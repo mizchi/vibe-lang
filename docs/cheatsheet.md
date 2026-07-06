@@ -237,11 +237,16 @@ x if x > 0          // guard (match arm only)
 let (a, b) = (1, 2)
 let record { x, y } = r          // any field names bind
 let Some((x, y)) = pt            // ctor pattern (partial: traps on mismatch)
+
+// let-else: bind on match, else run a DIVERGING fallback (#760)
+let Some(v) = opt else { return -1 }   // else must return / throw
+use(v)                                  // v is in scope past the let-else
 ```
 
-> **selfhost status (#760):** `let PAT = e else { ... }` (let-else) is not yet
-> implemented in the selfhost parser — use an explicit `match` for the fallback
-> case. Tuple/record/ctor destructuring binds fine.
+> **let-else semantics (#760):** `let PAT = e else { alt }` desugars to
+> `match e { PAT => <rest>, _ => alt }`, so `alt` must diverge (`return` /
+> `throw`) — its arm has to unify with the continuation. For a fall-through
+> *value* fallback, use an explicit `match`/`if … is` instead.
 
 ### is expression
 

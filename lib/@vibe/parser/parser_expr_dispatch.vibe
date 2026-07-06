@@ -95,6 +95,7 @@ enum BlockStep {
   StepAssign(String, Expr);
   StepAssignOp(String, String, Expr);
   StepPattern(Pat, Expr);
+  StepPatternElse(Pat, Expr, Expr);
   StepStructDestr(Pat, Expr);
   StepRecordDestr(Pat, Expr);
   StepBind(String, Expr)
@@ -407,6 +408,14 @@ let apply_block_step: (BlockStep, Expr) -> Expr = (step, rest) -> {
     StepPattern(pat, val) => EMatch(val, [
       (pat, rest)
     ]),
+    // #760(1): `let PAT = val else { alt }` — bind on match, else run the
+    // diverging fallback. Desugars to a two-arm match whose wildcard arm is
+    // the else body; the checker unifies both arms, so a fallback that
+    // `return`s / `break`s / `throw`s (or yields the same type) type-checks.
+    StepPatternElse(pat, val, alt) => EMatch(val, [
+      (pat, rest),
+      (PWild, alt)
+    ]),
     StepStructDestr(pat, val) => apply_struct_destr(pat, val, rest),
     StepRecordDestr(pat, val) => apply_record_destr(pat, val, rest),
     // `let* x = e` (railway bind, #635): short-circuit on the failure case,
@@ -440,6 +449,32 @@ let fold_block_steps: (Array[BlockStep]) -> Expr = (steps) -> {
     i = i - 1
   }
   result
+}
+
+// #760(1): after a pattern-let's value, consume an optional `else { body }`
+// (let-else) and return the body block. `else` is not an infix continuation,
+// so parse_block_value_only stops before it; an `if/else`-valued RHS already
+// consumed its own `else`, so only a genuine let-else `else` remains here.
+let parse_optional_let_else: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Option[Expr], Int) with { Error } = (tokens, pos, parse_recur) -> {
+  match peek(tokens, pos) {
+    TElse => {
+      let br = expect_tk(tokens, pos + 1, "{")
+      let (body, end) = parse_recur(tokens, br, 20)
+      (Some(body), end)
+    },
+    _ => (None, pos)
+  }
+}
+
+// Push a refutable pattern-let step, folding in a let-else fallback when one
+// follows. Returns the position past the (optional) else block.
+let push_pattern_let_step: (Array[Token], ArrayBuilder[BlockStep], Pat, Expr, Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> Int with { Error } = (tokens, steps, pat, val, next_pos, parse_recur) -> {
+  let (else_body, after) = parse_optional_let_else(tokens, next_pos, parse_recur)
+  match else_body {
+    Some(alt) => ArrayBuilder::push(steps, StepPatternElse(pat, val, alt)),
+    None => ArrayBuilder::push(steps, StepPattern(pat, val))
+  }
+  after
 }
 
 let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
@@ -583,8 +618,7 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
                   if next_pos <= eq {
                     throw("internal parser error: block let-ctor-pat parser did not advance")
                   } else {
-                    ArrayBuilder::push(steps, StepPattern(pat, val))
-                    p = next_pos
+                    p = push_pattern_let_step(tokens, steps, pat, val, next_pos, parse_recur)
                   }
                 },
                 _ => {
@@ -629,8 +663,7 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
             if next_pos <= eq {
               throw("internal parser error: block let-pat parser did not advance")
             } else {
-              ArrayBuilder::push(steps, StepPattern(pat, val))
-              p = next_pos
+              p = push_pattern_let_step(tokens, steps, pat, val, next_pos, parse_recur)
             }
           },
           _ => throw("expected identifier after 'let'")

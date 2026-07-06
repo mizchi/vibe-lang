@@ -45,6 +45,20 @@ fn first_half(a: Int, b: Int) -> Option[Int] {
 }
 ```
 
+## `let-else` — 束縛するか脱出
+
+`let PAT = e else { ... }` は `Some(v)` を剥がして `v` を**その先ずっと**束縛し、
+マッチしなければ `else` に入る。`else` は脱出 (`return` / `throw`) する必要が
+ある — `match e { PAT => <残り>, _ => else }` に脱糖され、両腕の型が合う必要が
+あるため。`match` のような右方向ネストなしで「剥がして続行」を書ける。
+
+```vibe
+fn double_or_zero(o: Option[Int]) -> Int {
+  let Some(v) = o else { return 0 }
+  v * 2                              // v はここで使える
+}
+```
+
 ## クイックチェックは is 式
 
 ```vibe
