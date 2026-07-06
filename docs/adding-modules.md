@@ -2,7 +2,7 @@
 
 > Status: 2026-07-04, #741/#742/#745 の作業で確立した運用の成文化。
 > 設計背景は [module-system-v2.md](module-system-v2.md) (ADR-0063/0064)。
-> selfhost-only 前提 ([moonbit-retirement.md](moonbit-retirement.md))。
+> selfhost-only 前提 ([archive/moonbit-retirement.md](archive/moonbit-retirement.md))。
 
 このリポジトリのライブラリは「テストが allowlist に載っていて、battery が
 回っている」ものだけが生きている。allowlist の外にあるコードは selfhost で

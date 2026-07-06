@@ -131,7 +131,7 @@ Status: accepted and moved from `TODO.md`.
 - vibe shell object pipeline compatibility model is fixed:
   `|` is text-lane only, `|>` is object-lane only, and text/object boundary
   crossing must be explicit conversion calls.
-  Design memo is tracked in `spec/vibe-shell.md`.
+  Design memo is tracked in `archive/spec/vibe-shell.md`.
 - Pipe-first call desugaring policy is fixed (ADR-0020):
   `x |> f` is shorthand of `x |> f()`, and `x |> f(a, b)` desugars to
   `f(x, a, b)`.

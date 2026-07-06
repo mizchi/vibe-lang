@@ -12,7 +12,7 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 - Design explorations live in separate documents:
   - `docs/module-system.md`
 - Incident log for compiler/language regressions:
-  - `docs/compiler_language_incidents.md`
+  - `docs/archive/compiler_language_incidents.md`
 
 ## Goals
 

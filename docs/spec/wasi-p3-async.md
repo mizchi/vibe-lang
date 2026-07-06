@@ -8,7 +8,7 @@ async モデルへ寄せていくための設計判断と段階プランを定�
 **`async`/`await` + `Future[T]` + `Stream[T]`**、stream の抽象哲学は
 **既存 `Iterator` に寄せた pull ベース**。
 
-旧 [docs/report/support-wasip3.md](../report/support-wasip3.md)（2026-05-22、
+旧 [docs/archive/report/support-wasip3.md](../archive/report/support-wasip3.md)（2026-05-22、
 同期 effect ベースの Model 1）の async 部分は本ドキュメントが supersede する。
 同期 effect capability（`HttpRequest`/`HttpResponse`/`HttpClient` を `perform`
 で扱う）は引き続き有効で、async はその上位に位置づける。

@@ -1,7 +1,7 @@
 # TODO
 
 Spec-locked decisions are tracked in `docs/spec/decisions.md`.
-Completed items are archived in `docs/DONE.md`.
+Completed items are archived in `docs/archive/DONE.md`.
 タスクの一次管理は GitHub Issues (`gh issue` / MCP)。本ファイルはロードマップ概要。
 
 ## 次の一手 (2026-07-02 時点)
@@ -277,7 +277,7 @@ bootstrap / fallback として通常開発では触らない。
   - [x] `Error` surface を `Result::Ok/Err` に寄せる整理を仕様・stdlib・diagnostics まで確定する (#275, 2026-04-09 commit `719c176`)
   - [x] `main` の required checks / ruleset を release 前に有効化する (#120)
 - [x] 実使用ベースの `0.1.0` usability sign-off を 1 周通す
-  - `docs/report/0-1-0-usability-signoff.md`
+  - `docs/archive/report/0-1-0-usability-signoff.md`
   - [x] `vibe shell`
   - [x] `vibe check`
   - [x] `vibe run`

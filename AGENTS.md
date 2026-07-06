@@ -11,7 +11,7 @@
 > describe the **retired** host flow and are kept only for historical context;
 > they no longer run. Recovery point for the last MoonBit-host state: tag
 > `moonbit-host-final-2026-06-23` (`59ef040`). Migration record:
-> [docs/moonbit-retirement.md](docs/moonbit-retirement.md).
+> [docs/archive/moonbit-retirement.md](docs/archive/moonbit-retirement.md).
 
 ## vibe 言語リファレンス
 

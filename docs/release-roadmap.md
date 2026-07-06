@@ -4,7 +4,7 @@
 > 「外部ユーザーが実利用できる公開リリース」まで持っていくための工程表。
 >
 > 言語コア（parser / checker / codegen / selfhost bootstrap）は 0.1.0 sign-off
-> （`docs/report/0-1-0-usability-signoff.md`, TODO.md「0.1.0 release sign-off」）で
+> （`docs/archive/report/0-1-0-usability-signoff.md`, TODO.md「0.1.0 release sign-off」）で
 > 一定の完成度に達している。本ロードマップは **プロダクトとしての配布・利用・
 > 開発体験** に残る 4 テーマを「リリース blocker」として整理する:
 >
@@ -21,7 +21,7 @@
 ## 実装進捗 (2026-06-25 セッション)
 
 > **マイルストーン**: M1（配布確定）+ M2（開発体験 MVP）+ M3（開発体験フル）+
-> M4（GA）content gate 達成 → 実装側 **GA-ready**（[GA readiness](report/1-0-ga-readiness.md)）。
+> M4（GA）content gate 達成 → 実装側 **GA-ready**（[GA readiness](archive/report/1-0-ga-readiness.md)）。
 > ADR 決定事項を全確定（install/module/LSP host/仕様 freeze =
 > [spec/1.0-freeze.md](spec/1.0-freeze.md)）。PR #642 を main に merge 済み。
 > 以降の DAP P3 step/P4 named-local / `vibe binding-at` / rename 配線 /
@@ -237,7 +237,7 @@
 | **M1: 配布確定** | install + module の配布方法を凍結し、外部の人が「入れて使える」 | (1)(2) | ✅ 達成（install 配布物確定 + module fetch/lock/transitive/semver/frozen/verify） |
 | **M2: 開発体験 MVP** | LSP MVP（診断/シンボル/hover）+ debugger P0（source-mapped trace） | (3)(4) | ✅ 達成（型付き hover、parser error recovery で全診断、trap→source-line） |
 | **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | ✅ 達成（DAP P1-P4 = breakpoint/名前付き変数検査/step 実行 + 3-D VS Code debug adapter、rename/references は scope 精度の `vibe binding-at` で AST 精度化）。テーマ3 debugger は P0-P4 + 3-D 完了 |
-| **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | ✅ content gate 達成（仕様 freeze = [spec/1.0-freeze.md](spec/1.0-freeze.md)、docs = install/module/editor+debug、span-arc step1–4 + step5 関数行 breakpoint、[GA readiness](report/1-0-ga-readiness.md)）。残: 1.0 タグ / version bump / main land（リリース運用判断）、post-GA = 任意行 debug・LSP span JSON |
+| **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | ✅ content gate 達成（仕様 freeze = [spec/1.0-freeze.md](spec/1.0-freeze.md)、docs = install/module/editor+debug、span-arc step1–4 + step5 関数行 breakpoint、[GA readiness](archive/report/1-0-ga-readiness.md)）。残: 1.0 タグ / version bump / main land（リリース運用判断）、post-GA = 任意行 debug・LSP span JSON |
 
 ### 横断的な前提（どのテーマにも効く 2 つの土台）
 
