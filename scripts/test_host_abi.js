@@ -90,7 +90,7 @@ try {
     pure.exports.some((e) => e.name === "_start") && pure.exports.some((e) => e.name === "memory"));
 
   // --- Tier 1: Fs effect -------------------------------------------------
-  const fsAbs = path.join(REPO, "vibe", "fs", "fs.vibe");
+  const fsAbs = path.join(REPO, "lib", "@vibe", "fs", "fs.vibe");
   const fsw = build("fsprog",
     `import ${fsAbs} { read_file }\nlet main = () -> Unit { let _ = read_file("/tmp/x"); () }\n`);
   ok("fs: still imports wasi_snapshot_preview1::fd_write", fsw.imports.includes("wasi_snapshot_preview1::fd_write"));

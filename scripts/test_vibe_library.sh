@@ -25,8 +25,8 @@ cd "$ROOT_DIR"
 # wasm parsers touched by the O(N²) StringBuilder work (#660/#662) plus prelude
 # and a few lib/@vibex packages with real logic (#752 moved them out of vibe/x).
 ALLOW=(
-  vibe/prelude/func_test.vibe
-  vibe/prelude/lazy_iter_test.vibe
+  lib/@vibe/prelude/func_test.vibe
+  lib/@vibe/prelude/lazy_iter_test.vibe
   vibe/wasm/component_parser/component_parser_test.vibe
   vibe/wasm/wasm_parser/wasm_parser_test.vibe
   vibe/wasm/wat_parser/wat_parser_test.vibe
