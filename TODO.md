@@ -578,7 +578,7 @@ StringBuilder/ArrayBuilder) に置換する。
     interp 展開 + generic strip を接続 / entry・__heap_ptr export。
     `pkf run test-gc-selfbuild` が probe / bundle / run E2E / self-compile fixpoint を常設計測。
   - [ ] **P5: DCE + wasm-opt** — baseline 確保: raw 966KB (-62% vs linear)。縮小手段は
-    `core/dce.vibe` を gc path に適用 + `vibe/wasm/wasm_opt` post-pass
+    `core/dce.vibe` を gc path に適用 + `lib/@vibe/optimizer` post-pass
     (compiler への直接結合は +700KB & seed 不能 — docs/wasm-opt-dogfood.md)。
     数値目標は置かない（初回リリース後に現実的な値を設定）。
     メモ: wasm_opt の FS-linked compile は linear lane の FixedArray::make 未解決で現状ブロック
