@@ -1,4 +1,4 @@
-# Coverage strategy (MoonBit + WASM)
+# Coverage strategy (selfhost)
 
 > **Status (selfhost-only):** MoonBit host が退役 (#594) したため、下記 1)
 > `coverage-moon` と 2) `coverage-deno` は `src/` 依存で **動かない**（driver
@@ -21,7 +21,7 @@
 
 ```bash
 scripts/vibe_test.sh --coverage path/to/foo_test.vibe   # 単一ファイル
-scripts/vibe_test.sh --coverage vibe/prelude            # ディレクトリ配下の *_test.vibe
+scripts/vibe_test.sh --coverage lib/@vibe/prelude       # ディレクトリ配下の *_test.vibe
 ```
 
 出力例（負数入力を踏まないテストだと `n < 0` アームが未到達 → 3/4）:
@@ -85,7 +85,7 @@ bitmap（`raw.fn_bitmap` / `raw.branch_bitmap` + 静的な name/owner 表）を�
 
 `coverage_selfhost_merge.sh` の固定 3 ワークロードでは分岐 ~56% で頭打ちになる。
 `coverage_selfhost_corpus.sh` は 1 つの計測コンパイラを **多数の .vibe**
-（`examples/` `fixtures/` `vibe/prelude/`）に対して compile / normalize / rc で
+（`examples/` `fixtures/` `lib/@vibe/prelude/`）に対して compile / normalize / rc で
 走らせ、全 run を union する。
 
 ```bash
@@ -506,8 +506,11 @@ just coverage-wasm-std
 ## 一括実行
 
 ```bash
-just coverage
+pkf run coverage                            # selfhost suite coverage 集計
+pkf run coverage-selfhost-suite-branch-gate # branch coverage gate
+pkf run coverage-selfhost-suite-next-branches  # 未到達分岐の提案
 ```
 
-これは `coverage-moon` と `coverage-deno` を順に実行する。
-`coverage-wasm-source` は個別シナリオ計測用として別コマンドで実行する。
+> 旧 `coverage-moon` / `coverage-deno` / `coverage-wasm-source` / `coverage-wasm-std`
+> は MoonBit host 退役 (#594) で撤去済み。現在動くのは上記 selfhost-suite 系のみ
+> (セクション 0 参照)。

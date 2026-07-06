@@ -1,6 +1,13 @@
 # vibe
 
-vibe language prototype and runtime (MoonBit).
+vibe language prototype and runtime.
+
+vibe is **selfhost-only**: the compiler, type checker, and codegen are written in
+vibe itself (`vibe/compiler/`, `vibe/cli/`) and built from a committed seed via a
+wasm runner — no MoonBit toolchain is required (the original MoonBit host was
+retired in #594; see [docs/moonbit-retirement.md](docs/moonbit-retirement.md)).
+The task runner is [pkfire](https://github.com/mizchi/pkfire) (`pkf`), defined in
+`Taskfile.pkl`.
 
 ## Install
 
@@ -96,53 +103,35 @@ inspection) and a VS Code DAP adapter. See
 ## Development
 
 ```bash
-pkf run            # check + test
+pkf run            # check + test (release-check)
 pkf run fmt        # format code
 pkf run check      # type check
 pkf run test       # run tests
+pkf run test-local # affected local tests via flaker (fast inner loop)
+pkf run test-selfhost-unit  # selfhost unit tests (allowlist-gated)
+pkf run selfhost-gate       # full selfhost operation gate
 pkf run test-integration-deno  # deno integration tests (artifact-only wasm-gc)
-pkf run coverage   # moonbit + wasm(deno) coverage
-pkf run coverage-moon  # moonbit source coverage (summary/cobertura/html)
-pkf run coverage-deno  # wasm integration coverage (summary/lcov/html)
-pkf run coverage-wasm-source examples/pattern_coverage.vibe  # vibe source span + wasm counter coverage
-pkf run coverage-wasm-std  # vibe/prelude *_test.vibe coverage aggregation (wasm source)
-pkf run release-check  # full check before release
-pkf run playground-dev  # current wasm build で playground を起動
-pkf run playground-build  # GitHub Pages 向け playground を build
+pkf run coverage            # selfhost suite coverage aggregation
+pkf run release-check       # full check before release (fmt + info + check + test + gates)
+pkf run playground-dev      # current wasm build で playground を起動
+pkf run playground-build    # GitHub Pages 向け playground を build
 ```
 
-Coverage で使う主な環境変数:
-- `VIBE_MOON_COVERAGE_TARGET=native|wasm|wasm-gc|js`
-- `VIBE_MOON_COVERAGE_PACKAGE=<pkg>`
-- `VIBE_MOON_COVERAGE_MIN_LINE=<percent>`
-- `VIBE_DENO_COVERAGE_FILTER=<regex>`
-- `VIBE_DENO_COVERAGE_MIN_LINE=<percent>`
-- `VIBE_WASM_SOURCE_COVERAGE_MODE=wasm|wasm-js-string`
-- `VIBE_WASM_SOURCE_COVERAGE_NO_DCE=0|1`
-- `VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=0|1`
-- `VIBE_WASM_SOURCE_COVERAGE_DIR=<dir>`
-- `VIBE_WASM_STD_COVERAGE_MODE=wasm|wasm-js-string`
-- `VIBE_WASM_STD_COVERAGE_FILTER=<regex>`
-- `VIBE_WASM_STD_COVERAGE_EXCLUDE=<regex>`
-- `VIBE_WASM_STD_COVERAGE_STRICT=0|1`
-- `VIBE_WASM_STD_COVERAGE_DIR=<dir>`
+Coverage は selfhost テストスイート基準で測る:
+- 集計: `pkf run coverage`
+- branch coverage gate: `pkf run coverage-selfhost-suite-branch-gate`
+- next-branch 提案: `pkf run coverage-selfhost-suite-next-branches`
+- 詳細: [docs/coverage.md](docs/coverage.md)
 
-WASM 向けは 3 層で測る:
-- MoonBit 本体ロジック: `pkf run coverage-moon`（必要なら `VIBE_MOON_COVERAGE_TARGET=wasm-gc`）
-- `WebAssembly.instantiate` 経由の統合導線: `pkf run coverage-deno`
-- vibe ソース span ベースの line/branch: `pkf run coverage-wasm-source <entry.vibe>`
-- vibe/prelude の集計: `pkf run coverage-wasm-std`（`summary` の `cases(total/success)` と `failures.txt` を確認）
-- 詳細: `docs/coverage.md`
-
-`js/vibe/` には wasm 成果物 (`src/lib`) を呼ぶ JS バインディングを置く:
+`js/vibe/` には配布用 wasm (`wasm/vibe/vibe.wasm`) を呼ぶ JS バインディングを置く:
 - `js/vibe/index.js` / `js/vibe/index.d.ts` (`createVibeService`, `init`, `check`, `format`, `checkProject`, `ideOutline`, `idePeekDef`, `ideSearch`)
   - `createVibeService({ bootstrap: { prelude, kv } })` または `service.init({ prelude, kv })` で初期状態を注入可能
   - `checkProject({ entry, files })` と IDE request (`{ entry, path, files, ... }`) は import 解決対応（init で注入した `kv` も解決対象）
 - `js/vibe/cli.js` shell から使う JS CLI (`vibe ide` 相当)
 - `js/vibe/lsp.js` / `js/vibe/lsp.d.ts` (stdio/ws 非依存の transport 抽象)
 
-`wasm/vibe/` には `src/lib` の配布用 wasm (`wasm-gc`) を置く:
-- `wasm/vibe/vibe.wasm`
+`wasm/vibe/` には配布用 wasm を置く:
+- `wasm/vibe/vibe.wasm` — selfhost compiler をビルドした成果物
 - `pkf run build-wasm-vibe` で更新
 - `pkf run test-wasm-vibe-wasmtime` で `wasmtime --invoke vibe_check` 疎通確認
 - `pkf run build-release-assets v0.0.1` で GitHub Release 添付用の versioned asset を `dist/release/v0.0.1/` に生成
@@ -179,8 +168,6 @@ pkf run run -- compile --component script.vibe -o out.component.wasm
 # Generate component embedding WIT for wasm-tools/wkg pipeline
 pkf run run -- compile --wit-component script.vibe -o out.component.wit
 
-# Build validated component via wkg + wasm-tools
-pkf run component-wkg -- script.vibe
 # (stdio builtins are wired through wasi:cli/stdin|stdout + wasi:io/streams)
 
 # Interactive shell
@@ -209,27 +196,8 @@ pkf run run -- index verify /tmp/advanced-graph-index.json
 # Emit LSIF from the same symbol index backend
 pkf run run -- lsif -o /tmp/vibe.lsif examples/syntax.vibe
 
-# Build wasm line shell (preview2 stdio imports)
-pkf run build-shell-wasi-wasm
-# Build wasm compiler CLI (wasi)
-pkf run build-compiler-wasi-wasm
-# Build wasm checker CLI (json diagnostics)
-pkf run build-checker-wasi-wasm
-# Run wasm compiler CLI (`--wasm` は wasm-gc を優先)
-printf '1 + 2\n' > /tmp/gc_demo.vibe
-pkf run run-compiler-wasi-wasm -- --wasm /tmp/gc_demo.vibe -o /tmp/out.wasm
-# Run wasm checker CLI (file path or --source)
-pkf run run-checker-wasi-wasm -- /tmp/gc_demo.vibe
-pkf run run-checker-wasi-wasm -- --source '1 + true'
-# Run wasm formatter mode (vibe fmt 相当)
-pkf run run-checker-wasi-wasm -- --format --source 'let  x=1'
-# Same as above (shortcut)
-pkf run run-compiler-wasi-wasm ---gc /tmp/gc_demo.vibe -o /tmp/out.wasm
-# Use core wasm MVP backend explicitly
-pkf run run-compiler-wasi-wasm ---mvp examples/basics.vibe -o /tmp/out.mvp.wasm
-
 # Build component + run with wasmtime (explicit invoke for non-command component)
-pkf run component-run -- vibe/prelude/test_import.vibe
+pkf run component-run -- lib/@vibe/prelude/test_import.vibe
 # stdin 経由の実行も可能:
 printf 'A' | pkf run component-run -- your_stdio_script.vibe
 # stream TUI デモ:
@@ -238,34 +206,26 @@ printf 'hello\nworld\n' | pkf run component-run -- examples/wasm/tui_stream_demo
 pkf run demo-tui-stream
 
 # moonix で実行（moonix の CLI 差分はランチャで吸収）
-pkf run component-run-moonix -- vibe/prelude/test_import.vibe
-# moonix バイナリが無い場合の手動 bootstrap
-pkf run bootstrap-moonix
+pkf run component-run-moonix -- lib/@vibe/prelude/test_import.vibe
 
 # Install CLI to ~/.local/bin/vibe
 pkf run install
 ```
 
-`build-shell-wasi-wasm` output:
-- `_build/wasm/release/build/vibe_wasi/vibe_wasi.wasm`
-- this binary imports `wasi:cli/stdin|stdout@0.2.0` and `wasi:io/streams@0.2.0` directly
-- run it with a component/p3-compatible host (for example moon-component/mwac integration), not `moon run --target wasm`
-- for script-level stdio execution, use `pkf run component-run -- <file.vibe>`
-- moonix 実行は `pkf run component-run-moonix -- <file.vibe>`（必要なら `MOONIX_BIN=/path/to/moonix`）
-- `component-run-moonix` は `moonix` 未導入時に `scripts/bootstrap_moonix_bin.sh` を自動試行
-
-`build-compiler-wasi-wasm` output:
-- `_build/wasm/release/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm`
-- run with `moon run --target wasm src/cmd/vibe_compile_wasi -- ...` (or `pkf run run-compiler-wasi-wasm -- ...`)
-- compiler filesystem access is routed through `src/io.FileSystemAdapter` abstraction
-- `vibe_compile_wasi`（退役した MoonBit host）では `--wasm` が `wasm-gc` を選んでいた。
-  **selfhost CLI ではこれは成立しない**: `--wasm` = linear、`--wasm-gc` は未配線（throw）。
-  現行のバックエンド契約は [docs/spec/memory-contract.md](docs/spec/memory-contract.md) を参照
-
-Note: MoonBit `src/` の CLI は legacy bootstrap / fallback wrapper として扱う。
-compiler/checker/codegen と CLI の新しい挙動は `vibe/compiler/` / `vibe/cli/` 側で
-実装し、`src/` に二重実装を追加しない。完全 selfhost の継続判断は
-`pkf run selfhost-gate` を使う。
+Notes:
+- Script-level stdio execution goes through `pkf run component-run -- <file.vibe>`
+  (moonix 実行は `pkf run component-run-moonix -- <file.vibe>`, 必要なら
+  `MOONIX_BIN=/path/to/moonix`; `component-run-moonix` は `moonix` 未導入時に
+  `scripts/bootstrap_moonix_bin.sh` を自動試行する)。
+- Components import `wasi:cli/stdin|stdout@0.2.0` and `wasi:io/streams@0.2.0`
+  directly, so they run on a component / p3-compatible host.
+- Backend 契約: selfhost CLI では `--wasm` = linear (production default)、
+  `--wasm-gc` は未配線 (throw)。詳細は
+  [docs/spec/memory-contract.md](docs/spec/memory-contract.md)。
+- The old MoonBit-host wasi CLIs (`vibe_wasi` / `vibe_compile_wasi` under
+  `src/cmd/`) were retired with the MoonBit host in #594; the distributed
+  compiler wasm is now built from selfhost source (`pkf run build-wasm-vibe`,
+  or the installer's seed → stage1 → stage2 build).
 
 ## WASM Execution
 
@@ -302,7 +262,6 @@ pkf run wasmtime-submodule -- run -W gc --invoke _start /tmp/out.wasm
 
 # or switch existing vibe scripts/tasks to submodule wasmtime
 VIBE_USE_WASMTIME_SUBMODULE=1 pkf run component-run -- script.vibe
-VIBE_USE_WASMTIME_SUBMODULE=1 pkf run bench-wasmtime
 
 # inject extra wasmtime runtime flags into vibe scripts/*
 # (space-separated list; each token is passed as -W / -S)
@@ -310,9 +269,6 @@ VIBE_WASMTIME_WASM_FLAGS='component-model-async=y concurrency-support=y' \
 VIBE_WASMTIME_WASI_FLAGS='p3=y' \
 VIBE_USE_WASMTIME_SUBMODULE=1 \
 pkf run component-run -- script.vibe
-
-# flags are also propagated through justfile-backed tasks
-VIBE_WASMTIME_WASM_FLAGS='gc=y' pkf run bench-wasmtime
 
 # inspect current flag env values used by scripts/wasmtime_run.sh
 pkf run show-wasmtime-flags
@@ -328,84 +284,82 @@ pkf run experimental_wasmtime_stack_switching -- /tmp/out.wasm
 
 ## Project Structure
 
+Everything is now vibe source (`.vibe`); the retired MoonBit host tree (`src/`,
+`moon.mod`, `*.mbt`) is gone (#594).
+
 ```
-src/
-├── backend/        # Runtime host adapters (target-specific sleep, etc.)
-├── codebase/       # Nix-like content-addressed store and path mappings
-├── io/             # Unified IO boundary (fs/env/shell/sleep facade)
-├── loader/         # Source/lock resolution and module loading pipeline
-├── core/           # AST types and serialization
-├── parser/         # Lexer and parser
-├── checker/        # Type checker with effects
-├── codegen/        # WASM code generation
-├── runtime/        # Runtime state, caches, compiler hooks, and shell support
-├── x/fp/           # Floating-point to decimal formatter utilities
-├── x/module_graph/ # Experimental module graph index and codecs
-├── cmd/vibe/       # Legacy host CLI wrapper (bootstrap/fallback)
-├── cmd/vibe_wasi/  # Legacy WASI line-shell wrapper
-└── tests/          # Integration-like blackbox tests
+vibe/                     # Compiler-internal source (written in vibe)
+├── compiler/             # Selfhost compiler
+│   ├── syntax/           #   lexer + parser
+│   ├── checker/          #   type checker with effects
+│   ├── codegen/          #   WASM code generation (linear + gc lanes)
+│   ├── core/             #   AST types and serialization
+│   ├── loader/           #   source/lock resolution + module loading
+│   ├── contract/         #   .vibei contract grammar + conformance engine
+│   ├── perceus/ ripple/  #   ownership / reference-counting passes
+│   ├── normalize/ fmt/   #   normalization + formatter
+│   ├── cache/ runtime/   #   caches, compiler hooks, shell support
+│   └── entry/            #   compiler entrypoints
+├── cli/                  # Selfhost CLI command surface + entrypoints
+├── builtins/             # Builtin registry + host-import definitions
+├── wasi/ wasm/           # WASI / wasm emission helpers
+└── x/                    # Experimental compiler-internal utilities (simd_scan)
 
-examples/
-├── *.vibe           # Example scripts
-└── wasm/           # WASM-only examples (require host)
+lib/                      # Standard + experimental libraries (vibe source)
+├── @vibe/                #   stdlib: prelude, io, path, fs, http, json, socket,
+│                         #   time, process, shell, random, collection, module,
+│                         #   core, ast, parser
+└── @vibex/               #   experimental: math, regexp, url, uuid, toml, diff,
+                          #   fmt, color, template, semver, quickcheck, base64, …
 
-vibe/
-├── cli/            # Selfhost CLI command surface and entrypoints
-├── compiler/       # Selfhost compiler implementation
-└── prelude/        # vibe core library (self-hosted prelude modules)
-
-examples/async_host/  # Rust/wasmtime host runtime
+bootstrap/selfhost/       # Committed seed compiler (bootstraps the build)
+examples/                 # Example scripts (examples/wasm/ needs a host)
+examples/async_host/      # Rust/wasmtime host runtime
+js/vibe/ wasm/vibe/       # JS bindings + distributed compiler wasm
+scripts/ pkspec/          # Build/test scripts + pkfire/pkspec definitions
 ```
 
 ## Docs
 
+- `docs/cheatsheet.md` - Language cheatsheet (start here for syntax/features)
 - `docs/vibe.md` - Language specification (normative for implemented behavior)
 - `docs/module-system.md` - Current module system spec
-- `docs/coverage.md` - Coverage strategy for MoonBit + WASM integration
+- `docs/adding-modules.md` - How to add/repair a `lib/@vibe/*` module
+- `docs/coverage.md` - Selfhost-suite coverage strategy
 
 ## Fixtures
 
-Fixtures live in `fixtures/*.vibe` and include a `__DATA__` JSON section.
-`moon test` runs them via `src/tests/fixture_test.mbt`.
-Runtime-style fixtures (effect, HTTP, struct) live in `fixtures/runtime/`.
+Fixtures live in `fixtures/*.vibe` and include a `__DATA__` JSON section; they are
+exercised through the selfhost gate (`pkf run selfhost-gate`) and `pkf run
+test-fixtures`. Runtime-style fixtures (effect, HTTP, struct) live in
+`fixtures/runtime/`.
 
 WASM fixtures live in `fixtures/wasm/*.vibe` and compare expected WAT.
 WASM GC fixtures live in `fixtures/wasm_gc/*.vibe` and check for `struct.new/get/set`.
 
 ## Bench
 
+`vibe bench` は `bench {}` ブロックを言語機能として実行する:
+
 ```bash
-pkf run bench-wasmtime
-pkf run bench-compare
-pkf run bench-kpi
-pkf run bench-kpi bench/kpi_bench.vibe
-pkf run bench-std-baseline-update
 pkf run run -- bench examples/simple_bench.vibe
-pkf run bench-cmd-latency
-pkf run bench-scratch-workflow
-pkf run bench-symbol-index
-pkf run bench-advanced-graph
-pkf run bench-typechecker
 ```
 
-`vibe bench` は `bench {}` ブロックを言語機能として実行する。  
-`<file|dir...>` 指定時の canonical backend は `--backend compiled` で、`--backend wasm` は互換 alias として受け付ける。  
+`<file|dir...>` 指定時の canonical backend は `--backend compiled` で、`--backend wasm` は互換 alias として受け付ける。
 legacy の式ベンチ (`--expr/--case/--cases`) は廃止。`bench {}` を含む `.vibe` file を渡す。
 compiled bench path ではサイズ優先で `--no-dce -Oz` 相当のコンパイルを使い、各ケースに `wasm_bytes=<size>` を出力する。
-`pkf run bench-kpi` は `vibe bench` の結果を `dist/bench_kpi/latest.tsv` に保存し、`per_us` と `wasm_bytes` を同時に確認できる。
-KPI しきい値は `VIBE_BENCH_KPI_MAX_PER_US` / `VIBE_BENCH_KPI_MAX_WASM_BYTES` / `VIBE_BENCH_KPI_MAX_SCORE` で設定可能。
-引数なしの `pkf run bench-kpi` は `bench/kpi_bench.vibe`（数値パイプライン/状態更新の4ケース）を対象にする。
-`VIBE_BENCH_KPI_N` / `VIBE_BENCH_KPI_WARMUP` 未指定時は `compiled=20000/1000` を使う。
-`pkf run bench-std-baseline-update` は `vibe/prelude` を含む bundle-size budget
-(`bench/golden/bundle_size_budget.tsv`) と KPI snapshot
-(`bench/golden/kpi_wasm.tsv`) を更新する。
 
-`bench-scratch-workflow` は scratch 開発フローを段階別に計測する。
+コンパイラ内部のマイクロベンチ (pkf tasks):
 
-- `VIBE_BENCH_SCENARIOS=all|eval|finalize|export_apply|full` (`all` は `,` 区切り指定可)
-- `VIBE_BENCH_CHAIN=<N>` 定義チェーン長（デフォルト `40`）
-- `VIBE_BENCH_WARMUP=<N>` / `VIBE_BENCH_RUNS=<N>`
-- `VIBE_BENCH_EXPORT_JSON=<path>` で `hyperfine` の JSON を保存
+```bash
+pkf run bench-typechecker      # 型検査スループット
+pkf run bench-symbol-index     # シンボルインデックス構築
+pkf run bench-advanced-graph   # graph index build/query
+pkf run bench-array-build      # 配列構築
+pkf run bench-char-conversion  # 文字コード変換
+pkf run bench-jsonschema       # jsonschema 検証
+pkf run bench-bundle-size-monitor-strict  # bundle-size budget チェック
+```
 
 ## License
 
