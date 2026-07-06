@@ -1629,6 +1629,17 @@ async function main() {
     return isPersistentArtifactCacheDisabled(filePath);
   }
 
+  // Linear-backend stdin feed for the `vibe.stdin_*` host imports (vibe/io).
+  // Same VIBE_STDIN_BYTES source as the WASI 0.2 input-stream bridge in
+  // createPreview2CliStreamsHost, but with its own cursor: a program uses one
+  // backend, so the two never advance the same input concurrently. Unset =>
+  // null => immediate EOF, matching the empty-stdin tests.
+  const vibeStdinFeed =
+    process.env.VIBE_STDIN_BYTES !== undefined
+      ? Buffer.from(process.env.VIBE_STDIN_BYTES, "utf8")
+      : null;
+  let vibeStdinCursor = 0;
+
   const vibeModule = new Proxy(
     {
       sh(cmdTagged) {
@@ -1646,16 +1657,30 @@ async function main() {
           return encodeHostString(instanceRef, "error: " + stderr);
         }
       },
-      // vibe/io host effects (linear codegen `vibe.*` module). Tests run without
-      // a controlling stdin, so the input stream is empty: read_char yields -1
-      // (EOF) and read_stream yields "" (EOF). write_stream/write_char echo to
-      // process stdout and return 0 (Unit). Kept explicit (not the () => 0n proxy
-      // fallback) so read_char's EOF sentinel is the correct -1, not 0.
+      // vibe/io host effects (linear codegen `vibe.*` module). Both stdin
+      // readers draw from the SAME VIBE_STDIN_BYTES feed + cursor as the WASI
+      // 0.2 input-stream bridge (preview2CliStreamsHost), so a linear-backend
+      // program reading stdin sees the runner's configured input rather than a
+      // hardcoded EOF. With no VIBE_STDIN_BYTES the feed is null => immediate EOF
+      // (read_char -> -1, read_stream -> ""), matching the empty-stdin tests.
+      // write_stream/write_char echo to process stdout and return 0 (Unit).
       stdin_read_char() {
+        if (vibeStdinFeed && vibeStdinCursor < vibeStdinFeed.length) {
+          const b = vibeStdinFeed[vibeStdinCursor];
+          vibeStdinCursor += 1;
+          return encodeHostInt(b);
+        }
         return encodeHostInt(-1);
       },
-      stdin_read_stream(_nTagged) {
-        return encodeHostString(instanceRef, "");
+      stdin_read_stream(nTagged) {
+        const n = decodeHostInt(nTagged);
+        if (!vibeStdinFeed || vibeStdinCursor >= vibeStdinFeed.length || n <= 0) {
+          return encodeHostString(instanceRef, "");
+        }
+        const end = Math.min(vibeStdinFeed.length, vibeStdinCursor + n);
+        const chunk = vibeStdinFeed.slice(vibeStdinCursor, end).toString("utf8");
+        vibeStdinCursor = end;
+        return encodeHostString(instanceRef, chunk);
       },
       stdout_write_stream(strTagged) {
         const str = decodeStringArg(instanceRef, strTagged);
