@@ -1,0 +1,100 @@
+// Real-FS exercise of the Fs builtins against the preopen filesystem. As in
+// fixtures/fs_readdir_test.vibe, the `handle ... with Fs { ... }` blocks only
+// discharge the Fs effect for the checker — the builtin Fs ops
+// (Fs::write_file / Fs::read_file / Fs::exists / Fs::stat_token) compile to
+// direct host-import calls, so the arms are never invoked and the writes/reads
+// hit the real filesystem. (fs.vibe's perform-based wrappers are covered,
+// mocked, by fs_effect_test.vibe.)
+
+import ./fs_effect.vibe {
+  Fs
+}
+
+let do_roundtrip: () -> Bool with { Fs } = () -> {
+  Fs::write_file("_build/vibe_fs_test.txt", "hello vibe")
+  Fs::read_file("_build/vibe_fs_test.txt") == "hello vibe"
+}
+
+let do_exists_true: () -> Bool with { Fs } = () -> {
+  Fs::write_file("_build/vibe_fs_test_exists.txt", "test")
+  Fs::exists("_build/vibe_fs_test_exists.txt")
+}
+
+let do_exists_false: () -> Bool with { Fs } = () -> {
+  Fs::exists("_build/vibe_fs_nonexistent_file_12345")
+}
+
+let do_stat_stable: () -> Bool with { Fs } = () -> {
+  Fs::write_file("_build/vibe_fs_test_stat_stable.txt", "a")
+  let token1 = Fs::stat_token("_build/vibe_fs_test_stat_stable.txt")
+  let token2 = Fs::stat_token("_build/vibe_fs_test_stat_stable.txt")
+  eq(token1, token2)
+}
+
+let do_stat_changed: () -> Bool with { Fs } = () -> {
+  Fs::write_file("_build/vibe_fs_test_stat_changed.txt", "a")
+  let token1 = Fs::stat_token("_build/vibe_fs_test_stat_changed.txt")
+  Fs::write_file("_build/vibe_fs_test_stat_changed.txt", "longer content")
+  let token2 = Fs::stat_token("_build/vibe_fs_test_stat_changed.txt")
+  not(eq(token1, token2))
+}
+
+test "write_file and read_file roundtrip" {
+  let ok = handle {
+    do_roundtrip()
+  } with Fs {
+    ReadFile(_p) => resume("");
+    WriteFile(_p, _c) => resume(0);
+    Exists(_p) => resume(false);
+    Mkdir(_p) => resume(0)
+  }
+  assert(ok)
+}
+
+test "exists returns true for existing file" {
+  let ok = handle {
+    do_exists_true()
+  } with Fs {
+    ReadFile(_p) => resume("");
+    WriteFile(_p, _c) => resume(0);
+    Exists(_p) => resume(false);
+    Mkdir(_p) => resume(0)
+  }
+  assert(ok)
+}
+
+test "exists returns false for nonexistent file" {
+  let absent = handle {
+    do_exists_false()
+  } with Fs {
+    ReadFile(_p) => resume("");
+    WriteFile(_p, _c) => resume(0);
+    Exists(_p) => resume(false);
+    Mkdir(_p) => resume(0)
+  }
+  assert(not(absent))
+}
+
+test "stat_token is stable for unchanged file" {
+  let ok = handle {
+    do_stat_stable()
+  } with Fs {
+    ReadFile(_p) => resume("");
+    WriteFile(_p, _c) => resume(0);
+    Exists(_p) => resume(false);
+    Mkdir(_p) => resume(0)
+  }
+  assert(ok)
+}
+
+test "stat_token changes after write" {
+  let changed = handle {
+    do_stat_changed()
+  } with Fs {
+    ReadFile(_p) => resume("");
+    WriteFile(_p, _c) => resume(0);
+    Exists(_p) => resume(false);
+    Mkdir(_p) => resume(0)
+  }
+  assert(changed)
+}
