@@ -696,6 +696,12 @@ let rec infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(Strin
       EIdent("String::replace", _) => Some("String"),
       EIdent("String::from_char_code", _) => Some("String"),
       EIdent("__to_string", _) => Some("String"),
+      // Map-returning builtins (not in fn_returns): lets `let m2 = Map::set(m,
+      // k, v)` record m2 -> Map so a later `m2[k]` takes the #760(3) Map::get
+      // rewrite. (A `map { }` literal is already classified as Map above.)
+      EIdent("Map::set", _) => Some("Map"),
+      EIdent("Map::remove", _) => Some("Map"),
+      EIdent("Map::insert", _) => Some("Map"),
       EIdent(fname, _) => ctor_enum_of_name(fn_returns, fname),
       // `let x: T = e` is desugared to `((__asc: T) -> __asc)(e)` (ascribe_wrap);
       // recover the operand's type head from the annotation so an annotated
@@ -732,6 +738,33 @@ let rec infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(Strin
         }
       }
       result
+    },
+    _ => None
+  }
+}
+
+// #760(3): `m[k]` parses to `__index(m, k)`, whose codegen array-indexes the
+// receiver — on a Map that reads its backing store as a positional array and
+// traps. Rewrite to `Map::get(m, k)` ONLY when the receiver is determinably
+// Map-typed (a `map { }` literal, or a binding/param annotated `Map[..]`,
+// which `infer_arg_type_name` reports as "Map"). A non-Map receiver — an
+// Array/Bytes/String, or an unknown — is left as `__index`, so array indexing
+// (and the type checker's rejection of e.g. `a["x"]` on an Array) is unchanged.
+// `rwargs` are the already-rewritten arguments to carry into the new call.
+let map_index_rewrite: (Expr, Array[Expr], Array[Expr], Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Option[Expr] = (callee, args, rwargs, struct_sets, var_types, fn_returns) -> {
+  match callee {
+    EIdent(nm, _) => if nm == "__index" && Array::length(args) == 2 {
+      let recv_map = match infer_arg_type_name(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+        Some(t) => t == "Map",
+        None => false
+      }
+      if recv_map {
+        Some(ECall(EIdent("Map::get", -1), rwargs, -1))
+      } else {
+        None
+      }
+    } else {
+      None
     },
     _ => None
   }
@@ -1599,9 +1632,13 @@ let rec railway_rw: (Expr, Array[(String, Array[String])], Array[(String, String
         let rwval = railway_rw(val, struct_sets, var_types, fn_returns)
         lower_try_op(rwval, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
       } else {
-        ECall(railway_rw(callee, struct_sets, var_types, fn_returns), for a in args {
+        let rwargs = for a in args {
           railway_rw(a, struct_sets, var_types, fn_returns)
-        }, off)
+        }
+        match map_index_rewrite(callee, args, rwargs, struct_sets, var_types, fn_returns) {
+          Some(map_get) => map_get,
+          None => ECall(railway_rw(callee, struct_sets, var_types, fn_returns), rwargs, off)
+        }
       }
     },
     EInt(_) => expr,
@@ -1785,6 +1822,9 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
       let rwargs = for a in args {
         rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       }
+      match map_index_rewrite(callee, args, rwargs, struct_sets, var_types, fn_returns) {
+        Some(map_get) => map_get,
+        None =>
       match callee {
         EIdent(name0, coff) => {
           // #672: unqualify a qualified constructor call `Enum::Variant(..)` ->
@@ -1867,6 +1907,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
           }
         },
         _ => ECall(rewrite_expr(callee, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rwargs, off)
+      }
       }
       }
     },

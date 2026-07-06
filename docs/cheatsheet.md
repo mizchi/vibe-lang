@@ -320,9 +320,10 @@ Int64Array::length(w)            // => 4
 >   resolves only when some declared `struct` also names that field (#722
 >   residual). Destructuring (`let record { name: n } = r`) binds any field name
 >   and always works — prefer it.
-> - **`map { ... }` literals / `Map::*` builtins** run in a workspace that imports
->   `vibe/collection` (`Map::get`/`has_key`/…); the standalone builtin Map lane
->   still traps at runtime. Use `vibe/collection` for maps today.
+> - **`map { ... }` literals + `Map::*` builtins + `m[k]` indexing** work
+>   standalone (#760): `Map::get` / `has_key` / `set` / `keys` and the `m["k"]`
+>   index sugar all lower correctly. (`vibe/collection` remains available for a
+>   richer Map API.)
 
 ## Effects (core concept)
 
