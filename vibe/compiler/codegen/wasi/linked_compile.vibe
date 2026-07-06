@@ -546,6 +546,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // — the shape of a host async source (HTTP body byte, stdin char). Gated on
   // use (fixpoint-safe).
   let need_stdin_read_char_builtin = stmts_use_builtin(stmts, fn_names_list, "Stdin::read_char")
+  // Process effect host imports: `sh(cmd)` runs a shell command (returns 0) and
+  // `sh_lines(cmd)` returns its stdout "\n"-joined as ONE string (same packed
+  // ABI as fs_read_dir; compile_call lowers the Array[String] surface to a
+  // String::split). Both `vibe.sh` / `vibe.sh_lines (i64) -> i64` host imports,
+  // gated on use so non-users reserve no import (fixpoint-safe). Revives the
+  // process/time/shell stdlib whose functions call these.
+  let need_sh_builtin = stmts_use_builtin(stmts, fn_names_list, "sh")
+  let need_sh_lines_builtin = stmts_use_builtin(stmts, fn_names_list, "sh_lines")
   let mut next_import_idx = 1
   let env_get_import_idx = if need_env_get_builtin {
     let idx = next_import_idx
@@ -636,6 +644,22 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     -1
   }
   let stdin_read_char_import_idx = if need_stdin_read_char_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // reserved immediately after stdin_read_char; the import emission below must
+  // stay in this same order so the index matches the descriptor.
+  let sh_import_idx = if need_sh_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let sh_lines_import_idx = if need_sh_lines_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -807,6 +831,19 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     env_args_len_idx
   }
+  // sh / sh_lines call targets: the import when reserved, else the fs_read_file
+  // stub (a `(i64)->i64` never-called placeholder) — the real call site only
+  // exists when the import is reserved (i.e. when the program uses sh/sh_lines).
+  let sh_idx = if sh_import_idx >= 0 {
+    sh_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let sh_lines_idx = if sh_lines_import_idx >= 0 {
+    sh_lines_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
   let max_builtin_func_idx = str_lex_diff_idx
   let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
   let func_offset = num_imported_funcs + num_generated
@@ -875,6 +912,20 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(builtin_param_counts, 1)
   Array::push(builtin_needs_env_list, false)
   Array::push(builtin_indices_list, fs_read_dir_idx)
+  Array::push(builtin_returns_list, 1)
+  // Process host imports: `sh(cmd)` (runs a shell command, returns 0) resolves
+  // directly. `sh_lines(cmd)`'s Array[String] surface is lowered by compile_call
+  // to `__sh_lines_raw` (the RAW half returning the "\n"-joined stdout) plus a
+  // String::split — same pattern as Fs::readdir / __fs_read_dir_raw above.
+  Array::push(builtin_names_list, "sh")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, sh_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "__sh_lines_raw")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, sh_lines_idx)
   Array::push(builtin_returns_list, 1)
   Array::push(builtin_names_list, "Profiler::now_us")
   Array::push(builtin_param_counts, 0)
@@ -2443,6 +2494,25 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     emit_name(import_content, "stdin_read_char")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 5)
+  } else {
+    ()
+  }
+  // `vibe.sh (i64) -> i64` and `vibe.sh_lines (i64) -> i64` — reserved after
+  // stdin_read_char (before dbg_break), matching allocation order. Type 3 is
+  // `(i64) -> i64` (same as fs_read_file / fs_read_dir).
+  if sh_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sh")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if sh_lines_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sh_lines")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
   } else {
     ()
   }

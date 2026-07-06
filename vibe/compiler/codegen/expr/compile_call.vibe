@@ -1334,6 +1334,30 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         ], -1)
       ], -1))), local_names, next_local, ctx, ld)
     }
+    else if fname == "sh_lines" && Array::length(args) == 1 {
+      // `sh_lines(cmd) -> Array[String]`: the host import (`__sh_lines_raw`,
+      // linked_compile) runs the command and returns its stdout "\n"-joined as
+      // ONE packed string (same ABI as fs_read_dir). Lower to `String::split`
+      // over it, with the empty-output guard yielding [] (split("", d) is [""]).
+      ce(buf, ELet("__sh_out", ECall(EIdent("__sh_lines_raw", -1), [
+        Array::get(args, 0)
+      ], -1), EIf(EBinOp("==", ECall(EIdent("String::length", -1), [
+        EIdent("__sh_out", -1)
+      ], -1), EInt(0)), ECall(EIdent("Array::slice", -1), [
+        EArray([
+          ECall(EIdent("String::from_char_code", -1), [
+            EInt(10)
+          ], -1)
+        ]),
+        EInt(0),
+        EInt(0)
+      ], -1), ECall(EIdent("String::split", -1), [
+        EIdent("__sh_out", -1),
+        ECall(EIdent("String::from_char_code", -1), [
+          EInt(10)
+        ], -1)
+      ], -1))), local_names, next_local, ctx, ld)
+    }
     else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) {
       // #744: a statically-floatish argument takes the synthesized Double
       // formatter — the generic handler below would stringify the raw f64
