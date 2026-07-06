@@ -1,0 +1,81 @@
+// #760(4): dot access on an anonymous `record { .. }` binding. A record literal
+// whose field-set matches no declared struct is stored in LITERAL field order
+// with tag 0, and codegen's EDot resolves a field's slot only through declared
+// structs (`struct_field_candidates`) — so `r.name` used to throw "unknown
+// struct field". The record-pattern destructure already worked because the
+// parser lowers it to positional `__rec_field(r, i)` reads; desugar_trait_dict
+// now rewrites `binding.field` on an anonymous-record binding to the same
+// positional read (threading each binding's ordered field list through
+// var_types as a `__anonrec:` sentinel). A struct-matching record is untouched
+// and still resolves via the declared-struct EDot path. See anon_dot_rewrite in
+// desugar_trait_dict.vibe.
+
+struct Point {
+  x: Int;
+  y: Int
+}
+
+test "anonymous record dot read (int and string fields)" {
+  let r = record { name: "vibe", ver: 3 }
+  assert_eq(r.ver, 3)
+  assert_eq(r.name, "vibe")
+}
+
+test "anonymous record with three fields keeps literal order" {
+  let r = record { a: 10, b: 20, c: 30 }
+  assert_eq(r.a, 10)
+  assert_eq(r.b, 20)
+  assert_eq(r.c, 30)
+}
+
+test "record field participates in an expression" {
+  let r = record { x: 5, y: 7 }
+  let s = r.x + r.y
+  assert_eq(s, 12)
+}
+
+test "let mut anonymous record dot" {
+  let mut r = record { a: 1, b: 2 }
+  assert_eq(r.b, 2)
+}
+
+// Shadowing: the inner `r` (a different shape) must win — the field slot is
+// resolved against the innermost binding in scope, not the stale outer one.
+test "shadowed record binding with a different shape" {
+  let r = record { a: 1, b: 2 }
+  assert_eq(r.a, 1)
+  let r = record { c: 9, d: 8 }
+  assert_eq(r.c, 9)
+  assert_eq(r.d, 8)
+}
+
+// Destructure of an anonymous record still works (positional __rec_field reads),
+// and agrees with dot access on the same binding.
+test "dot access agrees with destructure" {
+  let r = record { name: "z", ver: 42 }
+  let record { name: n, ver: v } = r
+  assert_eq(v, r.ver)
+  assert_eq(n, r.name)
+}
+
+// Regression guard: a bare record whose field-set matches a declared struct is
+// reordered to the struct's declared layout and resolves via the struct EDot
+// path — dot access must still read the right field regardless of literal order.
+test "record matching a declared struct resolves via struct path" {
+  let p = record { y: 5, x: 4 }
+  assert_eq(p.x, 4)
+  assert_eq(p.y, 5)
+}
+
+test "declared struct ctor dot access unaffected" {
+  let p = Point::{ x: 1, y: 2 }
+  assert_eq(p.x, 1)
+  assert_eq(p.y, 2)
+}
+
+// Regression guard: tuple positional projection must not be rerouted.
+test "tuple projection unaffected" {
+  let t = (100, 200)
+  assert_eq(t.0, 100)
+  assert_eq(t.1, 200)
+}

@@ -293,8 +293,9 @@ t.0                           // => 1
 
 // Record
 let r = record { name: "vibe", ver: 1 }
+r.name                        // => "vibe"  (dot access)
+r.ver                         // => 1
 let record { name: n, ver: v } = r   // destructuring binds any field name
-// r.name (dot access) — see selfhost note below
 
 // Map
 let m = map { "key": 42 }
@@ -316,10 +317,10 @@ Int64Array::length(w)            // => 4
 ```
 
 > **selfhost status (#760):**
-> - **Record dot access** (`r.name` on an anonymous `record { ... }`) currently
->   resolves only when some declared `struct` also names that field (#722
->   residual). Destructuring (`let record { name: n } = r`) binds any field name
->   and always works — prefer it.
+> - **Record dot access** (`r.name` on an anonymous `record { ... }`) works
+>   (#760): a `binding.field` read on an anonymous-record binding lowers to the
+>   same positional field read the destructure uses. Destructuring
+>   (`let record { name: n } = r`) also binds any field name.
 > - **`map { ... }` literals + `Map::*` builtins + `m[k]` indexing** work
 >   standalone (#760): `Map::get` / `has_key` / `set` / `keys` and the `m["k"]`
 >   index sugar all lower correctly. (`vibe/collection` remains available for a

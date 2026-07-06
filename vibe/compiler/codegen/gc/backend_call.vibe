@@ -395,6 +395,24 @@ let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc
           }
         }
       }
+      else if fname == "__rec_field" {
+        // #760(4): positional record field read `__rec_field(rec, i)` — emitted
+        // by the record-pattern destructure (parser) and the anonymous-record
+        // dot-access lowering (desugar_trait_dict). gc records are
+        // [tag@0][len@4][fields@8+i*8], the same shape as the linear backend, so
+        // the field load is `8 + i*8` after untagging the pointer. Mirrors the
+        // linear __rec_field in compile_call.vibe.
+        let field_idx = match Array::get(args, 1) {
+          EInt(n) => n,
+          _ => throw("__rec_field: index must be an int literal")
+        }
+        let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        emit_i64_const(buf, -2)
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, 8 + field_idx * 8)
+        nl
+      }
       else if fname == "__len" {
         let (sl_idx, _, _) = resolve_func(ctx.func_table, "String::length")
         let (bl_idx, _, _) = resolve_func(ctx.func_table, "Bytes::length")

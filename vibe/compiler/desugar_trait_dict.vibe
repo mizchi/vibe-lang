@@ -589,16 +589,20 @@ let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (head, rest) -> {
 }
 
 let lookup_var_type: (Array[(String, String)], String) -> Option[String] = (var_types, name) -> {
+  // `extend_var_types` APPENDS on each `let`, so a shadowing rebind adds a second
+  // entry for the same name. Return the LAST match (the innermost binding in
+  // scope) so `let r = record { a }; ...; let r = record { c }; r.c` resolves
+  // against the inner shape rather than the stale outer one (#760(4)).
   let mut i = 0
   let mut result = None
   while i < Array::length(var_types) {
     let (vn, vt) = Array::get(var_types, i)
     if vn == name {
       result = Some(vt)
-      i = Array::length(var_types)
     } else {
-      i = i + 1
+      ()
     }
+    i = i + 1
   }
   result
 }
@@ -765,6 +769,139 @@ let map_index_rewrite: (Expr, Array[Expr], Array[Expr], Array[(String, Array[Str
       }
     } else {
       None
+    },
+    _ => None
+  }
+}
+
+// #760(4): anonymous-record dot access `r.name`. A `record { .. }` literal whose
+// field-set matches NO declared struct is stored in LITERAL field order with tag
+// 0 (see compile_expr_tail4 ERecord); its `.field` reads reach codegen's EDot,
+// which resolves the slot only through declared structs (`struct_field_candidates`)
+// and therefore throws "unknown struct field". The record-pattern destructure
+// (`let record { name: n } = r`) already works because the parser lowers it to
+// positional `__rec_field(r, i)` reads (parser_expr_dispatch). This mirrors that:
+// we thread each anonymous-record binding's ordered field list through `var_types`
+// (as a `__anonrec:` sentinel) and rewrite `binding.field` to the same
+// `__rec_field(binding, slot)` positional read. A struct-matching record is left
+// alone — its literal is reordered to the struct's declared order and the EDot
+// struct-tag-dispatch path resolves it correctly.
+let anon_record_prefix: () -> String = () -> {
+  "__anonrec:"
+}
+
+// Encode an ordered field-name list as a `var_types` sentinel value.
+let anon_record_sentinel: (Array[String]) -> String = (names) -> {
+  let mut s = anon_record_prefix()
+  let mut i = 0
+  while i < Array::length(names) {
+    if i > 0 {
+      s = String::concat(s, ",")
+    } else {
+      ()
+    }
+    s = String::concat(s, Array::get(names, i))
+    i = i + 1
+  }
+  s
+}
+
+// The slot of `field` within a `__anonrec:` sentinel, or -1 if the string is not
+// a sentinel or does not carry `field`. Splits on `,` so a field name that is a
+// prefix of another (e.g. `ver` vs `version`) does not false-match.
+let anon_field_index: (String, String) -> Int = (sentinel, field) -> {
+  let prefix = anon_record_prefix()
+  if !String::starts_with(sentinel, prefix) {
+    -1
+  } else {
+    let mut rest = String::substring(sentinel, String::length(prefix), String::length(sentinel))
+    let mut idx = 0
+    let mut found = -1
+    let mut go = true
+    while go {
+      let comma = String::index_of(rest, ",")
+      let tok = if comma < 0 {
+        rest
+      } else {
+        String::substring(rest, 0, comma)
+      }
+      if tok == field {
+        found = idx
+        go = false
+      } else if comma < 0 {
+        go = false
+      } else {
+        rest = String::substring(rest, comma + 1, String::length(rest))
+        idx = idx + 1
+      }
+    }
+    found
+  }
+}
+
+// If `val` is a `record { .. }` literal whose field-set matches no declared
+// struct, the `__anonrec:` sentinel recording its literal field order; else None.
+// Threaded into `var_types` at `let`/`let mut` so a later `binding.field` on the
+// same name resolves positionally.
+let anon_record_inferred: (Expr, Array[(String, Array[String])]) -> Option[String] = (val, struct_sets) -> {
+  match val {
+    ERecord(fields) => {
+      let names = empty_str_array()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, _) = Array::get(fields, i)
+        Array::push(names, fname)
+        i = i + 1
+      }
+      let mut j = 0
+      let mut matched = false
+      while j < Array::length(struct_sets) {
+        let (_, sfields) = Array::get(struct_sets, j)
+        if field_sets_match(names, sfields) {
+          matched = true
+          j = Array::length(struct_sets)
+        } else {
+          j = j + 1
+        }
+      }
+      if matched {
+        None
+      } else {
+        Some(anon_record_sentinel(names))
+      }
+    },
+    _ => None
+  }
+}
+
+// Prefer the anonymous-record sentinel for a `let` value, falling back to the
+// ordinary type inference used for trait dispatch / `==` / the Map-index rewrite.
+let anon_or_infer: (Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Option[String] = (val, struct_sets, var_types, fn_returns) -> {
+  match anon_record_inferred(val, struct_sets) {
+    Some(s) => Some(s),
+    None => infer_arg_type_name(val, struct_sets, var_types, fn_returns)
+  }
+}
+
+// `binding.field` -> `__rec_field(binding, slot)` when `binding` is an
+// anonymous-record binding (a `__anonrec:` var_types entry) that carries `field`.
+// `robj` is the already-rewritten receiver. None leaves the EDot untouched (a
+// declared-struct field, a tuple index, or an unknown receiver).
+let anon_dot_rewrite: (Expr, String, Int, Expr, Array[(String, String)]) -> Option[Expr] = (obj, field, off, robj, var_types) -> {
+  match obj {
+    EIdent(vn, _) => match lookup_var_type(var_types, vn) {
+      Some(t) => {
+        let idx = anon_field_index(t, field)
+        if idx >= 0 {
+          Some(ECall(EIdent("__rec_field", off), [
+            robj,
+            EInt(idx)
+          ], off))
+        } else {
+          None
+        }
+      },
+      None => None
     },
     _ => None
   }
@@ -1682,13 +1819,13 @@ let rec railway_rw: (Expr, Array[(String, Array[String])], Array[(String, String
     EIf(c, t, e) => EIf(railway_rw(c, struct_sets, var_types, fn_returns), railway_rw(t, struct_sets, var_types, fn_returns), railway_rw(e, struct_sets, var_types, fn_returns)),
     ELet(name, val, body) => {
       let new_val = railway_rw(val, struct_sets, var_types, fn_returns)
-      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
       ELet(name, new_val, railway_rw(body, struct_sets, body_vars, fn_returns))
     },
     ELetRec(name, val, body) => ELetRec(name, railway_rw(val, struct_sets, var_types, fn_returns), railway_rw(body, struct_sets, var_types, fn_returns)),
     ELetMut(name, val, body) => {
       let new_val = railway_rw(val, struct_sets, var_types, fn_returns)
-      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
       ELetMut(name, new_val, railway_rw(body, struct_sets, body_vars, fn_returns))
     },
     EAssign(name, val, cont) => EAssign(name, railway_rw(val, struct_sets, var_types, fn_returns), railway_rw(cont, struct_sets, var_types, fn_returns)),
@@ -1727,7 +1864,13 @@ let rec railway_rw: (Expr, Array[(String, Array[String])], Array[(String, String
     EBinOp(op, l, r) => EBinOp(op, railway_rw(l, struct_sets, var_types, fn_returns), railway_rw(r, struct_sets, var_types, fn_returns)),
     EUnaryOp(op, e) => EUnaryOp(op, railway_rw(e, struct_sets, var_types, fn_returns)),
     EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, railway_rw(body, struct_sets, seed_var_types(ps, tp, var_types), fn_returns)),
-    EDot(obj, field, off) => EDot(railway_rw(obj, struct_sets, var_types, fn_returns), field, off),
+    EDot(obj, field, off) => {
+      let robj = railway_rw(obj, struct_sets, var_types, fn_returns)
+      match anon_dot_rewrite(obj, field, off, robj, var_types) {
+        Some(rw) => rw,
+        None => EDot(robj, field, off)
+      }
+    },
     ELabeledArg(label, name, body) => ELabeledArg(label, name, railway_rw(body, struct_sets, var_types, fn_returns)),
     EThrow(e) => EThrow(railway_rw(e, struct_sets, var_types, fn_returns)),
     EReturn(e) => EReturn(railway_rw(e, struct_sets, var_types, fn_returns)),
@@ -1951,13 +2094,13 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
     EIf(c, t, e) => EIf(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(t, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELet(name, val, body) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
       ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns))
     },
     ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELetMut(name, val, body) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
       ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns))
     },
     EAssign(name, val, cont) => EAssign(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
@@ -2177,7 +2320,13 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
     },
     EUnaryOp(op, e) => EUnaryOp(op, rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, rewrite_expr(body, gens, traits, struct_sets, dict_binds, seed_var_types(ps, tp, var_types), fn_returns)),
-    EDot(obj, field, off) => EDot(rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns), field, off),
+    EDot(obj, field, off) => {
+      let robj = rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      match anon_dot_rewrite(obj, field, off, robj, var_types) {
+        Some(rw) => rw,
+        None => EDot(robj, field, off)
+      }
+    },
     ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EThrow(e) => EThrow(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EReturn(e) => EReturn(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
