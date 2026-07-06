@@ -1,0 +1,73 @@
+//# Imports
+
+import ../entry / source_compile {
+  compile_source_wasi
+}
+
+//# Functions
+
+let bytes_contains: (Bytes, String) -> Bool = (hay, needle) -> {
+  let nlen = String::length(needle)
+  let hlen = Bytes::length(hay)
+  if nlen == 0 {
+    true
+  } else if nlen > hlen {
+    false
+  } else {
+    let mut found = false
+    let mut i = 0
+    while i + nlen <= hlen && !found {
+      let mut ok = true
+      let mut j = 0
+      while j < nlen && ok {
+        ok = Bytes::get(hay, i + j) == String::char_code_at(needle, j)
+        j = j + 1
+      }
+      if ok {
+        found = true
+      } else {
+        i = i + 1
+      }
+    }
+    found
+  }
+}
+
+let assert_wasm_magic: (Bytes) -> Unit = (bytes) -> {
+  assert(Bytes::get(bytes, 0) == 0)
+  assert(Bytes::get(bytes, 1) == 97)
+  assert(Bytes::get(bytes, 2) == 115)
+  assert(Bytes::get(bytes, 3) == 109)
+}
+
+//# Misc
+
+test "compile_source_wasi: produces valid WASM with entry" {
+  let bytes = compile_source_wasi("let main: () -> Int = () -> { 0 }", "main")
+  assert_wasm_magic(bytes)
+  assert(bytes_contains(bytes, "vibe.abi"))
+  assert(bytes_contains(bytes, "host_import_abi=raw"))
+}
+
+test "compile_source_wasi: pure entry omits vibe host imports" {
+  let bytes = compile_source_wasi("let answer: () -> Int = () -> { 40 + 2 }", "answer")
+  assert(bytes_contains(bytes, "env-get") == false)
+  assert(bytes_contains(bytes, "args-len") == false)
+  assert(bytes_contains(bytes, "fs_write_bytes") == false)
+}
+
+test "compile_source_wasi: canonicalizes effect builtin aliases in calls" {
+  let bytes = compile_source_wasi(
+    "let answer: () -> Int with { Fs } = () -> { if perform Fs::Exists(\"/tmp\") { 1 } else { 0 } }",
+    "answer"
+  )
+  assert_wasm_magic(bytes)
+}
+
+test "compile_source_wasi: statement Array::push compiles" {
+  let bytes = compile_source_wasi(
+    "let answer: () -> Int = () -> { let xs = Array::slice([0], 0, 0); Array::push(xs, 1); Array::length(xs) }",
+    "answer"
+  )
+  assert_wasm_magic(bytes)
+}

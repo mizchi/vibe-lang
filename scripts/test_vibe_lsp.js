@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// Drive js/vibe/lsp_server.js over stdio and assert it publishes diagnostics
+// Drive clients/js/lsp_server.js over stdio and assert it publishes diagnostics
 // for a bad file and clears them for a good one. Uses VIBE_BIN from the env
 // (the installed launcher) for the actual compile.
 "use strict";
 const { spawn } = require("child_process");
 const path = require("path");
 
-const serverPath = path.join(__dirname, "..", "js", "vibe", "lsp_server.js");
+const serverPath = path.join(__dirname, "..", "clients", "js", "lsp_server.js");
 const srv = spawn("node", [serverPath], { stdio: ["pipe", "pipe", "inherit"], env: process.env });
 
 let buf = Buffer.alloc(0);

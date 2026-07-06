@@ -37,7 +37,7 @@ fi
 
 src="$1"
 entry="${2:-main}"
-seed="$ROOT_DIR/bootstrap/selfhost/seed/selfhost_compiler.wasm"
+seed="$ROOT_DIR/bootstrap/seed/selfhost_compiler.wasm"
 
 # Repo-root-relative source path for the wasm preopen.
 case "$src" in

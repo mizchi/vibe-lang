@@ -7,7 +7,7 @@
 # (DCE'd) functions fail to compile and are skipped.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "$ROOT"
-SEED="bootstrap/selfhost/seed/selfhost_compiler.wasm"
+SEED="bootstrap/seed/selfhost_compiler.wasm"
 # FLAT defaults to the committed DCE'd flat source; override with VIBE_COV_FLAT
 # (e.g. the no-DCE merged source) to unblock test files that reference
 # cli_main-unreachable (DCE'd) functions. Merge still counts only branches in

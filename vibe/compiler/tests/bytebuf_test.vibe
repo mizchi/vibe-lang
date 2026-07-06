@@ -1,0 +1,85 @@
+//# Imports
+
+import ../bytebuf.vibe {
+  bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_buf, bytebuf_push_section, bytebuf_to_bytes, leb128_encode_s32, leb128_encode_u32
+}
+
+//# Misc
+
+test "bytebuf basic" {
+  let buf = bytebuf_new()
+  bytebuf_push(buf, 0)
+  bytebuf_push(buf, 255)
+  bytebuf_push(buf, 42)
+  assert(bytebuf_length(buf) == 3)
+  let bytes = bytebuf_to_bytes(buf)
+  assert(Bytes::length(bytes) == 3)
+  assert(Bytes::get(bytes, 0) == 0)
+  assert(Bytes::get(bytes, 1) == 255)
+  assert(Bytes::get(bytes, 2) == 42)
+}
+
+test "leb128 unsigned" {
+  let buf = bytebuf_new()
+  leb128_encode_u32(buf, 0)
+  assert(bytebuf_length(buf) == 1)
+  assert(Bytes::get(bytebuf_to_bytes(buf), 0) == 0)
+  let buf2 = bytebuf_new()
+  leb128_encode_u32(buf2, 128)
+  assert(bytebuf_length(buf2) == 2)
+  let b2 = bytebuf_to_bytes(buf2)
+  assert(Bytes::get(b2, 0) == 128)
+  assert(Bytes::get(b2, 1) == 1)
+}
+
+test "leb128 signed" {
+  let buf = bytebuf_new()
+  leb128_encode_s32(buf, 0 - 1)
+  assert(bytebuf_length(buf) == 1)
+  assert(Bytes::get(bytebuf_to_bytes(buf), 0) == 127)
+}
+
+test "section encoding" {
+  let out = bytebuf_new()
+  let content = bytebuf_new()
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 2)
+  bytebuf_push(content, 3)
+  bytebuf_push_section(out, 7, content)
+  let bytes = bytebuf_to_bytes(out)
+  assert(Bytes::length(bytes) == 5)
+  assert(Bytes::get(bytes, 0) == 7)
+  assert(Bytes::get(bytes, 1) == 3)
+  assert(Bytes::get(bytes, 2) == 1)
+}
+
+test "bytebuf_new returns independent buffers" {
+  let left = bytebuf_new()
+  let right = bytebuf_new()
+  bytebuf_push(left, 1)
+  bytebuf_push(right, 2)
+  let left_bytes = bytebuf_to_bytes(left)
+  let right_bytes = bytebuf_to_bytes(right)
+  assert(Bytes::length(left_bytes) == 1)
+  assert(Bytes::length(right_bytes) == 1)
+  assert(Bytes::get(left_bytes, 0) == 1)
+  assert(Bytes::get(right_bytes, 0) == 2)
+}
+
+test "bytebuf_push_buf" {
+  let dst = bytebuf_new()
+  bytebuf_push(dst, 1)
+  bytebuf_push(dst, 2)
+  let src = bytebuf_new()
+  bytebuf_push(src, 3)
+  bytebuf_push(src, 4)
+  bytebuf_push(src, 5)
+  bytebuf_push_buf(dst, src)
+  assert(bytebuf_length(dst) == 5)
+  let bytes = bytebuf_to_bytes(dst)
+  assert(Bytes::get(bytes, 0) == 1)
+  assert(Bytes::get(bytes, 1) == 2)
+  assert(Bytes::get(bytes, 2) == 3)
+  assert(Bytes::get(bytes, 3) == 4)
+  assert(Bytes::get(bytes, 4) == 5)
+}

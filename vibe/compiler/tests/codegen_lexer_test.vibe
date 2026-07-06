@@ -1,0 +1,66 @@
+//# Imports
+
+import ../codegen {
+  compile_wasi_module
+}
+
+import ./codegen_test_support.vibe {
+  assert_wasm
+}
+
+import ../syntax {
+  lex
+}
+
+import ../parser.vibe {
+  parse_program
+}
+
+//# Functions
+
+let lexer_fixture_source = "let is_digit: (Int) -> Bool = (c) -> {\n  c >= 48 && c <= 57\n}\n\nlet lex: (String) -> Array[Token] = (s) -> {\n  let len = String::length(s)\n  let b = ArrayBuilder::new()\n  let mut i = 0\n  while i < len {\n    let c = String::char_code_at(s, i)\n    if is_digit(c) {\n      ArrayBuilder::push(b, TInt(c - 48))\n      i = i + 1\n    }\n    else if c == 43 {\n      ArrayBuilder::push(b, TPlus)\n      i = i + 1\n    }\n    else {\n      i = i + 1\n    }\n  }\n  ArrayBuilder::push(b, TEof)\n  ArrayBuilder::freeze(b)\n}"
+
+let lexer_fixture_token_source = "enum Token { TInt(Int); TPlus; TEof }"
+
+let compile_lexer_wasm: (String) -> Bytes with { Error } = (main_source) -> {
+  let all_stmts = ArrayBuilder::new()
+  let tk_tokens = lex(lexer_fixture_token_source)
+  let tk_stmts = parse_program(tk_tokens)
+  let mut ti = 0
+  while ti < Array::length(tk_stmts) {
+    match Array::get(tk_stmts, ti) {
+      SEnum(_, _, _, _, _) => {
+        ArrayBuilder::push(all_stmts, Array::get(tk_stmts, ti)); 0
+      },
+      _ => 0
+    };
+    ti = ti + 1
+  }
+  let lx_tokens = lex(lexer_fixture_source)
+  let lx_stmts = parse_program(lx_tokens)
+  let mut li = 0
+  while li < Array::length(lx_stmts) {
+    match Array::get(lx_stmts, li) {
+      SLet(_, _, _, _, _) => {
+        ArrayBuilder::push(all_stmts, Array::get(lx_stmts, li)); 0
+      },
+      _ => 0
+    };
+    li = li + 1
+  }
+  let mn_tokens = lex(main_source)
+  let mn_stmts = parse_program(mn_tokens)
+  let mut mi = 0
+  while mi < Array::length(mn_stmts) {
+    ArrayBuilder::push(all_stmts, Array::get(mn_stmts, mi));
+    mi = mi + 1
+  }
+  compile_wasi_module(ArrayBuilder::freeze(all_stmts), "main")
+}
+
+//# Misc
+
+test "selfhost codegen: compact lexer fixture compiles" {
+  let bytes = compile_lexer_wasm("let main: () -> Int = () -> {\n  let tokens = lex(\"1 + 2 * 3\")\n  let len = Array::length(tokens)\n  let first = Array::get(tokens, 0)\n  let head = match first {\n    TInt(n) => n,\n    _ => -1\n  }\n  len + head\n}")
+  assert_wasm(bytes)
+}

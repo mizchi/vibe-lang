@@ -1,0 +1,242 @@
+//# Imports
+
+import ../core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr
+}
+
+import ../checker/checker_stmt.vibe {
+  check_program, check_stmts
+}
+
+import ../types.vibe {
+  Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup, types_equal
+}
+
+//# Functions
+
+let _no_tp = Array::slice([
+  ""
+], 0, 0)
+
+let _no_tb = Array::slice([
+  ("", _no_tp)
+], 0, 0)
+
+let empty_defs: () -> Array[TypeDef] = () -> {
+  Array::slice([
+    TDAlias("_dummy", Array::slice([""], 0, 0), CtUnit)
+  ], 0, 0)
+}
+
+let check_stmts_compat: (Array[Stmt]) -> TypeEnv = (stmts) -> {
+  let errors = Array::slice([
+    ""
+  ], 0, 0)
+  let (env, _, _) = check_stmts(stmts, 0, EnvEmpty, empty_defs(), SubstEmpty, 0, errors, Array::slice([(0, CtUnit)], 0, 0))
+  env
+}
+
+//# Misc
+
+test "SLet binds int" {
+  let stmts = [
+    SLet(false, false, "x", None, EInt(42))
+  ]
+  let env = check_stmts_compat(stmts)
+  let ty = env_lookup(env, "x")
+  match ty {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+}
+
+test "SLet binds string" {
+  let stmts = [
+    SLet(false, false, "name", None, EString("hi"))
+  ]
+  let env = check_stmts_compat(stmts)
+  match env_lookup(env, "name") {
+    Some(t) => assert(types_equal(t, CtString)),
+    None => assert(false)
+  }
+}
+
+test "SLetMut binds" {
+  let stmts = [
+    SLetMut("count", None, EInt(0))
+  ]
+  let env = check_stmts_compat(stmts)
+  match env_lookup(env, "count") {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+}
+
+test "SLet rec binds" {
+  let stmts = [
+    SLet(false, true, "fact", None, EInt(1))
+  ]
+  let env = check_stmts_compat(stmts)
+  match env_lookup(env, "fact") {
+    Some(_) => assert(true),
+    None => assert(false)
+  }
+}
+
+test "SEnum binds type name" {
+  let stmts = [
+    SEnum(false, "Color", Array::slice([""], 0, 0), [
+      ("Red", Array::slice([
+        TyUnit
+      ], 0, 0))
+    ], Array::slice([""], 0, 0))
+  ]
+  let env = check_stmts_compat(stmts)
+  match env_lookup(env, "Color") {
+    Some(t) => assert(types_equal(t, CtEnum("Color"))),
+    None => assert(false)
+  }
+}
+
+test "SStruct binds constructor" {
+  let stmts = [
+    SStruct(false, "Point", [
+      ("x", TyName("Int"))
+    ], Array::slice([
+      ""
+    ], 0, 0), Array::slice([
+      ""
+    ], 0, 0))
+  ]
+  let env = check_stmts_compat(stmts)
+  match env_lookup(env, "Point") {
+    Some(t) => assert(types_equal(t, CtFn([
+      CtInt
+    ], CtStruct("Point"), None))),
+    None => assert(false)
+  }
+}
+
+test "struct constructor returns CtStruct" {
+  let stmts = [
+    SStruct(false, "Point", [
+      ("x", TyName("Int")),
+      ("y", TyName("Int"))
+    ], Array::slice([
+      ""
+    ], 0, 0), Array::slice([
+      ""
+    ], 0, 0)),
+    SLet(false, false, "p", None, ECall(EIdent("Point", -1), [
+      ERecord([
+        ("x", EInt(1)),
+        ("y", EInt(2))
+      ])
+    ], -1))
+  ]
+  let env = check_stmts_compat(stmts)
+  match env_lookup(env, "p") {
+    Some(t) => assert(types_equal(t, CtStruct("Point"))),
+    None => assert(false)
+  }
+}
+
+test "struct EDot field type resolution" {
+  let stmts = [
+    SStruct(false, "Pair", [
+      ("left", TyName("String")),
+      ("right", TyName("Int"))
+    ], Array::slice([
+      ""
+    ], 0, 0), Array::slice([
+      ""
+    ], 0, 0)),
+    SLet(false, false, "p", None, ECall(EIdent("Pair", -1), [
+      ERecord([
+        ("left", EString("hi")),
+        ("right", EInt(42))
+      ])
+    ], -1)),
+    SLet(false, false, "l", None, EDot(EIdent("p", -1), "left", -1)),
+    SLet(false, false, "r", None, EDot(EIdent("p", -1), "right", -1))
+  ]
+  let env = check_stmts_compat(stmts)
+  match env_lookup(env, "l") {
+    Some(t) => assert(types_equal(t, CtString)),
+    None => assert(false)
+  }
+  match env_lookup(env, "r") {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+}
+
+test "SExternLet binds" {
+  let stmts = [
+    SExternLet("print", TyFn([
+      TyName("String")
+    ], TyUnit, None))
+  ]
+  let env = check_stmts_compat(stmts)
+  match env_lookup(env, "print") {
+    Some(_) => assert(true),
+    None => assert(false)
+  }
+}
+
+test "multiple stmts thread env" {
+  let stmts = [
+    SLet(false, false, "x", None, EInt(1)),
+    SLet(false, false, "y", None, EString("hi")),
+    SLet(false, false, "z", None, EBool(true))
+  ]
+  let env = check_stmts_compat(stmts)
+  match env_lookup(env, "x") {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+  match env_lookup(env, "y") {
+    Some(t) => assert(types_equal(t, CtString)),
+    None => assert(false)
+  }
+  match env_lookup(env, "z") {
+    Some(t) => assert(types_equal(t, CtBool)),
+    None => assert(false)
+  }
+}
+
+test "SExpr does not change env" {
+  let stmts = [
+    SExpr(EInt(42))
+  ]
+  let env = check_stmts_compat(stmts)
+  match env {
+    EnvEmpty => assert(true),
+    _ => assert(false)
+  }
+}
+
+test "STest does not change env" {
+  let stmts = [
+    STest("my test", EBool(true))
+  ]
+  let env = check_stmts_compat(stmts)
+  match env {
+    EnvEmpty => assert(true),
+    _ => assert(false)
+  }
+}
+
+test "check_program returns env" {
+  let stmts = [
+    SLet(false, false, "x", None, EInt(42))
+  ]
+  let env = check_program(stmts)
+  match env_lookup(env, "x") {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+}

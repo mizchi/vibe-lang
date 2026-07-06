@@ -1,7 +1,7 @@
 # TODO
 
 Spec-locked decisions are tracked in `docs/spec/decisions.md`.
-Completed items are archived in `docs/DONE.md`.
+Completed items are archived in `docs/archive/DONE.md`.
 タスクの一次管理は GitHub Issues (`gh issue` / MCP)。本ファイルはロードマップ概要。
 
 ## 次の一手 (2026-07-02 時点)
@@ -130,11 +130,11 @@ bootstrap / fallback として通常開発では触らない。
 
 ### 🔴 Cutover work — wasmtime runner と compiler wasm を分ける
 
-- [ ] **wasmtime runner 層**: `tools/moonrun_wasmtime` / `scripts/wasmtime_run.sh`
+- [ ] **wasmtime runner 層**: `runtime/moonrun_wasmtime` / `scripts/wasmtime_run.sh`
   / cwasm cache / CI perf-RSS gate を「実行基盤」として整理する。
 - [ ] **compiler wasm artifact 層**: `vibe/compiler/` の selfhost CLI/component/check
   entry と `scripts/build_selfhost_dist.sh` を canonical 配布物として整理する。
-  - `selfhost-generation` 管理層は追加済み (`bootstrap/selfhost/seed.json`,
+  - `selfhost-generation` 管理層は追加済み (`bootstrap/seed.json`,
     `scripts/selfhost_generations.sh`)。seed → stage1 → stage2 → stage3 は
     pinned seed のまま deterministic に通る状態に復旧済み (**#584** 解決)。
     真因は seed 非互換ではなく、#557/#558 (WASI 0.3 async) が
@@ -208,7 +208,7 @@ bootstrap / fallback として通常開発では触らない。
 - [ ] `vibe/types/` / `vibe/parser/` 分離
 - [ ] `vibe/compiler` 論理分割
 - [ ] MoonBit host CLI を bootstrap 専用へ縮退
-- [ ] selfhost perf gap cutover 水準まで（素材: `claude/chunk-compile-experiment` ブランチに hash-bucket lookup / sorted index / O(n) string dedup 等 23 commits、#295）。wasmtime AOT runtime は `tools/moonrun_wasmtime` で実装済、bench-selfhost-perf-wasmtime task で 5 cases 平均 compile ratio 5.7 → 1.2（~5× 改善）。残課題は algorithmic な hash-bucket / dedup 系
+- [ ] selfhost perf gap cutover 水準まで（素材: `claude/chunk-compile-experiment` ブランチに hash-bucket lookup / sorted index / O(n) string dedup 等 23 commits、#295）。wasmtime AOT runtime は `runtime/moonrun_wasmtime` で実装済、bench-selfhost-perf-wasmtime task で 5 cases 平均 compile ratio 5.7 → 1.2（~5× 改善）。残課題は algorithmic な hash-bucket / dedup 系
 - [ ] MoonBit host 重複削減（similarity-mbt 抽出、§[MoonBit host 重複削減](#moonbit-host-重複削減-similarity-mbt-ベース)）
 
 ### ⚪ upstream / infra 待ち
@@ -277,7 +277,7 @@ bootstrap / fallback として通常開発では触らない。
   - [x] `Error` surface を `Result::Ok/Err` に寄せる整理を仕様・stdlib・diagnostics まで確定する (#275, 2026-04-09 commit `719c176`)
   - [x] `main` の required checks / ruleset を release 前に有効化する (#120)
 - [x] 実使用ベースの `0.1.0` usability sign-off を 1 周通す
-  - `docs/report/0-1-0-usability-signoff.md`
+  - `docs/archive/report/0-1-0-usability-signoff.md`
   - [x] `vibe shell`
   - [x] `vibe check`
   - [x] `vibe run`

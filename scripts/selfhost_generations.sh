@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="${VIBE_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
-DEFAULT_MANIFEST="$PROJECT_ROOT/bootstrap/selfhost/seed.json"
+DEFAULT_MANIFEST="$PROJECT_ROOT/bootstrap/seed.json"
 DEFAULT_OUT_ROOT="$PROJECT_ROOT/_build/selfhost/generations"
 RUNNER="${VIBE_SELFHOST_GENERATION_RUNNER:-moonrun}"
 COMPILE_FLAG="${VIBE_SELFHOST_GENERATION_COMPILE_FLAG:---wasm-mvp}"

@@ -57,7 +57,7 @@ checker requests.
 
 The bench driver's `VIBE_SELFHOST_PERF_RUNTIME` defaults to
 `wasmtime-aot`. It runs the stage1 wasm under a small Rust wasmtime
-host (`tools/moonrun_wasmtime`, binary `moonrun_wt`) that
+host (`runtime/moonrun_wasmtime`, binary `moonrun_wt`) that
 re-implements the moonbit `--target wasm` import surface
 (`spectest::print_char` + `__moonbit_{fs,time,sys}_unstable::*`,
 32 functions) and Cranelift-JITs the module. `wasmtime-aot` also
@@ -144,7 +144,7 @@ verifies the emitted `.wasm` is byte-identical. As of 2026-05-17 all
 **Import drift guard**: `scripts/check_moonrun_wt_imports.sh` (`pkf
 run check-moonrun-wt-imports`) dumps the `--target wasm` import
 surface from stage1 compile + check artifacts and diffs against
-`tools/moonrun_wasmtime/expected_imports.txt`. Fails if moonbit ever
+`runtime/moonrun_wasmtime/expected_imports.txt`. Fails if moonbit ever
 emits a new host import we haven't wired into moonrun_wt's
 `register_imports()`. Refresh with
 `scripts/check_moonrun_wt_imports.sh --update` after implementing

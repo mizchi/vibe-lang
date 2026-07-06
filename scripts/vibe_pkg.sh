@@ -47,7 +47,7 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
-CLI="${VIBE_PKG_CLI_WASM:-bootstrap/selfhost/seed/selfhost_compiler.wasm}"
+CLI="${VIBE_PKG_CLI_WASM:-bootstrap/seed/selfhost_compiler.wasm}"
 VIBE_HOME="${VIBE_HOME:-$HOME/.vibe}"
 CACHE_DIR="$VIBE_HOME/cache"
 VERSIONS_TSV="$CACHE_DIR/versions.tsv"

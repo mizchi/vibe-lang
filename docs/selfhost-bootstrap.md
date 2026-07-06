@@ -38,8 +38,8 @@ seed として固定し、stage を分けて検証すること。vibe はこの�
 - seed compiler は毎 commit 更新しない。更新は「bootstrap bump」として
   独立した PR/commit にし、下記 gate を全て通したときだけ許可する。
 
-実装上の seed manifest は `bootstrap/selfhost/seed.json`、固定 seed artifact は
-`bootstrap/selfhost/seed/` 配下に置く。stage 生成物は `_build/selfhost/`
+実装上の seed manifest は `bootstrap/seed.json`、固定 seed artifact は
+`bootstrap/seed/` 配下に置く。stage 生成物は `_build/selfhost/`
 配下に置く。2026-06-12 の cutover seed は
 `selfhost-cutover-base-2026-06-12` / `39eab0519952ca72599b0b7064d00e3fbd2ac302`
 に固定している。canonical dist / CLI build entry は `cli_main` を持つ
@@ -60,7 +60,7 @@ scripts/selfhost_generations.sh adopt --artifact _build/selfhost/generations/<ge
 (stage0..stage3 の sha と `stage3_equal_stage2`) を一覧する。stage0 -> stage1 ->
 stage2 -> bootstrap bump の流れを追跡したいときの入口にする。
 
-`adopt` は stage2 artifact を seed path にコピーし、`bootstrap/selfhost/seed.json`
+`adopt` は stage2 artifact を seed path にコピーし、`bootstrap/seed.json`
 の sha256 を更新する。bootstrap bump ではこの manifest 更新を独立 commit として
 扱う。`pkf run selfhost-generation` は seed provenance に従い、安定した
 low-level compiler entry (`vibe/compiler/selfhost_cli_support.vibe`) を flat source
@@ -117,7 +117,7 @@ selfhost を「保証」するには、stage0 -> stage1 -> stage2 を **MoonBit 
 
 - `vibe-selfhost-<tag>.wasm` — stage0 seed compiler wasm。stock wasmtime で
   instantiate でき、`moonrun` 上で `cli_main` として動く。中身は
-  `bootstrap/selfhost/seed/selfhost_compiler.wasm` (seed.json で sha256 pin)。
+  `bootstrap/seed/selfhost_compiler.wasm` (seed.json で sha256 pin)。
 - `vibe-selfhost-module-source-<tag>.vibe` — flatten 済みの flat module source。
   `emit-module-source` の出力 (= committed compiler source からの決定的関数) を
   pin したもの。これがあれば flatten で host `vibe.exe` を呼ばない。
@@ -151,7 +151,7 @@ flat source が現在の source と食い違い、stage1/stage2 parity 失敗と
 
 cutover 後も runner と compiler artifact は分ける。
 
-- runner layer: `tools/moonrun_wasmtime`、wasmtime flags、cwasm cache、
+- runner layer: `runtime/moonrun_wasmtime`、wasmtime flags、cwasm cache、
   host import、component adapter。
 - compiler wasm layer: `vibe/cli/` の CLI entry と `vibe/compiler/` の compiler 実装から作る dist/component/check entry。
 

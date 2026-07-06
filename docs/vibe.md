@@ -12,7 +12,7 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 - Design explorations live in separate documents:
   - `docs/module-system.md`
 - Incident log for compiler/language regressions:
-  - `docs/compiler_language_incidents.md`
+  - `docs/archive/compiler_language_incidents.md`
 
 ## Goals
 
@@ -304,7 +304,7 @@ Threads (experimental, runtime-gated by `--unstable-threads`):
 - `Threads::recv(channel_id: Int)` -> `String` (`""` when empty)
 - `Threads::spawn(name: String, channel_id: Int)` -> `Int` (task id)
 - `Threads::wait(task_id: Int)` -> `Int` (current minimal runtime returns `0`)
-- `vibe/prelude/threads.vibe` は test-safe な pure contract 層を分離:
+- `lib/@vibe/prelude/threads.vibe` は test-safe な pure contract 層を分離:
   - `task_spec`, `channel_spec`, `actor_spec`, `deployment_plan`, `recommended_*`
   - これらは通常 `vibe test` で実行可能
   - runtime 呼び出し
@@ -457,10 +457,10 @@ functions.
 Current forms:
 
 ```vibe
-import ./vibe/prelude/int.vibe { type Int }             // also imports Int::*
-import ./vibe/prelude/int.vibe { Int }                  // namespace activation
-import ./vibe/prelude/int.vibe { Int::to_string }       // single member
-import ./vibe/prelude/int.vibe { Int::to_string as int_to_string }
+import ./lib/@vibe/prelude/int.vibe { type Int }             // also imports Int::*
+import ./lib/@vibe/prelude/int.vibe { Int }                  // namespace activation
+import ./lib/@vibe/prelude/int.vibe { Int::to_string }       // single member
+import ./lib/@vibe/prelude/int.vibe { Int::to_string as int_to_string }
 ```
 
 Rules:
@@ -490,7 +490,7 @@ Rules:
 - `SymbolRef`: symbol pointer.
 
 Notes:
-- `PathRef` is unquoted (`import ./vibe/prelude/string.vibe { ... }`).
+- `PathRef` is unquoted (`import ./lib/@vibe/prelude/string.vibe { ... }`).
 - `import` source is semantically `ModuleRef`; non-module assets should be split to a future `AssetRef` lane.
 
 Dependency resolution is Nix-like: path inputs are handled as typed path objects
@@ -553,7 +553,7 @@ Current lock file:
   - Path imports are rejected when resolved path escapes index root.
   - `index.vibe` may define `export let module = record { <ns>: "<dir>" }` to map
     namespace imports (for example `std/...`) under root.
-  - Default namespace mapping includes `builtin -> ./vibe/prelude`.
+  - Default namespace mapping includes `builtin -> ./lib/@vibe/prelude`.
 - CLI:
   - `vibe apply <entry>` resolves recursive path imports, updates `index.lock`,
     injects prelude refs, and updates `index.vdb.graph_head`.
@@ -796,35 +796,33 @@ Runtime API:
 - Internal PosixMode preprocessing/desugar remains available for preview
   shell-style command-head rewriting in runtime tests.
 CLI:
-- The canonical compiler / checker / CLI implementation lives under `vibe/compiler/`.
-  MoonBit `src/cmd/*` entrypoints are legacy bootstrap/fallback wrappers and should
-  not receive new CLI behavior.
-- `moon run --target native src/cmd/vibe -- run <file>` executes a script (ignores `test {}`).
-- `moon run --target native src/cmd/vibe -- eval ...` was removed from the public CLI.
-  Interactive evaluation now lives under compiled `shell` / `shell-stdin`.
-- `moon run --target native src/cmd/vibe -- test <file...>` runs test blocks and prints a report.
-- `moon run --target native src/cmd/vibe -- compile [--wasm | --wasm-js-string] [-o out] <file>` emits IR (default) or wasm bytes.
-- `moon run --target wasm src/cmd/vibe_compile_wasi -- [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wit|--wit-component] [-o out] <file>` runs compile pipeline from wasm target as well.
-  - `vibe_compile_wasi` only: `--wasm` prefers `wasm-gc`; use `--wasm-mvp` for core wasm backend (broader language coverage).
-  - selfhost compiler boundary: compile and CLI semantics stay in `vibe/compiler/*`;
-    filesystem / environ / stdio adapters may still exist in the legacy host wrapper
-    during cutover. Do not add new behavior to `src/cmd/vibe_compile_wasi`.
+- The canonical compiler / checker / CLI implementation lives under `vibe/compiler/`
+  and `vibe/cli/` (selfhost-only; the MoonBit `src/cmd/*` host was retired in #594).
+- Commands below use the installed `vibe` binary; from a checkout the equivalent is
+  `pkf run run -- <args>`.
+- `vibe run <file>` executes a script (ignores `test {}`).
+- Interactive evaluation lives under `vibe shell` / `vibe shell-stdin`.
+- `vibe test <file...>` runs test blocks and prints a report.
+- `vibe compile [--wasm | --wasm-js-string | --wasm-mvp | --component | --wit | --wit-component] [-o out] <file>`
+  emits IR (default) or wasm bytes.
+  - `--wasm` = linear-memory backend (production default). `--wasm-gc` is not yet
+    wired into the selfhost compile CLI (throws); the gc backend is reachable via
+    `VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` for pure test/bench.
 - Public CLI parser-consuming commands support `--syntax vibe` only.
-- `moon run --target native src/cmd/vibe -- shell` launches the TUI interactive shell (completion + layout, history).
-- `moon run --target native src/cmd/vibe -- shell-stdin [--no-prompt]` reads lines from stdin and evaluates them.
-- `moon run --target native src/cmd/vibe -- wasm-shell-stdin [--no-prompt] [-o dir]` compiles each entered line to a separate WASM file for pipeline testing.
-- `moon build --target wasm src/cmd/vibe_compile_wasi` builds wasm compiler CLI (filesystem side is abstracted via `src/io.FileSystemAdapter`).
-- `just component-run script.vibe` builds a stdio-capable component and runs it via wasmtime (`--invoke 'run()'`).
-- `just component-run-moonix script.vibe` builds the same component and runs it via moonix.
-- `just bootstrap-moonix [src]` tries to produce `moonix` binary from a local moonix checkout.
+- `vibe shell` launches the TUI interactive shell (completion + layout, history).
+- `vibe shell-stdin [--no-prompt]` reads lines from stdin and evaluates them.
+- `vibe wasm-shell-stdin [--no-prompt] [-o dir]` compiles each entered line to a separate WASM file for pipeline testing.
+- `pkf run component-run -- script.vibe` builds a stdio-capable component and runs it via wasmtime (`--invoke 'run()'`).
+- `pkf run component-run-moonix -- script.vibe` builds the same component and runs it via moonix.
 - TUI completion sources: builtins + PATH commands + history.
-- `just install` installs a native binary to `~/.local/bin/vibe` (override with `VIBE_PREFIX`).
+- `pkf run install` installs the CLI to `~/.local/bin/vibe` (see `docs/install.md` for the toolchain layout).
 - Imports are loaded recursively (imports of imports) for hashing and import-rename resolution.
 - Import cycle reporting is implemented for path-based import graphs
   (diagnostic stage: `import`, message prefix: `import cycle:`).
 
 Fixtures:
-- `fixtures/*.vibe` include a `__DATA__` JSON block and are executed by `moon test`.
+- `fixtures/*.vibe` include a `__DATA__` JSON block and are exercised through the
+  selfhost gate (`pkf run selfhost-gate`) and `pkf run test-fixtures`.
 - Fields:
   - `last`: expected `Value::to_string()` (exact match).
   - `effects`: expected `Effect::to_string()` list (exact match).
@@ -839,18 +837,9 @@ Fixtures:
     module path whose content hash is used.
 
 Bench:
-- `just bench-wasmtime` builds `cmd/vibe`, compiles `bench/bench_simple.vibe` to wasm,
-  then benchmarks `wasmtime run --invoke _start`.
-- `just bench-compare` compares source `vibe run` vs `wasmtime run`.
-- `just bench-kpi [<file|dir...>]` runs `vibe bench` and writes a combined KPI report
-  (`per_us` + `wasm_bytes`) to `dist/bench_kpi/latest.tsv`.
-  - Default target (no args): `bench/kpi_bench.vibe` with numeric pipeline/state-mix cases.
-  - Default iterations/warmup: `compiled=20000/1000`.
-  - `VIBE_BENCH_KPI_N` / `VIBE_BENCH_KPI_WARMUP` to tune iterations.
-  - Optional thresholds: `VIBE_BENCH_KPI_MAX_PER_US`,
-    `VIBE_BENCH_KPI_MAX_WASM_BYTES`, `VIBE_BENCH_KPI_MAX_SCORE`.
 - 言語組み込み benchmark:
-  - `bench "name" { ... }` を `.vibe` に書き、`vibe bench <file|dir...>` で実行。
+  - `bench "name" { ... }` を `.vibe` に書き、`vibe bench <file|dir...>` で実行
+    (checkout からは `pkf run run -- bench <file|dir...>`)。
   - backend の canonical surface は `--backend compiled`（`--backend wasm` は互換 alias）。
   - ディレクトリ指定時は top-level の `*_bench.vibe` を探索。
   - `--n` / `--warmup` は benchmark 実行回数に適用。
@@ -858,19 +847,13 @@ Bench:
 - 互換の expression benchmark モード（legacy）:
   - legacy expr mode (`--expr`, `--case`, `--cases`) は廃止
   - `bench {}` を含む `.vibe` file を `vibe bench <file>` で実行する
+- コンパイラ内部のマイクロベンチは `pkf run bench-typechecker` / `bench-symbol-index` /
+  `bench-advanced-graph` / `bench-array-build` / `bench-char-conversion` /
+  `bench-jsonschema` などの pkf タスクで実行する。
 - `vibe index ref push <scope> <index-file>` / `pull <scope> <out-file>` maps advanced graph snapshots to git/bit refs under
   `refs/bit/index/<scope>/graph/head`.
 - `vibe index ref push-delta <scope> <delta-file>` / `pull-delta <scope> <out-file>` maps advanced graph deltas to
   `refs/bit/index/<scope>/graph/wal_head`.
-- `just bench-cmd-latency` is a backward-compatible alias of `just bench-compare`.
-- `just bench-scratch-workflow` benchmarks scratch workflow stages
-  (`eval` / `finalize` / `export+apply` / `full`) and supports:
-  - `VIBE_BENCH_SCENARIOS=all|eval|finalize|export_apply|full` (comma-separated)
-  - `VIBE_BENCH_CHAIN=<N>`
-  - `VIBE_BENCH_WARMUP=<N>` / `VIBE_BENCH_RUNS=<N>`
-  - `VIBE_BENCH_EXPORT_JSON=<path>` for hyperfine JSON export
-- `just run-wasm-js-string examples/string_basic.vibe` compiles with `--wasm-js-string`
-  and runs the result using a JS engine (Node/WebAssembly builtins).
 
 ## WASM codegen (prototype)
 

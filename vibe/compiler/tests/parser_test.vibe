@@ -1,0 +1,376 @@
+//# Imports
+
+import ../syntax {
+  lex,
+  print_program
+}
+
+import ../parser.vibe {
+  parse_program
+}
+
+import ./parser_test_support.vibe {
+  parse_print
+}
+
+
+//# Misc
+
+test "parse comparison" {
+  let result = handle {
+    parse_print("a == b")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "(a == b)")
+}
+
+test "parse qualified import/export names" {
+  // Regression: import/export lists accept qualified `Ns::member` items
+  // (e.g. `Int::abs`, `JsonSchema::validate`) — used by prelude/index.vibe
+  // and vibe/x/index.vibe aggregators (#492).
+  let imp = handle {
+    let _ = parse_program(lex("import ./x.vibe { Foo::bar, baz as qux }\n0"))
+    "ok"
+  } with Error {
+    Throw(_) => "threw"
+  }
+  assert(imp == "ok")
+  let exp = handle {
+    let _ = parse_program(lex("export ./x.vibe { A::b }\n0"))
+    "ok"
+  } with Error {
+    Throw(_) => "threw"
+  }
+  assert(exp == "ok")
+}
+
+test "parse generic impl" {
+  // Regression: impl statements accept a type-parameter header with bounds
+  // and a generic target type, e.g. `impl [T: Eq] Eq for Option[T]` — used by
+  // vibe/prelude/option.vibe (#492).
+  let ok = handle {
+    let _ = parse_program(lex("trait Eq\nimpl Eq for Int\nimpl [T: Eq] Eq for Option[T]\n0"))
+    "ok"
+  } with Error {
+    Throw(_) => "threw"
+  }
+  assert(ok == "ok")
+}
+
+test "parse value-position generic let keeps type params" {
+  // Regression: `let f = [T: Ord](...)` (a value-position type-parameter
+  // header, no `: Type` annotation) must put `[T: Ord]` onto the lambda's
+  // type params and survive a print -> re-parse round-trip. Previously the
+  // header was skipped and discarded, so the round-trip (used when merging
+  // multi-module programs) lost it (#492).
+  let p1 = handle {
+    print_program(parse_program(lex("let ord_max = [T: Ord](a: T, b: T) -> T { if a < b { b } else a }")))
+  } with Error {
+    Throw(e) => String::concat("ERR: ", e)
+  }
+  assert(String::index_of(p1, "[T: Ord]") >= 0)
+  // and it is stable across a second round-trip
+  let p2 = handle {
+    print_program(parse_program(lex(p1)))
+  } with Error {
+    Throw(_) => "threw"
+  }
+  assert(p1 == p2)
+}
+
+test "parse generic struct" {
+  // Regression: struct declarations accept a type-parameter header
+  // `struct Foo[T] { ... }` (and `[A, B]`) — used by vibe/prelude/string_view.vibe
+  // (`struct ArrayView[T]`) (#492).
+  let ok = handle {
+    let _ = parse_program(lex("struct Box[T] { v: T }\nstruct Pair[A, B] { fst: A; snd: B }\n0"))
+    "ok"
+  } with Error {
+    Throw(_) => "threw"
+  }
+  assert(ok == "ok")
+}
+
+test "parse array trailing comma" {
+  // Regression: array literals accept a trailing comma `[a, b,]` — used by
+  // vibe/x/args/demo.vibe. Previously surfaced as a misleading
+  // `unexpected token: ->` downstream parse error (#492).
+  let ok = handle {
+    let _ = parse_program(lex("let xs = [\"a\", \"b\", \"c\",]\nArray::length(xs)"))
+    "ok"
+  } with Error {
+    Throw(_) => "threw"
+  }
+  assert(ok == "ok")
+}
+
+test "parse tuple and call trailing comma" {
+  // Regression: tuples `(a, b,)` and call argument lists `f(a, b,)` accept a
+  // trailing comma — used by vibe/x/scan/scan.vibe. Previously surfaced as
+  // `expected ')' or ','` (#492).
+  let tup = handle {
+    let _ = parse_program(lex("let t = (1, 2,)\nlet (a, b) = t\na + b"))
+    "ok"
+  } with Error {
+    Throw(_) => "threw"
+  }
+  assert(tup == "ok")
+  let call = handle {
+    let _ = parse_program(lex("let add = (a: Int, b: Int) -> Int { a + b }\nadd(1, 2,)"))
+    "ok"
+  } with Error {
+    Throw(_) => "threw"
+  }
+  assert(call == "ok")
+}
+
+test "parse generic type alias" {
+  // Regression: type aliases accept a type-parameter header
+  // `type Foo[T] = ...` — used by vibe/prelude/string_parser.vibe
+  // (`type ParseResult[T] = Option[(T, Int)]`) (#492).
+  let ok = handle {
+    let _ = parse_program(lex("type ParseResult[T] = Option[(T, Int)]\ntype Pair[A, B] = (A, B)\n0"))
+    "ok"
+  } with Error {
+    Throw(_) => "threw"
+  }
+  assert(ok == "ok")
+}
+
+test "parse higher-order effect function type annotation" {
+  // Regression: function types can appear as parenthesized parameter types
+  // inside another function type, with an effect variable on both levels.
+  let ok = handle {
+    let _ = parse_program(lex("let apply: [e]((Int) -> Int with { e }, Int) -> Int with { e } = (f, x) -> { f(x) }\n0"))
+    "ok"
+  } with Error {
+    Throw(_) => "threw"
+  }
+  assert(ok == "ok")
+}
+
+test "parse higher-order effect function type annotation with trailing comma" {
+  let source = "let chain: [e](\n  (Int) -> Int with { e },\n  (Int) -> Int with { e },\n  Int,\n) -> Int with { e } = (f, g, x) -> { add(f(x), g(x)) }\n0"
+  let ok = handle {
+    let _ = parse_program(lex(source))
+    "ok"
+  } with Error {
+    Throw(_) => "threw"
+  }
+  assert(ok == "ok")
+}
+
+test "parse logical" {
+  let result = handle {
+    parse_print("a && b || c")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "((a && b) || c)")
+}
+
+test "parse import trailing comma" {
+  let ok = handle {
+    let program = parse_program(lex("import ../../syntax/lexer.vibe {\n  lex,\n}"))
+    print_program(program) == "import ../../syntax/lexer.vibe { lex }"
+  } with Error {
+    Throw(_) => false
+  }
+  assert(ok)
+}
+
+test "parse re-export trailing comma" {
+  let ok = handle {
+    let program = parse_program(lex("export ./syntax/parser.vibe {\n  parse,\n}"))
+    print_program(program) == "export ./syntax/parser.vibe { parse }"
+  } with Error {
+    Throw(_) => false
+  }
+  assert(ok)
+}
+
+test "parse unary negate in expr" {
+  let ok = handle {
+    let _ = parse_print("1 + (-x)")
+    true
+  } with Error {
+    Throw(_) => false
+  }
+  assert(ok)
+}
+
+test "parse unary not in expr" {
+  let ok = handle {
+    let _ = parse_print("if !done { 1 } else { 0 }")
+    true
+  } with Error {
+    Throw(_) => false
+  }
+  assert(ok)
+}
+
+test "parse nested if" {
+  let ok = handle {
+    let _ = parse_print("if a { if b { 1 } else { 2 } } else { 3 }")
+    true
+  } with Error {
+    Throw(_) => false
+  }
+  assert(ok)
+}
+
+test "parse match" {
+  let ok = handle {
+    let _ = parse_print("match x { 1 => a, 2 => b, _ => c }")
+    true
+  } with Error {
+    Throw(_) => false
+  }
+  assert(ok)
+}
+
+test "parse tuple" {
+  let result = handle {
+    parse_print("(1, 2, 3)")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "(1, 2, 3)")
+}
+
+test "parse array" {
+  let result = handle {
+    parse_print("[1, 2, 3]")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "[1, 2, 3]")
+}
+
+test "parse lambda" {
+  let ok = handle {
+    let _ = parse_print("(x) -> x + 1")
+    true
+  } with Error {
+    Throw(_) => false
+  }
+  assert(ok)
+}
+
+test "parse method call" {
+  let result = handle {
+    parse_print("Foo::bar(x)")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "Foo::bar(x)")
+}
+
+test "parse pipe" {
+  let ok = handle {
+    let _ = parse_print("x |> f |> g")
+    true
+  } with Error {
+    Throw(_) => false
+  }
+  assert(ok)
+}
+
+test "parse bitwise ops" {
+  let ok = handle {
+    let _ = parse_print("a & b | c ^ d")
+    true
+  } with Error {
+    Throw(_) => false
+  }
+  assert(ok)
+}
+
+test "parse string interp" {
+  let ok = handle {
+    let _ = parse_print("\"hello \\{name}\"")
+    true
+  } with Error {
+    Throw(_) => false
+  }
+  assert(ok)
+}
+
+test "parse let program" {
+  let ok = handle {
+    let program = parse_program(lex("let x = 1\nlet y = x + 2"))
+    String::length(print_program(program)) > 0
+  } with Error {
+    Throw(_) => false
+  }
+  assert(ok)
+}
+
+test "parse enum decl" {
+  let ok = handle {
+    let program = parse_program(lex("enum Color { Red; Green; Blue }"))
+    String::length(print_program(program)) > 0
+  } with Error {
+    Throw(_) => false
+  }
+  assert(ok)
+}
+
+test "parse struct decl" {
+  let ok = handle {
+    let program = parse_program(lex("struct Point { x: Int; y: Int }"))
+    String::length(print_program(program)) > 0
+  } with Error {
+    Throw(_) => false
+  }
+  assert(ok)
+}
+
+test "parse for in" {
+  let ok = handle {
+    let _ = parse_print("for x in arr { x * 2 }")
+    true
+  } with Error {
+    Throw(_) => false
+  }
+  assert(ok)
+}
+
+test "parse handle" {
+  let ok = handle {
+    let _ = parse_print("handle { throw(\"err\") } with Error { Throw(msg) => msg }")
+    true
+  } with Error {
+    Throw(_) => false
+  }
+  assert(ok)
+}
+
+test "parse let* railway bind chain" {
+  // `let* x = e` is the railway bind: it must parse (and desugar) without
+  // error, including chained binds (proposal 4).
+  let ok = handle {
+    let _ = parse_program(lex("let run = () -> { let* x = foo() \n let* y = bar(x) \n Ok(y) }\n0"))
+    "ok"
+  } with Error {
+    Throw(_) => "threw"
+  }
+  assert(ok == "ok")
+}
+
+test "let* parses to the type-directed railway sentinel" {
+  // #635: `let* x = e <rest>` now parses to the type-directed sentinel
+  //   __try_bind(e, (x) -> <rest>)
+  // which the pre-check railway desugar lowers by `e`'s head type — Result by
+  // default (today's behavior), Option when `e: Option[_]`. The parser has no
+  // type info, so it emits the sentinel rather than committing to a match.
+  let printed = handle {
+    print_program(parse_program(lex("let run = () -> { let* x = foo() \n Ok(x) }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::contains(printed, "__try_bind"))
+  // The continuation closure carries the bound name + the rest of the block.
+  assert(String::contains(printed, "Ok"))
+}

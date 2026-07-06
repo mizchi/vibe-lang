@@ -28,7 +28,7 @@ fi
 # emit-module-source. Fall back to the MoonBit host only if the seed is absent.
 # If neither is available, the freshness check cannot run and is skipped.
 have_emit=0
-if [ -f "$PROJECT_ROOT/bootstrap/selfhost/seed/selfhost_compiler.wasm" ] &&
+if [ -f "$PROJECT_ROOT/bootstrap/seed/selfhost_compiler.wasm" ] &&
   [ "${VIBE_SELFHOST_EMIT_VIA_HOST:-0}" != "1" ]; then
   have_emit=1
 elif [ -x "$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe" ] ||

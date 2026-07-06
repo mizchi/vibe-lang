@@ -1,4 +1,4 @@
-import { bindLspTransport, createLspBridge } from "../../js/vibe/index.js";
+import { bindLspTransport, createLspBridge } from "../../clients/js/index.js";
 
 function assertEquals<T>(actual: T, expected: T, msg?: string): void {
   if (actual !== expected) {

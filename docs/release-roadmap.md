@@ -4,7 +4,7 @@
 > 「外部ユーザーが実利用できる公開リリース」まで持っていくための工程表。
 >
 > 言語コア（parser / checker / codegen / selfhost bootstrap）は 0.1.0 sign-off
-> （`docs/report/0-1-0-usability-signoff.md`, TODO.md「0.1.0 release sign-off」）で
+> （`docs/archive/report/0-1-0-usability-signoff.md`, TODO.md「0.1.0 release sign-off」）で
 > 一定の完成度に達している。本ロードマップは **プロダクトとしての配布・利用・
 > 開発体験** に残る 4 テーマを「リリース blocker」として整理する:
 >
@@ -21,7 +21,7 @@
 ## 実装進捗 (2026-06-25 セッション)
 
 > **マイルストーン**: M1（配布確定）+ M2（開発体験 MVP）+ M3（開発体験フル）+
-> M4（GA）content gate 達成 → 実装側 **GA-ready**（[GA readiness](report/1-0-ga-readiness.md)）。
+> M4（GA）content gate 達成 → 実装側 **GA-ready**（[GA readiness](archive/report/1-0-ga-readiness.md)）。
 > ADR 決定事項を全確定（install/module/LSP host/仕様 freeze =
 > [spec/1.0-freeze.md](spec/1.0-freeze.md)）。PR #642 を main に merge 済み。
 > 以降の DAP P3 step/P4 named-local / `vibe binding-at` / rename 配線 /
@@ -237,7 +237,7 @@
 | **M1: 配布確定** | install + module の配布方法を凍結し、外部の人が「入れて使える」 | (1)(2) | ✅ 達成（install 配布物確定 + module fetch/lock/transitive/semver/frozen/verify） |
 | **M2: 開発体験 MVP** | LSP MVP（診断/シンボル/hover）+ debugger P0（source-mapped trace） | (3)(4) | ✅ 達成（型付き hover、parser error recovery で全診断、trap→source-line） |
 | **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | ✅ 達成（DAP P1-P4 = breakpoint/名前付き変数検査/step 実行 + 3-D VS Code debug adapter、rename/references は scope 精度の `vibe binding-at` で AST 精度化）。テーマ3 debugger は P0-P4 + 3-D 完了 |
-| **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | ✅ content gate 達成（仕様 freeze = [spec/1.0-freeze.md](spec/1.0-freeze.md)、docs = install/module/editor+debug、span-arc step1–4 + step5 関数行 breakpoint、[GA readiness](report/1-0-ga-readiness.md)）。残: 1.0 タグ / version bump / main land（リリース運用判断）、post-GA = 任意行 debug・LSP span JSON |
+| **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | ✅ content gate 達成（仕様 freeze = [spec/1.0-freeze.md](spec/1.0-freeze.md)、docs = install/module/editor+debug、span-arc step1–4 + step5 関数行 breakpoint、[GA readiness](archive/report/1-0-ga-readiness.md)）。残: 1.0 タグ / version bump / main land（リリース運用判断）、post-GA = 任意行 debug・LSP span JSON |
 
 ### 横断的な前提（どのテーマにも効く 2 つの土台）
 
@@ -266,7 +266,7 @@
   - `vibe-selfhost-<tag>.wasm`（stage0 seed compiler、stock wasmtime で実行可）
   - `vibe-selfhost-module-source-<tag>.vibe` / `-seed-<tag>.json` / `SHA256SUMS.txt`
   - `v*` tag push で `.github/workflows/release.yml` が公開。
-- 実行基盤は `tools/moonrun_wasmtime`（Rust, `moonrun_wt`）。compiler は
+- 実行基盤は `runtime/moonrun_wasmtime`（Rust, `moonrun_wt`）。compiler は
   selfhost wasm + wasmtime runner で動く（ADR-0056 cutover）。
 
 ### ギャップ（未確定）
@@ -287,7 +287,7 @@
 **canonical = 独自ビルドの wasmtime runner + vibe コンパイラ wasm の分離配布。
 インストール時に各環境で `.cwasm`（AOT precompile）をビルドする。**
 
-- 実行基盤は `tools/moonrun_wasmtime`（`moonrun_wt`）を「独自ビルドの wasmtime
+- 実行基盤は `runtime/moonrun_wasmtime`（`moonrun_wt`）を「独自ビルドの wasmtime
   runner」として配布する。runner は portable wasm を受け取り、インストール時に
   ホスト固有の `.cwasm` へ AOT コンパイルしてキャッシュする
   （既存の `.cwasm` cache 機構 / ADR-0050・ADR-0056 を install フローに昇格）。
@@ -298,14 +298,14 @@
   自前 runner に閉じ込められる。
 
 > 補足: npm / 単一ネイティブバイナリは canonical からは外す。必要になれば
-> 補助配布として後付け検討（JS 埋め込み用途は `js/vibe/` を維持）。
+> 補助配布として後付け検討（JS 埋め込み用途は `clients/js/` を維持）。
 
 ### マイルストーン
 
 - [x] **1-1 runner/compiler 分離の確定** — `moonrun_wt` に selfhost CLI が使う
       raw-ABI host import (`vibe::env-get`/`args-get`/`fs_*`) を実装し、runner が
       compiler wasm を実行基盤として動かせるようにした。compiler wasm は
-      差し替え可能 artifact として分離（`tools/moonrun_wasmtime/src/main.rs`）。
+      差し替え可能 artifact として分離（`runtime/moonrun_wasmtime/src/main.rs`）。
 - [x] **1-2 install-time `.cwasm` ビルド** — `scripts/install.sh` が runner 取得後に
       `moonrun_wt --precompile` で compiler wasm を host 固有 `.cwasm` へ AOT。
       launcher は runner より古い `.cwasm` を検出すると portable wasm に fallback。
@@ -512,7 +512,7 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
       fallback。DAP `variables` も名前付きで返す。検証済み
       （`scripts/test_vibe_break_args.sh` 6/6、`scripts/test_vibe_dap.js` 25/25）。
       残: 任意の式評価（watch）。
-- [x] **3-D editor 統合（着地）** — `js/vibe/dap_server.js`（stdio DAP server: 行→関数 breakpoint、step s/n/o/c、stack/args を `vibe run --break` から翻訳）+ `integrations/vscode-vibe`（debuggers contribution + adapter factory）。launcher は `--break`/`--trace` の stderr を FIFO で live stream（対話/DAP 用）。`scripts/test_vibe_dap.js` 25/25（純関数）。E2E は VS Code 必要。
+- [x] **3-D editor 統合（着地）** — `clients/js/dap_server.js`（stdio DAP server: 行→関数 breakpoint、step s/n/o/c、stack/args を `vibe run --break` から翻訳）+ `integrations/vscode-vibe`（debuggers contribution + adapter factory）。launcher は `--break`/`--trace` の stderr を FIFO で live stream（対話/DAP 用）。`scripts/test_vibe_dap.js` 25/25（純関数）。E2E は VS Code 必要。
 
 > **DAP P1-P4 の実装設計（2026-06-25 調査）** — これは LSP サーバ構築に匹敵する
 > 多コンポーネントの大型機能で、専用の focused 作業が必要:
@@ -525,7 +525,7 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
 > 2. **runner: pause loop** — `moonrun_wt` に `vibe::dbg_line` host import を実装し、
 >    breakpoint 集合と照合 → hit なら停止して DAP セッション（stdio JSON）を駆動。
 >    変数検査は host ABI 経由で linear memory / locals を読み tagged 値を decode。
-> 3. **DAP プロトコルサーバ** — `js/vibe/`（LSP と同様の transport 抽象を再利用）
+> 3. **DAP プロトコルサーバ** — `clients/js/`（LSP と同様の transport 抽象を再利用）
 >    または runner 内に DAP（initialize/setBreakpoints/stackTrace/scopes/variables/
 >    continue/next/stepIn）を実装。`integrations/vscode-vibe` に debug adapter 配線。
 >
@@ -539,13 +539,13 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
 
 ### 現状
 
-- **transport 層は実装済み**: `js/vibe/lsp.js`
+- **transport 層は実装済み**: `clients/js/lsp.js`
   （`bindLspTransport` / `createLspBridge` / `createWebSocketTransport`、
   stdio/ws 非依存）。`tests/integration-deno/vibe_lsp_transport_test.ts` あり。
 - **シンボル index バックエンドは存在**（ただし MoonBit host `src/` 側）:
   `vibe ide`（outline / peek-def / search）と `vibe lsif` が
   共有 symbol index（`src/frontend/symbol_index.mbt`）を消費。
-  `js/vibe/index.js` が `createVibeService`（`check`/`ideOutline`/`idePeekDef`/
+  `clients/js/index.js` が `createVibeService`（`check`/`ideOutline`/`idePeekDef`/
   `ideSearch`/`checkProject`）を wasm 経由で公開。
 - **エディタ拡張は実装済み**（syntax のみ、language server 機能なし）:
   - `integrations/vscode-vibe/`（tmLanguage, language-configuration）
@@ -573,7 +573,7 @@ VS Code / Neovim / Zed で「保存時診断 + hover で型 + 定義ジャンプ
 **LSP サーバーは native runner + selfhost wasm で動かす（node 非依存）。**
 install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfhost
 コンパイラをバックエンドにした language server として実装し、
-`js/vibe/lsp.js` の transport 抽象はブラウザ/embedding 用途の補助に留める。
+`clients/js/lsp.js` の transport 抽象はブラウザ/embedding 用途の補助に留める。
 
 ### マイルストーン
 
@@ -585,7 +585,7 @@ install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfho
       検証済み（`scripts/test_vibe_diagnostics.sh` 3/3、`test_vibe_lsp.js` 15/15:
       2行に跨る同時診断、selfhost gate fixpoint green、located-diagnostics 7/7 非回帰）。
       残: 単一文**内**の複数エラー（現状は文単位で最初の1つ）。
-- [~] **4-1 LSP MVP**（M2）— `js/vibe/lsp_server.js`（stdio JSON-RPC）+ launcher
+- [~] **4-1 LSP MVP**（M2）— `clients/js/lsp_server.js`（stdio JSON-RPC）+ launcher
       `vibe lsp` を実装。`textDocument/publishDiagnostics` を提供（didOpen/
       didChange/didSave で native `vibe check` を駆動 → 診断を publish）。source
       span 未実装のため、診断メッセージ中のシンボルを文書テキストから探して範囲を
@@ -610,7 +610,7 @@ install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfho
       **hover は型付きに昇格**: `vibe type-at <file> <line> <col>`（selfhost の
       `type_at_source`: 位置の EIdent を実オフセットで特定 → `check_program` →
       `env_lookup` + `type_to_string`）で推論型を返し、LSP hover が表示する
-      （`js/vibe/lsp_server.js`、`scripts/test_vibe_type_at.sh` 3/3 +
+      （`clients/js/lsp_server.js`、`scripts/test_vibe_type_at.sh` 3/3 +
       `test_vibe_lsp.js` 16/16）。**signatureHelp も追加**: 呼び出し `foo(│)` の
       中で callee の推論シグネチャ `foo: (Int) -> Int` を表示（`vibe type-at`
       再利用、enclosingCall でバランス括弧を遡り activeParameter も算出）。
@@ -654,7 +654,7 @@ install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfho
 3. ✅ **LSP ホスト** — **native runner + selfhost wasm に寄せる（node 非依存）**。
    install を独自 wasmtime runner に決めたのと整合させ、runtime 前提を 1 本化する。
    `vibe lsp` は同 runner 上で動く selfhost LSP サーバーとして提供し、
-   `js/vibe/lsp.js` の transport 抽象はブラウザ/embedding 用途の補助に留める
+   `clients/js/lsp.js` の transport 抽象はブラウザ/embedding 用途の補助に留める
    （テーマ 4）。
 
 4. ✅ **言語仕様 freeze の範囲**（M4, ADR-0057）— 1.0 で SemVer 2.0.0 保証する
@@ -663,5 +663,5 @@ install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfho
    incremental / wasm-gc gap）を [spec/1.0-freeze.md](spec/1.0-freeze.md) に確定。
 
 > runtime 前提は install・LSP・debugger すべて「独自 wasmtime runner +
-> selfhost wasm」に一本化された。node は補助（`js/vibe/`、ブラウザ playground）
+> selfhost wasm」に一本化された。node は補助（`clients/js/`、ブラウザ playground）
 > に限定する。ADR 決定事項はすべて確定（install/module/LSP host/仕様 freeze）。

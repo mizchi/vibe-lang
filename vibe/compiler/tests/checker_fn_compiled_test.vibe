@@ -1,0 +1,64 @@
+//# Imports
+
+import ../core {
+  Expr,
+  Stmt,
+  TypeExpr
+}
+
+import ../checker/checker_stmt.vibe {
+  check_program
+}
+
+import ./checker_test_support.vibe {
+  check, no_tb, no_tp
+}
+
+import ../types.vibe {
+  Type, TypeEnv, type_to_string, types_equal
+}
+
+//# Misc
+
+test "compiled: fn typed param binds in body" {
+  let ann: TypeExpr = TyName("Int")
+  let env: TypeEnv = EnvEmpty
+  let int_ty: Type = CtInt
+  let expr: Expr = EFn(no_tp, no_tb, [
+    ("x", Some(ann))
+  ], None, None, EIdent("x", -1))
+  let ty = check(expr, env)
+  let ok = match ty {
+    CtFn(_, ret, he) => {
+      let pure = match he {
+        Some(_) => false,
+        None => true
+      }
+      types_equal(ret, int_ty) && pure
+    },
+    _ => false
+  }
+  if !ok {
+    throw(type_to_string(ty))
+  }
+}
+
+test "compiled: annotated function call keeps callee return type" {
+  let f_stmt: Stmt = SLet(false, false, "f", Some(TyFn([
+    TyName("Int")
+  ], TyName("Bool"), None)), EFn(no_tp, no_tb, [
+    ("x", Some(TyName("Int")))
+  ], Some(TyName("Bool")), None, EBool(true)))
+  let g_stmt: Stmt = SLet(true, false, "g", Some(TyFn([
+    TyName("Int")
+  ], TyName("Bool"), None)), EFn(no_tp, no_tb, [
+    ("x", Some(TyName("Int")))
+  ], Some(TyName("Bool")), None, ECall(EIdent("f", -1), [
+    EIdent("x", -1)
+  ], -1)))
+  let _ = check_program([
+    f_stmt,
+    g_stmt
+  ])
+  assert(true)
+}

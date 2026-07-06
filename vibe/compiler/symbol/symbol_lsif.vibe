@@ -1,0 +1,160 @@
+//# Imports
+
+import ../core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr
+}
+
+import ./symbol_index.vibe {
+  collect_refs, collect_refs_stmts, collect_symbols, find_symbol
+}
+
+//# Functions
+
+export let kind_to_string: (Int) -> String = (kind) -> {
+  if kind == 0 {
+    "function"
+  }
+  else if kind == 1 {
+    "value"
+  }
+  else if kind == 2 {
+    "type"
+  }
+  else if kind == 3 {
+    "constructor"
+  }
+  else if kind == 4 {
+    "trait"
+  }
+  else if kind == 5 {
+    "module"
+  }
+  else {
+    "unknown"
+  }
+}
+
+export let hover_info: (Array[(String, Int, Bool)], String) -> String = (symbols, name) -> {
+  match find_symbol(symbols, name) {
+    Some(entry) => {
+      let (_, kind, exported) = entry
+      let kind_str = kind_to_string(kind)
+      let scope = if exported {
+        "(exported)"
+      } else {
+        "(local)"
+      }
+      String::concat(String::concat(String::concat(kind_str, " "), name), String::concat(" ", scope))
+    },
+    None => "unknown"
+  }
+}
+
+export let format_symbol: ((String, Int, Bool)) -> String = (sym) -> {
+  let (name, kind, exported) = sym
+  let kind_str = kind_to_string(kind)
+  let exp_str = if exported {
+    "true"
+  } else {
+    "false"
+  }
+  String::concat(String::concat(String::concat(String::concat(kind_str, ":"), name), ":"), exp_str)
+}
+
+export let format_symbols: (Array[(String, Int, Bool)]) -> String = (symbols) -> {
+  let len = Array::length(symbols)
+  if len == 0 {
+    ""
+  }
+  else {
+    // O(N) via StringBuilder; the previous `result = concat(result, ...)`
+    // was O(N²) over the symbol count emitted to LSIF.
+    let buf = StringBuilder::new()
+    StringBuilder::push(buf, format_symbol(Array::get(symbols, 0)))
+    let mut i = 1
+    while i < len {
+      StringBuilder::push(buf, "\n")
+      StringBuilder::push(buf, format_symbol(Array::get(symbols, i)))
+      i = i + 1
+    }
+    StringBuilder::freeze(buf)
+  }
+}
+
+let array_contains_str: (Array[String], String) -> Bool = (arr, s) -> {
+  let len = Array::length(arr)
+  let mut i = 0
+  let mut found = false
+  while i < len {
+    if Array::get(arr, i) == s {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+export let find_references_in: (Array[Stmt], String) -> Array[String] = (stmts, target_name) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let len = Array::length(stmts)
+  let mut i = 0
+  while i < len {
+    let stmt = Array::get(stmts, i)
+    match stmt {
+      SLet(_, _, name, _, body) => {
+        let refs = collect_refs(body)
+        if array_contains_str(refs, target_name) {
+          Array::push(out, name)
+        }
+      },
+      _ => {
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
+export let generate_def_index: (Array[Stmt]) -> String = (stmts) -> {
+  let syms = collect_symbols(stmts)
+  format_symbols(syms)
+}
+
+export let generate_ref_index: (Array[Stmt]) -> String = (stmts) -> {
+  let refs = collect_refs_stmts(stmts)
+  let syms = collect_symbols(stmts)
+  let len = Array::length(refs)
+  if len == 0 {
+    ""
+  }
+  else {
+    // O(N) via StringBuilder; was O(N²) concat accumulator.
+    let buf = StringBuilder::new()
+    let mut i = 0
+    while i < len {
+      let name = Array::get(refs, i)
+      let status = match find_symbol(syms, name) {
+        Some(_) => "defined",
+        None => "undefined"
+      }
+      let line = String::concat(String::concat(String::concat("ref:", name), ":"), status)
+      if i > 0 {
+        StringBuilder::push(buf, "\n")
+      }
+      StringBuilder::push(buf, line)
+      i = i + 1
+    }
+    StringBuilder::freeze(buf)
+  }
+}
+
+export let generate_lsif_report: (Array[Stmt]) -> String = (stmts) -> {
+  let def_idx = generate_def_index(stmts)
+  let ref_idx = generate_ref_index(stmts)
+  String::concat(String::concat(String::concat("=== Definitions ===\n", def_idx), "\n=== References ===\n"), ref_idx)
+}

@@ -16,7 +16,7 @@
 #    "the Perceus plan is empty" finding in the #715 investigation turned out
 #    to be this mistake, not a real bug.)
 #
-# 2. The *frozen* seed (`bootstrap/selfhost/seed/selfhost_compiler.wasm`)
+# 2. The *frozen* seed (`bootstrap/seed/selfhost_compiler.wasm`)
 #    cannot RC-self-compile the CURRENT flat source directly -- it is stale
 #    relative to whatever syntax/feature the current source uses, and fails
 #    immediately with `not EFn`. You must first build a *fresh* bump

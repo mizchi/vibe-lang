@@ -1,0 +1,27 @@
+# clients/wasm
+
+`clients/wasm/vibe.wasm` は selfhost compiler を `wasm-gc` release でビルドした配布用成果物です。
+
+## Update
+
+```bash
+pkf run build-wasm-vibe
+```
+
+GitHub Release 用の versioned asset をローカルで組むときは:
+
+```bash
+pkf run build-release-assets -- v0.0.1
+```
+
+## Smoke test with wasmtime
+
+```bash
+pkf run test-wasm-vibe-wasmtime
+```
+
+内部では以下を実行します:
+
+```bash
+wasmtime run -W gc=y -W function-references=y --invoke vibe_check clients/wasm/vibe.wasm 1024 0 4096 4096
+```

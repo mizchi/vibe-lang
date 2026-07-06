@@ -7,7 +7,7 @@ WASM-targeting, pure-by-default language with algebraic effects. Compiled via Mo
 ```vibe
 // `stdout_write` is a prelude helper, not a builtin — import it (otherwise the
 // checker reports `unknown function: String::stdout_write`).
-import ./vibe/prelude/io.vibe { stdout_write }
+import ./lib/@vibe/prelude/io.vibe { stdout_write }
 
 let main: () -> Unit with { Stdout } = () -> {
   stdout_write("hello world\n")
@@ -161,7 +161,7 @@ semantics. Builtin receivers (`Array`/`String`/...) keep their builtin
 
 ### Function combinators (point-free)
 
-`compose` / `identity` / `flip` live in the prelude (`vibe/prelude/func.vibe`);
+`compose` / `identity` / `flip` live in the prelude (`lib/@vibe/prelude/func.vibe`);
 import them before use (`import ./func.vibe { compose, identity, flip }`).
 
 ```vibe
@@ -173,11 +173,11 @@ Array::map(xs, compose(parse, render))
 ```
 
 > Runnable reference for the pipe `_` slot, combinators, `let*`, and `tap`:
-> [`vibe/prelude/pipeline_ergonomics_test.vibe`](../vibe/prelude/pipeline_ergonomics_test.vibe)
-> (`vibe test vibe/prelude/pipeline_ergonomics_test.vibe`). `Result`, `tap*`,
+> [`lib/@vibe/prelude/pipeline_ergonomics_test.vibe`](../lib/@vibe/prelude/pipeline_ergonomics_test.vibe)
+> (`vibe test lib/@vibe/prelude/pipeline_ergonomics_test.vibe`). `Result`, `tap*`,
 > and the combinators are prelude exports, so a file must `import` them and sit
 > where it can reach the prelude — `import` paths may not escape the file's root
-> directory, so standalone `examples/` files cannot reach `vibe/prelude/`.
+> directory, so standalone `examples/` files cannot reach `lib/@vibe/prelude/`.
 
 ## Control Flow
 
@@ -323,7 +323,7 @@ Int64Array::length(w)            // => 4
 >   (`let record { name: n } = r`) also binds any field name.
 > - **`map { ... }` literals + `Map::*` builtins + `m[k]` indexing** work
 >   standalone (#760): `Map::get` / `has_key` / `set` / `keys` and the `m["k"]`
->   index sugar all lower correctly. (`vibe/collection` remains available for a
+>   index sugar all lower correctly. (`lib/@vibe/collection` remains available for a
 >   richer Map API.)
 
 ## Effects (core concept)
@@ -395,7 +395,7 @@ function return type) if a borderline `Option` case is misread as `Result`.
 `tap` runs a side effect on the value and returns it unchanged — observe a
 stage without breaking the `|>` chain. Railway variants `tap_ok` / `tap_err` /
 `tap_some` observe only one track. They are prelude exports
-(`vibe/prelude/io.vibe`); import them and note they carry the `Stdout` effect:
+(`lib/@vibe/prelude/io.vibe`); import them and note they carry the `Stdout` effect:
 
 ```vibe
 x
@@ -474,7 +474,7 @@ handle { greet("world") } with Logger {
 継続呼び出しは `resume(v)` が canonical (one-shot tail-resumptive, ADR-0050)。
 operation の宣言 arity より 1 つ多い末尾パラメータを束縛すると、それが継続 `k` に
 なり、`resume` では書けない non-tail position で結果を使える (`Emit(v, k) => v + k(0)`)。
-どちらも one-shot。規約の詳細は [mut-effect-plan.md](mut-effect-plan.md) の
+どちらも one-shot。規約の詳細は [archive/mut-effect-plan.md](archive/mut-effect-plan.md) の
 「継続呼び出し規約」(#627) を参照。
 
 ### Effect polymorphism

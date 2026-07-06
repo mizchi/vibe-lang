@@ -78,14 +78,14 @@ mkdir -p "$TC_DIR/bin" "$TC_DIR/lib" "$VIBE_HOME/bin" "$VIBE_HOME/lib"
 
 # 1. runner ----------------------------------------------------------------
 if [ -z "$RUNNER_SRC" ]; then
-  prebuilt="$ROOT_DIR/tools/moonrun_wasmtime/target/release/moonrun_wt"
+  prebuilt="$ROOT_DIR/runtime/moonrun_wasmtime/target/release/moonrun_wt"
   if [ -x "$prebuilt" ]; then
     RUNNER_SRC="$prebuilt"
     say "using already-built runner: $RUNNER_SRC"
   else
     command -v cargo >/dev/null 2>&1 || die "cargo not found; pass a prebuilt runner with --runner"
     say "building runner (cargo build --release)..."
-    ( cd "$ROOT_DIR/tools/moonrun_wasmtime" && cargo build --release >/dev/null )
+    ( cd "$ROOT_DIR/runtime/moonrun_wasmtime" && cargo build --release >/dev/null )
     RUNNER_SRC="$prebuilt"
   fi
 fi
@@ -102,7 +102,7 @@ if [ -z "$CLI_WASM_SRC" ]; then
     CLI_WASM_SRC="$built"
     say "using freshly built compiler wasm: $CLI_WASM_SRC"
   else
-    CLI_WASM_SRC="$ROOT_DIR/bootstrap/selfhost/seed/selfhost_compiler.wasm"
+    CLI_WASM_SRC="$ROOT_DIR/bootstrap/seed/selfhost_compiler.wasm"
     say "build unavailable; using committed seed compiler as the CLI wasm"
   fi
 fi
@@ -119,18 +119,18 @@ say "AOT compiler -> $TC_DIR/lib/vibe-cli.cwasm"
 # 4. launcher + LSP server (toolchain-local artifacts) ---------------------
 install -m 0755 "$ROOT_DIR/runtime/vibe" "$TC_DIR/bin/vibe"
 say "launcher -> $TC_DIR/bin/vibe"
-if [ -f "$ROOT_DIR/js/vibe/lsp_server.js" ]; then
-  install -m 0644 "$ROOT_DIR/js/vibe/lsp_server.js" "$TC_DIR/lib/lsp_server.js"
+if [ -f "$ROOT_DIR/clients/js/lsp_server.js" ]; then
+  install -m 0644 "$ROOT_DIR/clients/js/lsp_server.js" "$TC_DIR/lib/lsp_server.js"
   say "lsp server -> $TC_DIR/lib/lsp_server.js"
   # The LSP server requires the workspace symbol/call-hierarchy index alongside
   # it (workspace/symbol + callHierarchy).
-  if [ -f "$ROOT_DIR/js/vibe/symbol_index.js" ]; then
-    install -m 0644 "$ROOT_DIR/js/vibe/symbol_index.js" "$TC_DIR/lib/symbol_index.js"
+  if [ -f "$ROOT_DIR/clients/js/symbol_index.js" ]; then
+    install -m 0644 "$ROOT_DIR/clients/js/symbol_index.js" "$TC_DIR/lib/symbol_index.js"
     say "lsp symbol index -> $TC_DIR/lib/symbol_index.js"
   fi
   # Project graph query layer (vibe/graph custom request + dependency graph).
-  if [ -f "$ROOT_DIR/js/vibe/graph_query.js" ]; then
-    install -m 0644 "$ROOT_DIR/js/vibe/graph_query.js" "$TC_DIR/lib/graph_query.js"
+  if [ -f "$ROOT_DIR/clients/js/graph_query.js" ]; then
+    install -m 0644 "$ROOT_DIR/clients/js/graph_query.js" "$TC_DIR/lib/graph_query.js"
     say "lsp graph query -> $TC_DIR/lib/graph_query.js"
   fi
 fi

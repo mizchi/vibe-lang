@@ -2,9 +2,9 @@
 
 This document clarifies the role of each `vibe` CLI command, with special attention to the compile/build variants and other commonly confused command pairs.
 
-Implementation policy: the canonical CLI source lives in `vibe/compiler/`.
-MoonBit `src/cmd/*` entrypoints are legacy bootstrap/fallback wrappers during
-selfhost cutover; new command behavior should not be added there.
+Implementation policy: the canonical CLI source lives in `vibe/compiler/` and
+`vibe/cli/`. The MoonBit host (including the `src/cmd/*` entrypoints) was retired
+in #594; new command behavior is added only in the selfhost source.
 
 ## Quick Reference: Compile & Build Commands
 
@@ -119,7 +119,7 @@ vibe precompile -Os <dir...>
 ```
 
 - Skips `_test.vibe` and `_bench.vibe` files.
-- Output directory structure mirrors input, with the first path component stripped (e.g., `vibe/prelude/foo.vibe` -> `dist/prelude/foo.wasm`).
+- Output directory structure mirrors input, with the first path component stripped (e.g., `lib/@vibe/prelude/foo.vibe` -> `dist/prelude/foo.wasm`).
 
 ### test
 

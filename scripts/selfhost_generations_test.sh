@@ -7,12 +7,12 @@ SCRIPT="$PROJECT_ROOT/scripts/selfhost_generations.sh"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vibe_selfhost_generations.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
-mkdir -p "$TMP_ROOT/bootstrap/selfhost" "$TMP_ROOT/_build/selfhost/seed" "$TMP_ROOT/vibe/compiler"
+mkdir -p "$TMP_ROOT/bootstrap" "$TMP_ROOT/_build/selfhost/seed" "$TMP_ROOT/vibe/compiler"
 printf 'export let main = () -> Int { 0 }\n' > "$TMP_ROOT/vibe/compiler/index.vibe"
 printf 'seed-compiler\n' > "$TMP_ROOT/_build/selfhost/seed/selfhost_compiler.wasm"
 seed_sha="$(shasum -a 256 "$TMP_ROOT/_build/selfhost/seed/selfhost_compiler.wasm" | awk '{print $1}')"
 
-cat > "$TMP_ROOT/bootstrap/selfhost/seed.json" <<EOF
+cat > "$TMP_ROOT/bootstrap/seed.json" <<EOF
 {
   "schema": 1,
   "policy": "rust-style-stage0-stage1-stage2",
@@ -59,7 +59,7 @@ VIBE_PROJECT_ROOT="$TMP_ROOT" \
 VIBE_SELFHOST_GENERATION_RUNNER="$TMP_ROOT/fake_runner.sh" \
 VIBE_SELFHOST_GENERATION_VALIDATE_WASM=0 \
 VIBE_SELFHOST_GENERATION_VALIDATE_RUN=0 \
-  bash "$SCRIPT" build --manifest "$TMP_ROOT/bootstrap/selfhost/seed.json" --out-dir "$TMP_ROOT/out" --stage3
+  bash "$SCRIPT" build --manifest "$TMP_ROOT/bootstrap/seed.json" --out-dir "$TMP_ROOT/out" --stage3
 
 test -s "$TMP_ROOT/out/stage0_seed.wasm"
 test -s "$TMP_ROOT/out/stage1.wasm"
@@ -82,7 +82,7 @@ assert.equal(typeof data.result.stage3_equal_stage2, "boolean");
 NODE
 
 status_out="$(VIBE_PROJECT_ROOT="$TMP_ROOT" bash "$SCRIPT" status \
-  --manifest "$TMP_ROOT/bootstrap/selfhost/seed.json" --out-dir "$TMP_ROOT/out")"
+  --manifest "$TMP_ROOT/bootstrap/seed.json" --out-dir "$TMP_ROOT/out")"
 echo "$status_out" | rg -q "^seed\.name=test-seed$" || { echo "status missing seed.name" >&2; echo "$status_out" >&2; exit 1; }
 echo "$status_out" | rg -q "^seed\.artifact\.pin=ok " || { echo "status missing pin ok" >&2; echo "$status_out" >&2; exit 1; }
 echo "$status_out" | rg -q "^generation\.manifest=" || { echo "status missing generation manifest" >&2; echo "$status_out" >&2; exit 1; }
@@ -91,13 +91,13 @@ echo "$status_out" | rg -q "^stage3_equal_stage2=" || { echo "status missing sta
 
 # status against an unbuilt out-dir reports not-built without failing.
 status_empty="$(VIBE_PROJECT_ROOT="$TMP_ROOT" bash "$SCRIPT" status \
-  --manifest "$TMP_ROOT/bootstrap/selfhost/seed.json" --out-dir "$TMP_ROOT/never-built")"
+  --manifest "$TMP_ROOT/bootstrap/seed.json" --out-dir "$TMP_ROOT/never-built")"
 echo "$status_empty" | rg -q "^generation\.status=not-built$" || { echo "status missing not-built state" >&2; echo "$status_empty" >&2; exit 1; }
 
 echo "selfhost generations status self-test: ok"
 
-cp "$TMP_ROOT/bootstrap/selfhost/seed.json" "$TMP_ROOT/bootstrap/selfhost/bad-seed.json"
-node - "$TMP_ROOT/bootstrap/selfhost/bad-seed.json" <<'NODE'
+cp "$TMP_ROOT/bootstrap/seed.json" "$TMP_ROOT/bootstrap/bad-seed.json"
+node - "$TMP_ROOT/bootstrap/bad-seed.json" <<'NODE'
 const fs = require("node:fs");
 const p = process.argv[2];
 const data = JSON.parse(fs.readFileSync(p, "utf8"));
@@ -110,7 +110,7 @@ VIBE_PROJECT_ROOT="$TMP_ROOT" \
 VIBE_SELFHOST_GENERATION_RUNNER="$TMP_ROOT/fake_runner.sh" \
 VIBE_SELFHOST_GENERATION_VALIDATE_WASM=0 \
 VIBE_SELFHOST_GENERATION_VALIDATE_RUN=0 \
-  bash "$SCRIPT" build --manifest "$TMP_ROOT/bootstrap/selfhost/bad-seed.json" --out-dir "$TMP_ROOT/bad-out" >"$TMP_ROOT/bad.stdout" 2>"$TMP_ROOT/bad.stderr"
+  bash "$SCRIPT" build --manifest "$TMP_ROOT/bootstrap/bad-seed.json" --out-dir "$TMP_ROOT/bad-out" >"$TMP_ROOT/bad.stdout" 2>"$TMP_ROOT/bad.stderr"
 bad_status=$?
 set -e
 if [ "$bad_status" -eq 0 ]; then
@@ -126,13 +126,13 @@ fi
 printf 'new-seed\n' > "$TMP_ROOT/new_seed.wasm"
 VIBE_PROJECT_ROOT="$TMP_ROOT" \
   bash "$SCRIPT" adopt \
-    --manifest "$TMP_ROOT/bootstrap/selfhost/seed.json" \
+    --manifest "$TMP_ROOT/bootstrap/seed.json" \
     --artifact "$TMP_ROOT/new_seed.wasm" \
     --name next-seed \
     --tag next-tag \
     --source-commit def456
 
-node - "$TMP_ROOT/bootstrap/selfhost/seed.json" "$TMP_ROOT/_build/selfhost/seed/selfhost_compiler.wasm" <<'NODE'
+node - "$TMP_ROOT/bootstrap/seed.json" "$TMP_ROOT/_build/selfhost/seed/selfhost_compiler.wasm" <<'NODE'
 const assert = require("node:assert");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -148,13 +148,13 @@ NODE
 echo "selfhost generations self-test: ok"
 
 CLI_ROOT="$TMP_ROOT/cli_seed"
-mkdir -p "$CLI_ROOT/bootstrap/selfhost" "$CLI_ROOT/bootstrap/selfhost/seed" "$CLI_ROOT/scripts" "$CLI_ROOT/vibe/compiler"
+mkdir -p "$CLI_ROOT/bootstrap" "$CLI_ROOT/bootstrap/seed" "$CLI_ROOT/scripts" "$CLI_ROOT/vibe/compiler"
 printf 'import ./dep.vibe { dep }\nexport let cli_main = () -> Int { dep() }\n' > "$CLI_ROOT/vibe/compiler/selfhost_cli_support.vibe"
 printf 'export let dep = () -> Int { 0 }\n' > "$CLI_ROOT/vibe/compiler/dep.vibe"
-printf 'seed-cli\n' > "$CLI_ROOT/bootstrap/selfhost/seed/selfhost_compiler.wasm"
-cli_seed_sha="$(shasum -a 256 "$CLI_ROOT/bootstrap/selfhost/seed/selfhost_compiler.wasm" | awk '{print $1}')"
+printf 'seed-cli\n' > "$CLI_ROOT/bootstrap/seed/selfhost_compiler.wasm"
+cli_seed_sha="$(shasum -a 256 "$CLI_ROOT/bootstrap/seed/selfhost_compiler.wasm" | awk '{print $1}')"
 
-cat > "$CLI_ROOT/bootstrap/selfhost/seed.json" <<EOF
+cat > "$CLI_ROOT/bootstrap/seed.json" <<EOF
 {
   "schema": 1,
   "policy": "rust-style-stage0-stage1-stage2",
@@ -165,7 +165,7 @@ cat > "$CLI_ROOT/bootstrap/selfhost/seed.json" <<EOF
     "entry": "vibe/compiler/selfhost_cli_support.vibe",
     "entry_name": "cli_main",
     "artifact": {
-      "path": "bootstrap/selfhost/seed/selfhost_compiler.wasm",
+      "path": "bootstrap/seed/selfhost_compiler.wasm",
       "sha256": "$cli_seed_sha"
     }
   }
@@ -202,7 +202,7 @@ chmod +x "$CLI_ROOT/scripts/run_wasm_vibe_host_runner.sh"
 VIBE_PROJECT_ROOT="$CLI_ROOT" \
 VIBE_SELFHOST_GENERATION_VALIDATE_WASM=0 \
 VIBE_SELFHOST_GENERATION_VALIDATE_RUN=0 \
-  bash "$SCRIPT" build --manifest "$CLI_ROOT/bootstrap/selfhost/seed.json" --out-dir "$CLI_ROOT/out"
+  bash "$SCRIPT" build --manifest "$CLI_ROOT/bootstrap/seed.json" --out-dir "$CLI_ROOT/out"
 
 test -s "$CLI_ROOT/out/selfhost_cli_adapter_module_source.vibe"
 test -s "$CLI_ROOT/out/stage1.wasm"
@@ -228,7 +228,7 @@ VIBE_PROJECT_ROOT="$CLI_ROOT" \
 VIBE_SELFHOST_GENERATION_VALIDATE_WASM=0 \
 VIBE_SELFHOST_GENERATION_VALIDATE_RUN=0 \
   bash "$SCRIPT" build \
-    --manifest "$CLI_ROOT/bootstrap/selfhost/seed.json" \
+    --manifest "$CLI_ROOT/bootstrap/seed.json" \
     --out-dir "$CLI_ROOT/split-out" \
     --entry vibe/cli/selfhost_entry.vibe >"$CLI_ROOT/split.stdout" 2>"$CLI_ROOT/split.stderr"
 split_status=$?

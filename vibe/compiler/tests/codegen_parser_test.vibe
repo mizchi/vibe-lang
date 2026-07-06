@@ -1,0 +1,93 @@
+//# Imports
+
+import ../codegen {
+  compile_wasi_module
+}
+
+import ../syntax {
+  lex
+}
+
+import ../parser.vibe {
+  parse_program
+}
+
+//# Misc
+
+test "wasi: parser.vibe import - compile and run" {
+  let token_source = Fs::read_file("vibe/compiler/token.vibe")
+  let ast_source = Fs::read_file("vibe/compiler/ast.vibe")
+  let syntax_paths = [
+    "vibe/compiler/syntax/lexer.vibe",
+    "vibe/compiler/syntax/parser_base.vibe",
+    "vibe/compiler/syntax/parser_expr_primary.vibe",
+    "vibe/compiler/syntax/parser_expr_core.vibe",
+    "vibe/compiler/syntax/parser_expr_dispatch.vibe",
+    "vibe/compiler/syntax/parser_expr.vibe",
+    "vibe/compiler/syntax/parser.vibe",
+  ]
+  let main_source = "let main: () -> Int = () -> {\n  let tokens = lex(\"1 + 2\")\n  let stmts = parse_program(tokens)\n  Array::length(stmts)\n}"
+  let all_stmts = ArrayBuilder::new()
+  // Token enum
+  let tk_tokens = lex(token_source)
+  let tk_stmts = parse_program(tk_tokens)
+  let mut ti = 0
+  while ti < Array::length(tk_stmts) {
+    match Array::get(tk_stmts, ti) {
+      SEnum(_, _, _, _, _) => {
+        ArrayBuilder::push(all_stmts, Array::get(tk_stmts, ti)); 0
+      },
+      _ => 0
+    };
+    ti = ti + 1
+  }
+  // AST enums
+  let ast_tokens = lex(ast_source)
+  let ast_stmts = parse_program(ast_tokens)
+  let mut ai = 0
+  while ai < Array::length(ast_stmts) {
+    match Array::get(ast_stmts, ai) {
+      SEnum(_, _, _, _, _) => {
+        ArrayBuilder::push(all_stmts, Array::get(ast_stmts, ai)); 0
+      },
+      _ => 0
+    };
+    ai = ai + 1
+  }
+  // Syntax sources (skip imports and *_ok helpers)
+  let mut si = 0
+  while si < Array::length(syntax_paths) {
+    let source = Fs::read_file(Array::get(syntax_paths, si))
+    let source_tokens = lex(source)
+    let source_stmts = parse_program(source_tokens)
+    let mut sj = 0
+    while sj < Array::length(source_stmts) {
+      match Array::get(source_stmts, sj) {
+        SImport(_, _) => 0,
+        SLet(_, _, name, _, _) => if name == "lex_ok" || name == "parse_ok" {
+          0
+        }
+        else {
+          ArrayBuilder::push(all_stmts, Array::get(source_stmts, sj)); 0
+        }
+        ,
+        _ => {
+          ArrayBuilder::push(all_stmts, Array::get(source_stmts, sj)); 0
+        }
+      };
+      sj = sj + 1
+    };
+    si = si + 1
+  }
+  // Main function
+  let mn_tokens = lex(main_source)
+  let mn_stmts = parse_program(mn_tokens)
+  let mut mi = 0
+  while mi < Array::length(mn_stmts) {
+    ArrayBuilder::push(all_stmts, Array::get(mn_stmts, mi));
+    mi = mi + 1
+  }
+  let bytes = compile_wasi_module(ArrayBuilder::freeze(all_stmts), "main")
+  Fs::write_bytes("/tmp/test_cg_parser_import.wasm", bytes)
+  0
+}

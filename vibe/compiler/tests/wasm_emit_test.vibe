@@ -1,0 +1,134 @@
+//# Imports
+
+import ../bytebuf.vibe {
+  bytebuf_length, bytebuf_new, bytebuf_to_bytes
+}
+
+import ../codegen/wasm_emit {
+  build_add_module, build_arithmetic_module, build_call_module, build_factorial_module, build_fibonacci_module, build_hello_module, build_print_string_module, emit_header, emit_vibe_abi_custom_section, string_to_data
+}
+
+//# Misc
+
+test "wasm header" {
+  let buf = bytebuf_new()
+  emit_header(buf)
+  assert(bytebuf_length(buf) == 8)
+  let bytes = bytebuf_to_bytes(buf)
+  assert(Bytes::get(bytes, 0) == 0)
+  assert(Bytes::get(bytes, 1) == 97)
+  assert(Bytes::get(bytes, 2) == 115)
+  assert(Bytes::get(bytes, 3) == 109)
+  assert(Bytes::get(bytes, 4) == 1)
+}
+
+test "emit_vibe_abi_custom_section encodes raw host import ABI" {
+  let buf = bytebuf_new()
+  emit_vibe_abi_custom_section(buf, "raw")
+  assert(bytebuf_length(buf) == 41)
+  let bytes = bytebuf_to_bytes(buf)
+  assert(Bytes::get(bytes, 0) == 0)
+  assert(Bytes::get(bytes, 1) == 39)
+  assert(Bytes::get(bytes, 2) == 8)
+  assert(Bytes::get(bytes, 3) == 118)
+  assert(Bytes::get(bytes, 4) == 105)
+  assert(Bytes::get(bytes, 5) == 98)
+  assert(Bytes::get(bytes, 6) == 101)
+  assert(Bytes::get(bytes, 7) == 46)
+  assert(Bytes::get(bytes, 8) == 97)
+  assert(Bytes::get(bytes, 9) == 98)
+  assert(Bytes::get(bytes, 10) == 105)
+  assert(Bytes::get(bytes, 11) == 118)
+  assert(Bytes::get(bytes, 20) == 10)
+  assert(Bytes::get(bytes, 21) == 104)
+  assert(Bytes::get(bytes, 40) == 10)
+}
+
+test "build_add_module produces valid wasm" {
+  let bytes = build_add_module()
+  assert(Bytes::length(bytes) > 20)
+  assert(Bytes::get(bytes, 0) == 0)
+  assert(Bytes::get(bytes, 1) == 97)
+  assert(Bytes::get(bytes, 2) == 115)
+  assert(Bytes::get(bytes, 3) == 109)
+}
+
+test "build_add_module validates with wasmtime" {
+  let bytes = build_add_module()
+  Fs::write_bytes("/tmp/test_vibe_add.wasm", bytes)
+  sh("wasmtime run --invoke add /tmp/test_vibe_add.wasm 3 4")
+}
+
+test "arithmetic module: add" {
+  let bytes = build_arithmetic_module()
+  Fs::write_bytes("/tmp/test_vibe_arith.wasm", bytes)
+  sh("wasmtime run --invoke add /tmp/test_vibe_arith.wasm 10 20")
+}
+
+test "arithmetic module: sub" {
+  let bytes = build_arithmetic_module()
+  Fs::write_bytes("/tmp/test_vibe_arith.wasm", bytes)
+  sh("wasmtime run --invoke sub /tmp/test_vibe_arith.wasm 30 7")
+}
+
+test "arithmetic module: mul" {
+  let bytes = build_arithmetic_module()
+  Fs::write_bytes("/tmp/test_vibe_arith.wasm", bytes)
+  sh("wasmtime run --invoke mul /tmp/test_vibe_arith.wasm 6 7")
+}
+
+test "call module: square" {
+  let bytes = build_call_module()
+  Fs::write_bytes("/tmp/test_vibe_call.wasm", bytes)
+  sh("wasmtime run --invoke square /tmp/test_vibe_call.wasm 5")
+}
+
+test "call module: sum_sq" {
+  let bytes = build_call_module()
+  Fs::write_bytes("/tmp/test_vibe_call.wasm", bytes)
+  sh("wasmtime run --invoke sum_sq /tmp/test_vibe_call.wasm 3 4")
+}
+
+test "fibonacci: fib(0)=0" {
+  let bytes = build_fibonacci_module()
+  Fs::write_bytes("/tmp/test_vibe_fib.wasm", bytes)
+  sh("wasmtime run --invoke fib /tmp/test_vibe_fib.wasm 0")
+}
+
+test "fibonacci: fib(10)=55" {
+  let bytes = build_fibonacci_module()
+  Fs::write_bytes("/tmp/test_vibe_fib.wasm", bytes)
+  sh("wasmtime run --invoke fib /tmp/test_vibe_fib.wasm 10")
+}
+
+test "factorial: fact(1)=1" {
+  let bytes = build_factorial_module()
+  Fs::write_bytes("/tmp/test_vibe_fact.wasm", bytes)
+  sh("wasmtime run --invoke fact /tmp/test_vibe_fact.wasm 1")
+}
+
+test "factorial: fact(10)=3628800" {
+  let bytes = build_factorial_module()
+  Fs::write_bytes("/tmp/test_vibe_fact.wasm", bytes)
+  sh("wasmtime run --invoke fact /tmp/test_vibe_fact.wasm 10")
+}
+
+test "hello world WASI module" {
+  let bytes = build_hello_module()
+  Fs::write_bytes("/tmp/test_vibe_hello.wasm", bytes)
+  sh("wasmtime run /tmp/test_vibe_hello.wasm")
+}
+
+test "string_to_data" {
+  let data = string_to_data("abc")
+  assert(Bytes::length(data) == 3)
+  assert(Bytes::get(data, 0) == 97)
+  assert(Bytes::get(data, 1) == 98)
+  assert(Bytes::get(data, 2) == 99)
+}
+
+test "print_string_module custom message" {
+  let bytes = build_print_string_module("vibe codegen works!\n")
+  Fs::write_bytes("/tmp/test_vibe_print.wasm", bytes)
+  sh("wasmtime run /tmp/test_vibe_print.wasm")
+}

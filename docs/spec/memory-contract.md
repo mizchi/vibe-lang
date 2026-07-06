@@ -21,7 +21,7 @@ only behavior.**
 | reclamation | **none (leaks linearly)** | Perceus dup/drop (analysis complete; drop **codegen Phase 3 WIP**) | engine GC (tracing) |
 | object lifetime | n/a | deterministic, eager (once Phase 3 lands) | non-deterministic, lazy |
 | cycles | n/a | **leak (RC limitation)** | collected |
-| known gaps | — | uniform object header only partly landed (tuples done, arrays/enums/closures pending); no drop emission yet; no wasmtime RC e2e gate | HOF / Iterator codegen gaps (`docs/report/wasm-gc-hof-gap-2026-05-25.md`); builtin parity; not CLI-reachable |
+| known gaps | — | uniform object header only partly landed (tuples done, arrays/enums/closures pending); no drop emission yet; no wasmtime RC e2e gate | HOF / Iterator codegen gaps (`docs/spec/iterable-touch-points.md`); builtin parity; not CLI-reachable |
 | intended status | production default | future linear default (opt-out leak) | long-term primary target |
 
 The defaults above are exercised by the selfhost gate

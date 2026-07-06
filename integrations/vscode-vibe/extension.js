@@ -6,7 +6,7 @@
 // `vibe` on PATH).
 //
 // Debug: registers a `vibe` debug type whose adapter is the stdio DAP server in
-// js/vibe/dap_server.js (docs/release-roadmap.md テーマ3 3-D). The adapter
+// clients/js/dap_server.js (docs/release-roadmap.md テーマ3 3-D). The adapter
 // bridges DAP to `vibe run --break <fn> <file>`: setBreakpoints maps lines to
 // enclosing function names, and the runner's pause output is translated to DAP
 // stopped/stackTrace/variables; continue/next/stepIn/stepOut drive the runner's
@@ -21,7 +21,7 @@ const fs = require("fs");
 let client;
 
 // Resolve the dap_server.js path. In the repo layout it lives at
-// <repo>/js/vibe/dap_server.js; the extension lives at
+// <repo>/clients/js/dap_server.js; the extension lives at
 // <repo>/integrations/vscode-vibe/. When packaged as a VSIX, `vsce package`
 // only includes files under the extension dir, so the `vscode:prepublish`
 // step (scripts/bundle-dap.js) copies it to <extensionPath>/dap_server.js —
@@ -29,8 +29,8 @@ let client;
 // context, while the first finds the canonical source during repo-dev.
 function resolveDapServer(context) {
   const candidates = [
-    path.join(context.extensionPath, "..", "..", "js", "vibe", "dap_server.js"),
-    path.join(context.extensionPath, "js", "vibe", "dap_server.js"),
+    path.join(context.extensionPath, "..", "..", "clients", "js", "dap_server.js"),
+    path.join(context.extensionPath, "clients", "js", "dap_server.js"),
     path.join(context.extensionPath, "dap_server.js"),
   ];
   for (const c of candidates) {

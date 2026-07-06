@@ -5,12 +5,12 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const branchFocusedExtraEntries = [
-  "vibe/compiler/fixture_test.vibe",
-  "vibe/compiler/lexer_test.vibe",
-  "vibe/compiler/printer_test.vibe",
-  "vibe/compiler/checker_test.vibe",
-  "vibe/compiler/checker_builtins_test.vibe",
-  "vibe/compiler/selfhost_s5_test.vibe",
+  "vibe/compiler/tests/fixture_test.vibe",
+  "vibe/compiler/tests/lexer_test.vibe",
+  "vibe/compiler/tests/printer_test.vibe",
+  "vibe/compiler/tests/checker_test.vibe",
+  "vibe/compiler/tests/checker_builtins_test.vibe",
+  "vibe/compiler/tests/selfhost_s5_test.vibe",
 ];
 
 function usage() {

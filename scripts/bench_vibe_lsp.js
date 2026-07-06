@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Benchmark for the vibe LSP workspace symbol / call-hierarchy index
-// (js/vibe/symbol_index.js).
+// (clients/js/symbol_index.js).
 //
 // Establishes the perf case for the in-process index: the LSP server answers
 // queries by spawning a `vibe` subprocess (each loads the wasm compiler), which
@@ -21,7 +21,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
-const { SymbolIndex } = require(path.join(__dirname, "..", "js", "vibe", "symbol_index.js"));
+const { SymbolIndex } = require(path.join(__dirname, "..", "clients", "js", "symbol_index.js"));
 
 const ROOT = path.resolve(process.argv[2] && !process.argv[2].startsWith("--") ? process.argv[2] : path.join(__dirname, "..", "vibe"));
 const WANT_BASELINE = process.argv.includes("--baseline");

@@ -4,7 +4,7 @@
 content-addressed caching) is the **canonical task runner** for vibe-lang —
 it replaces the former `justfile`. [`pkspec`](https://github.com/mizchi/pkspec)
 (language-agnostic test runner) is wired in as an opt-in companion alongside
-`moon test` / `pkf run test-local`.
+the selfhost gate (`pkf run test`) / `pkf run test-local`.
 
 The task definitions live in `Taskfile.pkl` (238 tasks). Multi-line
 shell that doesn't fit a single Pkl `cmd =` lives in `scripts/pkfire/*.sh`
@@ -33,23 +33,21 @@ caller). Pass `pkfire-cache: 'true'` to also hydrate `~/.cache/pkfire`.
 
 ## pkfire — `Taskfile.pkl`
 
-`Taskfile.pkl` mirrors **every** recipe from the `justfile`
-(238 tasks: 206 from justfile + 32 generated per-package test tasks).
-Simple recipes are inlined; complex multi-line shell stays in the
-justfile and is invoked via `just <name>` so the canonical body
-doesn't fork.
+`Taskfile.pkl` is the sole source of task definitions (the former `justfile`
+was retired). Simple recipes are inlined via `cmd = …`; complex multi-line
+shell lives in `scripts/pkfire/*.sh` (or other `scripts/*.sh`) and is invoked
+directly.
 
-Highlights:
+Highlights (post-#594 selfhost-only):
 
-| Task           | Behaviour                      | Notes                                |
-|----------------|--------------------------------|--------------------------------------|
-| `fmt`          | `moon fmt`                     | not cached (mutates source files)    |
-| `info`         | `moon info`                    | outputs `**/*.mbti`                  |
-| `check`        | `moon check --deny-warn …`     | cached on source-tree hash           |
-| `test`         | `just test` (12-line recipe)   | wrapped — too tangled to inline      |
-| `test-update`  | `moon test --update`           | not cached (refreshes snapshots)     |
-| `run`          | `moon run … src/cmd/vibe -- $@`| `acceptsArgs` — pass via `--`        |
-| `release-check`| aggregate (typed deps)         | fmt + info + check + test + vibe-normalize + bundle-size + 15 selfhost gates |
+| Task           | Behaviour                          | Notes                                |
+|----------------|------------------------------------|--------------------------------------|
+| `fmt`          | `true` (no-op placeholder)         | selfhost fmt 未移植 (#594)           |
+| `test`         | `bash scripts/selfhost_only_gate.sh`| selfhost operation gate — commit 前の主チェック |
+| `test-local`   | affected tests via `flaker`        | fast inner loop                      |
+| `run`          | `bash scripts/vibe_run.sh $@`      | `acceptsArgs` — pass via `--`        |
+| `release-check`| `deps { selfhost-only gate }`      | moon-free sign-off: bundle/module-source sync + seed→stage1→stage2→stage3 fixpoint + compile/run validation |
+| `info` / `check` / `test-update` | legacy `moon …`  | MoonBit host 依存で #594 以降は無効。検証は `test` / `release-check` / `vibe diagnostics` を使う |
 
 Two helper factories keep the file readable:
 

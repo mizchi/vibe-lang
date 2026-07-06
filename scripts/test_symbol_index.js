@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Unit tests for the workspace symbol / call-graph index (js/vibe/symbol_index.js).
+// Unit tests for the workspace symbol / call-graph index (clients/js/symbol_index.js).
 // Pure JS, no compiler/runner required — runs anywhere node does.
 "use strict";
 const path = require("path");
 const { SymbolIndex, extractFile, codeMask, hashText, fuzzyScore, KIND } =
-  require(path.join(__dirname, "..", "js", "vibe", "symbol_index.js"));
+  require(path.join(__dirname, "..", "clients", "js", "symbol_index.js"));
 
 let pass = 0, fail = 0;
 function ok(cond, name, detail) {

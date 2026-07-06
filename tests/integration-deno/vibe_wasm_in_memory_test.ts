@@ -1,4 +1,4 @@
-import { createVibeService } from "../../js/vibe/index.js";
+import { createVibeService } from "../../clients/js/index.js";
 
 function assertTrue(actual: boolean, msg?: string): void {
   if (!actual) {
