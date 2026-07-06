@@ -356,6 +356,444 @@ export let inject_trait_method_generics: (Array[Stmt]) -> Unit = (stmts) -> {
   inject_trait_method_generics_with(stmts, traits)
 }
 
+// #760(2): `Result` is not a built-in type constructor (unlike Option/CtOption);
+// it is the ordinary user enum `enum Result[T, E] { Ok(T); Err(E) }` (see
+// vibe/prelude/result.vibe). A standalone program that neither declares nor
+// imports it gets `unknown name: Ok` / `Err` / `Result::Ok`. This appends that
+// enum declaration to the program UNLESS a `Result` type (or an `Ok`/`Err`
+// constructor) is already in scope — user-declared, or imported and merged in as
+// a statement. All the existing user-enum machinery (ctor resolution, pattern
+// match, exhaustiveness, codegen ctor construction) then applies with no
+// type-system changes. Type declarations are hoisted, so appending is order-safe.
+// In-place + idempotent + inert when Result is already present. Shared by
+// `desugar_trait_dicts` (pre-codegen) and `check_program` (the FS-compile path
+// type-checks before the codegen desugar runs), which both re-parse the merged
+// program, so each independently appends the SAME deterministic declaration.
+// #760(2): does the program actually reference `Result` / `Ok` / `Err`? The
+// prelude injection is gated on this so a program that never mentions Result
+// gets NO injected enum — otherwise every binary would carry (and #cov would
+// instrument) a dead `Ok`/`Err` ctor. Covers construction (`Ok`/`Err`/
+// `Result::Ok`/`Result::Err` value references), pattern matches (`Ok(..)` /
+// `Err(..)` arms), and `Result[..]` type annotations.
+let is_result_ctor_name: (String) -> Bool = (s) -> {
+  s == "Ok" || s == "Err" || s == "Result::Ok" || s == "Result::Err"
+}
+
+let rec ty_mentions_result: (TypeExpr) -> Bool = (te) -> {
+  match te {
+    TyName(n) => n == "Result",
+    TyApp(n, args) => if n == "Result" {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if ty_mentions_result(Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyFn(params, ret, _) => {
+      let mut found = ty_mentions_result(ret)
+      let mut i = 0
+      while i < Array::length(params) {
+        if ty_mentions_result(Array::get(params, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(elems) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(elems) {
+        if ty_mentions_result(Array::get(elems, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyUnit => false
+  }
+}
+
+let opt_ty_mentions_result: (Option[TypeExpr]) -> Bool = (o) -> {
+  match o {
+    Some(t) => ty_mentions_result(t),
+    None => false
+  }
+}
+
+let rec pat_mentions_result: (Pat) -> Bool = (p) -> {
+  match p {
+    PCtor(name, sub) => if is_result_ctor_name(name) {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(sub) {
+        if pat_mentions_result(Array::get(sub, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    PStruct(name, fields) => if is_result_ctor_name(name) || name == "Result" {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        if pat_mentions_result(fp) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    PTuple(sub) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(sub) {
+        if pat_mentions_result(Array::get(sub, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    POr(a, b) => pat_mentions_result(a) || pat_mentions_result(b),
+    _ => false
+  }
+}
+
+// Recurse into an array of exprs (inlined, like collect_strings_expr — a `let
+// rec` cannot forward-reference a plain `let` helper defined later).
+let rec expr_mentions_result: (Expr) -> Bool = (e) -> {
+  match e {
+    EIdent(n, _) => is_result_ctor_name(n) || n == "Result",
+    ETuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if expr_mentions_result(Array::get(elems, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EArray(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if expr_mentions_result(Array::get(elems, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ERecord(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        if expr_mentions_result(v) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMap(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        if expr_mentions_result(v) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EIf(c, t, el) => expr_mentions_result(c) || expr_mentions_result(t) || expr_mentions_result(el),
+    ELet(_, v, b) => expr_mentions_result(v) || expr_mentions_result(b),
+    ELetRec(_, v, b) => expr_mentions_result(v) || expr_mentions_result(b),
+    ELetMut(_, v, b) => expr_mentions_result(v) || expr_mentions_result(b),
+    EAssign(_, v, b) => expr_mentions_result(v) || expr_mentions_result(b),
+    EAssignOp(_, _, v, b) => expr_mentions_result(v) || expr_mentions_result(b),
+    ESeq(a, b) => expr_mentions_result(a) || expr_mentions_result(b),
+    EMatch(scrut, arms) => {
+      let mut found = expr_mentions_result(scrut)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, b) = Array::get(arms, i)
+        if pat_mentions_result(p) || expr_mentions_result(b) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EHandle(scrut, arms) => {
+      let mut found = expr_mentions_result(scrut)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, b) = Array::get(arms, i)
+        if pat_mentions_result(p) || expr_mentions_result(b) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EWhile(c, b) => expr_mentions_result(c) || expr_mentions_result(b),
+    ELoop(params, body) => {
+      let mut found = expr_mentions_result(body)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, v) = Array::get(params, i)
+        if expr_mentions_result(v) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EForIn(_, _, it, body) => expr_mentions_result(it) || expr_mentions_result(body),
+    ECall(callee, args, _) => {
+      let mut found = expr_mentions_result(callee)
+      let mut i = 0
+      while i < Array::length(args) {
+        if expr_mentions_result(Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EBinOp(_, l, r) => expr_mentions_result(l) || expr_mentions_result(r),
+    EUnaryOp(_, x) => expr_mentions_result(x),
+    EFn(_, _, params, ret, _, body) => {
+      let mut found = opt_ty_mentions_result(ret) || expr_mentions_result(body)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, ann) = Array::get(params, i)
+        if opt_ty_mentions_result(ann) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EDot(o, _, _) => expr_mentions_result(o),
+    ELabeledArg(_, _, v) => expr_mentions_result(v),
+    EThrow(x) => expr_mentions_result(x),
+    EReturn(x) => expr_mentions_result(x),
+    EBreak(o) => match o {
+      Some(x) => expr_mentions_result(x),
+      None => false
+    },
+    EContinue(xs) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(xs) {
+        if expr_mentions_result(Array::get(xs, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ESpread(x) => expr_mentions_result(x),
+    _ => false
+  }
+}
+
+let rec stmt_mentions_result: (Stmt) -> Bool = (s) -> {
+  match s {
+    SLet(_, _, _, ann, v) => opt_ty_mentions_result(ann) || expr_mentions_result(v),
+    SLetMut(_, ann, v) => opt_ty_mentions_result(ann) || expr_mentions_result(v),
+    STest(_, b) => expr_mentions_result(b),
+    SBench(_, b) => expr_mentions_result(b),
+    SExpr(e) => expr_mentions_result(e),
+    SLetPat(p, e) => pat_mentions_result(p) || expr_mentions_result(e),
+    SExternLet(_, te) => ty_mentions_result(te),
+    STypeAlias(_, _, _, te) => ty_mentions_result(te),
+    SStruct(_, _, fields, _, _) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, te) = Array::get(fields, i)
+        if ty_mentions_result(te) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    SModule(_, _, body) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(body) {
+        if stmt_mentions_result(Array::get(body, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+let program_mentions_result: (Array[Stmt]) -> Bool = (stmts) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    if stmt_mentions_result(Array::get(stmts, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+let result_already_present: (Array[Stmt]) -> Bool = (stmts) -> {
+  let mut present = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEnum(_, name, _, variants, _) => {
+        if name == "Result" {
+          present = true
+        } else {
+          ()
+        }
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vn, _) = Array::get(variants, vi)
+          if vn == "Ok" || vn == "Err" {
+            present = true
+          } else {
+            ()
+          }
+          vi = vi + 1
+        }
+      },
+      SStruct(_, name, _, _, _) => if name == "Result" {
+        present = true
+      } else {
+        ()
+      },
+      STypeAlias(_, name, _, _) => if name == "Result" {
+        present = true
+      } else {
+        ()
+      },
+      // An imported / re-exported `Result` (or `Ok`/`Err`) — e.g.
+      // `import ../prelude/result.vibe { Result }`. Without this the per-file
+      // checker path (which sees the import but not the merged enum declaration)
+      // would inject a SECOND, nominally-distinct `Result`, so a value of the
+      // imported type would not unify with the injected one (`type mismatch in
+      // '=='`). Treat the imported name as already-present.
+      SImport(_, names) => {
+        let mut ni = 0
+        while ni < Array::length(names) {
+          let (nm, _) = Array::get(names, ni)
+          if nm == "Result" || nm == "Ok" || nm == "Err" {
+            present = true
+          } else {
+            ()
+          }
+          ni = ni + 1
+        }
+      },
+      SReExport(_, names) => {
+        let mut ni = 0
+        while ni < Array::length(names) {
+          let (nm, _) = Array::get(names, ni)
+          if nm == "Result" || nm == "Ok" || nm == "Err" {
+            present = true
+          } else {
+            ()
+          }
+          ni = ni + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  present
+}
+
+export let inject_prelude_result: (Array[Stmt]) -> Unit = (stmts) -> {
+  if result_already_present(stmts) || !program_mentions_result(stmts) {
+    ()
+  } else {
+    let variants = [
+      ("Ok", [
+        TyName("T")
+      ]),
+      ("Err", [
+        TyName("E")
+      ])
+    ]
+    let params = [
+      "T",
+      "E"
+    ]
+    Array::push(stmts, SEnum(false, "Result", params, variants, empty_str_array()))
+  }
+}
+
 // Collect each trait's declared supertraits (`trait B: A + ...`), for all
 // traits (method-bearing or not), so a method-bearing trait can inherit its
 // supertraits' methods.
@@ -589,16 +1027,20 @@ let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (head, rest) -> {
 }
 
 let lookup_var_type: (Array[(String, String)], String) -> Option[String] = (var_types, name) -> {
+  // `extend_var_types` APPENDS on each `let`, so a shadowing rebind adds a second
+  // entry for the same name. Return the LAST match (the innermost binding in
+  // scope) so `let r = record { a }; ...; let r = record { c }; r.c` resolves
+  // against the inner shape rather than the stale outer one (#760(4)).
   let mut i = 0
   let mut result = None
   while i < Array::length(var_types) {
     let (vn, vt) = Array::get(var_types, i)
     if vn == name {
       result = Some(vt)
-      i = Array::length(var_types)
     } else {
-      i = i + 1
+      ()
     }
+    i = i + 1
   }
   result
 }
@@ -696,6 +1138,12 @@ let rec infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(Strin
       EIdent("String::replace", _) => Some("String"),
       EIdent("String::from_char_code", _) => Some("String"),
       EIdent("__to_string", _) => Some("String"),
+      // Map-returning builtins (not in fn_returns): lets `let m2 = Map::set(m,
+      // k, v)` record m2 -> Map so a later `m2[k]` takes the #760(3) Map::get
+      // rewrite. (A `map { }` literal is already classified as Map above.)
+      EIdent("Map::set", _) => Some("Map"),
+      EIdent("Map::remove", _) => Some("Map"),
+      EIdent("Map::insert", _) => Some("Map"),
       EIdent(fname, _) => ctor_enum_of_name(fn_returns, fname),
       // `let x: T = e` is desugared to `((__asc: T) -> __asc)(e)` (ascribe_wrap);
       // recover the operand's type head from the annotation so an annotated
@@ -732,6 +1180,166 @@ let rec infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(Strin
         }
       }
       result
+    },
+    _ => None
+  }
+}
+
+// #760(3): `m[k]` parses to `__index(m, k)`, whose codegen array-indexes the
+// receiver — on a Map that reads its backing store as a positional array and
+// traps. Rewrite to `Map::get(m, k)` ONLY when the receiver is determinably
+// Map-typed (a `map { }` literal, or a binding/param annotated `Map[..]`,
+// which `infer_arg_type_name` reports as "Map"). A non-Map receiver — an
+// Array/Bytes/String, or an unknown — is left as `__index`, so array indexing
+// (and the type checker's rejection of e.g. `a["x"]` on an Array) is unchanged.
+// `rwargs` are the already-rewritten arguments to carry into the new call.
+let map_index_rewrite: (Expr, Array[Expr], Array[Expr], Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Option[Expr] = (callee, args, rwargs, struct_sets, var_types, fn_returns) -> {
+  match callee {
+    EIdent(nm, _) => if nm == "__index" && Array::length(args) == 2 {
+      let recv_map = match infer_arg_type_name(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+        Some(t) => t == "Map",
+        None => false
+      }
+      if recv_map {
+        Some(ECall(EIdent("Map::get", -1), rwargs, -1))
+      } else {
+        None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+// #760(4): anonymous-record dot access `r.name`. A `record { .. }` literal whose
+// field-set matches NO declared struct is stored in LITERAL field order with tag
+// 0 (see compile_expr_tail4 ERecord); its `.field` reads reach codegen's EDot,
+// which resolves the slot only through declared structs (`struct_field_candidates`)
+// and therefore throws "unknown struct field". The record-pattern destructure
+// (`let record { name: n } = r`) already works because the parser lowers it to
+// positional `__rec_field(r, i)` reads (parser_expr_dispatch). This mirrors that:
+// we thread each anonymous-record binding's ordered field list through `var_types`
+// (as a `__anonrec:` sentinel) and rewrite `binding.field` to the same
+// `__rec_field(binding, slot)` positional read. A struct-matching record is left
+// alone — its literal is reordered to the struct's declared order and the EDot
+// struct-tag-dispatch path resolves it correctly.
+let anon_record_prefix: () -> String = () -> {
+  "__anonrec:"
+}
+
+// Encode an ordered field-name list as a `var_types` sentinel value.
+let anon_record_sentinel: (Array[String]) -> String = (names) -> {
+  let mut s = anon_record_prefix()
+  let mut i = 0
+  while i < Array::length(names) {
+    if i > 0 {
+      s = String::concat(s, ",")
+    } else {
+      ()
+    }
+    s = String::concat(s, Array::get(names, i))
+    i = i + 1
+  }
+  s
+}
+
+// The slot of `field` within a `__anonrec:` sentinel, or -1 if the string is not
+// a sentinel or does not carry `field`. Splits on `,` so a field name that is a
+// prefix of another (e.g. `ver` vs `version`) does not false-match.
+let anon_field_index: (String, String) -> Int = (sentinel, field) -> {
+  let prefix = anon_record_prefix()
+  if !String::starts_with(sentinel, prefix) {
+    -1
+  } else {
+    let mut rest = String::substring(sentinel, String::length(prefix), String::length(sentinel))
+    let mut idx = 0
+    let mut found = -1
+    let mut go = true
+    while go {
+      let comma = String::index_of(rest, ",")
+      let tok = if comma < 0 {
+        rest
+      } else {
+        String::substring(rest, 0, comma)
+      }
+      if tok == field {
+        found = idx
+        go = false
+      } else if comma < 0 {
+        go = false
+      } else {
+        rest = String::substring(rest, comma + 1, String::length(rest))
+        idx = idx + 1
+      }
+    }
+    found
+  }
+}
+
+// If `val` is a `record { .. }` literal whose field-set matches no declared
+// struct, the `__anonrec:` sentinel recording its literal field order; else None.
+// Threaded into `var_types` at `let`/`let mut` so a later `binding.field` on the
+// same name resolves positionally.
+let anon_record_inferred: (Expr, Array[(String, Array[String])]) -> Option[String] = (val, struct_sets) -> {
+  match val {
+    ERecord(fields) => {
+      let names = empty_str_array()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, _) = Array::get(fields, i)
+        Array::push(names, fname)
+        i = i + 1
+      }
+      let mut j = 0
+      let mut matched = false
+      while j < Array::length(struct_sets) {
+        let (_, sfields) = Array::get(struct_sets, j)
+        if field_sets_match(names, sfields) {
+          matched = true
+          j = Array::length(struct_sets)
+        } else {
+          j = j + 1
+        }
+      }
+      if matched {
+        None
+      } else {
+        Some(anon_record_sentinel(names))
+      }
+    },
+    _ => None
+  }
+}
+
+// Prefer the anonymous-record sentinel for a `let` value, falling back to the
+// ordinary type inference used for trait dispatch / `==` / the Map-index rewrite.
+let anon_or_infer: (Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Option[String] = (val, struct_sets, var_types, fn_returns) -> {
+  match anon_record_inferred(val, struct_sets) {
+    Some(s) => Some(s),
+    None => infer_arg_type_name(val, struct_sets, var_types, fn_returns)
+  }
+}
+
+// `binding.field` -> `__rec_field(binding, slot)` when `binding` is an
+// anonymous-record binding (a `__anonrec:` var_types entry) that carries `field`.
+// `robj` is the already-rewritten receiver. None leaves the EDot untouched (a
+// declared-struct field, a tuple index, or an unknown receiver).
+let anon_dot_rewrite: (Expr, String, Int, Expr, Array[(String, String)]) -> Option[Expr] = (obj, field, off, robj, var_types) -> {
+  match obj {
+    EIdent(vn, _) => match lookup_var_type(var_types, vn) {
+      Some(t) => {
+        let idx = anon_field_index(t, field)
+        if idx >= 0 {
+          Some(ECall(EIdent("__rec_field", off), [
+            robj,
+            EInt(idx)
+          ], off))
+        } else {
+          None
+        }
+      },
+      None => None
     },
     _ => None
   }
@@ -1599,9 +2207,13 @@ let rec railway_rw: (Expr, Array[(String, Array[String])], Array[(String, String
         let rwval = railway_rw(val, struct_sets, var_types, fn_returns)
         lower_try_op(rwval, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
       } else {
-        ECall(railway_rw(callee, struct_sets, var_types, fn_returns), for a in args {
+        let rwargs = for a in args {
           railway_rw(a, struct_sets, var_types, fn_returns)
-        }, off)
+        }
+        match map_index_rewrite(callee, args, rwargs, struct_sets, var_types, fn_returns) {
+          Some(map_get) => map_get,
+          None => ECall(railway_rw(callee, struct_sets, var_types, fn_returns), rwargs, off)
+        }
       }
     },
     EInt(_) => expr,
@@ -1645,13 +2257,13 @@ let rec railway_rw: (Expr, Array[(String, Array[String])], Array[(String, String
     EIf(c, t, e) => EIf(railway_rw(c, struct_sets, var_types, fn_returns), railway_rw(t, struct_sets, var_types, fn_returns), railway_rw(e, struct_sets, var_types, fn_returns)),
     ELet(name, val, body) => {
       let new_val = railway_rw(val, struct_sets, var_types, fn_returns)
-      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
       ELet(name, new_val, railway_rw(body, struct_sets, body_vars, fn_returns))
     },
     ELetRec(name, val, body) => ELetRec(name, railway_rw(val, struct_sets, var_types, fn_returns), railway_rw(body, struct_sets, var_types, fn_returns)),
     ELetMut(name, val, body) => {
       let new_val = railway_rw(val, struct_sets, var_types, fn_returns)
-      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
       ELetMut(name, new_val, railway_rw(body, struct_sets, body_vars, fn_returns))
     },
     EAssign(name, val, cont) => EAssign(name, railway_rw(val, struct_sets, var_types, fn_returns), railway_rw(cont, struct_sets, var_types, fn_returns)),
@@ -1690,7 +2302,13 @@ let rec railway_rw: (Expr, Array[(String, Array[String])], Array[(String, String
     EBinOp(op, l, r) => EBinOp(op, railway_rw(l, struct_sets, var_types, fn_returns), railway_rw(r, struct_sets, var_types, fn_returns)),
     EUnaryOp(op, e) => EUnaryOp(op, railway_rw(e, struct_sets, var_types, fn_returns)),
     EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, railway_rw(body, struct_sets, seed_var_types(ps, tp, var_types), fn_returns)),
-    EDot(obj, field, off) => EDot(railway_rw(obj, struct_sets, var_types, fn_returns), field, off),
+    EDot(obj, field, off) => {
+      let robj = railway_rw(obj, struct_sets, var_types, fn_returns)
+      match anon_dot_rewrite(obj, field, off, robj, var_types) {
+        Some(rw) => rw,
+        None => EDot(robj, field, off)
+      }
+    },
     ELabeledArg(label, name, body) => ELabeledArg(label, name, railway_rw(body, struct_sets, var_types, fn_returns)),
     EThrow(e) => EThrow(railway_rw(e, struct_sets, var_types, fn_returns)),
     EReturn(e) => EReturn(railway_rw(e, struct_sets, var_types, fn_returns)),
@@ -1785,6 +2403,9 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
       let rwargs = for a in args {
         rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       }
+      match map_index_rewrite(callee, args, rwargs, struct_sets, var_types, fn_returns) {
+        Some(map_get) => map_get,
+        None =>
       match callee {
         EIdent(name0, coff) => {
           // #672: unqualify a qualified constructor call `Enum::Variant(..)` ->
@@ -1869,6 +2490,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
         _ => ECall(rewrite_expr(callee, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rwargs, off)
       }
       }
+      }
     },
     EInt(_) => expr,
     EFloat(_) => expr,
@@ -1910,13 +2532,13 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
     EIf(c, t, e) => EIf(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(t, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELet(name, val, body) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
       ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns))
     },
     ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELetMut(name, val, body) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
       ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns))
     },
     EAssign(name, val, cont) => EAssign(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
@@ -2136,7 +2758,13 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
     },
     EUnaryOp(op, e) => EUnaryOp(op, rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, rewrite_expr(body, gens, traits, struct_sets, dict_binds, seed_var_types(ps, tp, var_types), fn_returns)),
-    EDot(obj, field, off) => EDot(rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns), field, off),
+    EDot(obj, field, off) => {
+      let robj = rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      match anon_dot_rewrite(obj, field, off, robj, var_types) {
+        Some(rw) => rw,
+        None => EDot(robj, field, off)
+      }
+    },
     ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EThrow(e) => EThrow(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EReturn(e) => EReturn(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
@@ -3671,6 +4299,10 @@ let struct_decl_exists: (Array[Stmt], String) -> Bool = (stmts, name) -> {
 // the same stmts after) finds the bounds already stripped (so no function is
 // re-threaded) and skips dict structs that already exist.
 export let desugar_trait_dicts: (Array[Stmt]) -> Unit = (stmts) -> {
+  // #760(2): make `Result` (Ok/Err) available standalone by appending its enum
+  // declaration when neither declared nor imported. Runs first so the ctor table
+  // and every downstream pass see it. Idempotent + inert when already present.
+  inject_prelude_result(stmts)
   // derive(...) structural function generation (#638) — independent of traits,
   // idempotent, so it runs unconditionally here at the shared pre-check points.
   desugar_derives(stmts)

@@ -719,12 +719,19 @@ let effect_name_of_op: (String) -> String = (op_name) -> {
 // discipline) and `Async` (composition-allowed; handled by the async pass) are
 // deliberately excluded from this slice.
 let builtin_call_effect: (String) -> Option[String] = (name) -> {
-  // Fast path: every effectful builtin in this slice is a QUALIFIED name
-  // (`Fs::read_file`, `Env::args_len`, `Stdin::...`, `Stdout::...`, ...), so a
-  // callee with no `::` can never be one. Skipping `lookup_builtin` for the
-  // (vastly more common) unqualified calls keeps the pass cheap enough to run
-  // over the whole compiler source within the seed's heap during self-build.
-  if String::index_of(name, "::") < 0 {
+  // `sh` / `sh_lines` are the only UNQUALIFIED effectful builtins: they now
+  // lower to real `vibe.sh` / `vibe.sh_lines` host imports that execute shell
+  // commands, so a direct `sh("...")` must require `{ Process }` just like a
+  // qualified builtin — otherwise it could run from a pure function or a bare
+  // top-level expression undeclared. Checked before the `::` fast path below.
+  if name == "sh" || name == "sh_lines" {
+    Some("Process")
+  } else if String::index_of(name, "::") < 0 {
+    // Fast path: every OTHER effectful builtin in this slice is a QUALIFIED name
+    // (`Fs::read_file`, `Env::args_len`, `Stdin::...`, `Stdout::...`, ...), so a
+    // callee with no `::` can never be one. Skipping `lookup_builtin` for the
+    // (vastly more common) unqualified calls keeps the pass cheap enough to run
+    // over the whole compiler source within the seed's heap during self-build.
     None
   } else {
     let normalized = canonical_builtin_name(name)
@@ -932,7 +939,23 @@ export let check_perform_effects_expr_tx: (Expr, Array[String], Bool, Array[Stri
         }
       },
       EFn(_, _, _, _, effect, body) => {
-        Array::push(stack, (body, effect_decl_labels(effect), false))
+        // #761: an EXPLICITLY-annotated lambda (`(x) -> { .. } with { E }`) is
+        // checked against its own row E. An UN-annotated lambda's effect row is
+        // INFERRED, not declared, so checking its body against an empty row is
+        // wrong — it wrongly rejected an inline effectful lambda passed to a HOF
+        // param whose type declares the effect (bidirectional effect checking,
+        // e.g. `call_twice((c) -> { write_char(c) })`). Inherit the enclosing
+        // declared context instead: the lambda may use any effect available
+        // where it is written (its inferred row is surfaced in its type and
+        // re-checked at the call/handle site). Conservative — like the
+        // mutability pass, this can only miss errors, never invent them.
+        let lam_labels = effect_decl_labels(effect)
+        let body_declared = if Array::length(lam_labels) == 0 {
+          declared
+        } else {
+          lam_labels
+        }
+        Array::push(stack, (body, body_declared, in_handle))
       },
       EHandle(body, arms) => {
         let discharged = collect_handle_effects(arms)
@@ -1068,12 +1091,31 @@ let check_perform_effects_binding_tx: (Option[TypeExpr], Expr, Array[String], Ar
   }
 }
 
+// #761: a `test {}` / `bench {}` block is a program entry point — it runs under
+// the runtime host, which is the ambient handler for the HOST resource effects
+// (Fs/Env/Stdin/Stdout/Process/Profiler). So a test may invoke a host-effectful
+// function (directly, transitively, or as an unqualified builtin) without a
+// `handle`, exactly as `main` does. This grant was already de-facto true for
+// IMPORTED effectful functions (they are absent from the transitive fn_effs map,
+// so calling them never flagged), but LOCALLY-defined ones (in fn_effs) and
+// direct builtin/perform host effects were wrongly rejected — an asymmetry.
+// Seeding the test/bench declared row with the host set removes it. NON-host
+// (user-defined) effects still require a handler: performing one at runtime with
+// no host handler would trap, so leaving it flagged is correct. Purity/caching
+// is judged separately by file_tests_cacheable (empty declared row), so a test
+// that reaches a host effect still correctly counts as impure/non-cacheable.
+let test_bench_ambient_effects: () -> Array[String] = () -> {
+  [
+    "Fs", "Env", "Stdin", "Stdout", "Process", "Profiler"
+  ]
+}
+
 let check_perform_effects_stmt_tx: (Stmt, Array[String], Array[Array[String]]) -> Array[EffectError] = (stmt, fn_names, fn_effs) -> {
   match stmt {
     SLet(_, _, _, ty, body) => check_perform_effects_binding_tx(ty, body, fn_names, fn_effs),
     SLetMut(_, ty, body) => check_perform_effects_binding_tx(ty, body, fn_names, fn_effs),
-    STest(_, body) => check_perform_effects_expr_tx(body, effect_decl_labels(None), false, fn_names, fn_effs),
-    SBench(_, body) => check_perform_effects_expr_tx(body, effect_decl_labels(None), false, fn_names, fn_effs),
+    STest(_, body) => check_perform_effects_expr_tx(body, test_bench_ambient_effects(), false, fn_names, fn_effs),
+    SBench(_, body) => check_perform_effects_expr_tx(body, test_bench_ambient_effects(), false, fn_names, fn_effs),
     SExpr(e) => check_perform_effects_expr_tx(e, effect_decl_labels(None), false, fn_names, fn_effs),
     _ => Array::slice([
       EEThrowOutsideEffect("")
@@ -1145,13 +1187,12 @@ export let check_perform_effects_stmts: (Array[Stmt]) -> Array[EffectError] = (s
 // discharges its effects (e.g. a fixed-seed Rng handler) also stays cacheable.
 // Zero errors => cacheable.
 //
-// Known limitation (documented like ADR-0026 EC-7): an effect the type system
-// does not surface here is invisible — notably a DIRECT `sh`/`sh_lines` call in
-// a test body (they carry `Process` but are unqualified, so the builtin effect
-// lookup's qualified-name fast-path skips them). `sh` reached THROUGH a user
-// function IS caught (the function declares `with { Process }`, which lands in
-// fn_effs). Conservative otherwise: it never marks an impure test cacheable
-// except this narrow direct-shell case.
+// A direct `sh`/`sh_lines` call IS surfaced: builtin_call_effect special-cases
+// these two unqualified builtins to `Process` (they lower to real host imports),
+// so a test that shells out is correctly treated as impure/non-cacheable, the
+// same as `sh` reached through a user function declaring `with { Process }`.
+// Conservative otherwise: an effect the type system does not surface here stays
+// invisible, but it never marks a genuinely-impure test cacheable.
 export let file_tests_cacheable: (Array[Stmt]) -> Bool = (stmts) -> {
   let fn_names = Array::slice([
     ""

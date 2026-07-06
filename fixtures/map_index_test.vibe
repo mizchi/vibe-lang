@@ -1,0 +1,46 @@
+// #760(3): `m[k]` on a Map. The parser desugars index syntax `m[k]` to
+// `__index(m, k)`, whose codegen array-indexes the receiver — on a Map that
+// reads the backing store positionally and traps. desugar_trait_dict now
+// rewrites `__index(m, k)` to `Map::get(m, k)` when the receiver is
+// determinably Map-typed (a `map { }` literal or a `Map[..]`-annotated
+// binding/param). A non-Map receiver is left as array indexing, so `a["x"]`
+// on an Array is still a type error. See map_index_rewrite in
+// desugar_trait_dict.vibe.
+
+test "map index by string literal" {
+  let m: Map[String, Int] = map { "a": 1, "b": 2 }
+  assert_eq(m["a"], 1)
+  assert_eq(m["b"], 2)
+}
+
+test "map index by string variable" {
+  let m: Map[String, Int] = map { "x": 10, "y": 20 }
+  let k = "y"
+  assert_eq(m[k], 20)
+}
+
+test "map index and Map::get agree" {
+  let m: Map[String, Int] = map { "k": 42 }
+  assert_eq(m["k"], Map::get(m, "k"))
+}
+
+test "map index after set" {
+  let m: Map[String, Int] = map { "p": 1 }
+  let m2 = Map::set(m, "q", 2)
+  assert_eq(m2["q"], 2)
+  assert_eq(m2["p"], 1)
+}
+
+// Regression guard: ordinary Int-indexed array/bytes access must NOT be
+// rewritten to Map::get.
+test "array index unaffected" {
+  let a = [10, 20, 30]
+  assert_eq(a[0], 10)
+  let i = 2
+  assert_eq(a[i], 30)
+}
+
+test "bytes index unaffected" {
+  let b = Bytes::from_array([65, 66, 67])
+  assert_eq(b[1], 66)
+}

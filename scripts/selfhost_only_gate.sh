@@ -1558,7 +1558,7 @@ echo "[selfhost-only-gate] cross-import trait-iterator element-type regression o
 #     and the async `for await`-driven terminals) — these prelude tests are not
 #     otherwise exercised by the moon-free gate.
 echo "[selfhost-only-gate] 21/21 prelude iterator combinator suites"
-for suite in vibe/prelude/lazy_iter_test.vibe vibe/prelude/async_iter_test.vibe; do
+for suite in lib/@vibe/prelude/lazy_iter_test.vibe lib/@vibe/prelude/async_iter_test.vibe; do
   out="_build/_gate_prelude_iter_$(basename "${suite%.vibe}").wasm"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \

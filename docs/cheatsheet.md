@@ -235,9 +235,18 @@ x if x > 0          // guard (match arm only)
 
 ```vibe
 let (a, b) = (1, 2)
-let record { x, y } = r
-let Some(v) = opt else { fallback }
+let record { x, y } = r          // any field names bind
+let Some((x, y)) = pt            // ctor pattern (partial: traps on mismatch)
+
+// let-else: bind on match, else run a DIVERGING fallback (#760)
+let Some(v) = opt else { return -1 }   // else must return / throw
+use(v)                                  // v is in scope past the let-else
 ```
+
+> **let-else semantics (#760):** `let PAT = e else { alt }` desugars to
+> `match e { PAT => <rest>, _ => alt }`, so `alt` must diverge (`return` /
+> `throw`) — its arm has to unify with the continuation. For a fall-through
+> *value* fallback, use an explicit `match`/`if … is` instead.
 
 ### is expression
 
@@ -284,7 +293,9 @@ t.0                           // => 1
 
 // Record
 let r = record { name: "vibe", ver: 1 }
-r.name
+r.name                        // => "vibe"  (dot access)
+r.ver                         // => 1
+let record { name: n, ver: v } = r   // destructuring binds any field name
 
 // Map
 let m = map { "key": 42 }
@@ -305,11 +316,29 @@ Int64Array::get(w, 0)            // => 4294967295 (no truncation)
 Int64Array::length(w)            // => 4
 ```
 
+> **selfhost status (#760):**
+> - **Record dot access** (`r.name` on an anonymous `record { ... }`) works
+>   (#760): a `binding.field` read on an anonymous-record binding lowers to the
+>   same positional field read the destructure uses. Destructuring
+>   (`let record { name: n } = r`) also binds any field name.
+> - **`map { ... }` literals + `Map::*` builtins + `m[k]` indexing** work
+>   standalone (#760): `Map::get` / `has_key` / `set` / `keys` and the `m["k"]`
+>   index sugar all lower correctly. (`vibe/collection` remains available for a
+>   richer Map API.)
+
 ## Effects (core concept)
 
 vibe is **pure by default**. Side effects are tracked in the type system.
 
 ### Result-first pipeline (recommended)
+
+> **selfhost status (#760):** `Result` (`Ok`/`Err`, `Result::Ok`/`Result::Err`,
+> `Result[T, E]`) is available standalone — the compiler auto-provides
+> `enum Result[T, E] { Ok(T); Err(E) }` for any program that references it and
+> neither declares nor imports its own. Declaring or importing a `Result` (e.g.
+> a single-param `enum Result[T] { Ok(T); Err(String) }`) overrides the built-in
+> one. `Option` (`Some`/`None`) is built in as a first-class type. Both the
+> `let*`/`?` railway on `Result` and on `Option` work standalone.
 
 ```vibe
 let parse_id: (String) -> Result[Int, String] = (raw) -> { ... }

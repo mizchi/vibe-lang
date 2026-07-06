@@ -479,6 +479,22 @@ let rec parse_prefix: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
   }
 }
 
+// #760(5): a loop-form expression (while / loop / for-in) evaluates to Unit,
+// so it can never be a meaningful left operand of an infix operator. When one
+// appears at statement position followed by a new line beginning with `-`/`+`
+// (e.g. a bare `-1` after a `while` loop, or `return -1` mis-split), the
+// greedy infix ladder used to fold it into `loop_result - 1`, which then failed
+// as `Unit - Int`. Treat such a left as a completed statement and stop the
+// ladder, so the `-1` parses as the next statement's unary-minus literal.
+let left_is_stmt_form: (Expr) -> Bool = (e) -> {
+  match e {
+    EWhile(_, _) => true,
+    ELoop(_, _) => true,
+    EForIn(_, _, _, _) => true,
+    _ => false
+  }
+}
+
 let rec parse_infix_loop: (Array[Token], Array[Int], Expr, Int, Int, Int, Bool, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, left, next, min_prec, expr_start, cmp_locked, parse_recur) -> {
   let tok = peek(tokens, next)
   let prec = binop_prec(tok)
@@ -486,6 +502,18 @@ let rec parse_infix_loop: (Array[Token], Array[Int], Expr, Int, Int, Int, Bool, 
     true
   } else if cmp_locked {
     prec == 3
+  } else if left_is_stmt_form(left) {
+    // #760(5): a loop-form (while/loop/for-in) at statement position must not
+    // swallow a trailing unary `-1`/`+1` on the next line as binary +/-. Only
+    // `+`/`-` are ambiguous (they double as unary prefixes that begin a fresh
+    // statement); an unambiguously-infix operator must still fold, so a
+    // for-expression (which yields an array) stays pipeable, e.g.
+    // `(for x in xs { x }) |> Array::length`. (#763 review)
+    match tok {
+      TPlus => true,
+      TMinus => true,
+      _ => false
+    }
   } else {
     false
   }

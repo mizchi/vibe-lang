@@ -1294,6 +1294,31 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     else if !prefer_bound_call && fname == "path" {
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     }
+    else if !prefer_bound_call && (fname == "Path::ref" || fname == "Path::resolve") && Array::length(args) == 1 {
+      // #762: both resolve their argument to an absolute path against the
+      // process CWD via the `resolve_path` host import. The runtime op is
+      // identical; the effect distinction (Path::ref pure, Path::resolve
+      // `with { Env }`) lives in the checker's builtin signatures.
+      ce(buf, ECall(EIdent("resolve_path", -1), [
+        Array::get(args, 0)
+      ], -1), local_names, next_local, ctx, ld)
+    }
+    else if !prefer_bound_call && fname == "Path::to_string" && Array::length(args) == 1 {
+      // #762: PathRef / DynamicPath wrap a raw String; to_string is identity.
+      ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    }
+    else if !prefer_bound_call && fname == "Path::is_absolute" && Array::length(args) == 1 {
+      // #762: absolute iff the path begins with '/'. eq(char_code_at(x, 0), 47)
+      // avoids synthesizing a "/" string (which would not be in the string
+      // table).
+      ce(buf, ECall(EIdent("eq", -1), [
+        ECall(EIdent("String::char_code_at", -1), [
+          Array::get(args, 0),
+          EInt(0)
+        ], -1),
+        EInt(47)
+      ], -1), local_names, next_local, ctx, ld)
+    }
     else if !prefer_bound_call && fname == "__float_bits" {
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     }
@@ -1329,6 +1354,30 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         EInt(0)
       ], -1), ECall(EIdent("String::split", -1), [
         EIdent("__rd_names", -1),
+        ECall(EIdent("String::from_char_code", -1), [
+          EInt(10)
+        ], -1)
+      ], -1))), local_names, next_local, ctx, ld)
+    }
+    else if fname == "sh_lines" && Array::length(args) == 1 {
+      // `sh_lines(cmd) -> Array[String]`: the host import (`__sh_lines_raw`,
+      // linked_compile) runs the command and returns its stdout "\n"-joined as
+      // ONE packed string (same ABI as fs_read_dir). Lower to `String::split`
+      // over it, with the empty-output guard yielding [] (split("", d) is [""]).
+      ce(buf, ELet("__sh_out", ECall(EIdent("__sh_lines_raw", -1), [
+        Array::get(args, 0)
+      ], -1), EIf(EBinOp("==", ECall(EIdent("String::length", -1), [
+        EIdent("__sh_out", -1)
+      ], -1), EInt(0)), ECall(EIdent("Array::slice", -1), [
+        EArray([
+          ECall(EIdent("String::from_char_code", -1), [
+            EInt(10)
+          ], -1)
+        ]),
+        EInt(0),
+        EInt(0)
+      ], -1), ECall(EIdent("String::split", -1), [
+        EIdent("__sh_out", -1),
         ECall(EIdent("String::from_char_code", -1), [
           EInt(10)
         ], -1)
@@ -1633,9 +1682,14 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl
     }
     else if fname == "assert_eq" {
-      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
-      emit_i64_eq(buf)
+      // #756: lower as `assert(a == b)` — the synthesized `==` rides
+      // emit_eq_value's operand classification (intish fast-path, #724 agg
+      // slots, runtime `eq` fall-back). The old raw i64.eq compared the
+      // (ptr<<32)|len STRING repr by pointer, so a heap string the static
+      // classifier can't see (e.g. a tuple-destructured binding) failed
+      // against an equal-content literal while `a == b` passed.
+      let nl = ce(buf, EBinOp("==", Array::get(args, 0), Array::get(args, 1)), local_names, next_local, ctx, ld)
+      emit_i32_wrap_i64(buf)
       emit_if_void(buf)
       emit_else(buf)
       bytebuf_push(buf, 0)
