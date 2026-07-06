@@ -1675,8 +1675,12 @@ async function main() {
         const input = decodeStringArg(instanceRef, pathTagged);
         return encodeHostString(instanceRef, input);
       },
+      // #762: Path::ref / Path::resolve host op — resolve to an absolute path
+      // against the process CWD (node path.resolve). Purely lexical: it does not
+      // require the path to exist.
       resolve_path(pathTagged) {
-        return this["resolve-path"](pathTagged);
+        const input = decodeStringArg(instanceRef, pathTagged);
+        return encodeHostString(instanceRef, path.resolve(input));
       },
       fs_read_file(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);

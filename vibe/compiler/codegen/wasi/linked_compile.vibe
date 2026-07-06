@@ -564,6 +564,11 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   let need_stdin_read_stream_builtin = stmts_use_builtin(stmts, fn_names_list, "Stdin::read_stream")
   let need_stdout_write_stream_builtin = stmts_use_builtin(stmts, fn_names_list, "Stdout::write_stream")
   let need_stdout_write_char_builtin = stmts_use_builtin(stmts, fn_names_list, "Stdout::write_char")
+  // #762: `Path::ref` / `Path::resolve` both lower (compile_call) to the
+  // `resolve_path` host import — resolve a path to absolute against the process
+  // CWD. `vibe.resolve_path (i64) -> i64`, value-returning like fs_read_file,
+  // gated on either surface name so non-users reserve no import (fixpoint-safe).
+  let need_resolve_path_builtin = stmts_use_builtin(stmts, fn_names_list, "Path::ref") || stmts_use_builtin(stmts, fn_names_list, "Path::resolve")
   let mut next_import_idx = 1
   let env_get_import_idx = if need_env_get_builtin {
     let idx = next_import_idx
@@ -693,6 +698,15 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     -1
   }
   let stdout_write_char_import_idx = if need_stdout_write_char_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // reserved immediately after stdout_write_char; the import emission below must
+  // stay in this same order so the index matches the descriptor.
+  let resolve_path_import_idx = if need_resolve_path_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -897,6 +911,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     env_args_len_idx
   }
+  // resolve_path call target: the import when reserved, else the fs_read_file
+  // stub (a `(i64)->i64` never-called placeholder — same shape).
+  let resolve_path_idx = if resolve_path_import_idx >= 0 {
+    resolve_path_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
   let max_builtin_func_idx = str_lex_diff_idx
   let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
   let func_offset = num_imported_funcs + num_generated
@@ -998,6 +1019,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(builtin_needs_env_list, false)
   Array::push(builtin_indices_list, stdout_write_char_idx)
   Array::push(builtin_returns_list, 0)
+  // #762: resolve_path — the RAW host op behind Path::ref / Path::resolve (1 i64
+  // arg, i64 String return, like Fs::read_file). compile_call lowers both
+  // surface names to this.
+  Array::push(builtin_names_list, "resolve_path")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, resolve_path_idx)
+  Array::push(builtin_returns_list, 1)
   Array::push(builtin_names_list, "Profiler::now_us")
   Array::push(builtin_param_counts, 0)
   Array::push(builtin_needs_env_list, false)
@@ -2612,6 +2641,16 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     emit_name(import_content, "stdout_write_char")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // `vibe.resolve_path (i64) -> i64` (type 3, like fs_read_file) — reserved after
+  // stdout_write_char (before dbg_break), matching allocation order.
+  if resolve_path_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "resolve_path")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
   } else {
     ()
   }
