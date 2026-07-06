@@ -332,12 +332,13 @@ vibe is **pure by default**. Side effects are tracked in the type system.
 
 ### Result-first pipeline (recommended)
 
-> **selfhost status (#760):** in a **standalone** file the built-in `Result`
-> constructors (`Ok`/`Err`, `Result::Ok`/`Result::Err`) are not yet resolvable
-> — declare a local `enum Result[T] { Ok(T); Err(String) }` (see
-> `examples/pattern_match_test.vibe`), or import one. `Option` (`Some`/`None`)
-> **is** built in everywhere, so `let*`/`?` on `Option` works standalone today;
-> the `Result` railway below assumes a `Result` type is in scope.
+> **selfhost status (#760):** `Result` (`Ok`/`Err`, `Result::Ok`/`Result::Err`,
+> `Result[T, E]`) is available standalone — the compiler auto-provides
+> `enum Result[T, E] { Ok(T); Err(E) }` for any program that references it and
+> neither declares nor imports its own. Declaring or importing a `Result` (e.g.
+> a single-param `enum Result[T] { Ok(T); Err(String) }`) overrides the built-in
+> one. `Option` (`Some`/`None`) is built in as a first-class type. Both the
+> `let*`/`?` railway on `Result` and on `Option` work standalone.
 
 ```vibe
 let parse_id: (String) -> Result[Int, String] = (raw) -> { ... }
