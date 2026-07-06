@@ -6,7 +6,7 @@
 const { spawn } = require("child_process");
 const path = require("path");
 
-const serverPath = path.join(__dirname, "..", "js", "vibe", "lsp_server.js");
+const serverPath = path.join(__dirname, "..", "clients", "js", "lsp_server.js");
 const srv = spawn("node", [serverPath], { stdio: ["pipe", "pipe", "inherit"], env: process.env });
 
 let buf = Buffer.alloc(0);

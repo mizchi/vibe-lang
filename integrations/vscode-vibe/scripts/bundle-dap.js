@@ -12,7 +12,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const src = path.join(__dirname, "..", "..", "..", "js", "vibe", "dap_server.js");
+const src = path.join(__dirname, "..", "..", "..", "clients", "js", "dap_server.js");
 const dest = path.join(__dirname, "..", "dap_server.js");
 
 if (!fs.existsSync(src)) {

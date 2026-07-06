@@ -30,8 +30,8 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
-const { SymbolIndex, KIND } = require(path.join(__dirname, "..", "js", "vibe", "symbol_index.js"));
-const { GraphQuery } = require(path.join(__dirname, "..", "js", "vibe", "graph_query.js"));
+const { SymbolIndex, KIND } = require(path.join(__dirname, "..", "clients", "js", "symbol_index.js"));
+const { GraphQuery } = require(path.join(__dirname, "..", "clients", "js", "graph_query.js"));
 
 function parseArgs(argv) {
   const o = { root: null, query: null, args: [], level: null, transitive: false, depth: 1, by: "fan-in", functionsOnly: false, out: null, call: false };

@@ -9,7 +9,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const SERVER = path.join(__dirname, "..", "js", "vibe", "lsp_server.js");
+const SERVER = path.join(__dirname, "..", "clients", "js", "lsp_server.js");
 
 // --- scratch workspace ------------------------------------------------------
 const ws = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-lsp-ws-"));

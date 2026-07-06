@@ -18,7 +18,7 @@ const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 
-const dap = require(path.join(__dirname, "..", "js", "vibe", "dap_server.js"));
+const dap = require(path.join(__dirname, "..", "clients", "js", "dap_server.js"));
 
 let pass = 0;
 let fail = 0;
@@ -258,7 +258,7 @@ async function e2e() {
     console.log("[dap-test] skipping E2E drive (no usable `vibe` launcher)");
     return;
   }
-  const serverPath = path.join(__dirname, "..", "js", "vibe", "dap_server.js");
+  const serverPath = path.join(__dirname, "..", "clients", "js", "dap_server.js");
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-dap-"));
   const prog = path.join(work, "prog.vibe");
   fs.writeFileSync(

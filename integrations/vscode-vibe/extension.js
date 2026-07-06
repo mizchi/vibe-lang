@@ -29,8 +29,8 @@ let client;
 // context, while the first finds the canonical source during repo-dev.
 function resolveDapServer(context) {
   const candidates = [
-    path.join(context.extensionPath, "..", "..", "js", "vibe", "dap_server.js"),
-    path.join(context.extensionPath, "js", "vibe", "dap_server.js"),
+    path.join(context.extensionPath, "..", "..", "clients", "js", "dap_server.js"),
+    path.join(context.extensionPath, "clients", "js", "dap_server.js"),
     path.join(context.extensionPath, "dap_server.js"),
   ];
   for (const c of candidates) {

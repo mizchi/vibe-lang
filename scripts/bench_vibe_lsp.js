@@ -21,7 +21,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
-const { SymbolIndex } = require(path.join(__dirname, "..", "js", "vibe", "symbol_index.js"));
+const { SymbolIndex } = require(path.join(__dirname, "..", "clients", "js", "symbol_index.js"));
 
 const ROOT = path.resolve(process.argv[2] && !process.argv[2].startsWith("--") ? process.argv[2] : path.join(__dirname, "..", "vibe"));
 const WANT_BASELINE = process.argv.includes("--baseline");

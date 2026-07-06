@@ -4,7 +4,7 @@
 "use strict";
 const path = require("path");
 const { SymbolIndex, extractFile, codeMask, hashText, fuzzyScore, KIND } =
-  require(path.join(__dirname, "..", "js", "vibe", "symbol_index.js"));
+  require(path.join(__dirname, "..", "clients", "js", "symbol_index.js"));
 
 let pass = 0, fail = 0;
 function ok(cond, name, detail) {

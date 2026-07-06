@@ -3,8 +3,8 @@
 // Pure JS; builds a synthetic 2-module workspace with a deliberate import cycle.
 "use strict";
 const path = require("path");
-const { SymbolIndex } = require(path.join(__dirname, "..", "js", "vibe", "symbol_index.js"));
-const { GraphQuery } = require(path.join(__dirname, "..", "js", "vibe", "graph_query.js"));
+const { SymbolIndex } = require(path.join(__dirname, "..", "clients", "js", "symbol_index.js"));
+const { GraphQuery } = require(path.join(__dirname, "..", "clients", "js", "graph_query.js"));
 
 let pass = 0, fail = 0;
 const ok = (n, c, d) => { c ? (pass++, console.log(`ok: ${n}`)) : (fail++, console.error(`FAIL: ${n}${d ? " — " + d : ""}`)); };
