@@ -1646,6 +1646,27 @@ async function main() {
           return encodeHostString(instanceRef, "error: " + stderr);
         }
       },
+      // vibe/io host effects (linear codegen `vibe.*` module). Tests run without
+      // a controlling stdin, so the input stream is empty: read_char yields -1
+      // (EOF) and read_stream yields "" (EOF). write_stream/write_char echo to
+      // process stdout and return 0 (Unit). Kept explicit (not the () => 0n proxy
+      // fallback) so read_char's EOF sentinel is the correct -1, not 0.
+      stdin_read_char() {
+        return encodeHostInt(-1);
+      },
+      stdin_read_stream(_nTagged) {
+        return encodeHostString(instanceRef, "");
+      },
+      stdout_write_stream(strTagged) {
+        const str = decodeStringArg(instanceRef, strTagged);
+        process.stdout.write(str);
+        return 0n;
+      },
+      stdout_write_char(codeTagged) {
+        const code = decodeHostInt(codeTagged);
+        process.stdout.write(String.fromCharCode(code));
+        return 0n;
+      },
       path(pathValue) {
         const input = decodeStringArg(instanceRef, pathValue);
         return encodeHostString(instanceRef, input);
