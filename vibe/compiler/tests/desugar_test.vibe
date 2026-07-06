@@ -1,0 +1,373 @@
+//# Imports
+
+import ../ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ../desugar.vibe {
+  desugar_expr, desugar_stmts
+}
+
+//# Functions
+
+let is_edot: (Expr) -> Bool = (e) -> {
+  match e {
+    EDot(_, _, _) => true,
+    _ => false
+  }
+}
+
+let is_eint: (Expr) -> Bool = (e) -> {
+  match e {
+    EInt(_) => true,
+    _ => false
+  }
+}
+
+let is_elet: (Expr) -> Bool = (e) -> {
+  match e {
+    ELet(_, _, _) => true,
+    _ => false
+  }
+}
+
+let is_slet: (Stmt) -> Bool = (s) -> {
+  match s {
+    SLet(_, _, _, _, _) => true,
+    _ => false
+  }
+}
+
+let edot_obj: (Expr) -> Expr = (e) -> {
+  match e {
+    EDot(o, _, _) => o,
+    _ => EUnit
+  }
+}
+
+let eint_val: (Expr) -> Int = (e) -> {
+  match e {
+    EInt(n) => n,
+    _ => -1
+  }
+}
+
+let is_ecall: (Expr) -> Bool = (e) -> {
+  match e {
+    ECall(_, _, _) => true,
+    _ => false
+  }
+}
+
+let is_eloop: (Expr) -> Bool = (e) -> {
+  match e {
+    ELoop(_, _) => true,
+    _ => false
+  }
+}
+
+let ebinop_op: (Expr) -> String = (e) -> {
+  match e {
+    EBinOp(op, _, _) => op,
+    _ => ""
+  }
+}
+
+let elet_body: (Expr) -> Expr = (e) -> {
+  match e {
+    ELet(_, _, b) => b,
+    _ => EUnit
+  }
+}
+
+let is_earray: (Expr) -> Bool = (e) -> {
+  match e {
+    EArray(_) => true,
+    _ => false
+  }
+}
+
+let is_ebinop: (Expr) -> Bool = (e) -> {
+  match e {
+    EBinOp(_, _, _) => true,
+    _ => false
+  }
+}
+
+let is_eident: (Expr) -> Bool = (e) -> {
+  match e {
+    EIdent(_, _) => true,
+    _ => false
+  }
+}
+
+let slet_body: (Stmt) -> Expr = (s) -> {
+  match s {
+    SLet(_, _, _, _, b) => b,
+    _ => EUnit
+  }
+}
+
+let ecall_args: (Expr) -> Array[Expr] = (e) -> {
+  match e {
+    ECall(_, a, _) => a,
+    _ => Array::slice([
+      EUnit
+    ], 0, 0)
+  }
+}
+
+let edot_field: (Expr) -> String = (e) -> {
+  match e {
+    EDot(_, f, _) => f,
+    _ => ""
+  }
+}
+
+let eident_name: (Expr) -> String = (e) -> {
+  match e {
+    EIdent(n, _) => n,
+    _ => ""
+  }
+}
+
+let earray_elems: (Expr) -> Array[Expr] = (e) -> {
+  match e {
+    EArray(elems) => elems,
+    _ => Array::slice([
+      EUnit
+    ], 0, 0)
+  }
+}
+
+let ecall_callee: (Expr) -> Expr = (e) -> {
+  match e {
+    ECall(c, _, _) => c,
+    _ => EUnit
+  }
+}
+
+let eloop_params: (Expr) -> Array[(String, Expr)] = (e) -> {
+  match e {
+    ELoop(params, _) => params,
+    _ => Array::slice([
+      ("", EUnit)
+    ], 0, 0)
+  }
+}
+
+let is_eassignop: (Expr) -> Bool = (e) -> {
+  match e {
+    EAssignOp(_, _, _, _) => true,
+    _ => false
+  }
+}
+
+let eassignop_val: (Expr) -> Expr = (e) -> {
+  match e {
+    EAssignOp(_, _, v, _) => v,
+    _ => EUnit
+  }
+}
+
+//# Misc
+
+test "pipe simple: x |> f => f(x)" {
+  let result = desugar_expr(EBinOp("|>", EInt(1), EIdent("f", -1)))
+  assert(is_ecall(result))
+  assert(is_eident(ecall_callee(result)))
+  assert(eident_name(ecall_callee(result)) == "f")
+  assert(eq(Array::length(ecall_args(result)), 1))
+  assert(eq(eint_val(Array::get(ecall_args(result), 0)), 1))
+}
+
+test "pipe with args: x |> f(y) => f(x, y)" {
+  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EIdent("f", -1), [
+    EInt(2)
+  ], -1)))
+  assert(is_ecall(result))
+  assert(eident_name(ecall_callee(result)) == "f")
+  assert(eq(Array::length(ecall_args(result)), 2))
+  assert(eq(eint_val(Array::get(ecall_args(result), 0)), 1))
+  assert(eq(eint_val(Array::get(ecall_args(result), 1)), 2))
+}
+
+test "method call: obj.method() preserved as ECall(EDot(...))" {
+  let result = desugar_expr(ECall(EDot(EIdent("x", -1), "len", -1), Array::slice([
+    EUnit
+  ], 0, 0), -1))
+  assert(is_ecall(result))
+  let callee = ecall_callee(result)
+  assert(is_edot(callee))
+  assert(edot_field(callee) == "len")
+  assert(eident_name(edot_obj(callee)) == "x")
+}
+
+test "method call with args: obj.push(1) preserved" {
+  let result = desugar_expr(ECall(EDot(EIdent("x", -1), "push", -1), [
+    EInt(1)
+  ], -1))
+  assert(is_ecall(result))
+  let callee = ecall_callee(result)
+  assert(is_edot(callee))
+  assert(edot_field(callee) == "push")
+  assert(eq(Array::length(ecall_args(result)), 1))
+  assert(eq(eint_val(Array::get(ecall_args(result), 0)), 1))
+}
+
+test "non-pipe binop passes through" {
+  let result = desugar_expr(EBinOp("+", EInt(1), EInt(2)))
+  assert(is_ebinop(result))
+  assert(ebinop_op(result) == "+")
+}
+
+test "EDot without call passes through" {
+  let result = desugar_expr(EDot(EIdent("x", -1), "y", -1))
+  assert(is_edot(result))
+  assert(edot_field(result) == "y")
+  assert(eident_name(edot_obj(result)) == "x")
+}
+
+test "nested: pipe inside let body" {
+  let result = desugar_expr(ELet("x", EInt(1), EBinOp("|>", EIdent("x", -1), EIdent("f", -1))))
+  assert(is_elet(result))
+  let body = elet_body(result)
+  assert(is_ecall(body))
+  assert(eident_name(ecall_callee(body)) == "f")
+}
+
+test "SLet body gets desugared" {
+  let stmts = [
+    SLet(false, false, "x", None, EBinOp("|>", EInt(1), EIdent("f", -1)))
+  ]
+  let result = desugar_stmts(stmts)
+  assert(eq(Array::length(result), 1))
+  match Array::get(result, 0) {
+    SLet(_, _, name, _, body) => {
+      assert(name == "x")
+      assert(is_ecall(body))
+      assert(eident_name(ecall_callee(body)) == "f")
+    },
+    _ => assert(false)
+  }
+}
+
+test "chained pipe: x |> f |> g => g(f(x))" {
+  let result = desugar_expr(EBinOp("|>", EBinOp("|>", EInt(1), EIdent("f", -1)), EIdent("g", -1)))
+  assert(is_ecall(result))
+  assert(is_eident(ecall_callee(result)))
+  assert(eident_name(ecall_callee(result)) == "g")
+  assert(eq(Array::length(ecall_args(result)), 1))
+  let inner = Array::get(ecall_args(result), 0)
+  assert(is_ecall(inner))
+  assert(eident_name(ecall_callee(inner)) == "f")
+  assert(eq(Array::length(ecall_args(inner)), 1))
+  assert(eq(eint_val(Array::get(ecall_args(inner), 0)), 1))
+}
+
+test "pipe into method call: 1 |> obj.method() preserved EDot" {
+  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EDot(EIdent("obj", -1), "method", -1), Array::slice([
+    EUnit
+  ], 0, 0), -1)))
+  // pipe prepends 1 to args of ECall(EDot(obj, method), [])
+  assert(is_ecall(result))
+  let callee = ecall_callee(result)
+  assert(is_edot(callee))
+  assert(edot_field(callee) == "method")
+  assert(eq(Array::length(ecall_args(result)), 1))
+  assert(eq(eint_val(Array::get(ecall_args(result), 0)), 1))
+}
+
+test "chained method: x.a().b() preserved as nested EDot" {
+  let result = desugar_expr(ECall(EDot(ECall(EDot(EIdent("x", -1), "a", -1), Array::slice([
+    EUnit
+  ], 0, 0), -1), "b", -1), Array::slice([
+    EUnit
+  ], 0, 0), -1))
+  assert(is_ecall(result))
+  let callee = ecall_callee(result)
+  assert(is_edot(callee))
+  assert(edot_field(callee) == "b")
+  // inner is ECall(EDot(x, a), [])
+  let inner = edot_obj(callee)
+  assert(is_ecall(inner))
+  let inner_callee = ecall_callee(inner)
+  assert(is_edot(inner_callee))
+  assert(edot_field(inner_callee) == "a")
+}
+
+test "pipe into obj.push(): 1 |> obj.push() preserved EDot" {
+  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EDot(EIdent("obj", -1), "push", -1), Array::slice([
+    EUnit
+  ], 0, 0), -1)))
+  assert(is_ecall(result))
+  let callee = ecall_callee(result)
+  assert(is_edot(callee))
+  assert(edot_field(callee) == "push")
+  assert(eq(Array::length(ecall_args(result)), 1))
+  assert(eq(eint_val(Array::get(ecall_args(result), 0)), 1))
+}
+
+test "EAssignOp desugars val: x += (1 |> f) => x += f(1)" {
+  let result = desugar_expr(EAssignOp("x", "+", EBinOp("|>", EInt(1), EIdent("f", -1)), EUnit))
+  assert(is_eassignop(result))
+  let val = eassignop_val(result)
+  assert(is_ecall(val))
+  assert(eident_name(ecall_callee(val)) == "f")
+  assert(eq(Array::length(ecall_args(val)), 1))
+  assert(eq(eint_val(Array::get(ecall_args(val), 0)), 1))
+}
+
+test "desugar_stmts handles multiple SLet with pipes" {
+  let stmts = [
+    SLet(false, false, "a", None, EBinOp("|>", EInt(1), EIdent("f", -1))),
+    SLet(false, false, "b", None, EBinOp("|>", EInt(2), EIdent("g", -1)))
+  ]
+  let result = desugar_stmts(stmts)
+  assert(eq(Array::length(result), 2))
+  let body0 = slet_body(Array::get(result, 0))
+  assert(is_ecall(body0))
+  assert(eident_name(ecall_callee(body0)) == "f")
+  assert(eq(eint_val(Array::get(ecall_args(body0), 0)), 1))
+  let body1 = slet_body(Array::get(result, 1))
+  assert(is_ecall(body1))
+  assert(eident_name(ecall_callee(body1)) == "g")
+  assert(eq(eint_val(Array::get(ecall_args(body1), 0)), 2))
+}
+
+test "array spread flushes buffered elems without Array::pop" {
+  let result = desugar_expr(EArray([
+    EInt(1),
+    ESpread(EIdent("xs", -1)),
+    EInt(2)
+  ]))
+  assert(is_ecall(result))
+  assert(eident_name(ecall_callee(result)) == "Array::concat")
+  let outer_left = Array::get(ecall_args(result), 0)
+  let outer_right = Array::get(ecall_args(result), 1)
+  assert(is_ecall(outer_left))
+  assert(is_earray(outer_right))
+  assert(eq(Array::length(earray_elems(outer_right)), 1))
+  assert(eq(eint_val(Array::get(earray_elems(outer_right), 0)), 2))
+  assert(eident_name(ecall_callee(outer_left)) == "Array::concat")
+  let inner_left = Array::get(ecall_args(outer_left), 0)
+  let inner_right = Array::get(ecall_args(outer_left), 1)
+  assert(is_earray(inner_left))
+  assert(eq(Array::length(earray_elems(inner_left)), 1))
+  assert(eq(eint_val(Array::get(earray_elems(inner_left), 0)), 1))
+  assert(is_eident(inner_right))
+  assert(eident_name(inner_right) == "xs")
+}
+
+test "parameterized loop desugars init exprs" {
+  let result = desugar_expr(ELoop([
+    ("i", EBinOp("|>", EInt(1), EIdent("f", -1)))
+  ], EIdent("body", -1)))
+  assert(is_eloop(result))
+  let params = eloop_params(result)
+  assert(eq(Array::length(params), 1))
+  let (name, init) = Array::get(params, 0)
+  assert(name == "i")
+  assert(is_ecall(init))
+  assert(eident_name(ecall_callee(init)) == "f")
+}

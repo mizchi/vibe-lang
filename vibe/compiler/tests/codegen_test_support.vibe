@@ -1,0 +1,85 @@
+//# Imports
+
+import ../codegen.vibe {
+  compile_module, compile_wasi_module, compile_wasi_module_rc
+}
+
+import ../codegen/gc/backend_body.vibe {
+  compile_wasi_module_gc
+}
+
+import ../lexer.vibe {
+  lex
+}
+
+import ../parser.vibe {
+  parse_program
+}
+
+//# Functions
+
+export let assert_wasm: (Bytes) -> Int = (bytes) -> {
+  assert(Bytes::length(bytes) > 8)
+  assert(Bytes::get(bytes, 0) == 0)
+  assert(Bytes::get(bytes, 1) == 97)
+  assert(Bytes::get(bytes, 2) == 115)
+  assert(Bytes::get(bytes, 3) == 109)
+  0
+}
+
+export let compile_wasi: (String, String) -> Bytes with { Error } = (source, entry) -> {
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  compile_wasi_module(stmts, entry)
+}
+
+// RC-mode compile (uniform object header). Same as compile_wasi but on the
+// Perceus RC path; used by the heap e2e / leak tests to exercise the headered
+// layout (docs/spec/selfhost-rc-port.md).
+export let compile_wasi_rc: (String, String) -> Bytes with { Error } = (source, entry) -> {
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  compile_wasi_module_rc(stmts, entry)
+}
+
+export let compile_source: (String) -> Bytes with { Error } = (source) -> {
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  compile_module(stmts)
+}
+
+export let compile_wasi_gc: (String, String) -> Bytes with { Error } = (source, entry) -> {
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  compile_wasi_module_gc(stmts, entry)
+}
+
+export let compile_wasi_with_imports: (Array[String], String, String) -> Bytes with { Error } = (import_sources, source, entry) -> {
+  let all_stmts = ArrayBuilder::new()
+  let mut ii = 0
+  while ii < Array::length(import_sources) {
+    let itokens = lex(Array::get(import_sources, ii))
+    let istmts = parse_program(itokens)
+    let mut si = 0
+    while si < Array::length(istmts) {
+      let s = Array::get(istmts, si)
+      match s {
+        SEnum(_, _, _, _, _) => {
+          ArrayBuilder::push(all_stmts, s)
+          0
+        },
+        _ => 0
+      }
+      si = si + 1
+    }
+    ii = ii + 1
+  }
+  let main_tokens = lex(source)
+  let main_stmts = parse_program(main_tokens)
+  let mut mi = 0
+  while mi < Array::length(main_stmts) {
+    ArrayBuilder::push(all_stmts, Array::get(main_stmts, mi))
+    mi = mi + 1
+  }
+  compile_wasi_module(ArrayBuilder::freeze(all_stmts), entry)
+}

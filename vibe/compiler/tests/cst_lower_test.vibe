@@ -1,0 +1,151 @@
+//# Imports
+
+import ../ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ../cst.vibe {
+  CstChild, NodeKind, cst_child_nodes, cst_children, cst_filter, cst_find, cst_find_token, cst_kind, cst_tokens, node_kind_eq, node_kind_tag
+}
+
+import ../lower.vibe {
+  lower_expr, lower_pat, lower_source_file, lower_stmt, lower_type
+}
+
+import ../token.vibe {
+  Token
+}
+
+//# Misc
+
+test "node_kind_tag returns distinct values" {
+  assert(node_kind_tag(NSourceFile) == 0)
+  assert(node_kind_tag(NLetStmt) == 1)
+  assert(node_kind_tag(NIntExpr) == 20)
+  assert(node_kind_tag(NError) == 99)
+}
+
+test "node_kind_eq same" {
+  assert(node_kind_eq(NIntExpr, NIntExpr))
+  assert(node_kind_eq(NError, NError))
+}
+
+test "node_kind_eq different" {
+  assert(node_kind_eq(NIntExpr, NStringExpr) == false)
+}
+
+test "cst_kind CNode" {
+  let n = CNode(NIntExpr, [
+    CToken(TInt(42))
+  ])
+  assert(node_kind_eq(cst_kind(n), NIntExpr))
+}
+
+test "cst_kind CToken returns NError" {
+  assert(node_kind_eq(cst_kind(CToken(TInt(1))), NError))
+}
+
+test "cst_kind CError returns NError" {
+  assert(node_kind_eq(cst_kind(CError("oops")), NError))
+}
+
+test "cst_children CNode" {
+  let kids = [
+    CToken(TInt(1)),
+    CToken(TInt(2))
+  ]
+  let n = CNode(NTupleExpr, kids)
+  assert(Array::length(cst_children(n)) == 2)
+}
+
+test "cst_children CToken returns empty" {
+  assert(Array::length(cst_children(CToken(TInt(1)))) == 0)
+}
+
+test "cst_find finds matching kind" {
+  let children = [
+    CToken(TLet),
+    CNode(NIntExpr, [
+      CToken(TInt(42))
+    ]),
+    CNode(NStringExpr, [
+      CToken(TString("hi"))
+    ])
+  ]
+  match cst_find(children, NIntExpr, 0) {
+    Some(_) => assert(true),
+    None => assert(false)
+  }
+}
+
+test "cst_find returns None for missing kind" {
+  let children = [
+    CToken(TLet),
+    CNode(NIntExpr, [
+      CToken(TInt(1))
+    ])
+  ]
+  match cst_find(children, NStringExpr, 0) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "cst_find_token returns first token" {
+  let children = [
+    CNode(NIntExpr, [
+      CToken(TInt(0))
+    ]),
+    CToken(TLet),
+    CToken(TInt(1))
+  ]
+  match cst_find_token(children, 0) {
+    Some(TLet) => assert(true),
+    _ => assert(false)
+  }
+}
+
+test "cst_filter collects matching nodes" {
+  let children = [
+    CNode(NIntExpr, [
+      CToken(TInt(1))
+    ]),
+    CToken(TComma),
+    CNode(NIntExpr, [
+      CToken(TInt(2))
+    ]),
+    CNode(NStringExpr, [
+      CToken(TString("x"))
+    ])
+  ]
+  let ints = cst_filter(children, NIntExpr)
+  assert(Array::length(ints) == 2)
+}
+
+test "cst_child_nodes skips tokens" {
+  let children = [
+    CToken(TLParen),
+    CNode(NIntExpr, [
+      CToken(TInt(1))
+    ]),
+    CToken(TComma),
+    CNode(NIntExpr, [
+      CToken(TInt(2))
+    ]),
+    CToken(TRParen)
+  ]
+  let nodes = cst_child_nodes(children)
+  assert(Array::length(nodes) == 2)
+}
+
+test "cst_tokens skips nodes" {
+  let children = [
+    CToken(TLParen),
+    CNode(NIntExpr, [
+      CToken(TInt(1))
+    ]),
+    CToken(TRParen)
+  ]
+  let toks = cst_tokens(children)
+  assert(Array::length(toks) == 2)
+}

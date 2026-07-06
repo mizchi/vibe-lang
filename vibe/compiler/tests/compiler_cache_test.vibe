@@ -1,0 +1,114 @@
+//# Imports
+
+import ../entry / compiler / file_compile {
+  compile_file_fs_module_cached
+}
+
+import ../entry / compiler / fs_compile {
+  closure_merged_stmt_count, closure_pruned_stmt_count, compile_with_closure_sources_wasi_mode_unchecked_cached, compile_with_closure_sources_wasi_unchecked_cached, compile_with_modules_cached, compile_with_modules_wasi_cached, compile_with_source_groups_via_module_source_wasi_unchecked_cached, compile_with_source_groups_wasi_cached, compile_with_source_groups_wasi_unchecked_cached, grouped_source_merged_len, prepare_modules_cached, source_group_filtered_group_count, source_group_module_source_len, source_group_ordered_source_count, source_group_prepare_typecheck_count, source_group_pruned_stmt_count, source_group_total_source_count
+}
+
+import ../type_db.vibe {
+  db_codegen_count, db_grouped_merged_source, db_merge_count, db_merged_source, db_module_source_count, db_new, db_parse_count, db_typecheck_count
+}
+
+//# Functions
+
+let empty_sources: () -> Array[(String, String)] = () -> {
+  Array::slice([
+    ("", "")
+  ], 0, 0)
+}
+
+let repeat_string: (String, Int) -> String = (fragment, count) -> {
+  let mut out = ""
+  let mut i = 0
+  while i < count {
+    out = String::concat(out, fragment)
+    i = i + 1
+  }
+  out
+}
+
+let string_to_bytes: (String) -> Bytes = (s) -> {
+  let out = Array::slice([
+    0
+  ], 0, 0)
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+let assert_wasm_magic: (Bytes) -> Unit = (bytes) -> {
+  assert(Bytes::get(bytes, 0) == 0)
+  assert(Bytes::get(bytes, 1) == 97)
+  assert(Bytes::get(bytes, 2) == 115)
+  assert(Bytes::get(bytes, 3) == 109)
+}
+
+//# Misc
+
+test "compile_with_modules_cached: warm compile reuses compiled artifact cache" {
+  let main_source = "let main: () -> Int = () -> { 1 + 2 }"
+  let sources = empty_sources()
+  let (_, db1) = compile_with_modules_cached(db_new(), main_source, "main.vibe", sources)
+  let codegen_count1 = db_codegen_count(db1)
+  let (_, db2) = compile_with_modules_cached(db1, main_source, "main.vibe", sources)
+  assert(eq(db_codegen_count(db2), codegen_count1))
+}
+
+test "compile_with_modules_wasi_cached: multi-module imports compile to valid WASM and reuse codegen cache" {
+  let helper_source = "export let add: (Int, Int) -> Int = (a, b) -> { a + b }"
+  let main_source = "import ./helpers.vibe { add }\nlet _start: () -> Int = () -> { add(1, 2) }"
+  let sources = [
+    ("helpers.vibe", helper_source)
+  ]
+  let (bytes1, db1) = compile_with_modules_wasi_cached(db_new(), main_source, "main.vibe", sources, "_start")
+  assert_wasm_magic(bytes1)
+  let codegen_count1 = db_codegen_count(db1)
+  let (bytes2, db2) = compile_with_modules_wasi_cached(db1, main_source, "main.vibe", sources, "_start")
+  assert_wasm_magic(bytes2)
+  assert(eq(db_codegen_count(db2), codegen_count1))
+}
+
+test "compile_with_source_groups_wasi_cached: grouped sources reuse grouped merge cache" {
+  let helper_source = "export let add: (Int, Int) -> Int = (a, b) -> { a + b }"
+  let main_source = "import ./helpers.vibe { add }\nlet _start: () -> Int = () -> { add(1, 2) }"
+  let source_groups = [
+    ("core", [
+      ("helpers.vibe", helper_source)
+    ]),
+    ("entry", [
+      ("main.vibe", main_source)
+    ])
+  ]
+  let (bytes1, db1) = compile_with_source_groups_wasi_cached(db_new(), main_source, "main.vibe", source_groups, "_start")
+  assert_wasm_magic(bytes1)
+  let merge_count1 = db_merge_count(db1)
+  let (bytes2, db2) = compile_with_source_groups_wasi_cached(db1, main_source, "main.vibe", source_groups, "_start")
+  assert_wasm_magic(bytes2)
+  assert(eq(db_merge_count(db2), merge_count1))
+}
+
+test "compile_with_source_groups_wasi_unchecked_cached: grouped sources reuse artifact cache" {
+  let helper_source = "export let add: (Int, Int) -> Int = (a, b) -> { a + b }"
+  let main_source = "import ./helpers.vibe { add }\nlet _start: () -> Int = () -> { add(1, 2) }"
+  let source_groups = [
+    ("core", [
+      ("helpers.vibe", helper_source)
+    ]),
+    ("entry", [
+      ("main.vibe", main_source)
+    ])
+  ]
+  let (bytes1, db1) = compile_with_source_groups_wasi_unchecked_cached(db_new(), main_source, "main.vibe", source_groups, "_start")
+  assert_wasm_magic(bytes1)
+  let codegen_count1 = db_codegen_count(db1)
+  let (bytes2, db2) = compile_with_source_groups_wasi_unchecked_cached(db1, main_source, "main.vibe", source_groups, "_start")
+  assert_wasm_magic(bytes2)
+  assert(eq(db_codegen_count(db2), codegen_count1))
+}

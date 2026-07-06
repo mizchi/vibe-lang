@@ -1,0 +1,153 @@
+//# Imports
+
+import ../checker_trait.vibe {
+  check_bounds_satisfied, register_builtin_traits, satisfies_bound, validate_impl_no_overlap, validate_supers_defined
+}
+
+import ../types.vibe {
+  Subst, Type, TypeEnv, trait_defined, trait_supers, type_implements_trait
+}
+
+//# Functions
+
+let no_type_args: () -> Array[Type] = () -> {
+  Array::slice([
+    CtUnknown
+  ], 0, 0)
+}
+
+//# Misc
+
+test "register_builtin_traits defines Eq trait" {
+  let env = register_builtin_traits(EnvEmpty)
+  assert(trait_defined(env, "Eq"))
+}
+
+test "register_builtin_traits defines Ord trait with Eq super" {
+  let env = register_builtin_traits(EnvEmpty)
+  assert(trait_defined(env, "Ord"))
+  let supers = trait_supers(env, "Ord")
+  assert(eq(Array::length(supers), 1))
+  assert(Array::get(supers, 0) == "Eq")
+}
+
+test "Int implements Eq after registration" {
+  let env = register_builtin_traits(EnvEmpty)
+  assert(type_implements_trait(env, SubstEmpty, CtInt, "Eq"))
+}
+
+test "Int implements Ord after registration" {
+  let env = register_builtin_traits(EnvEmpty)
+  assert(type_implements_trait(env, SubstEmpty, CtInt, "Ord"))
+}
+
+test "Int implements Add after registration" {
+  let env = register_builtin_traits(EnvEmpty)
+  assert(type_implements_trait(env, SubstEmpty, CtInt, "Add"))
+}
+
+test "Bool implements Eq but NOT Add" {
+  let env = register_builtin_traits(EnvEmpty)
+  assert(type_implements_trait(env, SubstEmpty, CtBool, "Eq"))
+  assert(not(type_implements_trait(env, SubstEmpty, CtBool, "Add")))
+}
+
+test "validate_impl_no_overlap returns true for new impl" {
+  let env = register_builtin_traits(EnvEmpty)
+  assert(validate_impl_no_overlap(env, "Eq", CtUnit))
+}
+
+test "validate_impl_no_overlap returns false for duplicate impl" {
+  let env = register_builtin_traits(EnvEmpty)
+  assert(not(validate_impl_no_overlap(env, "Eq", CtInt)))
+}
+
+test "validate_supers_defined with all defined returns empty" {
+  let env = register_builtin_traits(EnvEmpty)
+  let result = validate_supers_defined(env, [
+    "Eq"
+  ])
+  assert(eq(Array::length(result), 0))
+}
+
+test "validate_supers_defined with undefined returns it" {
+  let env = register_builtin_traits(EnvEmpty)
+  let result = validate_supers_defined(env, [
+    "Nonexistent"
+  ])
+  assert(eq(Array::length(result), 1))
+  assert(Array::get(result, 0) == "Nonexistent")
+}
+
+test "satisfies_bound Int satisfies Eq" {
+  let env = register_builtin_traits(EnvEmpty)
+  assert(satisfies_bound(env, SubstEmpty, CtInt, "Eq"))
+}
+
+test "satisfies_bound Bool does NOT satisfy Add" {
+  let env = register_builtin_traits(EnvEmpty)
+  assert(not(satisfies_bound(env, SubstEmpty, CtBool, "Add")))
+}
+
+test "check_bounds_satisfied all satisfied returns empty" {
+  let env = register_builtin_traits(EnvEmpty)
+  let result = check_bounds_satisfied(env, SubstEmpty, CtInt, [
+    "Eq",
+    "Add"
+  ])
+  assert(eq(Array::length(result), 0))
+}
+
+test "check_bounds_satisfied some unsatisfied returns names" {
+  let env = register_builtin_traits(EnvEmpty)
+  let result = check_bounds_satisfied(env, SubstEmpty, CtBool, [
+    "Eq",
+    "Add"
+  ])
+  assert(eq(Array::length(result), 1))
+  assert(Array::get(result, 0) == "Add")
+}
+
+test "trait impl overlap precheck rejects disjoint concrete targets" {
+  let env = register_builtin_traits(EnvEmpty)
+  let empty_args = Array::slice([
+    CtInt
+  ], 0, 0)
+  let foo_type = CtNamed("Foo", empty_args)
+  let bar_type = CtNamed("Bar", empty_args)
+  let env2 = EnvTraitImpl("Eq", foo_type, env)
+  assert(validate_impl_no_overlap(env2, "Eq", bar_type))
+}
+
+test "trait impl overlap precheck keeps generic targets as maybe-overlap" {
+  let env = register_builtin_traits(EnvEmpty)
+  let var_type = CtVar(999)
+  assert(validate_impl_no_overlap(env, "Eq", var_type))
+}
+
+test "two different CtNamed types dont overlap for same trait" {
+  let env = register_builtin_traits(EnvEmpty)
+  let empty_args = Array::slice([
+    CtInt
+  ], 0, 0)
+  let alpha = CtNamed("Alpha", empty_args)
+  let beta = CtNamed("Beta", empty_args)
+  let env2 = EnvTraitImpl("Add", alpha, env)
+  assert(validate_impl_no_overlap(env2, "Add", beta))
+  assert(not(validate_impl_no_overlap(env2, "Add", alpha)))
+}
+
+test "String implements Eq from builtins so overlap is detected" {
+  let env = register_builtin_traits(EnvEmpty)
+  assert(not(validate_impl_no_overlap(env, "Eq", CtString)))
+}
+
+test "i64 implements Add after registration" {
+  let env = register_builtin_traits(EnvEmpty)
+  assert(type_implements_trait(env, SubstEmpty, CtNamed("i64", no_type_args()), "Add"))
+}
+
+test "u32 implements Ord after registration" {
+  let env = register_builtin_traits(EnvEmpty)
+  assert(type_implements_trait(env, SubstEmpty, CtNamed("u32", no_type_args()), "Ord"))
+}

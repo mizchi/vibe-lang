@@ -1,0 +1,223 @@
+//# Imports
+
+import ../ast.vibe {
+  Expr, Pat
+}
+
+import ../checker.vibe {
+  check_expr
+}
+
+import ../checker_pattern.vibe {
+  check_pattern
+}
+
+import ../types.vibe {
+  Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup, types_equal
+}
+
+//# Functions
+
+let no_args: () -> Array[Type] = () -> {
+  Array::slice([
+    CtUnknown
+  ], 0, 0)
+}
+
+let empty_pats: () -> Array[Pat] = () -> {
+  Array::slice([
+    PWild
+  ], 0, 0)
+}
+
+let empty_defs: () -> Array[TypeDef] = () -> {
+  Array::slice([
+    TDAlias("_dummy", Array::slice([""], 0, 0), CtUnit)
+  ], 0, 0)
+}
+
+let check: (Expr, TypeEnv) -> Type = (expr, env) -> {
+  let errors = Array::slice([
+    ""
+  ], 0, 0)
+  let (ty, _, _) = check_expr(expr, env, empty_defs(), SubstEmpty, 0, errors, Array::slice([(0, CtUnit)], 0, 0))
+  ty
+}
+
+//# Misc
+
+test "PBind binds name to scrutinee type" {
+  let env = check_pattern(PBind("x"), CtInt, EnvEmpty, empty_defs(), Array::slice([""], 0, 0))
+  match env_lookup(env, "x") {
+    Some(ty) => assert(types_equal(ty, CtInt)),
+    None => assert(false)
+  }
+}
+
+test "PWild does not add bindings" {
+  let env = check_pattern(PWild, CtInt, EnvEmpty, empty_defs(), Array::slice([""], 0, 0))
+  match env_lookup(env, "x") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "PInt does not add bindings" {
+  let env = check_pattern(PInt(42), CtInt, EnvEmpty, empty_defs(), Array::slice([""], 0, 0))
+  match env_lookup(env, "x") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "PString does not add bindings" {
+  let env = check_pattern(PString("hello"), CtString, EnvEmpty, empty_defs(), Array::slice([""], 0, 0))
+  match env_lookup(env, "x") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "PBool does not add bindings" {
+  let env = check_pattern(PBool(true), CtBool, EnvEmpty, empty_defs(), Array::slice([""], 0, 0))
+  match env_lookup(env, "x") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "PTuple destructuring extracts element types" {
+  let scr_ty = CtTuple([
+    CtInt,
+    CtString
+  ])
+  let pat = PTuple([
+    PBind("a"),
+    PBind("b")
+  ])
+  let env = check_pattern(pat, scr_ty, EnvEmpty, empty_defs(), Array::slice([""], 0, 0))
+  match env_lookup(env, "a") {
+    Some(ty) => assert(types_equal(ty, CtInt)),
+    None => assert(false)
+  }
+  match env_lookup(env, "b") {
+    Some(ty) => assert(types_equal(ty, CtString)),
+    None => assert(false)
+  }
+}
+
+test "PTuple with non-tuple scrutinee binds to unknown" {
+  let pat = PTuple([
+    PBind("a"),
+    PBind("b")
+  ])
+  let env = check_pattern(pat, CtInt, EnvEmpty, empty_defs(), Array::slice([""], 0, 0))
+  match env_lookup(env, "a") {
+    Some(ty) => assert(types_equal(ty, CtUnknown)),
+    None => assert(false)
+  }
+}
+
+test "PCtor with known enum extracts payload types" {
+  let defs = [
+    TDEnum("Option", Array::slice([""], 0, 0), [
+      ("Some", [
+        CtInt
+      ]),
+      ("None", no_args())
+    ])
+  ]
+  let pat = PCtor("Some", [
+    PBind("val")
+  ])
+  let env = check_pattern(pat, CtEnum("Option"), EnvEmpty, defs, Array::slice([""], 0, 0))
+  match env_lookup(env, "val") {
+    Some(ty) => assert(types_equal(ty, CtInt)),
+    None => assert(false)
+  }
+}
+
+test "PCtor with unknown constructor binds to unknown" {
+  let pat = PCtor("Unknown", [
+    PBind("x")
+  ])
+  let env = check_pattern(pat, CtUnknown, EnvEmpty, empty_defs(), Array::slice([""], 0, 0))
+  match env_lookup(env, "x") {
+    Some(ty) => assert(types_equal(ty, CtUnknown)),
+    None => assert(false)
+  }
+}
+
+test "POr returns bindings from left" {
+  let pat = POr(PBind("x"), PBind("x"))
+  let env = check_pattern(pat, CtInt, EnvEmpty, empty_defs(), Array::slice([""], 0, 0))
+  match env_lookup(env, "x") {
+    Some(ty) => assert(types_equal(ty, CtInt)),
+    None => assert(false)
+  }
+}
+
+test "match with PBind resolves type in arm body" {
+  let expr = EMatch(EInt(1), [
+    (PBind("x"), EIdent("x", -1))
+  ])
+  let ty = check(expr, EnvEmpty)
+  assert(types_equal(ty, CtInt))
+}
+
+test "match with multiple arms checks all" {
+  let expr = EMatch(EInt(1), [
+    (PInt(1), EString("one")),
+    (PBind("n"), EIdent("n", -1)),
+    (PWild, EString("other"))
+  ])
+  // Returns type of first arm
+  let ty = check(expr, EnvEmpty)
+  assert(types_equal(ty, CtString))
+}
+
+test "match with tuple pattern binds elements" {
+  let env = env_bind(EnvEmpty, "pair", CtTuple([
+    CtInt,
+    CtString
+  ]))
+  let expr = EMatch(EIdent("pair", -1), [
+    (PTuple([
+      PBind("a"),
+      PBind("b")
+    ]), EIdent("b", -1))
+  ])
+  let ty = check(expr, env)
+  assert(types_equal(ty, CtString))
+}
+
+test "PCtor Some on CtOption extracts element type" {
+  let pat = PCtor("Some", [
+    PBind("val")
+  ])
+  let env = check_pattern(pat, CtOption(CtInt), EnvEmpty, empty_defs(), Array::slice([""], 0, 0))
+  match env_lookup(env, "val") {
+    Some(ty) => assert(types_equal(ty, CtInt)),
+    None => assert(false)
+  }
+}
+
+test "PCtor None on CtOption binds nothing" {
+  let pat = PCtor("None", empty_pats())
+  let env = check_pattern(pat, CtOption(CtString), EnvEmpty, empty_defs(), Array::slice([""], 0, 0))
+  // None has no sub-patterns, env stays empty
+  match env_lookup(env, "val") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "match CtOption Some arm resolves element" {
+  let env = env_bind(EnvEmpty, "x", CtOption(CtInt))
+  let expr = EMatch(EIdent("x", -1), [
+    (PCtor("Some", [PBind("n")]), EIdent("n", -1)),
+    (PCtor("None", empty_pats()), EInt(0))
+  ])
+  let ty = check(expr, env)
+  assert(types_equal(ty, CtInt))
+}

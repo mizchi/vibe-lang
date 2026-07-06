@@ -1,0 +1,172 @@
+//# Imports
+
+import ../ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ../checker_stmt.vibe {
+  check_stmts
+}
+
+import ../types.vibe {
+  Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup, types_equal
+}
+
+//# Functions
+
+let _no_tp = Array::slice([
+  ""
+], 0, 0)
+
+let _no_tb = Array::slice([
+  ("", _no_tp)
+], 0, 0)
+
+let empty_defs: () -> Array[TypeDef] = () -> {
+  Array::slice([
+    TDAlias("_dummy", Array::slice([""], 0, 0), CtUnit)
+  ], 0, 0)
+}
+
+let check_stmts_compat: (Array[Stmt]) -> TypeEnv = (stmts) -> {
+  let errors = Array::slice([
+    ""
+  ], 0, 0)
+  let (env, _, _) = check_stmts(stmts, 0, EnvEmpty, empty_defs(), SubstEmpty, 0, errors, Array::slice([(0, CtUnit)], 0, 0))
+  env
+}
+
+//# Misc
+
+test "SLet with type annotation uses annotation" {
+  let stmts = [
+    SLet(false, false, "x", Some(TyName("Int")), EInt(42))
+  ]
+  let env = check_stmts_compat(stmts)
+  match env_lookup(env, "x") {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+}
+
+test "SLetMut with type annotation uses annotation" {
+  let stmts = [
+    SLetMut("count", Some(TyName("Int")), EInt(0))
+  ]
+  let env = check_stmts_compat(stmts)
+  match env_lookup(env, "count") {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+}
+
+test "SExternLet resolves simple type" {
+  let stmts = [
+    SExternLet("get_name", TyName("String"))
+  ]
+  let env = check_stmts_compat(stmts)
+  match env_lookup(env, "get_name") {
+    Some(t) => assert(types_equal(t, CtString)),
+    None => assert(false)
+  }
+}
+
+test "STypeAlias resolves builtin type" {
+  let stmts = [
+    STypeAlias(false, "MyInt", Array::slice([""], 0, 0), TyName("Int"))
+  ]
+  let env = check_stmts_compat(stmts)
+  match env_lookup(env, "MyInt") {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+}
+
+test "SImport binds imported names" {
+  let stmts = [
+    SImport("./foo.vibe", [
+      ("bar", None)
+    ])
+  ]
+  let env = check_stmts_compat(stmts)
+  match env_lookup(env, "bar") {
+    Some(_) => assert(true),
+    None => assert(false)
+  }
+}
+
+test "SImport binds aliased name" {
+  let stmts = [
+    SImport("./foo.vibe", [
+      ("bar", Some("baz"))
+    ])
+  ]
+  let env = check_stmts_compat(stmts)
+  match env_lookup(env, "baz") {
+    Some(_) => assert(true),
+    None => assert(false)
+  }
+}
+
+test "SImport alias keeps source type" {
+  let stmts = [
+    SImport("./foo.vibe", [
+      ("bar", Some("baz"))
+    ])
+  ]
+  let seed = env_bind(EnvEmpty, "bar", CtInt)
+  let _errors = Array::slice([
+    ""
+  ], 0, 0)
+  let (env, _, _) = check_stmts(stmts, 0, seed, empty_defs(), SubstEmpty, 0, _errors, Array::slice([(0, CtUnit)], 0, 0))
+  match env_lookup(env, "baz") {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+}
+
+test "SImport uses nearest binding from env" {
+  let stmts = [
+    SImport("./foo.vibe", [
+      ("x", None)
+    ])
+  ]
+  let seed = env_bind(env_bind(EnvEmpty, "x", CtInt), "x", CtString)
+  let _errors = Array::slice([
+    ""
+  ], 0, 0)
+  let (env, _, _) = check_stmts(stmts, 0, seed, empty_defs(), SubstEmpty, 0, _errors, Array::slice([(0, CtUnit)], 0, 0))
+  match env_lookup(env, "x") {
+    Some(t) => assert(types_equal(t, CtString)),
+    None => assert(false)
+  }
+}
+
+test "SImport binds multiple names" {
+  let stmts = [
+    SImport("./mod.vibe", [
+      ("a", None),
+      ("b", Some("c"))
+    ])
+  ]
+  let env = check_stmts_compat(stmts)
+  match env_lookup(env, "a") {
+    Some(_) => match env_lookup(env, "c") {
+      Some(_) => assert(true),
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "let uses previous binding" {
+  let stmts = [
+    SLet(false, false, "x", None, EInt(1)),
+    SLet(false, false, "y", None, EIdent("x", -1))
+  ]
+  let env = check_stmts_compat(stmts)
+  match env_lookup(env, "y") {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+}

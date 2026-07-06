@@ -1,0 +1,205 @@
+//# Imports
+
+import ../ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ../checker_effects.vibe {
+  EffectError, check_effects_expr, check_effects_stmt, check_effects_stmts, effect_error_to_string
+}
+
+import ../types.vibe {
+  Type, TypeEnv, env_bind
+}
+
+//# Functions
+
+let is_call_err: (EffectError) -> Bool = (e) -> {
+  match e {
+    EEEffectfulCallOutsideEffect(_) => true,
+    _ => false
+  }
+}
+
+let is_throw_err: (EffectError) -> Bool = (e) -> {
+  match e {
+    EEThrowOutsideEffect(_) => true,
+    _ => false
+  }
+}
+
+//# Misc
+
+test "throw outside effect reports error" {
+  let errors = check_effects_expr(EThrow(EString("fail")), EnvEmpty, false)
+  assert(eq(Array::length(errors), 1))
+  assert(is_throw_err(Array::get(errors, 0)))
+}
+
+test "throw inside effect context is OK" {
+  let errors = check_effects_expr(EThrow(EString("fail")), EnvEmpty, true)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "throw inside EFn with effect annotation is OK" {
+  let fn_expr = EFn(Array::slice([
+    ""
+  ], 0, 0), Array::slice([
+    ("", Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0), Array::slice([
+    ("x", None)
+  ], 0, 0), None, Some("Error"), EThrow(EString("fail")))
+  let errors = check_effects_expr(fn_expr, EnvEmpty, false)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "throw inside EFn without effect annotation reports error" {
+  let fn_expr = EFn(Array::slice([
+    ""
+  ], 0, 0), Array::slice([
+    ("", Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0), Array::slice([
+    ("x", None)
+  ], 0, 0), None, None, EThrow(EString("fail")))
+  let errors = check_effects_expr(fn_expr, EnvEmpty, false)
+  assert(eq(Array::length(errors), 1))
+  assert(is_throw_err(Array::get(errors, 0)))
+}
+
+test "handle allows throw in body" {
+  let handle_expr = EHandle(EThrow(EString("err")), [
+    (PBind("e"), EInt(0))
+  ])
+  let errors = check_effects_expr(handle_expr, EnvEmpty, false)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "handle arm body uses outer effect context" {
+  let handle_expr = EHandle(EInt(1), [
+    (PBind("e"), EThrow(EString("rethrow")))
+  ])
+  // outer context has no effect => throw in arm body is error
+  let errors = check_effects_expr(handle_expr, EnvEmpty, false)
+  assert(eq(Array::length(errors), 1))
+  assert(is_throw_err(Array::get(errors, 0)))
+}
+
+test "handle arm body OK when outer has effect" {
+  let handle_expr = EHandle(EInt(1), [
+    (PBind("e"), EThrow(EString("rethrow")))
+  ])
+  let errors = check_effects_expr(handle_expr, EnvEmpty, true)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "calling throw builtin outside effect reports error" {
+  let call_expr = ECall(EIdent("throw", -1), [
+    EString("fail")
+  ], -1)
+  let errors = check_effects_expr(call_expr, EnvEmpty, false)
+  // Should report effectful call error (throw is effectful builtin)
+  assert(Array::length(errors) > 0)
+}
+
+test "calling throw builtin inside effect is OK" {
+  let call_expr = ECall(EIdent("throw", -1), [
+    EString("fail")
+  ], -1)
+  let errors = check_effects_expr(call_expr, EnvEmpty, true)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "calling effectful user function outside effect reports error" {
+  let env = env_bind(EnvEmpty, "my_fn", CtFn([
+    CtInt
+  ], CtString, Some("Error")))
+  let call_expr = ECall(EIdent("my_fn", -1), [
+    EInt(1)
+  ], -1)
+  let errors = check_effects_expr(call_expr, env, false)
+  assert(Array::length(errors) > 0)
+  assert(is_call_err(Array::get(errors, 0)))
+}
+
+test "calling effectful user function inside effect is OK" {
+  let env = env_bind(EnvEmpty, "my_fn", CtFn([
+    CtInt
+  ], CtString, Some("Error")))
+  let call_expr = ECall(EIdent("my_fn", -1), [
+    EInt(1)
+  ], -1)
+  let errors = check_effects_expr(call_expr, env, true)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "calling pure function outside effect is OK" {
+  let env = env_bind(EnvEmpty, "pure_fn", CtFn([
+    CtInt
+  ], CtInt, None))
+  let call_expr = ECall(EIdent("pure_fn", -1), [
+    EInt(1)
+  ], -1)
+  let errors = check_effects_expr(call_expr, env, false)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "throw nested in let body outside effect" {
+  let expr = ELet("x", EInt(1), EThrow(EString("fail")))
+  let errors = check_effects_expr(expr, EnvEmpty, false)
+  assert(eq(Array::length(errors), 1))
+}
+
+test "throw nested in if then outside effect" {
+  let expr = EIf(EBool(true), EThrow(EString("fail")), EInt(0))
+  let errors = check_effects_expr(expr, EnvEmpty, false)
+  assert(eq(Array::length(errors), 1))
+}
+
+test "multiple throws reports multiple errors" {
+  let expr = ESeq(EThrow(EString("a")), EThrow(EString("b")))
+  let errors = check_effects_expr(expr, EnvEmpty, false)
+  assert(eq(Array::length(errors), 2))
+}
+
+test "SLet with throw reports error" {
+  let stmt = SLet(false, false, "x", None, EThrow(EString("fail")))
+  let errors = check_effects_stmt(stmt, EnvEmpty)
+  assert(eq(Array::length(errors), 1))
+}
+
+test "SLet with effectful fn body is OK" {
+  let fn_body = EFn(Array::slice([
+    ""
+  ], 0, 0), Array::slice([
+    ("", Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0), Array::slice([
+    ("x", None)
+  ], 0, 0), None, Some("Error"), EThrow(EString("fail")))
+  let stmt = SLet(false, false, "f", None, fn_body)
+  let errors = check_effects_stmt(stmt, EnvEmpty)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "effect error formatting" {
+  let e1 = EEThrowOutsideEffect("throw")
+  let s1 = effect_error_to_string(e1)
+  assert(String::length(s1) > 0)
+  let e2 = EEEffectfulCallOutsideEffect("Fs::read_file")
+  let s2 = effect_error_to_string(e2)
+  assert(String::length(s2) > 0)
+}
+
+test "check_effects_stmts collects errors from multiple stmts" {
+  let stmts = [
+    SLet(false, false, "a", None, EThrow(EString("a"))),
+    SExpr(EThrow(EString("b")))
+  ]
+  let errors = check_effects_stmts(stmts, EnvEmpty)
+  assert(eq(Array::length(errors), 2))
+}

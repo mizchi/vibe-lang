@@ -1,0 +1,171 @@
+//# Imports
+
+import ../ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ./checker_test_support.vibe {
+  check
+}
+
+import ../types.vibe {
+  Type, TypeEnv, env_bind, types_equal
+}
+
+//# Misc
+
+test "literal int" {
+  assert(types_equal(check(EInt(42), EnvEmpty), CtInt))
+}
+
+test "literal string" {
+  assert(types_equal(check(EString("hello"), EnvEmpty), CtString))
+}
+
+test "literal bool" {
+  assert(types_equal(check(EBool(true), EnvEmpty), CtBool))
+}
+
+test "literal float" {
+  assert(types_equal(check(EFloat(3.14), EnvEmpty), CtDouble))
+}
+
+test "unit" {
+  assert(types_equal(check(EUnit, EnvEmpty), CtUnit))
+}
+
+test "ident from env" {
+  let env = env_bind(EnvEmpty, "x", CtInt)
+  assert(types_equal(check(EIdent("x", -1), env), CtInt))
+}
+
+test "ident builtin" {
+  let ty = check(EIdent("String::concat", -1), EnvEmpty)
+  assert(types_equal(ty, CtFn([
+    CtString,
+    CtString
+  ], CtString, None)))
+}
+
+test "ident unknown" {
+  let caught = handle {
+    let _ = check(EIdent("nonexistent", -1), EnvEmpty)
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(caught)
+}
+
+test "let binding" {
+  let expr = ELet("x", EInt(1), EIdent("x", -1))
+  assert(types_equal(check(expr, EnvEmpty), CtInt))
+}
+
+test "seq returns last" {
+  let expr = ESeq(EInt(1), EString("hello"))
+  assert(types_equal(check(expr, EnvEmpty), CtString))
+}
+
+test "if returns then type" {
+  let expr = EIf(EBool(true), EInt(42), EInt(0))
+  assert(types_equal(check(expr, EnvEmpty), CtInt))
+}
+
+test "binop comparison" {
+  let expr = EBinOp("==", EInt(1), EInt(2))
+  assert(types_equal(check(expr, EnvEmpty), CtBool))
+}
+
+test "binop double comparison" {
+  let expr = EBinOp("<", EFloat(1.0), EFloat(2.0))
+  assert(types_equal(check(expr, EnvEmpty), CtBool))
+}
+
+test "perform builtin effect result feeds order comparison" {
+  let env = env_bind(EnvEmpty, "index", CtInt)
+  let expr = EBinOp(">", ECall(EIdent("perform", -1), [
+    EIdent("Env::ArgsLen", -1)
+  ], -1), EIdent("index", -1))
+  assert(types_equal(check(expr, env), CtBool))
+}
+
+test "binop invalid string ordering" {
+  let caught = handle {
+    let _ = check(EBinOp("<", EString("a"), EString("b")), EnvEmpty)
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(caught)
+}
+
+test "binop invalid bool logic operands" {
+  let caught = handle {
+    let _ = check(EBinOp("&&", EInt(1), EInt(2)), EnvEmpty)
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(caught)
+}
+
+test "binop arithmetic" {
+  let expr = EBinOp("+", EInt(1), EInt(2))
+  assert(types_equal(check(expr, EnvEmpty), CtInt))
+}
+
+test "binop double arithmetic" {
+  let expr = EBinOp("+", EFloat(1.5), EFloat(2.5))
+  assert(types_equal(check(expr, EnvEmpty), CtDouble))
+}
+
+test "binop string concat" {
+  let expr = EBinOp("+", EString("a"), EString("b"))
+  assert(types_equal(check(expr, EnvEmpty), CtString))
+}
+
+test "unary not" {
+  let expr = EUnaryOp("!", EBool(true))
+  assert(types_equal(check(expr, EnvEmpty), CtBool))
+}
+
+test "unary negate double" {
+  let expr = EUnaryOp("-", EFloat(5.0))
+  assert(types_equal(check(expr, EnvEmpty), CtDouble))
+}
+
+test "method call: string.length() => Int" {
+  let env = env_bind(EnvEmpty, "s", CtString)
+  let expr = ECall(EDot(EIdent("s", -1), "length", -1), Array::slice([
+    EUnit
+  ], 0, 0), -1)
+  assert(types_equal(check(expr, env), CtInt))
+}
+
+test "method call: string.concat(string) => String" {
+  let env = env_bind(EnvEmpty, "s", CtString)
+  let expr = ECall(EDot(EIdent("s", -1), "concat", -1), [
+    EString("world")
+  ], -1)
+  assert(types_equal(check(expr, env), CtString))
+}
+
+test "method call: array.length() => Int" {
+  let env = env_bind(EnvEmpty, "a", CtArray(CtInt))
+  let expr = ECall(EDot(EIdent("a", -1), "length", -1), Array::slice([
+    EUnit
+  ], 0, 0), -1)
+  assert(types_equal(check(expr, env), CtInt))
+}
+
+test "builtin Array::truncate returns Unit" {
+  let expr = ECall(EIdent("Array::truncate", -1), [
+    EArray([
+      EInt(1),
+      EInt(2)
+    ]),
+    EInt(1)
+  ], -1)
+  assert(types_equal(check(expr, EnvEmpty), CtUnit))
+}

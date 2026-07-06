@@ -1,0 +1,192 @@
+//# Imports
+
+import ../ast.vibe {
+  Expr
+}
+
+import ../checker_effects.vibe {
+  EffectError, check_effects_expr
+}
+
+import ../checker/builtins.vibe {
+  lookup_builtin
+}
+
+import ../types.vibe {
+  Type, TypeEnv
+}
+
+//# Functions
+
+let is_call_err: (EffectError) -> Bool = (e) -> {
+  match e {
+    EEEffectfulCallOutsideEffect(_) => true,
+    _ => false
+  }
+}
+
+// `Future::ready(1)` — a pure future constructor used to feed `await`.
+let future_ready_one: () -> Expr = () -> {
+  ECall(EIdent("Future::ready", -1), [
+    EInt(1)
+  ], -1)
+}
+
+let await_call: () -> Expr = () -> {
+  ECall(EIdent("await", -1), [
+    future_ready_one()
+  ], -1)
+}
+
+//# Misc
+
+test "await is a registered effectful builtin" {
+  match lookup_builtin("await") {
+    Some(ty) => match ty {
+      CtFn(_, _, Some(_)) => assert(true),
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "Future::ready is a registered pure builtin" {
+  match lookup_builtin("Future::ready") {
+    Some(ty) => match ty {
+      CtFn(_, _, None) => assert(true),
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "await outside effect reports effectful-call error" {
+  let errors = check_effects_expr(await_call(), EnvEmpty, false)
+  assert(Array::length(errors) > 0)
+  assert(is_call_err(Array::get(errors, 0)))
+}
+
+test "await inside effect context is OK" {
+  let errors = check_effects_expr(await_call(), EnvEmpty, true)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "await inside EFn with Async annotation is OK" {
+  let fn_expr = EFn(Array::slice([
+    ""
+  ], 0, 0), Array::slice([
+    ("", Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0), Array::slice([
+    ("x", None)
+  ], 0, 0), None, Some("Async"), await_call())
+  let errors = check_effects_expr(fn_expr, EnvEmpty, false)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "await inside EFn without effect annotation reports error" {
+  let fn_expr = EFn(Array::slice([
+    ""
+  ], 0, 0), Array::slice([
+    ("", Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0), Array::slice([
+    ("x", None)
+  ], 0, 0), None, None, await_call())
+  let errors = check_effects_expr(fn_expr, EnvEmpty, false)
+  assert(Array::length(errors) > 0)
+}
+
+// --- Stream[T] (async iterator) ---
+
+// `Stream::next(Stream::empty())`
+let stream_next_call: () -> Expr = () -> {
+  ECall(EIdent("Stream::next", -1), [
+    ECall(EIdent("Stream::empty", -1), Array::slice([
+      EInt(0)
+    ], 0, 0), -1)
+  ], -1)
+}
+
+test "Stream::next is a registered effectful builtin (Async)" {
+  match lookup_builtin("Stream::next") {
+    Some(ty) => match ty {
+      CtFn(_, _, Some(_)) => assert(true),
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "Stream::empty and Stream::map are registered pure builtins" {
+  match lookup_builtin("Stream::empty") {
+    Some(ty) => match ty {
+      CtFn(_, _, None) => assert(true),
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+  match lookup_builtin("Stream::map") {
+    Some(ty) => match ty {
+      CtFn(_, _, None) => assert(true),
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "Stream::next outside effect reports effectful-call error" {
+  let errors = check_effects_expr(stream_next_call(), EnvEmpty, false)
+  assert(Array::length(errors) > 0)
+  assert(is_call_err(Array::get(errors, 0)))
+}
+
+test "Stream::next inside effect context is OK" {
+  let errors = check_effects_expr(stream_next_call(), EnvEmpty, true)
+  assert(eq(Array::length(errors), 0))
+}
+
+// --- Task[T] (structured concurrency + cancellation) ---
+
+test "Task::spawn / join / cancel are registered effectful builtins (Async)" {
+  match lookup_builtin("Task::spawn") {
+    Some(ty) => match ty {
+      CtFn(_, _, Some(_)) => assert(true),
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+  match lookup_builtin("Task::join") {
+    Some(ty) => match ty {
+      CtFn(_, _, Some(_)) => assert(true),
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+  match lookup_builtin("Task::cancel") {
+    Some(ty) => match ty {
+      CtFn(_, _, Some(_)) => assert(true),
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "Task::spawn outside effect reports effectful-call error" {
+  let call_expr = ECall(EIdent("Task::spawn", -1), [
+    EInt(0)
+  ], -1)
+  let errors = check_effects_expr(call_expr, EnvEmpty, false)
+  assert(Array::length(errors) > 0)
+  assert(is_call_err(Array::get(errors, 0)))
+}
+
+test "Task::join inside effect context is OK" {
+  let call_expr = ECall(EIdent("Task::join", -1), [
+    EInt(0)
+  ], -1)
+  let errors = check_effects_expr(call_expr, EnvEmpty, true)
+  assert(eq(Array::length(errors), 0))
+}

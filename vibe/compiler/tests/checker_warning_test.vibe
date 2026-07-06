@@ -1,0 +1,150 @@
+//# Imports
+
+import ../ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ../checker_warning.vibe {
+  check_warnings, collect_assign_targets, collect_assign_targets_stmts, collect_defined_names, collect_used_names, collect_used_names_stmts, detect_shadows, detect_unused_mut, detect_unused_vars
+}
+
+//# Functions
+
+let no_ty: () -> Option[TypeExpr] = () -> {
+  None
+}
+
+//# Misc
+
+test "collect_defined_names finds SLet names" {
+  let stmts = [
+    SLet(false, false, "foo", no_ty(), EInt(1)),
+    SLet(false, false, "bar", no_ty(), EInt(2))
+  ]
+  let names = collect_defined_names(stmts)
+  assert(eq(Array::length(names), 2))
+  assert(Array::get(names, 0) == "foo")
+  assert(Array::get(names, 1) == "bar")
+}
+
+test "collect_defined_names finds SLetMut names" {
+  let stmts = [
+    SLetMut("x", no_ty(), EInt(0))
+  ]
+  let names = collect_defined_names(stmts)
+  assert(eq(Array::length(names), 1))
+  assert(Array::get(names, 0) == "x")
+}
+
+test "collect_used_names finds EIdent references" {
+  let expr = EBinOp("+", EIdent("a", -1), EIdent("b", -1))
+  let names = collect_used_names(expr)
+  assert(eq(Array::length(names), 2))
+}
+
+test "detect_unused_vars finds unused variable" {
+  let stmts = [
+    SLet(false, false, "unused", no_ty(), EInt(42)),
+    SExpr(EInt(0))
+  ]
+  let warnings = detect_unused_vars(stmts)
+  assert(eq(Array::length(warnings), 1))
+  let (kind, name, _) = Array::get(warnings, 0)
+  assert(kind == "unused_var")
+  assert(name == "unused")
+}
+
+test "detect_unused_vars ignores used variable" {
+  let stmts = [
+    SLet(false, false, "x", no_ty(), EInt(1)),
+    SExpr(EIdent("x", -1))
+  ]
+  let warnings = detect_unused_vars(stmts)
+  assert(eq(Array::length(warnings), 0))
+}
+
+test "detect_unused_vars ignores underscore-prefixed" {
+  let stmts = [
+    SLet(false, false, "_unused", no_ty(), EInt(1)),
+    SExpr(EInt(0))
+  ]
+  let warnings = detect_unused_vars(stmts)
+  assert(eq(Array::length(warnings), 0))
+}
+
+test "detect_unused_mut finds never-reassigned mut" {
+  let stmts = [
+    SLetMut("counter", no_ty(), EInt(0)),
+    SExpr(EIdent("counter", -1))
+  ]
+  let warnings = detect_unused_mut(stmts)
+  assert(eq(Array::length(warnings), 1))
+  let (kind, name, _) = Array::get(warnings, 0)
+  assert(kind == "unused_mut")
+  assert(name == "counter")
+}
+
+test "detect_unused_mut ignores reassigned mut" {
+  let stmts = [
+    SLetMut("counter", no_ty(), EInt(0)),
+    SExpr(EAssign("counter", EInt(1), EIdent("counter", -1)))
+  ]
+  let warnings = detect_unused_mut(stmts)
+  assert(eq(Array::length(warnings), 0))
+}
+
+test "collect_assign_targets finds EAssign targets" {
+  let expr = EAssign("x", EInt(1), EUnit)
+  let targets = collect_assign_targets(expr)
+  assert(eq(Array::length(targets), 1))
+  assert(Array::get(targets, 0) == "x")
+}
+
+test "collect_assign_targets finds EAssignOp targets" {
+  let expr = EAssignOp("y", "+", EInt(1), EUnit)
+  let targets = collect_assign_targets(expr)
+  assert(eq(Array::length(targets), 1))
+  assert(Array::get(targets, 0) == "y")
+}
+
+test "detect_shadows finds shadowed name" {
+  let stmts = [
+    SLet(false, false, "x", no_ty(), EInt(1)),
+    SLet(false, false, "x", no_ty(), EInt(2))
+  ]
+  let warnings = detect_shadows(stmts)
+  assert(eq(Array::length(warnings), 1))
+  let (kind, name, _) = Array::get(warnings, 0)
+  assert(kind == "shadow")
+  assert(name == "x")
+}
+
+test "detect_shadows no shadow returns empty" {
+  let stmts = [
+    SLet(false, false, "a", no_ty(), EInt(1)),
+    SLet(false, false, "b", no_ty(), EInt(2))
+  ]
+  let warnings = detect_shadows(stmts)
+  assert(eq(Array::length(warnings), 0))
+}
+
+test "check_warnings combines all warnings" {
+  let stmts = [
+    SLet(false, false, "unused", no_ty(), EInt(1)),
+    SLetMut("m", no_ty(), EInt(0)),
+    SExpr(EIdent("m", -1))
+  ]
+  let warnings = check_warnings(stmts)
+  // unused_var for "unused", unused_mut for "m"
+  assert(eq(Array::length(warnings), 2))
+}
+
+test "check_warnings clean code returns empty" {
+  let stmts = [
+    SLet(false, false, "x", no_ty(), EInt(1)),
+    SLetMut("y", no_ty(), EInt(0)),
+    SExpr(ESeq(EIdent("x", -1), EAssign("y", EInt(1), EIdent("y", -1))))
+  ]
+  let warnings = check_warnings(stmts)
+  assert(eq(Array::length(warnings), 0))
+}

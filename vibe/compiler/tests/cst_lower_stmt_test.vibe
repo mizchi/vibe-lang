@@ -1,0 +1,202 @@
+//# Imports
+
+import ../ast.vibe {
+  Expr, Stmt
+}
+
+import ../cst.vibe {
+  CstChild, NodeKind
+}
+
+import ../lower.vibe {
+  lower_source_file, lower_stmt
+}
+
+import ../token.vibe {
+  Token
+}
+
+//# Misc
+
+test "lower SLet" {
+  let node = CNode(NLetStmt, [
+    CToken(TLet),
+    CToken(TIdent("x")),
+    CToken(TEq),
+    CNode(NIntExpr, [
+      CToken(TInt(42))
+    ])
+  ])
+  match lower_stmt(node) {
+    SLet(exported, is_rec, name, _, _) => {
+      assert(exported == false)
+      assert(is_rec == false)
+      assert(name == "x")
+    },
+    _ => assert(false)
+  }
+}
+
+test "lower SLet exported rec" {
+  let node = CNode(NLetStmt, [
+    CToken(TExport),
+    CToken(TLet),
+    CToken(TRec),
+    CToken(TIdent("f")),
+    CToken(TEq),
+    CNode(NIdentExpr, [
+      CToken(TIdent("f"))
+    ])
+  ])
+  match lower_stmt(node) {
+    SLet(exported, is_rec, name, _, _) => {
+      assert(exported == true)
+      assert(is_rec == true)
+      assert(name == "f")
+    },
+    _ => assert(false)
+  }
+}
+
+test "lower SLetMut" {
+  let node = CNode(NLetMutStmt, [
+    CToken(TLet),
+    CToken(TMut),
+    CToken(TIdent("x")),
+    CToken(TEq),
+    CNode(NIntExpr, [
+      CToken(TInt(0))
+    ])
+  ])
+  match lower_stmt(node) {
+    SLetMut(name, _, _) => assert(name == "x"),
+    _ => assert(false)
+  }
+}
+
+test "lower SEnum" {
+  let node = CNode(NEnumStmt, [
+    CToken(TExport),
+    CToken(TEnum),
+    CToken(TIdent("Color")),
+    CToken(TLBrace),
+    CNode(NEnumVariant, [
+      CToken(TIdent("Red"))
+    ]),
+    CToken(TSemicolon),
+    CNode(NEnumVariant, [
+      CToken(TIdent("Blue"))
+    ]),
+    CToken(TRBrace)
+  ])
+  match lower_stmt(node) {
+    SEnum(exported, name, _, variants, _) => {
+      assert(exported == true)
+      assert(name == "Color")
+      assert(Array::length(variants) == 2)
+    },
+    _ => assert(false)
+  }
+}
+
+test "lower SStruct" {
+  let node = CNode(NStructStmt, [
+    CToken(TStruct),
+    CToken(TIdent("Point")),
+    CToken(TLBrace),
+    CNode(NStructField, [
+      CToken(TIdent("x")),
+      CToken(TColon),
+      CNode(NNameType, [
+        CToken(TIdent("Int"))
+      ])
+    ]),
+    CToken(TSemicolon),
+    CNode(NStructField, [
+      CToken(TIdent("y")),
+      CToken(TColon),
+      CNode(NNameType, [
+        CToken(TIdent("Int"))
+      ])
+    ]),
+    CToken(TRBrace)
+  ])
+  match lower_stmt(node) {
+    SStruct(exported, name, fields, _) => {
+      assert(exported == false)
+      assert(name == "Point")
+      assert(Array::length(fields) == 2)
+    },
+    _ => assert(false)
+  }
+}
+
+test "lower SExpr" {
+  let node = CNode(NExprStmt, [
+    CNode(NIntExpr, [
+      CToken(TInt(42))
+    ])
+  ])
+  match lower_stmt(node) {
+    SExpr(EInt(n)) => assert(n == 42),
+    _ => assert(false)
+  }
+}
+
+test "lower STest" {
+  let node = CNode(NTestStmt, [
+    CToken(TTest),
+    CToken(TString("my test")),
+    CNode(NIntExpr, [
+      CToken(TInt(1))
+    ])
+  ])
+  match lower_stmt(node) {
+    STest(name, _) => assert(name == "my test"),
+    _ => assert(false)
+  }
+}
+
+test "lower SBench" {
+  let node = CNode(NBenchStmt, [
+    CToken(TBench),
+    CToken(TString("bench name")),
+    CNode(NIntExpr, [
+      CToken(TInt(1))
+    ])
+  ])
+  match lower_stmt(node) {
+    SBench(name, _) => assert(name == "bench name"),
+    _ => assert(false)
+  }
+}
+
+test "lower SExport" {
+  let node = CNode(NExportStmt, [
+    CToken(TExport),
+    CToken(TIdent("foo")),
+    CToken(TComma),
+    CToken(TIdent("bar"))
+  ])
+  match lower_stmt(node) {
+    SExport(names) => assert(Array::length(names) == 2),
+    _ => assert(false)
+  }
+}
+
+test "lower_source_file" {
+  let root = CNode(NSourceFile, [
+    CNode(NExprStmt, [
+      CNode(NIntExpr, [
+        CToken(TInt(1))
+      ])
+    ]),
+    CNode(NExprStmt, [
+      CNode(NIntExpr, [
+        CToken(TInt(2))
+      ])
+    ])
+  ])
+  let stmts = lower_source_file(root)
+  assert(Array::length(stmts) == 2)
+}
