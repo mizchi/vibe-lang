@@ -5,6 +5,70 @@
 # host and traps in sandboxes and on hosted CI runners (environment-dependent,
 # not a compiler regression). Run it manually where TCP is available.
 # lib/@vibe/socket/tcp_import_test.vibe is EXCLUDED: it needs a real TCP-capable
+# #768: 18 files below are EXCLUDED pending compiler codegen/checker work (NOT a
+# simple sandbox-capability grant -- see issue #768 for the full trace). Fixed
+# in the same pass: lib/@vibe/shell/commands.vibe and
+# lib/@vibe/compiler/entry/compiler/fs_compile/index.vibe were missing
+# `with { Fs }`/`with { Env }` effect declarations on functions that perform
+# those effects (a real, pre-existing bug -- unrelated to sandbox capability);
+# fixing it let compiler_cache_prepare_test.vibe pass and is added above. The
+# remaining 18 need deeper, riskier changes:
+#  - Fs::mkdir_p/Fs::chdir/Fs::remove/Fs::copy/Fs::append/Fs::rename/Fs::is_dir/
+#    Fs::is_file/Fs::getcwd are checker-legal (checker/builtins_fs.vibe,
+#    checker_builtins.vibe, checker_purity.vibe all recognize most of them) but
+#    have NO linear-backend codegen wiring in
+#    codegen/wasi/linked_compile.vibe's func-table (unlike Fs::read_file/
+#    write_file/exists/stat_token/read_bytes/write_bytes/readdir, which ARE
+#    wired). A direct call like `Fs::remove(path)` falls through to
+#    "undefined variable (local)"; a `perform Fs::Chdir(...)` falls through to
+#    the generic effect-throw path and can emit an invalid wasm exception tag
+#    ("Invalid tag index") at instantiation. The JS host runner already
+#    implements fs_mkdir/fs_mkdir_p/fs_chdir/fs_remove/fs_copy/fs_append (see
+#    scripts/wasm_vibe_host_runner.js) -- only the compiler-side codegen wiring
+#    (import reservation + func-table registration, mirroring the #632/#729/
+#    #730 Fs::read_bytes/Fs::readdir precedent) is missing. `Fs::mkdir_p` is
+#    additionally absent from checker/builtins_fs.vibe's lookup_fs (unlike
+#    Fs::mkdir) and from builtin_name.vibe's canonical_builtin_name (no
+#    "Fs::MkdirP" -> "Fs::mkdir_p" mapping), so it also fails earlier as
+#    "unknown name". This spans codegen import-index ordering that many
+#    already-passing allowlisted tests implicitly depend on -- a maintainer
+#    call, not a unilateral sandbox tweak. Affected:
+#    lib/@vibe/compiler/tests/cli_cache_test.vibe,
+#    lib/@vibe/compiler/tests/persistent_cache_test.vibe (Fs::remove),
+#    lib/@vibe/compiler/tests/compiler_fs_test.vibe,
+#    lib/@vibe/compiler/tests/loader_manifest_sources_test.vibe,
+#    lib/@vibe/compiler/tests/loader_persistent_cache_test.vibe,
+#    lib/@vibe/compiler/tests/selfhost_cli_support_test.vibe,
+#    lib/@vibe/compiler/tests/type_db_cross_module_test.vibe (Fs::mkdir_p),
+#    lib/@vibe/compiler/tests/cache_probe_test.vibe,
+#    lib/@vibe/compiler/tests/persistent_fs_compile_cache_test.vibe (now blocked
+#    on the same Fs::remove codegen gap, after the effect-declaration fix above
+#    got them past the checker), lib/@vibe/shell/commands_test.vibe (now
+#    blocked on the "Invalid tag index" codegen gap for Fs::Chdir).
+#  - lib/@vibe/compiler/tests/fixture_real_selfhost_test.vibe,
+#    lib/@vibe/compiler/tests/fixture_roundtrip_test.vibe,
+#    lib/@vibe/compiler/tests/fixture_test.vibe,
+#    lib/@vibe/shell/index_import_test.vibe,
+#    lib/@vibe/shell/posix_compat_test.vibe: a SEPARATE, unrelated pre-existing
+#    bug surfaced once the effect fix got them past the Fs::Chdir checker error
+#    -- lib/@vibe/shell/pipeline.vibe calls `Json::parse`, which is a real
+#    builtin type-registered in builtins_extended.vibe's lookup_json/
+#    lookup_extended, but that lookup table is never wired into
+#    checker/checker.vibe's name resolution, so it resolves as "unknown name:
+#    Json::parse" in this compile path. Needs its own investigation (not filed
+#    under #768's capability-grant framing).
+#  - lib/@vibe/compiler/tests/cache_probe_type_db_fs_multi_dep_bench_test.vibe:
+#    now blocked on an unrelated "undefined variable (local): to_string @call"
+#    in lib/@vibe/compiler/selfbuild_gate_block_a.vibe (an unqualified
+#    `to_string(token)` call with no matching builtin/import in scope).
+#  - lib/@vibe/compiler/tests/compiler_cache_advanced_test.vibe,
+#    lib/@vibe/compiler/tests/compiler_cache_test.vibe: now blocked on an
+#    unrelated, deterministic "memory access out of bounds" trap inside
+#    dce_stmts (lib/@vibe/compiler/core/dce.vibe) reached via
+#    prune_entry_stmts, exercised by each file's own inner-compile test
+#    ("prunes unreachable broken defs" / "multi-module imports compile to
+#    valid WASM"). Looks like a real DCE memory-safety bug, unrelated to
+#    effects/capabilities.
 docs/tutorial/01_values_functions_test.vibe
 docs/tutorial/02_control_flow_test.vibe
 docs/tutorial/03_data_test.vibe
@@ -149,6 +213,7 @@ lib/@vibe/compiler/tests/codegen_struct_test.vibe
 lib/@vibe/compiler/tests/codegen_test.vibe
 lib/@vibe/compiler/tests/compiler_advanced_test.vibe
 lib/@vibe/compiler/tests/compiler_cache_merge_test.vibe
+lib/@vibe/compiler/tests/compiler_cache_prepare_test.vibe
 lib/@vibe/compiler/tests/compiler_test.vibe
 lib/@vibe/compiler/tests/compiler_wasi_test.vibe
 lib/@vibe/compiler/tests/component_codegen_test.vibe
