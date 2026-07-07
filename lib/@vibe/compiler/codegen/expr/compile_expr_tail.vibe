@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, agg_ret_lookup, agg_slot_lookup, find_local_slot, emit_rc_dup_guarded, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_ctor_call, is_earray, is_efn, is_eident, is_erecord, is_etuple, is_nullary_ctor_ident, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, agg_expr_lookup, agg_ret_lookup, agg_slot_lookup, find_local_slot, emit_rc_dup_guarded, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_ctor_call, is_earray, is_efn, is_eident, is_erecord, is_etuple, is_nullary_ctor_ident, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -432,7 +432,37 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     } else {
       0
     }
+    // #672 (post-#724): the shape LITERAL backing `agg_entry`, kept in
+    // lockstep with agg_local_slots (see CompileCtx.agg_local_exprs) so a
+    // both-sides-tracked `a == b` can recurse into NESTED aggregate elements
+    // (e.g. `let a = ((1,2),3)`) instead of only comparing the top-level
+    // shape. An alias propagates its SOURCE's shape expr (not just the
+    // kind+n int); everything else that isn't a literal (call-result via
+    // agg_ret, round-2 param/return tracking) has no literal to recurse
+    // into, so it stores the inert EInt(0) placeholder — those tracked
+    // slots still get correct TOP-level structural comparison (unchanged
+    // from before this change) but nested elements under them keep the
+    // pre-existing generic-eq fallback.
+    let agg_shape_expr = if is_etuple(value) {
+      value
+    } else if is_ctor_call(value, ctx.ctor_table) {
+      value
+    } else if is_nullary_ctor_ident(value, ctx.ctor_table) {
+      value
+    } else if is_erecord(value) {
+      value
+    } else if is_eident(value) {
+      let src_slot = find_local_slot(local_names, get_eident_name(value))
+      if src_slot >= 0 {
+        agg_expr_lookup(ctx.agg_local_slots, ctx.agg_local_exprs, src_slot)
+      } else {
+        EInt(0)
+      }
+    } else {
+      EInt(0)
+    }
     Array::push(ctx.agg_local_slots, local_idx * 256 + agg_entry)
+    Array::push(ctx.agg_local_exprs, agg_shape_expr)
     let mut rc_kind = 0
     // #708 follow-up: set when this let's value is a borrow-returning call
     // (`let a = Array::get(...)`) -- see the ELet/expr_tag==8 branch below for

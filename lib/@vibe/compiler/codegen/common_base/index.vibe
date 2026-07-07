@@ -194,6 +194,19 @@ export struct CompileCtx {
   // value shape is not statically known (params, call results, match binds)
   // are NOT tracked and keep the generic-eq fallback.
   agg_local_slots: Array[Int];
+  // #672 (post-#724): parallel array to agg_local_slots, SAME length and
+  // index correspondence (every push to agg_local_slots pushes exactly one
+  // entry here too, in the same call). Holds the actual shape LITERAL
+  // expression (ETuple / ctor ECall / nullary-ctor EIdent) backing a kind-1
+  // (tuple) or kind-2 (ctor/record) entry, or an inert EInt(0) placeholder
+  // for kind-0 / untracked entries (never consulted — callers only read this
+  // after confirming kind via agg_slot_lookup). This lets `a == b` on a
+  // TRACKED variable recurse into NESTED aggregate elements (e.g. `let a =
+  // ((1,2),3)`) the same way a literal operand does, instead of only
+  // comparing the top-level shape and falling back to pointer `eq` for any
+  // element that is itself an aggregate. See agg_expr_lookup / emit_eq_shape_slots
+  // (compile_expr.vibe).
+  agg_local_exprs: Array[Expr];
   // #724 round 2: program-wide (fn name -> declared aggregate return shape)
   // parallel arrays (see compute_agg_returning). Shared across functions —
   // NOT per-function like agg_local_slots.
@@ -405,6 +418,30 @@ export let agg_log_reset_above: (Array[Int], Int) -> Unit = (arr, floor) -> {
   Array::truncate(arr, w)
 }
 
+// #672 (post-#724): dual-array twin of agg_log_reset_above — prunes
+// agg_local_slots AND its parallel agg_local_exprs in lockstep (same
+// keep/drop decision, driven by the slots array, applied to both), so the
+// two arrays stay the same length / index-aligned after a branch/arm
+// boundary prunes stale entries. See CompileCtx.agg_local_exprs.
+export let agg_log_reset_above2: (Array[Int], Array[Expr], Int) -> Unit = (arr, exprs, floor) -> {
+  let n = Array::length(arr)
+  let mut w = 0
+  let mut i = 0
+  while i < n {
+    let e = Array::get(arr, i)
+    if e / 256 < floor {
+      Array::set(arr, w, e)
+      Array::set(exprs, w, Array::get(exprs, i))
+      w = w + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(arr, w)
+  Array::truncate(exprs, w)
+}
+
 // #724: most-recent aggregate-shape entry for `slot` — `kind*64 + n`
 // (kind 1 = tuple/arity, 2 = ctor/field count), or -1 when untracked /
 // overridden by a non-aggregate rebind.
@@ -425,6 +462,27 @@ export let agg_slot_lookup: (Array[Int], Int) -> Int = (arr, slot) -> {
   } else {
     out
   }
+}
+
+// #672 (post-#724): companion to agg_slot_lookup — the shape-literal Expr
+// paired with the most-recent tracked entry for `slot` (same rightmost-match
+// scan), or EInt(0) when the slot has no entry at all. Callers only read the
+// result after agg_slot_lookup has confirmed a kind 1 (tuple) or kind 2
+// (ctor/record) entry exists for the slot, so the EInt(0) fallback is never
+// actually consulted as a shape in practice — it just keeps this total.
+export let agg_expr_lookup: (Array[Int], Array[Expr], Int) -> Expr = (arr, exprs, slot) -> {
+  let mut i = Array::length(arr) - 1
+  let mut out = EInt(0)
+  while i >= 0 {
+    let e = Array::get(arr, i)
+    if e / 256 == slot {
+      out = Array::get(exprs, i)
+      i = 0 - 1
+    } else {
+      i = i - 1
+    }
+  }
+  out
 }
 
 // #724 round 2: aggregate-shape classification from a DECLARED TypeExpr —
@@ -560,6 +618,24 @@ export let agg_info_of_ident: (Array[Int], Expr, Array[String]) -> Int = (arr, e
       }
     },
     _ => 0 - 1
+  }
+}
+
+// #672 (post-#724): companion to agg_info_of_ident — the tracked shape-
+// literal Expr for a bare-ident operand (same ident -> slot resolution), or
+// EInt(0) when the ident is not a tracked slot. Callers gate on
+// agg_info_of_ident's kind first, same discipline as agg_expr_lookup.
+export let agg_expr_of_ident: (Array[Int], Array[Expr], Expr, Array[String]) -> Expr = (arr, exprs, e, local_names) -> {
+  match e {
+    EIdent(nm, _) => {
+      let slot = find_local_slot(local_names, nm)
+      if slot >= 0 {
+        agg_expr_lookup(arr, exprs, slot)
+      } else {
+        EInt(0)
+      }
+    },
+    _ => EInt(0)
   }
 }
 
