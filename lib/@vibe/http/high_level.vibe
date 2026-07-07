@@ -85,8 +85,34 @@ export let status_is_success = (status: Int) -> Bool {
   status >= 200 && status < 300
 }
 
+// #774: `String::to_lower` is registered in the type checker's builtin table
+// (checker/builtins_string2.vibe) but has no codegen builtin-registry entry
+// (codegen/builtin_registry.vibe only carries `String::trim`/`to_upper`'s
+// siblings, not `to_lower`), so calling it traps at runtime with "undefined
+// variable (local): String::to_lower @call" instead of failing to compile.
+// Fixing that gap is a compiler codegen change out of scope for the HTTP
+// effect-declaration issue this module was blocked on, so header-name
+// normalization is done here with a manual ASCII-only lowercase loop built
+// from `String::char_code_at`/`String::from_char_code`, both of which ARE
+// registered in every codegen lane.
+let ascii_lower_char_code = (code: Int) -> Int {
+  if code >= 65 && code <= 90 {
+    code + 32
+  } else {
+    code
+  }
+}
+
 let normalize_header_name = (name: String) -> String {
-  String::to_lower(name)
+  let len = String::length(name)
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < len {
+    let code = String::char_code_at(name, i)
+    StringBuilder::push(sb, String::from_char_code(ascii_lower_char_code(code)))
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
 }
 
 export let headers_get = (headers: Map[String, String], name: String) -> Option[String] {

@@ -282,8 +282,22 @@ export let rec expr_contains_exceptions: (Expr) -> Bool = (expr) -> {
       // misused outside a handler must still produce a VALID module. A user
       // function actually named `resume` merely keeps the tags (harmless
       // over-approximation).
+      //
+      // #774: `perform Eff::Op(..)` compiles to `throw <eff_tag>`
+      // (compile_call.vibe) EVEN WHEN the enclosing file declares no
+      // `effect Eff { .. }` of its own (e.g. lib/@vibe/http/http.vibe /
+      // lib/@vibe/socket/tcp.vibe perform `Http::*`/`Socket::*` ops whose
+      // names never appear as an `SEffectDef` in the compiled unit) --
+      // `effect_name_to_tag` falls back to a sentinel tag index in that
+      // case. Missing "perform" here (like "resume") made `uses_exceptions`
+      // false whenever a compiled unit's ONLY exception-shaped construct was
+      // an un-declared-effect `perform` with no `handle`/`throw` anywhere
+      // else, so the tag section was omitted -- and the emitted `throw
+      // <eff_tag>` then referenced a tag index that plain does not exist,
+      // failing wasm validation ("Invalid tag index: N") the moment the
+      // function's body is compiled, whether or not it is ever called.
       let mut found = match callee {
-        EIdent(cname, _) => cname == "resume",
+        EIdent(cname, _) => cname == "resume" || cname == "perform",
         _ => expr_contains_exceptions(callee)
       }
       let mut i = 0
