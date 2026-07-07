@@ -239,14 +239,17 @@ let lookup_char_from_int: (String) -> Option[Type] = (name) -> {
 }
 
 let lookup_double_to_int: (String) -> Option[Type] = (name) -> {
-  if name == "Double::to_int" {
+  // `Float` is `CtDouble` under the hood (see core/types.vibe) — codegen
+  // already treats "Double::to_int" / "Float::to_int" as the same case, so
+  // accept both spellings here too.
+  if name == "Double::to_int" || name == "Float::to_int" {
     Some(CtFn(misc_one_param(CtDouble), CtInt, None))
   }
   else None
 }
 
 let lookup_int_to_double: (String) -> Option[Type] = (name) -> {
-  if name == "Int::to_double" {
+  if name == "Int::to_double" || name == "Int::to_float" {
     Some(CtFn(misc_one_param(CtInt), CtDouble, None))
   }
   else if name == "Int::to_string" {
@@ -298,6 +301,93 @@ let lookup_misc_group_d: (String) -> Option[Type] = (name) -> {
   }
 }
 
+// Double::to_string / Float::to_string: codegen already lowers these through
+// `double_to_string_expr` (the same formatter string interpolation of a
+// float uses via `__to_string`) — only the checker-side registration was
+// missing.
+let lookup_double_to_string: (String) -> Option[Type] = (name) -> {
+  if name == "Double::to_string" || name == "Float::to_string" {
+    Some(CtFn(misc_one_param(CtDouble), CtString, None))
+  }
+  else None
+}
+
+// Native single-opcode f64 ops (f64.abs/floor/ceil/min/max) — cheap to wire
+// up since wasm has direct instructions for all of them.
+let lookup_double_unary_op: (String) -> Option[Type] = (name) -> {
+  if name == "Double::abs" || name == "Double::floor" || name == "Double::ceil" {
+    Some(CtFn(misc_one_param(CtDouble), CtDouble, None))
+  }
+  else None
+}
+
+let lookup_double_binary_op: (String) -> Option[Type] = (name) -> {
+  if name == "Double::max" || name == "Double::min" {
+    Some(CtFn(misc_two_params(CtDouble, CtDouble), CtDouble, None))
+  }
+  else None
+}
+
+let lookup_int_parse: (String) -> Option[Type] = (name) -> {
+  if name == "Int::parse" {
+    Some(CtFn(misc_one_param(CtString), CtOption(CtInt), None))
+  }
+  else None
+}
+
+let lookup_int_unary_op: (String) -> Option[Type] = (name) -> {
+  if name == "Int::abs" || name == "Int::signum" {
+    Some(CtFn(misc_one_param(CtInt), CtInt, None))
+  }
+  else None
+}
+
+let lookup_int_predicate: (String) -> Option[Type] = (name) -> {
+  if name == "Int::is_even" || name == "Int::is_odd" {
+    Some(CtFn(misc_one_param(CtInt), CtBool, None))
+  }
+  else None
+}
+
+let lookup_int_binary_op: (String) -> Option[Type] = (name) -> {
+  if name == "Int::max" || name == "Int::min" {
+    Some(CtFn(misc_two_params(CtInt, CtInt), CtInt, None))
+  }
+  else None
+}
+
+let lookup_int_clamp: (String) -> Option[Type] = (name) -> {
+  if name == "Int::clamp" {
+    Some(CtFn(misc_three_params(CtInt, CtInt, CtInt), CtInt, None))
+  }
+  else None
+}
+
+let lookup_misc_group_f: (String) -> Option[Type] = (name) -> {
+  match lookup_double_to_string(name) {
+    Some(t) => Some(t),
+    None => match lookup_double_unary_op(name) {
+      Some(t) => Some(t),
+      None => match lookup_double_binary_op(name) {
+        Some(t) => Some(t),
+        None => match lookup_int_parse(name) {
+          Some(t) => Some(t),
+          None => match lookup_int_unary_op(name) {
+            Some(t) => Some(t),
+            None => match lookup_int_predicate(name) {
+              Some(t) => Some(t),
+              None => match lookup_int_binary_op(name) {
+                Some(t) => Some(t),
+                None => lookup_int_clamp(name)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 export let lookup_misc: (String) -> Option[Type] = (name) -> {
   match lookup_misc_group_a(name) {
     Some(t) => Some(t),
@@ -307,7 +397,10 @@ export let lookup_misc: (String) -> Option[Type] = (name) -> {
         Some(t) => Some(t),
         None => match lookup_misc_group_d(name) {
           Some(t) => Some(t),
-          None => lookup_misc_group_e(name)
+          None => match lookup_misc_group_e(name) {
+            Some(t) => Some(t),
+            None => lookup_misc_group_f(name)
+          }
         }
       }
     }
