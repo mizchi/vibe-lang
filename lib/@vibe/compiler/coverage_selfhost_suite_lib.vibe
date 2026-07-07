@@ -127,11 +127,11 @@ struct ParsedCoverageCase {
 //# Functions
 
 let int_json: (Int) -> Json = (value) -> {
-  Json::JNum(Int::to_double(value))
+  JNum(Int::to_double(value))
 }
 
 let bool_json: (Bool) -> Json = (value) -> {
-  Json::JBool(value)
+  JBool(value)
 }
 
 let string_lt: (String, String) -> Bool = (a, b) -> {
@@ -156,12 +156,12 @@ let string_lt: (String, String) -> Bool = (a, b) -> {
 }
 
 let double_json: (Double) -> Json = (value) -> {
-  Json::JNum(value)
+  JNum(value)
 }
 
 let obj_get_opt: (Json, String) -> Option[Json] = (obj, key) -> {
   match obj {
-    Json::JObj(m) => if Map::has_key(m, key) {
+    JObj(m) => if Map::has_key(m, key) {
       Some(Map::get(m, key))
     } else None,
     _ => None
@@ -169,7 +169,7 @@ let obj_get_opt: (Json, String) -> Option[Json] = (obj, key) -> {
 }
 
 let string_json: (String) -> Json = (value) -> {
-  Json::JStr(value)
+  JStr(value)
 }
 
 let parse_int_or: (String, Int) -> Int = (raw, fallback) -> {
@@ -282,7 +282,7 @@ let percent_text: (Int, Int) -> String = (hit, total) -> {
 
 let json_int_text: (Json) -> String = (value) -> {
   match value {
-    Json::JNum(n) => __to_string(Double::to_int(n)),
+    JNum(n) => __to_string(Double::to_int(n)),
     _ => ""
   }
 }
@@ -293,14 +293,14 @@ let json_value_int: (Int) -> String = (value) -> {
 
 let obj_get_num_or: (Json, String, Int) -> Int = (obj, key, fallback) -> {
   match obj_get_opt(obj, key) {
-    Some(Json::JNum(value)) => Double::to_int(value),
+    Some(JNum(value)) => Double::to_int(value),
     _ => fallback
   }
 }
 
 let obj_get_str_or: (Json, String, String) -> String = (obj, key, fallback) -> {
   match obj_get_opt(obj, key) {
-    Some(Json::JStr(value)) => value,
+    Some(JStr(value)) => value,
     _ => fallback
   }
 }
@@ -319,7 +319,7 @@ let json_value_bool: (Bool) -> String = (value) -> {
 
 let obj_get_bool_or: (Json, String, Bool) -> Bool = (obj, key, fallback) -> {
   match obj_get_opt(obj, key) {
-    Some(Json::JBool(value)) => value,
+    Some(JBool(value)) => value,
     _ => fallback
   }
 }
@@ -485,7 +485,7 @@ let case_json_text: (CoverageCase) -> String = (case) -> {
 let option_double_json: (Option[Double]) -> Json = (value) -> {
   match value {
     Some(v) => double_json(v),
-    None => Json::JNull
+    None => JNull
   }
 }
 
@@ -537,7 +537,7 @@ let concat_point_entries: (Array[PointEntry], Array[PointEntry]) -> Array[PointE
 
 let normalize_line_stats: (Json, Json) -> (Int, Int) with { Error } = (raw_obj, stats_obj) -> {
   match obj_get_opt(raw_obj, "lines") {
-    Some(Json::JArr(lines)) => {
+    Some(JArr(lines)) => {
       let mut line_total = 0
       let mut line_hit = 0
       let mut i = 0
@@ -595,13 +595,13 @@ let collect_point_entries: (Json) -> Array[PointEntry] with { Error } = (raw_obj
     concat_point_entries(compact_point_entries(line_points, "line"), compact_point_entries(branch_points, "branch"))
   } else {
     match obj_get_opt(raw_obj, "points") {
-      Some(Json::JArr(points)) => {
+      Some(JArr(points)) => {
         let out = ArrayBuilder::new()
         let mut i = 0
         while i < Array::length(points) {
           let point_value = Array::get(points, i)
           match point_value {
-            Json::JStr(raw) => {
+            JStr(raw) => {
               let parts = split(raw, "|")
               if Array::length(parts) >= 3 {
                 let pid = Array::get(parts, 0)
@@ -1125,173 +1125,181 @@ export let build_suite_report_from_json_texts: (Array[CoverageCaseInput]) -> Sui
 }
 
 // ── Streaming JSON writer ──
-// Writes JSON directly to a file handle via Fs::write_chunk, avoiding
-// intermediate String::concat chains that exhaust the bump-allocator heap.
+// #769: this used to write directly to a file handle via a `Fs::write_chunk`
+// / `Fs::open_write` / `Fs::close_write` trio to avoid intermediate
+// String::concat chains that exhaust the bump-allocator heap — but none of
+// those three ever existed as compiler builtins (grep the builtin registry:
+// only `Fs::write_file` and `Fs::write_bytes` are real), so this whole path
+// has never actually run. StringBuilder gives the same O(N) avoid-concat-
+// chains property this comment cared about, so build into one and let the
+// caller do a single `Fs::write_file`.
 
-let sw: (Int, String) -> Unit with { Fs } = (fd, s) -> {
-  Fs::write_chunk(fd, s)
+let sw: (StringBuilder, String) -> Unit = (sb, s) -> {
+  StringBuilder::push(sb, s)
 }
 
-let sw_str: (Int, String) -> Unit with { Fs } = (fd, s) -> {
+let sw_str: (StringBuilder, String) -> Unit = (sb, s) -> {
   // Stream JSON string directly: write quote, chars, quote — no intermediate concat
-  Fs::write_chunk(fd, "\"")
+  StringBuilder::push(sb, "\"")
   let len = String::length(s)
   let mut i = 0
   while i < len {
     let c = String::char_code_at(s, i)
-    if c == 34 { Fs::write_chunk(fd, "\\\"") }
-    else if c == 92 { Fs::write_chunk(fd, "\\\\") }
-    else if c == 10 { Fs::write_chunk(fd, "\\n") }
-    else if c == 13 { Fs::write_chunk(fd, "\\r") }
-    else if c == 9 { Fs::write_chunk(fd, "\\t") }
-    else { Fs::write_chunk(fd, String::from_char_code(c)) }
+    if c == 34 { StringBuilder::push(sb, "\\\"") }
+    else if c == 92 { StringBuilder::push(sb, "\\\\") }
+    else if c == 10 { StringBuilder::push(sb, "\\n") }
+    else if c == 13 { StringBuilder::push(sb, "\\r") }
+    else if c == 9 { StringBuilder::push(sb, "\\t") }
+    else { StringBuilder::push(sb, String::from_char_code(c)) }
     i = i + 1
   }
-  Fs::write_chunk(fd, "\"")
+  StringBuilder::push(sb, "\"")
 }
 
-let sw_int: (Int, Int) -> Unit with { Fs } = (fd, v) -> {
-  sw(fd, __to_string(v))
+let sw_int: (StringBuilder, Int) -> Unit = (sb, v) -> {
+  sw(sb, __to_string(v))
 }
 
-let sw_double: (Int, Double) -> Unit with { Fs } = (fd, v) -> {
-  sw(fd, __to_string(v))
+let sw_double: (StringBuilder, Double) -> Unit = (sb, v) -> {
+  sw(sb, __to_string(v))
 }
 
-let sw_bool: (Int, Bool) -> Unit with { Fs } = (fd, v) -> {
-  if v { sw(fd, "true") } else { sw(fd, "false") }
+let sw_bool: (StringBuilder, Bool) -> Unit = (sb, v) -> {
+  if v { sw(sb, "true") } else { sw(sb, "false") }
 }
 
-let sw_opt_double: (Int, Option[Double]) -> Unit with { Fs } = (fd, v) -> {
+let sw_opt_double: (StringBuilder, Option[Double]) -> Unit = (sb, v) -> {
   match v {
-    Some(d) => sw_double(fd, d),
-    None => sw(fd, "null")
+    Some(d) => sw_double(sb, d),
+    None => sw(sb, "null")
   }
 }
 
-let sw_field: (Int, String, Bool) -> Unit with { Fs } = (fd, key, needs_comma) -> {
-  if needs_comma { sw(fd, ",") }
-  sw_str(fd, key)
-  sw(fd, ":")
+let sw_field: (StringBuilder, String, Bool) -> Unit = (sb, key, needs_comma) -> {
+  if needs_comma { sw(sb, ",") }
+  sw_str(sb, key)
+  sw(sb, ":")
 }
 
-let sw_case: (Int, CoverageCase) -> Unit with { Fs } = (fd, case) -> {
-  sw(fd, "{")
-  sw_field(fd, "report_path", false); sw_str(fd, case.report_path)
-  sw_field(fd, "entry_path", true); sw_str(fd, case.entry_path)
-  sw_field(fd, "execution_ok", true); sw_bool(fd, case.execution_ok)
-  sw_field(fd, "execution_error", true); sw_str(fd, case.execution_error)
-  sw_field(fd, "summary_only", true); sw_bool(fd, case.summary_only)
-  sw_field(fd, "stats", true)
-  sw(fd, "{")
-  sw_field(fd, "point_total", false); sw_int(fd, case.stats.point_total)
-  sw_field(fd, "point_hit", true); sw_int(fd, case.stats.point_hit)
-  sw_field(fd, "line_total", true); sw_int(fd, case.stats.line_total)
-  sw_field(fd, "line_hit", true); sw_int(fd, case.stats.line_hit)
-  sw_field(fd, "branch_total", true); sw_int(fd, case.stats.branch_total)
-  sw_field(fd, "branch_hit", true); sw_int(fd, case.stats.branch_hit)
-  sw(fd, "}")
-  sw_field(fd, "case_branch_total", true); sw_int(fd, case.case_branch_total)
-  sw_field(fd, "case_branch_hit", true); sw_int(fd, case.case_branch_hit)
-  sw_field(fd, "rates", true)
-  sw(fd, "{")
-  sw_field(fd, "point", false); sw_double(fd, case.point_rate)
-  sw_field(fd, "line", true); sw_double(fd, case.line_rate)
-  sw_field(fd, "branch", true); sw_double(fd, case.branch_rate)
-  sw(fd, "}")
-  sw(fd, "}")
+let sw_case: (StringBuilder, CoverageCase) -> Unit = (sb, case) -> {
+  sw(sb, "{")
+  sw_field(sb, "report_path", false); sw_str(sb, case.report_path)
+  sw_field(sb, "entry_path", true); sw_str(sb, case.entry_path)
+  sw_field(sb, "execution_ok", true); sw_bool(sb, case.execution_ok)
+  sw_field(sb, "execution_error", true); sw_str(sb, case.execution_error)
+  sw_field(sb, "summary_only", true); sw_bool(sb, case.summary_only)
+  sw_field(sb, "stats", true)
+  sw(sb, "{")
+  sw_field(sb, "point_total", false); sw_int(sb, case.stats.point_total)
+  sw_field(sb, "point_hit", true); sw_int(sb, case.stats.point_hit)
+  sw_field(sb, "line_total", true); sw_int(sb, case.stats.line_total)
+  sw_field(sb, "line_hit", true); sw_int(sb, case.stats.line_hit)
+  sw_field(sb, "branch_total", true); sw_int(sb, case.stats.branch_total)
+  sw_field(sb, "branch_hit", true); sw_int(sb, case.stats.branch_hit)
+  sw(sb, "}")
+  sw_field(sb, "case_branch_total", true); sw_int(sb, case.case_branch_total)
+  sw_field(sb, "case_branch_hit", true); sw_int(sb, case.case_branch_hit)
+  sw_field(sb, "rates", true)
+  sw(sb, "{")
+  sw_field(sb, "point", false); sw_double(sb, case.point_rate)
+  sw_field(sb, "line", true); sw_double(sb, case.line_rate)
+  sw_field(sb, "branch", true); sw_double(sb, case.branch_rate)
+  sw(sb, "}")
+  sw(sb, "}")
 }
 
-let sw_branch_gap: (Int, BranchGapEntry) -> Unit with { Fs } = (fd, gap) -> {
-  sw(fd, "{")
-  sw_field(fd, "entry_path", false); sw_str(fd, gap.entry_path)
-  sw_field(fd, "branch_miss", true); sw_int(fd, gap.branch_miss)
-  sw_field(fd, "branch_total", true); sw_int(fd, gap.branch_total)
-  sw_field(fd, "branch_hit", true); sw_int(fd, gap.branch_hit)
-  sw(fd, "}")
+let sw_branch_gap: (StringBuilder, BranchGapEntry) -> Unit = (sb, gap) -> {
+  sw(sb, "{")
+  sw_field(sb, "entry_path", false); sw_str(sb, gap.entry_path)
+  sw_field(sb, "branch_miss", true); sw_int(sb, gap.branch_miss)
+  sw_field(sb, "branch_total", true); sw_int(sb, gap.branch_total)
+  sw_field(sb, "branch_hit", true); sw_int(sb, gap.branch_hit)
+  sw(sb, "}")
 }
 
-export let write_suite_report_json_stream: (Int, SuiteReport, KpiResult) -> Unit with { Fs } = (fd, report, kpi) -> {
-  sw(fd, "{")
-  sw_field(fd, "format", false); sw_str(fd, "vibe-selfhost-suite-coverage-v1")
-  sw_field(fd, "case_count", true); sw_int(fd, report.case_count)
+export let write_suite_report_json_stream: (SuiteReport, KpiResult) -> String = (report, kpi) -> {
+  let sb = StringBuilder::new()
+  sw(sb, "{")
+  sw_field(sb, "format", false); sw_str(sb, "vibe-selfhost-suite-coverage-v1")
+  sw_field(sb, "case_count", true); sw_int(sb, report.case_count)
   // execution
-  sw_field(fd, "execution", true)
-  sw(fd, "{")
-  sw_field(fd, "trap_case_count", false); sw_int(fd, report.trap_case_count)
-  sw(fd, "}")
+  sw_field(sb, "execution", true)
+  sw(sb, "{")
+  sw_field(sb, "trap_case_count", false); sw_int(sb, report.trap_case_count)
+  sw(sb, "}")
   // stats
-  sw_field(fd, "stats", true)
-  sw(fd, "{")
-  sw_field(fd, "point_total", false); sw_int(fd, report.stats.point_total)
-  sw_field(fd, "point_hit", true); sw_int(fd, report.stats.point_hit)
-  sw_field(fd, "line_total", true); sw_int(fd, report.stats.line_total)
-  sw_field(fd, "line_hit", true); sw_int(fd, report.stats.line_hit)
-  sw_field(fd, "branch_total", true); sw_int(fd, report.stats.branch_total)
-  sw_field(fd, "branch_hit", true); sw_int(fd, report.stats.branch_hit)
-  sw(fd, "}")
+  sw_field(sb, "stats", true)
+  sw(sb, "{")
+  sw_field(sb, "point_total", false); sw_int(sb, report.stats.point_total)
+  sw_field(sb, "point_hit", true); sw_int(sb, report.stats.point_hit)
+  sw_field(sb, "line_total", true); sw_int(sb, report.stats.line_total)
+  sw_field(sb, "line_hit", true); sw_int(sb, report.stats.line_hit)
+  sw_field(sb, "branch_total", true); sw_int(sb, report.stats.branch_total)
+  sw_field(sb, "branch_hit", true); sw_int(sb, report.stats.branch_hit)
+  sw(sb, "}")
   // rates
-  sw_field(fd, "rates", true)
-  sw(fd, "{")
-  sw_field(fd, "point", false); sw_double(fd, report.point_rate)
-  sw_field(fd, "line", true); sw_double(fd, report.line_rate)
-  sw_field(fd, "branch", true); sw_double(fd, report.branch_rate)
-  sw(fd, "}")
+  sw_field(sb, "rates", true)
+  sw(sb, "{")
+  sw_field(sb, "point", false); sw_double(sb, report.point_rate)
+  sw_field(sb, "line", true); sw_double(sb, report.line_rate)
+  sw_field(sb, "branch", true); sw_double(sb, report.branch_rate)
+  sw(sb, "}")
   // cases
-  sw_field(fd, "cases", true)
-  sw(fd, "[")
+  sw_field(sb, "cases", true)
+  sw(sb, "[")
   let mut ci = 0
   while ci < Array::length(report.cases) {
-    if ci > 0 { sw(fd, ",") }
-    sw_case(fd, Array::get(report.cases, ci))
+    if ci > 0 { sw(sb, ",") }
+    sw_case(sb, Array::get(report.cases, ci))
     ci = ci + 1
   }
-  sw(fd, "]")
+  sw(sb, "]")
   // branch gaps
   let branch_gaps = top_branch_gap_entries(report.cases, 5, false)
-  sw_field(fd, "top_branch_gaps", true)
-  sw(fd, "[")
+  sw_field(sb, "top_branch_gaps", true)
+  sw(sb, "[")
   let mut bi = 0
   while bi < Array::length(branch_gaps) {
-    if bi > 0 { sw(fd, ",") }
-    sw_branch_gap(fd, Array::get(branch_gaps, bi))
+    if bi > 0 { sw(sb, ",") }
+    sw_branch_gap(sb, Array::get(branch_gaps, bi))
     bi = bi + 1
   }
-  sw(fd, "]")
+  sw(sb, "]")
   // non-aggregate branch gaps
   let na_branch_gaps = top_branch_gap_entries(report.cases, 5, true)
-  sw_field(fd, "top_non_aggregate_branch_gaps", true)
-  sw(fd, "[")
+  sw_field(sb, "top_non_aggregate_branch_gaps", true)
+  sw(sb, "[")
   let mut ni = 0
   while ni < Array::length(na_branch_gaps) {
-    if ni > 0 { sw(fd, ",") }
-    sw_branch_gap(fd, Array::get(na_branch_gaps, ni))
+    if ni > 0 { sw(sb, ",") }
+    sw_branch_gap(sb, Array::get(na_branch_gaps, ni))
     ni = ni + 1
   }
-  sw(fd, "]")
+  sw(sb, "]")
   // kpi
-  sw_field(fd, "kpi", true)
-  sw(fd, "{")
-  sw_field(fd, "ok", false); sw_bool(fd, kpi.ok)
-  sw_field(fd, "point_rate", true); sw_double(fd, kpi.point_rate)
-  sw_field(fd, "line_rate", true); sw_double(fd, kpi.line_rate)
-  sw_field(fd, "branch_rate", true); sw_double(fd, kpi.branch_rate)
-  sw_field(fd, "thresholds", true)
-  sw(fd, "{")
-  sw_field(fd, "min_point_rate", false); sw_opt_double(fd, kpi.min_point_rate)
-  sw_field(fd, "min_line_rate", true); sw_opt_double(fd, kpi.min_line_rate)
-  sw_field(fd, "min_branch_rate", true); sw_opt_double(fd, kpi.min_branch_rate)
-  sw(fd, "}")
-  sw_field(fd, "has_thresholds", true); sw_bool(fd, kpi.has_thresholds)
-  sw_field(fd, "failures", true)
-  sw(fd, "[")
+  sw_field(sb, "kpi", true)
+  sw(sb, "{")
+  sw_field(sb, "ok", false); sw_bool(sb, kpi.ok)
+  sw_field(sb, "point_rate", true); sw_double(sb, kpi.point_rate)
+  sw_field(sb, "line_rate", true); sw_double(sb, kpi.line_rate)
+  sw_field(sb, "branch_rate", true); sw_double(sb, kpi.branch_rate)
+  sw_field(sb, "thresholds", true)
+  sw(sb, "{")
+  sw_field(sb, "min_point_rate", false); sw_opt_double(sb, kpi.min_point_rate)
+  sw_field(sb, "min_line_rate", true); sw_opt_double(sb, kpi.min_line_rate)
+  sw_field(sb, "min_branch_rate", true); sw_opt_double(sb, kpi.min_branch_rate)
+  sw(sb, "}")
+  sw_field(sb, "has_thresholds", true); sw_bool(sb, kpi.has_thresholds)
+  sw_field(sb, "failures", true)
+  sw(sb, "[")
   let mut fi = 0
   while fi < Array::length(kpi.failures) {
-    if fi > 0 { sw(fd, ",") }
-    sw_str(fd, Array::get(kpi.failures, fi))
+    if fi > 0 { sw(sb, ",") }
+    sw_str(sb, Array::get(kpi.failures, fi))
     fi = fi + 1
   }
-  sw(fd, "]")
-  sw(fd, "}")
-  sw(fd, "}\n")
+  sw(sb, "]")
+  sw(sb, "}")
+  sw(sb, "}\n")
+  StringBuilder::freeze(sb)
 }
