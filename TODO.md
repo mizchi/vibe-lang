@@ -81,6 +81,21 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
   同名契約 fn と衝突するため同様に非契約のまま。副産物: `index.vibei`
   契約を持つディレクトリは境界強制（#729）により外部から直接ファイル
   import できないことを実地確認。
+- [x] **@vibex の純粋アルゴリズム4件を @vibe/core へ統合 (#766, 2026-07-07)**
+  — `base64`/`math`(+`math_double`)/`diff`/`uuid`（消費者ゼロの純粋関数
+  パッケージ）を物理統合し `index.vibei` に正式契約 fn として追加。
+  `math.vibe` の `sum(Array[Int])` は `List[Int]` 版と bare 名が衝突する
+  ため `math_extra.vibe` に分離し非契約のまま。移行の副産物として発見・
+  修正: `diff.vibe` の `text[idx] == "\n"`（Char/String 型不一致、
+  `String::char_code_at` 未使用）が実は一度も CI battery で検証されて
+  いなかった潜在バグだった（`diff` は移行前 allowlist 未登録）。
+  さらに2件、CI 未検証のまま残っていた既存バグを発見(未修正・スコープ外
+  として allowlist から除外): `math_double.vibe` の `sin(0.0)` が
+  `normalize_angle` 内で wasm メモリ OOB クラッシュ、`math_prop_test.vibe`
+  が `@vibex/quickcheck` 自体の `check_int`/`is_ok` 内で unreachable
+  trap。`@vibex/collect`（effect ベースの map/filter、trait 制約と異なる
+  設計）と `@vibex/regexp`/`@vibex/zlib`（大規模・専門的すぎる）は今回の
+  統合対象から除外。
 - [x] **#726 bundle flatten を merge machinery 化 (2026-07-04)** — Python
   flattener を廃止し、`lib/@vibe/compiler/emit_merged_source_entry.vibe`(seed で
   FS-compile される単体ツール)が ExportRenamePlan + private namespacing の

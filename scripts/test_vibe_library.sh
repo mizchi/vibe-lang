@@ -34,7 +34,7 @@ ALLOW=(
   lib/@vibex/collect/collect_effect_test.vibe
   lib/@vibex/collect/collect_test.vibe
   lib/@vibex/jsonschema/validate_test.vibe
-  lib/@vibex/math/math_test.vibe
+  lib/@vibe/core/math_test.vibe
   lib/@vibex/scan/index_import_test.vibe
 )
 
