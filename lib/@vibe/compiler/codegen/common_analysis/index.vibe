@@ -567,6 +567,32 @@ let is_inlined_async_builtin: (String) -> Bool = (name) -> {
   name == "await" || name == "Future::ready" || name == "Task::spawn" || name == "Task::join" || name == "Task::cancel" || name == "Task::race" || name == "Task::timeout" || name == "Stream::empty" || name == "Stream::once" || name == "Stream::map" || name == "Stream::filter" || name == "Stream::fold" || name == "Stream::next" || name == "String::to_bytes" || name == "Stream::to_string"
 }
 
+// #773: the scalar arithmetic/logic intrinsics ("not"/"add"/"sub"/"mul"/"lt")
+// are, like the async builtins above, lowered INLINE by compile_call.vibe
+// (`!prefer_bound_call && fname == "not"` etc.) rather than living in the func
+// table -- UNLESS a user top-level function of the same bare name shadows them,
+// in which case they're already present in `fn_names` (ctx.func_table.names)
+// and excluded by the check above. ("eq"/"Array::length"/"Bytes::length"/
+// "String::length" are unconditionally registered in the func table for every
+// compile, so they never reach this fallback and need no entry here.)
+//
+// Before this fix, a closure/lambda literal that referenced one of these bare
+// names as a call callee (e.g. `(b: Bool) -> Bool { not(b) }`) — and did NOT
+// shadow it with a same-named top-level function — fell through to the `else`
+// branch below and was wrongly recorded as a FREE VARIABLE to capture from the
+// enclosing scope. compile_lambda.vibe then allocated a captured-env slot named
+// "not" and, back in compile_call.vibe, `local_idx_hint` found "not" among the
+// closure's own `local_names` (the just-added capture), forcing
+// `prefer_bound_call = true` -- i.e. treating the wrongly captured (and
+// nonexistent-in-the-enclosing-scope) "not" value as a closure to invoke via
+// `call_indirect`. That corrupted the closure's environment and crashed with
+// "unreachable" / "null function or function signature mismatch" at runtime
+// (reported against @vibex/quickcheck's check_int/check_bool + is_ok, whose
+// property closures call `not(...)`).
+let is_inlined_scalar_builtin: (String) -> Bool = (name) -> {
+  name == "not" || name == "add" || name == "sub" || name == "mul" || name == "lt"
+}
+
 // Stack-based free variable analysis: uses in-place push/truncate on bound array
 // to avoid O(n) array copies at every scope boundary. This dramatically reduces
 // heap allocation during meta-circular self-compilation.
@@ -579,6 +605,9 @@ export let rec collect_free_vars_expr: (Expr, Array[String], Array[String], Arra
       0
     }
     else if is_inlined_async_builtin(name) {
+      0
+    }
+    else if is_inlined_scalar_builtin(name) {
       0
     }
     else if array_contains_str(out, name) {
