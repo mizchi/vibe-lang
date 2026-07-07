@@ -41,7 +41,7 @@ export enum Match {
 //# Functions
 
 let char_at = (s: String, idx: Int) -> String {
-  s[idx]
+  String::substring(s, idx, idx + 1)
 }
 
 let empty_res = () -> Array[Re] {
@@ -161,7 +161,7 @@ export let escape = (s: String) -> String {
     if is_meta_char(c) {
       result = "\{result}\\"
     }
-    result = "\{result}\{s[i]}"
+    result = "\{result}\{char_at(s, i)}"
     i = i + 1
   }
   result
@@ -272,6 +272,35 @@ let rec repeat_impl = (mc: (Re, String, Int, Int, Array[Int]) -> Array[(Int, Arr
   }
 }
 
+// Hoisted out of `match_candidates` (like `repeat_impl` above) rather than
+// defined as a nested closure that captures `match_candidates` (its own
+// enclosing `rec` binding) via `mc`: an unused nested closure capturing a
+// recursive self-reference corrupted the linear-backend heap even on
+// branches that never invoked it (#776 — minimal repro: any `let rec` with
+// an unreachable inner closure calling the outer function crashed with
+// "memory access out of bounds" on the very first call).
+let rec match_seq_impl = (mc: (Re, String, Int, Int, Array[Int]) -> Array[(Int, Array[Int])], s: String, flags: Int, parts: Array[Re], seq_pos: Int, seq_collector: Array[Int]) -> Array[(Int, Array[Int])] {
+  let part_count = Array::length(parts)
+  let mut states = [
+    (seq_pos, seq_collector)
+  ]
+  let mut idx = 0
+  while idx < part_count {
+    let next_states = empty_states()
+    let n_states = Array::length(states)
+    let mut si = 0
+    while si < n_states {
+      let (cur_pos, cur_coll) = Array::get(states, si)
+      let part_results = mc(Array::get(parts, idx), s, cur_pos, flags, cur_coll)
+      append_states(next_states, part_results)
+      si = si + 1
+    }
+    states = next_states
+    idx = idx + 1
+  }
+  states
+}
+
 let flag_ignore_case: Int = 1
 
 let chars_equal = (lhs: Int, rhs: Int, flags: Int) -> Bool {
@@ -341,8 +370,15 @@ let empty_matches = () -> Array[Match] {
 }
 
 let extract_captures = (collector: Array[Int], s: String, num_groups: Int) -> Array[String] {
-  // Preallocate exactly num_groups slots — only Array::set follows below.
-  let captures = FixedArray::make(num_groups, "")
+  // Preallocate exactly num_groups slots (filled with "") — only Array::set
+  // follows below. FixedArray::make is GC-backend-only (#776); the linear
+  // backend has no lowering for it, so build a regular Array[String] instead.
+  let captures = empty_string_array()
+  let mut fill_i = 0
+  while fill_i < num_groups {
+    Array::push(captures, "")
+    fill_i = fill_i + 1
+  }
   let clen = Array::length(collector)
   let mut ci = 0
   while ci + 2 < clen {
@@ -811,30 +847,6 @@ let in_ranges_with_flags = (c: Int, ranges: Array[(Int, Int)], flags: Int) -> Bo
 
 let rec match_candidates = (re: Re, s: String, pos: Int, flags: Int, collector: Array[Int]) -> Array[(Int, Array[Int])] {
   let len = String::length(s)
-  let match_seq_impl = (parts: Array[Re], seq_pos: Int, seq_collector: Array[Int]) -> Array[(Int, Array[Int])] {
-    let part_count = Array::length(parts)
-    let mut states = [
-      (seq_pos, seq_collector)
-    ]
-    let mut idx = 0
-    while idx < part_count {
-      let next_states = empty_states()
-      let n_states = Array::length(states)
-      let mut si = 0
-      while si < n_states {
-        let (cur_pos, cur_coll) = Array::get(states, si)
-        let part_results = match_candidates(Array::get(parts, idx), s, cur_pos, flags, cur_coll)
-        append_states(next_states, part_results)
-        si = si + 1
-      }
-      states = next_states
-      idx = idx + 1
-    }
-    states
-  }
-  let match_repeat = (inner: Re, min_n: Int, max_n: Int, lazy: Bool) -> Array[(Int, Array[Int])] {
-    repeat_impl(match_candidates, inner, s, flags, min_n, max_n, lazy, 0, pos, collector)
-  }
   match re {
     RChar(c) => if pos < len && chars_equal(c, char_at_code(s, pos), flags) {
       single_state(pos + 1, collector)
@@ -880,8 +892,8 @@ let rec match_candidates = (re: Re, s: String, pos: Int, flags: Int, collector: 
     } else {
       empty_states()
     },
-    RRepeat(inner, min_n, max_n) => match_repeat(inner, min_n, max_n, false),
-    RRepeatLazy(inner, min_n, max_n) => match_repeat(inner, min_n, max_n, true),
+    RRepeat(inner, min_n, max_n) => repeat_impl(match_candidates, inner, s, flags, min_n, max_n, false, 0, pos, collector),
+    RRepeatLazy(inner, min_n, max_n) => repeat_impl(match_candidates, inner, s, flags, min_n, max_n, true, 0, pos, collector),
     RCapture(inner, group_id) => {
       let inner_states = match_candidates(inner, s, pos, flags, collector)
       let results = empty_states()
@@ -912,19 +924,19 @@ let rec match_candidates = (re: Re, s: String, pos: Int, flags: Int, collector: 
         }
       }
     },
-    RSeq(seq_parts) => match_seq_impl(seq_parts, pos, collector),
+    RSeq(seq_parts) => match_seq_impl(match_candidates, s, flags, seq_parts, pos, collector),
     RAlt(a, b) => {
       let results = empty_states()
       append_states(results, match_candidates(a, s, pos, flags, collector))
       append_states(results, match_candidates(b, s, pos, flags, collector))
       results
     },
-    RStar(inner) => match_repeat(inner, 0, 999999, false),
-    RStarLazy(inner) => match_repeat(inner, 0, 999999, true),
-    RPlus(inner) => match_repeat(inner, 1, 999999, false),
-    RPlusLazy(inner) => match_repeat(inner, 1, 999999, true),
-    ROpt(inner) => match_repeat(inner, 0, 1, false),
-    ROptLazy(inner) => match_repeat(inner, 0, 1, true),
+    RStar(inner) => repeat_impl(match_candidates, inner, s, flags, 0, 999999, false, 0, pos, collector),
+    RStarLazy(inner) => repeat_impl(match_candidates, inner, s, flags, 0, 999999, true, 0, pos, collector),
+    RPlus(inner) => repeat_impl(match_candidates, inner, s, flags, 1, 999999, false, 0, pos, collector),
+    RPlusLazy(inner) => repeat_impl(match_candidates, inner, s, flags, 1, 999999, true, 0, pos, collector),
+    ROpt(inner) => repeat_impl(match_candidates, inner, s, flags, 0, 1, false, 0, pos, collector),
+    ROptLazy(inner) => repeat_impl(match_candidates, inner, s, flags, 0, 1, true, 0, pos, collector),
     RLookAhead(inner) => if Array::length(match_candidates(inner, s, pos, flags, collector)) > 0 {
       single_state(pos, collector)
     } else {
@@ -1116,7 +1128,7 @@ export let replace_all = (re: Re, s: String, replacement: String) -> String {
       result = "\{result}\{replacement}"
       if r == pos {
         if pos < len {
-          result = "\{result}\{s[pos]}"
+          result = "\{result}\{char_at(s, pos)}"
         }
         pos = pos + 1
       } else {
@@ -1124,7 +1136,7 @@ export let replace_all = (re: Re, s: String, replacement: String) -> String {
       }
     } else {
       if pos < len {
-        result = "\{result}\{s[pos]}"
+        result = "\{result}\{char_at(s, pos)}"
       }
       pos = pos + 1
     }
@@ -1281,7 +1293,7 @@ export let replace_with_groups = (regex: Regex, s: String, replacement: String) 
           result = "\{result}\{expanded}"
           if r == pos {
             if pos < len {
-              result = "\{result}\{s[pos]}"
+              result = "\{result}\{char_at(s, pos)}"
             }
             pos = pos + 1
           } else {
@@ -1289,7 +1301,7 @@ export let replace_with_groups = (regex: Regex, s: String, replacement: String) 
           }
         } else {
           if pos < len {
-            result = "\{result}\{s[pos]}"
+            result = "\{result}\{char_at(s, pos)}"
           }
           pos = pos + 1
         }
