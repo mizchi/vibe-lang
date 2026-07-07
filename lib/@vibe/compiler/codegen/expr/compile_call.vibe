@@ -238,6 +238,50 @@ let ts_known_int: (Expr, Array[String], CompileCtx) -> Bool = (e, local_names, c
   }
 }
 
+// A synthesized `EString` literal is NOT in the compile unit's string table
+// (same constraint double_to_string_expr documents) — a flag label is only
+// known at codegen time, so it can't have been pre-interned like a literal
+// from the original source. Build it char-by-char via `String::from_char_code`
+// + `String::concat` instead, exactly like double_to_string_expr's `ch_minus`
+// / `ch_dot` pieces. `s` must be non-empty (callers only pass " -<label>").
+let rec uninterned_string_expr: (String, Int) -> Expr = (s, i) -> {
+  let ch = ECall(EIdent("String::from_char_code", -1), [
+    EInt(String::char_code_at(s, i))
+  ], -1)
+  if i >= String::length(s) - 1 {
+    ch
+  } else {
+    ECall(EIdent("String::concat", -1), [
+      ch,
+      uninterned_string_expr(s, i + 1)
+    ], -1)
+  }
+}
+
+// #777: `sh_lines(cmd, flag1 = boolExpr1, flag2 = boolExpr2, ...)` — extra
+// labeled boolean args (beyond the command string) become `-<label>`
+// appended to the command when the labeled expression is true, so callers
+// can write `sh_lines("ls", a = true)` instead of building the flag string
+// by hand. NOTE: argument labels are NOT part of a general keyword-argument
+// feature here — labels are purely decorative for ordinary calls (args
+// still bind positionally), so this reads the literal label text directly
+// off the `ELabeledArg` AST node rather than relying on any label-based
+// rebinding machinery (there isn't one).
+let rec sh_lines_flag_cmd: (Expr, Array[Expr], Int) -> Expr = (acc, args, i) -> {
+  if i >= Array::length(args) {
+    acc
+  } else {
+    let next_acc = match Array::get(args, i) {
+      ELabeledArg(label, _, cond) => EIf(cond, ECall(EIdent("String::concat", -1), [
+        acc,
+        uninterned_string_expr(String::concat(" -", label), 0)
+      ], -1), acc),
+      _ => acc
+    }
+    sh_lines_flag_cmd(next_acc, args, i + 1)
+  }
+}
+
 export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, callee, args, local_names, next_local, ctx, ld, ce) -> {
   if is_eident(callee) {
     let fname0 = canonical_builtin_name(get_eident_name(callee))
@@ -1363,13 +1407,17 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         ], -1)
       ], -1))), local_names, next_local, ctx, ld)
     }
-    else if fname == "sh_lines" && Array::length(args) == 1 {
+    else if fname == "sh_lines" && Array::length(args) >= 1 {
       // `sh_lines(cmd) -> Array[String]`: the host import (`__sh_lines_raw`,
       // linked_compile) runs the command and returns its stdout "\n"-joined as
       // ONE packed string (same ABI as fs_read_dir). Lower to `String::split`
       // over it, with the empty-output guard yielding [] (split("", d) is [""]).
+      // #777: any args beyond the first are labeled boolean flags folded
+      // into the command string by `sh_lines_flag_cmd` (single-arg calls are
+      // the common case and pass straight through unchanged).
+      let sh_cmd = sh_lines_flag_cmd(Array::get(args, 0), args, 1)
       ce(buf, ELet("__sh_out", ECall(EIdent("__sh_lines_raw", -1), [
-        Array::get(args, 0)
+        sh_cmd
       ], -1), EIf(EBinOp("==", ECall(EIdent("String::length", -1), [
         EIdent("__sh_out", -1)
       ], -1), EInt(0)), ECall(EIdent("Array::slice", -1), [
