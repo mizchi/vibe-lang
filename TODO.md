@@ -70,6 +70,17 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
   lane の ingestion 統一（pin-blank + .vibei 脱糖が cache lane を
   バイパスするバグ修正）。残: compiler 本体が @vibe/core を require で
   消費する形への移行（#726/#730 系）、prelude の重複 helper 整理。
+- [x] **vibe/collection を @vibe/core へ統合 (#766, 2026-07-07)** — maps 専用に
+  縮小していた `vibe/collection` を撤去し、`map.vibe`/`maps.vibe` を
+  `lib/@vibe/core/` へ物理統合。`get`/`get_or`/`get_or_else`/`has_key`/
+  `keys`/`values`（trait 不要な素の `Map[String, V]` 操作）は
+  `map_get.vibe` に切り出して `index.vibei` の正式契約 fn に昇格。
+  `[K: Hash]` 版（`get_by` 等）と `Hash` trait 自体は contract 文法が
+  まだ trait を宣言できないため非契約のまま `map.vibe` に残置（package
+  境界内からのみ到達可能）。`length`/`is_empty` も List/StringSet の
+  同名契約 fn と衝突するため同様に非契約のまま。副産物: `index.vibei`
+  契約を持つディレクトリは境界強制（#729）により外部から直接ファイル
+  import できないことを実地確認。
 - [x] **#726 bundle flatten を merge machinery 化 (2026-07-04)** — Python
   flattener を廃止し、`lib/@vibe/compiler/emit_merged_source_entry.vibe`(seed で
   FS-compile される単体ツール)が ExportRenamePlan + private namespacing の

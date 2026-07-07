@@ -20,7 +20,7 @@ This directory is the vibe core library, self-hosted by porting selected parts o
 | `string.vibe` | 19 | String helpers (`equals`, `compare`, `utf8/utf16/unicode length`, `is_blank`, `trim*`, `head`, `tail`, `contains`, `replace*`, `from_char_code`) |
 | `io.vibe` | 6 | High-level stdio + ANSI/TUI helpers (`stdout_write`, `stdout_writeln`, `stdin_read`, `stdin_read_line`, `ansi_escape`) |
 
-`list.vibe` / `map.vibe` / `set.vibe` moved to `vibe/collection`.
+`list.vibe` / `map.vibe` / `set.vibe` moved to `lib/@vibe/core` (#766).
 
 Tests are separated into `*_test.vibe` files (for example, `string_test.vibe` for `string.vibe`).
 

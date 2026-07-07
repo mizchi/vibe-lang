@@ -14,8 +14,8 @@ allowlist をセットで足す。**
 
 | 置き場所 | 用途 | 例 |
 | --- | --- | --- |
-| `lib/@vibe/<pkg>/` | 契約パッケージ。`index.vibei` が公開 API。compiler 本体からも `import ../../../lib/@vibe/<pkg> { ... }` で消費できる (#741, #766) | `lib/@vibe/core` (sha1 / leb128 / list / set), `lib/@vibe/ast` (AST 透明型), `lib/@vibe/parser` (lexer/parser/printer, #753) |
-| `lib/@vibe/<domain>/` | 標準ライブラリ層。directory import (`import ../json { ... }`) は `index.vibe(i)` 経由 | `lib/@vibe/json`, `lib/@vibe/collection` |
+| `lib/@vibe/<pkg>/` | 契約パッケージ。`index.vibei` が公開 API。**境界強制 (#729)**: `index.vibei` を持つディレクトリの内部ファイルは外部から直接 import できず、契約 (ディレクトリ import) 経由のみ。compiler 本体からも `import ../../../lib/@vibe/<pkg> { ... }` で消費できる (#741, #766) | `lib/@vibe/core` (sha1 / leb128 / list / set / maps, #766), `lib/@vibe/ast` (AST 透明型), `lib/@vibe/parser` (lexer/parser/printer, #753) |
+| `lib/@vibe/<domain>/` | 標準ライブラリ層。directory import (`import ../json { ... }`) は `index.vibe(i)` 経由 | `lib/@vibe/json`, `lib/@vibe/module` |
 | `lib/@vibex/<pkg>/` | 実験・拡張層 (ADR-0065: @vibex = 仮想実験ユーザー scope)。安定したら `lib/@vibe/` へ昇格 | `lib/@vibex/fmt`, `lib/@vibex/regexp` |
 | `lib/@<user>/<pkg>/` | コンパイラ非関連の実ユーザー scope パッケージ (in-repo に置けるのは repo owner が支配する scope のみ) | `lib/@mizchi/markdown` |
 | `lib/@vibe/compiler/` | compiler 本体のみ。ライブラリを置かない (共有したいものは `lib/@vibe/` に切り出して契約 import する) | — |

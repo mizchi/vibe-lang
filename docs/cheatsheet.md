@@ -323,8 +323,8 @@ Int64Array::length(w)            // => 4
 >   (`let record { name: n } = r`) also binds any field name.
 > - **`map { ... }` literals + `Map::*` builtins + `m[k]` indexing** work
 >   standalone (#760): `Map::get` / `has_key` / `set` / `keys` and the `m["k"]`
->   index sugar all lower correctly. (`lib/@vibe/collection` remains available for a
->   richer Map API.)
+>   index sugar all lower correctly. (`lib/@vibe/core`'s `get`/`get_or`/
+>   `has_key`/`keys`/`values` remain available for a richer Map API, #766.)
 
 ## Effects (core concept)
 
