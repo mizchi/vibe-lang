@@ -9,7 +9,14 @@ import ./codegen_test_support.vibe {
 let run_one: (Bytes, String, String, String) -> Int with { Fs, Process } = (bytes, entry, label, expected,) -> {
   let path = "/tmp/_heap_e2e_" + label + ".wasm"
   Fs::write_bytes(path, bytes)
-  let out = sh_lines("wasmtime run --invoke " + entry + " " + path + " 2>/dev/null")
+  // #770: every compiled entry here is a 0-arity vibe closure, but the
+  // codegen entry ABI always takes one hidden env-pointer parameter (used by
+  // the wasm_vibe_host_runner.js custom runner's own invoke logic, which
+  // tries a real env value and falls back to 0). Plain `wasmtime run
+  // --invoke` doesn't know about that convention and needs the trailing `0`
+  // supplied explicitly, or it fails with "not enough arguments for `<entry>`"
+  // before ever running the module.
+  let out = sh_lines("wasmtime run --invoke " + entry + " " + path + " 0 2>/dev/null")
   let mut found = false
   let mut i = 0
   while i < Array::length(out) {
@@ -252,7 +259,10 @@ test "heap e2e: logical not and and/or" {
 test "heap e2e: bitwise and/or/xor" {
   // &,|,^ on n<<1 stay tagged with no correction
   let src = "let main: () -> Int = () -> {\n  let a = 12 & 10\n  let b = 12 | 10\n  let c = 12 ^ 10\n  a * 100 + b * 10 + c\n}"
-  assert_result(src, "main", "bitand_or_xor", "956")
+  // #770: 12 & 10 = 8, 12 | 10 = 14, 12 ^ 10 = 6 -> 8*100 + 14*10 + 6 = 946
+  // (the previous expected value "956" was simply a wrong hand-computed
+  // constant; wasmtime confirms the compiled program's actual output is 946).
+  assert_result(src, "main", "bitand_or_xor", "946")
 }
 
 test "heap e2e: shift left and right" {
@@ -490,7 +500,11 @@ test "heap e2e: mapbuilder build-and-discard in loop" {
 
 test "heap e2e: mapbuilder with heap (tuple) values" {
   let src = "let build: (Int) -> Int = (k) -> {\n  let b = MapBuilder::new()\n  MapBuilder::set(b, k, (k, k + 1))\n  MapBuilder::set(b, k + 1, (k + 2, k + 3))\n  let m = MapBuilder::freeze(b)\n  let p = Map::get(m, k)\n  p.0 + p.1\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut j = 0\n  while j < 100 {\n    s = s + build(j)\n    j = j + 1\n  }\n  s\n}"
-  assert_result(src, "main", "mapbuilder_heap_vals", "9900")
+  // #770: build(k) looks up key k, which was set to (k, k+1) (the k+1 slot
+  // holds a different key and never overwrites it), so p.0+p.1 = 2k+1.
+  // sum_{k=0}^{99} (2k+1) = 2*4950 + 100 = 10000 (wasmtime confirms this is
+  // what the compiled program actually returns; "9900" was a wrong constant).
+  assert_result(src, "main", "mapbuilder_heap_vals", "10000")
 }
 
 test "heap e2e: enum payload tuple drop in loop" {
