@@ -96,6 +96,27 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
   trap。`@vibex/collect`（effect ベースの map/filter、trait 制約と異なる
   設計）と `@vibex/regexp`/`@vibex/zlib`（大規模・専門的すぎる）は今回の
   統合対象から除外。
+- [ ] **#767〜#778: allowlist 除外ファイルの解消 (2026-07-07 着手)** — `--scan`
+  監査で allowlist 未登録の 122 ファイルを分類し、issue を12件作成
+  (examples 24件/#767、Fs・Env サンドボックス権限欠如19件/#768、
+  compiler facade 単体 parse 失敗6件/#769、原因不明 runtime trap 20件/#770、
+  prelude 陳腐化17件/#771、http・socket 未検証7件/#774、
+  FixedArray::make 未配線5件/#775、vibex 雑多10件/#776、
+  shell 雑多5件/#777、misc tail 3件/#778、加えて #766 移行時に発見済みの
+  math_double sin OOB/#772・quickcheck unreachable trap/#773)。並列 agent で
+  着手し、**#772 (math_double.vibe の `while` fast-path が boxed Double を
+  整数比較していたコンパイラバグを root-cause、値側で workaround)・
+  #775 (`FixedArray::make` 等が gc レーン専用登録のまま linear バックエンド
+  codegen が皆無だった欠落を `compile_call.vibe` に実装)・
+  #768 (`lib/@vibe/shell/commands.vibe` 等の Fs/Env/Stdout/Stdin 宣言漏れを
+  修正、`Fs::mkdir_p` 等はリスクが高いため codegen 配線せず allowlist に
+  文書化のみ)・#771 (prelude 17件中10件を現行 builtin surface に追従、
+  `string_parser.vibe` の実バグ修正)** の4件を merge 済み(272/272 green,
+  fixpoint 確認済み)。副産物として新規発見(未修正、要 follow-up issue):
+  `expr_is_floatish` の非リテラル Double 式に対する検出漏れ、
+  `Json::parse` が checker 名前解決に未配線、`dce_stmts` の決定論的 OOB
+  trap、shell コマンド codegen の "Invalid tag index" 実行時エラー。
+  残り #769/#770/#773/#774/#776/#777/#778 は並列 agent で作業継続中。
 - [x] **#726 bundle flatten を merge machinery 化 (2026-07-04)** — Python
   flattener を廃止し、`lib/@vibe/compiler/emit_merged_source_entry.vibe`(seed で
   FS-compile される単体ツール)が ExportRenamePlan + private namespacing の
