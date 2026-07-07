@@ -1,0 +1,191 @@
+//# Functions
+
+export let compact_string_fingerprint: (String) -> String = (source) -> {
+  let mod1 = 2147483647
+  let mod2 = 2147483629
+  let step1 = 131
+  let step2 = 65599
+  let len = String::length(source)
+  let mut h1 = 17
+  let mut h2 = 29
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(source, i)
+    h1 = (h1 * step1 + c + 1) % mod1
+    h2 = (h2 * step2 + c + i + 1) % mod2
+    i = i + 1
+  }
+  String::concat(__to_string(len), String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2)))))
+}
+
+// `version_tag` folds in whatever cache-invalidation identity the caller
+// needs (cache format version, codegen fingerprint, ...) — this package has
+// no opinion on what belongs in it, it only mixes it into the key.
+export let stable_cache_path: (String, String, String, String) -> String = (version_tag, prefix, seed, suffix) -> {
+  let raw = compact_string_fingerprint(String::concat("persistent-cache-", String::concat(version_tag, String::concat("|", seed))))
+  // O(N) build via StringBuilder; the previous `token = String::concat(token, ...)`
+  // per char was O(N²) over the fingerprint length (issue #366).
+  let token_sb = StringBuilder::new()
+  let mut i = 0
+  while i < String::length(raw) {
+    let c = String::char_code_at(raw, i)
+    let piece = if c == 58 {
+      "_"
+    } else {
+      String::from_char_code(c)
+    }
+    StringBuilder::push(token_sb, piece)
+    i = i + 1
+  }
+  let token = StringBuilder::freeze(token_sb)
+  String::concat("_build/vibe_", String::concat(prefix, String::concat("_", String::concat(token, suffix))))
+}
+
+let build_sources_fingerprint: (Array[(String, String)]) -> String = (sources) -> {
+  let mut acc = "merged"
+  let mut i = 0
+  while i < Array::length(sources) {
+    let (_, source) = Array::get(sources, i)
+    let next = String::concat(acc, String::concat("|", compact_string_fingerprint(source)))
+    acc = compact_string_fingerprint(next)
+    i = i + 1
+  }
+  acc
+}
+
+export let persistent_artifact_cache_path: (String, String, String, String) -> String = (version_tag, kind, entry_name, fingerprint) -> {
+  stable_cache_path(version_tag, "selfhost_artifact", String::concat(kind, String::concat("|", String::concat(entry_name, String::concat("|", fingerprint)))), ".bin")
+}
+
+export let store_persistent_artifact: (String, String, String, String, Bytes) -> Unit with { Error, Fs } = (version_tag, kind, entry_name, fingerprint, bytes) -> {
+  let path = persistent_artifact_cache_path(version_tag, kind, entry_name, fingerprint)
+  Fs::write_bytes(path, bytes)
+}
+
+export let persistent_dep_list_cache_path: (String, String, String, String) -> String = (version_tag, path, source_fingerprint, resolution_seed) -> {
+  stable_cache_path(version_tag, "selfhost_dep_list", String::concat(path, String::concat("|", String::concat(source_fingerprint, resolution_seed))), ".tsv")
+}
+
+export let persistent_type_env_cache_path: (String, String) -> String = (version_tag, fingerprint) -> {
+  stable_cache_path(version_tag, "selfhost_type_env_v2", fingerprint, ".tsv")
+}
+
+export let build_source_groups_fingerprint: (Array[(String, Array[(String, String)])]) -> String = (groups) -> {
+  let mut acc = "merged-groups"
+  let mut i = 0
+  while i < Array::length(groups) {
+    let (group_name, sources) = Array::get(groups, i)
+    let fingerprint = build_sources_fingerprint(sources)
+    let next = String::concat(acc, String::concat("|", String::concat(group_name, String::concat("=", fingerprint))))
+    acc = compact_string_fingerprint(next)
+    i = i + 1
+  }
+  acc
+}
+
+export let normalize_persistent_cache_text: (String) -> String = (text) -> {
+  let len = String::length(text)
+  let mut start = 0
+  while start < len && String::char_code_at(text, start) == 0 {
+    start = start + 1
+  }
+  if start == 0 {
+    text
+  } else {
+    text[start: len]
+  }
+}
+
+export let load_persistent_artifact: (String, String, String, String) -> Option[Bytes] with { Error, Fs } = (version_tag, kind, entry_name, fingerprint) -> {
+  let path = persistent_artifact_cache_path(version_tag, kind, entry_name, fingerprint)
+  if !(Fs::exists(path)) {
+    None
+  } else {
+    Some(Fs::read_bytes(path))
+  }
+}
+
+export let persistent_source_list_cache_path: (String, String, String) -> String = (version_tag, entry_path, resolution_seed) -> {
+  stable_cache_path(version_tag, "selfhost_source_list", String::concat(entry_path, resolution_seed), ".tsv")
+}
+
+export let persistent_source_group_cache_path: (String, String, String) -> String = (version_tag, entry_path, resolution_seed) -> {
+  stable_cache_path(version_tag, "selfhost_source_groups", String::concat(entry_path, resolution_seed), ".tsv")
+}
+
+export let persistent_module_header_cache_path: (String, String, String, String) -> String = (version_tag, path, source_fingerprint, resolution_seed) -> {
+  stable_cache_path(version_tag, "selfhost_module_header_v2", String::concat(path, String::concat("|", String::concat(source_fingerprint, resolution_seed))), ".tsv")
+}
+
+export let persistent_manifest_header_cache_path: (String, String) -> String = (version_tag, entry_path) -> {
+  stable_cache_path(version_tag, "selfhost_manifest_headers", entry_path, ".tsv")
+}
+
+export let persistent_leaf_fingerprint_cache_path: (String, String, String) -> String = (version_tag, path, source_fingerprint) -> {
+  stable_cache_path(version_tag, "selfhost_leaf_fp_v2", String::concat(path, String::concat("|", source_fingerprint)), ".tsv")
+}
+
+let build_sources_fingerprint_from_compact_fingerprints: (Array[String]) -> String = (source_fingerprints) -> {
+  let mut acc = "merged"
+  let mut i = 0
+  while i < Array::length(source_fingerprints) {
+    let next = String::concat(acc, String::concat("|", Array::get(source_fingerprints, i)))
+    acc = compact_string_fingerprint(next)
+    i = i + 1
+  }
+  acc
+}
+
+export let build_source_groups_fingerprint_from_compact_fingerprints: (Array[(String, Array[(String, String)])]) -> String = (groups) -> {
+  let mut acc = "merged-groups"
+  let mut i = 0
+  while i < Array::length(groups) {
+    let (group_name, specs) = Array::get(groups, i)
+    let source_fingerprints = Array::slice([
+      ""
+    ], 0, 0)
+    let mut j = 0
+    while j < Array::length(specs) {
+      let (_, source_fingerprint) = Array::get(specs, j)
+      Array::push(source_fingerprints, source_fingerprint)
+      j = j + 1
+    }
+    let fingerprint = build_sources_fingerprint_from_compact_fingerprints(source_fingerprints)
+    let next = String::concat(acc, String::concat("|", String::concat(group_name, String::concat("=", fingerprint))))
+    acc = compact_string_fingerprint(next)
+    i = i + 1
+  }
+  acc
+}
+
+export let build_fs_compile_wasi_artifact_fingerprint_from_group_fingerprint: (String, String) -> String = (source_groups_fingerprint, entry_name) -> {
+  compact_string_fingerprint(String::concat("fs-compile|", String::concat(source_groups_fingerprint, String::concat("|", entry_name))))
+}
+
+export let build_fs_compile_wasi_artifact_fingerprint: (Array[(String, Array[(String, String)])], String) -> String = (source_groups, entry_name) -> {
+  build_fs_compile_wasi_artifact_fingerprint_from_group_fingerprint(build_source_groups_fingerprint(source_groups), entry_name)
+}
+
+export let build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint: (String, String, String) -> String = (source_groups_fingerprint, entry_name, mode) -> {
+  compact_string_fingerprint(String::concat("file-compile|", String::concat(source_groups_fingerprint, String::concat("|", String::concat(entry_name, String::concat("|", mode))))))
+}
+
+export let build_file_compile_wasi_artifact_fingerprint: (Array[(String, Array[(String, String)])], String, String) -> String = (source_groups, entry_name, mode) -> {
+  build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint(build_source_groups_fingerprint(source_groups), entry_name, mode)
+}
+
+export let build_fs_compile_module_artifact_fingerprint_from_group_fingerprint: (String) -> String = (source_groups_fingerprint) -> {
+  compact_string_fingerprint(String::concat("fs-compile-module|", source_groups_fingerprint))
+}
+
+export let build_fs_compile_module_artifact_fingerprint: (Array[(String, Array[(String, String)])]) -> String = (source_groups) -> {
+  build_fs_compile_module_artifact_fingerprint_from_group_fingerprint(build_source_groups_fingerprint(source_groups))
+}
+
+export let build_file_compile_module_artifact_fingerprint_from_group_fingerprint: (String) -> String = (source_groups_fingerprint) -> {
+  compact_string_fingerprint(String::concat("file-compile-module|", source_groups_fingerprint))
+}
+
+export let build_file_compile_module_artifact_fingerprint: (Array[(String, Array[(String, String)])]) -> String = (source_groups) -> {
+  build_file_compile_module_artifact_fingerprint_from_group_fingerprint(build_source_groups_fingerprint(source_groups))
+}
