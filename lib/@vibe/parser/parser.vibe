@@ -111,6 +111,32 @@ let parse_import_items: (Array[Token], Int) -> (Array[(String, Option[String])],
   }
 }
 
+// #769: a trailing `import <path> @alias` alias token must be recognized
+// regardless of what the path itself starts with. This used to be checked
+// only on the branch for a path starting with a bare identifier (`import
+// pkg_name @alias`); a path starting with `.`/`..` (the common case for the
+// compiler's own facades, e.g. `import ../../../lib/@vibe/json @json`) fell
+// through the catch-all `_` arm below, which always demanded a `{` next and
+// never looked for an alias — surfacing as "expected { but got ident" once
+// collect_import_path correctly stopped just before the alias token.
+let parse_import_path_tail: (Array[Token], Int, String) -> (Stmt, Int) with { Error } = (tokens, bp, path) -> {
+  match peek(tokens, bp) {
+    TIdent(alias_name) => if String::length(alias_name) > 1 && String::char_code_at(alias_name, 0) == '@' {
+      let alias_str = String::substring(alias_name, 1, String::length(alias_name))
+      (SAliasDecl(alias_str, path), bp + 1)
+    } else {
+      let br = expect_tk(tokens, bp, "{")
+      let (items, end) = parse_import_items(tokens, br);
+      (SImport(path, items), end)
+    },
+    _ => {
+      let br = expect_tk(tokens, bp, "{")
+      let (items, end) = parse_import_items(tokens, br);
+      (SImport(path, items), end)
+    }
+  }
+}
+
 let parse_import_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens, pos) -> {
   match peek(tokens, pos) {
     TIdent(name) => if String::length(name) > 1 && String::char_code_at(name, 0) == '@' {
@@ -119,27 +145,11 @@ let parse_import_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (toke
       (SImport(name, items), end)
     } else {
       let (path, bp) = collect_import_path(tokens, pos, "")
-      match peek(tokens, bp) {
-        TIdent(alias_name) => if String::length(alias_name) > 1 && String::char_code_at(alias_name, 0) == '@' {
-          let alias_str = String::substring(alias_name, 1, String::length(alias_name))
-          (SAliasDecl(alias_str, path), bp + 1)
-        } else {
-          let br = expect_tk(tokens, bp, "{")
-          let (items, end) = parse_import_items(tokens, br);
-          (SImport(path, items), end)
-        },
-        _ => {
-          let br = expect_tk(tokens, bp, "{")
-          let (items, end) = parse_import_items(tokens, br);
-          (SImport(path, items), end)
-        }
-      }
+      parse_import_path_tail(tokens, bp, path)
     },
     _ => {
       let (path, bp) = collect_import_path(tokens, pos, "")
-      let br = expect_tk(tokens, bp, "{")
-      let (items, end) = parse_import_items(tokens, br);
-      (SImport(path, items), end)
+      parse_import_path_tail(tokens, bp, path)
     }
   }
 }
@@ -263,6 +273,17 @@ let parse_export_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Err
       _ => throw("expected name in export list")
     },
     TDot => {
+      let (path, bp) = collect_import_path(tokens, pos, "")
+      let br = expect_tk(tokens, bp, "{")
+      let (items, end) = parse_import_items(tokens, br);
+      (SReExport(path, items), end)
+    },
+    // #769: `export ../foo/index.vibe { .. }` (a re-export that climbs OUT of
+    // the current directory, as used by entry/compiler/index.vibe) is exactly
+    // as valid an import-path start as `export ./foo { .. }` — only the
+    // single-dot case was wired up here, so a leading `..` fell through to
+    // the catch-all "unexpected after 'export'" error.
+    TDotDot => {
       let (path, bp) = collect_import_path(tokens, pos, "")
       let br = expect_tk(tokens, bp, "{")
       let (items, end) = parse_import_items(tokens, br);
