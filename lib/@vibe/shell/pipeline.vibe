@@ -4,7 +4,72 @@ import ./types.vibe {
   type FileEntry
 }
 
+// #777: `Json::parse`/`Json::stringify`/`Json::get`/... below were written
+// against the MoonBit host's builtin `Json` type (auto-imported methods).
+// The selfhost `@vibe/json` package only ships Result-based primitives, so
+// use the direct-value convenience wrappers in json_convenience.vibe instead
+// (`Json::field` there, not `Json::get` — see that file's header comment for
+// why the name differs).
+import ../json/json_convenience.vibe {
+  Json::parse, Json::stringify, Json::keys, Json::field, Json::type_of, Json::length, Json::index, Json::number, Json::string
+}
+
 //# Functions
+
+// #777: `String::count`/`String::replace_all` (`../prelude/string.vibe`) are
+// real prelude functions, not checker builtins — normally that just means
+// "needs an explicit import" (same class of host-era rot as #742). But
+// importing EITHER of them into this file, together with `dirname`'s dynamic
+// string slice below, trips a real selfhost codegen bug: the imported
+// function's `let rec` + dynamic-slice body corrupts a WASM function
+// elsewhere in this compile unit ("not enough arguments on the stack for
+// call" at runtime instantiation, in a function that never even calls the
+// import). Reimplementing the two helpers locally (iteratively, no `let
+// rec`) sidesteps the bug without touching codegen. Tracked for a real fix;
+// do not reintroduce the prelude import here without re-testing.
+let pipeline_count = (s: String, sub: String) -> Int {
+  let s_len = String::length(s)
+  let sub_len = String::length(sub)
+  if sub_len == 0 || sub_len > s_len {
+    0
+  } else {
+    let mut i = 0
+    let mut acc = 0
+    while i <= s_len - sub_len {
+      if s[i: i + sub_len] == sub {
+        acc = acc + 1
+        i = i + sub_len
+      } else {
+        i = i + 1
+      }
+    }
+    acc
+  }
+}
+
+let pipeline_replace_all = (s: String, pattern: String, replacement: String) -> String {
+  let pat_len = String::length(pattern)
+  let s_len = String::length(s)
+  if pat_len == 0 || pat_len > s_len {
+    s
+  } else {
+    let sb = StringBuilder::new()
+    let mut i = 0
+    while i <= s_len - pat_len {
+      if s[i: i + pat_len] == pattern {
+        StringBuilder::push(sb, replacement)
+        i = i + pat_len
+      } else {
+        StringBuilder::push(sb, s[i: i + 1])
+        i = i + 1
+      }
+    }
+    if i < s_len {
+      StringBuilder::push(sb, s[i: s_len])
+    }
+    StringBuilder::freeze(sb)
+  }
+}
 
 export let jq = (text: String, expr: String) -> String {
   let root = Json::parse(text)
@@ -41,7 +106,7 @@ export let jq = (text: String, expr: String) -> String {
         if i > 0 {
           StringBuilder::push(sb, ",")
         }
-        StringBuilder::push(sb, Json::stringify(Json::get(root, Array::get(ks, i))))
+        StringBuilder::push(sb, Json::stringify(Json::field(root, Array::get(ks, i))))
         i = i + 1
       }
       StringBuilder::push(sb, "]")
@@ -64,32 +129,34 @@ export let jq = (text: String, expr: String) -> String {
     let mut idx = 0
     let mut k = 0
     while k < idx_len {
+      // #777: `idx_str[k]` (single-index) is an Int char code — compare
+      // against char literals, not one-char strings.
       let c = idx_str[k]
-      let d = if c == "0" {
+      let d = if c == '0' {
         0
       }
-      else if c == "1" {
+      else if c == '1' {
         1
       }
-      else if c == "2" {
+      else if c == '2' {
         2
       }
-      else if c == "3" {
+      else if c == '3' {
         3
       }
-      else if c == "4" {
+      else if c == '4' {
         4
       }
-      else if c == "5" {
+      else if c == '5' {
         5
       }
-      else if c == "6" {
+      else if c == '6' {
         6
       }
-      else if c == "7" {
+      else if c == '7' {
         7
       }
-      else if c == "8" {
+      else if c == '8' {
         8
       }
       else 9
@@ -102,11 +169,11 @@ export let jq = (text: String, expr: String) -> String {
     let mut cur = root
     let mut i = 0
     while i < Array::length(parts) {
-      cur = Json::get(cur, Array::get(parts, i))
+      cur = Json::field(cur, Array::get(parts, i))
       i = i + 1
     }
     Json::stringify(cur)
-  } else Json::stringify(Json::get(root, e))
+  } else Json::stringify(Json::field(root, e))
 }
 
 export let nl = (xs: Array[String], sep: String) -> Array[String] {
@@ -128,13 +195,15 @@ export let tr = (text: String, src_chars: String, dst_chars: String) -> String {
     let len = String::length(text)
     let mut i = 0
     while i < len {
-      let ch = text[i]
-      let idx = String::index_of(src_chars, ch)
+      // #777: `text[i]` (single-index) is an Int char code — `String::index_of`
+      // needs the range-slice `text[i: i+1]` (String), not the Int.
+      let ch_str = text[i: i + 1]
+      let idx = String::index_of(src_chars, ch_str)
       if idx >= 0 {
         if idx < String::length(dst_chars) {
-          StringBuilder::push(sb, dst_chars[idx])
+          StringBuilder::push(sb, dst_chars[idx: idx + 1])
         }
-      } else StringBuilder::push(sb, ch)
+      } else StringBuilder::push(sb, ch_str)
       i = i + 1
     }
     StringBuilder::freeze(sb)
@@ -240,15 +309,54 @@ export let wc_l = (text: String) -> Int {
 }
 
 export let count = (text: String, sub: String) -> Int {
-  String::count(text, sub)
+  pipeline_count(text, sub)
 }
 
 export let lines = (text: String) -> Array[String] {
   String::split(text, "\n")
 }
 
+// #777: `String::to_lower`/`String::to_upper` are declared as checker
+// builtins (checker/builtins_string2.vibe) but have NO codegen backing
+// anywhere (linear or wasm-gc) — calling them fails at codegen with
+// "undefined variable (local)" once the checker's builtin stub falls
+// through. `../prelude/string.vibe`'s own `String::to_lower`/`to_upper`
+// wrappers are self-recursive (call themselves) for the same reason, so
+// importing them would not help either. ASCII-only case conversion done
+// manually here via `char_code_at`/`from_char_code`, both of which ARE
+// implemented.
+let pipeline_to_lower = (s: String) -> String {
+  let len = String::length(s)
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(s, i)
+    let c2 = if c >= 65 && c <= 90 {
+      c + 32
+    } else c
+    StringBuilder::push(sb, String::from_char_code(c2))
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+let pipeline_to_upper = (s: String) -> String {
+  let len = String::length(s)
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(s, i)
+    let c2 = if c >= 97 && c <= 122 {
+      c - 32
+    } else c
+    StringBuilder::push(sb, String::from_char_code(c2))
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
 export let lower = (text: String) -> String {
-  String::to_lower(text)
+  pipeline_to_lower(text)
 }
 
 export let paste = (xs: Array[String], ys: Array[String], sep: String) -> Array[String] {
@@ -279,7 +387,7 @@ export let split = (text: String, sep: String) -> Array[String] {
 }
 
 export let upper = (text: String) -> String {
-  String::to_upper(text)
+  pipeline_to_upper(text)
 }
 
 export let expand = (text: String, tab_width: Int) -> String {
@@ -295,10 +403,12 @@ export let expand = (text: String, tab_width: Int) -> String {
     let spaces = StringBuilder::freeze(spaces_sb)
     let mut i = 0
     while i < len {
+      // #777: `text[i]` (single-index) is an Int char code — compare against
+      // a char literal, and use the range-slice for the raw-char push.
       let ch = text[i]
-      if ch == "\t" {
+      if ch == '\t' {
         StringBuilder::push(sb, spaces)
-      } else StringBuilder::push(sb, ch)
+      } else StringBuilder::push(sb, text[i: i + 1])
       i = i + 1
     }
     StringBuilder::freeze(sb)
@@ -328,7 +438,9 @@ export let jq_str = (text: String, expr: String) -> String {
 }
 
 export let char_at = (text: String, idx: Int) -> String {
-  text[idx]
+  // #777: `text[idx]` (single-index) is an Int char code — this function's
+  // declared return type is String, so slice instead.
+  text[idx: idx + 1]
 }
 
 export let dirname = (path: String) -> String {
@@ -345,14 +457,14 @@ export let grep_re = (xs: Array[String], pattern: String) -> Array[String] with 
   if text == "" {
     xs
   } else {
-    let escaped_text = String::replace_all(text, "'", "'\\''")
-    let escaped_pattern = String::replace_all(pattern, "'", "'\\''")
+    let escaped_text = pipeline_replace_all(text, "'", "'\\''")
+    let escaped_pattern = pipeline_replace_all(pattern, "'", "'\\''")
     sh_lines("printf '%s' '\{escaped_text}' | grep -E '\{escaped_pattern}'")
   }
 }
 
 export let replace = (text: String, pattern: String, replacement: String) -> String {
-  String::replace_all(text, pattern, replacement)
+  pipeline_replace_all(text, pattern, replacement)
 }
 
 export let rev_str = (xs: Array[String]) -> Array[String] {
@@ -424,7 +536,10 @@ export let sort_str = (xs: Array[String]) -> Array[String] {
     let key = Array::get(arr, i2)
     let mut j = i2 - 1
     while j >= 0 {
-      if __lt(key, Array::get(arr, j)) {
+      // #777: `__lt` is not a real function (host-era intrinsic, never
+      // ported) — the `<` operator does lexicographic String comparison in
+      // the selfhost compiler, which is what a string sort needs here.
+      if key < Array::get(arr, j) {
         arr[j + 1] = Array::get(arr, j)
         j = j - 1
       } else break
