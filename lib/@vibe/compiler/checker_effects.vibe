@@ -1506,35 +1506,50 @@ export let rec check_mutability_expr: (Expr, Array[String]) -> Array[EffectError
   }
 }
 
-let check_mutability_binding: (Expr) -> Array[EffectError] = (body) -> {
+// #770: `outer` carries the top-level `let mut` names already in scope from
+// earlier sibling statements (see check_mutability_stmts below) so a later
+// top-level statement's assignment to an earlier top-level `mut` binding
+// (directly, or via a closure capturing it) is recognized as mutable instead
+// of being misreported as `cannot assign to immutable binding`.
+let check_mutability_binding: (Expr, Array[String]) -> Array[EffectError] = (body, outer) -> {
   match body {
-    EFn(_, _, params, _, _, fbody) => check_mutability_expr(fbody, mut_with_params(Array::slice([
-      ""
-    ], 0, 0), params)),
-    _ => check_mutability_expr(body, Array::slice([
-      ""
-    ], 0, 0))
+    EFn(_, _, params, _, _, fbody) => check_mutability_expr(fbody, mut_with_params(outer, params)),
+    _ => check_mutability_expr(body, outer)
   }
 }
 
+// #770: top-level program statements are a flat `Array[Stmt]` sequence (not
+// nested `ELetMut` continuations like a function/test body), so a top-level
+// `let mut x = ...` must thread `x` forward into the mutability check of
+// every later sibling statement by accumulating `mutable` across the loop —
+// mirroring how `check_stmts` threads `env` across the same array. Before
+// this fix each statement was checked in isolation starting from an empty
+// mutable set, so any top-level `let mut` followed by an assignment in a
+// later top-level statement (e.g. a top-level `while` loop mutating a
+// counter) was rejected with a bogus `cannot assign to immutable binding`
+// error even though the program is valid.
 export let check_mutability_stmts: (Array[Stmt]) -> Array[EffectError] = (stmts) -> {
   let errors = Array::slice([
     EEThrowOutsideEffect("")
   ], 0, 0)
+  let mut mutable = Array::slice([
+    ""
+  ], 0, 0)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, _, _, body) => append_eff_errs(errors, check_mutability_binding(body)),
-      SLetMut(_, _, body) => append_eff_errs(errors, check_mutability_binding(body)),
+      SLet(_, _, _, _, body) => append_eff_errs(errors, check_mutability_binding(body, mutable)),
+      SLetMut(name, _, body) => {
+        append_eff_errs(errors, check_mutability_binding(body, mutable))
+        mutable = mut_with(mutable, name)
+      },
       STest(_, body) => append_eff_errs(errors, check_mutability_expr(body, Array::slice([
         ""
       ], 0, 0))),
       SBench(_, body) => append_eff_errs(errors, check_mutability_expr(body, Array::slice([
         ""
       ], 0, 0))),
-      SExpr(e) => append_eff_errs(errors, check_mutability_expr(e, Array::slice([
-        ""
-      ], 0, 0))),
+      SExpr(e) => append_eff_errs(errors, check_mutability_expr(e, mutable)),
       _ => ()
     }
     i = i + 1
