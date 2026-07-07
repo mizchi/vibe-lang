@@ -59,8 +59,29 @@ export let respond_empty = (status: Int) -> Response {
   }
 }
 
+// #778: `String::to_lower` is a checker-recognized builtin name with no
+// codegen implementation (undefined variable (local): String::to_lower
+// @call). Normalize header names with an explicit char-code loop instead of
+// relying on the broken builtin.
+let ascii_lower = (s: String) -> String {
+  let len = String::length(s)
+  let rec go = (i: Int, acc: String) -> String {
+    if i >= len {
+      acc
+    }
+    else {
+      let code = String::char_code_at(s, i)
+      let lower_code = if code >= 65 && code <= 90 {
+        code + 32
+      } else code
+      go(i + 1, String::concat(acc, String::from_char_code(lower_code)))
+    }
+  }
+  go(0, "")
+}
+
 export let request_header = (req: Request, name: String) -> Option[String] {
-  let key = String::to_lower(name)
+  let key = ascii_lower(name)
   if Map::has_key(req.headers, key) {
     Some(Map::get(req.headers, key))
   } else None
