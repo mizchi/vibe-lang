@@ -328,37 +328,17 @@ let lookup_double_binary_op: (String) -> Option[Type] = (name) -> {
   else None
 }
 
+// Int::abs/signum/is_even/is_odd/max/min/clamp are intentionally NOT
+// registered as compiler builtins here: lib/@vibe/prelude/int.vibe already
+// defines all of them as regular user-space functions (with correct
+// overflow/saturation semantics, e.g. Int::abs(int_min_value) ==
+// int_max_value). Registering them as builtins too would let this
+// checker-side entry win over the prelude definition and silently swap in
+// different (wrong-for-edge-cases) codegen — this previously broke
+// lib/@vibe/prelude/int_test.vibe after a #767 attempt added them.
 let lookup_int_parse: (String) -> Option[Type] = (name) -> {
   if name == "Int::parse" {
     Some(CtFn(misc_one_param(CtString), CtOption(CtInt), None))
-  }
-  else None
-}
-
-let lookup_int_unary_op: (String) -> Option[Type] = (name) -> {
-  if name == "Int::abs" || name == "Int::signum" {
-    Some(CtFn(misc_one_param(CtInt), CtInt, None))
-  }
-  else None
-}
-
-let lookup_int_predicate: (String) -> Option[Type] = (name) -> {
-  if name == "Int::is_even" || name == "Int::is_odd" {
-    Some(CtFn(misc_one_param(CtInt), CtBool, None))
-  }
-  else None
-}
-
-let lookup_int_binary_op: (String) -> Option[Type] = (name) -> {
-  if name == "Int::max" || name == "Int::min" {
-    Some(CtFn(misc_two_params(CtInt, CtInt), CtInt, None))
-  }
-  else None
-}
-
-let lookup_int_clamp: (String) -> Option[Type] = (name) -> {
-  if name == "Int::clamp" {
-    Some(CtFn(misc_three_params(CtInt, CtInt, CtInt), CtInt, None))
   }
   else None
 }
@@ -370,19 +350,7 @@ let lookup_misc_group_f: (String) -> Option[Type] = (name) -> {
       Some(t) => Some(t),
       None => match lookup_double_binary_op(name) {
         Some(t) => Some(t),
-        None => match lookup_int_parse(name) {
-          Some(t) => Some(t),
-          None => match lookup_int_unary_op(name) {
-            Some(t) => Some(t),
-            None => match lookup_int_predicate(name) {
-              Some(t) => Some(t),
-              None => match lookup_int_binary_op(name) {
-                Some(t) => Some(t),
-                None => lookup_int_clamp(name)
-              }
-            }
-          }
-        }
+        None => lookup_int_parse(name)
       }
     }
   }
