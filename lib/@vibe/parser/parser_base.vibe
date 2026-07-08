@@ -716,7 +716,19 @@ export let rec collect_import_path: (Array[Token], Int, String) -> (String, Int)
     TDot => collect_import_path(tokens, pos + 1, String::concat(acc, ".")),
     TDotDot => collect_import_path(tokens, pos + 1, String::concat(acc, "..")),
     TSlash => collect_import_path(tokens, pos + 1, String::concat(acc, "/")),
-    TIdent(name) => collect_import_path(tokens, pos + 1, String::concat(acc, name)),
+    // #769: a `@name` identifier only continues the PATH when it directly
+    // follows a '/' (a scoped package segment, e.g. `lib/@vibe/json`). One
+    // that follows a completed path with no separating '/' is the trailing
+    // `import <path> @alias` alias token (parse_import_stmt peeks for it
+    // right after this call returns) — stop here and let the caller see it,
+    // instead of silently absorbing it into the path text and running on
+    // into the NEXT statement's tokens looking for a '{' that will never
+    // come (surfaced as "unexpected token in import path: import").
+    TIdent(name) => if String::length(name) > 0 && String::char_code_at(name, 0) == '@' && !String::ends_with(acc, "/") {
+      (acc, pos)
+    } else {
+      collect_import_path(tokens, pos + 1, String::concat(acc, name))
+    },
     TMinus => collect_import_path(tokens, pos + 1, String::concat(acc, "-")),
     TModule => collect_import_path(tokens, pos + 1, String::concat(acc, "module")),
     TImpl => collect_import_path(tokens, pos + 1, String::concat(acc, "impl")),

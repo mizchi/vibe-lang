@@ -16,7 +16,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 SEED="$ROOT_DIR/bootstrap/seed/selfhost_compiler.wasm"
-FLAT="vibe/compiler/selfhost_cli_adapter_module_source.vibe"
+FLAT="lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe"
 RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"
 OUT_DIR="$ROOT_DIR/_build/coverage/selfhost-testexec"
 CORPUS_ACC="$ROOT_DIR/_build/coverage/selfhost-corpus/acc.json"
@@ -28,7 +28,7 @@ rel() { python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2])
 # Per-test: compile under coverage (instrument output) + run, dump raw bitmap.
 i=0; comp_ok=0; run_ok=0
 : > "$OUT_DIR/runs.txt"
-for f in vibe/compiler/*_test.vibe; do
+for f in lib/@vibe/compiler/*_test.vibe; do
   i=$((i+1))
   base="$(basename "$f" .vibe)"
   bin="$OUT_DIR/bins/$base.wasm"

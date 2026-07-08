@@ -1,0 +1,1558 @@
+//# Imports
+
+import ./core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr
+}
+
+import ./builtin_name.vibe {
+  canonical_builtin_name
+}
+
+import ./checker/builtins.vibe {
+  lookup_builtin
+}
+
+import ./types.vibe {
+  Type, TypeEnv, env_lookup
+}
+
+//# Types
+
+export enum EffectError {
+  EEThrowOutsideEffect(String);
+  EEEffectfulCallOutsideEffect(String);
+  EEPerformUndeclaredEffect(String, String);
+  EEAssignImmutable(String)
+}
+
+//# Functions
+
+let is_effectful_type: (Type) -> Bool = (ty) -> {
+  match ty {
+    CtFn(_, _, Some(_)) => true,
+    _ => false
+  }
+}
+
+let is_effectful_name: (String, TypeEnv) -> Bool = (name, env) -> {
+  match env_lookup(env, name) {
+    Some(ty) => is_effectful_type(ty),
+    None => {
+      let normalized = canonical_builtin_name(name)
+      match lookup_builtin(normalized) {
+        Some(ty) => is_effectful_type(ty),
+        None => false
+      }
+    }
+  }
+}
+
+export let rec check_effects_expr: (Expr, TypeEnv, Bool) -> Array[EffectError] = (expr, env, in_effect) -> {
+  let errors = Array::slice([
+    EEThrowOutsideEffect("")
+  ], 0, 0)
+  match expr {
+    EThrow(_) => {
+      if !in_effect {
+        Array::push(errors, EEThrowOutsideEffect("throw"))
+      }
+      errors
+    },
+    EHandle(body, arms) => {
+      let body_errs = check_effects_expr(body, env, true)
+      let mut i = 0
+      while i < Array::length(body_errs) {
+        Array::push(errors, Array::get(body_errs, i))
+        i = i + 1
+      }
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, ai)
+        let arm_errs = check_effects_expr(arm_body, env, in_effect)
+        let mut j = 0
+        while j < Array::length(arm_errs) {
+          Array::push(errors, Array::get(arm_errs, j))
+          j = j + 1
+        }
+        ai = ai + 1
+      }
+      errors
+    },
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(name, _) => if !in_effect && is_effectful_name(name, env) {
+          Array::push(errors, EEEffectfulCallOutsideEffect(name))
+        }
+        ,
+        _ => ()
+      }
+      let ce = check_effects_expr(callee, env, in_effect)
+      let mut i = 0
+      while i < Array::length(ce) {
+        Array::push(errors, Array::get(ce, i))
+        i = i + 1
+      }
+      let mut ai = 0
+      while ai < Array::length(args) {
+        let ae = check_effects_expr(Array::get(args, ai), env, in_effect)
+        let mut j = 0
+        while j < Array::length(ae) {
+          Array::push(errors, Array::get(ae, j))
+          j = j + 1
+        }
+        ai = ai + 1
+      }
+      errors
+    },
+    EFn(_, _, _, _, effect, body) => {
+      let fn_in_effect = match effect {
+        Some(_) => true,
+        None => false
+      }
+      let body_errs = check_effects_expr(body, env, fn_in_effect)
+      let mut i = 0
+      while i < Array::length(body_errs) {
+        Array::push(errors, Array::get(body_errs, i))
+        i = i + 1
+      }
+      errors
+    },
+    ELet(_, val, body) => {
+      let ve = check_effects_expr(val, env, in_effect)
+      let be = check_effects_expr(body, env, in_effect)
+      let mut i = 0
+      while i < Array::length(ve) {
+        Array::push(errors, Array::get(ve, i))
+        i = i + 1
+      }
+      i = 0
+      while i < Array::length(be) {
+        Array::push(errors, Array::get(be, i))
+        i = i + 1
+      }
+      errors
+    },
+    ELetRec(_, val, body) => {
+      let ve = check_effects_expr(val, env, in_effect)
+      let be = check_effects_expr(body, env, in_effect)
+      let mut i = 0
+      while i < Array::length(ve) {
+        Array::push(errors, Array::get(ve, i))
+        i = i + 1
+      }
+      i = 0
+      while i < Array::length(be) {
+        Array::push(errors, Array::get(be, i))
+        i = i + 1
+      }
+      errors
+    },
+    ELetMut(_, val, body) => {
+      let ve = check_effects_expr(val, env, in_effect)
+      let be = check_effects_expr(body, env, in_effect)
+      let mut i = 0
+      while i < Array::length(ve) {
+        Array::push(errors, Array::get(ve, i))
+        i = i + 1
+      }
+      i = 0
+      while i < Array::length(be) {
+        Array::push(errors, Array::get(be, i))
+        i = i + 1
+      }
+      errors
+    },
+    ESeq(a, b) => {
+      let ae = check_effects_expr(a, env, in_effect)
+      let be = check_effects_expr(b, env, in_effect)
+      let mut i = 0
+      while i < Array::length(ae) {
+        Array::push(errors, Array::get(ae, i))
+        i = i + 1
+      }
+      i = 0
+      while i < Array::length(be) {
+        Array::push(errors, Array::get(be, i))
+        i = i + 1
+      }
+      errors
+    },
+    EIf(cond, then_e, else_e) => {
+      let ce = check_effects_expr(cond, env, in_effect)
+      let te = check_effects_expr(then_e, env, in_effect)
+      let ee = check_effects_expr(else_e, env, in_effect)
+      let mut i = 0
+      while i < Array::length(ce) {
+        Array::push(errors, Array::get(ce, i))
+        i = i + 1
+      }
+      i = 0
+      while i < Array::length(te) {
+        Array::push(errors, Array::get(te, i))
+        i = i + 1
+      }
+      i = 0
+      while i < Array::length(ee) {
+        Array::push(errors, Array::get(ee, i))
+        i = i + 1
+      }
+      errors
+    },
+    EMatch(scrutinee, arms) => {
+      let se = check_effects_expr(scrutinee, env, in_effect)
+      let mut i = 0
+      while i < Array::length(se) {
+        Array::push(errors, Array::get(se, i))
+        i = i + 1
+      }
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, ai)
+        let ae = check_effects_expr(arm_body, env, in_effect)
+        let mut j = 0
+        while j < Array::length(ae) {
+          Array::push(errors, Array::get(ae, j))
+          j = j + 1
+        }
+        ai = ai + 1
+      }
+      errors
+    },
+    EWhile(cond, body) => {
+      let ce = check_effects_expr(cond, env, in_effect)
+      let be = check_effects_expr(body, env, in_effect)
+      let mut i = 0
+      while i < Array::length(ce) {
+        Array::push(errors, Array::get(ce, i))
+        i = i + 1
+      }
+      i = 0
+      while i < Array::length(be) {
+        Array::push(errors, Array::get(be, i))
+        i = i + 1
+      }
+      errors
+    },
+    ELoop(params, body) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        let pe = check_effects_expr(init, env, in_effect)
+        let mut j = 0
+        while j < Array::length(pe) {
+          Array::push(errors, Array::get(pe, j))
+          j = j + 1
+        }
+        i = i + 1
+      }
+      let be = check_effects_expr(body, env, in_effect)
+      i = 0
+      while i < Array::length(be) {
+        Array::push(errors, Array::get(be, i))
+        i = i + 1
+      }
+      errors
+    },
+    EForIn(_, _, iter, body) => {
+      let ie = check_effects_expr(iter, env, in_effect)
+      let be = check_effects_expr(body, env, in_effect)
+      let mut i = 0
+      while i < Array::length(ie) {
+        Array::push(errors, Array::get(ie, i))
+        i = i + 1
+      }
+      i = 0
+      while i < Array::length(be) {
+        Array::push(errors, Array::get(be, i))
+        i = i + 1
+      }
+      errors
+    },
+    EBinOp(_, left, right) => {
+      let le = check_effects_expr(left, env, in_effect)
+      let re = check_effects_expr(right, env, in_effect)
+      let mut i = 0
+      while i < Array::length(le) {
+        Array::push(errors, Array::get(le, i))
+        i = i + 1
+      }
+      i = 0
+      while i < Array::length(re) {
+        Array::push(errors, Array::get(re, i))
+        i = i + 1
+      }
+      errors
+    },
+    EReturn(e) => check_effects_expr(e, env, in_effect),
+    EUnaryOp(_, operand) => check_effects_expr(operand, env, in_effect),
+    EAssign(_, val, cont) => {
+      let ve = check_effects_expr(val, env, in_effect)
+      let ce = check_effects_expr(cont, env, in_effect)
+      let mut i = 0
+      while i < Array::length(ve) {
+        Array::push(errors, Array::get(ve, i))
+        i = i + 1
+      }
+      i = 0
+      while i < Array::length(ce) {
+        Array::push(errors, Array::get(ce, i))
+        i = i + 1
+      }
+      errors
+    },
+    EAssignOp(_, _, val, cont) => {
+      let ve = check_effects_expr(val, env, in_effect)
+      let ce = check_effects_expr(cont, env, in_effect)
+      let mut i = 0
+      while i < Array::length(ve) {
+        Array::push(errors, Array::get(ve, i))
+        i = i + 1
+      }
+      i = 0
+      while i < Array::length(ce) {
+        Array::push(errors, Array::get(ce, i))
+        i = i + 1
+      }
+      errors
+    },
+    EDot(obj, _, _) => check_effects_expr(obj, env, in_effect),
+    ETuple(elems) => {
+      let mut ei = 0
+      while ei < Array::length(elems) {
+        let ee = check_effects_expr(Array::get(elems, ei), env, in_effect)
+        let mut j = 0
+        while j < Array::length(ee) {
+          Array::push(errors, Array::get(ee, j))
+          j = j + 1
+        }
+        ei = ei + 1
+      }
+      errors
+    },
+    EArray(elems) => {
+      let mut ei = 0
+      while ei < Array::length(elems) {
+        let ee = check_effects_expr(Array::get(elems, ei), env, in_effect)
+        let mut j = 0
+        while j < Array::length(ee) {
+          Array::push(errors, Array::get(ee, j))
+          j = j + 1
+        }
+        ei = ei + 1
+      }
+      errors
+    },
+    ERecord(fields) => {
+      let mut fi = 0
+      while fi < Array::length(fields) {
+        let (_, fval) = Array::get(fields, fi)
+        let fe = check_effects_expr(fval, env, in_effect)
+        let mut j = 0
+        while j < Array::length(fe) {
+          Array::push(errors, Array::get(fe, j))
+          j = j + 1
+        }
+        fi = fi + 1
+      }
+      errors
+    },
+    _ => errors
+  }
+}
+
+export let check_effects_stmt: (Stmt, TypeEnv) -> Array[EffectError] = (stmt, env) -> {
+  match stmt {
+    SLet(_, _, _, _, body) => check_effects_expr(body, env, false),
+    SLetMut(_, _, body) => check_effects_expr(body, env, false),
+    STest(_, body) => check_effects_expr(body, env, false),
+    SBench(_, body) => check_effects_expr(body, env, false),
+    SExpr(e) => check_effects_expr(e, env, false),
+    _ => Array::slice([
+      EEThrowOutsideEffect("")
+    ], 0, 0)
+  }
+}
+
+export let check_effects_stmts: (Array[Stmt], TypeEnv) -> Array[EffectError] = (stmts, env) -> {
+  let errors = Array::slice([
+    EEThrowOutsideEffect("")
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let se = check_effects_stmt(Array::get(stmts, i), env)
+    let mut j = 0
+    while j < Array::length(se) {
+      Array::push(errors, Array::get(se, j))
+      j = j + 1
+    }
+    i = i + 1
+  }
+  errors
+}
+
+export let effect_error_to_string: (EffectError) -> String = (err) -> {
+  match err {
+    EEThrowOutsideEffect(msg) => String::concat("throw outside effectful context: ", msg),
+    EEEffectfulCallOutsideEffect(name) => String::concat("effectful call outside effectful context: ", name),
+    EEPerformUndeclaredEffect(op, eff) => String::concat("use of undeclared effect `", String::concat(eff, String::concat("` (", String::concat(op, "); add it to the function's `with { ... }` or wrap in a `handle`")))),
+    EEAssignImmutable(name) => String::concat("cannot assign to immutable binding `", String::concat(name, "` (declare it with `let mut`)"))
+  }
+}
+
+//# Async-scoped effect enforcement (the pass wired into `check_program`)
+//
+// The general `check_effects_expr` above treats every effect identically and is
+// far too strict to enable across the un-annotated selfhost source (441 `throw`
+// sites alone would fail). This pass enforces ONLY the `Async` effect, and only
+// for async PRIMITIVES — the builtins `await(..)` / `sleep(..)` / `Stream::next`
+// whose type carries `with { Async }`, including the `await(..)` the `for await`
+// desugar injects over a Future-returning iterator. A primitive must appear
+// inside a function/lambda annotated `with { Async }`.
+//
+// Crucially it does NOT propagate to user functions that merely COMPOSE async
+// work: calling a `with { Async }` helper (e.g. `async_iter_collect`) from a
+// sync context is allowed (await is the identity on the synchronous backend,
+// and on a real async backend the value/Future mismatch is a separate type
+// error). Only env-absent BUILTIN primitives are checked, so the compiler /
+// prelude — which use `Async` only in the disciplined async_iter terminals —
+// stay green while `for await` over an async stream becomes sound (#2+#3).
+
+let effect_opt_is_async: (Option[String]) -> Bool = (eff) -> {
+  match eff {
+    Some(s) => String::contains(s, "Async"),
+    None => false
+  }
+}
+
+// True only for async-effect BUILTIN primitives (await/sleep/Stream::next/...).
+// A name bound in `env` (a user/prelude function) is intentionally NOT treated
+// as a primitive even if its type is `with { Async }`.
+let is_async_primitive: (String, TypeEnv) -> Bool = (name, env) -> {
+  match env_lookup(env, name) {
+    Some(_) => false,
+    None => {
+      let normalized = canonical_builtin_name(name)
+      match lookup_builtin(normalized) {
+        Some(ty) => match ty {
+          CtFn(_, _, eff) => effect_opt_is_async(eff),
+          _ => false
+        },
+        None => false
+      }
+    }
+  }
+}
+
+let append_eff_errs: (Array[EffectError], Array[EffectError]) -> Unit = (dst, src) -> {
+  let mut i = 0
+  while i < Array::length(src) {
+    Array::push(dst, Array::get(src, i))
+    i = i + 1
+  }
+}
+
+export let rec check_async_effects_expr: (Expr, TypeEnv, Bool) -> Array[EffectError] = (expr, env, in_async) -> {
+  let errors = Array::slice([
+    EEThrowOutsideEffect("")
+  ], 0, 0)
+  match expr {
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(name, _) => if !in_async && is_async_primitive(name, env) {
+          Array::push(errors, EEEffectfulCallOutsideEffect(name))
+        }
+        ,
+        _ => ()
+      }
+      append_eff_errs(errors, check_async_effects_expr(callee, env, in_async))
+      let mut ai = 0
+      while ai < Array::length(args) {
+        append_eff_errs(errors, check_async_effects_expr(Array::get(args, ai), env, in_async))
+        ai = ai + 1
+      }
+      errors
+    },
+    EFn(_, _, _, _, effect, body) => {
+      append_eff_errs(errors, check_async_effects_expr(body, env, effect_opt_is_async(effect)))
+      errors
+    },
+    EHandle(body, arms) => {
+      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, ai)
+        append_eff_errs(errors, check_async_effects_expr(arm_body, env, in_async))
+        ai = ai + 1
+      }
+      errors
+    },
+    ELet(_, val, body) => {
+      append_eff_errs(errors, check_async_effects_expr(val, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
+      errors
+    },
+    ELetRec(_, val, body) => {
+      append_eff_errs(errors, check_async_effects_expr(val, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
+      errors
+    },
+    ELetMut(_, val, body) => {
+      append_eff_errs(errors, check_async_effects_expr(val, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
+      errors
+    },
+    ESeq(a, b) => {
+      append_eff_errs(errors, check_async_effects_expr(a, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(b, env, in_async))
+      errors
+    },
+    EIf(cond, then_e, else_e) => {
+      append_eff_errs(errors, check_async_effects_expr(cond, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(then_e, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(else_e, env, in_async))
+      errors
+    },
+    EMatch(scrutinee, arms) => {
+      append_eff_errs(errors, check_async_effects_expr(scrutinee, env, in_async))
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, ai)
+        append_eff_errs(errors, check_async_effects_expr(arm_body, env, in_async))
+        ai = ai + 1
+      }
+      errors
+    },
+    EWhile(cond, body) => {
+      append_eff_errs(errors, check_async_effects_expr(cond, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
+      errors
+    },
+    ELoop(params, body) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        append_eff_errs(errors, check_async_effects_expr(init, env, in_async))
+        i = i + 1
+      }
+      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
+      errors
+    },
+    EForIn(_, _, iter, body) => {
+      append_eff_errs(errors, check_async_effects_expr(iter, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
+      errors
+    },
+    EBinOp(_, left, right) => {
+      append_eff_errs(errors, check_async_effects_expr(left, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(right, env, in_async))
+      errors
+    },
+    EReturn(e) => check_async_effects_expr(e, env, in_async),
+    EUnaryOp(_, operand) => check_async_effects_expr(operand, env, in_async),
+    EThrow(e) => check_async_effects_expr(e, env, in_async),
+    EAssign(_, val, cont) => {
+      append_eff_errs(errors, check_async_effects_expr(val, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(cont, env, in_async))
+      errors
+    },
+    EAssignOp(_, _, val, cont) => {
+      append_eff_errs(errors, check_async_effects_expr(val, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(cont, env, in_async))
+      errors
+    },
+    EDot(obj, _, _) => check_async_effects_expr(obj, env, in_async),
+    ETuple(elems) => {
+      let mut ei = 0
+      while ei < Array::length(elems) {
+        append_eff_errs(errors, check_async_effects_expr(Array::get(elems, ei), env, in_async))
+        ei = ei + 1
+      }
+      errors
+    },
+    EArray(elems) => {
+      let mut ei = 0
+      while ei < Array::length(elems) {
+        append_eff_errs(errors, check_async_effects_expr(Array::get(elems, ei), env, in_async))
+        ei = ei + 1
+      }
+      errors
+    },
+    ERecord(fields) => {
+      let mut fi = 0
+      while fi < Array::length(fields) {
+        let (_, fval) = Array::get(fields, fi)
+        append_eff_errs(errors, check_async_effects_expr(fval, env, in_async))
+        fi = fi + 1
+      }
+      errors
+    },
+    _ => errors
+  }
+}
+
+// A function body runs in an `{Async}` context if EITHER the lambda's inline
+// effect OR the binding's declared signature type carries `Async`.
+let sig_type_is_async: (Option[TypeExpr]) -> Bool = (topt) -> {
+  match topt {
+    Some(TyFn(_, _, eff)) => effect_opt_is_async(eff),
+    _ => false
+  }
+}
+
+let check_async_effects_binding: (Option[TypeExpr], Expr, TypeEnv) -> Array[EffectError] = (ty, body, env) -> {
+  let sig_async = sig_type_is_async(ty)
+  match body {
+    EFn(_, _, _, _, eff, fbody) => check_async_effects_expr(fbody, env, sig_async || effect_opt_is_async(eff)),
+    _ => check_async_effects_expr(body, env, sig_async)
+  }
+}
+
+export let check_async_effects_stmt: (Stmt, TypeEnv) -> Array[EffectError] = (stmt, env) -> {
+  match stmt {
+    SLet(_, _, _, ty, body) => check_async_effects_binding(ty, body, env),
+    SLetMut(_, ty, body) => check_async_effects_binding(ty, body, env),
+    STest(_, body) => check_async_effects_expr(body, env, false),
+    SBench(_, body) => check_async_effects_expr(body, env, false),
+    SExpr(e) => check_async_effects_expr(e, env, false),
+    _ => Array::slice([
+      EEThrowOutsideEffect("")
+    ], 0, 0)
+  }
+}
+
+export let check_async_effects_stmts: (Array[Stmt], TypeEnv) -> Array[EffectError] = (stmts, env) -> {
+  let errors = Array::slice([
+    EEThrowOutsideEffect("")
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    append_eff_errs(errors, check_async_effects_stmt(Array::get(stmts, i), env))
+    i = i + 1
+  }
+  errors
+}
+
+//# perform-discipline enforcement (#626 criterion 1)
+//
+// `perform EffName::Op(..)` may only occur where `EffName` is in scope: either
+// the enclosing function/lambda declares it in `with { ... }`, or the perform
+// is inside a `handle` (which discharges it). Otherwise it is a type error —
+// "performing an undeclared effect". This realizes the first acceptance
+// criterion of #626 (the checker formerly accepted undeclared performs because
+// it never resolved which effect an op belongs to).
+//
+// A `handle` is treated CONSERVATIVELY as discharging any effect for its body
+// (we do not yet read which specific effect its arms handle), so a perform
+// inside any handle is allowed — this never rejects a valid program; it only
+// declines to flag the (rarer) perform-of-a-different-effect-inside-a-handle
+// case, which full row tracking (#626 criteria 2/4) will cover.
+
+// Split a `with { A, B }` annotation into trimmed, deduped effect labels.
+let effect_decl_labels: (Option[String]) -> Array[String] = (eff) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  match eff {
+    None => out,
+    Some(s) => {
+      let raw = String::split(s, ",")
+      let mut i = 0
+      while i < Array::length(raw) {
+        let label = String::trim(Array::get(raw, i))
+        if String::length(label) > 0 {
+          let mut seen = false
+          let mut j = 0
+          while j < Array::length(out) {
+            if Array::get(out, j) == label {
+              seen = true
+            }
+            j = j + 1
+          }
+          if !seen {
+            Array::push(out, label)
+          }
+        }
+        i = i + 1
+      }
+      out
+    }
+  }
+}
+
+// A single lowercase letter is an effect VARIABLE (polymorphic row tail in the
+// current representation): a function declaring `with { e }` may perform any
+// effect, so treat such a declaration as authorizing everything.
+let label_is_effect_var: (String) -> Bool = (name) -> {
+  String::length(name) == 1 && String::char_code_at(name, 0) >= 97 && String::char_code_at(name, 0) <= 122
+}
+
+let decl_authorizes_effect: (Array[String], String) -> Bool = (labels, eff_name) -> {
+  let mut i = 0
+  let mut ok = false
+  while i < Array::length(labels) {
+    let l = Array::get(labels, i)
+    if l == eff_name {
+      ok = true
+    } else if label_is_effect_var(l) {
+      ok = true
+    }
+    i = i + 1
+  }
+  ok
+}
+
+// `perform EffName::Op` — the op identifier is `EffName::Op`; the effect is the
+// segment before `::`.
+let effect_name_of_op: (String) -> String = (op_name) -> {
+  let idx = String::index_of(op_name, "::")
+  if idx > 0 {
+    op_name[0:idx]
+  } else {
+    op_name
+  }
+}
+
+// #626 criterion 3 (call-site propagation, builtin slice): calling an effectful
+// BUILTIN (e.g. `Fs::read_file`, `Env::args_len`) requires the enclosing
+// function to declare that effect, exactly like `perform`. Returns the required
+// effect, or None for pure builtins / non-builtins. `Error` (the 441-site throw
+// discipline) and `Async` (composition-allowed; handled by the async pass) are
+// deliberately excluded from this slice.
+let builtin_call_effect: (String) -> Option[String] = (name) -> {
+  // `sh` / `sh_lines` are the only UNQUALIFIED effectful builtins: they now
+  // lower to real `vibe.sh` / `vibe.sh_lines` host imports that execute shell
+  // commands, so a direct `sh("...")` must require `{ Process }` just like a
+  // qualified builtin — otherwise it could run from a pure function or a bare
+  // top-level expression undeclared. Checked before the `::` fast path below.
+  if name == "sh" || name == "sh_lines" {
+    Some("Process")
+  } else if String::index_of(name, "::") < 0 {
+    // Fast path: every OTHER effectful builtin in this slice is a QUALIFIED name
+    // (`Fs::read_file`, `Env::args_len`, `Stdin::...`, `Stdout::...`, ...), so a
+    // callee with no `::` can never be one. Skipping `lookup_builtin` for the
+    // (vastly more common) unqualified calls keeps the pass cheap enough to run
+    // over the whole compiler source within the seed's heap during self-build.
+    None
+  } else {
+    let normalized = canonical_builtin_name(name)
+    match lookup_builtin(normalized) {
+      Some(ty) => match ty {
+        CtFn(_, _, Some(eff)) => if eff == "Error" {
+          None
+        } else if eff == "Async" {
+          None
+        } else {
+          Some(eff)
+        },
+        _ => None
+      },
+      None => None
+    }
+  }
+}
+
+let labels_union: (Array[String], Array[String]) -> Array[String] = (a, b) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(a) {
+    Array::push(out, Array::get(a, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(b) {
+    let l = Array::get(b, j)
+    let mut seen = false
+    let mut k = 0
+    while k < Array::length(out) {
+      if Array::get(out, k) == l {
+        seen = true
+      }
+      k = k + 1
+    }
+    if !seen {
+      Array::push(out, l)
+    }
+    j = j + 1
+  }
+  out
+}
+
+// #626 criterion 2: a `handle ... with E` DISCHARGES E for its body — after
+// handling E the body need not declare it. The parser qualifies each handler
+// arm pattern as `E::Op`, so the discharged effect names are recoverable as the
+// `::`-prefixes of the arm constructor patterns. Returns the distinct effects a
+// handle discharges (empty if none could be determined — then the body stays
+// conservatively permissive, never over-strict).
+let collect_handle_effects: (Array[(Pat, Expr)]) -> Array[String] = (arms) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (pat, _) = Array::get(arms, i)
+    match pat {
+      PCtor(name, _) => {
+        let idx = String::index_of(name, "::")
+        if idx > 0 {
+          let eff = name[0:idx]
+          let mut seen = false
+          let mut j = 0
+          while j < Array::length(out) {
+            if Array::get(out, j) == eff {
+              seen = true
+            }
+            j = j + 1
+          }
+          if !seen {
+            Array::push(out, eff)
+          }
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Walk an expression's effect discipline with an EXPLICIT WORK STACK instead of
+// recursion, so the pass never exhausts the wasm call stack however deeply the
+// compiler's own source nests (long `let`/`seq` spines AND nested
+// if/match/call forms). Each stack item carries its (expr, declared, in_handle)
+// context: `EFn` resets `declared` to its own effect row, `EHandle` augments it
+// with the discharged effects (criterion 2). Order of traversal differs from a
+// recursive pre-order walk, but the SET of effect errors found is identical, so
+// the accept/reject decision is unchanged.
+// The declared effect row of a top-level binding: the signature's `with { ... }`
+// unioned with an EFn body's own effect annotation (`let f = (x) -> { .. } with
+// { E }`). Used to build the call-graph effect map for transitive enforcement.
+let fn_binding_effects: (Option[TypeExpr], Expr) -> Array[String] = (ty, body) -> {
+  let sig = sig_type_effect_labels(ty)
+  match body {
+    EFn(_, _, _, _, eff, _) => labels_union(sig, effect_decl_labels(eff)),
+    _ => sig
+  }
+}
+
+// Look up a called function's declared effect row by linear scan over PARALLEL
+// arrays (names[i] <-> effs[i]). A `Map` here allocates per lookup and, across
+// the compiler's tens of thousands of call sites, exhausts the GC-less bump heap
+// (#626 OOM); the linear scan allocates nothing.
+let lookup_fn_effs: (Array[String], Array[Array[String]], String) -> Option[Array[String]] = (names, effs, name) -> {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(names) {
+    match found {
+      None => if Array::get(names, i) == name {
+        found = Some(Array::get(effs, i))
+      } else {
+        ()
+      },
+      Some(_) => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// Transitive effect enforcement (#626): a call to a user function `G` that
+// declares `with { E }` leaks E into the caller unless the caller declares E or
+// the call is under a `handle ... with E`. Combined with the DIRECT discipline
+// (every function that itself performs/invokes an effectful builtin must declare
+// it — already enforced), this propagates effect requirements up the call graph
+// level by level: every effectful leaf is annotated, so a one-level check at
+// each call site is complete. `fn_names`/`fn_effs` is the call-graph map (empty
+// => transitive check disabled, preserving the direct-only behavior).
+export let check_perform_effects_expr_tx: (Expr, Array[String], Bool, Array[String], Array[Array[String]]) -> Array[EffectError] = (root, root_declared, root_in_handle, fn_names, fn_effs) -> {
+  let errors = Array::slice([
+    EEThrowOutsideEffect("")
+  ], 0, 0)
+  let stack = Array::slice([
+    (root, root_declared, root_in_handle)
+  ], 0, 1)
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let (expr, declared, in_handle) = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match expr {
+      ECall(callee, args, _) => {
+        match callee {
+          EIdent(name, _) => {
+            if name == "perform" && Array::length(args) == 1 {
+              match Array::get(args, 0) {
+                ECall(op_callee, _, _) => match op_callee {
+                  EIdent(op_name, _) => {
+                    let eff = effect_name_of_op(op_name)
+                    if !in_handle && !decl_authorizes_effect(declared, eff) {
+                      Array::push(errors, EEPerformUndeclaredEffect(op_name, eff))
+                    } else {
+                      ()
+                    }
+                  },
+                  _ => ()
+                },
+                _ => ()
+              }
+            } else {
+              match builtin_call_effect(name) {
+                Some(eff) => if !in_handle && !decl_authorizes_effect(declared, eff) {
+                  Array::push(errors, EEPerformUndeclaredEffect(name, eff))
+                } else {
+                  ()
+                },
+                None => ()
+              }
+            }
+            // Transitive (#626): calling a user function leaks its declared
+            // effects into this context unless declared here or under a handle.
+            // Scope = concrete RESOURCE effects (Fs/Env/Stdin/Stdout/...): the
+            // DIRECT discipline already excludes `Error` (the throw row is
+            // pervasive — nearly every function can throw) and `Async`
+            // (composition is allowed; the async pass governs it), so the
+            // transitive pass mirrors that exclusion. Effect-variable rows
+            // (polymorphic) impose nothing.
+            match lookup_fn_effs(fn_names, fn_effs, name) {
+              Some(callee_effs) => {
+                let mut ti = 0
+                while ti < Array::length(callee_effs) {
+                  let teff = Array::get(callee_effs, ti)
+                  if String::length(teff) > 0 && teff != "Error" && teff != "Async" && !label_is_effect_var(teff) && !in_handle && !decl_authorizes_effect(declared, teff) {
+                    Array::push(errors, EEPerformUndeclaredEffect(name, teff))
+                  } else {
+                    ()
+                  }
+                  ti = ti + 1
+                }
+              },
+              None => ()
+            }
+          },
+          _ => ()
+        }
+        Array::push(stack, (callee, declared, in_handle))
+        let mut ai = 0
+        while ai < Array::length(args) {
+          Array::push(stack, (Array::get(args, ai), declared, in_handle))
+          ai = ai + 1
+        }
+      },
+      EFn(_, _, _, _, effect, body) => {
+        // #761: an EXPLICITLY-annotated lambda (`(x) -> { .. } with { E }`) is
+        // checked against its own row E. An UN-annotated lambda's effect row is
+        // INFERRED, not declared, so checking its body against an empty row is
+        // wrong — it wrongly rejected an inline effectful lambda passed to a HOF
+        // param whose type declares the effect (bidirectional effect checking,
+        // e.g. `call_twice((c) -> { write_char(c) })`). Inherit the enclosing
+        // declared context instead: the lambda may use any effect available
+        // where it is written (its inferred row is surfaced in its type and
+        // re-checked at the call/handle site). Conservative — like the
+        // mutability pass, this can only miss errors, never invent them.
+        let lam_labels = effect_decl_labels(effect)
+        let body_declared = if Array::length(lam_labels) == 0 {
+          declared
+        } else {
+          lam_labels
+        }
+        Array::push(stack, (body, body_declared, in_handle))
+      },
+      EHandle(body, arms) => {
+        let discharged = collect_handle_effects(arms)
+        let body_declared = labels_union(declared, discharged)
+        let body_in_handle = if Array::length(discharged) == 0 {
+          true
+        } else {
+          in_handle
+        }
+        Array::push(stack, (body, body_declared, body_in_handle))
+        let mut ai = 0
+        while ai < Array::length(arms) {
+          let (_, arm_body) = Array::get(arms, ai)
+          Array::push(stack, (arm_body, declared, in_handle))
+          ai = ai + 1
+        }
+      },
+      ELet(_, val, body) => {
+        Array::push(stack, (val, declared, in_handle))
+        Array::push(stack, (body, declared, in_handle))
+      },
+      ELetRec(_, val, body) => {
+        Array::push(stack, (val, declared, in_handle))
+        Array::push(stack, (body, declared, in_handle))
+      },
+      ELetMut(_, val, body) => {
+        Array::push(stack, (val, declared, in_handle))
+        Array::push(stack, (body, declared, in_handle))
+      },
+      ESeq(a, b) => {
+        Array::push(stack, (a, declared, in_handle))
+        Array::push(stack, (b, declared, in_handle))
+      },
+      EIf(cond, then_e, else_e) => {
+        Array::push(stack, (cond, declared, in_handle))
+        Array::push(stack, (then_e, declared, in_handle))
+        Array::push(stack, (else_e, declared, in_handle))
+      },
+      EMatch(scrutinee, arms) => {
+        Array::push(stack, (scrutinee, declared, in_handle))
+        let mut ai = 0
+        while ai < Array::length(arms) {
+          let (_, arm_body) = Array::get(arms, ai)
+          Array::push(stack, (arm_body, declared, in_handle))
+          ai = ai + 1
+        }
+      },
+      EWhile(cond, body) => {
+        Array::push(stack, (cond, declared, in_handle))
+        Array::push(stack, (body, declared, in_handle))
+      },
+      ELoop(params, body) => {
+        let mut i = 0
+        while i < Array::length(params) {
+          let (_, init) = Array::get(params, i)
+          Array::push(stack, (init, declared, in_handle))
+          i = i + 1
+        }
+        Array::push(stack, (body, declared, in_handle))
+      },
+      EForIn(_, _, iter, body) => {
+        Array::push(stack, (iter, declared, in_handle))
+        Array::push(stack, (body, declared, in_handle))
+      },
+      EBinOp(_, left, right) => {
+        Array::push(stack, (left, declared, in_handle))
+        Array::push(stack, (right, declared, in_handle))
+      },
+      EReturn(e) => Array::push(stack, (e, declared, in_handle)),
+      EUnaryOp(_, operand) => Array::push(stack, (operand, declared, in_handle)),
+      EThrow(e) => Array::push(stack, (e, declared, in_handle)),
+      EAssign(_, val, cont) => {
+        Array::push(stack, (val, declared, in_handle))
+        Array::push(stack, (cont, declared, in_handle))
+      },
+      EAssignOp(_, _, val, cont) => {
+        Array::push(stack, (val, declared, in_handle))
+        Array::push(stack, (cont, declared, in_handle))
+      },
+      EDot(obj, _, _) => Array::push(stack, (obj, declared, in_handle)),
+      ETuple(elems) => {
+        let mut ei = 0
+        while ei < Array::length(elems) {
+          Array::push(stack, (Array::get(elems, ei), declared, in_handle))
+          ei = ei + 1
+        }
+      },
+      EArray(elems) => {
+        let mut ei = 0
+        while ei < Array::length(elems) {
+          Array::push(stack, (Array::get(elems, ei), declared, in_handle))
+          ei = ei + 1
+        }
+      },
+      ERecord(fields) => {
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (_, fval) = Array::get(fields, fi)
+          Array::push(stack, (fval, declared, in_handle))
+          fi = fi + 1
+        }
+      },
+      _ => ()
+    }
+  }
+  errors
+}
+
+let sig_type_effect_labels: (Option[TypeExpr]) -> Array[String] = (topt) -> {
+  match topt {
+    Some(TyFn(_, _, eff)) => effect_decl_labels(eff),
+    _ => effect_decl_labels(None)
+  }
+}
+
+// Public 3-arg entry: the direct-only check (no call-graph map), preserving the
+// pre-transitive behavior for unit tests and any non-stmts caller.
+export let check_perform_effects_expr: (Expr, Array[String], Bool) -> Array[EffectError] = (root, root_declared, root_in_handle) -> {
+  check_perform_effects_expr_tx(root, root_declared, root_in_handle, Array::slice([
+    ""
+  ], 0, 0), Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0))
+}
+
+let check_perform_effects_binding_tx: (Option[TypeExpr], Expr, Array[String], Array[Array[String]]) -> Array[EffectError] = (ty, body, fn_names, fn_effs) -> {
+  let sig_labels = sig_type_effect_labels(ty)
+  match body {
+    EFn(_, _, _, _, eff, fbody) => check_perform_effects_expr_tx(fbody, labels_union(sig_labels, effect_decl_labels(eff)), false, fn_names, fn_effs),
+    _ => check_perform_effects_expr_tx(body, sig_labels, false, fn_names, fn_effs)
+  }
+}
+
+// #761: a `test {}` / `bench {}` block is a program entry point — it runs under
+// the runtime host, which is the ambient handler for the HOST resource effects
+// (Fs/Env/Stdin/Stdout/Process/Profiler). So a test may invoke a host-effectful
+// function (directly, transitively, or as an unqualified builtin) without a
+// `handle`, exactly as `main` does. This grant was already de-facto true for
+// IMPORTED effectful functions (they are absent from the transitive fn_effs map,
+// so calling them never flagged), but LOCALLY-defined ones (in fn_effs) and
+// direct builtin/perform host effects were wrongly rejected — an asymmetry.
+// Seeding the test/bench declared row with the host set removes it. NON-host
+// (user-defined) effects still require a handler: performing one at runtime with
+// no host handler would trap, so leaving it flagged is correct. Purity/caching
+// is judged separately by file_tests_cacheable (empty declared row), so a test
+// that reaches a host effect still correctly counts as impure/non-cacheable.
+let test_bench_ambient_effects: () -> Array[String] = () -> {
+  [
+    "Fs", "Env", "Stdin", "Stdout", "Process", "Profiler"
+  ]
+}
+
+let check_perform_effects_stmt_tx: (Stmt, Array[String], Array[Array[String]]) -> Array[EffectError] = (stmt, fn_names, fn_effs) -> {
+  match stmt {
+    SLet(_, _, _, ty, body) => check_perform_effects_binding_tx(ty, body, fn_names, fn_effs),
+    SLetMut(_, ty, body) => check_perform_effects_binding_tx(ty, body, fn_names, fn_effs),
+    STest(_, body) => check_perform_effects_expr_tx(body, test_bench_ambient_effects(), false, fn_names, fn_effs),
+    SBench(_, body) => check_perform_effects_expr_tx(body, test_bench_ambient_effects(), false, fn_names, fn_effs),
+    SExpr(e) => check_perform_effects_expr_tx(e, effect_decl_labels(None), false, fn_names, fn_effs),
+    _ => Array::slice([
+      EEThrowOutsideEffect("")
+    ], 0, 0)
+  }
+}
+
+// Public 1-arg entry: direct-only (empty map). Kept for unit tests.
+export let check_perform_effects_stmt: (Stmt) -> Array[EffectError] = (stmt) -> {
+  check_perform_effects_stmt_tx(stmt, Array::slice([
+    ""
+  ], 0, 0), Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0))
+}
+
+export let check_perform_effects_stmts: (Array[Stmt]) -> Array[EffectError] = (stmts) -> {
+  // Build the call-graph effect map (parallel arrays) from every top-level
+  // binding's declared row, then run the per-stmt check WITH transitive
+  // enforcement so a caller must declare (or handle) the effects of the
+  // functions it invokes.
+  let fn_names = Array::slice([
+    ""
+  ], 0, 0)
+  let fn_effs = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let mut m = 0
+  while m < Array::length(stmts) {
+    match Array::get(stmts, m) {
+      SLet(_, _, name, ty, body) => {
+        Array::push(fn_names, name)
+        Array::push(fn_effs, fn_binding_effects(ty, body))
+      },
+      SLetMut(name, ty, body) => {
+        Array::push(fn_names, name)
+        Array::push(fn_effs, fn_binding_effects(ty, body))
+      },
+      _ => ()
+    }
+    m = m + 1
+  }
+  let errors = Array::slice([
+    EEThrowOutsideEffect("")
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    append_eff_errs(errors, check_perform_effects_stmt_tx(Array::get(stmts, i), fn_names, fn_effs))
+    i = i + 1
+  }
+  errors
+}
+
+// #634 (ADR-0026): pure-test result cache verdict. A `test {}` block's result
+// is safe to cache/skip only when running it depends on nothing external — no
+// I/O, no non-determinism — so it is a deterministic function of source + deps +
+// compiler version. file_tests_cacheable is true iff the file has at least one
+// `test {}` block and EVERY test block is transitively effect-free.
+//
+// Reuses the transitive effect walk: a test body checked with an EMPTY declared
+// row reports an error for ANY effect it reaches that a `handle` does not
+// discharge — Fs/Http/Env/custom effects and `perform`, propagated through the
+// call-graph effect map (fn_names/fn_effs). `Error` (assert/throw) and `Async`
+// are excluded by that pass, so they stay cacheable; a `handle` that fully
+// discharges its effects (e.g. a fixed-seed Rng handler) also stays cacheable.
+// Zero errors => cacheable.
+//
+// A direct `sh`/`sh_lines` call IS surfaced: builtin_call_effect special-cases
+// these two unqualified builtins to `Process` (they lower to real host imports),
+// so a test that shells out is correctly treated as impure/non-cacheable, the
+// same as `sh` reached through a user function declaring `with { Process }`.
+// Conservative otherwise: an effect the type system does not surface here stays
+// invisible, but it never marks a genuinely-impure test cacheable.
+export let file_tests_cacheable: (Array[Stmt]) -> Bool = (stmts) -> {
+  let fn_names = Array::slice([
+    ""
+  ], 0, 0)
+  let fn_effs = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let mut m = 0
+  while m < Array::length(stmts) {
+    match Array::get(stmts, m) {
+      SLet(_, _, name, ty, body) => {
+        Array::push(fn_names, name)
+        Array::push(fn_effs, fn_binding_effects(ty, body))
+      },
+      SLetMut(name, ty, body) => {
+        Array::push(fn_names, name)
+        Array::push(fn_effs, fn_binding_effects(ty, body))
+      },
+      _ => ()
+    }
+    m = m + 1
+  }
+  let empty_decl = Array::slice([
+    ""
+  ], 0, 0)
+  let mut any_test = false
+  let mut all_ok = true
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STest(_, body) => {
+        any_test = true
+        let errs = check_perform_effects_expr_tx(body, empty_decl, false, fn_names, fn_effs)
+        if Array::length(errs) != 0 {
+          all_ok = false
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  any_test && all_ok
+}
+
+//# Mutability discipline: reassignment requires a `let mut` binding.
+//
+// `let x = ...` is immutable (docs/cheatsheet.md); only `let mut x` may be
+// reassigned. The checker previously accepted `let x = 1; x = 2`. This pass
+// walks expressions carrying the SET of names that are reassignable in scope
+// and reports an `x = e` / `x op= e` whose target is not in that set.
+//
+// The set only ever GROWS down a scope (never shrinks), so the pass can only
+// produce false NEGATIVES, never false positives: every form that introduces a
+// reassignable or freshly-rebindable name — `let mut`, function parameters,
+// loop accumulators, `for` variables, and pattern binds — is added, so the
+// only thing flagged is reassignment of a plain immutable `let`. Nested
+// functions INHERIT the outer set (a closure may mutate a captured `let mut`).
+
+let mut_has: (Array[String], String) -> Bool = (xs, n) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) {
+    if Array::get(xs, i) == n {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+let mut_with: (Array[String], String) -> Array[String] = (base, name) -> {
+  let out = Array::slice(base, 0, Array::length(base))
+  Array::push(out, name)
+  out
+}
+
+let rec collect_pat_binds_into: (Pat, Array[String]) -> Unit = (pat, acc) -> {
+  match pat {
+    PBind(name) => Array::push(acc, name),
+    PCtor(_, subs) => {
+      let mut i = 0
+      while i < Array::length(subs) {
+        collect_pat_binds_into(Array::get(subs, i), acc)
+        i = i + 1
+      }
+    },
+    PTuple(subs) => {
+      let mut i = 0
+      while i < Array::length(subs) {
+        collect_pat_binds_into(Array::get(subs, i), acc)
+        i = i + 1
+      }
+    },
+    POr(l, r) => {
+      collect_pat_binds_into(l, acc)
+      collect_pat_binds_into(r, acc)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        collect_pat_binds_into(fp, acc)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+let mut_with_pat: (Array[String], Pat) -> Array[String] = (base, pat) -> {
+  let out = Array::slice(base, 0, Array::length(base))
+  collect_pat_binds_into(pat, out)
+  out
+}
+
+let mut_with_params: (Array[String], Array[(String, Option[TypeExpr])]) -> Array[String] = (base, params) -> {
+  let out = Array::slice(base, 0, Array::length(base))
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, _) = Array::get(params, i)
+    Array::push(out, pname)
+    i = i + 1
+  }
+  out
+}
+
+export let rec check_mutability_expr: (Expr, Array[String]) -> Array[EffectError] = (expr, mutable) -> {
+  let errors = Array::slice([
+    EEThrowOutsideEffect("")
+  ], 0, 0)
+  match expr {
+    ECall(callee, args, _) => {
+      append_eff_errs(errors, check_mutability_expr(callee, mutable))
+      let mut ai = 0
+      while ai < Array::length(args) {
+        append_eff_errs(errors, check_mutability_expr(Array::get(args, ai), mutable))
+        ai = ai + 1
+      }
+      errors
+    },
+    EFn(_, _, params, _, _, body) => {
+      append_eff_errs(errors, check_mutability_expr(body, mut_with_params(mutable, params)))
+      errors
+    },
+    EHandle(body, arms) => {
+      append_eff_errs(errors, check_mutability_expr(body, mutable))
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, ai)
+        append_eff_errs(errors, check_mutability_expr(arm_body, mut_with_pat(mutable, pat)))
+        ai = ai + 1
+      }
+      errors
+    },
+    ELet(_, val, body) => {
+      append_eff_errs(errors, check_mutability_expr(val, mutable))
+      append_eff_errs(errors, check_mutability_expr(body, mutable))
+      errors
+    },
+    ELetRec(_, val, body) => {
+      append_eff_errs(errors, check_mutability_expr(val, mutable))
+      append_eff_errs(errors, check_mutability_expr(body, mutable))
+      errors
+    },
+    ELetMut(name, val, body) => {
+      append_eff_errs(errors, check_mutability_expr(val, mutable))
+      append_eff_errs(errors, check_mutability_expr(body, mut_with(mutable, name)))
+      errors
+    },
+    ESeq(a, b) => {
+      append_eff_errs(errors, check_mutability_expr(a, mutable))
+      append_eff_errs(errors, check_mutability_expr(b, mutable))
+      errors
+    },
+    EIf(cond, then_e, else_e) => {
+      append_eff_errs(errors, check_mutability_expr(cond, mutable))
+      append_eff_errs(errors, check_mutability_expr(then_e, mutable))
+      append_eff_errs(errors, check_mutability_expr(else_e, mutable))
+      errors
+    },
+    EMatch(scrutinee, arms) => {
+      append_eff_errs(errors, check_mutability_expr(scrutinee, mutable))
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, ai)
+        append_eff_errs(errors, check_mutability_expr(arm_body, mut_with_pat(mutable, pat)))
+        ai = ai + 1
+      }
+      errors
+    },
+    EWhile(cond, body) => {
+      append_eff_errs(errors, check_mutability_expr(cond, mutable))
+      append_eff_errs(errors, check_mutability_expr(body, mutable))
+      errors
+    },
+    ELoop(params, body) => {
+      let loopmut = Array::slice(mutable, 0, Array::length(mutable))
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pname, init) = Array::get(params, i)
+        append_eff_errs(errors, check_mutability_expr(init, mutable))
+        Array::push(loopmut, pname)
+        i = i + 1
+      }
+      append_eff_errs(errors, check_mutability_expr(body, loopmut))
+      errors
+    },
+    EForIn(name, index_name, iter, body) => {
+      append_eff_errs(errors, check_mutability_expr(iter, mutable))
+      let base = mut_with(mutable, name)
+      let formut = match index_name {
+        Some(idx) => mut_with(base, idx),
+        None => base
+      }
+      append_eff_errs(errors, check_mutability_expr(body, formut))
+      errors
+    },
+    EBinOp(_, left, right) => {
+      append_eff_errs(errors, check_mutability_expr(left, mutable))
+      append_eff_errs(errors, check_mutability_expr(right, mutable))
+      errors
+    },
+    EReturn(e) => check_mutability_expr(e, mutable),
+    EUnaryOp(_, operand) => check_mutability_expr(operand, mutable),
+    EThrow(e) => check_mutability_expr(e, mutable),
+    EAssign(name, val, cont) => {
+      if !mut_has(mutable, name) {
+        Array::push(errors, EEAssignImmutable(name))
+      } else {
+        ()
+      }
+      append_eff_errs(errors, check_mutability_expr(val, mutable))
+      append_eff_errs(errors, check_mutability_expr(cont, mutable))
+      errors
+    },
+    EAssignOp(name, _, val, cont) => {
+      if !mut_has(mutable, name) {
+        Array::push(errors, EEAssignImmutable(name))
+      } else {
+        ()
+      }
+      append_eff_errs(errors, check_mutability_expr(val, mutable))
+      append_eff_errs(errors, check_mutability_expr(cont, mutable))
+      errors
+    },
+    EDot(obj, _, _) => check_mutability_expr(obj, mutable),
+    ETuple(elems) => {
+      let mut ei = 0
+      while ei < Array::length(elems) {
+        append_eff_errs(errors, check_mutability_expr(Array::get(elems, ei), mutable))
+        ei = ei + 1
+      }
+      errors
+    },
+    EArray(elems) => {
+      let mut ei = 0
+      while ei < Array::length(elems) {
+        append_eff_errs(errors, check_mutability_expr(Array::get(elems, ei), mutable))
+        ei = ei + 1
+      }
+      errors
+    },
+    ERecord(fields) => {
+      let mut fi = 0
+      while fi < Array::length(fields) {
+        let (_, fval) = Array::get(fields, fi)
+        append_eff_errs(errors, check_mutability_expr(fval, mutable))
+        fi = fi + 1
+      }
+      errors
+    },
+    // #629 step 3-2: forms previously dropped to `_ => errors`, so an illegal
+    // reassignment (`x = e` where x is an immutable `let`) sitting inside a map
+    // literal, labeled argument, spread, break value, or continue argument went
+    // unflagged. Recurse with the SAME mutable set (these forms introduce no new
+    // bindings), keeping the pass sound: still no false positives, just fewer
+    // false negatives.
+    EMap(entries) => {
+      let mut mi = 0
+      while mi < Array::length(entries) {
+        let (_, mval) = Array::get(entries, mi)
+        append_eff_errs(errors, check_mutability_expr(mval, mutable))
+        mi = mi + 1
+      }
+      errors
+    },
+    ELabeledArg(_, _, inner) => check_mutability_expr(inner, mutable),
+    ESpread(inner) => check_mutability_expr(inner, mutable),
+    EBreak(opt) => match opt {
+      Some(e) => check_mutability_expr(e, mutable),
+      None => errors
+    },
+    EContinue(cargs) => {
+      let mut ci = 0
+      while ci < Array::length(cargs) {
+        append_eff_errs(errors, check_mutability_expr(Array::get(cargs, ci), mutable))
+        ci = ci + 1
+      }
+      errors
+    },
+    _ => errors
+  }
+}
+
+// #770: `outer` carries the top-level `let mut` names already in scope from
+// earlier sibling statements (see check_mutability_stmts below) so a later
+// top-level statement's assignment to an earlier top-level `mut` binding
+// (directly, or via a closure capturing it) is recognized as mutable instead
+// of being misreported as `cannot assign to immutable binding`.
+let check_mutability_binding: (Expr, Array[String]) -> Array[EffectError] = (body, outer) -> {
+  match body {
+    EFn(_, _, params, _, _, fbody) => check_mutability_expr(fbody, mut_with_params(outer, params)),
+    _ => check_mutability_expr(body, outer)
+  }
+}
+
+// #770: top-level program statements are a flat `Array[Stmt]` sequence (not
+// nested `ELetMut` continuations like a function/test body), so a top-level
+// `let mut x = ...` must thread `x` forward into the mutability check of
+// every later sibling statement by accumulating `mutable` across the loop —
+// mirroring how `check_stmts` threads `env` across the same array. Before
+// this fix each statement was checked in isolation starting from an empty
+// mutable set, so any top-level `let mut` followed by an assignment in a
+// later top-level statement (e.g. a top-level `while` loop mutating a
+// counter) was rejected with a bogus `cannot assign to immutable binding`
+// error even though the program is valid.
+export let check_mutability_stmts: (Array[Stmt]) -> Array[EffectError] = (stmts) -> {
+  let errors = Array::slice([
+    EEThrowOutsideEffect("")
+  ], 0, 0)
+  let mut mutable = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, body) => append_eff_errs(errors, check_mutability_binding(body, mutable)),
+      SLetMut(name, _, body) => {
+        append_eff_errs(errors, check_mutability_binding(body, mutable))
+        mutable = mut_with(mutable, name)
+      },
+      STest(_, body) => append_eff_errs(errors, check_mutability_expr(body, Array::slice([
+        ""
+      ], 0, 0))),
+      SBench(_, body) => append_eff_errs(errors, check_mutability_expr(body, Array::slice([
+        ""
+      ], 0, 0))),
+      SExpr(e) => append_eff_errs(errors, check_mutability_expr(e, mutable)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  errors
+}

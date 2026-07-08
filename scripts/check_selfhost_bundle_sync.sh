@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="${VIBE_SELFHOST_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
-COMPILER_DIR="${VIBE_SELFHOST_COMPILER_DIR:-$PROJECT_ROOT/vibe/compiler}"
+COMPILER_DIR="${VIBE_SELFHOST_COMPILER_DIR:-$PROJECT_ROOT/lib/@vibe/compiler}"
 MANIFEST="${VIBE_SELFHOST_SOURCE_MANIFEST:-$COMPILER_DIR/selfhost_sources_manifest.tsv}"
 EXPECTED="${VIBE_SELFHOST_BUNDLE_EXPECTED:-$COMPILER_DIR/selfhost_sources_bundle.vibe}"
 EXPECTED_ADAPTER="${VIBE_SELFHOST_ADAPTER_BUNDLE_EXPECTED:-$COMPILER_DIR/selfhost_cli_adapter_bundle.vibe}"

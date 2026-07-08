@@ -1,0 +1,124 @@
+//# Imports
+
+// #766: the generic disk-cache primitives live in @vibe/cache (no compiler
+// dependency). This file is the compiler-specific adapter: it supplies the
+// two identity components a generic cache can't know about — the compiler's
+// own codegen fingerprint (so a codegen change invalidates stale artifacts,
+// #630) and VIBE_LIB's module-resolution env seed (#758) — and re-exports
+// the ORIGINAL wrapper names/signatures so every existing call site in the
+// compiler keeps working unchanged.
+import ../../../../lib/@vibe/cache {
+  compact_string_fingerprint,
+  persistent_artifact_cache_path as cache_persistent_artifact_cache_path,
+  store_persistent_artifact as cache_store_persistent_artifact,
+  load_persistent_artifact as cache_load_persistent_artifact,
+  persistent_dep_list_cache_path as cache_persistent_dep_list_cache_path,
+  persistent_type_env_cache_path as cache_persistent_type_env_cache_path,
+  persistent_source_list_cache_path as cache_persistent_source_list_cache_path,
+  persistent_source_group_cache_path as cache_persistent_source_group_cache_path,
+  persistent_module_header_cache_path as cache_persistent_module_header_cache_path,
+  persistent_manifest_header_cache_path as cache_persistent_manifest_header_cache_path,
+  persistent_leaf_fingerprint_cache_path as cache_persistent_leaf_fingerprint_cache_path,
+  build_source_groups_fingerprint,
+  normalize_persistent_cache_text,
+  build_source_groups_fingerprint_from_compact_fingerprints,
+  build_fs_compile_wasi_artifact_fingerprint_from_group_fingerprint,
+  build_fs_compile_wasi_artifact_fingerprint,
+  build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint,
+  build_file_compile_wasi_artifact_fingerprint,
+  build_fs_compile_module_artifact_fingerprint_from_group_fingerprint,
+  build_fs_compile_module_artifact_fingerprint,
+  build_file_compile_module_artifact_fingerprint_from_group_fingerprint,
+  build_file_compile_module_artifact_fingerprint
+}
+
+import ./selfhost_codegen_fingerprint.vibe {
+  selfhost_codegen_fingerprint
+}
+
+import ../module_graph_path.vibe {
+  resolution_env_seed
+}
+
+//# Misc
+
+export {
+  compact_string_fingerprint,
+  build_source_groups_fingerprint,
+  normalize_persistent_cache_text,
+  build_source_groups_fingerprint_from_compact_fingerprints,
+  build_fs_compile_wasi_artifact_fingerprint_from_group_fingerprint,
+  build_fs_compile_wasi_artifact_fingerprint,
+  build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint,
+  build_file_compile_wasi_artifact_fingerprint,
+  build_fs_compile_module_artifact_fingerprint_from_group_fingerprint,
+  build_fs_compile_module_artifact_fingerprint,
+  build_file_compile_module_artifact_fingerprint_from_group_fingerprint,
+  build_file_compile_module_artifact_fingerprint
+}
+
+//# Functions
+
+// Cache key version tag. TWO independent reasons to bump it (#630):
+//  - cache FORMAT change (how `.hex` / `.tsv` entries are serialized): bump `vNN`.
+//  - CODEGEN / wasm-ABI change (the SAME source now compiles to DIFFERENT wasm):
+//    bump `cgNN`. The artifact cache is keyed by the source fingerprint only, so
+//    without a codegen segment a codegen change returns a STALE compiled wasm for
+//    unchanged source. Bump `cg` on any change to emitted wasm / runtime ABI.
+//    The `cg` segment is `selfhost_codegen_fingerprint()` — a build-time hash of
+//    all compiler source files (selfhost_sources_manifest.tsv), regenerated with
+//    the bundle. So any codegen-source change automatically changes the key and
+//    invalidates stale artifacts; no manual bump needed (#630). `vNN` is still a
+//    manual knob for pure cache-FORMAT changes that don't change the source hash.
+let persistent_cache_version_tag: () -> String = () -> {
+  // v11 (#632): artifact cache switched from hex text (`.hex`) to raw binary
+  // (`.bin`, via Fs::write_bytes / Fs::read_bytes) — a cache FORMAT change, so
+  // the manual `vNN` knob is bumped. Old `.hex` entries are now unreferenced
+  // (different key + suffix) and reclaimable via `pkf run cache-clean` (#631).
+  String::concat("v11|cg-", selfhost_codegen_fingerprint())
+}
+
+export let persistent_artifact_cache_path: (String, String, String) -> String = (kind, entry_name, fingerprint) -> {
+  cache_persistent_artifact_cache_path(persistent_cache_version_tag(), kind, entry_name, fingerprint)
+}
+
+export let store_persistent_artifact: (String, String, String, Bytes) -> Unit with { Error, Fs } = (kind, entry_name, fingerprint, bytes) -> {
+  cache_store_persistent_artifact(persistent_cache_version_tag(), kind, entry_name, fingerprint, bytes)
+}
+
+export let load_persistent_artifact: (String, String, String) -> Option[Bytes] with { Error, Fs } = (kind, entry_name, fingerprint) -> {
+  cache_load_persistent_artifact(persistent_cache_version_tag(), kind, entry_name, fingerprint)
+}
+
+export let persistent_dep_list_cache_path: (String, String) -> String = (path, source_fingerprint) -> {
+  cache_persistent_dep_list_cache_path(persistent_cache_version_tag(), path, source_fingerprint, resolution_env_seed())
+}
+
+export let persistent_type_env_cache_path: (String) -> String = (fingerprint) -> {
+  cache_persistent_type_env_cache_path(persistent_cache_version_tag(), fingerprint)
+}
+
+export let persistent_source_list_cache_path: (String) -> String = (entry_path) -> {
+  // #758 review (P1): the cached artifact is a RESOLVED graph — the external
+  // lib roots and the freeze switch (#751) are part of its identity, or a
+  // graph resolved without pins replays under VIBE_REQUIRE_PINS=1 (and a
+  // VIBE_LIB change replays the previous roots). Same seed on the dep-list
+  // and module-header caches below.
+  cache_persistent_source_list_cache_path(persistent_cache_version_tag(), entry_path, resolution_env_seed())
+}
+
+export let persistent_source_group_cache_path: (String) -> String = (entry_path) -> {
+  cache_persistent_source_group_cache_path(persistent_cache_version_tag(), entry_path, resolution_env_seed())
+}
+
+export let persistent_module_header_cache_path: (String, String) -> String = (path, source_fingerprint) -> {
+  cache_persistent_module_header_cache_path(persistent_cache_version_tag(), path, source_fingerprint, resolution_env_seed())
+}
+
+export let persistent_manifest_header_cache_path: (String) -> String = (entry_path) -> {
+  cache_persistent_manifest_header_cache_path(persistent_cache_version_tag(), entry_path)
+}
+
+export let persistent_leaf_fingerprint_cache_path: (String, String) -> String = (path, source_fingerprint) -> {
+  cache_persistent_leaf_fingerprint_cache_path(persistent_cache_version_tag(), path, source_fingerprint)
+}

@@ -10,8 +10,8 @@
 | `src/checker/prelude.mbt` | Host prelude source | vibe source 文字列 |
 | `src/checker/builtin_modules.mbt` | Host module builtins | vibe source 文字列 |
 | `src/codegen/wasm_codegen_call_builtin_pre_user.mbt` | Host codegen | WASM emit |
-| `vibe/compiler/checker/builtins_*.vibe` | Selfhost checker | vibe 関数 |
-| `vibe/compiler/codegen/*/builtin_bodies*.vibe` | Selfhost codegen | vibe 関数 |
+| `lib/@vibe/compiler/checker/builtins_*.vibe` | Selfhost checker | vibe 関数 |
+| `lib/@vibe/compiler/codegen/*/builtin_bodies*.vibe` | Selfhost codegen | vibe 関数 |
 
 host と selfhost で同じシグネチャを別々に管理しており、不一致が頻発。
 

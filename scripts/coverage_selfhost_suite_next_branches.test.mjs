@@ -31,15 +31,15 @@ test("presetExtraEntries: branch returns branch-focused preset entries", () => {
 test("computeNextBranchEntries: returns missing branch-focused preset entries", () => {
   const report = {
     cases: [
-      { entry_path: "vibe/compiler/fixture_test.vibe" },
-      { entry_path: "vibe/compiler/lexer_test.vibe" },
-      { entry_path: "vibe/compiler/printer_test.vibe" },
+      { entry_path: "lib/@vibe/compiler/fixture_test.vibe" },
+      { entry_path: "lib/@vibe/compiler/lexer_test.vibe" },
+      { entry_path: "lib/@vibe/compiler/printer_test.vibe" },
     ],
   };
   assert.deepEqual(computeNextBranchEntries(report), [
-    "vibe/compiler/checker_test.vibe",
-    "vibe/compiler/checker_builtins_test.vibe",
-    "vibe/compiler/selfhost_s5_test.vibe",
+    "lib/@vibe/compiler/checker_test.vibe",
+    "lib/@vibe/compiler/checker_builtins_test.vibe",
+    "lib/@vibe/compiler/selfhost_s5_test.vibe",
   ]);
 });
 
@@ -53,13 +53,13 @@ test("computeNextBranchEntries: empty when all preset entries already exist", ()
 test("buildTextReport: includes top gaps and suggested entries", () => {
   const report = {
     cases: [
-      { entry_path: "vibe/compiler/fixture_test.vibe" },
-      { entry_path: "vibe/compiler/lexer_test.vibe" },
-      { entry_path: "vibe/compiler/printer_test.vibe" },
+      { entry_path: "lib/@vibe/compiler/fixture_test.vibe" },
+      { entry_path: "lib/@vibe/compiler/lexer_test.vibe" },
+      { entry_path: "lib/@vibe/compiler/printer_test.vibe" },
     ],
     top_branch_gaps: [
       {
-        entry_path: "vibe/compiler/checker_test.vibe",
+        entry_path: "lib/@vibe/compiler/checker_test.vibe",
         branch_miss: 120,
         branch_total: 400,
         branch_hit: 280,
@@ -67,7 +67,7 @@ test("buildTextReport: includes top gaps and suggested entries", () => {
     ],
     top_non_aggregate_branch_gaps: [
       {
-        entry_path: "vibe/compiler/selfhost_stage2_coverage_run.vibe",
+        entry_path: "lib/@vibe/compiler/selfhost_stage2_coverage_run.vibe",
         branch_miss: 5354,
         branch_total: 5354,
         branch_hit: 0,
@@ -93,10 +93,10 @@ test("buildTextReport: includes top gaps and suggested entries", () => {
 
 test("buildJsonReport: emits suggested entries and gaps", () => {
   const report = {
-    cases: [{ entry_path: "vibe/compiler/fixture_test.vibe" }],
+    cases: [{ entry_path: "lib/@vibe/compiler/fixture_test.vibe" }],
     top_branch_gaps: [
       {
-        entry_path: "vibe/compiler/checker_test.vibe",
+        entry_path: "lib/@vibe/compiler/checker_test.vibe",
         branch_miss: 120,
         branch_total: 400,
         branch_hit: 280,
@@ -104,7 +104,7 @@ test("buildJsonReport: emits suggested entries and gaps", () => {
     ],
     top_non_aggregate_branch_gaps: [
       {
-        entry_path: "vibe/compiler/selfhost_stage2_coverage_run.vibe",
+        entry_path: "lib/@vibe/compiler/selfhost_stage2_coverage_run.vibe",
         branch_miss: 5354,
         branch_total: 5354,
         branch_hit: 0,
@@ -117,10 +117,10 @@ test("buildJsonReport: emits suggested entries and gaps", () => {
   assert.equal(parsed.top_branch_gaps[0].branch_miss, 120);
   assert.equal(parsed.top_non_aggregate_branch_gaps[0].branch_miss, 5354);
   assert.deepEqual(parsed.suggested_extra_entries, [
-    "vibe/compiler/lexer_test.vibe",
-    "vibe/compiler/printer_test.vibe",
-    "vibe/compiler/checker_test.vibe",
-    "vibe/compiler/checker_builtins_test.vibe",
-    "vibe/compiler/selfhost_s5_test.vibe",
+    "lib/@vibe/compiler/lexer_test.vibe",
+    "lib/@vibe/compiler/printer_test.vibe",
+    "lib/@vibe/compiler/checker_test.vibe",
+    "lib/@vibe/compiler/checker_builtins_test.vibe",
+    "lib/@vibe/compiler/selfhost_s5_test.vibe",
   ]);
 });

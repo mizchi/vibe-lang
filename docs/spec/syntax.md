@@ -9,8 +9,8 @@ semantics live in `docs/vibe.md`; tutorial material lives in
 
 Implementation sources:
 
-- `vibe/compiler/syntax/lexer.vibe`
-- `vibe/compiler/syntax/parser*.vibe`
+- `lib/@vibe/compiler/syntax/lexer.vibe`
+- `lib/@vibe/compiler/syntax/parser*.vibe`
 - `src/parser/*.mbt` for the MoonBit compiler path
 - `fixtures/*.vibe` and `examples/*_test.vibe` for executable syntax coverage
 

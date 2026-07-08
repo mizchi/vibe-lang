@@ -1,0 +1,270 @@
+//# Functions
+
+export let ln = (x: Double) -> Double {
+  if x <= 0.0 {
+    0.0 - 1.0 / 0.0
+  }
+  else {
+    let ln2 = 0.6931471805599453
+    let mut k = 0
+    let mut m = x
+    // #772: as with `sin`'s range reduction below, a Double comparison
+    // (`>=`/`<`) directly in a `while` header hits the codegen's
+    // type-oblivious while-loop fast path and gets compiled as an *integer*
+    // comparison, which is meaningless on a boxed Double. Route through a
+    // `let mut` Bool re-evaluated each iteration instead.
+    let mut too_large = m >= 2.0
+    while too_large {
+      m = m * 0.5
+      k = k + 1
+      too_large = m >= 2.0
+    }
+    let mut too_small_m = m < 0.5
+    while too_small_m {
+      m = m * 2.0
+      k = k - 1
+      too_small_m = m < 0.5
+    }
+    let t = (m - 1.0) / (m + 1.0)
+    let t2 = t * t
+    let mut term = t
+    let mut result = t
+    let mut i = 1
+    while i < 30 {
+      let nd = Int::to_double(i * 2 + 1)
+      term = term * t2
+      result = result + term / nd
+      i = i + 1
+    }
+    Int::to_double(k) * ln2 + 2.0 * result
+  }
+}
+
+export let pi: Double = 3.14159265358979323846
+
+export let tau: Double = 6.28318530717958647692
+
+export let sqrt = (x: Double) -> Double {
+  if x <= 0.0 {
+    0.0
+  } else {
+    let mut guess = x
+    let mut i = 0
+    while i < 60 {
+      guess = (guess + x / guess) * 0.5
+      i = i + 1
+    }
+    guess
+  }
+}
+
+export let hypot = (x: Double, y: Double) -> Double {
+  sqrt(x * x + y * y)
+}
+
+export let log10 = (x: Double) -> Double {
+  let log10e = 2.302585092994046
+  ln(x) / log10e
+}
+
+export let degrees = (rad: Double) -> Double {
+  rad * 180.0 / pi
+}
+
+export let e_const: Double = 2.71828182845904523536
+
+let half_pi: Double = 1.5707963267948966
+
+export let radians = (deg: Double) -> Double {
+  deg * pi / 180.0
+}
+
+let atan_small = (x: Double) -> Double {
+  let xx = x * x
+  let mut result = x
+  let mut term = x
+  let mut i = 1
+  while i < 20 {
+    let n = i * 2 + 1
+    let nd = Int::to_double(n)
+    term = 0.0 - term * xx
+    result = result + term / nd
+    i = i + 1
+  }
+  result
+}
+
+export let atan = (x: Double) -> Double {
+  if x > 1.0 {
+    // #772: `half_pi` (a global) minus a call result (`atan_small(...)`) --
+    // neither operand is a literal or a parameter, so the codegen's
+    // syntactic `expr_is_floatish` heuristic (which has no real type
+    // information) can't recognize this subtraction as float arithmetic and
+    // silently compiles it as an *integer* subtraction on the two boxed
+    // Double bit patterns/pointers instead. `+ 0.0` forces recognition
+    // without changing the value.
+    (half_pi + 0.0) - atan_small(1.0 / x)
+  }
+  else if x < -1.0 {
+    0.0 - half_pi - atan_small(1.0 / x)
+  }
+  else if x > 0.999999999 {
+    pi / 4.0
+  }
+  else if x < -0.999999999 {
+    0.0 - pi / 4.0
+  }
+  else {
+    atan_small(x)
+  }
+}
+
+export let asin = (x: Double) -> Double {
+  if x >= 1.0 {
+    half_pi
+  }
+  else if x <= -1.0 {
+    0.0 - half_pi
+  }
+  else {
+    atan(x / sqrt(1.0 - x * x))
+  }
+}
+
+export let acos = (x: Double) -> Double {
+  // #772: same `expr_is_floatish` blind spot as `atan` above -- `half_pi`
+  // (global) minus a call result (`asin(x)`), neither recognized, silently
+  // compiled as integer subtraction without the `+ 0.0` nudge.
+  (half_pi + 0.0) - asin(x)
+}
+
+export let atan2 = (y: Double, x: Double) -> Double {
+  if x > 0.0 {
+    atan(y / x)
+  }
+  else if x < 0.0 {
+    // #772: same `expr_is_floatish` blind spot -- a call result
+    // (`atan(y / x)`) combined with a global (`pi`), neither recognized by
+    // the syntactic floatish heuristic, silently compiled as integer
+    // arithmetic without the `+ 0.0` nudge on `pi`.
+    if y >= 0.0 {
+      atan(y / x) + (pi + 0.0)
+    } else {
+      atan(y / x) - (pi + 0.0)
+    }
+  }
+  else {
+    if y > 0.0 {
+      half_pi
+    }
+    else if y < 0.0 {
+      0.0 - half_pi
+    }
+    else {
+      0.0
+    }
+  }
+}
+
+export let exp_double = (x: Double) -> Double {
+  let mut result = 1.0
+  let mut term = 1.0
+  let mut i = 1
+  while i < 30 {
+    let id = Int::to_double(i)
+    term = term * x / id
+    result = result + term
+    i = i + 1
+  }
+  result
+}
+
+export let pow_double = (base: Double, exponent: Double) -> Double {
+  exp_double(exponent * ln(base))
+}
+
+export let log2_double = (x: Double) -> Double {
+  let ln2 = 0.6931471805599453
+  ln(x) / ln2
+}
+
+export let sin = (x: Double) -> Double {
+  // #772: range-reduce `x` into `[-pi, pi]` before the Taylor series below.
+  // This used to be a separate `normalize_angle` helper with
+  // `while a > pi { a = a - tau }` / `while a < 0.0 - pi { a = a + tau }`,
+  // which hit two independent pre-existing compiler bugs (never exercised
+  // before because this test file was never wired into any CI battery):
+  //
+  // 1. A Double comparison (`EBinOp` with op `<`/`>`) directly in a `while`
+  //    header hits the codegen's while-loop fast path
+  //    (lib/@vibe/compiler/codegen/expr/compile_expr_tail3.vibe), which
+  //    special-cases exactly that shape (cond is a top-level
+  //    `<`/`>`/`<=`/`>=` EBinOp) but always emits *integer* i64.lt_s /
+  //    i64.gt_s comparisons, with no check for Double operands -- unlike the
+  //    general expression path, which dispatches on `expr_is_floatish` and
+  //    correctly uses f64.lt / f64.gt. Doubles are boxed/tagged in the
+  //    linear-memory backend, so comparing two Double bit-patterns with a
+  //    signed-integer compare is meaningless: the loop-exit condition
+  //    effectively never evaluated "false", so the loop body ran forever,
+  //    each iteration bump-allocating a boxed Double until linear memory
+  //    (grown to the 4GB / 65535-page ceiling) was exhausted and the next
+  //    allocation trapped with "memory access out of bounds" -- reproducible
+  //    even for `sin(0.0)`, since the second loop's condition
+  //    (`a < 0.0 - pi`) is evaluated regardless of the actual value of `a`.
+  //    Fix: route the comparison through a `let mut` Bool re-evaluated at
+  //    the end of each iteration, so the `while` header itself is a plain
+  //    identifier (not a top-level comparison `EBinOp`), sidestepping the
+  //    buggy fast path and going through the normal (correct, type-aware)
+  //    codegen path instead.
+  // 2. Separately, calling a private (non-exported) helper function from
+  //    inside an *exported* function that also contains a Double-arithmetic
+  //    `while` loop -- exactly the `sin` / `normalize_angle` shape -- trips
+  //    a second, independent codegen bug when `sin` is invoked across a
+  //    module-import boundary (as every caller of this exported `sin`
+  //    necessarily does): the call reproduces even with a trivial
+  //    `identity` helper in place of `normalize_angle`, so it is unrelated
+  //    to bug (1) or to the trig math itself, and traps with the same
+  //    "memory access out of bounds" symptom in the exported wrapper.
+  //    Fix: inline the range-reduction directly into `sin`'s body instead
+  //    of factoring it into a separately-called helper, which avoids the
+  //    private-call + Double-loop combination that triggers it.
+  let mut a = x
+  let mut too_big = a > pi
+  while too_big {
+    a = a - tau
+    too_big = a > pi
+  }
+  let mut too_small = a < (0.0 - pi)
+  while too_small {
+    a = a + tau
+    too_small = a < (0.0 - pi)
+  }
+  let aa = a * a
+  let mut term = a
+  let mut result = a
+  let mut i = 1
+  while i < 13 {
+    let n = i * 2 * (i * 2 + 1)
+    let nd = Int::to_double(n)
+    term = 0.0 - term * aa / nd
+    result = result + term
+    i = i + 1
+  }
+  result
+}
+
+export let cos = (x: Double) -> Double {
+  sin(x + half_pi)
+}
+
+export let tan = (x: Double) -> Double {
+  // #772: `let c = cos(x)` -- the initializer is an unrecognized call, so
+  // the codegen's `expr_is_floatish` heuristic marks `c`'s local slot as
+  // non-float; the later `sin(x) / c` then has *no* recognized-floatish
+  // operand (another unrecognized call divided by a non-float-tagged slot)
+  // and gets compiled as integer division on the two boxed Double
+  // pointers/bit-patterns. `+ 0.0` on the initializer marks `c`'s slot
+  // floatish so the division is correctly recognized.
+  let c = cos(x) + 0.0
+  sin(x) / c
+}

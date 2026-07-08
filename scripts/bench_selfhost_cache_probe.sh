@@ -15,8 +15,8 @@ if [[ ! -x "$CLI_BIN" ]]; then
   exit 1
 fi
 
-cmd_multi_dep="VIBE_TEST_BACKEND=$BACKEND \"$CLI_BIN\" test \"$ROOT_DIR/vibe/compiler/tests/cache_probe_type_db_fs_multi_dep_bench_test.vibe\" >/dev/null"
-cmd_cli_prepare="VIBE_TEST_BACKEND=$BACKEND \"$CLI_BIN\" test \"$ROOT_DIR/vibe/compiler/tests/cache_probe_cli_prepare_batch_bench_test.vibe\" >/dev/null"
+cmd_multi_dep="VIBE_TEST_BACKEND=$BACKEND \"$CLI_BIN\" test \"$ROOT_DIR/lib/@vibe/compiler/tests/cache_probe_type_db_fs_multi_dep_bench_test.vibe\" >/dev/null"
+cmd_cli_prepare="VIBE_TEST_BACKEND=$BACKEND \"$CLI_BIN\" test \"$ROOT_DIR/lib/@vibe/compiler/tests/cache_probe_cli_prepare_batch_bench_test.vibe\" >/dev/null"
 
 if command -v hyperfine >/dev/null 2>&1; then
   hyperfine \

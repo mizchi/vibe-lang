@@ -115,11 +115,11 @@ fn f(x~: Int, y~: Int) -> Int { x + y }        // labeled args
 サブ境界の存在 (内部整理) と外部公開は分離する:
 
 - サブ index はデフォルトで **package-private の境界**。
-- 外部に subpath (`@vibe/compiler/syntax`) として見せるのは、**ルートの
+- 外部に subpath (`@lib/@vibe/compiler/syntax`) として見せるのは、**ルートの
   index.vibei が明示 re-export したときだけ**:
 
 ```vibe
-// lib/@vibe/compiler/index.vibei
+// lib/@lib/@vibe/compiler/index.vibei
 export ./syntax as syntax
 ```
 
@@ -172,7 +172,7 @@ require @vibe/http ^1.2.3 = #77aa02ef     // ^ は互換範囲 (full triple 必�
 
 ```
 error: duplicate package @vibe/core
-  #ab12cd (1.2.3)  required by @vibe/compiler
+  #ab12cd (1.2.3)  required by @lib/@vibe/compiler
   #cd34ef (1.2.5)  required by @vibe/http
 hint: require @vibe/core 1.2.5 = #cd34ef override
 ```
@@ -284,7 +284,7 @@ moonbitlang/core の構成を参考に、旧 `vibe/collection/{list,set}` /
   bare alias 衝突回避）があっても、いずれかの exported def が
   シグネチャ一致すれば満たされる。
 - **compiler 内部との関係**: build cache の identity hash は
-  `vibe/compiler/cache/sha1.vibe`（vendored twin）を使い、canonical
+  `lib/@vibe/compiler/cache/sha1.vibe`（vendored twin）を使い、canonical
   (`lib/@vibe/core/sha1.vibe`) との同期は selfhost gate step 6e が
   comment 行を除いた diff で強制する。compiler が @vibe/core を
   `require` で消費する形は #726/#730 の flattener 刷新後に移行する。

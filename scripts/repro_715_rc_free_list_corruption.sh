@@ -67,7 +67,7 @@ while [ $# -gt 0 ]; do
 done
 
 mkdir -p "$OUT_DIR"
-FLAT_SRC="vibe/compiler/selfhost_cli_adapter_module_source.vibe"
+FLAT_SRC="lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe"
 [ -s "$FLAT_SRC" ] || {
   echo "[repro-715] flat source not found at $FLAT_SRC -- run:" >&2
   echo "  VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=\$PWD/$FLAT_SRC bash scripts/generate_selfhost_bundle.sh" >&2

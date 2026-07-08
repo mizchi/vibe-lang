@@ -3,8 +3,8 @@
 `vibe compile --wit` (launcher) / `VIBE_EMIT_WIT=1` (compiler wasm) render a
 vibe file's **effect surface** as a WIT world. `vibe serve` writes the same
 WIT next to the handler component. Implementation:
-`vibe/compiler/wit_gen.vibe`; pinned by `fixtures/wit_gen_http.golden.wit`
-(gate step 40i) and unit-tested by `vibe/compiler/wit_gen_test.vibe`.
+`lib/@vibe/compiler/wit_gen.vibe`; pinned by `fixtures/wit_gen_http.golden.wit`
+(gate step 40i) and unit-tested by `lib/@vibe/compiler/wit_gen_test.vibe`.
 
 ## The contract
 

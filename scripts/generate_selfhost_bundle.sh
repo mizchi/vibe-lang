@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT_PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 PROJECT_ROOT="${VIBE_SELFHOST_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
-COMPILER_DIR="${VIBE_SELFHOST_COMPILER_DIR:-$PROJECT_ROOT/vibe/compiler}"
+COMPILER_DIR="${VIBE_SELFHOST_COMPILER_DIR:-$PROJECT_ROOT/lib/@vibe/compiler}"
 MANIFEST="${VIBE_SELFHOST_SOURCE_MANIFEST:-$COMPILER_DIR/selfhost_sources_manifest.tsv}"
 OUT="${VIBE_SELFHOST_BUNDLE_OUT:-$COMPILER_DIR/selfhost_sources_bundle.vibe}"
 OUT_ADAPTER="${VIBE_SELFHOST_ADAPTER_BUNDLE_OUT:-$COMPILER_DIR/selfhost_cli_adapter_bundle.vibe}"
@@ -623,12 +623,12 @@ write_adapter_bundle() {
   for idx in "${CLI_ADAPTER_INDEXES[@]}"; do
     f="${FILES[$idx]}"
     filepath="$COMPILER_DIR/$f"
-    # #741: manifest rows outside the compiler dir (../../lib/@vibe/core/...)
-    # are repo-rooted once the ../../ prefix (vibe/compiler -> repo root) drops.
-    if [[ "$f" == ../../* ]]; then
-      relpath="${f#../../}"
+    # #741/#766: manifest rows outside the compiler dir (../../../lib/@vibe/core/...)
+    # are repo-rooted once the ../../../ prefix (lib/@vibe/compiler -> repo root) drops.
+    if [[ "$f" == ../../../* ]]; then
+      relpath="${f#../../../}"
     else
-      relpath="vibe/compiler/$f"
+      relpath="lib/@vibe/compiler/$f"
     fi
     echo "let cli_adapter_source_$adapter_local_idx = () -> (String, String) {"
     echo "  (\"$relpath\","
@@ -734,7 +734,7 @@ build_exact_adapter_merged_source() {
     VIBE_SELFHOST_IMPORT_ABI="${VIBE_SELFHOST_IMPORT_ABI:-raw}" \
     VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$flatten_wasm" \
-    vibe/compiler/selfhost_cli_adapter.vibe "$merged_path" cli_main >"$tool_log.flatten" 2>&1) || true
+    lib/@vibe/compiler/selfhost_cli_adapter.vibe "$merged_path" cli_main >"$tool_log.flatten" 2>&1) || true
   if [ ! -s "$merged_path" ]; then
     echo "generate_selfhost_bundle: merge flatten failed" >&2
     cat "$merged_path.diag" >&2 2>/dev/null || true
@@ -820,12 +820,12 @@ write_runtime_entry_bundle
       echo "error: file not found: $filepath" >&2
       exit 1
     fi
-    # #741: manifest rows outside the compiler dir (../../lib/@vibe/core/...)
-    # are repo-rooted once the ../../ prefix (vibe/compiler -> repo root) drops.
-    if [[ "$f" == ../../* ]]; then
-      relpath="${f#../../}"
+    # #741/#766: manifest rows outside the compiler dir (../../../lib/@vibe/core/...)
+    # are repo-rooted once the ../../../ prefix (lib/@vibe/compiler -> repo root) drops.
+    if [[ "$f" == ../../../* ]]; then
+      relpath="${f#../../../}"
     else
-      relpath="vibe/compiler/$f"
+      relpath="lib/@vibe/compiler/$f"
     fi
     echo "let selfhost_source_$bundle_local_idx = () -> (String, String) {"
     echo "  (\"$relpath\","

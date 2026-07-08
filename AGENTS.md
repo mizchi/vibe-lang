@@ -3,7 +3,7 @@
 > **Status (2026-06-23, #594):** vibe is now **selfhost-only**. The MoonBit host
 > implementation (`src/`, `moon.mod`) was retired. The compiler is built,
 > checked, and run entirely from the committed seed (`bootstrap/seed/`)
-> + selfhost source (`vibe/compiler/`, `vibe/cli/`) via the Rust/node wasm runner
+> + selfhost source (`lib/@vibe/compiler/`, `vibe/cli/`) via the Rust/node wasm runner
 > — **no MoonBit toolchain (`moon`) is required**. The default gate is the
 > moon-free `pkf run release-check` → `scripts/selfhost_only_gate.sh`.
 >
@@ -54,13 +54,13 @@ selfhost-only (#594) 以降、ソースはすべて vibe (`.vibe`)。旧 MoonBit
 
 vibe compiler は二層構造になっている:
 
-- **`vibe/compiler/` (selfhost: vibe で書かれた vibe compiler)** —
+- **`lib/@vibe/compiler/` (selfhost: vibe で書かれた vibe compiler)** —
   2026-06-12 以降の完全 selfhost 運用では source of truth。
   parser/checker/codegen/runtime compile だけでなく、CLI のコマンド挙動、
   adapter、bundle、component entry、parity gate もここを主対象として実装する。
 - **`src/` (MoonBit 実装)** — legacy bootstrap / fallback / host-runner 層。
   通常開発では触らない。新機能、bugfix、CLI 挙動変更、builtin 追加は
-  `src/` へ入れず、`vibe/compiler/` 側だけで実装する。`src/` を変更するのは、
+  `src/` へ入れず、`lib/@vibe/compiler/` 側だけで実装する。`src/` を変更するのは、
   明示的に許可された bootstrap 破損の復旧、退役作業、または別ブランチでの
   隔離作業に限る。
 
@@ -74,11 +74,11 @@ compiler source 自体で使う場合は、先に seed compiler がその syntax
 
 判断目安:
 - 「`vibe test foo.vibe` で挙動を変えたい / 新 builtin を追加したい」
-  → `vibe/compiler/` 側だけを変更する
+  → `lib/@vibe/compiler/` 側だけを変更する
 - 「CLI の挙動を変えたい / コマンドを追加したい」
-  → `vibe/compiler/entry` / `selfhost_cli_*.vibe` / component adapter 側で実装する
+  → `lib/@vibe/compiler/entry` / `selfhost_cli_*.vibe` / component adapter 側で実装する
 - 「selfhost が正しく自分でコンパイルできない」「dist wasm が壊れて
-  いる」 → まず `vibe/compiler/` / bootstrap scripts / seed 管理を直し、
+  いる」 → まず `lib/@vibe/compiler/` / bootstrap scripts / seed 管理を直し、
   `pkf run selfhost-gate` で確認する。`src/` 修正が必要に見える場合は
   変更前に方針確認する
 - MoonBit host と selfhost の二重実装は増やさない。parity/cutover gate は

@@ -7,8 +7,8 @@ SCRIPT="$PROJECT_ROOT/scripts/selfhost_generations.sh"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vibe_selfhost_generations.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
-mkdir -p "$TMP_ROOT/bootstrap" "$TMP_ROOT/_build/selfhost/seed" "$TMP_ROOT/vibe/compiler"
-printf 'export let main = () -> Int { 0 }\n' > "$TMP_ROOT/vibe/compiler/index.vibe"
+mkdir -p "$TMP_ROOT/bootstrap" "$TMP_ROOT/_build/selfhost/seed" "$TMP_ROOT/lib/@vibe/compiler"
+printf 'export let main = () -> Int { 0 }\n' > "$TMP_ROOT/lib/@vibe/compiler/index.vibe"
 printf 'seed-compiler\n' > "$TMP_ROOT/_build/selfhost/seed/selfhost_compiler.wasm"
 seed_sha="$(shasum -a 256 "$TMP_ROOT/_build/selfhost/seed/selfhost_compiler.wasm" | awk '{print $1}')"
 
@@ -20,7 +20,7 @@ cat > "$TMP_ROOT/bootstrap/seed.json" <<EOF
     "name": "test-seed",
     "tag": "test-seed-tag",
     "source_commit": "abc123",
-    "entry": "vibe/compiler/index.vibe",
+    "entry": "lib/@vibe/compiler/index.vibe",
     "entry_name": "main",
     "artifact": {
       "path": "_build/selfhost/seed/selfhost_compiler.wasm",
@@ -73,7 +73,7 @@ const fs = require("node:fs");
 const data = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 assert.equal(data.policy, "rust-style-stage0-stage1-stage2");
 assert.equal(data.seed.name, "test-seed");
-assert.equal(data.source.entry, "vibe/compiler/index.vibe");
+assert.equal(data.source.entry, "lib/@vibe/compiler/index.vibe");
 assert.equal(data.stages.stage0.built_by, "fixed-seed");
 assert.equal(data.stages.stage1.built_by, "stage0");
 assert.equal(data.stages.stage2.built_by, "stage1");
@@ -148,9 +148,9 @@ NODE
 echo "selfhost generations self-test: ok"
 
 CLI_ROOT="$TMP_ROOT/cli_seed"
-mkdir -p "$CLI_ROOT/bootstrap" "$CLI_ROOT/bootstrap/seed" "$CLI_ROOT/scripts" "$CLI_ROOT/vibe/compiler"
-printf 'import ./dep.vibe { dep }\nexport let cli_main = () -> Int { dep() }\n' > "$CLI_ROOT/vibe/compiler/selfhost_cli_support.vibe"
-printf 'export let dep = () -> Int { 0 }\n' > "$CLI_ROOT/vibe/compiler/dep.vibe"
+mkdir -p "$CLI_ROOT/bootstrap" "$CLI_ROOT/bootstrap/seed" "$CLI_ROOT/scripts" "$CLI_ROOT/lib/@vibe/compiler"
+printf 'import ./dep.vibe { dep }\nexport let cli_main = () -> Int { dep() }\n' > "$CLI_ROOT/lib/@vibe/compiler/selfhost_cli_support.vibe"
+printf 'export let dep = () -> Int { 0 }\n' > "$CLI_ROOT/lib/@vibe/compiler/dep.vibe"
 printf 'seed-cli\n' > "$CLI_ROOT/bootstrap/seed/selfhost_compiler.wasm"
 cli_seed_sha="$(shasum -a 256 "$CLI_ROOT/bootstrap/seed/selfhost_compiler.wasm" | awk '{print $1}')"
 
@@ -162,7 +162,7 @@ cat > "$CLI_ROOT/bootstrap/seed.json" <<EOF
     "name": "test-cli-seed",
     "tag": "test-cli-seed-tag",
     "source_commit": "abc123",
-    "entry": "vibe/compiler/selfhost_cli_support.vibe",
+    "entry": "lib/@vibe/compiler/selfhost_cli_support.vibe",
     "entry_name": "cli_main",
     "artifact": {
       "path": "bootstrap/seed/selfhost_compiler.wasm",
@@ -207,7 +207,7 @@ VIBE_SELFHOST_GENERATION_VALIDATE_RUN=0 \
 test -s "$CLI_ROOT/out/selfhost_cli_adapter_module_source.vibe"
 test -s "$CLI_ROOT/out/stage1.wasm"
 test -s "$CLI_ROOT/out/stage2.wasm"
-if rg -q '^vibe/compiler/selfhost_cli_support\.vibe$' "$CLI_ROOT/invocations.log"; then
+if rg -q '^lib/@vibe/compiler/selfhost_cli_support\.vibe$' "$CLI_ROOT/invocations.log"; then
   echo "expected cli seed build to use generated flat compiler source, not import entry" >&2
   cat "$CLI_ROOT/invocations.log" >&2
   exit 1

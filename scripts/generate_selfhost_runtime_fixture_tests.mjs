@@ -19,7 +19,7 @@ import path from "node:path";
 const ROOT = process.cwd();
 const GENERATED_DIR = path.join(
   ROOT,
-  "vibe/compiler/_generated_selfhost_runtime_fixtures",
+  "lib/@vibe/compiler/_generated_selfhost_runtime_fixtures",
 );
 
 // ---------------------------------------------------------------------------

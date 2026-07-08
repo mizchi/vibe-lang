@@ -1,4 +1,47 @@
+//# Imports
+
+// #777: `Json::parse`/`Json::stringify`/... were written against the
+// MoonBit host's builtin `Json` type (auto-imported methods); the selfhost
+// `@vibe/json` package only ships Result-based primitives, so use the
+// direct-value convenience wrappers in json_convenience.vibe instead.
+import ../json/json_convenience.vibe {
+  Json::parse
+}
+
 //# Functions
+
+// #777: `String::replace_all` (`../prelude/string.vibe`) is a real prelude
+// function needing an explicit import (same class of host-era rot as
+// #742) — but importing it into THIS file, alongside the dynamic string
+// slices below (`_csv_parse_line`'s `line[i: i+1]` etc.), trips a real
+// selfhost codegen bug: the imported function's `let rec` + dynamic-slice
+// body corrupts an unrelated WASM function in this compile unit ("not
+// enough arguments on the stack for call" at instantiation — see
+// pipeline.vibe's `pipeline_replace_all` for the same workaround and a
+// fuller repro note). Reimplemented locally (iteratively) to sidestep it.
+let csv_replace_all = (s: String, pattern: String, replacement: String) -> String {
+  let pat_len = String::length(pattern)
+  let s_len = String::length(s)
+  if pat_len == 0 || pat_len > s_len {
+    s
+  } else {
+    let sb = StringBuilder::new()
+    let mut i = 0
+    while i <= s_len - pat_len {
+      if s[i: i + pat_len] == pattern {
+        StringBuilder::push(sb, replacement)
+        i = i + pat_len
+      } else {
+        StringBuilder::push(sb, s[i: i + 1])
+        i = i + 1
+      }
+    }
+    if i < s_len {
+      StringBuilder::push(sb, s[i: s_len])
+    }
+    StringBuilder::freeze(sb)
+  }
+}
 
 export let _csv_is_number = (s: String) -> Bool {
   let len = String::length(s)
@@ -16,21 +59,21 @@ export let _csv_is_number = (s: String) -> Bool {
         let mut has_dot = false
         while i < len {
           let ch = s[i]
-          if ch == "." {
+          if ch == '.' {
             if has_dot {
               valid = false
             }
             has_dot = true
-          } else if not(ch == "0") {
-            if not(ch == "1") {
-              if not(ch == "2") {
-                if not(ch == "3") {
-                  if not(ch == "4") {
-                    if not(ch == "5") {
-                      if not(ch == "6") {
-                        if not(ch == "7") {
-                          if not(ch == "8") {
-                            if not(ch == "9") {
+          } else if not(ch == '0') {
+            if not(ch == '1') {
+              if not(ch == '2') {
+                if not(ch == '3') {
+                  if not(ch == '4') {
+                    if not(ch == '5') {
+                      if not(ch == '6') {
+                        if not(ch == '7') {
+                          if not(ch == '8') {
+                            if not(ch == '9') {
                               valid = false
                             }
                           }
@@ -51,21 +94,21 @@ export let _csv_is_number = (s: String) -> Bool {
       let mut has_dot = false
       while i < len {
         let ch = s[i]
-        if ch == "." {
+        if ch == '.' {
           if has_dot {
             valid = false
           }
           has_dot = true
-        } else if not(ch == "0") {
-          if not(ch == "1") {
-            if not(ch == "2") {
-              if not(ch == "3") {
-                if not(ch == "4") {
-                  if not(ch == "5") {
-                    if not(ch == "6") {
-                      if not(ch == "7") {
-                        if not(ch == "8") {
-                          if not(ch == "9") {
+        } else if not(ch == '0') {
+          if not(ch == '1') {
+            if not(ch == '2') {
+              if not(ch == '3') {
+                if not(ch == '4') {
+                  if not(ch == '5') {
+                    if not(ch == '6') {
+                      if not(ch == '7') {
+                        if not(ch == '8') {
+                          if not(ch == '9') {
                             valid = false
                           }
                         }
@@ -92,11 +135,15 @@ export let _csv_parse_line = (line: String) -> Array[String] {
     let mut i = 0
     let mut in_quotes = false
     while i < len {
+      // #777: `line[i]` (single-index) is an Int char code — compare against
+      // char literals. Where the raw character must be appended as text,
+      // reuse the range-slice `line[i: i+1]` (String) instead of `ch`.
       let ch = line[i]
+      let ch_str = line[i: i + 1]
       let mut extra = 0
       let prev_in_quotes = in_quotes
       if in_quotes {
-        if ch == "\"" {
+        if ch == '"' {
           let mut is_escape = false
           if i + 1 < len {
             let next = line[i + 1: i + 2]
@@ -112,21 +159,21 @@ export let _csv_parse_line = (line: String) -> Array[String] {
             in_quotes = false
           }
         }
-        if not(ch == "\"") {
-          StringBuilder::push(field_sb, ch)
+        if not(ch == '"') {
+          StringBuilder::push(field_sb, ch_str)
         }
       }
       if not(prev_in_quotes) {
-        if ch == "\"" {
+        if ch == '"' {
           in_quotes = true
         }
-        if ch == "," {
+        if ch == ',' {
           ArrayBuilder::push(result, StringBuilder::freeze(field_sb))
           field_sb = StringBuilder::new()
         }
-        if not(ch == "\"") {
-          if not(ch == ",") {
-            StringBuilder::push(field_sb, ch)
+        if not(ch == '"') {
+          if not(ch == ',') {
+            StringBuilder::push(field_sb, ch_str)
           }
         }
       }
@@ -143,16 +190,19 @@ export let _csv_escape_json = (s: String) -> String {
     let len = String::length(s)
     let mut i = 0
     while i < len {
+      // #777: `s[i]` is an Int char code — compare against char literals,
+      // not one-char strings (Int == String is a type error).
       let ch = s[i]
-      if ch == "\\" {
+      let ch_str = s[i: i + 1]
+      if ch == '\\' {
         StringBuilder::push(sb, "\\\\")
-      } else if ch == "\"" {
+      } else if ch == '"' {
         StringBuilder::push(sb, "\\\"")
-      } else if ch == "\n" {
+      } else if ch == '\n' {
         StringBuilder::push(sb, "\\n")
-      } else if ch == "\t" {
+      } else if ch == '\t' {
         StringBuilder::push(sb, "\\t")
-      } else StringBuilder::push(sb, ch)
+      } else StringBuilder::push(sb, ch_str)
       i = i + 1
     }
     StringBuilder::freeze(sb)
@@ -161,7 +211,7 @@ export let _csv_escape_json = (s: String) -> String {
 
 export let from_csv = (text: String) -> Json {
   let cr = String::from_char_code(13)
-  let cleaned = String::replace_all(text, cr, "")
+  let cleaned = csv_replace_all(text, cr, "")
   let all_lines = String::split(cleaned, "\n")
   let num_lines = Array::length(all_lines)
   if num_lines < 2 {

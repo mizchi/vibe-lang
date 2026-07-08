@@ -1,0 +1,376 @@
+//# Imports
+
+import .. / core / types.vibe {
+  Type
+}
+
+//# Functions
+
+let misc_no_params: () -> Array[Type] = () -> {
+  Array::slice([
+    CtUnknown
+  ], 0, 0)
+}
+
+let misc_one_param: (Type) -> Array[Type] = (a) -> {
+  let arr = misc_no_params()
+  Array::push(arr, a)
+  arr
+}
+
+let lookup_not: (String) -> Option[Type] = (name) -> {
+  if name == "not" {
+    Some(CtFn(misc_one_param(CtBool), CtBool, None))
+  }
+  else None
+}
+
+let lookup_neg: (String) -> Option[Type] = (name) -> {
+  if name == "__neg" {
+    Some(CtFn(misc_one_param(CtUnknown), CtUnknown, None))
+  }
+  else None
+}
+
+let misc_two_params: (Type, Type) -> Array[Type] = (a, b) -> {
+  let arr = misc_no_params()
+  Array::push(arr, a)
+  Array::push(arr, b)
+  arr
+}
+
+let lookup_eq: (String) -> Option[Type] = (name) -> {
+  if name == "eq" {
+    Some(CtFn(misc_two_params(CtInt, CtInt), CtBool, None))
+  }
+  else None
+}
+
+let lookup_arithmetic_helper: (String) -> Option[Type] = (name) -> {
+  if name == "add" || name == "sub" || name == "mul" {
+    Some(CtFn(misc_two_params(CtInt, CtInt), CtInt, None))
+  } else if name == "lt" {
+    Some(CtFn(misc_two_params(CtInt, CtInt), CtBool, None))
+  } else {
+    None
+  }
+}
+
+let lookup_none: (String) -> Option[Type] = (name) -> {
+  if name == "None" {
+    Some(CtOption(CtUnknown))
+  }
+  else None
+}
+
+let lookup_some: (String) -> Option[Type] = (name) -> {
+  if name == "Some" {
+    Some(CtFn(misc_one_param(CtUnknown), CtOption(CtUnknown), None))
+  }
+  else None
+}
+
+let lookup_index: (String) -> Option[Type] = (name) -> {
+  if name == "__index" {
+    Some(CtFn(misc_two_params(CtUnknown, CtUnknown), CtUnknown, None))
+  }
+  else if name == "__set_field" {
+    // Build the param list inline rather than via the shared `misc_three_params`
+    // helper: adding a second call site for that private helper triggered a
+    // namespace-hash collision in the wasm bundler (#492).
+    let set_field_params = misc_no_params()
+    Array::push(set_field_params, CtUnknown)
+    Array::push(set_field_params, CtString)
+    Array::push(set_field_params, CtUnknown)
+    Some(CtFn(set_field_params, CtUnit, None))
+  }
+  else None
+}
+
+let lookup_print: (String) -> Option[Type] = (name) -> {
+  if name == "print" {
+    Some(CtFn(misc_one_param(CtString), CtUnit, None))
+  }
+  else None
+}
+
+let lookup_throw: (String) -> Option[Type] = (name) -> {
+  if name == "throw" {
+    Some(CtFn(misc_one_param(CtString), CtUnknown, Some("Error")))
+  }
+  else None
+}
+
+let misc_three_params: (Type, Type, Type) -> Array[Type] = (a, b, c) -> {
+  let arr = misc_no_params()
+  Array::push(arr, a)
+  Array::push(arr, b)
+  Array::push(arr, c)
+  arr
+}
+
+let lookup_slice: (String) -> Option[Type] = (name) -> {
+  if name == "__slice" {
+    Some(CtFn(misc_three_params(CtUnknown, CtInt, CtInt), CtUnknown, None))
+  }
+  else None
+}
+
+let lookup_assert: (String) -> Option[Type] = (name) -> {
+  if name == "assert" {
+    Some(CtFn(misc_one_param(CtBool), CtUnit, None))
+  }
+  else if name == "assert_true" {
+    Some(CtFn(misc_one_param(CtBool), CtUnit, None))
+  }
+  else if name == "assert_eq" {
+    Some(CtFn([
+      CtUnknown,
+      CtUnknown
+    ], CtUnit, None))
+  }
+  else None
+}
+
+let lookup_println: (String) -> Option[Type] = (name) -> {
+  if name == "println" {
+    Some(CtFn(misc_one_param(CtString), CtUnit, None))
+  }
+  else None
+}
+
+let lookup_to_string: (String) -> Option[Type] = (name) -> {
+  if name == "__to_string" {
+    Some(CtFn(misc_one_param(CtUnknown), CtString, None))
+  }
+  else None
+}
+
+let lookup_len: (String) -> Option[Type] = (name) -> {
+  if name == "__len" {
+    Some(CtFn(misc_one_param(CtUnknown), CtInt, None))
+  }
+  else None
+}
+
+let lookup_iter_intrinsic: (String) -> Option[Type] = (name) -> {
+  if name == "iter_require" {
+    Some(CtFn(misc_one_param(CtUnknown), CtUnknown, None))
+  } else if name == "iter_length" {
+    Some(CtFn(misc_one_param(CtUnknown), CtInt, None))
+  } else if name == "iter_get" {
+    Some(CtFn(misc_two_params(CtUnknown, CtInt), CtUnknown, None))
+  } else if name == "String::iter_length" {
+    Some(CtFn(misc_one_param(CtString), CtInt, None))
+  } else if name == "String::iter_get" {
+    Some(CtFn(misc_two_params(CtString, CtInt), CtInt, None))
+  } else if name == "Map::iter_length" {
+    Some(CtFn(misc_one_param(CtUnknown), CtInt, None))
+  } else if name == "Map::iter_get" {
+    Some(CtFn(misc_two_params(CtUnknown, CtInt), CtUnknown, None))
+  } else {
+    None
+  }
+}
+
+let lookup_char_to_int: (String) -> Option[Type] = (name) -> {
+  if name == "Char::to_int" {
+    Some(CtFn(misc_one_param(CtChar), CtInt, None))
+  }
+  else None
+}
+
+let lookup_misc_group_a: (String) -> Option[Type] = (name) -> {
+  match lookup_arithmetic_helper(name) {
+    Some(t) => Some(t),
+    None => match lookup_eq(name) {
+      Some(t) => Some(t),
+      None => match lookup_not(name) {
+        Some(t) => Some(t),
+        None => match lookup_neg(name) {
+          Some(t) => Some(t),
+          None => match lookup_to_string(name) {
+            Some(t) => Some(t),
+            None => match lookup_len(name) {
+              Some(t) => Some(t),
+              None => lookup_index(name)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+let lookup_misc_group_b: (String) -> Option[Type] = (name) -> {
+  match lookup_slice(name) {
+    Some(t) => Some(t),
+    None => match lookup_print(name) {
+      Some(t) => Some(t),
+      None => match lookup_println(name) {
+        Some(t) => Some(t),
+        None => lookup_assert(name)
+      }
+    }
+  }
+}
+
+let lookup_misc_group_e: (String) -> Option[Type] = (name) -> {
+  if name == "String::join" {
+    // (Array[String], String) -> String  (host builtin)
+    Some(CtFn(misc_two_params(CtArray(CtString), CtString), CtString, None))
+  } else if name == "__rec_field" {
+    // selfhost record-pattern desugar: __rec_field(record, index) -> field value.
+    // Lenient (field type unknown); only needs to resolve, not constrain.
+    Some(CtFn(misc_two_params(CtUnknown, CtInt), CtUnknown, None))
+  } else {
+    match lookup_iter_intrinsic(name) {
+      Some(t) => Some(t),
+      None => lookup_none(name)
+    }
+  }
+}
+
+let lookup_char_from_int: (String) -> Option[Type] = (name) -> {
+  if name == "Char::from_int" {
+    Some(CtFn(misc_one_param(CtInt), CtChar, None))
+  }
+  else None
+}
+
+let lookup_double_to_int: (String) -> Option[Type] = (name) -> {
+  // `Float` is `CtDouble` under the hood (see core/types.vibe) — codegen
+  // already treats "Double::to_int" / "Float::to_int" as the same case, so
+  // accept both spellings here too.
+  if name == "Double::to_int" || name == "Float::to_int" {
+    Some(CtFn(misc_one_param(CtDouble), CtInt, None))
+  }
+  else None
+}
+
+let lookup_int_to_double: (String) -> Option[Type] = (name) -> {
+  if name == "Int::to_double" || name == "Int::to_float" {
+    Some(CtFn(misc_one_param(CtInt), CtDouble, None))
+  }
+  else if name == "Int::to_string" {
+    // Documented in the cheatsheet's conversion set but never wired up —
+    // codegen lowers it to the `__to_string` integer path (#740 fallout:
+    // ripple_test rotted against it).
+    Some(CtFn(misc_one_param(CtInt), CtString, None))
+  }
+  else None
+}
+
+let lookup_double_to_i64_bits: (String) -> Option[Type] = (name) -> {
+  if name == "Double::to_i64_bits" || name == "Double::to_i64_bits_lo" || name == "Double::to_i64_bits_hi" {
+    Some(CtFn(misc_one_param(CtDouble), CtInt, None))
+  }
+  else None
+}
+
+let lookup_misc_group_c: (String) -> Option[Type] = (name) -> {
+  match lookup_throw(name) {
+    Some(t) => Some(t),
+    None => match lookup_int_to_double(name) {
+      Some(t) => Some(t),
+      None => match lookup_double_to_int(name) {
+        Some(t) => Some(t),
+        None => lookup_double_to_i64_bits(name)
+      }
+    }
+  }
+}
+
+let lookup_double_from_i64_bits: (String) -> Option[Type] = (name) -> {
+  if name == "Double::from_i64_bits" {
+    Some(CtFn(misc_one_param(CtInt), CtDouble, None))
+  }
+  else None
+}
+
+let lookup_misc_group_d: (String) -> Option[Type] = (name) -> {
+  match lookup_double_from_i64_bits(name) {
+    Some(t) => Some(t),
+    None => match lookup_char_to_int(name) {
+      Some(t) => Some(t),
+      None => match lookup_char_from_int(name) {
+        Some(t) => Some(t),
+        None => lookup_some(name)
+      }
+    }
+  }
+}
+
+// Double::to_string / Float::to_string: codegen already lowers these through
+// `double_to_string_expr` (the same formatter string interpolation of a
+// float uses via `__to_string`) — only the checker-side registration was
+// missing.
+let lookup_double_to_string: (String) -> Option[Type] = (name) -> {
+  if name == "Double::to_string" || name == "Float::to_string" {
+    Some(CtFn(misc_one_param(CtDouble), CtString, None))
+  }
+  else None
+}
+
+// Native single-opcode f64 ops (f64.abs/floor/ceil/min/max) — cheap to wire
+// up since wasm has direct instructions for all of them.
+let lookup_double_unary_op: (String) -> Option[Type] = (name) -> {
+  if name == "Double::abs" || name == "Double::floor" || name == "Double::ceil" {
+    Some(CtFn(misc_one_param(CtDouble), CtDouble, None))
+  }
+  else None
+}
+
+let lookup_double_binary_op: (String) -> Option[Type] = (name) -> {
+  if name == "Double::max" || name == "Double::min" {
+    Some(CtFn(misc_two_params(CtDouble, CtDouble), CtDouble, None))
+  }
+  else None
+}
+
+// Int::abs/signum/is_even/is_odd/max/min/clamp are intentionally NOT
+// registered as compiler builtins here: lib/@vibe/prelude/int.vibe already
+// defines all of them as regular user-space functions (with correct
+// overflow/saturation semantics, e.g. Int::abs(int_min_value) ==
+// int_max_value). Registering them as builtins too would let this
+// checker-side entry win over the prelude definition and silently swap in
+// different (wrong-for-edge-cases) codegen — this previously broke
+// lib/@vibe/prelude/int_test.vibe after a #767 attempt added them.
+let lookup_int_parse: (String) -> Option[Type] = (name) -> {
+  if name == "Int::parse" {
+    Some(CtFn(misc_one_param(CtString), CtOption(CtInt), None))
+  }
+  else None
+}
+
+let lookup_misc_group_f: (String) -> Option[Type] = (name) -> {
+  match lookup_double_to_string(name) {
+    Some(t) => Some(t),
+    None => match lookup_double_unary_op(name) {
+      Some(t) => Some(t),
+      None => match lookup_double_binary_op(name) {
+        Some(t) => Some(t),
+        None => lookup_int_parse(name)
+      }
+    }
+  }
+}
+
+export let lookup_misc: (String) -> Option[Type] = (name) -> {
+  match lookup_misc_group_a(name) {
+    Some(t) => Some(t),
+    None => match lookup_misc_group_b(name) {
+      Some(t) => Some(t),
+      None => match lookup_misc_group_c(name) {
+        Some(t) => Some(t),
+        None => match lookup_misc_group_d(name) {
+          Some(t) => Some(t),
+          None => match lookup_misc_group_e(name) {
+            Some(t) => Some(t),
+            None => lookup_misc_group_f(name)
+          }
+        }
+      }
+    }
+  }
+}

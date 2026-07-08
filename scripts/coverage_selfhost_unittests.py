@@ -36,7 +36,7 @@ test_files = sys.argv[2:]
 helpers = []
 seen_names = set()
 for sf in support_files:
-    p = os.path.join(ROOT, 'vibe/compiler', sf)
+    p = os.path.join(ROOT, 'lib/@vibe/compiler', sf)
     if not os.path.exists(p): continue
     body = strip_module(open(p).read())
     # dedup top-level let names to avoid collisions across supports
@@ -51,7 +51,7 @@ let assert_neq: [T: Eq](T, T) -> Int with { Error } = (a, b) -> { if eq(a, b) { 
 '''
 fns, calls, n = [], [], 0
 for tf in test_files:
-    pth = os.path.join(ROOT, 'vibe/compiler', tf)
+    pth = os.path.join(ROOT, 'lib/@vibe/compiler', tf)
     if not os.path.exists(pth): continue
     body_src = strip_module(open(pth).read())
     # convert each `test "name" { ... }` / `bench` to `let cov_ut_N: () -> Int with { Error } = () -> { ... 0 }`

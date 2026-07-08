@@ -1,34 +1,81 @@
+//# Imports
+
+// #777: `Json::parse`/... were written against the MoonBit host's builtin
+// `Json` type (auto-imported methods); the selfhost `@vibe/json` package
+// only ships Result-based primitives, so use the direct-value convenience
+// wrappers in json_convenience.vibe instead.
+import ../json/json_convenience.vibe {
+  Json::parse
+}
+
 //# Functions
 
-let _yaml_is_digit = (ch: String) -> Bool {
-  if ch == "0" {
+// #777: `String::replace_all` (`../prelude/string.vibe`) needs an explicit
+// import to use (real prelude function, not a checker builtin — same class
+// of host-era rot as #742). But importing it into THIS file, alongside the
+// many dynamic string slices below, trips a real selfhost codegen bug: the
+// imported function's `let rec` + dynamic-slice body corrupts an unrelated
+// WASM function in this compile unit ("not enough arguments on the stack
+// for call" at instantiation — see pipeline.vibe's `pipeline_replace_all`
+// for the same workaround and a fuller repro note). Reimplemented locally
+// (iteratively) to sidestep it.
+let yaml_replace_all = (s: String, pattern: String, replacement: String) -> String {
+  let pat_len = String::length(pattern)
+  let s_len = String::length(s)
+  if pat_len == 0 || pat_len > s_len {
+    s
+  } else {
+    let sb = StringBuilder::new()
+    let mut i = 0
+    while i <= s_len - pat_len {
+      if s[i: i + pat_len] == pattern {
+        StringBuilder::push(sb, replacement)
+        i = i + pat_len
+      } else {
+        StringBuilder::push(sb, s[i: i + 1])
+        i = i + 1
+      }
+    }
+    if i < s_len {
+      StringBuilder::push(sb, s[i: s_len])
+    }
+    StringBuilder::freeze(sb)
+  }
+}
+
+// #777: `ch: String` was wrong — every call site passes `s[i]` (single-
+// index), which is an Int char code, not a one-char String. Fixed the
+// parameter type and the literal comparisons to match (char literals, not
+// one-char strings).
+let _yaml_is_digit = (ch: Int) -> Bool {
+  if ch == '0' {
     true
   }
-  else if ch == "1" {
+  else if ch == '1' {
     true
   }
-  else if ch == "2" {
+  else if ch == '2' {
     true
   }
-  else if ch == "3" {
+  else if ch == '3' {
     true
   }
-  else if ch == "4" {
+  else if ch == '4' {
     true
   }
-  else if ch == "5" {
+  else if ch == '5' {
     true
   }
-  else if ch == "6" {
+  else if ch == '6' {
     true
   }
-  else if ch == "7" {
+  else if ch == '7' {
     true
   }
-  else if ch == "8" {
+  else if ch == '8' {
     true
   }
-  else if ch == "9" {
+  else if ch == '9' {
     true
   }
   else false
@@ -57,13 +104,13 @@ let _yaml_is_number = (s: String) -> Bool {
       let mut has_dot = false
       while i < len {
         let ch = s[i]
-        if ch == "." {
+        if ch == '.' {
           if has_dot {
             valid = false
           }
           has_dot = true
         }
-        if not(ch == ".") {
+        if not(ch == '.') {
           if not(_yaml_is_digit(ch)) {
             valid = false
           }
@@ -86,26 +133,26 @@ let _yaml_find_colon = (line: String) -> Int {
     let was_sq = in_sq
     let was_dq = in_dq
     if was_sq {
-      if ch == "'" {
+      if ch == '\'' {
         in_sq = false
       }
     }
     if not(was_sq) {
       if was_dq {
-        if ch == "\"" {
+        if ch == '"' {
           in_dq = false
         }
       }
     }
     if not(was_sq) {
       if not(was_dq) {
-        if ch == "'" {
+        if ch == '\'' {
           in_sq = true
         }
-        if ch == "\"" {
+        if ch == '"' {
           in_dq = true
         }
-        if ch == ":" {
+        if ch == ':' {
           if found < 0 {
             if i + 1 >= len {
               found = i
@@ -131,24 +178,26 @@ let _yaml_escape_json = (s: String) -> String {
     let len = String::length(s)
     let mut i = 0
     while i < len {
+      // #777: `s[i]` is an Int char code — compare against char literals,
+      // and use the range-slice for the raw-char push.
       let ch = s[i]
-      if ch == "\\" {
+      if ch == '\\' {
         StringBuilder::push(sb, "\\\\")
       }
-      if ch == "\"" {
+      if ch == '"' {
         StringBuilder::push(sb, "\\\"")
       }
-      if ch == "\n" {
+      if ch == '\n' {
         StringBuilder::push(sb, "\\n")
       }
-      if ch == "\t" {
+      if ch == '\t' {
         StringBuilder::push(sb, "\\t")
       }
-      if not(ch == "\\") {
-        if not(ch == "\"") {
-          if not(ch == "\n") {
-            if not(ch == "\t") {
-              StringBuilder::push(sb, ch)
+      if not(ch == '\\') {
+        if not(ch == '"') {
+          if not(ch == '\n') {
+            if not(ch == '\t') {
+              StringBuilder::push(sb, s[i: i + 1])
             }
           }
         }
@@ -166,7 +215,7 @@ let _yaml_count_indent = (line: String) -> Int {
   while i < len {
     if result < 0 {
       let ch = line[i]
-      if not(ch == " ") {
+      if not(ch == ' ') {
         result = i
       }
     }
@@ -188,26 +237,26 @@ let _yaml_strip_comment = (line: String) -> String {
     let was_sq = in_sq
     let was_dq = in_dq
     if was_sq {
-      if ch == "'" {
+      if ch == '\'' {
         in_sq = false
       }
     }
     if not(was_sq) {
       if was_dq {
-        if ch == "\"" {
+        if ch == '"' {
           in_dq = false
         }
       }
     }
     if not(was_sq) {
       if not(was_dq) {
-        if ch == "'" {
+        if ch == '\'' {
           in_sq = true
         }
-        if ch == "\"" {
+        if ch == '"' {
           in_dq = true
         }
-        if ch == "#" {
+        if ch == '#' {
           if result_end == len {
             if i == 0 {
               result_end = 0
@@ -468,7 +517,7 @@ let _yaml_parse_block = (lines_arr: Array[String], indents_arr: Array[Int], num_
 
 export let from_yaml = (text: String) -> Json {
   let cr = String::from_char_code(13)
-  let cleaned = String::replace_all(text, cr, "")
+  let cleaned = yaml_replace_all(text, cr, "")
   let raw_lines = String::split(cleaned, "\n")
   let num_raw = Array::length(raw_lines)
   {

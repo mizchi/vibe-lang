@@ -1,0 +1,158 @@
+//# Imports
+
+import ../ast {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr
+}
+
+import ./symbol_index.vibe {
+  collect_symbols
+}
+
+import ./symbol_lsif.vibe {
+  find_references_in, format_symbol, format_symbols, generate_def_index, generate_lsif_report, generate_ref_index, hover_info, kind_to_string
+}
+
+//# Functions
+
+let _use_pat: (Pat) -> Pat = (p) -> {
+  p
+}
+
+let no_tparams = Array::slice([
+  ""
+], 0, 0)
+
+let no_bounds = Array::slice([
+  ("", no_tparams)
+], 0, 0)
+
+let mk_fn_body: () -> Expr = () -> {
+  EFn(no_tparams, no_bounds, [
+    ("x", None)
+  ], None, None, EIdent("x", -1))
+}
+
+let _use_type_expr: (TypeExpr) -> TypeExpr = (t) -> {
+  t
+}
+
+//# Misc
+
+test "kind_to_string returns function for 0" {
+  assert(kind_to_string(0) == "function")
+}
+
+test "kind_to_string returns type for 2" {
+  assert(kind_to_string(2) == "type")
+}
+
+test "format_symbol produces correct format" {
+  let sym = ("foo", 0, true)
+  let result = format_symbol(sym)
+  assert(result == "function:foo:true")
+}
+
+test "format_symbols joins with newlines" {
+  let syms = [
+    ("foo", 0, true),
+    ("bar", 1, false)
+  ]
+  let result = format_symbols(syms)
+  assert(String::contains(result, "function:foo:true"))
+  assert(String::contains(result, "value:bar:false"))
+}
+
+test "generate_def_index includes function definitions" {
+  let stmts = [
+    SLet(true, false, "add", None, mk_fn_body())
+  ]
+  let result = generate_def_index(stmts)
+  assert(String::contains(result, "function:add:true"))
+}
+
+test "generate_def_index includes enum types and constructors" {
+  let no_types = Array::slice([
+    TyName("_")
+  ], 0, 0)
+  let variants = [
+    ("Some", [
+      TyName("Int")
+    ]),
+    ("None", no_types)
+  ]
+  let stmts = [
+    SEnum(true, "Option", Array::slice([""], 0, 0), variants, Array::slice([""], 0, 0))
+  ]
+  let result = generate_def_index(stmts)
+  assert(String::contains(result, "type:Option:true"))
+  assert(String::contains(result, "constructor:Some:true"))
+  assert(String::contains(result, "constructor:None:true"))
+}
+
+test "hover_info for existing symbol" {
+  let syms = [
+    ("add", 0, true)
+  ]
+  let result = hover_info(syms, "add")
+  assert(String::contains(result, "function"))
+  assert(String::contains(result, "add"))
+  assert(String::contains(result, "(exported)"))
+}
+
+test "hover_info for unknown returns unknown" {
+  let syms = [
+    ("add", 0, true)
+  ]
+  let result = hover_info(syms, "missing")
+  assert(result == "unknown")
+}
+
+test "find_references_in finds referencing functions" {
+  let stmts = [
+    SLet(true, false, "helper", None, mk_fn_body()),
+    SLet(false, false, "caller", None, ECall(EIdent("helper", -1), [
+      EInt(1)
+    ], -1))
+  ]
+  let refs = find_references_in(stmts, "helper")
+  assert(Array::length(refs) == 1)
+  assert(Array::get(refs, 0) == "caller")
+}
+
+test "find_references_in target not referenced returns empty" {
+  let stmts = [
+    SLet(false, false, "a", None, EInt(1)),
+    SLet(false, false, "b", None, EInt(2))
+  ]
+  let refs = find_references_in(stmts, "missing")
+  assert(Array::length(refs) == 0)
+}
+
+test "generate_ref_index marks defined and undefined" {
+  let stmts = [
+    SLet(true, false, "helper", None, mk_fn_body()),
+    SLet(false, false, "caller", None, ECall(EIdent("helper", -1), [
+      EIdent("unknown_var", -1)
+    ], -1))
+  ]
+  let result = generate_ref_index(stmts)
+  assert(String::contains(result, "ref:helper:defined"))
+  assert(String::contains(result, "ref:unknown_var:undefined"))
+}
+
+test "generate_lsif_report contains both sections" {
+  let stmts = [
+    SLet(true, false, "foo", None, mk_fn_body()),
+    SLet(false, false, "bar", None, ECall(EIdent("foo", -1), [
+      EInt(1)
+    ], -1))
+  ]
+  let result = generate_lsif_report(stmts)
+  assert(String::contains(result, "=== Definitions ==="))
+  assert(String::contains(result, "=== References ==="))
+  assert(String::contains(result, "function:foo:true"))
+  assert(String::contains(result, "ref:foo:defined"))
+}

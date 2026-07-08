@@ -657,7 +657,7 @@ fi
 rm -rf "$edir"
 echo "[selfhost-only-gate] where-contract + publish gate regression ok"
 
-# (6e retired by #741: the vendored vibe/compiler/cache/sha1.vibe twin was
+# (6e retired by #741: the vendored lib/@vibe/compiler/cache/sha1.vibe twin was
 # deleted — the compiler consumes lib/@vibe/core through the contract import,
 # so there is nothing left to drift-check.)
 

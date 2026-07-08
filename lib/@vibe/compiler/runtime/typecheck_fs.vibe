@@ -1,0 +1,760 @@
+//# Imports
+
+import .. / cache / persistent_cache.vibe {
+  compact_string_fingerprint, normalize_persistent_cache_text, persistent_dep_list_cache_path, persistent_leaf_fingerprint_cache_path, persistent_type_env_cache_path
+}
+
+import .. / checker / checker_stmt.vibe {
+  check_program, check_program_with_env
+}
+
+import .. / core {
+  Stmt, Type, TypeEnv, env_bind, env_flat_bindings, env_lookup_flat
+}
+
+import .. / module_graph_path.vibe {
+  dir_of_path, resolve_import_path, resolve_import_path_candidates
+}
+
+import ../loader {
+  load_or_parse_module_header_fs
+}
+
+import ../../../../lib/@vibe/graph {
+  RippleDb, ripple_get_deps, ripple_get_fingerprint, ripple_get_source, ripple_record_eval
+}
+
+import .. / syntax {
+  lex_with_offsets, parse_program_located, parse_program_recovering, offset_to_line_col
+}
+
+import ./eval_loader {
+  contains_str
+}
+
+export ./persistent_env_codec.vibe {
+  load_persistent_dep_list, load_persistent_leaf_fingerprint, load_persistent_type_env, persistent_dep_list_text, persistent_leaf_fingerprint_text, persistent_type_env_cache_text
+}
+
+//# Functions
+
+let empty_stack: () -> Array[String] = () -> {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+
+let empty_dep_fps: () -> Array[(String, String)] = () -> {
+  Array::slice([
+    ("", "")
+  ], 0, 0)
+}
+
+let lookup_env_cache: (Array[(String, TypeEnv)], String) -> Option[TypeEnv] = (cache, path) -> {
+  let len = Array::length(cache)
+  let mut i = 0
+  let mut result = None
+  let mut done = false
+  while !done {
+    if i >= len {
+      done = true
+    } else {
+      let (p, env) = Array::get(cache, i)
+      if p == path {
+        result = Some(env)
+        done = true
+      } else {
+        i = i + 1
+      }
+    }
+  }
+  result
+}
+
+let resolve_cached_import_path: (String, String, Array[(String, TypeEnv)]) -> String = (base_dir, raw_path, cache) -> {
+  let candidates = resolve_import_path_candidates(base_dir, raw_path)
+  let mut selected = ""
+  let mut i = 0
+  while i < Array::length(candidates) && selected == "" {
+    let candidate = Array::get(candidates, i)
+    match lookup_env_cache(cache, candidate) {
+      Some(_) => {
+        selected = candidate
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  if selected == "" {
+    resolve_import_path(base_dir, raw_path)
+  } else {
+    selected
+  }
+}
+
+let starts_with_upper: (String) -> Bool = (name) -> {
+  if String::length(name) == 0 {
+    false
+  } else {
+    let c = String::char_code_at(name, 0)
+    c >= 65 && c <= 90
+  }
+}
+
+let rec type_returns_name: (Type, String) -> Bool = (ty, type_name) -> {
+  match ty {
+    CtEnum(name) => name == type_name,
+    CtNamed(name, _) => name == type_name,
+    CtFn(_, ret, _) => type_returns_name(ret, type_name),
+    CtForAll(_, _, body) => type_returns_name(body, type_name),
+    _ => false
+  }
+}
+
+let bind_enum_constructor_companions: (TypeEnv, Array[(String, Type)], String) -> TypeEnv = (acc, dep_bindings, enum_name) -> {
+  let mut out = acc
+  let mut i = 0
+  while i < Array::length(dep_bindings) {
+    let (candidate_name, candidate_ty) = Array::get(dep_bindings, i)
+    if candidate_name != enum_name && starts_with_upper(candidate_name) && type_returns_name(candidate_ty, enum_name) {
+      out = env_bind(out, candidate_name, candidate_ty)
+    }
+    i = i + 1
+  }
+  out
+}
+
+let bind_import_names_from_cache: (TypeEnv, String, Array[(String, Option[String])], Array[(String, TypeEnv)]) -> TypeEnv = (acc, resolved, names, cache) -> {
+  let dep_env = match lookup_env_cache(cache, resolved) {
+    Some(e) => e,
+    None => EnvEmpty
+  }
+  let dep_bindings = env_flat_bindings(dep_env)
+  let nlen = Array::length(names)
+  let rec bind_names: (Int, TypeEnv) -> TypeEnv = (j, nacc) -> {
+    if j >= nlen {
+      nacc
+    } else {
+      let (name, alias) = Array::get(names, j)
+      let bound_name = match alias {
+        Some(a) => a,
+        None => name
+      }
+      let ty = match env_lookup_flat(dep_bindings, name) {
+        Some(t) => t,
+        None => CtUnknown
+      }
+      let with_name = env_bind(nacc, bound_name, ty)
+      let with_companions = match ty {
+        CtEnum(enum_name) => bind_enum_constructor_companions(with_name, dep_bindings, enum_name),
+        _ => if starts_with_upper(name) {
+          bind_enum_constructor_companions(with_name, dep_bindings, name)
+        } else {
+          with_name
+        }
+      }
+      bind_names(j + 1, with_companions)
+    }
+  }
+  bind_names(0, acc)
+}
+
+let build_import_env: (Array[Stmt], String, Array[(String, TypeEnv)]) -> TypeEnv = (stmts, base_dir, cache) -> {
+  let len = Array::length(stmts)
+  let rec go: (Int, TypeEnv) -> TypeEnv = (i, acc) -> {
+    if i >= len {
+      acc
+    } else {
+      let next = match Array::get(stmts, i) {
+        SImport(raw_path, names) => {
+          let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
+          bind_import_names_from_cache(acc, resolved, names, cache)
+        },
+        SReExport(raw_path, names) => {
+          let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
+          bind_import_names_from_cache(acc, resolved, names, cache)
+        },
+        _ => acc
+      }
+      go(i + 1, next)
+    }
+  }
+  go(0, EnvEmpty)
+}
+
+let upsert_env_cache: (Array[(String, TypeEnv)], String, TypeEnv) -> Array[(String, TypeEnv)] = (cache, path, env) -> {
+  let len = Array::length(cache)
+  let mut i = 0
+  let mut found = false
+  while i < len && !found {
+    let (p, _) = Array::get(cache, i)
+    if p == path {
+      Array::set(cache, i, (path, env))
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  if !found {
+    Array::push(cache, (path, env))
+  }
+  cache
+}
+
+let ensure_env_cache_for_path: (RippleDb, Array[(String, TypeEnv)], String) -> Array[(String, TypeEnv)] with { Error, Fs } = (rdb, env_cache, path) -> {
+  match lookup_env_cache(env_cache, path) {
+    Some(_) => env_cache,
+    None =>
+    match ripple_get_fingerprint(rdb, path) {
+      Some(fingerprint) =>
+      match load_persistent_type_env(fingerprint) {
+        Some(cached_env) => upsert_env_cache(env_cache, path, cached_env),
+        None => env_cache
+      },
+      None => env_cache
+    }
+  }
+}
+
+let ensure_env_cache_for_paths: (RippleDb, Array[(String, TypeEnv)], Array[String]) -> Array[(String, TypeEnv)] with { Error, Fs } = (rdb, env_cache, paths) -> {
+  let mut cache = env_cache
+  let mut i = 0
+  while i < Array::length(paths) {
+    cache = ensure_env_cache_for_path(rdb, cache, Array::get(paths, i))
+    i = i + 1
+  }
+  cache
+}
+
+let build_fingerprint: (String, Array[(String, String)]) -> String = (source, dep_fps) -> {
+  let mut acc = compact_string_fingerprint(source)
+  let mut i = 0
+  while i < Array::length(dep_fps) {
+    let dep_pair = Array::get(dep_fps, i)
+    let dep_path = dep_pair.0
+    let dep_fp = dep_pair.1
+    let next = String::concat(acc, String::concat("|", String::concat(dep_path, String::concat("=", dep_fp))))
+    acc = compact_string_fingerprint(next)
+    i = i + 1
+  }
+  acc
+}
+
+let copy_string_array: (Array[String]) -> Array[String] = (items) -> {
+  // Iterative push: previous recursive Array::concat(acc, [x]) was
+  // O(N^2) — copied the full prefix on each step.
+  let out = empty_stack()
+  let mut i = 0
+  let len = Array::length(items)
+  while i < len {
+    Array::push(out, Array::get(items, i))
+    i = i + 1
+  }
+  out
+}
+
+let lookup_string_pair: (Array[(String, String)], String) -> Option[String] = (pairs, key) -> {
+  let len = Array::length(pairs)
+  let mut i = 0
+  let mut result = None
+  let mut done = false
+  while !done {
+    if i >= len {
+      done = true
+    } else {
+      let (k, v) = Array::get(pairs, i)
+      if k == key {
+        result = Some(v)
+        done = true
+      } else {
+        i = i + 1
+      }
+    }
+  }
+  result
+}
+
+let upsert_string_pair: (Array[(String, String)], String, String) -> Array[(String, String)] = (pairs, key, value) -> {
+  let len = Array::length(pairs)
+  let mut i = 0
+  let mut found = false
+  while i < len && !found {
+    let (k, _) = Array::get(pairs, i)
+    if k == key {
+      Array::set(pairs, i, (key, value))
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  if !found {
+    Array::push(pairs, (key, value))
+  }
+  pairs
+}
+
+let parse_program_with_path: (String, String) -> Array[Stmt] with { Error } = (path, source) -> {
+  handle {
+    // Located lex+parse so EIdent (and other) nodes carry real source char
+    // offsets; the checker rides those offsets into type diagnostics via the
+    // [@off=N] marker (decoded by locate_type_error). The plain
+    // `parse_program(lex(source))` passed an empty starts array, leaving every
+    // offset at -1, so located type errors fell back to a first-occurrence scan.
+    let (tokens, starts, _ends) = lex_with_offsets(source)
+    parse_program_located(tokens, starts, source)
+  } with Error {
+    Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
+  }
+}
+
+let store_persistent_type_env: (String, TypeEnv) -> Unit with { Error, Fs } = (fingerprint, env) -> {
+  Fs::write_file(persistent_type_env_cache_path(fingerprint), persistent_type_env_cache_text(env))
+}
+
+let write_persistent_dep_list_if_missing: (String, String, Array[String]) -> Unit with { Fs } = (path, source, deps) -> {
+  let dep_cache_path = persistent_dep_list_cache_path(path, compact_string_fingerprint(source))
+  if !(Fs::exists(dep_cache_path)) {
+    Fs::write_file(dep_cache_path, persistent_dep_list_text(deps))
+  } else {
+    ()
+  }
+}
+
+// Span of an identifier run starting at `start` (returns the end offset).
+let typecheck_ident_run: (String, Int) -> Int = (s, start) -> {
+  let len = String::length(s)
+  let mut e = start
+  let mut go = true
+  while go && e < len {
+    let c = String::char_code_at(s, e)
+    let is_id = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+    if is_id {
+      e = e + 1
+    } else {
+      go = false
+    }
+  }
+  e
+}
+
+// Best-effort `line:col` for a type error: pull the symbol out of
+// `unknown name: X` and locate its first occurrence in the source. Real
+// expression-level spans (AST node positions) remain future work; this gives
+// the common case a line number in both CLI and LSP (which parses the prefix).
+// Built with String::concat only (not `+`) to avoid the selfhost NUL fragility.
+// Prefix `msg` with the source `line:col` of the symbol that follows `marker`
+// in `msg` (if both are found); otherwise return `msg` unchanged.
+let locate_by_marker: (String, String, String) -> String = (source, msg, marker) -> {
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    msg
+  } else {
+    let sstart = mi + String::length(marker)
+    let send = typecheck_ident_run(msg, sstart)
+    if send <= sstart {
+      msg
+    } else {
+      let sym = String::substring(msg, sstart, send)
+      let off = String::index_of(source, sym)
+      if off < 0 {
+        msg
+      } else {
+        let (line, col) = offset_to_line_col(source, off)
+        let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+        String::concat(loc, msg)
+      }
+    }
+  }
+}
+
+// First-occurrence heuristic locator (the original behavior). Kept separate so
+// the offset-marker path can fall through to it on the marker-stripped message.
+let locate_type_error_heuristic: (String, String) -> String = (source, msg) -> {
+  // Already located (e.g. a parse error that bubbled here)? leave it.
+  if String::index_of(msg, "line ") == 0 {
+    msg
+  } else {
+    let with_name = locate_by_marker(source, msg, "unknown name: ")
+    if with_name != msg {
+      with_name
+    } else {
+      let with_arity = locate_by_marker(source, msg, "function arity mismatch for ")
+      if with_arity != msg {
+        with_arity
+      } else {
+        let with_field = locate_by_marker(source, msg, "unknown field ")
+        if with_field != msg {
+          with_field
+        } else {
+          locate_by_marker(source, msg, "unknown constructor ")
+        }
+      }
+    }
+  }
+}
+
+// Build the `line L:col C: ` prefix for a source char offset (same format as
+// locate_by_marker). String::concat only — the selfhost `+`/interpolation NUL
+// hazard applies here too.
+let offset_line_col_prefix: (String, Int) -> String = (source, off) -> {
+  let (line, col) = offset_to_line_col(source, off)
+  String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+}
+
+// Build a `line L:colC-E: ` RANGE prefix from a (start, end) char-offset span.
+// When start and end fall on the same source line this carries the exact end
+// column so the LSP can highlight the precise token (incl. qualified names);
+// when end is on a later line (or not greater than start) it degrades to the
+// point prefix. Backward compatible: `line L:` still leads, so existing
+// `grep -F "line N:"` assertions keep matching. String::concat only.
+let offset_line_col_range_prefix: (String, Int, Int) -> String = (source, start, endo) -> {
+  let (l1, c1) = offset_to_line_col(source, start)
+  let (l2, c2) = offset_to_line_col(source, endo)
+  if l1 == l2 && endo > start {
+    String::concat("line ", String::concat(__to_string(l1), String::concat(":", String::concat(__to_string(c1), String::concat("-", String::concat(__to_string(c2), ": "))))))
+  } else {
+    offset_line_col_prefix(source, start)
+  }
+}
+
+// Parse a non-negative decimal integer from msg[start..end). Returns -1 if the
+// span is empty or contains a non-digit (callers then fall through to the text
+// heuristic).
+let parse_offset_digits: (String, Int, Int) -> Int = (msg, start, end) -> {
+  if end <= start {
+    -1
+  } else {
+    let mut i = start
+    let mut acc = 0
+    let mut ok = true
+    while ok && i < end {
+      let c = String::char_code_at(msg, i)
+      if c >= '0' && c <= '9' {
+        acc = acc * 10 + (c - '0')
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    if ok {
+      acc
+    } else {
+      -1
+    }
+  }
+}
+
+// Decode (and ALWAYS strip) the ` [@off=N]` marker the checker may have
+// appended. If N is a valid in-range offset, prefix the stripped message with
+// its exact `line:col`. Otherwise strip the marker and fall through to the
+// existing first-occurrence heuristics on the cleaned message. If no marker is
+// present, returns msg unchanged.
+let locate_type_error: (String, String) -> String = (source, msg) -> {
+  let marker = " [@off="
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    locate_type_error_heuristic(source, msg)
+  } else {
+    let inner_start = mi + String::length(marker)
+    let rel_end = String::index_of(String::substring(msg, inner_start, String::length(msg)), "]")
+    if rel_end < 0 {
+      // Malformed marker (no closing `]`): strip from the marker onward.
+      locate_type_error_heuristic(source, String::substring(msg, 0, mi))
+    } else {
+      let close = inner_start + rel_end
+      // inner is `N` (start only) or `N:M` (start:end). Split on `:`.
+      let inner = String::substring(msg, inner_start, close)
+      let colon = String::index_of(inner, ":")
+      let n = if colon < 0 {
+        parse_offset_digits(inner, 0, String::length(inner))
+      } else {
+        parse_offset_digits(inner, 0, colon)
+      }
+      let m = if colon < 0 {
+        -1
+      } else {
+        parse_offset_digits(inner, colon + 1, String::length(inner))
+      }
+      // Strip the full ` [@off=...]` segment (marker .. closing `]` inclusive).
+      let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, close + 1, String::length(msg)))
+      let slen = String::length(source)
+      if n >= 0 && n < slen {
+        if m > n && m <= slen {
+          String::concat(offset_line_col_range_prefix(source, n, m), stripped)
+        } else {
+          String::concat(offset_line_col_prefix(source, n), stripped)
+        }
+      } else {
+        locate_type_error_heuristic(source, stripped)
+      }
+    }
+  }
+}
+
+let finish_typecheck_fs_impl: (RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int, String, String, Array[String], String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } = (rdb, env_cache, dep_source_cache, parse_count, path, source, deps, fingerprint) -> {
+  if Fs::exists(persistent_type_env_cache_path(fingerprint)) {
+    let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
+    (fingerprint, next_db, env_cache, dep_source_cache, parse_count)
+  } else {
+    let stmts = parse_program_with_path(path, source)
+    let final_parse_count = parse_count + 1
+    let import_env_cache = ensure_env_cache_for_paths(rdb, env_cache, deps)
+    let import_env = build_import_env(stmts, dir_of_path(path), import_env_cache)
+    let checked_env = handle {
+      match import_env {
+        EnvEmpty => check_program(stmts),
+        _ => check_program_with_env(stmts, import_env)
+      }
+    } with Error {
+      Throw(msg) => throw(String::concat(String::concat(path, ": "), locate_type_error(source, msg)))
+    }
+    store_persistent_type_env(fingerprint, checked_env)
+    if Array::length(deps) == 0 {
+      Fs::write_file(persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(source)), persistent_leaf_fingerprint_text(fingerprint))
+    } else {
+      ()
+    }
+    let next_env_cache = upsert_env_cache(import_env_cache, path, checked_env)
+    let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
+    (fingerprint, next_db, next_env_cache, dep_source_cache, final_parse_count)
+  }
+}
+
+let collect_import_deps_from_stmts: (Array[Stmt], String) -> Array[String] = (stmts, base_dir) -> {
+  // Iterative push: previously the recursive `Array::concat(acc, [x])`
+  // copied the full prefix on each new dep — O(N^2) for files with
+  // many imports.
+  let out = empty_stack()
+  let mut i = 0
+  let len = Array::length(stmts)
+  while i < len {
+    match Array::get(stmts, i) {
+      SImport(raw_path, _) => if String::length(raw_path) > 0 {
+        let resolved = resolve_import_path(base_dir, raw_path)
+        if !contains_str(out, resolved) {
+          Array::push(out, resolved)
+        }
+      },
+      SReExport(raw_path, _) => if String::length(raw_path) > 0 {
+        let resolved = resolve_import_path(base_dir, raw_path)
+        if !contains_str(out, resolved) {
+          Array::push(out, resolved)
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+let load_or_parse_deps_for_source_fs: (Array[(String, String)], String, String, Int) -> (Array[String], Array[(String, String)], Int) with { Error, Fs } = (dep_source_cache, path, source, parse_count) -> {
+  match load_persistent_dep_list(path, source) {
+    Some(deps) => (deps, upsert_string_pair(dep_source_cache, path, source), parse_count),
+    None => {
+      let (deps, _, next_parse_count) = load_or_parse_module_header_fs(path, source, parse_count)
+      (deps, upsert_string_pair(dep_source_cache, path, source), next_parse_count)
+    }
+  }
+}
+
+let resolve_deps_for_source_fs: (RippleDb, Array[(String, String)], String, String, Int) -> (Array[String], Array[(String, String)], Int) with { Error, Fs } = (rdb, dep_source_cache, path, source, parse_count) -> {
+  match lookup_string_pair(dep_source_cache, path) {
+    Some(cached_source) =>
+    if cached_source == source {
+      match ripple_get_deps(rdb, path) {
+        Some(deps) => (deps, dep_source_cache, parse_count),
+        None => load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
+      }
+    } else {
+      load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
+    },
+    None => load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
+  }
+}
+
+let rec ensure_fingerprint_fs_go: (RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int, String, Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } = (rdb, env_cache, dep_source_cache, parse_count, path, stack) -> {
+  if contains_str(stack, path) {
+    throw(String::concat("type_db: import cycle detected at ", path))
+  } else {
+    match ripple_get_source(rdb, path) {
+      None => (String::concat("missing:", path), rdb, env_cache, dep_source_cache, parse_count),
+      Some(source) => match lookup_string_pair(dep_source_cache, path) {
+        Some(cached_source) => if cached_source == source {
+          match ripple_get_fingerprint(rdb, path) {
+            Some(cached_fingerprint) =>
+            // The fingerprint is enough for dependency fingerprint folding.
+            // Loading the env here caused shared leaf modules to re-read their
+            // persistent leaf cache every time they were reached before a
+            // parent needed their bindings.
+            (cached_fingerprint, rdb, env_cache, dep_source_cache, parse_count),
+            None => match load_persistent_leaf_fingerprint(path, source) {
+              Some(leaf_fingerprint) => {
+                write_persistent_dep_list_if_missing(path, source, empty_stack())
+                let next_dep_source_cache = upsert_string_pair(dep_source_cache, path, source)
+                let next_db = ripple_record_eval(rdb, path, leaf_fingerprint, empty_stack())
+                (leaf_fingerprint, next_db, env_cache, next_dep_source_cache, parse_count)
+              },
+              None => {
+                let (deps_raw, next_dep_source_cache, initial_parse_count) = resolve_deps_for_source_fs(rdb, dep_source_cache, path, source, parse_count)
+                let deps = copy_string_array(deps_raw)
+                write_persistent_dep_list_if_missing(path, source, deps)
+                let dlen = Array::length(deps)
+                let saved_stack_len = Array::length(stack)
+                Array::push(stack, path)
+                let mut i = 0
+                let mut db_after_deps = rdb
+                let mut env_cache_after_deps = env_cache
+                let mut dep_source_cache_after_deps = next_dep_source_cache
+                let mut parse_count_after_deps = initial_parse_count
+                let dep_fps = empty_dep_fps()
+                while i < dlen {
+                  let dep_path = Array::get(deps, i)
+                  let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint_fs_go(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, dep_path, stack)
+                  db_after_deps = next_db
+                  env_cache_after_deps = next_env_cache
+                  dep_source_cache_after_deps = next_dep_source_cache2
+                  parse_count_after_deps = next_parse_count
+                  Array::push(dep_fps, (dep_path, dep_fp))
+                  i = i + 1
+                }
+                Array::truncate(stack, saved_stack_len)
+                let fingerprint = build_fingerprint(source, dep_fps)
+                match ripple_get_fingerprint(db_after_deps, path) {
+                  Some(cached_fp) =>
+                  if cached_fp == fingerprint {
+                    (fingerprint, db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps)
+                  } else {
+                    finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, fingerprint)
+                  },
+                  None =>
+                  finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, fingerprint)
+                }
+              }
+            }
+          }
+        } else {
+          match load_persistent_leaf_fingerprint(path, source) {
+            Some(leaf_fingerprint) => {
+              write_persistent_dep_list_if_missing(path, source, empty_stack())
+              let next_dep_source_cache = upsert_string_pair(dep_source_cache, path, source)
+              let next_db = ripple_record_eval(rdb, path, leaf_fingerprint, empty_stack())
+              (leaf_fingerprint, next_db, env_cache, next_dep_source_cache, parse_count)
+            },
+            None => {
+              let (deps_raw, next_dep_source_cache, initial_parse_count) = resolve_deps_for_source_fs(rdb, dep_source_cache, path, source, parse_count)
+              let deps = copy_string_array(deps_raw)
+              write_persistent_dep_list_if_missing(path, source, deps)
+              let dlen = Array::length(deps)
+              let saved_stack_len = Array::length(stack)
+              Array::push(stack, path)
+              let mut i = 0
+              let mut db_after_deps = rdb
+              let mut env_cache_after_deps = env_cache
+              let mut dep_source_cache_after_deps = next_dep_source_cache
+              let mut parse_count_after_deps = initial_parse_count
+              let dep_fps = empty_dep_fps()
+              while i < dlen {
+                let dep_path = Array::get(deps, i)
+                let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint_fs_go(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, dep_path, stack)
+                db_after_deps = next_db
+                env_cache_after_deps = next_env_cache
+                dep_source_cache_after_deps = next_dep_source_cache2
+                parse_count_after_deps = next_parse_count
+                Array::push(dep_fps, (dep_path, dep_fp))
+                i = i + 1
+              }
+              Array::truncate(stack, saved_stack_len)
+              let fingerprint = build_fingerprint(source, dep_fps)
+              match ripple_get_fingerprint(db_after_deps, path) {
+                Some(cached_fp) =>
+                if cached_fp == fingerprint {
+                  (fingerprint, db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps)
+                } else {
+                  finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, fingerprint)
+                },
+                None =>
+                finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, fingerprint)
+              }
+            }
+          }
+        },
+        None =>
+        match load_persistent_leaf_fingerprint(path, source) {
+          Some(leaf_fingerprint) => {
+            write_persistent_dep_list_if_missing(path, source, empty_stack())
+            let next_dep_source_cache = upsert_string_pair(dep_source_cache, path, source)
+            let next_db = ripple_record_eval(rdb, path, leaf_fingerprint, empty_stack())
+            (leaf_fingerprint, next_db, env_cache, next_dep_source_cache, parse_count)
+          },
+          None => {
+            let (deps_raw, next_dep_source_cache, initial_parse_count) = resolve_deps_for_source_fs(rdb, dep_source_cache, path, source, parse_count)
+            let deps = copy_string_array(deps_raw)
+            write_persistent_dep_list_if_missing(path, source, deps)
+            let dlen = Array::length(deps)
+            let saved_stack_len = Array::length(stack)
+            Array::push(stack, path)
+            let mut i = 0
+            let mut db_after_deps = rdb
+            let mut env_cache_after_deps = env_cache
+            let mut dep_source_cache_after_deps = next_dep_source_cache
+            let mut parse_count_after_deps = initial_parse_count
+            let dep_fps = empty_dep_fps()
+            while i < dlen {
+              let dep_path = Array::get(deps, i)
+              let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint_fs_go(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, dep_path, stack)
+              db_after_deps = next_db
+              env_cache_after_deps = next_env_cache
+              dep_source_cache_after_deps = next_dep_source_cache2
+              parse_count_after_deps = next_parse_count
+              Array::push(dep_fps, (dep_path, dep_fp))
+              i = i + 1
+            }
+            Array::truncate(stack, saved_stack_len)
+            let fingerprint = build_fingerprint(source, dep_fps)
+            match ripple_get_fingerprint(db_after_deps, path) {
+              Some(cached_fp) =>
+              if cached_fp == fingerprint {
+                (fingerprint, db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps)
+              } else {
+                finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, fingerprint)
+              },
+              None =>
+              finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, fingerprint)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+export let ensure_fingerprint_fs_impl: (RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int, String, Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } = (rdb, env_cache, dep_source_cache, parse_count, path, stack) -> {
+  let (fingerprint, next_db, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint_fs_go(rdb, env_cache, dep_source_cache, parse_count, path, stack)
+  let final_env_cache = ensure_env_cache_for_path(next_db, next_env_cache, path)
+  (fingerprint, next_db, final_env_cache, next_dep_source_cache, next_parse_count)
+}
+
+// Collect ALL diagnostics for `source` as located (`line:col`) message strings.
+// Uses the recovering parser to gather every top-level syntax error; only if
+// the parse is clean does it run the type checker and report the (single,
+// located) type error. Returns [] when the source parses and checks cleanly.
+// Foundation for `vibe check` / LSP multi-diagnostic reporting.
+export let collect_all_diagnostics: (String) -> Array[String] with { Error } = (source) -> {
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  let (stmts, parse_diags) = parse_program_recovering(tokens, starts, source)
+  if Array::length(parse_diags) > 0 {
+    parse_diags
+  } else {
+    handle {
+      let _env = check_program(stmts)
+      Array::slice([
+        "_"
+      ], 0, 0)
+    } with Error {
+      Throw(msg) => [
+        locate_type_error(source, msg)
+      ]
+    }
+  }
+}

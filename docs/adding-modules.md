@@ -14,11 +14,11 @@ allowlist をセットで足す。**
 
 | 置き場所 | 用途 | 例 |
 | --- | --- | --- |
-| `lib/@vibe/<pkg>/` | 契約パッケージ。`index.vibei` が公開 API。compiler 本体からも `import ../../lib/@vibe/<pkg> { ... }` で消費できる (#741) | `lib/@vibe/core` (sha1 / leb128 / list / set), `lib/@vibe/ast` (AST 透明型), `lib/@vibe/parser` (lexer/parser/printer, #753) |
-| `lib/@vibe/<domain>/` | 標準ライブラリ層。directory import (`import ../json { ... }`) は `index.vibe(i)` 経由 | `lib/@vibe/json`, `lib/@vibe/collection` |
+| `lib/@vibe/<pkg>/` | 契約パッケージ。`index.vibei` が公開 API。**境界強制 (#729)**: `index.vibei` を持つディレクトリの内部ファイルは外部から直接 import できず、契約 (ディレクトリ import) 経由のみ。compiler 本体からも `import ../../../lib/@vibe/<pkg> { ... }` で消費できる (#741, #766) | `lib/@vibe/core` (sha1 / leb128 / list / set / maps, #766), `lib/@vibe/ast` (AST 透明型), `lib/@vibe/parser` (lexer/parser/printer, #753) |
+| `lib/@vibe/<domain>/` | 標準ライブラリ層。directory import (`import ../json { ... }`) は `index.vibe(i)` 経由 | `lib/@vibe/json`, `lib/@vibe/module` |
 | `lib/@vibex/<pkg>/` | 実験・拡張層 (ADR-0065: @vibex = 仮想実験ユーザー scope)。安定したら `lib/@vibe/` へ昇格 | `lib/@vibex/fmt`, `lib/@vibex/regexp` |
 | `lib/@<user>/<pkg>/` | コンパイラ非関連の実ユーザー scope パッケージ (in-repo に置けるのは repo owner が支配する scope のみ) | `lib/@mizchi/markdown` |
-| `vibe/compiler/` | compiler 本体のみ。ライブラリを置かない (共有したいものは `lib/@vibe/` に切り出して契約 import する) | — |
+| `lib/@vibe/compiler/` | compiler 本体のみ。ライブラリを置かない (共有したいものは `lib/@vibe/` に切り出して契約 import する) | — |
 
 新規の再利用可能なデータ構造・アルゴリズムは **`lib/@vibe/core` への追加を
 第一候補**にする (moonbitlang/core 方式のドメイン別ファイル + index.vibei
@@ -46,10 +46,10 @@ dev-mode の便宜で、pin があれば置き場所によらず hash 照合さ�
    経路も踏まれる (#745 はこれで発見された)
 4. **allowlist**: `scripts/selfhost_unit_test_allowlist.txt` にテストを追加
    (アルファベット順)。これがラチェット — 以後 battery が回帰を検出する
-5. **compiler から消費する場合のみ**: `vibe/compiler/selfhost_sources_manifest.tsv`
-   に `vibe_core` group で `../../lib/@vibe/<pkg>/...` の行を足す。bundle
+5. **compiler から消費する場合のみ**: `lib/@vibe/compiler/selfhost_sources_manifest.tsv`
+   に `vibe_core` group で `../../../lib/@vibe/<pkg>/...` の行を足す。bundle
    への inline / codegen fingerprint への波及は generate_selfhost_bundle.sh
-   が面倒を見る (#741)
+   が面倒を見る (#741, #766)
 
 ## 3. 検証 (commit 前に必ず)
 
@@ -65,12 +65,12 @@ bash scripts/selfhost_only_gate.sh
 bash scripts/selfhost_unit_test_runner.sh
 ```
 
-compiler 本体 (`vibe/compiler/`, `lib/@vibe/` の compiler 消費分) を触った
+compiler 本体 (`lib/@vibe/compiler/`, `lib/@vibe/` の compiler 消費分) を触った
 場合は必ず:
 
 ```bash
 VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 \
-  VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=vibe/compiler/selfhost_cli_adapter_module_source.vibe \
+  VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe \
   bash scripts/generate_selfhost_bundle.sh
 bash scripts/selfhost_generations.sh build --stage3 --out-dir _build/gen
 cmp _build/gen/stage2.wasm _build/gen/stage3.wasm   # fixpoint

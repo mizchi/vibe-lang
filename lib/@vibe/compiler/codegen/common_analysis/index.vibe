@@ -1,0 +1,1240 @@
+//# Imports
+
+import ../../core/index.vibe {
+  Expr, Pat, Stmt, TypeExpr,
+  bytebuf_push
+}
+
+import ../common_extractors/index.vibe {
+  array_contains_str
+}
+
+import ../wasm_emit/index.vibe {
+  emit_call_indirect, emit_else, emit_end, emit_i32_load, emit_i32_wrap_i64, emit_i64_and, emit_i64_const, emit_i64_eq, emit_i64_or, emit_i64_shl, emit_i64_shr_s, emit_if_void, emit_local_get, emit_local_set
+}
+
+let op_i64_extend_i32_u = 173
+
+//# Functions
+
+let common_analysis_fresh_string_array: () -> Array[String] = () -> {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+// Collect string literals appearing anywhere in a pattern, including inside
+// constructor / tuple / or / struct sub-patterns. #603: codegen now tests a
+// `PString` sub-pattern of a `PCtor`, so its literal must be registered in the
+// string table (previously only top-level `PString` arms were collected).
+let rec collect_strings_pat: (Pat, Array[String]) -> Int = (pat, out) -> {
+  match pat {
+    PString(s) => {
+      let mut pf = false
+      let mut pi = 0
+      while pi < Array::length(out) {
+        if Array::get(out, pi) == s {
+          pf = true
+        }
+        pi = pi + 1
+      }
+      if !pf {
+        Array::push(out, s)
+      }
+      0
+    },
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        let _ = collect_strings_pat(Array::get(args, i), out)
+        i = i + 1
+      }
+      0
+    },
+    PTuple(pats) => {
+      let mut i = 0
+      while i < Array::length(pats) {
+        let _ = collect_strings_pat(Array::get(pats, i), out)
+        i = i + 1
+      }
+      0
+    },
+    POr(l, r) => {
+      let _ = collect_strings_pat(l, out)
+      let _ = collect_strings_pat(r, out)
+      0
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        let _ = collect_strings_pat(fp, out)
+        i = i + 1
+      }
+      0
+    },
+    _ => 0
+  }
+}
+
+export let rec collect_strings_expr: (Expr, Array[String]) -> Int = (expr, out) -> {
+  match expr {
+    EString(s) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(out) {
+        if Array::get(out, i) == s {
+          found = true
+        }
+        i = i + 1
+      }
+      if !found {
+        Array::push(out, s)
+      }
+      0
+    },
+    EBinOp(_, lhs, rhs) => {
+      collect_strings_expr(lhs, out)
+      collect_strings_expr(rhs, out)
+    },
+    EUnaryOp(_, operand) => collect_strings_expr(operand, out),
+    EIf(cond, then_e, else_e) => {
+      collect_strings_expr(cond, out)
+      collect_strings_expr(then_e, out)
+      collect_strings_expr(else_e, out)
+    },
+    ECall(callee, args, _) => {
+      collect_strings_expr(callee, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_strings_expr(Array::get(args, i), out)
+        i = i + 1
+      }
+      0
+    },
+    ELet(_, value, body) => {
+      collect_strings_expr(value, out)
+      collect_strings_expr(body, out)
+    },
+    ELetRec(_, value, body) => {
+      collect_strings_expr(value, out)
+      collect_strings_expr(body, out)
+    },
+    ELetMut(_, value, body) => {
+      collect_strings_expr(value, out)
+      collect_strings_expr(body, out)
+    },
+    EAssign(_, value, body) => {
+      collect_strings_expr(value, out)
+      collect_strings_expr(body, out)
+    },
+    EAssignOp(_, _, value, body) => {
+      collect_strings_expr(value, out)
+      collect_strings_expr(body, out)
+    },
+    ESeq(first, second) => {
+      collect_strings_expr(first, out)
+      collect_strings_expr(second, out)
+    },
+    EWhile(cond, body) => {
+      collect_strings_expr(cond, out)
+      collect_strings_expr(body, out)
+    },
+    EForIn(_, _, iter_e, body) => {
+      collect_strings_expr(iter_e, out)
+      collect_strings_expr(body, out)
+    },
+    ETuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        collect_strings_expr(Array::get(elems, i), out)
+        i = i + 1
+      }
+      0
+    },
+    EArray(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        collect_strings_expr(Array::get(elems, i), out)
+        i = i + 1
+      }
+      0
+    },
+    EMatch(scrutinee, arms) => {
+      collect_strings_expr(scrutinee, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, arm_expr) = Array::get(arms, i)
+        let _ = collect_strings_pat(pat, out)
+        collect_strings_expr(arm_expr, out)
+        i = i + 1
+      }
+      0
+    },
+    EFn(_, _, _, _, _, body) => collect_strings_expr(body, out),
+    EThrow(msg) => collect_strings_expr(msg, out),
+    EReturn(msg) => collect_strings_expr(msg, out),
+    EStringInterp(parts) => {
+      let mut si_p = 0
+      while si_p < Array::length(parts) {
+        if si_p % 2 == 0 {
+          let part = Array::get(parts, si_p)
+          if String::length(part) > 0 {
+            let mut found = false
+            let mut fi2 = 0
+            while fi2 < Array::length(out) {
+              if Array::get(out, fi2) == part { found = true }
+              fi2 = fi2 + 1
+            }
+            if !found { Array::push(out, part) }
+          }
+        }
+        si_p = si_p + 1
+      }
+      0
+    },
+    EHandle(body, arms) => {
+      collect_strings_expr(body, out)
+      let mut hi = 0
+      while hi < Array::length(arms) {
+        let (_, arm_expr) = Array::get(arms, hi)
+        collect_strings_expr(arm_expr, out)
+        hi = hi + 1
+      }
+      0
+    },
+    EMap(fields) => {
+      let mut mi = 0
+      while mi < Array::length(fields) {
+        let (key, val) = Array::get(fields, mi)
+        let mut kf = false
+        let mut ki = 0
+        while ki < Array::length(out) {
+          if Array::get(out, ki) == key { kf = true }
+          ki = ki + 1
+        }
+        if !kf { Array::push(out, key) }
+        collect_strings_expr(val, out)
+        mi = mi + 1
+      }
+      0
+    },
+    ERecord(fields) => {
+      let mut ri = 0
+      while ri < Array::length(fields) {
+        let (_, fval) = Array::get(fields, ri)
+        collect_strings_expr(fval, out)
+        ri = ri + 1
+      }
+      0
+    },
+    EDot(obj, _, _) => collect_strings_expr(obj, out),
+    ELabeledArg(_, _, val) => collect_strings_expr(val, out),
+    _ => 0
+  }
+}
+
+// Extract function param names from SLet(_, _, _, _, EFn(_, _, params, _, _, _))
+export let get_func_param_names: (Stmt) -> Array[String] with { Error } = (stmt) -> {
+  match stmt {
+    SLet(_, _, _, _, expr) => match expr {
+      EFn(_, _, params, _, _, _) => {
+        let names = common_analysis_fresh_string_array()
+        let mut i = 0
+        while i < Array::length(params) {
+          let (pname, _) = Array::get(params, i)
+          // Strip labeled/optional markers from param names
+          let plen2 = String::length(pname)
+          let clean_name = if plen2 > 0 {
+            let last_char = String::char_code_at(pname, plen2 - 1)
+            if last_char == '~' || last_char == '?' {
+              pname[0:plen2 - 1]
+            } else pname
+          } else pname
+          Array::push(names, clean_name)
+          i = i + 1
+        }
+        names
+      },
+      _ => throw("get_func_param_names: not a function")
+    },
+    _ => throw("get_func_param_names: not a let statement")
+  }
+}
+
+// #721: does the program reference the exception machinery anywhere? EThrow
+// compiles to `throw 2`, EHandle to try_table over tags 0-3, and effect op
+// performs to `throw <eff_tag>` (guarded separately by the effect declaration
+// list). When NONE of these appear, the tag section and the "error" tag
+// export can be omitted entirely -- V8 runs exnref-bearing modules on a
+// slower path, costing pure-compute code ~35% (fib(38): 0.32s with tags vs
+// 0.20s without; wasmtime shows parity, so it is engine behavior, not
+// codegen). Conservative: any EThrow/EHandle at ANY nesting depth counts.
+export let rec expr_contains_exceptions: (Expr) -> Bool = (expr) -> {
+  match expr {
+    EThrow(_) => true,
+    EHandle(_, _) => true,
+    EBinOp(_, lhs, rhs) => expr_contains_exceptions(lhs) || expr_contains_exceptions(rhs),
+    EUnaryOp(_, operand) => expr_contains_exceptions(operand),
+    EIf(cond, then_e, else_e) =>
+    expr_contains_exceptions(cond) || expr_contains_exceptions(then_e) || expr_contains_exceptions(else_e),
+    ECall(callee, args, _) => {
+      // A bare `resume(..)` call compiles to `throw 1` (continuation resume)
+      // even without a surrounding EHandle in this expression -- a resume
+      // misused outside a handler must still produce a VALID module. A user
+      // function actually named `resume` merely keeps the tags (harmless
+      // over-approximation).
+      //
+      // #774: `perform Eff::Op(..)` compiles to `throw <eff_tag>`
+      // (compile_call.vibe) EVEN WHEN the enclosing file declares no
+      // `effect Eff { .. }` of its own (e.g. lib/@vibe/http/http.vibe /
+      // lib/@vibe/socket/tcp.vibe perform `Http::*`/`Socket::*` ops whose
+      // names never appear as an `SEffectDef` in the compiled unit) --
+      // `effect_name_to_tag` falls back to a sentinel tag index in that
+      // case. Missing "perform" here (like "resume") made `uses_exceptions`
+      // false whenever a compiled unit's ONLY exception-shaped construct was
+      // an un-declared-effect `perform` with no `handle`/`throw` anywhere
+      // else, so the tag section was omitted -- and the emitted `throw
+      // <eff_tag>` then referenced a tag index that plain does not exist,
+      // failing wasm validation ("Invalid tag index: N") the moment the
+      // function's body is compiled, whether or not it is ever called.
+      let mut found = match callee {
+        EIdent(cname, _) => cname == "resume" || cname == "perform",
+        _ => expr_contains_exceptions(callee)
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        if expr_contains_exceptions(Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ELet(_, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    ELetRec(_, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    ELetMut(_, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    EAssign(_, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    EAssignOp(_, _, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    ESeq(first, second) => expr_contains_exceptions(first) || expr_contains_exceptions(second),
+    EWhile(cond, body) => expr_contains_exceptions(cond) || expr_contains_exceptions(body),
+    EForIn(_, _, iter_e, body) => expr_contains_exceptions(iter_e) || expr_contains_exceptions(body),
+    ELoop(params, body) => {
+      let mut i = 0
+      let mut found = expr_contains_exceptions(body)
+      while i < Array::length(params) {
+        let (_, iv) = Array::get(params, i)
+        if expr_contains_exceptions(iv) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMatch(scrut, arms) => {
+      let mut i = 0
+      let mut found = expr_contains_exceptions(scrut)
+      while i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, i)
+        if expr_contains_exceptions(arm_body) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EFn(_, _, _, _, _, body) => expr_contains_exceptions(body),
+    ETuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if expr_contains_exceptions(Array::get(elems, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EArray(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if expr_contains_exceptions(Array::get(elems, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ERecord(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        if expr_contains_exceptions(fval) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMap(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        if expr_contains_exceptions(fval) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EDot(obj, _, _) => expr_contains_exceptions(obj),
+    ELabeledArg(_, _, inner) => expr_contains_exceptions(inner),
+    EReturn(inner) => expr_contains_exceptions(inner),
+    ESpread(inner) => expr_contains_exceptions(inner),
+    EBreak(opt) => match opt {
+      Some(inner) => expr_contains_exceptions(inner),
+      None => false
+    },
+    EContinue(args) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if expr_contains_exceptions(Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EInt(_) => false,
+    EFloat(_) => false,
+    EString(_) => false,
+    EBool(_) => false,
+    EIdent(_, _) => false,
+    EStringInterp(_) => false,
+    EUnit => false
+  }
+}
+
+export let rec stmts_contain_exceptions: (Array[Stmt]) -> Bool = (stmts) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SLetMut(_, _, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SLetPat(_, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SExpr(expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      STest(_, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SBench(_, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SModule(_, _, inner) => if stmts_contain_exceptions(inner) {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+export let collect_strings_stmts: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let out = common_analysis_fresh_string_array()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => collect_strings_expr(expr, out),
+      _ => 0
+    }
+    i = i + 1
+  }
+  out
+}
+
+export let emit_i64_extend_i32_u: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_extend_i32_u)
+}
+
+// Resolve closure/fn value tag and fill slot_local/env_local
+// After this: slot_local = table slot index, env_local = env pointer (0 for bare fn)
+export let emit_closure_resolve: (Bytes, Int, Int, Int) -> Unit = (buf, fn_val_local, slot_local, env_local) -> {
+  emit_local_get(buf, fn_val_local)
+  emit_i64_const(buf, 3)
+  emit_i64_and(buf)
+  emit_i64_const(buf, 2)
+  emit_i64_eq(buf)
+  emit_if_void(buf)
+  // Bare fn: table_slot = fn_val >> 2, env = 0
+  emit_local_get(buf, fn_val_local)
+  emit_i64_const(buf, 2)
+  emit_i64_shr_s(buf)
+  emit_local_set(buf, slot_local)
+  emit_i64_const(buf, 0)
+  emit_local_set(buf, env_local)
+  emit_else(buf)
+  // Closure: env = fn_val & ~3, slot = i32.load(env, 0)
+  emit_local_get(buf, fn_val_local)
+  emit_i64_const(buf, -4)
+  emit_i64_and(buf)
+  emit_local_set(buf, env_local)
+  emit_local_get(buf, env_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf, slot_local)
+  emit_end(buf)
+}
+
+// Emit the tail of an indirect closure call (push env, push slot, call_indirect)
+export let emit_closure_call_tail: (Bytes, Int, Int, Int, Int) -> Unit = (buf, env_local, slot_local, closure_type_base, num_args) -> {
+  emit_local_get(buf, env_local)
+  emit_local_get(buf, slot_local)
+  emit_i32_wrap_i64(buf)
+  emit_call_indirect(buf, closure_type_base + num_args)
+}
+
+let rec collect_pattern_bindings: (Pat, Array[String]) -> Int = (pat, bindings) -> {
+  match pat {
+    PBind(name) => {
+      Array::push(bindings, name); 0
+    },
+    PTuple(pats) => {
+      let mut i = 0
+      while i < Array::length(pats) {
+        collect_pattern_bindings(Array::get(pats, i), bindings)
+        i = i + 1
+      }
+      0
+    },
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_pattern_bindings(Array::get(args, i), bindings)
+        i = i + 1
+      }
+      0
+    },
+    POr(l, r) => {
+      collect_pattern_bindings(l, bindings); collect_pattern_bindings(r, bindings)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fpat) = Array::get(fields, i)
+        collect_pattern_bindings(fpat, bindings)
+        i = i + 1
+      }
+      0
+    },
+    _ => 0
+  }
+}
+
+// Inlined async builtins (docs/spec/wasi-p3-async.md) are lowered directly by
+// compile_call rather than living in the func table, so — like operators — they
+// must never be treated as free variables when they appear inside a nested
+// lambda body. Otherwise a thunk such as `() -> { Task::join(t) }` would capture
+// `Task::join` as a closure value and mis-lower the call as an indirect apply.
+let is_inlined_async_builtin: (String) -> Bool = (name) -> {
+  name == "await" || name == "Future::ready" || name == "Task::spawn" || name == "Task::join" || name == "Task::cancel" || name == "Task::race" || name == "Task::timeout" || name == "Stream::empty" || name == "Stream::once" || name == "Stream::map" || name == "Stream::filter" || name == "Stream::fold" || name == "Stream::next" || name == "String::to_bytes" || name == "Stream::to_string"
+}
+
+// #773: the scalar arithmetic/logic intrinsics ("not"/"add"/"sub"/"mul"/"lt")
+// are, like the async builtins above, lowered INLINE by compile_call.vibe
+// (`!prefer_bound_call && fname == "not"` etc.) rather than living in the func
+// table -- UNLESS a user top-level function of the same bare name shadows them,
+// in which case they're already present in `fn_names` (ctx.func_table.names)
+// and excluded by the check above. ("eq"/"Array::length"/"Bytes::length"/
+// "String::length" are unconditionally registered in the func table for every
+// compile, so they never reach this fallback and need no entry here.)
+//
+// Before this fix, a closure/lambda literal that referenced one of these bare
+// names as a call callee (e.g. `(b: Bool) -> Bool { not(b) }`) — and did NOT
+// shadow it with a same-named top-level function — fell through to the `else`
+// branch below and was wrongly recorded as a FREE VARIABLE to capture from the
+// enclosing scope. compile_lambda.vibe then allocated a captured-env slot named
+// "not" and, back in compile_call.vibe, `local_idx_hint` found "not" among the
+// closure's own `local_names` (the just-added capture), forcing
+// `prefer_bound_call = true` -- i.e. treating the wrongly captured (and
+// nonexistent-in-the-enclosing-scope) "not" value as a closure to invoke via
+// `call_indirect`. That corrupted the closure's environment and crashed with
+// "unreachable" / "null function or function signature mismatch" at runtime
+// (reported against @vibex/quickcheck's check_int/check_bool + is_ok, whose
+// property closures call `not(...)`).
+let is_inlined_scalar_builtin: (String) -> Bool = (name) -> {
+  name == "not" || name == "add" || name == "sub" || name == "mul" || name == "lt"
+}
+
+// Stack-based free variable analysis: uses in-place push/truncate on bound array
+// to avoid O(n) array copies at every scope boundary. This dramatically reduces
+// heap allocation during meta-circular self-compilation.
+export let rec collect_free_vars_expr: (Expr, Array[String], Array[String], Array[String]) -> Int = (expr, bound, fn_names, out) -> {
+  match expr {
+    EIdent(name, _) => if array_contains_str(bound, name) {
+      0
+    }
+    else if array_contains_str(fn_names, name) {
+      0
+    }
+    else if array_contains_str(out, name) {
+      0
+    }
+    else {
+      Array::push(out, name)
+      0
+    },
+    EInt(_) => 0,
+    EBool(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EUnit => 0,
+    EBinOp(_, lhs, rhs) => {
+      collect_free_vars_expr(lhs, bound, fn_names, out); collect_free_vars_expr(rhs, bound, fn_names, out)
+    },
+    EUnaryOp(_, operand) => collect_free_vars_expr(operand, bound, fn_names, out),
+    EIf(cond, then_e, else_e) => {
+      collect_free_vars_expr(cond, bound, fn_names, out); collect_free_vars_expr(then_e, bound, fn_names, out); collect_free_vars_expr(else_e, bound, fn_names, out)
+    },
+    // #773/regression fix: the inlined-builtin skip only applies to a bare
+    // name used as a CALL CALLEE (`sub(a, b)`), never to a plain identifier
+    // reference. Checking it in the generic EIdent branch above would also
+    // swallow a real bound-elsewhere variable that merely happens to share
+    // one of these short names (e.g. a `sub: String` parameter in
+    // lib/@vibe/prelude/string.vibe's string_index_of_from), wrongly
+    // skipping its capture into a nested closure and crashing with
+    // "undefined variable (ident)" at runtime.
+    ECall(EIdent(cname, _), args, _) => if !array_contains_str(bound, cname) && !array_contains_str(fn_names, cname) && (is_inlined_async_builtin(cname) || is_inlined_scalar_builtin(cname)) {
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_free_vars_expr(Array::get(args, i), bound, fn_names, out)
+        i = i + 1
+      }
+      0
+    } else {
+      collect_free_vars_expr(EIdent(cname, 0), bound, fn_names, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_free_vars_expr(Array::get(args, i), bound, fn_names, out)
+        i = i + 1
+      }
+      0
+    },
+    ECall(callee, args, _) => {
+      collect_free_vars_expr(callee, bound, fn_names, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_free_vars_expr(Array::get(args, i), bound, fn_names, out)
+        i = i + 1
+      }
+      0
+    },
+    ELet(name, value, body) => {
+      collect_free_vars_expr(value, bound, fn_names, out)
+      let saved = Array::length(bound)
+      Array::push(bound, name)
+      collect_free_vars_expr(body, bound, fn_names, out)
+      Array::truncate(bound, saved)
+      0
+    },
+    ELetRec(name, value, body) => {
+      let saved = Array::length(bound)
+      Array::push(bound, name)
+      collect_free_vars_expr(value, bound, fn_names, out)
+      collect_free_vars_expr(body, bound, fn_names, out)
+      Array::truncate(bound, saved)
+      0
+    },
+    ELetMut(name, value, body) => {
+      collect_free_vars_expr(value, bound, fn_names, out)
+      let saved = Array::length(bound)
+      Array::push(bound, name)
+      collect_free_vars_expr(body, bound, fn_names, out)
+      Array::truncate(bound, saved)
+      0
+    },
+    EAssign(name, value, body) => {
+      // The assignment TARGET is a variable reference too: a lambda whose only
+      // use of an outer `let mut` is `x = 1` (no read) must still capture it —
+      // previously only value/body mentions were collected, so `count += 1` /
+      // write-only assigns in closures failed codegen with
+      // "undefined variable (local): count" (and is_mut_captured_in, which
+      // rides this collector, never promoted the cell).
+      if array_contains_str(bound, name) || array_contains_str(fn_names, name) || array_contains_str(out, name) {
+        0
+      } else {
+        Array::push(out, name)
+        0
+      }
+      collect_free_vars_expr(value, bound, fn_names, out); collect_free_vars_expr(body, bound, fn_names, out)
+    },
+    EAssignOp(name, _, value, body) => {
+      if array_contains_str(bound, name) || array_contains_str(fn_names, name) || array_contains_str(out, name) {
+        0
+      } else {
+        Array::push(out, name)
+        0
+      }
+      collect_free_vars_expr(value, bound, fn_names, out); collect_free_vars_expr(body, bound, fn_names, out)
+    },
+    ESeq(first, second) => {
+      collect_free_vars_expr(first, bound, fn_names, out); collect_free_vars_expr(second, bound, fn_names, out)
+    },
+    EWhile(cond, body) => {
+      collect_free_vars_expr(cond, bound, fn_names, out); collect_free_vars_expr(body, bound, fn_names, out)
+    },
+    EForIn(var_name, index_name, iter_e, body) => {
+      collect_free_vars_expr(iter_e, bound, fn_names, out)
+      let saved = Array::length(bound)
+      Array::push(bound, var_name)
+      match index_name {
+        Some(index_name) => Array::push(bound, index_name),
+        None => ()
+      }
+      collect_free_vars_expr(body, bound, fn_names, out)
+      Array::truncate(bound, saved)
+      0
+    },
+    ETuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        collect_free_vars_expr(Array::get(elems, i), bound, fn_names, out)
+        i = i + 1
+      }
+      0
+    },
+    EArray(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        collect_free_vars_expr(Array::get(elems, i), bound, fn_names, out)
+        i = i + 1
+      }
+      0
+    },
+    EMatch(scrutinee, arms) => {
+      collect_free_vars_expr(scrutinee, bound, fn_names, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (arm_pat, arm_expr) = Array::get(arms, i)
+        let saved = Array::length(bound)
+        collect_pattern_bindings(arm_pat, bound)
+        collect_free_vars_expr(arm_expr, bound, fn_names, out)
+        Array::truncate(bound, saved)
+        i = i + 1
+      }
+      0
+    },
+    EFn(_, _, params, _, _, body) => {
+      let saved = Array::length(bound)
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pname_raw, _) = Array::get(params, pi)
+        let pnl = String::length(pname_raw)
+        let pname = if pnl > 0 {
+          let plc = String::char_code_at(pname_raw, pnl - 1)
+          if plc == '~' || plc == '?' { pname_raw[0:pnl - 1] } else pname_raw
+        } else pname_raw
+        Array::push(bound, pname)
+        pi = pi + 1
+      }
+      collect_free_vars_expr(body, bound, fn_names, out)
+      Array::truncate(bound, saved)
+      0
+    },
+    EBreak(_) => 0,
+    EContinue(_) => 0,
+    EThrow(msg) => collect_free_vars_expr(msg, bound, fn_names, out),
+    EReturn(msg) => collect_free_vars_expr(msg, bound, fn_names, out),
+    EHandle(body, arms) => {
+      collect_free_vars_expr(body, bound, fn_names, out)
+      let mut hi = 0
+      while hi < Array::length(arms) {
+        let (_, arm_expr) = Array::get(arms, hi)
+        collect_free_vars_expr(arm_expr, bound, fn_names, out)
+        hi = hi + 1
+      }
+      0
+    },
+    EDot(obj, _, _) => collect_free_vars_expr(obj, bound, fn_names, out),
+    ERecord(fields) => {
+      let mut ri = 0
+      while ri < Array::length(fields) {
+        let (_, fval) = Array::get(fields, ri)
+        collect_free_vars_expr(fval, bound, fn_names, out)
+        ri = ri + 1
+      }
+      0
+    },
+    ELabeledArg(_, _, arg_expr) => collect_free_vars_expr(arg_expr, bound, fn_names, out),
+    _ => 0
+  }
+}
+
+export let collect_free_vars: (Expr, Array[String], Array[String]) -> Array[String] = (body, param_names, fn_names) -> {
+  let out = common_analysis_fresh_string_array()
+  // Make a mutable copy of param_names for stack-based push/truncate
+  let bound = Array::slice(param_names, 0, Array::length(param_names))
+  collect_free_vars_expr(body, bound, fn_names, out)
+  out
+}
+
+// The root identifier of a projection chain (EDot(...EDot(EIdent(root))...)), or
+// "" if `e` is not a projection. (ADR-0055 Stage 4: shared with compile_expr_tail
+// so function-tail param drops can detect an escaping projection of a param.)
+export let rec proj_root_ident: (Expr) -> String = (e) -> {
+  match e {
+    EDot(obj, _, _) => proj_root_ident(obj),
+    EIdent(nm, _) => nm,
+    _ => ""
+  }
+}
+
+// If the *tail* (result) expression of a scope is a projection chain, return its
+// root identifier; otherwise "". Follows let/seq/assign wrappers to the tail.
+export let rec scope_tail_proj_root: (Expr) -> String = (e) -> {
+  match e {
+    ELet(_, _, b) => scope_tail_proj_root(b),
+    ELetMut(_, _, b) => scope_tail_proj_root(b),
+    ELetRec(_, _, b) => scope_tail_proj_root(b),
+    ESeq(_, b) => scope_tail_proj_root(b),
+    EAssign(_, _, b) => scope_tail_proj_root(b),
+    EAssignOp(_, _, _, b) => scope_tail_proj_root(b),
+    EDot(obj, _, _) => proj_root_ident(obj),
+    _ => ""
+  }
+}
+
+// Check if a mutable variable is captured by any nested EFn in the given expression
+export let rec is_mut_captured_in: (Expr, String) -> Bool = (expr, name) -> {
+  match expr {
+    EIdent(_, _) => false,
+    EInt(_) => false,
+    EBool(_) => false,
+    EFloat(_) => false,
+    EString(_) => false,
+    EUnit => false,
+    EBinOp(_, lhs, rhs) => is_mut_captured_in(lhs, name) || is_mut_captured_in(rhs, name),
+    EUnaryOp(_, operand) => is_mut_captured_in(operand, name),
+    EIf(cond, then_e, else_e) => is_mut_captured_in(cond, name) || is_mut_captured_in(then_e, name) || is_mut_captured_in(else_e, name),
+    ECall(callee, args, _) => if is_mut_captured_in(callee, name) {
+      true
+    }
+    else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if is_mut_captured_in(Array::get(args, i), name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    ELet(n, value, body) => if n == name {
+      is_mut_captured_in(value, name)
+    }
+    else {
+      is_mut_captured_in(value, name) || is_mut_captured_in(body, name)
+    },
+    ELetRec(n, value, body) => if n == name {
+      false
+    }
+    else {
+      is_mut_captured_in(value, name) || is_mut_captured_in(body, name)
+    },
+    ELetMut(n, value, body) => if n == name {
+      is_mut_captured_in(value, name)
+    }
+    else {
+      is_mut_captured_in(value, name) || is_mut_captured_in(body, name)
+    },
+    EAssign(_, value, body) => is_mut_captured_in(value, name) || is_mut_captured_in(body, name),
+    EAssignOp(_, _, value, body) => is_mut_captured_in(value, name) || is_mut_captured_in(body, name),
+    ESeq(first, second) => is_mut_captured_in(first, name) || is_mut_captured_in(second, name),
+    EWhile(cond, body) => is_mut_captured_in(cond, name) || is_mut_captured_in(body, name),
+    EForIn(_, _, iter_e, body) => is_mut_captured_in(iter_e, name) || is_mut_captured_in(body, name),
+    ETuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if is_mut_captured_in(Array::get(elems, i), name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EArray(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if is_mut_captured_in(Array::get(elems, i), name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMatch(scrutinee, arms) => if is_mut_captured_in(scrutinee, name) {
+      true
+    }
+    else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(arms) {
+        let (_, arm_expr) = Array::get(arms, i)
+        if is_mut_captured_in(arm_expr, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EFn(_, _, params, _, _, fn_body) => {
+      // Check if name is shadowed by params
+      let mut shadowed = false
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pname, _) = Array::get(params, pi)
+        if pname == name {
+          shadowed = true
+        }
+        pi = pi + 1
+      }
+      if shadowed {
+        false
+      }
+      else {
+        // Check if name is free in this EFn
+        let param_names = Array::slice([
+          ""
+        ], 0, 0)
+        let mut pi2 = 0
+        while pi2 < Array::length(params) {
+          let (pname2, _) = Array::get(params, pi2)
+          Array::push(param_names, pname2)
+          pi2 = pi2 + 1
+        }
+        let fv = collect_free_vars(fn_body, param_names, Array::slice([
+          ""
+        ], 0, 0))
+        if array_contains_str(fv, name) {
+          true
+        }
+        else {
+          // Also check recursively for deeper nesting
+          is_mut_captured_in(fn_body, name)
+        }
+      }
+    },
+    EBreak(_) => false,
+    EContinue(_) => false,
+    EThrow(msg) => is_mut_captured_in(msg, name),
+    EReturn(msg) => is_mut_captured_in(msg, name),
+    // #629 step 2: forms that carry sub-expressions which may hold a capturing
+    // closure. Previously these fell through to `_ => false`, so a mut captured
+    // by a closure INSIDE a struct/record literal, handler, loop, projection,
+    // labeled argument, map literal, or spread was not detected — the cell was
+    // left a stack-local and the closure captured it by value (snapshot),
+    // silently losing the shared mutation. Recursing here is always sound
+    // (over-detection only boxes more).
+    ERecord(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        if is_mut_captured_in(fval, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMap(entries) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(entries) {
+        let (_, mval) = Array::get(entries, i)
+        if is_mut_captured_in(mval, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EHandle(body, arms) => if is_mut_captured_in(body, name) {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(arms) {
+        let (_, arm_expr) = Array::get(arms, i)
+        if is_mut_captured_in(arm_expr, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    ELoop(params, body) => if is_mut_captured_in(body, name) {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        if is_mut_captured_in(init, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EDot(obj, _, _) => is_mut_captured_in(obj, name),
+    ELabeledArg(_, _, inner) => is_mut_captured_in(inner, name),
+    ESpread(inner) => is_mut_captured_in(inner, name),
+    _ => false
+  }
+}
+
+// Region-lifetime decision for a `let mut name` cell (#629 region inference).
+// Returns true when the cell must be heap-boxed because its region lifetime can
+// extend beyond the binding block (a capturing closure may escape); false keeps
+// it a plain stack-local (region = lexical block). Both backends gate boxing on
+// this single predicate (linear compile_expr_tail / wasm-gc backend_expr).
+//
+// Step 1 baseline: a mut captured by ANY nested closure is conservatively
+// treated as escaping — identical to the prior `is_mut_captured_in` gate, so
+// behavior is unchanged. Later steps refine this into a real escape analysis
+// (a capture whose closure provably cannot escape its binding scope stays
+// stack-local). The predicate stays conservative: when escape cannot be ruled
+// out it returns true (box), which is always sound.
+export let mut_needs_ref_cell: (Expr, String) -> Bool = (body, name) -> {
+  is_mut_captured_in(body, name)
+}
+
+// Builtins whose arg0 is BORROWED (read in place, not consumed/dropped). Kept
+// in sync with is_borrow_arg0_call in perceus/index.vibe.
+export let md_is_borrow_arg0_call: (String) -> Bool = (f) -> {
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "__rec_field"
+}
+
+let md_max: (Int, Int) -> Int = (a, b) -> {
+  if a > b { a } else { b }
+}
+
+// How many times is `name` consumed (owning position) along the LONGEST control
+// path of `e`? Used to balance the rc of a value that is referenced but NOT
+// owned at its definition site — a matched ctor field (a borrowed view sharing
+// the scrutinee's refcount; compile_match) or a captured free variable (a
+// borrowed view of the defining scope's binding; compile_lambda). Each owning
+// consume of such a value decrements a refcount it does not own, so the value
+// must be dup'd once PER consume or it is freed more times than dup'd -> double
+// free. Sequential children SUM; alternative children (if-branches, match/handle
+// arms) take the MAX, so the count is an upper bound on the consumes of any
+// executed path (>= actual everywhere -> never under-dup -> no double free;
+// tight on straight-line code -> no over-dup leak). MUST enumerate every Expr
+// variant (modeled on fold_expr): skipping recursion into a child could miss a
+// real consume and wrongly suppress the dup. A bare `EIdent(name)` passed as
+// arg0 of a borrow-arg0 builtin does not consume (it is read in place).
+export let rec md_consume_count: (Expr, String) -> Int = (e, name) -> {
+  match e {
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EStringInterp(_) => 0,
+    EIdent(n, _) => if n == name { 1 } else { 0 },
+    ETuple(items) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(items) {
+        acc = acc + md_consume_count(Array::get(items, i), name)
+        i = i + 1
+      }
+      acc
+    },
+    EArray(items) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(items) {
+        acc = acc + md_consume_count(Array::get(items, i), name)
+        i = i + 1
+      }
+      acc
+    },
+    ERecord(fields) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        acc = acc + md_consume_count(v, name)
+        i = i + 1
+      }
+      acc
+    },
+    EMap(fields) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        acc = acc + md_consume_count(v, name)
+        i = i + 1
+      }
+      acc
+    },
+    EIf(c, t, el) =>
+    md_consume_count(c, name) + md_max(md_consume_count(t, name), md_consume_count(el, name)),
+    ELet(_, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
+    ELetRec(_, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
+    ELetMut(_, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
+    EAssign(_, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
+    EAssignOp(_, _, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
+    ESeq(a, b) => md_consume_count(a, name) + md_consume_count(b, name),
+    EMatch(s, arms) => {
+      let mut mx = 0
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, v) = Array::get(arms, i)
+        mx = md_max(mx, md_consume_count(v, name))
+        i = i + 1
+      }
+      // A bare `match name { .. }` BORROWS the scrutinee (its fields become
+      // borrowed views reclaimed by the owner's recursive drop); it does not
+      // consume `name`. Counting it as a consume would over-dup a re-matched
+      // borrowed tail (e.g. deeply-nested `match restN`), leaking/corrupting
+      // the chain. A non-ident scrutinee may still consume `name` in a
+      // sub-expression, so recurse there.
+      let scr = match s {
+        EIdent(_, _) => 0,
+        _ => md_consume_count(s, name)
+      }
+      scr + mx
+    },
+    EHandle(s, arms) => {
+      let mut mx = 0
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, v) = Array::get(arms, i)
+        mx = md_max(mx, md_consume_count(v, name))
+        i = i + 1
+      }
+      let scr = match s {
+        EIdent(_, _) => 0,
+        _ => md_consume_count(s, name)
+      }
+      scr + mx
+    },
+    EWhile(c, b) => md_consume_count(c, name) + md_consume_count(b, name),
+    ELoop(params, b) => {
+      let mut acc = md_consume_count(b, name)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, v) = Array::get(params, i)
+        acc = acc + md_consume_count(v, name)
+        i = i + 1
+      }
+      acc
+    },
+    EForIn(_, _, it, b) => md_consume_count(it, name) + md_consume_count(b, name),
+    ECall(callee, args, _) => {
+      let borrow0 = match callee {
+        EIdent(f, _) => md_is_borrow_arg0_call(f),
+        _ => false
+      }
+      let start = if borrow0 && Array::length(args) >= 1 {
+        1
+      } else {
+        0
+      }
+      let head = if start == 1 {
+        match Array::get(args, 0) {
+          EIdent(_, _) => 0,
+          _ => md_consume_count(Array::get(args, 0), name)
+        }
+      } else {
+        0
+      }
+      // A bare-ident CALLEE is invoked, not consumed — calling a function or a
+      // captured closure (incl. a recursive closure's own self-reference) does
+      // not drop it. Counting `f(..)` as a consume of `f` over-dups the captured
+      // closure once per call (#705: a nested self-recursive closure's self-
+      // capture corrupted under RC). Only a non-ident callee can consume `name`
+      // in a sub-expression.
+      let callee_c = match callee {
+        EIdent(_, _) => 0,
+        _ => md_consume_count(callee, name)
+      }
+      let mut acc = callee_c + head
+      let mut ri = start
+      while ri < Array::length(args) {
+        acc = acc + md_consume_count(Array::get(args, ri), name)
+        ri = ri + 1
+      }
+      acc
+    },
+    EBinOp(_, l, r) => md_consume_count(l, name) + md_consume_count(r, name),
+    EUnaryOp(_, x) => md_consume_count(x, name),
+    EFn(_, _, _, _, _, body) => md_consume_count(body, name),
+    EDot(x, _, _) => md_consume_count(x, name),
+    ELabeledArg(_, _, v) => md_consume_count(v, name),
+    EThrow(x) => md_consume_count(x, name),
+    EReturn(x) => md_consume_count(x, name),
+    EBreak(opt) => match opt {
+      Some(v) => md_consume_count(v, name),
+      None => 0
+    },
+    EContinue(args) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(args) {
+        acc = acc + md_consume_count(Array::get(args, i), name)
+        i = i + 1
+      }
+      acc
+    },
+    ESpread(x) => md_consume_count(x, name)
+  }
+}

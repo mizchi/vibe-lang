@@ -3,7 +3,7 @@ set -euo pipefail
 
 # SIMD emit opcode gate (ADR-0054 / #536).
 #
-# The selfhost SIMD emitter (vibe/compiler/codegen/wasm_emit/simd.vibe) writes
+# The selfhost SIMD emitter (lib/@vibe/compiler/codegen/wasm_emit/simd.vibe) writes
 # `0xFD <sub-opcode> ...` for v128 instructions. simd_test.vibe pins each
 # emitter to its exact sub-opcode byte. This script is the matching runtime
 # side: it assembles a module that uses those same sub-opcodes and runs it
@@ -49,7 +49,7 @@ WAT
 out="$("$WASMTIME_BIN" run --invoke probe "$wat" 2>/dev/null || true)"
 if [ "$out" != "1" ]; then
   echo "simd-emit-wasmtime: FAIL (expected probe()=1, got '$out')" >&2
-  echo "  a SIMD sub-opcode is invalid or mis-mapped; see vibe/compiler/codegen/wasm_emit/simd.vibe" >&2
+  echo "  a SIMD sub-opcode is invalid or mis-mapped; see lib/@vibe/compiler/codegen/wasm_emit/simd.vibe" >&2
   exit 1
 fi
 

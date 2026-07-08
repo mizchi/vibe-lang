@@ -302,7 +302,7 @@ use_flat_cli_source() {
       local entry_rel
       entry_rel="$(rel_path "$entry")"
       [ "$SEED_ENTRY_NAME" = "cli_main" ] && \
-        [ "$SEED_ENTRY" = "vibe/compiler/selfhost_cli_support.vibe" ] && \
+        [ "$SEED_ENTRY" = "lib/@vibe/compiler/selfhost_cli_support.vibe" ] && \
         [ "$entry_rel" = "$SEED_ENTRY" ]
       ;;
     *) die "VIBE_SELFHOST_GENERATION_FLAT_CLI_SOURCE must be auto, 1, or 0" ;;
@@ -667,7 +667,7 @@ command_build() {
   mkdir -p "$out_dir"
   local requested_entry="$entry"
   if [ "$(rel_path "$requested_entry")" = "vibe/cli/selfhost_entry.vibe" ] && \
-    [ "$SEED_ENTRY" = "vibe/compiler/selfhost_cli_support.vibe" ]; then
+    [ "$SEED_ENTRY" = "lib/@vibe/compiler/selfhost_cli_support.vibe" ]; then
     die "split CLI generation requires a bootstrap bump first; current fixed seed uses legacy selfhost_cli_support.vibe"
   fi
   select_generation_entry "$out_dir" "$requested_entry"

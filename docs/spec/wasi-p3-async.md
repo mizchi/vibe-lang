@@ -71,7 +71,7 @@ front-end は **lexer/parser/AST/core-Type の変更ゼロ**で着地した:
 
 - `await` は予約語ではないため `await(f)` は通常の呼び出し
   `ECall(EIdent("await"), [f])` として既存 parser でそのまま通る。
-- checker builtin として登録（`vibe/compiler/checker/builtins_async.vibe`、
+- checker builtin として登録（`lib/@vibe/compiler/checker/builtins_async.vibe`、
   `lookup_builtin` 経由）:
   - `await : (Future[T]) -> T with { Async }`（`throw` と同型、effect=`Async`）
   - `Future::ready : (T) -> Future[T]`（pure、テスト用に future を構築）
@@ -133,7 +133,7 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
 - `Stream[T]` / `Task[T]` は `CtNamed("Stream"/"Task", _)` で構造表現（要素型は
   gradual な `CtUnknown`）。`Future[Option[T]]` は `CtNamed("Future",
   [CtOption(CtUnknown)])`。
-- builtin は `vibe/compiler/checker/builtins_async.vibe`（`lookup_stream` /
+- builtin は `lib/@vibe/compiler/checker/builtins_async.vibe`（`lookup_stream` /
   `lookup_concurrency`、`lookup_builtin` 経由）に登録。suspend / runtime 接触
   操作（`*::next`/`fold`/`spawn`/`join`/`cancel`/`race`/`timeout`）は `Async`
   effect を帯び、effect-escape チェックがそのまま機能する。
@@ -254,7 +254,7 @@ lowering 概要:
    `async-lift` 規約で wasmtime に lift される。
 
 この lowering は selfhost compiler 側
-(`vibe/compiler/codegen/`) に実装する（CLAUDE.md の source-of-truth 方針）。
+(`lib/@vibe/compiler/codegen/`) に実装する（CLAUDE.md の source-of-truth 方針）。
 既存の effect region / replay 機構とは独立した新パスとする。
 
 ### 3.1 M1b feasibility spike（landed、実測 — wasmtime 45.0.0 / x86_64 linux）

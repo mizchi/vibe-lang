@@ -261,12 +261,12 @@ overhead. The `wasmtime-aot` runtime variant addresses this directly
 ## Micro: vibe bench probes
 
 Files:
-- `vibe/compiler/lexer_hotspot_probe.vibe` + `selfhost_lexer_bench.vibe`
-- `vibe/compiler/parser_hotspot_probe.vibe` + `selfhost_parser_bench.vibe`
-- `vibe/compiler/selfhost_parser_control_bench.vibe` (optional `parser-control` phase)
-- `vibe/compiler/checker_hotspot_probe.vibe` + `selfhost_checker_bench.vibe`
-- `vibe/compiler/selfhost_bundle_bench.vibe` (optional `bundle` phase)
-- `vibe/compiler/selfhost_codegen_bench.vibe` (optional `codegen` phase)
+- `lib/@vibe/compiler/lexer_hotspot_probe.vibe` + `selfhost_lexer_bench.vibe`
+- `lib/@vibe/compiler/parser_hotspot_probe.vibe` + `selfhost_parser_bench.vibe`
+- `lib/@vibe/compiler/selfhost_parser_control_bench.vibe` (optional `parser-control` phase)
+- `lib/@vibe/compiler/checker_hotspot_probe.vibe` + `selfhost_checker_bench.vibe`
+- `lib/@vibe/compiler/selfhost_bundle_bench.vibe` (optional `bundle` phase)
+- `lib/@vibe/compiler/selfhost_codegen_bench.vibe` (optional `codegen` phase)
 
 Driver (host CLI compiled backend):
 `scripts/bench_selfhost_compile_hotspots.sh` → `just bench-selfhost-compile-hotspots`.
@@ -303,7 +303,7 @@ optimizer `@wite.optimize_binary_for_size` (mizchi/wite package).
 That in-process optimizer is **pathological on no-DCE 4-5 MB
 selfhost-import wasm**: a single -Oz pass hangs >4 minutes vs ~5
 seconds for the equivalent binaryen `wasm-opt -Oz` on the same input.
-Verified by isolating flags on `vibe compile vibe/compiler/selfhost_loader_collect_bench.vibe`:
+Verified by isolating flags on `vibe compile lib/@vibe/compiler/selfhost_loader_collect_bench.vibe`:
 
 | flags                                    | outcome             |
 | ---------------------------------------- | ------------------- |
@@ -502,11 +502,11 @@ selfhost compiler:
 ## Linked-build `contains_name` / `contains_path` scans (#533)
 
 `#533` re-opened the question of the linear `contains_name`
-(`vibe/compiler/entry/source_compile/wasi_only/linked_helpers.vibe`,
+(`lib/@vibe/compiler/entry/source_compile/wasi_only/linked_helpers.vibe`,
 3 sites) and `contains_path`
 (`.../linked_artifacts.vibe`, 2 sites) scans that the linked-build
 path uses to filter re-exported names and to dedup direct dependency
-paths. Both delegate to helpers in `vibe/compiler/module_graph_path.vibe`.
+paths. Both delegate to helpers in `lib/@vibe/compiler/module_graph_path.vibe`.
 
 **Re-classification (matches the #366 survey verdict).**
 
@@ -539,7 +539,7 @@ linked-build hotspot.
 4. **Sort + merge dedup of `dep_paths` is unsafe, not merely low-ROI.**
    The dedup must preserve first-occurrence order: `dep_paths` order
    flows into `linked_imports`, which `compile_wasi_module_linked_impl`
-   (`vibe/compiler/codegen/wasi/linked_compile.vibe`) turns into wasm
+   (`lib/@vibe/compiler/codegen/wasi/linked_compile.vibe`) turns into wasm
    import-section indices and emission order. Reordering would change
    the emitted binary and break selfhost reproducibility/parity. This
    rules out the "input order normalization / sort + merge" option from

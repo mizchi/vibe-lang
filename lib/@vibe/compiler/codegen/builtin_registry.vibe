@@ -1,0 +1,197 @@
+//# Functions
+
+// #415 B-0: the central declarative registry of func-table builtins across
+// both backends. Row: (name, param_count, returns_value 0|1,
+// in_linear_table, in_gc_table).
+//
+// This B-0 stage does NOT drive codegen — the linear builder
+// (wasi/linked_compile.vibe) and the gc builder (gc/backend_body.vibe) keep
+// their existing registration wiring, but each VERIFIES its built name table
+// against this registry at compile time (verify_lane_builtins below). Adding
+// a builtin to a lane without a registry row — or claiming a lane here
+// without registering it there — fails every build with a named diff instead
+// of silently diverging (the wasm-gc HOF-gap class of regression this issue
+// exists to prevent).
+//
+// Lane semantics:
+// - in_linear_table / in_gc_table refer to the lane's FUNC-TABLE registration
+//   only. A name absent from a lane's table may still be served there by a
+//   callsite lowering (expr/compile_call.vibe, gc/backend_call.vibe) or by
+//   prelude vibe source — B-1 will classify those; B-0 pins what exists.
+// - Host imports (Fs::/Env::/sleep/...) are linear-only by design: the gc
+//   lane is the pure-test lane and gates host builtins out as a group.
+export let builtin_registry: () -> Array[(String, Int, Int, Bool, Bool)] = () -> {
+  [
+    ("Env::get", 1, 1, true, false),
+    ("Env::args_len", 0, 1, true, false),
+    ("Env::args_get", 1, 1, true, false),
+    ("Fs::read_file", 1, 1, true, false),
+    ("Fs::exists", 1, 1, true, false),
+    ("Fs::stat_token", 1, 1, true, false),
+    ("Fs::write_file", 2, 0, true, false),
+    ("Fs::write_bytes", 2, 0, true, false),
+    ("Fs::read_bytes", 1, 1, true, false),
+    ("__fs_read_dir_raw", 1, 1, true, false),
+    ("sh", 1, 1, true, false),
+    ("__sh_lines_raw", 1, 1, true, false),
+    ("Stdin::read_stream", 1, 1, true, false),
+    ("Stdout::write_stream", 1, 0, true, false),
+    ("Stdout::write_char", 1, 0, true, false),
+    ("resolve_path", 1, 1, true, false),
+    ("Profiler::now_us", 0, 1, true, false),
+    ("Profiler::NowUs", 0, 1, true, false),
+    ("sleep", 1, 0, true, false),
+    ("Stdin::read_char", 0, 1, true, false),
+    ("simd_skip_ws", 3, 1, true, false),
+    ("simd_scan_alnum", 3, 1, true, false),
+    ("simd_scan_alnum_str", 3, 1, true, false),
+    ("str_lex_diff", 2, 1, true, true),
+    ("print_int", 1, 0, true, true),
+    ("print_str", 1, 0, true, true),
+    ("String::length", 1, 1, true, true),
+    ("String::equals", 2, 1, true, true),
+    ("String::concat", 2, 1, true, true),
+    ("array_new", 0, 1, true, true),
+    ("Array::length", 1, 1, true, true),
+    ("Array::get", 2, 1, true, true),
+    ("Array::push", 2, 0, true, true),
+    ("Array::push_all", 2, 0, true, true),
+    ("Array::set", 3, 0, true, true),
+    ("Double::to_int", 1, 1, true, true),
+    ("Int::to_double", 1, 1, true, true),
+    ("String::char_code_at", 2, 1, true, true),
+    ("String::from_char_code", 1, 1, true, true),
+    ("String::substring", 3, 1, true, true),
+    ("Array::truncate", 2, 0, true, true),
+    ("String::join", 2, 1, true, true),
+    ("eq", 2, 1, true, true),
+    ("String::ends_with", 2, 1, true, true),
+    ("String::last_index_of", 2, 1, true, true),
+    ("String::index_of", 2, 1, true, true),
+    ("String::contains", 2, 1, true, true),
+    ("String::starts_with", 2, 1, true, true),
+    ("String::split", 2, 1, true, true),
+    ("String::trim", 1, 1, true, true),
+    ("selfhost_sources", 0, 1, true, false),
+    ("ArrayBuilder::new", 0, 1, true, true),
+    ("ArrayBuilder::push", 2, 0, true, true),
+    ("ArrayBuilder::freeze", 1, 1, true, true),
+    ("Array::slice", 3, 1, true, true),
+    ("Array::concat", 2, 1, true, true),
+    ("Bytes::new", 0, 1, true, true),
+    ("Bytes::from_array", 1, 1, true, true),
+    ("Bytes::to_array", 1, 1, true, true),
+    ("Bytes::length", 1, 1, true, true),
+    ("Bytes::get", 2, 1, true, true),
+    ("Bytes::set", 3, 0, true, true),
+    ("Bytes::push", 2, 0, true, true),
+    ("Bytes::append", 2, 0, true, true),
+    ("Bytes::concat", 2, 1, true, true),
+    ("Bytes::slice", 3, 1, true, true),
+    ("Double::to_i64_bits", 1, 1, true, true),
+    ("__to_string", 1, 1, true, true),
+    ("__rc_drop", 1, 0, true, false),
+    ("__rc_alloc", 1, 1, true, false),
+    ("__heap_grow_check", 0, 0, true, false),
+    ("not", 1, 1, false, true),
+    ("Bytes::blit", 4, 0, false, true),
+    ("Bytes::fill", 3, 0, false, true),
+    ("Double::from_i64_bits", 1, 1, false, true),
+    ("Double::to_float", 1, 1, false, true),
+    ("Float::to_double", 1, 1, false, true),
+    ("Char::to_int", 1, 1, false, true),
+    ("Char::from_int", 1, 1, false, true),
+    ("Int::to_float", 1, 1, false, true),
+    ("FixedArray::make", 2, 1, false, true),
+    ("FixedArray::length", 1, 1, false, true),
+    ("FixedArray::get", 2, 1, false, true),
+    ("FixedArray::set", 3, 0, false, true),
+    ("FixedArray::unsafe_set", 3, 0, false, true),
+    ("FixedArray::blit", 5, 0, false, true),
+    ("StringBuilder::new", 0, 1, false, true),
+    ("StringBuilder::push", 2, 0, false, true),
+    ("StringBuilder::freeze", 1, 1, false, true),
+    ("Map::get", 2, 1, false, true),
+    ("Map::keys", 1, 1, false, true),
+    ("MapBuilder::new", 0, 1, false, true),
+    ("MapBuilder::set", 3, 0, false, true),
+    ("MapBuilder::freeze", 1, 1, false, true),
+    ("assert", 1, 0, false, true),
+    ("assert_true", 1, 0, false, true),
+    ("assert_eq", 2, 0, false, true),
+    ("println", 1, 0, false, true),
+    ("print", 1, 0, false, true),
+    ("map_has", 2, 1, false, true)
+  ]
+}
+
+// #415 B-0: assert one lane's registered (names, param_counts, returns)
+// arrays agree with the registry. Called by each backend builder right after
+// it finishes its registration pushes; throws with a named diff on any
+// drift. O(n^2) over ~100 entries at compile start — noise next to a parse.
+export let verify_lane_builtins: (String, Array[String], Array[Int], Array[Int]) -> Unit with { Error } = (lane, names, param_counts, returns) -> {
+  let is_gc = lane == "gc"
+  let reg = builtin_registry()
+  // 1. every registered name must have a matching registry row
+  let mut i = 0
+  while i < Array::length(names) {
+    let n = Array::get(names, i)
+    let mut found = false
+    let mut ri = 0
+    while ri < Array::length(reg) {
+      let (rn, rp, rr, rlin, rgc) = Array::get(reg, ri)
+      if rn == n {
+        found = true
+        let claimed = if is_gc { rgc } else { rlin }
+        if claimed {
+          ()
+        } else {
+          throw("builtin registry drift: '\{n}' is registered by the \{lane} lane but the registry says it is not in that lane's table (lib/@vibe/compiler/codegen/builtin_registry.vibe, #415)")
+        }
+        if rp == Array::get(param_counts, i) && rr == Array::get(returns, i) {
+          ()
+        } else {
+          throw("builtin registry drift: '\{n}' signature mismatch in the \{lane} lane — registry says (params=\{rp}, returns=\{rr}), lane registered (params=\{Array::get(param_counts, i)}, returns=\{Array::get(returns, i)}) (#415)")
+        }
+        ri = Array::length(reg)
+      } else {
+        ri = ri + 1
+      }
+    }
+    if found {
+      ()
+    } else {
+      throw("builtin registry drift: '\{n}' is registered by the \{lane} lane but has no row in lib/@vibe/compiler/codegen/builtin_registry.vibe (#415) — add one (and decide the other lane explicitly)")
+    }
+    i = i + 1
+  }
+  // 2. every registry row claiming this lane must actually be registered.
+  // Exemption: the linear lane registers __rc_drop/__rc_alloc only when RC is
+  // enabled (VIBE_RC), so their absence in a bump-mode build is not drift —
+  // they stay direction-1 verified (if registered, the signature must match).
+  let mut ri2 = 0
+  while ri2 < Array::length(reg) {
+    let (rn2, _, _, rlin2, rgc2) = Array::get(reg, ri2)
+    let claimed2 = (if is_gc { rgc2 } else { rlin2 }) && not(String::starts_with(rn2, "__rc_"))
+    if claimed2 {
+      let mut found2 = false
+      let mut i2 = 0
+      while i2 < Array::length(names) {
+        if Array::get(names, i2) == rn2 {
+          found2 = true
+          i2 = Array::length(names)
+        } else {
+          i2 = i2 + 1
+        }
+      }
+      if found2 {
+        ()
+      } else {
+        throw("builtin registry drift: registry claims '\{rn2}' is in the \{lane} lane's table but the lane did not register it (#415)")
+      }
+    } else {
+      ()
+    }
+    ri2 = ri2 + 1
+  }
+}

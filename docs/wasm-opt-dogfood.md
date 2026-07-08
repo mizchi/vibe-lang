@@ -1,6 +1,6 @@
 # wasm_opt dogfooding — vibe optimizer vs binaryen `wasm-opt`
 
-The size optimizer in [`vibe/wasm/wasm_opt`](../vibe/wasm/wasm_opt) is written in
+The size optimizer in [`lib/@vibe/optimizer`](../lib/@vibe/optimizer) is written in
 vibe and optimizes vibe-compiled wasm. This note records how we benchmark it
 against binaryen's `wasm-opt` and where we currently stand.
 
@@ -20,7 +20,7 @@ post-optimize hook and drive it via the node host runner:
 
 ```bash
 # 1) local-only hook in vibe/cli/selfhost.vibe: gate maybe-minify on
-#    VIBE_MINIFY_PASS (import minify_converge etc. from ../wasm/wasm_opt). DO
+#    VIBE_MINIFY_PASS (import minify_converge etc. from ../../lib/@vibe/optimizer). DO
 #    NOT COMMIT — it couples wasm_opt into the selfhost compiler (+~700 KB) and
 #    the fixed seed cannot self-compile it.
 # 2) host-build the dogfood compiler (~8s):

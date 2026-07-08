@@ -1,0 +1,253 @@
+//# Imports
+
+import ../../../../lib/@vibe/cache/header_codec.vibe {
+  parse_persistent_module_header_text, persistent_module_header_text
+}
+
+import .. / cache / persistent_cache.vibe {
+  compact_string_fingerprint, normalize_persistent_cache_text, persistent_module_header_cache_path
+}
+
+import .. / core / ast.vibe {
+  Stmt
+}
+
+import .. / module_graph_path.vibe {
+  dir_of_path, resolve_import_path_candidates
+}
+
+import .. / runtime / eval_loader {
+  collect_exports
+}
+
+import .. / syntax / lexer.vibe {
+  lex, lex_with_offsets
+}
+
+import .. / syntax / parser.vibe {
+  parse_program, parse_program_located
+}
+
+import .. / contract / index.vibe {
+  contract_facade_marker, extract_require_pins, parse_contract_program
+}
+
+//# Functions
+
+let resolve_path_fs: (String, String, String) -> String with { Fs } = (base_dir, raw_path, self_path) -> {
+  let candidates = resolve_import_path_candidates(base_dir, raw_path)
+  let mut i = 0
+  let mut found = ""
+  let mut fallback = ""
+  while i < Array::length(candidates) {
+    let candidate = Array::get(candidates, i)
+    // A directory-style import from a same-named facade file resolves its
+    // plain-file candidate to the IMPORTING file itself (`export ./codegen`
+    // inside codegen.vibe -> codegen.vibe): a self-dep is never meant, it
+    // only manufactures "type_db: import cycle detected". Skip it so the
+    // probe falls through to <dir>/index.vibe(i).
+    if candidate == self_path {
+      ()
+    } else {
+      if fallback == "" {
+        fallback = candidate
+      } else {
+        ()
+      }
+      if found == "" && Fs::exists(candidate) {
+        found = candidate
+      } else {
+        ()
+      }
+    }
+    i = i + 1
+  }
+  if found == "" {
+    if fallback == "" {
+      Array::get(candidates, 0)
+    } else {
+      fallback
+    }
+  } else {
+    found
+  }
+}
+
+let is_special_bundle_path: (String) -> Bool = (path) -> {
+  String::ends_with(path, "selfhost_sources_bundle.vibe") || String::ends_with(path, "selfhost_cli_adapter_bundle.vibe") || String::ends_with(path, "selfbuild_runtime_entry_bundle.vibe")
+}
+
+let special_bundle_header: (String) -> Option[(Array[String], Array[String])] = (path) -> {
+  if String::ends_with(path, "selfhost_sources_bundle.vibe") {
+    Some((Array::slice([
+      ""
+    ], 0, 0), [
+      "selfhost_sources",
+      "selfhost_source_groups"
+    ]))
+  } else if String::ends_with(path, "selfhost_cli_adapter_bundle.vibe") {
+    Some((Array::slice([
+      ""
+    ], 0, 0), [
+      "selfhost_cli_adapter_sources",
+      "selfhost_cli_adapter_source_groups",
+      "selfhost_cli_adapter_ordered_sources",
+      "selfhost_cli_adapter_merged_source",
+      "selfhost_cli_adapter_module_source"
+    ]))
+  } else if String::ends_with(path, "selfbuild_runtime_entry_bundle.vibe") {
+    Some((Array::slice([
+      ""
+    ], 0, 0), [
+      "selfbuild_runtime_entry_source"
+    ]))
+  } else {
+    None
+  }
+}
+
+let collect_import_deps_from_stmts: (Array[Stmt], String, String) -> Array[String] with { Fs } = (stmts, base_dir, self_path) -> {
+  let deps = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(raw_path, _) => Array::push(deps, resolve_path_fs(base_dir, raw_path, self_path)),
+      SReExport(raw_path, _) => Array::push(deps, resolve_path_fs(base_dir, raw_path, self_path)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  deps
+}
+
+// #730: sibling implementation files of a contract package, as raw import
+// spellings ("./<name>"). Used when an index.vibei declares NO implementation
+// imports: explicit `import ./impl.vibe {}` lines win when present (their
+// spelling is part of the package hash), discovery applies otherwise.
+// Fs::readdir returns names byte-sorted by the host, so facade order, hash
+// order, and dep order are deterministic. index.vibe cannot appear among the
+// siblings — ingestion rejects index.vibe + index.vibei coexistence first.
+export let contract_sibling_impl_raws: (String) -> Array[String] with { Error, Fs } = (dir) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let names = Fs::readdir(dir)
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    if String::ends_with(name, ".vibe") {
+      Array::push(out, String::concat("./", name))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+export let load_or_parse_module_header_fs_impl: (String, String, Int) -> (Array[String], Array[String], Int) with { Error, Fs } = (path, source, parse_count) -> {
+  let cache_path = persistent_module_header_cache_path(path, compact_string_fingerprint(source))
+  if Fs::exists(cache_path) {
+    let parsed = parse_persistent_module_header_text(normalize_persistent_cache_text(Fs::read_file(cache_path)))
+    (parsed.0, parsed.1, parse_count)
+  } else {
+    // #708: dispatch on `is_special_bundle_path` (a plain Bool) rather than
+    // matching `special_bundle_header(path)`'s Option result directly here,
+    // and never nest the `Some((deps, exports))` tuple-in-option pattern in
+    // the same match as the `None` arm's parse call. A compiler that is
+    // itself self-hosted under RC traps ("wasm unreachable" in `tk_name`,
+    // reached via `parse_stmt`) reading a corrupted Token tag when
+    // `load_or_parse_module_header_fs_impl` is compiled with the call chain
+    // that reaches `tk_name` (lex_with_offsets/parse_program_located, or
+    // even the plain lex/parse_program pair) sitting inside ONE arm of a
+    // `match` on `special_bundle_header(path)`'s `Option` result — even
+    // though that arm is never taken for ordinary (non-bundle-file) input.
+    // Splitting the dispatch into this Bool `if` (special_bundle_header is
+    // then only ever called, and only ever `match`ed, inside the branch that
+    // does NOT also reach the parser) reproducibly avoids the trap for the
+    // simplest repro. NOT a full fix for #708: a structurally similar crash
+    // still reproduces one level deeper (`parse_type_impl`, reached once the
+    // input has a type annotation) -- root cause remains uncharacterized, and
+    // this workaround likely needs to be repeated at that/other call sites.
+    // #753: an already-desugared facade can reach this parse under its
+    // .vibei path (type_db re-reads COLLECTED sources, and collection
+    // replaces a contract's text with its facade). A facade is ordinary
+    // program syntax — re-parsing it as contract grammar mis-reads its
+    // surface (a facade with only type defs has zero impl imports, which
+    // would trigger sibling auto-discovery below and pull `_test.vibe`
+    // neighbors into the package's dep set — "import cycle detected" for
+    // any `import .` test). Route it to the ordinary branch instead.
+    let is_contract_source = String::ends_with(path, ".vibei") && !String::starts_with(source, contract_facade_marker)
+    let header_result = if is_contract_source {
+      // #740 fallout: a .vibei contract is not ordinary program syntax
+      // (bodyless fn/type declarations), so the full-program parse below
+      // threw "expected = but got type". Only the COLD-cache lane reaches
+      // this parse (warm runs read the cached header), which is why it
+      // survived until the whole-graph cold repro. Parse with the contract
+      // grammar instead: deps come from the implementation imports, the
+      // export surface from decls + opaques + transparent type stmts.
+      let (_, pin_blanked) = extract_require_pins(source)
+      let (cdecls, copaques, cextra) = parse_contract_program(lex(pin_blanked))
+      let cexports = collect_exports(cextra)
+      let mut cdi = 0
+      while cdi < Array::length(cdecls) {
+        let (cdname, _) = Array::get(cdecls, cdi)
+        Array::push(cexports, cdname)
+        cdi = cdi + 1
+      }
+      let mut coi = 0
+      while coi < Array::length(copaques) {
+        let (coname, _) = Array::get(copaques, coi)
+        Array::push(cexports, coname)
+        coi = coi + 1
+      }
+      // #730: a contract with no implementation imports auto-discovers its
+      // siblings — those files are deps of the header too, or an impl edit
+      // would not invalidate this cache entry.
+      let cdeps = collect_import_deps_from_stmts(cextra, dir_of_path(path), path)
+      let cdeps2 = if Array::length(cdeps) == 0 {
+        let craws = contract_sibling_impl_raws(dir_of_path(path))
+        let resolved = Array::slice([
+          ""
+        ], 0, 0)
+        let mut cri = 0
+        while cri < Array::length(craws) {
+          Array::push(resolved, resolve_path_fs(dir_of_path(path), Array::get(craws, cri), path))
+          cri = cri + 1
+        }
+        resolved
+      } else {
+        cdeps
+      }
+      (cdeps2, cexports, parse_count + 1)
+    } else if is_special_bundle_path(path) {
+      match special_bundle_header(path) {
+        Some(pair) => {
+          let deps = pair.0
+          let exports = pair.1
+          (deps, exports, parse_count)
+        },
+        None => (Array::slice([
+          ""
+        ], 0, 0), Array::slice([
+          ""
+        ], 0, 0), parse_count)
+      }
+    } else {
+      let (tokens, starts, _ends) = lex_with_offsets(source)
+      let stmts = handle {
+        parse_program_located(tokens, starts, source)
+      } with Error {
+        Throw(msg) => throw(String::concat(path, String::concat(": ", msg)))
+      }
+      (collect_import_deps_from_stmts(stmts, dir_of_path(path), path), collect_exports(stmts), parse_count + 1)
+    }
+    let deps = header_result.0
+    let exports = header_result.1
+    let next_parse_count = header_result.2
+    Fs::write_file(cache_path, persistent_module_header_text(deps, exports))
+    (deps, exports, next_parse_count)
+  }
+}

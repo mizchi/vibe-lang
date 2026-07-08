@@ -1,0 +1,3000 @@
+//# Imports
+
+import .. / .. / core {
+  Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_buf, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
+}
+
+import .. / .. / desugar_trait_dict.vibe {
+  desugar_trait_dicts
+}
+
+import .. / .. / normalize {
+  lift_match_scrutinees, uniquify_shadowed_bindings
+}
+
+import .. / .. / syntax / import_alias_rewrite.vibe {
+  rewrite_top_level_fn_alias_refs
+}
+
+import .. / .. / perceus {
+  PerceusAction, build_perceus_plan, build_perceus_plan_with_params, compute_borrow_returning_names, compute_scalar_returning_names, elaborate_heap_params, pa_is_alias_dup, pa_is_drop, pa_is_dup, param_is_heap_in_body
+}
+
+import .. / builtin_bodies {
+  gen_arr_concat_body, gen_arr_get_body, gen_arr_len_body, gen_arr_new_body, gen_arr_push_all_body, gen_arr_push_body, gen_arr_set_body, gen_arr_slice_body, gen_arr_truncate_body, gen_bytes_append_body, gen_bytes_concat_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_len_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body, gen_eq_body, gen_rc_alloc_body, gen_rc_drop_body, gen_selfhost_sources_proper_body, gen_selfhost_sources_stub_body, gen_simd_scan_alnum_body, gen_simd_skip_ws_body, gen_str_char_code_at_body, gen_str_concat_body, gen_str_eq_body, gen_str_lex_diff_body, gen_str_from_char_code_body, gen_str_len_body, gen_str_substring_body, gen_string_contains_body, gen_string_ends_with_body, gen_string_index_of_body, gen_string_join_body, gen_string_last_index_of_body, gen_string_split_body, gen_string_starts_with_body, gen_string_trim_body, static_arr_get_body, static_arr_len_body, static_arr_set_body, static_arr_truncate_body, static_double_to_int_body, static_fs_stub_body, static_fs_write_bytes_stub_body, static_identity_body, static_int_to_double_body, static_print_i64_body, static_print_str_body, static_str_char_code_at_body, static_str_eq_body, static_str_len_body
+}
+
+import .. / builtin_registry.vibe {
+  verify_lane_builtins
+}
+
+import .. / common_analysis {
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, scope_tail_proj_root, stmts_contain_exceptions
+}
+
+import .. / common_base {
+  rc_shadow_reserve,
+  CompileCtx, CovState, CtorTable, DbgProv, FuncTable, LambdaTable, StrTable, agg_info_of_type_expr, compute_agg_returning, emit_rc_dup_guarded, empty_dbg_prov, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, fn_type_param_types, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, get_slet_type, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+}
+
+import .. / common_extractors {
+  array_contains_str, build_newline_offsets, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_earray_elems, get_eassign_body, get_eassign_name, get_eassign_val, get_eassignop_body, get_eassignop_name, get_eassignop_op, get_eassignop_val, get_ebinop_lhs, get_ebinop_rhs, get_ebool_value, get_ecall_args, get_ecall_callee, get_efloat_value, get_efn_params, get_eforin_body, get_eforin_iter, get_eforin_name, get_eident_name, get_eint_value, get_eletmut_body, get_eletmut_name, get_eletmut_val, get_eletrec_body, get_eletrec_name, get_eletrec_val, get_eseq_first, get_eseq_second, get_estring_value, get_ethrow_expr, get_etuple_elems, get_eunaryop_expr, get_eunaryop_op, get_ewhile_body, get_ewhile_cond, get_match_arms, get_match_scrutinee, get_pbind_name, get_pbool_value, get_pctor_args, get_pctor_name, get_pint_value, get_pstring_value, get_ptuple_pats, get_slet_export, str_table_lookup
+}
+
+import .. / expr {
+  compile_expr
+}
+
+import .. / wasm_emit {
+  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_full, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_heap_memory_grow_check, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i64_store, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_table_section_funcref, emit_type_section, emit_type_section_multi, emit_vibe_abi_custom_section, emit_function_name_section, string_to_data
+}
+
+import ./linked_helpers.vibe {
+  stmts_use_builtin
+}
+
+//# Functions
+
+let wasm_page_size = 65536
+
+let lc_fresh_int_array: () -> Array[Int] = () -> {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+let lc_fresh_bool_array: () -> Array[Bool] = () -> {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+let lc_fresh_bytes_array: () -> Array[Bytes] = () -> {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+let lc_fresh_string_array: () -> Array[String] = () -> {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+let lc_fresh_expr_array: () -> Array[Expr] = () -> {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+
+let lc_fresh_string_matrix: () -> Array[Array[String]] = () -> {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+let gen_heap_grow_check_body: () -> Bytes = () -> {
+  let b = bytebuf_new()
+  emit_heap_memory_grow_check(b)
+  b
+}
+
+let default_wasi_memory_min_pages = 64
+
+export let wasi_memory_min_pages_for_heap: (Int) -> Int = (heap_start) -> {
+  let needed_pages = (heap_start + wasm_page_size - 1) / wasm_page_size
+  if needed_pages > default_wasi_memory_min_pages {
+    needed_pages
+  } else {
+    default_wasi_memory_min_pages
+  }
+}
+
+export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool, Bool, DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, prov) -> {
+  // Method-bearing-trait dictionary passing (#641 PR-3). Universal codegen
+  // convergence point — runs here on the fully merged program before generic
+  // type params are stripped (just below). No-op unless a method-bearing trait
+  // is declared, and idempotent if an earlier pipeline stage already desugared.
+  desugar_trait_dicts(stmts)
+  // Top-level `let f = g` function aliases: retarget references to the final
+  // EFn def so calls do not route through the 0-param thunk registration
+  // below (invalid wasm for any call arity). See import_alias_rewrite.vibe.
+  rewrite_top_level_fn_alias_refs(stmts)
+  // #707: functions whose entire body is transitively a tail-call to a
+  // borrow-returning builtin (Array::get/Map::get/__index) -- e.g. a thin
+  // `peek(toks, pos) -> Array::get(toks, pos)` wrapper. Computed once over the
+  // whole merged program and threaded into every function's Perceus plan so a
+  // `let v = peek(...)` binding (including the match-scrutinee-lift's
+  // `let __m_scrut = peek(...)`, see normalize/index.vibe) is recognized the
+  // same as a direct `let v = Array::get(...)` one.
+  let lc_borrow_ret_names = compute_borrow_returning_names(stmts)
+  // #710: see CompileCtx.scalar_ret_names' doc comment (common_base/index.vibe).
+  let lc_scalar_ret_names = compute_scalar_returning_names(stmts)
+  let fn_names_list = lc_fresh_string_array()
+  let fn_param_counts = lc_fresh_int_array()
+  let fn_needs_env_list = lc_fresh_bool_array()
+  let fn_stmt_indices = lc_fresh_int_array()
+  let thunk_names_list = lc_fresh_string_array()
+  let const_int_names_list = lc_fresh_string_array()
+  let const_int_values_list = lc_fresh_int_array()
+  let export_fn_names = lc_fresh_string_array()
+  let export_fn_user_indices = lc_fresh_int_array()
+  let test_fn_names = lc_fresh_string_array()
+  let empty_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let empty_bounds = Array::slice([
+    ("", Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let empty_params = Array::slice([
+    ("", None)
+  ], 0, 0)
+  let mut pi = 0
+  while pi < Array::length(stmts) {
+    match Array::get(stmts, pi) {
+      STest(tname, tbody) => {
+        let test_fn = String::concat("__test_", tname)
+        Array::push(test_fn_names, test_fn)
+        Array::set(stmts, pi, SLet(false, false, test_fn, None, EFn(empty_tp, empty_bounds, empty_params, None, None, ESeq(tbody, EInt(0)))))
+      },
+      SBench(bname, bbody) => {
+        let bench_fn = String::concat("__bench_", bname)
+        Array::push(test_fn_names, bench_fn)
+        Array::set(stmts, pi, SLet(false, false, bench_fn, None, EFn(empty_tp, empty_bounds, empty_params, None, None, ESeq(bbody, EInt(0)))))
+      },
+      SLet(sl_exp, sl_rec, sl_name, sl_ann, sl_expr) => match sl_expr {
+        EFn(tparams, _, params, ret, eff, body) => if Array::length(tparams) > 0 {
+          Array::set(stmts, pi, SLet(sl_exp, sl_rec, sl_name, sl_ann, EFn(empty_tp, empty_bounds, params, ret, eff, body)))
+        }
+        ,
+        _ => ()
+      },
+      _ => ()
+    }
+    pi = pi + 1
+  }
+  if Array::length(test_fn_names) > 0 {
+    let mut has_entry = false
+    let mut ei = 0
+    while ei < Array::length(stmts) {
+      match Array::get(stmts, ei) {
+        SLet(is_exp, _, name, _, _) => if is_exp && name == entry_name {
+          has_entry = true
+        },
+        _ => ()
+      }
+      ei = ei + 1
+    }
+    if !has_entry {
+      ()
+    }
+  }
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    if is_slet(stmt) {
+      let name = get_slet_name(stmt)
+      let expr = get_slet_expr(stmt)
+      let is_export = get_slet_export(stmt)
+      let user_idx = Array::length(fn_names_list)
+      // #715: `expr_tag(expr)` hoisted out of the `else` branch below and
+      // computed here, unconditionally -- so it (like `is_efn(expr)` above)
+      // contributes to `expr`'s always-consumed prefix instead of only being
+      // paid for on the `else` path. This alone still leaves the `else`
+      // branch's own nested if asymmetric (`get_eint_value`=1 use vs the
+      // thunk fallback's 0), so the thunk fallback below also aliases `expr`
+      // once (`let __sf_thunk_expr = expr`) to match. With both asymmetries
+      // resolved, `then` and `else` each consume `expr` the same number of
+      // times, so pc_emit's EIf MIN-merge (#705) lands on the SAME remaining
+      // count regardless of which branch a given statement actually takes --
+      // previously the merge could permanently assume more consumption than
+      // a commonly-taken branch (int-constant or thunk statements, which are
+      // NOT rare like a false `is_efn` check on a real function body) really
+      // performed, skipping the loop-body scope-end drop and leaking `expr`
+      // (a heap Expr node) on every such statement.
+      let __sf_etag = expr_tag(expr)
+      if is_efn(expr) {
+        let params = get_efn_params(expr)
+        Array::push(fn_names_list, name)
+        Array::push(fn_param_counts, Array::length(params))
+        Array::push(fn_needs_env_list, true)
+        Array::push(fn_stmt_indices, i)
+      } else {
+        if (__sf_etag == 0) && !is_export {
+          Array::push(const_int_names_list, name)
+          Array::push(const_int_values_list, get_eint_value(expr))
+        } else {
+          let __sf_thunk_expr = expr
+          Array::push(fn_names_list, name)
+          Array::push(fn_param_counts, 0)
+          Array::push(fn_needs_env_list, true)
+          Array::push(fn_stmt_indices, i)
+          Array::push(thunk_names_list, name)
+        }
+      }
+      if is_export || library_mode {
+        Array::push(export_fn_names, name)
+        Array::push(export_fn_user_indices, user_idx)
+      }
+    }
+    i = i + 1
+  }
+  let ctor_names_list = lc_fresh_string_array()
+  Array::push(ctor_names_list, "None")
+  Array::push(ctor_names_list, "Some")
+  let ctor_tags_list = lc_fresh_int_array()
+  Array::push(ctor_tags_list, 0)
+  Array::push(ctor_tags_list, 1)
+  let ctor_field_counts_list = lc_fresh_int_array()
+  Array::push(ctor_field_counts_list, 0)
+  Array::push(ctor_field_counts_list, 1)
+  let ctor_type_names_list = lc_fresh_string_array()
+  Array::push(ctor_type_names_list, "Option")
+  Array::push(ctor_type_names_list, "Option")
+  let mut type_index = 1
+  let mut ei2 = 0
+  while ei2 < Array::length(stmts) {
+    match Array::get(stmts, ei2) {
+      SEnum(_, ename, _, variants, _) => {
+        type_index = type_index + 1
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, vfields) = Array::get(variants, vi)
+          Array::push(ctor_names_list, vname)
+          Array::push(ctor_tags_list, (type_index<<16)|vi)
+          Array::push(ctor_field_counts_list, Array::length(vfields))
+          Array::push(ctor_type_names_list, ename)
+          vi = vi + 1
+        }
+        0
+      },
+      SStruct(_, sname, sfields, _, _) => {
+        type_index = type_index + 1
+        Array::push(ctor_names_list, sname)
+        Array::push(ctor_tags_list, type_index<<16)
+        Array::push(ctor_field_counts_list, Array::length(sfields))
+        Array::push(ctor_type_names_list, sname)
+        0
+      },
+      _ => 0
+    }
+    ei2 = ei2 + 1
+  }
+  let struct_names = lc_fresh_string_array()
+  let struct_field_names = lc_fresh_string_matrix()
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SStruct(_, sname, sfields, _, _) => {
+        Array::push(struct_names, sname)
+        let fnames = lc_fresh_string_array()
+        let mut sfi = 0
+        while sfi < Array::length(sfields) {
+          let (fname, _) = Array::get(sfields, sfi)
+          Array::push(fnames, fname)
+          sfi = sfi + 1
+        }
+        Array::push(struct_field_names, fnames)
+        ()
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  // #724 round 2: (fn name -> declared aggregate return shape) table so
+  // `let a = f(..)` bindings participate in structural `==` (see
+  // compute_agg_returning in common_base).
+  let lc_agg_ret_names = lc_fresh_string_array()
+  let lc_agg_ret_infos = lc_fresh_int_array()
+  compute_agg_returning(stmts, CtorTable::{
+    names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+  }, lc_agg_ret_names, lc_agg_ret_infos)
+  let num_user_funcs = Array::length(fn_names_list)
+  if num_user_funcs == 0 {
+    throw("no functions found to compile")
+  }
+  let mut entry_user_idx = -1
+  let mut ei = 0
+  while ei < num_user_funcs {
+    if Array::get(fn_names_list, ei) == entry_name {
+      entry_user_idx = ei
+    }
+    ei = ei + 1
+  }
+  let str_strs = collect_strings_stmts(stmts)
+  let rec add_map_keys_expr: (Expr) -> Unit = (e) -> {
+    match e {
+      EMap(fields) => {
+        let mut mi = 0
+        while mi < Array::length(fields) {
+          let (key, val) = Array::get(fields, mi)
+          if !array_contains_str(str_strs, key) {
+            Array::push(str_strs, key)
+          }
+          add_map_keys_expr(val)
+          mi = mi + 1
+        }
+      },
+      EStringInterp(parts) => {
+        let mut pi3 = 0
+        while pi3 < Array::length(parts) {
+          if pi3 % 2 == 0 {
+            let part = Array::get(parts, pi3)
+            if String::length(part) > 0 && !array_contains_str(str_strs, part) {
+              Array::push(str_strs, part)
+            }
+          }
+          pi3 = pi3 + 1
+        }
+      },
+      ELet(_, val, body) => {
+        add_map_keys_expr(val); add_map_keys_expr(body)
+      },
+      ELetMut(_, val, body) => {
+        add_map_keys_expr(val); add_map_keys_expr(body)
+      },
+      ELetRec(_, val, body) => {
+        add_map_keys_expr(val); add_map_keys_expr(body)
+      },
+      ESeq(a, b) => {
+        add_map_keys_expr(a); add_map_keys_expr(b)
+      },
+      EIf(c, t, e) => {
+        add_map_keys_expr(c); add_map_keys_expr(t); add_map_keys_expr(e)
+      },
+      EFn(_, _, _, _, _, body) => add_map_keys_expr(body),
+      EHandle(body, _) => add_map_keys_expr(body),
+      ECall(callee, args, _) => {
+        add_map_keys_expr(callee)
+        let mut ai = 0
+        while ai < Array::length(args) {
+          add_map_keys_expr(Array::get(args, ai))
+          ai = ai + 1
+        }
+      },
+      _ => ()
+    }
+  }
+  let mut __mk = 0
+  while __mk < Array::length(stmts) {
+    match Array::get(stmts, __mk) {
+      SLet(_, _, _, _, expr) => add_map_keys_expr(expr),
+      STest(_, expr) => add_map_keys_expr(expr),
+      SBench(_, expr) => add_map_keys_expr(expr),
+      _ => ()
+    }
+    __mk = __mk + 1
+  }
+  // Always seed the empty string so codegen that materialises "" (e.g.
+  // StringBuilder::freeze's join separator, Stream::to_string's accumulator)
+  // can rely on str_table_lookup("") succeeding even when the source never
+  // mentions "" literally.
+  if !array_contains_str(str_strs, "") {
+    Array::push(str_strs, "")
+  }
+  let src_str_base = Array::length(str_strs)
+  let num_src_pairs = Array::length(selfhost_srcs)
+  let mut __src_i = 0
+  while __src_i < num_src_pairs {
+    let (__src_path, __src_content) = Array::get(selfhost_srcs, __src_i)
+    Array::push(str_strs, __src_path)
+    Array::push(str_strs, __src_content)
+    __src_i = __src_i + 1
+  }
+  let num_strings = Array::length(str_strs)
+  let data_base = 64
+  let str_offsets = lc_fresh_int_array()
+  let str_lengths = lc_fresh_int_array()
+  let mut str_pos = data_base
+  let mut si = 0
+  while si < num_strings {
+    let s = Array::get(str_strs, si)
+    let slen = String::length(s)
+    Array::push(str_offsets, str_pos)
+    Array::push(str_lengths, slen)
+    str_pos = str_pos + slen
+    si = si + 1
+  }
+  let heap_start = ((str_pos + 7) / 8) * 8
+  let effect_names_list = lc_fresh_string_array()
+  let effect_op_keys_list = lc_fresh_string_array()
+  let effect_op_arities_list = Array::slice([
+    0
+  ], 0, 0)
+  let mut eff_collect_i = 0
+  while eff_collect_i < Array::length(stmts) {
+    match Array::get(stmts, eff_collect_i) {
+      SEffectDef(_, eff_name, _, ops) => {
+        if eff_name != "Error" && !array_contains_str(effect_names_list, eff_name) {
+          Array::push(effect_names_list, eff_name)
+        } else {
+          ()
+        }
+        let mut op_i = 0
+        while op_i < Array::length(ops) {
+          let (op_name, op_params, _) = Array::get(ops, op_i)
+          Array::push(effect_op_keys_list, String::concat(String::concat(eff_name, "::"), op_name))
+          Array::push(effect_op_arities_list, Array::length(op_params))
+          op_i = op_i + 1
+        }
+      },
+      _ => ()
+    }
+    eff_collect_i = eff_collect_i + 1
+  }
+  // Per-effect region stride (#553). Each effect tag gets a reserved region
+  // below the heap frontier holding the replay-handler control words (+0
+  // perform counter, +8 resume-memo count) and the resume-memo array (+16 +
+  // k*8). The replay model stores one i64 per `perform` resolved within a
+  // `handle`, so the region is O(performs). At 8192 B (1022 entries) a loop
+  // performing more than ~1022-2046 times overflowed the region into the live
+  // heap, where the growing memo chased and clobbered the reused payload-tuple
+  // free block (~8 B/iter past the threshold, ADR-0055). 131072 B (16382
+  // entries) covers the full verify regime (N2=11000) with headroom; programs
+  // performing more than ~16K times within one handle still spill (a hard
+  // bound of the replay-based handler — unbounded performs need a
+  // continuation-based handler). MUST stay in sync with the `* 131072` strides
+  // in compile_call.vibe (perform) and compile_expr_tail6.vibe (handler arm).
+  let eff_reserve = (Array::length(effect_names_list) + 1) * 131072
+  // Function-level coverage (gated by `coverage`): a 1-byte-per-user-function
+  // hit bitmap placed in a dedicated reserve ABOVE the effect regions and BELOW
+  // the heap frontier, so it never collides with effect words or the live heap.
+  // `cov_base` is a compile-time-constant address baked into each function's
+  // prologue store. When coverage is off, cov_reserve is 0 and codegen output is
+  // byte-identical to the normal build (the self-host fixpoint is unaffected).
+  let cov_count = num_user_funcs
+  let cov_base = heap_start + eff_reserve
+  let cov_reserve = if coverage {
+    ((cov_count + 7) / 8) * 8
+  } else {
+    0
+  }
+  // #cov branch coverage: a second 1-byte-per-branch hit region directly above
+  // the function-hit region. Branch ids are assigned sequentially during codegen
+  // (CovState.next), so the count is not known up front — reserve a fixed cap.
+  // 65536 branches is generous headroom (the whole compiler has a few thousand).
+  // Off => branch_reserve is 0 and the layout/codegen is byte-identical.
+  let cov_branch_cap = 65536
+  let cov_branch_base = cov_base + cov_reserve
+  let cov_branch_reserve = if coverage {
+    cov_branch_cap
+  } else {
+    0
+  }
+  // Function-call execution trace (debugger / DAP P1 groundwork, gated by
+  // `debug_trace`). A dedicated region directly above the coverage regions and
+  // below the heap frontier holds a 4-byte counter cell followed by a fixed-cap
+  // log of i32 slots. Each user function's entry, in debug mode, appends its
+  // own user index to the log (counter-bounded). A `vibe.trace` custom section
+  // records the layout + function names so the runner can dump the entry
+  // sequence. Off => trace_reserve is 0 and the layout/codegen is byte-identical
+  // to a normal build (the self-host fixpoint is unaffected).
+  let trace_cap = 4096
+  let trace_counter_addr = cov_branch_base + cov_branch_reserve
+  let trace_log_base = trace_counter_addr + 4
+  let trace_reserve = if debug_trace {
+    4 + trace_cap * 4
+  } else {
+    0
+  }
+  // debugger argument inspection (DAP P2, gated by `debug_break`). A dedicated
+  // region directly above the trace region holds a 4-byte count cell followed by
+  // a fixed-cap array of i64 slots. At each user function entry, in break mode,
+  // the function's i64 parameters are spilled here (capped at dbgargs_cap) and
+  // the count cell is set, BEFORE calling the `vibe::dbg_break` host hook. The
+  // hook reads them out of guest memory and prints `args: [...]`. A
+  // `vibe.dbgargs` custom section publishes the two addresses to the runner.
+  // Off => dbgargs_reserve is 0 and the layout/codegen is byte-identical to a
+  // normal build (the self-host fixpoint is unaffected).
+  let dbgargs_cap = 16
+  let dbgargs_count_addr = trace_counter_addr + trace_reserve
+  let dbgargs_base = dbgargs_count_addr + 8
+  let dbgargs_reserve = if debug_break {
+    8 + dbgargs_cap * 8
+  } else {
+    0
+  }
+  let cov_state = CovState::{
+    enabled: coverage,
+    base: cov_branch_base,
+    cap: cov_branch_cap,
+    next: [
+      0
+    ],
+    cur_fn: [
+      0
+    ],
+    owners: ArrayBuilder::freeze(ArrayBuilder::new())
+  }
+  let need_env_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::get")
+  let need_env_args_len_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_len")
+  let need_env_args_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_get")
+  let need_fs_read_file_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::read_file")
+  let need_fs_exists_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::exists")
+  let need_fs_stat_token_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token")
+  let need_fs_write_file_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::write_file")
+  let need_fs_write_bytes_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes")
+  // #632: `Fs::read_bytes(path) -> Bytes` — the binary-exact read counterpart of
+  // Fs::write_bytes, a `vibe.fs_read_bytes (i64) -> i64` host import (type 3,
+  // same shape as fs_read_file). Gated on use so non-users reserve no import
+  // (fixpoint-safe). Lets the persistent artifact cache store/load wasm raw.
+  let need_fs_read_bytes_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::read_bytes")
+  // #729/#730: `Fs::readdir(path) -> Array[String]` — a `vibe.fs_read_dir
+  // (i64) -> i64` host import (type 3, same packed-string shape as
+  // fs_read_file: the host returns the byte-sorted entry NAMES "\n"-joined as
+  // ONE string, no host-side array building). compile_call lowers the
+  // Array[String] surface to `String::split` over that string. Gated on use
+  // (fixpoint-safe). Unblocks contract-package sibling auto-discovery and the
+  // global store walk.
+  let need_fs_readdir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::readdir")
+  let need_profiler_now_us_builtin = stmts_use_builtin(stmts, fn_names_list, "Profiler::now_us")
+  // `sleep(ms)` (Async): a `vibe.sleep (i64) -> ()` host import. The host
+  // implements it as an async function so the guest fiber genuinely
+  // suspends/resumes (docs/spec/wasi-p3-async.md §2.3, examples/async_host).
+  // Gated on use, so programs without `sleep` reserve no import (fixpoint-safe).
+  let need_sleep_builtin = stmts_use_builtin(stmts, fn_names_list, "sleep")
+  // `Stdin::read_char() -> Int`: a value-returning `vibe.stdin_read_char () ->
+  // i64` host import. Implemented async by the host (it can suspend the guest
+  // until a char is available), so this is the data-consuming analog of `sleep`
+  // — the shape of a host async source (HTTP body byte, stdin char). Gated on
+  // use (fixpoint-safe).
+  let need_stdin_read_char_builtin = stmts_use_builtin(stmts, fn_names_list, "Stdin::read_char")
+  // Process effect host imports: `sh(cmd)` runs a shell command (returns 0) and
+  // `sh_lines(cmd)` returns its stdout "\n"-joined as ONE string (same packed
+  // ABI as fs_read_dir; compile_call lowers the Array[String] surface to a
+  // String::split). Both `vibe.sh` / `vibe.sh_lines (i64) -> i64` host imports,
+  // gated on use so non-users reserve no import (fixpoint-safe). Revives the
+  // process/time/shell stdlib whose functions call these.
+  let need_sh_builtin = stmts_use_builtin(stmts, fn_names_list, "sh")
+  let need_sh_lines_builtin = stmts_use_builtin(stmts, fn_names_list, "sh_lines")
+  // Stdin/Stdout host effects for vibe/io: `Stdin::read_stream(n) -> String`
+  // (`vibe.stdin_read_stream (i64) -> i64`, value-returning like fs_read_file),
+  // `Stdout::write_stream(s) -> Unit` and `Stdout::write_char(c) -> Unit`
+  // (`vibe.stdout_write_stream` / `vibe.stdout_write_char (i64) -> ()`, void like
+  // sleep). All gated on use so non-users reserve no import (fixpoint-safe) —
+  // the compiler's own build uses none, so its bytes are unchanged. Revives the
+  // io stdlib whose read/print/println/write_char helpers call these builtins.
+  let need_stdin_read_stream_builtin = stmts_use_builtin(stmts, fn_names_list, "Stdin::read_stream")
+  let need_stdout_write_stream_builtin = stmts_use_builtin(stmts, fn_names_list, "Stdout::write_stream")
+  let need_stdout_write_char_builtin = stmts_use_builtin(stmts, fn_names_list, "Stdout::write_char")
+  // #762: `Path::ref` / `Path::resolve` both lower (compile_call) to the
+  // `resolve_path` host import — resolve a path to absolute against the process
+  // CWD. `vibe.resolve_path (i64) -> i64`, value-returning like fs_read_file,
+  // gated on either surface name so non-users reserve no import (fixpoint-safe).
+  let need_resolve_path_builtin = stmts_use_builtin(stmts, fn_names_list, "Path::ref") || stmts_use_builtin(stmts, fn_names_list, "Path::resolve")
+  let mut next_import_idx = 1
+  let env_get_import_idx = if need_env_get_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let env_args_len_import_idx = if need_env_args_len_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let env_args_get_import_idx = if need_env_args_get_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_read_file_import_idx = if need_fs_read_file_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_exists_import_idx = if need_fs_exists_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_stat_token_import_idx = if need_fs_stat_token_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_write_file_import_idx = if need_fs_write_file_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_write_bytes_import_idx = if need_fs_write_bytes_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #632: reserved immediately after fs_write_bytes; the import emission below
+  // must stay in this same order so the index matches the descriptor.
+  let fs_read_bytes_import_idx = if need_fs_read_bytes_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #729/#730: reserved immediately after fs_read_bytes; the import emission
+  // below must stay in this same order so the index matches the descriptor.
+  let fs_read_dir_import_idx = if need_fs_readdir_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let profiler_now_us_import_idx = if need_profiler_now_us_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let sleep_import_idx = if need_sleep_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let stdin_read_char_import_idx = if need_stdin_read_char_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // reserved immediately after stdin_read_char; the import emission below must
+  // stay in this same order so the index matches the descriptor.
+  let sh_import_idx = if need_sh_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let sh_lines_import_idx = if need_sh_lines_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // reserved immediately after sh_lines; the import emission below must stay in
+  // this same order so the index matches the descriptor.
+  let stdin_read_stream_import_idx = if need_stdin_read_stream_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let stdout_write_stream_import_idx = if need_stdout_write_stream_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let stdout_write_char_import_idx = if need_stdout_write_char_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // reserved immediately after stdout_write_char; the import emission below must
+  // stay in this same order so the index matches the descriptor.
+  let resolve_path_import_idx = if need_resolve_path_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // debugger breakpoint (DAP P1): in break mode emit a conditional `vibe::dbg_break`
+  // host import (() -> ()) called at each user-function entry. Default OFF, so
+  // num_imported_funcs / func_offset are unchanged for normal builds (fixpoint).
+  let dbg_break_import_idx = if debug_break {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // Interior-line breakpoints (span-arc step5): in break mode with per-file
+  // provenance, reserve a `vibe::dbg_line (i32 file_id, i32 line) -> ()` host
+  // import called at each statement boundary. Each function's line is mapped
+  // against ITS OWN source file (prov.file_nls[file_id]) so multi-file entries
+  // work. Gated on `debug_break && prov has files`, so default builds reserve
+  // nothing and stay byte-identical.
+  let dbg_line_on = debug_break && Array::length(prov.files) > 0
+  let dbg_line_import_idx = if dbg_line_on {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let linked_import_indices = lc_fresh_int_array()
+  let linked_import_names = lc_fresh_string_array()
+  let mut li_i = 0
+  while li_i < Array::length(linked_imports) {
+    let (_, lfn_name, _, _) = Array::get(linked_imports, li_i)
+    Array::push(linked_import_indices, next_import_idx)
+    Array::push(linked_import_names, lfn_name)
+    next_import_idx = next_import_idx + 1
+    li_i = li_i + 1
+  }
+  let num_imported_funcs = next_import_idx
+  let print_int_idx = num_imported_funcs
+  let print_str_idx = print_int_idx + 1
+  let str_len_idx = print_str_idx + 1
+  let str_eq_idx = str_len_idx + 1
+  let str_concat_idx = str_eq_idx + 1
+  let arr_new_idx = str_concat_idx + 1
+  let arr_len_idx = arr_new_idx + 1
+  let arr_get_idx = arr_len_idx + 1
+  let arr_push_idx = arr_get_idx + 1
+  let arr_set_idx = arr_push_idx + 1
+  let double_to_int_idx = arr_set_idx + 1
+  let int_to_double_idx = double_to_int_idx + 1
+  let str_char_code_at_idx = int_to_double_idx + 1
+  let str_from_char_code_idx = str_char_code_at_idx + 1
+  let str_substring_idx = str_from_char_code_idx + 1
+  let identity_idx = str_substring_idx + 1
+  let arr_slice_idx = identity_idx + 1
+  let arr_concat_idx = arr_slice_idx + 1
+  let arr_truncate_idx = arr_concat_idx + 1
+  let string_join_idx = arr_truncate_idx + 1
+  let fs_read_file_stub_idx = string_join_idx + 1
+  let fs_exists_stub_idx = fs_read_file_stub_idx + 1
+  let fs_stat_token_stub_idx = fs_exists_stub_idx + 1
+  let fs_write_file_stub_idx = fs_stat_token_stub_idx + 1
+  let fs_write_bytes_stub_idx = fs_write_file_stub_idx + 1
+  let eq_idx = fs_write_bytes_stub_idx + 1
+  let string_ends_with_idx = eq_idx + 1
+  let string_last_index_of_idx = string_ends_with_idx + 1
+  let arr_push_all_idx = string_last_index_of_idx + 1
+  let string_index_of_idx = arr_push_all_idx + 1
+  let string_contains_idx = string_index_of_idx + 1
+  let string_starts_with_idx = string_contains_idx + 1
+  let string_split_idx = string_starts_with_idx + 1
+  let string_trim_idx = string_split_idx + 1
+  let selfhost_sources_idx = string_trim_idx + 1
+  let bytes_new_idx = selfhost_sources_idx + 1
+  let bytes_len_idx = bytes_new_idx + 1
+  let bytes_get_idx = bytes_len_idx + 1
+  let bytes_set_idx = bytes_get_idx + 1
+  let bytes_push_idx = bytes_set_idx + 1
+  let bytes_append_idx = bytes_push_idx + 1
+  let bytes_concat_idx = bytes_append_idx + 1
+  let bytes_slice_idx = bytes_concat_idx + 1
+  let bytes_from_array_idx = bytes_slice_idx + 1
+  let bytes_to_array_idx = bytes_from_array_idx + 1
+  let rc_drop_idx = bytes_to_array_idx + 1
+  let rc_alloc_idx = rc_drop_idx + 1
+  let heap_grow_check_idx = if enable_rc {
+    rc_alloc_idx + 1
+  } else {
+    bytes_to_array_idx + 1
+  }
+  let simd_skip_ws_idx = heap_grow_check_idx + 1
+  let simd_scan_alnum_idx = simd_skip_ws_idx + 1
+  let simd_scan_alnum_str_idx = simd_scan_alnum_idx + 1
+  let str_lex_diff_idx = simd_scan_alnum_str_idx + 1
+  let env_get_idx = if env_get_import_idx >= 0 {
+    env_get_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let env_args_len_idx = if env_args_len_import_idx >= 0 {
+    env_args_len_import_idx
+  } else {
+    fs_exists_stub_idx
+  }
+  let env_args_get_idx = if env_args_get_import_idx >= 0 {
+    env_args_get_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let fs_read_file_idx = if fs_read_file_import_idx >= 0 {
+    fs_read_file_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let fs_exists_idx = if fs_exists_import_idx >= 0 {
+    fs_exists_import_idx
+  } else {
+    fs_exists_stub_idx
+  }
+  let fs_stat_token_idx = if fs_stat_token_import_idx >= 0 {
+    fs_stat_token_import_idx
+  } else {
+    fs_stat_token_stub_idx
+  }
+  let fs_write_file_idx = if fs_write_file_import_idx >= 0 {
+    fs_write_file_import_idx
+  } else {
+    fs_write_file_stub_idx
+  }
+  let fs_write_bytes_idx = if fs_write_bytes_import_idx >= 0 {
+    fs_write_bytes_import_idx
+  } else {
+    fs_write_bytes_stub_idx
+  }
+  // #632: no dedicated stub — when read_bytes is unused the builtin index just
+  // needs SOME valid never-called slot, so reuse the fs_read_file stub (a
+  // `(i64)->i64` placeholder). The real call site only exists when the import is
+  // reserved.
+  let fs_read_bytes_idx = if fs_read_bytes_import_idx >= 0 {
+    fs_read_bytes_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  // #729/#730: like read_bytes, no dedicated stub — unused readdir reuses the
+  // fs_read_file stub (a `(i64)->i64` never-called placeholder).
+  let fs_read_dir_idx = if fs_read_dir_import_idx >= 0 {
+    fs_read_dir_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let profiler_now_us_idx = if profiler_now_us_import_idx >= 0 {
+    profiler_now_us_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // `sleep` call target: the import when reserved, else a never-called stub
+  // (the builtin is only emitted as a call when the program uses `sleep`, which
+  // is exactly when the import is reserved).
+  let sleep_idx = if sleep_import_idx >= 0 {
+    sleep_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let stdin_read_char_idx = if stdin_read_char_import_idx >= 0 {
+    stdin_read_char_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // sh / sh_lines call targets: the import when reserved, else the fs_read_file
+  // stub (a `(i64)->i64` never-called placeholder) — the real call site only
+  // exists when the import is reserved (i.e. when the program uses sh/sh_lines).
+  let sh_idx = if sh_import_idx >= 0 {
+    sh_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let sh_lines_idx = if sh_lines_import_idx >= 0 {
+    sh_lines_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  // Stdin::read_stream / Stdout::write_stream / Stdout::write_char call targets:
+  // the import when reserved, else a never-called stub (read_stream is
+  // value-returning like sh -> fs_read_file stub; the void write ops mirror
+  // sleep's fallback to env_args_len). The real call site only exists when the
+  // matching import is reserved (i.e. when the program uses io).
+  let stdin_read_stream_idx = if stdin_read_stream_import_idx >= 0 {
+    stdin_read_stream_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let stdout_write_stream_idx = if stdout_write_stream_import_idx >= 0 {
+    stdout_write_stream_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let stdout_write_char_idx = if stdout_write_char_import_idx >= 0 {
+    stdout_write_char_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // resolve_path call target: the import when reserved, else the fs_read_file
+  // stub (a `(i64)->i64` never-called placeholder — same shape).
+  let resolve_path_idx = if resolve_path_import_idx >= 0 {
+    resolve_path_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let max_builtin_func_idx = str_lex_diff_idx
+  let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
+  let func_offset = num_imported_funcs + num_generated
+  let fn_indices_list = lc_fresh_int_array()
+  let fn_returns_list = lc_fresh_int_array()
+  let mut fi = 0
+  while fi < num_user_funcs {
+    Array::push(fn_indices_list, fi + func_offset)
+    Array::push(fn_returns_list, 1)
+    fi = fi + 1
+  }
+  let builtin_names_list = lc_fresh_string_array()
+  let builtin_param_counts = lc_fresh_int_array()
+  let builtin_needs_env_list = lc_fresh_bool_array()
+  let builtin_indices_list = lc_fresh_int_array()
+  let builtin_returns_list = lc_fresh_int_array()
+  Array::push(builtin_names_list, "Env::get")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, env_get_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Env::args_len")
+  Array::push(builtin_param_counts, 0)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, env_args_len_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Env::args_get")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, env_args_get_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Fs::read_file")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_read_file_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Fs::exists")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_exists_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Fs::stat_token")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_stat_token_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Fs::write_file")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_write_file_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Fs::write_bytes")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_write_bytes_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Fs::read_bytes")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_read_bytes_idx)
+  Array::push(builtin_returns_list, 1)
+  // #729/#730: the RAW half of Fs::readdir — the direct host-import call
+  // returning the "\n"-joined names string. User code writes Fs::readdir
+  // (Array[String]); compile_call's lowering is the only caller of this name.
+  Array::push(builtin_names_list, "__fs_read_dir_raw")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_read_dir_idx)
+  Array::push(builtin_returns_list, 1)
+  // Process host imports: `sh(cmd)` (runs a shell command, returns 0) resolves
+  // directly. `sh_lines(cmd)`'s Array[String] surface is lowered by compile_call
+  // to `__sh_lines_raw` (the RAW half returning the "\n"-joined stdout) plus a
+  // String::split — same pattern as Fs::readdir / __fs_read_dir_raw above.
+  Array::push(builtin_names_list, "sh")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, sh_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "__sh_lines_raw")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, sh_lines_idx)
+  Array::push(builtin_returns_list, 1)
+  // io host effects: `Stdin::read_stream(n) -> String` resolves directly (1 i64
+  // arg, i64 return, like Fs::read_file). `Stdout::write_stream(s)` and
+  // `Stdout::write_char(c)` are void (1 i64 arg, no return, like sleep).
+  Array::push(builtin_names_list, "Stdin::read_stream")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, stdin_read_stream_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Stdout::write_stream")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, stdout_write_stream_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Stdout::write_char")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, stdout_write_char_idx)
+  Array::push(builtin_returns_list, 0)
+  // #762: resolve_path — the RAW host op behind Path::ref / Path::resolve (1 i64
+  // arg, i64 String return, like Fs::read_file). compile_call lowers both
+  // surface names to this.
+  Array::push(builtin_names_list, "resolve_path")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, resolve_path_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Profiler::now_us")
+  Array::push(builtin_param_counts, 0)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, profiler_now_us_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Profiler::NowUs")
+  Array::push(builtin_param_counts, 0)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, profiler_now_us_idx)
+  Array::push(builtin_returns_list, 1)
+  // `sleep(ms) -> Unit`: 1 i64 arg, void return (like `Fs::write_file`); the
+  // host import suspends the guest (real async).
+  Array::push(builtin_names_list, "sleep")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, sleep_idx)
+  Array::push(builtin_returns_list, 0)
+  // `Stdin::read_char() -> Int`: 0 args, i64 return (like `Profiler::now_us`);
+  // the host import returns a char asynchronously (real async data read).
+  Array::push(builtin_names_list, "Stdin::read_char")
+  Array::push(builtin_param_counts, 0)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, stdin_read_char_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "simd_skip_ws")
+  Array::push(builtin_param_counts, 3)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, simd_skip_ws_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "simd_scan_alnum")
+  Array::push(builtin_param_counts, 3)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, simd_scan_alnum_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "simd_scan_alnum_str")
+  Array::push(builtin_param_counts, 3)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, simd_scan_alnum_str_idx)
+  Array::push(builtin_returns_list, 1)
+  // #746: lexicographic compare backing String `<` `>` `<=` `>=` (desugar
+  // rewrites them to `str_lex_diff(a, b) <op> 0`; see desugar_trait_dict).
+  Array::push(builtin_names_list, "str_lex_diff")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, str_lex_diff_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "print_int")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, print_int_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "print_str")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, print_str_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "String::length")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, str_len_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "String::equals")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, str_eq_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "String::concat")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, str_concat_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "array_new")
+  Array::push(builtin_param_counts, 0)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, arr_new_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Array::length")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, arr_len_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Array::get")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, arr_get_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Array::push")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, arr_push_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Array::push_all")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, arr_push_all_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Array::set")
+  Array::push(builtin_param_counts, 3)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, arr_set_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Double::to_int")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, double_to_int_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Int::to_double")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, int_to_double_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "String::char_code_at")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, str_char_code_at_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "String::from_char_code")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, str_from_char_code_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "String::substring")
+  Array::push(builtin_param_counts, 3)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, str_substring_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Array::truncate")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, arr_truncate_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "String::join")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, string_join_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "eq")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, eq_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "String::ends_with")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, string_ends_with_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "String::last_index_of")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, string_last_index_of_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "String::index_of")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, string_index_of_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "String::contains")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, string_contains_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "String::starts_with")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, string_starts_with_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "String::split")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, string_split_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "String::trim")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, string_trim_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "selfhost_sources")
+  Array::push(builtin_param_counts, 0)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, selfhost_sources_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "ArrayBuilder::new")
+  Array::push(builtin_param_counts, 0)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, arr_new_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "ArrayBuilder::push")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, arr_push_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "ArrayBuilder::freeze")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, identity_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Array::slice")
+  Array::push(builtin_param_counts, 3)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, arr_slice_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Array::concat")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, arr_concat_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Bytes::new")
+  Array::push(builtin_param_counts, 0)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, bytes_new_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Bytes::from_array")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, bytes_from_array_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Bytes::to_array")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, bytes_to_array_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Bytes::length")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, bytes_len_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Bytes::get")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, bytes_get_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Bytes::set")
+  Array::push(builtin_param_counts, 3)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, bytes_set_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Bytes::push")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, bytes_push_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Bytes::append")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, bytes_append_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Bytes::concat")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, bytes_concat_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Bytes::slice")
+  Array::push(builtin_param_counts, 3)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, bytes_slice_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Double::to_i64_bits")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, identity_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "__to_string")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, identity_idx)
+  Array::push(builtin_returns_list, 1)
+  if enable_rc {
+    Array::push(builtin_names_list, "__rc_drop")
+    Array::push(builtin_param_counts, 1)
+    Array::push(builtin_needs_env_list, false)
+    Array::push(builtin_indices_list, rc_drop_idx)
+    Array::push(builtin_returns_list, 0)
+    Array::push(builtin_names_list, "__rc_alloc")
+    Array::push(builtin_param_counts, 1)
+    Array::push(builtin_needs_env_list, false)
+    Array::push(builtin_indices_list, rc_alloc_idx)
+    Array::push(builtin_returns_list, 1)
+  } else {
+    ()
+  }
+  Array::push(builtin_names_list, "__heap_grow_check")
+  Array::push(builtin_param_counts, 0)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, heap_grow_check_idx)
+  Array::push(builtin_returns_list, 0)
+  // #415 B-0: the static registration above must agree with the central
+  // registry (name set + params + returns, both directions). Placed BEFORE
+  // the linked_imports loop — those are user-declared effect bridges with
+  // dynamic names, not builtins.
+  verify_lane_builtins("linear", builtin_names_list, builtin_param_counts, builtin_returns_list)
+  let mut li_reg = 0
+  while li_reg < Array::length(linked_imports) {
+    let (_, lfn_name, lparams, lreturns) = Array::get(linked_imports, li_reg)
+    Array::push(builtin_names_list, lfn_name)
+    Array::push(builtin_param_counts, lparams)
+    Array::push(builtin_needs_env_list, true)
+    Array::push(builtin_indices_list, Array::get(linked_import_indices, li_reg))
+    Array::push(builtin_returns_list, lreturns)
+    li_reg = li_reg + 1
+  }
+  let mut all_fn_i = 0
+  while all_fn_i < Array::length(builtin_names_list) {
+    Array::push(fn_names_list, Array::get(builtin_names_list, all_fn_i))
+    Array::push(fn_param_counts, Array::get(builtin_param_counts, all_fn_i))
+    Array::push(fn_needs_env_list, Array::get(builtin_needs_env_list, all_fn_i))
+    Array::push(fn_indices_list, Array::get(builtin_indices_list, all_fn_i))
+    Array::push(fn_returns_list, Array::get(builtin_returns_list, all_fn_i))
+    all_fn_i = all_fn_i + 1
+  }
+  let all_fn_names_list = fn_names_list
+  let all_fn_param_counts = fn_param_counts
+  let all_fn_needs_env_list = fn_needs_env_list
+  let all_fn_indices_list = fn_indices_list
+  let all_fn_returns_list = fn_returns_list
+  let num_base_types = 9
+  let lt_w = LambdaTable::{
+    bodies: lc_fresh_bytes_array(),
+    param_counts: lc_fresh_int_array(),
+    captures: lc_fresh_string_matrix(),
+    meta_i32: lc_fresh_int_array(),
+    meta_i64: lc_fresh_int_array()
+  }
+  let bodies = lc_fresh_bytes_array()
+  let meta_i32 = lc_fresh_int_array()
+  let meta_i64 = lc_fresh_int_array()
+  let builtin_type_idxs = lc_fresh_int_array()
+  // #415 B-1: one call = one builtin body. The body bytes, its extra local
+  // counts (meta_i32/meta_i64), and its function-section type index are
+  // pushed TOGETHER, killing the four-way positional alignment this block
+  // used to share with a bare number list ~1,400 lines below (the function
+  // section splices builtin_type_idxs in this same order; a count mismatch
+  // still throws there).
+  let push_builtin: (Bytes, Int, Int, Int) -> Unit = (body, m32, m64, type_idx) -> {
+    Array::push(bodies, body)
+    Array::push(meta_i32, m32)
+    Array::push(meta_i64, m64)
+    Array::push(builtin_type_idxs, type_idx)
+  }
+  push_builtin(static_print_i64_body(), 3, 1, 1)
+  push_builtin(static_print_str_body(), 2, 0, 1)
+  push_builtin(if enable_rc {
+    gen_str_len_body(true)
+  } else {
+    static_str_len_body()
+  }, 0, 0, 3)
+  // #748: SIMD chunk compare needs the extra chunk_limit local (meta_i32 6).
+  push_builtin(gen_str_eq_body(), 6, 0, 4)
+  push_builtin(gen_str_concat_body(), 6, 0, 4)
+  if enable_rc {
+    push_builtin(gen_arr_new_body(true, rc_alloc_idx), 1, 0, 5)
+    push_builtin(gen_arr_len_body(true), 0, 0, 3)
+    push_builtin(gen_arr_get_body(true), 1, 0, 4)
+    push_builtin(gen_arr_push_body(true, rc_alloc_idx, rc_shadow), 6, 0, 6)
+    push_builtin(gen_arr_set_body(true), 1, 0, 7)
+  } else {
+    push_builtin(gen_arr_new_body(false, rc_alloc_idx), 1, 0, 5)
+    push_builtin(static_arr_len_body(), 0, 0, 3)
+    push_builtin(static_arr_get_body(), 1, 0, 4)
+    push_builtin(gen_arr_push_body(false, rc_alloc_idx, rc_shadow), 6, 0, 6)
+    push_builtin(static_arr_set_body(), 1, 0, 7)
+  }
+  push_builtin(static_double_to_int_body(), 0, 0, 3)
+  push_builtin(static_int_to_double_body(), 0, 0, 3)
+  push_builtin(if enable_rc {
+    gen_str_char_code_at_body(true)
+  } else {
+    static_str_char_code_at_body()
+  }, 1, 0, 4)
+  push_builtin(gen_str_from_char_code_body(enable_rc), 1, 0, 3)
+  push_builtin(gen_str_substring_body(enable_rc), 2, 0, 8)
+  push_builtin(static_identity_body(), 0, 0, 3)
+  if enable_rc {
+    push_builtin(gen_arr_slice_body(true, rc_alloc_idx, rc_shadow), 7, 1, 8)
+  } else {
+    push_builtin(gen_arr_slice_body(false, rc_alloc_idx, rc_shadow), 6, 0, 8)
+  }
+  push_builtin(gen_arr_concat_body(), 9, 0, 4)
+  push_builtin(if enable_rc {
+    gen_arr_truncate_body(true)
+  } else {
+    static_arr_truncate_body()
+  }, 0, 0, 6)
+  push_builtin(gen_string_join_body(enable_rc, arr_len_idx, arr_get_idx, str_concat_idx), 9, 1, 4)
+  push_builtin(static_fs_stub_body(), 0, 0, 3)
+  push_builtin(static_fs_stub_body(), 0, 0, 3)
+  push_builtin(static_fs_stub_body(), 0, 0, 3)
+  push_builtin(static_fs_write_bytes_stub_body(), 0, 0, 6)
+  push_builtin(static_fs_write_bytes_stub_body(), 0, 0, 6)
+  push_builtin(gen_eq_body(str_eq_idx), 0, 0, 4)
+  push_builtin(gen_string_ends_with_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 2, 1, 4)
+  push_builtin(gen_string_last_index_of_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 3, 1, 4)
+  if enable_rc {
+    push_builtin(gen_arr_push_all_body(true, rc_alloc_idx, rc_shadow), 10, 1, 6)
+  } else {
+    push_builtin(gen_arr_push_all_body(false, rc_alloc_idx, rc_shadow), 9, 0, 6)
+  }
+  // #748 memchr rewrite: 8 i32 locals, the i64 substring scratch is gone.
+  push_builtin(gen_string_index_of_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 8, 0, 4)
+  push_builtin(gen_string_contains_body(enable_rc, string_index_of_idx), 0, 0, 4)
+  push_builtin(gen_string_starts_with_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 2, 1, 4)
+  push_builtin(gen_string_split_body(enable_rc, arr_new_idx, arr_push_idx, str_len_idx, str_substring_idx, string_index_of_idx), 4, 1, 4)
+  push_builtin(gen_string_trim_body(enable_rc, str_len_idx, str_char_code_at_idx, str_substring_idx), 4, 0, 3)
+  if num_src_pairs > 0 {
+    push_builtin(gen_selfhost_sources_proper_body(num_src_pairs, str_offsets, str_lengths, src_str_base, arr_new_idx, arr_push_idx), 1, 1, 5)
+  } else {
+    push_builtin(gen_selfhost_sources_stub_body(arr_new_idx), 0, 0, 5)
+  }
+  push_builtin(gen_bytes_new_body(), 1, 0, 5)
+  push_builtin(gen_bytes_len_body(enable_rc), 0, 0, 3)
+  push_builtin(gen_bytes_get_body(enable_rc), 1, 0, 4)
+  push_builtin(gen_bytes_set_body(enable_rc), 1, 0, 7)
+  push_builtin(gen_bytes_push_body(enable_rc), 6, 0, 6)
+  push_builtin(gen_bytes_append_body(enable_rc, bytes_len_idx, bytes_get_idx, bytes_push_idx), 2, 0, 6)
+  push_builtin(gen_bytes_concat_body(bytes_new_idx, bytes_append_idx), 0, 1, 4)
+  push_builtin(gen_bytes_slice_body(enable_rc, bytes_new_idx, bytes_get_idx, bytes_push_idx), 2, 1, 8)
+  push_builtin(gen_bytes_from_array_body(enable_rc, arr_len_idx, arr_get_idx, bytes_new_idx, bytes_push_idx), 2, 1, 3)
+  push_builtin(gen_bytes_to_array_body(enable_rc, arr_new_idx, arr_push_idx, bytes_len_idx, bytes_get_idx), 2, 1, 3)
+  if enable_rc {
+    push_builtin(gen_rc_drop_body(rc_drop_idx, rc_shadow), 5, 1, 1)
+    push_builtin(gen_rc_alloc_body(rc_shadow), 4, 0, 3)
+  } else {
+    ()
+  }
+  push_builtin(gen_heap_grow_check_body(), 0, 0, 2)
+  push_builtin(gen_simd_skip_ws_body(enable_rc), 2, 2, 8)
+  push_builtin(gen_simd_scan_alnum_body(enable_rc, false), 1, 3, 8)
+  push_builtin(gen_simd_scan_alnum_body(enable_rc, true), 1, 3, 8)
+  push_builtin(gen_str_lex_diff_body(enable_rc), 7, 0, 4)
+  // #708: one counter cell shared across every function's lift pass, so each
+  // lift site gets a distinct `__m_scrut_N` name (see lift_match_scrutinees).
+  let m_scrut_counter = [0]
+  // #712: one counter cell shared across every function's uniquify pass, so
+  // every renamed shadow gets a distinct `__shadow_N_<name>` (see
+  // uniquify_shadowed_bindings).
+  let uq_shadow_counter = [0]
+  let mut bi = 0
+  while bi < num_user_funcs {
+    let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
+    // #703 follow-up: under RC, lift temporary match scrutinees into lets so the
+    // Perceus pass (which drops named bindings) reclaims them. Applied here, the
+    // SAME transformed body feeds both build_perceus_plan (below) and the body
+    // compilation, keeping the plan and codegen consistent. Non-RC is unchanged.
+    //
+    // #712: before lifting scrutinees, alpha-rename any binding that shadows an
+    // enclosing one (within this same function) to a fresh unique name, so RC
+    // codegen's name-keyed bookkeeping (heap_binding_names, rc_drop_names,
+    // rc_alias_dup_names, rc_dup_names, loop_borrowed_names, and the Perceus
+    // plan itself) can never confuse two distinct bindings that happen to share
+    // a name. See uniquify_shadowed_bindings's doc comment (normalize/index.vibe).
+    let __bi_expr = if enable_rc {
+      // #715: fresh per-function seen-set -- name uniqueness is only required
+      // within one function (Perceus plans and codegen bookkeeping are
+      // per-function), and per-function reset keeps first binders unrenamed.
+      let uq_seen: Array[String] = [
+      ]
+      lift_match_scrutinees(uniquify_shadowed_bindings(get_slet_expr(__bi_stmt), map {
+      }, uq_shadow_counter, uq_seen), m_scrut_counter)
+    } else {
+      get_slet_expr(__bi_stmt)
+    }
+    let body_buf = bytebuf_new()
+    // #cov: mark this user function as executed (store 1 at cov_base + bi).
+    // Stack-neutral and local-free, so prepending it to the body is safe.
+    if coverage {
+      emit_i32_const(body_buf, cov_base + bi)
+      emit_i32_const(body_buf, 1)
+      emit_i32_store8(body_buf, 0, 0)
+      // #cov branch: tell branch instrumentation which function owns the branches
+      // emitted while compiling this body.
+      Array::set(cov_state.cur_fn, 0, bi)
+    } else {
+      ()
+    }
+    // debugger trace (DAP P1 groundwork): in debug mode, append this user
+    // function's index `bi` to the in-memory trace log when there is still room.
+    // Stack-neutral and local-free, so prepending it to the body is safe:
+    //   if load[counter_addr] < cap {
+    //     store[log_base + load[counter_addr]*4] = bi
+    //     store[counter_addr] = load[counter_addr] + 1
+    //   }
+    // `counter` is reloaded from memory each time (idempotent), avoiding locals.
+    if debug_trace {
+      emit_i32_const(body_buf, trace_counter_addr)
+      emit_i32_load(body_buf, 2, 0)
+      emit_i32_const(body_buf, trace_cap)
+      emit_i32_ge_u(body_buf)
+      emit_i32_eqz(body_buf)
+      emit_if_void(body_buf)
+      // store[log_base + counter*4] = bi
+      emit_i32_const(body_buf, trace_log_base)
+      emit_i32_const(body_buf, trace_counter_addr)
+      emit_i32_load(body_buf, 2, 0)
+      emit_i32_const(body_buf, 4)
+      emit_i32_mul(body_buf)
+      emit_i32_add(body_buf)
+      emit_i32_const(body_buf, bi)
+      emit_i32_store(body_buf, 2, 0)
+      // store[counter_addr] = counter + 1
+      emit_i32_const(body_buf, trace_counter_addr)
+      emit_i32_const(body_buf, trace_counter_addr)
+      emit_i32_load(body_buf, 2, 0)
+      emit_i32_const(body_buf, 1)
+      emit_i32_add(body_buf)
+      emit_i32_store(body_buf, 2, 0)
+      emit_end(body_buf)
+    } else {
+      ()
+    }
+    // #715: computed here, BEFORE the `debug_break` block below, and reused by
+    // it via `Array::length(lc_norm_params)` instead of a second independent
+    // `is_efn(__bi_expr)`/`get_efn_params(__bi_expr)` call. Both accessors
+    // unconditionally rc_drop their argument, so each call is a real "use" of
+    // `__bi_expr` for Perceus's purposes; having it called from BOTH branches
+    // of the (usually-false) `if debug_break` AND unconditionally right after
+    // made the `if debug_break {...} else {...}` construct's `then` branch
+    // statically "consume" 2 extra units of `__bi_expr`'s remaining-use budget
+    // that, in the overwhelmingly common `debug_break == false` case, never
+    // actually execute. perceus/index.vibe's `pc_emit` EIf handling takes the
+    // MIN of the two branches' resulting `remaining` and carries it forward
+    // (see the #705 comment there) to avoid double-freeing a value fully
+    // consumed on the taken branch -- but that also means the *lower* (more-
+    // consuming) branch's count wins even when it is the branch that is
+    // essentially never taken, permanently starving the dup budget needed by
+    // `__bi_expr`'s later, always-executed uses below (`lc_norm_params` itself
+    // was one of them) and eventually causing a use of an already-freed
+    // pointer (#715's free-list corruption during RC self-hosting). Hoisting
+    // this computation out from under `debug_break` removes the only
+    // asymmetric-branch use of `__bi_expr` in this function (the other
+    // `is_efn(__bi_expr)`-gated branches all have `is_efn(__bi_expr)` true on
+    // effectively every real program, so their MIN-selected branch already
+    // matches the branch actually taken).
+    // #715: `get_slet_type(__bi_stmt)` hoisted out of the `is_efn(__bi_expr)`
+    // `then` branch and computed here, unconditionally -- previously it was
+    // the ONLY use of `__bi_stmt` inside this specific `if`'s `then` branch
+    // (the `else` branch, `Array::slice([("",None)],0,0)`, never touches
+    // `__bi_stmt`), and `__bi_expr` is NOT an EFn for every `bi` iteration:
+    // `fn_names_list`/`fn_stmt_indices` also carry thunk entries (see the
+    // classification loop above), so the `else` path here is a real, common
+    // occurrence, not a rare edge case. Same leak mechanism as the
+    // `lc_norm_params`/`__bi_body`/`dn_expr`/classification-loop fixes above
+    // -- `pc_emit`'s EIf MIN-merge (#705) otherwise permanently assumes the
+    // `then`-branch's higher `__bi_stmt` consumption even on thunk (`else`)
+    // iterations, leaking `__bi_stmt` (a heap Stmt node) on each one.
+    let __sf_slet_type = get_slet_type(__bi_stmt)
+    let lc_norm_params = if is_efn(__bi_expr) {
+      let ps = get_efn_params(__bi_expr)
+      let sig_args_raw = fn_type_param_types(__sf_slet_type)
+      let single_tuple_param = match sig_args_raw {
+        Some(a) => Array::length(ps) == 1 && Array::length(a) > 1,
+        None => false
+      }
+      let np = Array::slice(ps, 0, 0)
+      let mut spi = 0
+      while spi < Array::length(ps) {
+        let (sraw, sty) = Array::get(ps, spi)
+        let slen = String::length(sraw)
+        let ssn = if slen > 0 {
+          let slc = String::char_code_at(sraw, slen - 1)
+          if slc == '~' || slc == '?' {
+            sraw[0: slen - 1]
+          } else {
+            sraw
+          }
+        } else {
+          sraw
+        }
+        let resolved_ty = match sty {
+          Some(_) => sty,
+          None =>
+          match sig_args_raw {
+            Some(args) =>
+            if single_tuple_param {
+              Some(TyTuple(args))
+            } else if Array::length(args) == Array::length(ps) {
+              Some(Array::get(args, spi))
+            } else {
+              None
+            },
+            None => None
+          }
+        }
+        Array::push(np, (ssn, resolved_ty))
+        spi = spi + 1
+      }
+      np
+    } else {
+      // #715: alias `__sf_slet_type` once here too, matching `then`'s single
+      // use (via `fn_type_param_types`) now that it is hoisted above -- see
+      // that binding's doc comment.
+      let __sf_lnp_ty = __sf_slet_type
+      Array::slice([
+        ("", None)
+      ], 0, 0)
+    }
+    // debugger breakpoint (DAP P1): in break mode, call the host hook
+    // `vibe::dbg_break` at this user function's entry. The hook inspects the
+    // wasm backtrace to name the entering function and pauses when it is in the
+    // breakpoint set. Stack-neutral (() -> ()), so prepending is safe.
+    if debug_break {
+      // DAP P2: spill this function's i64 parameters into the dbgargs region so
+      // the host hook can read and print them. All user-function wasm params are
+      // i64 (vibe value ABI); locals 0..nparams-1 hold the params at entry.
+      let dbg_nparams = Array::length(lc_norm_params)
+      let dbg_n = if dbg_nparams > dbgargs_cap {
+        dbgargs_cap
+      } else {
+        dbg_nparams
+      }
+      let mut dbg_pi = 0
+      while dbg_pi < dbg_n {
+        emit_i32_const(body_buf, dbgargs_base + dbg_pi * 8)
+        emit_local_get(body_buf, dbg_pi)
+        emit_i64_store(body_buf, 3, 0)
+        dbg_pi = dbg_pi + 1
+      }
+      emit_i32_const(body_buf, dbgargs_count_addr)
+      emit_i32_const(body_buf, dbg_n)
+      emit_i32_store(body_buf, 2, 0)
+      emit_call(body_buf, dbg_break_import_idx)
+    } else {
+      ()
+    }
+    let local_names = lc_fresh_string_array()
+    let fn_name_dbg = Array::get(fn_names_list, bi)
+    let rc_drops = Array::slice([
+      ""
+    ], 0, 0)
+    let rc_alias_dups = Array::slice([
+      ""
+    ], 0, 0)
+    let rc_dups = Array::slice([
+      ""
+    ], 0, 0)
+    let lc_heap_params = lc_fresh_string_array()
+    // #715: computed once, unconditionally (regardless of `enable_rc`), and
+    // reused below both for the Perceus plan and for the actual codegen call
+    // to `compile_expr` -- instead of a separate `get_efn_body(__bi_expr)`
+    // call under `enable_rc` (as `fbody`) AND another one further down (as
+    // `body`, inside the `is_efn(__bi_expr)` block). Each independent
+    // `get_efn_body(__bi_expr)`/`get_efn_params(__bi_expr)` call is a real
+    // additional owning "use" of `__bi_expr` for Perceus's purposes (neither
+    // is registered in `is_borrow_arg0_call`), inflating the dup budget
+    // `__bi_expr` statically needs. See the `lc_norm_params` doc comment
+    // above (the same redundant-call pattern, already fixed once for
+    // `get_efn_params`) for the full double-free mechanism this avoids.
+    let __bi_body = if is_efn(__bi_expr) {
+      get_efn_body(__bi_expr)
+    } else {
+      __bi_expr
+    }
+    if enable_rc {
+      let plan = build_perceus_plan_with_params(lc_norm_params, __bi_body, lc_borrow_ret_names)
+      let mut lhpi = 0
+      while lhpi < Array::length(lc_norm_params) {
+        let (lhpn, lhpt) = Array::get(lc_norm_params, lhpi)
+        if param_is_heap_in_body(lhpn, lhpt, __bi_body) {
+          Array::push(lc_heap_params, lhpn)
+        } else {
+          ()
+        }
+        lhpi = lhpi + 1
+      }
+      let mut di = 0
+      while di < Array::length(plan) {
+        let pa = Array::get(plan, di)
+        if pa_is_drop(pa) {
+          Array::push(rc_drops, pa.name)
+        } else if pa_is_alias_dup(pa) {
+          Array::push(rc_alias_dups, pa.name)
+        } else if pa_is_dup(pa) {
+          Array::push(rc_dups, pa.name)
+        } else {
+          ()
+        }
+        di = di + 1
+      }
+    }
+    // Interior-line breakpoints: this function's source file id + that file's
+    // newline index (for mapping its statement offsets to lines). Off => 0/empty.
+    let dbg_fid = if dbg_line_on {
+      Array::get(prov.stmt_file_id, Array::get(fn_stmt_indices, bi))
+    } else {
+      0
+    }
+    let dbg_nls = if dbg_line_on {
+      Array::get(prov.file_nls, dbg_fid)
+    } else {
+      lc_fresh_int_array()
+    }
+    let compile_ctx = CompileCtx::{
+      func_table: FuncTable::{
+        names: all_fn_names_list,
+        indices: all_fn_indices_list,
+        params: all_fn_param_counts,
+        returns: all_fn_returns_list,
+        needs_env: all_fn_needs_env_list
+      },
+      str_table: StrTable::{
+        strs: str_strs, offsets: str_offsets, lengths: str_lengths
+      },
+      lambda_table: lt_w,
+      num_user_funcs: num_user_funcs, func_offset: func_offset,
+      ref_cell_names: lc_fresh_string_array(),
+      ctor_table: CtorTable::{
+        names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+      },
+      thunk_names: thunk_names_list,
+      const_int_names: const_int_names_list,
+      const_int_values: const_int_values_list,
+      enable_rc: enable_rc,
+      rc_shadow: rc_shadow,
+      rc_drop_names: rc_drops,
+      rc_alias_dup_names: rc_alias_dups,
+      heap_binding_names: lc_heap_params,
+      rc_drop_func_idx: if enable_rc {
+        rc_drop_idx
+      } else {
+        -1
+      },
+      rc_alloc_func_idx: if enable_rc {
+        rc_alloc_idx
+      } else {
+        -1
+      },
+      heap_grow_check_func_idx: heap_grow_check_idx,
+      rc_dup_names: rc_dups,
+      float_local_slots: lc_fresh_int_array(),
+      int_local_slots: lc_fresh_int_array(),
+      agg_local_slots: lc_fresh_int_array(),
+      agg_local_exprs: lc_fresh_expr_array(),
+      agg_ret_names: lc_agg_ret_names,
+      agg_ret_infos: lc_agg_ret_infos,
+      effect_names: effect_names_list,
+      effect_op_keys: effect_op_keys_list,
+      effect_op_arities: effect_op_arities_list,
+      cov: cov_state,
+      dbg_line_idx: dbg_line_import_idx,
+      dbg_line_nl: dbg_nls,
+      dbg_line_file_id: dbg_fid,
+      loop_borrowed_names: lc_fresh_string_array(),
+      loop_consumed_names: lc_fresh_string_array(),
+      borrow_ret_names: lc_borrow_ret_names,
+      scalar_ret_names: lc_scalar_ret_names
+    }
+    if is_efn(__bi_expr) {
+      // #715: `lc_norm_params` (built above from `get_efn_params(__bi_expr)`)
+      // already carries each parameter's `~`/`?`-stripped name in `.0` --
+      // reuse it instead of a second `get_efn_params(__bi_expr)` call plus a
+      // duplicate stripping pass (see the `__bi_body` doc comment above).
+      let body = __bi_body
+      let mut pi = 0
+      while pi < Array::length(lc_norm_params) {
+        let (pname, _) = Array::get(lc_norm_params, pi)
+        Array::push(local_names, pname)
+        pi = pi + 1
+      }
+      // #724 round 2: seed the aggregate-shape log from ANNOTATED params
+      // (param slot i = local i), so `p == q` on tuple/struct/enum-typed
+      // params compares structurally.
+      let sig_ptypes = fn_type_param_types(__sf_slet_type)
+      let mut psi = 0
+      while psi < Array::length(lc_norm_params) {
+        // Prefer the SLet signature's param types (`let f: (P2) -> ..`);
+        // fall back to a per-param annotation (`(p: P2) -> ..`).
+        let pann = match sig_ptypes {
+          Some(pts) => if Array::length(pts) == Array::length(lc_norm_params) {
+            Some(Array::get(pts, psi))
+          } else {
+            let (_, pa) = Array::get(lc_norm_params, psi)
+            pa
+          },
+          None => {
+            let (_, pa) = Array::get(lc_norm_params, psi)
+            pa
+          }
+        }
+        match pann {
+          Some(pte) => {
+            let pinfo = agg_info_of_type_expr(compile_ctx.ctor_table, pte)
+            if pinfo > 0 {
+              Array::push(compile_ctx.agg_local_slots, psi * 256 + pinfo)
+            } else {
+              ()
+            }
+            // Float/Double-typed params feed expr_is_floatish the same way
+            // let-bound floats do; without this, `a == b` on annotated float
+            // params misses the f64 path and (under RC, where floats are
+            // boxed) compares heap pointers — `1.5 == 1.5` came out false.
+            match pte {
+              TyName(ptn) => if ptn == "Float" || ptn == "Double" {
+                Array::push(compile_ctx.float_local_slots, psi * 2 + 1)
+              } else {
+                ()
+              },
+              _ => ()
+            }
+          },
+          None => ()
+        }
+        psi = psi + 1
+      }
+      Array::push(local_names, "__env")
+      let param_count = Array::length(lc_norm_params) + 1
+      if enable_rc {
+        let mut edi = 0
+        while edi < Array::length(lc_norm_params) {
+          let (edn, _edt) = Array::get(lc_norm_params, edi)
+          if array_contains_str(lc_heap_params, edn) {
+            let mut edc = 0
+            let mut edj = 0
+            while edj < Array::length(rc_dups) {
+              if Array::get(rc_dups, edj) == edn {
+                edc = edc + 1
+              } else {
+                ()
+              }
+              edj = edj + 1
+            }
+            let mut ede = 0
+            while ede < edc {
+              emit_rc_dup_guarded(body_buf, edi, rc_shadow)
+              ede = ede + 1
+            }
+          } else {
+            ()
+          }
+          edi = edi + 1
+        }
+      } else {
+        ()
+      }
+      let final_nl = compile_expr(body_buf, body, local_names, param_count, compile_ctx, -1)
+      let mut tail_nl = final_nl
+      if enable_rc && rc_drop_idx >= 0 {
+        let tail_root = scope_tail_proj_root(body)
+        // #706 leak follow-up: a loop-borrowed param's protective rc_dup (see
+        // compile_call.vibe's cc_is_loop_borrowed_ident sites) is matched by the
+        // callee's OWN internal drop each iteration — it never touches this
+        // function's own slot-held reference. The Perceus plan still counts that
+        // textual occurrence as "one real consume" (so `remaining` hits 0 and no
+        // PaDrop is emitted), leaking the binding's own reference once per such
+        // occurrence. Count each param's occurrences in loop_consumed_names and
+        // emit that many EXTRA rc_drop calls here — purely additive to the
+        // existing rc_drops accounting, so it cannot perturb any decision the
+        // plan and codegen already agree on elsewhere.
+        let mut need_dup = false
+        let mut tci = 0
+        while tci < Array::length(lc_norm_params) {
+          let (tcn, _tct) = Array::get(lc_norm_params, tci)
+          let mut tcn_loop_extra = 0
+          let mut tcle = 0
+          while tcle < Array::length(compile_ctx.loop_consumed_names) {
+            if Array::get(compile_ctx.loop_consumed_names, tcle) == tcn {
+              tcn_loop_extra = tcn_loop_extra + 1
+            } else {
+              ()
+            }
+            tcle = tcle + 1
+          }
+          if array_contains_str(lc_heap_params, tcn) && (array_contains_str(rc_drops, tcn) || tcn_loop_extra > 0) && tcn == tail_root {
+            need_dup = true
+          } else {
+            ()
+          }
+          tci = tci + 1
+        }
+        let rtemp = final_nl
+        if need_dup {
+          emit_local_set(body_buf, rtemp)
+          emit_rc_dup_guarded(body_buf, rtemp, rc_shadow)
+          tail_nl = final_nl + 1
+        } else {
+          ()
+        }
+        let mut tdj = 0
+        while tdj < Array::length(lc_norm_params) {
+          let (tdn, _tdt) = Array::get(lc_norm_params, tdj)
+          if array_contains_str(lc_heap_params, tdn) {
+            // #725: a loop-protected consume (per-iteration dup at the call
+            // site, #706 above) is NET-ZERO at runtime — the dup is matched by
+            // the callee's own drop each execution and never touches the
+            // param's single owned reference. So the epilogue owes EXACTLY ONE
+            // drop for that reference, regardless of how many textual
+            // loop-consumed SITES exist: a second site in a sibling match arm
+            // (even one that never executes — its protective dup is emitted
+            // but never runs) previously got its own per-occurrence drop,
+            // over-releasing the CALLER's value and poisoning the RC free
+            // list (fuzz/findings/issue725/). When a loop site exists it also
+            // absorbs the plan's PaDrop (the textual counts ate the budget the
+            // plan would otherwise drop), so emit one drop total either way.
+            let mut tdn_loop_count = 0
+            let mut tdle = 0
+            while tdle < Array::length(compile_ctx.loop_consumed_names) {
+              if Array::get(compile_ctx.loop_consumed_names, tdle) == tdn {
+                tdn_loop_count = tdn_loop_count + 1
+              } else {
+                ()
+              }
+              tdle = tdle + 1
+            }
+            if array_contains_str(rc_drops, tdn) || tdn_loop_count > 0 {
+              emit_local_get(body_buf, tdj)
+              emit_call(body_buf, rc_drop_idx)
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          tdj = tdj + 1
+        }
+        if need_dup {
+          emit_local_get(body_buf, rtemp)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      if enable_rc && fn_name_dbg == entry_name {
+        emit_i64_const(body_buf, 1)
+        emit_i64_shr_s(body_buf)
+      }
+      Array::push(bodies, body_buf)
+      let extra = if tail_nl > param_count {
+        tail_nl - param_count
+      } else {
+        0
+      }
+      Array::push(meta_i32, 0)
+      Array::push(meta_i64, extra)
+    } else {
+      // Module-level non-function `let` (a THUNK): previously the initializer
+      // re-ran on EVERY reference, so a 16-entry lookup table cost an O(size)
+      // allocation per access (~148 B/call in bench/_probe_sb_phases.vibe)
+      // and, worse, each access saw a FRESH value while the gc backend
+      // initializes module globals ONCE — a cross-backend semantics split
+      // (mutations visible there, lost here). Memoize: two appended i64
+      // globals per thunk (value + init flag; base index rc?7:6, after
+      // g_op_index). First call computes and caches, later calls reload.
+      // Under RC the cache holds one permanent reference and every return
+      // (both paths) hands the caller a guarded-dup'd reference, so consumer
+      // drops balance exactly like the old fresh-value contract.
+      Array::push(local_names, "__env")
+      let param_count = 1
+      let mut tg_k = -1
+      let mut tg_i = 0
+      while tg_i < Array::length(thunk_names_list) {
+        if Array::get(thunk_names_list, tg_i) == fn_name_dbg {
+          tg_k = tg_i
+          tg_i = Array::length(thunk_names_list)
+        } else {
+          tg_i = tg_i + 1
+        }
+      }
+      let tg_base = if enable_rc {
+        7
+      } else {
+        6
+      }
+      let tg_value_g = tg_base + tg_k * 2
+      let tg_flag_g = tg_value_g + 1
+      emit_global_get(body_buf, tg_flag_g)
+      emit_i32_wrap_i64(body_buf)
+      emit_if_i64(body_buf)
+      emit_global_get(body_buf, tg_value_g)
+      emit_local_tee(body_buf, 1)
+      if enable_rc {
+        emit_rc_dup_guarded(body_buf, 1, rc_shadow)
+      } else {
+        ()
+      }
+      emit_else(body_buf)
+      Array::push(local_names, "__thunk_memo")
+      let final_nl = compile_expr(body_buf, __bi_expr, local_names, 2, compile_ctx, -1)
+      emit_local_tee(body_buf, 1)
+      emit_global_set(body_buf, tg_value_g)
+      if enable_rc {
+        emit_rc_dup_guarded(body_buf, 1, rc_shadow)
+      } else {
+        ()
+      }
+      emit_i64_const(body_buf, 1)
+      emit_global_set(body_buf, tg_flag_g)
+      emit_local_get(body_buf, 1)
+      emit_end(body_buf)
+      if enable_rc && fn_name_dbg == entry_name {
+        emit_i64_const(body_buf, 1)
+        emit_i64_shr_s(body_buf)
+      }
+      Array::push(bodies, body_buf)
+      let extra = if final_nl > param_count {
+        final_nl - param_count
+      } else {
+        0
+      }
+      Array::push(meta_i32, 0)
+      Array::push(meta_i64, extra)
+    }
+    bi = bi + 1
+  }
+  let num_lambdas = Array::length(lt_w.bodies)
+  let start_body = bytebuf_new()
+  let entry_func_idx = if entry_user_idx >= 0 {
+    entry_user_idx + func_offset
+  } else {
+    -1
+  }
+  if entry_user_idx >= 0 {
+    let entry_params = Array::get(fn_param_counts, entry_user_idx)
+    if entry_params != 0 {
+      throw("WASI entry function must take 0 parameters")
+    }
+    emit_i64_const(start_body, 0)
+    emit_call(start_body, entry_func_idx)
+    emit_call(start_body, print_int_idx)
+  } else {
+    let mut sti = 0
+    while sti < Array::length(test_fn_names) {
+      let stname = Array::get(test_fn_names, sti)
+      let mut __stj = 0
+      let mut __stf = -1
+      while __stj < Array::length(fn_names_list) {
+        if Array::get(fn_names_list, __stj) == stname {
+          __stf = __stj
+        }
+        __stj = __stj + 1
+      }
+      if __stf >= 0 {
+        emit_i64_const(start_body, 0)
+        emit_call(start_body, func_offset + __stf)
+        emit_drop(start_body)
+      }
+      sti = sti + 1
+    }
+  }
+  Array::push(bodies, start_body)
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  let run_body = bytebuf_new()
+  if entry_func_idx >= 0 {
+    emit_i64_const(run_body, 0)
+    emit_call(run_body, entry_func_idx)
+  } else {
+    let mut rti = 0
+    while rti < Array::length(test_fn_names) {
+      let tname = Array::get(test_fn_names, rti)
+      let mut __rtj = 0
+      let mut __rtf = -1
+      while __rtj < Array::length(fn_names_list) {
+        if Array::get(fn_names_list, __rtj) == tname {
+          __rtf = __rtj
+        }
+        __rtj = __rtj + 1
+      }
+      if __rtf >= 0 {
+        emit_i64_const(run_body, 0)
+        emit_call(run_body, func_offset + __rtf)
+        emit_drop(run_body)
+      }
+      rti = rti + 1
+    }
+    emit_i64_const(run_body, 0)
+  }
+  Array::push(bodies, run_body)
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  let mut li = 0
+  while li < num_lambdas {
+    Array::push(bodies, Array::get(lt_w.bodies, li))
+    Array::push(meta_i32, Array::get(lt_w.meta_i32, li))
+    Array::push(meta_i64, Array::get(lt_w.meta_i64, li))
+    li = li + 1
+  }
+  let mut max_closure_arity = -1
+  let mut lai = 0
+  while lai < num_lambdas {
+    let lpc = Array::get(lt_w.param_counts, lai) - 1
+    if lpc > max_closure_arity {
+      max_closure_arity = lpc
+    }
+    lai = lai + 1
+  }
+  let mut uai = 0
+  while uai < num_user_funcs {
+    let upc = Array::get(fn_param_counts, uai)
+    if upc > max_closure_arity {
+      max_closure_arity = upc
+    }
+    uai = uai + 1
+  }
+  let mut iai = 0
+  while iai < Array::length(linked_imports) {
+    let (_, _, ipc, _) = Array::get(linked_imports, iai)
+    if ipc > max_closure_arity {
+      max_closure_arity = ipc
+    }
+    iai = iai + 1
+  }
+  let num_closure_types = if max_closure_arity >= 0 {
+    max_closure_arity + 1
+  } else {
+    0
+  }
+  // Interior-line breakpoints (span-arc step5): when active, the `vibe::dbg_line`
+  // import needs an `(i32) -> ()` func type. No existing base type is `(i32)->()`
+  // (type 1 is `(i64)->()`), so append one new type AFTER all base + closure
+  // types at index `num_base_types + num_closure_types`. This is strictly beyond
+  // every linked-import type index (which use `num_base_types + lparams`, bounded
+  // by num_closure_types), so existing indices are unshifted. -1 when off.
+  let dbg_line_type_idx = if dbg_line_on {
+    num_base_types + num_closure_types
+  } else {
+    -1
+  }
+  let extra_dbg_types = if dbg_line_on {
+    1
+  } else {
+    0
+  }
+  let type_content = bytebuf_new()
+  bytebuf_push_vec_header(type_content, num_base_types + num_closure_types + extra_dbg_types)
+  emit_func_type_raw(type_content, [
+    127,
+    127,
+    127,
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(type_content, [
+    126
+  ], Array::slice([
+    0
+  ], 0, 0))
+  emit_func_type_raw(type_content, Array::slice([
+    0
+  ], 0, 0), Array::slice([
+    0
+  ], 0, 0))
+  emit_func_type_raw(type_content, [
+    126
+  ], [
+    126
+  ])
+  emit_func_type_raw(type_content, [
+    126,
+    126
+  ], [
+    126
+  ])
+  emit_func_type_raw(type_content, Array::slice([
+    0
+  ], 0, 0), [
+    126
+  ])
+  emit_func_type_raw(type_content, [
+    126,
+    126
+  ], Array::slice([
+    0
+  ], 0, 0))
+  emit_func_type_raw(type_content, [
+    126,
+    126,
+    126
+  ], Array::slice([
+    0
+  ], 0, 0))
+  emit_func_type_raw(type_content, [
+    126,
+    126,
+    126
+  ], [
+    126
+  ])
+  let mut cti = 0
+  while cti < num_closure_types {
+    let num_params = cti + 1
+    let ct_params = lc_fresh_int_array()
+    let mut cpti = 0
+    while cpti < num_params {
+      Array::push(ct_params, 126)
+      cpti = cpti + 1
+    }
+    emit_func_type_raw(type_content, ct_params, [
+      126
+    ])
+    cti = cti + 1
+  }
+  // Interior-line breakpoints: append the `(i32, i32) -> ()` type for
+  // `vibe::dbg_line` (127 = i32; params = file_id, line). Only when active, so the
+  // type section is byte-identical off.
+  if dbg_line_on {
+    emit_func_type_raw(type_content, [
+      127,
+      127
+    ], Array::slice([
+      0
+    ], 0, 0))
+  } else {
+    ()
+  }
+  let out = bytebuf_new()
+  emit_header(out)
+  emit_vibe_abi_custom_section(out, "raw")
+  // #cov: emit a `vibe_cov` custom section describing the function-hit bitmap.
+  // Layout of the payload: i32 LE cov_base, i32 LE cov_count, then the
+  // user-function names (one per line, in bitmap-index order). The consumer
+  // reads memory[cov_base .. cov_base+cov_count] after running and maps each
+  // hit byte back to a name. Only present in coverage builds.
+  if coverage {
+    let cov_content = bytebuf_new()
+    let cov_name = "vibe_cov"
+    leb128_encode_u32(cov_content, String::length(cov_name))
+    let mut cni = 0
+    while cni < String::length(cov_name) {
+      bytebuf_push(cov_content, String::char_code_at(cov_name, cni))
+      cni = cni + 1
+    }
+    bytebuf_push(cov_content, cov_base & 255)
+    bytebuf_push(cov_content, (cov_base >> 8) & 255)
+    bytebuf_push(cov_content, (cov_base >> 16) & 255)
+    bytebuf_push(cov_content, (cov_base >> 24) & 255)
+    bytebuf_push(cov_content, cov_count & 255)
+    bytebuf_push(cov_content, (cov_count >> 8) & 255)
+    bytebuf_push(cov_content, (cov_count >> 16) & 255)
+    bytebuf_push(cov_content, (cov_count >> 24) & 255)
+    let mut covni = 0
+    while covni < num_user_funcs {
+      let covnm = Array::get(fn_names_list, covni)
+      let covnml = String::length(covnm)
+      let mut covci = 0
+      while covci < covnml {
+        bytebuf_push(cov_content, String::char_code_at(covnm, covci))
+        covci = covci + 1
+      }
+      bytebuf_push(cov_content, 10)
+      covni = covni + 1
+    }
+    bytebuf_push_section(out, 0, cov_content)
+    // #cov branch: a `vibe_cov_branch` custom section describing the branch-hit
+    // bitmap. Payload: i32 LE branch_base, i32 LE branch_count, then
+    // branch_count i32 LE entries giving the owning user-function index per
+    // branch id (in id order). The consumer reads memory[base .. base+count]
+    // after running and attributes each hit branch to its function (names from
+    // the `vibe_cov` section), so it can report per-function branch coverage.
+    let covb_content = bytebuf_new()
+    let covb_name = "vibe_cov_branch"
+    leb128_encode_u32(covb_content, String::length(covb_name))
+    let mut covbni = 0
+    while covbni < String::length(covb_name) {
+      bytebuf_push(covb_content, String::char_code_at(covb_name, covbni))
+      covbni = covbni + 1
+    }
+    let covb_count = Array::get(cov_state.next, 0)
+    bytebuf_push(covb_content, cov_branch_base & 255)
+    bytebuf_push(covb_content, (cov_branch_base >> 8) & 255)
+    bytebuf_push(covb_content, (cov_branch_base >> 16) & 255)
+    bytebuf_push(covb_content, (cov_branch_base >> 24) & 255)
+    bytebuf_push(covb_content, covb_count & 255)
+    bytebuf_push(covb_content, (covb_count >> 8) & 255)
+    bytebuf_push(covb_content, (covb_count >> 16) & 255)
+    bytebuf_push(covb_content, (covb_count >> 24) & 255)
+    let mut covbi = 0
+    while covbi < covb_count {
+      let owner = Array::get(cov_state.owners, covbi)
+      bytebuf_push(covb_content, owner & 255)
+      bytebuf_push(covb_content, (owner >> 8) & 255)
+      bytebuf_push(covb_content, (owner >> 16) & 255)
+      bytebuf_push(covb_content, (owner >> 24) & 255)
+      covbi = covbi + 1
+    }
+    bytebuf_push_section(out, 0, covb_content)
+  } else {
+    ()
+  }
+  // debugger trace (DAP P1 groundwork): emit a `vibe.trace` custom section
+  // describing the in-memory trace log. Payload layout: i32 LE counter_addr,
+  // i32 LE log_base, i32 LE cap, then the user-function names (one per line, in
+  // user-index order — the same list the name section uses). The runner reads
+  // memory[counter_addr] for the count, then `count` i32 entries from log_base,
+  // and maps each index to a name. Only present in debug-trace builds.
+  if debug_trace {
+    let tr_content = bytebuf_new()
+    let tr_name = "vibe.trace"
+    leb128_encode_u32(tr_content, String::length(tr_name))
+    let mut trni = 0
+    while trni < String::length(tr_name) {
+      bytebuf_push(tr_content, String::char_code_at(tr_name, trni))
+      trni = trni + 1
+    }
+    bytebuf_push(tr_content, trace_counter_addr & 255)
+    bytebuf_push(tr_content, (trace_counter_addr >> 8) & 255)
+    bytebuf_push(tr_content, (trace_counter_addr >> 16) & 255)
+    bytebuf_push(tr_content, (trace_counter_addr >> 24) & 255)
+    bytebuf_push(tr_content, trace_log_base & 255)
+    bytebuf_push(tr_content, (trace_log_base >> 8) & 255)
+    bytebuf_push(tr_content, (trace_log_base >> 16) & 255)
+    bytebuf_push(tr_content, (trace_log_base >> 24) & 255)
+    bytebuf_push(tr_content, trace_cap & 255)
+    bytebuf_push(tr_content, (trace_cap >> 8) & 255)
+    bytebuf_push(tr_content, (trace_cap >> 16) & 255)
+    bytebuf_push(tr_content, (trace_cap >> 24) & 255)
+    let mut trni2 = 0
+    while trni2 < num_user_funcs {
+      let trnm = Array::get(fn_names_list, trni2)
+      let trnml = String::length(trnm)
+      let mut trci = 0
+      while trci < trnml {
+        bytebuf_push(tr_content, String::char_code_at(trnm, trci))
+        trci = trci + 1
+      }
+      bytebuf_push(tr_content, 10)
+      trni2 = trni2 + 1
+    }
+    bytebuf_push_section(out, 0, tr_content)
+  } else {
+    ()
+  }
+  // debugger argument inspection (DAP P2): emit a `vibe.dbgargs` custom section
+  // publishing the addresses + value ABI the runner reads. Payload layout:
+  // i32 LE dbgargs_count_addr, i32 LE dbgargs_base, i32 LE tag_mode. At a
+  // breakpoint the runner reads memory[count_addr] (i32) for the arg count, then
+  // that many i64 values from dbgargs_base, decoding each per tag_mode:
+  //   tag_mode 0 (enable_rc off): values are plain untagged i64 ints.
+  //   tag_mode 1 (enable_rc on):  values are 1-bit tagged — low bit 0 => int
+  //                               (raw >> 1), low bit 1 => heap pointer (hex).
+  // Only present in break builds.
+  if debug_break {
+    let da_content = bytebuf_new()
+    let da_name = "vibe.dbgargs"
+    leb128_encode_u32(da_content, String::length(da_name))
+    let mut dani = 0
+    while dani < String::length(da_name) {
+      bytebuf_push(da_content, String::char_code_at(da_name, dani))
+      dani = dani + 1
+    }
+    bytebuf_push(da_content, dbgargs_count_addr & 255)
+    bytebuf_push(da_content, (dbgargs_count_addr >> 8) & 255)
+    bytebuf_push(da_content, (dbgargs_count_addr >> 16) & 255)
+    bytebuf_push(da_content, (dbgargs_count_addr >> 24) & 255)
+    bytebuf_push(da_content, dbgargs_base & 255)
+    bytebuf_push(da_content, (dbgargs_base >> 8) & 255)
+    bytebuf_push(da_content, (dbgargs_base >> 16) & 255)
+    bytebuf_push(da_content, (dbgargs_base >> 24) & 255)
+    let da_tag_mode = if enable_rc {
+      1
+    } else {
+      0
+    }
+    bytebuf_push(da_content, da_tag_mode & 255)
+    bytebuf_push(da_content, (da_tag_mode >> 8) & 255)
+    bytebuf_push(da_content, (da_tag_mode >> 16) & 255)
+    bytebuf_push(da_content, (da_tag_mode >> 24) & 255)
+    bytebuf_push_section(out, 0, da_content)
+  } else {
+    ()
+  }
+  // debugger named-parameter inspection (DAP P4): emit a `vibe.dbgnames` custom
+  // section listing, per user function (in user-index order — the same order as
+  // the name section / fn_names_list / vibe.dbgargs spill), that function's name
+  // followed by its parameter names. One record per function, terminated by
+  // newline (10); within a record fields are tab-delimited (9): the first field
+  // is the function name, the remaining fields are the parameter names. A
+  // function with no params emits just its name + newline. Names are capped at
+  // dbgargs_cap to match the spilled value count. The runner keys a map by
+  // function name so entering-function F's names can be paired with F's spilled
+  // values to print `args: [name=value]`. Only present in break builds; off =>
+  // byte-identical to a normal build (fixpoint preserved).
+  if debug_break {
+    let dn_content = bytebuf_new()
+    let dn_name = "vibe.dbgnames"
+    leb128_encode_u32(dn_content, String::length(dn_name))
+    let mut dnni = 0
+    while dnni < String::length(dn_name) {
+      bytebuf_push(dn_content, String::char_code_at(dn_name, dnni))
+      dnni = dnni + 1
+    }
+    let mut dnfi = 0
+    while dnfi < num_user_funcs {
+      let dn_fnname = Array::get(fn_names_list, dnfi)
+      let mut dn_fci = 0
+      while dn_fci < String::length(dn_fnname) {
+        bytebuf_push(dn_content, String::char_code_at(dn_fnname, dn_fci))
+        dn_fci = dn_fci + 1
+      }
+      let dn_stmt = Array::get(stmts, Array::get(fn_stmt_indices, dnfi))
+      let dn_expr = get_slet_expr(dn_stmt)
+      if is_efn(dn_expr) {
+        let dn_params = get_efn_params(dn_expr)
+        let dn_np = Array::length(dn_params)
+        let dn_n = if dn_np > dbgargs_cap {
+          dbgargs_cap
+        } else {
+          dn_np
+        }
+        let mut dn_pi = 0
+        while dn_pi < dn_n {
+          let (dn_pname_raw, _) = Array::get(dn_params, dn_pi)
+          let dn_pnl = String::length(dn_pname_raw)
+          let dn_pname = if dn_pnl > 0 {
+            let dn_plc = String::char_code_at(dn_pname_raw, dn_pnl - 1)
+            if dn_plc == '~' || dn_plc == '?' {
+              dn_pname_raw[0: dn_pnl - 1]
+            } else {
+              dn_pname_raw
+            }
+          } else {
+            dn_pname_raw
+          }
+          bytebuf_push(dn_content, 9)
+          let mut dn_ci = 0
+          while dn_ci < String::length(dn_pname) {
+            bytebuf_push(dn_content, String::char_code_at(dn_pname, dn_ci))
+            dn_ci = dn_ci + 1
+          }
+          dn_pi = dn_pi + 1
+        }
+      } else {
+        // #715: `dn_expr` is a fresh per-iteration owned binding (like
+        // `__bi_expr` in the main codegen loop above), and -- unlike
+        // `__bi_expr` -- `is_efn(dn_expr)` is NOT overwhelmingly true here:
+        // `fn_stmt_indices` legitimately mixes real functions with non-
+        // function "thunk" entries (constant initializers), so this `else`
+        // is a common, not rare, runtime path. An empty `else { () }` uses
+        // `dn_expr` zero times while `then` uses it once (via
+        // `get_efn_params`), so `pc_emit`'s EIf MIN-merge (#705) permanently
+        // carries the `then`-consumed (lower) remaining forward even on the
+        // iterations that really take this branch -- the loop-body scope-end
+        // drop for `dn_expr` is then skipped based on that borrowed count,
+        // leaking `dn_expr` on every thunk entry. Call `is_efn` again here,
+        // discarding the result, purely to consume `dn_expr` exactly once --
+        // matching `then`'s single consuming use so both branches leave the
+        // same remaining count and the plan's assumption holds either way.
+        is_efn(dn_expr)
+      }
+      bytebuf_push(dn_content, 10)
+      dnfi = dnfi + 1
+    }
+    bytebuf_push_section(out, 0, dn_content)
+  } else {
+    ()
+  }
+  // Interior-line breakpoints (span-arc step5, multi-file): emit a `vibe.dbgfiles`
+  // custom section listing the source-file basenames in file-id order, one per
+  // line (terminated by newline 10). `vibe::dbg_line(file_id, line)` passes the
+  // file id; the runner indexes this table to recover the basename and match a
+  // `--break <file>:<line>` spec. Only present when dbg_line is active, so off =>
+  // byte-identical (fixpoint preserved).
+  if dbg_line_on {
+    let df_content = bytebuf_new()
+    let df_name = "vibe.dbgfiles"
+    leb128_encode_u32(df_content, String::length(df_name))
+    let mut dfni = 0
+    while dfni < String::length(df_name) {
+      bytebuf_push(df_content, String::char_code_at(df_name, dfni))
+      dfni = dfni + 1
+    }
+    let mut dffi = 0
+    while dffi < Array::length(prov.files) {
+      let df_base = Array::get(prov.files, dffi)
+      let mut df_ci = 0
+      while df_ci < String::length(df_base) {
+        bytebuf_push(df_content, String::char_code_at(df_base, df_ci))
+        df_ci = df_ci + 1
+      }
+      bytebuf_push(df_content, 10)
+      dffi = dffi + 1
+    }
+    bytebuf_push_section(out, 0, df_content)
+  } else {
+    ()
+  }
+  bytebuf_push_section(out, 1, type_content)
+  let import_content = bytebuf_new()
+  bytebuf_push_vec_header(import_content, num_imported_funcs)
+  emit_name(import_content, "wasi_snapshot_preview1")
+  emit_name(import_content, "fd_write")
+  bytebuf_push(import_content, 0)
+  leb128_encode_u32(import_content, 0)
+  if env_get_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "env-get")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  if env_args_len_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "args-len")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+  }
+  if env_args_get_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "args-get")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  if fs_read_file_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_read_file")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  if fs_exists_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_exists")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  if fs_stat_token_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_stat_token")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  if fs_write_file_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_write_file")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 6)
+  }
+  if fs_write_bytes_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_write_bytes")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 6)
+  }
+  // #632: fs_read_bytes — emitted right after fs_write_bytes to match its
+  // reserved index. Type 3 is `(i64) -> i64` (same as fs_read_file).
+  if fs_read_bytes_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_read_bytes")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  // #729/#730: fs_read_dir — emitted right after fs_read_bytes to match its
+  // reserved index. Type 3 is `(i64) -> i64` (same as fs_read_file).
+  if fs_read_dir_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_read_dir")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  if profiler_now_us_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "profile-now-us")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+  }
+  // `vibe.sleep (i64) -> ()` — reserved index after profiler, matching the
+  // allocation order above. Type 1 is `(i64) -> ()`.
+  if sleep_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sleep")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // `vibe.stdin_read_char () -> i64` — after sleep, matching allocation order.
+  // Type 5 is `() -> i64` (same as profile-now-us).
+  if stdin_read_char_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stdin_read_char")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+  } else {
+    ()
+  }
+  // `vibe.sh (i64) -> i64` and `vibe.sh_lines (i64) -> i64` — reserved after
+  // stdin_read_char (before dbg_break), matching allocation order. Type 3 is
+  // `(i64) -> i64` (same as fs_read_file / fs_read_dir).
+  if sh_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sh")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if sh_lines_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sh_lines")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // `vibe.stdin_read_stream (i64) -> i64` (type 3, like fs_read_file), then the
+  // two void `vibe.stdout_write_stream` / `vibe.stdout_write_char (i64) -> ()`
+  // (type 1, like sleep) — reserved after sh_lines (before dbg_break), matching
+  // allocation order.
+  if stdin_read_stream_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stdin_read_stream")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if stdout_write_stream_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stdout_write_stream")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  if stdout_write_char_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stdout_write_char")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // `vibe.resolve_path (i64) -> i64` (type 3, like fs_read_file) — reserved after
+  // stdout_write_char (before dbg_break), matching allocation order.
+  if resolve_path_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "resolve_path")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if dbg_break_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "dbg_break")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 2)
+  }
+  // Interior-line breakpoints (span-arc step5): emit the `vibe::dbg_line` import
+  // descriptor here, AFTER dbg_break and BEFORE the linked imports, matching its
+  // reserved import index order. Type index is the appended `(i32) -> ()` type.
+  if dbg_line_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "dbg_line")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, dbg_line_type_idx)
+  } else {
+    ()
+  }
+  let mut li_emit = 0
+  while li_emit < Array::length(linked_imports) {
+    let (lmod, lfn, lparams, _) = Array::get(linked_imports, li_emit)
+    emit_name(import_content, lmod)
+    emit_name(import_content, lfn)
+    bytebuf_push(import_content, 0)
+    let type_idx = num_base_types + lparams
+    leb128_encode_u32(import_content, type_idx)
+    li_emit = li_emit + 1
+  }
+  bytebuf_push_section(out, 2, import_content)
+  let func_type_indices = lc_fresh_int_array()
+  // #415 B-1: the builtin type indices are declared next to each body push
+  // (push_builtin above), in the exact bodies order — splice them here where
+  // a hand-maintained bare number list used to mirror that order from ~1,400
+  // lines away.
+  let mut bti = 0
+  while bti < Array::length(builtin_type_idxs) {
+    Array::push(func_type_indices, Array::get(builtin_type_idxs, bti))
+    bti = bti + 1
+  }
+  let mut fti = 0
+  while fti < num_user_funcs {
+    let upc = Array::get(fn_param_counts, fti)
+    Array::push(func_type_indices, num_base_types + upc)
+    fti = fti + 1
+  }
+  Array::push(func_type_indices, 2)
+  Array::push(func_type_indices, 5)
+  let mut lfi = 0
+  while lfi < num_lambdas {
+    let lam_user_params = Array::get(lt_w.param_counts, lfi) - 1
+    Array::push(func_type_indices, num_base_types + lam_user_params)
+    lfi = lfi + 1
+  }
+  if Array::length(func_type_indices) != Array::length(bodies) {
+    throw("WASI codegen internal error: function section and code section count mismatch")
+  }
+  emit_function_section(out, func_type_indices)
+  let total_table_entries = num_user_funcs + num_lambdas
+  if total_table_entries > 0 {
+    emit_table_section_funcref(out, total_table_entries)
+  }
+  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + (if rc_shadow {
+    rc_shadow_reserve()
+  } else {
+    0
+  })))
+  // #721: emit the tag section only when something can reference a tag --
+  // EThrow (`throw 2`), EHandle (try_table over tags 0-3), or a declared
+  // effect (per-effect tags at index 4+). Pure-compute modules then carry no
+  // exceptions machinery at all, which keeps V8 off its slower exnref module
+  // path (~35% wall on call-heavy code; wasmtime is indifferent).
+  let uses_exceptions = Array::length(effect_names_list) > 0 || stmts_contain_exceptions(stmts)
+  if uses_exceptions {
+    let tag_content = bytebuf_new()
+    let num_tags = Array::length(effect_names_list) + 4
+    bytebuf_push_vec_header(tag_content, num_tags)
+    let mut tag_emit_i = 0
+    while tag_emit_i < num_tags {
+      bytebuf_push(tag_content, 0)
+      leb128_encode_u32(tag_content, 1)
+      tag_emit_i = tag_emit_i + 1
+    }
+    bytebuf_push_section(out, 13, tag_content)
+  } else {
+    ()
+  }
+  let global_content = bytebuf_new()
+  // Base globals (bump ptr, effect state, ..., g_op_index) plus two i64
+  // globals per module-level thunk (memo value + init flag) appended last —
+  // see the thunk-body memoization above for the index formula.
+  let tg_num_thunks = Array::length(thunk_names_list)
+  if enable_rc {
+    bytebuf_push_vec_header(global_content, 7 + tg_num_thunks * 2)
+  } else {
+    bytebuf_push_vec_header(global_content, 6 + tg_num_thunks * 2)
+  }
+  bytebuf_push(global_content, 127)
+  bytebuf_push(global_content, 1)
+  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve)
+  emit_end(global_content)
+  bytebuf_push(global_content, 126)
+  bytebuf_push(global_content, 1)
+  emit_i64_const(global_content, 0)
+  emit_end(global_content)
+  if enable_rc {
+    bytebuf_push(global_content, 127)
+    bytebuf_push(global_content, 1)
+    emit_i32_const(global_content, 0)
+    emit_end(global_content)
+  }
+  bytebuf_push(global_content, 126)
+  bytebuf_push(global_content, 1)
+  emit_i64_const(global_content, 0)
+  emit_end(global_content)
+  bytebuf_push(global_content, 126)
+  bytebuf_push(global_content, 1)
+  emit_i64_const(global_content, 0)
+  emit_end(global_content)
+  bytebuf_push(global_content, 127)
+  bytebuf_push(global_content, 1)
+  emit_i32_const(global_content, heap_start)
+  emit_end(global_content)
+  // #665: g_op_index (i64, mut) — operation index of the perform unwinding to a
+  // handler, for multi-operation dispatch. Appended last; index = rc ? 6 : 5.
+  bytebuf_push(global_content, 126)
+  bytebuf_push(global_content, 1)
+  emit_i64_const(global_content, 0)
+  emit_end(global_content)
+  let mut tg_gi = 0
+  while tg_gi < tg_num_thunks * 2 {
+    bytebuf_push(global_content, 126)
+    bytebuf_push(global_content, 1)
+    emit_i64_const(global_content, 0)
+    emit_end(global_content)
+    tg_gi = tg_gi + 1
+  }
+  bytebuf_push_section(out, 6, global_content)
+  let start_func_idx = func_offset + num_user_funcs
+  let run_func_idx = start_func_idx + 1
+  let all_export_names = lc_fresh_string_array()
+  let all_export_indices = lc_fresh_int_array()
+  if !library_mode {
+    Array::push(all_export_names, "_start")
+    Array::push(all_export_indices, start_func_idx)
+  }
+  if !library_mode && entry_func_idx >= 0 && !array_contains_str(all_export_names, entry_name) {
+    Array::push(all_export_names, entry_name)
+    Array::push(all_export_indices, entry_func_idx)
+  }
+  let mut exi = 0
+  while exi < Array::length(export_fn_names) {
+    let ename = Array::get(export_fn_names, exi)
+    let skip_export = library_mode && ename == entry_name
+    if !skip_export && !array_contains_str(all_export_names, ename) {
+      Array::push(all_export_names, ename)
+      Array::push(all_export_indices, Array::get(export_fn_user_indices, exi) + func_offset)
+    }
+    exi = exi + 1
+  }
+  // Per-block bench: export each `__bench_<name>` function so the runner's
+  // `--bench` mode can time benchmark blocks individually (instead of running the
+  // whole `_start`). Only `__no_entry__` test/bench builds populate test_fn_names,
+  // so normal builds (incl. the compiler self-compile) are byte-identical. The
+  // wasm index of a user function at user-index `j` is `j + func_offset`.
+  let mut bxi = 0
+  while bxi < Array::length(test_fn_names) {
+    let bname = Array::get(test_fn_names, bxi)
+    if String::starts_with(bname, "__bench_") && !array_contains_str(all_export_names, bname) {
+      let mut bj = 0
+      let mut bfound = 0 - 1
+      while bj < num_user_funcs {
+        if Array::get(fn_names_list, bj) == bname {
+          bfound = bj
+          bj = num_user_funcs
+        } else {
+          bj = bj + 1
+        }
+      }
+      if bfound >= 0 {
+        Array::push(all_export_names, bname)
+        Array::push(all_export_indices, bfound + func_offset)
+      }
+    }
+    bxi = bxi + 1
+  }
+  let export_content = bytebuf_new()
+  // #721: the "error" tag export exists only when the tag section does.
+  let export_count = Array::length(all_export_names) + 1 +
+  (if library_mode {
+    0
+  } else {
+    1 + (if uses_exceptions {
+      1
+    } else {
+      0
+    })
+  })
+  bytebuf_push_vec_header(export_content, export_count)
+  let mut efi = 0
+  while efi < Array::length(all_export_names) {
+    emit_name(export_content, Array::get(all_export_names, efi))
+    bytebuf_push(export_content, 0)
+    leb128_encode_u32(export_content, Array::get(all_export_indices, efi))
+    efi = efi + 1
+  }
+  emit_name(export_content, "memory")
+  bytebuf_push(export_content, 2)
+  leb128_encode_u32(export_content, 0)
+  if !library_mode {
+    emit_name(export_content, "__heap_ptr")
+    bytebuf_push(export_content, 3)
+    leb128_encode_u32(export_content, 0)
+    if uses_exceptions {
+      emit_name(export_content, "error")
+      bytebuf_push(export_content, 4)
+      leb128_encode_u32(export_content, 0)
+    } else {
+      ()
+    }
+  }
+  bytebuf_push_section(out, 7, export_content)
+  if total_table_entries > 0 {
+    let table_func_indices = lc_fresh_int_array()
+    let mut tei = 0
+    while tei < num_user_funcs {
+      Array::push(table_func_indices, func_offset + tei)
+      tei = tei + 1
+    }
+    let mut tej = 0
+    while tej < num_lambdas {
+      Array::push(table_func_indices, run_func_idx + 1 + tej)
+      tej = tej + 1
+    }
+    emit_element_section_active(out, table_func_indices)
+  }
+  let code_content = bytebuf_new()
+  bytebuf_push_vec_header(code_content, Array::length(bodies))
+  let mut ci = 0
+  while ci < Array::length(bodies) {
+    let body = Array::get(bodies, ci)
+    let func_buf = bytebuf_new()
+    let ni32 = Array::get(meta_i32, ci)
+    let ni64 = Array::get(meta_i64, ci)
+    if ni32 == 0 {
+      if ni64 == 0 {
+        leb128_encode_u32(func_buf, 0)
+      } else {
+        leb128_encode_u32(func_buf, 1)
+        leb128_encode_u32(func_buf, ni64)
+        bytebuf_push(func_buf, 126)
+      }
+    } else {
+      if ni64 == 0 {
+        leb128_encode_u32(func_buf, 1)
+        leb128_encode_u32(func_buf, ni32)
+        bytebuf_push(func_buf, 127)
+      } else {
+        leb128_encode_u32(func_buf, 2)
+        leb128_encode_u32(func_buf, ni32)
+        bytebuf_push(func_buf, 127)
+        leb128_encode_u32(func_buf, ni64)
+        bytebuf_push(func_buf, 126)
+      }
+    }
+    bytebuf_push_buf(func_buf, body)
+    bytebuf_push(func_buf, 11)
+    leb128_encode_u32(code_content, bytebuf_length(func_buf))
+    bytebuf_push_buf(code_content, func_buf)
+    ci = ci + 1
+  }
+  bytebuf_push_section(out, 10, code_content)
+  if num_strings > 0 {
+    let data_offsets = lc_fresh_int_array()
+    let data_bufs = lc_fresh_bytes_array()
+    let mut di = 0
+    while di < num_strings {
+      Array::push(data_offsets, Array::get(str_offsets, di))
+      Array::push(data_bufs, string_to_data(Array::get(str_strs, di)))
+      di = di + 1
+    }
+    emit_data_section_multi(out, data_offsets, data_bufs)
+  }
+  // Name section (debugger P0 / ADR-0035): name the user functions so wasm
+  // backtraces and tooling show `main` etc. instead of `<wasm function N>`.
+  // User functions occupy consecutive indices starting at `func_offset`.
+  emit_function_name_section(out, fn_names_list, func_offset)
+  bytebuf_to_bytes(out)
+}
+
+export let compile_wasi_module_rc_impl: (Array[Stmt], String) -> Bytes with { Error } = (stmts_in, entry_name) -> {
+  let stmts = elaborate_heap_params(stmts_in)
+  compile_wasi_module_linked_impl(stmts, entry_name, Array::slice([
+    ("", "")
+  ], 0, 0), Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), false, true, false, false, false, false, empty_dbg_prov())
+}
+
+// #715 recurrence guard: RC + shadow-liveness instrumentation (VIBE_RC=shadow).
+export let compile_wasi_module_rc_shadow_impl: (Array[Stmt], String) -> Bytes with { Error } = (stmts_in, entry_name) -> {
+  let stmts = elaborate_heap_params(stmts_in)
+  compile_wasi_module_linked_impl(stmts, entry_name, Array::slice([
+    ("", "")
+  ], 0, 0), Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), false, true, false, false, false, true, empty_dbg_prov())
+}
+
+export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
+  compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), false, false, false, false, false, false, empty_dbg_prov())
+}
+
+// Coverage build (#cov): compile with function-level hit instrumentation +
+// `vibe_cov` custom section. Same as compile_wasi_module_with_sources_impl but
+// with coverage enabled.
+export let compile_wasi_module_with_sources_coverage_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
+  compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), false, true, true, false, false, false, empty_dbg_prov())
+}
+
+// Trace build (debugger / DAP P1 groundwork): compile with function-call
+// execution-trace instrumentation + `vibe.trace` custom section. Same as
+// compile_wasi_module_with_sources_impl but with debug_trace enabled.
+export let compile_wasi_module_with_sources_trace_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
+  compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), false, true, false, true, false, false, empty_dbg_prov())
+}
+
+// Break build (debugger / DAP P1): compile with `vibe::dbg_break` host-hook
+// instrumentation at each user function entry. Same as
+// compile_wasi_module_with_sources_impl but with debug_break enabled.
+export let compile_wasi_module_with_sources_break_impl: (Array[Stmt], String, Array[(String, String)], DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, prov) -> {
+  compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), false, true, false, false, true, false, prov)
+}

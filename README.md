@@ -3,7 +3,7 @@
 vibe language prototype and runtime.
 
 vibe is **selfhost-only**: the compiler, type checker, and codegen are written in
-vibe itself (`vibe/compiler/`, `vibe/cli/`) and built from a committed seed via a
+vibe itself (`lib/@vibe/compiler/`, `vibe/cli/`) and built from a committed seed via a
 wasm runner — no MoonBit toolchain is required (the original MoonBit host was
 retired in #594; see [docs/archive/moonbit-retirement.md](docs/archive/moonbit-retirement.md)).
 The task runner is [pkfire](https://github.com/mizchi/pkfire) (`pkf`), defined in
@@ -84,7 +84,7 @@ inspection) and a VS Code DAP adapter. See
 | Native CLI | Compiled execution via the host runtime (`run` / `test` / `shell`) |
 | WASM (linear) | **Production default**: `compile --wasm` / `--wasm-linear`, `build --release`, `test`, `bench` (tagged-i64, bump allocator) |
 | WASM + js-string | WASM with JS string builtins for embedding |
-| WASM GC | Long-term primary target. Backend exists (`vibe/compiler/codegen/gc/`) but is **not yet wired into the selfhost compile CLI** (`compile --wasm-gc` throws); reachable via `VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` for pure test/bench. See [docs/spec/memory-contract.md](docs/spec/memory-contract.md) |
+| WASM GC | Long-term primary target. Backend exists (`lib/@vibe/compiler/codegen/gc/`) but is **not yet wired into the selfhost compile CLI** (`compile --wasm-gc` throws); reachable via `VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` for pure test/bench. See [docs/spec/memory-contract.md](docs/spec/memory-contract.md) |
 | Component Model | WASI/component packaging for composition |
 
 ### Builtin Functions

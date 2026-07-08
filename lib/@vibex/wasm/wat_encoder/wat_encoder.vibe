@@ -1,0 +1,2808 @@
+//# Functions
+
+let hex_val = (c: Int) -> Int {
+  if (c >= 48) && (c <= 57) {
+    c - 48
+  }
+  else {
+    if (c >= 97) && (c <= 102) {
+      c - 87
+    }
+    else {
+      if (c >= 65) && (c <= 70) {
+        c - 55
+      }
+      else {
+        0
+      }
+    }
+  }
+}
+
+let map_get = (names: Array[String], indices: Array[Int], name: String) -> Int {
+  let len = Array::length(names)
+  let mut i = 0
+  let mut found = -1
+  while i < len {
+    if Array::get(names, i) == name {
+      found = Array::get(indices, i)
+    }
+    i = i + 1
+  }
+  found
+}
+
+let map_set = (names: Array[String], indices: Array[Int], name: String, idx: Int) -> Unit {
+  Array::push(names, name)
+  Array::push(indices, idx)
+}
+
+let tok_int: Int = 5
+
+let is_digit = (c: Int) -> Bool {
+  (c >= 48) && (c <= 57)
+}
+
+let make_i64 = (hi: Int, lo: Int) -> Int {
+  (hi<<32)|lo
+}
+
+let tok_text = (src: String, tokens: Array[(Int, Int, Int)], idx: Int) -> String {
+  let (_, s, e) = Array::get(tokens, idx)
+  String::substring(src, s, e)
+}
+
+let tok_type = (tokens: Array[(Int, Int, Int)], idx: Int) -> Int {
+  let (ty, _, _) = Array::get(tokens, idx)
+  ty
+}
+
+let parse_int = (s: String) -> Int {
+  let len = String::length(s)
+  if len == 0 {
+    0
+  }
+  else {
+    let mut neg = false
+    let mut start = 0
+    if String::char_code_at(s, 0) == 45 {
+      neg = true; start = 1
+    }
+    else {
+      if String::char_code_at(s, 0) == 43 {
+        start = 1
+      }
+    }
+    let mut val = 0
+    if ((start + 1) < len) && (String::char_code_at(s, start) == 48) && ((String::char_code_at(s, start + 1) == 120) || (String::char_code_at(s, start + 1) == 88)) {
+      let mut i = start + 2
+      while i < len {
+        let c = String::char_code_at(s, i)
+        if (c >= 48) && (c <= 57) {
+          val = val * 16 + (c - 48)
+        }
+        else {
+          if (c >= 97) && (c <= 102) {
+            val = val * 16 + (c - 87)
+          }
+          else {
+            if (c >= 65) && (c <= 70) {
+              val = val * 16 + (c - 55)
+            }
+          }
+        }
+        i = i + 1
+      }
+    } else {
+      let mut i = start
+      while i < len {
+        let c = String::char_code_at(s, i)
+        if (c >= 48) && (c <= 57) {
+          val = val * 10 + (c - 48)
+        }
+        i = i + 1
+      }
+    }
+    if neg {
+      0 - val
+    } else {
+      val
+    }
+  }
+}
+
+let tok_float: Int = 6
+
+let tok_ident: Int = 4
+
+let is_id_char = (c: Int) -> Bool {
+  ((c >= 97) && (c <= 122)) ||
+  ((c >= 65) && (c <= 90)) ||
+  ((c >= 48) && (c <= 57)) ||
+  (c == 95) || (c == 46) || (c == 47) || (c == 58) || (c == 45)
+}
+
+let tok_lparen: Int = 1
+
+let tok_rparen: Int = 2
+
+let tok_string: Int = 7
+
+let tok_keyword: Int = 3
+
+let append_bytes = (dst: Bytes, src: Bytes) -> Unit {
+  let len = Bytes::length(src)
+  let mut i = 0
+  while i < len {
+    Bytes::push(dst, src[i])
+    i = i + 1
+  }
+}
+
+let is_hex_digit = (c: Int) -> Bool {
+  ((c >= 48) && (c <= 57)) ||
+  ((c >= 97) && (c <= 102)) ||
+  ((c >= 65) && (c <= 70))
+}
+
+let tokenize = (src: String) -> Array[(Int, Int, Int)] {
+  let len = String::length(src)
+  let result = Array::slice([
+    (0, 0, 0)
+  ], 0, 0)
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(src, i)
+    if (c == 32) || (c == 9) || (c == 10) || (c == 13) {
+      i = i + 1
+    } else {
+      if c == 40 {
+        if ((i + 1) < len) && (String::char_code_at(src, i + 1) == 59) {
+          i = i + 2
+          let mut depth = 1
+          while (i < len) && (depth > 0) {
+            let cc = String::char_code_at(src, i)
+            if (cc == 59) && ((i + 1) < len) && (String::char_code_at(src, i + 1) == 41) {
+              depth = depth - 1
+              i = i + 2
+            } else {
+              if (cc == 40) && ((i + 1) < len) && (String::char_code_at(src, i + 1) == 59) {
+                depth = depth + 1
+                i = i + 2
+              } else {
+                i = i + 1
+              }
+            }
+          }
+        } else {
+          Array::push(result, (tok_lparen, i, i + 1))
+          i = i + 1
+        }
+      } else {
+        if c == 41 {
+          Array::push(result, (tok_rparen, i, i + 1))
+          i = i + 1
+        } else {
+          if c == 59 {
+            while (i < len) && (String::char_code_at(src, i) != 10) {
+              i = i + 1
+            }
+          } else {
+            if c == 34 {
+              let start = i
+              i = i + 1
+              while (i < len) && (String::char_code_at(src, i) != 34) {
+                if String::char_code_at(src, i) == 92 {
+                  i = i + 2
+                }
+                else {
+                  i = i + 1
+                }
+              }
+              if i < len {
+                i = i + 1
+              }
+              Array::push(result, (tok_string, start, i))
+            } else {
+              if c == 36 {
+                let start = i
+                i = i + 1
+                while (i < len) && (is_id_char(String::char_code_at(src, i))) {
+                  i = i + 1
+                }
+                Array::push(result, (tok_ident, start, i))
+              } else {
+                if is_digit(c) || ((c == 45) && ((i + 1) < len) && (is_digit(String::char_code_at(src, i + 1)))) || ((c == 43) && ((i + 1) < len) && (is_digit(String::char_code_at(src, i + 1)))) {
+                  let start = i
+                  let mut is_float = false
+                  if (c == 45) || (c == 43) {
+                    i = i + 1
+                  }
+                  if ((i + 1) < len) && (String::char_code_at(src, i) == 48) && ((String::char_code_at(src, i + 1) == 120) || (String::char_code_at(src, i + 1) == 88)) {
+                    i = i + 2
+                    while (i < len) && (is_hex_digit(String::char_code_at(src, i)) || (String::char_code_at(src, i) == 95)) {
+                      i = i + 1
+                    }
+                    if (i < len) && (String::char_code_at(src, i) == 46) {
+                      is_float = true
+                      i = i + 1
+                      while (i < len) && (is_hex_digit(String::char_code_at(src, i)) || (String::char_code_at(src, i) == 95)) {
+                        i = i + 1
+                      }
+                    }
+                    if (i < len) && ((String::char_code_at(src, i) == 112) || (String::char_code_at(src, i) == 80)) {
+                      is_float = true
+                      i = i + 1
+                      if (i < len) && ((String::char_code_at(src, i) == 43) || (String::char_code_at(src, i) == 45)) {
+                        i = i + 1
+                      }
+                      while (i < len) && (is_digit(String::char_code_at(src, i))) {
+                        i = i + 1
+                      }
+                    }
+                  } else {
+                    while (i < len) && (is_digit(String::char_code_at(src, i)) || (String::char_code_at(src, i) == 95)) {
+                      i = i + 1
+                    }
+                    if (i < len) && (String::char_code_at(src, i) == 46) {
+                      is_float = true
+                      i = i + 1
+                      while (i < len) && (is_digit(String::char_code_at(src, i)) || (String::char_code_at(src, i) == 95)) {
+                        i = i + 1
+                      }
+                    }
+                    if (i < len) && ((String::char_code_at(src, i) == 101) || (String::char_code_at(src, i) == 69)) {
+                      is_float = true
+                      i = i + 1
+                      if (i < len) && ((String::char_code_at(src, i) == 43) || (String::char_code_at(src, i) == 45)) {
+                        i = i + 1
+                      }
+                      while (i < len) && (is_digit(String::char_code_at(src, i))) {
+                        i = i + 1
+                      }
+                    }
+                  }
+                  if is_float {
+                    Array::push(result, (tok_float, start, i))
+                  } else {
+                    Array::push(result, (tok_int, start, i))
+                  }
+                } else {
+                  let start = i
+                  while (i < len) && (is_id_char(String::char_code_at(src, i))) {
+                    i = i + 1
+                  }
+                  if i > start {
+                    Array::push(result, (tok_keyword, start, i))
+                  } else {
+                    i = i + 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  result
+}
+
+let valtype_code = (name: String) -> Int {
+  if name == "i32" {
+    0x7F
+  }
+  else if name == "i64" {
+    0x7E
+  }
+  else if name == "f32" {
+    0x7D
+  }
+  else if name == "f64" {
+    0x7C
+  }
+  else {
+    0x7F
+  }
+}
+
+let write_f32_le = (buf: Bytes, bits: Int) -> Unit {
+  Bytes::push(buf, bits&0xFF)
+  Bytes::push(buf, (bits>>8)&0xFF)
+  Bytes::push(buf, (bits>>16)&0xFF)
+  Bytes::push(buf, (bits>>24)&0xFF)
+}
+
+let write_f64_le = (buf: Bytes, bits: Int) -> Unit {
+  Bytes::push(buf, bits&0xFF)
+  Bytes::push(buf, (bits>>8)&0xFF)
+  Bytes::push(buf, (bits>>16)&0xFF)
+  Bytes::push(buf, (bits>>24)&0xFF)
+  Bytes::push(buf, (bits>>32)&0xFF)
+  Bytes::push(buf, (bits>>40)&0xFF)
+  Bytes::push(buf, (bits>>48)&0xFF)
+  Bytes::push(buf, (bits>>56)&0xFF)
+}
+
+let decode_string = (s: String) -> String {
+  let len = String::length(s)
+  if len < 2 {
+    ""
+  }
+  else {
+    // O(N) build via StringBuilder; per-char String::concat was O(L²) (issue #366).
+    let result = StringBuilder::new()
+    let mut i = 1
+    let end_pos = len - 1
+    while i < end_pos {
+      let c = String::char_code_at(s, i)
+      if c == 92 {
+        i = i + 1
+        if i < end_pos {
+          let c2 = String::char_code_at(s, i)
+          if c2 == 110 {
+            StringBuilder::push(result, String::from_char_code(10)); i = i + 1
+          }
+          else {
+            if c2 == 116 {
+              StringBuilder::push(result, String::from_char_code(9)); i = i + 1
+            }
+            else {
+              if c2 == 92 {
+                StringBuilder::push(result, "\\"); i = i + 1
+              }
+              else {
+                if c2 == 34 {
+                  StringBuilder::push(result, "\""); i = i + 1
+                }
+                else {
+                  if is_hex_digit(c2) && ((i + 1) < end_pos) && (is_hex_digit(String::char_code_at(s, i + 1))) {
+                    let h = hex_val(c2) * 16 + hex_val(String::char_code_at(s, i + 1))
+                    StringBuilder::push(result, String::from_char_code(h))
+                    i = i + 2
+                  } else {
+                    StringBuilder::push(result, String::from_char_code(c2))
+                    i = i + 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      } else {
+        StringBuilder::push(result, String::from_char_code(c))
+        i = i + 1
+      }
+    }
+    StringBuilder::freeze(result)
+  }
+}
+
+let map_names_new = () -> Array[String] {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+
+let write_sleb128 = (buf: Bytes, val: Int) -> Unit {
+  let mut v = val
+  let mut done = false
+  while done == false {
+    let byte = v&0x7F
+    v = v>>7
+    if ((v == 0) && ((byte&0x40) == 0)) || ((v == -1) && ((byte&0x40) != 0)) {
+      Bytes::push(buf, byte)
+      done = true
+    } else {
+      Bytes::push(buf, byte|0x80)
+    }
+  }
+}
+
+let write_uleb128 = (buf: Bytes, val: Int) -> Unit {
+  let mut v = val
+  let mut done = false
+  while done == false {
+    let byte = v&0x7F
+    v = v>>7
+    if v < 0 {
+      v = v&0x1FFFFFFFFFFFFFF
+    }
+    if v == 0 {
+      Bytes::push(buf, byte)
+      done = true
+    } else {
+      Bytes::push(buf, byte|0x80)
+    }
+  }
+}
+
+let write_name = (buf: Bytes, s: String) -> Unit {
+  let len = String::length(s)
+  write_uleb128(buf, len)
+  let mut i = 0
+  while i < len {
+    Bytes::push(buf, String::char_code_at(s, i))
+    i = i + 1
+  }
+}
+
+let emit_section = (out: Bytes, section_id: Int, payload: Bytes) -> Unit {
+  let plen = Bytes::length(payload)
+  if plen > 0 {
+    Bytes::push(out, section_id)
+    write_uleb128(out, plen)
+    let mut i = 0
+    while i < plen {
+      Bytes::push(out, payload[i])
+      i = i + 1
+    }
+  }
+}
+
+// #776: there is no `Double::parse` (or any string->Double parser) builtin
+// anywhere in the selfhost compiler/stdlib — `Double::parse` isn't even a
+// checker-known name (unlike e.g. `Llm::complete`, which at least type-checks
+// but lacks codegen). WASM has no "parse decimal string" instruction either,
+// so this hand-rolls plain-decimal (`[+-]?digits[.digits][eE[+-]?digits]`)
+// parsing via Int/Double arithmetic instead. Good enough for WAT `f64.const` /
+// `f32.const` literals (hex-float `0x1.8p3` forms are not handled — none of
+// the wasm fixtures use them).
+let pow10 = (n: Int) -> Double {
+  let mut result = 1.0
+  let mut i = 0
+  while i < n {
+    result = result * 10.0
+    i = i + 1
+  }
+  result
+}
+
+let parse_decimal_double = (s: String) -> Option[Double] {
+  let len = String::length(s)
+  if len == 0 {
+    None
+  } else {
+    let mut i = 0
+    let mut neg = false
+    let c0 = String::char_code_at(s, 0)
+    if c0 == 45 {
+      neg = true
+      i = 1
+    } else if c0 == 43 {
+      i = 1
+    }
+    let e_pos_lower = String::index_of(s, "e")
+    let e_pos_upper = String::index_of(s, "E")
+    let e_pos = if e_pos_lower >= 0 { e_pos_lower } else { e_pos_upper }
+    let mantissa_end = if e_pos >= 0 { e_pos } else { len }
+    let mut mantissa = 0
+    let mut frac_digits = 0
+    let mut seen_dot = false
+    let mut seen_digit = false
+    let mut ok = true
+    let mut j = i
+    while j < mantissa_end {
+      let c = String::char_code_at(s, j)
+      if is_digit(c) {
+        mantissa = mantissa * 10 + (c - 48)
+        if seen_dot {
+          frac_digits = frac_digits + 1
+        }
+        seen_digit = true
+      } else if c == 46 && not(seen_dot) {
+        seen_dot = true
+      } else {
+        ok = false
+      }
+      j = j + 1
+    }
+    let mut exp = 0
+    if ok && seen_digit && e_pos >= 0 {
+      let exp_str = String::substring(s, e_pos + 1, len)
+      let exp_len = String::length(exp_str)
+      if exp_len == 0 {
+        ok = false
+      } else {
+        let mut k = 0
+        let mut exp_neg = false
+        let e0 = String::char_code_at(exp_str, 0)
+        if e0 == 45 {
+          exp_neg = true
+          k = 1
+        } else if e0 == 43 {
+          k = 1
+        }
+        let mut exp_val = 0
+        let mut exp_seen_digit = false
+        while k < exp_len {
+          let c = String::char_code_at(exp_str, k)
+          if is_digit(c) {
+            exp_val = exp_val * 10 + (c - 48)
+            exp_seen_digit = true
+          } else {
+            ok = false
+          }
+          k = k + 1
+        }
+        if not(exp_seen_digit) {
+          ok = false
+        }
+        exp = if exp_neg { 0 - exp_val } else { exp_val }
+      }
+    }
+    if not(ok) || not(seen_digit) {
+      None
+    } else {
+      let total_exp = exp - frac_digits
+      let mag = Int::to_double(mantissa)
+      let scaled = if total_exp >= 0 {
+        mag * pow10(total_exp)
+      } else {
+        mag / pow10(0 - total_exp)
+      }
+      let signed = if neg { 0.0 - scaled } else { scaled }
+      Some(signed)
+    }
+  }
+}
+
+let parse_f64_bits = (s: String) -> Int {
+  if s == "nan" {
+    make_i64(0x7FF80000, 0)
+  }
+  else if s == "-nan" {
+    make_i64(0xFFF80000, 0)
+  }
+  else if s == "inf" {
+    make_i64(0x7FF00000, 0)
+  }
+  else if s == "-inf" {
+    make_i64(0xFFF00000, 0)
+  }
+  else {
+    let mut clean = ""
+    let len = String::length(s)
+    let mut i = 0
+    while i < len {
+      let c = String::char_code_at(s, i)
+      if c != 95 {
+        clean = String::concat(clean, String::from_char_code(c))
+      }
+      i = i + 1
+    }
+    let parsed = parse_decimal_double(clean)
+    match parsed {
+      Some(v) => Double::to_i64_bits(v),
+      None => {
+        // Malformed f64 literal: the tokenizer only emits float tokens for
+        // forms that `parse_decimal_double` should accept (nan/inf/signed-nan/
+        // signed-inf are handled by the branches above). Hitting `None` here
+        // means the input is not a valid numeric literal; trap loudly rather
+        // than silently emit zero bytes.
+        assert(false)
+        0
+      },
+    }
+  }
+}
+
+let parse_mem_args = (src: String, tokens: Array[(Int, Int, Int)], pos: Int, end_pos: Int, default_align: Int) -> (Int, Int, Int) {
+  let mut align = default_align
+  let mut offset = 0
+  let mut cur = pos
+  let mut done = false
+  while (cur < end_pos) && (done == false) {
+    if tok_type(tokens, cur) != tok_keyword {
+      done = true
+    }
+    else {
+      let text = tok_text(src, tokens, cur)
+      if String::starts_with(text, "offset=") {
+        offset = parse_int(String::substring(text, 7, String::length(text)))
+        cur = cur + 1
+      } else if String::starts_with(text, "align=") {
+        let a = parse_int(String::substring(text, 6, String::length(text)))
+        align = 0
+        let mut av = a
+        while av > 1 {
+          align = align + 1; av = av / 2
+        }
+        cur = cur + 1
+      } else {
+        done = true
+      }
+    }
+  }
+  (align, offset, cur)
+}
+
+let empty_int_array = () -> Array[Int] {
+  Array::slice([
+    0
+  ], 0, 0)
+}
+
+let parse_func_sig = (src: String, tokens: Array[(Int, Int, Int)], start_pos: Int, tok_count: Int) -> (Array[Int], Array[Int], Int) {
+  let params = empty_int_array()
+  let results = empty_int_array()
+  let mut pos = start_pos
+  let mut parsing = true
+  while parsing {
+    if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+      let peek = pos + 1
+      if peek < tok_count {
+        let kw = tok_text(src, tokens, peek)
+        if kw == "param" {
+          pos = peek + 1
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_ident) {
+            pos = pos + 1
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+              Array::push(params, valtype_code(tok_text(src, tokens, pos)))
+              pos = pos + 1
+            }
+          } else {
+            while (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+              Array::push(params, valtype_code(tok_text(src, tokens, pos)))
+              pos = pos + 1
+            }
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+            pos = pos + 1
+          }
+        }
+        else if kw == "result" {
+          pos = peek + 1
+          while (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+            Array::push(results, valtype_code(tok_text(src, tokens, pos)))
+            pos = pos + 1
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+            pos = pos + 1
+          }
+        }
+        else {
+          parsing = false
+        }
+      } else {
+        parsing = false
+      }
+    } else {
+      parsing = false
+    }
+  }
+  (params, results, pos)
+}
+
+let map_indices_new = () -> Array[Int] {
+  Array::slice([
+    0
+  ], 0, 0)
+}
+
+let find_or_add_type = (types_params: Array[Array[Int]], types_results: Array[Array[Int]], params: Array[Int], results: Array[Int]) -> Int {
+  let cnt = Array::length(types_params)
+  let mut i = 0
+  let mut found = -1
+  while (i < cnt) && (found == -1) {
+    let tp = Array::get(types_params, i)
+    let tr = Array::get(types_results, i)
+    if (Array::length(tp) == Array::length(params)) && (Array::length(tr) == Array::length(results)) {
+      let mut match_ok = true
+      let mut j = 0
+      while j < Array::length(tp) {
+        if Array::get(tp, j) != Array::get(params, j) {
+          match_ok = false
+        }
+        j = j + 1
+      }
+      j = 0
+      while j < Array::length(tr) {
+        if Array::get(tr, j) != Array::get(results, j) {
+          match_ok = false
+        }
+        j = j + 1
+      }
+      if match_ok {
+        found = i
+      }
+    }
+    i = i + 1
+  }
+  if found >= 0 {
+    found
+  }
+  else {
+    Array::push(types_params, params)
+    Array::push(types_results, results)
+    cnt
+  }
+}
+
+let decode_string_bytes = (s: String) -> Bytes {
+  let len = String::length(s)
+  let buf = Bytes::new()
+  if len < 2 {
+    buf
+  }
+  else {
+    let mut i = 1
+    let end_pos = len - 1
+    while i < end_pos {
+      let c = String::char_code_at(s, i)
+      if c == 92 {
+        i = i + 1
+        if i < end_pos {
+          let c2 = String::char_code_at(s, i)
+          if c2 == 110 {
+            Bytes::push(buf, 10); i = i + 1
+          }
+          else {
+            if c2 == 116 {
+              Bytes::push(buf, 9); i = i + 1
+            }
+            else {
+              if c2 == 92 {
+                Bytes::push(buf, 92); i = i + 1
+              }
+              else {
+                if c2 == 34 {
+                  Bytes::push(buf, 34); i = i + 1
+                }
+                else {
+                  if is_hex_digit(c2) && ((i + 1) < end_pos) && (is_hex_digit(String::char_code_at(s, i + 1))) {
+                    let h = hex_val(c2) * 16 + hex_val(String::char_code_at(s, i + 1))
+                    Bytes::push(buf, h)
+                    i = i + 2
+                  } else {
+                    Bytes::push(buf, c2)
+                    i = i + 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      } else {
+        Bytes::push(buf, c)
+        i = i + 1
+      }
+    }
+    buf
+  }
+}
+
+let f64_bits_to_f32_bits = (bits: Int) -> Int {
+  let sign = (bits>>63)&1
+  let exp64 = (bits>>52)&0x7FF
+  let frac64 = bits&0xFFFFFFFFFFFFF
+  if exp64 == 0x7FF {
+    if frac64 == 0 {
+      (sign<<31)|0x7F800000
+    } else {
+      (sign<<31)|0x7FC00000
+    }
+  } else if exp64 == 0 {
+    sign<<31
+  } else {
+    let exp32 = exp64 - 1023 + 127
+    let frac32 = (frac64>>29)&0x7FFFFF
+    if exp32 >= 255 {
+      (sign<<31)|0x7F800000
+    } else if exp32 <= 0 {
+      sign<<31
+    } else {
+      (sign<<31)|(exp32<<23)|frac32
+    }
+  }
+}
+
+let parse_f32_bits = (s: String) -> Int {
+  if s == "nan" {
+    0x7FC00000
+  }
+  else if s == "-nan" {
+    0xFFC00000
+  }
+  else if s == "inf" {
+    0x7F800000
+  }
+  else if s == "-inf" {
+    0xFF800000
+  }
+  else {
+    f64_bits_to_f32_bits(parse_f64_bits(s))
+  }
+}
+
+let emit_instruction = (buf: Bytes, src: String, tokens: Array[(Int, Int, Int)], pos: Int, end_pos: Int, func_names: Array[String], func_indices: Array[Int], local_names: Array[String], local_indices: Array[Int], global_names: Array[String], global_indices: Array[Int], label_names: Array[String], label_indices: Array[Int], label_depth: Int) -> Int {
+  if pos >= end_pos {
+    pos
+  }
+  else {
+    let ty = tok_type(tokens, pos)
+    if ty == tok_lparen {
+      pos + 1
+    } else if ty == tok_rparen {
+      pos + 1
+    } else if ty != tok_keyword {
+      pos + 1
+    } else {
+      let kw = tok_text(src, tokens, pos)
+      if kw == "unreachable" {
+        Bytes::push(buf, 0x00); pos + 1
+      }
+      else if kw == "nop" {
+        Bytes::push(buf, 0x01); pos + 1
+      }
+      else if kw == "block" {
+        Bytes::push(buf, 0x02)
+        let mut next = pos + 1
+        if (next < end_pos) && (tok_type(tokens, next) == tok_ident) {
+          let lbl = tok_text(src, tokens, next)
+          map_set(label_names, label_indices, lbl, label_depth)
+          next = next + 1
+        }
+        if (next < end_pos) && (tok_type(tokens, next) == tok_lparen) && ((next + 1) < end_pos) && (tok_text(src, tokens, next + 1) == "result") {
+          let rpos = next + 2
+          if (rpos < end_pos) && (tok_type(tokens, rpos) == tok_keyword) {
+            Bytes::push(buf, valtype_code(tok_text(src, tokens, rpos)))
+            let mut skip = rpos + 1
+            if (skip < end_pos) && (tok_type(tokens, skip) == tok_rparen) {
+              skip = skip + 1
+            }
+            skip
+          } else {
+            Bytes::push(buf, 0x40)
+            next
+          }
+        } else {
+          Bytes::push(buf, 0x40)
+          next
+        }
+      }
+      else if kw == "loop" {
+        Bytes::push(buf, 0x03)
+        let mut next = pos + 1
+        if (next < end_pos) && (tok_type(tokens, next) == tok_ident) {
+          let lbl = tok_text(src, tokens, next)
+          map_set(label_names, label_indices, lbl, label_depth)
+          next = next + 1
+        }
+        if (next < end_pos) && (tok_type(tokens, next) == tok_lparen) && ((next + 1) < end_pos) && (tok_text(src, tokens, next + 1) == "result") {
+          let rpos = next + 2
+          if (rpos < end_pos) && (tok_type(tokens, rpos) == tok_keyword) {
+            Bytes::push(buf, valtype_code(tok_text(src, tokens, rpos)))
+            let mut skip = rpos + 1
+            if (skip < end_pos) && (tok_type(tokens, skip) == tok_rparen) {
+              skip = skip + 1
+            }
+            skip
+          } else {
+            Bytes::push(buf, 0x40)
+            next
+          }
+        } else {
+          Bytes::push(buf, 0x40)
+          next
+        }
+      }
+      else if kw == "if" {
+        Bytes::push(buf, 0x04)
+        let mut next = pos + 1
+        if (next < end_pos) && (tok_type(tokens, next) == tok_lparen) && ((next + 1) < end_pos) && (tok_text(src, tokens, next + 1) == "result") {
+          let rpos = next + 2
+          if (rpos < end_pos) && (tok_type(tokens, rpos) == tok_keyword) {
+            Bytes::push(buf, valtype_code(tok_text(src, tokens, rpos)))
+            let mut skip = rpos + 1
+            if (skip < end_pos) && (tok_type(tokens, skip) == tok_rparen) {
+              skip = skip + 1
+            }
+            skip
+          } else {
+            Bytes::push(buf, 0x40)
+            next
+          }
+        } else {
+          Bytes::push(buf, 0x40)
+          next
+        }
+      }
+      else if kw == "else" {
+        Bytes::push(buf, 0x05); pos + 1
+      }
+      else if kw == "end" {
+        Bytes::push(buf, 0x0B); pos + 1
+      }
+      else if kw == "then" {
+        pos + 1
+      }
+      else if kw == "br" {
+        Bytes::push(buf, 0x0C)
+        let next = pos + 1
+        if next < end_pos {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(label_names, label_indices, arg)
+            let depth = if idx >= 0 {
+              label_depth - idx - 1
+            } else {
+              0
+            }
+            write_uleb128(buf, depth)
+          } else {
+            write_uleb128(buf, parse_int(arg))
+          }
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "br_if" {
+        Bytes::push(buf, 0x0D)
+        let next = pos + 1
+        if next < end_pos {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(label_names, label_indices, arg)
+            let depth = if idx >= 0 {
+              label_depth - idx - 1
+            } else {
+              0
+            }
+            write_uleb128(buf, depth)
+          } else {
+            write_uleb128(buf, parse_int(arg))
+          }
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "return" {
+        Bytes::push(buf, 0x0F); pos + 1
+      }
+      else if kw == "call" {
+        Bytes::push(buf, 0x10)
+        let next = pos + 1
+        if next < end_pos {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(func_names, func_indices, arg)
+            write_uleb128(buf, if idx >= 0 {
+              idx
+            } else {
+              0
+            })
+          } else {
+            write_uleb128(buf, parse_int(arg))
+          }
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "drop" {
+        Bytes::push(buf, 0x1A); pos + 1
+      }
+      else if kw == "select" {
+        Bytes::push(buf, 0x1B); pos + 1
+      }
+      else if kw == "local.get" {
+        Bytes::push(buf, 0x20)
+        let next = pos + 1
+        if next < end_pos {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(local_names, local_indices, arg)
+            write_uleb128(buf, if idx >= 0 {
+              idx
+            } else {
+              0
+            })
+          } else {
+            write_uleb128(buf, parse_int(arg))
+          }
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "local.set" {
+        Bytes::push(buf, 0x21)
+        let next = pos + 1
+        if next < end_pos {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(local_names, local_indices, arg)
+            write_uleb128(buf, if idx >= 0 {
+              idx
+            } else {
+              0
+            })
+          } else {
+            write_uleb128(buf, parse_int(arg))
+          }
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "local.tee" {
+        Bytes::push(buf, 0x22)
+        let next = pos + 1
+        if next < end_pos {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(local_names, local_indices, arg)
+            write_uleb128(buf, if idx >= 0 {
+              idx
+            } else {
+              0
+            })
+          } else {
+            write_uleb128(buf, parse_int(arg))
+          }
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "global.get" {
+        Bytes::push(buf, 0x23)
+        let next = pos + 1
+        if next < end_pos {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(global_names, global_indices, arg)
+            write_uleb128(buf, if idx >= 0 {
+              idx
+            } else {
+              0
+            })
+          } else {
+            write_uleb128(buf, parse_int(arg))
+          }
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "global.set" {
+        Bytes::push(buf, 0x24)
+        let next = pos + 1
+        if next < end_pos {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(global_names, global_indices, arg)
+            write_uleb128(buf, if idx >= 0 {
+              idx
+            } else {
+              0
+            })
+          } else {
+            write_uleb128(buf, parse_int(arg))
+          }
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "i32.load" {
+        Bytes::push(buf, 0x28)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 2)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.load" {
+        Bytes::push(buf, 0x29)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 3)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.store" {
+        Bytes::push(buf, 0x36)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 2)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.store" {
+        Bytes::push(buf, 0x37)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 3)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.store8" {
+        Bytes::push(buf, 0x3A)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 0)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.store16" {
+        Bytes::push(buf, 0x3B)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 1)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.load8_s" {
+        Bytes::push(buf, 0x2C)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 0)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.load8_u" {
+        Bytes::push(buf, 0x2D)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 0)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.load16_s" {
+        Bytes::push(buf, 0x2E)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 1)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.load16_u" {
+        Bytes::push(buf, 0x2F)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 1)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "memory.size" {
+        Bytes::push(buf, 0x3F)
+        Bytes::push(buf, 0x00)
+        pos + 1
+      }
+      else if kw == "memory.grow" {
+        Bytes::push(buf, 0x40)
+        Bytes::push(buf, 0x00)
+        pos + 1
+      }
+      else if kw == "i32.const" {
+        Bytes::push(buf, 0x41)
+        let next = pos + 1
+        if next < end_pos {
+          write_sleb128(buf, parse_int(tok_text(src, tokens, next)))
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "i64.const" {
+        Bytes::push(buf, 0x42)
+        let next = pos + 1
+        if next < end_pos {
+          write_sleb128(buf, parse_int(tok_text(src, tokens, next)))
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "i32.eqz" {
+        Bytes::push(buf, 0x45); pos + 1
+      }
+      else if kw == "i32.eq" {
+        Bytes::push(buf, 0x46); pos + 1
+      }
+      else if kw == "i32.ne" {
+        Bytes::push(buf, 0x47); pos + 1
+      }
+      else if kw == "i32.lt_s" {
+        Bytes::push(buf, 0x48); pos + 1
+      }
+      else if kw == "i32.lt_u" {
+        Bytes::push(buf, 0x49); pos + 1
+      }
+      else if kw == "i32.gt_s" {
+        Bytes::push(buf, 0x4A); pos + 1
+      }
+      else if kw == "i32.gt_u" {
+        Bytes::push(buf, 0x4B); pos + 1
+      }
+      else if kw == "i32.le_s" {
+        Bytes::push(buf, 0x4C); pos + 1
+      }
+      else if kw == "i32.le_u" {
+        Bytes::push(buf, 0x4D); pos + 1
+      }
+      else if kw == "i32.ge_s" {
+        Bytes::push(buf, 0x4E); pos + 1
+      }
+      else if kw == "i32.ge_u" {
+        Bytes::push(buf, 0x4F); pos + 1
+      }
+      else if kw == "i64.eqz" {
+        Bytes::push(buf, 0x50); pos + 1
+      }
+      else if kw == "i64.eq" {
+        Bytes::push(buf, 0x51); pos + 1
+      }
+      else if kw == "i64.ne" {
+        Bytes::push(buf, 0x52); pos + 1
+      }
+      else if kw == "i64.lt_s" {
+        Bytes::push(buf, 0x53); pos + 1
+      }
+      else if kw == "i64.gt_s" {
+        Bytes::push(buf, 0x55); pos + 1
+      }
+      else if kw == "i64.le_s" {
+        Bytes::push(buf, 0x57); pos + 1
+      }
+      else if kw == "i64.ge_s" {
+        Bytes::push(buf, 0x59); pos + 1
+      }
+      else if kw == "i32.clz" {
+        Bytes::push(buf, 0x67); pos + 1
+      }
+      else if kw == "i32.ctz" {
+        Bytes::push(buf, 0x68); pos + 1
+      }
+      else if kw == "i32.popcnt" {
+        Bytes::push(buf, 0x69); pos + 1
+      }
+      else if kw == "i32.add" {
+        Bytes::push(buf, 0x6A); pos + 1
+      }
+      else if kw == "i32.sub" {
+        Bytes::push(buf, 0x6B); pos + 1
+      }
+      else if kw == "i32.mul" {
+        Bytes::push(buf, 0x6C); pos + 1
+      }
+      else if kw == "i32.div_s" {
+        Bytes::push(buf, 0x6D); pos + 1
+      }
+      else if kw == "i32.div_u" {
+        Bytes::push(buf, 0x6E); pos + 1
+      }
+      else if kw == "i32.rem_s" {
+        Bytes::push(buf, 0x6F); pos + 1
+      }
+      else if kw == "i32.rem_u" {
+        Bytes::push(buf, 0x70); pos + 1
+      }
+      else if kw == "i32.and" {
+        Bytes::push(buf, 0x71); pos + 1
+      }
+      else if kw == "i32.or" {
+        Bytes::push(buf, 0x72); pos + 1
+      }
+      else if kw == "i32.xor" {
+        Bytes::push(buf, 0x73); pos + 1
+      }
+      else if kw == "i32.shl" {
+        Bytes::push(buf, 0x74); pos + 1
+      }
+      else if kw == "i32.shr_s" {
+        Bytes::push(buf, 0x75); pos + 1
+      }
+      else if kw == "i32.shr_u" {
+        Bytes::push(buf, 0x76); pos + 1
+      }
+      else if kw == "i32.rotl" {
+        Bytes::push(buf, 0x77); pos + 1
+      }
+      else if kw == "i32.rotr" {
+        Bytes::push(buf, 0x78); pos + 1
+      }
+      else if kw == "i64.add" {
+        Bytes::push(buf, 0x7C); pos + 1
+      }
+      else if kw == "i64.sub" {
+        Bytes::push(buf, 0x7D); pos + 1
+      }
+      else if kw == "i64.mul" {
+        Bytes::push(buf, 0x7E); pos + 1
+      }
+      else if kw == "i64.clz" {
+        Bytes::push(buf, 0x79); pos + 1
+      }
+      else if kw == "i64.ctz" {
+        Bytes::push(buf, 0x7A); pos + 1
+      }
+      else if kw == "i64.popcnt" {
+        Bytes::push(buf, 0x7B); pos + 1
+      }
+      else if kw == "i64.div_s" {
+        Bytes::push(buf, 0x7F); pos + 1
+      }
+      else if kw == "i64.div_u" {
+        Bytes::push(buf, 0x80); pos + 1
+      }
+      else if kw == "i64.rem_s" {
+        Bytes::push(buf, 0x81); pos + 1
+      }
+      else if kw == "i64.rem_u" {
+        Bytes::push(buf, 0x82); pos + 1
+      }
+      else if kw == "i64.and" {
+        Bytes::push(buf, 0x83); pos + 1
+      }
+      else if kw == "i64.or" {
+        Bytes::push(buf, 0x84); pos + 1
+      }
+      else if kw == "i64.xor" {
+        Bytes::push(buf, 0x85); pos + 1
+      }
+      else if kw == "i64.shl" {
+        Bytes::push(buf, 0x86); pos + 1
+      }
+      else if kw == "i64.shr_s" {
+        Bytes::push(buf, 0x87); pos + 1
+      }
+      else if kw == "i64.shr_u" {
+        Bytes::push(buf, 0x88); pos + 1
+      }
+      else if kw == "i64.rotl" {
+        Bytes::push(buf, 0x89); pos + 1
+      }
+      else if kw == "i64.rotr" {
+        Bytes::push(buf, 0x8A); pos + 1
+      }
+      else if kw == "f32.eq" {
+        Bytes::push(buf, 0x5B); pos + 1
+      }
+      else if kw == "f32.ne" {
+        Bytes::push(buf, 0x5C); pos + 1
+      }
+      else if kw == "f32.lt" {
+        Bytes::push(buf, 0x5D); pos + 1
+      }
+      else if kw == "f32.gt" {
+        Bytes::push(buf, 0x5E); pos + 1
+      }
+      else if kw == "f32.le" {
+        Bytes::push(buf, 0x5F); pos + 1
+      }
+      else if kw == "f32.ge" {
+        Bytes::push(buf, 0x60); pos + 1
+      }
+      else if kw == "f64.eq" {
+        Bytes::push(buf, 0x61); pos + 1
+      }
+      else if kw == "f64.ne" {
+        Bytes::push(buf, 0x62); pos + 1
+      }
+      else if kw == "f64.lt" {
+        Bytes::push(buf, 0x63); pos + 1
+      }
+      else if kw == "f64.gt" {
+        Bytes::push(buf, 0x64); pos + 1
+      }
+      else if kw == "f64.le" {
+        Bytes::push(buf, 0x65); pos + 1
+      }
+      else if kw == "f64.ge" {
+        Bytes::push(buf, 0x66); pos + 1
+      }
+      else if kw == "f32.abs" {
+        Bytes::push(buf, 0x8B); pos + 1
+      }
+      else if kw == "f32.neg" {
+        Bytes::push(buf, 0x8C); pos + 1
+      }
+      else if kw == "f32.ceil" {
+        Bytes::push(buf, 0x8D); pos + 1
+      }
+      else if kw == "f32.floor" {
+        Bytes::push(buf, 0x8E); pos + 1
+      }
+      else if kw == "f32.trunc" {
+        Bytes::push(buf, 0x8F); pos + 1
+      }
+      else if kw == "f32.nearest" {
+        Bytes::push(buf, 0x90); pos + 1
+      }
+      else if kw == "f32.sqrt" {
+        Bytes::push(buf, 0x91); pos + 1
+      }
+      else if kw == "f32.add" {
+        Bytes::push(buf, 0x92); pos + 1
+      }
+      else if kw == "f32.sub" {
+        Bytes::push(buf, 0x93); pos + 1
+      }
+      else if kw == "f32.mul" {
+        Bytes::push(buf, 0x94); pos + 1
+      }
+      else if kw == "f32.div" {
+        Bytes::push(buf, 0x95); pos + 1
+      }
+      else if kw == "f32.min" {
+        Bytes::push(buf, 0x96); pos + 1
+      }
+      else if kw == "f32.max" {
+        Bytes::push(buf, 0x97); pos + 1
+      }
+      else if kw == "f32.copysign" {
+        Bytes::push(buf, 0x98); pos + 1
+      }
+      else if kw == "f64.abs" {
+        Bytes::push(buf, 0x99); pos + 1
+      }
+      else if kw == "f64.neg" {
+        Bytes::push(buf, 0x9A); pos + 1
+      }
+      else if kw == "f64.ceil" {
+        Bytes::push(buf, 0x9B); pos + 1
+      }
+      else if kw == "f64.floor" {
+        Bytes::push(buf, 0x9C); pos + 1
+      }
+      else if kw == "f64.trunc" {
+        Bytes::push(buf, 0x9D); pos + 1
+      }
+      else if kw == "f64.nearest" {
+        Bytes::push(buf, 0x9E); pos + 1
+      }
+      else if kw == "f64.sqrt" {
+        Bytes::push(buf, 0x9F); pos + 1
+      }
+      else if kw == "f64.add" {
+        Bytes::push(buf, 0xA0); pos + 1
+      }
+      else if kw == "f64.sub" {
+        Bytes::push(buf, 0xA1); pos + 1
+      }
+      else if kw == "f64.mul" {
+        Bytes::push(buf, 0xA2); pos + 1
+      }
+      else if kw == "f64.div" {
+        Bytes::push(buf, 0xA3); pos + 1
+      }
+      else if kw == "f64.min" {
+        Bytes::push(buf, 0xA4); pos + 1
+      }
+      else if kw == "f64.max" {
+        Bytes::push(buf, 0xA5); pos + 1
+      }
+      else if kw == "f64.copysign" {
+        Bytes::push(buf, 0xA6); pos + 1
+      }
+      else if kw == "i32.wrap_i64" {
+        Bytes::push(buf, 0xA7); pos + 1
+      }
+      else if kw == "i32.trunc_f32_s" {
+        Bytes::push(buf, 0xA8); pos + 1
+      }
+      else if kw == "i32.trunc_f32_u" {
+        Bytes::push(buf, 0xA9); pos + 1
+      }
+      else if kw == "i32.trunc_f64_s" {
+        Bytes::push(buf, 0xAA); pos + 1
+      }
+      else if kw == "i32.trunc_f64_u" {
+        Bytes::push(buf, 0xAB); pos + 1
+      }
+      else if kw == "i64.extend_i32_s" {
+        Bytes::push(buf, 0xAC); pos + 1
+      }
+      else if kw == "i64.extend_i32_u" {
+        Bytes::push(buf, 0xAD); pos + 1
+      }
+      else if kw == "i64.trunc_f32_s" {
+        Bytes::push(buf, 0xAE); pos + 1
+      }
+      else if kw == "i64.trunc_f32_u" {
+        Bytes::push(buf, 0xAF); pos + 1
+      }
+      else if kw == "i64.trunc_f64_s" {
+        Bytes::push(buf, 0xB0); pos + 1
+      }
+      else if kw == "i64.trunc_f64_u" {
+        Bytes::push(buf, 0xB1); pos + 1
+      }
+      else if kw == "f32.convert_i32_s" {
+        Bytes::push(buf, 0xB2); pos + 1
+      }
+      else if kw == "f32.convert_i32_u" {
+        Bytes::push(buf, 0xB3); pos + 1
+      }
+      else if kw == "f32.convert_i64_s" {
+        Bytes::push(buf, 0xB4); pos + 1
+      }
+      else if kw == "f32.convert_i64_u" {
+        Bytes::push(buf, 0xB5); pos + 1
+      }
+      else if kw == "f32.demote_f64" {
+        Bytes::push(buf, 0xB6); pos + 1
+      }
+      else if kw == "f64.convert_i32_s" {
+        Bytes::push(buf, 0xB7); pos + 1
+      }
+      else if kw == "f64.convert_i32_u" {
+        Bytes::push(buf, 0xB8); pos + 1
+      }
+      else if kw == "f64.convert_i64_s" {
+        Bytes::push(buf, 0xB9); pos + 1
+      }
+      else if kw == "f64.convert_i64_u" {
+        Bytes::push(buf, 0xBA); pos + 1
+      }
+      else if kw == "f64.promote_f32" {
+        Bytes::push(buf, 0xBB); pos + 1
+      }
+      else if kw == "i32.reinterpret_f32" {
+        Bytes::push(buf, 0xBC); pos + 1
+      }
+      else if kw == "i64.reinterpret_f64" {
+        Bytes::push(buf, 0xBD); pos + 1
+      }
+      else if kw == "f32.reinterpret_i32" {
+        Bytes::push(buf, 0xBE); pos + 1
+      }
+      else if kw == "f64.reinterpret_i64" {
+        Bytes::push(buf, 0xBF); pos + 1
+      }
+      else if kw == "f32.load" {
+        Bytes::push(buf, 0x2A)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 2)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "f64.load" {
+        Bytes::push(buf, 0x2B)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 3)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "f32.store" {
+        Bytes::push(buf, 0x38)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 2)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "f64.store" {
+        Bytes::push(buf, 0x39)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 3)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.load8_s" {
+        Bytes::push(buf, 0x30)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 0)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.load8_u" {
+        Bytes::push(buf, 0x31)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 0)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.load16_s" {
+        Bytes::push(buf, 0x32)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 1)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.load16_u" {
+        Bytes::push(buf, 0x33)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 1)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.load32_s" {
+        Bytes::push(buf, 0x34)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 2)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.load32_u" {
+        Bytes::push(buf, 0x35)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 2)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.store8" {
+        Bytes::push(buf, 0x3C)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 0)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.store16" {
+        Bytes::push(buf, 0x3D)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 1)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.store32" {
+        Bytes::push(buf, 0x3E)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 2)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "br_table" {
+        Bytes::push(buf, 0x0E)
+        let labels = empty_int_array()
+        let mut next = pos + 1
+        while (next < end_pos) && ((tok_type(tokens, next) == tok_int) || (tok_type(tokens, next) == tok_ident)) {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(label_names, label_indices, arg)
+            let depth = if idx >= 0 {
+              label_depth - idx - 1
+            } else {
+              0
+            }
+            Array::push(labels, depth)
+          } else {
+            Array::push(labels, parse_int(arg))
+          }
+          next = next + 1
+        }
+        let label_count = Array::length(labels)
+        if label_count > 0 {
+          write_uleb128(buf, label_count - 1)
+          let mut li = 0
+          while li < label_count {
+            write_uleb128(buf, Array::get(labels, li))
+            li = li + 1
+          }
+        } else {
+          write_uleb128(buf, 0)
+          write_uleb128(buf, 0)
+        }
+        next
+      }
+      else if kw == "call_indirect" {
+        Bytes::push(buf, 0x11)
+        let next = pos + 1
+        if (next < end_pos) && (tok_type(tokens, next) == tok_lparen) && ((next + 1) < end_pos) && (tok_text(src, tokens, next + 1) == "type") {
+          let type_pos = next + 2
+          if type_pos < end_pos {
+            let type_arg = tok_text(src, tokens, type_pos)
+            if tok_type(tokens, type_pos) == tok_int {
+              write_uleb128(buf, parse_int(type_arg))
+            } else {
+              write_uleb128(buf, 0)
+            }
+          } else {
+            write_uleb128(buf, 0)
+          }
+          Bytes::push(buf, 0x00)
+          let mut skip = type_pos + 1
+          if (skip < end_pos) && (tok_type(tokens, skip) == tok_rparen) {
+            skip = skip + 1
+          }
+          skip
+        } else if (next < end_pos) && (tok_type(tokens, next) == tok_int) {
+          write_uleb128(buf, parse_int(tok_text(src, tokens, next)))
+          Bytes::push(buf, 0x00)
+          next + 1
+        } else {
+          write_uleb128(buf, 0)
+          Bytes::push(buf, 0x00)
+          next
+        }
+      }
+      else if kw == "f32.const" {
+        Bytes::push(buf, 0x43)
+        let next = pos + 1
+        if next < end_pos {
+          let bits = parse_f32_bits(tok_text(src, tokens, next))
+          write_f32_le(buf, bits)
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "f64.const" {
+        Bytes::push(buf, 0x44)
+        let next = pos + 1
+        if next < end_pos {
+          let bits = parse_f64_bits(tok_text(src, tokens, next))
+          write_f64_le(buf, bits)
+          next + 1
+        } else {
+          next
+        }
+      }
+      else {
+        pos + 1
+      }
+    }
+  }
+}
+
+let compile_func_body = (src: String, tokens: Array[(Int, Int, Int)], body_start: Int, body_end: Int, func_names: Array[String], func_indices: Array[Int], global_names: Array[String], global_indices: Array[Int], param_names: Array[String], param_count: Int, local_types: Array[Int], local_decl_names: Array[String]) -> Bytes {
+  let code = Bytes::new()
+  let ln = map_names_new()
+  let li = map_indices_new()
+  let mut pi = 0
+  while pi < Array::length(param_names) {
+    let pn = Array::get(param_names, pi)
+    if String::length(pn) > 0 {
+      map_set(ln, li, pn, pi)
+    }
+    pi = pi + 1
+  }
+  let mut di = 0
+  while di < Array::length(local_decl_names) {
+    let dn = Array::get(local_decl_names, di)
+    if String::length(dn) > 0 {
+      map_set(ln, li, dn, param_count + di)
+    }
+    di = di + 1
+  }
+  let lbl_names = map_names_new()
+  let lbl_indices = map_indices_new()
+  let local_count = Array::length(local_types)
+  if local_count == 0 {
+    write_uleb128(code, 0)
+  } else {
+    let groups_types = empty_int_array()
+    let groups_counts = empty_int_array()
+    let mut gi = 0
+    while gi < local_count {
+      let lt = Array::get(local_types, gi)
+      let gl = Array::length(groups_types)
+      if (gl > 0) && (Array::get(groups_types, gl - 1) == lt) {
+        let prev = Array::get(groups_counts, gl - 1)
+        Array::truncate(groups_counts, gl - 1)
+        Array::push(groups_counts, prev + 1)
+      } else {
+        Array::push(groups_types, lt)
+        Array::push(groups_counts, 1)
+      }
+      gi = gi + 1
+    }
+    write_uleb128(code, Array::length(groups_types))
+    let mut k = 0
+    while k < Array::length(groups_types) {
+      write_uleb128(code, Array::get(groups_counts, k))
+      Bytes::push(code, Array::get(groups_types, k))
+      k = k + 1
+    }
+  }
+  let paren_is_block = Array::slice([
+    0
+  ], 0, 0)
+  let mut ip = body_start
+  while ip < body_end {
+    let cur_ty = tok_type(tokens, ip)
+    if cur_ty == tok_lparen {
+      let nxt = ip + 1
+      if (nxt < body_end) && (tok_type(tokens, nxt) == tok_keyword) {
+        let nkw = tok_text(src, tokens, nxt)
+        if (nkw == "block") || (nkw == "loop") || (nkw == "if") {
+          Array::push(paren_is_block, 1)
+          ip = ip + 1
+        } else if (nkw == "result") || (nkw == "then") || (nkw == "else") {
+          Array::push(paren_is_block, 0)
+          ip = ip + 1
+        } else {
+          Array::push(paren_is_block, 0)
+          ip = ip + 1
+        }
+      } else {
+        Array::push(paren_is_block, 0)
+        ip = ip + 1
+      }
+    } else if cur_ty == tok_rparen {
+      let plen = Array::length(paren_is_block)
+      if plen > 0 {
+        let is_block = Array::get(paren_is_block, plen - 1)
+        Array::truncate(paren_is_block, plen - 1)
+        if is_block == 1 {
+          Bytes::push(code, 0x0B)
+        }
+      }
+      ip = ip + 1
+    } else {
+      ip = emit_instruction(code, src, tokens, ip, body_end, func_names, func_indices, ln, li, global_names, global_indices, lbl_names, lbl_indices, 0)
+    }
+  }
+  Bytes::push(code, 0x0B)
+  code
+}
+
+export let compile = (src: String) -> Bytes {
+  let tokens = tokenize(src)
+  let tok_count = Array::length(tokens)
+  let out = Bytes::new()
+  Bytes::push(out, 0x00)
+  Bytes::push(out, 0x61)
+  Bytes::push(out, 0x73)
+  Bytes::push(out, 0x6D)
+  Bytes::push(out, 0x01)
+  Bytes::push(out, 0x00)
+  Bytes::push(out, 0x00)
+  Bytes::push(out, 0x00)
+  let types_params = Array::slice([
+    Array::slice([
+      0
+    ], 0, 0)
+  ], 0, 0)
+  let types_results = Array::slice([
+    Array::slice([
+      0
+    ], 0, 0)
+  ], 0, 0)
+  let import_modules = Array::slice([
+    ""
+  ], 0, 0)
+  let import_names = Array::slice([
+    ""
+  ], 0, 0)
+  let import_kinds = Array::slice([
+    0
+  ], 0, 0)
+  let import_type_indices = Array::slice([
+    0
+  ], 0, 0)
+  let import_global_valtypes = Array::slice([
+    0
+  ], 0, 0)
+  let import_global_muts = Array::slice([
+    0
+  ], 0, 0)
+  let func_type_indices = Array::slice([
+    0
+  ], 0, 0)
+  let func_bodies_start = Array::slice([
+    0
+  ], 0, 0)
+  let func_bodies_end = Array::slice([
+    0
+  ], 0, 0)
+  let func_param_names = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let func_param_counts = Array::slice([
+    0
+  ], 0, 0)
+  let func_local_types = Array::slice([
+    Array::slice([
+      0
+    ], 0, 0)
+  ], 0, 0)
+  let func_local_names = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let func_names = map_names_new()
+  let func_indices = map_indices_new()
+  let global_names = map_names_new()
+  let global_indices = map_indices_new()
+  let export_names = Array::slice([
+    ""
+  ], 0, 0)
+  let export_kinds = Array::slice([
+    0
+  ], 0, 0)
+  let export_indices = Array::slice([
+    0
+  ], 0, 0)
+  let mem_min = Array::slice([
+    0
+  ], 0, 0)
+  let mem_max = Array::slice([
+    0
+  ], 0, 0)
+  let mem_has_max = Array::slice([
+    0
+  ], 0, 0)
+  let global_valtypes = Array::slice([
+    0
+  ], 0, 0)
+  let global_muts = Array::slice([
+    0
+  ], 0, 0)
+  let global_init_vals = Array::slice([
+    0
+  ], 0, 0)
+  let global_init_types = Array::slice([
+    0
+  ], 0, 0)
+  let table_min = Array::slice([
+    0
+  ], 0, 0)
+  let table_max = Array::slice([
+    0
+  ], 0, 0)
+  let table_has_max = Array::slice([
+    0
+  ], 0, 0)
+  let elem_offsets = Array::slice([
+    0
+  ], 0, 0)
+  let elem_func_indices = Array::slice([
+    Array::slice([
+      0
+    ], 0, 0)
+  ], 0, 0)
+  let data_offsets = Array::slice([
+    0
+  ], 0, 0)
+  let data_bytes = Array::slice([
+    Bytes::new()
+  ], 0, 0)
+  let mut start_func = -1
+  let mut import_func_count = 0
+  let mut pos = 0
+  while (pos < tok_count) && (tok_type(tokens, pos) != tok_lparen) {
+    pos = pos + 1
+  }
+  if pos < tok_count {
+    pos = pos + 1
+  }
+  if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) && (tok_text(src, tokens, pos) == "module") {
+    pos = pos + 1
+  }
+  while pos < tok_count {
+    let cur_ty = tok_type(tokens, pos)
+    if cur_ty == tok_rparen {
+      pos = tok_count
+    } else if cur_ty == tok_lparen {
+      pos = pos + 1
+      if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+        let section_kw = tok_text(src, tokens, pos)
+        pos = pos + 1
+        if section_kw == "type" {
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_ident) {
+            pos = pos + 1
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            pos = pos + 1
+            if (pos < tok_count) && (tok_text(src, tokens, pos) == "func") {
+              pos = pos + 1
+              let result0 = parse_func_sig(src, tokens, pos, tok_count)
+              let (params0, results0, new_pos0) = result0
+              let _ = find_or_add_type(types_params, types_results, params0, results0)
+              pos = new_pos0
+            }
+          }
+          let mut depth = 1
+          while (pos < tok_count) && (depth > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              depth = depth + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              depth = depth - 1
+            }
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "import" {
+          let mut mod_name = ""
+          let mut field_name = ""
+          let mut str_count = 0
+          while (pos < tok_count) && (tok_type(tokens, pos) == tok_string) {
+            if str_count == 0 {
+              mod_name = decode_string(tok_text(src, tokens, pos))
+            } else {
+              field_name = decode_string(tok_text(src, tokens, pos))
+            }
+            str_count = str_count + 1
+            pos = pos + 1
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            pos = pos + 1
+            if pos < tok_count {
+              let desc_kw = tok_text(src, tokens, pos)
+              pos = pos + 1
+              if desc_kw == "func" {
+                if (pos < tok_count) && (tok_type(tokens, pos) == tok_ident) {
+                  let fname = tok_text(src, tokens, pos)
+                  map_set(func_names, func_indices, fname, import_func_count)
+                  pos = pos + 1
+                }
+                if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+                  let result1 = parse_func_sig(src, tokens, pos, tok_count)
+                  let (params1, results1, new_pos1) = result1
+                  let tidx = find_or_add_type(types_params, types_results, params1, results1)
+                  Array::push(import_modules, mod_name)
+                  Array::push(import_names, field_name)
+                  Array::push(import_kinds, 0)
+                  Array::push(import_type_indices, tidx)
+                  Array::push(import_global_valtypes, 0)
+                  Array::push(import_global_muts, 0)
+                  pos = new_pos1
+                } else {
+                  let tidx = find_or_add_type(types_params, types_results, empty_int_array(), empty_int_array())
+                  Array::push(import_modules, mod_name)
+                  Array::push(import_names, field_name)
+                  Array::push(import_kinds, 0)
+                  Array::push(import_type_indices, tidx)
+                  Array::push(import_global_valtypes, 0)
+                  Array::push(import_global_muts, 0)
+                }
+                import_func_count = import_func_count + 1
+              }
+              else if desc_kw == "memory" {
+                let mut min_val = 0
+                let mut max_val = 0
+                let mut has_max_val = 0
+                if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+                  min_val = parse_int(tok_text(src, tokens, pos))
+                  pos = pos + 1
+                  if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+                    max_val = parse_int(tok_text(src, tokens, pos))
+                    has_max_val = 1
+                    pos = pos + 1
+                  }
+                }
+                Array::push(import_modules, mod_name)
+                Array::push(import_names, field_name)
+                Array::push(import_kinds, 2)
+                Array::push(import_type_indices, 0)
+                Array::push(import_global_valtypes, 0)
+                Array::push(import_global_muts, 0)
+                Array::push(mem_min, min_val)
+                Array::push(mem_max, max_val)
+                Array::push(mem_has_max, has_max_val)
+              }
+              else if desc_kw == "global" {
+                let mut vt = 0x7F
+                let mut mutability = 0
+                if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+                  pos = pos + 1
+                  if (pos < tok_count) && (tok_text(src, tokens, pos) == "mut") {
+                    mutability = 1
+                    pos = pos + 1
+                    if pos < tok_count {
+                      vt = valtype_code(tok_text(src, tokens, pos))
+                      pos = pos + 1
+                    }
+                  }
+                  if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+                    pos = pos + 1
+                  }
+                } else if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+                  vt = valtype_code(tok_text(src, tokens, pos))
+                  pos = pos + 1
+                }
+                Array::push(import_modules, mod_name)
+                Array::push(import_names, field_name)
+                Array::push(import_kinds, 3)
+                Array::push(import_type_indices, 0)
+                Array::push(import_global_valtypes, vt)
+                Array::push(import_global_muts, mutability)
+              }
+            }
+          }
+          let mut depth2 = 1
+          while (pos < tok_count) && (depth2 > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              depth2 = depth2 + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              depth2 = depth2 - 1
+            }
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "func" {
+          let func_idx = import_func_count + Array::length(func_type_indices)
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_ident) {
+            let fname = tok_text(src, tokens, pos)
+            map_set(func_names, func_indices, fname, func_idx)
+            pos = pos + 1
+          }
+          let mut check_export = true
+          while check_export {
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+              let next_pos = pos + 1
+              if (next_pos < tok_count) && (tok_type(tokens, next_pos) == tok_keyword) && (tok_text(src, tokens, next_pos) == "export") {
+                let str_pos = next_pos + 1
+                if (str_pos < tok_count) && (tok_type(tokens, str_pos) == tok_string) {
+                  let ename = decode_string(tok_text(src, tokens, str_pos))
+                  Array::push(export_names, ename)
+                  Array::push(export_kinds, 0)
+                  Array::push(export_indices, func_idx)
+                  pos = str_pos + 1
+                  if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+                    pos = pos + 1
+                  }
+                } else {
+                  check_export = false
+                }
+              } else {
+                check_export = false
+              }
+            } else {
+              check_export = false
+            }
+          }
+          let pnames = Array::slice([
+            ""
+          ], 0, 0)
+          let params = empty_int_array()
+          let results = empty_int_array()
+          let mut parsing_sig = true
+          while parsing_sig {
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+              let peek_pos = pos + 1
+              if peek_pos < tok_count {
+                let peek_kw = tok_text(src, tokens, peek_pos)
+                if peek_kw == "param" {
+                  pos = peek_pos + 1
+                  if (pos < tok_count) && (tok_type(tokens, pos) == tok_ident) {
+                    let pname = tok_text(src, tokens, pos)
+                    pos = pos + 1
+                    if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+                      Array::push(pnames, pname)
+                      Array::push(params, valtype_code(tok_text(src, tokens, pos)))
+                      pos = pos + 1
+                    }
+                  } else {
+                    while (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+                      Array::push(pnames, "")
+                      Array::push(params, valtype_code(tok_text(src, tokens, pos)))
+                      pos = pos + 1
+                    }
+                  }
+                  if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+                    pos = pos + 1
+                  }
+                }
+                else if peek_kw == "result" {
+                  pos = peek_pos + 1
+                  while (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+                    Array::push(results, valtype_code(tok_text(src, tokens, pos)))
+                    pos = pos + 1
+                  }
+                  if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+                    pos = pos + 1
+                  }
+                }
+                else {
+                  parsing_sig = false
+                }
+              } else {
+                parsing_sig = false
+              }
+            } else {
+              parsing_sig = false
+            }
+          }
+          let tidx = find_or_add_type(types_params, types_results, params, results)
+          Array::push(func_type_indices, tidx)
+          Array::push(func_param_names, pnames)
+          Array::push(func_param_counts, Array::length(params))
+          let ltypes = empty_int_array()
+          let lnames = Array::slice([
+            ""
+          ], 0, 0)
+          let mut parsing_locals = true
+          while parsing_locals {
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+              let peek_pos2 = pos + 1
+              if (peek_pos2 < tok_count) && (tok_text(src, tokens, peek_pos2) == "local") {
+                pos = peek_pos2 + 1
+                if (pos < tok_count) && (tok_type(tokens, pos) == tok_ident) {
+                  let lname = tok_text(src, tokens, pos)
+                  pos = pos + 1
+                  if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+                    Array::push(lnames, lname)
+                    Array::push(ltypes, valtype_code(tok_text(src, tokens, pos)))
+                    pos = pos + 1
+                  }
+                } else {
+                  while (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+                    Array::push(lnames, "")
+                    Array::push(ltypes, valtype_code(tok_text(src, tokens, pos)))
+                    pos = pos + 1
+                  }
+                }
+                if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+                  pos = pos + 1
+                }
+              } else {
+                parsing_locals = false
+              }
+            } else {
+              parsing_locals = false
+            }
+          }
+          Array::push(func_local_types, ltypes)
+          Array::push(func_local_names, lnames)
+          let body_start_pos = pos
+          let mut depth3 = 1
+          while (pos < tok_count) && (depth3 > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              depth3 = depth3 + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              depth3 = depth3 - 1
+            }
+            if depth3 > 0 {
+              pos = pos + 1
+            }
+          }
+          let body_end_pos = pos
+          Array::push(func_bodies_start, body_start_pos)
+          Array::push(func_bodies_end, body_end_pos)
+          if pos < tok_count {
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "memory" {
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            let next_pos2 = pos + 1
+            if (next_pos2 < tok_count) && (tok_text(src, tokens, next_pos2) == "export") {
+              let str_pos2 = next_pos2 + 1
+              if (str_pos2 < tok_count) && (tok_type(tokens, str_pos2) == tok_string) {
+                let ename2 = decode_string(tok_text(src, tokens, str_pos2))
+                Array::push(export_names, ename2)
+                Array::push(export_kinds, 2)
+                Array::push(export_indices, Array::length(mem_min))
+                pos = str_pos2 + 1
+                if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+                  pos = pos + 1
+                }
+              }
+            }
+          }
+          let mut min_v = 0
+          let mut max_v = 0
+          let mut has_max_v = 0
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+            min_v = parse_int(tok_text(src, tokens, pos))
+            pos = pos + 1
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+              max_v = parse_int(tok_text(src, tokens, pos))
+              has_max_v = 1
+              pos = pos + 1
+            }
+          }
+          Array::push(mem_min, min_v)
+          Array::push(mem_max, max_v)
+          Array::push(mem_has_max, has_max_v)
+          let mut d4 = 1
+          while (pos < tok_count) && (d4 > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              d4 = d4 + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              d4 = d4 - 1
+            }
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "export" {
+          let mut ename3 = ""
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_string) {
+            ename3 = decode_string(tok_text(src, tokens, pos))
+            pos = pos + 1
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            pos = pos + 1
+            if pos < tok_count {
+              let ekind_kw = tok_text(src, tokens, pos)
+              pos = pos + 1
+              let mut ekind = 0
+              if ekind_kw == "func" {
+                ekind = 0
+              }
+              else if ekind_kw == "table" {
+                ekind = 1
+              }
+              else if ekind_kw == "memory" {
+                ekind = 2
+              }
+              else if ekind_kw == "global" {
+                ekind = 3
+              }
+              let mut eidx = 0
+              if pos < tok_count {
+                if tok_type(tokens, pos) == tok_ident {
+                  let ident = tok_text(src, tokens, pos)
+                  if ekind == 0 {
+                    eidx = map_get(func_names, func_indices, ident)
+                    if eidx < 0 {
+                      eidx = 0
+                    }
+                  } else if ekind == 3 {
+                    eidx = map_get(global_names, global_indices, ident)
+                    if eidx < 0 {
+                      eidx = 0
+                    }
+                  }
+                  pos = pos + 1
+                } else if tok_type(tokens, pos) == tok_int {
+                  eidx = parse_int(tok_text(src, tokens, pos))
+                  pos = pos + 1
+                }
+              }
+              Array::push(export_names, ename3)
+              Array::push(export_kinds, ekind)
+              Array::push(export_indices, eidx)
+            }
+          }
+          let mut d5 = 1
+          while (pos < tok_count) && (d5 > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              d5 = d5 + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              d5 = d5 - 1
+            }
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "global" {
+          let global_idx = Array::length(global_valtypes)
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_ident) {
+            let gname = tok_text(src, tokens, pos)
+            map_set(global_names, global_indices, gname, global_idx)
+            pos = pos + 1
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            let peek3 = pos + 1
+            if (peek3 < tok_count) && (tok_text(src, tokens, peek3) == "export") {
+              let str3 = peek3 + 1
+              if (str3 < tok_count) && (tok_type(tokens, str3) == tok_string) {
+                let gename = decode_string(tok_text(src, tokens, str3))
+                Array::push(export_names, gename)
+                Array::push(export_kinds, 3)
+                Array::push(export_indices, global_idx)
+                pos = str3 + 1
+                if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+                  pos = pos + 1
+                }
+              }
+            }
+          }
+          let mut gvt = 0x7F
+          let mut gmut = 0
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            pos = pos + 1
+            if (pos < tok_count) && (tok_text(src, tokens, pos) == "mut") {
+              gmut = 1
+              pos = pos + 1
+              if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+                gvt = valtype_code(tok_text(src, tokens, pos))
+                pos = pos + 1
+              }
+            }
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+              pos = pos + 1
+            }
+          } else if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+            gvt = valtype_code(tok_text(src, tokens, pos))
+            pos = pos + 1
+          }
+          let mut ginit = 0
+          let mut ginit_type = 0x7F
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            pos = pos + 1
+            if pos < tok_count {
+              let init_kw = tok_text(src, tokens, pos)
+              pos = pos + 1
+              if init_kw == "i32.const" {
+                ginit_type = 0x7F
+              }
+              else if init_kw == "i64.const" {
+                ginit_type = 0x7E
+              }
+              if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+                ginit = parse_int(tok_text(src, tokens, pos))
+                pos = pos + 1
+              }
+            }
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+              pos = pos + 1
+            }
+          }
+          Array::push(global_valtypes, gvt)
+          Array::push(global_muts, gmut)
+          Array::push(global_init_vals, ginit)
+          Array::push(global_init_types, ginit_type)
+          let mut d6 = 1
+          while (pos < tok_count) && (d6 > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              d6 = d6 + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              d6 = d6 - 1
+            }
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "table" {
+          let mut tmin = 0
+          let mut tmax = 0
+          let mut t_has_max = 0
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_ident) {
+            pos = pos + 1
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+            tmin = parse_int(tok_text(src, tokens, pos))
+            pos = pos + 1
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+            tmax = parse_int(tok_text(src, tokens, pos))
+            t_has_max = 1
+            pos = pos + 1
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+            pos = pos + 1
+          }
+          Array::push(table_min, tmin)
+          Array::push(table_max, tmax)
+          Array::push(table_has_max, t_has_max)
+          let mut d_tab = 1
+          while (pos < tok_count) && (d_tab > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              d_tab = d_tab + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              d_tab = d_tab - 1
+            }
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "elem" {
+          let mut eoffset = 0
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            pos = pos + 1
+            if (pos < tok_count) && (tok_text(src, tokens, pos) == "i32.const") {
+              pos = pos + 1
+              if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+                eoffset = parse_int(tok_text(src, tokens, pos))
+                pos = pos + 1
+              }
+            }
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+              pos = pos + 1
+            }
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) && (tok_text(src, tokens, pos) == "func") {
+            pos = pos + 1
+          }
+          let efuncs = empty_int_array()
+          while (pos < tok_count) && (tok_type(tokens, pos) != tok_rparen) {
+            if tok_type(tokens, pos) == tok_ident {
+              let fidx = map_get(func_names, func_indices, tok_text(src, tokens, pos))
+              Array::push(efuncs, if fidx >= 0 {
+                fidx
+              } else {
+                0
+              })
+            } else if tok_type(tokens, pos) == tok_int {
+              Array::push(efuncs, parse_int(tok_text(src, tokens, pos)))
+            }
+            pos = pos + 1
+          }
+          Array::push(elem_offsets, eoffset)
+          Array::push(elem_func_indices, efuncs)
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "data" {
+          let mut doffset = 0
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            pos = pos + 1
+            if (pos < tok_count) && (tok_text(src, tokens, pos) == "i32.const") {
+              pos = pos + 1
+              if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+                doffset = parse_int(tok_text(src, tokens, pos))
+                pos = pos + 1
+              }
+            }
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+              pos = pos + 1
+            }
+          }
+          let dbytes = Bytes::new()
+          while (pos < tok_count) && (tok_type(tokens, pos) == tok_string) {
+            let sraw = tok_text(src, tokens, pos)
+            let decoded = decode_string_bytes(sraw)
+            append_bytes(dbytes, decoded)
+            pos = pos + 1
+          }
+          Array::push(data_offsets, doffset)
+          Array::push(data_bytes, dbytes)
+          let mut d7 = 1
+          while (pos < tok_count) && (d7 > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              d7 = d7 + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              d7 = d7 - 1
+            }
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "start" {
+          if pos < tok_count {
+            if tok_type(tokens, pos) == tok_ident {
+              let sn = tok_text(src, tokens, pos)
+              start_func = map_get(func_names, func_indices, sn)
+              if start_func < 0 {
+                start_func = 0
+              }
+            } else if tok_type(tokens, pos) == tok_int {
+              start_func = parse_int(tok_text(src, tokens, pos))
+            }
+            pos = pos + 1
+          }
+          let mut d8 = 1
+          while (pos < tok_count) && (d8 > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              d8 = d8 + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              d8 = d8 - 1
+            }
+            pos = pos + 1
+          }
+        }
+        else {
+          let mut d9 = 1
+          while (pos < tok_count) && (d9 > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              d9 = d9 + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              d9 = d9 - 1
+            }
+            pos = pos + 1
+          }
+        }
+      } else {
+        pos = pos + 1
+      }
+    } else {
+      pos = pos + 1
+    }
+  }
+  let type_count = Array::length(types_params)
+  if type_count > 0 {
+    let type_payload = Bytes::new()
+    write_uleb128(type_payload, type_count)
+    let mut ti = 0
+    while ti < type_count {
+      Bytes::push(type_payload, 0x60)
+      let tp = Array::get(types_params, ti)
+      let tr = Array::get(types_results, ti)
+      write_uleb128(type_payload, Array::length(tp))
+      let mut pi2 = 0
+      while pi2 < Array::length(tp) {
+        Bytes::push(type_payload, Array::get(tp, pi2))
+        pi2 = pi2 + 1
+      }
+      write_uleb128(type_payload, Array::length(tr))
+      let mut ri = 0
+      while ri < Array::length(tr) {
+        Bytes::push(type_payload, Array::get(tr, ri))
+        ri = ri + 1
+      }
+      ti = ti + 1
+    }
+    emit_section(out, 1, type_payload)
+  }
+  let import_count = Array::length(import_modules)
+  if import_count > 0 {
+    let import_payload = Bytes::new()
+    write_uleb128(import_payload, import_count)
+    let mut ii = 0
+    while ii < import_count {
+      write_name(import_payload, Array::get(import_modules, ii))
+      write_name(import_payload, Array::get(import_names, ii))
+      let ikind = Array::get(import_kinds, ii)
+      Bytes::push(import_payload, ikind)
+      if ikind == 0 {
+        write_uleb128(import_payload, Array::get(import_type_indices, ii))
+      } else if ikind == 2 {
+        if Array::length(mem_min) > 0 {
+          let hm = Array::get(mem_has_max, 0)
+          if hm > 0 {
+            Bytes::push(import_payload, 0x01)
+            write_uleb128(import_payload, Array::get(mem_min, 0))
+            write_uleb128(import_payload, Array::get(mem_max, 0))
+          } else {
+            Bytes::push(import_payload, 0x00)
+            write_uleb128(import_payload, Array::get(mem_min, 0))
+          }
+        } else {
+          Bytes::push(import_payload, 0x00)
+          write_uleb128(import_payload, 0)
+        }
+      } else if ikind == 3 {
+        Bytes::push(import_payload, Array::get(import_global_valtypes, ii))
+        Bytes::push(import_payload, Array::get(import_global_muts, ii))
+      }
+      ii = ii + 1
+    }
+    emit_section(out, 2, import_payload)
+  }
+  let func_count = Array::length(func_type_indices)
+  if func_count > 0 {
+    let func_payload = Bytes::new()
+    write_uleb128(func_payload, func_count)
+    let mut fi = 0
+    while fi < func_count {
+      write_uleb128(func_payload, Array::get(func_type_indices, fi))
+      fi = fi + 1
+    }
+    emit_section(out, 3, func_payload)
+  }
+  if Array::length(table_min) > 0 {
+    let table_payload = Bytes::new()
+    write_uleb128(table_payload, Array::length(table_min))
+    let mut ti = 0
+    while ti < Array::length(table_min) {
+      Bytes::push(table_payload, 0x70)
+      let thm = Array::get(table_has_max, ti)
+      if thm > 0 {
+        Bytes::push(table_payload, 0x01)
+        write_uleb128(table_payload, Array::get(table_min, ti))
+        write_uleb128(table_payload, Array::get(table_max, ti))
+      } else {
+        Bytes::push(table_payload, 0x00)
+        write_uleb128(table_payload, Array::get(table_min, ti))
+      }
+      ti = ti + 1
+    }
+    emit_section(out, 4, table_payload)
+  }
+  let mut imported_mem = false
+  let mut im_check = 0
+  while im_check < Array::length(import_kinds) {
+    if Array::get(import_kinds, im_check) == 2 {
+      imported_mem = true
+    }
+    im_check = im_check + 1
+  }
+  if (Array::length(mem_min) > 0) && (imported_mem == false) {
+    let mem_payload = Bytes::new()
+    write_uleb128(mem_payload, Array::length(mem_min))
+    let mut mi = 0
+    while mi < Array::length(mem_min) {
+      let hm2 = Array::get(mem_has_max, mi)
+      if hm2 > 0 {
+        Bytes::push(mem_payload, 0x01)
+        write_uleb128(mem_payload, Array::get(mem_min, mi))
+        write_uleb128(mem_payload, Array::get(mem_max, mi))
+      } else {
+        Bytes::push(mem_payload, 0x00)
+        write_uleb128(mem_payload, Array::get(mem_min, mi))
+      }
+      mi = mi + 1
+    }
+    emit_section(out, 5, mem_payload)
+  }
+  let global_count = Array::length(global_valtypes)
+  if global_count > 0 {
+    let global_payload = Bytes::new()
+    write_uleb128(global_payload, global_count)
+    let mut gli = 0
+    while gli < global_count {
+      Bytes::push(global_payload, Array::get(global_valtypes, gli))
+      Bytes::push(global_payload, Array::get(global_muts, gli))
+      let git = Array::get(global_init_types, gli)
+      if git == 0x7E {
+        Bytes::push(global_payload, 0x42)
+      } else {
+        Bytes::push(global_payload, 0x41)
+      }
+      write_sleb128(global_payload, Array::get(global_init_vals, gli))
+      Bytes::push(global_payload, 0x0B)
+      gli = gli + 1
+    }
+    emit_section(out, 6, global_payload)
+  }
+  let export_count = Array::length(export_names)
+  if export_count > 0 {
+    let export_payload = Bytes::new()
+    write_uleb128(export_payload, export_count)
+    let mut ei = 0
+    while ei < export_count {
+      write_name(export_payload, Array::get(export_names, ei))
+      Bytes::push(export_payload, Array::get(export_kinds, ei))
+      write_uleb128(export_payload, Array::get(export_indices, ei))
+      ei = ei + 1
+    }
+    emit_section(out, 7, export_payload)
+  }
+  if start_func >= 0 {
+    let start_payload = Bytes::new()
+    write_uleb128(start_payload, start_func)
+    emit_section(out, 8, start_payload)
+  }
+  if Array::length(elem_offsets) > 0 {
+    let elem_payload = Bytes::new()
+    write_uleb128(elem_payload, Array::length(elem_offsets))
+    let mut eli = 0
+    while eli < Array::length(elem_offsets) {
+      Bytes::push(elem_payload, 0x00)
+      Bytes::push(elem_payload, 0x41)
+      write_sleb128(elem_payload, Array::get(elem_offsets, eli))
+      Bytes::push(elem_payload, 0x0B)
+      let efuncs = Array::get(elem_func_indices, eli)
+      write_uleb128(elem_payload, Array::length(efuncs))
+      let mut efi = 0
+      while efi < Array::length(efuncs) {
+        write_uleb128(elem_payload, Array::get(efuncs, efi))
+        efi = efi + 1
+      }
+      eli = eli + 1
+    }
+    emit_section(out, 9, elem_payload)
+  }
+  if func_count > 0 {
+    let code_payload = Bytes::new()
+    write_uleb128(code_payload, func_count)
+    let mut ci = 0
+    while ci < func_count {
+      let body = compile_func_body(src, tokens, Array::get(func_bodies_start, ci), Array::get(func_bodies_end, ci), func_names, func_indices, global_names, global_indices, Array::get(func_param_names, ci), Array::get(func_param_counts, ci), Array::get(func_local_types, ci), Array::get(func_local_names, ci))
+      let body_len = Bytes::length(body)
+      write_uleb128(code_payload, body_len)
+      append_bytes(code_payload, body)
+      ci = ci + 1
+    }
+    emit_section(out, 10, code_payload)
+  }
+  let data_count = Array::length(data_offsets)
+  if data_count > 0 {
+    let data_payload = Bytes::new()
+    write_uleb128(data_payload, data_count)
+    let mut dti = 0
+    while dti < data_count {
+      Bytes::push(data_payload, 0x00)
+      Bytes::push(data_payload, 0x41)
+      write_sleb128(data_payload, Array::get(data_offsets, dti))
+      Bytes::push(data_payload, 0x0B)
+      let db = Array::get(data_bytes, dti)
+      write_uleb128(data_payload, Bytes::length(db))
+      append_bytes(data_payload, db)
+      dti = dti + 1
+    }
+    emit_section(out, 11, data_payload)
+  }
+  out
+}

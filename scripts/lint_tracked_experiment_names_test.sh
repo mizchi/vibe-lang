@@ -7,13 +7,13 @@ TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vibe_experiment_name_lint_test.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 git -C "$TMP_ROOT" init -q
-mkdir -p "$TMP_ROOT/vibe/compiler" "$TMP_ROOT/scripts"
+mkdir -p "$TMP_ROOT/lib/@vibe/compiler" "$TMP_ROOT/scripts"
 
-cat > "$TMP_ROOT/vibe/compiler/cache_probe_test.vibe" <<'EOF'
+cat > "$TMP_ROOT/lib/@vibe/compiler/cache_probe_test.vibe" <<'EOF'
 test "allowed legacy probe" { assert(true) }
 EOF
 
-cat > "$TMP_ROOT/vibe/compiler/new_probe_test.vibe" <<'EOF'
+cat > "$TMP_ROOT/lib/@vibe/compiler/new_probe_test.vibe" <<'EOF'
 test "new probe" { assert(true) }
 EOF
 
@@ -25,7 +25,7 @@ git -C "$TMP_ROOT" add .
 
 cat > "$TMP_ROOT/allowlist.txt" <<'EOF'
 # path category reason
-vibe/compiler/cache_probe_test.vibe gate legacy probe fixture
+lib/@vibe/compiler/cache_probe_test.vibe gate legacy probe fixture
 EOF
 
 if VIBE_EXPERIMENT_NAME_LINT_ROOT="$TMP_ROOT" \
@@ -35,7 +35,7 @@ if VIBE_EXPERIMENT_NAME_LINT_ROOT="$TMP_ROOT" \
   exit 1
 fi
 
-if ! rg -q 'vibe/compiler/new_probe_test.vibe' "$TMP_ROOT/fail.stderr"; then
+if ! rg -q 'lib/@vibe/compiler/new_probe_test.vibe' "$TMP_ROOT/fail.stderr"; then
   echo "experiment-name lint self-test: missing new probe violation" >&2
   cat "$TMP_ROOT/fail.stderr" >&2
   exit 1
@@ -48,7 +48,7 @@ if ! rg -q 'scripts/.tmp_probe.sh' "$TMP_ROOT/fail.stderr"; then
 fi
 
 cat >> "$TMP_ROOT/allowlist.txt" <<'EOF'
-vibe/compiler/new_probe_test.vibe gate new gate fixture
+lib/@vibe/compiler/new_probe_test.vibe gate new gate fixture
 scripts/.tmp_probe.sh manual-experiment temporary script fixture
 EOF
 
@@ -57,8 +57,8 @@ VIBE_EXPERIMENT_NAME_LINT_ROOT="$TMP_ROOT" \
   bash "$CHECK_SCRIPT" >/dev/null
 
 cat > "$TMP_ROOT/allowlist.txt" <<'EOF'
-vibe/compiler/cache_probe_test.vibe invalid-category bad category
-vibe/compiler/missing_probe_test.vibe gate stale entry
+lib/@vibe/compiler/cache_probe_test.vibe invalid-category bad category
+lib/@vibe/compiler/missing_probe_test.vibe gate stale entry
 EOF
 
 if VIBE_EXPERIMENT_NAME_LINT_ROOT="$TMP_ROOT" \

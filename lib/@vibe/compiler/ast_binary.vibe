@@ -1,0 +1,316 @@
+//# AST Binary ABI v1 — selfhost implementation
+//#
+//# Wire format spec: docs/ast_binary_abi.md (single source of truth).
+//#
+//# This file implements the byte-level primitives (varint, svarint,
+//# string, bool, span, magic header) and a cursor over `Bytes` for
+//# reads. The MoonBit host counterpart lives in
+//# src/core/serialize_binary.mbt + src/core/deserialize_binary.mbt
+//# and is byte-for-byte compatible on every primitive: a Bytes blob
+//# written by one side MUST round-trip cleanly through the other.
+//#
+//# Status: primitives complete + parity-tested. The Module/Stmt/Expr
+//# encoders themselves are mechanical (one match arm per tag in the
+//# spec) but require the selfhost AST representation in
+//# `lib/@vibe/compiler/core/ast.vibe` to be aligned with the MoonBit
+//# `@core.Module` shape (the spec uses `Stmt::Let { rec, name, expr,
+//# span }` whereas selfhost currently has
+//# `SLet(Bool, Bool, String, Option[TypeExpr], Expr)` — different
+//# fields and no span tracking). Translation + AST-level encoders are
+//# tracked as follow-up work; the primitive layer is the load-bearing
+//# part that needed parity first.
+
+//# Constants ===
+
+export let AST_BINARY_VERSION: Int = 1
+export let AST_BINARY_MAGIC_V: Int = 118  // 'v'
+export let AST_BINARY_MAGIC_A: Int = 65   // 'A'
+export let AST_BINARY_MAGIC_S: Int = 83   // 'S'
+export let AST_BINARY_MAGIC_T: Int = 84   // 'T'
+
+//# Encoder primitives ===
+
+//# LEB128 unsigned. Mirrors `write_varint` in
+//# src/core/serialize_binary.mbt. We avoid `leb128_encode_u32` from
+//# core/bytebuf because that one shifts via `((1<<25) - 1)` which
+//# silently clamps at 32 bits; the ABI requires 64-bit-clean output
+//# for any varint field (Stmt counts, string lengths). Spelled out
+//# the slow way so the bytes match across implementations bit-for-bit.
+export let ast_binary_write_varint: (Bytes, Int) -> Unit = (buf, v) -> {
+  let mut x = v
+  let mut more = true
+  while more {
+    let byte = x & 127
+    x = (x >> 7) & ((1 << 57) - 1)
+    if x == 0 {
+      Bytes::push(buf, byte)
+      more = false
+    } else {
+      Bytes::push(buf, byte | 128)
+    }
+  }
+}
+
+//# Standard signed LEB128 (sleb128). Matches the encoder in
+//# src/core/serialize_binary.mbt. Arithmetic right shift keeps the
+//# sign bit on the high end so the termination condition is
+//# value==0/no-sign or value==-1/sign-set.
+export let ast_binary_write_svarint: (Bytes, Int) -> Unit = (buf, v) -> {
+  let mut value = v
+  let mut more = true
+  while more {
+    let byte = value & 127
+    value = value >> 7
+    let sign_bit_set = (byte & 64) != 0
+    let terminate =
+      (value == 0 && (sign_bit_set == false)) ||
+      (value == (0 - 1) && sign_bit_set)
+    if terminate {
+      Bytes::push(buf, byte)
+      more = false
+    } else {
+      Bytes::push(buf, byte | 128)
+    }
+  }
+}
+
+//# Single byte 0x00 or 0x01.
+export let ast_binary_write_bool: (Bytes, Bool) -> Unit = (buf, b) -> {
+  if b {
+    Bytes::push(buf, 1)
+  } else {
+    Bytes::push(buf, 0)
+  }
+}
+
+//# UTF-8 encode a string and prefix with `varint(byte_count)`. vibe's
+//# `String::char_code_at` returns UTF-16 code units, so we have to
+//# (a) decode surrogate pairs back into code points, then (b) emit
+//# UTF-8 bytes. This is the inverse of what
+//# `@buffer.Buffer::write_string_utf8` does on the MoonBit side.
+export let ast_binary_write_string: (Bytes, String) -> Unit = (buf, s) -> {
+  // Encode UTF-8 into a scratch buffer first so we can prefix with
+  // the byte count (not the char/code-unit count).
+  let scratch = Bytes::new()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    let unit = String::char_code_at(s, i)
+    let mut code_point = unit
+    let is_high_surrogate = unit >= 55296 && unit < 56320
+    if is_high_surrogate && (i + 1) < len {
+      let low = String::char_code_at(s, i + 1)
+      let is_low = low >= 56320 && low < 57344
+      if is_low {
+        code_point = ((unit - 55296) << 10) + (low - 56320) + 65536
+        i = i + 1
+      }
+    }
+    if code_point < 128 {
+      Bytes::push(scratch, code_point)
+    } else {
+      if code_point < 2048 {
+        Bytes::push(scratch, 192 | (code_point >> 6))
+        Bytes::push(scratch, 128 | (code_point & 63))
+      } else {
+        if code_point < 65536 {
+          Bytes::push(scratch, 224 | (code_point >> 12))
+          Bytes::push(scratch, 128 | ((code_point >> 6) & 63))
+          Bytes::push(scratch, 128 | (code_point & 63))
+        } else {
+          Bytes::push(scratch, 240 | (code_point >> 18))
+          Bytes::push(scratch, 128 | ((code_point >> 12) & 63))
+          Bytes::push(scratch, 128 | ((code_point >> 6) & 63))
+          Bytes::push(scratch, 128 | (code_point & 63))
+        }
+      }
+    }
+    i = i + 1
+  }
+  ast_binary_write_varint(buf, Bytes::length(scratch))
+  Bytes::append(buf, scratch)
+}
+
+//# Optional string: 0x00 = None, 0x01 followed by string.
+export let ast_binary_write_optstr: (Bytes, Option[String]) -> Unit = (buf, o) -> {
+  match o {
+    None => Bytes::push(buf, 0)
+    Some(s) => {
+      Bytes::push(buf, 1)
+      ast_binary_write_string(buf, s)
+    }
+  }
+}
+
+//# `svarint(start) svarint(end)`.
+export let ast_binary_write_span: (Bytes, Int, Int) -> Unit = (buf, start, end) -> {
+  ast_binary_write_svarint(buf, start)
+  ast_binary_write_svarint(buf, end)
+}
+
+//# Magic 'vAST' + version varint. Emit this once at the start of any
+//# blob.
+export let ast_binary_write_header: (Bytes) -> Unit = (buf) -> {
+  Bytes::push(buf, AST_BINARY_MAGIC_V)
+  Bytes::push(buf, AST_BINARY_MAGIC_A)
+  Bytes::push(buf, AST_BINARY_MAGIC_S)
+  Bytes::push(buf, AST_BINARY_MAGIC_T)
+  ast_binary_write_varint(buf, AST_BINARY_VERSION)
+}
+
+//# Reader cursor ===
+//#
+//# vibe doesn't have first-class Refs; we use a struct with a mut
+//# field to advance the read position.
+export struct AstBinaryReader {
+  bytes: Bytes;
+  mut pos: Int
+}
+
+export let ast_binary_reader_new: (Bytes) -> AstBinaryReader = (bytes) -> {
+  AstBinaryReader::{ bytes: bytes, pos: 0 }
+}
+
+export let ast_binary_reader_remaining: (AstBinaryReader) -> Int = (r) -> {
+  Bytes::length(r.bytes) - r.pos
+}
+
+//# Read one byte and advance the cursor. Returns -1 on EOF; callers
+//# are expected to validate ahead-of-read for non-trivial decodes.
+export let ast_binary_read_byte: (AstBinaryReader) -> Int = (r) -> {
+  if r.pos >= Bytes::length(r.bytes) {
+    0 - 1
+  } else {
+    let b = Bytes::get(r.bytes, r.pos)
+    r.pos = r.pos + 1
+    b
+  }
+}
+
+//# LEB128 unsigned. Mirrors `read_varint` on the MoonBit side.
+export let ast_binary_read_varint: (AstBinaryReader) -> Int = (r) -> {
+  let mut result = 0
+  let mut shift = 0
+  let mut more = true
+  while more {
+    let b = ast_binary_read_byte(r)
+    result = result | ((b & 127) << shift)
+    if (b & 128) == 0 {
+      more = false
+    } else {
+      shift = shift + 7
+    }
+  }
+  result
+}
+
+//# sleb128. Sign-extends if the final byte has bit 6 set.
+export let ast_binary_read_svarint: (AstBinaryReader) -> Int = (r) -> {
+  let mut result = 0
+  let mut shift = 0
+  let mut last_byte = 0
+  let mut more = true
+  while more {
+    let b = ast_binary_read_byte(r)
+    last_byte = b
+    result = result | ((b & 127) << shift)
+    shift = shift + 7
+    if (b & 128) == 0 {
+      more = false
+    }
+  }
+  if shift < 64 && (last_byte & 64) != 0 {
+    result | ((0 - 1) << shift)
+  } else {
+    result
+  }
+}
+
+export let ast_binary_read_bool: (AstBinaryReader) -> Bool = (r) -> {
+  let b = ast_binary_read_byte(r)
+  b == 1
+}
+
+//# Decode the varint length-prefixed UTF-8 string back into a vibe
+//# `String`. We assemble characters via char arithmetic; vibe's
+//# `String::concat` joins single-character strings.
+export let ast_binary_read_string: (AstBinaryReader) -> String = (r) -> {
+  let byte_len = ast_binary_read_varint(r)
+  let end = r.pos + byte_len
+  // O(N) build via StringBuilder; the previous `out = String::concat(out, c)`
+  // per character was O(L²) over the string length, paid on every string when
+  // loading a cached AST (issue #366).
+  let out = StringBuilder::new()
+  while r.pos < end {
+    let b0 = ast_binary_read_byte(r)
+    let mut code_point = 0
+    if b0 < 128 {
+      code_point = b0
+    } else {
+      if (b0 & 224) == 192 {
+        let b1 = ast_binary_read_byte(r)
+        code_point = ((b0 & 31) << 6) | (b1 & 63)
+      } else {
+        if (b0 & 240) == 224 {
+          let b1 = ast_binary_read_byte(r)
+          let b2 = ast_binary_read_byte(r)
+          code_point = ((b0 & 15) << 12) | ((b1 & 63) << 6) | (b2 & 63)
+        } else {
+          let b1 = ast_binary_read_byte(r)
+          let b2 = ast_binary_read_byte(r)
+          let b3 = ast_binary_read_byte(r)
+          code_point = ((b0 & 7) << 18) | ((b1 & 63) << 12) | ((b2 & 63) << 6) | (b3 & 63)
+        }
+      }
+    }
+    // Re-encode as UTF-16 surrogate pair if needed, then build a 1-char string.
+    if code_point >= 65536 {
+      let high = 55296 + ((code_point - 65536) >> 10)
+      let low = 56320 + ((code_point - 65536) & 1023)
+      // vibe doesn't expose a primitive char-from-code-point that handles
+      // surrogates; we round-trip through Bytes which is UTF-16-aware in
+      // the runtime. This branch is unused by the prelude (ASCII-only)
+      // so we keep the slow path explicit and tested by the cross-impl
+      // fixture once non-BMP characters get added.
+      StringBuilder::push(out, String::from_char_code(high))
+      StringBuilder::push(out, String::from_char_code(low))
+    } else {
+      StringBuilder::push(out, String::from_char_code(code_point))
+    }
+  }
+  StringBuilder::freeze(out)
+}
+
+export let ast_binary_read_optstr: (AstBinaryReader) -> Option[String] = (r) -> {
+  let tag = ast_binary_read_byte(r)
+  if tag == 0 {
+    None
+  } else {
+    Some(ast_binary_read_string(r))
+  }
+}
+
+export let ast_binary_read_span: (AstBinaryReader) -> (Int, Int) = (r) -> {
+  let start = ast_binary_read_svarint(r)
+  let end = ast_binary_read_svarint(r)
+  (start, end)
+}
+
+//# Magic + version. Returns `(ok, version)`: ok=false on bad magic,
+//# version=0 on EOF.
+export let ast_binary_read_header: (AstBinaryReader) -> (Bool, Int) = (r) -> {
+  if ast_binary_reader_remaining(r) < 4 {
+    (false, 0)
+  } else {
+    let v = ast_binary_read_byte(r)
+    let a = ast_binary_read_byte(r)
+    let s = ast_binary_read_byte(r)
+    let t = ast_binary_read_byte(r)
+    if v != AST_BINARY_MAGIC_V || a != AST_BINARY_MAGIC_A || s != AST_BINARY_MAGIC_S || t != AST_BINARY_MAGIC_T {
+      (false, 0)
+    } else {
+      let version = ast_binary_read_varint(r)
+      (true, version)
+    }
+  }
+}
