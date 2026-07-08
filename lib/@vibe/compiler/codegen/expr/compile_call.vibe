@@ -171,14 +171,21 @@ let rec cc_expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with { Er
   }
 }
 
-// #784: is `e` statically — BY SHAPE — a Bool? A bool literal, a comparison /
-// logical binary op, a `!` unary, or a call to a bool-returning builtin. Used to
-// route `"\{b}"` / `__to_string(b)` to a "true"/"false" formatter instead of the
-// integer path (which prints 1/0, since Bool and Int share the tagged-int runtime
-// representation). Purely syntactic, like `cc_expr_is_floatish`: a bool bound to
-// a local and then interpolated is not covered (still prints 1/0), but every
-// direct boolean expression is. Never fires for an integer expression, so the
-// pervasive `__to_string(<int>)` calls (lengths, offsets, ids) are untouched.
+// #784: is `e` statically — BY SHAPE — a Bool via an UNSHADOWABLE form? A bool
+// literal, a comparison / logical binary op, or a `!` unary. These lower directly
+// (operators bypass name resolution) so the classification is always correct.
+// Used to route `"\{b}"` / `__to_string(b)` to a "true"/"false" formatter instead
+// of the integer path (which prints 1/0, since Bool and Int share the tagged-int
+// runtime representation). Purely syntactic, like `cc_expr_is_floatish`.
+//
+// Deliberately does NOT classify calls to bool-returning builtins (eq / not /
+// String::contains / …) by name: a file may define or import a same-named
+// function that returns Int/String, and the actual call emission honors that
+// shadow via `prefer_bound_call` — so a name-only match would misformat the
+// shadowed function's result (Codex #785 review, P2). A bool bound to a local
+// and then interpolated is likewise not covered (still prints 1/0). Never fires
+// for an integer expression, so the pervasive `__to_string(<int>)` calls
+// (lengths, offsets, ids) are untouched.
 let cc_expr_is_boolish: (Expr) -> Bool = (e) -> {
   let tag = expr_tag(e)
   if tag == 1 {
@@ -188,14 +195,6 @@ let cc_expr_is_boolish: (Expr) -> Bool = (e) -> {
     op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||"
   } else if tag == 6 {
     get_eunaryop_op(e) == "!"
-  } else if tag == 8 {
-    let callee = get_ecall_callee(e)
-    if is_eident(callee) {
-      let fname = get_eident_name(callee)
-      fname == "eq" || fname == "not" || fname == "String::equals" || fname == "String::contains" || fname == "String::starts_with" || fname == "String::ends_with" || fname == "Array::any" || fname == "Array::all" || fname == "Array::contains" || fname == "Map::has_key" || fname == "map_has" || fname == "Path::is_absolute" || fname == "Fs::exists" || fname == "Fs::is_dir" || fname == "Fs::is_file"
-    } else {
-      false
-    }
   } else {
     false
   }

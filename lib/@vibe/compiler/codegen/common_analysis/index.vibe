@@ -103,6 +103,23 @@ export let rec collect_strings_expr: (Expr, Array[String]) -> Int = (expr, out) 
     },
     ECall(callee, args, _) => {
       collect_strings_expr(callee, out)
+      // #784: the bool→string codegen path (compile_call.vibe) synthesizes
+      // `if b { "true" } else { "false" }` for a statically-boolean `__to_string`
+      // arg. Those EString nodes are created during codegen — AFTER this
+      // collection pass — so their literals are otherwise absent from the string
+      // table (`string not in table: true`, Codex #785 review, P1). Seed them
+      // whenever `__to_string` is called. Over-approximates (also seeds for a
+      // purely-integer `__to_string`), which is harmless: two small interned
+      // strings.
+      match callee {
+        EIdent(nm, _) => if nm == "__to_string" {
+          collect_strings_expr(EString("true"), out)
+          collect_strings_expr(EString("false"), out)
+        } else {
+          0
+        },
+        _ => 0
+      }
       let mut i = 0
       while i < Array::length(args) {
         collect_strings_expr(Array::get(args, i), out)
