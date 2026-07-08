@@ -1008,7 +1008,13 @@ let rec match_candidates = (re: Re, s: String, pos: Int, flags: Int, collector: 
 let match_first_state = (re: Re, s: String, pos: Int, collector: Array[Int]) -> (Int, Array[Int]) {
   let states = match_candidates(re, s, pos, 0, collector)
   if Array::length(states) > 0 {
-    Array::get(states, 0)
+    // #787 workaround: `Array::get(states, 0)` returns a `(Int, Array[Int])`
+    // tuple whose inner array is NOT retained under RC, so the following drop of
+    // the `states` container frees it and the returned array dangles (heap
+    // corruption that surfaces on the next allocation). Clone the extracted
+    // array so the returned tuple owns its own copy. Same class as #776/#725.
+    let (fp, fc) = Array::get(states, 0)
+    (fp, clone_int_array(fc))
   } else {
     (-1, empty_int_array())
   }
