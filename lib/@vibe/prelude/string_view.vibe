@@ -14,7 +14,14 @@ export struct ArrayView[T] {
 
 //# Functions
 
-let normalize_range = (start: Int, end: Int, len: Int) {
+// Returns the clamped, ordered (lo, hi) pair as a tuple rather than an
+// anonymous `record { start, end }`: the fields `start`/`end` collide with
+// the StringView/ArrayView struct fields, and anonymous-record `.field`
+// access currently resolves the offset via the named-struct field table
+// (start@1/end@2) instead of the record's own layout (start@0/end@1), so
+// `range.start`/`range.end` read the wrong slots and produce wrong views.
+// Tuples have an unambiguous positional layout and sidestep that bug.
+let normalize_range = (start: Int, end: Int, len: Int) -> (Int, Int) {
   let a0 = if start < 0 {
     0
   }
@@ -30,24 +37,18 @@ let normalize_range = (start: Int, end: Int, len: Int) {
   }
   else end
   if a0 <= b0 {
-    record {
-      start: a0,
-      end: b0
-    }
+    (a0, b0)
   }
-  else record {
-    start: b0,
-    end: a0
-  }
+  else (b0, a0)
 }
 
 export let from_array_range = [T](source: Array[T], start: Int, end: Int) -> ArrayView[T] {
   let len = Array::length(source)
-  let range = normalize_range(start, end, len)
+  let (r_start, r_end) = normalize_range(start, end, len)
   ArrayView::{
     source: source,
-    start: range.start,
-    end: range.end
+    start: r_start,
+    end: r_end
   }
 }
 
@@ -57,11 +58,11 @@ export let from_array = [T](source: Array[T]) -> ArrayView[T] {
 
 export let from_string_range = (source: String, start: Int, end: Int) -> StringView {
   let len = String::length(source)
-  let range = normalize_range(start, end, len)
+  let (r_start, r_end) = normalize_range(start, end, len)
   StringView::{
     source: source,
-    start: range.start,
-    end: range.end
+    start: r_start,
+    end: r_end
   }
 }
 

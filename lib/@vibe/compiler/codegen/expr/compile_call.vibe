@@ -3454,16 +3454,10 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       let loop_body = ESeq(ECall(EIdent("Array::push", -1), [
         EIdent("__fam_arr", -1),
         EIdent("__fam_init", -1)
-      ], -1), EAssign("__fam_i", ECall(EIdent("add", -1), [
-        EIdent("__fam_i", -1),
-        EInt(1)
-      ], -1), EUnit))
+      ], -1), EAssign("__fam_i", EBinOp("+", EIdent("__fam_i", -1), EInt(1)), EUnit))
       let synth = ELet("__fam_n", n_expr, ELet("__fam_init", init_expr, ELetMut("__fam_arr", EArray(Array::slice([
         EUnit
-      ], 0, 0)), ELetMut("__fam_i", EInt(0), ESeq(EWhile(ECall(EIdent("lt", -1), [
-        EIdent("__fam_i", -1),
-        EIdent("__fam_n", -1)
-      ], -1), loop_body), EIdent("__fam_arr", -1))))))
+      ], 0, 0)), ELetMut("__fam_i", EInt(0), ESeq(EWhile(EBinOp("<", EIdent("__fam_i", -1), EIdent("__fam_n", -1)), loop_body), EIdent("__fam_arr", -1))))))
       ce(buf, synth, local_names, next_local, ctx, ld)
     }
     else if fname == "FixedArray::blit" {
@@ -3476,25 +3470,48 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       let len_expr = Array::get(args, 4)
       let loop_body = ESeq(ECall(EIdent("Array::set", -1), [
         EIdent("__fb_dst", -1),
-        ECall(EIdent("add", -1), [
-          EIdent("__fb_doff", -1),
-          EIdent("__fb_i", -1)
-        ], -1),
+        EBinOp("+", EIdent("__fb_doff", -1), EIdent("__fb_i", -1)),
         ECall(EIdent("Array::get", -1), [
           EIdent("__fb_src", -1),
-          ECall(EIdent("add", -1), [
-            EIdent("__fb_soff", -1),
-            EIdent("__fb_i", -1)
-          ], -1)
+          EBinOp("+", EIdent("__fb_soff", -1), EIdent("__fb_i", -1))
         ], -1)
-      ], -1), EAssign("__fb_i", ECall(EIdent("add", -1), [
-        EIdent("__fb_i", -1),
-        EInt(1)
-      ], -1), EUnit))
-      let synth = ELet("__fb_dst", dst_expr, ELet("__fb_doff", doff_expr, ELet("__fb_src", src_expr, ELet("__fb_soff", soff_expr, ELet("__fb_len", len_expr, ELetMut("__fb_i", EInt(0), ESeq(EWhile(ECall(EIdent("lt", -1), [
-        EIdent("__fb_i", -1),
-        EIdent("__fb_len", -1)
-      ], -1), loop_body), EUnit)))))))
+      ], -1), EAssign("__fb_i", EBinOp("+", EIdent("__fb_i", -1), EInt(1)), EUnit))
+      let synth = ELet("__fb_dst", dst_expr, ELet("__fb_doff", doff_expr, ELet("__fb_src", src_expr, ELet("__fb_soff", soff_expr, ELet("__fb_len", len_expr, ELetMut("__fb_i", EInt(0), ESeq(EWhile(EBinOp("<", EIdent("__fb_i", -1), EIdent("__fb_len", -1)), loop_body), EUnit)))))))
+      ce(buf, synth, local_names, next_local, ctx, ld)
+    }
+    else if fname == "Bytes::blit" {
+      // blit(dst, src, start, end): append src[start..end) to dst (half-open
+      // range), matching lib/@vibe/prelude/bytes_test.vibe's expectation and the
+      // gc backend's gen_bytes_blit_body. gc-only in the builtin registry; this
+      // synthesizes the loop for the linear backend (same technique as
+      // FixedArray::make/blit above) so `Bytes::push` handles the buffer growth
+      // and RC bookkeeping instead of hand-emitted wasm.
+      let dst_expr = Array::get(args, 0)
+      let src_expr = Array::get(args, 1)
+      let start_expr = Array::get(args, 2)
+      let end_expr = Array::get(args, 3)
+      let loop_body = ESeq(ECall(EIdent("Bytes::push", -1), [
+        EIdent("__bb_dst", -1),
+        ECall(EIdent("Bytes::get", -1), [
+          EIdent("__bb_src", -1),
+          EIdent("__bb_i", -1)
+        ], -1)
+      ], -1), EAssign("__bb_i", EBinOp("+", EIdent("__bb_i", -1), EInt(1)), EUnit))
+      let synth = ELet("__bb_dst", dst_expr, ELet("__bb_src", src_expr, ELet("__bb_start", start_expr, ELet("__bb_end", end_expr, ELetMut("__bb_i", EIdent("__bb_start", -1), ESeq(EWhile(EBinOp("<", EIdent("__bb_i", -1), EIdent("__bb_end", -1)), loop_body), EUnit))))))
+      ce(buf, synth, local_names, next_local, ctx, ld)
+    }
+    else if fname == "Bytes::fill" {
+      // fill(dst, value, count): append `count` copies of `value` to dst.
+      // gc-only in the builtin registry; synthesized for the linear backend
+      // via Bytes::push (same technique as Bytes::blit / FixedArray::make).
+      let dst_expr = Array::get(args, 0)
+      let val_expr = Array::get(args, 1)
+      let count_expr = Array::get(args, 2)
+      let loop_body = ESeq(ECall(EIdent("Bytes::push", -1), [
+        EIdent("__bf2_dst", -1),
+        EIdent("__bf2_val", -1)
+      ], -1), EAssign("__bf2_i", EBinOp("+", EIdent("__bf2_i", -1), EInt(1)), EUnit))
+      let synth = ELet("__bf2_dst", dst_expr, ELet("__bf2_val", val_expr, ELet("__bf2_count", count_expr, ELetMut("__bf2_i", EInt(0), ESeq(EWhile(EBinOp("<", EIdent("__bf2_i", -1), EIdent("__bf2_count", -1)), loop_body), EUnit)))))
       ce(buf, synth, local_names, next_local, ctx, ld)
     }
     else {
