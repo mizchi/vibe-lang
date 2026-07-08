@@ -4298,6 +4298,656 @@ let struct_decl_exists: (Array[Stmt], String) -> Bool = (stmts, name) -> {
   found
 }
 
+///|
+// ===== #786: hoist non-capturing effectful local lambdas to top-level =====
+// A `let f = () -> { perform ... }` bound INSIDE a block compiles to a closure
+// value; calling it inside `handle` drives a miscompiled effect+closure lowering
+// (unregistered arity-1 closure type / infinite recursion, #786). The identical
+// function at TOP LEVEL compiles to a direct call and works. So hoist a local
+// `let`-bound lambda whose body performs/throws and that provably captures NO
+// enclosing local, to a fresh top-level `let`, rewriting its call sites.
+//
+// Safety: hoisted only when EVERY free identifier (used, not bound inside the
+// lambda) is an effect keyword (perform/throw/resume), a qualified name (`A::b`),
+// or a constructor (Uppercase-initial). Locals are snake_case (lowercase,
+// unqualified) by convention, so any captured local fails the test -- the pass
+// can never hoist a capturing lambda. Bare lowercase top-level helpers also fail,
+// so such lambdas are left alone (a safe miss, not a miscompile).
+let dlh_name_ok: (String) -> Bool = (n) -> {
+  if n == "perform" || n == "throw" || n == "resume" {
+    true
+  } else if String::index_of(n, "::") >= 0 {
+    true
+  } else if String::length(n) > 0 {
+    let c = String::char_code_at(n, 0)
+    c >= 65 && c <= 90
+  } else {
+    false
+  }
+}
+
+///|
+let dlh_with: (Array[String], String) -> Array[String] = (arr, name) -> {
+  let out = Array::slice(arr, 0, Array::length(arr))
+  Array::push(out, name)
+  out
+}
+
+///|
+// Local membership test — avoids depending on `array_contains_str` (defined in
+// other compiler modules and NOT imported here; it resolves in the concatenated
+// sources bundle but is `unknown name` in the strict per-module module_source
+// merge that the FS-compile lane type-checks).
+let dlh_contains: (Array[String], String) -> Bool = (arr, name) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == name {
+      found = true
+      i = Array::length(arr)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+///|
+let dlh_strip_tilde: (String) -> String = (n) -> {
+  let ln = String::length(n)
+  if ln > 0 && n[ln - 1: ln] == "~" {
+    n[0: ln - 1]
+  } else {
+    n
+  }
+}
+
+///|
+let rec dlh_pat_binds: (Pat, Array[String]) -> Unit = (p, out) -> {
+  match p {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        dlh_pat_binds(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    PTuple(ps) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        dlh_pat_binds(Array::get(ps, i), out)
+        i = i + 1
+      }
+    },
+    POr(a, b) => {
+      dlh_pat_binds(a, out)
+      dlh_pat_binds(b, out)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        dlh_pat_binds(fp, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+///|
+// #786 targets `perform` inside a local lambda that is later called under a
+// `handle`. Hoisting is gated on the body containing a `perform` specifically —
+// NOT `throw`. A `throw(SubErr(..))` lambda (see effect_handler_test) has no
+// closure bug and compiled fine as a local closure; hoisting it to top-level
+// would relocate its bare suberror-ctor references (`KeyInvalid`) out of the
+// scope that resolves them (`undefined variable (local): KeyInvalid @call`).
+let rec dlh_has_perform: (Expr) -> Bool = (expr) -> {
+  match expr {
+    ECall(callee, args, _) => {
+      let head = match callee {
+        EIdent(n, _) => n == "perform",
+        _ => false
+      }
+      if head {
+        true
+      } else {
+        let mut i = 0
+        let mut found = dlh_has_perform(callee)
+        while i < Array::length(args) {
+          if dlh_has_perform(Array::get(args, i)) {
+            found = true
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        found
+      }
+    },
+    EBinOp(_, l, r) => dlh_has_perform(l) || dlh_has_perform(r),
+    EUnaryOp(_, e) => dlh_has_perform(e),
+    EIf(c, t, e) => dlh_has_perform(c) || dlh_has_perform(t) || dlh_has_perform(e),
+    ELet(_, v, b) => dlh_has_perform(v) || dlh_has_perform(b),
+    ELetRec(_, v, b) => dlh_has_perform(v) || dlh_has_perform(b),
+    ELetMut(_, v, b) => dlh_has_perform(v) || dlh_has_perform(b),
+    EAssign(_, v, c) => dlh_has_perform(v) || dlh_has_perform(c),
+    EAssignOp(_, _, v, c) => dlh_has_perform(v) || dlh_has_perform(c),
+    ESeq(a, b) => dlh_has_perform(a) || dlh_has_perform(b),
+    EWhile(c, b) => dlh_has_perform(c) || dlh_has_perform(b),
+    EForIn(_, _, it, b) => dlh_has_perform(it) || dlh_has_perform(b),
+    EDot(o, _, _) => dlh_has_perform(o),
+    ELabeledArg(_, _, e) => dlh_has_perform(e),
+    EThrow(e) => dlh_has_perform(e),
+    EReturn(e) => dlh_has_perform(e),
+    EMatch(s, arms) => dlh_has_perform(s) || dlh_has_perform_arms(arms),
+    EHandle(s, _) => dlh_has_perform(s),
+    _ => false
+  }
+}
+
+///|
+let dlh_has_perform_arms: (Array[(Pat, Expr)]) -> Bool = (arms) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) {
+    let (_, b) = Array::get(arms, i)
+    if dlh_has_perform(b) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+///|
+// Append to `bad` any free identifier of `expr` that is not `dlh_name_ok` and
+// not in `bound`. Non-empty `bad` => the lambda references a bare lowercase
+// non-top-level name (capture or bare-helper call) and must not be hoisted.
+let rec dlh_scan_free: (Expr, Array[String], Array[String]) -> Unit = (expr, bound, bad) -> {
+  match expr {
+    EIdent(n, _) => if dlh_name_ok(n) || dlh_contains(bound, n) {
+      ()
+    } else {
+      Array::push(bad, n)
+    },
+    EBinOp(_, l, r) => {
+      dlh_scan_free(l, bound, bad)
+      dlh_scan_free(r, bound, bad)
+    },
+    EUnaryOp(_, e) => dlh_scan_free(e, bound, bad),
+    ECall(callee, args, _) => {
+      dlh_scan_free(callee, bound, bad)
+      let mut i = 0
+      while i < Array::length(args) {
+        dlh_scan_free(Array::get(args, i), bound, bad)
+        i = i + 1
+      }
+    },
+    ETuple(es) => {
+      let mut i = 0
+      while i < Array::length(es) {
+        dlh_scan_free(Array::get(es, i), bound, bad)
+        i = i + 1
+      }
+    },
+    EArray(es) => {
+      let mut i = 0
+      while i < Array::length(es) {
+        dlh_scan_free(Array::get(es, i), bound, bad)
+        i = i + 1
+      }
+    },
+    ESpread(e) => dlh_scan_free(e, bound, bad),
+    EContinue(es) => {
+      let mut i = 0
+      while i < Array::length(es) {
+        dlh_scan_free(Array::get(es, i), bound, bad)
+        i = i + 1
+      }
+    },
+    ERecord(fs) => {
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (_, v) = Array::get(fs, i)
+        dlh_scan_free(v, bound, bad)
+        i = i + 1
+      }
+    },
+    EMap(fs) => {
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (_, v) = Array::get(fs, i)
+        dlh_scan_free(v, bound, bad)
+        i = i + 1
+      }
+    },
+    EIf(c, t, e) => {
+      dlh_scan_free(c, bound, bad)
+      dlh_scan_free(t, bound, bad)
+      dlh_scan_free(e, bound, bad)
+    },
+    ELet(name, v, b) => {
+      dlh_scan_free(v, bound, bad)
+      dlh_scan_free(b, dlh_with(bound, name), bad)
+    },
+    ELetRec(name, v, b) => {
+      let b2 = dlh_with(bound, name)
+      dlh_scan_free(v, b2, bad)
+      dlh_scan_free(b, b2, bad)
+    },
+    ELetMut(name, v, b) => {
+      dlh_scan_free(v, bound, bad)
+      dlh_scan_free(b, dlh_with(bound, name), bad)
+    },
+    EAssign(name, v, c) => {
+      if dlh_name_ok(name) || dlh_contains(bound, name) {
+        ()
+      } else {
+        Array::push(bad, name)
+      }
+      dlh_scan_free(v, bound, bad)
+      dlh_scan_free(c, bound, bad)
+    },
+    EAssignOp(name, _, v, c) => {
+      if dlh_name_ok(name) || dlh_contains(bound, name) {
+        ()
+      } else {
+        Array::push(bad, name)
+      }
+      dlh_scan_free(v, bound, bad)
+      dlh_scan_free(c, bound, bad)
+    },
+    ESeq(a, b) => {
+      dlh_scan_free(a, bound, bad)
+      dlh_scan_free(b, bound, bad)
+    },
+    EWhile(c, b) => {
+      dlh_scan_free(c, bound, bad)
+      dlh_scan_free(b, bound, bad)
+    },
+    EForIn(name, idxn, it, b) => {
+      dlh_scan_free(it, bound, bad)
+      let mut b2 = dlh_with(bound, name)
+      b2 = match idxn {
+        Some(inm) => dlh_with(b2, inm),
+        None => b2
+      }
+      dlh_scan_free(b, b2, bad)
+    },
+    EDot(o, _, _) => dlh_scan_free(o, bound, bad),
+    ELabeledArg(_, _, e) => dlh_scan_free(e, bound, bad),
+    EThrow(e) => dlh_scan_free(e, bound, bad),
+    EReturn(e) => dlh_scan_free(e, bound, bad),
+    EBreak(opt) => match opt {
+      Some(e) => dlh_scan_free(e, bound, bad),
+      None => ()
+    },
+    EFn(_, _, params, _, _, body) => {
+      let mut inner = bound
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        inner = dlh_with(inner, dlh_strip_tilde(pn))
+        i = i + 1
+      }
+      dlh_scan_free(body, inner, bad)
+    },
+    EMatch(s, arms) => {
+      dlh_scan_free(s, bound, bad)
+      dlh_scan_arms(arms, bound, bad)
+    },
+    EHandle(s, arms) => {
+      dlh_scan_free(s, bound, bad)
+      dlh_scan_arms(arms, bound, bad)
+    },
+    ELoop(params, b) => {
+      let mut b2 = bound
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, init) = Array::get(params, i)
+        dlh_scan_free(init, bound, bad)
+        b2 = dlh_with(b2, pn)
+        i = i + 1
+      }
+      dlh_scan_free(b, b2, bad)
+    },
+    _ => ()
+  }
+}
+
+///|
+let dlh_scan_arms: (Array[(Pat, Expr)], Array[String], Array[String]) -> Unit = (arms, bound, bad) -> {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (p, b) = Array::get(arms, i)
+    let mut ab = bound
+    let pb = empty_str_array()
+    dlh_pat_binds(p, pb)
+    let mut j = 0
+    while j < Array::length(pb) {
+      ab = dlh_with(ab, Array::get(pb, j))
+      j = j + 1
+    }
+    dlh_scan_free(b, ab, bad)
+    i = i + 1
+  }
+}
+
+///|
+// Capture-safe substitution: EIdent(from) -> EIdent(to), stopping in subtrees
+// that rebind `from`.
+let rec dlh_subst: (Expr, String, String) -> Expr = (expr, from, to) -> {
+  match expr {
+    EIdent(n, off) => if n == from {
+      EIdent(to, off)
+    } else {
+      expr
+    },
+    EBinOp(op, l, r) => EBinOp(op, dlh_subst(l, from, to), dlh_subst(r, from, to)),
+    EUnaryOp(op, e) => EUnaryOp(op, dlh_subst(e, from, to)),
+    ECall(callee, args, off) => ECall(dlh_subst(callee, from, to), for a in args {
+      dlh_subst(a, from, to)
+    }, off),
+    ETuple(es) => ETuple(for e in es {
+      dlh_subst(e, from, to)
+    }),
+    EArray(es) => EArray(for e in es {
+      dlh_subst(e, from, to)
+    }),
+    ESpread(e) => ESpread(dlh_subst(e, from, to)),
+    EContinue(es) => EContinue(for e in es {
+      dlh_subst(e, from, to)
+    }),
+    ERecord(fs) => {
+      let out = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (k, v) = Array::get(fs, i)
+        Array::push(out, (k, dlh_subst(v, from, to)))
+        i = i + 1
+      }
+      ERecord(out)
+    },
+    EMap(fs) => {
+      let out = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (k, v) = Array::get(fs, i)
+        Array::push(out, (k, dlh_subst(v, from, to)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    EIf(c, t, e) => EIf(dlh_subst(c, from, to), dlh_subst(t, from, to), dlh_subst(e, from, to)),
+    ELet(name, v, b) => ELet(name, dlh_subst(v, from, to), if name == from {
+      b
+    } else {
+      dlh_subst(b, from, to)
+    }),
+    ELetRec(name, v, b) => if name == from {
+      ELetRec(name, v, b)
+    } else {
+      ELetRec(name, dlh_subst(v, from, to), dlh_subst(b, from, to))
+    },
+    ELetMut(name, v, b) => ELetMut(name, dlh_subst(v, from, to), if name == from {
+      b
+    } else {
+      dlh_subst(b, from, to)
+    }),
+    EAssign(name, v, c) => EAssign(name, dlh_subst(v, from, to), dlh_subst(c, from, to)),
+    EAssignOp(name, op, v, c) => EAssignOp(name, op, dlh_subst(v, from, to), dlh_subst(c, from, to)),
+    ESeq(a, b) => ESeq(dlh_subst(a, from, to), dlh_subst(b, from, to)),
+    EWhile(c, b) => EWhile(dlh_subst(c, from, to), dlh_subst(b, from, to)),
+    EForIn(name, idxn, it, b) => {
+      let shadow = name == from || (match idxn {
+        Some(inm) => inm == from,
+        None => false
+      })
+      EForIn(name, idxn, dlh_subst(it, from, to), if shadow {
+        b
+      } else {
+        dlh_subst(b, from, to)
+      })
+    },
+    EDot(o, f, off) => EDot(dlh_subst(o, from, to), f, off),
+    ELabeledArg(l, m, e) => ELabeledArg(l, m, dlh_subst(e, from, to)),
+    EThrow(e) => EThrow(dlh_subst(e, from, to)),
+    EReturn(e) => EReturn(dlh_subst(e, from, to)),
+    EBreak(opt) => match opt {
+      Some(e) => EBreak(Some(dlh_subst(e, from, to))),
+      None => expr
+    },
+    EFn(tp, bnds, params, rt, eff, body) => {
+      let mut shadow = false
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        if dlh_strip_tilde(pn) == from {
+          shadow = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if shadow {
+        expr
+      } else {
+        EFn(tp, bnds, params, rt, eff, dlh_subst(body, from, to))
+      }
+    },
+    EMatch(s, arms) => EMatch(dlh_subst(s, from, to), dlh_subst_arms(arms, from, to)),
+    EHandle(s, arms) => EHandle(dlh_subst(s, from, to), dlh_subst_arms(arms, from, to)),
+    ELoop(params, b) => {
+      let mut shadow = false
+      let out = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, init) = Array::get(params, i)
+        if pn == from {
+          shadow = true
+        } else {
+          ()
+        }
+        Array::push(out, (pn, dlh_subst(init, from, to)))
+        i = i + 1
+      }
+      ELoop(out, if shadow {
+        b
+      } else {
+        dlh_subst(b, from, to)
+      })
+    },
+    _ => expr
+  }
+}
+
+///|
+let dlh_subst_arms: (Array[(Pat, Expr)], String, String) -> Array[(Pat, Expr)] = (arms, from, to) -> {
+  let out = Array::slice([
+    (PWild, EUnit)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (p, b) = Array::get(arms, i)
+    let pb = empty_str_array()
+    dlh_pat_binds(p, pb)
+    let shadow = dlh_contains(pb, from)
+    Array::push(out, (p, if shadow {
+      b
+    } else {
+      dlh_subst(b, from, to)
+    }))
+    i = i + 1
+  }
+  out
+}
+
+///|
+let rec dlh_hoist_expr: (Expr, Array[Stmt], Array[Int]) -> Expr = (expr, hoisted, ctr) -> {
+  match expr {
+    ELet(name, v, b) => match v {
+      EFn(tp, bnds, params, rt, eff, fbody) => {
+        let hoisted_fn = dlh_hoist_expr(EFn(tp, bnds, params, rt, eff, fbody), hoisted, ctr)
+        let rest = dlh_hoist_expr(b, hoisted, ctr)
+        let bad = empty_str_array()
+        let mut pb = empty_str_array()
+        let mut i = 0
+        while i < Array::length(params) {
+          let (pn, _) = Array::get(params, i)
+          pb = dlh_with(pb, dlh_strip_tilde(pn))
+          i = i + 1
+        }
+        match hoisted_fn {
+          EFn(_, _, _, _, _, hb) => dlh_scan_free(hb, pb, bad),
+          _ => ()
+        }
+        let hoistable = dlh_has_perform(fbody) && Array::length(bad) == 0
+        if hoistable {
+          let idx = Array::get(ctr, 0)
+          Array::set(ctr, 0, idx + 1)
+          let fresh = "__hoisted_lam_\{idx}_\{name}"
+          Array::push(hoisted, SLet(false, false, fresh, None, hoisted_fn))
+          dlh_subst(rest, name, fresh)
+        } else {
+          ELet(name, hoisted_fn, rest)
+        }
+      },
+      _ => ELet(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr))
+    },
+    EBinOp(op, l, r) => EBinOp(op, dlh_hoist_expr(l, hoisted, ctr), dlh_hoist_expr(r, hoisted, ctr)),
+    EUnaryOp(op, e) => EUnaryOp(op, dlh_hoist_expr(e, hoisted, ctr)),
+    ECall(callee, args, off) => ECall(dlh_hoist_expr(callee, hoisted, ctr), for a in args {
+      dlh_hoist_expr(a, hoisted, ctr)
+    }, off),
+    ETuple(es) => ETuple(for e in es {
+      dlh_hoist_expr(e, hoisted, ctr)
+    }),
+    EArray(es) => EArray(for e in es {
+      dlh_hoist_expr(e, hoisted, ctr)
+    }),
+    ESpread(e) => ESpread(dlh_hoist_expr(e, hoisted, ctr)),
+    EContinue(es) => EContinue(for e in es {
+      dlh_hoist_expr(e, hoisted, ctr)
+    }),
+    ERecord(fs) => {
+      let out = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (k, v) = Array::get(fs, i)
+        Array::push(out, (k, dlh_hoist_expr(v, hoisted, ctr)))
+        i = i + 1
+      }
+      ERecord(out)
+    },
+    EMap(fs) => {
+      let out = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (k, v) = Array::get(fs, i)
+        Array::push(out, (k, dlh_hoist_expr(v, hoisted, ctr)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    EIf(c, t, e) => EIf(dlh_hoist_expr(c, hoisted, ctr), dlh_hoist_expr(t, hoisted, ctr), dlh_hoist_expr(e, hoisted, ctr)),
+    ELetRec(name, v, b) => ELetRec(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),
+    ELetMut(name, v, b) => ELetMut(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),
+    EAssign(name, v, c) => EAssign(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(c, hoisted, ctr)),
+    EAssignOp(name, op, v, c) => EAssignOp(name, op, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(c, hoisted, ctr)),
+    ESeq(a, b) => ESeq(dlh_hoist_expr(a, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),
+    EWhile(c, b) => EWhile(dlh_hoist_expr(c, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),
+    EForIn(name, idxn, it, b) => EForIn(name, idxn, dlh_hoist_expr(it, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),
+    EDot(o, f, off) => EDot(dlh_hoist_expr(o, hoisted, ctr), f, off),
+    ELabeledArg(l, m, e) => ELabeledArg(l, m, dlh_hoist_expr(e, hoisted, ctr)),
+    EThrow(e) => EThrow(dlh_hoist_expr(e, hoisted, ctr)),
+    EReturn(e) => EReturn(dlh_hoist_expr(e, hoisted, ctr)),
+    EBreak(opt) => match opt {
+      Some(e) => EBreak(Some(dlh_hoist_expr(e, hoisted, ctr))),
+      None => expr
+    },
+    EFn(tp, bnds, params, rt, eff, body) => EFn(tp, bnds, params, rt, eff, dlh_hoist_expr(body, hoisted, ctr)),
+    EMatch(s, arms) => EMatch(dlh_hoist_expr(s, hoisted, ctr), dlh_hoist_arms(arms, hoisted, ctr)),
+    EHandle(s, arms) => EHandle(dlh_hoist_expr(s, hoisted, ctr), dlh_hoist_arms(arms, hoisted, ctr)),
+    ELoop(params, b) => {
+      let out = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, init) = Array::get(params, i)
+        Array::push(out, (pn, dlh_hoist_expr(init, hoisted, ctr)))
+        i = i + 1
+      }
+      ELoop(out, dlh_hoist_expr(b, hoisted, ctr))
+    },
+    _ => expr
+  }
+}
+
+///|
+let dlh_hoist_arms: (Array[(Pat, Expr)], Array[Stmt], Array[Int]) -> Array[(Pat, Expr)] = (arms, hoisted, ctr) -> {
+  let out = Array::slice([
+    (PWild, EUnit)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (p, b) = Array::get(arms, i)
+    Array::push(out, (p, dlh_hoist_expr(b, hoisted, ctr)))
+    i = i + 1
+  }
+  out
+}
+
+///|
+let dlh_hoist_stmt: (Stmt, Array[Stmt], Array[Int]) -> Stmt = (stmt, hoisted, ctr) -> {
+  match stmt {
+    SLet(ex, rc, name, ty, body) => SLet(ex, rc, name, ty, dlh_hoist_expr(body, hoisted, ctr)),
+    SLetMut(name, ty, body) => SLetMut(name, ty, dlh_hoist_expr(body, hoisted, ctr)),
+    STest(name, body) => STest(name, dlh_hoist_expr(body, hoisted, ctr)),
+    SBench(name, body) => SBench(name, dlh_hoist_expr(body, hoisted, ctr)),
+    SExpr(e) => SExpr(dlh_hoist_expr(e, hoisted, ctr)),
+    SLetPat(pat, e) => SLetPat(pat, dlh_hoist_expr(e, hoisted, ctr)),
+    _ => stmt
+  }
+}
+
+///|
+// In-place hoisting of non-capturing effectful local lambdas across the program.
+export let desugar_hoist_local_lambdas: (Array[Stmt]) -> Unit = (stmts) -> {
+  let hoisted = Array::slice([
+    SExpr(EUnit)
+  ], 0, 0)
+  let ctr = [
+    0
+  ]
+  let n = Array::length(stmts)
+  let mut i = 0
+  while i < n {
+    Array::set(stmts, i, dlh_hoist_stmt(Array::get(stmts, i), hoisted, ctr))
+    i = i + 1
+  }
+  let mut h = 0
+  while h < Array::length(hoisted) {
+    Array::push(stmts, Array::get(hoisted, h))
+    h = h + 1
+  }
+}
+
+///|
 // Labeled-argument reordering. Named args are order-independent — `f(y=2, x=1)`
 // binds x=1, y=2 (cheatsheet "Labeled arguments"). Codegen strips ELabeledArg
 // labels and binds positionally, so a call given out of declared order used to
@@ -4577,6 +5227,13 @@ export let desugar_labeled_args: (Array[Stmt]) -> Unit = (stmts) -> {
 // the same stmts after) finds the bounds already stripped (so no function is
 // re-threaded) and skips dict structs that already exist.
 export let desugar_trait_dicts: (Array[Stmt]) -> Unit = (stmts) -> {
+  // #786: hoist non-capturing effectful local lambdas to top-level functions
+  // before any other pass. A local `let f = (x) -> { perform ... }` that captures
+  // nothing gets promoted to a top-level `let f = ...`, so codegen emits a direct
+  // function (with its `$read` effect param) instead of a local closure whose
+  // arity-1 type may go unregistered. Runs first so the hoisted top-level SLets
+  // are processed by every downstream pass (labeled args, dict rewrite, codegen).
+  desugar_hoist_local_lambdas(stmts)
   // Labeled-argument reordering runs first so downstream passes and codegen see
   // args already in declared parameter order.
   desugar_labeled_args(stmts)
