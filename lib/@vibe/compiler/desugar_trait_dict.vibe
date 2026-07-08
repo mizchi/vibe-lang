@@ -4298,12 +4298,288 @@ let struct_decl_exists: (Array[Stmt], String) -> Bool = (stmts, name) -> {
   found
 }
 
+// Labeled-argument reordering. Named args are order-independent — `f(y=2, x=1)`
+// binds x=1, y=2 (cheatsheet "Labeled arguments"). Codegen strips ELabeledArg
+// labels and binds positionally, so a call given out of declared order used to
+// bind by position (silently wrong; `add`-style commutative calls masked it).
+// This pass reorders a FULLY-labeled call's args into the callee's declared
+// parameter order. It fires only when the callee is a let-bound function whose
+// params are labeled and every arg is an ELabeledArg naming one of those params;
+// any other shape (positional, partial, unknown callee) is left untouched, so
+// positional binding is unchanged.
+let strip_label_tilde: (String) -> String = (n) -> {
+  let ln = String::length(n)
+  if ln > 0 && n[ln - 1: ln] == "~" {
+    n[0: ln - 1]
+  } else {
+    n
+  }
+}
+
+///|
+// fname -> ordered param labels, for every top-level `let f = (a~, b~) -> ..`
+// whose parameter list carries at least one labeled (`~`) parameter.
+let collect_fn_param_labels: (Array[Stmt]) -> Array[(String, Array[String])] = (stmts) -> {
+  let out = Array::slice([
+    ("", empty_str_array())
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, fname, _, body) => match body {
+        EFn(_, _, params, _, _, _) => {
+          let labels = empty_str_array()
+          let mut any_labeled = false
+          let mut pi = 0
+          while pi < Array::length(params) {
+            let (pn, _) = Array::get(params, pi)
+            let pl = String::length(pn)
+            if pl > 0 && pn[pl - 1: pl] == "~" {
+              any_labeled = true
+            } else {
+              ()
+            }
+            Array::push(labels, strip_label_tilde(pn))
+            pi = pi + 1
+          }
+          if any_labeled {
+            Array::push(out, (fname, labels))
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+///|
+let lookup_param_labels: (Array[(String, Array[String])], String) -> Option[Array[String]] = (tbl, fname) -> {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(tbl) {
+    let (n, labels) = Array::get(tbl, i)
+    if n == fname {
+      found = Some(labels)
+      i = Array::length(tbl)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+///|
+// Reorder a fully-labeled arg list into `param_labels` order. None when the call
+// is not a candidate (arity mismatch, some arg not labeled, or a label matches no
+// parameter) — the caller then leaves the args untouched.
+let reorder_labeled_args: (Array[Expr], Array[String]) -> Option[Array[Expr]] = (args, param_labels) -> {
+  if Array::length(args) != Array::length(param_labels) {
+    None
+  } else {
+    let mut all_labeled = true
+    let mut i = 0
+    while i < Array::length(args) {
+      let is_lbl = match Array::get(args, i) {
+        ELabeledArg(_, _, _) => true,
+        _ => false
+      }
+      if is_lbl {
+        ()
+      } else {
+        all_labeled = false
+      }
+      i = i + 1
+    }
+    if !all_labeled {
+      None
+    } else {
+      let out = empty_expr_array()
+      let mut ok = true
+      let mut pj = 0
+      while pj < Array::length(param_labels) {
+        let want = Array::get(param_labels, pj)
+        let mut fk = -1
+        let mut k = 0
+        while k < Array::length(args) {
+          match Array::get(args, k) {
+            ELabeledArg(lbl, _, _) => if lbl == want && fk < 0 {
+              fk = k
+            } else {
+              ()
+            },
+            _ => ()
+          }
+          k = k + 1
+        }
+        if fk < 0 {
+          ok = false
+          pj = Array::length(param_labels)
+        } else {
+          Array::push(out, Array::get(args, fk))
+          pj = pj + 1
+        }
+      }
+      if ok {
+        Some(out)
+      } else {
+        None
+      }
+    }
+  }
+}
+
+///|
+let rec relabel_expr: (Expr, Array[(String, Array[String])]) -> Expr = (expr, tbl) -> {
+  match expr {
+    ECall(callee, args, off) => {
+      let rargs = for a in args {
+        relabel_expr(a, tbl)
+      }
+      let rcallee = relabel_expr(callee, tbl)
+      let final_args = match callee {
+        EIdent(fname, _) => match lookup_param_labels(tbl, fname) {
+          Some(labels) => match reorder_labeled_args(rargs, labels) {
+            Some(reordered) => reordered,
+            None => rargs
+          },
+          None => rargs
+        },
+        _ => rargs
+      }
+      ECall(rcallee, final_args, off)
+    },
+    EBinOp(op, l, r) => EBinOp(op, relabel_expr(l, tbl), relabel_expr(r, tbl)),
+    EUnaryOp(op, e) => EUnaryOp(op, relabel_expr(e, tbl)),
+    ETuple(elems) => ETuple(for e in elems {
+      relabel_expr(e, tbl)
+    }),
+    EArray(elems) => EArray(for e in elems {
+      relabel_expr(e, tbl)
+    }),
+    ESpread(e) => ESpread(relabel_expr(e, tbl)),
+    ERecord(fields) => {
+      let out = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, fval) = Array::get(fields, i)
+        Array::push(out, (fname, relabel_expr(fval, tbl)))
+        i = i + 1
+      }
+      ERecord(out)
+    },
+    EMap(fields) => {
+      let out = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (k, v) = Array::get(fields, i)
+        Array::push(out, (k, relabel_expr(v, tbl)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    EIf(c, t, e) => EIf(relabel_expr(c, tbl), relabel_expr(t, tbl), relabel_expr(e, tbl)),
+    ELet(name, v, b) => ELet(name, relabel_expr(v, tbl), relabel_expr(b, tbl)),
+    ELetRec(name, v, b) => ELetRec(name, relabel_expr(v, tbl), relabel_expr(b, tbl)),
+    ELetMut(name, v, b) => ELetMut(name, relabel_expr(v, tbl), relabel_expr(b, tbl)),
+    EAssign(name, v, c) => EAssign(name, relabel_expr(v, tbl), relabel_expr(c, tbl)),
+    EAssignOp(name, op, v, c) => EAssignOp(name, op, relabel_expr(v, tbl), relabel_expr(c, tbl)),
+    ESeq(a, b) => ESeq(relabel_expr(a, tbl), relabel_expr(b, tbl)),
+    EMatch(scrut, arms) => {
+      let out = Array::slice([
+        (PWild, EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, b) = Array::get(arms, i)
+        Array::push(out, (p, relabel_expr(b, tbl)))
+        i = i + 1
+      }
+      EMatch(relabel_expr(scrut, tbl), out)
+    },
+    EHandle(scrut, arms) => {
+      let out = Array::slice([
+        (PWild, EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, b) = Array::get(arms, i)
+        Array::push(out, (p, relabel_expr(b, tbl)))
+        i = i + 1
+      }
+      EHandle(relabel_expr(scrut, tbl), out)
+    },
+    EWhile(c, b) => EWhile(relabel_expr(c, tbl), relabel_expr(b, tbl)),
+    ELoop(params, b) => ELoop(for param in params {
+      let (name, init) = param
+      (name, relabel_expr(init, tbl))
+    }, relabel_expr(b, tbl)),
+    EForIn(name, idx, iter, b) => EForIn(name, idx, relabel_expr(iter, tbl), relabel_expr(b, tbl)),
+    EFn(tp, bnds, params, rt, eff, b) => EFn(tp, bnds, params, rt, eff, relabel_expr(b, tbl)),
+    EDot(obj, field, off) => EDot(relabel_expr(obj, tbl), field, off),
+    ELabeledArg(label, name, b) => ELabeledArg(label, name, relabel_expr(b, tbl)),
+    EThrow(e) => EThrow(relabel_expr(e, tbl)),
+    EReturn(e) => EReturn(relabel_expr(e, tbl)),
+    EBreak(opt) => match opt {
+      Some(e) => EBreak(Some(relabel_expr(e, tbl))),
+      None => expr
+    },
+    EContinue(exprs) => EContinue(for e in exprs {
+      relabel_expr(e, tbl)
+    }),
+    _ => expr
+  }
+}
+
+///|
+let rec relabel_stmt: (Stmt, Array[(String, Array[String])]) -> Stmt = (stmt, tbl) -> {
+  match stmt {
+    SLet(ex, rc, name, ty, body) => SLet(ex, rc, name, ty, relabel_expr(body, tbl)),
+    SLetMut(name, ty, body) => SLetMut(name, ty, relabel_expr(body, tbl)),
+    STest(name, body) => STest(name, relabel_expr(body, tbl)),
+    SBench(name, body) => SBench(name, relabel_expr(body, tbl)),
+    SExpr(e) => SExpr(relabel_expr(e, tbl)),
+    SLetPat(pat, e) => SLetPat(pat, relabel_expr(e, tbl)),
+    SModule(ex, name, stmts) => SModule(ex, name, for s in stmts {
+      relabel_stmt(s, tbl)
+    }),
+    _ => stmt
+  }
+}
+
+///|
+// In-place labeled-argument reordering over a whole program.
+export let desugar_labeled_args: (Array[Stmt]) -> Unit = (stmts) -> {
+  let tbl = collect_fn_param_labels(stmts)
+  if Array::length(tbl) == 0 {
+    ()
+  } else {
+    let mut i = 0
+    while i < Array::length(stmts) {
+      Array::set(stmts, i, relabel_stmt(Array::get(stmts, i), tbl))
+      i = i + 1
+    }
+  }
+}
+
+///|
 // Entry point: in-place dictionary-passing desugaring. No-op unless the program
 // declares at least one method-bearing trait. Idempotent: re-running (the
 // single-file pipeline desugars before generic-stripping and codegen re-runs on
 // the same stmts after) finds the bounds already stripped (so no function is
 // re-threaded) and skips dict structs that already exist.
 export let desugar_trait_dicts: (Array[Stmt]) -> Unit = (stmts) -> {
+  // Labeled-argument reordering runs first so downstream passes and codegen see
+  // args already in declared parameter order.
+  desugar_labeled_args(stmts)
   // #760(2): make `Result` (Ok/Err) available standalone by appending its enum
   // declaration when neither declared nor imported. Runs first so the ctor table
   // and every downstream pass see it. Idempotent + inert when already present.
