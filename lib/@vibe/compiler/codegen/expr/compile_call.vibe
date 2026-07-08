@@ -171,6 +171,36 @@ let rec cc_expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with { Er
   }
 }
 
+// #784: is `e` statically — BY SHAPE — a Bool? A bool literal, a comparison /
+// logical binary op, a `!` unary, or a call to a bool-returning builtin. Used to
+// route `"\{b}"` / `__to_string(b)` to a "true"/"false" formatter instead of the
+// integer path (which prints 1/0, since Bool and Int share the tagged-int runtime
+// representation). Purely syntactic, like `cc_expr_is_floatish`: a bool bound to
+// a local and then interpolated is not covered (still prints 1/0), but every
+// direct boolean expression is. Never fires for an integer expression, so the
+// pervasive `__to_string(<int>)` calls (lengths, offsets, ids) are untouched.
+let cc_expr_is_boolish: (Expr) -> Bool = (e) -> {
+  let tag = expr_tag(e)
+  if tag == 1 {
+    true
+  } else if tag == 5 {
+    let op = get_ebinop_op(e)
+    op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||"
+  } else if tag == 6 {
+    get_eunaryop_op(e) == "!"
+  } else if tag == 8 {
+    let callee = get_ecall_callee(e)
+    if is_eident(callee) {
+      let fname = get_eident_name(callee)
+      fname == "eq" || fname == "not" || fname == "String::equals" || fname == "String::contains" || fname == "String::starts_with" || fname == "String::ends_with" || fname == "Array::any" || fname == "Array::all" || fname == "Array::contains" || fname == "Map::has_key" || fname == "map_has" || fname == "Path::is_absolute" || fname == "Fs::exists" || fname == "Fs::is_dir" || fname == "Fs::is_file"
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
 // #706: is `e` a bare reference to a value live-in to an enclosing loop (and not
 // a `mut` ref-cell, whose reassignment already manages its own drop)? Passing
 // such a value to a consuming (owning) parameter inside the loop frees it on the
@@ -1440,6 +1470,12 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       // formatter — the generic handler below would stringify the raw f64
       // bits (or the box pointer under RC) as an integer.
       ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
+    }
+    else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_boolish(Array::get(args, 0)) {
+      // #784: a statically-boolean argument formats as "true"/"false", not the
+      // integer 1/0 the generic path below would emit. Reuse the existing
+      // if/EString codegen: `if b { "true" } else { "false" }`.
+      ce(buf, EIf(Array::get(args, 0), EString("true"), EString("false")), local_names, next_local, ctx, ld)
     }
     else if fname == "__to_string" {
       let ts_arg0 = Array::get(args, 0)
