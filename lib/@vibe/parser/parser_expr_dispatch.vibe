@@ -86,6 +86,117 @@ let distribute_local_fn_ann: (TypeExpr, Expr) -> Option[Expr] = (ann_ty, val) ->
   }
 }
 
+// #789: `[T: A + B]` per-param trait-bound names (first name at `pos`). Private
+// copy of parser_base.parse_method_tp_bound_names (not re-exportable across the
+// package contract boundary).
+let dispatch_tp_bound_names: (Array[Token], Int) -> (Array[String], Int) with { Error } = (tokens, pos) -> {
+  let b = ArrayBuilder::new()
+  let mut p = pos
+  let mut done = false
+  while !done {
+    match peek(tokens, p) {
+      TIdent(bname) => {
+        ArrayBuilder::push(b, bname)
+        p = p + 1
+        match peek(tokens, p) {
+          TPlus => {
+            p = p + 1
+          },
+          _ => {
+            done = true
+          }
+        }
+      },
+      _ => throw("expected trait bound name")
+    }
+  }
+  (ArrayBuilder::freeze(b), p)
+}
+
+// #789: parse a `[T, U: Bound]` binder (`[` already consumed; first name token at
+// `pos`). Private copy of parser_base.parse_method_type_params. Returns
+// (type-param names, per-param bounds, next-after-`]`).
+let dispatch_type_params: (Array[Token], Int) -> (Array[String], Array[(String, Array[String])], Int) with { Error } = (tokens, pos) -> {
+  let names = ArrayBuilder::new()
+  let bounds = ArrayBuilder::new()
+  let mut p = pos
+  let mut done = false
+  while !done {
+    match peek(tokens, p) {
+      TRBracket => {
+        p = p + 1
+        done = true
+      },
+      TIdent(name) => {
+        ArrayBuilder::push(names, name)
+        p = p + 1
+        match peek(tokens, p) {
+          TColon => {
+            let (bound_names, next) = dispatch_tp_bound_names(tokens, p + 1)
+            ArrayBuilder::push(bounds, (name, bound_names))
+            p = next
+          },
+          _ => ()
+        }
+        match peek(tokens, p) {
+          TComma => {
+            p = p + 1
+          },
+          TRBracket => {
+            p = p + 1
+            done = true
+          },
+          _ => throw("expected ',' or ']' in type params")
+        }
+      },
+      _ => throw("expected type parameter name or ']'")
+    }
+  }
+  (ArrayBuilder::freeze(names), ArrayBuilder::freeze(bounds), p)
+}
+
+// #789: parse a local `let f: TYPE = ..` annotation, consuming an optional
+// generic binder `[T, U: Bound]` first (like the top-level parse_let_annotation /
+// parse_let_type_params, which the local block-let path previously lacked — a
+// leading `[` gave `expected type but got [`). `pos` is the first annotation
+// token (just after `:`). Returns (type-param names, per-param bounds, type,
+// next position).
+let parse_local_let_annotation: (Array[Token], Int) -> (Array[String], Array[(String, Array[String])], TypeExpr, Int) with { Error } = (tokens, pos) -> {
+  match peek(tokens, pos) {
+    TLBracket => {
+      let (tps, tbs, after_binder) = dispatch_type_params(tokens, pos + 1)
+      let (ty, next) = parse_type_impl(tokens, after_binder, 0)
+      (tps, tbs, ty, next)
+    },
+    _ => {
+      let (ty, next) = parse_type_impl(tokens, pos, 0)
+      let no_tp = Array::slice([
+        ""
+      ], 0, 0)
+      let no_tb = Array::slice([
+        ("", Array::slice([
+          ""
+        ], 0, 0))
+      ], 0, 0)
+      (no_tp, no_tb, ty, next)
+    }
+  }
+}
+
+// #789: attach a local generic-let's `[T]` binder to its (annotation-distributed)
+// lambda, mirroring apply_generic_fn_annotation so the local function stays
+// polymorphic. No-op when there are no type params or the value is not a lambda.
+let apply_local_let_tp: (Array[String], Array[(String, Array[String])], Expr) -> Expr = (tps, tbs, val) -> {
+  if Array::length(tps) > 0 {
+    match val {
+      EFn(_, _, params, ret, eff, body) => EFn(tps, tbs, params, ret, eff, body),
+      _ => val
+    }
+  } else {
+    val
+  }
+}
+
 enum BlockStep {
   StepSeq(Expr);
   StepValue(Expr);
@@ -515,12 +626,24 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
         match peek(tokens, next) {
           TRec => match peek(tokens, next + 1) {
             TIdent(name) => {
-              let (rec_ann, eq_pos_r) = match peek(tokens, next + 2) {
+              // #789: consume an optional `[T]` binder before the type, as for
+              // the plain local let below.
+              let (rtps, rtbs, rec_ann, eq_pos_r) = match peek(tokens, next + 2) {
                 TColon => {
-                  let (rty, tp) = parse_type_impl(tokens, next + 3, 0)
-                  (Some(rty), tp)
+                  let (tps, tbs, rty, tp) = parse_local_let_annotation(tokens, next + 3)
+                  (tps, tbs, Some(rty), tp)
                 },
-                _ => (None, next + 2)
+                _ => {
+                  let no_tp = Array::slice([
+                    ""
+                  ], 0, 0)
+                  let no_tb = Array::slice([
+                    ("", Array::slice([
+                      ""
+                    ], 0, 0))
+                  ], 0, 0)
+                  (no_tp, no_tb, None, next + 2)
+                }
               }
               let eq = expect_tk(tokens, eq_pos_r, "=")
               let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur)
@@ -531,9 +654,10 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
                 // let below. The annotation used to be parsed and discarded
                 // here; keep that as the fallback (no ascribe_wrap -- a
                 // wrapped value would break letrec's direct-lambda shape).
+                // #789: re-attach a `[T]` binder to the distributed lambda.
                 let val2 = match rec_ann {
                   Some(the_type) => match distribute_local_fn_ann(the_type, val) {
-                    Some(distributed) => distributed,
+                    Some(distributed) => apply_local_let_tp(rtps, rtbs, distributed),
                     None => val
                   },
                   None => val
@@ -622,12 +746,24 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
                   }
                 },
                 _ => {
-                  let (ann_type, eq_pos) = match after_name {
+                  // #789: parse an optional `[T]` binder before the type so a
+                  // local generic `let f: [T](T) -> T = ..` parses like top-level.
+                  let (ltps, ltbs, ann_type, eq_pos) = match after_name {
                     TColon => {
-                      let (the_type, tp) = parse_type_impl(tokens, next + 2, 0)
-                      (Some(the_type), tp)
+                      let (tps, tbs, the_type, tp) = parse_local_let_annotation(tokens, next + 2)
+                      (tps, tbs, Some(the_type), tp)
                     },
-                    _ => (None, next + 1)
+                    _ => {
+                      let no_tp = Array::slice([
+                        ""
+                      ], 0, 0)
+                      let no_tb = Array::slice([
+                        ("", Array::slice([
+                          ""
+                        ], 0, 0))
+                      ], 0, 0)
+                      (no_tp, no_tb, None, next + 1)
+                    }
                   }
                   let eq = expect_tk(tokens, eq_pos, "=")
                   let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur)
@@ -641,10 +777,11 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
                     // codegen sees only ordinary EFn/ECall. Exception (#705): a
                     // TyFn annotation on a lambda value is distributed onto the
                     // lambda itself instead (see distribute_local_fn_ann) so the
-                    // Perceus param heap-inference sees the param types.
+                    // Perceus param heap-inference sees the param types. #789: a
+                    // `[T]` binder is re-attached to the distributed lambda.
                     let val2 = match ann_type {
                       Some(the_type) => match distribute_local_fn_ann(the_type, val) {
-                        Some(distributed) => distributed,
+                        Some(distributed) => apply_local_let_tp(ltps, ltbs, distributed),
                         None => ascribe_wrap(val, the_type)
                       },
                       None => val
