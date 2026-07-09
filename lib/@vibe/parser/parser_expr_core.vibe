@@ -133,9 +133,21 @@ let pipe_desugar: (Expr, Expr) -> Expr = (lhs, rhs) -> {
         ], args), off)
       }
     },
-    _ => ECall(rhs, [
-      lhs
-    ], callee_offset(rhs))
+    _ => {
+      // #770: route the bare-callee case through the same `Array::concat`
+      // path as the arg-bearing case above. Storing an array *literal*
+      // `[lhs]` directly as the ECall args field trips an RC double-free when
+      // `lhs` is a value accumulated through `parse_infix_loop`'s tail
+      // recursion (chained `a |> f |> g`): the literal aliases the moved
+      // accumulator without a retain, so printing the resulting tree later
+      // reads freed memory. `Array::concat` dups its inputs, so the same
+      // single-element array built via concat is RC-safe. `off` is hoisted so
+      // `rhs` is read once before being moved into the ECall callee slot.
+      let off = callee_offset(rhs)
+      ECall(rhs, Array::concat([
+        lhs
+      ], empty_exprs()), off)
+    }
   }
 }
 
