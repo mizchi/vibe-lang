@@ -17,7 +17,7 @@ import .. / .. / syntax / import_alias_rewrite.vibe {
 }
 
 import .. / .. / perceus {
-  PerceusAction, build_perceus_plan, build_perceus_plan_with_params, compute_borrow_returning_names, compute_scalar_returning_names, elaborate_heap_params, pa_is_alias_dup, pa_is_drop, pa_is_dup, param_is_heap_in_body
+  PerceusAction, build_perceus_plan, build_perceus_plan_with_params, compute_borrow_returning_names, compute_heap_returning, compute_scalar_returning_names, elaborate_heap_params, pa_is_alias_dup, pa_is_drop, pa_is_dup, param_is_heap_in_body
 }
 
 import .. / builtin_bodies {
@@ -317,6 +317,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   compute_agg_returning(stmts, CtorTable::{
     names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
   }, lc_agg_ret_names, lc_agg_ret_infos)
+  // #791: program-wide (fn name) set for declared-heap-returning top-level
+  // functions (see compute_heap_returning in perceus/index.vibe). Consulted
+  // by classify_let_value_heap (compile_expr_tail.vibe) to classify
+  // `let`/`let mut` bindings whose value is a call by the CALLEE's own
+  // declared signature, instead of always over-approximating every call as
+  // heap.
+  let lc_heap_ret_names = compute_heap_returning(stmts)
   let num_user_funcs = Array::length(fn_names_list)
   if num_user_funcs == 0 {
     throw("no functions found to compile")
@@ -1780,6 +1787,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       agg_local_exprs: lc_fresh_expr_array(),
       agg_ret_names: lc_agg_ret_names,
       agg_ret_infos: lc_agg_ret_infos,
+      heap_ret_names: lc_heap_ret_names,
       effect_names: effect_names_list,
       effect_op_keys: effect_op_keys_list,
       effect_op_arities: effect_op_arities_list,
