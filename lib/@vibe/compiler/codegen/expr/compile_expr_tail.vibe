@@ -920,7 +920,32 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       nl2
       }
     } else {
-      if ctx.enable_rc && (is_etuple(value) || is_earray(value) || is_erecord(value) || is_ctor_call(value, ctx.ctor_table) || is_nullary_ctor_ident(value, ctx.ctor_table) || expr_is_floatish(value, local_names, ctx)) {
+      // #791: this heap-classification list was missing the most common RHS
+      // shape for a `let mut` binding -- a plain function call (`let mut s =
+      // Set::new()`, `s`'s type being a user struct/enum returned by a
+      // regular function, not a literal tuple/array/record/ctor-call/float).
+      // ELet's (tag 9) classification just above has a broad catch-all that
+      // defaults ANY non-literal, non-bare-ident RHS to heap; ELetMut never
+      // got the same treatment, so a heap-typed mut binding whose initial
+      // value is an ordinary call (the overwhelmingly common case for an
+      // accumulator like `let mut s = Set::new(); while ... { s = f(s, ..) }`)
+      // was NEVER registered in `ctx.heap_binding_names`. Every downstream
+      // mechanism gated on that membership (the EAssign reassignment path's
+      // old-value drop, its dup-budget reapplication, etc.) then silently
+      // never applied to `s`, so a reassigned value used 2+ times afterward
+      // via a callee that internally drops its (projection-only) param was
+      // freed prematurely and its block reused/corrupted by a later
+      // allocation -- reproduced/diagnosed via #791
+      // (examples/set_test.vibe "multiple adds": `Set::size(s)` /
+      // `Set::contains(s, _)` each take `s` by field-projection only, so
+      // Perceus's use-counting doesn't count it as an owning use and both
+      // functions unconditionally drop `s` in their epilogue; without this
+      // classification the caller never dup'd before a non-last such call).
+      // Add ECall (expr_tag 8) as heap by default, matching ELet's
+      // over-inclusive philosophy: the guarded dup/drop already no-op on a
+      // genuinely scalar (tagged-even) result, so this is a leak/no-op at
+      // worst, never a missing retain.
+      if ctx.enable_rc && (is_etuple(value) || is_earray(value) || is_erecord(value) || is_ctor_call(value, ctx.ctor_table) || is_nullary_ctor_ident(value, ctx.ctor_table) || expr_is_floatish(value, local_names, ctx) || expr_tag(value) == 8) {
         Array::push(ctx.heap_binding_names, name)
       } else {
         ()
@@ -1024,7 +1049,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         } else {
           ()
         }
-        // #715: the Perceus plan's dup budget for a `let mut` binding
+        // #715/#791: the Perceus plan's dup budget for a `let mut` binding
         // (ctx.rc_dup_names occurrences) is applied ONCE, to the INITIAL value
         // at the declaration site -- but the scope-end drop and every
         // remaining owning use consume the binding's CURRENT value. After a
@@ -1038,7 +1063,33 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         // the +1 in the budget). Worst case this over-retains (a leak) when
         // part of the budget was already spent before the reassign -- the
         // codebase-wide "leak/no-op at worst, never corrupt" trade.
-        if ctx.enable_rc && is_heap_mut && !is_self {
+        //
+        // #791: this budget reapplication was gated on `!is_self`, so a
+        // SELF-referential reassignment (`s = f(s, ...)`, e.g. a loop
+        // accumulator `s = Set::add(s, i)`) never got it -- only the narrow
+        // `reassign_self_reusable` tuple-element branch above has its own
+        // protection, and non-tuple self-reassignment (an ECall RHS, the
+        // common accumulator shape) falls through to this same `else` with
+        // no compensating dup at all. The freshly stored value then carries
+        // only the single reference `f` returned, so the FIRST subsequent
+        // owning use of `s` (which internally drops its param) frees it
+        // prematurely; later uses read/reuse the freed block, corrupting
+        // memory once an intervening allocation reuses it (2+ further uses
+        // needed to observe it -- 1 further use still "works" because
+        // nothing has overwritten the freed-but-untouched memory yet).
+        // Reproduced/diagnosed via #791 (examples/set_test.vibe "multiple
+        // adds"): `let mut s = Set::new(); while ... { s = Set::add(s, i) };
+        // assert(Set::size(s)==20); assert(Set::contains(s,0));
+        // assert(Set::contains(s,19))` traps under RC1 -- `Set::size`/
+        // `Set::contains` take `s` by projection only (`s.items`), which
+        // Perceus's use-counting doesn't count as an owning use, so both
+        // functions unconditionally drop `s` in their epilogue; the caller
+        // must dup before every non-last such call, exactly like the
+        // `!is_self` case already handles. Applying the same budget here
+        // (mirroring the `!is_self` path) fixes it: at worst an extra dup on
+        // an already-dead reference (a leak, per the trade-off above), never
+        // a missing one.
+        if ctx.enable_rc && is_heap_mut {
           let mut adbi = 0
           while adbi < Array::length(ctx.rc_dup_names) {
             if Array::get(ctx.rc_dup_names, adbi) == name {
