@@ -936,6 +936,48 @@ export let type_expr_is_heap: (Option[TypeExpr]) -> Bool = (ot) -> {
   }
 }
 
+// #791: program-wide (name of every top-level function whose DECLARED return
+// type is heap), mirroring compute_agg_returning's scan but reading
+// type_expr_is_heap instead of agg_info_of_type_expr. This is the "read the
+// declared signature" alternative to threading checker-inferred types
+// through codegen: `let mut s = Set::new()` can be classified correctly by
+// looking up `Set::new`'s OWN `-> Set[T]` annotation (already sitting on the
+// AST, no unification/inference needed) instead of guessing from the RHS
+// expression's shape. Only covers named, annotated top-level functions --
+// classify_let_value_heap (compile_expr_tail.vibe) falls back to its
+// existing "any ECall is heap by default" over-approximation when a callee
+// isn't found here (unannotated function, local closure, shadowed name),
+// so this is a precision refinement, not a completeness requirement.
+export let compute_heap_returning: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let out: Array[String] = [
+  ]
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, ann, value) => match value {
+        EFn(_, _, _, fn_ret, _, _) => {
+          let ret = match ann {
+            Some(at) => match at {
+              TyFn(_, r, _) => Some(r),
+              _ => fn_ret
+            },
+            None => fn_ret
+          }
+          if type_expr_is_heap(ret) {
+            Array::push(out, name)
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 let collect_ctor_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
   let out: Array[String] = [
   ]

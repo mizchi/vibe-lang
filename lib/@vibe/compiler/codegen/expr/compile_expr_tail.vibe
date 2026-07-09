@@ -346,6 +346,139 @@ let reassign_self_reusable: (Expr, String) -> Bool with { Error } = (value, name
   }
 }
 
+// #791: shared RC heap-classification for a `let`/`let mut` binding's INITIAL
+// value, extracted so ELet (tag 9) and ELetMut (tag 11) can never drift apart
+// again -- the entire #715/#791 bug family was ELetMut silently missing shape
+// coverage (EIf/EMatch/ELet/ESeq/EDot/EFn/generic-ECall) that ELet already
+// had, one shape re-discovered and patched at a time without ever being
+// ported to the sibling form. Requires `value` to already be compiled and
+// stored into `local_idx` (so the is_edot/is_eident-alias branches' immediate
+// `emit_rc_dup_guarded(buf, local_idx, ...)` targets the right local) --
+// call this AFTER `compile_expr(buf, value, ...)` + the corresponding
+// `emit_local_set`/`emit_local_tee`, never before. Pushes `name` into
+// `ctx.heap_binding_names` whenever the value's shape can't be proven scalar;
+// over-classifying is a leak/no-op at worst (guarded dup/drop no-ops on a
+// tagged-even scalar), under-classifying is the corruption class both issues
+// hit. Returns (rc_kind, is_borrow_ret_ext) exactly as the original inline
+// ELet chain did, for callers that still need those (loop_borrowed_names
+// scoping for a borrow-returning call's alias).
+let classify_let_value_heap: (Bytes, Expr, String, Int, Array[String], CompileCtx) -> (Int, Bool) with { Error } = (buf, value, name, local_idx, local_names, ctx) -> {
+  let mut rc_kind = 0
+  let mut is_borrow_ret_ext = false
+  if ctx.enable_rc {
+    if expr_is_floatish(value, local_names, ctx) {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+    } else if is_etuple(value) {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+    } else if is_earray(value) {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+    } else if is_erecord(value) {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+    } else if is_ctor_call(value, ctx.ctor_table) {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+    } else if is_nullary_ctor_ident(value, ctx.ctor_table) {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+    } else if is_eident(value) {
+      let src = get_eident_name(value)
+      if array_contains_str(ctx.heap_binding_names, src) {
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+        if array_contains_str(ctx.rc_alias_dup_names, name) {
+          emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else if expr_tag(value) == 8 {
+      let callee = get_ecall_callee(value)
+      let is_borrow_ret = if is_eident(callee) {
+        let cn = get_eident_name(callee)
+        cn == "Array::get" || cn == "__index" || cn == "Map::get" || cn == "__rec_field" || array_contains_str(ctx.borrow_ret_names, cn)
+      } else {
+        false
+      }
+      // #791: consult the DECLARED return-type table (compute_heap_returning,
+      // built once from a syntactic scan of top-level signatures -- see its
+      // doc comment) before falling back to the blanket "any ECall is heap"
+      // default. This makes the common `let mut s = Set::new()` case
+      // precise (uses the function's OWN declared `-> Set[T]` signature)
+      // instead of over-approximating every call, without needing full
+      // checker-inferred types threaded through codegen.
+      let is_declared_heap_ret = if is_eident(callee) {
+        array_contains_str(ctx.heap_ret_names, get_eident_name(callee))
+      } else {
+        false
+      }
+      let is_builtin_scalar_ret = if is_eident(callee) {
+        let cn = get_eident_name(callee)
+        let is_always_registered = cn == "Array::length" || cn == "Bytes::length" || cn == "String::length" || cn == "eq"
+        let is_user_shadowed = !is_always_registered && array_contains_str(ctx.func_table.names, cn)
+        !is_user_shadowed && (cn == "Array::length" || cn == "Bytes::length" || cn == "String::length" || cn == "Map::has_key" || cn == "Array::contains" || cn == "eq" || cn == "not" || cn == "add" || cn == "sub" || cn == "mul" || cn == "lt")
+      } else {
+        false
+      }
+      let is_scalar_ret = if is_eident(callee) {
+        array_contains_str(ctx.scalar_ret_names, get_eident_name(callee)) || is_builtin_scalar_ret
+      } else {
+        false
+      }
+      if is_borrow_ret || is_scalar_ret {
+        ()
+      } else if is_declared_heap_ret {
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      } else {
+        // No declared signature resolved either way (unannotated callee, a
+        // local closure, or a shadowed/unresolved name) -- default to heap,
+        // same "leak/no-op at worst" over-approximation the rest of this
+        // chain already relies on.
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      }
+      is_borrow_ret_ext = is_borrow_ret
+    } else if is_edot(value) {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+      emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow)
+    } else if is_efn(value) {
+      if efn_is_capturing(value, ctx) {
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      } else {
+        ()
+      }
+    } else if expr_tag(value) == 7 {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+    } else if expr_tag(value) == 16 {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+    } else if expr_tag(value) == 9 || expr_tag(value) == 14 {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+    } else {
+      let __sf_tag = expr_tag(value)
+      if is_eident(value) || __sf_tag == 0 || __sf_tag == 1 || __sf_tag == 2 || __sf_tag == 3 || __sf_tag == 22 {
+        ()
+      } else {
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      }
+    }
+  } else {
+    ()
+  }
+  (rc_kind, is_borrow_ret_ext)
+}
+
 export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld, compile_expr) -> {
   let __tag = expr_tag(expr)
   if __tag == 9 {
@@ -463,251 +596,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     }
     Array::push(ctx.agg_local_slots, local_idx * 256 + agg_entry)
     Array::push(ctx.agg_local_exprs, agg_shape_expr)
-    let mut rc_kind = 0
-    // #708 follow-up: set when this let's value is a borrow-returning call
-    // (`let a = Array::get(...)`) -- see the ELet/expr_tag==8 branch below for
-    // why a bare later reference to `name` needs loop_borrowed_names tracking.
-    let mut is_borrow_ret_ext = false
-    if ctx.enable_rc {
-      if val_is_float {
-        rc_kind = 2
-        Array::push(ctx.heap_binding_names, name)
-      } else if is_etuple(value) {
-        rc_kind = 2
-        Array::push(ctx.heap_binding_names, name)
-      } else if is_earray(value) {
-        rc_kind = 2
-        Array::push(ctx.heap_binding_names, name)
-      } else if is_erecord(value) {
-        rc_kind = 2
-        Array::push(ctx.heap_binding_names, name)
-      } else if is_ctor_call(value, ctx.ctor_table) {
-        rc_kind = 2
-        Array::push(ctx.heap_binding_names, name)
-      } else if is_nullary_ctor_ident(value, ctx.ctor_table) {
-        rc_kind = 2
-        Array::push(ctx.heap_binding_names, name)
-      } else if is_eident(value) {
-        let src = get_eident_name(value)
-        if array_contains_str(ctx.heap_binding_names, src) {
-          rc_kind = 2
-          Array::push(ctx.heap_binding_names, name)
-          if array_contains_str(ctx.rc_alias_dup_names, name) {
-            // #709 follow-up: `src` landing in heap_binding_names is a
-            // classification heuristic (ECall scalar-return coverage is a
-            // finite whitelist + signature-based inference; see
-            // perceus/index.vibe's compute_scalar_returning_names doc), not a
-            // proof. A misclassified scalar aliased a 2nd+ time reaches here;
-            // the old unguarded emit_rc_dup_local blindly treated its numeric
-            // value as a heap pointer minus 4 and read/wrote that address,
-            // corrupting arbitrary low memory instead of crashing immediately
-            // -- exactly the "free-list corruption with no local cause" shape
-            // seen in #709's second, hard-to-localize crash. Every other dup
-            // call site already uses the runtime-tag-checked guarded version;
-            // this was the one remaining unguarded increment.
-            emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow)
-          } else {
-            ()
-          }
-        } else {
-          ()
-        }
-      } else if expr_tag(value) == 8 {
-        let callee = get_ecall_callee(value)
-        // #708: this hand-rolled check duplicated (incompletely) the borrow-return
-        // classification compile_call.vibe:64 already gets right. It only
-        // recognized the 3 hardcoded builtins, missing user-defined functions
-        // registered in ctx.borrow_ret_names (e.g. a `peek` wrapper whose body is
-        // `if ... { Array::get(...) } else default`, see #707's
-        // compute_borrow_returning_names). lift_match_scrutinees (normalize)
-        // rewrites every non-trivial match scrutinee into a `let __m_scrut = <call>`
-        // before this file ever sees it, so a match on a borrow-returning wrapper
-        // call landed here too. Missing the ctx.borrow_ret_names check made this
-        // ELet wrongly flag __m_scrut as an owned heap binding (rc_kind=2,
-        // heap_binding_names), and because __m_scrut is a NON-unique synthetic name
-        // shared by every lifted match in the enclosing function, a later drop
-        // scheduled for a *different* lift site's __m_scrut fired here too --
-        // double-decrementing the refcount shared with the live array element the
-        // borrow-returning call actually pointed into (single-slot corruption).
-        let is_borrow_ret = if is_eident(callee) {
-          let cn = get_eident_name(callee)
-          cn == "Array::get" || cn == "__index" || cn == "Map::get" || cn == "__rec_field" || array_contains_str(ctx.borrow_ret_names, cn)
-        } else {
-          false
-        }
-        // #710: a call whose CALLEE's declared return type is provably scalar
-        // (Int/Bool/Unit, e.g. `build_import_plan(...) -> Int`) owns no heap
-        // reference either -- same as a borrow-returning call, just for a
-        // different reason (nothing to retain a view INTO; there's no heap
-        // object at all). Skipping heap_binding_names here is required, not
-        // just an optimization: see CompileCtx.scalar_ret_names' doc comment
-        // for the memory-OOB crash a misclassified scalar alias causes.
-        //
-        // #709: ctx.scalar_ret_names only covers USER-DEFINED functions (via
-        // compute_scalar_returning_names, which walks declared `-> T`
-        // signatures). A BUILTIN with a provably scalar return type --
-        // `Array::length`/`Bytes::length`/`String::length`/`Map::has_key`, the
-        // scalar comparison/arithmetic builtins (`eq`/`not`/`add`/`sub`/`mul`/
-        // `lt`) -- fell through the same gap: neither borrow-ret nor
-        // scalar-ret, so `let n = Array::length(arr)` got heap_binding_names'd
-        // despite `n` being a plain tagged Int. A later guarded rc_dup/drop on
-        // `n` then untags-and-derefs a small integer as if it were a heap
-        // pointer -- for a small count like an array length, that reads/writes
-        // near a tiny address, a `memory access out of bounds` trap (not a
-        // leak). Recognize the same well-known scalar-returning builtins here.
-        //
-        // #709/#717 follow-up: the bare, unqualified names in that list
-        // ("add"/"sub"/"mul"/"lt"/"eq"/"not") are also legal USER-DEFINED
-        // top-level function names, and vibe lets a user definition shadow
-        // the scalar-arithmetic intrinsic of the same name -- compile_call.vibe
-        // already accounts for this at the CALL site (`prefer_bound_call`,
-        // gating the inline-intrinsic dispatch on the name NOT resolving to a
-        // registered function/local), but this classification never checked
-        // it, so `let s = add(x, y)` for a user `add: (MySet, String) ->
-        // MySet` was misread as the scalar intrinsic and never registered in
-        // heap_binding_names -- silently skipping the rc_dup this binding
-        // needed for its second owning use, leaving a live reference
-        // unbacked and eventually decrementing a free-list node past zero
-        // (set.vibe's own `add`/`contains`/`remove` hit exactly this; #717's
-        // minimal repro). A registered top-level function of that exact name
-        // means it's the user's, not the intrinsic -- defer to
-        // ctx.scalar_ret_names (which correctly reads that function's own
-        // signature) instead of guessing from the bare name.
-        let is_builtin_scalar_ret = if is_eident(callee) {
-          let cn = get_eident_name(callee)
-          // #719 review (Codex): `ctx.func_table.names` also contains the
-          // compiler's OWN always-registered builtin entries -- unlike
-          // "add"/"sub"/"mul"/"lt"/"not"/"Map::has_key"/"Array::contains"
-          // (pure inline intrinsics with no backing function unless a user
-          // defines one), "Array::length"/"Bytes::length"/"String::length"/
-          // "eq" are unconditionally pushed into fn_names_list/func_table for
-          // EVERY compile (see linked_compile.vibe's builtin_names_list), and
-          // a top-level `let` can never define a name containing `::` anyway.
-          // Treating their mere presence in func_table.names as "shadowed"
-          // made `is_user_shadowed` true unconditionally for these four,
-          // silently reverting #709's original fix (Array::length/eq calls
-          // misclassified as heap again). Only the names that can actually
-          // be absent (and thus meaningfully shadowed by a user definition)
-          // need the guard.
-          let is_always_registered = cn == "Array::length" || cn == "Bytes::length" || cn == "String::length" || cn == "eq"
-          let is_user_shadowed = !is_always_registered && array_contains_str(ctx.func_table.names, cn)
-          !is_user_shadowed && (cn == "Array::length" || cn == "Bytes::length" || cn == "String::length" || cn == "Map::has_key" || cn == "Array::contains" || cn == "eq" || cn == "not" || cn == "add" || cn == "sub" || cn == "mul" || cn == "lt")
-        } else {
-          false
-        }
-        let is_scalar_ret = if is_eident(callee) {
-          array_contains_str(ctx.scalar_ret_names, get_eident_name(callee)) || is_builtin_scalar_ret
-        } else {
-          false
-        }
-        if is_borrow_ret || is_scalar_ret {
-          ()
-        } else {
-          rc_kind = 2
-          Array::push(ctx.heap_binding_names, name)
-        }
-        // #708 follow-up: a borrow-returning let (`let a = Array::get(xs, i)`)
-        // is deliberately left untracked above (rc_kind stays 0 -- it owns
-        // nothing to drop). But a LATER bare-ident reference to `a` passed
-        // into an owning parameter (`f(a)`) still needs the SAME retain a
-        // direct `f(Array::get(xs, i))` call already gets via
-        // cc_is_borrow_ret_call (compile_call.vibe) -- that check only
-        // inspects the ARGUMENT EXPRESSION'S OWN shape (is it a call?), so it
-        // never fires for a bare EIdent, even though the name's value is
-        // exactly as borrowed. Piggyback on the existing loop_borrowed_names
-        // mechanism (cc_is_loop_borrowed_ident), scoped tightly to this let's
-        // own body via push-before/truncate-after so it never leaks past this
-        // binding's scope: reproduced as `let a = Array::get(plan, i); ...
-        // f(a) && a.field == y ...` inside a `while` loop corrupting the heap
-        // (only outside a loop, or with a non-borrow-bound `a`, it was fine --
-        // Perceus's own multi-use dup accounting for a loop-repeated binding
-        // apparently only budgets for the loop-carried case this mechanism
-        // already exists for).
-        is_borrow_ret_ext = is_borrow_ret
-      } else if is_edot(value) {
-        rc_kind = 2
-        Array::push(ctx.heap_binding_names, name)
-        emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow)
-      } else if is_efn(value) {
-        // NOTE: must be a nested `if`, not `is_efn(value) && efn_is_capturing(...)`:
-        // `&&` evaluates both operands, so the `&&` form ran efn_is_capturing
-        // (which calls get_efn_params) on EVERY non-heap `let` value that reached
-        // this arm — e.g. `let o = 5` — throwing "not EFn" and breaking RC compile
-        // of any function with a scalar/`if`/`match`-valued `let` (#702 blocker A).
-        // Guarding with is_efn first keeps efn_is_capturing to genuine closures.
-        if efn_is_capturing(value, ctx) {
-          rc_kind = 2
-          Array::push(ctx.heap_binding_names, name)
-        } else {
-          ()
-        }
-      } else if expr_tag(value) == 7 {
-        // #715: `let x = if cond { a } else { b }` fell all the way through
-        // this shape-based classification chain (tuple/array/record/ctor
-        // call/EDot/EFn all explicitly handled above) to the silent default
-        // `else { () }`, leaving rc_kind at 0. Since rc_kind gates the ENTIRE
-        // dup-emission loop just below (`if ctx.enable_rc && rc_kind > 0`),
-        // an if/else-valued let NEVER got any of its planned dups emitted at
-        // its declaration site, no matter how many `PaDup` actions the
-        // Perceus plan (perceus/index.vibe) computed for its name -- the
-        // plan and the actual generated code silently disagreed. A binding
-        // used more than once (e.g. `let __bi_expr = if enable_rc {...} else
-        // {...}`, then passed to several accessor calls later) would have 1
-        // reference but N planned consumers, each dropping it via their own
-        // internal parameter cleanup: the first consumer's drop is real, the
-        // second is a same-address double-free (#715's exact signature).
-        // Treat it the same as EDot/ctor-call above: conservatively heap
-        // (the guarded rc_dup/rc_drop already no-op on a genuinely scalar
-        // value, so over-including here is safe, matching the existing
-        // "leak/no-op at worst, never corrupt" design used throughout this
-        // file -- see the is_borrow_ret/is_scalar_ret comments above).
-        rc_kind = 2
-        Array::push(ctx.heap_binding_names, name)
-      } else if expr_tag(value) == 16 {
-        // #715 follow-up: same gap as the EIf case just above, for
-        // `let x = match scrutinee { ... }` (EMatch, expr_tag 16) --
-        // extremely common in hand-written parser/checker code (e.g. `let
-        // tok = match peek(...) { ... }`), so a match-valued let used more
-        // than once hit the identical same-address double-free.
-        rc_kind = 2
-        Array::push(ctx.heap_binding_names, name)
-      } else if expr_tag(value) == 9 || expr_tag(value) == 14 {
-        // #715 follow-up: same gap again, for a block-expression-valued let
-        // -- `let x = { let tmp = f(); tmp }` (ELet, expr_tag 9) or
-        // `let x = { f(); g() }` (ESeq, expr_tag 14) as the RHS. Just as
-        // common in hand-written parser/codegen code as the EIf/EMatch cases
-        // above (a multi-statement block used as an expression).
-        rc_kind = 2
-        Array::push(ctx.heap_binding_names, name)
-      } else {
-        // #715 follow-up: `expr_tag` only enumerates a subset of `Expr`
-        // constructors and returns -1 for the rest (EHandle, ELabeledArg,
-        // EMap, ESpread, EStringInterp, EBreak, EContinue, EReturn, EThrow,
-        // EWhile, EForIn, ELoop, ...) -- none of which are covered by the
-        // is_etuple/is_earray/.../is_efn checks above either, so ANY of them
-        // as a let's value silently fell through to no RC treatment, same
-        // bug class as the EIf/EMatch/ELet/ESeq cases already fixed. Rather
-        // than keep enumerating one crash at a time, default the true
-        // catch-all to heap too EXCEPT a bare identifier (`let a = b`, an
-        // ALIAS handled by its own dedicated PaAliasDup mechanism elsewhere
-        // -- see the is_eident-guarded rc_alias_dup_names handling later in
-        // this function; forcing rc_kind here would double-manage it) and
-        // literals (EInt/EBool/EFloat/EString/EUnit -- provably scalar, no
-        // guarded-no-op overhead worth paying on every such binding). Over-
-        // including a genuinely scalar value here is safe: the guarded
-        // rc_dup/rc_drop already no-op on non-heap-tagged values (the same
-        // property every other case in this chain already relies on).
-        let __sf_tag = expr_tag(value)
-        if is_eident(value) || __sf_tag == 0 || __sf_tag == 1 || __sf_tag == 2 || __sf_tag == 3 || __sf_tag == 22 {
-          ()
-        } else {
-          rc_kind = 2
-          Array::push(ctx.heap_binding_names, name)
-        }
-      }
-    } else {
-      ()
-    }
+    let (rc_kind, is_borrow_ret_ext) = classify_let_value_heap(buf, value, name, local_idx, local_names, ctx)
     if ctx.enable_rc && rc_kind > 0 {
       let mut dbi = 0
       while dbi < Array::length(ctx.rc_dup_names) {
@@ -920,13 +809,18 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       nl2
       }
     } else {
-      if ctx.enable_rc && (is_etuple(value) || is_earray(value) || is_erecord(value) || is_ctor_call(value, ctx.ctor_table) || is_nullary_ctor_ident(value, ctx.ctor_table) || expr_is_floatish(value, local_names, ctx)) {
-        Array::push(ctx.heap_binding_names, name)
-      } else {
-        ()
-      }
       let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
       emit_local_set(buf, local_idx)
+      // #791: classify AFTER the value is compiled + stored (local_idx now
+      // holds it), matching ELet's ordering -- classify_let_value_heap's
+      // is_edot/is_eident-alias branches emit an immediate guarded dup
+      // against local_idx, which only makes sense once it holds the fresh
+      // value. See classify_let_value_heap's doc comment for why ELetMut
+      // needs the identical (not just overlapping) classification ELet
+      // uses -- this used to be a narrower, hand-duplicated condition list
+      // that repeatedly drifted out of sync with ELet's (the #715/#791 bug
+      // family); sharing one function makes that drift impossible.
+      let (_mut_rc_kind, _mut_is_borrow_ret_ext) = classify_let_value_heap(buf, value, name, local_idx, local_names, ctx)
       // #715: the ELet path (tag 9) emits every dup the Perceus plan budgeted
       // for a binding (ctx.rc_dup_names) at its declaration site -- this
       // ELetMut path never did, while the matching scope-end drop below DID
@@ -1024,7 +918,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         } else {
           ()
         }
-        // #715: the Perceus plan's dup budget for a `let mut` binding
+        // #715/#791: the Perceus plan's dup budget for a `let mut` binding
         // (ctx.rc_dup_names occurrences) is applied ONCE, to the INITIAL value
         // at the declaration site -- but the scope-end drop and every
         // remaining owning use consume the binding's CURRENT value. After a
@@ -1038,7 +932,33 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         // the +1 in the budget). Worst case this over-retains (a leak) when
         // part of the budget was already spent before the reassign -- the
         // codebase-wide "leak/no-op at worst, never corrupt" trade.
-        if ctx.enable_rc && is_heap_mut && !is_self {
+        //
+        // #791: this budget reapplication was gated on `!is_self`, so a
+        // SELF-referential reassignment (`s = f(s, ...)`, e.g. a loop
+        // accumulator `s = Set::add(s, i)`) never got it -- only the narrow
+        // `reassign_self_reusable` tuple-element branch above has its own
+        // protection, and non-tuple self-reassignment (an ECall RHS, the
+        // common accumulator shape) falls through to this same `else` with
+        // no compensating dup at all. The freshly stored value then carries
+        // only the single reference `f` returned, so the FIRST subsequent
+        // owning use of `s` (which internally drops its param) frees it
+        // prematurely; later uses read/reuse the freed block, corrupting
+        // memory once an intervening allocation reuses it (2+ further uses
+        // needed to observe it -- 1 further use still "works" because
+        // nothing has overwritten the freed-but-untouched memory yet).
+        // Reproduced/diagnosed via #791 (examples/set_test.vibe "multiple
+        // adds"): `let mut s = Set::new(); while ... { s = Set::add(s, i) };
+        // assert(Set::size(s)==20); assert(Set::contains(s,0));
+        // assert(Set::contains(s,19))` traps under RC1 -- `Set::size`/
+        // `Set::contains` take `s` by projection only (`s.items`), which
+        // Perceus's use-counting doesn't count as an owning use, so both
+        // functions unconditionally drop `s` in their epilogue; the caller
+        // must dup before every non-last such call, exactly like the
+        // `!is_self` case already handles. Applying the same budget here
+        // (mirroring the `!is_self` path) fixes it: at worst an extra dup on
+        // an already-dead reference (a leak, per the trade-off above), never
+        // a missing one.
+        if ctx.enable_rc && is_heap_mut {
           let mut adbi = 0
           while adbi < Array::length(ctx.rc_dup_names) {
             if Array::get(ctx.rc_dup_names, adbi) == name {
