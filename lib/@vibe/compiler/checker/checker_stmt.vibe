@@ -479,6 +479,69 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         }
         (env_default, s, c + param_len)
       },
+      SSuberror(_, name, variants) => {
+        // #786: a `suberror Name(payload...)` declaration is structurally a
+        // single-typed enum whose constructors produce a throwable value. It
+        // was parsed (SSuberror) but never bound, so `KeyInvalid("x")` was an
+        // "unknown name". Register it exactly like a no-type-param enum: record
+        // a TDEnum def (so `match` + type resolution work) and bind each
+        // constructor name as `CtFn(payload, CtEnum(name))`. `throw` accepts the
+        // resulting value (its param is CtUnknown, see builtins_misc).
+        let ctor_result_type = CtEnum(name)
+        let resolved_variants = Array::slice([
+          ("", Array::slice([
+            CtUnknown
+          ], 0, 0))
+        ], 0, 0)
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, vtypes) = Array::get(variants, vi)
+          let resolved_vtypes = Array::slice([
+            CtUnknown
+          ], 0, 0)
+          let mut ti = 0
+          while ti < Array::length(vtypes) {
+            Array::push(resolved_vtypes, resolve_type_expr(Array::get(vtypes, ti), defs))
+            ti = ti + 1
+          }
+          Array::push(resolved_variants, (vname, resolved_vtypes))
+          vi = vi + 1
+        }
+        Array::push(defs, TDEnum(name, Array::slice([
+          ""
+        ], 0, 0), resolved_variants))
+        let mut env1 = env_bind(env, name, CtEnum(name))
+        let mut ci2 = 0
+        while ci2 < Array::length(variants) {
+          let (vname, vtypes) = Array::get(variants, ci2)
+          let ctor_ty = if Array::length(vtypes) == 0 {
+            ctor_result_type
+          } else {
+            let resolved_args = Array::slice([
+              CtUnknown
+            ], 0, 0)
+            let mut ai = 0
+            while ai < Array::length(vtypes) {
+              Array::push(resolved_args, resolve_type_expr(Array::get(vtypes, ai), defs))
+              ai = ai + 1
+            }
+            CtFn(resolved_args, ctor_result_type, None)
+          }
+          env1 = env_bind(env1, vname, ctor_ty)
+          match ctor_ty {
+            CtFn(_, ret, _) => {
+              env1 = bind_fn_return(env1, vname, ret)
+            },
+            _ => ()
+          }
+          ci2 = ci2 + 1
+        }
+        let env_eq = env_bind(env1, String::concat(name, "::equals"), CtFn([
+          ctor_result_type,
+          ctor_result_type
+        ], CtBool, None))
+        (env_eq, s, c)
+      },
       SStruct(_, name, field_defs, derives, mut_fields) => {
         validate_derives(derives, errors)
         let resolved_fields = Array::slice([
