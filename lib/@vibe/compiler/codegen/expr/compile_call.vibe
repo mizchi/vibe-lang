@@ -2360,6 +2360,18 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_end(buf)
       emit_end(buf)
       emit_local_get(buf, res_l)
+      // Under RC a Bool is a TAGGED scalar (n << 1: true=2, false=0); res_l holds
+      // a raw 0/1 built from i64 consts, so tag it here. Without this the raw
+      // result mismatches tagged Bool literals — `Array::any(..) == true` was
+      // always false under VIBE_RC=1 (bare `assert(Array::any(..))` still worked
+      // because the untag path only halves an already-even value). Bump leaves
+      // scalars untagged, so only shift under RC.
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      } else {
+        ()
+      }
       nl + 7
     }
     else if fname == "Array::all" {
@@ -2417,6 +2429,14 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_end(buf)
       emit_end(buf)
       emit_local_get(buf, res_l)
+      // Under RC a Bool is a TAGGED scalar (n << 1); tag the raw 0/1 result so it
+      // matches tagged Bool literals (see Array::any above). #776/hof_test.
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      } else {
+        ()
+      }
       nl + 7
     }
     else if fname == "Array::find" {
@@ -2698,6 +2718,15 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_local_set(buf, i_l); emit_br(buf, 0)
       emit_end(buf); emit_end(buf)
       emit_i64_const(buf, 0); emit_end(buf)
+      // Under RC a Bool is a TAGGED scalar (n << 1); the block yields a raw 0/1,
+      // so tag it to match tagged Bool literals (see Array::any). Latent
+      // `Map::has_key(..) == true` mismatch under VIBE_RC=1.
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      } else {
+        ()
+      }
       nl + 4
     }
     else if fname == "Map::remove" {
