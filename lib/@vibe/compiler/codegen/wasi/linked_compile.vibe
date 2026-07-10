@@ -597,6 +597,16 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // CWD. `vibe.resolve_path (i64) -> i64`, value-returning like fs_read_file,
   // gated on either surface name so non-users reserve no import (fixpoint-safe).
   let need_resolve_path_builtin = stmts_use_builtin(stmts, fn_names_list, "Path::ref") || stmts_use_builtin(stmts, fn_names_list, "Path::resolve")
+  // #768: `Fs::remove(path) -> Unit` — a `vibe.fs_remove (i64) -> ()` host
+  // import (type 1, like sleep/stdout_write_char). Checker-recognized since
+  // `builtins_fs.vibe`'s `lookup_fs_remove` but never wired to codegen, so any
+  // caller hit "undefined variable (local): Fs::remove @call". Gated on use so
+  // non-users reserve no import (fixpoint-safe).
+  let need_fs_remove_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::remove")
+  // #768: `Fs::mkdir_p(path) -> Unit` (recursive mkdir) — same shape/import
+  // type as Fs::remove. Same gap: checker-recognized (builtins_fs.vibe's
+  // lookup_fs_mkdir_p) but had no codegen wiring at all.
+  let need_fs_mkdir_p_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::mkdir_p")
   let mut next_import_idx = 1
   let env_get_import_idx = if need_env_get_builtin {
     let idx = next_import_idx
@@ -735,6 +745,24 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // reserved immediately after stdout_write_char; the import emission below must
   // stay in this same order so the index matches the descriptor.
   let resolve_path_import_idx = if need_resolve_path_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #768: reserved immediately after resolve_path; the import emission below
+  // must stay in this same order so the index matches the descriptor.
+  let fs_remove_import_idx = if need_fs_remove_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #768: reserved immediately after fs_remove; the import emission below must
+  // stay in this same order so the index matches the descriptor.
+  let fs_mkdir_p_import_idx = if need_fs_mkdir_p_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -946,6 +974,20 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     fs_read_file_stub_idx
   }
+  // #768: Fs::remove call target — the import when reserved, else a
+  // never-called stub (void return, so mirrors sleep_idx/stdout_write_char_idx's
+  // fallback to env_args_len_idx).
+  let fs_remove_idx = if fs_remove_import_idx >= 0 {
+    fs_remove_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // #768: Fs::mkdir_p call target — same fallback shape as fs_remove_idx.
+  let fs_mkdir_p_idx = if fs_mkdir_p_import_idx >= 0 {
+    fs_mkdir_p_import_idx
+  } else {
+    env_args_len_idx
+  }
   let max_builtin_func_idx = str_lex_diff_idx
   let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
   let func_offset = num_imported_funcs + num_generated
@@ -1015,6 +1057,16 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(builtin_needs_env_list, false)
   Array::push(builtin_indices_list, fs_read_dir_idx)
   Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Fs::remove")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_remove_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Fs::mkdir_p")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_mkdir_p_idx)
+  Array::push(builtin_returns_list, 0)
   // Process host imports: `sh(cmd)` (runs a shell command, returns 0) resolves
   // directly. `sh_lines(cmd)`'s Array[String] surface is lowered by compile_call
   // to `__sh_lines_raw` (the RAW half returning the "\n"-joined stdout) plus a
@@ -2681,6 +2733,26 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     emit_name(import_content, "resolve_path")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_remove (i64) -> ()` (type 1, like sleep) — reserved after
+  // resolve_path (before dbg_break), matching allocation order.
+  if fs_remove_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_remove")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_mkdir_p (i64) -> ()` (type 1, like fs_remove) — reserved
+  // after fs_remove (before dbg_break), matching allocation order.
+  if fs_mkdir_p_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_mkdir_p")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
   } else {
     ()
   }

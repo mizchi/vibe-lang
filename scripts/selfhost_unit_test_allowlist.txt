@@ -5,46 +5,57 @@
 # host and traps in sandboxes and on hosted CI runners (environment-dependent,
 # not a compiler regression). Run it manually where TCP is available.
 # lib/@vibe/socket/tcp_import_test.vibe is EXCLUDED: it needs a real TCP-capable
-# #768: 18 files below are EXCLUDED pending compiler codegen/checker work (NOT a
+# #768: files below are EXCLUDED pending compiler codegen/checker work (NOT a
 # simple sandbox-capability grant -- see issue #768 for the full trace). Fixed
 # in the same pass: lib/@vibe/shell/commands.vibe and
 # lib/@vibe/compiler/entry/compiler/fs_compile/index.vibe were missing
 # `with { Fs }`/`with { Env }` effect declarations on functions that perform
 # those effects (a real, pre-existing bug -- unrelated to sandbox capability);
-# fixing it let compiler_cache_prepare_test.vibe pass and is added above. The
-# remaining 18 need deeper, riskier changes:
-#  - Fs::mkdir_p/Fs::chdir/Fs::remove/Fs::copy/Fs::append/Fs::rename/Fs::is_dir/
-#    Fs::is_file/Fs::getcwd are checker-legal (checker/builtins_fs.vibe,
-#    checker_builtins.vibe, checker_purity.vibe all recognize most of them) but
-#    have NO linear-backend codegen wiring in
-#    codegen/wasi/linked_compile.vibe's func-table (unlike Fs::read_file/
-#    write_file/exists/stat_token/read_bytes/write_bytes/readdir, which ARE
-#    wired). A direct call like `Fs::remove(path)` falls through to
-#    "undefined variable (local)"; a `perform Fs::Chdir(...)` falls through to
-#    the generic effect-throw path and can emit an invalid wasm exception tag
-#    ("Invalid tag index") at instantiation. The JS host runner already
-#    implements fs_mkdir/fs_mkdir_p/fs_chdir/fs_remove/fs_copy/fs_append (see
-#    scripts/wasm_vibe_host_runner.js) -- only the compiler-side codegen wiring
-#    (import reservation + func-table registration, mirroring the #632/#729/
-#    #730 Fs::read_bytes/Fs::readdir precedent) is missing. `Fs::mkdir_p` is
-#    additionally absent from checker/builtins_fs.vibe's lookup_fs (unlike
-#    Fs::mkdir) and from builtin_name.vibe's canonical_builtin_name (no
-#    "Fs::MkdirP" -> "Fs::mkdir_p" mapping), so it also fails earlier as
-#    "unknown name". This spans codegen import-index ordering that many
+# fixing it let compiler_cache_prepare_test.vibe pass and is added above.
+#  - 2026-07-10: `Fs::remove` codegen wiring (import reservation + func-table
+#    registration in codegen/wasi/linked_compile.vibe + codegen/builtin_registry.vibe,
+#    mirroring the #632/#729/#730 Fs::read_bytes/Fs::readdir precedent) landed --
+#    the JS host runner already implemented fs_remove (scripts/wasm_vibe_host_runner.js),
+#    only the compiler-side wiring was missing. This recovered
+#    lib/@vibe/compiler/tests/cli_cache_test.vibe,
+#    lib/@vibe/compiler/tests/persistent_cache_test.vibe,
+#    lib/@vibe/compiler/tests/persistent_fs_compile_cache_test.vibe, and
+#    lib/@vibe/compiler/tests/cache_probe_test.vibe (all now allowlisted above).
+#  - 2026-07-10: `Fs::mkdir_p` (direct-call form) added too -- it was missing
+#    from checker/builtins_fs.vibe's lookup_fs entirely (unlike Fs::mkdir),
+#    not just codegen, so it failed earlier as "unknown name". Added
+#    `lookup_fs_mkdir_p`, the `with { Fs }` requirement in checker.vibe, a
+#    `builtin_name.vibe` canonical-name entry for the `perform Fs::MkdirP`
+#    spelling (lib/@vibe/shell/commands.vibe uses that form), and the same
+#    codegen wiring shape as Fs::remove. This recovered
+#    lib/@vibe/compiler/tests/selfhost_cli_support_test.vibe,
+#    lib/@vibe/compiler/tests/loader_persistent_cache_test.vibe, and
+#    lib/@vibe/compiler/tests/type_db_cross_module_test.vibe (all now
+#    allowlisted above). Two more that also call `Fs::mkdir_p` now compile and
+#    run (past the "undefined variable" gap) but hit SEPARATE, unrelated
+#    failures, so they stay excluded:
+#    lib/@vibe/compiler/tests/compiler_fs_test.vibe (a WebAssembly.Exception
+#    crash reported by the runner's heap-crash debug dump -- looks like an
+#    unhandled effect/exception, not a Fs::mkdir_p issue) and
+#    lib/@vibe/compiler/tests/loader_manifest_sources_test.vibe ("unreachable"
+#    trap reached via `Env::get` inside
+#    `__test_build_grouped_sources_from_manifest_row_source_index` -- likely
+#    the same Env::get sandbox-capability question as the group below, not a
+#    codegen gap).
+#  - Still missing: Fs::chdir/Fs::copy/Fs::append/Fs::rename/Fs::is_dir/
+#    Fs::is_file/Fs::getcwd have NO linear-backend codegen wiring (same class
+#    of gap Fs::remove/Fs::mkdir_p just had). A `perform Fs::Chdir(...)` falls
+#    through to the generic effect-throw path and can emit an invalid wasm
+#    exception tag ("Invalid tag index") at instantiation -- this is the
+#    `perform`/effect-op path, a different (harder) codegen gap than the
+#    direct-call builtin wiring Fs::remove/Fs::mkdir_p needed. The JS host
+#    runner already implements fs_chdir/fs_copy/fs_append (see
+#    scripts/wasm_vibe_host_runner.js) -- only the compiler-side codegen
+#    wiring is missing. This spans codegen import-index ordering that many
 #    already-passing allowlisted tests implicitly depend on -- a maintainer
 #    call, not a unilateral sandbox tweak. Affected:
-#    lib/@vibe/compiler/tests/cli_cache_test.vibe,
-#    lib/@vibe/compiler/tests/persistent_cache_test.vibe (Fs::remove),
-#    lib/@vibe/compiler/tests/compiler_fs_test.vibe,
-#    lib/@vibe/compiler/tests/loader_manifest_sources_test.vibe,
-#    lib/@vibe/compiler/tests/loader_persistent_cache_test.vibe,
-#    lib/@vibe/compiler/tests/selfhost_cli_support_test.vibe,
-#    lib/@vibe/compiler/tests/type_db_cross_module_test.vibe (Fs::mkdir_p),
-#    lib/@vibe/compiler/tests/cache_probe_test.vibe,
-#    lib/@vibe/compiler/tests/persistent_fs_compile_cache_test.vibe (now blocked
-#    on the same Fs::remove codegen gap, after the effect-declaration fix above
-#    got them past the checker), lib/@vibe/shell/commands_test.vibe (now
-#    blocked on the "Invalid tag index" codegen gap for Fs::Chdir).
+#    lib/@vibe/shell/commands_test.vibe (blocked on the "Invalid tag index"
+#    codegen gap for Fs::Chdir).
 #  - lib/@vibe/compiler/tests/fixture_real_selfhost_test.vibe,
 #    lib/@vibe/compiler/tests/fixture_roundtrip_test.vibe,
 #    lib/@vibe/compiler/tests/fixture_test.vibe,
@@ -208,6 +219,7 @@ lib/@vibe/compiler/tests/builtins_test.vibe
 lib/@vibe/compiler/tests/builtins_type_test.vibe
 lib/@vibe/compiler/tests/bytebuf_test.vibe
 lib/@vibe/compiler/tests/cache_probe_loader_manifest_list_bench_test.vibe
+lib/@vibe/compiler/tests/cache_probe_test.vibe
 lib/@vibe/compiler/tests/checker_ann_test.vibe
 lib/@vibe/compiler/tests/checker_async_effects_test.vibe
 lib/@vibe/compiler/tests/checker_async_test.vibe
@@ -236,6 +248,7 @@ lib/@vibe/compiler/tests/checker_test.vibe
 lib/@vibe/compiler/tests/checker_unify_test.vibe
 lib/@vibe/compiler/tests/checker_warning_test.vibe
 lib/@vibe/compiler/tests/cli_adapter_cache_test.vibe
+lib/@vibe/compiler/tests/cli_cache_test.vibe
 lib/@vibe/compiler/tests/cli_test.vibe
 lib/@vibe/compiler/codegen/wasi/linked_compile_test.vibe
 lib/@vibe/compiler/codegen/wasm_emit/simd_bench_test.vibe
@@ -273,6 +286,7 @@ lib/@vibe/compiler/tests/import_private_entry_collision_test.vibe
 lib/@vibe/compiler/tests/import_private_type_collision_test.vibe
 lib/@vibe/compiler/tests/lexer_edge_test.vibe
 lib/@vibe/compiler/tests/lexer_test.vibe
+lib/@vibe/compiler/tests/loader_persistent_cache_test.vibe
 lib/@vibe/compiler/tests/module_graph_path_test.vibe
 lib/@vibe/cache/header_codec_test.vibe
 lib/@vibe/compiler/tests/module_loader_test.vibe
@@ -291,6 +305,8 @@ lib/@vibe/compiler/tests/parser_operator_test.vibe
 lib/@vibe/compiler/tests/parser_pipe_test.vibe
 lib/@vibe/compiler/tests/parser_test.vibe
 lib/@vibe/compiler/tests/perceus_rc_test.vibe
+lib/@vibe/compiler/tests/persistent_cache_test.vibe
+lib/@vibe/compiler/tests/persistent_fs_compile_cache_test.vibe
 lib/@vibe/compiler/tests/printer_block_test.vibe
 lib/@vibe/compiler/tests/printer_call_test.vibe
 lib/@vibe/compiler/tests/printer_controlflow_loop_test.vibe
@@ -307,6 +323,7 @@ lib/@vibe/compiler/tests/rc_shadow_regression_test.vibe
 lib/@vibe/graph/index_import_test.vibe
 lib/@vibe/graph/graph_test.vibe
 lib/@vibe/compiler/runtime/module_source_test.vibe
+lib/@vibe/compiler/tests/selfhost_cli_support_test.vibe
 lib/@vibe/compiler/tests/selfhost_library_smoke_test.vibe
 lib/@vibe/compiler/tests/stmt_binding_test.vibe
 lib/@vibe/compiler/tests/stmt_data_decl_test.vibe
@@ -323,6 +340,7 @@ lib/@vibe/compiler/tests/stmt_type_test.vibe
 lib/@vibe/symbol/symbol_index_test.vibe
 lib/@vibe/symbol/symbol_lsif_test.vibe
 lib/@vibe/compiler/tests/tuple_destr_test.vibe
+lib/@vibe/compiler/tests/type_db_cross_module_test.vibe
 lib/@vibe/compiler/tests/type_db_test.vibe
 lib/@vibe/compiler/tests/types_reexport_test.vibe
 lib/@vibe/compiler/tests/types_test.vibe
