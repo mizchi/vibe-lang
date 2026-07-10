@@ -5,6 +5,30 @@
 # host and traps in sandboxes and on hosted CI runners (environment-dependent,
 # not a compiler regression). Run it manually where TCP is available.
 # lib/@vibe/socket/tcp_import_test.vibe is EXCLUDED: it needs a real TCP-capable
+# 2026-07-10 (#415-adjacent, found while auditing for more instances of the
+# #768 "checker says yes, codegen says nothing" pattern beyond Fs::):
+# `Lines::parse`/`Lines::stringify`/`PromptText::new` are checker-recognized
+# magic names (checker/builtins_system.vibe) with no implementation anywhere
+# -- unlike Fs::* these are pure (no host effect), so the fix is a real
+# lib/@vibe/prelude/string.vibe function (same shape as String::to_lower/
+# to_upper), not codegen wiring. Unlike host-effect builtins, calling these
+# still requires an explicit import (the checker's magic-name recognition
+# doesn't make codegen auto-resolve them) -- lib/@mizchi/markdown/
+# markdown.vibe called both with NO import at all, relying solely on the
+# checker accepting the name, so it never actually worked and had zero test
+# coverage catching it (first *_test.vibe added to that package this pass).
+# Also fixed a second, unrelated bug in the same file while adding coverage:
+# an unqualified `to_string(num)` call (should be `Int::to_string`) in the
+# OrderedList serializer, same "bare to_string dead end" pattern noted
+# elsewhere in this file's #768 dce_stmts entry. `Llm::complete`/`Rlm::run`/
+# `Rlm::finalize` are the same checker-yes-codegen-no shape but need an
+# actual LLM backend (no host runtime implementation exists anywhere) --
+# left unimplemented, a real feature gap not a wiring gap. `Http::*`/
+# `Socket::tcp_*` (checker/builtins_net.vibe) have the identical gap too,
+# but every real caller goes through lib/@vibe/http / lib/@vibe/socket's own
+# implementations (which shadow the magic name via normal name resolution
+# before the checker's fallback ever fires), so they're unreachable in
+# practice -- lower priority, not fixed this pass.
 # #768: files below are EXCLUDED pending compiler codegen/checker work (NOT a
 # simple sandbox-capability grant -- see issue #768 for the full trace). Fixed
 # in the same pass: lib/@vibe/shell/commands.vibe and
@@ -213,6 +237,7 @@ fixtures/string_relational_test.vibe
 fixtures/struct_field_collision_test.vibe
 fixtures/vibe_core_pkg_test.vibe
 fixtures/where_contract_test.vibe
+lib/@mizchi/markdown/markdown_test.vibe
 lib/@vibe/ast/ast_test.vibe
 lib/@vibe/core/base64_test.vibe
 lib/@vibe/core/diff_test.vibe
