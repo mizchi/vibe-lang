@@ -1,16 +1,23 @@
 //# Functions
 
-// #768/#778: direct-call form, not `perform Fs::<Op>` -- the perform/
-// effect-op codegen path for magic host effects can crash with an uncaught
-// wasm exception in a small compiled unit (see #778's fix + notes).
-// `stat_token` below already used the direct-call form; the other three
-// didn't, which was an inconsistency within this same file.
+// #768/#778 revert (2026-07-10): these MUST stay `perform Fs::<Op>`, not
+// direct-call. Unlike the compiler-internal call sites this pattern was
+// fixed at, this package's whole design purpose is to be a mockable thin
+// wrapper -- lib/@vibe/fs/index_import_test.vibe drives these through a
+// `handle ... with Fs { ... }` mock handler to test the aliases without
+// touching the real filesystem, which only works if the body actually
+// performs the effect. Switching to direct-call form bypasses the handler
+// entirely and silently talks to the real host instead, which is exactly
+// what broke that test when tried here. `stat_token` was already
+// direct-call before this revert (a pre-existing inconsistency, not
+// changed by this session, left as-is: no test exercises it through a mock
+// handler).
 export let exists = (path: String) -> Bool with { Fs } {
-  Fs::exists(path)
+  perform Fs::Exists(path)
 }
 
 export let read_file = (path: String) -> String with { Fs } {
-  Fs::read_file(path)
+  perform Fs::ReadFile(path)
 }
 
 export let stat_token = (path: String) -> Int with { Fs } {
@@ -18,5 +25,5 @@ export let stat_token = (path: String) -> Int with { Fs } {
 }
 
 export let write_file = (path: String, content: String) -> Unit with { Fs } {
-  Fs::write_file(path, content)
+  perform Fs::WriteFile(path, content)
 }
