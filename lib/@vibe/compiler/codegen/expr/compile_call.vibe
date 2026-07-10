@@ -262,6 +262,21 @@ let ts_known_int: (Expr, Array[String], CompileCtx) -> Bool = (e, local_names, c
   } else if tag == 5 {
     let op = get_ebinop_op(e)
     op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%"
+  } else if tag == 8 {
+    // #769 (#664 follow-up): a DIRECT call to a known Int-returning builtin is
+    // statically an Int -- force the integer path. The #664 runtime bound
+    // (`ptr + len <= memory_size`) is load-dependent: once the process has
+    // grown to hundreds of MB (a cold full-closure FS compile), a 61-bit
+    // `Fs::stat_token` hash whose high word lands below memory_size and whose
+    // low word keeps ptr+len in bounds passes the string-pointer heuristic and
+    // is emitted as GARBAGE BYTES (observed: a deterministic ~100MB
+    // persistent-source-groups cache row for one specific file, "invalid
+    // persistent source group cache group row" on re-read). The bound can
+    // never be airtight for 61-bit hashes; static knowledge is.
+    match get_ecall_callee(e) {
+      EIdent(cn, _) => cn == "Fs::stat_token" || cn == "Profiler::now_us" || cn == "Env::args_len" || cn == "String::length" || cn == "Array::length" || cn == "Bytes::length" || cn == "String::char_code_at" || cn == "String::index_of" || cn == "String::last_index_of" || cn == "Stdin::read_char",
+      _ => false
+    }
   } else {
     false
   }
