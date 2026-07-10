@@ -118,10 +118,43 @@
 #    synthetic let) gets tagged/retained when later read back through an
 #    ArrayBuilder and placed into a struct field, not simple local-slot
 #    proximity. Needs step-through/disassembly tooling to pin down further.
+#  - 2026-07-10 (#769): converted every real (non-string-literal) `perform
+#    Env::Get/ArgsLen/ArgsGet`/`perform Fs::ReadFile/Exists` call in
+#    lib/@vibe/compiler/index.vibe to direct-call form (same #778 rationale).
+#    This confirmed and fixed #769's `undefined variable (ident):
+#    Env::ArgsLen` mystery: `selfbuild_probe_cli_args_*` used the bare
+#    (parenthesis-less) `perform Env::ArgsLen` form, which apparently
+#    doesn't resolve when this file is compiled standalone through the
+#    FS-compile dynamic loader (works fine as part of the bundle-based
+#    self-hosting build, which never exercises this exact path in
+#    isolation). Recovered lib/@vibe/compiler/tests/selfhost_s5_stage2_test.vibe
+#    (now allowlisted above). lib/@vibe/compiler/tests/
+#    cache_probe_cli_prepare_batch_bench_test.vibe -- the other #769 file
+#    with this symptom -- now compiles past that gap too but hits a
+#    consistent (3/3, not the usual nondeterministic-retry heap-marginal
+#    pattern) compile-time trap with no diagnostic; likely a genuine heap
+#    ceiling for this specific harness (the probed function itself does a
+#    batch of nested internal compiles), not re-diagnosed further this pass.
+#    lib/@vibe/compiler/tests/selfhost_s5_test.vibe and lib/@vibe/compiler/
+#    tests/coverage_selfhost_suite_lib_test.vibe's separately-tracked
+#    failures (see their own notes elsewhere in this file / issue #769) are
+#    unaffected by this fix, confirmed unchanged.
 #  - lib/@vibe/compiler/tests/cache_probe_type_db_fs_multi_dep_bench_test.vibe:
-#    now blocked on an unrelated "undefined variable (local): to_string @call"
-#    in lib/@vibe/compiler/selfbuild_gate_block_a.vibe (an unqualified
-#    `to_string(token)` call with no matching builtin/import in scope).
+#    the originally-noted "undefined variable (local): to_string @call"
+#    compile error is gone as of 2026-07-10 (not specifically chased down --
+#    likely a side effect of the index.vibe Env::ArgsLen/Env::Get fixes
+#    above touching shared compile machinery). It now compiles but crashes
+#    at runtime with the same generic uncaught WebAssembly.Exception seen
+#    elsewhere in this file (find()'s BFS trap, etc.) -- still excluded,
+#    not re-diagnosed further this pass. While investigating, also found and
+#    fixed an unrelated, likely-unreachable dead-code copy of the same bare
+#    `to_string(token)` -> should-be-`Int::to_string` bug in
+#    lib/@vibe/compiler/selfbuild_gate_block_a.vibe's SINGLE-dep sibling
+#    function `selfbuild_probe_type_db_fs_parse_counts` (the real, reachable
+#    definition of that name lives in cache_probe_support.vibe and doesn't
+#    have this bug; confirmed via stage2 byte-identity that fixing the dead
+#    copy doesn't change the compiled binary) -- harmless correctness fix,
+#    kept anyway.
 #  - lib/@vibe/compiler/tests/compiler_cache_advanced_test.vibe,
 #    lib/@vibe/compiler/tests/compiler_cache_test.vibe: now blocked on an
 #    unrelated, deterministic "memory access out of bounds" trap inside
@@ -392,6 +425,7 @@ lib/@vibe/graph/graph_test.vibe
 lib/@vibe/compiler/runtime/module_source_test.vibe
 lib/@vibe/compiler/tests/selfhost_cli_support_test.vibe
 lib/@vibe/compiler/tests/selfhost_library_smoke_test.vibe
+lib/@vibe/compiler/tests/selfhost_s5_stage2_test.vibe
 lib/@vibe/compiler/tests/stmt_binding_test.vibe
 lib/@vibe/compiler/tests/stmt_data_decl_test.vibe
 lib/@vibe/compiler/tests/stmt_decl_test.vibe

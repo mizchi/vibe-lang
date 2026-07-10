@@ -182,10 +182,22 @@ let selfhost_cli_stage1_path = "_build/bench/selfhost_cli_adapter/selfhost_cli_s
 let selfhost_cli_merged_dump_path = "_build/bench/selfhost_cli_adapter/selfhost_cli_adapter_merged_dump.vibe"
 let selfhost_cli_module_dump_path = "_build/bench/selfhost_cli_adapter/selfhost_cli_adapter_module_dump.vibe"
 
+// #768/#778/#769: the entries below use direct-call form
+// (Fs::exists/Fs::read_file/Env::get/Env::args_len/Env::args_get), not
+// `perform <Effect>::<Op>` -- the perform/effect-op codegen path for magic
+// host effects can crash with an uncaught wasm exception (#778) or fail to
+// resolve at all (#769's `undefined variable (ident): Env::ArgsLen`, hit
+// when this file is loaded standalone through the FS-compile dynamic
+// loader rather than the bundle-based self-hosting build) in a small
+// compiled unit. This file's own probe helpers below (`compile_source_wasi`
+// on a literal source string containing `perform Env::Get(...)`/
+// `perform Fs::ReadFile(...)`) are deliberately left untouched -- they test
+// that shape of code, not this file's own logic.
+
 // Lightweight entry for WASI _start/run wrapper.
 export let selfbuild_entry: () -> Int with { Error, Fs } = () -> {
   handle {
-    if perform Fs::Exists(selfhost_cli_trigger_path) {
+    if Fs::exists(selfhost_cli_trigger_path) {
       compile_selfhost_cli_adapter_to(selfhost_cli_stage1_path)
     } else {
       0
@@ -216,39 +228,39 @@ export let selfbuild_dump_cli_adapter_module_source: () -> Int with { Error, Fs 
 }
 
 export let selfbuild_dump_cli_adapter_merged_source_env: () -> Int with { Error, Fs, Env } = () -> {
-  let output_path = perform Env::Get("VIBE_OUTPUT")
+  let output_path = Env::get("VIBE_OUTPUT")
   Fs::write_bytes(output_path, string_to_bytes(selfhost_cli_adapter_merged_source()))
   0
 }
 
 export let selfbuild_dump_cli_adapter_module_source_env: () -> Int with { Error, Fs, Env } = () -> {
-  let output_path = perform Env::Get("VIBE_OUTPUT")
+  let output_path = Env::get("VIBE_OUTPUT")
   Fs::write_bytes(output_path, string_to_bytes(selfhost_cli_adapter_module_source()))
   0
 }
 
 export let probe_dump_cli_adapter_merged_source_env: () -> Int with { Error, Fs, Env } = () -> {
-  let output_path = perform Env::Get("VIBE_OUTPUT")
+  let output_path = Env::get("VIBE_OUTPUT")
   Fs::write_bytes(output_path, string_to_bytes(selfhost_cli_adapter_merged_source()))
   0
 }
 
 export let probe_dump_cli_adapter_module_source_env: () -> Int with { Error, Fs, Env } = () -> {
-  let output_path = perform Env::Get("VIBE_OUTPUT")
+  let output_path = Env::get("VIBE_OUTPUT")
   Fs::write_bytes(output_path, string_to_bytes(selfhost_cli_adapter_module_source()))
   0
 }
 
 export let probe_write_bytes_smoke: () -> Int with { Error, Fs, Env } = () -> {
-  let output_path = perform Env::Get("VIBE_OUTPUT")
+  let output_path = Env::get("VIBE_OUTPUT")
   Fs::write_bytes(output_path, string_to_bytes("ok\n"))
   0
 }
 
 export let selfbuild_cli_env_entry: () -> Int with { Error, Fs, Env } = () -> {
-  let input_path = perform Env::Get("VIBE_INPUT")
-  let output_path = perform Env::Get("VIBE_OUTPUT")
-  let entry_name = perform Env::Get("VIBE_ENTRY")
+  let input_path = Env::get("VIBE_INPUT")
+  let output_path = Env::get("VIBE_OUTPUT")
+  let entry_name = Env::get("VIBE_ENTRY")
   if input_path == "" {
     1
   }
@@ -259,7 +271,7 @@ export let selfbuild_cli_env_entry: () -> Int with { Error, Fs, Env } = () -> {
     1
   }
   else {
-    let source = perform Fs::ReadFile(input_path)
+    let source = Fs::read_file(input_path)
     let bytes = compile_source_wasi_only(source, entry_name)
     Fs::write_bytes(output_path, bytes)
     0
@@ -267,37 +279,37 @@ export let selfbuild_cli_env_entry: () -> Int with { Error, Fs, Env } = () -> {
 }
 
 export let selfbuild_probe_cli_env_read_len: () -> Int with { Error, Fs, Env } = () -> {
-  let input_path = perform Env::Get("VIBE_INPUT")
-  let source = perform Fs::ReadFile(input_path)
+  let input_path = Env::get("VIBE_INPUT")
+  let source = Fs::read_file(input_path)
   String::length(source)
 }
 
 export let selfbuild_probe_cli_env_compile_len: () -> Int with { Error, Fs, Env } = () -> {
-  let input_path = perform Env::Get("VIBE_INPUT")
-  let entry_name = perform Env::Get("VIBE_ENTRY")
-  let source = perform Fs::ReadFile(input_path)
+  let input_path = Env::get("VIBE_INPUT")
+  let entry_name = Env::get("VIBE_ENTRY")
+  let source = Fs::read_file(input_path)
   let bytes = compile_source_wasi_only(source, entry_name)
   Bytes::length(bytes)
 }
 
 export let selfbuild_probe_cli_args_read_len: () -> Int with { Error, Fs, Env } = () -> {
-  let input_path = if perform Env::ArgsLen > 0 { perform Env::ArgsGet(0) } else { "" }
-  let source = perform Fs::ReadFile(input_path)
+  let input_path = if Env::args_len() > 0 { Env::args_get(0) } else { "" }
+  let source = Fs::read_file(input_path)
   String::length(source)
 }
 
 export let selfbuild_probe_cli_args_compile_len: () -> Int with { Error, Fs, Env } = () -> {
-  let input_path = if perform Env::ArgsLen > 0 { perform Env::ArgsGet(0) } else { "" }
-  let entry_name = if perform Env::ArgsLen > 2 { perform Env::ArgsGet(2) } else { "" }
-  let source = perform Fs::ReadFile(input_path)
+  let input_path = if Env::args_len() > 0 { Env::args_get(0) } else { "" }
+  let entry_name = if Env::args_len() > 2 { Env::args_get(2) } else { "" }
+  let source = Fs::read_file(input_path)
   let bytes = compile_source_wasi_only(source, entry_name)
   Bytes::length(bytes)
 }
 
 export let selfbuild_cli_args_entry: () -> Int with { Error, Fs, Env } = () -> {
-  let input_path = if perform Env::ArgsLen > 0 { perform Env::ArgsGet(0) } else { "" }
-  let output_path = if perform Env::ArgsLen > 1 { perform Env::ArgsGet(1) } else { "" }
-  let entry_name = if perform Env::ArgsLen > 2 { perform Env::ArgsGet(2) } else { "" }
+  let input_path = if Env::args_len() > 0 { Env::args_get(0) } else { "" }
+  let output_path = if Env::args_len() > 1 { Env::args_get(1) } else { "" }
+  let entry_name = if Env::args_len() > 2 { Env::args_get(2) } else { "" }
   if input_path == "" {
     1
   }
@@ -308,14 +320,14 @@ export let selfbuild_cli_args_entry: () -> Int with { Error, Fs, Env } = () -> {
     1
   }
   else {
-    let source = perform Fs::ReadFile(input_path)
+    let source = Fs::read_file(input_path)
     // ADR-0055 #493 cutover: the Perceus RC codegen path is the DEFAULT; set
     // VIBE_RC=0 to opt back into the legacy bump path. The #705 RC fixes brought
     // the corpus to parity (28/29; v128 is RC-unsupported by design). The
     // selfbuild / bootstrap / bump-baseline gates pin VIBE_RC=0 (scripts/*.sh) so
     // they self-reproduce byte-identically on the proven bump path until an
     // RC compiler self-build fixpoint is validated; everything else reclaims.
-    let bytes = if perform Env::Get("VIBE_RC") != "0" {
+    let bytes = if Env::get("VIBE_RC") != "0" {
       compile_source_wasi_only_rc(source, entry_name)
     } else {
       compile_source_wasi_only(source, entry_name)
@@ -356,7 +368,7 @@ export let selfbuild_compile_cli_adapter: () -> Bytes with { Error } = () -> {
 // selfhost compiler to VIBE_OUTPUT. Invoked through stage1 by the rc bootstrap
 // gate so the selfhost compiler compiles *itself* under the Perceus RC backend.
 export let selfbuild_compile_cli_adapter_rc_env: () -> Int with { Error, Fs, Env } = () -> {
-  let output_path = perform Env::Get("VIBE_OUTPUT")
+  let output_path = Env::get("VIBE_OUTPUT")
   if output_path == "" {
     1
   } else {
@@ -369,7 +381,7 @@ export let selfbuild_compile_cli_adapter_rc_env: () -> Int with { Error, Fs, Env
 // Companion default-backend entry, so the gate can compare RC vs default for the
 // same whole-compiler self-compile through one code path.
 export let selfbuild_compile_cli_adapter_env: () -> Int with { Error, Fs, Env } = () -> {
-  let output_path = perform Env::Get("VIBE_OUTPUT")
+  let output_path = Env::get("VIBE_OUTPUT")
   if output_path == "" {
     1
   } else {
