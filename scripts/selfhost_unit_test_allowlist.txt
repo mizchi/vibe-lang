@@ -57,15 +57,40 @@
 #    lib/@vibe/compiler/tests/type_db_cross_module_test.vibe (all now
 #    allowlisted above). Two more that also call `Fs::mkdir_p` now compile and
 #    run (past the "undefined variable" gap) but hit SEPARATE, unrelated
-#    failures, so they stay excluded:
-#    lib/@vibe/compiler/tests/compiler_fs_test.vibe (a WebAssembly.Exception
-#    crash reported by the runner's heap-crash debug dump -- looks like an
-#    unhandled effect/exception, not a Fs::mkdir_p issue) and
-#    lib/@vibe/compiler/tests/loader_manifest_sources_test.vibe ("unreachable"
-#    trap reached via `Env::get` inside
-#    `__test_build_grouped_sources_from_manifest_row_source_index` -- likely
-#    the same Env::get sandbox-capability question as the group below, not a
-#    codegen gap).
+#    failures:
+#    2026-07-10 follow-up: `compiler_fs_test.vibe`'s WebAssembly.Exception
+#    crash was `lib/@vibe/compiler/entry/source_compile/wasi_only/
+#    linked_helpers.vibe`'s `resolve_reexport_chain` -- another straggler
+#    still using `perform Fs::ReadFile`, same #768/#778 class as everywhere
+#    else in this file. No mock-handler test exercises it, so converted to
+#    direct-call (`Fs::read_file`). While auditing for more of these, also
+#    found and fixed 3 more stragglers with the identical shape: `loader/
+#    index.vibe`'s `resolve_path_fs` (`perform Fs::Exists` -- its sibling
+#    `loader/header_cache.vibe` copy was already direct-call, confirming the
+#    fix), and `selfbuild_gate_block_a.vibe` + `file_compile_hotspot_probe.vibe`'s
+#    duplicate `remove_file_if_exists` helpers (`perform Fs::Exists`/`perform
+#    Fs::Remove` -- every other copy of this exact helper, in
+#    cache_probe_support.vibe/entry/cli_cache/index.vibe and every
+#    tests/*_test.vibe copy, was already direct-call). Recovered
+#    `compiler_fs_test.vibe`, now allowlisted above; verified no regression
+#    via a spot-check of selfhost_cli_support_test.vibe/fixture_test.vibe/
+#    fixture_roundtrip_test.vibe/type_db_cross_module_test.vibe/
+#    loader_persistent_cache_test.vibe/cli_cache_test.vibe/
+#    persistent_cache_test.vibe (all still pass) plus a full stage0->stage3
+#    fixpoint rebuild (stage3_equal_stage2=true).
+#    `lib/@vibe/compiler/tests/loader_manifest_sources_test.vibe` stays
+#    excluded, unchanged by the above fixes (confirmed via direct compile+run
+#    against both the pre- and post-fix stage2): it compiles clean now but
+#    still traps ("unreachable") at runtime inside `Env::get`, reached from
+#    `__test_build_grouped_sources_from_manifest_row_source_index` -- a test
+#    that (per its own source) never calls any Env/perform builtin at all.
+#    The debug heap dump at the trap point shows garbage-looking bytes near
+#    the start of linear memory, the same nondeterministic-looking-crash-site
+#    signature as the DCE/normalize_all_sources heap-corruption entry
+#    elsewhere in this file -- plausibly the same underlying memory-safety
+#    bug, not a sandbox-capability or codegen-wiring gap. Left excluded,
+#    not chased further (needs the same step-through/disassembly tooling
+#    that bug needs).
 #  - 2026-07-10: `Fs::mkdir`/`Fs::chdir`/`Fs::copy`/`Fs::append`/`Fs::rename`/
 #    `Fs::is_dir`/`Fs::is_file`/`Fs::getcwd` codegen wiring landed too (same
 #    shape as Fs::remove/Fs::mkdir_p; `Fs::rename` was also missing from the
@@ -392,6 +417,7 @@ lib/@vibe/compiler/tests/codegen_test.vibe
 lib/@vibe/compiler/tests/compiler_advanced_test.vibe
 lib/@vibe/compiler/tests/compiler_cache_merge_test.vibe
 lib/@vibe/compiler/tests/compiler_cache_prepare_test.vibe
+lib/@vibe/compiler/tests/compiler_fs_test.vibe
 lib/@vibe/compiler/tests/compiler_test.vibe
 lib/@vibe/compiler/tests/compiler_wasi_test.vibe
 lib/@vibe/compiler/tests/component_codegen_test.vibe
