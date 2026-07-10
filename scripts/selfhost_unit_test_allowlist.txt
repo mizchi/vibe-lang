@@ -73,6 +73,15 @@
 #  compiler_cache_test.vibe after a fresh stage2 can trap inside the stage2
 #  compiler's collect_source_groups_fs persistent-cache STORE path (bump-build
 #  memory pressure; a retry with the warm cache passes). Not chased this pass.
+#  2026-07-10 later same day: CHASED AND FIXED -- build_persistent_sources_
+#  cache_text / build_persistent_source_groups_cache_text (loader/index.vibe)
+#  built the cache text via `out = String::concat(out, row)` per row, O(N^2)
+#  over the row count; on the heaviest closures the bump concat garbage blew
+#  past the 4GB wasm32 address space in ~3s (peak RSS 3.6GB measured) and
+#  memory.grow's silently-ignored failure surfaced as the OOB. StringBuilder
+#  rewrite (same #366 pattern as stable_cache_path) drops peak RSS to 1.2GB;
+#  cache_probe_cli_prepare_batch_bench_test now compiles AND passes
+#  (allowlisted above).
 #  Same-pass follow-up recoveries with the name section now trustworthy:
 #  - coverage_selfhost_suite_lib_test.vibe (allowlisted above): its trap was a
 #    plain assert failure in "aggregate kpi pass" -- evaluate_kpi compared
@@ -91,7 +100,25 @@
 #    compiler traps in the persistent-cache STORE path (the same
 #    build_persistent_sources_cache_text OOB as the cold-cache flake above,
 #    but consistent here -- this file's dependency closure is the entire
-#    compiler, the heaviest standalone compile in the corpus). Still excluded.
+#    compiler, the heaviest standalone compile in the corpus). FIXED later
+#    same day by the StringBuilder rewrite (see the cold-cache note above);
+#    allowlisted now.
+#  - selfhost_s5_test.vibe (allowlisted above): its uncaught
+#    WebAssembly.Exception was a thrown contract violation -- generate_
+#    selfhost_bundle.sh stripped relative import/export lines from EVERY
+#    embedded source including .vibei contracts, but a contract's
+#    `import ./impl.vibe {}` lines ARE its implementation-file declarations;
+#    with them gone the desugar auto-discovered ALL sibling *.vibe files and
+#    flagged @vibe/core/map.vibe's deliberately-out-of-contract exports.
+#    .vibei sources are now embedded verbatim.
+#  - cache_probe_type_db_fs_multi_dep_bench_test.vibe (allowlisted above):
+#    the earlier "genuine heap ceiling" framing was wrong (name-section-era
+#    diagnosis); it was a plain assert failure -- selfbuild_gate_block_a.vibe's
+#    DUPLICATE copy of selfbuild_probe_type_db_fs_multi_dep_parse_counts
+#    predated the module-header/leaf-fingerprint caches and did not clear
+#    them, so a warm cache skipped parses and the expected fresh-parse count
+#    (6) failed. Duplicate synced with the canonical cache_probe_support.vibe
+#    copy.
 #
 # #768: files below are EXCLUDED pending compiler codegen/checker work (NOT a
 # simple sandbox-capability grant -- see issue #768 for the full trace). Fixed
@@ -436,7 +463,9 @@ lib/@vibe/compiler/tests/builtins_extended_test.vibe
 lib/@vibe/compiler/tests/builtins_test.vibe
 lib/@vibe/compiler/tests/builtins_type_test.vibe
 lib/@vibe/compiler/tests/bytebuf_test.vibe
+lib/@vibe/compiler/tests/cache_probe_cli_prepare_batch_bench_test.vibe
 lib/@vibe/compiler/tests/cache_probe_loader_manifest_list_bench_test.vibe
+lib/@vibe/compiler/tests/cache_probe_type_db_fs_multi_dep_bench_test.vibe
 lib/@vibe/compiler/tests/cache_probe_test.vibe
 lib/@vibe/compiler/tests/checker_ann_test.vibe
 lib/@vibe/compiler/tests/checker_async_effects_test.vibe
@@ -552,6 +581,7 @@ lib/@vibe/compiler/runtime/module_source_test.vibe
 lib/@vibe/compiler/tests/selfhost_cli_support_test.vibe
 lib/@vibe/compiler/tests/selfhost_library_smoke_test.vibe
 lib/@vibe/compiler/tests/selfhost_s5_stage2_test.vibe
+lib/@vibe/compiler/tests/selfhost_s5_test.vibe
 lib/@vibe/compiler/tests/stmt_binding_test.vibe
 lib/@vibe/compiler/tests/stmt_data_decl_test.vibe
 lib/@vibe/compiler/tests/stmt_decl_test.vibe

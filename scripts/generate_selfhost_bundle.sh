@@ -836,24 +836,34 @@ import sys, re
 with open('$filepath', 'r') as f:
     content = f.read()
 # Strip relative import/export statements (they are resolved by collect_merged_stmts)
+# -- EXCEPT in .vibei contracts: there the 'import ./impl.vibe {}' lines are the
+# contract's implementation-file DECLARATIONS (data consumed by the conformance
+# desugar, loader/index.vibe desugar_contract_source_fs). Stripping them flipped
+# the desugar into sibling auto-discovery (Fs::readdir over the whole package
+# dir), which pulled deliberately-out-of-contract files like @vibe/core/map.vibe
+# into the conformance set and failed the bundle-ingest lane with 'exported X is
+# not declared in the contract' (selfhost_s5_test). Embed .vibei verbatim.
 drop_pattern = re.compile(r'^\s*(?:import|export)\s+\.[\w./\s-]+')
-lines = content.splitlines(True)
-out = []
-skipping = False
-depth = 0
-for line in lines:
-    stripped = line.lstrip()
-    if stripped.startswith('//'): continue
-    if not skipping and drop_pattern.match(line):
-        depth = line.count('{') - line.count('}')
-        if depth > 0: skipping = True
-        continue
-    if skipping:
-        depth += line.count('{') - line.count('}')
-        if depth <= 0: skipping = False
-        continue
-    out.append(line)
-content = ''.join(out)
+if '$filepath'.endswith('.vibei'):
+    pass
+else:
+    lines = content.splitlines(True)
+    out = []
+    skipping = False
+    depth = 0
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith('//'): continue
+        if not skipping and drop_pattern.match(line):
+            depth = line.count('{') - line.count('}')
+            if depth > 0: skipping = True
+            continue
+        if skipping:
+            depth += line.count('{') - line.count('}')
+            if depth <= 0: skipping = False
+            continue
+        out.append(line)
+    content = ''.join(out)
 # Escape for vibe string literal
 content = content.replace('\\\\', '\\\\\\\\')
 content = content.replace('\"', '\\\\\"')
