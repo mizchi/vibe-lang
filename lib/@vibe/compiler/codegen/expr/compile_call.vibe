@@ -171,22 +171,41 @@ let rec cc_expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with { Er
   }
 }
 
-// #784: is `e` statically — BY SHAPE — a Bool via an UNSHADOWABLE form? A bool
-// literal, a comparison / logical binary op, or a `!` unary. These lower directly
-// (operators bypass name resolution) so the classification is always correct.
-// Used to route `"\{b}"` / `__to_string(b)` to a "true"/"false" formatter instead
-// of the integer path (which prints 1/0, since Bool and Int share the tagged-int
+// local mirror of compile_expr_tail's slot_is_boolish (see cc_slot_is_floatish
+// above for why this can't just be imported: compile_expr_tail imports this file).
+let cc_slot_is_boolish: (CompileCtx, Int) -> Bool = (ctx, slot) -> {
+  let arr = ctx.bool_local_slots
+  let mut j = Array::length(arr) - 1
+  let mut result = false
+  while j >= 0 {
+    let entry = Array::get(arr, j)
+    if entry / 2 == slot {
+      result = (entry % 2) == 1
+      j = -1
+    } else {
+      j = j - 1
+    }
+  }
+  result
+}
+
+// #784/#767: is `e` statically — BY SHAPE — a Bool via an UNSHADOWABLE form? A
+// bool literal, a comparison / logical binary op, a `!` unary, or a bare ident
+// whose slot was logged Bool by a `let`/`let mut` binding (ctx.bool_local_slots,
+// the dual of cc_slot_is_floatish — #767 closes the "bound to a local" gap
+// this function's own comment used to call out as uncovered). Used to route
+// `"\{b}"` / `__to_string(b)` to a "true"/"false" formatter instead of the
+// integer path (which prints 1/0, since Bool and Int share the tagged-int
 // runtime representation). Purely syntactic, like `cc_expr_is_floatish`.
 //
 // Deliberately does NOT classify calls to bool-returning builtins (eq / not /
 // String::contains / …) by name: a file may define or import a same-named
 // function that returns Int/String, and the actual call emission honors that
 // shadow via `prefer_bound_call` — so a name-only match would misformat the
-// shadowed function's result (Codex #785 review, P2). A bool bound to a local
-// and then interpolated is likewise not covered (still prints 1/0). Never fires
-// for an integer expression, so the pervasive `__to_string(<int>)` calls
-// (lengths, offsets, ids) are untouched.
-let cc_expr_is_boolish: (Expr) -> Bool = (e) -> {
+// shadowed function's result (Codex #785 review, P2). Never fires for an
+// integer expression, so the pervasive `__to_string(<int>)` calls (lengths,
+// offsets, ids) are untouched.
+export let cc_expr_is_boolish: (Expr, Array[String], CompileCtx) -> Bool = (e, local_names, ctx) -> {
   let tag = expr_tag(e)
   if tag == 1 {
     true
@@ -195,6 +214,24 @@ let cc_expr_is_boolish: (Expr) -> Bool = (e) -> {
     op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||"
   } else if tag == 6 {
     get_eunaryop_op(e) == "!"
+  } else if tag == 4 {
+    let nm = get_eident_name(e)
+    let len = Array::length(local_names)
+    let mut i = len - 1
+    let mut slot = -1
+    while i >= 0 {
+      if Array::get(local_names, i) == nm {
+        slot = i
+        i = -1
+      } else {
+        i = i - 1
+      }
+    }
+    if slot >= 0 {
+      cc_slot_is_boolish(ctx, slot)
+    } else {
+      false
+    }
   } else {
     false
   }
@@ -1470,7 +1507,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       // bits (or the box pointer under RC) as an integer.
       ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
     }
-    else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_boolish(Array::get(args, 0)) {
+    else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_boolish(Array::get(args, 0), local_names, ctx) {
       // #784: a statically-boolean argument formats as "true"/"false", not the
       // integer 1/0 the generic path below would emit. Reuse the existing
       // if/EString codegen: `if b { "true" } else { "false" }`.

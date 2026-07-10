@@ -182,6 +182,16 @@ export struct CompileCtx {
   // entry — is never read as a stale int. Without that pruning a reused slot
   // holding a string would be misclassified and string `==` would break.
   int_local_slots: Array[Int];
+  // #767: same `slot*2 + flag` / most-recent-wins / pruned-at-branch-boundary
+  // scheme as int_local_slots, but specifically for Bool (int_local_slots
+  // conflates Int and Bool under one "integral" flag for the `==`/`!=` fast
+  // path, which doesn't distinguish them for FORMATTING purposes). Lets a
+  // bare `let`-bound Bool identifier take the "true"/"false" string path in
+  // `__to_string` / `"\(b)"` instead of printing the tagged-int "1"/"0"
+  // (cc_expr_is_boolish's declared scope, #784). Pruned by int_log_reset_above
+  // alongside int_local_slots (same soundness requirement: a slot reused by a
+  // non-`let` binder must not be read as a stale Bool).
+  bool_local_slots: Array[Int];
   // #724: append-only log of `slot*256 + kind*64 + n` entries tracking
   // let-bound AGGREGATE literals, so `a == b` with BOTH sides non-literal
   // bindings can still take the structural comparators (the generic runtime
@@ -402,6 +412,21 @@ export let int_log_reset_above: (CompileCtx, Int) -> Unit = (ctx, floor) -> {
     i = i + 1
   }
   Array::truncate(arr, w)
+  let barr = ctx.bool_local_slots
+  let bn = Array::length(barr)
+  let mut bw = 0
+  let mut bi = 0
+  while bi < bn {
+    let be = Array::get(barr, bi)
+    if be / 2 < floor {
+      Array::set(barr, bw, be)
+      bw = bw + 1
+    } else {
+      ()
+    }
+    bi = bi + 1
+  }
+  Array::truncate(barr, bw)
 }
 
 // #724: prune the aggregate-shape log (see CompileCtx.agg_local_slots) at the

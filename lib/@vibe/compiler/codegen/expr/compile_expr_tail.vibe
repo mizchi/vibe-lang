@@ -21,7 +21,7 @@ import .. / wasm_emit {
 }
 
 import ./compile_call.vibe {
-  compile_call
+  cc_expr_is_boolish, compile_call
 }
 
 import ./compile_expr_tail2.vibe {
@@ -123,6 +123,25 @@ let slot_is_floatish: (CompileCtx, Int) -> Bool = (ctx, slot) -> {
 // the string-pointer-misreading `eq` builtin (see expr_is_intish).
 let slot_is_intish: (CompileCtx, Int) -> Bool = (ctx, slot) -> {
   let arr = ctx.int_local_slots
+  let mut j = Array::length(arr) - 1
+  let mut result = false
+  while j >= 0 {
+    let entry = Array::get(arr, j)
+    if entry / 2 == slot {
+      result = (entry % 2) == 1
+      j = -1
+    } else {
+      j = j - 1
+    }
+  }
+  result
+}
+
+// #767: dual of slot_is_intish over ctx.bool_local_slots (see that field's
+// doc comment on CompileCtx). Consulted by cc_expr_is_boolish (compile_call.vibe)
+// for a bare-ident argument to `__to_string` / `"\(b)"`.
+let slot_is_boolish: (CompileCtx, Int) -> Bool = (ctx, slot) -> {
+  let arr = ctx.bool_local_slots
   let mut j = Array::length(arr) - 1
   let mut result = false
   while j >= 0 {
@@ -505,6 +524,14 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     } else if slot_is_intish(ctx, local_idx) {
       Array::push(ctx.int_local_slots, local_idx * 2)
     }
+    // #767: log whether this binding holds a definitely-Bool value, so a
+    // later bare-ident `__to_string(b)` / `"\(b)"` formats "true"/"false"
+    // instead of the tagged-int "1"/"0" (see CompileCtx.bool_local_slots).
+    if cc_expr_is_boolish(value, local_names, ctx) {
+      Array::push(ctx.bool_local_slots, local_idx * 2 + 1)
+    } else if slot_is_boolish(ctx, local_idx) {
+      Array::push(ctx.bool_local_slots, local_idx * 2)
+    }
     // #724: log this binding's AGGREGATE shape (tuple arity / ctor-record
     // field count) so `a == b` with both sides bound takes the structural
     // comparators. kind*64+n; 0 overrides a reused slot. See
@@ -749,6 +776,12 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       Array::push(ctx.int_local_slots, local_idx * 2 + 1)
     } else if slot_is_intish(ctx, local_idx) {
       Array::push(ctx.int_local_slots, local_idx * 2)
+    }
+    // #767: track Bool `let mut` bindings too (see the `let` case above).
+    if cc_expr_is_boolish(value, local_names, ctx) {
+      Array::push(ctx.bool_local_slots, local_idx * 2 + 1)
+    } else if slot_is_boolish(ctx, local_idx) {
+      Array::push(ctx.bool_local_slots, local_idx * 2)
     }
     if mut_needs_ref_cell(body, name) {
       Array::push(ctx.ref_cell_names, name)
