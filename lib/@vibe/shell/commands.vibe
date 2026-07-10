@@ -6,36 +6,43 @@ import ./types.vibe {
 
 //# Functions
 
+// #768: direct-call form throughout this file for magic host effects (Fs,
+// Env, Stdout, Stdin), not `perform <Effect>::<Op>`. The perform/effect-op
+// codegen path for these can crash with an uncaught wasm exception (see
+// #778's fix + notes) when no handler is installed; direct calls bypass
+// that machinery entirely and are what every already-working call site in
+// the compiler uses. `Process::Exec` is a real user-declared effect (not a
+// magic host builtin), so it's left as `perform` -- it needs a real handler.
 export let cd = (path: String) -> Unit with { Fs } {
-  perform Fs::Chdir(path)
+  Fs::chdir(path)
 }
 
 export let cp = (src: String, dst: String) -> Unit with { Fs } {
-  perform Fs::Copy(src, dst)
+  Fs::copy(src, dst)
 }
 
 export let mv = (src: String, dst: String) -> Unit with { Fs } {
-  perform Fs::Rename(src, dst)
+  Fs::rename(src, dst)
 }
 
 export let rm = (path: String) -> Unit with { Fs } {
-  perform Fs::Remove(path)
+  Fs::remove(path)
 }
 
 export let cat = (path: String) -> String with { Fs } {
-  perform Fs::ReadFile(path)
+  Fs::read_file(path)
 }
 
 export let env = (name: String) -> String with { Env } {
-  perform Env::Get(name)
+  Env::get(name)
 }
 
 export let pwd = () -> String with { Fs } {
-  perform Fs::Getcwd
+  Fs::getcwd()
 }
 
 export let tee = (text: String, path: String) -> String with { Fs } {
-  perform Fs::WriteFile(path, text)
+  Fs::write_file(path, text)
   text
 }
 
@@ -49,49 +56,49 @@ export let exec = (cmd: String) -> Unit with { Process } {
 }
 
 export let mkdir = (path: String) -> Unit with { Fs } {
-  perform Fs::Mkdir(path)
+  Fs::mkdir(path)
 }
 
 export let print = (text: String) -> Unit with { Stdout } {
-  perform Stdout::WriteStream(text)
+  Stdout::write_stream(text)
 }
 
 export let touch = (path: String) -> Unit with { Fs } {
-  if not(perform Fs::Exists(path)) {
-    perform Fs::WriteFile(path, "")
+  if not(Fs::exists(path)) {
+    Fs::write_file(path, "")
   }
 }
 
 export let append = (path: String, content: String) -> Unit with { Fs } {
-  perform Fs::Append(path, content)
+  Fs::append(path, content)
 }
 
 export let env_or = (name: String, fallback: String) -> String with { Env } {
-  let value = perform Env::Get(name)
+  let value = Env::get(name)
   if value == "" {
     fallback
   } else value
 }
 
 export let exists = (path: String) -> Bool with { Fs } {
-  perform Fs::Exists(path)
+  Fs::exists(path)
 }
 
 export let is_dir = (path: String) -> Bool with { Fs } {
-  perform Fs::IsDir(path)
+  Fs::is_dir(path)
 }
 
 export let is_file = (path: String) -> Bool with { Fs } {
-  perform Fs::IsFile(path)
+  Fs::is_file(path)
 }
 
 export let mkdir_p = (path: String) -> Unit with { Fs } {
-  perform Fs::MkdirP(path)
+  Fs::mkdir_p(path)
 }
 
 export let println = (text: String) -> Unit with { Stdout } {
-  perform Stdout::WriteStream(text)
-  perform Stdout::WriteChar(10)
+  Stdout::write_stream(text)
+  Stdout::write_char(10)
 }
 
 export let realpath = (p: String) -> String with { Env } {
@@ -103,7 +110,7 @@ export let sleep_ms = (ms: Int) -> Unit with { Async } {
 }
 
 export let read_line = () -> String with { Stdin } {
-  perform Stdin::ReadStream(4096)
+  Stdin::read_stream(4096)
 }
 
 export let exec_lines = (cmd: String) -> Array[String] with { Process } {
@@ -111,14 +118,14 @@ export let exec_lines = (cmd: String) -> Array[String] with { Process } {
 }
 
 export let write_file = (path: String, content: String) -> Unit with { Fs } {
-  perform Fs::WriteFile(path, content)
+  Fs::write_file(path, content)
 }
 
 let to_file_entry = (name: String, path: String) -> FileEntry with { Fs } {
   FileEntry::{
     name: name,
     path: path,
-    is_dir: perform Fs::IsDir(path)
+    is_dir: Fs::is_dir(path)
   }
 }
 
@@ -150,7 +157,7 @@ let join_path = (dir: String, name: String) -> String {
 }
 
 let list_entries = (dir: String, include_hidden: Bool) -> Array[FileEntry] with { Fs } {
-  let names = perform Fs::ReadDir(dir)
+  let names = Fs::readdir(dir)
   let result = ArrayBuilder::new()
   let mut i = 0
   while i < Array::length(names) {
@@ -188,7 +195,7 @@ export let find = (dir: String) -> Array[FileEntry] with { Fs } {
   let root_dir = strip_trailing_slashes(dir)
   let result = ArrayBuilder::new()
   let queue_paths = ArrayBuilder::new()
-  let initial_names = perform Fs::ReadDir(root_dir)
+  let initial_names = Fs::readdir(root_dir)
   let mut k = 0
   while k < Array::length(initial_names) {
     let name = Array::get(initial_names, k)
@@ -203,12 +210,12 @@ export let find = (dir: String) -> Array[FileEntry] with { Fs } {
     let mut i = 0
     while i < Array::length(paths) {
       let p = Array::get(paths, i)
-      let is_directory = perform Fs::IsDir(p)
+      let is_directory = Fs::is_dir(p)
       ArrayBuilder::push(result, FileEntry::{
         name: path_basename(p), path: p, is_dir: is_directory
       })
       if is_directory {
-        let child_names = perform Fs::ReadDir(p)
+        let child_names = Fs::readdir(p)
         let mut j = 0
         while j < Array::length(child_names) {
           let cname = Array::get(child_names, j)

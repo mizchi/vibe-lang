@@ -42,32 +42,46 @@
 #    `__test_build_grouped_sources_from_manifest_row_source_index` -- likely
 #    the same Env::get sandbox-capability question as the group below, not a
 #    codegen gap).
-#  - Still missing: Fs::chdir/Fs::copy/Fs::append/Fs::rename/Fs::is_dir/
-#    Fs::is_file/Fs::getcwd have NO linear-backend codegen wiring (same class
-#    of gap Fs::remove/Fs::mkdir_p just had). A `perform Fs::Chdir(...)` falls
-#    through to the generic effect-throw path and can emit an invalid wasm
-#    exception tag ("Invalid tag index") at instantiation -- this is the
-#    `perform`/effect-op path, a different (harder) codegen gap than the
-#    direct-call builtin wiring Fs::remove/Fs::mkdir_p needed. The JS host
-#    runner already implements fs_chdir/fs_copy/fs_append (see
-#    scripts/wasm_vibe_host_runner.js) -- only the compiler-side codegen
-#    wiring is missing. This spans codegen import-index ordering that many
-#    already-passing allowlisted tests implicitly depend on -- a maintainer
-#    call, not a unilateral sandbox tweak. Affected:
-#    lib/@vibe/shell/commands_test.vibe (blocked on the "Invalid tag index"
-#    codegen gap for Fs::Chdir).
-#  - lib/@vibe/compiler/tests/fixture_real_selfhost_test.vibe,
+#  - 2026-07-10: `Fs::mkdir`/`Fs::chdir`/`Fs::copy`/`Fs::append`/`Fs::rename`/
+#    `Fs::is_dir`/`Fs::is_file`/`Fs::getcwd` codegen wiring landed too (same
+#    shape as Fs::remove/Fs::mkdir_p; `Fs::rename` was also missing from the
+#    checker entirely, like Fs::mkdir_p was). The JS host runner already
+#    implemented all of fs_mkdir/fs_chdir/fs_copy/fs_append/fs_rename/
+#    fs_is_dir/fs_is_file/fs_getcwd. Also converted every `perform
+#    <Effect>::<Op>` call in lib/@vibe/shell/commands.vibe and
+#    lib/@vibe/shell/index.vibe's "canonical collision-safe alias" wrappers to
+#    the direct-call form (Process::Exec is a real user effect, left as
+#    `perform`) -- the perform/effect-op codegen path for magic host effects
+#    (Fs/Env/Stdout/Stdin) can crash with an uncaught wasm exception when no
+#    handler is installed (see #778's fix), independent of whether the codegen
+#    wiring itself exists. Also found and fixed: lib/@vibe/shell/index.vibe's
+#    `shell_print`/`shell_println`/`shell_read_line`/`shell_exists`/
+#    `shell_is_dir`/`shell_is_file`/`shell_write_file` and
+#    lib/@vibe/compiler/tests/fixture_test_support.vibe's
+#    `resolve_import_fs_path` were missing their `with { ... }` effect
+#    annotations entirely (checker error: "use of undeclared effect") --
+#    unrelated pre-existing bugs, fixed alongside since they blocked the same
+#    files. Also flattened `export module math { ... }` out of the
+#    fixture_03_parse/fixture_03_roundtrip fixture strings in
+#    fixture_test.vibe/fixture_roundtrip_test.vibe (#728 removed `module { }`
+#    blocks; same "stale fixture predates a language change" pattern as #767).
+#    Recovered: lib/@vibe/compiler/tests/fixture_real_selfhost_test.vibe,
 #    lib/@vibe/compiler/tests/fixture_roundtrip_test.vibe,
 #    lib/@vibe/compiler/tests/fixture_test.vibe,
-#    lib/@vibe/shell/index_import_test.vibe,
-#    lib/@vibe/shell/posix_compat_test.vibe: a SEPARATE, unrelated pre-existing
-#    bug surfaced once the effect fix got them past the Fs::Chdir checker error
-#    -- lib/@vibe/shell/pipeline.vibe calls `Json::parse`, which is a real
-#    builtin type-registered in builtins_extended.vibe's lookup_json/
-#    lookup_extended, but that lookup table is never wired into
-#    checker/checker.vibe's name resolution, so it resolves as "unknown name:
-#    Json::parse" in this compile path. Needs its own investigation (not filed
-#    under #768's capability-grant framing).
+#    lib/@vibe/shell/index_import_test.vibe (all now allowlisted above).
+#  - lib/@vibe/shell/commands_test.vibe, lib/@vibe/shell/posix_compat_test.vibe:
+#    now past every effect/codegen-wiring gap above, but both still fail --
+#    `find()` (lib/@vibe/shell/commands.vibe) traps with "memory access out of
+#    bounds" in its BFS directory walk. Bisected to a minimal repro: a
+#    multi-round loop with a mutable `paths` array reassigned each round,
+#    where each iteration both (a) calls `Fs::readdir` (whose direct-call
+#    lowering in codegen/expr/compile_call.vibe synthesizes a `let __rd_names
+#    = ...` binding) and (b) constructs a struct literal (`FileEntry::{...}`)
+#    -- removing either the multi-round reassignment, the struct literal, or
+#    the recursive Fs::readdir call individually makes it pass, so it's some
+#    interaction between synthetic-let local-slot allocation and struct-literal
+#    codegen inside a loop, not any one of them alone. Looks like a real,
+#    narrow codegen bug; not isolated further than this repro shape.
 #  - lib/@vibe/compiler/tests/cache_probe_type_db_fs_multi_dep_bench_test.vibe:
 #    now blocked on an unrelated "undefined variable (local): to_string @call"
 #    in lib/@vibe/compiler/selfbuild_gate_block_a.vibe (an unqualified
@@ -290,6 +304,9 @@ lib/@vibe/compiler/tests/cst_lower_type_test.vibe
 lib/@vibe/compiler/tests/dce_test.vibe
 lib/@vibe/compiler/tests/desugar_test.vibe
 lib/@vibe/compiler/tests/file_compile_mode_test.vibe
+lib/@vibe/compiler/tests/fixture_real_selfhost_test.vibe
+lib/@vibe/compiler/tests/fixture_roundtrip_test.vibe
+lib/@vibe/compiler/tests/fixture_test.vibe
 lib/@vibe/compiler/tests/fs_compile_path_test.vibe
 lib/@vibe/compiler/tests/import_alias_codegen_test.vibe
 lib/@vibe/compiler/tests/import_alias_collision_test.vibe
@@ -411,6 +428,7 @@ lib/@vibe/shell/_types_test.vibe
 lib/@vibe/shell/from_csv_test.vibe
 lib/@vibe/shell/from_yaml_test.vibe
 lib/@vibe/shell/glob_test.vibe
+lib/@vibe/shell/index_import_test.vibe
 lib/@vibe/shell/pipeline_test.vibe
 lib/@vibe/shell/sh_lines_flags_test.vibe
 lib/@vibe/socket/index_import_test.vibe
