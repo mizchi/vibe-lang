@@ -3271,7 +3271,17 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // Name section (debugger P0 / ADR-0035): name the user functions so wasm
   // backtraces and tooling show `main` etc. instead of `<wasm function N>`.
   // User functions occupy consecutive indices starting at `func_offset`.
-  emit_function_name_section(out, fn_names_list, func_offset)
+  // #768: emit ONLY the first num_user_funcs entries -- fn_names_list also
+  // carries the builtin/runtime names appended for call resolution (Env::get,
+  // Fs::read_file, ...), but those bodies live at LOW indices (below
+  // func_offset). Emitting the whole list consecutively shifted every
+  // post-user name: `_start` was labeled `Env::get` in crash stacks, which
+  // repeatedly sent debugging to functions the trace never touched. `_start`
+  // and `run` sit right after the user block, so name them explicitly.
+  let name_sec_names = Array::slice(fn_names_list, 0, num_user_funcs)
+  Array::push(name_sec_names, "_start")
+  Array::push(name_sec_names, "run")
+  emit_function_name_section(out, name_sec_names, func_offset)
   bytebuf_to_bytes(out)
 }
 

@@ -25,7 +25,7 @@ import ../../../syntax/import_alias_rewrite.vibe {
 }
 
 import ../../../codegen/index.vibe {
-  compile_module, compile_wasi_module, compile_wasi_module_rc, compile_wasi_module_coverage, compile_wasi_module_trace, compile_wasi_module_break
+  compile_module, compile_wasi_module, compile_wasi_module_rc, compile_wasi_module_rc_shadow, compile_wasi_module_coverage, compile_wasi_module_trace, compile_wasi_module_break
 }
 
 import ../../../codegen/common_base/index.vibe {
@@ -491,6 +491,18 @@ export let compile_file_fs_mode_rc: (String, String) -> Bytes with { Error, Fs }
   let _ = next_db
   let merged_stmts = build_grouped_merged_stmts(source_groups)
   compile_wasi_module_rc(merged_stmts, entry_name)
+}
+
+// #715/#768 debug variant (VIBE_RC=shadow): same load/merge as
+// compile_file_fs_mode_rc but with shadow-liveness double-free traps, so an
+// import-resolving test build's "moving target" free-list corruption becomes a
+// deterministic trap at the first bad dup/drop.
+export let compile_file_fs_mode_rc_shadow: (String, String) -> Bytes with { Error, Fs } = (entry_path, entry_name) -> {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let _ = next_db
+  let merged_stmts = build_grouped_merged_stmts(source_groups)
+  compile_wasi_module_rc_shadow(merged_stmts, entry_name)
 }
 
 // #634 (ADR-0026): same as compile_file_fs_mode, but ALSO writes the pure-test

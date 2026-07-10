@@ -29,6 +29,51 @@
 # implementations (which shadow the magic name via normal name resolution
 # before the checker's fallback ever fires), so they're unreachable in
 # practice -- lower priority, not fixed this pass.
+# 2026-07-10 RESOLUTION (#768): the "heap-corruption family" documented at
+# length in several notes below (compiler_cache_test / compiler_cache_advanced
+# _test dce_stmts/normalize_all_sources traps, commands_test / posix_compat
+# _test find() BFS trap, loader_manifest_sources_test's "Env::get" trap) is
+# FIXED -- all five files are allowlisted above now. It was THREE independent
+# RC-backend bugs plus one diagnostic bug that had been muddying every stack
+# trace:
+#  1. Perceus loop-branch-tail under-retain: `let bucket = if cached { last }
+#     else { fresh() }` inside `while` -- the static dup budget cannot cover
+#     per-iteration borrowed reads escaping as an if/match BRANCH VALUE into a
+#     scope-end-dropped `let`, so each cached-path iteration net-dropped a
+#     loop-carried reference; refcount hit 0 while the outer structure still
+#     pointed at the block, the free-list reused it, and whatever allocation
+#     landed there next aliased live data. Fix: retain_wrap_branch_tails
+#     (codegen/expr/compile_expr_tail.vibe) + the `__loop_tail_retain` marker
+#     (compile_call.vibe). Minimal repro preserved in the #768 issue thread.
+#  2. Borrow laundering through if/match alias chains: `let export_renamed =
+#     if entry { stmts } else { call() }` re-binds a borrowed view under a
+#     fresh name that consuming calls no longer recognize as borrowed, so the
+#     callee's param drop freed a block its true owner (file_stmts) still
+#     held (this was the actual build_merged_stmts_inline crash behind the
+#     "dce_stmts bug" framing). Fix: value_has_borrowed_branch_tail marks such
+#     lets borrow-bound for their body scope, same mechanism as #708.
+#  3. Fs::is_dir / Fs::is_file missing from the #705 raw-ABI RC shim
+#     (compile_call.vibe): their raw host `1` (true) is ODD, so a guarded
+#     rc_dup/rc_drop on a binding holding it mistook it for an RC pointer 0x0
+#     and trapped OOB at address -4 (the find() BFS crash -- NOT a memory
+#     corruption at all, despite the signature).
+#  4. (diagnostic) The wasm name section emitted builtin/runtime names shifted
+#     onto post-user-function indices, labeling `_start` as "Env::get" etc. --
+#     every "crashes inside <function>" claim in the superseded notes below
+#     was unreliable; the notes are kept for history but their per-function
+#     attributions should not be trusted. Fixed in linked_compile.vibe.
+#  Two follow-ons landed in the same pass: VIBE_RC=shadow now works for
+#  import-resolving FS-compile builds (compile_file_fs_mode_rc_shadow -- this
+#  is what made bug 2 a deterministic first-bad-free trap instead of a moving
+#  target), and lib/@vibe/shell's sort_str compared strings by POINTER (the
+#  #746 String-relational rewrite can't see `Array::get` element types; fixed
+#  with an explicit lexicographic helper in pipeline.vibe), which had been
+#  masked behind the find() crash.
+#  Known cold-cache flake, separate issue: the FIRST compile of
+#  compiler_cache_test.vibe after a fresh stage2 can trap inside the stage2
+#  compiler's collect_source_groups_fs persistent-cache STORE path (bump-build
+#  memory pressure; a retry with the warm cache passes). Not chased this pass.
+#
 # #768: files below are EXCLUDED pending compiler codegen/checker work (NOT a
 # simple sandbox-capability grant -- see issue #768 for the full trace). Fixed
 # in the same pass: lib/@vibe/shell/commands.vibe and
@@ -415,8 +460,10 @@ lib/@vibe/compiler/tests/codegen_regression_test.vibe
 lib/@vibe/compiler/tests/codegen_struct_test.vibe
 lib/@vibe/compiler/tests/codegen_test.vibe
 lib/@vibe/compiler/tests/compiler_advanced_test.vibe
+lib/@vibe/compiler/tests/compiler_cache_advanced_test.vibe
 lib/@vibe/compiler/tests/compiler_cache_merge_test.vibe
 lib/@vibe/compiler/tests/compiler_cache_prepare_test.vibe
+lib/@vibe/compiler/tests/compiler_cache_test.vibe
 lib/@vibe/compiler/tests/compiler_fs_test.vibe
 lib/@vibe/compiler/tests/compiler_test.vibe
 lib/@vibe/compiler/tests/compiler_wasi_test.vibe
@@ -444,6 +491,7 @@ lib/@vibe/compiler/tests/import_private_entry_collision_test.vibe
 lib/@vibe/compiler/tests/import_private_type_collision_test.vibe
 lib/@vibe/compiler/tests/lexer_edge_test.vibe
 lib/@vibe/compiler/tests/lexer_test.vibe
+lib/@vibe/compiler/tests/loader_manifest_sources_test.vibe
 lib/@vibe/compiler/tests/loader_persistent_cache_test.vibe
 lib/@vibe/compiler/tests/module_graph_path_test.vibe
 lib/@vibe/cache/header_codec_test.vibe
@@ -554,11 +602,13 @@ lib/@vibe/process/index_import_test.vibe
 lib/@vibe/time/index_import_test.vibe
 lib/@vibe/random/index_import_test.vibe
 lib/@vibe/shell/_types_test.vibe
+lib/@vibe/shell/commands_test.vibe
 lib/@vibe/shell/from_csv_test.vibe
 lib/@vibe/shell/from_yaml_test.vibe
 lib/@vibe/shell/glob_test.vibe
 lib/@vibe/shell/index_import_test.vibe
 lib/@vibe/shell/pipeline_test.vibe
+lib/@vibe/shell/posix_compat_test.vibe
 lib/@vibe/shell/sh_lines_flags_test.vibe
 lib/@vibe/socket/index_import_test.vibe
 lib/@vibe/socket/socket_effect_test.vibe

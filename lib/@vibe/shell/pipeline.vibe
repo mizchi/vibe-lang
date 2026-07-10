@@ -528,6 +528,40 @@ export let seq_step = (first: Int, incr: Int, last: Int) -> Array[String] {
   }
 }
 
+// #768: explicit lexicographic compare (true iff a < b, char-by-char with
+// length tie-break). A bare `a < b` here relied on the #746 String-relational
+// rewrite (desugar_trait_dict), but that rewrite needs an operand whose type
+// is syntactically inferable -- `Array::get(arr, i)` is not, so the raw binop
+// survived to codegen and compared the (ptr<<32)|len string values NUMERICALLY
+// (pointer order): sort_str returned its input unsorted.
+let str_lex_lt = (a: String, b: String) -> Bool {
+  let la = String::length(a)
+  let lb = String::length(b)
+  let n = if la < lb { la } else lb
+  let mut i = 0
+  let mut decided = 0
+  while i < n {
+    let ca = String::char_code_at(a, i)
+    let cb = String::char_code_at(b, i)
+    if ca < cb {
+      decided = 1
+      i = n
+    } else if ca > cb {
+      decided = 2
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  if decided == 1 {
+    true
+  } else if decided == 2 {
+    false
+  } else {
+    la < lb
+  }
+}
+
 export let sort_str = (xs: Array[String]) -> Array[String] {
   let len = Array::length(xs)
   let arr = xs[0: len]
@@ -536,10 +570,7 @@ export let sort_str = (xs: Array[String]) -> Array[String] {
     let key = Array::get(arr, i2)
     let mut j = i2 - 1
     while j >= 0 {
-      // #777: `__lt` is not a real function (host-era intrinsic, never
-      // ported) — the `<` operator does lexicographic String comparison in
-      // the selfhost compiler, which is what a string sort needs here.
-      if key < Array::get(arr, j) {
+      if str_lex_lt(key, Array::get(arr, j)) {
         arr[j + 1] = Array::get(arr, j)
         j = j - 1
       } else break

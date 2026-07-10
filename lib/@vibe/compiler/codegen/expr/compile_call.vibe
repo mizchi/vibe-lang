@@ -1371,6 +1371,21 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     else if !prefer_bound_call && fname == "path" {
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     }
+    else if fname == "__loop_tail_retain" {
+      // #768: codegen-internal marker (retain_wrap_branch_tails,
+      // compile_expr_tail.vibe) -- a loop-borrowed bare ident / projection
+      // escaping an if/match branch as the branch VALUE into a
+      // scope-end-dropped `let`. Compile the read, then guarded rc_dup so the
+      // per-iteration drop consumes the dup, not the loop-carried reference.
+      // Never present in user AST (synthesized during codegen only).
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      let v_l = nl
+      Array::push(local_names, "__ltr_v")
+      emit_local_set(buf, v_l)
+      emit_rc_dup_guarded(buf, v_l, ctx.rc_shadow)
+      emit_local_get(buf, v_l)
+      nl + 1
+    }
     else if !prefer_bound_call && (fname == "Path::ref" || fname == "Path::resolve") && Array::length(args) == 1 {
       // #762: both resolve their argument to an absolute path against the
       // process CWD via the `resolve_path` host import. The runtime op is
@@ -3277,7 +3292,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_local_get(buf, fm_l)
       nl + 3
     }
-    else if ctx.enable_rc && (fname == "Env::args_len" || fname == "Env::args_get" || fname == "Fs::exists" || fname == "Fs::stat_token" || fname == "Profiler::now_us" || fname == "Profiler::NowUs" || fname == "Stdin::read_char") {
+    else if ctx.enable_rc && (fname == "Env::args_len" || fname == "Env::args_get" || fname == "Fs::exists" || fname == "Fs::is_dir" || fname == "Fs::is_file" || fname == "Fs::stat_token" || fname == "Profiler::now_us" || fname == "Profiler::NowUs" || fname == "Stdin::read_char") {
       // #705: the raw-ABI host imports speak UNTAGGED integers, but RC values
       // are tagged (n<<1). These builtins alias their import function
       // directly, so the generic call path handed the import a TAGGED index
@@ -3288,6 +3303,10 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       // results are packed (ptr<<32)|len in both modes and pass through.
       // (`sleep`'s (i64)->() import still lacks this shim — it is shadowable
       // by user code and returns nothing; tracked with #705.)
+      // #768: Fs::is_dir / Fs::is_file were added without this shim -- their
+      // raw `1` (true) is ODD, so a later guarded rc_dup/rc_drop on a binding
+      // holding it mistook it for an RC pointer 0x0 and trapped OOB at
+      // address -4 (lib/@vibe/shell's find() BFS crash).
       let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
       let mut nl = next_local
       if Array::length(args) > 0 {
