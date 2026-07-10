@@ -470,6 +470,19 @@ export let gen_rc_drop_body: (Int, Bool) -> Bytes = (self_idx, rc_shadow) -> {
   emit_i64_and(b)
   emit_i32_wrap_i64(b)
   emit_if_void(b)
+  // #769: ALSO require high32 == 0 (same leaf-fat-pointer rule as this
+  // function's own entry check above). A captured STRING is (ptr<<32)|len;
+  // an ODD length passes the bit-0 test, and `(v & -2) - 1` then wraps the
+  // LOW word: a captured 1-char string gave address 0xFFFFFFFF and the class
+  // byte probe itself trapped OOB (parser_roundtrip_test's escape_string,
+  // which captures its String param in a closure); longer odd-length strings
+  // silently probed low memory and could false-positive into a wild
+  // recursive drop.
+  emit_local_get(b, 6)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i64_eqz(b)
+  emit_if_void(b)
   emit_local_get(b, 6)
   emit_i64_const(b, -2)
   emit_i64_and(b)
@@ -482,6 +495,7 @@ export let gen_rc_drop_body: (Int, Bool) -> Bytes = (self_idx, rc_shadow) -> {
   emit_if_void(b)
   emit_local_get(b, 6)
   emit_call(b, self_idx)
+  emit_end(b)
   emit_end(b)
   emit_end(b)
   emit_local_get(b, 4)

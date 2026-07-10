@@ -186,10 +186,45 @@ let rec cc_expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with { Er
 // and then interpolated is likewise not covered (still prints 1/0). Never fires
 // for an integer expression, so the pervasive `__to_string(<int>)` calls
 // (lengths, offsets, ids) are untouched.
-let cc_expr_is_boolish: (Expr) -> Bool = (e) -> {
+let cc_expr_is_boolish: (Expr, Array[String], CompileCtx) -> Bool = (e, local_names, ctx) -> {
   let tag = expr_tag(e)
   if tag == 1 {
     true
+  } else if tag == 4 {
+    // #769: a bare ident `let`-bound to a boolish value -- kind-3 entry in
+    // ctx.int_local_slots (slot*4 + kind, see compile_expr_tail's
+    // slot_is_intish). Closes the documented #785-P2 gap where
+    // `let b = true; "\{b}"` printed the raw integer. Duplicated slot scan
+    // (expr_is_boolish lives in compile_expr_tail, which imports this file --
+    // importing back would be circular).
+    let nm = get_eident_name(e)
+    let mut i = Array::length(local_names) - 1
+    let mut slot = -1
+    while i >= 0 {
+      if Array::get(local_names, i) == nm {
+        slot = i
+        i = -1
+      } else {
+        i = i - 1
+      }
+    }
+    if slot >= 0 {
+      let arr = ctx.int_local_slots
+      let mut j = Array::length(arr) - 1
+      let mut result = false
+      while j >= 0 {
+        let entry = Array::get(arr, j)
+        if entry / 4 == slot {
+          result = (entry % 4) == 3
+          j = -1
+        } else {
+          j = j - 1
+        }
+      }
+      result
+    } else {
+      false
+    }
   } else if tag == 5 {
     let op = get_ebinop_op(e)
     op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||"
@@ -1500,7 +1535,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       // bits (or the box pointer under RC) as an integer.
       ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
     }
-    else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_boolish(Array::get(args, 0)) {
+    else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_boolish(Array::get(args, 0), local_names, ctx) {
       // #784: a statically-boolean argument formats as "true"/"false", not the
       // integer 1/0 the generic path below would emit. Reuse the existing
       // if/EString codegen: `if b { "true" } else { "false" }`.
