@@ -118,6 +118,11 @@
 #    synthetic let) gets tagged/retained when later read back through an
 #    ArrayBuilder and placed into a struct field, not simple local-slot
 #    proximity. Needs step-through/disassembly tooling to pin down further.
+#    Cross-reference: this file's compiler_cache_test.vibe entry (below,
+#    dce_stmts/build_merged_stmts_inline) traps in the same narrow heap
+#    address range with a similarly nondeterministic crash site across
+#    runs -- worth checking whether these are the same underlying
+#    memory-corruption bug before investigating either in isolation again.
 #  - 2026-07-10 (#769): converted every real (non-string-literal) `perform
 #    Env::Get/ArgsLen/ArgsGet`/`perform Fs::ReadFile/Exists` call in
 #    lib/@vibe/compiler/index.vibe to direct-call form (same #778 rationale).
@@ -166,16 +171,43 @@
 #    2026-07-10 refinement: NOT specific to multi-module imports despite the
 #    test name -- a minimal standalone repro (single statement
 #    `let _start: () -> Int = () -> { 1 + 2 }`, zero linked sources) through
-#    `compile_with_modules_wasi_cached` -> `prune_entry_stmts` ->
-#    `dce_stmts` reproduces the identical trap. `dce_stmts` itself passes its
-#    own direct unit tests (dce_test.vibe, allowlisted), so the bug is
-#    specific to whatever shape of parsed (not hand-constructed) Stmt/Expr
-#    AST reaches it via the FS-compile path -- not isolated further this
-#    pass (walked collect_refs_into's full Expr match and it looks
-#    exhaustive/bounds-safe by inspection; the actual OOB is in a nested
-#    call frame the stack trace doesn't name). Needs step-through debugging
-#    tooling (wasm disassembly or a debug build) rather than further static
-#    reading.
+#    `compile_with_modules_wasi_cached` reproduces the identical trap.
+#    `dce_stmts` itself passes its own direct unit tests (dce_test.vibe,
+#    allowlisted), so the bug is specific to whatever shape of parsed AST
+#    reaches it via the FS-compile path.
+#    2026-07-10 further refinement (supersedes the "isolate to dce_stmts"
+#    framing above -- this is NOT a dce_stmts bug): `compile_with_
+#    source_groups_wasi_cached` (compiler_cache_test.vibe's OTHER test in
+#    the same file, "grouped sources reuse grouped merge cache") calls the
+#    exact same `prune_entry_stmts`/`dce_stmts` on the exact same trivial
+#    input and passes cleanly -- the only difference is it re-parses the
+#    merged source from TEXT (`parse_program(lex(merged_source))`) rather
+#    than building the merged Stmt array in-memory via
+#    `build_merged_stmts_inline` (the AST-splice/rename/namespace-rewrite
+#    path `compile_with_modules_wasi_cached` uses). So `dce_stmts` was
+#    never the culprit; suspicion shifts to `build_merged_stmts_inline`
+#    (lib/@vibe/compiler/entry/compiler/fs_compile/index.vibe) producing a
+#    subtly malformed Stmt/Expr shape that only manifests as an OOB later.
+#    But repeated runs of the SAME minimal repro (calling
+#    `closure_pruned_stmt_count` with identical trivial input) crash at
+#    DIFFERENT innermost frames across runs -- sometimes inside
+#    `normalize_all_sources` (lib/@vibe/compiler/entry/compiler/
+#    fs_compile/closure_order.vibe), sometimes inside `dce_stmts` -- always
+#    around the same narrow heap address range (~0x20000-0x4a000). That's
+#    the signature of a heap/memory-corruption bug (an earlier out-of-
+#    bounds write silently corrupts nearby memory; whichever allocation
+#    happens to land on the corrupted region next is what visibly traps),
+#    not a single deterministic logic bug in one function -- and the same
+#    heap-address range shows up in this file's unrelated `find()` BFS
+#    entry too, raising the possibility these are the SAME underlying
+#    memory-safety bug wearing different call-stack costumes, not two
+#    independent bugs. Pinning the actual out-of-bounds WRITE site (as
+#    opposed to wherever it happens to be observed) needs step-through/
+#    memory-diffing tooling (wasm disassembly, a debug build, or
+#    byte-level heap snapshots across runs) that this session doesn't
+#    have -- static reading of dce.vibe/closure_order.vibe/
+#    build_merged_stmts_inline did not turn up an obvious bounds violation
+#    in any of them.
 docs/tutorial/01_values_functions_test.vibe
 docs/tutorial/02_control_flow_test.vibe
 docs/tutorial/03_data_test.vibe
