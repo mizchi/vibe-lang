@@ -72,16 +72,28 @@
 #  - lib/@vibe/shell/commands_test.vibe, lib/@vibe/shell/posix_compat_test.vibe:
 #    now past every effect/codegen-wiring gap above, but both still fail --
 #    `find()` (lib/@vibe/shell/commands.vibe) traps with "memory access out of
-#    bounds" in its BFS directory walk. Bisected to a minimal repro: a
-#    multi-round loop with a mutable `paths` array reassigned each round,
-#    where each iteration both (a) calls `Fs::readdir` (whose direct-call
-#    lowering in codegen/expr/compile_call.vibe synthesizes a `let __rd_names
-#    = ...` binding) and (b) constructs a struct literal (`FileEntry::{...}`)
-#    -- removing either the multi-round reassignment, the struct literal, or
-#    the recursive Fs::readdir call individually makes it pass, so it's some
-#    interaction between synthetic-let local-slot allocation and struct-literal
-#    codegen inside a loop, not any one of them alone. Looks like a real,
-#    narrow codegen bug; not isolated further than this repro shape.
+#    bounds" in its BFS directory walk.
+#    2026-07-10 narrower repro (superseding the note this replaces): it is
+#    NOT about proximity within one loop body -- moving the struct-literal
+#    construction to an entirely separate, later loop that reads its field
+#    values back out of an ArrayBuilder-collected array still crashes;
+#    only a fully DISCONNECTED second loop (struct built from literal
+#    constants, not from data threaded through the readdir loop) passes.
+#    So the trigger is a function that contains BOTH (a) a multi-round loop
+#    with mutable `paths` reassignment where each iteration conditionally
+#    calls `Fs::readdir` inside an `if is_directory { ... }` branch (whose
+#    direct-call lowering in codegen/expr/compile_call.vibe synthesizes a
+#    `let __rd_names = ...` binding) AND (b) constructs a struct literal
+#    (`FileEntry::{...}`) whose field values were populated from data that
+#    passed through that same readdir loop (e.g. a Bool computed inside the
+#    conditional branch, pushed to an ArrayBuilder, then read back later) --
+#    removing the multi-round reassignment, the struct literal, the
+#    conditional/`if`, or the data dependency between the two loops
+#    individually makes it pass. Likely a real bug in how a value computed
+#    inside a conditionally-taken branch (with its own heap-allocating
+#    synthetic let) gets tagged/retained when later read back through an
+#    ArrayBuilder and placed into a struct field, not simple local-slot
+#    proximity. Needs step-through/disassembly tooling to pin down further.
 #  - lib/@vibe/compiler/tests/cache_probe_type_db_fs_multi_dep_bench_test.vibe:
 #    now blocked on an unrelated "undefined variable (local): to_string @call"
 #    in lib/@vibe/compiler/selfbuild_gate_block_a.vibe (an unqualified
