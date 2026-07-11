@@ -200,8 +200,56 @@ export let rec expr_is_boolish: (Expr, Array[String], CompileCtx) -> Bool with {
 // take the f64 path. Shared by compile_expr (binop/unary instruction choice)
 // and the `let` handler below (which populates float_local_slots).
 export let rec expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with { Error } = (e, local_names, ctx) -> {
+  // fbox (#797): `t.N` tuple projection survives to codegen as EDot (expr_tag
+  // -1), NOT as __rec_field (that lowering is only produced for tuple
+  // DESTRUCTURING and record-pattern desugars). Heap fields store floats as
+  // raw f64 bits (boxed under RC), so the reader must recover float-ness
+  // statically -- without this, `let t = (1.5, 2.5); t.0 + t.1` integer-adds
+  // two bit patterns into NaN and Double::to_int traps. The #724 agg log
+  // keeps the backing ETuple expression per slot; recurse into the projected
+  // element. Untracked bindings stay false (same over-approximation as the
+  // rest of this predicate).
+  let dot_float = match e {
+    EDot(dobj, dfield, _) => {
+      let fc = String::char_code_at(dfield, 0)
+      if fc >= 48 && fc <= 57 && is_eident(dobj) {
+        let slot = find_local_slot(local_names, get_eident_name(dobj))
+        if slot >= 0 {
+          let info = agg_slot_lookup(ctx.agg_local_slots, slot)
+          if info >= 0 && info / 64 == 1 {
+            let backing = agg_expr_lookup(ctx.agg_local_slots, ctx.agg_local_exprs, slot)
+            if is_etuple(backing) {
+              let elems = get_etuple_elems(backing)
+              let mut k = 0
+              let mut fp = 0
+              while fp < String::length(dfield) {
+                k = k * 10 + (String::char_code_at(dfield, fp) - 48)
+                fp = fp + 1
+              }
+              if k >= 0 && k < Array::length(elems) {
+                expr_is_floatish(Array::get(elems, k), local_names, ctx)
+              } else {
+                false
+              }
+            } else {
+              false
+            }
+          } else {
+            false
+          }
+        } else {
+          false
+        }
+      } else {
+        false
+      }
+    },
+    _ => false
+  }
   let tag = expr_tag(e)
-  if tag == 2 {
+  if dot_float {
+    true
+  } else if tag == 2 {
     true
   } else if tag == 4 {
     let nm = get_eident_name(e)
@@ -243,7 +291,47 @@ export let rec expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with 
     let callee = get_ecall_callee(e)
     if is_eident(callee) {
       let fname = get_eident_name(callee)
-      fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_double" || fname == "Double::to_float" || fname == "Double::from_i64_bits"
+      if fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_double" || fname == "Double::to_float" || fname == "Double::from_i64_bits" {
+        true
+      } else if fname == "__rec_field" {
+        // fbox (#797): `t.0` on a TRACKED tuple-literal binding (`let t =
+        // (1.5, 2.5)`). Heap fields store floats as RAW f64 bits, so the
+        // reader must recover float-ness statically -- without this, `t.0 +
+        // t.1` integer-adds two bit patterns into NaN and `Double::to_int`
+        // traps ("invalid conversion to integer"). The #724 agg log already
+        // keeps the backing ETuple expression per slot; recurse into the
+        // projected element. Non-literal / untracked bindings stay false
+        // (same over-approximation as the rest of this predicate).
+        let args = get_ecall_args(e)
+        if Array::length(args) == 2 && is_eident(Array::get(args, 0)) && expr_tag(Array::get(args, 1)) == 0 {
+          let slot = find_local_slot(local_names, get_eident_name(Array::get(args, 0)))
+          if slot >= 0 {
+            let info = agg_slot_lookup(ctx.agg_local_slots, slot)
+            if info >= 0 && info / 64 == 1 {
+              let backing = agg_expr_lookup(ctx.agg_local_slots, ctx.agg_local_exprs, slot)
+              if is_etuple(backing) {
+                let elems = get_etuple_elems(backing)
+                let k = get_eint_value(Array::get(args, 1))
+                if k >= 0 && k < Array::length(elems) {
+                  expr_is_floatish(Array::get(elems, k), local_names, ctx)
+                } else {
+                  false
+                }
+              } else {
+                false
+              }
+            } else {
+              false
+            }
+          } else {
+            false
+          }
+        } else {
+          false
+        }
+      } else {
+        false
+      }
     } else {
       false
     }

@@ -13,7 +13,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  emit_rc_word_inc_saturating, CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_rc_dup_guarded, effect_name_to_tag, effect_op_index, emit_binop_op, emit_box_float, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_index_one, emit_str_ref, emit_unbox_float, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local, struct_field_candidates, struct_field_dispatch_cases
+  emit_rc_word_inc_saturating, CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, agg_expr_lookup, agg_slot_lookup, emit_rc_dup_guarded, effect_name_to_tag, effect_op_index, emit_binop_op, emit_box_float, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_index_one, emit_str_ref, emit_unbox_float, expr_tag, find_local_slot, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local, struct_field_candidates, struct_field_dispatch_cases
 }
 
 import .. / common_extractors {
@@ -123,8 +123,50 @@ let cc_slot_is_floatish: (CompileCtx, Int) -> Bool = (ctx, slot) -> {
 }
 
 let rec cc_expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with { Error } = (e, local_names, ctx) -> {
+  // fbox (#797): mirror of expr_is_floatish's EDot tuple-projection case --
+  // `t.N` on a tracked tuple-literal binding recurses into the backing
+  // ETuple element via the #724 agg log.
+  let dot_float = match e {
+    EDot(dobj, dfield, _) => {
+      let fc = String::char_code_at(dfield, 0)
+      if fc >= 48 && fc <= 57 && is_eident(dobj) {
+        let slot = find_local_slot(local_names, get_eident_name(dobj))
+        if slot >= 0 {
+          let info = agg_slot_lookup(ctx.agg_local_slots, slot)
+          if info >= 0 && info / 64 == 1 {
+            let backing = agg_expr_lookup(ctx.agg_local_slots, ctx.agg_local_exprs, slot)
+            if is_etuple(backing) {
+              let elems = get_etuple_elems(backing)
+              let mut k = 0
+              let mut fp = 0
+              while fp < String::length(dfield) {
+                k = k * 10 + (String::char_code_at(dfield, fp) - 48)
+                fp = fp + 1
+              }
+              if k >= 0 && k < Array::length(elems) {
+                cc_expr_is_floatish(Array::get(elems, k), local_names, ctx)
+              } else {
+                false
+              }
+            } else {
+              false
+            }
+          } else {
+            false
+          }
+        } else {
+          false
+        }
+      } else {
+        false
+      }
+    },
+    _ => false
+  }
   let tag = expr_tag(e)
-  if tag == 2 {
+  if dot_float {
+    true
+  } else if tag == 2 {
     true
   } else if tag == 4 {
     let nm = get_eident_name(e)
@@ -162,7 +204,43 @@ let rec cc_expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with { Er
     let callee = get_ecall_callee(e)
     if is_eident(callee) {
       let fname = get_eident_name(callee)
-      fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_double" || fname == "Double::to_float" || fname == "Double::from_i64_bits"
+      if fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_double" || fname == "Double::to_float" || fname == "Double::from_i64_bits" {
+        true
+      } else if fname == "__rec_field" {
+        // fbox (#797): mirror of expr_is_floatish's tuple-projection case --
+        // `t.0` on a tracked tuple-literal binding recurses into the backing
+        // ETuple element via the #724 agg log (heap fields hold raw f64 bits,
+        // so the reader must recover float-ness statically).
+        let args = get_ecall_args(e)
+        if Array::length(args) == 2 && is_eident(Array::get(args, 0)) && expr_tag(Array::get(args, 1)) == 0 {
+          let slot = find_local_slot(local_names, get_eident_name(Array::get(args, 0)))
+          if slot >= 0 {
+            let info = agg_slot_lookup(ctx.agg_local_slots, slot)
+            if info >= 0 && info / 64 == 1 {
+              let backing = agg_expr_lookup(ctx.agg_local_slots, ctx.agg_local_exprs, slot)
+              if is_etuple(backing) {
+                let elems = get_etuple_elems(backing)
+                let k = get_eint_value(Array::get(args, 1))
+                if k >= 0 && k < Array::length(elems) {
+                  cc_expr_is_floatish(Array::get(elems, k), local_names, ctx)
+                } else {
+                  false
+                }
+              } else {
+                false
+              }
+            } else {
+              false
+            }
+          } else {
+            false
+          }
+        } else {
+          false
+        }
+      } else {
+        false
+      }
     } else {
       false
     }
