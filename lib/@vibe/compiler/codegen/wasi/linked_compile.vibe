@@ -621,6 +621,17 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   let need_fs_is_dir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::is_dir")
   let need_fs_is_file_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::is_file")
   let need_fs_getcwd_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::getcwd")
+  // #794: HTTP client host imports. lib/@vibe/http's client functions call
+  // the `__http_*_raw` builtins (dunder names so units bundling the package's
+  // index.vibe -- which exports alias functions literally named
+  // `Http::request` etc. -- cannot capture the ident, see #795). Each lowers
+  // to a `vibe.http_*` host import, gated on use (fixpoint-safe: the compiler
+  // itself uses none, so its bytes are unchanged).
+  let need_http_request_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_request_raw")
+  let need_http_response_status_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_response_status_raw")
+  let need_http_response_header_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_response_header_raw")
+  let need_http_response_body_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_response_body_raw")
+  let need_http_close_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_close_raw")
   let mut next_import_idx = 1
   let env_get_import_idx = if need_env_get_builtin {
     let idx = next_import_idx
@@ -835,6 +846,43 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     -1
   }
   let fs_getcwd_import_idx = if need_fs_getcwd_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #794: HTTP client imports -- reserved after fs_getcwd (before dbg_break),
+  // in the same order as their emission below.
+  let http_request_import_idx = if need_http_request_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let http_response_status_import_idx = if need_http_response_status_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let http_response_header_import_idx = if need_http_response_header_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let http_response_body_import_idx = if need_http_response_body_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let http_close_import_idx = if need_http_close_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -1105,6 +1153,32 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     env_args_len_idx
   }
+  // #794: never-called placeholders when unused, like the Fs fallbacks above.
+  let http_request_idx = if http_request_import_idx >= 0 {
+    http_request_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let http_response_status_idx = if http_response_status_import_idx >= 0 {
+    http_response_status_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let http_response_header_idx = if http_response_header_import_idx >= 0 {
+    http_response_header_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let http_response_body_idx = if http_response_body_import_idx >= 0 {
+    http_response_body_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let http_close_idx = if http_close_import_idx >= 0 {
+    http_close_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
   let max_builtin_func_idx = str_lex_diff_idx
   let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
   let func_offset = num_imported_funcs + num_generated
@@ -1224,6 +1298,33 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(builtin_needs_env_list, false)
   Array::push(builtin_indices_list, fs_getcwd_idx)
   Array::push(builtin_returns_list, 1)
+  // #794: HTTP client host ops -- raw dunder surface names (see the need_http_*
+  // block above for why they are not Http::request etc.).
+  Array::push(builtin_names_list, "__http_request_raw")
+  Array::push(builtin_param_counts, 4)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, http_request_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "__http_response_status_raw")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, http_response_status_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "__http_response_header_raw")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, http_response_header_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "__http_response_body_raw")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, http_response_body_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "__http_close_raw")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, http_close_idx)
+  Array::push(builtin_returns_list, 0)
   // Process host imports: `sh(cmd)` (runs a shell command, returns 0) resolves
   // directly. `sh_lines(cmd)`'s Array[String] surface is lowered by compile_call
   // to `__sh_lines_raw` (the RAW half returning the "\n"-joined stdout) plus a
@@ -2385,8 +2486,23 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     0
   }
+  // #794: `vibe.http_request` needs an `(i64,i64,i64,i64) -> i64` func type.
+  // No base type has 4 i64 params, and closure types are data-dependent (only
+  // present up to the max closure arity in the unit), so append one dedicated
+  // type AFTER base + closure + dbg types when the import is live. Off =>
+  // byte-identical type section (fixpoint-safe).
+  let http_request_type_idx = if need_http_request_builtin {
+    num_base_types + num_closure_types + extra_dbg_types
+  } else {
+    -1
+  }
+  let extra_http_types = if need_http_request_builtin {
+    1
+  } else {
+    0
+  }
   let type_content = bytebuf_new()
-  bytebuf_push_vec_header(type_content, num_base_types + num_closure_types + extra_dbg_types)
+  bytebuf_push_vec_header(type_content, num_base_types + num_closure_types + extra_dbg_types + extra_http_types)
   emit_func_type_raw(type_content, [
     127,
     127,
@@ -2465,6 +2581,20 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     ], Array::slice([
       0
     ], 0, 0))
+  } else {
+    ()
+  }
+  // #794: the `(i64,i64,i64,i64) -> i64` type for vibe.http_request, appended
+  // last so every other type index is unshifted.
+  if need_http_request_builtin {
+    emit_func_type_raw(type_content, [
+      126,
+      126,
+      126,
+      126
+    ], [
+      126
+    ])
   } else {
     ()
   }
@@ -2984,6 +3114,52 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     emit_name(import_content, "fs_getcwd")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 5)
+  } else {
+    ()
+  }
+  // #794: `vibe.http_request (i64,i64,i64,i64) -> i64` — the dedicated type
+  // appended after base/closure/dbg types (http_request_type_idx).
+  if http_request_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "http_request")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, http_request_type_idx)
+  } else {
+    ()
+  }
+  // #794: `vibe.http_response_status (i64) -> i64` (type 3, like fs_exists).
+  if http_response_status_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "http_response_status")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #794: `vibe.http_response_header (i64, i64) -> i64` (type 4).
+  if http_response_header_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "http_response_header")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 4)
+  } else {
+    ()
+  }
+  // #794: `vibe.http_response_body (i64) -> i64` (type 3, like fs_read_file).
+  if http_response_body_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "http_response_body")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #794: `vibe.http_close (i64) -> ()` (type 1, like fs_remove).
+  if http_close_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "http_close")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
   } else {
     ()
   }

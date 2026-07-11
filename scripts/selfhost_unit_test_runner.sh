@@ -60,6 +60,30 @@ else
 fi
 [ -s "$S2" ] || { echo "[unit-test-runner] FAIL: no stage2 compiler available" >&2; exit 1; }
 
+# --- local HTTP echo server (#794) --------------------------------------------
+# lib/@vibe/http/http_e2e_test.vibe drives real HTTP against
+# tests/http_echo_server.py on 127.0.0.1:18280. Detection is content-based
+# (the endpoint string in the test source), like the wasmtime gate below. If
+# python3 is unavailable the server is not started and the affected tests
+# fail with a connection error -- an honest signal, not a silent skip.
+http_echo_pid=""
+start_http_echo_server_if_needed() {
+  local list_file="$1"
+  local need=0 f
+  while IFS= read -r f; do
+    case "$f" in ''|\#*) continue ;; esac
+    if [ -f "$f" ] && grep -q "127.0.0.1:18280" "$f"; then need=1; break; fi
+  done < "$list_file"
+  [ "$need" -eq 1 ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  [ -f "$ROOT_DIR/tests/http_echo_server.py" ] || return 0
+  python3 "$ROOT_DIR/tests/http_echo_server.py" 18280 >/dev/null 2>&1 &
+  http_echo_pid=$!
+  trap 'if [ -n "$http_echo_pid" ]; then kill "$http_echo_pid" 2>/dev/null || true; fi' EXIT
+  echo "[unit-test-runner] started http echo server (pid $http_echo_pid, 127.0.0.1:18280)"
+  sleep 1
+}
+
 # --- compile + run one test file; 0 = pass, 1 = fail --------------------------
 # A heavy file can trap the compiler with no diagnostic (the bump-heap hits a
 # guard page mid-compile) — that's a nondeterministic heap-marginal OOM, not a
@@ -100,6 +124,9 @@ discover() { find examples vibe lib -name '*_test.vibe' 2>/dev/null | sed "s@^$R
 
 # --- --scan / --update-allowlist: rescan everything ---------------------------
 if [ "$mode" = "scan" ] || [ "$mode" = "update" ]; then
+  discovered="$(mktemp)"; discover > "$discovered"
+  start_http_echo_server_if_needed "$discovered"
+  rm -f "$discovered"
   passing="$(mktemp)"; : > "$passing"
   npass=0; nfail=0
   while IFS= read -r f; do
@@ -136,6 +163,7 @@ fi
 
 # --- default: run the allowlist, fail on any regression -----------------------
 [ -f "$ALLOWLIST" ] || { echo "[unit-test-runner] FAIL: allowlist not found: $ALLOWLIST" >&2; exit 1; }
+start_http_echo_server_if_needed "$ALLOWLIST"
 # #769: some allowlisted tests shell out to the standalone `wasmtime` CLI
 # (wasm_emit_test / codegen_heap_e2e_test run their compiled samples through
 # it). CI installs wasmtime (ci.yml), so they are covered there; sandboxes

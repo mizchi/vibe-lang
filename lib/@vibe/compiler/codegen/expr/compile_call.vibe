@@ -3379,6 +3379,54 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       }
       nl
     }
+    else if ctx.enable_rc && (fname == "__http_response_status_raw" || fname == "__http_response_body_raw" || fname == "__http_close_raw") {
+      // #794: same raw-ABI shim as the #705 block above for the HTTP client
+      // host imports. The handle param is a guest-tagged Int (untag it);
+      // response_status returns a raw Int (tag it). response_body returns a
+      // packed string (same in both modes) and close returns nothing --
+      // leaving a raw int result untagged would repeat the #768 Fs::is_dir
+      // odd-raw-value RC-pointer misread (raw handle 1 is odd).
+      let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_i64_const(buf, 1)
+      emit_i64_shr_s(buf)
+      emit_call(buf, hi_idx)
+      if fname == "__http_response_status_raw" {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      } else if fname == "__http_close_raw" {
+        // (i64) -> () import: the surrounding expression still expects a
+        // value, so push the Unit 0 the generic returns==0 path would.
+        emit_i64_const(buf, 0)
+      } else {
+        ()
+      }
+      nl
+    }
+    else if ctx.enable_rc && fname == "__http_response_header_raw" {
+      // #794: (handle: Int -> untag, name: String -> pass) -> String (pass).
+      let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_i64_const(buf, 1)
+      emit_i64_shr_s(buf)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_call(buf, hi_idx)
+      nl
+    }
+    else if ctx.enable_rc && fname == "__http_request_raw" {
+      // #794: four packed-string params pass through; the raw Int handle
+      // result must be tagged (it is 1-based, so leaving it raw hands the RC
+      // machinery an odd non-pointer -- the exact #768 failure shape).
+      let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+      nl = ce(buf, Array::get(args, 3), local_names, nl, ctx, ld)
+      emit_call(buf, hi_idx)
+      emit_i64_const(buf, 1)
+      emit_i64_shl(buf)
+      nl
+    }
     else if fname == "__rec_field" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       let idx_expr = Array::get(args, 1)

@@ -1640,8 +1640,99 @@ async function main() {
       : null;
   let vibeStdinCursor = 0;
 
+  // #794: HTTP client host state for the `vibe.http_*` imports behind
+  // lib/@vibe/http's `__http_*_raw` builtins. `http_request` performs the whole
+  // request SYNCHRONOUSLY in a child node process running fetch() (host imports
+  // cannot suspend the guest here; same execSync pattern as `sh` above) and
+  // parks the {status, headers, body} result in this map until http_close.
+  const httpResponses = new Map();
+  let nextHttpHandle = 1;
+
   const vibeModule = new Proxy(
     {
+      http_request(methodTagged, urlTagged, headersTagged, bodyTagged) {
+        const method = decodeStringArg(instanceRef, methodTagged);
+        const url = decodeStringArg(instanceRef, urlTagged);
+        const headersText = decodeStringArg(instanceRef, headersTagged);
+        const body = decodeStringArg(instanceRef, bodyTagged);
+        // Child script: read one JSON request from stdin, fetch it, print one
+        // JSON response (or {error}) to stdout. Header wire format matches
+        // lib/@vibe/http's headers_to_wire: "Name: value" lines, "\n"-joined.
+        const script = [
+          'let input = "";',
+          'process.stdin.on("data", (d) => { input += d; });',
+          'process.stdin.on("end", async () => {',
+          "  const req = JSON.parse(input);",
+          "  const headers = {};",
+          '  for (const line of req.headers.split("\\n")) {',
+          '    const idx = line.indexOf(":");',
+          "    if (idx > 0) headers[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();",
+          "  }",
+          "  try {",
+          "    const res = await fetch(req.url, {",
+          "      method: req.method,",
+          "      headers,",
+          '      body: req.method === "GET" || req.method === "HEAD" || req.body === "" ? undefined : req.body,',
+          "    });",
+          "    const text = await res.text();",
+          "    const resHeaders = {};",
+          "    res.headers.forEach((v, k) => { resHeaders[k] = v; });",
+          "    process.stdout.write(JSON.stringify({ status: res.status, headers: resHeaders, body: text }));",
+          "  } catch (e) {",
+          "    process.stdout.write(JSON.stringify({ error: String((e && e.message) || e) }));",
+          "  }",
+          "});",
+        ].join("\n");
+        const out = cp.execFileSync(process.execPath, ["-e", script], {
+          input: JSON.stringify({ method, url, headers: headersText, body }),
+          encoding: "utf8",
+          timeout: 60000,
+        });
+        const res = JSON.parse(out);
+        if (res.error) {
+          throw new Error(`http_request failed for '${url}': ${res.error}`);
+        }
+        const handle = nextHttpHandle;
+        nextHttpHandle += 1;
+        httpResponses.set(handle, res);
+        if (process.env.VIBE_DEBUG_HTTP === "1") {
+          console.error(
+            `[http] ${method} ${url} -> handle=${handle} status=${res.status} body_len=${res.body.length}`,
+          );
+        }
+        return encodeHostInt(handle);
+      },
+      http_response_status(handleTagged) {
+        const entry = httpResponses.get(decodeHostInt(handleTagged));
+        if (!entry) {
+          throw new Error("http_response_status: unknown response handle");
+        }
+        return encodeHostInt(entry.status);
+      },
+      http_response_header(handleTagged, nameTagged) {
+        const entry = httpResponses.get(decodeHostInt(handleTagged));
+        if (!entry) {
+          throw new Error("http_response_header: unknown response handle");
+        }
+        // fetch() lowercases header names; match case-insensitively.
+        const name = decodeStringArg(instanceRef, nameTagged).toLowerCase();
+        const value =
+          entry.headers && entry.headers[name] !== undefined ? entry.headers[name] : "";
+        return encodeHostString(instanceRef, value);
+      },
+      http_response_body(handleTagged) {
+        const entry = httpResponses.get(decodeHostInt(handleTagged));
+        if (!entry) {
+          throw new Error("http_response_body: unknown response handle");
+        }
+        return encodeHostString(instanceRef, entry.body);
+      },
+      // Tolerates unknown handles: `close` is shared by client and (future)
+      // server surfaces, so a double-close must not kill the guest.
+      http_close(handleTagged) {
+        httpResponses.delete(decodeHostInt(handleTagged));
+        return 0n;
+      },
       sh(cmdTagged) {
         const cmd = decodeStringArg(instanceRef, cmdTagged);
         cp.execSync(cmd, { stdio: "inherit", shell: "/bin/bash" });
