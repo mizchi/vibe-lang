@@ -168,8 +168,10 @@ start_http_echo_server_if_needed "$ALLOWLIST"
 # (wasm_emit_test / codegen_heap_e2e_test run their compiled samples through
 # it). CI installs wasmtime (ci.yml), so they are covered there; sandboxes
 # without it (Claude/Copilot runners, minimal dev boxes) skip them instead of
-# reporting a fake regression. Detection is content-based ("wasmtime run" in
-# the test source), so no annotation can drift out of sync.
+# reporting a fake regression. Detection is content-based: a `"wasmtime run`
+# string literal in the test source (the sh()/sh_lines() invocation) -- the
+# leading quote keeps prose mentions in comments ("...wasmtime runs...") from
+# skipping tests that never shell out (fixtures_inline_test was one).
 have_wasmtime=0
 command -v wasmtime >/dev/null 2>&1 && have_wasmtime=1
 total=0; fails=0; skips=0
@@ -179,7 +181,7 @@ while IFS= read -r f; do
   if [ ! -f "$f" ]; then
     echo "[unit-test-runner] FAIL: allowlisted file missing on disk: $f" >&2; fails=$((fails+1)); continue
   fi
-  if [ "$have_wasmtime" -eq 0 ] && grep -q "wasmtime run" "$f"; then
+  if [ "$have_wasmtime" -eq 0 ] && grep -q '"wasmtime run' "$f"; then
     echo "skip: $f (needs the wasmtime CLI; not installed)"
     skips=$((skips+1)); total=$((total-1)); continue
   fi

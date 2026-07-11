@@ -105,7 +105,7 @@ while IFS= read -r line; do
   case "$line" in
     ''|\#*) continue ;;
   esac
-  if [ "$have_wasmtime" -eq 0 ] && [ -f "$line" ] && grep -q "wasmtime run" "$line"; then
+  if [ "$have_wasmtime" -eq 0 ] && [ -f "$line" ] && grep -q '"wasmtime run' "$line"; then
     echo "[coverage-suite] skip: $line (needs the wasmtime CLI; not installed)"
     continue
   fi
