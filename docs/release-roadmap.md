@@ -18,6 +18,17 @@
 
 ---
 
+## 方針転換 (2026-07-10)
+
+> **1.0 GA タグは見送り、次のリリースは `0.2.0` とする**（ADR-0066）。実装側の
+> content gate 達成（M1–M4）は 2026-06-26 時点の記録として残すが、「1.0 として
+> 外部公開してよいか」は別判断であり、現時点ではまだその段階にないと判断した。
+> `docs/spec/1.0-freeze.md` の stable surface 定義自体は 1.0 到達時にそのまま
+> 使う想定で無効化しない。**#647 は 1.0 GA タグの issue として保留**し、直近の
+> リリース作業は 0.2.0（0.1.0 からの継続的バグ修正・小機能追加）として進める。
+
+---
+
 ## 実装進捗 (2026-06-25 セッション)
 
 > **マイルストーン**: M1（配布確定）+ M2（開発体験 MVP）+ M3（開発体験フル）+
@@ -36,7 +47,8 @@
 >
 > **進捗メモ（2026-06-26、PR #643 マージ時点）— tracked issues**:
 > 実装側の roadmap は出し切り。残りは GitHub issue で追跡する。
-> - 残（リリース運用）: 1.0 GA タグ / version bump → **#647**
+> - 残（リリース運用、2026-07-10 時点で保留・0.2.0 を優先 — 上記「方針転換」参照）:
+>   1.0 GA タグ / version bump → **#647**
 > - 残（post-GA, debugger）: `vibe.linemap` 命令オフセット粒度化 + 裸リテラル文の
 >   break 対応 → **#644**
 > - 残（post-GA, LSP）: field-access 診断 end offset を compiler 由来に（EDot field
@@ -237,7 +249,7 @@
 | **M1: 配布確定** | install + module の配布方法を凍結し、外部の人が「入れて使える」 | (1)(2) | ✅ 達成（install 配布物確定 + module fetch/lock/transitive/semver/frozen/verify） |
 | **M2: 開発体験 MVP** | LSP MVP（診断/シンボル/hover）+ debugger P0（source-mapped trace） | (3)(4) | ✅ 達成（型付き hover、parser error recovery で全診断、trap→source-line） |
 | **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | ✅ 達成（DAP P1-P4 = breakpoint/名前付き変数検査/step 実行 + 3-D VS Code debug adapter、rename/references は scope 精度の `vibe binding-at` で AST 精度化）。テーマ3 debugger は P0-P4 + 3-D 完了 |
-| **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | ✅ content gate 達成（仕様 freeze = [spec/1.0-freeze.md](spec/1.0-freeze.md)、docs = install/module/editor+debug、span-arc step1–4 + step5 関数行 breakpoint、[GA readiness](archive/report/1-0-ga-readiness.md)）。残: 1.0 タグ / version bump / main land（リリース運用判断）、post-GA = 任意行 debug・LSP span JSON |
+| **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | ✅ content gate 達成（仕様 freeze = [spec/1.0-freeze.md](spec/1.0-freeze.md)、docs = install/module/editor+debug、span-arc step1–4 + step5 関数行 breakpoint、[GA readiness](archive/report/1-0-ga-readiness.md)）。**2026-07-10: 1.0 タグ自体は見送り**（ADR-0066）。直近の実リリースは **0.2.0** として進める。post-GA 課題（任意行 debug・LSP span JSON）は引き続き有効 |
 
 ### 横断的な前提（どのテーマにも効く 2 つの土台）
 

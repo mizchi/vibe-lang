@@ -1,5 +1,19 @@
 //# Functions
 
+// #768/#778 revert (2026-07-10): these MUST stay `perform Fs::<Op>`, not
+// direct-call. Unlike the compiler-internal call sites this pattern was
+// fixed at, this package's whole design purpose is to be a mockable thin
+// wrapper -- lib/@vibe/fs/index_import_test.vibe drives these through a
+// `handle ... with Fs { ... }` mock handler to test the aliases without
+// touching the real filesystem, which only works if the body actually
+// performs the effect. Switching to direct-call form bypasses the handler
+// entirely and silently talks to the real host instead, which is exactly
+// what broke that test when tried here. `stat_token` is deliberately
+// direct-call (no mock-handler test exercises it) -- but via
+// `__fs_stat_token_raw`, NOT `Fs::stat_token`: index.vibe exports an alias
+// function with that exact name and qualified exports are exempt from the
+// #716 rename, so in a unit bundling the index a free `Fs::stat_token`
+// ident bound to the alias and recursed forever (#795).
 export let exists = (path: String) -> Bool with { Fs } {
   perform Fs::Exists(path)
 }
@@ -9,7 +23,7 @@ export let read_file = (path: String) -> String with { Fs } {
 }
 
 export let stat_token = (path: String) -> Int with { Fs } {
-  Fs::stat_token(path)
+  __fs_stat_token_raw(path)
 }
 
 export let write_file = (path: String, content: String) -> Unit with { Fs } {

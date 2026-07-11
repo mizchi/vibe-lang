@@ -115,7 +115,11 @@ let resolve_path_fs: (String, String) -> String with { Fs } = (base_dir, raw_pat
   while i < Array::length(candidates) {
     if found == "" {
       let candidate = Array::get(candidates, i)
-      let candidate_exists = perform Fs::Exists(candidate)
+      // #768/#778: direct-call form, not `perform Fs::Exists` -- matches
+      // loader/header_cache.vibe's sibling resolve_path_fs (already
+      // direct-call) and avoids the perform/effect-op crash risk in a
+      // narrow-effect-surface compiled unit.
+      let candidate_exists = Fs::exists(candidate)
       if candidate_exists {
         found = candidate
       }
@@ -740,73 +744,67 @@ export let load_persistent_source_group_fingerprint_if_valid: (String) -> Option
   }
 }
 
+// #769: O(N) build via StringBuilder. The previous `out = String::concat(out,
+// row)` per row was O(N^2) over the row count -- on the heaviest standalone
+// closures (cache_probe_cli_prepare_batch_bench_test pulls the whole compiler)
+// the bump-allocated concat garbage blew past the 4GB wasm32 address space in
+// ~3s (peak RSS 3.6GB measured) and memory.grow's ignored failure surfaced as
+// a "memory access out of bounds" inside String::concat's memory.copy. Same
+// fix and issue class as stable_cache_path's #366 note (lib/@vibe/cache).
 let build_persistent_sources_cache_text: (Option[String], Array[(String, String)]) -> String with { Error, Fs } = (manifest_path, sources) -> {
-  let mut out = "version\t2\n"
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, "version\t2\n")
   match manifest_path {
     Some(path) => {
-      out = String::concat(
-        out,
-        String::concat(
-          "manifest\t",
-          String::concat(
-            path,
-            String::concat(
-              "\t",
-              String::concat(
-                __to_string(Fs::stat_token(path)),
-                String::concat("\t", String::concat(compact_string_fingerprint(Fs::read_file(path)), "\n"))
-              )
-            )
-          )
-        )
-      )
+      StringBuilder::push(sb, "manifest\t")
+      StringBuilder::push(sb, path)
+      StringBuilder::push(sb, "\t")
+      StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
+      StringBuilder::push(sb, "\t")
+      StringBuilder::push(sb, compact_string_fingerprint(Fs::read_file(path)))
+      StringBuilder::push(sb, "\n")
     },
     None => ()
   }
   let mut i = 0
   while i < Array::length(sources) {
     let (path, source) = Array::get(sources, i)
-    out = String::concat(
-      out,
-      String::concat(
-        "source\t",
-        String::concat(
-          path,
-          String::concat(
-            "\t",
-            String::concat(
-              __to_string(Fs::stat_token(path)),
-              String::concat("\t", String::concat(compact_string_fingerprint(source), "\n"))
-            )
-          )
-        )
-      )
-    )
+    // #769: skip empty-path rows -- `Fs::stat_token("")` throws in the host
+    // (ENOENT stat ''), and a pathless row could never be validated on reload
+    // anyway. Empty paths have been observed reaching this writer through the
+    // recursive-collection lane (cache_probe_loader_manifest_groups_bench /
+    // collect_source_groups_fs on some entries); the row origin is tracked
+    // separately, but the writer must never crash the whole compile over it.
+    if String::length(path) == 0 {
+      ()
+    } else {
+      StringBuilder::push(sb, "source\t")
+      StringBuilder::push(sb, path)
+      StringBuilder::push(sb, "\t")
+      StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
+      StringBuilder::push(sb, "\t")
+      StringBuilder::push(sb, compact_string_fingerprint(source))
+      StringBuilder::push(sb, "\n")
+    }
     i = i + 1
   }
-  out
+  StringBuilder::freeze(sb)
 }
 
+// #769: O(N) via StringBuilder, same rationale as
+// build_persistent_sources_cache_text above.
 let build_persistent_source_groups_cache_text: (Option[String], Array[(String, Array[(String, String)])]) -> String with { Error, Fs } = (manifest_path, groups) -> {
-  let mut out = "version\t2\n"
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, "version\t2\n")
   match manifest_path {
     Some(path) => {
-      out = String::concat(
-        out,
-        String::concat(
-          "manifest\t",
-          String::concat(
-            path,
-            String::concat(
-              "\t",
-              String::concat(
-                __to_string(Fs::stat_token(path)),
-                String::concat("\t", String::concat(compact_string_fingerprint(Fs::read_file(path)), "\n"))
-              )
-            )
-          )
-        )
-      )
+      StringBuilder::push(sb, "manifest\t")
+      StringBuilder::push(sb, path)
+      StringBuilder::push(sb, "\t")
+      StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
+      StringBuilder::push(sb, "\t")
+      StringBuilder::push(sb, compact_string_fingerprint(Fs::read_file(path)))
+      StringBuilder::push(sb, "\n")
     },
     None => ()
   }
@@ -816,33 +814,25 @@ let build_persistent_source_groups_cache_text: (Option[String], Array[(String, A
     let mut si = 0
     while si < Array::length(sources) {
       let (path, source) = Array::get(sources, si)
-      out = String::concat(
-        out,
-        String::concat(
-          "group\t",
-          String::concat(
-            group_name,
-            String::concat(
-              "\t",
-              String::concat(
-                path,
-                String::concat(
-                  "\t",
-                  String::concat(
-                    __to_string(Fs::stat_token(path)),
-                    String::concat("\t", String::concat(compact_string_fingerprint(source), "\n"))
-                  )
-                )
-              )
-            )
-          )
-        )
-      )
+      // #769: skip empty-path rows (see build_persistent_sources_cache_text).
+      if String::length(path) == 0 {
+        ()
+      } else {
+        StringBuilder::push(sb, "group\t")
+        StringBuilder::push(sb, group_name)
+        StringBuilder::push(sb, "\t")
+        StringBuilder::push(sb, path)
+        StringBuilder::push(sb, "\t")
+        StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
+        StringBuilder::push(sb, "\t")
+        StringBuilder::push(sb, compact_string_fingerprint(source))
+        StringBuilder::push(sb, "\n")
+      }
       si = si + 1
     }
     gi = gi + 1
   }
-  out
+  StringBuilder::freeze(sb)
 }
 
 let collect_import_deps_from_stmts: (Array[Stmt], String) -> Array[String] with { Fs } = (stmts, base_dir) -> {

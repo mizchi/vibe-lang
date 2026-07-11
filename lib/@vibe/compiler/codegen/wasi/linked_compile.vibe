@@ -546,7 +546,9 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   let need_env_args_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_get")
   let need_fs_read_file_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::read_file")
   let need_fs_exists_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::exists")
-  let need_fs_stat_token_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token")
+  // #795: __fs_stat_token_raw is the alias-collision-proof surface for the
+  // same import (lib/@vibe/fs/fs.vibe calls it; see checker/builtins_fs.vibe).
+  let need_fs_stat_token_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token") || stmts_use_builtin(stmts, fn_names_list, "__fs_stat_token_raw")
   let need_fs_write_file_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::write_file")
   let need_fs_write_bytes_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes")
   // #632: `Fs::read_bytes(path) -> Bytes` — the binary-exact read counterpart of
@@ -597,6 +599,41 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // CWD. `vibe.resolve_path (i64) -> i64`, value-returning like fs_read_file,
   // gated on either surface name so non-users reserve no import (fixpoint-safe).
   let need_resolve_path_builtin = stmts_use_builtin(stmts, fn_names_list, "Path::ref") || stmts_use_builtin(stmts, fn_names_list, "Path::resolve")
+  // #768: `Fs::remove(path) -> Unit` — a `vibe.fs_remove (i64) -> ()` host
+  // import (type 1, like sleep/stdout_write_char). Checker-recognized since
+  // `builtins_fs.vibe`'s `lookup_fs_remove` but never wired to codegen, so any
+  // caller hit "undefined variable (local): Fs::remove @call". Gated on use so
+  // non-users reserve no import (fixpoint-safe).
+  let need_fs_remove_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::remove")
+  // #768: `Fs::mkdir_p(path) -> Unit` (recursive mkdir) — same shape/import
+  // type as Fs::remove. Same gap: checker-recognized (builtins_fs.vibe's
+  // lookup_fs_mkdir_p) but had no codegen wiring at all.
+  let need_fs_mkdir_p_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::mkdir_p")
+  // #768: the rest of lib/@vibe/shell/commands.vibe's Fs surface — same
+  // "checker-legal (or newly made so), zero codegen wiring" gap as
+  // Fs::remove/Fs::mkdir_p, and the JS host runner already implements all of
+  // fs_mkdir/fs_chdir/fs_copy/fs_append/fs_rename/fs_is_dir/fs_is_file/
+  // fs_getcwd. Fs::mkdir (non-recursive, distinct from Fs::mkdir_p) was
+  // likewise checker-legal but had no codegen wiring at all.
+  let need_fs_mkdir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::mkdir")
+  let need_fs_chdir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::chdir")
+  let need_fs_copy_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::copy")
+  let need_fs_append_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::append")
+  let need_fs_rename_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::rename")
+  let need_fs_is_dir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::is_dir")
+  let need_fs_is_file_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::is_file")
+  let need_fs_getcwd_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::getcwd")
+  // #794: HTTP client host imports. lib/@vibe/http's client functions call
+  // the `__http_*_raw` builtins (dunder names so units bundling the package's
+  // index.vibe -- which exports alias functions literally named
+  // `Http::request` etc. -- cannot capture the ident, see #795). Each lowers
+  // to a `vibe.http_*` host import, gated on use (fixpoint-safe: the compiler
+  // itself uses none, so its bytes are unchanged).
+  let need_http_request_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_request_raw")
+  let need_http_response_status_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_response_status_raw")
+  let need_http_response_header_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_response_header_raw")
+  let need_http_response_body_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_response_body_raw")
+  let need_http_close_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_close_raw")
   let mut next_import_idx = 1
   let env_get_import_idx = if need_env_get_builtin {
     let idx = next_import_idx
@@ -735,6 +772,119 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // reserved immediately after stdout_write_char; the import emission below must
   // stay in this same order so the index matches the descriptor.
   let resolve_path_import_idx = if need_resolve_path_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #768: reserved immediately after resolve_path; the import emission below
+  // must stay in this same order so the index matches the descriptor.
+  let fs_remove_import_idx = if need_fs_remove_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #768: reserved immediately after fs_remove; the import emission below must
+  // stay in this same order so the index matches the descriptor.
+  let fs_mkdir_p_import_idx = if need_fs_mkdir_p_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #768: reserved immediately after fs_mkdir_p, in this fixed order; the
+  // import emission below must match.
+  let fs_mkdir_import_idx = if need_fs_mkdir_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_chdir_import_idx = if need_fs_chdir_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_copy_import_idx = if need_fs_copy_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_append_import_idx = if need_fs_append_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_rename_import_idx = if need_fs_rename_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_is_dir_import_idx = if need_fs_is_dir_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_is_file_import_idx = if need_fs_is_file_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_getcwd_import_idx = if need_fs_getcwd_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #794: HTTP client imports -- reserved after fs_getcwd (before dbg_break),
+  // in the same order as their emission below.
+  let http_request_import_idx = if need_http_request_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let http_response_status_import_idx = if need_http_response_status_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let http_response_header_import_idx = if need_http_response_header_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let http_response_body_import_idx = if need_http_response_body_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let http_close_import_idx = if need_http_close_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -946,6 +1096,91 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     fs_read_file_stub_idx
   }
+  // #768: Fs::remove call target — the import when reserved, else a
+  // never-called stub (void return, so mirrors sleep_idx/stdout_write_char_idx's
+  // fallback to env_args_len_idx).
+  let fs_remove_idx = if fs_remove_import_idx >= 0 {
+    fs_remove_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // #768: Fs::mkdir_p call target — same fallback shape as fs_remove_idx.
+  let fs_mkdir_p_idx = if fs_mkdir_p_import_idx >= 0 {
+    fs_mkdir_p_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // #768: void Fs ops (mkdir/chdir/copy/append/rename) — same fallback shape
+  // as fs_remove_idx/fs_mkdir_p_idx.
+  let fs_mkdir_idx = if fs_mkdir_import_idx >= 0 {
+    fs_mkdir_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let fs_chdir_idx = if fs_chdir_import_idx >= 0 {
+    fs_chdir_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let fs_copy_idx = if fs_copy_import_idx >= 0 {
+    fs_copy_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let fs_append_idx = if fs_append_import_idx >= 0 {
+    fs_append_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let fs_rename_idx = if fs_rename_import_idx >= 0 {
+    fs_rename_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // #768: value-returning Fs ops (is_dir/is_file bool, getcwd string) —
+  // fallback to the fs_read_file stub (an `(i64)->i64`-shaped never-called
+  // placeholder), same as other value-returning fallbacks above.
+  let fs_is_dir_idx = if fs_is_dir_import_idx >= 0 {
+    fs_is_dir_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let fs_is_file_idx = if fs_is_file_import_idx >= 0 {
+    fs_is_file_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let fs_getcwd_idx = if fs_getcwd_import_idx >= 0 {
+    fs_getcwd_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // #794: never-called placeholders when unused, like the Fs fallbacks above.
+  let http_request_idx = if http_request_import_idx >= 0 {
+    http_request_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let http_response_status_idx = if http_response_status_import_idx >= 0 {
+    http_response_status_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let http_response_header_idx = if http_response_header_import_idx >= 0 {
+    http_response_header_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let http_response_body_idx = if http_response_body_import_idx >= 0 {
+    http_response_body_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let http_close_idx = if http_close_import_idx >= 0 {
+    http_close_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
   let max_builtin_func_idx = str_lex_diff_idx
   let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
   let func_offset = num_imported_funcs + num_generated
@@ -992,6 +1227,12 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(builtin_needs_env_list, false)
   Array::push(builtin_indices_list, fs_stat_token_idx)
   Array::push(builtin_returns_list, 1)
+  // #795: alias-collision-proof name for the SAME import index.
+  Array::push(builtin_names_list, "__fs_stat_token_raw")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_stat_token_idx)
+  Array::push(builtin_returns_list, 1)
   Array::push(builtin_names_list, "Fs::write_file")
   Array::push(builtin_param_counts, 2)
   Array::push(builtin_needs_env_list, false)
@@ -1015,6 +1256,83 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(builtin_needs_env_list, false)
   Array::push(builtin_indices_list, fs_read_dir_idx)
   Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Fs::remove")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_remove_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Fs::mkdir_p")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_mkdir_p_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Fs::mkdir")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_mkdir_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Fs::chdir")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_chdir_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Fs::copy")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_copy_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Fs::append")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_append_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Fs::rename")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_rename_idx)
+  Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Fs::is_dir")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_is_dir_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Fs::is_file")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_is_file_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "Fs::getcwd")
+  Array::push(builtin_param_counts, 0)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_getcwd_idx)
+  Array::push(builtin_returns_list, 1)
+  // #794: HTTP client host ops -- raw dunder surface names (see the need_http_*
+  // block above for why they are not Http::request etc.).
+  Array::push(builtin_names_list, "__http_request_raw")
+  Array::push(builtin_param_counts, 4)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, http_request_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "__http_response_status_raw")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, http_response_status_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "__http_response_header_raw")
+  Array::push(builtin_param_counts, 2)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, http_response_header_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "__http_response_body_raw")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, http_response_body_idx)
+  Array::push(builtin_returns_list, 1)
+  Array::push(builtin_names_list, "__http_close_raw")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, http_close_idx)
+  Array::push(builtin_returns_list, 0)
   // Process host imports: `sh(cmd)` (runs a shell command, returns 0) resolves
   // directly. `sh_lines(cmd)`'s Array[String] surface is lowered by compile_call
   // to `__sh_lines_raw` (the RAW half returning the "\n"-joined stdout) plus a
@@ -2176,8 +2494,23 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     0
   }
+  // #794: `vibe.http_request` needs an `(i64,i64,i64,i64) -> i64` func type.
+  // No base type has 4 i64 params, and closure types are data-dependent (only
+  // present up to the max closure arity in the unit), so append one dedicated
+  // type AFTER base + closure + dbg types when the import is live. Off =>
+  // byte-identical type section (fixpoint-safe).
+  let http_request_type_idx = if need_http_request_builtin {
+    num_base_types + num_closure_types + extra_dbg_types
+  } else {
+    -1
+  }
+  let extra_http_types = if need_http_request_builtin {
+    1
+  } else {
+    0
+  }
   let type_content = bytebuf_new()
-  bytebuf_push_vec_header(type_content, num_base_types + num_closure_types + extra_dbg_types)
+  bytebuf_push_vec_header(type_content, num_base_types + num_closure_types + extra_dbg_types + extra_http_types)
   emit_func_type_raw(type_content, [
     127,
     127,
@@ -2256,6 +2589,20 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     ], Array::slice([
       0
     ], 0, 0))
+  } else {
+    ()
+  }
+  // #794: the `(i64,i64,i64,i64) -> i64` type for vibe.http_request, appended
+  // last so every other type index is unshifted.
+  if need_http_request_builtin {
+    emit_func_type_raw(type_content, [
+      126,
+      126,
+      126,
+      126
+    ], [
+      126
+    ])
   } else {
     ()
   }
@@ -2684,6 +3031,146 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     ()
   }
+  // #768: `vibe.fs_remove (i64) -> ()` (type 1, like sleep) — reserved after
+  // resolve_path (before dbg_break), matching allocation order.
+  if fs_remove_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_remove")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_mkdir_p (i64) -> ()` (type 1, like fs_remove) — reserved
+  // after fs_remove (before dbg_break), matching allocation order.
+  if fs_mkdir_p_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_mkdir_p")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_mkdir (i64) -> ()` (type 1, like fs_remove) — reserved
+  // after fs_mkdir_p, matching allocation order.
+  if fs_mkdir_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_mkdir")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_chdir (i64) -> ()` (type 1, like fs_remove) — reserved
+  // after fs_mkdir, matching allocation order.
+  if fs_chdir_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_chdir")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_copy (i64, i64) -> ()` (type 6, like fs_write_file).
+  if fs_copy_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_copy")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 6)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_append (i64, i64) -> ()` (type 6, like fs_write_file).
+  if fs_append_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_append")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 6)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_rename (i64, i64) -> ()` (type 6, like fs_write_file).
+  if fs_rename_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_rename")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 6)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_is_dir (i64) -> i64` (type 3, like fs_exists/fs_read_file).
+  if fs_is_dir_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_is_dir")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_is_file (i64) -> i64` (type 3, like fs_exists).
+  if fs_is_file_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_is_file")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_getcwd () -> i64` (type 5, like profile-now-us).
+  if fs_getcwd_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_getcwd")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+  } else {
+    ()
+  }
+  // #794: `vibe.http_request (i64,i64,i64,i64) -> i64` — the dedicated type
+  // appended after base/closure/dbg types (http_request_type_idx).
+  if http_request_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "http_request")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, http_request_type_idx)
+  } else {
+    ()
+  }
+  // #794: `vibe.http_response_status (i64) -> i64` (type 3, like fs_exists).
+  if http_response_status_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "http_response_status")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #794: `vibe.http_response_header (i64, i64) -> i64` (type 4).
+  if http_response_header_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "http_response_header")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 4)
+  } else {
+    ()
+  }
+  // #794: `vibe.http_response_body (i64) -> i64` (type 3, like fs_read_file).
+  if http_response_body_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "http_response_body")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #794: `vibe.http_close (i64) -> ()` (type 1, like fs_remove).
+  if http_close_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "http_close")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
   if dbg_break_import_idx >= 0 {
     emit_name(import_content, "vibe")
     emit_name(import_content, "dbg_break")
@@ -2968,7 +3455,17 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // Name section (debugger P0 / ADR-0035): name the user functions so wasm
   // backtraces and tooling show `main` etc. instead of `<wasm function N>`.
   // User functions occupy consecutive indices starting at `func_offset`.
-  emit_function_name_section(out, fn_names_list, func_offset)
+  // #768: emit ONLY the first num_user_funcs entries -- fn_names_list also
+  // carries the builtin/runtime names appended for call resolution (Env::get,
+  // Fs::read_file, ...), but those bodies live at LOW indices (below
+  // func_offset). Emitting the whole list consecutively shifted every
+  // post-user name: `_start` was labeled `Env::get` in crash stacks, which
+  // repeatedly sent debugging to functions the trace never touched. `_start`
+  // and `run` sit right after the user block, so name them explicitly.
+  let name_sec_names = Array::slice(fn_names_list, 0, num_user_funcs)
+  Array::push(name_sec_names, "_start")
+  Array::push(name_sec_names, "run")
+  emit_function_name_section(out, name_sec_names, func_offset)
   bytebuf_to_bytes(out)
 }
 

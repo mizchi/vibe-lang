@@ -1,0 +1,56 @@
+//# Imports
+
+import ./markdown.vibe {
+  parse, serialize, extract_code_blocks, extract_code_blocks_by_lang, extract_vibe_source
+}
+
+//# Misc
+
+// #768: markdown.vibe called `Lines::parse`/`Lines::stringify` (checker-
+// recognized magic names) with no import at all and had no test coverage,
+// so it silently never worked -- codegen had "undefined variable" for both.
+// This package had zero *_test.vibe before this fix.
+
+test "parse heading and paragraph" {
+  let doc = parse("# Hello\n\nWorld paragraph.\n")
+  assert(Array::length(doc.blocks) >= 2)
+}
+
+test "parse and serialize roundtrip preserves paragraph text" {
+  let src = "First paragraph.\n\nSecond paragraph.\n"
+  let doc = parse(src)
+  let out = serialize(doc)
+  assert(String::contains(out, "First paragraph."))
+  assert(String::contains(out, "Second paragraph."))
+}
+
+test "ordered list numbering (Int::to_string, not bare to_string)" {
+  let src = "1. one\n2. two\n3. three\n"
+  let doc = parse(src)
+  let out = serialize(doc)
+  assert(String::contains(out, "1. one"))
+  assert(String::contains(out, "2. two"))
+  assert(String::contains(out, "3. three"))
+}
+
+test "extract_code_blocks finds fenced code" {
+  let src = "before\n```vibe\nlet x = 1\n```\nafter\n"
+  let blocks = extract_code_blocks(src)
+  assert(Array::length(blocks) == 1)
+  assert(Array::get(blocks, 0).lang == "vibe")
+  assert(String::contains(Array::get(blocks, 0).code, "let x = 1"))
+}
+
+test "extract_code_blocks_by_lang filters by language" {
+  let src = "```vibe\nlet a = 1\n```\n```js\nconst b = 2;\n```\n"
+  let vibe_blocks = extract_code_blocks_by_lang(src, "vibe")
+  assert(Array::length(vibe_blocks) == 1)
+  assert(String::contains(Array::get(vibe_blocks, 0), "let a = 1"))
+}
+
+test "extract_vibe_source joins vibe fences" {
+  let src = "```vibe\nlet a = 1\n```\ntext\n```vibe\nlet b = 2\n```\n"
+  let out = extract_vibe_source(src)
+  assert(String::contains(out, "let a = 1"))
+  assert(String::contains(out, "let b = 2"))
+}

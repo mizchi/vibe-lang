@@ -216,16 +216,22 @@ let format_fixed2: (Double) -> String = (value) -> {
 }
 
 export let evaluate_kpi: (SuiteReport, Option[Double], Option[Double], Option[Double]) -> KpiResult = (report, min_point_rate, min_line_rate, min_branch_rate) -> {
+  // #769: `min + 0.0` forces the comparison onto the f64 path. A bare
+  // `report.point_rate >= min` compares boxed-float POINTERS: neither side is
+  // syntactically floatish (struct projection + Option-match-bound payload),
+  // so codegen's static float classifier falls through to raw i64 compare --
+  // the "aggregate kpi pass" assert failed with 23.33 "<" 20.00. Same
+  // residual-classifier limitation as lib/@vibe/shell sort_str's string `<`.
   let point_ok = match min_point_rate {
-    Some(min) => report.point_rate >= min,
+    Some(min) => report.point_rate >= min + 0.0,
     None => true
   }
   let line_ok = match min_line_rate {
-    Some(min) => report.line_rate >= min,
+    Some(min) => report.line_rate >= min + 0.0,
     None => true
   }
   let branch_ok = match min_branch_rate {
-    Some(min) => report.branch_rate >= min,
+    Some(min) => report.branch_rate >= min + 0.0,
     None => true
   }
   let failures_builder = ArrayBuilder::new()

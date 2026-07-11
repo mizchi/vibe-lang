@@ -74,11 +74,41 @@ if [ ! -f "$cli" ]; then
   exit 1
 fi
 
+# #794: mirror the unit-test runner's echo-server start -- entries that drive
+# real HTTP mention the local echo endpoint; start tests/http_echo_server.py
+# for the run when any does (content-based, like the wasmtime gate below).
+http_echo_pid=""
+start_http_echo_server_if_needed() {
+  local need=0 f
+  while IFS= read -r f; do
+    case "$f" in ''|\#*) continue ;; esac
+    if [ -f "$f" ] && grep -q "127.0.0.1:18280" "$f"; then need=1; break; fi
+  done < "$ALLOWLIST"
+  [ "$need" -eq 1 ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  [ -f "$ROOT/tests/http_echo_server.py" ] || return 0
+  python3 "$ROOT/tests/http_echo_server.py" 18280 >/dev/null 2>&1 &
+  http_echo_pid=$!
+  trap 'if [ -n "$http_echo_pid" ]; then kill "$http_echo_pid" 2>/dev/null || true; fi' EXIT
+  echo "[coverage-suite] started http echo server (pid $http_echo_pid, 127.0.0.1:18280)"
+  sleep 1
+}
+start_http_echo_server_if_needed
+
+# #769: mirror the unit-test runner's wasmtime gate -- tests that shell out to
+# the standalone wasmtime CLI are covered in CI (ci.yml installs it) and
+# skipped where it is absent.
+have_wasmtime=0
+command -v wasmtime >/dev/null 2>&1 && have_wasmtime=1
 entries=()
 while IFS= read -r line; do
   case "$line" in
     ''|\#*) continue ;;
   esac
+  if [ "$have_wasmtime" -eq 0 ] && [ -f "$line" ] && grep -q '"wasmtime run' "$line"; then
+    echo "[coverage-suite] skip: $line (needs the wasmtime CLI; not installed)"
+    continue
+  fi
   entries+=("$line")
 done < "$ALLOWLIST"
 if [ -n "${VIBE_SELFHOST_SUITE_EXTRA_ENTRIES:-}" ]; then

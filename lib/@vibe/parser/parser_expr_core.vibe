@@ -184,20 +184,13 @@ let parse_call_arg: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> 
   }
 }
 
+// Recurses into nested EBinOp trees so placeholders buried below the
+// top-level operator (e.g. `_ % 2 == 0`, where `_` sits inside the `%`
+// sub-expression of the outer `==`) are still detected.
 let has_placeholder_arg: (Expr) -> Bool = (arg) -> {
   match arg {
     EIdent(n, _) => n == "_",
-    EBinOp(_, l, r) => {
-      let left_has = match l {
-        EIdent(n, _) => n == "_",
-        _ => false
-      }
-      let right_has = match r {
-        EIdent(n, _) => n == "_",
-        _ => false
-      }
-      left_has || right_has
-    },
+    EBinOp(_, l, r) => has_placeholder_arg(l) || has_placeholder_arg(r),
     _ => false
   }
 }
@@ -262,44 +255,29 @@ let wrap_placeholder_arg: (Expr) -> Expr = (arg) -> {
   let params = Array::slice([
     ("", None)
   ], 0, 0)
-  let replaced = match arg {
-    EIdent(n, _) => if n == "_" {
-      let pn = "__ph0"
-      Array::push(params, (pn, None))
-      EIdent(pn, -1)
-    } else {
-      arg
+  // Walks nested EBinOp trees (mirrors has_placeholder_arg) so every `_`
+  // hole, however deeply nested under binary operators, becomes its own
+  // lambda parameter in left-to-right order.
+  let rec replace_placeholders: (Expr) -> Expr = (e) -> {
+    match e {
+      EIdent(n, _) => if n == "_" {
+        let pn = String::concat("__ph", __to_string(pc))
+        Array::push(params, (pn, None))
+        pc = pc + 1
+        EIdent(pn, -1)
+      } else {
+        e
+      }
+      ,
+      EBinOp(op, l, r) => {
+        let nl = replace_placeholders(l)
+        let nr = replace_placeholders(r)
+        EBinOp(op, nl, nr)
+      },
+      _ => e
     }
-    ,
-    EBinOp(op, l, r) => {
-      let nl = match l {
-        EIdent(n, _) => if n == "_" {
-          let pn = String::concat("__ph", __to_string(pc))
-          Array::push(params, (pn, None))
-          pc = pc + 1
-          EIdent(pn, -1)
-        } else {
-          l
-        }
-        ,
-        _ => l
-      }
-      let nr = match r {
-        EIdent(n, _) => if n == "_" {
-          let pn = String::concat("__ph", __to_string(pc))
-          Array::push(params, (pn, None))
-          pc = pc + 1
-          EIdent(pn, -1)
-        } else {
-          r
-        }
-        ,
-        _ => r
-      }
-      EBinOp(op, nl, nr)
-    },
-    _ => arg
   }
+  let replaced = replace_placeholders(arg)
   EFn(_no_tp(), _no_tb(), params, None, None, replaced)
 }
 

@@ -81,12 +81,38 @@ let lookup_fs_remove: (String) -> Option[Type] = (name) -> {
   else None
 }
 
+// #768: `Fs::mkdir_p` (recursive mkdir, unlike `Fs::mkdir`) -- same shape as
+// Fs::mkdir but a distinct name the checker never recognized at all (not just
+// a codegen gap), so callers failed as "unknown name" before reaching codegen.
+let lookup_fs_mkdir_p: (String) -> Option[Type] = (name) -> {
+  if name == "Fs::mkdir_p" {
+    Some(CtFn(fs_one_param(CtString), CtUnit, Some("Fs")))
+  }
+  else None
+}
+
+// #768: `Fs::rename` -- like Fs::mkdir_p, never recognized by the checker at
+// all (unlike its perform-form sibling `Fs::Copy`/`Fs::Append`), even though
+// the JS host runner already implements `fs_rename`.
+let lookup_fs_rename: (String) -> Option[Type] = (name) -> {
+  if name == "Fs::rename" {
+    Some(CtFn(fs_two_params(CtString, CtString), CtUnit, Some("Fs")))
+  }
+  else None
+}
+
 let lookup_fs_group_d: (String) -> Option[Type] = (name) -> {
   match lookup_fs_remove(name) {
     Some(t) => Some(t),
     None => match lookup_fs_copy(name) {
       Some(t) => Some(t),
-      None => lookup_fs_append(name)
+      None => match lookup_fs_append(name) {
+        Some(t) => Some(t),
+        None => match lookup_fs_mkdir_p(name) {
+          Some(t) => Some(t),
+          None => lookup_fs_rename(name)
+        }
+      }
     }
   }
 }
@@ -133,7 +159,13 @@ let lookup_fs_read_bytes: (String) -> Option[Type] = (name) -> {
 }
 
 let lookup_fs_stat_token: (String) -> Option[Type] = (name) -> {
-  if name == "Fs::stat_token" {
+  // #795: `__fs_stat_token_raw` is the alias-collision-proof surface used by
+  // lib/@vibe/fs/fs.vibe itself. Its index.vibe exports an alias function
+  // literally named `Fs::stat_token`, and qualified exports are exempt from
+  // the #716 rename (Type::method global dispatch), so inside any unit
+  // bundling the index a free `Fs::stat_token` ident binds to the alias --
+  // infinite recursion. Same dunder-raw-name pattern as #794's __http_*_raw.
+  if name == "Fs::stat_token" || name == "__fs_stat_token_raw" {
     Some(CtFn(fs_one_param(CtString), CtInt, Some("Fs")))
   }
   else None

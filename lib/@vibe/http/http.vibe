@@ -1,8 +1,25 @@
 //# Functions
 
+// #794: the CLIENT-side functions (request / response_status /
+// response_header / response_body / close) call the `__http_*_raw` host
+// builtins directly, so they reach the real network through the runner's
+// `vibe.http_*` imports with no handler required — same shape as
+// lib/@vibe/fs's stat_token. Two deliberate choices:
+//  - raw dunder names, NOT `Http::request(...)`: index.vibe exports alias
+//    functions named exactly `Http::request` etc., and in a unit bundling
+//    the index a free `Http::request` ident binds to the alias instead of
+//    the builtin -> infinite recursion (#795; lib/@vibe/fs's Fs::stat_token
+//    trips this today).
+//  - direct-call, NOT `perform`: an unhandled perform always throws
+//    (handler required); no test drives these through a mock handler, and
+//    the e2e test needs the unhandled path to hit the host.
+// The SERVER-side functions stay `perform` (throw without a handler):
+// listen/accept/respond have no host implementation yet and their tests
+// (http_effect_test) use their own effect declarations + handlers.
+
 // close: (Int) -> Unit with {Http}
 export let close: (Int) -> Unit with { Http } = (fd) -> {
-  perform Http::Close(fd)
+  __http_close_raw(fd)
 }
 
 // accept: (Int) -> Int with {Http}
@@ -17,7 +34,7 @@ export let listen: (Int) -> Int with { Http } = (port) -> {
 
 // request: (String, String, String, String) -> Int with {Http}
 export let request: (String, String, String, String) -> Int with { Http } = (method, url, headers, body) -> {
-  perform Http::Request(method, url, headers, body)
+  __http_request_raw(method, url, headers, body)
 }
 
 // respond: (Int, Int, String, String) -> Unit with {Http}
@@ -37,7 +54,7 @@ export let request_body: (Int) -> String with { Http } = (fd) -> {
 
 // response_body: (Int) -> String with {Http}
 export let response_body: (Int) -> String with { Http } = (fd) -> {
-  perform Http::ResponseBody(fd)
+  __http_response_body_raw(fd)
 }
 
 // request_header: (Int, String) -> String with {Http}
@@ -52,10 +69,10 @@ export let request_method: (Int) -> String with { Http } = (fd) -> {
 
 // response_header: (Int, String) -> String with {Http}
 export let response_header: (Int, String) -> String with { Http } = (fd, name) -> {
-  perform Http::ResponseHeader(fd, name)
+  __http_response_header_raw(fd, name)
 }
 
 // response_status: (Int) -> Int with {Http}
 export let response_status: (Int) -> Int with { Http } = (fd) -> {
-  perform Http::ResponseStatus(fd)
+  __http_response_status_raw(fd)
 }

@@ -60,6 +60,30 @@ else
 fi
 [ -s "$S2" ] || { echo "[unit-test-runner] FAIL: no stage2 compiler available" >&2; exit 1; }
 
+# --- local HTTP echo server (#794) --------------------------------------------
+# lib/@vibe/http/http_e2e_test.vibe drives real HTTP against
+# tests/http_echo_server.py on 127.0.0.1:18280. Detection is content-based
+# (the endpoint string in the test source), like the wasmtime gate below. If
+# python3 is unavailable the server is not started and the affected tests
+# fail with a connection error -- an honest signal, not a silent skip.
+http_echo_pid=""
+start_http_echo_server_if_needed() {
+  local list_file="$1"
+  local need=0 f
+  while IFS= read -r f; do
+    case "$f" in ''|\#*) continue ;; esac
+    if [ -f "$f" ] && grep -q "127.0.0.1:18280" "$f"; then need=1; break; fi
+  done < "$list_file"
+  [ "$need" -eq 1 ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  [ -f "$ROOT_DIR/tests/http_echo_server.py" ] || return 0
+  python3 "$ROOT_DIR/tests/http_echo_server.py" 18280 >/dev/null 2>&1 &
+  http_echo_pid=$!
+  trap 'if [ -n "$http_echo_pid" ]; then kill "$http_echo_pid" 2>/dev/null || true; fi' EXIT
+  echo "[unit-test-runner] started http echo server (pid $http_echo_pid, 127.0.0.1:18280)"
+  sleep 1
+}
+
 # --- compile + run one test file; 0 = pass, 1 = fail --------------------------
 # A heavy file can trap the compiler with no diagnostic (the bump-heap hits a
 # guard page mid-compile) — that's a nondeterministic heap-marginal OOM, not a
@@ -100,6 +124,9 @@ discover() { find examples vibe lib -name '*_test.vibe' 2>/dev/null | sed "s@^$R
 
 # --- --scan / --update-allowlist: rescan everything ---------------------------
 if [ "$mode" = "scan" ] || [ "$mode" = "update" ]; then
+  discovered="$(mktemp)"; discover > "$discovered"
+  start_http_echo_server_if_needed "$discovered"
+  rm -f "$discovered"
   passing="$(mktemp)"; : > "$passing"
   npass=0; nfail=0
   while IFS= read -r f; do
@@ -136,12 +163,27 @@ fi
 
 # --- default: run the allowlist, fail on any regression -----------------------
 [ -f "$ALLOWLIST" ] || { echo "[unit-test-runner] FAIL: allowlist not found: $ALLOWLIST" >&2; exit 1; }
-total=0; fails=0
+start_http_echo_server_if_needed "$ALLOWLIST"
+# #769: some allowlisted tests shell out to the standalone `wasmtime` CLI
+# (wasm_emit_test / codegen_heap_e2e_test run their compiled samples through
+# it). CI installs wasmtime (ci.yml), so they are covered there; sandboxes
+# without it (Claude/Copilot runners, minimal dev boxes) skip them instead of
+# reporting a fake regression. Detection is content-based: a `"wasmtime run`
+# string literal in the test source (the sh()/sh_lines() invocation) -- the
+# leading quote keeps prose mentions in comments ("...wasmtime runs...") from
+# skipping tests that never shell out (fixtures_inline_test was one).
+have_wasmtime=0
+command -v wasmtime >/dev/null 2>&1 && have_wasmtime=1
+total=0; fails=0; skips=0
 while IFS= read -r f; do
   case "$f" in ''|\#*) continue ;; esac
   total=$((total+1))
   if [ ! -f "$f" ]; then
     echo "[unit-test-runner] FAIL: allowlisted file missing on disk: $f" >&2; fails=$((fails+1)); continue
+  fi
+  if [ "$have_wasmtime" -eq 0 ] && grep -q '"wasmtime run' "$f"; then
+    echo "skip: $f (needs the wasmtime CLI; not installed)"
+    skips=$((skips+1)); total=$((total-1)); continue
   fi
   if run_one "$f"; then
     echo "ok:   $f"
@@ -150,7 +192,11 @@ while IFS= read -r f; do
   fi
 done < "$ALLOWLIST"
 
-echo "[unit-test-runner] $((total-fails))/$total allowlisted unit-test files passed"
+summary="[unit-test-runner] $((total-fails))/$total allowlisted unit-test files passed"
+if [ "$skips" -ne 0 ]; then
+  summary="$summary ($skips skipped: wasmtime not installed)"
+fi
+echo "$summary"
 if [ "$fails" -ne 0 ]; then
   echo "[unit-test-runner] FAIL: $fails allowlisted unit-test file(s) regressed" >&2
   exit 1

@@ -49,8 +49,19 @@ let efn_param_count: (Expr) -> Int = (expr) -> {
   }
 }
 
+// #778: use the direct-call builtin form, not `perform Fs::ReadFile`. The
+// perform/effect-op path for host effects (Fs) computes a handler-stack
+// region via `effect_name_to_tag`/`ctx.effect_names` that is only reliably
+// sized when the compiled unit declares other real user effects; a small
+// compiled unit whose only effect surface is the magic `Fs` name (no handler
+// installed, few/no other declared effects) can get a bogus tag/offset and
+// crash with an uncaught wasm exception before ever reaching the "no
+// handler -> call the builtin directly" fallback. `check_linked_file` (used
+// standalone by `vibe check`, without the rest of the compiler's effect
+// surface pulled in) hit exactly this. Direct calls skip that machinery
+// entirely and go straight through the safe compile_call builtin dispatch.
 let read_program: (String) -> Array[Stmt] with { Error, Fs } = (path) -> {
-  let source = perform Fs::ReadFile(path)
+  let source = Fs::read_file(path)
   parse_program(lex(source))
 }
 

@@ -291,18 +291,23 @@ let source_pairs_has_path: (Array[(String, String)], String) -> Bool = (pairs, p
   go(0)
 }
 
-let resolve_import_fs_path: (String, String) -> Option[String] = (from_path, raw_path) -> {
+// #768/#778: was missing its `with { Fs }` effect annotation entirely
+// (checker error: "use of undeclared effect"), and used `perform Fs::IsFile`
+// -- switched to the direct-call form like every other working Fs call
+// site (perform/effect-op codegen for magic host effects can crash with no
+// handler installed, see #778).
+let resolve_import_fs_path: (String, String) -> Option[String] with { Fs } = (from_path, raw_path) -> {
   let raw_index = String::concat(raw_path, "/index.vibe")
-  if perform Fs::IsFile(raw_path) {
+  if Fs::is_file(raw_path) {
     Some(raw_path)
-  } else if perform Fs::IsFile(raw_index) {
+  } else if Fs::is_file(raw_index) {
     Some(raw_index)
   } else {
     let resolved = resolve_path(dir_of(from_path), raw_path)
     let resolved_index = String::concat(resolved, "/index.vibe")
-    if perform Fs::IsFile(resolved) {
+    if Fs::is_file(resolved) {
       Some(resolved)
-    } else if perform Fs::IsFile(resolved_index) {
+    } else if Fs::is_file(resolved_index) {
       Some(resolved_index)
     } else {
       let len = String::length(raw_path)
@@ -312,9 +317,9 @@ let resolve_import_fs_path: (String, String) -> Option[String] = (from_path, raw
         raw_path
       }
       let root_index = String::concat(root_raw, "/index.vibe")
-      if perform Fs::IsFile(root_raw) {
+      if Fs::is_file(root_raw) {
         Some(root_raw)
-      } else if perform Fs::IsFile(root_index) {
+      } else if Fs::is_file(root_index) {
         Some(root_index)
       } else None
     }
@@ -473,7 +478,7 @@ let rec load_fixture_sources: (String, FixtureSpec, Array[(String, String)]) -> 
   if source_pairs_has_path(loaded, path) {
     loaded
   } else {
-    let source = perform Fs::ReadFile(path)
+    let source = Fs::read_file(path)
     let rewritten_source = rewrite_fixture_source(path, source, spec)
     let next_loaded = Array::concat(loaded, [
       (path, rewritten_source)
@@ -496,14 +501,14 @@ let rec load_fixture_sources: (String, FixtureSpec, Array[(String, String)]) -> 
 }
 
 let load_real_fixture_sources: (String) -> Array[(String, String)] with { Fs, Error } = (path) -> {
-  let source = perform Fs::ReadFile(path)
+  let source = Fs::read_file(path)
   let (_script, data) = split_fixture(source, path)
   let spec = parse_fixture_spec(data, path)
   load_fixture_sources(path, spec, empty_string_pairs())
 }
 
 let rewrite_real_fixture_source: (String) -> String with { Fs, Error } = (path) -> {
-  let source = perform Fs::ReadFile(path)
+  let source = Fs::read_file(path)
   let (_script, data) = split_fixture(source, path)
   let spec = parse_fixture_spec(data, path)
   rewrite_fixture_source(path, source, spec)
