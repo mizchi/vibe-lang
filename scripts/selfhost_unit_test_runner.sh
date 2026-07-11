@@ -136,12 +136,24 @@ fi
 
 # --- default: run the allowlist, fail on any regression -----------------------
 [ -f "$ALLOWLIST" ] || { echo "[unit-test-runner] FAIL: allowlist not found: $ALLOWLIST" >&2; exit 1; }
-total=0; fails=0
+# #769: some allowlisted tests shell out to the standalone `wasmtime` CLI
+# (wasm_emit_test / codegen_heap_e2e_test run their compiled samples through
+# it). CI installs wasmtime (ci.yml), so they are covered there; sandboxes
+# without it (Claude/Copilot runners, minimal dev boxes) skip them instead of
+# reporting a fake regression. Detection is content-based ("wasmtime run" in
+# the test source), so no annotation can drift out of sync.
+have_wasmtime=0
+command -v wasmtime >/dev/null 2>&1 && have_wasmtime=1
+total=0; fails=0; skips=0
 while IFS= read -r f; do
   case "$f" in ''|\#*) continue ;; esac
   total=$((total+1))
   if [ ! -f "$f" ]; then
     echo "[unit-test-runner] FAIL: allowlisted file missing on disk: $f" >&2; fails=$((fails+1)); continue
+  fi
+  if [ "$have_wasmtime" -eq 0 ] && grep -q "wasmtime run" "$f"; then
+    echo "skip: $f (needs the wasmtime CLI; not installed)"
+    skips=$((skips+1)); total=$((total-1)); continue
   fi
   if run_one "$f"; then
     echo "ok:   $f"
@@ -150,7 +162,11 @@ while IFS= read -r f; do
   fi
 done < "$ALLOWLIST"
 
-echo "[unit-test-runner] $((total-fails))/$total allowlisted unit-test files passed"
+summary="[unit-test-runner] $((total-fails))/$total allowlisted unit-test files passed"
+if [ "$skips" -ne 0 ]; then
+  summary="$summary ($skips skipped: wasmtime not installed)"
+fi
+echo "$summary"
 if [ "$fails" -ne 0 ]; then
   echo "[unit-test-runner] FAIL: $fails allowlisted unit-test file(s) regressed" >&2
   exit 1

@@ -74,11 +74,20 @@ if [ ! -f "$cli" ]; then
   exit 1
 fi
 
+# #769: mirror the unit-test runner's wasmtime gate -- tests that shell out to
+# the standalone wasmtime CLI are covered in CI (ci.yml installs it) and
+# skipped where it is absent.
+have_wasmtime=0
+command -v wasmtime >/dev/null 2>&1 && have_wasmtime=1
 entries=()
 while IFS= read -r line; do
   case "$line" in
     ''|\#*) continue ;;
   esac
+  if [ "$have_wasmtime" -eq 0 ] && [ -f "$line" ] && grep -q "wasmtime run" "$line"; then
+    echo "[coverage-suite] skip: $line (needs the wasmtime CLI; not installed)"
+    continue
+  fi
   entries+=("$line")
 done < "$ALLOWLIST"
 if [ -n "${VIBE_SELFHOST_SUITE_EXTRA_ENTRIES:-}" ]; then
