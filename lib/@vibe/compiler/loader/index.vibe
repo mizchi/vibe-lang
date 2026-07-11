@@ -769,13 +769,23 @@ let build_persistent_sources_cache_text: (Option[String], Array[(String, String)
   let mut i = 0
   while i < Array::length(sources) {
     let (path, source) = Array::get(sources, i)
-    StringBuilder::push(sb, "source\t")
-    StringBuilder::push(sb, path)
-    StringBuilder::push(sb, "\t")
-    StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
-    StringBuilder::push(sb, "\t")
-    StringBuilder::push(sb, compact_string_fingerprint(source))
-    StringBuilder::push(sb, "\n")
+    // #769: skip empty-path rows -- `Fs::stat_token("")` throws in the host
+    // (ENOENT stat ''), and a pathless row could never be validated on reload
+    // anyway. Empty paths have been observed reaching this writer through the
+    // recursive-collection lane (cache_probe_loader_manifest_groups_bench /
+    // collect_source_groups_fs on some entries); the row origin is tracked
+    // separately, but the writer must never crash the whole compile over it.
+    if String::length(path) == 0 {
+      ()
+    } else {
+      StringBuilder::push(sb, "source\t")
+      StringBuilder::push(sb, path)
+      StringBuilder::push(sb, "\t")
+      StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
+      StringBuilder::push(sb, "\t")
+      StringBuilder::push(sb, compact_string_fingerprint(source))
+      StringBuilder::push(sb, "\n")
+    }
     i = i + 1
   }
   StringBuilder::freeze(sb)
@@ -804,15 +814,20 @@ let build_persistent_source_groups_cache_text: (Option[String], Array[(String, A
     let mut si = 0
     while si < Array::length(sources) {
       let (path, source) = Array::get(sources, si)
-      StringBuilder::push(sb, "group\t")
-      StringBuilder::push(sb, group_name)
-      StringBuilder::push(sb, "\t")
-      StringBuilder::push(sb, path)
-      StringBuilder::push(sb, "\t")
-      StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
-      StringBuilder::push(sb, "\t")
-      StringBuilder::push(sb, compact_string_fingerprint(source))
-      StringBuilder::push(sb, "\n")
+      // #769: skip empty-path rows (see build_persistent_sources_cache_text).
+      if String::length(path) == 0 {
+        ()
+      } else {
+        StringBuilder::push(sb, "group\t")
+        StringBuilder::push(sb, group_name)
+        StringBuilder::push(sb, "\t")
+        StringBuilder::push(sb, path)
+        StringBuilder::push(sb, "\t")
+        StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
+        StringBuilder::push(sb, "\t")
+        StringBuilder::push(sb, compact_string_fingerprint(source))
+        StringBuilder::push(sb, "\n")
+      }
       si = si + 1
     }
     gi = gi + 1
