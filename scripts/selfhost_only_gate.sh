@@ -2108,7 +2108,8 @@ export let _start: () -> Int = () -> {
   let b = Bytes::new(3)
   Bytes::set(b, 0, 2)
   Bytes::push(b, 9)
-  Array::get(a, 0) + Bytes::get(b, 0) + Bytes::get(b, 3) - 9
+  let s = "abc"
+  Array::get(a, 0) + Bytes::get(b, 0) + Bytes::get(b, 3) - 9 + s[1] - String::char_code_at(s, 1)
 }
 EOF
 cat > "$bdir/oob_get.vibe" <<'EOF'
@@ -2120,6 +2121,12 @@ EOF
 cat > "$bdir/oob_bytes.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let b = Bytes::new(2); Bytes::get(b, 9) }
 EOF
+cat > "$bdir/oob_str.vibe" <<'EOF'
+export let _start: () -> Int = () -> { String::char_code_at("abc", 7) }
+EOF
+cat > "$bdir/oob_str_neg.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let s = "abc"; s[-1] }
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$bdir/inbounds.vibe" "$bdir/inbounds.wasm" _start >/dev/null 2>&1 || true
@@ -2127,7 +2134,7 @@ bounds_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$bdir/i
 if [ "$bounds_out" != "42" ]; then
   echo "[selfhost-only-gate] FAIL: in-bounds access returned '$bounds_out' (expected 42; #811 over-traps)" >&2; exit 1
 fi
-for oob in oob_get oob_neg oob_bytes; do
+for oob in oob_get oob_neg oob_bytes oob_str oob_str_neg; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$bdir/$oob.vibe" "$bdir/$oob.wasm" _start >/dev/null 2>&1 || true

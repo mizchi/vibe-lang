@@ -1036,6 +1036,21 @@ export let static_str_eq_body: () -> Bytes = () -> {
 
 export let gen_str_char_code_at_body: (Bool) -> Bytes = (enable_rc) -> {
   let b = bytebuf_new()
+  // #811: bounds check — idx (untagged, i32-wrapped) must be < length (the
+  // fat pointer's low 32 bits). ge_u catches negative indices too (they wrap
+  // to huge unsigned values). OOB reads previously returned adjacent memory.
+  emit_local_get(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_i32_wrap_i64(b)
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  bytebuf_push(b, 79)
+  emit_if_void(b)
+  bytebuf_push(b, 0)
+  emit_end(b)
   emit_local_get(b, 0)
   emit_i64_const(b, 32)
   emit_i64_shr_s(b)
@@ -2383,6 +2398,19 @@ export let gen_selfhost_sources_proper_body: (Int, Array[Int], Array[Int], Int, 
 }
 
 let static_str_char_code_at_body_bytes = Bytes::from_array([
+  // #811 bounds-check prefix: local.get 1; i32.wrap; local.get 0; i32.wrap
+  // (low word = length); i32.ge_u; if; unreachable; end
+  32,
+  1,
+  167,
+  32,
+  0,
+  167,
+  79,
+  4,
+  64,
+  0,
+  11,
   32,
   0,
   66,
