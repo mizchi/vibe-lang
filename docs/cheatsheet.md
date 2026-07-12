@@ -567,7 +567,7 @@ Profiler::heap_bytes()  // with { Profiler } - current bump-heap pointer
                         // way now_us deltas attribute time (heap never shrinks)
 ```
 
-**Conversion**: `Int::to_string`, `Int::to_double`, `Double::to_int`, `String::from_char_code`
+**Conversion**: `Int::to_string`, `Int::to_double`, `Double::to_int`, `String::from_char_code`, `Int::parse(s) -> Option[Int]` (10 進、先頭 `-` 可; 空文字列・非数字・`Int::max_value` 超えは `None`)
 
 ## Idioms
 
