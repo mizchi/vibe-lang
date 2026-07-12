@@ -2027,6 +2027,73 @@ fi
 rm -rf "$hdir"
 echo "[selfhost-only-gate] handle effect discharge ok"
 
+# 27b. effect op signatures (#813): perform arguments, handler arm names and
+#      payload types, and resume values are validated against the DECLARED
+#      effect's op signatures. Each was previously unchecked (silent garbage).
+echo "[selfhost-only-gate] 27b/27 effect op signature checking (#813)"
+odir="_build/_gate_effopsig"
+rm -rf "$odir"; mkdir -p "$odir"
+cat > "$odir/ok_op.vibe" <<'EOF'
+effect R { Take(Int) -> Int }
+export let _start: () -> Int = () -> {
+  handle {
+    perform R::Take(41)
+  } with R {
+    Take(n) => resume(n + 1)
+  }
+}
+EOF
+cat > "$odir/bad_performarg.vibe" <<'EOF'
+effect R { Take(Int) -> Int }
+export let _start: () -> Int = () -> {
+  handle { perform R::Take("str") } with R { Take(n) => resume(n + 1) }
+}
+EOF
+cat > "$odir/bad_performarity.vibe" <<'EOF'
+effect R { Take(Int) -> Int }
+export let _start: () -> Int = () -> {
+  handle { perform R::Take(1, 2) } with R { Take(n) => resume(n + 1) }
+}
+EOF
+cat > "$odir/bad_armname.vibe" <<'EOF'
+effect Ask { Get() -> Int }
+export let _start: () -> Int = () -> {
+  handle { perform Ask::Get() } with Ask { Wrong(x) => resume(1) }
+}
+EOF
+cat > "$odir/bad_armpayload.vibe" <<'EOF'
+effect G { Give(Int) -> Int }
+export let _start: () -> Int = () -> {
+  handle { perform G::Give(7) } with G { Give(s) => resume(String::length(s)) }
+}
+EOF
+cat > "$odir/bad_resumeval.vibe" <<'EOF'
+effect Q { Get() -> Int }
+export let _start: () -> Int = () -> {
+  handle { perform Q::Get() } with Q { Get() => resume("oops") }
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$odir/ok_op.vibe" "$odir/ok_op.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$odir/ok_op.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: well-typed effect op program did not compile (#813 over-rejects)" >&2; exit 1
+fi
+op_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$odir/ok_op.wasm" 2>/dev/null | tail -n 1)"
+if [ "$op_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: effect op control returned '$op_out' (expected 42)" >&2; exit 1
+fi
+for bad in bad_performarg bad_performarity bad_armname bad_armpayload bad_resumeval; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$odir/$bad.vibe" "$odir/$bad.wasm" _start >/dev/null 2>&1 || true
+  if [ -s "$odir/$bad.wasm" ]; then
+    echo "[selfhost-only-gate] FAIL: ill-typed $bad compiled (#813 regressed)" >&2; exit 1
+  fi
+done
+rm -rf "$odir"
+echo "[selfhost-only-gate] effect op signature checking ok"
+
 # 28. argument type checking: the checker used to SWALLOW argument unification
 #     failures (`unify_call_args` did `None => out`), so an ill-typed call like
 #     `f("x")` for `f: (Int) -> Int` was silently accepted. It now reports a
@@ -2710,7 +2777,7 @@ export let _start: () -> Int = () -> {
     let b = perform Calc::Mul(3)
     a + b
   } with Calc {
-    Add(n) => resume(match n { x if x > 3 => x * 10, _ => x });
+    Add(n) => resume(match n { x if x > 3 => x * 10, _ => n });
     Mul(n) => resume(n + 100)
   }
 }
