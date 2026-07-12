@@ -175,22 +175,67 @@ start_http_echo_server_if_needed "$ALLOWLIST"
 have_wasmtime=0
 command -v wasmtime >/dev/null 2>&1 && have_wasmtime=1
 total=0; fails=0; skips=0
-while IFS= read -r f; do
-  case "$f" in ''|\#*) continue ;; esac
-  total=$((total+1))
-  if [ ! -f "$f" ]; then
-    echo "[unit-test-runner] FAIL: allowlisted file missing on disk: $f" >&2; fails=$((fails+1)); continue
-  fi
-  if [ "$have_wasmtime" -eq 0 ] && grep -q '"wasmtime run' "$f"; then
-    echo "skip: $f (needs the wasmtime CLI; not installed)"
-    skips=$((skips+1)); total=$((total-1)); continue
-  fi
-  if run_one "$f"; then
-    echo "ok:   $f"
-  else
-    echo "FAIL: $f -- ${LAST_DIAG:-}" >&2; fails=$((fails+1))
-  fi
-done < "$ALLOWLIST"
+# Parallelism: the loop is embarrassingly parallel (each file compiles to its
+# own mktemp wasm; the persistent caches under _build/vibe_* are safe to share
+# because the host runner writes them atomically via temp+rename). Default
+# min(4, nproc) -- the heavy compiler tests peak at a few GB of wasm memory
+# each, so unbounded -P would OOM small runners. VIBE_UNIT_TEST_JOBS=1 keeps
+# the exact sequential behavior (allowlist-ordered output).
+hw_jobs="$(nproc 2>/dev/null || echo 1)"
+[ "$hw_jobs" -gt 4 ] && hw_jobs=4
+JOBS="${VIBE_UNIT_TEST_JOBS:-$hw_jobs}"
+if [ "$JOBS" -le 1 ]; then
+  while IFS= read -r f; do
+    case "$f" in ''|\#*) continue ;; esac
+    total=$((total+1))
+    if [ ! -f "$f" ]; then
+      echo "[unit-test-runner] FAIL: allowlisted file missing on disk: $f" >&2; fails=$((fails+1)); continue
+    fi
+    if [ "$have_wasmtime" -eq 0 ] && grep -q '"wasmtime run' "$f"; then
+      echo "skip: $f (needs the wasmtime CLI; not installed)"
+      skips=$((skips+1)); total=$((total-1)); continue
+    fi
+    if run_one "$f"; then
+      echo "ok:   $f"
+    else
+      echo "FAIL: $f -- ${LAST_DIAG:-}" >&2; fails=$((fails+1))
+    fi
+  done < "$ALLOWLIST"
+else
+  echo "[unit-test-runner] running with $JOBS parallel jobs (VIBE_UNIT_TEST_JOBS)"
+  results_dir="$(mktemp -d -t vibe-unit-results-XXXXXX)"
+  export S2 RUNNER ROOT_DIR results_dir have_wasmtime
+  unit_worker() {
+    local f="$1"
+    local key; key="$(printf '%s' "$f" | tr '/' '_')"
+    if [ ! -f "$f" ]; then
+      echo "[unit-test-runner] FAIL: allowlisted file missing on disk: $f" >&2
+      printf '%s\n' "$f (missing on disk)" > "$results_dir/$key.fail"
+      return 0
+    fi
+    if [ "$have_wasmtime" -eq 0 ] && grep -q '"wasmtime run' "$f"; then
+      echo "skip: $f (needs the wasmtime CLI; not installed)"
+      : > "$results_dir/$key.skip"
+      return 0
+    fi
+    if run_one "$f"; then
+      echo "ok:   $f"
+      : > "$results_dir/$key.ok"
+    else
+      echo "FAIL: $f -- ${LAST_DIAG:-}" >&2
+      printf '%s -- %s\n' "$f" "${LAST_DIAG:-}" > "$results_dir/$key.fail"
+    fi
+    return 0
+  }
+  export -f unit_worker run_one
+  grep -vE '^[[:space:]]*#' "$ALLOWLIST" | sed '/^[[:space:]]*$/d' \
+    | xargs -P "$JOBS" -n 1 -I{} bash -c 'unit_worker "$@"' _ {}
+  n_ok=$(ls "$results_dir" | grep -c '\.ok$' || true)
+  skips=$(ls "$results_dir" | grep -c '\.skip$' || true)
+  fails=$(ls "$results_dir" | grep -c '\.fail$' || true)
+  total=$((n_ok + fails))
+  rm -rf "$results_dir"
+fi
 
 summary="[unit-test-runner] $((total-fails))/$total allowlisted unit-test files passed"
 if [ "$skips" -ne 0 ]; then

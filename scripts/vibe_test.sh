@@ -83,26 +83,39 @@ if [ "${#files[@]}" -eq 0 ]; then
   exit 2
 fi
 
-pass=0
-fail=0
-cov_fn_total=0
-cov_fn_hit=0
-cov_br_total=0
-cov_br_hit=0
-cov_files=0
-for src in "${files[@]}"; do
+# Parallel execution (CI bottleneck): each file compiles to its own
+# _build/vibe_test/<flat>.wasm and coverage JSON, and the shared persistent
+# caches are concurrency-safe (the host runner writes them via temp+rename),
+# so files fan out over VIBE_TEST_JOBS workers (default min(4, nproc); the
+# heavy compiler tests peak at a few GB each, so unbounded -P would OOM small
+# runners). -P 1 degrades to the exact sequential order. Per-file results are
+# recorded under a temp dir and aggregated after the fan-out.
+vt_hw_jobs="$(nproc 2>/dev/null || echo 1)"
+[ "$vt_hw_jobs" -gt 4 ] && vt_hw_jobs=4
+VT_JOBS="${VIBE_TEST_JOBS:-$vt_hw_jobs}"
+vt_results="$(mktemp -d -t vibe-test-results-XXXXXX)"
+export ROOT_DIR coverage backend cli_wasm covdir vt_results
+
+vt_worker() {
+  local src="$1"
+  local src_rel
   case "$src" in
     "$ROOT_DIR"/*) src_rel="${src#"$ROOT_DIR"/}" ;;
-    /*) echo "vibe_test.sh: path must be under the repo root: $src" >&2; exit 2 ;;
+    /*)
+      echo "vibe_test.sh: path must be under the repo root: $src" >&2
+      printf 'fail 0 0 0 0 0\n' > "$vt_results/$(printf '%s' "$src" | tr '/' '_').res"
+      return 0
+      ;;
     *) src_rel="$src" ;;
   esac
-  flat="$(echo "$src_rel" | tr '/' '_' | sed 's/\.vibe$//')"
-  out_rel="_build/vibe_test/$flat.wasm"
+  local flat; flat="$(echo "$src_rel" | tr '/' '_' | sed 's/\.vibe$//')"
+  local out_rel="_build/vibe_test/$flat.wasm"
 
   # Compile with a sentinel entry name that does not exist in the file, so the
   # compiler takes the no-entry path and emits a test-running `_start`.
   # VIBE_COVERAGE=$coverage selects the instrumented codegen when --coverage.
   # VIBE_TEST_BACKEND=gc: single-file wasm-gc compile (no VIBE_FS_COMPILE).
+  local compile_env
   if [ "$backend" = "gc" ]; then
     compile_env=(VIBE_BACKEND=gc)
   else
@@ -113,15 +126,15 @@ for src in "${files[@]}"; do
       --invoke cli_main "$cli_wasm" "$src_rel" "$out_rel" "__vibe_test_no_entry__" \
       >/dev/null 2>&1 || [ ! -s "$ROOT_DIR/$out_rel" ]; then
     echo "FAIL (compile) $src_rel"
-    fail=$((fail + 1))
-    continue
+    printf 'fail 0 0 0 0 0\n' > "$vt_results/$flat.res"
+    return 0
   fi
 
-  cov_out=""
+  local cov_out=""
   if [ "$coverage" = "1" ]; then
     cov_out="$covdir/$flat.json"
   fi
-  run_ok=0
+  local run_ok=0
   if [ "$backend" = "gc" ]; then
     if timeout 60 wasmtime run -W gc=y,function-references=y,exceptions=y \
         --invoke _start "$ROOT_DIR/$out_rel" >/dev/null 2>&1; then
@@ -136,7 +149,7 @@ for src in "${files[@]}"; do
   fi
   if [ "$run_ok" = "1" ]; then
     if [ "$coverage" = "1" ] && [ -s "$cov_out" ]; then
-      # Accumulate + print this file's function/branch coverage.
+      local f_hit f_total b_hit b_total
       read -r f_hit f_total b_hit b_total < <(python3 - "$cov_out" <<'PY'
 import json, sys
 r = json.load(open(sys.argv[1]))
@@ -144,9 +157,6 @@ b = r.get("branch") or {}
 print(r.get("hit", 0), r.get("total", 0), b.get("hit", 0), b.get("total", 0))
 PY
 )
-      cov_fn_hit=$((cov_fn_hit + f_hit)); cov_fn_total=$((cov_fn_total + f_total))
-      cov_br_hit=$((cov_br_hit + b_hit)); cov_br_total=$((cov_br_total + b_total))
-      cov_files=$((cov_files + 1))
       printf 'ok   %s  [cov fn %d/%d, branch %d/%d]\n' "$src_rel" "$f_hit" "$f_total" "$b_hit" "$b_total"
       if [ "${VIBE_COV_SHOW_GAPS:-0}" = "1" ]; then
         # Surface WHAT is uncovered (the CLI summary alone is not actionable):
@@ -161,15 +171,43 @@ for g in (r.get("branch") or {}).get("top_gaps", []):
     print(f"       branch gap: {g['fn']} {g['taken']}/{g['total']} taken")
 PY
       fi
+      printf 'ok %s %s %s %s 1\n' "$f_hit" "$f_total" "$b_hit" "$b_total" > "$vt_results/$flat.res"
     else
       echo "ok   $src_rel"
+      printf 'ok 0 0 0 0 0\n' > "$vt_results/$flat.res"
     fi
-    pass=$((pass + 1))
   else
     echo "FAIL $src_rel"
+    printf 'fail 0 0 0 0 0\n' > "$vt_results/$flat.res"
+  fi
+  return 0
+}
+export -f vt_worker
+
+printf '%s\n' "${files[@]}" | xargs -P "$VT_JOBS" -n 1 -I{} bash -c 'vt_worker "$@"' _ {}
+
+pass=0
+fail=0
+cov_fn_total=0
+cov_fn_hit=0
+cov_br_total=0
+cov_br_hit=0
+cov_files=0
+for res in "$vt_results"/*.res; do
+  [ -f "$res" ] || continue
+  read -r r_status r_fh r_ft r_bh r_bt r_cov < "$res"
+  if [ "$r_status" = "ok" ]; then
+    pass=$((pass + 1))
+    if [ "$r_cov" = "1" ]; then
+      cov_fn_hit=$((cov_fn_hit + r_fh)); cov_fn_total=$((cov_fn_total + r_ft))
+      cov_br_hit=$((cov_br_hit + r_bh)); cov_br_total=$((cov_br_total + r_bt))
+      cov_files=$((cov_files + 1))
+    fi
+  else
     fail=$((fail + 1))
   fi
 done
+rm -rf "$vt_results"
 
 echo "[vibe-test] $pass passed, $fail failed (${#files[@]} files)"
 if [ "$coverage" = "1" ] && [ "$cov_files" -gt 0 ]; then
