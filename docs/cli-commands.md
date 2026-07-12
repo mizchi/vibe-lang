@@ -95,7 +95,7 @@ export let handler = (method: String, url: String, headers: String, body: String
 ```
 
 returning `"STATUS\n<Header: value lines>\n\n<body>"`. Internally the handler
-may use algebraic effects (`perform` / `handle`, e.g. `vibe/wasi/p3/`), as
+may use algebraic effects (`perform` / `handle`, e.g. `lib/@vibe/wasi/p3/`), as
 long as they are discharged inside the file.
 
 - Artifact generation lives in the compiler (`VIBE_SERVE_COMPONENT=1`); adapter
