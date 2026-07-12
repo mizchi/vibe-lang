@@ -235,7 +235,7 @@ else
   # in its path runs in a sequential tail after the fan-out instead.
   all_entries="$(grep -vE '^[[:space:]]*#' "$ALLOWLIST" | sed '/^[[:space:]]*$/d')"
   printf '%s\n' "$all_entries" | grep -vi cache \
-    | xargs -P "$JOBS" -n 1 -I{} bash -c 'unit_worker "$@"' _ {}
+    | xargs -P "$JOBS" -I{} bash -c 'unit_worker "$@"' _ {}
   while IFS= read -r f; do
     [ -n "$f" ] && unit_worker "$f"
   done < <(printf '%s\n' "$all_entries" | grep -i cache)

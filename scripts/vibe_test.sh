@@ -184,7 +184,16 @@ PY
 }
 export -f vt_worker
 
-printf '%s\n' "${files[@]}" | xargs -P "$VT_JOBS" -n 1 -I{} bash -c 'vt_worker "$@"' _ {}
+# Tests that INSPECT the shared persistent-cache state (_build/vibe_*) cannot
+# run while other workers' compiles are writing it -- the cache-file
+# counts/contents they assert on shift underneath them (same split as
+# selfhost_unit_test_runner.sh). Anything with "cache" in its path runs in a
+# sequential tail after the fan-out instead.
+printf '%s\n' "${files[@]}" | grep -vi cache \
+  | xargs -P "$VT_JOBS" -I{} bash -c 'vt_worker "$@"' _ {} || true
+while IFS= read -r f; do
+  [ -n "$f" ] && vt_worker "$f"
+done < <(printf '%s\n' "${files[@]}" | grep -i cache)
 
 pass=0
 fail=0
