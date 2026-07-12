@@ -4,6 +4,10 @@ import .. / .. / core {
   Expr, Stmt, bytebuf_new, bytebuf_to_bytes
 }
 
+import .. / .. / core / sorted_index.vibe {
+  sorted_names_of
+}
+
 import .. / common_base {
   CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, cov_disabled
 }
@@ -137,6 +141,9 @@ export let compile_module_expr: (Array[Stmt]) -> Bytes with { Error } = (stmts) 
     let empty_rc_dup_names = fresh_string_array()
     let bodies = fresh_bytes_matrix()
     let local_counts = fresh_int_array()
+    // Sorted capture index (see CompileCtx.capture_name_index): built once,
+    // shared by every per-function ctx below.
+    let cni_sorted = sorted_names_of(fn_names_list)
     let mut bi = 0
     while bi < num_funcs {
       let body = Array::get(fn_bodies_list, bi)
@@ -150,12 +157,6 @@ export let compile_module_expr: (Array[Stmt]) -> Bytes with { Error } = (stmts) 
       }
       let param_count = Array::length(param_names)
       let empty_ref_cells = fresh_string_array()
-      let cni_b = MapBuilder::new()
-      let mut cni_i = 0
-      while cni_i < Array::length(fn_names_list) {
-        MapBuilder::set(cni_b, Array::get(fn_names_list, cni_i), true)
-        cni_i = cni_i + 1
-      }
       let compile_ctx = CompileCtx::{
         func_table: FuncTable::{
           names: fn_names_list,
@@ -181,7 +182,7 @@ export let compile_module_expr: (Array[Stmt]) -> Bytes with { Error } = (stmts) 
         rc_alloc_func_idx: -1,
         heap_grow_check_func_idx: -1,
         rc_dup_names: empty_rc_dup_names,
-        capture_name_index: MapBuilder::freeze(cni_b),
+        capture_name_index: cni_sorted,
         float_local_slots: fresh_int_array(),
         int_local_slots: fresh_int_array(),
         agg_local_slots: fresh_int_array(),

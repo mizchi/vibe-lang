@@ -7,6 +7,10 @@ import ./core {
   TypeExpr
 }
 
+import ./core/sorted_index.vibe {
+  sort_perm_by_names, str_lt
+}
+
 //# Functions
 
 // Dictionary-passing desugaring for method-bearing traits (#641 PR-3
@@ -1781,39 +1785,74 @@ let collect_fn_returns: (Array[Stmt]) -> Array[(String, String)] = (stmts) -> {
     }
     i = i + 1
   }
-  out
+  // Perf: this table holds every top-level fn + enum variant of the merged
+  // compile (thousands of entries) and fn_exists/fn_return_type consulted it
+  // LINEARLY per expression during the rewrite. Sort once (STABLE, so the
+  // leftmost duplicate stays the linear scan's "first match") and let the
+  // helpers below binary-search. Nothing outside those helpers reads the
+  // table positionally, so the order change is invisible.
+  let names = Array::slice([
+    ""
+  ], 0, 0)
+  let mut ni = 0
+  while ni < Array::length(out) {
+    let (n, _) = Array::get(out, ni)
+    Array::push(names, n)
+    ni = ni + 1
+  }
+  let perm = sort_perm_by_names(names)
+  let sorted = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let mut pi = 0
+  while pi < Array::length(perm) {
+    Array::push(sorted, Array::get(out, Array::get(perm, pi)))
+    pi = pi + 1
+  }
+  sorted
+}
+
+// Leftmost binary search over the SORTED fn_returns table (see
+// collect_fn_returns). Leftmost-of-run preserves first-match-wins for
+// duplicate names.
+let fn_returns_find: (Array[(String, String)], String) -> Int = (fn_returns, fname) -> {
+  let mut lo = 0
+  let mut hi = Array::length(fn_returns)
+  while lo < hi {
+    let mid = (lo + hi) / 2
+    let (n, _) = Array::get(fn_returns, mid)
+    if str_lt(n, fname) {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  let mut res = -1
+  if lo < Array::length(fn_returns) {
+    let (n2, _) = Array::get(fn_returns, lo)
+    if n2 == fname {
+      res = lo
+    }
+  }
+  res
 }
 
 let fn_exists: (Array[(String, String)], String) -> Bool = (fn_returns, fname) -> {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(fn_returns) {
-    let (n, _) = Array::get(fn_returns, i)
-    if n == fname {
-      found = true
-      i = Array::length(fn_returns)
-    } else {
-      i = i + 1
-    }
-  }
-  found
+  fn_returns_find(fn_returns, fname) >= 0
 }
 
 let fn_return_type: (Array[(String, String)], String) -> Option[String] = (fn_returns, fname) -> {
-  let mut i = 0
-  let mut result = None
-  while i < Array::length(fn_returns) {
-    let (n, rt) = Array::get(fn_returns, i)
-    if n == fname {
-      result = if String::length(rt) == 0 {
-        None
-      } else Some(rt)
-      i = Array::length(fn_returns)
+  let idx = fn_returns_find(fn_returns, fname)
+  if idx < 0 {
+    None
+  } else {
+    let (_, rt) = Array::get(fn_returns, idx)
+    if String::length(rt) == 0 {
+      None
     } else {
-      i = i + 1
+      Some(rt)
     }
   }
-  result
 }
 
 // Desugar `for x in it { body }` over a struct iterator type `C` into a loop

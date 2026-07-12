@@ -4,6 +4,10 @@ import .. / .. / core {
   Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_buf, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
 }
 
+import .. / .. / core / sorted_index.vibe {
+  sorted_names_of
+}
+
 import .. / .. / desugar_trait_dict.vibe {
   desugar_trait_dicts
 }
@@ -1507,18 +1511,20 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // shared by every per-function CompileCtx below. collect_free_vars_indexed
   // consults it per ident instead of linearly scanning ~thousands of names
   // (which dominated compiler-closure compile profiles).
-  let capture_index_b = MapBuilder::new()
+  // Round 2: a SORTED array + binary search -- the previous MapBuilder index
+  // was O(N^2) to build (set scans for duplicates) and O(N) per has_key.
+  let capture_index_names = lc_fresh_string_array()
   let mut cib_i = 0
   while cib_i < Array::length(all_fn_names_list) {
-    MapBuilder::set(capture_index_b, Array::get(all_fn_names_list, cib_i), true)
+    Array::push(capture_index_names, Array::get(all_fn_names_list, cib_i))
     cib_i = cib_i + 1
   }
   let mut cib_j = 0
   while cib_j < Array::length(ctor_names_list) {
-    MapBuilder::set(capture_index_b, Array::get(ctor_names_list, cib_j), true)
+    Array::push(capture_index_names, Array::get(ctor_names_list, cib_j))
     cib_j = cib_j + 1
   }
-  let capture_name_index_shared = MapBuilder::freeze(capture_index_b)
+  let capture_name_index_shared = sorted_names_of(capture_index_names)
   let mut bi = 0
   while bi < num_user_funcs {
     let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
