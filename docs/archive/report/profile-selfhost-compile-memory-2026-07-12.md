@@ -132,9 +132,22 @@ search) を導入し、以下を O(log N) 化:
   更新。既存 cache 行は stat mismatch → content fingerprint fallback で
   graceful に生き残る。
 
-残候補: `lookup_ctor` 83ms (CtorTable への sorted index、構築7箇所)、
-`__rt_bytes_push` 107ms (wasm emit の per-byte push)、V8 GC 680ms
-(memory.grow コピー — ヒープ削減に連動)。
+## 第3弾: lookup_ctor の sorted-index 化 (同ブランチ)
+
+`CtorTable` に `names_sorted` / `names_sorted_pos` (stable sort permutation)
+を追加し、per-ctor-reference の線形走査 `lookup_ctor(ct.names, name, 0)` を
+`ctor_table_index_of` (leftmost bsearch → 元 index payload、sorted view 欠落
+時は linear fallback) に置換。linear/gc 両 lane の callsite 10 箇所 + 構築 7
+箇所 (index は compile 単位で 1 回だけ構築)。
+
+結果 (byte-parity 確認済み): wall 2976→2584ms、CPU 2.75→2.45s、
+lookup_ctor 83ms が top20 圏外へ。**baseline 累計: wall −33% / CPU −33% /
+RSS −23% / heap −29%**。
+
+残候補: `__rt_bytes_push` 107ms 前後 (wasm emit の per-byte push)、
+`__rt_arr_slice` 134ms (perceus snapshot — dirty-tracking 化が必要)、
+V8 GC ~630ms (memory.grow コピー — ヒープ削減に連動)、
+`lookup_alias` / `env_lookup` の線形走査。
 
 ## 今回入れた profiler 改善
 
