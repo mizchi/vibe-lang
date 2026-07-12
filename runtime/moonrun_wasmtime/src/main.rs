@@ -2184,7 +2184,13 @@ fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {
     )?;
     // `Profiler::heap_bytes` — the guest's current bump-heap pointer (a
     // monotonic allocation counter; see caller_heap_ptr). The allocation
-    // analog of profile-now-us for per-phase memory attribution.
+    // analog of profile-now-us for per-phase memory attribution. The legacy
+    // tagged-lane `Profiler/HeapBytes` import tags like its NowUs sibling;
+    // the selfhost raw-ABI `vibe/profile-heap-bytes` import returns the RAW
+    // integer — raw host imports speak untagged values (the JS runner's raw
+    // encodeHostInt path, and compile_call's RC shim tags raw results
+    // itself), so tagging here would inflate readings 4x under wasmtime and
+    // break node/wasmtime profiling parity (PR #803 review).
     linker.func_wrap(
         "Profiler",
         "HeapBytes",
@@ -2196,7 +2202,7 @@ fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {
         "vibe",
         "profile-heap-bytes",
         |mut caller: Caller<'_, HostState>| -> i64 {
-            encode_tagged_int(caller_heap_ptr(&mut caller).unwrap_or(0) as i64)
+            caller_heap_ptr(&mut caller).unwrap_or(0) as i64
         },
     )?;
 
