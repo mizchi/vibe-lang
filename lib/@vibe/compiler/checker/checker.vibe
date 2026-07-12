@@ -392,6 +392,19 @@ let head_kind: (Type) -> Int = (t) -> {
   }
 }
 
+// #827: `Stream[T]` is `CtNamed` (head_kind 0 = tolerated), so the Array
+// builtins' receiver head check let `Array::length(stream)` / `Array::get(s,
+// 0)` through — observably leaking the eager Array-backed representation
+// (ADR-0012) into user programs. Recognise a Stream receiver so the Array
+// head-check sites can reject it explicitly; head_kind itself is unchanged
+// (other CtNamed heads stay tolerated, the #826 discipline).
+let is_stream_named_type: (Type) -> Bool = (t) -> {
+  match t {
+    CtNamed(n, _) => n == "Stream",
+    _ => false
+  }
+}
+
 // True when every declared field type of a struct is ground (the struct is not
 // generic). `S::{ ... }` for such a struct can safely be typed `CtStruct(S)`.
 let struct_fields_ground: (Array[(String, Type)]) -> Bool = (dfields) -> {
@@ -1731,6 +1744,9 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         let as_recv_head = head_kind(subst_apply(s3, obj_ty))
         if as_recv_head != 0 && as_recv_head != 9 {
           Array::push(errors, String::concat("argument type mismatch for Array::set: receiver type ", String::concat(type_to_string(subst_apply(s3, obj_ty)), off_marker_len(callee_off, String::length(name)))))
+        } else if is_stream_named_type(subst_apply(s3, obj_ty)) {
+          // #827: Stream is CtNamed (head 0 = tolerated) but is NOT an Array.
+          Array::push(errors, String::concat("argument type mismatch for Array::set: receiver type ", String::concat(type_to_string(subst_apply(s3, obj_ty)), String::concat(" is a Stream, not an Array (use `for await` / Stream::*)", off_marker_len(callee_off, String::length(name))))))
         } else {
           ()
         }
@@ -1769,6 +1785,9 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         let ag_recv_head = head_kind(subst_apply(s2, obj_ty))
         if ag_recv_head != 0 && ag_recv_head != 9 {
           Array::push(errors, String::concat("argument type mismatch for Array::get: receiver type ", String::concat(type_to_string(subst_apply(s2, obj_ty)), off_marker_len(callee_off, String::length(name)))))
+        } else if is_stream_named_type(subst_apply(s2, obj_ty)) {
+          // #827: Stream is CtNamed (head 0 = tolerated) but is NOT an Array.
+          Array::push(errors, String::concat("argument type mismatch for Array::get: receiver type ", String::concat(type_to_string(subst_apply(s2, obj_ty)), String::concat(" is a Stream, not an Array (use `for await` / Stream::*)", off_marker_len(callee_off, String::length(name))))))
         } else {
           ()
         }
@@ -1896,6 +1915,11 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 let got_head = head_kind(subst_apply(s2, at))
                 if got_head != 0 && got_head != want_head {
                   Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(subst_apply(s2, at)), off_marker_len(callee_off, String::length(name)))))
+                } else if want_head == 9 && is_stream_named_type(subst_apply(s2, at)) {
+                  // #827: Stream is CtNamed (head 0 = tolerated), so the eager
+                  // Array-backed representation leaked through every Array
+                  // builtin (`Array::length(stream)` compiled and ran).
+                  Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(subst_apply(s2, at)), String::concat(" is a Stream, not an Array (use `for await` / Stream::*)", off_marker_len(callee_off, String::length(name))))))
                 } else {
                   ()
                 }

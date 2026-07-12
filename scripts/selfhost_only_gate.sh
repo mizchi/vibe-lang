@@ -2163,6 +2163,54 @@ done
 rm -rf "$bdir"
 echo "[selfhost-only-gate] index bounds checks ok"
 
+# 27d. `for await` classification (#827): a stream iterated through an
+#      UNannotated lambda param gives the type-directed desugar no type head; it
+#      used to fall back SILENTLY to the pull-closure lowering, which compiled
+#      fine and then trapped at runtime (call_indirect on the stream's array
+#      pointer). It must now be REJECTED at compile time; the annotated-param
+#      equivalent (#822) must still compile and run to 42.
+echo "[selfhost-only-gate] 27d/27 for-await classification (#827)"
+fadir="_build/_gate_forawait"
+rm -rf "$fadir"; mkdir -p "$fadir"
+cat > "$fadir/ok_annot.vibe" <<'EOF'
+let consume: (Stream[Int]) -> Int = (s) -> {
+  let mut sum = 0
+  for await x in s {
+    sum = sum + x
+  }
+  sum
+}
+export let _start: () -> Int = () -> { consume(Stream::once(42)) }
+EOF
+cat > "$fadir/bad_unannot.vibe" <<'EOF'
+let consume = (s) -> Int {
+  let mut sum = 0
+  for await x in s {
+    sum = sum + x
+  }
+  sum
+}
+export let _start: () -> Int = () -> { consume(Stream::once(42)) }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fadir/ok_annot.vibe" "$fadir/ok_annot.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$fadir/ok_annot.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: annotated-param for-await did not compile (#827 over-rejects)" >&2; exit 1
+fi
+fa_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$fadir/ok_annot.wasm" 2>/dev/null | tail -n 1)"
+if [ "$fa_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: annotated-param for-await returned '$fa_out' (expected 42; #822 regressed)" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fadir/bad_unannot.vibe" "$fadir/bad_unannot.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$fadir/bad_unannot.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: unannotated-param for-await compiled (#827 regressed: pull-closure fallback trap)" >&2; exit 1
+fi
+rm -rf "$fadir"
+echo "[selfhost-only-gate] for-await classification ok"
+
 # 28. argument type checking: the checker used to SWALLOW argument unification
 #     failures (`unify_call_args` did `None => out`), so an ill-typed call like
 #     `f("x")` for `f: (Int) -> Int` was silently accepted. It now reports a
@@ -2346,13 +2394,24 @@ EOF
 cat > "$tdir/bad_arity_bytesnew.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let b = Bytes::new(1, 2); Bytes::length(b) }
 EOF
+# #827: Stream[T] is CtNamed (head 0 = tolerated), so the eager Array-backed
+# representation leaked through the Array builtins — these compiled AND ran.
+cat > "$tdir/bad_streamlen.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::length(Stream::once(41)) }
+EOF
+cat > "$tdir/bad_streamget.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::get(Stream::once(41), 0) }
+EOF
+cat > "$tdir/bad_streamset.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::set(Stream::once(41), 0, 1); 0 }
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/ok.vibe" "$tdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed binding/assign/if did not compile (over-rejects)" >&2; exit 1
 fi
-for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg bad_unknownfield bad_guardonly bad_arity_get bad_arity_bytesnew bad_mutann bad_agrecv bad_agidx bad_asrecv; do
+for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg bad_unknownfield bad_guardonly bad_arity_get bad_arity_bytesnew bad_mutann bad_agrecv bad_agidx bad_asrecv bad_streamlen bad_streamget bad_streamset; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$tdir/$bad.vibe" "$tdir/$bad.wasm" _start >/dev/null 2>&1 || true

@@ -2022,10 +2022,52 @@ let fn_return_is_future: (Array[(String, String)], String) -> Bool = (fn_returns
   }
 }
 
+// #827: is `inner` positively a pull-closure source? The pull loop binds the
+// iteratee as `__pull_next` and CALLS it, so lowering anything that is not a
+// function value that way is a call_indirect on a non-function pointer — an
+// out-of-bounds table trap at runtime. Only two shapes are accepted: a lambda
+// literal, and a call to a known top-level function whose recorded return-type
+// head is empty (a non-named return — the closure-returning sources like
+// `stdin_stream: (Int) -> (() -> Option[String])`; a named head would have
+// classified in the Some branch instead).
+let for_await_is_pull_source: (Expr, Array[(String, String)]) -> Bool = (inner, fn_returns) -> {
+  match inner {
+    EFn(_, _, _, _, _, _) => true,
+    ECall(callee, _, _) => match callee {
+      EIdent(fname, _) => fn_exists(fn_returns, fname),
+      _ => false
+    },
+    _ => false
+  }
+}
+
+// #827: located "cannot classify this `for await`" error. The desugar has no
+// source text, so the position rides the checker's `[@off=N]` marker format
+// (decoded to line:col by the located-diagnostics layer where available;
+// harmless plain text otherwise). String::concat only (NUL hazard for `+`).
+let for_await_classify_error: (Expr) -> String = (inner) -> {
+  let off = match inner {
+    EIdent(_, o) => o,
+    ECall(_, _, o) => o,
+    _ => -1
+  }
+  let base = "for await: cannot infer the type of the loop source; annotate it (e.g. `s: Stream[Int]`) or iterate a Stream/Array expression directly"
+  if off >= 0 {
+    String::concat(base, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+  } else {
+    base
+  }
+}
+
 // `for await x in inner { body }`: classify `inner` and build the loop.
 // `rinner` / `rbody` are the already-rewritten iterable / body. A struct type
-// with a `::next` drives the iterator loop (`await`-wrapped when async);
-// anything else drives the pull-closure loop.
+// with a `::next` drives the iterator loop (`await`-wrapped when async); a
+// Stream/Array head drives the plain array loop (#822); a positively
+// pull-shaped source (see for_await_is_pull_source) drives the pull-closure
+// loop. Anything else — most commonly an UNannotated lambda param whose type
+// this syntactic pass cannot see — is a compile error (#827): the old silent
+// pull fallback compiled fine and then trapped at runtime (call_indirect on
+// the stream's array pointer).
 let classify_for_await_loop: (String, Option[String], Expr, Expr, Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Expr = (name, idx, inner, rinner, rbody, struct_sets, var_types, fn_returns) -> {
   match infer_arg_type_name(inner, struct_sets, var_types, fn_returns) {
     Some(tn) => if fn_exists(fn_returns, String::concat(tn, "::next")) {
@@ -2035,18 +2077,22 @@ let classify_for_await_loop: (String, Option[String], Expr, Expr, Expr, Array[(S
         build_iter_for(name, tn, rinner, rbody)
       }
     } else {
-      if tn == "Stream" {
+      if tn == "Stream" || tn == "Array" {
         // #822: the builtin Stream is eager Array-backed (ADR-0012), so
-        // `for await x in <stream>` iterates it with the plain array loop.
-        // The pull fallback below would bind the stream VALUE as
+        // `for await x in <stream>` (and over a plain Array) iterates with
+        // the plain array loop. The pull lowering would bind the VALUE as
         // `__pull_next` and call it — call_indirect on an array pointer,
         // i.e. an out-of-bounds table trap at runtime.
         EForIn(name, idx, rinner, rbody)
       } else {
-        build_pull_for_in(name, idx, rinner, rbody)
+        throw(for_await_classify_error(inner))
       }
     },
-    None => build_pull_for_in(name, idx, rinner, rbody)
+    None => if for_await_is_pull_source(inner, fn_returns) {
+      build_pull_for_in(name, idx, rinner, rbody)
+    } else {
+      throw(for_await_classify_error(inner))
+    }
   }
 }
 
