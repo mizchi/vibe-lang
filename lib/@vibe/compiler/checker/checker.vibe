@@ -2052,6 +2052,12 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let (scr_ty, s1, c1) = check_expr(scrutinee, env, defs, s, c, errors, tytab)
       let alen = Array::length(arms)
       if alen == 0 {
+        // #809: a match with ZERO arms is only produced by the guard desugar
+        // (#666) — `pat if g => body` chains end in `match __mg { }` when NO
+        // unguarded arm exists — or by a literal empty `match x { }`. Both
+        // reach codegen as an unconditional `unreachable`: every guard failing
+        // at runtime trapped with no source location. Reject at compile time.
+        Array::push(errors, "non-exhaustive match: no unguarded arm covers the scrutinee (all guards may fail — add an unguarded arm or `_`)")
         (CtUnknown, s1, c1)
       }
       else {
@@ -2105,16 +2111,6 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             }
           }
           ai = ai + 1
-        }
-        // #809: a match with ZERO arms is only produced by the guard desugar
-        // (#666) — `pat if g => body` chains end in `match __mg { }` when NO
-        // unguarded arm exists — or by a literal empty `match x { }`. Both
-        // reach codegen as an unconditional `unreachable`: every guard failing
-        // at runtime trapped with no source location. Reject at compile time.
-        if Array::length(arms) == 0 {
-          Array::push(errors, "non-exhaustive match: no unguarded arm covers the scrutinee (all guards may fail — add an unguarded arm or `_`)")
-        } else {
-          ()
         }
         // Exhaustiveness: when the scrutinee is a concrete user enum, the arms
         // must either include a catch-all (`_` / bind) or cover EVERY variant —
