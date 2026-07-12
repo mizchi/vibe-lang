@@ -1545,6 +1545,19 @@ function profileNowUs() {
   return Number((process.hrtime.bigint() - PROFILE_START_NS) / 1000n);
 }
 
+// Backs the `vibe.profile-heap-bytes` host import (Profiler::heap_bytes):
+// the guest's current bump-heap pointer. The bump allocator never frees, so
+// this is a monotonic allocation counter — deltas attribute allocation to a
+// code region the same way now_us deltas attribute time.
+function currentGuestHeapBytes() {
+  const heapGlobal = instanceRefGlobal?.exports?.__heap_ptr;
+  if (!(heapGlobal instanceof WebAssembly.Global)) {
+    return 0;
+  }
+  const raw = heapGlobal.value;
+  return typeof raw === "bigint" ? Number(BigInt.asUintN(64, raw)) : raw >>> 0;
+}
+
 function profileFileHasNonzeroStage(filePath, stage) {
   if (!filePath) return false;
   const resolved = path.resolve(process.cwd(), filePath);
@@ -2078,6 +2091,9 @@ async function main() {
       ["profile-now-us"]() {
         return encodeHostInt(profileNowUs());
       },
+      ["profile-heap-bytes"]() {
+        return encodeHostInt(currentGuestHeapBytes());
+      },
       env_get(nameTagged) {
         return this["env-get"](nameTagged);
       },
@@ -2089,6 +2105,9 @@ async function main() {
       },
       profile_now_us() {
         return this["profile-now-us"]();
+      },
+      profile_heap_bytes() {
+        return this["profile-heap-bytes"]();
       },
     },
     {
@@ -2244,6 +2263,9 @@ async function main() {
   const profilerModule = {
     NowUs(_envTagged) {
       return encodeHostInt(profileNowUs());
+    },
+    HeapBytes(_envTagged) {
+      return encodeHostInt(currentGuestHeapBytes());
     },
   };
 

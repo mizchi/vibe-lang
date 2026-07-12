@@ -2169,6 +2169,23 @@ fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {
             encode_tagged_int(elapsed_profile_us(caller.data().start_instant))
         },
     )?;
+    // `Profiler::heap_bytes` — the guest's current bump-heap pointer (a
+    // monotonic allocation counter; see caller_heap_ptr). The allocation
+    // analog of profile-now-us for per-phase memory attribution.
+    linker.func_wrap(
+        "Profiler",
+        "HeapBytes",
+        |mut caller: Caller<'_, HostState>, _env: i32| -> i64 {
+            encode_tagged_int(caller_heap_ptr(&mut caller).unwrap_or(0) as i64)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "profile-heap-bytes",
+        |mut caller: Caller<'_, HostState>| -> i64 {
+            encode_tagged_int(caller_heap_ptr(&mut caller).unwrap_or(0) as i64)
+        },
+    )?;
 
     // ------------- string create / read -------------
     linker.func_wrap(

@@ -570,6 +570,12 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // global store walk.
   let need_fs_readdir_builtin = Map::has_key(used_builtin_names, "Fs::readdir")
   let need_profiler_now_us_builtin = Map::has_key(used_builtin_names, "Profiler::now_us")
+  // `Profiler::heap_bytes() -> Int`: a `vibe.profile-heap-bytes () -> i64`
+  // host import (type 5, same shape as profile-now-us). Returns the guest's
+  // current bump-heap pointer (`__heap_ptr`) so vibe code can attribute its
+  // own allocation growth per phase, mirroring how now_us attributes time.
+  // Gated on use so non-users reserve no import (fixpoint-safe).
+  let need_profiler_heap_bytes_builtin = Map::has_key(used_builtin_names, "Profiler::heap_bytes")
   // `sleep(ms)` (Async): a `vibe.sleep (i64) -> ()` host import. The host
   // implements it as an async function so the guest fiber genuinely
   // suspends/resumes (docs/spec/wasi-p3-async.md §2.3, examples/async_host).
@@ -715,6 +721,15 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     -1
   }
   let profiler_now_us_import_idx = if need_profiler_now_us_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // reserved immediately after profile-now-us; the import emission below must
+  // stay in this same order so the index matches the descriptor.
+  let profiler_heap_bytes_import_idx = if need_profiler_heap_bytes_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -1048,6 +1063,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     env_args_len_idx
   }
+  // Profiler::heap_bytes call target: the import when reserved, else a
+  // never-called `() -> i64` stub (mirrors now_us's fallback).
+  let profiler_heap_bytes_idx = if profiler_heap_bytes_import_idx >= 0 {
+    profiler_heap_bytes_import_idx
+  } else {
+    env_args_len_idx
+  }
   // `sleep` call target: the import when reserved, else a never-called stub
   // (the builtin is only emitted as a call when the program uses `sleep`, which
   // is exactly when the import is reserved).
@@ -1258,6 +1280,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         "resolve_path" => resolve_path_idx,
         "Profiler::now_us" => profiler_now_us_idx,
         "Profiler::NowUs" => profiler_now_us_idx,
+        "Profiler::heap_bytes" => profiler_heap_bytes_idx,
+        "Profiler::HeapBytes" => profiler_heap_bytes_idx,
         "sleep" => sleep_idx,
         "Stdin::read_char" => stdin_read_char_idx,
         "simd_skip_ws" => simd_skip_ws_idx,
@@ -2639,6 +2663,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   if profiler_now_us_import_idx >= 0 {
     emit_name(import_content, "vibe")
     emit_name(import_content, "profile-now-us")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+  }
+  // `vibe.profile-heap-bytes () -> i64` — emitted right after profile-now-us
+  // to match its reserved index. Type 5 is `() -> i64` (same as now-us).
+  if profiler_heap_bytes_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "profile-heap-bytes")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 5)
   }
