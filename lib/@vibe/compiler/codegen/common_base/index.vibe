@@ -4,6 +4,10 @@ import .. / .. / core {
   Expr, Pat, Stmt, TypeExpr, __to_string, bytebuf_push, leb128_encode_u32
 }
 
+import .. / .. / core / sorted_index.vibe {
+  apply_perm_strings, bsearch_leftmost, sort_perm_by_names
+}
+
 import .. / wasm_emit {
   emit_call, emit_call_indirect, emit_else, emit_end, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_sub, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_load, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_store, emit_i64_sub, emit_i64_xor, emit_if_void, emit_local_get, emit_local_set
 }
@@ -38,7 +42,15 @@ export struct CtorTable {
   field_counts: Array[Int];
   type_names: Array[String];
   struct_names: Array[String];
-  struct_field_names: Array[Array[String]]
+  struct_field_names: Array[Array[String]];
+  // Sorted view of `names` + original-position payload (ctor_sorted_index).
+  // ctor_table_index_of binary-searches these instead of linearly scanning
+  // `names` per constructor reference -- lookup_ctor was a top-10 self-time
+  // entry in compiler-closure compile profiles. Keep in sync with `names`
+  // (same length); ctor_table_index_of falls back to the linear scan when a
+  // hand-built table skips them.
+  names_sorted: Array[String];
+  names_sorted_pos: Array[Int]
 }
 
 // #cov branch coverage state, threaded via CompileCtx. Linear-backend only;
@@ -172,7 +184,10 @@ export struct CompileCtx {
   // built ONCE per compile. collect_free_vars_indexed consults it per ident
   // instead of linearly scanning the flat name arrays (which was ~70% of a
   // compiler-closure compile's profile).
-  capture_name_index: Map[String, Bool];
+  // Round 2: the Map representation was itself a linear assoc scan per
+  // lookup (Map::has_key is O(entries)); now a SORTED name array consulted
+  // via binary search (core/sorted_index.vibe).
+  capture_name_index: Array[String];
   float_local_slots: Array[Int];
   // #678: append-only log of `slot*2 + flag` entries, the integer dual of
   // float_local_slots. flag 1 marks a `let`/`let mut` slot whose value is
@@ -816,6 +831,30 @@ export let rec lookup_ctor: (Array[String], String, Int) -> Int = (ctor_names, n
   else lookup_ctor(ctor_names, name, i + 1)
 }
 
+// Build CtorTable.names_sorted / names_sorted_pos from the name list: a
+// stable sort permutation, so equal names keep insertion order and the
+// leftmost binary-search hit maps to the same index the linear scan found.
+export let ctor_sorted_index: (Array[String]) -> (Array[String], Array[Int]) = (names) -> {
+  let perm = sort_perm_by_names(names)
+  (apply_perm_strings(names, perm), perm)
+}
+
+// O(log N) replacement for `lookup_ctor(ct.names, name, 0)` at CtorTable
+// call sites. Falls back to the linear scan when the sorted view is absent
+// (defensive: a table built without ctor_sorted_index stays correct).
+export let ctor_table_index_of: (CtorTable, String) -> Int = (ct, name) -> {
+  if Array::length(ct.names_sorted) != Array::length(ct.names) {
+    lookup_ctor(ct.names, name, 0)
+  } else {
+    let slot = bsearch_leftmost(ct.names_sorted, name)
+    if slot < 0 {
+      -1
+    } else {
+      Array::get(ct.names_sorted_pos, slot)
+    }
+  }
+}
+
 // #722: candidates for a NAME-based struct field access. Returns
 // (ctor_tag, field_idx) for every struct whose field list contains `field`,
 // in struct-declaration order. Field resolution used to take the FIRST
@@ -837,7 +876,7 @@ export let struct_field_candidates: (CtorTable, String) -> Array[(Int, Int)] = (
     let mut fi = 0
     while fi < Array::length(fnames) {
       if Array::get(fnames, fi) == field {
-        let ci = lookup_ctor(ct.names, Array::get(ct.struct_names, si), 0)
+        let ci = ctor_table_index_of(ct, Array::get(ct.struct_names, si))
         let tag = if ci >= 0 {
           Array::get(ct.tags, ci)
         } else {
@@ -927,7 +966,7 @@ export let struct_index_by_field_set: (CtorTable, Array[String]) -> Int = (ct, l
 // #722: ctor tag for struct index `si`, or 0 (the legacy anonymous-record
 // type id) when the struct is not in the ctor table.
 export let struct_tag_by_index: (CtorTable, Int) -> Int = (ct, si) -> {
-  let ci = lookup_ctor(ct.names, Array::get(ct.struct_names, si), 0)
+  let ci = ctor_table_index_of(ct, Array::get(ct.struct_names, si))
   if ci >= 0 {
     Array::get(ct.tags, ci)
   } else {
@@ -1004,7 +1043,7 @@ export let get_elet_val: (Expr) -> Expr with { Error } = (expr) -> {
 export let is_ctor_call: (Expr, CtorTable) -> Bool = (value, ct) -> {
   match value {
     ECall(callee, _, _) => match callee {
-      EIdent(nm, _) => lookup_ctor(ct.names, nm, 0) >= 0,
+      EIdent(nm, _) => ctor_table_index_of(ct, nm) >= 0,
       _ => false
     },
     _ => false
@@ -1365,7 +1404,7 @@ export let fn_type_param_types: (Option[TypeExpr]) -> Option[Array[TypeExpr]] = 
 
 export let is_nullary_ctor_ident: (Expr, CtorTable) -> Bool = (value, ct) -> {
   match value {
-    EIdent(nm, _) => lookup_ctor(ct.names, nm, 0) >= 0,
+    EIdent(nm, _) => ctor_table_index_of(ct, nm) >= 0,
     _ => false
   }
 }

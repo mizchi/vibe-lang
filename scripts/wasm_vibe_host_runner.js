@@ -884,13 +884,25 @@ function buildFsMetadataHashParts(filePath) {
     typeof stat.mtimeNs === "bigint"
       ? stat.mtimeNs
       : BigInt(Math.round(Number(stat.mtimeMs) * 1e6));
+  // ino guards the "racy stat" window (same class as git's racy index): an
+  // atomic rename-in rewrite that lands in the same kernel timestamp tick
+  // with the same size would otherwise produce an identical token, so the
+  // persistent source caches missed the change (persistent_cache_test's
+  // invalidation assert caught this once compiles got fast enough to fit in
+  // one tick). Every atomicWriteFileSync allocates a fresh inode, so mixing
+  // it in makes rename-based rewrites always change the token. Must mirror
+  // moonrun_wasmtime's vibe_stat_token exactly (shared cache/cwasm keys).
+  const ino = typeof stat.ino === "bigint" ? stat.ino : BigInt(stat.ino || 0);
   const lower = BigInt.asUintN(
     64,
-    (size * 0x9e3779b185ebca87n) ^ mtimeNs ^ 0x243f6a8885a308d3n,
+    (size * 0x9e3779b185ebca87n) ^
+      mtimeNs ^
+      0x243f6a8885a308d3n ^
+      (ino * 0x100000001b3n),
   );
   const upper = BigInt.asUintN(
     64,
-    ((mtimeNs << 1n) ^ (size << 17n) ^ 0x13198a2e03707344n),
+    (mtimeNs << 1n) ^ (size << 17n) ^ 0x13198a2e03707344n ^ (ino << 7n),
   );
   return { lower, upper };
 }
@@ -1545,6 +1557,19 @@ function profileNowUs() {
   return Number((process.hrtime.bigint() - PROFILE_START_NS) / 1000n);
 }
 
+// Backs the `vibe.profile-heap-bytes` host import (Profiler::heap_bytes):
+// the guest's current bump-heap pointer. The bump allocator never frees, so
+// this is a monotonic allocation counter — deltas attribute allocation to a
+// code region the same way now_us deltas attribute time.
+function currentGuestHeapBytes() {
+  const heapGlobal = instanceRefGlobal?.exports?.__heap_ptr;
+  if (!(heapGlobal instanceof WebAssembly.Global)) {
+    return 0;
+  }
+  const raw = heapGlobal.value;
+  return typeof raw === "bigint" ? Number(BigInt.asUintN(64, raw)) : raw >>> 0;
+}
+
 function profileFileHasNonzeroStage(filePath, stage) {
   if (!filePath) return false;
   const resolved = path.resolve(process.cwd(), filePath);
@@ -2078,6 +2103,9 @@ async function main() {
       ["profile-now-us"]() {
         return encodeHostInt(profileNowUs());
       },
+      ["profile-heap-bytes"]() {
+        return encodeHostInt(currentGuestHeapBytes());
+      },
       env_get(nameTagged) {
         return this["env-get"](nameTagged);
       },
@@ -2089,6 +2117,9 @@ async function main() {
       },
       profile_now_us() {
         return this["profile-now-us"]();
+      },
+      profile_heap_bytes() {
+        return this["profile-heap-bytes"]();
       },
     },
     {
@@ -2244,6 +2275,9 @@ async function main() {
   const profilerModule = {
     NowUs(_envTagged) {
       return encodeHostInt(profileNowUs());
+    },
+    HeapBytes(_envTagged) {
+      return encodeHostInt(currentGuestHeapBytes());
     },
   };
 

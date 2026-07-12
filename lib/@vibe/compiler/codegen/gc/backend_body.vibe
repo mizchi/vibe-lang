@@ -13,7 +13,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, agg_info_of_type_expr, compute_agg_returning, fn_type_param_types, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, lookup_ctor, resolve_func, resolve_local
+  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, agg_info_of_type_expr, compute_agg_returning, ctor_sorted_index, fn_type_param_types, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -156,6 +156,9 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     }
     ei2 = ei2 + 1
   }
+  // Sorted ctor-name index (see CtorTable.names_sorted): built once here,
+  // shared by every CtorTable literal below.
+  let (gc_ctor_names_sorted, gc_ctor_names_sorted_pos) = ctor_sorted_index(ctor_names_list)
   // #538: module-level literal constants (Int / Bool / String). The user-func
   // walk keeps only EFn lets; scalar lets like `let op_call = 16` previously
   // vanished and every reference threw "undefined variable".
@@ -494,7 +497,7 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     0
   ], 0, 0)
   compute_agg_returning(stmts, CtorTable::{
-    names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+    names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, names_sorted: gc_ctor_names_sorted, names_sorted_pos: gc_ctor_names_sorted_pos
   }, gc_agg_ret_names_l, gc_agg_ret_infos_l)
   let ft_params = Array::slice([
     0
@@ -665,7 +668,7 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
             match pann {
               Some(pte) => {
                 let pinfo = agg_info_of_type_expr(CtorTable::{
-                  names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+                  names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, names_sorted: gc_ctor_names_sorted, names_sorted_pos: gc_ctor_names_sorted_pos
                 }, pte)
                 if pinfo > 0 {
                   Array::push(gc_agg_slots_f, psi * 256 + pinfo)
@@ -703,7 +706,7 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
             strs: str_strs, offsets: str_offsets, lengths: str_lengths
           }
           let ct = CtorTable::{
-            names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+            names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, names_sorted: gc_ctor_names_sorted, names_sorted_pos: gc_ctor_names_sorted_pos
           }
           let func_ctx = CompileCtxGc::{
             func_table: ft, str_table: st, lambda_table: lt_w,
@@ -768,7 +771,8 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
       refcell_type_idx: refcell_type_idx, closure_type_base: closure_type_base,
       gc_ctor_table: CtorTable::{
         names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list,
-        type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+        type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names,
+        names_sorted: gc_ctor_names_sorted, names_sorted_pos: gc_ctor_names_sorted_pos
       },
       gc_const_names: gc_const_names_l, gc_const_kinds: gc_const_kinds_l,
       gc_const_ivals: gc_const_ivals_l, gc_const_svals: gc_const_svals_l,

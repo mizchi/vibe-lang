@@ -8,6 +8,10 @@ import .. / .. / core {
   Expr, Stmt
 }
 
+import .. / .. / core / sorted_index.vibe {
+  sorted_names_of
+}
+
 import .. / common_analysis {
   collect_free_vars, collect_free_vars_indexed
 }
@@ -57,7 +61,7 @@ export let rec stmts_use_builtin: (Array[Stmt], Array[String], String) -> Bool =
 // compiler-closure compile profiles. Same semantics: a name counts as "used"
 // only where it is FREE (not a user fn, not locally bound), and the flag
 // reads compare canonical names exactly like expr_uses_builtin did.
-let push_free_canonical: (Expr, Map[String, Bool], Array[(String, Bool)]) -> Unit = (expr, fn_name_index, sink) -> {
+let push_free_canonical: (Expr, Array[String], Array[(String, Bool)]) -> Unit = (expr, fn_name_index, sink) -> {
   let fvs = collect_free_vars_indexed(expr, Array::slice([
     ""
   ], 0, 0), fn_name_index)
@@ -68,7 +72,7 @@ let push_free_canonical: (Expr, Map[String, Bool], Array[(String, Bool)]) -> Uni
   }
 }
 
-export let rec collect_used_builtin_names_into: (Array[Stmt], Array[String], Map[String, Bool], Array[(String, Bool)]) -> Unit = (stmts, fn_names, fn_name_index, sink) -> {
+export let rec collect_used_builtin_names_into: (Array[Stmt], Array[String], Array[String], Array[(String, Bool)]) -> Unit = (stmts, fn_names, fn_name_index, sink) -> {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -86,13 +90,9 @@ export let rec collect_used_builtin_names_into: (Array[Stmt], Array[String], Map
 
 
 export let collect_used_builtin_names: (Array[Stmt], Array[String]) -> Map[String, Bool] = (stmts, fn_names) -> {
-  let idx_b = MapBuilder::new()
-  let mut i = 0
-  while i < Array::length(fn_names) {
-    MapBuilder::set(idx_b, Array::get(fn_names, i), true)
-    i = i + 1
-  }
-  let fn_name_index = MapBuilder::freeze(idx_b)
+  // Sorted membership index (see core/sorted_index.vibe) -- the MapBuilder
+  // version was O(N^2) to build and O(N) per lookup.
+  let fn_name_index = sorted_names_of(fn_names)
   let sink = Array::slice([
     ("", false)
   ], 0, 0)

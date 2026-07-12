@@ -1574,8 +1574,11 @@ fn report_alloc_sites(
     }
 }
 
-// fnv-ish stat token mixing size + mtime; mirrors the JS host so cwasm/cache
-// keys agree across runners. Only needs to change when the file changes.
+// fnv-ish stat token mixing size + mtime + ino; mirrors the JS host so
+// cwasm/cache keys agree across runners. Only needs to change when the file
+// changes. ino guards the "racy stat" window: a rename-in rewrite landing in
+// the same kernel timestamp tick with the same size would otherwise keep the
+// token identical (see buildFsMetadataHashParts in wasm_vibe_host_runner.js).
 fn vibe_stat_token(path: &str) -> i64 {
     match fs::metadata(path) {
         Ok(meta) => {
@@ -1586,8 +1589,18 @@ fn vibe_stat_token(path: &str) -> i64 {
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(0);
-            let lower = size.wrapping_mul(0x9e37_79b1_85eb_ca87) ^ mtime_ns ^ 0x243f_6a88_85a3_08d3;
-            let upper = (mtime_ns << 1) ^ (size << 17) ^ 0x1319_8a2e_0370_7344;
+            #[cfg(unix)]
+            let ino = {
+                use std::os::unix::fs::MetadataExt;
+                meta.ino()
+            };
+            #[cfg(not(unix))]
+            let ino = 0u64;
+            let lower = size.wrapping_mul(0x9e37_79b1_85eb_ca87)
+                ^ mtime_ns
+                ^ 0x243f_6a88_85a3_08d3
+                ^ ino.wrapping_mul(0x1000_0000_01b3);
+            let upper = (mtime_ns << 1) ^ (size << 17) ^ 0x1319_8a2e_0370_7344 ^ (ino << 7);
             ((lower ^ upper) & ((1u64 << 61) - 1)) as i64
         }
         Err(_) => 0,
@@ -2167,6 +2180,23 @@ fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {
         "profile-now-us",
         |caller: Caller<'_, HostState>| -> i64 {
             encode_tagged_int(elapsed_profile_us(caller.data().start_instant))
+        },
+    )?;
+    // `Profiler::heap_bytes` — the guest's current bump-heap pointer (a
+    // monotonic allocation counter; see caller_heap_ptr). The allocation
+    // analog of profile-now-us for per-phase memory attribution.
+    linker.func_wrap(
+        "Profiler",
+        "HeapBytes",
+        |mut caller: Caller<'_, HostState>, _env: i32| -> i64 {
+            encode_tagged_int(caller_heap_ptr(&mut caller).unwrap_or(0) as i64)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "profile-heap-bytes",
+        |mut caller: Caller<'_, HostState>| -> i64 {
+            encode_tagged_int(caller_heap_ptr(&mut caller).unwrap_or(0) as i64)
         },
     )?;
 

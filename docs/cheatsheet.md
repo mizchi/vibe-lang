@@ -539,6 +539,15 @@ sh("ls -la")       // with { Stdout } - shell command
 sh_lines("ls")     // -> Array[String]
 ```
 
+**Profiling** (require `Profiler` effect; linear backend only; use the
+direct-call surface — unhandled `perform` throws):
+```vibe
+Profiler::now_us()      // with { Profiler } - elapsed µs (wall clock)
+Profiler::heap_bytes()  // with { Profiler } - current bump-heap pointer
+                        // (bytes allocated); deltas attribute allocation the
+                        // way now_us deltas attribute time (heap never shrinks)
+```
+
 **Conversion**: `Int::to_string`, `Int::to_double`, `Double::to_int`, `String::from_char_code`
 
 ## Idioms

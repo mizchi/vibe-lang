@@ -1,0 +1,40 @@
+//# Misc
+
+// Profiler::heap_bytes — the allocation analog of Profiler::now_us. Returns
+// the guest's current bump-heap pointer, so deltas attribute allocation to a
+// code region the same way now_us deltas attribute time. Linear lane only
+// (host import `vibe.profile-heap-bytes`, gated out of the gc lane like every
+// host builtin). Direct-call surface, NOT `perform` — unhandled performs
+// always throw (#768/#794 direct-call convention).
+
+test "heap_bytes returns a positive bump pointer" {
+  let h = Profiler::heap_bytes()
+  assert(h > 0)
+}
+
+test "heap_bytes grows monotonically across allocation" {
+  let h0 = Profiler::heap_bytes()
+  let a = Array::slice([
+    0
+  ], 0, 0)
+  let mut i = 0
+  while i < 4096 {
+    Array::push(a, i)
+    i = i + 1
+  }
+  assert(Array::length(a) == 4096)
+  let h1 = Profiler::heap_bytes()
+  // The bump allocator never frees: the pointer can only move forward, and
+  // 4096 pushed ints must have consumed at least 4096 bytes.
+  assert(h1 > h0)
+  assert(h1 - h0 >= 4096)
+  let h2 = Profiler::heap_bytes()
+  assert(h2 >= h1)
+}
+
+test "heap_bytes coexists with now_us" {
+  let t0 = Profiler::now_us()
+  let h0 = Profiler::heap_bytes()
+  assert(t0 >= 0)
+  assert(h0 > 0)
+}

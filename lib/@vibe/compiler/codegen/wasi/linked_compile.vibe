@@ -4,6 +4,10 @@ import .. / .. / core {
   Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_buf, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
 }
 
+import .. / .. / core / sorted_index.vibe {
+  sorted_names_of
+}
+
 import .. / .. / desugar_trait_dict.vibe {
   desugar_trait_dicts
 }
@@ -34,7 +38,7 @@ import .. / common_analysis {
 
 import .. / common_base {
   rc_shadow_reserve,
-  CompileCtx, CovState, CtorTable, DbgProv, FuncTable, LambdaTable, StrTable, agg_info_of_type_expr, compute_agg_returning, emit_rc_dup_guarded, empty_dbg_prov, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, fn_type_param_types, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, get_slet_type, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CovState, CtorTable, DbgProv, FuncTable, LambdaTable, StrTable, agg_info_of_type_expr, compute_agg_returning, ctor_sorted_index, emit_rc_dup_guarded, empty_dbg_prov, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, fn_type_param_types, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, get_slet_type, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -309,13 +313,16 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     }
     si = si + 1
   }
+  // Sorted ctor-name index (see CtorTable.names_sorted): built once here,
+  // shared by this table literal and every per-function ctor_table below.
+  let (lc_ctor_names_sorted, lc_ctor_names_sorted_pos) = ctor_sorted_index(ctor_names_list)
   // #724 round 2: (fn name -> declared aggregate return shape) table so
   // `let a = f(..)` bindings participate in structural `==` (see
   // compute_agg_returning in common_base).
   let lc_agg_ret_names = lc_fresh_string_array()
   let lc_agg_ret_infos = lc_fresh_int_array()
   compute_agg_returning(stmts, CtorTable::{
-    names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+    names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, names_sorted: lc_ctor_names_sorted, names_sorted_pos: lc_ctor_names_sorted_pos
   }, lc_agg_ret_names, lc_agg_ret_infos)
   // #791: program-wide (fn name) set for declared-heap-returning top-level
   // functions (see compute_heap_returning in perceus/index.vibe). Consulted
@@ -570,6 +577,12 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // global store walk.
   let need_fs_readdir_builtin = Map::has_key(used_builtin_names, "Fs::readdir")
   let need_profiler_now_us_builtin = Map::has_key(used_builtin_names, "Profiler::now_us")
+  // `Profiler::heap_bytes() -> Int`: a `vibe.profile-heap-bytes () -> i64`
+  // host import (type 5, same shape as profile-now-us). Returns the guest's
+  // current bump-heap pointer (`__heap_ptr`) so vibe code can attribute its
+  // own allocation growth per phase, mirroring how now_us attributes time.
+  // Gated on use so non-users reserve no import (fixpoint-safe).
+  let need_profiler_heap_bytes_builtin = Map::has_key(used_builtin_names, "Profiler::heap_bytes")
   // `sleep(ms)` (Async): a `vibe.sleep (i64) -> ()` host import. The host
   // implements it as an async function so the guest fiber genuinely
   // suspends/resumes (docs/spec/wasi-p3-async.md §2.3, examples/async_host).
@@ -715,6 +728,15 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     -1
   }
   let profiler_now_us_import_idx = if need_profiler_now_us_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // reserved immediately after profile-now-us; the import emission below must
+  // stay in this same order so the index matches the descriptor.
+  let profiler_heap_bytes_import_idx = if need_profiler_heap_bytes_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -1048,6 +1070,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     env_args_len_idx
   }
+  // Profiler::heap_bytes call target: the import when reserved, else a
+  // never-called `() -> i64` stub (mirrors now_us's fallback).
+  let profiler_heap_bytes_idx = if profiler_heap_bytes_import_idx >= 0 {
+    profiler_heap_bytes_import_idx
+  } else {
+    env_args_len_idx
+  }
   // `sleep` call target: the import when reserved, else a never-called stub
   // (the builtin is only emitted as a call when the program uses `sleep`, which
   // is exactly when the import is reserved).
@@ -1258,6 +1287,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         "resolve_path" => resolve_path_idx,
         "Profiler::now_us" => profiler_now_us_idx,
         "Profiler::NowUs" => profiler_now_us_idx,
+        "Profiler::heap_bytes" => profiler_heap_bytes_idx,
+        "Profiler::HeapBytes" => profiler_heap_bytes_idx,
         "sleep" => sleep_idx,
         "Stdin::read_char" => stdin_read_char_idx,
         "simd_skip_ws" => simd_skip_ws_idx,
@@ -1483,18 +1514,20 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // shared by every per-function CompileCtx below. collect_free_vars_indexed
   // consults it per ident instead of linearly scanning ~thousands of names
   // (which dominated compiler-closure compile profiles).
-  let capture_index_b = MapBuilder::new()
+  // Round 2: a SORTED array + binary search -- the previous MapBuilder index
+  // was O(N^2) to build (set scans for duplicates) and O(N) per has_key.
+  let capture_index_names = lc_fresh_string_array()
   let mut cib_i = 0
   while cib_i < Array::length(all_fn_names_list) {
-    MapBuilder::set(capture_index_b, Array::get(all_fn_names_list, cib_i), true)
+    Array::push(capture_index_names, Array::get(all_fn_names_list, cib_i))
     cib_i = cib_i + 1
   }
   let mut cib_j = 0
   while cib_j < Array::length(ctor_names_list) {
-    MapBuilder::set(capture_index_b, Array::get(ctor_names_list, cib_j), true)
+    Array::push(capture_index_names, Array::get(ctor_names_list, cib_j))
     cib_j = cib_j + 1
   }
-  let capture_name_index_shared = MapBuilder::freeze(capture_index_b)
+  let capture_name_index_shared = sorted_names_of(capture_index_names)
   let mut bi = 0
   while bi < num_user_funcs {
     let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
@@ -1764,7 +1797,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       num_user_funcs: num_user_funcs, func_offset: func_offset,
       ref_cell_names: lc_fresh_string_array(),
       ctor_table: CtorTable::{
-        names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+        names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, names_sorted: lc_ctor_names_sorted, names_sorted_pos: lc_ctor_names_sorted_pos
       },
       thunk_names: thunk_names_list,
       const_int_names: const_int_names_list,
@@ -2639,6 +2672,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   if profiler_now_us_import_idx >= 0 {
     emit_name(import_content, "vibe")
     emit_name(import_content, "profile-now-us")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+  }
+  // `vibe.profile-heap-bytes () -> i64` — emitted right after profile-now-us
+  // to match its reserved index. Type 5 is `() -> i64` (same as now-us).
+  if profiler_heap_bytes_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "profile-heap-bytes")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 5)
   }
