@@ -39,7 +39,8 @@ cd "$PROJECT_ROOT"
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_async_component}"
 mkdir -p "$OUT_DIR"
 
-if ! command -v wasmtime >/dev/null 2>&1; then
+WASMTIME_BIN="$("$SCRIPT_DIR/wasmtime_bin.sh" 2>/dev/null || command -v wasmtime || true)"
+if [ -z "${WASMTIME_BIN:-}" ] || ! "$WASMTIME_BIN" --version >/dev/null 2>&1; then
   if [ "${VIBE_P3_GATE_REQUIRE_TOOLS:-0}" = "1" ]; then
     echo "selfhost async component gate FAILED: wasmtime not installed (required mode)" >&2
     exit 1
@@ -47,6 +48,7 @@ if ! command -v wasmtime >/dev/null 2>&1; then
   echo "selfhost async component gate skipped: wasmtime not installed"
   exit 0
 fi
+echo "[async-component-gate] wasmtime: $("$WASMTIME_BIN" --version)"
 
 COMPILER="${VIBE_ASYNC_GATE_COMPILER:-}"
 if [ -z "$COMPILER" ]; then
@@ -156,7 +158,7 @@ run_component_42() {
     wasm-tools validate --features all "$comp" >/dev/null
   fi
   local result
-  result="$(wasmtime $WT_FLAGS --invoke 'run()' "$comp" 2>"$OUT_DIR/$name.err" | tail -n 1 || true)"
+  result="$("$WASMTIME_BIN" $WT_FLAGS --invoke 'run()' "$comp" 2>"$OUT_DIR/$name.err" | tail -n 1 || true)"
   if [ "$result" != "42" ]; then
     echo "selfhost async component gate FAILED: $name returned '$result' (expected 42)" >&2
     sed -n '1,6p' "$OUT_DIR/$name.err" >&2 || true
