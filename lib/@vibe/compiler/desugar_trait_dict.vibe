@@ -2720,6 +2720,40 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
             }
           },
           None => {
+            // #825: full static-shape dispatch. When either operand's complete
+            // TypeExpr is inferable from literal syntax (Some/Ok/Err ctor
+            // literals, tuple literals, array literals with non-scalar
+            // elements), route through the fully-recursive `eq_for_typed` so
+            // aggregate payloads (`Some([1,2])`, `Ok([1,2])`, `Some(Some(1))`,
+            // `([1,2], 0)`) compare structurally instead of by word identity.
+            // `known_types` is empty: this inference only ever yields builtin
+            // shapes (never user struct/enum names), and unknown positions
+            // carry the `__EqUnknown` marker which `eq_for_typed` compares
+            // with raw `==` (status quo for that position).
+            let sty = match infer_static_eq_type(l) {
+              Some(t) => Some(t),
+              None => infer_static_eq_type(r)
+            }
+            let dty = match sty {
+              Some(t) => if static_eq_dispatchable(t) {
+                Some(t)
+              } else {
+                None
+              },
+              None => None
+            }
+            match dty {
+              Some(dt) => {
+                let call = eq_for_typed(dt, rl, rr, empty_str_array())
+                if op == "==" {
+                  call
+                } else {
+                  ECall(EIdent("not", -1), [
+                    call
+                  ], -1)
+                }
+              },
+              None => {
             let ty = match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
               Some(t) => Some(t),
               None => infer_arg_type_name(r, struct_sets, var_types, fn_returns)
@@ -2765,6 +2799,8 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
                 EBinOp(op, rl, rr)
               },
               None => EBinOp(op, rl, rr)
+            }
+              }
             }
           }
         }
@@ -3978,6 +4014,150 @@ let rec infer_earray_elem_type: (Expr) -> Option[TypeExpr] = (arr) -> {
   }
 }
 
+// #825: does `t` contain the `__EqUnknown` marker anywhere? Used to keep the
+// marker out of generated `__arr_equals__<key>` helper names/annotations (an
+// Array element type must be fully concrete to be usable).
+let rec ty_contains_eq_unknown: (TypeExpr) -> Bool = (t) -> {
+  match t {
+    TyName(n) => n == "__EqUnknown",
+    TyApp(_, args) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if ty_contains_eq_unknown(Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(ts) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(ts) {
+        if ty_contains_eq_unknown(Array::get(ts, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+// #825: best-effort full STATIC TypeExpr of a bare `==` operand, inferred from
+// literal syntax alone (no environment). Where the name-based `==` dispatch
+// only recovers a head name ("Option"/"Result") and compares payloads with a
+// raw word `==`, this recovers the payload SHAPE too, so
+// `Some([1,2]) == Some([1,2])` / `Ok([1,2]) == Ok([1,2])` /
+// `Some(Some(1)) == Some(Some(1))` / `([1,2], 0) == ([1,2], 0)` route through
+// the fully-recursive `eq_for_typed` instead of identity-comparing aggregate
+// payloads. A position whose type is not statically obvious yields the marker
+// `TyName("__EqUnknown")` — never a scalar or declared type, so `eq_for_typed`
+// falls back to raw `==` there (exactly the status-quo behavior for that
+// position). An Array element type must be marker-free (else the whole array
+// is uninferable): the element type names the generated `__arr_equals__<key>`
+// helper and appears in its parameter annotations, where the marker would not
+// resolve.
+let rec infer_static_eq_type: (Expr) -> Option[TypeExpr] = (e) -> {
+  match e {
+    EInt(_) => Some(TyName("Int")),
+    EBool(_) => Some(TyName("Bool")),
+    EString(_) => Some(TyName("String")),
+    EFloat(_) => Some(TyName("Double")),
+    EUnit => Some(TyUnit),
+    EArray(elems) => if Array::length(elems) == 0 {
+      None
+    } else {
+      match infer_static_eq_type(Array::get(elems, 0)) {
+        Some(t) => if ty_contains_eq_unknown(t) {
+          None
+        } else {
+          Some(TyApp("Array", Array::slice([
+            t
+          ], 0, 1)))
+        },
+        None => None
+      }
+    },
+    ETuple(es) => {
+      let ts = empty_type_exprs()
+      let mut i = 0
+      while i < Array::length(es) {
+        match infer_static_eq_type(Array::get(es, i)) {
+          Some(t) => Array::push(ts, t),
+          None => Array::push(ts, TyName("__EqUnknown"))
+        }
+        i = i + 1
+      }
+      Some(TyTuple(ts))
+    },
+    EIdent(n, _) => if n == "None" {
+      Some(TyApp("Option", Array::slice([
+        TyName("__EqUnknown")
+      ], 0, 1)))
+    } else {
+      None
+    },
+    ECall(callee, args, _) => match callee {
+      EIdent("Some", _) => if Array::length(args) == 1 {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
+          Some(t) => t,
+          None => TyName("__EqUnknown")
+        }
+        Some(TyApp("Option", Array::slice([
+          pt
+        ], 0, 1)))
+      } else {
+        None
+      },
+      EIdent("Ok", _) => if Array::length(args) == 1 {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
+          Some(t) => t,
+          None => TyName("__EqUnknown")
+        }
+        Some(TyApp("Result", Array::slice([
+          pt,
+          TyName("__EqUnknown")
+        ], 0, 2)))
+      } else {
+        None
+      },
+      EIdent("Err", _) => if Array::length(args) == 1 {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
+          Some(t) => t,
+          None => TyName("__EqUnknown")
+        }
+        Some(TyApp("Result", Array::slice([
+          TyName("__EqUnknown"),
+          pt
+        ], 0, 2)))
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
+// #825: shapes worth dispatching through `eq_for_typed` at a bare `==` site.
+// Only the aggregate shapes the runtime word-compare gets wrong; scalars keep
+// the raw binop and anything unrecognized falls back to the name-based
+// dispatch (which preserves the pre-#825 behavior).
+let static_eq_dispatchable: (TypeExpr) -> Bool = (t) -> {
+  match t {
+    TyApp(n, args) => (n == "Option" && Array::length(args) == 1) || (n == "Result" && Array::length(args) == 2) || (n == "Array" && Array::length(args) == 1),
+    TyTuple(_) => true,
+    _ => false
+  }
+}
+
 // Walk an expression and, for every `a == b` / `a != b` whose operand is an
 // array LITERAL with a determinable element type, collect that element type so a
 // `__arr_equals__<key>` helper is generated for the dispatch rewrite to call.
@@ -4000,6 +4180,18 @@ let rec collect_bare_array_eq_keys: (Expr, Array[TypeExpr], Array[String]) -> Un
             }
             collect_array_elem_types(t, acc, acc_keys)
           },
+          None => ()
+        }
+        // #825: the full static-shape dispatch can surface Array element types
+        // nested inside Option/Result/tuple literals (`Some([1,2]) == ...`,
+        // `([1,2], 0) == ...`, `[Some(1)] == ...`) — collect them so their
+        // `__arr_equals__<key>` helpers exist for `eq_for_typed`'s calls.
+        let sty = match infer_static_eq_type(l) {
+          Some(t2) => Some(t2),
+          None => infer_static_eq_type(r)
+        }
+        match sty {
+          Some(t2) => collect_array_elem_types(t2, acc, acc_keys),
           None => ()
         }
       } else {

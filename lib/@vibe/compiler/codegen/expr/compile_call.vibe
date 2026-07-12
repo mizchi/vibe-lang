@@ -312,6 +312,10 @@ let rec cc_expr_is_boolish: (Expr, Array[String], CompileCtx) -> Bool with { Err
     // #815: an `is` expression desugars at parse time to a match whose arms
     // all return Bool literals — classify such a match as boolish so
     // `"\{opt is None}"` prints true/false instead of the raw 0/1.
+    // #825: arm bodies recurse through cc_expr_is_boolish (not just Bool
+    // literals), because the structural `==` dispatch on Option/Result/tuple
+    // lowers to nested matches whose leaf arms are `==`/`&&` chains and Bool
+    // literals — so `"\{Some(1) == Some(1)}"` prints true, not 1.
     let arms = get_match_arms(e)
     let alen2 = Array::length(arms)
     if alen2 == 0 {
@@ -320,7 +324,7 @@ let rec cc_expr_is_boolish: (Expr, Array[String], CompileCtx) -> Bool with { Err
       let mut all_bool = true
       let mut bi2 = 0
       while bi2 < alen2 {
-        if expr_tag(get_arm_body(Array::get(arms, bi2))) != 1 {
+        if !cc_expr_is_boolish(get_arm_body(Array::get(arms, bi2)), local_names, ctx) {
           all_bool = false
         } else {
           ()
@@ -329,6 +333,21 @@ let rec cc_expr_is_boolish: (Expr, Array[String], CompileCtx) -> Bool with { Err
       }
       all_bool
     }
+  } else if tag == 9 {
+    // #825: the normalize pass lifts a non-ident match scrutinee into
+    // `let __m_scrut_N = <e> in match ...` (lift_match_scrutinees), so a
+    // boolish match arrives here wrapped in a let — classify by the BODY.
+    // Same for the other body-position wrappers below.
+    cc_expr_is_boolish(get_elet_body(e), local_names, ctx)
+  } else if tag == 10 {
+    cc_expr_is_boolish(get_eletrec_body(e), local_names, ctx)
+  } else if tag == 11 {
+    cc_expr_is_boolish(get_eletmut_body(e), local_names, ctx)
+  } else if tag == 14 {
+    cc_expr_is_boolish(get_eseq_second(e), local_names, ctx)
+  } else if tag == 7 {
+    // An if-expression is boolish when BOTH branches are.
+    cc_expr_is_boolish(get_eif_then(e), local_names, ctx) && cc_expr_is_boolish(get_eif_else(e), local_names, ctx)
   } else if tag == 8 {
     // #815: the `==` desugar rewrites array equality to the compiler-emitted
     // `__arr_equals__<key>` helper and struct/enum equality to `T::equals`

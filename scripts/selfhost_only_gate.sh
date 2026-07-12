@@ -2973,6 +2973,26 @@ export let _start: () -> Int = () -> {
   v1 + v2 + v3 + v4
 }
 EOF
+# beq: builtin Option/Result and tuples with AGGREGATE payloads compare
+# structurally (#825). Before the fix the bare-`==` dispatch only recovered the
+# head name ("Option"/"Result") and word-compared payloads, so `Some([1,2]) ==
+# Some([1,2])` was silently false (heap pointers differ); tuples containing
+# arrays likewise. The dispatch now infers the full static shape from literal
+# syntax and routes through eq_for_typed. v7 guards the #815 follow-up: the
+# lowered match interpolates as true/false, not raw 1/0 (the boolish
+# classifier sees through the lift_match_scrutinees `let __m_scrut_N` wrap).
+cat > "$sdir/beq.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let v1 = if Some([1, 2]) == Some([1, 2]) { 1 } else { 0 }
+  let v2 = if Some((1, 2)) == Some((1, 2)) { 20 } else { 0 }
+  let v3 = if Some(Some(1)) == Some(Some(1)) { 300 } else { 0 }
+  let v4 = if Ok([1, 2]) == Ok([1, 2]) { 4000 } else { 0 }
+  let v5 = if ([1, 2], 0) == ([1, 2], 0) { 50000 } else { 0 }
+  let v6 = if Some([1, 2]) != Some([1, 3]) { 600000 } else { 0 }
+  let v7 = if "\{Some(1) == Some(1)}" == "true" { 7000000 } else { 0 }
+  v1 + v2 + v3 + v4 + v5 + v6 + v7
+}
+EOF
 # tann: function-type annotation arity. A parenthesized tuple parameter
 # `((A, B)) -> R` is ONE tuple param, distinct from `(A, B) -> R`'s two params —
 # previously both flattened to a two-param list and the tuple-param form failed
@@ -3109,6 +3129,7 @@ smoke_check seq 321
 smoke_check eveq 3021
 smoke_check qctor 11111
 smoke_check rec 4321
+smoke_check beq 7654321
 smoke_check tann 148
 smoke_check interp 4321
 smoke_check pneg 4321
@@ -3116,7 +3137,7 @@ smoke_check pstruct 78
 smoke_check tostr 4321
 smoke_check ieq 4321
 rm -rf "$sdir"
-echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/148/4321/4321/78/4321/4321)"
+echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/7654321/148/4321/4321/78/4321/4321)"
 
 # 40. V128 SIMD intrinsics (#536): the first-class V128 type + 12 wasm-SIMD
 #     intrinsics (v128_load/store/splat/eq/le_u/ge_u/and/or/not/bitmask/
