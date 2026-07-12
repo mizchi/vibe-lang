@@ -10,6 +10,17 @@ vibe compiler (selfhost, linear/RC lane) の性能改善は「synthetic bench �
 圧倒的に速く核心に届く。#799 でこの手順により重量級コンパイルを 39s→4s
 (約10倍) にした実績がある。
 
+## 0. ワンコマンド: scripts/profile_selfhost_compile.sh
+
+§1 の cpu-prof + self-time 集計と §3 のメモリ統計 (heap 高水位 / linear
+memory / RSS) を 1 コマンドに束ねたもの。まずこれを叩き、深掘りが必要に
+なったら §1 以降の手作業に降りる。
+
+```bash
+scripts/profile_selfhost_compile.sh /tmp/gen/stage2.wasm            # 既定 corpus
+scripts/profile_selfhost_compile.sh /tmp/gen/stage2.wasm foo.vibe 30
+```
+
 ## 1. まず実コンパイルをプロファイルする (最重要)
 
 ```bash
@@ -91,9 +102,24 @@ phase bench: selfhost_{lexer,parser,checker,codegen}_bench.vibe。
 | 手段 | 取れるもの |
 |---|---|
 | `Profiler::now_us` | 任意区間の実時間 (cache_probe_*_bench_test 群が使用) |
+| `Profiler::heap_bytes` | 任意区間のアロケーション量 (bump-heap pointer。now_us の allocation 版 — bump は解放しないので delta = その区間の確保量) |
 | `vibe test --coverage` | 関数/分岐 hit bitmap (通ったか。回数は取れない) |
 | debug_trace (`vibe.trace` section) | 関数 entry の実行順列 (先頭 4096) |
 | runner `--bench-count` + `--mem` 系 | ns/op, bytes/op (bump-heap delta) |
+
+### メモリ計測 (runner 側、ゲスト変更不要)
+
+- **`VIBE_WASM_MEMORY_STATS=1`**: run/bench 終了時に `[wasm-memory] ...
+  pages= bytes= heap_ptr= rss=` を stderr に 1 行出す。heap_ptr が bump 高水位。
+  参考値: 重量級 full-closure compile (codegen_lexer_test) 1 回で
+  heap ~362MB / RSS ~428MB (2026-07 計測)。
+- **`VIBE_PROFILE_MEMORY_MARKS=1`**: ゲストが `Profiler::now_us` を呼ぶ
+  たびに `[profile-memory] mark=N ...` を出す。profiled compile (full CLI
+  entry の `--profile-tsv` / `VIBE_PROFILE_TSV`) は stage 境界で now_us を
+  呼ぶので、stage ごとのメモリ推移が取れる。**注**: generation の stage2
+  (flat low-level entry) は profiled path を持たないため marks は出ない —
+  dist / `vibe/cli` entry の wasm で使う。
+- ゲスト内で区間を自分で測るなら `Profiler::heap_bytes` (上表)。
 
 ## 4. 修正したら必ずこの順で検証する
 
