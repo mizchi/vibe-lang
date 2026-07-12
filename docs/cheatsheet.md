@@ -480,12 +480,12 @@ handle { greet("world") } with Logger {
 ```
 
 継続呼び出しは `resume(v)` が canonical (one-shot tail-resumptive, ADR-0050)。
-operation の宣言 arity より 1 つ多い末尾パラメータを束縛すると、それが継続 `k` に
-なり、`resume` では書けない non-tail position で結果を使える (`Emit(v, k) => v + k(0)`)
-— **ただしこの `k` 規約は現在 fixture runner 専用で、selfhost build path
-(`vibe build` / FS compile) ではコンパイルできない** (`undefined variable
-(local): k @call`、#814)。build path での非 tail 継続は evidence-passing
-handler 移行 (#817) で対応予定。`resume` はどちらの経路でも動く。
+operation の宣言 arity より 1 つ多い末尾パラメータを束縛する `k` 規約
+(`Emit(v, k) => v + k(0)`、non-tail 継続) は **旧 MoonBit fixture runner
+専用だった機能で、selfhost build path では未サポート** — checker が
+`non-tail continuation binder (k-convention) is not supported by the build
+path` と reject する (#814)。非 tail 継続は evidence-passing handler 移行
+(#817) で対応予定。継続呼び出しは `resume(v)` を使う。
 規約の詳細は [archive/mut-effect-plan.md](archive/mut-effect-plan.md) の
 「継続呼び出し規約」(#627) を参照。
 

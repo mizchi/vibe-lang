@@ -681,19 +681,30 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
           },
           TMut => match peek(tokens, next + 1) {
             TIdent(name) => {
-              let eq_pos_m = match peek(tokens, next + 2) {
+              // #824: the annotation used to be parsed only to locate `=` and
+              // then discarded — `let mut x: Bool = 5` compiled silently.
+              // Enforce it exactly like the immutable branch: distribute a
+              // TyFn annotation onto a lambda value, otherwise ascribe-wrap.
+              let (m_ann, eq_pos_m) = match peek(tokens, next + 2) {
                 TColon => {
-                  let (_, tp) = parse_type_impl(tokens, next + 3, 0)
-                  tp
+                  let (mty, tp) = parse_type_impl(tokens, next + 3, 0)
+                  (Some(mty), tp)
                 },
-                _ => next + 2
+                _ => (None, next + 2)
               }
               let eq = expect_tk(tokens, eq_pos_m, "=")
               let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur)
               if next_pos <= eq {
                 throw("internal parser error: block let-mut parser did not advance")
               } else {
-                ArrayBuilder::push(steps, StepLetMut(name, val, blk_offset_at(starts, next - 1)))
+                let val2 = match m_ann {
+                  Some(the_type) => match distribute_local_fn_ann(the_type, val) {
+                    Some(distributed) => distributed,
+                    None => ascribe_wrap(val, the_type)
+                  },
+                  None => val
+                }
+                ArrayBuilder::push(steps, StepLetMut(name, val2, blk_offset_at(starts, next - 1)))
                 p = next_pos
               }
             },
