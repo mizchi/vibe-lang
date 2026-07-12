@@ -197,6 +197,42 @@ export let rec expr_is_boolish: (Expr, Array[String], CompileCtx) -> Bool with {
     op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||"
   } else if tag == 6 {
     get_eunaryop_op(e) == "!"
+  } else if tag == 16 {
+    // #815: an `is` expression desugars at parse time to a match whose arms
+    // all return Bool literals — classify such a match as boolish so
+    // `"\{opt is None}"` prints true/false instead of the raw 0/1.
+    let arms = get_match_arms(e)
+    let alen2 = Array::length(arms)
+    if alen2 == 0 {
+      false
+    } else {
+      let mut all_bool = true
+      let mut bi2 = 0
+      while bi2 < alen2 {
+        if expr_tag(get_arm_body(Array::get(arms, bi2))) != 1 {
+          all_bool = false
+        } else {
+          ()
+        }
+        bi2 = bi2 + 1
+      }
+      all_bool
+    }
+  } else if tag == 8 {
+    // #815: the `==` desugar rewrites array equality to the compiler-emitted
+    // `__arr_equals__<key>` helper and struct/enum equality to `T::equals`
+    // (both Bool-returning), so the EBinOp shape above is gone by codegen.
+    // `__arr_equals__` is a reserved compiler prefix; `::equals` (2 args) is
+    // the == rewrite's exact output shape. `not(...)`-wrapped `!=` rewrites
+    // are deliberately NOT classified (same shadowing caution as the #785-P2
+    // note above).
+    let bcallee = get_ecall_callee(e)
+    if is_eident(bcallee) {
+      let bcn = get_eident_name(bcallee)
+      String::starts_with(bcn, "__arr_equals__") || (String::ends_with(bcn, "::equals") && Array::length(get_ecall_args(e)) == 2)
+    } else {
+      false
+    }
   } else {
     false
   }
