@@ -128,3 +128,43 @@ test "while with compound condition" {
   assert(x == 1)
   assert(steps > 0)
 }
+
+// #808: break/continue inside a match arm inside `loop` must get the loop
+// desugar (payload threading). Before the fix, `continue(i + 1)` in an arm
+// looped without updating `i` (compile-clean infinite loop) and `break v`
+// dropped its value.
+test "break/continue inside match arm (#808)" {
+  let r = loop (i = 0) {
+    if i >= 10 { break -1 }
+    match i {
+      v if v > 2 => break v,
+      _ => continue(i + 1)
+    }
+  }
+  assert(r == 3)
+}
+
+test "multi-param continue inside match arm (#808)" {
+  let r = loop (i = 0, acc = 0) {
+    if i >= 5 { break acc }
+    match i % 2 {
+      0 => continue(i + 1, acc + i),
+      _ => continue(i + 1, acc)
+    }
+  }
+  assert(r == 6)
+}
+
+test "nested loop keeps its own params under match desugar (#808)" {
+  let r = loop (i = 0) {
+    if i >= 3 { break i * 10 }
+    let inner = loop (j = 0) {
+      match j {
+        2 => break j,
+        _ => continue(j + 1)
+      }
+    }
+    continue(i + inner - 1)
+  }
+  assert(r == 30)
+}
