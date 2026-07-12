@@ -23,7 +23,7 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 const { SymbolIndex } = require(path.join(__dirname, "..", "clients", "js", "symbol_index.js"));
 
-const ROOT = path.resolve(process.argv[2] && !process.argv[2].startsWith("--") ? process.argv[2] : path.join(__dirname, "..", "vibe"));
+const ROOT = path.resolve(process.argv[2] && !process.argv[2].startsWith("--") ? process.argv[2] : path.join(__dirname, "..", "lib", "@vibe", "compiler"));
 const WANT_BASELINE = process.argv.includes("--baseline");
 
 function walk(dir, out) {

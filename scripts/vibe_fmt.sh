@@ -34,7 +34,7 @@ esac
 [ -f "$ROOT_DIR/$src_rel" ] || { echo "vibe_fmt.sh: not found: $src_rel" >&2; exit 2; }
 
 seed="$ROOT_DIR/bootstrap/seed/selfhost_compiler.wasm"
-entry_src="vibe/cli/fmt_entry.vibe"
+entry_src="lib/@vibe/cli/fmt_entry.vibe"
 work="$ROOT_DIR/_build/vibe_fmt"
 mkdir -p "$work"
 entry_wasm_rel="_build/vibe_fmt/fmt_entry.wasm"

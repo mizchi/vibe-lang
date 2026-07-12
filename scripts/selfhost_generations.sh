@@ -666,7 +666,7 @@ command_build() {
   fi
   mkdir -p "$out_dir"
   local requested_entry="$entry"
-  if [ "$(rel_path "$requested_entry")" = "vibe/cli/selfhost_entry.vibe" ] && \
+  if [ "$(rel_path "$requested_entry")" = "lib/@vibe/cli/selfhost_entry.vibe" ] && \
     [ "$SEED_ENTRY" = "lib/@vibe/compiler/selfhost_cli_support.vibe" ]; then
     die "split CLI generation requires a bootstrap bump first; current fixed seed uses legacy selfhost_cli_support.vibe"
   fi

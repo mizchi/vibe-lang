@@ -3,7 +3,7 @@
 > **Status (2026-06-23, #594):** vibe is now **selfhost-only**. The MoonBit host
 > implementation (`src/`, `moon.mod`) was retired. The compiler is built,
 > checked, and run entirely from the committed seed (`bootstrap/seed/`)
-> + selfhost source (`lib/@vibe/compiler/`, `vibe/cli/`) via the Rust/node wasm runner
+> + selfhost source (`lib/@vibe/compiler/`, `lib/@vibe/cli/`) via the Rust/node wasm runner
 > — **no MoonBit toolchain (`moon`) is required**. The default gate is the
 > moon-free `pkf run release-check` → `scripts/selfhost_only_gate.sh`.
 >

@@ -27,8 +27,8 @@ case "$shard" in
     scripts/test_selfhost_wasi_selfbuild.sh
     ;;
   cli)
-    # Library `vibe test` smoke (selfhost-CLI-compilable subset; covers lib/@vibex/wasm,
-    # vibe/x, vibe/prelude — the selfhost-only gate doesn't reach these).
+    # Library `vibe test` smoke (selfhost-CLI-compilable subset; covers lib/@vibex/wasm and
+    # lib/@vibe/prelude — the selfhost-only gate doesn't reach these).
     bash scripts/test_vibe_library.sh
     bash scripts/test_selfhost_cli_core.sh
     bash scripts/test_selfhost_cli_component_preview2.sh

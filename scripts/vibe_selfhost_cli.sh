@@ -7,7 +7,7 @@
 #   VIBE_CLI_BIN_OVERRIDE="$PWD/scripts/vibe_selfhost_cli.sh" \
 #     bash scripts/run_cached_vibe.sh compile --wasm foo.vibe -o foo.wasm
 #
-# Scope: only the commands the selfhost CLI (vibe/cli/selfhost_entry.vibe)
+# Scope: only the commands the selfhost CLI (lib/@vibe/cli/selfhost_entry.vibe)
 # implements — compile / build / check / compile-lite / bundle. Other commands
 # (run, test, fmt, normalize, bench, ...) are not yet ported (see
 # docs/moonbit-retirement.md, Stage 4.5) and must still go through the host CLI;

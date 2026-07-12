@@ -220,8 +220,8 @@ fi
 
 echo "selfhost generations cli-seed self-test: ok"
 
-mkdir -p "$CLI_ROOT/vibe/cli"
-printf 'export let cli_main: () -> Int = () -> { 0 }\n' > "$CLI_ROOT/vibe/cli/selfhost_entry.vibe"
+mkdir -p "$CLI_ROOT/lib/@vibe/cli"
+printf 'export let cli_main: () -> Int = () -> { 0 }\n' > "$CLI_ROOT/lib/@vibe/cli/selfhost_entry.vibe"
 
 set +e
 VIBE_PROJECT_ROOT="$CLI_ROOT" \
@@ -230,7 +230,7 @@ VIBE_SELFHOST_GENERATION_VALIDATE_RUN=0 \
   bash "$SCRIPT" build \
     --manifest "$CLI_ROOT/bootstrap/seed.json" \
     --out-dir "$CLI_ROOT/split-out" \
-    --entry vibe/cli/selfhost_entry.vibe >"$CLI_ROOT/split.stdout" 2>"$CLI_ROOT/split.stderr"
+    --entry lib/@vibe/cli/selfhost_entry.vibe >"$CLI_ROOT/split.stdout" 2>"$CLI_ROOT/split.stderr"
 split_status=$?
 set -e
 if [ "$split_status" -eq 0 ]; then

@@ -111,7 +111,7 @@ trampoline, `comp_emit_component_wasm_string_handler`); the runner layer
 `wasmtime serve`. E2E gate: `scripts/test_wasi_http_p3_full_gate.sh`.
 
 The algebraic-effect style HTTP server (`effect HttpReq` + `perform`, see
-`vibe/wasi/p3/example_server_v2.vibe`) composes with this: discharge the
+`lib/@vibe/wasi/p3/example_server_v2.vibe`) composes with this: discharge the
 effects inside `handler` with `handle`, keeping the component boundary at the
 4-string contract while the WIT world documents the internal effect surface
 of anything you choose to export.

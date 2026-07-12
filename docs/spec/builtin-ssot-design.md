@@ -39,7 +39,7 @@ declarations.vibe  (SSoT, 人間が編集)
 ### declarations.vibe 構文
 
 ```vibe
-// vibe/builtins/declarations.vibe
+// lib/@vibe/compiler/builtins/declarations.vibe
 
 //# Array
 declare Array::new() -> Array[T]

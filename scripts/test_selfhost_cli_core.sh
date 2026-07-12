@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUT_DIR="$PROJECT_ROOT/_build/bench/selfhost_cli_core"
-ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/vibe/cli/selfhost_entry.vibe}"
+ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/lib/@vibe/cli/selfhost_entry.vibe}"
 STAGE_TIMEOUT_SEC="${VIBE_SELFHOST_CLI_CORE_STAGE_TIMEOUT_SEC:-300}"
 STAGE1_CORE_WASM="$OUT_DIR/index_stage1.wasm"
 INPUT_SOURCE="$OUT_DIR/core_env_input.vibe"

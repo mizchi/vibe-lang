@@ -43,9 +43,9 @@ seed として固定し、stage を分けて検証すること。vibe はこの�
 配下に置く。2026-06-12 の cutover seed は
 `selfhost-cutover-base-2026-06-12` / `39eab0519952ca72599b0b7064d00e3fbd2ac302`
 に固定している。canonical dist / CLI build entry は `cli_main` を持つ
-`vibe/cli/selfhost_entry.vibe` の wasm とし、各世代は次世代の compiler source を
+`lib/@vibe/cli/selfhost_entry.vibe` の wasm とし、各世代は次世代の compiler source を
 `cli_main` 経由でビルドできるものとして扱う。CLI の argv parsing / command
-dispatch は `vibe/cli/`、compiler 本体・link/check/build helper は
+dispatch は `lib/@vibe/cli/`、compiler 本体・link/check/build helper は
 `lib/@vibe/compiler/` に置き、ビルド単位を分ける。
 
 ```bash
@@ -65,7 +65,7 @@ stage2 -> bootstrap bump の流れを追跡したいときの入口にする。
 扱う。`pkf run selfhost-generation` は seed provenance に従い、安定した
 low-level compiler entry (`lib/@vibe/compiler/selfhost_cli_support.vibe`) を flat source
 化して stage を回す。`build-selfhost-dist` / `test-selfhost-cli-core` は
-`vibe/cli/selfhost_entry.vibe` を使う。split CLI entry を generation default に
+`lib/@vibe/cli/selfhost_entry.vibe` を使う。split CLI entry を generation default に
 昇格する場合は、別の bootstrap bump として stage2/stage3、corpus、perf/RSS を
 通してから manifest entry を切り替える。
 
@@ -74,7 +74,7 @@ low-level compiler entry (`lib/@vibe/compiler/selfhost_cli_support.vibe`) を fl
 - stage0: 固定 seed compiler。新しい compiler source をビルドするためだけに使う。
 - stage1: stage0 が現在 source から作った compiler。現行 generation は固定 seed
   provenance に従う flat low-level compiler entry を使い、dist/component/CLI gate は
-  `vibe/cli/` entry と `lib/@vibe/compiler/` source を使う。
+  `lib/@vibe/cli/` entry と `lib/@vibe/compiler/` source を使う。
 - stage2: stage1 が同じ source から作った compiler。配布・tag 候補は stage2。
 - stage3: optional。同じ source を stage2 で再ビルドし、stage2 と stage3 の
   挙動または artifact が一致するかを確認する。
@@ -153,7 +153,7 @@ cutover 後も runner と compiler artifact は分ける。
 
 - runner layer: `runtime/moonrun_wasmtime`、wasmtime flags、cwasm cache、
   host import、component adapter。
-- compiler wasm layer: `vibe/cli/` の CLI entry と `lib/@vibe/compiler/` の compiler 実装から作る dist/component/check entry。
+- compiler wasm layer: `lib/@vibe/cli/` の CLI entry と `lib/@vibe/compiler/` の compiler 実装から作る dist/component/check entry。
 
 runner layer は性能・実行基盤の都合で差し替えてよいが、canonical compiler は
 portable selfhost wasm として再構築できることを gate に残す。
@@ -220,11 +220,11 @@ seed が build 環境にある状態で確認する。
 
 `src/` は selfhost cutover 後、legacy bootstrap/fallback 層へ縮退する。
 新機能、bugfix、CLI 挙動変更、builtin 追加は `src/` に入れず、
-`lib/@vibe/compiler/` / `vibe/cli/` 側で実装する。削除は一度に行わず、次の順に進める。
+`lib/@vibe/compiler/` / `lib/@vibe/cli/` 側で実装する。削除は一度に行わず、次の順に進める。
 
 1. seed tag と manifest を固定する。2026-06-12 cutover seed は完了済み。
 2. default CLI build/run/check/test を selfhost wasm 経路へ向ける。新規 CLI 実装は
-   `vibe/cli/` と `lib/@vibe/compiler/` 側で行う。
+   `lib/@vibe/cli/` と `lib/@vibe/compiler/` 側で行う。
 3. CI で seed -> stage1 -> stage2 と corpus/perf/RSS gate を継続 green にする。
 4. MoonBit `src/` を runner/fallback に必要な最小限へ縮小する。
 5. fallback が不要になった時点で archive または削除する。

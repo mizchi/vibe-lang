@@ -30,7 +30,7 @@ core artifact:
 VIBE_SELFHOST_PERF_COMPILER_KIND=cli-core scripts/bench_selfhost_perf.sh
 ```
 
-This builds `vibe/cli/selfhost_entry.vibe` to
+This builds `lib/@vibe/cli/selfhost_entry.vibe` to
 `_build/bench/selfhost_cli_core/index_stage1.wasm` via
 `scripts/build_selfhost_cli_core.sh`, then runs the normal
 `compile-lite` bench commands against that wasm. Because this artifact
