@@ -670,6 +670,39 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         }
         (new_env, s, c)
       },
+      SEffectDef(_, ename, eparams, ops) => {
+        // #813: register the effect's operation signatures (resolved to
+        // checker Types) so perform arguments, handler arm names/arity/
+        // payload binds, and resume values can be validated. Generic effects
+        // (type params) are not registered — every consumer ground-gates on
+        // the registry, so an absent entry means "no signature checking",
+        // exactly the pre-#813 behavior.
+        if Array::length(eparams) == 0 {
+          let resolved_ops = Array::slice([
+            ("", Array::slice([
+              CtUnknown
+            ], 0, 0), CtUnknown)
+          ], 0, 0)
+          let mut oi = 0
+          while oi < Array::length(ops) {
+            let (opname, opparams, opret) = Array::get(ops, oi)
+            let rp = Array::slice([
+              CtUnknown
+            ], 0, 0)
+            let mut pi = 0
+            while pi < Array::length(opparams) {
+              Array::push(rp, resolve_type_expr(Array::get(opparams, pi), defs))
+              pi = pi + 1
+            }
+            Array::push(resolved_ops, (opname, rp, resolve_type_expr(opret, defs)))
+            oi = oi + 1
+          }
+          Array::push(defs, TDEffect(ename, resolved_ops))
+        } else {
+          ()
+        }
+        (env, s, c)
+      },
       _ => (env, s, c)
     }
     cur_env = new_env

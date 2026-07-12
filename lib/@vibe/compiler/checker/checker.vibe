@@ -1,7 +1,7 @@
 //# Imports
 
 import .. / core / ast.vibe {
-  Expr
+  Expr, Pat
 }
 
 import .. / core / types.vibe {
@@ -482,6 +482,54 @@ let struct_field_names_match: (Array[(String, Type)], Array[(String, Type)]) -> 
       i = i + 1
     }
     ok
+  }
+}
+
+// #813: look up a qualified operation name ("Eff::Op") in the declared-effect
+// registry (TDEffect defs). None when the name is unqualified, the effect is
+// undeclared/builtin/generic, or the op is unknown WITHIN a declared effect is
+// reported separately by the callers — this returns None only when there is
+// nothing to validate against (pre-#813 behavior).
+let effect_op_sig: (Array[TypeDef], String) -> Option[(Array[Type], Type)] = (defs, qname) -> {
+  let ci = String::index_of(qname, "::")
+  if ci < 0 {
+    None
+  } else {
+    let eff = String::substring(qname, 0, ci)
+    let op = String::substring(qname, ci + 2, String::length(qname))
+    match find_typedef(defs, eff) {
+      Some(td) => match td {
+        TDEffect(_, ops) => {
+          let mut oi = 0
+          let mut found = None
+          while oi < Array::length(ops) {
+            let (oname, oparams, oret) = Array::get(ops, oi)
+            if oname == op {
+              found = Some((oparams, oret))
+            } else {
+              ()
+            }
+            oi = oi + 1
+          }
+          found
+        },
+        _ => None
+      },
+      None => None
+    }
+  }
+}
+
+// #813: is `eff` a DECLARED effect (TDEffect) in this module? Distinguishes
+// "unknown op of a declared effect" (reportable) from builtin/imported
+// effects the registry cannot see (skip).
+let effect_is_declared: (Array[TypeDef], String) -> Bool = (defs, eff) -> {
+  match find_typedef(defs, eff) {
+    Some(td) => match td {
+      TDEffect(_, _) => true,
+      _ => false
+    },
+    None => false
   }
 }
 
@@ -1310,6 +1358,83 @@ let parse_tuple_index: (String) -> Option[Int] = (s) -> {
   }
 }
 
+// #813: walk a handler arm body for `resume(x)` calls and check x against the
+// op's declared return type (ground-gated via check_assignable). Nested
+// EHandle subtrees are skipped entirely — their resumes belong to the inner
+// handler's own arms. Runs on a throwaway lane after the arm body was checked,
+// so it only ADDS diagnostics (main inference flow untouched).
+let rec check_resume_values: (Expr, Type, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> Subst = (e, ret_ty, env, defs, s, c, errors, tytab) -> {
+  match e {
+    ECall(callee, args, _) => {
+      let mut s1 = s
+      match callee {
+        EIdent(nm, _) => {
+          if nm == "resume" && Array::length(args) == 1 {
+            let (aty, ns, _) = check_expr(Array::get(args, 0), env, defs, s1, c, errors, tytab)
+            s1 = check_assignable(ret_ty, subst_apply(ns, aty), ns, errors, "resume value type mismatch", 0 - 1)
+          } else {
+            ()
+          }
+        },
+        _ => {
+          s1 = check_resume_values(callee, ret_ty, env, defs, s1, c, errors, tytab)
+        }
+      }
+      let mut ri = 0
+      while ri < Array::length(args) {
+        s1 = check_resume_values(Array::get(args, ri), ret_ty, env, defs, s1, c, errors, tytab)
+        ri = ri + 1
+      }
+      s1
+    },
+    EHandle(_, _) => s,
+    ELet(_, v, b, _) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
+    ELetMut(_, v, b, _) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
+    ELetRec(_, v, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
+    ESeq(a, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(a, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
+    EIf(cnd, t, el) => check_resume_values(el, ret_ty, env, defs, check_resume_values(t, ret_ty, env, defs, check_resume_values(cnd, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab), c, errors, tytab),
+    EMatch(scr, marms) => {
+      let mut s1 = check_resume_values(scr, ret_ty, env, defs, s, c, errors, tytab)
+      let mut mi = 0
+      while mi < Array::length(marms) {
+        let (_, mb) = Array::get(marms, mi)
+        s1 = check_resume_values(mb, ret_ty, env, defs, s1, c, errors, tytab)
+        mi = mi + 1
+      }
+      s1
+    },
+    EWhile(cnd, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(cnd, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
+    EForIn(_, _, it, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(it, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
+    EBinOp(_, l, r) => check_resume_values(r, ret_ty, env, defs, check_resume_values(l, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
+    EUnaryOp(_, inner) => check_resume_values(inner, ret_ty, env, defs, s, c, errors, tytab),
+    EAssign(_, v, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
+    EAssignOp(_, _, v, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
+    EFn(_, _, _, _, _, fb) => check_resume_values(fb, ret_ty, env, defs, s, c, errors, tytab),
+    EThrow(inner) => check_resume_values(inner, ret_ty, env, defs, s, c, errors, tytab),
+    EReturn(inner) => check_resume_values(inner, ret_ty, env, defs, s, c, errors, tytab),
+    EDot(obj, _, _, _) => check_resume_values(obj, ret_ty, env, defs, s, c, errors, tytab),
+    ETuple(items) => {
+      let mut s1 = s
+      let mut ti = 0
+      while ti < Array::length(items) {
+        s1 = check_resume_values(Array::get(items, ti), ret_ty, env, defs, s1, c, errors, tytab)
+        ti = ti + 1
+      }
+      s1
+    },
+    EArray(items) => {
+      let mut s1 = s
+      let mut ti = 0
+      while ti < Array::length(items) {
+        s1 = check_resume_values(Array::get(items, ti), ret_ty, env, defs, s1, c, errors, tytab)
+        ti = ti + 1
+      }
+      s1
+    },
+    _ => s
+  }
+}
+
 export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int) = (expr, env, defs, s, c, errors, tytab) -> {
   match expr {
     EInt(_) => (CtInt, s, c),
@@ -1437,19 +1562,68 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         if name == "perform" {
         if Array::length(args) == 1 {
           match Array::get(args, 0) {
-            ECall(_, opargs, _) => {
+            ECall(op_callee, opargs, _) => {
               let oalen = Array::length(opargs)
               let mut s1 = s
               let mut c1 = c
+              let oparg_tys = Array::slice([
+                CtUnknown
+              ], 0, 0)
               let mut ai = 0
               while ai < oalen {
-                let (_, ns, nc) = check_expr(Array::get(opargs, ai), env, defs, s1, c1, errors, tytab)
+                let (oat, ns, nc) = check_expr(Array::get(opargs, ai), env, defs, s1, c1, errors, tytab)
+                Array::push(oparg_tys, oat)
                 s1 = ns
                 c1 = nc
                 ai = ai + 1
               }
-              let (tv, c2) = fresh_var(c1)
-              (tv, s1, c2)
+              // #813: when the op belongs to a DECLARED effect, validate the
+              // perform against its signature — arity and (ground-gated)
+              // argument types were previously unchecked, so
+              // `perform R::Take("str")` against `Take(Int)` compiled and
+              // produced garbage. Builtin/imported effects (no TDEffect) skip.
+              match op_callee {
+                EIdent(op_qname, op_off) => match effect_op_sig(defs, op_qname) {
+                  Some(sig) => {
+                    let (sig_params, sig_ret) = sig
+                    if Array::length(sig_params) != oalen {
+                      Array::push(errors, String::concat("perform ", String::concat(op_qname, String::concat(" expects ", String::concat(__to_string(Array::length(sig_params)), String::concat(" argument(s), got ", String::concat(__to_string(oalen), off_marker(op_off))))))))
+                    } else {
+                      let mut vi = 0
+                      while vi < oalen {
+                        s1 = check_assignable(Array::get(sig_params, vi), subst_apply(s1, Array::get(oparg_tys, vi)), s1, errors, String::concat("perform argument type mismatch for ", op_qname), op_off)
+                        vi = vi + 1
+                      }
+                    }
+                    // The perform's value is the op's declared return type —
+                    // typing it (instead of a fresh var) also lets resume/arm
+                    // consumers see the concrete type. Non-ground returns keep
+                    // the fresh var (generic inference untouched).
+                    if type_is_ground(sig_ret) {
+                      (sig_ret, s1, c1)
+                    } else {
+                      let (tv, c2) = fresh_var(c1)
+                      (tv, s1, c2)
+                    }
+                  },
+                  None => {
+                    // Unknown op of a DECLARED effect: the typo'd op would
+                    // never be matched by any handler arm — report it.
+                    let ci2 = String::index_of(op_qname, "::")
+                    if ci2 > 0 && effect_is_declared(defs, String::substring(op_qname, 0, ci2)) {
+                      Array::push(errors, String::concat("unknown operation `", String::concat(String::substring(op_qname, ci2 + 2, String::length(op_qname)), String::concat("` of effect ", String::concat(String::substring(op_qname, 0, ci2), off_marker(op_off))))))
+                    } else {
+                      ()
+                    }
+                    let (tv, c2) = fresh_var(c1)
+                    (tv, s1, c2)
+                  }
+                },
+                _ => {
+                  let (tv, c2) = fresh_var(c1)
+                  (tv, s1, c2)
+                }
+              }
             },
             EIdent(_, _) => {
               let (tv, c2) = fresh_var(c)
@@ -2172,7 +2346,73 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         (result_ty, si, ci)
       }
     },
-    EHandle(body, _) => check_expr(body, env, defs, s, c, errors, tytab),
+    EHandle(body, harms) => {
+      let (hty, hs, hc) = check_expr(body, env, defs, s, c, errors, tytab)
+      // #813: validate handler arms against DECLARED effects (TDEffect).
+      // Previously arms were never checked at all: a typo'd op name silently
+      // handled a different op, payload binds carried garbage types, and
+      // `resume("oops")` into an Int-returning op compiled. Scope is limited
+      // to declared effects — arms for builtin/imported effects (Error etc.)
+      // keep the pre-#813 behavior (unchecked) so the compiler's ~4k
+      // `with Error` arms are untouched.
+      let mut hs1 = hs
+      let mut hc1 = hc
+      let mut hai = 0
+      while hai < Array::length(harms) {
+        let (hpat, hbody) = Array::get(harms, hai)
+        match hpat {
+          PCtor(hqname, hbinds) => {
+            let hci = String::index_of(hqname, "::")
+            if hci > 0 && effect_is_declared(defs, String::substring(hqname, 0, hci)) {
+              match effect_op_sig(defs, hqname) {
+                Some(hsig) => {
+                  let (hparams, hret) = hsig
+                  let hplen = Array::length(hparams)
+                  let hblen = Array::length(hbinds)
+                  // The op's declared arity, plus optionally one trailing
+                  // continuation binder (`Op(v, k)` — the #627 k-convention).
+                  if hblen != hplen && hblen != hplen + 1 {
+                    Array::push(errors, String::concat("handler arm ", String::concat(hqname, String::concat(" expects ", String::concat(__to_string(hplen), " payload binding(s)")))))
+                  } else {
+                    ()
+                  }
+                  // Bind payload names to the op's param types and check the
+                  // arm body (the trailing k binder stays CtUnknown).
+                  let mut henv = env
+                  let mut hbi = 0
+                  while hbi < hblen {
+                    match Array::get(hbinds, hbi) {
+                      PBind(hbname) => {
+                        henv = env_bind(henv, hbname, if hbi < hplen {
+                          Array::get(hparams, hbi)
+                        } else {
+                          CtUnknown
+                        })
+                      },
+                      _ => ()
+                    }
+                    hbi = hbi + 1
+                  }
+                  let (_, hns, hnc) = check_expr(hbody, henv, defs, hs1, hc1, errors, tytab)
+                  hs1 = hns
+                  hc1 = hnc
+                  // resume(x): x must be assignable to the op's declared
+                  // return type (ground-gated). Throwaway walk — nested
+                  // handles are skipped (their resumes belong to inner arms).
+                  hs1 = check_resume_values(hbody, hret, henv, defs, hs1, hc1, errors, tytab)
+                },
+                None => Array::push(errors, String::concat("handler arm `", String::concat(String::substring(hqname, hci + 2, String::length(hqname)), String::concat("` is not an operation of effect ", String::substring(hqname, 0, hci)))))
+              }
+            } else {
+              ()
+            }
+          },
+          _ => ()
+        }
+        hai = hai + 1
+      }
+      (hty, hs1, hc1)
+    },
     EWhile(cond, body) => {
       let (ct, s1, c1) = check_expr(cond, env, defs, s, c, errors, tytab)
       let resolved_ct = subst_apply(s1, ct)
