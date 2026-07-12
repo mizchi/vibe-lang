@@ -282,7 +282,7 @@ export let rec rewrite_import_alias_expr: (Expr, Array[(String, String)]) -> Exp
     EArray(items) => EArray(for item in items {
       rewrite_import_alias_expr(item, aliases)
     }),
-    ERecord(fields) => ERecord(for field in fields {
+    ERecord(rn, fields) => ERecord(rn, for field in fields {
       let (name, value) = field
       (name, rewrite_import_alias_expr(value, aliases))
     }),
@@ -831,10 +831,19 @@ let rec rewrite_private_type_ctor_expr: (Expr, Array[(String, String)], Array[(S
     EArray(items) => EArray(for item in items {
       rewrite_private_type_ctor_expr(item, type_renames, ctor_renames)
     }),
-    ERecord(fields) => ERecord(for field in fields {
-      let (name, value) = field
-      (name, rewrite_private_type_ctor_expr(value, type_renames, ctor_renames))
-    }),
+    ERecord(rn, fields) => {
+      // #810: the struct-literal name now travels in the AST — rename it
+      // alongside the type (same as PStruct below), or the checker's named
+      // field validation would see the pre-rename spelling after merge.
+      let next_rn = match lookup_alias(type_renames, rn) {
+        Some(renamed) => renamed,
+        None => rn
+      }
+      ERecord(next_rn, for field in fields {
+        let (name, value) = field
+        (name, rewrite_private_type_ctor_expr(value, type_renames, ctor_renames))
+      })
+    },
     EIf(cond, then_expr, else_expr) => EIf(
       rewrite_private_type_ctor_expr(cond, type_renames, ctor_renames),
       rewrite_private_type_ctor_expr(then_expr, type_renames, ctor_renames),

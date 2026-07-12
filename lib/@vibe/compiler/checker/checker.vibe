@@ -2106,6 +2106,16 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           }
           ai = ai + 1
         }
+        // #809: a match with ZERO arms is only produced by the guard desugar
+        // (#666) — `pat if g => body` chains end in `match __mg { }` when NO
+        // unguarded arm exists — or by a literal empty `match x { }`. Both
+        // reach codegen as an unconditional `unreachable`: every guard failing
+        // at runtime trapped with no source location. Reject at compile time.
+        if Array::length(arms) == 0 {
+          Array::push(errors, "non-exhaustive match: no unguarded arm covers the scrutinee (all guards may fail — add an unguarded arm or `_`)")
+        } else {
+          ()
+        }
         // Exhaustiveness: when the scrutinee is a concrete user enum, the arms
         // must either include a catch-all (`_` / bind) or cover EVERY variant —
         // otherwise an unhandled variant traps at runtime. Conservative: only a
@@ -2479,7 +2489,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       }
       (CtUnit, s1, c1)
     },
-    ERecord(fields) => {
+    ERecord(rn, fields) => {
       let flen = Array::length(fields)
       let mut s1 = s
       let mut c1 = c
@@ -2514,15 +2524,93 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         c1 = nc
         fi = fi + 1
       }
-      // Check the field values against the matching struct's declared types.
-      let s2 = check_record_fields(defs, field_tys, s1, errors)
-      // Recover the struct identity (when unambiguous) so downstream uses — in
-      // particular `mut`-field write checking — see a concrete `CtStruct`.
-      let rec_ty = match resolve_record_struct_name(defs, field_tys) {
-        Some(sname) => CtStruct(sname),
-        None => CtUnknown
+      // #810: a NAMED struct literal `S::{ ... }` (rn carries the parsed
+      // struct name since the ERecord arity bump) is validated against S's
+      // declaration by NAME — the field-set heuristics below cannot tell a
+      // typo'd `Point::{ x, z }` from an intentional anonymous
+      // `record { x, z }`, so before this check a same-count wrong-name
+      // field silently landed in another field's slot. Anonymous literals
+      // (rn == "") keep the field-set path unchanged.
+      if rn != "" {
+        match find_typedef(defs, rn) {
+          Some(td) => match td {
+            TDStruct(_, dfields, _) => {
+              // Unknown literal fields (present in the literal, absent from
+              // the declaration).
+              let mut ui = 0
+              while ui < Array::length(field_tys) {
+                let (an, _) = Array::get(field_tys, ui)
+                let mut known = false
+                let mut uj = 0
+                while uj < Array::length(dfields) {
+                  let (dn, _) = Array::get(dfields, uj)
+                  if dn == an {
+                    known = true
+                  } else {
+                    ()
+                  }
+                  uj = uj + 1
+                }
+                if !known {
+                  Array::push(errors, String::concat("unknown field `", String::concat(an, String::concat("` for struct ", rn))))
+                } else {
+                  ()
+                }
+                ui = ui + 1
+              }
+              // Missing declared fields (absent from the literal).
+              let mut mi = 0
+              while mi < Array::length(dfields) {
+                let (dn, dty) = Array::get(dfields, mi)
+                match lookup_actual_field_ty(field_tys, dn) {
+                  Some(aty) => {
+                    // Value type check (ground-gated like check_record_fields).
+                    s1 = check_assignable(dty, subst_apply(s1, aty), s1, errors, String::concat("struct field type mismatch for ", dn), 0 - 1)
+                  },
+                  None => Array::push(errors, String::concat("missing field `", String::concat(dn, String::concat("` in construction of struct ", rn))))
+                }
+                mi = mi + 1
+              }
+              // Struct identity: keep the monomorphic-only policy of
+              // resolve_record_struct_name (generic structs stay CtUnknown to
+              // preserve type-param inference).
+              if struct_fields_ground(dfields) {
+                (CtStruct(rn), s1, c1)
+              } else {
+                (CtUnknown, s1, c1)
+              }
+            },
+            _ => {
+              Array::push(errors, String::concat("`", String::concat(rn, "` is not a struct (struct literal)")))
+              (CtUnknown, s1, c1)
+            }
+          },
+          // Unknown name: fall back to the anonymous field-set path instead
+          // of erroring — the merge layer's private-struct rename and alias
+          // imports can leave rn referring to a pre-rename spelling that the
+          // merged defs no longer contain. The typo detection above still
+          // fires for the common case (the struct EXISTS and a field name is
+          // wrong).
+          None => {
+            let s2f = check_record_fields(defs, field_tys, s1, errors)
+            let rec_tyf = match resolve_record_struct_name(defs, field_tys) {
+              Some(sname) => CtStruct(sname),
+              None => CtUnknown
+            }
+            (rec_tyf, s2f, c1)
+          }
+        }
+      } else {
+        // Check the field values against the matching struct's declared types.
+        let s2 = check_record_fields(defs, field_tys, s1, errors)
+        // Recover the struct identity (when unambiguous) so downstream uses — in
+        // particular `mut`-field write checking — see a concrete `CtStruct`.
+        let rec_ty = match resolve_record_struct_name(defs, field_tys) {
+          Some(sname) => CtStruct(sname),
+          None => CtUnknown
+        }
+        (rec_ty, s2, c1)
       }
-      (rec_ty, s2, c1)
     },
     ETuple(items) => {
       let ilen = Array::length(items)

@@ -345,7 +345,7 @@ export let rec check_effects_expr: (Expr, TypeEnv, Bool) -> Array[EffectError] =
       }
       errors
     },
-    ERecord(fields) => {
+    ERecord(_, fields) => {
       let mut fi = 0
       while fi < Array::length(fields) {
         let (_, fval) = Array::get(fields, fi)
@@ -580,7 +580,7 @@ export let rec check_async_effects_expr: (Expr, TypeEnv, Bool) -> Array[EffectEr
       }
       errors
     },
-    ERecord(fields) => {
+    ERecord(_, fields) => {
       let mut fi = 0
       while fi < Array::length(fields) {
         let (_, fval) = Array::get(fields, fi)
@@ -1053,7 +1053,7 @@ export let check_perform_effects_expr_tx: (Expr, Array[String], Bool, Array[Stri
           ei = ei + 1
         }
       },
-      ERecord(fields) => {
+      ERecord(_, fields) => {
         let mut fi = 0
         while fi < Array::length(fields) {
           let (_, fval) = Array::get(fields, fi)
@@ -1137,19 +1137,62 @@ export let check_perform_effects_stmt: (Stmt) -> Array[EffectError] = (stmt) -> 
   ], 0, 0))
 }
 
-export let check_perform_effects_stmts: (Array[Stmt]) -> Array[EffectError] = (stmts) -> {
-  // Build the call-graph effect map (parallel arrays) from every top-level
-  // binding's declared row, then run the per-stmt check WITH transitive
-  // enforcement so a caller must declare (or handle) the effects of the
-  // functions it invokes.
-  let fn_names = Array::slice([
-    ""
-  ], 0, 0)
-  let fn_effs = Array::slice([
-    Array::slice([
-      ""
-    ], 0, 0)
-  ], 0, 0)
+// #812: seed the transitive call-graph map with the checker ENV's bindings.
+// fn_names/fn_effs was built from the CURRENT module's top-level statements
+// only, so a caller could invoke an IMPORTED `with { Fs }` function without
+// declaring Fs and reach the filesystem at runtime — while the identical
+// shape with a local callee was rejected. An imported binding's CtFn carries
+// its declared effect row in the env; add every effect-bearing env binding
+// AFTER the local rows (lookup_fn_effs is first-match, so a same-name local
+// row still shadows the env row). Effect-free bindings are skipped — an
+// absent row and an empty row enforce the same (nothing).
+let push_env_fn_eff: (String, Type, Array[String], Array[Array[String]]) -> Unit = (name, ty, fn_names, fn_effs) -> {
+  let fnty = match ty {
+    CtForAll(_, _, body) => body,
+    _ => ty
+  }
+  match fnty {
+    CtFn(_, _, eff) => {
+      let labels = effect_decl_labels(eff)
+      if Array::length(labels) > 0 {
+        Array::push(fn_names, name)
+        Array::push(fn_effs, labels)
+      } else {
+        ()
+      }
+    },
+    _ => ()
+  }
+}
+
+let seed_env_fn_effs: (TypeEnv, Array[String], Array[Array[String]]) -> Unit = (env, fn_names, fn_effs) -> {
+  let mut cur = env
+  let mut looping = true
+  while looping {
+    match cur {
+      EnvBind(name, ty, rest) => {
+        push_env_fn_eff(name, ty, fn_names, fn_effs)
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest) => cur = rest,
+      EnvTraitImpl(_, _, rest) => cur = rest,
+      EnvTraitImplGen(_, _, _, _, rest) => cur = rest,
+      EnvCached(_, rest) => cur = rest,
+      EnvFlat(entries) => {
+        let mut ei = 0
+        while ei < Array::length(entries) {
+          let (ename, ety) = Array::get(entries, ei)
+          push_env_fn_eff(ename, ety, fn_names, fn_effs)
+          ei = ei + 1
+        }
+        looping = false
+      },
+      EnvEmpty => looping = false
+    }
+  }
+}
+
+let build_perform_fn_effs: (Array[Stmt], Array[String], Array[Array[String]]) -> Unit = (stmts, fn_names, fn_effs) -> {
   let mut m = 0
   while m < Array::length(stmts) {
     match Array::get(stmts, m) {
@@ -1165,6 +1208,28 @@ export let check_perform_effects_stmts: (Array[Stmt]) -> Array[EffectError] = (s
     }
     m = m + 1
   }
+}
+
+export let check_perform_effects_stmts: (Array[Stmt]) -> Array[EffectError] = (stmts) -> {
+  check_perform_effects_stmts_env(stmts, EnvEmpty)
+}
+
+export let check_perform_effects_stmts_env: (Array[Stmt], TypeEnv) -> Array[EffectError] = (stmts, env) -> {
+  // Build the call-graph effect map (parallel arrays) from every top-level
+  // binding's declared row — locals first, then the env's (imported)
+  // bindings (#812) — then run the per-stmt check WITH transitive
+  // enforcement so a caller must declare (or handle) the effects of the
+  // functions it invokes.
+  let fn_names = Array::slice([
+    ""
+  ], 0, 0)
+  let fn_effs = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  build_perform_fn_effs(stmts, fn_names, fn_effs)
+  seed_env_fn_effs(env, fn_names, fn_effs)
   let errors = Array::slice([
     EEThrowOutsideEffect("")
   ], 0, 0)
@@ -1464,7 +1529,7 @@ export let rec check_mutability_expr: (Expr, Array[String]) -> Array[EffectError
       }
       errors
     },
-    ERecord(fields) => {
+    ERecord(_, fields) => {
       let mut fi = 0
       while fi < Array::length(fields) {
         let (_, fval) = Array::get(fields, fi)

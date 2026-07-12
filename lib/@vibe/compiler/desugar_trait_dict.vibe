@@ -523,7 +523,7 @@ let rec expr_mentions_result: (Expr) -> Bool = (e) -> {
       }
       found
     },
-    ERecord(fields) => {
+    ERecord(_, fields) => {
       let mut i = 0
       let mut found = false
       while i < Array::length(fields) {
@@ -1180,7 +1180,7 @@ let rec infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(Strin
       },
       _ => None
     },
-    ERecord(fields) => {
+    ERecord(_, fields) => {
       let names = empty_str_array()
       let mut i = 0
       while i < Array::length(fields) {
@@ -1303,7 +1303,7 @@ let anon_field_index: (String, String) -> Int = (sentinel, field) -> {
 // same name resolves positionally.
 let anon_record_inferred: (Expr, Array[(String, Array[String])]) -> Option[String] = (val, struct_sets) -> {
   match val {
-    ERecord(fields) => {
+    ERecord(_, fields) => {
       let names = empty_str_array()
       let mut i = 0
       while i < Array::length(fields) {
@@ -1661,7 +1661,7 @@ let rec build_concrete_dict: (String, String, Array[(String, Array[(String, Arra
       if failed {
         None
       } else {
-        Some(ERecord(recfields))
+        Some(ERecord("", recfields))
       }
     },
     None => None
@@ -2294,7 +2294,7 @@ let rec railway_rw: (Expr, Array[(String, Array[String])], Array[(String, String
     EArray(elems) => EArray(for e in elems {
       railway_rw(e, struct_sets, var_types, fn_returns)
     }),
-    ERecord(fields) => {
+    ERecord(rn, fields) => {
       let out = Array::slice([
         ("", EUnit)
       ], 0, 0)
@@ -2304,7 +2304,7 @@ let rec railway_rw: (Expr, Array[(String, Array[String])], Array[(String, String
         Array::push(out, (fname, railway_rw(fval, struct_sets, var_types, fn_returns)))
         i = i + 1
       }
-      ERecord(out)
+      ERecord(rn, out)
     },
     EMap(fields) => {
       let out = Array::slice([
@@ -2569,7 +2569,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
     EArray(elems) => EArray(for e in elems {
       rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
     }),
-    ERecord(fields) => {
+    ERecord(rn, fields) => {
       let out = Array::slice([
         ("", EUnit)
       ], 0, 0)
@@ -2579,7 +2579,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
         Array::push(out, (fname, rewrite_expr(fval, gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
         i = i + 1
       }
-      ERecord(out)
+      ERecord(rn, out)
     },
     EMap(fields) => {
       let out = Array::slice([
@@ -3874,7 +3874,7 @@ let gen_default_fn: (String, Array[(String, TypeExpr)], Array[String]) -> Stmt =
   let no_tb = Array::slice([
     ("", no_tp)
   ], 0, 0)
-  SLet(false, false, qualified_name(tname, "default"), None, EFn(no_tp, no_tb, no_params, Some(TyName(tname)), None, ERecord(rec_fields)))
+  SLet(false, false, qualified_name(tname, "default"), None, EFn(no_tp, no_tb, no_params, Some(TyName(tname)), None, ERecord("", rec_fields)))
 }
 
 // `let E::default = () -> E { V0(<default>, ...) }` — the FIRST variant, with
@@ -4016,7 +4016,7 @@ let rec collect_bare_array_eq_keys: (Expr, Array[TypeExpr], Array[String]) -> Un
     EUnit => (),
     ETuple(es) => collect_bare_array_eq_keys_list(es, acc, acc_keys),
     EArray(es) => collect_bare_array_eq_keys_list(es, acc, acc_keys),
-    ERecord(fs) => {
+    ERecord(_, fs) => {
       let mut i = 0
       while i < Array::length(fs) {
         let (_, fe) = Array::get(fs, i)
@@ -4568,7 +4568,7 @@ let rec dlh_scan_free: (Expr, Array[String], Array[String]) -> Unit = (expr, bou
         i = i + 1
       }
     },
-    ERecord(fs) => {
+    ERecord(_, fs) => {
       let mut i = 0
       while i < Array::length(fs) {
         let (_, v) = Array::get(fs, i)
@@ -4721,7 +4721,7 @@ let rec dlh_subst: (Expr, String, String) -> Expr = (expr, from, to) -> {
     EContinue(es) => EContinue(for e in es {
       dlh_subst(e, from, to)
     }),
-    ERecord(fs) => {
+    ERecord(rn, fs) => {
       let out = Array::slice([
         ("", EUnit)
       ], 0, 0)
@@ -4731,7 +4731,7 @@ let rec dlh_subst: (Expr, String, String) -> Expr = (expr, from, to) -> {
         Array::push(out, (k, dlh_subst(v, from, to)))
         i = i + 1
       }
-      ERecord(out)
+      ERecord(rn, out)
     },
     EMap(fs) => {
       let out = Array::slice([
@@ -4898,7 +4898,7 @@ let rec dlh_hoist_expr: (Expr, Array[Stmt], Array[Int]) -> Expr = (expr, hoisted
     EContinue(es) => EContinue(for e in es {
       dlh_hoist_expr(e, hoisted, ctr)
     }),
-    ERecord(fs) => {
+    ERecord(rn, fs) => {
       let out = Array::slice([
         ("", EUnit)
       ], 0, 0)
@@ -4908,7 +4908,7 @@ let rec dlh_hoist_expr: (Expr, Array[Stmt], Array[Int]) -> Expr = (expr, hoisted
         Array::push(out, (k, dlh_hoist_expr(v, hoisted, ctr)))
         i = i + 1
       }
-      ERecord(out)
+      ERecord(rn, out)
     },
     EMap(fs) => {
       let out = Array::slice([
@@ -5171,7 +5171,7 @@ let rec relabel_expr: (Expr, Array[(String, Array[String])]) -> Expr = (expr, tb
       relabel_expr(e, tbl)
     }),
     ESpread(e) => ESpread(relabel_expr(e, tbl)),
-    ERecord(fields) => {
+    ERecord(rn, fields) => {
       let out = Array::slice([
         ("", EUnit)
       ], 0, 0)
@@ -5181,7 +5181,7 @@ let rec relabel_expr: (Expr, Array[(String, Array[String])]) -> Expr = (expr, tb
         Array::push(out, (fname, relabel_expr(fval, tbl)))
         i = i + 1
       }
-      ERecord(out)
+      ERecord(rn, out)
     },
     EMap(fields) => {
       let out = Array::slice([
@@ -5350,7 +5350,7 @@ let rec das_expr: (Expr) -> Expr = (expr) -> {
     ETuple(es) => ETuple(for e in es {
       das_expr(e)
     }),
-    ERecord(fs) => {
+    ERecord(rn, fs) => {
       let out = Array::slice([
         ("", EUnit)
       ], 0, 0)
@@ -5360,7 +5360,7 @@ let rec das_expr: (Expr) -> Expr = (expr) -> {
         Array::push(out, (k, das_expr(v)))
         i = i + 1
       }
-      ERecord(out)
+      ERecord(rn, out)
     },
     EMap(fs) => {
       let out = Array::slice([
