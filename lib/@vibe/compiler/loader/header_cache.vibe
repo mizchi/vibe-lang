@@ -5,7 +5,7 @@ import ../../../../lib/@vibe/cache/header_codec.vibe {
 }
 
 import .. / cache / persistent_cache.vibe {
-  compact_string_fingerprint, normalize_persistent_cache_text, persistent_module_header_cache_path
+  compact_string_fingerprint, normalize_persistent_cache_text, package_index_deps_are_current, persistent_module_header_cache_path
 }
 
 import .. / core / ast.vibe {
@@ -149,9 +149,32 @@ export let contract_sibling_impl_raws: (String) -> Array[String] with { Error, F
 
 export let load_or_parse_module_header_fs_impl: (String, String, Int) -> (Array[String], Array[String], Int) with { Error, Fs } = (path, source, parse_count) -> {
   let cache_path = persistent_module_header_cache_path(path, compact_string_fingerprint(source))
+  // #801 follow-up: a warm header whose package-index deps no longer match
+  // the current resolution winners was written under a different resolution
+  // context (a store copy appeared or vanished) — fall through to the cold
+  // lane and re-resolve. Plain Bool dispatch (mut flag), NOT an Option match
+  // wrapping the parser calls below — see the #708 note in the cold lane.
+  let mut warm_deps = Array::slice([
+    ""
+  ], 0, 0)
+  let mut warm_exports = Array::slice([
+    ""
+  ], 0, 0)
+  let mut warm_ok = false
   if Fs::exists(cache_path) {
     let parsed = parse_persistent_module_header_text(normalize_persistent_cache_text(Fs::read_file(cache_path)))
-    (parsed.0, parsed.1, parse_count)
+    if package_index_deps_are_current(parsed.0) {
+      warm_deps = parsed.0
+      warm_exports = parsed.1
+      warm_ok = true
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  if warm_ok {
+    (warm_deps, warm_exports, parse_count)
   } else {
     // #708: dispatch on `is_special_bundle_path` (a plain Bool) rather than
     // matching `special_bundle_header(path)`'s Option result directly here,

@@ -47,7 +47,8 @@ import ./selfhost_codegen_fingerprint.vibe {
 }
 
 import ../module_graph_path.vibe {
-  resolution_env_seed
+  resolution_env_seed,
+  resolve_import_path_candidates
 }
 
 //# Misc
@@ -136,4 +137,73 @@ export let persistent_manifest_header_cache_path: (String) -> String = (entry_pa
 
 export let persistent_leaf_fingerprint_cache_path: (String, String) -> String = (path, source_fingerprint) -> {
   cache_persistent_leaf_fingerprint_cache_path(persistent_cache_version_tag(), path, source_fingerprint)
+}
+
+// #801 follow-up: the module-header and dep-list caches store RESOLVED dep
+// paths, and a `@scope/name` import resolves to a DIFFERENT package root
+// (.vibe/store wins over lib/ wins over external roots) depending on what
+// exists at resolve time. A header cached while a store copy existed lists
+// the store index.vibei as a dep; replayed after the store copy is gone (or
+// vice versa) it aims the walk at the wrong root. Unlike the source-group
+// cache (#801's resctx row), the poison here is VISIBLE in the cached rows —
+// the importing file's dep always names the winning package index — so no
+// context enumeration is needed: re-derive the `@scope/name` ref from each
+// package-index dep and check it still wins today.
+let package_ref_of_index_dep: (String) -> Option[String] = (dep) -> {
+  if String::ends_with(dep, "/index.vibei") {
+    let parts = String::split(dep, "/")
+    let n = Array::length(parts)
+    if n >= 3 && String::starts_with(Array::get(parts, n - 3), "@") {
+      Some(String::concat(Array::get(parts, n - 3), String::concat("/", Array::get(parts, n - 2))))
+    } else {
+      None
+    }
+  } else {
+    None
+  }
+}
+
+export let package_index_dep_is_current: (String) -> Bool with { Fs } = (dep) -> {
+  match package_ref_of_index_dep(dep) {
+    None => true,
+    Some(pkg_ref) => {
+      let candidates = resolve_import_path_candidates("", pkg_ref)
+      let mut i = 0
+      let mut winner = ""
+      while i < Array::length(candidates) {
+        if winner == "" {
+          let candidate = Array::get(candidates, i)
+          if Fs::exists(candidate) {
+            winner = candidate
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      // Mirror resolve_path_fs: no existing candidate falls back to the
+      // first (store) spelling.
+      if winner == "" {
+        Array::get(candidates, 0) == dep
+      } else {
+        winner == dep
+      }
+    }
+  }
+}
+
+export let package_index_deps_are_current: (Array[String]) -> Bool with { Fs } = (deps) -> {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(deps) {
+    if ok && !(package_index_dep_is_current(Array::get(deps, i))) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
 }

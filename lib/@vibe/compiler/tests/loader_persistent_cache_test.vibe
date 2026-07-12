@@ -271,6 +271,42 @@ test "load_or_parse_module_header_fs: warm cache reuses deps and exports" {
   assert(Array::get(exports2, 0) == "_start")
 }
 
+test "load_or_parse_module_header_fs: package dep re-resolves when store copy vanishes (#801)" {
+  // The header cache stores RESOLVED dep paths. `@scope/name` resolution
+  // prefers .vibe/store over lib/, so a header cached while a store copy
+  // existed must be refused (and re-resolved) once the store copy is gone —
+  // otherwise the walk keeps aiming at the stale root.
+  let base_dir = "/tmp/vibe_compiler_persistent_header_resctx"
+  let main_path = String::concat(base_dir, "/main.vibe")
+  let main_source = "import @vibetest/hdrprobe801 { x }\nexport let run: () -> Int = () -> { 1 }"
+  let store_dir = ".vibe/store/@vibetest/hdrprobe801"
+  let lib_dir = "lib/@vibetest/hdrprobe801"
+  let contract = "version 0.0.1\n\nlet version: String\n"
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  remove_file_if_exists(persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source)))
+  Fs::mkdir_p(store_dir)
+  Fs::write_bytes(String::concat(store_dir, "/index.vibei"), string_to_bytes(contract))
+  Fs::mkdir_p(lib_dir)
+  Fs::write_bytes(String::concat(lib_dir, "/index.vibei"), string_to_bytes(contract))
+  // Cold parse: the store copy wins.
+  let (deps1, _, parse1) = load_or_parse_module_header_fs(main_path, main_source, 0)
+  assert(eq(parse1, 1))
+  assert(eq(Array::length(deps1), 1))
+  assert(Array::get(deps1, 0) == ".vibe/store/@vibetest/hdrprobe801/index.vibei")
+  // Same context: warm replay, no parse.
+  let (_, _, parse2) = load_or_parse_module_header_fs(main_path, main_source, 0)
+  assert(eq(parse2, 0))
+  // The store copy vanishes: lib/ is now the winner, so the cached header
+  // (still listing the store path) must be re-resolved, not replayed.
+  Fs::remove(".vibe/store/@vibetest")
+  let (deps3, _, parse3) = load_or_parse_module_header_fs(main_path, main_source, 0)
+  assert(eq(parse3, 1))
+  assert(eq(Array::length(deps3), 1))
+  assert(Array::get(deps3, 0) == "lib/@vibetest/hdrprobe801/index.vibei")
+  Fs::remove("lib/@vibetest")
+}
+
 test "load_or_parse_module_header_fs: selfhost source bundle uses cheap header scan" {
   let base_dir = "/tmp/vibe_compiler_generated_bundle_header"
   let bundle_path = String::concat(base_dir, "/selfhost_sources_bundle.vibe")

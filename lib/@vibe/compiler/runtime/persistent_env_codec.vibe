@@ -1,7 +1,7 @@
 //# Imports
 
 import .. / cache / persistent_cache.vibe {
-  compact_string_fingerprint, normalize_persistent_cache_text, persistent_dep_list_cache_path, persistent_leaf_fingerprint_cache_path, persistent_type_env_cache_path
+  compact_string_fingerprint, normalize_persistent_cache_text, package_index_deps_are_current, persistent_dep_list_cache_path, persistent_leaf_fingerprint_cache_path, persistent_type_env_cache_path
 }
 
 import .. / core {
@@ -348,7 +348,14 @@ export let load_persistent_dep_list: (String, String) -> Option[Array[String]] w
         let body = text[v2_len: text_len]
         let (deps, end_pos) = parse_string_array(body, 0)
         if end_pos == String::length(body) {
-          Some(deps)
+          // #801 follow-up: deps are RESOLVED paths — refuse a list whose
+          // package-index deps no longer match the current resolution winners
+          // (written while a store copy existed, or vice versa).
+          if package_index_deps_are_current(deps) {
+            Some(deps)
+          } else {
+            None
+          }
         } else {
           throw(String::concat("invalid persistent dep list body: ", cache_path))
         }
@@ -360,7 +367,11 @@ export let load_persistent_dep_list: (String, String) -> Option[Array[String]] w
             ""
           ], 0, 0))
         } else {
-          Some([dep])
+          if package_index_deps_are_current([dep]) {
+            Some([dep])
+          } else {
+            None
+          }
         }
       } else {
         throw(String::concat("invalid persistent dep list header: ", cache_path))
