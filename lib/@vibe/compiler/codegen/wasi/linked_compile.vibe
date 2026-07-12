@@ -25,7 +25,7 @@ import .. / builtin_bodies {
 }
 
 import .. / builtin_registry.vibe {
-  verify_lane_builtins
+  builtin_registry, verify_lane_builtins
 }
 
 import .. / common_analysis {
@@ -50,7 +50,7 @@ import .. / wasm_emit {
 }
 
 import ./linked_helpers.vibe {
-  stmts_use_builtin
+  stmts_use_builtin, collect_used_builtin_names
 }
 
 //# Functions
@@ -541,21 +541,26 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     ],
     owners: ArrayBuilder::freeze(ArrayBuilder::new())
   }
-  let need_env_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::get")
-  let need_env_args_len_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_len")
-  let need_env_args_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_get")
-  let need_fs_read_file_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::read_file")
-  let need_fs_exists_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::exists")
+  // #799 perf: ONE program walk collecting the canonical free-name set,
+  // then every need_<builtin> flag below is a map lookup. Previously each
+  // flag re-walked the whole AST (~40 walks) with a linear fn_names scan per
+  // ident inside.
+  let used_builtin_names = collect_used_builtin_names(stmts, fn_names_list)
+  let need_env_get_builtin = Map::has_key(used_builtin_names, "Env::get")
+  let need_env_args_len_builtin = Map::has_key(used_builtin_names, "Env::args_len")
+  let need_env_args_get_builtin = Map::has_key(used_builtin_names, "Env::args_get")
+  let need_fs_read_file_builtin = Map::has_key(used_builtin_names, "Fs::read_file")
+  let need_fs_exists_builtin = Map::has_key(used_builtin_names, "Fs::exists")
   // #795: __fs_stat_token_raw is the alias-collision-proof surface for the
   // same import (lib/@vibe/fs/fs.vibe calls it; see checker/builtins_fs.vibe).
-  let need_fs_stat_token_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token") || stmts_use_builtin(stmts, fn_names_list, "__fs_stat_token_raw")
-  let need_fs_write_file_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::write_file")
-  let need_fs_write_bytes_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes")
+  let need_fs_stat_token_builtin = Map::has_key(used_builtin_names, "Fs::stat_token") || Map::has_key(used_builtin_names, "__fs_stat_token_raw")
+  let need_fs_write_file_builtin = Map::has_key(used_builtin_names, "Fs::write_file")
+  let need_fs_write_bytes_builtin = Map::has_key(used_builtin_names, "Fs::write_bytes")
   // #632: `Fs::read_bytes(path) -> Bytes` — the binary-exact read counterpart of
   // Fs::write_bytes, a `vibe.fs_read_bytes (i64) -> i64` host import (type 3,
   // same shape as fs_read_file). Gated on use so non-users reserve no import
   // (fixpoint-safe). Lets the persistent artifact cache store/load wasm raw.
-  let need_fs_read_bytes_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::read_bytes")
+  let need_fs_read_bytes_builtin = Map::has_key(used_builtin_names, "Fs::read_bytes")
   // #729/#730: `Fs::readdir(path) -> Array[String]` — a `vibe.fs_read_dir
   // (i64) -> i64` host import (type 3, same packed-string shape as
   // fs_read_file: the host returns the byte-sorted entry NAMES "\n"-joined as
@@ -563,27 +568,27 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // Array[String] surface to `String::split` over that string. Gated on use
   // (fixpoint-safe). Unblocks contract-package sibling auto-discovery and the
   // global store walk.
-  let need_fs_readdir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::readdir")
-  let need_profiler_now_us_builtin = stmts_use_builtin(stmts, fn_names_list, "Profiler::now_us")
+  let need_fs_readdir_builtin = Map::has_key(used_builtin_names, "Fs::readdir")
+  let need_profiler_now_us_builtin = Map::has_key(used_builtin_names, "Profiler::now_us")
   // `sleep(ms)` (Async): a `vibe.sleep (i64) -> ()` host import. The host
   // implements it as an async function so the guest fiber genuinely
   // suspends/resumes (docs/spec/wasi-p3-async.md §2.3, examples/async_host).
   // Gated on use, so programs without `sleep` reserve no import (fixpoint-safe).
-  let need_sleep_builtin = stmts_use_builtin(stmts, fn_names_list, "sleep")
+  let need_sleep_builtin = Map::has_key(used_builtin_names, "sleep")
   // `Stdin::read_char() -> Int`: a value-returning `vibe.stdin_read_char () ->
   // i64` host import. Implemented async by the host (it can suspend the guest
   // until a char is available), so this is the data-consuming analog of `sleep`
   // — the shape of a host async source (HTTP body byte, stdin char). Gated on
   // use (fixpoint-safe).
-  let need_stdin_read_char_builtin = stmts_use_builtin(stmts, fn_names_list, "Stdin::read_char")
+  let need_stdin_read_char_builtin = Map::has_key(used_builtin_names, "Stdin::read_char")
   // Process effect host imports: `sh(cmd)` runs a shell command (returns 0) and
   // `sh_lines(cmd)` returns its stdout "\n"-joined as ONE string (same packed
   // ABI as fs_read_dir; compile_call lowers the Array[String] surface to a
   // String::split). Both `vibe.sh` / `vibe.sh_lines (i64) -> i64` host imports,
   // gated on use so non-users reserve no import (fixpoint-safe). Revives the
   // process/time/shell stdlib whose functions call these.
-  let need_sh_builtin = stmts_use_builtin(stmts, fn_names_list, "sh")
-  let need_sh_lines_builtin = stmts_use_builtin(stmts, fn_names_list, "sh_lines")
+  let need_sh_builtin = Map::has_key(used_builtin_names, "sh")
+  let need_sh_lines_builtin = Map::has_key(used_builtin_names, "sh_lines")
   // Stdin/Stdout host effects for vibe/io: `Stdin::read_stream(n) -> String`
   // (`vibe.stdin_read_stream (i64) -> i64`, value-returning like fs_read_file),
   // `Stdout::write_stream(s) -> Unit` and `Stdout::write_char(c) -> Unit`
@@ -591,49 +596,49 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // sleep). All gated on use so non-users reserve no import (fixpoint-safe) —
   // the compiler's own build uses none, so its bytes are unchanged. Revives the
   // io stdlib whose read/print/println/write_char helpers call these builtins.
-  let need_stdin_read_stream_builtin = stmts_use_builtin(stmts, fn_names_list, "Stdin::read_stream")
-  let need_stdout_write_stream_builtin = stmts_use_builtin(stmts, fn_names_list, "Stdout::write_stream")
-  let need_stdout_write_char_builtin = stmts_use_builtin(stmts, fn_names_list, "Stdout::write_char")
+  let need_stdin_read_stream_builtin = Map::has_key(used_builtin_names, "Stdin::read_stream")
+  let need_stdout_write_stream_builtin = Map::has_key(used_builtin_names, "Stdout::write_stream")
+  let need_stdout_write_char_builtin = Map::has_key(used_builtin_names, "Stdout::write_char")
   // #762: `Path::ref` / `Path::resolve` both lower (compile_call) to the
   // `resolve_path` host import — resolve a path to absolute against the process
   // CWD. `vibe.resolve_path (i64) -> i64`, value-returning like fs_read_file,
   // gated on either surface name so non-users reserve no import (fixpoint-safe).
-  let need_resolve_path_builtin = stmts_use_builtin(stmts, fn_names_list, "Path::ref") || stmts_use_builtin(stmts, fn_names_list, "Path::resolve")
+  let need_resolve_path_builtin = Map::has_key(used_builtin_names, "Path::ref") || Map::has_key(used_builtin_names, "Path::resolve")
   // #768: `Fs::remove(path) -> Unit` — a `vibe.fs_remove (i64) -> ()` host
   // import (type 1, like sleep/stdout_write_char). Checker-recognized since
   // `builtins_fs.vibe`'s `lookup_fs_remove` but never wired to codegen, so any
   // caller hit "undefined variable (local): Fs::remove @call". Gated on use so
   // non-users reserve no import (fixpoint-safe).
-  let need_fs_remove_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::remove")
+  let need_fs_remove_builtin = Map::has_key(used_builtin_names, "Fs::remove")
   // #768: `Fs::mkdir_p(path) -> Unit` (recursive mkdir) — same shape/import
   // type as Fs::remove. Same gap: checker-recognized (builtins_fs.vibe's
   // lookup_fs_mkdir_p) but had no codegen wiring at all.
-  let need_fs_mkdir_p_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::mkdir_p")
+  let need_fs_mkdir_p_builtin = Map::has_key(used_builtin_names, "Fs::mkdir_p")
   // #768: the rest of lib/@vibe/shell/commands.vibe's Fs surface — same
   // "checker-legal (or newly made so), zero codegen wiring" gap as
   // Fs::remove/Fs::mkdir_p, and the JS host runner already implements all of
   // fs_mkdir/fs_chdir/fs_copy/fs_append/fs_rename/fs_is_dir/fs_is_file/
   // fs_getcwd. Fs::mkdir (non-recursive, distinct from Fs::mkdir_p) was
   // likewise checker-legal but had no codegen wiring at all.
-  let need_fs_mkdir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::mkdir")
-  let need_fs_chdir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::chdir")
-  let need_fs_copy_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::copy")
-  let need_fs_append_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::append")
-  let need_fs_rename_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::rename")
-  let need_fs_is_dir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::is_dir")
-  let need_fs_is_file_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::is_file")
-  let need_fs_getcwd_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::getcwd")
+  let need_fs_mkdir_builtin = Map::has_key(used_builtin_names, "Fs::mkdir")
+  let need_fs_chdir_builtin = Map::has_key(used_builtin_names, "Fs::chdir")
+  let need_fs_copy_builtin = Map::has_key(used_builtin_names, "Fs::copy")
+  let need_fs_append_builtin = Map::has_key(used_builtin_names, "Fs::append")
+  let need_fs_rename_builtin = Map::has_key(used_builtin_names, "Fs::rename")
+  let need_fs_is_dir_builtin = Map::has_key(used_builtin_names, "Fs::is_dir")
+  let need_fs_is_file_builtin = Map::has_key(used_builtin_names, "Fs::is_file")
+  let need_fs_getcwd_builtin = Map::has_key(used_builtin_names, "Fs::getcwd")
   // #794: HTTP client host imports. lib/@vibe/http's client functions call
   // the `__http_*_raw` builtins (dunder names so units bundling the package's
   // index.vibe -- which exports alias functions literally named
   // `Http::request` etc. -- cannot capture the ident, see #795). Each lowers
   // to a `vibe.http_*` host import, gated on use (fixpoint-safe: the compiler
   // itself uses none, so its bytes are unchanged).
-  let need_http_request_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_request_raw")
-  let need_http_response_status_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_response_status_raw")
-  let need_http_response_header_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_response_header_raw")
-  let need_http_response_body_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_response_body_raw")
-  let need_http_close_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_close_raw")
+  let need_http_request_builtin = Map::has_key(used_builtin_names, "__http_request_raw")
+  let need_http_response_status_builtin = Map::has_key(used_builtin_names, "__http_response_status_raw")
+  let need_http_response_header_builtin = Map::has_key(used_builtin_names, "__http_response_header_raw")
+  let need_http_response_body_builtin = Map::has_key(used_builtin_names, "__http_response_body_raw")
+  let need_http_close_builtin = Map::has_key(used_builtin_names, "__http_close_raw")
   let mut next_import_idx = 1
   let env_get_import_idx = if need_env_get_builtin {
     let idx = next_import_idx
@@ -1197,467 +1202,133 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   let builtin_needs_env_list = lc_fresh_bool_array()
   let builtin_indices_list = lc_fresh_int_array()
   let builtin_returns_list = lc_fresh_int_array()
-  Array::push(builtin_names_list, "Env::get")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, env_get_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Env::args_len")
-  Array::push(builtin_param_counts, 0)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, env_args_len_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Env::args_get")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, env_args_get_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Fs::read_file")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_read_file_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Fs::exists")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_exists_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Fs::stat_token")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_stat_token_idx)
-  Array::push(builtin_returns_list, 1)
-  // #795: alias-collision-proof name for the SAME import index.
-  Array::push(builtin_names_list, "__fs_stat_token_raw")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_stat_token_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Fs::write_file")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_write_file_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "Fs::write_bytes")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_write_bytes_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "Fs::read_bytes")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_read_bytes_idx)
-  Array::push(builtin_returns_list, 1)
-  // #729/#730: the RAW half of Fs::readdir — the direct host-import call
-  // returning the "\n"-joined names string. User code writes Fs::readdir
-  // (Array[String]); compile_call's lowering is the only caller of this name.
-  Array::push(builtin_names_list, "__fs_read_dir_raw")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_read_dir_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Fs::remove")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_remove_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "Fs::mkdir_p")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_mkdir_p_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "Fs::mkdir")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_mkdir_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "Fs::chdir")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_chdir_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "Fs::copy")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_copy_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "Fs::append")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_append_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "Fs::rename")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_rename_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "Fs::is_dir")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_is_dir_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Fs::is_file")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_is_file_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Fs::getcwd")
-  Array::push(builtin_param_counts, 0)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, fs_getcwd_idx)
-  Array::push(builtin_returns_list, 1)
-  // #794: HTTP client host ops -- raw dunder surface names (see the need_http_*
-  // block above for why they are not Http::request etc.).
-  Array::push(builtin_names_list, "__http_request_raw")
-  Array::push(builtin_param_counts, 4)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, http_request_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "__http_response_status_raw")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, http_response_status_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "__http_response_header_raw")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, http_response_header_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "__http_response_body_raw")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, http_response_body_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "__http_close_raw")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, http_close_idx)
-  Array::push(builtin_returns_list, 0)
-  // Process host imports: `sh(cmd)` (runs a shell command, returns 0) resolves
-  // directly. `sh_lines(cmd)`'s Array[String] surface is lowered by compile_call
-  // to `__sh_lines_raw` (the RAW half returning the "\n"-joined stdout) plus a
-  // String::split — same pattern as Fs::readdir / __fs_read_dir_raw above.
-  Array::push(builtin_names_list, "sh")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, sh_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "__sh_lines_raw")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, sh_lines_idx)
-  Array::push(builtin_returns_list, 1)
-  // io host effects: `Stdin::read_stream(n) -> String` resolves directly (1 i64
-  // arg, i64 return, like Fs::read_file). `Stdout::write_stream(s)` and
-  // `Stdout::write_char(c)` are void (1 i64 arg, no return, like sleep).
-  Array::push(builtin_names_list, "Stdin::read_stream")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, stdin_read_stream_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Stdout::write_stream")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, stdout_write_stream_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "Stdout::write_char")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, stdout_write_char_idx)
-  Array::push(builtin_returns_list, 0)
-  // #762: resolve_path — the RAW host op behind Path::ref / Path::resolve (1 i64
-  // arg, i64 String return, like Fs::read_file). compile_call lowers both
-  // surface names to this.
-  Array::push(builtin_names_list, "resolve_path")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, resolve_path_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Profiler::now_us")
-  Array::push(builtin_param_counts, 0)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, profiler_now_us_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Profiler::NowUs")
-  Array::push(builtin_param_counts, 0)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, profiler_now_us_idx)
-  Array::push(builtin_returns_list, 1)
-  // `sleep(ms) -> Unit`: 1 i64 arg, void return (like `Fs::write_file`); the
-  // host import suspends the guest (real async).
-  Array::push(builtin_names_list, "sleep")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, sleep_idx)
-  Array::push(builtin_returns_list, 0)
-  // `Stdin::read_char() -> Int`: 0 args, i64 return (like `Profiler::now_us`);
-  // the host import returns a char asynchronously (real async data read).
-  Array::push(builtin_names_list, "Stdin::read_char")
-  Array::push(builtin_param_counts, 0)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, stdin_read_char_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "simd_skip_ws")
-  Array::push(builtin_param_counts, 3)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, simd_skip_ws_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "simd_scan_alnum")
-  Array::push(builtin_param_counts, 3)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, simd_scan_alnum_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "simd_scan_alnum_str")
-  Array::push(builtin_param_counts, 3)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, simd_scan_alnum_str_idx)
-  Array::push(builtin_returns_list, 1)
-  // #746: lexicographic compare backing String `<` `>` `<=` `>=` (desugar
-  // rewrites them to `str_lex_diff(a, b) <op> 0`; see desugar_trait_dict).
-  Array::push(builtin_names_list, "str_lex_diff")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, str_lex_diff_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "print_int")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, print_int_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "print_str")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, print_str_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "String::length")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, str_len_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "String::equals")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, str_eq_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "String::concat")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, str_concat_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "array_new")
-  Array::push(builtin_param_counts, 0)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, arr_new_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Array::length")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, arr_len_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Array::get")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, arr_get_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Array::push")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, arr_push_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "Array::push_all")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, arr_push_all_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "Array::set")
-  Array::push(builtin_param_counts, 3)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, arr_set_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "Double::to_int")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, double_to_int_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Int::to_double")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, int_to_double_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "String::char_code_at")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, str_char_code_at_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "String::from_char_code")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, str_from_char_code_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "String::substring")
-  Array::push(builtin_param_counts, 3)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, str_substring_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Array::truncate")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, arr_truncate_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "String::join")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, string_join_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "eq")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, eq_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "String::ends_with")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, string_ends_with_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "String::last_index_of")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, string_last_index_of_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "String::index_of")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, string_index_of_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "String::contains")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, string_contains_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "String::starts_with")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, string_starts_with_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "String::split")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, string_split_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "String::trim")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, string_trim_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "selfhost_sources")
-  Array::push(builtin_param_counts, 0)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, selfhost_sources_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "ArrayBuilder::new")
-  Array::push(builtin_param_counts, 0)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, arr_new_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "ArrayBuilder::push")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, arr_push_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "ArrayBuilder::freeze")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, identity_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Array::slice")
-  Array::push(builtin_param_counts, 3)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, arr_slice_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Array::concat")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, arr_concat_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Bytes::new")
-  Array::push(builtin_param_counts, 0)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, bytes_new_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Bytes::from_array")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, bytes_from_array_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Bytes::to_array")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, bytes_to_array_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Bytes::length")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, bytes_len_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Bytes::get")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, bytes_get_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Bytes::set")
-  Array::push(builtin_param_counts, 3)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, bytes_set_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "Bytes::push")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, bytes_push_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "Bytes::append")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, bytes_append_idx)
-  Array::push(builtin_returns_list, 0)
-  Array::push(builtin_names_list, "Bytes::concat")
-  Array::push(builtin_param_counts, 2)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, bytes_concat_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Bytes::slice")
-  Array::push(builtin_param_counts, 3)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, bytes_slice_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "Double::to_i64_bits")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, identity_idx)
-  Array::push(builtin_returns_list, 1)
-  Array::push(builtin_names_list, "__to_string")
-  Array::push(builtin_param_counts, 1)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, identity_idx)
-  Array::push(builtin_returns_list, 1)
-  if enable_rc {
-    Array::push(builtin_names_list, "__rc_drop")
-    Array::push(builtin_param_counts, 1)
-    Array::push(builtin_needs_env_list, false)
-    Array::push(builtin_indices_list, rc_drop_idx)
-    Array::push(builtin_returns_list, 0)
-    Array::push(builtin_names_list, "__rc_alloc")
-    Array::push(builtin_param_counts, 1)
-    Array::push(builtin_needs_env_list, false)
-    Array::push(builtin_indices_list, rc_alloc_idx)
-    Array::push(builtin_returns_list, 1)
-  } else {
-    ()
+  // #415 B-1: the central registry DRIVES the linear lane's registration.
+  // Names, param counts, and returns come straight from builtin_registry()
+  // rows with in_linear = true; only the function INDEX is lane-local (the
+  // idx bindings computed above), resolved by the match below. Adding a
+  // linear builtin = one registry row + one match arm here (+ the import /
+  // body wiring); param-count and returns live ONLY in the registry.
+  // needs_env is false for every static builtin -- only the linked-import
+  // bridges appended after verify carry an env. __rc_drop/__rc_alloc
+  // register under RC builds only (mirrored by verify_lane_builtins'
+  // __rc_ exemption).
+  let registry_rows = builtin_registry()
+  let mut reg_i = 0
+  while reg_i < Array::length(registry_rows) {
+    let (reg_name, reg_params, reg_returns, reg_linear, _) = Array::get(registry_rows, reg_i)
+    let reg_include = reg_linear && (enable_rc || !String::starts_with(reg_name, "__rc_"))
+    if reg_include {
+      let reg_idx = match reg_name {
+        "Env::get" => env_get_idx,
+        "Env::args_len" => env_args_len_idx,
+        "Env::args_get" => env_args_get_idx,
+        "Fs::read_file" => fs_read_file_idx,
+        "Fs::exists" => fs_exists_idx,
+        "Fs::stat_token" => fs_stat_token_idx,
+        // #795: alias-collision-proof name, same import index as Fs::stat_token.
+        "__fs_stat_token_raw" => fs_stat_token_idx,
+        "Fs::write_file" => fs_write_file_idx,
+        "Fs::write_bytes" => fs_write_bytes_idx,
+        "Fs::read_bytes" => fs_read_bytes_idx,
+        // #729/#730: RAW half of Fs::readdir -- compile_call lowers the surface.
+        "__fs_read_dir_raw" => fs_read_dir_idx,
+        "Fs::remove" => fs_remove_idx,
+        "Fs::mkdir_p" => fs_mkdir_p_idx,
+        "Fs::mkdir" => fs_mkdir_idx,
+        "Fs::chdir" => fs_chdir_idx,
+        "Fs::copy" => fs_copy_idx,
+        "Fs::append" => fs_append_idx,
+        "Fs::rename" => fs_rename_idx,
+        "Fs::is_dir" => fs_is_dir_idx,
+        "Fs::is_file" => fs_is_file_idx,
+        "Fs::getcwd" => fs_getcwd_idx,
+        // #794: HTTP client host ops (raw dunder surface names, see checker/builtins_net.vibe).
+        "__http_request_raw" => http_request_idx,
+        "__http_response_status_raw" => http_response_status_idx,
+        "__http_response_header_raw" => http_response_header_idx,
+        "__http_response_body_raw" => http_response_body_idx,
+        "__http_close_raw" => http_close_idx,
+        "sh" => sh_idx,
+        // RAW half of sh_lines -- compile_call lowers the Array[String] surface.
+        "__sh_lines_raw" => sh_lines_idx,
+        "Stdin::read_stream" => stdin_read_stream_idx,
+        "Stdout::write_stream" => stdout_write_stream_idx,
+        "Stdout::write_char" => stdout_write_char_idx,
+        // #762: RAW host op behind Path::ref / Path::resolve.
+        "resolve_path" => resolve_path_idx,
+        "Profiler::now_us" => profiler_now_us_idx,
+        "Profiler::NowUs" => profiler_now_us_idx,
+        "sleep" => sleep_idx,
+        "Stdin::read_char" => stdin_read_char_idx,
+        "simd_skip_ws" => simd_skip_ws_idx,
+        "simd_scan_alnum" => simd_scan_alnum_idx,
+        "simd_scan_alnum_str" => simd_scan_alnum_str_idx,
+        // #746: backs String < > <= >= (desugar rewrites to str_lex_diff(a,b) <op> 0).
+        "str_lex_diff" => str_lex_diff_idx,
+        "print_int" => print_int_idx,
+        "print_str" => print_str_idx,
+        "String::length" => str_len_idx,
+        "String::equals" => str_eq_idx,
+        "String::concat" => str_concat_idx,
+        "array_new" => arr_new_idx,
+        "Array::length" => arr_len_idx,
+        "Array::get" => arr_get_idx,
+        "Array::push" => arr_push_idx,
+        "Array::push_all" => arr_push_all_idx,
+        "Array::set" => arr_set_idx,
+        "Double::to_int" => double_to_int_idx,
+        "Int::to_double" => int_to_double_idx,
+        "String::char_code_at" => str_char_code_at_idx,
+        "String::from_char_code" => str_from_char_code_idx,
+        "String::substring" => str_substring_idx,
+        "Array::truncate" => arr_truncate_idx,
+        "String::join" => string_join_idx,
+        "eq" => eq_idx,
+        "String::ends_with" => string_ends_with_idx,
+        "String::last_index_of" => string_last_index_of_idx,
+        "String::index_of" => string_index_of_idx,
+        "String::contains" => string_contains_idx,
+        "String::starts_with" => string_starts_with_idx,
+        "String::split" => string_split_idx,
+        "String::trim" => string_trim_idx,
+        "selfhost_sources" => selfhost_sources_idx,
+        "ArrayBuilder::new" => arr_new_idx,
+        "ArrayBuilder::push" => arr_push_idx,
+        "ArrayBuilder::freeze" => identity_idx,
+        "Array::slice" => arr_slice_idx,
+        "Array::concat" => arr_concat_idx,
+        "Bytes::new" => bytes_new_idx,
+        "Bytes::from_array" => bytes_from_array_idx,
+        "Bytes::to_array" => bytes_to_array_idx,
+        "Bytes::length" => bytes_len_idx,
+        "Bytes::get" => bytes_get_idx,
+        "Bytes::set" => bytes_set_idx,
+        "Bytes::push" => bytes_push_idx,
+        "Bytes::append" => bytes_append_idx,
+        "Bytes::concat" => bytes_concat_idx,
+        "Bytes::slice" => bytes_slice_idx,
+        "Double::to_i64_bits" => identity_idx,
+        "__to_string" => identity_idx,
+        "__rc_drop" => rc_drop_idx,
+        "__rc_alloc" => rc_alloc_idx,
+        "__heap_grow_check" => heap_grow_check_idx,
+        _ => 0 - 1
+      }
+      if reg_idx < 0 {
+        throw("builtin registry drift: no linear function-index mapping for builtin '\{reg_name}' (add a match arm in linked_compile.vibe, #415)")
+      } else {
+        ()
+      }
+      Array::push(builtin_names_list, reg_name)
+      Array::push(builtin_param_counts, reg_params)
+      Array::push(builtin_needs_env_list, false)
+      Array::push(builtin_indices_list, reg_idx)
+      Array::push(builtin_returns_list, reg_returns)
+    } else {
+      ()
+    }
+    reg_i = reg_i + 1
   }
-  Array::push(builtin_names_list, "__heap_grow_check")
-  Array::push(builtin_param_counts, 0)
-  Array::push(builtin_needs_env_list, false)
-  Array::push(builtin_indices_list, heap_grow_check_idx)
-  Array::push(builtin_returns_list, 0)
   // #415 B-0: the static registration above must agree with the central
   // registry (name set + params + returns, both directions). Placed BEFORE
   // the linked_imports loop — those are user-declared effect bridges with
@@ -1808,6 +1479,22 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // every renamed shadow gets a distinct `__shadow_N_<name>` (see
   // uniquify_shadowed_bindings).
   let uq_shadow_counter = [0]
+  // #799 perf: ONE membership index over the flat fn + ctor name tables,
+  // shared by every per-function CompileCtx below. collect_free_vars_indexed
+  // consults it per ident instead of linearly scanning ~thousands of names
+  // (which dominated compiler-closure compile profiles).
+  let capture_index_b = MapBuilder::new()
+  let mut cib_i = 0
+  while cib_i < Array::length(all_fn_names_list) {
+    MapBuilder::set(capture_index_b, Array::get(all_fn_names_list, cib_i), true)
+    cib_i = cib_i + 1
+  }
+  let mut cib_j = 0
+  while cib_j < Array::length(ctor_names_list) {
+    MapBuilder::set(capture_index_b, Array::get(ctor_names_list, cib_j), true)
+    cib_j = cib_j + 1
+  }
+  let capture_name_index_shared = MapBuilder::freeze(capture_index_b)
   let mut bi = 0
   while bi < num_user_funcs {
     let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
@@ -2099,6 +1786,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       },
       heap_grow_check_func_idx: heap_grow_check_idx,
       rc_dup_names: rc_dups,
+      capture_name_index: capture_name_index_shared,
       float_local_slots: lc_fresh_int_array(),
       int_local_slots: lc_fresh_int_array(),
       agg_local_slots: lc_fresh_int_array(),
@@ -3462,10 +3150,83 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // post-user name: `_start` was labeled `Env::get` in crash stacks, which
   // repeatedly sent debugging to functions the trace never touched. `_start`
   // and `run` sit right after the user block, so name them explicitly.
-  let name_sec_names = Array::slice(fn_names_list, 0, num_user_funcs)
+  // #799: name the GENERATED runtime helpers too. Profilers (node --cpu-prof)
+  // attributed the hottest samples to anonymous wasm-function[N] frames
+  // because only user functions carried name-section entries; the generated
+  // string/array/bytes helpers occupy the consecutive index range
+  // [num_imported_funcs, func_offset). Unassigned slots (lambda-arity pads
+  // etc.) keep the generic "__rt_gen" label.
+  let gen_sec_names = lc_fresh_string_array()
+  let mut gsn_i = 0
+  while gsn_i < num_generated {
+    Array::push(gen_sec_names, "__rt_gen")
+    gsn_i = gsn_i + 1
+  }
+  Array::set(gen_sec_names, print_int_idx - num_imported_funcs, "__rt_print_int")
+  Array::set(gen_sec_names, print_str_idx - num_imported_funcs, "__rt_print_str")
+  Array::set(gen_sec_names, str_len_idx - num_imported_funcs, "__rt_str_len")
+  Array::set(gen_sec_names, str_eq_idx - num_imported_funcs, "__rt_str_eq")
+  Array::set(gen_sec_names, str_concat_idx - num_imported_funcs, "__rt_str_concat")
+  Array::set(gen_sec_names, arr_new_idx - num_imported_funcs, "__rt_arr_new")
+  Array::set(gen_sec_names, arr_len_idx - num_imported_funcs, "__rt_arr_len")
+  Array::set(gen_sec_names, arr_get_idx - num_imported_funcs, "__rt_arr_get")
+  Array::set(gen_sec_names, arr_push_idx - num_imported_funcs, "__rt_arr_push")
+  Array::set(gen_sec_names, arr_set_idx - num_imported_funcs, "__rt_arr_set")
+  Array::set(gen_sec_names, double_to_int_idx - num_imported_funcs, "__rt_double_to_int")
+  Array::set(gen_sec_names, int_to_double_idx - num_imported_funcs, "__rt_int_to_double")
+  Array::set(gen_sec_names, str_char_code_at_idx - num_imported_funcs, "__rt_str_char_code_at")
+  Array::set(gen_sec_names, str_from_char_code_idx - num_imported_funcs, "__rt_str_from_char_code")
+  Array::set(gen_sec_names, str_substring_idx - num_imported_funcs, "__rt_str_substring")
+  Array::set(gen_sec_names, identity_idx - num_imported_funcs, "__rt_identity")
+  Array::set(gen_sec_names, arr_slice_idx - num_imported_funcs, "__rt_arr_slice")
+  Array::set(gen_sec_names, arr_concat_idx - num_imported_funcs, "__rt_arr_concat")
+  Array::set(gen_sec_names, arr_truncate_idx - num_imported_funcs, "__rt_arr_truncate")
+  Array::set(gen_sec_names, string_join_idx - num_imported_funcs, "__rt_string_join")
+  Array::set(gen_sec_names, fs_read_file_stub_idx - num_imported_funcs, "__rt_stub_a")
+  Array::set(gen_sec_names, fs_exists_stub_idx - num_imported_funcs, "__rt_stub_b")
+  Array::set(gen_sec_names, fs_stat_token_stub_idx - num_imported_funcs, "__rt_stub_c")
+  Array::set(gen_sec_names, fs_write_file_stub_idx - num_imported_funcs, "__rt_stub_d")
+  Array::set(gen_sec_names, fs_write_bytes_stub_idx - num_imported_funcs, "__rt_stub_e")
+  Array::set(gen_sec_names, eq_idx - num_imported_funcs, "__rt_eq")
+  Array::set(gen_sec_names, string_ends_with_idx - num_imported_funcs, "__rt_string_ends_with")
+  Array::set(gen_sec_names, string_last_index_of_idx - num_imported_funcs, "__rt_string_last_index_of")
+  Array::set(gen_sec_names, arr_push_all_idx - num_imported_funcs, "__rt_arr_push_all")
+  Array::set(gen_sec_names, string_index_of_idx - num_imported_funcs, "__rt_string_index_of")
+  Array::set(gen_sec_names, string_contains_idx - num_imported_funcs, "__rt_string_contains")
+  Array::set(gen_sec_names, string_starts_with_idx - num_imported_funcs, "__rt_string_starts_with")
+  Array::set(gen_sec_names, string_split_idx - num_imported_funcs, "__rt_string_split")
+  Array::set(gen_sec_names, string_trim_idx - num_imported_funcs, "__rt_string_trim")
+  Array::set(gen_sec_names, selfhost_sources_idx - num_imported_funcs, "__rt_selfhost_sources")
+  Array::set(gen_sec_names, bytes_new_idx - num_imported_funcs, "__rt_bytes_new")
+  Array::set(gen_sec_names, bytes_len_idx - num_imported_funcs, "__rt_bytes_len")
+  Array::set(gen_sec_names, bytes_get_idx - num_imported_funcs, "__rt_bytes_get")
+  Array::set(gen_sec_names, bytes_set_idx - num_imported_funcs, "__rt_bytes_set")
+  Array::set(gen_sec_names, bytes_push_idx - num_imported_funcs, "__rt_bytes_push")
+  Array::set(gen_sec_names, bytes_append_idx - num_imported_funcs, "__rt_bytes_append")
+  Array::set(gen_sec_names, bytes_concat_idx - num_imported_funcs, "__rt_bytes_concat")
+  Array::set(gen_sec_names, bytes_slice_idx - num_imported_funcs, "__rt_bytes_slice")
+  Array::set(gen_sec_names, bytes_from_array_idx - num_imported_funcs, "__rt_bytes_from_array")
+  Array::set(gen_sec_names, bytes_to_array_idx - num_imported_funcs, "__rt_bytes_to_array")
+  if enable_rc {
+    Array::set(gen_sec_names, rc_drop_idx - num_imported_funcs, "__rt_rc_drop")
+    Array::set(gen_sec_names, rc_alloc_idx - num_imported_funcs, "__rt_rc_alloc")
+  } else {
+    ()
+  }
+  Array::set(gen_sec_names, heap_grow_check_idx - num_imported_funcs, "__rt_heap_grow_check")
+  Array::set(gen_sec_names, simd_skip_ws_idx - num_imported_funcs, "__rt_simd_skip_ws")
+  Array::set(gen_sec_names, simd_scan_alnum_idx - num_imported_funcs, "__rt_simd_scan_alnum")
+  Array::set(gen_sec_names, simd_scan_alnum_str_idx - num_imported_funcs, "__rt_simd_scan_alnum_str")
+  Array::set(gen_sec_names, str_lex_diff_idx - num_imported_funcs, "__rt_str_lex_diff")
+  let name_sec_names = gen_sec_names
+  let mut usn_i = 0
+  while usn_i < num_user_funcs {
+    Array::push(name_sec_names, Array::get(fn_names_list, usn_i))
+    usn_i = usn_i + 1
+  }
   Array::push(name_sec_names, "_start")
   Array::push(name_sec_names, "run")
-  emit_function_name_section(out, name_sec_names, func_offset)
+  emit_function_name_section(out, name_sec_names, num_imported_funcs)
   bytebuf_to_bytes(out)
 }
 

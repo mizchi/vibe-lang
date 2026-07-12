@@ -25,7 +25,7 @@ import .. / wasm_emit {
 }
 
 import .. / builtin_registry.vibe {
-  verify_lane_builtins
+  builtin_registry, verify_lane_builtins
 }
 
 import .. / builtin_bodies {
@@ -300,84 +300,109 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     0
   }
   let func_offset = 1 + hbo + num_generated
-  let builtin_defs = [
-    ("print_int", 1, 1, 0),
-    ("print_str", 1, 2, 0),
-    ("String::length", 1, 3, 1),
-    ("String::equals", 2, 4, 1),
-    ("String::concat", 2, 5, 1),
-    ("array_new", 0, 6, 1),
-    ("Array::length", 1, 7, 1),
-    ("Array::get", 2, 8, 1),
-    ("Array::push", 2, 9, 0),
-    ("Array::set", 3, 10, 0),
-    ("Double::to_int", 1, 11, 1),
-    ("Int::to_double", 1, 12, 1),
-    ("String::char_code_at", 2, 13, 1),
-    ("String::from_char_code", 1, 14, 1),
-    ("String::substring", 3, 15, 1),
-    ("ArrayBuilder::new", 0, 6, 1),
-    ("ArrayBuilder::push", 2, 9, 0),
-    ("ArrayBuilder::freeze", 1, 16, 1),
-    ("Array::slice", 3, 38, 1),
-    ("Array::concat", 2, 39, 1),
-    ("Array::truncate", 2, 40, 0),
-    ("Array::push_all", 2, 41, 0),
-    ("str_lex_diff", 2, 42, 1),
-    ("eq", 2, 29, 1),
-    ("not", 1, 6, 1),
-    ("String::join", 2, 35, 1),
-    ("String::ends_with", 2, 33, 1),
-    ("String::last_index_of", 2, 34, 1),
-    ("String::starts_with", 2, 32, 1),
-    ("String::contains", 2, 31, 1),
-    ("String::index_of", 2, 30, 1),
-    ("String::split", 2, 36, 1),
-    ("String::trim", 1, 37, 1),
-    ("Bytes::new", 0, 18, 1),
-    ("Bytes::length", 1, 7, 1),
-    ("Bytes::get", 2, 19, 1),
-    ("Bytes::set", 3, 20, 0),
-    ("Bytes::push", 2, 21, 0),
-    ("Bytes::append", 2, 22, 0),
-    ("Bytes::concat", 2, 23, 1),
-    ("Bytes::slice", 3, 24, 1),
-    ("Bytes::from_array", 1, 25, 1),
-    ("Bytes::to_array", 1, 26, 1),
-    ("Bytes::blit", 4, 27, 0),
-    ("Bytes::fill", 3, 28, 0),
-    ("Double::to_i64_bits", 1, 16, 1),
-    ("Double::from_i64_bits", 1, 16, 1),
-    // #538 P4.5: identity wraps the trait-dict desugar emits around float
-    // `==` operands (and int->float widening); all no-ops in the raw-bits
-    // i64 world, same as the linear lane's compile_call identity handling.
-    ("Double::to_float", 1, 16, 1),
-    ("Float::to_double", 1, 16, 1),
-    ("Char::to_int", 1, 16, 1),
-    ("Char::from_int", 1, 16, 1),
-    ("Int::to_float", 1, 12, 1),
-    ("FixedArray::make", 2, 6, 1),
-    ("FixedArray::length", 1, 6, 1),
-    ("FixedArray::get", 2, 6, 1),
-    ("FixedArray::set", 3, 6, 0),
-    ("FixedArray::unsafe_set", 3, 6, 0),
-    ("FixedArray::blit", 5, 6, 0),
-    ("StringBuilder::new", 0, 6, 1),
-    ("StringBuilder::push", 2, 6, 0),
-    ("StringBuilder::freeze", 1, 6, 1),
-    ("Map::get", 2, 6, 1),
-    ("Map::keys", 1, 6, 1),
-    ("MapBuilder::new", 0, 6, 1),
-    ("MapBuilder::set", 3, 6, 0),
-    ("MapBuilder::freeze", 1, 6, 1),
-    ("__to_string", 1, 17, 1),
-    ("assert", 1, 6, 0),
-    ("assert_true", 1, 6, 0),
-    ("assert_eq", 2, 6, 0),
-    ("println", 1, 6, 0),
-    ("print", 1, 6, 0),
-    ("map_has", 2, 6, 1)
-  ]
+  // #415 B-1: the central registry DRIVES the gc lane's registration too.
+  // (name, params, returns) come from builtin_registry() rows with in_gc =
+  // true; only the gc GENERATED-BODY INDEX is lane-local, resolved by the
+  // match below. Adding a gc builtin = one registry row + one match arm (+
+  // its generated body); param-count and returns live ONLY in the registry.
+  let builtin_defs = Array::slice([
+    ("", 0, 0, 0)
+  ], 0, 0)
+  let gc_registry_rows = builtin_registry()
+  let mut gc_reg_i = 0
+  while gc_reg_i < Array::length(gc_registry_rows) {
+    let (gc_name, gc_params, gc_returns, _, gc_in_gc) = Array::get(gc_registry_rows, gc_reg_i)
+    if gc_in_gc {
+      let gc_body_idx = match gc_name {
+        "print_int" => 1,
+        "print_str" => 2,
+        "String::length" => 3,
+        "String::equals" => 4,
+        "String::concat" => 5,
+        "array_new" => 6,
+        "Array::length" => 7,
+        "Array::get" => 8,
+        "Array::push" => 9,
+        "Array::set" => 10,
+        "Double::to_int" => 11,
+        "Int::to_double" => 12,
+        "String::char_code_at" => 13,
+        "String::from_char_code" => 14,
+        "String::substring" => 15,
+        "ArrayBuilder::new" => 6,
+        "ArrayBuilder::push" => 9,
+        "ArrayBuilder::freeze" => 16,
+        "Array::slice" => 38,
+        "Array::concat" => 39,
+        "Array::truncate" => 40,
+        "Array::push_all" => 41,
+        "str_lex_diff" => 42,
+        "eq" => 29,
+        "not" => 6,
+        "String::join" => 35,
+        "String::ends_with" => 33,
+        "String::last_index_of" => 34,
+        "String::starts_with" => 32,
+        "String::contains" => 31,
+        "String::index_of" => 30,
+        "String::split" => 36,
+        "String::trim" => 37,
+        "Bytes::new" => 18,
+        "Bytes::length" => 7,
+        "Bytes::get" => 19,
+        "Bytes::set" => 20,
+        "Bytes::push" => 21,
+        "Bytes::append" => 22,
+        "Bytes::concat" => 23,
+        "Bytes::slice" => 24,
+        "Bytes::from_array" => 25,
+        "Bytes::to_array" => 26,
+        "Bytes::blit" => 27,
+        "Bytes::fill" => 28,
+        "Double::to_i64_bits" => 16,
+        "Double::from_i64_bits" => 16,
+        // #538 P4.5: identity wraps the trait-dict desugar emits around float
+        // `==` operands (and int->float widening); all no-ops in the raw-bits
+        // i64 world, same as the linear lane's compile_call identity handling.
+        "Double::to_float" => 16,
+        "Float::to_double" => 16,
+        "Char::to_int" => 16,
+        "Char::from_int" => 16,
+        "Int::to_float" => 12,
+        "FixedArray::make" => 6,
+        "FixedArray::length" => 6,
+        "FixedArray::get" => 6,
+        "FixedArray::set" => 6,
+        "FixedArray::unsafe_set" => 6,
+        "FixedArray::blit" => 6,
+        "StringBuilder::new" => 6,
+        "StringBuilder::push" => 6,
+        "StringBuilder::freeze" => 6,
+        "Map::get" => 6,
+        "Map::keys" => 6,
+        "MapBuilder::new" => 6,
+        "MapBuilder::set" => 6,
+        "MapBuilder::freeze" => 6,
+        "__to_string" => 17,
+        "assert" => 6,
+        "assert_true" => 6,
+        "assert_eq" => 6,
+        "println" => 6,
+        "print" => 6,
+        "map_has" => 6,
+        _ => 0 - 1
+      }
+      if gc_body_idx < 0 {
+        throw("builtin registry drift: no gc body-index mapping for builtin '\{gc_name}' (add a match arm in backend_body.vibe, #415)")
+      } else {
+        ()
+      }
+      Array::push(builtin_defs, (gc_name, gc_params, gc_body_idx, gc_returns))
+    } else {
+      ()
+    }
+    gc_reg_i = gc_reg_i + 1
+  }
   // #415 B-0: builtin_defs must agree with the central registry (name set +
   // params + returns, both directions). The table is static, so this is a
   // full bidirectional check — a builtin added to the linear lane without an

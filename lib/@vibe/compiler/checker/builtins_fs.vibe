@@ -6,6 +6,13 @@ import .. / core / types.vibe {
 
 //# Functions
 
+// #415 B-2: every Fs func-table builtin signature moved to the central
+// registry (codegen/builtin_registry.vibe), which checker/builtins.vibe
+// consults FIRST -- do not re-add arms for those names here. This file only
+// keeps the Fs names that are NOT func-table entries: `Fs::readdir` is a
+// checker-level surface whose Array[String] result is lowered by
+// compile_call to the `__fs_read_dir_raw` host import + String::split.
+
 let fs_no_params: () -> Array[Type] = () -> {
   Array::slice([
     CtUnknown
@@ -18,208 +25,9 @@ let fs_one_param: (Type) -> Array[Type] = (a) -> {
   arr
 }
 
-let fs_two_params: (Type, Type) -> Array[Type] = (a, b) -> {
-  let arr = fs_no_params()
-  Array::push(arr, a)
-  Array::push(arr, b)
-  arr
-}
-
-let lookup_fs_copy: (String) -> Option[Type] = (name) -> {
-  if name == "Fs::copy" {
-    Some(CtFn(fs_two_params(CtString, CtString), CtUnit, Some("Fs")))
-  }
-  else None
-}
-
-let lookup_fs_chdir: (String) -> Option[Type] = (name) -> {
-  if name == "Fs::chdir" {
-    Some(CtFn(fs_one_param(CtString), CtUnit, Some("Fs")))
-  }
-  else None
-}
-
-let lookup_fs_mkdir: (String) -> Option[Type] = (name) -> {
-  if name == "Fs::mkdir" {
-    Some(CtFn(fs_one_param(CtString), CtUnit, Some("Fs")))
-  }
-  else None
-}
-
-let lookup_fs_append: (String) -> Option[Type] = (name) -> {
-  if name == "Fs::append" {
-    Some(CtFn(fs_two_params(CtString, CtString), CtUnit, Some("Fs")))
-  }
-  else None
-}
-
-let lookup_fs_exists: (String) -> Option[Type] = (name) -> {
-  if name == "Fs::exists" {
-    Some(CtFn(fs_one_param(CtString), CtBool, Some("Fs")))
-  }
-  else None
-}
-
-let lookup_fs_getcwd: (String) -> Option[Type] = (name) -> {
-  if name == "Fs::getcwd" {
-    Some(CtFn(fs_no_params(), CtString, Some("Fs")))
-  }
-  else None
-}
-
-let lookup_fs_is_dir: (String) -> Option[Type] = (name) -> {
-  if name == "Fs::is_dir" {
-    Some(CtFn(fs_one_param(CtString), CtBool, Some("Fs")))
-  }
-  else None
-}
-
-let lookup_fs_remove: (String) -> Option[Type] = (name) -> {
-  if name == "Fs::remove" {
-    Some(CtFn(fs_one_param(CtString), CtUnit, Some("Fs")))
-  }
-  else None
-}
-
-// #768: `Fs::mkdir_p` (recursive mkdir, unlike `Fs::mkdir`) -- same shape as
-// Fs::mkdir but a distinct name the checker never recognized at all (not just
-// a codegen gap), so callers failed as "unknown name" before reaching codegen.
-let lookup_fs_mkdir_p: (String) -> Option[Type] = (name) -> {
-  if name == "Fs::mkdir_p" {
-    Some(CtFn(fs_one_param(CtString), CtUnit, Some("Fs")))
-  }
-  else None
-}
-
-// #768: `Fs::rename` -- like Fs::mkdir_p, never recognized by the checker at
-// all (unlike its perform-form sibling `Fs::Copy`/`Fs::Append`), even though
-// the JS host runner already implements `fs_rename`.
-let lookup_fs_rename: (String) -> Option[Type] = (name) -> {
-  if name == "Fs::rename" {
-    Some(CtFn(fs_two_params(CtString, CtString), CtUnit, Some("Fs")))
-  }
-  else None
-}
-
-let lookup_fs_group_d: (String) -> Option[Type] = (name) -> {
-  match lookup_fs_remove(name) {
-    Some(t) => Some(t),
-    None => match lookup_fs_copy(name) {
-      Some(t) => Some(t),
-      None => match lookup_fs_append(name) {
-        Some(t) => Some(t),
-        None => match lookup_fs_mkdir_p(name) {
-          Some(t) => Some(t),
-          None => lookup_fs_rename(name)
-        }
-      }
-    }
-  }
-}
-
-let lookup_fs_is_file: (String) -> Option[Type] = (name) -> {
-  if name == "Fs::is_file" {
-    Some(CtFn(fs_one_param(CtString), CtBool, Some("Fs")))
-  }
-  else None
-}
-
-let lookup_fs_group_c: (String) -> Option[Type] = (name) -> {
-  match lookup_fs_is_file(name) {
-    Some(t) => Some(t),
-    None => match lookup_fs_mkdir(name) {
-      Some(t) => Some(t),
-      None => match lookup_fs_getcwd(name) {
-        Some(t) => Some(t),
-        None => lookup_fs_chdir(name)
-      }
-    }
-  }
-}
-
-let lookup_fs_readdir: (String) -> Option[Type] = (name) -> {
+export let lookup_fs: (String) -> Option[Type] = (name) -> {
   if name == "Fs::readdir" {
     Some(CtFn(fs_one_param(CtString), CtArray(CtString), Some("Fs")))
   }
   else None
-}
-
-let lookup_fs_read_file: (String) -> Option[Type] = (name) -> {
-  if name == "Fs::read_file" {
-    Some(CtFn(fs_one_param(CtString), CtString, Some("Fs")))
-  }
-  else None
-}
-
-let lookup_fs_read_bytes: (String) -> Option[Type] = (name) -> {
-  if name == "Fs::read_bytes" {
-    Some(CtFn(fs_one_param(CtString), CtBytes, Some("Fs")))
-  }
-  else None
-}
-
-let lookup_fs_stat_token: (String) -> Option[Type] = (name) -> {
-  // #795: `__fs_stat_token_raw` is the alias-collision-proof surface used by
-  // lib/@vibe/fs/fs.vibe itself. Its index.vibe exports an alias function
-  // literally named `Fs::stat_token`, and qualified exports are exempt from
-  // the #716 rename (Type::method global dispatch), so inside any unit
-  // bundling the index a free `Fs::stat_token` ident binds to the alias --
-  // infinite recursion. Same dunder-raw-name pattern as #794's __http_*_raw.
-  if name == "Fs::stat_token" || name == "__fs_stat_token_raw" {
-    Some(CtFn(fs_one_param(CtString), CtInt, Some("Fs")))
-  }
-  else None
-}
-
-let lookup_fs_group_b: (String) -> Option[Type] = (name) -> {
-  match lookup_fs_exists(name) {
-    Some(t) => Some(t),
-    None => match lookup_fs_stat_token(name) {
-      Some(t) => Some(t),
-      None => match lookup_fs_readdir(name) {
-        Some(t) => Some(t),
-        None => lookup_fs_is_dir(name)
-      }
-    }
-  }
-}
-
-let lookup_fs_write_file: (String) -> Option[Type] = (name) -> {
-  if name == "Fs::write_file" {
-    Some(CtFn(fs_two_params(CtString, CtString), CtUnit, Some("Fs")))
-  }
-  else None
-}
-
-let lookup_fs_write_bytes: (String) -> Option[Type] = (name) -> {
-  if name == "Fs::write_bytes" {
-    Some(CtFn(fs_two_params(CtString, CtBytes), CtUnit, Some("Fs")))
-  }
-  else None
-}
-
-let lookup_fs_group_a: (String) -> Option[Type] = (name) -> {
-  match lookup_fs_read_file(name) {
-    Some(t) => Some(t),
-    None => match lookup_fs_write_file(name) {
-      Some(t) => Some(t),
-      None => match lookup_fs_read_bytes(name) {
-        Some(t) => Some(t),
-        None => lookup_fs_write_bytes(name)
-      }
-    }
-  }
-}
-
-export let lookup_fs: (String) -> Option[Type] = (name) -> {
-  match lookup_fs_group_a(name) {
-    Some(t) => Some(t),
-    None => match lookup_fs_group_b(name) {
-      Some(t) => Some(t),
-      None => match lookup_fs_group_c(name) {
-        Some(t) => Some(t),
-        None => lookup_fs_group_d(name)
-      }
-    }
-  }
 }

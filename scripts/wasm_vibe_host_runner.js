@@ -4,6 +4,28 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const cp = require("node:child_process");
+
+// Guest Fs::write_file / Fs::write_bytes land here. Write via a same-dir temp
+// file + rename so a concurrent READER never sees a truncated file -- the
+// persistent caches under _build/vibe_* are content-keyed and shared, and the
+// parallel unit-test runner (VIBE_UNIT_TEST_JOBS > 1) has many compilers
+// reading and writing the same hot keys; plain writeFileSync opens with
+// O_TRUNC and exposes a partial-file window that torn a cache row into an
+// "invalid persistent ... cache row" flake. rename(2) is atomic on POSIX and
+// same-content racers simply last-write-win as complete files.
+function atomicWriteFileSync(filePath, data, encoding) {
+  const tmp =
+    filePath + ".tmp-" + process.pid + "-" + Math.random().toString(36).slice(2, 8);
+  try {
+    fs.writeFileSync(tmp, data, encoding);
+    fs.renameSync(tmp, filePath);
+  } catch (e) {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch (_) {}
+    throw e;
+  }
+}
 const readline = require("node:readline");
 
 const TAG_MASK = 3n;
@@ -1870,7 +1892,7 @@ async function main() {
         if (dir && !fs.existsSync(dir)) {
           fs.mkdirSync(dir, { recursive: true });
         }
-        fs.writeFileSync(filePath, content, "utf8");
+        atomicWriteFileSync(filePath, content, "utf8");
         return 0n;
       },
       fs_write_bytes(pathTagged, bytesTagged) {
@@ -1880,7 +1902,7 @@ async function main() {
         if (dir && !fs.existsSync(dir)) {
           fs.mkdirSync(dir, { recursive: true });
         }
-        fs.writeFileSync(filePath, bytes);
+        atomicWriteFileSync(filePath, bytes);
         if (process.env.VIBE_DEBUG_FS === "1") {
           console.error(`[fs-write-bytes] ${filePath} bytes=${bytes.length}`);
         }
@@ -2274,7 +2296,17 @@ async function main() {
       invoke.startsWith("probe_") ||
       invoke.startsWith("selfbuild_") ||
       process.env.VIBE_PREFER_ZERO_ENV_FIRST === "1";
-    const skipRunInit = process.env.VIBE_SKIP_RUN_INIT === "1";
+    // #799 perf: `cli_main` is the selfhost CLI's exported main; on those
+    // artifacts the WASI-convention `_start` ALSO runs main. The pre-invoke
+    // `_start()` below (module init for test/bench modules) therefore ran the
+    // ENTIRE compile once, findClosureEnv then scanned the ~360MB post-compile
+    // heap for an env cli_main does not have, and the explicit cli_main call
+    // compiled AGAIN -- every harness compile did the work twice. Outputs are
+    // byte-identical either way (verified); skip the pre-start for cli_main.
+    // VIBE_FORCE_RUN_INIT=1 restores the old behavior for debugging.
+    const skipRunInit =
+      process.env.VIBE_SKIP_RUN_INIT === "1" ||
+      (invoke === "cli_main" && process.env.VIBE_FORCE_RUN_INIT !== "1");
     let resolvedEnv = 0;
     if (!skipRunInit && invoke !== "_start" && typeof instance.exports._start === "function") {
       if (!didInitStart) {
