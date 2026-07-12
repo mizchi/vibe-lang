@@ -4,6 +4,23 @@ Spec-locked decisions are tracked in `docs/spec/decisions.md`.
 Completed items are archived in `docs/archive/DONE.md`.
 タスクの一次管理は GitHub Issues (`gh issue` / MCP)。本ファイルはロードマップ概要。
 
+## バージョンロードマップ (2026-07-12, ADR-0067)
+
+**GA = 0.3.0**（旧 1.0 GA を renumber）。詳細は
+[docs/release-roadmap.md](docs/release-roadmap.md)「バージョンロードマップ」。
+
+- **0.2.0（現在地）** — 既知バグが一通り吐き出せている段階。0.1.0 からの
+  継続的バグ修正・小機能追加（ADR-0066）。
+- **0.3.0（GA、tracking #805）** — ① パッケージレジストリの完成（ADR-0065）
+  ② 冗長な文法の削除 ③ トップレベル副作用の制限 + `fn main {}` エントリ
+  ポイント特殊化（`_start`/`main` 混在の解消）④ エフェクトシステムの精緻化
+  （#639/#640、#418/#629）⑤ REPL ⑥ doctest + 実行可能な `*.vibe.md`
+  ⑦ inline wasm（WAT S 式の直接記述、最適化用）⑧ `@vibe/core` コアライブラリ
+  拡充 ⑨ `let` → `fn` 移行の完遂（ADR-0064）。タグ運用も #805
+  （旧 1.0 GA タグ issue #647 は close 済み）。
+- **0.4.0（tracking #806）** — ① スレッドを念頭に置いた設計（#488）
+  ② 形式化を念頭に置いた型システムの設計 ③ 専用のエージェントハーネス。
+
 ## 次の一手 (2026-07-02 時点)
 
 現況スナップショット。**selfhost-only 移行は完了**（#594、`src/` MoonBit host 退役、
@@ -157,7 +174,8 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
 - [ ] **#534** `vibe/types/` / `vibe/parser/` 分離
 - [x] **#533** linked artifact の contains 線形走査解消 — whole-graph の visited/scheduled set を bucketed `path_set` 化（merge 再帰 / FS collect / manifest worklist×3、collect フェーズ -41% @450 modules）。per-module の `contains_name`/`contains_path` は小 N のため意図的に線形のまま。副産物: inline `__to_string` の copy-before-grow OOB crash 修正（cold-cache 大規模 FS compile が deterministic に落ちていた）
 - [ ] **#488** shared-everything-threads 実験基盤
-- [ ] **#647** 1.0 GA タグ / version bump（リリース運用判断）
+- [ ] **#805** GA (0.3.0) タグ / version bump（リリース運用判断。GA は
+  1.0 → 0.3 に renumber、ADR-0067。旧 1.0 GA タグ issue #647 は close 済み）
 - [ ] `#cfg` をコンパイラ自身のソースで使えるようにする seed bump
   （docs/selfhost-bootstrap.md 手順、現状は user code 専用）
 
