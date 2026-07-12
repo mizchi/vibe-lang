@@ -30,7 +30,8 @@ vibe build --release app.vibe  # standalone .wasm
 let x: Int = 42                // 62-bit tagged, max 2^61-1
 let f: Float = 1.5f            // 32-bit (suffix f)
 let d: Double = 3.14           // 64-bit (default decimal)
-let s: String = "hello \(x)"  // interpolation with \(expr)
+let s: String = "hello \{x}"   // interpolation with \{expr}
+                               // (旧 `\(x)` は 0.3.0 で削除、`\{x}` を使う)
 let c: Char = 'A'              // char code (Int alias)
 let b: Bool = true
 let u: Unit = ()

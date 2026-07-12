@@ -16,7 +16,7 @@ vibe check file.vibe     # Type check
 
 ```vibe
 let greeting: (String) -> String = (name) -> {
-  "hello \(name)"
+  "hello \{name}"
 }
 
 greeting("world")

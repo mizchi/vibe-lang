@@ -2405,13 +2405,24 @@ EOF
 cat > "$tdir/bad_streamset.vibe" <<'EOF'
 export let _start: () -> Int = () -> { Array::set(Stream::once(41), 0, 1); 0 }
 EOF
+# #805 (0.3.0 redundant-syntax removal): the `\(expr)` string-interpolation
+# spelling was removed — only `\{expr}` remains. A source using the old form
+# must be a (located) compile error. The ok side is covered by the existing
+# tests' pervasive `\{...}` usage.
+cat > "$tdir/bad_interp_paren.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let x = 41
+  let s = "\(x)"
+  String::length(s)
+}
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/ok.vibe" "$tdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed binding/assign/if did not compile (over-rejects)" >&2; exit 1
 fi
-for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg bad_unknownfield bad_guardonly bad_arity_get bad_arity_bytesnew bad_mutann bad_agrecv bad_agidx bad_asrecv bad_streamlen bad_streamget bad_streamset; do
+for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg bad_unknownfield bad_guardonly bad_arity_get bad_arity_bytesnew bad_mutann bad_agrecv bad_agidx bad_asrecv bad_streamlen bad_streamget bad_streamset bad_interp_paren; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$tdir/$bad.vibe" "$tdir/$bad.wasm" _start >/dev/null 2>&1 || true
@@ -3136,10 +3147,12 @@ export let _start: () -> Int = () -> {
   v1 + v2 + v3 + v4
 }
 EOF
-# interp: string interpolation `\{expr}` / `\(expr)` parses an arbitrary
-# EXPRESSION (arithmetic, call, field access, multiple holes), not just a bare
+# interp: string interpolation `\{expr}` parses an arbitrary EXPRESSION
+# (arithmetic, call, field access, multiple holes), not just a bare
 # identifier — previously the embedded source was treated as an identifier name
 # (`undefined variable: 1+1`). (parser_expr_primary.vibe build_interp_expr.)
+# The `\(expr)` spelling was removed in 0.3.0 (#805; see bad_interp_paren in
+# section 29 for the reject side).
 cat > "$sdir/interp.vibe" <<'EOF'
 struct P { x: Int }
 let inc: (Int) -> Int = (n) -> { n + 1 }
@@ -3149,7 +3162,7 @@ export let _start: () -> Int = () -> {
   let v1 = if "\{a + 3}" == "5" { 1 } else { 0 }
   let v2 = if "\{inc(a)}" == "3" { 20 } else { 0 }
   let v3 = if "\{p.x}" == "7" { 300 } else { 0 }
-  let v4 = if "\{a}-\(p.x)" == "2-7" { 4000 } else { 0 }
+  let v4 = if "\{a}-\{p.x}" == "2-7" { 4000 } else { 0 }
   v1 + v2 + v3 + v4
 }
 EOF

@@ -85,7 +85,7 @@ literals only where the parser is expecting that literal head.
 0xFF
 1.5f
 3.14
-"hello \(name)"
+"hello \{name}"
 #|multi
 #|line
 'A'
@@ -102,7 +102,8 @@ Rules:
 - Hex literals use `0x` or `0X`.
 - Decimal literals without `f` are `Double`; decimal literals with `f` are
   `Float`.
-- Strings support escapes and interpolation with `\(Expr)`.
+- Strings support escapes and interpolation with `\{Expr}`. The former
+  `\(Expr)` spelling was removed in 0.3.0 and is now a lex error.
 - `Char` is represented as an integer character code.
 
 ## Program Structure

@@ -92,7 +92,7 @@ let swap: [A, B](A, B) -> (B, A) = (a, b) -> { (b, a) }
 // z? : optional argument (receives Option[T])
 let f: (Int, y~: String, z?: Int) -> String = (x, y~, z?) -> {
   let suffix = match z { Some(v) => to_string(v), None => "none" }
-  "\(y)-\(suffix)"
+  "\{y}-\{suffix}"
 }
 // f(1, y = "ok")          => "ok-none"
 // f(1, y = "ok", z = 10)  => "ok-10"

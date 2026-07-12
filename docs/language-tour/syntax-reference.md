@@ -11,7 +11,7 @@ syntax spec is [`../spec/syntax.md`](../spec/syntax.md).
 | Float | `1.5f`, `2.0f` | 32-bit, suffix `f` |
 | Double | `3.14`, `1.0e-10` | 64-bit, default decimal |
 | String | `"hello"`, `"a\nb"` | Escapes: `\n`, `\t`, `\\`, `\"` |
-| String interp | `"x = \(expr)"` | Nested parens allowed |
+| String interp | `"x = \{expr}"` | Nested braces allowed; `\(expr)` removed in 0.3.0 |
 | Multiline str | `#\| line1` + `#\| line2` | Leading `#\|` prefix |
 | Char | `'a'`, `'\n'` | Int alias for char code |
 | Bool | `true`, `false` | |

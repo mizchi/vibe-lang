@@ -426,25 +426,28 @@ let lex_string_go: (String, Int, Int, Int, Array[String], Bool, ArrayBuilder[Str
         throw("unterminated string escape")
       }
       let esc = String::char_code_at(s, next)
-      if esc == '{' || esc == '(' {
-        ArrayBuilder::push(parts, concat_string_parts(current_parts_acc, chunk))
-        let interp_end = if esc == '{' {
-          scan_interp_end(s, len, next + 1, 1)
-        } else {
-          let mut ie = next + 1
-          let mut depth = 1
-          while ie < len && depth > 0 {
-            let ic = String::char_code_at(s, ie)
-            if ic == '(' {
-              depth = depth + 1
-            }
-            else if ic == ')' {
-              depth = depth - 1
-            }
-            ie = ie + 1
+      if esc == '(' {
+        // 0.3.0 redundant-syntax removal (#805): the `\(expr)` interpolation
+        // spelling is gone — only `\{expr}` remains. Reject with a located
+        // (1-based `line L:C:` of the backslash) message, matching the
+        // parser's located diagnostic prefix.
+        let mut eline = 1
+        let mut ecol = 1
+        let mut ei = 0
+        while ei < current_idx {
+          if String::char_code_at(s, ei) == '\n' {
+            eline = eline + 1
+            ecol = 1
+          } else {
+            ecol = ecol + 1
           }
-          ie - 1
+          ei = ei + 1
         }
+        let eloc = String::concat("line ", String::concat(__to_string(eline), String::concat(":", String::concat(__to_string(ecol), ": "))))
+        throw(String::concat(eloc, "string interpolation \\(expr) was removed in 0.3.0; use \\{expr}"))
+      } else if esc == '{' {
+        ArrayBuilder::push(parts, concat_string_parts(current_parts_acc, chunk))
+        let interp_end = scan_interp_end(s, len, next + 1, 1)
         let expr_src = s[next + 1: interp_end]
         ArrayBuilder::push(parts, expr_src)
         current_idx = interp_end + 1
