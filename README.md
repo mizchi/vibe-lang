@@ -288,25 +288,23 @@ Everything is now vibe source (`.vibe`); the retired MoonBit host tree (`src/`,
 `moon.mod`, `*.mbt`) is gone (#594).
 
 ```
-vibe/                     # Compiler-internal source (written in vibe)
-├── compiler/             # Selfhost compiler
-│   ├── syntax/           #   lexer + parser
-│   ├── checker/          #   type checker with effects
-│   ├── codegen/          #   WASM code generation (linear + gc lanes)
-│   ├── core/             #   AST types and serialization
-│   ├── loader/           #   source/lock resolution + module loading
-│   ├── contract/         #   .vibei contract grammar + conformance engine
-│   ├── perceus/ ripple/  #   ownership / reference-counting passes
-│   ├── normalize/ fmt/   #   normalization + formatter
-│   ├── cache/ runtime/   #   caches, compiler hooks, shell support
-│   └── entry/            #   compiler entrypoints
-├── cli/                  # Selfhost CLI command surface + entrypoints
-├── builtins/             # Builtin registry + host-import definitions
-├── wasi/ wasm/           # WASI / wasm emission helpers
-└── x/                    # Experimental compiler-internal utilities (simd_scan)
-
-lib/                      # Standard + experimental libraries (vibe source)
-├── @vibe/                #   stdlib: prelude, io, path, fs, http, json, socket,
+lib/                      # All vibe source: stdlib + compiler + experimental
+├── @vibe/                # official packages
+│   ├── compiler/         #   selfhost compiler
+│   │   ├── syntax/       #     lexer + parser
+│   │   ├── checker/      #     type checker with effects
+│   │   ├── codegen/      #     WASM code generation (linear + gc lanes)
+│   │   ├── core/         #     AST types and serialization
+│   │   ├── loader/       #     source/lock resolution + module loading
+│   │   ├── contract/     #     .vibei contract grammar + conformance engine
+│   │   ├── perceus/ ripple/ #  ownership / reference-counting passes
+│   │   ├── normalize/ fmt/  #  normalization + formatter
+│   │   ├── cache/ runtime/  #  caches, compiler hooks, shell support
+│   │   ├── builtins/     #     builtin signature SSoT (declarations.vibe)
+│   │   └── entry/        #     compiler entrypoints
+│   ├── cli/              #   selfhost CLI command surface + entrypoints
+│   ├── wasi/             #   WASI p2/p3 runtime adapters
+│   └── …                 #   stdlib: prelude, io, path, fs, http, json, socket,
 │                         #   time, process, shell, random, collection, module,
 │                         #   core, ast, parser
 └── @vibex/               #   experimental: math, regexp, url, uuid, toml, diff,
