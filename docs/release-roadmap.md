@@ -44,7 +44,7 @@
 | version | 位置づけ | 内容 |
 | --- | --- | --- |
 | **0.2.0** | 現在地 | 既知バグが一通り吐き出せている段階。0.1.0 からの継続的バグ修正・小機能追加（ADR-0066 のリリース） |
-| **0.3.0** | **GA** | 下記 9 項目 + タグ運用。tracking: **#805** |
+| **0.3.0** | **GA** | 下記 10 項目 + タグ運用。tracking: **#805** |
 | **0.4.0** | post-GA | 下記 3 項目。tracking: **#806** |
 
 ### 0.3.0 (GA) の内容
@@ -75,6 +75,11 @@
    uuid/list/set の路線を継続）。
 9. **`let` → `fn` 移行の完遂** — ADR-0064。compiler source を含む全ツリーで
    トップレベル名前付き関数を `fn` に統一する（cache/sha1.vibe から着手済み）。
+10. **WASI p3 動作保証** (#821) — wasmtime の WASI p3 (wasmtime_wasi p3
+    bindings) で動くことを CI で保証する。async-component gate の復旧、
+    guarantee gate 新設（wasmtime 45/46 matrix、ツール欠如 = FAIL）、
+    ratified 0.3.0 / wasmtime 46 への cutover。パイプライン自体は wasmtime
+    45 で動作確認済み — 欠けているのは検証側のみ。
 
 ### 0.4.0 の内容
 

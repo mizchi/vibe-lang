@@ -16,8 +16,12 @@ Completed items are archived in `docs/archive/DONE.md`.
   ポイント特殊化（`_start`/`main` 混在の解消）④ エフェクトシステムの精緻化
   （#639/#640、#418/#629）⑤ REPL ⑥ doctest + 実行可能な `*.vibe.md`
   ⑦ inline wasm（WAT S 式の直接記述、最適化用）⑧ `@vibe/core` コアライブラリ
-  拡充 ⑨ `let` → `fn` 移行の完遂（ADR-0064）。タグ運用も #805
-  （旧 1.0 GA タグ issue #647 は close 済み）。
+  拡充 ⑨ `let` → `fn` 移行の完遂（ADR-0064）⑩ WASI p3 動作保証（#821、
+  wasmtime 45/46 matrix の guarantee gate + ratified 0.3.0 cutover）。
+  タグ運用も #805（旧 1.0 GA タグ issue #647 は close 済み）。
+  取り込み候補の PL 研究サーベイは [docs/pl-survey-2026-07.md](docs/pl-survey-2026-07.md)
+  （evidence-passing handler #817 / structured concurrency #818 /
+  doctest 様式 #819 / エージェント向け構造化診断 #820）。
 - **0.4.0（tracking #806）** — ① スレッドを念頭に置いた設計 — Go channel /
   Elixir 風軽量プロセスが目標モデル（ADR-0068、#488）。以後の全設計は
   ADR-0068 の制約（グローバル可変状態を増やさない等）に従う
