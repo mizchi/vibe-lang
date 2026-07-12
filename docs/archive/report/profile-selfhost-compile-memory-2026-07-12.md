@@ -85,6 +85,57 @@ profile の caller 集計 (cpuprofile の parent 帰属) で特定した 2 箇�
 パターン適用候補)、perceus snapshot 自体の 113ms (`__rt_arr_slice`) は
 dirty-tracking 化しないと消えない。
 
+## 第2弾: 線形名前走査の sorted-index 化 (同ブランチ)
+
+**構造的発見: この compiler の `Map` は flat assoc list で、`Map::get` /
+`Map::has_key` は O(entries)×eq、`MapBuilder::set` も重複走査で build が
+O(N²)** — つまり #799 の「Map membership index」も実は線形走査だった。
+`core/sorted_index.vibe` (stable merge sort permutation + leftmost binary
+search) を導入し、以下を O(log N) 化:
+
+1. `CompileCtx.capture_name_index`: Map → SORTED Array[String]。
+   collect_free_vars_expr の per-ident 走査が ~12 str 比較になる。
+2. `desugar_trait_dict.collect_fn_returns`: 構築時に stable sort し、
+   fn_exists / fn_return_type を leftmost bsearch に (first-match-wins は
+   stable sort + leftmost で保存)。
+3. `collect_used_builtin_names` の membership index も sorted array 化
+   (旧 MapBuilder 構築は O(N²))。
+
+結果 (byte-parity で意味論保存を確認済み):
+
+| 指標 | 第1弾後 | 第2弾後 | baseline比 |
+|---|---|---|---|
+| wall | 3332ms | 2976ms | **−23%** |
+| CPU total | 3.09s | 2.75s | **−24%** |
+| RSS | 389MB | 344MB | **−22%** |
+| `__rt_eq` self | 246ms | 148ms | −43% |
+| collect_free_vars_expr self | 139ms | top20圏外 | — |
+| fn_exists + fn_return_type | 73ms | top20圏外 | — |
+
+### 踏んだ罠 (記録)
+
+- **compiler source で string `<` は使えない**: desugar が checker 不可視の
+  `str_lex_diff` へ書き換えるため "unknown name: str_lex_diff" で落ちる。
+  sorted_index は char-code 比較の `str_lt` を自前実装した。
+- **`!f(x) >= 0` の優先順位**: `!` が先に結合して "operand of `!` must be
+  Bool"。`!(f(x) >= 0)` と括弧必須。
+- **regen 失敗は committed 生成物を途中状態で残す**: 次の regen が
+  「seed が古い生成物をコンパイルできない」形で誤診を誘う。regen を
+  リトライする前に `git checkout -- <生成物3点>` で戻す。
+- **高速化が racy-stat cache の穴を顕在化させた**: stat token が
+  (size, mtimeNs) のみだったため、同サイズ書き換えが同一 kernel
+  timestamp tick 内に収まると persistent source cache の invalidation を
+  見逃す (git の racy index と同型)。第1+2弾の高速化で
+  persistent_cache_test の write→collect→write が 1 tick に収まるように
+  なり決定的に fail。**token に inode を混入して修正** (atomic rename
+  書き込みは毎回新 inode) — node runner / moonrun_wasmtime を lockstep
+  更新。既存 cache 行は stat mismatch → content fingerprint fallback で
+  graceful に生き残る。
+
+残候補: `lookup_ctor` 83ms (CtorTable への sorted index、構築7箇所)、
+`__rt_bytes_push` 107ms (wasm emit の per-byte push)、V8 GC 680ms
+(memory.grow コピー — ヒープ削減に連動)。
+
 ## 今回入れた profiler 改善
 
 - `Profiler::heap_bytes` builtin (linear lane, `vibe.profile-heap-bytes`):

@@ -884,13 +884,25 @@ function buildFsMetadataHashParts(filePath) {
     typeof stat.mtimeNs === "bigint"
       ? stat.mtimeNs
       : BigInt(Math.round(Number(stat.mtimeMs) * 1e6));
+  // ino guards the "racy stat" window (same class as git's racy index): an
+  // atomic rename-in rewrite that lands in the same kernel timestamp tick
+  // with the same size would otherwise produce an identical token, so the
+  // persistent source caches missed the change (persistent_cache_test's
+  // invalidation assert caught this once compiles got fast enough to fit in
+  // one tick). Every atomicWriteFileSync allocates a fresh inode, so mixing
+  // it in makes rename-based rewrites always change the token. Must mirror
+  // moonrun_wasmtime's vibe_stat_token exactly (shared cache/cwasm keys).
+  const ino = typeof stat.ino === "bigint" ? stat.ino : BigInt(stat.ino || 0);
   const lower = BigInt.asUintN(
     64,
-    (size * 0x9e3779b185ebca87n) ^ mtimeNs ^ 0x243f6a8885a308d3n,
+    (size * 0x9e3779b185ebca87n) ^
+      mtimeNs ^
+      0x243f6a8885a308d3n ^
+      (ino * 0x100000001b3n),
   );
   const upper = BigInt.asUintN(
     64,
-    ((mtimeNs << 1n) ^ (size << 17n) ^ 0x13198a2e03707344n),
+    (mtimeNs << 1n) ^ (size << 17n) ^ 0x13198a2e03707344n ^ (ino << 7n),
   );
   return { lower, upper };
 }
