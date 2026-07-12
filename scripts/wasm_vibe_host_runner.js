@@ -2296,7 +2296,7 @@ async function main() {
       invoke.startsWith("probe_") ||
       invoke.startsWith("selfbuild_") ||
       process.env.VIBE_PREFER_ZERO_ENV_FIRST === "1";
-    // #798 perf: `cli_main` is the selfhost CLI's exported main; on those
+    // #799 perf: `cli_main` is the selfhost CLI's exported main; on those
     // artifacts the WASI-convention `_start` ALSO runs main. The pre-invoke
     // `_start()` below (module init for test/bench modules) therefore ran the
     // ENTIRE compile once, findClosureEnv then scanned the ~360MB post-compile

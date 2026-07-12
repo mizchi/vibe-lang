@@ -541,7 +541,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     ],
     owners: ArrayBuilder::freeze(ArrayBuilder::new())
   }
-  // #798 perf: ONE program walk collecting the canonical free-name set,
+  // #799 perf: ONE program walk collecting the canonical free-name set,
   // then every need_<builtin> flag below is a map lookup. Previously each
   // flag re-walked the whole AST (~40 walks) with a linear fn_names scan per
   // ident inside.
@@ -1479,7 +1479,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // every renamed shadow gets a distinct `__shadow_N_<name>` (see
   // uniquify_shadowed_bindings).
   let uq_shadow_counter = [0]
-  // #798 perf: ONE membership index over the flat fn + ctor name tables,
+  // #799 perf: ONE membership index over the flat fn + ctor name tables,
   // shared by every per-function CompileCtx below. collect_free_vars_indexed
   // consults it per ident instead of linearly scanning ~thousands of names
   // (which dominated compiler-closure compile profiles).
@@ -3150,10 +3150,83 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // post-user name: `_start` was labeled `Env::get` in crash stacks, which
   // repeatedly sent debugging to functions the trace never touched. `_start`
   // and `run` sit right after the user block, so name them explicitly.
-  let name_sec_names = Array::slice(fn_names_list, 0, num_user_funcs)
+  // #799: name the GENERATED runtime helpers too. Profilers (node --cpu-prof)
+  // attributed the hottest samples to anonymous wasm-function[N] frames
+  // because only user functions carried name-section entries; the generated
+  // string/array/bytes helpers occupy the consecutive index range
+  // [num_imported_funcs, func_offset). Unassigned slots (lambda-arity pads
+  // etc.) keep the generic "__rt_gen" label.
+  let gen_sec_names = lc_fresh_string_array()
+  let mut gsn_i = 0
+  while gsn_i < num_generated {
+    Array::push(gen_sec_names, "__rt_gen")
+    gsn_i = gsn_i + 1
+  }
+  Array::set(gen_sec_names, print_int_idx - num_imported_funcs, "__rt_print_int")
+  Array::set(gen_sec_names, print_str_idx - num_imported_funcs, "__rt_print_str")
+  Array::set(gen_sec_names, str_len_idx - num_imported_funcs, "__rt_str_len")
+  Array::set(gen_sec_names, str_eq_idx - num_imported_funcs, "__rt_str_eq")
+  Array::set(gen_sec_names, str_concat_idx - num_imported_funcs, "__rt_str_concat")
+  Array::set(gen_sec_names, arr_new_idx - num_imported_funcs, "__rt_arr_new")
+  Array::set(gen_sec_names, arr_len_idx - num_imported_funcs, "__rt_arr_len")
+  Array::set(gen_sec_names, arr_get_idx - num_imported_funcs, "__rt_arr_get")
+  Array::set(gen_sec_names, arr_push_idx - num_imported_funcs, "__rt_arr_push")
+  Array::set(gen_sec_names, arr_set_idx - num_imported_funcs, "__rt_arr_set")
+  Array::set(gen_sec_names, double_to_int_idx - num_imported_funcs, "__rt_double_to_int")
+  Array::set(gen_sec_names, int_to_double_idx - num_imported_funcs, "__rt_int_to_double")
+  Array::set(gen_sec_names, str_char_code_at_idx - num_imported_funcs, "__rt_str_char_code_at")
+  Array::set(gen_sec_names, str_from_char_code_idx - num_imported_funcs, "__rt_str_from_char_code")
+  Array::set(gen_sec_names, str_substring_idx - num_imported_funcs, "__rt_str_substring")
+  Array::set(gen_sec_names, identity_idx - num_imported_funcs, "__rt_identity")
+  Array::set(gen_sec_names, arr_slice_idx - num_imported_funcs, "__rt_arr_slice")
+  Array::set(gen_sec_names, arr_concat_idx - num_imported_funcs, "__rt_arr_concat")
+  Array::set(gen_sec_names, arr_truncate_idx - num_imported_funcs, "__rt_arr_truncate")
+  Array::set(gen_sec_names, string_join_idx - num_imported_funcs, "__rt_string_join")
+  Array::set(gen_sec_names, fs_read_file_stub_idx - num_imported_funcs, "__rt_stub_a")
+  Array::set(gen_sec_names, fs_exists_stub_idx - num_imported_funcs, "__rt_stub_b")
+  Array::set(gen_sec_names, fs_stat_token_stub_idx - num_imported_funcs, "__rt_stub_c")
+  Array::set(gen_sec_names, fs_write_file_stub_idx - num_imported_funcs, "__rt_stub_d")
+  Array::set(gen_sec_names, fs_write_bytes_stub_idx - num_imported_funcs, "__rt_stub_e")
+  Array::set(gen_sec_names, eq_idx - num_imported_funcs, "__rt_eq")
+  Array::set(gen_sec_names, string_ends_with_idx - num_imported_funcs, "__rt_string_ends_with")
+  Array::set(gen_sec_names, string_last_index_of_idx - num_imported_funcs, "__rt_string_last_index_of")
+  Array::set(gen_sec_names, arr_push_all_idx - num_imported_funcs, "__rt_arr_push_all")
+  Array::set(gen_sec_names, string_index_of_idx - num_imported_funcs, "__rt_string_index_of")
+  Array::set(gen_sec_names, string_contains_idx - num_imported_funcs, "__rt_string_contains")
+  Array::set(gen_sec_names, string_starts_with_idx - num_imported_funcs, "__rt_string_starts_with")
+  Array::set(gen_sec_names, string_split_idx - num_imported_funcs, "__rt_string_split")
+  Array::set(gen_sec_names, string_trim_idx - num_imported_funcs, "__rt_string_trim")
+  Array::set(gen_sec_names, selfhost_sources_idx - num_imported_funcs, "__rt_selfhost_sources")
+  Array::set(gen_sec_names, bytes_new_idx - num_imported_funcs, "__rt_bytes_new")
+  Array::set(gen_sec_names, bytes_len_idx - num_imported_funcs, "__rt_bytes_len")
+  Array::set(gen_sec_names, bytes_get_idx - num_imported_funcs, "__rt_bytes_get")
+  Array::set(gen_sec_names, bytes_set_idx - num_imported_funcs, "__rt_bytes_set")
+  Array::set(gen_sec_names, bytes_push_idx - num_imported_funcs, "__rt_bytes_push")
+  Array::set(gen_sec_names, bytes_append_idx - num_imported_funcs, "__rt_bytes_append")
+  Array::set(gen_sec_names, bytes_concat_idx - num_imported_funcs, "__rt_bytes_concat")
+  Array::set(gen_sec_names, bytes_slice_idx - num_imported_funcs, "__rt_bytes_slice")
+  Array::set(gen_sec_names, bytes_from_array_idx - num_imported_funcs, "__rt_bytes_from_array")
+  Array::set(gen_sec_names, bytes_to_array_idx - num_imported_funcs, "__rt_bytes_to_array")
+  if enable_rc {
+    Array::set(gen_sec_names, rc_drop_idx - num_imported_funcs, "__rt_rc_drop")
+    Array::set(gen_sec_names, rc_alloc_idx - num_imported_funcs, "__rt_rc_alloc")
+  } else {
+    ()
+  }
+  Array::set(gen_sec_names, heap_grow_check_idx - num_imported_funcs, "__rt_heap_grow_check")
+  Array::set(gen_sec_names, simd_skip_ws_idx - num_imported_funcs, "__rt_simd_skip_ws")
+  Array::set(gen_sec_names, simd_scan_alnum_idx - num_imported_funcs, "__rt_simd_scan_alnum")
+  Array::set(gen_sec_names, simd_scan_alnum_str_idx - num_imported_funcs, "__rt_simd_scan_alnum_str")
+  Array::set(gen_sec_names, str_lex_diff_idx - num_imported_funcs, "__rt_str_lex_diff")
+  let name_sec_names = gen_sec_names
+  let mut usn_i = 0
+  while usn_i < num_user_funcs {
+    Array::push(name_sec_names, Array::get(fn_names_list, usn_i))
+    usn_i = usn_i + 1
+  }
   Array::push(name_sec_names, "_start")
   Array::push(name_sec_names, "run")
-  emit_function_name_section(out, name_sec_names, func_offset)
+  emit_function_name_section(out, name_sec_names, num_imported_funcs)
   bytebuf_to_bytes(out)
 }
 

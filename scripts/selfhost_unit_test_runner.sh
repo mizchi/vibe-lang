@@ -228,8 +228,17 @@ else
     return 0
   }
   export -f unit_worker run_one
-  grep -vE '^[[:space:]]*#' "$ALLOWLIST" | sed '/^[[:space:]]*$/d' \
+  # Tests that INSPECT the shared persistent-cache state (_build/vibe_*)
+  # cannot run while other workers' compiles are writing it -- the cache-file
+  # counts/contents they assert on shift underneath them (persistent_cache_test
+  # flaked exactly this way on the first parallel run). Anything with "cache"
+  # in its path runs in a sequential tail after the fan-out instead.
+  all_entries="$(grep -vE '^[[:space:]]*#' "$ALLOWLIST" | sed '/^[[:space:]]*$/d')"
+  printf '%s\n' "$all_entries" | grep -vi cache \
     | xargs -P "$JOBS" -n 1 -I{} bash -c 'unit_worker "$@"' _ {}
+  while IFS= read -r f; do
+    [ -n "$f" ] && unit_worker "$f"
+  done < <(printf '%s\n' "$all_entries" | grep -i cache)
   n_ok=$(ls "$results_dir" | grep -c '\.ok$' || true)
   skips=$(ls "$results_dir" | grep -c '\.skip$' || true)
   fails=$(ls "$results_dir" | grep -c '\.fail$' || true)
