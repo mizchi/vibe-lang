@@ -19,12 +19,12 @@ model does not), so we host-build a selfhost compiler with an opt-in
 post-optimize hook and drive it via the node host runner:
 
 ```bash
-# 1) local-only hook in vibe/cli/selfhost.vibe: gate maybe-minify on
+# 1) local-only hook in lib/@vibe/cli/selfhost.vibe: gate maybe-minify on
 #    VIBE_MINIFY_PASS (import minify_converge etc. from ../../lib/@vibe/optimizer). DO
 #    NOT COMMIT — it couples wasm_opt into the selfhost compiler (+~700 KB) and
 #    the fixed seed cannot self-compile it.
 # 2) host-build the dogfood compiler (~8s):
-vibe compile --wasm --force-cabi-realloc vibe/cli/selfhost_entry.vibe -o /tmp/sc.wasm
+vibe compile --wasm --force-cabi-realloc lib/@vibe/cli/selfhost_entry.vibe -o /tmp/sc.wasm
 # 3) compile a sample with/without a pass, then validate + run:
 export VIBE_PREOPEN_DIR="$(pwd)"
 bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main /tmp/sc.wasm \

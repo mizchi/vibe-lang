@@ -3,7 +3,7 @@
 vibe language prototype and runtime.
 
 vibe is **selfhost-only**: the compiler, type checker, and codegen are written in
-vibe itself (`lib/@vibe/compiler/`, `vibe/cli/`) and built from a committed seed via a
+vibe itself (`lib/@vibe/compiler/`, `lib/@vibe/cli/`) and built from a committed seed via a
 wasm runner — no MoonBit toolchain is required (the original MoonBit host was
 retired in #594; see [docs/archive/moonbit-retirement.md](docs/archive/moonbit-retirement.md)).
 The task runner is [pkfire](https://github.com/mizchi/pkfire) (`pkf`), defined in

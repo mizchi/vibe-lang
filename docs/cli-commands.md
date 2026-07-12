@@ -3,7 +3,7 @@
 This document clarifies the role of each `vibe` CLI command, with special attention to the compile/build variants and other commonly confused command pairs.
 
 Implementation policy: the canonical CLI source lives in `lib/@vibe/compiler/` and
-`vibe/cli/`. The MoonBit host (including the `src/cmd/*` entrypoints) was retired
+`lib/@vibe/cli/`. The MoonBit host (including the `src/cmd/*` entrypoints) was retired
 in #594; new command behavior is added only in the selfhost source.
 
 ## Quick Reference: Compile & Build Commands
