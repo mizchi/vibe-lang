@@ -17,11 +17,10 @@
 #   roundtrip  Stream::to_string(String::to_bytes(...))
 #   control    non-async entry stays a core module (magic layer 0x01)
 #
-# KNOWN GAP: the `for await x in stream` entry (spec M2 surface) currently
-# REGRESSES — Stream iteration traps ("undefined element: out of bounds table
-# access") and Array iteration fails compile ("calling a non-function value:
-# __pull_next"). Tracked in #822; opt in with VIBE_ASYNC_GATE_FORAWAIT=1 once
-# fixed to promote it into the always-on set.
+# forawait: the `for await x in stream` entry regressed while this gate was
+# missing (#822 — the pull-classification called the Stream value as a
+# closure); fixed by classifying builtin Streams to the eager array loop, and
+# promoted into the always-on set.
 #
 # Env:
 #   VIBE_ASYNC_GATE_COMPILER        compiler wasm override (default: newest
@@ -30,7 +29,6 @@
 #                                   45 RC flag set; clear/adjust for the
 #                                   wasmtime 46 re-probe, #821)
 #   VIBE_P3_GATE_REQUIRE_TOOLS=1    missing wasmtime = FAIL instead of skip
-#   VIBE_ASYNC_GATE_FORAWAIT=1      also run the for-await entry (known red)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -169,12 +167,7 @@ run_component_42() {
 
 write_fixtures
 
-ENTRIES="await task stream option body roundtrip"
-if [ "${VIBE_ASYNC_GATE_FORAWAIT:-0}" = "1" ]; then
-  ENTRIES="$ENTRIES forawait"
-else
-  echo "[async-component-gate] forawait: SKIPPED (known regression, #822)"
-fi
+ENTRIES="await task stream option body roundtrip forawait"
 for name in $ENTRIES; do
   run_component_42 "$name"
 done

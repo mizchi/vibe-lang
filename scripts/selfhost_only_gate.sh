@@ -1885,6 +1885,45 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
 if [ ! -s "$pfdir/good_transitive.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: correctly-declared transitive effect chain did not compile (#626 over-rejects)" >&2; exit 1
 fi
+# #812: the transitive map must also cover IMPORTED effectful functions — a
+# caller invoking an imported `with { Fs }` function without declaring Fs used
+# to compile (and reach the filesystem at runtime) while the same shape with a
+# local callee was rejected. The env-seeded row closes the module boundary.
+mkdir -p "$pfdir/sub"
+cat > "$pfdir/sub/helper.vibe" <<'EOF'
+export let read_it: (String) -> String with { Error, Fs } = (p) -> {
+  Fs::read_file(p)
+}
+EOF
+cat > "$pfdir/bad_import_transitive.vibe" <<'EOF'
+import ./sub/helper.vibe { read_it }
+
+let f: (Int) -> Int = (n) -> {
+  let _ = read_it("x")
+  n
+}
+export let _start: () -> Int = () -> { f(1) }
+EOF
+cat > "$pfdir/good_import_transitive.vibe" <<'EOF'
+import ./sub/helper.vibe { read_it }
+
+let g: (String) -> String with { Error, Fs } = (p) -> {
+  read_it(p)
+}
+export let _start: () -> Int = () -> { 42 }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$pfdir/bad_import_transitive.vibe" "$pfdir/bad_import_transitive.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$pfdir/bad_import_transitive.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: undeclared call of IMPORTED effectful function compiled (#812 regressed)" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$pfdir/good_import_transitive.vibe" "$pfdir/good_import_transitive.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$pfdir/good_import_transitive.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: correctly-declared imported effect call did not compile (#812 over-rejects)" >&2; exit 1
+fi
 rm -rf "$pfdir"
 echo "[selfhost-only-gate] effect-call discipline ok"
 
@@ -2141,13 +2180,25 @@ EOF
 cat > "$tdir/bad_substrarg.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let s = String::substring("abc", "x", 2); 0 }
 EOF
+cat > "$tdir/bad_unknownfield.vibe" <<'EOF'
+struct P { x: Int; y: Int }
+export let _start: () -> Int = () -> { let p = P::{ x: 1, z: 2 }; p.y }
+EOF
+cat > "$tdir/bad_guardonly.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  match 0 {
+    v if v > 0 => 1,
+    v if v < 0 => -1
+  }
+}
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/ok.vibe" "$tdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed binding/assign/if did not compile (over-rejects)" >&2; exit 1
 fi
-for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg; do
+for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg bad_unknownfield bad_guardonly; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$tdir/$bad.vibe" "$tdir/$bad.wasm" _start >/dev/null 2>&1 || true
