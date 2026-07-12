@@ -2094,6 +2094,47 @@ done
 rm -rf "$odir"
 echo "[selfhost-only-gate] effect op signature checking ok"
 
+# 27c. index bounds checks (#811): OOB / negative Array and Bytes access must
+#      TRAP (unreachable) instead of silently reading/writing adjacent memory;
+#      in-bounds access is unchanged.
+echo "[selfhost-only-gate] 27c/27 index bounds checks (#811)"
+bdir="_build/_gate_bounds"
+rm -rf "$bdir"; mkdir -p "$bdir"
+cat > "$bdir/inbounds.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let a = [40, 2, 7]
+  let b = Bytes::new(3)
+  Bytes::set(b, 0, 2)
+  Array::get(a, 0) + Bytes::get(b, 0)
+}
+EOF
+cat > "$bdir/oob_get.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::get([1, 2, 3], 5) }
+EOF
+cat > "$bdir/oob_neg.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::get([1, 2, 3], -1) }
+EOF
+cat > "$bdir/oob_bytes.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let b = Bytes::new(2); Bytes::get(b, 9) }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$bdir/inbounds.vibe" "$bdir/inbounds.wasm" _start >/dev/null 2>&1 || true
+bounds_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$bdir/inbounds.wasm" 2>/dev/null | tail -n 1)"
+if [ "$bounds_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: in-bounds access returned '$bounds_out' (expected 42; #811 over-traps)" >&2; exit 1
+fi
+for oob in oob_get oob_neg oob_bytes; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$bdir/$oob.vibe" "$bdir/$oob.wasm" _start >/dev/null 2>&1 || true
+  if bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$bdir/$oob.wasm" >/dev/null 2>&1; then
+    echo "[selfhost-only-gate] FAIL: $oob ran without trapping (#811 regressed)" >&2; exit 1
+  fi
+done
+rm -rf "$bdir"
+echo "[selfhost-only-gate] index bounds checks ok"
+
 # 28. argument type checking: the checker used to SWALLOW argument unification
 #     failures (`unify_call_args` did `None => out`), so an ill-typed call like
 #     `f("x")` for `f: (Int) -> Int` was silently accepted. It now reports a
