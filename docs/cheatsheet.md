@@ -306,6 +306,14 @@ let b = ArrayBuilder::new()
 ArrayBuilder::push(b, 1)
 ArrayBuilder::freeze(b)       // -> Array[Int]
 
+// Bytes — growable byte buffer
+let e = Bytes::new()          // empty (length 0), grows via push/append
+let z = Bytes::new(4)         // length 4, zero-filled (MoonBit semantics)
+Bytes::set(z, 0, 65)          // in-bounds write (OOB index traps, #811)
+Bytes::push(z, 9)             // append -> length 5
+Bytes::get(z, 0)              // => 65
+Bytes::length(z)              // => 5
+
 // Int64Array — fixed-size i64-cell buffer for 32-bit word workloads.
 // linear `Array[Int]` cells are 32-bit (with a 2-bit tag), so values
 // >= 2^30 truncate; use Int64Array for hash / binary-protocol word

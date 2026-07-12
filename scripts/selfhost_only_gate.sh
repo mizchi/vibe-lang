@@ -2103,9 +2103,12 @@ rm -rf "$bdir"; mkdir -p "$bdir"
 cat > "$bdir/inbounds.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
   let a = [40, 2, 7]
+  // Bytes::new(n) is a length-n zero-filled buffer (MoonBit semantics);
+  // exercise in-len set/get plus push growth past the initial length.
   let b = Bytes::new(3)
   Bytes::set(b, 0, 2)
-  Array::get(a, 0) + Bytes::get(b, 0)
+  Bytes::push(b, 9)
+  Array::get(a, 0) + Bytes::get(b, 0) + Bytes::get(b, 3) - 9
 }
 EOF
 cat > "$bdir/oob_get.vibe" <<'EOF'
@@ -2120,7 +2123,7 @@ EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$bdir/inbounds.vibe" "$bdir/inbounds.wasm" _start >/dev/null 2>&1 || true
-bounds_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$bdir/inbounds.wasm" 2>/dev/null | tail -n 1)"
+bounds_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$bdir/inbounds.wasm" 2>/dev/null | tail -n 1 || true)"
 if [ "$bounds_out" != "42" ]; then
   echo "[selfhost-only-gate] FAIL: in-bounds access returned '$bounds_out' (expected 42; #811 over-traps)" >&2; exit 1
 fi
@@ -2300,13 +2303,19 @@ export let _start: () -> Int = () -> {
   }
 }
 EOF
+cat > "$tdir/bad_arity_get.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::get([1, 2, 3]) }
+EOF
+cat > "$tdir/bad_arity_bytesnew.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let b = Bytes::new(1, 2); Bytes::length(b) }
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/ok.vibe" "$tdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed binding/assign/if did not compile (over-rejects)" >&2; exit 1
 fi
-for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg bad_unknownfield bad_guardonly; do
+for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg bad_unknownfield bad_guardonly bad_arity_get bad_arity_bytesnew; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$tdir/$bad.vibe" "$tdir/$bad.wasm" _start >/dev/null 2>&1 || true

@@ -3819,6 +3819,22 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       let synth = ELet("__bf2_dst", dst_expr, ELet("__bf2_val", val_expr, ELet("__bf2_count", count_expr, ELetMut("__bf2_i", EInt(0), ESeq(EWhile(EBinOp("<", EIdent("__bf2_i", -1), EIdent("__bf2_count", -1)), loop_body), EUnit), -1), -1), -1), -1)
       ce(buf, synth, local_names, next_local, ctx, ld)
     }
+    else if fname == "Bytes::new" && Array::length(args) == 1 {
+      // Bytes::new(n): length-n zero-filled buffer (MoonBit semantics). The
+      // runtime bytes_new takes no operands, so the generic path used to emit
+      // the argument and then call it anyway — the operand stayed stranded on
+      // the value stack and the whole module failed validation at
+      // instantiation time. Synthesize new() + a zero-push loop instead.
+      let n_expr = Array::get(args, 0)
+      let loop_body = ESeq(ECall(EIdent("Bytes::push", -1), [
+        EIdent("__bn_b", -1),
+        EInt(0)
+      ], -1), EAssign("__bn_i", EBinOp("+", EIdent("__bn_i", -1), EInt(1)), EUnit))
+      let synth = ELet("__bn_n", n_expr, ELet("__bn_b", ECall(EIdent("Bytes::new", -1), Array::slice([
+        EUnit
+      ], 0, 0), -1), ELetMut("__bn_i", EInt(0), ESeq(EWhile(EBinOp("<", EIdent("__bn_i", -1), EIdent("__bn_n", -1)), loop_body), EIdent("__bn_b", -1)), -1), -1), -1)
+      ce(buf, synth, local_names, next_local, ctx, ld)
+    }
     else {
       if fn_idx_in_list >= 0 {
         let fidx = Array::get(ctx.func_table.indices, fn_idx_in_list)
