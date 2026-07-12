@@ -58,6 +58,33 @@ compiler source を触った commit は persistent cache のフィンガープ�
 なって 10 倍化する。1 compile ~5s × 2 gate ×~340 file がそのまま CI の
 支配項 = **compile 速度/メモリの改善がそのまま cold CI を短縮する**。
 
+## このプロファイルに基づく第1弾の修正 (同ブランチ)
+
+profile の caller 集計 (cpuprofile の parent 帰属) で特定した 2 箇所:
+
+1. **perceus `copy_ints`** — `__rt_arr_push` 439ms 中 253ms の単独最大
+   呼び出し元。branch/match arm ごとの snapshot を push ループで作っていた。
+   `Array::slice(src, 0, len)` (1 allocation + memory.copy) に置換。
+2. **import_alias_rewrite** — (a) `alias_map_without_{name,names,pat,params}`
+   が「削除対象が無くても毎 binder でコピー」→ 事前スキャンして無変更なら
+   入力 map を共有して返す。(b) `rewrite_import_alias_expr` が alias 0 件でも
+   AST 全木を再構築 → 空 map なら identity を返す fast path。
+
+結果 (同一 corpus、byte-parity で意味論保存を確認済み):
+
+| 指標 | before | after | delta |
+|---|---|---|---|
+| wall | 3867ms | 3332ms | −14% |
+| CPU total | 3.63s | 3.09s | −15% |
+| bump-heap 高水位 | 362.9MB | 255.8MB | **−30%** |
+| RSS | 441MB | 389MB | −12% |
+| `__rt_arr_push` self | 439ms | 130ms | −70% |
+| V8 GC | 985ms | 695ms | −29% |
+
+残る上位: `__rt_eq` (collect_free_vars の線形名前走査、#799 の Map index
+パターン適用候補)、perceus snapshot 自体の 113ms (`__rt_arr_slice`) は
+dirty-tracking 化しないと消えない。
+
 ## 今回入れた profiler 改善
 
 - `Profiler::heap_bytes` builtin (linear lane, `vibe.profile-heap-bytes`):
