@@ -627,12 +627,18 @@ let is_inlined_scalar_builtin: (String) -> Bool = (name) -> {
 // Stack-based free variable analysis: uses in-place push/truncate on bound array
 // to avoid O(n) array copies at every scope boundary. This dramatically reduces
 // heap allocation during meta-circular self-compilation.
-export let rec collect_free_vars_expr: (Expr, Array[String], Array[String], Array[String]) -> Int = (expr, bound, fn_names, out) -> {
+// #798 perf: `fn_names` is a MEMBERSHIP INDEX (Map), not an array. The flat
+// fn+ctor name table is thousands of entries in a compiler-closure compile,
+// and this walker consulted it linearly PER IDENT -- ~70% of a full compile's
+// profile was string-equality scans under this function. Callers with a hot
+// loop pass a prebuilt index (ctx.capture_name_index); the Array-taking
+// wrapper below builds one per call for small/cold callers.
+export let rec collect_free_vars_expr: (Expr, Array[String], Map[String, Bool], Array[String]) -> Int = (expr, bound, fn_names, out) -> {
   match expr {
     EIdent(name, _) => if array_contains_str(bound, name) {
       0
     }
-    else if array_contains_str(fn_names, name) {
+    else if Map::has_key(fn_names, name) {
       0
     }
     else if array_contains_str(out, name) {
@@ -662,7 +668,7 @@ export let rec collect_free_vars_expr: (Expr, Array[String], Array[String], Arra
     // lib/@vibe/prelude/string.vibe's string_index_of_from), wrongly
     // skipping its capture into a nested closure and crashing with
     // "undefined variable (ident)" at runtime.
-    ECall(EIdent(cname, _), args, _) => if !array_contains_str(bound, cname) && !array_contains_str(fn_names, cname) && (is_inlined_async_builtin(cname) || is_inlined_scalar_builtin(cname)) {
+    ECall(EIdent(cname, _), args, _) => if !array_contains_str(bound, cname) && !Map::has_key(fn_names, cname) && (is_inlined_async_builtin(cname) || is_inlined_scalar_builtin(cname)) {
       let mut i = 0
       while i < Array::length(args) {
         collect_free_vars_expr(Array::get(args, i), bound, fn_names, out)
@@ -718,7 +724,7 @@ export let rec collect_free_vars_expr: (Expr, Array[String], Array[String], Arra
       // write-only assigns in closures failed codegen with
       // "undefined variable (local): count" (and is_mut_captured_in, which
       // rides this collector, never promoted the cell).
-      if array_contains_str(bound, name) || array_contains_str(fn_names, name) || array_contains_str(out, name) {
+      if array_contains_str(bound, name) || Map::has_key(fn_names, name) || array_contains_str(out, name) {
         0
       } else {
         Array::push(out, name)
@@ -727,7 +733,7 @@ export let rec collect_free_vars_expr: (Expr, Array[String], Array[String], Arra
       collect_free_vars_expr(value, bound, fn_names, out); collect_free_vars_expr(body, bound, fn_names, out)
     },
     EAssignOp(name, _, value, body) => {
-      if array_contains_str(bound, name) || array_contains_str(fn_names, name) || array_contains_str(out, name) {
+      if array_contains_str(bound, name) || Map::has_key(fn_names, name) || array_contains_str(out, name) {
         0
       } else {
         Array::push(out, name)
@@ -828,11 +834,26 @@ export let rec collect_free_vars_expr: (Expr, Array[String], Array[String], Arra
   }
 }
 
+// Array-taking compatibility entry: builds the membership index per call.
+// Fine for small fn_names (tests, perceus probes); HOT loops over the full
+// fn+ctor table must use collect_free_vars_indexed with a prebuilt index.
 export let collect_free_vars: (Expr, Array[String], Array[String]) -> Array[String] = (body, param_names, fn_names) -> {
+  let b = MapBuilder::new()
+  let mut fni = 0
+  while fni < Array::length(fn_names) {
+    MapBuilder::set(b, Array::get(fn_names, fni), true)
+    fni = fni + 1
+  }
+  collect_free_vars_indexed(body, param_names, MapBuilder::freeze(b))
+}
+
+// #798 perf: index-taking entry -- the index is built ONCE per compile
+// (linked_compile) and reused for every lambda.
+export let collect_free_vars_indexed: (Expr, Array[String], Map[String, Bool]) -> Array[String] = (body, param_names, fn_name_index) -> {
   let out = common_analysis_fresh_string_array()
   // Make a mutable copy of param_names for stack-based push/truncate
   let bound = Array::slice(param_names, 0, Array::length(param_names))
-  collect_free_vars_expr(body, bound, fn_names, out)
+  collect_free_vars_expr(body, bound, fn_name_index, out)
   out
 }
 

@@ -50,7 +50,7 @@ import .. / wasm_emit {
 }
 
 import ./linked_helpers.vibe {
-  stmts_use_builtin
+  stmts_use_builtin, collect_used_builtin_names
 }
 
 //# Functions
@@ -541,21 +541,26 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     ],
     owners: ArrayBuilder::freeze(ArrayBuilder::new())
   }
-  let need_env_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::get")
-  let need_env_args_len_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_len")
-  let need_env_args_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_get")
-  let need_fs_read_file_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::read_file")
-  let need_fs_exists_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::exists")
+  // #798 perf: ONE program walk collecting the canonical free-name set,
+  // then every need_<builtin> flag below is a map lookup. Previously each
+  // flag re-walked the whole AST (~40 walks) with a linear fn_names scan per
+  // ident inside.
+  let used_builtin_names = collect_used_builtin_names(stmts, fn_names_list)
+  let need_env_get_builtin = Map::has_key(used_builtin_names, "Env::get")
+  let need_env_args_len_builtin = Map::has_key(used_builtin_names, "Env::args_len")
+  let need_env_args_get_builtin = Map::has_key(used_builtin_names, "Env::args_get")
+  let need_fs_read_file_builtin = Map::has_key(used_builtin_names, "Fs::read_file")
+  let need_fs_exists_builtin = Map::has_key(used_builtin_names, "Fs::exists")
   // #795: __fs_stat_token_raw is the alias-collision-proof surface for the
   // same import (lib/@vibe/fs/fs.vibe calls it; see checker/builtins_fs.vibe).
-  let need_fs_stat_token_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token") || stmts_use_builtin(stmts, fn_names_list, "__fs_stat_token_raw")
-  let need_fs_write_file_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::write_file")
-  let need_fs_write_bytes_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes")
+  let need_fs_stat_token_builtin = Map::has_key(used_builtin_names, "Fs::stat_token") || Map::has_key(used_builtin_names, "__fs_stat_token_raw")
+  let need_fs_write_file_builtin = Map::has_key(used_builtin_names, "Fs::write_file")
+  let need_fs_write_bytes_builtin = Map::has_key(used_builtin_names, "Fs::write_bytes")
   // #632: `Fs::read_bytes(path) -> Bytes` — the binary-exact read counterpart of
   // Fs::write_bytes, a `vibe.fs_read_bytes (i64) -> i64` host import (type 3,
   // same shape as fs_read_file). Gated on use so non-users reserve no import
   // (fixpoint-safe). Lets the persistent artifact cache store/load wasm raw.
-  let need_fs_read_bytes_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::read_bytes")
+  let need_fs_read_bytes_builtin = Map::has_key(used_builtin_names, "Fs::read_bytes")
   // #729/#730: `Fs::readdir(path) -> Array[String]` — a `vibe.fs_read_dir
   // (i64) -> i64` host import (type 3, same packed-string shape as
   // fs_read_file: the host returns the byte-sorted entry NAMES "\n"-joined as
@@ -563,27 +568,27 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // Array[String] surface to `String::split` over that string. Gated on use
   // (fixpoint-safe). Unblocks contract-package sibling auto-discovery and the
   // global store walk.
-  let need_fs_readdir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::readdir")
-  let need_profiler_now_us_builtin = stmts_use_builtin(stmts, fn_names_list, "Profiler::now_us")
+  let need_fs_readdir_builtin = Map::has_key(used_builtin_names, "Fs::readdir")
+  let need_profiler_now_us_builtin = Map::has_key(used_builtin_names, "Profiler::now_us")
   // `sleep(ms)` (Async): a `vibe.sleep (i64) -> ()` host import. The host
   // implements it as an async function so the guest fiber genuinely
   // suspends/resumes (docs/spec/wasi-p3-async.md §2.3, examples/async_host).
   // Gated on use, so programs without `sleep` reserve no import (fixpoint-safe).
-  let need_sleep_builtin = stmts_use_builtin(stmts, fn_names_list, "sleep")
+  let need_sleep_builtin = Map::has_key(used_builtin_names, "sleep")
   // `Stdin::read_char() -> Int`: a value-returning `vibe.stdin_read_char () ->
   // i64` host import. Implemented async by the host (it can suspend the guest
   // until a char is available), so this is the data-consuming analog of `sleep`
   // — the shape of a host async source (HTTP body byte, stdin char). Gated on
   // use (fixpoint-safe).
-  let need_stdin_read_char_builtin = stmts_use_builtin(stmts, fn_names_list, "Stdin::read_char")
+  let need_stdin_read_char_builtin = Map::has_key(used_builtin_names, "Stdin::read_char")
   // Process effect host imports: `sh(cmd)` runs a shell command (returns 0) and
   // `sh_lines(cmd)` returns its stdout "\n"-joined as ONE string (same packed
   // ABI as fs_read_dir; compile_call lowers the Array[String] surface to a
   // String::split). Both `vibe.sh` / `vibe.sh_lines (i64) -> i64` host imports,
   // gated on use so non-users reserve no import (fixpoint-safe). Revives the
   // process/time/shell stdlib whose functions call these.
-  let need_sh_builtin = stmts_use_builtin(stmts, fn_names_list, "sh")
-  let need_sh_lines_builtin = stmts_use_builtin(stmts, fn_names_list, "sh_lines")
+  let need_sh_builtin = Map::has_key(used_builtin_names, "sh")
+  let need_sh_lines_builtin = Map::has_key(used_builtin_names, "sh_lines")
   // Stdin/Stdout host effects for vibe/io: `Stdin::read_stream(n) -> String`
   // (`vibe.stdin_read_stream (i64) -> i64`, value-returning like fs_read_file),
   // `Stdout::write_stream(s) -> Unit` and `Stdout::write_char(c) -> Unit`
@@ -591,49 +596,49 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // sleep). All gated on use so non-users reserve no import (fixpoint-safe) —
   // the compiler's own build uses none, so its bytes are unchanged. Revives the
   // io stdlib whose read/print/println/write_char helpers call these builtins.
-  let need_stdin_read_stream_builtin = stmts_use_builtin(stmts, fn_names_list, "Stdin::read_stream")
-  let need_stdout_write_stream_builtin = stmts_use_builtin(stmts, fn_names_list, "Stdout::write_stream")
-  let need_stdout_write_char_builtin = stmts_use_builtin(stmts, fn_names_list, "Stdout::write_char")
+  let need_stdin_read_stream_builtin = Map::has_key(used_builtin_names, "Stdin::read_stream")
+  let need_stdout_write_stream_builtin = Map::has_key(used_builtin_names, "Stdout::write_stream")
+  let need_stdout_write_char_builtin = Map::has_key(used_builtin_names, "Stdout::write_char")
   // #762: `Path::ref` / `Path::resolve` both lower (compile_call) to the
   // `resolve_path` host import — resolve a path to absolute against the process
   // CWD. `vibe.resolve_path (i64) -> i64`, value-returning like fs_read_file,
   // gated on either surface name so non-users reserve no import (fixpoint-safe).
-  let need_resolve_path_builtin = stmts_use_builtin(stmts, fn_names_list, "Path::ref") || stmts_use_builtin(stmts, fn_names_list, "Path::resolve")
+  let need_resolve_path_builtin = Map::has_key(used_builtin_names, "Path::ref") || Map::has_key(used_builtin_names, "Path::resolve")
   // #768: `Fs::remove(path) -> Unit` — a `vibe.fs_remove (i64) -> ()` host
   // import (type 1, like sleep/stdout_write_char). Checker-recognized since
   // `builtins_fs.vibe`'s `lookup_fs_remove` but never wired to codegen, so any
   // caller hit "undefined variable (local): Fs::remove @call". Gated on use so
   // non-users reserve no import (fixpoint-safe).
-  let need_fs_remove_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::remove")
+  let need_fs_remove_builtin = Map::has_key(used_builtin_names, "Fs::remove")
   // #768: `Fs::mkdir_p(path) -> Unit` (recursive mkdir) — same shape/import
   // type as Fs::remove. Same gap: checker-recognized (builtins_fs.vibe's
   // lookup_fs_mkdir_p) but had no codegen wiring at all.
-  let need_fs_mkdir_p_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::mkdir_p")
+  let need_fs_mkdir_p_builtin = Map::has_key(used_builtin_names, "Fs::mkdir_p")
   // #768: the rest of lib/@vibe/shell/commands.vibe's Fs surface — same
   // "checker-legal (or newly made so), zero codegen wiring" gap as
   // Fs::remove/Fs::mkdir_p, and the JS host runner already implements all of
   // fs_mkdir/fs_chdir/fs_copy/fs_append/fs_rename/fs_is_dir/fs_is_file/
   // fs_getcwd. Fs::mkdir (non-recursive, distinct from Fs::mkdir_p) was
   // likewise checker-legal but had no codegen wiring at all.
-  let need_fs_mkdir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::mkdir")
-  let need_fs_chdir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::chdir")
-  let need_fs_copy_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::copy")
-  let need_fs_append_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::append")
-  let need_fs_rename_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::rename")
-  let need_fs_is_dir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::is_dir")
-  let need_fs_is_file_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::is_file")
-  let need_fs_getcwd_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::getcwd")
+  let need_fs_mkdir_builtin = Map::has_key(used_builtin_names, "Fs::mkdir")
+  let need_fs_chdir_builtin = Map::has_key(used_builtin_names, "Fs::chdir")
+  let need_fs_copy_builtin = Map::has_key(used_builtin_names, "Fs::copy")
+  let need_fs_append_builtin = Map::has_key(used_builtin_names, "Fs::append")
+  let need_fs_rename_builtin = Map::has_key(used_builtin_names, "Fs::rename")
+  let need_fs_is_dir_builtin = Map::has_key(used_builtin_names, "Fs::is_dir")
+  let need_fs_is_file_builtin = Map::has_key(used_builtin_names, "Fs::is_file")
+  let need_fs_getcwd_builtin = Map::has_key(used_builtin_names, "Fs::getcwd")
   // #794: HTTP client host imports. lib/@vibe/http's client functions call
   // the `__http_*_raw` builtins (dunder names so units bundling the package's
   // index.vibe -- which exports alias functions literally named
   // `Http::request` etc. -- cannot capture the ident, see #795). Each lowers
   // to a `vibe.http_*` host import, gated on use (fixpoint-safe: the compiler
   // itself uses none, so its bytes are unchanged).
-  let need_http_request_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_request_raw")
-  let need_http_response_status_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_response_status_raw")
-  let need_http_response_header_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_response_header_raw")
-  let need_http_response_body_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_response_body_raw")
-  let need_http_close_builtin = stmts_use_builtin(stmts, fn_names_list, "__http_close_raw")
+  let need_http_request_builtin = Map::has_key(used_builtin_names, "__http_request_raw")
+  let need_http_response_status_builtin = Map::has_key(used_builtin_names, "__http_response_status_raw")
+  let need_http_response_header_builtin = Map::has_key(used_builtin_names, "__http_response_header_raw")
+  let need_http_response_body_builtin = Map::has_key(used_builtin_names, "__http_response_body_raw")
+  let need_http_close_builtin = Map::has_key(used_builtin_names, "__http_close_raw")
   let mut next_import_idx = 1
   let env_get_import_idx = if need_env_get_builtin {
     let idx = next_import_idx
@@ -1474,6 +1479,22 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // every renamed shadow gets a distinct `__shadow_N_<name>` (see
   // uniquify_shadowed_bindings).
   let uq_shadow_counter = [0]
+  // #798 perf: ONE membership index over the flat fn + ctor name tables,
+  // shared by every per-function CompileCtx below. collect_free_vars_indexed
+  // consults it per ident instead of linearly scanning ~thousands of names
+  // (which dominated compiler-closure compile profiles).
+  let capture_index_b = MapBuilder::new()
+  let mut cib_i = 0
+  while cib_i < Array::length(all_fn_names_list) {
+    MapBuilder::set(capture_index_b, Array::get(all_fn_names_list, cib_i), true)
+    cib_i = cib_i + 1
+  }
+  let mut cib_j = 0
+  while cib_j < Array::length(ctor_names_list) {
+    MapBuilder::set(capture_index_b, Array::get(ctor_names_list, cib_j), true)
+    cib_j = cib_j + 1
+  }
+  let capture_name_index_shared = MapBuilder::freeze(capture_index_b)
   let mut bi = 0
   while bi < num_user_funcs {
     let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
@@ -1765,6 +1786,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       },
       heap_grow_check_func_idx: heap_grow_check_idx,
       rc_dup_names: rc_dups,
+      capture_name_index: capture_name_index_shared,
       float_local_slots: lc_fresh_int_array(),
       int_local_slots: lc_fresh_int_array(),
       agg_local_slots: lc_fresh_int_array(),

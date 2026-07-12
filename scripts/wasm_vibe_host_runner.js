@@ -2296,7 +2296,17 @@ async function main() {
       invoke.startsWith("probe_") ||
       invoke.startsWith("selfbuild_") ||
       process.env.VIBE_PREFER_ZERO_ENV_FIRST === "1";
-    const skipRunInit = process.env.VIBE_SKIP_RUN_INIT === "1";
+    // #798 perf: `cli_main` is the selfhost CLI's exported main; on those
+    // artifacts the WASI-convention `_start` ALSO runs main. The pre-invoke
+    // `_start()` below (module init for test/bench modules) therefore ran the
+    // ENTIRE compile once, findClosureEnv then scanned the ~360MB post-compile
+    // heap for an env cli_main does not have, and the explicit cli_main call
+    // compiled AGAIN -- every harness compile did the work twice. Outputs are
+    // byte-identical either way (verified); skip the pre-start for cli_main.
+    // VIBE_FORCE_RUN_INIT=1 restores the old behavior for debugging.
+    const skipRunInit =
+      process.env.VIBE_SKIP_RUN_INIT === "1" ||
+      (invoke === "cli_main" && process.env.VIBE_FORCE_RUN_INIT !== "1");
     let resolvedEnv = 0;
     if (!skipRunInit && invoke !== "_start" && typeof instance.exports._start === "function") {
       if (!didInitStart) {
