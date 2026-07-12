@@ -19,20 +19,42 @@ export VIBE_HOME="$WORK/home"
 export VIBE_BIN_DIR="$WORK/bin"
 unset RUST_BACKTRACE || true
 
-bash scripts/install.sh >/dev/null 2>&1
+install_log="$WORK/install.log"
+bash scripts/install.sh >"$install_log" 2>&1 || true
 VIBE="$VIBE_BIN_DIR/vibe"
 [ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }
+# Fresh-build detection: without a standalone wasmtime, install.sh falls back
+# to the committed seed compiler, which lags features that postdate the seed
+# (the #644 bare-literal stmt-offset case below). CI installs wasmtime and
+# always builds fresh; locally we skip seed-lagging cases instead of failing.
+fresh_cli=1
+grep -q "using committed seed compiler" "$install_log" && fresh_cli=0
 
 pass=0; fail=0
 ok()  { echo "ok: $1"; pass=$((pass + 1)); }
 bad() { echo "FAIL: $1" >&2; fail=$((fail + 1)); }
 
 # A single-file program whose body has interior statements on known lines.
-#   line 2: let a = 1       (literal value -> no offset -> not breakable, by design)
+#   line 2: let a = 1       (bare literal -> breakable via the ELet stmt offset, #644)
 #   line 3: let b = a + 2   (identifier-led -> breakable)
 #   line 4: let c = b + 3   (identifier-led -> breakable)
 P="$WORK/p.vibe"
 printf 'export let main = () -> Int {\n  let a = 1\n  let b = a + 2\n  let c = b + 3\n  c\n}\n' > "$P"
+
+# 0. (#644) break at line 2, a bare-literal `let a = 1`. The literal value
+#    carries no offset of its own; the ELet statement offset (the `let`
+#    keyword token, threaded by the parser) anchors the dbg_line probe.
+#    Requires a fresh-built compiler (the committed seed predates #644).
+if [ "$fresh_cli" = "1" ]; then
+  out2="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "$P:2" "$P" 2>&1 || true)"
+  if printf '%s' "$out2" | grep -qF "breakpoint hit: p.vibe:2"; then
+    ok "bare-literal interior line 2 pauses (#644)"
+  else
+    bad "bare-literal line 2 should pause; got: $out2"
+  fi
+else
+  echo "skip: bare-literal line 2 (#644) -- seed-fallback install (no standalone wasmtime)"
+fi
 
 # 1. break at interior line 3 (mid-function, NOT the function decl line).
 out3="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "$P:3" "$P" 2>&1 || true)"

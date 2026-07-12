@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, agg_expr_lookup, agg_ret_lookup, agg_slot_lookup, find_local_slot, emit_rc_dup_guarded, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_ctor_call, is_earray, is_efn, is_eident, is_erecord, is_etuple, is_nullary_ctor_ident, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, agg_expr_lookup, agg_ret_lookup, agg_slot_lookup, find_local_slot, emit_rc_dup_guarded, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_off, get_elet_val, get_eletmut_off, get_slet_expr, get_slet_name, is_ctor_call, is_earray, is_efn, is_eident, is_erecord, is_etuple, is_nullary_ctor_ident, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -62,8 +62,18 @@ let emit_assignop_rc_tag_fix: (Bytes, Bool, String) -> Unit = (buf, enable_rc, o
 // so the default codegen path is byte-identical. Stack-neutral: dbg_line is
 // `(i32) -> ()`, the i32 const it consumes leaves the stack unchanged.
 let emit_dbg_line_for: (Bytes, Expr, CompileCtx) -> Unit = (buf, value, ctx) -> {
+  emit_dbg_line_stmt(buf, value, -1, ctx)
+}
+
+// #644: like emit_dbg_line_for, but with the STATEMENT's own source offset as
+// the fallback anchor. `let a = 1` binds a bare literal whose subexpression
+// carries no offset (first_offset = -1) -- the ELet/ELetMut node's stmt offset
+// (the `let` keyword token) still locates the line, so the probe is emitted
+// and the line is breakpoint-able.
+let emit_dbg_line_stmt: (Bytes, Expr, Int, CompileCtx) -> Unit = (buf, value, stmt_off, ctx) -> {
   if ctx.dbg_line_idx >= 0 {
-    let off = first_offset(value)
+    let voff = first_offset(value)
+    let off = if voff >= 0 { voff } else { stmt_off }
     if off >= 0 {
       let line = offset_to_line(ctx.dbg_line_nl, off)
       emit_i32_const(buf, ctx.dbg_line_file_id)
@@ -676,8 +686,8 @@ let rec retain_wrap_branch_tails: (Expr, CompileCtx) -> Expr with { Error } = (e
         EMatch(scrut, out)
       }
     },
-    ELet(n, v, b) => ELet(n, v, retain_wrap_branch_tails(b, ctx)),
-    ELetMut(n, v, b) => ELetMut(n, v, retain_wrap_branch_tails(b, ctx)),
+    ELet(n, v, b, soff) => ELet(n, v, retain_wrap_branch_tails(b, ctx), soff),
+    ELetMut(n, v, b, soff) => ELetMut(n, v, retain_wrap_branch_tails(b, ctx), soff),
     ESeq(a, b) => ESeq(a, retain_wrap_branch_tails(b, ctx)),
     EAssign(n, v, b) => EAssign(n, v, retain_wrap_branch_tails(b, ctx)),
     EAssignOp(o, n, v, b) => EAssignOp(o, n, v, retain_wrap_branch_tails(b, ctx)),
@@ -721,8 +731,8 @@ let rec value_has_borrowed_branch_tail: (Expr, CompileCtx) -> Bool = (e, ctx) ->
       }
       found
     },
-    ELet(_, _, b) => value_has_borrowed_branch_tail(b, ctx),
-    ELetMut(_, _, b) => value_has_borrowed_branch_tail(b, ctx),
+    ELet(_, _, b, _) => value_has_borrowed_branch_tail(b, ctx),
+    ELetMut(_, _, b, _) => value_has_borrowed_branch_tail(b, ctx),
     ESeq(_, b) => value_has_borrowed_branch_tail(b, ctx),
     EAssign(_, _, b) => value_has_borrowed_branch_tail(b, ctx),
     EAssignOp(_, _, _, b) => value_has_borrowed_branch_tail(b, ctx),
@@ -751,7 +761,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     let value = get_elet_val(expr)
     let body = get_elet_body(expr)
     let local_idx = next_local
-    emit_dbg_line_for(buf, value, ctx)
+    emit_dbg_line_stmt(buf, value, get_elet_off(expr), ctx)
     Array::push(local_names, name)
     let nl = compile_expr(buf, retain_wrap_let_value(value, name, ctx), local_names, next_local + 1, ctx, ld)
     emit_local_set(buf, local_idx)
@@ -1007,7 +1017,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     let value = get_eletmut_val(expr)
     let body = get_eletmut_body(expr)
     let local_idx = next_local
-    emit_dbg_line_for(buf, value, ctx)
+    emit_dbg_line_stmt(buf, value, get_eletmut_off(expr), ctx)
     Array::push(local_names, name)
     if expr_is_floatish(value, local_names, ctx) {
       Array::push(ctx.float_local_slots, local_idx * 2 + 1)

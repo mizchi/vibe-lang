@@ -329,8 +329,8 @@ let tail_is_borrow_ret_safe: (Array[String], Expr) -> Bool = (known, e0) -> {
   let mut i = 0
   while i < Array::length(worklist) {
     match Array::get(worklist, i) {
-      ELet(_, _, b) => Array::push(worklist, b),
-      ELetMut(_, _, b) => Array::push(worklist, b),
+      ELet(_, _, b, _) => Array::push(worklist, b),
+      ELetMut(_, _, b, _) => Array::push(worklist, b),
       ELetRec(_, _, b) => Array::push(worklist, b),
       ESeq(_, b) => Array::push(worklist, b),
       EAssign(_, _, b) => Array::push(worklist, b),
@@ -387,8 +387,8 @@ let tail_is_borrow_ret_safe: (Array[String], Expr) -> Bool = (known, e0) -> {
 // expression whose SHAPE decides eligibility at the top level.
 let rec strip_wrappers_for_borrow_ret: (Expr) -> Expr = (e) -> {
   match e {
-    ELet(_, _, b) => strip_wrappers_for_borrow_ret(b),
-    ELetMut(_, _, b) => strip_wrappers_for_borrow_ret(b),
+    ELet(_, _, b, _) => strip_wrappers_for_borrow_ret(b),
+    ELetMut(_, _, b, _) => strip_wrappers_for_borrow_ret(b),
     ELetRec(_, _, b) => strip_wrappers_for_borrow_ret(b),
     ESeq(_, b) => strip_wrappers_for_borrow_ret(b),
     EAssign(_, _, b) => strip_wrappers_for_borrow_ret(b),
@@ -651,7 +651,7 @@ let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Arr
       0
     },
     EDot(obj, _, _, _) => analyze_calls(name, obj, env, calls, esc, hctx),
-    ELet(n, v, b) => {
+    ELet(n, v, b, _) => {
       analyze_calls(name, v, env, calls, esc, hctx)
       env = Map::set(env, n, is_heap_value(v, env, hctx))
       e = b
@@ -663,7 +663,7 @@ let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Arr
       e = b
       looping = true
     },
-    ELetMut(n, v, b) => {
+    ELetMut(n, v, b, _) => {
       analyze_calls(name, v, env, calls, esc, hctx)
       env = Map::set(env, n, false)
       e = b
@@ -1052,17 +1052,17 @@ let fill_lambda_params: (String, Expr, Expr, HeapInferCtx) -> Expr = (name, efn,
 
 let rec elaborate_rw: (Expr, HeapInferCtx) -> Expr = (e, hctx) -> {
   match e {
-    ELet(n, v, b) => {
+    ELet(n, v, b, soff) => {
       let v2 = elaborate_rw(v, hctx)
       let v3 = fill_lambda_params(n, v2, b, hctx)
-      ELet(n, v3, elaborate_rw(b, hctx))
+      ELet(n, v3, elaborate_rw(b, hctx), soff)
     },
     ELetRec(n, v, b) => {
       let v2 = elaborate_rw(v, hctx)
       let v3 = fill_lambda_params(n, v2, b, hctx)
       ELetRec(n, v3, elaborate_rw(b, hctx))
     },
-    ELetMut(n, v, b) => ELetMut(n, elaborate_rw(v, hctx), elaborate_rw(b, hctx)),
+    ELetMut(n, v, b, soff) => ELetMut(n, elaborate_rw(v, hctx), elaborate_rw(b, hctx), soff),
     EAssign(n, v, c) => EAssign(n, elaborate_rw(v, hctx), elaborate_rw(c, hctx)),
     EAssignOp(n, op, v, c) => EAssignOp(n, op, elaborate_rw(v, hctx), elaborate_rw(c, hctx)),
     ESeq(a, b) => ESeq(elaborate_rw(a, hctx), elaborate_rw(b, hctx)),
@@ -1221,7 +1221,7 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
       _ => pc_emit(ctx, scope, obj)
     }
     ,
-    ELet(name, value, body) => {
+    ELet(name, value, body, _) => {
       match value {
         EIdent(src, _) => {
           if Map::has_key(scope, src) {
@@ -1246,7 +1246,7 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
       pc_emit(ctx, Map::set(scope, name, id), body)
       pe_scope_end(ctx, id, name)
     },
-    ELetMut(name, value, body) => {
+    ELetMut(name, value, body, _) => {
       pc_emit(ctx, scope, value)
       let id = pe_declare(ctx, name)
       pc_emit(ctx, Map::set(scope, name, id), body)
@@ -1535,12 +1535,12 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
       _ => pc_count(ctx, scope, obj)
     }
     ,
-    ELet(name, value, body) => {
+    ELet(name, value, body, _) => {
       pc_count(ctx, scope, value)
       let id = pc_declare(ctx, name, is_scalar_expr(ctx, value))
       pc_count(ctx, Map::set(scope, name, id), body)
     },
-    ELetMut(name, value, body) => {
+    ELetMut(name, value, body, _) => {
       pc_count(ctx, scope, value)
       let id = pc_declare(ctx, name, is_scalar_expr(ctx, value))
       pc_count(ctx, Map::set(scope, name, id), body)
@@ -1932,11 +1932,11 @@ let rec expr_projects_or_matches: (String, Expr) -> Bool = (name, e) -> {
       }
       found
     },
-    ELet(_, val, body) =>
+    ELet(_, val, body, _) =>
     expr_projects_or_matches(name, val) || expr_projects_or_matches(name, body),
     ELetRec(_, val, body) =>
     expr_projects_or_matches(name, val) || expr_projects_or_matches(name, body),
-    ELetMut(_, val, body) =>
+    ELetMut(_, val, body, _) =>
     expr_projects_or_matches(name, val) || expr_projects_or_matches(name, body),
     EAssign(_, val, cont) =>
     expr_projects_or_matches(name, val) || expr_projects_or_matches(name, cont),
