@@ -75,9 +75,20 @@ let binop_prec: (Token) -> Int = (tok) -> {
 let callee_offset: (Expr) -> Int = (callee) -> {
   match callee {
     EIdent(_, off) => off,
-    EDot(inner, _, off) => if off >= 0 { off } else { callee_offset(inner) },
+    EDot(inner, _, off, _) => if off >= 0 { off } else { callee_offset(inner) },
     ECall(inner, _, off) => if off >= 0 { off } else { callee_offset(inner) },
     _ => -1
+  }
+}
+
+// Source char offset of the token at `p` (#645: the field-name token of an
+// EDot). Mirrors parser_expr_primary's offset_at; -1 when `starts` has no
+// entry (offset-less parse entry points).
+let field_offset_at: (Array[Int], Int) -> Int = (starts, p) -> {
+  if p >= 0 && p < Array::length(starts) {
+    Array::get(starts, p)
+  } else {
+    -1
   }
 }
 
@@ -442,8 +453,8 @@ let rec parse_postfix: (Array[Token], Array[Int], Int, Expr, (Array[Token], Int,
       }
     },
     TDot => match peek(tokens, pos + 1) {
-      TIdent(field) => parse_postfix(tokens, starts, pos + 2, EDot(expr, field, callee_offset(expr)), parse_recur),
-      TInt(idx) => parse_postfix(tokens, starts, pos + 2, EDot(expr, __to_string(idx), callee_offset(expr)), parse_recur),
+      TIdent(field) => parse_postfix(tokens, starts, pos + 2, EDot(expr, field, callee_offset(expr), field_offset_at(starts, pos + 1)), parse_recur),
+      TInt(idx) => parse_postfix(tokens, starts, pos + 2, EDot(expr, __to_string(idx), callee_offset(expr), field_offset_at(starts, pos + 1)), parse_recur),
       _ => (expr, pos)
     },
     // `expr?` (railway try, #635): emit the type-directed sentinel

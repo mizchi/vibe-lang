@@ -51,8 +51,10 @@
 >   1.0 GA タグ / version bump → **#647**
 > - 残（post-GA, debugger）: `vibe.linemap` 命令オフセット粒度化 + 裸リテラル文の
 >   break 対応 → **#644**
-> - 残（post-GA, LSP）: field-access 診断 end offset を compiler 由来に（EDot field
->   offset）→ **#645**
+> - ✅（post-GA, LSP）: field-access 診断 end offset を compiler 由来に（EDot field
+>   offset）→ **#645**（2026-07-12 着地: `EDot(Expr, String, Int, Int)` の第4引数に
+>   field token offset、checker が `[@off=N:M]` で厳密 range 発行、LSP の dot-hop
+>   heuristic 撤去、field 位置 hover も解決）
 > - 残（test-infra）: hosted CI runner の compiler error-path（vibe-eh-ci）→ **#646**
 > - 残（post-GA, 任意式 watch）: debugger の arbitrary expression evaluation（未着手）
 >
