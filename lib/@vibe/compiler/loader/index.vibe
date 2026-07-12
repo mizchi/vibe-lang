@@ -56,6 +56,7 @@ import ../cache/persistent_cache.vibe {
 
 import ../module_graph_path.vibe {
   dir_of_path,
+  external_lib_roots,
   normalize_path,
   resolve_import_path,
   resolve_import_path_candidates,
@@ -343,12 +344,83 @@ let empty_manifest_header_cache_rows: () -> Array[(String, String, String, Strin
   Array::slice([("", "", "", "")], 0, 0)
 }
 
-let parse_persistent_source_list_cache: (String) -> (Int, Option[(String, String, String)], Array[(String, String, String)]) with { Error } = (raw) -> {
+// #801: the source list/group caches store a RESOLVED graph, and `@scope/name`
+// resolution depends on which packages EXIST under `.vibe/store`, `lib/`, and
+// the external roots at resolve time — not just on the root list (#758's env
+// seed covers the latter only). A graph collected while `.vibe/store/@vibe/core`
+// existed (store install gates/tests create and delete it) can lack the
+// lib/-resolved vibe_core group entirely; every row such a cache DOES list
+// still validates, so row-level checks can never notice the missing package.
+// The visible package set itself must therefore be part of the validity check:
+// writers record its fingerprint (`resctx` row) and validators refuse the
+// cache when the current set differs.
+// NOTE: no Fs::is_dir guards here — the fixed seed compiler predates that
+// builtin (bootstrap bump required first). Scope/package levels are
+// directories by layout convention (resolver assumes the same).
+let push_context_packages_under: (StringBuilder, String) -> Unit with { Error, Fs } = (sb, root) -> {
+  if Fs::exists(root) {
+    let scopes = Fs::readdir(root)
+    let mut i = 0
+    while i < Array::length(scopes) {
+      let scope = Array::get(scopes, i)
+      if String::starts_with(scope, "@") {
+        let scope_dir = String::concat(root, String::concat("/", scope))
+        let names = Fs::readdir(scope_dir)
+        let mut j = 0
+        while j < Array::length(names) {
+          let name = Array::get(names, j)
+          let pkg_dir = String::concat(scope_dir, String::concat("/", name))
+          if Fs::exists(String::concat(pkg_dir, "/index.vibei")) {
+            StringBuilder::push(sb, root)
+            StringBuilder::push(sb, "|")
+            StringBuilder::push(sb, scope)
+            StringBuilder::push(sb, "/")
+            StringBuilder::push(sb, name)
+            StringBuilder::push(sb, "\n")
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+}
+
+export let resolution_context_fingerprint_fs: () -> String with { Error, Fs } = () -> {
+  let sb = StringBuilder::new()
+  push_context_packages_under(sb, ".vibe/store")
+  push_context_packages_under(sb, "lib")
+  let roots = external_lib_roots()
+  let mut i = 0
+  while i < Array::length(roots) {
+    push_context_packages_under(sb, Array::get(roots, i))
+    i = i + 1
+  }
+  compact_string_fingerprint(StringBuilder::freeze(sb))
+}
+
+let resolution_context_is_valid: (Option[String]) -> Bool with { Error, Fs } = (resctx) -> {
+  match resctx {
+    Some(fp) => fp == resolution_context_fingerprint_fs(),
+    // No resctx row = written before #801 (or by a foreign writer): the
+    // context it resolved under is unknown, so it cannot be trusted.
+    None => false
+  }
+}
+
+let parse_persistent_source_list_cache: (String) -> (Int, Option[(String, String, String)], Array[(String, String, String)], Option[String]) with { Error } = (raw) -> {
   let len = String::length(raw)
   let mut line_start = 0
   let mut i = 0
   let mut version = 0
   let mut manifest = None
+  let mut resctx = None
   let sources = empty_source_cache_specs()
   while i <= len {
     let at_line_end = if i == len {
@@ -370,9 +442,16 @@ let parse_persistent_source_list_cache: (String) -> (Int, Option[(String, String
             version = 1
           } else if version_text == "2" {
             version = 2
+          } else if version_text == "3" {
+            version = 3
           } else {
             throw("invalid persistent source list cache version")
           }
+        } else if tag == "resctx" {
+          if Array::length(fields) != 2 {
+            throw("invalid persistent source list cache resctx row")
+          }
+          resctx = Some(Array::get(fields, 1))
         } else if tag == "manifest" {
           if version == 1 {
             if Array::length(fields) != 3 {
@@ -405,15 +484,16 @@ let parse_persistent_source_list_cache: (String) -> (Int, Option[(String, String
     }
     i = i + 1
   }
-  (version, manifest, sources)
+  (version, manifest, sources, resctx)
 }
 
-let parse_persistent_source_group_cache: (String) -> (Int, Option[(String, String, String)], Array[(String, String, String, String)]) with { Error } = (raw) -> {
+let parse_persistent_source_group_cache: (String) -> (Int, Option[(String, String, String)], Array[(String, String, String, String)], Option[String]) with { Error } = (raw) -> {
   let len = String::length(raw)
   let mut line_start = 0
   let mut i = 0
   let mut version = 0
   let mut manifest = None
+  let mut resctx = None
   let rows = empty_group_cache_specs()
   while i <= len {
     let at_line_end = if i == len {
@@ -435,9 +515,16 @@ let parse_persistent_source_group_cache: (String) -> (Int, Option[(String, Strin
             version = 1
           } else if version_text == "2" {
             version = 2
+          } else if version_text == "3" {
+            version = 3
           } else {
             throw("invalid persistent source group cache version")
           }
+        } else if tag == "resctx" {
+          if Array::length(fields) != 2 {
+            throw("invalid persistent source group cache resctx row")
+          }
+          resctx = Some(Array::get(fields, 1))
         } else if tag == "manifest" {
           if version == 1 {
             if Array::length(fields) != 3 {
@@ -470,7 +557,7 @@ let parse_persistent_source_group_cache: (String) -> (Int, Option[(String, Strin
     }
     i = i + 1
   }
-  (version, manifest, rows)
+  (version, manifest, rows, resctx)
 }
 
 let matches_cached_file_spec: (String, String, String) -> Bool with { Error, Fs } = (path, stat_token_text, source_fingerprint) -> {
@@ -635,10 +722,12 @@ let load_persistent_sources_cache_if_valid: (String) -> Option[Array[(String, St
   if !(Fs::exists(cache_path)) {
     None
   } else {
-    let (_, manifest, specs) = parse_persistent_source_list_cache(
+    let (_, manifest, specs, resctx) = parse_persistent_source_list_cache(
       normalize_persistent_cache_text(Fs::read_file(cache_path))
     )
-    if !(manifest_cache_is_valid(manifest)) {
+    if !(resolution_context_is_valid(resctx)) {
+      None
+    } else if !(manifest_cache_is_valid(manifest)) {
       None
     } else {
       load_cached_sources_rec(specs, 0, empty_source_specs())
@@ -651,10 +740,12 @@ let load_persistent_source_groups_cache_if_valid: (String) -> Option[Array[(Stri
   if !(Fs::exists(cache_path)) {
     None
   } else {
-    let (_, manifest, rows) = parse_persistent_source_group_cache(
+    let (_, manifest, rows, resctx) = parse_persistent_source_group_cache(
       normalize_persistent_cache_text(Fs::read_file(cache_path))
     )
-    if !(manifest_cache_is_valid(manifest)) {
+    if !(resolution_context_is_valid(resctx)) {
+      None
+    } else if !(manifest_cache_is_valid(manifest)) {
       None
     } else {
       load_cached_grouped_sources_rec(rows, 0, empty_grouped_sources())
@@ -674,10 +765,12 @@ let load_persistent_sources_from_group_cache_if_valid: (String) -> Option[(Optio
   if !(Fs::exists(cache_path)) {
     None
   } else {
-    let (_, manifest, rows) = parse_persistent_source_group_cache(
+    let (_, manifest, rows, resctx) = parse_persistent_source_group_cache(
       normalize_persistent_cache_text(Fs::read_file(cache_path))
     )
-    if !(manifest_cache_is_valid(manifest)) {
+    if !(resolution_context_is_valid(resctx)) {
+      None
+    } else if !(manifest_cache_is_valid(manifest)) {
       None
     } else {
       let specs = empty_source_cache_specs()
@@ -700,10 +793,12 @@ let load_persistent_source_groups_from_source_list_cache_if_valid: (String) -> O
   if !(Fs::exists(cache_path)) {
     None
   } else {
-    let (_, manifest, specs) = parse_persistent_source_list_cache(
+    let (_, manifest, specs, resctx) = parse_persistent_source_list_cache(
       normalize_persistent_cache_text(Fs::read_file(cache_path))
     )
-    if !(manifest_cache_is_valid(manifest)) {
+    if !(resolution_context_is_valid(resctx)) {
+      None
+    } else if !(manifest_cache_is_valid(manifest)) {
       None
     } else {
       match load_cached_sources_rec(specs, 0, empty_source_specs()) {
@@ -730,10 +825,12 @@ export let load_persistent_source_group_fingerprint_if_valid: (String) -> Option
   if !(Fs::exists(cache_path)) {
     None
   } else {
-    let (_, manifest, rows) = parse_persistent_source_group_cache(
+    let (_, manifest, rows, resctx) = parse_persistent_source_group_cache(
       normalize_persistent_cache_text(Fs::read_file(cache_path))
     )
-    if !(manifest_cache_is_valid(manifest)) {
+    if !(resolution_context_is_valid(resctx)) {
+      None
+    } else if !(manifest_cache_is_valid(manifest)) {
       None
     } else {
       match load_cached_group_fingerprint_rec(rows, 0, empty_grouped_sources()) {
@@ -753,7 +850,10 @@ export let load_persistent_source_group_fingerprint_if_valid: (String) -> Option
 // fix and issue class as stable_cache_path's #366 note (lib/@vibe/cache).
 let build_persistent_sources_cache_text: (Option[String], Array[(String, String)]) -> String with { Error, Fs } = (manifest_path, sources) -> {
   let sb = StringBuilder::new()
-  StringBuilder::push(sb, "version\t2\n")
+  StringBuilder::push(sb, "version\t3\n")
+  StringBuilder::push(sb, "resctx\t")
+  StringBuilder::push(sb, resolution_context_fingerprint_fs())
+  StringBuilder::push(sb, "\n")
   match manifest_path {
     Some(path) => {
       StringBuilder::push(sb, "manifest\t")
@@ -795,7 +895,10 @@ let build_persistent_sources_cache_text: (Option[String], Array[(String, String)
 // build_persistent_sources_cache_text above.
 let build_persistent_source_groups_cache_text: (Option[String], Array[(String, Array[(String, String)])]) -> String with { Error, Fs } = (manifest_path, groups) -> {
   let sb = StringBuilder::new()
-  StringBuilder::push(sb, "version\t2\n")
+  StringBuilder::push(sb, "version\t3\n")
+  StringBuilder::push(sb, "resctx\t")
+  StringBuilder::push(sb, resolution_context_fingerprint_fs())
+  StringBuilder::push(sb, "\n")
   match manifest_path {
     Some(path) => {
       StringBuilder::push(sb, "manifest\t")

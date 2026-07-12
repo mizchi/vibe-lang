@@ -98,6 +98,46 @@ test "load_persistent_source_group_fingerprint_if_valid: same-content rewrite ke
   }
 }
 
+test "load_persistent_source_group_fingerprint_if_valid: resolution-context change invalidates cache (#801)" {
+  // A cache written while `.vibe/store/@scope/name` exists resolves @-refs
+  // against a DIFFERENT package universe than the normal tree. Row validation
+  // can never notice a package the poisoned cache is missing entirely, so the
+  // loader records a resolution-context fingerprint (resctx) and must refuse
+  // the cache once the visible package set changes (#801).
+  let helper_path = "/tmp/vibe_compiler_persistent_loader_resctx_helper.vibe"
+  let main_path = "/tmp/vibe_compiler_persistent_loader_resctx_main.vibe"
+  let store_pkg_dir = ".vibe/store/@vibetest/resctx_probe801"
+  let store_pkg_contract = String::concat(store_pkg_dir, "/index.vibei")
+  Fs::write_bytes(helper_path, string_to_bytes("export let add: () -> Int = () -> { 1 }"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./vibe_compiler_persistent_loader_resctx_helper.vibe { add }\nlet run: () -> Int = () -> { add() }"))
+  remove_file_if_exists(persistent_source_group_cache_path(main_path))
+  // Context A: a store package is visible while the cache is written.
+  Fs::mkdir_p(store_pkg_dir)
+  Fs::write_bytes(store_pkg_contract, string_to_bytes("version 0.0.1\n\nlet version: String\n"))
+  let groups = collect_source_groups_fs(main_path)
+  let expected = build_source_groups_fingerprint(groups)
+  // Same context: the cache must replay.
+  match load_persistent_source_group_fingerprint_if_valid(main_path) {
+    Some(fingerprint) => assert(fingerprint == expected),
+    None => assert(false)
+  }
+  // Context B: the store package is gone -- the context-A cache must be
+  // refused even though every row it lists still validates. (Remove the
+  // whole probe scope so the working tree is left clean.)
+  Fs::remove(".vibe/store/@vibetest")
+  match load_persistent_source_group_fingerprint_if_valid(main_path) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  // A fresh collect in context B re-establishes a replayable cache.
+  let groups_b = collect_source_groups_fs(main_path)
+  let expected_b = build_source_groups_fingerprint(groups_b)
+  match load_persistent_source_group_fingerprint_if_valid(main_path) {
+    Some(fingerprint) => assert(fingerprint == expected_b),
+    None => assert(false)
+  }
+}
+
 test "collect_all_sources_fs: reuses valid source group cache when list cache is missing" {
   let (_, helper_path, main_path) = setup_manifest_fixture("/tmp/vibe_compiler_persistent_manifest_groups_to_list", "export let add: () -> Int = () -> { 1 }", "import ./helper.vibe { add }\nlet run: () -> Int = () -> { add() }")
   remove_file_if_exists(persistent_source_group_cache_path(main_path))
