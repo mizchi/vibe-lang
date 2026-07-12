@@ -1153,6 +1153,17 @@ let rec infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(Strin
       EIdent("Map::insert", _) => Some("Map"),
       EIdent("Map::delete", _) => Some("Map"),
       EIdent("MapBuilder::freeze", _) => Some("Map"),
+      // Stream-returning builtins (ADR-0012 eager Array-backed model): lets
+      // `for await x in Stream::once(v)` — or a let-bound stream via
+      // extend_var_types — classify as "Stream" so classify_for_await_loop
+      // lowers it to the plain array loop instead of the pull-closure loop
+      // (#822: the pull desugar called the stream value as a closure —
+      // call_indirect on an array pointer = table OOB trap).
+      EIdent("Stream::once", _) => Some("Stream"),
+      EIdent("Stream::empty", _) => Some("Stream"),
+      EIdent("Stream::map", _) => Some("Stream"),
+      EIdent("Stream::filter", _) => Some("Stream"),
+      EIdent("String::to_bytes", _) => Some("Stream"),
       EIdent(fname, _) => ctor_enum_of_name(fn_returns, fname),
       // `let x: T = e` is desugared to `((__asc: T) -> __asc)(e)` (ascribe_wrap);
       // recover the operand's type head from the annotation so an annotated
@@ -2024,7 +2035,16 @@ let classify_for_await_loop: (String, Option[String], Expr, Expr, Expr, Array[(S
         build_iter_for(name, tn, rinner, rbody)
       }
     } else {
-      build_pull_for_in(name, idx, rinner, rbody)
+      if tn == "Stream" {
+        // #822: the builtin Stream is eager Array-backed (ADR-0012), so
+        // `for await x in <stream>` iterates it with the plain array loop.
+        // The pull fallback below would bind the stream VALUE as
+        // `__pull_next` and call it — call_indirect on an array pointer,
+        // i.e. an out-of-bounds table trap at runtime.
+        EForIn(name, idx, rinner, rbody)
+      } else {
+        build_pull_for_in(name, idx, rinner, rbody)
+      }
     },
     None => build_pull_for_in(name, idx, rinner, rbody)
   }
