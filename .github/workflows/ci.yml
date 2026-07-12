@@ -78,9 +78,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        wasmtime:
-          - v45.0.2   # validated RC baseline (flags per wasi-p3-async.md §3.5)
-          - v46.0.1   # ratified WASI 0.3.0, component-model-async default-on
+        include:
+          # Validated RC baseline (flags per wasi-p3-async.md §3.5): all phases.
+          - wasmtime: v45.0.2
+            phases: "async,http"
+          # Ratified WASI 0.3.0, component-model-async default-on. Local
+          # re-probe (2026-07-12): phase A passes with the unchanged RC flag
+          # set; phase B cannot link (46 serves wasi:http@0.3.0, rejects the
+          # RC world — "resource implementation is missing"). http joins this
+          # leg at the ratified-WIT cutover (#821 step 3).
+          - wasmtime: v46.0.1
+            phases: "async"
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -97,7 +105,10 @@ jobs:
         # fallback so a renamed asset degrades to a slow build, not a red run).
         env:
           WASM_TOOLS_VERSION: "1.253.0"
-          WAC_VERSION: "0.8.0"
+          # 0.10.1 verified locally: `wac plug` of the p3 handler + wasmtime 45
+          # serve is green (the 0.8.1/0.9.0 failures in docs/knowledge.md are
+          # resolved upstream — no fork needed for this shape).
+          WAC_VERSION: "0.10.1"
         run: |
           set -euo pipefail
           mkdir -p "$PWD/p3-tools"
@@ -124,6 +135,7 @@ jobs:
       - name: WASI p3 guarantee gate
         env:
           VIBE_P3_GATE_REQUIRE_TOOLS: "1"
+          VIBE_P3_GATE_PHASES: ${{ matrix.phases }}
           VIBE_ASYNC_GATE_COMPILER: ${{ github.workspace }}/_build/ci-artifacts/stage2.wasm
           VIBE_SERVE_CLI_WASM: ${{ github.workspace }}/_build/ci-artifacts/stage2.wasm
         run: bash scripts/test_wasi_p3_guarantee_gate.sh

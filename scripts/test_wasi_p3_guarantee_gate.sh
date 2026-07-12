@@ -22,6 +22,14 @@
 #                                composed component (default: the RC pin
 #                                0.3.0-rc-2026-03-15; flip to 0.3.0 at the
 #                                wasmtime 46 cutover, #821)
+#   VIBE_P3_GATE_PHASES          comma list of phases to run (default
+#                                "async,http"). The wasmtime 46 leg runs
+#                                "async" only until the ratified-0.3.0 WIT
+#                                cutover: re-probe (2026-07-12, wasmtime
+#                                46.0.1) confirmed phase A passes unchanged
+#                                while phase B fails to link — 46 serves
+#                                wasi:http@0.3.0 and rejects the RC world
+#                                ("resource implementation is missing").
 #   VIBE_ASYNC_GATE_WASMTIME_FLAGS / VIBE_HTTP_GATE_WASMTIME_FLAGS
 #                                flag overrides for the wasmtime 46 re-probe
 set -euo pipefail
@@ -43,14 +51,27 @@ if [ -z "${WASMTIME_BIN:-}" ] || ! "$WASMTIME_BIN" --version >/dev/null 2>&1; th
   echo "[p3-guarantee] SKIP: wasmtime not available"
   exit 0
 fi
+PHASES="${VIBE_P3_GATE_PHASES:-async,http}"
 echo "[p3-guarantee] wasmtime under test: $("$WASMTIME_BIN" --version) ($WASMTIME_BIN)"
-echo "[p3-guarantee] required-tools mode: $REQUIRE / wit pin: wasi:http@$WIT_PIN"
+echo "[p3-guarantee] required-tools mode: $REQUIRE / phases: $PHASES / wit pin: wasi:http@$WIT_PIN"
 
-echo "[p3-guarantee] phase A: async component vertical"
-bash "$SCRIPT_DIR/test_selfhost_async_component_gate.sh"
+run_http=0
+case ",$PHASES," in *",async,"*)
+  echo "[p3-guarantee] phase A: async component vertical"
+  bash "$SCRIPT_DIR/test_selfhost_async_component_gate.sh"
+  ;;
+esac
+case ",$PHASES," in *",http,"*)
+  run_http=1
+  echo "[p3-guarantee] phase B: wasi:http p3 world"
+  bash "$SCRIPT_DIR/test_wasi_http_p3_full_gate.sh"
+  ;;
+esac
 
-echo "[p3-guarantee] phase B: wasi:http p3 world"
-bash "$SCRIPT_DIR/test_wasi_http_p3_full_gate.sh"
+if [ "$run_http" != "1" ]; then
+  echo "[p3-guarantee] PASS (phases: $PHASES) on $("$WASMTIME_BIN" --version)"
+  exit 0
+fi
 
 echo "[p3-guarantee] phase C: WIT version pin"
 COMPOSED="$PROJECT_ROOT/_build/bench/wasi_http_p3_full/handler.serve.wasm"

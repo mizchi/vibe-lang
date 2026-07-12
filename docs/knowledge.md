@@ -604,6 +604,15 @@ top-level 関数が他の top-level 関数を機械的に capture すると、�
 - 外部 issue を作成して追跡中:
   - wasmtime: https://github.com/bytecodealliance/wasmtime/issues/12714
   - wit-bindgen: https://github.com/bytecodealliance/wit-bindgen/issues/1554
+- **2026-07-12 実測更新 (#821)**: 現行 pipeline (wit-bindgen **0.54.0** +
+  vendored WIT `lib/@vibe/wasi/wit/p3`) では **upstream `wac-cli 0.10.1`
+  (crates.io) で plug → validate → wasmtime 45.0.2 serve → 200/401 まで
+  green**。上記 0.8.1 (leading-byte crash) / 0.9.0 (resource implementation
+  is missing) は 0.10.1 で解消しており、この形については fork 不要。
+  **wasmtime 46.0.1 re-probe**: async component (phase A) は RC flag のまま
+  PASS、http serve (phase B) は 46 が ratified `wasi:http@0.3.0` を提供する
+  ため RC world (`@0.3.0-rc-2026-03-15`) の component を link できず fail
+  (`resource implementation is missing`) — ratified-WIT cutover (#821) が必要。
 
 ### 実務上の扱い
 
