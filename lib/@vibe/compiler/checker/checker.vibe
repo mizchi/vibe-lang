@@ -1400,6 +1400,11 @@ let rec check_resume_values: (Expr, Type, TypeEnv, Array[TypeDef], Subst, Int, A
           if nm == "resume" && Array::length(args) == 1 && !(ret_ty is CtUnit) {
             let (aty, ns, _) = check_expr(Array::get(args, 0), env, defs, s1, c, errors, tytab)
             s1 = check_assignable(ret_ty, subst_apply(ns, aty), ns, errors, "resume value type mismatch", 0 - 1)
+          } else if nm == "resume" && Array::length(args) == 0 && !(ret_ty is CtUnit) {
+            // #828: `resume()` on a value-returning op used to reach codegen,
+            // which indexes resume args[0] unconditionally — a compiler ICE
+            // with no diagnostic. Reject it here instead.
+            Array::push(errors, "resume expects a value (the operation returns a non-Unit type); resume() with no argument is only valid for Unit-returning operations")
           } else {
             ()
           }
@@ -1719,8 +1724,22 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         // `Array::set(a, i, v)` requires `v` to match `a`'s element type (the 3rd
         // arg was unchecked). Same ground-gated discipline as Array::push.
         let (obj_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
-        let (_, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+        let (set_idx_ty, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
         let (val_ty, s3, c3) = check_expr(Array::get(args, 2), env, defs, s2, c2, errors, tytab)
+        // #826: same head checks as Array::get (this branch also bypasses the
+        // direct fast path).
+        let as_recv_head = head_kind(subst_apply(s3, obj_ty))
+        if as_recv_head != 0 && as_recv_head != 9 {
+          Array::push(errors, String::concat("argument type mismatch for Array::set: receiver type ", String::concat(type_to_string(subst_apply(s3, obj_ty)), off_marker_len(callee_off, String::length(name)))))
+        } else {
+          ()
+        }
+        let as_idx_head = head_kind(subst_apply(s3, set_idx_ty))
+        if as_idx_head != 0 && as_idx_head != 1 {
+          Array::push(errors, String::concat("argument type mismatch for Array::set (arg 1): ", String::concat(type_to_string(subst_apply(s3, set_idx_ty)), off_marker_len(callee_off, String::length(name)))))
+        } else {
+          ()
+        }
         let s4 = match subst_apply(s3, obj_ty) {
           CtArray(elem) => check_assignable(subst_apply(s3, elem), subst_apply(s3, val_ty), s3, errors, "Array::set value type mismatch", 0 - 1),
           _ => s3
@@ -1742,7 +1761,23 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         // through. Refine the result to the element type from a concrete
         // `CtArray(elem)` receiver (var / generic receivers stay CtUnknown).
         let (obj_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
-        let (_, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+        let (idx_ty, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+        // #826: this special branch bypasses the direct fast path, so the
+        // head checks never ran — `Array::get("str", 0)` trapped at runtime
+        // and `Array::get(a, "x")` returned silent garbage. Same ground-gated
+        // discipline as builtin_first_arg_head (0 = tolerate).
+        let ag_recv_head = head_kind(subst_apply(s2, obj_ty))
+        if ag_recv_head != 0 && ag_recv_head != 9 {
+          Array::push(errors, String::concat("argument type mismatch for Array::get: receiver type ", String::concat(type_to_string(subst_apply(s2, obj_ty)), off_marker_len(callee_off, String::length(name)))))
+        } else {
+          ()
+        }
+        let ag_idx_head = head_kind(subst_apply(s2, idx_ty))
+        if ag_idx_head != 0 && ag_idx_head != 1 {
+          Array::push(errors, String::concat("argument type mismatch for Array::get (arg 1): ", String::concat(type_to_string(subst_apply(s2, idx_ty)), off_marker_len(callee_off, String::length(name)))))
+        } else {
+          ()
+        }
         let result = match subst_apply(s2, obj_ty) {
           CtArray(elem) => elem,
           _ => CtUnknown
@@ -2422,7 +2457,10 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                   // variable (local): k`. Reject it HERE with a located
                   // message until evidence-passing handlers (#817) land.
                   if hblen == hplen + 1 {
-                    Array::push(errors, String::concat("handler arm ", String::concat(hqname, ": non-tail continuation binder (k-convention) is not supported by the build path; use resume(v) (#814, evidence-passing handlers #817)")))
+                    // #828: this shape is EITHER a payload-arity typo or an
+                    // intended k-convention continuation — say both, since a
+                    // plain extra binder was misdiagnosed as k-convention.
+                    Array::push(errors, String::concat("handler arm ", String::concat(hqname, String::concat(String::concat(" expects ", String::concat(__to_string(hplen), " payload binding(s), got ")), String::concat(__to_string(hblen), " — either drop the extra binder, or if it was meant as a non-tail continuation (k-convention): that is not supported by the build path; use resume(v) (#814, evidence-passing handlers #817)")))))
                   } else if hblen != hplen {
                     Array::push(errors, String::concat("handler arm ", String::concat(hqname, String::concat(" expects ", String::concat(__to_string(hplen), " payload binding(s)")))))
                   } else {
@@ -2462,6 +2500,62 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           _ => ()
         }
         hai = hai + 1
+      }
+      // #828: op-arm exhaustiveness for DECLARED effects — a handler covering
+      // only some ops compiled and the unhandled perform trapped unreachable
+      // at runtime with no message. The checker knows the op set (it already
+      // rejects unknown arm names), so require every op to have an arm.
+      let hx_eff = Array::slice([
+        ""
+      ], 0, 0)
+      let hx_ops = Array::slice([
+        ""
+      ], 0, 0)
+      let mut hxi = 0
+      while hxi < Array::length(harms) {
+        let (hxpat, _) = Array::get(harms, hxi)
+        match hxpat {
+          PCtor(hxq, _) => {
+            let hxci = String::index_of(hxq, "::")
+            if hxci > 0 && effect_is_declared(defs, String::substring(hxq, 0, hxci)) {
+              Array::push(hx_eff, String::substring(hxq, 0, hxci))
+              Array::push(hx_ops, String::substring(hxq, hxci + 2, String::length(hxq)))
+            } else {
+              ()
+            }
+          },
+          _ => ()
+        }
+        hxi = hxi + 1
+      }
+      if Array::length(hx_eff) > 0 {
+        match find_typedef(defs, Array::get(hx_eff, 0)) {
+          Some(TDEffect(_, hx_decl_ops)) => {
+            let mut hoi = 0
+            while hoi < Array::length(hx_decl_ops) {
+              let (hx_op_name, _, _) = Array::get(hx_decl_ops, hoi)
+              let mut hx_found = false
+              let mut hoj = 0
+              while hoj < Array::length(hx_ops) {
+                if Array::get(hx_ops, hoj) == hx_op_name {
+                  hx_found = true
+                } else {
+                  ()
+                }
+                hoj = hoj + 1
+              }
+              if hx_found {
+                ()
+              } else {
+                Array::push(errors, String::concat("non-exhaustive handler: operation `", String::concat(hx_op_name, String::concat("` of effect ", String::concat(Array::get(hx_eff, 0), " has no arm — performing it would trap at runtime; add an arm for it")))))
+              }
+              hoi = hoi + 1
+            }
+          },
+          _ => ()
+        }
+      } else {
+        ()
       }
       (hty, hs1, hc1)
     },

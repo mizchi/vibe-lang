@@ -2079,6 +2079,18 @@ export let _start: () -> Int = () -> {
   handle { perform E::Emit(20) } with E { Emit(v, k) => v + k(0) }
 }
 EOF
+cat > "$odir/bad_missingarm.vibe" <<'EOF'
+effect Duo { A() -> Int; B() -> Int }
+export let _start: () -> Int = () -> {
+  handle { perform Duo::B() } with Duo { A() => resume(1) }
+}
+EOF
+cat > "$odir/bad_resume0.vibe" <<'EOF'
+effect Q { Get() -> Int }
+export let _start: () -> Int = () -> {
+  handle { perform Q::Get() } with Q { Get() => resume() }
+}
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$odir/ok_op.vibe" "$odir/ok_op.wasm" _start >/dev/null 2>&1 || true
@@ -2089,7 +2101,7 @@ op_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$odir/ok_op
 if [ "$op_out" != "42" ]; then
   echo "[selfhost-only-gate] FAIL: effect op control returned '$op_out' (expected 42)" >&2; exit 1
 fi
-for bad in bad_performarg bad_performarity bad_armname bad_armpayload bad_resumeval bad_kconv; do
+for bad in bad_performarg bad_performarity bad_armname bad_armpayload bad_resumeval bad_kconv bad_missingarm bad_resume0; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$odir/$bad.vibe" "$odir/$bad.wasm" _start >/dev/null 2>&1 || true
@@ -2322,6 +2334,15 @@ EOF
 cat > "$tdir/bad_mutann.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let mut x: Bool = 5; 0 }
 EOF
+cat > "$tdir/bad_agrecv.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::get("str", 0) }
+EOF
+cat > "$tdir/bad_agidx.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::get([1, 2, 3], "x") }
+EOF
+cat > "$tdir/bad_asrecv.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::set("str", 0, 1); 0 }
+EOF
 cat > "$tdir/bad_arity_bytesnew.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let b = Bytes::new(1, 2); Bytes::length(b) }
 EOF
@@ -2331,7 +2352,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
 if [ ! -s "$tdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed binding/assign/if did not compile (over-rejects)" >&2; exit 1
 fi
-for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg bad_unknownfield bad_guardonly bad_arity_get bad_arity_bytesnew bad_mutann; do
+for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg bad_unknownfield bad_guardonly bad_arity_get bad_arity_bytesnew bad_mutann bad_agrecv bad_agidx bad_asrecv; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$tdir/$bad.vibe" "$tdir/$bad.wasm" _start >/dev/null 2>&1 || true

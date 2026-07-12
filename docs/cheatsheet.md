@@ -480,6 +480,13 @@ handle { greet("world") } with Logger {
 ```
 
 継続呼び出しは `resume(v)` が canonical (one-shot tail-resumptive, ADR-0050)。
+> **replay 実装の制約 (#817 まで)**: 現行の handler は resume 時に handle
+> body を**先頭から再実行** (replay) する実装のため、handle body 内の
+> 副作用 (print / `let mut` の更新など) は perform ごとに再実行される。
+> **handle body は最後の perform まで pure に保つこと** — 副作用や
+> 可変状態の蓄積は handler arm 側か handle の外に置く。この制約は
+> evidence-passing handler 移行 (#817) で解消予定。
+
 operation の宣言 arity より 1 つ多い末尾パラメータを束縛する `k` 規約
 (`Emit(v, k) => v + k(0)`、non-tail 継続) は **旧 MoonBit fixture runner
 専用だった機能で、selfhost build path では未サポート** — checker が
