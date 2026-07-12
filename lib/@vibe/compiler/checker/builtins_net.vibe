@@ -33,42 +33,6 @@ let net_three_params: (Type, Type, Type) -> Array[Type] = (a, b, c) -> {
   arr
 }
 
-let net_four_params: (Type, Type, Type, Type) -> Array[Type] = (a, b, c, d) -> {
-  let arr = net_no_params()
-  Array::push(arr, a)
-  Array::push(arr, b)
-  Array::push(arr, c)
-  Array::push(arr, d)
-  arr
-}
-
-// #794: RAW host-import ops behind lib/@vibe/http's client functions. The
-// surface names (Http::request etc.) CANNOT be used as direct builtin calls
-// inside http.vibe: lib/@vibe/http/index.vibe exports alias functions with
-// those exact names, and in any compiled unit bundling the index the free
-// ident binds to the alias instead of the builtin, producing infinite
-// recursion (#795 -- lib/@vibe/fs's Fs::stat_token has this bug today).
-// Dunder raw names collide with nothing, same trick as __fs_read_dir_raw /
-// __sh_lines_raw in codegen. Effect tag "Http" matches the `with { Http }`
-// on the http.vibe wrappers.
-let lookup_http_host_raw: (String) -> Option[Type] = (name) -> {
-  if name == "__http_request_raw" {
-    Some(CtFn(net_four_params(CtString, CtString, CtString, CtString), CtInt, Some("Http")))
-  }
-  else if name == "__http_response_status_raw" {
-    Some(CtFn(net_one_param(CtInt), CtInt, Some("Http")))
-  }
-  else if name == "__http_response_header_raw" {
-    Some(CtFn(net_two_params(CtInt, CtString), CtString, Some("Http")))
-  }
-  else if name == "__http_response_body_raw" {
-    Some(CtFn(net_one_param(CtInt), CtString, Some("Http")))
-  }
-  else if name == "__http_close_raw" {
-    Some(CtFn(net_one_param(CtInt), CtUnit, Some("Http")))
-  }
-  else None
-}
 
 let lookup_http_close: (String) -> Option[Type] = (name) -> {
   if name == "Http::close" {
@@ -221,10 +185,7 @@ export let lookup_net: (String) -> Option[Type] = (name) -> {
       Some(t) => Some(t),
       None => match lookup_net_group_c(name) {
         Some(t) => Some(t),
-        None => match lookup_net_group_d(name) {
-          Some(t) => Some(t),
-          None => lookup_http_host_raw(name)
-        }
+        None => lookup_net_group_d(name)
       }
     }
   }
