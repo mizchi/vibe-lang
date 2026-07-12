@@ -459,17 +459,13 @@ function locate(text, message) {
       const endCh = Math.max(co + 1, parseInt(lc[3], 10) - 1);
       return { start: { line: li, character: co }, end: { line: li, character: endCh } };
     }
-    // The AST anchor (co) is the offending *expression's* start, which for a
-    // field access `p.x` is the base `p` — not the field. When the message
-    // names the offending token, highlight that token at/after the anchor
-    // (for field errors, after the `.`) so the squiggle lands on the field
-    // rather than blind-scanning the base identifier.
+    // When the message names the offending token but carries no end column,
+    // highlight that token at/after the anchor. (#645: field errors no longer
+    // need the old "hop past the dot" special case — EDot carries the field
+    // token's own offset, so the checker emits the exact `col M-K` range and
+    // the authoritative branch above handles them.)
     if (needle) {
-      let from = co;
-      if (/unknown field/i.test(message)) {
-        const dot = lineText.indexOf(".", co);
-        if (dot >= 0) from = dot + 1;
-      }
+      const from = co;
       const at = lineText.indexOf(needle, from);
       if (at >= 0) {
         return {

@@ -84,6 +84,12 @@ expect_contains "method-call arity located at call site (line 6)" "line 6:" \
 expect_contains "unknown-field access located at access site (line 3)" "line 3:" \
   'struct Point { x: Int, y: Int }\nexport let get = (p: Point) -> Int {\n  p.z\n}\nexport let main = () -> Int { 0 }\n'
 
+# #645: EDot now carries the FIELD token's own offset, so the unknown-field
+# diagnostic is an exact compiler-authoritative range over the field name
+# (`line 3:col5-6:` for the 1-char `z`), no LSP-side dot-hop word scan.
+expect_matches "unknown-field carries an exact field range (colM-K)" "line 3:5-6:" \
+  'struct Point { x: Int, y: Int }\nexport let get = (p: Point) -> Int {\n  p.z\n}\nexport let main = () -> Int { 0 }\n'
+
 # the internal [@off=N] offset marker must never leak into user-facing output.
 expect_missing() { # <desc> <needle-that-must-be-absent> <file.vibe content>
   local desc="$1" needle="$2"; shift 2

@@ -1087,7 +1087,7 @@ let check_seq_spine: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], 
         c1 = nc
         cur = right
       },
-      ELet(name, val, body) => {
+      ELet(name, val, body, _) => {
         let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab)
         let gen = generalize(ns, vt)
         cenv = env_bind(cenv, name, gen)
@@ -1095,7 +1095,7 @@ let check_seq_spine: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], 
         c1 = nc
         cur = body
       },
-      ELetMut(name, val, body) => {
+      ELetMut(name, val, body, _) => {
         let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab)
         // `loop` desugars to `let mut __loop_result = 0; while true { ...
         // __loop_result = <break value> ... }` (parser_expr_primary.vibe) —
@@ -1389,9 +1389,9 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       }
     },
     ESeq(_, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, check_expr),
-    ELet(_, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, check_expr),
+    ELet(_, _, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, check_expr),
     ELetRec(_, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, check_expr),
-    ELetMut(_, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, check_expr),
+    ELetMut(_, _, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, check_expr),
     EIf(cond, then_e, else_e) => {
       let (ct, s1, c1) = check_expr(cond, env, defs, s, c, errors, tytab)
       let resolved_ct = subst_apply(s1, ct)
@@ -1714,7 +1714,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 _ => false
               }
               if has_qual || user_recv {
-                Some(check_expr(ECall(EDot(Array::get(args, 0), name, callee_off), Array::slice(args, 1, Array::length(args)), call_off), env, defs, sa, ca, errors, tytab))
+                Some(check_expr(ECall(EDot(Array::get(args, 0), name, callee_off, callee_off), Array::slice(args, 1, Array::length(args)), call_off), env, defs, sa, ca, errors, tytab))
               } else {
                 None
               }
@@ -1795,7 +1795,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         }
         }
       },
-      EDot(obj, method, _) => {
+      EDot(obj, method, _, _) => {
         let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors, tytab)
         let resolved = subst_apply(s1, obj_ty)
         let type_prefix = type_name_prefix(resolved)
@@ -2266,7 +2266,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let (bt, s2, c2) = check_expr(body, env_bind(env3, "__in_loop__", CtUnit), defs, s1, c1b, errors, tytab)
       (CtArray(bt), s2, c2)
     },
-    EDot(obj, field, dot_off) => {
+    EDot(obj, field, dot_off, field_off) => {
       let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors, tytab)
       let resolved = subst_apply(s1, obj_ty)
       let field_ty = match resolved {
@@ -2286,7 +2286,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               match find_field(0) {
                 Some(ft) => ft,
                 None => {
-                  Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", sname))), off_marker(dot_off)))
+                  Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", sname))), if field_off >= 0 { off_marker_len(field_off, String::length(field)) } else { off_marker(dot_off) }))
                   CtUnknown
                 }
               }
@@ -2302,7 +2302,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           Some(idx) => if idx >= 0 && idx < Array::length(elems) {
             Array::get(elems, idx)
           } else {
-            Array::push(errors, String::concat(String::concat("tuple index ", String::concat(field, String::concat(" out of range for a ", String::concat(__to_string(Array::length(elems)), "-tuple")))), off_marker(dot_off)))
+            Array::push(errors, String::concat(String::concat("tuple index ", String::concat(field, String::concat(" out of range for a ", String::concat(__to_string(Array::length(elems)), "-tuple")))), if field_off >= 0 { off_marker_len(field_off, String::length(field)) } else { off_marker(dot_off) }))
             CtUnknown
           },
           None => CtUnknown
@@ -2324,7 +2324,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             _ => false
           }
           if not_struct {
-            Array::push(errors, String::concat(String::concat("field access `.", String::concat(field, "` on a non-struct value")), off_marker(dot_off)))
+            Array::push(errors, String::concat(String::concat("field access `.", String::concat(field, "` on a non-struct value")), if field_off >= 0 { off_marker_len(field_off, String::length(field)) } else { off_marker(dot_off) }))
           } else {
             ()
           }
@@ -2333,9 +2333,16 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       }
       // Record this field-access node's (raw, pre-final-subst) projection type
       // keyed by its real source offset, for typed-hover on `obj.field`.
-      // Synthetic accesses (dot_off < 0) are skipped.
+      // Synthetic accesses (dot_off < 0) are skipped. #645: the field token's
+      // own offset gets the same entry, so hovering the field NAME (not just
+      // the base) resolves the projection type.
       if dot_off >= 0 {
         Array::push(tytab, (dot_off, field_ty))
+      } else {
+        ()
+      }
+      if field_off >= 0 && field_off != dot_off {
+        Array::push(tytab, (field_off, field_ty))
       } else {
         ()
       }

@@ -548,9 +548,9 @@ let rec expr_mentions_result: (Expr) -> Bool = (e) -> {
       found
     },
     EIf(c, t, el) => expr_mentions_result(c) || expr_mentions_result(t) || expr_mentions_result(el),
-    ELet(_, v, b) => expr_mentions_result(v) || expr_mentions_result(b),
+    ELet(_, v, b, _) => expr_mentions_result(v) || expr_mentions_result(b),
     ELetRec(_, v, b) => expr_mentions_result(v) || expr_mentions_result(b),
-    ELetMut(_, v, b) => expr_mentions_result(v) || expr_mentions_result(b),
+    ELetMut(_, v, b, _) => expr_mentions_result(v) || expr_mentions_result(b),
     EAssign(_, v, b) => expr_mentions_result(v) || expr_mentions_result(b),
     EAssignOp(_, _, v, b) => expr_mentions_result(v) || expr_mentions_result(b),
     ESeq(a, b) => expr_mentions_result(a) || expr_mentions_result(b),
@@ -627,7 +627,7 @@ let rec expr_mentions_result: (Expr) -> Bool = (e) -> {
       }
       found
     },
-    EDot(o, _, _) => expr_mentions_result(o),
+    EDot(o, _, _, _) => expr_mentions_result(o),
     ELabeledArg(_, _, v) => expr_mentions_result(v),
     EThrow(x) => expr_mentions_result(x),
     EReturn(x) => expr_mentions_result(x),
@@ -1856,7 +1856,7 @@ let build_iter_for_with: (String, Expr, Expr, Expr) -> Expr = (name, nextcall, i
   // `for x in Range::{..}`) made that consume-then-reassign double-free the
   // initial value under RC. Seeding from a stable binding mirrors the working
   // `let r = ..; for x in r` shape so the ownership accounting balances (#704).
-  ELet("__iter_src", iter, ELetMut("__iter_cur", EIdent("__iter_src", -1), ELetMut("__iter_go", EBool(true), EWhile(EIdent("__iter_go", -1), loop_body))))
+  ELet("__iter_src", iter, ELetMut("__iter_cur", EIdent("__iter_src", -1), ELetMut("__iter_go", EBool(true), EWhile(EIdent("__iter_go", -1), loop_body), -1), -1), -1)
 }
 
 let next_call_for: (String) -> Expr = (ctype) -> {
@@ -1897,11 +1897,11 @@ let build_indexed_iter_for: (String, Option[String], String, Expr, Expr) -> Expr
   ], -1)
   let incr = EAssign("__iter_i", EBinOp("+", EIdent("__iter_i", -1), EInt(1)), EUnit)
   let bound_body = match idx {
-    Some(iname) => ELet(iname, EIdent("__iter_i", -1), body),
+    Some(iname) => ELet(iname, EIdent("__iter_i", -1), body, -1),
     None => body
   }
-  let loop_body = ELet(name, get_call, ESeq(bound_body, incr))
-  ELet("__iter_src", iter, ELet("__iter_n", len_call, ELetMut("__iter_i", EInt(0), EWhile(EBinOp("<", EIdent("__iter_i", -1), EIdent("__iter_n", -1)), loop_body))))
+  let loop_body = ELet(name, get_call, ESeq(bound_body, incr), -1)
+  ELet("__iter_src", iter, ELet("__iter_n", len_call, ELetMut("__iter_i", EInt(0), EWhile(EBinOp("<", EIdent("__iter_i", -1), EIdent("__iter_n", -1)), loop_body), -1), -1), -1)
 }
 
 // `for await` over an async iterator type `C` whose
@@ -1937,12 +1937,12 @@ let build_pull_for_in: (String, Option[String], Expr, Expr) -> Expr = (value_nam
       PWild
     ], 0, 0)), EAssign("__pull_continue", EBool(false), EUnit))
   ])
-  let core_loop = ELetMut("__pull_continue", EBool(true), EWhile(EIdent("__pull_continue", -1), loop_body))
+  let core_loop = ELetMut("__pull_continue", EBool(true), EWhile(EIdent("__pull_continue", -1), loop_body), -1)
   let with_index = match index_name {
-    Some(ix) => ELetMut(ix, EInt(0), core_loop),
+    Some(ix) => ELetMut(ix, EInt(0), core_loop, -1),
     None => core_loop
   }
-  ELet("__pull_next", iterable, with_index)
+  ELet("__pull_next", iterable, with_index, -1)
 }
 
 // Unwrap a `for await` marker: the parser wraps the iterable of a `for await`
@@ -2260,16 +2260,16 @@ let rec railway_rw: (Expr, Array[(String, Array[String])], Array[(String, String
       EMap(out)
     },
     EIf(c, t, e) => EIf(railway_rw(c, struct_sets, var_types, fn_returns), railway_rw(t, struct_sets, var_types, fn_returns), railway_rw(e, struct_sets, var_types, fn_returns)),
-    ELet(name, val, body) => {
+    ELet(name, val, body, soff) => {
       let new_val = railway_rw(val, struct_sets, var_types, fn_returns)
       let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
-      ELet(name, new_val, railway_rw(body, struct_sets, body_vars, fn_returns))
+      ELet(name, new_val, railway_rw(body, struct_sets, body_vars, fn_returns), soff)
     },
     ELetRec(name, val, body) => ELetRec(name, railway_rw(val, struct_sets, var_types, fn_returns), railway_rw(body, struct_sets, var_types, fn_returns)),
-    ELetMut(name, val, body) => {
+    ELetMut(name, val, body, soff) => {
       let new_val = railway_rw(val, struct_sets, var_types, fn_returns)
       let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
-      ELetMut(name, new_val, railway_rw(body, struct_sets, body_vars, fn_returns))
+      ELetMut(name, new_val, railway_rw(body, struct_sets, body_vars, fn_returns), soff)
     },
     EAssign(name, val, cont) => EAssign(name, railway_rw(val, struct_sets, var_types, fn_returns), railway_rw(cont, struct_sets, var_types, fn_returns)),
     EAssignOp(name, op, val, cont) => EAssignOp(name, op, railway_rw(val, struct_sets, var_types, fn_returns), railway_rw(cont, struct_sets, var_types, fn_returns)),
@@ -2307,11 +2307,11 @@ let rec railway_rw: (Expr, Array[(String, Array[String])], Array[(String, String
     EBinOp(op, l, r) => EBinOp(op, railway_rw(l, struct_sets, var_types, fn_returns), railway_rw(r, struct_sets, var_types, fn_returns)),
     EUnaryOp(op, e) => EUnaryOp(op, railway_rw(e, struct_sets, var_types, fn_returns)),
     EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, railway_rw(body, struct_sets, seed_var_types(ps, tp, var_types), fn_returns)),
-    EDot(obj, field, off) => {
+    EDot(obj, field, off, fdoff) => {
       let robj = railway_rw(obj, struct_sets, var_types, fn_returns)
       match anon_dot_rewrite(obj, field, off, robj, var_types) {
         Some(rw) => rw,
-        None => EDot(robj, field, off)
+        None => EDot(robj, field, off, fdoff)
       }
     },
     ELabeledArg(label, name, body) => ELabeledArg(label, name, railway_rw(body, struct_sets, var_types, fn_returns)),
@@ -2368,7 +2368,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
       Some(parts) => {
         let (head, member) = parts
         match find_dict_for_method(dict_binds, head, member) {
-          Some(dict_pname) => EDot(EIdent(dict_pname, -1), member, -1),
+          Some(dict_pname) => EDot(EIdent(dict_pname, -1), member, -1, -1),
           None => match qual_ctor_member(head, member, struct_sets, fn_returns) {
             Some(m) => EIdent(m, off),
             None => expr
@@ -2455,7 +2455,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
             None => None
           }
           match as_method {
-            Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1), rwargs, off),
+            Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1, -1), rwargs, off),
             None => match lookup_gen(gens, name) {
               Some(threaded) => match synth_dicts(threaded, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
                 Some(dicts) => ECall(EIdent(name, coff), concat_expr_arrays(dicts, rwargs), off),
@@ -2465,7 +2465,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
             }
           }
         },
-        EDot(obj, m, doff) => {
+        EDot(obj, m, doff, fdoff) => {
           // #736 residual: method-style call `xs.length()` on a USER type —
           // codegen compiles a called EDot as struct-field access, so a
           // receiver method (`List::length`) failed with "unknown struct
@@ -2489,7 +2489,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
           }
           match as_recv_method {
             Some(qual) => ECall(EIdent(qual, doff), prepend_expr(robj, rwargs), off),
-            None => ECall(EDot(robj, m, doff), rwargs, off)
+            None => ECall(EDot(robj, m, doff, fdoff), rwargs, off)
           }
         },
         _ => ECall(rewrite_expr(callee, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rwargs, off)
@@ -2535,16 +2535,16 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
       EMap(out)
     },
     EIf(c, t, e) => EIf(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(t, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
-    ELet(name, val, body) => {
+    ELet(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
-      ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns))
+      ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
-    ELetMut(name, val, body) => {
+    ELetMut(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
-      ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns))
+      ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     EAssign(name, val, cont) => EAssign(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EAssignOp(name, op, val, cont) => EAssignOp(name, op, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
@@ -2763,11 +2763,11 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
     },
     EUnaryOp(op, e) => EUnaryOp(op, rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, rewrite_expr(body, gens, traits, struct_sets, dict_binds, seed_var_types(ps, tp, var_types), fn_returns)),
-    EDot(obj, field, off) => {
+    EDot(obj, field, off, fdoff) => {
       let robj = rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       match anon_dot_rewrite(obj, field, off, robj, var_types) {
         Some(rw) => rw,
-        None => EDot(robj, field, off)
+        None => EDot(robj, field, off, fdoff)
       }
     },
     ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
@@ -3060,7 +3060,7 @@ let rec show_for_typed: (TypeExpr, Expr, Array[String]) -> Expr = (fty, val, kno
 // (#694: type-directed and recursive — aggregate fields recurse structurally
 // instead of falling into the `__to_string` pointer heuristic).
 let field_show_expr: (String, TypeExpr, Array[String]) -> Expr = (fname, fty, known_types) -> {
-  show_for_typed(fty, EDot(EIdent("self", -1), fname, -1), known_types)
+  show_for_typed(fty, EDot(EIdent("self", -1), fname, -1, -1), known_types)
 }
 
 // `let __arr_to_string__<key> = (a: Array[t]) -> String {
@@ -3084,7 +3084,7 @@ let gen_arr_to_string_fn: (TypeExpr, Array[String]) -> Stmt = (elem_ty, known_ty
     EIdent("a", -1)
   ], 0, 1), -1)), loop_body)
   let closed = concat2(EIdent("__as_acc", -1), EString("]"))
-  let body = ELetMut("__as_i", EInt(0), ELetMut("__as_acc", EString("["), ESeq(while_loop, closed)))
+  let body = ELetMut("__as_i", EInt(0), ELetMut("__as_acc", EString("["), ESeq(while_loop, closed), -1), -1)
   let arr_ty = TyApp("Array", Array::slice([
     elem_ty
   ], 0, 1))
@@ -3392,7 +3392,7 @@ let gen_arr_equals_fn: (TypeExpr, Array[String]) -> Stmt = (elem_ty, known_types
   let while_loop = EWhile(EBinOp("<", EIdent("__ae_i", -1), ECall(EIdent("Array::length", -1), Array::slice([
     EIdent("a", -1)
   ], 0, 1), -1)), loop_body)
-  let body_eq = ELetMut("__ae_i", EInt(0), ELetMut("__ae_ok", EBool(true), ESeq(while_loop, EIdent("__ae_ok", -1))))
+  let body_eq = ELetMut("__ae_i", EInt(0), ELetMut("__ae_ok", EBool(true), ESeq(while_loop, EIdent("__ae_ok", -1)), -1), -1)
   let body = EIf(EBinOp("!=", len_a, len_b), EBool(false), body_eq)
   let arr_ty = TyApp("Array", Array::slice([
     elem_ty
@@ -3414,7 +3414,7 @@ let gen_arr_equals_fn: (TypeExpr, Array[String]) -> Stmt = (elem_ty, known_types
 // direct `FieldType::equals(a.f, b.f)` for aggregate (declared struct/enum)
 // fields so nested/recursive structs compare structurally. (#672 recursion.)
 let field_eq_expr: (String, TypeExpr, Array[String]) -> Expr = (fname, fty, known_types) -> {
-  eq_for_typed(fty, EDot(EIdent("a", -1), fname, -1), EDot(EIdent("b", -1), fname, -1), known_types)
+  eq_for_typed(fty, EDot(EIdent("a", -1), fname, -1, -1), EDot(EIdent("b", -1), fname, -1, -1), known_types)
 }
 
 // `let P::equals = (a: P, b: P) -> Bool { a.x == b.x && a.y == b.y && ... }`
@@ -3536,8 +3536,8 @@ let gen_compare_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields
   let mut i = Array::length(fields) - 1
   while i >= 0 {
     let (fname, _) = Array::get(fields, i)
-    let af = EDot(EIdent("a", -1), fname, -1)
-    let bf = EDot(EIdent("b", -1), fname, -1)
+    let af = EDot(EIdent("a", -1), fname, -1, -1)
+    let bf = EDot(EIdent("b", -1), fname, -1, -1)
     body = EIf(EBinOp("<", af, bf), EInt(neg_one), EIf(EBinOp(">", af, bf), EInt(1), body))
     i = i - 1
   }
@@ -3978,7 +3978,7 @@ let rec collect_bare_array_eq_keys: (Expr, Array[TypeExpr], Array[String]) -> Un
       collect_bare_array_eq_keys(t, acc, acc_keys)
       collect_bare_array_eq_keys(el, acc, acc_keys)
     },
-    ELet(_, v, b) => {
+    ELet(_, v, b, _) => {
       collect_bare_array_eq_keys(v, acc, acc_keys)
       collect_bare_array_eq_keys(b, acc, acc_keys)
     },
@@ -3986,7 +3986,7 @@ let rec collect_bare_array_eq_keys: (Expr, Array[TypeExpr], Array[String]) -> Un
       collect_bare_array_eq_keys(v, acc, acc_keys)
       collect_bare_array_eq_keys(b, acc, acc_keys)
     },
-    ELetMut(_, v, b) => {
+    ELetMut(_, v, b, _) => {
       collect_bare_array_eq_keys(v, acc, acc_keys)
       collect_bare_array_eq_keys(b, acc, acc_keys)
     },
@@ -4033,7 +4033,7 @@ let rec collect_bare_array_eq_keys: (Expr, Array[TypeExpr], Array[String]) -> Un
     },
     EUnaryOp(_, x) => collect_bare_array_eq_keys(x, acc, acc_keys),
     EFn(_, _, _, _, _, b) => collect_bare_array_eq_keys(b, acc, acc_keys),
-    EDot(o, _, _) => collect_bare_array_eq_keys(o, acc, acc_keys),
+    EDot(o, _, _, _) => collect_bare_array_eq_keys(o, acc, acc_keys),
     ELabeledArg(_, _, b) => collect_bare_array_eq_keys(b, acc, acc_keys),
     EThrow(x) => collect_bare_array_eq_keys(x, acc, acc_keys),
     EReturn(x) => collect_bare_array_eq_keys(x, acc, acc_keys),
@@ -4429,15 +4429,15 @@ let rec dlh_has_perform: (Expr) -> Bool = (expr) -> {
     EBinOp(_, l, r) => dlh_has_perform(l) || dlh_has_perform(r),
     EUnaryOp(_, e) => dlh_has_perform(e),
     EIf(c, t, e) => dlh_has_perform(c) || dlh_has_perform(t) || dlh_has_perform(e),
-    ELet(_, v, b) => dlh_has_perform(v) || dlh_has_perform(b),
+    ELet(_, v, b, _) => dlh_has_perform(v) || dlh_has_perform(b),
     ELetRec(_, v, b) => dlh_has_perform(v) || dlh_has_perform(b),
-    ELetMut(_, v, b) => dlh_has_perform(v) || dlh_has_perform(b),
+    ELetMut(_, v, b, _) => dlh_has_perform(v) || dlh_has_perform(b),
     EAssign(_, v, c) => dlh_has_perform(v) || dlh_has_perform(c),
     EAssignOp(_, _, v, c) => dlh_has_perform(v) || dlh_has_perform(c),
     ESeq(a, b) => dlh_has_perform(a) || dlh_has_perform(b),
     EWhile(c, b) => dlh_has_perform(c) || dlh_has_perform(b),
     EForIn(_, _, it, b) => dlh_has_perform(it) || dlh_has_perform(b),
-    EDot(o, _, _) => dlh_has_perform(o),
+    EDot(o, _, _, _) => dlh_has_perform(o),
     ELabeledArg(_, _, e) => dlh_has_perform(e),
     EThrow(e) => dlh_has_perform(e),
     EReturn(e) => dlh_has_perform(e),
@@ -4530,7 +4530,7 @@ let rec dlh_scan_free: (Expr, Array[String], Array[String]) -> Unit = (expr, bou
       dlh_scan_free(t, bound, bad)
       dlh_scan_free(e, bound, bad)
     },
-    ELet(name, v, b) => {
+    ELet(name, v, b, _) => {
       dlh_scan_free(v, bound, bad)
       dlh_scan_free(b, dlh_with(bound, name), bad)
     },
@@ -4539,7 +4539,7 @@ let rec dlh_scan_free: (Expr, Array[String], Array[String]) -> Unit = (expr, bou
       dlh_scan_free(v, b2, bad)
       dlh_scan_free(b, b2, bad)
     },
-    ELetMut(name, v, b) => {
+    ELetMut(name, v, b, _) => {
       dlh_scan_free(v, bound, bad)
       dlh_scan_free(b, dlh_with(bound, name), bad)
     },
@@ -4578,7 +4578,7 @@ let rec dlh_scan_free: (Expr, Array[String], Array[String]) -> Unit = (expr, bou
       }
       dlh_scan_free(b, b2, bad)
     },
-    EDot(o, _, _) => dlh_scan_free(o, bound, bad),
+    EDot(o, _, _, _) => dlh_scan_free(o, bound, bad),
     ELabeledArg(_, _, e) => dlh_scan_free(e, bound, bad),
     EThrow(e) => dlh_scan_free(e, bound, bad),
     EReturn(e) => dlh_scan_free(e, bound, bad),
@@ -4687,21 +4687,21 @@ let rec dlh_subst: (Expr, String, String) -> Expr = (expr, from, to) -> {
       EMap(out)
     },
     EIf(c, t, e) => EIf(dlh_subst(c, from, to), dlh_subst(t, from, to), dlh_subst(e, from, to)),
-    ELet(name, v, b) => ELet(name, dlh_subst(v, from, to), if name == from {
+    ELet(name, v, b, soff) => ELet(name, dlh_subst(v, from, to), if name == from {
       b
     } else {
       dlh_subst(b, from, to)
-    }),
+    }, soff),
     ELetRec(name, v, b) => if name == from {
       ELetRec(name, v, b)
     } else {
       ELetRec(name, dlh_subst(v, from, to), dlh_subst(b, from, to))
     },
-    ELetMut(name, v, b) => ELetMut(name, dlh_subst(v, from, to), if name == from {
+    ELetMut(name, v, b, soff) => ELetMut(name, dlh_subst(v, from, to), if name == from {
       b
     } else {
       dlh_subst(b, from, to)
-    }),
+    }, soff),
     EAssign(name, v, c) => EAssign(name, dlh_subst(v, from, to), dlh_subst(c, from, to)),
     EAssignOp(name, op, v, c) => EAssignOp(name, op, dlh_subst(v, from, to), dlh_subst(c, from, to)),
     ESeq(a, b) => ESeq(dlh_subst(a, from, to), dlh_subst(b, from, to)),
@@ -4717,7 +4717,7 @@ let rec dlh_subst: (Expr, String, String) -> Expr = (expr, from, to) -> {
         dlh_subst(b, from, to)
       })
     },
-    EDot(o, f, off) => EDot(dlh_subst(o, from, to), f, off),
+    EDot(o, f, off, fdoff) => EDot(dlh_subst(o, from, to), f, off, fdoff),
     ELabeledArg(l, m, e) => ELabeledArg(l, m, dlh_subst(e, from, to)),
     EThrow(e) => EThrow(dlh_subst(e, from, to)),
     EReturn(e) => EReturn(dlh_subst(e, from, to)),
@@ -4795,7 +4795,7 @@ let dlh_subst_arms: (Array[(Pat, Expr)], String, String) -> Array[(Pat, Expr)] =
 ///|
 let rec dlh_hoist_expr: (Expr, Array[Stmt], Array[Int]) -> Expr = (expr, hoisted, ctr) -> {
   match expr {
-    ELet(name, v, b) => match v {
+    ELet(name, v, b, soff) => match v {
       EFn(tp, bnds, params, rt, eff, fbody) => {
         let hoisted_fn = dlh_hoist_expr(EFn(tp, bnds, params, rt, eff, fbody), hoisted, ctr)
         let rest = dlh_hoist_expr(b, hoisted, ctr)
@@ -4819,10 +4819,10 @@ let rec dlh_hoist_expr: (Expr, Array[Stmt], Array[Int]) -> Expr = (expr, hoisted
           Array::push(hoisted, SLet(false, false, fresh, None, hoisted_fn))
           dlh_subst(rest, name, fresh)
         } else {
-          ELet(name, hoisted_fn, rest)
+          ELet(name, hoisted_fn, rest, soff)
         }
       },
-      _ => ELet(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr))
+      _ => ELet(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr), soff)
     },
     EBinOp(op, l, r) => EBinOp(op, dlh_hoist_expr(l, hoisted, ctr), dlh_hoist_expr(r, hoisted, ctr)),
     EUnaryOp(op, e) => EUnaryOp(op, dlh_hoist_expr(e, hoisted, ctr)),
@@ -4865,13 +4865,13 @@ let rec dlh_hoist_expr: (Expr, Array[Stmt], Array[Int]) -> Expr = (expr, hoisted
     },
     EIf(c, t, e) => EIf(dlh_hoist_expr(c, hoisted, ctr), dlh_hoist_expr(t, hoisted, ctr), dlh_hoist_expr(e, hoisted, ctr)),
     ELetRec(name, v, b) => ELetRec(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),
-    ELetMut(name, v, b) => ELetMut(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),
+    ELetMut(name, v, b, soff) => ELetMut(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr), soff),
     EAssign(name, v, c) => EAssign(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(c, hoisted, ctr)),
     EAssignOp(name, op, v, c) => EAssignOp(name, op, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(c, hoisted, ctr)),
     ESeq(a, b) => ESeq(dlh_hoist_expr(a, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),
     EWhile(c, b) => EWhile(dlh_hoist_expr(c, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),
     EForIn(name, idxn, it, b) => EForIn(name, idxn, dlh_hoist_expr(it, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),
-    EDot(o, f, off) => EDot(dlh_hoist_expr(o, hoisted, ctr), f, off),
+    EDot(o, f, off, fdoff) => EDot(dlh_hoist_expr(o, hoisted, ctr), f, off, fdoff),
     ELabeledArg(l, m, e) => ELabeledArg(l, m, dlh_hoist_expr(e, hoisted, ctr)),
     EThrow(e) => EThrow(dlh_hoist_expr(e, hoisted, ctr)),
     EReturn(e) => EReturn(dlh_hoist_expr(e, hoisted, ctr)),
@@ -5137,9 +5137,9 @@ let rec relabel_expr: (Expr, Array[(String, Array[String])]) -> Expr = (expr, tb
       EMap(out)
     },
     EIf(c, t, e) => EIf(relabel_expr(c, tbl), relabel_expr(t, tbl), relabel_expr(e, tbl)),
-    ELet(name, v, b) => ELet(name, relabel_expr(v, tbl), relabel_expr(b, tbl)),
+    ELet(name, v, b, soff) => ELet(name, relabel_expr(v, tbl), relabel_expr(b, tbl), soff),
     ELetRec(name, v, b) => ELetRec(name, relabel_expr(v, tbl), relabel_expr(b, tbl)),
-    ELetMut(name, v, b) => ELetMut(name, relabel_expr(v, tbl), relabel_expr(b, tbl)),
+    ELetMut(name, v, b, soff) => ELetMut(name, relabel_expr(v, tbl), relabel_expr(b, tbl), soff),
     EAssign(name, v, c) => EAssign(name, relabel_expr(v, tbl), relabel_expr(c, tbl)),
     EAssignOp(name, op, v, c) => EAssignOp(name, op, relabel_expr(v, tbl), relabel_expr(c, tbl)),
     ESeq(a, b) => ESeq(relabel_expr(a, tbl), relabel_expr(b, tbl)),
@@ -5174,7 +5174,7 @@ let rec relabel_expr: (Expr, Array[(String, Array[String])]) -> Expr = (expr, tb
     }, relabel_expr(b, tbl)),
     EForIn(name, idx, iter, b) => EForIn(name, idx, relabel_expr(iter, tbl), relabel_expr(b, tbl)),
     EFn(tp, bnds, params, rt, eff, b) => EFn(tp, bnds, params, rt, eff, relabel_expr(b, tbl)),
-    EDot(obj, field, off) => EDot(relabel_expr(obj, tbl), field, off),
+    EDot(obj, field, off, fdoff) => EDot(relabel_expr(obj, tbl), field, off, fdoff),
     ELabeledArg(label, name, b) => ELabeledArg(label, name, relabel_expr(b, tbl)),
     EThrow(e) => EThrow(relabel_expr(e, tbl)),
     EReturn(e) => EReturn(relabel_expr(e, tbl)),
@@ -5316,9 +5316,9 @@ let rec das_expr: (Expr) -> Expr = (expr) -> {
       EMap(out)
     },
     EIf(c, t, e) => EIf(das_expr(c), das_expr(t), das_expr(e)),
-    ELet(n, v, b) => ELet(n, das_expr(v), das_expr(b)),
+    ELet(n, v, b, soff) => ELet(n, das_expr(v), das_expr(b), soff),
     ELetRec(n, v, b) => ELetRec(n, das_expr(v), das_expr(b)),
-    ELetMut(n, v, b) => ELetMut(n, das_expr(v), das_expr(b)),
+    ELetMut(n, v, b, soff) => ELetMut(n, das_expr(v), das_expr(b), soff),
     EAssign(n, v, c) => EAssign(n, das_expr(v), das_expr(c)),
     EAssignOp(n, op, v, c) => EAssignOp(n, op, das_expr(v), das_expr(c)),
     ESeq(a, b) => ESeq(das_expr(a), das_expr(b)),
@@ -5336,7 +5336,7 @@ let rec das_expr: (Expr) -> Expr = (expr) -> {
     EBinOp(op, l, r) => EBinOp(op, das_expr(l), das_expr(r)),
     EUnaryOp(op, e) => EUnaryOp(op, das_expr(e)),
     EFn(tp, tb, params, rt, eff, body) => EFn(tp, tb, params, rt, eff, das_expr(body)),
-    EDot(o, f, off) => EDot(das_expr(o), f, off),
+    EDot(o, f, off, fdoff) => EDot(das_expr(o), f, off, fdoff),
     ELabeledArg(l, m, e) => ELabeledArg(l, m, das_expr(e)),
     EThrow(e) => EThrow(das_expr(e)),
     EReturn(e) => EReturn(das_expr(e)),

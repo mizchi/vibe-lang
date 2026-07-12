@@ -514,9 +514,9 @@ let rec fold_expr: (Expr) -> Expr = (expr) -> {
       (n, fold_expr(v))
     }),
     EIf(c, t, e) => EIf(fold_expr(c), fold_expr(t), fold_expr(e)),
-    ELet(n, v, b) => ELet(n, fold_expr(v), fold_expr(b)),
+    ELet(n, v, b, soff) => ELet(n, fold_expr(v), fold_expr(b), soff),
     ELetRec(n, v, b) => ELetRec(n, fold_expr(v), fold_expr(b)),
-    ELetMut(n, v, b) => ELetMut(n, fold_expr(v), fold_expr(b)),
+    ELetMut(n, v, b, soff) => ELetMut(n, fold_expr(v), fold_expr(b), soff),
     EAssign(n, v, b) => EAssign(n, fold_expr(v), fold_expr(b)),
     EAssignOp(op, n, v, b) => EAssignOp(op, n, fold_expr(v), fold_expr(b)),
     ESeq(a, b) => ESeq(fold_expr(a), fold_expr(b)),
@@ -553,7 +553,7 @@ let rec fold_expr: (Expr) -> Expr = (expr) -> {
     },
     EUnaryOp(op, e) => EUnaryOp(op, fold_expr(e)),
     EFn(tp, bounds, params, ret, eff, body) => EFn(tp, bounds, params, ret, eff, fold_expr(body)),
-    EDot(e, field, off) => EDot(fold_expr(e), field, off),
+    EDot(e, field, off, fdoff) => EDot(fold_expr(e), field, off, fdoff),
     ELabeledArg(label, modifier, v) => ELabeledArg(label, modifier, fold_expr(v)),
     EThrow(e) => EThrow(fold_expr(e)),
     EReturn(e) => EReturn(fold_expr(e)),
@@ -782,20 +782,20 @@ export let rec uniquify_shadowed_bindings: (Expr, Map[String, String], Array[Int
       (n, uniquify_shadowed_bindings(v, env, counter, seen))
     }),
     EIf(c, t, e) => EIf(uniquify_shadowed_bindings(c, env, counter, seen), uniquify_shadowed_bindings(t, env, counter, seen), uniquify_shadowed_bindings(e, env, counter, seen)),
-    ELet(n, v, b) => {
+    ELet(n, v, b, soff) => {
       let v2 = uniquify_shadowed_bindings(v, env, counter, seen)
       let (n2, env2) = uq_bind_name(n, env, counter, seen)
-      ELet(n2, v2, uniquify_shadowed_bindings(b, env2, counter, seen))
+      ELet(n2, v2, uniquify_shadowed_bindings(b, env2, counter, seen), soff)
     },
     ELetRec(n, v, b) => {
       let (n2, env2) = uq_bind_name(n, env, counter, seen)
       let v2 = uniquify_shadowed_bindings(v, env2, counter, seen)
       ELetRec(n2, v2, uniquify_shadowed_bindings(b, env2, counter, seen))
     },
-    ELetMut(n, v, b) => {
+    ELetMut(n, v, b, soff) => {
       let v2 = uniquify_shadowed_bindings(v, env, counter, seen)
       let (n2, env2) = uq_bind_name(n, env, counter, seen)
-      ELetMut(n2, v2, uniquify_shadowed_bindings(b, env2, counter, seen))
+      ELetMut(n2, v2, uniquify_shadowed_bindings(b, env2, counter, seen), soff)
     },
     EAssign(n, v, b) => EAssign(uq_lookup(env, n), uniquify_shadowed_bindings(v, env, counter, seen), uniquify_shadowed_bindings(b, env, counter, seen)),
     EAssignOp(n, op, v, b) => EAssignOp(uq_lookup(env, n), op, uniquify_shadowed_bindings(v, env, counter, seen), uniquify_shadowed_bindings(b, env, counter, seen)),
@@ -857,7 +857,7 @@ export let rec uniquify_shadowed_bindings: (Expr, Map[String, String], Array[Int
       }
       EFn(tp, bounds, params2, ret, eff, uniquify_shadowed_bindings(body, env2, counter, seen))
     },
-    EDot(e, field, off) => EDot(uniquify_shadowed_bindings(e, env, counter, seen), field, off),
+    EDot(e, field, off, fdoff) => EDot(uniquify_shadowed_bindings(e, env, counter, seen), field, off, fdoff),
     ELabeledArg(label, modifier, v) => ELabeledArg(label, modifier, uniquify_shadowed_bindings(v, env, counter, seen)),
     EThrow(e) => EThrow(uniquify_shadowed_bindings(e, env, counter, seen)),
     EReturn(e) => EReturn(uniquify_shadowed_bindings(e, env, counter, seen)),
@@ -902,9 +902,9 @@ export let rec lift_match_scrutinees: (Expr, Array[Int]) -> Expr = (expr, counte
       (n, lift_match_scrutinees(v, counter))
     }),
     EIf(c, t, e) => EIf(lift_match_scrutinees(c, counter), lift_match_scrutinees(t, counter), lift_match_scrutinees(e, counter)),
-    ELet(n, v, b) => ELet(n, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter)),
+    ELet(n, v, b, soff) => ELet(n, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter), soff),
     ELetRec(n, v, b) => ELetRec(n, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter)),
-    ELetMut(n, v, b) => ELetMut(n, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter)),
+    ELetMut(n, v, b, soff) => ELetMut(n, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter), soff),
     EAssign(n, v, b) => EAssign(n, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter)),
     EAssignOp(op, n, v, b) => EAssignOp(op, n, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter)),
     ESeq(a, b) => ESeq(lift_match_scrutinees(a, counter), lift_match_scrutinees(b, counter)),
@@ -918,7 +918,7 @@ export let rec lift_match_scrutinees: (Expr, Array[Int]) -> Expr = (expr, counte
         EIdent(_, _) => EMatch(ls, lifted_arms),
         _ => {
           let fresh = fresh_m_scrut_name(counter)
-          ELet(fresh, ls, EMatch(EIdent(fresh, -1), lifted_arms))
+          ELet(fresh, ls, EMatch(EIdent(fresh, -1), lifted_arms), -1)
         }
       }
     },
@@ -938,7 +938,7 @@ export let rec lift_match_scrutinees: (Expr, Array[Int]) -> Expr = (expr, counte
     EBinOp(op, l, r) => EBinOp(op, lift_match_scrutinees(l, counter), lift_match_scrutinees(r, counter)),
     EUnaryOp(op, e) => EUnaryOp(op, lift_match_scrutinees(e, counter)),
     EFn(tp, bounds, params, ret, eff, body) => EFn(tp, bounds, params, ret, eff, lift_match_scrutinees(body, counter)),
-    EDot(e, field, off) => EDot(lift_match_scrutinees(e, counter), field, off),
+    EDot(e, field, off, fdoff) => EDot(lift_match_scrutinees(e, counter), field, off, fdoff),
     ELabeledArg(label, modifier, v) => ELabeledArg(label, modifier, lift_match_scrutinees(v, counter)),
     EThrow(e) => EThrow(lift_match_scrutinees(e, counter)),
     EReturn(e) => EReturn(lift_match_scrutinees(e, counter)),

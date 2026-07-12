@@ -51,7 +51,9 @@ vibe diagnostics <file.vibe>              # all diagnostics, one per line; empty
 ```
 
 - `type-at` powers hover. Empty output means there is no env-visible
-  identifier at that position.
+  identifier at that position. Field accesses resolve at BOTH positions of
+  `obj.field` (#645): the base identifier and the field name each yield the
+  projection type (EDot carries the field token's own offset).
 - `binding-at` powers rename/references. Each line is a `START END` pair of
   char offsets for one occurrence of the binding under the cursor.
 - `symbols` powers the document outline and go-to-definition. Each line is

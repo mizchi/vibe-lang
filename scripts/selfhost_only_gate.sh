@@ -14,6 +14,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT_DIR"
 
+echo "[selfhost-only-gate] 0/3 builtin parity (#415 B-3)"
+bash scripts/check_builtin_parity.sh
+
 echo "[selfhost-only-gate] 1/3 bundle sync"
 bash scripts/check_selfhost_bundle_sync.sh
 

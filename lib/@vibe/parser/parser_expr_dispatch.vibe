@@ -197,11 +197,22 @@ let apply_local_let_tp: (Array[String], Array[(String, Array[String])], Expr) ->
   }
 }
 
+// #644: source char offset of the token at `p` (the `let` keyword of a block
+// statement) -- ELet/ELetMut carry it so break-mode codegen can emit a
+// dbg_line probe even when the bound value is a bare literal with no offset.
+let blk_offset_at: (Array[Int], Int) -> Int = (starts, p) -> {
+  if p >= 0 && p < Array::length(starts) {
+    Array::get(starts, p)
+  } else {
+    -1
+  }
+}
+
 enum BlockStep {
   StepSeq(Expr);
   StepValue(Expr);
-  StepLet(String, Expr);
-  StepLetMut(String, Expr);
+  StepLet(String, Expr, Int);
+  StepLetMut(String, Expr, Int);
   StepLetRec(String, Expr);
   StepAssign(String, Expr);
   StepAssignOp(String, String, Expr);
@@ -324,7 +335,7 @@ let parse_block_after_expr: (Array[Token], Int, Expr, (Array[Token], Int, Int) -
         let (rest, end) = parse_recur(tokens, a, 20)
         (EAssign(name, val, rest), end)
       },
-      EDot(obj, field, _) => {
+      EDot(obj, field, _, _) => {
         let val_pair = parse_recur(tokens, pos + 1, 0)
         let val = val_pair.0
         let val_next = val_pair.1
@@ -453,7 +464,7 @@ let apply_struct_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
         let (fname, fpat) = Array::get(fields, di)
         match fpat {
           PBind(bname) => {
-            desugar = ELet(bname, EDot(EIdent(val_name, -1), fname, -1), desugar)
+            desugar = ELet(bname, EDot(EIdent(val_name, -1), fname, -1, -1), desugar, -1)
           },
           _ => ()
         }
@@ -462,7 +473,7 @@ let apply_struct_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
     },
     _ => ()
   }
-  ELet(val_name, val, desugar)
+  ELet(val_name, val, desugar, -1)
 }
 
 let apply_record_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
@@ -478,7 +489,7 @@ let apply_record_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
             desugar = ELet(bname, ECall(EIdent("__rec_field", -1), [
               EIdent(val_name, -1),
               EInt(di)
-            ], -1), desugar)
+            ], -1), desugar, -1)
           },
           PTuple(sub_pats) => {
             let sub_name = String::concat("__rec_sub_", __to_string(di))
@@ -486,7 +497,7 @@ let apply_record_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
             while si >= 0 {
               match Array::get(sub_pats, si) {
                 PBind(sname) => {
-                  desugar = ELet(sname, EDot(EIdent(sub_name, -1), __to_string(si), -1), desugar)
+                  desugar = ELet(sname, EDot(EIdent(sub_name, -1), __to_string(si), -1, -1), desugar, -1)
                 },
                 _ => ()
               }
@@ -495,7 +506,7 @@ let apply_record_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
             desugar = ELet(sub_name, ECall(EIdent("__rec_field", -1), [
               EIdent(val_name, -1),
               EInt(di)
-            ], -1), desugar)
+            ], -1), desugar, -1)
           },
           _ => ()
         }
@@ -504,15 +515,15 @@ let apply_record_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
     },
     _ => ()
   }
-  ELet(val_name, val, desugar)
+  ELet(val_name, val, desugar, -1)
 }
 
 let apply_block_step: (BlockStep, Expr) -> Expr = (step, rest) -> {
   match step {
     StepSeq(expr) => ESeq(expr, rest),
     StepValue(expr) => expr,
-    StepLet(name, val) => ELet(name, val, rest),
-    StepLetMut(name, val) => ELetMut(name, val, rest),
+    StepLet(name, val, soff) => ELet(name, val, rest, soff),
+    StepLetMut(name, val, soff) => ELetMut(name, val, rest, soff),
     StepLetRec(name, val) => ELetRec(name, val, rest),
     StepAssign(name, val) => EAssign(name, val, rest),
     StepAssignOp(name, op, val) => EAssignOp(name, op, val, rest),
@@ -608,7 +619,7 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
             while vi < Array::length(variants) {
               let (vname, vfields) = Array::get(variants, vi)
               if Array::length(vfields) == 0 {
-                ArrayBuilder::push(steps, StepLet(vname, EInt(vi)))
+                ArrayBuilder::push(steps, StepLet(vname, EInt(vi), -1))
               }
               vi = vi + 1
             }
@@ -682,7 +693,7 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
               if next_pos <= eq {
                 throw("internal parser error: block let-mut parser did not advance")
               } else {
-                ArrayBuilder::push(steps, StepLetMut(name, val))
+                ArrayBuilder::push(steps, StepLetMut(name, val, blk_offset_at(starts, next - 1)))
                 p = next_pos
               }
             },
@@ -786,7 +797,7 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
                       },
                       None => val
                     }
-                    ArrayBuilder::push(steps, StepLet(name, val2))
+                    ArrayBuilder::push(steps, StepLet(name, val2, blk_offset_at(starts, next - 1)))
                     p = next_pos
                   }
                 }
@@ -827,7 +838,7 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
                 ArrayBuilder::push(steps, StepAssign(name, val))
                 p = next_pos
               },
-              EDot(obj, field, _) => {
+              EDot(obj, field, _, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
                 let set_args = empty_exprs()
                 Array::push(set_args, obj)
@@ -976,7 +987,7 @@ export let parse_impl_dispatch: (Array[Token], Array[Int], Int, Int, (Array[Toke
         let arms3 = ArrayBuilder::freeze(ab)
         if Array::get(hg, 0) {
           let final_arms = desugar_guarded(arms3, 0, EIdent("__mg", 0 - 1))
-          (ELet("__mg", scrutinee, EMatch(EIdent("__mg", 0 - 1), final_arms)), endpos)
+          (ELet("__mg", scrutinee, EMatch(EIdent("__mg", 0 - 1), final_arms), -1), endpos)
         } else {
           let plain = ArrayBuilder::new()
           let mut k = 0
