@@ -607,6 +607,53 @@ export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens
 // Per-statement wrapping keeps the change local. Build the prefix with
 // String::concat (not `+` or interpolation) to avoid selfhost string-concat
 // NUL fragility. Source-span foundation: located parse diagnostics.
+// #816: in-body parse errors carry the failing TOKEN index as "at #N"
+// (expect_tk and the primary-dispatch "unexpected token" throw). Decode it so
+// the located wrapper anchors the diagnostic at the OFFENDING token instead
+// of the enclosing statement's start (an error on line 6 used to report
+// "line 2:1"), and strip the index + the lexer-internal "(prev=..., next=...)"
+// debris from the user-facing message.
+let extract_err_token_pos: (String, Int) -> (Int, String) = (msg, fallback_pos) -> {
+  let mi = String::index_of(msg, " at #")
+  if mi < 0 {
+    (fallback_pos, msg)
+  } else {
+    let mlen = String::length(msg)
+    let mut di = mi + 5
+    let mut n = 0
+    let mut any = false
+    let mut scanning = true
+    while scanning {
+      if di < mlen {
+        let ch = String::char_code_at(msg, di)
+        if ch >= 48 && ch <= 57 {
+          n = n * 10 + (ch - 48)
+          any = true
+          di = di + 1
+        } else {
+          scanning = false
+        }
+      } else {
+        scanning = false
+      }
+    }
+    if !any {
+      (fallback_pos, msg)
+    } else {
+      let head = String::substring(msg, 0, mi)
+      let tail = String::substring(msg, di, mlen)
+      let joined = String::concat(head, tail)
+      let pi = String::index_of(joined, " (prev=")
+      let cleaned = if pi >= 0 {
+        String::substring(joined, 0, pi)
+      } else {
+        joined
+      }
+      (n, cleaned)
+    }
+  }
+}
+
 export let parse_program_located: (Array[Token], Array[Int], String) -> Array[Stmt] with { Error } = (tokens, starts, source) -> {
   let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
@@ -655,14 +702,20 @@ export let parse_program_located: (Array[Token], Array[Int], String) -> Array[St
           }
         } with Error {
           Throw(msg) => {
-            let off = if start_pos < Array::length(starts) {
-              Array::get(starts, start_pos)
+            let (err_pos, cleaned_msg) = extract_err_token_pos(msg, start_pos)
+            let anchor_pos = if err_pos < Array::length(starts) {
+              err_pos
+            } else {
+              start_pos
+            }
+            let off = if anchor_pos < Array::length(starts) {
+              Array::get(starts, anchor_pos)
             } else {
               0
             }
             let (line, col) = offset_to_line_col(source, off)
             let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
-            throw(String::concat(loc, msg))
+            throw(String::concat(loc, cleaned_msg))
           }
         }
         let mut ii = 0
@@ -785,14 +838,20 @@ export let parse_program_recovering: (Array[Token], Array[Int], String) -> (Arra
           Some((stmts, next))
         } with Error {
           Throw(msg) => {
-            let off = if start_pos < Array::length(starts) {
-              Array::get(starts, start_pos)
+            let (err_pos, cleaned_msg) = extract_err_token_pos(msg, start_pos)
+            let anchor_pos = if err_pos < Array::length(starts) {
+              err_pos
+            } else {
+              start_pos
+            }
+            let off = if anchor_pos < Array::length(starts) {
+              Array::get(starts, anchor_pos)
             } else {
               0
             }
             let (line, col) = offset_to_line_col(source, off)
             let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
-            ArrayBuilder::push(diags, String::concat(loc, msg))
+            ArrayBuilder::push(diags, String::concat(loc, cleaned_msg))
             None
           }
         }
