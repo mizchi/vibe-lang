@@ -255,7 +255,8 @@ clients/                  # Embeddings + distribution artifacts
 ├── js/                   #   JS bindings (LSP / IDE / DAP / graph-query)
 └── wasm/                 #   distributed compiler wasm (vibe.wasm)
 bootstrap/                # Committed seed compiler (seed/ + seed.json)
-tools/                    # Dev tooling (wasmtime_bench, agent-os-poc)
+tools/                    # Dev tooling: wasmtime_bench (raw-wasmtime microbench,
+                          #   standalone Rust crate, not wired into pkf/CI)
 integrations/             # Editor plugins (treesitter / vscode / zed)
 examples/                 # Example scripts (examples/wasm/ needs a host)
 examples/async_host/      # Rust/wasmtime host runtime for async (sleep)
