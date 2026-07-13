@@ -1414,11 +1414,54 @@ fn parse_tuple_index(s: String) -> Option[Int] {
   }
 }
 
+// #813: bind a pattern's binders to CtUnknown for the resume-value walk —
+// the walker re-checks resume arguments outside the main inference flow, so
+// locally-bound names (match arms, lets) must be in scope or a legitimate
+// `Read() => { let v = ...; resume(v) }` reports a false `unknown name: v`.
+// CtUnknown keeps the value check ground-gated (tolerant) for such names.
+fn resume_walk_bind_pat(p: Pat, env: TypeEnv) -> TypeEnv {
+  match p {
+    PBind(n) => env_bind(env, n, CtUnknown),
+    PCtor(_, ps) => {
+      let mut env1 = env
+      let mut pi = 0
+      while pi < Array::length(ps) {
+        env1 = resume_walk_bind_pat(Array::get(ps, pi), env1)
+        pi = pi + 1
+      }
+      env1
+    },
+    PTuple(ps) => {
+      let mut env1 = env
+      let mut pi = 0
+      while pi < Array::length(ps) {
+        env1 = resume_walk_bind_pat(Array::get(ps, pi), env1)
+        pi = pi + 1
+      }
+      env1
+    },
+    POr(a, b) => resume_walk_bind_pat(b, resume_walk_bind_pat(a, env)),
+    PStruct(_, fields) => {
+      let mut env1 = env
+      let mut pi = 0
+      while pi < Array::length(fields) {
+        let (_, fp) = Array::get(fields, pi)
+        env1 = resume_walk_bind_pat(fp, env1)
+        pi = pi + 1
+      }
+      env1
+    },
+    _ => env
+  }
+}
+
 // #813: walk a handler arm body for `resume(x)` calls and check x against the
 // op's declared return type (ground-gated via check_assignable). Nested
 // EHandle subtrees are skipped entirely — their resumes belong to the inner
 // handler's own arms. Runs on a throwaway lane after the arm body was checked,
-// so it only ADDS diagnostics (main inference flow untouched).
+// so it only ADDS diagnostics (main inference flow untouched). Local binders
+// (let / let mut / let rec / match arms / for-in vars) are bound to CtUnknown
+// while descending so resume(local) doesn't report a false `unknown name`.
 fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> Subst {
   match e {
     ECall(callee, args, _) => {
@@ -1453,23 +1496,29 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
       s1
     },
     EHandle(_, _) => s,
-    ELet(_, v, b, _) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
-    ELetMut(_, v, b, _) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
-    ELetRec(_, v, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
+    ELet(ln, v, b, _) => check_resume_values(b, ret_ty, env_bind(env, ln, CtUnknown), defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
+    ELetMut(ln, v, b, _) => check_resume_values(b, ret_ty, env_bind(env, ln, CtUnknown), defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
+    ELetRec(ln, v, b) => check_resume_values(b, ret_ty, env_bind(env, ln, CtUnknown), defs, check_resume_values(v, ret_ty, env_bind(env, ln, CtUnknown), defs, s, c, errors, tytab), c, errors, tytab),
     ESeq(a, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(a, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
     EIf(cnd, t, el) => check_resume_values(el, ret_ty, env, defs, check_resume_values(t, ret_ty, env, defs, check_resume_values(cnd, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab), c, errors, tytab),
     EMatch(scr, marms) => {
       let mut s1 = check_resume_values(scr, ret_ty, env, defs, s, c, errors, tytab)
       let mut mi = 0
       while mi < Array::length(marms) {
-        let (_, mb) = Array::get(marms, mi)
-        s1 = check_resume_values(mb, ret_ty, env, defs, s1, c, errors, tytab)
+        let (mp, mb) = Array::get(marms, mi)
+        s1 = check_resume_values(mb, ret_ty, resume_walk_bind_pat(mp, env), defs, s1, c, errors, tytab)
         mi = mi + 1
       }
       s1
     },
     EWhile(cnd, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(cnd, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
-    EForIn(_, _, it, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(it, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
+    EForIn(fname, fidx, it, b) => {
+      let fenv = match fidx {
+        Some(fi) => env_bind(env_bind(env, fname, CtUnknown), fi, CtUnknown),
+        None => env_bind(env, fname, CtUnknown)
+      }
+      check_resume_values(b, ret_ty, fenv, defs, check_resume_values(it, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab)
+    },
     EBinOp(_, l, r) => check_resume_values(r, ret_ty, env, defs, check_resume_values(l, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
     EUnaryOp(_, inner) => check_resume_values(inner, ret_ty, env, defs, s, c, errors, tytab),
     EAssign(_, v, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab), c, errors, tytab),
