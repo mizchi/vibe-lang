@@ -291,6 +291,41 @@ fi
 rm -rf "$cdir"
 echo "[selfhost-only-gate] contract package + boundary regression ok"
 
+# 6b2. generic-struct contract arity regression (#829/#841 follow-up):
+#      collect_impl_type_defs used to hardcode a struct's type-parameter
+#      arity as 0 regardless of its actual `[T]` header, so a package
+#      exporting `struct Box[T] { ... }` had no arity-correct way to declare
+#      `type Box[T]` in its own contract (multiple #841 packages worked
+#      around this by writing a nullary `type Box`, which is now WRONG and
+#      must itself be rejected — the under-declared arity 0 no longer
+#      matches the impl's real arity 1).
+echo "[selfhost-only-gate] 6b2 generic-struct contract arity regression (#829/#841)"
+gsdir="_build/_gate_genstruct_contract"
+rm -rf "$gsdir"; mkdir -p "$gsdir/pkg"
+printf 'export struct Box[T] {\n  v: T\n}\n\nexport fn Box::wrap[T](v: T) -> Box[T] {\n  Box::{ v: v }\n}\n' > "$gsdir/pkg/box.vibe"
+printf 'version 0.0.1\nimport ./box.vibe {}\ntype Box[T]\nfn Box::wrap[T](v: T) -> Box[T]\n' > "$gsdir/pkg/index.vibei"
+printf 'import ./pkg { Box::wrap }\nexport let _start: () -> Int = () -> { 0 }\n' > "$gsdir/ok.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gsdir/ok.vibe" "$gsdir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$gsdir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: contract-correct 'type Box[T]' arity was rejected (over-reject)" >&2
+  cat "$gsdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+printf 'version 0.0.1\nimport ./box.vibe {}\ntype Box\nfn Box::wrap[T](v: T) -> Box[T]\n' > "$gsdir/pkg/index.vibei"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gsdir/ok.vibe" "$gsdir/bad.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$gsdir/bad.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: nullary 'type Box' contract for a struct Box[T] impl compiled (arity under-declaration not caught)" >&2; exit 1
+fi
+if ! grep -q "arity mismatch" "$gsdir/bad.wasm.diag" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: struct arity mismatch rejection lacks the expected diagnostic" >&2
+  cat "$gsdir/bad.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+rm -rf "$gsdir"
+echo "[selfhost-only-gate] generic-struct contract arity regression ok"
+
 # 6c. content-addressed store regression (#730 D-2): `vibe hash` prints a
 #     store package's pin; a require-pinned `import @scope/name` resolves
 #     through .vibe/store/ with hash verification; a wrong pin is rejected.
