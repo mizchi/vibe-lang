@@ -1,0 +1,209 @@
+// @vibex/rational — arbitrary-precision rational numbers (ADR-0065
+// experimental scope), built on @vibex/bigint.
+//
+// Representation: num/den as BigInt, ALWAYS normalized — gcd-reduced,
+// den > 0 (the sign lives on num), and zero is canonically 0/1. Every
+// constructor and arithmetic result goes through make_rational, so
+// structural equality of the normalized fields matches value equality.
+//
+// gcd is a package-internal Euclid over BigInt::divmod (bigint deliberately
+// does not export one). to_double is intentionally omitted — vibe's BigInt
+// has no Double conversion surface yet.
+
+//# Imports
+
+import ../bigint {
+  type BigInt, BigInt::from_int, BigInt::parse, BigInt::to_string, BigInt::add, BigInt::mul, BigInt::div, BigInt::mod, BigInt::cmp, BigInt::equals, BigInt::neg, BigInt::abs, BigInt::is_zero
+}
+
+//# Types
+
+export struct Rational {
+  num: BigInt;
+  den: BigInt
+}
+
+//# Internal helpers
+
+fn big_zero() -> BigInt {
+  BigInt::from_int(0)
+}
+
+fn big_one() -> BigInt {
+  BigInt::from_int(1)
+}
+
+// Euclid's algorithm on non-negative inputs (not both zero).
+// BigInt::mod with a non-zero divisor is always Some; the None arm is
+// unreachable and only satisfies the Option type.
+fn gcd_big(a0: BigInt, b0: BigInt) -> BigInt {
+  let mut a = a0
+  let mut b = b0
+  while not(BigInt::is_zero(b)) {
+    let r = match BigInt::mod(a, b) {
+      Some(r0) => r0,
+      None => big_zero()
+    }
+    a = b
+    b = r
+  }
+  a
+}
+
+// Exact division helper (divisor is a known-nonzero gcd divisor).
+fn div_exact(a: BigInt, b: BigInt) -> BigInt {
+  match BigInt::div(a, b) {
+    Some(q) => q,
+    None => big_zero()
+  }
+}
+
+// Normalize num/den (den must be non-zero): reduce by gcd, force den > 0,
+// canonicalize zero to 0/1.
+fn make_rational(num: BigInt, den: BigInt) -> Rational {
+  if BigInt::is_zero(num) {
+    return Rational::{
+      num: big_zero(),
+      den: big_one()
+    }
+  }
+  let sn = BigInt::cmp(num, big_zero())
+  let sd = BigInt::cmp(den, big_zero())
+  let na = BigInt::abs(num)
+  let da = BigInt::abs(den)
+  let g = gcd_big(na, da)
+  let nr = div_exact(na, g)
+  let dr = div_exact(da, g)
+  if sn * sd < 0 {
+    Rational::{
+      num: BigInt::neg(nr),
+      den: dr
+    }
+  } else {
+    Rational::{
+      num: nr,
+      den: dr
+    }
+  }
+}
+
+//# Construction / conversion
+
+export fn Rational::from_int(n: Int) -> Rational {
+  Rational::{
+    num: BigInt::from_int(n),
+    den: big_one()
+  }
+}
+
+export fn Rational::from_ints(num: Int, den: Int) -> Option[Rational] {
+  if den == 0 {
+    None
+  } else {
+    Some(make_rational(BigInt::from_int(num), BigInt::from_int(den)))
+  }
+}
+
+export fn Rational::from_bigints(num: BigInt, den: BigInt) -> Option[Rational] {
+  if BigInt::is_zero(den) {
+    None
+  } else {
+    Some(make_rational(num, den))
+  }
+}
+
+// "num/den" (den == 1 renders as just "num").
+export fn Rational::to_string(a: Rational) -> String {
+  let ns = BigInt::to_string(a.num)
+  if BigInt::equals(a.den, big_one()) {
+    ns
+  } else {
+    let ds = BigInt::to_string(a.den)
+    "\{ns}/\{ds}"
+  }
+}
+
+// Accepts "5", "-5", "3/4", "-3/4" (and "3/-4", which normalizes to -3/4).
+// None on empty parts, non-digits, or a zero denominator.
+export fn Rational::parse(s: String) -> Option[Rational] {
+  let slash = String::index_of(s, "/")
+  if slash < 0 {
+    match BigInt::parse(s) {
+      Some(n) => Some(Rational::{
+        num: n,
+        den: big_one()
+      }),
+      None => None
+    }
+  } else {
+    let num_str = s[0: slash]
+    let den_str = s[slash + 1: String::length(s)]
+    match BigInt::parse(num_str) {
+      Some(n) =>
+      match BigInt::parse(den_str) {
+        Some(d) => if BigInt::is_zero(d) {
+          None
+        } else {
+          Some(make_rational(n, d))
+        },
+        None => None
+      },
+      None => None
+    }
+  }
+}
+
+//# Comparison / sign
+
+// Denominators are always positive, so cross-multiplication preserves order.
+export fn Rational::cmp(a: Rational, b: Rational) -> Int {
+  BigInt::cmp(BigInt::mul(a.num, b.den), BigInt::mul(b.num, a.den))
+}
+
+export fn Rational::equals(a: Rational, b: Rational) -> Bool {
+  Rational::cmp(a, b) == 0
+}
+
+export fn Rational::is_zero(a: Rational) -> Bool {
+  BigInt::is_zero(a.num)
+}
+
+export fn Rational::neg(a: Rational) -> Rational {
+  Rational::{
+    num: BigInt::neg(a.num),
+    den: a.den
+  }
+}
+
+export fn Rational::abs(a: Rational) -> Rational {
+  Rational::{
+    num: BigInt::abs(a.num),
+    den: a.den
+  }
+}
+
+//# Arithmetic
+
+export fn Rational::add(a: Rational, b: Rational) -> Rational {
+  let n = BigInt::add(BigInt::mul(a.num, b.den), BigInt::mul(b.num, a.den))
+  make_rational(n, BigInt::mul(a.den, b.den))
+}
+
+export fn Rational::sub(a: Rational, b: Rational) -> Rational {
+  Rational::add(a, Rational::neg(b))
+}
+
+export fn Rational::mul(a: Rational, b: Rational) -> Rational {
+  make_rational(BigInt::mul(a.num, b.num), BigInt::mul(a.den, b.den))
+}
+
+// None when b is zero.
+export fn Rational::div(a: Rational, b: Rational) -> Option[Rational] {
+  if BigInt::is_zero(b.num) {
+    None
+  } else {
+    Some(make_rational(BigInt::mul(a.num, b.den), BigInt::mul(a.den, b.num)))
+  }
+}
+
+export let version: String = "0.0.1"

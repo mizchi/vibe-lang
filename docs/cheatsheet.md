@@ -48,6 +48,19 @@ let big_2_64: () -> String = () -> {
 }
 ```
 
+正確な分数演算は `@vibex/rational` の `BigInt` ベース `Rational` (常に gcd 約分・den > 0 に正規化):
+
+```vibe
+import ./lib/@vibex/rational { Rational::parse, Rational::to_string }
+
+let half: () -> String = () -> {
+  match Rational::parse("2/4") {
+    Some(r) => Rational::to_string(r),   // "1/2" — 常に gcd 約分 + den > 0 へ正規化
+    None => "unreachable"
+  }
+}
+```
+
 ## Variables
 
 ```vibe
