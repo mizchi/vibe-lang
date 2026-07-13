@@ -1178,6 +1178,34 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
       } else {
         None
       },
+      // #864: a UFCS method-chain call `x.method(args)` as the callee here means
+      // `arg` itself IS `x.method(args)` (e.g. the receiver of an outer
+      // `.and_then(...)` in `x.and_then(f).and_then(g)`, or a `let`-bound
+      // `let b = x.and_then(f)` whose type feeds a later `b.is_ok()`). Without
+      // this case the match fell through to `_ => None`, so the result type of
+      // ANY UFCS call went untracked -- the EDot call-position rewrite below
+      // (see the `as_recv_method` match on `EDot(obj, m, ...)`) then can't
+      // infer the OUTER call's receiver type either, leaves the outer
+      // `.method(...)` as a bare EDot, and codegen's EDot fallback (which only
+      // understands genuine struct-field projections) throws "unknown struct
+      // field: <method>" even though the checker -- which performs proper
+      // type-directed `T::method` resolution independently in checker.vibe's
+      // `EDot(obj, method, ...)` arm -- already accepted the same expression
+      // as type-correct. Mirror that checker resolution here: infer the
+      // receiver's type, then look up the qualified `Type::method` return
+      // type, falling back to the bare method name (prelude functions like
+      // `Result::and_then` / `and_then` register both forms in `fn_returns`).
+      EDot(dobj, dmethod, _, _) => {
+        let recv_tn = infer_arg_type_name(dobj, struct_sets, var_types, fn_returns)
+        let qual_rt = match recv_tn {
+          Some(tn) => fn_return_type(fn_returns, String::concat(tn, String::concat("::", dmethod))),
+          None => None
+        }
+        match qual_rt {
+          Some(rt) => Some(rt),
+          None => fn_return_type(fn_returns, dmethod)
+        }
+      },
       _ => None
     },
     ERecord(_, fields) => {
