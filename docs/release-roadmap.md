@@ -4,7 +4,7 @@
 > 「外部ユーザーが実利用できる公開リリース」まで持っていくための工程表。
 >
 > 言語コア（parser / checker / codegen / selfhost bootstrap）は 0.1.0 sign-off
-> （`docs/archive/report/0-1-0-usability-signoff.md`, TODO.md「0.1.0 release sign-off」）で
+> （`docs/archive/report/0-1-0-usability-signoff.md`, `docs/archive/TODO.md`「0.1.0 release sign-off」）で
 > 一定の完成度に達している。本ロードマップは **プロダクトとしての配布・利用・
 > 開発体験** に残る 4 テーマを「リリース blocker」として整理する:
 >
@@ -375,7 +375,7 @@
   runner」として配布する。runner は portable wasm を受け取り、インストール時に
   ホスト固有の `.cwasm` へ AOT コンパイルしてキャッシュする
   （既存の `.cwasm` cache 機構 / ADR-0050・ADR-0056 を install フローに昇格）。
-- **runner 層と compiler wasm 層を分離**する（TODO.md「Cutover work」と一致）。
+- **runner 層と compiler wasm 層を分離**する（`docs/archive/TODO.md`「Cutover work」と一致）。
   vibe コンパイラ本体は wasm artifact として runner とは独立に更新できる
   （runner を入れ替えずに `vibe` 自身を bump 可能）。
 - これにより DWARF 的なネイティブ依存を増やさず、stock でない wasmtime 拡張も

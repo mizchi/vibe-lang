@@ -7,7 +7,8 @@ An experimental self-hosted compiler/tooling package for vibe-lang, written in v
 - Frontend and typecheck stages are implemented in vibe.
 - Multi-file `import` / `export` resolution is part of the active selfhost pipeline.
 - Mainline validation is now centered on compiled/selfhost fixture and CLI gates.
-- Current gates and remaining work are tracked in [`TODO.md`](../../TODO.md).
+- Current gates and remaining work are tracked via GitHub Issues and
+  [docs/release-roadmap.md](../../docs/release-roadmap.md).
 
 ## Implemented
 
@@ -45,7 +46,8 @@ An experimental self-hosted compiler/tooling package for vibe-lang, written in v
 - `type_db` is still experimental and not integrated into the main checker pipeline
 - Some deeper recursive self-host scenarios can still hit WASM stack limits
 
-See [`TODO.md`](../../TODO.md) for the tracked source-of-truth checklist and release gates.
+See GitHub Issues and [docs/release-roadmap.md](../../docs/release-roadmap.md)
+for the tracked checklist and release gates.
 
 ## Quick Verification
 

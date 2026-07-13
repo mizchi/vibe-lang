@@ -3714,4 +3714,67 @@ fi
 rm -rf "$a69dir"
 echo "[selfhost-only-gate] ADR-0069 fn main sugar + entry/top-level hardening ok"
 
+# 42. #830 regression: `let record { .. } = <expr>` (record-pattern
+# destructuring, #760) parsed fine as a *local* `let` but hit a confusing raw
+# "expected = but got {" parse error at the top level (the top-level `let`
+# parser only special-cased `Name::{ .. }` struct-destructure and plain
+# bindings, not the `record { .. }` sugar). Top-level statements don't go
+# through the block-step desugar that makes the local form work (each
+# top-level `let` is its own independent global binding, not one big
+# continuation to expand into), so accepting the grammar there needs a real
+# multi-statement expansion -- not a local change. Fixed by rejecting it at
+# parse time with a clear, LOCATED, actionable error instead (docs/adr.md
+# option (b) fallback) while leaving the working function-body form alone.
+echo "[selfhost-only-gate] 42/42 top-level record-pattern let rejection (#830)"
+g830dir="_build/_gate_830"
+rm -rf "$g830dir"; mkdir -p "$g830dir"
+cat > "$g830dir/toplevel_record_destr.vibe" <<'EOF'
+let r = record { name: "vibe", ver: 1 }
+let record { name: n, ver: v } = r
+export let _start: () -> Int = () -> { n; v; 0 }
+EOF
+rm -f "$g830dir/toplevel_record_destr.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g830dir/toplevel_record_destr.vibe" "$g830dir/toplevel_record_destr.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$g830dir/toplevel_record_destr.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: top-level 'let record { .. } = ..' compiled (should be rejected, #830)" >&2
+  exit 1
+fi
+if ! grep -q "top-level 'let record" "$g830dir/toplevel_record_destr.wasm.diag" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: top-level record-pattern let diag missing the clear #830 message (still the raw 'expected = but got {' error?)" >&2
+  cat "$g830dir/toplevel_record_destr.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# The function-body form (the one #830 says already worked) must keep
+# compiling AND running to the correct values -- this is the regression net
+# for the working case, so a future change to the block-step record-destr
+# desugar (parser_expr_dispatch.vibe StepRecordDestr/apply_record_destr)
+# that breaks it fails here too, not just silently at the top level.
+cat > "$g830dir/fnbody_record_destr.vibe" <<'EOF'
+struct Rec { name: String; ver: Int }
+fn describe(r: Rec) -> Int {
+  let record { name: n, ver: v } = r
+  String::length(n) * 100 + v
+}
+export let _start: () -> Int = () -> { describe(Rec::{ name: "vibe", ver: 7 }) }
+EOF
+rm -f "$g830dir/fnbody_record_destr.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g830dir/fnbody_record_destr.vibe" "$g830dir/fnbody_record_destr.wasm" _start >/dev/null 2>&1
+if [ ! -s "$g830dir/fnbody_record_destr.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: function-body 'let record { .. } = ..' did not compile" >&2
+  cat "$g830dir/fnbody_record_destr.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+g830_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$g830dir/fnbody_record_destr.wasm" 2>&1 || true)"
+if [ "$g830_out" != "407" ]; then
+  echo "[selfhost-only-gate] FAIL: function-body record-pattern destructure output '$g830_out' (want '407' = length(\"vibe\")*100 + 7)" >&2
+  exit 1
+fi
+rm -rf "$g830dir"
+echo "[selfhost-only-gate] top-level record-pattern let rejection (#830) ok"
+
 echo "[selfhost-only-gate] ok"

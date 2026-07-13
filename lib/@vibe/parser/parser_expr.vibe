@@ -317,6 +317,34 @@ fn parse_let_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: 
       (SLetPat(pat, val), val_next)
     },
     TIdent(_name0) => {
+      // #830: `let record { a, b } = r` (record-pattern destructuring, #760)
+      // parses fine as a *local* `let` (parser_expr_dispatch's block-step
+      // parser special-cases `TIdent("record") + TLBrace` into
+      // StepRecordDestr, desugared via positional `__rec_field` reads) but
+      // this top-level `let` parser had no matching case: `record` fell
+      // through to the plain-binding-name path below, which expects `=`
+      // right after the name and instead hit `{` -- a confusing raw
+      // "expected = but got {" error that gives no hint the syntax itself
+      // is the problem.
+      //
+      // Top-level statements don't go through the block-step machinery (no
+      // single enclosing `ELet`/`EMatch` continuation to desugar into: each
+      // top-level `let` becomes its own independent global binding), so
+      // accepting the pattern here would need a real multi-statement
+      // expansion (one destructured field per top-level binding) plumbed
+      // through every `parse_program*` variant plus the checker/codegen
+      // pipeline -- not a local change (top-level tuple/struct-name pattern
+      // `let`s already silently miscompile the same way, #830 investigation).
+      // Until that lands, fail fast with a clear, LOCATED error instead of
+      // the misleading parse error (see docs/doctest-report-2026-07-12.md
+      // §2 class E / #830).
+      let is_top_level_record_destr = match peek(tokens, pos + 1) {
+        TLBrace => _name0 == "record",
+        _ => false
+      }
+      if is_top_level_record_destr {
+        throw("top-level 'let record { .. } = <expr>' destructuring is not supported (#830); move it into a function body (e.g. 'fn main() { let record { .. } = <expr>; .. }')")
+      }
       let is_struct_destructure = match peek(tokens, pos + 1) {
         TDoubleColon => match peek(tokens, pos + 2) {
           TLBrace => true,
