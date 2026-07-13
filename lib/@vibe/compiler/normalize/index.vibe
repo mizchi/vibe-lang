@@ -28,7 +28,7 @@ import ../core/dce.vibe {
 }
 
 import ../syntax/index.vibe {
-  Token, lex, parse_program, print_stmt
+  Token, lex, parse_program_preserving, print_stmt
 }
 
 import ../syntax/import_alias_rewrite.vibe {
@@ -144,6 +144,10 @@ let exported_value_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
       SLet(exp, _, name, _, _) => if exp || String::contains(name, "::") {
         Array::push(roots, name)
       },
+      // Preserved fn decl (ADR-0064 #727): same root rule as SLet.
+      SFnDecl(exp, name, _, _, _) => if exp || String::contains(name, "::") {
+        Array::push(roots, name)
+      },
       SLetMut(name, _, _) => if String::contains(name, "::") {
         Array::push(roots, name)
       },
@@ -211,6 +215,11 @@ let promote_aggregate_exports: (Array[Stmt], Array[String]) -> Array[Stmt] = (st
       } else {
         stmt
       },
+      SFnDecl(exp, name, fn_value, reqs, enss) => if !exp && str_array_has(agg, name) {
+        SFnDecl(true, name, fn_value, reqs, enss)
+      } else {
+        stmt
+      },
       _ => stmt
     }
     Array::push(result, promoted)
@@ -268,6 +277,21 @@ let collect_opt_type_into: (Option[TypeExpr], Array[String]) -> Int = (ty_opt, o
 let collect_stmt_type_refs_into: (Stmt, Array[String]) -> Int = (stmt, out) -> {
   match stmt {
     SLet(_, _, _, ty, _) => collect_opt_type_into(ty, out),
+    // Preserved fn decl: its types live on the EFn params/return (there is
+    // no let-annotation), so collect them there — otherwise a type alias
+    // referenced only by an fn signature would be dropped as unused.
+    SFnDecl(_, _, fn_value, _, _) => match fn_value {
+      EFn(_, _, params, ret_opt, _, _) => {
+        let mut fpi = 0
+        while fpi < Array::length(params) {
+          let (_, pty) = Array::get(params, fpi)
+          let _ = collect_opt_type_into(pty, out)
+          fpi = fpi + 1
+        }
+        collect_opt_type_into(ret_opt, out)
+      },
+      _ => 0
+    },
     SLetMut(_, ty, _) => collect_opt_type_into(ty, out),
     SExternLet(_, ty) => collect_type_names_into(ty, out),
     STypeAlias(_, _, _, rhs) => collect_type_names_into(rhs, out),
@@ -343,6 +367,7 @@ let stmt_section: (Stmt) -> Int = (stmt) -> {
     SEffectDef(_, _, _, _) => 1,
     SExternLet(_, _) => 1,
     SLet(_, _, _, _, _) => 2,
+    SFnDecl(_, _, _, _, _) => 2,
     SLetMut(_, _, _) => 2,
     SLetPat(_, _) => 2,
     STest(_, _) => 3,
@@ -960,6 +985,7 @@ export let rec lift_match_scrutinees: (Expr, Array[Int]) -> Expr = (expr, counte
 let fold_stmt: (Stmt) -> Stmt = (stmt) -> {
   match stmt {
     SLet(exp, is_rec, name, ty, body) => SLet(exp, is_rec, name, ty, fold_expr(body)),
+    SFnDecl(exp, name, fn_value, reqs, enss) => SFnDecl(exp, name, fold_expr(fn_value), reqs, enss),
     SLetMut(name, ty, body) => SLetMut(name, ty, fold_expr(body)),
     STest(n, body) => STest(n, fold_expr(body)),
     SBench(n, body) => SBench(n, fold_expr(body)),
@@ -1074,20 +1100,14 @@ export let normalize_source: (String) -> String with { Error } = (src) -> {
   while ci < Array::length(toks_cfg) {
     match Array::get(toks_cfg, ci) {
       THash => throw("cannot normalize a source containing #cfg directives"),
-      // #727 guard: `fn` desugars to SLet + EFn at parse time, so re-printing
-      // would rewrite fn statements into let-form (and drop `where` clauses,
-      // which the Phase A parser skips). Refuse until printer support lands
-      // with the fmt migration (ADR-0064 Phase E/G).
-      TIdent(tn) => if tn == "fn" {
-        throw("cannot normalize a source containing fn statements yet (#727)")
-      } else {
-        ()
-      },
       _ => ()
     }
     ci = ci + 1
   }
-  let stmts = parse_program(toks_cfg)
+  // #727 (ADR-0064): parse with the fn-PRESERVING entry so `fn` declarations
+  // (and their where-contracts) survive as SFnDecl and re-print in fn form
+  // instead of being rewritten to `let rec` + inlined asserts.
+  let stmts = parse_program_preserving(toks_cfg)
   let kept = normalize_stmts(stmts)
   let sections = empty_strs()
   if Array::length(req_pins) > 0 {

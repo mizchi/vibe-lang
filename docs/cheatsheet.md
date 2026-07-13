@@ -82,13 +82,23 @@ fn identity[T](x: T) -> T { x }                // generic
 fn show[T: Eq + Ord](x: T) -> T { x }          // trait bounds
 fn hello() -> Unit with { Stdout } { stdout_write("hi\n") }
 export fn doubled(x: Int) -> Int { x * 2 }
+// where-contract (#731): requires asserts at entry; ensures binds the
+// function value as `result` and asserts at exit. Violations trap.
+fn checked_add(x: Int, y: Int) -> Int
+  where { requires: x >= 0, requires: y >= 0, ensures: result >= x } { x + y }
 ```
 
-`fn` is top-level only — pure parse-time sugar for the `let rec` form below,
-so checker/codegen semantics are identical. The optional
-`where { requires: .., ensures: .. }` contract clause parses but has no
-semantics yet (ADR-0064 Phase E, #731). `vibe fmt`/normalize currently
-refuse fn-bearing sources (printer support lands with the fmt migration).
+`fn` is top-level only. The declaration — including its `where` clause — is
+kept in the AST (`SFnDecl`, #727) and lowered to the `let rec` form below
+just before checking/codegen, so checker/codegen semantics are identical.
+The optional `where { requires: .., ensures: .. }` contract runs as
+always-on runtime asserts (#731 Phase 1): each `requires` condition asserts
+at entry; each `ensures` condition sees the function value bound as
+`result` and asserts at exit; a violating call traps. Known limits: an
+early `return` bypasses `ensures`, and `result` shadows any user binding of
+that name inside ensures conditions. `vibe normalize` and the AST printer
+round-trip fn declarations in fn + where form — fn sources are no longer
+refused or rewritten to `let rec`.
 
 ```vibe
 // let form: values, computed functions, higher-order returns

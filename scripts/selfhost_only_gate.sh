@@ -196,8 +196,7 @@ if grep -q "dead" "$ndir/out.vibe" || ! grep -q "helper" "$ndir/out.vibe"; then
 fi
 # Removed/guarded syntax must be refused by the CURRENT stage2 (the committed
 # seed lags until the next bump, so these checks live here, not in the
-# seed-driven normalize smoke): module blocks are removed (#728); fn
-# statements re-print as let-form until the printer lands (#727).
+# seed-driven normalize smoke): module blocks are removed (#728).
 printf 'module m {\n  export let run: () -> Int = () -> { 1 }\n}\n' > "$ndir/reject_module.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -205,12 +204,30 @@ if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   && [ -s "$ndir/reject_module.out.vibe" ]; then
   echo "[selfhost-only-gate] FAIL: module-block source was not rejected (#728)" >&2; exit 1
 fi
-printf 'fn run() -> Int { 1 }\nexport { run }\n' > "$ndir/reject_fn.vibe"
-if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
+# fn round-trip (ADR-0064 #727): normalize must KEEP `fn` declarations —
+# including the `where` contract — in fn form (SFnDecl + printer support),
+# not rewrite them to `let rec` + inlined asserts; and stay idempotent.
+printf 'fn checked_inc(x: Int) -> Int where { requires: x >= 0, ensures: result > x } { x + 1 }\nexport fn run() -> Int { checked_inc(41) }\nexport { run }\n' > "$ndir/keep_fn.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$ndir/reject_fn.vibe" "$ndir/reject_fn.out.vibe" >/dev/null 2>&1 \
-  && [ -s "$ndir/reject_fn.out.vibe" ]; then
-  echo "[selfhost-only-gate] FAIL: fn-bearing source was not rejected by normalize (#727)" >&2; exit 1
+  "$ndir/keep_fn.vibe" "$ndir/keep_fn.out.vibe" >/dev/null 2>&1
+if [ ! -s "$ndir/keep_fn.out.vibe" ]; then
+  echo "[selfhost-only-gate] FAIL: fn-bearing source was not normalized (#727)" >&2; exit 1
+fi
+if ! grep -q "fn checked_inc" "$ndir/keep_fn.out.vibe" \
+  || ! grep -q "fn run" "$ndir/keep_fn.out.vibe" \
+  || ! grep -q "where { requires:" "$ndir/keep_fn.out.vibe" \
+  || ! grep -q "ensures:" "$ndir/keep_fn.out.vibe" \
+  || grep -q "let rec checked_inc" "$ndir/keep_fn.out.vibe"; then
+  echo "[selfhost-only-gate] FAIL: normalize did not keep the fn + where form (#727)" >&2
+  cat "$ndir/keep_fn.out.vibe" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ndir/keep_fn.out.vibe" "$ndir/keep_fn.out2.vibe" >/dev/null 2>&1
+if ! cmp -s "$ndir/keep_fn.out.vibe" "$ndir/keep_fn.out2.vibe"; then
+  echo "[selfhost-only-gate] FAIL: fn normalize not idempotent (#727)" >&2
+  diff "$ndir/keep_fn.out.vibe" "$ndir/keep_fn.out2.vibe" >&2 || true; exit 1
 fi
 # Idempotency: normalize(normalize(x)) == normalize(x).
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
@@ -630,6 +647,20 @@ echo "[selfhost-only-gate] registry-less git resolution ok"
 echo "[selfhost-only-gate] 6d where-contract + publish gate regression (#731/#732)"
 edir="_build/_gate_ef"
 rm -rf "$edir"; mkdir -p "$edir"
+# (a) satisfied contract: requires + ensures hold, the call returns 42.
+printf 'fn checked_add(x: Int, y: Int) -> Int where { requires: x >= 0, requires: y >= 0, ensures: result >= x } { x + y }\nexport let _start: () -> Int = () -> { checked_add(40, 2) }\n' > "$edir/ok.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edir/ok.vibe" "$edir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$edir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: satisfied where-contract program did not compile (#731)" >&2
+  cat "$edir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+ok_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/ok.wasm" 2>/dev/null | tail -1)"
+if [ "$ok_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: satisfied where-contract returned '$ok_out' (want 42) (#731)" >&2; exit 1
+fi
+# (b) violated requires: entry assert traps.
 printf 'fn half_pos(x: Int) -> Int where { requires: x > 0 } { x / 2 }\nexport let _start: () -> Int = () -> { half_pos(0 - 4) }\n' > "$edir/viol.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -640,6 +671,18 @@ if [ ! -s "$edir/viol.wasm" ]; then
 fi
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol.wasm" >/dev/null 2>&1; then
   echo "[selfhost-only-gate] FAIL: violated requires clause did not trap (#731)" >&2; exit 1
+fi
+# (c) violated ensures: exit assert (over the `result` binding) traps.
+printf 'fn bad_dec(x: Int) -> Int where { ensures: result > x } { x - 1 }\nexport let _start: () -> Int = () -> { bad_dec(7) }\n' > "$edir/viol_ens.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edir/viol_ens.vibe" "$edir/viol_ens.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$edir/viol_ens.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: ensures-contract program did not compile (#731)" >&2
+  cat "$edir/viol_ens.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ens.wasm" >/dev/null 2>&1; then
+  echo "[selfhost-only-gate] FAIL: violated ensures clause did not trap (#731)" >&2; exit 1
 fi
 printf 'fn a(x: Int) -> Int\n' > "$edir/prev.vibei"
 printf 'fn a(x: Int) -> Int\nfn b(x: Int) -> Int\n' > "$edir/next.vibei"

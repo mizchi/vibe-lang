@@ -13,6 +13,9 @@ let clone_arr: (Array[String]) -> Array[String] = (arr) -> {
 let stmt_name: (Stmt) -> Option[String] = (stmt) -> {
   match stmt {
     SLet(_, _, name, _, _) => Some(name),
+    // Preserved `fn` declaration (ADR-0064 #727): a value binding for DCE
+    // purposes, exactly like the SLet it lowers to.
+    SFnDecl(_, name, _, _, _) => Some(name),
     SLetMut(name, _, _) => Some(name),
     _ => None
   }
@@ -340,6 +343,23 @@ export let dce_stmts: (Array[Stmt], Array[String]) -> Array[Stmt] = (stmts, entr
         Array::push(def_names, name)
         let refs = match stmt {
           SLet(_, _, _, _, expr) => collect_refs(expr, empty_bound),
+          // Preserved fn decl (ADR-0064 #727): body refs plus contract-
+          // condition refs (requires/ensures execute inside the function
+          // after lowering, so helpers they call must stay live).
+          SFnDecl(_, _, fn_value, reqs, enss) => {
+            let out = collect_refs(fn_value, empty_bound)
+            let mut cri = 0
+            while cri < Array::length(reqs) {
+              let _ = collect_refs_into(Array::get(reqs, cri), empty_bound, out)
+              cri = cri + 1
+            }
+            let mut cei = 0
+            while cei < Array::length(enss) {
+              let _ = collect_refs_into(Array::get(enss, cei), empty_bound, out)
+              cei = cei + 1
+            }
+            out
+          },
           SLetMut(_, _, expr) => collect_refs(expr, empty_bound),
           _ => Array::slice([
             ""
@@ -437,6 +457,23 @@ let dce_reachable_names: (Array[Stmt], Array[String]) -> Array[String] = (stmts,
         Array::push(def_names, name)
         let refs = match stmt {
           SLet(_, _, _, _, expr) => collect_refs(expr, empty_bound),
+          // Preserved fn decl (ADR-0064 #727): body refs plus contract-
+          // condition refs (requires/ensures execute inside the function
+          // after lowering, so helpers they call must stay live).
+          SFnDecl(_, _, fn_value, reqs, enss) => {
+            let out = collect_refs(fn_value, empty_bound)
+            let mut cri = 0
+            while cri < Array::length(reqs) {
+              let _ = collect_refs_into(Array::get(reqs, cri), empty_bound, out)
+              cri = cri + 1
+            }
+            let mut cei = 0
+            while cei < Array::length(enss) {
+              let _ = collect_refs_into(Array::get(enss, cei), empty_bound, out)
+              cei = cei + 1
+            }
+            out
+          },
           SLetMut(_, _, expr) => collect_refs(expr, empty_bound),
           _ => Array::slice([
             ""

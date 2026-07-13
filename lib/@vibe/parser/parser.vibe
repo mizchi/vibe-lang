@@ -9,7 +9,7 @@ import ./parser_base.vibe {
 }
 
 import ./parser_expr.vibe {
-  parse, parse_expr, parse_fn_stmt, parse_impl, parse_let_stmt, parse_ok
+  lower_fn_decl_stmt, lower_fn_decl_stmts, parse, parse_expr, parse_fn_stmt, parse_impl, parse_let_stmt, parse_ok
 }
 
 import ./token.vibe {
@@ -306,7 +306,12 @@ let parse_extern_let_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
   (SExternLet(name, ty), end)
 }
 
-export let rec parse_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = (tokens, starts, pos) -> {
+// Statement parser that KEEPS `fn` declarations in declaration form
+// (SFnDecl, contracts un-desugared) — the input to printer/normalize
+// round-tripping (ADR-0064 #727). Everything that feeds the checker or
+// codegen should use `parse_stmt` / `parse_program*` below, which lower
+// SFnDecl to the legacy SLet shape.
+export let rec parse_stmt_preserving: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = (tokens, starts, pos) -> {
   let head = peek(tokens, pos)
   match head {
     TLet => parse_let_stmt(tokens, starts, pos + 1, false),
@@ -396,6 +401,17 @@ export let rec parse_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with {
       (SExpr(e), next)
     }
   }
+}
+
+// Default statement entry: identical to parse_stmt_preserving except that a
+// `fn` declaration is lowered to the legacy `SLet(exported, true, name,
+// None, EFn(..))` shape with its where-contract desugared to runtime
+// asserts — i.e. exactly what this function returned before #727 kept the
+// declaration form. All existing consumers (checker, codegen, symbols,
+// contract engine, ...) keep seeing the pre-#727 AST.
+export let parse_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = (tokens, starts, pos) -> {
+  let (stmt, next) = parse_stmt_preserving(tokens, starts, pos)
+  (lower_fn_decl_stmt(stmt), next)
 }
 
 // Expand an impl body `{ method(params) -> ret { body } ... }` into the impl
@@ -543,7 +559,11 @@ let cfg_flag_active: (Array[String], String) -> Bool = (active, flag) -> {
   found
 }
 
-export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens) -> {
+// Program parser that KEEPS `fn` declarations as SFnDecl (see
+// parse_stmt_preserving) — used by the printer/normalize round-trip so
+// `vibe normalize` re-emits `fn name(..) -> T where { .. } { .. }` instead
+// of rewriting it to `let rec` form (ADR-0064 #727).
+export let parse_program_preserving: (Array[Token]) -> Array[Stmt] with { Error } = (tokens) -> {
   let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let mut pos = 0
@@ -570,7 +590,7 @@ export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens
               pos = dn
             },
             _ => {
-              let (_dropped, dn) = parse_stmt(tokens, [], dnext)
+              let (_dropped, dn) = parse_stmt_preserving(tokens, [], dnext)
               pos = dn
             }
           }
@@ -587,13 +607,20 @@ export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens
         pos = next
       },
       _ => {
-        let (stmt, next) = parse_stmt(tokens, [], pos)
+        let (stmt, next) = parse_stmt_preserving(tokens, [], pos)
         ArrayBuilder::push(b, stmt)
         pos = next
       }
     }
   }
   ArrayBuilder::freeze(b)
+}
+
+// Default program entry: `fn` declarations lowered to the legacy SLet shape
+// (where-contracts desugared to runtime asserts) — the exact pre-#727
+// output, so every checker/codegen consumer is unchanged.
+export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens) -> {
+  lower_fn_decl_stmts(parse_program_preserving(tokens))
 }
 
 // Like parse_program but, on a syntax error, prefixes the message with the
@@ -936,9 +963,9 @@ export let parse_program_spans: (Array[Token], Array[Int], Array[Int]) -> (Array
 //# Misc
 
 export {
-  Pat, Expr, Stmt, TypeExpr, parse, parse_ok, parse_expr, parse_stmt, parse_type, parse_program
+  Pat, Expr, Stmt, TypeExpr, parse, parse_ok, parse_expr, parse_stmt, parse_stmt_preserving, parse_type, parse_program, parse_program_preserving
 }
 
 export {
-  Pat, Expr, Stmt, parse, TypeExpr, parse_ok, parse_expr, parse_stmt, parse_type, parse_program
+  Pat, Expr, Stmt, parse, TypeExpr, parse_ok, parse_expr, parse_stmt, parse_stmt_preserving, parse_type, parse_program, parse_program_preserving
 }

@@ -445,43 +445,71 @@ let parse_fn_stmt: (Array[Token], Array[Int], Int, Bool) -> (Stmt, Int) with { E
   let (reqs, enss) = contracts
   let br = expect_tk(tokens, where_next, "{")
   let (body, end) = parse_impl(tokens, starts, br, mode_block)
-  // #731 (ADR-0064 §7 Phase 1): where-contract desugar. requires conditions
-  // assert at entry; ensures conditions bind the body's value as `result`
-  // and assert at exit. v1 semantics are Eiffel-style ALWAYS-ON runtime
-  // checks (a violating call traps); compile-time stripping for release
-  // builds is a later refinement. Known limits (documented): an early
-  // `return` inside the body bypasses ensures; `result` shadows any
-  // user binding of that name inside ensures conditions.
-  let body_with_ensures = if Array::length(enss) == 0 {
-    body
-  } else {
-    let mut exit_expr = EIdent("result", 0 - 1)
-    let mut ei = Array::length(enss)
-    while ei > 0 {
-      ei = ei - 1
-      exit_expr = ESeq(ECall(EIdent("assert", 0 - 1), [
-        Array::get(enss, ei)
-      ], 0 - 1), exit_expr)
-    }
-    ELet("result", body, exit_expr, -1)
+  // ADR-0064 (#727/#731): keep the declaration form — including the where
+  // contract's requires/ensures conditions — in the AST so the printer and
+  // normalize can round-trip `fn`. The runtime contract desugar (identical
+  // semantics to the old parse-time inline form) lives in
+  // lower_fn_decl_stmt, applied by parse_stmt / parse_program before the
+  // checker/codegen ever see the program.
+  (SFnDecl(exported, name, EFn(tps, tbs, params, Some(ret_ty), eff_opt, body), reqs, enss), end)
+}
+
+// #731 (ADR-0064 §7 Phase 1): where-contract desugar + fn-declaration
+// lowering to the legacy `let rec` shape. requires conditions assert at
+// entry; ensures conditions bind the body's value as `result` and assert at
+// exit. v1 semantics are Eiffel-style ALWAYS-ON runtime checks (a violating
+// call traps); compile-time stripping for release builds is a later
+// refinement. Known limits (documented): an early `return` inside the body
+// bypasses ensures; `result` shadows any user binding of that name inside
+// ensures conditions. Applied by the default parse entry points
+// (parse_stmt / parse_program*) so checker/codegen keep seeing the
+// pre-#727 `SLet(exported, true, name, None, EFn(..))` shape; only the
+// *_preserving entry points hand out SFnDecl.
+export let lower_fn_decl_stmt: (Stmt) -> Stmt = (stmt) -> {
+  match stmt {
+    SFnDecl(exported, name, fn_value, reqs, enss) => match fn_value {
+      EFn(tps, tbs, params, ret_opt, eff_opt, body) => {
+        let body_with_ensures = if Array::length(enss) == 0 {
+          body
+        } else {
+          let mut exit_expr = EIdent("result", 0 - 1)
+          let mut ei = Array::length(enss)
+          while ei > 0 {
+            ei = ei - 1
+            exit_expr = ESeq(ECall(EIdent("assert", 0 - 1), [
+              Array::get(enss, ei)
+            ], 0 - 1), exit_expr)
+          }
+          ELet("result", body, exit_expr, -1)
+        }
+        let mut guarded = body_with_ensures
+        let mut qi = Array::length(reqs)
+        while qi > 0 {
+          qi = qi - 1
+          guarded = ESeq(ECall(EIdent("assert", 0 - 1), [
+            Array::get(reqs, qi)
+          ], 0 - 1), guarded)
+        }
+        SLet(exported, true, name, None, EFn(tps, tbs, params, ret_opt, eff_opt, guarded))
+      },
+      _ => SLet(exported, true, name, None, fn_value)
+    },
+    _ => stmt
   }
-  let mut guarded = body_with_ensures
-  let mut qi = Array::length(reqs)
-  while qi > 0 {
-    qi = qi - 1
-    guarded = ESeq(ECall(EIdent("assert", 0 - 1), [
-      Array::get(reqs, qi)
-    ], 0 - 1), guarded)
+}
+
+export let lower_fn_decl_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
+  for s in stmts {
+    lower_fn_decl_stmt(s)
   }
-  (SLet(exported, true, name, None, EFn(tps, tbs, params, Some(ret_ty), eff_opt, guarded)), end)
 }
 
 //# Misc
 
 export {
-  collect_import_path, empty_fields, empty_import_items, expect_tk, is_tk, parse, parse_effect_stmt, parse_enum_stmt, parse_expr, parse_fn_stmt, parse_impl, parse_impl_stmt_dispatch, parse_import_item, parse_let_stmt, parse_ok, parse_struct_field, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, peek, tk_name
+  collect_import_path, empty_fields, empty_import_items, expect_tk, is_tk, lower_fn_decl_stmt, lower_fn_decl_stmts, parse, parse_effect_stmt, parse_enum_stmt, parse_expr, parse_fn_stmt, parse_impl, parse_impl_stmt_dispatch, parse_import_item, parse_let_stmt, parse_ok, parse_struct_field, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, peek, tk_name
 }
 
 export {
-  peek, is_tk, parse, tk_name, parse_ok, expect_tk, parse_expr, parse_impl, parse_type, empty_fields, parse_let_stmt, parse_fn_stmt, parse_enum_stmt, parse_trait_stmt, parse_effect_stmt, parse_import_item, empty_import_items, parse_struct_field, collect_import_path, parse_suberror_stmt, parse_type_alias_stmt, parse_impl_stmt_dispatch
+  peek, is_tk, parse, tk_name, parse_ok, expect_tk, parse_expr, parse_impl, parse_type, empty_fields, parse_let_stmt, parse_fn_stmt, parse_enum_stmt, parse_trait_stmt, parse_effect_stmt, parse_import_item, empty_import_items, parse_struct_field, collect_import_path, parse_suberror_stmt, parse_type_alias_stmt, parse_impl_stmt_dispatch, lower_fn_decl_stmt, lower_fn_decl_stmts
 }

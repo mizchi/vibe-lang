@@ -479,6 +479,55 @@ export let rec print_stmt: (Stmt) -> String = (s) -> {
       }
       String::concat(p, String::concat(r, String::concat(print_name(name), String::concat(t, String::concat(" = ", print_annotated_let_value(ty_opt, val))))))
     },
+    // ADR-0064 (#727): a preserved `fn` declaration —
+    //   fn name[T](x: Int) -> R with { E } where { requires: c, ensures: c } { body }
+    // Only produced by the *_preserving parse entry points; the default
+    // pipeline lowers SFnDecl to SLet before printing ever matters.
+    SFnDecl(exported, name, fn_value, reqs, enss) => {
+      let p = prefix(exported)
+      match fn_value {
+        EFn(type_params, bounds, params, ret_ty, effect, body) => {
+          let tp_str = print_fn_type_params(type_params, bounds)
+          let parts = for param in params {
+            let (pn, ty_opt) = param
+            match ty_opt {
+              Some(ty) => String::concat(print_name(pn), String::concat(": ", print_type_expr(ty))),
+              None => print_name(pn)
+            }
+          }
+          let ret_str = match ret_ty {
+            Some(rt) => print_type_expr(rt),
+            None => "()"
+          }
+          let eff_str = match effect {
+            Some(e) => String::concat(" with { ", String::concat(e, " }")),
+            None => ""
+          }
+          let where_str = if Array::length(reqs) == 0 && Array::length(enss) == 0 {
+            ""
+          } else {
+            let conds = ArrayBuilder::new()
+            let mut qi = 0
+            while qi < Array::length(reqs) {
+              ArrayBuilder::push(conds, String::concat("requires: ", print_expr(Array::get(reqs, qi))))
+              qi = qi + 1
+            }
+            let mut ei = 0
+            while ei < Array::length(enss) {
+              ArrayBuilder::push(conds, String::concat("ensures: ", print_expr(Array::get(enss, ei))))
+              ei = ei + 1
+            }
+            String::concat(" where { ", String::concat(join(ArrayBuilder::freeze(conds), ", "), " }"))
+          }
+          let head = String::concat(p, String::concat("fn ", String::concat(print_name(name), tp_str)))
+          let sig = String::concat("(", String::concat(join(parts, ", "), String::concat(") -> ", String::concat(ret_str, String::concat(eff_str, where_str)))))
+          String::concat(head, String::concat(sig, String::concat(" { ", String::concat(print_expr(body), " }"))))
+        },
+        // Defensive: a non-EFn value cannot be spelled in fn syntax; fall
+        // back to the lowered let-rec form so output stays parseable.
+        _ => String::concat(p, String::concat("let rec ", String::concat(print_name(name), String::concat(" = ", print_expr(fn_value)))))
+      }
+    },
     SLetMut(name, ty_opt, val) => {
       let t = match ty_opt {
         Some(ty) => String::concat(": ", print_type_expr(ty)),
