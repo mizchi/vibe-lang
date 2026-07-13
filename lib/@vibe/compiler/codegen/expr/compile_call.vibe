@@ -2176,7 +2176,21 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_end(buf)
       nl
     }
-    else if fname == "Array::map" || fname == "map" {
+    // #832: the bare "map" alias below intentionally lets a free-standing
+    // `map(arr, fn)` call reuse the Array::map inline lowering (mirrors the
+    // qualified `Array::map` call). But unlike every other bare-name builtin
+    // alias in this chain, it was missing the `!prefer_bound_call` guard, so
+    // ANY top-level `map` binding visible at the call site (a same-file /
+    // entry-file `let map = ...`, unaffected by the #716 cross-file export
+    // rename since entry-file defs keep their bare name) got silently
+    // hijacked into this 2-arg array intrinsic regardless of its real arity
+    // or type -- a 1-arg call like `map(41)` then read past `args` (only 1
+    // element) for the callback argument, an out-of-bounds `__rt_arr_get`
+    // that trapped the compiler itself (not a diagnostic). Guarding the bare
+    // alias the same way as its siblings restores precedence for a real
+    // user-defined `map` while leaving the intentional `Array::map` /
+    // unbound bare-`map` sugar intact.
+    else if fname == "Array::map" || (!prefer_bound_call && fname == "map") {
       let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
       let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
       let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
