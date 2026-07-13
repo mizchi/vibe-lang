@@ -51,7 +51,7 @@ import ../syntax {
 // 1-based (line, col) -> 0-based char offset. Mirror of type_at.vibe's
 // line_col_to_offset: count newlines to reach the target line, add (col - 1),
 // clamp to [0, len].
-let bind_line_col_to_offset: (String, Int, Int) -> Int = (source, line, col) -> {
+fn bind_line_col_to_offset(source: String, line: Int, col: Int) -> Int {
   let len = String::length(source)
   let mut i = 0
   let mut cur_line = 1
@@ -83,7 +83,7 @@ enum BindHit {
   BindHit(String, Int, Int)
 }
 
-let bind_empty_hits: () -> Array[BindHit] = () -> {
+fn bind_empty_hits() -> Array[BindHit] {
   Array::slice([
     BindHit("", -1, 0)
   ], 0, 0)
@@ -91,7 +91,7 @@ let bind_empty_hits: () -> Array[BindHit] = () -> {
 
 // True when `source[off]` is NOT an identifier char (or off out of range) — a
 // word boundary. Used to match a binding name as a whole word.
-let bind_is_boundary_at: (String, Int) -> Bool = (source, off) -> {
+fn bind_is_boundary_at(source: String, off: Int) -> Bool {
   if off < 0 || off >= String::length(source) {
     true
   } else {
@@ -104,7 +104,7 @@ let bind_is_boundary_at: (String, Int) -> Bool = (source, off) -> {
 // Find the start offset of the first whole-word occurrence of `name` in
 // `source` at or after `from`. Returns -1 when not found. Recovers a source
 // offset for a binder NAME, which the parser stores only as a String.
-let bind_find_word: (String, String, Int) -> Int = (source, name, from) -> {
+fn bind_find_word(source: String, name: String, from: Int) -> Int {
   let nlen = String::length(name)
   if nlen == 0 {
     -1
@@ -144,13 +144,13 @@ struct BindState {
 // A fresh single-cell mutable Int array holding `v` (a poor-man's mutable box).
 // Built via the slice+push idiom so the cell is a heap array supporting
 // Array::set, not a static read-only literal.
-let bind_box_int: (Int) -> Array[Int] = (v) -> {
+fn bind_box_int(v: Int) -> Array[Int] {
   let arr = Array::slice([0], 0, 0)
   Array::push(arr, v)
   arr
 }
 
-let bind_new_state: (String) -> BindState = (source) -> {
+fn bind_new_state(source: String) -> BindState {
   BindState::{
     hits: bind_empty_hits(),
     scope_names: Array::slice([""], 0, 0),
@@ -163,7 +163,7 @@ let bind_new_state: (String) -> BindState = (source) -> {
 // Resolve `name` to the nearest enclosing scope id, scanning the scope stack from
 // the top (end) down. Returns 0 (module-level / free, grouped file-wide) when no
 // local introduction is in scope.
-let bind_resolve: (BindState, String) -> Int = (st, name) -> {
+fn bind_resolve(st: BindState, name: String) -> Int {
   let n = Array::length(st.scope_names)
   let mut i = n - 1
   let mut found = 0
@@ -179,7 +179,7 @@ let bind_resolve: (BindState, String) -> Int = (st, name) -> {
 }
 
 // Pop the scope stack back down to `mark` entries.
-let bind_pop_scope: (BindState, Int) -> Unit = (st, mark) -> {
+fn bind_pop_scope(st: BindState, mark: Int) -> Unit {
   Array::truncate(st.scope_names, mark)
   Array::truncate(st.scope_ids, mark)
 }
@@ -190,7 +190,7 @@ let bind_pop_scope: (BindState, Int) -> Unit = (st, mark) -> {
 // FALLBACK note). Does NOT push to scope — callers control when the binder enters
 // scope (e.g. a non-recursive `let x = v` must recover x's offset textually
 // before v, yet not have x in scope while walking v).
-let bind_recover_binder: (BindState, String) -> Int = (st, name) -> {
+fn bind_recover_binder(st: BindState, name: String) -> Int {
   let from = Array::get(st.floor, 0)
   let off = bind_find_word(st.source, name, from)
   let id = if off >= 0 { off + 1 } else { 0 }
@@ -204,7 +204,7 @@ let bind_recover_binder: (BindState, String) -> Int = (st, name) -> {
 }
 
 // Push a binder (name, id) onto the current scope.
-let bind_push_binder: (BindState, String, Int) -> Unit = (st, name, id) -> {
+fn bind_push_binder(st: BindState, name: String, id: Int) -> Unit {
   Array::push(st.scope_names, name)
   Array::push(st.scope_ids, id)
 }
@@ -212,7 +212,7 @@ let bind_push_binder: (BindState, String, Int) -> Unit = (st, name, id) -> {
 // Introduce a binder: recover its offset/id then immediately push it into scope.
 // Used where the binder's scope begins right at the binder site (params, for /
 // loop binders, match-pattern binders).
-let bind_introduce: (BindState, String) -> Unit = (st, name) -> {
+fn bind_introduce(st: BindState, name: String) -> Unit {
   let id = bind_recover_binder(st, name)
   bind_push_binder(st, name, id)
 }
@@ -220,7 +220,7 @@ let bind_introduce: (BindState, String) -> Unit = (st, name) -> {
 // Record a reference `EIdent(name, off)`: resolve it to the nearest enclosing
 // binding (or 0 = module-level/free) and store its located span. Advance the
 // floor past it so later binder recovery does not re-find an earlier position.
-let bind_record_ref: (BindState, String, Int) -> Unit = (st, name, off) -> {
+fn bind_record_ref(st: BindState, name: String, off: Int) -> Unit {
   if off >= 0 {
     let key = bind_resolve(st, name)
     Array::push(st.hits, BindHit(name, off, key))
@@ -237,7 +237,7 @@ let bind_record_ref: (BindState, String, Int) -> Unit = (st, name, off) -> {
 // Record an assignment target `name = ...` / `name op= ...`. Resolve to the
 // enclosing binding and recover the name's source offset from the floor (the
 // target name has no stored offset).
-let bind_record_assign_target: (BindState, String) -> Unit = (st, name) -> {
+fn bind_record_assign_target(st: BindState, name: String) -> Unit {
   let key = bind_resolve(st, name)
   let from = Array::get(st.floor, 0)
   let off = bind_find_word(st.source, name, from)
@@ -252,7 +252,7 @@ let bind_record_assign_target: (BindState, String) -> Unit = (st, name) -> {
 // Introduce the names bound by a pattern (PBind directly; nested binders in
 // ctor / tuple / struct / or patterns recursively). Each is introduced into the
 // current scope.
-let rec bind_introduce_pat: (BindState, Pat) -> Unit = (st, pat) -> {
+fn bind_introduce_pat(st: BindState, pat: Pat) -> Unit {
   match pat {
     PWild => (),
     PBind(name) => bind_introduce(st, name),
@@ -277,7 +277,7 @@ let rec bind_introduce_pat: (BindState, Pat) -> Unit = (st, pat) -> {
   }
 }
 
-let bind_introduce_pats: (BindState, Array[Pat]) -> Unit = (st, sub) -> {
+fn bind_introduce_pats(st: BindState, sub: Array[Pat]) -> Unit {
   let mut i = 0
   while i < Array::length(sub) {
     bind_introduce_pat(st, Array::get(sub, i))
@@ -288,7 +288,7 @@ let bind_introduce_pats: (BindState, Array[Pat]) -> Unit = (st, sub) -> {
 // Scope-aware walker. `st.hits` accumulates references (resolved to a binding id)
 // and recovered binders. Every Expr arm is enumerated so a new variant is a
 // compile error here, keeping the collector in sync with the AST.
-let rec bind_walk_expr: (BindState, Expr) -> Unit = (st, expr) -> {
+fn bind_walk_expr(st: BindState, expr: Expr) -> Unit {
   match expr {
     EInt(_) => (),
     EFloat(_) => (),
@@ -299,7 +299,7 @@ let rec bind_walk_expr: (BindState, Expr) -> Unit = (st, expr) -> {
     EStringInterp(_) => (),
     ETuple(items) => bind_walk_exprs(st, items),
     EArray(items) => bind_walk_exprs(st, items),
-    ERecord(fields) => bind_walk_field_exprs(st, fields),
+    ERecord(_, fields) => bind_walk_field_exprs(st, fields),
     EIf(c, t, e) => {
       bind_walk_expr(st, c)
       bind_walk_expr(st, t)
@@ -420,7 +420,7 @@ let rec bind_walk_expr: (BindState, Expr) -> Unit = (st, expr) -> {
   }
 }
 
-let bind_walk_exprs: (BindState, Array[Expr]) -> Unit = (st, items) -> {
+fn bind_walk_exprs(st: BindState, items: Array[Expr]) -> Unit {
   let mut i = 0
   while i < Array::length(items) {
     bind_walk_expr(st, Array::get(items, i))
@@ -428,7 +428,7 @@ let bind_walk_exprs: (BindState, Array[Expr]) -> Unit = (st, items) -> {
   }
 }
 
-let bind_walk_field_exprs: (BindState, Array[(String, Expr)]) -> Unit = (st, fields) -> {
+fn bind_walk_field_exprs(st: BindState, fields: Array[(String, Expr)]) -> Unit {
   let mut i = 0
   while i < Array::length(fields) {
     let (_, v) = Array::get(fields, i)
@@ -438,7 +438,7 @@ let bind_walk_field_exprs: (BindState, Array[(String, Expr)]) -> Unit = (st, fie
 }
 
 // A match/handle arm: the pattern binders are scoped to the arm body only.
-let bind_walk_arms: (BindState, Array[(Pat, Expr)]) -> Unit = (st, arms) -> {
+fn bind_walk_arms(st: BindState, arms: Array[(Pat, Expr)]) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
     let (pat, e) = Array::get(arms, i)
@@ -453,7 +453,7 @@ let bind_walk_arms: (BindState, Array[(Pat, Expr)]) -> Unit = (st, arms) -> {
 // Record a top-level / module-level binder NAME. These group file-wide (key 0),
 // so all references to the same module name resolve together. We recover the
 // binder's offset from the floor.
-let bind_record_module_binder: (BindState, String) -> Unit = (st, name) -> {
+fn bind_record_module_binder(st: BindState, name: String) -> Unit {
   let from = Array::get(st.floor, 0)
   let off = bind_find_word(st.source, name, from)
   if off >= 0 {
@@ -467,7 +467,7 @@ let bind_record_module_binder: (BindState, String) -> Unit = (st, name) -> {
 // Walk a statement. Top-level value bindings (SLet/SLetMut) introduce a
 // module-level name (key 0 => grouped file-wide); we record the binder's located
 // NAME and walk the body. SModule recurses.
-let bind_walk_stmt: (BindState, Stmt) -> Unit = (st, stmt) -> {
+fn bind_walk_stmt(st: BindState, stmt: Stmt) -> Unit {
   match stmt {
     SLet(_, _, name, _, body) => {
       bind_record_module_binder(st, name)
@@ -486,7 +486,7 @@ let bind_walk_stmt: (BindState, Stmt) -> Unit = (st, stmt) -> {
   }
 }
 
-let bind_walk_stmts: (BindState, Array[Stmt]) -> Unit = (st, stmts) -> {
+fn bind_walk_stmts(st: BindState, stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     bind_walk_stmt(st, Array::get(stmts, i))
@@ -497,7 +497,7 @@ let bind_walk_stmts: (BindState, Array[Stmt]) -> Unit = (st, stmts) -> {
 // Among all hits whose span [off, off+len(name)) contains `tgt`, pick the one
 // with the largest `off` (innermost / closest start). Returns the (name, key) of
 // that hit, or ("", 0) when none.
-let bind_pick_at: (Array[BindHit], Int) -> (String, Int) = (hits, tgt) -> {
+fn bind_pick_at(hits: Array[BindHit], tgt: Int) -> (String, Int) {
   let mut best_name = ""
   let mut best_key = 0
   let mut best_off = -1
@@ -523,7 +523,7 @@ let bind_pick_at: (Array[BindHit], Int) -> (String, Int) = (hits, tgt) -> {
 // Insert (start, end) into `out` keeping it sorted by start ascending and
 // de-duplicated (skip when an identical start is already present — equal starts
 // imply equal spans because the name length is fixed).
-let bind_insert_sorted_unique: (Array[(Int, Int)], Int, Int) -> Unit = (out, start, end) -> {
+fn bind_insert_sorted_unique(out: Array[(Int, Int)], start: Int, end: Int) -> Unit {
   let n = Array::length(out)
   let mut dup = false
   let mut idx = n
@@ -566,7 +566,7 @@ let bind_insert_sorted_unique: (Array[(Int, Int)], Int, Int) -> Unit = (out, sta
 //      free name grouped file-wide), de-duplicated and sorted by start.
 // AST-accurate and scope-aware (see file header). Any failure is swallowed and
 // yields an empty list.
-let binding_occurrences_impl: (String, Int, Int) -> Array[(Int, Int)] with { Error } = (source, line, col) -> {
+fn binding_occurrences_impl(source: String, line: Int, col: Int) -> Array[(Int, Int)] with { Error } {
   {
     let tgt = bind_line_col_to_offset(source, line, col)
     let (tokens, starts, _ends) = lex_with_offsets(source)
@@ -599,7 +599,7 @@ let binding_occurrences_impl: (String, Int, Int) -> Array[(Int, Int)] with { Err
   }
 }
 
-export let binding_occurrences: (String, Int, Int) -> Array[(Int, Int)] = (source, line, col) -> {
+export fn binding_occurrences(source: String, line: Int, col: Int) -> Array[(Int, Int)] {
   handle {
     binding_occurrences_impl(source, line, col)
   } with Error {

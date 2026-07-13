@@ -11,7 +11,7 @@ This grammar is used by the Helix, Zed, and Neovim editor integrations.
 - Control flow: `if`/`else`, `match`, `while`, `for`/`in`, `loop`, `handle`/`throw`
 - Functions with type parameters, effects, and labeled arguments
 - Pattern matching: constructors, tuples, records, or-patterns, guards
-- String interpolation (`\(expr)`)
+- String interpolation (`\{expr}`)
 - Import/export with specifier lists
 
 ## Build

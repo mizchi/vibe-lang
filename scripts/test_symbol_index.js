@@ -31,8 +31,8 @@ function eq(a, b, name) { ok(JSON.stringify(a) === JSON.stringify(b), name, `${J
     "  let local = twice(x)        // local must NOT be a symbol",
     "  combo(local)                // self-recursion",
     "}",
-    "struct Point { x: Int, y: Int }",
-    "enum Color { Red, Green }",
+    "struct Point { x: Int; y: Int }",
+    "enum Color { Red; Green }",
     "let value = 42",
   ].join("\n");
   const ex = extractFile(src);

@@ -29,7 +29,12 @@ export enum Type {
 export enum TypeDef {
   TDEnum(String, Array[String], Array[(String, Array[Type])]);
   TDStruct(String, Array[(String, Type)], Array[String]);
-  TDAlias(String, Array[String], Type)
+  TDAlias(String, Array[String], Type);
+  // #813: a declared effect's operation signatures — (op name, param types,
+  // return type) — so perform arguments, handler arm names/arity/payloads,
+  // and resume values can be validated. Generic effects are not registered
+  // (ground gate).
+  TDEffect(String, Array[(String, Array[Type], Type)])
 }
 
 export enum TypeEnv {
@@ -57,14 +62,14 @@ export enum Subst {
 
 //# Functions
 
-export let env_bind: (TypeEnv, String, Type) -> TypeEnv = (env, name, ty) -> {
+export fn env_bind(env: TypeEnv, name: String, ty: Type) -> TypeEnv {
   match env {
     EnvCached(cache, rest) => EnvCached(cache, EnvBind(name, ty, rest)),
     _ => EnvBind(name, ty, env)
   }
 }
 
-export let env_cache: (TypeEnv) -> TypeEnv = (env) -> {
+export fn env_cache(env: TypeEnv) -> TypeEnv {
   let is_empty = match env {
     EnvEmpty => true,
     _ => false
@@ -124,11 +129,11 @@ export let env_cache: (TypeEnv) -> TypeEnv = (env) -> {
   }
 }
 
-export let fresh_var: (Int) -> (Type, Int) = (c) -> {
+export fn fresh_var(c: Int) -> (Type, Int) {
   (CtVar(c), c + 1)
 }
 
-export let rec occurs_in: (Int, Type) -> Bool = (id, ty) -> {
+export fn occurs_in(id: Int, ty: Type) -> Bool {
   match ty {
     CtVar(vid) => (id == vid),
     CtFn(params, ret, _) => {
@@ -164,7 +169,7 @@ export let rec occurs_in: (Int, Type) -> Bool = (id, ty) -> {
   }
 }
 
-export let env_lookup: (TypeEnv, String) -> Option[Type] = (env, name) -> {
+export fn env_lookup(env: TypeEnv, name: String) -> Option[Type] {
   let mut cur = env
   let mut result = None
   let mut done = false
@@ -214,7 +219,7 @@ export let env_lookup: (TypeEnv, String) -> Option[Type] = (env, name) -> {
   result
 }
 
-export let env_bind_all: (TypeEnv, Array[(String, Type)]) -> TypeEnv = (env, bindings) -> {
+export fn env_bind_all(env: TypeEnv, bindings: Array[(String, Type)]) -> TypeEnv {
   let len = Array::length(bindings)
   let mut i = 0
   let mut acc = env
@@ -226,7 +231,7 @@ export let env_bind_all: (TypeEnv, Array[(String, Type)]) -> TypeEnv = (env, bin
   acc
 }
 
-export let find_typedef: (Array[TypeDef], String) -> Option[TypeDef] = (defs, name) -> {
+export fn find_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDef] {
   let len = Array::length(defs)
   let mut i = 0
   let mut result = None
@@ -239,7 +244,8 @@ export let find_typedef: (Array[TypeDef], String) -> Option[TypeDef] = (defs, na
       let dname = match d {
         TDEnum(n, _, _) => n,
         TDStruct(n, _, _) => n,
-        TDAlias(n, _, _) => n
+        TDAlias(n, _, _) => n,
+        TDEffect(n, _) => n
       }
       if dname == name {
         result = Some(d)
@@ -252,7 +258,7 @@ export let find_typedef: (Array[TypeDef], String) -> Option[TypeDef] = (defs, na
   result
 }
 
-export let subst_lookup: (Subst, Int) -> Option[Type] = (s, id) -> {
+export fn subst_lookup(s: Subst, id: Int) -> Option[Type] {
   let mut cur = s
   let mut out = None
   let mut done = false
@@ -287,7 +293,7 @@ export let subst_lookup: (Subst, Int) -> Option[Type] = (s, id) -> {
   out
 }
 
-export let rec trait_supers: (TypeEnv, String) -> Array[String] = (env, name) -> {
+export fn trait_supers(env: TypeEnv, name: String) -> Array[String] {
   let empty = Array::slice([
     ""
   ], 0, 0)
@@ -307,7 +313,7 @@ export let rec trait_supers: (TypeEnv, String) -> Array[String] = (env, name) ->
 // Look up a trait method's declared signature (param TypeExprs + return
 // TypeExpr) by trait name + method name. `Self` appears verbatim as
 // `TyName("Self")` in the stored signature; the caller substitutes it.
-export let rec trait_method_sig: (TypeEnv, String, String) -> Option[(Array[TypeExpr], TypeExpr)] = (env, trait_name, method_name) -> {
+export fn trait_method_sig(env: TypeEnv, trait_name: String, method_name: String) -> Option[(Array[TypeExpr], TypeExpr)] {
   match env {
     EnvEmpty => None,
     EnvBind(_, _, rest) => trait_method_sig(rest, trait_name, method_name),
@@ -340,7 +346,7 @@ export let rec trait_method_sig: (TypeEnv, String, String) -> Option[(Array[Type
 // matching against a trait impl's target. Impl targets are stored with their
 // type arguments erased to `CtUnknown` (see the `SImpl` handler), so element
 // types must be matched by head name, not by `types_equal`.
-let trait_target_head_name: (Type) -> String = (ty) -> {
+fn trait_target_head_name(ty: Type) -> String {
   match ty {
     CtNamed(n, _) => n,
     CtStruct(n) => n,
@@ -349,7 +355,7 @@ let trait_target_head_name: (Type) -> String = (ty) -> {
   }
 }
 
-let rec type_name_iterator_impl_scan: (TypeEnv, TypeEnv, String) -> Bool = (scan, full, type_name) -> {
+fn type_name_iterator_impl_scan(scan: TypeEnv, full: TypeEnv, type_name: String) -> Bool {
   match scan {
     EnvEmpty => false,
     EnvBind(_, _, rest) => type_name_iterator_impl_scan(rest, full, type_name),
@@ -375,14 +381,14 @@ let rec type_name_iterator_impl_scan: (TypeEnv, TypeEnv, String) -> Bool = (scan
 // it` element-type inference uses this to recognise struct-trait iterators
 // (`LazyIter`, async streams, …) and bind the loop variable to the iterator's
 // element type instead of `CtUnknown`.
-export let type_name_has_iterator_impl: (TypeEnv, String) -> Bool = (env, type_name) -> {
+export fn type_name_has_iterator_impl(env: TypeEnv, type_name: String) -> Bool {
   type_name_iterator_impl_scan(env, env, type_name)
 }
 
 // Like `trait_method_sig` but follows supertraits transitively, so a method
 // inherited from a supertrait (`trait B: A` calling an `A` method on `[T: B]`)
 // resolves. Trait hierarchies are acyclic, so the recursion terminates.
-export let rec trait_method_sig_deep: (TypeEnv, String, String) -> Option[(Array[TypeExpr], TypeExpr)] = (env, trait_name, method_name) -> {
+export fn trait_method_sig_deep(env: TypeEnv, trait_name: String, method_name: String) -> Option[(Array[TypeExpr], TypeExpr)] {
   match trait_method_sig(env, trait_name, method_name) {
     Some(sig) => Some(sig),
     None => {
@@ -414,7 +420,7 @@ export let rec trait_method_sig_deep: (TypeEnv, String, String) -> Option[(Array
 // Collect the trait bounds recorded for a specific type variable id in the
 // current substitution (`subst_add_bound` entries). Used to resolve a
 // `T::method` call where `T` is a bounded generic parameter.
-export let subst_bounds_for: (Subst, Int) -> Array[String] = (s, id) -> {
+export fn subst_bounds_for(s: Subst, id: Int) -> Array[String] {
   let out = ArrayBuilder::new()
   let mut cur = s
   let mut done = false
@@ -460,7 +466,7 @@ export let subst_bounds_for: (Subst, Int) -> Array[String] = (s, id) -> {
   ArrayBuilder::freeze(out)
 }
 
-let rec array_has_int: (Array[Int], Int, Int) -> Bool = (arr, val, i) -> {
+fn array_has_int(arr: Array[Int], val: Int, i: Int) -> Bool {
   if i >= Array::length(arr) {
     false
   }
@@ -470,7 +476,7 @@ let rec array_has_int: (Array[Int], Int, Int) -> Bool = (arr, val, i) -> {
   else array_has_int(arr, val, i + 1)
 }
 
-let int_array_has: (Array[Int], Int) -> Bool = (arr, v) -> {
+fn int_array_has(arr: Array[Int], v: Int) -> Bool {
   let slen = Array::length(arr)
   let mut si = 0
   let mut sfound = false
@@ -488,7 +494,7 @@ let int_array_has: (Array[Int], Int) -> Bool = (arr, v) -> {
   sfound
 }
 
-let is_effect_var_name: (String) -> Bool = (name) -> {
+fn is_effect_var_name(name: String) -> Bool {
   let len = String::length(name)
   if len == 1 {
     // a source-level effect variable: a single lowercase letter (`with { e }`)
@@ -505,7 +511,7 @@ let is_effect_var_name: (String) -> Bool = (name) -> {
 // Resolve an effect variable name through the effect-binding chain (transitively
 // following var->var links). Returns the bound effect-label string ("" = pure)
 // or None if the variable is unbound.
-let rec subst_eff_lookup: (Subst, String) -> Option[String] = (s, name) -> {
+fn subst_eff_lookup(s: Subst, name: String) -> Option[String] {
   let mut cur = s
   let mut out = None
   let mut done = false
@@ -547,7 +553,7 @@ let rec subst_eff_lookup: (Subst, String) -> Option[String] = (s, name) -> {
 // Resolve a CtFn effect annotation through the effect-binding chain: a bound
 // effect variable becomes its binding (an empty binding "" collapses to the
 // pure row `None`); anything else is returned unchanged.
-let resolve_effect_opt: (Subst, Option[String]) -> Option[String] = (s, eff) -> {
+fn resolve_effect_opt(s: Subst, eff: Option[String]) -> Option[String] {
   match eff {
     None => None,
     Some(name) => if is_effect_var_name(name) {
@@ -565,7 +571,7 @@ let resolve_effect_opt: (Subst, Option[String]) -> Option[String] = (s, eff) -> 
   }
 }
 
-export let rec subst_apply: (Subst, Type) -> Type = (s, ty) -> {
+export fn subst_apply(s: Subst, ty: Type) -> Type {
   match ty {
     CtInt => ty,
     CtBool => ty,
@@ -635,7 +641,7 @@ export let rec subst_apply: (Subst, Type) -> Type = (s, ty) -> {
   }
 }
 
-export let rec trait_defined: (TypeEnv, String) -> Bool = (env, name) -> {
+export fn trait_defined(env: TypeEnv, name: String) -> Bool {
   match env {
     EnvEmpty => false,
     EnvBind(_, _, rest) => trait_defined(rest, name),
@@ -649,7 +655,7 @@ export let rec trait_defined: (TypeEnv, String) -> Bool = (env, name) -> {
   }
 }
 
-export let rec type_to_string: (Type) -> String = (ty) -> {
+export fn type_to_string(ty: Type) -> String {
   match ty {
     CtInt => "Int",
     CtDouble => "Double",
@@ -730,13 +736,13 @@ export let rec type_to_string: (Type) -> String = (ty) -> {
   }
 }
 
-let empty_type_args: () -> Array[Type] = () -> {
+fn empty_type_args() -> Array[Type] {
   Array::slice([
     CtUnknown
   ], 0, 0)
 }
 
-export let env_lookup_flat: (Array[(String, Type)], String) -> Option[Type] = (bindings, name) -> {
+export fn env_lookup_flat(bindings: Array[(String, Type)], name: String) -> Option[Type] {
   let len = Array::length(bindings)
   let mut i = 0
   let mut result = None
@@ -757,7 +763,7 @@ export let env_lookup_flat: (Array[(String, Type)], String) -> Option[Type] = (b
   result
 }
 
-export let resolve_builtin: (String) -> Option[Type] = (name) -> {
+export fn resolve_builtin(name: String) -> Option[Type] {
   if name == "Int" || name == "i32" {
     Some(CtInt)
   }
@@ -802,11 +808,11 @@ export let resolve_builtin: (String) -> Option[Type] = (name) -> {
   else None
 }
 
-export let subst_add_bound: (Subst, Int, Array[String]) -> Subst = (s, id, bounds) -> {
+export fn subst_add_bound(s: Subst, id: Int, bounds: Array[String]) -> Subst {
   SubstBound(id, bounds, s)
 }
 
-let empty_var_bounds: () -> Array[(Int, Array[String])] = () -> {
+fn empty_var_bounds() -> Array[(Int, Array[String])] {
   Array::slice([
     (0, Array::slice([
       ""
@@ -814,7 +820,7 @@ let empty_var_bounds: () -> Array[(Int, Array[String])] = () -> {
   ], 0, 0)
 }
 
-let rec int_bounds_has_id: (Array[(Int, Array[String])], Int, Int) -> Bool = (pairs, id, i) -> {
+fn int_bounds_has_id(pairs: Array[(Int, Array[String])], id: Int, i: Int) -> Bool {
   if i >= Array::length(pairs) {
     false
   } else {
@@ -827,7 +833,7 @@ let rec int_bounds_has_id: (Array[(Int, Array[String])], Int, Int) -> Bool = (pa
   }
 }
 
-let rec int_bounds_lookup: (Array[(Int, Array[String])], Int, Int) -> Array[String] = (pairs, id, i) -> {
+fn int_bounds_lookup(pairs: Array[(Int, Array[String])], id: Int, i: Int) -> Array[String] {
   if i >= Array::length(pairs) {
     Array::slice([
       ""
@@ -842,7 +848,7 @@ let rec int_bounds_lookup: (Array[(Int, Array[String])], Int, Int) -> Array[Stri
   }
 }
 
-let rec int_int_lookup_or: (Array[(Int, Int)], Int, Int, Int) -> Int = (pairs, key, fallback, i) -> {
+fn int_int_lookup_or(pairs: Array[(Int, Int)], key: Int, fallback: Int, i: Int) -> Int {
   if i >= Array::length(pairs) {
     fallback
   } else {
@@ -858,7 +864,7 @@ let rec int_int_lookup_or: (Array[(Int, Int)], Int, Int, Int) -> Int = (pairs, k
 // #626 criterion 4: collect the distinct effect-VARIABLE names appearing in a
 // type scheme body (lone `with { e }` annotations), so `instantiate` can mint a
 // fresh variable per use site and effect polymorphism survives unification.
-let rec collect_effect_vars_walk: (Type, Array[String]) -> Int = (t, out) -> {
+fn collect_effect_vars_walk(t: Type, out: Array[String]) -> Int {
   match t {
     CtFn(params, ret, eff) => {
       match eff {
@@ -901,7 +907,7 @@ let rec collect_effect_vars_walk: (Type, Array[String]) -> Int = (t, out) -> {
   }
 }
 
-let rename_eff_name: (String, Array[(String, String)]) -> String = (name, pairs) -> {
+fn rename_eff_name(name: String, pairs: Array[(String, String)]) -> String {
   let mut i = 0
   let mut out = name
   while i < Array::length(pairs) {
@@ -914,7 +920,7 @@ let rename_eff_name: (String, Array[(String, String)]) -> String = (name, pairs)
   out
 }
 
-let rec rename_effect_vars: (Type, Array[(String, String)]) -> Type = (t, pairs) -> {
+fn rename_effect_vars(t: Type, pairs: Array[(String, String)]) -> Type {
   match t {
     CtFn(params, ret, eff) => {
       let new_params = Array::slice([
@@ -959,7 +965,7 @@ let rec rename_effect_vars: (Type, Array[(String, String)]) -> Type = (t, pairs)
   }
 }
 
-export let instantiate: (Type, Int) -> (Type, Int, Array[(Int, Array[String])]) = (ty, c) -> {
+export fn instantiate(ty: Type, c: Int) -> (Type, Int, Array[(Int, Array[String])]) {
   match ty {
     CtForAll(bound_vars, var_bounds, body) => {
       let blen = Array::length(bound_vars)
@@ -1040,7 +1046,7 @@ export let instantiate: (Type, Int) -> (Type, Int, Array[(Int, Array[String])]) 
   }
 }
 
-export let rec trait_is_subtrait: (TypeEnv, String, String) -> Bool = (env, sub, super_name) -> {
+export fn trait_is_subtrait(env: TypeEnv, sub: String, super_name: String) -> Bool {
   if sub == super_name {
     true
   }
@@ -1070,7 +1076,7 @@ export let rec trait_is_subtrait: (TypeEnv, String, String) -> Bool = (env, sub,
   }
 }
 
-let rec collect_tvars_walk: (Type, Array[Int]) -> Int = (t, out) -> {
+fn collect_tvars_walk(t: Type, out: Array[Int]) -> Int {
   match t {
     CtVar(id) => {
       if !array_has_int(out, id, 0) {
@@ -1097,7 +1103,7 @@ let rec collect_tvars_walk: (Type, Array[Int]) -> Int = (t, out) -> {
   }
 }
 
-export let collect_tvars: (Type) -> Array[Int] = (ty) -> {
+export fn collect_tvars(ty: Type) -> Array[Int] {
   let out = Array::slice([
     0
   ], 0, 0)
@@ -1105,13 +1111,13 @@ export let collect_tvars: (Type) -> Array[Int] = (ty) -> {
   out
 }
 
-let empty_env_bindings: () -> Array[(String, Type)] = () -> {
+fn empty_env_bindings() -> Array[(String, Type)] {
   Array::slice([
     ("", CtUnknown)
   ], 0, 0)
 }
 
-export let env_flat_bindings: (TypeEnv) -> Array[(String, Type)] = (env) -> {
+export fn env_flat_bindings(env: TypeEnv) -> Array[(String, Type)] {
   match env {
     EnvFlat(bindings) => bindings,
     _ => {
@@ -1154,7 +1160,7 @@ export let env_flat_bindings: (TypeEnv) -> Array[(String, Type)] = (env) -> {
   }
 }
 
-let string_array_equal: (Array[String], Array[String]) -> Bool = (left, right) -> {
+fn string_array_equal(left: Array[String], right: Array[String]) -> Bool {
   let len = Array::length(left)
   let mut i = 0
   let mut result = true
@@ -1172,7 +1178,7 @@ let string_array_equal: (Array[String], Array[String]) -> Bool = (left, right) -
   result
 }
 
-let option_string_equal: (Option[String], Option[String]) -> Bool = (left, right) -> {
+fn option_string_equal(left: Option[String], right: Option[String]) -> Bool {
   match left {
     Some(left_name) => match right {
       Some(right_name) => left_name == right_name,
@@ -1190,7 +1196,7 @@ let option_string_equal: (Option[String], Option[String]) -> Bool = (left, right
 // so `{ A, B }` and `{ B, A }` serialize to different strings. Split the
 // comma-separated annotation back into its labels (trimmed, deduplicated) so
 // equality can be decided on the set, not the raw ordered string.
-let effect_label_list: (Option[String]) -> Array[String] = (eff) -> {
+fn effect_label_list(eff: Option[String]) -> Array[String] {
   let out = Array::slice([
     ""
   ], 0, 0)
@@ -1221,7 +1227,7 @@ let effect_label_list: (Option[String]) -> Array[String] = (eff) -> {
   }
 }
 
-let effect_label_sets_equal: (Option[String], Option[String]) -> Bool = (left, right) -> {
+fn effect_label_sets_equal(left: Option[String], right: Option[String]) -> Bool {
   let ls = effect_label_list(left)
   let rs = effect_label_list(right)
   if Array::length(ls) != Array::length(rs) {
@@ -1248,14 +1254,14 @@ let effect_label_sets_equal: (Option[String], Option[String]) -> Bool = (left, r
   }
 }
 
-let effect_opt_is_var: (Option[String]) -> Bool = (eff) -> {
+fn effect_opt_is_var(eff: Option[String]) -> Bool {
   match eff {
     Some(name) => is_effect_var_name(name),
     None => false
   }
 }
 
-let effect_names_compatible: (Option[String], Option[String]) -> Bool = (left, right) -> {
+fn effect_names_compatible(left: Option[String], right: Option[String]) -> Bool {
   if option_string_equal(left, right) {
     true
   } else if effect_opt_is_var(left) {
@@ -1279,7 +1285,7 @@ let effect_names_compatible: (Option[String], Option[String]) -> Bool = (left, r
 // Unify two effect annotations, binding an effect VARIABLE to the other side
 // (#626 criterion 4 — no longer an unconditional wildcard). Returns the extended
 // substitution, or None on a genuine effect-set conflict.
-let unify_effects: (Option[String], Option[String], Subst) -> Option[Subst] = (ea, eb, s) -> {
+fn unify_effects(ea: Option[String], eb: Option[String], s: Subst) -> Option[Subst] {
   let ra = resolve_effect_opt(s, ea)
   let rb = resolve_effect_opt(s, eb)
   let a_is_var = match ra {
@@ -1321,7 +1327,7 @@ let unify_effects: (Option[String], Option[String], Subst) -> Option[Subst] = (e
   }
 }
 
-export let rec types_equal: (Type, Type) -> Bool = (a, b) -> {
+export fn types_equal(a: Type, b: Type) -> Bool {
   match a {
     CtInt => match b {
       CtInt => true,
@@ -1532,7 +1538,7 @@ export let rec types_equal: (Type, Type) -> Bool = (a, b) -> {
 // tokens (TInt, see lexer.vibe lex_char), so a value of Char and a value of Int
 // share one runtime representation and must unify freely — a `Char` annotation
 // accepts an int value and vice versa (`'A' == 65`, `c + 1`, char_test).
-let char_int_compatible: (Type, Type) -> Bool = (ta, tb) -> {
+fn char_int_compatible(ta: Type, tb: Type) -> Bool {
   match ta {
     CtChar => match tb {
       CtInt => true,
@@ -1547,7 +1553,7 @@ let char_int_compatible: (Type, Type) -> Bool = (ta, tb) -> {
 }
 
 ///|
-export let rec unify: (Type, Type, Subst) -> Option[Subst] = (a, b, s) -> {
+export fn unify(a: Type, b: Type, s: Subst) -> Option[Subst] {
   let ta = subst_apply(s, a)
   let tb = subst_apply(s, b)
   if types_equal(ta, tb) {
@@ -1730,7 +1736,7 @@ export let rec unify: (Type, Type, Subst) -> Option[Subst] = (a, b, s) -> {
   }
 }
 
-export let types_compatible: (Type, Type) -> Bool = (expected, actual) -> {
+export fn types_compatible(expected: Type, actual: Type) -> Bool {
   match expected {
     CtUnknown => true,
     _ => match actual {
@@ -1740,7 +1746,7 @@ export let types_compatible: (Type, Type) -> Bool = (expected, actual) -> {
   }
 }
 
-export let rec impls_overlap_for: (TypeEnv, String, Type) -> Bool = (env, trait_name, new_target) -> {
+export fn impls_overlap_for(env: TypeEnv, trait_name: String, new_target: Type) -> Bool {
   match env {
     EnvEmpty => false,
     EnvBind(_, _, rest) => impls_overlap_for(rest, trait_name, new_target),
@@ -1757,7 +1763,7 @@ export let rec impls_overlap_for: (TypeEnv, String, Type) -> Bool = (env, trait_
   }
 }
 
-let rec type_implements_check_env: (TypeEnv, String, Type) -> Bool = (e, trait_name, resolved) -> {
+fn type_implements_check_env(e: TypeEnv, trait_name: String, resolved: Type) -> Bool {
   match e {
     EnvEmpty => false,
     EnvBind(_, _, rest) => type_implements_check_env(rest, trait_name, resolved),
@@ -1774,7 +1780,7 @@ let rec type_implements_check_env: (TypeEnv, String, Type) -> Bool = (e, trait_n
   }
 }
 
-export let collect_subst_bounds_pairs: (Subst) -> Array[(Int, Array[String])] = (s) -> {
+export fn collect_subst_bounds_pairs(s: Subst) -> Array[(Int, Array[String])] {
   let out = Array::slice([
     (0, Array::slice([
       ""
@@ -1807,7 +1813,7 @@ export let collect_subst_bounds_pairs: (Subst) -> Array[(Int, Array[String])] = 
   out
 }
 
-export let generalize: (Subst, Type) -> Type = (s, ty) -> {
+export fn generalize(s: Subst, ty: Type) -> Type {
   let resolved = subst_apply(s, ty)
   let tvars = collect_tvars(resolved)
   if Array::length(tvars) == 0 {
@@ -1830,7 +1836,7 @@ export let generalize: (Subst, Type) -> Type = (s, ty) -> {
   }
 }
 
-let rec type_implements_check_super: (TypeEnv, TypeEnv, String, Type) -> Bool = (e2, full_env, trait_name, resolved) -> {
+fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, trait_name: String, resolved: Type) -> Bool {
   match e2 {
     EnvEmpty => false,
     EnvBind(_, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
@@ -1851,7 +1857,7 @@ let rec type_implements_check_super: (TypeEnv, TypeEnv, String, Type) -> Bool = 
 // against a concrete type (`Array[Int]` and the impl target `Array` both have
 // head "Array"). Returns "" for types with no nominal constructor (tuples,
 // primitives, vars) so they never match a generic impl.
-let type_constructor_name: (Type) -> String = (ty) -> {
+fn type_constructor_name(ty: Type) -> String {
   match ty {
     CtArray(_) => "Array",
     CtOption(_) => "Option",
@@ -1870,7 +1876,7 @@ let type_constructor_name: (Type) -> String = (ty) -> {
 // whereas a marker trait "dispatches" via a builtin operator (`==`, `<`) that
 // does NOT structurally handle a container — so matching a marker-trait generic
 // impl would let `==` be used on e.g. `Option[Int]` where it silently misbehaves.
-let rec trait_is_method_bearing: (TypeEnv, String) -> Bool = (env, trait_name) -> {
+fn trait_is_method_bearing(env: TypeEnv, trait_name: String) -> Bool {
   match env {
     EnvEmpty => false,
     EnvBind(_, _, rest) => trait_is_method_bearing(rest, trait_name),
@@ -1894,7 +1900,7 @@ let rec trait_is_method_bearing: (TypeEnv, String) -> Bool = (env, trait_name) -
 
 // Type arguments of a (possibly generic) type, for checking a generic impl's
 // per-parameter bounds against the concrete element types.
-let type_args_of: (Type) -> Array[Type] = (ty) -> {
+fn type_args_of(ty: Type) -> Array[Type] {
   match ty {
     CtArray(e) => Array::slice([
       e
@@ -1916,7 +1922,7 @@ let type_args_of: (Type) -> Array[Type] = (ty) -> {
 // which is the dictionary-of-dictionaries condition. The dict-passing desugar
 // synthesizes a `{ method: C::method }` witness (unbounded) or a nested closure
 // witness supplying the element dict (bounded). (#5 generic impls.)
-let rec generic_impl_satisfies: (TypeEnv, TypeEnv, Subst, String, Type) -> Bool = (scan, full, s, trait_name, resolved) -> {
+fn generic_impl_satisfies(scan: TypeEnv, full: TypeEnv, s: Subst, trait_name: String, resolved: Type) -> Bool {
   match scan {
     EnvEmpty => false,
     EnvBind(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
@@ -1936,7 +1942,7 @@ let rec generic_impl_satisfies: (TypeEnv, TypeEnv, Subst, String, Type) -> Bool 
 
 // Every non-empty per-parameter bound is satisfied by every concrete type
 // argument. Empty bound lists (Increment A) hold trivially.
-let rec generic_bounds_hold: (TypeEnv, Subst, Array[(String, Array[String])], Array[Type]) -> Bool = (full, s, bounds, args) -> {
+fn generic_bounds_hold(full: TypeEnv, s: Subst, bounds: Array[(String, Array[String])], args: Array[Type]) -> Bool {
   let mut bi = 0
   let mut ok = true
   while bi < Array::length(bounds) {
@@ -1973,7 +1979,7 @@ let rec generic_bounds_hold: (TypeEnv, Subst, Array[(String, Array[String])], Ar
   ok
 }
 
-export let rec type_implements_trait: (TypeEnv, Subst, Type, String) -> Bool = (env, s, ty, trait_name) -> {
+export fn type_implements_trait(env: TypeEnv, s: Subst, ty: Type, trait_name: String) -> Bool {
   let resolved = subst_apply(s, ty)
   if type_implements_check_env(env, trait_name, resolved) {
     true

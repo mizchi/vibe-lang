@@ -47,7 +47,8 @@ import ./selfhost_codegen_fingerprint.vibe {
 }
 
 import ../module_graph_path.vibe {
-  resolution_env_seed
+  resolution_env_seed,
+  resolve_import_path_candidates
 }
 
 //# Misc
@@ -80,35 +81,40 @@ export {
 //    the bundle. So any codegen-source change automatically changes the key and
 //    invalidates stale artifacts; no manual bump needed (#630). `vNN` is still a
 //    manual knob for pure cache-FORMAT changes that don't change the source hash.
-let persistent_cache_version_tag: () -> String = () -> {
+fn persistent_cache_version_tag() -> String {
+  // v12 (#801): source list/group cache text gained a mandatory `resctx` row
+  // (resolution-context fingerprint) and its version row moved to 3 — a cache
+  // FORMAT change. Loaders written before #801 throw on the unknown row tag,
+  // so the manual `vNN` knob is bumped to keep old and new writers in
+  // disjoint key spaces (this also orphans any #801-poisoned entries).
   // v11 (#632): artifact cache switched from hex text (`.hex`) to raw binary
   // (`.bin`, via Fs::write_bytes / Fs::read_bytes) — a cache FORMAT change, so
   // the manual `vNN` knob is bumped. Old `.hex` entries are now unreferenced
   // (different key + suffix) and reclaimable via `pkf run cache-clean` (#631).
-  String::concat("v11|cg-", selfhost_codegen_fingerprint())
+  String::concat("v12|cg-", selfhost_codegen_fingerprint())
 }
 
-export let persistent_artifact_cache_path: (String, String, String) -> String = (kind, entry_name, fingerprint) -> {
+export fn persistent_artifact_cache_path(kind: String, entry_name: String, fingerprint: String) -> String {
   cache_persistent_artifact_cache_path(persistent_cache_version_tag(), kind, entry_name, fingerprint)
 }
 
-export let store_persistent_artifact: (String, String, String, Bytes) -> Unit with { Error, Fs } = (kind, entry_name, fingerprint, bytes) -> {
+export fn store_persistent_artifact(kind: String, entry_name: String, fingerprint: String, bytes: Bytes) -> Unit with { Error, Fs } {
   cache_store_persistent_artifact(persistent_cache_version_tag(), kind, entry_name, fingerprint, bytes)
 }
 
-export let load_persistent_artifact: (String, String, String) -> Option[Bytes] with { Error, Fs } = (kind, entry_name, fingerprint) -> {
+export fn load_persistent_artifact(kind: String, entry_name: String, fingerprint: String) -> Option[Bytes] with { Error, Fs } {
   cache_load_persistent_artifact(persistent_cache_version_tag(), kind, entry_name, fingerprint)
 }
 
-export let persistent_dep_list_cache_path: (String, String) -> String = (path, source_fingerprint) -> {
+export fn persistent_dep_list_cache_path(path: String, source_fingerprint: String) -> String {
   cache_persistent_dep_list_cache_path(persistent_cache_version_tag(), path, source_fingerprint, resolution_env_seed())
 }
 
-export let persistent_type_env_cache_path: (String) -> String = (fingerprint) -> {
+export fn persistent_type_env_cache_path(fingerprint: String) -> String {
   cache_persistent_type_env_cache_path(persistent_cache_version_tag(), fingerprint)
 }
 
-export let persistent_source_list_cache_path: (String) -> String = (entry_path) -> {
+export fn persistent_source_list_cache_path(entry_path: String) -> String {
   // #758 review (P1): the cached artifact is a RESOLVED graph — the external
   // lib roots and the freeze switch (#751) are part of its identity, or a
   // graph resolved without pins replays under VIBE_REQUIRE_PINS=1 (and a
@@ -117,18 +123,87 @@ export let persistent_source_list_cache_path: (String) -> String = (entry_path) 
   cache_persistent_source_list_cache_path(persistent_cache_version_tag(), entry_path, resolution_env_seed())
 }
 
-export let persistent_source_group_cache_path: (String) -> String = (entry_path) -> {
+export fn persistent_source_group_cache_path(entry_path: String) -> String {
   cache_persistent_source_group_cache_path(persistent_cache_version_tag(), entry_path, resolution_env_seed())
 }
 
-export let persistent_module_header_cache_path: (String, String) -> String = (path, source_fingerprint) -> {
+export fn persistent_module_header_cache_path(path: String, source_fingerprint: String) -> String {
   cache_persistent_module_header_cache_path(persistent_cache_version_tag(), path, source_fingerprint, resolution_env_seed())
 }
 
-export let persistent_manifest_header_cache_path: (String) -> String = (entry_path) -> {
+export fn persistent_manifest_header_cache_path(entry_path: String) -> String {
   cache_persistent_manifest_header_cache_path(persistent_cache_version_tag(), entry_path)
 }
 
-export let persistent_leaf_fingerprint_cache_path: (String, String) -> String = (path, source_fingerprint) -> {
+export fn persistent_leaf_fingerprint_cache_path(path: String, source_fingerprint: String) -> String {
   cache_persistent_leaf_fingerprint_cache_path(persistent_cache_version_tag(), path, source_fingerprint)
+}
+
+// #801 follow-up: the module-header and dep-list caches store RESOLVED dep
+// paths, and a `@scope/name` import resolves to a DIFFERENT package root
+// (.vibe/store wins over lib/ wins over external roots) depending on what
+// exists at resolve time. A header cached while a store copy existed lists
+// the store index.vibei as a dep; replayed after the store copy is gone (or
+// vice versa) it aims the walk at the wrong root. Unlike the source-group
+// cache (#801's resctx row), the poison here is VISIBLE in the cached rows —
+// the importing file's dep always names the winning package index — so no
+// context enumeration is needed: re-derive the `@scope/name` ref from each
+// package-index dep and check it still wins today.
+fn package_ref_of_index_dep(dep: String) -> Option[String] {
+  if String::ends_with(dep, "/index.vibei") {
+    let parts = String::split(dep, "/")
+    let n = Array::length(parts)
+    if n >= 3 && String::starts_with(Array::get(parts, n - 3), "@") {
+      Some(String::concat(Array::get(parts, n - 3), String::concat("/", Array::get(parts, n - 2))))
+    } else {
+      None
+    }
+  } else {
+    None
+  }
+}
+
+export fn package_index_dep_is_current(dep: String) -> Bool with { Fs } {
+  match package_ref_of_index_dep(dep) {
+    None => true,
+    Some(pkg_ref) => {
+      let candidates = resolve_import_path_candidates("", pkg_ref)
+      let mut i = 0
+      let mut winner = ""
+      while i < Array::length(candidates) {
+        if winner == "" {
+          let candidate = Array::get(candidates, i)
+          if Fs::exists(candidate) {
+            winner = candidate
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      // Mirror resolve_path_fs: no existing candidate falls back to the
+      // first (store) spelling.
+      if winner == "" {
+        Array::get(candidates, 0) == dep
+      } else {
+        winner == dep
+      }
+    }
+  }
+}
+
+export fn package_index_deps_are_current(deps: Array[String]) -> Bool with { Fs } {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(deps) {
+    if ok && !(package_index_dep_is_current(Array::get(deps, i))) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
 }

@@ -9,7 +9,7 @@ import ./parser_base.vibe {
 }
 
 import ./parser_expr.vibe {
-  parse, parse_expr, parse_fn_stmt, parse_impl, parse_let_stmt, parse_ok
+  lower_fn_decl_stmt, lower_fn_decl_stmts, parse, parse_expr, parse_fn_stmt, parse_impl, parse_let_stmt, parse_ok
 }
 
 import ./token.vibe {
@@ -24,13 +24,13 @@ import ./lexer.vibe {
 
 let parser_mode_block = 20
 
-let empty_names: () -> Array[String] = () -> {
+fn empty_names() -> Array[String] {
   Array::slice([
     "_"
   ], 0, 0)
 }
 
-let parse_test_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = (tokens, starts, pos) -> {
+fn parse_test_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with { Error } {
   match peek(tokens, pos) {
     TString(name) => {
       let br = expect_tk(tokens, pos + 1, "{")
@@ -41,7 +41,7 @@ let parse_test_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error
   }
 }
 
-let parse_bench_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = (tokens, starts, pos) -> {
+fn parse_bench_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with { Error } {
   match peek(tokens, pos) {
     TString(name) => {
       let br = expect_tk(tokens, pos + 1, "{")
@@ -54,7 +54,7 @@ let parse_bench_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Erro
 
 // Parse one export-list name, accepting a qualified `Ns::member`
 // (e.g. `JsonSchema::validate`) in addition to a bare ident.
-let parse_export_name: (Array[Token], Int) -> (String, Int) with { Error } = (tokens, pos) -> {
+fn parse_export_name(tokens: Array[Token], pos: Int) -> (String, Int) with { Error } {
   match peek(tokens, pos) {
     TIdent(name) => match peek(tokens, pos + 1) {
       TDoubleColon => match peek(tokens, pos + 2) {
@@ -68,7 +68,7 @@ let parse_export_name: (Array[Token], Int) -> (String, Int) with { Error } = (to
   }
 }
 
-let rec parse_export_names_rest: (Array[Token], Int, ArrayBuilder[String]) -> (Array[String], Int) with { Error } = (tokens, pos, b) -> {
+fn parse_export_names_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[String]) -> (Array[String], Int) with { Error } {
   match peek(tokens, pos) {
     TComma => match peek(tokens, pos + 1) {
       TRBrace => (ArrayBuilder::freeze(b), pos + 2),
@@ -84,7 +84,7 @@ let rec parse_export_names_rest: (Array[Token], Int, ArrayBuilder[String]) -> (A
   }
 }
 
-let rec parse_import_items_rest: (Array[Token], Int, ArrayBuilder[(String, Option[String])]) -> (Array[(String, Option[String])], Int) with { Error } = (tokens, pos, b) -> {
+fn parse_import_items_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Option[String])]) -> (Array[(String, Option[String])], Int) with { Error } {
   match peek(tokens, pos) {
     TComma => match peek(tokens, pos + 1) {
       TRBrace => (ArrayBuilder::freeze(b), pos + 2),
@@ -99,7 +99,7 @@ let rec parse_import_items_rest: (Array[Token], Int, ArrayBuilder[(String, Optio
   }
 }
 
-let parse_import_items: (Array[Token], Int) -> (Array[(String, Option[String])], Int) with { Error } = (tokens, pos) -> {
+fn parse_import_items(tokens: Array[Token], pos: Int) -> (Array[(String, Option[String])], Int) with { Error } {
   match peek(tokens, pos) {
     TRBrace => (empty_import_items(), pos + 1),
     _ => {
@@ -119,7 +119,7 @@ let parse_import_items: (Array[Token], Int) -> (Array[(String, Option[String])],
 // through the catch-all `_` arm below, which always demanded a `{` next and
 // never looked for an alias — surfacing as "expected { but got ident" once
 // collect_import_path correctly stopped just before the alias token.
-let parse_import_path_tail: (Array[Token], Int, String) -> (Stmt, Int) with { Error } = (tokens, bp, path) -> {
+fn parse_import_path_tail(tokens: Array[Token], bp: Int, path: String) -> (Stmt, Int) with { Error } {
   match peek(tokens, bp) {
     TIdent(alias_name) => if String::length(alias_name) > 1 && String::char_code_at(alias_name, 0) == '@' {
       let alias_str = String::substring(alias_name, 1, String::length(alias_name))
@@ -137,7 +137,7 @@ let parse_import_path_tail: (Array[Token], Int, String) -> (Stmt, Int) with { Er
   }
 }
 
-let parse_import_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens, pos) -> {
+fn parse_import_stmt(tokens: Array[Token], pos: Int) -> (Stmt, Int) with { Error } {
   match peek(tokens, pos) {
     TIdent(name) => if String::length(name) > 1 && String::char_code_at(name, 0) == '@' {
       let br = expect_tk(tokens, pos + 1, "{")
@@ -154,7 +154,7 @@ let parse_import_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (toke
   }
 }
 
-let tl_push_mut_name: (ArrayBuilder[String], (String, TypeExpr), Bool) -> Unit = (mb, field, is_mut) -> {
+fn tl_push_mut_name(mb: ArrayBuilder[String], field: (String, TypeExpr), is_mut: Bool) -> Unit {
   if is_mut {
     let (fname, _) = field
     ArrayBuilder::push(mb, fname)
@@ -163,7 +163,7 @@ let tl_push_mut_name: (ArrayBuilder[String], (String, TypeExpr), Bool) -> Unit =
   }
 }
 
-let rec parse_toplevel_struct_fields_rest: (Array[Token], Int, ArrayBuilder[(String, TypeExpr)], ArrayBuilder[String]) -> (Array[(String, TypeExpr)], Array[String], Int) with { Error } = (tokens, pos, b, mb) -> {
+fn parse_toplevel_struct_fields_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, TypeExpr)], mb: ArrayBuilder[String]) -> (Array[(String, TypeExpr)], Array[String], Int) with { Error } {
   match peek(tokens, pos) {
     TSemicolon => match peek(tokens, pos + 1) {
       TRBrace => (ArrayBuilder::freeze(b), ArrayBuilder::freeze(mb), pos + 2),
@@ -174,21 +174,15 @@ let rec parse_toplevel_struct_fields_rest: (Array[Token], Int, ArrayBuilder[(Str
         parse_toplevel_struct_fields_rest(tokens, next, b, mb)
       }
     },
-    TComma => match peek(tokens, pos + 1) {
-      TRBrace => (ArrayBuilder::freeze(b), ArrayBuilder::freeze(mb), pos + 2),
-      _ => {
-        let (field, is_mut, next) = parse_struct_field(tokens, pos + 1)
-        ArrayBuilder::push(b, field)
-        tl_push_mut_name(mb, field, is_mut)
-        parse_toplevel_struct_fields_rest(tokens, next, b, mb)
-      }
-    },
+    // 0.3.0 redundant-syntax removal: ',' is no longer a declaration-body
+    // separator (see parser_base.vibe parse_enum_ctors_rest).
+    TComma => throw("use ';' to separate declaration members; ',' was removed in 0.3.0 at #\{pos}"),
     TRBrace => (ArrayBuilder::freeze(b), ArrayBuilder::freeze(mb), pos + 1),
-    _ => throw("expected ';', ',' or '}' in struct")
+    _ => throw("expected ';' or '}' in struct at #\{pos}")
   }
 }
 
-let parse_toplevel_struct_fields: (Array[Token], Int) -> (Array[(String, TypeExpr)], Array[String], Int) with { Error } = (tokens, pos) -> {
+fn parse_toplevel_struct_fields(tokens: Array[Token], pos: Int) -> (Array[(String, TypeExpr)], Array[String], Int) with { Error } {
   match peek(tokens, pos) {
     TRBrace => (empty_fields(), Array::slice([
       ""
@@ -204,7 +198,7 @@ let parse_toplevel_struct_fields: (Array[Token], Int) -> (Array[(String, TypeExp
   }
 }
 
-let parse_toplevel_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, pos, exported) -> {
+fn parse_toplevel_struct_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with { Error } {
   match peek(tokens, pos) {
     TIdent(name) => {
       // Optional type-parameter header `struct Foo[T] { ... }`. Consumed and
@@ -242,7 +236,7 @@ let parse_toplevel_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { 
   }
 }
 
-let parse_export_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = (tokens, starts, pos) -> {
+fn parse_export_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with { Error } {
   match peek(tokens, pos) {
     TLet => parse_let_stmt(tokens, starts, pos + 1, true),
     TEnum => parse_enum_stmt(tokens, pos + 1, true),
@@ -296,7 +290,7 @@ let parse_export_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Err
   }
 }
 
-let parse_percent_symbol_name: (Array[Token], Int, String) -> (String, Int) with { Error } = (tokens, pos, label) -> {
+fn parse_percent_symbol_name(tokens: Array[Token], pos: Int, label: String) -> (String, Int) with { Error } {
   let pp = expect_tk(tokens, pos, "%")
   match peek(tokens, pp) {
     TIdent(name) => ("%\{name}", pp + 1),
@@ -304,7 +298,7 @@ let parse_percent_symbol_name: (Array[Token], Int, String) -> (String, Int) with
   }
 }
 
-let parse_extern_let_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens, pos) -> {
+fn parse_extern_let_stmt(tokens: Array[Token], pos: Int) -> (Stmt, Int) with { Error } {
   let lp = expect_tk(tokens, pos, "let")
   let (name, np) = parse_percent_symbol_name(tokens, lp, "extern symbol name")
   let cp = expect_tk(tokens, np, ":")
@@ -312,7 +306,12 @@ let parse_extern_let_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
   (SExternLet(name, ty), end)
 }
 
-export let rec parse_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = (tokens, starts, pos) -> {
+// Statement parser that KEEPS `fn` declarations in declaration form
+// (SFnDecl, contracts un-desugared) — the input to printer/normalize
+// round-tripping (ADR-0064 #727). Everything that feeds the checker or
+// codegen should use `parse_stmt` / `parse_program*` below, which lower
+// SFnDecl to the legacy SLet shape.
+export fn parse_stmt_preserving(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with { Error } {
   let head = peek(tokens, pos)
   match head {
     TLet => parse_let_stmt(tokens, starts, pos + 1, false),
@@ -404,13 +403,24 @@ export let rec parse_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with {
   }
 }
 
+// Default statement entry: identical to parse_stmt_preserving except that a
+// `fn` declaration is lowered to the legacy `SLet(exported, true, name,
+// None, EFn(..))` shape with its where-contract desugared to runtime
+// asserts — i.e. exactly what this function returned before #727 kept the
+// declaration form. All existing consumers (checker, codegen, symbols,
+// contract engine, ...) keep seeing the pre-#727 AST.
+export fn parse_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with { Error } {
+  let (stmt, next) = parse_stmt_preserving(tokens, starts, pos)
+  (lower_fn_decl_stmt(stmt), next)
+}
+
 // Expand an impl body `{ method(params) -> ret { body } ... }` into the impl
 // marker plus one `let Type::method = (params) -> ret { body }` per method
 // (#641 Phase 1: concrete-receiver dispatch). Trait stays marker-only; the
 // methods become ordinary qualified free functions resolved by name. `pos` is
 // at the body `{` (or the next token for a body-less impl). Needs `parse_expr`,
 // which is why this lives here rather than in parser_base.
-let parse_impl_methods: (Array[Token], Int, Stmt) -> (Array[Stmt], Int) with { Error } = (tokens, pos, simpl) -> {
+fn parse_impl_methods(tokens: Array[Token], pos: Int, simpl: Stmt) -> (Array[Stmt], Int) with { Error } {
   let out = ArrayBuilder::new()
   ArrayBuilder::push(out, simpl)
   match peek(tokens, pos) {
@@ -486,7 +496,7 @@ let parse_impl_methods: (Array[Token], Int, Stmt) -> (Array[Stmt], Int) with { E
 
 // Parse the directive after a THash: `cfg(name)` or `cfg_enable(name)`.
 // Returns (directive_kind, flag_name, next_pos).
-let parse_cfg_directive: (Array[Token], Int) -> (String, String, Int) with { Error } = (tokens, pos) -> {
+fn parse_cfg_directive(tokens: Array[Token], pos: Int) -> (String, String, Int) with { Error } {
   match peek(tokens, pos) {
     TIdent(dname) => {
       if dname == "cfg" || dname == "cfg_enable" {
@@ -510,7 +520,7 @@ let parse_cfg_directive: (Array[Token], Int) -> (String, String, Int) with { Err
 
 // Pre-scan the whole token stream for `#cfg_enable(name)` directives and
 // return the active flag set. O(tokens), no allocation unless a THash exists.
-let cfg_scan_enabled: (Array[Token]) -> Array[String] with { Error } = (tokens) -> {
+fn cfg_scan_enabled(tokens: Array[Token]) -> Array[String] with { Error } {
   let out = Array::slice([
     ""
   ], 0, 0)
@@ -535,7 +545,7 @@ let cfg_scan_enabled: (Array[Token]) -> Array[String] with { Error } = (tokens) 
   out
 }
 
-let cfg_flag_active: (Array[String], String) -> Bool = (active, flag) -> {
+fn cfg_flag_active(active: Array[String], flag: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(active) {
@@ -549,7 +559,11 @@ let cfg_flag_active: (Array[String], String) -> Bool = (active, flag) -> {
   found
 }
 
-export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens) -> {
+// Program parser that KEEPS `fn` declarations as SFnDecl (see
+// parse_stmt_preserving) — used by the printer/normalize round-trip so
+// `vibe normalize` re-emits `fn name(..) -> T where { .. } { .. }` instead
+// of rewriting it to `let rec` form (ADR-0064 #727).
+export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with { Error } {
   let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let mut pos = 0
@@ -576,7 +590,7 @@ export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens
               pos = dn
             },
             _ => {
-              let (_dropped, dn) = parse_stmt(tokens, [], dnext)
+              let (_dropped, dn) = parse_stmt_preserving(tokens, [], dnext)
               pos = dn
             }
           }
@@ -593,7 +607,7 @@ export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens
         pos = next
       },
       _ => {
-        let (stmt, next) = parse_stmt(tokens, [], pos)
+        let (stmt, next) = parse_stmt_preserving(tokens, [], pos)
         ArrayBuilder::push(b, stmt)
         pos = next
       }
@@ -602,12 +616,66 @@ export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens
   ArrayBuilder::freeze(b)
 }
 
+// Default program entry: `fn` declarations lowered to the legacy SLet shape
+// (where-contracts desugared to runtime asserts) — the exact pre-#727
+// output, so every checker/codegen consumer is unchanged.
+export fn parse_program(tokens: Array[Token]) -> Array[Stmt] with { Error } {
+  lower_fn_decl_stmts(parse_program_preserving(tokens))
+}
+
 // Like parse_program but, on a syntax error, prefixes the message with the
 // failing statement's `line:col` (from `lex_with_offsets` token start offsets).
 // Per-statement wrapping keeps the change local. Build the prefix with
 // String::concat (not `+` or interpolation) to avoid selfhost string-concat
 // NUL fragility. Source-span foundation: located parse diagnostics.
-export let parse_program_located: (Array[Token], Array[Int], String) -> Array[Stmt] with { Error } = (tokens, starts, source) -> {
+// #816: in-body parse errors carry the failing TOKEN index as "at #N"
+// (expect_tk and the primary-dispatch "unexpected token" throw). Decode it so
+// the located wrapper anchors the diagnostic at the OFFENDING token instead
+// of the enclosing statement's start (an error on line 6 used to report
+// "line 2:1"), and strip the index + the lexer-internal "(prev=..., next=...)"
+// debris from the user-facing message.
+fn extract_err_token_pos(msg: String, fallback_pos: Int) -> (Int, String) {
+  let mi = String::index_of(msg, " at #")
+  if mi < 0 {
+    (fallback_pos, msg)
+  } else {
+    let mlen = String::length(msg)
+    let mut di = mi + 5
+    let mut n = 0
+    let mut any = false
+    let mut scanning = true
+    while scanning {
+      if di < mlen {
+        let ch = String::char_code_at(msg, di)
+        if ch >= 48 && ch <= 57 {
+          n = n * 10 + (ch - 48)
+          any = true
+          di = di + 1
+        } else {
+          scanning = false
+        }
+      } else {
+        scanning = false
+      }
+    }
+    if !any {
+      (fallback_pos, msg)
+    } else {
+      let head = String::substring(msg, 0, mi)
+      let tail = String::substring(msg, di, mlen)
+      let joined = String::concat(head, tail)
+      let pi = String::index_of(joined, " (prev=")
+      let cleaned = if pi >= 0 {
+        String::substring(joined, 0, pi)
+      } else {
+        joined
+      }
+      (n, cleaned)
+    }
+  }
+}
+
+export fn parse_program_located(tokens: Array[Token], starts: Array[Int], source: String) -> Array[Stmt] with { Error } {
   let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let mut pos = 0
@@ -655,14 +723,20 @@ export let parse_program_located: (Array[Token], Array[Int], String) -> Array[St
           }
         } with Error {
           Throw(msg) => {
-            let off = if start_pos < Array::length(starts) {
-              Array::get(starts, start_pos)
+            let (err_pos, cleaned_msg) = extract_err_token_pos(msg, start_pos)
+            let anchor_pos = if err_pos < Array::length(starts) {
+              err_pos
+            } else {
+              start_pos
+            }
+            let off = if anchor_pos < Array::length(starts) {
+              Array::get(starts, anchor_pos)
             } else {
               0
             }
             let (line, col) = offset_to_line_col(source, off)
             let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
-            throw(String::concat(loc, msg))
+            throw(String::concat(loc, cleaned_msg))
           }
         }
         let mut ii = 0
@@ -683,7 +757,7 @@ export let parse_program_located: (Array[Token], Array[Int], String) -> Array[St
 // use a single `if is_recovery_point(...)` test instead of a mixed
 // constructor/catch-all `match` (the latter traps the seed codegen on this
 // shape — keep this a flat function returning Bool).
-let is_recovery_point: (Token) -> Bool = (t) -> {
+fn is_recovery_point(t: Token) -> Bool {
   match t {
     TLet => true,
     TExport => true,
@@ -712,7 +786,7 @@ let is_recovery_point: (Token) -> Bool = (t) -> {
 // progress. Returns the partial AST plus all collected diagnostics. Build all
 // strings with String::concat (not `+`/interpolation) to avoid selfhost
 // string-concat NUL fragility. Foundation: collect-all parse diagnostics (LSP).
-export let parse_program_recovering: (Array[Token], Array[Int], String) -> (Array[Stmt], Array[String]) with { Error } = (tokens, starts, source) -> {
+export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], source: String) -> (Array[Stmt], Array[String]) with { Error } {
   let cfg_active = handle {
     cfg_scan_enabled(tokens)
   } with Error {
@@ -785,14 +859,20 @@ export let parse_program_recovering: (Array[Token], Array[Int], String) -> (Arra
           Some((stmts, next))
         } with Error {
           Throw(msg) => {
-            let off = if start_pos < Array::length(starts) {
-              Array::get(starts, start_pos)
+            let (err_pos, cleaned_msg) = extract_err_token_pos(msg, start_pos)
+            let anchor_pos = if err_pos < Array::length(starts) {
+              err_pos
+            } else {
+              start_pos
+            }
+            let off = if anchor_pos < Array::length(starts) {
+              Array::get(starts, anchor_pos)
             } else {
               0
             }
             let (line, col) = offset_to_line_col(source, off)
             let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
-            ArrayBuilder::push(diags, String::concat(loc, msg))
+            ArrayBuilder::push(diags, String::concat(loc, cleaned_msg))
             None
           }
         }
@@ -836,7 +916,7 @@ export let parse_program_recovering: (Array[Token], Array[Int], String) -> (Arra
 // byte span (start, end), derived from the token offset arrays produced by
 // `lex_with_offsets`. start = first token's start offset; end = last token's
 // end offset. The three returned arrays are parallel (one entry per stmt).
-export let parse_program_spans: (Array[Token], Array[Int], Array[Int]) -> (Array[Stmt], Array[Int], Array[Int]) with { Error } = (tokens, starts, ends) -> {
+export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Array[Int]) -> (Array[Stmt], Array[Int], Array[Int]) with { Error } {
   let b = ArrayBuilder::new()
   let span_start = ArrayBuilder::new()
   let span_end = ArrayBuilder::new()
@@ -883,9 +963,9 @@ export let parse_program_spans: (Array[Token], Array[Int], Array[Int]) -> (Array
 //# Misc
 
 export {
-  Pat, Expr, Stmt, TypeExpr, parse, parse_ok, parse_expr, parse_stmt, parse_type, parse_program
+  Pat, Expr, Stmt, TypeExpr, parse, parse_ok, parse_expr, parse_stmt, parse_stmt_preserving, parse_type, parse_program, parse_program_preserving
 }
 
 export {
-  Pat, Expr, Stmt, parse, TypeExpr, parse_ok, parse_expr, parse_stmt, parse_type, parse_program
+  Pat, Expr, Stmt, parse, TypeExpr, parse_ok, parse_expr, parse_stmt, parse_stmt_preserving, parse_type, parse_program, parse_program_preserving
 }

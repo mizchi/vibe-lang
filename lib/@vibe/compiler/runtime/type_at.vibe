@@ -33,7 +33,7 @@ import ../syntax {
 // `col` is the position WITHIN a line (col 1 = first char of the line). We count
 // newlines: the offset of the start of line L is just past the (L-1)th newline,
 // then add (col - 1). Defensive: clamp at the source length.
-let line_col_to_offset: (String, Int, Int) -> Int = (source, line, col) -> {
+fn line_col_to_offset(source: String, line: Int, col: Int) -> Int {
   let len = String::length(source)
   let mut i = 0
   let mut cur_line = 1
@@ -63,7 +63,7 @@ enum IdentHit {
   IdentHit(String, Int)
 }
 
-let empty_hits: () -> Array[IdentHit] = () -> {
+fn empty_hits() -> Array[IdentHit] {
   Array::slice([
     IdentHit("", -1)
   ], 0, 0)
@@ -73,7 +73,7 @@ let empty_hits: () -> Array[IdentHit] = () -> {
 // `fold_expr`, but it only COLLECTS located EIdent nodes — it never rebuilds the
 // tree). Every variant is enumerated so a new Expr arm is a compile error here,
 // keeping the collector in sync with the AST.
-let rec collect_expr: (Expr, Array[IdentHit]) -> Unit = (expr, acc) -> {
+fn collect_expr(expr: Expr, acc: Array[IdentHit]) -> Unit {
   match expr {
     EInt(_) => (),
     EFloat(_) => (),
@@ -90,7 +90,7 @@ let rec collect_expr: (Expr, Array[IdentHit]) -> Unit = (expr, acc) -> {
     EStringInterp(_) => (),
     ETuple(items) => collect_exprs(items, acc),
     EArray(items) => collect_exprs(items, acc),
-    ERecord(fields) => collect_field_exprs(fields, acc),
+    ERecord(_, fields) => collect_field_exprs(fields, acc),
     EIf(c, t, e) => {
       collect_expr(c, acc)
       collect_expr(t, acc)
@@ -173,7 +173,7 @@ let rec collect_expr: (Expr, Array[IdentHit]) -> Unit = (expr, acc) -> {
   }
 }
 
-let collect_exprs: (Array[Expr], Array[IdentHit]) -> Unit = (items, acc) -> {
+fn collect_exprs(items: Array[Expr], acc: Array[IdentHit]) -> Unit {
   let mut i = 0
   while i < Array::length(items) {
     collect_expr(Array::get(items, i), acc)
@@ -181,7 +181,7 @@ let collect_exprs: (Array[Expr], Array[IdentHit]) -> Unit = (items, acc) -> {
   }
 }
 
-let collect_field_exprs: (Array[(String, Expr)], Array[IdentHit]) -> Unit = (fields, acc) -> {
+fn collect_field_exprs(fields: Array[(String, Expr)], acc: Array[IdentHit]) -> Unit {
   let mut i = 0
   while i < Array::length(fields) {
     let (_, v) = Array::get(fields, i)
@@ -190,7 +190,7 @@ let collect_field_exprs: (Array[(String, Expr)], Array[IdentHit]) -> Unit = (fie
   }
 }
 
-let collect_arm_exprs: (Array[(Pat, Expr)], Array[IdentHit]) -> Unit = (arms, acc) -> {
+fn collect_arm_exprs(arms: Array[(Pat, Expr)], acc: Array[IdentHit]) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
     let (_, e) = Array::get(arms, i)
@@ -199,7 +199,7 @@ let collect_arm_exprs: (Array[(Pat, Expr)], Array[IdentHit]) -> Unit = (arms, ac
   }
 }
 
-let collect_loop_param_exprs: (Array[(String, Expr)], Array[IdentHit]) -> Unit = (params, acc) -> {
+fn collect_loop_param_exprs(params: Array[(String, Expr)], acc: Array[IdentHit]) -> Unit {
   let mut i = 0
   while i < Array::length(params) {
     let (_, init) = Array::get(params, i)
@@ -208,7 +208,7 @@ let collect_loop_param_exprs: (Array[(String, Expr)], Array[IdentHit]) -> Unit =
   }
 }
 
-let collect_stmt: (Stmt, Array[IdentHit]) -> Unit = (stmt, acc) -> {
+fn collect_stmt(stmt: Stmt, acc: Array[IdentHit]) -> Unit {
   match stmt {
     SLet(_, _, _, _, body) => collect_expr(body, acc),
     SLetMut(_, _, body) => collect_expr(body, acc),
@@ -221,7 +221,7 @@ let collect_stmt: (Stmt, Array[IdentHit]) -> Unit = (stmt, acc) -> {
   }
 }
 
-let collect_stmts: (Array[Stmt], Array[IdentHit]) -> Unit = (stmts, acc) -> {
+fn collect_stmts(stmts: Array[Stmt], acc: Array[IdentHit]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     collect_stmt(Array::get(stmts, i), acc)
@@ -231,7 +231,7 @@ let collect_stmts: (Array[Stmt], Array[IdentHit]) -> Unit = (stmts, acc) -> {
 
 // True when `source[off]` is NOT an identifier char (or off is out of range) —
 // i.e. a valid word boundary. Used to match a binding name as a whole word.
-let is_boundary_at: (String, Int) -> Bool = (source, off) -> {
+fn is_boundary_at(source: String, off: Int) -> Bool {
   if off < 0 || off >= String::length(source) {
     true
   } else {
@@ -247,7 +247,7 @@ let is_boundary_at: (String, Int) -> Bool = (source, off) -> {
 // not an EIdent and so carries no offset). Binding names are exactly the
 // env-visible top-level names, so making their definition site hoverable is the
 // useful case for this MVP.
-let push_binding_name_hit: (String, Int, Int, String, Array[IdentHit]) -> Unit = (source, start, end, name, acc) -> {
+fn push_binding_name_hit(source: String, start: Int, end: Int, name: String, acc: Array[IdentHit]) -> Unit {
   let nlen = String::length(name)
   if nlen == 0 {
     ()
@@ -269,7 +269,7 @@ let push_binding_name_hit: (String, Int, Int, String, Array[IdentHit]) -> Unit =
 // Add located hits for the NAMES of top-level (and module-body) value bindings,
 // using each statement's source span (from parse_program_spans) to scope the
 // whole-word search. Only SLet/SLetMut names are env-visible value bindings.
-let collect_binding_name_hits: (Array[Stmt], Array[Int], Array[Int], String, Array[IdentHit]) -> Unit = (stmts, span_start, span_end, source, acc) -> {
+fn collect_binding_name_hits(stmts: Array[Stmt], span_start: Array[Int], span_end: Array[Int], source: String, acc: Array[IdentHit]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     let start = if i < Array::length(span_start) { Array::get(span_start, i) } else { 0 }
@@ -286,7 +286,7 @@ let collect_binding_name_hits: (Array[Stmt], Array[Int], Array[Int], String, Arr
 // Among all collected idents whose span [off, off+len(name)) contains `tgt`,
 // pick the one with the largest `off` (innermost / closest start). Returns ""
 // when no ident covers the position.
-let pick_ident_at: (Array[IdentHit], Int) -> String = (hits, tgt) -> {
+fn pick_ident_at(hits: Array[IdentHit], tgt: Int) -> String {
   let mut best_name = ""
   let mut best_off = -1
   let mut i = 0
@@ -310,7 +310,7 @@ let pick_ident_at: (Array[IdentHit], Int) -> String = (hits, tgt) -> {
 // Same selection as pick_ident_at, but returns the chosen ident's source
 // `off` (the innermost / largest-off hit covering `tgt`), or -1 when none.
 // Used to query the per-node type table by the hovered EIdent's offset.
-let pick_ident_off: (Array[IdentHit], Int) -> Int = (hits, tgt) -> {
+fn pick_ident_off(hits: Array[IdentHit], tgt: Int) -> Int {
   let mut best_off = -1
   let mut i = 0
   while i < Array::length(hits) {
@@ -333,7 +333,7 @@ let pick_ident_off: (Array[IdentHit], Int) -> Int = (hits, tgt) -> {
 // produced by check_program_type_table. Returns None when no node recorded that
 // exact offset. When multiple entries share an offset (re-checked node), the
 // last recorded one wins (closest to the final inference state).
-let tytab_lookup: (Array[(Int, Type)], Int) -> Option[Type] = (table, off) -> {
+fn tytab_lookup(table: Array[(Int, Type)], off: Int) -> Option[Type] {
   let mut found = None
   let mut i = 0
   while i < Array::length(table) {
@@ -356,7 +356,7 @@ let tytab_lookup: (Array[(Int, Type)], Int) -> Option[Type] = (table, off) -> {
 //      and let-binding definition sites whose offset is not an EIdent node).
 // Returns "" when the position is not over a located identifier, or the name
 // resolves nowhere. Any failure is swallowed and yields "".
-export let type_at_source: (String, Int, Int) -> String = (source, line, col) -> {
+export fn type_at_source(source: String, line: Int, col: Int) -> String {
   handle {
     let tgt = line_col_to_offset(source, line, col)
     let (tokens, starts, ends) = lex_with_offsets(source)

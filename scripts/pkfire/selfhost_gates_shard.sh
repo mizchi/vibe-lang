@@ -30,14 +30,17 @@ case "$shard" in
     # Library `vibe test` smoke (selfhost-CLI-compilable subset; covers lib/@vibex/wasm and
     # lib/@vibe/prelude — the selfhost-only gate doesn't reach these).
     bash scripts/test_vibe_library.sh
-    bash scripts/test_selfhost_cli_core.sh
-    bash scripts/test_selfhost_cli_component_preview2.sh
+    # #821: the following gate scripts were referenced here but NEVER committed
+    # (no git history), so this shard died at the first missing file under
+    # `set -e` and everything after it silently never ran:
+    #   test_selfhost_cli_component_preview2.sh, test_selfhost_cli_command_parity.sh,
+    #   test_selfhost_cli_direct_parity.sh, test_selfhost_cutover_gate.sh
+    # test_selfhost_cli_core.sh exists but depends on build_selfhost_cli_core.sh
+    # which was also never committed (recorded in #766 / PR #804). Restore each
+    # from its spec contract before re-adding to this list.
     bash scripts/test_selfhost_cli_preview2_package.sh
     bash scripts/test_selfhost_cli_command_component.sh
-    bash scripts/test_selfhost_cli_command_parity.sh
     bash scripts/test_selfhost_cli_direct_component.sh
-    bash scripts/test_selfhost_cli_direct_parity.sh
-    scripts/test_selfhost_cutover_gate.sh
     bash scripts/test_selfhost_rc_bootstrap.sh
     bash scripts/test_selfhost_async_component_gate.sh
     bash scripts/test_wasi_http_p3_full_gate.sh

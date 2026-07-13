@@ -36,7 +36,7 @@ export let AST_BINARY_MAGIC_T: Int = 84   // 'T'
 //# silently clamps at 32 bits; the ABI requires 64-bit-clean output
 //# for any varint field (Stmt counts, string lengths). Spelled out
 //# the slow way so the bytes match across implementations bit-for-bit.
-export let ast_binary_write_varint: (Bytes, Int) -> Unit = (buf, v) -> {
+export fn ast_binary_write_varint(buf: Bytes, v: Int) -> Unit {
   let mut x = v
   let mut more = true
   while more {
@@ -55,7 +55,7 @@ export let ast_binary_write_varint: (Bytes, Int) -> Unit = (buf, v) -> {
 //# src/core/serialize_binary.mbt. Arithmetic right shift keeps the
 //# sign bit on the high end so the termination condition is
 //# value==0/no-sign or value==-1/sign-set.
-export let ast_binary_write_svarint: (Bytes, Int) -> Unit = (buf, v) -> {
+export fn ast_binary_write_svarint(buf: Bytes, v: Int) -> Unit {
   let mut value = v
   let mut more = true
   while more {
@@ -75,7 +75,7 @@ export let ast_binary_write_svarint: (Bytes, Int) -> Unit = (buf, v) -> {
 }
 
 //# Single byte 0x00 or 0x01.
-export let ast_binary_write_bool: (Bytes, Bool) -> Unit = (buf, b) -> {
+export fn ast_binary_write_bool(buf: Bytes, b: Bool) -> Unit {
   if b {
     Bytes::push(buf, 1)
   } else {
@@ -88,7 +88,7 @@ export let ast_binary_write_bool: (Bytes, Bool) -> Unit = (buf, b) -> {
 //# (a) decode surrogate pairs back into code points, then (b) emit
 //# UTF-8 bytes. This is the inverse of what
 //# `@buffer.Buffer::write_string_utf8` does on the MoonBit side.
-export let ast_binary_write_string: (Bytes, String) -> Unit = (buf, s) -> {
+export fn ast_binary_write_string(buf: Bytes, s: String) -> Unit {
   // Encode UTF-8 into a scratch buffer first so we can prefix with
   // the byte count (not the char/code-unit count).
   let scratch = Bytes::new()
@@ -132,7 +132,7 @@ export let ast_binary_write_string: (Bytes, String) -> Unit = (buf, s) -> {
 }
 
 //# Optional string: 0x00 = None, 0x01 followed by string.
-export let ast_binary_write_optstr: (Bytes, Option[String]) -> Unit = (buf, o) -> {
+export fn ast_binary_write_optstr(buf: Bytes, o: Option[String]) -> Unit {
   match o {
     None => Bytes::push(buf, 0)
     Some(s) => {
@@ -143,14 +143,14 @@ export let ast_binary_write_optstr: (Bytes, Option[String]) -> Unit = (buf, o) -
 }
 
 //# `svarint(start) svarint(end)`.
-export let ast_binary_write_span: (Bytes, Int, Int) -> Unit = (buf, start, end) -> {
+export fn ast_binary_write_span(buf: Bytes, start: Int, end: Int) -> Unit {
   ast_binary_write_svarint(buf, start)
   ast_binary_write_svarint(buf, end)
 }
 
 //# Magic 'vAST' + version varint. Emit this once at the start of any
 //# blob.
-export let ast_binary_write_header: (Bytes) -> Unit = (buf) -> {
+export fn ast_binary_write_header(buf: Bytes) -> Unit {
   Bytes::push(buf, AST_BINARY_MAGIC_V)
   Bytes::push(buf, AST_BINARY_MAGIC_A)
   Bytes::push(buf, AST_BINARY_MAGIC_S)
@@ -167,17 +167,17 @@ export struct AstBinaryReader {
   mut pos: Int
 }
 
-export let ast_binary_reader_new: (Bytes) -> AstBinaryReader = (bytes) -> {
+export fn ast_binary_reader_new(bytes: Bytes) -> AstBinaryReader {
   AstBinaryReader::{ bytes: bytes, pos: 0 }
 }
 
-export let ast_binary_reader_remaining: (AstBinaryReader) -> Int = (r) -> {
+export fn ast_binary_reader_remaining(r: AstBinaryReader) -> Int {
   Bytes::length(r.bytes) - r.pos
 }
 
 //# Read one byte and advance the cursor. Returns -1 on EOF; callers
 //# are expected to validate ahead-of-read for non-trivial decodes.
-export let ast_binary_read_byte: (AstBinaryReader) -> Int = (r) -> {
+export fn ast_binary_read_byte(r: AstBinaryReader) -> Int {
   if r.pos >= Bytes::length(r.bytes) {
     0 - 1
   } else {
@@ -188,7 +188,7 @@ export let ast_binary_read_byte: (AstBinaryReader) -> Int = (r) -> {
 }
 
 //# LEB128 unsigned. Mirrors `read_varint` on the MoonBit side.
-export let ast_binary_read_varint: (AstBinaryReader) -> Int = (r) -> {
+export fn ast_binary_read_varint(r: AstBinaryReader) -> Int {
   let mut result = 0
   let mut shift = 0
   let mut more = true
@@ -205,7 +205,7 @@ export let ast_binary_read_varint: (AstBinaryReader) -> Int = (r) -> {
 }
 
 //# sleb128. Sign-extends if the final byte has bit 6 set.
-export let ast_binary_read_svarint: (AstBinaryReader) -> Int = (r) -> {
+export fn ast_binary_read_svarint(r: AstBinaryReader) -> Int {
   let mut result = 0
   let mut shift = 0
   let mut last_byte = 0
@@ -226,7 +226,7 @@ export let ast_binary_read_svarint: (AstBinaryReader) -> Int = (r) -> {
   }
 }
 
-export let ast_binary_read_bool: (AstBinaryReader) -> Bool = (r) -> {
+export fn ast_binary_read_bool(r: AstBinaryReader) -> Bool {
   let b = ast_binary_read_byte(r)
   b == 1
 }
@@ -234,7 +234,7 @@ export let ast_binary_read_bool: (AstBinaryReader) -> Bool = (r) -> {
 //# Decode the varint length-prefixed UTF-8 string back into a vibe
 //# `String`. We assemble characters via char arithmetic; vibe's
 //# `String::concat` joins single-character strings.
-export let ast_binary_read_string: (AstBinaryReader) -> String = (r) -> {
+export fn ast_binary_read_string(r: AstBinaryReader) -> String {
   let byte_len = ast_binary_read_varint(r)
   let end = r.pos + byte_len
   // O(N) build via StringBuilder; the previous `out = String::concat(out, c)`
@@ -281,7 +281,7 @@ export let ast_binary_read_string: (AstBinaryReader) -> String = (r) -> {
   StringBuilder::freeze(out)
 }
 
-export let ast_binary_read_optstr: (AstBinaryReader) -> Option[String] = (r) -> {
+export fn ast_binary_read_optstr(r: AstBinaryReader) -> Option[String] {
   let tag = ast_binary_read_byte(r)
   if tag == 0 {
     None
@@ -290,7 +290,7 @@ export let ast_binary_read_optstr: (AstBinaryReader) -> Option[String] = (r) -> 
   }
 }
 
-export let ast_binary_read_span: (AstBinaryReader) -> (Int, Int) = (r) -> {
+export fn ast_binary_read_span(r: AstBinaryReader) -> (Int, Int) {
   let start = ast_binary_read_svarint(r)
   let end = ast_binary_read_svarint(r)
   (start, end)
@@ -298,7 +298,7 @@ export let ast_binary_read_span: (AstBinaryReader) -> (Int, Int) = (r) -> {
 
 //# Magic + version. Returns `(ok, version)`: ok=false on bad magic,
 //# version=0 on EOF.
-export let ast_binary_read_header: (AstBinaryReader) -> (Bool, Int) = (r) -> {
+export fn ast_binary_read_header(r: AstBinaryReader) -> (Bool, Int) {
   if ast_binary_reader_remaining(r) < 4 {
     (false, 0)
   } else {

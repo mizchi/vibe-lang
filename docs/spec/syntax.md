@@ -25,8 +25,10 @@ change.
 - `Expr` is an expression.
 - `Pat` is a pattern.
 - `Stmt` is a declaration, command, assignment, or expression statement.
-- `...` means a comma- or semicolon-separated repetition depending on the
-  surrounding delimiter.
+- `...` means a separated repetition: comma-separated in expression contexts
+  (arguments, tuples, struct literals, import lists), semicolon-separated in
+  type declaration bodies (enum variants, struct fields). Using `,` as a
+  declaration-body separator was removed in 0.3.0 and is a parse error.
 
 This document is intentionally EBNF-like, not a parser generator grammar.
 Parser conflict resolution and diagnostics are implementation-defined.
@@ -85,7 +87,7 @@ literals only where the parser is expecting that literal head.
 0xFF
 1.5f
 3.14
-"hello \(name)"
+"hello \{name}"
 #|multi
 #|line
 'A'
@@ -102,7 +104,8 @@ Rules:
 - Hex literals use `0x` or `0X`.
 - Decimal literals without `f` are `Double`; decimal literals with `f` are
   `Float`.
-- Strings support escapes and interpolation with `\(Expr)`.
+- Strings support escapes and interpolation with `\{Expr}`. The former
+  `\(Expr)` spelling was removed in 0.3.0 and is now a lex error.
 - `Char` is represented as an integer character code.
 
 ## Program Structure
@@ -215,6 +218,10 @@ export enum Shape { Circle(Int); Rect(Int, Int) }
 ```
 
 Constructors may be used in expressions and patterns.
+
+Declaration members (enum variants, struct fields) are separated by `;`.
+Using `,` as the separator was removed in 0.3.0; the parser reports a located
+error suggesting `;`.
 
 ### Structs
 

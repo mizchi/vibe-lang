@@ -26,6 +26,76 @@
 > `docs/spec/1.0-freeze.md` の stable surface 定義自体は 1.0 到達時にそのまま
 > 使う想定で無効化しない。**#647 は 1.0 GA タグの issue として保留**し、直近の
 > リリース作業は 0.2.0（0.1.0 からの継続的バグ修正・小機能追加）として進める。
+>
+> **追記 (2026-07-12, ADR-0067)**: GA のバージョン番号自体を **1.0 → 0.3 に
+> renumber** した。旧 1.0 GA タグ issue #647 は close 済みで、タグ運用を含む
+> tracking は **#805 (0.3.0 GA) / #806 (0.4.0)**。下の「バージョンロードマップ」
+> 参照。
+
+---
+
+## バージョンロードマップ (2026-07-12)
+
+> **GA = 0.3.0**（旧 1.0 GA を renumber、ADR-0067）。1.0 は GA の同義語では
+> なくなり、GA 後の成熟版番号として空ける。`spec/1.0-freeze.md` の stable
+> surface 定義は GA (= 0.3) 到達時に適用するものと読み替える（ADR-0057/0066 の
+> 「1.0 到達時に使う」を継承）。
+
+| version | 位置づけ | 内容 |
+| --- | --- | --- |
+| **0.2.0** | 現在地 | 既知バグが一通り吐き出せている段階。0.1.0 からの継続的バグ修正・小機能追加（ADR-0066 のリリース） |
+| **0.3.0** | **GA** | 下記 10 項目 + タグ運用。tracking: **#805** |
+| **0.4.0** | post-GA | 下記 3 項目。tracking: **#806** |
+
+### 0.3.0 (GA) の内容
+
+1. **パッケージレジストリの完成** — ADR-0065 の registry / 供給網要件
+   （transparency log、scope 所有権・署名、version→hash 不変 mapping、
+   yank 不変、provenance）を実装し、`vibe add`/`publish` の導線を閉じる。
+   Module System v2（ADR-0063/0064）の後続作業（ネットワーク add/update）を含む。
+2. **冗長な文法の削除** — 同じことを書く方法が複数ある箇所を 1 つに絞る
+   （`module {}` 削除 #728 の路線を継続）。
+3. **トップレベル副作用の制限 + `fn main {}` エントリポイント特殊化** —
+   現状 `_start` / `main` / `cli_main` 等のエントリ規約が混在している。
+   MoonBit と同様に `fn main {}` を言語レベルで特殊化し、トップレベルは
+   宣言のみ・副作用（実行）は main に限定する方向で設計する。
+4. **エフェクトシステムの精緻化** — effect 診断の fix-it (#639)、`Error` の
+   algebraic effect 化 (#640)、mut の region capability 統一
+   (#418/#629, ADR-0060) 系の残タスク。
+5. **REPL** — compiled session backend の `vibe shell` を対話開発の一級導線に
+   引き上げる（interpreter は撤去済みのため compiled REPL として）。
+6. **doctest + 実行可能な `*.vibe.md`** — docs 中のコード例を検証対象にする
+   （cheatsheet ↔ examples の同期切れを構造的に防ぐ）。
+7. **inline wasm (WAT S 式) の直接記述** — 最適化のために WAT の S 式を
+   vibe ソース内に直接書けるようにする。既存資産: `lib/@vibex/wasm` の
+   wat_encoder（S 式完全対応）、SIMD codegen 計画（0xFD prefix emit）。
+   ホットパスの手書き最適化・SIMD intrinsic の足場。
+8. **`@vibe/core` コアライブラリの拡充** — moonbitlang/core を参考に契約
+   パッケージとしての stdlib 面を広げる（#766 で統合した base64/math/diff/
+   uuid/list/set の路線を継続）。
+9. **`let` → `fn` 移行の完遂** — ADR-0064。compiler source を含む全ツリーで
+   トップレベル名前付き関数を `fn` に統一する（cache/sha1.vibe から着手済み）。
+10. **WASI p3 動作保証** (#821) — wasmtime の WASI p3 (wasmtime_wasi p3
+    bindings) で動くことを CI で保証する。async-component gate の復旧、
+    guarantee gate 新設（wasmtime 45/46 matrix、ツール欠如 = FAIL）、
+    ratified 0.3.0 / wasmtime 46 への cutover。パイプライン自体は wasmtime
+    45 で動作確認済み — 欠けているのは検証側のみ。
+
+### 0.4.0 の内容
+
+1. **スレッドを念頭に置いた設計** — 目標モデルは **Go channel / Elixir 風
+   軽量プロセス**（軽量スレッド + message passing、ADR-0068）。
+   shared-everything-threads (#488) の実験基盤を本線化し、ランタイム・
+   effect 表面をこのモデル前提で設計し直す。0.3.0 までの全設計も
+   ADR-0068 の設計制約（グローバル可変状態を増やさない等）に従う。
+2. **形式化を念頭に置いた型システムの設計** — checker 健全化
+   （ADR「型健全性」系列）の先にある、仕様の形式化・機械検証を見据えた
+   型システムの再設計。
+3. **専用のエージェントハーネス** — AI エージェントが vibe を書く・検証する
+   ための専用ハーネス（diagnostics/editor query primitives の路線の先）。
+   前身として言語評価ループ `eval/lang-review/`（AI レビュアーが文法・
+   意味論・型健全性をスコアリングし、所見を issue 化して改善を回す）が
+   稼働済み。
 
 ---
 

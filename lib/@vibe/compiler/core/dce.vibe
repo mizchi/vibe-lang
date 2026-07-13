@@ -6,19 +6,22 @@ import ./ast.vibe {
 
 //# Functions
 
-let clone_arr: (Array[String]) -> Array[String] = (arr) -> {
+fn clone_arr(arr: Array[String]) -> Array[String] {
   Array::slice(arr, 0, Array::length(arr))
 }
 
-let stmt_name: (Stmt) -> Option[String] = (stmt) -> {
+fn stmt_name(stmt: Stmt) -> Option[String] {
   match stmt {
     SLet(_, _, name, _, _) => Some(name),
+    // Preserved `fn` declaration (ADR-0064 #727): a value binding for DCE
+    // purposes, exactly like the SLet it lowers to.
+    SFnDecl(_, name, _, _, _) => Some(name),
     SLetMut(name, _, _) => Some(name),
     _ => None
   }
 }
 
-let dce_array_contains_str: (Array[String], String) -> Bool = (arr, s) -> {
+fn dce_array_contains_str(arr: Array[String], s: String) -> Bool {
   let len = Array::length(arr)
   let rec search: (Int) -> Bool = (i) -> {
     if i >= len {
@@ -32,7 +35,7 @@ let dce_array_contains_str: (Array[String], String) -> Bool = (arr, s) -> {
   search(0)
 }
 
-let add_ref: (Array[String], Array[String], String) -> Int = (out, bound, name) -> {
+fn add_ref(out: Array[String], bound: Array[String], name: String) -> Int {
   if not(dce_array_contains_str(bound, name)) {
     if not(dce_array_contains_str(out, name)) {
       Array::push(out, name)
@@ -41,7 +44,7 @@ let add_ref: (Array[String], Array[String], String) -> Int = (out, bound, name) 
   0
 }
 
-let rec collect_pat_bindings: (Pat, Array[String]) -> Int = (pat, bound) -> {
+fn collect_pat_bindings(pat: Pat, bound: Array[String]) -> Int {
   match pat {
     PWild => 0,
     PBind(name) => {
@@ -77,7 +80,7 @@ let rec collect_pat_bindings: (Pat, Array[String]) -> Int = (pat, bound) -> {
   }
 }
 
-let rec collect_refs_into: (Expr, Array[String], Array[String]) -> Int = (expr, bound, out) -> {
+fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> Int {
   match expr {
     EIdent(name, _) => add_ref(out, bound, name),
     EInt(_) => 0,
@@ -106,7 +109,7 @@ let rec collect_refs_into: (Expr, Array[String], Array[String]) -> Int = (expr, 
       }
       0
     },
-    ERecord(fields) => {
+    ERecord(_, fields) => {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, val) = Array::get(fields, i)
@@ -259,7 +262,7 @@ let rec collect_refs_into: (Expr, Array[String], Array[String]) -> Int = (expr, 
   }
 }
 
-let collect_refs: (Expr, Array[String]) -> Array[String] = (expr, bound) -> {
+fn collect_refs(expr: Expr, bound: Array[String]) -> Array[String] {
   let out = Array::slice([
     ""
   ], 0, 0)
@@ -267,14 +270,14 @@ let collect_refs: (Expr, Array[String]) -> Array[String] = (expr, bound) -> {
   out
 }
 
-let enqueue_reachable: (Array[String], Array[String], String) -> Unit = (reachable, queue, name) -> {
+fn enqueue_reachable(reachable: Array[String], queue: Array[String], name: String) -> Unit {
   if not(dce_array_contains_str(reachable, name)) {
     Array::push(reachable, name)
     Array::push(queue, name)
   }
 }
 
-let collect_structural_refs_into_queue: (Stmt, Array[String], Array[String], Array[String]) -> Unit = (stmt, bound, reachable, queue) -> {
+fn collect_structural_refs_into_queue(stmt: Stmt, bound: Array[String], reachable: Array[String], queue: Array[String]) -> Unit {
   let refs = match stmt {
     STest(_, expr) => collect_refs(expr, bound),
     SBench(_, expr) => collect_refs(expr, bound),
@@ -290,7 +293,7 @@ let collect_structural_refs_into_queue: (Stmt, Array[String], Array[String], Arr
   }
 }
 
-let is_type_or_structural: (Stmt) -> Bool = (stmt) -> {
+fn is_type_or_structural(stmt: Stmt) -> Bool {
   match stmt {
     SEnum(_, _, _, _, _) => true,
     SSuberror(_, _, _) => true,
@@ -312,7 +315,7 @@ let is_type_or_structural: (Stmt) -> Bool = (stmt) -> {
   }
 }
 
-export let dce_stmts: (Array[Stmt], Array[String]) -> Array[Stmt] = (stmts, entry_names) -> {
+export fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stmt] {
   // Early-return on empty input: downstream code uses
   //   `Array::slice([Array::get(stmts, 0)], 0, 0)`
   // to construct a typed empty `Array[Stmt]`, which traps out-of-bounds
@@ -340,6 +343,23 @@ export let dce_stmts: (Array[Stmt], Array[String]) -> Array[Stmt] = (stmts, entr
         Array::push(def_names, name)
         let refs = match stmt {
           SLet(_, _, _, _, expr) => collect_refs(expr, empty_bound),
+          // Preserved fn decl (ADR-0064 #727): body refs plus contract-
+          // condition refs (requires/ensures execute inside the function
+          // after lowering, so helpers they call must stay live).
+          SFnDecl(_, _, fn_value, reqs, enss) => {
+            let out = collect_refs(fn_value, empty_bound)
+            let mut cri = 0
+            while cri < Array::length(reqs) {
+              let _ = collect_refs_into(Array::get(reqs, cri), empty_bound, out)
+              cri = cri + 1
+            }
+            let mut cei = 0
+            while cei < Array::length(enss) {
+              let _ = collect_refs_into(Array::get(enss, cei), empty_bound, out)
+              cei = cei + 1
+            }
+            out
+          },
           SLetMut(_, _, expr) => collect_refs(expr, empty_bound),
           _ => Array::slice([
             ""
@@ -417,7 +437,7 @@ export let dce_stmts: (Array[Stmt], Array[String]) -> Array[Stmt] = (stmts, entr
 // Mirrors the reachability computation inside `dce_stmts`; kept as a separate
 // (currently unwired) function so module-source emission can reuse it without
 // changing `dce_stmts` (a bootstrap-reachable hot path).
-let dce_reachable_names: (Array[Stmt], Array[String]) -> Array[String] = (stmts, entry_names) -> {
+fn dce_reachable_names(stmts: Array[Stmt], entry_names: Array[String]) -> Array[String] {
   let empty_bound = Array::slice([
     ""
   ], 0, 0)
@@ -437,6 +457,23 @@ let dce_reachable_names: (Array[Stmt], Array[String]) -> Array[String] = (stmts,
         Array::push(def_names, name)
         let refs = match stmt {
           SLet(_, _, _, _, expr) => collect_refs(expr, empty_bound),
+          // Preserved fn decl (ADR-0064 #727): body refs plus contract-
+          // condition refs (requires/ensures execute inside the function
+          // after lowering, so helpers they call must stay live).
+          SFnDecl(_, _, fn_value, reqs, enss) => {
+            let out = collect_refs(fn_value, empty_bound)
+            let mut cri = 0
+            while cri < Array::length(reqs) {
+              let _ = collect_refs_into(Array::get(reqs, cri), empty_bound, out)
+              cri = cri + 1
+            }
+            let mut cei = 0
+            while cei < Array::length(enss) {
+              let _ = collect_refs_into(Array::get(enss, cei), empty_bound, out)
+              cei = cei + 1
+            }
+            out
+          },
           SLetMut(_, _, expr) => collect_refs(expr, empty_bound),
           _ => Array::slice([
             ""
@@ -493,7 +530,7 @@ let dce_reachable_names: (Array[Stmt], Array[String]) -> Array[String] = (stmts,
 // Whether DCE keeps `stmt` given the reachable name set: type/structural
 // statements are always kept; named value defs are kept iff reachable; unnamed
 // statements are kept. (Same per-statement rule `dce_stmts` applies.)
-let dce_keep_stmt: (Stmt, Array[String]) -> Bool = (stmt, reachable) -> {
+fn dce_keep_stmt(stmt: Stmt, reachable: Array[String]) -> Bool {
   if is_type_or_structural(stmt) {
     true
   } else {
@@ -508,7 +545,7 @@ let dce_keep_stmt: (Stmt, Array[String]) -> Bool = (stmt, reachable) -> {
 // (e.g. module-source emission) map surviving statements back to their source
 // spans without relying on statement identity/equality. Result length equals
 // `Array::length(stmts)`.
-export let dce_keep_flags: (Array[Stmt], Array[String]) -> Array[Bool] = (stmts, entry_names) -> {
+export fn dce_keep_flags(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Bool] {
   let flags = Array::slice([
     true
   ], 0, 0)

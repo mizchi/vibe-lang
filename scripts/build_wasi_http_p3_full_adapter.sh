@@ -55,6 +55,15 @@ crate-type = ["cdylib"]
 wit-bindgen = { version = "0.54.0", default-features = false, features = ["macros", "realloc", "bitflags", "async", "async-spawn"] }
 EOF
 
+# WIT source for the wasi:http p3 world: prefer the in-repo vendored copy
+# (lib/@vibe/wasi/wit/p3, from crates.io wasmtime-wasi-http 45.0.2 — see its
+# VENDOR.md) so the gate is self-contained; fall back to the deps/wasmtime
+# submodule checkout for developers who track wasmtime HEAD (#821).
+WIT_PATH="$PROJECT_ROOT/lib/@vibe/wasi/wit/p3"
+if [ ! -f "$WIT_PATH/world.wit" ]; then
+  WIT_PATH="$PROJECT_ROOT/deps/wasmtime/crates/wasi-http/src/p3/wit"
+fi
+
 cat >"$TMP_DIR/src/lib.rs" <<EOF
 wit_bindgen::generate!({
     inline: r#"
@@ -68,7 +77,7 @@ wit_bindgen::generate!({
         include wasi:http/service@0.3.0-rc-2026-03-15;
       }
     "#,
-    path: "$PROJECT_ROOT/deps/wasmtime/crates/wasi-http/src/p3/wit",
+    path: "$WIT_PATH",
     world: "vibe:http-full-adapter/adapter",
     pub_export_macro: true,
     generate_all,

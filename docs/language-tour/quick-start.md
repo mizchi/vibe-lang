@@ -36,7 +36,7 @@ let count = {
 
 // String interpolation
 let name = "vibe"
-let msg = "hello \(name)"
+let msg = "hello \{name}"
 
 // Functions
 let inc: (Int) -> Int = (x) -> { x + 1 }

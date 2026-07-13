@@ -1,0 +1,66 @@
+//# Misc
+
+// #825: structural `==` on builtin Option/Result and tuples with AGGREGATE
+// payloads (arrays, tuples, nested Options) must compare structurally, not by
+// word identity. Before the fix these silently returned false because the
+// bare-`==` dispatch only recovered the head type name ("Option"/"Result")
+// and compared payloads with a raw word `==` — arrays/tuples/ctor payloads
+// are heap pointers, so equal values compared unequal. The fix infers the
+// full static shape from literal syntax and routes through the recursive
+// `eq_for_typed` lowering (the same one used for struct fields).
+
+test "Option with array payload compares structurally (#825)" {
+  assert(Some([1, 2]) == Some([1, 2]))
+  assert(Some([1, 2]) != Some([1, 3]))
+  assert(Some([1, 2]) != Some([1, 2, 3]))
+}
+
+test "Option with tuple payload compares structurally (#825)" {
+  assert(Some((1, 2)) == Some((1, 2)))
+  assert(Some((1, 2)) != Some((1, 3)))
+  assert(Some(("a", 2)) == Some(("a", 2)))
+}
+
+test "nested Option compares structurally (#825)" {
+  assert(Some(Some(1)) == Some(Some(1)))
+  assert(Some(Some(1)) != Some(Some(2)))
+  assert(Some(None) == Some(None))
+  assert(Some(Some(1)) != Some(None))
+}
+
+test "Result with aggregate payload compares structurally (#825)" {
+  assert(Ok([1, 2]) == Ok([1, 2]))
+  assert(Ok([1, 2]) != Ok([1, 3]))
+  assert(Err([1, 2]) == Err([1, 2]))
+  assert(Ok((1, "x")) == Ok((1, "x")))
+}
+
+test "tuple with array element compares structurally (#825)" {
+  assert(([1, 2], 0) == ([1, 2], 0))
+  assert(([1, 2], 0) != ([1, 2], 1))
+  assert(([1, 2], 0) != ([1, 3], 0))
+  assert((Some(1), [2]) == (Some(1), [2]))
+}
+
+test "array of Options compares structurally (#825)" {
+  assert([Some(1), None] == [Some(1), None])
+  assert([Some(1)] != [Some(2)])
+}
+
+test "scalar-payload cases keep working (#825 regression net)" {
+  assert(Some(1) == Some(1))
+  assert(Some(1) != Some(2))
+  assert(Some("ab") == Some("ab"))
+  assert(None == None)
+  assert(Ok(1) == Ok(1))
+  assert(Ok(1) != Err(1))
+  assert((1, 2) == (1, 2))
+  assert([1, 2] == [1, 2])
+}
+
+test "builtin enum == interpolates as bool (#825 / #815 follow-up)" {
+  assert("\{Some(1) == Some(1)}" == "true")
+  assert("\{Some([1, 2]) == Some([1, 3])}" == "false")
+  assert("\{Ok([1, 2]) == Ok([1, 2])}" == "true")
+  assert("\{([1, 2], 0) == ([1, 2], 0)}" == "true")
+}

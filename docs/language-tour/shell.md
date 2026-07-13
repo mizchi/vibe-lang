@@ -60,10 +60,10 @@ Embed vibe expressions in shell commands:
 ```
 > let dir = "/tmp"
 > ls {{ dir }}
-  => sh_lines("ls \(dir)")
+  => sh_lines("ls \{dir}")
 ```
 
-`{{ expr }}` is converted to vibe string interpolation `\(expr)`.
+`{{ expr }}` is converted to vibe string interpolation `\{expr}`.
 
 ## Command Substitution `$()`
 

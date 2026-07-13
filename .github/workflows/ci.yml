@@ -54,6 +54,91 @@ jobs:
           name: selfhost-suite-coverage
           path: _build/coverage/selfhost-suite/selfhost_suite.report.json
           if-no-files-found: ignore
+      - name: Stage stage2 for downstream gates (#821)
+        run: |
+          gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
+          mkdir -p _build/ci-artifacts
+          cp "${gen}stage2.wasm" _build/ci-artifacts/stage2.wasm
+      - name: Upload stage2 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfhost-stage2
+          path: _build/ci-artifacts/stage2.wasm
+          if-no-files-found: error
+
+  # WASI p3 guarantee (#821): vibe-built async components + the wasi:http p3
+  # serve pipeline must run on pinned wasmtime versions, with missing tools
+  # treated as FAILURES (no silent skip). Non-required while the wasmtime 46
+  # leg is baselined (the first runs double as the 46 flag re-probe); fold
+  # into ci-required once green for a week.
+  wasi-p3-gate:
+    name: wasi-p3-gate (wasmtime ${{ matrix.wasmtime }})
+    needs: [selfhost-only-gate]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Validated RC baseline (flags per wasi-p3-async.md §3.5): all phases.
+          - wasmtime: v45.0.2
+            phases: "async,http"
+          # Ratified WASI 0.3.0, component-model-async default-on. Local
+          # re-probe (2026-07-12): phase A passes with the unchanged RC flag
+          # set; phase B cannot link (46 serves wasi:http@0.3.0, rejects the
+          # RC world — "resource implementation is missing"). http joins this
+          # leg at the ratified-WIT cutover (#821 step 3).
+          - wasmtime: v46.0.1
+            phases: "async"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Install wasmtime ${{ matrix.wasmtime }}
+        run: |
+          set -euo pipefail
+          dir="wasmtime-${{ matrix.wasmtime }}-x86_64-linux"
+          curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${{ matrix.wasmtime }}/${dir}.tar.xz" | tar -xJ
+          echo "$PWD/$dir" >> "$GITHUB_PATH"
+      - name: Install wasm-tools / wac
+        # Prebuilt release binaries (validated versions; cargo install is the
+        # fallback so a renamed asset degrades to a slow build, not a red run).
+        env:
+          WASM_TOOLS_VERSION: "1.253.0"
+          # 0.10.1 verified locally: `wac plug` of the p3 handler + wasmtime 45
+          # serve is green (the 0.8.1/0.9.0 failures in docs/knowledge.md are
+          # resolved upstream — no fork needed for this shape).
+          WAC_VERSION: "0.10.1"
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/p3-tools"
+          if curl -fsSL "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" | tar -xz; then
+            cp "wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux/wasm-tools" "$PWD/p3-tools/"
+          else
+            cargo install wasm-tools --locked --version "$WASM_TOOLS_VERSION" --root "$PWD/p3-tools-cargo"
+            cp "$PWD/p3-tools-cargo/bin/wasm-tools" "$PWD/p3-tools/"
+          fi
+          if curl -fsSL -o "$PWD/p3-tools/wac" "https://github.com/bytecodealliance/wac/releases/download/v${WAC_VERSION}/wac-cli-x86_64-unknown-linux-musl"; then
+            chmod +x "$PWD/p3-tools/wac"
+          else
+            cargo install wac-cli --locked --root "$PWD/p3-tools-cargo"
+            cp "$PWD/p3-tools-cargo/bin/wac" "$PWD/p3-tools/"
+          fi
+          echo "$PWD/p3-tools" >> "$GITHUB_PATH"
+      - name: Add wasm32 target for the http adapter
+        run: rustup target add wasm32-unknown-unknown
+      - name: Download stage2 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: selfhost-stage2
+          path: _build/ci-artifacts/
+      - name: WASI p3 guarantee gate
+        env:
+          VIBE_P3_GATE_REQUIRE_TOOLS: "1"
+          VIBE_P3_GATE_PHASES: ${{ matrix.phases }}
+          VIBE_ASYNC_GATE_COMPILER: ${{ github.workspace }}/_build/ci-artifacts/stage2.wasm
+          VIBE_SERVE_CLI_WASM: ${{ github.workspace }}/_build/ci-artifacts/stage2.wasm
+        run: bash scripts/test_wasi_p3_guarantee_gate.sh
 
   # Aggregate required check (branch protection requires "ci-required").
   ci-required:

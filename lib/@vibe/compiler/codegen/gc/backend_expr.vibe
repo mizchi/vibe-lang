@@ -73,7 +73,7 @@ import ./backend_match.vibe {
 // packed (ptr<<32)|len strings by CONTENT — raw i64.eq made every
 // string-vs-string `==` a pointer compare, so the gc-compiled compiler failed
 // its own types_equal with "return type mismatch: expected Int, got Int".
-let gc_expr_is_intish: (Expr) -> Bool = (e) -> {
+fn gc_expr_is_intish(e: Expr) -> Bool {
   match e {
     EInt(_) => true,
     EBool(_) => true,
@@ -87,7 +87,7 @@ let gc_expr_is_intish: (Expr) -> Bool = (e) -> {
 // int->float conversions, arithmetic over a floatish operand, and let-bound
 // locals recorded in ctx.gc_float_locals count; anything else (annotated
 // Double params, tuple-destructured floats) is best-effort untracked.
-let rec gc_expr_is_floatish: (Expr, CompileCtxGc) -> Bool = (e, ctx) -> {
+fn gc_expr_is_floatish(e: Expr, ctx: CompileCtxGc) -> Bool {
   match e {
     EFloat(_) => true,
     EIdent(fname, _) => array_contains_str(ctx.gc_float_locals, fname),
@@ -105,7 +105,7 @@ let rec gc_expr_is_floatish: (Expr, CompileCtxGc) -> Bool = (e, ctx) -> {
 // ctor ident)? Runtime values carry no type info, so — exactly like the
 // linear lane's emit_eq_value — the SHAPE of a literal operand decides the
 // structural comparison path for `==`/`!=`.
-let gc_is_ctor_expr: (Expr, CompileCtxGc) -> Bool = (e, ctx) -> {
+fn gc_is_ctor_expr(e: Expr, ctx: CompileCtxGc) -> Bool {
   match e {
     ECall(callee, _, _) => match callee {
       EIdent(cname, _) => ctor_table_index_of(ctx.gc_ctor_table, cname) >= 0,
@@ -119,7 +119,7 @@ let gc_is_ctor_expr: (Expr, CompileCtxGc) -> Bool = (e, ctx) -> {
 // Structural equality for two tuples (gc layout: raw even ptr, element i at
 // ptr+i*8, no header). Ported from the linear emit_tuple_struct_eq; leaves a
 // raw i64 0/1. `cefn` is compile_expr_gc, threaded to avoid a forward ref.
-let emit_gc_tuple_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, num, local_names, next_local, ctx, ld, cefn) -> {
+fn emit_gc_tuple_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, num: Int, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with { Error }) -> Int with { Error } {
   let aptr = next_local
   Array::push(local_names, "__gceqa")
   let bptr = next_local + 1
@@ -150,7 +150,7 @@ let emit_gc_tuple_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, Compil
 // by content there). The generic `eq` builtin compares ctor POINTERS — fresh
 // allocations are never bit-equal, which made the gc-compiled checker's
 // `Some(av) == rb` effect-row comparison (unify_effects) always false.
-let emit_gc_ctor_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, fc, local_names, next_local, ctx, ld, cefn) -> {
+fn emit_gc_ctor_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, fc: Int, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with { Error }) -> Int with { Error } {
   let aptr = next_local
   Array::push(local_names, "__gcceqa")
   let bptr = next_local + 1
@@ -253,7 +253,7 @@ let emit_gc_ctor_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, Compile
 // literals get structural comparison, provably-scalar operands a raw i64.eq,
 // everything else the generic `eq` builtin (bit-equal fast path + string
 // content fall-back). Mirrors the linear lane's emit_eq_value routing.
-let emit_gc_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, cefn) -> {
+fn emit_gc_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with { Error }) -> Int with { Error } {
   let lhs_is_tuple = match lhs {
     ETuple(_) => true,
     _ => false
@@ -328,7 +328,7 @@ let emit_gc_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtxGc, Int,
   }
 }
 
-let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld) -> {
+fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int) -> Int with { Error } {
   let ce: (Bytes, Expr, Array[String], Int, Int) -> Int with { Error } = (b, e, ln, nl, d) -> {
     compile_expr_gc(b, e, ln, nl, ctx, d)
   }
@@ -668,13 +668,13 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       // comparators — mirrors the linear ELet (compile_expr_tail.vibe).
       let agg_entry = match value {
         ETuple(tels) => 64 + Array::length(tels),
-        ERecord(rfields) => 128 + Array::length(rfields),
+        ERecord(_, rfields) => 128 + Array::length(rfields),
         _ => if gc_is_ctor_expr(value, ctx) {
           match value {
             ECall(_, cargs, _) => {
               let fcnt = if Array::length(cargs) == 1 {
                 match Array::get(cargs, 0) {
-                  ERecord(crf) => Array::length(crf),
+                  ERecord(_, crf) => Array::length(crf),
                   _ => Array::length(cargs)
                 }
               } else {
@@ -1157,7 +1157,7 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
         nl1 + 1
       }
     },
-    ERecord(fields) => {
+    ERecord(_, fields) => {
       let flen = Array::length(fields)
       // #722: resolve to a struct by exact field-name set; on a match, lay
       // out in DECLARED field order and stamp the struct's ctor tag at

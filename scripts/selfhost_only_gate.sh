@@ -196,8 +196,7 @@ if grep -q "dead" "$ndir/out.vibe" || ! grep -q "helper" "$ndir/out.vibe"; then
 fi
 # Removed/guarded syntax must be refused by the CURRENT stage2 (the committed
 # seed lags until the next bump, so these checks live here, not in the
-# seed-driven normalize smoke): module blocks are removed (#728); fn
-# statements re-print as let-form until the printer lands (#727).
+# seed-driven normalize smoke): module blocks are removed (#728).
 printf 'module m {\n  export let run: () -> Int = () -> { 1 }\n}\n' > "$ndir/reject_module.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -205,12 +204,30 @@ if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   && [ -s "$ndir/reject_module.out.vibe" ]; then
   echo "[selfhost-only-gate] FAIL: module-block source was not rejected (#728)" >&2; exit 1
 fi
-printf 'fn run() -> Int { 1 }\nexport { run }\n' > "$ndir/reject_fn.vibe"
-if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
+# fn round-trip (ADR-0064 #727): normalize must KEEP `fn` declarations —
+# including the `where` contract — in fn form (SFnDecl + printer support),
+# not rewrite them to `let rec` + inlined asserts; and stay idempotent.
+printf 'fn checked_inc(x: Int) -> Int where { requires: x >= 0, ensures: result > x } { x + 1 }\nexport fn run() -> Int { checked_inc(41) }\nexport { run }\n' > "$ndir/keep_fn.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$ndir/reject_fn.vibe" "$ndir/reject_fn.out.vibe" >/dev/null 2>&1 \
-  && [ -s "$ndir/reject_fn.out.vibe" ]; then
-  echo "[selfhost-only-gate] FAIL: fn-bearing source was not rejected by normalize (#727)" >&2; exit 1
+  "$ndir/keep_fn.vibe" "$ndir/keep_fn.out.vibe" >/dev/null 2>&1
+if [ ! -s "$ndir/keep_fn.out.vibe" ]; then
+  echo "[selfhost-only-gate] FAIL: fn-bearing source was not normalized (#727)" >&2; exit 1
+fi
+if ! grep -q "fn checked_inc" "$ndir/keep_fn.out.vibe" \
+  || ! grep -q "fn run" "$ndir/keep_fn.out.vibe" \
+  || ! grep -q "where { requires:" "$ndir/keep_fn.out.vibe" \
+  || ! grep -q "ensures:" "$ndir/keep_fn.out.vibe" \
+  || grep -q "let rec checked_inc" "$ndir/keep_fn.out.vibe"; then
+  echo "[selfhost-only-gate] FAIL: normalize did not keep the fn + where form (#727)" >&2
+  cat "$ndir/keep_fn.out.vibe" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ndir/keep_fn.out.vibe" "$ndir/keep_fn.out2.vibe" >/dev/null 2>&1
+if ! cmp -s "$ndir/keep_fn.out.vibe" "$ndir/keep_fn.out2.vibe"; then
+  echo "[selfhost-only-gate] FAIL: fn normalize not idempotent (#727)" >&2
+  diff "$ndir/keep_fn.out.vibe" "$ndir/keep_fn.out2.vibe" >&2 || true; exit 1
 fi
 # Idempotency: normalize(normalize(x)) == normalize(x).
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
@@ -630,6 +647,20 @@ echo "[selfhost-only-gate] registry-less git resolution ok"
 echo "[selfhost-only-gate] 6d where-contract + publish gate regression (#731/#732)"
 edir="_build/_gate_ef"
 rm -rf "$edir"; mkdir -p "$edir"
+# (a) satisfied contract: requires + ensures hold, the call returns 42.
+printf 'fn checked_add(x: Int, y: Int) -> Int where { requires: x >= 0, requires: y >= 0, ensures: result >= x } { x + y }\nexport let _start: () -> Int = () -> { checked_add(40, 2) }\n' > "$edir/ok.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edir/ok.vibe" "$edir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$edir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: satisfied where-contract program did not compile (#731)" >&2
+  cat "$edir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+ok_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/ok.wasm" 2>/dev/null | tail -1)"
+if [ "$ok_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: satisfied where-contract returned '$ok_out' (want 42) (#731)" >&2; exit 1
+fi
+# (b) violated requires: entry assert traps.
 printf 'fn half_pos(x: Int) -> Int where { requires: x > 0 } { x / 2 }\nexport let _start: () -> Int = () -> { half_pos(0 - 4) }\n' > "$edir/viol.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -640,6 +671,18 @@ if [ ! -s "$edir/viol.wasm" ]; then
 fi
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol.wasm" >/dev/null 2>&1; then
   echo "[selfhost-only-gate] FAIL: violated requires clause did not trap (#731)" >&2; exit 1
+fi
+# (c) violated ensures: exit assert (over the `result` binding) traps.
+printf 'fn bad_dec(x: Int) -> Int where { ensures: result > x } { x - 1 }\nexport let _start: () -> Int = () -> { bad_dec(7) }\n' > "$edir/viol_ens.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edir/viol_ens.vibe" "$edir/viol_ens.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$edir/viol_ens.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: ensures-contract program did not compile (#731)" >&2
+  cat "$edir/viol_ens.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ens.wasm" >/dev/null 2>&1; then
+  echo "[selfhost-only-gate] FAIL: violated ensures clause did not trap (#731)" >&2; exit 1
 fi
 printf 'fn a(x: Int) -> Int\n' > "$edir/prev.vibei"
 printf 'fn a(x: Int) -> Int\nfn b(x: Int) -> Int\n' > "$edir/next.vibei"
@@ -1885,6 +1928,45 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
 if [ ! -s "$pfdir/good_transitive.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: correctly-declared transitive effect chain did not compile (#626 over-rejects)" >&2; exit 1
 fi
+# #812: the transitive map must also cover IMPORTED effectful functions — a
+# caller invoking an imported `with { Fs }` function without declaring Fs used
+# to compile (and reach the filesystem at runtime) while the same shape with a
+# local callee was rejected. The env-seeded row closes the module boundary.
+mkdir -p "$pfdir/sub"
+cat > "$pfdir/sub/helper.vibe" <<'EOF'
+export let read_it: (String) -> String with { Error, Fs } = (p) -> {
+  Fs::read_file(p)
+}
+EOF
+cat > "$pfdir/bad_import_transitive.vibe" <<'EOF'
+import ./sub/helper.vibe { read_it }
+
+let f: (Int) -> Int = (n) -> {
+  let _ = read_it("x")
+  n
+}
+export let _start: () -> Int = () -> { f(1) }
+EOF
+cat > "$pfdir/good_import_transitive.vibe" <<'EOF'
+import ./sub/helper.vibe { read_it }
+
+let g: (String) -> String with { Error, Fs } = (p) -> {
+  read_it(p)
+}
+export let _start: () -> Int = () -> { 42 }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$pfdir/bad_import_transitive.vibe" "$pfdir/bad_import_transitive.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$pfdir/bad_import_transitive.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: undeclared call of IMPORTED effectful function compiled (#812 regressed)" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$pfdir/good_import_transitive.vibe" "$pfdir/good_import_transitive.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$pfdir/good_import_transitive.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: correctly-declared imported effect call did not compile (#812 over-rejects)" >&2; exit 1
+fi
 rm -rf "$pfdir"
 echo "[selfhost-only-gate] effect-call discipline ok"
 
@@ -1987,6 +2069,190 @@ if [ ! -s "$hdir/singleop.wasm" ]; then
 fi
 rm -rf "$hdir"
 echo "[selfhost-only-gate] handle effect discharge ok"
+
+# 27b. effect op signatures (#813): perform arguments, handler arm names and
+#      payload types, and resume values are validated against the DECLARED
+#      effect's op signatures. Each was previously unchecked (silent garbage).
+echo "[selfhost-only-gate] 27b/27 effect op signature checking (#813)"
+odir="_build/_gate_effopsig"
+rm -rf "$odir"; mkdir -p "$odir"
+cat > "$odir/ok_op.vibe" <<'EOF'
+effect R { Take(Int) -> Int }
+export let _start: () -> Int = () -> {
+  handle {
+    perform R::Take(41)
+  } with R {
+    Take(n) => resume(n + 1)
+  }
+}
+EOF
+cat > "$odir/bad_performarg.vibe" <<'EOF'
+effect R { Take(Int) -> Int }
+export let _start: () -> Int = () -> {
+  handle { perform R::Take("str") } with R { Take(n) => resume(n + 1) }
+}
+EOF
+cat > "$odir/bad_performarity.vibe" <<'EOF'
+effect R { Take(Int) -> Int }
+export let _start: () -> Int = () -> {
+  handle { perform R::Take(1, 2) } with R { Take(n) => resume(n + 1) }
+}
+EOF
+cat > "$odir/bad_armname.vibe" <<'EOF'
+effect Ask { Get() -> Int }
+export let _start: () -> Int = () -> {
+  handle { perform Ask::Get() } with Ask { Wrong(x) => resume(1) }
+}
+EOF
+cat > "$odir/bad_armpayload.vibe" <<'EOF'
+effect G { Give(Int) -> Int }
+export let _start: () -> Int = () -> {
+  handle { perform G::Give(7) } with G { Give(s) => resume(String::length(s)) }
+}
+EOF
+cat > "$odir/bad_resumeval.vibe" <<'EOF'
+effect Q { Get() -> Int }
+export let _start: () -> Int = () -> {
+  handle { perform Q::Get() } with Q { Get() => resume("oops") }
+}
+EOF
+cat > "$odir/bad_kconv.vibe" <<'EOF'
+effect E { Emit(Int) -> Int }
+export let _start: () -> Int = () -> {
+  handle { perform E::Emit(20) } with E { Emit(v, k) => v + k(0) }
+}
+EOF
+cat > "$odir/bad_missingarm.vibe" <<'EOF'
+effect Duo { A() -> Int; B() -> Int }
+export let _start: () -> Int = () -> {
+  handle { perform Duo::B() } with Duo { A() => resume(1) }
+}
+EOF
+cat > "$odir/bad_resume0.vibe" <<'EOF'
+effect Q { Get() -> Int }
+export let _start: () -> Int = () -> {
+  handle { perform Q::Get() } with Q { Get() => resume() }
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$odir/ok_op.vibe" "$odir/ok_op.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$odir/ok_op.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: well-typed effect op program did not compile (#813 over-rejects)" >&2; exit 1
+fi
+op_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$odir/ok_op.wasm" 2>/dev/null | tail -n 1)"
+if [ "$op_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: effect op control returned '$op_out' (expected 42)" >&2; exit 1
+fi
+for bad in bad_performarg bad_performarity bad_armname bad_armpayload bad_resumeval bad_kconv bad_missingarm bad_resume0; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$odir/$bad.vibe" "$odir/$bad.wasm" _start >/dev/null 2>&1 || true
+  if [ -s "$odir/$bad.wasm" ]; then
+    echo "[selfhost-only-gate] FAIL: ill-typed $bad compiled (#813 regressed)" >&2; exit 1
+  fi
+done
+rm -rf "$odir"
+echo "[selfhost-only-gate] effect op signature checking ok"
+
+# 27c. index bounds checks (#811): OOB / negative Array and Bytes access must
+#      TRAP (unreachable) instead of silently reading/writing adjacent memory;
+#      in-bounds access is unchanged.
+echo "[selfhost-only-gate] 27c/27 index bounds checks (#811)"
+bdir="_build/_gate_bounds"
+rm -rf "$bdir"; mkdir -p "$bdir"
+cat > "$bdir/inbounds.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let a = [40, 2, 7]
+  // Bytes::new(n) is a length-n zero-filled buffer (MoonBit semantics);
+  // exercise in-len set/get plus push growth past the initial length.
+  let b = Bytes::new(3)
+  Bytes::set(b, 0, 2)
+  Bytes::push(b, 9)
+  let s = "abc"
+  Array::get(a, 0) + Bytes::get(b, 0) + Bytes::get(b, 3) - 9 + s[1] - String::char_code_at(s, 1)
+}
+EOF
+cat > "$bdir/oob_get.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::get([1, 2, 3], 5) }
+EOF
+cat > "$bdir/oob_neg.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::get([1, 2, 3], -1) }
+EOF
+cat > "$bdir/oob_bytes.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let b = Bytes::new(2); Bytes::get(b, 9) }
+EOF
+cat > "$bdir/oob_str.vibe" <<'EOF'
+export let _start: () -> Int = () -> { String::char_code_at("abc", 7) }
+EOF
+cat > "$bdir/oob_str_neg.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let s = "abc"; s[-1] }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$bdir/inbounds.vibe" "$bdir/inbounds.wasm" _start >/dev/null 2>&1 || true
+bounds_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$bdir/inbounds.wasm" 2>/dev/null | tail -n 1 || true)"
+if [ "$bounds_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: in-bounds access returned '$bounds_out' (expected 42; #811 over-traps)" >&2; exit 1
+fi
+for oob in oob_get oob_neg oob_bytes oob_str oob_str_neg; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$bdir/$oob.vibe" "$bdir/$oob.wasm" _start >/dev/null 2>&1 || true
+  if bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$bdir/$oob.wasm" >/dev/null 2>&1; then
+    echo "[selfhost-only-gate] FAIL: $oob ran without trapping (#811 regressed)" >&2; exit 1
+  fi
+done
+rm -rf "$bdir"
+echo "[selfhost-only-gate] index bounds checks ok"
+
+# 27d. `for await` classification (#827): a stream iterated through an
+#      UNannotated lambda param gives the type-directed desugar no type head; it
+#      used to fall back SILENTLY to the pull-closure lowering, which compiled
+#      fine and then trapped at runtime (call_indirect on the stream's array
+#      pointer). It must now be REJECTED at compile time; the annotated-param
+#      equivalent (#822) must still compile and run to 42.
+echo "[selfhost-only-gate] 27d/27 for-await classification (#827)"
+fadir="_build/_gate_forawait"
+rm -rf "$fadir"; mkdir -p "$fadir"
+cat > "$fadir/ok_annot.vibe" <<'EOF'
+let consume: (Stream[Int]) -> Int = (s) -> {
+  let mut sum = 0
+  for await x in s {
+    sum = sum + x
+  }
+  sum
+}
+export let _start: () -> Int = () -> { consume(Stream::once(42)) }
+EOF
+cat > "$fadir/bad_unannot.vibe" <<'EOF'
+let consume = (s) -> Int {
+  let mut sum = 0
+  for await x in s {
+    sum = sum + x
+  }
+  sum
+}
+export let _start: () -> Int = () -> { consume(Stream::once(42)) }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fadir/ok_annot.vibe" "$fadir/ok_annot.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$fadir/ok_annot.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: annotated-param for-await did not compile (#827 over-rejects)" >&2; exit 1
+fi
+fa_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$fadir/ok_annot.wasm" 2>/dev/null | tail -n 1)"
+if [ "$fa_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: annotated-param for-await returned '$fa_out' (expected 42; #822 regressed)" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fadir/bad_unannot.vibe" "$fadir/bad_unannot.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$fadir/bad_unannot.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: unannotated-param for-await compiled (#827 regressed: pull-closure fallback trap)" >&2; exit 1
+fi
+rm -rf "$fadir"
+echo "[selfhost-only-gate] for-await classification ok"
 
 # 28. argument type checking: the checker used to SWALLOW argument unification
 #     failures (`unify_call_args` did `None => out`), so an ill-typed call like
@@ -2141,13 +2407,78 @@ EOF
 cat > "$tdir/bad_substrarg.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let s = String::substring("abc", "x", 2); 0 }
 EOF
+cat > "$tdir/bad_unknownfield.vibe" <<'EOF'
+struct P { x: Int; y: Int }
+export let _start: () -> Int = () -> { let p = P::{ x: 1, z: 2 }; p.y }
+EOF
+cat > "$tdir/bad_guardonly.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  match 0 {
+    v if v > 0 => 1,
+    v if v < 0 => -1
+  }
+}
+EOF
+cat > "$tdir/bad_arity_get.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::get([1, 2, 3]) }
+EOF
+cat > "$tdir/bad_mutann.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let mut x: Bool = 5; 0 }
+EOF
+cat > "$tdir/bad_agrecv.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::get("str", 0) }
+EOF
+cat > "$tdir/bad_agidx.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::get([1, 2, 3], "x") }
+EOF
+cat > "$tdir/bad_asrecv.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::set("str", 0, 1); 0 }
+EOF
+cat > "$tdir/bad_arity_bytesnew.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let b = Bytes::new(1, 2); Bytes::length(b) }
+EOF
+# #827: Stream[T] is CtNamed (head 0 = tolerated), so the eager Array-backed
+# representation leaked through the Array builtins — these compiled AND ran.
+cat > "$tdir/bad_streamlen.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::length(Stream::once(41)) }
+EOF
+cat > "$tdir/bad_streamget.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::get(Stream::once(41), 0) }
+EOF
+cat > "$tdir/bad_streamset.vibe" <<'EOF'
+export let _start: () -> Int = () -> { Array::set(Stream::once(41), 0, 1); 0 }
+EOF
+# #805 (0.3.0 redundant-syntax removal): the `\(expr)` string-interpolation
+# spelling was removed — only `\{expr}` remains. A source using the old form
+# must be a (located) compile error. The ok side is covered by the existing
+# tests' pervasive `\{...}` usage.
+cat > "$tdir/bad_interp_paren.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let x = 41
+  let s = "\(x)"
+  String::length(s)
+}
+EOF
+# 0.3.0 redundant-syntax removal (2nd batch): ',' as the separator inside type
+# declaration bodies (enum variants / struct fields) was removed — only ';'
+# separates members. Sources using the old comma form must be (located) parse
+# errors. The ok side is covered by the compiler tree's pervasive ';' decls
+# (and $tdir/ok.vibe compiles above).
+cat > "$tdir/bad_declcomma.vibe" <<'EOF'
+enum Color { Red, Green, Blue }
+export let _start: () -> Int = () -> { match Red { Red => 42, _ => 0 } }
+EOF
+cat > "$tdir/bad_structcomma.vibe" <<'EOF'
+struct Pt { x: Int, y: Int }
+export let _start: () -> Int = () -> { let p = Pt::{ x: 40, y: 2 }; p.x + p.y }
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/ok.vibe" "$tdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed binding/assign/if did not compile (over-rejects)" >&2; exit 1
 fi
-for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg; do
+for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg bad_unknownfield bad_guardonly bad_arity_get bad_arity_bytesnew bad_mutann bad_agrecv bad_agidx bad_asrecv bad_streamlen bad_streamget bad_streamset bad_interp_paren bad_declcomma bad_structcomma; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$tdir/$bad.vibe" "$tdir/$bad.wasm" _start >/dev/null 2>&1 || true
@@ -2659,7 +2990,7 @@ export let _start: () -> Int = () -> {
     let b = perform Calc::Mul(3)
     a + b
   } with Calc {
-    Add(n) => resume(match n { x if x > 3 => x * 10, _ => x });
+    Add(n) => resume(match n { x if x > 3 => x * 10, _ => n });
     Mul(n) => resume(n + 100)
   }
 }
@@ -2768,6 +3099,26 @@ export let _start: () -> Int = () -> {
   v1 + v2 + v3 + v4
 }
 EOF
+# beq: builtin Option/Result and tuples with AGGREGATE payloads compare
+# structurally (#825). Before the fix the bare-`==` dispatch only recovered the
+# head name ("Option"/"Result") and word-compared payloads, so `Some([1,2]) ==
+# Some([1,2])` was silently false (heap pointers differ); tuples containing
+# arrays likewise. The dispatch now infers the full static shape from literal
+# syntax and routes through eq_for_typed. v7 guards the #815 follow-up: the
+# lowered match interpolates as true/false, not raw 1/0 (the boolish
+# classifier sees through the lift_match_scrutinees `let __m_scrut_N` wrap).
+cat > "$sdir/beq.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let v1 = if Some([1, 2]) == Some([1, 2]) { 1 } else { 0 }
+  let v2 = if Some((1, 2)) == Some((1, 2)) { 20 } else { 0 }
+  let v3 = if Some(Some(1)) == Some(Some(1)) { 300 } else { 0 }
+  let v4 = if Ok([1, 2]) == Ok([1, 2]) { 4000 } else { 0 }
+  let v5 = if ([1, 2], 0) == ([1, 2], 0) { 50000 } else { 0 }
+  let v6 = if Some([1, 2]) != Some([1, 3]) { 600000 } else { 0 }
+  let v7 = if "\{Some(1) == Some(1)}" == "true" { 7000000 } else { 0 }
+  v1 + v2 + v3 + v4 + v5 + v6 + v7
+}
+EOF
 # tann: function-type annotation arity. A parenthesized tuple parameter
 # `((A, B)) -> R` is ONE tuple param, distinct from `(A, B) -> R`'s two params —
 # previously both flattened to a two-param list and the tuple-param form failed
@@ -2852,10 +3203,12 @@ export let _start: () -> Int = () -> {
   v1 + v2 + v3 + v4
 }
 EOF
-# interp: string interpolation `\{expr}` / `\(expr)` parses an arbitrary
-# EXPRESSION (arithmetic, call, field access, multiple holes), not just a bare
+# interp: string interpolation `\{expr}` parses an arbitrary EXPRESSION
+# (arithmetic, call, field access, multiple holes), not just a bare
 # identifier — previously the embedded source was treated as an identifier name
 # (`undefined variable: 1+1`). (parser_expr_primary.vibe build_interp_expr.)
+# The `\(expr)` spelling was removed in 0.3.0 (#805; see bad_interp_paren in
+# section 29 for the reject side).
 cat > "$sdir/interp.vibe" <<'EOF'
 struct P { x: Int }
 let inc: (Int) -> Int = (n) -> { n + 1 }
@@ -2865,7 +3218,7 @@ export let _start: () -> Int = () -> {
   let v1 = if "\{a + 3}" == "5" { 1 } else { 0 }
   let v2 = if "\{inc(a)}" == "3" { 20 } else { 0 }
   let v3 = if "\{p.x}" == "7" { 300 } else { 0 }
-  let v4 = if "\{a}-\(p.x)" == "2-7" { 4000 } else { 0 }
+  let v4 = if "\{a}-\{p.x}" == "2-7" { 4000 } else { 0 }
   v1 + v2 + v3 + v4
 }
 EOF
@@ -2904,6 +3257,7 @@ smoke_check seq 321
 smoke_check eveq 3021
 smoke_check qctor 11111
 smoke_check rec 4321
+smoke_check beq 7654321
 smoke_check tann 148
 smoke_check interp 4321
 smoke_check pneg 4321
@@ -2911,7 +3265,7 @@ smoke_check pstruct 78
 smoke_check tostr 4321
 smoke_check ieq 4321
 rm -rf "$sdir"
-echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/148/4321/4321/78/4321/4321)"
+echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/7654321/148/4321/4321/78/4321/4321)"
 
 # 40. V128 SIMD intrinsics (#536): the first-class V128 type + 12 wasm-SIMD
 #     intrinsics (v128_load/store/splat/eq/le_u/ge_u/and/or/not/bitmask/

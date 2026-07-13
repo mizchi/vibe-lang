@@ -50,7 +50,7 @@ import .. / int_parse_expr.vibe {
 // Perceus emits no action for bare projections, so this guarded dup is the only
 // owner-increment. Scalars are no-ops; this is NOT applied to borrow-arg0
 // builtins (Array::get/length etc.), which do not drop their argument.
-let cc_is_projection: (Expr) -> Bool = (e) -> {
+fn cc_is_projection(e: Expr) -> Bool {
   match e {
     EDot(_, _, _, _) => true,
     _ => false
@@ -65,7 +65,7 @@ let cc_is_projection: (Expr) -> Bool = (e) -> {
 // same element (e.g. `chk(Array::get(ps, i))` recursing over a heap array, or
 // `validate(s, Map::get(obj, key))`). Scalars are even so the guarded dup is a
 // runtime no-op for `Array[Int]` etc.
-export let cc_is_borrow_ret_call: (Expr, CompileCtx) -> Bool = (e, ctx) -> {
+export fn cc_is_borrow_ret_call(e: Expr, ctx: CompileCtx) -> Bool {
   match e {
     ECall(callee, _, _) =>
     match callee {
@@ -84,7 +84,7 @@ export let cc_is_borrow_ret_call: (Expr, CompileCtx) -> Bool = (e, ctx) -> {
 // this, `eq(int, int)` falls through to the generic bound `eq` whose
 // `looks_like_string`/str_eq fallback reads OOB on ints resembling fat-pointers
 // (#678 residual) — e.g. leb128's `eq(val, 0)` trapped under RC (#705).
-let rec cc_arg_is_scalarish: (Expr) -> Bool with { Error } = (e) -> {
+fn cc_arg_is_scalarish(e: Expr) -> Bool with { Error } {
   let t = expr_tag(e)
   if t == 0 || t == 1 {
     true
@@ -106,7 +106,7 @@ let rec cc_arg_is_scalarish: (Expr) -> Bool with { Error } = (e) -> {
 // Used to route `eq(a, b)` with a float operand onto the unbox + f64.eq path
 // under RC — the scalar i64.eq below compares BOX POINTERS for boxed floats,
 // so `eq(0.0125, 0.0125)` came out false and the assert trapped.
-let cc_slot_is_floatish: (CompileCtx, Int) -> Bool = (ctx, slot) -> {
+fn cc_slot_is_floatish(ctx: CompileCtx, slot: Int) -> Bool {
   let arr = ctx.float_local_slots
   let mut j = Array::length(arr) - 1
   let mut result = false
@@ -122,7 +122,7 @@ let cc_slot_is_floatish: (CompileCtx, Int) -> Bool = (ctx, slot) -> {
   result
 }
 
-let rec cc_expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with { Error } = (e, local_names, ctx) -> {
+fn cc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with { Error } {
   // fbox (#797): mirror of expr_is_floatish's EDot tuple-projection case --
   // `t.N` on a tracked tuple-literal binding recurses into the backing
   // ETuple element via the #724 agg log.
@@ -264,7 +264,7 @@ let rec cc_expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with { Er
 // and then interpolated is likewise not covered (still prints 1/0). Never fires
 // for an integer expression, so the pervasive `__to_string(<int>)` calls
 // (lengths, offsets, ids) are untouched.
-let cc_expr_is_boolish: (Expr, Array[String], CompileCtx) -> Bool = (e, local_names, ctx) -> {
+fn cc_expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with { Error } {
   let tag = expr_tag(e)
   if tag == 1 {
     true
@@ -308,6 +308,82 @@ let cc_expr_is_boolish: (Expr, Array[String], CompileCtx) -> Bool = (e, local_na
     op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||"
   } else if tag == 6 {
     get_eunaryop_op(e) == "!"
+  } else if tag == 16 {
+    // #815: an `is` expression desugars at parse time to a match whose arms
+    // all return Bool literals — classify such a match as boolish so
+    // `"\{opt is None}"` prints true/false instead of the raw 0/1.
+    // #825: arm bodies recurse through cc_expr_is_boolish (not just Bool
+    // literals), because the structural `==` dispatch on Option/Result/tuple
+    // lowers to nested matches whose leaf arms are `==`/`&&` chains and Bool
+    // literals — so `"\{Some(1) == Some(1)}"` prints true, not 1.
+    let arms = get_match_arms(e)
+    let alen2 = Array::length(arms)
+    if alen2 == 0 {
+      false
+    } else {
+      let mut all_bool = true
+      let mut bi2 = 0
+      while bi2 < alen2 {
+        if !cc_expr_is_boolish(get_arm_body(Array::get(arms, bi2)), local_names, ctx) {
+          all_bool = false
+        } else {
+          ()
+        }
+        bi2 = bi2 + 1
+      }
+      all_bool
+    }
+  } else if tag == 9 {
+    // #825: the normalize pass lifts a non-ident match scrutinee into
+    // `let __m_scrut_N = <e> in match ...` (lift_match_scrutinees), so a
+    // boolish match arrives here wrapped in a let — classify by the BODY.
+    // Same for the other body-position wrappers below.
+    cc_expr_is_boolish(get_elet_body(e), local_names, ctx)
+  } else if tag == 10 {
+    cc_expr_is_boolish(get_eletrec_body(e), local_names, ctx)
+  } else if tag == 11 {
+    cc_expr_is_boolish(get_eletmut_body(e), local_names, ctx)
+  } else if tag == 14 {
+    cc_expr_is_boolish(get_eseq_second(e), local_names, ctx)
+  } else if tag == 7 {
+    // An if-expression is boolish when BOTH branches are.
+    cc_expr_is_boolish(get_eif_then(e), local_names, ctx) && cc_expr_is_boolish(get_eif_else(e), local_names, ctx)
+  } else if tag == 8 {
+    // #815: the `==` desugar rewrites array equality to the compiler-emitted
+    // `__arr_equals__<key>` helper and struct/enum equality to `T::equals`
+    // (both Bool-returning), so the EBinOp shape above is gone by codegen.
+    // `__arr_equals__` is a reserved compiler prefix; `::equals` (2 args) is
+    // the == rewrite's exact output shape. A `not(...)` wrap (the `!=`
+    // rewrite's output) is classified only when its single argument is itself
+    // boolish AND `not` is not locally shadowed (display-only risk, see the
+    // expr_is_boolish twin in compile_expr_tail.vibe).
+    let bcallee = get_ecall_callee(e)
+    if is_eident(bcallee) {
+      let bcn = get_eident_name(bcallee)
+      String::starts_with(bcn, "__arr_equals__") || (String::ends_with(bcn, "::equals") && Array::length(get_ecall_args(e)) == 2) || (bcn == "not" && Array::length(get_ecall_args(e)) == 1 && find_local_slot(local_names, "not") < 0 && cc_expr_is_boolish(Array::get(get_ecall_args(e), 0), local_names, ctx))
+    } else if is_efn(bcallee) && Array::length(get_ecall_args(e)) == 1 {
+      // #815: `let x: Bool = e` parses to the ascription marker
+      // `((__asc: Bool) -> __asc)(e)` (see parser_expr_dispatch's
+      // ascribe_wrap) — honor the annotation so the binding's slot is logged
+      // boolish even when `e` itself is opaque.
+      // The SECOND and later ascriptions in one function arrive with the
+      // param renamed to `__shadow_<n>___asc` (normalize's
+      // uniquify_shadowed_bindings; per-function `seen` de-dup), so match
+      // that renamed form too — otherwise only the first annotated let per
+      // function was classified (#825 follow-up).
+      let fparams = get_efn_params(bcallee)
+      if Array::length(fparams) == 1 {
+        let (asc_name, asc_ty) = Array::get(fparams, 0)
+        (asc_name == "__asc" || (String::starts_with(asc_name, "__shadow_") && String::ends_with(asc_name, "___asc"))) && (match asc_ty {
+          Some(TyName(tn)) => tn == "Bool",
+          _ => false
+        })
+      } else {
+        false
+      }
+    } else {
+      false
+    }
   } else {
     false
   }
@@ -319,7 +395,7 @@ let cc_expr_is_boolish: (Expr, Array[String], CompileCtx) -> Bool = (e, local_na
 // first iteration; dup'ing at the call site keeps the loop-carried reference
 // alive across the back-edge. rc_dup is a no-op on scalars, so a scalar loop var
 // caught here costs only a wasted (guarded) dup, not a correctness problem.
-export let cc_is_loop_borrowed_ident: (Expr, CompileCtx) -> Bool = (e, ctx) -> {
+export fn cc_is_loop_borrowed_ident(e: Expr, ctx: CompileCtx) -> Bool {
   match e {
     EIdent(name, _) =>
     array_contains_str(ctx.loop_borrowed_names, name) && !array_contains_str(ctx.ref_cell_names, name),
@@ -331,7 +407,7 @@ export let cc_is_loop_borrowed_ident: (Expr, CompileCtx) -> Bool = (e, ctx) -> {
 // sync with `is_borrow_arg0_call` in perceus/index.vibe — a projection passed as
 // arg0 to one of these must NOT be rc_dup'd at the call site (the callee never
 // drops it, so the dup would leak; #704). Other argument positions are owning.
-let cc_is_borrow_arg0_call: (String) -> Bool = (f) -> {
+fn cc_is_borrow_arg0_call(f: String) -> Bool {
   f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "__rec_field"
 }
 
@@ -343,7 +419,7 @@ let cc_is_borrow_arg0_call: (String) -> Bool = (f) -> {
 // `Array::get(vals, i)` un-retained, and once `vals` died the map's entry
 // pointed at freed memory (ctor match on `Map::get` then read garbage).
 // Expects the freshly compiled arg on the wasm stack; leaves it there.
-let cc_retain_stored_arg: (Bytes, Expr, Array[String], Int, CompileCtx) -> Int with { Error } = (buf, carg, local_names, nl, ctx) -> {
+fn cc_retain_stored_arg(buf: Bytes, carg: Expr, local_names: Array[String], nl: Int, ctx: CompileCtx) -> Int with { Error } {
   let is_loop_borrow = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
   if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow) {
     // #706 leak follow-up: a loop-borrowed trigger needs the epilogue's
@@ -368,7 +444,7 @@ let cc_retain_stored_arg: (Bytes, Expr, Array[String], Int, CompileCtx) -> Int w
 // operators are never float or string). Bare idents are deliberately excluded:
 // a per-slot "is int" log is unsound because slots are reused across scopes
 // without updating it. Covers `"\{1 << 40}"` and integer-literal interpolation.
-let ts_known_int: (Expr, Array[String], CompileCtx) -> Bool = (e, local_names, ctx) -> {
+fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
   let tag = expr_tag(e)
   if tag == 0 {
     true
@@ -401,7 +477,7 @@ let ts_known_int: (Expr, Array[String], CompileCtx) -> Bool = (e, local_names, c
 // from the original source. Build it char-by-char via `String::from_char_code`
 // + `String::concat` instead, exactly like double_to_string_expr's `ch_minus`
 // / `ch_dot` pieces. `s` must be non-empty (callers only pass " -<label>").
-let rec uninterned_string_expr: (String, Int) -> Expr = (s, i) -> {
+fn uninterned_string_expr(s: String, i: Int) -> Expr {
   let ch = ECall(EIdent("String::from_char_code", -1), [
     EInt(String::char_code_at(s, i))
   ], -1)
@@ -424,7 +500,7 @@ let rec uninterned_string_expr: (String, Int) -> Expr = (s, i) -> {
 // still bind positionally), so this reads the literal label text directly
 // off the `ELabeledArg` AST node rather than relying on any label-based
 // rebinding machinery (there isn't one).
-let rec sh_lines_flag_cmd: (Expr, Array[Expr], Int) -> Expr = (acc, args, i) -> {
+fn sh_lines_flag_cmd(acc: Expr, args: Array[Expr], i: Int) -> Expr {
   if i >= Array::length(args) {
     acc
   } else {
@@ -439,7 +515,7 @@ let rec sh_lines_flag_cmd: (Expr, Array[Expr], Int) -> Expr = (acc, args, i) -> 
   }
 }
 
-export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, callee, args, local_names, next_local, ctx, ld, ce) -> {
+export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } {
   if is_eident(callee) {
     let fname0 = canonical_builtin_name(get_eident_name(callee))
     // Stream[T] (docs/spec/wasi-p3-async.md §2.4) is backed by the eager Array
@@ -483,7 +559,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       Array::push(local_names, "__ctor_ptr")
       let actual_args = if Array::length(args) == 1 {
         match Array::get(args, 0) {
-          ERecord(rec_fields) => {
+          ERecord(_, rec_fields) => {
             let mut si2 = 0
             let mut sn_idx = -1
             while si2 < Array::length(ctx.ctor_table.struct_names) {
@@ -3781,6 +3857,22 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         EIdent("__bf2_val", -1)
       ], -1), EAssign("__bf2_i", EBinOp("+", EIdent("__bf2_i", -1), EInt(1)), EUnit))
       let synth = ELet("__bf2_dst", dst_expr, ELet("__bf2_val", val_expr, ELet("__bf2_count", count_expr, ELetMut("__bf2_i", EInt(0), ESeq(EWhile(EBinOp("<", EIdent("__bf2_i", -1), EIdent("__bf2_count", -1)), loop_body), EUnit), -1), -1), -1), -1)
+      ce(buf, synth, local_names, next_local, ctx, ld)
+    }
+    else if fname == "Bytes::new" && Array::length(args) == 1 {
+      // Bytes::new(n): length-n zero-filled buffer (MoonBit semantics). The
+      // runtime bytes_new takes no operands, so the generic path used to emit
+      // the argument and then call it anyway — the operand stayed stranded on
+      // the value stack and the whole module failed validation at
+      // instantiation time. Synthesize new() + a zero-push loop instead.
+      let n_expr = Array::get(args, 0)
+      let loop_body = ESeq(ECall(EIdent("Bytes::push", -1), [
+        EIdent("__bn_b", -1),
+        EInt(0)
+      ], -1), EAssign("__bn_i", EBinOp("+", EIdent("__bn_i", -1), EInt(1)), EUnit))
+      let synth = ELet("__bn_n", n_expr, ELet("__bn_b", ECall(EIdent("Bytes::new", -1), Array::slice([
+        EUnit
+      ], 0, 0), -1), ELetMut("__bn_i", EInt(0), ESeq(EWhile(EBinOp("<", EIdent("__bn_i", -1), EIdent("__bn_n", -1)), loop_body), EIdent("__bn_b", -1)), -1), -1), -1)
       ce(buf, synth, local_names, next_local, ctx, ld)
     }
     else {

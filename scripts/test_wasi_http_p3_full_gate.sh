@@ -29,14 +29,28 @@ COMPOSED="$OUT_DIR/handler.serve.wasm"
 SERVE_LOG="$OUT_DIR/serve.log"
 ADDR="127.0.0.1:18984"
 
-WASM_FLAGS=(-Sp3 -Shttp -W exceptions=y -W concurrency-support=y -W component-model-async=y -W component-model-async-stackful=y)
+# Flag override for the wasmtime 46 re-probe (#821): on 46+ component-model
+# async is default-on, so the RC flag set can be replaced/trimmed via env.
+if [ -n "${VIBE_HTTP_GATE_WASMTIME_FLAGS:-}" ]; then
+  read -r -a WASM_FLAGS <<<"$VIBE_HTTP_GATE_WASMTIME_FLAGS"
+else
+  WASM_FLAGS=(-Sp3 -Shttp -W exceptions=y -W concurrency-support=y -W component-model-async=y -W component-model-async-stackful=y)
+fi
 
+# VIBE_P3_GATE_REQUIRE_TOOLS=1 (#821 guarantee mode): a missing tool is a
+# FAILURE, not a skip — CI must not go green without actually verifying.
+missing_tool() {
+  if [ "${VIBE_P3_GATE_REQUIRE_TOOLS:-0}" = "1" ]; then
+    echo "[http-full-gate] FAILED: $1 not found (required mode)" >&2; exit 1
+  fi
+  echo "[http-full-gate] SKIP: $1 not found"; exit 0
+}
 for c in cargo wasm-tools wac curl; do
-  command -v "$c" >/dev/null 2>&1 || { echo "[http-full-gate] SKIP: $c not found"; exit 0; }
+  command -v "$c" >/dev/null 2>&1 || missing_tool "$c"
 done
 WASMTIME_BIN="$("$PROJECT_ROOT/scripts/wasmtime_bin.sh" 2>/dev/null || command -v wasmtime || true)"
 if [ -z "${WASMTIME_BIN:-}" ] || ! "$WASMTIME_BIN" --version >/dev/null 2>&1; then
-  echo "[http-full-gate] SKIP: wasmtime not found"; exit 0
+  missing_tool "wasmtime"
 fi
 
 # Selfhost compiler wasm: explicit override, else the newest generation build.
@@ -45,6 +59,10 @@ if [ -z "$CLI_WASM" ]; then
   CLI_WASM="$(ls -t "$PROJECT_ROOT"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
 fi
 if [ -z "$CLI_WASM" ] || [ ! -s "$CLI_WASM" ]; then
+  if [ "${VIBE_P3_GATE_REQUIRE_TOOLS:-0}" = "1" ]; then
+    echo "[http-full-gate] FAILED: no selfhost compiler wasm (required mode; run scripts/selfhost_generations.sh build, or set VIBE_SERVE_CLI_WASM)" >&2
+    exit 1
+  fi
   echo "[http-full-gate] SKIP: no selfhost compiler wasm (run scripts/selfhost_generations.sh build, or set VIBE_SERVE_CLI_WASM)"
   exit 0
 fi

@@ -30,7 +30,8 @@ vibe build --release app.vibe  # standalone .wasm
 let x: Int = 42                // 62-bit tagged, max 2^61-1
 let f: Float = 1.5f            // 32-bit (suffix f)
 let d: Double = 3.14           // 64-bit (default decimal)
-let s: String = "hello \(x)"  // interpolation with \(expr)
+let s: String = "hello \{x}"   // interpolation with \{expr}
+                               // (旧 `\(x)` は 0.3.0 で削除、`\{x}` を使う)
 let c: Char = 'A'              // char code (Int alias)
 let b: Bool = true
 let u: Unit = ()
@@ -69,6 +70,8 @@ Anti-patterns:
 ## Functions
 
 ```vibe
+import ./lib/@vibe/prelude/io.vibe { stdout_write }   // for hello() below
+
 // Top-level named functions: `fn` (#727, ADR-0064). Full annotations
 // required (param types + return type); recursion needs no `rec`.
 fn add(x: Int, y: Int) -> Int { x + y }
@@ -79,13 +82,23 @@ fn identity[T](x: T) -> T { x }                // generic
 fn show[T: Eq + Ord](x: T) -> T { x }          // trait bounds
 fn hello() -> Unit with { Stdout } { stdout_write("hi\n") }
 export fn doubled(x: Int) -> Int { x * 2 }
+// where-contract (#731): requires asserts at entry; ensures binds the
+// function value as `result` and asserts at exit. Violations trap.
+fn checked_add(x: Int, y: Int) -> Int
+  where { requires: x >= 0, requires: y >= 0, ensures: result >= x } { x + y }
 ```
 
-`fn` is top-level only — pure parse-time sugar for the `let rec` form below,
-so checker/codegen semantics are identical. The optional
-`where { requires: .., ensures: .. }` contract clause parses but has no
-semantics yet (ADR-0064 Phase E, #731). `vibe fmt`/normalize currently
-refuse fn-bearing sources (printer support lands with the fmt migration).
+`fn` is top-level only. The declaration — including its `where` clause — is
+kept in the AST (`SFnDecl`, #727) and lowered to the `let rec` form below
+just before checking/codegen, so checker/codegen semantics are identical.
+The optional `where { requires: .., ensures: .. }` contract runs as
+always-on runtime asserts (#731 Phase 1): each `requires` condition asserts
+at entry; each `ensures` condition sees the function value bound as
+`result` and asserts at exit; a violating call traps. Known limits: an
+early `return` bypasses `ensures`, and `result` shadows any user binding of
+that name inside ensures conditions. `vibe normalize` and the AST printer
+round-trip fn declarations in fn + where form — fn sources are no longer
+refused or rewritten to `let rec`.
 
 ```vibe
 // let form: values, computed functions, higher-order returns
@@ -260,6 +273,8 @@ expr is None                     // -> Bool
 ```vibe
 type Pair = (Int, Int)                   // alias
 
+// enum/struct body members are ';'-separated; ',' as the declaration
+// separator was removed in 0.3.0 (parse error)
 enum Color { Red; Green; Blue } derive(Eq)
 enum Shape { Circle(Int); Rect(Int, Int) }
 
@@ -305,6 +320,14 @@ m["key"]
 let b = ArrayBuilder::new()
 ArrayBuilder::push(b, 1)
 ArrayBuilder::freeze(b)       // -> Array[Int]
+
+// Bytes — growable byte buffer
+let e = Bytes::new()          // empty (length 0), grows via push/append
+let z = Bytes::new(4)         // length 4, zero-filled (MoonBit semantics)
+Bytes::set(z, 0, 65)          // in-bounds write (OOB index traps, #811)
+Bytes::push(z, 9)             // append -> length 5
+Bytes::get(z, 0)              // => 65
+Bytes::length(z)              // => 5
 
 // Int64Array — fixed-size i64-cell buffer for 32-bit word workloads.
 // linear `Array[Int]` cells are 32-bit (with a 2-bit tag), so values
@@ -455,26 +478,42 @@ suberror InvalidInput(Int, String)   // tuple payload only
 ### User-defined effects (algebraic)
 
 ```vibe
+import ./lib/@vibe/prelude/io.vibe { stdout_write }
+
 effect Logger {
   Log(String) -> Unit
 }
 
 let greet: (String) -> Unit with { Logger } = (name) -> {
-  perform Logger::Log("hello \(name)")
+  perform Logger::Log("hello \{name}")
 }
 
-handle { greet("world") } with Logger {
-  Log(msg) => {
-    stdout_write(msg)
-    resume(())           // continue where perform left off
+// the handler arm calls stdout_write, so the enclosing function carries Stdout
+let main: () -> Unit with { Stdout } = () -> {
+  handle { greet("world") } with Logger {
+    Log(msg) => {
+      stdout_write(msg)
+      resume(())         // continue where perform left off
+    }
   }
 }
 ```
 
 継続呼び出しは `resume(v)` が canonical (one-shot tail-resumptive, ADR-0050)。
-operation の宣言 arity より 1 つ多い末尾パラメータを束縛すると、それが継続 `k` に
-なり、`resume` では書けない non-tail position で結果を使える (`Emit(v, k) => v + k(0)`)。
-どちらも one-shot。規約の詳細は [archive/mut-effect-plan.md](archive/mut-effect-plan.md) の
+> **replay 実装の制約 (#817 まで)**: 現行の handler は resume 時に handle
+> body を**先頭から再実行** (replay) する実装のため、handle body 内の
+> 副作用 (print / `let mut` の更新など) は perform ごとに再実行される。
+> **handle body は最後の perform まで pure に保つこと** — 副作用や
+> 可変状態の蓄積は handler arm 側か handle の外に置く。この制約は
+> evidence-passing handler 移行 (#817) で解消予定。
+
+operation の宣言 arity より 1 つ多い末尾パラメータを束縛する `k` 規約
+(`Emit(v, k) => v + k(0)`、non-tail 継続) は **旧 MoonBit fixture runner
+専用だった機能で、selfhost build path では未サポート** — checker が
+`non-tail continuation binder (k-convention) is not supported by the build
+path` と reject する (#814)。非 tail 継続は evidence-passing handler 移行
+(#817) で対応予定。継続呼び出しは `resume(v)` を使う。
+規約の詳細は [archive/mut-effect-plan.md](archive/mut-effect-plan.md) の
 「継続呼び出し規約」(#627) を参照。
 
 ### Effect polymorphism
@@ -548,7 +587,7 @@ Profiler::heap_bytes()  // with { Profiler } - current bump-heap pointer
                         // way now_us deltas attribute time (heap never shrinks)
 ```
 
-**Conversion**: `Int::to_string`, `Int::to_double`, `Double::to_int`, `String::from_char_code`
+**Conversion**: `Int::to_string`, `Int::to_double`, `Double::to_int`, `String::from_char_code`, `Int::parse(s) -> Option[Int]` (10 進、先頭 `-` 可; 空文字列・非数字・`Int::max_value` 超えは `None`)
 
 ## Idioms
 

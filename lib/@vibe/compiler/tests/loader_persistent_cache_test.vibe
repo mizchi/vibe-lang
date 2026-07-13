@@ -10,7 +10,7 @@ import ../loader {
 
 //# Functions
 
-let lookup_source: (Array[(String, String)], String) -> Option[String] = (sources, target_path) -> {
+fn lookup_source(sources: Array[(String, String)], target_path: String) -> Option[String] {
   let mut i = 0
   let mut found = None
   while i < Array::length(sources) {
@@ -25,7 +25,7 @@ let lookup_source: (Array[(String, String)], String) -> Option[String] = (source
   found
 }
 
-let string_to_bytes: (String) -> Bytes = (s) -> {
+fn string_to_bytes(s: String) -> Bytes {
   let out = Array::slice([
     0
   ], 0, 0)
@@ -38,7 +38,7 @@ let string_to_bytes: (String) -> Bytes = (s) -> {
   Bytes::from_array(out)
 }
 
-let lookup_group_source: (Array[(String, Array[(String, String)])], String) -> Option[String] = (groups, target_path) -> {
+fn lookup_group_source(groups: Array[(String, Array[(String, String)])], target_path: String) -> Option[String] {
   let mut gi = 0
   let mut found = None
   while gi < Array::length(groups) {
@@ -59,7 +59,7 @@ let lookup_group_source: (Array[(String, Array[(String, String)])], String) -> O
   found
 }
 
-let remove_file_if_exists: (String) -> Unit with { Fs } = (path) -> {
+fn remove_file_if_exists(path: String) -> Unit with { Fs } {
   if Fs::exists(path) {
     Fs::remove(path)
   } else {
@@ -67,7 +67,7 @@ let remove_file_if_exists: (String) -> Unit with { Fs } = (path) -> {
   }
 }
 
-let setup_manifest_fixture: (String, String, String) -> (String, String, String) with { Error, Fs } = (base_dir, helper_source, main_source) -> {
+fn setup_manifest_fixture(base_dir: String, helper_source: String, main_source: String) -> (String, String, String) with { Error, Fs } {
   let manifest_path = String::concat(base_dir, "/selfhost_sources_manifest.tsv")
   let helper_path = String::concat(base_dir, "/helper.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
@@ -94,6 +94,46 @@ test "load_persistent_source_group_fingerprint_if_valid: same-content rewrite ke
   Fs::write_bytes(main_path, string_to_bytes(main_source))
   match load_persistent_source_group_fingerprint_if_valid(main_path) {
     Some(fingerprint) => assert(fingerprint == expected),
+    None => assert(false)
+  }
+}
+
+test "load_persistent_source_group_fingerprint_if_valid: resolution-context change invalidates cache (#801)" {
+  // A cache written while `.vibe/store/@scope/name` exists resolves @-refs
+  // against a DIFFERENT package universe than the normal tree. Row validation
+  // can never notice a package the poisoned cache is missing entirely, so the
+  // loader records a resolution-context fingerprint (resctx) and must refuse
+  // the cache once the visible package set changes (#801).
+  let helper_path = "/tmp/vibe_compiler_persistent_loader_resctx_helper.vibe"
+  let main_path = "/tmp/vibe_compiler_persistent_loader_resctx_main.vibe"
+  let store_pkg_dir = ".vibe/store/@vibetest/resctx_probe801"
+  let store_pkg_contract = String::concat(store_pkg_dir, "/index.vibei")
+  Fs::write_bytes(helper_path, string_to_bytes("export let add: () -> Int = () -> { 1 }"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./vibe_compiler_persistent_loader_resctx_helper.vibe { add }\nlet run: () -> Int = () -> { add() }"))
+  remove_file_if_exists(persistent_source_group_cache_path(main_path))
+  // Context A: a store package is visible while the cache is written.
+  Fs::mkdir_p(store_pkg_dir)
+  Fs::write_bytes(store_pkg_contract, string_to_bytes("version 0.0.1\n\nlet version: String\n"))
+  let groups = collect_source_groups_fs(main_path)
+  let expected = build_source_groups_fingerprint(groups)
+  // Same context: the cache must replay.
+  match load_persistent_source_group_fingerprint_if_valid(main_path) {
+    Some(fingerprint) => assert(fingerprint == expected),
+    None => assert(false)
+  }
+  // Context B: the store package is gone -- the context-A cache must be
+  // refused even though every row it lists still validates. (Remove the
+  // whole probe scope so the working tree is left clean.)
+  Fs::remove(".vibe/store/@vibetest")
+  match load_persistent_source_group_fingerprint_if_valid(main_path) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  // A fresh collect in context B re-establishes a replayable cache.
+  let groups_b = collect_source_groups_fs(main_path)
+  let expected_b = build_source_groups_fingerprint(groups_b)
+  match load_persistent_source_group_fingerprint_if_valid(main_path) {
+    Some(fingerprint) => assert(fingerprint == expected_b),
     None => assert(false)
   }
 }
@@ -229,6 +269,42 @@ test "load_or_parse_module_header_fs: warm cache reuses deps and exports" {
   assert(Array::get(deps2, 0) == helper_path)
   assert(eq(Array::length(exports2), 1))
   assert(Array::get(exports2, 0) == "_start")
+}
+
+test "load_or_parse_module_header_fs: package dep re-resolves when store copy vanishes (#801)" {
+  // The header cache stores RESOLVED dep paths. `@scope/name` resolution
+  // prefers .vibe/store over lib/, so a header cached while a store copy
+  // existed must be refused (and re-resolved) once the store copy is gone —
+  // otherwise the walk keeps aiming at the stale root.
+  let base_dir = "/tmp/vibe_compiler_persistent_header_resctx"
+  let main_path = String::concat(base_dir, "/main.vibe")
+  let main_source = "import @vibetest/hdrprobe801 { x }\nexport let run: () -> Int = () -> { 1 }"
+  let store_dir = ".vibe/store/@vibetest/hdrprobe801"
+  let lib_dir = "lib/@vibetest/hdrprobe801"
+  let contract = "version 0.0.1\n\nlet version: String\n"
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  remove_file_if_exists(persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source)))
+  Fs::mkdir_p(store_dir)
+  Fs::write_bytes(String::concat(store_dir, "/index.vibei"), string_to_bytes(contract))
+  Fs::mkdir_p(lib_dir)
+  Fs::write_bytes(String::concat(lib_dir, "/index.vibei"), string_to_bytes(contract))
+  // Cold parse: the store copy wins.
+  let (deps1, _, parse1) = load_or_parse_module_header_fs(main_path, main_source, 0)
+  assert(eq(parse1, 1))
+  assert(eq(Array::length(deps1), 1))
+  assert(Array::get(deps1, 0) == ".vibe/store/@vibetest/hdrprobe801/index.vibei")
+  // Same context: warm replay, no parse.
+  let (_, _, parse2) = load_or_parse_module_header_fs(main_path, main_source, 0)
+  assert(eq(parse2, 0))
+  // The store copy vanishes: lib/ is now the winner, so the cached header
+  // (still listing the store path) must be re-resolved, not replayed.
+  Fs::remove(".vibe/store/@vibetest")
+  let (deps3, _, parse3) = load_or_parse_module_header_fs(main_path, main_source, 0)
+  assert(eq(parse3, 1))
+  assert(eq(Array::length(deps3), 1))
+  assert(Array::get(deps3, 0) == "lib/@vibetest/hdrprobe801/index.vibei")
+  Fs::remove("lib/@vibetest")
 }
 
 test "load_or_parse_module_header_fs: selfhost source bundle uses cheap header scan" {

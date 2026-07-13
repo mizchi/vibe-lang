@@ -42,7 +42,7 @@ import ./compile_match.vibe {
 // tagged (n<<1), so `+`, `-`, `%` preserve the tag for free, but `*` yields
 // ab<<2 (shift right once) and `/` yields a/b untagged (shift left once).
 // The raw emit_assignop_op alone silently doubled `x *= 2` results under RC.
-let emit_assignop_rc_tag_fix: (Bytes, Bool, String) -> Unit = (buf, enable_rc, op) -> {
+fn emit_assignop_rc_tag_fix(buf: Bytes, enable_rc: Bool, op: String) -> Unit {
   if enable_rc && op == "*" {
     emit_i64_const(buf, 1)
     emit_i64_shr_s(buf)
@@ -61,7 +61,7 @@ let emit_assignop_rc_tag_fix: (Bytes, Bool, String) -> Unit = (buf, enable_rc, o
 // line from the value's first offset. No-op when off or when no offset is found,
 // so the default codegen path is byte-identical. Stack-neutral: dbg_line is
 // `(i32) -> ()`, the i32 const it consumes leaves the stack unchanged.
-let emit_dbg_line_for: (Bytes, Expr, CompileCtx) -> Unit = (buf, value, ctx) -> {
+fn emit_dbg_line_for(buf: Bytes, value: Expr, ctx: CompileCtx) -> Unit {
   emit_dbg_line_stmt(buf, value, -1, ctx)
 }
 
@@ -70,7 +70,7 @@ let emit_dbg_line_for: (Bytes, Expr, CompileCtx) -> Unit = (buf, value, ctx) -> 
 // carries no offset (first_offset = -1) -- the ELet/ELetMut node's stmt offset
 // (the `let` keyword token) still locates the line, so the probe is emitted
 // and the line is breakpoint-able.
-let emit_dbg_line_stmt: (Bytes, Expr, Int, CompileCtx) -> Unit = (buf, value, stmt_off, ctx) -> {
+fn emit_dbg_line_stmt(buf: Bytes, value: Expr, stmt_off: Int, ctx: CompileCtx) -> Unit {
   if ctx.dbg_line_idx >= 0 {
     let voff = first_offset(value)
     let off = if voff >= 0 { voff } else { stmt_off }
@@ -87,14 +87,14 @@ let emit_dbg_line_stmt: (Bytes, Expr, Int, CompileCtx) -> Unit = (buf, value, st
   }
 }
 
-let is_edot: (Expr) -> Bool = (e) -> {
+fn is_edot(e: Expr) -> Bool {
   match e {
     EDot(_, _, _, _) => true,
     _ => false
   }
 }
 
-let efn_is_capturing: (Expr, CompileCtx) -> Bool with { Error } = (value, ctx) -> {
+fn efn_is_capturing(value: Expr, ctx: CompileCtx) -> Bool with { Error } {
   let params = get_efn_params(value)
   let pnames = Array::slice([
     ""
@@ -109,7 +109,7 @@ let efn_is_capturing: (Expr, CompileCtx) -> Bool with { Error } = (value, ctx) -
   Array::length(caps) > 0
 }
 
-let slot_is_floatish: (CompileCtx, Int) -> Bool = (ctx, slot) -> {
+fn slot_is_floatish(ctx: CompileCtx, slot: Int) -> Bool {
   let arr = ctx.float_local_slots
   let mut j = Array::length(arr) - 1
   let mut result = false
@@ -134,7 +134,7 @@ let slot_is_floatish: (CompileCtx, Int) -> Bool = (ctx, slot) -> {
 // "\{b}"` printed the raw integer). Most-recent entry wins; the log is pruned
 // at branch/arm boundaries (int_log_reset_above) so a slot reused by a
 // non-`let` binder reads false here rather than a stale entry.
-let slot_is_intish: (CompileCtx, Int) -> Bool = (ctx, slot) -> {
+fn slot_is_intish(ctx: CompileCtx, slot: Int) -> Bool {
   let arr = ctx.int_local_slots
   let mut j = Array::length(arr) - 1
   let mut result = false
@@ -151,7 +151,7 @@ let slot_is_intish: (CompileCtx, Int) -> Bool = (ctx, slot) -> {
 }
 
 // #769: is the local in `slot` known to hold specifically a Bool (kind 3)?
-let slot_is_boolish: (CompileCtx, Int) -> Bool = (ctx, slot) -> {
+fn slot_is_boolish(ctx: CompileCtx, slot: Int) -> Bool {
   let arr = ctx.int_local_slots
   let mut j = Array::length(arr) - 1
   let mut result = false
@@ -171,7 +171,7 @@ let slot_is_boolish: (CompileCtx, Int) -> Bool = (ctx, slot) -> {
 // logical operators, `!`, and -- via the kind-3 slot log above -- a bare ident
 // `let`-bound to a boolish value. Syntactic over-approximation like
 // expr_is_intish; consumers use it only to pick "true"/"false" formatting.
-export let rec expr_is_boolish: (Expr, Array[String], CompileCtx) -> Bool with { Error } = (e, local_names, ctx) -> {
+export fn expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with { Error } {
   let tag = expr_tag(e)
   if tag == 1 {
     true
@@ -197,6 +197,83 @@ export let rec expr_is_boolish: (Expr, Array[String], CompileCtx) -> Bool with {
     op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||"
   } else if tag == 6 {
     get_eunaryop_op(e) == "!"
+  } else if tag == 16 {
+    // #815: an `is` expression desugars at parse time to a match whose arms
+    // all return Bool literals — classify such a match as boolish so
+    // `"\{opt is None}"` prints true/false instead of the raw 0/1.
+    // #825: arm bodies recurse through expr_is_boolish (not just Bool
+    // literals), because the structural `==` dispatch on Option/Result/tuple
+    // lowers to nested matches whose leaf arms are `==`/`&&` chains and Bool
+    // literals — so `"\{Some(1) == Some(1)}"` prints true, not 1.
+    let arms = get_match_arms(e)
+    let alen2 = Array::length(arms)
+    if alen2 == 0 {
+      false
+    } else {
+      let mut all_bool = true
+      let mut bi2 = 0
+      while bi2 < alen2 {
+        if !expr_is_boolish(get_arm_body(Array::get(arms, bi2)), local_names, ctx) {
+          all_bool = false
+        } else {
+          ()
+        }
+        bi2 = bi2 + 1
+      }
+      all_bool
+    }
+  } else if tag == 9 {
+    // #825: the normalize pass lifts a non-ident match scrutinee into
+    // `let __m_scrut_N = <e> in match ...` (lift_match_scrutinees), so a
+    // boolish match arrives here wrapped in a let — classify by the BODY.
+    // Same for the other body-position wrappers below.
+    expr_is_boolish(get_elet_body(e), local_names, ctx)
+  } else if tag == 10 {
+    expr_is_boolish(get_eletrec_body(e), local_names, ctx)
+  } else if tag == 11 {
+    expr_is_boolish(get_eletmut_body(e), local_names, ctx)
+  } else if tag == 14 {
+    expr_is_boolish(get_eseq_second(e), local_names, ctx)
+  } else if tag == 7 {
+    // An if-expression is boolish when BOTH branches are.
+    expr_is_boolish(get_eif_then(e), local_names, ctx) && expr_is_boolish(get_eif_else(e), local_names, ctx)
+  } else if tag == 8 {
+    // #815: the `==` desugar rewrites array equality to the compiler-emitted
+    // `__arr_equals__<key>` helper and struct/enum equality to `T::equals`
+    // (both Bool-returning), so the EBinOp shape above is gone by codegen.
+    // `__arr_equals__` is a reserved compiler prefix; `::equals` (2 args) is
+    // the == rewrite's exact output shape. A `not(...)` wrap (the `!=`
+    // rewrite's output) is classified only when its single argument is itself
+    // boolish AND `not` is not locally shadowed — a user global `not` taking
+    // a boolish arg but returning non-Bool could still misformat, but that is
+    // display-only and vanishingly rare (relaxes the #785-P2 caution).
+    let bcallee = get_ecall_callee(e)
+    if is_eident(bcallee) {
+      let bcn = get_eident_name(bcallee)
+      String::starts_with(bcn, "__arr_equals__") || (String::ends_with(bcn, "::equals") && Array::length(get_ecall_args(e)) == 2) || (bcn == "not" && Array::length(get_ecall_args(e)) == 1 && find_local_slot(local_names, "not") < 0 && expr_is_boolish(Array::get(get_ecall_args(e), 0), local_names, ctx))
+    } else if is_efn(bcallee) && Array::length(get_ecall_args(e)) == 1 {
+      // #815: `let x: Bool = e` parses to the ascription marker
+      // `((__asc: Bool) -> __asc)(e)` (ELet carries no type field, see
+      // parser_expr_dispatch's ascribe_wrap) — honor the annotation so the
+      // binding's slot is logged boolish even when `e` itself is opaque.
+      // The SECOND and later ascriptions in one function arrive with the
+      // param renamed to `__shadow_<n>___asc` (normalize's
+      // uniquify_shadowed_bindings; per-function `seen` de-dup), so match
+      // that renamed form too — otherwise only the first annotated let per
+      // function was classified (#825 follow-up).
+      let fparams = get_efn_params(bcallee)
+      if Array::length(fparams) == 1 {
+        let (asc_name, asc_ty) = Array::get(fparams, 0)
+        (asc_name == "__asc" || (String::starts_with(asc_name, "__shadow_") && String::ends_with(asc_name, "___asc"))) && (match asc_ty {
+          Some(TyName(tn)) => tn == "Bool",
+          _ => false
+        })
+      } else {
+        false
+      }
+    } else {
+      false
+    }
   } else {
     false
   }
@@ -209,7 +286,7 @@ export let rec expr_is_boolish: (Expr, Array[String], CompileCtx) -> Bool with {
 // ctx.float_local_slots as `let`s compile). This lets `let x = 1.5; x + y`
 // take the f64 path. Shared by compile_expr (binop/unary instruction choice)
 // and the `let` handler below (which populates float_local_slots).
-export let rec expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with { Error } = (e, local_names, ctx) -> {
+export fn expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with { Error } {
   // fbox (#797): `t.N` tuple projection survives to codegen as EDot (expr_tag
   // -1), NOT as __rec_field (that lowering is only produced for tuple
   // DESTRUCTURING and record-pattern desugars). Heap fields store floats as
@@ -362,7 +439,7 @@ export let rec expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with 
 // holding a string is never read as int. Unclassified operands (a call return,
 // an untracked param/capture) stay false and fall back to the bounds-guarded
 // `eq` — the narrow remaining residual.
-export let expr_is_intish: (Expr, Array[String], CompileCtx) -> Bool with { Error } = (e, local_names, ctx) -> {
+export fn expr_is_intish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with { Error } {
   let tag = expr_tag(e)
   if tag == 0 {
     true
@@ -404,7 +481,7 @@ export let expr_is_intish: (Expr, Array[String], CompileCtx) -> Bool with { Erro
 }
 
 
-let assign_value_mentions: (Expr, String) -> Bool = (value, name) -> {
+fn assign_value_mentions(value: Expr, name: String) -> Bool {
   let empty1 = Array::slice([
     ""
   ], 0, 0)
@@ -414,7 +491,7 @@ let assign_value_mentions: (Expr, String) -> Bool = (value, name) -> {
   array_contains_str(collect_free_vars(value, empty1, empty2), name)
 }
 
-let rec reassign_carry_safe: (Expr, String) -> Bool = (e, name) -> {
+fn reassign_carry_safe(e: Expr, name: String) -> Bool {
   if !assign_value_mentions(e, name) {
     true
   } else {
@@ -428,7 +505,7 @@ let rec reassign_carry_safe: (Expr, String) -> Bool = (e, name) -> {
   }
 }
 
-let emit_rc_value_ptr_i32: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged) -> {
+fn emit_rc_value_ptr_i32(buf: Bytes, local_idx: Int, tagged: Bool) -> Unit {
   emit_local_get(buf, local_idx)
   if tagged {
     emit_i64_const(buf, -2)
@@ -439,7 +516,7 @@ let emit_rc_value_ptr_i32: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged)
   emit_i32_wrap_i64(buf)
 }
 
-let emit_rc_drop_local: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged) -> {
+fn emit_rc_drop_local(buf: Bytes, local_idx: Int, tagged: Bool) -> Unit {
   // #720: a saturated rc (low 24 bits == 0xFFFFFF) marks an immortal block
   // (see emit_rc_word_inc_saturating) -- never decrement, never free.
   emit_rc_value_ptr_i32(buf, local_idx, tagged)
@@ -480,7 +557,7 @@ let emit_rc_drop_local: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged) ->
   emit_end(buf)
 }
 
-let reassign_self_reusable: (Expr, String) -> Bool with { Error } = (value, name) -> {
+fn reassign_self_reusable(value: Expr, name: String) -> Bool with { Error } {
   if is_etuple(value) {
     let elems = get_etuple_elems(value)
     let mut i = 0
@@ -515,7 +592,7 @@ let reassign_self_reusable: (Expr, String) -> Bool with { Error } = (value, name
 // hit. Returns (rc_kind, is_borrow_ret_ext) exactly as the original inline
 // ELet chain did, for callers that still need those (loop_borrowed_names
 // scoping for a borrow-returning call's alias).
-let classify_let_value_heap: (Bytes, Expr, String, Int, Array[String], CompileCtx) -> (Int, Bool) with { Error } = (buf, value, name, local_idx, local_names, ctx) -> {
+fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int, local_names: Array[String], ctx: CompileCtx) -> (Int, Bool) with { Error } {
   let mut rc_kind = 0
   let mut is_borrow_ret_ext = false
   if ctx.enable_rc {
@@ -650,7 +727,7 @@ let classify_let_value_heap: (Bytes, Expr, String, Int, Array[String], CompileCt
 // unwrapped -- no new retention on the owned path. Guarded dup no-ops on
 // scalars/non-RC values; worst case is the codebase-wide "leak, never corrupt"
 // trade.
-let rec retain_wrap_branch_tails: (Expr, CompileCtx) -> Expr with { Error } = (e, ctx) -> {
+fn retain_wrap_branch_tails(e: Expr, ctx: CompileCtx) -> Expr with { Error } {
   match e {
     EIdent(x, p) => if array_contains_str(ctx.loop_borrowed_names, x) && !array_contains_str(ctx.ref_cell_names, x) {
       ECall(EIdent("__loop_tail_retain", -1), [
@@ -708,7 +785,7 @@ let rec retain_wrap_branch_tails: (Expr, CompileCtx) -> Expr with { Error } = (e
 // recursive drop then double-freed it, shadow-trapped at that exact site).
 // The owned branch (fresh call result) sees at most an extra guarded dup at
 // consuming sites -- the codebase-wide "leak, never corrupt" trade.
-let rec value_has_borrowed_branch_tail: (Expr, CompileCtx) -> Bool = (e, ctx) -> {
+fn value_has_borrowed_branch_tail(e: Expr, ctx: CompileCtx) -> Bool {
   match e {
     EIdent(x, _) => array_contains_str(ctx.loop_borrowed_names, x) && !array_contains_str(ctx.ref_cell_names, x),
     EDot(_, _, _, _) => true,
@@ -746,7 +823,7 @@ let rec value_has_borrowed_branch_tail: (Expr, CompileCtx) -> Bool = (e, ctx) ->
 // codegen elsewhere is byte-identical). Only if/match values are rewritten;
 // the top-level node kind is preserved, so classification of the ORIGINAL
 // `value` below stays valid.
-let retain_wrap_let_value: (Expr, String, CompileCtx) -> Expr with { Error } = (value, name, ctx) -> {
+fn retain_wrap_let_value(value: Expr, name: String, ctx: CompileCtx) -> Expr with { Error } {
   if ctx.enable_rc && (expr_tag(value) == 7 || expr_tag(value) == 16) && Array::length(ctx.loop_borrowed_names) > 0 && array_contains_str(ctx.rc_drop_names, name) {
     retain_wrap_branch_tails(value, ctx)
   } else {
@@ -754,7 +831,7 @@ let retain_wrap_let_value: (Expr, String, CompileCtx) -> Expr with { Error } = (
   }
 }
 
-export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld, compile_expr) -> {
+export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } {
   let __tag = expr_tag(expr)
   if __tag == 9 {
     let name = get_elet_name(expr)
@@ -795,7 +872,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       // field count is the record's, not the call arity.
       let fcnt = if Array::length(cargs) == 1 {
         match Array::get(cargs, 0) {
-          ERecord(rfields) => Array::length(rfields),
+          ERecord(_, rfields) => Array::length(rfields),
           _ => Array::length(cargs)
         }
       } else {
@@ -807,7 +884,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     } else if is_erecord(value) {
       // Records are [tag@0][len@4][fields@8+] since #722, walkable like ctors.
       match value {
-        ERecord(rfields) => 128 + Array::length(rfields),
+        ERecord(_, rfields) => 128 + Array::length(rfields),
         _ => 0
       }
     } else if expr_tag(value) == 8 {

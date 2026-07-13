@@ -12,3 +12,35 @@ test "bool interp without source literal compiles and runs" {
   assert(String::length("\{1 > 2}") == 5)
   assert(String::length("prefix \{5 == 5} suffix") == 18)
 }
+
+// #815: `is` expressions (all-Bool-arm match desugar) and rewritten
+// structural `==` (`__arr_equals__*` / `T::equals` calls) must interpolate
+// as true/false, not the raw 0/1 runtime representation.
+test "is-expression interpolates as bool (#815)" {
+  let opt: Option[Int] = None
+  assert("\{opt is None}" == "true")
+  assert("\{opt is Some(_)}" == "false")
+  let b = opt is None
+  assert("\{b}" == "true")
+}
+
+test "structural array equality interpolates as bool (#815)" {
+  assert("\{[1, 2] == [1, 2]}" == "true")
+  assert("\{[1] == [9]}" == "false")
+}
+
+test "structural inequality (not-wrap) interpolates as bool (#815)" {
+  assert("\{[1, 2] != [1, 2]}" == "false")
+  assert("\{[1] != [9]}" == "true")
+}
+
+test "annotated let binding interpolates as bool (#815)" {
+  // The Bool annotation parses to the `((__asc: Bool) -> __asc)(e)`
+  // ascription marker; the slot must be logged boolish even though the
+  // wrapped value is opaque to the syntactic classifier.
+  let f = (n: Int) -> Bool { n > 3 }
+  let b: Bool = f(5)
+  assert("\{b}" == "true")
+  let c: Bool = f(1)
+  assert("\{c}" == "false")
+}
