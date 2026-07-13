@@ -1,11 +1,9 @@
-# Complete Selfhost Operation
+# Compiler Operation Gate
 
 Status: accepted from 2026-06-12.
 
-この文書は、vibe compiler を完全 selfhost 前提で運用するための gate と
-判断基準を固定する。ファイル名は trial の履歴互換として残すが、2026-06-12
-以降は本運用の基準として扱う。長期方針と bootstrap bump の詳細は
-[selfhost-bootstrap.md](selfhost-bootstrap.md) に従う。
+この文書は、vibe compiler を運用するための gate と判断基準を固定する。
+長期方針と bootstrap bump の詳細は [bootstrap.md](bootstrap.md) に従う。
 
 ## Cutover Baseline
 
@@ -37,12 +35,12 @@ Status: accepted from 2026-06-12.
 compiler/checker/codegen の挙動変更は `lib/@vibe/compiler/` に入れる。CLI の
 コマンド挙動、adapter、bundle、component entry は `lib/@vibe/cli/` と
 `lib/@vibe/compiler/` 側を source of truth とする。MoonBit `src/` は固定 seed から
-current selfhost compiler を作るための legacy bootstrap/fallback 境界として扱い、
+current compiler を作るための legacy bootstrap/fallback 境界として扱い、
 通常の feature / bugfix / CLI 変更では編集しない。
 
 通常の feature / bugfix は次の順で進める。
 
-1. selfhost 側に test を追加して Red を確認する。
+1. `lib/@vibe/compiler/` 側に test を追加して Red を確認する。
 2. `lib/@vibe/compiler/` または `lib/@vibe/cli/` の実装を直して Green にする。
 3. 必要なら `scripts/generate_selfhost_bundle.sh` で bundle を同期する。
 4. `pkf run selfhost-gate` を通す。
@@ -59,7 +57,7 @@ bootstrap bump は通常の feature commit と分ける。新 syntax を compile
 
 ## Operation Gate
 
-complete selfhost の継続判断には以下を使う。
+compiler の継続運用判断には以下を使う。
 
 ```bash
 pkf run selfhost-gate
@@ -91,7 +89,7 @@ pkf run selfhost-rss-kpi
 
 ## Stop Criteria
 
-次のどれかが起きたら、完全 selfhost 運用は一時停止して原因を切り分ける。
+次のどれかが起きたら、compiler の運用は一時停止して原因を切り分ける。
 
 - fixed seed から stage2 が再現できない。
 - corpus REAL gap が増える。

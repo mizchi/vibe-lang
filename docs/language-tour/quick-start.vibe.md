@@ -1,7 +1,7 @@
 # vibe Quick Start
 
 ML-like statically typed scripting language with shell integration, targeting WASM/wasip3.
-For full details see [index.md](index.md).
+For full details see [index.vibe.md](index.vibe.md).
 
 ## CLI
 

@@ -191,10 +191,28 @@ Rules:
 - Trait bounds and effect checks are independent constraints; either can fail
   first depending on the call shape.
 
+> **Known gap (#838):** the third rule above ("the wrapper must declare a
+> compatible effect set") is the intended design but is **not currently
+> enforced** by the checker. Row-variable effect propagation checking was
+> deliberately scoped out when transitive effect enforcement landed (#626,
+> `check_perform_effects_expr_tx` in `checker_effects.vibe`) — the checker's
+> call-graph effect map only tracks concrete effect names for named
+> top-level bindings; it never verifies that a caller's declared row covers
+> an effect row VARIABLE reached through a callback parameter. In practice
+> the `apply` example below (missing `with { e }`) compiles successfully
+> today instead of producing the error shown in its comment. A sound fix
+> needs call-site effect-row unification, not just label matching, so it is
+> tracked separately rather than forced in here.
+
 Examples:
 
-```vibe
-// error: wrapper body calls effect-polymorphic callback without declaring {e}
+<!-- doctest-skip: #838 — the `apply` (missing `with {e}`) case documents the
+     INTENDED error but the checker does not yet enforce row-variable
+     coverage, so this block currently compiles clean; skip until the gap
+     is closed so doctest doesn't silently certify the wrong behavior. -->
+```vibe skip
+// intended error (NOT YET ENFORCED — #838): wrapper body calls an
+// effect-polymorphic callback without declaring {e}
 let apply: [T](f: (T) -> T with { e }, x: T) -> T = (f, x) -> {
   f(x)
 }
@@ -616,8 +634,7 @@ Rules:
 
 ## Struct and enum details (current)
 
-<!-- doctest-skip: 文中の Pair[Int]::{ ... } (明示型引数) と Pair::{ left, right } (field shorthand) は現 selfhost parser では parse error — spec と実装の gap (doctest-report-2026-07-12.md 参照) -->
-```vibe skip
+```vibe
 enum Option[T] {
   None;
   Some(T);
@@ -628,8 +645,17 @@ struct Pair[T] {
   right: T;
 }
 
-let p = Pair[Int]::{ left: 1, right: 2 }
+let left = 1
+let right = 2
 let q = Pair::{ left, right } // shorthand for { left: left, right: right }
+```
+
+<!-- doctest-skip: 明示型引数 `Pair[Int]::{ ... }` は未実装 (#836) —
+     `Name[Args]::{` は located parse error ("explicit struct type arguments
+     ... are not supported yet") を返す仕様。field shorthand (`Pair::{ left,
+     right }`) は #836 で実装済み (上のブロック参照)。 -->
+```vibe skip
+let p = Pair[Int]::{ left: 1, right: 2 } // NOT YET SUPPORTED: located parse error
 ```
 
 Rules:
@@ -644,8 +670,14 @@ Rules:
   errors.
 - Struct literals require all declared fields exactly once.
   Missing/unknown/duplicate fields are errors.
-- Struct type arguments can be explicit (`Pair[Int]::{ ... }`) or inferred from
-  provided field expressions.
+- Struct literal fields support shorthand: `Name::{ left, right }` is
+  shorthand for `Name::{ left: left, right: right }`, matching an in-scope
+  binding named after the field (same shorthand as anonymous `record { ... }`
+  literals).
+- Struct type arguments are inferred from the provided field expressions
+  (#829). Explicit type arguments (`Pair[Int]::{ ... }`) are documented as
+  spec surface but not yet implemented — the parser reports a located error
+  rather than silently accepting or misinterpreting the syntax.
 - `derive(TraitA, TraitB)` expands to corresponding `impl` entries for the
   declared type (duplicates ignored).
   Unknown traits or sealed-trait derive targets are rejected at type check.

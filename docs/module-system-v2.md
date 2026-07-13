@@ -48,7 +48,7 @@ fn f(x~: Int, y~: Int) -> Int { x + y }        // labeled args
   3. AI の事前学習分布 (Rust/MoonBit 系 `fn`) との一致による生成誤り減。
 - 移行: `vibe fmt` が旧形式を機械変換する (inline-param-type deprecation と
   同じ経路)。コンパイラ自身のソースで使うのは seed bump 後
-  ([selfhost-bootstrap.md](selfhost-bootstrap.md) の手順に従う)。
+  ([bootstrap.md](bootstrap.md) の手順に従う)。
 
 ## 2. 境界規則 — index を持つディレクトリは境界
 
@@ -257,7 +257,7 @@ wasm component として publish する際に WIT を契約から機械導出す
 
 ## 12. 実装フェーズ
 
-bootstrap 制約 ([selfhost-bootstrap.md](selfhost-bootstrap.md)): 新構文は
+bootstrap 制約 ([bootstrap.md](bootstrap.md)): 新構文は
 seed がそれを理解するまでコンパイラ自身のソースで使えない。各フェーズは
 「user 向け実装 → gates → (必要なら) seed bump → compiler source 移行」の順。
 

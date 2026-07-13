@@ -344,10 +344,8 @@ let t0 = t.0                  // => 1
 
 // Record
 let r = record { name: "vibe", ver: 1 }
-// dot access (r.name) は現状 top-level 式文の位置でしか lower されない
-// (#760 部分実装 — let 初期化子・関数 body 内では unknown struct field)。
-// 値の取り出しは下の destructure を使う。
-let nv = {                            // record destructure は fn/block body 内で
+let rn = r.name                       // dot access (#760/#839, all positions)
+let nv = {                            // destructure also works in fn/block body
   let record { name: n, ver: v } = r  // destructuring binds any field name
   (n, v)
 }
@@ -387,28 +385,35 @@ let bytes_len = {
 }
 ```
 
-<!-- doctest-skip: Int64Array builtin は selfhost checker 未移植 (moonbit-retirement.md の要確認項目) — 現 stage2 では unknown name -->
-```vibe skip
-// Int64Array — fixed-size i64-cell buffer for 32-bit word workloads.
-// linear `Array[Int]` cells are 32-bit (with a 2-bit tag), so values
-// >= 2^30 truncate; use Int64Array for hash / binary-protocol word
-// buffers (SHA-1 schedule, etc.) where full 32/62-bit Ints must survive.
-// NOTE: 旧 MoonBit host builtin。selfhost checker には未移植で現在は
-// コンパイル不可 (docs/archive/moonbit-retirement.md)。
-let w = Int64Array::make(4, 0)   // length 4, default 0
-Int64Array::set(w, 0, 0xffffffff)
-Int64Array::get(w, 0)            // => 4294967295 (no truncation)
-Int64Array::length(w)            // => 4
+```vibe
+// Int64Array — fixed-size Int-typed buffer for word/hash workloads
+// (SHA-1 schedule, binary-protocol buffers, etc). #835: ported to the
+// selfhost checker/codegen as a thin alias onto Array[Int]'s own
+// make/get/set/length — the selfhost linear/gc backends already store the
+// full tagged Int per cell (no 32-bit truncation), so no separate i64-cell
+// object layout is needed the way the retired MoonBit host required.
+let w_check = {
+  let w = Int64Array::make(4, 0)   // length 4, default 0
+  Int64Array::set(w, 0, 0xffffffff)
+  let v0 = Int64Array::get(w, 0)   // => 4294967295 (no truncation)
+  let len = Int64Array::length(w)  // => 4
+  (v0, len)
+}
 ```
 
-> **selfhost status (#760):**
+> **selfhost status (#760/#839):**
 > - **Record dot access** (`r.name` on an anonymous `record { ... }`) lowers to
->   the positional field read the destructure uses, but **only when the read is
->   a bare top-level expression statement** — in a `let` initializer or inside a
->   function/test body it fails with `unknown struct field` (2026-07-13 doctest
->   検証; ADR-0069 で top-level 式文が禁止されると実質使えなくなる)。
->   Destructuring (`let record { name: n } = r`) binds any field name and works
->   in fn/block bodies.
+>   the positional field read the destructure uses, and now resolves in every
+>   expression position — a `let` initializer (including a top-level `let`
+>   reading a binding declared by an EARLIER top-level `let`), a function/test
+>   body (including one that closes over a top-level record binding), and a
+>   nested call argument (#839, fixed 2026-07-13: both lowering passes
+>   — `desugar_railway_binds`/`check_program` and the independent
+>   `desugar_trait_dicts` pass the RC/FS-compile codegen entries use — used to
+>   reset their binding-shape tracking at every top-level statement boundary,
+>   so only a record literal and its `.field` read sharing one statement's own
+>   expression tree ever resolved). Destructuring (`let record { name: n } = r`)
+>   binds any field name and works in fn/block bodies too.
 > - **`map { ... }` literals + `Map::*` builtins + `m[k]` indexing** work
 >   standalone (#760): `Map::get` / `has_key` / `set` / `keys` and the `m["k"]`
 >   index sugar all lower correctly. (`lib/@vibe/core`'s `get`/`get_or`/
@@ -710,7 +715,7 @@ let main = () -> Int { run() }
 - A `#cfg(flag)` statement whose flag is inactive is parsed (syntax must stay valid, like Rust's `cfg`) and **dropped before checking/codegen** — zero bytes in the output binary.
 - Top-level statements only (`let` / `enum` / `struct` / `impl` / ...).
 - `vibe fmt` / normalize refuses `#cfg` sources (formatting would delete disabled code).
-- Not usable inside the compiler's own source until the seed compiler understands it (see docs/selfhost-bootstrap.md).
+- Not usable inside the compiler's own source until the seed compiler understands it (see docs/bootstrap.md).
 
 ## RC Debug Mode (`VIBE_RC=shadow`)
 

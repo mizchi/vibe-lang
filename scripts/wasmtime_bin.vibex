@@ -1,0 +1,86 @@
+// vibex pilot port of scripts/wasmtime_bin.sh (#848-style .vibex pilot).
+//
+// Resolve which `wasmtime` binary to use, in priority order:
+//   1. $WASMTIME_BIN, if set (explicit override always wins)
+//   2. if VIBE_USE_WASMTIME_SUBMODULE=1: the deps/wasmtime submodule build
+//      (release, then debug), or an error if neither is built
+//   3. `wasmtime` on $PATH
+//   4. fallback to the deps/wasmtime submodule build even without opt-in
+//   5. an error: wasmtime not found anywhere
+//
+// Usage: vibe run scripts/wasmtime_bin.vibex   (prints the resolved path)
+//
+// Differences from scripts/wasmtime_bin.sh, both a consequence of the
+// current stdlib/runtime surface (see the pilot report):
+//   * executable-bit checks (`[ -x path ]`) are approximated with
+//     Fs::exists (there is no file-permission query builtin yet); a
+//     same-named non-executable file at that exact path would be a false
+//     positive, which does not occur in practice for cargo build output.
+//   * the "not found" error paths print to stdout instead of stderr (there
+//     is no Stderr builtin) and the process still exits 0 (there is no
+//     builtin to set a custom process exit code from a `vibe run`
+//     program) -- so a caller relying on this script's own exit code
+//     cannot distinguish success from failure yet. In this repo every
+//     current caller already treats a wasmtime_bin.sh failure as
+//     non-fatal (`scripts/wasmtime_bin.sh 2>/dev/null || command -v
+//     wasmtime || true`), so this gap does not change real call-site
+//     behavior today, but it is a real gap worth calling out.
+
+fn command_v(name: String) -> String with { Process } {
+  let lines = sh_lines("command -v \{name}")
+  if Array::length(lines) == 0 {
+    ""
+  }
+  else {
+    let first = Array::get(lines, 0)
+    if String::starts_with(first, "error:") {
+      ""
+    } else first
+  }
+}
+
+let local_release = "deps/wasmtime/target/release/wasmtime"
+let local_debug = "deps/wasmtime/target/debug/wasmtime"
+
+fn resolve_submodule_opt_in() -> Unit with { Fs, Stdout } {
+  if Fs::exists(local_release) {
+    Stdout::write_stream("\{local_release}\n")
+  }
+  else if Fs::exists(local_debug) {
+    Stdout::write_stream("\{local_debug}\n")
+  }
+  else {
+    Stdout::write_stream("VIBE_USE_WASMTIME_SUBMODULE=1 but deps/wasmtime wasmtime binary is not built.\n")
+    Stdout::write_stream("Run: pkf run build-wasmtime-submodule\n")
+  }
+}
+
+fn resolve_default() -> Unit with { Fs, Process, Stdout } {
+  let found = command_v("wasmtime")
+  if found != "" {
+    Stdout::write_stream("\{found}\n")
+  }
+  else if Fs::exists(local_release) {
+    Stdout::write_stream("\{local_release}\n")
+  }
+  else if Fs::exists(local_debug) {
+    Stdout::write_stream("\{local_debug}\n")
+  }
+  else {
+    Stdout::write_stream("wasmtime not found (system PATH and deps/wasmtime build).\n")
+    Stdout::write_stream("Install wasmtime or run: pkf run wasmtime-submodule-init && pkf run build-wasmtime-submodule\n")
+  }
+}
+
+export let main = () -> Unit with { Fs, Env, Process, Stdout } {
+  let override_bin = Env::get("WASMTIME_BIN")
+  if override_bin != "" {
+    Stdout::write_stream("\{override_bin}\n")
+  }
+  else if Env::get("VIBE_USE_WASMTIME_SUBMODULE") == "1" {
+    resolve_submodule_opt_in()
+  }
+  else {
+    resolve_default()
+  }
+}

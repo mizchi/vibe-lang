@@ -65,11 +65,11 @@ vibe compiler は二層構造になっている:
   隔離作業に限る。
 
 selfhost cutover 後の Rust-style seed compiler / stage0-stage2 / bootstrap bump の運用は
-[docs/selfhost-bootstrap.md](docs/selfhost-bootstrap.md) に従う。新しい syntax を
+[docs/bootstrap.md](docs/bootstrap.md) に従う。新しい syntax を
 compiler source 自体で使う場合は、先に seed compiler がその syntax を理解できる
 状態を tag し、bootstrap bump を通してから source を移行する。
 2026-06-12 以降の完全 selfhost 運用では
-[docs/selfhost-trial.md](docs/selfhost-trial.md) の判断基準に従い、節目で
+[docs/operation-gate.md](docs/operation-gate.md) の判断基準に従い、節目で
 `pkf run selfhost-gate` を通す。旧 `pkf run selfhost-trial-gate` は互換 alias。
 
 判断目安:

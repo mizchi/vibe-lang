@@ -360,12 +360,24 @@ fn parse_control_primary(tokens: Array[Token], starts: Array[Int], pos: Int, par
   }
 }
 
+// #836: named struct constructor literals (`Name::{ ... }`) accept the same
+// field-shorthand as anonymous record literals (`record { ... }`, see
+// `parse_record_literal_fields` below) — `Name::{ left, right }` desugars to
+// `Name::{ left: left, right: right }` by matching a bare identifier field to
+// an in-scope binding of the same name. Mirrors `parse_record_literal_fields`
+// exactly so both literal forms stay in sync.
 fn parse_ctor_record_fields(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[(String, Expr)], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[(String, Expr)], Int) with { Error } {
   match peek(tokens, pos) {
     TRBrace => (ArrayBuilder::freeze(b), pos + 1),
     TIdent(fname) => {
-      let colon_pos = expect_tk(tokens, pos + 1, ":")
-      let (val, next_pos) = parse_recur(tokens, colon_pos, 0)
+      let (val, next_pos) = match peek(tokens, pos + 1) {
+        TComma => (EIdent(fname, -1), pos + 1),
+        TRBrace => (EIdent(fname, -1), pos + 1),
+        _ => {
+          let colon_pos = expect_tk(tokens, pos + 1, ":")
+          parse_recur(tokens, colon_pos, 0)
+        }
+      }
       ArrayBuilder::push(b, (fname, val))
       match peek(tokens, next_pos) {
         TComma => parse_ctor_record_fields(tokens, starts, next_pos + 1, b, parse_recur),
@@ -634,6 +646,41 @@ fn offset_at(starts: Array[Int], p: Int) -> Int {
   }
 }
 
+// #836: detect `Name[...]::{` (explicit struct type arguments on a named
+// struct constructor literal, e.g. `Pair[Int]::{ left: 1, right: 2 }`).
+// `pos` is the TLBracket immediately after the constructor name. Skips the
+// balanced `[...]` span (mirrors `is_generic_fn_start`'s bracket-depth scan)
+// and checks whether it is immediately followed by `::{`. Used only to
+// recognize the pattern so `parse_ident_primary` can raise a clear, located
+// diagnostic — explicit type arguments are not implemented yet (see the
+// comment at the call site), so this never actually parses type arguments.
+fn is_struct_targs_ctor_start(tokens: Array[Token], pos: Int) -> Bool {
+  let mut p = pos + 1
+  let mut depth = 1
+  while depth > 0 {
+    match peek(tokens, p) {
+      TLBracket => {
+        depth = depth + 1
+      },
+      TRBracket => {
+        depth = depth - 1
+      },
+      TEof => {
+        depth = 0
+      },
+      _ => ()
+    }
+    p = p + 1
+  }
+  match peek(tokens, p) {
+    TDoubleColon => match peek(tokens, p + 1) {
+      TLBrace => true,
+      _ => false
+    },
+    _ => false
+  }
+}
+
 fn parse_ident_primary(tokens: Array[Token], starts: Array[Int], pos: Int, name: String, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
   if name == "true" {
     (EBool(true), pos + 1)
@@ -669,6 +716,22 @@ fn parse_ident_primary(tokens: Array[Token], starts: Array[Int], pos: Int, name:
           (ERecord(name, fields), end_pos)
         },
         _ => (EIdent(name, offset_at(starts, pos)), pos + 1)
+      },
+      // #836: `Name[Args]::{ ... }` (explicit struct type arguments) is
+      // documented spec surface (docs/vibe.md "Struct and enum details") but
+      // not implemented — the field values already determine the struct's
+      // type arguments via #829's instantiation inference, and threading an
+      // explicit type-argument list through to that inference would need a
+      // new AST carrier that every exhaustive `Expr` visitor in the compiler
+      // (desugar/normalize/perceus/codegen/checker_effects/...) would have to
+      // learn about. Rather than let this fall through to postfix indexing
+      // and surface a confusing "unexpected token: ::" once the `[...]` is
+      // misparsed as an index expression, recognize the shape up front and
+      // raise a clear, located error.
+      TLBracket => if is_struct_targs_ctor_start(tokens, pos + 1) {
+        throw("explicit struct type arguments (`\{name}[...]::{ ... }`) are not supported yet at #\{pos + 1}: write `\{name}::{ ... }` — field values already determine the type arguments (#829) — or annotate the binding, e.g. `let x: \{name}[T] = \{name}::{ ... }`")
+      } else {
+        (EIdent(name, offset_at(starts, pos)), pos + 1)
       },
       _ => (EIdent(name, offset_at(starts, pos)), pos + 1)
     }

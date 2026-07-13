@@ -51,7 +51,7 @@ through the linear `--wasm` path; the RC analysis path is exercised by
 
 RC was **ported to selfhost** (it is no longer src/-only), but the
 reclamation half is not finished. Detailed staged plan:
-[selfhost-rc-port.md](selfhost-rc-port.md); readiness:
+[rc-port.md](rc-port.md); readiness:
 [selfhost-rc-cutover-readiness.md](selfhost-rc-cutover-readiness.md).
 
 - **Phase 1 — uniform object header (prerequisite):** *started*. RC's drop
@@ -102,5 +102,5 @@ reclamation half is not finished. Detailed staged plan:
   backend defaults pinned above and exercised by the selfhost gate.
 - ✅ README backend description reconciled with the selfhost CLI.
 - ✅ Perceus RC marked experimental opt-in; selfhost port status and the
-  remaining Phase 3 work are tracked in `selfhost-rc-port.md`.
+  remaining Phase 3 work are tracked in `rc-port.md`.
 - ✅ The "no reclamation / cycles leak" limitations are documented above.

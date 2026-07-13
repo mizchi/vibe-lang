@@ -1,14 +1,14 @@
-# Selfhost Perceus RC port — design & staged plan
+# Perceus RC port — design & staged plan
 
 Status: planning (issue #493 direction C / item **D**). Tracks implementing
-Perceus reference-counting memory management in the vibe-written selfhost
-compiler (`lib/@vibe/compiler/`). The MoonBit `src/` backend is now a historical
-reference and legacy bootstrap/fallback layer; new RC work targets selfhost
-directly and is guarded by the parity gates (per CLAUDE.md).
+Perceus reference-counting memory management in the vibe-written compiler
+(`lib/@vibe/compiler/`). The MoonBit `src/` backend is now a historical
+reference and legacy bootstrap/fallback layer; new RC work targets the
+compiler directly and is guarded by the parity gates (per CLAUDE.md).
 
 ## Why this is not a straight code port
 
-The `src/` linear backend and the selfhost linear backend use **different
+The `src/` linear backend and the compiler's linear backend use **different
 heap object layouts**, and RC's correctness depends on the `src/` layout.
 
 ### `src/` linear layout (RC-ready)
@@ -24,9 +24,9 @@ string=1, bytes=13) lets the RC drop helper dispatch and **recursively drop the
 right fields**; `length` bounds the field loop. This is what
 `emit_rc_drop_fields` / `compile_rc_drop_function` rely on.
 
-### selfhost linear layout (no headers)
+### Compiler linear layout (no headers)
 
-The selfhost backend is a pure bump allocator with **no type-id / length
+The compiler's linear backend is a pure bump allocator with **no type-id / length
 headers**:
 
 - tuple: bare sequential `i64` slots (no header)
@@ -41,7 +41,7 @@ how to recurse, so the RC drop helper cannot be ported as-is.
 
 ## Consequence: the prerequisite is a layout change
 
-The first real domino is **adding a uniform object header to every selfhost
+The first real domino is **adding a uniform object header to every compiler
 linear allocation** and updating every field-access offset accordingly. This
 is large and touches every allocation/access site, so it must land behind a
 flag and be proven output-equivalent by the parity gates before any RC code
@@ -52,15 +52,15 @@ is added.
 ### Phase 1 — uniform object header (prerequisite, no RC yet) — *started*
 
 - **Verification harness in place** (the safety net for the layout change): the
-  selfhost codegen unit tests only check wasm magic bytes (`assert_wasm`), which
+  compiler's codegen unit tests only check wasm magic bytes (`assert_wasm`), which
   is too weak to catch a layout regression. `lib/@vibe/compiler/codegen_heap_e2e_test.vibe`
   (task `test-selfhost-heap-e2e`, 9/9) compiles heap-object source programs with
-  the selfhost backend, runs them on wasmtime (`sh_lines("wasmtime run --invoke
+  the compiler's linear backend, runs them on wasmtime (`sh_lines("wasmtime run --invoke
   main …")`), and checks the *result* — covering tuple, nested tuple, array get,
   array builder, struct field, enum ctor + match payload, closure capture,
   returned closure, and a tuple-allocating loop. The header rewrite must keep
   these green.
-- **Memory-leak profiling in place**: the selfhost backend exports its
+- **Memory-leak profiling in place**: the compiler's linear backend exports its
   bump-allocator cursor as the `__heap_ptr` global. `scripts/measure_selfhost_heap.mjs`
   reads it before/after invoking a function (on a minimal wasm host) to report
   bytes allocated; `scripts/measure_selfhost_heap_leak.sh` compiles the same
@@ -94,7 +94,7 @@ is added.
 
 - Ported the analysis to `lib/@vibe/compiler/perceus/index.vibe`
   (`build_perceus_plan : (Expr) -> Array[PerceusAction]`), pattern-matching the
-  selfhost `Expr` enum directly. Because the selfhost AST is
+  compiler's `Expr` enum directly. Because the compiler's AST is
   expression-oriented, scope is structural: an `ELet(x, val, body)` scopes `x`
   to `body`, so per-iteration / per-branch bindings fall out of the tree shape
   (no statement-index bookkeeping). Two passes (`pc_count` then `pc_emit`)
@@ -220,7 +220,7 @@ is added.
   borrow arg0 (the map stays live), `Map::get` returns a borrowed entry (like
   `Array::get`), and map readers untag (`& -2`, a no-op on the still-even
   `map { … }` literal pointer) before dereferencing. Map **literals** and
-  `Map::set` **results** remain on the even/leaky path (and the selfhost map-
+  `Map::set` **results** remain on the even/leaky path (and the compiler's map-
   literal string-key read has a pre-existing correctness bug, orthogonal to RC).
 - Known limitations of this first vertical (all leak conservatively — they
   never corrupt — and only matter under `enable_rc`):
@@ -235,10 +235,10 @@ is added.
   - **Name shadowing**: `heap_binding_names` is a flat per-function set, so a
     scalar binding that shadows a same-named heap binding in a sibling scope
     could in principle be mis-classified for an alias source. Pathological and
-    not hit by the selfhost sources; the immediate-value classification of the
+    not hit by the compiler's own sources; the immediate-value classification of the
     binding being dropped is precise, only the alias *source* lookup consults
     the set.
-- Remaining: recursive field drop — blocked on the selfhost runtime representing
+- Remaining: recursive field drop — blocked on the compiler's runtime representing
   **integers as raw `i64`** (no tag) and the **AST carrying no element types**,
   so neither `src/`-style runtime pointer-dispatch nor a static pointer-bitmap is
   available; and even a fresh-literal-only subset is unsafe because an extracted
@@ -253,16 +253,16 @@ is added.
 
 ### Phase 4 — verification & cutover
 
-- Add a wasmtime e2e gate for the selfhost RC backend, mirroring
+- Add a wasmtime e2e gate for the compiler's RC backend, mirroring
   `src/tests/vibe_wasm_rc_e2e_test.mbt` (the `test-wasm-rc-e2e` task).
-- Run the selfhost parity / cutover gates with RC on.
-- Only then consider making RC the selfhost linear default, in lockstep with
+- Run the compiler's parity / cutover gates with RC on.
+- Only then consider making RC the compiler's linear default, in lockstep with
   the `src/` default decision (issue #493 C/F).
 
 ## Sequencing note
 
 Phases 2 and 3 can reuse the now-validated `src/` design directly (including
 the B-1 wasm-validity fix and the A-1/A-1b/A-2 analysis fixes). Phase 1 is the
-unavoidable, selfhost-specific prerequisite and is where most of the risk and
+unavoidable, compiler-specific prerequisite and is where most of the risk and
 effort sits. Until Phase 1 lands, the analysis pass (Phase 2) is the only part
-that can be built and tested without destabilizing the selfhost backend.
+that can be built and tested without destabilizing the compiler's backend.

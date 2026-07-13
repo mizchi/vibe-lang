@@ -57,6 +57,13 @@ test "heap e2e: array get" {
   assert_result(src, "main", "array_get", "20")
 }
 
+// #835: Int64Array::make/set/get/length round-trips a full 32-bit word
+// (0xffffffff) with no truncation, exactly as docs/cheatsheet.md documents.
+test "heap e2e: Int64Array make/set/get/length round-trip" {
+  let src = "let main: () -> Int = () -> {\n  let w = Int64Array::make(4, 0)\n  Int64Array::set(w, 0, 4294967295)\n  if Int64Array::length(w) == 4 { Int64Array::get(w, 0) } else { 0 - 1 }\n}"
+  assert_result(src, "main", "int64array_roundtrip", "4294967295")
+}
+
 test "heap e2e: parenthesized call after a binding (no newline glue)" {
   let src = "let main: () -> Int = () -> {\n  let a = [(7, 8)]\n  (Array::get(a, 0)).0\n}"
   assert_result(src, "main", "paren_call_after_binding", "7")
@@ -657,4 +664,28 @@ test "effect multi-value: 2-arg payload with `_` skip (unused field reclaimed)" 
 
 test "effect multi-value: payload allocated + dropped each loop iteration" {
   assert_result("effect E { Op(Int, Int) -> Int }\nlet main: () -> Int = () -> { handle { let mut s = 0\n    let mut i = 0\n    while i < 5 { s = s + perform E::Op(i, i + 1)\n      i = i + 1 }\n    s } with E { Op(x, y) => resume(x + y) } }", "main", "eff_mv_loop", "25")
+}
+
+// #832: a bare (no `Type::` prefix) raw-identifier top-level function named
+// `map`, defined and called in the same file, used to crash the compiler
+// itself (an internal `__rt_arr_get` OOB trap in codegen, not a diagnostic)
+// -- `r#map` lexes to a plain `TIdent("map")` (the `r#` carries no AST
+// information, see lib/@vibe/parser/lexer.vibe's lex_ident), and the inline
+// `Array::map` codegen intrinsic in codegen/expr/compile_call.vibe matched
+// the bare name "map" unconditionally (unlike every sibling bare-name
+// builtin alias in that dispatch chain, which is guarded with
+// `!prefer_bound_call`), hijacking a 1-arg user call into the 2-arg
+// Array::map lowering and reading past `args`. The `Type::`-prefixed forms
+// (`Array::r#map`, `Iterator::r#map`) and the string_parser module's bare
+// `r#map` never hit this: qualified names don't match the bare string, and
+// non-entry-file exported bindings are renamed by the #716 cross-file
+// export-visibility pass before codegen ever sees them.
+test "wasi: bare raw-ident top-level fn named map, called locally (#832)" {
+  assert_result("let r#map: (Int) -> Int = (x) -> { x + 1 }\nlet main: () -> Int = () -> { r#map(41) }", "main", "bare_raw_ident_map", "42")
+}
+
+// Same bug, without the `r#` sugar (`r#map` and `map` lex identically) --
+// covers the underlying name-collision independent of raw-ident syntax.
+test "wasi: bare top-level fn named map (no r# prefix), called locally (#832)" {
+  assert_result("let map: (Int) -> Int = (x) -> { x + 1 }\nlet main: () -> Int = () -> { map(41) }", "main", "bare_map_no_rawident", "42")
 }

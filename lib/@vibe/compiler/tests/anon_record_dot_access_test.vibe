@@ -1,0 +1,129 @@
+//# Imports
+
+// #839: anonymous `record { .. }` dot access (`r.name`, #760) was lowered by
+// TWO independent passes that each threaded a FRESH, empty var_types at every
+// top-level statement boundary:
+//   - `railway_rw`/`desugar_railway_binds` (desugar_trait_dict.vibe), run from
+//     `check_program` — the checker-time entry (`compile_source`/
+//     `compile_source_wasi_only`/`compile_file_wasi_only`).
+//   - `rewrite_expr`/`desugar_trait_dicts` (desugar_trait_dict.vibe), run
+//     unconditionally inside `compile_wasi_module_linked_impl` — the SHARED
+//     codegen convergence point for every WASI-targeting entry (bump AND the
+//     Perceus RC backend). This is the pass `vibe run`/`vibe test` actually
+//     exercise by default (ADR-0055 #493: RC is the default backend, and its
+//     FS-compile entry `compile_file_fs_mode_rc` does not call
+//     `check_program` at all — see entry/compiler/file_compile/index.vibe).
+// Both passes only resolved `binding.field` when the `let binding = record
+// { .. }` and its `.field` read lived in the SAME top-level statement's own
+// expression tree (so it "worked" only for a bare top-level expression
+// statement immediately following its own record literal — itself now
+// rejected by ADR-0069). A `let` initializer referencing an EARLIER top-level
+// record binding, or a function/test body closing over one, always fell
+// through to codegen's declared-struct-only field lookup and threw "unknown
+// struct field". Fixed by seeding both passes' per-statement var_types with
+// `collect_toplevel_anon_records` instead of starting fresh each statement.
+//
+// These tests exercise BOTH passes directly (bypassing the `vibe` CLI/runner,
+// which needs a built vibe-cli.wasm) so a regression in EITHER one is caught:
+// `compiles_via_check_program` mirrors the checker-time entries,
+// `compiles_via_desugar_trait_dicts` mirrors the RC/FS-compile entries.
+
+import ../syntax/lexer.vibe {
+  lex
+}
+
+import ../syntax/parser.vibe {
+  parse_program
+}
+
+import ../checker/checker_stmt.vibe {
+  check_program
+}
+
+import ../codegen/wasi/index.vibe {
+  compile_wasi_module_impl
+}
+
+import ../desugar_trait_dict.vibe {
+  desugar_trait_dicts
+}
+
+//# Functions
+
+// Checker-time path: `check_program` (which runs `desugar_railway_binds`)
+// then plain wasi codegen — mirrors `compile_source_wasi_only`/
+// `compile_file_wasi_only`.
+fn compiles_via_check_program(src: String, entry: String) -> Bool {
+  handle {
+    let stmts = parse_program(lex(src))
+    let _ = check_program(stmts)
+    let _ = compile_wasi_module_impl(stmts, entry)
+    true
+  } with Error {
+    Throw(_) => false
+  }
+}
+
+// RC/FS-compile path: skip `check_program` entirely and run ONLY
+// `desugar_trait_dicts` before codegen — mirrors what
+// `compile_wasi_module_linked_impl` does internally (and therefore what
+// `compile_file_fs_mode_rc`, the default codegen entry `vibe run`/`vibe test`
+// use, does). A regression here is exactly the #839 bug: `desugar_trait_dicts`
+// alone used to fail every one of these while `compiles_via_check_program`
+// (wrongly) looked sufficient.
+fn compiles_via_desugar_trait_dicts(src: String, entry: String) -> Bool {
+  handle {
+    let stmts = parse_program(lex(src))
+    desugar_trait_dicts(stmts)
+    let _ = compile_wasi_module_impl(stmts, entry)
+    true
+  } with Error {
+    Throw(_) => false
+  }
+}
+
+fn compiles_both_ways(src: String, entry: String) -> Bool {
+  compiles_via_check_program(src, entry) && compiles_via_desugar_trait_dicts(src, entry)
+}
+
+// Position 1: a top-level `let` initializer referencing an anon-record binding
+// declared in an EARLIER top-level statement (the original #839 repro).
+test "839: top-level let initializer reads an earlier top-level anon record" {
+  let src = "let r = record { name: \"vibe\", ver: 1 }\nlet rn = r.name\nexport fn main() -> Int {\n  if rn == \"vibe\" { 0 } else { 1 }\n}\n"
+  assert_eq(compiles_both_ways(src, "main"), true)
+}
+
+// Position 2: a function body closing over a TOP-LEVEL anon record binding
+// (not a local one) — the other half of the original #839 repro.
+test "839: function body closes over a top-level anon record binding" {
+  let src = "let r = record { name: \"vibe\", ver: 1 }\nexport fn main() -> Int {\n  let rn = r.name\n  if rn == \"vibe\" { 0 } else { 1 }\n}\n"
+  assert_eq(compiles_both_ways(src, "main"), true)
+}
+
+// Position 3: function body return position, with the record LOCAL to the
+// function (already worked pre-fix; guards against regressing it).
+test "839: function body return position (local anon record)" {
+  let src = "export fn main() -> Int {\n  let r = record { name: \"vibe\", ver: 1 }\n  let rn = r.name\n  if rn == \"vibe\" { 0 } else { 1 }\n}\n"
+  assert_eq(compiles_both_ways(src, "main"), true)
+}
+
+// Position 4: nested call argument.
+test "839: anon record dot access as a nested call argument" {
+  let src = "fn is_vibe(s: String) -> Bool {\n  s == \"vibe\"\n}\nexport fn main() -> Int {\n  let r = record { name: \"vibe\", ver: 1 }\n  if is_vibe(r.name) { 0 } else { 1 }\n}\n"
+  assert_eq(compiles_both_ways(src, "main"), true)
+}
+
+// Position 5: inside a `test { }` block.
+test "839: anon record dot access inside a test block" {
+  let src = "test \"inner\" {\n  let r = record { name: \"vibe\", ver: 1 }\n  let rn = r.name\n  assert_eq(rn, \"vibe\")\n}\n"
+  assert_eq(compiles_both_ways(src, "__test_inner"), true)
+}
+
+// Regression guard: a field that genuinely does not exist on ANY declared
+// struct or anon-record binding must still be rejected (not silently
+// resolved to some other slot) — the fix must not blur real errors.
+test "839: nonexistent field on an anon record is still rejected" {
+  let src = "let r = record { name: \"vibe\", ver: 1 }\nlet bad = r.nonexistent\nexport fn main() -> Int {\n  0\n}\n"
+  assert_eq(compiles_via_check_program(src, "main"), false)
+  assert_eq(compiles_via_desugar_trait_dicts(src, "main"), false)
+}

@@ -535,7 +535,7 @@ top-level 関数が他の top-level 関数を機械的に capture すると、�
 ### 教訓
 
 - package 単位 root と monorepo 共通 root は目的が異なる。  
-  selfhost のような横断 import では **repo-aware root 解決**が必要。
+  コンパイラのような横断 import では **repo-aware root 解決**が必要。
 
 ---
 

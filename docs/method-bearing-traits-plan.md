@@ -172,7 +172,7 @@ restriction does not apply. Start after Phase 1 lands.
 
 ## Bootstrap sequencing
 
-Per `docs/selfhost-bootstrap.md`, compiler source cannot use new syntax until the
+Per `docs/bootstrap.md`, compiler source cannot use new syntax until the
 seed understands it.
 
 1. **PR-1** (parser/AST/printer/desugar, no compiler-source usage of method syntax):

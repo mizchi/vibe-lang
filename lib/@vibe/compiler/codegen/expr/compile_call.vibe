@@ -2176,7 +2176,21 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_end(buf)
       nl
     }
-    else if fname == "Array::map" || fname == "map" {
+    // #832: the bare "map" alias below intentionally lets a free-standing
+    // `map(arr, fn)` call reuse the Array::map inline lowering (mirrors the
+    // qualified `Array::map` call). But unlike every other bare-name builtin
+    // alias in this chain, it was missing the `!prefer_bound_call` guard, so
+    // ANY top-level `map` binding visible at the call site (a same-file /
+    // entry-file `let map = ...`, unaffected by the #716 cross-file export
+    // rename since entry-file defs keep their bare name) got silently
+    // hijacked into this 2-arg array intrinsic regardless of its real arity
+    // or type -- a 1-arg call like `map(41)` then read past `args` (only 1
+    // element) for the callback argument, an out-of-bounds `__rt_arr_get`
+    // that trapped the compiler itself (not a diagnostic). Guarding the bare
+    // alias the same way as its siblings restores precedence for a real
+    // user-defined `map` while leaving the intentional `Array::map` /
+    // unbound bare-`map` sugar intact.
+    else if fname == "Array::map" || (!prefer_bound_call && fname == "map") {
       let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
       let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
       let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
@@ -3784,16 +3798,20 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
     // the repeatedly-pushed `init` value across FixedArray::make's loop
     // iterations under RC — a hand-emitted raw loop here would silently
     // double-free `init` on the second push.
-    else if fname == "FixedArray::length" {
+    // #835: Int64Array::make/length/get/set piggyback on the exact same
+    // Array aliasing (Array[Int] already stores the full tagged Int per cell
+    // in both backends, so there is no truncation to work around here the
+    // way the retired MoonBit host needed a dedicated i64-cell object).
+    else if fname == "FixedArray::length" || fname == "Int64Array::length" {
       ce(buf, ECall(EIdent("Array::length", -1), args, -1), local_names, next_local, ctx, ld)
     }
-    else if fname == "FixedArray::get" {
+    else if fname == "FixedArray::get" || fname == "Int64Array::get" {
       ce(buf, ECall(EIdent("Array::get", -1), args, -1), local_names, next_local, ctx, ld)
     }
-    else if fname == "FixedArray::set" || fname == "FixedArray::unsafe_set" {
+    else if fname == "FixedArray::set" || fname == "FixedArray::unsafe_set" || fname == "Int64Array::set" {
       ce(buf, ECall(EIdent("Array::set", -1), args, -1), local_names, next_local, ctx, ld)
     }
-    else if fname == "FixedArray::make" {
+    else if fname == "FixedArray::make" || fname == "Int64Array::make" {
       let n_expr = Array::get(args, 0)
       let init_expr = Array::get(args, 1)
       let loop_body = ESeq(ECall(EIdent("Array::push", -1), [

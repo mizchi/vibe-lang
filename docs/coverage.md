@@ -1,13 +1,13 @@
-# Coverage strategy (selfhost)
+# Coverage strategy
 
-> **Status (selfhost-only):** MoonBit host が退役 (#594) したため、下記 1)
+> **Status:** MoonBit host が退役 (#594) したため、下記 1)
 > `coverage-moon` と 2) `coverage-deno` は `src/` 依存で **動かない**（driver
 > script も削除済み）。3) の vibe ソース span coverage も計測側
-> (`vibe compile --coverage`) が MoonBit host 専用で、selfhost には移植され
-> ていない。**現在 selfhost で動くのは下記「0) selfhost コンパイラの関数
+> (`vibe compile --coverage`) が MoonBit host 専用で、コンパイラには移植され
+> ていない。**現在動くのは下記「0) コンパイラの関数
 > カバレッジ」**。1〜3 は歴史的経緯として残す。
 
-## 0) selfhost コンパイラの関数 / 分岐カバレッジ（#cov, selfhost-only で動く）
+## 0) コンパイラの関数 / 分岐カバレッジ（#cov）
 
 コンパイラ自身を **計測ビルド**して、ワークロード実行時にどの compiler
 関数が呼ばれたか（関数カバレッジ）と、どの `if`/`match` 分岐が実行されたか
