@@ -3,12 +3,16 @@
 vibe is a small, effect-typed language with a **selfhost-only** compiler: the
 parser, type checker, and WASM codegen are all written in vibe itself
 (`lib/@vibe/compiler/`, `lib/@vibe/cli/`) and built from a committed seed via
-a wasm runner — no other toolchain is required to build or run it.
+a wasm runner — no MoonBit toolchain is required to build or run it (the
+original MoonBit host was retired in #594).
 
 ## Install
 
 vibe ships as a small wasmtime runner (`moonrun_wt`) plus a portable compiler
 wasm; the installer AOT-compiles the compiler for your machine at install time.
+Building the runner from source needs `git`, `bash`, and `cargo`; pass
+`--runner PATH` to use a prebuilt one instead. See
+[docs/install.md](docs/install.md) for the full prerequisite list.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/scripts/installer.sh | bash
