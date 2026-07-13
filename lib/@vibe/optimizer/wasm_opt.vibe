@@ -1,14 +1,14 @@
 //# Functions
 
-let copy_bytes = (src: Bytes, start: Int, end_pos: Int) -> Bytes {
+fn copy_bytes(src: Bytes, start: Int, end_pos: Int) -> Bytes {
   Bytes::slice(src, start, end_pos)
 }
 
-export let binary_size = (bytes: Bytes) -> Int {
+export fn binary_size(bytes: Bytes) -> Int {
   Bytes::length(bytes)
 }
 
-let append_bytes = (out: Bytes, src: Bytes) -> Unit {
+fn append_bytes(out: Bytes, src: Bytes) -> Unit {
   let mut i = 0
   while i < Bytes::length(src) {
     Bytes::push(out, src[i])
@@ -16,26 +16,26 @@ let append_bytes = (out: Bytes, src: Bytes) -> Unit {
   }
 }
 
-let is_i32_binop = (op: Int) -> Bool {
+fn is_i32_binop(op: Int) -> Bool {
   (op == 0x6A) || (op == 0x6B) || (op == 0x6C) || (op == 0x71) || (op == 0x72) || (op == 0x73)
 }
 
 // i32.shl / i32.shr_s / i32.shr_u. Kept separate from is_i32_binop so callers
 // can ask for "binop" vs "shift" specifically; apply_i32_fold handles both
 // (with wasm's 32-bit shift-amount masking and wraparound).
-let is_i32_shift = (op: Int) -> Bool {
+fn is_i32_shift(op: Int) -> Bool {
   (op == 0x74) || (op == 0x75) || (op == 0x76)
 }
 
 // Opcodes whose `i32.const a; i32.const b; OP` triple can be constant-folded.
 // div/rem are excluded: folding `x / 0` would silently drop a wasm trap.
-let is_i32_foldable = (op: Int) -> Bool {
+fn is_i32_foldable(op: Int) -> Bool {
   is_i32_binop(op) || is_i32_shift(op)
 }
 
 // i32 relational ops (eq/ne and signed/unsigned lt/gt/le/ge), 0x46..0x4F.
 // Folding `i32.const a; i32.const b; CMP` yields `i32.const 0|1`.
-let is_i32_cmp = (op: Int) -> Bool {
+fn is_i32_cmp(op: Int) -> Bool {
   (op >= 0x46) && (op <= 0x4F)
 }
 
@@ -43,7 +43,7 @@ let is_i32_cmp = (op: Int) -> Bool {
 // identity. Mirrors is_identity_op for the i64 opcodes: add/sub/or/xor/shl/
 // shr_s/shr_u with k == 0, and mul with k == 1. `and` is intentionally absent
 // (x & 0 == 0, not x). Pure elimination, no arithmetic computed.
-let is_i64_identity_op = (op: Int, imm: Int) -> Bool {
+fn is_i64_identity_op(op: Int, imm: Int) -> Bool {
   if (op == 0x7C) || (op == 0x7D) || (op == 0x84) || (op == 0x85) || (op == 0x86) || (op == 0x87) || (op == 0x88) {
     imm == 0
   }
@@ -57,7 +57,7 @@ let is_i64_identity_op = (op: Int, imm: Int) -> Bool {
   }
 }
 
-let read_sleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
+fn read_sleb128(buf: Bytes, offset: Int) -> (Int, Int) {
   let len = Bytes::length(buf)
   let mut i = offset
   let mut result = 0
@@ -78,7 +78,7 @@ let read_sleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
   (result, i)
 }
 
-let read_uleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
+fn read_uleb128(buf: Bytes, offset: Int) -> (Int, Int) {
   let len = Bytes::length(buf)
   let mut i = offset
   let mut result = 0
@@ -98,7 +98,7 @@ let read_uleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
   (result, i)
 }
 
-let read_name = (bytes: Bytes, offset: Int) -> (String, Int) {
+fn read_name(bytes: Bytes, offset: Int) -> (String, Int) {
   let (name_len, pos) = read_uleb128(bytes, offset)
   // O(N) build via StringBuilder; per-char String::concat was O(L²) (issue #366).
   let s = StringBuilder::new()
@@ -110,7 +110,7 @@ let read_name = (bytes: Bytes, offset: Int) -> (String, Int) {
   (StringBuilder::freeze(s), pos + name_len)
 }
 
-export let minify_fast = (bytes: Bytes) -> Bytes {
+export fn minify_fast(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -157,7 +157,7 @@ export let minify_fast = (bytes: Bytes) -> Bytes {
   }
 }
 
-let decode_instr = (body: Bytes, pos: Int) -> (Int, Int, Int) {
+fn decode_instr(body: Bytes, pos: Int) -> (Int, Int, Int) {
   let op = body[pos]
   if op == 0x08 {
     // throw <tagidx>
@@ -311,7 +311,7 @@ let decode_instr = (body: Bytes, pos: Int) -> (Int, Int, Int) {
   }
 }
 
-let list_sections = (bytes: Bytes) -> Array[(Int, Int, Int)] {
+fn list_sections(bytes: Bytes) -> Array[(Int, Int, Int)] {
   let len = Bytes::length(bytes)
   let result = Array::slice([
     (0, 0, 0)
@@ -338,7 +338,7 @@ let list_sections = (bytes: Bytes) -> Array[(Int, Int, Int)] {
   }
 }
 
-export let count_types = (bytes: Bytes) -> Int {
+export fn count_types(bytes: Bytes) -> Int {
   let sections = list_sections(bytes)
   let mut count = 0
   let mut s = 0
@@ -353,7 +353,7 @@ export let count_types = (bytes: Bytes) -> Int {
   count
 }
 
-export let count_exports = (bytes: Bytes) -> Int {
+export fn count_exports(bytes: Bytes) -> Int {
   let sections = list_sections(bytes)
   let mut count = 0
   let mut s = 0
@@ -368,7 +368,7 @@ export let count_exports = (bytes: Bytes) -> Int {
   count
 }
 
-export let section_sizes = (bytes: Bytes) -> Array[(Int, Int)] {
+export fn section_sizes(bytes: Bytes) -> Array[(Int, Int)] {
   let sections = list_sections(bytes)
   let result = Array::slice([
     (0, 0)
@@ -382,7 +382,7 @@ export let section_sizes = (bytes: Bytes) -> Array[(Int, Int)] {
   result
 }
 
-let write_sleb128 = (buf: Bytes, n: Int) -> Unit {
+fn write_sleb128(buf: Bytes, n: Int) -> Unit {
   let mut val = n
   let mut more = true
   while more {
@@ -397,7 +397,7 @@ let write_sleb128 = (buf: Bytes, n: Int) -> Unit {
   }
 }
 
-let write_uleb128 = (buf: Bytes, n: Int) -> Unit {
+fn write_uleb128(buf: Bytes, n: Int) -> Unit {
   let mut val = n
   let mut more = true
   while more {
@@ -412,13 +412,13 @@ let write_uleb128 = (buf: Bytes, n: Int) -> Unit {
   }
 }
 
-let emit_section = (out: Bytes, sec_id: Int, content: Bytes) -> Unit {
+fn emit_section(out: Bytes, sec_id: Int, content: Bytes) -> Unit {
   Bytes::push(out, sec_id)
   write_uleb128(out, Bytes::length(content))
   append_bytes(out, content)
 }
 
-let is_identity_op = (op: Int, imm: Int) -> Bool {
+fn is_identity_op(op: Int, imm: Int) -> Bool {
   if op == 0x6A {
     imm == 0
   }
@@ -455,7 +455,7 @@ let is_identity_op = (op: Int, imm: Int) -> Bool {
 // Normalize a 62-bit Int result to a signed wasm i32 (two's complement,
 // -2^31 .. 2^31-1) so constant folding matches wasm's wraparound semantics
 // instead of leaking out-of-range values into the rewritten i32.const.
-let wrap_i32 = (v: Int) -> Int {
+fn wrap_i32(v: Int) -> Int {
   let m = v & 0xFFFFFFFF
   if (m & 0x80000000) != 0 {
     m - 4294967296
@@ -465,7 +465,7 @@ let wrap_i32 = (v: Int) -> Int {
   }
 }
 
-let apply_i32_fold = (op: Int, a: Int, b: Int) -> Int {
+fn apply_i32_fold(op: Int, a: Int, b: Int) -> Int {
   if op == 0x6A {
     wrap_i32(a + b)
   }
@@ -501,7 +501,7 @@ let apply_i32_fold = (op: Int, a: Int, b: Int) -> Int {
 // Evaluate an i32 relational op on two constants, returning 0 or 1. Signed
 // ops compare the sign-extended i32 values; unsigned ops compare the low
 // 32 bits as non-negative magnitudes.
-let apply_i32_cmp = (op: Int, a: Int, b: Int) -> Int {
+fn apply_i32_cmp(op: Int, a: Int, b: Int) -> Int {
   let sa = wrap_i32(a)
   let sb = wrap_i32(b)
   let ua = a & 0xFFFFFFFF
@@ -538,7 +538,7 @@ let apply_i32_cmp = (op: Int, a: Int, b: Int) -> Int {
   }
 }
 
-let copy_span_bytes = (out: Bytes, body: Bytes, start: Int, end_pos: Int) -> Unit {
+fn copy_span_bytes(out: Bytes, body: Bytes, start: Int, end_pos: Int) -> Unit {
   let mut k = start
   while k < end_pos {
     Bytes::push(out, body[k])
@@ -546,7 +546,7 @@ let copy_span_bytes = (out: Bytes, body: Bytes, start: Int, end_pos: Int) -> Uni
   }
 }
 
-export let count_functions = (bytes: Bytes) -> Int {
+export fn count_functions(bytes: Bytes) -> Int {
   let sections = list_sections(bytes)
   let mut import_funcs = 0
   let mut defined_funcs = 0
@@ -583,7 +583,7 @@ export let count_functions = (bytes: Bytes) -> Int {
   import_funcs + defined_funcs
 }
 
-let parse_body_spans = (body: Bytes, start: Int, end_pos: Int) -> Array[(Int, Int, Int)] {
+fn parse_body_spans(body: Bytes, start: Int, end_pos: Int) -> Array[(Int, Int, Int)] {
   let spans = Array::slice([
     (0, 0, 0)
   ], 0, 0)
@@ -596,7 +596,7 @@ let parse_body_spans = (body: Bytes, start: Int, end_pos: Int) -> Array[(Int, In
   spans
 }
 
-let is_table_exported = (bytes: Bytes) -> Bool {
+fn is_table_exported(bytes: Bytes) -> Bool {
   let sections = list_sections(bytes)
   let mut s = 0
   let mut found = false
@@ -630,7 +630,7 @@ let is_table_exported = (bytes: Bytes) -> Bool {
   found
 }
 
-let parse_body_instrs = (body: Bytes, start: Int, end_pos: Int) -> Array[(Int, Int)] {
+fn parse_body_instrs(body: Bytes, start: Int, end_pos: Int) -> Array[(Int, Int)] {
   let instrs = Array::slice([
     (0, 0)
   ], 0, 0)
@@ -643,7 +643,7 @@ let parse_body_instrs = (body: Bytes, start: Int, end_pos: Int) -> Array[(Int, I
   instrs
 }
 
-let parse_code_bodies = (bytes: Bytes, offset: Int, size: Int) -> Array[Bytes] {
+fn parse_code_bodies(bytes: Bytes, offset: Int, size: Int) -> Array[Bytes] {
   let end_pos = offset + size
   let (func_count, pos0) = read_uleb128(bytes, offset)
   let mut pos = pos0
@@ -660,7 +660,7 @@ let parse_code_bodies = (bytes: Bytes, offset: Int, size: Int) -> Array[Bytes] {
   result
 }
 
-let array_contains_int = (arr: Array[Int], target: Int) -> Bool {
+fn array_contains_int(arr: Array[Int], target: Int) -> Bool {
   let mut i = 0
   let mut found = false
   while (i < Array::length(arr)) && (found == false) {
@@ -672,7 +672,7 @@ let array_contains_int = (arr: Array[Int], target: Int) -> Bool {
   found
 }
 
-let array_contains_str = (arr: Array[String], target: String) -> Bool {
+fn array_contains_str(arr: Array[String], target: String) -> Bool {
   let mut i = 0
   let mut found = false
   while (i < Array::length(arr)) && (found == false) {
@@ -684,7 +684,7 @@ let array_contains_str = (arr: Array[String], target: String) -> Bool {
   found
 }
 
-let rewrite_exports = (bytes: Bytes, offset: Int, size: Int, keep_names: Array[String]) -> Bytes {
+fn rewrite_exports(bytes: Bytes, offset: Int, size: Int, keep_names: Array[String]) -> Bytes {
   let end_pos = offset + size
   let kept = Array::slice([
     ("", 0, 0)
@@ -724,7 +724,7 @@ let rewrite_exports = (bytes: Bytes, offset: Int, size: Int, keep_names: Array[S
   out
 }
 
-export let filter_exports = (bytes: Bytes, keep_names: Array[String]) -> Bytes {
+export fn filter_exports(bytes: Bytes, keep_names: Array[String]) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -752,7 +752,7 @@ export let filter_exports = (bytes: Bytes, keep_names: Array[String]) -> Bytes {
   }
 }
 
-let count_import_funcs = (bytes: Bytes) -> Int {
+fn count_import_funcs(bytes: Bytes) -> Int {
   let sections = list_sections(bytes)
   let mut import_funcs = 0
   let mut s = 0
@@ -804,7 +804,7 @@ let count_import_funcs = (bytes: Bytes) -> Int {
   import_funcs
 }
 
-export let build_call_graph = (bytes: Bytes) -> Array[(Int, Array[Int])] {
+export fn build_call_graph(bytes: Bytes) -> Array[(Int, Array[Int])] {
   let result = Array::slice([
     (0, Array::slice([
       (0)
@@ -866,7 +866,7 @@ export let build_call_graph = (bytes: Bytes) -> Array[(Int, Array[Int])] {
   result
 }
 
-let count_local_tables = (bytes: Bytes) -> Int {
+fn count_local_tables(bytes: Bytes) -> Int {
   let sections = list_sections(bytes)
   let mut s = 0
   let mut count = 0
@@ -881,7 +881,7 @@ let count_local_tables = (bytes: Bytes) -> Int {
   count
 }
 
-let expand_local_count = (local_types: Array[(Int, Int)]) -> Int {
+fn expand_local_count(local_types: Array[(Int, Int)]) -> Int {
   let mut total = 0
   let mut i = 0
   while i < Array::length(local_types) {
@@ -892,7 +892,7 @@ let expand_local_count = (local_types: Array[(Int, Int)]) -> Int {
   total
 }
 
-let remap_func_section = (bytes: Bytes, offset: Int, size: Int, type_map: Array[Int]) -> Bytes {
+fn remap_func_section(bytes: Bytes, offset: Int, size: Int, type_map: Array[Int]) -> Bytes {
   let end_pos = offset + size
   let (cnt, pos0) = read_uleb128(bytes, offset)
   let mut pos = pos0
@@ -913,12 +913,12 @@ let remap_func_section = (bytes: Bytes, offset: Int, size: Int, type_map: Array[
   out
 }
 
-let span_read_sleb_imm = (body: Bytes, span_start: Int) -> Int {
+fn span_read_sleb_imm(body: Bytes, span_start: Int) -> Int {
   let (val, _) = read_sleb128(body, span_start + 1)
   val
 }
 
-let directize_body = (body: Bytes, slot_to_func: Array[Int], max_slot: Int, func_type_by_idx: Array[Int]) -> Bytes {
+fn directize_body(body: Bytes, slot_to_func: Array[Int], max_slot: Int, func_type_by_idx: Array[Int]) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
     copy_bytes(body, 0, body_len)
@@ -994,12 +994,12 @@ let directize_body = (body: Bytes, slot_to_func: Array[Int], max_slot: Int, func
   }
 }
 
-let span_read_uleb_imm = (body: Bytes, span_start: Int) -> Int {
+fn span_read_uleb_imm(body: Bytes, span_start: Int) -> Int {
   let (val, _) = read_uleb128(body, span_start + 1)
   val
 }
 
-let coalesce_body = (body: Bytes, param_count: Int) -> Bytes {
+fn coalesce_body(body: Bytes, param_count: Int) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
     copy_bytes(body, 0, body_len)
@@ -1138,7 +1138,7 @@ let coalesce_body = (body: Bytes, param_count: Int) -> Bytes {
   }
 }
 
-let peephole_try2 = (out: Bytes, body: Bytes, spans: Array[(Int, Int, Int)], i: Int, n: Int) -> Bool {
+fn peephole_try2(out: Bytes, body: Bytes, spans: Array[(Int, Int, Int)], i: Int, n: Int) -> Bool {
   if (i + 1) >= n {
     false
   }
@@ -1193,7 +1193,7 @@ let peephole_try2 = (out: Bytes, body: Bytes, spans: Array[(Int, Int, Int)], i: 
   }
 }
 
-let peephole_spans = (body: Bytes, spans: Array[(Int, Int, Int)]) -> (Bytes, Bool) {
+fn peephole_spans(body: Bytes, spans: Array[(Int, Int, Int)]) -> (Bytes, Bool) {
   let n = Array::length(spans)
   let out = Bytes::new()
   let mut changed = false
@@ -1252,7 +1252,7 @@ let peephole_spans = (body: Bytes, spans: Array[(Int, Int, Int)]) -> (Bytes, Boo
   (out, changed)
 }
 
-let peephole_body = (body: Bytes) -> Bytes {
+fn peephole_body(body: Bytes) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
     copy_bytes(body, 0, body_len)
@@ -1306,7 +1306,7 @@ let peephole_body = (body: Bytes) -> Bytes {
   }
 }
 
-let rewrite_body_calls = (body: Bytes, fwd_lookup: Array[Int], max_func: Int, remap_reffunc: Bool) -> Bytes {
+fn rewrite_body_calls(body: Bytes, fwd_lookup: Array[Int], max_func: Int, remap_reffunc: Bool) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
     copy_bytes(body, 0, body_len)
@@ -1374,7 +1374,7 @@ let rewrite_body_calls = (body: Bytes, fwd_lookup: Array[Int], max_func: Int, re
   }
 }
 
-let detect_forward_call = (body: Bytes, param_count: Int) -> Int {
+fn detect_forward_call(body: Bytes, param_count: Int) -> Int {
   let body_len = Bytes::length(body)
   if body_len < 2 {
     (-1)
@@ -1442,7 +1442,7 @@ let detect_forward_call = (body: Bytes, param_count: Int) -> Int {
   }
 }
 
-export let strip_named_section = (bytes: Bytes, name: String) -> Bytes {
+export fn strip_named_section(bytes: Bytes, name: String) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -1474,7 +1474,7 @@ export let strip_named_section = (bytes: Bytes, name: String) -> Bytes {
   }
 }
 
-let filter_data_segments = (bytes: Bytes, offset: Int, size: Int) -> Bytes {
+fn filter_data_segments(bytes: Bytes, offset: Int, size: Int) -> Bytes {
   let end_pos = offset + size
   let segments = Array::slice([
     (0, 0, 0)
@@ -1532,7 +1532,7 @@ let filter_data_segments = (bytes: Bytes, offset: Int, size: Int) -> Bytes {
   out
 }
 
-export let strip_empty_data = (bytes: Bytes) -> Bytes {
+export fn strip_empty_data(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -1562,7 +1562,7 @@ export let strip_empty_data = (bytes: Bytes) -> Bytes {
   }
 }
 
-let get_type_param_count = (bytes: Bytes, type_sec_off: Int, type_sec_sz: Int, type_idx: Int) -> Int {
+fn get_type_param_count(bytes: Bytes, type_sec_off: Int, type_sec_sz: Int, type_idx: Int) -> Int {
   let end_pos = type_sec_off + type_sec_sz
   let (type_count, pos0) = read_uleb128(bytes, type_sec_off)
   let mut pos = pos0
@@ -1585,7 +1585,7 @@ let get_type_param_count = (bytes: Bytes, type_sec_off: Int, type_sec_sz: Int, t
   result
 }
 
-let get_func_param_count = (bytes: Bytes, func_idx: Int, func_type_by_idx: Array[Int]) -> Int {
+fn get_func_param_count(bytes: Bytes, func_idx: Int, func_type_by_idx: Array[Int]) -> Int {
   if func_idx >= Array::length(func_type_by_idx) {
     (-1)
   }
@@ -1605,7 +1605,7 @@ let get_func_param_count = (bytes: Bytes, func_idx: Int, func_type_by_idx: Array
   }
 }
 
-let rebuild_code_section = (bodies: Array[Bytes]) -> Bytes {
+fn rebuild_code_section(bodies: Array[Bytes]) -> Bytes {
   let out = Bytes::new()
   write_uleb128(out, Array::length(bodies))
   let mut bi = 0
@@ -1618,7 +1618,7 @@ let rebuild_code_section = (bodies: Array[Bytes]) -> Bytes {
   out
 }
 
-let remap_import_section = (bytes: Bytes, offset: Int, size: Int, type_map: Array[Int]) -> Bytes {
+fn remap_import_section(bytes: Bytes, offset: Int, size: Int, type_map: Array[Int]) -> Bytes {
   let end_pos = offset + size
   let (cnt, pos0) = read_uleb128(bytes, offset)
   let mut pos = pos0
@@ -1696,7 +1696,7 @@ let remap_import_section = (bytes: Bytes, offset: Int, size: Int, type_map: Arra
   out
 }
 
-let rewrite_type_section = (bytes: Bytes, offset: Int, size: Int, used: Array[Int]) -> Bytes {
+fn rewrite_type_section(bytes: Bytes, offset: Int, size: Int, used: Array[Int]) -> Bytes {
   let end_pos = offset + size
   let (type_count, pos0) = read_uleb128(bytes, offset)
   let mut pos = pos0
@@ -1730,7 +1730,7 @@ let rewrite_type_section = (bytes: Bytes, offset: Int, size: Int, used: Array[In
   out
 }
 
-let coalesce_code_section = (bytes: Bytes, offset: Int, size: Int, type_sec_off: Int, type_sec_sz: Int, func_type_indices: Array[Int]) -> Bytes {
+fn coalesce_code_section(bytes: Bytes, offset: Int, size: Int, type_sec_off: Int, type_sec_sz: Int, func_type_indices: Array[Int]) -> Bytes {
   let raw_bodies = parse_code_bodies(bytes, offset, size)
   let optimized = Array::slice([
     (Bytes::new())
@@ -1750,7 +1750,7 @@ let coalesce_code_section = (bytes: Bytes, offset: Int, size: Int, type_sec_off:
   rebuild_code_section(optimized)
 }
 
-let count_imported_tables = (bytes: Bytes) -> Int {
+fn count_imported_tables(bytes: Bytes) -> Int {
   let sections = list_sections(bytes)
   let mut s = 0
   let mut count = 0
@@ -1803,7 +1803,7 @@ let count_imported_tables = (bytes: Bytes) -> Int {
   count
 }
 
-export let remove_empty_sections = (bytes: Bytes) -> Bytes {
+export fn remove_empty_sections(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -1845,7 +1845,7 @@ export let remove_empty_sections = (bytes: Bytes) -> Bytes {
   }
 }
 
-export let strip_custom_sections = (bytes: Bytes) -> Bytes {
+export fn strip_custom_sections(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -1882,7 +1882,7 @@ export let strip_custom_sections = (bytes: Bytes) -> Bytes {
   }
 }
 
-let directize_code_section = (bytes: Bytes, offset: Int, size: Int, slot_to_func: Array[Int], max_slot: Int, func_type_by_idx: Array[Int]) -> Bytes {
+fn directize_code_section(bytes: Bytes, offset: Int, size: Int, slot_to_func: Array[Int], max_slot: Int, func_type_by_idx: Array[Int]) -> Bytes {
   let raw_bodies = parse_code_bodies(bytes, offset, size)
   let optimized = Array::slice([
     (Bytes::new())
@@ -1895,7 +1895,7 @@ let directize_code_section = (bytes: Bytes, offset: Int, size: Int, slot_to_func
   rebuild_code_section(optimized)
 }
 
-let get_export_func_indices = (bytes: Bytes) -> Array[Int] {
+fn get_export_func_indices(bytes: Bytes) -> Array[Int] {
   let result = Array::slice([
     (0)
   ], 0, 0)
@@ -1928,7 +1928,7 @@ let get_export_func_indices = (bytes: Bytes) -> Array[Int] {
   result
 }
 
-export let find_reachable = (bytes: Bytes) -> Array[Int] {
+export fn find_reachable(bytes: Bytes) -> Array[Int] {
   let graph = build_call_graph(bytes)
   let roots = get_export_func_indices(bytes)
   let import_count = count_import_funcs(bytes)
@@ -1991,7 +1991,7 @@ export let find_reachable = (bytes: Bytes) -> Array[Int] {
   reachable
 }
 
-export let dce = (bytes: Bytes) -> Bytes {
+export fn dce(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -2051,7 +2051,7 @@ export let dce = (bytes: Bytes) -> Bytes {
 // Roots for true DCE: exported functions, any function named by a start
 // section, and any function placed in a table by an element segment (it may be
 // reached via call_indirect we cannot trace, so it must be kept).
-let collect_func_roots = (bytes: Bytes) -> Array[Int] {
+fn collect_func_roots(bytes: Bytes) -> Array[Int] {
   let roots = Array::slice([
     (0)
   ], 0, 0)
@@ -2103,7 +2103,7 @@ let collect_func_roots = (bytes: Bytes) -> Array[Int] {
 }
 
 // BFS over the call graph from an explicit root set (generalizes find_reachable).
-let reachable_from = (bytes: Bytes, roots: Array[Int]) -> Array[Int] {
+fn reachable_from(bytes: Bytes, roots: Array[Int]) -> Array[Int] {
   let graph = build_call_graph(bytes)
   let import_count = count_import_funcs(bytes)
   let mut max_func_idx = import_count
@@ -2175,7 +2175,7 @@ let reachable_from = (bytes: Bytes, roots: Array[Int]) -> Array[Int] {
 
 // Reserialize an export section, remapping function-export indices (kind 0)
 // through idx_map (old global func index -> new index).
-let remap_export_section = (bytes: Bytes, offset: Int, size: Int, idx_map: Array[Int]) -> Bytes {
+fn remap_export_section(bytes: Bytes, offset: Int, size: Int, idx_map: Array[Int]) -> Bytes {
   let end_pos = offset + size
   let (cnt, pos0) = read_uleb128(bytes, offset)
   let mut pos = pos0
@@ -2211,7 +2211,7 @@ let remap_export_section = (bytes: Bytes, offset: Int, size: Int, idx_map: Array
 // places in the table through idx_map. Handles segment flag 0 (table 0, i32
 // const offset) and flag 2 (explicit table, elemkind). Returns (out, true) on
 // success; on any unsupported shape returns (_, false) so dce_remove bails.
-let remap_element_section = (bytes: Bytes, offset: Int, size: Int, idx_map: Array[Int]) -> (Bytes, Bool) {
+fn remap_element_section(bytes: Bytes, offset: Int, size: Int, idx_map: Array[Int]) -> (Bytes, Bool) {
   let end_pos = offset + size
   let (seg_count, pos0) = read_uleb128(bytes, offset)
   let out = Bytes::new()
@@ -2278,7 +2278,7 @@ let remap_element_section = (bytes: Bytes, offset: Int, size: Int, idx_map: Arra
 // start, element segments), unlike `dce` which only stubs dead bodies. Bails
 // (returns input unchanged) only when an element section uses a shape
 // remap_element_section cannot reserialize; callers fall back to `dce` then.
-export let dce_remove = (bytes: Bytes) -> Bytes {
+export fn dce_remove(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -2422,7 +2422,7 @@ export let dce_remove = (bytes: Bytes) -> Bytes {
   }
 }
 
-let parse_element_table_map = (bytes: Bytes, elem_off: Int, elem_sz: Int) -> Array[(Int, Int)] {
+fn parse_element_table_map(bytes: Bytes, elem_off: Int, elem_sz: Int) -> Array[(Int, Int)] {
   let end_pos = elem_off + elem_sz
   let result = Array::slice([
     (0, 0)
@@ -2498,7 +2498,7 @@ let parse_element_table_map = (bytes: Bytes, elem_off: Int, elem_sz: Int) -> Arr
   }
 }
 
-let parse_func_type_indices = (bytes: Bytes) -> Array[Int] {
+fn parse_func_type_indices(bytes: Bytes) -> Array[Int] {
   let result = Array::slice([
     (0)
   ], 0, 0)
@@ -2525,7 +2525,7 @@ let parse_func_type_indices = (bytes: Bytes) -> Array[Int] {
   result
 }
 
-export let coalesce_locals = (bytes: Bytes) -> Bytes {
+export fn coalesce_locals(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -2567,7 +2567,7 @@ export let coalesce_locals = (bytes: Bytes) -> Bytes {
   }
 }
 
-let build_func_type_by_index = (bytes: Bytes) -> Array[Int] {
+fn build_func_type_by_index(bytes: Bytes) -> Array[Int] {
   let result = Array::slice([
     (0)
   ], 0, 0)
@@ -2639,7 +2639,7 @@ let build_func_type_by_index = (bytes: Bytes) -> Array[Int] {
   result
 }
 
-let build_forwarding_map = (bytes: Bytes) -> Array[(Int, Int)] {
+fn build_forwarding_map(bytes: Bytes) -> Array[(Int, Int)] {
   let result = Array::slice([
     (0, 0)
   ], 0, 0)
@@ -2716,7 +2716,7 @@ let build_forwarding_map = (bytes: Bytes) -> Array[(Int, Int)] {
   resolved
 }
 
-let has_disallowed_table_ops = (bytes: Bytes, code_off: Int, code_sz: Int) -> Bool {
+fn has_disallowed_table_ops(bytes: Bytes, code_off: Int, code_sz: Int) -> Bool {
   let end_pos = code_off + code_sz
   let (func_count, pos0) = read_uleb128(bytes, code_off)
   let mut pos = pos0
@@ -2760,7 +2760,7 @@ let has_disallowed_table_ops = (bytes: Bytes, code_off: Int, code_sz: Int) -> Bo
   found
 }
 
-export let directize = (bytes: Bytes) -> Bytes {
+export fn directize(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -2866,7 +2866,7 @@ export let directize = (bytes: Bytes) -> Bytes {
   }
 }
 
-let rewrite_calls_forwarding = (bytes: Bytes, offset: Int, size: Int, fwd_lookup: Array[Int], max_func: Int) -> Bytes {
+fn rewrite_calls_forwarding(bytes: Bytes, offset: Int, size: Int, fwd_lookup: Array[Int], max_func: Int) -> Bytes {
   let raw_bodies = parse_code_bodies(bytes, offset, size)
   let optimized = Array::slice([
     (Bytes::new())
@@ -2879,7 +2879,7 @@ let rewrite_calls_forwarding = (bytes: Bytes, offset: Int, size: Int, fwd_lookup
   rebuild_code_section(optimized)
 }
 
-export let call_forwarding = (bytes: Bytes) -> Bytes {
+export fn call_forwarding(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -2929,7 +2929,7 @@ export let call_forwarding = (bytes: Bytes) -> Bytes {
   }
 }
 
-let collect_used_type_indices = (bytes: Bytes) -> Array[Int] {
+fn collect_used_type_indices(bytes: Bytes) -> Array[Int] {
   let used = Array::slice([
     (0)
   ], 0, 0)
@@ -3015,7 +3015,7 @@ let collect_used_type_indices = (bytes: Bytes) -> Array[Int] {
   used
 }
 
-export let remove_unused_types = (bytes: Bytes) -> Bytes {
+export fn remove_unused_types(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -3089,7 +3089,7 @@ export let remove_unused_types = (bytes: Bytes) -> Bytes {
   }
 }
 
-let optimize_code_section_content = (bytes: Bytes, offset: Int, size: Int) -> Bytes {
+fn optimize_code_section_content(bytes: Bytes, offset: Int, size: Int) -> Bytes {
   let raw_bodies = parse_code_bodies(bytes, offset, size)
   let optimized = Array::slice([
     (Bytes::new())
@@ -3102,7 +3102,7 @@ let optimize_code_section_content = (bytes: Bytes, offset: Int, size: Int) -> By
   rebuild_code_section(optimized)
 }
 
-export let optimize_code_section = (bytes: Bytes) -> Bytes {
+export fn optimize_code_section(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -3144,7 +3144,7 @@ export let optimize_code_section = (bytes: Bytes) -> Bytes {
 // `br`. Getting this wrong would corrupt effectful programs (vibe effects
 // compile to wasm exception handling). A single forward pass suffices: every
 // branch inside a block is seen before the block's `end`.
-let remove_dead_blocks_body = (body: Bytes) -> Bytes {
+fn remove_dead_blocks_body(body: Bytes) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
     copy_bytes(body, 0, body_len)
@@ -3305,7 +3305,7 @@ let remove_dead_blocks_body = (body: Bytes) -> Bytes {
   }
 }
 
-let remove_dead_blocks_code_section = (bytes: Bytes, offset: Int, size: Int) -> Bytes {
+fn remove_dead_blocks_code_section(bytes: Bytes, offset: Int, size: Int) -> Bytes {
   let raw_bodies = parse_code_bodies(bytes, offset, size)
   let optimized = Array::slice([
     (Bytes::new())
@@ -3318,7 +3318,7 @@ let remove_dead_blocks_code_section = (bytes: Bytes, offset: Int, size: Int) -> 
   rebuild_code_section(optimized)
 }
 
-export let remove_dead_blocks = (bytes: Bytes) -> Bytes {
+export fn remove_dead_blocks(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -3347,7 +3347,7 @@ export let remove_dead_blocks = (bytes: Bytes) -> Bytes {
 }
 
 // Result-arity of a function type (mirror of get_type_param_count).
-let get_type_result_count = (bytes: Bytes, type_sec_off: Int, type_sec_sz: Int, type_idx: Int) -> Int {
+fn get_type_result_count(bytes: Bytes, type_sec_off: Int, type_sec_sz: Int, type_idx: Int) -> Int {
   let end_pos = type_sec_off + type_sec_sz
   let (type_count, pos0) = read_uleb128(bytes, type_sec_off)
   let mut pos = pos0
@@ -3371,7 +3371,7 @@ let get_type_result_count = (bytes: Bytes, type_sec_off: Int, type_sec_sz: Int, 
 }
 
 // A function body with no instructions other than the terminating `end`.
-let is_body_empty = (body: Bytes) -> Bool {
+fn is_body_empty(body: Bytes) -> Bool {
   let body_len = Bytes::length(body)
   if body_len < 2 {
     false
@@ -3392,7 +3392,7 @@ let is_body_empty = (body: Bytes) -> Bool {
 // Drop `call F` instructions whose target F is an empty () -> () function:
 // such a call has no stack effect and no side effect, so removing it is a
 // semantics-preserving no-op. Leaves func indices untouched (DCE renumbers).
-let remove_noop_calls_body = (body: Bytes, noop: Array[Int], max_func: Int) -> Bytes {
+fn remove_noop_calls_body(body: Bytes, noop: Array[Int], max_func: Int) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
     copy_bytes(body, 0, body_len)
@@ -3442,7 +3442,7 @@ let remove_noop_calls_body = (body: Bytes, noop: Array[Int], max_func: Int) -> B
 
 // Inline (delete) calls to empty () -> () functions; the now-uncalled empty
 // functions are removed by the following DCE pass.
-export let inline_empty_calls = (bytes: Bytes) -> Bytes {
+export fn inline_empty_calls(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -3525,7 +3525,7 @@ export let inline_empty_calls = (bytes: Bytes) -> Bytes {
 }
 
 // Parse instruction spans of a whole function body (locals header skipped).
-let parse_full_body_spans = (body: Bytes) -> Array[(Int, Int, Int)] {
+fn parse_full_body_spans(body: Bytes) -> Array[(Int, Int, Int)] {
   let body_len = Bytes::length(body)
   if body_len < 2 {
     Array::slice([
@@ -3546,7 +3546,7 @@ let parse_full_body_spans = (body: Bytes) -> Array[(Int, Int, Int)] {
 }
 
 // Minimum size of each *defined* table (index space after imported tables).
-let parse_table_mins = (bytes: Bytes) -> Array[Int] {
+fn parse_table_mins(bytes: Bytes) -> Array[Int] {
   let result = Array::slice([
     (0)
   ], 0, 0)
@@ -3580,7 +3580,7 @@ let parse_table_mins = (bytes: Bytes) -> Array[Int] {
 
 // True if any body uses a table opcode: call_indirect, table.get/set, or any
 // 0xFC table.* (init/drop/copy/grow/size/fill). Used to decide table removal.
-let code_uses_any_table_op = (bytes: Bytes) -> Bool {
+fn code_uses_any_table_op(bytes: Bytes) -> Bool {
   let sections = list_sections(bytes)
   let mut found = false
   let mut s = 0
@@ -3615,7 +3615,7 @@ let code_uses_any_table_op = (bytes: Bytes) -> Bool {
 }
 
 // Replace `table.size t` with `i32.const <min size of table t>` in one body.
-let fold_table_size_body = (body: Bytes, table_mins: Array[Int]) -> Bytes {
+fn fold_table_size_body(body: Bytes, table_mins: Array[Int]) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
     copy_bytes(body, 0, body_len)
@@ -3675,7 +3675,7 @@ let fold_table_size_body = (body: Bytes, table_mins: Array[Int]) -> Bytes {
 // True if the module exports any table (kind 1). An exported table can be
 // grown by the embedder between calls, so its `table.size` is not statically
 // the declared minimum.
-let any_table_exported = (bytes: Bytes) -> Bool {
+fn any_table_exported(bytes: Bytes) -> Bool {
   let sections = list_sections(bytes)
   let mut found = false
   let mut s = 0
@@ -3704,7 +3704,7 @@ let any_table_exported = (bytes: Bytes) -> Bool {
   found
 }
 
-export let fold_table_size = (bytes: Bytes) -> Bytes {
+export fn fold_table_size(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -3787,7 +3787,7 @@ export let fold_table_size = (bytes: Bytes) -> Bytes {
 // Drop the table and element sections when no table opcode references any table
 // and no table is exported or imported. The functions that were only kept alive
 // by element segments then become dead and are removed by the following DCE.
-export let drop_unused_tables = (bytes: Bytes) -> Bytes {
+export fn drop_unused_tables(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -3855,7 +3855,7 @@ export let drop_unused_tables = (bytes: Bytes) -> Bytes {
 // whole-function property it is independent of control flow, so this is always
 // safe; the resulting `<pure expr>; drop` is then cleaned by peephole and the
 // now-unused local declaration by coalesce_locals.
-let eliminate_dead_stores_body = (body: Bytes) -> Bytes {
+fn eliminate_dead_stores_body(body: Bytes) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
     copy_bytes(body, 0, body_len)
@@ -3913,7 +3913,7 @@ let eliminate_dead_stores_body = (body: Bytes) -> Bytes {
   }
 }
 
-export let eliminate_dead_stores = (bytes: Bytes) -> Bytes {
+export fn eliminate_dead_stores(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -3951,7 +3951,7 @@ export let eliminate_dead_stores = (bytes: Bytes) -> Bytes {
 
 // Read the parameter value types of type index `type_idx` from the type
 // section, as an array of value-type bytes (used to append callee param locals).
-let read_param_types = (bytes: Bytes, type_off: Int, type_sz: Int, type_idx: Int) -> Array[Int] {
+fn read_param_types(bytes: Bytes, type_off: Int, type_sz: Int, type_idx: Int) -> Array[Int] {
   let end_pos = type_off + type_sz
   let (type_count, pos0) = read_uleb128(bytes, type_off)
   let mut pos = pos0
@@ -3981,7 +3981,7 @@ let read_param_types = (bytes: Bytes, type_off: Int, type_sz: Int, type_idx: Int
 // Read the single result blocktype byte of type index `type_idx`: 0x40 for no
 // result, the value-type byte for one result, or -1 for multi-value (which the
 // inliner does not handle).
-let read_result_bt = (bytes: Bytes, type_off: Int, type_sz: Int, type_idx: Int) -> Int {
+fn read_result_bt(bytes: Bytes, type_off: Int, type_sz: Int, type_idx: Int) -> Int {
   let end_pos = type_off + type_sz
   let (type_count, pos0) = read_uleb128(bytes, type_off)
   let mut pos = pos0
@@ -4010,7 +4010,7 @@ let read_result_bt = (bytes: Bytes, type_off: Int, type_sz: Int, type_idx: Int) 
 
 // Parse a code body's local declaration groups: returns the (count, type) pairs
 // and the offset of the first instruction (after the local header).
-let read_local_groups = (body: Bytes) -> (Array[(Int, Int)], Int) {
+fn read_local_groups(body: Bytes) -> (Array[(Int, Int)], Int) {
   let (decl_count, p0) = read_uleb128(body, 0)
   let mut pos = p0
   let groups = Array::slice([
@@ -4026,7 +4026,7 @@ let read_local_groups = (body: Bytes) -> (Array[(Int, Int)], Int) {
   (groups, pos)
 }
 
-let local_groups_total = (groups: Array[(Int, Int)]) -> Int {
+fn local_groups_total(groups: Array[(Int, Int)]) -> Int {
   let mut t = 0
   let mut i = 0
   while i < Array::length(groups) {
@@ -4042,7 +4042,7 @@ let local_groups_total = (groups: Array[(Int, Int)]) -> Int {
 // (0x0C/0x0D/0x0E) may target the function-implicit scope, and try_table (0x1F)
 // catch labels / throw (0x08) interact with exception scopes. We rewrite only
 // `return` (0x0F) safely, so bail on any of these to keep inlining correct.
-let body_has_unrelocatable_op = (body: Bytes) -> Bool {
+fn body_has_unrelocatable_op(body: Bytes) -> Bool {
   let spans = parse_full_body_spans(body)
   let mut found = false
   let mut i = 0
@@ -4060,7 +4060,7 @@ let body_has_unrelocatable_op = (body: Bytes) -> Bool {
 // param locals, wrap the body in a block of the callee's result type, remap
 // the callee's locals by +base, and rewrite `return` to `br <depth>` so it
 // exits the wrapper instead of the (now different) enclosing function.
-let emit_inlined_body = (out: Bytes, f_body: Bytes, n_params: Int, base: Int, result_bt: Int) -> Unit {
+fn emit_inlined_body(out: Bytes, f_body: Bytes, n_params: Int, base: Int, result_bt: Int) -> Unit {
   let mut k = n_params - 1
   while k >= 0 {
     Bytes::push(out, 0x21)
@@ -4102,7 +4102,7 @@ let emit_inlined_body = (out: Bytes, f_body: Bytes, n_params: Int, base: Int, re
 // Inline a single call to a non-root function that is called exactly once
 // (general function inlining beyond inline_empty_calls). The now-uncalled
 // callee is removed by the following DCE. One inline per pass; converge repeats.
-export let inline_calls = (bytes: Bytes) -> Bytes {
+export fn inline_calls(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -4265,7 +4265,7 @@ export let inline_calls = (bytes: Bytes) -> Bytes {
 // Count imported entries of a given external kind (0=func,1=table,2=mem,
 // 3=global,4=tag). Used to decide whether the corresponding index space starts
 // above 0 (we bail on imports for tag/global DCE to keep renumbering simple).
-let count_import_kind = (bytes: Bytes, want_kind: Int) -> Int {
+fn count_import_kind(bytes: Bytes, want_kind: Int) -> Int {
   let sections = list_sections(bytes)
   let mut n = 0
   let mut s = 0
@@ -4318,7 +4318,7 @@ let count_import_kind = (bytes: Bytes, want_kind: Int) -> Int {
 
 // Reserialize an export section, remapping the index of exports whose kind
 // matches want_kind through idx_map (old index -> new index, -1 = removed).
-let remap_export_kind = (bytes: Bytes, offset: Int, size: Int, want_kind: Int, idx_map: Array[Int]) -> Bytes {
+fn remap_export_kind(bytes: Bytes, offset: Int, size: Int, want_kind: Int, idx_map: Array[Int]) -> Bytes {
   let end_pos = offset + size
   let (cnt, pos0) = read_uleb128(bytes, offset)
   let mut pos = pos0
@@ -4352,7 +4352,7 @@ let remap_export_kind = (bytes: Bytes, offset: Int, size: Int, want_kind: Int, i
 
 // Rewrite a code body remapping tag indices in throw (0x08) and try_table
 // (0x1F) catch clauses through tmap.
-let rewrite_body_tags = (body: Bytes, tmap: Array[Int]) -> Bytes {
+fn rewrite_body_tags(body: Bytes, tmap: Array[Int]) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
     copy_bytes(body, 0, body_len)
@@ -4438,7 +4438,7 @@ let rewrite_body_tags = (body: Bytes, tmap: Array[Int]) -> Bytes {
 // never exported. Renumbers throw/try_table/export tag indices. Bails on
 // imported tags. This is the unused-tag cleanup that function inlining unlocks
 // (an inlined effect helper can leave its tag unreferenced).
-export let drop_unused_tags = (bytes: Bytes) -> Bytes {
+export fn drop_unused_tags(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -4619,7 +4619,7 @@ export let drop_unused_tags = (bytes: Bytes) -> Bytes {
 
 // Rewrite a code body remapping global indices in global.get (0x23) and
 // global.set (0x24) through gmap.
-let rewrite_body_globals = (body: Bytes, gmap: Array[Int]) -> Bytes {
+fn rewrite_body_globals(body: Bytes, gmap: Array[Int]) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
     copy_bytes(body, 0, body_len)
@@ -4671,7 +4671,7 @@ let rewrite_body_globals = (body: Bytes, gmap: Array[Int]) -> Bytes {
 // True if any global init expr contains a global.get (0x23). Defined-global
 // inits may reference imported globals; we bail in that case to avoid having to
 // renumber inside init exprs.
-let global_init_refs_global = (bytes: Bytes, gbl_off: Int, gbl_sz: Int) -> Bool {
+fn global_init_refs_global(bytes: Bytes, gbl_off: Int, gbl_sz: Int) -> Bool {
   let end_pos = gbl_off + gbl_sz
   let mut pos = gbl_off
   let mut found = false
@@ -4688,7 +4688,7 @@ let global_init_refs_global = (bytes: Bytes, gbl_off: Int, gbl_sz: Int) -> Bool 
 // exported. Renumbers global.get/set and export global indices. Bails on
 // imported globals or any global.get inside init/offset exprs. This is the
 // unused-global cleanup that function inlining unlocks.
-export let drop_unused_globals = (bytes: Bytes) -> Bytes {
+export fn drop_unused_globals(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -4862,7 +4862,7 @@ export let drop_unused_globals = (bytes: Bytes) -> Bytes {
 // pair at span indices (set_b_span - 1, set_b_span) and, when b_idx >= 0,
 // rewrite the single later `local.get $b_idx` to `local.get $a_idx`. Mirrors
 // the other rewrite_body_* helpers.
-let rewrite_body_locals = (body: Bytes, set_b_span: Int, a_idx: Int, b_idx: Int) -> Bytes {
+fn rewrite_body_locals(body: Bytes, set_b_span: Int, a_idx: Int, b_idx: Int) -> Bytes {
   let (_, code_start) = read_local_groups(body)
   let code_end = Bytes::length(body) - 1
   let spans = parse_body_spans(body, code_start, code_end)
@@ -4900,7 +4900,7 @@ let rewrite_body_locals = (body: Bytes, set_b_span: Int, a_idx: Int, b_idx: Int)
 //       both are deleted and the later `local.get $b` becomes `local.get $a`
 //       (value-equivalent since $a is unchanged). $b is then dead for
 //       coalesce/DCE.
-export let propagate_local_copies = (bytes: Bytes) -> Bytes {
+export fn propagate_local_copies(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -5060,7 +5060,7 @@ export let propagate_local_copies = (bytes: Bytes) -> Bytes {
   }
 }
 
-export let minify = (bytes: Bytes) -> Bytes {
+export fn minify(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
@@ -5105,7 +5105,7 @@ export let minify = (bytes: Bytes) -> Bytes {
   }
 }
 
-export let optimize = (bytes: Bytes) -> Bytes {
+export fn optimize(bytes: Bytes) -> Bytes {
   let step1 = strip_custom_sections(bytes)
   let step2 = optimize_code_section(step1)
   let step3 = dce(step2)
@@ -5118,7 +5118,7 @@ export let optimize = (bytes: Bytes) -> Bytes {
 // and deep constant-fold chains finish past `peephole_body`'s internal cap.
 // Monotonic: a round is kept only if it is strictly smaller, so the result is
 // never larger than a single `minify`. `max_rounds` bounds the work.
-let minify_converge_n = (bytes: Bytes, max_rounds: Int) -> Bytes {
+fn minify_converge_n(bytes: Bytes, max_rounds: Int) -> Bytes {
   let mut cur = minify(bytes)
   let mut rounds = 0
   let mut keep_going = true
@@ -5134,6 +5134,6 @@ let minify_converge_n = (bytes: Bytes, max_rounds: Int) -> Bytes {
   cur
 }
 
-export let minify_converge = (bytes: Bytes) -> Bytes {
+export fn minify_converge(bytes: Bytes) -> Bytes {
   minify_converge_n(bytes, 16)
 }
