@@ -3784,16 +3784,20 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
     // the repeatedly-pushed `init` value across FixedArray::make's loop
     // iterations under RC — a hand-emitted raw loop here would silently
     // double-free `init` on the second push.
-    else if fname == "FixedArray::length" {
+    // #835: Int64Array::make/length/get/set piggyback on the exact same
+    // Array aliasing (Array[Int] already stores the full tagged Int per cell
+    // in both backends, so there is no truncation to work around here the
+    // way the retired MoonBit host needed a dedicated i64-cell object).
+    else if fname == "FixedArray::length" || fname == "Int64Array::length" {
       ce(buf, ECall(EIdent("Array::length", -1), args, -1), local_names, next_local, ctx, ld)
     }
-    else if fname == "FixedArray::get" {
+    else if fname == "FixedArray::get" || fname == "Int64Array::get" {
       ce(buf, ECall(EIdent("Array::get", -1), args, -1), local_names, next_local, ctx, ld)
     }
-    else if fname == "FixedArray::set" || fname == "FixedArray::unsafe_set" {
+    else if fname == "FixedArray::set" || fname == "FixedArray::unsafe_set" || fname == "Int64Array::set" {
       ce(buf, ECall(EIdent("Array::set", -1), args, -1), local_names, next_local, ctx, ld)
     }
-    else if fname == "FixedArray::make" {
+    else if fname == "FixedArray::make" || fname == "Int64Array::make" {
       let n_expr = Array::get(args, 0)
       let init_expr = Array::get(args, 1)
       let loop_body = ESeq(ECall(EIdent("Array::push", -1), [

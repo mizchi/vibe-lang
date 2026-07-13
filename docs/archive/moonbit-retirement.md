@@ -192,10 +192,15 @@ dist/stage2 parity、cutover gate) はこの監査の自動化部分として活
 - `fmt` (formatter, `src/cmd/vibe/cli_fmt.mbt`) — selfhost 無し。公開 CLI として期待される。
 - `normalize` (`src/cmd/vibe/cli_normalize.mbt`) — selfhost 無し。**`pkf run release-check` の
   `vibe-normalize` で使用**しており project gate に直結。要対応。
-- builtin: `Set::*` (new/add/remove/contains/size/from_array/to_array)、`Int64Array::*`
-  (Array[Int] 32-bit truncation #429 の回避用)、`Path::ref` — host checker
-  (`src/checker/builtin_declared_names.mbt`) にあり selfhost checker に無い疑い。**要確認**:
-  実プログラム/compiler source 自身が使うなら移植必須、未使用なら退役可。
+- builtin: `Set::*` (new/add/remove/contains/size/from_array/to_array)、`Path::ref` — host
+  checker (`src/checker/builtin_declared_names.mbt`) にあり selfhost checker に無い疑い。
+  **要確認**: 実プログラム/compiler source 自身が使うなら移植必須、未使用なら退役可。
+  - `Int64Array::*` (旧 host では Array[Int] 32-bit truncation #429 の回避用に別 i64-cell
+    object layout として実装) は **#835 で selfhost へ移植済み**。selfhost の
+    linear/gc 両バックエンドは Array[Int] の各セルに既に tagged Int をフル幅で保持しており
+    (32-bit truncation が無い)、`FixedArray::*` と同じパターンで Array::make/get/set/length
+    への薄いエイリアスとして checker/codegen 登録するだけで済んだ — 新しい i64-cell layout の
+    移植は不要だった。`docs/cheatsheet.md` の該当 doctest ブロックは skip 解除済み。
 
 **(b) 退役可 (dev-only / obsolete / 別 layer 提供):**
 - IDE/LSP 系: `ide` `lsif` `index` `lsp` `serve` — エディタ統合 dev tooling。

@@ -385,18 +385,20 @@ let bytes_len = {
 }
 ```
 
-<!-- doctest-skip: Int64Array builtin は selfhost checker 未移植 (moonbit-retirement.md の要確認項目) — 現 stage2 では unknown name -->
-```vibe skip
-// Int64Array — fixed-size i64-cell buffer for 32-bit word workloads.
-// linear `Array[Int]` cells are 32-bit (with a 2-bit tag), so values
-// >= 2^30 truncate; use Int64Array for hash / binary-protocol word
-// buffers (SHA-1 schedule, etc.) where full 32/62-bit Ints must survive.
-// NOTE: 旧 MoonBit host builtin。selfhost checker には未移植で現在は
-// コンパイル不可 (docs/archive/moonbit-retirement.md)。
-let w = Int64Array::make(4, 0)   // length 4, default 0
-Int64Array::set(w, 0, 0xffffffff)
-Int64Array::get(w, 0)            // => 4294967295 (no truncation)
-Int64Array::length(w)            // => 4
+```vibe
+// Int64Array — fixed-size Int-typed buffer for word/hash workloads
+// (SHA-1 schedule, binary-protocol buffers, etc). #835: ported to the
+// selfhost checker/codegen as a thin alias onto Array[Int]'s own
+// make/get/set/length — the selfhost linear/gc backends already store the
+// full tagged Int per cell (no 32-bit truncation), so no separate i64-cell
+// object layout is needed the way the retired MoonBit host required.
+let w_check = {
+  let w = Int64Array::make(4, 0)   // length 4, default 0
+  Int64Array::set(w, 0, 0xffffffff)
+  let v0 = Int64Array::get(w, 0)   // => 4294967295 (no truncation)
+  let len = Int64Array::length(w)  // => 4
+  (v0, len)
+}
 ```
 
 > **selfhost status (#760/#839):**
