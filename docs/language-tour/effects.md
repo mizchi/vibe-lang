@@ -17,21 +17,26 @@ let add: (Int, Int) -> Int = (a, b) -> { a + b }  // pure
 Use `Result` composition in the pipeline core, and isolate error boundaries at edges.
 
 ```vibe
-let parse_id: (String) -> Result[Int, String] = (raw) -> { ... }
-let validate_id: (Int) -> Result[Int, String] = (id) -> { ... }
-let load_user: (Int) -> Result[String, String] = (id) -> { ... }
+import ./lib/@vibe/prelude/result.vibe { Result::and_then }
 
-let fetch_user: (String) -> Result[String, String] = (raw) -> {
+// stub stages so the example is self-contained
+// (note: the current checker cannot yet infer an `and_then` chain whose
+// success type changes mid-pipeline, so the stages share one type)
+let parse_id: (String) -> Result[Int, String] = (raw) -> { Ok(1) }
+let validate_id: (Int) -> Result[Int, String] = (id) -> { Ok(id) }
+let load_user: (Int) -> Result[Int, String] = (id) -> { Ok(id) }
+
+let fetch_user: (String) -> Result[Int, String] = (raw) -> {
   raw
   |> parse_id
   |> Result::and_then(validate_id)
   |> Result::and_then(load_user)
 }
 
-let fetch_user_or_guest: (String) -> String = (raw) -> {
+let fetch_user_or_guest: (String) -> Int = (raw) -> {
   match fetch_user(raw) {
     Ok(user) => user,
-    Err(_) => "guest"
+    Err(_) => -1     // guest
   }
 }
 ```
@@ -58,6 +63,10 @@ let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }
 Calling a `with { Error }` function from a pure function requires `handle`:
 
 ```vibe
+let safe_div: (Int, Int) -> Int with { Error } = (a, b) -> {
+  if eq(b, 0) { throw("division by zero") } else { a / b }
+}
+
 let safe: (Int) -> Int = (x) -> {
   handle { safe_div(x, 0) } with Error { Throw(_) => 0 }
 }
@@ -139,8 +148,9 @@ let safe: [T]((T) -> T with { Error }, T) -> T = (f, x) -> {
 | Effect | Operations |
 |--------|-----------|
 | `Error` | `throw(...)` |
-| `Stdout` | `sh(...)`, `sh_lines(...)`, `Stdout::write_char(...)`, `Stdout::write_stream(...)` |
+| `Stdout` | `Stdout::write_char(...)`, `Stdout::write_stream(...)` |
 | `Stdin` | `Stdin::read_char()`, `Stdin::read_stream(...)` |
+| `Process` | `sh(...)`, `sh_lines(...)` |
 | `Async` | `yield`, `sleep(...)` (requires `--unstable-async`) |
 
 ## Builders and `for-in`
@@ -156,7 +166,8 @@ let doubled = for x in [1, 2, 3] { x * 2 }
 
 I/O builtins require the appropriate `with { Effect }` declaration:
 
-```vibe
+<!-- doctest-skip: 意図的な error 例 (missing effect declaration) を含む ok/error 対比の提示 -->
+```vibe skip
 // OK: effect declared
 let greet: (String) -> Unit with { Stdout } = (name) -> {
   Stdout::write_stream(name)

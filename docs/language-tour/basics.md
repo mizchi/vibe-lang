@@ -91,7 +91,7 @@ let swap: [A, B](A, B) -> (B, A) = (a, b) -> { (b, a) }
 // y~ : required labeled argument (caller must use y = ...)
 // z? : optional argument (receives Option[T])
 let f: (Int, y~: String, z?: Int) -> String = (x, y~, z?) -> {
-  let suffix = match z { Some(v) => to_string(v), None => "none" }
+  let suffix = match z { Some(v) => Int::to_string(v), None => "none" }
   "\{y}-\{suffix}"
 }
 // f(1, y = "ok")          => "ok-none"
@@ -163,7 +163,7 @@ loop (i = 10, acc = 0) {
 // Enum
 match Ok(1) {
   Ok(v) => v,
-  Err => 0,
+  Err(_) => 0,
 }
 
 // Tuple
@@ -204,8 +204,8 @@ let built = for x in [1, 2] { x }
 
 ```vibe
 let name = "vibe"
-let msg = "hello \(name)"        // => "hello vibe"
-let sum = "result: \(add(1, 2))" // => "result: 3"
+let msg = "hello \{name}"        // => "hello vibe"
+let sum = "result: \{add(1, 2)}" // => "result: 3"
 ```
 
 ## Pipe Operator
@@ -336,19 +336,24 @@ match Array::find([1, 2, 3], (x) -> { x > 1 }) {
 Functions declare required effects with `with { ... }`.
 
 ```vibe
-let run: () -> Unit with { Stdout } = () -> {
-  sh("echo hello")
+// sh / sh_lines require the Process effect; sh returns the captured
+// output (String), so discard it explicitly in a Unit function
+let run: () -> Unit with { Process } = () -> {
+  let _ = sh("echo hello")
 }
 ```
 
 ### Error handling
 
 ```vibe
-let parse_id: (String) -> Result[Int, String] = (raw) -> { ... }
-let validate_id: (Int) -> Result[Int, String] = (id) -> { ... }
-let load_user: (Int) -> Result[String, String] = (id) -> { ... }
+import ./lib/@vibe/prelude/result.vibe { Result::and_then }
 
-let fetch_user: (String) -> Result[String, String] = (raw) -> {
+// stub stages so the example is self-contained
+let parse_id: (String) -> Result[Int, String] = (raw) -> { Ok(1) }
+let validate_id: (Int) -> Result[Int, String] = (id) -> { Ok(id) }
+let load_user: (Int) -> Result[Int, String] = (id) -> { Ok(id) }
+
+let fetch_user: (String) -> Result[Int, String] = (raw) -> {
   raw
   |> parse_id
   |> Result::and_then(validate_id)
@@ -430,7 +435,8 @@ let result = handle {
 
 Requires `--unstable-async` flag.
 
-```vibe
+<!-- doctest-skip: `yield` は selfhost build path 未サポート (--unstable-async gated の experimental 例) -->
+```vibe skip
 let delayed: () -> Int with { Async } = () -> {
   yield
   42
@@ -448,7 +454,8 @@ export let double: (Int) -> Int = (x) -> { x * 2 }
 
 ### import
 
-```vibe
+<!-- doctest-skip: 対になる math.vibe が実ファイルとして存在しない 2 ファイル例 (#831: 欠落 import は raw crash) -->
+```vibe skip
 // main.vibe
 import ./math.vibe { double }
 

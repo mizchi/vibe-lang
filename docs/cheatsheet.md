@@ -118,12 +118,13 @@ let show: [T: Eq + Ord](T) -> T = (x) -> { x } // trait bounds
 
 ```vibe
 let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
-f(x=10, y=20)
+let sum = f(x=10, y=20)   // => 30
 ```
 
 ### Lambda shorthand
 
-```vibe
+<!-- doctest-skip: 未定義名 (xs) を参照する構文提示の断片 -->
+```vibe skip
 Array::map(xs, x -> x * 2)
 Array::map(xs, _ * 2)         // placeholder
 Array::fold(xs, 0, _ + _)
@@ -147,7 +148,8 @@ Assignment: `=` `+=` `-=` `*=` `/=` `%=` (statement, not expr)
 
 ## Pipe Operator
 
-```vibe
+<!-- doctest-skip: 未定義名 (x / f / g) を参照する構文提示の断片 -->
+```vibe skip
 x |> f            // f(x)
 x |> f(a, b)      // f(x, a, b)   — value is prepended
 x |> f(a, _)      // f(a, x)      — `_` marks where the value goes
@@ -177,7 +179,8 @@ semantics. Builtin receivers (`Array`/`String`/...) keep their builtin
 `compose` / `identity` / `flip` live in the prelude (`lib/@vibe/prelude/func.vibe`);
 import them before use (`import ./func.vibe { compose, identity, flip }`).
 
-```vibe
+<!-- doctest-skip: 未定義名 (f / g / xs / parse / render) を参照する構文提示の断片 -->
+```vibe skip
 // vibe has no `>>` compose operator (`>>` is arithmetic shift) — use functions
 compose(f, g)            // (x) -> g(f(x))   apply f then g
 identity                 // (x) -> x         no-op stage / default
@@ -194,7 +197,8 @@ Array::map(xs, compose(parse, render))
 
 ## Control Flow
 
-```vibe
+<!-- doctest-skip: 未定義名 (cond / opt / arr / pull / body ...) を参照する構文提示の断片 -->
+```vibe skip
 // if (expression)
 let v = if cond { a } else { b }
 
@@ -232,7 +236,8 @@ let find_first_neg: (Array[Int]) -> Int = (arr) -> {
 
 ## Pattern Matching
 
-```vibe
+<!-- doctest-skip: パターン構文の列挙 (単体プログラムではない) -->
+```vibe skip
 _                   // wildcard
 x                   // binding
 42, "hi", true      // literal
@@ -246,14 +251,20 @@ x if x > 0          // guard (match arm only)
 
 ### Destructuring let
 
-```vibe
-let (a, b) = (1, 2)
-let record { x, y } = r          // any field names bind
-let Some((x, y)) = pt            // ctor pattern (partial: traps on mismatch)
+record destructure は関数 / block body 内で使う (top-level の
+`let record { ... } = r` は現状 parse error、#760)。
 
-// let-else: bind on match, else run a DIVERGING fallback (#760)
-let Some(v) = opt else { return -1 }   // else must return / throw
-use(v)                                  // v is in scope past the let-else
+```vibe
+let demo: (Option[(Int, Int)], Option[Int]) -> Int = (pt, opt) -> {
+  let (a, b) = (1, 2)              // tuple destructure (top-level でも可)
+  let r = record { x: 10, y: 20 }
+  let record { x, y } = r          // any field names bind
+  let Some((px, py)) = pt          // ctor pattern (partial: traps on mismatch)
+
+  // let-else: bind on match, else run a DIVERGING fallback (#760)
+  let Some(v) = opt else { return -1 }   // else must return / throw
+  a + b + x + y + px + py + v            // v is in scope past the let-else
+}
 ```
 
 > **let-else semantics (#760):** `let PAT = e else { alt }` desugars to
@@ -263,7 +274,8 @@ use(v)                                  // v is in scope past the let-else
 
 ### is expression
 
-```vibe
+<!-- doctest-skip: 未定義名 (expr / use) を参照する構文提示の断片 -->
+```vibe skip
 if expr is Some(v) { use(v) }   // bind + test
 expr is None                     // -> Bool
 ```
@@ -280,7 +292,7 @@ enum Shape { Circle(Int); Rect(Int, Int) }
 
 struct Point { x: Int; y: Int } derive(Eq, Ord, Show)
 let p = Point::{ x: 1, y: 2 }
-p.x                                       // field access
+let px = p.x                              // field access
 // struct derive(Ord) -> Point::compare(a, b) : Int   (-1 / 0 / 1, lexicographic)
 // struct derive(Show) -> Point::to_string(p) : String ("Point { x: 1, y: 2 }")
 // (Eq is a no-op marker; Hash / Default and enum derive are not yet generated)
@@ -298,41 +310,54 @@ impl [T: Eq] Eq for Array[T]              // conditional impl
 ```vibe
 // Array
 let a = [1, 2, 3]
-a[0]                          // index
-Array::length(a)
-Array::map(a, _ * 2)            // r# escapes keyword
+let first = a[0]              // index
+let len = Array::length(a)
+let doubled = Array::map(a, _ * 2)
 
 // Tuple
 let t = (1, "two", true)
-t.0                           // => 1
+let t0 = t.0                  // => 1
 
 // Record
 let r = record { name: "vibe", ver: 1 }
-r.name                        // => "vibe"  (dot access)
-r.ver                         // => 1
-let record { name: n, ver: v } = r   // destructuring binds any field name
+// dot access (r.name) は現状 top-level 式文の位置でしか lower されない
+// (#760 部分実装 — let 初期化子・関数 body 内では unknown struct field)。
+// 値の取り出しは下の destructure を使う。
+let nv = {                            // record destructure は fn/block body 内で
+  let record { name: n, ver: v } = r  // destructuring binds any field name
+  (n, v)
+}
 
 // Map
 let m = map { "key": 42 }
-m["key"]
+let mv = m["key"]
 
 // Builders (mutable construction)
-let b = ArrayBuilder::new()
-ArrayBuilder::push(b, 1)
-ArrayBuilder::freeze(b)       // -> Array[Int]
+let arr2 = {
+  let b = ArrayBuilder::new()
+  ArrayBuilder::push(b, 1)
+  ArrayBuilder::freeze(b)     // -> Array[Int]
+}
 
 // Bytes — growable byte buffer
-let e = Bytes::new()          // empty (length 0), grows via push/append
-let z = Bytes::new(4)         // length 4, zero-filled (MoonBit semantics)
-Bytes::set(z, 0, 65)          // in-bounds write (OOB index traps, #811)
-Bytes::push(z, 9)             // append -> length 5
-Bytes::get(z, 0)              // => 65
-Bytes::length(z)              // => 5
+let bytes_len = {
+  let e = Bytes::new()        // empty (length 0), grows via push/append
+  let z = Bytes::new(4)       // length 4, zero-filled (MoonBit semantics)
+  Bytes::set(z, 0, 65)        // in-bounds write (OOB index traps, #811)
+  Bytes::push(z, 9)           // append -> length 5
+  let b0 = Bytes::get(z, 0)   // => 65
+  Bytes::length(z)            // => 5
+}
+```
 
+<!-- doctest-skip: Int64Array builtin は selfhost checker 未移植 (moonbit-retirement.md の要確認項目) — 現 stage2 では unknown name -->
+```vibe skip
 // Int64Array — fixed-size i64-cell buffer for 32-bit word workloads.
 // linear `Array[Int]` cells are 32-bit (with a 2-bit tag), so values
 // >= 2^30 truncate; use Int64Array for hash / binary-protocol word
 // buffers (SHA-1 schedule, etc.) where full 32/62-bit Ints must survive.
+// NOTE: 旧 MoonBit host builtin。selfhost checker には未移植で現在は
+// コンパイル不可 (docs/archive/moonbit-retirement.md)。
 let w = Int64Array::make(4, 0)   // length 4, default 0
 Int64Array::set(w, 0, 0xffffffff)
 Int64Array::get(w, 0)            // => 4294967295 (no truncation)
@@ -340,10 +365,13 @@ Int64Array::length(w)            // => 4
 ```
 
 > **selfhost status (#760):**
-> - **Record dot access** (`r.name` on an anonymous `record { ... }`) works
->   (#760): a `binding.field` read on an anonymous-record binding lowers to the
->   same positional field read the destructure uses. Destructuring
->   (`let record { name: n } = r`) also binds any field name.
+> - **Record dot access** (`r.name` on an anonymous `record { ... }`) lowers to
+>   the positional field read the destructure uses, but **only when the read is
+>   a bare top-level expression statement** — in a `let` initializer or inside a
+>   function/test body it fails with `unknown struct field` (2026-07-13 doctest
+>   検証; ADR-0069 で top-level 式文が禁止されると実質使えなくなる)。
+>   Destructuring (`let record { name: n } = r`) binds any field name and works
+>   in fn/block bodies.
 > - **`map { ... }` literals + `Map::*` builtins + `m[k]` indexing** work
 >   standalone (#760): `Map::get` / `has_key` / `set` / `keys` and the `m["k"]`
 >   index sugar all lower correctly. (`lib/@vibe/core`'s `get`/`get_or`/
@@ -363,7 +391,8 @@ vibe is **pure by default**. Side effects are tracked in the type system.
 > one. `Option` (`Some`/`None`) is built in as a first-class type. Both the
 > `let*`/`?` railway on `Result` and on `Option` work standalone.
 
-```vibe
+<!-- doctest-skip: `...` ellipsis による意図的省略 (パイプライン形の提示) -->
+```vibe skip
 let parse_id: (String) -> Result[Int, String] = (raw) -> { ... }
 let validate_id: (Int) -> Result[Int, String] = (id) -> { ... }
 let load_user: (Int) -> Result[String, String] = (id) -> { ... }
@@ -387,7 +416,8 @@ block with the failure case. The lowering is **type-directed by `e`'s type**:
 so the enclosing function must return the matching `Result`/`Option`. Handy when
 stages need names instead of point-free `and_then`:
 
-```vibe
+<!-- doctest-skip: 直前 block の定義 (parse_id 等) に依存する断片 (将来の `vibe continue` 候補) -->
+```vibe skip
 let fetch_user: (String) -> Result[String, String] = (raw) -> {
   let* id    = parse_id(raw)       // Err short-circuits the block
   let* valid = validate_id(id)
@@ -420,7 +450,8 @@ stage without breaking the `|>` chain. Railway variants `tap_ok` / `tap_err` /
 `tap_some` observe only one track. They are prelude exports
 (`lib/@vibe/prelude/io.vibe`); import them and note they carry the `Stdout` effect:
 
-```vibe
+<!-- doctest-skip: 未定義名 (x / next_stage / result) を参照する構文提示の断片 -->
+```vibe skip
 x
 |> tap((v) -> stdout_write("step: \{v}\n"))
 |> next_stage
@@ -449,7 +480,8 @@ the failure case from the enclosing function. Like `let*`, the lowering is
 - `e: Result[T, E]` → `match e { Ok(v) => v, Err(err) => return Err(err) }`
 - `e: Option[T]`    → `match e { Some(v) => v, None => return None }`
 
-```vibe
+<!-- doctest-skip: 未定義名 (checked / half) を参照する断片 (前セクション依存) -->
+```vibe skip
 let sum_checked: (Int, Int) -> Result[Int, String] = (a, b) -> {
   let x = checked(a)?              // Err early-returns from sum_checked
   let y = checked(b)?
@@ -526,7 +558,8 @@ let apply: [T](f~: (T) -> T with { e }, x~: T) -> T with { e } = (f~, x~) -> {
 
 ## Module System
 
-```vibe
+<!-- doctest-skip: 存在しない import 先 (./lib.vibe) を参照する構文一覧 -->
+```vibe skip
 // export
 export let f: (Int) -> Int = (x) -> { x + 1 }
 export enum Color { Red; Green; Blue }
@@ -571,7 +604,8 @@ vibe test dir/            # run all tests in directory
 **Map**: `Map::get`, `has_key`, `keys`, `values`, `set`
 
 **I/O** (require effects):
-```vibe
+<!-- doctest-skip: 未定義名 (s) + effect context 無しの呼び出しシグネチャ一覧 -->
+```vibe skip
 stdout_write(s)    // with { Stdout }
 stdin_read_line()  // with { Stdin }
 sh("ls -la")       // with { Stdout } - shell command
@@ -580,7 +614,8 @@ sh_lines("ls")     // -> Array[String]
 
 **Profiling** (require `Profiler` effect; linear backend only; use the
 direct-call surface — unhandled `perform` throws):
-```vibe
+<!-- doctest-skip: effect context (with { Profiler }) 無しの直接呼び出し例 -->
+```vibe skip
 Profiler::now_us()      // with { Profiler } - elapsed µs (wall clock)
 Profiler::heap_bytes()  // with { Profiler } - current bump-heap pointer
                         // (bytes allocated); deltas attribute allocation the
@@ -591,7 +626,8 @@ Profiler::heap_bytes()  // with { Profiler } - current bump-heap pointer
 
 ## Idioms
 
-```vibe
+<!-- doctest-skip: 未定義名 (read_config / parse / process / risky / xs / parse_int 等) を参照するイディオム断片 -->
+```vibe skip
 // Result composition (railway-style)
 let result =
   read_config()
@@ -621,7 +657,8 @@ input
 
 ## Conditional Compilation (`#cfg`)
 
-```vibe
+<!-- doctest-skip: `...` ellipsis による意図的省略 -->
+```vibe skip
 #cfg(dev)
 let debug_dump = (x) -> { ... }   // exists ONLY when the `dev` flag is active
 

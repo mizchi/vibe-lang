@@ -26,7 +26,8 @@ Non-exported bindings are private to the file.
 
 Import bindings from another file with `import`.
 
-```vibe
+<!-- doctest-skip: 対になる math.vibe が実ファイルとして存在しない 2 ファイル例 (#831: 欠落 import は raw crash) -->
+```vibe skip
 // main.vibe
 import ./math.vibe { double, triple }
 
@@ -37,13 +38,15 @@ test "import" {
 
 ### Renaming imports
 
-```vibe
+<!-- doctest-skip: 存在しない import 先 (./math.vibe) を参照する構文例 -->
+```vibe skip
 import ./math.vibe { double as dbl }
 ```
 
 ### Import kinds
 
-```vibe
+<!-- doctest-skip: 存在しない import 先 + `module` import kind は #728 で削除済み (このセクションは stale、要更新) -->
+```vibe skip
 import ./types.vibe { type MyType }     // type import
 import ./traits.vibe { trait Show }     // trait import
 import ./lib.xm { module math }         // module namespace import
@@ -51,9 +54,12 @@ import ./lib.xm { module math }         // module namespace import
 
 ## module blocks
 
-Group related definitions into a namespace accessed with `::`.
+> **REMOVED (#728, ADR-0063)**: `module { ... }` blocks are no longer part of
+> the language — use file boundaries + `import`/`export`. The examples below
+> are kept for historical context only.
 
-```vibe
+<!-- doctest-skip: module block は #728/ADR-0063 で削除済み (parser が located error で reject) -->
+```vibe skip
 module math {
   export let inc: (Int) -> Int = (x) -> { x + 1 }
 }
@@ -65,14 +71,16 @@ test "module" {
 
 Export a module for use from other files:
 
-```vibe
+<!-- doctest-skip: module block は #728/ADR-0063 で削除済み -->
+```vibe skip
 // lib.xm
 export module math {
   export let inc: (Int) -> Int = (x) -> { x + 1 }
 }
 ```
 
-```vibe
+<!-- doctest-skip: `module` import kind は #728 で削除済み + 存在しない import 先 -->
+```vibe skip
 // main.vibe
 import ./lib.xm { module math }
 
@@ -81,7 +89,8 @@ math::inc(41)  // => 42
 
 ### Module with alias
 
-```vibe
+<!-- doctest-skip: `module` import kind は #728 で削除済み + 存在しない import 先 -->
+```vibe skip
 import ./lib.xm { module math as m }
 
 m::inc(41)
@@ -91,7 +100,8 @@ m::inc(41)
 
 Pin imports to a specific content hash for reproducible builds:
 
-```vibe
+<!-- doctest-skip: `./dep.vibe#hash` の PinnedPath suffix は現 parser 未対応 (unknown # directive) — spec と実装の gap -->
+```vibe skip
 import ./dep.vibe#a1b2c3d { helper }
 ```
 

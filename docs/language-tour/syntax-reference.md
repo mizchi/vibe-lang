@@ -88,7 +88,7 @@ let identity: [T](T) -> T = (x) -> { x }
 let risky: () -> Int with { Error } = () -> { throw("fail") }
 
 // With trait bounds
-let show: [T: Show](T) -> String = (x) -> { to_string(x) }
+let show: [T: Show](T) -> T = (x) -> { x }
 
 // Labeled arguments
 let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
@@ -98,18 +98,20 @@ f(x = 1, y = 5)
 ### Lambda shorthand
 
 ```vibe
+let xs = [1, 2, 3]
+
 // Single param, arrow
-Array::map(xs, x -> x * 2)
+let doubled = Array::map(xs, x -> x * 2)
 
 // Multi param
-Array::fold(xs, 0, (acc, x) -> acc + x)
+let sum = Array::fold(xs, 0, (acc, x) -> acc + x)
 
-// Block body
-Array::map(xs, (x) { x + 1 })
+// Block body (arrow + { ... })
+let inced = Array::map(xs, (x) -> { x + 1 })
 
 // Placeholder
-Array::map(xs, _ * 2)
-Array::fold(xs, 0, _ + _)
+let doubled2 = Array::map(xs, _ * 2)
+let sum2 = Array::fold(xs, 0, _ + _)
 ```
 
 ### enum
@@ -177,14 +179,16 @@ suberror MyError(String)
 
 ### if / else
 
-```vibe
+<!-- doctest-skip: 未定義名 (cond / then_expr ...) を参照する構文提示の断片 -->
+```vibe skip
 if cond { then_expr } else { else_expr }
 if a { 1 } else if b { 2 } else { 3 }
 ```
 
 ### match
 
-```vibe
+<!-- doctest-skip: 未定義名 (value / v) を参照する構文提示の断片 -->
+```vibe skip
 match value {
   Some(x) => x,
   None => 0,
@@ -199,7 +203,8 @@ match v { x if x > 0 => "pos", _ => "neg" }
 
 ### Loops
 
-```vibe
+<!-- doctest-skip: 未定義名 (cond / body / arr / done) を参照する構文提示の断片 -->
+```vibe skip
 // while
 while cond { body }
 
@@ -223,7 +228,8 @@ loop { if done { break } }
 
 ### Pipe operator
 
-```vibe
+<!-- doctest-skip: 未定義名 (x / f / g) を参照する構文提示の断片 -->
+```vibe skip
 x |> f          // f(x)
 x |> f(a)       // f(x, a)
 x |> f |> g     // g(f(x))
@@ -231,7 +237,8 @@ x |> f |> g     // g(f(x))
 
 ### Pipe-first call style
 
-```vibe
+<!-- doctest-skip: 未定義名 (arr / s / point) を参照する構文提示の断片 -->
+```vibe skip
 arr |> Array::length
 s |> String::substring(0, 5)
 
@@ -241,7 +248,8 @@ point.x
 
 ### Tuple / Array / Record / Map
 
-```vibe
+<!-- doctest-skip: 未定義名 (x / y / value) を含むリテラル構文の列挙 -->
+```vibe skip
 (1, "two", true)       // tuple
 [1, 2, 3]              // array
 record { x: 1, y: 2 }  // record
@@ -251,7 +259,8 @@ map { "key": value }    // string-keyed map
 
 ### Index
 
-```vibe
+<!-- doctest-skip: 未定義名 (arr / m / value) を参照する構文提示の断片 -->
+```vibe skip
 arr[0]           // array index (=> __index(arr, 0))
 m["key"]         // map index
 arr[0] = value   // index assignment
@@ -283,15 +292,17 @@ t.1   // => "two"
 
 ### Destructuring let
 
-```vibe
+<!-- doctest-skip: 未定義名 (r / opt / fallback) の断片。record destructure は top-level では parse error (#830)、let-else の else は diverging 必須 -->
+```vibe skip
 let (a, b) = (1, 2)
-let record { x, y } = r
+let record { x, y } = r          // fn/test body 内で使う (#830)
 let Some(v) = opt else { fallback }
 ```
 
 ## Type Annotations
 
-```vibe
+<!-- doctest-skip: 型構文の列挙 (プログラムではない) -->
+```vibe skip
 // Primitives
 Int, Float, Double, Bool, Char, String, Unit
 
@@ -322,7 +333,8 @@ T, U, V
 
 ## Effects
 
-```vibe
+<!-- doctest-skip: `...` ellipsis + effect context 無しの top-level perform を含む構文提示の断片 -->
+```vibe skip
 // Result-first core flow
 let parse_id: (String) -> Result[Int, String] = (raw) -> { ... }
 let load_user: (Int) -> Result[String, String] = (id) -> { ... }
@@ -352,7 +364,8 @@ Identifiers in vibe can contain special characters depending on context. The rul
 
 A `@` prefix introduces a package reference. After `@`, hyphens (`-`) and slashes (`/`) become part of the identifier (they are not treated as operators).
 
-```vibe
+<!-- doctest-skip: package 参照構文の列挙 (単体では未解決名) -->
+```vibe skip
 @json                 // package "json"
 @lib/path             // package "lib/path"
 @my-utils/helpers     // package "my-utils/helpers"
@@ -360,7 +373,8 @@ A `@` prefix introduces a package reference. After `@`, hyphens (`-`) and slashe
 
 Without `@`, a hyphen is the subtraction operator:
 
-```vibe
+<!-- doctest-skip: 未定義名 (x / y / @my-pkg) を参照する構文提示の断片 -->
+```vibe skip
 x - y                 // subtraction
 @my-pkg               // identifier "my-pkg" (hyphen is part of the name)
 ```
@@ -369,7 +383,8 @@ x - y                 // subtraction
 
 Dots are used for field access on values:
 
-```vibe
+<!-- doctest-skip: 未定義名 (point / tuple / s) を参照する構文提示の断片 -->
+```vibe skip
 point.x               // field access
 tuple.0               // tuple index
 s.length              // field access
@@ -381,7 +396,8 @@ Dots are **not** part of a bare identifier. They are always parsed as the member
 
 Double colons are used to access members of types or modules:
 
-```vibe
+<!-- doctest-skip: qualified name の列挙 (呼び出し文脈なしの bare 参照は未解決) -->
+```vibe skip
 Array::length          // type method
 Option::Some           // enum constructor
 String::substring      // type method
@@ -412,7 +428,8 @@ export { name1, name2 }
 
 ### import
 
-```vibe
+<!-- doctest-skip: 存在しない import 先 (./lib.vibe) を参照する構文一覧 (#831) -->
+```vibe skip
 import ./lib.vibe { func1, func2 }
 import ./lib.vibe { func1 as renamed }
 import ./lib.vibe { type MyType, trait Show }
@@ -427,6 +444,8 @@ is an independent mechanism and remains.
 ## Test and Bench
 
 ```vibe
+let expensive_computation: () -> Int = () -> { 42 }
+
 test "name" {
   assert(eq(1 + 1, 2))
   assert(String::equals("a", "a"))

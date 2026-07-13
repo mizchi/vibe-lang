@@ -44,23 +44,22 @@ let result = for x in [1, 2] { x }
 String-keyed dictionary.
 
 ```vibe
+// Richer Map API (get_or etc.) lives in lib/@vibe/core (#766)
+import ./lib/@vibe/core { get_or }
+
 // Create with map literal
 let m = map { a: 1, "b": 2 }
 
 test "map operations" {
   // Access
-  assert(eq(Map::get(m, "a"), 1))         // throws if key missing
-  assert(eq(Map::get_or(m, "c", 0), 0))  // safe, returns default
-  assert(eq(m["a"], 1))                   // index syntax
+  assert(eq(Map::get(m, "a"), 1))       // throws if key missing
+  assert(eq(get_or(m, "c", 0), 0))      // safe, returns default
+  assert(eq(m["a"], 1))                 // index syntax
 
   // Query
   assert(Map::has_key(m, "a"))
   let keys = Map::keys(m)     // ["a", "b"]
   let vals = Map::values(m)   // [1, 2]
-
-  // HOFs
-  let scaled = Map::map(m, (v) -> { v * 10 })     // map { a: 10, b: 20 }
-  let big = Map::filter(m, (v) -> { v > 1 })      // map { b: 2 }
 }
 ```
 
@@ -82,13 +81,18 @@ let x = 1
 let y = 2
 let r2 = record { x, y }
 
-// Destructure
-let record { x, y } = r
-// x => 3, y => 4
+// Destructure — inside a fn/test body (top-level record destructure is
+// currently a parse error, #830)
+test "record destructure" {
+  let record { x, y } = r
+  // x => 3, y => 4
+  assert(eq(x + y, 7))
 
-// Destructure with rename
-let record { x: a, y: b } = r
-// a => 3, b => 4
+  // Destructure with rename
+  let record { x: a, y: b } = r
+  // a => 3, b => 4
+  assert(eq(a + b, 7))
+}
 
 // Match
 match r {
@@ -119,12 +123,20 @@ match pair {
 Parse, query, and serialize JSON data.
 
 ```vibe
+// Convenience surface (throwing accessors). The Result-based primitives
+// (`parse`, `Json::get`, `json_as_*`) are exported from ./lib/@vibe/json.
+import ./lib/@vibe/json/json_convenience.vibe {
+  Json::parse, Json::type_of, Json::string, Json::field,
+  Json::length, Json::is_null, Json::keys
+}
+
 test "json" {
   let data = Json::parse("{\"name\": \"vibe\", \"version\": 1}")
 
   // Query
   assert(String::equals(Json::type_of(data), "object"))
-  assert(String::equals(Json::string(Json::get(data, "name")), "vibe"))
+  // object field accessor is Json::field (Json::get is the Result-based one)
+  assert(String::equals(Json::string(Json::field(data, "name")), "vibe"))
 
   // Array access
   let arr = Json::parse("[1, 2, 3]")
@@ -144,6 +156,8 @@ test "json" {
 ## String as Collection
 
 ```vibe
+import ./lib/@vibe/prelude/string.vibe { Lines::parse, Lines::stringify }
+
 test "string as collection" {
   assert(eq(String::length("hello"), 5))
   assert(eq(String::char_code_at("abc", 0), 97))
