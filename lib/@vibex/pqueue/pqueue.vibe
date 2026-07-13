@@ -1,0 +1,245 @@
+// @vibex/pqueue — priority queue backed by a binary min-heap
+// (issue #841 B 群, ADR-0065 実験 scope).
+//
+// Explicit-dictionary design: the queue carries its comparator as a
+// closure field (`cmp: (T, T) -> Int`, closures-in-struct-fields per the
+// LazyIter precedent). `cmp(a, b) < 0` means `a` is dequeued first, so a
+// numeric-ascending comparator gives a MIN-heap; flip the comparator (or
+// use `new_int_max`) for a max-heap. Equal keys (`cmp == 0`) have no
+// ordering guarantee among themselves (the heap is not stable).
+//
+// Representation: `buf` is the implicit-tree array (children of `i` at
+// `2i+1` / `2i+2`), `len` the live element count. Same generic-allocation
+// scheme as @vibex/deque: no default value of an arbitrary `T` exists, so
+// the buffer starts empty and grows inside `push`, where the pushed
+// element fills the fresh slots. Popped slots keep their old element
+// until overwritten.
+//
+// Complexity: push / pop O(log n), peek O(1), from_array O(n) (Floyd
+// heapify), to_sorted_array O(n log n).
+
+//# Types
+
+export struct PriorityQueue[T] {
+  mut buf: Array[T];
+  mut len: Int;
+  cmp: (T, T) -> Int
+}
+
+//# Internal helpers
+
+fn pq_empty_buf[T]() -> Array[T] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+// Double the backing buffer (or allocate the first one), using `filler`
+// — the element being pushed — for the fresh slots.
+fn pq_grow[T](q: PriorityQueue[T], filler: T) -> Unit {
+  let old_cap = Array::length(q.buf)
+  let new_cap = if old_cap > 0 {
+    old_cap * 2
+  } else {
+    8
+  }
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < new_cap {
+    ArrayBuilder::push(b, filler)
+    i = i + 1
+  }
+  let nbuf = ArrayBuilder::freeze(b)
+  let mut j = 0
+  while j < q.len {
+    Array::set(nbuf, j, Array::get(q.buf, j))
+    j = j + 1
+  }
+  q.buf = nbuf
+}
+
+fn pq_swap[T](q: PriorityQueue[T], i: Int, j: Int) -> Unit {
+  let tmp = Array::get(q.buf, i)
+  Array::set(q.buf, i, Array::get(q.buf, j))
+  Array::set(q.buf, j, tmp)
+}
+
+// Bubble the element at `start` up until its parent is not greater.
+fn pq_sift_up[T](q: PriorityQueue[T], start: Int) -> Unit {
+  let mut i = start
+  while i > 0 {
+    let parent = (i - 1) / 2
+    if (q.cmp)(Array::get(q.buf, i), Array::get(q.buf, parent)) < 0 {
+      pq_swap(q, i, parent)
+      i = parent
+    } else {
+      return ()
+    }
+  }
+}
+
+// Push the element at `start` down until both children are not smaller.
+fn pq_sift_down[T](q: PriorityQueue[T], start: Int) -> Unit {
+  let mut i = start
+  let mut moving = true
+  while moving {
+    let l = 2 * i + 1
+    let r = 2 * i + 2
+    let mut best = i
+    if l < q.len && (q.cmp)(Array::get(q.buf, l), Array::get(q.buf, best)) < 0 {
+      best = l
+    }
+    if r < q.len && (q.cmp)(Array::get(q.buf, r), Array::get(q.buf, best)) < 0 {
+      best = r
+    }
+    if best == i {
+      moving = false
+    } else {
+      pq_swap(q, i, best)
+      i = best
+    }
+  }
+}
+
+//# Functions
+
+// `cmp(a, b) < 0` ⇔ `a` is dequeued before `b` (min-heap on `cmp`).
+export fn PriorityQueue::new[T](cmp: (T, T) -> Int) -> PriorityQueue[T] {
+  PriorityQueue::{
+    buf: pq_empty_buf(),
+    len: 0,
+    cmp: cmp
+  }
+}
+
+// Ascending Int comparator, written as explicit comparisons (not `a - b`,
+// which can overflow the 62-bit tagged Int on extreme operands).
+export fn int_cmp_asc(a: Int, b: Int) -> Int {
+  if a < b {
+    -1
+  } else if a > b {
+    1
+  } else {
+    0
+  }
+}
+
+export fn int_cmp_desc(a: Int, b: Int) -> Int {
+  int_cmp_asc(b, a)
+}
+
+// Int min-heap: pop yields the smallest first.
+// (Constructed directly rather than via `new` — the current stage2
+// checker does not instantiate `PriorityQueue[T]` to `PriorityQueue[Int]`
+// through the generic call, see #829.)
+export fn PriorityQueue::new_int_min() -> PriorityQueue[Int] {
+  PriorityQueue::{
+    buf: pq_empty_buf(),
+    len: 0,
+    cmp: int_cmp_asc
+  }
+}
+
+// Int max-heap: pop yields the largest first.
+export fn PriorityQueue::new_int_max() -> PriorityQueue[Int] {
+  PriorityQueue::{
+    buf: pq_empty_buf(),
+    len: 0,
+    cmp: int_cmp_desc
+  }
+}
+
+export fn PriorityQueue::length[T](q: PriorityQueue[T]) -> Int {
+  q.len
+}
+
+export fn PriorityQueue::is_empty[T](q: PriorityQueue[T]) -> Bool {
+  q.len == 0
+}
+
+export fn PriorityQueue::push[T](q: PriorityQueue[T], x: T) -> Unit {
+  if q.len >= Array::length(q.buf) {
+    pq_grow(q, x)
+  }
+  Array::set(q.buf, q.len, x)
+  q.len = q.len + 1
+  pq_sift_up(q, q.len - 1)
+}
+
+export fn PriorityQueue::peek[T](q: PriorityQueue[T]) -> Option[T] {
+  if q.len == 0 {
+    None
+  } else {
+    Some(Array::get(q.buf, 0))
+  }
+}
+
+export fn PriorityQueue::pop[T](q: PriorityQueue[T]) -> Option[T] {
+  if q.len == 0 {
+    None
+  } else {
+    let top = Array::get(q.buf, 0)
+    q.len = q.len - 1
+    if q.len > 0 {
+      Array::set(q.buf, 0, Array::get(q.buf, q.len))
+      pq_sift_down(q, 0)
+    }
+    Some(top)
+  }
+}
+
+// Build a queue from an array in O(n) (Floyd's bottom-up heapify).
+// The input array is COPIED — the caller's array is not modified.
+export fn PriorityQueue::from_array[T](arr: Array[T], cmp: (T, T) -> Int) -> PriorityQueue[T] {
+  let n = Array::length(arr)
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < n {
+    ArrayBuilder::push(b, Array::get(arr, i))
+    i = i + 1
+  }
+  let q = PriorityQueue::{
+    buf: ArrayBuilder::freeze(b),
+    len: n,
+    cmp: cmp
+  }
+  let mut j = n / 2 - 1
+  while j >= 0 {
+    pq_sift_down(q, j)
+    j = j - 1
+  }
+  q
+}
+
+// Dequeue order as an array (cmp-ascending). NON-DESTRUCTIVE: works on
+// a private copy of the heap, so `q` is unchanged. O(n log n).
+export fn PriorityQueue::to_sorted_array[T](q: PriorityQueue[T]) -> Array[T] {
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < q.len {
+    ArrayBuilder::push(b, Array::get(q.buf, i))
+    i = i + 1
+  }
+  let scratch = PriorityQueue::{
+    buf: ArrayBuilder::freeze(b),
+    len: q.len,
+    cmp: q.cmp
+  }
+  let out = ArrayBuilder::new()
+  let mut draining = true
+  while draining {
+    match PriorityQueue::pop(scratch) {
+      Some(v) => ArrayBuilder::push(out, v),
+      None => {
+        draining = false
+      }
+    }
+  }
+  ArrayBuilder::freeze(out)
+}
+
+// Drop all elements. The backing buffer is KEPT (capacity is reused);
+// old elements stay referenced by the buffer until overwritten.
+export fn PriorityQueue::clear[T](q: PriorityQueue[T]) -> Unit {
+  q.len = 0
+}
+
+export let version: String = "0.0.1"

@@ -1,0 +1,204 @@
+//# Imports
+
+import ./deque.vibe {
+  Deque::back, Deque::clear, Deque::front, Deque::get, Deque::is_empty, Deque::length, Deque::new, Deque::pop_back, Deque::pop_front, Deque::push_back, Deque::push_front, Deque::to_array, Deque::with_capacity
+}
+
+//# Misc
+
+test "empty deque pops None" {
+  let d = Deque::new()
+  assert(Deque::is_empty(d))
+  assert(Deque::length(d) == 0)
+  assert(Deque::pop_front(d) is None)
+  assert(Deque::pop_back(d) is None)
+  assert(Deque::front(d) is None)
+  assert(Deque::back(d) is None)
+  // still usable after a push
+  Deque::push_back(d, 1)
+  assert(Deque::length(d) == 1)
+}
+
+test "fifo push_back / pop_front" {
+  let d = Deque::new()
+  Deque::push_back(d, 1)
+  Deque::push_back(d, 2)
+  Deque::push_back(d, 3)
+  assert(Deque::length(d) == 3)
+  assert(Deque::pop_front(d) == Some(1))
+  assert(Deque::pop_front(d) == Some(2))
+  assert(Deque::pop_front(d) == Some(3))
+  assert(Deque::pop_front(d) is None)
+}
+
+test "lifo push_back / pop_back" {
+  let d = Deque::new()
+  Deque::push_back(d, 1)
+  Deque::push_back(d, 2)
+  Deque::push_back(d, 3)
+  assert(Deque::pop_back(d) == Some(3))
+  assert(Deque::pop_back(d) == Some(2))
+  assert(Deque::pop_back(d) == Some(1))
+  assert(Deque::pop_back(d) is None)
+}
+
+test "push_front prepends" {
+  let d = Deque::new()
+  Deque::push_front(d, 1)
+  Deque::push_front(d, 2)
+  Deque::push_front(d, 3)
+  // deque is [3, 2, 1]
+  assert(Deque::front(d) == Some(3))
+  assert(Deque::back(d) == Some(1))
+  assert(Deque::pop_front(d) == Some(3))
+  assert(Deque::pop_back(d) == Some(1))
+  assert(Deque::pop_front(d) == Some(2))
+  assert(Deque::is_empty(d))
+}
+
+test "wrap-around across the capacity boundary" {
+  // capacity 4: advance head to the middle, then force writes to wrap
+  let d = Deque::with_capacity(4)
+  Deque::push_back(d, 1)
+  Deque::push_back(d, 2)
+  Deque::push_back(d, 3)
+  assert(Deque::pop_front(d) == Some(1))
+  assert(Deque::pop_front(d) == Some(2))
+  // head = 2, len = 1; the next pushes wrap past index 3
+  Deque::push_back(d, 4)
+  Deque::push_back(d, 5)
+  Deque::push_back(d, 6)
+  assert(Deque::length(d) == 4)
+  let snap = Deque::to_array(d)
+  assert(Array::length(snap) == 4)
+  assert(Array::get(snap, 0) == 3)
+  assert(Array::get(snap, 1) == 4)
+  assert(Array::get(snap, 2) == 5)
+  assert(Array::get(snap, 3) == 6)
+}
+
+test "alternating front/back pushes across capacity" {
+  let d = Deque::with_capacity(2)
+  Deque::push_back(d, 10)
+  Deque::push_front(d, 20)
+  Deque::push_back(d, 30)
+  Deque::push_front(d, 40)
+  Deque::push_back(d, 50)
+  Deque::push_front(d, 60)
+  // deque is [60, 40, 20, 10, 30, 50]
+  assert(Deque::length(d) == 6)
+  assert(Deque::pop_front(d) == Some(60))
+  assert(Deque::pop_back(d) == Some(50))
+  assert(Deque::pop_front(d) == Some(40))
+  assert(Deque::pop_back(d) == Some(30))
+  assert(Deque::pop_front(d) == Some(20))
+  assert(Deque::pop_back(d) == Some(10))
+  assert(Deque::pop_front(d) is None)
+}
+
+test "growth preserves order (default capacity exceeded)" {
+  let d = Deque::new()
+  let mut i = 0
+  while i < 100 {
+    Deque::push_back(d, i * 7)
+    i = i + 1
+  }
+  assert(Deque::length(d) == 100)
+  let mut j = 0
+  while j < 100 {
+    assert(Deque::pop_front(d) == Some(j * 7))
+    j = j + 1
+  }
+  assert(Deque::is_empty(d))
+}
+
+test "growth from a wrapped state preserves order" {
+  let d = Deque::with_capacity(4)
+  Deque::push_back(d, 1)
+  Deque::push_back(d, 2)
+  assert(Deque::pop_front(d) == Some(1))
+  assert(Deque::pop_front(d) == Some(2))
+  // head = 2 in a cap-4 buffer; fill it so the next push reallocates
+  Deque::push_back(d, 3)
+  Deque::push_back(d, 4)
+  Deque::push_back(d, 5)
+  Deque::push_back(d, 6)
+  Deque::push_back(d, 7)   // grow while wrapped
+  assert(Deque::length(d) == 5)
+  assert(Deque::pop_front(d) == Some(3))
+  assert(Deque::pop_front(d) == Some(4))
+  assert(Deque::pop_front(d) == Some(5))
+  assert(Deque::pop_front(d) == Some(6))
+  assert(Deque::pop_front(d) == Some(7))
+}
+
+test "get respects logical order and bounds" {
+  let d = Deque::with_capacity(4)
+  Deque::push_back(d, 2)
+  Deque::push_back(d, 3)
+  Deque::push_front(d, 1)   // wraps head to the buffer's end
+  assert(Deque::get(d, 0) == Some(1))
+  assert(Deque::get(d, 1) == Some(2))
+  assert(Deque::get(d, 2) == Some(3))
+  assert(Deque::get(d, 3) is None)
+  assert(Deque::get(d, 0 - 1) is None)
+}
+
+test "clear then reuse" {
+  let d = Deque::new()
+  Deque::push_back(d, 1)
+  Deque::push_back(d, 2)
+  Deque::push_front(d, 3)
+  Deque::clear(d)
+  assert(Deque::is_empty(d))
+  assert(Deque::length(d) == 0)
+  assert(Deque::pop_front(d) is None)
+  assert(Deque::get(d, 0) is None)
+  Deque::push_back(d, 9)
+  Deque::push_front(d, 8)
+  assert(Deque::to_array(d) == [8, 9])
+  assert(Deque::pop_back(d) == Some(9))
+  assert(Deque::pop_back(d) == Some(8))
+}
+
+test "to_array snapshot does not consume the deque" {
+  let d = Deque::new()
+  Deque::push_back(d, 1)
+  Deque::push_back(d, 2)
+  let snap = Deque::to_array(d)
+  assert(Array::length(snap) == 2)
+  assert(Deque::length(d) == 2)
+  assert(Deque::pop_front(d) == Some(1))
+}
+
+test "generic elements: strings" {
+  let d = Deque::new()
+  Deque::push_back(d, "b")
+  Deque::push_front(d, "a")
+  Deque::push_back(d, "c")
+  assert(Deque::length(d) == 3)
+  match Deque::pop_front(d) {
+    Some(s) => assert(String::equals(s, "a")),
+    None => assert(false)
+  }
+  match Deque::pop_back(d) {
+    Some(s) => assert(String::equals(s, "c")),
+    None => assert(false)
+  }
+}
+
+test "generic elements: tuples survive growth" {
+  let d = Deque::with_capacity(2)
+  Deque::push_back(d, (1, "one"))
+  Deque::push_back(d, (2, "two"))
+  Deque::push_back(d, (3, "three"))
+  match Deque::pop_back(d) {
+    Some(p) => {
+      let (n, s) = p
+      assert(n == 3)
+      assert(String::equals(s, "three"))
+    },
+    None => assert(false)
+  }
+  assert(Deque::length(d) == 2)
+}

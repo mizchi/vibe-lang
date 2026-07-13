@@ -363,6 +363,10 @@ let arr2 = {
   ArrayBuilder::freeze(b)     // -> Array[Int]
 }
 
+// 両端キュー / 優先度付きキューは @vibex/deque / @vibex/pqueue:
+//   Deque::new/push_back/pop_front (ring buffer、両端 O(1))
+//   PriorityQueue::new_int_min / new(cmp) (binary heap、cmp < 0 が先頭)
+
 // Bytes — growable byte buffer
 let bytes_len = {
   let e = Bytes::new()        // empty (length 0), grows via push/append
