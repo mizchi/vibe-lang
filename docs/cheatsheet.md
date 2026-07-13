@@ -37,21 +37,21 @@ let b: Bool = true
 let u: Unit = ()
 ```
 
-Int の範囲 (±2^61) を超える整数は `@vibex/bigint` の任意精度 `BigInt`
+Int の範囲 (±2^61) を超える整数は `@vibe/core` の任意精度 `BigInt`
 (sign + 30-bit limbs) を使う — `parse`/`to_string`/`add`/`sub`/`mul`/`divmod`/`pow`:
 
 ```vibe
-import ./lib/@vibex/bigint { BigInt::from_int, BigInt::pow, BigInt::to_string }
+import ./lib/@vibe/core { BigInt::from_int, BigInt::pow, BigInt::to_string }
 
 let big_2_64: () -> String = () -> {
   BigInt::to_string(BigInt::pow(BigInt::from_int(2), 64))   // "18446744073709551616" (Int では持てない)
 }
 ```
 
-正確な分数演算は `@vibex/rational` の `BigInt` ベース `Rational` (常に gcd 約分・den > 0 に正規化):
+正確な分数演算は同じく `@vibe/core` の `BigInt` ベース `Rational` (常に gcd 約分・den > 0 に正規化):
 
 ```vibe
-import ./lib/@vibex/rational { Rational::parse, Rational::to_string }
+import ./lib/@vibe/core { Rational::parse, Rational::to_string }
 
 let half: () -> String = () -> {
   match Rational::parse("2/4") {
