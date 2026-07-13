@@ -1,4 +1,11 @@
-# TODO
+# TODO (archived)
+
+> **Archived (2026-07-13).** This file's content is historical — it was the
+> root-level task/roadmap tracker before task management fully moved to
+> GitHub Issues. For the current roadmap see
+> [docs/release-roadmap.md](../release-roadmap.md); for current tasks see
+> `gh issue list --state open`. Kept here for historical reference only, not
+> maintained going forward.
 
 Spec-locked decisions are tracked in `docs/spec/decisions.md`.
 Completed items are archived in `docs/archive/DONE.md`.
@@ -7,7 +14,7 @@ Completed items are archived in `docs/archive/DONE.md`.
 ## バージョンロードマップ (2026-07-12, ADR-0067)
 
 **GA = 0.3.0**（旧 1.0 GA を renumber）。詳細は
-[docs/release-roadmap.md](docs/release-roadmap.md)「バージョンロードマップ」。
+[docs/release-roadmap.md](../release-roadmap.md)「バージョンロードマップ」。
 
 - **0.2.0（現在地）** — 既知バグが一通り吐き出せている段階。0.1.0 からの
   継続的バグ修正・小機能追加（ADR-0066）。
@@ -19,7 +26,7 @@ Completed items are archived in `docs/archive/DONE.md`.
   拡充 ⑨ `let` → `fn` 移行の完遂（ADR-0064）⑩ WASI p3 動作保証（#821、
   wasmtime 45/46 matrix の guarantee gate + ratified 0.3.0 cutover）。
   タグ運用も #805（旧 1.0 GA タグ issue #647 は close 済み）。
-  取り込み候補の PL 研究サーベイは [docs/pl-survey-2026-07.md](docs/pl-survey-2026-07.md)
+  取り込み候補の PL 研究サーベイは [docs/pl-survey-2026-07.md](../pl-survey-2026-07.md)
   （evidence-passing handler #817 / structured concurrency #818 /
   doctest 様式 #819 / エージェント向け構造化診断 #820）。
 - **0.4.0（tracking #806）** — ① スレッドを念頭に置いた設計 — Go channel /

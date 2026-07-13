@@ -190,7 +190,9 @@ LZ77 backreference 経路は trap)。bench cache はモードに backend を
 
 ## Task Management
 
-タスクは GitHub Issues (`gh issue`) で管理する。`TODO.md` はロードマップの概要のみ。
+タスクは GitHub Issues (`gh issue`) で管理する。ロードマップは
+[docs/release-roadmap.md](docs/release-roadmap.md) 参照 (`TODO.md` は
+`docs/archive/TODO.md` へ移動済み、historical のみ)。
 
 ```bash
 # タスク一覧

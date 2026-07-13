@@ -303,5 +303,7 @@ pkf run bench-bundle-size-monitor-strict  # bundle-size budget チェック
 
 ## Task management
 
-タスクは GitHub Issues (`gh issue`) で管理する。`TODO.md` はロードマップの概要のみ。設計判断は
+タスクは GitHub Issues (`gh issue`) で管理する。ロードマップは
+[docs/release-roadmap.md](docs/release-roadmap.md) 参照 (`TODO.md` は
+`docs/archive/TODO.md` へ移動済み、historical のみ)。設計判断は
 [docs/adr.md](docs/adr.md) に記録する。
