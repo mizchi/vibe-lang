@@ -5,7 +5,7 @@ vibe is an ML-like statically typed scripting language with shell integration, t
 ## CLI
 
 ```bash
-vibe run file.vibe       # Run a script (evaluates the final top-level pure expression)
+vibe run file.vibe       # Run a script (executes `fn main`)
 vibe test file.vibe      # Run tests in a file
 vibe shell               # Interactive shell (PosixMode)
 vibe bench file.vibe     # Run benchmarks
@@ -15,11 +15,15 @@ vibe check file.vibe     # Type check
 ## Hello World
 
 ```vibe
+import ./lib/@vibe/prelude/io.vibe { stdout_write }
+
 let greeting: (String) -> String = (name) -> {
   "hello \{name}"
 }
 
-greeting("world")
+fn main with { Stdout } {
+  stdout_write(greeting("world"))
+}
 
 test "greeting" {
   assert(String::equals(greeting("world"), "hello world"))
@@ -28,11 +32,19 @@ test "greeting" {
 
 ## Entry Point
 
-Source-level scripts run the final top-level pure expression.
-When you `vibe build`, the generated WASM exports `_start` as the ABI entry point.
+The entry point is `fn main { ... }` (ADR-0069): the top level is
+declarations-only, and statements/side effects live in `main`. Capabilities
+are declared as `fn main with { Stdout, Fs } { ... }`. The legacy
+`let main: () -> Int = ...` form still runs (its Int result is printed) but
+`fn main` is the primary form going forward. When you `vibe build`, the
+generated WASM exports `_start` as the ABI entry point.
 
 ```vibe
-1 + 2
+import ./lib/@vibe/prelude/io.vibe { stdout_write }
+
+fn main with { Stdout } {
+  stdout_write("1 + 2 = \{1 + 2}\n")
+}
 ```
 
 ## Guide

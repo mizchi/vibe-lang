@@ -6,7 +6,7 @@ For full details see [index.md](index.md).
 ## CLI
 
 ```bash
-vibe run file.vibe    # Run script (evaluates the final top-level pure expression)
+vibe run file.vibe    # Run script (executes `fn main`)
 vibe test file.vibe   # Run tests in a file
 vibe shell            # Interactive shell (PosixMode)
 vibe check file.vibe  # Type check
@@ -14,13 +14,21 @@ vibe check file.vibe  # Type check
 
 ## Entry Point
 
-Source-level scripts run the final top-level pure expression. When you `vibe build`,
-the generated WASM exports `_start` as the ABI entry point.
+The entry point is `fn main { ... }` (ADR-0069): the top level is
+declarations-only, and statements/side effects go in `main`. Declare needed
+capabilities with `fn main with { Stdout, Fs } { ... }`. The legacy
+`let main: () -> Int = ...` form still runs (its Int result is printed), but
+`fn main` is the primary form. When you `vibe build`, the generated WASM
+exports `_start` as the ABI entry point.
 
 ```vibe
+import ./lib/@vibe/prelude/io.vibe { stdout_write }
+
 let add: (Int, Int) -> Int = (x, y) -> { x + y }
 
-add(1, 2)
+fn main with { Stdout } {
+  stdout_write("add(1, 2) = \{add(1, 2)}\n")
+}
 ```
 
 ## Basics

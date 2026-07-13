@@ -95,7 +95,7 @@ test "record destructure" {
 }
 
 // Match
-match r {
+let mx = match r {
   record { x: v } => v,
   _ => 0
 }
@@ -105,15 +105,15 @@ match r {
 
 ```vibe
 let pair = (1, "two")
-pair.0   // => 1
-pair.1   // => "two"
+let p0 = pair.0   // => 1
+let p1 = pair.1   // => "two"
 
 // Destructure
 let (a, b) = pair
 
 // Match
-match pair {
-  (a, b) => a,
+let first = match pair {
+  (a2, b2) => a2,
   _ => 0
 }
 ```

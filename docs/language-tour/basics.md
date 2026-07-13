@@ -20,19 +20,19 @@ WASM aliases: `i32` = `Int`, `f32` = `Float`, `f64` = `Double`.
 // Float (f32): suffix f
 let x: Float = 1.5f
 let y = 2.5f
-x + y  // => 4.0f
+let sum = x + y                    // => 4.0f
 
 // Double (f64): default decimal literal
 let d = 3.14
-Double::floor(d)  // => 3.0
-Double::ceil(d)   // => 4.0
-Double::abs(-2.5) // => 2.5
+let fl = Double::floor(d)          // => 3.0
+let ce = Double::ceil(d)           // => 4.0
+let ab = Double::abs(-2.5)         // => 2.5
 
 // Conversion
-Int::to_double(3)     // => 3.0
-Double::to_int(3.14)  // => 3
-Int::to_float(5)      // => 5.0f
-Float::to_double(1.5f) // => 1.5
+let td = Int::to_double(3)         // => 3.0
+let ti = Double::to_int(3.14)      // => 3
+let tf = Int::to_float(5)          // => 5.0f
+let fd = Float::to_double(1.5f)    // => 1.5
 ```
 
 ## Variables
@@ -118,7 +118,7 @@ let v = if true { 1 } else { 2 }
 ### while
 
 ```vibe
-{
+let total = {
   let mut i = 0
   let mut sum = 0
   while i <= 4 {
@@ -127,21 +127,22 @@ let v = if true { 1 } else { 2 }
   }
   sum
 }
+// => 10
 ```
 
 ### for-in
 
 ```vibe
 // Returns collected array
-for x in [1, 2, 3] { x * 10 }
+let tens = for x in [1, 2, 3] { x * 10 }
 // => [10, 20, 30]
 
 // With index
-for i, x in [10, 20, 30] { i + x }
+let with_index = for i, x in [10, 20, 30] { i + x }
 // => [10, 21, 32]
 
 // break / continue
-for x in [1, 2, 3, 4, 5] {
+let until4 = for x in [1, 2, 3, 4, 5] {
   if x == 4 { break } else { }
   x * 10
 }
@@ -151,7 +152,7 @@ for x in [1, 2, 3, 4, 5] {
 ### loop (parameterized)
 
 ```vibe
-loop (i = 10, acc = 0) {
+let total = loop (i = 10, acc = 0) {
   if i <= 0 { break acc } else { continue(i - 1, acc + i) }
 }
 // => 55
@@ -161,31 +162,31 @@ loop (i = 10, acc = 0) {
 
 ```vibe
 // Enum
-match Ok(1) {
+let from_enum = match Ok(1) {
   Ok(v) => v,
   Err(_) => 0,
 }
 
 // Tuple
-match (1, 2) {
+let from_tuple = match (1, 2) {
   (a, b) => a + b,
   _ => 0
 }
 
 // Guard
-match 1 {
+let guarded = match 1 {
   v if v < 2 => 1,
   _ => 0
 }
 
 // Or-pattern
-match 2 {
+let small = match 2 {
   1 | 2 | 3 => true,
   _ => false
 }
 
 // Literal (Int, String, Bool, Float, Double)
-match "ok" {
+let ok_flag = match "ok" {
   "ok" => 1,
   _ => 0
 }
@@ -215,7 +216,7 @@ let sum = "result: \{add(1, 2)}" // => "result: 3"
 // 1 |> add(2)          => add(1, 2)
 // "hello" |> String::length  => String::length("hello")
 
-1 |> add(2) |> mul(3)   // => 9
+let nine = 1 |> add(2) |> mul(3)   // => 9
 ```
 
 ## Type Definitions
@@ -250,10 +251,10 @@ struct Point {
 }
 
 let p = Point::{ x: 3, y: 4 }
-p.x  // => 3
+let px = p.x  // => 3
 
 // Pattern match
-match p {
+let sum = match p {
   Point::{ x, y } => x + y,
   _ => 0
 }
@@ -269,8 +270,8 @@ enum Color {
   Blue
 } derive(Eq)
 
-eq(Red, Red)     // => true
-eq(Red, Blue)    // => false
+let same = eq(Red, Red)      // => true
+let diff = eq(Red, Blue)     // => false
 
 // Works with payload variants
 enum Shape {
@@ -278,15 +279,15 @@ enum Shape {
   Rect(Int, Int)
 } derive(Eq)
 
-eq(Circle(5), Circle(5))  // => true
-eq(Circle(5), Rect(1, 2)) // => false
+let c_eq = eq(Circle(5), Circle(5))   // => true
+let c_ne = eq(Circle(5), Rect(1, 2))  // => false
 
 // Also works for structs
 struct Point {
   x: Int; y: Int
 } derive(Eq)
 
-eq(Point::{ x: 1, y: 2 }, Point::{ x: 1, y: 2 })  // => true
+let p_eq = eq(Point::{ x: 1, y: 2 }, Point::{ x: 1, y: 2 })  // => true
 ```
 
 ### trait / impl
@@ -325,7 +326,7 @@ let value = match x {
 // => 42
 
 // Common usage: Array::find
-match Array::find([1, 2, 3], (x) -> { x > 1 }) {
+let found = match Array::find([1, 2, 3], (x) -> { x > 1 }) {
   Some(v) => v,    // => 2
   None => -1,
 }

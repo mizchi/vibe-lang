@@ -194,11 +194,24 @@ pinned stage2 = `_build/selfhost/generations/version-directive-2026-07-05_fc45db
 **ADR-0069: top-level 式文の禁止** (`top-level expressions are not allowed;
 move it into fn main`) を実装していた。cheatsheet の該当 3 block は let 束縛 /
 block 式に書き換え、**cheatsheet + vibe.md は旧 (pinned fc45db4)・新 (089474fe)
-両方の stage2 で exit 0** を確認済み。一方 **docs/language-tour/ は新 stage2 だと
-19 block が ADR-0069 で fail** する (quick-start の Entry Point 節 =「最後の
-top-level 純粋式を実行する」という記述自体が変わるため)。language-tour の
-ADR-0069 対応は、その言語変更を入れている作業側の docs pass として実施するのが
-正しく、今回は追わない。
+両方の stage2 で exit 0** を確認済み。
+
+**ADR-0069 Phase 1 commit (811673d8) 後の追対応 (同日)**: language-tour で
+fail していた 19 block を新仕様に合わせて書き換え、**全対象 142 blocks が
+ADR-0069 実装済み stage2 で 91 pass / 0 fail / 51 skip (exit 0)**。
+
+- **`fn main { ... }` 化 (4 block)**: index.md の Hello World / Entry Point、
+  quick-start.md の Entry Point (いずれも `fn main with { Stdout }` +
+  `stdout_write`)。Entry Point / CLI 節の文章も「entry は `fn main`、top-level
+  は宣言限定、`let main: () -> Int` は従来形 (Int を print) として存続」に更新。
+- **let 束縛 / block 式化 (15 block)**: 値例の裸式 (basics の Float/Double・
+  for-in・loop・match・pipe・struct・derive・Option、collections の record match・
+  tuple、effects の apply、syntax-reference の labeled call・struct・block・
+  tuple index) は `let name = expr   // => 値` 形に変換 (fn main で包むより
+  値例としての可読性が高く、旧 stage2 でも通る)。
+- 注意: `fn main {}` sugar は新 parser のみ受理するため、fn main を含む
+  index.md / quick-start.md の 3 block は **旧 stage2 (fc45db4 以前) では
+  parse できない**。doctest gate は最新 stage2 を解決するので問題にならない。
 
 ### release-check への配線状況
 

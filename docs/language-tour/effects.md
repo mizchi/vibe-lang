@@ -128,7 +128,7 @@ let apply: [T, U]((T) -> U with { e }, T) -> U with { e } = (f, x) -> {
   f(x)
 }
 
-apply((x) -> { x + 1 }, 41)  // => 42
+let applied = apply((x) -> { x + 1 }, 41)  // => 42
 ```
 
 The wrapper must declare `with { e }` to propagate the callee's effects:

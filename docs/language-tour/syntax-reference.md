@@ -92,7 +92,7 @@ let show: [T: Show](T) -> T = (x) -> { x }
 
 // Labeled arguments
 let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
-f(x = 1, y = 5)
+let six = f(x = 1, y = 5)
 ```
 
 ### Lambda shorthand
@@ -131,8 +131,8 @@ enum Color { Red; Green; Blue } derive(Eq)
 struct Point { x: Int; y: Int } derive(Eq)
 
 let p = Point::{ x: 1, y: 2 }
-p.x   // => 1
-match p { Point::{ x, y } => x + y }
+let px = p.x   // => 1
+let sum = match p { Point::{ x, y } => x + y }
 ```
 
 ### type alias
@@ -170,7 +170,7 @@ suberror MyError(String)
 ### Block
 
 ```vibe
-{
+let v = {
   let x = 1
   let y = 2
   x + y      // last expression is the value
@@ -270,8 +270,8 @@ arr[0] = value   // index assignment
 
 ```vibe
 let t = (1, "two")
-t.0   // => 1
-t.1   // => "two"
+let t0 = t.0   // => 1
+let t1 = t.1   // => "two"
 ```
 
 ## Patterns
