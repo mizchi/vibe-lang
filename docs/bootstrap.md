@@ -1,12 +1,12 @@
-# Selfhost Bootstrap Policy
+# Bootstrap Policy
 
-この文書は、vibe compiler を selfhost canonical に移すときの seed compiler
-運用を固定する。目的は、HEAD の compiler source が常に「直前の安定
+この文書は、vibe compiler の自己コンパイル (self-compilation) を支える seed
+compiler 運用を固定する。目的は、HEAD の compiler source が常に「直前の安定
 compiler から再構築できる」状態を保ちつつ、新しい言語機能へ段階的に移行すること。
 
 ## 背景
 
-selfhost compiler は、自分自身をビルドできるようになった後も、更新の起点に
+compiler は、自分自身をビルドできるようになった後も、更新の起点に
 なる compiler binary が必要になる。既存言語でもこの境界は明示されている。
 
 - Rust は prebuilt stage0 compiler を起点に stage1 を作り、stage1 で
@@ -32,7 +32,7 @@ seed として固定し、stage を分けて検証すること。vibe はこの�
 ### Seed compiler
 
 - local gate green な状態に annotated tag を打ち、その tag から作った
-  selfhost compiler artifact を seed compiler として固定する。
+  compiler artifact を seed compiler として固定する。
 - seed compiler は version、git tag、source commit、artifact sha256、
   target triple、wasmtime version、build command を manifest に記録する。
 - seed compiler は毎 commit 更新しない。更新は「bootstrap bump」として
@@ -107,12 +107,12 @@ commit」は分ける。これにより、常に固定 seed から HEAD を復�
 
 ## Release asset からの bootstrap (MoonBit host build なし)
 
-selfhost を「保証」するには、stage0 -> stage1 -> stage2 を **MoonBit host を
+self-compilation を「保証」するには、stage0 -> stage1 -> stage2 を **MoonBit host を
 ビルドせずに** 回せる必要がある。完全な registry (mooncakes) と native build が
 無い環境 (web/remote container 等) では `moon build src/cmd/vibe` が通らず、
 従来は flatten 工程 (`emit-module-source`) が host `vibe.exe` に依存していた。
 
-これを解消するため、selfhost に必要な 2 つの prebuilt artifact を
+これを解消するため、self-compilation に必要な 2 つの prebuilt artifact を
 **GitHub Release asset** として配布し、pull して使えるようにする。
 
 - `vibe-selfhost-<tag>.wasm` — stage0 seed compiler wasm。stock wasmtime で
@@ -156,7 +156,7 @@ cutover 後も runner と compiler artifact は分ける。
 - compiler wasm layer: `lib/@vibe/cli/` の CLI entry と `lib/@vibe/compiler/` の compiler 実装から作る dist/component/check entry。
 
 runner layer は性能・実行基盤の都合で差し替えてよいが、canonical compiler は
-portable selfhost wasm として再構築できることを gate に残す。
+portable な compiler wasm として再構築できることを gate に残す。
 
 ## Compiler wasm artifact 層の contract (#529)
 
@@ -169,8 +169,8 @@ compiler wasm を作る入口は 2 つある。両者は **同じ compiler sourc
 | dist | `scripts/build_selfhost_dist.sh` | `_build/dist/selfhost_compiler.wasm` (+ `_raw`) | MoonBit host-compiled の shipping artifact。配布・実行用。wasm-opt `-O3` を通す。 |
 | stage2 | `scripts/selfhost_generations.sh build` | `_build/selfhost/generations/<ts>/stage2.wasm` | pinned seed から self-reproduce した candidate。bootstrap bump 判断用。 |
 
-- dist は host (`src/`) MoonBit codegen の出力、stage2 は selfhost wasm codegen の
-  出力なので、**compiler binary 同士の byte 比較は意味がない**。生成入口を
+- dist は host (`src/`) MoonBit codegen の出力、stage2 は compiler 自身の wasm
+  codegen の出力なので、**compiler binary 同士の byte 比較は意味がない**。生成入口を
   一本化せず役割で分けるのが canonical な扱い。
 - `scripts/selfhost_generations.sh status` で seed pin / source commit / 直近
   generation manifest (stage0..stage3 の sha, stage3==stage2) を rebuild 無しで
@@ -178,9 +178,9 @@ compiler wasm を作る入口は 2 つある。両者は **同じ compiler sourc
 
 ### `vibe.abi` custom section contract
 
-selfhost codegen (`lib/@vibe/compiler/codegen/wasm_emit/metadata.vibe::emit_vibe_abi_custom_section`)
+compiler の codegen (`lib/@vibe/compiler/codegen/wasm_emit/metadata.vibe::emit_vibe_abi_custom_section`)
 は **生成する program wasm** に custom section `vibe.abi` を埋め込む。これは
-compiler binary 自身にも (selfhost が自分自身を compile した結果なので) 載る。
+compiler binary 自身にも (compiler が自分自身を compile した結果なので) 載る。
 
 ```
 section id 0 (custom), name "vibe.abi", payload:
@@ -223,7 +223,7 @@ seed が build 環境にある状態で確認する。
 `lib/@vibe/compiler/` / `lib/@vibe/cli/` 側で実装する。削除は一度に行わず、次の順に進める。
 
 1. seed tag と manifest を固定する。2026-06-12 cutover seed は完了済み。
-2. default CLI build/run/check/test を selfhost wasm 経路へ向ける。新規 CLI 実装は
+2. default CLI build/run/check/test を compiler wasm 経路へ向ける。新規 CLI 実装は
    `lib/@vibe/cli/` と `lib/@vibe/compiler/` 側で行う。
 3. CI で seed -> stage1 -> stage2 と corpus/perf/RSS gate を継続 green にする。
 4. MoonBit `src/` を runner/fallback に必要な最小限へ縮小する。

@@ -9,7 +9,7 @@ passed through whole rather than projected/matched) — all *safe* leaks (no
 use-after-free), and the gate that blocks RC cutover to the selfhost linear
 default. Prerequisite
 for *recursive field drop* in the selfhost Perceus RC port
-(`docs/spec/selfhost-rc-port.md`). The canonical implementation target is now
+(`docs/spec/rc-port.md`). The canonical implementation target is now
 the selfhost compiler under `lib/@vibe/compiler/`; the MoonBit `src/` backend is only
 a historical/reference point for this design. This documents the design the
 selfhost backend needs before the RC vertical can reclaim **nested** heap
@@ -19,7 +19,7 @@ selfhost backend needs before the RC vertical can reclaim **nested** heap
 
 The selfhost linear backend's RC port reclaims the common scope-local and alias
 cases at 0 bytes/iteration (tuple / record / enum / closure-body / alias / array
-literal — `selfhost-rc-port.md`). The remaining leak sources are:
+literal — `rc-port.md`). The remaining leak sources are:
 
 1. **Nested heap**: dropping `((1,2),(3,4))` frees the outer tuple block but not
    the two inner tuple blocks — recursive field drop is needed.
