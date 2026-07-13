@@ -1,0 +1,216 @@
+//# Imports
+
+import ./pqueue.vibe {
+  PriorityQueue::clear, PriorityQueue::from_array, PriorityQueue::is_empty, PriorityQueue::length, PriorityQueue::new, PriorityQueue::new_int_max, PriorityQueue::new_int_min, PriorityQueue::peek, PriorityQueue::pop, PriorityQueue::push, PriorityQueue::to_sorted_array, int_cmp_asc, int_cmp_desc
+}
+
+//# Misc
+
+test "empty queue pops None" {
+  let q = PriorityQueue::new_int_min()
+  assert(PriorityQueue::is_empty(q))
+  assert(PriorityQueue::length(q) == 0)
+  assert(PriorityQueue::pop(q) is None)
+  assert(PriorityQueue::peek(q) is None)
+  // still usable after a push
+  PriorityQueue::push(q, 5)
+  assert(PriorityQueue::length(q) == 1)
+  assert(PriorityQueue::peek(q) == Some(5))
+}
+
+test "min-heap basic ordering" {
+  let q = PriorityQueue::new_int_min()
+  PriorityQueue::push(q, 5)
+  PriorityQueue::push(q, 1)
+  PriorityQueue::push(q, 4)
+  PriorityQueue::push(q, 2)
+  PriorityQueue::push(q, 3)
+  assert(PriorityQueue::peek(q) == Some(1))
+  assert(PriorityQueue::pop(q) == Some(1))
+  assert(PriorityQueue::pop(q) == Some(2))
+  assert(PriorityQueue::pop(q) == Some(3))
+  assert(PriorityQueue::pop(q) == Some(4))
+  assert(PriorityQueue::pop(q) == Some(5))
+  assert(PriorityQueue::pop(q) is None)
+}
+
+test "heap property: 200 pseudo-random pushes pop in ascending order" {
+  // Lehmer LCG (multiplier 48271, modulus 2^31 - 1): products stay below
+  // 48271 * 2^31 ~= 1.0e14, safely inside the 62-bit tagged Int range.
+  let q = PriorityQueue::new_int_min()
+  let mut seed = 12345
+  let mut i = 0
+  while i < 200 {
+    seed = (seed * 48271) % 2147483647
+    PriorityQueue::push(q, seed % 1000)
+    i = i + 1
+  }
+  assert(PriorityQueue::length(q) == 200)
+  let mut prev = 0 - 1
+  let mut n = 0
+  let mut draining = true
+  while draining {
+    match PriorityQueue::pop(q) {
+      Some(v) => {
+        assert(v >= prev)
+        prev = v
+        n = n + 1
+      },
+      None => {
+        draining = false
+      }
+    }
+  }
+  assert(n == 200)
+  assert(PriorityQueue::is_empty(q))
+}
+
+test "duplicate keys all come out, grouped in order" {
+  let q = PriorityQueue::new_int_min()
+  PriorityQueue::push(q, 5)
+  PriorityQueue::push(q, 1)
+  PriorityQueue::push(q, 5)
+  PriorityQueue::push(q, 3)
+  PriorityQueue::push(q, 1)
+  assert(PriorityQueue::pop(q) == Some(1))
+  assert(PriorityQueue::pop(q) == Some(1))
+  assert(PriorityQueue::pop(q) == Some(3))
+  assert(PriorityQueue::pop(q) == Some(5))
+  assert(PriorityQueue::pop(q) == Some(5))
+  assert(PriorityQueue::pop(q) is None)
+}
+
+test "max-heap variant pops descending" {
+  let q = PriorityQueue::new_int_max()
+  PriorityQueue::push(q, 3)
+  PriorityQueue::push(q, 9)
+  PriorityQueue::push(q, 1)
+  PriorityQueue::push(q, 7)
+  assert(PriorityQueue::peek(q) == Some(9))
+  assert(PriorityQueue::pop(q) == Some(9))
+  assert(PriorityQueue::pop(q) == Some(7))
+  assert(PriorityQueue::pop(q) == Some(3))
+  assert(PriorityQueue::pop(q) == Some(1))
+  assert(PriorityQueue::pop(q) is None)
+}
+
+test "from_array heapifies without touching the input" {
+  let arr = [5, 3, 8, 1, 9, 2, 7]
+  let q = PriorityQueue::from_array(arr, int_cmp_asc)
+  assert(PriorityQueue::length(q) == 7)
+  assert(PriorityQueue::pop(q) == Some(1))
+  assert(PriorityQueue::pop(q) == Some(2))
+  assert(PriorityQueue::pop(q) == Some(3))
+  assert(PriorityQueue::pop(q) == Some(5))
+  assert(PriorityQueue::pop(q) == Some(7))
+  assert(PriorityQueue::pop(q) == Some(8))
+  assert(PriorityQueue::pop(q) == Some(9))
+  assert(PriorityQueue::pop(q) is None)
+  // the source array was copied, not consumed or reordered
+  assert(arr == [5, 3, 8, 1, 9, 2, 7])
+}
+
+test "from_array with a descending comparator" {
+  let q = PriorityQueue::from_array([2, 10, 6], int_cmp_desc)
+  assert(PriorityQueue::pop(q) == Some(10))
+  assert(PriorityQueue::pop(q) == Some(6))
+  assert(PriorityQueue::pop(q) == Some(2))
+}
+
+test "from_array of an empty array" {
+  let empty = Array::slice([0], 0, 0)
+  let q = PriorityQueue::from_array(empty, int_cmp_asc)
+  assert(PriorityQueue::is_empty(q))
+  assert(PriorityQueue::pop(q) is None)
+}
+
+test "to_sorted_array is sorted and non-destructive" {
+  let q = PriorityQueue::from_array([4, 1, 3, 2], int_cmp_asc)
+  let sorted = PriorityQueue::to_sorted_array(q)
+  assert(sorted == [1, 2, 3, 4])
+  // the queue itself is untouched
+  assert(PriorityQueue::length(q) == 4)
+  assert(PriorityQueue::pop(q) == Some(1))
+  assert(PriorityQueue::pop(q) == Some(2))
+  assert(PriorityQueue::pop(q) == Some(3))
+  assert(PriorityQueue::pop(q) == Some(4))
+}
+
+test "interleaved push and pop keeps the heap property" {
+  let q = PriorityQueue::new_int_min()
+  PriorityQueue::push(q, 5)
+  PriorityQueue::push(q, 2)
+  assert(PriorityQueue::pop(q) == Some(2))
+  PriorityQueue::push(q, 1)
+  PriorityQueue::push(q, 8)
+  assert(PriorityQueue::pop(q) == Some(1))
+  assert(PriorityQueue::pop(q) == Some(5))
+  PriorityQueue::push(q, 0)
+  assert(PriorityQueue::pop(q) == Some(0))
+  assert(PriorityQueue::pop(q) == Some(8))
+  assert(PriorityQueue::pop(q) is None)
+}
+
+test "clear then reuse" {
+  let q = PriorityQueue::new_int_min()
+  PriorityQueue::push(q, 3)
+  PriorityQueue::push(q, 1)
+  PriorityQueue::clear(q)
+  assert(PriorityQueue::is_empty(q))
+  assert(PriorityQueue::pop(q) is None)
+  PriorityQueue::push(q, 7)
+  PriorityQueue::push(q, 4)
+  assert(PriorityQueue::pop(q) == Some(4))
+  assert(PriorityQueue::pop(q) == Some(7))
+}
+
+test "explicit dict: custom comparator over tuples (priority, label)" {
+  // order by the first tuple element; the payload rides along
+  let cmp_by_priority = (a: (Int, String), b: (Int, String)) -> Int {
+    let (pa, _) = a
+    let (pb, _) = b
+    int_cmp_asc(pa, pb)
+  }
+  let q = PriorityQueue::new(cmp_by_priority)
+  PriorityQueue::push(q, (3, "low"))
+  PriorityQueue::push(q, (1, "high"))
+  PriorityQueue::push(q, (2, "mid"))
+  match PriorityQueue::pop(q) {
+    Some(p) => {
+      let (pri, label) = p
+      assert(pri == 1)
+      assert(String::equals(label, "high"))
+    },
+    None => assert(false)
+  }
+  match PriorityQueue::pop(q) {
+    Some(p) => {
+      let (pri, _) = p
+      assert(pri == 2)
+    },
+    None => assert(false)
+  }
+  assert(PriorityQueue::length(q) == 1)
+}
+
+test "explicit dict: strings ordered by length" {
+  let cmp_by_len = (a: String, b: String) -> Int {
+    int_cmp_asc(String::length(a), String::length(b))
+  }
+  let q = PriorityQueue::new(cmp_by_len)
+  PriorityQueue::push(q, "three")
+  PriorityQueue::push(q, "a")
+  PriorityQueue::push(q, "bb")
+  match PriorityQueue::pop(q) {
+    Some(s) => assert(String::equals(s, "a")),
+    None => assert(false)
+  }
+  match PriorityQueue::pop(q) {
+    Some(s) => assert(String::equals(s, "bb")),
+    None => assert(false)
+  }
+  match PriorityQueue::pop(q) {
+    Some(s) => assert(String::equals(s, "three")),
+    None => assert(false)
+  }
+}

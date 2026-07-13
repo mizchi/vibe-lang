@@ -1,0 +1,301 @@
+//# Imports
+
+import ./bigint.vibe {
+  BigInt::from_int, BigInt::to_int, BigInt::parse, BigInt::to_string, BigInt::add, BigInt::sub, BigInt::mul, BigInt::divmod, BigInt::div, BigInt::mod, BigInt::cmp, BigInt::equals, BigInt::neg, BigInt::abs, BigInt::is_zero, BigInt::pow
+}
+
+//# Misc
+
+test "from_int / to_int roundtrip" {
+  let cases = [
+    0,
+    1,
+    -1,
+    42,
+    -42,
+    1073741823,
+    1073741824,
+    -1073741824,
+    1152921504606846975,
+    2305843009213693951,
+    -2305843009213693951
+  ]
+  let mut i = 0
+  while i < Array::length(cases) {
+    let n = Array::get(cases, i)
+    match BigInt::to_int(BigInt::from_int(n)) {
+      Some(v) => assert(v == n),
+      None => assert(false)
+    }
+    i = i + 1
+  }
+}
+
+test "from_int / to_int roundtrip at Int::min" {
+  let min_val = -2305843009213693951 - 1
+  match BigInt::to_int(BigInt::from_int(min_val)) {
+    Some(v) => assert(v == min_val),
+    None => assert(false)
+  }
+}
+
+test "to_int rejects out-of-range values" {
+  // 2^61 (Int::max + 1) and -(2^61 + 1) (Int::min - 1) do not fit.
+  match BigInt::parse("2305843009213693952") {
+    Some(a) => assert(BigInt::to_int(a) is None),
+    None => assert(false)
+  }
+  match BigInt::parse("-2305843009213693953") {
+    Some(a) => assert(BigInt::to_int(a) is None),
+    None => assert(false)
+  }
+}
+
+test "parse / to_string roundtrip" {
+  let cases = [
+    "0",
+    "1",
+    "-1",
+    "42",
+    "1073741824",
+    "1152921504606846976",
+    "2305843009213693952",
+    "-2305843009213693952",
+    "12345678901234567890123456789",
+    "-12345678901234567890123456789",
+    "1000000000000000000000000000000"
+  ]
+  let mut i = 0
+  while i < Array::length(cases) {
+    let s = Array::get(cases, i)
+    match BigInt::parse(s) {
+      Some(a) => assert(BigInt::to_string(a) == s),
+      None => assert(false)
+    }
+    i = i + 1
+  }
+}
+
+test "parse handles zero forms and rejects invalid input" {
+  match BigInt::parse("-0") {
+    Some(a) => {
+      assert(BigInt::is_zero(a))
+      assert(BigInt::to_string(a) == "0")
+    },
+    None => assert(false)
+  }
+  match BigInt::parse("000123") {
+    Some(a) => assert(BigInt::to_string(a) == "123"),
+    None => assert(false)
+  }
+  assert(BigInt::parse("") is None)
+  assert(BigInt::parse("-") is None)
+  assert(BigInt::parse("12a3") is None)
+  assert(BigInt::parse("--5") is None)
+  assert(BigInt::parse("+5") is None)
+}
+
+test "2^64 via parse, pow, and mul agree" {
+  match BigInt::parse("18446744073709551616") {
+    Some(p64) => {
+      assert(BigInt::to_string(p64) == "18446744073709551616")
+      let via_pow = BigInt::pow(BigInt::from_int(2), 64)
+      assert(BigInt::equals(via_pow, p64))
+      let two32 = BigInt::from_int(4294967296)
+      let via_mul = BigInt::mul(two32, two32)
+      assert(BigInt::equals(via_mul, p64))
+      assert(BigInt::to_string(via_pow) == "18446744073709551616")
+    },
+    None => assert(false)
+  }
+}
+
+test "factorial 25 exceeds Int range" {
+  let mut acc = BigInt::from_int(1)
+  let mut i = 2
+  while i <= 25 {
+    acc = BigInt::mul(acc, BigInt::from_int(i))
+    i = i + 1
+  }
+  assert(BigInt::to_string(acc) == "15511210043330985984000000")
+  // Way outside the 62-bit tagged Int range.
+  assert(BigInt::to_int(acc) is None)
+}
+
+test "add carry chain across base-1 limbs" {
+  // 2^60 - 1 is two full base-1 limbs; +1 must carry through both.
+  match BigInt::parse("1152921504606846975") {
+    Some(full) => {
+      let bumped = BigInt::add(full, BigInt::from_int(1))
+      assert(BigInt::to_string(bumped) == "1152921504606846976")
+      // and the borrow chain back down
+      let back = BigInt::sub(bumped, BigInt::from_int(1))
+      assert(BigInt::equals(back, full))
+    },
+    None => assert(false)
+  }
+  // single-limb boundary: (2^30 - 1) + 1 = 2^30
+  let b = BigInt::add(BigInt::from_int(1073741823), BigInt::from_int(1))
+  assert(BigInt::to_string(b) == "1073741824")
+}
+
+test "sub yields zero and mixed-sign add subtracts" {
+  match BigInt::parse("99999999999999999999999999") {
+    Some(a) => {
+      assert(BigInt::is_zero(BigInt::sub(a, a)))
+      let sum = BigInt::add(a, BigInt::neg(BigInt::from_int(1)))
+      assert(BigInt::to_string(sum) == "99999999999999999999999998")
+    },
+    None => assert(false)
+  }
+}
+
+test "divmod 10^30 by 10^7" {
+  let ten = BigInt::from_int(10)
+  let a = BigInt::pow(ten, 30)
+  let b = BigInt::pow(ten, 7)
+  match BigInt::divmod(a, b) {
+    Some((q, r)) => {
+      assert(BigInt::equals(q, BigInt::pow(ten, 23)))
+      assert(BigInt::to_string(q) == "100000000000000000000000")
+      assert(BigInt::is_zero(r))
+    },
+    None => assert(false)
+  }
+  // non-zero remainder: (10^30 + 7) divmod 10^7 -> (10^23, 7)
+  let a7 = BigInt::add(a, BigInt::from_int(7))
+  match BigInt::divmod(a7, b) {
+    Some((q, r)) => {
+      assert(BigInt::equals(q, BigInt::pow(ten, 23)))
+      assert(BigInt::equals(r, BigInt::from_int(7)))
+    },
+    None => assert(false)
+  }
+}
+
+test "divmod truncates toward zero with dividend-signed remainder" {
+  // -7 / 2 = -3 rem -1
+  match BigInt::divmod(BigInt::from_int(-7), BigInt::from_int(2)) {
+    Some((q, r)) => {
+      assert(BigInt::equals(q, BigInt::from_int(-3)))
+      assert(BigInt::equals(r, BigInt::from_int(-1)))
+    },
+    None => assert(false)
+  }
+  // 7 / -2 = -3 rem 1
+  match BigInt::divmod(BigInt::from_int(7), BigInt::from_int(-2)) {
+    Some((q, r)) => {
+      assert(BigInt::equals(q, BigInt::from_int(-3)))
+      assert(BigInt::equals(r, BigInt::from_int(1)))
+    },
+    None => assert(false)
+  }
+  // -7 / -2 = 3 rem -1
+  match BigInt::divmod(BigInt::from_int(-7), BigInt::from_int(-2)) {
+    Some((q, r)) => {
+      assert(BigInt::equals(q, BigInt::from_int(3)))
+      assert(BigInt::equals(r, BigInt::from_int(-1)))
+    },
+    None => assert(false)
+  }
+}
+
+test "divmod invariant q*b + r == a on big mixed-sign values" {
+  match BigInt::parse("-123456789012345678901234567890123") {
+    Some(a) => {
+      match BigInt::parse("98765432109876543") {
+        Some(b) => {
+          match BigInt::divmod(a, b) {
+            Some((q, r)) => {
+              let recomposed = BigInt::add(BigInt::mul(q, b), r)
+              assert(BigInt::equals(recomposed, a))
+              // remainder carries the dividend's sign and |r| < |b|
+              assert(BigInt::cmp(r, BigInt::from_int(0)) <= 0)
+              assert(BigInt::cmp(BigInt::abs(r), BigInt::abs(b)) < 0)
+            },
+            None => assert(false)
+          }
+        },
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "division by zero is None" {
+  let a = BigInt::from_int(123)
+  let z = BigInt::from_int(0)
+  assert(BigInt::divmod(a, z) is None)
+  assert(BigInt::div(a, z) is None)
+  assert(BigInt::mod(a, z) is None)
+}
+
+test "div and mod project divmod" {
+  match BigInt::div(BigInt::from_int(100), BigInt::from_int(7)) {
+    Some(q) => assert(BigInt::equals(q, BigInt::from_int(14))),
+    None => assert(false)
+  }
+  match BigInt::mod(BigInt::from_int(100), BigInt::from_int(7)) {
+    Some(r) => assert(BigInt::equals(r, BigInt::from_int(2))),
+    None => assert(false)
+  }
+}
+
+test "cmp ordering and antisymmetry" {
+  match BigInt::parse("340282366920938463463374607431768211456") {
+    Some(big) => {
+      let vals = [
+        BigInt::neg(big),
+        BigInt::from_int(-5),
+        BigInt::from_int(0),
+        BigInt::from_int(3),
+        big
+      ]
+      let n = Array::length(vals)
+      let mut i = 0
+      while i < n {
+        let mut j = 0
+        while j < n {
+          let a = Array::get(vals, i)
+          let b = Array::get(vals, j)
+          // antisymmetry: cmp(a, b) == -cmp(b, a)
+          assert(BigInt::cmp(a, b) == 0 - BigInt::cmp(b, a))
+          // strictly increasing list
+          if i < j {
+            assert(BigInt::cmp(a, b) == -1)
+          }
+          if i == j {
+            assert(BigInt::cmp(a, b) == 0)
+          }
+          j = j + 1
+        }
+        i = i + 1
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "neg, abs, is_zero" {
+  let a = BigInt::from_int(-99)
+  assert(BigInt::equals(BigInt::neg(BigInt::neg(a)), a))
+  assert(BigInt::equals(BigInt::abs(a), BigInt::from_int(99)))
+  assert(BigInt::is_zero(BigInt::from_int(0)))
+  assert(BigInt::is_zero(BigInt::neg(BigInt::from_int(0))))
+  assert(not(BigInt::is_zero(a)))
+}
+
+test "pow edge cases" {
+  assert(BigInt::equals(BigInt::pow(BigInt::from_int(2), 0), BigInt::from_int(1)))
+  assert(BigInt::is_zero(BigInt::pow(BigInt::from_int(2), -3)))
+  assert(BigInt::equals(BigInt::pow(BigInt::from_int(10), 9), BigInt::from_int(1000000000)))
+  assert(BigInt::to_string(BigInt::pow(BigInt::from_int(3), 50)) == "717897987691852588770249")
+  // (-2)^61 is representable only as BigInt-negative of 2^61
+  let m = BigInt::pow(BigInt::from_int(-2), 61)
+  assert(BigInt::to_string(m) == "-2305843009213693952")
+  match BigInt::to_int(m) {
+    Some(v) => assert(v == -2305843009213693951 - 1),
+    None => assert(false)
+  }
+}

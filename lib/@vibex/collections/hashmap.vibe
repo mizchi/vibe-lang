@@ -1,0 +1,338 @@
+// @vibex/collections — HashMap[K, V]: mutable open-addressing hash table.
+//
+// Layout: parallel slot arrays (keys / vals / state) + `mut` struct fields
+// (ADR-0052) so `set`/`delete`/rehash mutate the same handle in place.
+// - linear probing, tombstones (state: 0 = empty, 1 = occupied,
+//   2 = tombstone), rehash to 2x capacity when
+//   (size + tombstones + 1) / capacity would exceed 0.7.
+// - Slots hold Option[K] / Option[V] so empty tables need no sentinel key
+//   or value; a generic `Array[K]` prefill would require one. This also
+//   sidesteps the #829 generic-struct-instantiation holes: every slot read
+//   goes through a `match` on Option, so a miscompiled "opaque" read shows
+//   up as a pattern-match failure, never as silent garbage reinterpreted
+//   as a K or V.
+// - Key hashing/equality is explicit-dict style: `hash_fn` / `eq_fn` are
+//   closed into the struct at construction. `HashMap::new_int` /
+//   `HashMap::new_string` are the specialized constructors for the common
+//   key types (see key.vibe).
+// Iteration order of keys/values/to_array is slot order (unspecified).
+
+//# Imports
+
+import ./key.vibe { eq_int, eq_string, hash_int, hash_string }
+
+//# Types
+
+export struct HashMap[K, V] {
+  mut keys: Array[Option[K]];
+  mut vals: Array[Option[V]];
+  mut state: Array[Int];
+  mut size: Int;
+  mut tombs: Int;
+  hash_fn: (K) -> Int;
+  eq_fn: (K, K) -> Bool
+}
+
+//# Internal helpers
+
+fn alloc_states(cap: Int) -> Array[Int] {
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < cap {
+    ArrayBuilder::push(b, 0)
+    i = i + 1
+  }
+  ArrayBuilder::freeze(b)
+}
+
+fn alloc_slots[T](cap: Int) -> Array[Option[T]] {
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < cap {
+    let none_slot: Option[T] = None
+    ArrayBuilder::push(b, none_slot)
+    i = i + 1
+  }
+  ArrayBuilder::freeze(b)
+}
+
+fn home_index[K, V](m: HashMap[K, V], k: K, cap: Int) -> Int {
+  let h = (m.hash_fn)(k)
+  let mut idx = h % cap
+  if idx < 0 {
+    idx = idx + cap
+  }
+  idx
+}
+
+// Index of the occupied slot holding `k`, or -1. Probing stops at the first
+// empty slot; tombstones are skipped (deleted slots must not break chains).
+fn find_index[K, V](m: HashMap[K, V], k: K) -> Int {
+  let cap = Array::length(m.state)
+  let mut idx = home_index(m, k, cap)
+  let mut result = -1
+  let mut scanning = true
+  let mut steps = 0
+  while scanning {
+    let st = Array::get(m.state, idx)
+    if st == 0 {
+      scanning = false
+    } else {
+      if st == 1 {
+        match Array::get(m.keys, idx) {
+          Some(sk) => {
+            if (m.eq_fn)(sk, k) {
+              result = idx
+              scanning = false
+            }
+          },
+          None => ()
+        }
+      }
+      if scanning {
+        idx = idx + 1
+        if idx >= cap {
+          idx = 0
+        }
+        steps = steps + 1
+        if steps > cap {
+          // invariant: the table always keeps free slots, so this is
+          // unreachable; guard against looping forever if it ever breaks.
+          scanning = false
+        }
+      }
+    }
+  }
+  result
+}
+
+// Insert without growth check. Reuses the first tombstone seen on the probe
+// path when the key is not already present.
+fn insert_raw[K, V](m: HashMap[K, V], k: K, v: V) -> Unit {
+  let cap = Array::length(m.state)
+  let mut idx = home_index(m, k, cap)
+  let mut tomb_idx = -1
+  let mut inserting = true
+  while inserting {
+    let st = Array::get(m.state, idx)
+    if st == 0 {
+      let target = if tomb_idx >= 0 {
+        tomb_idx
+      } else {
+        idx
+      }
+      if tomb_idx >= 0 {
+        m.tombs = m.tombs - 1
+      }
+      Array::set(m.keys, target, Some(k))
+      Array::set(m.vals, target, Some(v))
+      Array::set(m.state, target, 1)
+      m.size = m.size + 1
+      inserting = false
+    } else if st == 2 {
+      if tomb_idx < 0 {
+        tomb_idx = idx
+      }
+      idx = idx + 1
+      if idx >= cap {
+        idx = 0
+      }
+    } else {
+      let mut matched = false
+      match Array::get(m.keys, idx) {
+        Some(sk) => {
+          if (m.eq_fn)(sk, k) {
+            matched = true
+          }
+        },
+        None => ()
+      }
+      if matched {
+        Array::set(m.vals, idx, Some(v))
+        inserting = false
+      } else {
+        idx = idx + 1
+        if idx >= cap {
+          idx = 0
+        }
+      }
+    }
+  }
+}
+
+fn rehash[K, V](m: HashMap[K, V], new_cap: Int) -> Unit {
+  let cap = if new_cap < 8 {
+    8
+  } else {
+    new_cap
+  }
+  let old_keys = m.keys
+  let old_vals = m.vals
+  let old_state = m.state
+  m.keys = alloc_slots(cap)
+  m.vals = alloc_slots(cap)
+  m.state = alloc_states(cap)
+  m.size = 0
+  m.tombs = 0
+  let n = Array::length(old_state)
+  let mut i = 0
+  while i < n {
+    if Array::get(old_state, i) == 1 {
+      match Array::get(old_keys, i) {
+        Some(k) =>
+        match Array::get(old_vals, i) {
+          Some(v) => insert_raw(m, k, v),
+          None => ()
+        },
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+}
+
+//# Constructors
+
+export fn HashMap::with_capacity[K, V](hash_fn: (K) -> Int, eq_fn: (K, K) -> Bool, capacity: Int) -> HashMap[K, V] {
+  let cap = if capacity < 8 {
+    8
+  } else {
+    capacity
+  }
+  HashMap::{
+    keys: alloc_slots(cap),
+    vals: alloc_slots(cap),
+    state: alloc_states(cap),
+    size: 0,
+    tombs: 0,
+    hash_fn: hash_fn,
+    eq_fn: eq_fn
+  }
+}
+
+export fn HashMap::new[K, V](hash_fn: (K) -> Int, eq_fn: (K, K) -> Bool) -> HashMap[K, V] {
+  HashMap::with_capacity(hash_fn, eq_fn, 16)
+}
+
+// Specialized constructors for the common key types.
+// NOTE: the intermediate `let m: HashMap[Int, V] = ...` annotations are a
+// workaround for generic-call inference (#829 adjacent): returning the
+// generic call directly fails to instantiate K from the function-typed
+// arguments ("return type mismatch: expected HashMap[Int, ?], got
+// HashMap[K, ?]").
+export fn HashMap::new_int[V]() -> HashMap[Int, V] {
+  let m: HashMap[Int, V] = HashMap::new(hash_int, eq_int)
+  m
+}
+
+export fn HashMap::new_string[V]() -> HashMap[String, V] {
+  let m: HashMap[String, V] = HashMap::new(hash_string, eq_string)
+  m
+}
+
+export fn HashMap::with_capacity_int[V](capacity: Int) -> HashMap[Int, V] {
+  let m: HashMap[Int, V] = HashMap::with_capacity(hash_int, eq_int, capacity)
+  m
+}
+
+export fn HashMap::with_capacity_string[V](capacity: Int) -> HashMap[String, V] {
+  let m: HashMap[String, V] = HashMap::with_capacity(hash_string, eq_string, capacity)
+  m
+}
+
+//# Operations
+
+export fn HashMap::set[K, V](m: HashMap[K, V], k: K, v: V) -> Unit {
+  let cap = Array::length(m.state)
+  if (m.size + m.tombs + 1) * 10 > cap * 7 {
+    rehash(m, cap * 2)
+  }
+  insert_raw(m, k, v)
+}
+
+export fn HashMap::get[K, V](m: HashMap[K, V], k: K) -> Option[V] {
+  let idx = find_index(m, k)
+  if idx < 0 {
+    None
+  } else {
+    Array::get(m.vals, idx)
+  }
+}
+
+export fn HashMap::has[K, V](m: HashMap[K, V], k: K) -> Bool {
+  find_index(m, k) >= 0
+}
+
+// Removes `k`; returns whether it was present. The slot becomes a tombstone
+// and both Option slots are cleared so the K/V values are released.
+export fn HashMap::delete[K, V](m: HashMap[K, V], k: K) -> Bool {
+  let idx = find_index(m, k)
+  if idx < 0 {
+    false
+  } else {
+    Array::set(m.state, idx, 2)
+    let none_k: Option[K] = None
+    Array::set(m.keys, idx, none_k)
+    let none_v: Option[V] = None
+    Array::set(m.vals, idx, none_v)
+    m.size = m.size - 1
+    m.tombs = m.tombs + 1
+    true
+  }
+}
+
+export fn HashMap::size[K, V](m: HashMap[K, V]) -> Int {
+  m.size
+}
+
+export fn HashMap::keys[K, V](m: HashMap[K, V]) -> Array[K] {
+  let b = ArrayBuilder::new()
+  let cap = Array::length(m.state)
+  let mut i = 0
+  while i < cap {
+    if Array::get(m.state, i) == 1 {
+      match Array::get(m.keys, i) {
+        Some(k) => ArrayBuilder::push(b, k),
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  ArrayBuilder::freeze(b)
+}
+
+export fn HashMap::values[K, V](m: HashMap[K, V]) -> Array[V] {
+  let b = ArrayBuilder::new()
+  let cap = Array::length(m.state)
+  let mut i = 0
+  while i < cap {
+    if Array::get(m.state, i) == 1 {
+      match Array::get(m.vals, i) {
+        Some(v) => ArrayBuilder::push(b, v),
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  ArrayBuilder::freeze(b)
+}
+
+export fn HashMap::to_array[K, V](m: HashMap[K, V]) -> Array[(K, V)] {
+  let b = ArrayBuilder::new()
+  let cap = Array::length(m.state)
+  let mut i = 0
+  while i < cap {
+    if Array::get(m.state, i) == 1 {
+      match Array::get(m.keys, i) {
+        Some(k) =>
+        match Array::get(m.vals, i) {
+          Some(v) => ArrayBuilder::push(b, (k, v)),
+          None => ()
+        },
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  ArrayBuilder::freeze(b)
+}

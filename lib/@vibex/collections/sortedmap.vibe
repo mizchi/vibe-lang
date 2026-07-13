@@ -1,0 +1,331 @@
+// @vibex/collections — SortedMap[K, V]: ordered map on an AVL tree.
+//
+// Nodes are immutable enum values (AvlNode carries its height); mutation is
+// "rebuild the spine, swap the root" — the SortedMap struct holds `mut root`
+// / `mut size` (ADR-0052) so set/delete update the same handle in place.
+// This keeps the tree code purely functional (no mut-field aliasing inside
+// nodes) while the container API stays mutable like HashMap's.
+// Ordering is explicit-dict style: `cmp(a, b) -> Int` (< 0 / 0 / > 0) is
+// closed into the struct at construction; SortedMap::new_int /
+// SortedMap::new_string specialize it (see key.vibe).
+// `range(m, lo, hi)` returns the entries with lo <= k <= hi (both ends
+// inclusive) in ascending key order.
+
+//# Imports
+
+import ./key.vibe { compare_int, compare_string }
+
+//# Types
+
+// AvlNode(height, left, key, value, right) — internal representation
+// (not exported: the index.vibei facade must not surface it)
+enum AvlTree[K, V] {
+  AvlLeaf;
+  AvlNode(Int, AvlTree[K, V], K, V, AvlTree[K, V])
+}
+
+export struct SortedMap[K, V] {
+  mut root: AvlTree[K, V];
+  mut size: Int;
+  cmp: (K, K) -> Int
+}
+
+//# Internal tree helpers
+
+fn avl_height[K, V](t: AvlTree[K, V]) -> Int {
+  match t {
+    AvlLeaf => 0,
+    AvlNode(h, _, _, _, _) => h
+  }
+}
+
+fn avl_mk[K, V](l: AvlTree[K, V], k: K, v: V, r: AvlTree[K, V]) -> AvlTree[K, V] {
+  let hl = avl_height(l)
+  let hr = avl_height(r)
+  let h = if hl > hr {
+    hl + 1
+  } else {
+    hr + 1
+  }
+  AvlNode(h, l, k, v, r)
+}
+
+// Rebalance a node whose children differ by at most 2 in height
+// (the standard AVL invariant during insert/delete rebuilds).
+fn avl_balance[K, V](l: AvlTree[K, V], k: K, v: V, r: AvlTree[K, V]) -> AvlTree[K, V] {
+  let hl = avl_height(l)
+  let hr = avl_height(r)
+  if hl > hr + 1 {
+    match l {
+      AvlNode(_, ll, lk, lv, lr) => {
+        if avl_height(ll) >= avl_height(lr) {
+          // left-left: single right rotation
+          avl_mk(ll, lk, lv, avl_mk(lr, k, v, r))
+        } else {
+          // left-right: double rotation
+          match lr {
+            AvlNode(_, lrl, lrk, lrv, lrr) => avl_mk(avl_mk(ll, lk, lv, lrl), lrk, lrv, avl_mk(lrr, k, v, r)),
+            AvlLeaf => avl_mk(l, k, v, r)
+          }
+        }
+      },
+      AvlLeaf => avl_mk(l, k, v, r)
+    }
+  } else if hr > hl + 1 {
+    match r {
+      AvlNode(_, rl, rk, rv, rr) => {
+        if avl_height(rr) >= avl_height(rl) {
+          // right-right: single left rotation
+          avl_mk(avl_mk(l, k, v, rl), rk, rv, rr)
+        } else {
+          // right-left: double rotation
+          match rl {
+            AvlNode(_, rll, rlk, rlv, rlr) => avl_mk(avl_mk(l, k, v, rll), rlk, rlv, avl_mk(rlr, rk, rv, rr)),
+            AvlLeaf => avl_mk(l, k, v, r)
+          }
+        }
+      },
+      AvlLeaf => avl_mk(l, k, v, r)
+    }
+  } else {
+    avl_mk(l, k, v, r)
+  }
+}
+
+// Insert; Bool = an existing key was replaced (size unchanged).
+fn avl_insert[K, V](t: AvlTree[K, V], cmp: (K, K) -> Int, k: K, v: V) -> (AvlTree[K, V], Bool) {
+  match t {
+    AvlLeaf => (AvlNode(1, AvlLeaf, k, v, AvlLeaf), false),
+    AvlNode(h, l, nk, nv, r) => {
+      let c = cmp(k, nk)
+      if c == 0 {
+        (AvlNode(h, l, k, v, r), true)
+      } else if c < 0 {
+        let (nl, replaced) = avl_insert(l, cmp, k, v)
+        (avl_balance(nl, nk, nv, r), replaced)
+      } else {
+        let (nr, replaced) = avl_insert(r, cmp, k, v)
+        (avl_balance(l, nk, nv, nr), replaced)
+      }
+    }
+  }
+}
+
+// Detach the minimum binding; None when the tree is empty.
+fn avl_remove_min[K, V](t: AvlTree[K, V]) -> Option[(AvlTree[K, V], K, V)] {
+  match t {
+    AvlLeaf => None,
+    AvlNode(_, l, k, v, r) =>
+    match avl_remove_min(l) {
+      Some(triple) => {
+        let (nl, mk, mv) = triple
+        Some((avl_balance(nl, k, v, r), mk, mv))
+      },
+      None => Some((r, k, v))
+    }
+  }
+}
+
+// Delete; Bool = the key was present (size shrank).
+fn avl_remove[K, V](t: AvlTree[K, V], cmp: (K, K) -> Int, k: K) -> (AvlTree[K, V], Bool) {
+  match t {
+    AvlLeaf => (AvlLeaf, false),
+    AvlNode(_, l, nk, nv, r) => {
+      let c = cmp(k, nk)
+      if c < 0 {
+        let (nl, removed) = avl_remove(l, cmp, k)
+        (avl_balance(nl, nk, nv, r), removed)
+      } else if c > 0 {
+        let (nr, removed) = avl_remove(r, cmp, k)
+        (avl_balance(l, nk, nv, nr), removed)
+      } else {
+        // replace this node with the in-order successor (min of right)
+        match avl_remove_min(r) {
+          Some(triple) => {
+            let (nr, sk, sv) = triple
+            (avl_balance(l, sk, sv, nr), true)
+          },
+          None => (l, true)
+        }
+      }
+    }
+  }
+}
+
+fn avl_get[K, V](t: AvlTree[K, V], cmp: (K, K) -> Int, k: K) -> Option[V] {
+  match t {
+    AvlLeaf => None,
+    AvlNode(_, l, nk, nv, r) => {
+      let c = cmp(k, nk)
+      if c == 0 {
+        Some(nv)
+      } else if c < 0 {
+        avl_get(l, cmp, k)
+      } else {
+        avl_get(r, cmp, k)
+      }
+    }
+  }
+}
+
+fn avl_min[K, V](t: AvlTree[K, V]) -> Option[(K, V)] {
+  match t {
+    AvlLeaf => None,
+    AvlNode(_, l, k, v, _) =>
+    match l {
+      AvlLeaf => Some((k, v)),
+      AvlNode(_, _, _, _, _) => avl_min(l)
+    }
+  }
+}
+
+fn avl_max[K, V](t: AvlTree[K, V]) -> Option[(K, V)] {
+  match t {
+    AvlLeaf => None,
+    AvlNode(_, _, k, v, r) =>
+    match r {
+      AvlLeaf => Some((k, v)),
+      AvlNode(_, _, _, _, _) => avl_max(r)
+    }
+  }
+}
+
+fn avl_keys_rec[K, V](t: AvlTree[K, V], b: ArrayBuilder[K]) -> Unit {
+  match t {
+    AvlLeaf => (),
+    AvlNode(_, l, k, _, r) => {
+      avl_keys_rec(l, b)
+      ArrayBuilder::push(b, k)
+      avl_keys_rec(r, b)
+    }
+  }
+}
+
+fn avl_values_rec[K, V](t: AvlTree[K, V], b: ArrayBuilder[V]) -> Unit {
+  match t {
+    AvlLeaf => (),
+    AvlNode(_, l, _, v, r) => {
+      avl_values_rec(l, b)
+      ArrayBuilder::push(b, v)
+      avl_values_rec(r, b)
+    }
+  }
+}
+
+fn avl_entries_rec[K, V](t: AvlTree[K, V], b: ArrayBuilder[(K, V)]) -> Unit {
+  match t {
+    AvlLeaf => (),
+    AvlNode(_, l, k, v, r) => {
+      avl_entries_rec(l, b)
+      ArrayBuilder::push(b, (k, v))
+      avl_entries_rec(r, b)
+    }
+  }
+}
+
+// In-order collect of lo <= k <= hi, pruning subtrees outside the bounds.
+fn avl_range_rec[K, V](t: AvlTree[K, V], cmp: (K, K) -> Int, lo: K, hi: K, b: ArrayBuilder[(K, V)]) -> Unit {
+  match t {
+    AvlLeaf => (),
+    AvlNode(_, l, k, v, r) => {
+      let c_lo = cmp(k, lo)
+      let c_hi = cmp(k, hi)
+      if c_lo > 0 {
+        avl_range_rec(l, cmp, lo, hi, b)
+      }
+      if c_lo >= 0 && c_hi <= 0 {
+        ArrayBuilder::push(b, (k, v))
+      }
+      if c_hi < 0 {
+        avl_range_rec(r, cmp, lo, hi, b)
+      }
+    }
+  }
+}
+
+//# Constructors
+
+export fn SortedMap::new[K, V](cmp: (K, K) -> Int) -> SortedMap[K, V] {
+  SortedMap::{
+    root: AvlLeaf,
+    size: 0,
+    cmp: cmp
+  }
+}
+
+// Specialized constructors (annotation workaround as in hashmap.vibe).
+export fn SortedMap::new_int[V]() -> SortedMap[Int, V] {
+  let m: SortedMap[Int, V] = SortedMap::new(compare_int)
+  m
+}
+
+export fn SortedMap::new_string[V]() -> SortedMap[String, V] {
+  let m: SortedMap[String, V] = SortedMap::new(compare_string)
+  m
+}
+
+//# Operations
+
+export fn SortedMap::set[K, V](m: SortedMap[K, V], k: K, v: V) -> Unit {
+  let (nt, replaced) = avl_insert(m.root, m.cmp, k, v)
+  m.root = nt
+  if not(replaced) {
+    m.size = m.size + 1
+  }
+}
+
+export fn SortedMap::get[K, V](m: SortedMap[K, V], k: K) -> Option[V] {
+  avl_get(m.root, m.cmp, k)
+}
+
+export fn SortedMap::has[K, V](m: SortedMap[K, V], k: K) -> Bool {
+  match avl_get(m.root, m.cmp, k) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+export fn SortedMap::delete[K, V](m: SortedMap[K, V], k: K) -> Bool {
+  let (nt, removed) = avl_remove(m.root, m.cmp, k)
+  if removed {
+    m.root = nt
+    m.size = m.size - 1
+  }
+  removed
+}
+
+export fn SortedMap::size[K, V](m: SortedMap[K, V]) -> Int {
+  m.size
+}
+
+export fn SortedMap::min[K, V](m: SortedMap[K, V]) -> Option[(K, V)] {
+  avl_min(m.root)
+}
+
+export fn SortedMap::max[K, V](m: SortedMap[K, V]) -> Option[(K, V)] {
+  avl_max(m.root)
+}
+
+export fn SortedMap::keys[K, V](m: SortedMap[K, V]) -> Array[K] {
+  let b = ArrayBuilder::new()
+  avl_keys_rec(m.root, b)
+  ArrayBuilder::freeze(b)
+}
+
+export fn SortedMap::values[K, V](m: SortedMap[K, V]) -> Array[V] {
+  let b = ArrayBuilder::new()
+  avl_values_rec(m.root, b)
+  ArrayBuilder::freeze(b)
+}
+
+export fn SortedMap::to_array[K, V](m: SortedMap[K, V]) -> Array[(K, V)] {
+  let b = ArrayBuilder::new()
+  avl_entries_rec(m.root, b)
+  ArrayBuilder::freeze(b)
+}
+
+export fn SortedMap::range[K, V](m: SortedMap[K, V], lo: K, hi: K) -> Array[(K, V)] {
+  let b = ArrayBuilder::new()
+  avl_range_rec(m.root, m.cmp, lo, hi, b)
+  ArrayBuilder::freeze(b)
+}

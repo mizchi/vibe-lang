@@ -1,0 +1,78 @@
+// @vibex/collections — key-function dictionaries (hash / eq / compare) for
+// Int and String keys.
+//
+// vibe has no method-bearing trait dispatch usable for container keys, so
+// every container in this package takes its key functions as explicit
+// arguments (explicit-dict style). The high-frequency Int / String key
+// cases get specialized constructors in each container file; those close
+// over the functions below.
+
+//# Functions
+
+// Int hash: cheap xor-fold. No multiplication so it can never overflow the
+// 62-bit tagged Int range; linear probing tolerates the weak avalanche.
+export fn hash_int(x: Int) -> Int {
+  x ^ (x >> 33)
+}
+
+export fn eq_int(a: Int, b: Int) -> Bool {
+  a == b
+}
+
+// Total order on Int. Written with explicit branches instead of `a - b`
+// because the subtraction can overflow for operands near the +-2^61 ends
+// of the tagged-Int range.
+export fn compare_int(a: Int, b: Int) -> Int {
+  if a < b {
+    -1
+  } else if a > b {
+    1
+  } else {
+    0
+  }
+}
+
+// String hash: h = h * 31 + char, masked to 53 bits after every step so the
+// next `h * 31` stays below 2^58 — safely inside the 62-bit Int range.
+export fn hash_string(s: String) -> Int {
+  let len = String::length(s)
+  let mut h = 5381
+  let mut i = 0
+  while i < len {
+    h = ((h * 31) + String::char_code_at(s, i)) & 9007199254740991
+    i = i + 1
+  }
+  h
+}
+
+export fn eq_string(a: String, b: String) -> Bool {
+  a == b
+}
+
+// Lexicographic (char-by-char, then length) String order. Deliberately NOT
+// delegated to any host comparison: MoonBit's native `String <` was
+// length-first, and this package must define proper dictionary order.
+export fn compare_string(a: String, b: String) -> Int {
+  let a_len = String::length(a)
+  let b_len = String::length(b)
+  let min_len = if a_len < b_len {
+    a_len
+  } else {
+    b_len
+  }
+  let mut i = 0
+  while i < min_len {
+    let ac = String::char_code_at(a, i)
+    let bc = String::char_code_at(b, i)
+    if ac < bc {
+      return -1
+    }
+    if ac > bc {
+      return 1
+    }
+    i = i + 1
+  }
+  compare_int(a_len, b_len)
+}
+
+export let version: String = "0.0.1"

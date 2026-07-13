@@ -313,8 +313,12 @@ export fn collect_impl_fn_defs(stmts: Array[Stmt]) -> Array[(String, Option[Stri
 // enum / type alias / suberror) — the shapes an `opaque type` declaration
 // can be implemented by.
 // #739: the third element is the implementation's type-parameter count, so
-// conformance can compare it against the contract's declared arity. Structs
-// and suberrors carry no type parameters in the AST — arity 0.
+// conformance can compare it against the contract's declared arity.
+// Suberrors carry no type parameters in the AST — arity 0. Structs DO
+// (#829 gave SStruct a trailing tparams field, `struct S[T] { ... }`) —
+// this used to be hardcoded to 0 for every struct, which forced every
+// generic-struct package's contract to under-declare its arity as 0 (see
+// e.g. the #841 packages' now-stale "arity 0" workaround NOTEs).
 export fn collect_impl_type_defs(stmts: Array[Stmt]) -> Array[(String, Bool, Int)] {
   let out = Array::slice([
     ("", false, 0)
@@ -322,7 +326,7 @@ export fn collect_impl_type_defs(stmts: Array[Stmt]) -> Array[(String, Bool, Int
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SStruct(exported, name, _, _, _) => Array::push(out, (name, exported, 0)),
+      SStruct(exported, name, _, _, _, tparams) => Array::push(out, (name, exported, Array::length(tparams))),
       SEnum(exported, name, tparams, _, _) => Array::push(out, (name, exported, Array::length(tparams))),
       STypeAlias(exported, name, tparams, _) => Array::push(out, (name, exported, Array::length(tparams))),
       SSuberror(exported, name, _) => Array::push(out, (name, exported, 0)),
@@ -479,7 +483,7 @@ export fn classify_contract_stmts(stmts: Array[Stmt]) -> (Array[String], Array[S
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SImport(raw_path, _) => Array::push(raws, raw_path),
-      SStruct(_, name, fields, derives, mut_names) => Array::push(type_defs, SStruct(true, name, fields, derives, mut_names)),
+      SStruct(_, name, fields, derives, mut_names, tparams) => Array::push(type_defs, SStruct(true, name, fields, derives, mut_names, tparams)),
       SEnum(_, name, tparams, ctors, derives) => Array::push(type_defs, SEnum(true, name, tparams, ctors, derives)),
       STypeAlias(_, name, tparams, ty) => Array::push(type_defs, STypeAlias(true, name, tparams, ty)),
       // #752: a transparent EFFECT definition — like transparent types, the

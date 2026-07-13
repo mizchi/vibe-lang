@@ -1,0 +1,181 @@
+// @vibex/deque — double-ended queue backed by a growable ring buffer
+// (issue #841 B 群, ADR-0065 実験 scope).
+//
+// Representation: generic struct with `mut` fields (ADR-0052) —
+// `buf` is the backing store, `head` the index of the first element,
+// `len` the live element count. Capacity is `Array::length(buf)`;
+// indices wrap modulo capacity, so both ends push/pop in O(1) and the
+// buffer doubles on overflow (amortized O(1) growth).
+//
+// Generic-allocation note: vibe has no way to conjure a default value of
+// an arbitrary `T`, so the backing buffer starts EMPTY and is only
+// (re)allocated inside a push — where an element of type `T` is in hand
+// to fill the fresh slots. `with_capacity(n)` therefore records `n` as a
+// hint consumed by the first push rather than allocating up front.
+// Popped slots keep their old element until overwritten (values are
+// retained, not freed, until the slot is reused or the deque grows).
+
+//# Types
+
+export struct Deque[T] {
+  mut buf: Array[T];
+  mut head: Int;
+  mut len: Int;
+  mut cap_hint: Int
+}
+
+//# Internal helpers
+
+fn deque_empty_buf[T]() -> Array[T] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+// Reallocate to the next capacity, linearizing the ring (head -> 0).
+// `filler` (the element being pushed) fills the fresh slots — see the
+// generic-allocation note above. Only called when the buffer is full,
+// so `len > 0` implies `old_cap > 0` (no modulo-by-zero in the copy).
+fn deque_grow[T](d: Deque[T], filler: T) -> Unit {
+  let old_cap = Array::length(d.buf)
+  let new_cap = if old_cap > 0 {
+    old_cap * 2
+  } else if d.cap_hint > 0 {
+    d.cap_hint
+  } else {
+    8
+  }
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < new_cap {
+    ArrayBuilder::push(b, filler)
+    i = i + 1
+  }
+  let nbuf = ArrayBuilder::freeze(b)
+  let mut j = 0
+  while j < d.len {
+    Array::set(nbuf, j, Array::get(d.buf, (d.head + j) % old_cap))
+    j = j + 1
+  }
+  d.buf = nbuf
+  d.head = 0
+}
+
+//# Functions
+
+export fn Deque::new[T]() -> Deque[T] {
+  Deque::{
+    buf: deque_empty_buf(),
+    head: 0,
+    len: 0,
+    cap_hint: 0
+  }
+}
+
+// `n` is a capacity HINT: the backing buffer is allocated by the first
+// push (see the generic-allocation note), which uses `n` as the initial
+// capacity. `n <= 0` behaves like `new()`.
+export fn Deque::with_capacity[T](n: Int) -> Deque[T] {
+  Deque::{
+    buf: deque_empty_buf(),
+    head: 0,
+    len: 0,
+    cap_hint: if n > 0 { n } else { 0 }
+  }
+}
+
+export fn Deque::length[T](d: Deque[T]) -> Int {
+  d.len
+}
+
+export fn Deque::is_empty[T](d: Deque[T]) -> Bool {
+  d.len == 0
+}
+
+export fn Deque::push_back[T](d: Deque[T], x: T) -> Unit {
+  if d.len >= Array::length(d.buf) {
+    deque_grow(d, x)
+  }
+  let cap = Array::length(d.buf)
+  Array::set(d.buf, (d.head + d.len) % cap, x)
+  d.len = d.len + 1
+}
+
+export fn Deque::push_front[T](d: Deque[T], x: T) -> Unit {
+  if d.len >= Array::length(d.buf) {
+    deque_grow(d, x)
+  }
+  let cap = Array::length(d.buf)
+  d.head = (d.head + cap - 1) % cap
+  Array::set(d.buf, d.head, x)
+  d.len = d.len + 1
+}
+
+export fn Deque::pop_front[T](d: Deque[T]) -> Option[T] {
+  if d.len == 0 {
+    None
+  } else {
+    let v = Array::get(d.buf, d.head)
+    d.head = (d.head + 1) % Array::length(d.buf)
+    d.len = d.len - 1
+    Some(v)
+  }
+}
+
+export fn Deque::pop_back[T](d: Deque[T]) -> Option[T] {
+  if d.len == 0 {
+    None
+  } else {
+    let cap = Array::length(d.buf)
+    let v = Array::get(d.buf, (d.head + d.len - 1) % cap)
+    d.len = d.len - 1
+    Some(v)
+  }
+}
+
+export fn Deque::front[T](d: Deque[T]) -> Option[T] {
+  if d.len == 0 {
+    None
+  } else {
+    Some(Array::get(d.buf, d.head))
+  }
+}
+
+export fn Deque::back[T](d: Deque[T]) -> Option[T] {
+  if d.len == 0 {
+    None
+  } else {
+    let cap = Array::length(d.buf)
+    Some(Array::get(d.buf, (d.head + d.len - 1) % cap))
+  }
+}
+
+// Logical index: 0 is the front, `length - 1` the back.
+// Out-of-range (including negative) yields None.
+export fn Deque::get[T](d: Deque[T], i: Int) -> Option[T] {
+  if i < 0 || i >= d.len {
+    None
+  } else {
+    Some(Array::get(d.buf, (d.head + i) % Array::length(d.buf)))
+  }
+}
+
+// Front-to-back snapshot. O(n); the deque is unchanged.
+export fn Deque::to_array[T](d: Deque[T]) -> Array[T] {
+  let b = ArrayBuilder::new()
+  let cap = Array::length(d.buf)
+  let mut i = 0
+  while i < d.len {
+    ArrayBuilder::push(b, Array::get(d.buf, (d.head + i) % cap))
+    i = i + 1
+  }
+  ArrayBuilder::freeze(b)
+}
+
+// Drop all elements. The backing buffer is KEPT (its capacity is
+// reused by later pushes); the old elements stay referenced by the
+// buffer until overwritten.
+export fn Deque::clear[T](d: Deque[T]) -> Unit {
+  d.head = 0
+  d.len = 0
+}
+
+export let version: String = "0.0.1"

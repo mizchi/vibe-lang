@@ -1,0 +1,193 @@
+//# Imports
+
+import ./sortedset.vibe {
+  type SortedSet, SortedSet::add, SortedSet::delete, SortedSet::difference, SortedSet::has, SortedSet::intersect, SortedSet::max, SortedSet::min, SortedSet::new, SortedSet::new_int, SortedSet::new_string, SortedSet::range, SortedSet::size, SortedSet::to_array, SortedSet::union
+}
+import ./key.vibe { compare_int }
+
+//# Helpers
+
+fn is_ascending_ints(xs: Array[Int]) -> Bool {
+  let mut ok = true
+  let mut i = 1
+  while i < Array::length(xs) {
+    if Array::get(xs, i - 1) >= Array::get(xs, i) {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
+//# Misc
+
+test "empty set" {
+  let s: SortedSet[Int] = SortedSet::new_int()
+  assert_eq(SortedSet::size(s), 0)
+  assert_eq(SortedSet::has(s, 0), false)
+  assert_eq(SortedSet::delete(s, 0), false)
+  assert_eq(Array::length(SortedSet::to_array(s)), 0)
+  match SortedSet::min(s) {
+    Some(_) => assert_eq(1, 2),
+    None => assert_eq(0, 0)
+  }
+  match SortedSet::max(s) {
+    Some(_) => assert_eq(1, 2),
+    None => assert_eq(0, 0)
+  }
+}
+
+test "single element and duplicates" {
+  let s: SortedSet[Int] = SortedSet::new_int()
+  SortedSet::add(s, 9)
+  SortedSet::add(s, 9)
+  assert_eq(SortedSet::size(s), 1)
+  assert_eq(SortedSet::has(s, 9), true)
+  match SortedSet::min(s) {
+    Some(x) => assert_eq(x, 9),
+    None => assert_eq(1, 2)
+  }
+  match SortedSet::max(s) {
+    Some(x) => assert_eq(x, 9),
+    None => assert_eq(1, 2)
+  }
+}
+
+test "random insertion comes out ascending" {
+  let s: SortedSet[Int] = SortedSet::new_int()
+  // pseudo-random permutation of 0..127: i -> (i * 53) % 128 twice over
+  // (second pass re-adds every element: duplicates must not change the set)
+  let mut pass = 0
+  while pass < 2 {
+    let mut i = 0
+    while i < 128 {
+      SortedSet::add(s, (i * 53) % 128)
+      i = i + 1
+    }
+    pass = pass + 1
+  }
+  assert_eq(SortedSet::size(s), 128)
+  let xs = SortedSet::to_array(s)
+  assert_eq(Array::length(xs), 128)
+  assert_eq(is_ascending_ints(xs), true)
+  assert_eq(Array::get(xs, 0), 0)
+  assert_eq(Array::get(xs, 127), 127)
+  match SortedSet::min(s) {
+    Some(x) => assert_eq(x, 0),
+    None => assert_eq(1, 2)
+  }
+  match SortedSet::max(s) {
+    Some(x) => assert_eq(x, 127),
+    None => assert_eq(1, 2)
+  }
+}
+
+test "delete then re-add keeps order" {
+  let s: SortedSet[Int] = SortedSet::new_int()
+  let mut i = 0
+  while i < 50 {
+    SortedSet::add(s, i)
+    i = i + 1
+  }
+  assert_eq(SortedSet::delete(s, 25), true)
+  assert_eq(SortedSet::delete(s, 25), false)
+  assert_eq(SortedSet::size(s), 49)
+  assert_eq(SortedSet::has(s, 25), false)
+  SortedSet::add(s, 25)
+  assert_eq(SortedSet::size(s), 50)
+  assert_eq(is_ascending_ints(SortedSet::to_array(s)), true)
+}
+
+test "range boundaries" {
+  let s: SortedSet[Int] = SortedSet::new_int()
+  let mut i = 0
+  while i < 15 {
+    SortedSet::add(s, i * 10)   // 0, 10, ..., 140
+    i = i + 1
+  }
+  let r1 = SortedSet::range(s, 20, 50)
+  assert_eq(Array::length(r1), 4)   // 20, 30, 40, 50 (inclusive)
+  assert_eq(Array::get(r1, 0), 20)
+  assert_eq(Array::get(r1, 3), 50)
+  let r2 = SortedSet::range(s, 15, 45)
+  assert_eq(Array::length(r2), 3)   // 20, 30, 40
+  let r3 = SortedSet::range(s, -5, 1000)
+  assert_eq(Array::length(r3), 15)
+  let r4 = SortedSet::range(s, 141, 200)
+  assert_eq(Array::length(r4), 0)
+  let r5 = SortedSet::range(s, 50, 20)
+  assert_eq(Array::length(r5), 0)
+  let r6 = SortedSet::range(s, 70, 70)
+  assert_eq(Array::length(r6), 1)
+  assert_eq(Array::get(r6, 0), 70)
+}
+
+test "union intersect difference stay sorted" {
+  let a: SortedSet[Int] = SortedSet::new_int()
+  let b: SortedSet[Int] = SortedSet::new_int()
+  let mut i = 0
+  while i < 10 {
+    SortedSet::add(a, 9 - i)        // a = {0..9}, inserted descending
+    SortedSet::add(b, i + 5)        // b = {5..14}
+    i = i + 1
+  }
+  let u = SortedSet::union(a, b)
+  assert_eq(SortedSet::size(u), 15)
+  let ux = SortedSet::to_array(u)
+  assert_eq(is_ascending_ints(ux), true)
+  assert_eq(Array::get(ux, 0), 0)
+  assert_eq(Array::get(ux, 14), 14)
+  let n = SortedSet::intersect(a, b)
+  assert_eq(SortedSet::size(n), 5)
+  let nx = SortedSet::to_array(n)
+  assert_eq(Array::get(nx, 0), 5)
+  assert_eq(Array::get(nx, 4), 9)
+  let d = SortedSet::difference(a, b)
+  assert_eq(SortedSet::size(d), 5)
+  let dx = SortedSet::to_array(d)
+  assert_eq(Array::get(dx, 0), 0)
+  assert_eq(Array::get(dx, 4), 4)
+  // operands untouched
+  assert_eq(SortedSet::size(a), 10)
+  assert_eq(SortedSet::size(b), 10)
+}
+
+test "string set specialization" {
+  let s: SortedSet[String] = SortedSet::new_string()
+  SortedSet::add(s, "delta")
+  SortedSet::add(s, "alpha")
+  SortedSet::add(s, "charlie")
+  SortedSet::add(s, "bravo")
+  SortedSet::add(s, "alpha")
+  assert_eq(SortedSet::size(s), 4)
+  let xs = SortedSet::to_array(s)
+  assert_eq(Array::get(xs, 0), "alpha")
+  assert_eq(Array::get(xs, 1), "bravo")
+  assert_eq(Array::get(xs, 2), "charlie")
+  assert_eq(Array::get(xs, 3), "delta")
+  match SortedSet::min(s) {
+    Some(x) => assert_eq(x, "alpha"),
+    None => assert_eq(1, 2)
+  }
+  match SortedSet::max(s) {
+    Some(x) => assert_eq(x, "delta"),
+    None => assert_eq(1, 2)
+  }
+  let r = SortedSet::range(s, "b", "cz")
+  assert_eq(Array::length(r), 2)   // bravo, charlie
+  assert_eq(SortedSet::delete(s, "bravo"), true)
+  assert_eq(SortedSet::size(s), 3)
+}
+
+test "explicit cmp constructor" {
+  let rev: (Int, Int) -> Int = (a, b) -> {
+    compare_int(b, a)
+  }
+  let s: SortedSet[Int] = SortedSet::new(rev)
+  SortedSet::add(s, 1)
+  SortedSet::add(s, 2)
+  SortedSet::add(s, 3)
+  let xs = SortedSet::to_array(s)
+  assert_eq(Array::get(xs, 0), 3)
+  assert_eq(Array::get(xs, 2), 1)
+}

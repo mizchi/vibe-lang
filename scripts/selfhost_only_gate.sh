@@ -291,6 +291,41 @@ fi
 rm -rf "$cdir"
 echo "[selfhost-only-gate] contract package + boundary regression ok"
 
+# 6b2. generic-struct contract arity regression (#829/#841 follow-up):
+#      collect_impl_type_defs used to hardcode a struct's type-parameter
+#      arity as 0 regardless of its actual `[T]` header, so a package
+#      exporting `struct Box[T] { ... }` had no arity-correct way to declare
+#      `type Box[T]` in its own contract (multiple #841 packages worked
+#      around this by writing a nullary `type Box`, which is now WRONG and
+#      must itself be rejected — the under-declared arity 0 no longer
+#      matches the impl's real arity 1).
+echo "[selfhost-only-gate] 6b2 generic-struct contract arity regression (#829/#841)"
+gsdir="_build/_gate_genstruct_contract"
+rm -rf "$gsdir"; mkdir -p "$gsdir/pkg"
+printf 'export struct Box[T] {\n  v: T\n}\n\nexport fn Box::wrap[T](v: T) -> Box[T] {\n  Box::{ v: v }\n}\n' > "$gsdir/pkg/box.vibe"
+printf 'version 0.0.1\nimport ./box.vibe {}\ntype Box[T]\nfn Box::wrap[T](v: T) -> Box[T]\n' > "$gsdir/pkg/index.vibei"
+printf 'import ./pkg { Box::wrap }\nexport let _start: () -> Int = () -> { 0 }\n' > "$gsdir/ok.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gsdir/ok.vibe" "$gsdir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$gsdir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: contract-correct 'type Box[T]' arity was rejected (over-reject)" >&2
+  cat "$gsdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+printf 'version 0.0.1\nimport ./box.vibe {}\ntype Box\nfn Box::wrap[T](v: T) -> Box[T]\n' > "$gsdir/pkg/index.vibei"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gsdir/ok.vibe" "$gsdir/bad.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$gsdir/bad.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: nullary 'type Box' contract for a struct Box[T] impl compiled (arity under-declaration not caught)" >&2; exit 1
+fi
+if ! grep -q "arity mismatch" "$gsdir/bad.wasm.diag" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: struct arity mismatch rejection lacks the expected diagnostic" >&2
+  cat "$gsdir/bad.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+rm -rf "$gsdir"
+echo "[selfhost-only-gate] generic-struct contract arity regression ok"
+
 # 6c. content-addressed store regression (#730 D-2): `vibe hash` prints a
 #     store package's pin; a require-pinned `import @scope/name` resolves
 #     through .vibe/store/ with hash verification; a wrong pin is rejected.
@@ -2477,13 +2512,40 @@ cat > "$tdir/bad_structcomma.vibe" <<'EOF'
 struct Pt { x: Int, y: Int }
 export let _start: () -> Int = () -> { let p = Pt::{ x: 40, y: 2 }; p.x + p.y }
 EOF
+# #829 (lang-review r2 M7): a GENERIC struct literal must instantiate its type
+# params from the field values, so a field read consumed at the wrong concrete
+# type is a compile error (it used to compile and return silent garbage).
+cat > "$tdir/bad_genfield.vibe" <<'EOF'
+struct Box[T] { v: T }
+export let _start: () -> Int = () -> {
+  let b = Box::{ v: 1 }
+  String::length(b.v)
+}
+EOF
+# The well-typed counterpart: the instantiated field read consumed at its own
+# concrete type must still compile (no over-reject).
+cat > "$tdir/ok_genfield.vibe" <<'EOF'
+struct Box[T] { v: T }
+fn unbox[T](b: Box[T]) -> T { b.v }
+export let _start: () -> Int = () -> {
+  let b = Box::{ v: 41 }
+  let s = Box::{ v: "x" }
+  b.v + String::length(s.v) + unbox(b)
+}
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/ok.vibe" "$tdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed binding/assign/if did not compile (over-rejects)" >&2; exit 1
 fi
-for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg bad_unknownfield bad_guardonly bad_arity_get bad_arity_bytesnew bad_mutann bad_agrecv bad_agidx bad_asrecv bad_streamlen bad_streamget bad_streamset bad_interp_paren bad_declcomma bad_structcomma; do
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdir/ok_genfield.vibe" "$tdir/ok_genfield.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$tdir/ok_genfield.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: well-typed generic-struct field reads did not compile (over-rejects, #829)" >&2; exit 1
+fi
+for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg bad_unknownfield bad_guardonly bad_arity_get bad_arity_bytesnew bad_mutann bad_agrecv bad_agidx bad_asrecv bad_streamlen bad_streamget bad_streamset bad_interp_paren bad_declcomma bad_structcomma bad_genfield; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$tdir/$bad.vibe" "$tdir/$bad.wasm" _start >/dev/null 2>&1 || true

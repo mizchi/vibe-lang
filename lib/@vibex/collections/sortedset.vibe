@@ -1,0 +1,145 @@
+// @vibex/collections — SortedSet[T]: ordered set on SortedMap's AVL tree.
+//
+// Thin wrapper over SortedMap[T, Int] (values are a constant 0); see
+// sortedmap.vibe. The struct keeps its own copy of `cmp` so the set-algebra
+// operations can build result sets without reading through the nested
+// generic struct's fields (#829 caution). to_array / range are ascending;
+// range(s, lo, hi) is inclusive on both ends.
+
+//# Imports
+
+import ./key.vibe { compare_int, compare_string }
+import ./sortedmap.vibe {
+  type SortedMap, SortedMap::delete, SortedMap::has, SortedMap::keys, SortedMap::max, SortedMap::min, SortedMap::new, SortedMap::range, SortedMap::set, SortedMap::size
+}
+
+//# Types
+
+export struct SortedSet[T] {
+  inner: SortedMap[T, Int];
+  cmp: (T, T) -> Int
+}
+
+//# Constructors
+
+export fn SortedSet::new[T](cmp: (T, T) -> Int) -> SortedSet[T] {
+  let inner: SortedMap[T, Int] = SortedMap::new(cmp)
+  SortedSet::{
+    inner: inner,
+    cmp: cmp
+  }
+}
+
+// Specialized constructors (annotation workaround as in hashmap.vibe).
+export fn SortedSet::new_int() -> SortedSet[Int] {
+  let s: SortedSet[Int] = SortedSet::new(compare_int)
+  s
+}
+
+export fn SortedSet::new_string() -> SortedSet[String] {
+  let s: SortedSet[String] = SortedSet::new(compare_string)
+  s
+}
+
+//# Operations
+
+export fn SortedSet::add[T](s: SortedSet[T], x: T) -> Unit {
+  SortedMap::set(s.inner, x, 0)
+}
+
+export fn SortedSet::has[T](s: SortedSet[T], x: T) -> Bool {
+  SortedMap::has(s.inner, x)
+}
+
+export fn SortedSet::delete[T](s: SortedSet[T], x: T) -> Bool {
+  SortedMap::delete(s.inner, x)
+}
+
+export fn SortedSet::size[T](s: SortedSet[T]) -> Int {
+  SortedMap::size(s.inner)
+}
+
+export fn SortedSet::min[T](s: SortedSet[T]) -> Option[T] {
+  match SortedMap::min(s.inner) {
+    Some(kv) => {
+      let (k, _) = kv
+      Some(k)
+    },
+    None => None
+  }
+}
+
+export fn SortedSet::max[T](s: SortedSet[T]) -> Option[T] {
+  match SortedMap::max(s.inner) {
+    Some(kv) => {
+      let (k, _) = kv
+      Some(k)
+    },
+    None => None
+  }
+}
+
+// Ascending order.
+export fn SortedSet::to_array[T](s: SortedSet[T]) -> Array[T] {
+  SortedMap::keys(s.inner)
+}
+
+// Ascending; lo <= x <= hi (both ends inclusive).
+export fn SortedSet::range[T](s: SortedSet[T], lo: T, hi: T) -> Array[T] {
+  let entries = SortedMap::range(s.inner, lo, hi)
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < Array::length(entries) {
+    let (k, _) = Array::get(entries, i)
+    ArrayBuilder::push(b, k)
+    i = i + 1
+  }
+  ArrayBuilder::freeze(b)
+}
+
+//# Set algebra (result sets use the left operand's cmp)
+
+export fn SortedSet::union[T](a: SortedSet[T], b: SortedSet[T]) -> SortedSet[T] {
+  let out = SortedSet::new(a.cmp)
+  let xs = SortedSet::to_array(a)
+  let mut i = 0
+  while i < Array::length(xs) {
+    SortedSet::add(out, Array::get(xs, i))
+    i = i + 1
+  }
+  let ys = SortedSet::to_array(b)
+  let mut j = 0
+  while j < Array::length(ys) {
+    SortedSet::add(out, Array::get(ys, j))
+    j = j + 1
+  }
+  out
+}
+
+export fn SortedSet::intersect[T](a: SortedSet[T], b: SortedSet[T]) -> SortedSet[T] {
+  let out = SortedSet::new(a.cmp)
+  let xs = SortedSet::to_array(a)
+  let mut i = 0
+  while i < Array::length(xs) {
+    let x = Array::get(xs, i)
+    if SortedSet::has(b, x) {
+      SortedSet::add(out, x)
+    }
+    i = i + 1
+  }
+  out
+}
+
+export fn SortedSet::difference[T](a: SortedSet[T], b: SortedSet[T]) -> SortedSet[T] {
+  let out = SortedSet::new(a.cmp)
+  let xs = SortedSet::to_array(a)
+  let mut i = 0
+  while i < Array::length(xs) {
+    let x = Array::get(xs, i)
+    if not(SortedSet::has(b, x)) {
+      SortedSet::add(out, x)
+    }
+    i = i + 1
+  }
+  out
+}

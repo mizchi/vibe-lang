@@ -1,0 +1,255 @@
+//# Imports
+
+import ./rational.vibe {
+  Rational::from_int, Rational::from_ints, Rational::from_bigints, Rational::parse, Rational::to_string, Rational::add, Rational::sub, Rational::mul, Rational::div, Rational::neg, Rational::abs, Rational::cmp, Rational::equals, Rational::is_zero
+}
+import ./bigint.vibe {
+  BigInt::from_int, BigInt::pow
+}
+
+//# Misc
+
+test "construction normalizes gcd, sign, and zero" {
+  match Rational::from_ints(2, 4) {
+    Some(r) => assert(Rational::to_string(r) == "1/2"),
+    None => assert(false)
+  }
+  match Rational::from_ints(-1, -2) {
+    Some(r) => assert(Rational::to_string(r) == "1/2"),
+    None => assert(false)
+  }
+  match Rational::from_ints(1, -2) {
+    Some(r) => assert(Rational::to_string(r) == "-1/2"),
+    None => assert(false)
+  }
+  match Rational::from_ints(-6, 3) {
+    Some(r) => assert(Rational::to_string(r) == "-2"),
+    None => assert(false)
+  }
+  match Rational::from_ints(0, 5) {
+    Some(r) => {
+      assert(Rational::is_zero(r))
+      assert(Rational::to_string(r) == "0")
+    },
+    None => assert(false)
+  }
+  match Rational::from_ints(0, -5) {
+    Some(r) => assert(Rational::to_string(r) == "0"),
+    None => assert(false)
+  }
+}
+
+test "zero denominator is None" {
+  assert(Rational::from_ints(1, 0) is None)
+  assert(Rational::from_ints(0, 0) is None)
+  assert(Rational::from_bigints(BigInt::from_int(3), BigInt::from_int(0)) is None)
+}
+
+test "from_int and equals across equivalent forms" {
+  let five = Rational::from_int(5)
+  assert(Rational::to_string(five) == "5")
+  match Rational::from_ints(10, 2) {
+    Some(r) => assert(Rational::equals(r, five)),
+    None => assert(false)
+  }
+  match Rational::from_ints(2, 4) {
+    Some(a) => {
+      match Rational::from_ints(1, 2) {
+        Some(b) => assert(Rational::equals(a, b)),
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "add and sub find common denominators and reduce" {
+  match Rational::from_ints(1, 2) {
+    Some(half) => {
+      match Rational::from_ints(1, 3) {
+        Some(third) => {
+          assert(Rational::to_string(Rational::add(half, third)) == "5/6")
+          assert(Rational::to_string(Rational::sub(half, third)) == "1/6")
+        },
+        None => assert(false)
+      }
+      // 1/2 + (-1/2) collapses to canonical zero
+      let z = Rational::add(half, Rational::neg(half))
+      assert(Rational::is_zero(z))
+      assert(Rational::to_string(z) == "0")
+    },
+    None => assert(false)
+  }
+  // reduction after add: 1/6 + 1/6 = 1/3
+  match Rational::from_ints(1, 6) {
+    Some(sixth) => assert(Rational::to_string(Rational::add(sixth, sixth)) == "1/3"),
+    None => assert(false)
+  }
+}
+
+test "mul and div reduce cross factors" {
+  match Rational::from_ints(2, 3) {
+    Some(a) => {
+      match Rational::from_ints(3, 4) {
+        Some(b) => {
+          assert(Rational::to_string(Rational::mul(a, b)) == "1/2")
+          // (2/3) / (3/4) = 8/9
+          match Rational::div(a, b) {
+            Some(q) => assert(Rational::to_string(q) == "8/9"),
+            None => assert(false)
+          }
+        },
+        None => assert(false)
+      }
+      // sign: (2/3) * (-3/2) = -1
+      match Rational::from_ints(-3, 2) {
+        Some(m) => assert(Rational::to_string(Rational::mul(a, m)) == "-1"),
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "division by zero rational is None" {
+  let z = Rational::from_int(0)
+  assert(Rational::div(Rational::from_int(1), z) is None)
+  assert(Rational::div(z, z) is None)
+}
+
+test "cmp is a total order with antisymmetry" {
+  match Rational::from_ints(-1, 2) {
+    Some(neg_half) => {
+      match Rational::from_ints(1, 3) {
+        Some(third) => {
+          match Rational::from_ints(1, 2) {
+            Some(half) => {
+              let vals = [
+                Rational::from_int(-2),
+                neg_half,
+                Rational::from_int(0),
+                third,
+                half,
+                Rational::from_int(2)
+              ]
+              let n = Array::length(vals)
+              let mut i = 0
+              while i < n {
+                let mut j = 0
+                while j < n {
+                  let a = Array::get(vals, i)
+                  let b = Array::get(vals, j)
+                  assert(Rational::cmp(a, b) == 0 - Rational::cmp(b, a))
+                  if i < j {
+                    assert(Rational::cmp(a, b) == -1)
+                  }
+                  if i == j {
+                    assert(Rational::cmp(a, b) == 0)
+                  }
+                  j = j + 1
+                }
+                i = i + 1
+              }
+            },
+            None => assert(false)
+          }
+        },
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "parse / to_string roundtrip and normalization" {
+  let round = [
+    "0",
+    "5",
+    "-5",
+    "3/4",
+    "-3/4",
+    "10/3"
+  ]
+  let mut i = 0
+  while i < Array::length(round) {
+    let s = Array::get(round, i)
+    match Rational::parse(s) {
+      Some(r) => assert(Rational::to_string(r) == s),
+      None => assert(false)
+    }
+    i = i + 1
+  }
+  // parse normalizes non-canonical inputs
+  match Rational::parse("2/4") {
+    Some(r) => assert(Rational::to_string(r) == "1/2"),
+    None => assert(false)
+  }
+  match Rational::parse("3/-4") {
+    Some(r) => assert(Rational::to_string(r) == "-3/4"),
+    None => assert(false)
+  }
+  match Rational::parse("6/3") {
+    Some(r) => assert(Rational::to_string(r) == "2"),
+    None => assert(false)
+  }
+}
+
+test "parse rejects malformed and zero-denominator input" {
+  assert(Rational::parse("") is None)
+  assert(Rational::parse("/") is None)
+  assert(Rational::parse("3/") is None)
+  assert(Rational::parse("/4") is None)
+  assert(Rational::parse("3/0") is None)
+  assert(Rational::parse("a/b") is None)
+  assert(Rational::parse("1/2/3") is None)
+  assert(Rational::parse("1.5") is None)
+}
+
+test "neg and abs" {
+  match Rational::from_ints(-3, 4) {
+    Some(a) => {
+      assert(Rational::to_string(Rational::neg(a)) == "3/4")
+      assert(Rational::to_string(Rational::abs(a)) == "3/4")
+      assert(Rational::equals(Rational::neg(Rational::neg(a)), a))
+    },
+    None => assert(false)
+  }
+  assert(Rational::is_zero(Rational::neg(Rational::from_int(0))))
+}
+
+test "BigInt-scale numerators and denominators" {
+  let ten = BigInt::from_int(10)
+  let p30 = BigInt::pow(ten, 30)
+  // 10^30 / 7 does not reduce
+  match Rational::from_bigints(p30, BigInt::from_int(7)) {
+    Some(r) => {
+      assert(Rational::to_string(r) == "1000000000000000000000000000000/7")
+      // (10^30/7) * 7 = 10^30
+      match Rational::from_ints(7, 1) {
+        Some(seven) => assert(Rational::to_string(Rational::mul(r, seven)) == "1000000000000000000000000000000"),
+        None => assert(false)
+      }
+      // (10^30/7) + (10^30/7) = (2*10^30)/7
+      assert(Rational::to_string(Rational::add(r, r)) == "2000000000000000000000000000000/7")
+    },
+    None => assert(false)
+  }
+  // 10^30 / 10^7 reduces to the integer 10^23
+  match Rational::from_bigints(p30, BigInt::pow(ten, 7)) {
+    Some(r) => assert(Rational::to_string(r) == "100000000000000000000000"),
+    None => assert(false)
+  }
+  // huge equivalent fractions compare equal: 10^30/10^7 == 10^23/1
+  match Rational::from_bigints(p30, BigInt::pow(ten, 7)) {
+    Some(a) => {
+      match Rational::from_bigints(BigInt::pow(ten, 23), BigInt::from_int(1)) {
+        Some(b) => {
+          assert(Rational::equals(a, b))
+          assert(Rational::cmp(a, b) == 0)
+        },
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}

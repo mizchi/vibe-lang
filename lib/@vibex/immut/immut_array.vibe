@@ -1,0 +1,199 @@
+//# @vibex/immut — ImmutArray: persistent (immutable) vector, 32-way trie.
+//#
+//# Clojure-style persistent vector SIMPLIFIED: no tail buffer — every push
+//# copies the O(log32 n) path from root to the last leaf. push / set return
+//# a NEW vector; the old version stays valid and unchanged, sharing all
+//# untouched subtrees (structural sharing). 0.4.0 concurrency groundwork
+//# (ADR-0068): immutable, hence sendable between tasks.
+//#
+//# Shape invariants:
+//# - leaves hold up to 32 elements; internal nodes up to 32 children
+//# - `shift` is the root level (0 = root is a leaf; +5 per level)
+//# - the trie is left-packed: index i lives at 5-bit digit path
+//#   (i >> shift) & 31, ..., i & 31
+//# - the root overflows exactly when length == 1 << (shift + 5); a new
+//#   root is added above (old root = child 0, new path = child 1)
+
+//# Types
+
+// Trie node (package-private; the contract exposes only ImmutArray).
+enum VecNode[T] {
+  VLeafN(Array[T]);
+  VBranchN(Array[VecNode[T]])
+}
+
+// (length, shift, root)
+export enum ImmutArray[T] {
+  IAVec(Int, Int, VecNode[T])
+}
+
+//# Internal helpers
+
+fn va_empty[T]() -> Array[T] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+fn va1[T](a: T) -> Array[T] {
+  let b = ArrayBuilder::new()
+  ArrayBuilder::push(b, a)
+  ArrayBuilder::freeze(b)
+}
+
+fn va2[T](a: T, b2: T) -> Array[T] {
+  let b = ArrayBuilder::new()
+  ArrayBuilder::push(b, a)
+  ArrayBuilder::push(b, b2)
+  ArrayBuilder::freeze(b)
+}
+
+// Copy with slot idx replaced (old array untouched).
+fn va_set_at[T](xs: Array[T], idx: Int, v: T) -> Array[T] {
+  let n = Array::length(xs)
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < n {
+    if i == idx {
+      ArrayBuilder::push(b, v)
+    } else {
+      ArrayBuilder::push(b, Array::get(xs, i))
+    }
+    i = i + 1
+  }
+  ArrayBuilder::freeze(b)
+}
+
+// Copy with v appended (old array untouched).
+fn va_append_one[T](xs: Array[T], v: T) -> Array[T] {
+  let n = Array::length(xs)
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < n {
+    ArrayBuilder::push(b, Array::get(xs, i))
+    i = i + 1
+  }
+  ArrayBuilder::push(b, v)
+  ArrayBuilder::freeze(b)
+}
+
+// A fresh single-element spine from level `shift` down to a leaf.
+fn new_path[T](shift: Int, v: T) -> VecNode[T] {
+  if shift == 0 {
+    VLeafN(va1(v))
+  } else {
+    VBranchN(va1(new_path(shift - 5, v)))
+  }
+}
+
+// Append at index idx (== old length) under `node` at level `shift`,
+// copying only the touched path. Caller guarantees the subtree is not full.
+fn node_push[T](node: VecNode[T], shift: Int, idx: Int, v: T) -> VecNode[T] {
+  match node {
+    VLeafN(vals) => VLeafN(va_append_one(vals, v)),
+    VBranchN(kids) => {
+      let ci = (idx >> shift) & 0x1F
+      if ci < Array::length(kids) {
+        VBranchN(va_set_at(kids, ci, node_push(Array::get(kids, ci), shift - 5, idx, v)))
+      } else {
+        VBranchN(va_append_one(kids, new_path(shift - 5, v)))
+      }
+    }
+  }
+}
+
+fn node_get[T](node: VecNode[T], shift: Int, i: Int) -> T {
+  match node {
+    VLeafN(vals) => Array::get(vals, i & 0x1F),
+    VBranchN(kids) => node_get(Array::get(kids, (i >> shift) & 0x1F), shift - 5, i)
+  }
+}
+
+fn node_set[T](node: VecNode[T], shift: Int, i: Int, v: T) -> VecNode[T] {
+  match node {
+    VLeafN(vals) => VLeafN(va_set_at(vals, i & 0x1F, v)),
+    VBranchN(kids) => {
+      let ci = (i >> shift) & 0x1F
+      VBranchN(va_set_at(kids, ci, node_set(Array::get(kids, ci), shift - 5, i, v)))
+    }
+  }
+}
+
+//# Public API
+
+export fn ImmutArray::empty[T]() -> ImmutArray[T] {
+  IAVec(0, 0, VLeafN(va_empty()))
+}
+
+export fn ImmutArray::length[T](a: ImmutArray[T]) -> Int {
+  match a {
+    IAVec(len, _, _) => len
+  }
+}
+
+// Returns a NEW vector with v appended; the receiver is unchanged.
+export fn ImmutArray::push[T](a: ImmutArray[T], v: T) -> ImmutArray[T] {
+  match a {
+    IAVec(len, shift, root) => {
+      if len == 0 {
+        IAVec(1, 0, VLeafN(va1(v)))
+      }
+      else if len == (1 << (shift + 5)) {
+        // root full: grow one level (old root left, new spine right)
+        IAVec(len + 1, shift + 5, VBranchN(va2(root, new_path(shift, v))))
+      }
+      else {
+        IAVec(len + 1, shift, node_push(root, shift, len, v))
+      }
+    }
+  }
+}
+
+export fn ImmutArray::get[T](a: ImmutArray[T], i: Int) -> Option[T] {
+  match a {
+    IAVec(len, shift, root) => {
+      if i < 0 || i >= len {
+        None
+      } else {
+        Some(node_get(root, shift, i))
+      }
+    }
+  }
+}
+
+// Returns a NEW vector with slot i replaced; the receiver is unchanged.
+// Out-of-range i returns the receiver as-is (no-op).
+export fn ImmutArray::set[T](a: ImmutArray[T], i: Int, v: T) -> ImmutArray[T] {
+  match a {
+    IAVec(len, shift, root) => {
+      if i < 0 || i >= len {
+        IAVec(len, shift, root)
+      } else {
+        IAVec(len, shift, node_set(root, shift, i, v))
+      }
+    }
+  }
+}
+
+export fn ImmutArray::from_array[T](xs: Array[T]) -> ImmutArray[T] {
+  let n = Array::length(xs)
+  let mut out = ImmutArray::empty()
+  let mut i = 0
+  while i < n {
+    out = ImmutArray::push(out, Array::get(xs, i))
+    i = i + 1
+  }
+  out
+}
+
+export fn ImmutArray::to_array[T](a: ImmutArray[T]) -> Array[T] {
+  match a {
+    IAVec(len, shift, root) => {
+      let b = ArrayBuilder::new()
+      let mut i = 0
+      while i < len {
+        ArrayBuilder::push(b, node_get(root, shift, i))
+        i = i + 1
+      }
+      ArrayBuilder::freeze(b)
+    }
+  }
+}
