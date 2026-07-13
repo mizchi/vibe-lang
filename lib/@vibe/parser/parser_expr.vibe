@@ -5,7 +5,7 @@ import ../ast {
 }
 
 import ./parser_base.vibe {
-  _no_tb, _no_tp, collect_effect_names, collect_import_path, empty_fields, empty_import_items, expect_tk, is_tk, mode_block, parse_binding_name, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_param_list, parse_pattern, parse_struct_field, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_type_impl, peek, skip_braced_body, tk_name
+  _no_tb, _no_tp, collect_effect_names, collect_import_path, empty_exprs, empty_fields, empty_import_items, empty_params, expect_tk, is_tk, mode_block, parse_binding_name, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_param_list, parse_pattern, parse_struct_field, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_type_impl, peek, skip_braced_body, tk_name
 }
 
 import ./parser_expr_core.vibe {
@@ -438,7 +438,53 @@ export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[
   ((name, tps, tbs), (params, ret_ty, eff_opt), (reqs, enss), where_next)
 }
 
+// ADR-0069 Phase 1: `fn main { ... }` / `fn main with { Fs } { ... }` — the ONE
+// fn form allowed to omit the parens and all annotations. It is a pure sugar
+// for `fn main() -> Unit [with { .. }] { ... }`: the branch below builds the
+// exact SFnDecl shape the general path would produce for that spelling
+// (EFn([], [], [], Some(TyName("Unit")), eff_opt, body)), so lower_fn_decl_stmt,
+// checker, codegen, and the printer round-trip (which prints the annotated
+// `fn main() -> Unit` spelling — same meaning) are all untouched.
+fn parse_fn_main_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool) -> (Stmt, Int) with { Error } {
+  // pos points at the `main` identifier; the caller verified the next token
+  // is `{` (body) or `with` (capability row then body).
+  let (eff_opt, body_start) = match peek(tokens, pos + 1) {
+    TWith => {
+      let wb = expect_tk(tokens, pos + 2, "{")
+      let (eff_names, en) = collect_effect_names(tokens, wb, "")
+      (Some(eff_names), en)
+    },
+    _ => (None, pos + 1)
+  }
+  let br = expect_tk(tokens, body_start, "{")
+  let (body, end) = parse_impl(tokens, starts, br, mode_block)
+  (SFnDecl(exported, "main", EFn(_no_tp(), _no_tb(), empty_params(), Some(TyName("Unit")), eff_opt, body), empty_exprs(), empty_exprs()), end)
+}
+
 fn parse_fn_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool) -> (Stmt, Int) with { Error } {
+  // ADR-0069 Phase 1: dispatch the `fn main {` / `fn main with {` special form
+  // before the general signature parse (which requires `(`). `fn main(` still
+  // takes the general path, so an explicit signature keeps working.
+  let is_main_special = match peek(tokens, pos) {
+    TIdent(n0) => if n0 == "main" {
+      match peek(tokens, pos + 1) {
+        TLBrace => true,
+        TWith => true,
+        _ => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+  if is_main_special {
+    parse_fn_main_stmt(tokens, starts, pos, exported)
+  } else {
+    parse_fn_stmt_general(tokens, starts, pos, exported)
+  }
+}
+
+fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool) -> (Stmt, Int) with { Error } {
   let (head, sig, contracts, where_next) = parse_fn_signature(tokens, pos)
   let (name, tps, tbs) = head
   let (params, ret_ty, eff_opt) = sig

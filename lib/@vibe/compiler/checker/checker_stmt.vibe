@@ -30,6 +30,53 @@ import .. / desugar_trait_dict.vibe {
 
 //# Functions
 
+// ADR-0069 Phase 1: locate a top-level statement for the reject diagnostics
+// below — first available source char-offset of the statement's value
+// expression (same walk as codegen's first_offset; duplicated locally to keep
+// checker → codegen imports out). -1 when no offset-carrying node exists; the
+// `[@off=N]` marker convention (see checker.vibe off_marker) then simply
+// stays off the message.
+fn top_stmt_expr_off(e: Expr) -> Int {
+  match e {
+    EIdent(_, off) => off,
+    ECall(callee, _, off) => if off >= 0 {
+      off
+    } else {
+      top_stmt_expr_off(callee)
+    },
+    EDot(base, _, off, _) => if off >= 0 {
+      off
+    } else {
+      top_stmt_expr_off(base)
+    },
+    EBinOp(_, lhs, _) => top_stmt_expr_off(lhs),
+    EUnaryOp(_, inner) => top_stmt_expr_off(inner),
+    ELet(_, val, _, _) => top_stmt_expr_off(val),
+    ELetRec(_, val, _) => top_stmt_expr_off(val),
+    ELetMut(_, val, _, _) => top_stmt_expr_off(val),
+    EAssign(_, val, _) => top_stmt_expr_off(val),
+    EAssignOp(_, _, val, _) => top_stmt_expr_off(val),
+    ESeq(first, _) => top_stmt_expr_off(first),
+    EIf(cond, _, _) => top_stmt_expr_off(cond),
+    EMatch(scrut, _) => top_stmt_expr_off(scrut),
+    EThrow(inner) => top_stmt_expr_off(inner),
+    EReturn(inner) => top_stmt_expr_off(inner),
+    _ => 0 - 1
+  }
+}
+
+// String::concat only (never `+` / interpolation — NUL-miscodegen hazard in
+// selfhost, same rule as checker.vibe off_marker).
+fn top_level_reject_msg(what: String, e: Expr) -> String {
+  let base = String::concat(what, " (ADR-0069)")
+  let off = top_stmt_expr_off(e)
+  if off >= 0 {
+    String::concat(base, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+  } else {
+    base
+  }
+}
+
 fn import_cache_lookup(cache: Array[(String, Type)], name: String, i: Int) -> Option[Type] {
   if i >= Array::length(cache) {
     None
@@ -258,6 +305,11 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
       SLetMut(name, ann, val) => {
+        // ADR-0069 Phase 1: top level is declarations only. A top-level
+        // `let mut` was never soundly implemented (the linear backend
+        // miscompiles cross-function references); reject it, but keep
+        // checking/binding below for error recovery.
+        Array::push(errors, top_level_reject_msg("top-level `let mut` bindings are not allowed; move it into fn main", val))
         let (vt, ns0, nc) = check_expr(val, env, defs, s, c, errors, tytab)
         let ns = match ann {
           Some(te) => check_assignable(resolve_type_expr(te, defs), subst_apply(ns0, vt), ns0, errors, String::concat("binding type mismatch for ", name), 0 - 1),
@@ -634,6 +686,10 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
         (env, ns, nc)
       },
       SExpr(expr) => {
+        // ADR-0069 Phase 1: top level is declarations only. A top-level
+        // expression statement was silently DROPPED by the linear backend;
+        // reject it (still type-check the expression for error recovery).
+        Array::push(errors, top_level_reject_msg("top-level expressions are not allowed; move it into fn main", expr))
         let (_, ns, nc) = check_expr(expr, env, defs, s, c, errors, tytab)
         (env, ns, nc)
       },
