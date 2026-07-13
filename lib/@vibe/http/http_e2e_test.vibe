@@ -4,29 +4,60 @@ import ./http.vibe {
   close, request, response_body, response_status
 }
 
+//# Functions
+
+// Real-network e2e against the runner's `vibe.http_*` host imports. As in
+// lib/@vibe/fs/fs_test.vibe, the `handle ... with Http { ... }` blocks only
+// discharge the Http row for the checker — the client ops compile to direct
+// host-import calls (#794), so the arm is never invoked and the requests hit
+// the real test server.
+
+fn do_get() -> Bool with { Http } {
+  let h = request("GET", "http://127.0.0.1:18280/hello", "", "")
+  let ok = response_status(h) == 200 && response_body(h) == "hello"
+  close(h)
+  ok
+}
+
+fn do_post_echo() -> Bool with { Http } {
+  let h = request("POST", "http://127.0.0.1:18280/echo", "", "ping from vibe")
+  let ok = response_status(h) == 200 && response_body(h) == "ping from vibe"
+  close(h)
+  ok
+}
+
+fn do_404() -> Bool with { Http } {
+  let h = request("GET", "http://127.0.0.1:18280/nonexistent", "", "")
+  let ok = response_status(h) == 404
+  close(h)
+  ok
+}
+
 //# Misc
 
 test "http GET request" {
-  let h = request("GET", "http://127.0.0.1:18280/hello", "", "")
-  let status = response_status(h)
-  assert(status == 200)
-  let body = response_body(h)
-  assert(body == "hello")
-  close(h)
+  let ok = handle {
+    do_get()
+  } with Http {
+    Listen(_p) => resume(0)
+  }
+  assert(ok)
 }
 
 test "http POST echo" {
-  let h = request("POST", "http://127.0.0.1:18280/echo", "", "ping from vibe")
-  let status = response_status(h)
-  assert(status == 200)
-  let body = response_body(h)
-  assert(body == "ping from vibe")
-  close(h)
+  let ok = handle {
+    do_post_echo()
+  } with Http {
+    Listen(_p) => resume(0)
+  }
+  assert(ok)
 }
 
 test "http 404 response" {
-  let h = request("GET", "http://127.0.0.1:18280/nonexistent", "", "")
-  let status = response_status(h)
-  assert(status == 404)
-  close(h)
+  let ok = handle {
+    do_404()
+  } with Http {
+    Listen(_p) => resume(0)
+  }
+  assert(ok)
 }

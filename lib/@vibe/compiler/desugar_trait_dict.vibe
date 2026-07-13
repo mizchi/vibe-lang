@@ -2776,10 +2776,7 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
             // shapes (never user struct/enum names), and unknown positions
             // carry the `__EqUnknown` marker which `eq_for_typed` compares
             // with raw `==` (status quo for that position).
-            let sty = match infer_static_eq_type(l) {
-              Some(t) => Some(t),
-              None => infer_static_eq_type(r)
-            }
+            let sty = infer_static_eq_type_binop(l, r)
             let dty = match sty {
               Some(t) => if static_eq_dispatchable(t) {
                 Some(t)
@@ -4151,6 +4148,45 @@ fn infer_static_eq_type(e: Expr) -> Option[TypeExpr] {
       None
     },
     ECall(callee, args, _) => match callee {
+      // #825 review follow-up: the docs' qualified ctor spellings
+      // (`Option::Some` / `Result::Ok` / `Result::Err`) must infer the same
+      // shape as the bare forms — they fell through to the name-only path
+      // where aggregate payloads word-compare.
+      EIdent("Option::Some", _) => if Array::length(args) == 1 {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
+          Some(t) => t,
+          None => TyName("__EqUnknown")
+        }
+        Some(TyApp("Option", Array::slice([
+          pt
+        ], 0, 1)))
+      } else {
+        None
+      },
+      EIdent("Result::Ok", _) => if Array::length(args) == 1 {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
+          Some(t) => t,
+          None => TyName("__EqUnknown")
+        }
+        Some(TyApp("Result", Array::slice([
+          pt,
+          TyName("__EqUnknown")
+        ], 0, 2)))
+      } else {
+        None
+      },
+      EIdent("Result::Err", _) => if Array::length(args) == 1 {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
+          Some(t) => t,
+          None => TyName("__EqUnknown")
+        }
+        Some(TyApp("Result", Array::slice([
+          TyName("__EqUnknown"),
+          pt
+        ], 0, 2)))
+      } else {
+        None
+      },
       EIdent("Some", _) => if Array::length(args) == 1 {
         let pt = match infer_static_eq_type(Array::get(args, 0)) {
           Some(t) => t,
@@ -4189,6 +4225,31 @@ fn infer_static_eq_type(e: Expr) -> Option[TypeExpr] {
       _ => None
     },
     _ => None
+  }
+}
+
+// #825 review follow-up: pick the static shape for `l == r` from whichever
+// side is MORE concrete. A left-first choice masked a fully concrete right
+// shape — `let xs = [1, 2]; Some(xs) == Some([1, 2])` inferred the left as
+// `Option[__EqUnknown]` and the payload fell back to raw word `==`. Prefer a
+// marker-free shape; between two partial shapes keep the left one.
+fn infer_static_eq_type_binop(l: Expr, r: Expr) -> Option[TypeExpr] {
+  let lt = infer_static_eq_type(l)
+  let rt = infer_static_eq_type(r)
+  match lt {
+    Some(lty) => if ty_contains_eq_unknown(lty) {
+      match rt {
+        Some(rty) => if ty_contains_eq_unknown(rty) {
+          Some(lty)
+        } else {
+          Some(rty)
+        },
+        None => Some(lty)
+      }
+    } else {
+      Some(lty)
+    },
+    None => rt
   }
 }
 
@@ -4232,10 +4293,7 @@ fn collect_bare_array_eq_keys(e: Expr, acc: Array[TypeExpr], acc_keys: Array[Str
         // nested inside Option/Result/tuple literals (`Some([1,2]) == ...`,
         // `([1,2], 0) == ...`, `[Some(1)] == ...`) — collect them so their
         // `__arr_equals__<key>` helpers exist for `eq_for_typed`'s calls.
-        let sty = match infer_static_eq_type(l) {
-          Some(t2) => Some(t2),
-          None => infer_static_eq_type(r)
-        }
+        let sty = infer_static_eq_type_binop(l, r)
         match sty {
           Some(t2) => collect_array_elem_types(t2, acc, acc_keys),
           None => ()

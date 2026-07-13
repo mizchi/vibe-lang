@@ -1005,8 +1005,27 @@ fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: 
     match unify(left_ty, right_ty, s) {
       Some(s1) => (CtBool, s1),
       None => {
-        Array::push(errors, String::concat("type mismatch in '", String::concat(op, "': operands must have same type")))
-        (CtUnknown, s)
+        // Tolerate unresolved NOMINAL operands: a generic `[T]` callee's
+        // result reaches here as a rigid CtNamed type param when call-site
+        // instantiation can't ground it (#829) — e.g.
+        // `Array::get(ArrayView::to_array(v), 0) == 20`. Pre-fn-migration
+        // these positions were CtUnknown, so erroring regressed working
+        // code. Fully concrete mismatches still error.
+        let eq_l = subst_apply(s, left_ty)
+        let eq_r = subst_apply(s, right_ty)
+        let eq_has_named = match eq_l {
+          CtNamed(_, _) => true,
+          _ => match eq_r {
+            CtNamed(_, _) => true,
+            _ => false
+          }
+        }
+        if eq_has_named {
+          (CtBool, s)
+        } else {
+          Array::push(errors, String::concat("type mismatch in '", String::concat(op, "': operands must have same type")))
+          (CtUnknown, s)
+        }
       }
     }
   }
