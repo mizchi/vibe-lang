@@ -5,7 +5,7 @@ import ../ast {
 }
 
 import ./parser_base.vibe {
-  collect_import_path, empty_fields, empty_import_items, expect_tk, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_struct_field, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_derive_names, peek, skip_braced_body, skip_derive, tk_name
+  collect_import_path, empty_fields, empty_import_items, expect_tk, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_struct_field, parse_suberror_stmt, parse_tparam_names, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_derive_names, peek, skip_braced_body, skip_derive, tk_name
 }
 
 import ./parser_expr.vibe {
@@ -201,36 +201,15 @@ fn parse_toplevel_struct_fields(tokens: Array[Token], pos: Int) -> (Array[(Strin
 fn parse_toplevel_struct_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with { Error } {
   match peek(tokens, pos) {
     TIdent(name) => {
-      // Optional type-parameter header `struct Foo[T] { ... }`. Consumed and
-      // discarded (uniform tagged representation, like enum type params).
-      let after_name = match peek(tokens, pos + 1) {
-        TLBracket => {
-          let mut skip = pos + 2
-          let mut depth = 1
-          while depth > 0 {
-            match peek(tokens, skip) {
-              TLBracket => {
-                depth = depth + 1; skip = skip + 1
-              },
-              TRBracket => {
-                depth = depth - 1; skip = skip + 1
-              },
-              TEof => {
-                depth = 0
-              },
-              _ => {
-                skip = skip + 1
-              }
-            }
-          }
-          skip
-        },
-        _ => pos + 1
-      }
+      // Optional type-parameter header `struct Foo[T] { ... }`. #829: the
+      // param NAMES are kept on the SStruct (they used to be discarded) so
+      // the checker can instantiate generic struct literals; representation
+      // stays uniform/tagged like enum type params.
+      let (tparams, after_name) = parse_tparam_names(tokens, pos + 1)
       let br = expect_tk(tokens, after_name, "{")
       let (fields, mut_names, end) = parse_toplevel_struct_fields(tokens, br);
       let (derives, final_pos) = parse_derive_names(tokens, end)
-      (SStruct(exported, name, fields, derives, mut_names), final_pos)
+      (SStruct(exported, name, fields, derives, mut_names, tparams), final_pos)
     },
     _ => throw("expected struct name")
   }

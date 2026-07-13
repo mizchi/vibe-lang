@@ -2477,13 +2477,40 @@ cat > "$tdir/bad_structcomma.vibe" <<'EOF'
 struct Pt { x: Int, y: Int }
 export let _start: () -> Int = () -> { let p = Pt::{ x: 40, y: 2 }; p.x + p.y }
 EOF
+# #829 (lang-review r2 M7): a GENERIC struct literal must instantiate its type
+# params from the field values, so a field read consumed at the wrong concrete
+# type is a compile error (it used to compile and return silent garbage).
+cat > "$tdir/bad_genfield.vibe" <<'EOF'
+struct Box[T] { v: T }
+export let _start: () -> Int = () -> {
+  let b = Box::{ v: 1 }
+  String::length(b.v)
+}
+EOF
+# The well-typed counterpart: the instantiated field read consumed at its own
+# concrete type must still compile (no over-reject).
+cat > "$tdir/ok_genfield.vibe" <<'EOF'
+struct Box[T] { v: T }
+fn unbox[T](b: Box[T]) -> T { b.v }
+export let _start: () -> Int = () -> {
+  let b = Box::{ v: 41 }
+  let s = Box::{ v: "x" }
+  b.v + String::length(s.v) + unbox(b)
+}
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/ok.vibe" "$tdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed binding/assign/if did not compile (over-rejects)" >&2; exit 1
 fi
-for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg bad_unknownfield bad_guardonly bad_arity_get bad_arity_bytesnew bad_mutann bad_agrecv bad_agidx bad_asrecv bad_streamlen bad_streamget bad_streamset bad_interp_paren bad_declcomma bad_structcomma; do
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdir/ok_genfield.vibe" "$tdir/ok_genfield.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$tdir/ok_genfield.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: well-typed generic-struct field reads did not compile (over-rejects, #829)" >&2; exit 1
+fi
+for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg bad_unknownfield bad_guardonly bad_arity_get bad_arity_bytesnew bad_mutann bad_agrecv bad_agidx bad_asrecv bad_streamlen bad_streamget bad_streamset bad_interp_paren bad_declcomma bad_structcomma bad_genfield; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$tdir/$bad.vibe" "$tdir/$bad.wasm" _start >/dev/null 2>&1 || true

@@ -17,7 +17,7 @@ import ./checker_pattern.vibe {
 }
 
 import ./checker_resolve.vibe {
-  resolve_type_expr
+  resolve_type_expr, subst_type_params
 }
 
 //# Functions
@@ -605,7 +605,7 @@ fn check_record_fields(defs: Array[TypeDef], actual: Array[(String, Type)], s: S
   let mut di = 0
   while di < Array::length(defs) {
     match Array::get(defs, di) {
-      TDStruct(_, dfields, _) => if struct_field_names_match(dfields, actual) {
+      TDStruct(_, dfields, _, _) => if struct_field_names_match(dfields, actual) {
         matchct = matchct + 1
         matched_fields = dfields
       },
@@ -650,7 +650,7 @@ fn check_record_fields(defs: Array[TypeDef], actual: Array[(String, Type)], s: S
     let mut dj = 0
     while dj < Array::length(defs) {
       match Array::get(defs, dj) {
-        TDStruct(sname, dfields, _) => if struct_is_strict_superset(dfields, actual) {
+        TDStruct(sname, dfields, _, _) => if struct_is_strict_superset(dfields, actual) {
           supct = supct + 1
           sup_name = sname
           sup_fields = dfields
@@ -690,7 +690,7 @@ fn resolve_record_struct_name(defs: Array[TypeDef], actual: Array[(String, Type)
   let mut di = 0
   while di < Array::length(defs) {
     match Array::get(defs, di) {
-      TDStruct(sname, dfields, _) => if struct_field_names_match(dfields, actual) {
+      TDStruct(sname, dfields, _, _) => if struct_field_names_match(dfields, actual) {
         matchct = matchct + 1
         out = Some(sname)
         ground = struct_fields_ground(dfields)
@@ -914,7 +914,7 @@ fn check_two_array_elems(a_app: Type, b_app: Type, s: Subst, errors: Array[Strin
 fn struct_field_type(defs: Array[TypeDef], sname: String, field: String) -> Option[Type] {
   match find_typedef(defs, sname) {
     Some(td) => match td {
-      TDStruct(_, fields, _) => {
+      TDStruct(_, fields, _, _) => {
         let rec go: (Int) -> Option[Type] = (i) -> {
           if i >= Array::length(fields) {
             None
@@ -928,6 +928,39 @@ fn struct_field_type(defs: Array[TypeDef], sname: String, field: String) -> Opti
       _ => None
     },
     None => None
+  }
+}
+
+// #829: instantiate a declared field type against the receiver's actual type
+// arguments (`CtNamed(S, targs)`). Substitutes only when the declared param
+// list and the argument list line up; otherwise the raw (rigid) type is kept,
+// which downstream checks tolerate exactly as before.
+fn inst_struct_field_ty(ft: Type, tparams: Array[String], targs: Array[Type]) -> Type {
+  if Array::length(tparams) > 0 && Array::length(tparams) == Array::length(targs) {
+    subst_type_params(ft, tparams, targs)
+  } else {
+    ft
+  }
+}
+
+// #829: field type of a struct-typed receiver, instantiated when the receiver
+// is an applied generic struct. `CtStruct` receivers keep the raw field type
+// (monomorphic structs have no params to substitute). None when the receiver
+// is not a known struct or the field does not exist.
+fn receiver_struct_field_type(defs: Array[TypeDef], recv: Type, field: String) -> Option[Type] {
+  match recv {
+    CtStruct(sname) => struct_field_type(defs, sname, field),
+    CtNamed(sname, targs) => match find_typedef(defs, sname) {
+      Some(td) => match td {
+        TDStruct(_, _, _, tparams) => match struct_field_type(defs, sname, field) {
+          Some(ft) => Some(inst_struct_field_ty(ft, tparams, targs)),
+          None => None
+        },
+        _ => None
+      },
+      None => None
+    },
+    _ => None
   }
 }
 
@@ -1254,9 +1287,21 @@ fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, defs: Ar
         let throwaway = Array::slice([""], 0, 0)
         let throwtab = Array::slice([(0, CtUnit)], 0, 0)
         let (obj_ty, _, _) = ce(Array::get(args, 0), env, defs, s, c, throwaway, throwtab)
-        match subst_apply(s, obj_ty) {
-          CtStruct(sname) => match find_typedef(defs, sname) {
-            Some(TDStruct(_, dfields, mut_names)) => {
+        // #829: also recognise an INSTANTIATED generic struct receiver
+        // (`CtNamed(S, targs)`), so `mut`-field enforcement and the written-
+        // value type check cover generic structs too.
+        let recv_struct = match subst_apply(s, obj_ty) {
+          CtStruct(sn) => Some((sn, Array::slice([
+            CtUnknown
+          ], 0, 0))),
+          CtNamed(sn, sargs) => Some((sn, sargs)),
+          _ => None
+        }
+        match recv_struct {
+          Some(recv_info) => {
+            let (sname, recv_targs) = recv_info
+            match find_typedef(defs, sname) {
+            Some(TDStruct(_, dfields, mut_names, s_tparams)) => {
               let mut found = false
               let mut i = 0
               while i < Array::length(mut_names) {
@@ -1290,15 +1335,21 @@ fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, defs: Ar
               }
               if has_field {
                 let (val_ty, _, _) = ce(Array::get(args, 2), env, defs, s, c, throwaway, throwtab)
-                let _ = check_assignable(subst_apply(s, fty), subst_apply(s, val_ty), s, errors, String::concat("type mismatch writing field `", String::concat(field, "`")), 0 - 1)
+                // #829: instantiate a generic field's declared type from the
+                // receiver's type args so the written value is checked against
+                // the CONCRETE field type; a non-applied receiver keeps the
+                // raw (rigid) type, which check_assignable tolerates.
+                let inst_fty = inst_struct_field_ty(fty, s_tparams, recv_targs)
+                let _ = check_assignable(subst_apply(s, inst_fty), subst_apply(s, val_ty), s, errors, String::concat("type mismatch writing field `", String::concat(field, "`")), 0 - 1)
                 ()
               } else {
                 ()
               }
             },
             _ => ()
+            }
           },
-          _ => ()
+          None => ()
         }
       },
       _ => ()
@@ -2206,10 +2257,10 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
             // (Int) -> Int` was otherwise unchecked. Ground-gated via
             // unify_call_args; generic-struct receivers stay CtUnknown so no
             // over-rejection.
-            let field_fn = match subst_apply(s3, obj_ty) {
-              CtStruct(sname) => struct_field_type(defs, sname, method),
-              _ => None
-            }
+            // #829: also resolve the field through an INSTANTIATED generic
+            // struct receiver (`CtNamed(S, targs)`), so `it.pull(x)` on
+            // `LazyIter[Int]` checks against the concrete field signature.
+            let field_fn = receiver_struct_field_type(defs, subst_apply(s3, obj_ty), method)
             match field_fn {
               Some(CtFn(fpts, fret, _)) => {
                 let explicit = Array::slice(arg_tys, 1, Array::length(arg_tys))
@@ -2756,7 +2807,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
       let field_ty = match resolved {
         CtStruct(sname) => match find_typedef(defs, sname) {
           Some(td) => match td {
-            TDStruct(_, fields, _) => {
+            TDStruct(_, fields, _, _) => {
               let rec find_field: (Int) -> Option[Type] = (i) -> {
                 if i >= Array::length(fields) {
                   None
@@ -2771,6 +2822,37 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                 Some(ft) => ft,
                 None => {
                   Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", sname))), if field_off >= 0 { off_marker_len(field_off, String::length(field)) } else { off_marker(dot_off) }))
+                  CtUnknown
+                }
+              }
+            },
+            _ => CtUnknown
+          },
+          None => CtUnknown
+        },
+        // #829: field read through an INSTANTIATED generic struct value —
+        // substitute the declared type params with the receiver's type args so
+        // `b.v` on `Box[Int]` is `Int` (previously the whole read was
+        // CtUnknown, letting `String::length(b.v)` compile to silent garbage).
+        // A CtNamed head that is not a known struct (Stream/i64/unresolved
+        // type params, cross-module names) stays tolerated as before.
+        CtNamed(gname, gargs) => match find_typedef(defs, gname) {
+          Some(td) => match td {
+            TDStruct(_, gfields, _, gtparams) => {
+              let rec find_field_g: (Int) -> Option[Type] = (i) -> {
+                if i >= Array::length(gfields) {
+                  None
+                } else {
+                  let (fname, ftype) = Array::get(gfields, i)
+                  if fname == field {
+                    Some(ftype)
+                  } else find_field_g(i + 1)
+                }
+              }
+              match find_field_g(0) {
+                Some(ft) => inst_struct_field_ty(ft, gtparams, gargs),
+                None => {
+                  Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", gname))), if field_off >= 0 { off_marker_len(field_off, String::length(field)) } else { off_marker(dot_off) }))
                   CtUnknown
                 }
               }
@@ -3008,7 +3090,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
       if rn != "" {
         match find_typedef(defs, rn) {
           Some(td) => match td {
-            TDStruct(_, dfields, _) => {
+            TDStruct(_, dfields, _, s_tparams) => {
               // Unknown literal fields (present in the literal, absent from
               // the declaration).
               let mut ui = 0
@@ -3032,10 +3114,38 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                 }
                 ui = ui + 1
               }
+              // #829: instantiate a GENERIC struct's declared type params with
+              // fresh inference vars, so the field values determine the
+              // construction's concrete type arguments (`Box::{ v: 1 }` is
+              // `Box[Int]`, not CtUnknown → its field reads become checkable).
+              let tplen = Array::length(s_tparams)
+              let fresh_targs = Array::slice([
+                CtUnknown
+              ], 0, 0)
+              let mut c2 = c1
+              let mut tpi = 0
+              while tpi < tplen {
+                match fresh_var(c2) {
+                  (tv, nc) => {
+                    Array::push(fresh_targs, tv)
+                    c2 = nc
+                  },
+                  _ => ()
+                }
+                tpi = tpi + 1
+              }
               // Missing declared fields (absent from the literal).
               let mut mi = 0
               while mi < Array::length(dfields) {
-                let (dn, dty) = Array::get(dfields, mi)
+                let (dn, dty0) = Array::get(dfields, mi)
+                // Check field values against the INSTANTIATED declared type
+                // (rigid params substituted by the fresh vars above); a
+                // non-generic struct keeps the raw declared type as before.
+                let dty = if tplen > 0 {
+                  subst_type_params(dty0, s_tparams, fresh_targs)
+                } else {
+                  dty0
+                }
                 match lookup_actual_field_ty(field_tys, dn) {
                   Some(aty) => {
                     // Value type check (ground-gated like check_record_fields).
@@ -3045,13 +3155,21 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                 }
                 mi = mi + 1
               }
-              // Struct identity: keep the monomorphic-only policy of
-              // resolve_record_struct_name (generic structs stay CtUnknown to
-              // preserve type-param inference).
+              // Struct identity: a monomorphic struct keeps `CtStruct(rn)`;
+              // a GENERIC struct now gets its instantiated nominal type
+              // `CtNamed(rn, args)` (#829 — previously CtUnknown, which made
+              // every downstream use of the value unchecked). A non-ground
+              // struct WITHOUT declared params (unresolved field type names)
+              // keeps the old CtUnknown tolerance.
               if struct_fields_ground(dfields) {
-                (CtStruct(rn), s1, c1)
+                (CtStruct(rn), s1, c2)
+              } else if tplen > 0 {
+                let inst_targs = for ta in fresh_targs {
+                  subst_apply(s1, ta)
+                }
+                (CtNamed(rn, inst_targs), s1, c2)
               } else {
-                (CtUnknown, s1, c1)
+                (CtUnknown, s1, c2)
               }
             },
             _ => {

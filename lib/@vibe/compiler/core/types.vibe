@@ -28,7 +28,9 @@ export enum Type {
 
 export enum TypeDef {
   TDEnum(String, Array[String], Array[(String, Array[Type])]);
-  TDStruct(String, Array[(String, Type)], Array[String]);
+  // #829: (name, fields, mut field names, declared type params). Type params
+  // are APPENDED so positional matches of the older 3-field form stay aligned.
+  TDStruct(String, Array[(String, Type)], Array[String], Array[String]);
   TDAlias(String, Array[String], Type);
   // #813: a declared effect's operation signatures — (op name, param types,
   // return type) — so perform arguments, handler arm names/arity/payloads,
@@ -243,7 +245,7 @@ export fn find_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDef] {
       let d = Array::get(defs, i)
       let dname = match d {
         TDEnum(n, _, _) => n,
-        TDStruct(n, _, _) => n,
+        TDStruct(n, _, _, _) => n,
         TDAlias(n, _, _) => n,
         TDEffect(n, _) => n
       }
@@ -1098,6 +1100,20 @@ fn collect_tvars_walk(t: Type, out: Array[Int]) -> Int {
       }
       0
     },
+    // #829: type variables inside an APPLIED named type's arguments (e.g. the
+    // `V` in `SortedMap[K, V]` when only `K` is mentioned by a parameter) must
+    // be quantified too. They used to be skipped, leaving the scheme with a
+    // FREE variable whose id is from the exporting module's counter domain —
+    // an id-collision landmine (#743's hazard, but for free vars, which
+    // `instantiate` does not rename): once generic struct types became real
+    // (`CtNamed(S, args)` instead of CtUnknown), a collision bound an
+    // importing module's own type param through the shared free var.
+    CtNamed(_, args) => {
+      for a in args {
+        let _ = collect_tvars_walk(a, out)
+      }
+      0
+    },
     CtForAll(_, _, body) => collect_tvars_walk(body, out),
     _ => 0
   }
@@ -1679,7 +1695,12 @@ export fn unify(a: Type, b: Type, s: Subst) -> Option[Subst] {
                   CtStruct(b_name) => if a_name == b_name {
                     Some(s)
                   } else None,
-                  CtNamed(b_name, b_args) => if a_name == b_name && Array::length(b_args) == 0 {
+                  // #829: a bare `CtStruct(S)` (unparameterized annotation /
+                  // pre-bound structural fn signature) unifies by name with an
+                  // INSTANTIATED `CtNamed(S, args)` of any arity — the bare
+                  // form carries no argument information to conflict with,
+                  // exactly like the CtEnum/CtNamed bridge below.
+                  CtNamed(b_name, _) => if a_name == b_name {
                     Some(s)
                   } else None,
                   _ => None
@@ -1690,7 +1711,9 @@ export fn unify(a: Type, b: Type, s: Subst) -> Option[Subst] {
                   CtEnum(b_name) => if a_name == b_name {
                     Some(s)
                   } else None,
-                  CtStruct(b_name) => if a_name == b_name && Array::length(a_args) == 0 {
+                  // #829: symmetric bridge — an applied `CtNamed(S, args)`
+                  // unifies with the bare struct `CtStruct(S)` by name.
+                  CtStruct(b_name) => if a_name == b_name {
                     Some(s)
                   } else None,
                   CtNamed(b_name, b_args) => if a_name != b_name {
@@ -1763,13 +1786,33 @@ export fn impls_overlap_for(env: TypeEnv, trait_name: String, new_target: Type) 
   }
 }
 
+// #829: an `impl Trait for S` stores its target with the type arguments
+// ERASED (the SImpl handler registers `CtNamed(S, [])` / `CtStruct(S)`), but
+// an instantiated generic struct value is now typed `CtNamed(S, args)`.
+// Bridge the two by head name — the unparameterized impl covers every
+// instantiation — mirroring the CtEnum/CtNamed unify bridge.
+fn struct_impl_target_matches(target: Type, resolved: Type) -> Bool {
+  match resolved {
+    CtNamed(rname, rargs) => if Array::length(rargs) > 0 {
+      match target {
+        CtStruct(tname) => tname == rname,
+        CtNamed(tname, targs) => tname == rname && Array::length(targs) == 0,
+        _ => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
 fn type_implements_check_env(e: TypeEnv, trait_name: String, resolved: Type) -> Bool {
   match e {
     EnvEmpty => false,
     EnvBind(_, _, rest) => type_implements_check_env(rest, trait_name, resolved),
     EnvTraitDef(_, _, _, _, rest) => type_implements_check_env(rest, trait_name, resolved),
     EnvTraitImpl(tname, target, rest) => if tname == trait_name {
-      if types_equal(target, resolved) {
+      if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) {
         true
       }
       else type_implements_check_env(rest, trait_name, resolved)
@@ -1841,7 +1884,7 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, trait_name: Strin
     EnvEmpty => false,
     EnvBind(_, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
     EnvTraitDef(_, _, _, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
-    EnvTraitImpl(tname, target, rest) => if types_equal(target, resolved) {
+    EnvTraitImpl(tname, target, rest) => if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) {
       if trait_is_subtrait(full_env, tname, trait_name) {
         true
       }

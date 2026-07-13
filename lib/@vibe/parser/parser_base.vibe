@@ -773,6 +773,54 @@ fn skip_bracketed_args(tokens: Array[Token], pos: Int) -> Int {
   }
 }
 
+// #829: collect the declared type-parameter NAMES of a `[T, U, ...]` header
+// (returning ([], pos) when there is no bracket). Mirrors parse_enum_stmt's
+// inline collector: only depth-1 identifiers in name position are kept, so a
+// bound like `[T: Eq]` still records just `T`.
+fn parse_tparam_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) {
+  match peek(tokens, pos) {
+    TLBracket => {
+      let b = ArrayBuilder::new()
+      let mut skip = pos + 1
+      let mut depth = 1
+      let mut expect_name = true
+      while depth > 0 {
+        match peek(tokens, skip) {
+          TLBracket => {
+            depth = depth + 1; skip = skip + 1
+          },
+          TRBracket => {
+            depth = depth - 1; skip = skip + 1
+          },
+          TComma => {
+            if depth == 1 {
+              expect_name = true
+            }
+            skip = skip + 1
+          },
+          TIdent(nm) => {
+            if depth == 1 && expect_name {
+              ArrayBuilder::push(b, nm)
+              expect_name = false
+            }
+            skip = skip + 1
+          },
+          TEof => {
+            depth = 0
+          },
+          _ => {
+            skip = skip + 1
+          }
+        }
+      }
+      (ArrayBuilder::freeze(b), skip)
+    },
+    _ => (Array::slice([
+      ""
+    ], 0, 0), pos)
+  }
+}
+
 fn collect_effect_names(tokens: Array[Token], pos: Int, acc: String) -> (String, Int) with { Error } {
   match peek(tokens, pos) {
     TRBrace => (acc, pos + 1),
@@ -1501,11 +1549,13 @@ fn parse_struct_fields(tokens: Array[Token], pos: Int) -> (Array[(String, TypeEx
 fn parse_struct_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with { Error } {
   match peek(tokens, pos) {
     TIdent(name) => {
-      let after_name = skip_bracketed_args(tokens, pos + 1)
+      // #829: keep the `[T]` type-parameter names (previously skipped and
+      // discarded) so the checker can instantiate generic struct literals.
+      let (tparams, after_name) = parse_tparam_names(tokens, pos + 1)
       let br = expect_tk(tokens, after_name, "{")
       let (fields, mut_names, end) = parse_struct_fields(tokens, br);
       let (derives, final_pos) = parse_derive_names(tokens, end)
-      (SStruct(exported, name, fields, derives, mut_names), final_pos)
+      (SStruct(exported, name, fields, derives, mut_names, tparams), final_pos)
     },
     _ => throw("expected struct name")
   }
@@ -1514,13 +1564,13 @@ fn parse_struct_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, I
 //# Misc
 
 export {
-  _no_tb, _no_tp, collect_effect_names, collect_import_path, empty_arms, empty_exprs, empty_fields, empty_import_items, empty_params, empty_pats, empty_type_exprs, expect_tk, is_expr_end_token, is_lambda_start, is_non_pipe_infix, is_tk, mode_block, mode_for_in, mode_handle, mode_if, mode_match, mode_while, parse_binding_name, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_param_list, parse_pattern, parse_struct_field, parse_struct_stmt, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_type_impl, parse_derive_names, peek, skip_derive, skip_semi, tk_name
+  _no_tb, _no_tp, collect_effect_names, collect_import_path, empty_arms, empty_exprs, empty_fields, empty_import_items, empty_params, empty_pats, empty_type_exprs, expect_tk, is_expr_end_token, is_lambda_start, is_non_pipe_infix, is_tk, mode_block, mode_for_in, mode_handle, mode_if, mode_match, mode_while, parse_binding_name, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_param_list, parse_pattern, parse_struct_field, parse_struct_stmt, parse_suberror_stmt, parse_tparam_names, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_type_impl, parse_derive_names, peek, skip_derive, skip_semi, tk_name
 }
 
 export {
-  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, skip_derive, parse_derive_names, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
+  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, skip_derive, parse_derive_names, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, parse_tparam_names, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
 }
 
 export {
-  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, skip_derive, parse_derive_names, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
+  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, skip_derive, parse_derive_names, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, parse_tparam_names, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
 }
