@@ -1,0 +1,140 @@
+// vibex pilot port of scripts/cache_clean.sh (#848-style .vibex pilot).
+//
+// Reclaim the persistent build cache (#631). The selfhost compiler writes
+// every incremental-build cache entry to `_build/vibe_<prefix>_<token><suffix>`
+// and never deletes old entries in place, so `_build/vibe_*` grows
+// monotonically over a long editing session. This is the explicit reclaim
+// path (see docs/build-cache.md).
+//
+// Usage (direct runner invocation forwards argv; the `vibe run` launcher
+// wrapper does not yet forward trailing args to the compiled program -- see
+// the pilot report for details, so prefer the env-var form below when going
+// through `scripts/vibe_run.sh` / `vibe run`):
+//   vibe run scripts/cache_clean.vibex             # delete every _build/vibe_* file
+//   vibe run scripts/cache_clean.vibex -- --dry-run   # (direct runner invocation only)
+//   VIBE_CACHE_CLEAN_DRY_RUN=1 vibe run scripts/cache_clean.vibex   # dry-run via env var
+//
+// Differences from scripts/cache_clean.sh, all a consequence of the current
+// stdlib/runtime surface (see the pilot report):
+//   * dry-run can also be requested via VIBE_CACHE_CLEAN_DRY_RUN=1 (env var),
+//     since `vibe run`'s wrapper scripts do not forward argv today.
+//   * an unrecognized flag is silently ignored (there is no Stderr builtin to
+//     report it on, and no builtin to set a custom process exit code from a
+//     `vibe run` program, so the bash original's `exit 2` on a bad flag has
+//     no equivalent here).
+//   * file size is computed via Fs::read_bytes + Bytes::length (reads each
+//     file fully into memory) rather than `wc -c`; byte counts are identical,
+//     but this is O(bytes) not O(1) per file.
+
+fn is_dry_run_flag(arg: String) -> Bool {
+  if arg == "--dry-run" {
+    true
+  } else arg == "-n"
+}
+
+fn parse_dry_run() -> Bool with { Env } {
+  let env_flag = Env::get("VIBE_CACHE_CLEAN_DRY_RUN")
+  let mut dry_run = env_flag == "1"
+  let argc = Env::args_len()
+  let mut i = 0
+  while i < argc {
+    let arg = Env::args_get(i)
+    if is_dry_run_flag(arg) {
+      dry_run = true
+    }
+    i = i + 1
+  }
+  dry_run
+}
+
+// Byte-exact port of the awk human-readable formatter:
+//   awk -v b="$total" 'BEGIN{ split("B KB MB GB",u); i=1;
+//     while(b>=1024 && i<4){b/=1024;i++} printf("%.1f %s", b, u[i]) }'
+// Division by 1024 (a power of two) is exact in IEEE double, so the tier
+// boundaries are exactly `total >= 1024^(k+1)`; this reimplements the same
+// arithmetic with scaled Int math (round-half-up) instead of Double, since
+// Double formatting is not reliably available yet (see the pilot report).
+fn unit_name(tier: Int) -> String {
+  if tier == 0 {
+    "B"
+  } else if tier == 1 {
+    "KB"
+  } else if tier == 2 {
+    "MB"
+  } else "GB"
+}
+
+fn human_size(total_bytes: Int) -> String {
+  let mut tier = 0
+  let mut divisor = 1
+  while tier < 3 && total_bytes >= divisor * 1024 {
+    divisor = divisor * 1024
+    tier = tier + 1
+  }
+  let tenths = (total_bytes * 10 + divisor / 2) / divisor
+  let whole = tenths / 10
+  let frac = tenths % 10
+  "\{whole}.\{frac} \{unit_name(tier)}"
+}
+
+fn is_cache_file_name(name: String) -> Bool {
+  String::starts_with(name, "vibe_")
+}
+
+fn collect_cache_files(build_dir: String) -> Array[String] with { Fs } {
+  let result = ArrayBuilder::new()
+  if Fs::is_dir(build_dir) {
+    let names = Fs::readdir(build_dir)
+    let mut i = 0
+    while i < Array::length(names) {
+      let name = Array::get(names, i)
+      if is_cache_file_name(name) {
+        let path = "\{build_dir}/\{name}"
+        if Fs::is_file(path) {
+          ArrayBuilder::push(result, path)
+        }
+      }
+      i = i + 1
+    }
+  }
+  ArrayBuilder::freeze(result)
+}
+
+fn total_size(paths: Array[String]) -> Int with { Fs } {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(paths) {
+    let bytes = Fs::read_bytes(Array::get(paths, i))
+    total = total + Bytes::length(bytes)
+    i = i + 1
+  }
+  total
+}
+
+fn remove_all(paths: Array[String]) -> Unit with { Fs } {
+  let mut i = 0
+  while i < Array::length(paths) {
+    Fs::remove(Array::get(paths, i))
+    i = i + 1
+  }
+}
+
+export let main = () -> Unit with { Fs, Env, Stdout } {
+  let dry_run = parse_dry_run()
+  let files = collect_cache_files("_build")
+  let count = Array::length(files)
+  if count == 0 {
+    Stdout::write_stream("[cache-clean] no persistent cache files (_build/vibe_*) to reclaim\n")
+  }
+  else {
+    let total = total_size(files)
+    let human = human_size(total)
+    if dry_run {
+      Stdout::write_stream("[cache-clean] DRY RUN: would reclaim \{count} file(s), \{human} from _build/vibe_*\n")
+    }
+    else {
+      remove_all(files)
+      Stdout::write_stream("[cache-clean] reclaimed \{count} file(s), \{human} from _build/vibe_*\n")
+    }
+  }
+}
