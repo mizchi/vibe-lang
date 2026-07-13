@@ -25,8 +25,10 @@ change.
 - `Expr` is an expression.
 - `Pat` is a pattern.
 - `Stmt` is a declaration, command, assignment, or expression statement.
-- `...` means a comma- or semicolon-separated repetition depending on the
-  surrounding delimiter.
+- `...` means a separated repetition: comma-separated in expression contexts
+  (arguments, tuples, struct literals, import lists), semicolon-separated in
+  type declaration bodies (enum variants, struct fields). Using `,` as a
+  declaration-body separator was removed in 0.3.0 and is a parse error.
 
 This document is intentionally EBNF-like, not a parser generator grammar.
 Parser conflict resolution and diagnostics are implementation-defined.
@@ -216,6 +218,10 @@ export enum Shape { Circle(Int); Rect(Int, Int) }
 ```
 
 Constructors may be used in expressions and patterns.
+
+Declaration members (enum variants, struct fields) are separated by `;`.
+Using `,` as the separator was removed in 0.3.0; the parser reports a located
+error suggesting `;`.
 
 ### Structs
 

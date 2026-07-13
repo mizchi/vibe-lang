@@ -48,9 +48,9 @@ emit t_match_scrut   'enum E { A; B }
 export let main: () -> Int = () -> { match 1 { A => 1, B => 2 } }'
 emit t_ctor_arity    'enum E { A(Int) }
 export let main: () -> Int = () -> { match A(1) { A => 1 } }'
-emit t_struct_field  'struct P { x: Int, y: Int }
+emit t_struct_field  'struct P { x: Int; y: Int }
 export let main: () -> Int = () -> { let p = P { x: 1, y: "s" }; p.x }'
-emit t_struct_miss   'struct P { x: Int, y: Int }
+emit t_struct_miss   'struct P { x: Int; y: Int }
 export let main: () -> Int = () -> { let p = P { x: 1 }; p.x }'
 emit t_struct_nofld  'struct P { x: Int }
 export let main: () -> Int = () -> { let p = P { x: 1 }; p.z }'

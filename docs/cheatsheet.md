@@ -263,6 +263,8 @@ expr is None                     // -> Bool
 ```vibe
 type Pair = (Int, Int)                   // alias
 
+// enum/struct body members are ';'-separated; ',' as the declaration
+// separator was removed in 0.3.0 (parse error)
 enum Color { Red; Green; Blue } derive(Eq)
 enum Shape { Circle(Int); Rect(Int, Int) }
 

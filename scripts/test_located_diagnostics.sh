@@ -82,13 +82,13 @@ expect_contains "method-call arity located at call site (line 6)" "line 6:" \
 # located). `p.z` accesses a non-existent field on Point at line 3, so the
 # located diagnostic must point at line 3.
 expect_contains "unknown-field access located at access site (line 3)" "line 3:" \
-  'struct Point { x: Int, y: Int }\nexport let get = (p: Point) -> Int {\n  p.z\n}\nexport let main = () -> Int { 0 }\n'
+  'struct Point { x: Int; y: Int }\nexport let get = (p: Point) -> Int {\n  p.z\n}\nexport let main = () -> Int { 0 }\n'
 
 # #645: EDot now carries the FIELD token's own offset, so the unknown-field
 # diagnostic is an exact compiler-authoritative range over the field name
 # (`line 3:col5-6:` for the 1-char `z`), no LSP-side dot-hop word scan.
 expect_matches "unknown-field carries an exact field range (colM-K)" "line 3:5-6:" \
-  'struct Point { x: Int, y: Int }\nexport let get = (p: Point) -> Int {\n  p.z\n}\nexport let main = () -> Int { 0 }\n'
+  'struct Point { x: Int; y: Int }\nexport let get = (p: Point) -> Int {\n  p.z\n}\nexport let main = () -> Int { 0 }\n'
 
 # the internal [@off=N] offset marker must never leak into user-facing output.
 expect_missing() { # <desc> <needle-that-must-be-absent> <file.vibe content>
@@ -107,7 +107,7 @@ expect_missing "no [@off= marker leak (arity)" "[@off=" \
 expect_missing "no [@off= marker leak (unknown name)" "[@off=" \
   'export let a = 1\nexport let main = () -> Int { zzz }\n'
 expect_missing "no [@off= marker leak (unknown field)" "[@off=" \
-  'struct Point { x: Int, y: Int }\nexport let get = (p: Point) -> Int {\n  p.z\n}\nexport let main = () -> Int { 0 }\n'
+  'struct Point { x: Int; y: Int }\nexport let get = (p: Point) -> Int {\n  p.z\n}\nexport let main = () -> Int { 0 }\n'
 
 # a good program -> check passes (no error)
 printf 'export let main = () -> Int { 40 + 2 }\n' > "$WORK/ok.vibe"
