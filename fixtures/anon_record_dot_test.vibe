@@ -15,6 +15,44 @@ struct Point {
   y: Int
 }
 
+// #839: `binding.field` resolved above only within the SAME top-level
+// statement's own expression tree (both the `railway_rw`/`desugar_railway_binds`
+// pass off `check_program` and the independent `rewrite_expr`/
+// `desugar_trait_dicts` pass used by the RC/FS-compile codegen entries — the
+// path `vibe run`/`vibe test` actually take by default — threaded a FRESH,
+// empty var_types at every top-level statement boundary). A `let` initializer
+// referencing an EARLIER top-level record binding, or a function/test body
+// closing over one, fell through to codegen's declared-struct-only field
+// lookup and threw "unknown struct field". Fixed by seeding both passes with
+// `collect_toplevel_anon_records` (desugar_trait_dict.vibe) instead of a fresh
+// scope per top-level statement.
+let toplevel_r = record { name: "vibe", ver: 7 }
+
+// Position: a top-level `let` initializer reading an anon record bound by an
+// EARLIER top-level statement.
+let toplevel_rn = toplevel_r.name
+
+fn toplevel_r_field_is(expected: String) -> Bool {
+  toplevel_r.name == expected
+}
+
+test "839: top-level let initializer resolves an earlier top-level anon record" {
+  assert_eq(toplevel_rn, "vibe")
+}
+
+// Position: a function/test body closing over a TOP-LEVEL anon record binding
+// (not a local one).
+test "839: test body closes over a top-level anon record binding" {
+  let rn = toplevel_r.name
+  assert_eq(rn, "vibe")
+}
+
+// Position: nested call argument, closing over a top-level binding.
+test "839: top-level anon record dot access as a nested call argument" {
+  assert_eq(toplevel_r_field_is("vibe"), true)
+  assert_eq(toplevel_r_field_is("nope"), false)
+}
+
 test "anonymous record dot read (int and string fields)" {
   let r = record { name: "vibe", ver: 3 }
   assert_eq(r.ver, 3)

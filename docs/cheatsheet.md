@@ -344,10 +344,8 @@ let t0 = t.0                  // => 1
 
 // Record
 let r = record { name: "vibe", ver: 1 }
-// dot access (r.name) は現状 top-level 式文の位置でしか lower されない
-// (#760 部分実装 — let 初期化子・関数 body 内では unknown struct field)。
-// 値の取り出しは下の destructure を使う。
-let nv = {                            // record destructure は fn/block body 内で
+let rn = r.name                       // dot access (#760/#839, all positions)
+let nv = {                            // destructure also works in fn/block body
   let record { name: n, ver: v } = r  // destructuring binds any field name
   (n, v)
 }
@@ -401,14 +399,19 @@ Int64Array::get(w, 0)            // => 4294967295 (no truncation)
 Int64Array::length(w)            // => 4
 ```
 
-> **selfhost status (#760):**
+> **selfhost status (#760/#839):**
 > - **Record dot access** (`r.name` on an anonymous `record { ... }`) lowers to
->   the positional field read the destructure uses, but **only when the read is
->   a bare top-level expression statement** — in a `let` initializer or inside a
->   function/test body it fails with `unknown struct field` (2026-07-13 doctest
->   検証; ADR-0069 で top-level 式文が禁止されると実質使えなくなる)。
->   Destructuring (`let record { name: n } = r`) binds any field name and works
->   in fn/block bodies.
+>   the positional field read the destructure uses, and now resolves in every
+>   expression position — a `let` initializer (including a top-level `let`
+>   reading a binding declared by an EARLIER top-level `let`), a function/test
+>   body (including one that closes over a top-level record binding), and a
+>   nested call argument (#839, fixed 2026-07-13: both lowering passes
+>   — `desugar_railway_binds`/`check_program` and the independent
+>   `desugar_trait_dicts` pass the RC/FS-compile codegen entries use — used to
+>   reset their binding-shape tracking at every top-level statement boundary,
+>   so only a record literal and its `.field` read sharing one statement's own
+>   expression tree ever resolved). Destructuring (`let record { name: n } = r`)
+>   binds any field name and works in fn/block bodies too.
 > - **`map { ... }` literals + `Map::*` builtins + `m[k]` indexing** work
 >   standalone (#760): `Map::get` / `has_key` / `set` / `keys` and the `m["k"]`
 >   index sugar all lower correctly. (`lib/@vibe/core`'s `get`/`get_or`/
