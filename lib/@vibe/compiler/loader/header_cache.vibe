@@ -21,7 +21,7 @@ import .. / runtime / eval_loader {
 }
 
 import .. / syntax / lexer.vibe {
-  lex, lex_with_offsets
+  lex, lex_with_offsets, offset_to_line_col
 }
 
 import .. / syntax / parser.vibe {
@@ -106,15 +106,55 @@ fn special_bundle_header(path: String) -> Option[(Array[String], Array[String])]
   }
 }
 
-fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String, self_path: String) -> Array[String] with { Fs } {
+// #831: a plain relative/workspace-absolute import (`import ./x.vibe { .. }`,
+// `export ./x.vibe { .. }`) whose resolved candidate does not exist on disk
+// used to reach `Fs::read_file` unguarded further down the pipeline
+// (`collect_sources_rec`), which is a raw host primitive -- a missing file
+// there is a JS-level throw from the host runner, NOT a guest `Error` effect,
+// so it crosses the wasm/JS boundary uncaught and prints a "[crash debug]"
+// dump instead of a located diagnostic. Catch it HERE, at the import
+// resolution call site, where the raw import spelling and the importing
+// module's source text (for a line:col lookup) are still both in scope.
+// `@scope/name` package refs are exempt: their resolution has its own,
+// more specific existence + pin checks downstream (`verify_store_package_fs`,
+// `verify_lib_package_fs` in loader/index.vibe), which report a better
+// message (pin/store-install guidance) than a generic "cannot resolve
+// import" would.
+fn located_missing_import_error(source: String, keyword: String, raw_path: String, resolved: String) -> String {
+  let base_msg = String::concat("cannot resolve import '", String::concat(raw_path, String::concat("' (resolved to ", String::concat(resolved, ")"))))
+  let needle = String::concat(keyword, String::concat(" ", raw_path))
+  let needle_off = String::index_of(source, needle)
+  let off = if needle_off >= 0 {
+    needle_off + String::length(keyword) + 1
+  } else {
+    String::index_of(source, raw_path)
+  }
+  if off < 0 {
+    base_msg
+  } else {
+    let (line, col) = offset_to_line_col(source, off)
+    String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), String::concat(": ", base_msg)))))
+  }
+}
+
+fn resolve_checked_path_fs(base_dir: String, raw_path: String, self_path: String, source: String, keyword: String) -> String with { Error, Fs } {
+  let resolved = resolve_path_fs(base_dir, raw_path, self_path)
+  if String::starts_with(raw_path, "@") || Fs::exists(resolved) {
+    resolved
+  } else {
+    throw(located_missing_import_error(source, keyword, raw_path, resolved))
+  }
+}
+
+fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String, self_path: String, source: String) -> Array[String] with { Error, Fs } {
   let deps = Array::slice([
     ""
   ], 0, 0)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(raw_path, _) => Array::push(deps, resolve_path_fs(base_dir, raw_path, self_path)),
-      SReExport(raw_path, _) => Array::push(deps, resolve_path_fs(base_dir, raw_path, self_path)),
+      SImport(raw_path, _) => Array::push(deps, resolve_checked_path_fs(base_dir, raw_path, self_path, source, "import")),
+      SReExport(raw_path, _) => Array::push(deps, resolve_checked_path_fs(base_dir, raw_path, self_path, source, "export")),
       _ => ()
     }
     i = i + 1
@@ -229,7 +269,7 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
       // #730: a contract with no implementation imports auto-discovers its
       // siblings — those files are deps of the header too, or an impl edit
       // would not invalidate this cache entry.
-      let cdeps = collect_import_deps_from_stmts(cextra, dir_of_path(path), path)
+      let cdeps = collect_import_deps_from_stmts(cextra, dir_of_path(path), path, pin_blanked)
       let cdeps2 = if Array::length(cdeps) == 0 {
         let craws = contract_sibling_impl_raws(dir_of_path(path))
         let resolved = Array::slice([
@@ -265,7 +305,7 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
       } with Error {
         Throw(msg) => throw(String::concat(path, String::concat(": ", msg)))
       }
-      (collect_import_deps_from_stmts(stmts, dir_of_path(path), path), collect_exports(stmts), parse_count + 1)
+      (collect_import_deps_from_stmts(stmts, dir_of_path(path), path, source), collect_exports(stmts), parse_count + 1)
     }
     let deps = header_result.0
     let exports = header_result.1

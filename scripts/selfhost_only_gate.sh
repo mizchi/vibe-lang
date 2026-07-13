@@ -144,6 +144,52 @@ if [ "$drres" != "42" ]; then
 fi
 echo "[selfhost-only-gate] deep-recursion effect resume ok (42)"
 
+# 4c. missing-import diagnostic regression (#831): a file that imports a path
+#     which does not exist on disk used to crash raw -- `collect_sources_rec`
+#     called the host `Fs::read_file` primitive unguarded on the (silently
+#     best-effort-resolved) missing path, and a host-level ENOENT there is a
+#     JS exception that crosses the wasm/JS boundary uncaught (not a guest
+#     `Error` effect), printing a "[crash debug]" memory dump and aborting
+#     instead of reporting a diagnostic. Assert the compile now fails
+#     gracefully with a located "cannot resolve import" diagnostic and never
+#     reaches the raw crash dump / host exception text.
+echo "[selfhost-only-gate] 4c missing-import diagnostic regression (#831)"
+midir="_build/_gate_missing_import"
+rm -rf "$midir"; mkdir -p "$midir"
+cat > "$midir/main.vibe" <<'VEOF'
+import ./does_not_exist.vibe { helper }
+
+export let _start = () -> Int { helper(1) }
+VEOF
+mi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$midir/main.vibe" "$midir/main.wasm" _start 2>&1)" || true
+mi_wasm_produced=0
+if [ -s "$midir/main.wasm" ]; then
+  mi_wasm_produced=1
+fi
+mi_diag="$(cat "$midir/main.wasm.diag" 2>/dev/null || true)"
+rm -rf "$midir"
+if [ "$mi_wasm_produced" = "1" ]; then
+  echo "[selfhost-only-gate] FAIL: missing-import program compiled successfully (expected a diagnostic failure)" >&2
+  exit 1
+fi
+if echo "$mi_out" | grep -q "crash debug"; then
+  echo "[selfhost-only-gate] FAIL: missing-import compile hit the raw crash-debug dump instead of a diagnostic" >&2
+  echo "$mi_out" >&2
+  exit 1
+fi
+if echo "$mi_out" | grep -qi "fs_read_file failed"; then
+  echo "[selfhost-only-gate] FAIL: missing-import compile leaked the raw fs_read_file host error instead of a diagnostic" >&2
+  echo "$mi_out" >&2
+  exit 1
+fi
+if ! echo "$mi_diag" | grep -qE '^line [0-9]+:[0-9]+: cannot resolve import .*does_not_exist\.vibe'; then
+  echo "[selfhost-only-gate] FAIL: missing-import diagnostic did not look like a located 'cannot resolve import' message: '$mi_diag'" >&2
+  exit 1
+fi
+echo "[selfhost-only-gate] missing-import diagnostic ok: $mi_diag"
+
 # 5. test-block regression (#594): a file with only `test {}` blocks (no entry)
 #    must compile to a valid module whose `_start` runs every test; a passing
 #    file exits clean and a failing assert traps. Guards the codegen fix that
