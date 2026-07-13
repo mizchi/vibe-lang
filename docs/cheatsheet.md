@@ -37,6 +37,17 @@ let b: Bool = true
 let u: Unit = ()
 ```
 
+Int の範囲 (±2^61) を超える整数は `@vibex/bigint` の任意精度 `BigInt`
+(sign + 30-bit limbs) を使う — `parse`/`to_string`/`add`/`sub`/`mul`/`divmod`/`pow`:
+
+```vibe
+import ./lib/@vibex/bigint { BigInt::from_int, BigInt::pow, BigInt::to_string }
+
+let big_2_64: () -> String = () -> {
+  BigInt::to_string(BigInt::pow(BigInt::from_int(2), 64))   // "18446744073709551616" (Int では持てない)
+}
+```
+
 ## Variables
 
 ```vibe
