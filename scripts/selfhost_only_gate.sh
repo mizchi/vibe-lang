@@ -3581,13 +3581,33 @@ if [ ! -s "$a69dir/ok_fnmain.wasm" ]; then
 fi
 a69_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$a69dir/ok_fnmain.wasm" 2>&1 || true)"
-case "$a69_out" in
-  *42*) ;;
-  *)
-    echo "[selfhost-only-gate] FAIL: fn main {} run output '$a69_out' (want it to contain 42)" >&2
-    exit 1
-    ;;
-esac
+# `fn main` is `() -> Unit`: the program's own output must appear and the
+# `_start` synthesis must NOT print the entry's return (a Unit entry used to
+# get a stray trailing `0` line from the Int-return print_int convention,
+# PR #834 review). Int-returning entries keep the print (see below).
+if [ "$a69_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: fn main {} run output '$a69_out' (want exactly '42'; a trailing 0 line means the Unit entry hit print_int)" >&2
+  exit 1
+fi
+# Int-returning `let main` keeps the historical return-print convention.
+cat > "$a69dir/int_main.vibe" <<'EOF'
+let main: () -> Int = () -> { 41 + 1 }
+EOF
+rm -f "$a69dir/int_main.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$a69dir/int_main.vibe" "$a69dir/int_main.wasm" main >/dev/null 2>&1
+if [ ! -s "$a69dir/int_main.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: Int-returning let main did not compile" >&2
+  cat "$a69dir/int_main.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+a69_int_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$a69dir/int_main.wasm" 2>&1 || true)"
+if [ "$a69_int_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: Int-returning main output '$a69_int_out' (want '42' — the return-print convention must survive for Int entries)" >&2
+  exit 1
+fi
 cat > "$a69dir/typo.vibe" <<'EOF'
 let main: () -> Int = () -> { 42 }
 EOF
