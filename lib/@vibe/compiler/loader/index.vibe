@@ -1502,6 +1502,14 @@ fn verify_lib_package_fs(importer: String, pins: Array[(String, String, String)]
   if pin_hash == "" {
     if vibe_env_flag("VIBE_REQUIRE_PINS") {
       throw("pin required for \{name} (VIBE_REQUIRE_PINS=1): \{importer} resolves it via the dev-mode lib lane; add `require \{name} <version> = #pkg:sha1:<hash>` (ADR-0065)")
+    } else if !(Fs::exists(lib_index_path)) {
+      // #831: an unpinned lib/VIBE_LIB package reference with no installed
+      // copy used to fall through here silently and only fail later, deep
+      // inside the raw `Fs::read_file` primitive in `collect_sources_rec`
+      // (an uncaught host-level crash, not a diagnostic). Catch it here,
+      // at resolution time, with the same guidance shape as the pin-mismatch
+      // and store-install errors below/above.
+      throw("cannot resolve import \{name}: not found via lib/ or VIBE_LIB (looked for \{lib_index_path})")
     } else ()
   } else {
     let (actual, _) = contract_package_hashes_fs(lib_index_path)
@@ -1549,6 +1557,21 @@ fn collect_sources_rec(path: String, sources: Array[(String, String)], visited: 
   }
   else {
     path_set_add(visited, path)
+    // #831: safety net. `path` normally already passed the located,
+    // raw-import-spelling-aware existence check in
+    // header_cache.vibe's `resolve_checked_path_fs` before it ever became a
+    // dep here -- but this recursion is also entered directly for the
+    // top-level entry path (no importer, no located import site) and can
+    // replay a WARM persistent header cache written before that check
+    // existed (stale fallback dep). `Fs::read_file` is a raw host
+    // primitive: a missing file there is a JS-level throw from the host
+    // runner, not a guest `Error` effect, so it crosses the wasm/JS
+    // boundary uncaught and prints a low-level crash dump instead of a
+    // diagnostic. Guard it here too so no path through this recursion can
+    // still reach that raw primitive with a nonexistent file.
+    if !(Fs::exists(path)) {
+      throw("cannot resolve module: \{path} does not exist")
+    } else ()
     let raw_source = Fs::read_file(path)
     // #730 (D-2): require pin lines are a leading directive, extracted and
     // blanked (offset-preserving) before anything parses the source.

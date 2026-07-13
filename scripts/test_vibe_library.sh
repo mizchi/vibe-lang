@@ -31,8 +31,8 @@ ALLOW=(
   lib/@vibex/wasm/wasm_parser/wasm_parser_test.vibe
   lib/@vibex/wasm/wat_parser/wat_parser_test.vibe
   lib/@vibex/args/parser_import_test.vibe
-  lib/@vibex/collect/collect_effect_test.vibe
-  lib/@vibex/collect/collect_test.vibe
+  lib/@vibex/effect_demo/effect_demo_effect_test.vibe
+  lib/@vibex/effect_demo/effect_demo_test.vibe
   lib/@vibex/jsonschema/validate_test.vibe
   lib/@vibe/core/math_test.vibe
   lib/@vibex/scan/index_import_test.vibe

@@ -1,6 +1,10 @@
 # Modules
 
-vibe uses file-based modules with explicit `export` / `import`.
+vibe uses file-based modules with explicit `export` / `import`. Module
+System v2 (ADR-0063 / ADR-0064,
+[docs/module-system-v2.md](../module-system-v2.md)) governs the current
+rules: directories with an `index.vibe`/`index.vibei` are boundaries, and
+content-addressed `require` pins replace lock files.
 
 ## export
 
@@ -26,7 +30,6 @@ Non-exported bindings are private to the file.
 
 Import bindings from another file with `import`.
 
-<!-- doctest-skip: 対になる math.vibe が実ファイルとして存在しない 2 ファイル例 (#831: 欠落 import は raw crash) -->
 ```vibe skip
 // main.vibe
 import ./math.vibe { double, triple }
@@ -38,75 +41,66 @@ test "import" {
 
 ### Renaming imports
 
-<!-- doctest-skip: 存在しない import 先 (./math.vibe) を参照する構文例 -->
 ```vibe skip
 import ./math.vibe { double as dbl }
 ```
 
-### Import kinds
+### Type and trait imports
 
-<!-- doctest-skip: 存在しない import 先 + `module` import kind は #728 で削除済み (このセクションは stale、要更新) -->
 ```vibe skip
 import ./types.vibe { type MyType }     // type import
 import ./traits.vibe { trait Show }     // trait import
-import ./lib.xm { module math }         // module namespace import
 ```
 
-## module blocks
+### Directory imports
 
-> **REMOVED (#728, ADR-0063)**: `module { ... }` blocks are no longer part of
-> the language — use file boundaries + `import`/`export`. The examples below
-> are kept for historical context only.
+A directory with an `index.vibe`/`index.vibei` is a **boundary**: importing
+the directory resolves to its index, and files *inside* the directory can
+only be reached from outside through names the index exports.
 
-<!-- doctest-skip: module block は #728/ADR-0063 で削除済み (parser が located error で reject) -->
 ```vibe skip
-module math {
-  export let inc: (Int) -> Int = (x) -> { x + 1 }
-}
-
-test "module" {
-  assert(eq(math::inc(41), 42))
-}
+import ./subdir { helper }   // resolves to subdir/index.vibe(i)
+import . { helper }          // this directory's own index
 ```
 
-Export a module for use from other files:
+## Re-exporting
 
-<!-- doctest-skip: module block は #728/ADR-0063 で削除済み -->
+An index can re-export names from a sibling file in the same directory:
+
 ```vibe skip
-// lib.xm
-export module math {
-  export let inc: (Int) -> Int = (x) -> { x + 1 }
-}
+// index.vibe
+export ./lib.vibe { helper1, helper2 }
 ```
 
-<!-- doctest-skip: `module` import kind は #728 で削除済み + 存在しない import 先 -->
+Wildcard re-export is intentionally not supported — every re-exported name
+is listed explicitly.
+
+## Contract files (`.vibei`)
+
+A directory's public API can be declared as a separate, body-less contract
+file instead of inline in `index.vibe`:
+
+| File | Meaning |
+|---|---|
+| `index.vibe` | Declarations have bodies (implementation inline). Good for small packages/scripts. |
+| `index.vibei` | Declarations have **no bodies** — implementation lives in sibling `.vibe` files and is checked against the contract. |
+
+A directory may have `index.vibe` *or* `index.vibei`, never both. See
+[docs/module-system-v2.md §3](../module-system-v2.md) for the full rules
+(opaque types, effect rows as contract surface, `where` clauses).
+
+## require (content-addressed dependencies)
+
+Dependencies are pinned by content hash, not a separate lock file:
+
 ```vibe skip
-// main.vibe
-import ./lib.xm { module math }
-
-math::inc(41)  // => 42
+require @vibe/core 1.2.3 = #ab12cd34      // bare triple = exact match
+require @vibe/http ^1.2.3 = #77aa02ef     // ^ = compatible range
 ```
 
-### Module with alias
-
-<!-- doctest-skip: `module` import kind は #728 で削除済み + 存在しない import 先 -->
-```vibe skip
-import ./lib.xm { module math as m }
-
-m::inc(41)
-```
-
-## PinnedPath imports
-
-Pin imports to a specific content hash for reproducible builds:
-
-<!-- doctest-skip: `./dep.vibe#hash` の PinnedPath suffix は現 parser 未対応 (unknown # directive) — spec と実装の gap -->
-```vibe skip
-import ./dep.vibe#a1b2c3d { helper }
-```
-
-The `#hash` suffix ensures the import resolves to a known version,
-independent of lock files.
+`vibe fmt` inserts/verifies the `= #hash` suffix from the local store. See
+[docs/module-system-v2.md §6](../module-system-v2.md) for the full
+resolution and override rules.
 
 ## extern (FFI)
 
@@ -121,7 +115,6 @@ extern let %parse_json: (String) -> Json with { Error }
 ## File conventions
 
 - `.vibe` -- standard source files
-- `.xm` -- module-oriented files (for `module` exports)
-- Each directory uses `index.vibe` as the public endpoint
-- `index.lock` -- dependency lock file per directory
-- `.vibe/cache.json` -- namespace/graph cache
+- `.vibei` -- contract file (body-less declarations, checked against sibling `.vibe` implementations)
+- Each directory uses `index.vibe`/`index.vibei` as the public boundary
+- `require NAME VERSION = #hash` lines are the manifest *and* the lock (no separate lock file)
