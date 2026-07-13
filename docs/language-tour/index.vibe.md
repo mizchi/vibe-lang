@@ -49,10 +49,10 @@ fn main with { Stdout } {
 
 ## Guide
 
-- [basics.md](basics.md) -- Types, variables, functions, control flow, type definitions
-- [collections.md](collections.md) -- Array, Map, Record, Tuple, JSON
-- [shell.md](shell.md) -- sh/sh_lines, PosixMode, pipes
-- [effects.md](effects.md) -- Error handling, algebraic effects, effect polymorphism
-- [modules.md](modules.md) -- export, import, module blocks, extern
+- [basics.vibe.md](basics.vibe.md) -- Types, variables, functions, control flow, type definitions
+- [collections.vibe.md](collections.vibe.md) -- Array, Map, Record, Tuple, JSON
+- [shell.vibe.md](shell.vibe.md) -- sh/sh_lines, PosixMode, pipes
+- [effects.vibe.md](effects.vibe.md) -- Error handling, algebraic effects, effect polymorphism
+- [modules.vibe.md](modules.vibe.md) -- export, import, module blocks, extern
 - [builtins.md](builtins.md) -- Built-in function reference
-- [syntax-reference.md](syntax-reference.md) -- Complete syntax reference (operators, patterns, effects, modules)
+- [syntax-reference.vibe.md](syntax-reference.vibe.md) -- Complete syntax reference (operators, patterns, effects, modules)
