@@ -123,7 +123,7 @@ vt_worker() {
   fi
   if ! env VIBE_COVERAGE="$coverage" VIBE_PREOPEN_DIR="$ROOT_DIR" "${compile_env[@]}" VIBE_SELFHOST_IMPORT_ABI=raw \
       bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
-      --invoke cli_main "$cli_wasm" "$src_rel" "$out_rel" "__vibe_test_no_entry__" \
+      --invoke cli_main "$cli_wasm" "$src_rel" "$out_rel" "__no_entry__" \
       >/dev/null 2>&1 || [ ! -s "$ROOT_DIR/$out_rel" ]; then
     echo "FAIL (compile) $src_rel"
     printf 'fail 0 0 0 0 0\n' > "$vt_results/$flat.res"

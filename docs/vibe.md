@@ -96,7 +96,8 @@ Rules:
 
 Examples:
 
-```vibe
+<!-- doctest-skip: 意図的な type error 例 (ok/error 対比の提示) を含むため単体コンパイル不可 -->
+```vibe skip
 // ok: declared effect allows direct builtin call
 let run: () -> Unit with { Stdout } = () -> { sh("ls") }
 
@@ -155,6 +156,13 @@ Railway-oriented guideline (pipe-first error flow):
   boundary location explicit in code.
 
 ```vibe
+import ./lib/@vibe/prelude/result.vibe { Result::and_then }
+
+// stubs so the guideline block is self-contained
+let parse_id: (String) -> Result[Int, String] = (raw) -> { Ok(1) }
+let validate_id: (Int) -> Result[Int, String] = (id) -> { Ok(id) }
+let load_user_id: (Int) -> Result[Int, String] = (id) -> { Ok(id) }
+
 let run_core: (String) -> Result[Int, String] = (raw) -> {
   raw
   |> parse_id
@@ -410,7 +418,8 @@ Separate internal hash:
 
 Imports are source-first `import` only:
 
-```vibe
+<!-- doctest-skip: 存在しない import 先 / hash・version・symbol ref の構文一覧 (#831: 欠落 import 先は raw crash になる) -->
+```vibe skip
 import ./path/to/mod.vibe { foo, bar as b }
 import ./path/to/mod.vibe { type IntPair, trait Show, foo, bar }
 import ./path/to/mod.vibe { foo }
@@ -607,7 +616,8 @@ Rules:
 
 ## Struct and enum details (current)
 
-```vibe
+<!-- doctest-skip: 文中の Pair[Int]::{ ... } (明示型引数) と Pair::{ left, right } (field shorthand) は現 selfhost parser では parse error — spec と実装の gap (doctest-report-2026-07-12.md 参照) -->
+```vibe skip
 enum Option[T] {
   None;
   Some(T);
@@ -646,7 +656,8 @@ Rules:
 
 ## Placeholder lambda shorthand (advanced)
 
-```vibe
+<!-- doctest-skip: 未定義名 (map / xs / add / zip_with / ys / f) を参照する desugar 提示の断片 -->
+```vibe skip
 map(xs, add(_, 1))        // => map(xs, (__p0) -> add(__p0, 1))
 zip_with(xs, ys, f(_, _)) // => zip_with(xs, ys, (__p0, __p1) -> f(__p0, __p1))
 ```
@@ -663,7 +674,8 @@ Rules:
 
 ## Member access, indexing, and pipe calls (current)
 
-```vibe
+<!-- doctest-skip: 未定義名 (obj / t / arr / x / f / g) を参照する構文提示の断片 -->
+```vibe skip
 obj.field             // data member access
 t.0                   // tuple index
 arr[i]                // => __index(arr, i)
@@ -719,7 +731,8 @@ Rules:
 
 Import/export example:
 
-```vibe
+<!-- doctest-skip: 存在しない import 先 (./std/stringify.vibe) を参照する構文例 (#831 の crash 経路) -->
+```vibe skip
 export { Int::to_string, String::to_string }
 import ./std/stringify.vibe { Int::to_string as int_to_string }
 ```
@@ -742,7 +755,8 @@ Example:
 
 ## vibe shell command pipeline (PosixMode preview)
 
-```vibe
+<!-- doctest-skip: PosixMode preview 専用の command-head desugar (標準 compile では `ls` は未定義名) -->
+```vibe skip
 let run: () -> Array[String] with { Stdout } = () -> {
   ls |> where((line) -> { String::contains(line, "vibe") })
 }
@@ -758,7 +772,8 @@ Rules:
 
 ## while / break / continue / yield (current)
 
-```vibe
+<!-- doctest-skip: 構文列挙の断片 (bare break/continue は loop 外、`yield` は build path 未サポート、cond/step/value 未定義) -->
+```vibe skip
 while cond {
   step()
 }

@@ -52,10 +52,18 @@ fi
 # --- resolve compiler once (pin: do NOT re-resolve later in the run) --------
 stage2="${DOCTEST_STAGE2:-}"
 if [ -z "$stage2" ]; then
-  latest_gen="$(ls -td _build/selfhost/generations/*/ 2>/dev/null | head -1 || true)"
-  if [ -n "$latest_gen" ] && [ -s "${latest_gen}stage2.wasm" ]; then
-    stage2="${latest_gen}stage2.wasm"
-  else
+  # newest generation that actually HAS a stage2.wasm — a concurrent bootstrap
+  # run may have created a newer, still-incomplete generation dir
+  for gen in $(ls -td _build/selfhost/generations/*/ 2>/dev/null); do
+    if [ -s "${gen}stage2.wasm" ]; then
+      stage2="${gen}stage2.wasm"
+      break
+    fi
+  done
+  if [ -z "$stage2" ]; then
+    # NOTE: docs document the CURRENT language; the committed seed (previous
+    # bootstrap tag) may be too old to compile them. Prefer a built stage2
+    # (or pass DOCTEST_STAGE2 explicitly).
     stage2="bootstrap/seed/selfhost_compiler.wasm"
   fi
 fi

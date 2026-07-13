@@ -188,13 +188,13 @@ for f in "${files[@]}"; do
   #   `main` / `run`         -> that entry
   is_test=0
   if grep -q 'test "' "$f" 2>/dev/null; then
-    entry="__vibe_test_no_entry__"; is_test=1
+    entry="__no_entry__"; is_test=1
   elif grep -qE '(export )?let main' "$f" 2>/dev/null; then
     entry="main"
   elif grep -qE '(export )?let run' "$f" 2>/dev/null; then
     entry="run"
   else
-    entry="__vibe_test_no_entry__"
+    entry="__no_entry__"
   fi
   # COMPILE (FS mode; exercises parser/checker/codegen). NB: only COMPILING the
   # corpus exercises the instrumented compiler — running the produced program is

@@ -990,7 +990,7 @@ test "pos" {
 EOF
 VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$cdir/cov_test.vibe" "$cdir/cov_test.wasm" __vibe_test_no_entry__ >/dev/null 2>&1
+  "$cdir/cov_test.vibe" "$cdir/cov_test.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$cdir/cov_test.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: coverage build produced no wasm (#cov regressed)" >&2; exit 1
 fi
@@ -1157,9 +1157,12 @@ for fx in \
   fixtures/eq_array_option_fields.vibe; do
   fxout="_build/_gate_derive_ext_$(basename "${fx%.vibe}").wasm"
   rm -f "$fxout" "$fxout.diag"
+  # ADR-0069: these are test-block suites with no `_start` of their own — the
+  # test-runner `_start` synthesis needs the explicit `__no_entry__` sentinel
+  # now (an unknown entry name is a compile error).
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$fx" "$fxout" _start >/dev/null 2>&1
+    "$fx" "$fxout" __no_entry__ >/dev/null 2>&1
   if [ ! -s "$fxout" ]; then
     echo "[selfhost-only-gate] FAIL: $fx did not compile" >&2
     cat "$fxout.diag" 2>/dev/null >&2; exit 1
@@ -1606,9 +1609,11 @@ echo "[selfhost-only-gate] cross-import trait-iterator element-type regression o
 echo "[selfhost-only-gate] 21/21 prelude iterator combinator suites"
 for suite in lib/@vibe/prelude/lazy_iter_test.vibe lib/@vibe/prelude/async_iter_test.vibe; do
   out="_build/_gate_prelude_iter_$(basename "${suite%.vibe}").wasm"
+  # ADR-0069: test-block suites need the explicit `__no_entry__` sentinel for
+  # the test-runner `_start` synthesis (unknown entry names are compile errors).
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$suite" "$out" _start >/dev/null 2>&1
+    "$suite" "$out" __no_entry__ >/dev/null 2>&1
   if [ ! -s "$out" ]; then
     echo "[selfhost-only-gate] FAIL: $suite did not compile" >&2
     cat "$out.diag" 2>/dev/null >&2; exit 1
@@ -3547,5 +3552,104 @@ else
   echo "[selfhost-only-gate] serve handler componentization ok (emission only; wasmtime unavailable)"
 fi
 rm -rf "$svdir"
+
+# 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
+#     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
+#         special form compiles as `let main: () -> Unit with { Stdout }` and the
+#         synthesized `_start` runs it (output contains 42).
+#     (b) bad_entry_typo: a nonexistent entry name is a COMPILE ERROR (it used
+#         to silently fall through to an empty test-runner `_start`); only the
+#         explicit `__no_entry__` sentinel builds a test runner (exercised all
+#         over this gate, e.g. step 15c).
+#     (c) bad_toplevel_expr / bad_toplevel_mut: top level is declarations only —
+#         a top-level expression statement / `let mut` is rejected by the checker.
+echo "[selfhost-only-gate] 41/41 ADR-0069 fn main sugar + entry/top-level hardening"
+a69dir="_build/_gate_adr69"
+rm -rf "$a69dir"; mkdir -p "$a69dir"
+cat > "$a69dir/ok_fnmain.vibe" <<'EOF'
+fn main with { Stdout } {
+  Stdout::write_stream("42\n")
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$a69dir/ok_fnmain.vibe" "$a69dir/ok_fnmain.wasm" main >/dev/null 2>&1
+if [ ! -s "$a69dir/ok_fnmain.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: fn main {} sugar did not compile" >&2
+  cat "$a69dir/ok_fnmain.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+a69_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$a69dir/ok_fnmain.wasm" 2>&1 || true)"
+# `fn main` is `() -> Unit`: the program's own output must appear and the
+# `_start` synthesis must NOT print the entry's return (a Unit entry used to
+# get a stray trailing `0` line from the Int-return print_int convention,
+# PR #834 review). Int-returning entries keep the print (see below).
+if [ "$a69_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: fn main {} run output '$a69_out' (want exactly '42'; a trailing 0 line means the Unit entry hit print_int)" >&2
+  exit 1
+fi
+# Int-returning `let main` keeps the historical return-print convention.
+cat > "$a69dir/int_main.vibe" <<'EOF'
+let main: () -> Int = () -> { 41 + 1 }
+EOF
+rm -f "$a69dir/int_main.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$a69dir/int_main.vibe" "$a69dir/int_main.wasm" main >/dev/null 2>&1
+if [ ! -s "$a69dir/int_main.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: Int-returning let main did not compile" >&2
+  cat "$a69dir/int_main.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+a69_int_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$a69dir/int_main.wasm" 2>&1 || true)"
+if [ "$a69_int_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: Int-returning main output '$a69_int_out' (want '42' — the return-print convention must survive for Int entries)" >&2
+  exit 1
+fi
+cat > "$a69dir/typo.vibe" <<'EOF'
+let main: () -> Int = () -> { 42 }
+EOF
+rm -f "$a69dir/typo.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$a69dir/typo.vibe" "$a69dir/typo.wasm" mian >/dev/null 2>&1 || true
+if [ -s "$a69dir/typo.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: entry typo 'mian' compiled to a module (should be 'entry not found' error)" >&2
+  exit 1
+fi
+if ! grep -q "not found" "$a69dir/typo.wasm.diag" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: entry typo diag missing 'not found' message" >&2
+  cat "$a69dir/typo.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+cat > "$a69dir/toplevel_expr.vibe" <<'EOF'
+let f = (n: Int) -> Int { n + 1 }
+f(41)
+export let _start: () -> Int = () -> { f(41) }
+EOF
+rm -f "$a69dir/toplevel_expr.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$a69dir/toplevel_expr.vibe" "$a69dir/toplevel_expr.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$a69dir/toplevel_expr.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: top-level expression statement compiled (should be rejected, ADR-0069)" >&2
+  exit 1
+fi
+cat > "$a69dir/toplevel_mut.vibe" <<'EOF'
+let mut counter = 0
+export let _start: () -> Int = () -> { counter }
+EOF
+rm -f "$a69dir/toplevel_mut.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$a69dir/toplevel_mut.vibe" "$a69dir/toplevel_mut.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$a69dir/toplevel_mut.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: top-level let mut compiled (should be rejected, ADR-0069)" >&2
+  exit 1
+fi
+rm -rf "$a69dir"
+echo "[selfhost-only-gate] ADR-0069 fn main sugar + entry/top-level hardening ok"
 
 echo "[selfhost-only-gate] ok"

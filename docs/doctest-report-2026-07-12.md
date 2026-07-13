@@ -1,5 +1,9 @@
 # doctest ハーネス第一弾 — cheatsheet 検証レポート (2026-07-12)
 
+> **2026-07-13 更新**: 運用化を実施。§4 (運用化の結果)・§5 (#830/#831 再現
+> fixture)・§6 (発見した compiler/doc gap 一覧) を追記。対象 docs はすべて
+> exit 0 (fail 0)。
+
 0.3.0 ロードマップ「doctest + 実行可能な `*.vibe.md`」の第一弾。
 markdown 中の ```vibe fenced block を selfhost stage2 で compile 検証する
 ハーネス `scripts/doctest_extract_run.sh` を追加し、`docs/cheatsheet.md` で
@@ -147,3 +151,158 @@ compiler 凍結中)。
   `vibe test` 相当 (`test { }` block) の doctest 化は未対応。
 - compile check は「その block が単体プログラムとして valid」の検証であり、
   文中コードとの整合 (例: 表内のシグネチャ) までは見ない。
+
+## 4. 運用化の結果 (2026-07-13)
+
+pinned stage2 = `_build/selfhost/generations/version-directive-2026-07-05_fc45db4/stage2.wasm`
+(scratchpad にコピーして run 中固定)。skip 理由は各 block 直前の
+`<!-- doctest-skip: 理由 -->` コメントに記載する規約で統一した。
+
+### PASS/SKIP 内訳 (before → after)
+
+| file | before | after |
+|---|---|---|
+| docs/cheatsheet.md | 12 pass / 17 fail (29) | **14 pass / 16 skip / 0 fail (30)** |
+| docs/vibe.md | 5 pass / 9 fail (14) | **6 pass / 8 skip / 0 fail (14)** |
+| docs/language-tour/basics.md | 22 pass / 7 fail | **27 pass / 2 skip** |
+| docs/language-tour/collections.md | 3 pass / 4 fail | **7 pass / 0 skip** |
+| docs/language-tour/effects.md | 7 pass / 3 fail | **9 pass / 1 skip** |
+| docs/language-tour/modules.md | 2 pass / 8 fail | **2 pass / 8 skip** |
+| docs/language-tour/quick-start.md | 4 pass / 3 fail | **7 pass / 0 skip** |
+| docs/language-tour/shell.md | 0 pass / 5 fail | **4 pass / 1 skip** |
+| docs/language-tour/syntax-reference.md | 10 pass / 18 fail | **13 pass / 15 skip** |
+| docs/language-tour/index.md | 2 pass / 0 fail | 2 pass (変更なし) |
+| **計** | **67 pass / 74 fail (141)** | **91 pass / 51 skip / 0 fail (142)** |
+
+- cheatsheet の E 類 (top-level record destructure, #830) は関数/ test body 内の
+  例に書き換えて PASS 化 (Int64Array 部分は selfhost 未移植のため skip block に分離)。
+- 直した主な doc バグ: 0.3.0 で削除済みの `\(expr)` 補間 (basics)、`Err` パターン
+  arity、bare `to_string`、`sh`/`sh_lines` の効果を `{Stdout}` → `{Process}` に修正
+  (+ String 戻り値の discard)、`Map::get_or`/`Map::map`/`Map::filter` →
+  builtin + `lib/@vibe/core` の `get_or` に整理、JSON 例を
+  `json_convenience.vibe` (`Json::field`) に合わせ、`Lines::parse` の import 追加、
+  `(x) { ... }` (arrow なし block lambda、parse 不可) を `(x) -> { ... }` に修正、
+  Result pipeline 例を stub 付き self-contained 化。
+- skip 分類は §2 の A〜G をそのまま踏襲 (A: 未定義名断片 / B: 構文列挙 /
+  C: ellipsis / D: 前 block・対ファイル依存 / F: 存在しない import 先 /
+  G: effect context なし) + 「削除済み機能の歴史的記載」(modules.md の
+  module block, #728) と「spec と実装の gap」(下記 §6)。
+
+### ADR-0069 (top-level 式禁止) との併走について
+
+検証中に並行 bootstrap が生成した新しい stage2 (gen `089474fe`) は
+**ADR-0069: top-level 式文の禁止** (`top-level expressions are not allowed;
+move it into fn main`) を実装していた。cheatsheet の該当 3 block は let 束縛 /
+block 式に書き換え、**cheatsheet + vibe.md は旧 (pinned fc45db4)・新 (089474fe)
+両方の stage2 で exit 0** を確認済み。
+
+**ADR-0069 Phase 1 commit (811673d8) 後の追対応 (同日)**: language-tour で
+fail していた 19 block を新仕様に合わせて書き換え、**全対象 142 blocks が
+ADR-0069 実装済み stage2 で 91 pass / 0 fail / 51 skip (exit 0)**。
+
+- **`fn main { ... }` 化 (4 block)**: index.md の Hello World / Entry Point、
+  quick-start.md の Entry Point (いずれも `fn main with { Stdout }` +
+  `stdout_write`)。Entry Point / CLI 節の文章も「entry は `fn main`、top-level
+  は宣言限定、`let main: () -> Int` は従来形 (Int を print) として存続」に更新。
+- **let 束縛 / block 式化 (15 block)**: 値例の裸式 (basics の Float/Double・
+  for-in・loop・match・pipe・struct・derive・Option、collections の record match・
+  tuple、effects の apply、syntax-reference の labeled call・struct・block・
+  tuple index) は `let name = expr   // => 値` 形に変換 (fn main で包むより
+  値例としての可読性が高く、旧 stage2 でも通る)。
+- 注意: `fn main {}` sugar は新 parser のみ受理するため、fn main を含む
+  index.md / quick-start.md の 3 block は **旧 stage2 (fc45db4 以前) では
+  parse できない**。doctest gate は最新 stage2 を解決するので問題にならない。
+
+### release-check への配線状況
+
+- `Taskfile.pkl` に `doctest` タスクを追加済み:
+  `bash scripts/doctest_extract_run.sh docs/cheatsheet.md docs/vibe.md docs/language-tour/*.md`
+  (`cache = false` — stage2 解決が `_build` の状態に依存するため)。
+- `release-check` の deps への追加は **保留**: 作業環境で pkfire package の
+  取得が 403 になり `pkf run release-check` のグラフ評価を検証できなかった
+  (releaseCheck 定義内の NOTE コメント参照)。`pkf run doctest` 単体 /
+  CI 独立 step で green を確認してから deps へ昇格する。
+- CI 独立 step 案 (ci.yml の selfhost-only-gate job、stage2 staging の後):
+
+  ```yaml
+  - name: Docs doctest (compile-check ```vibe blocks)
+    run: |
+      gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1)"
+      DOCTEST_STAGE2="${gen}stage2.wasm" \
+        bash scripts/doctest_extract_run.sh \
+          docs/cheatsheet.md docs/vibe.md docs/language-tour/*.md
+  ```
+
+## 5. #830 / #831 再現 fixture
+
+### #830 — top-level `let record { ... } = r` が parse error
+
+```vibe skip
+// repro-830.vibe — top-level だと `expected = but got {`
+let r = record { name: "vibe", ver: 1 }
+let record { name: n, ver: v } = r
+```
+
+関数 body / block 式 / `test { }` body 内では同じ 2 行が通る (検証済み):
+
+```vibe
+let r = record { name: "vibe", ver: 1 }
+let nv = {
+  let record { name: n, ver: v } = r
+  (n, v)
+}
+```
+
+再現コマンド: 上の skip block を `repro.vibe` に保存して
+`VIBE_PREOPEN_DIR=$PWD VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main <stage2.wasm> repro.vibe out.wasm __no_entry__`
+(doctest ハーネスの compile 経路そのもの)。
+
+### #831 — import 先ファイル欠落が raw crash (ENOENT)
+
+```vibe skip
+// repro-831.vibe — located diagnostic でなく
+// `[crash debug] ... fs_read_file failed for 'missing.vibe': ENOENT ...` になる
+import ./missing.vibe { helper }
+```
+
+同経路の diagnostics: cheatsheet の Module System block (`./lib.vibe`)、
+vibe.md の import 構文一覧 (`./std/stringify.vibe`)、language-tour の
+2 ファイル例 (`./math.vibe`)。すべて `vibe skip` タグ + 理由コメントで
+doctest からは除外済み — #831 修正後は「missing import の located error」を
+期待する fixture に昇格できる。
+
+## 6. 今回新たに見つけた compiler / spec gap (報告のみ、compiler 凍結中)
+
+1. **`Int64Array::*` builtin が selfhost checker に未移植** — cheatsheet に
+   記載があるが `unknown name: Int64Array::make`。
+   docs/archive/moonbit-retirement.md の「要確認」項目そのもの (要ポート判断)。
+2. **struct literal の明示型引数 `Pair[Int]::{ ... }` が parse error**
+   (`unexpected token: ::`) — docs/vibe.md の "Struct and enum details" が
+   spec として明記する形。実装との gap。
+3. **struct literal の field shorthand `Pair::{ left, right }` が parse error**
+   (`expected : but got ,`) — 同上 (record literal の shorthand は通る)。
+4. **`Result::and_then` 連鎖で成功型が途中で変わると推論できない**
+   (`(Int)->Result[String,E]` を最終段に置くと
+   `return type mismatch: got Result[Int, ...]`)。`let*` 版も同様。
+   docs の railway 例は同型 stage に揃えて回避した。
+5. **`(x) { ... }` (arrow なし block-body lambda) は parse 不可** —
+   syntax-reference が記載していた (docs は `(x) -> { ... }` に修正済み)。
+6. **`import ./dep.vibe#hash` (PinnedPath suffix) が parse 不可**
+   (`unknown # directive`) — modules.md が記載 (skip + 注記済み)。
+7. **`where` (Array filter の prelude 関数) が現 prelude に存在しない** —
+   shell.md が記載 (skip + 注記済み)。
+8. **effect polymorphism の「wrapper が `{ e }` 未宣言ならエラー」の例が
+   実際にはコンパイルが通る** (vibe.md / effects.md の `// error:` 例) —
+   checker がこの違反を検出していない可能性。要確認。
+9. **`sh` / `sh_lines` の必要 effect は `{Process}`** (checker_effects.vibe)。
+   docs の複数箇所が `{Stdout}` と記載していた (今回修正済み)。`sh` は
+   captured output (String) を返すため `Unit` 関数では discard が必要。
+10. **modules.md は削除済み機能 (`module` block #728、`.xm`、`module` import
+    kind) を現行機能として記載** — セクション書き換えの別タスクを推奨。
+11. **匿名 record の dot access (`r.name`) は bare な top-level 式文の位置で
+    しか lower されない** — `let rn = r.name` や関数/test body 内では
+    `unknown struct field: name` (#760 の部分実装)。ADR-0069 (top-level 式禁止)
+    が入ると実質使えなくなるため、#760 側の lowering を式位置全般に広げるか
+    docs から dot access を落とすかの判断が必要 (cheatsheet は destructure
+    ベースに書き換え + 状態注記済み)。

@@ -3,19 +3,21 @@
 ## sh / sh_lines
 
 ```vibe
-// Execute command (no return value, requires {Stdout})
-sh("echo hello")
+let demo: () -> Array[String] with { Process } = () -> {
+  // Execute command; returns the captured output (String)
+  let out = sh("echo hello")
 
-// Execute and capture output lines (requires {Stdout})
-let lines = sh_lines("ls /tmp")
-// => Array[String]
+  // Execute and capture output lines
+  sh_lines("ls /tmp")
+  // => Array[String]
+}
 ```
 
-Both require the `{Stdout}` effect:
+Both require the `{Process}` effect:
 
 ```vibe
-let run: () -> Unit with { Stdout } = () -> {
-  sh("echo hello")
+let run: () -> Unit with { Process } = () -> {
+  let _ = sh("echo hello")   // sh returns String; discard it in a Unit fn
 }
 
 // In tests, effects are implicit
@@ -81,9 +83,11 @@ POSIX-style command substitution within shell commands:
 Shell pipes work within `sh_lines()` strings:
 
 ```vibe
-sh_lines("echo hello | cat")
-sh_lines("printf 'a\\nb\\nc' | sort -r")
-sh_lines("seq 1 10 | head -3")
+let pipes: () -> Array[String] with { Process } = () -> {
+  let a = sh_lines("echo hello | cat")
+  let b = sh_lines("printf 'a\\nb\\nc' | sort -r")
+  sh_lines("seq 1 10 | head -3")
+}
 ```
 
 ## vibe Pipe Operator with Shell
@@ -91,15 +95,18 @@ sh_lines("seq 1 10 | head -3")
 The vibe `|>` pipe operator can chain shell results with vibe functions:
 
 ```vibe
-let result = sh_lines("ls /tmp")
+let count_txt: () -> Int with { Process } = () -> {
+  sh_lines("ls /tmp")
   |> Array::filter((s) -> { String::contains(s, ".txt") })
   |> Array::length
+}
 // Works because |> inserts value as first arg, matching collection-first order
 ```
 
 ## where (filter)
 
-```vibe
+<!-- doctest-skip: `where` は現 prelude に存在しない (doc rot — Array::filter を使う、要 doc 更新判断) -->
+```vibe skip
 // Filter array with predicate (prelude function, collection-first)
 let evens = where([1, 2, 3, 4, 5], (x) -> { x % 2 == 0 })
 // => [2, 4]
