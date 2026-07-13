@@ -372,6 +372,39 @@ fi
 rm -rf "$gsdir"
 echo "[selfhost-only-gate] generic-struct contract arity regression ok"
 
+# 6b3. cross-package contract import resolution regression (#842): a bare
+#      directory-style import inside an index.vibei CONTRACT (not just an
+#      implementation .vibe file) must resolve to the sibling package's own
+#      index.vibei/index.vibe, the same directory-first order the regular
+#      loader uses -- desugar_contract_source_fs used to skip straight to the
+#      single-file form (`../pkgb.vibe`) and ENOENT. package A's contract
+#      references package B's opaque type by NAME (`import ../pkgb { type X }`)
+#      instead of the #841-era workaround (referencing the bare name with no
+#      import at all); the cross-package .vibei target must also be routed
+#      through the normal facade desugar (not parsed as raw contract grammar).
+echo "[selfhost-only-gate] 6b3 cross-package contract import resolution regression (#842)"
+xpdir="_build/_gate_contract_crosspkg"
+rm -rf "$xpdir"; mkdir -p "$xpdir/pkgb" "$xpdir/pkga"
+printf 'import ./impl.vibe {}\nopaque type X\nfn make(v: Int) -> X\nfn value(x: X) -> Int\n' > "$xpdir/pkgb/index.vibei"
+printf 'export struct X {\n  v: Int\n}\n\nexport fn make(v: Int) -> X {\n  X::{ v: v }\n}\n\nexport fn value(x: X) -> Int {\n  x.v\n}\n' > "$xpdir/pkgb/impl.vibe"
+printf 'import ./impl.vibe {}\nimport ../pkgb { type X }\nfn wrap(v: Int) -> X\n' > "$xpdir/pkga/index.vibei"
+printf 'import ../pkgb { X, make }\nexport fn wrap(v: Int) -> X {\n  make(v)\n}\n' > "$xpdir/pkga/impl.vibe"
+printf 'import ./pkga { wrap }\nimport ./pkgb { value }\nexport let _start: () -> Int = () -> { value(wrap(42)) }\n' > "$xpdir/ok.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xpdir/ok.vibe" "$xpdir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$xpdir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: .vibei contract's cross-package directory import (../pkgb) did not resolve (#842)" >&2
+  cat "$xpdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+xpres="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$xpdir/ok.wasm" 2>/dev/null | tr -dc '0-9')"
+rm -rf "$xpdir"
+if [ "$xpres" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: cross-package contract import sample returned '$xpres' (expected 42)" >&2
+  exit 1
+fi
+echo "[selfhost-only-gate] cross-package contract import resolution regression ok"
+
 # 6c. content-addressed store regression (#730 D-2): `vibe hash` prints a
 #     store package's pin; a require-pinned `import @scope/name` resolves
 #     through .vibe/store/ with hash verification; a wrong pin is rejected.

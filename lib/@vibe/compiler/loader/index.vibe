@@ -1254,13 +1254,20 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with { Err
   let mut ri = 0
   while ri < Array::length(impl_raws) {
     let raw = Array::get(impl_raws, ri)
-    let resolved = resolve_import_path(dir, raw)
-    let impl_text = Fs::read_file(resolved)
-    // impl files may carry their own require pin lines (extracted for real
-    // when the file itself is ingested) — blank them for the conformance
-    // parse here.
-    let (_, impl_blanked) = extract_require_pins(impl_text)
-    let impl_stmts = parse_program(lex(impl_blanked))
+    // #842: probe directory/contract candidates the same way the regular
+    // loader does (resolve_path_fs) instead of assuming the plain-file form
+    // — a bare `import ../pkg { ... }` inside a .vibei must resolve to
+    // `../pkg/index.vibei` (or `/index.vibe`) when `../pkg.vibe` does not
+    // exist, exactly like the same import spelled inside a .vibe impl file.
+    let resolved = resolve_path_fs(dir, raw)
+    // #842: an impl raw may itself resolve to ANOTHER package's contract
+    // (a cross-package `import ../pkg { ... }`, not just this package's own
+    // sibling impl files) — route it through the same ingestion transform
+    // every other on-disk source goes through (ingest_source_text_fs), so a
+    // `.vibei` target is recursively desugared to its facade text instead of
+    // being handed to parse_program as raw (bodyless) contract grammar.
+    let impl_ingested = ingest_source_text_fs(resolved, Fs::read_file(resolved))
+    let impl_stmts = parse_program(lex(impl_ingested))
     Array::push(impl_units, (raw, impl_stmts))
     let mut si = 0
     while si < Array::length(impl_stmts) {
@@ -1305,7 +1312,9 @@ export fn contract_package_hashes_fs(path: String) -> (String, String) with { Er
   let mut ri = 0
   while ri < Array::length(impl_raws) {
     let iraw = Array::get(impl_raws, ri)
-    let itext = Fs::read_file(resolve_import_path(dir, iraw))
+    // #842: same directory/contract-aware resolution as above, so the
+    // package hash covers the same file the facade desugar actually reads.
+    let itext = Fs::read_file(resolve_path_fs(dir, iraw))
     Array::push(sources, (iraw, itext))
     ri = ri + 1
   }
