@@ -713,7 +713,7 @@ let main = () -> Int { run() }
 - A `#cfg(flag)` statement whose flag is inactive is parsed (syntax must stay valid, like Rust's `cfg`) and **dropped before checking/codegen** — zero bytes in the output binary.
 - Top-level statements only (`let` / `enum` / `struct` / `impl` / ...).
 - `vibe fmt` / normalize refuses `#cfg` sources (formatting would delete disabled code).
-- Not usable inside the compiler's own source until the seed compiler understands it (see docs/selfhost-bootstrap.md).
+- Not usable inside the compiler's own source until the seed compiler understands it (see docs/bootstrap.md).
 
 ## RC Debug Mode (`VIBE_RC=shadow`)
 
