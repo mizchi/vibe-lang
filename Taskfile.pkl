@@ -178,20 +178,14 @@ local testWasmRcE2e = new Task {
   inputs { ...moonSources }
 }
 
-local testVibePackageSuite =
-  scriptTask("test-vibe-package-suite", "scripts/pkfire/test_vibe_package_suite.sh")
-local testWasmHeavy = scriptTask("test-wasm-heavy", "scripts/pkfire/test_wasm_heavy.sh")
-
 local testFull = new Task {
   name = "test-full"
-  description = "full suite incl. heavy wasm tests"
-  deps { test; testWasmHeavy }
+  description =
+    "alias for test (heavy-wasm sub-suite retired: scripts/pkfire/test_wasm_heavy.sh no longer exists, #851)"
+  deps { test }
 }
 
 // === CI contract / shard tasks ===
-
-local ciNativeBinaryParity =
-  scriptTask("ci-native-binary-parity", "scripts/pkfire/native_binary_parity.sh")
 
 local ciWasmQuickShard = new Task {
   name = "ci-wasm-quick-shard"
@@ -298,9 +292,6 @@ local testIntegrationDeno = new Task {
 
 // === Coverage ===
 
-local coverageMoon = scriptTask("coverage-moon", "scripts/coverage_moon.sh")
-local coverageDeno = scriptTask("coverage-deno", "scripts/coverage_deno.sh")
-
 local coverageSelfhostSuite =
   scriptTask("coverage-selfhost-suite", "scripts/coverage_selfhost_suite.sh")
 
@@ -343,9 +334,13 @@ local coverageEvalSidecar = new Task {
 
 local coverageWasmStd = scriptTask("coverage-wasm-std", "scripts/coverage_wasm_std.sh")
 
+// `coverage-moon` / `coverage-deno` were retired with the MoonBit host (#594,
+// see docs/coverage.md); the selfhost-suite coverage lane is now the only
+// working coverage measurement, matching the `pkf run coverage` description
+// already documented in CONTRIBUTION.md / docs/coverage.md.
 local coverage = new Task {
   name = "coverage"
-  deps { coverageMoon; coverageDeno }
+  deps { coverageSelfhostSuite }
 }
 
 // === Fixtures / parity ===
@@ -363,11 +358,6 @@ local testFixtures = new Task {
   cmd = "moon test -p tests --filter 'fixtures' --target \(target)"
   inputs { ...moonSources; "fixtures/**/*" }
 }
-
-local testFixturesIsolation =
-  scriptTask("test-fixtures-isolation", "scripts/test_fixtures_isolation.sh")
-local testTypecheckFixtures =
-  scriptTask("test-typecheck-fixtures", "scripts/test_typecheck_fixtures.sh")
 
 local testUpdate = new Task {
   name = "test-update"
@@ -513,10 +503,6 @@ local benchCharConversion = new Task {
 
 local benchHttp = scriptTask("bench-http", "scripts/bench_http.sh")
 local benchCmdLatency = scriptTask("bench-cmd-latency", "scripts/bench_cmd_latency.sh")
-local benchScratchWorkflow =
-  scriptTask("bench-scratch-workflow", "scripts/bench_scratch_workflow.sh")
-local debugScratchWorkflow =
-  scriptTask("debug-scratch-workflow", "scripts/debug_scratch_workflow.sh")
 
 local benchSymbolIndex = new Task {
   name = "bench-symbol-index"
@@ -575,10 +561,17 @@ local benchSelfhostCacheProbe =
   scriptTask("bench-selfhost-cache-probe", "scripts/bench_selfhost_cache_probe.sh")
 local benchSelfhostLoaderHotspots =
   scriptTask("bench-selfhost-loader-hotspots", "scripts/bench_selfhost_loader_hotspots.sh")
-local buildSelfhostWasiOpt =
-  scriptTask("build-selfhost-wasi-opt", "scripts/build_selfhost_wasi_opt.sh")
-local benchSelfhostCompileHotspots =
-  scriptTask("bench-selfhost-compile-hotspots", "scripts/bench_selfhost_compile_hotspots.sh")
+
+// #851: scripts/bench_selfhost_compile_hotspots.sh no longer exists; repointed
+// to scripts/profile_selfhost_compile.sh (the current hotspot-table + memory
+// high-water profiler documented in .claude/skills/compiler-perf-profiling),
+// which takes a required <stage2.wasm> argument, hence acceptsArgs.
+local benchSelfhostCompileHotspots = new Task {
+  name = "bench-selfhost-compile-hotspots"
+  cmd = "bash scripts/profile_selfhost_compile.sh $@"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
 
 local selfhostGenerationGate = new Task {
   name = "selfhost-generation-gate"
@@ -649,11 +642,14 @@ local selfhostTrialPostGenerationGate = new Task {
   deps { selfhostPostGenerationGate }
 }
 
-local benchBundleSizeProduct =
-  scriptTask("bench-bundle-size-product", "scripts/bench_bundle_size.sh")
-
-local benchBundleSizeCompiler =
-  scriptTask("bench-bundle-size-compiler", "scripts/bench_compiler_bundle_size.sh")
+// #851: scripts/bench_bundle_size.sh and scripts/bench_compiler_bundle_size.sh
+// no longer exist and have no found replacement (unlike most other entries in
+// this cleanup, these are NOT superseded by a renamed script — see final
+// report). NOTE: scripts/monitor_wasm_bundle_size.sh (bench-bundle-size-monitor
+// / -strict below) shells out to both of these missing scripts directly, so
+// those two tasks are *also* currently broken; that is flagged for follow-up
+// but left as-is here since it is a real `cmd`, not a scriptTask() entry in
+// scope for this pass.
 
 local benchBundleSizeMonitor =
   scriptTask("bench-bundle-size-monitor", "scripts/monitor_wasm_bundle_size.sh")
@@ -665,11 +661,6 @@ local benchBundleSizeMonitorStrict = new Task {
 }
 
 // === HTTP / selfhost gates ===
-
-local testHttpCompiledPolicy =
-  scriptTask("test-http-compiled-policy", "scripts/test_compiled_backend_http_policy.sh")
-local testSelfhostBootstrap =
-  scriptTask("test-selfhost-bootstrap", "scripts/test_selfhost_bootstrap_gate.sh")
 
 // Selfhost unit-test runner (#531/#535): compile+run the allowlisted
 // *_test.vibe corpus through the selfhost compiler. `--scan` reports drift,
@@ -703,9 +694,6 @@ local testSelfhostUnit = new Task {
 local testSelfhostRcBootstrap =
   scriptTask("test-selfhost-rc-bootstrap", "scripts/test_selfhost_rc_bootstrap.sh")
 
-local testSelfhostWasiSelfbuild =
-  scriptTask("test-selfhost-wasi-selfbuild", "scripts/test_selfhost_wasi_selfbuild.sh")
-
 // #538: wasm-gc selfbuild frontier report (informational; always exits 0).
 local testGcSelfbuild = scriptTask("test-gc-selfbuild", "scripts/test_gc_selfbuild.sh")
 
@@ -717,10 +705,6 @@ local testSelfhostWasiSelfbuildKpi = new Task {
   inputs { ...moonSources; ...scriptSources }
 }
 
-local testSelfhostCliAdapter =
-  scriptTask("test-selfhost-cli-adapter", "scripts/test_selfhost_cli_adapter.sh")
-local testSelfhostCliAdapterCache =
-  scriptTask("test-selfhost-cli-adapter-cache", "scripts/test_selfhost_cli_adapter_cache.sh")
 local testSelfhostCliCore =
   scriptTask("test-selfhost-cli-core", "scripts/test_selfhost_cli_core.sh")
 local testWasmVibeHostRunner =
@@ -730,12 +714,6 @@ local testSelfhostCliFixedAdapterPreview2 =
     "test-selfhost-cli-fixed-adapter-preview2",
     "scripts/test_selfhost_cli_fixed_adapter_preview2.sh",
   )
-local testSelfhostCliComponentPreview2 =
-  scriptTask(
-    "test-selfhost-cli-component-preview2",
-    "scripts/test_selfhost_cli_component_preview2.sh",
-  )
-
 local runSelfhostCliPreview2Component = new Task {
   name = "run-selfhost-cli-preview2-component"
   cmd = "bash scripts/run_selfhost_cli_preview2_component.sh \"$1\" \"$2\" \"$3\" \"$4\""
@@ -751,13 +729,8 @@ local testSelfhostCliCommandComponent =
     "test-selfhost-cli-command-component",
     "scripts/test_selfhost_cli_command_component.sh",
   )
-local testSelfhostCliCommandParity =
-  scriptTask("test-selfhost-cli-command-parity", "scripts/test_selfhost_cli_command_parity.sh")
-
 local testSelfhostCliDirectComponent =
   scriptTask("test-selfhost-cli-direct-component", "scripts/test_selfhost_cli_direct_component.sh")
-local testSelfhostCliDirectParity =
-  scriptTask("test-selfhost-cli-direct-parity", "scripts/test_selfhost_cli_direct_parity.sh")
 
 local runSelfhostCheckPreview2Component = new Task {
   name = "run-selfhost-check-preview2-component"
@@ -777,9 +750,6 @@ local testSelfhostCheckCommandComponent =
     "test-selfhost-check-command-component",
     "scripts/test_selfhost_check_command_component.sh",
   )
-local testSelfhostCheckCommandParity =
-  scriptTask("test-selfhost-check-command-parity", "scripts/test_selfhost_check_command_parity.sh")
-
 local runSelfhostCheckDirectComponent = new Task {
   name = "run-selfhost-check-direct-component"
   cmd = "bash scripts/run_selfhost_check_direct_component.sh \"$1\" \"$2\" \"$3\""
@@ -792,21 +762,6 @@ local testSelfhostCheckDirectComponent =
     "test-selfhost-check-direct-component",
     "scripts/test_selfhost_check_direct_component.sh",
   )
-local testSelfhostCheckDirectParity =
-  scriptTask("test-selfhost-check-direct-parity", "scripts/test_selfhost_check_direct_parity.sh")
-local testSelfhostWasiHttpBoundary =
-  scriptTask("test-selfhost-wasi-http-boundary", "scripts/test_selfhost_wasi_http_boundary.sh")
-local testSelfhostCutover =
-  scriptTask("test-selfhost-cutover", "scripts/test_selfhost_cutover_gate.sh")
-local testSelfhostCheckBootstrapParity =
-  scriptTask("test-selfhost-check-bootstrap-parity", "scripts/test_selfhost_check_parity.sh")
-
-local testSelfhostCheckParity = new Task {
-  name = "test-selfhost-check-parity"
-  description = "alias for test-selfhost-check-bootstrap-parity"
-  deps { testSelfhostCheckBootstrapParity }
-}
-
 // #529 artifact-layer contract gate: dist (host-compiled shipping) and stage2
 // (self-reproduced) compilers must agree on the vibe.abi custom section and
 // behaviour of emitted program wasm. The two compiler binaries are byte-
@@ -814,25 +769,21 @@ local testSelfhostCheckParity = new Task {
 local testSelfhostDistStage2Parity =
   scriptTask("test-selfhost-dist-stage2-parity", "scripts/test_selfhost_dist_stage2_parity.sh")
 
-// Byte-equal --human stdout parity for the #402 selfhost `vibe check`
-// dispatch. Reuses the same wasi bundle / moonrun_wt host as production.
-// Phase-4 gate: any divergence in stdout (not just exit code) fails.
-local testVibeCheckSelfhostByteParity =
-  scriptTask(
-    "test-vibe-check-selfhost-byte-parity",
-    "scripts/test_vibe_check_selfhost_byte_parity.sh",
-  )
-
 local releaseSelfhostBootstrapGates = new Task {
   name = "release-selfhost-bootstrap-gates"
   description = "stage1/stage2 artifact health + checker parity"
-  deps { testSelfhostBootstrap; testSelfhostWasiSelfbuildKpi; testSelfhostCheckBootstrapParity }
+  // #851: dropped testSelfhostBootstrap / testSelfhostCheckBootstrapParity —
+  // both were MoonBit-host comparison gates (scripts/test_selfhost_bootstrap_gate.sh,
+  // scripts/test_selfhost_check_parity.sh) retired with src/ (#594; see the
+  // "retired with src/" comment in scripts/selfhost_trial_gate.sh for the same
+  // pattern). testSelfhostWasiSelfbuildKpi remains, though note (out of scope
+  // for this pass) it still shells out to the now-missing
+  // scripts/test_selfhost_wasi_selfbuild.sh internally.
+  deps { testSelfhostWasiSelfbuildKpi }
 }
 
 local testSelfhostTypecheckFixtures =
   scriptTask("test-selfhost-typecheck-fixtures", "scripts/test_selfhost_typecheck_fixtures.sh")
-local testSelfhostRuntimeFixtures =
-  scriptTask("test-selfhost-runtime-fixtures", "scripts/test_selfhost_runtime_fixtures.sh")
 
 local testSelfhostWarningFixtures =
   scriptTask("test-selfhost-warning-fixtures", "scripts/test_selfhost_warning_fixtures.sh")
@@ -861,13 +812,6 @@ local cacheClean = new Task {
   cache = false
 }
 
-local testCodegenUnsupported =
-  scriptTask("test-codegen-unsupported", "scripts/test_codegen_unsupported.sh")
-
-local testVibeWasmCompare =
-  scriptTask("test-vibe-wasm-compare", "scripts/test_vibe_wasm_compare.sh")
-local testWasmCompileWasmtime =
-  scriptTask("test-wasm-compile-wasmtime", "scripts/test_wasm_compile_wasmtime.sh")
 local showWasmtimeBin = scriptTask("show-wasmtime-bin", "scripts/wasmtime_bin.sh")
 
 local showWasmtimeFlags = new Task {
@@ -876,10 +820,6 @@ local showWasmtimeFlags = new Task {
     #"echo "VIBE_WASMTIME_WASM_FLAGS=${VIBE_WASMTIME_WASM_FLAGS:-unknown-imports-default=y}"; echo "VIBE_WASMTIME_WASI_FLAGS=${VIBE_WASMTIME_WASI_FLAGS:-}""#
   cache = false
 }
-
-local probeCmAsync = scriptTask("probe-cm-async", "src/x/cm_async/run_probe.sh")
-
-local probeCmStream = scriptTask("probe-cm-stream", "src/x/cm_async/run_stream_probe.sh")
 
 local wasmtimeSubmoduleInit = new Task {
   name = "wasmtime-submodule-init"
@@ -1097,10 +1037,7 @@ tasks {
   testLocal
   testWasmGcMainlaneE2e
   testWasmRcE2e
-  testVibePackageSuite
-  testWasmHeavy
   testFull
-  ciNativeBinaryParity
   ciWasmQuickShard
   ciSelfhostGatesShard
   ciSelfhostExamplesSmoke
@@ -1114,8 +1051,6 @@ tasks {
   selfhostGenerationStatus
   testWasmVibeWasmtime
   testIntegrationDeno
-  coverageMoon
-  coverageDeno
   coverageSelfhostSuite
   coverageSelfhostSuiteNextBranches
   coverageSelfhostSuiteBranch
@@ -1126,8 +1061,6 @@ tasks {
   coverage
   ideJs
   testFixtures
-  testFixturesIsolation
-  testTypecheckFixtures
   testUpdate
   run
   buildVibeWasm
@@ -1150,15 +1083,12 @@ tasks {
   benchCharConversion
   benchHttp
   benchCmdLatency
-  benchScratchWorkflow
-  debugScratchWorkflow
   benchSymbolIndex
   benchAdvancedGraph
   benchTypechecker
   testMoonrunWtDaemonParity
   benchSelfhostCacheProbe
   benchSelfhostLoaderHotspots
-  buildSelfhostWasiOpt
   benchSelfhostCompileHotspots
   selfhostGenerationGate
   selfhostPerfKpi
@@ -1168,54 +1098,32 @@ tasks {
   selfhostTrialPerfKpi
   selfhostTrialRssKpi
   selfhostTrialPostGenerationGate
-  benchBundleSizeProduct
-  benchBundleSizeCompiler
   benchBundleSizeMonitor
   benchBundleSizeMonitorStrict
-  testHttpCompiledPolicy
-  testSelfhostBootstrap
   testSelfhostRcBootstrap
-  testSelfhostWasiSelfbuild
   testSelfhostWasiSelfbuildKpi
   testGcSelfbuild
-  testSelfhostCliAdapter
-  testSelfhostCliAdapterCache
   testSelfhostCliCore
   testWasmVibeHostRunner
   testSelfhostCliFixedAdapterPreview2
-  testSelfhostCliComponentPreview2
   runSelfhostCliPreview2Component
   testSelfhostCliPreview2Package
   testSelfhostCliCommandComponent
-  testSelfhostCliCommandParity
   testSelfhostCliDirectComponent
-  testSelfhostCliDirectParity
   runSelfhostCheckPreview2Component
   testSelfhostCheckPreview2Package
   testSelfhostCheckCommandComponent
-  testSelfhostCheckCommandParity
   runSelfhostCheckDirectComponent
   testSelfhostCheckDirectComponent
-  testSelfhostCheckDirectParity
-  testSelfhostWasiHttpBoundary
-  testSelfhostCutover
-  testSelfhostCheckBootstrapParity
-  testSelfhostCheckParity
   testSelfhostDistStage2Parity
   releaseSelfhostBootstrapGates
   testSelfhostTypecheckFixtures
-  testSelfhostRuntimeFixtures
   testSelfhostWarningFixtures
   genAdvancedGraphFb
   clean
   cacheClean
-  testCodegenUnsupported
-  testVibeWasmCompare
-  testWasmCompileWasmtime
   showWasmtimeBin
   showWasmtimeFlags
-  probeCmAsync
-  probeCmStream
   wasmtimeSubmoduleInit
   wasmtimeSubmoduleUpdate
   buildWasmtimeSubmodule
