@@ -1,0 +1,184 @@
+//# Imports
+
+import ./immut_array.vibe {
+  ImmutArray, ImmutArray::empty, ImmutArray::from_array, ImmutArray::get, ImmutArray::length, ImmutArray::push, ImmutArray::set, ImmutArray::to_array
+}
+
+//# Helpers
+
+fn get_or[T](a: ImmutArray[T], i: Int, fallback: T) -> T {
+  match ImmutArray::get(a, i) {
+    Some(v) => v,
+    None => fallback
+  }
+}
+
+fn push_n(a: ImmutArray[Int], from: Int, count: Int) -> ImmutArray[Int] {
+  let mut out = a
+  let mut i = 0
+  while i < count {
+    out = ImmutArray::push(out, (from + i) * 3 + 1)
+    i = i + 1
+  }
+  out
+}
+
+//# Basics
+
+test "empty vector" {
+  let a: ImmutArray[Int] = ImmutArray::empty()
+  assert_eq(ImmutArray::length(a), 0)
+  assert(ImmutArray::get(a, 0) is None)
+  assert_eq(Array::length(ImmutArray::to_array(a)), 0)
+}
+
+test "push then get" {
+  let a = ImmutArray::push(ImmutArray::push(ImmutArray::push(ImmutArray::empty(), 10), 20), 30)
+  assert_eq(ImmutArray::length(a), 3)
+  assert_eq(get_or(a, 0, -1), 10)
+  assert_eq(get_or(a, 1, -1), 20)
+  assert_eq(get_or(a, 2, -1), 30)
+}
+
+test "string elements" {
+  let a = ImmutArray::push(ImmutArray::push(ImmutArray::empty(), "hello"), "world")
+  assert_eq(get_or(a, 0, "?"), "hello")
+  assert_eq(get_or(a, 1, "?"), "world")
+}
+
+test "bounds: negative and past-end get are None" {
+  let a = ImmutArray::push(ImmutArray::empty(), 5)
+  assert(ImmutArray::get(a, -1) is None)
+  assert(ImmutArray::get(a, 1) is None)
+  assert(ImmutArray::get(a, 100) is None)
+}
+
+//# Persistence (old version stays unchanged)
+
+test "push does not mutate the old vector" {
+  let a0: ImmutArray[Int] = ImmutArray::empty()
+  let a1 = ImmutArray::push(a0, 1)
+  let a2 = ImmutArray::push(a1, 2)
+  assert_eq(ImmutArray::length(a0), 0)
+  assert(ImmutArray::get(a0, 0) is None)
+  assert_eq(ImmutArray::length(a1), 1)
+  assert(ImmutArray::get(a1, 1) is None)
+  assert_eq(get_or(a1, 0, -1), 1)
+  assert_eq(ImmutArray::length(a2), 2)
+  assert_eq(get_or(a2, 1, -1), 2)
+}
+
+test "set does not mutate the old vector (structural sharing)" {
+  let base = push_n(ImmutArray::empty(), 0, 100)
+  let modified = ImmutArray::set(ImmutArray::set(base, 0, -100), 64, -6400)
+  assert_eq(get_or(modified, 0, 0), -100)
+  assert_eq(get_or(modified, 64, 0), -6400)
+  // untouched slots shared with base
+  assert_eq(get_or(modified, 50, 0), 50 * 3 + 1)
+  // base is fully intact
+  let mut i = 0
+  while i < 100 {
+    assert_eq(get_or(base, i, -1), i * 3 + 1)
+    i = i + 1
+  }
+  assert_eq(ImmutArray::length(base), 100)
+  assert_eq(ImmutArray::length(modified), 100)
+}
+
+test "set out of range is a no-op" {
+  let a = ImmutArray::push(ImmutArray::empty(), 7)
+  let b = ImmutArray::set(a, 5, 99)
+  assert_eq(ImmutArray::length(b), 1)
+  assert_eq(get_or(b, 0, -1), 7)
+  assert(ImmutArray::get(b, 5) is None)
+  let c = ImmutArray::set(a, -1, 99)
+  assert_eq(get_or(c, 0, -1), 7)
+}
+
+test "long chain of old versions all stay valid" {
+  // capture 3 snapshots along a push chain and check each afterwards
+  let s10 = push_n(ImmutArray::empty(), 0, 10)
+  let s40 = push_n(s10, 10, 30)
+  let s80 = push_n(s40, 40, 40)
+  assert_eq(ImmutArray::length(s10), 10)
+  assert_eq(ImmutArray::length(s40), 40)
+  assert_eq(ImmutArray::length(s80), 80)
+  let mut i = 0
+  while i < 10 {
+    assert_eq(get_or(s10, i, -1), i * 3 + 1)
+    i = i + 1
+  }
+  let mut j = 0
+  while j < 40 {
+    assert_eq(get_or(s40, j, -1), j * 3 + 1)
+    j = j + 1
+  }
+  assert(ImmutArray::get(s10, 10) is None)
+  assert(ImmutArray::get(s40, 40) is None)
+}
+
+//# Scale & level growth (leaf 32 -> depth 2 at 33 -> depth 3 past 1024)
+
+test "push across the 32-element leaf boundary" {
+  let a = push_n(ImmutArray::empty(), 0, 33)
+  assert_eq(ImmutArray::length(a), 33)
+  assert_eq(get_or(a, 31, -1), 31 * 3 + 1)
+  assert_eq(get_or(a, 32, -1), 32 * 3 + 1)
+}
+
+test "1100 pushes then all gets (crosses the 1024 boundary)" {
+  let a = push_n(ImmutArray::empty(), 0, 1100)
+  assert_eq(ImmutArray::length(a), 1100)
+  let mut i = 0
+  while i < 1100 {
+    assert_eq(get_or(a, i, -1), i * 3 + 1)
+    i = i + 1
+  }
+  assert(ImmutArray::get(a, 1100) is None)
+}
+
+test "set at deep indexes after level growth" {
+  let a = push_n(ImmutArray::empty(), 0, 1100)
+  let b = ImmutArray::set(ImmutArray::set(a, 1050, -1), 0, -2)
+  assert_eq(get_or(b, 1050, 0), -1)
+  assert_eq(get_or(b, 0, 0), -2)
+  assert_eq(get_or(b, 1099, 0), 1099 * 3 + 1)
+  // old version unchanged at both ends
+  assert_eq(get_or(a, 1050, 0), 1050 * 3 + 1)
+  assert_eq(get_or(a, 0, 0), 0 * 3 + 1)
+}
+
+//# Conversions
+
+test "from_array / to_array roundtrip" {
+  let src = [3, 1, 4, 1, 5, 9, 2, 6]
+  let a = ImmutArray::from_array(src)
+  assert_eq(ImmutArray::length(a), 8)
+  assert_eq(get_or(a, 0, -1), 3)
+  assert_eq(get_or(a, 7, -1), 6)
+  let back = ImmutArray::to_array(a)
+  assert_eq(Array::length(back), 8)
+  let mut i = 0
+  while i < 8 {
+    assert_eq(Array::get(back, i), Array::get(src, i))
+    i = i + 1
+  }
+}
+
+test "to_array of a large vector preserves order" {
+  let a = push_n(ImmutArray::empty(), 0, 200)
+  let xs = ImmutArray::to_array(a)
+  assert_eq(Array::length(xs), 200)
+  let mut i = 0
+  while i < 200 {
+    assert_eq(Array::get(xs, i), i * 3 + 1)
+    i = i + 1
+  }
+}
+
+test "from_array of empty array" {
+  let src: Array[Int] = []
+  let a = ImmutArray::from_array(src)
+  assert_eq(ImmutArray::length(a), 0)
+  assert(ImmutArray::get(a, 0) is None)
+}

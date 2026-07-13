@@ -1,0 +1,142 @@
+//# Imports
+
+import ./hashset.vibe {
+  type HashSet, HashSet::add, HashSet::delete, HashSet::difference, HashSet::has, HashSet::intersect, HashSet::new, HashSet::new_int, HashSet::new_string, HashSet::size, HashSet::to_array, HashSet::union, HashSet::with_capacity
+}
+
+//# Helpers
+
+fn sum_of[T](xs: Array[Int]) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(xs) {
+    total = total + Array::get(xs, i)
+    i = i + 1
+  }
+  total
+}
+
+//# Misc
+
+test "empty set" {
+  let s: HashSet[Int] = HashSet::new_int()
+  assert_eq(HashSet::size(s), 0)
+  assert_eq(HashSet::has(s, 0), false)
+  assert_eq(HashSet::delete(s, 0), false)
+  assert_eq(Array::length(HashSet::to_array(s)), 0)
+}
+
+test "single element and duplicate add" {
+  let s: HashSet[Int] = HashSet::new_int()
+  HashSet::add(s, 5)
+  HashSet::add(s, 5)
+  HashSet::add(s, 5)
+  assert_eq(HashSet::size(s), 1)
+  assert_eq(HashSet::has(s, 5), true)
+  assert_eq(HashSet::has(s, 6), false)
+  let xs = HashSet::to_array(s)
+  assert_eq(Array::length(xs), 1)
+  assert_eq(Array::get(xs, 0), 5)
+}
+
+test "delete then re-add" {
+  let s: HashSet[Int] = HashSet::new_int()
+  HashSet::add(s, 1)
+  HashSet::add(s, 2)
+  assert_eq(HashSet::delete(s, 1), true)
+  assert_eq(HashSet::delete(s, 1), false)
+  assert_eq(HashSet::size(s), 1)
+  HashSet::add(s, 1)
+  assert_eq(HashSet::size(s), 2)
+  assert_eq(HashSet::has(s, 1), true)
+}
+
+test "rehash across growth with 250 elements" {
+  let s: HashSet[Int] = HashSet::new_int()
+  let mut i = 0
+  while i < 250 {
+    HashSet::add(s, i * 3)
+    i = i + 1
+  }
+  assert_eq(HashSet::size(s), 250)
+  let mut j = 0
+  while j < 250 {
+    assert_eq(HashSet::has(s, j * 3), true)
+    j = j + 1
+  }
+  assert_eq(HashSet::has(s, 1), false)
+  assert_eq(HashSet::has(s, 250 * 3), false)
+  // to_array covers everything exactly once (check by sum)
+  let xs = HashSet::to_array(s)
+  assert_eq(Array::length(xs), 250)
+  assert_eq(sum_of(xs), 3 * 249 * 250 / 2)
+}
+
+test "string set specialization" {
+  let s: HashSet[String] = HashSet::new_string()
+  HashSet::add(s, "alpha")
+  HashSet::add(s, "beta")
+  HashSet::add(s, "alpha")
+  HashSet::add(s, "")
+  assert_eq(HashSet::size(s), 3)
+  assert_eq(HashSet::has(s, "alpha"), true)
+  assert_eq(HashSet::has(s, ""), true)
+  assert_eq(HashSet::has(s, "gamma"), false)
+  assert_eq(HashSet::delete(s, "beta"), true)
+  assert_eq(HashSet::size(s), 2)
+}
+
+test "union intersect difference" {
+  let a: HashSet[Int] = HashSet::new_int()
+  let b: HashSet[Int] = HashSet::new_int()
+  let mut i = 0
+  while i < 10 {
+    HashSet::add(a, i)          // a = {0..9}
+    HashSet::add(b, i + 5)      // b = {5..14}
+    i = i + 1
+  }
+  let u = HashSet::union(a, b)
+  assert_eq(HashSet::size(u), 15)
+  assert_eq(HashSet::has(u, 0), true)
+  assert_eq(HashSet::has(u, 14), true)
+  assert_eq(HashSet::has(u, 15), false)
+  let n = HashSet::intersect(a, b)
+  assert_eq(HashSet::size(n), 5)
+  assert_eq(HashSet::has(n, 5), true)
+  assert_eq(HashSet::has(n, 9), true)
+  assert_eq(HashSet::has(n, 4), false)
+  assert_eq(HashSet::has(n, 10), false)
+  let d = HashSet::difference(a, b)
+  assert_eq(HashSet::size(d), 5)
+  assert_eq(HashSet::has(d, 0), true)
+  assert_eq(HashSet::has(d, 4), true)
+  assert_eq(HashSet::has(d, 5), false)
+  // operands are untouched
+  assert_eq(HashSet::size(a), 10)
+  assert_eq(HashSet::size(b), 10)
+}
+
+test "set algebra with empty sets" {
+  let a: HashSet[Int] = HashSet::new_int()
+  let e: HashSet[Int] = HashSet::new_int()
+  HashSet::add(a, 1)
+  HashSet::add(a, 2)
+  assert_eq(HashSet::size(HashSet::union(a, e)), 2)
+  assert_eq(HashSet::size(HashSet::union(e, a)), 2)
+  assert_eq(HashSet::size(HashSet::intersect(a, e)), 0)
+  assert_eq(HashSet::size(HashSet::difference(a, e)), 2)
+  assert_eq(HashSet::size(HashSet::difference(e, a)), 0)
+}
+
+test "explicit dict generic constructor" {
+  let s: HashSet[Int] = HashSet::new((k: Int) -> Int { k }, (a: Int, b: Int) -> Bool { a == b })
+  HashSet::add(s, 100)
+  assert_eq(HashSet::has(s, 100), true)
+  let t: HashSet[Int] = HashSet::with_capacity((k: Int) -> Int { k }, (a: Int, b: Int) -> Bool { a == b }, 2)
+  let mut i = 0
+  while i < 40 {
+    HashSet::add(t, i)
+    i = i + 1
+  }
+  assert_eq(HashSet::size(t), 40)
+}

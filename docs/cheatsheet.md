@@ -363,6 +363,15 @@ let arr2 = {
   ArrayBuilder::freeze(b)     // -> Array[Int]
 }
 
+// 汎用コンテナは @vibex/collections — HashMap/HashSet (open addressing) と
+// SortedMap/SortedSet (AVL、keys/to_array 昇順、range(lo, hi) 両端 inclusive)。
+// 比較/ハッシュは関数を渡す explicit-dict 方式 + Int/String key 特化
+// (HashMap::new_int() / SortedSet::new_string() 等)。
+// 永続 (immutable) コレクションは @vibex/immut — 更新は常に新版を返し旧版不変
+// (構造共有、0.4.0 並行モデルの sendable データ):
+//   ImmutMap[V] (HAMT, String key): empty/set/get/delete/size/keys/has_key
+//   ImmutArray[T] (persistent vector): empty/push/get/set/length/from_array/to_array
+
 // 両端キュー / 優先度付きキューは @vibex/deque / @vibex/pqueue:
 //   Deque::new/push_back/pop_front (ring buffer、両端 O(1))
 //   PriorityQueue::new_int_min / new(cmp) (binary heap、cmp < 0 が先頭)
