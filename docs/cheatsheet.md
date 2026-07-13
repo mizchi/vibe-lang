@@ -70,6 +70,8 @@ Anti-patterns:
 ## Functions
 
 ```vibe
+import ./lib/@vibe/prelude/io.vibe { stdout_write }   // for hello() below
+
 // Top-level named functions: `fn` (#727, ADR-0064). Full annotations
 // required (param types + return type); recursion needs no `rec`.
 fn add(x: Int, y: Int) -> Int { x + y }
@@ -464,18 +466,23 @@ suberror InvalidInput(Int, String)   // tuple payload only
 ### User-defined effects (algebraic)
 
 ```vibe
+import ./lib/@vibe/prelude/io.vibe { stdout_write }
+
 effect Logger {
   Log(String) -> Unit
 }
 
 let greet: (String) -> Unit with { Logger } = (name) -> {
-  perform Logger::Log("hello \(name)")
+  perform Logger::Log("hello \{name}")
 }
 
-handle { greet("world") } with Logger {
-  Log(msg) => {
-    stdout_write(msg)
-    resume(())           // continue where perform left off
+// the handler arm calls stdout_write, so the enclosing function carries Stdout
+let main: () -> Unit with { Stdout } = () -> {
+  handle { greet("world") } with Logger {
+    Log(msg) => {
+      stdout_write(msg)
+      resume(())         // continue where perform left off
+    }
   }
 }
 ```
