@@ -59,7 +59,7 @@ import ./backend_builtins_string_extra.vibe {
 // declares the field wins). A struct lays its fields out like a constructor —
 // field i at `8 + i*8`, pointer tag-cleared — so the offset is `8 + index*8`,
 // identical to what `obj.field` reads.
-let field_index_in_gc: (Array[String], String) -> Int = (fnames, field) -> {
+fn field_index_in_gc(fnames: Array[String], field: String) -> Int {
   let mut fi = 0
   let mut found = -1
   while fi < Array::length(fnames) {
@@ -78,7 +78,7 @@ let field_index_in_gc: (Array[String], String) -> Int = (fnames, field) -> {
 // positions (`A { x; y }` vs `B { y; x }`), so a name-agnostic scan binds the
 // wrong offset. Falls back to a global first-match scan only when `sname` is
 // absent from the table.
-let struct_field_index_gc: (CompileCtxGc, String, String) -> Int with { Error } = (ctx, sname, field) -> {
+fn struct_field_index_gc(ctx: CompileCtxGc, sname: String, field: String) -> Int with { Error } {
   let names = ctx.gc_ctor_table.struct_names
   let mut si = 0
   let mut sidx = -1
@@ -127,7 +127,7 @@ let struct_field_index_gc: (CompileCtxGc, String, String) -> Int with { Error } 
 // by the parent tag test, and binds recurse through fresh temp locals.
 
 // Does `pat` constrain the value at all (vs matching anything)?
-let rec gc_pat_needs_test: (Pat) -> Bool = (p) -> {
+fn gc_pat_needs_test(p: Pat) -> Bool {
   match p {
     PBind(_) => false,
     PWild => false,
@@ -159,7 +159,7 @@ let rec gc_pat_needs_test: (Pat) -> Bool = (p) -> {
 }
 
 // Does `pat` bind any variables?
-let rec gc_pat_has_binds: (Pat) -> Bool = (p) -> {
+fn gc_pat_has_binds(p: Pat) -> Bool {
   match p {
     PBind(_) => true,
     PCtor(_, args) => {
@@ -203,7 +203,7 @@ let rec gc_pat_has_binds: (Pat) -> Bool = (p) -> {
 
 // Load ctor payload `idx` of the tagged ctor value in `vloc` into a fresh
 // local (ctor layout: value|1 -> [tag@0][argc@4][payload@8+i*8]).
-let gc_extract_ctor_payload: (Bytes, Array[String], Int, Int) -> Int = (buf, local_names, vloc, idx) -> {
+fn gc_extract_ctor_payload(buf: Bytes, local_names: Array[String], vloc: Int, idx: Int) -> Int {
   let tl = Array::length(local_names)
   emit_local_get(buf, vloc)
   emit_i64_const(buf, -2)
@@ -217,7 +217,7 @@ let gc_extract_ctor_payload: (Bytes, Array[String], Int, Int) -> Int = (buf, loc
 
 // Load tuple element `idx` of the untagged tuple pointer in `vloc` (tuple
 // layout: raw even pointer, elements at i*8, no header).
-let gc_extract_tuple_elem: (Bytes, Array[String], Int, Int) -> Int = (buf, local_names, vloc, idx) -> {
+fn gc_extract_tuple_elem(buf: Bytes, local_names: Array[String], vloc: Int, idx: Int) -> Int {
   let tl = Array::length(local_names)
   emit_local_get(buf, vloc)
   emit_i32_wrap_i64(buf)
@@ -231,7 +231,7 @@ let gc_extract_tuple_elem: (Bytes, Array[String], Int, Int) -> Int = (buf, local
 // one i32 (1 = matched). Sub-tests short-circuit behind the parent test via
 // `if (result i32)` (bytes 4, 127) so payload loads never run on a value of
 // the wrong shape.
-let rec emit_gc_pat_test: (Bytes, Array[String], Int, Pat, CompileCtxGc) -> Unit with { Error } = (buf, local_names, vloc, pat, ctx) -> {
+fn emit_gc_pat_test(buf: Bytes, local_names: Array[String], vloc: Int, pat: Pat, ctx: CompileCtxGc) -> Unit with { Error } {
   match pat {
     PInt(n) => {
       emit_local_get(buf, vloc)
@@ -379,7 +379,7 @@ let rec emit_gc_pat_test: (Bytes, Array[String], Int, Pat, CompileCtxGc) -> Unit
 // Bind every variable under `pat` from the value in `vloc` (recursing through
 // payload extraction). Or-patterns that bind are rejected: the two sides may
 // bind from different shapes and this backend has no phi for that yet.
-let rec emit_gc_pat_binds: (Bytes, Array[String], Int, Pat, CompileCtxGc) -> Unit with { Error } = (buf, local_names, vloc, pat, ctx) -> {
+fn emit_gc_pat_binds(buf: Bytes, local_names: Array[String], vloc: Int, pat: Pat, ctx: CompileCtxGc) -> Unit with { Error } {
   match pat {
     PBind(name) => {
       let bl = Array::length(local_names)
@@ -438,7 +438,7 @@ let rec emit_gc_pat_binds: (Bytes, Array[String], Int, Pat, CompileCtxGc) -> Uni
   }
 }
 
-let compile_match_gc: (Bytes, Expr, Array[(Pat, Expr)], Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, Int) -> Int with { Error }) -> Int with { Error } = (buf, scrutinee, arms, local_names, next_local, ctx, ld, ce) -> {
+fn compile_match_gc(buf: Bytes, scrutinee: Expr, arms: Array[(Pat, Expr)], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with { Error }) -> Int with { Error } {
   let scrut_local = next_local
   Array::push(local_names, "__match_scrut")
   let nl1 = ce(buf, scrutinee, local_names, next_local + 1, ld)

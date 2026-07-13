@@ -73,7 +73,7 @@ export struct CovState {
 
 // A disabled CovState (coverage off): inert, used by the normal compile path and
 // the non-WASI module entry. Fresh 1-element cells keep Array::get safe.
-export let cov_disabled: () -> CovState = () -> {
+export fn cov_disabled() -> CovState {
   CovState::{
     enabled: false,
     base: 0,
@@ -93,7 +93,7 @@ export let cov_disabled: () -> CovState = () -> {
 // coverage is off or the fixed-cap region is full. Called at the start of each
 // branch arm's instruction sequence (if/else, match arm), so the store runs
 // only when that branch is actually taken at run time.
-export let cov_emit_branch: (Bytes, CovState) -> Unit = (buf, cov) -> {
+export fn cov_emit_branch(buf: Bytes, cov: CovState) -> Unit {
   if cov.enabled {
     let id = Array::get(cov.next, 0)
     if id < cov.cap {
@@ -329,7 +329,7 @@ export struct DbgProv {
   stmt_file_id: Array[Int]
 }
 
-export let empty_dbg_prov: () -> DbgProv = () -> {
+export fn empty_dbg_prov() -> DbgProv {
   DbgProv::{
     files: Array::slice([
       ""
@@ -406,7 +406,7 @@ export struct CompileCtxGc {
 // No temporary allocation — this runs at every branch / arm boundary while
 // compiling, and a fresh array per call piles up on the bump/RC heap during one
 // big function and can trip a heap-marginal compile.
-export let int_log_reset_above: (CompileCtx, Int) -> Unit = (ctx, floor) -> {
+export fn int_log_reset_above(ctx: CompileCtx, floor: Int) -> Unit {
   let arr = ctx.int_local_slots
   let n = Array::length(arr)
   let mut w = 0
@@ -429,7 +429,7 @@ export let int_log_reset_above: (CompileCtx, Int) -> Unit = (ctx, floor) -> {
 // same branch/arm boundaries as int_log_reset_above — a slot reused by a
 // non-`let` binder must not be read as a stale tuple/ctor, or the structural
 // comparator would walk a non-aggregate value.
-export let agg_log_reset_above: (Array[Int], Int) -> Unit = (arr, floor) -> {
+export fn agg_log_reset_above(arr: Array[Int], floor: Int) -> Unit {
   let n = Array::length(arr)
   let mut w = 0
   let mut i = 0
@@ -451,7 +451,7 @@ export let agg_log_reset_above: (Array[Int], Int) -> Unit = (arr, floor) -> {
 // keep/drop decision, driven by the slots array, applied to both), so the
 // two arrays stay the same length / index-aligned after a branch/arm
 // boundary prunes stale entries. See CompileCtx.agg_local_exprs.
-export let agg_log_reset_above2: (Array[Int], Array[Expr], Int) -> Unit = (arr, exprs, floor) -> {
+export fn agg_log_reset_above2(arr: Array[Int], exprs: Array[Expr], floor: Int) -> Unit {
   let n = Array::length(arr)
   let mut w = 0
   let mut i = 0
@@ -473,7 +473,7 @@ export let agg_log_reset_above2: (Array[Int], Array[Expr], Int) -> Unit = (arr, 
 // #724: most-recent aggregate-shape entry for `slot` — `kind*64 + n`
 // (kind 1 = tuple/arity, 2 = ctor/field count), or -1 when untracked /
 // overridden by a non-aggregate rebind.
-export let agg_slot_lookup: (Array[Int], Int) -> Int = (arr, slot) -> {
+export fn agg_slot_lookup(arr: Array[Int], slot: Int) -> Int {
   let mut i = Array::length(arr) - 1
   let mut out = 0 - 1
   while i >= 0 {
@@ -498,7 +498,7 @@ export let agg_slot_lookup: (Array[Int], Int) -> Int = (arr, slot) -> {
 // result after agg_slot_lookup has confirmed a kind 1 (tuple) or kind 2
 // (ctor/record) entry exists for the slot, so the EInt(0) fallback is never
 // actually consulted as a shape in practice — it just keeps this total.
-export let agg_expr_lookup: (Array[Int], Array[Expr], Int) -> Expr = (arr, exprs, slot) -> {
+export fn agg_expr_lookup(arr: Array[Int], exprs: Array[Expr], slot: Int) -> Expr {
   let mut i = Array::length(arr) - 1
   let mut out = EInt(0)
   while i >= 0 {
@@ -520,7 +520,7 @@ export let agg_expr_lookup: (Array[Int], Array[Expr], Int) -> Expr = (arr, exprs
 // encoding; n = 63 is the "dynamic field count" sentinel: enum-typed values
 // have a variant-dependent argc, so the comparator reads argc@4 from the
 // value at runtime instead of unrolling a static count.
-export let agg_info_of_type_name: (CtorTable, String) -> Int = (ct, tname) -> {
+export fn agg_info_of_type_name(ct: CtorTable, tname: String) -> Int {
   let mut si = 0
   let mut out = 0
   while si < Array::length(ct.struct_names) {
@@ -552,7 +552,7 @@ export let agg_info_of_type_name: (CtorTable, String) -> Int = (ct, tname) -> {
   }
 }
 
-export let agg_info_of_type_expr: (CtorTable, TypeExpr) -> Int = (ct, te) -> {
+export fn agg_info_of_type_expr(ct: CtorTable, te: TypeExpr) -> Int {
   match te {
     TyTuple(tels) => 64 + Array::length(tels),
     TyName(tname) => agg_info_of_type_name(ct, tname),
@@ -567,7 +567,7 @@ export let agg_info_of_type_expr: (CtorTable, TypeExpr) -> Int = (ct, te) -> {
 // own return annotation). The `==` codegen consults it for `let a = f(..)`
 // bindings. Structural, all-lane-safe knowledge — unannotated returns stay
 // untracked (generic-eq fallback), preserving backend parity.
-export let compute_agg_returning: (Array[Stmt], CtorTable, Array[String], Array[Int]) -> Unit = (stmts, ct, out_names, out_infos) -> {
+export fn compute_agg_returning(stmts: Array[Stmt], ct: CtorTable, out_names: Array[String], out_infos: Array[Int]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -601,7 +601,7 @@ export let compute_agg_returning: (Array[Stmt], CtorTable, Array[String], Array[
   }
 }
 
-export let agg_ret_lookup: (Array[String], Array[Int], String) -> Int = (names, infos, fname) -> {
+export fn agg_ret_lookup(names: Array[String], infos: Array[Int], fname: String) -> Int {
   let mut i = 0
   let mut out = 0 - 1
   while i < Array::length(names) {
@@ -618,7 +618,7 @@ export let agg_ret_lookup: (Array[String], Array[Int], String) -> Int = (names, 
 // #724: non-throwing last-match local lookup (resolve_local throws on a
 // missing name, which is wrong for OPTIONAL classification — a bare ident
 // can name a global function or ctor instead of a local).
-export let find_local_slot: (Array[String], String) -> Int = (names, name) -> {
+export fn find_local_slot(names: Array[String], name: String) -> Int {
   let mut i = Array::length(names) - 1
   let mut result = 0 - 1
   while i >= 0 {
@@ -635,7 +635,7 @@ export let find_local_slot: (Array[String], String) -> Int = (names, name) -> {
 // #724: aggregate-shape info for a bare-ident operand of `==`/`!=`:
 // resolves the ident's CURRENT slot and returns its latest log entry
 // (`kind*64 + n`), or -1 for non-idents / untracked slots.
-export let agg_info_of_ident: (Array[Int], Expr, Array[String]) -> Int = (arr, e, local_names) -> {
+export fn agg_info_of_ident(arr: Array[Int], e: Expr, local_names: Array[String]) -> Int {
   match e {
     EIdent(nm, _) => {
       let slot = find_local_slot(local_names, nm)
@@ -653,7 +653,7 @@ export let agg_info_of_ident: (Array[Int], Expr, Array[String]) -> Int = (arr, e
 // literal Expr for a bare-ident operand (same ident -> slot resolution), or
 // EInt(0) when the ident is not a tracked slot. Callers gate on
 // agg_info_of_ident's kind first, same discipline as agg_expr_lookup.
-export let agg_expr_of_ident: (Array[Int], Array[Expr], Expr, Array[String]) -> Expr = (arr, exprs, e, local_names) -> {
+export fn agg_expr_of_ident(arr: Array[Int], exprs: Array[Expr], e: Expr, local_names: Array[String]) -> Expr {
   match e {
     EIdent(nm, _) => {
       let slot = find_local_slot(local_names, nm)
@@ -667,35 +667,35 @@ export let agg_expr_of_ident: (Array[Int], Array[Expr], Expr, Array[String]) -> 
   }
 }
 
-export let is_efn: (Expr) -> Bool = (expr) -> {
+export fn is_efn(expr: Expr) -> Bool {
   match expr {
     EFn(_, _, _, _, _, _) => true,
     _ => false
   }
 }
 
-export let is_pint: (Pat) -> Bool = (p) -> {
+export fn is_pint(p: Pat) -> Bool {
   match p {
     PInt(_) => true,
     _ => false
   }
 }
 
-export let is_pfloat: (Pat) -> Bool = (p) -> {
+export fn is_pfloat(p: Pat) -> Bool {
   match p {
     PFloat(_) => true,
     _ => false
   }
 }
 
-export let is_slet: (Stmt) -> Bool = (stmt) -> {
+export fn is_slet(stmt: Stmt) -> Bool {
   match stmt {
     SLet(_, _, _, _, _) => true,
     _ => false
   }
 }
 
-export let expr_tag: (Expr) -> Int = (expr) -> {
+export fn expr_tag(expr: Expr) -> Int {
   match expr {
     EInt(_) => 0,
     EBool(_) => 1,
@@ -728,56 +728,56 @@ export let expr_tag: (Expr) -> Int = (expr) -> {
   }
 }
 
-export let is_pbind: (Pat) -> Bool = (p) -> {
+export fn is_pbind(p: Pat) -> Bool {
   match p {
     PBind(_) => true,
     _ => false
   }
 }
 
-export let is_pbool: (Pat) -> Bool = (p) -> {
+export fn is_pbool(p: Pat) -> Bool {
   match p {
     PBool(_) => true,
     _ => false
   }
 }
 
-export let is_pctor: (Pat) -> Bool = (p) -> {
+export fn is_pctor(p: Pat) -> Bool {
   match p {
     PCtor(_, _) => true,
     _ => false
   }
 }
 
-export let is_pwild: (Pat) -> Bool = (p) -> {
+export fn is_pwild(p: Pat) -> Bool {
   match p {
     PWild => true,
     _ => false
   }
 }
 
-export let is_earray: (Expr) -> Bool = (expr) -> {
+export fn is_earray(expr: Expr) -> Bool {
   match expr {
     EArray(_) => true,
     _ => false
   }
 }
 
-export let is_eident: (Expr) -> Bool = (expr) -> {
+export fn is_eident(expr: Expr) -> Bool {
   match expr {
     EIdent(_, _) => true,
     _ => false
   }
 }
 
-export let is_etuple: (Expr) -> Bool = (expr) -> {
+export fn is_etuple(expr: Expr) -> Bool {
   match expr {
     ETuple(_) => true,
     _ => false
   }
 }
 
-export let is_ptuple: (Pat) -> Bool = (p) -> {
+export fn is_ptuple(p: Pat) -> Bool {
   match p {
     PTuple(_) => true,
     _ => false
@@ -788,14 +788,14 @@ let op_i32_eq = 70
 
 let op_i32_ne = 71
 
-export let is_erecord: (Expr) -> Bool = (expr) -> {
+export fn is_erecord(expr: Expr) -> Bool {
   match expr {
     ERecord(_, _) => true,
     _ => false
   }
 }
 
-export let is_pstring: (Pat) -> Bool = (p) -> {
+export fn is_pstring(p: Pat) -> Bool {
   match p {
     PString(_) => true,
     _ => false
@@ -808,20 +808,20 @@ let op_i32_mul = 108
 
 let op_i32_sub = 107
 
-export let emit_i32_eq: (Bytes) -> Unit = (buf) -> {
+export fn emit_i32_eq(buf: Bytes) -> Unit {
   bytebuf_push(buf, op_i32_eq)
 }
 
-export let emit_i32_ne: (Bytes) -> Unit = (buf) -> {
+export fn emit_i32_ne(buf: Bytes) -> Unit {
   bytebuf_push(buf, op_i32_ne)
 }
 
-export let get_arm_pat: ((Pat, Expr)) -> Pat = (arm) -> {
+export fn get_arm_pat(arm: (Pat, Expr)) -> Pat {
   let (p, _) = arm
   p
 }
 
-export let rec lookup_ctor: (Array[String], String, Int) -> Int = (ctor_names, name, i) -> {
+export fn lookup_ctor(ctor_names: Array[String], name: String, i: Int) -> Int {
   if i >= Array::length(ctor_names) {
     -1
   }
@@ -834,7 +834,7 @@ export let rec lookup_ctor: (Array[String], String, Int) -> Int = (ctor_names, n
 // Build CtorTable.names_sorted / names_sorted_pos from the name list: a
 // stable sort permutation, so equal names keep insertion order and the
 // leftmost binary-search hit maps to the same index the linear scan found.
-export let ctor_sorted_index: (Array[String]) -> (Array[String], Array[Int]) = (names) -> {
+export fn ctor_sorted_index(names: Array[String]) -> (Array[String], Array[Int]) {
   let perm = sort_perm_by_names(names)
   (apply_perm_strings(names, perm), perm)
 }
@@ -842,7 +842,7 @@ export let ctor_sorted_index: (Array[String]) -> (Array[String], Array[Int]) = (
 // O(log N) replacement for `lookup_ctor(ct.names, name, 0)` at CtorTable
 // call sites. Falls back to the linear scan when the sorted view is absent
 // (defensive: a table built without ctor_sorted_index stays correct).
-export let ctor_table_index_of: (CtorTable, String) -> Int = (ct, name) -> {
+export fn ctor_table_index_of(ct: CtorTable, name: String) -> Int {
   if Array::length(ct.names_sorted) != Array::length(ct.names) {
     lookup_ctor(ct.names, name, 0)
   } else {
@@ -866,7 +866,7 @@ export let ctor_table_index_of: (CtorTable, String) -> Int = (ct, name) -> {
 // on the slot, and otherwise dispatch at runtime on the value's ctor tag
 // (struct construction — both the `S::{...}` ctor path and the set-matched
 // bare-record path — stamps the struct's unique tag at value+0).
-export let struct_field_candidates: (CtorTable, String) -> Array[(Int, Int)] = (ct, field) -> {
+export fn struct_field_candidates(ct: CtorTable, field: String) -> Array[(Int, Int)] {
   let out = Array::slice([
     (0, 0)
   ], 0, 0)
@@ -898,7 +898,7 @@ export let struct_field_candidates: (CtorTable, String) -> Array[(Int, Int)] = (
 // first-match resolution used to miscompile. Empty result = the static
 // fast path is sound; non-empty = the caller must emit a runtime tag
 // dispatch over these, with candidate 0 as the untagged/legacy fallback.
-export let struct_field_dispatch_cases: (Array[(Int, Int)]) -> Array[(Int, Int)] = (cands) -> {
+export fn struct_field_dispatch_cases(cands: Array[(Int, Int)]) -> Array[(Int, Int)] {
   let (_, idx0) = Array::get(cands, 0)
   let out = Array::slice([
     (0, 0)
@@ -923,7 +923,7 @@ export let struct_field_dispatch_cases: (Array[(Int, Int)]) -> Array[(Int, Int)]
 // record out in the struct's DECLARED field order and stamp the struct's
 // ctor tag, making bare records byte-compatible with `S::{...}` ctor-path
 // construction (which already reorders to declared order).
-export let struct_index_by_field_set: (CtorTable, Array[String]) -> Int = (ct, lit_names) -> {
+export fn struct_index_by_field_set(ct: CtorTable, lit_names: Array[String]) -> Int {
   let mut si = 0
   let mut found = -1
   while si < Array::length(ct.struct_names) {
@@ -965,7 +965,7 @@ export let struct_index_by_field_set: (CtorTable, Array[String]) -> Int = (ct, l
 
 // #722: ctor tag for struct index `si`, or 0 (the legacy anonymous-record
 // type id) when the struct is not in the ctor table.
-export let struct_tag_by_index: (CtorTable, Int) -> Int = (ct, si) -> {
+export fn struct_tag_by_index(ct: CtorTable, si: Int) -> Int {
   let ci = ctor_table_index_of(ct, Array::get(ct.struct_names, si))
   if ci >= 0 {
     Array::get(ct.tags, ci)
@@ -980,19 +980,19 @@ let op_i32_gt_u = 75
 
 let op_i64_load = 41
 
-export let emit_i32_eqz: (Bytes) -> Unit = (buf) -> {
+export fn emit_i32_eqz(buf: Bytes) -> Unit {
   bytebuf_push(buf, op_i32_eqz)
 }
 
-export let emit_i32_mul: (Bytes) -> Unit = (buf) -> {
+export fn emit_i32_mul(buf: Bytes) -> Unit {
   bytebuf_push(buf, op_i32_mul)
 }
 
-export let emit_i32_sub: (Bytes) -> Unit = (buf) -> {
+export fn emit_i32_sub(buf: Bytes) -> Unit {
   bytebuf_push(buf, op_i32_sub)
 }
 
-export let emit_str_ref: (Bytes, Int, Int) -> Unit = (buf, offset, length) -> {
+export fn emit_str_ref(buf: Bytes, offset: Int, length: Int) -> Unit {
   emit_i64_const(buf, offset)
   emit_i64_const(buf, 32)
   emit_i64_shl(buf)
@@ -1000,47 +1000,47 @@ export let emit_str_ref: (Bytes, Int, Int) -> Unit = (buf, offset, length) -> {
   emit_i64_or(buf)
 }
 
-export let get_arm_body: ((Pat, Expr)) -> Expr = (arm) -> {
+export fn get_arm_body(arm: (Pat, Expr)) -> Expr {
   let (_, b) = arm
   b
 }
 
-export let get_efn_body: (Expr) -> Expr with { Error } = (expr) -> {
+export fn get_efn_body(expr: Expr) -> Expr with { Error } {
   match expr {
     EFn(_, _, _, _, _, body) => body,
     _ => throw("not EFn")
   }
 }
 
-export let get_eif_cond: (Expr) -> Expr with { Error } = (expr) -> {
+export fn get_eif_cond(expr: Expr) -> Expr with { Error } {
   match expr {
     EIf(c, _, _) => c,
     _ => throw("not EIf")
   }
 }
 
-export let get_eif_else: (Expr) -> Expr with { Error } = (expr) -> {
+export fn get_eif_else(expr: Expr) -> Expr with { Error } {
   match expr {
     EIf(_, _, e) => e,
     _ => throw("not EIf")
   }
 }
 
-export let get_eif_then: (Expr) -> Expr with { Error } = (expr) -> {
+export fn get_eif_then(expr: Expr) -> Expr with { Error } {
   match expr {
     EIf(_, t, _) => t,
     _ => throw("not EIf")
   }
 }
 
-export let get_elet_val: (Expr) -> Expr with { Error } = (expr) -> {
+export fn get_elet_val(expr: Expr) -> Expr with { Error } {
   match expr {
     ELet(_, val, _, _) => val,
     _ => throw("not ELet")
   }
 }
 
-export let is_ctor_call: (Expr, CtorTable) -> Bool = (value, ct) -> {
+export fn is_ctor_call(value: Expr, ct: CtorTable) -> Bool {
   match value {
     ECall(callee, _, _) => match callee {
       EIdent(nm, _) => ctor_table_index_of(ct, nm) >= 0,
@@ -1052,7 +1052,7 @@ export let is_ctor_call: (Expr, CtorTable) -> Bool = (value, ct) -> {
 
 let op_i64_store = 55
 
-export let resolve_func: (FuncTable, String) -> (Int, Int, Int) with { Error } = (ft, name) -> {
+export fn resolve_func(ft: FuncTable, name: String) -> (Int, Int, Int) with { Error } {
   let len = Array::length(ft.names)
   let mut i = 0
   let mut found = -1
@@ -1070,7 +1070,7 @@ export let resolve_func: (FuncTable, String) -> (Int, Int, Int) with { Error } =
   (Array::get(ft.indices, found), Array::get(ft.params, found), Array::get(ft.returns, found))
 }
 
-export let emit_binop_op: (Bytes, String) -> Unit with { Error } = (buf, op) -> {
+export fn emit_binop_op(buf: Bytes, op: String) -> Unit with { Error } {
   if op == "+" {
     emit_i64_add(buf)
   }
@@ -1130,28 +1130,28 @@ export let emit_binop_op: (Bytes, String) -> Unit with { Error } = (buf, op) -> 
   }
 }
 
-export let emit_i32_ge_u: (Bytes) -> Unit = (buf) -> {
+export fn emit_i32_ge_u(buf: Bytes) -> Unit {
   bytebuf_push(buf, op_i32_ge_u)
 }
 
-export let emit_i32_gt_u: (Bytes) -> Unit = (buf) -> {
+export fn emit_i32_gt_u(buf: Bytes) -> Unit {
   bytebuf_push(buf, op_i32_gt_u)
 }
 
-export let emit_i64_load: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
+export fn emit_i64_load(buf: Bytes, align: Int, offset: Int) -> Unit {
   bytebuf_push(buf, op_i64_load)
   leb128_encode_u32(buf, align)
   leb128_encode_u32(buf, offset)
 }
 
-export let get_ebinop_op: (Expr) -> String with { Error } = (expr) -> {
+export fn get_ebinop_op(expr: Expr) -> String with { Error } {
   match expr {
     EBinOp(op, _, _) => op,
     _ => throw("not EBinOp")
   }
 }
 
-export let get_elet_body: (Expr) -> Expr with { Error } = (expr) -> {
+export fn get_elet_body(expr: Expr) -> Expr with { Error } {
   match expr {
     ELet(_, _, body, _) => body,
     _ => throw("not ELet")
@@ -1161,28 +1161,28 @@ export let get_elet_body: (Expr) -> Expr with { Error } = (expr) -> {
 // #644: the let-statement's source offset (the `let` keyword token), -1 for
 // synthesized lets. Break-mode codegen uses it as the dbg_line fallback when
 // the bound value is a bare literal that carries no offset of its own.
-export let get_elet_off: (Expr) -> Int with { Error } = (expr) -> {
+export fn get_elet_off(expr: Expr) -> Int with { Error } {
   match expr {
     ELet(_, _, _, soff) => soff,
     _ => throw("not ELet")
   }
 }
 
-export let get_eletmut_off: (Expr) -> Int with { Error } = (expr) -> {
+export fn get_eletmut_off(expr: Expr) -> Int with { Error } {
   match expr {
     ELetMut(_, _, _, soff) => soff,
     _ => throw("not ELetMut")
   }
 }
 
-export let get_elet_name: (Expr) -> String with { Error } = (expr) -> {
+export fn get_elet_name(expr: Expr) -> String with { Error } {
   match expr {
     ELet(name, _, _, _) => name,
     _ => throw("not ELet")
   }
 }
 
-export let get_func_body: (Stmt) -> Expr with { Error } = (stmt) -> {
+export fn get_func_body(stmt: Stmt) -> Expr with { Error } {
   match stmt {
     SLet(_, _, _, _, expr) => match expr {
       EFn(_, _, _, _, _, body) => body,
@@ -1192,28 +1192,28 @@ export let get_func_body: (Stmt) -> Expr with { Error } = (stmt) -> {
   }
 }
 
-export let get_slet_expr: (Stmt) -> Expr with { Error } = (stmt) -> {
+export fn get_slet_expr(stmt: Stmt) -> Expr with { Error } {
   match stmt {
     SLet(_, _, _, _, expr) => expr,
     _ => throw("not SLet")
   }
 }
 
-export let get_slet_name: (Stmt) -> String with { Error } = (stmt) -> {
+export fn get_slet_name(stmt: Stmt) -> String with { Error } {
   match stmt {
     SLet(_, _, name, _, _) => name,
     _ => throw("not SLet")
   }
 }
 
-export let get_slet_type: (Stmt) -> Option[TypeExpr] = (stmt) -> {
+export fn get_slet_type(stmt: Stmt) -> Option[TypeExpr] {
   match stmt {
     SLet(_, _, _, ty, _) => ty,
     _ => None
   }
 }
 
-export let resolve_local: (Array[String], String, String) -> Int with { Error } = (names, name, tag) -> {
+export fn resolve_local(names: Array[String], name: String, tag: String) -> Int with { Error } {
   let mut i = Array::length(names) - 1
   let mut result = -1
   while i >= 0 {
@@ -1230,13 +1230,13 @@ export let resolve_local: (Array[String], String, String) -> Int with { Error } 
   result
 }
 
-export let emit_i64_store: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
+export fn emit_i64_store(buf: Bytes, align: Int, offset: Int) -> Unit {
   bytebuf_push(buf, op_i64_store)
   leb128_encode_u32(buf, align)
   leb128_encode_u32(buf, offset)
 }
 
-export let emit_box_float: (Bytes, CompileCtx, Int, Int) -> Unit = (buf, ctx, bits_local, box_local) -> {
+export fn emit_box_float(buf: Bytes, ctx: CompileCtx, bits_local: Int, box_local: Int) -> Unit {
   emit_local_set(buf, bits_local)
   emit_i64_const(buf, 16)
   emit_call(buf, ctx.rc_alloc_func_idx)
@@ -1260,7 +1260,7 @@ export let emit_box_float: (Bytes, CompileCtx, Int, Int) -> Unit = (buf, ctx, bi
   emit_i64_or(buf)
 }
 
-export let find_func_stmt: (Array[Stmt], String) -> Stmt with { Error } = (stmts, name) -> {
+export fn find_func_stmt(stmts: Array[Stmt], name: String) -> Stmt with { Error } {
   let len = Array::length(stmts)
   let mut i = 0
   let mut found = -1
@@ -1283,7 +1283,7 @@ export let find_func_stmt: (Array[Stmt], String) -> Stmt with { Error } = (stmts
   Array::get(stmts, found)
 }
 
-export let emit_unbox_float: (Bytes) -> Unit = (buf) -> {
+export fn emit_unbox_float(buf: Bytes) -> Unit {
   emit_i64_const(buf, -2)
   emit_i64_and(buf)
   emit_i32_wrap_i64(buf)
@@ -1297,7 +1297,7 @@ export let emit_unbox_float: (Bytes) -> Unit = (buf) -> {
 // live in tagged space too — stepping by raw 2 (= logical 1). Without RC the
 // counter is a raw index and steps by 1. Using a raw 1 under RC makes the loop
 // run twice per element (each read/processed twice; #704).
-export let emit_index_one: (Bytes, CompileCtx) -> Unit = (buf, ctx) -> {
+export fn emit_index_one(buf: Bytes, ctx: CompileCtx) -> Unit {
   if ctx.enable_rc {
     emit_i64_const(buf, 2)
   } else {
@@ -1314,11 +1314,11 @@ export let emit_index_one: (Bytes, CompileCtx) -> Unit = (buf, ctx) -> {
 // #715 recurrence guard: base address of the shadow-liveness byte table
 // (1 byte per heap address at base+vptr) and the reservation pad that keeps
 // it inside linear memory. Only referenced when compiling with rc_shadow.
-export let rc_shadow_base: () -> Int = () -> {
+export fn rc_shadow_base() -> Int {
   268435456
 }
 
-export let rc_shadow_reserve: () -> Int = () -> {
+export fn rc_shadow_reserve() -> Int {
   536870912
 }
 
@@ -1333,7 +1333,7 @@ export let rc_shadow_reserve: () -> Int = () -> {
 // incremented, never decremented, never freed -- see gen_rc_drop_body's
 // matching skip). `push_addr` emits the i32 address of the rc word; it is
 // invoked up to three times, so it must be a pure push.
-export let emit_rc_word_inc_saturating: (Bytes, () -> Unit) -> Unit = (buf, push_addr) -> {
+export fn emit_rc_word_inc_saturating(buf: Bytes, push_addr: () -> Unit) -> Unit {
   push_addr()
   emit_i32_load(buf, 2, 0)
   emit_i32_const(buf, 16777215)
@@ -1351,7 +1351,7 @@ export let emit_rc_word_inc_saturating: (Bytes, () -> Unit) -> Unit = (buf, push
   emit_end(buf)
 }
 
-export let emit_rc_dup_guarded: (Bytes, Int, Bool) -> Unit = (buf, local_idx, rc_shadow) -> {
+export fn emit_rc_dup_guarded(buf: Bytes, local_idx: Int, rc_shadow: Bool) -> Unit {
   emit_local_get(buf, local_idx)
   emit_i64_const(buf, 1)
   emit_i64_and(buf)
@@ -1391,7 +1391,7 @@ export let emit_rc_dup_guarded: (Bytes, Int, Bool) -> Unit = (buf, local_idx, rc
   emit_end(buf)
 }
 
-export let fn_type_param_types: (Option[TypeExpr]) -> Option[Array[TypeExpr]] = (ty) -> {
+export fn fn_type_param_types(ty: Option[TypeExpr]) -> Option[Array[TypeExpr]] {
   match ty {
     Some(t) =>
     match t {
@@ -1402,14 +1402,14 @@ export let fn_type_param_types: (Option[TypeExpr]) -> Option[Array[TypeExpr]] = 
   }
 }
 
-export let is_nullary_ctor_ident: (Expr, CtorTable) -> Bool = (value, ct) -> {
+export fn is_nullary_ctor_ident(value: Expr, ct: CtorTable) -> Bool {
   match value {
     EIdent(nm, _) => ctor_table_index_of(ct, nm) >= 0,
     _ => false
   }
 }
 
-export let name_has_effect_prefix: (String, String) -> Bool = (full, eff) -> {
+export fn name_has_effect_prefix(full: String, eff: String) -> Bool {
   let el = String::length(eff)
   let fl = String::length(full)
   if fl < el + 2 {
@@ -1429,7 +1429,7 @@ export let name_has_effect_prefix: (String, String) -> Bool = (full, eff) -> {
   }
 }
 
-export let effect_name_to_tag: (Array[String], String) -> Int = (effect_names, full) -> {
+export fn effect_name_to_tag(effect_names: Array[String], full: String) -> Int {
   let n = Array::length(effect_names)
   let mut result = 3 + n
   let mut i = 0
@@ -1444,7 +1444,7 @@ export let effect_name_to_tag: (Array[String], String) -> Int = (effect_names, f
   result
 }
 
-export let effect_op_declared_arity: (Array[String], Array[Int], String) -> Int = (keys, arities, full) -> {
+export fn effect_op_declared_arity(keys: Array[String], arities: Array[Int], full: String) -> Int {
   let n = Array::length(keys)
   let mut result = -1
   let mut i = 0
@@ -1461,7 +1461,7 @@ export let effect_op_declared_arity: (Array[String], Array[Int], String) -> Int 
 
 // #665: index of a qualified op key (`Eff::Op`) in the global effect_op_keys
 // table — the operation discriminant for multi-operation handler dispatch.
-export let effect_op_index: (Array[String], String) -> Int = (keys, full) -> {
+export fn effect_op_index(keys: Array[String], full: String) -> Int {
   let n = Array::length(keys)
   let mut result = 0 - 1
   let mut i = 0
@@ -1476,7 +1476,7 @@ export let effect_op_index: (Array[String], String) -> Int = (keys, full) -> {
   result
 }
 
-export let emit_heap_grow_after_heap_set: (Bytes, CompileCtx) -> Unit = (buf, ctx) -> {
+export fn emit_heap_grow_after_heap_set(buf: Bytes, ctx: CompileCtx) -> Unit {
   if ctx.heap_grow_check_func_idx >= 0 {
     emit_call(buf, ctx.heap_grow_check_func_idx)
   } else {

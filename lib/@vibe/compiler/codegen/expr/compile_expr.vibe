@@ -44,7 +44,7 @@ import ./compile_match.vibe {
 // Evaluates each operand to a pointer in a temp local, then ANDs an element-wise
 // generic `eq` over all elements. Produces a raw i64 0/1. `compile_expr_fn` is
 // the main expression compiler, threaded to avoid a forward reference.
-let emit_tuple_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, num, local_names, next_local, ctx, ld, compile_expr_fn) -> {
+fn emit_tuple_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, num: Int, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_expr_fn: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } {
   let aptr = next_local
   Array::push(local_names, "__eqa")
   let bptr = next_local + 1
@@ -101,7 +101,7 @@ let emit_tuple_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCt
 // — when tags match — ANDs an element-wise generic `eq` over the `fc` fields.
 // Flat ctors (Int/String/Bool fields) are correct; nested-ctor fields fall back
 // to `eq` (so recursive types stay non-structural — tracked in #672).
-let emit_ctor_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, fc, local_names, next_local, ctx, ld, compile_expr_fn) -> {
+fn emit_ctor_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, fc: Int, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_expr_fn: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } {
   let aptr = next_local
   Array::push(local_names, "__ceqa")
   let bptr = next_local + 1
@@ -205,7 +205,7 @@ let emit_ctor_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx
 // structural comparator below can walk directly — a tuple literal, a
 // payload-ctor call, a nullary-ctor ident, or a record literal (records and
 // ctors share the runtime [tag@0][argc@4][fields@8+] layout since #722).
-let is_agg_shape: (Expr, CtorTable) -> Bool = (e, ct) -> {
+fn is_agg_shape(e: Expr, ct: CtorTable) -> Bool {
   is_etuple(e) || is_ctor_call(e, ct) || is_nullary_ctor_ident(e, ct) || is_erecord(e)
 }
 
@@ -218,7 +218,7 @@ let is_agg_shape: (Expr, CtorTable) -> Bool = (e, ct) -> {
 // (not an aggregate shape — a plain leaf, gated by is_agg_shape at the call
 // site) otherwise. This is what lets `(a, 3) == (b, 3)` recurse into `a`/`b`'s
 // OWN tracked nested shape instead of only comparing the outer pair.
-let resolved_element_shape: (Expr, CompileCtx, Array[String]) -> Expr = (el, ctx, local_names) -> {
+fn resolved_element_shape(el: Expr, ctx: CompileCtx, local_names: Array[String]) -> Expr {
   if is_agg_shape(el, ctx.ctor_table) {
     el
   } else if is_eident(el) {
@@ -239,7 +239,7 @@ let resolved_element_shape: (Expr, CompileCtx, Array[String]) -> Expr = (el, ctx
 // cfc computation used, so a defensively-parsed record-sugar ctor call
 // (single ERecord arg) reports its RECORD's field count/exprs, not the
 // call's own 1-arg arity.
-let ctor_shape_field_exprs: (Expr, CtorTable) -> Array[Expr] = (shape, ct) -> {
+fn ctor_shape_field_exprs(shape: Expr, ct: CtorTable) -> Array[Expr] {
   if is_ctor_call(shape, ct) {
     let cargs = get_ecall_args(shape)
     if Array::length(cargs) == 1 {
@@ -298,7 +298,7 @@ let ctor_shape_field_exprs: (Expr, CtorTable) -> Array[Expr] = (shape, ct) -> {
 // is not statically an aggregate (scalar, or an opaque call-result / bound
 // name we cannot see the literal shape of) keeps the old generic-`eq` leaf
 // comparison — same residual as before, just one level shallower.
-let rec emit_eq_shape_slots: (Bytes, Expr, Int, Int, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, shape, asl, bsl, local_names, nl0, ctx, ld, ce) -> {
+fn emit_eq_shape_slots(buf: Bytes, shape: Expr, asl: Int, bsl: Int, local_names: Array[String], nl0: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } {
   let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
   if is_etuple(shape) {
     let elems = get_etuple_elems(shape)
@@ -443,7 +443,7 @@ let rec emit_eq_shape_slots: (Bytes, Expr, Int, Int, Array[String], Int, Compile
 // callers fall back to the old flat comparators when only a shallow kind+n
 // is known (no literal in scope — e.g. a round-2 declared-return-type or
 // dynamic-argc tracked binding), which is unchanged from before this change.
-let emit_eq_shape_top: (Bytes, Expr, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, shape, lhs, rhs, local_names, next_local, ctx, ld, ce) -> {
+fn emit_eq_shape_top(buf: Bytes, shape: Expr, lhs: Expr, rhs: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } {
   let aptr = next_local
   Array::push(local_names, "__seqa")
   let bptr = next_local + 1
@@ -462,7 +462,7 @@ let emit_eq_shape_top: (Bytes, Expr, Expr, Expr, Array[String], Int, CompileCtx,
 // condition fast-paths — calls this, so structural equality is consistent
 // across all of them (the post-processing each site applies to the 0/1 result —
 // `i32_wrap`/`i32_eqz`/rc-shift — is unchanged).
-let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, ce) -> {
+fn emit_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } {
   // #724: aggregate shape of a bare-ident operand whose `let` value was a
   // tuple/ctor/record literal (kind*64+n, or -1) — extends the structural
   // comparators below to both-sides-bound comparisons.
@@ -563,7 +563,7 @@ let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Byt
   }
 }
 
-export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld) -> {
+export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int) -> Int with { Error } {
   let __tag = expr_tag(expr)
   if __tag == 0 {
     let n = get_eint_value(expr)

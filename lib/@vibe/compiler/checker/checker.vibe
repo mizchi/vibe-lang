@@ -22,7 +22,7 @@ import ./checker_resolve.vibe {
 
 //# Functions
 
-let min_int: (Int, Int) -> Int = (a, b) -> {
+fn min_int(a: Int, b: Int) -> Int {
   if a < b {
     a
   } else {
@@ -35,7 +35,7 @@ let min_int: (Int, Int) -> Int = (a, b) -> {
 // the exact line:col instead of falling back to a first-occurrence text scan.
 // String::concat only (never `+` / interpolation — both mis-codegen to NUL in
 // selfhost). off < 0 => no marker (heuristic fallback retained).
-let off_marker: (Int) -> String = (off) -> {
+fn off_marker(off: Int) -> String {
   if off >= 0 {
     String::concat(" [@off=", String::concat(__to_string(off), "]"))
   } else {
@@ -52,7 +52,7 @@ let off_marker: (Int) -> String = (off) -> {
 // length matches the source span); keep plain off_marker where the offset is an
 // anchor rather than the token start (e.g. a field error whose offset is the
 // base expr). String::concat only (NUL-miscodegen hazard for `+`/interpolation).
-let off_marker_len: (Int, Int) -> String = (off, len) -> {
+fn off_marker_len(off: Int, len: Int) -> String {
   if off >= 0 && len > 0 {
     String::concat(" [@off=", String::concat(__to_string(off), String::concat(":", String::concat(__to_string(off + len), "]"))))
   } else {
@@ -60,7 +60,7 @@ let off_marker_len: (Int, Int) -> String = (off, len) -> {
   }
 }
 
-let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (first, rest) -> {
+fn prepend_expr(first: Expr, rest: Array[Expr]) -> Array[Expr] {
   let out = Array::slice([
     EUnit
   ], 0, 0)
@@ -76,7 +76,7 @@ let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (first, rest) -> {
 // Replace the abstract `Self` type (resolved as `CtNamed("Self", _)`) inside a
 // trait-method signature with the concrete receiver type, when typing a
 // `T::method` call against a bounded generic parameter T.
-let rec subst_self_in_type: (Type, Type) -> Type = (ty, self_ty) -> {
+fn subst_self_in_type(ty: Type, self_ty: Type) -> Type {
   match ty {
     CtNamed(n, args) => if n == "Self" {
       self_ty
@@ -103,7 +103,7 @@ let rec subst_self_in_type: (Type, Type) -> Type = (ty, self_ty) -> {
 // resolves to a real type (primitive or declared) is kept; only truly-unknown
 // named types — the trait's own element type params, which the uniform
 // representation erases — are relaxed. (#636.)
-let rec relax_unknown_named: (Type, Array[TypeDef]) -> Type = (ty, defs) -> {
+fn relax_unknown_named(ty: Type, defs: Array[TypeDef]) -> Type {
   match ty {
     CtNamed(n, args) => {
       let known = match find_typedef(defs, n) {
@@ -139,7 +139,7 @@ let rec relax_unknown_named: (Type, Array[TypeDef]) -> Type = (ty, defs) -> {
 // signature with `Self` substituted by T. Returns None for any other qualified
 // name (concrete `Type::method`, module-qualified names, etc.) so the existing
 // resolution paths are untouched. (PR-3 component 2.)
-let resolve_trait_method_ident: (String, TypeEnv, Array[TypeDef], Subst) -> Option[Type] = (name, env, defs, s) -> {
+fn resolve_trait_method_ident(name: String, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Option[Type] {
   let idx = String::index_of(name, "::")
   if idx < 0 {
     None
@@ -191,7 +191,7 @@ let resolve_trait_method_ident: (String, TypeEnv, Array[TypeDef], Subst) -> Opti
 // known enum that actually owns `member` (so unrelated `T::method` names fall
 // through to the `unknown name` path). Returns the polymorphic env type as-is;
 // callers instantiate it exactly like a bare ident. (#672 qualified ctors.)
-let resolve_qualified_ctor_ident: (String, TypeEnv, Array[TypeDef]) -> Option[Type] = (name, env, defs) -> {
+fn resolve_qualified_ctor_ident(name: String, env: TypeEnv, defs: Array[TypeDef]) -> Option[Type] {
   let idx = String::index_of(name, "::")
   if idx < 0 {
     None
@@ -222,7 +222,7 @@ let resolve_qualified_ctor_ident: (String, TypeEnv, Array[TypeDef]) -> Option[Ty
   }
 }
 
-let expr_ident_name_or_empty: (Expr) -> String = (expr) -> {
+fn expr_ident_name_or_empty(expr: Expr) -> String {
   match expr {
     EIdent(name, _) => name,
     _ => ""
@@ -234,7 +234,7 @@ let expr_ident_name_or_empty: (Expr) -> String = (expr) -> {
 // function VALUES are inferred imprecisely (a `with { Error }` callback often
 // arrives typed with no effect), so an effect-only difference must not be
 // reported as a type error — only the structural shape is enforced here.
-let rec strip_effects: (Type) -> Type = (ty) -> {
+fn strip_effects(ty: Type) -> Type {
   match ty {
     CtFn(params, ret, _) => {
       let out = Array::slice([
@@ -288,7 +288,7 @@ let rec strip_effects: (Type) -> Type = (ty) -> {
 // whose `None` arm is `return None` — it must not force the match's result type
 // (else `T` vs `Option[T]` clashes). A diverging arm is a bare `return`, or a
 // block (`ESeq`) whose final expr diverges.
-let rec arm_body_diverges: (Expr) -> Bool = (body) -> {
+fn arm_body_diverges(body: Expr) -> Bool {
   match body {
     EReturn(_) => true,
     ESeq(_, rest) => arm_body_diverges(rest),
@@ -296,7 +296,7 @@ let rec arm_body_diverges: (Expr) -> Bool = (body) -> {
   }
 }
 
-let rec type_is_ground: (Type) -> Bool = (t) -> {
+fn type_is_ground(t: Type) -> Bool {
   match t {
     CtNamed(_, _) => false,
     CtVar(_) => false,
@@ -335,7 +335,7 @@ let rec type_is_ground: (Type) -> Bool = (t) -> {
 // against a fully GROUND expected type, no instantiation of its variables can
 // make it match, so the mismatch is real (unlike an un-instantiated generic
 // param `CtNamed(T)`, which the checker simply has not substituted yet).
-let rec type_no_named: (Type) -> Bool = (t) -> {
+fn type_no_named(t: Type) -> Bool {
   match t {
     CtNamed(_, _) => false,
     CtForAll(_, _, _) => false,
@@ -373,7 +373,7 @@ let rec type_no_named: (Type) -> Bool = (t) -> {
 // instantiation of their inner type parameters (an `Int` is never an `Array[T]`
 // for any `T`), so such a unify failure is a real mismatch even when the inner
 // parts are generic — which the whole-type groundness gate misses.
-let head_kind: (Type) -> Int = (t) -> {
+fn head_kind(t: Type) -> Int {
   match t {
     CtInt => 1,
     CtDouble => 2,
@@ -398,7 +398,7 @@ let head_kind: (Type) -> Int = (t) -> {
 // (ADR-0012) into user programs. Recognise a Stream receiver so the Array
 // head-check sites can reject it explicitly; head_kind itself is unchanged
 // (other CtNamed heads stay tolerated, the #826 discipline).
-let is_stream_named_type: (Type) -> Bool = (t) -> {
+fn is_stream_named_type(t: Type) -> Bool {
   match t {
     CtNamed(n, _) => n == "Stream",
     _ => false
@@ -407,7 +407,7 @@ let is_stream_named_type: (Type) -> Bool = (t) -> {
 
 // True when every declared field type of a struct is ground (the struct is not
 // generic). `S::{ ... }` for such a struct can safely be typed `CtStruct(S)`.
-let struct_fields_ground: (Array[(String, Type)]) -> Bool = (dfields) -> {
+fn struct_fields_ground(dfields: Array[(String, Type)]) -> Bool {
   let mut ok = true
   let mut i = 0
   while i < Array::length(dfields) {
@@ -426,7 +426,7 @@ let struct_fields_ground: (Array[(String, Type)]) -> Bool = (dfields) -> {
 // effects erased, and tolerate the difference if the structure matches — effect
 // inference on function values is imprecise, so effect-only differences must not
 // be reported here. Returns the (possibly extended) substitution.
-export let check_assignable: (Type, Type, Subst, Array[String], String, Int) -> Subst = (expected, actual, s, errors, what, off) -> {
+export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array[String], what: String, off: Int) -> Subst {
   match unify(expected, actual, s) {
     Some(su) => su,
     None => {
@@ -472,7 +472,7 @@ export let check_assignable: (Type, Type, Subst, Array[String], String, Int) -> 
 // Struct construction `S::{ ... }` drops the name `S` at parse time (becomes a
 // bare ERecord), so the struct is resolved by matching the field-name SET. True
 // when `declared` and `actual` have the same field names.
-let struct_field_names_match: (Array[(String, Type)], Array[(String, Type)]) -> Bool = (declared, actual) -> {
+fn struct_field_names_match(declared: Array[(String, Type)], actual: Array[(String, Type)]) -> Bool {
   if Array::length(declared) != Array::length(actual) {
     false
   } else {
@@ -503,7 +503,7 @@ let struct_field_names_match: (Array[(String, Type)], Array[(String, Type)]) -> 
 // undeclared/builtin/generic, or the op is unknown WITHIN a declared effect is
 // reported separately by the callers — this returns None only when there is
 // nothing to validate against (pre-#813 behavior).
-let effect_op_sig: (Array[TypeDef], String) -> Option[(Array[Type], Type)] = (defs, qname) -> {
+fn effect_op_sig(defs: Array[TypeDef], qname: String) -> Option[(Array[Type], Type)] {
   let ci = String::index_of(qname, "::")
   if ci < 0 {
     None
@@ -536,7 +536,7 @@ let effect_op_sig: (Array[TypeDef], String) -> Option[(Array[Type], Type)] = (de
 // #813: is `eff` a DECLARED effect (TDEffect) in this module? Distinguishes
 // "unknown op of a declared effect" (reportable) from builtin/imported
 // effects the registry cannot see (skip).
-let effect_is_declared: (Array[TypeDef], String) -> Bool = (defs, eff) -> {
+fn effect_is_declared(defs: Array[TypeDef], eff: String) -> Bool {
   match find_typedef(defs, eff) {
     Some(td) => match td {
       TDEffect(_, _) => true,
@@ -546,7 +546,7 @@ let effect_is_declared: (Array[TypeDef], String) -> Bool = (defs, eff) -> {
   }
 }
 
-let lookup_actual_field_ty: (Array[(String, Type)], String) -> Option[Type] = (actual, name) -> {
+fn lookup_actual_field_ty(actual: Array[(String, Type)], name: String) -> Option[Type] {
   let mut i = 0
   let mut out = None
   while i < Array::length(actual) {
@@ -563,7 +563,7 @@ let lookup_actual_field_ty: (Array[(String, Type)], String) -> Option[Type] = (a
 // record literal's `actual` fields: every provided field name appears in the
 // struct, and the struct declares strictly more fields. Used to flag a record
 // that omits required fields.
-let struct_is_strict_superset: (Array[(String, Type)], Array[(String, Type)]) -> Bool = (dfields, actual) -> {
+fn struct_is_strict_superset(dfields: Array[(String, Type)], actual: Array[(String, Type)]) -> Bool {
   if Array::length(dfields) <= Array::length(actual) {
     false
   } else {
@@ -597,7 +597,7 @@ let struct_is_strict_superset: (Array[(String, Type)], Array[(String, Type)]) ->
 // (uniquely) matching struct definition — previously unchecked, so
 // `S::{ x: "oops" }` for `struct S { x: Int }` was accepted. Conservative: if 0
 // or >1 structs share the field-name set, skip (no struct could be determined).
-let check_record_fields: (Array[TypeDef], Array[(String, Type)], Subst, Array[String]) -> Subst = (defs, actual, s, errors) -> {
+fn check_record_fields(defs: Array[TypeDef], actual: Array[(String, Type)], s: Subst, errors: Array[String]) -> Subst {
   let mut matchct = 0
   let mut matched_fields = Array::slice([
     ("", CtUnknown)
@@ -683,7 +683,7 @@ let check_record_fields: (Array[TypeDef], Array[(String, Type)], Subst, Array[St
 // to give a bare `S::{ ... }` literal the type `CtStruct(S)` instead of
 // CtUnknown, which in turn lets `mut`-field write checking see the struct
 // without disturbing generic-struct inference.
-let resolve_record_struct_name: (Array[TypeDef], Array[(String, Type)]) -> Option[String] = (defs, actual) -> {
+fn resolve_record_struct_name(defs: Array[TypeDef], actual: Array[(String, Type)]) -> Option[String] {
   let mut matchct = 0
   let mut out = None
   let mut ground = false
@@ -710,7 +710,7 @@ let resolve_record_struct_name: (Array[TypeDef], Array[(String, Type)]) -> Optio
 // of silently swallowing it. `__to_string` (the polymorphic interpolation
 // stringifier: `"\{x}"` -> `__to_string(x)` wraps values of any type, but the
 // polyfill annotates it `(Int) -> String`) is exempt.
-let unify_call_args: (Array[Type], Array[Type], Subst, Array[String], String, Int) -> Subst = (param_tys, arg_tys, s, errors, label, off) -> {
+fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], s: Subst, errors: Array[String], label: String, off: Int) -> Subst {
   let mut out = s
   let mut ui = 0
   let ul = min_int(Array::length(arg_tys), Array::length(param_tys))
@@ -730,11 +730,11 @@ let unify_call_args: (Array[Type], Array[Type], Subst, Array[String], String, In
   out
 }
 
-export let fn_return_env_name: (String) -> String = (name) -> {
+export fn fn_return_env_name(name: String) -> String {
   String::concat("__fn_ret__:", name)
 }
 
-let direct_builtin_return: (String) -> Option[Type] = (name) -> {
+fn direct_builtin_return(name: String) -> Option[Type] {
   if name == "Bytes::length" {
     Some(CtInt)
   }
@@ -797,7 +797,7 @@ let direct_builtin_return: (String) -> Option[Type] = (name) -> {
   }
 }
 
-let direct_call_return: (TypeEnv, String) -> Option[Type] = (env, name) -> {
+fn direct_call_return(env: TypeEnv, name: String) -> Option[Type] {
   match env_lookup(env, name) {
     Some(_) => None,
     None => direct_builtin_return(name)
@@ -810,7 +810,7 @@ let direct_call_return: (TypeEnv, String) -> Option[Type] = (env, name) -> {
 // the direct-call fast path WITHOUT a per-call `lookup_builtin` (the #626
 // seed-heap OOM constraint). Only entries whose first-arg head is certain are
 // listed; anything else returns 0 (tolerated).
-let builtin_first_arg_head: (String) -> Int = (name) -> {
+fn builtin_first_arg_head(name: String) -> Int {
   if name == "Array::length" || name == "Array::get" || name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::slice" || name == "Array::concat" || name == "Array::reverse" || name == "Array::truncate" || name == "Array::foreach" || name == "Array::contains" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "Array::filter" {
     9
   } else if name == "String::length" || name == "String::substring" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::index_of" || name == "String::last_index_of" || name == "String::char_code_at" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "String::split" || name == "String::concat" {
@@ -829,7 +829,7 @@ let builtin_first_arg_head: (String) -> Int = (name) -> {
 // `String::substring`, slipped through. 0 = tolerate (no certain head). Only
 // monomorphic, non-callback positions are listed (so HOF args like Array::map's
 // function stay untouched — those need real signature inference, not a head).
-let builtin_arg_head_rest: (String, Int) -> Int = (name, i) -> {
+fn builtin_arg_head_rest(name: String, i: Int) -> Int {
   // String head = 4, Int head = 1, Bytes head = 7 (see head_kind).
   if name == "String::concat" {
     if i == 1 { 4 } else { 0 }
@@ -856,7 +856,7 @@ let builtin_arg_head_rest: (String, Int) -> Int = (name, i) -> {
 // the module failed validation only at instantiation). Only builtins whose
 // arity is certain are listed; anything variadic-ish or unsure stays -1.
 // `Bytes::new` is handled separately (0 or 1 capacity arg).
-let builtin_fixed_arity: (String) -> Int = (name) -> {
+fn builtin_fixed_arity(name: String) -> Int {
   if name == "Array::length" || name == "Array::reverse" || name == "String::length" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::from_char_code" || name == "String::iter_length" || name == "Bytes::length" || name == "Bytes::to_array" || name == "Bytes::from_array" || name == "Map::keys" || name == "Map::iter_length" || name == "Char::to_int" || name == "Char::from_int" || name == "Double::to_int" || name == "Double::to_i64_bits" || name == "Double::from_i64_bits" || name == "Int::to_double" || name == "not" || name == "print" || name == "println" || name == "assert" || name == "assert_true" || name == "__to_string" || name == "FixedArray::length" {
     1
   } else if name == "Array::get" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "Array::concat" || name == "Array::contains" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "Array::filter" || name == "Array::join" || name == "Array::foreach" || name == "String::equals" || name == "String::concat" || name == "String::char_code_at" || name == "String::index_of" || name == "String::last_index_of" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "String::split" || name == "String::join" || name == "String::iter_get" || name == "Bytes::get" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::concat" || name == "Map::has_key" || name == "map_has" || name == "eq" || name == "assert_eq" || name == "FixedArray::get" || name == "FixedArray::make" {
@@ -880,7 +880,7 @@ let builtin_fixed_arity: (String) -> Int = (name) -> {
 // the body never pins to a concrete type) stays tolerant — only an explicit
 // wrong annotation (or a body that pins the param to a mismatching concrete
 // type) is rejected. `expected_ty` is the param (the slot), `elem` the value.
-let check_hof_param_vs_elem: (Type, Type, Int, Subst, Array[String], String) -> Subst = (recv_ty, fn_ty, pidx, s, errors, msg) -> {
+fn check_hof_param_vs_elem(recv_ty: Type, fn_ty: Type, pidx: Int, s: Subst, errors: Array[String], msg: String) -> Subst {
   match recv_ty {
     CtArray(elem) => match fn_ty {
       CtFn(ptys, _, _) => if Array::length(ptys) > pidx {
@@ -898,7 +898,7 @@ let check_hof_param_vs_elem: (Type, Type, Int, Subst, Array[String], String) -> 
 // Array::push_all). `a_app` / `b_app` are already subst-applied; when both are
 // concrete `CtArray`, ground-gated check_assignable compares their element
 // types (generic / var operands stay tolerant).
-let check_two_array_elems: (Type, Type, Subst, Array[String], String) -> Subst = (a_app, b_app, s, errors, msg) -> {
+fn check_two_array_elems(a_app: Type, b_app: Type, s: Subst, errors: Array[String], msg: String) -> Subst {
   match a_app {
     CtArray(ea) => match b_app {
       CtArray(eb) => check_assignable(subst_apply(s, ea), subst_apply(s, eb), s, errors, msg, 0 - 1),
@@ -911,7 +911,7 @@ let check_two_array_elems: (Type, Type, Subst, Array[String], String) -> Subst =
 // Declared type of a (monomorphic) struct field by name, or None if the struct
 // or field is unknown. Used to recognise a field-stored-function call
 // `b.f(args)` when no method/builtin `T::f` exists.
-let struct_field_type: (Array[TypeDef], String, String) -> Option[Type] = (defs, sname, field) -> {
+fn struct_field_type(defs: Array[TypeDef], sname: String, field: String) -> Option[Type] {
   match find_typedef(defs, sname) {
     Some(td) => match td {
       TDStruct(_, fields, _) => {
@@ -931,19 +931,19 @@ let struct_field_type: (Array[TypeDef], String, String) -> Option[Type] = (defs,
   }
 }
 
-let is_logic_binop: (String) -> Bool = (op) -> {
+fn is_logic_binop(op: String) -> Bool {
   op == "&&"
   || op == "||"
 }
 
-let is_order_binop: (String) -> Bool = (op) -> {
+fn is_order_binop(op: String) -> Bool {
   op == "<"
   || op == ">"
   || op == "<="
   || op == ">="
 }
 
-let type_name_prefix: (Type) -> String = (ty) -> {
+fn type_name_prefix(ty: Type) -> String {
   match ty {
     CtInt => "Int",
     CtDouble => "Double",
@@ -961,26 +961,26 @@ let type_name_prefix: (Type) -> String = (ty) -> {
   }
 }
 
-let is_equality_binop: (String) -> Bool = (op) -> {
+fn is_equality_binop(op: String) -> Bool {
   op == "=="
   || op == "!="
 }
 
-let unify_binop_candidate: (Type, Type, Type, Subst) -> Option[Subst] = (left_ty, right_ty, target_ty, s) -> {
+fn unify_binop_candidate(left_ty: Type, right_ty: Type, target_ty: Type, s: Subst) -> Option[Subst] {
   match unify(left_ty, target_ty, s) {
     Some(s1) => unify(right_ty, target_ty, s1),
     None => None
   }
 }
 
-let unify_same_binop_operands: (Type, Type, Subst) -> Option[(Type, Subst)] = (left_ty, right_ty, s) -> {
+fn unify_same_binop_operands(left_ty: Type, right_ty: Type, s: Subst) -> Option[(Type, Subst)] {
   match unify(left_ty, right_ty, s) {
     Some(s1) => Some((subst_apply(s1, left_ty), s1)),
     None => None
   }
 }
 
-let infer_named_trait_binop: (TypeEnv, Type, Type, String, Subst) -> Option[(Type, Subst)] = (env, left_ty, right_ty, trait_name, s) -> {
+fn infer_named_trait_binop(env: TypeEnv, left_ty: Type, right_ty: Type, trait_name: String, s: Subst) -> Option[(Type, Subst)] {
   match unify_same_binop_operands(left_ty, right_ty, s) {
     Some((resolved, s1)) => if type_implements_trait(env, s1, resolved, trait_name) {
       Some((resolved, s1))
@@ -991,7 +991,7 @@ let infer_named_trait_binop: (TypeEnv, Type, Type, String, Subst) -> Option[(Typ
   }
 }
 
-let infer_binop_type: (String, Type, Type, TypeEnv, Subst, Array[String], Array[(Int, Type)]) -> (Type, Subst) = (op, left_ty, right_ty, env, s, errors, tytab) -> {
+fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: Subst, errors: Array[String], tytab: Array[(Int, Type)]) -> (Type, Subst) {
   if is_logic_binop(op) {
     match unify_binop_candidate(left_ty, right_ty, CtBool, s) {
       Some(s1) => (CtBool, s1),
@@ -1097,7 +1097,7 @@ let infer_binop_type: (String, Type, Type, TypeEnv, Subst, Array[String], Array[
 // their args recursed. This lets a generic annotation like `Map[String, V]`
 // resolve its inner `V` to the function's quantified var, so call sites can
 // instantiate it (the previous shallow lookup only handled the outermost name).
-let rec resolve_tparams_in: (Type, TypeEnv) -> Type = (ty, env) -> {
+fn resolve_tparams_in(ty: Type, env: TypeEnv) -> Type {
   match ty {
     CtNamed(name, args) => {
       let ra = for a in args {
@@ -1141,7 +1141,7 @@ let rec resolve_tparams_in: (Type, TypeEnv) -> Type = (ty, env) -> {
 // push. Used at the ECall result sites (NOT by wrapping the giant ECall match,
 // which the bootstrap seed parser cannot reparse when that match is nested one
 // level deeper — only the interior result types are tagged).
-let tab_call_ty: (Array[(Int, Type)], Int, Type) -> Type = (tytab, call_off, ty) -> {
+fn tab_call_ty(tytab: Array[(Int, Type)], call_off: Int, ty: Type) -> Type {
   if call_off >= 0 {
     Array::push(tytab, (call_off, ty))
   } else {
@@ -1157,7 +1157,7 @@ let tab_call_ty: (Array[(Int, Type)], Int, Type) -> Type = (tytab, call_off, ty)
 // forward reference). Semantics are identical to the recursive arms: each `let`
 // binds its (generalized, or raw for `mut`) value type into the env seen by the
 // rest of the spine, and the final non-spine expression's result is returned.
-let check_seq_spine: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> (Type, Subst, Int) = (expr, env, defs, s, c, errors, tytab, ce) -> {
+fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> (Type, Subst, Int) {
   let mut cur = expr
   let mut cenv = env
   let mut s1 = s
@@ -1228,7 +1228,7 @@ let check_seq_spine: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], 
 // perturbs the main type/subst flow — it only type-checks `obj` to learn its
 // struct name, looks up that struct's `mut` field set, and pushes a single
 // diagnostic to the real `errors` when the written field is not `mut`.
-let field_write_mut_check: (String, Array[Expr], TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit = (name, args, env, defs, s, c, errors, tytab, ce) -> {
+fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
   if name == "__set_field" && Array::length(args) == 3 {
     match Array::get(args, 1) {
       EString(field) => {
@@ -1294,7 +1294,7 @@ let field_write_mut_check: (String, Array[Expr], TypeEnv, Array[TypeDef], Subst,
 // Report when `obj` resolves to a concrete scalar that cannot be indexed
 // (Array/String/Bytes ARE indexable; type vars / unknown / named stay
 // tolerated). Pure side-effect over a throwaway error/type table.
-let index_target_check: (String, Array[Expr], TypeEnv, Array[TypeDef], Subst, Int, Array[String], (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit = (name, args, env, defs, s, c, errors, ce) -> {
+fn index_target_check(name: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
   if name == "__index" && Array::length(args) == 2 {
     let throwaway = Array::slice([""], 0, 0)
     let throwtab = Array::slice([(0, CtUnit)], 0, 0)
@@ -1345,7 +1345,7 @@ let index_target_check: (String, Array[Expr], TypeEnv, Array[TypeDef], Subst, In
 // An arm pattern is a CATCH-ALL (makes a match exhaustive regardless of which
 // constructors precede it) when it is a wildcard or a bare binding. `POr` is a
 // catch-all if either side is.
-let rec pat_is_catchall: (Pat) -> Bool = (pat) -> {
+fn pat_is_catchall(pat: Pat) -> Bool {
   match pat {
     PWild => true,
     PBind(_) => true,
@@ -1356,7 +1356,7 @@ let rec pat_is_catchall: (Pat) -> Bool = (pat) -> {
 
 // Collect the constructor names a pattern matches at the TOP level (for enum
 // exhaustiveness). `POr` contributes from both sides; other patterns none.
-let rec collect_ctor_names_into: (Pat, Array[String]) -> Unit = (pat, acc) -> {
+fn collect_ctor_names_into(pat: Pat, acc: Array[String]) -> Unit {
   match pat {
     PCtor(name, _) => Array::push(acc, name),
     POr(l, r) => {
@@ -1370,7 +1370,7 @@ let rec collect_ctor_names_into: (Pat, Array[String]) -> Unit = (pat, acc) -> {
 // Parse a tuple projection field (`t.0`, `t.5`) — the field is the all-digit
 // index string. Returns None for a non-numeric field (a real `.method`/.field)
 // so only genuine tuple projections are bounds-checked.
-let parse_tuple_index: (String) -> Option[Int] = (s) -> {
+fn parse_tuple_index(s: String) -> Option[Int] {
   let len = String::length(s)
   if len == 0 {
     None
@@ -1400,7 +1400,7 @@ let parse_tuple_index: (String) -> Option[Int] = (s) -> {
 // EHandle subtrees are skipped entirely — their resumes belong to the inner
 // handler's own arms. Runs on a throwaway lane after the arm body was checked,
 // so it only ADDS diagnostics (main inference flow untouched).
-let rec check_resume_values: (Expr, Type, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> Subst = (e, ret_ty, env, defs, s, c, errors, tytab) -> {
+fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> Subst {
   match e {
     ECall(callee, args, _) => {
       let mut s1 = s
@@ -1481,7 +1481,7 @@ let rec check_resume_values: (Expr, Type, TypeEnv, Array[TypeDef], Subst, Int, A
   }
 }
 
-export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int) = (expr, env, defs, s, c, errors, tytab) -> {
+export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (Type, Subst, Int) {
   match expr {
     EInt(_) => (CtInt, s, c),
     EFloat(_) => (CtDouble, s, c),

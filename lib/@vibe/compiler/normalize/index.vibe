@@ -37,13 +37,13 @@ import ../syntax/import_alias_rewrite.vibe {
 
 //# Module flattening
 
-let empty_stmts: () -> Array[Stmt] = () -> {
+fn empty_stmts() -> Array[Stmt] {
   Array::slice([
     SExport([])
   ], 0, 0)
 }
 
-let empty_strs: () -> Array[String] = () -> {
+fn empty_strs() -> Array[String] {
   Array::slice([
     ""
   ], 0, 0)
@@ -51,7 +51,7 @@ let empty_strs: () -> Array[String] = () -> {
 
 // Prefix a binding name with the enclosing module path (`math` + `helper` =>
 // `math::helper`). Empty prefix leaves the name unchanged.
-let join_module_name: (String, String) -> String = (prefix, name) -> {
+fn join_module_name(prefix: String, name: String) -> String {
   if prefix == "" {
     name
   } else {
@@ -61,7 +61,7 @@ let join_module_name: (String, String) -> String = (prefix, name) -> {
 
 // Alias map (short name -> `prefix::name`) for the value members of a module
 // body, so intra-module references can be qualified to match the renamed decls.
-let rec module_value_aliases: (Array[Stmt], String, Array[(String, String)]) -> Int = (body, prefix, out) -> {
+fn module_value_aliases(body: Array[Stmt], prefix: String, out: Array[(String, String)]) -> Int {
   let mut i = 0
   while i < Array::length(body) {
     match Array::get(body, i) {
@@ -92,7 +92,7 @@ let rec module_value_aliases: (Array[Stmt], String, Array[(String, String)]) -> 
 // `prefix::name` AND qualify intra-module value references in its body, so the
 // flattened source typechecks without the enclosing module scope (a sibling call
 // `helper()` becomes `m::helper()`, matching the renamed `let m::helper`).
-let rec flatten_module_body: (Array[Stmt], String, Array[(String, String)], Array[Stmt]) -> Int = (body, prefix, aliases, out) -> {
+fn flatten_module_body(body: Array[Stmt], prefix: String, aliases: Array[(String, String)], out: Array[Stmt]) -> Int {
   let mut i = 0
   while i < Array::length(body) {
     match Array::get(body, i) {
@@ -122,7 +122,7 @@ let rec flatten_module_body: (Array[Stmt], String, Array[(String, String)], Arra
   0
 }
 
-let is_module_stmt: (Stmt) -> Bool = (stmt) -> {
+fn is_module_stmt(stmt: Stmt) -> Bool {
   match stmt {
     SModule(_, _, _) => true,
     _ => false
@@ -136,7 +136,7 @@ let is_module_stmt: (Stmt) -> Bool = (stmt) -> {
 // member to `m::f` while leaving its body referencing the short `f`, so a
 // second normalize pass must not drop those by name — keeping all `::` names
 // (module members are live by construction) makes normalize idempotent.
-let exported_value_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
+fn exported_value_names(stmts: Array[Stmt]) -> Array[String] {
   let roots = empty_strs()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -171,7 +171,7 @@ let exported_value_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
 // Names that an aggregate `export { .. }` re-exports (the renderer drops the
 // `SExport` statement, so the underlying bindings must be promoted to keep the
 // public API).
-let aggregate_export_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
+fn aggregate_export_names(stmts: Array[Stmt]) -> Array[String] {
   let names = empty_strs()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -191,7 +191,7 @@ let aggregate_export_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
   names
 }
 
-let str_array_has: (Array[String], String) -> Bool = (arr, target) -> {
+fn str_array_has(arr: Array[String], target: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(arr) && !found {
@@ -204,7 +204,7 @@ let str_array_has: (Array[String], String) -> Bool = (arr, target) -> {
   found
 }
 
-let promote_aggregate_exports: (Array[Stmt], Array[String]) -> Array[Stmt] = (stmts, agg) -> {
+fn promote_aggregate_exports(stmts: Array[Stmt], agg: Array[String]) -> Array[Stmt] {
   let result = empty_stmts()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -230,7 +230,7 @@ let promote_aggregate_exports: (Array[Stmt], Array[String]) -> Array[Stmt] = (st
 
 //# Type-alias DCE: drop non-exported aliases whose name is never referenced.
 
-let rec collect_type_names_into: (TypeExpr, Array[String]) -> Int = (ty, out) -> {
+fn collect_type_names_into(ty: TypeExpr, out: Array[String]) -> Int {
   match ty {
     TyName(n) => {
       Array::push(out, n)
@@ -266,7 +266,7 @@ let rec collect_type_names_into: (TypeExpr, Array[String]) -> Int = (ty, out) ->
   }
 }
 
-let collect_opt_type_into: (Option[TypeExpr], Array[String]) -> Int = (ty_opt, out) -> {
+fn collect_opt_type_into(ty_opt: Option[TypeExpr], out: Array[String]) -> Int {
   match ty_opt {
     Some(ty) => collect_type_names_into(ty, out),
     None => 0
@@ -274,7 +274,7 @@ let collect_opt_type_into: (Option[TypeExpr], Array[String]) -> Int = (ty_opt, o
 }
 
 // Collect every type-name referenced by a statement.
-let collect_stmt_type_refs_into: (Stmt, Array[String]) -> Int = (stmt, out) -> {
+fn collect_stmt_type_refs_into(stmt: Stmt, out: Array[String]) -> Int {
   match stmt {
     SLet(_, _, _, ty, _) => collect_opt_type_into(ty, out),
     // Preserved fn decl: its types live on the EFn params/return (there is
@@ -326,7 +326,7 @@ let collect_stmt_type_refs_into: (Stmt, Array[String]) -> Int = (stmt, out) -> {
 }
 
 
-let drop_unused_type_aliases: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
+fn drop_unused_type_aliases(stmts: Array[Stmt]) -> Array[Stmt] {
   let referenced = empty_strs()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -353,7 +353,7 @@ let drop_unused_type_aliases: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
 
 // 0 = import, 1 = type/structural, 2 = function/value, 3 = test/bench,
 // 9 = drop (aggregate export / bare expression).
-let stmt_section: (Stmt) -> Int = (stmt) -> {
+fn stmt_section(stmt: Stmt) -> Int {
   match stmt {
     SImport(_, _) => 0,
     SReExport(_, _) => 0,
@@ -378,7 +378,7 @@ let stmt_section: (Stmt) -> Int = (stmt) -> {
   }
 }
 
-let section_header: (Int) -> String = (section) -> {
+fn section_header(section: Int) -> String {
   if section == 0 {
     "//# Imports"
   } else if section == 1 {
@@ -392,7 +392,7 @@ let section_header: (Int) -> String = (section) -> {
 
 // Render all statements in one section (already filtered) joined by blank lines,
 // prefixed by the section header. Returns "" when the section is empty.
-let render_section: (Array[Stmt], Int) -> String = (stmts, section) -> {
+fn render_section(stmts: Array[Stmt], section: Int) -> String {
   let parts = empty_strs()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -412,13 +412,13 @@ let render_section: (Array[Stmt], Int) -> String = (stmts, section) -> {
 
 //# Lambda-annotation hoisting
 
-let normalize_empty_type_exprs: () -> Array[TypeExpr] = () -> {
+fn normalize_empty_type_exprs() -> Array[TypeExpr] {
   Array::slice([
     TyUnit
   ], 0, 0)
 }
 
-let all_params_typed: (Array[(String, Option[TypeExpr])]) -> Bool = (params) -> {
+fn all_params_typed(params: Array[(String, Option[TypeExpr])]) -> Bool {
   let mut i = 0
   let mut ok = true
   while i < Array::length(params) {
@@ -435,7 +435,7 @@ let all_params_typed: (Array[(String, Option[TypeExpr])]) -> Bool = (params) -> 
   ok
 }
 
-let param_type_list: (Array[(String, Option[TypeExpr])]) -> Array[TypeExpr] = (params) -> {
+fn param_type_list(params: Array[(String, Option[TypeExpr])]) -> Array[TypeExpr] {
   let out = normalize_empty_type_exprs()
   let mut i = 0
   while i < Array::length(params) {
@@ -449,7 +449,7 @@ let param_type_list: (Array[(String, Option[TypeExpr])]) -> Array[TypeExpr] = (p
   out
 }
 
-let strip_param_types: (Array[(String, Option[TypeExpr])]) -> Array[(String, Option[TypeExpr])] = (params) -> {
+fn strip_param_types(params: Array[(String, Option[TypeExpr])]) -> Array[(String, Option[TypeExpr])] {
   let out = Array::slice([
     ("", None)
   ], 0, 0)
@@ -467,7 +467,7 @@ let strip_param_types: (Array[(String, Option[TypeExpr])]) -> Array[(String, Opt
 // types + return type into a `TyFn` let-annotation and strip them from the
 // lambda. Only when the let has no annotation yet, the value is a return-type
 // annotated lambda, and every parameter carries a type (full type recoverable).
-let hoist_lambda_let: (Stmt) -> Stmt = (stmt) -> {
+fn hoist_lambda_let(stmt: Stmt) -> Stmt {
   match stmt {
     SLet(exp, is_rec, name, ty, value) => match ty {
       Some(_) => stmt,
@@ -491,7 +491,7 @@ let hoist_lambda_let: (Stmt) -> Stmt = (stmt) -> {
   }
 }
 
-let hoist_lambda_lets: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
+fn hoist_lambda_lets(stmts: Array[Stmt]) -> Array[Stmt] {
   let out = empty_stmts()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -507,7 +507,7 @@ let hoist_lambda_lets: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
 // which are total and wrap identically at compile time and runtime (both use
 // 62-bit Int), so folding is semantics-preserving. `/` and `%` are skipped
 // (a literal `x / 0` must keep trapping at runtime, not at fold time).
-let fold_int_binop: (String, Int, Int) -> Option[Int] = (op, a, b) -> {
+fn fold_int_binop(op: String, a: Int, b: Int) -> Option[Int] {
   if op == "+" {
     Some(a + b)
   } else if op == "-" {
@@ -519,7 +519,7 @@ let fold_int_binop: (String, Int, Int) -> Option[Int] = (op, a, b) -> {
   }
 }
 
-let rec fold_expr: (Expr) -> Expr = (expr) -> {
+fn fold_expr(expr: Expr) -> Expr {
   match expr {
     EInt(_) => expr,
     EFloat(_) => expr,
@@ -645,7 +645,7 @@ let rec fold_expr: (Expr) -> Expr = (expr) -> {
 // their original name (so debugging/argument-inspection output is unaffected
 // outside the rare shadowing case). Pure rewrite; gated at the call site to
 // keep the non-RC backend byte-identical.
-let fresh_shadow_name: (Array[Int], String) -> String = (counter, name) -> {
+fn fresh_shadow_name(counter: Array[Int], name: String) -> String {
   let n = Array::get(counter, 0)
   Array::set(counter, 0, n + 1)
   String::concat(String::concat("__shadow_", __to_string(n)), String::concat("_", name))
@@ -653,7 +653,7 @@ let fresh_shadow_name: (Array[Int], String) -> String = (counter, name) -> {
 
 // Renamed reference for `name` under `env`, or `name` unchanged if it is not a
 // tracked (shadowed-or-not) binding -- i.e. a free variable / global / builtin.
-let uq_lookup: (Map[String, String], String) -> String = (env, name) -> {
+fn uq_lookup(env: Map[String, String], name: String) -> String {
   if Map::has_key(env, name) {
     Map::get(env, name)
   } else {
@@ -664,7 +664,7 @@ let uq_lookup: (Map[String, String], String) -> String = (env, name) -> {
 // #715: has `name` been bound ANYWHERE in this function already (including a
 // sibling scope that has since closed)? `seen` is a shared mutable array, one
 // per top-level function, appended by uq_bind_name's first-binder path.
-let uq_seen_contains: (Array[String], String) -> Bool = (seen, name) -> {
+fn uq_seen_contains(seen: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(seen) {
@@ -696,7 +696,7 @@ let uq_seen_contains: (Array[String], String) -> Bool = (seen, name) -> {
 // Otherwise this is the first binder for `name` in this function; keep it
 // as-is but still record the identity mapping, so a DEEPER shadow of the same
 // name is detected against this occurrence.
-let uq_bind_name: (String, Map[String, String], Array[Int], Array[String]) -> (String, Map[String, String]) = (name, env, counter, seen) -> {
+fn uq_bind_name(name: String, env: Map[String, String], counter: Array[Int], seen: Array[String]) -> (String, Map[String, String]) {
   // A labeled/optional param (`a~`/`a?`) is declared with its suffix but its
   // body references use the STRIPPED name, so this env (keyed by the declared
   // name) never rewrites those references anyway -- renaming the declaration
@@ -718,7 +718,7 @@ let uq_bind_name: (String, Map[String, String], Array[Int], Array[String]) -> (S
   }
 }
 
-let rec uq_pat_names: (Pat, Array[String]) -> Unit = (pat, out) -> {
+fn uq_pat_names(pat: Pat, out: Array[String]) -> Unit {
   match pat {
     PBind(name) => Array::push(out, name),
     PCtor(_, args) => {
@@ -752,7 +752,7 @@ let rec uq_pat_names: (Pat, Array[String]) -> Unit = (pat, out) -> {
   }
 }
 
-let rec uq_pat_rewrite: (Pat, Map[String, String]) -> Pat = (pat, env) -> {
+fn uq_pat_rewrite(pat: Pat, env: Map[String, String]) -> Pat {
   match pat {
     PBind(name) => PBind(uq_lookup(env, name)),
     PCtor(name, args) => PCtor(name, for a in args {
@@ -773,7 +773,7 @@ let rec uq_pat_rewrite: (Pat, Map[String, String]) -> Pat = (pat, env) -> {
 // Binds every name in `pat` (shadow-checked against `env`) and returns the
 // rewritten pattern together with the extended env for the pattern's own
 // scope (the arm body).
-let uq_bind_pat: (Pat, Map[String, String], Array[Int], Array[String]) -> (Pat, Map[String, String]) = (pat, env, counter, seen) -> {
+fn uq_bind_pat(pat: Pat, env: Map[String, String], counter: Array[Int], seen: Array[String]) -> (Pat, Map[String, String]) {
   let names: Array[String] = [
   ]
   uq_pat_names(pat, names)
@@ -787,7 +787,7 @@ let uq_bind_pat: (Pat, Map[String, String], Array[Int], Array[String]) -> (Pat, 
   (uq_pat_rewrite(pat, env2), env2)
 }
 
-export let rec uniquify_shadowed_bindings: (Expr, Map[String, String], Array[Int], Array[String]) -> Expr = (expr, env, counter, seen) -> {
+export fn uniquify_shadowed_bindings(expr: Expr, env: Map[String, String], counter: Array[Int], seen: Array[String]) -> Expr {
   match expr {
     EInt(_) => expr,
     EFloat(_) => expr,
@@ -901,13 +901,13 @@ export let rec uniquify_shadowed_bindings: (Expr, Map[String, String], Array[Int
   }
 }
 
-let fresh_m_scrut_name: (Array[Int]) -> String = (counter) -> {
+fn fresh_m_scrut_name(counter: Array[Int]) -> String {
   let n = Array::get(counter, 0)
   Array::set(counter, 0, n + 1)
   String::concat("__m_scrut_", __to_string(n))
 }
 
-export let rec lift_match_scrutinees: (Expr, Array[Int]) -> Expr = (expr, counter) -> {
+export fn lift_match_scrutinees(expr: Expr, counter: Array[Int]) -> Expr {
   match expr {
     EInt(_) => expr,
     EFloat(_) => expr,
@@ -982,7 +982,7 @@ export let rec lift_match_scrutinees: (Expr, Array[Int]) -> Expr = (expr, counte
   }
 }
 
-let fold_stmt: (Stmt) -> Stmt = (stmt) -> {
+fn fold_stmt(stmt: Stmt) -> Stmt {
   match stmt {
     SLet(exp, is_rec, name, ty, body) => SLet(exp, is_rec, name, ty, fold_expr(body)),
     SFnDecl(exp, name, fn_value, reqs, enss) => SFnDecl(exp, name, fold_expr(fn_value), reqs, enss),
@@ -995,7 +995,7 @@ let fold_stmt: (Stmt) -> Stmt = (stmt) -> {
   }
 }
 
-let fold_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
+fn fold_stmts(stmts: Array[Stmt]) -> Array[Stmt] {
   let out = empty_stmts()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -1011,7 +1011,7 @@ let fold_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
 // type. Only these self-evident cases are annotated; anything needing real
 // inference (a call result, an identifier, arithmetic over non-literals) is
 // left unannotated so normalize never asserts a type it cannot prove.
-let literal_type: (Expr) -> Option[TypeExpr] = (e) -> {
+fn literal_type(e: Expr) -> Option[TypeExpr] {
   match e {
     EInt(_) => Some(TyName("Int")),
     EBool(_) => Some(TyName("Bool")),
@@ -1024,7 +1024,7 @@ let literal_type: (Expr) -> Option[TypeExpr] = (e) -> {
 // Add `: T` to an un-annotated `let x = <literal>` (runs after folding, so e.g.
 // `let answer = 40 + 2` -> `let answer = 42` -> `let answer: Int = 42`). Lambda
 // values are handled by hoisting, not here (a literal is never an `EFn`).
-let annotate_literal_let: (Stmt) -> Stmt = (stmt) -> {
+fn annotate_literal_let(stmt: Stmt) -> Stmt {
   match stmt {
     SLet(exp, is_rec, name, ty, body) => match ty {
       Some(_) => stmt,
@@ -1037,7 +1037,7 @@ let annotate_literal_let: (Stmt) -> Stmt = (stmt) -> {
   }
 }
 
-let annotate_literal_lets: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
+fn annotate_literal_lets(stmts: Array[Stmt]) -> Array[Stmt] {
   let out = empty_stmts()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -1052,7 +1052,7 @@ let annotate_literal_lets: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
 // each scope before flattening renames its bindings:
 //   - top-level non-module decls are DCE'd against the exported top-level roots;
 //   - each module body is DCE'd against its own exported members, then renamed.
-export let normalize_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
+export fn normalize_stmts(stmts: Array[Stmt]) -> Array[Stmt] {
   let nonmods = empty_stmts()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -1085,7 +1085,7 @@ export let normalize_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
   hoist_lambda_lets(annotate_literal_lets(fold_stmts(drop_unused_type_aliases(promoted))))
 }
 
-export let normalize_source: (String) -> String with { Error } = (src) -> {
+export fn normalize_source(src: String) -> String with { Error } {
   // #730 (D-3): require pin lines are a leading directive, not statement
   // grammar — extract them, normalize the remainder, and re-emit them in
   // canonical single-space form above the output. Pin FILLING is the
