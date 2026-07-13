@@ -634,8 +634,7 @@ Rules:
 
 ## Struct and enum details (current)
 
-<!-- doctest-skip: 文中の Pair[Int]::{ ... } (明示型引数) と Pair::{ left, right } (field shorthand) は現 selfhost parser では parse error — spec と実装の gap (doctest-report-2026-07-12.md 参照) -->
-```vibe skip
+```vibe
 enum Option[T] {
   None;
   Some(T);
@@ -646,8 +645,17 @@ struct Pair[T] {
   right: T;
 }
 
-let p = Pair[Int]::{ left: 1, right: 2 }
+let left = 1
+let right = 2
 let q = Pair::{ left, right } // shorthand for { left: left, right: right }
+```
+
+<!-- doctest-skip: 明示型引数 `Pair[Int]::{ ... }` は未実装 (#836) —
+     `Name[Args]::{` は located parse error ("explicit struct type arguments
+     ... are not supported yet") を返す仕様。field shorthand (`Pair::{ left,
+     right }`) は #836 で実装済み (上のブロック参照)。 -->
+```vibe skip
+let p = Pair[Int]::{ left: 1, right: 2 } // NOT YET SUPPORTED: located parse error
 ```
 
 Rules:
@@ -662,8 +670,14 @@ Rules:
   errors.
 - Struct literals require all declared fields exactly once.
   Missing/unknown/duplicate fields are errors.
-- Struct type arguments can be explicit (`Pair[Int]::{ ... }`) or inferred from
-  provided field expressions.
+- Struct literal fields support shorthand: `Name::{ left, right }` is
+  shorthand for `Name::{ left: left, right: right }`, matching an in-scope
+  binding named after the field (same shorthand as anonymous `record { ... }`
+  literals).
+- Struct type arguments are inferred from the provided field expressions
+  (#829). Explicit type arguments (`Pair[Int]::{ ... }`) are documented as
+  spec surface but not yet implemented — the parser reports a located error
+  rather than silently accepting or misinterpreting the syntax.
 - `derive(TraitA, TraitB)` expands to corresponding `impl` entries for the
   declared type (duplicates ignored).
   Unknown traits or sealed-trait derive targets are rejected at type check.
