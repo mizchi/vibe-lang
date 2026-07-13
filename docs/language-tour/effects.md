@@ -133,8 +133,18 @@ let applied = apply((x) -> { x + 1 }, 41)  // => 42
 
 The wrapper must declare `with { e }` to propagate the callee's effects:
 
-```vibe
-// Error: wrapper does not declare { e }
+> **Known gap (#838):** this rule is the intended design but is **not
+> currently enforced** by the checker — row-variable effect propagation was
+> deliberately scoped out when transitive effect enforcement landed (#626).
+> The `bad` example below compiles successfully today even though it omits
+> `with { e }`; see [vibe.md](../vibe.md#generics-with-effects-current) for
+> details. Do not rely on the compiler catching this mistake yet.
+
+<!-- doctest-skip: #838 — `bad` (missing `with {e}`) documents the INTENDED
+     error but the checker does not yet enforce row-variable coverage, so
+     this block currently compiles clean; skip until the gap is closed. -->
+```vibe skip
+// intended error (NOT YET ENFORCED — #838): wrapper does not declare { e }
 let bad: [T]((T) -> T with { e }, T) -> T = (f, x) -> { f(x) }
 
 // OK: Error is localized by handle

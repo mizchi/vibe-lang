@@ -191,10 +191,28 @@ Rules:
 - Trait bounds and effect checks are independent constraints; either can fail
   first depending on the call shape.
 
+> **Known gap (#838):** the third rule above ("the wrapper must declare a
+> compatible effect set") is the intended design but is **not currently
+> enforced** by the checker. Row-variable effect propagation checking was
+> deliberately scoped out when transitive effect enforcement landed (#626,
+> `check_perform_effects_expr_tx` in `checker_effects.vibe`) — the checker's
+> call-graph effect map only tracks concrete effect names for named
+> top-level bindings; it never verifies that a caller's declared row covers
+> an effect row VARIABLE reached through a callback parameter. In practice
+> the `apply` example below (missing `with { e }`) compiles successfully
+> today instead of producing the error shown in its comment. A sound fix
+> needs call-site effect-row unification, not just label matching, so it is
+> tracked separately rather than forced in here.
+
 Examples:
 
-```vibe
-// error: wrapper body calls effect-polymorphic callback without declaring {e}
+<!-- doctest-skip: #838 — the `apply` (missing `with {e}`) case documents the
+     INTENDED error but the checker does not yet enforce row-variable
+     coverage, so this block currently compiles clean; skip until the gap
+     is closed so doctest doesn't silently certify the wrong behavior. -->
+```vibe skip
+// intended error (NOT YET ENFORCED — #838): wrapper body calls an
+// effect-polymorphic callback without declaring {e}
 let apply: [T](f: (T) -> T with { e }, x: T) -> T = (f, x) -> {
   f(x)
 }

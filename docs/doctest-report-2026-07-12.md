@@ -295,6 +295,20 @@ doctest からは除外済み — #831 修正後は「missing import の located
 8. **effect polymorphism の「wrapper が `{ e }` 未宣言ならエラー」の例が
    実際にはコンパイルが通る** (vibe.md / effects.md の `// error:` 例) —
    checker がこの違反を検出していない可能性。要確認。
+   **調査結果 (#838, 2026-07-13)**: 実 gap と確認。#626 (transitive effect
+   enforcement, 2026-06-28) で `check_perform_effects_expr_tx`
+   (`checker_effects.vibe`) が effect ROW VARIABLE を transitive check から
+   明示的に除外している (`label_is_effect_var` ガード、コメント
+   "Effect-variable rows (polymorphic) impose nothing")。加えて `fn_names`/
+   `fn_effs` の呼び出しグラフは top-level named binding のみを追跡するため、
+   doc の例のようにラムダ引数 (`f`) 経由で呼ぶケースはそもそも追跡対象外。
+   健全な修正には呼び出し箇所ごとの effect-row 単一化が要る (現状の
+   label 文字列一致ベースの独立 pass では不可)。素朴に row-variable 除外を
+   外すと `fixtures/typecheck/generic_effect_matrix_ok_passthrough_pure.vibe`
+   のような正当な pure-instantiation ケースまで reject する false positive
+   を確認したため、checker 修正は見送り、vibe.md / effects.md 側を
+   「意図した設計だが未実装」と明記する docs-only fix に留めた
+   (該当 block は `vibe skip` 化)。checker 側の是正は別 issue でトラック。
 9. **`sh` / `sh_lines` の必要 effect は `{Process}`** (checker_effects.vibe)。
    docs の複数箇所が `{Stdout}` と記載していた (今回修正済み)。`sh` は
    captured output (String) を返すため `Unit` 関数では discard が必要。
