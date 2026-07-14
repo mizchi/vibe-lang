@@ -49,10 +49,10 @@ Highlights (post-#594 selfhost-only):
 | Task           | Behaviour                          | Notes                                |
 |----------------|------------------------------------|--------------------------------------|
 | `fmt`          | `true` (no-op placeholder)         | selfhost fmt 未移植 (#594)           |
-| `test`         | `bash scripts/selfhost_only_gate.sh`| selfhost operation gate — commit 前の主チェック |
+| `test`         | `bash scripts/compiler_gate.sh`| selfhost operation gate — commit 前の主チェック |
 | `test-local`   | affected tests via `flaker`        | fast inner loop                      |
 | `run`          | `bash scripts/vibe_run.sh $@`      | `acceptsArgs` — pass via `--`        |
-| `release-check`| `deps { selfhost-only gate }`      | moon-free sign-off: bundle/module-source sync + seed→stage1→stage2→stage3 fixpoint + compile/run validation |
+| `release-check`| `deps { compiler-gate }`           | moon-free sign-off: bundle/module-source sync + seed→stage1→stage2→stage3 fixpoint + compile/run validation |
 | `info` / `check` / `test-update` | legacy `moon …`  | MoonBit host 依存で #594 以降は無効。検証は `test` / `release-check` / `vibe diagnostics` を使う |
 
 Two helper factories keep the file readable:

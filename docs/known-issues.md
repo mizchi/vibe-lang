@@ -8,10 +8,10 @@ instead of real output, so the LSP and standalone tests that depend on those
 features failed — only in CI, never locally.
 
 **Root cause (not a wasm-EH bug).** The *fresh* compiler build
-(`scripts/install.sh` → `build_cli_wasm.sh` → `selfhost_generations.sh`) runs
+(`scripts/install.sh` → `build_cli_wasm.sh` → `generations.sh`) runs
 the committed seed through the **standalone `wasmtime` CLI**
 (`scripts/wasmtime_bin.sh`) to produce stage1/stage2. The CI workflow only built
-the `moonrun_wt` runner and never installed the `wasmtime` CLI, so the fresh
+the `vibewt` runner and never installed the `wasmtime` CLI, so the fresh
 build failed and `install.sh` silently **fell back to the committed seed
 compiler**, which predates the diagnostics/type-at/error-handling features.
 Local dev worked only because the dev environment already had `wasmtime` on PATH.

@@ -806,7 +806,30 @@ fn load_persistent_source_groups_from_source_list_cache_if_valid(entry_path: Str
           match try_load_manifest_rows(entry_path) {
             Some((base_dir, rows)) => {
               let groups = build_grouped_sources_from_manifest_rows(base_dir, rows, sources)
-              Some((manifest_path_of(manifest), groups))
+              // #801 bug 2: `sources` comes from the source-LIST cache, a
+              // SEPARATE persistent cache from the group cache being rebuilt
+              // here. Each cache independently passes its own resctx/manifest
+              // validity check, but that does not guarantee the two enumerate
+              // the SAME file set -- e.g. the list cache may have been seeded
+              // via a plain recursive walk (or an older manifest snapshot)
+              // that never reached every manifest-listed group.
+              // build_grouped_sources_from_manifest_rows silently drops any
+              // manifest row with no matching path in `sources`, so a
+              // stale/narrower list cache can make an entire group vanish
+              // with no signal (observed: lib/@vibe/core's vibe_core /
+              // index.vibei group dropped wholesale, 50/51 rows survived).
+              // Cross-validate the reconstruction against the manifest's own
+              // row count before trusting (and persisting) it: a short count
+              // means rows were dropped, so refuse this lane and let the
+              // caller fall through to a fresh manifest collection
+              // (try_collect_manifest_source_groups_fs) that rebuilds the
+              // correct groups directly from disk instead of silently
+              // caching/returning the incomplete graph.
+              if Array::length(flatten_group_sources(groups)) != Array::length(rows) {
+                None
+              } else {
+                Some((manifest_path_of(manifest), groups))
+              }
             },
             None => {
               let groups = empty_grouped_sources()

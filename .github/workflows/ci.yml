@@ -11,8 +11,8 @@ on:
 # ->stage3 selfbuild with the stage2==stage3 fixpoint and per-stage compile/run
 # validation. No MoonBit toolchain is installed or used.
 jobs:
-  selfhost-only-gate:
-    name: selfhost-only-gate (moon-free)
+  compiler-gate:
+    name: compiler-gate (moon-free)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -30,16 +30,16 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
-      - name: Selfhost-only gate
-        run: bash scripts/selfhost_only_gate.sh
-      - name: Selfhost unit-test runner (allowlist)
+      - name: Compiler gate
+        run: bash scripts/compiler_gate.sh
+      - name: Compiler unit-test runner (allowlist)
         # Reuse the stage2 the gate just built (no second selfbuild). Runs the
         # allowlisted *_test.vibe corpus (#531/#535) — the regression net for
         # language/stdlib features the compiler doesn't exercise during selfbuild.
         run: |
           gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1)"
           VIBE_STAGE2_WASM="${gen}stage2.wasm" \
-            bash scripts/selfhost_unit_test_runner.sh
+            bash scripts/unit_test_runner.sh
       - name: Selfhost suite coverage gate (#535)
         # Re-runs the allowlist under function/branch hit instrumentation and
         # enforces the ratcheting minimum rates (defaults in the script; raise
@@ -47,12 +47,12 @@ jobs:
         run: |
           gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1)"
           VIBE_SUITE_CLI_WASM="${gen}stage2.wasm" \
-            bash scripts/coverage_selfhost_suite.sh
-      - name: Upload selfhost suite coverage report
+            bash scripts/coverage_suite.sh
+      - name: Upload compiler suite coverage report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: selfhost-suite-coverage
+          name: compiler-suite-coverage
           path: _build/coverage/selfhost-suite/selfhost_suite.report.json
           if-no-files-found: ignore
       - name: Stage stage2 for downstream gates (#821)
@@ -63,7 +63,7 @@ jobs:
       - name: Upload stage2 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: selfhost-stage2
+          name: compiler-stage2
           path: _build/ci-artifacts/stage2.wasm
           if-no-files-found: error
 
@@ -73,7 +73,7 @@ jobs:
   # promote once green for a week on the wasmtime 46 primary leg.
   wasi-p3-gate:
     name: wasi-p3-gate (wasmtime ${{ matrix.wasmtime }})
-    needs: [selfhost-only-gate]
+    needs: [compiler-gate]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -140,7 +140,7 @@ jobs:
       - name: Download stage2 artifact
         uses: actions/download-artifact@v4
         with:
-          name: selfhost-stage2
+          name: compiler-stage2
           path: _build/ci-artifacts/
       - name: WASI p3 guarantee gate
         env:
@@ -153,14 +153,14 @@ jobs:
   # Aggregate required check (branch protection requires "ci-required").
   ci-required:
     name: ci-required
-    needs: [selfhost-only-gate]
+    needs: [compiler-gate]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Verify required jobs succeeded
         run: |
-          if [ "${{ needs.selfhost-only-gate.result }}" != "success" ]; then
-            echo "::error::selfhost-only-gate did not succeed (${{ needs.selfhost-only-gate.result }})"
+          if [ "${{ needs.compiler-gate.result }}" != "success" ]; then
+            echo "::error::compiler-gate did not succeed (${{ needs.compiler-gate.result }})"
             exit 1
           fi
           echo "all required jobs passed"

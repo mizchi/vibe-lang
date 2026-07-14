@@ -72,7 +72,7 @@ reproduced on the source-compile RC path (independent of #699/#701):
 
 Known minor follow-up: a matched heap field bound but **unused** now leaks (dup
 with no consuming drop) — safe over-keep, rare (use `_`). The leak-guard gate
-(`selfhost_only_gate.sh` step 40d) exercises tuple+cell+closure+recursive-enum
+(`compiler_gate.sh` step 40d) exercises tuple+cell+closure+recursive-enum
 and asserts bounded heap, locking these in against regression.
 
 ## Real test-corpus assessment (2026-06-29) — the actual cutover gate
@@ -166,7 +166,7 @@ across any construct the compiler itself uses**.
 The stronger signal is to drive the compiler's *real* self-compile vehicle —
 the module-source + source-groups path (`build_selfhost_cli_adapter_bytes`,
 entry `cli_main`) — through **stage1** (the selfhost compiler, itself compiled to
-wasm). `scripts/test_selfhost_rc_bootstrap.sh` does this under both backends via
+wasm). `scripts/test_rc_bootstrap.sh` does this under both backends via
 new entries `selfbuild_compile_cli_adapter_env` (default) and
 `selfbuild_compile_cli_adapter_rc_env` (RC, on the new
 `compile_with_source_groups_via_module_source_wasi_unchecked_rc` path), and

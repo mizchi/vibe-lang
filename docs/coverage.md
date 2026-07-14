@@ -50,10 +50,10 @@ instrumentation を共有する。
 ### コンパイラ自身を計測
 
 ```bash
-scripts/coverage_selfhost_fn.sh                  # 既定: コンパイラの self-compile を計測
-scripts/coverage_selfhost_fn.sh path/to/foo.vibe # foo.vibe をコンパイルする経路を計測 (FS mode)
-VIBE_COV_SHOW_MISSED=1 scripts/coverage_selfhost_fn.sh        # 未実行関数も列挙
-VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_selfhost_fn.sh   # 未到達分岐が多い関数 top50
+scripts/coverage_fn.sh                  # 既定: コンパイラの self-compile を計測
+scripts/coverage_fn.sh path/to/foo.vibe # foo.vibe をコンパイルする経路を計測 (FS mode)
+VIBE_COV_SHOW_MISSED=1 scripts/coverage_fn.sh        # 未実行関数も列挙
+VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_fn.sh   # 未到達分岐が多い関数 top50
 ```
 
 #### 複数ワークロードのマージ
@@ -61,14 +61,14 @@ VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_selfhost_fn.sh   # 未到達分岐�
 単一ワークロードは経路が偏る: self-compile は parser/checker/codegen を踏むが
 printer（`print_expr`/`print_stmt`）は `normalize` でしか、Perceus RC
 （`pc_count`/`pc_emit`/`elaborate_rw`）は `VIBE_RC=1` でしか踏まれない。
-`coverage_selfhost_merge.sh` は **1 つの計測コンパイラ**を複数ワークロードで
+`coverage_merge.sh` は **1 つの計測コンパイラ**を複数ワークロードで
 走らせ、ヒット bitmap を **union 合成**する（同一バイナリ＝同一 id なので
 正確に OR できる）。
 
 ```bash
-scripts/coverage_selfhost_merge.sh                 # 既定: compile + normalize + rc
-scripts/coverage_selfhost_merge.sh extra1.vibe ... # 追加で各ファイルを FS-compile
-VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_selfhost_merge.sh
+scripts/coverage_merge.sh                 # 既定: compile + normalize + rc
+scripts/coverage_merge.sh extra1.vibe ... # 追加で各ファイルを FS-compile
+VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_merge.sh
 ```
 
 実測（合成効果）: compile 単体 646fn/2436br → **merged 733fn(62.4%) /
@@ -83,15 +83,15 @@ bitmap（`raw.fn_bitmap` / `raw.branch_bitmap` + 静的な name/owner 表）を�
 
 #### コーパス（大量プログラム）でのマージ
 
-`coverage_selfhost_merge.sh` の固定 3 ワークロードでは分岐 ~56% で頭打ちになる。
-`coverage_selfhost_corpus.sh` は 1 つの計測コンパイラを **多数の .vibe**
+`coverage_merge.sh` の固定 3 ワークロードでは分岐 ~56% で頭打ちになる。
+`coverage_corpus.sh` は 1 つの計測コンパイラを **多数の .vibe**
 （`examples/` `fixtures/` `lib/@vibe/prelude/`）に対して compile / normalize / rc で
 走らせ、全 run を union する。
 
 ```bash
-scripts/coverage_selfhost_corpus.sh                 # 既定: examples fixtures + 生成エラーコーパス
-VIBE_COV_MAX=200 scripts/coverage_selfhost_corpus.sh
-VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_selfhost_corpus.sh
+scripts/coverage_corpus.sh                 # 既定: examples fixtures + 生成エラーコーパス
+VIBE_COV_MAX=200 scripts/coverage_corpus.sh
+VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_corpus.sh
 ```
 
 corpus は base self-compile / RC-stress に加えて以下のワークロードを束ねる:
@@ -140,7 +140,7 @@ corpus は base self-compile / RC-stress に加えて以下のワークロード
 
 #### test-execution 計測（2026-06-24, 上記方式 #1 を実装）
 
-`scripts/coverage_selfhost_testexec.sh` は `lib/@vibe/compiler/*_test.vibe` を
+`scripts/coverage_testexec.sh` は `lib/@vibe/compiler/*_test.vibe` を
 **coverage 付きでコンパイル → 生成 wasm を実行**し、実行された分岐を corpus に
 `(関数名, 関数内 local 分岐 index)` キーで union する（別バイナリだが同一ソース
 関数なら local 分岐順が一致するのでマージできる）。テストは `type_to_string` /
@@ -168,7 +168,7 @@ compile+run すると、コンパイラの型/trait/env 関数を**直接** edge
 `types_equal` 66→83/99、`subst_apply` ~0→21/22、`type_name_prefix` 0→13/13。
 
 ```bash
-scripts/coverage_selfhost_driver.sh   # corpus acc.json へ (fn,local_branch) キーで union
+scripts/coverage_driver.sh   # corpus acc.json へ (fn,local_branch) キーで union
 ```
 
 driver は flat source の全 top-level 関数（export 有無を問わず同一ファイル内で
@@ -208,11 +208,11 @@ corpus acc.json に (fn_name, local_branch_index) キーで union する。分�
 コンパイラの分岐）は不変なので、seed に存在する関数の未踏 arm だけが点灯する。
 
 レバー別の寄与（76.25% から）:
-- **no-DCE unit-tests** (`coverage_selfhost_unittests.sh` + `VIBE_COV_FLAT`):
+- **no-DCE unit-tests** (`coverage_unittests.sh` + `VIBE_COV_FLAT`):
   flat の代わりに no-DCE merged を base にし、`*_test.vibe` を 28→**68 本**実行
   (+82)。残 80 本は seed に無い standalone module（`desugar`/`monoify`/`cst_lower`/
   `analyze_purity` 等）を import するため分母外で無意味。
-- **direct-call drivers** (`coverage_selfhost_drivers.sh`): seed の under-tested
+- **direct-call drivers** (`coverage_drivers.sh`): seed の under-tested
   関数を crafted 入力で直接叩く。**黒箱 compile では構造的に踏めない category**:
   - `cov_async.vibe`: inlined async/stream builtin (`Task::spawn`/`Stream::map`/
     `await`/…) — examples に async プログラムが無い (+32)。
@@ -254,26 +254,26 @@ corpus acc.json に (fn_name, local_branch_index) キーで union する。分�
     `Fs::stat_token` / `compact_string_fingerprint` 値と、わざと外した値で全 arm 踏破
     （0 dark 到達）(+11)。注: その Bool twin `matches_cached_file_spec` は merged
     source に重複定義があり 10 dark は dead copy（駆動不能）。
-- **manifest-header cache** (`coverage_selfhost_manifestcache.sh`): 非 special な
+- **manifest-header cache** (`coverage_manifestcache.sh`): 非 special な
   manifest project を cold/warm/部分 invalidation で FS-compile し、
   `matches_cached_file_spec`/`try_collect_manifest_source_groups_fs`/
   `collect_needed_paths_from_manifest_headers` を点灯 (+32)。コンパイラ自身の
   manifest は cold で trap するため cache が書かれず、この cluster が dark だった。
-- **multi-module merge** (`coverage_selfhost_multimodule.sh`): 非 entry module が
+- **multi-module merge** (`coverage_multimodule.sh`): 非 entry module が
   private let/enum/struct/type-alias を持ち、entry が同名 export を別 alias で
   import する（衝突）project を FS-compile → `namespace_private_value_stmts`/
   `append_import_alias_collision_defs_from_sources` 系を点灯 (+16)。
-- **feature programs** (`coverage_selfhost_features.sh`): trait/効果/mut capture/
+- **feature programs** (`coverage_features.sh`): trait/効果/mut capture/
   pattern 等の breadth (+14)。
 
 再現:
 ```bash
-scripts/coverage_selfhost_corpus.sh        # base acc.json + compiler_cov.wasm
-scripts/coverage_selfhost_unittests.sh     # VIBE_COV_FLAT=_build/coverage/merged_nodce.vibe で再実行も可
-scripts/coverage_selfhost_drivers.sh       # async/lookup/cachetext/units/traitenv/link/helpers/…
-scripts/coverage_selfhost_manifestcache.sh
-scripts/coverage_selfhost_multimodule.sh
-scripts/coverage_selfhost_features.sh
+scripts/coverage_corpus.sh        # base acc.json + compiler_cov.wasm
+scripts/coverage_unittests.sh     # VIBE_COV_FLAT=_build/coverage/merged_nodce.vibe で再実行も可
+scripts/coverage_drivers.sh       # async/lookup/cachetext/units/traitenv/link/helpers/…
+scripts/coverage_manifestcache.sh
+scripts/coverage_multimodule.sh
+scripts/coverage_features.sh
 ```
 
 #### 構造的に到達不能な残差（~19 dark）
@@ -507,8 +507,8 @@ just coverage-wasm-std
 
 ```bash
 pkf run coverage                            # selfhost suite coverage 集計
-pkf run coverage-selfhost-suite-branch-gate # branch coverage gate
-pkf run coverage-selfhost-suite-next-branches  # 未到達分岐の提案
+pkf run coverage-suite-branch-gate # branch coverage gate
+pkf run coverage-suite-next-branches  # 未到達分岐の提案
 ```
 
 > 旧 `coverage-moon` / `coverage-deno` / `coverage-wasm-source` / `coverage-wasm-std`

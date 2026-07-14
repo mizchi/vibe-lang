@@ -17,7 +17,7 @@ import ../core/types.vibe {
 }
 
 import ./checker.vibe {
-  check_assignable, check_expr, fn_return_env_name
+  check_assignable, check_expr, detect_narrowed_generic_mismatch, fn_return_env_name, preserve_generic_instantiation
 }
 
 import ./checker_resolve.vibe {
@@ -293,13 +293,33 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
         }
         // The value must be assignable to a declared annotation (previously
         // unchecked — `let x: Int = "s"` was accepted).
-        let ns = match ann {
-          Some(te) => check_assignable(resolve_type_expr(te, defs), subst_apply(ns0, vt), ns0, errors, String::concat("binding type mismatch for ", name), 0 - 1),
-          None => ns0
-        }
-        let t = match ann {
-          Some(te) => resolve_type_expr(te, defs),
-          None => generalize(ns, vt)
+        let (ns, t) = match ann {
+          Some(te) => {
+            let resolved_te = resolve_type_expr(te, defs)
+            let actual_v = subst_apply(ns0, vt)
+            let ns_a = check_assignable(resolved_te, actual_v, ns0, errors, String::concat("binding type mismatch for ", name), 0 - 1)
+            // #844: `check_assignable`'s polymorphism-tolerant heuristic never
+            // reports a same-name generic-struct/enum instantiation mismatch
+            // (it treats every `CtNamed` as non-ground to stay lenient for
+            // genuinely rigid/uninstantiated type parameters elsewhere) — so
+            // a bare-annotated binding's real type args, once laundered
+            // through the erasing bare `CtStruct` annotation, could be
+            // silently re-narrowed by a LATER unrelated annotation
+            // (`let x: Box = Box::{v:1}; let y: Box[String] = x`). Additively
+            // catch that specific shape here without touching the shared
+            // heuristic (see `detect_narrowed_generic_mismatch`'s doc comment
+            // in checker.vibe for the full reasoning and blast-radius
+            // analysis).
+            let ns_b = detect_narrowed_generic_mismatch(resolved_te, actual_v, ns_a, errors, String::concat("binding type mismatch for ", name), 0 - 1)
+            // Prefer the RHS's real instantiated type over the erasing bare
+            // annotation when `resolved_te` is a bare generic-struct
+            // reference that `actual_v` already concretely instantiates, so a
+            // LATER statement's lookup of this binding sees real type args
+            // instead of an erased placeholder (see
+            // `preserve_generic_instantiation`'s doc comment in checker.vibe).
+            (ns_b, preserve_generic_instantiation(resolved_te, subst_apply(ns_b, vt)))
+          },
+          None => (ns0, generalize(ns0, vt))
         }
         let env1 = env_bind(env, name, t)
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)

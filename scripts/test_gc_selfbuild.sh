@@ -19,7 +19,7 @@ set -uo pipefail
 #
 # Not a CI gate (the frontier is expected to move): run it manually or from
 # `pkf run test-gc-selfbuild`. The gc gate that IS enforced is
-# selfhost_only_gate.sh step 40h (the supported-subset smoke fixture).
+# compiler_gate.sh step 40h (the supported-subset smoke fixture).
 #
 # Usage: bash scripts/test_gc_selfbuild.sh [stage2.wasm]
 #   stage2.wasm defaults to the newest generation build.
@@ -33,7 +33,7 @@ if [ -z "$CLI_WASM" ]; then
   CLI_WASM="$(ls -t "$ROOT_DIR"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
 fi
 if [ -z "$CLI_WASM" ] || [ ! -s "$CLI_WASM" ]; then
-  echo "[gc-selfbuild] SKIP: no selfhost compiler wasm (run scripts/selfhost_generations.sh build, or pass one)"
+  echo "[gc-selfbuild] SKIP: no selfhost compiler wasm (run scripts/generations.sh build, or pass one)"
   exit 0
 fi
 echo "[gc-selfbuild] compiler: $CLI_WASM"

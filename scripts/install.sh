@@ -7,7 +7,7 @@
 #   $VIBE_HOME/bin/vibe                       dispatcher shim (stable PATH
 #                                             entry; picks a toolchain)
 #   $VIBE_HOME/toolchain                      default toolchain name
-#   $VIBE_HOME/toolchains/<name>/bin/{vibe,moonrun_wt}
+#   $VIBE_HOME/toolchains/<name>/bin/{vibe,vibewt}
 #   $VIBE_HOME/toolchains/<name>/lib/{vibe-cli.wasm,vibe-cli.cwasm,lsp...}
 #   $VIBE_HOME/lib/@vibe/{core,ast,parser}    stdlib packages, hash-verified
 #                                             (the default VIBE_LIB root #751
@@ -19,7 +19,7 @@
 # toolchain while packages stay content-addressed and shared.
 #
 # Steps:
-#   1. obtain the wasmtime runner `moonrun_wt` (build from source by default,
+#   1. obtain the wasmtime runner `vibewt` (build from source by default,
 #      or use a prebuilt binary via --runner),
 #   2. obtain the portable compiler wasm `vibe-cli.wasm` (fresh build via
 #      build_cli_wasm.sh, falling back to the committed seed),
@@ -78,7 +78,7 @@ mkdir -p "$TC_DIR/bin" "$TC_DIR/lib" "$VIBE_HOME/bin" "$VIBE_HOME/lib"
 
 # 1. runner ----------------------------------------------------------------
 if [ -z "$RUNNER_SRC" ]; then
-  prebuilt="$ROOT_DIR/runtime/moonrun_wasmtime/target/release/moonrun_wt"
+  prebuilt="$ROOT_DIR/runtime/moonrun_wasmtime/target/release/vibewt"
   if [ -x "$prebuilt" ]; then
     RUNNER_SRC="$prebuilt"
     say "using already-built runner: $RUNNER_SRC"
@@ -90,8 +90,8 @@ if [ -z "$RUNNER_SRC" ]; then
   fi
 fi
 [ -x "$RUNNER_SRC" ] || die "runner not executable: $RUNNER_SRC"
-install -m 0755 "$RUNNER_SRC" "$TC_DIR/bin/moonrun_wt"
-say "runner -> $TC_DIR/bin/moonrun_wt"
+install -m 0755 "$RUNNER_SRC" "$TC_DIR/bin/vibewt"
+say "runner -> $TC_DIR/bin/vibewt"
 
 # 2. compiler wasm ---------------------------------------------------------
 # Prefer a freshly built compiler (latest source, incl. diagnostics); fall back
@@ -112,7 +112,7 @@ say "compiler wasm -> $TC_DIR/lib/vibe-cli.wasm"
 
 # 3. install-time AOT (.cwasm) --------------------------------------------
 say "AOT-compiling host-specific .cwasm..."
-"$TC_DIR/bin/moonrun_wt" --precompile "$TC_DIR/lib/vibe-cli.wasm" \
+"$TC_DIR/bin/vibewt" --precompile "$TC_DIR/lib/vibe-cli.wasm" \
   -o "$TC_DIR/lib/vibe-cli.cwasm"
 say "AOT compiler -> $TC_DIR/lib/vibe-cli.cwasm"
 

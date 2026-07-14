@@ -180,7 +180,7 @@ exits.
 
 ## Keeping the compiler up to date
 
-The runner (`moonrun_wt`) and the compiler wasm are distributed and updated
+The runner (`vibewt`) and the compiler wasm are distributed and updated
 independently (ADR-0056 / テーマ1). To swap in a newer compiler artifact
 without rebuilding the runner:
 

@@ -145,7 +145,7 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
   同期セマンティクスへ lower（`compile_call.vibe`）。`Task::spawn` は 0 引数
   closure（thunk）を `call_indirect`（closure type 9）で呼ぶ。`await` /
   `Future::ready` と同じ系列で、async component（`with { Async }`）に包まれ
-  wasmtime 45 上で実行可能。回帰 gate `test_selfhost_async_component_gate.sh`
+  wasmtime 45 上で実行可能。回帰 gate `test_async_component_gate.sh`
   に Task entry を追加（spawn/join/cancel/race → 42）。
   - **free-var capture 修正**: inlined async builtin（`await`/`Future::ready`/
     `Task::spawn|join|cancel|race`）は func table に居ないため、nested lambda
@@ -487,8 +487,8 @@ universal な source-compile）に、entry が `() -> Int with { Async }`（name
 宣言）。`await` 本体の codegen、非 Int 戻り値、param 付き entry、複数 wasi
 import（fd_write 以外）、entry 名一般化は後続。
 
-回帰保護: この E2E は `scripts/test_selfhost_async_component_gate.sh`
-（pkf task `test-selfhost-async-component`、CI selfhost-gates `cli` shard）に
+回帰保護: この E2E は `scripts/test_async_component_gate.sh`
+（pkf task `test-async-component`、CI gates-shard `cli` shard）に
 固定。wasmtime/wasm-tools 不在時は graceful skip。非 async control が plain
 core module のままであること（async wrap が通常ビルドに漏れない）も検証する。
 
@@ -599,7 +599,7 @@ vibe handler → host `--compose-p3` → `wasmtime serve` → curl の縦串を 
 "x-token: secret") { "200\ncontent-type: text/plain\n\nok" } else { "401\n
 unauthorized" } }` → `x-token` ありで **200 "ok"**（`content-type` ヘッダ付き）、
 なしで **401 "unauthorized"**。gate `test_wasi_http_p3_full_gate.sh`（pkf
-`test-wasi-http-p3-full`、CI selfhost-gates cli shard、serve+curl で検証、
+`test-wasi-http-p3-full`、CI gates-shard cli shard、serve+curl で検証、
 tooling 不在時 skip）。
 
 **確立できた point**:
@@ -668,7 +668,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
   「vendored WIT がもう RC world を持たないため phase B は 46 でしか
   link できない」ことを踏まえ `phases: async` のみの compat leg として
   残す（phase A は wasi:http WIT に依存しないため 45 でも無回帰で通る）。
-  `WASMTIME_VERSION` 系の pin（`ci.yml` の `selfhost-only-gate` /
+  `WASMTIME_VERSION` 系の pin（`ci.yml` の `compiler-gate` /
   `cli-install.yml` / `scripts/install_wasmtime_release.sh`）もすべて
   46.0.1 に統一。
 
@@ -684,7 +684,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | **M1b-2b** | emitter 実装: `comp_generate_async_trampoline` + `comp_emit_component_wasm_async_trampolined`（2-module 合成）+ byte test | 未着手 |
 | **M1b-2c** | orchestration: `compile_source_wasi_only` が entry の `() -> Int with { Async }`（name="run"）を AST から検出し、core wasm を `comp_emit_component_wasm_async_trampolined` で包む。selfhost compiler（stage1）で `.vibe` → **component を出力**（magic 0d 00 01 00、`wasm-tools validate` OK）、非 async は plain core のまま（無回帰） | done |
 | **M1b-2d** | 真の run: fd_write stub module を component に同梱し main の instantiation に供給、entry の `(param i64)->i64` 規約に合わせ trampoline が dummy i64 引数で呼ぶよう修正、wasmtime に exceptions flag。**縦串完成: selfhost が `.vibe` async entry → async component → wasmtime 45 で 42 を返す** | **done** |
-| **M1b-2e** | 回帰保護 gate（`test-selfhost-async-component`）＋ CI 配線 | done |
+| **M1b-2e** | 回帰保護 gate（`test-async-component`）＋ CI 配線 | done |
 | **M1b-3a** | `await` codegen spike: wit-bindgen reference から `future.new/read/write` + waitable-set 等 canon built-in の signature/option を抽出（§3.6） | done |
 | **M1b-3b** | `await`/`Future::ready` の codegen（ready-future identity lowering）: `await(x)`/`Future::ready(x)` を引数の値へ lower。**await を使う async プログラムが初めてコンパイル&実行可能**。gate を `await(Future::ready(42))` body に更新し E2E で 42 | done |
 | **M1b-3c** | 真の blocking await: `future.read` + waitable-set 待機ループ（async source = host async import / subtask spawn が前提）。core codegen に future canon built-in の import + buffer + ループを emit | spike done（§3.7、mechanics 実機確認）/ codegen 未着手 |

@@ -1,4 +1,4 @@
-//! Rust client for `moonrun_wt --daemon`'s line-delimited JSON protocol.
+//! Rust client for `vibewt --daemon`'s line-delimited JSON protocol.
 //!
 //! The daemon (added in #405) keeps a wasm Store + instance warm across
 //! requests so moonbit module-level state survives, eliminating the
@@ -35,7 +35,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 #[derive(Debug)]
 pub enum ClientError {
-    /// `moonrun_wt --daemon` failed to spawn (binary missing,
+    /// `vibewt --daemon` failed to spawn (binary missing,
     /// non-executable, etc.).
     Spawn(std::io::Error),
     /// IO failure while talking to the daemon — usually means it
@@ -60,7 +60,7 @@ pub enum ClientError {
 impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ClientError::Spawn(e) => write!(f, "spawn moonrun_wt --daemon: {e}"),
+            ClientError::Spawn(e) => write!(f, "spawn vibewt --daemon: {e}"),
             ClientError::Io(e) => write!(f, "daemon io: {e}"),
             ClientError::BadResponse { raw, err } => {
                 write!(f, "daemon returned unparseable response: {err} (raw: {raw:?})")
@@ -110,7 +110,7 @@ pub struct CheckResponse {
     pub error: Option<String>,
 }
 
-/// Long-lived client for a `moonrun_wt --daemon` process.
+/// Long-lived client for a `vibewt --daemon` process.
 ///
 /// Owns the child process and its stdin/stdout pipes. Dropping the
 /// client closes the daemon's stdin (EOF), which makes the daemon
@@ -124,19 +124,19 @@ pub struct Client {
 }
 
 impl Client {
-    /// Spawn `moonrun_wt --daemon <wasm_path>` from the binary at
+    /// Spawn `vibewt --daemon <wasm_path>` from the binary at
     /// `MOONRUN_WT_BIN` env var, falling back to a relative path
     /// for the repo layout.
     pub fn spawn(wasm_path: impl AsRef<Path>) -> Result<Self, ClientError> {
         let bin = std::env::var_os("MOONRUN_WT_BIN")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                PathBuf::from("runtime/moonrun_wasmtime/target/release/moonrun_wt")
+                PathBuf::from("runtime/moonrun_wasmtime/target/release/vibewt")
             });
         Self::spawn_with(bin, wasm_path)
     }
 
-    /// Spawn an explicit `moonrun_wt` binary against the given wasm.
+    /// Spawn an explicit `vibewt` binary against the given wasm.
     /// Use this when the caller already knows where the binary lives
     /// (e.g. a build script that just produced it).
     pub fn spawn_with(
@@ -168,7 +168,7 @@ impl Client {
 
     /// Send one request to the daemon and block until the response
     /// arrives. `args` is the argv the wasm `_start` will see (the
-    /// daemon prepends `moonrun_wt` as argv[0] on its side).
+    /// daemon prepends `vibewt` as argv[0] on its side).
     pub fn send(&mut self, args: &[&str]) -> Result<CheckResponse, ClientError> {
         let stdin = self.stdin.as_mut().ok_or(ClientError::DaemonClosed)?;
         let stdout = self.stdout.as_mut().ok_or(ClientError::DaemonClosed)?;
@@ -288,7 +288,7 @@ impl Drop for Client {
 
 #[cfg(test)]
 mod tests {
-    // Integration-style smoke test: spawns the actual moonrun_wt
+    // Integration-style smoke test: spawns the actual vibewt
     // binary and checks an actual wasm. Gated on env vars so the
     // crate's bare `cargo test` doesn't require the whole repo
     // build chain.

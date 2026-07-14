@@ -36,7 +36,7 @@ This builds `lib/@vibe/cli/selfhost_entry.vibe` to
 `compile-lite` bench commands against that wasm. Because this artifact
 uses the vibe host ABI (`vibe::env-get`, `vibe::fs-read-file`, etc.),
 the compiler side runs through `scripts/run_wasm_vibe_host_runner.sh`
-instead of `moonrun_wt`; `VIBE_SELFHOST_PERF_RUNTIME` still controls the
+instead of `vibewt`; `VIBE_SELFHOST_PERF_RUNTIME` still controls the
 MoonBit-built checker runner when `VIBE_SELFHOST_PERF_CHECKER_KIND=moonbit`.
 When `VIBE_SELFHOST_PERF_COMPILER_KIND=cli-core`, the checker side also
 defaults to `cli-core`, so both compile and check requests go through the
@@ -57,7 +57,7 @@ checker requests.
 
 The bench driver's `VIBE_SELFHOST_PERF_RUNTIME` defaults to
 `wasmtime-aot`. It runs the stage1 wasm under a small Rust wasmtime
-host (`runtime/moonrun_wasmtime`, binary `moonrun_wt`) that
+host (`runtime/moonrun_wasmtime`, binary `vibewt`) that
 re-implements the moonbit `--target wasm` import surface
 (`spectest::print_char` + `__moonbit_{fs,time,sys}_unstable::*`,
 32 functions) and Cranelift-JITs the module. `wasmtime-aot` also
@@ -93,7 +93,7 @@ scripts/bench_selfhost_perf.sh
 
 Set `VIBE_SELFHOST_PERF_RUNTIME=wasmtime` to skip the AOT step (loses
 the per-invocation Cranelift cost). Set `MOONRUN_WT_BIN` to point at a
-prebuilt `moonrun_wt` (otherwise the driver builds it on first use).
+prebuilt `vibewt` (otherwise the driver builds it on first use).
 
 ### Runtime-aware wasm-opt level
 
@@ -136,18 +136,18 @@ binaryen `wasm-opt -Oz`):
 
 Average ratio drop ~2.6× on opt'd wasm (still above the 1.5-2× target).
 
-**Output parity**: `scripts/test_moonrun_wt_parity.sh` (`pkf run
-test-moonrun-wt-parity`) compiles each case under both runtimes and
+**Output parity**: `scripts/test_vibewt_parity.sh` (`pkf run
+test-vibewt-parity`) compiles each case under both runtimes and
 verifies the emitted `.wasm` is byte-identical. As of 2026-05-17 all
 5 default cases match SHA-256 on both debug and release+Oz profiles.
 
-**Import drift guard**: `scripts/check_moonrun_wt_imports.sh` (`pkf
-run check-moonrun-wt-imports`) dumps the `--target wasm` import
+**Import drift guard**: `scripts/check_vibewt_imports.sh` (`pkf
+run check-vibewt-imports`) dumps the `--target wasm` import
 surface from stage1 compile + check artifacts and diffs against
 `runtime/moonrun_wasmtime/expected_imports.txt`. Fails if moonbit ever
-emits a new host import we haven't wired into moonrun_wt's
+emits a new host import we haven't wired into vibewt's
 `register_imports()`. Refresh with
-`scripts/check_moonrun_wt_imports.sh --update` after implementing
+`scripts/check_vibewt_imports.sh --update` after implementing
 the new import.
 
 Both guards run in the `selfhost-runtime-parity` CI job (required).

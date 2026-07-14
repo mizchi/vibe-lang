@@ -44,11 +44,11 @@ dev-mode の便宜で、pin があれば置き場所によらず hash 照合さ�
 3. **テスト**: `<pkg>/foo_test.vibe` を書く。`vibe test` は production
    default (RC) でコンパイルされることに注意 — float / 所有権の RC 特有
    経路も踏まれる (#745 はこれで発見された)
-4. **allowlist**: `scripts/selfhost_unit_test_allowlist.txt` にテストを追加
+4. **allowlist**: `scripts/unit_test_allowlist.txt` にテストを追加
    (アルファベット順)。これがラチェット — 以後 battery が回帰を検出する
 5. **compiler から消費する場合のみ**: `lib/@vibe/compiler/selfhost_sources_manifest.tsv`
    に `vibe_core` group で `../../../lib/@vibe/<pkg>/...` の行を足す。bundle
-   への inline / codegen fingerprint への波及は generate_selfhost_bundle.sh
+   への inline / codegen fingerprint への波及は generate_bundle.sh
    が面倒を見る (#741, #766)
 
 ## 3. 検証 (commit 前に必ず)
@@ -61,8 +61,8 @@ env VIBE_PREOPEN_DIR="$PWD" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
 env VIBE_PREOPEN_DIR="$PWD" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start /tmp/t.wasm
 
 # 一式 (compiler を触った場合は bundle regen + fixpoint も)
-bash scripts/selfhost_only_gate.sh
-bash scripts/selfhost_unit_test_runner.sh
+bash scripts/compiler_gate.sh
+bash scripts/unit_test_runner.sh
 ```
 
 compiler 本体 (`lib/@vibe/compiler/`, `lib/@vibe/` の compiler 消費分) を触った
@@ -71,8 +71,8 @@ compiler 本体 (`lib/@vibe/compiler/`, `lib/@vibe/` の compiler 消費分) を
 ```bash
 VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 \
   VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe \
-  bash scripts/generate_selfhost_bundle.sh
-bash scripts/selfhost_generations.sh build --stage3 --out-dir _build/gen
+  bash scripts/generate_bundle.sh
+bash scripts/generations.sh build --stage3 --out-dir _build/gen
 cmp _build/gen/stage2.wasm _build/gen/stage3.wasm   # fixpoint
 ```
 

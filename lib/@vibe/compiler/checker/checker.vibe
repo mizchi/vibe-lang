@@ -1,7 +1,7 @@
 //# Imports
 
 import ../core/ast.vibe {
-  Expr, Pat
+  Expr, Pat, TypeExpr
 }
 
 import ../core/types.vibe {
@@ -469,6 +469,159 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
   }
 }
 
+// #844: true when `t` mentions no unresolved/rigid type-parameter placeholder
+// and no unbound unification variable ANYWHERE in its structure -- i.e. it is
+// a genuinely CONCRETE type. Unlike the more conservative shared
+// `type_is_ground` (which treats EVERY `CtNamed` as non-ground, to stay safe
+// for the many call sites that must still tolerate a rigid/uninstantiated
+// type parameter such as a trait method's `CtNamed("T", _)` field type), this
+// recurses into `CtNamed`'s own type arguments. Used ONLY by
+// `detect_narrowed_generic_mismatch` below (a narrowly-scoped, additive check
+// for the `let`-annotation erasure hole -- see #844) so this refinement's
+// blast radius stays contained to that one new check instead of the many
+// existing `type_is_ground` call sites.
+//
+// The sentinel shape `CtNamed(name, [CtUnknown])` is what `resolve_type_expr`
+// (checker_resolve.vibe) emits for an unresolved rigid single-name type
+// parameter reference AND for an unresolved/unknown type name alike -- treat
+// that shape as non-concrete. A REAL instantiated generic type (e.g. #829's
+// `Box::{v:1}` -> `CtNamed("Box", [CtInt])`) never carries the bare
+// `CtUnknown` sentinel as its own argument.
+fn type_fully_concrete(t: Type) -> Bool {
+  match t {
+    CtVar(_) => false,
+    CtForAll(_, _, _) => false,
+    CtUnknown => false,
+    // A `CtNamed` with an EMPTY argument list is ALSO treated as non-concrete
+    // (not just the `[CtUnknown]` singlet sentinel above): a rigid/uninstantiated
+    // generic function's own type parameter can leak through, unsubstituted,
+    // as a bare `CtNamed(pname, [])` when it only appears NESTED inside another
+    // type's argument list (e.g. `HashMap::new_int[V]() -> HashMap[Int, V]`
+    // called as `HashMap::new_int()` -- `instantiate` does not always rewrite
+    // an occurrence of `V` buried inside a struct's own field/return-type
+    // representation to a fresh `CtVar`, so it can surface literally as
+    // `CtNamed("V", [])` instead -- lib/@vibex/collections/hashmap_test.vibe
+    // hit exactly this via `let m: HashMap[Int, String] = HashMap::new_int()`
+    // during development of this check). Both shapes are the SAME underlying
+    // ambiguity (a name with no way to tell "resolved zero-arg nominal type"
+    // from "unresolved rigid reference" apart) that the shared `type_is_ground`
+    // sidesteps by always tolerating `CtNamed`; treat both as non-concrete here
+    // too so this narrowly-scoped check only ever fires when it is SURE both
+    // sides are fully resolved.
+    CtNamed(_, args) => {
+      let is_sentinel = Array::length(args) == 0 || (Array::length(args) == 1 && match Array::get(args, 0) {
+        CtUnknown => true,
+        _ => false
+      })
+      if is_sentinel {
+        false
+      } else {
+        let mut ok = true
+        let mut i = 0
+        while i < Array::length(args) {
+          if !type_fully_concrete(Array::get(args, i)) {
+            ok = false
+          }
+          i = i + 1
+        }
+        ok
+      }
+    },
+    CtTuple(items) => {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(items) {
+        if !type_fully_concrete(Array::get(items, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    CtArray(e) => type_fully_concrete(e),
+    CtOption(e) => type_fully_concrete(e),
+    CtFn(ps, r, _) => {
+      let mut ok = type_fully_concrete(r)
+      let mut i = 0
+      while i < Array::length(ps) {
+        if !type_fully_concrete(Array::get(ps, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    _ => true
+  }
+}
+
+// #844: `resolve_type_expr` types a BARE (unparameterized) reference to a
+// generic struct annotation (`let x: Box = ...`) as bare `CtStruct("Box")`,
+// discarding the struct's real type arguments -- and `unify`'s
+// `CtStruct`/`CtNamed` bridge (core/types.vibe, #829/#843) then lets that bare
+// annotation re-unify by NAME ALONE with any later, unrelated instantiation
+// (`let y: Box[String] = x`), silently re-narrowing a laundered value. Fixing
+// that erasure at its source (threading fresh type variables through
+// `resolve_type_expr`) touches its ~20 call sites across the whole checker
+// and was judged too wide-blast-radius to land in one pass (#844); this is
+// the narrower, additive half of the fix that IS safe to land: when BOTH the
+// expected annotation and the actual value are already a fully concrete,
+// SAME-NAME `CtNamed` instantiation (arity > 0) and their arguments do not
+// unify, report the mismatch directly -- bypassing `check_assignable`'s
+// `type_is_ground` gate, which (deliberately, to stay lenient for genuinely
+// rigid/uninstantiated type parameters elsewhere) treats every `CtNamed` as
+// non-ground and so never reports this shape at all. Gated on
+// `type_fully_concrete` on BOTH sides so a still-polymorphic case (either
+// side embedding an unresolved rigid parameter or unbound type variable, e.g.
+// a trait-generic `LazyIter[T]` return before `T` is resolved) is never
+// flagged -- only a same-name mismatch where both sides are already fully
+// resolved concrete types.
+export fn detect_narrowed_generic_mismatch(expected: Type, actual: Type, s: Subst, errors: Array[String], what: String, off: Int) -> Subst {
+  let e2 = subst_apply(s, expected)
+  let a2 = subst_apply(s, actual)
+  match e2 {
+    CtNamed(ename, eargs) => match a2 {
+      CtNamed(aname, aargs) => if ename == aname && Array::length(eargs) == Array::length(aargs) && Array::length(eargs) > 0 && type_fully_concrete(e2) && type_fully_concrete(a2) {
+        match unify(e2, a2, s) {
+          Some(_) => s,
+          None => {
+            Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(e2), String::concat(", got ", String::concat(type_to_string(a2), off_marker(off)))))))
+            s
+          }
+        }
+      } else s,
+      _ => s
+    },
+    _ => s
+  }
+}
+
+// #844: when a `let`-style annotation is a BARE (unparameterized) reference to
+// a generic struct (`resolve_type_expr` resolves it to bare `CtStruct(name)`,
+// discarding type args) and the RHS's ACTUAL inferred type is already a
+// concrete instantiation of that SAME struct (`CtNamed(name, args)`, arity >
+// 0, from #829's struct-literal instantiation), prefer recording the RHS's
+// real instantiated type for the binding instead of the erasing bare
+// annotation. This does not change what the CURRENT statement accepts (the
+// bare annotation already tolerates any instantiation via the unify bridge,
+// unchanged here) -- it only changes what a LATER statement observes when it
+// looks the binding up, so a subsequent re-narrowing annotation
+// (`detect_narrowed_generic_mismatch` above) has real type information to
+// compare against instead of an erased placeholder.
+export fn preserve_generic_instantiation(resolved: Type, actual: Type) -> Type {
+  match resolved {
+    CtStruct(rname) => match actual {
+      CtNamed(aname, aargs) => if rname == aname && Array::length(aargs) > 0 {
+        actual
+      } else {
+        resolved
+      },
+      _ => resolved
+    },
+    _ => resolved
+  }
+}
+
 // Struct construction `S::{ ... }` drops the name `S` at parse time (becomes a
 // bare ERecord), so the struct is resolved by matching the field-name SET. True
 // when `declared` and `actual` have the same field names.
@@ -728,6 +881,48 @@ fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], s: Subst, error
     ui = ui + 1
   }
   out
+}
+
+// #844: recognize the EXACT synthetic call shape `parser_expr_dispatch.vibe`'s
+// `ascribe_wrap` builds for a LOCAL `let x: T = val` --
+// `((__asc: T) -> __asc)(val)` -- and return its annotation `T`. `"__asc"` is
+// a dedicated internal marker name (parallel to `"__return__"` /
+// `"__in_loop__"` used elsewhere in this file), never written by real user
+// code, so this match is precise: an ordinary lambda call (a real user IIFE)
+// will not have a single param literally named `__asc` whose body is exactly
+// `EIdent("__asc", _)`. Used to run a dedicated, narrowly-scoped check for
+// this one call shape (see the `ECall` fallback arm below) instead of
+// changing the general call-argument checking (`unify_call_args`) that every
+// other call in the language goes through.
+fn ascription_lambda_ann(callee: Expr) -> Option[TypeExpr] {
+  match callee {
+    EFn(tparams, _tbounds, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(params) == 1 {
+      match ret_ty {
+        Some(_) => None,
+        None => match effect {
+          Some(_) => None,
+          None => {
+            let (pname, pann) = Array::get(params, 0)
+            if pname == "__asc" {
+              match body {
+                EIdent(bname, _) => if bname == "__asc" {
+                  pann
+                } else {
+                  None
+                },
+                _ => None
+              }
+            } else {
+              None
+            }
+          }
+        }
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
 }
 
 export fn fn_return_env_name(name: String) -> String {
@@ -2279,6 +2474,32 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
         }
       },
       _ => {
+        // #844: intercept the synthetic ascription-lambda call shape
+        // `((__asc: T) -> __asc)(val)` that a LOCAL `let x: T = val` desugars
+        // to (parser_expr_dispatch.vibe's ascribe_wrap) BEFORE the general
+        // callee-dispatch logic below, so its annotation-vs-value check can
+        // additionally run `detect_narrowed_generic_mismatch` (closing the
+        // #844 same-name generic-struct re-narrowing hole) and
+        // `preserve_generic_instantiation` (so the bound local variable keeps
+        // its real instantiated type instead of an erased bare one) without
+        // touching `unify_call_args` / `check_assignable`, which every OTHER
+        // call in the language also goes through.
+        let asc_ann = if Array::length(args) == 1 {
+          ascription_lambda_ann(callee)
+        } else {
+          None
+        }
+        match asc_ann {
+          Some(ann_te) => {
+            let (at, ns0, nc0) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+            let resolved = resolve_type_expr(ann_te, defs)
+            let actual = subst_apply(ns0, at)
+            let ns1 = check_assignable(resolved, actual, ns0, errors, "binding type mismatch for a local let", call_off)
+            let ns2 = detect_narrowed_generic_mismatch(resolved, actual, ns1, errors, "binding type mismatch for a local let", call_off)
+            let bound_ty = preserve_generic_instantiation(resolved, subst_apply(ns2, actual))
+            (tab_call_ty(tytab, call_off, bound_ty), ns2, nc0)
+          },
+          None => {
         let callee_name0 = expr_ident_name_or_empty(callee)
         if callee_name0 != "" {
           match direct_call_return(env, callee_name0) {
@@ -2373,6 +2594,8 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
               CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname)), s2, c2),
               _ => (tab_call_ty(tytab, call_off, CtUnknown), s2, c2)
             }
+        }
+          }
         }
       }
     },

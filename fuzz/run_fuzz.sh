@@ -45,7 +45,7 @@ if [ -z "$CLI" ]; then
   CLI="$(ls -t _build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1)"
 fi
 if [ -z "$CLI" ] || [ ! -f "$CLI" ]; then
-  echo "[fuzz] no stage2 CLI found; build one first (scripts/selfhost_generations.sh build)" >&2
+  echo "[fuzz] no stage2 CLI found; build one first (scripts/generations.sh build)" >&2
   exit 2
 fi
 echo "[fuzz] mode=$MODE gen=${GENMODE:-liveness} seeds=$A..$B cli=$CLI"

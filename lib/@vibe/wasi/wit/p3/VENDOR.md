@@ -57,7 +57,7 @@ Adapter/gate updates made in lockstep (all under #821):
    together — a mismatch between adapter include and gate pin fails loudly
    (wit-bindgen resolution error) rather than silently, but keep them in
    lockstep anyway.
-6. Re-run `bash scripts/test_selfhost_async_component_gate.sh` and
+6. Re-run `bash scripts/test_async_component_gate.sh` and
    `VIBE_P3_GATE_REQUIRE_TOOLS=1 VIBE_P3_GATE_PHASES=async,http bash
    scripts/test_wasi_p3_guarantee_gate.sh` against the new wasmtime version
    before bumping the CI pins.

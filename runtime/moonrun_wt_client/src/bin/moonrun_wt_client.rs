@@ -21,8 +21,8 @@ fn print_help() {
            moonrun_wt_client --runs N <wasm|cwasm> <case>\n\
          \n\
          ENV:\n\
-           MOONRUN_WT_BIN   path to moonrun_wt (default: \n\
-                            runtime/moonrun_wasmtime/target/release/moonrun_wt)\n"
+           MOONRUN_WT_BIN   path to vibewt (default: \n\
+                            runtime/moonrun_wasmtime/target/release/vibewt)\n"
     );
 }
 
