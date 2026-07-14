@@ -121,7 +121,7 @@ vt_worker() {
   else
     compile_env=(VIBE_FS_COMPILE=1)
   fi
-  if ! env VIBE_COVERAGE="$coverage" VIBE_PREOPEN_DIR="$ROOT_DIR" "${compile_env[@]}" VIBE_SELFHOST_IMPORT_ABI=raw \
+  if ! env VIBE_COVERAGE="$coverage" VIBE_PREOPEN_DIR="$ROOT_DIR" "${compile_env[@]}" VIBE_IMPORT_ABI=raw \
       bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
       --invoke cli_main "$cli_wasm" "$src_rel" "$out_rel" "__no_entry__" \
       >/dev/null 2>&1 || [ ! -s "$ROOT_DIR/$out_rel" ]; then

@@ -40,13 +40,13 @@ let ignored = 1
 let cli_main = () -> Int { token() }
 EOF
 
-VIBE_SELFHOST_PROJECT_ROOT="$TMP_ROOT" \
-VIBE_SELFHOST_SOURCE_MANIFEST="$TMP_ROOT/lib/@vibe/compiler/selfhost_sources_manifest.tsv" \
-VIBE_SELFHOST_BUNDLE_OUT="$TMP_ROOT/lib/@vibe/compiler/selfhost_sources_bundle.vibe" \
-VIBE_SELFHOST_ADAPTER_BUNDLE_OUT="$TMP_ROOT/lib/@vibe/compiler/selfhost_cli_adapter_bundle.vibe" \
-VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT="$TMP_ROOT/lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe" \
-VIBE_SELFHOST_BUNDLE_EXTRA_ENTRIES="" \
-VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_FROM_MERGED=1 \
+VIBE_PROJECT_ROOT="$TMP_ROOT" \
+VIBE_SOURCE_MANIFEST="$TMP_ROOT/lib/@vibe/compiler/selfhost_sources_manifest.tsv" \
+VIBE_BUNDLE_OUT="$TMP_ROOT/lib/@vibe/compiler/selfhost_sources_bundle.vibe" \
+VIBE_ADAPTER_BUNDLE_OUT="$TMP_ROOT/lib/@vibe/compiler/selfhost_cli_adapter_bundle.vibe" \
+VIBE_ADAPTER_MODULE_SOURCE_OUT="$TMP_ROOT/lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe" \
+VIBE_BUNDLE_EXTRA_ENTRIES="" \
+VIBE_ADAPTER_MODULE_SOURCE_FROM_MERGED=1 \
 bash "$BUNDLE_SCRIPT" >/dev/null
 
 OUT="$TMP_ROOT/lib/@vibe/compiler/selfhost_sources_bundle.vibe"
@@ -68,7 +68,7 @@ if [ ! -f "$OUT_ADAPTER_MODULE" ]; then
 fi
 
 # Main bundle should contain only files reachable from selfhost_cli_adapter.vibe
-# (+ any extra entries specified via VIBE_SELFHOST_BUNDLE_EXTRA_ENTRIES)
+# (+ any extra entries specified via VIBE_BUNDLE_EXTRA_ENTRIES)
 # In this test: polyfill, token, selfhost_cli_adapter are reachable.
 # index.vibe is NOT reachable from adapter (it imports adapter_bundle, not adapter).
 for path in polyfill token selfhost_cli_adapter; do

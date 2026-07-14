@@ -47,7 +47,7 @@ export let main = () -> Int with { Fs } {
   Bytes::length(comp)
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
   "$WORK/emit.vibe" "$WORK/emit.wasm" main >/dev/null 2>&1
 VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$WORK/emit.wasm" >/dev/null 2>&1

@@ -3,12 +3,12 @@
 // Generates selfhost runtime fixture test files for the selfhost compiler.
 //
 // Mode 1 – list candidates:
-//   VIBE_SELFHOST_RUNTIME_FIXTURE_LIST_ONLY=1 node scripts/generate_selfhost_runtime_fixture_tests.mjs
+//   VIBE_RUNTIME_FIXTURE_LIST_ONLY=1 node scripts/generate_selfhost_runtime_fixture_tests.mjs
 //   Prints one fixture path per line to stdout.
 //
 // Mode 2 – generate test files:
-//   VIBE_SELFHOST_RUNTIME_FIXTURE_PATHS_FILE=paths.txt \
-//   VIBE_SELFHOST_RUNTIME_FIXTURE_SHARD_SIZE=10 \
+//   VIBE_RUNTIME_FIXTURE_PATHS_FILE=paths.txt \
+//   VIBE_RUNTIME_FIXTURE_SHARD_SIZE=10 \
 //   node scripts/generate_selfhost_runtime_fixture_tests.mjs
 //   Creates .vibe test files in the generated directory and prints their paths
 //   to stdout.
@@ -265,9 +265,9 @@ function buildShardTestFiles(fixturePaths, shardStartIndex) {
 // ---------------------------------------------------------------------------
 
 function main() {
-  const listOnly = process.env.VIBE_SELFHOST_RUNTIME_FIXTURE_LIST_ONLY === "1";
+  const listOnly = process.env.VIBE_RUNTIME_FIXTURE_LIST_ONLY === "1";
   const limit = Number(
-    process.env.VIBE_SELFHOST_RUNTIME_FIXTURE_LIMIT || "0",
+    process.env.VIBE_RUNTIME_FIXTURE_LIMIT || "0",
   );
 
   if (listOnly) {
@@ -282,10 +282,10 @@ function main() {
   }
 
   // Generate mode
-  const pathsFile = process.env.VIBE_SELFHOST_RUNTIME_FIXTURE_PATHS_FILE;
+  const pathsFile = process.env.VIBE_RUNTIME_FIXTURE_PATHS_FILE;
   if (!pathsFile) {
     process.stderr.write(
-      "error: set VIBE_SELFHOST_RUNTIME_FIXTURE_LIST_ONLY=1 or VIBE_SELFHOST_RUNTIME_FIXTURE_PATHS_FILE\n",
+      "error: set VIBE_RUNTIME_FIXTURE_LIST_ONLY=1 or VIBE_RUNTIME_FIXTURE_PATHS_FILE\n",
     );
     process.exit(1);
   }

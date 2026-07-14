@@ -38,7 +38,7 @@ if [ -s "$STAGE2" ]; then
   echo "[real-async-host] vibe end-to-end: compiling examples/wasm/sleep_async.vibe"
   vdir="_build/_realasync_vibe"; mkdir -p "$vdir"
   rm -f _build/vibe_selfhost_type_env_v2_*.tsv 2>/dev/null || true
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
     examples/wasm/sleep_async.vibe "$vdir/sleep.wasm" run >/dev/null 2>&1 || true
   if [ ! -s "$vdir/sleep.wasm" ]; then
@@ -63,7 +63,7 @@ if [ -s "$STAGE2" ]; then
   fi
   # Value-returning async import: `Stdin::read_char()` reads async DATA.
   rm -f _build/vibe_selfhost_type_env_v2_*.tsv 2>/dev/null || true
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
     examples/wasm/read_async.vibe "$vdir/read.wasm" run >/dev/null 2>&1 || true
   ( cd "$host_dir" && cargo build --bin vibe-recv-host >/dev/null 2>&1 ) || true

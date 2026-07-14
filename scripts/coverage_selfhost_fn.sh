@@ -33,7 +33,7 @@ mkdir -p "$OUT_DIR"
 # 1. Produce the instrumented compiler (compile the flat compiler source under
 #    VIBE_COVERAGE=1, via the default source-compile path).
 echo "[coverage_selfhost_fn] building instrumented compiler ..." >&2
-VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash "$RUNNER" --invoke cli_main "$SEED" \
   "$(python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2]))' "$FLAT" "$ROOT_DIR")" \
   "$(python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2]))' "$COMPILER_COV" "$ROOT_DIR")" \
@@ -46,14 +46,14 @@ sample_out="$OUT_DIR/workload.out.wasm"
 if [ -z "$workload" ]; then
   # Default workload: self-compile the whole compiler source (default path).
   echo "[coverage_selfhost_fn] workload: self-compile the compiler source" >&2
-  VIBE_COV_OUT="$REPORT" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_COV_OUT="$REPORT" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash "$RUNNER" --invoke cli_main "$COMPILER_COV" \
     "$(python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2]))' "$FLAT" "$ROOT_DIR")" \
     "$(python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2]))' "$sample_out" "$ROOT_DIR")" \
     cli_main
 else
   echo "[coverage_selfhost_fn] workload: compile $workload (FS mode)" >&2
-  VIBE_COV_OUT="$REPORT" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_COV_OUT="$REPORT" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash "$RUNNER" --invoke cli_main "$COMPILER_COV" \
     "$workload" "$(python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2]))' "$sample_out" "$ROOT_DIR")" \
     _start

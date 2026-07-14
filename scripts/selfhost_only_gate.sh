@@ -57,7 +57,7 @@ PY
 # ~1.7x wall, ~2.9x output size; see #705 final benchmark), not a
 # correctness blocker. seed->stage1 must still run bump: the pinned seed
 # predates RC ("not EFn" on VIBE_RC=1).
-VIBE_SELFHOST_RC_BOOTSTRAP_REUSE_GEN="${latest_gen}generation.json" \
+VIBE_RC_BOOTSTRAP_REUSE_GEN="${latest_gen}generation.json" \
   bash scripts/test_selfhost_rc_bootstrap.sh
 
 # 4. multi-file compile regression (#594): the selfhost compiler must resolve
@@ -72,7 +72,7 @@ rm -rf "$fsdir"; mkdir -p "$fsdir"
 printf 'export let add = (a: Int, b: Int) -> Int { a + b }\n' > "$fsdir/helper.vibe"
 printf 'import ./helper.vibe { add }\nexport let _start = () -> Int { add(40, 2) }\n' > "$fsdir/main.vibe"
 stage2_wasm="${latest_gen}stage2.wasm"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$fsdir/main.vibe" "$fsdir/main.wasm" _start
 if [ ! -s "$fsdir/main.wasm" ]; then
@@ -128,7 +128,7 @@ export let _start: () -> Int with { Fs } = () -> {
   }
 }
 VEOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$drdir/main.vibe" "$drdir/main.wasm" _start >/dev/null 2>&1
 if [ ! -s "$drdir/main.wasm" ]; then
@@ -161,7 +161,7 @@ import ./does_not_exist.vibe { helper }
 
 export let _start = () -> Int { helper(1) }
 VEOF
-mi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+mi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$midir/main.vibe" "$midir/main.wasm" _start 2>&1)" || true
 mi_wasm_produced=0
@@ -199,10 +199,10 @@ tdir="_build/_gate_testblock"
 rm -rf "$tdir"; mkdir -p "$tdir"
 printf 'test "ok" {\n  assert_eq(2 + 2, 4)\n}\n' > "$tdir/pass_test.vibe"
 printf 'test "bad" {\n  assert_eq(2 + 2, 5)\n}\n' > "$tdir/fail_test.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/pass_test.vibe" "$tdir/pass_test.wasm" __no_entry__ >/dev/null 2>&1
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/fail_test.vibe" "$tdir/fail_test.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$tdir/pass_test.wasm" ] || [ ! -s "$tdir/fail_test.wasm" ]; then
@@ -286,7 +286,7 @@ fi
 # must succeed.
 cp "$ndir/out.vibe" "$ndir/compile.vibe"
 printf '\nexport let _start: () -> Int = () -> { run() }\n' >> "$ndir/compile.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ndir/compile.vibe" "$ndir/out.wasm" _start >/dev/null 2>&1
 if [ ! -s "$ndir/out.wasm" ]; then
@@ -312,7 +312,7 @@ printf 'import ./pkg { add }\nexport let _start: () -> Int = () -> { add(40, 2) 
 # beside the (valid) wasm the second pass writes. Cold-only ingestion rot
 # (#740/#749 class) surfaces exactly there, so assert "no sidecar" too.
 find "$ROOT_DIR/_build" -maxdepth 1 -type f -name "vibe_*" -delete 2>/dev/null || true
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir/ok.vibe" "$cdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$cdir/ok.wasm" ]; then
@@ -324,7 +324,7 @@ if [ -s "$cdir/ok.wasm.diag" ]; then
   cat "$cdir/ok.wasm.diag" >&2; exit 1
 fi
 printf 'import ./pkg/impl.vibe { add }\nexport let _start: () -> Int = () -> { add(40, 2) }\n' > "$cdir/bad.vibe"
-if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir/bad.vibe" "$cdir/bad.wasm" _start >/dev/null 2>&1 \
   && [ -s "$cdir/bad.wasm" ]; then
@@ -351,7 +351,7 @@ rm -rf "$gsdir"; mkdir -p "$gsdir/pkg"
 printf 'export struct Box[T] {\n  v: T\n}\n\nexport fn Box::wrap[T](v: T) -> Box[T] {\n  Box::{ v: v }\n}\n' > "$gsdir/pkg/box.vibe"
 printf 'version 0.0.1\nimport ./box.vibe {}\ntype Box[T]\nfn Box::wrap[T](v: T) -> Box[T]\n' > "$gsdir/pkg/index.vibei"
 printf 'import ./pkg { Box::wrap }\nexport let _start: () -> Int = () -> { 0 }\n' > "$gsdir/ok.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$gsdir/ok.vibe" "$gsdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$gsdir/ok.wasm" ]; then
@@ -359,7 +359,7 @@ if [ ! -s "$gsdir/ok.wasm" ]; then
   cat "$gsdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 printf 'version 0.0.1\nimport ./box.vibe {}\ntype Box\nfn Box::wrap[T](v: T) -> Box[T]\n' > "$gsdir/pkg/index.vibei"
-if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$gsdir/ok.vibe" "$gsdir/bad.wasm" _start >/dev/null 2>&1 \
   && [ -s "$gsdir/bad.wasm" ]; then
@@ -390,7 +390,7 @@ printf 'export struct X {\n  v: Int\n}\n\nexport fn make(v: Int) -> X {\n  X::{ 
 printf 'import ./impl.vibe {}\nimport ../pkgb { type X }\nfn wrap(v: Int) -> X\n' > "$xpdir/pkga/index.vibei"
 printf 'import ../pkgb { X, make }\nexport fn wrap(v: Int) -> X {\n  make(v)\n}\n' > "$xpdir/pkga/impl.vibe"
 printf 'import ./pkga { wrap }\nimport ./pkgb { value }\nexport let _start: () -> Int = () -> { value(wrap(42)) }\n' > "$xpdir/ok.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xpdir/ok.vibe" "$xpdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$xpdir/ok.wasm" ]; then
@@ -424,7 +424,7 @@ if [ -z "$pin" ]; then
   cat "$cdir2/hash.out.diag" 2>/dev/null >&2; exit 1
 fi
 printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' "$pin" > "$cdir2/ok.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir2/ok.vibe" "$cdir2/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$cdir2/ok.wasm" ]; then
@@ -432,7 +432,7 @@ if [ ! -s "$cdir2/ok.wasm" ]; then
   cat "$cdir2/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 printf 'require @gate/d2pkg 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' > "$cdir2/bad.vibe"
-if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir2/bad.vibe" "$cdir2/bad.wasm" _start >/dev/null 2>&1 \
   && [ -s "$cdir2/bad.wasm" ]; then
@@ -445,7 +445,7 @@ fi
 # D-3: an unpinned require refuses to build; VIBE_FILL_PINS completes it
 # offline from the store; the filled source builds; the fill is idempotent.
 printf 'require @gate/d2pkg 1.0.0\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' > "$cdir2/unpinned.vibe"
-if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir2/unpinned.vibe" "$cdir2/unpinned.wasm" _start >/dev/null 2>&1 \
   && [ -s "$cdir2/unpinned.wasm" ]; then
@@ -458,7 +458,7 @@ if ! grep -q "= #pkg:sha1:" "$cdir2/filled.vibe" 2>/dev/null; then
   echo "[selfhost-only-gate] FAIL: VIBE_FILL_PINS did not insert the pin (#730 D-3)" >&2
   cat "$cdir2/filled.vibe.diag" 2>/dev/null >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir2/filled.vibe" "$cdir2/filled.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$cdir2/filled.wasm" ]; then
@@ -489,7 +489,7 @@ printf 'export fn greet_n(x: Int) -> Int { x + 2 }\n' > "$lpkg/impl.vibe"
 ldir="_build/_gate_lib751"
 rm -rf "$ldir"; mkdir -p "$ldir"
 printf 'import @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(40) }\n' > "$ldir/ok.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ldir/ok.vibe" "$ldir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$ldir/ok.wasm" ]; then
@@ -497,7 +497,7 @@ if [ ! -s "$ldir/ok.wasm" ]; then
   cat "$ldir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 printf 'require @gate751/greet 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(40) }\n' > "$ldir/bad.vibe"
-if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ldir/bad.vibe" "$ldir/bad.wasm" _start >/dev/null 2>&1 \
   && [ -s "$ldir/bad.wasm" ]; then
@@ -529,7 +529,7 @@ xdir="_build/_gate_lib751x"
 rm -rf "$xdir" "lib/@gate751x"; mkdir -p "$xdir"
 # (1) without a usable root the name must NOT resolve
 printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) }\n' > "$xdir/miss.vibe"
-if VIBE_LIB="$xroot/does-not-exist" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+if VIBE_LIB="$xroot/does-not-exist" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/miss.vibe" "$xdir/miss.wasm" _start >/dev/null 2>&1 \
   && [ -s "$xdir/miss.wasm" ]; then
@@ -538,7 +538,7 @@ fi
 # (2) a ":"-separated VIBE_LIB resolves through the first root that has the
 #     package (missing roots skipped); the compiled program runs.
 printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 }\n' > "$xdir/ext.vibe"
-VIBE_LIB="$xroot/does-not-exist:$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_LIB="$xroot/does-not-exist:$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/ext.vibe" "$xdir/ext.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$xdir/ext.wasm" ]; then
@@ -554,7 +554,7 @@ mkdir -p "lib/@gate751x/echo"
 printf 'fn echo_n(x: Int) -> Int\n' > "lib/@gate751x/echo/index.vibei"
 printf 'export fn echo_n(x: Int) -> Int { x + 3 }\n' > "lib/@gate751x/echo/impl.vibe"
 printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 + 0 }\n' > "$xdir/ws.vibe"
-VIBE_LIB="$xroot/does-not-exist:$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_LIB="$xroot/does-not-exist:$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/ws.vibe" "$xdir/ws.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$xdir/ws.wasm" ]; then
@@ -567,7 +567,7 @@ if [ "$ws_out" != "43" ]; then
 fi
 # (4) freeze: VIBE_REQUIRE_PINS=1 demands a pin for any dev-mode lib lane
 printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 + 0 + 0 }\n' > "$xdir/frz.vibe"
-if VIBE_REQUIRE_PINS=1 VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+if VIBE_REQUIRE_PINS=1 VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/frz.vibe" "$xdir/frz.wasm" _start >/dev/null 2>&1 \
   && [ -s "$xdir/frz.wasm" ]; then
@@ -585,20 +585,20 @@ fi
 #     resolving).
 rm -rf "lib/@gate751x"
 printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(38) }\n' > "$xdir/replay.vibe"
-VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/replay.vibe" "$xdir/replay1.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$xdir/replay1.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: replay warm-up compile failed (#758)" >&2
   cat "$xdir/replay1.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-if VIBE_LIB="$xroot/does-not-exist" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+if VIBE_LIB="$xroot/does-not-exist" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/replay.vibe" "$xdir/replay2.wasm" _start >/dev/null 2>&1 \
   && [ -s "$xdir/replay2.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: warm cache replayed a removed VIBE_LIB root (#758)" >&2; exit 1
 fi
-if VIBE_REQUIRE_PINS=1 VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+if VIBE_REQUIRE_PINS=1 VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/replay.vibe" "$xdir/replay3.wasm" _start >/dev/null 2>&1 \
   && [ -s "$xdir/replay3.wasm" ]; then
@@ -637,7 +637,7 @@ if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.s
   cat "$jdir/inst1.log" >&2; exit 1
 fi
 printf 'import @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(11) }\n' > "$jdir/use.vibe"
-VIBE_HOME="$jhome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_HOME="$jhome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$jdir/use.vibe" "$jdir/use.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$jdir/use.wasm" ]; then
@@ -655,7 +655,7 @@ if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.s
 fi
 jhash="$(awk -F'\t' '$1 == "@gate754/mathx@1.0.0" { print $2 }' "$jhome/cache/versions.tsv")"
 printf 'require @gate754/mathx 1.0.0 = #%s\n\nimport @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(11) + 0 }\n' "$jhash" > "$jdir/pinned.vibe"
-VIBE_REQUIRE_PINS=1 VIBE_HOME="$jhome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_REQUIRE_PINS=1 VIBE_HOME="$jhome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$jdir/pinned.vibe" "$jdir/pinned.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$jdir/pinned.wasm" ]; then
@@ -719,7 +719,7 @@ if ! grep -q "@gate755/hex@1.0.0" "$khome/cache/provenance.tsv" 2>/dev/null; the
   echo "[selfhost-only-gate] FAIL: git add did not record provenance (#755)" >&2; exit 1
 fi
 printf 'import @gate755/hex { hex_n }\nexport let _start: () -> Int = () -> { hex_n(36) }\n' > "$kdir/use.vibe"
-VIBE_HOME="$khome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_HOME="$khome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$kdir/use.vibe" "$kdir/use.wasm" _start >/dev/null 2>&1 || true
 kuse_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$kdir/use.wasm" 2>/dev/null | tail -1)"
@@ -763,7 +763,7 @@ edir="_build/_gate_ef"
 rm -rf "$edir"; mkdir -p "$edir"
 # (a) satisfied contract: requires + ensures hold, the call returns 42.
 printf 'fn checked_add(x: Int, y: Int) -> Int where { requires: x >= 0, requires: y >= 0, ensures: result >= x } { x + y }\nexport let _start: () -> Int = () -> { checked_add(40, 2) }\n' > "$edir/ok.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$edir/ok.vibe" "$edir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$edir/ok.wasm" ]; then
@@ -776,7 +776,7 @@ if [ "$ok_out" != "42" ]; then
 fi
 # (b) violated requires: entry assert traps.
 printf 'fn half_pos(x: Int) -> Int where { requires: x > 0 } { x / 2 }\nexport let _start: () -> Int = () -> { half_pos(0 - 4) }\n' > "$edir/viol.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$edir/viol.vibe" "$edir/viol.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$edir/viol.wasm" ]; then
@@ -788,7 +788,7 @@ if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invo
 fi
 # (c) violated ensures: exit assert (over the `result` binding) traps.
 printf 'fn bad_dec(x: Int) -> Int where { ensures: result > x } { x - 1 }\nexport let _start: () -> Int = () -> { bad_dec(7) }\n' > "$edir/viol_ens.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$edir/viol_ens.vibe" "$edir/viol_ens.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$edir/viol_ens.wasm" ]; then
@@ -857,7 +857,7 @@ export let _start: () -> Int = () -> {
   0
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir6f/consumer.vibe" "$cdir6f/consumer.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$cdir6f/consumer.wasm" ]; then
@@ -892,7 +892,7 @@ export let _start: () -> Int = () -> {
 }
 EOF
 # Expected: 11 + 21 + 10 + 20 = 62
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pdir/litpat.vibe" "$pdir/litpat.wasm" _start >/dev/null 2>&1
 if [ ! -s "$pdir/litpat.wasm" ]; then
@@ -932,7 +932,7 @@ fi
 # The normalized output must still compile + run.
 cp "$ldir/out.vibe" "$ldir/compile.vibe"
 printf '\nexport let _start: () -> Int = () -> { run() }\n' >> "$ldir/compile.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ldir/compile.vibe" "$ldir/out.wasm" _start >/dev/null 2>&1
 labeled_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
@@ -961,7 +961,7 @@ if ! grep -q "let x: Int = 60" "$fdir/out.vibe" || grep -q "40 + 2" "$fdir/out.v
 fi
 cp "$fdir/out.vibe" "$fdir/compile.vibe"
 printf '\nexport let _start: () -> Int = () -> { run() }\n' >> "$fdir/compile.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$fdir/compile.vibe" "$fdir/out.wasm" _start >/dev/null 2>&1
 fold_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
@@ -996,7 +996,7 @@ export let _start: () -> Int = () -> {
 EOF
 # Expected: (4+6) + (4+7+6) = 10 + 17 = 27.
 # The bound `x` in Some(x) must compile (no trap), and Some must not route to None.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ndir/nested.vibe" "$ndir/nested.wasm" _start >/dev/null 2>&1
 if [ ! -s "$ndir/nested.wasm" ]; then
@@ -1023,7 +1023,7 @@ let early: () -> Int = () -> { late() }
 let late: () -> Int = () -> { 41 }
 export let _start: () -> Int = () -> { early() + 1 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$wdir/fwd.vibe" "$wdir/fwd.wasm" _start >/dev/null 2>&1
 if [ ! -s "$wdir/fwd.wasm" ]; then
@@ -1038,7 +1038,7 @@ fi
 # Guard: a genuinely-undefined name must still be rejected (hoist only adds names
 # that are actually defined later).
 printf 'export let _start: () -> Int = () -> { genuinely_undefined_name() }\n' > "$wdir/undef.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$wdir/undef.vibe" "$wdir/undef.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$wdir/undef.wasm" ]; then
@@ -1067,7 +1067,7 @@ export let _start: () -> Int = () -> {
 }
 EOF
 # 3*1000 + 52*100 + 3*10 + 0 = 3000 + 5200 + 30 = 8230
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$idir/interp.vibe" "$idir/interp.wasm" _start >/dev/null 2>&1
 if [ ! -s "$idir/interp.wasm" ]; then
@@ -1102,7 +1102,7 @@ test "pos" {
   assert(pick(5) == 1)
 }
 EOF
-VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir/cov_test.vibe" "$cdir/cov_test.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$cdir/cov_test.wasm" ]; then
@@ -1165,7 +1165,7 @@ export let _start: () -> Int = () -> {
 }
 EOF
 # Expected: 42 + 42 + 42 + 84 + (10+20) + (7+8) + (42+43) = 340
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mbtdir/mbt.vibe" "$mbtdir/mbt.wasm" _start >/dev/null 2>&1
 if [ ! -s "$mbtdir/mbt.wasm" ]; then
@@ -1208,7 +1208,7 @@ export let _start: () -> Int = () -> {
 }
 EOF
 # Expected: 84 (both Int and String witnesses resolved -> correct shown strings)
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mgdir/mg.vibe" "$mgdir/mg.wasm" _start >/dev/null 2>&1
 if [ ! -s "$mgdir/mg.wasm" ]; then
@@ -1241,7 +1241,7 @@ export let _start: () -> Int = () -> {
 }
 EOF
 # Expected: -1 + 1 + 0 + len("P { x: 7, y: 9 }")=16 -> 16
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$drvdir/drv.vibe" "$drvdir/drv.wasm" _start >/dev/null 2>&1
 if [ ! -s "$drvdir/drv.wasm" ]; then
@@ -1274,7 +1274,7 @@ for fx in \
   # ADR-0069: these are test-block suites with no `_start` of their own — the
   # test-runner `_start` synthesis needs the explicit `__no_entry__` sentinel
   # now (an unknown entry name is a compile error).
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$fx" "$fxout" __no_entry__ >/dev/null 2>&1
   if [ ! -s "$fxout" ]; then
@@ -1297,7 +1297,7 @@ cat > "$undir/u.vibe" <<'EOF'
 struct P { x: Int } derive(Foo)
 export let _start: () -> Int = () -> { P::{ x: 1 }.x }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$undir/u.vibe" "$undir/u.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$undir/u.wasm" ]; then
@@ -1321,7 +1321,7 @@ for fx in \
   fixtures/try_question_option_test.vibe; do
   fxout="_build/_gate_railway_$(basename "${fx%.vibe}").wasm"
   rm -f "$fxout" "$fxout.diag"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$fx" "$fxout" __no_entry__ >/dev/null 2>&1
   if [ ! -s "$fxout" ]; then
@@ -1354,7 +1354,7 @@ export let _start: () -> Int = () -> {
   match r(1) { Some(v) => v, None => 0 }
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mixdir/m.vibe" "$mixdir/m.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$mixdir/m.wasm" ]; then
@@ -1377,7 +1377,7 @@ echo "[selfhost-only-gate] 15d/15 derive(Hash) transparent Map keys (#694)"
 hkfx="fixtures/derive_hash_map_key_test.vibe"
 hkout="_build/_gate_derive_hash_map_key.wasm"
 rm -f "$hkout" "$hkout.diag"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$hkfx" "$hkout" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$hkout" ]; then
@@ -1438,7 +1438,7 @@ export let _start: () -> Int = () -> {
 }
 EOF
 # Expected: (1+2+3+4) + (1+2+3+4) + (1+2+3+4) = 30
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$itdir/iter.vibe" "$itdir/iter.wasm" _start >/dev/null 2>&1
 if [ ! -s "$itdir/iter.wasm" ]; then
@@ -1509,7 +1509,7 @@ export let _start: () -> Int = () -> {
 }
 EOF
 # Expected: 20 + 20 + 7 = 47
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$lcdir/lc.vibe" "$lcdir/lc.wasm" _start >/dev/null 2>&1
 if [ ! -s "$lcdir/lc.wasm" ]; then
@@ -1564,7 +1564,7 @@ cat > "$xidir/main.vibe" <<'EOF'
 import ./li.vibe { lazy_iter_arr, lazy_iter_count }
 export let _start: () -> Int = () -> { lazy_iter_count(lazy_iter_arr([10, 20, 30, 40, 50])) }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xidir/main.vibe" "$xidir/main.wasm" _start >/dev/null 2>&1
 if [ ! -s "$xidir/main.wasm" ]; then
@@ -1619,7 +1619,7 @@ export let _start: () -> Int with { Async } = () -> {
 }
 EOF
 # Expected: async iterator 10+20+30 = 60, pull closure 1+2+3+4 = 10 -> 70.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$fadir/fa.vibe" "$fadir/fa.wasm" _start >/dev/null 2>&1
 if [ ! -s "$fadir/fa.wasm" ]; then
@@ -1676,7 +1676,7 @@ let sum_direct = (src: LazyIter[Int]) -> Int {
 }
 export let _start: () -> Int = () -> { sum_direct(lazy_iter_arr([10, 20, 30, 40])) }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$eidir/pos.vibe" "$eidir/pos.wasm" _start >/dev/null 2>&1
 if [ ! -s "$eidir/pos.wasm" ]; then
@@ -1699,7 +1699,7 @@ let bad = (src: LazyIter[String]) -> Int {
 }
 export let _start: () -> Int = () -> { bad(lazy_iter_arr(["a", "b"])) }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$eidir/neg.vibe" "$eidir/neg.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$eidir/neg.wasm" ]; then
@@ -1725,7 +1725,7 @@ for suite in lib/@vibe/prelude/lazy_iter_test.vibe lib/@vibe/prelude/async_iter_
   out="_build/_gate_prelude_iter_$(basename "${suite%.vibe}").wasm"
   # ADR-0069: test-block suites need the explicit `__no_entry__` sentinel for
   # the test-runner `_start` synthesis (unknown entry names are compile errors).
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$suite" "$out" __no_entry__ >/dev/null 2>&1
   if [ ! -s "$out" ]; then
@@ -1761,7 +1761,7 @@ impl [T] Len2 for Array { len2(self) -> Int { Array::length(self) } }
 let total = [U: Len2](x: U) -> Int { U::len2(x) }
 export let _start: () -> Int = () -> { total([10, 20, 30, 40]) + total(Box::{ v: 99 }) }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$gidir/pos.vibe" "$gidir/pos.wasm" _start >/dev/null 2>&1
 if [ ! -s "$gidir/pos.wasm" ]; then
@@ -1781,7 +1781,7 @@ impl [T] Marky for Array
 let needs = [U: Marky](x: U) -> Int { 1 }
 export let _start: () -> Int = () -> { needs([1, 2, 3]) }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$gidir/neg.vibe" "$gidir/neg.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$gidir/neg.wasm" ]; then
@@ -1815,7 +1815,7 @@ let use_it = [U: Show2](x: U) -> Int { U::show2(x) }'
 { printf '%s\n' "$gj_prelude"
   printf 'export let _start: () -> Int = () -> { use_it([Box::{ v: 10 }, Box::{ v: 20 }, Box::{ v: 30 }]) + use_it([[Box::{ v: 1 }, Box::{ v: 2 }], [Box::{ v: 3 }]]) }\n'
 } > "$gjdir/pos.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$gjdir/pos.vibe" "$gjdir/pos.wasm" _start >/dev/null 2>&1
 if [ ! -s "$gjdir/pos.wasm" ]; then
@@ -1833,7 +1833,7 @@ fi
   printf 'struct Qux[T] { w: T }\n'
   printf 'export let _start: () -> Int = () -> { use_it([Qux::{ w: 5 }]) }\n'
 } > "$gjdir/neg.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$gjdir/neg.vibe" "$gjdir/neg.wasm" _start >/dev/null 2>&1 || true
 neg_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
@@ -1934,7 +1934,7 @@ EOF
 # Expected: 1007+3+1005+1+1009+2 + 7+11 + 13+17 = 3075. A regressed compiler
 # ignores the nested/bare-tuple/or literal tests and returns a smaller sum (or
 # fails to compile the bare-tuple binding).
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$nldir/nestedlit.vibe" "$nldir/nestedlit.wasm" _start >/dev/null 2>&1
 if [ ! -s "$nldir/nestedlit.wasm" ]; then
@@ -2017,31 +2017,31 @@ export let _start: () -> Int with { Fs } = () -> {
   42
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/good.vibe" "$pfdir/good.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$pfdir/good.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: declared effect calls did not compile (#626 over-rejects)" >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/bad_perform.vibe" "$pfdir/bad_perform.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$pfdir/bad_perform.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: undeclared perform compiled (#626 criterion 1 regressed)" >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/bad_builtin.vibe" "$pfdir/bad_builtin.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$pfdir/bad_builtin.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: undeclared effectful builtin call compiled (#626 builtin slice regressed)" >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/bad_transitive.vibe" "$pfdir/bad_transitive.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$pfdir/bad_transitive.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: undeclared transitive effect call compiled (#626 transitive enforcement regressed)" >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/good_transitive.vibe" "$pfdir/good_transitive.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$pfdir/good_transitive.wasm" ]; then
@@ -2074,13 +2074,13 @@ let g: (String) -> String with { Error, Fs } = (p) -> {
 }
 export let _start: () -> Int = () -> { 42 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/bad_import_transitive.vibe" "$pfdir/bad_import_transitive.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$pfdir/bad_import_transitive.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: undeclared call of IMPORTED effectful function compiled (#812 regressed)" >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/good_import_transitive.vibe" "$pfdir/good_import_transitive.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$pfdir/good_import_transitive.wasm" ]; then
@@ -2122,13 +2122,13 @@ let greet: () -> Int = () -> {
 }
 export let _start: () -> Int = () -> { greet() }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$hdir/discharge.vibe" "$hdir/discharge.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$hdir/discharge.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: handle did not discharge its own effect (#626 criterion 2 over-rejects)" >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$hdir/leak.vibe" "$hdir/leak.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$hdir/leak.wasm" ]; then
@@ -2168,7 +2168,7 @@ export let _start: () -> Int = () -> {
   }
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$hdir/multiop.vibe" "$hdir/multiop.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$hdir/multiop.wasm" ]; then
@@ -2180,7 +2180,7 @@ multiop_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runn
 if [ "$multiop_out" != "3045" ]; then
   echo "[selfhost-only-gate] FAIL: multi-operation dispatch wrong (got '$multiop_out', want 3045 -> #665 regressed)" >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$hdir/singleop.vibe" "$hdir/singleop.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$hdir/singleop.wasm" ]; then
@@ -2253,7 +2253,7 @@ export let _start: () -> Int = () -> {
   handle { perform Q::Get() } with Q { Get() => resume() }
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$odir/ok_op.vibe" "$odir/ok_op.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$odir/ok_op.wasm" ]; then
@@ -2264,7 +2264,7 @@ if [ "$op_out" != "42" ]; then
   echo "[selfhost-only-gate] FAIL: effect op control returned '$op_out' (expected 42)" >&2; exit 1
 fi
 for bad in bad_performarg bad_performarity bad_armname bad_armpayload bad_resumeval bad_kconv bad_missingarm bad_resume0; do
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$odir/$bad.vibe" "$odir/$bad.wasm" _start >/dev/null 2>&1 || true
   if [ -s "$odir/$bad.wasm" ]; then
@@ -2307,7 +2307,7 @@ EOF
 cat > "$bdir/oob_str_neg.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let s = "abc"; s[-1] }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$bdir/inbounds.vibe" "$bdir/inbounds.wasm" _start >/dev/null 2>&1 || true
 bounds_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$bdir/inbounds.wasm" 2>/dev/null | tail -n 1 || true)"
@@ -2315,7 +2315,7 @@ if [ "$bounds_out" != "42" ]; then
   echo "[selfhost-only-gate] FAIL: in-bounds access returned '$bounds_out' (expected 42; #811 over-traps)" >&2; exit 1
 fi
 for oob in oob_get oob_neg oob_bytes oob_str oob_str_neg; do
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$bdir/$oob.vibe" "$bdir/$oob.wasm" _start >/dev/null 2>&1 || true
   if bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$bdir/$oob.wasm" >/dev/null 2>&1; then
@@ -2354,7 +2354,7 @@ let consume = (s) -> Int {
 }
 export let _start: () -> Int = () -> { consume(Stream::once(42)) }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$fadir/ok_annot.vibe" "$fadir/ok_annot.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$fadir/ok_annot.wasm" ]; then
@@ -2364,7 +2364,7 @@ fa_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$fadir/ok_a
 if [ "$fa_out" != "42" ]; then
   echo "[selfhost-only-gate] FAIL: annotated-param for-await returned '$fa_out' (expected 42; #822 regressed)" >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$fadir/bad_unannot.vibe" "$fadir/bad_unannot.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$fadir/bad_unannot.wasm" ]; then
@@ -2402,25 +2402,25 @@ cat > "$adir/ffright.vibe" <<'EOF'
 struct B { f: (Int) -> Int }
 export let _start: () -> Int = () -> { let b = B::{ f: (x) -> { x + 1 } }; (b.f)(3) }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$adir/right.vibe" "$adir/right.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$adir/right.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: a correctly-typed call did not compile (arg-check over-rejects)" >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$adir/ffright.vibe" "$adir/ffright.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$adir/ffright.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: a correct field-stored-function call did not compile (over-rejects)" >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$adir/wrong.vibe" "$adir/wrong.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$adir/wrong.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: an ill-typed argument (Int <- String) compiled (arg-check regressed)" >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$adir/ffwrong.vibe" "$adir/ffwrong.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$adir/ffwrong.wasm" ]; then
@@ -2612,20 +2612,20 @@ export let _start: () -> Int = () -> {
   b.v + String::length(s.v) + unbox(b)
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/ok.vibe" "$tdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed binding/assign/if did not compile (over-rejects)" >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/ok_genfield.vibe" "$tdir/ok_genfield.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tdir/ok_genfield.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed generic-struct field reads did not compile (over-rejects, #829)" >&2; exit 1
 fi
 for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg bad_unknownfield bad_guardonly bad_arity_get bad_arity_bytesnew bad_mutann bad_agrecv bad_agidx bad_asrecv bad_streamlen bad_streamget bad_streamset bad_interp_paren bad_declcomma bad_structcomma bad_genfield; do
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$tdir/$bad.vibe" "$tdir/$bad.wasm" _start >/dev/null 2>&1 || true
   if [ -s "$tdir/$bad.wasm" ]; then
@@ -2666,7 +2666,7 @@ export let _start: () -> Int = () -> {
   c.n
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mdir/ok_mut.vibe" "$mdir/ok_mut.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$mdir/ok_mut.wasm" ]; then
@@ -2674,7 +2674,7 @@ if [ ! -s "$mdir/ok_mut.wasm" ]; then
   cat "$mdir/ok_mut.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 for bad in bad_nonmut bad_valty; do
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$mdir/$bad.vibe" "$mdir/$bad.wasm" _start >/dev/null 2>&1 || true
   if [ -s "$mdir/$bad.wasm" ]; then
@@ -2723,7 +2723,7 @@ EOF
 cat > "$cdir/bad_tuparity.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let t = (1, 2); let (a, b, c) = t; a }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir/ok.vibe" "$cdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$cdir/ok.wasm" ]; then
@@ -2731,7 +2731,7 @@ if [ ! -s "$cdir/ok.wasm" ]; then
   cat "$cdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 for bad in bad_match bad_array bad_arraynest bad_call bad_calloption bad_not bad_forint bad_tuparity; do
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$cdir/$bad.vibe" "$cdir/$bad.wasm" _start >/dev/null 2>&1 || true
   if [ -s "$cdir/$bad.wasm" ]; then
@@ -2759,14 +2759,14 @@ EOF
 cat > "$mudir/bad.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let x = 1; x = 2; x }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mudir/ok.vibe" "$mudir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$mudir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed mut/accumulator did not compile (over-rejects)" >&2
   cat "$mudir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mudir/bad.vibe" "$mudir/bad.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$mudir/bad.wasm" ]; then
@@ -2797,14 +2797,14 @@ export let _start: () -> Int = () -> {
   m["a"]
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mu2dir/ok.vibe" "$mu2dir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$mu2dir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: legal mut reassignment inside map literal did not compile (over-rejects)" >&2
   cat "$mu2dir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mu2dir/bad.vibe" "$mu2dir/bad.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$mu2dir/bad.wasm" ]; then
@@ -2835,7 +2835,7 @@ cat > "$pdir/bad_scalar.vibe" <<'EOF'
 enum Color { Red; Green }
 export let _start: () -> Int = () -> { match 5 { Red => 1, _ => 0 } }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pdir/ok.vibe" "$pdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$pdir/ok.wasm" ]; then
@@ -2843,7 +2843,7 @@ if [ ! -s "$pdir/ok.wasm" ]; then
   cat "$pdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 for bad in bad_arity bad_scalar; do
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$pdir/$bad.vibe" "$pdir/$bad.wasm" _start >/dev/null 2>&1 || true
   if [ -s "$pdir/$bad.wasm" ]; then
@@ -2917,7 +2917,7 @@ EOF
 cat > "$idir/bad_arrrev.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let b = Array::reverse([1, 2]); let s: String = Array::get(b, 0); 0 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$idir/ok.vibe" "$idir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$idir/ok.wasm" ]; then
@@ -2925,7 +2925,7 @@ if [ ! -s "$idir/ok.wasm" ]; then
   cat "$idir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 for bad in bad_index bad_tuple bad_idxtype bad_idxelem bad_stridx bad_arrget bad_arrpush bad_arrset bad_arrmap bad_arrfold bad_mapparam bad_foldparam bad_arrslice bad_arrconcat bad_arrconcatmix bad_arrpushallmix bad_arrrev; do
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$idir/$bad.vibe" "$idir/$bad.wasm" _start >/dev/null 2>&1 || true
   if [ -s "$idir/$bad.wasm" ]; then
@@ -2955,7 +2955,7 @@ export let _start: () -> Int = () -> {
   miss + hit + fall + bind
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$gdir/guard.vibe" "$gdir/guard.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$gdir/guard.wasm" ]; then
@@ -2989,14 +2989,14 @@ cat > "$xdir/bad.vibe" <<'EOF'
 enum Color { Red; Green; Blue }
 export let _start: () -> Int = () -> { match Red { Red => 1 } }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/ok.vibe" "$xdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$xdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: exhaustive matches did not compile (over-rejects)" >&2
   cat "$xdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/bad.vibe" "$xdir/bad.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$xdir/bad.wasm" ]; then
@@ -3026,7 +3026,7 @@ EOF
 cat > "$ldir/bad_nested.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let o: Option[Int] = Some(1); match o { Some(true) => 1, _ => 0 } }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ldir/ok.vibe" "$ldir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$ldir/ok.wasm" ]; then
@@ -3034,7 +3034,7 @@ if [ ! -s "$ldir/ok.wasm" ]; then
   cat "$ldir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 for bad in bad_lit bad_nested; do
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$ldir/$bad.vibe" "$ldir/$bad.wasm" _start >/dev/null 2>&1 || true
   if [ -s "$ldir/$bad.wasm" ]; then
@@ -3065,7 +3065,7 @@ EOF
 cat > "$bdir/bad_break.vibe" <<'EOF'
 export let _start: () -> Int = () -> { break; 0 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$bdir/ok.vibe" "$bdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$bdir/ok.wasm" ]; then
@@ -3073,7 +3073,7 @@ if [ ! -s "$bdir/ok.wasm" ]; then
   cat "$bdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 for bad in bad_neg bad_break; do
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$bdir/$bad.vibe" "$bdir/$bad.wasm" _start >/dev/null 2>&1 || true
   if [ -s "$bdir/$bad.wasm" ]; then
@@ -3096,14 +3096,14 @@ EOF
 cat > "$tdir/bad_nontuple.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let (a, b) = 5; a + b }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/ok.vibe" "$tdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed tuple destructure did not compile (over-rejects)" >&2
   cat "$tdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/bad_nontuple.vibe" "$tdir/bad_nontuple.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$tdir/bad_nontuple.wasm" ]; then
@@ -3381,7 +3381,7 @@ export let _start: () -> Int = () -> {
 EOF
 smoke_check() {
   local nm="$1" want="$2"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$sdir/$nm.vibe" "$sdir/$nm.wasm" _start >/dev/null 2>&1 || true
   if [ ! -s "$sdir/$nm.wasm" ]; then
@@ -3422,7 +3422,7 @@ echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111
 echo "[selfhost-only-gate] 40/40 V128 SIMD intrinsics compile+run"
 vdir="_build/_gate_v128"
 rm -rf "$vdir"; mkdir -p "$vdir"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/v128_intrinsics_test.vibe" "$vdir/v128.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$vdir/v128.wasm" ]; then
@@ -3445,7 +3445,7 @@ echo "[selfhost-only-gate] V128 SIMD intrinsics ok"
 echo "[selfhost-only-gate] 40b/40 fused SIMD whitespace skip (simd_skip_ws)"
 swdir="_build/_gate_simd_skip_ws"
 rm -rf "$swdir"; mkdir -p "$swdir"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/simd_skip_ws_test.vibe" "$swdir/sw.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$swdir/sw.wasm" ]; then
@@ -3468,7 +3468,7 @@ echo "[selfhost-only-gate] fused SIMD whitespace skip ok"
 echo "[selfhost-only-gate] 40c/40 region capture (mut captured inside struct literal etc.)"
 rcdir="_build/_gate_region_capture"
 rm -rf "$rcdir"; mkdir -p "$rcdir"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/region_capture_test.vibe" "$rcdir/rc.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$rcdir/rc.wasm" ]; then
@@ -3501,7 +3501,7 @@ echo "[selfhost-only-gate] region capture ok"
 echo "[selfhost-only-gate] 40d/40 RC reclamation leak guard (tuple+cell+closure+enum+loop-consume)"
 lkdir="_build/_gate_rc_leak"
 rm -rf "$lkdir"; mkdir -p "$lkdir"
-VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/rc_reclaim_leak_test.vibe" "$lkdir/rc.wasm" main >/dev/null 2>&1
 if [ ! -s "$lkdir/rc.wasm" ]; then
@@ -3536,7 +3536,7 @@ echo "[selfhost-only-gate] RC reclamation leak guard ok (heap_used=$lk_used B at
 echo "[selfhost-only-gate] 40e/40 V128 SIMD intrinsics compile+run under RC"
 v2dir="_build/_gate_v128_rc"
 rm -rf "$v2dir"; mkdir -p "$v2dir"
-VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/v128_intrinsics_test.vibe" "$v2dir/v128rc.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$v2dir/v128rc.wasm" ]; then
@@ -3563,7 +3563,7 @@ echo "[selfhost-only-gate] V128 SIMD intrinsics under RC ok"
 echo "[selfhost-only-gate] 40f/40 RC shadow-liveness regression guard (#715 shapes)"
 shdir="_build/_gate_rc_shadow"
 rm -rf "$shdir"; mkdir -p "$shdir"
-VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/rc_shadow_regression_test.vibe" "$shdir/shadow.wasm" main >/dev/null 2>&1
 if [ ! -s "$shdir/shadow.wasm" ]; then
@@ -3585,11 +3585,11 @@ echo "[selfhost-only-gate] RC shadow-liveness regression guard ok (122489)"
 echo "[selfhost-only-gate] 40g/40 #cfg conditional compilation"
 cfdir="_build/_gate_cfg"
 rm -rf "$cfdir"; mkdir -p "$cfdir"
-VIBE_CFG=dev VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_CFG=dev VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/cfg_flag_test.vibe" "$cfdir/dev.wasm" main >/dev/null 2>&1
 cf_dev="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$cfdir/dev.wasm" 2>&1 | tail -1)"
-VIBE_CFG=release VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_CFG=release VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/cfg_flag_test.vibe" "$cfdir/rel.wasm" main >/dev/null 2>&1
 cf_rel="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$cfdir/rel.wasm" 2>&1 | tail -1)"
@@ -3609,7 +3609,7 @@ echo "[selfhost-only-gate] #cfg conditional compilation ok (dev=102 release=2)"
 echo "[selfhost-only-gate] 40h/40 wasm-gc backend smoke"
 gcdir="_build/_gate_gc"
 rm -rf "$gcdir"; mkdir -p "$gcdir"
-VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/gc_backend_smoke_test.vibe" "$gcdir/smoke.wasm" main >/dev/null 2>&1
 if [ ! -s "$gcdir/smoke.wasm" ]; then
@@ -3633,7 +3633,7 @@ echo "[selfhost-only-gate] wasm-gc backend smoke ok (101520)"
 echo "[selfhost-only-gate] 40i/40 effect->WIT golden (#537)"
 witdir="_build/_gate_wit"
 rm -rf "$witdir"; mkdir -p "$witdir"
-VIBE_EMIT_WIT=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_EMIT_WIT=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/wit_gen_http.vibe" "$witdir/out.wit" main >/dev/null 2>&1
 if [ ! -s "$witdir/out.wit" ]; then
@@ -3659,7 +3659,7 @@ echo "[selfhost-only-gate] 40j/40 serve handler componentization (#537)"
 svdir="_build/_gate_serve"
 rm -rf "$svdir"; mkdir -p "$svdir"
 VIBE_SERVE_COMPONENT=1 VIBE_SERVE_WIT_OUT="$svdir/handler.wit" \
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/serve_handler_smoke.vibe" "$svdir/handler.component.wasm" main >/dev/null 2>&1
 if [ ! -s "$svdir/handler.component.wasm" ]; then
@@ -3712,7 +3712,7 @@ fn main with { Stdout } {
   Stdout::write_stream("42\n")
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$a69dir/ok_fnmain.vibe" "$a69dir/ok_fnmain.wasm" main >/dev/null 2>&1
 if [ ! -s "$a69dir/ok_fnmain.wasm" ]; then
@@ -3735,7 +3735,7 @@ cat > "$a69dir/int_main.vibe" <<'EOF'
 let main: () -> Int = () -> { 41 + 1 }
 EOF
 rm -f "$a69dir/int_main.wasm"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$a69dir/int_main.vibe" "$a69dir/int_main.wasm" main >/dev/null 2>&1
 if [ ! -s "$a69dir/int_main.wasm" ]; then
@@ -3753,7 +3753,7 @@ cat > "$a69dir/typo.vibe" <<'EOF'
 let main: () -> Int = () -> { 42 }
 EOF
 rm -f "$a69dir/typo.wasm"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$a69dir/typo.vibe" "$a69dir/typo.wasm" mian >/dev/null 2>&1 || true
 if [ -s "$a69dir/typo.wasm" ]; then
@@ -3771,7 +3771,7 @@ f(41)
 export let _start: () -> Int = () -> { f(41) }
 EOF
 rm -f "$a69dir/toplevel_expr.wasm"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$a69dir/toplevel_expr.vibe" "$a69dir/toplevel_expr.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$a69dir/toplevel_expr.wasm" ]; then
@@ -3783,7 +3783,7 @@ let mut counter = 0
 export let _start: () -> Int = () -> { counter }
 EOF
 rm -f "$a69dir/toplevel_mut.wasm"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$a69dir/toplevel_mut.vibe" "$a69dir/toplevel_mut.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$a69dir/toplevel_mut.wasm" ]; then
@@ -3813,7 +3813,7 @@ let record { name: n, ver: v } = r
 export let _start: () -> Int = () -> { n; v; 0 }
 EOF
 rm -f "$g830dir/toplevel_record_destr.wasm"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$g830dir/toplevel_record_destr.vibe" "$g830dir/toplevel_record_destr.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$g830dir/toplevel_record_destr.wasm" ]; then
@@ -3839,7 +3839,7 @@ fn describe(r: Rec) -> Int {
 export let _start: () -> Int = () -> { describe(Rec::{ name: "vibe", ver: 7 }) }
 EOF
 rm -f "$g830dir/fnbody_record_destr.wasm"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$g830dir/fnbody_record_destr.vibe" "$g830dir/fnbody_record_destr.wasm" _start >/dev/null 2>&1
 if [ ! -s "$g830dir/fnbody_record_destr.wasm" ]; then

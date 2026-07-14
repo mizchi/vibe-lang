@@ -21,7 +21,7 @@
 #   `analyze_calls` pass is now iterative over the let/seq spine (#681), so the
 #   deep-recursion trap can no longer occur; this gate guards that.
 #
-# Cheap mode: point VIBE_SELFHOST_RC_BOOTSTRAP_REUSE_GEN at an existing
+# Cheap mode: point VIBE_RC_BOOTSTRAP_REUSE_GEN at an existing
 # generation.json (e.g. one the release gate just produced) to assert on it
 # without rebuilding.
 set -euo pipefail
@@ -30,8 +30,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT_DIR"
 
-OUT_DIR="${VIBE_SELFHOST_RC_BOOTSTRAP_OUT_DIR:-_build/rc_bootstrap_gate}"
-reuse="${VIBE_SELFHOST_RC_BOOTSTRAP_REUSE_GEN:-}"
+OUT_DIR="${VIBE_RC_BOOTSTRAP_OUT_DIR:-_build/rc_bootstrap_gate}"
+reuse="${VIBE_RC_BOOTSTRAP_REUSE_GEN:-}"
 
 if [ -n "$reuse" ] && [ -f "$reuse" ]; then
   gen_json="$reuse"

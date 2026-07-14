@@ -52,7 +52,7 @@ mkdir -p "$ROOT_DIR/_build/vibe_run"
 
 # 1. compile (FS import resolution) via the seed. VIBE_COVERAGE=$coverage selects
 #    the instrumented codegen when --coverage.
-VIBE_COVERAGE="$coverage" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_COVERAGE="$coverage" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
   --invoke cli_main "$seed" "$src_rel" "$out_rel" "$entry" >/dev/null
 

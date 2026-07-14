@@ -70,7 +70,7 @@ mkdir -p "$OUT_DIR"
 FLAT_SRC="lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe"
 [ -s "$FLAT_SRC" ] || {
   echo "[repro-715] flat source not found at $FLAT_SRC -- run:" >&2
-  echo "  VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=\$PWD/$FLAT_SRC bash scripts/generate_selfhost_bundle.sh" >&2
+  echo "  VIBE_REGEN_MODULE_SOURCE=1 VIBE_ADAPTER_MODULE_SOURCE_OUT=\$PWD/$FLAT_SRC bash scripts/generate_selfhost_bundle.sh" >&2
   exit 1
 }
 
@@ -82,7 +82,7 @@ else
   echo "[repro-715] (a) bump-building fresh stage2 from current HEAD (VIBE_RC=0, the default) ..."
   GEN_DIR="$OUT_DIR/gen"
   rm -rf "$GEN_DIR"
-  VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 bash scripts/selfhost_generations.sh build --out-dir "$GEN_DIR" --stage3
+  VIBE_REGEN_MODULE_SOURCE=1 bash scripts/selfhost_generations.sh build --out-dir "$GEN_DIR" --stage3
   STAGE2="$GEN_DIR/stage2.wasm"
   [ -s "$STAGE2" ] || { echo "[repro-715] FAIL: bump stage2 build did not produce $STAGE2" >&2; exit 1; }
 fi
@@ -90,7 +90,7 @@ fi
 echo "[repro-715] (b) RC self-compiling flat source with stage2 (VIBE_RC=1) ..."
 STAGE_RC="$OUT_DIR/stage_rc.wasm"
 rm -f "$STAGE_RC"
-if ! VIBE_RC=1 VIBE_SELFHOST_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+if ! VIBE_RC=1 VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
     "$STAGE2" "$FLAT_SRC" "$STAGE_RC" cli_main; then
   echo "[repro-715] FAIL: step (b) itself crashed (RC self-compile of the whole flat source) -- this is a DIFFERENT/earlier failure than #715's usual landing site, investigate separately" >&2
   exit 2

@@ -76,7 +76,7 @@ bash "$SCRIPT_DIR/build_wasi_http_p3_full_adapter.sh" "$ADAPTER" >/dev/null
 
 echo "[http-full-gate] componentize handler (selfhost VIBE_SERVE_COMPONENT)"
 rm -f "$COMPONENT" "$COMPONENT.diag"
-env VIBE_SERVE_COMPONENT=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_SELFHOST_IMPORT_ABI=raw \
+env VIBE_SERVE_COMPONENT=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
   bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main "$CLI_WASM" \
   "${HANDLER_SRC#"$PROJECT_ROOT"/}" "${COMPONENT#"$PROJECT_ROOT"/}" main >/dev/null 2>&1 || true
 if [ ! -s "$COMPONENT" ]; then
