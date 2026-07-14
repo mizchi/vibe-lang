@@ -3964,4 +3964,82 @@ fi
 rm -rf "$g844dir"
 echo "[compiler-gate] generic-struct annotation re-narrowing regression (#844) ok"
 
+# 44. #859 regression: top-level pattern `let` (tuple destructure
+#     `let (a, b) = pair`, named-struct destructure `let Name::{ x, y } = v`)
+#     parsed AND type-checked cleanly but codegen had no case for a
+#     top-level `SLetPat` at all -- ANY pattern shape crashed with a raw
+#     "undefined variable" instead of either working or producing a proper
+#     diagnostic (pattern-let lowering only exists as a block-level
+#     mechanism with an enclosing expression continuation to desugar into;
+#     top-level statements have no such continuation). Same treatment #830
+#     already gave the `record { .. }` form: reject with a clear, LOCATED
+#     error instead of the misleading internal crash.
+echo "[compiler-gate] 44/44 top-level pattern let rejection (#859)"
+g859dir="_build/_gate_859"
+rm -rf "$g859dir"; mkdir -p "$g859dir"
+cat > "$g859dir/toplevel_tuple_destr.vibe" <<'EOF'
+let (a, b) = (10, 32)
+export let _start: () -> Int = () -> { a + b }
+EOF
+rm -f "$g859dir/toplevel_tuple_destr.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g859dir/toplevel_tuple_destr.vibe" "$g859dir/toplevel_tuple_destr.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$g859dir/toplevel_tuple_destr.wasm" ]; then
+  echo "[compiler-gate] FAIL: top-level 'let (a, b) = ..' compiled (should be rejected, #859)" >&2
+  exit 1
+fi
+if ! grep -q "top-level 'let (\.\.)" "$g859dir/toplevel_tuple_destr.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: top-level tuple-pattern let diag missing the clear #859 message (still the raw 'undefined variable' crash?)" >&2
+  cat "$g859dir/toplevel_tuple_destr.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+cat > "$g859dir/toplevel_struct_destr.vibe" <<'EOF'
+struct Pair { x: Int; y: Int }
+let Pair::{ x, y } = Pair::{ x: 10, y: 32 }
+export let _start: () -> Int = () -> { x + y }
+EOF
+rm -f "$g859dir/toplevel_struct_destr.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g859dir/toplevel_struct_destr.vibe" "$g859dir/toplevel_struct_destr.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$g859dir/toplevel_struct_destr.wasm" ]; then
+  echo "[compiler-gate] FAIL: top-level 'let Name::{ .. } = ..' compiled (should be rejected, #859)" >&2
+  exit 1
+fi
+if ! grep -q "top-level 'let Name::{ \.\. }" "$g859dir/toplevel_struct_destr.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: top-level struct-pattern let diag missing the clear #859 message (still the raw 'undefined variable' crash?)" >&2
+  cat "$g859dir/toplevel_struct_destr.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# The function-body forms (which already worked, per the #859 writeup) must
+# keep compiling AND running to the correct values -- the regression net for
+# the working case, so a future change to the block-step destructure desugar
+# (parser_expr_dispatch.vibe apply_record_destr/apply_struct_destr) that
+# breaks it fails here too, not just silently at the top level.
+cat > "$g859dir/fnbody_tuple_destr.vibe" <<'EOF'
+fn compute() -> Int {
+  let (a, b) = (10, 32)
+  a + b
+}
+export let _start: () -> Int = () -> { compute() }
+EOF
+rm -f "$g859dir/fnbody_tuple_destr.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g859dir/fnbody_tuple_destr.vibe" "$g859dir/fnbody_tuple_destr.wasm" _start >/dev/null 2>&1
+if [ ! -s "$g859dir/fnbody_tuple_destr.wasm" ]; then
+  echo "[compiler-gate] FAIL: function-body 'let (a, b) = ..' did not compile" >&2
+  cat "$g859dir/fnbody_tuple_destr.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+g859_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$g859dir/fnbody_tuple_destr.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$g859_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: function-body tuple-pattern destructure output '$g859_out' (want 42)" >&2
+  exit 1
+fi
+rm -rf "$g859dir"
+echo "[compiler-gate] top-level pattern let rejection (#859) ok"
+
 echo "[compiler-gate] ok"
