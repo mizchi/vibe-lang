@@ -619,6 +619,13 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
     let (raw, unit_stmts) = Array::get(impl_units, ui)
     let defs = collect_impl_fn_defs(unit_stmts)
     let unit_types = collect_impl_type_defs(unit_stmts)
+    // #847: a unit may satisfy a declaration purely via `export ./other.vibe
+    // { name }` (no direct SLet/SStruct/... def of its own) — `check_contract`
+    // already accepts this (a re-export is trusted at face value, same as any
+    // other impl declaration), so the facade must allocate it here too, or a
+    // contract that relies on re-export throws "some declarations have no
+    // implementation file" despite passing conformance.
+    let unit_reexported = collect_reexported_names(unit_stmts)
     let names = Array::slice([
       ""
     ], 0, 0)
@@ -636,7 +643,7 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
       if otaken {
         ()
       } else {
-        let mut here = false
+        let mut here = array_contains_string(unit_reexported, oname)
         let mut uti = 0
         while uti < Array::length(unit_types) {
           let (tname, _, _) = Array::get(unit_types, uti)
@@ -666,7 +673,7 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
       if taken {
         ()
       } else {
-        let mut defined_here = false
+        let mut defined_here = array_contains_string(unit_reexported, dname)
         let mut fi = 0
         while fi < Array::length(defs) {
           let (fname, _, fexp) = Array::get(defs, fi)

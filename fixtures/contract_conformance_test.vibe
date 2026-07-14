@@ -17,7 +17,7 @@ import ../lib/@vibe/compiler/core {
 }
 
 import ../lib/@vibe/compiler/contract/index.vibe {
-  parse_contract_program, check_contract, contract_hash, package_hash_from_sources, extract_package_version, extract_require_pins, is_strict_semver, is_package_pin, contract_surface_lines, classify_contract_change, semver_bump_kind, verify_publish_bump
+  parse_contract_program, check_contract, contract_hash, package_hash_from_sources, extract_package_version, extract_require_pins, is_strict_semver, is_package_pin, contract_surface_lines, classify_contract_change, semver_bump_kind, verify_publish_bump, contract_facade_source
 }
 
 import ../lib/@vibe/core {
@@ -347,6 +347,25 @@ test "re-exported symbol matching a declared opaque type is not reported (#847)"
   let impls = parse_program(lex("export ./other.vibe { Counter }"))
   let errs = check_contract(decls, opaques, impls)
   assert_eq(Array::length(errs), 0)
+}
+
+// #847: check_contract accepting a declaration satisfied only by re-export
+// is not enough on its own — contract_facade_source must ALSO allocate that
+// name (into the re-exporting unit's own facade line), or a package that
+// conforms would still throw "some declarations have no implementation
+// file" the moment its facade is generated.
+test "facade generation allocates a declaration satisfied only by re-export (#847)" {
+  let (decls, _, _) = parse_contract_program(lex("fn helper(x: Int) -> Int"))
+  let unit_stmts = parse_program(lex("export ./other.vibe { helper }"))
+  let facade = contract_facade_source(decls, no_opaques(), no_type_defs(), [("./mid.vibe", unit_stmts)])
+  assert(String::contains(facade, "helper"))
+}
+
+test "facade generation allocates a re-exported opaque type (#847)" {
+  let (decls, opaques, _) = parse_contract_program(lex("opaque type Counter"))
+  let unit_stmts = parse_program(lex("export ./other.vibe { Counter }"))
+  let facade = contract_facade_source(decls, opaques, no_type_defs(), [("./mid.vibe", unit_stmts)])
+  assert(String::contains(facade, "Counter"))
 }
 
 test "re-exported symbol checks the alias name, not the source name (#847)" {
