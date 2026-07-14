@@ -20,7 +20,7 @@
 #   --update-allowlist   rescan all *_test.vibe and overwrite the allowlist with
 #                        the passing set (run after intentionally widening it)
 #
-# Stage2 selection: reuse $VIBE_SELFHOST_STAGE2_WASM when set and non-empty
+# Stage2 selection: reuse $VIBE_STAGE2_WASM when set and non-empty
 # (CI reuses the gate's freshly-built stage2 to avoid a second selfbuild);
 # otherwise build a fresh seed->stage1->stage2 generation and use its stage2.
 set -euo pipefail
@@ -29,7 +29,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT_DIR"
 
-ALLOWLIST="${VIBE_SELFHOST_UNIT_TEST_ALLOWLIST:-$ROOT_DIR/scripts/unit_test_allowlist.txt}"
+ALLOWLIST="${VIBE_UNIT_TEST_ALLOWLIST:-$ROOT_DIR/scripts/unit_test_allowlist.txt}"
 RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"
 
 mode="run"
@@ -48,8 +48,8 @@ fi
 
 # --- obtain a stage2 compiler -------------------------------------------------
 S2=""
-if [ -n "${VIBE_SELFHOST_STAGE2_WASM:-}" ] && [ -s "${VIBE_SELFHOST_STAGE2_WASM}" ]; then
-  S2="$VIBE_SELFHOST_STAGE2_WASM"
+if [ -n "${VIBE_STAGE2_WASM:-}" ] && [ -s "${VIBE_STAGE2_WASM}" ]; then
+  S2="$VIBE_STAGE2_WASM"
   echo "[unit-test-runner] using prebuilt stage2: $S2"
 else
   outdir="$ROOT_DIR/_build/_unit_test_gen"
@@ -97,7 +97,7 @@ run_one() {
     attempt=$((attempt + 1))
     local out; out="$(mktemp -t vibe-unit-XXXXXX.wasm)"
     rm -f "$out" "$out.diag"
-    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
       timeout 300 bash "$RUNNER" --invoke cli_main "$S2" "$f" "$out" __no_entry__ >/dev/null 2>&1 || true
     if [ -s "$out" ]; then
       # timeout: a miscompiled test that loops forever must fail the FILE,

@@ -33,7 +33,7 @@ verdict() {
   # "$out"` still finding the PREVIOUS fixture's wasm and running/reporting
   # that instead of catching the compile regression as `cfail`.
   rm -f "$out"
-  env $e VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  env $e VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash "$RUNNER" --invoke cli_main "$CLI" "$src" "$out" __no_entry__ >/dev/null 2>&1
   [ -s "$out" ] || { echo cfail; return; }
   if env VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$RUNNER" --invoke _start "$out" >/dev/null 2>&1; then echo pass; else echo trap; fi

@@ -29,7 +29,7 @@ cat "$FLAT" "$DRIVER" > "$OUT/driver_src.vibe"
 ok=0
 for t in 1 2 3 4 5 6 7 8; do
   rm -f "$OUT/driver.wasm"
-  VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash "$RUNNER" --invoke cli_main "$SEED" "$OUT/driver_src.vibe" "$OUT/driver.wasm" cov_driver_main >/dev/null 2>&1 || true
   [ -s "$OUT/driver.wasm" ] && { ok=1; break; }
 done

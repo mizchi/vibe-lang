@@ -19,7 +19,7 @@ RTIMEOUT="${RTIMEOUT:-20}"
 compile() { # src out extra-env...
   local src="$1" out="$2"; shift 2
   rm -f "$out" "$out.diag"
-  timeout "$CTIMEOUT" env VIBE_PREOPEN_DIR="$ROOT" VIBE_SELFHOST_IMPORT_ABI=raw "$@" \
+  timeout "$CTIMEOUT" env VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw "$@" \
     $RUNNER --invoke cli_main "$CLI" "$src" "$out" _start \
     > "$out.log" 2>&1
   local rc=$?

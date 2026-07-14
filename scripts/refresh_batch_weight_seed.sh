@@ -2,10 +2,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="${VIBE_SELFHOST_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-BOOTSTRAP_OUT_DIR="${VIBE_SELFHOST_BOOTSTRAP_OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_bootstrap}"
-CACHE_PATH="${VIBE_SELFHOST_BOOTSTRAP_BATCH_WEIGHT_CACHE:-${VIBE_SELFHOST_BATCH_WEIGHT_CACHE:-$BOOTSTRAP_OUT_DIR/selfhost_test_batch_weights.json}}"
-SEED_PATH="${VIBE_SELFHOST_BOOTSTRAP_BATCH_WEIGHT_SEED:-${VIBE_SELFHOST_BATCH_WEIGHT_SEED:-$PROJECT_ROOT/scripts/test_batch_weights.seed.json}}"
+PROJECT_ROOT="${VIBE_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+BOOTSTRAP_OUT_DIR="${VIBE_BOOTSTRAP_OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_bootstrap}"
+CACHE_PATH="${VIBE_BOOTSTRAP_BATCH_WEIGHT_CACHE:-${VIBE_BATCH_WEIGHT_CACHE:-$BOOTSTRAP_OUT_DIR/test_batch_weights.json}}"
+SEED_PATH="${VIBE_BOOTSTRAP_BATCH_WEIGHT_SEED:-${VIBE_BATCH_WEIGHT_SEED:-$PROJECT_ROOT/scripts/test_batch_weights.seed.json}}"
 
 if [ ! -f "$CACHE_PATH" ]; then
   echo "missing batch weight cache: $CACHE_PATH" >&2

@@ -37,7 +37,7 @@ COMPILER_COV_REL="$(rel "$COMPILER_COV")"
 
 # 1. Build the instrumented compiler once.
 echo "[cov-merge] building instrumented compiler ..." >&2
-VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash "$RUNNER" --invoke cli_main "$SEED" "$FLAT" "$COMPILER_COV_REL" cli_main
 [ -s "$COMPILER_COV" ] || { echo "coverage_selfhost_merge: instrumented compiler not produced (seed lacks VIBE_COVERAGE?)" >&2; exit 1; }
 
@@ -83,7 +83,7 @@ sample_rel="$(rel "$sample")"
 
 # Workload A: self-compile the flat compiler source (parser/checker/codegen).
 run_workload compile \
-  env VIBE_SELFHOST_IMPORT_ABI=raw \
+  env VIBE_IMPORT_ABI=raw \
   bash "$RUNNER" --invoke cli_main "$COMPILER_COV" "$FLAT" "$OUT_DIR/out_compile.wasm" cli_main
 
 # Workload B: normalize the sample (exercises the AST printer: print_expr/_stmt).
@@ -96,14 +96,14 @@ run_workload normalize \
 # (non-FS) path, which honors VIBE_RC; RC-self-compiling the whole 4.8MB flat
 # source is too heavy and traps, so a small program is the right driver here.
 run_workload rc \
-  env VIBE_RC=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  env VIBE_RC=1 VIBE_IMPORT_ABI=raw \
   bash "$RUNNER" --invoke cli_main "$COMPILER_COV" "$sample_rel" "$OUT_DIR/out_rc.wasm" run
 
 # Extra workloads: FS-compile each path passed on the command line.
 for extra in "$@"; do
   ename="file_$(echo "$extra" | tr '/.' '__')"
   run_workload "$ename" \
-    env VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash "$RUNNER" --invoke cli_main "$COMPILER_COV" "$extra" "$OUT_DIR/out_$ename.wasm" _start
 done
 

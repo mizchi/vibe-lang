@@ -23,7 +23,7 @@ cat > "$TMP_ROOT/scripts/test_batch_weights.seed.json" <<'EOF'
 }
 EOF
 
-cat > "$TMP_ROOT/out/selfhost_test_batch_weights.json" <<EOF
+cat > "$TMP_ROOT/out/test_batch_weights.json" <<EOF
 {
   "lib/@vibe/compiler/keep_test.vibe": 321,
   "${TMP_ROOT//\\/\\\\}/lib/@vibe/compiler/new_split_test.vibe": 654,
@@ -33,9 +33,9 @@ cat > "$TMP_ROOT/out/selfhost_test_batch_weights.json" <<EOF
 }
 EOF
 
-VIBE_SELFHOST_PROJECT_ROOT="$TMP_ROOT" \
-VIBE_SELFHOST_BATCH_WEIGHT_CACHE="$TMP_ROOT/out/selfhost_test_batch_weights.json" \
-VIBE_SELFHOST_BATCH_WEIGHT_SEED="$TMP_ROOT/scripts/test_batch_weights.seed.json" \
+VIBE_PROJECT_ROOT="$TMP_ROOT" \
+VIBE_BATCH_WEIGHT_CACHE="$TMP_ROOT/out/test_batch_weights.json" \
+VIBE_BATCH_WEIGHT_SEED="$TMP_ROOT/scripts/test_batch_weights.seed.json" \
 bash "$REFRESH_SCRIPT" >/dev/null
 
 node - "$TMP_ROOT/scripts/test_batch_weights.seed.json" <<'EOF'

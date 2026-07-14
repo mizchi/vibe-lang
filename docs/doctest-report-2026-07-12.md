@@ -19,7 +19,7 @@ bash scripts/doctest_extract_run.sh docs/*.md                   # 複数可
 - block ごとに `PASS` / `FAIL` / `SKIP` を 1 行ずつ報告 (`<file>:<行番号>` 付き)。
   fail が 1 つでもあれば exit 1。
 - compile は moon-free: `run_wasm_vibe_host_runner.sh --invoke cli_main` に
-  `VIBE_PREOPEN_DIR=$ROOT VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw` で
+  `VIBE_PREOPEN_DIR=$ROOT VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw` で
   stage2 wasm を食わせる (only_gate.sh の 4/4 と同じ経路)。
 - compiler は起動時に **一度だけ** 解決して work dir にコピーする
   (最新 `_build/selfhost/generations/*/stage2.wasm` → 無ければ
@@ -254,7 +254,7 @@ let nv = {
 ```
 
 再現コマンド: 上の skip block を `repro.vibe` に保存して
-`VIBE_PREOPEN_DIR=$PWD VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+`VIBE_PREOPEN_DIR=$PWD VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
 bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main <stage2.wasm> repro.vibe out.wasm __no_entry__`
 (doctest ハーネスの compile 経路そのもの)。
 

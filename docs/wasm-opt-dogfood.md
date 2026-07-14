@@ -46,7 +46,7 @@ as the baseline):
 
 | program (selfhost-compiled) | baseline | vibe minify | runs | wasm-opt -Oz |
 |-----------------------------|---------:|------------:|------|-------------:|
-| examples/selfhost_features  |     4153 |         834 | 0    |          707 |
+| examples/features  |     4153 |         834 | 0    |          707 |
 | examples/perform_handle     |     4613 |         858 | 86   |          720 |
 
 ~80% reduction on real output; on small programs now at or below `wasm-opt -Oz`
@@ -103,11 +103,11 @@ run-matching the baseline):
 | loop             |     3855 |         509 |  87% |            — |
 | str              |     3926 |         583 |  85% |            — |
 | arr              |     4001 |         816 |  80% |            — |
-| selfhost_features|     4153 |         834 |  80% |          707 |
+| features|     4153 |         834 |  80% |          707 |
 | perform_handle   |     4613 |         858 |  81% |          720 |
 
 Correctness has been validated end-to-end on 7 real programs (arrays, recursion,
-strings, enums/match, loops, plus examples/selfhost_features and
+strings, enums/match, loops, plus examples/features and
 examples/perform_handle): every `minify` output (now including `inline_calls`)
 is VALID under wasm-opt and runs to the same result as the baseline. Reductions
 range 79–90%:
@@ -119,7 +119,7 @@ range 79–90%:
 | str              |     3926 |         583 |  85% | ✅    | ✅ (0)     |
 | enum/match       |     3922 |         464 |  88% | ✅    | ✅ (20)    |
 | loop             |     3855 |         509 |  87% | ✅    | ✅ (5050)  |
-| selfhost_features|     4153 |         834 |  80% | ✅    | ✅ (0)     |
+| features|     4153 |         834 |  80% | ✅    | ✅ (0)     |
 | perform_handle   |     4613 |         858 |  81% | ✅    | ✅ (86)    |
 
 Baselines come from binaryen (installed via `npm i binaryen`):
@@ -185,7 +185,7 @@ byte-identical to a module that `wasm-opt` validates and `wasmtime` runs.
   in the scope *enclosing* the try_table (its own label not counted, target at
   `sp - 2 - label`), so a catch that targets or crosses a block pins it.
   Validated on real effectful output (`perform_handle`, runs to 86) and shrinks
-  `selfhost_features` 834 → 824 B.
+  `features` 834 → 824 B.
 
 A prerequisite fix landed here too: `decode_instr` now consumes the immediates
 of every `0xFC`-prefixed op (table/memory bulk ops). Previously `table.size`'s

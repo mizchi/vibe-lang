@@ -171,8 +171,8 @@ echo "[fetch] selfhost compiler artifacts ready in $OUT_DIR (source_commit=$sour
 
 if [ "$PRINT_ENV" = "1" ]; then
   if [ -n "$module_source" ]; then
-    printf 'export VIBE_SELFHOST_PREBUILT_MODULE_SOURCE=%q\n' "$module_source"
-    printf 'export VIBE_SELFHOST_PREBUILT_MODULE_SOURCE_SHA256=%q\n' "$module_source_sha"
+    printf 'export VIBE_PREBUILT_MODULE_SOURCE=%q\n' "$module_source"
+    printf 'export VIBE_PREBUILT_MODULE_SOURCE_SHA256=%q\n' "$module_source_sha"
   else
     echo "# (no module source fetched; flatten will fall back to host vibe.exe)" >&2
   fi

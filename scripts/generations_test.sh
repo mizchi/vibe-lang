@@ -56,9 +56,9 @@ EOF
 chmod +x "$TMP_ROOT/fake_runner.sh"
 
 VIBE_PROJECT_ROOT="$TMP_ROOT" \
-VIBE_SELFHOST_GENERATION_RUNNER="$TMP_ROOT/fake_runner.sh" \
-VIBE_SELFHOST_GENERATION_VALIDATE_WASM=0 \
-VIBE_SELFHOST_GENERATION_VALIDATE_RUN=0 \
+VIBE_GENERATION_RUNNER="$TMP_ROOT/fake_runner.sh" \
+VIBE_GENERATION_VALIDATE_WASM=0 \
+VIBE_GENERATION_VALIDATE_RUN=0 \
   bash "$SCRIPT" build --manifest "$TMP_ROOT/bootstrap/seed.json" --out-dir "$TMP_ROOT/out" --stage3
 
 test -s "$TMP_ROOT/out/stage0_seed.wasm"
@@ -107,9 +107,9 @@ NODE
 
 set +e
 VIBE_PROJECT_ROOT="$TMP_ROOT" \
-VIBE_SELFHOST_GENERATION_RUNNER="$TMP_ROOT/fake_runner.sh" \
-VIBE_SELFHOST_GENERATION_VALIDATE_WASM=0 \
-VIBE_SELFHOST_GENERATION_VALIDATE_RUN=0 \
+VIBE_GENERATION_RUNNER="$TMP_ROOT/fake_runner.sh" \
+VIBE_GENERATION_VALIDATE_WASM=0 \
+VIBE_GENERATION_VALIDATE_RUN=0 \
   bash "$SCRIPT" build --manifest "$TMP_ROOT/bootstrap/bad-seed.json" --out-dir "$TMP_ROOT/bad-out" >"$TMP_ROOT/bad.stdout" 2>"$TMP_ROOT/bad.stderr"
 bad_status=$?
 set -e
@@ -175,12 +175,12 @@ EOF
 cat > "$CLI_ROOT/scripts/generate_bundle.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[ -n "${VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT:-}" ] || {
-  echo "missing VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT" >&2
+[ -n "${VIBE_ADAPTER_MODULE_SOURCE_OUT:-}" ] || {
+  echo "missing VIBE_ADAPTER_MODULE_SOURCE_OUT" >&2
   exit 2
 }
-mkdir -p "$(dirname "$VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT")"
-printf 'export let cli_main = () -> Int { 0 }\n' > "$VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT"
+mkdir -p "$(dirname "$VIBE_ADAPTER_MODULE_SOURCE_OUT")"
+printf 'export let cli_main = () -> Int { 0 }\n' > "$VIBE_ADAPTER_MODULE_SOURCE_OUT"
 EOF
 chmod +x "$CLI_ROOT/scripts/generate_bundle.sh"
 
@@ -200,19 +200,19 @@ EOF
 chmod +x "$CLI_ROOT/scripts/run_wasm_vibe_host_runner.sh"
 
 VIBE_PROJECT_ROOT="$CLI_ROOT" \
-VIBE_SELFHOST_GENERATION_VALIDATE_WASM=0 \
-VIBE_SELFHOST_GENERATION_VALIDATE_RUN=0 \
+VIBE_GENERATION_VALIDATE_WASM=0 \
+VIBE_GENERATION_VALIDATE_RUN=0 \
   bash "$SCRIPT" build --manifest "$CLI_ROOT/bootstrap/seed.json" --out-dir "$CLI_ROOT/out"
 
 test -s "$CLI_ROOT/out/cli_adapter_module_source.vibe"
 test -s "$CLI_ROOT/out/stage1.wasm"
 test -s "$CLI_ROOT/out/stage2.wasm"
-if rg -q '^lib/@vibe/compiler/selfhost_cli_support\.vibe$' "$CLI_ROOT/invocations.log"; then
+if rg -q '^lib/@vibe/compiler/cli_support\.vibe$' "$CLI_ROOT/invocations.log"; then
   echo "expected cli seed build to use generated flat compiler source, not import entry" >&2
   cat "$CLI_ROOT/invocations.log" >&2
   exit 1
 fi
-if ! rg -q '^out/selfhost_cli_adapter_module_source\.vibe$' "$CLI_ROOT/invocations.log"; then
+if ! rg -q '^out/cli_adapter_module_source\.vibe$' "$CLI_ROOT/invocations.log"; then
   echo "expected cli seed build to invoke generated flat compiler source" >&2
   cat "$CLI_ROOT/invocations.log" >&2
   exit 1
@@ -225,8 +225,8 @@ printf 'export let cli_main: () -> Int = () -> { 0 }\n' > "$CLI_ROOT/lib/@vibe/c
 
 set +e
 VIBE_PROJECT_ROOT="$CLI_ROOT" \
-VIBE_SELFHOST_GENERATION_VALIDATE_WASM=0 \
-VIBE_SELFHOST_GENERATION_VALIDATE_RUN=0 \
+VIBE_GENERATION_VALIDATE_WASM=0 \
+VIBE_GENERATION_VALIDATE_RUN=0 \
   bash "$SCRIPT" build \
     --manifest "$CLI_ROOT/bootstrap/seed.json" \
     --out-dir "$CLI_ROOT/split-out" \

@@ -163,7 +163,7 @@ if [ "$raw_abi_result" != "3" ]; then
 fi
 
 tagged_override_result="$(
-  FOO=abc VIBE_SELFHOST_IMPORT_ABI=tagged bash "$RUNNER" --invoke probe "$OUT_DIR/raw_abi_probe.wasm" | grep -E '^-?[0-9]+$' | tail -n 1
+  FOO=abc VIBE_IMPORT_ABI=tagged bash "$RUNNER" --invoke probe "$OUT_DIR/raw_abi_probe.wasm" | grep -E '^-?[0-9]+$' | tail -n 1
 )"
 if [ "$tagged_override_result" = "3" ]; then
   echo "raw ABI custom section should not override explicit tagged env" >&2

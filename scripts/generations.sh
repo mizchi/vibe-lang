@@ -6,23 +6,23 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="${VIBE_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
 DEFAULT_MANIFEST="$PROJECT_ROOT/bootstrap/seed.json"
 DEFAULT_OUT_ROOT="$PROJECT_ROOT/_build/selfhost/generations"
-RUNNER="${VIBE_SELFHOST_GENERATION_RUNNER:-moonrun}"
-COMPILE_FLAG="${VIBE_SELFHOST_GENERATION_COMPILE_FLAG:---wasm-mvp}"
-VALIDATE_WASM="${VIBE_SELFHOST_GENERATION_VALIDATE_WASM:-1}"
-VALIDATE_RUN="${VIBE_SELFHOST_GENERATION_VALIDATE_RUN:-1}"
-ALLOW_UNPINNED_SEED="${VIBE_SELFHOST_GENERATION_ALLOW_UNPINNED_SEED:-0}"
-CLI_INVOKE="${VIBE_SELFHOST_GENERATION_CLI_INVOKE:-auto}"
-SELFBUILD_INVOKE="${VIBE_SELFHOST_GENERATION_SELFBUILD_INVOKE:-auto}"
-FLAT_CLI_SOURCE="${VIBE_SELFHOST_GENERATION_FLAT_CLI_SOURCE:-auto}"
+RUNNER="${VIBE_GENERATION_RUNNER:-moonrun}"
+COMPILE_FLAG="${VIBE_GENERATION_COMPILE_FLAG:---wasm-mvp}"
+VALIDATE_WASM="${VIBE_GENERATION_VALIDATE_WASM:-1}"
+VALIDATE_RUN="${VIBE_GENERATION_VALIDATE_RUN:-1}"
+ALLOW_UNPINNED_SEED="${VIBE_GENERATION_ALLOW_UNPINNED_SEED:-0}"
+CLI_INVOKE="${VIBE_GENERATION_CLI_INVOKE:-auto}"
+SELFBUILD_INVOKE="${VIBE_GENERATION_SELFBUILD_INVOKE:-auto}"
+FLAT_CLI_SOURCE="${VIBE_GENERATION_FLAT_CLI_SOURCE:-auto}"
 SELFBUILD_OUT="$PROJECT_ROOT/_build/bench/selfhost_wasi_selfbuild/index_stage2.wasm"
-NODE_STACK_SIZE="${VIBE_SELFHOST_GENERATION_NODE_STACK_SIZE:-131072}"
+NODE_STACK_SIZE="${VIBE_GENERATION_NODE_STACK_SIZE:-131072}"
 # Selfhost-generated wasm now emits guest-side memory.grow checks after heap
 # bumps, so raw ABI runs do not need a fixed host pre-grow. Keep the env knob as
 # an emergency rollback for old artifacts that still require a large upfront
 # memory.
-WASM_PRE_GROW_PAGES="${VIBE_SELFHOST_GENERATION_WASM_PRE_GROW_PAGES:-0}"
-DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_SELFHOST_GENERATION_DISABLE_PERSISTENT_ARTIFACT_CACHE:-1}"
-SKIP_RUN_INIT="${VIBE_SELFHOST_GENERATION_SKIP_RUN_INIT:-1}"
+WASM_PRE_GROW_PAGES="${VIBE_GENERATION_WASM_PRE_GROW_PAGES:-0}"
+DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_GENERATION_DISABLE_PERSISTENT_ARTIFACT_CACHE:-1}"
+SKIP_RUN_INIT="${VIBE_GENERATION_SKIP_RUN_INIT:-1}"
 GENERATION_INVOKE_MODE="runner"
 GENERATION_ENTRY=""
 
@@ -138,7 +138,7 @@ verify_seed_artifact() {
   [ -f "$SEED_ARTIFACT_PATH" ] || die "seed artifact not found: $SEED_ARTIFACT_PATH"
   if [ -z "$SEED_ARTIFACT_SHA" ]; then
     if [ "$ALLOW_UNPINNED_SEED" != "1" ]; then
-      die "seed artifact sha256 is empty in $MANIFEST_PATH (run adopt/host-bootstrap-seed or set VIBE_SELFHOST_GENERATION_ALLOW_UNPINNED_SEED=1)"
+      die "seed artifact sha256 is empty in $MANIFEST_PATH (run adopt/host-bootstrap-seed or set VIBE_GENERATION_ALLOW_UNPINNED_SEED=1)"
     fi
     echo "[selfhost-gen] warning: seed artifact is not sha-pinned" >&2
     return
@@ -244,7 +244,7 @@ run_cli_compile() {
   local out="$4"
   local compile_entry_name="${5:-$SEED_ENTRY_NAME}"
   local node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=$NODE_STACK_SIZE}"
-  local import_abi="${VIBE_SELFHOST_IMPORT_ABI:-}"
+  local import_abi="${VIBE_IMPORT_ABI:-}"
   if [ -z "$import_abi" ]; then
     import_abi="$(detect_wasm_host_import_abi "$compiler")"
   fi
@@ -267,7 +267,7 @@ run_cli_compile() {
   (
     cd "$PROJECT_ROOT"
     VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
-      VIBE_SELFHOST_IMPORT_ABI="$import_abi" \
+      VIBE_IMPORT_ABI="$import_abi" \
       VIBE_WASM_PRE_GROW_PAGES="${VIBE_WASM_PRE_GROW_PAGES:-$WASM_PRE_GROW_PAGES}" \
       VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-$DISABLE_PERSISTENT_ARTIFACT_CACHE}" \
       VIBE_SKIP_RUN_INIT="$skip_run_init" \
@@ -305,7 +305,7 @@ use_flat_cli_source() {
         [ "$SEED_ENTRY" = "lib/@vibe/compiler/cli_support.vibe" ] && \
         [ "$entry_rel" = "$SEED_ENTRY" ]
       ;;
-    *) die "VIBE_SELFHOST_GENERATION_FLAT_CLI_SOURCE must be auto, 1, or 0" ;;
+    *) die "VIBE_GENERATION_FLAT_CLI_SOURCE must be auto, 1, or 0" ;;
   esac
 }
 
@@ -321,16 +321,16 @@ prepare_flat_cli_source() {
   # scripts/fetch_compiler.sh) and supplied here, so the seed ->
   # stage1 -> stage2 build needs no MoonBit host build at all.
   #
-  #   VIBE_SELFHOST_PREBUILT_MODULE_SOURCE         path to prebuilt source
-  #   VIBE_SELFHOST_PREBUILT_MODULE_SOURCE_SHA256  optional integrity check
+  #   VIBE_PREBUILT_MODULE_SOURCE         path to prebuilt source
+  #   VIBE_PREBUILT_MODULE_SOURCE_SHA256  optional integrity check
   #
   # The caller is responsible for matching the prebuilt source to the
   # configured seed's source commit; a mismatch is a stale-artifact error,
   # surfaced as a stage1/stage2 parity failure downstream.
-  local prebuilt="${VIBE_SELFHOST_PREBUILT_MODULE_SOURCE:-}"
+  local prebuilt="${VIBE_PREBUILT_MODULE_SOURCE:-}"
   if [ -n "$prebuilt" ]; then
     [ -s "$prebuilt" ] || die "prebuilt module source not found or empty: $prebuilt"
-    local want_sha="${VIBE_SELFHOST_PREBUILT_MODULE_SOURCE_SHA256:-}"
+    local want_sha="${VIBE_PREBUILT_MODULE_SOURCE_SHA256:-}"
     if [ -n "$want_sha" ]; then
       local got_sha
       got_sha="$(sha256_file "$prebuilt")"
@@ -349,10 +349,10 @@ prepare_flat_cli_source() {
   local bundle_log="$out_dir/selfhost_bundle_generation.log"
   mkdir -p "$bundle_tmp"
   echo "[selfhost-gen] prepare flat selfhost compiler source" >&2
-  if ! VIBE_SELFHOST_BUNDLE_OUT="$bundle_tmp/sources_bundle.vibe" \
-    VIBE_SELFHOST_ADAPTER_BUNDLE_OUT="$bundle_tmp/cli_adapter_bundle.vibe" \
-    VIBE_SELFHOST_RUNTIME_ENTRY_BUNDLE_OUT="$bundle_tmp/selfbuild_runtime_entry_bundle.vibe" \
-    VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT="$out" \
+  if ! VIBE_BUNDLE_OUT="$bundle_tmp/sources_bundle.vibe" \
+    VIBE_ADAPTER_BUNDLE_OUT="$bundle_tmp/cli_adapter_bundle.vibe" \
+    VIBE_RUNTIME_ENTRY_BUNDLE_OUT="$bundle_tmp/selfbuild_runtime_entry_bundle.vibe" \
+    VIBE_ADAPTER_MODULE_SOURCE_OUT="$out" \
     bash "$generator" >"$bundle_log" 2>&1; then
     cat "$bundle_log" >&2
     die "flat selfhost compiler source generation failed"
@@ -383,13 +383,13 @@ run_selfbuild_compile() {
   local compiler="$2"
   local out="$3"
   local node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=$NODE_STACK_SIZE}"
-  local import_abi="${VIBE_SELFHOST_IMPORT_ABI:-raw}"
+  local import_abi="${VIBE_IMPORT_ABI:-raw}"
   mkdir -p "$(dirname "$out")" "$(dirname "$SELFBUILD_OUT")"
   echo "[selfhost-gen] $label (invoke selfbuild_compile_stage2)"
   rm -f "$SELFBUILD_OUT"
   (
     cd "$PROJECT_ROOT"
-    VIBE_SELFHOST_IMPORT_ABI="$import_abi" \
+    VIBE_IMPORT_ABI="$import_abi" \
       VIBE_WASM_PRE_GROW_PAGES="${VIBE_WASM_PRE_GROW_PAGES:-$WASM_PRE_GROW_PAGES}" \
       VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-$DISABLE_PERSISTENT_ARTIFACT_CACHE}" \
       VIBE_NODE_WASM_FLAGS="$node_flags" \
@@ -437,7 +437,7 @@ run_start_if_enabled() {
     return
   fi
   echo "[selfhost-gen] run $label"
-  env VIBE_WASMTIME_WASM_FLAGS="${VIBE_SELFHOST_GENERATION_WASMTIME_FLAGS:-unknown-imports-default=y exceptions=y}" \
+  env VIBE_WASMTIME_WASM_FLAGS="${VIBE_GENERATION_WASMTIME_FLAGS:-unknown-imports-default=y exceptions=y}" \
     "$PROJECT_ROOT/scripts/wasmtime_run.sh" --invoke _start "$wasm" >"$out"
   local value
   value="$(grep -v '^warning' "$out" | tail -n 1)"
@@ -469,7 +469,7 @@ VIBE
   if [ "$magic" != "0061736d" ]; then
     die "$label sample artifact is not wasm (magic=$magic)"
   fi
-  env VIBE_WASMTIME_WASM_FLAGS="${VIBE_SELFHOST_GENERATION_WASMTIME_FLAGS:-exceptions=y}" \
+  env VIBE_WASMTIME_WASM_FLAGS="${VIBE_GENERATION_WASMTIME_FLAGS:-exceptions=y}" \
     "$PROJECT_ROOT/scripts/wasmtime_run.sh" --invoke _start "$sample_wasm" >"$sample_out"
   value="$(grep -v '^warning' "$sample_out" | tail -n 1)"
   if [ "$value" != "42" ]; then
@@ -781,7 +781,7 @@ command_host_bootstrap_seed() {
   if [ -z "$entry" ]; then
     entry="$(abs_path "$SEED_ENTRY")"
   fi
-  local host_compiler_override="${VIBE_SELFHOST_GENERATION_HOST_COMPILER_WASM:-}"
+  local host_compiler_override="${VIBE_GENERATION_HOST_COMPILER_WASM:-}"
   local host_compiler="${host_compiler_override:-$PROJECT_ROOT/_build/wasm/debug/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm}"
   if [ -z "$host_compiler_override" ]; then
     echo "[selfhost-gen] building MoonBit-host WASI compiler"

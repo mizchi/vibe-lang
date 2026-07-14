@@ -134,7 +134,7 @@ export function buildTextReport(report, reportPath) {
   );
   if (nextEntries.length > 0) {
     lines.push(
-      `run_env: VIBE_SELFHOST_SUITE_EXTRA_ENTRIES='${nextEntries.join(",")}'`,
+      `run_env: VIBE_SUITE_EXTRA_ENTRIES='${nextEntries.join(",")}'`,
     );
   }
   return lines.join("\n") + "\n";
@@ -204,7 +204,7 @@ if (isCliEntry) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     usage();
-    console.error(`[coverage_selfhost_suite_next_branches] ${message}`);
+    console.error(`[coverage_suite_next_branches] ${message}`);
     process.exit(1);
   }
 }

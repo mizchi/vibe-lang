@@ -28,7 +28,7 @@ for f in lib/@vibe/compiler/*_test.vibe; do
   built=0
   for t in 1 2 3; do
     rm -f "$OUT/ut.wasm"
-    VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT" VIBE_SELFHOST_IMPORT_ABI=raw bash "$RUNNER" --invoke cli_main "$SEED" "$OUT/src.vibe" "$OUT/ut.wasm" cov_driver_main >/dev/null 2>&1
+    VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw bash "$RUNNER" --invoke cli_main "$SEED" "$OUT/src.vibe" "$OUT/ut.wasm" cov_driver_main >/dev/null 2>&1
     [ -s "$OUT/ut.wasm" ] && { built=1; break; }
   done
   if [ "$built" = 1 ]; then

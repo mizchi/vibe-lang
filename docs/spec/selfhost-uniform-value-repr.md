@@ -588,7 +588,7 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    need field/element-type heap-ness — both larger than this local pass.
 5. **Stage 5 — verification & throughput. ◐ MEASURED.** The RC e2e gate (47/47,
    default vs RC identical on wasmtime) is the correctness signal;
-   `scripts/bench_selfhost_rc.{sh,mjs}` measures the payoff: each benchmark
+   `scripts/bench_rc.mjs` measures the payoff: each benchmark
    `main` runs an N-iteration allocating loop and is compiled both ways, then
    timed (median, fresh instance per run) with peak heap read from `__heap_ptr`.
 

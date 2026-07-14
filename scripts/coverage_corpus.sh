@@ -32,7 +32,7 @@ rel() { python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2])
 FLAT="$(rel "$FLAT_ABS")"
 
 echo "[corpus] building instrumented compiler ..." >&2
-VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash "$RUNNER" --invoke cli_main "$SEED" "$FLAT" "$(rel "$COMPILER_COV")" cli_main
 [ -s "$COMPILER_COV" ] || { echo "corpus: instrumented compiler not produced" >&2; exit 1; }
 
@@ -79,7 +79,7 @@ acc_run() {
 # Base: self-compile (compile) + flat self-compile under RC are heavy; include
 # the plain self-compile as the backbone, then the corpus broadens it.
 echo "[corpus] base: self-compile" >&2
-acc_run env VIBE_SELFHOST_IMPORT_ABI=raw bash "$RUNNER" --invoke cli_main "$COMPILER_COV" "$FLAT" "$OUT_DIR/o.wasm" cli_main || true
+acc_run env VIBE_IMPORT_ABI=raw bash "$RUNNER" --invoke cli_main "$COMPILER_COV" "$FLAT" "$OUT_DIR/o.wasm" cli_main || true
 
 # RC-stress: small heap-heavy programs RC-compiled (VIBE_RC=1) to exercise the
 # Perceus dup/drop/alias codegen (pc_count/pc_emit/elaborate_rw...), which a
@@ -118,7 +118,7 @@ export let main: () -> Int = () -> {
 EOF
 for rp in tree closure alias; do
   echo "[corpus] rc-stress: $rp" >&2
-  acc_run env VIBE_RC=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  acc_run env VIBE_RC=1 VIBE_IMPORT_ABI=raw \
     bash "$RUNNER" --invoke cli_main "$COMPILER_COV" "$(rel "$OUT_DIR/rcprog/$rp.vibe")" "$OUT_DIR/o.wasm" main || true
 done
 
@@ -133,7 +133,7 @@ done
 # fingerprint-miss) is taken at least once. Cache files live in ./_build/vibe_selfhost_*.
 cache_clear() { rm -f _build/vibe_selfhost_* 2>/dev/null || true; }
 fs_compile_run() { # label entry_path entry_name
-  acc_run env VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  acc_run env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash "$RUNNER" --invoke cli_main "$COMPILER_COV" "$(rel "$2")" "$OUT_DIR/o.wasm" "$3" || true
 }
 ORCH_ENTRIES=(
@@ -199,7 +199,7 @@ for f in "${files[@]}"; do
   # COMPILE (FS mode; exercises parser/checker/codegen). NB: only COMPILING the
   # corpus exercises the instrumented compiler — running the produced program is
   # pointless here (that program is a different, uninstrumented binary).
-  if acc_run env VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  if acc_run env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
       bash "$RUNNER" --invoke cli_main "$COMPILER_COV" "$fr" "$OUT_DIR/o.wasm" "$entry"; then
     comp_ok=$((comp_ok+1))
   else
@@ -215,7 +215,7 @@ for f in "${files[@]}"; do
   # RC: self-contained files (no imports) via the single-source path, which
   # honors VIBE_RC — exercises the Perceus codegen (pc_count/pc_emit/...).
   if ! grep -q '^import ' "$f" 2>/dev/null; then
-    acc_run env VIBE_RC=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    acc_run env VIBE_RC=1 VIBE_IMPORT_ABI=raw \
       bash "$RUNNER" --invoke cli_main "$COMPILER_COV" "$fr" "$OUT_DIR/orc.wasm" "$entry" && rc_ok=$((rc_ok+1)) || true
   fi
   if [ $((i % 25)) -eq 0 ] && [ -s "$ACC" ]; then

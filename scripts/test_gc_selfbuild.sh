@@ -179,7 +179,7 @@ for probe in "$OUT_DIR"/probes/*.vibe; do
   gc_wasm="$OUT_DIR/probes/$name.gc.wasm"
   lin_wasm="$OUT_DIR/probes/$name.lin.wasm"
   rm -f "$gc_wasm" "$gc_wasm.diag" "$lin_wasm" "$lin_wasm.diag"
-  env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
     "${probe#"$ROOT_DIR"/}" "${gc_wasm#"$ROOT_DIR"/}" main >/dev/null 2>&1
   if [ ! -s "$gc_wasm" ]; then
@@ -191,7 +191,7 @@ for probe in "$OUT_DIR"/probes/*.vibe; do
     continue
   fi
   gc_out="$("$WASMTIME_BIN" run -W gc=y,function-references=y,exceptions=y "$gc_wasm" 2>/dev/null | tail -1)"
-  env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
     "${probe#"$ROOT_DIR"/}" "${lin_wasm#"$ROOT_DIR"/}" main >/dev/null 2>&1
   lin_out="$(env VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$lin_wasm" 2>/dev/null | tail -1)"
@@ -215,7 +215,7 @@ echo "[gc-selfbuild] full-bundle gc compile (the selfbuild end goal):"
 BUNDLE_SRC="lib/@vibe/compiler/cli_adapter_module_source.vibe"
 BUNDLE_OUT="$OUT_DIR/bundle_gc.wasm"
 rm -f "$BUNDLE_OUT" "$BUNDLE_OUT.diag"
-env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
   "$BUNDLE_SRC" "${BUNDLE_OUT#"$ROOT_DIR"/}" cli_main >/dev/null 2>&1
 if [ -s "$BUNDLE_OUT" ]; then
@@ -246,10 +246,10 @@ if [ -s "$BUNDLE_OUT" ]; then
   RUN_OUT="$OUT_DIR/run_e2e.out.wasm"
   RUN_REF="$OUT_DIR/run_e2e.ref.wasm"
   rm -f "$RUN_OUT" "$RUN_OUT.diag" "$RUN_REF" "$RUN_REF.diag"
-  env VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  env VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$BUNDLE_OUT" \
     "${RUN_SRC#"$ROOT_DIR"/}" "${RUN_OUT#"$ROOT_DIR"/}" main >/dev/null 2>&1
-  env VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  env VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
     "${RUN_SRC#"$ROOT_DIR"/}" "${RUN_REF#"$ROOT_DIR"/}" main >/dev/null 2>&1
   if [ -s "$RUN_OUT" ] && cmp -s "$RUN_OUT" "$RUN_REF"; then
@@ -270,10 +270,10 @@ if [ -s "$BUNDLE_OUT" ]; then
   SELF_OUT="$OUT_DIR/selfcompile.wasm"
   SELF_REF="$OUT_DIR/selfcompile.ref.wasm"
   rm -f "$SELF_OUT" "$SELF_OUT.diag" "$SELF_REF" "$SELF_REF.diag"
-  env VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  env VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$BUNDLE_OUT" \
     "$BUNDLE_SRC" "${SELF_OUT#"$ROOT_DIR"/}" cli_main >/dev/null 2>&1
-  env VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  env VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
     "$BUNDLE_SRC" "${SELF_REF#"$ROOT_DIR"/}" cli_main >/dev/null 2>&1
   if [ -s "$SELF_OUT" ] && cmp -s "$SELF_OUT" "$SELF_REF"; then

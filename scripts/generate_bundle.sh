@@ -6,13 +6,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT_PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-PROJECT_ROOT="${VIBE_SELFHOST_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
-COMPILER_DIR="${VIBE_SELFHOST_COMPILER_DIR:-$PROJECT_ROOT/lib/@vibe/compiler}"
-MANIFEST="${VIBE_SELFHOST_SOURCE_MANIFEST:-$COMPILER_DIR/sources_manifest.tsv}"
-OUT="${VIBE_SELFHOST_BUNDLE_OUT:-$COMPILER_DIR/sources_bundle.vibe}"
-OUT_ADAPTER="${VIBE_SELFHOST_ADAPTER_BUNDLE_OUT:-$COMPILER_DIR/cli_adapter_bundle.vibe}"
-OUT_RUNTIME_ENTRY="${VIBE_SELFHOST_RUNTIME_ENTRY_BUNDLE_OUT:-$COMPILER_DIR/selfbuild_runtime_entry_bundle.vibe}"
-ADAPTER_MODULE_SOURCE_OUT="${VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT:-}"
+PROJECT_ROOT="${VIBE_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
+COMPILER_DIR="${VIBE_COMPILER_DIR:-$PROJECT_ROOT/lib/@vibe/compiler}"
+MANIFEST="${VIBE_SOURCE_MANIFEST:-$COMPILER_DIR/sources_manifest.tsv}"
+OUT="${VIBE_BUNDLE_OUT:-$COMPILER_DIR/sources_bundle.vibe}"
+OUT_ADAPTER="${VIBE_ADAPTER_BUNDLE_OUT:-$COMPILER_DIR/cli_adapter_bundle.vibe}"
+OUT_RUNTIME_ENTRY="${VIBE_RUNTIME_ENTRY_BUNDLE_OUT:-$COMPILER_DIR/selfbuild_runtime_entry_bundle.vibe}"
+ADAPTER_MODULE_SOURCE_OUT="${VIBE_ADAPTER_MODULE_SOURCE_OUT:-}"
 
 if [ ! -f "$MANIFEST" ]; then
   echo "error: manifest not found: $MANIFEST" >&2
@@ -228,7 +228,7 @@ def visit_bundle(rel: str):
         visit_bundle(target)
 
 # Additional entry points for the main bundle
-bundle_extra_entries = os.environ.get("VIBE_SELFHOST_BUNDLE_EXTRA_ENTRIES", "codegen/gc/index.vibe,index.vibe")
+bundle_extra_entries = os.environ.get("VIBE_BUNDLE_EXTRA_ENTRIES", "codegen/gc/index.vibe,index.vibe")
 for entry in bundle_extra_entries.split(","):
     entry = entry.strip()
     if entry:
@@ -433,7 +433,7 @@ write_vibe_chunked_string_function_from_file() {
   local prefix="$1"
   local export_name="$2"
   local filepath="${3:-}"
-  local chunk_size="${VIBE_SELFHOST_BUNDLE_CHUNK_SIZE:-8192}"
+  local chunk_size="${VIBE_BUNDLE_CHUNK_SIZE:-8192}"
   if [ -z "$filepath" ] || [ ! -f "$filepath" ]; then
     echo "export let $export_name = () -> String {"
     echo "  \"\""
@@ -497,9 +497,9 @@ run_host_vibe_cmd() {
     # The seed carries emit-module-source (VIBE_EMIT_MODULE_SOURCE mode), so the
     # flat module source needs no MoonBit host. Args are (input, output, entry),
     # rewritten to repo-root-relative for the wasm preopen. Force the legacy host
-    # path with VIBE_SELFHOST_EMIT_VIA_HOST=1.
+    # path with VIBE_EMIT_VIA_HOST=1.
     local seed_wasm="$SCRIPT_PROJECT_ROOT/bootstrap/seed/selfhost_compiler.wasm"
-    if [ -f "$seed_wasm" ] && [ "${VIBE_SELFHOST_EMIT_VIA_HOST:-0}" != "1" ]; then
+    if [ -f "$seed_wasm" ] && [ "${VIBE_EMIT_VIA_HOST:-0}" != "1" ]; then
       local emit_in="${1#"$SCRIPT_PROJECT_ROOT"/}"
       local emit_out="${2#"$SCRIPT_PROJECT_ROOT"/}"
       local emit_entry="${3:-cli_main}"
@@ -507,7 +507,7 @@ run_host_vibe_cmd() {
         cd "$SCRIPT_PROJECT_ROOT" &&
           VIBE_PREOPEN_DIR="$SCRIPT_PROJECT_ROOT" \
             VIBE_EMIT_MODULE_SOURCE=1 \
-            VIBE_SELFHOST_IMPORT_ABI="${VIBE_SELFHOST_IMPORT_ABI:-raw}" \
+            VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" \
             bash "$SCRIPT_PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
             --invoke cli_main "$seed_wasm" "$emit_in" "$emit_out" "$emit_entry"
       )
@@ -540,10 +540,10 @@ build_adapter_module_source() {
   local merged_source_file="$1"
   # Fast path for tiny shell self-tests; production generation uses
   # emit-module-source through the host compiler below.
-  if [ "${VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_FROM_MERGED:-0}" = "1" ]; then
+  if [ "${VIBE_ADAPTER_MODULE_SOURCE_FROM_MERGED:-0}" = "1" ]; then
     local module_source_path
     mkdir -p "$PROJECT_ROOT/_build"
-    module_source_path="$(mktemp "$PROJECT_ROOT/_build/selfhost_cli_adapter_module_source.XXXXXX")"
+    module_source_path="$(mktemp "$PROJECT_ROOT/_build/cli_adapter_module_source.XXXXXX")"
     python3 - "$merged_source_file" "$module_source_path" <<'PY'
 import sys
 
@@ -566,20 +566,20 @@ PY
   # emit-module-source is a deterministic function of the compiler source;
   # the committed copy is kept fresh by scripts/check_module_source_sync.sh
   # (run in selfhost-gate). Force regeneration through the host compiler with
-  # VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 (used by that gate and by intentional
+  # VIBE_REGEN_MODULE_SOURCE=1 (used by that gate and by intentional
   # module-source bumps).
   local committed_module_source="$COMPILER_DIR/cli_adapter_module_source.vibe"
-  if [ "${VIBE_SELFHOST_REGEN_MODULE_SOURCE:-0}" != "1" ] && [ -s "$committed_module_source" ]; then
+  if [ "${VIBE_REGEN_MODULE_SOURCE:-0}" != "1" ] && [ -s "$committed_module_source" ]; then
     local module_source_path
     mkdir -p "$PROJECT_ROOT/_build"
-    module_source_path="$(mktemp "$PROJECT_ROOT/_build/selfhost_cli_adapter_module_source.XXXXXX")"
+    module_source_path="$(mktemp "$PROJECT_ROOT/_build/cli_adapter_module_source.XXXXXX")"
     cp "$committed_module_source" "$module_source_path"
     printf '%s\n' "$module_source_path"
     return 0
   fi
   local module_source_path
   mkdir -p "$PROJECT_ROOT/_build"
-  module_source_path="$(mktemp "$PROJECT_ROOT/_build/selfhost_cli_adapter_module_source.XXXXXX")"
+  module_source_path="$(mktemp "$PROJECT_ROOT/_build/cli_adapter_module_source.XXXXXX")"
   run_host_vibe_cmd emit-module-source "$merged_source_file" "$module_source_path" "cli_main" >/dev/null
   printf '%s\n' "$module_source_path"
 }
@@ -714,16 +714,16 @@ build_exact_adapter_merged_source() {
   local flatten_wasm="$PROJECT_ROOT/_build/merge_flatten_compiler.wasm"
   local seed_wasm="$PROJECT_ROOT/bootstrap/seed/selfhost_compiler.wasm"
   local committed_module_source="$COMPILER_DIR/cli_adapter_module_source.vibe"
-  local tool_node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_SELFHOST_GENERATION_NODE_STACK_SIZE:-131072}}"
+  local tool_node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_GENERATION_NODE_STACK_SIZE:-131072}}"
   local tool_log="$PROJECT_ROOT/_build/merge_flatten_compiler.log"
   rm -f "$flatten_wasm" "$flatten_wasm.diag"
   (cd "$PROJECT_ROOT" && env VIBE_RC=0 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
-    VIBE_SELFHOST_IMPORT_ABI="${VIBE_SELFHOST_IMPORT_ABI:-raw}" \
+    VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" \
     VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$seed_wasm" \
     "$committed_module_source" "$flatten_wasm" cli_main >"$tool_log" 2>&1) || true
   if [ ! -s "$flatten_wasm" ]; then
-    echo "generate_selfhost_bundle: merge-flatten compiler build failed" >&2
+    echo "generate_bundle: merge-flatten compiler build failed" >&2
     cat "$flatten_wasm.diag" >&2 2>/dev/null || true
     echo "--- runner output ---" >&2
     tail -40 "$tool_log" >&2 2>/dev/null || true
@@ -731,12 +731,12 @@ build_exact_adapter_merged_source() {
   fi
   rm -f "$merged_path.diag"
   (cd "$PROJECT_ROOT" && env VIBE_EMIT_MERGED_SOURCE=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
-    VIBE_SELFHOST_IMPORT_ABI="${VIBE_SELFHOST_IMPORT_ABI:-raw}" \
+    VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" \
     VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$flatten_wasm" \
     lib/@vibe/compiler/cli_adapter.vibe "$merged_path" cli_main >"$tool_log.flatten" 2>&1) || true
   if [ ! -s "$merged_path" ]; then
-    echo "generate_selfhost_bundle: merge flatten failed" >&2
+    echo "generate_bundle: merge flatten failed" >&2
     cat "$merged_path.diag" >&2 2>/dev/null || true
     echo "--- runner output ---" >&2
     tail -40 "$tool_log.flatten" >&2 2>/dev/null || true
@@ -748,7 +748,7 @@ build_exact_adapter_merged_source() {
     | sed -E 's/^(export )?let (rec )?(mut )?([A-Za-z_][A-Za-z0-9_:#]*).*/\4/' \
     | sort | uniq -d | wc -l | tr -d ' ')"
   if [ "$dups" != "0" ]; then
-    echo "generate_selfhost_bundle: $dups duplicate top-level def(s) in merged source (#726)" >&2
+    echo "generate_bundle: $dups duplicate top-level def(s) in merged source (#726)" >&2
     grep -E '^(export )?let (rec )?(mut )?[A-Za-z_]' "$merged_path" \
       | sed -E 's/^(export )?let (rec )?(mut )?([A-Za-z_][A-Za-z0-9_:#]*).*/\4/' \
       | sort | uniq -d >&2

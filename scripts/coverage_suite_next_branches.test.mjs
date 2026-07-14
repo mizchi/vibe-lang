@@ -83,11 +83,11 @@ test("buildTextReport: includes top gaps and suggested entries", () => {
   assert.match(text, /top_non_aggregate_branch_gaps:/);
   assert.match(
     text,
-    /vibe\/compiler\/selfhost_stage2_coverage_run\.vibe 5354 missed \(0\/5354\)/,
+    /vibe\/compiler\/stage2_coverage_run\.vibe 5354 missed \(0\/5354\)/,
   );
   assert.match(
     text,
-    /suggested_extra_entries: vibe\/compiler\/checker_test\.vibe,vibe\/compiler\/checker_builtins_test\.vibe,vibe\/compiler\/selfhost_s5_test\.vibe/,
+    /suggested_extra_entries: vibe\/compiler\/checker_test\.vibe,vibe\/compiler\/checker_builtins_test\.vibe,vibe\/compiler\/s5_test\.vibe/,
   );
 });
 

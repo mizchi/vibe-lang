@@ -50,7 +50,7 @@ echo "[profile-compile] input=$INPUT"
 echo "[profile-compile] out_dir=$OUT_DIR"
 
 start_ns=$(date +%s%N)
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   VIBE_WASM_MEMORY_STATS=1 \
   node --cpu-prof --cpu-prof-dir="$OUT_DIR" --cpu-prof-name="$PROFILE_NAME" \
   scripts/wasm_vibe_host_runner.js --invoke cli_main "$STAGE2" \

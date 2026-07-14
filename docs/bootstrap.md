@@ -136,7 +136,7 @@ bash scripts/generations.sh build
 ```
 
 `scripts/generations.sh` の `prepare_flat_cli_source` は
-`VIBE_SELFHOST_PREBUILT_MODULE_SOURCE`(+ optional `..._SHA256`)が指定されると
+`VIBE_PREBUILT_MODULE_SOURCE`(+ optional `..._SHA256`)が指定されると
 regeneration を skip して pull 済み flat source を使う。未指定時の挙動
 (host `vibe.exe` で regenerate) は不変。
 
@@ -189,7 +189,7 @@ section id 0 (custom), name "vibe.abi", payload:
 ```
 
 - `version` は section レイアウトの版。
-- `host_import_abi` は runner 層 (`VIBE_SELFHOST_IMPORT_ABI`) の host import 選択に
+- `host_import_abi` は runner 層 (`VIBE_IMPORT_ABI`) の host import 選択に
   対応する (現状 `raw`)。runner はこの値で import の解決方法を切り替える。
 - host (`src/`) codegen はこの section を emit しない。したがって host-compiled な
   dist binary 自体には載らないが、**dist / stage2 のどちらで compile しても、出力

@@ -21,7 +21,7 @@ BUNDLE=lib/@vibe/compiler/cli_adapter_module_source.vibe
 OUT=_build/rc_selfhost
 mkdir -p "$OUT"
 RUN="bash scripts/run_wasm_vibe_host_runner.sh"
-ENVV=(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw)
+ENVV=(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw)
 
 echo "[rc-selfhost] cli=$CLI"
 rm -f "$OUT"/ref.wasm* "$OUT"/rcstage.wasm* "$OUT"/rcout.wasm*

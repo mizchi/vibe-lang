@@ -47,7 +47,7 @@ for m in m_a m_b m_common main; do printf 'grp\t%s.vibe\n' "$m" >> "$P/sources_m
 
 run() {
   rm -f "$RUN_JSON"
-  VIBE_COV_OUT="$RUN_JSON" VIBE_COV_RAW=1 VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_COV_OUT="$RUN_JSON" VIBE_COV_RAW=1 VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     VIBE_PREOPEN_DIR="$ROOT" bash "$RUNNER" --invoke cli_main "$COMP" "$P/main.vibe" "$P/out.wasm" main >/dev/null 2>&1 || true
   [ -s "$RUN_JSON" ] && python3 "$OUT/acc_merge.py" "$ACC" "$RUN_JSON" || true
 }

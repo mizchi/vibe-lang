@@ -27,7 +27,7 @@ To measure the vibe-side CLI compiler path, opt into the selfhost CLI
 core artifact:
 
 ```bash
-VIBE_SELFHOST_PERF_COMPILER_KIND=cli-core scripts/bench_perf.sh
+VIBE_PERF_COMPILER_KIND=cli-core scripts/bench_perf.sh
 ```
 
 This builds `lib/@vibe/cli/entry.vibe` to
@@ -36,26 +36,26 @@ This builds `lib/@vibe/cli/entry.vibe` to
 `compile-lite` bench commands against that wasm. Because this artifact
 uses the vibe host ABI (`vibe::env-get`, `vibe::fs-read-file`, etc.),
 the compiler side runs through `scripts/run_wasm_vibe_host_runner.sh`
-instead of `moonrun_wt`; `VIBE_SELFHOST_PERF_RUNTIME` still controls the
-MoonBit-built checker runner when `VIBE_SELFHOST_PERF_CHECKER_KIND=moonbit`.
-When `VIBE_SELFHOST_PERF_COMPILER_KIND=cli-core`, the checker side also
+instead of `moonrun_wt`; `VIBE_PERF_RUNTIME` still controls the
+MoonBit-built checker runner when `VIBE_PERF_CHECKER_KIND=moonbit`.
+When `VIBE_PERF_COMPILER_KIND=cli-core`, the checker side also
 defaults to `cli-core`, so both compile and check requests go through the
 vibe-side CLI artifact. Override with
-`VIBE_SELFHOST_PERF_CHECKER_KIND=moonbit|cli-core`.
+`VIBE_PERF_CHECKER_KIND=moonbit|cli-core`.
 
 For `cli-core`, compile/selfhost requests default to a JSONL daemon mode
 inside `scripts/wasm_vibe_host_runner.js`
-(`VIBE_SELFHOST_PERF_COMPILE_DAEMON=1`). This keeps the Node host runner
+(`VIBE_PERF_COMPILE_DAEMON=1`). This keeps the Node host runner
 and WebAssembly instance warm across all cases, matching the checker
-daemon's amortized mode. Set `VIBE_SELFHOST_PERF_COMPILE_DAEMON=0` to
+daemon's amortized mode. Set `VIBE_PERF_COMPILE_DAEMON=0` to
 measure cold per-invocation runner cost; those numbers include Node
 startup and are not comparable to the wasmtime `vibe_compile_wasi` gate.
-`VIBE_SELFHOST_PERF_CHECK_DAEMON=1` enables the same daemon shape for
+`VIBE_PERF_CHECK_DAEMON=1` enables the same daemon shape for
 checker requests.
 
 ### wasmtime AOT runtime (default, #402 Phase 2)
 
-The bench driver's `VIBE_SELFHOST_PERF_RUNTIME` defaults to
+The bench driver's `VIBE_PERF_RUNTIME` defaults to
 `wasmtime-aot`. It runs the stage1 wasm under a small Rust wasmtime
 host (`runtime/moonrun_wasmtime`, binary `moonrun_wt`) that
 re-implements the moonbit `--target wasm` import surface
@@ -65,7 +65,7 @@ re-implements the moonbit `--target wasm` import surface
 instantiations skip Cranelift entirely.
 
 Opt back into the legacy `moonrun` (v8 interp) path with
-`VIBE_SELFHOST_PERF_RUNTIME=moonrun` — useful in environments
+`VIBE_PERF_RUNTIME=moonrun` — useful in environments
 without a rust toolchain. The CI KPI step uses `wasmtime-aot` with
 tightened TOTAL-ratio caps: `compile 2.0 / check 5.0` (was 10.0 /
 8.5 under moonrun). Sized against measured CI baselines (compile
@@ -86,12 +86,12 @@ median of 3 runs):
 Run via:
 
 ```bash
-VIBE_SELFHOST_PERF_RUNTIME=wasmtime-aot pkf run bench-selfhost-perf-wasmtime
+VIBE_PERF_RUNTIME=wasmtime-aot pkf run bench-selfhost-perf-wasmtime
 # or directly
 scripts/bench_perf.sh
 ```
 
-Set `VIBE_SELFHOST_PERF_RUNTIME=wasmtime` to skip the AOT step (loses
+Set `VIBE_PERF_RUNTIME=wasmtime` to skip the AOT step (loses
 the per-invocation Cranelift cost). Set `MOONRUN_WT_BIN` to point at a
 prebuilt `moonrun_wt` (otherwise the driver builds it on first use).
 
@@ -100,7 +100,7 @@ prebuilt `moonrun_wt` (otherwise the driver builds it on first use).
 Each runtime has a different sweet-spot for binaryen's optimization
 level — interpreters benefit from `-Oz` (instruction count), JITs
 benefit from `-O3` (loop unrolling, inlining). When the bench leaves
-`VIBE_SELFHOST_PERF_WASM_OPT_LEVEL` on `auto` (the default), the
+`VIBE_PERF_WASM_OPT_LEVEL` on `auto` (the default), the
 driver picks per-runtime:
 
 | runtime         | default level | rationale                                |
@@ -121,7 +121,7 @@ With auto level on wasmtime-aot the TOTAL compile ratio drops to
 writes `_build/wasm/opt/.opt_level` so a runtime switch triggers a
 single rebuild of the opt artifact, never a silent level mismatch.
 
-Override with `VIBE_SELFHOST_PERF_WASM_OPT_LEVEL=-Oz|-O3|-O4|-Os|...`.
+Override with `VIBE_PERF_WASM_OPT_LEVEL=-Oz|-O3|-O4|-Os|...`.
 
 The same wins survive on the canonical CI artifact (release profile +
 binaryen `wasm-opt -Oz`):
@@ -153,10 +153,10 @@ the new import.
 Both guards run in the `selfhost-runtime-parity` CI job (required).
 
 `scripts/bench_selfhost_memory.sh` also accepts
-`VIBE_SELFHOST_MEMORY_RUNTIME=wasmtime-aot` so peak-RSS measurement
+`VIBE_MEMORY_RUNTIME=wasmtime-aot` so peak-RSS measurement
 can compare moonrun's v8 heap vs wasmtime's linear memory. It mirrors
 the perf bench's auto opt-level (`-Oz` for moonrun, `-O3` for
-wasmtime/-aot); override with `VIBE_SELFHOST_MEMORY_WASM_OPT_LEVEL`.
+wasmtime/-aot); override with `VIBE_MEMORY_WASM_OPT_LEVEL`.
 Both benches share `_build/wasm/opt/` and consult `.opt_level` so a
 runtime switch rebuilds the wasm-opt artifact rather than silently
 benching against the wrong level.
@@ -168,7 +168,7 @@ Driver: `scripts/bench_selfhost_memory.sh` → `just bench-selfhost-memory`.
 Combines `hyperfine` (stable wallclock, std-dev, JSON export) with
 `/usr/bin/time -v` (peak resident-set size in KB) and reports the
 selfhost/host ratio per phase per case. Optional gates:
-`VIBE_SELFHOST_MEMORY_MAX_RSS_RATIO` / `VIBE_SELFHOST_MEMORY_MAX_RSS_KB`.
+`VIBE_MEMORY_MAX_RSS_RATIO` / `VIBE_MEMORY_MAX_RSS_KB`.
 
 Linux only — relies on GNU `/usr/bin/time -v`'s `Maximum resident set size`
 field. macOS users need `gnu-time` (`brew install gnu-time`) and to point
@@ -180,8 +180,8 @@ Output: `_build/bench/selfhost_memory/rss_summary.tsv` and
 ### wasm-opt -O3 step
 
 Both `bench_perf.sh` and `bench_selfhost_memory.sh` invoke
-`build_selfhost_wasi_opt.sh` (env: `VIBE_SELFHOST_PERF_WASM_OPT` /
-`VIBE_SELFHOST_MEMORY_WASM_OPT`, default `auto`) to pipe the release
+`build_selfhost_wasi_opt.sh` (env: `VIBE_PERF_WASM_OPT` /
+`VIBE_MEMORY_WASM_OPT`, default `auto`) to pipe the release
 selfhost wasm through binaryen `wasm-opt -O3` before measurement.
 
 The helper resolves the wasm-opt binary in this order:

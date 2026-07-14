@@ -21,7 +21,7 @@ for src in "$GOLDEN_DIR"/*.vibe; do
   name=$(basename "$src" .vibe)
   expected="$GOLDEN_DIR/$name.expected"
   wasm="$OUT_DIR/$name.wasm"
-  if ! VIBE_PREOPEN_DIR=$PWD VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  if ! VIBE_PREOPEN_DIR=$PWD VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
     "$S2" "$src" "$wasm" main >/dev/null 2>&1; then
     echo "FAIL $name (compile): $(cat "$wasm.diag" 2>/dev/null)"

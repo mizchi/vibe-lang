@@ -131,7 +131,7 @@ run_driver() { # entry driver_file label
   local ok=0 t
   for t in 1 2 3 4 5 6; do
     rm -f "$d/m.wasm"
-    VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT" VIBE_SELFHOST_IMPORT_ABI=raw \
+    VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw \
       bash "$RUNNER" --invoke cli_main "$SEED" "$d/src.vibe" "$d/m.wasm" "$entry" >/dev/null 2>&1 || true
     [ -s "$d/m.wasm" ] && { ok=1; break; }
   done
