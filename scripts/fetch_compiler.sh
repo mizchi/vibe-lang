@@ -37,7 +37,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="${VIBE_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
 
-die() { echo "fetch-selfhost-compiler: $*" >&2; exit 1; }
+die() { echo "fetch-compiler: $*" >&2; exit 1; }
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then

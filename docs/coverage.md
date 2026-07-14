@@ -507,8 +507,8 @@ just coverage-wasm-std
 
 ```bash
 pkf run coverage                            # selfhost suite coverage 集計
-pkf run coverage-selfhost-suite-branch-gate # branch coverage gate
-pkf run coverage-selfhost-suite-next-branches  # 未到達分岐の提案
+pkf run coverage-suite-branch-gate # branch coverage gate
+pkf run coverage-suite-next-branches  # 未到達分岐の提案
 ```
 
 > 旧 `coverage-moon` / `coverage-deno` / `coverage-wasm-source` / `coverage-wasm-std`

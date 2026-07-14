@@ -49,9 +49,9 @@ dispatch は `lib/@vibe/cli/`、compiler 本体・link/check/build helper は
 `lib/@vibe/compiler/` に置き、ビルド単位を分ける。
 
 ```bash
-pkf run selfhost-generation-seed-info
-pkf run selfhost-generation-status   # read-only: seed pin + latest generation
-pkf run selfhost-generation -- --stage3
+pkf run generation-seed-info
+pkf run generation-status   # read-only: seed pin + latest generation
+pkf run generation -- --stage3
 scripts/generations.sh adopt --artifact _build/selfhost/generations/<gen>/stage2.wasm
 ```
 
@@ -62,9 +62,9 @@ stage2 -> bootstrap bump の流れを追跡したいときの入口にする。
 
 `adopt` は stage2 artifact を seed path にコピーし、`bootstrap/seed.json`
 の sha256 を更新する。bootstrap bump ではこの manifest 更新を独立 commit として
-扱う。`pkf run selfhost-generation` は seed provenance に従い、安定した
+扱う。`pkf run generation` は seed provenance に従い、安定した
 low-level compiler entry (`lib/@vibe/compiler/cli_support.vibe`) を flat source
-化して stage を回す。`build-selfhost-dist` / `test-selfhost-cli-core` は
+化して stage を回す。`build-selfhost-dist` / `test-cli-core` は
 `lib/@vibe/cli/entry.vibe` を使う。split CLI entry を generation default に
 昇格する場合は、別の bootstrap bump として stage2/stage3、corpus、perf/RSS を
 通してから manifest entry を切り替える。
@@ -87,7 +87,7 @@ corpus parity に差分が出たときの切り分けに使う。
 
 bootstrap bump は最低限、以下を満たす。
 
-- `release-selfhost-gates` が green。
+- `release-gates` が green。
 - perf KPI: TOTAL compile <= 2.5x、TOTAL check <= 1.33x。
 - peak RSS: compile/check とも <= 2.0x。
 - corpus check parity: REAL gap = 0。
@@ -126,11 +126,11 @@ self-compilation を「保証」するには、stage0 -> stage1 -> stage2 を **
   sha256 と `source_commit` が入る。
 
 publish は `scripts/build_release_assets.sh`、取得は
-`scripts/fetch_compiler.sh` (`pkf run fetch-selfhost-compiler`)。
+`scripts/fetch_compiler.sh` (`pkf run fetch-compiler`)。
 
 ```bash
 # release から pull + sha256 検証し、prebuilt module source の env を出す
-eval "$(pkf run fetch-selfhost-compiler -- <tag> --print-env)"
+eval "$(pkf run fetch-compiler -- <tag> --print-env)"
 # MoonBit host build を一切せず stage0 -> stage1 -> stage2 を回す
 bash scripts/generations.sh build
 ```
@@ -198,7 +198,7 @@ section id 0 (custom), name "vibe.abi", payload:
 ### parity gate
 
 `scripts/test_dist_stage2_parity.sh`
-(`pkf run test-selfhost-dist-stage2-parity`) が contract を検証する。dist / stage2
+(`pkf run test-dist-stage2-parity`) が contract を検証する。dist / stage2
 両 compiler で同一 sample を compile し、
 
 1. 出力 program wasm の `vibe.abi` 一致、
@@ -209,7 +209,7 @@ section id 0 (custom), name "vibe.abi", payload:
 を assert する。`--self-test` は build 無しで pinned seed wasm に対し `vibe.abi`
 抽出ロジックだけを検証する (CI/build 不要の smoke)。
 
-gate は `release-selfhost-gates` に組み込まれ、`pkf run selfhost-gate`
+gate は `release-gates` に組み込まれ、`pkf run gate`
 (`trial_gate.sh`) の本流で走る。selfhost gate は本 gate の直前に
 `generations.sh build --stage3` で stage2/stage3 を生成するため、
 gate は既定 (`VIBE_DIST_PARITY_REUSE_STAGE2=1`) でその stage2 を再利用し、

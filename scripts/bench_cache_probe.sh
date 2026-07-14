@@ -11,7 +11,7 @@ BACKEND="${VIBE_CACHE_PROBE_BACKEND:-compiled}"
 mkdir -p "$OUT_DIR"
 
 if [[ ! -x "$CLI_BIN" ]]; then
-  echo "bench-selfhost-cache-probe: missing CLI_BIN: $CLI_BIN" >&2
+  echo "bench-cache-probe: missing CLI_BIN: $CLI_BIN" >&2
   exit 1
 fi
 
@@ -25,7 +25,7 @@ if command -v hyperfine >/dev/null 2>&1; then
     --export-json "$OUT_DIR/selfhost_cache_probe.json" \
     -n "type-db-fs-multi-dep" "$cmd_multi_dep" \
     -n "cli-prepare-batch" "$cmd_cli_prepare"
-  echo "bench-selfhost-cache-probe: wrote $OUT_DIR/selfhost_cache_probe.json"
+  echo "bench-cache-probe: wrote $OUT_DIR/selfhost_cache_probe.json"
 else
   echo "hyperfine not found; using /usr/bin/time" >&2
   for name in "type-db-fs-multi-dep" "cli-prepare-batch"; do

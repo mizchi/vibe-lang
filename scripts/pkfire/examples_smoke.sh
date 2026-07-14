@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PR-oriented selfhost smoke examples — extracted from justfile
-# `ci-selfhost-examples-smoke`.
+# `ci-examples-smoke`.
 set -euo pipefail
 
 SELFHOST_WASM="_build/dist/selfhost_compiler.wasm"

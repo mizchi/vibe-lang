@@ -19,7 +19,7 @@ LIST_JSON_OUT="$OUT_DIR/selfhost_loader_list_materialize.json"
 mkdir -p "$OUT_DIR"
 
 if [[ ! -x "$CLI_BIN" ]]; then
-  echo "bench-selfhost-loader-hotspots: missing CLI_BIN: $CLI_BIN" >&2
+  echo "bench-loader-hotspots: missing CLI_BIN: $CLI_BIN" >&2
   exit 1
 fi
 
@@ -31,7 +31,7 @@ fi
   --json-out "$COLLECT_JSON_OUT" \
   "$COLLECT_BENCH_FILE"
 
-echo "bench-selfhost-loader-hotspots: wrote $COLLECT_JSON_OUT"
+echo "bench-loader-hotspots: wrote $COLLECT_JSON_OUT"
 if [[ "$SKIP_MICRO" != "1" ]]; then
   "$CLI_BIN" bench \
     --backend "$BACKEND" \
@@ -54,8 +54,8 @@ if [[ "$SKIP_MICRO" != "1" ]]; then
     --json-out "$LIST_JSON_OUT" \
     "$LIST_MATERIALIZE_BENCH_FILE"
 
-  echo "bench-selfhost-loader-hotspots: wrote $GROUP_JSON_OUT"
-  echo "bench-selfhost-loader-hotspots: wrote $LIST_JSON_OUT"
+  echo "bench-loader-hotspots: wrote $GROUP_JSON_OUT"
+  echo "bench-loader-hotspots: wrote $LIST_JSON_OUT"
 else
-  echo "bench-selfhost-loader-hotspots: skipping micro benches (set VIBE_LOADER_HOTSPOT_SKIP_MICRO=0 to enable)"
+  echo "bench-loader-hotspots: skipping micro benches (set VIBE_LOADER_HOTSPOT_SKIP_MICRO=0 to enable)"
 fi

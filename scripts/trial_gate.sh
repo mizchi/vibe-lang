@@ -6,7 +6,7 @@
 # The canonical moon-free gate is now scripts/only_gate.sh
 # (bundle/module-source sync + seed->stage1->stage2->stage3 fixpoint +
 # compile/run validation). Redirect here so existing entry points
-# (gate.sh, the `selfhost-gate` / `selfhost-trial-gate` tasks) keep
+# (gate.sh, the `gate` / `trial-gate` tasks) keep
 # working. The `--post-generation` flag is accepted and ignored (the gate runs
 # its own staged generation).
 set -euo pipefail

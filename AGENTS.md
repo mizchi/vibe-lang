@@ -30,7 +30,7 @@ pkf list                  # show all tasks
 pkf run                   # default: release-check (moon-free selfhost sign-off)
 pkf run test              # selfhost operation gate (commit 前の主チェック)
 pkf run test-local        # affected tests only (fast inner loop)
-pkf run selfhost-gate     # complete selfhost operation gate
+pkf run gate              # complete selfhost operation gate
 pkf run run -- args       # run main with args
 pkf affected --since=origin/main 'test:*'  # diff-aware package tests
 # 単一ファイルの型検査 / 診断: vibe diagnostics <file.vibe>
@@ -70,7 +70,7 @@ compiler source 自体で使う場合は、先に seed compiler がその syntax
 状態を tag し、bootstrap bump を通してから source を移行する。
 2026-06-12 以降の完全 selfhost 運用では
 [docs/operation-gate.md](docs/operation-gate.md) の判断基準に従い、節目で
-`pkf run selfhost-gate` を通す。旧 `pkf run selfhost-trial-gate` は互換 alias。
+`pkf run gate` を通す。旧 `pkf run trial-gate` は互換 alias。
 
 判断目安:
 - 「`vibe test foo.vibe` で挙動を変えたい / 新 builtin を追加したい」
@@ -79,7 +79,7 @@ compiler source 自体で使う場合は、先に seed compiler がその syntax
   → `lib/@vibe/compiler/entry` / `selfhost_cli_*.vibe` / component adapter 側で実装する
 - 「selfhost が正しく自分でコンパイルできない」「dist wasm が壊れて
   いる」 → まず `lib/@vibe/compiler/` / bootstrap scripts / seed 管理を直し、
-  `pkf run selfhost-gate` で確認する。`src/` 修正が必要に見える場合は
+  `pkf run gate` で確認する。`src/` 修正が必要に見える場合は
   変更前に方針確認する
 - MoonBit host と selfhost の二重実装は増やさない。parity/cutover gate は
   selfhost 側の正しさを確認するために使い、`src/` 追従の理由にしない
@@ -87,7 +87,7 @@ compiler source 自体で使う場合は、先に seed compiler がその syntax
 CI shard では:
 - `scripts/pkfire/gates_shard.sh bootstrap|cli|check|coverage`
   が selfhost 側のゲートを走らせる
-- `pkf run selfhost-gate` を完全 selfhost 継続判断の主 gate とする
+- `pkf run gate` を完全 selfhost 継続判断の主 gate とする
 
 ## Coding Convention
 

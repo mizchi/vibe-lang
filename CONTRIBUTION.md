@@ -24,8 +24,8 @@ pkf run fmt        # format code
 pkf run check      # type check
 pkf run test       # run tests
 pkf run test-local # affected local tests via flaker (fast inner loop)
-pkf run test-selfhost-unit  # selfhost unit tests (allowlist-gated)
-pkf run selfhost-gate       # full selfhost operation gate
+pkf run test-unit  # selfhost unit tests (allowlist-gated)
+pkf run gate       # full selfhost operation gate
 pkf run test-integration-deno  # deno integration tests (artifact-only wasm-gc)
 pkf run coverage            # selfhost suite coverage aggregation
 pkf run release-check       # full check before release (fmt + info + check + test + gates)
@@ -35,8 +35,8 @@ pkf run playground-build    # GitHub Pages 向け playground を build
 
 Coverage は selfhost テストスイート基準で測る:
 - 集計: `pkf run coverage`
-- branch coverage gate: `pkf run coverage-selfhost-suite-branch-gate`
-- next-branch 提案: `pkf run coverage-selfhost-suite-next-branches`
+- branch coverage gate: `pkf run coverage-suite-branch-gate`
+- next-branch 提案: `pkf run coverage-suite-next-branches`
 - 詳細: [docs/coverage.md](docs/coverage.md)
 
 ## Before committing a compiler change
@@ -270,7 +270,7 @@ where new compiler work should land.
 ## Fixtures
 
 Fixtures live in `fixtures/*.vibe` and include a `__DATA__` JSON section; they are
-exercised through the selfhost gate (`pkf run selfhost-gate`) and `pkf run
+exercised through the selfhost gate (`pkf run gate`) and `pkf run
 test-fixtures`. Runtime-style fixtures (effect, HTTP, struct) live in
 `fixtures/runtime/`.
 

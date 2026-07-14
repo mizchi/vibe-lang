@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Selfhost release gate shards — extracted from justfile `ci-selfhost-gates-shard`.
+# Selfhost release gate shards — extracted from justfile `ci-gates-shard`.
 # Usage: scripts/pkfire/gates_shard.sh <bootstrap|bootstrap-core|selfbuild|cli|check|coverage|corpus>
 set -euo pipefail
 

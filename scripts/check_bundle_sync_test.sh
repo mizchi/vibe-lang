@@ -46,11 +46,11 @@ if VIBE_PROJECT_ROOT="$TMP_ROOT" \
   VIBE_SOURCE_MANIFEST="$TMP_ROOT/lib/@vibe/compiler/sources_manifest.tsv" \
   VIBE_BUNDLE_EXPECTED="$TMP_ROOT/lib/@vibe/compiler/sources_bundle.vibe" \
   bash "$CHECK_SCRIPT" >"$TMP_ROOT/main.stdout" 2>"$TMP_ROOT/main.stderr"; then
-  echo "check-selfhost-bundle-sync self-test: expected drift detection failure" >&2
+  echo "check-bundle-sync self-test: expected drift detection failure" >&2
   exit 1
 fi
 if ! grep -Fq "$TMP_ROOT/lib/@vibe/compiler/sources_bundle.vibe" "$TMP_ROOT/main.stderr"; then
-  echo "check-selfhost-bundle-sync self-test: expected main bundle drift path" >&2
+  echo "check-bundle-sync self-test: expected main bundle drift path" >&2
   exit 1
 fi
 
@@ -66,12 +66,12 @@ if VIBE_PROJECT_ROOT="$TMP_ROOT" \
   VIBE_SOURCE_MANIFEST="$TMP_ROOT/lib/@vibe/compiler/sources_manifest.tsv" \
   VIBE_BUNDLE_EXPECTED="$TMP_ROOT/lib/@vibe/compiler/sources_bundle.vibe" \
   bash "$CHECK_SCRIPT" >"$TMP_ROOT/adapter.stdout" 2>"$TMP_ROOT/adapter.stderr"; then
-  echo "check-selfhost-bundle-sync self-test: expected adapter drift detection failure" >&2
+  echo "check-bundle-sync self-test: expected adapter drift detection failure" >&2
   exit 1
 fi
 if ! grep -Fq "$TMP_ROOT/lib/@vibe/compiler/cli_adapter_bundle.vibe" "$TMP_ROOT/adapter.stderr"; then
-  echo "check-selfhost-bundle-sync self-test: expected adapter bundle drift path" >&2
+  echo "check-bundle-sync self-test: expected adapter bundle drift path" >&2
   exit 1
 fi
 
-echo "check-selfhost-bundle-sync self-test: ok"
+echo "check-bundle-sync self-test: ok"

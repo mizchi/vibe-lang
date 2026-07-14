@@ -269,7 +269,7 @@ Files:
 - `lib/@vibe/compiler/codegen_bench.vibe` (optional `codegen` phase)
 
 Driver (host CLI compiled backend):
-`scripts/bench_selfhost_compile_hotspots.sh` → `just bench-selfhost-compile-hotspots`.
+`scripts/bench_selfhost_compile_hotspots.sh` → `just bench-compile-hotspots`.
 
 These bench files type-check clean (`vibe check ...` passes) and define
 per-case probes that exercise the selfhost lexer / parser / checker against

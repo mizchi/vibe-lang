@@ -222,7 +222,7 @@ ADR-0069 実装済み stage2 で 91 pass / 0 fail / 51 skip (exit 0)**。
   取得が 403 になり `pkf run release-check` のグラフ評価を検証できなかった
   (releaseCheck 定義内の NOTE コメント参照)。`pkf run doctest` 単体 /
   CI 独立 step で green を確認してから deps へ昇格する。
-- CI 独立 step 案 (ci.yml の selfhost-only-gate job、stage2 staging の後):
+- CI 独立 step 案 (ci.yml の only-gate job、stage2 staging の後):
 
   ```yaml
   - name: Docs doctest (compile-check ```vibe blocks)

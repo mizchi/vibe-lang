@@ -14,22 +14,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT_DIR"
 
-echo "[selfhost-only-gate] 0/3 builtin parity (#415 B-3)"
+echo "[only-gate] 0/3 builtin parity (#415 B-3)"
 bash scripts/check_builtin_parity.sh
 
-echo "[selfhost-only-gate] 1/3 bundle sync"
+echo "[only-gate] 1/3 bundle sync"
 bash scripts/check_bundle_sync.sh
 
-echo "[selfhost-only-gate] 2/3 module-source sync (via seed)"
+echo "[only-gate] 2/3 module-source sync (via seed)"
 bash scripts/check_module_source_sync.sh
 
-echo "[selfhost-only-gate] 3/3 moon-free selfbuild seed->stage1->stage2->stage3"
+echo "[only-gate] 3/3 moon-free selfbuild seed->stage1->stage2->stage3"
 bash scripts/generations.sh build --stage3
 
 # Assert the stage2==stage3 fixpoint from the freshest generation manifest.
 latest_gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1 || true)"
 if [ -z "$latest_gen" ] || [ ! -f "${latest_gen}generation.json" ]; then
-  echo "[selfhost-only-gate] FAIL: no generation manifest produced" >&2
+  echo "[only-gate] FAIL: no generation manifest produced" >&2
   exit 1
 fi
 python3 - "${latest_gen}generation.json" <<'PY'
@@ -39,10 +39,10 @@ s = d.get("stages", {})
 s2 = s.get("stage2", {}).get("sha256")
 s3 = s.get("stage3", {}).get("sha256")
 if not s2 or not s3:
-    print("[selfhost-only-gate] FAIL: missing stage2/stage3 sha", file=sys.stderr); sys.exit(1)
+    print("[only-gate] FAIL: missing stage2/stage3 sha", file=sys.stderr); sys.exit(1)
 if s2 != s3:
-    print(f"[selfhost-only-gate] FAIL: stage2 != stage3 ({s2[:12]} != {s3[:12]})", file=sys.stderr); sys.exit(1)
-print(f"[selfhost-only-gate] fixpoint ok: stage2==stage3 ({s2[:12]})")
+    print(f"[only-gate] FAIL: stage2 != stage3 ({s2[:12]} != {s3[:12]})", file=sys.stderr); sys.exit(1)
+print(f"[only-gate] fixpoint ok: stage2==stage3 ({s2[:12]})")
 PY
 
 # 3b. RC bootstrap gate (#556) -- CAVEAT: this reuses the manifest from the
@@ -66,7 +66,7 @@ VIBE_RC_BOOTSTRAP_REUSE_GEN="${latest_gen}generation.json" \
 #    hit by real `import` statements, which the merged/bundle selfbuild source
 #    strips — so the fixpoint above does not exercise it). Compile a 2-file
 #    program via the fresh stage2 (VIBE_FS_COMPILE) and assert it runs to 42.
-echo "[selfhost-only-gate] 4/4 multi-file FS-compile regression"
+echo "[only-gate] 4/4 multi-file FS-compile regression"
 fsdir="_build/_gate_fscompile"
 rm -rf "$fsdir"; mkdir -p "$fsdir"
 printf 'export let add = (a: Int, b: Int) -> Int { a + b }\n' > "$fsdir/helper.vibe"
@@ -76,16 +76,16 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$fsdir/main.vibe" "$fsdir/main.wasm" _start
 if [ ! -s "$fsdir/main.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: multi-file FS-compile produced no wasm" >&2
+  echo "[only-gate] FAIL: multi-file FS-compile produced no wasm" >&2
   exit 1
 fi
 fsres="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$fsdir/main.wasm" 2>/dev/null | tr -dc '0-9')"
 rm -rf "$fsdir"
 if [ "$fsres" != "42" ]; then
-  echo "[selfhost-only-gate] FAIL: multi-file FS-compile sample returned '$fsres' (expected 42)" >&2
+  echo "[only-gate] FAIL: multi-file FS-compile sample returned '$fsres' (expected 42)" >&2
   exit 1
 fi
-echo "[selfhost-only-gate] multi-file FS-compile ok (42)"
+echo "[only-gate] multi-file FS-compile ok (42)"
 
 # 4b. deep-recursion effect resume regression (#737): a perform issued from a
 #     RECURSIVE frame, handled by an in-language handler OUTSIDE the recursion
@@ -93,7 +93,7 @@ echo "[selfhost-only-gate] multi-file FS-compile ok (42)"
 #     as the SECOND op's argument (deep-continuation resume corruption). The
 #     merge lane works around nothing anymore (merge_sources is back on
 #     `perform Fs::ReadFile`), so this program is the canary.
-echo "[selfhost-only-gate] 4b deep-recursion effect resume regression (#737)"
+echo "[only-gate] 4b deep-recursion effect resume regression (#737)"
 drdir="_build/_gate_deepresume"
 rm -rf "$drdir"; mkdir -p "$drdir/d"
 printf 'AAA' > "$drdir/a.txt"
@@ -132,17 +132,17 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$drdir/main.vibe" "$drdir/main.wasm" _start >/dev/null 2>&1
 if [ ! -s "$drdir/main.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: deep-resume regression program did not compile" >&2
+  echo "[only-gate] FAIL: deep-resume regression program did not compile" >&2
   cat "$drdir/main.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
 drres="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$drdir/main.wasm" 2>/dev/null | tr -dc '0-9')"
 rm -rf "$drdir"
 if [ "$drres" != "42" ]; then
-  echo "[selfhost-only-gate] FAIL: deep-resume regression returned '$drres' (expected 42) — #737-class resume corruption" >&2
+  echo "[only-gate] FAIL: deep-resume regression returned '$drres' (expected 42) — #737-class resume corruption" >&2
   exit 1
 fi
-echo "[selfhost-only-gate] deep-recursion effect resume ok (42)"
+echo "[only-gate] deep-recursion effect resume ok (42)"
 
 # 4c. missing-import diagnostic regression (#831): a file that imports a path
 #     which does not exist on disk used to crash raw -- `collect_sources_rec`
@@ -153,7 +153,7 @@ echo "[selfhost-only-gate] deep-recursion effect resume ok (42)"
 #     instead of reporting a diagnostic. Assert the compile now fails
 #     gracefully with a located "cannot resolve import" diagnostic and never
 #     reaches the raw crash dump / host exception text.
-echo "[selfhost-only-gate] 4c missing-import diagnostic regression (#831)"
+echo "[only-gate] 4c missing-import diagnostic regression (#831)"
 midir="_build/_gate_missing_import"
 rm -rf "$midir"; mkdir -p "$midir"
 cat > "$midir/main.vibe" <<'VEOF'
@@ -171,30 +171,30 @@ fi
 mi_diag="$(cat "$midir/main.wasm.diag" 2>/dev/null || true)"
 rm -rf "$midir"
 if [ "$mi_wasm_produced" = "1" ]; then
-  echo "[selfhost-only-gate] FAIL: missing-import program compiled successfully (expected a diagnostic failure)" >&2
+  echo "[only-gate] FAIL: missing-import program compiled successfully (expected a diagnostic failure)" >&2
   exit 1
 fi
 if echo "$mi_out" | grep -q "crash debug"; then
-  echo "[selfhost-only-gate] FAIL: missing-import compile hit the raw crash-debug dump instead of a diagnostic" >&2
+  echo "[only-gate] FAIL: missing-import compile hit the raw crash-debug dump instead of a diagnostic" >&2
   echo "$mi_out" >&2
   exit 1
 fi
 if echo "$mi_out" | grep -qi "fs_read_file failed"; then
-  echo "[selfhost-only-gate] FAIL: missing-import compile leaked the raw fs_read_file host error instead of a diagnostic" >&2
+  echo "[only-gate] FAIL: missing-import compile leaked the raw fs_read_file host error instead of a diagnostic" >&2
   echo "$mi_out" >&2
   exit 1
 fi
 if ! echo "$mi_diag" | grep -qE '^line [0-9]+:[0-9]+: cannot resolve import .*does_not_exist\.vibe'; then
-  echo "[selfhost-only-gate] FAIL: missing-import diagnostic did not look like a located 'cannot resolve import' message: '$mi_diag'" >&2
+  echo "[only-gate] FAIL: missing-import diagnostic did not look like a located 'cannot resolve import' message: '$mi_diag'" >&2
   exit 1
 fi
-echo "[selfhost-only-gate] missing-import diagnostic ok: $mi_diag"
+echo "[only-gate] missing-import diagnostic ok: $mi_diag"
 
 # 5. test-block regression (#594): a file with only `test {}` blocks (no entry)
 #    must compile to a valid module whose `_start` runs every test; a passing
 #    file exits clean and a failing assert traps. Guards the codegen fix that
 #    stopped exporting a nonexistent entry function (call/export index -1).
-echo "[selfhost-only-gate] 5/5 test-block compile+run regression"
+echo "[only-gate] 5/5 test-block compile+run regression"
 tdir="_build/_gate_testblock"
 rm -rf "$tdir"; mkdir -p "$tdir"
 printf 'test "ok" {\n  assert_eq(2 + 2, 4)\n}\n' > "$tdir/pass_test.vibe"
@@ -206,18 +206,18 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/fail_test.vibe" "$tdir/fail_test.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$tdir/pass_test.wasm" ] || [ ! -s "$tdir/fail_test.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: test-block compile produced no wasm" >&2; exit 1
+  echo "[only-gate] FAIL: test-block compile produced no wasm" >&2; exit 1
 fi
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
     --invoke _start "$tdir/pass_test.wasm" >/dev/null 2>&1; then
-  echo "[selfhost-only-gate] FAIL: passing test file did not run clean" >&2; exit 1
+  echo "[only-gate] FAIL: passing test file did not run clean" >&2; exit 1
 fi
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
     --invoke _start "$tdir/fail_test.wasm" >/dev/null 2>&1; then
-  echo "[selfhost-only-gate] FAIL: failing test file did not trap" >&2; exit 1
+  echo "[only-gate] FAIL: failing test file did not trap" >&2; exit 1
 fi
 rm -rf "$tdir"
-echo "[selfhost-only-gate] test-block regression ok"
+echo "[only-gate] test-block regression ok"
 
 # 6. normalize regression (#594): `vibe normalize` (VIBE_NORMALIZE=1) canonicalizes
 #    a source file — DCE from exported roots + section layout — via the
@@ -225,7 +225,7 @@ echo "[selfhost-only-gate] test-block regression ok"
 #    idempotent. The flat selfbuild source strips imports, so the fixpoint
 #    above does not exercise the normalize entry; assert it directly.
 #    (Module blocks were removed in #728; flatten coverage retired with them.)
-echo "[selfhost-only-gate] 6/6 normalize compile+run regression"
+echo "[only-gate] 6/6 normalize compile+run regression"
 ndir="_build/_gate_normalize"
 rm -rf "$ndir"; mkdir -p "$ndir"
 printf 'let dead: () -> Int = () -> { 0 }\nlet helper: () -> Int = () -> { 1 }\nexport let run: () -> Int = () -> { helper() }\n' > "$ndir/in.vibe"
@@ -233,11 +233,11 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ndir/in.vibe" "$ndir/out.vibe" >/dev/null 2>&1
 if [ ! -s "$ndir/out.vibe" ]; then
-  echo "[selfhost-only-gate] FAIL: normalize produced no output" >&2; exit 1
+  echo "[only-gate] FAIL: normalize produced no output" >&2; exit 1
 fi
 # `dead` must be eliminated; `helper` (reached from the exported `run`) kept.
 if grep -q "dead" "$ndir/out.vibe" || ! grep -q "helper" "$ndir/out.vibe"; then
-  echo "[selfhost-only-gate] FAIL: normalize DCE incorrect" >&2
+  echo "[only-gate] FAIL: normalize DCE incorrect" >&2
   cat "$ndir/out.vibe" >&2; exit 1
 fi
 # Removed/guarded syntax must be refused by the CURRENT stage2 (the committed
@@ -248,7 +248,7 @@ if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ndir/reject_module.vibe" "$ndir/reject_module.out.vibe" >/dev/null 2>&1 \
   && [ -s "$ndir/reject_module.out.vibe" ]; then
-  echo "[selfhost-only-gate] FAIL: module-block source was not rejected (#728)" >&2; exit 1
+  echo "[only-gate] FAIL: module-block source was not rejected (#728)" >&2; exit 1
 fi
 # fn round-trip (ADR-0064 #727): normalize must KEEP `fn` declarations —
 # including the `where` contract — in fn form (SFnDecl + printer support),
@@ -258,21 +258,21 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ndir/keep_fn.vibe" "$ndir/keep_fn.out.vibe" >/dev/null 2>&1
 if [ ! -s "$ndir/keep_fn.out.vibe" ]; then
-  echo "[selfhost-only-gate] FAIL: fn-bearing source was not normalized (#727)" >&2; exit 1
+  echo "[only-gate] FAIL: fn-bearing source was not normalized (#727)" >&2; exit 1
 fi
 if ! grep -q "fn checked_inc" "$ndir/keep_fn.out.vibe" \
   || ! grep -q "fn run" "$ndir/keep_fn.out.vibe" \
   || ! grep -q "where { requires:" "$ndir/keep_fn.out.vibe" \
   || ! grep -q "ensures:" "$ndir/keep_fn.out.vibe" \
   || grep -q "let rec checked_inc" "$ndir/keep_fn.out.vibe"; then
-  echo "[selfhost-only-gate] FAIL: normalize did not keep the fn + where form (#727)" >&2
+  echo "[only-gate] FAIL: normalize did not keep the fn + where form (#727)" >&2
   cat "$ndir/keep_fn.out.vibe" >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ndir/keep_fn.out.vibe" "$ndir/keep_fn.out2.vibe" >/dev/null 2>&1
 if ! cmp -s "$ndir/keep_fn.out.vibe" "$ndir/keep_fn.out2.vibe"; then
-  echo "[selfhost-only-gate] FAIL: fn normalize not idempotent (#727)" >&2
+  echo "[only-gate] FAIL: fn normalize not idempotent (#727)" >&2
   diff "$ndir/keep_fn.out.vibe" "$ndir/keep_fn.out2.vibe" >&2 || true; exit 1
 fi
 # Idempotency: normalize(normalize(x)) == normalize(x).
@@ -280,7 +280,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ndir/out.vibe" "$ndir/out2.vibe" >/dev/null 2>&1
 if ! cmp -s "$ndir/out.vibe" "$ndir/out2.vibe"; then
-  echo "[selfhost-only-gate] FAIL: normalize not idempotent" >&2; exit 1
+  echo "[only-gate] FAIL: normalize not idempotent" >&2; exit 1
 fi
 # Normalized output must still typecheck: compiling a copy with an entry
 # must succeed.
@@ -290,17 +290,17 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ndir/compile.vibe" "$ndir/out.wasm" _start >/dev/null 2>&1
 if [ ! -s "$ndir/out.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: normalized output does not compile" >&2
+  echo "[only-gate] FAIL: normalized output does not compile" >&2
   cat "$ndir/compile.vibe" >&2; exit 1
 fi
 rm -rf "$ndir"
-echo "[selfhost-only-gate] normalize regression ok"
+echo "[only-gate] normalize regression ok"
 
 # 6b. contract package regression (#729): an index.vibei contract package must
 #     resolve via a bare directory import (conformance-check + facade desugar,
 #     end to end through the current stage2), and its internals must NOT be
 #     importable from outside the boundary (incoming enforcement, Phase C-3).
-echo "[selfhost-only-gate] 6b contract package + boundary regression (#729)"
+echo "[only-gate] 6b contract package + boundary regression (#729)"
 cdir="_build/_gate_contract"
 rm -rf "$cdir"; mkdir -p "$cdir/pkg"
 printf 'import ./impl.vibe {}\nfn add(x: Int, y: Int) -> Int\n' > "$cdir/pkg/index.vibei"
@@ -316,11 +316,11 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir/ok.vibe" "$cdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$cdir/ok.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: contract package import did not compile (#729)" >&2
+  echo "[only-gate] FAIL: contract package import did not compile (#729)" >&2
   cat "$cdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 if [ -s "$cdir/ok.wasm.diag" ]; then
-  echo "[selfhost-only-gate] FAIL: cold contract compile left a stale .diag beside a valid wasm (#749 first-pass ingestion failure)" >&2
+  echo "[only-gate] FAIL: cold contract compile left a stale .diag beside a valid wasm (#749 first-pass ingestion failure)" >&2
   cat "$cdir/ok.wasm.diag" >&2; exit 1
 fi
 printf 'import ./pkg/impl.vibe { add }\nexport let _start: () -> Int = () -> { add(40, 2) }\n' > "$cdir/bad.vibe"
@@ -328,14 +328,14 @@ if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir/bad.vibe" "$cdir/bad.wasm" _start >/dev/null 2>&1 \
   && [ -s "$cdir/bad.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: package-internal import crossed the boundary (#729)" >&2; exit 1
+  echo "[only-gate] FAIL: package-internal import crossed the boundary (#729)" >&2; exit 1
 fi
 if ! grep -q "package boundary" "$cdir/bad.wasm.diag" 2>/dev/null; then
-  echo "[selfhost-only-gate] FAIL: boundary rejection lacks the expected diagnostic (#729)" >&2
+  echo "[only-gate] FAIL: boundary rejection lacks the expected diagnostic (#729)" >&2
   cat "$cdir/bad.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 rm -rf "$cdir"
-echo "[selfhost-only-gate] contract package + boundary regression ok"
+echo "[only-gate] contract package + boundary regression ok"
 
 # 6b2. generic-struct contract arity regression (#829/#841 follow-up):
 #      collect_impl_type_defs used to hardcode a struct's type-parameter
@@ -345,7 +345,7 @@ echo "[selfhost-only-gate] contract package + boundary regression ok"
 #      around this by writing a nullary `type Box`, which is now WRONG and
 #      must itself be rejected — the under-declared arity 0 no longer
 #      matches the impl's real arity 1).
-echo "[selfhost-only-gate] 6b2 generic-struct contract arity regression (#829/#841)"
+echo "[only-gate] 6b2 generic-struct contract arity regression (#829/#841)"
 gsdir="_build/_gate_genstruct_contract"
 rm -rf "$gsdir"; mkdir -p "$gsdir/pkg"
 printf 'export struct Box[T] {\n  v: T\n}\n\nexport fn Box::wrap[T](v: T) -> Box[T] {\n  Box::{ v: v }\n}\n' > "$gsdir/pkg/box.vibe"
@@ -355,7 +355,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$gsdir/ok.vibe" "$gsdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$gsdir/ok.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: contract-correct 'type Box[T]' arity was rejected (over-reject)" >&2
+  echo "[only-gate] FAIL: contract-correct 'type Box[T]' arity was rejected (over-reject)" >&2
   cat "$gsdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 printf 'version 0.0.1\nimport ./box.vibe {}\ntype Box\nfn Box::wrap[T](v: T) -> Box[T]\n' > "$gsdir/pkg/index.vibei"
@@ -363,14 +363,14 @@ if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$gsdir/ok.vibe" "$gsdir/bad.wasm" _start >/dev/null 2>&1 \
   && [ -s "$gsdir/bad.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: nullary 'type Box' contract for a struct Box[T] impl compiled (arity under-declaration not caught)" >&2; exit 1
+  echo "[only-gate] FAIL: nullary 'type Box' contract for a struct Box[T] impl compiled (arity under-declaration not caught)" >&2; exit 1
 fi
 if ! grep -q "arity mismatch" "$gsdir/bad.wasm.diag" 2>/dev/null; then
-  echo "[selfhost-only-gate] FAIL: struct arity mismatch rejection lacks the expected diagnostic" >&2
+  echo "[only-gate] FAIL: struct arity mismatch rejection lacks the expected diagnostic" >&2
   cat "$gsdir/bad.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 rm -rf "$gsdir"
-echo "[selfhost-only-gate] generic-struct contract arity regression ok"
+echo "[only-gate] generic-struct contract arity regression ok"
 
 # 6b3. cross-package contract import resolution regression (#842): a bare
 #      directory-style import inside an index.vibei CONTRACT (not just an
@@ -382,7 +382,7 @@ echo "[selfhost-only-gate] generic-struct contract arity regression ok"
 #      instead of the #841-era workaround (referencing the bare name with no
 #      import at all); the cross-package .vibei target must also be routed
 #      through the normal facade desugar (not parsed as raw contract grammar).
-echo "[selfhost-only-gate] 6b3 cross-package contract import resolution regression (#842)"
+echo "[only-gate] 6b3 cross-package contract import resolution regression (#842)"
 xpdir="_build/_gate_contract_crosspkg"
 rm -rf "$xpdir"; mkdir -p "$xpdir/pkgb" "$xpdir/pkga"
 printf 'import ./impl.vibe {}\nopaque type X\nfn make(v: Int) -> X\nfn value(x: X) -> Int\n' > "$xpdir/pkgb/index.vibei"
@@ -394,21 +394,21 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xpdir/ok.vibe" "$xpdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$xpdir/ok.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: .vibei contract's cross-package directory import (../pkgb) did not resolve (#842)" >&2
+  echo "[only-gate] FAIL: .vibei contract's cross-package directory import (../pkgb) did not resolve (#842)" >&2
   cat "$xpdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 xpres="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$xpdir/ok.wasm" 2>/dev/null | tr -dc '0-9')"
 rm -rf "$xpdir"
 if [ "$xpres" != "42" ]; then
-  echo "[selfhost-only-gate] FAIL: cross-package contract import sample returned '$xpres' (expected 42)" >&2
+  echo "[only-gate] FAIL: cross-package contract import sample returned '$xpres' (expected 42)" >&2
   exit 1
 fi
-echo "[selfhost-only-gate] cross-package contract import resolution regression ok"
+echo "[only-gate] cross-package contract import resolution regression ok"
 
 # 6c. content-addressed store regression (#730 D-2): `vibe hash` prints a
 #     store package's pin; a require-pinned `import @scope/name` resolves
 #     through .vibe/store/ with hash verification; a wrong pin is rejected.
-echo "[selfhost-only-gate] 6c content-addressed store regression (#730)"
+echo "[only-gate] 6c content-addressed store regression (#730)"
 sdir=".vibe/store/@gate/d2pkg"
 rm -rf ".vibe/store/@gate"; mkdir -p "$sdir"
 printf 'import ./impl.vibe {}\nfn triple(x: Int) -> Int\n' > "$sdir/index.vibei"
@@ -420,7 +420,7 @@ VIBE_HASH=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
   "$sdir/index.vibei" "$cdir2/hash.out" __no_entry__ >/dev/null 2>&1 || true
 pin="$(grep '^package ' "$cdir2/hash.out" 2>/dev/null | cut -d' ' -f2)"
 if [ -z "$pin" ]; then
-  echo "[selfhost-only-gate] FAIL: vibe hash produced no package pin (#730)" >&2
+  echo "[only-gate] FAIL: vibe hash produced no package pin (#730)" >&2
   cat "$cdir2/hash.out.diag" 2>/dev/null >&2; exit 1
 fi
 printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' "$pin" > "$cdir2/ok.vibe"
@@ -428,7 +428,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir2/ok.vibe" "$cdir2/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$cdir2/ok.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: pinned store import did not compile (#730)" >&2
+  echo "[only-gate] FAIL: pinned store import did not compile (#730)" >&2
   cat "$cdir2/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 printf 'require @gate/d2pkg 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' > "$cdir2/bad.vibe"
@@ -436,10 +436,10 @@ if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir2/bad.vibe" "$cdir2/bad.wasm" _start >/dev/null 2>&1 \
   && [ -s "$cdir2/bad.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: wrong pin was not rejected (#730)" >&2; exit 1
+  echo "[only-gate] FAIL: wrong pin was not rejected (#730)" >&2; exit 1
 fi
 if ! grep -q "pin mismatch" "$cdir2/bad.wasm.diag" 2>/dev/null; then
-  echo "[selfhost-only-gate] FAIL: pin rejection lacks the expected diagnostic (#730)" >&2
+  echo "[only-gate] FAIL: pin rejection lacks the expected diagnostic (#730)" >&2
   cat "$cdir2/bad.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 # D-3: an unpinned require refuses to build; VIBE_FILL_PINS completes it
@@ -449,31 +449,31 @@ if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir2/unpinned.vibe" "$cdir2/unpinned.wasm" _start >/dev/null 2>&1 \
   && [ -s "$cdir2/unpinned.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: unpinned require was not rejected (#730 D-3)" >&2; exit 1
+  echo "[only-gate] FAIL: unpinned require was not rejected (#730 D-3)" >&2; exit 1
 fi
 VIBE_FILL_PINS=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir2/unpinned.vibe" "$cdir2/filled.vibe" __no_entry__ >/dev/null 2>&1 || true
 if ! grep -q "= #pkg:sha1:" "$cdir2/filled.vibe" 2>/dev/null; then
-  echo "[selfhost-only-gate] FAIL: VIBE_FILL_PINS did not insert the pin (#730 D-3)" >&2
+  echo "[only-gate] FAIL: VIBE_FILL_PINS did not insert the pin (#730 D-3)" >&2
   cat "$cdir2/filled.vibe.diag" 2>/dev/null >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir2/filled.vibe" "$cdir2/filled.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$cdir2/filled.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: pin-filled source did not compile (#730 D-3)" >&2
+  echo "[only-gate] FAIL: pin-filled source did not compile (#730 D-3)" >&2
   cat "$cdir2/filled.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 VIBE_NORMALIZE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir2/filled.vibe" "$cdir2/norm.vibe" >/dev/null 2>&1 || true
 if ! head -1 "$cdir2/norm.vibe" 2>/dev/null | grep -q "^require @gate/d2pkg 1.0.0 = #pkg:sha1:"; then
-  echo "[selfhost-only-gate] FAIL: normalize did not re-emit the require pin line (#730 D-3)" >&2
+  echo "[only-gate] FAIL: normalize did not re-emit the require pin line (#730 D-3)" >&2
   head -3 "$cdir2/norm.vibe" 2>/dev/null >&2; exit 1
 fi
 rm -rf ".vibe/store/@gate" "$cdir2"
-echo "[selfhost-only-gate] content-addressed store regression ok"
+echo "[only-gate] content-addressed store regression ok"
 
 # 6h. workspace lib/ package resolution (#751, ADR-0065): `@scope/name`
 #     resolves through lib/@scope/name/index.vibei WITHOUT a require pin
@@ -481,7 +481,7 @@ echo "[selfhost-only-gate] content-addressed store regression ok"
 #     when present, is still the truth: a wrong pin against the lib/ copy is
 #     rejected. The package below declares no impl imports, so this also
 #     exercises sibling auto-discovery (#730) through the lib/ path.
-echo "[selfhost-only-gate] 6h workspace lib/ package resolution (#751)"
+echo "[only-gate] 6h workspace lib/ package resolution (#751)"
 lpkg="lib/@gate751/greet"
 rm -rf "lib/@gate751"; mkdir -p "$lpkg"
 printf 'fn greet_n(x: Int) -> Int\n' > "$lpkg/index.vibei"
@@ -493,7 +493,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ldir/ok.vibe" "$ldir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$ldir/ok.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: unpinned lib/ package import did not compile (#751)" >&2
+  echo "[only-gate] FAIL: unpinned lib/ package import did not compile (#751)" >&2
   cat "$ldir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 printf 'require @gate751/greet 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(40) }\n' > "$ldir/bad.vibe"
@@ -501,14 +501,14 @@ if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ldir/bad.vibe" "$ldir/bad.wasm" _start >/dev/null 2>&1 \
   && [ -s "$ldir/bad.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: wrong pin against a lib/ copy was not rejected (#751)" >&2; exit 1
+  echo "[only-gate] FAIL: wrong pin against a lib/ copy was not rejected (#751)" >&2; exit 1
 fi
 if ! grep -q "pin mismatch" "$ldir/bad.wasm.diag" 2>/dev/null; then
-  echo "[selfhost-only-gate] FAIL: lib/ pin rejection lacks the expected diagnostic (#751)" >&2
+  echo "[only-gate] FAIL: lib/ pin rejection lacks the expected diagnostic (#751)" >&2
   cat "$ldir/bad.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 rm -rf "lib/@gate751" "$ldir"
-echo "[selfhost-only-gate] workspace lib/ package resolution ok"
+echo "[only-gate] workspace lib/ package resolution ok"
 
 # 6i. VIBE_LIB external roots + freeze (#751, ADR-0065): an @scope/name
 #     package living OUTSIDE the workspace resolves through a VIBE_LIB root
@@ -519,7 +519,7 @@ echo "[selfhost-only-gate] workspace lib/ package resolution ok"
 #     file: the persistent header/dep caches key on content, and the SAME
 #     content under a different VIBE_LIB would replay the previous
 #     resolution.
-echo "[selfhost-only-gate] 6i VIBE_LIB external roots + freeze (#751)"
+echo "[only-gate] 6i VIBE_LIB external roots + freeze (#751)"
 xroot="$(mktemp -d)"
 xpkg="$xroot/@gate751x/echo"
 mkdir -p "$xpkg"
@@ -533,7 +533,7 @@ if VIBE_LIB="$xroot/does-not-exist" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/miss.vibe" "$xdir/miss.wasm" _start >/dev/null 2>&1 \
   && [ -s "$xdir/miss.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: external package resolved without a VIBE_LIB root (#751)" >&2; exit 1
+  echo "[only-gate] FAIL: external package resolved without a VIBE_LIB root (#751)" >&2; exit 1
 fi
 # (2) a ":"-separated VIBE_LIB resolves through the first root that has the
 #     package (missing roots skipped); the compiled program runs.
@@ -542,12 +542,12 @@ VIBE_LIB="$xroot/does-not-exist:$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COM
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/ext.vibe" "$xdir/ext.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$xdir/ext.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: VIBE_LIB root resolution did not compile (#751)" >&2
+  echo "[only-gate] FAIL: VIBE_LIB root resolution did not compile (#751)" >&2
   cat "$xdir/ext.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 ext_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$xdir/ext.wasm" 2>/dev/null | tail -1)"
 if [ "$ext_out" != "42" ]; then
-  echo "[selfhost-only-gate] FAIL: VIBE_LIB-resolved package returned '$ext_out' (want 42) (#751)" >&2; exit 1
+  echo "[only-gate] FAIL: VIBE_LIB-resolved package returned '$ext_out' (want 42) (#751)" >&2; exit 1
 fi
 # (3) the workspace lib/ copy wins over the external root
 mkdir -p "lib/@gate751x/echo"
@@ -558,12 +558,12 @@ VIBE_LIB="$xroot/does-not-exist:$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COM
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/ws.vibe" "$xdir/ws.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$xdir/ws.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: workspace-precedence consumer did not compile (#751)" >&2
+  echo "[only-gate] FAIL: workspace-precedence consumer did not compile (#751)" >&2
   cat "$xdir/ws.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 ws_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$xdir/ws.wasm" 2>/dev/null | tail -1)"
 if [ "$ws_out" != "43" ]; then
-  echo "[selfhost-only-gate] FAIL: workspace lib/ did not win over VIBE_LIB root (got '$ws_out', want 43) (#751)" >&2; exit 1
+  echo "[only-gate] FAIL: workspace lib/ did not win over VIBE_LIB root (got '$ws_out', want 43) (#751)" >&2; exit 1
 fi
 # (4) freeze: VIBE_REQUIRE_PINS=1 demands a pin for any dev-mode lib lane
 printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 + 0 + 0 }\n' > "$xdir/frz.vibe"
@@ -571,10 +571,10 @@ if VIBE_REQUIRE_PINS=1 VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_CO
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/frz.vibe" "$xdir/frz.wasm" _start >/dev/null 2>&1 \
   && [ -s "$xdir/frz.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: pin-less lib resolution was allowed under VIBE_REQUIRE_PINS=1 (#751)" >&2; exit 1
+  echo "[only-gate] FAIL: pin-less lib resolution was allowed under VIBE_REQUIRE_PINS=1 (#751)" >&2; exit 1
 fi
 if ! grep -q "pin required" "$xdir/frz.wasm.diag" 2>/dev/null; then
-  echo "[selfhost-only-gate] FAIL: freeze rejection lacks the expected diagnostic (#751)" >&2
+  echo "[only-gate] FAIL: freeze rejection lacks the expected diagnostic (#751)" >&2
   cat "$xdir/frz.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 # (5) #758 review (P1): a resolved graph cached under one environment must
@@ -589,27 +589,27 @@ VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/replay.vibe" "$xdir/replay1.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$xdir/replay1.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: replay warm-up compile failed (#758)" >&2
+  echo "[only-gate] FAIL: replay warm-up compile failed (#758)" >&2
   cat "$xdir/replay1.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 if VIBE_LIB="$xroot/does-not-exist" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/replay.vibe" "$xdir/replay2.wasm" _start >/dev/null 2>&1 \
   && [ -s "$xdir/replay2.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: warm cache replayed a removed VIBE_LIB root (#758)" >&2; exit 1
+  echo "[only-gate] FAIL: warm cache replayed a removed VIBE_LIB root (#758)" >&2; exit 1
 fi
 if VIBE_REQUIRE_PINS=1 VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/replay.vibe" "$xdir/replay3.wasm" _start >/dev/null 2>&1 \
   && [ -s "$xdir/replay3.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: warm cache bypassed VIBE_REQUIRE_PINS=1 (#758)" >&2; exit 1
+  echo "[only-gate] FAIL: warm cache bypassed VIBE_REQUIRE_PINS=1 (#758)" >&2; exit 1
 fi
 if ! grep -q "pin required" "$xdir/replay3.wasm.diag" 2>/dev/null; then
-  echo "[selfhost-only-gate] FAIL: freeze-under-warm-cache rejection lacks the expected diagnostic (#758)" >&2
+  echo "[only-gate] FAIL: freeze-under-warm-cache rejection lacks the expected diagnostic (#758)" >&2
   cat "$xdir/replay3.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 rm -rf "$xdir" "$xroot"
-echo "[selfhost-only-gate] VIBE_LIB external roots + freeze ok"
+echo "[only-gate] VIBE_LIB external roots + freeze ok"
 
 # 6j. distribution pipeline (#754, ADR-0065 Phase 4): publish (version
 #     directive + semver gate) -> fetch cache (CAS keyed by package hash +
@@ -617,7 +617,7 @@ echo "[selfhost-only-gate] VIBE_LIB external roots + freeze ok"
 #     root) -> name resolution -> build&run; then the pinned store lane
 #     under freeze; then the two rejections that make version->hash an
 #     immutable mapping (same-version republish; dishonest semver claim).
-echo "[selfhost-only-gate] 6j distribution pipeline: publish/cache/materialize (#754)"
+echo "[only-gate] 6j distribution pipeline: publish/cache/materialize (#754)"
 jhome="$(mktemp -d)"
 jsrc="$jhome/src/@gate754/mathx"
 mkdir -p "$jsrc"
@@ -626,14 +626,14 @@ printf 'export fn quad(x: Int) -> Int { x * 4 }\n' > "$jsrc/impl.vibe"
 jdir="_build/_gate_pkg754"
 rm -rf "$jdir" ".vibe/store/@gate754"; mkdir -p "$jdir"
 if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub1.log" 2>&1; then
-  echo "[selfhost-only-gate] FAIL: publish of @gate754/mathx@1.0.0 failed (#754)" >&2
+  echo "[only-gate] FAIL: publish of @gate754/mathx@1.0.0 failed (#754)" >&2
   cat "$jdir/pub1.log" >&2; exit 1
 fi
 if ! grep -q "@gate754/mathx@1.0.0" "$jhome/cache/versions.tsv" 2>/dev/null; then
-  echo "[selfhost-only-gate] FAIL: publish did not record the version mapping (#754)" >&2; exit 1
+  echo "[only-gate] FAIL: publish did not record the version mapping (#754)" >&2; exit 1
 fi
 if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate754/mathx@1.0.0" > "$jdir/inst1.log" 2>&1; then
-  echo "[selfhost-only-gate] FAIL: install/materialize into VIBE_HOME/lib failed (#754)" >&2
+  echo "[only-gate] FAIL: install/materialize into VIBE_HOME/lib failed (#754)" >&2
   cat "$jdir/inst1.log" >&2; exit 1
 fi
 printf 'import @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(11) }\n' > "$jdir/use.vibe"
@@ -641,16 +641,16 @@ VIBE_HOME="$jhome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_AB
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$jdir/use.vibe" "$jdir/use.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$jdir/use.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: materialized package did not resolve via VIBE_HOME default root (#754)" >&2
+  echo "[only-gate] FAIL: materialized package did not resolve via VIBE_HOME default root (#754)" >&2
   cat "$jdir/use.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 juse_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$jdir/use.wasm" 2>/dev/null | tail -1)"
 if [ "$juse_out" != "44" ]; then
-  echo "[selfhost-only-gate] FAIL: materialized package returned '$juse_out' (want 44) (#754)" >&2; exit 1
+  echo "[only-gate] FAIL: materialized package returned '$juse_out' (want 44) (#754)" >&2; exit 1
 fi
 # pinned store lane under freeze: install --store, consumer carries the pin
 if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate754/mathx@1.0.0" --store > "$jdir/inst2.log" 2>&1; then
-  echo "[selfhost-only-gate] FAIL: install --store failed (#754)" >&2
+  echo "[only-gate] FAIL: install --store failed (#754)" >&2
   cat "$jdir/inst2.log" >&2; exit 1
 fi
 jhash="$(awk -F'\t' '$1 == "@gate754/mathx@1.0.0" { print $2 }' "$jhome/cache/versions.tsv")"
@@ -659,32 +659,32 @@ VIBE_REQUIRE_PINS=1 VIBE_HOME="$jhome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMP
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$jdir/pinned.vibe" "$jdir/pinned.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$jdir/pinned.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: pinned store build under VIBE_REQUIRE_PINS=1 failed (#754)" >&2
+  echo "[only-gate] FAIL: pinned store build under VIBE_REQUIRE_PINS=1 failed (#754)" >&2
   cat "$jdir/pinned.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 # same-version republish with different content must be rejected
 printf 'export fn quad(x: Int) -> Int { x * 5 }\n' > "$jsrc/impl.vibe"
 if VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub2.log" 2>&1; then
-  echo "[selfhost-only-gate] FAIL: same-version republish was accepted (#754)" >&2; exit 1
+  echo "[only-gate] FAIL: same-version republish was accepted (#754)" >&2; exit 1
 fi
 if ! grep -q "same-version republish rejected" "$jdir/pub2.log"; then
-  echo "[selfhost-only-gate] FAIL: republish rejection lacks the expected message (#754)" >&2
+  echo "[only-gate] FAIL: republish rejection lacks the expected message (#754)" >&2
   cat "$jdir/pub2.log" >&2; exit 1
 fi
 # dishonest bump: surface grows but only the patch level is bumped
 printf 'version 1.0.1\n\nfn quad(x: Int) -> Int\nfn oct(x: Int) -> Int\n' > "$jsrc/index.vibei"
 printf 'export fn quad(x: Int) -> Int { x * 4 }\nexport fn oct(x: Int) -> Int { x * 8 }\n' > "$jsrc/impl.vibe"
 if VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub3.log" 2>&1; then
-  echo "[selfhost-only-gate] FAIL: dishonest patch bump was accepted by publish (#754)" >&2; exit 1
+  echo "[only-gate] FAIL: dishonest patch bump was accepted by publish (#754)" >&2; exit 1
 fi
 # honest minor bump passes (versions come from the directives, no env)
 printf 'version 1.1.0\n\nfn quad(x: Int) -> Int\nfn oct(x: Int) -> Int\n' > "$jsrc/index.vibei"
 if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub4.log" 2>&1; then
-  echo "[selfhost-only-gate] FAIL: honest minor bump was rejected by publish (#754)" >&2
+  echo "[only-gate] FAIL: honest minor bump was rejected by publish (#754)" >&2
   cat "$jdir/pub4.log" >&2; exit 1
 fi
 rm -rf ".vibe/store/@gate754" "$jdir" "$jhome"
-echo "[selfhost-only-gate] distribution pipeline ok"
+echo "[only-gate] distribution pipeline ok"
 
 # 6k. registry-less git resolution (#755 Phase 0): `vibe_pkg.sh add` fetches
 #     a package from a git source (github: is sugar over the same path),
@@ -693,7 +693,7 @@ echo "[selfhost-only-gate] distribution pipeline ok"
 #     (or records it trust-on-first-use). A hermetic file:// repo stands in
 #     for GitHub; the tamper step re-serves the same version with different
 #     content and must be rejected by the version->hash record.
-echo "[selfhost-only-gate] 6k registry-less git resolution (#755 Phase 0)"
+echo "[only-gate] 6k registry-less git resolution (#755 Phase 0)"
 khome="$(mktemp -d)"
 krepo="$(mktemp -d)"
 kdir="_build/_gate_pkg755"
@@ -708,15 +708,15 @@ git -C "$krepo" branch -m main
 kspec="git:file://$krepo@main#packages/@gate755/hex"
 # (1) TOFU add: fetch, record, materialize into $VIBE_HOME/lib; consumer runs
 if ! VIBE_HOME="$khome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" > "$kdir/add1.log" 2>&1; then
-  echo "[selfhost-only-gate] FAIL: git add (TOFU) failed (#755)" >&2
+  echo "[only-gate] FAIL: git add (TOFU) failed (#755)" >&2
   cat "$kdir/add1.log" >&2; exit 1
 fi
 khash="$(awk -F'\t' '$1 == "@gate755/hex@1.0.0" { print $2 }' "$khome/cache/versions.tsv")"
 if [ -z "$khash" ]; then
-  echo "[selfhost-only-gate] FAIL: git add did not record the version mapping (#755)" >&2; exit 1
+  echo "[only-gate] FAIL: git add did not record the version mapping (#755)" >&2; exit 1
 fi
 if ! grep -q "@gate755/hex@1.0.0" "$khome/cache/provenance.tsv" 2>/dev/null; then
-  echo "[selfhost-only-gate] FAIL: git add did not record provenance (#755)" >&2; exit 1
+  echo "[only-gate] FAIL: git add did not record provenance (#755)" >&2; exit 1
 fi
 printf 'import @gate755/hex { hex_n }\nexport let _start: () -> Int = () -> { hex_n(36) }\n' > "$kdir/use.vibe"
 VIBE_HOME="$khome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -724,20 +724,20 @@ VIBE_HOME="$khome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_AB
   "$kdir/use.vibe" "$kdir/use.wasm" _start >/dev/null 2>&1 || true
 kuse_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$kdir/use.wasm" 2>/dev/null | tail -1)"
 if [ "$kuse_out" != "42" ]; then
-  echo "[selfhost-only-gate] FAIL: git-added package returned '$kuse_out' (want 42) (#755)" >&2; exit 1
+  echo "[only-gate] FAIL: git-added package returned '$kuse_out' (want 42) (#755)" >&2; exit 1
 fi
 # (2) wrong expected pin rejects BEFORE any side effect (fresh home)
 khome2="$(mktemp -d)"
 if VIBE_HOME="$khome2" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" "#pkg:sha1:0000000000000000000000000000000000000000" > "$kdir/add2.log" 2>&1; then
-  echo "[selfhost-only-gate] FAIL: wrong expected pin was accepted (#755)" >&2; exit 1
+  echo "[only-gate] FAIL: wrong expected pin was accepted (#755)" >&2; exit 1
 fi
 if ! grep -q "hash mismatch" "$kdir/add2.log" || [ -f "$khome2/cache/versions.tsv" ]; then
-  echo "[selfhost-only-gate] FAIL: pin rejection is wrong or left side effects (#755)" >&2
+  echo "[only-gate] FAIL: pin rejection is wrong or left side effects (#755)" >&2
   cat "$kdir/add2.log" >&2; exit 1
 fi
 # (3) correct expected pin verifies a fresh fetch
 if ! VIBE_HOME="$khome2" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" "#$khash" > "$kdir/add3.log" 2>&1; then
-  echo "[selfhost-only-gate] FAIL: correct expected pin was rejected (#755)" >&2
+  echo "[only-gate] FAIL: correct expected pin was rejected (#755)" >&2
   cat "$kdir/add3.log" >&2; exit 1
 fi
 # (4) upstream tampers: same version, different content -> rejected by the
@@ -746,19 +746,19 @@ printf 'export fn hex_n(x: Int) -> Int { x + 7 }\n' > "$krepo/packages/@gate755/
 git -C "$krepo" add -A
 git -C "$krepo" -c user.email=gate@vibe -c user.name=gate commit -qm tamper
 if VIBE_HOME="$khome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" > "$kdir/add4.log" 2>&1; then
-  echo "[selfhost-only-gate] FAIL: tampered same-version fetch was accepted (#755)" >&2; exit 1
+  echo "[only-gate] FAIL: tampered same-version fetch was accepted (#755)" >&2; exit 1
 fi
 if ! grep -q "version->hash is immutable" "$kdir/add4.log"; then
-  echo "[selfhost-only-gate] FAIL: tamper rejection lacks the expected message (#755)" >&2
+  echo "[only-gate] FAIL: tamper rejection lacks the expected message (#755)" >&2
   cat "$kdir/add4.log" >&2; exit 1
 fi
 rm -rf "$kdir" "$khome" "$khome2" "$krepo"
-echo "[selfhost-only-gate] registry-less git resolution ok"
+echo "[only-gate] registry-less git resolution ok"
 
 # 6d. where-contract + publish-gate regression (#731 / #732): a violated
 #     requires clause traps at runtime; the publish semver gate accepts an
 #     honest bump and rejects a dishonest one.
-echo "[selfhost-only-gate] 6d where-contract + publish gate regression (#731/#732)"
+echo "[only-gate] 6d where-contract + publish gate regression (#731/#732)"
 edir="_build/_gate_ef"
 rm -rf "$edir"; mkdir -p "$edir"
 # (a) satisfied contract: requires + ensures hold, the call returns 42.
@@ -767,12 +767,12 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$edir/ok.vibe" "$edir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$edir/ok.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: satisfied where-contract program did not compile (#731)" >&2
+  echo "[only-gate] FAIL: satisfied where-contract program did not compile (#731)" >&2
   cat "$edir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 ok_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/ok.wasm" 2>/dev/null | tail -1)"
 if [ "$ok_out" != "42" ]; then
-  echo "[selfhost-only-gate] FAIL: satisfied where-contract returned '$ok_out' (want 42) (#731)" >&2; exit 1
+  echo "[only-gate] FAIL: satisfied where-contract returned '$ok_out' (want 42) (#731)" >&2; exit 1
 fi
 # (b) violated requires: entry assert traps.
 printf 'fn half_pos(x: Int) -> Int where { requires: x > 0 } { x / 2 }\nexport let _start: () -> Int = () -> { half_pos(0 - 4) }\n' > "$edir/viol.vibe"
@@ -780,11 +780,11 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$edir/viol.vibe" "$edir/viol.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$edir/viol.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: where-contract program did not compile (#731)" >&2
+  echo "[only-gate] FAIL: where-contract program did not compile (#731)" >&2
   cat "$edir/viol.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol.wasm" >/dev/null 2>&1; then
-  echo "[selfhost-only-gate] FAIL: violated requires clause did not trap (#731)" >&2; exit 1
+  echo "[only-gate] FAIL: violated requires clause did not trap (#731)" >&2; exit 1
 fi
 # (c) violated ensures: exit assert (over the `result` binding) traps.
 printf 'fn bad_dec(x: Int) -> Int where { ensures: result > x } { x - 1 }\nexport let _start: () -> Int = () -> { bad_dec(7) }\n' > "$edir/viol_ens.vibe"
@@ -792,11 +792,11 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$edir/viol_ens.vibe" "$edir/viol_ens.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$edir/viol_ens.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: ensures-contract program did not compile (#731)" >&2
+  echo "[only-gate] FAIL: ensures-contract program did not compile (#731)" >&2
   cat "$edir/viol_ens.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ens.wasm" >/dev/null 2>&1; then
-  echo "[selfhost-only-gate] FAIL: violated ensures clause did not trap (#731)" >&2; exit 1
+  echo "[only-gate] FAIL: violated ensures clause did not trap (#731)" >&2; exit 1
 fi
 printf 'fn a(x: Int) -> Int\n' > "$edir/prev.vibei"
 printf 'fn a(x: Int) -> Int\nfn b(x: Int) -> Int\n' > "$edir/next.vibei"
@@ -804,18 +804,18 @@ VIBE_PUBLISH_CHECK=1 VIBE_PUBLISH_PREV="$edir/prev.vibei" VIBE_PUBLISH_PREV_VERS
   VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$edir/next.vibei" "$edir/pub.out" __no_entry__ >/dev/null 2>&1 || true
 if ! grep -q "^ok" "$edir/pub.out" 2>/dev/null; then
-  echo "[selfhost-only-gate] FAIL: honest minor bump was rejected (#732)" >&2
+  echo "[only-gate] FAIL: honest minor bump was rejected (#732)" >&2
   cat "$edir/pub.out.diag" 2>/dev/null >&2; exit 1
 fi
 VIBE_PUBLISH_CHECK=1 VIBE_PUBLISH_PREV="$edir/prev.vibei" VIBE_PUBLISH_PREV_VERSION=1.0.0 VIBE_PUBLISH_VERSION=1.0.1 \
   VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$edir/next.vibei" "$edir/pub2.out" __no_entry__ >/dev/null 2>&1 || true
 if ! grep -q "requires minor" "$edir/pub2.out.diag" 2>/dev/null; then
-  echo "[selfhost-only-gate] FAIL: dishonest patch claim was not rejected (#732)" >&2
+  echo "[only-gate] FAIL: dishonest patch claim was not rejected (#732)" >&2
   cat "$edir/pub2.out" "$edir/pub2.out.diag" 2>/dev/null >&2; exit 1
 fi
 rm -rf "$edir"
-echo "[selfhost-only-gate] where-contract + publish gate regression ok"
+echo "[only-gate] where-contract + publish gate regression ok"
 
 # (6e retired by #741: the vendored lib/@vibe/compiler/cache/sha1.vibe twin was
 # deleted — the compiler consumes lib/@vibe/core through the contract import,
@@ -827,16 +827,16 @@ echo "[selfhost-only-gate] where-contract + publish gate regression ok"
 #     output, so core source changes never stale this step. Complements 6c
 #     (synthetic packages) with the shipped package: 82-decl contract,
 #     bodyless `type` re-exports, multi-impl any-match conformance.
-echo "[selfhost-only-gate] 6f @vibe/core store-install E2E"
+echo "[only-gate] 6f @vibe/core store-install E2E"
 cdir6f="_build/_gate_core_store"
 rm -rf "$cdir6f" ".vibe/store/@vibe/core"; mkdir -p "$cdir6f"
 if ! VIBE_CORE_CLI_WASM="$stage2_wasm" bash scripts/vibe_core_install.sh > "$cdir6f/install.out" 2>&1; then
-  echo "[selfhost-only-gate] FAIL: vibe_core_install.sh failed" >&2
+  echo "[only-gate] FAIL: vibe_core_install.sh failed" >&2
   cat "$cdir6f/install.out" >&2; exit 1
 fi
 core_pin="$(grep '^package ' "$cdir6f/install.out" | cut -d' ' -f2)"
 if [ -z "$core_pin" ]; then
-  echo "[selfhost-only-gate] FAIL: install printed no package pin" >&2
+  echo "[only-gate] FAIL: install printed no package pin" >&2
   cat "$cdir6f/install.out" >&2; exit 1
 fi
 cat > "$cdir6f/consumer.vibe" <<EOF
@@ -861,19 +861,19 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir6f/consumer.vibe" "$cdir6f/consumer.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$cdir6f/consumer.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: pinned @vibe/core consumer did not compile" >&2
+  echo "[only-gate] FAIL: pinned @vibe/core consumer did not compile" >&2
   cat "$cdir6f/consumer.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$cdir6f/consumer.wasm" >/dev/null 2>&1; then
-  echo "[selfhost-only-gate] FAIL: @vibe/core consumer trapped at runtime" >&2; exit 1
+  echo "[only-gate] FAIL: @vibe/core consumer trapped at runtime" >&2; exit 1
 fi
 rm -rf "$cdir6f" ".vibe/store/@vibe/core"
-echo "[selfhost-only-gate] @vibe/core store-install E2E ok"
+echo "[only-gate] @vibe/core store-install E2E ok"
 
 # 7. literal sub-pattern regression (#603): a literal (PInt/PString) argument of a
 #    constructor pattern must be tested, not just the tag — `I("x")` must not
 #    match `I("y")`, `I(1)` must not match `I(2)`. Guards the match-codegen fix.
-echo "[selfhost-only-gate] 7/7 literal sub-pattern regression"
+echo "[only-gate] 7/7 literal sub-pattern regression"
 pdir="_build/_gate_litpat"
 rm -rf "$pdir"; mkdir -p "$pdir"
 cat > "$pdir/litpat.vibe" <<'EOF'
@@ -896,16 +896,16 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pdir/litpat.vibe" "$pdir/litpat.wasm" _start >/dev/null 2>&1
 if [ ! -s "$pdir/litpat.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: literal sub-pattern program did not compile" >&2; exit 1
+  echo "[only-gate] FAIL: literal sub-pattern program did not compile" >&2; exit 1
 fi
 litpat_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$pdir/litpat.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$litpat_out" != "62" ]; then
-  echo "[selfhost-only-gate] FAIL: literal sub-pattern mismatch (got '$litpat_out', want 62 -> #603 regressed)" >&2
+  echo "[only-gate] FAIL: literal sub-pattern mismatch (got '$litpat_out', want 62 -> #603 regressed)" >&2
   exit 1
 fi
 rm -rf "$pdir"
-echo "[selfhost-only-gate] literal sub-pattern regression ok"
+echo "[only-gate] literal sub-pattern regression ok"
 
 # 8. labeled-param round-trip regression (#604/#606): normalizing a function
 #    with labeled (`x~`) / optional (`x?`) parameters must preserve the parameter
@@ -914,7 +914,7 @@ echo "[selfhost-only-gate] literal sub-pattern regression ok"
 #    pointer (`(1285664100319233~)`), and the #604 mitigation routed around it
 #    with `String::concat`. With the root fix the interpolation form is correct,
 #    so this guards the root fix directly. The result must still compile + run.
-echo "[selfhost-only-gate] 8/8 labeled-param round-trip regression"
+echo "[only-gate] 8/8 labeled-param round-trip regression"
 ldir="_build/_gate_labeled"
 rm -rf "$ldir"; mkdir -p "$ldir"
 printf 'let sum: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }\nexport let run: () -> Int = () -> { sum(x=1, y=2) }\nexport { run }\n' > "$ldir/in.vibe"
@@ -922,11 +922,11 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ldir/in.vibe" "$ldir/out.vibe" >/dev/null 2>&1
 if [ ! -s "$ldir/out.vibe" ]; then
-  echo "[selfhost-only-gate] FAIL: labeled-param normalize produced no output" >&2; exit 1
+  echo "[only-gate] FAIL: labeled-param normalize produced no output" >&2; exit 1
 fi
 # Param names must survive verbatim; a digit before `~` means the gensym bug is back.
 if ! grep -q "(x~, y~)" "$ldir/out.vibe" || grep -Eq "[0-9]+~" "$ldir/out.vibe"; then
-  echo "[selfhost-only-gate] FAIL: labeled param names mangled (#604 regressed)" >&2
+  echo "[only-gate] FAIL: labeled param names mangled (#604 regressed)" >&2
   cat "$ldir/out.vibe" >&2; exit 1
 fi
 # The normalized output must still compile + run.
@@ -938,16 +938,16 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
 labeled_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$ldir/out.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$labeled_out" != "3" ]; then
-  echo "[selfhost-only-gate] FAIL: normalized labeled-param output did not compile/run to 3 (got '$labeled_out')" >&2
+  echo "[only-gate] FAIL: normalized labeled-param output did not compile/run to 3 (got '$labeled_out')" >&2
   cat "$ldir/compile.vibe" >&2; exit 1
 fi
 rm -rf "$ldir"
-echo "[selfhost-only-gate] labeled-param round-trip regression ok"
+echo "[only-gate] labeled-param round-trip regression ok"
 
 # 9. constant-folding regression (#594): `vibe normalize` folds `+ - *` over int
 #    literals. The folded value must replace the expression and the result must
 #    compile + run unchanged.
-echo "[selfhost-only-gate] 9/9 constant-folding regression"
+echo "[only-gate] 9/9 constant-folding regression"
 fdir="_build/_gate_fold"
 rm -rf "$fdir"; mkdir -p "$fdir"
 printf 'let x = 40 + 2 * 10\nexport let run: () -> Int = () -> { x }\nexport { run }\n' > "$fdir/in.vibe"
@@ -956,7 +956,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   "$fdir/in.vibe" "$fdir/out.vibe" >/dev/null 2>&1
 # 40 + 2*10 = 60; the arithmetic must be gone and `60` present.
 if ! grep -q "let x: Int = 60" "$fdir/out.vibe" || grep -q "40 + 2" "$fdir/out.vibe"; then
-  echo "[selfhost-only-gate] FAIL: constant folding incorrect" >&2
+  echo "[only-gate] FAIL: constant folding incorrect" >&2
   cat "$fdir/out.vibe" >&2; exit 1
 fi
 cp "$fdir/out.vibe" "$fdir/compile.vibe"
@@ -967,10 +967,10 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
 fold_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$fdir/out.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$fold_out" != "60" ]; then
-  echo "[selfhost-only-gate] FAIL: folded program did not run to 60 (got '$fold_out')" >&2; exit 1
+  echo "[only-gate] FAIL: folded program did not run to 60 (got '$fold_out')" >&2; exit 1
 fi
 rm -rf "$fdir"
-echo "[selfhost-only-gate] constant-folding regression ok"
+echo "[only-gate] constant-folding regression ok"
 
 # 10. nested constructor sub-pattern regression (#608): a constructor pattern
 #     whose argument is itself a constructor (`SL(_, None, _)` vs
@@ -978,7 +978,7 @@ echo "[selfhost-only-gate] constant-folding regression ok"
 #     the outer tag must route distinctly — and (b) bind the nested fields, so
 #     using `x` in the arm body compiles instead of trapping codegen. Adjacent to
 #     #603 (literal sub-patterns); both live in the single-condition PCtor path.
-echo "[selfhost-only-gate] 10/10 nested ctor sub-pattern regression"
+echo "[only-gate] 10/10 nested ctor sub-pattern regression"
 ndir="_build/_gate_nestedctor"
 rm -rf "$ndir"; mkdir -p "$ndir"
 cat > "$ndir/nested.vibe" <<'EOF'
@@ -1000,22 +1000,22 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ndir/nested.vibe" "$ndir/nested.wasm" _start >/dev/null 2>&1
 if [ ! -s "$ndir/nested.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: nested ctor sub-pattern program did not compile (#608 regressed: codegen trap)" >&2; exit 1
+  echo "[only-gate] FAIL: nested ctor sub-pattern program did not compile (#608 regressed: codegen trap)" >&2; exit 1
 fi
 nested_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$ndir/nested.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$nested_out" != "27" ]; then
-  echo "[selfhost-only-gate] FAIL: nested ctor sub-pattern mismatch (got '$nested_out', want 27 -> #608 regressed)" >&2
+  echo "[only-gate] FAIL: nested ctor sub-pattern mismatch (got '$nested_out', want 27 -> #608 regressed)" >&2
   exit 1
 fi
 rm -rf "$ndir"
-echo "[selfhost-only-gate] nested ctor sub-pattern regression ok"
+echo "[only-gate] nested ctor sub-pattern regression ok"
 
 # 11. forward-reference regression (#602): a top-level `let` may reference another
 #     top-level `let` defined later in the same file. The checker now hoists
 #     top-level binding signatures, so this compiles instead of aborting with an
 #     opaque trap. A genuinely-undefined name must still error (no over-permit).
-echo "[selfhost-only-gate] 11/11 forward-reference regression"
+echo "[only-gate] 11/11 forward-reference regression"
 wdir="_build/_gate_fwdref"
 rm -rf "$wdir"; mkdir -p "$wdir"
 cat > "$wdir/fwd.vibe" <<'EOF'
@@ -1027,12 +1027,12 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$wdir/fwd.vibe" "$wdir/fwd.wasm" _start >/dev/null 2>&1
 if [ ! -s "$wdir/fwd.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: forward-reference program did not compile (#602 regressed: checker trap)" >&2; exit 1
+  echo "[only-gate] FAIL: forward-reference program did not compile (#602 regressed: checker trap)" >&2; exit 1
 fi
 fwd_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$wdir/fwd.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$fwd_out" != "42" ]; then
-  echo "[selfhost-only-gate] FAIL: forward-reference mismatch (got '$fwd_out', want 42 -> #602 regressed)" >&2
+  echo "[only-gate] FAIL: forward-reference mismatch (got '$fwd_out', want 42 -> #602 regressed)" >&2
   exit 1
 fi
 # Guard: a genuinely-undefined name must still be rejected (hoist only adds names
@@ -1042,10 +1042,10 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$wdir/undef.vibe" "$wdir/undef.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$wdir/undef.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: undefined name compiled (#602 hoist over-permitted)" >&2; exit 1
+  echo "[only-gate] FAIL: undefined name compiled (#602 hoist over-permitted)" >&2; exit 1
 fi
 rm -rf "$wdir"
-echo "[selfhost-only-gate] forward-reference regression ok"
+echo "[only-gate] forward-reference regression ok"
 
 # 12. string-interpolation conversion regression (#606): `"\{e}"` lowers to
 #     `__to_string(e)`, which was an `identity` stub (so interpolating an int
@@ -1053,7 +1053,7 @@ echo "[selfhost-only-gate] forward-reference regression ok"
 #     `__to_string` always use the real conversion (int -> decimal, string ->
 #     passthrough with an in-bounds pointer check). Assert an int interpolates to
 #     its digits and a string interpolates verbatim.
-echo "[selfhost-only-gate] 12/12 string-interpolation conversion regression"
+echo "[only-gate] 12/12 string-interpolation conversion regression"
 idir="_build/_gate_interp"
 rm -rf "$idir"; mkdir -p "$idir"
 cat > "$idir/interp.vibe" <<'EOF'
@@ -1071,23 +1071,23 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$idir/interp.vibe" "$idir/interp.wasm" _start >/dev/null 2>&1
 if [ ! -s "$idir/interp.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: interpolation program did not compile" >&2; exit 1
+  echo "[only-gate] FAIL: interpolation program did not compile" >&2; exit 1
 fi
 interp_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$idir/interp.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$interp_out" != "8230" ]; then
-  echo "[selfhost-only-gate] FAIL: interpolation mismatch (got '$interp_out', want 8230 -> #606 regressed)" >&2
+  echo "[only-gate] FAIL: interpolation mismatch (got '$interp_out', want 8230 -> #606 regressed)" >&2
   exit 1
 fi
 rm -rf "$idir"
-echo "[selfhost-only-gate] string-interpolation conversion regression ok"
+echo "[only-gate] string-interpolation conversion regression ok"
 
 # 13. coverage instrumentation regression (#cov): VIBE_COVERAGE=1 must produce an
 #     instrumented build whose vibe_cov / vibe_cov_branch sections the runner can
 #     read. A test that exercises only the then-branch of an `if` must report
 #     both functions hit and exactly one of the two branches taken — the signal
 #     that powers `vibe test --coverage`.
-echo "[selfhost-only-gate] 13/13 coverage instrumentation regression"
+echo "[only-gate] 13/13 coverage instrumentation regression"
 cdir="_build/_gate_cov"
 rm -rf "$cdir"; mkdir -p "$cdir"
 cat > "$cdir/cov_test.vibe" <<'EOF'
@@ -1106,12 +1106,12 @@ VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=r
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir/cov_test.vibe" "$cdir/cov_test.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$cdir/cov_test.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: coverage build produced no wasm (#cov regressed)" >&2; exit 1
+  echo "[only-gate] FAIL: coverage build produced no wasm (#cov regressed)" >&2; exit 1
 fi
 VIBE_COV_OUT="$cdir/cov.json" VIBE_PREOPEN_DIR="$ROOT_DIR" \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$cdir/cov_test.wasm" >/dev/null 2>&1
 if [ ! -s "$cdir/cov.json" ]; then
-  echo "[selfhost-only-gate] FAIL: no coverage report produced (vibe_cov section missing?)" >&2; exit 1
+  echo "[only-gate] FAIL: no coverage report produced (vibe_cov section missing?)" >&2; exit 1
 fi
 cov_check="$(python3 - "$cdir/cov.json" <<'PY'
 import json, sys
@@ -1126,10 +1126,10 @@ print("ok" if ok else f"bad fn={r.get('hit')}/{r.get('total')} br={b.get('hit')}
 PY
 )"
 if [ "$cov_check" != "ok" ]; then
-  echo "[selfhost-only-gate] FAIL: coverage report wrong ($cov_check -> #cov regressed)" >&2; exit 1
+  echo "[only-gate] FAIL: coverage report wrong ($cov_check -> #cov regressed)" >&2; exit 1
 fi
 rm -rf "$cdir"
-echo "[selfhost-only-gate] coverage instrumentation regression ok"
+echo "[only-gate] coverage instrumentation regression ok"
 
 # 14. method-bearing-trait dictionary passing regression (#641 PR-3): a
 #     `[T: Trait]` generic calling `T::method(x)` must dispatch to the concrete
@@ -1137,7 +1137,7 @@ echo "[selfhost-only-gate] coverage instrumentation regression ok"
 #     a primitive impl, a struct impl, multiple methods (incl. `Self`-returning
 #     `scale`), literal and let-bound receivers, generic->generic dict
 #     forwarding, and supertrait method inheritance (flattened witness).
-echo "[selfhost-only-gate] 14/14 method-bearing-trait dict-passing regression"
+echo "[only-gate] 14/14 method-bearing-trait dict-passing regression"
 mbtdir="_build/_gate_mbtrait"
 rm -rf "$mbtdir"; mkdir -p "$mbtdir"
 cat > "$mbtdir/mbt.vibe" <<'EOF'
@@ -1169,17 +1169,17 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mbtdir/mbt.vibe" "$mbtdir/mbt.wasm" _start >/dev/null 2>&1
 if [ ! -s "$mbtdir/mbt.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: trait dict-passing program did not compile" >&2
+  echo "[only-gate] FAIL: trait dict-passing program did not compile" >&2
   cat "$mbtdir/mbt.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 mbt_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$mbtdir/mbt.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$mbt_out" != "340" ]; then
-  echo "[selfhost-only-gate] FAIL: trait dict-passing mismatch (got '$mbt_out', want 340 -> #641 PR-3 regressed)" >&2
+  echo "[only-gate] FAIL: trait dict-passing mismatch (got '$mbt_out', want 340 -> #641 PR-3 regressed)" >&2
   exit 1
 fi
 rm -rf "$mbtdir"
-echo "[selfhost-only-gate] method-bearing-trait dict-passing regression ok"
+echo "[only-gate] method-bearing-trait dict-passing regression ok"
 
 # 14b. rank-1 method-level generics on trait methods (#684): a trait method may
 #      declare its OWN bounded type parameter `m: [X: Show](Self, X) -> R`. The
@@ -1187,7 +1187,7 @@ echo "[selfhost-only-gate] method-bearing-trait dict-passing regression ok"
 #      qualified call `C::m(recv, arg)` the `Show` witness for `X = type(arg)`
 #      must be resolved/threaded so the body's `X::show(arg)` dispatches to the
 #      concrete impl. Covers an Int and a String argument (witness per type).
-echo "[selfhost-only-gate] 14b/14 rank-1 trait-method generics regression (#684)"
+echo "[only-gate] 14b/14 rank-1 trait-method generics regression (#684)"
 mgdir="_build/_gate_methodgen"
 rm -rf "$mgdir"; mkdir -p "$mgdir"
 cat > "$mgdir/mg.vibe" <<'EOF'
@@ -1212,23 +1212,23 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mgdir/mg.vibe" "$mgdir/mg.wasm" _start >/dev/null 2>&1
 if [ ! -s "$mgdir/mg.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: rank-1 trait-method generic program did not compile" >&2
+  echo "[only-gate] FAIL: rank-1 trait-method generic program did not compile" >&2
   cat "$mgdir/mg.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 mg_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$mgdir/mg.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$mg_out" != "84" ]; then
-  echo "[selfhost-only-gate] FAIL: rank-1 trait-method generic mismatch (got '$mg_out', want 84 -> #684 regressed)" >&2
+  echo "[only-gate] FAIL: rank-1 trait-method generic mismatch (got '$mg_out', want 84 -> #684 regressed)" >&2
   exit 1
 fi
 rm -rf "$mgdir"
-echo "[selfhost-only-gate] rank-1 trait-method generics regression ok"
+echo "[only-gate] rank-1 trait-method generics regression ok"
 
 # 15. derive(...) structural generation regression (#638): `derive(Ord)` and
 #     `derive(Show)` on a struct must generate working `Type::compare` (-1/0/1
 #     lexicographic over fields) and `Type::to_string` free functions. Also
 #     covers multiple-derive and `Eq` accepted as a no-op marker.
-echo "[selfhost-only-gate] 15/15 derive(Ord/Show) structural-generation regression"
+echo "[only-gate] 15/15 derive(Ord/Show) structural-generation regression"
 drvdir="_build/_gate_derive"
 rm -rf "$drvdir"; mkdir -p "$drvdir"
 cat > "$drvdir/drv.vibe" <<'EOF'
@@ -1245,24 +1245,24 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$drvdir/drv.vibe" "$drvdir/drv.wasm" _start >/dev/null 2>&1
 if [ ! -s "$drvdir/drv.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: derive program did not compile" >&2
+  echo "[only-gate] FAIL: derive program did not compile" >&2
   cat "$drvdir/drv.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 drv_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$drvdir/drv.wasm" 2>/dev/null | tr -dc '0-9-')"
 if [ "$drv_out" != "16" ]; then
-  echo "[selfhost-only-gate] FAIL: derive mismatch (got '$drv_out', want 16 -> #638 regressed)" >&2
+  echo "[only-gate] FAIL: derive mismatch (got '$drv_out', want 16 -> #638 regressed)" >&2
   exit 1
 fi
 rm -rf "$drvdir"
-echo "[selfhost-only-gate] derive(Ord/Show) structural-generation regression ok"
+echo "[only-gate] derive(Ord/Show) structural-generation regression ok"
 
 # 15b. extended derive(...) regression (#638): enum `derive(Ord/Show)`, struct +
 #      enum `derive(Default)`, and `derive(Hash)` (Map-key usability). Each real
 #      fixture is a `test "..."`-block suite; compile it through the fresh stage2
 #      and run `_start` — every `assert` traps on failure, so a clean run == all
 #      blocks passed. Covers multiple-derive (`derive(Eq, Ord, Show, Hash)`) too.
-echo "[selfhost-only-gate] 15b/15 extended derive (enum Ord/Show, Default, Hash)"
+echo "[only-gate] 15b/15 extended derive (enum Ord/Show, Default, Hash)"
 for fx in \
   fixtures/derive_ord_show_test.vibe \
   fixtures/derive_enum_ord_show_test.vibe \
@@ -1278,12 +1278,12 @@ for fx in \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$fx" "$fxout" __no_entry__ >/dev/null 2>&1
   if [ ! -s "$fxout" ]; then
-    echo "[selfhost-only-gate] FAIL: $fx did not compile" >&2
+    echo "[only-gate] FAIL: $fx did not compile" >&2
     cat "$fxout.diag" 2>/dev/null >&2; exit 1
   fi
   if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
       --invoke _start "$fxout" >/dev/null 2>&1; then
-    echo "[selfhost-only-gate] FAIL: $fx has a failing test (assert trapped)" >&2
+    echo "[only-gate] FAIL: $fx has a failing test (assert trapped)" >&2
     exit 1
   fi
   rm -f "$fxout" "$fxout.diag" "$fxout.funcmap"
@@ -1301,11 +1301,11 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$undir/u.vibe" "$undir/u.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$undir/u.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: derive(Foo) unknown trait was accepted (should error)" >&2
+  echo "[only-gate] FAIL: derive(Foo) unknown trait was accepted (should error)" >&2
   exit 1
 fi
 rm -rf "$undir"
-echo "[selfhost-only-gate] extended derive (enum Ord/Show, Default, Hash) ok"
+echo "[only-gate] extended derive (enum Ord/Show, Default, Hash) ok"
 
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a
 #      type-directed sentinel that the pre-check desugar lowers by the operand's
@@ -1315,7 +1315,7 @@ echo "[selfhost-only-gate] extended derive (enum Ord/Show, Default, Hash) ok"
 #      blocks passed). Covers Option `let*`, Result `let*` unchanged, Option `?`
 #      early-return-None, Result `?` early-return-Err, and the mixed-type type
 #      error (a negative file that must NOT compile).
-echo "[selfhost-only-gate] 15c/15 railway let*/? Option generalization (#635)"
+echo "[only-gate] 15c/15 railway let*/? Option generalization (#635)"
 for fx in \
   fixtures/try_let_star_option_test.vibe \
   fixtures/try_question_option_test.vibe; do
@@ -1325,12 +1325,12 @@ for fx in \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$fx" "$fxout" __no_entry__ >/dev/null 2>&1
   if [ ! -s "$fxout" ]; then
-    echo "[selfhost-only-gate] FAIL: $fx did not compile" >&2
+    echo "[only-gate] FAIL: $fx did not compile" >&2
     cat "$fxout.diag" 2>/dev/null >&2; exit 1
   fi
   if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
       --invoke _start "$fxout" >/dev/null 2>&1; then
-    echo "[selfhost-only-gate] FAIL: $fx has a failing test (assert trapped)" >&2
+    echo "[only-gate] FAIL: $fx has a failing test (assert trapped)" >&2
     exit 1
   fi
   rm -f "$fxout" "$fxout.diag" "$fxout.funcmap"
@@ -1358,11 +1358,11 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mixdir/m.vibe" "$mixdir/m.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$mixdir/m.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: mixed Result/Option let* chain compiled (should be a type error)" >&2
+  echo "[only-gate] FAIL: mixed Result/Option let* chain compiled (should be a type error)" >&2
   exit 1
 fi
 rm -rf "$mixdir"
-echo "[selfhost-only-gate] railway let*/? Option generalization ok"
+echo "[only-gate] railway let*/? Option generalization ok"
 
 # 15d. derive(Hash) transparent Map keys (#694): a `derive(Hash)` struct is
 #      usable as a Map key through the method-bearing `Hash::hash_key` —
@@ -1373,7 +1373,7 @@ echo "[selfhost-only-gate] railway let*/? Option generalization ok"
 #      field (nested struct + Option + Array) to prove Layer-2 recursion. The
 #      fixture is a `test "..."`-block suite; compile via the fresh stage2 and run
 #      `_start` (a failing `assert` traps, so a clean run == all blocks passed).
-echo "[selfhost-only-gate] 15d/15 derive(Hash) transparent Map keys (#694)"
+echo "[only-gate] 15d/15 derive(Hash) transparent Map keys (#694)"
 hkfx="fixtures/derive_hash_map_key_test.vibe"
 hkout="_build/_gate_derive_hash_map_key.wasm"
 rm -f "$hkout" "$hkout.diag"
@@ -1381,23 +1381,23 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$hkfx" "$hkout" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$hkout" ]; then
-  echo "[selfhost-only-gate] FAIL: $hkfx did not compile" >&2
+  echo "[only-gate] FAIL: $hkfx did not compile" >&2
   cat "$hkout.diag" 2>/dev/null >&2; exit 1
 fi
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
     --invoke _start "$hkout" >/dev/null 2>&1; then
-  echo "[selfhost-only-gate] FAIL: $hkfx has a failing test (assert trapped) -> #694 regressed" >&2
+  echo "[only-gate] FAIL: $hkfx has a failing test (assert trapped) -> #694 regressed" >&2
   exit 1
 fi
 rm -f "$hkout" "$hkout.diag" "$hkout.funcmap"
-echo "[selfhost-only-gate] derive(Hash) transparent Map keys ok"
+echo "[only-gate] derive(Hash) transparent Map keys ok"
 
 # 16. trait type parameters / Iterator regression (#636): a method-bearing trait
 #     with a type parameter (`Iterator[T] { next(Self) -> Option[T] }`) must be
 #     declarable, and a `[I: Iterator]` generic must dispatch `I::next` through
 #     the witness dictionary — driving a stateful, functional iterator
 #     (`next(Self) -> Option[(T, Self)]`) to completion.
-echo "[selfhost-only-gate] 16/16 trait-type-parameter / Iterator regression"
+echo "[only-gate] 16/16 trait-type-parameter / Iterator regression"
 itdir="_build/_gate_iter"
 rm -rf "$itdir"; mkdir -p "$itdir"
 cat > "$itdir/iter.vibe" <<'EOF'
@@ -1442,17 +1442,17 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$itdir/iter.vibe" "$itdir/iter.wasm" _start >/dev/null 2>&1
 if [ ! -s "$itdir/iter.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: Iterator trait program did not compile" >&2
+  echo "[only-gate] FAIL: Iterator trait program did not compile" >&2
   cat "$itdir/iter.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 it_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$itdir/iter.wasm" 2>/dev/null | tr -dc '0-9-')"
 if [ "$it_out" != "30" ]; then
-  echo "[selfhost-only-gate] FAIL: Iterator dispatch mismatch (got '$it_out', want 30 -> #636 regressed)" >&2
+  echo "[only-gate] FAIL: Iterator dispatch mismatch (got '$it_out', want 30 -> #636 regressed)" >&2
   exit 1
 fi
 rm -rf "$itdir"
-echo "[selfhost-only-gate] trait-type-parameter / Iterator regression ok"
+echo "[only-gate] trait-type-parameter / Iterator regression ok"
 
 # 17. lazy iterator combinators regression (#636): a lazy `Stream` (a struct
 #     holding a `pull` closure) with `impl Iter for Stream` supports lazy
@@ -1460,7 +1460,7 @@ echo "[selfhost-only-gate] trait-type-parameter / Iterator regression ok"
 #     `for` desugar) — the trait-based replacement for prelude/lazy_iter.vibe's
 #     `() -> Option[T]` function iterator. All library code, no compiler support
 #     beyond the trait machinery.
-echo "[selfhost-only-gate] 17/17 lazy iterator combinators regression"
+echo "[only-gate] 17/17 lazy iterator combinators regression"
 lcdir="_build/_gate_lazyiter"
 rm -rf "$lcdir"; mkdir -p "$lcdir"
 cat > "$lcdir/lc.vibe" <<'EOF'
@@ -1513,17 +1513,17 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$lcdir/lc.vibe" "$lcdir/lc.wasm" _start >/dev/null 2>&1
 if [ ! -s "$lcdir/lc.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: lazy combinators program did not compile" >&2
+  echo "[only-gate] FAIL: lazy combinators program did not compile" >&2
   cat "$lcdir/lc.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 lc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$lcdir/lc.wasm" 2>/dev/null | tr -dc '0-9-')"
 if [ "$lc_out" != "47" ]; then
-  echo "[selfhost-only-gate] FAIL: lazy combinators mismatch (got '$lc_out', want 47 -> #636 regressed)" >&2
+  echo "[only-gate] FAIL: lazy combinators mismatch (got '$lc_out', want 47 -> #636 regressed)" >&2
   exit 1
 fi
 rm -rf "$lcdir"
-echo "[selfhost-only-gate] lazy iterator combinators regression ok"
+echo "[only-gate] lazy iterator combinators regression ok"
 
 # 18. cross-import trait-iterator regression (#636): the iterator type + its
 #     `impl ::next` + a `for x in <iter>` driver live in an IMPORTED module
@@ -1535,7 +1535,7 @@ echo "[selfhost-only-gate] lazy iterator combinators regression ok"
 #     `Type::method` names must follow the *type's* namespacing, not get an
 #     independent value suffix. Guards import_alias_rewrite + the generic-struct
 #     `for`-iterator desugar across the import boundary.
-echo "[selfhost-only-gate] 18/18 cross-import trait-iterator regression"
+echo "[only-gate] 18/18 cross-import trait-iterator regression"
 xidir="_build/_gate_import_iter"
 rm -rf "$xidir"; mkdir -p "$xidir"
 cat > "$xidir/li.vibe" <<'EOF'
@@ -1568,17 +1568,17 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xidir/main.vibe" "$xidir/main.wasm" _start >/dev/null 2>&1
 if [ ! -s "$xidir/main.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: cross-import trait-iterator program did not compile" >&2
+  echo "[only-gate] FAIL: cross-import trait-iterator program did not compile" >&2
   exit 1
 fi
 xi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$xidir/main.wasm" 2>/dev/null | tr -dc '0-9-')"
 if [ "$xi_out" != "5" ]; then
-  echo "[selfhost-only-gate] FAIL: cross-import trait-iterator mismatch (got '$xi_out', want 5 -> import method namespacing regressed)" >&2
+  echo "[only-gate] FAIL: cross-import trait-iterator mismatch (got '$xi_out', want 5 -> import method namespacing regressed)" >&2
   exit 1
 fi
 rm -rf "$xidir"
-echo "[selfhost-only-gate] cross-import trait-iterator regression ok"
+echo "[only-gate] cross-import trait-iterator regression ok"
 
 # 19. `for await` unification regression (#636): `for await x in s` shares one
 #     type-directed desugar with sync `for`. The parser wraps the iterable in a
@@ -1590,7 +1590,7 @@ echo "[selfhost-only-gate] cross-import trait-iterator regression ok"
 #       - any other iterable (a pull closure `() -> Option[T]`, the pre-existing
 #         M2c-3 model) drives the pull-to-`None` loop.
 #     Guards the parser marker + checker unwrap + always-run desugar pass.
-echo "[selfhost-only-gate] 19/19 for-await unification regression"
+echo "[only-gate] 19/19 for-await unification regression"
 fadir="_build/_gate_forawait"
 rm -rf "$fadir"; mkdir -p "$fadir"
 cat > "$fadir/fa.vibe" <<'EOF'
@@ -1623,17 +1623,17 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$fadir/fa.vibe" "$fadir/fa.wasm" _start >/dev/null 2>&1
 if [ ! -s "$fadir/fa.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: for-await program did not compile" >&2
+  echo "[only-gate] FAIL: for-await program did not compile" >&2
   cat "$fadir/fa.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 fa_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$fadir/fa.wasm" 2>/dev/null | tr -dc '0-9-')"
 if [ "$fa_out" != "70" ]; then
-  echo "[selfhost-only-gate] FAIL: for-await unification mismatch (got '$fa_out', want 70 -> #636 regressed)" >&2
+  echo "[only-gate] FAIL: for-await unification mismatch (got '$fa_out', want 70 -> #636 regressed)" >&2
   exit 1
 fi
 rm -rf "$fadir"
-echo "[selfhost-only-gate] for-await unification regression ok"
+echo "[only-gate] for-await unification regression ok"
 
 # 20. cross-import trait-iterator ELEMENT-TYPE inference: `for x in <C[T]>` binds
 #     `x` to the iterator's element type `T`, recovered from the iterable's type
@@ -1646,7 +1646,7 @@ echo "[selfhost-only-gate] for-await unification regression ok"
 #           (`total + x`, total : Int, x : String) MUST be rejected by the
 #           checker — proving the element is typed `String`, not `CtUnknown`
 #           (which silently accepted any use and dropped element-type safety).
-echo "[selfhost-only-gate] 20/20 cross-import trait-iterator element-type regression"
+echo "[only-gate] 20/20 cross-import trait-iterator element-type regression"
 eidir="_build/_gate_import_iter_elem"
 rm -rf "$eidir"; mkdir -p "$eidir"
 cat > "$eidir/li.vibe" <<'EOF'
@@ -1680,13 +1680,13 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$eidir/pos.vibe" "$eidir/pos.wasm" _start >/dev/null 2>&1
 if [ ! -s "$eidir/pos.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: element-type positive program did not compile" >&2
+  echo "[only-gate] FAIL: element-type positive program did not compile" >&2
   cat "$eidir/pos.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 ei_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$eidir/pos.wasm" 2>/dev/null | tr -dc '0-9-')"
 if [ "$ei_out" != "100" ]; then
-  echo "[selfhost-only-gate] FAIL: element-type positive mismatch (got '$ei_out', want 100)" >&2
+  echo "[only-gate] FAIL: element-type positive mismatch (got '$ei_out', want 100)" >&2
   exit 1
 fi
 # (b) negative: Int accumulator + String element must be a type error.
@@ -1703,15 +1703,15 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$eidir/neg.vibe" "$eidir/neg.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$eidir/neg.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: element-type negative program compiled (element typed CtUnknown, not String -> element-type safety regressed)" >&2
+  echo "[only-gate] FAIL: element-type negative program compiled (element typed CtUnknown, not String -> element-type safety regressed)" >&2
   exit 1
 fi
 if ! grep -q "type mismatch in '+'" "$eidir/neg.wasm.diag" 2>/dev/null; then
-  echo "[selfhost-only-gate] FAIL: element-type negative rejected for the wrong reason" >&2
+  echo "[only-gate] FAIL: element-type negative rejected for the wrong reason" >&2
   cat "$eidir/neg.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 rm -rf "$eidir"
-echo "[selfhost-only-gate] cross-import trait-iterator element-type regression ok"
+echo "[only-gate] cross-import trait-iterator element-type regression ok"
 
 # 21. prelude iterator combinator suites: compile + run the real prelude test
 #     files through the fresh stage2 and assert every `test "..."` block passes
@@ -1720,7 +1720,7 @@ echo "[selfhost-only-gate] cross-import trait-iterator element-type regression o
 #     (take / drop / take_while / enumerate / zip / flat_map / find / any / all,
 #     and the async `for await`-driven terminals) — these prelude tests are not
 #     otherwise exercised by the moon-free gate.
-echo "[selfhost-only-gate] 21/21 prelude iterator combinator suites"
+echo "[only-gate] 21/21 prelude iterator combinator suites"
 for suite in lib/@vibe/prelude/lazy_iter_test.vibe lib/@vibe/prelude/async_iter_test.vibe; do
   out="_build/_gate_prelude_iter_$(basename "${suite%.vibe}").wasm"
   # ADR-0069: test-block suites need the explicit `__no_entry__` sentinel for
@@ -1729,17 +1729,17 @@ for suite in lib/@vibe/prelude/lazy_iter_test.vibe lib/@vibe/prelude/async_iter_
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$suite" "$out" __no_entry__ >/dev/null 2>&1
   if [ ! -s "$out" ]; then
-    echo "[selfhost-only-gate] FAIL: $suite did not compile" >&2
+    echo "[only-gate] FAIL: $suite did not compile" >&2
     cat "$out.diag" 2>/dev/null >&2; exit 1
   fi
   if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
       --invoke _start "$out" >/dev/null 2>&1; then
-    echo "[selfhost-only-gate] FAIL: $suite has a failing test (assert trapped)" >&2
+    echo "[only-gate] FAIL: $suite has a failing test (assert trapped)" >&2
     exit 1
   fi
   rm -f "$out" "$out.diag" "$out.funcmap"
 done
-echo "[selfhost-only-gate] prelude iterator combinator suites ok"
+echo "[only-gate] prelude iterator combinator suites ok"
 
 # 22. generic trait impls — Increment A (#5): an UNbounded, method-bearing
 #     `impl [T] Trait for C` makes `C[K]` satisfy a `[U: Trait]` bound for any K,
@@ -1750,7 +1750,7 @@ echo "[selfhost-only-gate] prelude iterator combinator suites ok"
 #       (b) SOUNDNESS: a marker-trait generic impl (`impl [T: Eq] Eq for
 #           Option[T]`, Eq has no methods) must STILL be rejected — matching it
 #           would let `==` (which is not structural on Option) silently misbehave.
-echo "[selfhost-only-gate] 22/22 generic trait impl (Increment A)"
+echo "[only-gate] 22/22 generic trait impl (Increment A)"
 gidir="_build/_gate_generic_impl"
 rm -rf "$gidir"; mkdir -p "$gidir"
 cat > "$gidir/pos.vibe" <<'EOF'
@@ -1765,13 +1765,13 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$gidir/pos.vibe" "$gidir/pos.wasm" _start >/dev/null 2>&1
 if [ ! -s "$gidir/pos.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: generic-impl positive program did not compile" >&2
+  echo "[only-gate] FAIL: generic-impl positive program did not compile" >&2
   cat "$gidir/pos.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 gi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$gidir/pos.wasm" 2>/dev/null | tr -dc '0-9-')"
 if [ "$gi_out" != "5" ]; then
-  echo "[selfhost-only-gate] FAIL: generic-impl positive mismatch (got '$gi_out', want 5)" >&2
+  echo "[only-gate] FAIL: generic-impl positive mismatch (got '$gi_out', want 5)" >&2
   exit 1
 fi
 # Soundness: a marker-trait generic impl must NOT satisfy the bound.
@@ -1785,11 +1785,11 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$gidir/neg.vibe" "$gidir/neg.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$gidir/neg.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: marker-trait generic impl was accepted (unsound — should be rejected)" >&2
+  echo "[only-gate] FAIL: marker-trait generic impl was accepted (unsound — should be rejected)" >&2
   exit 1
 fi
 rm -rf "$gidir"
-echo "[selfhost-only-gate] generic trait impl (Increment A) ok"
+echo "[only-gate] generic trait impl (Increment A) ok"
 
 # 23. generic trait impls — Increment B (#5): a BOUNDED generic impl
 #     `impl [T: Bound] Trait for C` whose body dispatches `T`'s methods on the
@@ -1800,7 +1800,7 @@ echo "[selfhost-only-gate] generic trait impl (Increment A) ok"
 #       (b) SOUNDNESS: an element type with no impl must NOT silently dispatch —
 #           the witness refuses to build, so the program fails to produce a
 #           runnable module (never returns a wrong number).
-echo "[selfhost-only-gate] 23/23 generic trait impl (Increment B, dict-of-dict)"
+echo "[only-gate] 23/23 generic trait impl (Increment B, dict-of-dict)"
 gjdir="_build/_gate_generic_impl_b"
 rm -rf "$gjdir"; mkdir -p "$gjdir"
 gj_prelude='trait Show2[T] { show2(Self) -> Int }
@@ -1819,13 +1819,13 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$gjdir/pos.vibe" "$gjdir/pos.wasm" _start >/dev/null 2>&1
 if [ ! -s "$gjdir/pos.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: dict-of-dict positive program did not compile" >&2
+  echo "[only-gate] FAIL: dict-of-dict positive program did not compile" >&2
   cat "$gjdir/pos.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 gj_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$gjdir/pos.wasm" 2>/dev/null | tr -dc '0-9-')"
 if [ "$gj_out" != "66" ]; then
-  echo "[selfhost-only-gate] FAIL: dict-of-dict mismatch (got '$gj_out', want 66 = 60 + 6)" >&2
+  echo "[only-gate] FAIL: dict-of-dict mismatch (got '$gj_out', want 66 = 60 + 6)" >&2
   exit 1
 fi
 # Soundness: an element type with no Show2 impl must not silently dispatch.
@@ -1839,11 +1839,11 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
 neg_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$gjdir/neg.wasm" 2>/dev/null | tr -dc '0-9-' || true)"
 if [ "$neg_out" = "5" ]; then
-  echo "[selfhost-only-gate] FAIL: element without an impl silently dispatched (miscompile — returned 5)" >&2
+  echo "[only-gate] FAIL: element without an impl silently dispatched (miscompile — returned 5)" >&2
   exit 1
 fi
 rm -rf "$gjdir"
-echo "[selfhost-only-gate] generic trait impl (Increment B, dict-of-dict) ok"
+echo "[only-gate] generic trait impl (Increment B, dict-of-dict) ok"
 
 # 24. async-lifted component EXECUTION on wasmtime (docs/spec/wasi-p3-async.md
 #     §3.1). The async-lift codegen (`comp_emit_component_wasm_async*` — task.return
@@ -1855,22 +1855,22 @@ echo "[selfhost-only-gate] generic trait impl (Increment B, dict-of-dict) ok"
 #     the async runtime path is proven to EXECUTE on wasmtime 45 (no wasmtime 46
 #     needed). SKIPs cleanly when wasmtime / the async flags are unavailable.
 #     Regenerate the fixture with: scripts/emit_async_lift_fixture.sh
-echo "[selfhost-only-gate] 24/24 async-lifted component execution (wasmtime)"
+echo "[only-gate] 24/24 async-lifted component execution (wasmtime)"
 WT_BIN="$(command -v wasmtime || "$ROOT_DIR/scripts/wasmtime_bin.sh" 2>/dev/null || true)"
 ac_fixture="$ROOT_DIR/fixtures/async_lift_run42.component.wasm"
 if [ -z "${WT_BIN:-}" ] || ! "$WT_BIN" --version >/dev/null 2>&1; then
-  echo "[selfhost-only-gate] SKIP: wasmtime not available"
+  echo "[only-gate] SKIP: wasmtime not available"
 elif ! "$WT_BIN" -W help 2>&1 | grep -q "component-model-async-stackful"; then
-  echo "[selfhost-only-gate] SKIP: wasmtime lacks component-model-async-stackful"
+  echo "[only-gate] SKIP: wasmtime lacks component-model-async-stackful"
 elif [ ! -s "$ac_fixture" ]; then
-  echo "[selfhost-only-gate] SKIP: async-lift fixture missing (run scripts/emit_async_lift_fixture.sh)"
+  echo "[only-gate] SKIP: async-lift fixture missing (run scripts/emit_async_lift_fixture.sh)"
 else
   ac_out="$(VIBE_WASMTIME_WASM_FLAGS="component-model-async=y concurrency-support=y component-model-async-stackful=y" \
     bash scripts/wasmtime_run.sh --invoke 'run()' "$ac_fixture" 2>/dev/null | tr -dc '0-9-' || true)"
   if [ "$ac_out" != "42" ]; then
-    echo "[selfhost-only-gate] FAIL: async component did not execute to 42 (got '$ac_out')" >&2; exit 1
+    echo "[only-gate] FAIL: async component did not execute to 42 (got '$ac_out')" >&2; exit 1
   fi
-  echo "[selfhost-only-gate] async-lifted component execution (wasmtime $("$WT_BIN" --version | awk '{print $2}')) -> 42 ok"
+  echo "[only-gate] async-lifted component execution (wasmtime $("$WT_BIN" --version | awk '{print $2}')) -> 42 ok"
 fi
 
 # 25. nested literal sub-pattern discrimination (#613 follow-up): a boolean (or
@@ -1880,7 +1880,7 @@ fi
 #     test tuple sub-patterns at all, silently routing `W(true)`/`(true, _)` to
 #     the `false` arm (wrong result, not a trap). compile_match now emits the
 #     literal test recursively at every nesting level.
-echo "[selfhost-only-gate] 25/25 nested literal sub-pattern discrimination"
+echo "[only-gate] 25/25 nested literal sub-pattern discrimination"
 nldir="_build/_gate_nestedlit"
 rm -rf "$nldir"; mkdir -p "$nldir"
 cat > "$nldir/nestedlit.vibe" <<'EOF'
@@ -1938,16 +1938,16 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$nldir/nestedlit.vibe" "$nldir/nestedlit.wasm" _start >/dev/null 2>&1
 if [ ! -s "$nldir/nestedlit.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: nested literal sub-pattern program did not compile" >&2; exit 1
+  echo "[only-gate] FAIL: nested literal sub-pattern program did not compile" >&2; exit 1
 fi
 nestedlit_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$nldir/nestedlit.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$nestedlit_out" != "3075" ]; then
-  echo "[selfhost-only-gate] FAIL: nested literal sub-pattern mismatch (got '$nestedlit_out', want 3075 -> #613 regressed)" >&2
+  echo "[only-gate] FAIL: nested literal sub-pattern mismatch (got '$nestedlit_out', want 3075 -> #613 regressed)" >&2
   exit 1
 fi
 rm -rf "$nldir"
-echo "[selfhost-only-gate] nested literal sub-pattern discrimination ok"
+echo "[only-gate] nested literal sub-pattern discrimination ok"
 
 # 26. effect-call discipline (#626 criteria 1 & 3-builtin-slice): both
 #     `perform EffName::Op` and a call to an effectful BUILTIN (`Fs::read_file`,
@@ -1955,7 +1955,7 @@ echo "[selfhost-only-gate] nested literal sub-pattern discrimination ok"
 #     `with { ... }` (or it is inside a `handle`). Declared variants must
 #     compile; undeclared variants must be REJECTED. (`Error`/`Async` are out of
 #     this slice; pure builtins like `Array::length` are never flagged.)
-echo "[selfhost-only-gate] 26/26 effect-call discipline (perform + builtin)"
+echo "[only-gate] 26/26 effect-call discipline (perform + builtin)"
 pfdir="_build/_gate_perform"
 rm -rf "$pfdir"; mkdir -p "$pfdir"
 cat > "$pfdir/good.vibe" <<'EOF'
@@ -2021,31 +2021,31 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/good.vibe" "$pfdir/good.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$pfdir/good.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: declared effect calls did not compile (#626 over-rejects)" >&2; exit 1
+  echo "[only-gate] FAIL: declared effect calls did not compile (#626 over-rejects)" >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/bad_perform.vibe" "$pfdir/bad_perform.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$pfdir/bad_perform.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: undeclared perform compiled (#626 criterion 1 regressed)" >&2; exit 1
+  echo "[only-gate] FAIL: undeclared perform compiled (#626 criterion 1 regressed)" >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/bad_builtin.vibe" "$pfdir/bad_builtin.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$pfdir/bad_builtin.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: undeclared effectful builtin call compiled (#626 builtin slice regressed)" >&2; exit 1
+  echo "[only-gate] FAIL: undeclared effectful builtin call compiled (#626 builtin slice regressed)" >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/bad_transitive.vibe" "$pfdir/bad_transitive.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$pfdir/bad_transitive.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: undeclared transitive effect call compiled (#626 transitive enforcement regressed)" >&2; exit 1
+  echo "[only-gate] FAIL: undeclared transitive effect call compiled (#626 transitive enforcement regressed)" >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/good_transitive.vibe" "$pfdir/good_transitive.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$pfdir/good_transitive.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: correctly-declared transitive effect chain did not compile (#626 over-rejects)" >&2; exit 1
+  echo "[only-gate] FAIL: correctly-declared transitive effect chain did not compile (#626 over-rejects)" >&2; exit 1
 fi
 # #812: the transitive map must also cover IMPORTED effectful functions — a
 # caller invoking an imported `with { Fs }` function without declaring Fs used
@@ -2078,23 +2078,23 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/bad_import_transitive.vibe" "$pfdir/bad_import_transitive.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$pfdir/bad_import_transitive.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: undeclared call of IMPORTED effectful function compiled (#812 regressed)" >&2; exit 1
+  echo "[only-gate] FAIL: undeclared call of IMPORTED effectful function compiled (#812 regressed)" >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/good_import_transitive.vibe" "$pfdir/good_import_transitive.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$pfdir/good_import_transitive.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: correctly-declared imported effect call did not compile (#812 over-rejects)" >&2; exit 1
+  echo "[only-gate] FAIL: correctly-declared imported effect call did not compile (#812 over-rejects)" >&2; exit 1
 fi
 rm -rf "$pfdir"
-echo "[selfhost-only-gate] effect-call discipline ok"
+echo "[only-gate] effect-call discipline ok"
 
 # 27. handle effect discharge (#626 criterion 2): `handle ... with E` discharges
 #     E for its body (a perform of E inside need not be declared), but ONLY E —
 #     a perform of a DIFFERENT undeclared effect inside the same handle still
 #     leaks and is a type error. The parser qualifies arm patterns as `E::Op`, so
 #     the discharged effect is recovered from the handler arms.
-echo "[selfhost-only-gate] 27/27 handle effect discharge"
+echo "[only-gate] 27/27 handle effect discharge"
 hdir="_build/_gate_handle"
 rm -rf "$hdir"; mkdir -p "$hdir"
 cat > "$hdir/discharge.vibe" <<'EOF'
@@ -2126,13 +2126,13 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$hdir/discharge.vibe" "$hdir/discharge.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$hdir/discharge.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: handle did not discharge its own effect (#626 criterion 2 over-rejects)" >&2; exit 1
+  echo "[only-gate] FAIL: handle did not discharge its own effect (#626 criterion 2 over-rejects)" >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$hdir/leak.vibe" "$hdir/leak.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$hdir/leak.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: a different undeclared effect leaked through a handle (#626 criterion 2 regressed)" >&2; exit 1
+  echo "[only-gate] FAIL: a different undeclared effect leaked through a handle (#626 criterion 2 regressed)" >&2; exit 1
 fi
 # Multi-operation handler dispatch (#665): the perform/handler ABI records the
 # operation index (g_op_index) so a handler over a multi-operation effect routes
@@ -2172,27 +2172,27 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$hdir/multiop.vibe" "$hdir/multiop.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$hdir/multiop.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: multi-operation effect handler did not compile (#665 dispatch regressed)" >&2; exit 1
+  echo "[only-gate] FAIL: multi-operation effect handler did not compile (#665 dispatch regressed)" >&2; exit 1
 fi
 # a = Mul(3)*1000 = 3000 ; b = Mul(3)*10 + Add(5)+10 = 30+15 = 45 ; total 3045
 multiop_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$hdir/multiop.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$multiop_out" != "3045" ]; then
-  echo "[selfhost-only-gate] FAIL: multi-operation dispatch wrong (got '$multiop_out', want 3045 -> #665 regressed)" >&2; exit 1
+  echo "[only-gate] FAIL: multi-operation dispatch wrong (got '$multiop_out', want 3045 -> #665 regressed)" >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$hdir/singleop.vibe" "$hdir/singleop.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$hdir/singleop.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: single-operation effect handler did not compile (#665 over-rejects)" >&2; exit 1
+  echo "[only-gate] FAIL: single-operation effect handler did not compile (#665 over-rejects)" >&2; exit 1
 fi
 rm -rf "$hdir"
-echo "[selfhost-only-gate] handle effect discharge ok"
+echo "[only-gate] handle effect discharge ok"
 
 # 27b. effect op signatures (#813): perform arguments, handler arm names and
 #      payload types, and resume values are validated against the DECLARED
 #      effect's op signatures. Each was previously unchecked (silent garbage).
-echo "[selfhost-only-gate] 27b/27 effect op signature checking (#813)"
+echo "[only-gate] 27b/27 effect op signature checking (#813)"
 odir="_build/_gate_effopsig"
 rm -rf "$odir"; mkdir -p "$odir"
 cat > "$odir/ok_op.vibe" <<'EOF'
@@ -2257,27 +2257,27 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$odir/ok_op.vibe" "$odir/ok_op.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$odir/ok_op.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: well-typed effect op program did not compile (#813 over-rejects)" >&2; exit 1
+  echo "[only-gate] FAIL: well-typed effect op program did not compile (#813 over-rejects)" >&2; exit 1
 fi
 op_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$odir/ok_op.wasm" 2>/dev/null | tail -n 1)"
 if [ "$op_out" != "42" ]; then
-  echo "[selfhost-only-gate] FAIL: effect op control returned '$op_out' (expected 42)" >&2; exit 1
+  echo "[only-gate] FAIL: effect op control returned '$op_out' (expected 42)" >&2; exit 1
 fi
 for bad in bad_performarg bad_performarity bad_armname bad_armpayload bad_resumeval bad_kconv bad_missingarm bad_resume0; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$odir/$bad.vibe" "$odir/$bad.wasm" _start >/dev/null 2>&1 || true
   if [ -s "$odir/$bad.wasm" ]; then
-    echo "[selfhost-only-gate] FAIL: ill-typed $bad compiled (#813 regressed)" >&2; exit 1
+    echo "[only-gate] FAIL: ill-typed $bad compiled (#813 regressed)" >&2; exit 1
   fi
 done
 rm -rf "$odir"
-echo "[selfhost-only-gate] effect op signature checking ok"
+echo "[only-gate] effect op signature checking ok"
 
 # 27c. index bounds checks (#811): OOB / negative Array and Bytes access must
 #      TRAP (unreachable) instead of silently reading/writing adjacent memory;
 #      in-bounds access is unchanged.
-echo "[selfhost-only-gate] 27c/27 index bounds checks (#811)"
+echo "[only-gate] 27c/27 index bounds checks (#811)"
 bdir="_build/_gate_bounds"
 rm -rf "$bdir"; mkdir -p "$bdir"
 cat > "$bdir/inbounds.vibe" <<'EOF'
@@ -2312,18 +2312,18 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   "$bdir/inbounds.vibe" "$bdir/inbounds.wasm" _start >/dev/null 2>&1 || true
 bounds_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$bdir/inbounds.wasm" 2>/dev/null | tail -n 1 || true)"
 if [ "$bounds_out" != "42" ]; then
-  echo "[selfhost-only-gate] FAIL: in-bounds access returned '$bounds_out' (expected 42; #811 over-traps)" >&2; exit 1
+  echo "[only-gate] FAIL: in-bounds access returned '$bounds_out' (expected 42; #811 over-traps)" >&2; exit 1
 fi
 for oob in oob_get oob_neg oob_bytes oob_str oob_str_neg; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$bdir/$oob.vibe" "$bdir/$oob.wasm" _start >/dev/null 2>&1 || true
   if bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$bdir/$oob.wasm" >/dev/null 2>&1; then
-    echo "[selfhost-only-gate] FAIL: $oob ran without trapping (#811 regressed)" >&2; exit 1
+    echo "[only-gate] FAIL: $oob ran without trapping (#811 regressed)" >&2; exit 1
   fi
 done
 rm -rf "$bdir"
-echo "[selfhost-only-gate] index bounds checks ok"
+echo "[only-gate] index bounds checks ok"
 
 # 27d. `for await` classification (#827): a stream iterated through an
 #      UNannotated lambda param gives the type-directed desugar no type head; it
@@ -2331,7 +2331,7 @@ echo "[selfhost-only-gate] index bounds checks ok"
 #      fine and then trapped at runtime (call_indirect on the stream's array
 #      pointer). It must now be REJECTED at compile time; the annotated-param
 #      equivalent (#822) must still compile and run to 42.
-echo "[selfhost-only-gate] 27d/27 for-await classification (#827)"
+echo "[only-gate] 27d/27 for-await classification (#827)"
 fadir="_build/_gate_forawait"
 rm -rf "$fadir"; mkdir -p "$fadir"
 cat > "$fadir/ok_annot.vibe" <<'EOF'
@@ -2358,20 +2358,20 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$fadir/ok_annot.vibe" "$fadir/ok_annot.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$fadir/ok_annot.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: annotated-param for-await did not compile (#827 over-rejects)" >&2; exit 1
+  echo "[only-gate] FAIL: annotated-param for-await did not compile (#827 over-rejects)" >&2; exit 1
 fi
 fa_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$fadir/ok_annot.wasm" 2>/dev/null | tail -n 1)"
 if [ "$fa_out" != "42" ]; then
-  echo "[selfhost-only-gate] FAIL: annotated-param for-await returned '$fa_out' (expected 42; #822 regressed)" >&2; exit 1
+  echo "[only-gate] FAIL: annotated-param for-await returned '$fa_out' (expected 42; #822 regressed)" >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$fadir/bad_unannot.vibe" "$fadir/bad_unannot.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$fadir/bad_unannot.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: unannotated-param for-await compiled (#827 regressed: pull-closure fallback trap)" >&2; exit 1
+  echo "[only-gate] FAIL: unannotated-param for-await compiled (#827 regressed: pull-closure fallback trap)" >&2; exit 1
 fi
 rm -rf "$fadir"
-echo "[selfhost-only-gate] for-await classification ok"
+echo "[only-gate] for-await classification ok"
 
 # 28. argument type checking: the checker used to SWALLOW argument unification
 #     failures (`unify_call_args` did `None => out`), so an ill-typed call like
@@ -2380,7 +2380,7 @@ echo "[selfhost-only-gate] for-await classification ok"
 #     `__to_string` interpolation stringifier are still tolerated, since effect
 #     inference on function values is imprecise). The mismatch must be REJECTED;
 #     a correct call must still compile.
-echo "[selfhost-only-gate] 28/28 argument type checking"
+echo "[only-gate] 28/28 argument type checking"
 adir="_build/_gate_argcheck"
 rm -rf "$adir"; mkdir -p "$adir"
 cat > "$adir/wrong.vibe" <<'EOF'
@@ -2406,28 +2406,28 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$adir/right.vibe" "$adir/right.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$adir/right.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: a correctly-typed call did not compile (arg-check over-rejects)" >&2; exit 1
+  echo "[only-gate] FAIL: a correctly-typed call did not compile (arg-check over-rejects)" >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$adir/ffright.vibe" "$adir/ffright.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$adir/ffright.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: a correct field-stored-function call did not compile (over-rejects)" >&2; exit 1
+  echo "[only-gate] FAIL: a correct field-stored-function call did not compile (over-rejects)" >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$adir/wrong.vibe" "$adir/wrong.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$adir/wrong.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: an ill-typed argument (Int <- String) compiled (arg-check regressed)" >&2; exit 1
+  echo "[only-gate] FAIL: an ill-typed argument (Int <- String) compiled (arg-check regressed)" >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$adir/ffwrong.vibe" "$adir/ffwrong.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$adir/ffwrong.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: ill-typed field-stored-function call (Int <- String) compiled" >&2; exit 1
+  echo "[only-gate] FAIL: ill-typed field-stored-function call (Int <- String) compiled" >&2; exit 1
 fi
 rm -rf "$adir"
-echo "[selfhost-only-gate] argument type checking ok"
+echo "[only-gate] argument type checking ok"
 
 # 29. assignment / typed-binding / if-branch type checking: more positions the
 #     checker used to leave unchecked. A typed `let x: Int = "s"`, an assignment
@@ -2435,7 +2435,7 @@ echo "[selfhost-only-gate] argument type checking ok"
 #     REJECTED; their well-typed counterparts must compile. (Iterative
 #     check_expr spine — check_seq_spine — gives the stack headroom for these
 #     extra checks during self-compile.)
-echo "[selfhost-only-gate] 29/29 assignment / binding / if-branch / struct-field / local-let type checking"
+echo "[only-gate] 29/29 assignment / binding / if-branch / struct-field / local-let type checking"
 tdir="_build/_gate_typecheck"
 rm -rf "$tdir"; mkdir -p "$tdir"
 cat > "$tdir/ok.vibe" <<'EOF'
@@ -2616,30 +2616,30 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/ok.vibe" "$tdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tdir/ok.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: well-typed binding/assign/if did not compile (over-rejects)" >&2; exit 1
+  echo "[only-gate] FAIL: well-typed binding/assign/if did not compile (over-rejects)" >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/ok_genfield.vibe" "$tdir/ok_genfield.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tdir/ok_genfield.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: well-typed generic-struct field reads did not compile (over-rejects, #829)" >&2; exit 1
+  echo "[only-gate] FAIL: well-typed generic-struct field reads did not compile (over-rejects, #829)" >&2; exit 1
 fi
 for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg bad_unknownfield bad_guardonly bad_arity_get bad_arity_bytesnew bad_mutann bad_agrecv bad_agidx bad_asrecv bad_streamlen bad_streamget bad_streamset bad_interp_paren bad_declcomma bad_structcomma bad_genfield; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$tdir/$bad.vibe" "$tdir/$bad.wasm" _start >/dev/null 2>&1 || true
   if [ -s "$tdir/$bad.wasm" ]; then
-    echo "[selfhost-only-gate] FAIL: ill-typed $bad compiled (type-check regressed)" >&2; exit 1
+    echo "[only-gate] FAIL: ill-typed $bad compiled (type-check regressed)" >&2; exit 1
   fi
 done
 rm -rf "$tdir"
-echo "[selfhost-only-gate] assignment / binding / if-branch / struct-field / local-let type checking ok"
+echo "[only-gate] assignment / binding / if-branch / struct-field / local-let type checking ok"
 
 # 30. `mut`-field write escape analysis (#418): assigning `obj.field = x` (which
 #     desugars to `__set_field(obj, "field", x)`) is only legal when `field` was
 #     declared `mut` in its struct. A write to a non-`mut` field must be
 #     REJECTED; a write to a `mut` field (and a same-typed value) must compile.
-echo "[selfhost-only-gate] 30/30 mut-field write escape analysis"
+echo "[only-gate] 30/30 mut-field write escape analysis"
 mdir="_build/_gate_mutfield"
 rm -rf "$mdir"; mkdir -p "$mdir"
 cat > "$mdir/ok_mut.vibe" <<'EOF'
@@ -2670,7 +2670,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mdir/ok_mut.vibe" "$mdir/ok_mut.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$mdir/ok_mut.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: mut-field write did not compile (over-rejects)" >&2
+  echo "[only-gate] FAIL: mut-field write did not compile (over-rejects)" >&2
   cat "$mdir/ok_mut.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 for bad in bad_nonmut bad_valty; do
@@ -2678,18 +2678,18 @@ for bad in bad_nonmut bad_valty; do
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$mdir/$bad.vibe" "$mdir/$bad.wasm" _start >/dev/null 2>&1 || true
   if [ -s "$mdir/$bad.wasm" ]; then
-    echo "[selfhost-only-gate] FAIL: $bad field write compiled (mut/value-type check regressed)" >&2; exit 1
+    echo "[only-gate] FAIL: $bad field write compiled (mut/value-type check regressed)" >&2; exit 1
   fi
 done
 rm -rf "$mdir"
-echo "[selfhost-only-gate] mut-field write escape analysis ok"
+echo "[only-gate] mut-field write escape analysis ok"
 
 # 31. value-soundness probes (each was previously accepted silently): value-
 #     yielding `match` arms must agree; array literal elements must share a type;
 #     calling a non-function value, `!` on a non-Bool, and `for x in <scalar>`
 #     must all be rejected. A `CtUnit` arm (statement-position match) and the
 #     well-typed positives must still compile.
-echo "[selfhost-only-gate] 31/31 match-arm / array / non-fn-call / unary-not / for-iterable type checking"
+echo "[only-gate] 31/31 match-arm / array / non-fn-call / unary-not / for-iterable type checking"
 cdir="_build/_gate_consistency"
 rm -rf "$cdir"; mkdir -p "$cdir"
 cat > "$cdir/ok.vibe" <<'EOF'
@@ -2727,7 +2727,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir/ok.vibe" "$cdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$cdir/ok.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: well-typed match/array did not compile (over-rejects)" >&2
+  echo "[only-gate] FAIL: well-typed match/array did not compile (over-rejects)" >&2
   cat "$cdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 for bad in bad_match bad_array bad_arraynest bad_call bad_calloption bad_not bad_forint bad_tuparity; do
@@ -2735,16 +2735,16 @@ for bad in bad_match bad_array bad_arraynest bad_call bad_calloption bad_not bad
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$cdir/$bad.vibe" "$cdir/$bad.wasm" _start >/dev/null 2>&1 || true
   if [ -s "$cdir/$bad.wasm" ]; then
-    echo "[selfhost-only-gate] FAIL: ill-typed $bad compiled (consistency check regressed)" >&2; exit 1
+    echo "[only-gate] FAIL: ill-typed $bad compiled (consistency check regressed)" >&2; exit 1
   fi
 done
 rm -rf "$cdir"
-echo "[selfhost-only-gate] match-arm / array / non-fn-call / unary-not / for-iterable type checking ok"
+echo "[only-gate] match-arm / array / non-fn-call / unary-not / for-iterable type checking ok"
 
 # 32. mutability discipline: reassigning a plain (immutable) `let` is rejected;
 #     a `let mut` binding, an accumulator updated in a loop, and a closure-local
 #     `let mut` must still compile.
-echo "[selfhost-only-gate] 32/32 mutability discipline (immutable let reassignment)"
+echo "[only-gate] 32/32 mutability discipline (immutable let reassignment)"
 mudir="_build/_gate_mutability"
 rm -rf "$mudir"; mkdir -p "$mudir"
 cat > "$mudir/ok.vibe" <<'EOF'
@@ -2763,24 +2763,24 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mudir/ok.vibe" "$mudir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$mudir/ok.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: well-typed mut/accumulator did not compile (over-rejects)" >&2
+  echo "[only-gate] FAIL: well-typed mut/accumulator did not compile (over-rejects)" >&2
   cat "$mudir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mudir/bad.vibe" "$mudir/bad.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$mudir/bad.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: immutable-let reassignment compiled (mutability check regressed)" >&2; exit 1
+  echo "[only-gate] FAIL: immutable-let reassignment compiled (mutability check regressed)" >&2; exit 1
 fi
 rm -rf "$mudir"
-echo "[selfhost-only-gate] mutability discipline ok"
+echo "[only-gate] mutability discipline ok"
 
 # 32b. mutability discipline completeness (#629 step 3-2): an illegal reassignment
 #      of an immutable `let` must be flagged even when it sits inside a map literal
 #      (and likewise labeled arg / spread / break / continue — check_mutability_expr
 #      previously dropped these Expr forms to `_ => errors`, missing the violation).
 #      A `let mut` reassignment inside the same form must still compile (no over-reject).
-echo "[selfhost-only-gate] 32b/32 mutability discipline completeness (nested forms)"
+echo "[only-gate] 32b/32 mutability discipline completeness (nested forms)"
 mu2dir="_build/_gate_mutability_nested"
 rm -rf "$mu2dir"; mkdir -p "$mu2dir"
 cat > "$mu2dir/ok.vibe" <<'EOF'
@@ -2801,22 +2801,22 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mu2dir/ok.vibe" "$mu2dir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$mu2dir/ok.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: legal mut reassignment inside map literal did not compile (over-rejects)" >&2
+  echo "[only-gate] FAIL: legal mut reassignment inside map literal did not compile (over-rejects)" >&2
   cat "$mu2dir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mu2dir/bad.vibe" "$mu2dir/bad.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$mu2dir/bad.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: immutable-let reassignment inside map literal compiled (completeness regressed)" >&2; exit 1
+  echo "[only-gate] FAIL: immutable-let reassignment inside map literal compiled (completeness regressed)" >&2; exit 1
 fi
 rm -rf "$mu2dir"
-echo "[selfhost-only-gate] mutability discipline completeness ok"
+echo "[only-gate] mutability discipline completeness ok"
 
 # 33. pattern-soundness: a constructor pattern must bind its variant's exact
 #     payload arity, and cannot match a scalar scrutinee. Binding the right
 #     arity, a nullary variant, and the builtin Option ctors must still compile.
-echo "[selfhost-only-gate] 33/33 constructor-pattern arity / scrutinee type checking"
+echo "[only-gate] 33/33 constructor-pattern arity / scrutinee type checking"
 pdir="_build/_gate_patsound"
 rm -rf "$pdir"; mkdir -p "$pdir"
 cat > "$pdir/ok.vibe" <<'EOF'
@@ -2839,7 +2839,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pdir/ok.vibe" "$pdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$pdir/ok.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: well-typed ctor patterns did not compile (over-rejects)" >&2
+  echo "[only-gate] FAIL: well-typed ctor patterns did not compile (over-rejects)" >&2
   cat "$pdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 for bad in bad_arity bad_scalar; do
@@ -2847,16 +2847,16 @@ for bad in bad_arity bad_scalar; do
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$pdir/$bad.vibe" "$pdir/$bad.wasm" _start >/dev/null 2>&1 || true
   if [ -s "$pdir/$bad.wasm" ]; then
-    echo "[selfhost-only-gate] FAIL: ill-typed pattern $bad compiled (pattern check regressed)" >&2; exit 1
+    echo "[only-gate] FAIL: ill-typed pattern $bad compiled (pattern check regressed)" >&2; exit 1
   fi
 done
 rm -rf "$pdir"
-echo "[selfhost-only-gate] constructor-pattern arity / scrutinee type checking ok"
+echo "[only-gate] constructor-pattern arity / scrutinee type checking ok"
 
 # 34. indexing / tuple-projection soundness: `obj[i]` on a non-indexable scalar
 #     and `t.N` past a tuple's arity must be rejected; indexing an Array/String
 #     and an in-range tuple projection must still compile.
-echo "[selfhost-only-gate] 34/34 indexing / tuple-projection type checking"
+echo "[only-gate] 34/34 indexing / tuple-projection type checking"
 idir="_build/_gate_index"
 rm -rf "$idir"; mkdir -p "$idir"
 cat > "$idir/ok.vibe" <<'EOF'
@@ -2921,7 +2921,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$idir/ok.vibe" "$idir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$idir/ok.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: well-typed index/tuple did not compile (over-rejects)" >&2
+  echo "[only-gate] FAIL: well-typed index/tuple did not compile (over-rejects)" >&2
   cat "$idir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 for bad in bad_index bad_tuple bad_idxtype bad_idxelem bad_stridx bad_arrget bad_arrpush bad_arrset bad_arrmap bad_arrfold bad_mapparam bad_foldparam bad_arrslice bad_arrconcat bad_arrconcatmix bad_arrpushallmix bad_arrrev; do
@@ -2929,11 +2929,11 @@ for bad in bad_index bad_tuple bad_idxtype bad_idxelem bad_stridx bad_arrget bad
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$idir/$bad.vibe" "$idir/$bad.wasm" _start >/dev/null 2>&1 || true
   if [ -s "$idir/$bad.wasm" ]; then
-    echo "[selfhost-only-gate] FAIL: ill-typed $bad compiled (index/tuple check regressed)" >&2; exit 1
+    echo "[only-gate] FAIL: ill-typed $bad compiled (index/tuple check regressed)" >&2; exit 1
   fi
 done
 rm -rf "$idir"
-echo "[selfhost-only-gate] indexing / tuple-projection type checking ok"
+echo "[only-gate] indexing / tuple-projection type checking ok"
 
 # 34b. match-arm guards (#666): `pat if cond => body` must DISPATCH on the guard.
 #     Guards were previously parsed and silently DISCARDED — the arm was taken
@@ -2942,7 +2942,7 @@ echo "[selfhost-only-gate] indexing / tuple-projection type checking ok"
 #     so a failed guard falls through to later arms, and pattern bindings (with
 #     re-binding in the fall-through arm) stay in scope for the guard. Verify
 #     the runtime answer, not just that it compiles.
-echo "[selfhost-only-gate] 34b/35 match-arm guard dispatch (#666)"
+echo "[only-gate] 34b/35 match-arm guard dispatch (#666)"
 gdir="_build/_gate_guard"
 rm -rf "$gdir"; mkdir -p "$gdir"
 cat > "$gdir/guard.vibe" <<'EOF'
@@ -2959,21 +2959,21 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$gdir/guard.vibe" "$gdir/guard.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$gdir/guard.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: guarded match did not compile" >&2
+  echo "[only-gate] FAIL: guarded match did not compile" >&2
   cat "$gdir/guard.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 gres="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$gdir/guard.wasm" 2>/dev/null | tr -dc '0-9-')"
 rm -rf "$gdir"
 # 7 (guard misses -> wildcard) + 11 (guard hits) + 2 (second guard) + 102 (bind fall-through) = 122
 if [ "$gres" != "122" ]; then
-  echo "[selfhost-only-gate] FAIL: guarded match returned '$gres' (expected 122 — guard dispatch wrong)" >&2; exit 1
+  echo "[only-gate] FAIL: guarded match returned '$gres' (expected 122 — guard dispatch wrong)" >&2; exit 1
 fi
-echo "[selfhost-only-gate] match-arm guard dispatch ok (122)"
+echo "[only-gate] match-arm guard dispatch ok (122)"
 
 # 35. match exhaustiveness: a match on a concrete user enum must cover every
 #     variant or carry a catch-all; a non-exhaustive match must be rejected.
 #     Wildcard, full-coverage, and or-pattern coverage must still compile.
-echo "[selfhost-only-gate] 35/35 match exhaustiveness (enum variant coverage)"
+echo "[only-gate] 35/35 match exhaustiveness (enum variant coverage)"
 xdir="_build/_gate_exhaust"
 rm -rf "$xdir"; mkdir -p "$xdir"
 cat > "$xdir/ok.vibe" <<'EOF'
@@ -2993,23 +2993,23 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/ok.vibe" "$xdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$xdir/ok.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: exhaustive matches did not compile (over-rejects)" >&2
+  echo "[only-gate] FAIL: exhaustive matches did not compile (over-rejects)" >&2
   cat "$xdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/bad.vibe" "$xdir/bad.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$xdir/bad.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: non-exhaustive match compiled (exhaustiveness check regressed)" >&2; exit 1
+  echo "[only-gate] FAIL: non-exhaustive match compiled (exhaustiveness check regressed)" >&2; exit 1
 fi
 rm -rf "$xdir"
-echo "[selfhost-only-gate] match exhaustiveness ok"
+echo "[only-gate] match exhaustiveness ok"
 
 # 36. literal-pattern type checking: an integer/string/boolean literal pattern
 #     can only match a scrutinee of its own type — `match 5 { "x" => .. }` and a
 #     nested `Some(true)` over `Option[Int]` must be rejected; matching literals
 #     of the right type (incl. nested) must compile.
-echo "[selfhost-only-gate] 36/36 literal-pattern type checking"
+echo "[only-gate] 36/36 literal-pattern type checking"
 ldir="_build/_gate_litpat"
 rm -rf "$ldir"; mkdir -p "$ldir"
 cat > "$ldir/ok.vibe" <<'EOF'
@@ -3030,7 +3030,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ldir/ok.vibe" "$ldir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$ldir/ok.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: well-typed literal patterns did not compile (over-rejects)" >&2
+  echo "[only-gate] FAIL: well-typed literal patterns did not compile (over-rejects)" >&2
   cat "$ldir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 for bad in bad_lit bad_nested; do
@@ -3038,15 +3038,15 @@ for bad in bad_lit bad_nested; do
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$ldir/$bad.vibe" "$ldir/$bad.wasm" _start >/dev/null 2>&1 || true
   if [ -s "$ldir/$bad.wasm" ]; then
-    echo "[selfhost-only-gate] FAIL: ill-typed literal pattern $bad compiled (check regressed)" >&2; exit 1
+    echo "[only-gate] FAIL: ill-typed literal pattern $bad compiled (check regressed)" >&2; exit 1
   fi
 done
 rm -rf "$ldir"
-echo "[selfhost-only-gate] literal-pattern type checking ok"
+echo "[only-gate] literal-pattern type checking ok"
 
 # 37. unary `-` on a non-number and `break`/`continue` outside a loop must be
 #     rejected; numeric negation and in-loop break/continue must compile.
-echo "[selfhost-only-gate] 37/37 unary-minus / break-outside-loop checking"
+echo "[only-gate] 37/37 unary-minus / break-outside-loop checking"
 bdir="_build/_gate_breakneg"
 rm -rf "$bdir"; mkdir -p "$bdir"
 cat > "$bdir/ok.vibe" <<'EOF'
@@ -3069,7 +3069,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$bdir/ok.vibe" "$bdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$bdir/ok.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: well-typed negation/break/continue did not compile (over-rejects)" >&2
+  echo "[only-gate] FAIL: well-typed negation/break/continue did not compile (over-rejects)" >&2
   cat "$bdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 for bad in bad_neg bad_break; do
@@ -3077,17 +3077,17 @@ for bad in bad_neg bad_break; do
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$bdir/$bad.vibe" "$bdir/$bad.wasm" _start >/dev/null 2>&1 || true
   if [ -s "$bdir/$bad.wasm" ]; then
-    echo "[selfhost-only-gate] FAIL: ill-formed $bad compiled (unary-minus/break check regressed)" >&2; exit 1
+    echo "[only-gate] FAIL: ill-formed $bad compiled (unary-minus/break check regressed)" >&2; exit 1
   fi
 done
 rm -rf "$bdir"
-echo "[selfhost-only-gate] unary-minus / break-outside-loop checking ok"
+echo "[only-gate] unary-minus / break-outside-loop checking ok"
 
 # 38. tuple-pattern destructuring soundness: `let (a, b) = v` may only
 #     destructure a tuple value; binding a tuple pattern over a concrete
 #     non-tuple (`let (a, b) = 5`) must be rejected, while a genuine tuple
 #     destructure must still compile.
-echo "[selfhost-only-gate] 38/38 tuple-pattern destructuring type checking"
+echo "[only-gate] 38/38 tuple-pattern destructuring type checking"
 tdir="_build/_gate_tupledestr"
 rm -rf "$tdir"; mkdir -p "$tdir"
 cat > "$tdir/ok.vibe" <<'EOF'
@@ -3100,17 +3100,17 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/ok.vibe" "$tdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tdir/ok.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: well-typed tuple destructure did not compile (over-rejects)" >&2
+  echo "[only-gate] FAIL: well-typed tuple destructure did not compile (over-rejects)" >&2
   cat "$tdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/bad_nontuple.vibe" "$tdir/bad_nontuple.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$tdir/bad_nontuple.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: ill-typed tuple destructure compiled (tuple-pattern check regressed)" >&2; exit 1
+  echo "[only-gate] FAIL: ill-typed tuple destructure compiled (tuple-pattern check regressed)" >&2; exit 1
 fi
 rm -rf "$tdir"
-echo "[selfhost-only-gate] tuple-pattern destructuring type checking ok"
+echo "[only-gate] tuple-pattern destructuring type checking ok"
 
 # 39. multi-feature end-to-end smoke: real programs that combine several language
 #     features must compile through the fresh stage2 AND run to a known value —
@@ -3118,7 +3118,7 @@ echo "[selfhost-only-gate] tuple-pattern destructuring type checking ok"
 #     above. `eff` deliberately exercises this session's work together: multi-
 #     operation effect dispatch (#665), a match guard inside a handler arm
 #     (#666), and the effect-call discipline (#626) in one program.
-echo "[selfhost-only-gate] 39/39 multi-feature end-to-end smoke"
+echo "[only-gate] 39/39 multi-feature end-to-end smoke"
 sdir="_build/_gate_smoke"
 rm -rf "$sdir"; mkdir -p "$sdir"
 cat > "$sdir/clos.vibe" <<'EOF'
@@ -3385,13 +3385,13 @@ smoke_check() {
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$sdir/$nm.vibe" "$sdir/$nm.wasm" _start >/dev/null 2>&1 || true
   if [ ! -s "$sdir/$nm.wasm" ]; then
-    echo "[selfhost-only-gate] FAIL: smoke '$nm' did not compile (codegen regression)" >&2
+    echo "[only-gate] FAIL: smoke '$nm' did not compile (codegen regression)" >&2
     cat "$sdir/$nm.wasm.diag" 2>/dev/null >&2; exit 1
   fi
   local got
   got="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sdir/$nm.wasm" 2>/dev/null | tr -dc '0-9-')"
   if [ "$got" != "$want" ]; then
-    echo "[selfhost-only-gate] FAIL: smoke '$nm' ran to '$got' (expected $want)" >&2; exit 1
+    echo "[only-gate] FAIL: smoke '$nm' ran to '$got' (expected $want)" >&2; exit 1
   fi
 }
 smoke_check clos 10
@@ -3411,7 +3411,7 @@ smoke_check pstruct 78
 smoke_check tostr 4321
 smoke_check ieq 4321
 rm -rf "$sdir"
-echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/7654321/148/4321/4321/78/4321/4321)"
+echo "[only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/7654321/148/4321/4321/78/4321/4321)"
 
 # 40. V128 SIMD intrinsics (#536): the first-class V128 type + 12 wasm-SIMD
 #     intrinsics (v128_load/store/splat/eq/le_u/ge_u/and/or/not/bitmask/
@@ -3419,69 +3419,69 @@ echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111
 #     run correctly on the default non-RC linear backend. fixtures/
 #     v128_intrinsics_test.vibe asserts lane-wise results via i8x16.bitmask; a
 #     failing assert traps (`unreachable`), so a clean `_start` exit == pass.
-echo "[selfhost-only-gate] 40/40 V128 SIMD intrinsics compile+run"
+echo "[only-gate] 40/40 V128 SIMD intrinsics compile+run"
 vdir="_build/_gate_v128"
 rm -rf "$vdir"; mkdir -p "$vdir"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/v128_intrinsics_test.vibe" "$vdir/v128.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$vdir/v128.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: v128 intrinsics test did not compile" >&2
+  echo "[only-gate] FAIL: v128 intrinsics test did not compile" >&2
   cat "$vdir/v128.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
     --invoke _start "$vdir/v128.wasm" >/dev/null 2>&1; then
-  echo "[selfhost-only-gate] FAIL: v128 intrinsics test trapped (assert failed)" >&2; exit 1
+  echo "[only-gate] FAIL: v128 intrinsics test trapped (assert failed)" >&2; exit 1
 fi
 rm -rf "$vdir"
-echo "[selfhost-only-gate] V128 SIMD intrinsics ok"
+echo "[only-gate] V128 SIMD intrinsics ok"
 
 # 40b. Fused SIMD whitespace skip (#536 Phase 3): simd_skip_ws(Bytes,Int,Int)
 #      runs a single inline v128 scan loop (16 bytes/iteration, v128 kept on the
 #      operand stack with NO per-op heap boxing) plus a scalar tail. The fixture
 #      asserts the result equals the scalar first-non-whitespace index across the
 #      tail-only, single-chunk bitmask/ctz, multi-chunk, and non-zero-start paths.
-echo "[selfhost-only-gate] 40b/40 fused SIMD whitespace skip (simd_skip_ws)"
+echo "[only-gate] 40b/40 fused SIMD whitespace skip (simd_skip_ws)"
 swdir="_build/_gate_simd_skip_ws"
 rm -rf "$swdir"; mkdir -p "$swdir"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/simd_skip_ws_test.vibe" "$swdir/sw.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$swdir/sw.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: simd_skip_ws test did not compile" >&2
+  echo "[only-gate] FAIL: simd_skip_ws test did not compile" >&2
   cat "$swdir/sw.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
     --invoke _start "$swdir/sw.wasm" >/dev/null 2>&1; then
-  echo "[selfhost-only-gate] FAIL: simd_skip_ws test trapped (assert failed)" >&2; exit 1
+  echo "[only-gate] FAIL: simd_skip_ws test trapped (assert failed)" >&2; exit 1
 fi
 rm -rf "$swdir"
-echo "[selfhost-only-gate] fused SIMD whitespace skip ok"
+echo "[only-gate] fused SIMD whitespace skip ok"
 
 # 40c. Region capture (#629 step 2): a `let mut` captured by a closure inside a
 #      struct/record literal, projection, handler, loop, labeled arg, map literal
 #      or spread must still be heap-boxed (by-reference capture), not snapshotted.
 #      The fixture asserts the read closure sees the writer's mutations and the
 #      outer cell is updated; it traps under the pre-fix by-value snapshot bug.
-echo "[selfhost-only-gate] 40c/40 region capture (mut captured inside struct literal etc.)"
+echo "[only-gate] 40c/40 region capture (mut captured inside struct literal etc.)"
 rcdir="_build/_gate_region_capture"
 rm -rf "$rcdir"; mkdir -p "$rcdir"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/region_capture_test.vibe" "$rcdir/rc.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$rcdir/rc.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: region_capture test did not compile" >&2
+  echo "[only-gate] FAIL: region_capture test did not compile" >&2
   cat "$rcdir/rc.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
     --invoke _start "$rcdir/rc.wasm" >/dev/null 2>&1; then
-  echo "[selfhost-only-gate] FAIL: region_capture test trapped (assert failed)" >&2; exit 1
+  echo "[only-gate] FAIL: region_capture test trapped (assert failed)" >&2; exit 1
 fi
 rm -rf "$rcdir"
-echo "[selfhost-only-gate] region capture ok"
+echo "[only-gate] region capture ok"
 
 # 40d. RC reclamation leak guard (#699/#700/#701/#702/#706): a hot loop
 #      allocating a tuple + a captured `let mut` cell + the closure that
@@ -3498,14 +3498,14 @@ echo "[selfhost-only-gate] region capture ok"
 #      being dropped (#706 — leaked ~84 B per call before its fix) makes it
 #      scale with N (or trap). #700 slipped precisely because no gate asserted
 #      a bounded heap.
-echo "[selfhost-only-gate] 40d/40 RC reclamation leak guard (tuple+cell+closure+enum+loop-consume)"
+echo "[only-gate] 40d/40 RC reclamation leak guard (tuple+cell+closure+enum+loop-consume)"
 lkdir="_build/_gate_rc_leak"
 rm -rf "$lkdir"; mkdir -p "$lkdir"
 VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/rc_reclaim_leak_test.vibe" "$lkdir/rc.wasm" main >/dev/null 2>&1
 if [ ! -s "$lkdir/rc.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: rc_reclaim_leak fixture did not compile under VIBE_RC" >&2
+  echo "[only-gate] FAIL: rc_reclaim_leak fixture did not compile under VIBE_RC" >&2
   cat "$lkdir/rc.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
@@ -3513,16 +3513,16 @@ lk_json="$(node scripts/measure_heap.mjs "$lkdir/rc.wasm" main 2>/dev/null)"
 lk_used="$(printf '%s' "$lk_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
 lk_result="$(printf '%s' "$lk_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
 if [ -z "$lk_used" ]; then
-  echo "[selfhost-only-gate] FAIL: could not measure rc_reclaim_leak heap ($lk_json)" >&2; exit 1
+  echo "[only-gate] FAIL: could not measure rc_reclaim_leak heap ($lk_json)" >&2; exit 1
 fi
 if [ "$lk_result" != "3200280000" ]; then
-  echo "[selfhost-only-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 3200280000)" >&2; exit 1
+  echo "[only-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 3200280000)" >&2; exit 1
 fi
 if [ "$lk_used" -ge 2000 ]; then
-  echo "[selfhost-only-gate] FAIL: rc_reclaim_leak heap_used=$lk_used >= 2000 (RC reclamation regressed; ~800000 == full leak)" >&2; exit 1
+  echo "[only-gate] FAIL: rc_reclaim_leak heap_used=$lk_used >= 2000 (RC reclamation regressed; ~800000 == full leak)" >&2; exit 1
 fi
 rm -rf "$lkdir"
-echo "[selfhost-only-gate] RC reclamation leak guard ok (heap_used=$lk_used B at N=20000)"
+echo "[only-gate] RC reclamation leak guard ok (heap_used=$lk_used B at N=20000)"
 
 # 40e. V128 SIMD intrinsics under RC (#705 follow-up): step 40 only exercised
 #      the bump backend. v128 boxes are tagged pointers with NO rc header, so
@@ -3533,23 +3533,23 @@ echo "[selfhost-only-gate] RC reclamation leak guard ok (heap_used=$lk_used B at
 #      RC-only bug where v128_load/store's byte offset and v128_splat_i8x16's
 #      byte value were used raw instead of untagged (RC tags Int as n<<1),
 #      silently computing the wrong SIMD lane bytes.
-echo "[selfhost-only-gate] 40e/40 V128 SIMD intrinsics compile+run under RC"
+echo "[only-gate] 40e/40 V128 SIMD intrinsics compile+run under RC"
 v2dir="_build/_gate_v128_rc"
 rm -rf "$v2dir"; mkdir -p "$v2dir"
 VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/v128_intrinsics_test.vibe" "$v2dir/v128rc.wasm" __no_entry__ >/dev/null 2>&1
 if [ ! -s "$v2dir/v128rc.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: v128 intrinsics test did not compile under RC" >&2
+  echo "[only-gate] FAIL: v128 intrinsics test did not compile under RC" >&2
   cat "$v2dir/v128rc.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
     --invoke _start "$v2dir/v128rc.wasm" >/dev/null 2>&1; then
-  echo "[selfhost-only-gate] FAIL: v128 intrinsics test trapped under RC (assert failed)" >&2; exit 1
+  echo "[only-gate] FAIL: v128 intrinsics test trapped under RC (assert failed)" >&2; exit 1
 fi
 rm -rf "$v2dir"
-echo "[selfhost-only-gate] V128 SIMD intrinsics under RC ok"
+echo "[only-gate] V128 SIMD intrinsics under RC ok"
 
 # 40f. RC shadow-liveness regression guard (#715 recurrence prevention).
 #      Compiles the #715 shape corpus (every minimal shape that once produced
@@ -3560,29 +3560,29 @@ echo "[selfhost-only-gate] V128 SIMD intrinsics under RC ok"
 #      accounting traps HERE, deterministically, at the faulting operation,
 #      instead of corrupting the free list and crashing later at an
 #      unrelated, binary-layout-dependent location ("moving target").
-echo "[selfhost-only-gate] 40f/40 RC shadow-liveness regression guard (#715 shapes)"
+echo "[only-gate] 40f/40 RC shadow-liveness regression guard (#715 shapes)"
 shdir="_build/_gate_rc_shadow"
 rm -rf "$shdir"; mkdir -p "$shdir"
 VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/rc_shadow_regression_test.vibe" "$shdir/shadow.wasm" main >/dev/null 2>&1
 if [ ! -s "$shdir/shadow.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: rc_shadow_regression fixture did not compile under VIBE_RC=shadow" >&2
+  echo "[only-gate] FAIL: rc_shadow_regression fixture did not compile under VIBE_RC=shadow" >&2
   cat "$shdir/shadow.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
 sh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$shdir/shadow.wasm" 2>&1 | tail -1)"
 if [ "$sh_out" != "122489" ]; then
-  echo "[selfhost-only-gate] FAIL: rc_shadow_regression got '$sh_out' (want 122489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
+  echo "[only-gate] FAIL: rc_shadow_regression got '$sh_out' (want 122489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
   exit 1
 fi
 rm -rf "$shdir"
-echo "[selfhost-only-gate] RC shadow-liveness regression guard ok (122489)"
+echo "[only-gate] RC shadow-liveness regression guard ok (122489)"
 
 # 40g. #cfg conditional-compilation guard: the flag-off build must strip the
 #      guarded statements entirely (compiles, dev symbols absent -> different
 #      program), flag-on builds must select the matching statements.
-echo "[selfhost-only-gate] 40g/40 #cfg conditional compilation"
+echo "[only-gate] 40g/40 #cfg conditional compilation"
 cfdir="_build/_gate_cfg"
 rm -rf "$cfdir"; mkdir -p "$cfdir"
 VIBE_CFG=dev VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
@@ -3594,11 +3594,11 @@ VIBE_CFG=release VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   "fixtures/cfg_flag_test.vibe" "$cfdir/rel.wasm" main >/dev/null 2>&1
 cf_rel="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$cfdir/rel.wasm" 2>&1 | tail -1)"
 if [ "$cf_dev" != "102" ] || [ "$cf_rel" != "2" ]; then
-  echo "[selfhost-only-gate] FAIL: #cfg selection wrong (dev='$cf_dev' want 102, release='$cf_rel' want 2)" >&2
+  echo "[only-gate] FAIL: #cfg selection wrong (dev='$cf_dev' want 102, release='$cf_rel' want 2)" >&2
   exit 1
 fi
 rm -rf "$cfdir"
-echo "[selfhost-only-gate] #cfg conditional compilation ok (dev=102 release=2)"
+echo "[only-gate] #cfg conditional compilation ok (dev=102 release=2)"
 
 # 40h. wasm-gc backend smoke: the VIBE_BACKEND=gc lane (selfhost port of the
 #      gc backend, wired through the adapter) must compile and run the
@@ -3606,47 +3606,47 @@ echo "[selfhost-only-gate] #cfg conditional compilation ok (dev=102 release=2)"
 #      gc/linear builtin-body name split (gc_gen_*) and the annotated-local-
 #      lambda distribution on the gc path. See fixtures/gc_backend_smoke_test.vibe
 #      for the covered subset and the known gc-lane gaps.
-echo "[selfhost-only-gate] 40h/40 wasm-gc backend smoke"
+echo "[only-gate] 40h/40 wasm-gc backend smoke"
 gcdir="_build/_gate_gc"
 rm -rf "$gcdir"; mkdir -p "$gcdir"
 VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/gc_backend_smoke_test.vibe" "$gcdir/smoke.wasm" main >/dev/null 2>&1
 if [ ! -s "$gcdir/smoke.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: gc backend smoke did not compile under VIBE_BACKEND=gc" >&2
+  echo "[only-gate] FAIL: gc backend smoke did not compile under VIBE_BACKEND=gc" >&2
   cat "$gcdir/smoke.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
 gc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcdir/smoke.wasm" 2>&1 | tail -1)"
 if [ "$gc_out" != "101520" ]; then
-  echo "[selfhost-only-gate] FAIL: gc backend smoke got '$gc_out' (want 101520)" >&2
+  echo "[only-gate] FAIL: gc backend smoke got '$gc_out' (want 101520)" >&2
   exit 1
 fi
 rm -rf "$gcdir"
-echo "[selfhost-only-gate] wasm-gc backend smoke ok (101520)"
+echo "[only-gate] wasm-gc backend smoke ok (101520)"
 
 # 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
 #      must render fixtures/wit_gen_http.vibe byte-exactly as the committed
 #      golden. Pins the WIT mapping contract (docs/effect-wit-mapping.md):
 #      declared effect -> inline interface import, host-capability effect ->
 #      comment marker, exported fns -> world exports, type mapping.
-echo "[selfhost-only-gate] 40i/40 effect->WIT golden (#537)"
+echo "[only-gate] 40i/40 effect->WIT golden (#537)"
 witdir="_build/_gate_wit"
 rm -rf "$witdir"; mkdir -p "$witdir"
 VIBE_EMIT_WIT=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/wit_gen_http.vibe" "$witdir/out.wit" main >/dev/null 2>&1
 if [ ! -s "$witdir/out.wit" ]; then
-  echo "[selfhost-only-gate] FAIL: VIBE_EMIT_WIT produced no output" >&2
+  echo "[only-gate] FAIL: VIBE_EMIT_WIT produced no output" >&2
   cat "$witdir/out.wit.diag" 2>/dev/null >&2 || true
   exit 1
 fi
 if ! diff -u "fixtures/wit_gen_http.golden.wit" "$witdir/out.wit" >&2; then
-  echo "[selfhost-only-gate] FAIL: WIT output differs from fixtures/wit_gen_http.golden.wit. If the mapping contract changed intentionally, update the golden AND docs/effect-wit-mapping.md together." >&2
+  echo "[only-gate] FAIL: WIT output differs from fixtures/wit_gen_http.golden.wit. If the mapping contract changed intentionally, update the golden AND docs/effect-wit-mapping.md together." >&2
   exit 1
 fi
 rm -rf "$witdir"
-echo "[selfhost-only-gate] effect->WIT golden ok"
+echo "[only-gate] effect->WIT golden ok"
 
 # 40j. `vibe serve` handler componentization (#537): the adapter's
 #      VIBE_SERVE_COMPONENT=1 step must turn the serve smoke handler into a
@@ -3655,7 +3655,7 @@ echo "[selfhost-only-gate] effect->WIT golden ok"
 #      via the packed-string trampoline (component_codegen). Executed on
 #      wasmtime when available (the same auth check the full HTTP gate curls);
 #      otherwise only the emission is asserted.
-echo "[selfhost-only-gate] 40j/40 serve handler componentization (#537)"
+echo "[only-gate] 40j/40 serve handler componentization (#537)"
 svdir="_build/_gate_serve"
 rm -rf "$svdir"; mkdir -p "$svdir"
 VIBE_SERVE_COMPONENT=1 VIBE_SERVE_WIT_OUT="$svdir/handler.wit" \
@@ -3663,17 +3663,17 @@ VIBE_SERVE_COMPONENT=1 VIBE_SERVE_WIT_OUT="$svdir/handler.wit" \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/serve_handler_smoke.vibe" "$svdir/handler.component.wasm" main >/dev/null 2>&1
 if [ ! -s "$svdir/handler.component.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: VIBE_SERVE_COMPONENT produced no component" >&2
+  echo "[only-gate] FAIL: VIBE_SERVE_COMPONENT produced no component" >&2
   cat "$svdir/handler.component.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
 sv_magic="$(od -An -t x1 -N 4 "$svdir/handler.component.wasm" | tr -d ' \n')"
 if [ "$sv_magic" != "0061736d" ]; then
-  echo "[selfhost-only-gate] FAIL: serve component is not wasm (magic=$sv_magic)" >&2
+  echo "[only-gate] FAIL: serve component is not wasm (magic=$sv_magic)" >&2
   exit 1
 fi
 if [ ! -s "$svdir/handler.wit" ]; then
-  echo "[selfhost-only-gate] FAIL: VIBE_SERVE_WIT_OUT sidecar missing" >&2
+  echo "[only-gate] FAIL: VIBE_SERVE_WIT_OUT sidecar missing" >&2
   exit 1
 fi
 SERVE_WASMTIME="$(bash scripts/wasmtime_bin.sh 2>/dev/null || command -v wasmtime || true)"
@@ -3684,13 +3684,13 @@ if [ -n "$SERVE_WASMTIME" ] && "$SERVE_WASMTIME" --version >/dev/null 2>&1; then
   case "$sv_out" in
     *"ok:GET:/gate"*) ;;
     *)
-      echo "[selfhost-only-gate] FAIL: serve component invoke got '$sv_out' (want 200 ok:GET:/gate). The packed-string trampoline (comp_emit_component_wasm_string_handler) no longer matches the linear-backend string ABI." >&2
+      echo "[only-gate] FAIL: serve component invoke got '$sv_out' (want 200 ok:GET:/gate). The packed-string trampoline (comp_emit_component_wasm_string_handler) no longer matches the linear-backend string ABI." >&2
       exit 1
       ;;
   esac
-  echo "[selfhost-only-gate] serve handler componentization ok (invoked on wasmtime)"
+  echo "[only-gate] serve handler componentization ok (invoked on wasmtime)"
 else
-  echo "[selfhost-only-gate] serve handler componentization ok (emission only; wasmtime unavailable)"
+  echo "[only-gate] serve handler componentization ok (emission only; wasmtime unavailable)"
 fi
 rm -rf "$svdir"
 
@@ -3704,7 +3704,7 @@ rm -rf "$svdir"
 #         over this gate, e.g. step 15c).
 #     (c) bad_toplevel_expr / bad_toplevel_mut: top level is declarations only —
 #         a top-level expression statement / `let mut` is rejected by the checker.
-echo "[selfhost-only-gate] 41/41 ADR-0069 fn main sugar + entry/top-level hardening"
+echo "[only-gate] 41/41 ADR-0069 fn main sugar + entry/top-level hardening"
 a69dir="_build/_gate_adr69"
 rm -rf "$a69dir"; mkdir -p "$a69dir"
 cat > "$a69dir/ok_fnmain.vibe" <<'EOF'
@@ -3716,7 +3716,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$a69dir/ok_fnmain.vibe" "$a69dir/ok_fnmain.wasm" main >/dev/null 2>&1
 if [ ! -s "$a69dir/ok_fnmain.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: fn main {} sugar did not compile" >&2
+  echo "[only-gate] FAIL: fn main {} sugar did not compile" >&2
   cat "$a69dir/ok_fnmain.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
@@ -3727,7 +3727,7 @@ a69_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.s
 # get a stray trailing `0` line from the Int-return print_int convention,
 # PR #834 review). Int-returning entries keep the print (see below).
 if [ "$a69_out" != "42" ]; then
-  echo "[selfhost-only-gate] FAIL: fn main {} run output '$a69_out' (want exactly '42'; a trailing 0 line means the Unit entry hit print_int)" >&2
+  echo "[only-gate] FAIL: fn main {} run output '$a69_out' (want exactly '42'; a trailing 0 line means the Unit entry hit print_int)" >&2
   exit 1
 fi
 # Int-returning `let main` keeps the historical return-print convention.
@@ -3739,14 +3739,14 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$a69dir/int_main.vibe" "$a69dir/int_main.wasm" main >/dev/null 2>&1
 if [ ! -s "$a69dir/int_main.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: Int-returning let main did not compile" >&2
+  echo "[only-gate] FAIL: Int-returning let main did not compile" >&2
   cat "$a69dir/int_main.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
 a69_int_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$a69dir/int_main.wasm" 2>&1 || true)"
 if [ "$a69_int_out" != "42" ]; then
-  echo "[selfhost-only-gate] FAIL: Int-returning main output '$a69_int_out' (want '42' — the return-print convention must survive for Int entries)" >&2
+  echo "[only-gate] FAIL: Int-returning main output '$a69_int_out' (want '42' — the return-print convention must survive for Int entries)" >&2
   exit 1
 fi
 cat > "$a69dir/typo.vibe" <<'EOF'
@@ -3757,11 +3757,11 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$a69dir/typo.vibe" "$a69dir/typo.wasm" mian >/dev/null 2>&1 || true
 if [ -s "$a69dir/typo.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: entry typo 'mian' compiled to a module (should be 'entry not found' error)" >&2
+  echo "[only-gate] FAIL: entry typo 'mian' compiled to a module (should be 'entry not found' error)" >&2
   exit 1
 fi
 if ! grep -q "not found" "$a69dir/typo.wasm.diag" 2>/dev/null; then
-  echo "[selfhost-only-gate] FAIL: entry typo diag missing 'not found' message" >&2
+  echo "[only-gate] FAIL: entry typo diag missing 'not found' message" >&2
   cat "$a69dir/typo.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
@@ -3775,7 +3775,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$a69dir/toplevel_expr.vibe" "$a69dir/toplevel_expr.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$a69dir/toplevel_expr.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: top-level expression statement compiled (should be rejected, ADR-0069)" >&2
+  echo "[only-gate] FAIL: top-level expression statement compiled (should be rejected, ADR-0069)" >&2
   exit 1
 fi
 cat > "$a69dir/toplevel_mut.vibe" <<'EOF'
@@ -3787,11 +3787,11 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$a69dir/toplevel_mut.vibe" "$a69dir/toplevel_mut.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$a69dir/toplevel_mut.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: top-level let mut compiled (should be rejected, ADR-0069)" >&2
+  echo "[only-gate] FAIL: top-level let mut compiled (should be rejected, ADR-0069)" >&2
   exit 1
 fi
 rm -rf "$a69dir"
-echo "[selfhost-only-gate] ADR-0069 fn main sugar + entry/top-level hardening ok"
+echo "[only-gate] ADR-0069 fn main sugar + entry/top-level hardening ok"
 
 # 42. #830 regression: `let record { .. } = <expr>` (record-pattern
 # destructuring, #760) parsed fine as a *local* `let` but hit a confusing raw
@@ -3804,7 +3804,7 @@ echo "[selfhost-only-gate] ADR-0069 fn main sugar + entry/top-level hardening ok
 # multi-statement expansion -- not a local change. Fixed by rejecting it at
 # parse time with a clear, LOCATED, actionable error instead (docs/adr.md
 # option (b) fallback) while leaving the working function-body form alone.
-echo "[selfhost-only-gate] 42/42 top-level record-pattern let rejection (#830)"
+echo "[only-gate] 42/42 top-level record-pattern let rejection (#830)"
 g830dir="_build/_gate_830"
 rm -rf "$g830dir"; mkdir -p "$g830dir"
 cat > "$g830dir/toplevel_record_destr.vibe" <<'EOF'
@@ -3817,11 +3817,11 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$g830dir/toplevel_record_destr.vibe" "$g830dir/toplevel_record_destr.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$g830dir/toplevel_record_destr.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: top-level 'let record { .. } = ..' compiled (should be rejected, #830)" >&2
+  echo "[only-gate] FAIL: top-level 'let record { .. } = ..' compiled (should be rejected, #830)" >&2
   exit 1
 fi
 if ! grep -q "top-level 'let record" "$g830dir/toplevel_record_destr.wasm.diag" 2>/dev/null; then
-  echo "[selfhost-only-gate] FAIL: top-level record-pattern let diag missing the clear #830 message (still the raw 'expected = but got {' error?)" >&2
+  echo "[only-gate] FAIL: top-level record-pattern let diag missing the clear #830 message (still the raw 'expected = but got {' error?)" >&2
   cat "$g830dir/toplevel_record_destr.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
@@ -3843,17 +3843,17 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$g830dir/fnbody_record_destr.vibe" "$g830dir/fnbody_record_destr.wasm" _start >/dev/null 2>&1
 if [ ! -s "$g830dir/fnbody_record_destr.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: function-body 'let record { .. } = ..' did not compile" >&2
+  echo "[only-gate] FAIL: function-body 'let record { .. } = ..' did not compile" >&2
   cat "$g830dir/fnbody_record_destr.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
 g830_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$g830dir/fnbody_record_destr.wasm" 2>&1 || true)"
 if [ "$g830_out" != "407" ]; then
-  echo "[selfhost-only-gate] FAIL: function-body record-pattern destructure output '$g830_out' (want '407' = length(\"vibe\")*100 + 7)" >&2
+  echo "[only-gate] FAIL: function-body record-pattern destructure output '$g830_out' (want '407' = length(\"vibe\")*100 + 7)" >&2
   exit 1
 fi
 rm -rf "$g830dir"
-echo "[selfhost-only-gate] top-level record-pattern let rejection (#830) ok"
+echo "[only-gate] top-level record-pattern let rejection (#830) ok"
 
-echo "[selfhost-only-gate] ok"
+echo "[only-gate] ok"

@@ -565,7 +565,7 @@ PY
   # module source so that seed -> stage1 -> stage2 needs no MoonBit host.
   # emit-module-source is a deterministic function of the compiler source;
   # the committed copy is kept fresh by scripts/check_module_source_sync.sh
-  # (run in selfhost-gate). Force regeneration through the host compiler with
+  # (run in gate). Force regeneration through the host compiler with
   # VIBE_REGEN_MODULE_SOURCE=1 (used by that gate and by intentional
   # module-source bumps).
   local committed_module_source="$COMPILER_DIR/cli_adapter_module_source.vibe"

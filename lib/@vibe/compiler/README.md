@@ -60,7 +60,7 @@ just release-check
 Run focused compiler suites:
 
 ```bash
-just test-selfhost-typecheck-fixtures
+just test-typecheck-fixtures
 just test-selfhost-runtime-fixtures
-just test-selfhost-cli-core
+just test-cli-core
 ```
