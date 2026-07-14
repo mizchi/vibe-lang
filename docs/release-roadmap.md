@@ -476,7 +476,7 @@ content-addressed に再現可能で動く。中央 registry の有無を含め�
       受け、resolver で `.vibe/deps/` ミラーに写像する案を試作したが、
       **compiler codegen の既知の脆さ**（`collect_import_path` の string 補間 /
       import 解決ホットパスでの String 操作が NUL garbage を生む。
-      `selfhost_only_gate.sh` step4 のコメント参照）に当たり revert。
+      `compiler_gate.sh` step4 のコメント参照）に当たり revert。
       seed 互換な codegen 修正を先に固めてから再導入する。
 - [ ] **2-1 リモート import 解決（完全版）** — git/URL から外部ソースを取得し
       `$HOME/.vibe/lib` / content store にキャッシュ。`index.lock` に hash を固定。

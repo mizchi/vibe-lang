@@ -5,7 +5,7 @@
 # and section layout. Also asserts idempotency and that --check distinguishes
 # normalized from un-normalized. (This script drives the COMMITTED SEED, so
 # stage2-only behavior — module-block rejection #728, fn rejection #727 —
-# is asserted in selfhost_only_gate.sh step 6 instead. The old module-flatten
+# is asserted in compiler_gate.sh step 6 instead. The old module-flatten
 # fixture 03 was retired with module blocks, #728.)
 set -euo pipefail
 

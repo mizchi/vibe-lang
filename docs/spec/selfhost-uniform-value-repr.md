@@ -326,7 +326,7 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    > not reflect edited codegen. **Always bust the cache by appending a unique
    > comment to the test file** (then `git checkout` it) when verifying codegen
    > changes. Do **not** rely on ad-hoc `compile_wasi_rc` → write-`/tmp` →
-   > `measure_selfhost_heap.mjs` probes for *correctness*: the test sandbox
+   > `measure_heap.mjs` probes for *correctness*: the test sandbox
    > isolates `/tmp` and the entry takes a closure-`env` arg, so the `result`
    > field is unreliable (the `heap_used` field, read from the `__heap_ptr`
    > global, is fine for reclamation). The **authoritative** signal is the

@@ -78,7 +78,7 @@ cp "$PROJECT_ROOT/clients/wasm/README.md" "$OUT_DIR/$README_NAME"
 # host imports), these run the *selfhost* compiler and let a consumer
 # bootstrap the stage0 -> stage1 -> stage2 build WITHOUT building the
 # MoonBit host from the mooncakes registry. See
-# scripts/fetch_selfhost_compiler.sh and docs/selfhost-bootstrap.md.
+# scripts/fetch_compiler.sh and docs/bootstrap.md.
 #   - vibe-selfhost-<tag>.wasm           : stage0 seed compiler wasm
 #                                          (instantiates under stock
 #                                           wasmtime, runs under moonrun)
@@ -114,7 +114,7 @@ if ! VIBE_BUNDLE_OUT="$sh_tmp/selfhost_sources_bundle.vibe" \
   VIBE_ADAPTER_BUNDLE_OUT="$sh_tmp/selfhost_cli_adapter_bundle.vibe" \
   VIBE_RUNTIME_ENTRY_BUNDLE_OUT="$sh_tmp/selfbuild_runtime_entry_bundle.vibe" \
   VIBE_ADAPTER_MODULE_SOURCE_OUT="$OUT_DIR/$SELFHOST_MODSRC_NAME" \
-  bash "$PROJECT_ROOT/scripts/generate_selfhost_bundle.sh" >"$sh_tmp/gen.log" 2>&1; then
+  bash "$PROJECT_ROOT/scripts/generate_bundle.sh" >"$sh_tmp/gen.log" 2>&1; then
   cat "$sh_tmp/gen.log" >&2
   echo "release-assets: selfhost module source generation failed" >&2
   exit 1

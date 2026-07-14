@@ -28,7 +28,7 @@ Status: accepted from 2026-06-12.
 | compile peak RSS ratio | 1.402x |
 | check peak RSS ratio | 0.920x |
 | corpus REAL gaps | 0 |
-| selfhost-gate | green |
+| full-gate | green |
 
 ## Development Mode
 
@@ -42,8 +42,8 @@ current compiler を作るための legacy bootstrap/fallback 境界として扱
 
 1. `lib/@vibe/compiler/` 側に test を追加して Red を確認する。
 2. `lib/@vibe/compiler/` または `lib/@vibe/cli/` の実装を直して Green にする。
-3. 必要なら `scripts/generate_selfhost_bundle.sh` で bundle を同期する。
-4. `pkf run selfhost-gate` を通す。
+3. 必要なら `scripts/generate_bundle.sh` で bundle を同期する。
+4. `pkf run full-gate` を通す。
 5. 互換や配布 artifact に影響する変更だけ `pkf run release-check` も通す。
 
 `src/` を変更する必要があるように見える場合は、先に原因を
@@ -60,31 +60,32 @@ bootstrap bump は通常の feature commit と分ける。新 syntax を compile
 compiler の継続運用判断には以下を使う。
 
 ```bash
-pkf run selfhost-gate
+pkf run full-gate
 ```
 
-旧 `pkf run selfhost-trial-gate` は互換 alias として残す。
+旧 `pkf run selfhost-trial-gate` 互換 alias は #850 Phase B で削除した
+(生存中の呼び出し元がなかったため)。
 
 この task は次をまとめて確認する。
 
-- `selfhost-generation-gate`: fixed seed -> stage1 -> stage2 -> stage3
-- `release-selfhost-gates`: component / direct / command / cutover / golden WAT
+- `generation-gate`: fixed seed -> stage1 -> stage2 -> stage3
+- `release-gates`: component / direct / command / cutover / golden WAT
 - `test-selfhost-corpus-gate`: corpus check parity REAL=0
-- `selfhost-perf-kpi`: TOTAL compile <= 2.5x、TOTAL check <= 1.33x
-- `selfhost-rss-kpi`: peak RSS compile/check <= 2.0x
+- `perf-kpi`: TOTAL compile <= 2.5x、TOTAL check <= 1.33x
+- `rss-kpi`: peak RSS compile/check <= 2.0x
 
 stage generation は gate の先頭で固定している。release/corpus/perf/RSS を
 先に実行したあとに generation を走らせると、host runner 側の Node/Wasm 実行が
 segfault することがあるため、Taskfile では
-`selfhost-generation-gate` -> `selfhost-post-generation-gate` の依存チェーンにしている。
+`generation-gate` -> `post-generation-gate` の依存チェーンにしている。
 
 短い調査ループでは、必要な部分だけを単独で走らせてよい。
 
 ```bash
-pkf run release-selfhost-gates
+pkf run release-gates
 pkf run test-selfhost-corpus-gate
-pkf run selfhost-perf-kpi
-pkf run selfhost-rss-kpi
+pkf run perf-kpi
+pkf run rss-kpi
 ```
 
 ## Stop Criteria

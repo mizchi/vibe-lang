@@ -110,7 +110,7 @@ let bytes_equal_simd = (a: Bytes, off_a: Int, b: Bytes, off_b: Int, len: Int) ->
 > Phase 2 (V128 first-class 型 + Layer 1 intrinsic の production 化) は #696 で着地。
 > `V128` は memory-boxed (16-byte heap block, ポインタ値 `|1` tag) として表現し、
 > `v128_*` intrinsic を `compile_call.vibe` で 0xFD prefix 命令に inline lowering する。
-> opcode regression は `scripts/selfhost_only_gate.sh` step 40 (V128 intrinsics) で pin
+> opcode regression は `scripts/compiler_gate.sh` step 40 (V128 intrinsics) で pin
 > (`v128.or` の opcode 80 取り違えバグ修正含む)。**wasm-gc backend は v128 非対応**
 > (`backend_call.vibe` が unsupported error を throw)。
 
@@ -124,7 +124,7 @@ self-build (数 MB) で GB 級の heap 成長 + scalar より遅い。
 **解決: fused unboxed builtin `simd_skip_ws(Bytes, Int, Int) -> Int`** を追加
 (codegen inline、`compile_call.vibe`)。16 バイト単位の v128 scan を**単一の wasm
 ループ**として emit し、v128 値を operand stack に載せたまま処理する (heap box ゼロ)。
-末尾はスカラ fallback。最初の非空白 index、全空白なら len を返す。`selfhost_only_gate.sh`
+末尾はスカラ fallback。最初の非空白 index、全空白なら len を返す。`compiler_gate.sh`
 step 40b で correctness を pin。
 
 **lexer 統合は見送り (データ判断)。** selfhost compiler source (447 files, 2.97MB) の

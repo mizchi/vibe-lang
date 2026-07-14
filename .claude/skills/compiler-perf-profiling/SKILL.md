@@ -10,21 +10,21 @@ vibe compiler (selfhost, linear/RC lane) の性能改善は「synthetic bench �
 圧倒的に速く核心に届く。#799 でこの手順により重量級コンパイルを 39s→4s
 (約10倍) にした実績がある。
 
-## 0. ワンコマンド: scripts/profile_selfhost_compile.sh
+## 0. ワンコマンド: scripts/profile_compile.sh
 
 §1 の cpu-prof + self-time 集計と §3 のメモリ統計 (heap 高水位 / linear
 memory / RSS) を 1 コマンドに束ねたもの。まずこれを叩き、深掘りが必要に
 なったら §1 以降の手作業に降りる。
 
 ```bash
-scripts/profile_selfhost_compile.sh /tmp/gen/stage2.wasm            # 既定 corpus
-scripts/profile_selfhost_compile.sh /tmp/gen/stage2.wasm foo.vibe 30
+scripts/profile_compile.sh /tmp/gen/stage2.wasm            # 既定 corpus
+scripts/profile_compile.sh /tmp/gen/stage2.wasm foo.vibe 30
 ```
 
 ## 1. まず実コンパイルをプロファイルする (最重要)
 
 ```bash
-S2=<stage2.wasm>   # 現行 stage2 (scripts/selfhost_generations.sh build の成果物)
+S2=<stage2.wasm>   # 現行 stage2 (scripts/generations.sh build の成果物)
 VIBE_PREOPEN_DIR="$PWD" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   node --cpu-prof --cpu-prof-dir=/tmp --cpu-prof-name=compile.cpuprofile \
   scripts/wasm_vibe_host_runner.js --invoke cli_main "$S2" \
@@ -127,10 +127,10 @@ phase bench: selfhost_{lexer,parser,checker,codegen}_bench.vibe。
 # a. bundle regen (compiler source を触ったら必須)
 VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 \
   VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe \
-  bash scripts/generate_selfhost_bundle.sh
+  bash scripts/generate_bundle.sh
 
 # b. stage rebuild + fixpoint (stage2 == stage3 が絶対条件)
-bash scripts/selfhost_generations.sh build --out-dir /tmp/gen --stage3 --skip-run-validation
+bash scripts/generations.sh build --out-dir /tmp/gen --stage3 --skip-run-validation
 cmp /tmp/gen/stage2.wasm /tmp/gen/stage3.wasm
 
 # c. 最適化の同値性: 修正前 stage2 と修正後 stage2 で同じファイルを
@@ -139,7 +139,7 @@ cmp /tmp/gen/stage2.wasm /tmp/gen/stage3.wasm
 # d. 再プロファイル (狙ったホットスポットが消えたか)
 
 # e. 全体回帰
-VIBE_SELFHOST_STAGE2_WASM=/tmp/gen/stage2.wasm bash scripts/selfhost_unit_test_runner.sh
+VIBE_SELFHOST_STAGE2_WASM=/tmp/gen/stage2.wasm bash scripts/unit_test_runner.sh
 ```
 
 ### 検証の罠 (実際に踏んだもの)

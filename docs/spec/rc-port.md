@@ -61,7 +61,7 @@ is added.
   returned closure, and a tuple-allocating loop. The header rewrite must keep
   these green.
 - **Memory-leak profiling in place**: the compiler's linear backend exports its
-  bump-allocator cursor as the `__heap_ptr` global. `scripts/measure_selfhost_heap.mjs`
+  bump-allocator cursor as the `__heap_ptr` global. `scripts/measure_heap.mjs`
   reads it before/after invoking a function (on a minimal wasm host) to report
   bytes allocated; `scripts/measure_selfhost_heap_leak.sh` compiles the same
   allocating loop at two iteration counts and reports per-iteration heap growth.

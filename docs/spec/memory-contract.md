@@ -25,7 +25,7 @@ only behavior.**
 | intended status | production default | future linear default (opt-out leak) | long-term primary target |
 
 The defaults above are exercised by the selfhost gate
-(`scripts/selfhost_only_gate.sh`), which compiles, runs, and self-reproduces
+(`scripts/compiler_gate.sh`), which compiles, runs, and self-reproduces
 through the linear `--wasm` path; the RC analysis path is exercised by
 `lib/@vibe/compiler/perceus_rc_test.vibe` (`test-selfhost-perceus`).
 

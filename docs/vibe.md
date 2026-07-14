@@ -871,7 +871,7 @@ CLI:
 
 Fixtures:
 - `fixtures/*.vibe` include a `__DATA__` JSON block and are exercised through the
-  selfhost gate (`pkf run selfhost-gate`) and `pkf run test-fixtures`.
+  selfhost gate (`pkf run full-gate`) and `pkf run test-fixtures`.
 - Fields:
   - `last`: expected `Value::to_string()` (exact match).
   - `effects`: expected `Effect::to_string()` list (exact match).

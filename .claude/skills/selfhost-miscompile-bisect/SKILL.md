@@ -17,7 +17,7 @@ backend X(wasm-gc lane 等)でコンパイルしたコンパイラ(以下「X-co
 # 1. 修正入りの linear CLI(stage2e)を作る: committed bundle を最新 stage2 でコンパイル
 VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 \
   VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe \
-  bash scripts/generate_selfhost_bundle.sh
+  bash scripts/generate_bundle.sh
 STAGE2="$(ls -t _build/selfhost/generations/*/stage2.wasm | head -1)"
 env VIBE_RC=0 VIBE_PREOPEN_DIR="$PWD" VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
@@ -105,7 +105,7 @@ trap の `wasm-function[N]` はこの対応で source 関数に翻訳できる�
 tiny E2E(`cmp` で linear 出力と一致)→ self-compile
 (bundle_gc に bundle 自身をコンパイルさせ、stage2e と `cmp`)。
 **byte 一致 = fixpoint** が最終合格。ゲートは
-`bash scripts/test_gc_selfbuild.sh` と `bash scripts/selfhost_only_gate.sh`。
+`bash scripts/test_gc_selfbuild.sh` と `bash scripts/compiler_gate.sh`。
 
 ## 落とし穴(実際に踏んだもの)
 
