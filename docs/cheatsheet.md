@@ -275,12 +275,16 @@ x if x > 0          // guard (match arm only)
 
 ### Destructuring let
 
-record destructure は関数 / block body 内で使う (top-level の
-`let record { ... } = r` は現状 parse error、#760)。
+パターン `let` (tuple destructure `let (a, b) = ..`、named-struct destructure
+`let Name::{ .. } = ..`、record destructure `let record { .. } = ..`) は
+すべて関数 / block body 内でのみ使う。top-level では現状すべて拒否される
+(`let record { ... } = r` は parse error、#760。`let (a, b) = ..` /
+`let Name::{ .. } = ..` は #830 の対応でこれらと同じ located error になった。
+根本原因は #859 参照 — 実装できれば top-level 対応も検討)。
 
 ```vibe
 let demo: (Option[(Int, Int)], Option[Int]) -> Int = (pt, opt) -> {
-  let (a, b) = (1, 2)              // tuple destructure (top-level でも可)
+  let (a, b) = (1, 2)              // tuple destructure (function/block body only)
   let r = record { x: 10, y: 20 }
   let record { x, y } = r          // any field names bind
   let Some((px, py)) = pt          // ctor pattern (partial: traps on mismatch)

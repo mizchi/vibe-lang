@@ -5,7 +5,7 @@ import ../ast {
 }
 
 import ./parser_base.vibe {
-  _no_tb, _no_tp, collect_effect_names, collect_import_path, empty_exprs, empty_fields, empty_import_items, empty_params, expect_tk, is_tk, mode_block, parse_binding_name, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_param_list, parse_pattern, parse_struct_field, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_type_impl, peek, skip_braced_body, tk_name
+  _no_tb, _no_tp, collect_effect_names, collect_import_path, empty_exprs, empty_fields, empty_import_items, empty_params, expect_tk, is_tk, mode_block, parse_binding_name, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_param_list, parse_struct_field, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_type_impl, peek, skip_braced_body, tk_name
 }
 
 import ./parser_expr_core.vibe {
@@ -308,13 +308,26 @@ fn parse_let_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: 
       },
       _ => throw("expected name after 'let mut'")
     },
+    // #859: top-level pattern `let` (tuple destructure `let (a, b) = pair`,
+    // and the `Name::{ .. }` struct-destructure case below) parses fine and
+    // type-checks fine (`checker_stmt.vibe`'s `SLetPat` arm happily binds the
+    // pattern names into the type environment) but codegen has no case for
+    // a top-level `SLetPat` at all -- ANY pattern shape, including a bare
+    // `let (x) = 5` that degenerates to a single `PBind`, crashes with a raw
+    // "undefined variable (ident): x" at compile time instead of either
+    // working or producing a proper diagnostic. Root cause (full writeup on
+    // #859): pattern-`let` lowering only exists as a block-level mechanism
+    // (`parser_expr_dispatch.vibe`'s `apply_struct_destr`/`apply_record_destr`,
+    // which wrap the REST of an enclosing expression continuation in nested
+    // `ELet`s) -- top-level statements have no such enclosing continuation
+    // (each top-level `let` is its own independent global binding), so
+    // properly supporting this needs a real multi-statement lowering
+    // plumbed through every `parse_program*` variant plus the checker/
+    // codegen pipeline, not a local parser change. Until that lands (#859),
+    // reject with a clear, LOCATED error instead of the misleading internal
+    // crash -- same treatment #830 already gave the `record { .. }` form.
     TLParen => {
-      let (pat, pat_next) = parse_pattern(tokens, pos)
-      let ep = expect_tk(tokens, pat_next, "=")
-      let val_pair = parse_impl(tokens, starts, ep, 0)
-      let val = val_pair.0
-      let val_next = val_pair.1
-      (SLetPat(pat, val), val_next)
+      throw("top-level 'let (..) = <expr>' tuple destructuring is not supported (#859); move it into a function body (e.g. 'fn main() { let (a, b) = <expr>; .. }')")
     },
     TIdent(_name0) => {
       // #830: `let record { a, b } = r` (record-pattern destructuring, #760)
@@ -353,12 +366,11 @@ fn parse_let_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: 
         _ => false
       }
       if is_struct_destructure {
-        let (pat, pat_next) = parse_pattern(tokens, pos)
-        let ep = expect_tk(tokens, pat_next, "=")
-        let val_pair = parse_impl(tokens, starts, ep, 0)
-        let val = val_pair.0
-        let val_next = val_pair.1
-        (SLetPat(pat, val), val_next)
+        // #859: same root cause as the tuple-destructure case above -- a
+        // named-struct pattern let (`let Name::{ x, y } = v`) parses and
+        // type-checks fine at top level but codegen has no `SLetPat` case,
+        // crashing with a raw "undefined variable" instead of working.
+        throw("top-level 'let Name::{ .. } = <expr>' struct destructuring is not supported (#859); move it into a function body (e.g. 'fn main() { let Name::{ x, y } = <expr>; .. }')")
       } else {
         let (name, name_next) = parse_binding_name(tokens, pos)
         let (type_params, type_bounds, ty_opt, eq_pos) = match peek(tokens, name_next) {
