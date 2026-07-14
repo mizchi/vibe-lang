@@ -1292,10 +1292,28 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with { Err
     let impl_ingested = ingest_source_text_fs(resolved, Fs::read_file(resolved))
     let impl_stmts = parse_program(lex(impl_ingested))
     Array::push(impl_units, (raw, impl_stmts))
-    let mut si = 0
-    while si < Array::length(impl_stmts) {
-      Array::push(union_stmts, Array::get(impl_stmts, si))
-      si = si + 1
+    // #847: a raw resolving to ANOTHER package's own index.vibei/index.vibe
+    // (a cross-package or nested-boundary reference, e.g. `import ../pkgb
+    // { type X }` written purely so the contract's own bodyless signatures
+    // can NAME `X`) is that OTHER package's already-conformance-checked
+    // facade, not this package's own implementation surface. Its stmts are
+    // excluded from `union_stmts` (this package's own conformance input) —
+    // otherwise pkgb's synthetic `export ./impl.vibe { X, make, value }`
+    // facade line reads as pkga re-exporting undeclared symbols, a false
+    // positive `check_contract`'s SReExport check would otherwise raise.
+    // `impl_units` (facade generation) is unaffected: a boundary unit's defs
+    // are already invisible to `collect_impl_fn_defs`/`collect_impl_type_defs`
+    // (a facade is SReExport-only, no SLet/SStruct), so it never allocates a
+    // re-export line under this package's own name anyway.
+    let is_boundary_unit = String::ends_with(resolved, "/index.vibei") || String::ends_with(resolved, "/index.vibe")
+    if is_boundary_unit {
+      ()
+    } else {
+      let mut si = 0
+      while si < Array::length(impl_stmts) {
+        Array::push(union_stmts, Array::get(impl_stmts, si))
+        si = si + 1
+      }
     }
     ri = ri + 1
   }

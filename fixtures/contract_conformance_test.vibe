@@ -17,7 +17,7 @@ import ../lib/@vibe/compiler/core {
 }
 
 import ../lib/@vibe/compiler/contract/index.vibe {
-  parse_contract_program, check_contract, contract_hash, package_hash_from_sources, extract_package_version, extract_require_pins, is_strict_semver, is_package_pin, contract_surface_lines, classify_contract_change, semver_bump_kind, verify_publish_bump
+  parse_contract_program, check_contract, contract_hash, package_hash_from_sources, extract_package_version, extract_require_pins, is_strict_semver, is_package_pin, contract_surface_lines, classify_contract_change, semver_bump_kind, verify_publish_bump, contract_facade_source
 }
 
 import ../lib/@vibe/core {
@@ -325,6 +325,60 @@ test "version directive: absent -> empty; only the leading region counts (#754)"
   assert(extract_package_version("fn f(x: Int) -> Int") == "")
   // a later line that happens to start with "version " is ordinary source
   assert(extract_package_version("fn f(x: Int) -> Int\nversion 9.9.9") == "")
+}
+
+test "re-exported symbol not declared in the contract is reported (#847)" {
+  let (decls, _, _) = parse_contract_program(lex("fn run(x: Int) -> Int"))
+  let impls = parse_program(lex("export fn run(x: Int) -> Int { x }\nexport ./other.vibe { leaked }"))
+  let errs = check_contract(decls, no_opaques(), impls)
+  assert_eq(Array::length(errs), 1)
+  assert(String::contains(errs[0], "leaked"))
+}
+
+test "re-exported symbol matching a declared fn is not reported (#847)" {
+  let (decls, _, _) = parse_contract_program(lex("fn run(x: Int) -> Int\nfn helper(x: Int) -> Int"))
+  let impls = parse_program(lex("export fn run(x: Int) -> Int { x }\nexport ./other.vibe { helper }"))
+  let errs = check_contract(decls, no_opaques(), impls)
+  assert_eq(Array::length(errs), 0)
+}
+
+test "re-exported symbol matching a declared opaque type is not reported (#847)" {
+  let (decls, opaques, _) = parse_contract_program(lex("opaque type Counter"))
+  let impls = parse_program(lex("export ./other.vibe { Counter }"))
+  let errs = check_contract(decls, opaques, impls)
+  assert_eq(Array::length(errs), 0)
+}
+
+// #847: check_contract accepting a declaration satisfied only by re-export
+// is not enough on its own — contract_facade_source must ALSO allocate that
+// name (into the re-exporting unit's own facade line), or a package that
+// conforms would still throw "some declarations have no implementation
+// file" the moment its facade is generated.
+test "facade generation allocates a declaration satisfied only by re-export (#847)" {
+  let (decls, _, _) = parse_contract_program(lex("fn helper(x: Int) -> Int"))
+  let unit_stmts = parse_program(lex("export ./other.vibe { helper }"))
+  let facade = contract_facade_source(decls, no_opaques(), no_type_defs(), [("./mid.vibe", unit_stmts)])
+  assert(String::contains(facade, "helper"))
+}
+
+test "facade generation allocates a re-exported opaque type (#847)" {
+  let (decls, opaques, _) = parse_contract_program(lex("opaque type Counter"))
+  let unit_stmts = parse_program(lex("export ./other.vibe { Counter }"))
+  let facade = contract_facade_source(decls, opaques, no_type_defs(), [("./mid.vibe", unit_stmts)])
+  assert(String::contains(facade, "Counter"))
+}
+
+test "re-exported symbol checks the alias name, not the source name (#847)" {
+  let (decls, _, _) = parse_contract_program(lex("fn helper(x: Int) -> Int"))
+  let ok_impls = parse_program(lex("export ./other.vibe { impl_name as helper }"))
+  assert_eq(Array::length(check_contract(decls, no_opaques(), ok_impls)), 0)
+  // aliasing the declared name AWAY (`helper as wrong_name`) is doubly wrong:
+  // 'helper' itself now has no implementer, AND 'wrong_name' is undeclared.
+  let bad_impls = parse_program(lex("export ./other.vibe { helper as wrong_name }"))
+  let bad_errs = check_contract(decls, no_opaques(), bad_impls)
+  assert_eq(Array::length(bad_errs), 2)
+  assert(String::contains(bad_errs[0], "helper"))
+  assert(String::contains(bad_errs[1], "wrong_name"))
 }
 
 test "version directive: malformed forms are rejected (#754)" {

@@ -337,6 +337,50 @@ export fn collect_impl_type_defs(stmts: Array[Stmt]) -> Array[(String, Bool, Int
   out
 }
 
+// #847: names an impl file brings into the package's export surface via
+// `export ./other.vibe { name, other as alias }` rather than a direct
+// SLet/SStruct/... definition — invisible to `collect_impl_fn_defs`/
+// `collect_impl_type_defs`, which only match direct top-level defs. Resolved
+// to the alias when present (the alias, not the source name, is what the
+// contract surface actually sees).
+fn collect_reexported_names(impl_stmts: Array[Stmt]) -> Array[String] {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(impl_stmts) {
+    match Array::get(impl_stmts, i) {
+      SReExport(_, items) => {
+        let mut ii = 0
+        while ii < Array::length(items) {
+          let (rname, alias_opt) = Array::get(items, ii)
+          let exported_name = match alias_opt {
+            Some(a) => a,
+            None => rname
+          }
+          Array::push(out, exported_name)
+          ii = ii + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn array_contains_string(xs: Array[String], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) {
+    if Array::get(xs, i) == target {
+      found = true
+    } else ()
+    i = i + 1
+  }
+  found
+}
+
 // Check that `impl_stmts` provide exactly the contract surface. Returns a
 // list of human-readable conformance errors; empty = conformant.
 export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(String, Int)], impl_stmts: Array[Stmt]) -> Array[String] {
@@ -344,6 +388,12 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
     ""
   ], 0, 0)
   let defs = collect_impl_fn_defs(impl_stmts)
+  // #847: a re-exported name has no signature to compare (SReExport carries
+  // no type info) — it is accepted at face value as satisfying a declared
+  // fn or opaque type, same trust boundary the loader already gives a plain
+  // `export ./impl.vibe { name }` line (the re-exported definition's OWN
+  // package/contract is responsible for that definition's correctness).
+  let reexported = collect_reexported_names(impl_stmts)
   let mut di = 0
   while di < Array::length(decls) {
     let (dname, dsig) = Array::get(decls, di)
@@ -381,6 +431,8 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
     }
     if satisfied {
       ()
+    } else if array_contains_string(reexported, dname) {
+      ()
     } else if seen_any {
       Array::push(errors, best_msg)
     } else {
@@ -413,7 +465,10 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
   let mut oi = 0
   while oi < Array::length(opaque_names) {
     let (oname, oarity) = Array::get(opaque_names, oi)
-    let mut ofound = false
+    // #847: same trust-at-face-value treatment as the fn-decl loop above —
+    // a re-exported name has no arity to compare, so it satisfies an opaque
+    // type declaration without an arity check (there is nothing to check).
+    let mut ofound = array_contains_string(reexported, oname)
     let mut ti = 0
     while ti < Array::length(type_defs) {
       let (tname, texported, tarity) = Array::get(type_defs, ti)
@@ -461,6 +516,43 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
       }
     } else ()
     xi = xi + 1
+  }
+  // #847: `collect_impl_fn_defs`/`collect_impl_type_defs` only see SLet/
+  // SStruct/... top-level defs — an impl file that RE-exports a symbol
+  // (`export ./other.vibe { extra }`) is neither, so its name was invisible
+  // to every check above and could leak an undeclared symbol into the
+  // package's real export surface. Require every re-exported name to match
+  // either a declared fn or a declared opaque type.
+  let mut rxi = 0
+  while rxi < Array::length(reexported) {
+    let exported_name = Array::get(reexported, rxi)
+    let mut rdeclared = false
+    let mut rdi = 0
+    while rdi < Array::length(decls) {
+      let (dname, _) = Array::get(decls, rdi)
+      if dname == exported_name {
+        rdeclared = true
+      } else ()
+      rdi = rdi + 1
+    }
+    if rdeclared {
+      ()
+    } else {
+      let mut roi = 0
+      while roi < Array::length(opaque_names) {
+        let (oname, _) = Array::get(opaque_names, roi)
+        if oname == exported_name {
+          rdeclared = true
+        } else ()
+        roi = roi + 1
+      }
+    }
+    if rdeclared {
+      ()
+    } else {
+      Array::push(errors, "re-exported '\{exported_name}' is not declared in the contract")
+    }
+    rxi = rxi + 1
   }
   errors
 }
@@ -527,6 +619,13 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
     let (raw, unit_stmts) = Array::get(impl_units, ui)
     let defs = collect_impl_fn_defs(unit_stmts)
     let unit_types = collect_impl_type_defs(unit_stmts)
+    // #847: a unit may satisfy a declaration purely via `export ./other.vibe
+    // { name }` (no direct SLet/SStruct/... def of its own) — `check_contract`
+    // already accepts this (a re-export is trusted at face value, same as any
+    // other impl declaration), so the facade must allocate it here too, or a
+    // contract that relies on re-export throws "some declarations have no
+    // implementation file" despite passing conformance.
+    let unit_reexported = collect_reexported_names(unit_stmts)
     let names = Array::slice([
       ""
     ], 0, 0)
@@ -544,7 +643,7 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
       if otaken {
         ()
       } else {
-        let mut here = false
+        let mut here = array_contains_string(unit_reexported, oname)
         let mut uti = 0
         while uti < Array::length(unit_types) {
           let (tname, _, _) = Array::get(unit_types, uti)
@@ -574,7 +673,7 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
       if taken {
         ()
       } else {
-        let mut defined_here = false
+        let mut defined_here = array_contains_string(unit_reexported, dname)
         let mut fi = 0
         while fi < Array::length(defs) {
           let (fname, _, fexp) = Array::get(defs, fi)
