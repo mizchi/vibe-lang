@@ -9,7 +9,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-RT="$ROOT_DIR/runtime/moonrun_wasmtime/target/release/moonrun_wt"
+RT="$ROOT_DIR/runtime/moonrun_wasmtime/target/release/vibewt"
 [ -x "$RT" ] || cargo build --release --manifest-path runtime/moonrun_wasmtime/Cargo.toml >/dev/null
 
 cli="$(bash scripts/build_cli_wasm.sh)"

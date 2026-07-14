@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Measure the wall-clock benefit of moonrun_wt's --daemon mode versus
+# Measure the wall-clock benefit of vibewt's --daemon mode versus
 # one-shot mode. Confirms the #400 win (warm-instance reuse skips the
 # 179ms `ensure_builtin_modules` cold-start cost on second+ requests).
 #
@@ -14,9 +14,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-WT_BIN="${MOONRUN_WT_BIN:-$PROJECT_ROOT/runtime/moonrun_wasmtime/target/release/moonrun_wt}"
+WT_BIN="${MOONRUN_WT_BIN:-$PROJECT_ROOT/runtime/moonrun_wasmtime/target/release/vibewt}"
 if [ ! -x "$WT_BIN" ]; then
-  echo "bench-moonrun-wt-daemon: build moonrun_wt first" >&2
+  echo "bench-moonrun-wt-daemon: build vibewt first" >&2
   exit 1
 fi
 

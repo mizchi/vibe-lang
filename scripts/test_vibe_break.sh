@@ -25,7 +25,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-RT="$ROOT_DIR/runtime/moonrun_wasmtime/target/release/moonrun_wt"
+RT="$ROOT_DIR/runtime/moonrun_wasmtime/target/release/vibewt"
 # Rebuild the runner if it is missing OR older than any runner source (a stale
 # local binary would lack newly added host imports like vibe::dbg_break).
 if [ ! -x "$RT" ] || [ -n "$(find runtime/moonrun_wasmtime/src -name "*.rs" -newer "$RT" 2>/dev/null | head -1)" ]; then

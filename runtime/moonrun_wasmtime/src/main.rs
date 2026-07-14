@@ -1,17 +1,20 @@
-// wasmtime-backed runner for moon-emitted `--target wasm` modules.
+// vibewt: wasmtime-backed runner for wasm modules produced by the selfhost
+// vibe compiler (lib/@vibe/compiler).
 //
-// Mirrors the moonrun host import surface (stdout via spectest::print_char
-// or wasi_snapshot_preview1::fd_write + __moonbit_fs_unstable::* +
-// __moonbit_time_unstable::* + __moonbit_sys_unstable::is_windows) but uses wasmtime's Cranelift JIT /
-// pre-compiled `.cwasm` so selfhost bench wallclock isn't dominated by
-// v8's wasm interpretation overhead.
+// The host import surface (stdout via spectest::print_char or
+// wasi_snapshot_preview1::fd_write + __moonbit_fs_unstable::* +
+// __moonbit_time_unstable::* + __moonbit_sys_unstable::is_windows) mirrors
+// the original moonrun runner's import namespaces for ABI compatibility with
+// codegen, but this runner uses wasmtime's Cranelift JIT / pre-compiled
+// `.cwasm` so selfhost bench wallclock isn't dominated by v8's wasm
+// interpretation overhead.
 //
 // CLI matches moonrun's positional shape:
-//   moonrun_wt <wasm|cwasm> [args...]              run, forward args
-//   moonrun_wt --precompile <wasm> [-o out.cwasm]  AOT compile only
-//   moonrun_wt --dump-imports <wasm>               list import surface (drift guard)
-//   moonrun_wt --daemon <wasm|cwasm>               long-running mode (#400)
-//   moonrun_wt --help
+//   vibewt <wasm|cwasm> [args...]              run, forward args
+//   vibewt --precompile <wasm> [-o out.cwasm]  AOT compile only
+//   vibewt --dump-imports <wasm>               list import surface (drift guard)
+//   vibewt --daemon <wasm|cwasm>               long-running mode (#400)
+//   vibewt --help
 
 use std::any::Any;
 use std::fs;
@@ -337,14 +340,14 @@ fn elapsed_profile_us(start: Instant) -> i64 {
 
 fn print_help() {
     eprintln!(
-        "moonrun_wt — wasmtime-backed runner for moon `--target wasm` modules\n\
+        "vibewt — wasmtime-backed runner for wasm modules produced by the selfhost vibe compiler\n\
          \n\
          USAGE:\n\
-           moonrun_wt <wasm|cwasm> [args...]\n\
-           moonrun_wt --precompile <input.wasm> [-o <output.cwasm>]\n\
-           moonrun_wt --dump-imports <input.wasm>\n\
-           moonrun_wt --daemon <wasm|cwasm>\n\
-           moonrun_wt --help\n\
+           vibewt <wasm|cwasm> [args...]\n\
+           vibewt --precompile <input.wasm> [-o <output.cwasm>]\n\
+           vibewt --dump-imports <input.wasm>\n\
+           vibewt --daemon <wasm|cwasm>\n\
+           vibewt --help\n\
          \n\
          ENV:\n\
            MOONRUN_WT_MEMORY_MB    soft cap on linear memory (default 8192)\n\
@@ -407,7 +410,7 @@ fn precompile(input: &str, output: Option<&str>) -> Result<()> {
     };
     fs::write(&out_path, &bytes).map_err(|e| format_err!("write {}: {e}", out_path.display()))?;
     eprintln!(
-        "moonrun_wt: precompiled {} → {} ({} bytes)",
+        "vibewt: precompiled {} → {} ({} bytes)",
         input,
         out_path.display(),
         bytes.len()
@@ -477,7 +480,7 @@ fn dump_imports(input: &str) -> Result<()> {
 
 fn load_module(engine: &Engine, path: &str) -> Result<Module> {
     if path.ends_with(".cwasm") {
-        // SAFETY: cwasm produced by `moonrun_wt --precompile` uses the same
+        // SAFETY: cwasm produced by `vibewt --precompile` uses the same
         // engine config above, so deserializing here is sound. Loading a
         // cwasm built with a different wasmtime version / config is UB —
         // don't share cwasm files across toolchain versions.
@@ -494,7 +497,7 @@ fn run(args: Vec<String>) -> Result<i32> {
         bail!("missing wasm/cwasm argument");
     }
     let wasm_path = &args[0];
-    let prog_args: Vec<String> = std::iter::once("moonrun_wt".to_string())
+    let prog_args: Vec<String> = std::iter::once("vibewt".to_string())
         .chain(args.iter().skip(1).cloned())
         .collect();
 
@@ -509,7 +512,7 @@ fn run(args: Vec<String>) -> Result<i32> {
     // on epoch_interruption here would make deserialization fail (the config must
     // match), and the AOT image has no epoch checkpoints to sample at anyway.
     // Disable sampling for `.cwasm` (the `vibe run` path always passes a fresh
-    // `.wasm`, so this only guards direct `moonrun_wt <module.cwasm>` use).
+    // `.wasm`, so this only guards direct `vibewt <module.cwasm>` use).
     let sample_ms = if sample_ms.is_some() && wasm_path.ends_with(".cwasm") {
         eprintln!("vibe: --mem-sample needs a fresh .wasm (a precompiled .cwasm has no epoch checkpoints); sampling disabled");
         None
@@ -715,7 +718,7 @@ fn run(args: Vec<String>) -> Result<i32> {
             }
             // `vibe::dbg_break` user abort (`q` at an interactive breakpoint).
             if e.downcast_ref::<BreakAbort>().is_some() {
-                eprintln!("moonrun_wt: run aborted at breakpoint");
+                eprintln!("vibewt: run aborted at breakpoint");
                 return Ok(130);
             }
             // A guest trap (e.g. an uncaught vibe `throw`/type error surfacing as
@@ -725,9 +728,9 @@ fn run(args: Vec<String>) -> Result<i32> {
             if std::env::var_os("VIBE_RUNNER_BACKTRACE").is_some()
                 || std::env::var_os("RUST_BACKTRACE").is_some()
             {
-                eprintln!("moonrun_wt: {e:?}");
+                eprintln!("vibewt: {e:?}");
             } else {
-                eprintln!("moonrun_wt: {e}");
+                eprintln!("vibewt: {e}");
             }
             Ok(1)
         }
@@ -767,7 +770,7 @@ fn fmt_ops(ops: f64) -> String {
 // together). Reports ns/op (min/p50/p95/mean), ops/sec, and bytes/op
 // (bump-heap delta / iters — the average allocation per iteration).
 //
-//   moonrun_wt --bench <wasm|cwasm>
+//   vibewt --bench <wasm|cwasm>
 // Env: VIBE_BENCH_ITERS (default 1000), VIBE_BENCH_WARMUP (default 50),
 //      VIBE_BENCH_LABEL (report label; default the wasm path).
 fn bench(args: Vec<String>) -> Result<i32> {
@@ -805,7 +808,7 @@ fn bench(args: Vec<String>) -> Result<i32> {
         let limits = StoreLimitsBuilder::new()
             .memory_size(memory_mb * 1024 * 1024)
             .build();
-        let mut state = HostState::new(vec!["moonrun_wt".to_string()], MemLimiter::new(limits));
+        let mut state = HostState::new(vec!["vibewt".to_string()], MemLimiter::new(limits));
         state.capture_stdout = true; // suppress per-iteration program output
         let mut store = Store::new(&engine, state);
         store.limiter(|s| &mut s.mem);
@@ -959,7 +962,7 @@ fn bench(args: Vec<String>) -> Result<i32> {
 //
 // Wasm stdout is captured (HostState.capture_stdout) so it doesn't
 // interleave with the protocol on stdout. Diagnostic / panic messages
-// from moonrun_wt itself still go to stderr.
+// from vibewt itself still go to stderr.
 fn daemon(args: Vec<String>) -> Result<i32> {
     if args.is_empty() {
         bail!("--daemon: missing <wasm|cwasm> argument");
@@ -981,7 +984,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
     // Empty initial args; daemon will populate per-request before each
     // `_start` call. capture_stdout is set true so per-request output
     // accumulates in HostState.captured_stdout for the JSON envelope.
-    let mut state = HostState::new(vec!["moonrun_wt".to_string()], MemLimiter::new(limits));
+    let mut state = HostState::new(vec!["vibewt".to_string()], MemLimiter::new(limits));
     state.capture_stdout = true;
     let mut store = Store::new(&engine, state);
     store.limiter(|s| &mut s.mem);
@@ -992,7 +995,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
     let instance = linker.instantiate(&mut store, &module)?;
     let start: TypedFunc<(), ()> = instance.get_typed_func(&mut store, "_start")?;
 
-    eprintln!("moonrun_wt: daemon ready ({} loaded)", wasm_path);
+    eprintln!("vibewt: daemon ready ({} loaded)", wasm_path);
 
     use std::io::BufRead;
     let stdin = std::io::stdin();
@@ -1003,7 +1006,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
         let line = match line_res {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("moonrun_wt: daemon stdin read failed: {e}");
+                eprintln!("vibewt: daemon stdin read failed: {e}");
                 break;
             }
         };
@@ -1066,7 +1069,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
         {
             let host = store.data_mut();
             host.args = Arc::new(
-                std::iter::once("moonrun_wt".to_string())
+                std::iter::once("vibewt".to_string())
                     .chain(req_args.into_iter())
                     .collect(),
             );
@@ -1121,7 +1124,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
                     let mut h = stdout.lock();
                     writeln!(h, "{}", resp).ok();
                     h.flush().ok();
-                    eprintln!("moonrun_wt: daemon aborting after wasm trap: {e:?}");
+                    eprintln!("vibewt: daemon aborting after wasm trap: {e:?}");
                     return Ok(1);
                 }
             }
@@ -1143,7 +1146,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
         h.flush().ok();
     }
 
-    eprintln!("moonrun_wt: daemon shutting down (stdin EOF, handled {req_id} requests)");
+    eprintln!("vibewt: daemon shutting down (stdin EOF, handled {req_id} requests)");
     Ok(0)
 }
 
@@ -2095,7 +2098,8 @@ fn vibe_dbg_line(mut caller: Caller<'_, HostState>, file_id: i32, line: i32) -> 
 
 fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {
     register_vibe_imports(linker)?;
-    // Current moon emits WASI Preview1 fd_write for stdout/stderr.
+    // Selfhost codegen emits WASI Preview1 fd_write for stdout/stderr (the
+    // same import shape the original moon `--target wasm` output used).
     linker.func_wrap(
         "wasi_snapshot_preview1",
         "fd_write",
@@ -2771,7 +2775,7 @@ fn main() {
     // raise its own graceful trap.
     let stack = wasm_stack_bytes() + 8 * 1024 * 1024;
     let handle = std::thread::Builder::new()
-        .name("moonrun_wt".to_string())
+        .name("vibewt".to_string())
         .stack_size(stack)
         .spawn(real_main)
         .expect("spawn main thread");
@@ -2800,7 +2804,7 @@ fn real_main() {
             std::process::exit(2);
         }
         if let Err(e) = dump_imports(&input) {
-            eprintln!("moonrun_wt: dump-imports failed: {e:?}");
+            eprintln!("vibewt: dump-imports failed: {e:?}");
             std::process::exit(1);
         }
         return;
@@ -2810,7 +2814,7 @@ fn real_main() {
         match daemon(daemon_args) {
             Ok(code) => std::process::exit(code),
             Err(e) => {
-                eprintln!("moonrun_wt: daemon failed: {e:?}");
+                eprintln!("vibewt: daemon failed: {e:?}");
                 std::process::exit(1);
             }
         }
@@ -2820,7 +2824,7 @@ fn real_main() {
         match bench(bench_args) {
             Ok(code) => std::process::exit(code),
             Err(e) => {
-                eprintln!("moonrun_wt: {e}");
+                eprintln!("vibewt: {e}");
                 std::process::exit(1);
             }
         }
@@ -2851,7 +2855,7 @@ fn real_main() {
             }
         }
         if let Err(e) = precompile(&input, output.as_deref()) {
-            eprintln!("moonrun_wt: precompile failed: {e:?}");
+            eprintln!("vibewt: precompile failed: {e:?}");
             std::process::exit(1);
         }
         return;
@@ -2859,7 +2863,7 @@ fn real_main() {
     match run(args) {
         Ok(code) => std::process::exit(code),
         Err(e) => {
-            eprintln!("moonrun_wt: {e:?}");
+            eprintln!("vibewt: {e:?}");
             std::process::exit(1);
         }
     }
