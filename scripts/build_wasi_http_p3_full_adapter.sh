@@ -11,9 +11,12 @@ set -euo pipefail
 #       // return: "STATUS\n<Header: value lines>\n\n<body>"  (headers optional)
 #     }
 #
-# Serve with (wasmtime 45):
-#   wasmtime serve -Sp3 -Shttp -W exceptions=y -W concurrency-support=y \
-#     -W component-model-async=y -W component-model-async-stackful=y <component.wasm>
+# Serve with (wasmtime 46, ratified wasi:http@0.3.0, #821):
+#   wasmtime serve -Sp3 -Shttp <component.wasm>
+# (component-model-async is default-on in wasmtime 46; the wasmtime 45 RC
+# flag set `-W exceptions=y -W concurrency-support=y -W component-model-async=y
+# -W component-model-async-stackful=y` is accepted as harmless no-ops on 46
+# but is no longer required.)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -56,9 +59,10 @@ wit-bindgen = { version = "0.54.0", default-features = false, features = ["macro
 EOF
 
 # WIT source for the wasi:http p3 world: prefer the in-repo vendored copy
-# (lib/@vibe/wasi/wit/p3, from crates.io wasmtime-wasi-http 45.0.2 — see its
-# VENDOR.md) so the gate is self-contained; fall back to the deps/wasmtime
-# submodule checkout for developers who track wasmtime HEAD (#821).
+# (lib/@vibe/wasi/wit/p3, from crates.io wasmtime-wasi-http 46.0.1, ratified
+# wasi:http@0.3.0 — see its VENDOR.md) so the gate is self-contained; fall
+# back to the deps/wasmtime submodule checkout for developers who track
+# wasmtime HEAD (#821).
 WIT_PATH="$PROJECT_ROOT/lib/@vibe/wasi/wit/p3"
 if [ ! -f "$WIT_PATH/world.wit" ]; then
   WIT_PATH="$PROJECT_ROOT/deps/wasmtime/crates/wasi-http/src/p3/wit"
@@ -74,7 +78,7 @@ wit_bindgen::generate!({
         ///   "STATUS\n<Header: value lines>\n\n<body>".
         /// request-headers are passed as "name: value\n" lines.
         import handler: func(method: string, url: string, headers: string, body: string) -> string;
-        include wasi:http/service@0.3.0-rc-2026-03-15;
+        include wasi:http/service@0.3.0;
       }
     "#,
     path: "$WIT_PATH",

@@ -1,6 +1,6 @@
 # WASI 0.3 (Preview 3) async — 設計と段階移行
 
-Status: **proposed** (ADR-0012 を更新)。最終更新 2026-06-16。
+Status: **proposed** (ADR-0012 を更新)。最終更新 2026-07-13（wasmtime 46 / ratified `0.3.0` cutover、#821）。
 
 WASI 0.3 は 2026-06-11 に ratify され、`stream<T>` / `future<T>` が Component
 Model の first-class 型として導入された。本ドキュメントは vibe を WASI 0.3 の
@@ -27,9 +27,9 @@ async モデルへ寄せていくための設計判断と段階プランを定�
   `world middleware`）。
 - ランタイム: wasmtime **45** は 0.3 を **release candidate** として
   フラグ付きで実行（`-W component-model-async=y -W
-  component-model-async-builtins=y` 等）。**46** が ratified `0.3.0` を
-  async-by-default で同梱予定（本ドキュメント時点では未リリース、最新 stable
-  は 45.0.2 / 2026-06-15）。
+  component-model-async-builtins=y` 等）。**46**（46.0.1）は ratified
+  `0.3.0` を async-by-default で同梱し、#821 でそちらへ cutover 済み
+  （§5 参照）。
 
 ## 2. 言語モデル
 
@@ -642,14 +642,42 @@ correctness 修正）。`src/codegen/*` の `@0.3.0-draft` は legacy host 経�
 wasmtime install 既定は 45.0.0 → 45.0.2（WASIp1 fd_renumber leak の security
 patch、p3 WIT 不変）。
 
-ratified `0.3.0` への最終 cutover は wasmtime 46（async-by-default）リリース
-時に、フラグ撤去とあわせて行う。
+### 5.1 ratified `0.3.0` cutover（wasmtime 46、#821、done）
+
+wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cutover を
+実施した。要点:
+
+- 46 は `wasi:http@0.3.0`（RC サフィックスなし）を serve する。旧 RC world
+  （`@0.3.0-rc-2026-03-15`）を link しようとすると
+  `resource implementation is missing` で失敗する（2026-07-12 の再検証で確認）。
+- `lib/@vibe/wasi/wit/p3/`（vendored WIT）を `wasmtime-wasi-http` 46.0.1 の
+  `src/p3/wit/` から再 vendor。差分は機械的なバージョン文字列置換のみ
+  （`0.3.0-rc-2026-03-15` → `0.3.0`）＋ 2 件の非構造差分
+  （`deps/cli.wit` の `cli-exit-with-code` が `@unstable` → `@since(0.3.0)`
+  に昇格、`deps/sockets.wit` のドキュメントリンク更新）。詳細は
+  `lib/@vibe/wasi/wit/p3/VENDOR.md`。
+- `scripts/build_wasi_http_p3_full_adapter.sh` の `include` 文字列、
+  `scripts/test_wasi_p3_guarantee_gate.sh` の `VIBE_P3_WIT_PIN` 既定値を
+  `0.3.0` に更新。
+- `component-model-async` は 46 で default-on のため、45 world 起源の RC flag
+  （`-W exceptions=y -W concurrency-support=y -W component-model-async=y
+  -W component-model-async-stackful=y`）は 46 上では無害な no-op として
+  受理される（実害はないが、もはや必須ではない）。
+- CI (`ci.yml` `wasi-p3-gate`): wasmtime 46.0.1 leg を primary にし
+  `phases: async,http` 両方を実行。旧 pin 45.0.2 leg は
+  「vendored WIT がもう RC world を持たないため phase B は 46 でしか
+  link できない」ことを踏まえ `phases: async` のみの compat leg として
+  残す（phase A は wasi:http WIT に依存しないため 45 でも無回帰で通る）。
+  `WASMTIME_VERSION` 系の pin（`ci.yml` の `selfhost-only-gate` /
+  `cli-install.yml` / `scripts/install_wasmtime_release.sh`）もすべて
+  46.0.1 に統一。
 
 ## 6. 段階プラン
 
 | Stage | 内容 | 状態 |
 |---|---|---|
 | **M0** | wasmtime 45.0.2 bump、P3 WIT 文字列を `rc-2026-03-15` に統一、ADR-0012 更新 + 本 spec 起票 | done |
+| **M0.1** | wasmtime 46.0.1 / ratified `wasi:http@0.3.0` cutover（#821）: vendored WIT 再取得、adapter/gate の pin 更新、CI wasmtime pin を 45.x→46.0.1、45.x leg は async-only の compat leg に縮小（§5.1） | done |
 | **M1a** | async front-end: `await` builtin (`(Future[T]) -> T with { Async }`) + `Future::ready` + `Future[T]`=CtNamed、effect-escape 検証。lexer/parser/core-Type 非変更 | done |
 | **M1b-1** | codegen emitter（component 側）: `comp_emit_component_wasm_async` + `task.return` canon + async lift + async functype。byte-exact verified（test 10/10） | done |
 | **M1b-2a** | アプローチ確定（**trampoline 方式**、`linked_compile` 無改修）を実測（`cm_async_trampoline_probe.wat` が wasmtime 45 で 42）。2-module 合成の exact byte blueprint 確定 | done |
@@ -681,4 +709,6 @@ ratified `0.3.0` への最終 cutover は wasmtime 46（async-by-default）リ�
   の effect 注釈規則）。
 - `T` → canonical `T'` の表現（特に enum/record を `future`/`stream` 要素に
   する場合）。
-- wasmtime 46 リリース後の ratified `0.3.0` cutover とフラグ撤去のタイミング。
+- ~~wasmtime 46 リリース後の ratified `0.3.0` cutover とフラグ撤去のタイミング。~~
+  → resolved: wasmtime 46.0.1 で cutover 済み（#821、§5.1）。RC flag は
+  46 上で無害な no-op として残置（撤去は任意、実害なし）。
