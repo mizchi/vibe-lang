@@ -3856,4 +3856,112 @@ fi
 rm -rf "$g830dir"
 echo "[compiler-gate] top-level record-pattern let rejection (#830) ok"
 
+# 43. #844 regression: a `let`-style annotation used to be able to LAUNDER a
+#     generic struct's real type arguments. `resolve_type_expr` types a bare
+#     (unparameterized) reference to a generic struct annotation as bare
+#     `CtStruct(name)`, discarding #829's real instantiated args; `unify`'s
+#     `CtStruct`/`CtNamed` bridge (core/types.vibe, needed for the LEGITIMATE
+#     case guarded by gate sections 18/20 above -- a bare-`S`-typed trait
+#     return accepting a freshly `S::{...}`-constructed `S[X]`) then re-unifies
+#     that bare annotation with ANY later, unrelated instantiation by name
+#     alone. `let x: Box = Box::{v:1}; let y: Box[String] = x; y.v` used to
+#     compile clean and read a stored `Int` as a `String` at runtime.
+#     `check_assignable`'s `type_is_ground`/`type_no_named` heuristic
+#     (deliberately lenient for a still-rigid/uninstantiated type parameter,
+#     e.g. the very `LazyIter`/`Option[(T, Int)]` shape sections 18/20 guard)
+#     ALSO independently swallows this specific mismatch even once the real
+#     type args are preserved, since it treats every `CtNamed` as non-ground
+#     regardless of how concrete its arguments are -- so the fix has two
+#     additive parts (checker.vibe: `preserve_generic_instantiation` +
+#     `detect_narrowed_generic_mismatch`, applied at both the top-level `SLet`
+#     path (checker_stmt.vibe) and the local-`let` ascription-lambda call
+#     shape) instead of touching `resolve_type_expr`'s ~20 call sites or the
+#     shared `type_is_ground` (both judged too wide-blast-radius to land in
+#     one pass, and the latter is exactly what sections 18/20 above exist to
+#     protect).
+echo "[compiler-gate] 43/43 generic-struct annotation re-narrowing regression (#844)"
+g844dir="_build/_gate_844"
+rm -rf "$g844dir"; mkdir -p "$g844dir"
+cat > "$g844dir/toplevel_narrow.vibe" <<'EOF'
+struct Box[T] { v: T }
+let x: Box = Box::{ v: 1 }
+let y: Box[String] = x
+export let _start: () -> Int = () -> { String::length(y.v) }
+EOF
+rm -f "$g844dir/toplevel_narrow.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g844dir/toplevel_narrow.vibe" "$g844dir/toplevel_narrow.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$g844dir/toplevel_narrow.wasm" ]; then
+  echo "[compiler-gate] FAIL: top-level annotation-laundered generic-struct re-narrowing compiled (#844 regressed)" >&2
+  exit 1
+fi
+if ! grep -q "binding type mismatch" "$g844dir/toplevel_narrow.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: top-level #844 rejection lacks the expected diagnostic" >&2
+  cat "$g844dir/toplevel_narrow.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+cat > "$g844dir/local_narrow.vibe" <<'EOF'
+struct Box[T] { v: T }
+fn bad() -> Int {
+  let x: Box = Box::{ v: 1 }
+  let y: Box[String] = x
+  String::length(y.v)
+}
+export let _start: () -> Int = () -> { bad() }
+EOF
+rm -f "$g844dir/local_narrow.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g844dir/local_narrow.vibe" "$g844dir/local_narrow.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$g844dir/local_narrow.wasm" ]; then
+  echo "[compiler-gate] FAIL: local-let annotation-laundered generic-struct re-narrowing compiled (#844 regressed)" >&2
+  exit 1
+fi
+if ! grep -q "binding type mismatch" "$g844dir/local_narrow.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: local-let #844 rejection lacks the expected diagnostic" >&2
+  cat "$g844dir/local_narrow.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+# Positive controls: legitimate bare/explicit generic-struct annotation uses
+# that must NOT be over-rejected by the #844 fix.
+cat > "$g844dir/ok_bare_roundtrip.vibe" <<'EOF'
+struct Box[T] { v: T }
+let x: Box = Box::{ v: 1 }
+let y: Box = x
+export let _start: () -> Int = () -> { y.v }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g844dir/ok_bare_roundtrip.vibe" "$g844dir/ok_bare_roundtrip.wasm" _start >/dev/null 2>&1
+if [ ! -s "$g844dir/ok_bare_roundtrip.wasm" ]; then
+  echo "[compiler-gate] FAIL: bare-to-bare generic-struct annotation round-trip over-rejected (#844 fix too aggressive)" >&2
+  cat "$g844dir/ok_bare_roundtrip.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+g844_ok_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$g844dir/ok_bare_roundtrip.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$g844_ok_out" != "1" ]; then
+  echo "[compiler-gate] FAIL: bare-to-bare generic-struct round-trip returned '$g844_ok_out' (want 1)" >&2
+  exit 1
+fi
+cat > "$g844dir/ok_matching.vibe" <<'EOF'
+struct Box[T] { v: T }
+let x: Box[Int] = Box::{ v: 41 }
+let y: Box[Int] = x
+export let _start: () -> Int = () -> { y.v + 1 }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g844dir/ok_matching.vibe" "$g844dir/ok_matching.wasm" _start >/dev/null 2>&1
+if [ ! -s "$g844dir/ok_matching.wasm" ]; then
+  echo "[compiler-gate] FAIL: explicit matching generic-struct instantiation over-rejected (#844 fix too aggressive)" >&2
+  cat "$g844dir/ok_matching.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+g844_ok2_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$g844dir/ok_matching.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$g844_ok2_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: explicit matching generic-struct instantiation returned '$g844_ok2_out' (want 42)" >&2
+  exit 1
+fi
+rm -rf "$g844dir"
+echo "[compiler-gate] generic-struct annotation re-narrowing regression (#844) ok"
+
 echo "[compiler-gate] ok"
