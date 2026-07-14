@@ -144,7 +144,7 @@ PROGRAMS="tuple enum_ast option_enum captured_mut_cell nested_closures hof recor
 compile() {
   local rc="$1" src="$2" out="$3" rcenv=""
   [ "$rc" = 1 ] && rcenv="VIBE_RC=1"
-  env $rcenv VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  env $rcenv VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI" "$src" "$out" main >/dev/null 2>&1
 }
 # field <json> <key>  -> integer value or empty

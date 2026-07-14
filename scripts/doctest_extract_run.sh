@@ -166,7 +166,7 @@ PY
     if [ "$mode" = "run" ]; then entry="_start"; fi
     compile_log="${src%.vibe}.compile.log"
     compile_ok=0
-    if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
         "${timeout_cmd[@]}" bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
         "$compiler" "$src" "$out" "$entry" >"$compile_log" 2>&1 && [ -s "$out" ]; then
       compile_ok=1
@@ -176,7 +176,7 @@ PY
       # "parses + typechecks" contract is still verified
       anchored="${src%.vibe}.anchored.vibe"
       { cat "$src"; printf '\nexport let __doctest_anchor: () -> Int = () -> { 0 }\n'; } > "$anchored"
-      if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+      if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
           "${timeout_cmd[@]}" bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
           "$compiler" "$anchored" "$out" "$entry" >"$compile_log" 2>&1 && [ -s "$out" ]; then
         compile_ok=1

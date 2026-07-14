@@ -4,9 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CLI_BIN="${CLI_BIN:-$ROOT_DIR/_build/native/release/build/cmd/vibe/vibe.exe}"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/_build/bench/selfhost_cache_probe}"
-RUNS="${VIBE_SELFHOST_CACHE_PROBE_RUNS:-5}"
-WARMUP="${VIBE_SELFHOST_CACHE_PROBE_WARMUP:-1}"
-BACKEND="${VIBE_SELFHOST_CACHE_PROBE_BACKEND:-compiled}"
+RUNS="${VIBE_CACHE_PROBE_RUNS:-5}"
+WARMUP="${VIBE_CACHE_PROBE_WARMUP:-1}"
+BACKEND="${VIBE_CACHE_PROBE_BACKEND:-compiled}"
 
 mkdir -p "$OUT_DIR"
 

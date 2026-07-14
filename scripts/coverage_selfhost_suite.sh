@@ -2,7 +2,7 @@
 # #535: selfhost mainline coverage gate.
 #
 # Runs the selfhost unit-test allowlist (scripts/selfhost_unit_test_allowlist.txt,
-# plus VIBE_SELFHOST_SUITE_EXTRA_ENTRIES=a.vibe,b.vibe) under
+# plus VIBE_SUITE_EXTRA_ENTRIES=a.vibe,b.vibe) under
 # `vibe test --coverage` (function/branch hit instrumentation, linear backend),
 # aggregates per-entry coverage, writes the suite report consumed by
 # scripts/coverage_selfhost_suite_next_branches.mjs, and enforces ratcheting
@@ -17,11 +17,11 @@
 # Thresholds (percent, env-overridable; shard defaults live in
 # scripts/pkfire/selfhost_gates_shard.sh — raise them as coverage improves,
 # lowering needs a rationale in the PR):
-#   VIBE_SELFHOST_SUITE_MIN_POINT_RATE  — minimum FUNCTION coverage (fn hit/total)
-#   VIBE_SELFHOST_SUITE_MIN_LINE_RATE   — minimum CASE PASS rate (entries green)
-#   VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE — minimum BRANCH coverage (branch hit/total)
-#   VIBE_SELFHOST_SUITE_MIN_FN_HIT      — minimum ABSOLUTE covered functions
-#   VIBE_SELFHOST_SUITE_MIN_BRANCH_HIT  — minimum ABSOLUTE covered branches
+#   VIBE_SUITE_MIN_POINT_RATE  — minimum FUNCTION coverage (fn hit/total)
+#   VIBE_SUITE_MIN_LINE_RATE   — minimum CASE PASS rate (entries green)
+#   VIBE_SUITE_MIN_BRANCH_RATE — minimum BRANCH coverage (branch hit/total)
+#   VIBE_SUITE_MIN_FN_HIT      — minimum ABSOLUTE covered functions
+#   VIBE_SUITE_MIN_BRANCH_HIT  — minimum ABSOLUTE covered branches
 #
 # The ABSOLUTE minimums are the primary ratchet: adding a test entry can only
 # raise them, while the RATE floors would punish it (a new entry grows the
@@ -47,11 +47,11 @@ cd "$ROOT"
 # counts rose ~5x (fn hit 2,4xx -> 12,476; branch hit 4,1xx -> 30,343). The
 # ABSOLUTE mins below are the real anti-regression ratchet and are raised to
 # just under current; the rate mins are recalibrated to the diluted baseline.
-MIN_POINT="${VIBE_SELFHOST_SUITE_MIN_POINT_RATE:-23}"
-MIN_LINE="${VIBE_SELFHOST_SUITE_MIN_LINE_RATE:-97}"
-MIN_BRANCH="${VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE:-7}"
-MIN_FN_HIT="${VIBE_SELFHOST_SUITE_MIN_FN_HIT:-12000}"
-MIN_BRANCH_HIT="${VIBE_SELFHOST_SUITE_MIN_BRANCH_HIT:-29000}"
+MIN_POINT="${VIBE_SUITE_MIN_POINT_RATE:-23}"
+MIN_LINE="${VIBE_SUITE_MIN_LINE_RATE:-97}"
+MIN_BRANCH="${VIBE_SUITE_MIN_BRANCH_RATE:-7}"
+MIN_FN_HIT="${VIBE_SUITE_MIN_FN_HIT:-12000}"
+MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-29000}"
 
 ALLOWLIST="scripts/selfhost_unit_test_allowlist.txt"
 OUT_DIR="_build/coverage/selfhost-suite"
@@ -60,7 +60,7 @@ COV_DIR="_build/vibe_test/coverage"
 
 # Compiling CLI: explicit override > the unit-runner override > the newest
 # generation stage2 > the committed seed.
-cli="${VIBE_SELFHOST_SUITE_CLI_WASM:-${VIBE_SELFHOST_STAGE2_WASM:-}}"
+cli="${VIBE_SUITE_CLI_WASM:-${VIBE_STAGE2_WASM:-}}"
 if [ -z "$cli" ]; then
   gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1 || true)"
   if [ -n "$gen" ] && [ -f "${gen}stage2.wasm" ]; then
@@ -111,8 +111,8 @@ while IFS= read -r line; do
   fi
   entries+=("$line")
 done < "$ALLOWLIST"
-if [ -n "${VIBE_SELFHOST_SUITE_EXTRA_ENTRIES:-}" ]; then
-  IFS=',' read -r -a extra <<< "$VIBE_SELFHOST_SUITE_EXTRA_ENTRIES"
+if [ -n "${VIBE_SUITE_EXTRA_ENTRIES:-}" ]; then
+  IFS=',' read -r -a extra <<< "$VIBE_SUITE_EXTRA_ENTRIES"
   for e in "${extra[@]}"; do
     [ -n "$e" ] && entries+=("$e")
   done

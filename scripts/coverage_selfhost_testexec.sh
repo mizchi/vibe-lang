@@ -34,7 +34,7 @@ for f in lib/@vibe/compiler/*_test.vibe; do
   bin="$OUT_DIR/bins/$base.wasm"
   cov="$OUT_DIR/bins/$base.json"
   # entry: tests use the sentinel (compiler emits a test-running _start)
-  if VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  if VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
       bash "$RUNNER" --invoke cli_main "$SEED" "$f" "$bin" "__no_entry__" >/dev/null 2>&1 && [ -s "$bin" ]; then
     comp_ok=$((comp_ok+1))
     if VIBE_COV_OUT="$cov" VIBE_COV_RAW=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \

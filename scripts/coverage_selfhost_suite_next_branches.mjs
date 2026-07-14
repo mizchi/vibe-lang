@@ -134,7 +134,7 @@ export function buildTextReport(report, reportPath) {
   );
   if (nextEntries.length > 0) {
     lines.push(
-      `run_env: VIBE_SELFHOST_SUITE_EXTRA_ENTRIES='${nextEntries.join(",")}'`,
+      `run_env: VIBE_SUITE_EXTRA_ENTRIES='${nextEntries.join(",")}'`,
     );
   }
   return lines.join("\n") + "\n";

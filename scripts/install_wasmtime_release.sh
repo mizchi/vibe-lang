@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WASMTIME_VERSION="${WASMTIME_VERSION:-45.0.2}"
+WASMTIME_VERSION="${WASMTIME_VERSION:-46.0.1}"
 WASMTIME_INSTALL_DIR="${WASMTIME_INSTALL_DIR:-$HOME/.wasmtime}"
 
 case "$(uname -s)" in

@@ -19,19 +19,20 @@
 #                                Default 0: phases skip like their underlying
 #                                gates (local dev convenience).
 #   VIBE_P3_WIT_PIN              expected wasi:http version substring in the
-#                                composed component (default: the RC pin
-#                                0.3.0-rc-2026-03-15; flip to 0.3.0 at the
-#                                wasmtime 46 cutover, #821)
+#                                composed component (default: the ratified
+#                                pin 0.3.0, wasmtime 46 cutover, #821 — was
+#                                the RC pin 0.3.0-rc-2026-03-15 on wasmtime 45)
 #   VIBE_P3_GATE_PHASES          comma list of phases to run (default
-#                                "async,http"). The wasmtime 46 leg runs
-#                                "async" only until the ratified-0.3.0 WIT
-#                                cutover: re-probe (2026-07-12, wasmtime
-#                                46.0.1) confirmed phase A passes unchanged
-#                                while phase B fails to link — 46 serves
-#                                wasi:http@0.3.0 and rejects the RC world
-#                                ("resource implementation is missing").
+#                                "async,http"). Both phases pass on wasmtime
+#                                46.0.1 as of the ratified-WIT cutover (#821):
+#                                the vendored WIT was refreshed to
+#                                wasi:http@0.3.0 (matching what 46 serves),
+#                                which was the blocker for phase B linking
+#                                (previously "resource implementation is
+#                                missing" against the RC world).
 #   VIBE_ASYNC_GATE_WASMTIME_FLAGS / VIBE_HTTP_GATE_WASMTIME_FLAGS
-#                                flag overrides for the wasmtime 46 re-probe
+#                                flag overrides (e.g. to pin an older
+#                                wasmtime's RC flag set for compat testing)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -41,7 +42,7 @@ cd "$PROJECT_ROOT"
 WASMTIME_BIN="${WASMTIME_BIN:-$("$SCRIPT_DIR/wasmtime_bin.sh" 2>/dev/null || command -v wasmtime || true)}"
 export WASMTIME_BIN
 REQUIRE="${VIBE_P3_GATE_REQUIRE_TOOLS:-0}"
-WIT_PIN="${VIBE_P3_WIT_PIN:-0.3.0-rc-2026-03-15}"
+WIT_PIN="${VIBE_P3_WIT_PIN:-0.3.0}"
 
 if [ -z "${WASMTIME_BIN:-}" ] || ! "$WASMTIME_BIN" --version >/dev/null 2>&1; then
   if [ "$REQUIRE" = "1" ]; then

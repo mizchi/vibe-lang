@@ -136,7 +136,7 @@ compile_one() {
   rm -f "$out" "$out.diag"
   # Single-source path (NO VIBE_FS_COMPILE): compile_source_wasi_only detects
   # the async `run` entry and wraps it into an async component.
-  VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_SELFHOST_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
     bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
     "$COMPILER" "$src" "$out" run >/dev/null
 }

@@ -36,7 +36,7 @@ const OBJ_STRING = 1;
 const OBJ_ARRAY = 5;
 const OBJ_BYTES = 13;
 const OBJ_BYTES_VIEW = 14;
-const REQUESTED_HOST_IMPORT_ABI = process.env.VIBE_SELFHOST_IMPORT_ABI || "";
+const REQUESTED_HOST_IMPORT_ABI = process.env.VIBE_IMPORT_ABI || "";
 let HOST_IMPORT_ABI = REQUESTED_HOST_IMPORT_ABI || "tagged";
 const PROFILE_START_NS = process.hrtime.bigint();
 

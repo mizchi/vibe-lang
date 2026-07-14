@@ -22,8 +22,9 @@ jobs:
       - name: Install wasmtime
         # The gate runs compiled sample wasm via wasmtime (exceptions/exnref).
         # Pinned to match the toolchain the seed/runner are validated against.
+        # Ratified wasi:http@0.3.0 cutover (#821): bumped 45.x -> 46.0.1.
         env:
-          WASMTIME_VERSION: v45.0.0
+          WASMTIME_VERSION: v46.0.1
         run: |
           set -euo pipefail
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
@@ -37,7 +38,7 @@ jobs:
         # language/stdlib features the compiler doesn't exercise during selfbuild.
         run: |
           gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1)"
-          VIBE_SELFHOST_STAGE2_WASM="${gen}stage2.wasm" \
+          VIBE_STAGE2_WASM="${gen}stage2.wasm" \
             bash scripts/selfhost_unit_test_runner.sh
       - name: Selfhost suite coverage gate (#535)
         # Re-runs the allowlist under function/branch hit instrumentation and
@@ -45,7 +46,7 @@ jobs:
         # them as coverage improves, lowering needs a rationale in the PR).
         run: |
           gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1)"
-          VIBE_SELFHOST_SUITE_CLI_WASM="${gen}stage2.wasm" \
+          VIBE_SUITE_CLI_WASM="${gen}stage2.wasm" \
             bash scripts/coverage_selfhost_suite.sh
       - name: Upload selfhost suite coverage report
         if: always()
@@ -68,9 +69,8 @@ jobs:
 
   # WASI p3 guarantee (#821): vibe-built async components + the wasi:http p3
   # serve pipeline must run on pinned wasmtime versions, with missing tools
-  # treated as FAILURES (no silent skip). Non-required while the wasmtime 46
-  # leg is baselined (the first runs double as the 46 flag re-probe); fold
-  # into ci-required once green for a week.
+  # treated as FAILURES (no silent skip). Not yet folded into ci-required;
+  # promote once green for a week on the wasmtime 46 primary leg.
   wasi-p3-gate:
     name: wasi-p3-gate (wasmtime ${{ matrix.wasmtime }})
     needs: [selfhost-only-gate]
@@ -79,15 +79,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Validated RC baseline (flags per wasi-p3-async.md §3.5): all phases.
-          - wasmtime: v45.0.2
-            phases: "async,http"
-          # Ratified WASI 0.3.0, component-model-async default-on. Local
-          # re-probe (2026-07-12): phase A passes with the unchanged RC flag
-          # set; phase B cannot link (46 serves wasi:http@0.3.0, rejects the
-          # RC world — "resource implementation is missing"). http joins this
-          # leg at the ratified-WIT cutover (#821 step 3).
+          # Primary leg, ratified WASI 0.3.0 (#821 cutover, done): the
+          # vendored WIT (lib/@vibe/wasi/wit/p3) was refreshed to
+          # wasi:http@0.3.0, matching what wasmtime 46 serves by default
+          # (component-model-async on by default too). Both phases pass.
           - wasmtime: v46.0.1
+            phases: "async,http"
+          # Compat leg: wasmtime 45.x only ever served the RC world
+          # (wasi:http@0.3.0-rc-2026-03-15), which the repo no longer
+          # vendors post-cutover, so phase B (http) cannot link against it
+          # any more (mirrors the "resource implementation is missing"
+          # failure 46 used to hit against the RC world pre-cutover).
+          # Phase A (async component vertical) doesn't touch the wasi:http
+          # WIT at all, so it still passes unchanged with the wasmtime 45 RC
+          # flag set — kept as a smoke test that the async component path
+          # doesn't regress on the older runtime during the wasmtime 46
+          # rollout. Drop this leg once 46 has been the sole target for a
+          # while and 45 compat is no longer a concern.
+          - wasmtime: v45.0.2
             phases: "async"
     steps:
       - uses: actions/checkout@v5
@@ -105,9 +114,10 @@ jobs:
         # fallback so a renamed asset degrades to a slow build, not a red run).
         env:
           WASM_TOOLS_VERSION: "1.253.0"
-          # 0.10.1 verified locally: `wac plug` of the p3 handler + wasmtime 45
-          # serve is green (the 0.8.1/0.9.0 failures in docs/knowledge.md are
-          # resolved upstream — no fork needed for this shape).
+          # 0.10.1 verified locally: `wac plug` of the p3 handler + wasmtime
+          # serve is green on both 45 and 46 (the 0.8.1/0.9.0 failures in
+          # docs/knowledge.md are resolved upstream — no fork needed for
+          # this shape).
           WAC_VERSION: "0.10.1"
         run: |
           set -euo pipefail

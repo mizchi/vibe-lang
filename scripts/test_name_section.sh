@@ -22,7 +22,7 @@ export let helper = (x: Int) -> Int { x * 2 }
 export let main = () -> Int { helper(21) }
 EOF
 
-VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   "$RT" "$cli" "$work/prog.vibe" "$work/prog.wasm" main >/dev/null 2>&1
 [ -s "$work/prog.wasm" ] || { echo "FAIL: compile produced no wasm" >&2; exit 1; }
 
