@@ -7,6 +7,20 @@ import ../builtin_name.vibe {
 // #415 B-2: func-table builtin signatures live in the central registry; the
 // registry lookup is consulted FIRST below, so the per-namespace files no
 // longer carry (and must not re-add) arms for registry names.
+//
+// #847 Phase C exception: this deliberately imports the internal file
+// directly rather than `../codegen/index.vibe`. Routing it through the full
+// facade pulls codegen's ENTIRE transitive graph (expr/, wasi/, gc/,
+// wasm_emit/, ...) into every program that imports checker/builtins.vibe
+// (which is nearly everything, since the checker is loaded everywhere).
+// That was found to trigger a pre-existing whole-program-merge bug: some
+// far-removed file (e.g. lib/@vibe/core/diff.vibe's has_changes) becomes
+// reachable via two independent import paths once codegen is added to the
+// graph, and the merge's export-rename dedup mis-handles the resulting
+// duplicate, producing a wasm CompileError ("not enough arguments on the
+// stack for call") in an unrelated function. Reproduced via
+// checker_pattern_test.vibe: passes against baseline, fails once this
+// import routes through codegen/index.vibe. See #847.
 import ../codegen/builtin_registry.vibe {
   lookup_registry_builtin
 }
