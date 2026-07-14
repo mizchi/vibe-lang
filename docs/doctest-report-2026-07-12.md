@@ -20,7 +20,7 @@ bash scripts/doctest_extract_run.sh docs/*.md                   # 複数可
   fail が 1 つでもあれば exit 1。
 - compile は moon-free: `run_wasm_vibe_host_runner.sh --invoke cli_main` に
   `VIBE_PREOPEN_DIR=$ROOT VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw` で
-  stage2 wasm を食わせる (selfhost_only_gate.sh の 4/4 と同じ経路)。
+  stage2 wasm を食わせる (only_gate.sh の 4/4 と同じ経路)。
 - compiler は起動時に **一度だけ** 解決して work dir にコピーする
   (最新 `_build/selfhost/generations/*/stage2.wasm` → 無ければ
   `bootstrap/seed/selfhost_compiler.wasm`)。並行の bootstrap build が途中で
@@ -133,7 +133,7 @@ compiler 凍結中)。
 2. **第二段階**: 対象を allowlist で拡大 (`docs/language-tour/*.md`,
    `docs/spec/syntax.md`, README)。ラチェット方式: green にしたファイルから
    allowlist に足す (adding-modules.md のテスト allowlist と同じ運用)。
-3. **release-check への追加**: `selfhost_only_gate.sh` 本体には入れず、
+3. **release-check への追加**: `only_gate.sh` 本体には入れず、
    `release-check` の独立ステップとして追加するのを推奨 (docs の赤で
    selfhost fixpoint 検証を止めない。~3 秒/ファイルなのでコストは無視できる)。
 4. **`*.vibe.md` (literate)**: 本ハーネスがそのまま基盤になる。literate

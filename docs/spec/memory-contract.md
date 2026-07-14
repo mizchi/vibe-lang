@@ -25,14 +25,14 @@ only behavior.**
 | intended status | production default | future linear default (opt-out leak) | long-term primary target |
 
 The defaults above are exercised by the selfhost gate
-(`scripts/selfhost_only_gate.sh`), which compiles, runs, and self-reproduces
+(`scripts/only_gate.sh`), which compiles, runs, and self-reproduces
 through the linear `--wasm` path; the RC analysis path is exercised by
 `lib/@vibe/compiler/perceus_rc_test.vibe` (`test-selfhost-perceus`).
 
 ## Current CLI behavior (pin)
 
 - `vibe compile --wasm <f>` / `--wasm-linear` → **linear** backend.
-- `vibe compile --wasm-gc <f>` → **throws** (`vibe/cli/selfhost.vibe`); the
+- `vibe compile --wasm-gc <f>` → **throws** (`vibe/cli/cli.vibe`); the
   wasm-gc backend lives in `lib/@vibe/compiler/codegen/gc/` but is not selectable
   from the compile CLI. `#683` / `#415` track making it CLI-reachable and
   parity-gated.

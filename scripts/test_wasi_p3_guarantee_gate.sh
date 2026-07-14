@@ -4,7 +4,7 @@
 # tooling treated as failure. This is the CI entry point; it composes the two
 # existing verticals plus a WIT version-pin assert:
 #
-#   phase A  async component vertical (test_selfhost_async_component_gate.sh)
+#   phase A  async component vertical (test_async_component_gate.sh)
 #            .vibe async entry -> component-model async component -> 42
 #   phase B  wasi:http p3 world (test_wasi_http_p3_full_gate.sh)
 #            componentize -> wac plug -> wasmtime serve -> curl 200/401
@@ -58,7 +58,7 @@ echo "[p3-guarantee] required-tools mode: $REQUIRE / phases: $PHASES / wit pin: 
 run_http=0
 case ",$PHASES," in *",async,"*)
   echo "[p3-guarantee] phase A: async component vertical"
-  bash "$SCRIPT_DIR/test_selfhost_async_component_gate.sh"
+  bash "$SCRIPT_DIR/test_async_component_gate.sh"
   ;;
 esac
 case ",$PHASES," in *",http,"*)

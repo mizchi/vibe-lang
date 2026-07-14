@@ -6,8 +6,8 @@
 # debugging sessions on two silent methodology traps -- both are load-bearing,
 # do not "simplify" this script without re-reading the notes below:
 #
-# 1. `scripts/selfhost_generations.sh` (and everything built on it, including
-#    `scripts/selfhost_only_gate.sh`) pins `VIBE_RC=0` unless the caller
+# 1. `scripts/generations.sh` (and everything built on it, including
+#    `scripts/only_gate.sh`) pins `VIBE_RC=0` unless the caller
 #    exports `VIBE_RC=1` FIRST. The default multi-stage seed->stage1->stage2
 #    ->stage3 bootstrap therefore NEVER exercises the Perceus RC backend at
 #    all -- any instrumentation added to RC-only code (`gen_rc_drop_body`,
@@ -24,7 +24,7 @@
 #    stage2 (not the seed) as the compiler for the RC self-compile step.
 #
 # The actual #715 repro is therefore a 3-step, 2-compiler-generation process:
-#   (a) bump-build a fresh stage2 from current source (scripts/selfhost_generations.sh, default VIBE_RC=0)
+#   (a) bump-build a fresh stage2 from current source (scripts/generations.sh, default VIBE_RC=0)
 #   (b) use that stage2 to compile the flat CLI source AGAIN, this time with VIBE_RC=1
 #       -> produces an RC-self-compiled compiler ("stage_rc.wasm")
 #   (c) use stage_rc.wasm to compile a trivial one-line program
@@ -41,7 +41,7 @@
 #   --out-dir DIR        Working directory for generated artifacts.
 #                         Default: _build/repro_715
 #   --reuse-stage2 PATH  Skip step (a) and use an existing bump stage2.wasm
-#                         (e.g. from a previous selfhost_only_gate.sh run) --
+#                         (e.g. from a previous only_gate.sh run) --
 #                         much faster for iterating on a hypothesis, but make
 #                         sure it was built from source that actually matches
 #                         what you are testing.
@@ -67,10 +67,10 @@ while [ $# -gt 0 ]; do
 done
 
 mkdir -p "$OUT_DIR"
-FLAT_SRC="lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe"
+FLAT_SRC="lib/@vibe/compiler/cli_adapter_module_source.vibe"
 [ -s "$FLAT_SRC" ] || {
   echo "[repro-715] flat source not found at $FLAT_SRC -- run:" >&2
-  echo "  VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=\$PWD/$FLAT_SRC bash scripts/generate_selfhost_bundle.sh" >&2
+  echo "  VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=\$PWD/$FLAT_SRC bash scripts/generate_bundle.sh" >&2
   exit 1
 }
 
@@ -82,7 +82,7 @@ else
   echo "[repro-715] (a) bump-building fresh stage2 from current HEAD (VIBE_RC=0, the default) ..."
   GEN_DIR="$OUT_DIR/gen"
   rm -rf "$GEN_DIR"
-  VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 bash scripts/selfhost_generations.sh build --out-dir "$GEN_DIR" --stage3
+  VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 bash scripts/generations.sh build --out-dir "$GEN_DIR" --stage3
   STAGE2="$GEN_DIR/stage2.wasm"
   [ -s "$STAGE2" ] || { echo "[repro-715] FAIL: bump stage2 build did not produce $STAGE2" >&2; exit 1; }
 fi

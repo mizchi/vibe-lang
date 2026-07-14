@@ -60,10 +60,10 @@ if [ -z "$CLI_WASM" ]; then
 fi
 if [ -z "$CLI_WASM" ] || [ ! -s "$CLI_WASM" ]; then
   if [ "${VIBE_P3_GATE_REQUIRE_TOOLS:-0}" = "1" ]; then
-    echo "[http-full-gate] FAILED: no selfhost compiler wasm (required mode; run scripts/selfhost_generations.sh build, or set VIBE_SERVE_CLI_WASM)" >&2
+    echo "[http-full-gate] FAILED: no selfhost compiler wasm (required mode; run scripts/generations.sh build, or set VIBE_SERVE_CLI_WASM)" >&2
     exit 1
   fi
-  echo "[http-full-gate] SKIP: no selfhost compiler wasm (run scripts/selfhost_generations.sh build, or set VIBE_SERVE_CLI_WASM)"
+  echo "[http-full-gate] SKIP: no selfhost compiler wasm (run scripts/generations.sh build, or set VIBE_SERVE_CLI_WASM)"
   exit 0
 fi
 

@@ -12,7 +12,7 @@
 #   scripts/test_moonrun_wt_daemon_parity.sh [case ...]
 # Env:
 #   VIBE_PARITY_WASM_PROFILE   debug | release | opt   (default: opt fallback debug)
-#   VIBE_PARITY_CASES_FILE     case list (default: bench/selfhost_perf/cases.txt)
+#   VIBE_PARITY_CASES_FILE     case list (default: bench/perf/cases.txt)
 #   VIBE_PARITY_KEEP_TMP=1     don't clean staged outputs (debug)
 set -euo pipefail
 
@@ -71,7 +71,7 @@ if [ ! -f "$CWASM" ] || [ "$CHECK_WASM" -nt "$CWASM" ]; then
   "$WT_BIN" --precompile "$CHECK_WASM" -o "$CWASM" >&2
 fi
 
-CASES_FILE="${VIBE_PARITY_CASES_FILE:-$PROJECT_ROOT/bench/selfhost_perf/cases.txt}"
+CASES_FILE="${VIBE_PARITY_CASES_FILE:-$PROJECT_ROOT/bench/perf/cases.txt}"
 cases=()
 if [ "$#" -gt 0 ]; then
   cases=("$@")

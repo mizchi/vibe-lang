@@ -13,7 +13,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 STAGE2="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1)stage2.wasm"
-[ -s "$STAGE2" ] || { echo "no stage2 — run: bash scripts/selfhost_generations.sh build" >&2; exit 1; }
+[ -s "$STAGE2" ] || { echo "no stage2 — run: bash scripts/generations.sh build" >&2; exit 1; }
 WORK="_build/_emit_async_fixture"; mkdir -p "$WORK"
 cat > "$WORK/emit.vibe" <<'EOF'
 import ../../lib/@vibe/compiler/bytebuf.vibe { bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes }

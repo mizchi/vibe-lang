@@ -42,7 +42,7 @@ current compiler を作るための legacy bootstrap/fallback 境界として扱
 
 1. `lib/@vibe/compiler/` 側に test を追加して Red を確認する。
 2. `lib/@vibe/compiler/` または `lib/@vibe/cli/` の実装を直して Green にする。
-3. 必要なら `scripts/generate_selfhost_bundle.sh` で bundle を同期する。
+3. 必要なら `scripts/generate_bundle.sh` で bundle を同期する。
 4. `pkf run selfhost-gate` を通す。
 5. 互換や配布 artifact に影響する変更だけ `pkf run release-check` も通す。
 

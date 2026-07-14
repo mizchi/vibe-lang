@@ -5,20 +5,20 @@ bumped seed/CI toolchain; PR-2 (bound enforcement + dictionary passing) next.
 
 ## Build gotcha (read before iterating on the selfhost compiler)
 
-`scripts/selfhost_generations.sh build` and `generate_selfhost_bundle.sh` copy the
-**committed** `lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe` by default
+`scripts/generations.sh build` and `generate_bundle.sh` copy the
+**committed** `lib/@vibe/compiler/cli_adapter_module_source.vibe` by default
 (`build_adapter_module_source`, gated on `VIBE_SELFHOST_REGEN_MODULE_SOURCE`).
 Editing compiler source files therefore has **no effect** on a build until the
 flat module source is regenerated. Always build/regenerate with:
 
 ```bash
-VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 bash scripts/selfhost_generations.sh build
+VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 bash scripts/generations.sh build
 VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 \
-  VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe \
-  bash scripts/generate_selfhost_bundle.sh   # to refresh the committed copy
+  VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/cli_adapter_module_source.vibe \
+  bash scripts/generate_bundle.sh   # to refresh the committed copy
 ```
 
-`scripts/selfhost_only_gate.sh` regenerates and checks sync, so it catches a
+`scripts/only_gate.sh` regenerates and checks sync, so it catches a
 stale committed module source — but a plain `build` will silently use the old one.
 
 vibe traits are currently **marker-only**: a `trait` declaration carries a name +
@@ -196,9 +196,9 @@ Tests / gate:
 - Extend `fixtures/typecheck/trait_with_methods.vibe` to cover signature storage.
 - Parser/printer round-trip case (guards normalize idempotency).
 - Substrate guard already committed: `fixtures/trait_dict_passing_substrate_test.vibe`.
-- Gate: `scripts/test_selfhost_typecheck_fixtures.sh`, then `scripts/selfhost_only_gate.sh`
+- Gate: `scripts/test_typecheck_fixtures.sh`, then `scripts/only_gate.sh`
   (authoritative seed→stage1→stage2→stage3 fixpoint + normalize round-trip). Regenerate
-  the flat bundle (`scripts/generate_selfhost_bundle.sh`) after AST changes.
+  the flat bundle (`scripts/generate_bundle.sh`) after AST changes.
 
 ## PR-3 implementation plan — dictionary passing (the big one)
 
@@ -296,7 +296,7 @@ resolve.
    first-class HOF value, and the wasm-gc backend mirror. A type-directed field
    access in codegen would remove the index-consistency constraint entirely.
    Activation needs no seed bump (the compiler source uses no trait-method
-   syntax); `scripts/selfhost_only_gate.sh` stays green.
+   syntax); `scripts/only_gate.sh` stays green.
 
    Note: a pre-existing source-cache bug (`build_persistent_sources_cache_text`,
    cf. #630–#634) traps on certain file byte-sizes via the FS-compile persistent
@@ -313,7 +313,7 @@ passing `Type::method` as a first-class HOF value.
 ### Bootstrap + validation
 Components 1–4 are all source changes the current (PR-2) seed can build (they don't
 make the *compiler source* use trait methods), so no bump until activation. Each
-component must keep `selfhost_only_gate.sh` green; build with
+component must keep `only_gate.sh` green; build with
 `VIBE_SELFHOST_REGEN_MODULE_SOURCE=1` (see the build gotcha above). Add a `vibe test`
 fixture mirroring G-3 but with `T::method` (not a hand-written dict) once component 4
 lands.

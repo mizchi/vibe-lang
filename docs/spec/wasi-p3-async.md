@@ -145,7 +145,7 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
   同期セマンティクスへ lower（`compile_call.vibe`）。`Task::spawn` は 0 引数
   closure（thunk）を `call_indirect`（closure type 9）で呼ぶ。`await` /
   `Future::ready` と同じ系列で、async component（`with { Async }`）に包まれ
-  wasmtime 45 上で実行可能。回帰 gate `test_selfhost_async_component_gate.sh`
+  wasmtime 45 上で実行可能。回帰 gate `test_async_component_gate.sh`
   に Task entry を追加（spawn/join/cancel/race → 42）。
   - **free-var capture 修正**: inlined async builtin（`await`/`Future::ready`/
     `Task::spawn|join|cancel|race`）は func table に居ないため、nested lambda
@@ -487,7 +487,7 @@ universal な source-compile）に、entry が `() -> Int with { Async }`（name
 宣言）。`await` 本体の codegen、非 Int 戻り値、param 付き entry、複数 wasi
 import（fd_write 以外）、entry 名一般化は後続。
 
-回帰保護: この E2E は `scripts/test_selfhost_async_component_gate.sh`
+回帰保護: この E2E は `scripts/test_async_component_gate.sh`
 （pkf task `test-selfhost-async-component`、CI selfhost-gates `cli` shard）に
 固定。wasmtime/wasm-tools 不在時は graceful skip。非 async control が plain
 core module のままであること（async wrap が通常ビルドに漏れない）も検証する。

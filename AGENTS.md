@@ -5,7 +5,7 @@
 > checked, and run entirely from the committed seed (`bootstrap/seed/`)
 > + selfhost source (`lib/@vibe/compiler/`, `lib/@vibe/cli/`) via the Rust/node wasm runner
 > — **no MoonBit toolchain (`moon`) is required**. The default gate is the
-> moon-free `pkf run release-check` → `scripts/selfhost_only_gate.sh`.
+> moon-free `pkf run release-check` → `scripts/only_gate.sh`.
 >
 > Sections below that reference `moon` (`moon fmt/test/check/info`) or `src/`
 > describe the **retired** host flow and are kept only for historical context;
@@ -85,7 +85,7 @@ compiler source 自体で使う場合は、先に seed compiler がその syntax
   selfhost 側の正しさを確認するために使い、`src/` 追従の理由にしない
 
 CI shard では:
-- `scripts/pkfire/selfhost_gates_shard.sh bootstrap|cli|check|coverage`
+- `scripts/pkfire/gates_shard.sh bootstrap|cli|check|coverage`
   が selfhost 側のゲートを走らせる
 - `pkf run selfhost-gate` を完全 selfhost 継続判断の主 gate とする
 
@@ -158,7 +158,7 @@ completion / signature help を提供する。詳細は
 > `moon fmt/info/test/check` は MoonBit host 退役 (#594) で使えなくなった。
 > selfhost の検証は `pkf` の selfhost gate と `vibe` CLI を使う。
 
-- `pkf run test` — selfhost operation gate (`scripts/selfhost_only_gate.sh`)。commit 前の主チェック。
+- `pkf run test` — selfhost operation gate (`scripts/only_gate.sh`)。commit 前の主チェック。
 - `pkf run release-check` — full gate (fmt + info + check + test + selfhost gates)。
 - `pkf run test-local` — 変更影響範囲のテストのみ (fast inner loop、flaker 経由)。
 - 単一ファイルの型検査 / 診断は `vibe diagnostics <file.vibe>`（空出力 = clean）。

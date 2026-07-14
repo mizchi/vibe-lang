@@ -24,7 +24,7 @@ cd "$ROOT_DIR"
 
 CLI="${VIBE_CLI_WASM:-$ROOT_DIR/dist/cli/vibe-cli.wasm}"
 [ -s "$CLI" ] || { echo "rc-cutover-readiness: compiler wasm not found: $CLI (run scripts/build_cli_wasm.sh)" >&2; exit 2; }
-MEASURE="$ROOT_DIR/scripts/measure_selfhost_heap.mjs"
+MEASURE="$ROOT_DIR/scripts/measure_heap.mjs"
 [ -s "$MEASURE" ] || { echo "rc-cutover-readiness: $MEASURE missing" >&2; exit 2; }
 
 N1="${RC_PROBE_N1:-1000}"

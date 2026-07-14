@@ -1,0 +1,387 @@
+//# Imports
+
+import ./cli.vibe {
+  parse_build_args, parse_check_args, parse_compile_args, parse_compile_lite_args,
+  selfhost_cli_build_args, selfhost_cli_check_args, selfhost_cli_compile_args,
+  selfhost_cli_compile_lite_args, selfhost_cli_low_level_args_profiled
+}
+
+import ./entry.vibe {
+  run_cli_main_with_args
+}
+
+//# Effects
+
+effect Profiler {
+  NowUs -> Int
+}
+
+//# Functions
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = Array::slice([
+    0
+  ], 0, 0)
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+fn run_compile_lite_with_fake_profiler(args: Array[String]) -> Int with { Error, Fs, Env } {
+  let mut tick = 1000
+  handle {
+    selfhost_cli_compile_lite_args(args)
+  } with Profiler {
+    NowUs => {
+      tick = tick + 1000
+      resume(tick)
+    }
+  }
+}
+
+fn run_low_level_with_fake_profiler(input_path: String, output_path: String, entry_name: String, mode: String, profile_path: String, callstack_path: String) -> Int with { Error, Fs } {
+  let mut tick = 1000
+  handle {
+    selfhost_cli_low_level_args_profiled(input_path, output_path, entry_name, mode, profile_path, callstack_path)
+  } with Profiler {
+    NowUs => {
+      tick = tick + 1000
+      resume(tick)
+    }
+  }
+}
+
+//# Misc
+
+test "selfhost cli parses compile-lite command args" {
+  let (input_path, output_path, entry_name, mode, in_memory) = parse_compile_lite_args([
+    "compile-lite", "--wasm-linear", "--entry", "answer", "--no-dce", "main.vibe", "-o", "out.wasm"
+  ])
+  assert(input_path == "main.vibe")
+  assert(output_path == "out.wasm")
+  assert(entry_name == "answer")
+  assert(mode == "no-dce")
+  assert(!in_memory)
+}
+
+test "selfhost cli compile-lite rejects coverage with host parity message" {
+  let result = handle {
+    let _ = parse_compile_lite_args([
+      "compile-lite", "--wasm", "--coverage", "main.vibe", "-o", "out.wasm"
+    ])
+    "OK"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(result == "compile-lite: --coverage/--coverage-run-tests are not supported")
+}
+
+test "selfhost cli compile-lite rejects debug error option with host parity message" {
+  let result = handle {
+    let _ = parse_compile_lite_args([
+      "compile-lite", "--wasm", "--debug-errors", "main.vibe", "-o", "out.wasm"
+    ])
+    "OK"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(result == "compile-lite: --debug-errors is not supported")
+}
+
+test "selfhost cli compile-lite rejects missing profile path" {
+  let result = handle {
+    let _ = parse_compile_lite_args([
+      "compile-lite", "--wasm", "--profile-tsv"
+    ])
+    "OK"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(result == "compile-lite: missing path after --profile-tsv")
+}
+
+test "selfhost cli compile-lite rejects missing callstack profile path" {
+  let result = handle {
+    let _ = parse_compile_lite_args([
+      "compile-lite", "--wasm", "--profile-callstack"
+    ])
+    "OK"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(result == "compile-lite: missing path after --profile-callstack")
+}
+
+test "selfhost cli compile-lite command writes wasm" {
+  let main_path = "/tmp/vibe_selfhost_cli_compile_lite_main.vibe"
+  let output_path = "/tmp/vibe_selfhost_cli_compile_lite_out.wasm"
+  let source = "export let answer: () -> Int = () -> { 40 + 2 }\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let status = run_compile_lite_with_fake_profiler([
+    "compile-lite", "--wasm", "--entry", "answer", main_path, "-o", output_path
+  ])
+  assert(status == 0)
+  assert(Fs::exists(output_path))
+}
+
+test "selfhost cli compile-lite command does not profile without profile args" {
+  let main_path = "/tmp/vibe_selfhost_cli_compile_lite_no_profile_main.vibe"
+  let output_path = "/tmp/vibe_selfhost_cli_compile_lite_no_profile_out.wasm"
+  let source = "export let answer: () -> Int = () -> { 40 + 2 }\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let mut profiler_calls = 0
+  let status = handle {
+    selfhost_cli_compile_lite_args([
+      "compile-lite", "--wasm", "--entry", "answer", main_path, "-o", output_path
+    ])
+  } with Profiler {
+    NowUs => {
+      profiler_calls = profiler_calls + 1
+      resume(1000)
+    }
+  }
+  assert(status == 0)
+  assert(Fs::exists(output_path))
+  assert(profiler_calls == 0)
+}
+
+test "selfhost cli compile-lite command writes profile tsv" {
+  let main_path = "/tmp/vibe_selfhost_cli_compile_lite_profile_main.vibe"
+  let output_path = "/tmp/vibe_selfhost_cli_compile_lite_profile_out.wasm"
+  let profile_path = "/tmp/vibe_selfhost_cli_compile_lite_profile.tsv"
+  let callstack_path = "/tmp/vibe_selfhost_cli_compile_lite_callstack.tsv"
+  let source = "export let answer: () -> Int = () -> { 40 + 2 }\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let status = run_compile_lite_with_fake_profiler([
+    "compile-lite", "--wasm", "--entry", "answer", "--profile-tsv", profile_path,
+    "--profile-callstack", callstack_path, main_path, "-o", output_path
+  ])
+  assert(status == 0)
+  assert(Fs::exists(output_path))
+  assert(Fs::exists(profile_path))
+  assert(Fs::exists(callstack_path))
+  let profile = Fs::read_file(profile_path)
+  assert(String::contains(profile, "stage\telapsed_ms\telapsed_us"))
+  assert(String::contains(profile, "load\t"))
+  assert(String::contains(profile, "type\t"))
+  assert(String::contains(profile, "bundle\t"))
+  assert(String::contains(profile, "parse\t"))
+  assert(String::contains(profile, "compile\t"))
+  assert(String::contains(profile, "write\t"))
+  assert(String::contains(profile, "total\t"))
+  assert(!String::contains(profile, "write\t0\t0"))
+  assert(!String::contains(profile, "total\t0\t0"))
+  let callstack = Fs::read_file(callstack_path)
+  assert(String::contains(callstack, "compile\t"))
+  assert(!String::contains(callstack, "compile\t0\t0"))
+}
+
+// Regression: the cli_main handler nesting (Profiler inner / Error outer) must
+// keep a *successful* `--profile-tsv` compile returning 0. The #543 reorder
+// (Error inner) made `perform NowUs` unwind through the Error handler and the
+// miscompiled resume corrupted the result to 1, breaking selfhost-perf-kpi.
+// This drives the production entry wrapper `run_cli_main_with_args` directly, so
+// flipping the handler order in entry.vibe fails this test.
+test "cli_main nesting: profiled compile succeeds (exit 0)" {
+  let main_path = "/tmp/vibe_selfhost_cli_main_nest_main.vibe"
+  let output_path = "/tmp/vibe_selfhost_cli_main_nest_out.wasm"
+  let profile_path = "/tmp/vibe_selfhost_cli_main_nest_profile.tsv"
+  let source = "export let answer: () -> Int = () -> { 40 + 2 }\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let status = run_cli_main_with_args([
+    "compile-lite", "--wasm", "--entry", "answer", "--profile-tsv", profile_path,
+    main_path, "-o", output_path
+  ])
+  assert(status == 0)
+  assert(Fs::exists(output_path))
+  assert(Fs::exists(profile_path))
+}
+
+test "selfhost cli low-level entry writes profile tsv from env" {
+  let main_path = "/tmp/vibe_selfhost_cli_low_level_profile_main.vibe"
+  let output_path = "/tmp/vibe_selfhost_cli_low_level_profile_out.wasm"
+  let profile_path = "/tmp/vibe_selfhost_cli_low_level_profile.tsv"
+  let callstack_path = "/tmp/vibe_selfhost_cli_low_level_callstack.tsv"
+  let source = "export let answer: () -> Int = () -> { 40 + 2 }\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let status = run_low_level_with_fake_profiler(main_path, output_path, "answer", "mvp", profile_path, callstack_path)
+  assert(status == 0)
+  assert(Fs::exists(output_path))
+  assert(Fs::exists(profile_path))
+  assert(Fs::exists(callstack_path))
+  let profile = Fs::read_file(profile_path)
+  assert(String::contains(profile, "stage\telapsed_ms\telapsed_us"))
+  assert(String::contains(profile, "compile\t"))
+  assert(String::contains(profile, "write\t"))
+  assert(String::contains(profile, "total\t"))
+  assert(!String::contains(profile, "total\t0\t0"))
+  let callstack = Fs::read_file(callstack_path)
+  assert(String::contains(callstack, "compile\t"))
+}
+
+test "selfhost cli parses compile command args" {
+  let (input_path, output_path, entry_name, mode) = parse_compile_args([
+    "compile", "--wasm-linear", "--no-dce", "main.vibe", "-o", "out.wasm"
+  ])
+  assert(input_path == "main.vibe")
+  assert(output_path == "out.wasm")
+  assert(entry_name == "_start")
+  assert(mode == "no-dce")
+}
+
+test "selfhost cli compile consumes profile flag" {
+  let (input_path, output_path, entry_name, mode) = parse_compile_args([
+    "compile", "--wasm", "--profile", "/tmp/compile.pprof", "main.vibe"
+  ])
+  assert(input_path == "main.vibe")
+  assert(output_path == "dist/main.wasm")
+  assert(entry_name == "_start")
+  assert(mode == "mvp")
+}
+
+test "selfhost cli compile accepts cutover no-op flags" {
+  let (input_path, output_path, entry_name, mode) = parse_compile_args([
+    "compile", "--wasm", "--debug-errors", "--http-host-imports", "main.vibe"
+  ])
+  assert(input_path == "main.vibe")
+  assert(output_path == "dist/main.wasm")
+  assert(entry_name == "_start")
+  assert(mode == "mvp")
+}
+
+test "selfhost cli compile command writes wasm" {
+  let main_path = "/tmp/vibe_selfhost_cli_compile_main.vibe"
+  let output_path = "/tmp/vibe_selfhost_cli_compile_out.wasm"
+  let source = "export let _start: () -> Int = () -> { 40 + 2 }\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let status = selfhost_cli_compile_args([
+    "compile", "--wasm", main_path, "-o", output_path
+  ])
+  assert(status == 0)
+  assert(Fs::exists(output_path))
+}
+
+test "selfhost cli compile rejects missing input before compile" {
+  let missing_path = "/tmp/vibe_selfhost_cli_compile_missing_input_never_exists.vibe"
+  let status = selfhost_cli_compile_args([
+    "compile", "--wasm", missing_path, "-o", "/tmp/vibe_selfhost_cli_missing_out.wasm"
+  ])
+  assert(status == 1)
+}
+
+test "selfhost cli parses build command args" {
+  let (input_path, output_path, entry_name, mode) = parse_build_args([
+    "build", "--debug", "main.vibe", "--out", "out.wasm"
+  ])
+  assert(input_path == "main.vibe")
+  assert(output_path == "out.wasm")
+  assert(entry_name == "_start")
+  assert(mode == "debug")
+}
+
+test "selfhost cli build consumes profile flag" {
+  let (input_path, output_path, entry_name, mode) = parse_build_args([
+    "build", "--profile", "/tmp/build.pprof", "main.vibe"
+  ])
+  assert(input_path == "main.vibe")
+  assert(output_path == "main.wasm")
+  assert(entry_name == "_start")
+  assert(mode == "mvp")
+}
+
+test "selfhost cli build rejects missing profile path" {
+  let result = handle {
+    let _ = parse_build_args([
+      "build", "--profile"
+    ])
+    "OK"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(result == "build: missing path after --profile")
+}
+
+test "selfhost cli build release command writes wasm" {
+  let main_path = "/tmp/vibe_selfhost_cli_build_main.vibe"
+  let output_path = "/tmp/vibe_selfhost_cli_build_out.wasm"
+  let source = "export let _start: () -> Int = () -> { 40 + 2 }\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let status = selfhost_cli_build_args([
+    "build", "--release", main_path, "-o", output_path
+  ])
+  assert(status == 0)
+  assert(Fs::exists(output_path))
+}
+
+test "selfhost cli parses check command args" {
+  let paths = parse_check_args([
+    "check", "--profile-tsv", "/tmp/check.tsv", "a.vibe", "b.vibe"
+  ])
+  assert(Array::length(paths) == 2)
+  assert(Array::get(paths, 0) == "a.vibe")
+  assert(Array::get(paths, 1) == "b.vibe")
+}
+
+test "selfhost cli check consumes profile flag" {
+  let paths = parse_check_args([
+    "check", "--profile", "/tmp/check.pprof", "a.vibe"
+  ])
+  assert(Array::length(paths) == 1)
+  assert(Array::get(paths, 0) == "a.vibe")
+}
+
+test "selfhost cli check rejects missing profile path" {
+  let result = handle {
+    let _ = parse_check_args([
+      "check", "--profile-callstack"
+    ])
+    "OK"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(result == "check: missing path after --profile-callstack")
+}
+
+test "selfhost cli check rejects missing tsv profile path" {
+  let result = handle {
+    let _ = parse_check_args([
+      "check", "--profile-tsv"
+    ])
+    "OK"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(result == "check: missing path after --profile-tsv")
+}
+
+test "selfhost cli check command accepts valid file" {
+  let main_path = "/tmp/vibe_selfhost_cli_check_main.vibe"
+  let source = "let answer: () -> Int = () -> { 40 + 2 }\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let status = selfhost_cli_check_args([
+    "check", main_path
+  ])
+  assert(status == 0)
+}
+
+test "selfhost cli check command writes profile tsv" {
+  let main_path = "/tmp/vibe_selfhost_cli_check_profile_main.vibe"
+  let profile_path = "/tmp/vibe_selfhost_cli_check_profile.tsv"
+  let callstack_path = "/tmp/vibe_selfhost_cli_check_callstack.tsv"
+  let source = "let answer: () -> Int = () -> { 40 + 2 }\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let status = selfhost_cli_check_args([
+    "check", "--profile-tsv", profile_path, "--profile-callstack", callstack_path, main_path
+  ])
+  assert(status == 0)
+  assert(Fs::exists(profile_path))
+  assert(Fs::exists(callstack_path))
+  let profile = Fs::read_file(profile_path)
+  assert(String::contains(profile, "stage\telapsed_ms\telapsed_us"))
+  assert(String::contains(profile, "type\t0\t0"))
+  assert(String::contains(profile, "total\t0\t0"))
+}

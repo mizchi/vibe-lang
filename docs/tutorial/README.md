@@ -26,7 +26,7 @@ vibe test docs/tutorial/          # 全章を一括実行
 | [07 モジュールとパッケージ](07_modules_packages.md) | import / export / @scope パッケージ / 契約 / pin | `vibe test docs/tutorial/07_modules_packages_test.vibe` |
 
 各 `*_test.vibe` は selfhost コンパイラの unit バッテリー
-(`scripts/selfhost_unit_test_allowlist.txt`) に登録されていて、コンパイラが
+(`scripts/unit_test_allowlist.txt`) に登録されていて、コンパイラが
 変わるたびに CI がこのチュートリアルを実際にコンパイル・実行する —
 つまりここの例文は**腐らない**。
 

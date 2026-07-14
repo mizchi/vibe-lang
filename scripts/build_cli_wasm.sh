@@ -14,7 +14,7 @@ out="${1:-$ROOT_DIR/dist/cli/vibe-cli.wasm}"
 mkdir -p "$(dirname "$out")"
 
 echo "[build-cli-wasm] building selfhost compiler (seed -> stage1 -> stage2)…" >&2
-bash scripts/selfhost_generations.sh build >/dev/null
+bash scripts/generations.sh build >/dev/null
 
 gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1 || true)"
 [ -n "$gen" ] && [ -s "${gen}stage2.wasm" ] || {

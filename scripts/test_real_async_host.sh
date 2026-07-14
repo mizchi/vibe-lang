@@ -76,5 +76,5 @@ if [ -s "$STAGE2" ]; then
   fi
   rm -rf "$vdir"
 else
-  echo "[real-async-host] SKIP vibe end-to-end: no stage2 (run scripts/selfhost_generations.sh build)"
+  echo "[real-async-host] SKIP vibe end-to-end: no stage2 (run scripts/generations.sh build)"
 fi

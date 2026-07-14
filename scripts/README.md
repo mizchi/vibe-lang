@@ -14,7 +14,7 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `vibe_run.sh` — compile+run a `.vibe` (seed → runner). `vibe_run_smoke.sh`
 - `vibe_test.sh` — run `test {}` blocks. `vibe_test_smoke.sh`
 - `vibe_fmt.sh` / `vibe_normalize.sh` (+ `*_smoke.sh`) — format / normalize
-- `vibe_selfhost_cli.sh` (+ smoke) — drive the selfhost CLI wasm
+- `vibe_cli.sh` (+ smoke) — drive the selfhost CLI wasm
 - `vibe_pkg.sh` — package fetch/add (hash-verified). `vibe_core_install.sh`
 - `vibe_graph.js` — graph/symbol-index query
 
@@ -25,18 +25,18 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `run_wasm_js_string_file.mjs` — run a `--wasm-js-string` artifact under node
 - `wasmtime_run.sh` / `wasmtime_bin.sh` — wasmtime invocation + flags
 - `run_component_stdio.sh` / `run_component_moonix.sh` — component + wasmtime/moonix
-- `run_selfhost_check_*_component.sh` / `run_selfhost_cli_preview2_component.sh`
+- `run_selfhost_check_*_component.sh` / `run_cli_preview2_component.sh`
 
 ## Selfhost build / bootstrap
-- `selfhost_only_gate.sh` — **moon-free sign-off** (seed→stage1→stage2→stage3
+- `only_gate.sh` — **moon-free sign-off** (seed→stage1→stage2→stage3
   fixpoint + compile/run validation); `pkf run test` / `release-check`
-- `selfhost_gate.sh` / `selfhost_trial_gate.sh` — operation gates
-- `selfhost_generations.sh` (+ `_test`) — stage build driver
-- `generate_selfhost_bundle.sh` (+ `_test`) — regenerate `selfhost_sources_bundle.vibe`
+- `gate.sh` / `trial_gate.sh` — operation gates
+- `generations.sh` (+ `_test`) — stage build driver
+- `generate_bundle.sh` (+ `_test`) — regenerate `sources_bundle.vibe`
   / adapter bundles from compiler source
 - `build_cli_wasm.sh` — build the distributable compiler wasm (seed→stage1→stage2)
-- `fetch_selfhost_compiler.sh` — fetch a prebuilt compiler
-- `refresh_selfhost_batch_weight_seed.sh` (+ `_test`), `selfhost_select_test_shard.mjs`
+- `fetch_compiler.sh` — fetch a prebuilt compiler
+- `refresh_batch_weight_seed.sh` (+ `_test`), `select_test_shard.mjs`
 
 ## Tests (`test_*`)
 - **Editor primitives:** `test_vibe_symbols.sh`, `test_vibe_type_at.sh`,
@@ -46,7 +46,7 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - **LSP / IDE:** `test_vibe_lsp.js`, `test_vibe_lsp_workspace.js`,
   `test_symbol_index.js`, `test_graph_query.js`
 - **Selfhost component/CLI:** `test_selfhost_check_*`, `test_selfhost_cli_*`,
-  `test_selfhost_dist_stage2_parity.sh`, `test_selfhost_rc_bootstrap.sh`,
+  `test_dist_stage2_parity.sh`, `test_rc_bootstrap.sh`,
   `test_selfhost_{typecheck,warning}_fixtures.sh`
 - **Runtime / mem / perf:** `test_vibe_{alloc_site,mem,bench}.sh`,
   `test_gc_selfbuild.sh`, `test_name_section.sh`, `test_simd_emit_wasmtime.sh`
@@ -70,7 +70,7 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `check_lock_clean.sh`, `check_selfhost_{bundle_sync,module_source_sync,portable_boundary}.sh`
 - `lint_architecture_debt.sh` (+ `architecture_debt_{rules.tsv,allowlist.txt}`),
   `lint_tracked_experiment_names.sh`
-- `verify_rc_selfhost.sh`, `rc_corpus_parity.sh`, `rc_cutover_readiness.sh`
+- `verify_rc.sh`, `rc_corpus_parity.sh`, `rc_cutover_readiness.sh`
 - `monitor_wasm_bundle_size.sh`, `repro_715_rc_free_list_corruption.sh`
 
 ## Install / release
@@ -79,12 +79,12 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `build_release_assets.sh`, `build_wasi_http_p3_full_adapter.sh`, `precompile.sh`
 
 ## Generators / codegen data
-- `generate_selfhost_runtime_fixture_tests.mjs`, `gen_wasm_intrinsics_table.mjs`,
+- `generate_runtime_fixture_tests.mjs`, `gen_wasm_intrinsics_table.mjs`,
   `emit_async_lift_fixture.sh`, `rename_builtins.py`
 
 ## Misc infra
-- `cache_clean.sh`, `flaker_run.sh` (+ `_test`), `measure_selfhost_heap.mjs`
+- `cache_clean.sh`, `flaker_run.sh` (+ `_test`), `measure_heap.mjs`
 
 ## Subdirs
-- `scripts/pkfire/` — pkfire CI shard helpers (`selfhost_gates_shard.sh`, …)
+- `scripts/pkfire/` — pkfire CI shard helpers (`gates_shard.sh`, …)
 - `scripts/coverage/` — coverage support assets
