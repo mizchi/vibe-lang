@@ -463,7 +463,7 @@ fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
     // persistent source group cache group row" on re-read). The bound can
     // never be airtight for 61-bit hashes; static knowledge is.
     match get_ecall_callee(e) {
-      EIdent(cn, _) => cn == "Fs::stat_token" || cn == "__fs_stat_token_raw" || cn == "Profiler::now_us" || cn == "Profiler::heap_bytes" || cn == "Env::args_len" || cn == "String::length" || cn == "Array::length" || cn == "Bytes::length" || cn == "String::char_code_at" || cn == "String::index_of" || cn == "String::last_index_of" || cn == "Stdin::read_char",
+      EIdent(cn, _) => cn == "Fs::stat_token" || cn == "vibe_fs_stat_token_raw" || cn == "Profiler::now_us" || cn == "Profiler::heap_bytes" || cn == "Env::args_len" || cn == "String::length" || cn == "Array::length" || cn == "Bytes::length" || cn == "String::char_code_at" || cn == "String::index_of" || cn == "String::last_index_of" || cn == "Stdin::read_char",
       _ => false
     }
   } else {
@@ -1628,7 +1628,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
     }
     else if fname == "Fs::readdir" && Array::length(args) == 1 {
       // #729/#730: readdir's surface is Array[String], but the host import
-      // (`__fs_read_dir_raw`, linked_compile) returns the byte-sorted entry
+      // (`vibe_fs_read_dir_raw`, linked_compile) returns the byte-sorted entry
       // names "\n"-joined as ONE packed string (same ABI as fs_read_file —
       // no host-side array building, RC/bump agnostic). Lower to ordinary
       // AST so String::split's codegen does the array work. An empty dir
@@ -1636,7 +1636,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       // the length guard. String pieces are built with String::from_char_code
       // because a synthesized EString is not in the string table (same
       // constraint as double_to_string_expr).
-      ce(buf, ELet("__rd_names", ECall(EIdent("__fs_read_dir_raw", -1), [
+      ce(buf, ELet("__rd_names", ECall(EIdent("vibe_fs_read_dir_raw", -1), [
         Array::get(args, 0)
       ], -1), EIf(EBinOp("==", ECall(EIdent("String::length", -1), [
         EIdent("__rd_names", -1)
@@ -1656,7 +1656,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       ], -1)), -1), local_names, next_local, ctx, ld)
     }
     else if fname == "sh_lines" && Array::length(args) >= 1 {
-      // `sh_lines(cmd) -> Array[String]`: the host import (`__sh_lines_raw`,
+      // `sh_lines(cmd) -> Array[String]`: the host import (`vibe_sh_lines_raw`,
       // linked_compile) runs the command and returns its stdout "\n"-joined as
       // ONE packed string (same ABI as fs_read_dir). Lower to `String::split`
       // over it, with the empty-output guard yielding [] (split("", d) is [""]).
@@ -1664,7 +1664,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       // into the command string by `sh_lines_flag_cmd` (single-arg calls are
       // the common case and pass straight through unchanged).
       let sh_cmd = sh_lines_flag_cmd(Array::get(args, 0), args, 1)
-      ce(buf, ELet("__sh_out", ECall(EIdent("__sh_lines_raw", -1), [
+      ce(buf, ELet("__sh_out", ECall(EIdent("vibe_sh_lines_raw", -1), [
         sh_cmd
       ], -1), EIf(EBinOp("==", ECall(EIdent("String::length", -1), [
         EIdent("__sh_out", -1)
@@ -3510,7 +3510,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_local_get(buf, fm_l)
       nl + 3
     }
-    else if ctx.enable_rc && (fname == "Env::args_len" || fname == "Env::args_get" || fname == "Fs::exists" || fname == "Fs::is_dir" || fname == "Fs::is_file" || fname == "Fs::stat_token" || fname == "__fs_stat_token_raw" || fname == "Profiler::now_us" || fname == "Profiler::NowUs" || fname == "Profiler::heap_bytes" || fname == "Profiler::HeapBytes" || fname == "Stdin::read_char") {
+    else if ctx.enable_rc && (fname == "Env::args_len" || fname == "Env::args_get" || fname == "Fs::exists" || fname == "Fs::is_dir" || fname == "Fs::is_file" || fname == "Fs::stat_token" || fname == "vibe_fs_stat_token_raw" || fname == "Profiler::now_us" || fname == "Profiler::NowUs" || fname == "Profiler::heap_bytes" || fname == "Profiler::HeapBytes" || fname == "Stdin::read_char") {
       // #705: the raw-ABI host imports speak UNTAGGED integers, but RC values
       // are tagged (n<<1). These builtins alias their import function
       // directly, so the generic call path handed the import a TAGGED index
@@ -3547,7 +3547,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       }
       nl
     }
-    else if ctx.enable_rc && (fname == "__http_response_status_raw" || fname == "__http_response_body_raw" || fname == "__http_close_raw") {
+    else if ctx.enable_rc && (fname == "vibe_http_response_status_raw" || fname == "vibe_http_response_body_raw" || fname == "vibe_http_close_raw") {
       // #794: same raw-ABI shim as the #705 block above for the HTTP client
       // host imports. The handle param is a guest-tagged Int (untag it);
       // response_status returns a raw Int (tag it). response_body returns a
@@ -3559,10 +3559,10 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_i64_const(buf, 1)
       emit_i64_shr_s(buf)
       emit_call(buf, hi_idx)
-      if fname == "__http_response_status_raw" {
+      if fname == "vibe_http_response_status_raw" {
         emit_i64_const(buf, 1)
         emit_i64_shl(buf)
-      } else if fname == "__http_close_raw" {
+      } else if fname == "vibe_http_close_raw" {
         // (i64) -> () import: the surrounding expression still expects a
         // value, so push the Unit 0 the generic returns==0 path would.
         emit_i64_const(buf, 0)
@@ -3571,7 +3571,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       }
       nl
     }
-    else if ctx.enable_rc && fname == "__http_response_header_raw" {
+    else if ctx.enable_rc && fname == "vibe_http_response_header_raw" {
       // #794: (handle: Int -> untag, name: String -> pass) -> String (pass).
       let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
@@ -3581,7 +3581,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_call(buf, hi_idx)
       nl
     }
-    else if ctx.enable_rc && fname == "__http_request_raw" {
+    else if ctx.enable_rc && fname == "vibe_http_request_raw" {
       // #794: four packed-string params pass through; the raw Int handle
       // result must be tagged (it is 1-based, so leaving it raw hands the RC
       // machinery an odd non-pointer -- the exact #768 failure shape).
