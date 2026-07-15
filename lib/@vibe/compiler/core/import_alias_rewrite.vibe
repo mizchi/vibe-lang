@@ -381,7 +381,19 @@ export fn rewrite_import_alias_expr(expr: Expr, aliases: Array[(String, String)]
       effect,
       rewrite_import_alias_expr(body, alias_map_without_params(aliases, params))
     ),
-    EDot(obj, field, off, fdoff) => EDot(rewrite_import_alias_expr(obj, aliases), field, off, fdoff),
+    // #897: `mod.x` written against a qualified-import namespace (`import
+    // ... as mod only { x }`) is encoded as the alias key "mod.x" -- see
+    // qualify_import_items in lib/@vibe/parser/parser.vibe. A real
+    // identifier can never contain '.', so this lookup only ever hits for
+    // that desugaring; anything else falls through to the ordinary EDot
+    // rewrite (ordinary struct/record field access).
+    EDot(obj, field, off, fdoff) => match obj {
+      EIdent(ns, _) => match lookup_alias(aliases, String::concat(ns, String::concat(".", field))) {
+        Some(original) => EIdent(original, -1),
+        None => EDot(rewrite_import_alias_expr(obj, aliases), field, off, fdoff)
+      },
+      _ => EDot(rewrite_import_alias_expr(obj, aliases), field, off, fdoff)
+    },
     ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_import_alias_expr(body, aliases)),
     EThrow(value) => EThrow(rewrite_import_alias_expr(value, aliases)),
     EReturn(value) => EReturn(rewrite_import_alias_expr(value, aliases)),
