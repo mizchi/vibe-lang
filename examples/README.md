@@ -20,7 +20,7 @@ pkf run run -- test examples/syntax.vibe
 - `module_export.vibe`, `module_import.vibe`: module export/import basics
 - `module_types_export.vibe`, `module_types_import.vibe`: importing types from modules
 - `trait_map_set.vibe`: map/set の trait パターン（`Hash` 境界と custom key adapter）
-- `selfhost_features.vibe`: selfhost compiler が使う言語機能のショーケース
+- `compiler_features.vibe`: selfhost compiler が使う言語機能のショーケース
 
 ## Standard Library Usage
 

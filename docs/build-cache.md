@@ -37,7 +37,7 @@ v10 | cg-<selfhost_codegen_fingerprint()>
 - `v10` — a manual knob bumped only on a cache **format** change (how `.hex` /
   `.tsv` entries are serialized).
 - `cg-<…>` — a build-time hash of every compiler source file
-  (`selfhost_sources_manifest.tsv`), regenerated with the bundle. Any change to
+  (`compiler_sources_manifest.tsv`), regenerated with the bundle. Any change to
   emitted wasm / runtime ABI changes the compiler source, hence this segment,
   hence the key — so a codegen change automatically invalidates stale artifacts
   with no manual bump (#630).

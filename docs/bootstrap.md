@@ -43,7 +43,7 @@ seed として固定し、stage を分けて検証すること。vibe はこの�
 配下に置く。2026-06-12 の cutover seed は
 `selfhost-cutover-base-2026-06-12` / `39eab0519952ca72599b0b7064d00e3fbd2ac302`
 に固定している。canonical dist / CLI build entry は `cli_main` を持つ
-`lib/@vibe/cli/selfhost_entry.vibe` の wasm とし、各世代は次世代の compiler source を
+`lib/@vibe/cli/entry.vibe` の wasm とし、各世代は次世代の compiler source を
 `cli_main` 経由でビルドできるものとして扱う。CLI の argv parsing / command
 dispatch は `lib/@vibe/cli/`、compiler 本体・link/check/build helper は
 `lib/@vibe/compiler/` に置き、ビルド単位を分ける。
@@ -63,9 +63,9 @@ stage2 -> bootstrap bump の流れを追跡したいときの入口にする。
 `adopt` は stage2 artifact を seed path にコピーし、`bootstrap/seed.json`
 の sha256 を更新する。bootstrap bump ではこの manifest 更新を独立 commit として
 扱う。`pkf run generation` は seed provenance に従い、安定した
-low-level compiler entry (`lib/@vibe/compiler/selfhost_cli_support.vibe`) を flat source
+low-level compiler entry (`lib/@vibe/compiler/cli_support.vibe`) を flat source
 化して stage を回す。`build-selfhost-dist` / `test-cli-core` は
-`lib/@vibe/cli/selfhost_entry.vibe` を使う。split CLI entry を generation default に
+`lib/@vibe/cli/entry.vibe` を使う。split CLI entry を generation default に
 昇格する場合は、別の bootstrap bump として stage2/stage3、corpus、perf/RSS を
 通してから manifest entry を切り替える。
 

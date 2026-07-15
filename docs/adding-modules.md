@@ -46,7 +46,7 @@ dev-mode の便宜で、pin があれば置き場所によらず hash 照合さ�
    経路も踏まれる (#745 はこれで発見された)
 4. **allowlist**: `scripts/unit_test_allowlist.txt` にテストを追加
    (アルファベット順)。これがラチェット — 以後 battery が回帰を検出する
-5. **compiler から消費する場合のみ**: `lib/@vibe/compiler/selfhost_sources_manifest.tsv`
+5. **compiler から消費する場合のみ**: `lib/@vibe/compiler/compiler_sources_manifest.tsv`
    に `vibe_core` group で `../../../lib/@vibe/<pkg>/...` の行を足す。bundle
    への inline / codegen fingerprint への波及は generate_bundle.sh
    が面倒を見る (#741, #766)
@@ -70,7 +70,7 @@ compiler 本体 (`lib/@vibe/compiler/`, `lib/@vibe/` の compiler 消費分) を
 
 ```bash
 VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 \
-  VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe \
+  VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/cli_adapter_module_source.vibe \
   bash scripts/generate_bundle.sh
 bash scripts/generations.sh build --stage3 --out-dir _build/gen
 cmp _build/gen/stage2.wasm _build/gen/stage3.wasm   # fixpoint

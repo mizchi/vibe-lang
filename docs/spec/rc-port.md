@@ -245,7 +245,7 @@ is added.
   field (`t.0`) can escape while the container is dropped. It needs a foundational
   step first — a **uniform value representation** (integer/float tagging enabling
   `src/`-style runtime dispatch) plus escape-ownership analysis. Designed in
-  [selfhost-uniform-value-repr.md](selfhost-uniform-value-repr.md) (ADR-0055).
+  [uniform-value-repr.md](uniform-value-repr.md) (ADR-0055).
   Also remaining: a segregated / coalescing free list. (Grown array data buffers
   and `ArrayBuilder`-built arrays are now reclaimed — Stage 4 array buffer
   reclamation.)

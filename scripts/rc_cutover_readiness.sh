@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# RC cutover readiness probe (ADR-0055 #493, docs/spec/selfhost-rc-cutover-readiness.md).
+# RC cutover readiness probe (ADR-0055 #493, docs/spec/rc-cutover-readiness.md).
 #
 # The reclaim suite and the heap-e2e gate exercise RC features in ISOLATION;
 # cutover (making the Perceus RC path the linear default) needs realistic code

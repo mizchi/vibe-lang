@@ -59,10 +59,10 @@ function shouldIncludeSeedEntry(key) {
     return false
   }
   const base = path.posix.basename(key)
-  if (base === "selfhost_s5_test.vibe") {
+  if (base === "s5_test.vibe") {
     return false
   }
-  if (base.startsWith("selfhost_s5_")) {
+  if (base.startsWith("s5_")) {
     return false
   }
   if (base === "codegen_parser_test.vibe") {

@@ -32,7 +32,7 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
   fixpoint + compile/run validation); `pkf run test` / `release-check`
 - `gate.sh` / `trial_gate.sh` — operation gates
 - `generations.sh` (+ `_test`) — stage build driver
-- `generate_bundle.sh` (+ `_test`) — regenerate `selfhost_sources_bundle.vibe`
+- `generate_bundle.sh` (+ `_test`) — regenerate `compiler_sources_bundle.vibe`
   / adapter bundles from compiler source
 - `build_cli_wasm.sh` — build the distributable compiler wasm (seed→stage1→stage2)
 - `fetch_compiler.sh` — fetch a prebuilt compiler

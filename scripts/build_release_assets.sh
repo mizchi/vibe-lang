@@ -110,8 +110,8 @@ seed_entry_name="$(json_string_field "$seed_json" entry_name)"
 
 echo "[release-assets] generating prebuilt flat selfhost module source"
 sh_tmp="$(mktemp -d)"
-if ! VIBE_BUNDLE_OUT="$sh_tmp/selfhost_sources_bundle.vibe" \
-  VIBE_ADAPTER_BUNDLE_OUT="$sh_tmp/selfhost_cli_adapter_bundle.vibe" \
+if ! VIBE_BUNDLE_OUT="$sh_tmp/compiler_sources_bundle.vibe" \
+  VIBE_ADAPTER_BUNDLE_OUT="$sh_tmp/cli_adapter_bundle.vibe" \
   VIBE_RUNTIME_ENTRY_BUNDLE_OUT="$sh_tmp/selfbuild_runtime_entry_bundle.vibe" \
   VIBE_ADAPTER_MODULE_SOURCE_OUT="$OUT_DIR/$SELFHOST_MODSRC_NAME" \
   bash "$PROJECT_ROOT/scripts/generate_bundle.sh" >"$sh_tmp/gen.log" 2>&1; then

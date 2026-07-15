@@ -302,7 +302,7 @@ use_flat_cli_source() {
       local entry_rel
       entry_rel="$(rel_path "$entry")"
       [ "$SEED_ENTRY_NAME" = "cli_main" ] && \
-        [ "$SEED_ENTRY" = "lib/@vibe/compiler/selfhost_cli_support.vibe" ] && \
+        [ "$SEED_ENTRY" = "lib/@vibe/compiler/cli_support.vibe" ] && \
         [ "$entry_rel" = "$SEED_ENTRY" ]
       ;;
     *) die "VIBE_GENERATION_FLAT_CLI_SOURCE must be auto, 1, or 0" ;;
@@ -311,7 +311,7 @@ use_flat_cli_source() {
 
 prepare_flat_cli_source() {
   local out_dir="$1"
-  local out="$out_dir/selfhost_cli_adapter_module_source.vibe"
+  local out="$out_dir/cli_adapter_module_source.vibe"
   # Decoupling hook (#533 follow-up / selfhost release-asset bootstrap):
   # the flat module source is a deterministic function of the committed
   # compiler source. Regenerating it requires the MoonBit-built host
@@ -349,8 +349,8 @@ prepare_flat_cli_source() {
   local bundle_log="$out_dir/selfhost_bundle_generation.log"
   mkdir -p "$bundle_tmp"
   echo "[selfhost-gen] prepare flat selfhost compiler source" >&2
-  if ! VIBE_BUNDLE_OUT="$bundle_tmp/selfhost_sources_bundle.vibe" \
-    VIBE_ADAPTER_BUNDLE_OUT="$bundle_tmp/selfhost_cli_adapter_bundle.vibe" \
+  if ! VIBE_BUNDLE_OUT="$bundle_tmp/compiler_sources_bundle.vibe" \
+    VIBE_ADAPTER_BUNDLE_OUT="$bundle_tmp/cli_adapter_bundle.vibe" \
     VIBE_RUNTIME_ENTRY_BUNDLE_OUT="$bundle_tmp/selfbuild_runtime_entry_bundle.vibe" \
     VIBE_ADAPTER_MODULE_SOURCE_OUT="$out" \
     bash "$generator" >"$bundle_log" 2>&1; then
@@ -666,9 +666,9 @@ command_build() {
   fi
   mkdir -p "$out_dir"
   local requested_entry="$entry"
-  if [ "$(rel_path "$requested_entry")" = "lib/@vibe/cli/selfhost_entry.vibe" ] && \
-    [ "$SEED_ENTRY" = "lib/@vibe/compiler/selfhost_cli_support.vibe" ]; then
-    die "split CLI generation requires a bootstrap bump first; current fixed seed uses legacy selfhost_cli_support.vibe"
+  if [ "$(rel_path "$requested_entry")" = "lib/@vibe/cli/entry.vibe" ] && \
+    [ "$SEED_ENTRY" = "lib/@vibe/compiler/cli_support.vibe" ]; then
+    die "split CLI generation requires a bootstrap bump first; current fixed seed uses legacy cli_support.vibe"
   fi
   select_generation_entry "$out_dir" "$requested_entry"
   entry="$GENERATION_ENTRY"

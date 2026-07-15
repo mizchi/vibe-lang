@@ -39,7 +39,7 @@ test("computeNextBranchEntries: returns missing branch-focused preset entries", 
   assert.deepEqual(computeNextBranchEntries(report), [
     "lib/@vibe/compiler/checker_test.vibe",
     "lib/@vibe/compiler/checker_builtins_test.vibe",
-    "lib/@vibe/compiler/selfhost_s5_test.vibe",
+    "lib/@vibe/compiler/s5_test.vibe",
   ]);
 });
 
@@ -67,7 +67,7 @@ test("buildTextReport: includes top gaps and suggested entries", () => {
     ],
     top_non_aggregate_branch_gaps: [
       {
-        entry_path: "lib/@vibe/compiler/selfhost_stage2_coverage_run.vibe",
+        entry_path: "lib/@vibe/compiler/stage2_coverage_run.vibe",
         branch_miss: 5354,
         branch_total: 5354,
         branch_hit: 0,
@@ -104,7 +104,7 @@ test("buildJsonReport: emits suggested entries and gaps", () => {
     ],
     top_non_aggregate_branch_gaps: [
       {
-        entry_path: "lib/@vibe/compiler/selfhost_stage2_coverage_run.vibe",
+        entry_path: "lib/@vibe/compiler/stage2_coverage_run.vibe",
         branch_miss: 5354,
         branch_total: 5354,
         branch_hit: 0,
@@ -121,6 +121,6 @@ test("buildJsonReport: emits suggested entries and gaps", () => {
     "lib/@vibe/compiler/printer_test.vibe",
     "lib/@vibe/compiler/checker_test.vibe",
     "lib/@vibe/compiler/checker_builtins_test.vibe",
-    "lib/@vibe/compiler/selfhost_s5_test.vibe",
+    "lib/@vibe/compiler/s5_test.vibe",
   ]);
 });

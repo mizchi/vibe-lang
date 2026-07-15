@@ -276,7 +276,7 @@ test("buildSourceDepSignature: follows relative and root imports with lock sidec
 test("buildSuiteCaseText: summary-only keeps case branch stats for ranking", () => {
   const compact = buildSuiteCaseText(
     {
-      entry_path: "lib/@vibe/compiler/selfhost_stage2_coverage_run.vibe",
+      entry_path: "lib/@vibe/compiler/stage2_coverage_run.vibe",
       execution: { ok: true, error: "" },
       stats: {
         point_total: 12,

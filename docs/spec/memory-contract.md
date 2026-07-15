@@ -32,7 +32,7 @@ through the linear `--wasm` path; the RC analysis path is exercised by
 ## Current CLI behavior (pin)
 
 - `vibe compile --wasm <f>` / `--wasm-linear` → **linear** backend.
-- `vibe compile --wasm-gc <f>` → **throws** (`vibe/cli/selfhost.vibe`); the
+- `vibe compile --wasm-gc <f>` → **throws** (`vibe/cli/dispatch.vibe`); the
   wasm-gc backend lives in `lib/@vibe/compiler/codegen/gc/` but is not selectable
   from the compile CLI. `#683` / `#415` track making it CLI-reachable and
   parity-gated.
@@ -52,7 +52,7 @@ through the linear `--wasm` path; the RC analysis path is exercised by
 RC was **ported to selfhost** (it is no longer src/-only), but the
 reclamation half is not finished. Detailed staged plan:
 [rc-port.md](rc-port.md); readiness:
-[selfhost-rc-cutover-readiness.md](selfhost-rc-cutover-readiness.md).
+[rc-cutover-readiness.md](rc-cutover-readiness.md).
 
 - **Phase 1 — uniform object header (prerequisite):** *started*. RC's drop
   helper needs a `[type_id][length]` header to recurse; the selfhost linear
