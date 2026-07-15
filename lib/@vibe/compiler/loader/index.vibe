@@ -72,6 +72,7 @@ import ../cache/persistent_cache.vibe {
 import ../module_graph_path.vibe {
   dir_of_path,
   external_lib_roots,
+  is_contract_ext,
   normalize_path,
   resolve_import_path,
   resolve_import_path_candidates,
@@ -385,7 +386,7 @@ fn push_context_packages_under(sb: StringBuilder, root: String) -> Unit with { E
         while j < Array::length(names) {
           let name = Array::get(names, j)
           let pkg_dir = String::concat(scope_dir, String::concat("/", name))
-          if Fs::exists(String::concat(pkg_dir, "/index.vibei")) {
+          if Fs::exists(String::concat(pkg_dir, "/index.vpkg")) || Fs::exists(String::concat(pkg_dir, "/index.vibei")) {
             StringBuilder::push(sb, root)
             StringBuilder::push(sb, "|")
             StringBuilder::push(sb, scope)
@@ -647,7 +648,7 @@ fn load_source_if_cached_file_spec_matches(path: String, stat_token_text: String
 
 export fn ingest_source_text_fs(path: String, raw: String) -> String with { Error, Fs } {
   let (_, pin_blanked) = extract_require_pins(raw)
-  if String::ends_with(path, ".vibei") {
+  if is_contract_ext(path) {
     if String::starts_with(pin_blanked, contract_facade_marker) {
       pin_blanked
     } else {
@@ -1263,9 +1264,27 @@ export fn check_module(source: String, path: String, sources: Array[(String, Str
 // directory listing yet (auto-discovery arrives with Fs::ReadDir, #730).
 fn desugar_contract_source_fs(path: String, source: String) -> String with { Error, Fs } {
   let dir = dir_of_path(path)
-  let sibling_index = String::concat(dir, "/index.vibe")
-  if Fs::exists(sibling_index) {
-    throw("both index.vibe and index.vibei exist in \{dir} (#729): a boundary has exactly one index")
+  // #897 (ADR-0070 Phase 1): `index.vpkg` is an alternate spelling of
+  // `index.vibei` (same contract-file role, migrated one directory at a
+  // time), so "a boundary has exactly one index" is now a 3-way mutual
+  // exclusion across index.vibe / index.vibei / index.vpkg rather than the
+  // original 2-way check. `path` is itself one of the three (whichever this
+  // desugar was invoked for), so `present` always has at least one entry;
+  // the error only fires when a SECOND spelling also exists alongside it.
+  let present = Array::slice([
+    ""
+  ], 0, 0)
+  if Fs::exists(String::concat(dir, "/index.vibe")) {
+    Array::push(present, "index.vibe")
+  } else ()
+  if Fs::exists(String::concat(dir, "/index.vibei")) {
+    Array::push(present, "index.vibei")
+  } else ()
+  if Fs::exists(String::concat(dir, "/index.vpkg")) {
+    Array::push(present, "index.vpkg")
+  } else ()
+  if Array::length(present) > 1 {
+    throw("\{String::join(present, " and ")} exist in \{dir} (#729/#897): a boundary has exactly one index")
   } else ()
   let (decls, opaque_names, extra) = parse_contract_program(lex(source))
   let (impl_raws0, type_defs) = classify_contract_stmts(extra)
@@ -1320,7 +1339,7 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with { Err
     // are already invisible to `collect_impl_fn_defs`/`collect_impl_type_defs`
     // (a facade is SReExport-only, no SLet/SStruct), so it never allocates a
     // re-export line under this package's own name anyway.
-    let is_boundary_unit = String::ends_with(resolved, "/index.vibei") || String::ends_with(resolved, "/index.vibe")
+    let is_boundary_unit = String::ends_with(resolved, "/index.vibei") || String::ends_with(resolved, "/index.vpkg") || String::ends_with(resolved, "/index.vibe")
     if is_boundary_unit {
       ()
     } else {
@@ -1364,7 +1383,19 @@ export fn contract_package_hashes_fs(path: String) -> (String, String) with { Er
   let sources = Array::slice([
     ("", "")
   ], 0, 0)
-  Array::push(sources, ("index.vibei", raw))
+  // #897 (ADR-0070 Phase 1): the package-hash key names the contract file by
+  // its OWN on-disk suffix rather than assuming "index.vibei" — `path` is
+  // already the resolved contract file (whichever of .vibei/.vpkg won), so
+  // its basename is read off directly instead of re-probing the filesystem.
+  // A directory that migrates from index.vibei to index.vpkg intentionally
+  // gets a different hash (the rename is a real content/identity change).
+  let contract_last_slash = String::last_index_of(path, "/")
+  let contract_basename = if contract_last_slash < 0 {
+    path
+  } else {
+    path[contract_last_slash + 1: String::length(path)]
+  }
+  Array::push(sources, (contract_basename, raw))
   let mut ri = 0
   while ri < Array::length(impl_raws) {
     let iraw = Array::get(impl_raws, ri)
@@ -1409,7 +1440,15 @@ export fn fill_require_pins_fs_mode(source: String, repin: Bool) -> String with 
       if Array::length(pins_one) == 1 {
         let (pname, pver, ppin) = Array::get(pins_one, 0)
         if ppin == "" || repin {
-          let store_index = String::concat(".vibe/store/", String::concat(pname, "/index.vibei"))
+          // #897: try the target spelling (.vpkg) first, then legacy
+          // .vibei, mirroring resolve_import_path_candidates' root ordering.
+          let store_index_vpkg = String::concat(".vibe/store/", String::concat(pname, "/index.vpkg"))
+          let store_index_vibei = String::concat(".vibe/store/", String::concat(pname, "/index.vibei"))
+          let store_index = if Fs::exists(store_index_vpkg) {
+            store_index_vpkg
+          } else {
+            store_index_vibei
+          }
           if Fs::exists(store_index) {
             ()
           } else {
@@ -1498,7 +1537,14 @@ export fn publish_check_fs(prev_contract_path: String, next_contract_path: Strin
 // only through this hash check, so any mirror/copy mechanism is fine.
 fn verify_store_package_fs(importer: String, pins: Array[(String, String, String)], store_index_path: String) -> Unit with { Error, Fs } {
   let prefix = ".vibe/store/"
-  let suffix = "/index.vibei"
+  // #897: `store_index_path` is already the RESOLVED dep (the caller reads
+  // it off the collected import graph), so its own suffix tells us which
+  // spelling won without re-probing the filesystem.
+  let suffix = if String::ends_with(store_index_path, "/index.vpkg") {
+    "/index.vpkg"
+  } else {
+    "/index.vibei"
+  }
   let name = String::substring(
     store_index_path,
     String::length(prefix),
@@ -1547,8 +1593,14 @@ fn verify_store_package_fs(importer: String, pins: Array[(String, String, String
 fn verify_lib_package_fs(importer: String, pins: Array[(String, String, String)], lib_index_path: String) -> Unit with { Error, Fs } {
   // The package name starts at the "@" — works for both the workspace
   // spelling ("lib/@scope/name/index.vibei") and an absolute VIBE_LIB root
-  // ("/home/u/.vibe/lib/@scope/name/index.vibei").
-  let suffix = "/index.vibei"
+  // ("/home/u/.vibe/lib/@scope/name/index.vibei"), and (#897) either's
+  // `.vpkg`-suffixed alternate spelling. `lib_index_path` is already the
+  // RESOLVED dep, so its own suffix tells us which spelling won.
+  let suffix = if String::ends_with(lib_index_path, "/index.vpkg") {
+    "/index.vpkg"
+  } else {
+    "/index.vibei"
+  }
   let at = String::last_index_of(lib_index_path, "@")
   let name = String::substring(
     lib_index_path,
@@ -1600,10 +1652,14 @@ fn enforce_incoming_boundary_fs(importer: String, target: String) -> Unit with {
   while p < tlen {
     if String::char_code_at(target, p) == '/' && p > 0 {
       let dir = target[0:p]
-      let contract = String::concat(dir, "/index.vibei")
-      if target == contract {
+      // #897: an ancestor directory is a contract boundary via EITHER
+      // spelling — check .vpkg first (order irrelevant for an existence
+      // test, kept consistent with the candidate-list ordering elsewhere).
+      let contract_vpkg = String::concat(dir, "/index.vpkg")
+      let contract_vibei = String::concat(dir, "/index.vibei")
+      if target == contract_vpkg || target == contract_vibei {
         ()
-      } else if Fs::exists(contract) {
+      } else if Fs::exists(contract_vpkg) || Fs::exists(contract_vibei) {
         let dir_prefix = String::concat(dir, "/")
         if String::starts_with(importer, dir_prefix) {
           ()
@@ -1648,7 +1704,7 @@ fn collect_sources_rec(path: String, sources: Array[(String, String)], visited: 
     // lines). This walk used to emit the bare facade; only the cold first
     // pass reaches it, so the failure hid behind the runner's module-init
     // re-run (#749).
-    let source = if String::ends_with(path, ".vibei") {
+    let source = if is_contract_ext(path) {
       String::concat(contract_facade_marker, desugar_contract_source_fs(path, pin_blanked))
     } else {
       pin_blanked
@@ -1662,9 +1718,9 @@ fn collect_sources_rec(path: String, sources: Array[(String, String)], visited: 
       // Only a store PACKAGE reference (its contract) is pin-verified;
       // paths inside an already-verified store package (its impl files)
       // are covered by that package's hash.
-      if String::starts_with(dep, ".vibe/store/") && String::ends_with(dep, "/index.vibei") {
+      if String::starts_with(dep, ".vibe/store/") && is_contract_ext(dep) {
         verify_store_package_fs(path, pins, dep)
-      } else if String::ends_with(dep, "/index.vibei") && String::last_index_of(dep, "@") >= 0 {
+      } else if is_contract_ext(dep) && String::last_index_of(dep, "@") >= 0 {
         // #751: dev-mode lane (workspace lib/ OR a VIBE_LIB external root —
         // any @-named package contract that is not the store) — pin
         // optional but verified when present; VIBE_REQUIRE_PINS=1 demands it.
