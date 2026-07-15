@@ -23,7 +23,7 @@ import ../runtime/eval_loader/index.vibe {
 }
 
 import ./header_cache.vibe {
-  contract_sibling_impl_raws, load_or_parse_module_header_fs_impl
+  contract_sibling_impl_raws, load_or_parse_module_header_fs_impl, merge_impl_raws_dedupe
 }
 
 import ../contract/index.vibe {
@@ -1291,7 +1291,12 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with { Err
   // #730: explicit `import ./impl.vibe {}` declarations win; a contract that
   // declares none auto-discovers its sibling *.vibe files (Fs::readdir,
   // byte-sorted by the host so the facade is deterministic).
-  let impl_raws = if Array::length(impl_raws0) == 0 {
+  // #897/#855 (ADR-0070 Phase 1): .vpkg gets implicit membership
+  // unconditionally -- explicit declarations (if any) are MERGED with
+  // discovery rather than suppressing it, replacing the empty-import idiom.
+  let impl_raws = if String::ends_with(path, ".vpkg") {
+    merge_impl_raws_dedupe(impl_raws0, contract_sibling_impl_raws(dir))
+  } else if Array::length(impl_raws0) == 0 {
     contract_sibling_impl_raws(dir)
   } else {
     impl_raws0
@@ -1375,7 +1380,13 @@ export fn contract_package_hashes_fs(path: String) -> (String, String) with { Er
   // the same impl files the facade is built from. Discovered raws are
   // "./<name>" and byte-sorted, so the hash stays location-independent and
   // deterministic.
-  let impl_raws = if Array::length(impl_raws0) == 0 {
+  // #897/#855: mirror desugar_contract_source_fs's .vpkg implicit-membership
+  // merge exactly, so the hash always covers the same impl set the facade
+  // was built from (a mismatch here would make the content-addressed hash
+  // silently stale relative to what actually got conformance-checked).
+  let impl_raws = if String::ends_with(path, ".vpkg") {
+    merge_impl_raws_dedupe(impl_raws0, contract_sibling_impl_raws(dir))
+  } else if Array::length(impl_raws0) == 0 {
     contract_sibling_impl_raws(dir)
   } else {
     impl_raws0
