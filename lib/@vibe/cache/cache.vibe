@@ -1,49 +1,19 @@
 //# Functions
 
-// #849: private Env effect + checker-only discharge, mirroring
-// module_graph_path.vibe's ADR-0065 pattern (VIBE_LIB / VIBE_HOME / HOME /
-// VIBE_REQUIRE_PINS) so `stable_cache_path` can read VIBE_BUILD_CACHE_DIR
-// without an `Env` row on its own signature or on any of the 8 exported
-// wrappers below (`persistent_artifact_cache_path` etc.) or their ~20-30
-// call sites across the compiler — `Env::get` compiles to the host env-get
-// import directly, so the handler arm here is never invoked at runtime.
-// The effect declaration is private — nothing outside this module sees it.
-effect Env {
-  Get(String) -> String
-}
-
-fn env_get_raw(name: String) -> String with { Env } {
-  Env::get(name)
-}
-
-fn read_env_discharged(name: String) -> String {
-  handle {
-    env_get_raw(name)
-  } with Env {
-    Get(_n) => resume("")
-  }
-}
-
-// #849: VIBE_BUILD_CACHE_DIR overrides the persistent-cache storage root so
-// parallel `git worktree` checkouts can share one physical cache directory
-// instead of each rebuilding it from scratch (the cache KEY is already
-// content/relative-path based, so it's safe to share as-is — see #849 audit
-// comment). Treated as a DIRECTORY ROOT: the existing "<prefix>_<token>
-// <suffix>" filename logic still appends into it via the "vibe_" convention,
-// so callers only need to point one env var at a shared directory rather
-// than reproduce today's "_build/vibe_" spelling verbatim. Unset/empty
-// falls back to today's literal "_build/vibe_" (unchanged default
-// behavior, no trailing slash — matches the historical hardcoded prefix).
-fn build_cache_root_prefix() -> String {
-  let raw = read_env_discharged("VIBE_BUILD_CACHE_DIR")
-  let len = String::length(raw)
-  if len == 0 {
-    "_build/vibe_"
-  } else if String::char_code_at(raw, len - 1) == 47 {
-    String::concat(raw, "vibe_")
-  } else {
-    String::concat(raw, "/vibe_")
-  }
+// #849/Codex review (PR #899): this package is a general, dependency-free
+// disk-cache primitive (#766) that pure/component consumers can import for
+// just `compact_string_fingerprint` etc. `collect_used_builtin_names` scans
+// every top-level statement of the WHOLE linked program for builtin free
+// names, not just ones reachable from the entry point (#799 perf note in
+// linked_helpers.vibe) — so an `Env::get` reference ANYWHERE in this module,
+// even in dead/unused code, would force a `vibe.env_get` host import onto
+// every consumer of this package, breaking pure/component targets that don't
+// provide it. VIBE_BUILD_CACHE_DIR override support therefore lives in the
+// compiler-specific wrapper (lib/@vibe/compiler/cache/cache_underlying.vibe)
+// instead, which rebases the path string this returns — that layer already
+// requires host Fs/Error imports, so adding Env costs it nothing.
+fn cache_root_prefix() -> String {
+  "_build/vibe_"
 }
 
 export fn compact_string_fingerprint(source: String) -> String {
@@ -84,7 +54,7 @@ export fn stable_cache_path(version_tag: String, prefix: String, seed: String, s
     i = i + 1
   }
   let token = StringBuilder::freeze(token_sb)
-  String::concat(build_cache_root_prefix(), String::concat(prefix, String::concat("_", String::concat(token, suffix))))
+  String::concat(cache_root_prefix(), String::concat(prefix, String::concat("_", String::concat(token, suffix))))
 }
 
 fn build_sources_fingerprint(sources: Array[(String, String)]) -> String {

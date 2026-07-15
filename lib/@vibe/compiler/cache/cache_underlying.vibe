@@ -26,8 +26,61 @@ import ../../../../lib/@vibe/cache {
 
 //# Functions
 
+// #849 (Codex review, PR #899): VIBE_BUILD_CACHE_DIR override lives HERE,
+// not in @vibe/cache/cache.vibe — this compiler-specific wrapper layer
+// already requires host Fs/Error imports for every consumer, so an
+// `Env::get` reference here forces nothing new. Putting it in the generic
+// package instead would force a `vibe.env_get` host import onto every
+// consumer of @vibe/cache's whole linked program (even ones only using pure
+// helpers like compact_string_fingerprint), since collect_used_builtin_names
+// scans all top-level statements of the linked program, not just ones
+// reachable from the entry point. Private effect + checker-only discharge,
+// mirroring module_graph_path.vibe's ADR-0065 pattern (VIBE_LIB / VIBE_HOME
+// / HOME / VIBE_REQUIRE_PINS) so the 8 path-returning wrappers below don't
+// need an `Env` row on their own signatures or their ~20-30 call sites.
+effect Env {
+  Get(String) -> String
+}
+
+fn env_get_raw(name: String) -> String with { Env } {
+  Env::get(name)
+}
+
+fn read_env_discharged(name: String) -> String {
+  handle {
+    env_get_raw(name)
+  } with Env {
+    Get(_n) => resume("")
+  }
+}
+
+// @vibe/cache/cache.vibe's stable_cache_path always roots paths under the
+// literal "_build/vibe_" prefix. When VIBE_BUILD_CACHE_DIR is set, rebase
+// that prefix onto the override directory (still ending in "vibe_", so the
+// existing "<prefix>_<token>_<suffix>" filename convention appends
+// unchanged) so parallel `git worktree` checkouts can share one physical
+// cache directory (the cache KEY is already content/relative-path based —
+// see #849 audit comment).
+fn rebase_cache_path(path: String) -> String {
+  let override_root = read_env_discharged("VIBE_BUILD_CACHE_DIR")
+  let default_prefix = "_build/vibe_"
+  if String::length(override_root) == 0 {
+    path
+  } else if !(String::starts_with(path, default_prefix)) {
+    path
+  } else {
+    let override_len = String::length(override_root)
+    let override_prefix = if String::char_code_at(override_root, override_len - 1) == 47 {
+      String::concat(override_root, "vibe_")
+    } else {
+      String::concat(override_root, "/vibe_")
+    }
+    String::concat(override_prefix, path[String::length(default_prefix): String::length(path)])
+  }
+}
+
 export fn cache_persistent_artifact_cache_path(version_tag: String, kind: String, entry_name: String, fingerprint: String) -> String {
-  persistent_artifact_cache_path(version_tag, kind, entry_name, fingerprint)
+  rebase_cache_path(persistent_artifact_cache_path(version_tag, kind, entry_name, fingerprint))
 }
 
 export fn cache_store_persistent_artifact(version_tag: String, kind: String, entry_name: String, fingerprint: String, bytes: Bytes) -> Unit with { Error, Fs } {
@@ -39,29 +92,29 @@ export fn cache_load_persistent_artifact(version_tag: String, kind: String, entr
 }
 
 export fn cache_persistent_dep_list_cache_path(version_tag: String, path: String, source_fingerprint: String, resolution_seed: String) -> String {
-  persistent_dep_list_cache_path(version_tag, path, source_fingerprint, resolution_seed)
+  rebase_cache_path(persistent_dep_list_cache_path(version_tag, path, source_fingerprint, resolution_seed))
 }
 
 export fn cache_persistent_type_env_cache_path(version_tag: String, fingerprint: String) -> String {
-  persistent_type_env_cache_path(version_tag, fingerprint)
+  rebase_cache_path(persistent_type_env_cache_path(version_tag, fingerprint))
 }
 
 export fn cache_persistent_source_list_cache_path(version_tag: String, entry_path: String, resolution_seed: String) -> String {
-  persistent_source_list_cache_path(version_tag, entry_path, resolution_seed)
+  rebase_cache_path(persistent_source_list_cache_path(version_tag, entry_path, resolution_seed))
 }
 
 export fn cache_persistent_source_group_cache_path(version_tag: String, entry_path: String, resolution_seed: String) -> String {
-  persistent_source_group_cache_path(version_tag, entry_path, resolution_seed)
+  rebase_cache_path(persistent_source_group_cache_path(version_tag, entry_path, resolution_seed))
 }
 
 export fn cache_persistent_module_header_cache_path(version_tag: String, path: String, source_fingerprint: String, resolution_seed: String) -> String {
-  persistent_module_header_cache_path(version_tag, path, source_fingerprint, resolution_seed)
+  rebase_cache_path(persistent_module_header_cache_path(version_tag, path, source_fingerprint, resolution_seed))
 }
 
 export fn cache_persistent_manifest_header_cache_path(version_tag: String, entry_path: String) -> String {
-  persistent_manifest_header_cache_path(version_tag, entry_path)
+  rebase_cache_path(persistent_manifest_header_cache_path(version_tag, entry_path))
 }
 
 export fn cache_persistent_leaf_fingerprint_cache_path(version_tag: String, path: String, source_fingerprint: String) -> String {
-  persistent_leaf_fingerprint_cache_path(version_tag, path, source_fingerprint)
+  rebase_cache_path(persistent_leaf_fingerprint_cache_path(version_tag, path, source_fingerprint))
 }
