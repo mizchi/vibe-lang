@@ -1,5 +1,21 @@
 //# Functions
 
+// #849/Codex review (PR #899): this package is a general, dependency-free
+// disk-cache primitive (#766) that pure/component consumers can import for
+// just `compact_string_fingerprint` etc. `collect_used_builtin_names` scans
+// every top-level statement of the WHOLE linked program for builtin free
+// names, not just ones reachable from the entry point (#799 perf note in
+// linked_helpers.vibe) — so an `Env::get` reference ANYWHERE in this module,
+// even in dead/unused code, would force a `vibe.env_get` host import onto
+// every consumer of this package, breaking pure/component targets that don't
+// provide it. VIBE_BUILD_CACHE_DIR override support therefore lives in the
+// compiler-specific wrapper (lib/@vibe/compiler/cache/cache_underlying.vibe)
+// instead, which rebases the path string this returns — that layer already
+// requires host Fs/Error imports, so adding Env costs it nothing.
+fn cache_root_prefix() -> String {
+  "_build/vibe_"
+}
+
 export fn compact_string_fingerprint(source: String) -> String {
   let mod1 = 2147483647
   let mod2 = 2147483629
@@ -38,7 +54,7 @@ export fn stable_cache_path(version_tag: String, prefix: String, seed: String, s
     i = i + 1
   }
   let token = StringBuilder::freeze(token_sb)
-  String::concat("_build/vibe_", String::concat(prefix, String::concat("_", String::concat(token, suffix))))
+  String::concat(cache_root_prefix(), String::concat(prefix, String::concat("_", String::concat(token, suffix))))
 }
 
 fn build_sources_fingerprint(sources: Array[(String, String)]) -> String {
