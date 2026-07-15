@@ -1,0 +1,217 @@
+//# Imports
+
+import ./deque.vibe {
+  type Deque, Deque::from_array, Deque::is_empty, Deque::length, Deque::new, Deque::peek_back, Deque::peek_front, Deque::pop_back, Deque::pop_front, Deque::push_back, Deque::push_front, Deque::to_array, Deque::with_capacity
+}
+
+//# Helpers
+
+fn expect_some(opt: Option[Int], expected: Int) -> Unit {
+  match opt {
+    Some(v) => assert_eq(v, expected),
+    None => assert_eq(1, 2)
+  }
+}
+
+fn expect_none(opt: Option[Int]) -> Unit {
+  match opt {
+    Some(_) => assert_eq(1, 2),
+    None => assert_eq(0, 0)
+  }
+}
+
+fn assert_array_eq(xs: Array[Int], expected: Array[Int]) -> Unit {
+  assert_eq(Array::length(xs), Array::length(expected))
+  let mut i = 0
+  while i < Array::length(expected) {
+    assert_eq(Array::get(xs, i), Array::get(expected, i))
+    i = i + 1
+  }
+}
+
+//# Empty deque
+
+test "empty deque: None on every read, zero length" {
+  let d: Deque[Int] = Deque::new()
+  assert_eq(Deque::length(d), 0)
+  assert_eq(Deque::is_empty(d), true)
+  expect_none(Deque::pop_front(d))
+  expect_none(Deque::pop_back(d))
+  expect_none(Deque::peek_front(d))
+  expect_none(Deque::peek_back(d))
+  assert_eq(Array::length(Deque::to_array(d)), 0)
+}
+
+//# Basic push/pop from both ends
+
+test "push_back / pop_front behaves like a FIFO queue" {
+  let d: Deque[Int] = Deque::new()
+  Deque::push_back(d, 1)
+  Deque::push_back(d, 2)
+  Deque::push_back(d, 3)
+  assert_eq(Deque::length(d), 3)
+  expect_some(Deque::peek_front(d), 1)
+  expect_some(Deque::peek_back(d), 3)
+  expect_some(Deque::pop_front(d), 1)
+  expect_some(Deque::pop_front(d), 2)
+  assert_eq(Deque::length(d), 1)
+  expect_some(Deque::pop_front(d), 3)
+  assert_eq(Deque::length(d), 0)
+  expect_none(Deque::pop_front(d))
+}
+
+test "push_back / pop_back behaves like a LIFO stack" {
+  let d: Deque[Int] = Deque::new()
+  Deque::push_back(d, 1)
+  Deque::push_back(d, 2)
+  Deque::push_back(d, 3)
+  expect_some(Deque::pop_back(d), 3)
+  expect_some(Deque::pop_back(d), 2)
+  expect_some(Deque::pop_back(d), 1)
+  assert_eq(Deque::is_empty(d), true)
+}
+
+test "push_front / pop_back and push_front / pop_front" {
+  let d: Deque[Int] = Deque::new()
+  Deque::push_front(d, 1)
+  Deque::push_front(d, 2)
+  Deque::push_front(d, 3)
+  // front-to-back order is 3, 2, 1 (each push_front lands at the front)
+  assert_array_eq(Deque::to_array(d), [3, 2, 1])
+  expect_some(Deque::pop_back(d), 1)
+  expect_some(Deque::pop_front(d), 3)
+  expect_some(Deque::pop_front(d), 2)
+  assert_eq(Deque::is_empty(d), true)
+}
+
+test "interleaved push/pop from both ends" {
+  let d: Deque[Int] = Deque::new()
+  Deque::push_back(d, 2)
+  Deque::push_front(d, 1)
+  Deque::push_back(d, 3)
+  Deque::push_front(d, 0)
+  // logical order front->back: 0, 1, 2, 3
+  assert_array_eq(Deque::to_array(d), [0, 1, 2, 3])
+  expect_some(Deque::pop_front(d), 0)
+  expect_some(Deque::pop_back(d), 3)
+  Deque::push_back(d, 4)
+  Deque::push_front(d, -1)
+  assert_array_eq(Deque::to_array(d), [-1, 1, 2, 4])
+  assert_eq(Deque::length(d), 4)
+}
+
+//# Resize / growth boundary
+
+test "push_back past initial capacity forces growth, order preserved" {
+  // with_capacity clamps to a minimum of 4, so 10 pushes force at least
+  // two doublings (4 -> 8 -> 16) while the deque is non-empty.
+  let d: Deque[Int] = Deque::with_capacity(1)
+  let mut i = 0
+  while i < 10 {
+    Deque::push_back(d, i)
+    i = i + 1
+  }
+  assert_eq(Deque::length(d), 10)
+  assert_array_eq(Deque::to_array(d), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+  // pop everything back out, front to back, and check nothing was lost
+  // or reordered by the growth copies.
+  let mut j = 0
+  while j < 10 {
+    expect_some(Deque::pop_front(d), j)
+    j = j + 1
+  }
+  assert_eq(Deque::is_empty(d), true)
+}
+
+test "push_front past initial capacity forces growth, order preserved" {
+  let d: Deque[Int] = Deque::with_capacity(1)
+  let mut i = 0
+  while i < 10 {
+    Deque::push_front(d, i)
+    i = i + 1
+  }
+  // each push_front lands at the front, so front->back is descending
+  assert_array_eq(Deque::to_array(d), [9, 8, 7, 6, 5, 4, 3, 2, 1, 0])
+  assert_eq(Deque::length(d), 10)
+}
+
+//# Wraparound: head index moves past the physical end of the backing
+//# array, then more pushes wrap the tail around to the front — the
+//# classic ring-buffer off-by-one boundary.
+
+test "wraparound after popping from the front, then pushing past the end" {
+  // capacity clamps to 4. Fill it exactly full first.
+  let d: Deque[Int] = Deque::with_capacity(4)
+  Deque::push_back(d, 1)
+  Deque::push_back(d, 2)
+  Deque::push_back(d, 3)
+  Deque::push_back(d, 4)
+  assert_eq(Deque::length(d), 4)
+  // buf is now [1, 2, 3, 4], head = 0. Pop twice from the front: head
+  // moves to physical index 2, well past the array's physical start,
+  // and slots 0/1 are now free.
+  expect_some(Deque::pop_front(d), 1)
+  expect_some(Deque::pop_front(d), 2)
+  assert_eq(Deque::length(d), 2)
+  // Push two more onto the back without growing (size 2 < capacity 4).
+  // The physical tail index must wrap from 3 back around to 0, then 1 —
+  // an off-by-one in the modulo here would either overwrite a live slot
+  // (3 or 4) or write past the array.
+  Deque::push_back(d, 5)
+  Deque::push_back(d, 6)
+  assert_eq(Deque::length(d), 4)
+  assert_array_eq(Deque::to_array(d), [3, 4, 5, 6])
+  // One more push forces growth *while head is non-zero and the buffer
+  // has wrapped* (head == 2 here) — the growth copy must read through
+  // the old head/modulo, not assume head == 0.
+  Deque::push_back(d, 7)
+  assert_eq(Deque::length(d), 5)
+  assert_array_eq(Deque::to_array(d), [3, 4, 5, 6, 7])
+  expect_some(Deque::pop_front(d), 3)
+  expect_some(Deque::pop_front(d), 4)
+  expect_some(Deque::pop_front(d), 5)
+  expect_some(Deque::pop_front(d), 6)
+  expect_some(Deque::pop_front(d), 7)
+  assert_eq(Deque::is_empty(d), true)
+}
+
+test "wraparound below zero via push_front, then growth while head != 0" {
+  let d: Deque[Int] = Deque::with_capacity(4)
+  Deque::push_back(d, 1)
+  // push_front three times: head goes 0 -> 3 -> 2 -> 1, exercising the
+  // negative-modulo branch (new_head = head - 1, wraps below 0 to
+  // capacity - 1) on every step but the first.
+  Deque::push_front(d, 0)
+  Deque::push_front(d, -1)
+  Deque::push_front(d, -2)
+  assert_eq(Deque::length(d), 4)
+  assert_array_eq(Deque::to_array(d), [-2, -1, 0, 1])
+  // Deque is full with head == 1 (non-zero, non-wrapped-around-the-end
+  // value). One more push_front forces growth: the copy must start from
+  // head == 1, not physical index 0, and the post-growth push_front must
+  // wrap around the *new*, larger capacity correctly.
+  Deque::push_front(d, -3)
+  assert_eq(Deque::length(d), 5)
+  assert_array_eq(Deque::to_array(d), [-3, -2, -1, 0, 1])
+  expect_some(Deque::pop_back(d), 1)
+  expect_some(Deque::pop_back(d), 0)
+  expect_some(Deque::pop_back(d), -1)
+  expect_some(Deque::pop_back(d), -2)
+  expect_some(Deque::pop_back(d), -3)
+  assert_eq(Deque::is_empty(d), true)
+}
+
+//# from_array / to_array round trip
+
+test "from_array / to_array round trip and further mutation" {
+  let d: Deque[Int] = Deque::from_array([10, 20, 30])
+  assert_eq(Deque::length(d), 3)
+  assert_array_eq(Deque::to_array(d), [10, 20, 30])
+  Deque::push_front(d, 5)
+  Deque::push_back(d, 40)
+  assert_array_eq(Deque::to_array(d), [5, 10, 20, 30, 40])
+  let empty_arr: Array[Int] = []
+  let empty: Deque[Int] = Deque::from_array(empty_arr)
+  assert_eq(Deque::is_empty(empty), true)
+  assert_eq(Array::length(Deque::to_array(empty)), 0)
+}
