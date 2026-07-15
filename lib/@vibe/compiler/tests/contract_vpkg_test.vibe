@@ -1,0 +1,95 @@
+//# Imports
+
+// #897 (ADR-0070 Phase 1): `index.vpkg` is being introduced as an alternate
+// spelling of `index.vibei` (the eventual target of a 76-directory rename,
+// migrated in later phases). The loader must accept EITHER spelling, but a
+// directory with BOTH present is the same "a boundary has exactly one
+// index" hard error `index.vibe` + `index.vibei` coexistence already is --
+// just widened from a 2-way to a 3-way mutual exclusion. This file covers
+// the loader-internal side of that (the end-to-end "a `.vpkg` package
+// resolves and type-checks" happy path is covered separately by
+// fixtures/contract_pkg_vpkg_test.vibe, which mirrors fixtures/contract_pkg_test.vibe
+// but with an index.vpkg instead of an index.vibei).
+
+import ../loader {
+  collect_all_sources_fs
+}
+
+import ../cache/persistent_cache.vibe {
+  compact_string_fingerprint,
+  persistent_manifest_header_cache_path,
+  persistent_module_header_cache_path,
+  persistent_source_group_cache_path,
+  persistent_source_list_cache_path
+}
+
+//# Functions
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = Array::slice([
+    0
+  ], 0, 0)
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+fn remove_file_if_exists(path: String) -> Unit with { Fs } {
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+// Clears every persistent-cache lane `collect_all_sources_fs` may have
+// warmed from a PRIOR run of this exact test (the fixture path is fixed and
+// /tmp persists across test invocations in this environment) -- without
+// this, a stale warm cache could mask the hard-error path entirely and turn
+// this into a false-negative regression test.
+fn clear_caches_for(entry_path: String) -> Unit with { Error, Fs } {
+  remove_file_if_exists(persistent_source_group_cache_path(entry_path))
+  remove_file_if_exists(persistent_source_list_cache_path(entry_path))
+  remove_file_if_exists(persistent_manifest_header_cache_path(entry_path))
+  if Fs::exists(entry_path) {
+    remove_file_if_exists(persistent_module_header_cache_path(entry_path, compact_string_fingerprint(Fs::read_file(entry_path))))
+  } else {
+    ()
+  }
+}
+
+//# Misc
+
+test "collect_all_sources_fs: index.vibei and index.vpkg coexisting is a hard error (#897)" {
+  let base_dir = "/tmp/vibe_compiler_contract_vpkg_conflict_897"
+  Fs::mkdir_p(base_dir)
+  let contract_vibei = String::concat(base_dir, "/index.vibei")
+  let contract_vpkg = String::concat(base_dir, "/index.vpkg")
+  let impl_path = String::concat(base_dir, "/impl.vibe")
+  clear_caches_for(contract_vibei)
+  clear_caches_for(contract_vpkg)
+  Fs::write_bytes(contract_vibei, string_to_bytes("import ./impl.vibe {}\n\nfn add(x: Int, y: Int) -> Int\n"))
+  Fs::write_bytes(contract_vpkg, string_to_bytes("import ./impl.vibe {}\n\nfn add(x: Int, y: Int) -> Int\n"))
+  Fs::write_bytes(impl_path, string_to_bytes("export fn add(x: Int, y: Int) -> Int { x + y }\n"))
+  let failed = handle {
+    let _ = collect_all_sources_fs(contract_vibei)
+    false
+  } with Error {
+    Throw(msg) =>
+      String::contains(msg, "a boundary has exactly one index") && String::contains(msg, "index.vibei") && String::contains(msg, "index.vpkg")
+  }
+  assert(failed)
+  // Symmetric: entering via the .vpkg path hits the same check.
+  let failed_via_vpkg = handle {
+    let _ = collect_all_sources_fs(contract_vpkg)
+    false
+  } with Error {
+    Throw(msg) =>
+      String::contains(msg, "a boundary has exactly one index") && String::contains(msg, "index.vibei") && String::contains(msg, "index.vpkg")
+  }
+  assert(failed_via_vpkg)
+}
