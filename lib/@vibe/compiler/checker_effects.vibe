@@ -866,6 +866,146 @@ fn lookup_fn_effs(names: Array[String], effs: Array[Array[String]], name: String
   found
 }
 
+// #885 review (Codex): a `let`/`let rec`/`let mut` binding can reuse the NAME
+// of an in-scope callback-parameter overlay entry (e.g. rebinding `f` to an
+// unrelated local pure closure). Without this, `lookup_fn_effs`'s first-match
+// scan would still find the SHADOWED outer entry and reject a call to the
+// new, unrelated binding as if it were the original effectful callback --
+// a false positive on valid shadowing. Removes every overlay entry matching
+// `name` before the shadowing binding's scope is pushed onto the stack.
+// #885 review (Codex): shadow the overlay by EVERY name in `params`, in one
+// pass — used at an EFn boundary where all of the lambda's own parameter
+// names (not just the ones that become new overlay entries) must block a
+// same-named inherited entry.
+fn shadow_overlay_names(names: Array[String], effs: Array[Array[String]], params: Array[(String, Option[TypeExpr])]) -> (Array[String], Array[Array[String]]) {
+  let mut cur_names = names
+  let mut cur_effs = effs
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, _) = Array::get(params, i)
+    let shadowed = shadow_overlay(cur_names, cur_effs, pname)
+    cur_names = shadowed.0
+    cur_effs = shadowed.1
+    i = i + 1
+  }
+  (cur_names, cur_effs)
+}
+
+fn shadow_overlay(names: Array[String], effs: Array[Array[String]], name: String) -> (Array[String], Array[Array[String]]) {
+  let out_names = Array::slice([
+    ""
+  ], 0, 0)
+  let out_effs = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(names) {
+    if Array::get(names, i) != name {
+      Array::push(out_names, Array::get(names, i))
+      Array::push(out_effs, Array::get(effs, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  (out_names, out_effs)
+}
+
+// #885 (split off from #838, originally scoped out at #626): a function-typed
+// PARAMETER (a callback, e.g. `f: (T) -> T with { e }`) is a call-graph leaf
+// exactly like a named top-level function, but `fn_names`/`fn_effs` above is
+// built ONLY from top-level `SLet`/`SLetMut` bindings, so invoking a callback
+// PARAMETER directly (`f(x)` inside the wrapper that owns `f`) was invisible to
+// the transitive check — no lookup ever matched `f`'s name, so nothing was
+// required. This is a SEPARATE parallel-array "overlay" (ov_names/ov_effs),
+// scoped to the function body currently being walked (extended when the walk
+// descends into an `EFn`, carried unchanged through every other node), that
+// records each in-scope function-typed parameter's declared effect labels.
+//
+// Deliberately narrower than the general transitive check: callback-parameter
+// labels are checked via `decl_authorizes_effect` WITHOUT the
+// `label_is_effect_var` exemption used below for calls to NAMED top-level
+// functions. That exemption exists to prevent a real unsoundness of its own —
+// naively requiring the LITERAL row-variable token (e.g. `"e"`) to appear in
+// the CALLER's declared row at a call site like `apply(inc, 41)` — since the
+// caller has no way to know the row variable resolves to nothing without
+// call-site effect-row UNIFICATION (matching the argument actually passed
+// against the callee's parameter type), which this pass does not perform. This
+// is exactly the naive fix rejected during #885's investigation: dropping the
+// exemption globally broke `generic_effect_matrix_ok_passthrough_pure.vibe`.
+// The callback-parameter case is different in kind: the row variable and the
+// declared effect being compared live in the SAME function signature (the
+// parameter's `with { e }` and the enclosing function's own `with { e }` are
+// the identical token by construction — no cross-call-site instantiation is
+// involved), so a literal-name check here is sound, not a naive shortcut.
+fn build_param_overlay(params: Array[(String, Option[TypeExpr])]) -> (Array[String], Array[Array[String]]) {
+  let names = Array::slice([
+    ""
+  ], 0, 0)
+  let effs = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, ptype) = Array::get(params, i)
+    match ptype {
+      Some(TyFn(_, _, eff)) => {
+        let labels = effect_decl_labels(eff)
+        if Array::length(labels) > 0 {
+          Array::push(names, pname)
+          Array::push(effs, labels)
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  (names, effs)
+}
+
+// A `let apply: [T](f: (T) -> T with { e }, x: T) -> T = (f, x) -> { f(x) }`
+// binding (separate top-level type annotation + untyped lambda) parses to an
+// `EFn` whose OWN `params` carry no per-parameter `TypeExpr` at all (the types
+// live only on the `SLet`'s `ty` field). `build_param_overlay` needs real
+// per-parameter types to find a callback parameter's declared effect, so this
+// fills in each untyped `EFn` parameter from `ty`'s `TyFn` parameter list at
+// the SAME position — the two lists describe the same signature, so positional
+// pairing is exact. An `EFn` parameter that already carries its own inline
+// type (the `[T](f: (T) -> T with { e }, ...)` generic-literal spelling used
+// elsewhere in this file) is left untouched; `ty` is consulted only to fill
+// gaps, never to override.
+fn merge_param_types_with_sig(ty: Option[TypeExpr], params: Array[(String, Option[TypeExpr])]) -> Array[(String, Option[TypeExpr])] {
+  match ty {
+    Some(TyFn(sig_params, _, _)) => {
+      let out = Array::slice([
+        ("", None)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pname, ptype) = Array::get(params, i)
+        let effective = match ptype {
+          Some(_) => ptype,
+          None => if i < Array::length(sig_params) {
+            Some(Array::get(sig_params, i))
+          } else {
+            None
+          }
+        }
+        Array::push(out, (pname, effective))
+        i = i + 1
+      }
+      out
+    },
+    _ => params
+  }
+}
+
 // Transitive effect enforcement (#626): a call to a user function `G` that
 // declares `with { E }` leaks E into the caller unless the caller declares E or
 // the call is under a `handle ... with E`. Combined with the DIRECT discipline
@@ -874,16 +1014,21 @@ fn lookup_fn_effs(names: Array[String], effs: Array[Array[String]], name: String
 // level by level: every effectful leaf is annotated, so a one-level check at
 // each call site is complete. `fn_names`/`fn_effs` is the call-graph map (empty
 // => transitive check disabled, preserving the direct-only behavior).
-export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]]) -> Array[EffectError] {
+//
+// `ov_names`/`ov_effs` (#885) is the SEPARATE callback-parameter overlay
+// described above, scoped to the function body currently in view (empty at the
+// program's top level and at any call site with no enclosing function-typed
+// parameters in scope).
+export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]]) -> Array[EffectError] {
   let errors = Array::slice([
     EEThrowOutsideEffect("")
   ], 0, 0)
   let stack = Array::slice([
-    (root, root_declared, root_in_handle)
+    (root, root_declared, root_in_handle, root_ov_names, root_ov_effs)
   ], 0, 1)
   while Array::length(stack) > 0 {
     let n = Array::length(stack)
-    let (expr, declared, in_handle) = Array::get(stack, n - 1)
+    let (expr, declared, in_handle, ov_names, ov_effs) = Array::get(stack, n - 1)
     Array::truncate(stack, n - 1)
     match expr {
       ECall(callee, args, _) => {
@@ -921,7 +1066,11 @@ export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String]
             // pervasive — nearly every function can throw) and `Async`
             // (composition is allowed; the async pass governs it), so the
             // transitive pass mirrors that exclusion. Effect-variable rows
-            // (polymorphic) impose nothing.
+            // (polymorphic) impose nothing HERE — call-site resolution of what
+            // a row variable is instantiated to would need real effect-row
+            // unification (#885 tracks that separately); naively requiring the
+            // row-variable TOKEN itself in the caller's declared row produces
+            // false positives (see `generic_effect_matrix_ok_passthrough_pure`).
             match lookup_fn_effs(fn_names, fn_effs, name) {
               Some(callee_effs) => {
                 let mut ti = 0
@@ -937,17 +1086,41 @@ export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String]
               },
               None => ()
             }
+            // #885: calling a function-typed PARAMETER (a callback) directly —
+            // e.g. `f(x)` inside the wrapper that declares `f: (T) -> T with
+            // { e }` — leaks `f`'s declared row into this context exactly like
+            // a named function call above, but UNLIKE that case a row-variable
+            // label here is NOT exempted: the parameter's `with { e }` and the
+            // enclosing function's own declared row live in the SAME
+            // signature, so the token `e` denotes the identical variable in
+            // both places (no cross-call-site instantiation to resolve), and
+            // literal-name membership is a sound check.
+            match lookup_fn_effs(ov_names, ov_effs, name) {
+              Some(param_effs) => {
+                let mut pi = 0
+                while pi < Array::length(param_effs) {
+                  let peff = Array::get(param_effs, pi)
+                  if String::length(peff) > 0 && peff != "Error" && peff != "Async" && !in_handle && !decl_authorizes_effect(declared, peff) {
+                    Array::push(errors, EEPerformUndeclaredEffect(name, peff))
+                  } else {
+                    ()
+                  }
+                  pi = pi + 1
+                }
+              },
+              None => ()
+            }
           },
           _ => ()
         }
-        Array::push(stack, (callee, declared, in_handle))
+        Array::push(stack, (callee, declared, in_handle, ov_names, ov_effs))
         let mut ai = 0
         while ai < Array::length(args) {
-          Array::push(stack, (Array::get(args, ai), declared, in_handle))
+          Array::push(stack, (Array::get(args, ai), declared, in_handle, ov_names, ov_effs))
           ai = ai + 1
         }
       },
-      EFn(_, _, _, _, effect, body) => {
+      EFn(_, _, params, _, effect, body) => {
         // #761: an EXPLICITLY-annotated lambda (`(x) -> { .. } with { E }`) is
         // checked against its own row E. An UN-annotated lambda's effect row is
         // INFERRED, not declared, so checking its body against an empty row is
@@ -964,7 +1137,46 @@ export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String]
         } else {
           lam_labels
         }
-        Array::push(stack, (body, body_declared, in_handle))
+        // #885: extend the callback-parameter overlay with THIS function's own
+        // function-typed parameters (if any carry a declared effect), scoped to
+        // its body. New entries are appended AHEAD of the inherited overlay so
+        // `lookup_fn_effs` (first-match) has a same-named inner parameter
+        // shadow an outer one.
+        //
+        // #885 review (Codex): shadowing must apply to EVERY one of this
+        // lambda's own parameter names, not just the ones that end up in
+        // local_names/local_effs (function-typed with a declared effect) --
+        // a parameter reusing an outer callback's name with a DIFFERENT type
+        // (e.g. plain `Int`, or a function type with no declared effect) must
+        // still block the inherited entry, or a call to the new, unrelated
+        // parameter is wrongly checked against the shadowed outer callback's
+        // effect row.
+        let shadowed = shadow_overlay_names(ov_names, ov_effs, params)
+        let (shadowed_ov_names, shadowed_ov_effs) = shadowed
+        let (local_names, local_effs) = build_param_overlay(params)
+        let body_ov_names = if Array::length(local_names) == 0 {
+          shadowed_ov_names
+        } else {
+          let merged = Array::slice(local_names, 0, Array::length(local_names))
+          let mut oi = 0
+          while oi < Array::length(shadowed_ov_names) {
+            Array::push(merged, Array::get(shadowed_ov_names, oi))
+            oi = oi + 1
+          }
+          merged
+        }
+        let body_ov_effs = if Array::length(local_effs) == 0 {
+          shadowed_ov_effs
+        } else {
+          let merged = Array::slice(local_effs, 0, Array::length(local_effs))
+          let mut oi = 0
+          while oi < Array::length(shadowed_ov_effs) {
+            Array::push(merged, Array::get(shadowed_ov_effs, oi))
+            oi = oi + 1
+          }
+          merged
+        }
+        Array::push(stack, (body, body_declared, in_handle, body_ov_names, body_ov_effs))
       },
       EHandle(body, arms) => {
         let discharged = collect_handle_effects(arms)
@@ -974,88 +1186,98 @@ export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String]
         } else {
           in_handle
         }
-        Array::push(stack, (body, body_declared, body_in_handle))
+        Array::push(stack, (body, body_declared, body_in_handle, ov_names, ov_effs))
         let mut ai = 0
         while ai < Array::length(arms) {
           let (_, arm_body) = Array::get(arms, ai)
-          Array::push(stack, (arm_body, declared, in_handle))
+          Array::push(stack, (arm_body, declared, in_handle, ov_names, ov_effs))
           ai = ai + 1
         }
       },
-      ELet(_, val, body, _) => {
-        Array::push(stack, (val, declared, in_handle))
-        Array::push(stack, (body, declared, in_handle))
+      ELet(name, val, body, _) => {
+        // #885 review (Codex): `val` is evaluated in the OUTER scope (ELet is
+        // non-recursive), so only the body's overlay needs the new binding
+        // shadowed out.
+        let (body_ov_names, body_ov_effs) = shadow_overlay(ov_names, ov_effs, name)
+        Array::push(stack, (val, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (body, declared, in_handle, body_ov_names, body_ov_effs))
       },
-      ELetRec(_, val, body) => {
-        Array::push(stack, (val, declared, in_handle))
-        Array::push(stack, (body, declared, in_handle))
+      ELetRec(name, val, body) => {
+        // #885 review (Codex): unlike ELet, `let rec` allows `val` itself to
+        // reference `name` (self-recursion), so both val and body need the
+        // shadow applied.
+        let (rec_ov_names, rec_ov_effs) = shadow_overlay(ov_names, ov_effs, name)
+        Array::push(stack, (val, declared, in_handle, rec_ov_names, rec_ov_effs))
+        Array::push(stack, (body, declared, in_handle, rec_ov_names, rec_ov_effs))
       },
-      ELetMut(_, val, body, _) => {
-        Array::push(stack, (val, declared, in_handle))
-        Array::push(stack, (body, declared, in_handle))
+      ELetMut(name, val, body, _) => {
+        // #885 review (Codex): same as ELet -- non-recursive, only body shadows.
+        let (body_ov_names, body_ov_effs) = shadow_overlay(ov_names, ov_effs, name)
+        Array::push(stack, (val, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (body, declared, in_handle, body_ov_names, body_ov_effs))
       },
       ESeq(a, b) => {
-        Array::push(stack, (a, declared, in_handle))
-        Array::push(stack, (b, declared, in_handle))
+        Array::push(stack, (a, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (b, declared, in_handle, ov_names, ov_effs))
       },
       EIf(cond, then_e, else_e) => {
-        Array::push(stack, (cond, declared, in_handle))
-        Array::push(stack, (then_e, declared, in_handle))
-        Array::push(stack, (else_e, declared, in_handle))
+        Array::push(stack, (cond, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (then_e, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (else_e, declared, in_handle, ov_names, ov_effs))
       },
       EMatch(scrutinee, arms) => {
-        Array::push(stack, (scrutinee, declared, in_handle))
+        Array::push(stack, (scrutinee, declared, in_handle, ov_names, ov_effs))
         let mut ai = 0
         while ai < Array::length(arms) {
           let (_, arm_body) = Array::get(arms, ai)
-          Array::push(stack, (arm_body, declared, in_handle))
+          Array::push(stack, (arm_body, declared, in_handle, ov_names, ov_effs))
           ai = ai + 1
         }
       },
       EWhile(cond, body) => {
-        Array::push(stack, (cond, declared, in_handle))
-        Array::push(stack, (body, declared, in_handle))
+        Array::push(stack, (cond, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (body, declared, in_handle, ov_names, ov_effs))
       },
       ELoop(params, body) => {
         let mut i = 0
         while i < Array::length(params) {
           let (_, init) = Array::get(params, i)
-          Array::push(stack, (init, declared, in_handle))
+          Array::push(stack, (init, declared, in_handle, ov_names, ov_effs))
           i = i + 1
         }
-        Array::push(stack, (body, declared, in_handle))
+        Array::push(stack, (body, declared, in_handle, ov_names, ov_effs))
       },
       EForIn(_, _, iter, body) => {
-        Array::push(stack, (iter, declared, in_handle))
-        Array::push(stack, (body, declared, in_handle))
+        Array::push(stack, (iter, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (body, declared, in_handle, ov_names, ov_effs))
       },
       EBinOp(_, left, right) => {
-        Array::push(stack, (left, declared, in_handle))
-        Array::push(stack, (right, declared, in_handle))
+        Array::push(stack, (left, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (right, declared, in_handle, ov_names, ov_effs))
       },
-      EReturn(e) => Array::push(stack, (e, declared, in_handle)),
-      EUnaryOp(_, operand) => Array::push(stack, (operand, declared, in_handle)),
-      EThrow(e) => Array::push(stack, (e, declared, in_handle)),
+      EReturn(e) => Array::push(stack, (e, declared, in_handle, ov_names, ov_effs)),
+      EUnaryOp(_, operand) => Array::push(stack, (operand, declared, in_handle, ov_names, ov_effs)),
+      EThrow(e) => Array::push(stack, (e, declared, in_handle, ov_names, ov_effs)),
       EAssign(_, val, cont) => {
-        Array::push(stack, (val, declared, in_handle))
-        Array::push(stack, (cont, declared, in_handle))
+        Array::push(stack, (val, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (cont, declared, in_handle, ov_names, ov_effs))
       },
       EAssignOp(_, _, val, cont) => {
-        Array::push(stack, (val, declared, in_handle))
-        Array::push(stack, (cont, declared, in_handle))
+        Array::push(stack, (val, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (cont, declared, in_handle, ov_names, ov_effs))
       },
-      EDot(obj, _, _, _) => Array::push(stack, (obj, declared, in_handle)),
+      EDot(obj, _, _, _) => Array::push(stack, (obj, declared, in_handle, ov_names, ov_effs)),
       ETuple(elems) => {
         let mut ei = 0
         while ei < Array::length(elems) {
-          Array::push(stack, (Array::get(elems, ei), declared, in_handle))
+          Array::push(stack, (Array::get(elems, ei), declared, in_handle, ov_names, ov_effs))
           ei = ei + 1
         }
       },
       EArray(elems) => {
         let mut ei = 0
         while ei < Array::length(elems) {
-          Array::push(stack, (Array::get(elems, ei), declared, in_handle))
+          Array::push(stack, (Array::get(elems, ei), declared, in_handle, ov_names, ov_effs))
           ei = ei + 1
         }
       },
@@ -1063,7 +1285,7 @@ export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String]
         let mut fi = 0
         while fi < Array::length(fields) {
           let (_, fval) = Array::get(fields, fi)
-          Array::push(stack, (fval, declared, in_handle))
+          Array::push(stack, (fval, declared, in_handle, ov_names, ov_effs))
           fi = fi + 1
         }
       },
@@ -1080,23 +1302,39 @@ fn sig_type_effect_labels(topt: Option[TypeExpr]) -> Array[String] {
   }
 }
 
-// Public 3-arg entry: the direct-only check (no call-graph map), preserving the
-// pre-transitive behavior for unit tests and any non-stmts caller.
-export fn check_perform_effects_expr(root: Expr, root_declared: Array[String], root_in_handle: Bool) -> Array[EffectError] {
-  check_perform_effects_expr_tx(root, root_declared, root_in_handle, Array::slice([
+fn no_str_labels() -> Array[String] {
+  Array::slice([
     ""
-  ], 0, 0), Array::slice([
+  ], 0, 0)
+}
+
+fn no_ov_effs() -> Array[Array[String]] {
+  Array::slice([
     Array::slice([
       ""
     ], 0, 0)
-  ], 0, 0))
+  ], 0, 0)
+}
+
+// Public 3-arg entry: the direct-only check (no call-graph map), preserving the
+// pre-transitive behavior for unit tests and any non-stmts caller.
+export fn check_perform_effects_expr(root: Expr, root_declared: Array[String], root_in_handle: Bool) -> Array[EffectError] {
+  check_perform_effects_expr_tx(root, root_declared, root_in_handle, no_str_labels(), no_ov_effs(), no_str_labels(), no_ov_effs())
 }
 
 fn check_perform_effects_binding_tx(ty: Option[TypeExpr], body: Expr, fn_names: Array[String], fn_effs: Array[Array[String]]) -> Array[EffectError] {
   let sig_labels = sig_type_effect_labels(ty)
   match body {
-    EFn(_, _, _, _, eff, fbody) => check_perform_effects_expr_tx(fbody, labels_union(sig_labels, effect_decl_labels(eff)), false, fn_names, fn_effs),
-    _ => check_perform_effects_expr_tx(body, sig_labels, false, fn_names, fn_effs)
+    // #885: build the callback-parameter overlay for THIS binding's own
+    // function value from its (possibly untyped, see merge_param_types_with_sig)
+    // parameters, so a direct call to one of them inside the body is checked
+    // from the very first stack frame — not just once the walk happens to
+    // redescend through a nested `EFn` node.
+    EFn(_, _, params, _, eff, fbody) => {
+      let (ov_names, ov_effs) = build_param_overlay(merge_param_types_with_sig(ty, params))
+      check_perform_effects_expr_tx(fbody, labels_union(sig_labels, effect_decl_labels(eff)), false, fn_names, fn_effs, ov_names, ov_effs)
+    },
+    _ => check_perform_effects_expr_tx(body, sig_labels, false, fn_names, fn_effs, no_str_labels(), no_ov_effs())
   }
 }
 
@@ -1123,9 +1361,9 @@ fn check_perform_effects_stmt_tx(stmt: Stmt, fn_names: Array[String], fn_effs: A
   match stmt {
     SLet(_, _, _, ty, body) => check_perform_effects_binding_tx(ty, body, fn_names, fn_effs),
     SLetMut(_, ty, body) => check_perform_effects_binding_tx(ty, body, fn_names, fn_effs),
-    STest(_, body) => check_perform_effects_expr_tx(body, test_bench_ambient_effects(), false, fn_names, fn_effs),
-    SBench(_, body) => check_perform_effects_expr_tx(body, test_bench_ambient_effects(), false, fn_names, fn_effs),
-    SExpr(e) => check_perform_effects_expr_tx(e, effect_decl_labels(None), false, fn_names, fn_effs),
+    STest(_, body) => check_perform_effects_expr_tx(body, test_bench_ambient_effects(), false, fn_names, fn_effs, no_str_labels(), no_ov_effs()),
+    SBench(_, body) => check_perform_effects_expr_tx(body, test_bench_ambient_effects(), false, fn_names, fn_effs, no_str_labels(), no_ov_effs()),
+    SExpr(e) => check_perform_effects_expr_tx(e, effect_decl_labels(None), false, fn_names, fn_effs, no_str_labels(), no_ov_effs()),
     _ => Array::slice([
       EEThrowOutsideEffect("")
     ], 0, 0)
@@ -1134,13 +1372,7 @@ fn check_perform_effects_stmt_tx(stmt: Stmt, fn_names: Array[String], fn_effs: A
 
 // Public 1-arg entry: direct-only (empty map). Kept for unit tests.
 export fn check_perform_effects_stmt(stmt: Stmt) -> Array[EffectError] {
-  check_perform_effects_stmt_tx(stmt, Array::slice([
-    ""
-  ], 0, 0), Array::slice([
-    Array::slice([
-      ""
-    ], 0, 0)
-  ], 0, 0))
+  check_perform_effects_stmt_tx(stmt, no_str_labels(), no_ov_effs())
 }
 
 // #812: seed the transitive call-graph map with the checker ENV's bindings.
@@ -1311,7 +1543,7 @@ export fn file_tests_cacheable(stmts: Array[Stmt]) -> Bool {
     match Array::get(stmts, i) {
       STest(_, body) => {
         any_test = true
-        let errs = check_perform_effects_expr_tx(body, empty_decl, false, fn_names, fn_effs)
+        let errs = check_perform_effects_expr_tx(body, empty_decl, false, fn_names, fn_effs, no_str_labels(), no_ov_effs())
         if Array::length(errs) != 0 {
           all_ok = false
         } else {

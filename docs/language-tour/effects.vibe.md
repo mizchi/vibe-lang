@@ -133,20 +133,26 @@ let applied = apply((x) -> { x + 1 }, 41)  // => 42
 
 The wrapper must declare `with { e }` to propagate the callee's effects:
 
-> **Known gap (#838):** this rule is the intended design but is **not
-> currently enforced** by the checker — row-variable effect propagation was
-> deliberately scoped out when transitive effect enforcement landed (#626).
-> The `bad` example below compiles successfully today even though it omits
-> `with { e }`; see [vibe.md](../vibe.md#generics-with-effects-current) for
-> details. Do not rely on the compiler catching this mistake yet.
+> **Enforced (#885, fixed; previously a known gap tracked at #838):** this rule
+> is now checked for the callback-parameter case — a wrapper whose body
+> directly invokes an effect-row-polymorphic callback parameter without
+> declaring a compatible row is rejected. The `bad` example below (missing
+> `with { e }`) is a checker error today; see
+> [vibe.md](../vibe.md#generics-with-effects-current) for the full scope note
+> (call-site row-variable unification against a specific instantiating
+> argument is a separate, still-open case).
 
-<!-- doctest-skip: #838 — `bad` (missing `with {e}`) documents the INTENDED
-     error but the checker does not yet enforce row-variable coverage, so
-     this block currently compiles clean; skip until the gap is closed. -->
+<!-- doctest-skip: intentional type error example (ok/error contrast
+     presentation) — `bad` is REJECTED by the checker (#885) and cannot share
+     a single compiled unit with `safe`, so it stays a prose-only
+     illustration; see the live `safe` block below for a verified compiling
+     counterpart. -->
 ```vibe skip
-// intended error (NOT YET ENFORCED — #838): wrapper does not declare { e }
+// error (ENFORCED — #885): wrapper does not declare { e }
 let bad: [T]((T) -> T with { e }, T) -> T = (f, x) -> { f(x) }
+```
 
+```vibe
 // OK: Error is localized by handle
 let safe: [T]((T) -> T with { Error }, T) -> T = (f, x) -> {
   handle { f(x) } with Error { Throw(_) => x }

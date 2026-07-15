@@ -191,32 +191,38 @@ Rules:
 - Trait bounds and effect checks are independent constraints; either can fail
   first depending on the call shape.
 
-> **Known gap (#838):** the third rule above ("the wrapper must declare a
-> compatible effect set") is the intended design but is **not currently
-> enforced** by the checker. Row-variable effect propagation checking was
-> deliberately scoped out when transitive effect enforcement landed (#626,
-> `check_perform_effects_expr_tx` in `checker_effects.vibe`) — the checker's
-> call-graph effect map only tracks concrete effect names for named
-> top-level bindings; it never verifies that a caller's declared row covers
-> an effect row VARIABLE reached through a callback parameter. In practice
-> the `apply` example below (missing `with { e }`) compiles successfully
-> today instead of producing the error shown in its comment. A sound fix
-> needs call-site effect-row unification, not just label matching, so it is
-> tracked separately rather than forced in here.
+> **Enforced (#885, fixed; previously a known gap tracked at #838):** the third
+> rule above ("the wrapper must declare a compatible effect set") is now
+> checked for the callback-PARAMETER case — a wrapper whose body directly
+> invokes an effect-row-polymorphic callback parameter (e.g. `f: (T) -> T with
+> { e }`) must itself declare a compatible `with { ... }` row, or the checker
+> rejects it. `check_perform_effects_expr_tx` (`checker_effects.vibe`) now
+> tracks function-typed PARAMETERS as call-graph leaves, alongside named
+> top-level bindings, and no longer exempts a row-variable label reached
+> through one. The `apply` example below (missing `with { e }`) is a checker
+> error today, as its comment says. (Scope note: this covers the callback's
+> OWN declaring function; unifying a row variable against the concrete effect
+> a specific *call site's* argument instantiates it with — e.g. detecting that
+> `apply(risky, 1)` needs `{Error}` when `apply` itself correctly declares
+> `with {e}` — still needs real call-site effect-row unification and remains
+> open.)
 
 Examples:
 
-<!-- doctest-skip: #838 — the `apply` (missing `with {e}`) case documents the
-     INTENDED error but the checker does not yet enforce row-variable
-     coverage, so this block currently compiles clean; skip until the gap
-     is closed so doctest doesn't silently certify the wrong behavior. -->
+<!-- doctest-skip: intentional type error example (ok/error contrast
+     presentation) — the `apply` case below is REJECTED by the checker
+     (#885) and cannot share a single compiled unit with the `apply_ok` case
+     below it, so it stays a prose-only illustration; see `apply_ok` for a
+     live-verified compiling counterpart. -->
 ```vibe skip
-// intended error (NOT YET ENFORCED — #838): wrapper body calls an
-// effect-polymorphic callback without declaring {e}
+// error (ENFORCED — #885): wrapper body calls an effect-polymorphic
+// callback without declaring {e}
 let apply: [T](f: (T) -> T with { e }, x: T) -> T = (f, x) -> {
   f(x)
 }
+```
 
+```vibe
 // ok: wrapper propagates effect requirement explicitly
 let apply_ok: [T](f: (T) -> T with { e }, x: T) -> T with { e } = (f, x) -> {
   f(x)
