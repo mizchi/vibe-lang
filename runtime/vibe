@@ -362,7 +362,24 @@ case "$cmd" in
     set -- "${args[@]}"
     [ "$#" -ge 1 ] || die "usage: vibe run [--trace] [--break <fn>[,<fn>...]] [--mem] [--alloc-site[=N]] <file.vibe> [entry]"
     [ "$brk" = "1" ] && [ -z "$break_spec" ] && die "usage: vibe run --break <fn>[,<fn>...] <file.vibe> [entry]"
-    src="$1"; entry="${2:-main}"
+    src="$1"
+    # #865/#901 (Codex review): a literal `--` in position 2 is the argv
+    # separator (`vibe run prog.vibex -- --dry-run`), not an entry-function
+    # name -- treating it as one made the compiler search for an exported
+    # function literally named `--`. Only consume $2 as `entry` when it is
+    # NOT `--`; either way, everything after the (optional) entry name /
+    # separator forwards to the guest program as trailing argv (readable via
+    # `Env::args_len`/`Env::args_get`, which already worked -- this wrapper
+    # previously just dropped them).
+    if [ "$#" -ge 2 ] && [ "$2" != "--" ]; then
+      entry="$2"
+      shift 2
+    else
+      entry="main"
+      shift 1
+    fi
+    [ "$#" -ge 1 ] && [ "$1" = "--" ] && shift 1
+    extra_args=("$@")
     [ -f "$src" ] || die "not found: $src"
     out="$(mktemp -t vibe-run-XXXXXX.wasm)"
     trap 'rm -f "$out" "$out.funcmap"' EXIT
@@ -437,7 +454,8 @@ case "$cmd" in
     rerr_fifo="$(mktemp -u -t vibe-run-err-XXXXXX)"; mkfifo "$rerr_fifo"
     annotate_run_stream "$out.funcmap" "$(basename "$src")" < "$rerr_fifo" >&2 &
     annot_pid=$!
-    env $trace_env $break_env $mem_env $alloc_env $funcmap_env $breakfile_env "$RUNNER" "$out" 2>"$rerr_fifo" || status=$?
+    env $trace_env $break_env $mem_env $alloc_env $funcmap_env $breakfile_env "$RUNNER" "$out" \
+      ${extra_args[@]+"${extra_args[@]}"} 2>"$rerr_fifo" || status=$?
     wait "$annot_pid" 2>/dev/null || true
     rm -f "$rerr_fifo"
     exit "$status"

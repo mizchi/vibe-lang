@@ -1,0 +1,66 @@
+//# Imports
+
+import .{
+  sh_capture
+}
+
+//# Misc
+
+// #865: structured subprocess result -- the core gap this issue tracks. A
+// failing subprocess must produce a real non-zero exit_code (not an
+// "error: "-prefixed string, and not an unhandled throw), and stdout/stderr
+// must be captured SEPARATELY (not combined like sh_lines).
+
+test "sh_capture: success reports exit_code 0 and stdout" {
+  let result = sh_capture("echo hello")
+  assert(result.exit_code == 0)
+  assert(String::contains(result.stdout, "hello"))
+  assert(result.stderr == "")
+}
+
+test "sh_capture: failing command reports the REAL non-zero exit code" {
+  let result = sh_capture("exit 3")
+  assert(result.exit_code == 3)
+}
+
+test "sh_capture: another distinct non-zero exit code (not just 0-vs-1)" {
+  let result = sh_capture("exit 42")
+  assert(result.exit_code == 42)
+}
+
+test "sh_capture: stderr is captured separately from stdout" {
+  let result = sh_capture("echo out_line; echo err_line 1>&2")
+  assert(result.exit_code == 0)
+  assert(String::contains(result.stdout, "out_line"))
+  assert(not(String::contains(result.stdout, "err_line")))
+  assert(String::contains(result.stderr, "err_line"))
+  assert(not(String::contains(result.stderr, "out_line")))
+}
+
+test "sh_capture: a command that writes to stderr AND fails" {
+  let result = sh_capture("echo boom 1>&2; exit 7")
+  assert(result.exit_code == 7)
+  assert(String::contains(result.stderr, "boom"))
+}
+
+test "sh_capture: command not found reports a non-zero exit code" {
+  let result = sh_capture("__vibe_sh_capture_test_no_such_command__ 2>/dev/null")
+  assert(not(result.exit_code == 0))
+}
+
+test "sh_capture: does not throw on failure (unlike sh)" {
+  // Whereas `sh("exit 1")` throws unhandled, sh_capture must return normally
+  // so callers can branch on the result instead of catching an exception.
+  let result = sh_capture("exit 1")
+  assert(result.exit_code == 1)
+  assert(true)
+}
+
+test "sh_capture: repeated calls do not leak or corrupt prior handles" {
+  let a = sh_capture("echo first")
+  let b = sh_capture("exit 5")
+  let c = sh_capture("echo third")
+  assert(String::contains(a.stdout, "first"))
+  assert(b.exit_code == 5)
+  assert(String::contains(c.stdout, "third"))
+}

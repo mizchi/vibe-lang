@@ -3595,6 +3595,39 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_i64_shl(buf)
       nl
     }
+    else if ctx.enable_rc && fname == "vibe_sh_capture_raw" {
+      // #865: same raw-ABI shim shape as vibe_http_request_raw above -- one
+      // packed-string param passes through; the raw Int handle result must
+      // be tagged (untagged, it's the same #768 odd-raw-value RC-pointer
+      // misread the http/#705 shims above all guard against).
+      let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_call(buf, hi_idx)
+      emit_i64_const(buf, 1)
+      emit_i64_shl(buf)
+      nl
+    }
+    else if ctx.enable_rc && (fname == "vibe_sh_capture_exit_code_raw" || fname == "vibe_sh_capture_stdout_raw" || fname == "vibe_sh_capture_stderr_raw" || fname == "vibe_sh_capture_close_raw") {
+      // #865: same raw-ABI shim shape as the vibe_http_response_status_raw /
+      // vibe_http_response_body_raw / vibe_http_close_raw group above -- the
+      // handle param is a guest-tagged Int (untag it); exit_code returns a
+      // raw Int (tag it), stdout/stderr return packed strings (same in both
+      // modes, pass through), close returns nothing (push Unit 0).
+      let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_i64_const(buf, 1)
+      emit_i64_shr_s(buf)
+      emit_call(buf, hi_idx)
+      if fname == "vibe_sh_capture_exit_code_raw" {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      } else if fname == "vibe_sh_capture_close_raw" {
+        emit_i64_const(buf, 0)
+      } else {
+        ()
+      }
+      nl
+    }
     else if fname == "__rec_field" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       let idx_expr = Array::get(args, 1)
