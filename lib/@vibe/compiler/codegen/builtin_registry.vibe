@@ -88,13 +88,13 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
     ("Fs::exists", CtFn(reg_p1(CtString), CtBool, Some("Fs")), true, false, true),
     ("Fs::stat_token", CtFn(reg_p1(CtString), CtInt, Some("Fs")), true, false, true),
     // #795: alias-collision-proof surface for the same import.
-    ("__fs_stat_token_raw", CtFn(reg_p1(CtString), CtInt, Some("Fs")), true, false, true),
+    ("vibe_fs_stat_token_raw", CtFn(reg_p1(CtString), CtInt, Some("Fs")), true, false, true),
     ("Fs::write_file", CtFn(reg_p2(CtString, CtString), CtUnit, Some("Fs")), true, false, true),
     ("Fs::write_bytes", CtFn(reg_p2(CtString, CtBytes), CtUnit, Some("Fs")), true, false, true),
     ("Fs::read_bytes", CtFn(reg_p1(CtString), CtBytes, Some("Fs")), true, false, true),
-    ("__fs_read_dir_raw", CtFn(reg_p1(CtString), CtString, Some("Fs")), true, false, false),
+    ("vibe_fs_read_dir_raw", CtFn(reg_p1(CtString), CtString, Some("Fs")), true, false, false),
     ("sh", CtFn(reg_p1(CtString), CtString, Some("Process")), true, false, true),
-    ("__sh_lines_raw", CtFn(reg_p1(CtString), CtString, Some("Process")), true, false, false),
+    ("vibe_sh_lines_raw", CtFn(reg_p1(CtString), CtString, Some("Process")), true, false, false),
     ("Stdin::read_stream", CtFn(reg_p1(CtInt), CtString, Some("Stdin")), true, false, true),
     ("Stdout::write_stream", CtFn(reg_p1(CtString), CtUnit, Some("Stdout")), true, false, true),
     ("Stdout::write_char", CtFn(reg_p1(CtInt), CtUnit, Some("Stdout")), true, false, true),
@@ -111,11 +111,11 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
     ("Fs::getcwd", CtFn(reg_p0(), CtString, Some("Fs")), true, false, true),
     // #794: HTTP client host imports (vibe.http_*) -- host builtins are
     // linear-only by design (the gc lane is the pure-test lane).
-    ("__http_request_raw", CtFn(reg_p4(CtString, CtString, CtString, CtString), CtInt, Some("Http")), true, false, true),
-    ("__http_response_status_raw", CtFn(reg_p1(CtInt), CtInt, Some("Http")), true, false, true),
-    ("__http_response_header_raw", CtFn(reg_p2(CtInt, CtString), CtString, Some("Http")), true, false, true),
-    ("__http_response_body_raw", CtFn(reg_p1(CtInt), CtString, Some("Http")), true, false, true),
-    ("__http_close_raw", CtFn(reg_p1(CtInt), CtUnit, Some("Http")), true, false, true),
+    ("vibe_http_request_raw", CtFn(reg_p4(CtString, CtString, CtString, CtString), CtInt, Some("Http")), true, false, true),
+    ("vibe_http_response_status_raw", CtFn(reg_p1(CtInt), CtInt, Some("Http")), true, false, true),
+    ("vibe_http_response_header_raw", CtFn(reg_p2(CtInt, CtString), CtString, Some("Http")), true, false, true),
+    ("vibe_http_response_body_raw", CtFn(reg_p1(CtInt), CtString, Some("Http")), true, false, true),
+    ("vibe_http_close_raw", CtFn(reg_p1(CtInt), CtUnit, Some("Http")), true, false, true),
     ("Profiler::now_us", CtFn(reg_p0(), CtInt, Some("Profiler")), true, false, true),
     ("Profiler::NowUs", CtFn(reg_p0(), CtInt, None), true, false, false),
     // Current bump-heap pointer (bytes) — the allocation analog of now_us,
@@ -172,9 +172,9 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
     ("Bytes::slice", CtFn(reg_p3(CtBytes, CtInt, CtInt), CtBytes, None), true, true, true),
     ("Double::to_i64_bits", CtFn(reg_p1(CtDouble), CtInt, None), true, true, true),
     ("__to_string", CtFn(reg_p1(CtUnknown), CtString, None), true, true, true),
-    ("__rc_drop", CtFn(reg_p1(CtUnknown), CtUnit, None), true, false, false),
-    ("__rc_alloc", CtFn(reg_p1(CtInt), CtInt, None), true, false, false),
-    ("__heap_grow_check", CtFn(reg_p0(), CtUnit, None), true, false, false),
+    ("vibe_rc_drop", CtFn(reg_p1(CtUnknown), CtUnit, None), true, false, false),
+    ("vibe_rc_alloc", CtFn(reg_p1(CtInt), CtInt, None), true, false, false),
+    ("vibe_heap_grow_check", CtFn(reg_p0(), CtUnit, None), true, false, false),
     ("not", CtFn(reg_p1(CtBool), CtBool, None), false, true, true),
     ("Bytes::blit", CtFn(reg_p4(CtBytes, CtBytes, CtInt, CtInt), CtUnit, None), false, true, true),
     ("Bytes::fill", CtFn(reg_p3(CtBytes, CtInt, CtInt), CtUnit, None), false, true, true),
@@ -309,13 +309,13 @@ export fn verify_lane_builtins(lane: String, names: Array[String], param_counts:
     i = i + 1
   }
   // 2. every registry row claiming this lane must actually be registered.
-  // Exemption: the linear lane registers __rc_drop/__rc_alloc only when RC is
+  // Exemption: the linear lane registers vibe_rc_drop/vibe_rc_alloc only when RC is
   // enabled (VIBE_RC), so their absence in a bump-mode build is not drift —
   // they stay direction-1 verified (if registered, the signature must match).
   let mut ri2 = 0
   while ri2 < Array::length(reg) {
     let (rn2, _, _, rlin2, rgc2) = Array::get(reg, ri2)
-    let claimed2 = (if is_gc { rgc2 } else { rlin2 }) && not(String::starts_with(rn2, "__rc_"))
+    let claimed2 = (if is_gc { rgc2 } else { rlin2 }) && not(String::starts_with(rn2, "vibe_rc_"))
     if claimed2 {
       let mut found2 = false
       let mut i2 = 0
