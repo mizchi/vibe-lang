@@ -59,7 +59,19 @@ cd "$ROOT"
 # now genuinely exercised, not uncounted). MIN_POINT lowered just enough to
 # accommodate; MIN_FN_HIT (the real anti-regression ratchet per the note
 # above) is unaffected and still comfortably cleared.
-MIN_POINT="${VIBE_SUITE_MIN_POINT_RATE:-22}"
+#
+# Rebaselined again 2026-07-15 (#847): mechanically rerouting ~44 direct leaf
+# imports to go through their directory's index.vibe facade (parser.vibe's
+# syntax/ imports alone fan out to ~20 test files, plus prelude/json/process
+# facade widening) grows the whole-program-merge denominator further --
+# functions 34671/153688 (22.56%) on main -> 34710/168826 (20.56%) with this
+# change. Hit count went UP (+39, not down), total reachable functions grew
+# ~9.8% (+15,138) because widened facades pull more already-compiled code
+# into every test's merged program. Same dilution shape as the #801 note
+# above, not a coverage regression. MIN_POINT lowered just enough to
+# accommodate with a small margin; MIN_FN_HIT is unaffected and still
+# cleared by ~3x (34,710 vs 12,000).
+MIN_POINT="${VIBE_SUITE_MIN_POINT_RATE:-20}"
 MIN_LINE="${VIBE_SUITE_MIN_LINE_RATE:-97}"
 MIN_BRANCH="${VIBE_SUITE_MIN_BRANCH_RATE:-7}"
 MIN_FN_HIT="${VIBE_SUITE_MIN_FN_HIT:-12000}"

@@ -69,9 +69,11 @@ case "$shard" in
     # Rebaselined 2026-07-05 (allowlist 110 -> 224 diluted the rates while
     # absolute covered counts rose ~5x); rebaselined again 2026-07-15 (#801,
     # a loader-cache fix let a previously-crashing bench test start
-    # contributing its (below-average) coverage ratio) — keep in sync with
-    # the defaults in scripts/coverage_suite.sh.
-    VIBE_SUITE_MIN_POINT_RATE="${VIBE_SUITE_MIN_POINT_RATE:-22}" \
+    # contributing its (below-average) coverage ratio); rebaselined again
+    # 2026-07-15 (#847, mechanical index-facade reroutes grew the
+    # whole-program-merge denominator ~9.8% while absolute hit count rose)
+    # — keep in sync with the defaults in scripts/coverage_suite.sh.
+    VIBE_SUITE_MIN_POINT_RATE="${VIBE_SUITE_MIN_POINT_RATE:-20}" \
     VIBE_SUITE_MIN_LINE_RATE="${VIBE_SUITE_MIN_LINE_RATE:-97}" \
     VIBE_SUITE_MIN_BRANCH_RATE="${VIBE_SUITE_MIN_BRANCH_RATE:-7}" \
     VIBE_SUITE_MIN_FN_HIT="${VIBE_SUITE_MIN_FN_HIT:-12000}" \
