@@ -19,8 +19,23 @@ pkf run run -- test examples/syntax.vibe
 - `perform_handle.vibe`: `perform Effect::Op(...)` + `handle` による多層エフェクト/回復パターン
 - `module_export.vibe`, `module_import.vibe`: module export/import basics
 - `module_types_export.vibe`, `module_types_import.vibe`: importing types from modules
-- `pattern_coverage.vibe`: exhaustive pattern coverage examples
 - `trait_map_set.vibe`: map/set の trait パターン（`Hash` 境界と custom key adapter）
+- `selfhost_features.vibe`: selfhost compiler が使う言語機能のショーケース
+
+## Standard Library Usage
+
+- `base64.vibe`: base64 encode/decode の使用例
+- `http_handler.vibe`: HTTP handler の書き方
+- `json.vibe`: JSON の parse/build/query
+
+## Bench
+
+- `simple_bench.vibe`: `vibe bench` の最小例（詳細は
+  [CONTRIBUTION.md の Bench セクション](../CONTRIBUTION.md#bench)）
+
+```bash
+pkf run run -- bench examples/simple_bench.vibe
+```
 
 ## Core Library
 
@@ -30,8 +45,20 @@ pkf run run -- test examples/syntax.vibe
 ## WASM / Component Demos
 
 - `wasm/sleep_demo.vibe`: async sleep demo (host support required)
+- `wasm/sleep_async.vibe`, `wasm/read_async.vibe`: real async host demos
+  (`sleep`/`Stdin::read_char` suspending across the guest/host boundary; see
+  `scripts/test_real_async_host.sh` and `tools/async_host/`)
 - `wasm/tui_stream_demo.vibe`: stdin/stdout stream TUI-style demo
 
 ```bash
 pkf run demo-tui-stream
 ```
+
+## Test Fixtures
+
+Regression-test fixtures (`*_test.vibe` files exercised via the selfhost
+unit-test allowlist) used to live in this directory. They moved to
+[`fixtures/`](../fixtures/) (#880) so `examples/` only contains material
+worth reading as a tutorial. See `scripts/unit_test_allowlist.txt` for the
+gated corpus and `CONTRIBUTION.md`'s "Fixtures" section for the fixture
+layout convention.
