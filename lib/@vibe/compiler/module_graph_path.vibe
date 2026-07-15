@@ -1,5 +1,18 @@
 //# Functions
 
+// #897 (ADR-0070 Phase 1): `index.vpkg` is the target spelling `index.vibei`
+// is being renamed to (76 directories, migrated in later phases). Every site
+// that currently recognizes a `.vibei` contract file by extension must also
+// recognize `.vpkg` during the migration, so a directory may use EITHER
+// spelling. This is the ONE shared boolean test — string-comparison sites
+// that only need a yes/no "is this a contract-grammar file" answer should
+// call this instead of duplicating the `String::ends_with` pair. Sites that
+// need to build a candidate path (e.g. `dir + "/index.vpkg"`) still spell the
+// literal suffix themselves.
+export fn is_contract_ext(path: String) -> Bool {
+  String::ends_with(path, ".vibei") || String::ends_with(path, ".vpkg")
+}
+
 export fn dir_of_path(file_path: String) -> String {
   let idx = String::last_index_of(file_path, "/")
   if idx < 0 {
@@ -382,11 +395,18 @@ export fn resolve_import_path_candidates(base_dir: String, raw_path: String) -> 
     let candidates = Array::slice([
       ""
     ], 0, 0)
+    // #897 (ADR-0070 Phase 1): each root probes `.vpkg` (the target spelling)
+    // BEFORE `.vibei` (legacy, still valid during the migration), so a
+    // directory that has switched to `.vpkg` resolves without needing the
+    // pin/verify lanes to change at all — only the candidate list grows.
+    Array::push(candidates, String::concat(".vibe/store/", String::concat(raw_path, "/index.vpkg")))
     Array::push(candidates, String::concat(".vibe/store/", String::concat(raw_path, "/index.vibei")))
+    Array::push(candidates, String::concat("lib/", String::concat(raw_path, "/index.vpkg")))
     Array::push(candidates, String::concat("lib/", String::concat(raw_path, "/index.vibei")))
     let roots = external_lib_roots()
     let mut ri = 0
     while ri < Array::length(roots) {
+      Array::push(candidates, String::concat(Array::get(roots, ri), String::concat("/", String::concat(raw_path, "/index.vpkg"))))
       Array::push(candidates, String::concat(Array::get(roots, ri), String::concat("/", String::concat(raw_path, "/index.vibei"))))
       ri = ri + 1
     }
@@ -405,11 +425,15 @@ export fn resolve_import_path_candidates(base_dir: String, raw_path: String) -> 
     ]
   } else {
     // #729: a bare (directory-style) import may target a contract package —
-    // `<dir>/index.vibei` is probed between the plain-file and index.vibe
-    // forms. Existence-probing resolvers pick it up when present; index-0
-    // stays the plain-file form so no-match fallbacks are unchanged.
+    // `<dir>/index.vibei` (or, #897, `<dir>/index.vpkg`) is probed between
+    // the plain-file and index.vibe forms. Existence-probing resolvers pick
+    // it up when present; index-0 stays the plain-file form so no-match
+    // fallbacks are unchanged. `.vpkg` is tried before `.vibei` (#897:
+    // target spelling wins when a directory somehow has neither yet
+    // resolved, matching the `@scope/name` root ordering above).
     [
       String::concat(normalized, ".vibe"),
+      String::concat(normalized, "/index.vpkg"),
       String::concat(normalized, "/index.vibei"),
       String::concat(normalized, "/index.vibe")
     ]

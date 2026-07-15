@@ -1,3 +1,16 @@
+//# Types
+
+// #865: structured subprocess result. `sh`/`sh_lines` (above via run/run_lines)
+// throw on failure / lose the exit code behind an "error: " string prefix, so
+// callers that need to branch on subprocess success/failure could only do
+// prefix string-matching. `sh_capture` gives the real {exit_code, stdout,
+// stderr} instead.
+export struct ShResult {
+  exit_code: Int;
+  stdout: String;
+  stderr: String
+}
+
 //# Functions
 
 // run: (String) -> Unit with { Process }
@@ -27,4 +40,24 @@ fn first_line(lines: Array[String]) -> String {
 // run_line: (String) -> String with { Process }
 export fn run_line(cmd: String) -> String with { Process } {
   first_line(run_lines(cmd))
+}
+
+// sh_capture: (String) -> ShResult with { Process }
+// Runs `cmd` ONCE (unlike a naive 3-accessor design that would re-run it) and
+// returns the real exit code alongside stdout/stderr, so a caller can branch
+// on `result.exit_code == 0` instead of string-prefix matching sh_lines'
+// "error: " convention or catching sh's unconditional throw. Calls the raw
+// dunder builtins directly (not `perform`), same convention as
+// lib/@vibe/http/http.vibe's `vibe_http_*_raw` direct calls.
+export fn sh_capture(cmd: String) -> ShResult with { Process } {
+  // NOTE: `handle` is a reserved word (the `handle { ... } with Effect { }`
+  // expression), so the local binding is named `cap_handle` instead.
+  let cap_handle = vibe_sh_capture_raw(cmd)
+  let result = ShResult::{
+    exit_code: vibe_sh_capture_exit_code_raw(cap_handle),
+    stdout: vibe_sh_capture_stdout_raw(cap_handle),
+    stderr: vibe_sh_capture_stderr_raw(cap_handle)
+  }
+  vibe_sh_capture_close_raw(cap_handle)
+  result
 }
