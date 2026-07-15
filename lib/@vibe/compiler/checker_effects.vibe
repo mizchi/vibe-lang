@@ -728,12 +728,23 @@ fn effect_name_of_op(op_name: String) -> String {
 // discipline) and `Async` (composition-allowed; handled by the async pass) are
 // deliberately excluded from this slice.
 fn builtin_call_effect(name: String) -> Option[String] {
-  // `sh` / `sh_lines` are the only UNQUALIFIED effectful builtins: they now
-  // lower to real `vibe.sh` / `vibe.sh_lines` host imports that execute shell
-  // commands, so a direct `sh("...")` must require `{ Process }` just like a
-  // qualified builtin — otherwise it could run from a pure function or a bare
-  // top-level expression undeclared. Checked before the `::` fast path below.
-  if name == "sh" || name == "sh_lines" {
+  // `sh`/`sh_lines` and the checker_visible `vibe_*_raw` dunder builtins
+  // (Codex review, PR #909) are the only UNQUALIFIED effectful builtins:
+  // they lower to real `vibe.*` host imports that execute shell commands or
+  // terminate the process, so calling them directly must require
+  // `{ Process }` just like a qualified builtin -- otherwise they could run
+  // from a pure function or a bare top-level expression undeclared. Every
+  // name here is checker_visible=true in builtin_registry.vibe (directly
+  // callable from source); vibe_sh_lines_raw is checker_visible=false (only
+  // synthesized internally, never typed by user source) so it needs no
+  // entry. Checked before the `::` fast path below.
+  if name == "sh" || name == "sh_lines"
+  || name == "vibe_sh_capture_raw"
+  || name == "vibe_sh_capture_exit_code_raw"
+  || name == "vibe_sh_capture_stdout_raw"
+  || name == "vibe_sh_capture_stderr_raw"
+  || name == "vibe_sh_capture_close_raw"
+  || name == "vibe_process_exit_raw" {
     Some("Process")
   } else if String::index_of(name, "::") < 0 {
     // Fast path: every OTHER effectful builtin in this slice is a QUALIFIED name

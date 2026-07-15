@@ -113,7 +113,10 @@ for _, rel in rows:
         with open(full, "r", encoding="utf-8") as f:
             source_by_rel[rel] = f.read()
 
-dep_pattern = re.compile(r'^\s*(?:import|export)\s+(\.[\w./@\s-]+?)(?:\.vibe)?\s*\{', re.MULTILINE)
+# #897/Codex: optional non-capturing `as <mod> only` tail so a qualified
+# import's path capture doesn't swallow the " as h only" text as part of
+# the resolved path (the qualified grammar lives in lib/@vibe/parser/parser.vibe).
+dep_pattern = re.compile(r'^\s*(?:import|export)\s+(\.[\w./@\s-]+?)(?:\.vibe)?(?:\s+as\s+\w+\s+only)?\s*\{', re.MULTILINE)
 
 def normalize_path(path: str) -> str:
     parts = []
@@ -292,7 +295,10 @@ for _, rel in rows:
         with open(full, "r", encoding="utf-8") as f:
             source_by_rel[rel] = f.read()
 
-dep_pattern = re.compile(r'^\s*(?:import|export)\s+(\.[\w./@\s-]+?)(?:\.vibe)?\s*\{', re.MULTILINE)
+# #897/Codex: optional non-capturing `as <mod> only` tail so a qualified
+# import's path capture doesn't swallow the " as h only" text as part of
+# the resolved path (the qualified grammar lives in lib/@vibe/parser/parser.vibe).
+dep_pattern = re.compile(r'^\s*(?:import|export)\s+(\.[\w./@\s-]+?)(?:\.vibe)?(?:\s+as\s+\w+\s+only)?\s*\{', re.MULTILINE)
 
 def normalize_path(path: str) -> str:
     parts = []

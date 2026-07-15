@@ -1979,6 +1979,19 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             Ok(())
         },
     )?;
+    // #903/#865: `Process::exit(code)` -- propagates a guest-chosen code to
+    // the real OS exit status by reusing the SAME trap mechanism the legacy
+    // `__moonbit_sys_unstable::exit` import already relies on (see `run()`'s
+    // ExitTrap downcast below): trapping here unwinds straight out of the
+    // wasm call, and the caller recovers the code and exits the process
+    // with it instead of treating the trap as a real error.
+    linker.func_wrap(
+        "vibe",
+        "process_exit",
+        |_caller: Caller<'_, HostState>, code: i64| -> Result<()> {
+            Err(ExitTrap(code as i32).into())
+        },
+    )?;
     // debugger breakpoint (DAP P1): the break-mode codegen emits a bare
     // `call vibe::dbg_break` at each user function entry. We capture the wasm
     // backtrace, name the entering function (the innermost user frame via the

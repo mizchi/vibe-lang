@@ -24,7 +24,7 @@ import ../syntax {
   lex, lex_with_offsets, offset_to_line_col, parse_program, parse_program_located
 }
 import ../contract/index.vibe {
-  contract_facade_marker, extract_require_pins, parse_contract_program
+  classify_contract_stmts, contract_facade_marker, extract_require_pins, parse_contract_program
 }
 
 //# Functions
@@ -194,7 +194,12 @@ fn contract_sibling_impl_raws_rec(sub_dir: String, prefix: String) -> Array[Stri
     let name = Array::get(names, i)
     if name == "index.vibei" || name == "index.vibe" || name == "index.vpkg" {
       ()
-    } else if String::ends_with(name, ".vibe") {
+    } else if String::ends_with(name, ".vibe") && !String::ends_with(name, "_test.vibe") && !String::ends_with(name, ".draft.vibe") && !String::starts_with(name, "_") {
+      // #897/#855 (ADR-0070 Phase 1): test files, draft/scratch files, and
+      // `_`-prefixed files are never implicit implementation members --
+      // pre-existing gap (header_cache.vibe's facade-reparse workaround
+      // comment above already documented `_test.vibe` leaking in here and
+      // routed around it rather than fixing discovery itself).
       Array::push(out, String::concat(prefix, name))
     } else {
       let full = String::concat(sub_dir, String::concat("/", name))
@@ -230,6 +235,44 @@ fn contract_sibling_impl_raws_rec(sub_dir: String, prefix: String) -> Array[Stri
 // index.vibei coexistence first.
 export fn contract_sibling_impl_raws(dir: String) -> Array[String] with { Error, Fs } {
   contract_sibling_impl_raws_rec(dir, "./")
+}
+
+// #897/#855 (ADR-0070 Phase 1): a .vpkg contract gets implicit membership
+// unconditionally (unlike .vibei's legacy all-or-nothing gate) -- explicit
+// `import ./x.vibe {}` declarations are merged with auto-discovered
+// siblings rather than suppressing discovery. `explicit` wins ordering (its
+// declared spelling is part of the package hash); newly-discovered names
+// are appended after, de-duplicated, preserving contract_sibling_impl_raws'
+// deterministic byte-sorted discovery order for anything not already listed.
+export fn merge_impl_raws_dedupe(explicit: Array[String], discovered: Array[String]) -> Array[String] {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(explicit) {
+    Array::push(out, Array::get(explicit, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(discovered) {
+    let d = Array::get(discovered, j)
+    let mut k = 0
+    let mut found = false
+    while k < Array::length(out) && !found {
+      if Array::get(out, k) == d {
+        found = true
+      } else {
+        k = k + 1
+      }
+    }
+    if !found {
+      Array::push(out, d)
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  out
 }
 
 export fn load_or_parse_module_header_fs_impl(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with { Error, Fs } {
@@ -314,9 +357,19 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
       // #730: a contract with no implementation imports auto-discovers its
       // siblings — those files are deps of the header too, or an impl edit
       // would not invalidate this cache entry.
+      // #897/#855: a .vpkg contract always merges discovered siblings with
+      // its explicit deps (implicit membership is unconditional for .vpkg),
+      // so its header deps must include both, not just whichever won under
+      // the old either/or gate.
       let cdeps = collect_import_deps_from_stmts(cextra, dir_of_path(path), path, pin_blanked)
-      let cdeps2 = if Array::length(cdeps) == 0 {
-        let craws = contract_sibling_impl_raws(dir_of_path(path))
+      let is_vpkg_contract = String::ends_with(path, ".vpkg")
+      let cdeps2 = if is_vpkg_contract || Array::length(cdeps) == 0 {
+        let craws = if is_vpkg_contract {
+          let (craws0, _) = classify_contract_stmts(cextra)
+          merge_impl_raws_dedupe(craws0, contract_sibling_impl_raws(dir_of_path(path)))
+        } else {
+          contract_sibling_impl_raws(dir_of_path(path))
+        }
         let resolved = Array::slice([
           ""
         ], 0, 0)
