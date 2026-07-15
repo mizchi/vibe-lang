@@ -142,10 +142,11 @@ def resolve_path(base_rel: str, raw_path: str) -> str:
         candidate = normalize_path(path)
     if candidate in source_by_rel:
         return candidate
-    # Directory-style imports fall back to index.vibei (contract package) / index.vibe
+    # Directory-style imports fall back to index.vpkg / index.vibei (contract
+    # package, #897 Phase 1 accepts either spelling) / index.vibe
     if candidate.endswith(".vibe"):
         stem = candidate[: -len(".vibe")]
-        for idx_candidate in (stem + "/index.vibei", stem + "/index.vibe"):
+        for idx_candidate in (stem + "/index.vpkg", stem + "/index.vibei", stem + "/index.vibe"):
             if idx_candidate in source_by_rel:
                 return idx_candidate
     return candidate
@@ -164,7 +165,7 @@ def record_gap(user: str, target: str):
     probes = [target]
     if target.endswith(".vibe"):
         stem = target[: -len(".vibe")]
-        probes += [stem + "/index.vibei", stem + "/index.vibe"]
+        probes += [stem + "/index.vpkg", stem + "/index.vibei", stem + "/index.vibe"]
     for probe in probes:
         if os.path.isfile(os.path.join(compiler_dir, probe)):
             manifest_gaps.setdefault(probe, []).append(user)
@@ -322,7 +323,7 @@ def resolve_path(base_rel: str, raw_path: str) -> str:
         return candidate
     if candidate.endswith(".vibe"):
         stem = candidate[: -len(".vibe")]
-        for idx_candidate in (stem + "/index.vibei", stem + "/index.vibe"):
+        for idx_candidate in (stem + "/index.vpkg", stem + "/index.vibei", stem + "/index.vibe"):
             if idx_candidate in source_by_rel:
                 return idx_candidate
     return candidate
@@ -836,15 +837,16 @@ import sys, re
 with open('$filepath', 'r') as f:
     content = f.read()
 # Strip relative import/export statements (they are resolved by collect_merged_stmts)
-# -- EXCEPT in .vibei contracts: there the 'import ./impl.vibe {}' lines are the
-# contract's implementation-file DECLARATIONS (data consumed by the conformance
-# desugar, loader/index.vibe desugar_contract_source_fs). Stripping them flipped
-# the desugar into sibling auto-discovery (Fs::readdir over the whole package
-# dir), which pulled deliberately-out-of-contract files like @vibe/core/map.vibe
-# into the conformance set and failed the bundle-ingest lane with 'exported X is
-# not declared in the contract' (selfhost_s5_test). Embed .vibei verbatim.
+# -- EXCEPT in .vibei/.vpkg contracts (#897 Phase 1 accepts either spelling):
+# there the 'import ./impl.vibe {}' lines are the contract's implementation-file
+# DECLARATIONS (data consumed by the conformance desugar, loader/index.vibe
+# desugar_contract_source_fs). Stripping them flipped the desugar into sibling
+# auto-discovery (Fs::readdir over the whole package dir), which pulled
+# deliberately-out-of-contract files like @vibe/core/map.vibe into the
+# conformance set and failed the bundle-ingest lane with 'exported X is not
+# declared in the contract' (selfhost_s5_test). Embed .vibei/.vpkg verbatim.
 drop_pattern = re.compile(r'^\s*(?:import|export)\s+\.[\w./\s-]+')
-if '$filepath'.endswith('.vibei'):
+if '$filepath'.endswith('.vibei') or '$filepath'.endswith('.vpkg'):
     pass
 else:
     lines = content.splitlines(True)

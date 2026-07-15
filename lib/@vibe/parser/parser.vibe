@@ -111,6 +111,43 @@ fn parse_import_items(tokens: Array[Token], pos: Int) -> (Array[(String, Option[
   }
 }
 
+// #897: `import <path> as <mod> only { x, y }` binds the imported items
+// under a namespace, accessed as `mod.x`/`mod.y` in the importing file.
+// No new Stmt/Expr variant: each item's local alias is desugared to the
+// dot-joined string "mod.x" (real identifiers can never contain '.', so
+// this can't collide with anything a user could type) and stored as an
+// ordinary SImport — the existing import_alias_rewrite.vibe machinery
+// resolves it exactly like any other aliased import. `only` is a
+// contextual keyword (matched by ident text, not a reserved token) to
+// avoid reserving "only" globally.
+fn qualify_import_items(mod_name: String, items: Array[(String, Option[String])]) -> Array[(String, Option[String])] {
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < Array::length(items) {
+    let (name, alias_opt) = Array::get(items, i)
+    let local = match alias_opt {
+      Some(alias) => alias,
+      None => name
+    }
+    ArrayBuilder::push(b, (name, Some(String::concat(mod_name, String::concat(".", local)))))
+    i = i + 1
+  }
+  ArrayBuilder::freeze(b)
+}
+
+fn parse_qualified_import_tail(tokens: Array[Token], pos: Int, path: String, mod_name: String) -> (Stmt, Int) with { Error } {
+  match peek(tokens, pos) {
+    TIdent(only_kw) => if only_kw == "only" {
+      let br = expect_tk(tokens, pos + 1, "{")
+      let (items, end) = parse_import_items(tokens, br);
+      (SImport(path, qualify_import_items(mod_name, items)), end)
+    } else {
+      throw("expected 'only' after 'as <name>' in qualified import")
+    },
+    _ => throw("expected 'only' after 'as <name>' in qualified import")
+  }
+}
+
 // #769: a trailing `import <path> @alias` alias token must be recognized
 // regardless of what the path itself starts with. This used to be checked
 // only on the branch for a path starting with a bare identifier (`import
@@ -121,6 +158,10 @@ fn parse_import_items(tokens: Array[Token], pos: Int) -> (Array[(String, Option[
 // collect_import_path correctly stopped just before the alias token.
 fn parse_import_path_tail(tokens: Array[Token], bp: Int, path: String) -> (Stmt, Int) with { Error } {
   match peek(tokens, bp) {
+    TAs => match peek(tokens, bp + 1) {
+      TIdent(mod_name) => parse_qualified_import_tail(tokens, bp + 2, path, mod_name),
+      _ => throw("expected namespace name after 'as' in import")
+    },
     TIdent(alias_name) => if String::length(alias_name) > 1 && String::char_code_at(alias_name, 0) == '@' {
       let alias_str = String::substring(alias_name, 1, String::length(alias_name))
       (SAliasDecl(alias_str, path), bp + 1)
@@ -140,9 +181,7 @@ fn parse_import_path_tail(tokens: Array[Token], bp: Int, path: String) -> (Stmt,
 fn parse_import_stmt(tokens: Array[Token], pos: Int) -> (Stmt, Int) with { Error } {
   match peek(tokens, pos) {
     TIdent(name) => if String::length(name) > 1 && String::char_code_at(name, 0) == '@' {
-      let br = expect_tk(tokens, pos + 1, "{")
-      let (items, end) = parse_import_items(tokens, br);
-      (SImport(name, items), end)
+      parse_import_path_tail(tokens, pos + 1, name)
     } else {
       let (path, bp) = collect_import_path(tokens, pos, "")
       parse_import_path_tail(tokens, bp, path)

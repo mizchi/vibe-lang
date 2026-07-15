@@ -2383,7 +2383,27 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
         }
         }
       },
-      EDot(obj, method, _, _) => {
+      // #897: `mod.x(args)` through a qualified-import namespace parses as
+      // ECall(EDot(EIdent(mod), x), args) -- a call whose callee is EDot goes
+      // through THIS UFCS/method-call arm, not the standalone EDot arm below,
+      // so the same qualified-namespace shortcut is needed here too (see the
+      // comment on the standalone `EDot` check_expr arm for the full
+      // rationale).
+      EDot(obj, method, _, qcall_field_off) => {
+        let qualified_key = match obj {
+          EIdent(ns, _) => Some(String::concat(ns, String::concat(".", method))),
+          _ => None
+        }
+        let qualified_hit = match qualified_key {
+          Some(k) => env_lookup(env, k),
+          None => None
+        }
+        match qualified_hit {
+        Some(_) => match qualified_key {
+          Some(k) => check_expr(ECall(EIdent(k, qcall_field_off), args, call_off), env, defs, s, c, errors, tytab),
+          None => (CtUnknown, s, c)
+        },
+        None => {
         let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors, tytab)
         let resolved = subst_apply(s1, obj_ty)
         let type_prefix = type_name_prefix(resolved)
@@ -2467,6 +2487,8 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
               }
             }
           }
+        }
+        }
         }
       },
       _ => {
@@ -3020,9 +3042,32 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
       let (bt, s2, c2) = check_expr(body, env_bind(env3, "__in_loop__", CtUnit), defs, s1, c1b, errors, tytab)
       (CtArray(bt), s2, c2)
     },
+    // #897: `mod.x` against a qualified-import namespace (`import ... as mod
+    // only { x }`) is bound directly as "mod.x" in env (see
+    // qualify_import_items in lib/@vibe/parser/parser.vibe -- bare `mod` is
+    // deliberately never bound, so a real identifier can never collide with
+    // this key). Whole-program merge later rewrites `EDot(EIdent(mod), x)`
+    // straight to the merged/renamed `x` (import_alias_rewrite.vibe), but
+    // some lanes (incremental fs_compile) type-check per-file BEFORE that
+    // merge runs, so this same shortcut is needed here too: resolve through
+    // the qualified binding directly instead of ever checking `mod` alone.
     EDot(obj, field, dot_off, field_off) => {
-      let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors, tytab)
-      let resolved = subst_apply(s1, obj_ty)
+      let qualified_key = match obj {
+        EIdent(ns, _) => Some(String::concat(ns, String::concat(".", field))),
+        _ => None
+      }
+      let qualified_hit = match qualified_key {
+        Some(k) => env_lookup(env, k),
+        None => None
+      }
+      match qualified_hit {
+        Some(_) => match qualified_key {
+          Some(k) => check_expr(EIdent(k, field_off), env, defs, s, c, errors, tytab),
+          None => (CtUnknown, s, c)
+        },
+        None => {
+          let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors, tytab)
+          let resolved = subst_apply(s1, obj_ty)
       let field_ty = match resolved {
         CtStruct(sname) => match find_typedef(defs, sname) {
           Some(td) => match td {
@@ -3131,7 +3176,9 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
       } else {
         ()
       }
-      (field_ty, s1, c1)
+          (field_ty, s1, c1)
+        }
+      }
     },
     EFn(tparams, tbounds, params, ret_ty, effect, body) => {
       let tplen = Array::length(tparams)
