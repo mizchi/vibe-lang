@@ -151,7 +151,7 @@ bash scripts/rc_cutover_readiness.sh 1000 101000  # tighter per-iter signal
 
 The probe now prints `READY` on this corpus — a green light for the #493 cutover
 on realistic mixed-feature code, alongside the existing reclaim gate. The residual
-*safe* leaks documented in `selfhost-uniform-value-repr.md` (escaping lambdas,
+*safe* leaks documented in `uniform-value-repr.md` (escaping lambdas,
 deep-projection opaque args, container-outlives-scope) do not appear in this
 corpus; the remaining cutover work is the mechanical default→RC switch itself
 (#493 C/F) plus any wider-corpus measurement.

@@ -8,13 +8,13 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 mkdir -p "$TMP_ROOT/lib/@vibe/compiler"
 
-cat > "$TMP_ROOT/lib/@vibe/compiler/selfhost_sources_manifest.tsv" <<'EOF'
+cat > "$TMP_ROOT/lib/@vibe/compiler/compiler_sources_manifest.tsv" <<'EOF'
 # group	path
 core	polyfill.vibe
 syntax	token.vibe
 entry	index.vibe
 entry	selfhost_cli_adapter.vibe
-entry	selfhost_cli_adapter_bundle.vibe
+entry	cli_adapter_bundle.vibe
 EOF
 
 cat > "$TMP_ROOT/lib/@vibe/compiler/polyfill.vibe" <<'EOF'
@@ -28,7 +28,7 @@ let token = () -> Int { polyfill() }
 EOF
 
 cat > "$TMP_ROOT/lib/@vibe/compiler/index.vibe" <<'EOF'
-import ./selfhost_cli_adapter_bundle.vibe { selfhost_cli_adapter_merged_source }
+import ./cli_adapter_bundle.vibe { selfhost_cli_adapter_merged_source }
 
 let index = String::length(selfhost_cli_adapter_merged_source()) + token()
 EOF
@@ -41,17 +41,17 @@ let cli_main = () -> Int { token() }
 EOF
 
 VIBE_PROJECT_ROOT="$TMP_ROOT" \
-VIBE_SOURCE_MANIFEST="$TMP_ROOT/lib/@vibe/compiler/selfhost_sources_manifest.tsv" \
-VIBE_BUNDLE_OUT="$TMP_ROOT/lib/@vibe/compiler/selfhost_sources_bundle.vibe" \
-VIBE_ADAPTER_BUNDLE_OUT="$TMP_ROOT/lib/@vibe/compiler/selfhost_cli_adapter_bundle.vibe" \
-VIBE_ADAPTER_MODULE_SOURCE_OUT="$TMP_ROOT/lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe" \
+VIBE_SOURCE_MANIFEST="$TMP_ROOT/lib/@vibe/compiler/compiler_sources_manifest.tsv" \
+VIBE_BUNDLE_OUT="$TMP_ROOT/lib/@vibe/compiler/compiler_sources_bundle.vibe" \
+VIBE_ADAPTER_BUNDLE_OUT="$TMP_ROOT/lib/@vibe/compiler/cli_adapter_bundle.vibe" \
+VIBE_ADAPTER_MODULE_SOURCE_OUT="$TMP_ROOT/lib/@vibe/compiler/cli_adapter_module_source.vibe" \
 VIBE_BUNDLE_EXTRA_ENTRIES="" \
 VIBE_ADAPTER_MODULE_SOURCE_FROM_MERGED=1 \
 bash "$BUNDLE_SCRIPT" >/dev/null
 
-OUT="$TMP_ROOT/lib/@vibe/compiler/selfhost_sources_bundle.vibe"
-OUT_ADAPTER="$TMP_ROOT/lib/@vibe/compiler/selfhost_cli_adapter_bundle.vibe"
-OUT_ADAPTER_MODULE="$TMP_ROOT/lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe"
+OUT="$TMP_ROOT/lib/@vibe/compiler/compiler_sources_bundle.vibe"
+OUT_ADAPTER="$TMP_ROOT/lib/@vibe/compiler/cli_adapter_bundle.vibe"
+OUT_ADAPTER_MODULE="$TMP_ROOT/lib/@vibe/compiler/cli_adapter_module_source.vibe"
 if [ ! -f "$OUT" ]; then
   echo "generate-selfhost-bundle self-test: expected bundle output" >&2
   exit 1

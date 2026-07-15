@@ -149,7 +149,7 @@ echo "selfhost generations self-test: ok"
 
 CLI_ROOT="$TMP_ROOT/cli_seed"
 mkdir -p "$CLI_ROOT/bootstrap" "$CLI_ROOT/bootstrap/seed" "$CLI_ROOT/scripts" "$CLI_ROOT/lib/@vibe/compiler"
-printf 'import ./dep.vibe { dep }\nexport let cli_main = () -> Int { dep() }\n' > "$CLI_ROOT/lib/@vibe/compiler/selfhost_cli_support.vibe"
+printf 'import ./dep.vibe { dep }\nexport let cli_main = () -> Int { dep() }\n' > "$CLI_ROOT/lib/@vibe/compiler/cli_support.vibe"
 printf 'export let dep = () -> Int { 0 }\n' > "$CLI_ROOT/lib/@vibe/compiler/dep.vibe"
 printf 'seed-cli\n' > "$CLI_ROOT/bootstrap/seed/selfhost_compiler.wasm"
 cli_seed_sha="$(shasum -a 256 "$CLI_ROOT/bootstrap/seed/selfhost_compiler.wasm" | awk '{print $1}')"
@@ -162,7 +162,7 @@ cat > "$CLI_ROOT/bootstrap/seed.json" <<EOF
     "name": "test-cli-seed",
     "tag": "test-cli-seed-tag",
     "source_commit": "abc123",
-    "entry": "lib/@vibe/compiler/selfhost_cli_support.vibe",
+    "entry": "lib/@vibe/compiler/cli_support.vibe",
     "entry_name": "cli_main",
     "artifact": {
       "path": "bootstrap/seed/selfhost_compiler.wasm",
@@ -204,15 +204,15 @@ VIBE_GENERATION_VALIDATE_WASM=0 \
 VIBE_GENERATION_VALIDATE_RUN=0 \
   bash "$SCRIPT" build --manifest "$CLI_ROOT/bootstrap/seed.json" --out-dir "$CLI_ROOT/out"
 
-test -s "$CLI_ROOT/out/selfhost_cli_adapter_module_source.vibe"
+test -s "$CLI_ROOT/out/cli_adapter_module_source.vibe"
 test -s "$CLI_ROOT/out/stage1.wasm"
 test -s "$CLI_ROOT/out/stage2.wasm"
-if rg -q '^lib/@vibe/compiler/selfhost_cli_support\.vibe$' "$CLI_ROOT/invocations.log"; then
+if rg -q '^lib/@vibe/compiler/cli_support\.vibe$' "$CLI_ROOT/invocations.log"; then
   echo "expected cli seed build to use generated flat compiler source, not import entry" >&2
   cat "$CLI_ROOT/invocations.log" >&2
   exit 1
 fi
-if ! rg -q '^out/selfhost_cli_adapter_module_source\.vibe$' "$CLI_ROOT/invocations.log"; then
+if ! rg -q '^out/cli_adapter_module_source\.vibe$' "$CLI_ROOT/invocations.log"; then
   echo "expected cli seed build to invoke generated flat compiler source" >&2
   cat "$CLI_ROOT/invocations.log" >&2
   exit 1
@@ -221,7 +221,7 @@ fi
 echo "selfhost generations cli-seed self-test: ok"
 
 mkdir -p "$CLI_ROOT/lib/@vibe/cli"
-printf 'export let cli_main: () -> Int = () -> { 0 }\n' > "$CLI_ROOT/lib/@vibe/cli/selfhost_entry.vibe"
+printf 'export let cli_main: () -> Int = () -> { 0 }\n' > "$CLI_ROOT/lib/@vibe/cli/entry.vibe"
 
 set +e
 VIBE_PROJECT_ROOT="$CLI_ROOT" \
@@ -230,7 +230,7 @@ VIBE_GENERATION_VALIDATE_RUN=0 \
   bash "$SCRIPT" build \
     --manifest "$CLI_ROOT/bootstrap/seed.json" \
     --out-dir "$CLI_ROOT/split-out" \
-    --entry lib/@vibe/cli/selfhost_entry.vibe >"$CLI_ROOT/split.stdout" 2>"$CLI_ROOT/split.stderr"
+    --entry lib/@vibe/cli/entry.vibe >"$CLI_ROOT/split.stdout" 2>"$CLI_ROOT/split.stderr"
 split_status=$?
 set -e
 if [ "$split_status" -eq 0 ]; then

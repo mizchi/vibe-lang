@@ -9,8 +9,8 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 mkdir -p "$TMP_ROOT/lib/@vibe/compiler" "$TMP_ROOT/out" "$TMP_ROOT/scripts"
 touch "$TMP_ROOT/lib/@vibe/compiler/keep_test.vibe"
 touch "$TMP_ROOT/lib/@vibe/compiler/new_split_test.vibe"
-touch "$TMP_ROOT/lib/@vibe/compiler/selfhost_s5_test.vibe"
-touch "$TMP_ROOT/lib/@vibe/compiler/selfhost_s5_wasm_test.vibe"
+touch "$TMP_ROOT/lib/@vibe/compiler/s5_test.vibe"
+touch "$TMP_ROOT/lib/@vibe/compiler/s5_wasm_test.vibe"
 touch "$TMP_ROOT/lib/@vibe/compiler/codegen_parser_test.vibe"
 
 cat > "$TMP_ROOT/scripts/test_batch_weights.seed.json" <<'EOF'
@@ -18,7 +18,7 @@ cat > "$TMP_ROOT/scripts/test_batch_weights.seed.json" <<'EOF'
   "lib/@vibe/compiler/keep_test.vibe": 100,
   "lib/@vibe/compiler/removed_test.vibe": 999,
   "lib/@vibe/compiler/not_a_test.vibe": 50,
-  "lib/@vibe/compiler/selfhost_s5_test.vibe": 888,
+  "lib/@vibe/compiler/s5_test.vibe": 888,
   "lib/@vibe/compiler/codegen_parser_test.vibe": 777
 }
 EOF
@@ -28,7 +28,7 @@ cat > "$TMP_ROOT/out/selfhost_test_batch_weights.json" <<EOF
   "lib/@vibe/compiler/keep_test.vibe": 321,
   "${TMP_ROOT//\\/\\\\}/lib/@vibe/compiler/new_split_test.vibe": 654,
   "lib/@vibe/compiler/missing_test.vibe": 777,
-  "lib/@vibe/compiler/selfhost_s5_wasm_test.vibe": 777,
+  "lib/@vibe/compiler/s5_wasm_test.vibe": 777,
   "lib/@vibe/compiler/codegen_parser_test.vibe": 666
 }
 EOF

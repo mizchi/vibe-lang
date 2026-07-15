@@ -6,7 +6,7 @@ bumped seed/CI toolchain; PR-2 (bound enforcement + dictionary passing) next.
 ## Build gotcha (read before iterating on the selfhost compiler)
 
 `scripts/generations.sh build` and `generate_bundle.sh` copy the
-**committed** `lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe` by default
+**committed** `lib/@vibe/compiler/cli_adapter_module_source.vibe` by default
 (`build_adapter_module_source`, gated on `VIBE_SELFHOST_REGEN_MODULE_SOURCE`).
 Editing compiler source files therefore has **no effect** on a build until the
 flat module source is regenerated. Always build/regenerate with:
@@ -14,7 +14,7 @@ flat module source is regenerated. Always build/regenerate with:
 ```bash
 VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 bash scripts/generations.sh build
 VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 \
-  VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe \
+  VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/cli_adapter_module_source.vibe \
   bash scripts/generate_bundle.sh   # to refresh the committed copy
 ```
 

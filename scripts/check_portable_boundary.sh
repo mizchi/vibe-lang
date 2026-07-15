@@ -53,7 +53,7 @@ require_line \
   "direct component closure compile stays in-memory"
 
 forbid_pattern \
-  "lib/@vibe/compiler/selfhost_cli_direct_component_entry.vibe" \
+  "lib/@vibe/compiler/cli_direct_component_entry.vibe" \
   "$native_effect_pattern" \
   "direct component entry"
 forbid_pattern \

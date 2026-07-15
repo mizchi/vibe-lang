@@ -42,8 +42,8 @@ import ./m_b.vibe { answer as answer_b }
 import ./m_common.vibe { common_val }
 export let main: () -> Int = () -> { answer_a() + answer_b() + a_extra() + common_val() }
 EOF
-printf '# group\tpath\n' > "$P/selfhost_sources_manifest.tsv"
-for m in m_a m_b m_common main; do printf 'grp\t%s.vibe\n' "$m" >> "$P/selfhost_sources_manifest.tsv"; done
+printf '# group\tpath\n' > "$P/compiler_sources_manifest.tsv"
+for m in m_a m_b m_common main; do printf 'grp\t%s.vibe\n' "$m" >> "$P/compiler_sources_manifest.tsv"; done
 
 run() {
   rm -f "$RUN_JSON"

@@ -4,7 +4,7 @@
 #
 # emit-module-source is a deterministic function of the committed compiler
 # source. The default (moon-free) build consumes the committed prebuilt
-# lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe instead of calling
+# lib/@vibe/compiler/cli_adapter_module_source.vibe instead of calling
 # the MoonBit host. This gate regenerates it through the host compiler
 # (VIBE_REGEN_MODULE_SOURCE=1) and fails on drift, so a stale
 # prebuilt can never silently ship.
@@ -17,7 +17,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="${VIBE_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
 COMPILER_DIR="${VIBE_COMPILER_DIR:-$PROJECT_ROOT/lib/@vibe/compiler}"
-EXPECTED="${VIBE_MODULE_SOURCE_EXPECTED:-$COMPILER_DIR/selfhost_cli_adapter_module_source.vibe}"
+EXPECTED="${VIBE_MODULE_SOURCE_EXPECTED:-$COMPILER_DIR/cli_adapter_module_source.vibe}"
 
 if [ ! -f "$EXPECTED" ]; then
   echo "selfhost module source sync: committed prebuilt not found: $EXPECTED" >&2
@@ -47,7 +47,7 @@ fi
 mkdir -p "$PROJECT_ROOT/_build"
 TMP_ROOT="$(mktemp -d "$PROJECT_ROOT/_build/vibe_selfhost_module_source_sync.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
-TMP_MODULE_SOURCE="$TMP_ROOT/selfhost_cli_adapter_module_source.vibe"
+TMP_MODULE_SOURCE="$TMP_ROOT/cli_adapter_module_source.vibe"
 
 VIBE_PROJECT_ROOT="$PROJECT_ROOT" \
 VIBE_COMPILER_DIR="$COMPILER_DIR" \

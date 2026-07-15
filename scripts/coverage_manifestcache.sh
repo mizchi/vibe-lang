@@ -37,8 +37,8 @@ import ./b.vibe { b_val }
 import ./c.vibe { c_val }
 export let main: () -> Int = () -> { b_val() + c_val() }
 EOF
-printf '# group\tpath\n' > "$P/selfhost_sources_manifest.tsv"
-for m in a b c main; do printf 'grp\t%s.vibe\n' "$m" >> "$P/selfhost_sources_manifest.tsv"; done
+printf '# group\tpath\n' > "$P/compiler_sources_manifest.tsv"
+for m in a b c main; do printf 'grp\t%s.vibe\n' "$m" >> "$P/compiler_sources_manifest.tsv"; done
 
 acc_run() {
   rm -f "$RUN_JSON"

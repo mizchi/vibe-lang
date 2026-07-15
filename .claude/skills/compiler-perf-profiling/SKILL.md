@@ -73,7 +73,7 @@ node runner の bench mode で回す:
 # compile (テストと同じ __no_entry__ sentinel で OK)
 VIBE_PREOPEN_DIR="$PWD" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$S2" \
-  lib/@vibe/compiler/selfhost_parser_bench.vibe /tmp/b.wasm __no_entry__
+  lib/@vibe/compiler/parser_bench.vibe /tmp/b.wasm __no_entry__
 
 # 実行 (合計 µs が出る。/N して µs/iter)
 VIBE_PREOPEN_DIR="$PWD" bash scripts/run_wasm_vibe_host_runner.sh \
@@ -126,7 +126,7 @@ phase bench: selfhost_{lexer,parser,checker,codegen}_bench.vibe。
 ```bash
 # a. bundle regen (compiler source を触ったら必須)
 VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 \
-  VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe \
+  VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/cli_adapter_module_source.vibe \
   bash scripts/generate_bundle.sh
 
 # b. stage rebuild + fixpoint (stage2 == stage3 が絶対条件)

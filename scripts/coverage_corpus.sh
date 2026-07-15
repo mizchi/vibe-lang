@@ -17,7 +17,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 SEED="${VIBE_COV_SEED:-$ROOT_DIR/bootstrap/seed/selfhost_compiler.wasm}"
-FLAT_ABS="$ROOT_DIR/lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe"
+FLAT_ABS="$ROOT_DIR/lib/@vibe/compiler/cli_adapter_module_source.vibe"
 OUT_DIR="${VIBE_COV_DIR:-$ROOT_DIR/_build/coverage/selfhost-corpus}"
 COMPILER_COV="$OUT_DIR/compiler_cov.wasm"
 RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"
@@ -125,7 +125,7 @@ done
 # Loader / persistent-cache orchestration (#cov): the cache read+manifest branches
 # (parse_persistent_*_cache, matches_cached_file_spec, scan_header_*, manifest header
 # parse) are NEVER reached by a plain one-shot compile of an examples/fixtures file —
-# they only fire when (a) a project carries a `selfhost_sources_manifest.tsv` (only the
+# they only fire when (a) a project carries a `compiler_sources_manifest.tsv` (only the
 # compiler tree does), and (b) a prior run already wrote the persistent cache so the
 # next run takes the read path. We drive both: compile a manifest-rooted entry and a
 # multi-import example repeatedly while selectively invalidating individual cache files

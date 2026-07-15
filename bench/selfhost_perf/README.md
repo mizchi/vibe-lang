@@ -30,7 +30,7 @@ core artifact:
 VIBE_SELFHOST_PERF_COMPILER_KIND=cli-core scripts/bench_selfhost_perf.sh
 ```
 
-This builds `lib/@vibe/cli/selfhost_entry.vibe` to
+This builds `lib/@vibe/cli/entry.vibe` to
 `_build/bench/selfhost_cli_core/index_stage1.wasm` via
 `scripts/build_selfhost_cli_core.sh`, then runs the normal
 `compile-lite` bench commands against that wasm. Because this artifact
@@ -261,12 +261,12 @@ overhead. The `wasmtime-aot` runtime variant addresses this directly
 ## Micro: vibe bench probes
 
 Files:
-- `lib/@vibe/compiler/lexer_hotspot_probe.vibe` + `selfhost_lexer_bench.vibe`
-- `lib/@vibe/compiler/parser_hotspot_probe.vibe` + `selfhost_parser_bench.vibe`
-- `lib/@vibe/compiler/selfhost_parser_control_bench.vibe` (optional `parser-control` phase)
-- `lib/@vibe/compiler/checker_hotspot_probe.vibe` + `selfhost_checker_bench.vibe`
-- `lib/@vibe/compiler/selfhost_bundle_bench.vibe` (optional `bundle` phase)
-- `lib/@vibe/compiler/selfhost_codegen_bench.vibe` (optional `codegen` phase)
+- `lib/@vibe/compiler/lexer_hotspot_probe.vibe` + `lexer_bench.vibe`
+- `lib/@vibe/compiler/parser_hotspot_probe.vibe` + `parser_bench.vibe`
+- `lib/@vibe/compiler/parser_control_bench.vibe` (optional `parser-control` phase)
+- `lib/@vibe/compiler/checker_hotspot_probe.vibe` + `checker_bench.vibe`
+- `lib/@vibe/compiler/bundle_bench.vibe` (optional `bundle` phase)
+- `lib/@vibe/compiler/codegen_bench.vibe` (optional `codegen` phase)
 
 Driver (host CLI compiled backend):
 `scripts/bench_selfhost_compile_hotspots.sh` → `just bench-selfhost-compile-hotspots`.
@@ -275,13 +275,13 @@ These bench files type-check clean (`vibe check ...` passes) and define
 per-case probes that exercise the selfhost lexer / parser / checker against
 real selfhost sources and synthetic shapes (deep binop chains, wide match,
 chained let / ESeq sequences, closure-heavy codegen).
-`selfhost_parser_bench.vibe` also includes parse-only probes with lazy
+`parser_bench.vibe` also includes parse-only probes with lazy
 token caches, plus statement/type/expression subcategory probes, so parser
 work can be separated from file read + lex noise before tuning.
-`selfhost_parser_control_bench.vibe` keeps the small block / if / match
+`parser_control_bench.vibe` keeps the small block / if / match
 parser-control probes in a separate bench file to reduce calibration
 interaction with the larger file-level parser probes.
-`selfhost_bundle_bench.vibe` covers both source-heavy grouped merge
+`bundle_bench.vibe` covers both source-heavy grouped merge
 (`bundle_grouped_merge_*`) and group-heavy manifest shapes
 (`bundle_many_groups_*`) so source concatenation changes and per-group
 cache overhead can be tuned separately.
@@ -303,7 +303,7 @@ optimizer `@wite.optimize_binary_for_size` (mizchi/wite package).
 That in-process optimizer is **pathological on no-DCE 4-5 MB
 selfhost-import wasm**: a single -Oz pass hangs >4 minutes vs ~5
 seconds for the equivalent binaryen `wasm-opt -Oz` on the same input.
-Verified by isolating flags on `vibe compile lib/@vibe/compiler/selfhost_loader_collect_bench.vibe`:
+Verified by isolating flags on `vibe compile lib/@vibe/compiler/loader_collect_bench.vibe`:
 
 | flags                                    | outcome             |
 | ---------------------------------------- | ------------------- |
@@ -333,7 +333,7 @@ each iter slower, but the bench still completes and relative
 numbers stay meaningful).
 
 This makes selfhost-import benches work out-of-the-box: as of
-`cc63caa`, `selfhost_loader_collect_bench.vibe` finishes calibration
+`cc63caa`, `loader_collect_bench.vibe` finishes calibration
 in 11.9 s with no env hatches set (the previous workaround required
 all three of `VIBE_BENCH_NO_DCE=0`, `VIBE_BENCH_DEBUG_ERRORS=0`,
 `VIBE_BENCH_OPT_LEVEL=none`).
@@ -357,10 +357,10 @@ un-optimized iteration cost, or for sanity comparisons.
 
 | file                                        | wallclock | benches |
 | ------------------------------------------- | --------- | ------- |
-| `selfhost_lexer_bench.vibe`                 | 3.8 s     | 5/5     |
-| `selfhost_parser_bench.vibe`                | 8.1 s     | 5/5     |
-| `selfhost_checker_bench.vibe`               | 10.8 s    | 5/5     |
-| `selfhost_loader_collect_bench.vibe`        | 12.3 s    | 2/2     |
+| `lexer_bench.vibe`                 | 3.8 s     | 5/5     |
+| `parser_bench.vibe`                | 8.1 s     | 5/5     |
+| `checker_bench.vibe`               | 10.8 s    | 5/5     |
+| `loader_collect_bench.vibe`        | 12.3 s    | 2/2     |
 
 Per-iteration medians (μs, 1-iter calibration on no-opt wasm so these
 are upper bounds):

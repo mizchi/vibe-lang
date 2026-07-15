@@ -22,7 +22,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 SEED="${VIBE_COV_SEED:-$ROOT_DIR/bootstrap/seed/selfhost_compiler.wasm}"
-FLAT_ABS="$ROOT_DIR/lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe"
+FLAT_ABS="$ROOT_DIR/lib/@vibe/compiler/cli_adapter_module_source.vibe"
 OUT_DIR="${VIBE_COV_DIR:-$ROOT_DIR/_build/coverage/selfhost-merge}"
 COMPILER_COV="$OUT_DIR/compiler_cov.wasm"
 RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"

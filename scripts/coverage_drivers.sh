@@ -31,7 +31,7 @@ WORK="_build/coverage/drivers"; mkdir -p "$WORK"
 #    concatenated (the pre-DCE input to build_module_source_from_source). This is
 #    the base every driver appends to.
 echo "[drivers] regenerating no-DCE merged source ..." >&2
-python3 - "lib/@vibe/compiler" "lib/@vibe/compiler/selfhost_sources_manifest.tsv" "selfhost_cli_adapter.vibe" "$MERGED" <<'PY'
+python3 - "lib/@vibe/compiler" "lib/@vibe/compiler/compiler_sources_manifest.tsv" "selfhost_cli_adapter.vibe" "$MERGED" <<'PY'
 import os, re, sys
 compiler_dir, manifest_path, root_rel, out_path = sys.argv[1:]
 rows=[]
@@ -151,7 +151,7 @@ mkdir -p _build/covfs
 printf 'export let f: () -> Int = () -> { 123 }\n' > _build/covfs/f.vibe
 mkdir -p _build/covfs2
 printf 'export let m: () -> Int = () -> { 7 }\n' > _build/covfs2/main.vibe
-printf '# group\tpath\ngrp\tmain.vibe\n' > _build/covfs2/selfhost_sources_manifest.tsv
+printf '# group\tpath\ngrp\tmain.vibe\n' > _build/covfs2/compiler_sources_manifest.tsv
 
 base=$(python3 -c "import json;print(sum(json.load(open('$ACC'))['br']))")
 run_driver cov_async_main      scripts/coverage/cov_async.vibe      async       # inlined async/stream builtins
