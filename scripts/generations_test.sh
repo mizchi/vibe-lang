@@ -207,12 +207,12 @@ VIBE_GENERATION_VALIDATE_RUN=0 \
 test -s "$CLI_ROOT/out/cli_adapter_module_source.vibe"
 test -s "$CLI_ROOT/out/stage1.wasm"
 test -s "$CLI_ROOT/out/stage2.wasm"
-if rg -q '^lib/@vibe/compiler/selfhost_cli_support\.vibe$' "$CLI_ROOT/invocations.log"; then
+if rg -q '^lib/@vibe/compiler/cli_support\.vibe$' "$CLI_ROOT/invocations.log"; then
   echo "expected cli seed build to use generated flat compiler source, not import entry" >&2
   cat "$CLI_ROOT/invocations.log" >&2
   exit 1
 fi
-if ! rg -q '^out/selfhost_cli_adapter_module_source\.vibe$' "$CLI_ROOT/invocations.log"; then
+if ! rg -q '^out/cli_adapter_module_source\.vibe$' "$CLI_ROOT/invocations.log"; then
   echo "expected cli seed build to invoke generated flat compiler source" >&2
   cat "$CLI_ROOT/invocations.log" >&2
   exit 1
