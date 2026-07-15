@@ -866,6 +866,53 @@ fn lookup_fn_effs(names: Array[String], effs: Array[Array[String]], name: String
   found
 }
 
+// #885 review (Codex): a `let`/`let rec`/`let mut` binding can reuse the NAME
+// of an in-scope callback-parameter overlay entry (e.g. rebinding `f` to an
+// unrelated local pure closure). Without this, `lookup_fn_effs`'s first-match
+// scan would still find the SHADOWED outer entry and reject a call to the
+// new, unrelated binding as if it were the original effectful callback --
+// a false positive on valid shadowing. Removes every overlay entry matching
+// `name` before the shadowing binding's scope is pushed onto the stack.
+// #885 review (Codex): shadow the overlay by EVERY name in `params`, in one
+// pass — used at an EFn boundary where all of the lambda's own parameter
+// names (not just the ones that become new overlay entries) must block a
+// same-named inherited entry.
+fn shadow_overlay_names(names: Array[String], effs: Array[Array[String]], params: Array[(String, Option[TypeExpr])]) -> (Array[String], Array[Array[String]]) {
+  let mut cur_names = names
+  let mut cur_effs = effs
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, _) = Array::get(params, i)
+    let shadowed = shadow_overlay(cur_names, cur_effs, pname)
+    cur_names = shadowed.0
+    cur_effs = shadowed.1
+    i = i + 1
+  }
+  (cur_names, cur_effs)
+}
+
+fn shadow_overlay(names: Array[String], effs: Array[Array[String]], name: String) -> (Array[String], Array[Array[String]]) {
+  let out_names = Array::slice([
+    ""
+  ], 0, 0)
+  let out_effs = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(names) {
+    if Array::get(names, i) != name {
+      Array::push(out_names, Array::get(names, i))
+      Array::push(out_effs, Array::get(effs, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  (out_names, out_effs)
+}
+
 // #885 (split off from #838, originally scoped out at #626): a function-typed
 // PARAMETER (a callback, e.g. `f: (T) -> T with { e }`) is a call-graph leaf
 // exactly like a named top-level function, but `fn_names`/`fn_effs` above is
@@ -1095,25 +1142,36 @@ export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String]
         // its body. New entries are appended AHEAD of the inherited overlay so
         // `lookup_fn_effs` (first-match) has a same-named inner parameter
         // shadow an outer one.
+        //
+        // #885 review (Codex): shadowing must apply to EVERY one of this
+        // lambda's own parameter names, not just the ones that end up in
+        // local_names/local_effs (function-typed with a declared effect) --
+        // a parameter reusing an outer callback's name with a DIFFERENT type
+        // (e.g. plain `Int`, or a function type with no declared effect) must
+        // still block the inherited entry, or a call to the new, unrelated
+        // parameter is wrongly checked against the shadowed outer callback's
+        // effect row.
+        let shadowed = shadow_overlay_names(ov_names, ov_effs, params)
+        let (shadowed_ov_names, shadowed_ov_effs) = shadowed
         let (local_names, local_effs) = build_param_overlay(params)
         let body_ov_names = if Array::length(local_names) == 0 {
-          ov_names
+          shadowed_ov_names
         } else {
           let merged = Array::slice(local_names, 0, Array::length(local_names))
           let mut oi = 0
-          while oi < Array::length(ov_names) {
-            Array::push(merged, Array::get(ov_names, oi))
+          while oi < Array::length(shadowed_ov_names) {
+            Array::push(merged, Array::get(shadowed_ov_names, oi))
             oi = oi + 1
           }
           merged
         }
         let body_ov_effs = if Array::length(local_effs) == 0 {
-          ov_effs
+          shadowed_ov_effs
         } else {
           let merged = Array::slice(local_effs, 0, Array::length(local_effs))
           let mut oi = 0
-          while oi < Array::length(ov_effs) {
-            Array::push(merged, Array::get(ov_effs, oi))
+          while oi < Array::length(shadowed_ov_effs) {
+            Array::push(merged, Array::get(shadowed_ov_effs, oi))
             oi = oi + 1
           }
           merged
@@ -1136,17 +1194,27 @@ export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String]
           ai = ai + 1
         }
       },
-      ELet(_, val, body, _) => {
+      ELet(name, val, body, _) => {
+        // #885 review (Codex): `val` is evaluated in the OUTER scope (ELet is
+        // non-recursive), so only the body's overlay needs the new binding
+        // shadowed out.
+        let (body_ov_names, body_ov_effs) = shadow_overlay(ov_names, ov_effs, name)
         Array::push(stack, (val, declared, in_handle, ov_names, ov_effs))
-        Array::push(stack, (body, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (body, declared, in_handle, body_ov_names, body_ov_effs))
       },
-      ELetRec(_, val, body) => {
-        Array::push(stack, (val, declared, in_handle, ov_names, ov_effs))
-        Array::push(stack, (body, declared, in_handle, ov_names, ov_effs))
+      ELetRec(name, val, body) => {
+        // #885 review (Codex): unlike ELet, `let rec` allows `val` itself to
+        // reference `name` (self-recursion), so both val and body need the
+        // shadow applied.
+        let (rec_ov_names, rec_ov_effs) = shadow_overlay(ov_names, ov_effs, name)
+        Array::push(stack, (val, declared, in_handle, rec_ov_names, rec_ov_effs))
+        Array::push(stack, (body, declared, in_handle, rec_ov_names, rec_ov_effs))
       },
-      ELetMut(_, val, body, _) => {
+      ELetMut(name, val, body, _) => {
+        // #885 review (Codex): same as ELet -- non-recursive, only body shadows.
+        let (body_ov_names, body_ov_effs) = shadow_overlay(ov_names, ov_effs, name)
         Array::push(stack, (val, declared, in_handle, ov_names, ov_effs))
-        Array::push(stack, (body, declared, in_handle, ov_names, ov_effs))
+        Array::push(stack, (body, declared, in_handle, body_ov_names, body_ov_effs))
       },
       ESeq(a, b) => {
         Array::push(stack, (a, declared, in_handle, ov_names, ov_effs))
