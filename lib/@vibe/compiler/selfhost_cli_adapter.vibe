@@ -18,7 +18,7 @@ import ./runtime/index.vibe {
 }
 
 import ./loader/index.vibe {
-  contract_package_hashes_fs, fill_require_pins_fs_mode, publish_check_fs
+  contract_package_hashes_fs, fill_require_pins_fs_mode, find_missing_vpkg_dirs, publish_check_fs
 }
 
 import ./entry/compiler/file_compile {
@@ -330,6 +330,25 @@ export fn cli_main() -> Int with { Error, Fs, Env } {
     return handle {
       let (pkg_hash, ct_hash) = contract_package_hashes_fs(input_path)
       Fs::write_file(output_path, "package #\{pkg_hash}\ncontract \{ct_hash}\n")
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  } else ()
+  // #897 (ADR-0070): `vibe check --missing-vpkg <root>` -- recursively scan
+  // `input_path` (a directory) for every boundary directory still on the
+  // old `index.vibei`/bare `index.vibe` spelling. Writes "ok: none missing"
+  // on a clean tree, or the newline-joined list of directories on the same
+  // diag sidecar every other check diagnostic uses, matching VIBE_HASH's
+  // shape immediately above.
+  if Env::get("VIBE_MISSING_VPKG_SCAN") == "1" {
+    return handle {
+      let missing = find_missing_vpkg_dirs(input_path)
+      if Array::length(missing) == 0 {
+        Fs::write_file(output_path, "ok: no directories missing index.vpkg under \{input_path}\n")
+      } else {
+        Fs::write_file(output_path, String::concat(String::join(missing, "\n"), "\n"))
+      }
       0
     } with Error {
       Throw(msg) => emit_compile_diag(output_path, msg)

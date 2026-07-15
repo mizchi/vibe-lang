@@ -1948,3 +1948,79 @@ export fn collect_merged_stmts(sources: Array[(String, String)]) -> Array[Stmt] 
   }
   merged
 }
+
+// #847-style trap-free directory probe (see loader/header_cache.vibe's
+// fs_is_directory for the full rationale): `Fs::readdir` TRAPS the whole
+// wasm instance on a non-directory, so a real directory test is required
+// before ever calling it speculatively. Appending "/." and testing with
+// `Fs::exists` is safe on the frozen bootstrap seed (predates `Fs::is_dir`).
+fn vpkg_scan_is_directory(path: String) -> Bool with { Fs } {
+  Fs::exists(String::concat(path, "/."))
+}
+
+// #897 (ADR-0070): directories this scan skips entirely -- not source, or
+// not part of this repo's own migration surface (vendored/fetched content,
+// build output, VCS metadata). Anything starting with "." already covers
+// `.git`/`.vibe` (the content-addressed store lives under `.vibe/store/`).
+fn vpkg_scan_skip_dir(name: String) -> Bool {
+  (String::length(name) > 0 && String::char_code_at(name, 0) == '.') || name == "_build" || name == "node_modules" || name == "target"
+}
+
+// #897 (ADR-0070): recurse into every non-skipped directory under `root`,
+// recording any directory that has `index.vibei` or plain `index.vibe` but
+// NOT YET `index.vpkg` -- exactly the 76-directory migration surface ADR-
+// 0070 counts. A directory with none of the three index files is not a
+// package boundary and is out of scope. Unlike contract_sibling_impl_raws_
+// rec (which stops at a nested boundary because its job is to list PLAIN
+// impl files), this must recurse THROUGH boundaries too, since nested
+// sub-packages are themselves part of the migration surface.
+fn vpkg_scan_rec(dir: String, out: Array[String]) -> Unit with { Error, Fs } {
+  let has_vpkg = Fs::exists(String::concat(dir, "/index.vpkg"))
+  let has_vibei = Fs::exists(String::concat(dir, "/index.vibei"))
+  let has_vibe = Fs::exists(String::concat(dir, "/index.vibe"))
+  if !has_vpkg && (has_vibei || has_vibe) {
+    Array::push(out, dir)
+  } else {
+    ()
+  }
+  let names = Fs::readdir(dir)
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    if !vpkg_scan_skip_dir(name) {
+      let full = String::concat(dir, String::concat("/", name))
+      if vpkg_scan_is_directory(full) {
+        vpkg_scan_rec(full, out)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+// find_missing_vpkg_dirs: (String) -> Array[String] with { Error, Fs }
+export fn find_missing_vpkg_dirs(root: String) -> Array[String] with { Error, Fs } {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  vpkg_scan_rec(root, out)
+  out
+}
+
+// check_missing_vpkg_dirs: (String) -> Int with { Error, Fs }
+// #897/ADR-0070: `vibe check --missing-vpkg <root>` diagnostic. Reports (via
+// throw, matching every other `vibe check` diagnostic's error-surfacing
+// convention) every directory under `root` still on the old `index.vibei`
+// or bare `index.vibe` spelling, so the migration's remaining scope is a
+// single command away instead of manual auditing.
+export fn check_missing_vpkg_dirs(root: String) -> Int with { Error, Fs } {
+  let missing = find_missing_vpkg_dirs(root)
+  if Array::length(missing) == 0 {
+    0
+  } else {
+    throw(String::concat("missing index.vpkg (#897) in: ", String::join(missing, ", ")))
+  }
+}
