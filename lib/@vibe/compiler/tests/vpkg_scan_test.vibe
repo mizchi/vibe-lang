@@ -63,8 +63,10 @@ test "find_missing_vpkg_dirs recurses into nested boundaries and skips vendored/
   let base_dir = "/tmp/vibe_compiler_vpkg_scan_897_nested"
   let nested_dir = String::concat(base_dir, "/nested")
   let build_dir = String::concat(base_dir, "/_build")
+  let deps_dir = String::concat(base_dir, "/deps")
   Fs::mkdir_p(nested_dir)
   Fs::mkdir_p(build_dir)
+  Fs::mkdir_p(deps_dir)
   // Root has a clean .vpkg boundary.
   Fs::write_bytes(String::concat(base_dir, "/index.vpkg"), string_to_bytes("import ./nested {}\n"))
   // A nested sub-boundary still on the bare index.vibe spelling -- must
@@ -74,10 +76,16 @@ test "find_missing_vpkg_dirs recurses into nested boundaries and skips vendored/
   // (vendored/build output is never part of this repo's migration surface).
   Fs::write_bytes(String::concat(build_dir, "/index.vibei"), string_to_bytes("import ./impl.vibe {}\n\nfn add(x: Int, y: Int) -> Int\n"))
   Fs::write_bytes(String::concat(build_dir, "/impl.vibe"), string_to_bytes("export fn add(x: Int, y: Int) -> Int { x + y }\n"))
+  // A deps/ sibling (vibe fetch's vendored-dependency dir) with its OWN
+  // index.vibei -- must also be skipped (Codex review, PR #910): third-party
+  // vendored packages are never part of this repo's own migration surface.
+  Fs::write_bytes(String::concat(deps_dir, "/index.vibei"), string_to_bytes("import ./impl.vibe {}\n\nfn add(x: Int, y: Int) -> Int\n"))
+  Fs::write_bytes(String::concat(deps_dir, "/impl.vibe"), string_to_bytes("export fn add(x: Int, y: Int) -> Int { x + y }\n"))
   let missing = find_missing_vpkg_dirs(base_dir)
   assert(!string_array_contains(missing, base_dir))
   assert(string_array_contains(missing, nested_dir))
   assert(!string_array_contains(missing, build_dir))
+  assert(!string_array_contains(missing, deps_dir))
 }
 
 test "check_missing_vpkg_dirs throws listing the offending directory, returns 0 when clean (#897)" {
