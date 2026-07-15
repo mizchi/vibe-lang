@@ -222,6 +222,19 @@ struct HostState {
     alloc_prev_fn: Option<String>,
     alloc_prev_heap: u64,
     alloc_sites: std::collections::HashMap<String, u64>,
+    // #901: structured subprocess result (`vibe.sh_capture*`), mirroring
+    // wasm_vibe_host_runner.js's handle-map shape so the 3 accessor imports
+    // are cheap map reads, not re-execs of the command.
+    sh_capture_results: std::collections::HashMap<i64, ShCaptureResult>,
+    next_sh_capture_handle: i64,
+}
+
+// #901: {exit_code, stdout, stderr} parked behind a handle by `sh_capture`,
+// read by the exit_code/stdout/stderr accessors, freed by `sh_capture_close`.
+struct ShCaptureResult {
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
 }
 
 // DAP P3 step modes. Continue: only pause at explicit break_set hits. StepInto:
@@ -306,6 +319,8 @@ impl HostState {
             alloc_prev_fn: None,
             alloc_prev_heap: 0,
             alloc_sites: std::collections::HashMap::new(),
+            sh_capture_results: std::collections::HashMap::new(),
+            next_sh_capture_handle: 1,
         }
     }
 
@@ -1677,6 +1692,35 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             Ok(vibe_stat_token(&path))
         },
     )?;
+    // #901: Fs::remove/is_dir/is_file -- like Stdout/Stderr/Process above,
+    // present in the JS runner and the builtin registry but never ported
+    // here, so scripts/cache_clean.vibex (which calls all three) failed to
+    // instantiate under the real `vibe run`.
+    linker.func_wrap(
+        "vibe",
+        "fs_remove",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<()> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            fs::remove_file(&path).map_err(|e| format_err!("vibe fs_remove '{path}': {e}"))?;
+            Ok(())
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_is_dir",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            Ok(i64::from(std::path::Path::new(&path).is_dir()))
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_is_file",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            Ok(i64::from(std::path::Path::new(&path).is_file()))
+        },
+    )?;
     linker.func_wrap(
         "vibe",
         "fs_write_file",
@@ -1730,6 +1774,209 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
                 .collect();
             names.sort();
             vibe_alloc_packed_str(&mut caller, &names.join("\n"))
+        },
+    )?;
+    // #901: Stdout/Stderr stream builtins (lib/@vibe/io's Stdout::write_stream
+    // / write_char and the new Stderr counterparts) -- previously only
+    // implemented in scripts/wasm_vibe_host_runner.js (the JS runner used by
+    // scripts/vibe_run.sh), never ported to this Rust runner (the one the
+    // real `vibe run` CLI actually uses), so any program using them failed to
+    // instantiate here with an unknown-import error. Writes immediately (no
+    // buffering), matching the JS runner's semantics exactly -- the older,
+    // buffered `spectest::print_char` above is a SEPARATE, legacy mechanism
+    // for `print_int`/plain program output and is left untouched.
+    linker.func_wrap(
+        "vibe",
+        "stdout_write_stream",
+        |mut caller: Caller<'_, HostState>, s: i64| -> Result<()> {
+            let s = vibe_read_packed_str(&mut caller, s)?;
+            let stdout = io::stdout();
+            let mut h = stdout.lock();
+            h.write_all(s.as_bytes())
+                .map_err(|e| format_err!("vibe stdout_write_stream: {e}"))?;
+            h.flush().ok();
+            Ok(())
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "stdout_write_char",
+        |code: i64| -> Result<()> {
+            let cu = (code as u32 & 0xffff) as u16;
+            let s = String::from_utf16_lossy(&[cu]);
+            let stdout = io::stdout();
+            let mut h = stdout.lock();
+            h.write_all(s.as_bytes())
+                .map_err(|e| format_err!("vibe stdout_write_char: {e}"))?;
+            h.flush().ok();
+            Ok(())
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "stderr_write_stream",
+        |mut caller: Caller<'_, HostState>, s: i64| -> Result<()> {
+            let s = vibe_read_packed_str(&mut caller, s)?;
+            let stderr = io::stderr();
+            let mut h = stderr.lock();
+            h.write_all(s.as_bytes())
+                .map_err(|e| format_err!("vibe stderr_write_stream: {e}"))?;
+            h.flush().ok();
+            Ok(())
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "stderr_write_char",
+        |code: i64| -> Result<()> {
+            let cu = (code as u32 & 0xffff) as u16;
+            let s = String::from_utf16_lossy(&[cu]);
+            let stderr = io::stderr();
+            let mut h = stderr.lock();
+            h.write_all(s.as_bytes())
+                .map_err(|e| format_err!("vibe stderr_write_char: {e}"))?;
+            h.flush().ok();
+            Ok(())
+        },
+    )?;
+    // #901: `Process` effect (lib/@vibe/process) -- same pre-existing-JS-only
+    // gap as Stdout/Stderr above. `sh` inherits stdio (so the child's own
+    // output goes straight to the real terminal, matching a shell `$(...)`
+    // running interactively) and throws (a host-call Err, which surfaces as a
+    // wasm trap) on a non-zero exit -- there is no successful-but-failed
+    // return value, mirroring wasm_vibe_host_runner.js's unconditional
+    // `execSync(cmd, {stdio: "inherit"})` (which throws JS-side on failure).
+    linker.func_wrap(
+        "vibe",
+        "sh",
+        |mut caller: Caller<'_, HostState>, cmd: i64| -> Result<i64> {
+            let cmd = vibe_read_packed_str(&mut caller, cmd)?;
+            let status = std::process::Command::new("/bin/bash")
+                .arg("-c")
+                .arg(&cmd)
+                .status()
+                .map_err(|e| format_err!("vibe sh '{cmd}': {e}"))?;
+            if !status.success() {
+                bail!("vibe sh '{cmd}': exited with {status}");
+            }
+            Ok(0)
+        },
+    )?;
+    // `sh_lines`: combined stdout+stderr (matching the JS runner's `execSync`
+    // with piped stdio, which merges neither by default -- only stdout is
+    // captured on success), trimmed of a trailing newline; on failure returns
+    // an "error: "-prefixed string instead of throwing (the JS runner's
+    // try/catch shape), since callers pattern-match this prefix rather than
+    // branch on a real exit code (that's what `sh_capture` below is for).
+    linker.func_wrap(
+        "vibe",
+        "sh_lines",
+        |mut caller: Caller<'_, HostState>, cmd: i64| -> Result<i64> {
+            let cmd = vibe_read_packed_str(&mut caller, cmd)?;
+            let output = std::process::Command::new("/bin/bash")
+                .arg("-c")
+                .arg(&cmd)
+                .output()
+                .map_err(|e| format_err!("vibe sh_lines '{cmd}': {e}"))?;
+            let result = if output.status.success() {
+                String::from_utf8_lossy(&output.stdout)
+                    .trim_end()
+                    .to_string()
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stderr = stderr.trim();
+                if stderr.is_empty() {
+                    format!("error: exited with {}", output.status)
+                } else {
+                    format!("error: {stderr}")
+                }
+            };
+            vibe_alloc_packed_str(&mut caller, &result)
+        },
+    )?;
+    // #901 (originally #865): structured subprocess result. `sh_capture` runs
+    // the command ONCE via `output()` (which reports stdout/stderr/status
+    // uniformly for both the success and failure case, unlike `sh`/`sh_lines`
+    // above) and parks {exit_code, stdout, stderr} behind a handle so the 3
+    // accessor imports below are cheap map reads, not re-execs -- same shape
+    // as wasm_vibe_host_runner.js's `shCaptureResults` map.
+    linker.func_wrap(
+        "vibe",
+        "sh_capture",
+        |mut caller: Caller<'_, HostState>, cmd: i64| -> Result<i64> {
+            let cmd = vibe_read_packed_str(&mut caller, cmd)?;
+            let output = std::process::Command::new("/bin/bash")
+                .arg("-c")
+                .arg(&cmd)
+                .output()
+                .map_err(|e| format_err!("vibe sh_capture '{cmd}': {e}"))?;
+            // On Unix a signal-killed child has no exit code; fall back to
+            // 128 (the shell convention), matching wasm_vibe_host_runner.js's
+            // signal-vs-status handling since Rust's ExitStatus doesn't
+            // separately report "not exited yet" the way Node's does.
+            let exit_code = output.status.code().unwrap_or(128);
+            let host = caller.data_mut();
+            let handle = host.next_sh_capture_handle;
+            host.next_sh_capture_handle += 1;
+            host.sh_capture_results.insert(
+                handle,
+                ShCaptureResult {
+                    exit_code,
+                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                },
+            );
+            Ok(handle)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "sh_capture_exit_code",
+        |caller: Caller<'_, HostState>, handle: i64| -> Result<i64> {
+            let entry = caller
+                .data()
+                .sh_capture_results
+                .get(&handle)
+                .ok_or_else(|| format_err!("vibe sh_capture_exit_code: unknown handle"))?;
+            Ok(entry.exit_code as i64)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "sh_capture_stdout",
+        |mut caller: Caller<'_, HostState>, handle: i64| -> Result<i64> {
+            let s = caller
+                .data()
+                .sh_capture_results
+                .get(&handle)
+                .ok_or_else(|| format_err!("vibe sh_capture_stdout: unknown handle"))?
+                .stdout
+                .clone();
+            vibe_alloc_packed_str(&mut caller, &s)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "sh_capture_stderr",
+        |mut caller: Caller<'_, HostState>, handle: i64| -> Result<i64> {
+            let s = caller
+                .data()
+                .sh_capture_results
+                .get(&handle)
+                .ok_or_else(|| format_err!("vibe sh_capture_stderr: unknown handle"))?
+                .stderr
+                .clone();
+            vibe_alloc_packed_str(&mut caller, &s)
+        },
+    )?;
+    // Tolerates unknown handles, like the JS runner's `sh_capture_close` --
+    // a double-close must not kill the guest.
+    linker.func_wrap(
+        "vibe",
+        "sh_capture_close",
+        |mut caller: Caller<'_, HostState>, handle: i64| -> Result<()> {
+            caller.data_mut().sh_capture_results.remove(&handle);
+            Ok(())
         },
     )?;
     // debugger breakpoint (DAP P1): the break-mode codegen emits a bare
