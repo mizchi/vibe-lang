@@ -2390,8 +2390,16 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
       // comment on the standalone `EDot` check_expr arm for the full
       // rationale).
       EDot(obj, method, _, qcall_field_off) => {
+        // #897/Codex P2: only take the qualified-import shortcut when `ns`
+        // is NOT independently bound -- a real local/param named the same
+        // as a qualified-import namespace must shadow it (normal field
+        // access on that local's own value), matching how import_alias_
+        // rewrite.vibe's alias map is pruned at every binder.
         let qualified_key = match obj {
-          EIdent(ns, _) => Some(String::concat(ns, String::concat(".", method))),
+          EIdent(ns, _) => match env_lookup(env, ns) {
+            Some(_) => None,
+            None => Some(String::concat(ns, String::concat(".", method)))
+          },
           _ => None
         }
         let qualified_hit = match qualified_key {
@@ -3052,8 +3060,14 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
     // merge runs, so this same shortcut is needed here too: resolve through
     // the qualified binding directly instead of ever checking `mod` alone.
     EDot(obj, field, dot_off, field_off) => {
+      // #897/Codex P2: only take the qualified-import shortcut when `ns` is
+      // NOT independently bound -- see the matching comment on the ECall
+      // callee-is-EDot arm above for the full rationale.
       let qualified_key = match obj {
-        EIdent(ns, _) => Some(String::concat(ns, String::concat(".", field))),
+        EIdent(ns, _) => match env_lookup(env, ns) {
+          Some(_) => None,
+          None => Some(String::concat(ns, String::concat(".", field)))
+        },
         _ => None
       }
       let qualified_hit = match qualified_key {

@@ -3607,12 +3607,16 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_i64_shl(buf)
       nl
     }
-    else if ctx.enable_rc && (fname == "vibe_sh_capture_exit_code_raw" || fname == "vibe_sh_capture_stdout_raw" || fname == "vibe_sh_capture_stderr_raw" || fname == "vibe_sh_capture_close_raw") {
+    else if ctx.enable_rc && (fname == "vibe_sh_capture_exit_code_raw" || fname == "vibe_sh_capture_stdout_raw" || fname == "vibe_sh_capture_stderr_raw" || fname == "vibe_sh_capture_close_raw" || fname == "vibe_process_exit_raw") {
       // #865: same raw-ABI shim shape as the vibe_http_response_status_raw /
       // vibe_http_response_body_raw / vibe_http_close_raw group above -- the
       // handle param is a guest-tagged Int (untag it); exit_code returns a
       // raw Int (tag it), stdout/stderr return packed strings (same in both
       // modes, pass through), close returns nothing (push Unit 0).
+      // #903: vibe_process_exit_raw takes the same shape as close (one
+      // tagged-Int arg to untag, no meaningful return -- the host runner
+      // traps/exits before ever returning, but codegen still needs SOME
+      // Unit value on the stack for the (never-reached) fallthrough).
       let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       emit_i64_const(buf, 1)
@@ -3621,7 +3625,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       if fname == "vibe_sh_capture_exit_code_raw" {
         emit_i64_const(buf, 1)
         emit_i64_shl(buf)
-      } else if fname == "vibe_sh_capture_close_raw" {
+      } else if fname == "vibe_sh_capture_close_raw" || fname == "vibe_process_exit_raw" {
         emit_i64_const(buf, 0)
       } else {
         ()

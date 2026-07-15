@@ -624,6 +624,12 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let need_sh_capture_stdout_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_stdout_raw")
   let need_sh_capture_stderr_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_stderr_raw")
   let need_sh_capture_close_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_close_raw")
+  // #903/#865: `Process::exit(code) -> Unit` -- propagates the guest's exit
+  // code to the real OS process exit status via the host runner's
+  // exit-trap mechanism (never returns in practice, but is typed Unit --
+  // there's no `Never` type). `vibe.process_exit (i64) -> ()` host import,
+  // void like Fs::remove/sh_capture_close, gated on use (fixpoint-safe).
+  let need_process_exit_builtin = Map::has_key(used_builtin_names, "vibe_process_exit_raw")
   // Stdin/Stdout host effects for vibe/io: `Stdin::read_stream(n) -> String`
   // (`vibe.stdin_read_stream (i64) -> i64`, value-returning like fs_read_file),
   // `Stdout::write_stream(s) -> Unit` and `Stdout::write_char(c) -> Unit`
@@ -984,6 +990,15 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   } else {
     -1
   }
+  // #903/#865: `Process::exit(code)` host import -- void like Fs::remove
+  // (type 1), reserved after sh_capture_close, before Stderr.
+  let process_exit_import_idx = if need_process_exit_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
   // #865: `Stderr::write_stream` / `Stderr::write_char` host imports --
   // reserved after sh_capture_close (before dbg_break), same shapes as the
   // Stdout pair (type 3 value-returning is N/A here; both are void type 1).
@@ -1327,6 +1342,13 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   } else {
     env_args_len_idx
   }
+  // #903/#865: Process::exit call target -- void op, same fallback shape as
+  // fs_remove_idx/sh_capture_close_idx.
+  let process_exit_idx = if process_exit_import_idx >= 0 {
+    process_exit_import_idx
+  } else {
+    env_args_len_idx
+  }
   // #865: Stderr::write_stream / Stderr::write_char call targets -- void ops,
   // same fallback shape as stdout_write_stream_idx/stdout_write_char_idx.
   let stderr_write_stream_idx = if stderr_write_stream_import_idx >= 0 {
@@ -1412,6 +1434,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         "vibe_sh_capture_stdout_raw" => sh_capture_stdout_idx,
         "vibe_sh_capture_stderr_raw" => sh_capture_stderr_idx,
         "vibe_sh_capture_close_raw" => sh_capture_close_idx,
+        "vibe_process_exit_raw" => process_exit_idx,
         "Stdin::read_stream" => stdin_read_stream_idx,
         "Stdout::write_stream" => stdout_write_stream_idx,
         "Stdout::write_char" => stdout_write_char_idx,
@@ -3122,6 +3145,15 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   if sh_capture_close_import_idx >= 0 {
     emit_name(import_content, "vibe")
     emit_name(import_content, "sh_capture_close")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #903/#865: `vibe.process_exit (i64) -> ()` (type 1, like fs_remove).
+  if process_exit_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "process_exit")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 1)
   } else {

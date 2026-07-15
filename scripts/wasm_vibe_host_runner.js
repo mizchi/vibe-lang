@@ -1879,6 +1879,15 @@ async function main() {
         shCaptureResults.delete(decodeHostInt(handleTagged));
         return 0n;
       },
+      // #903/#865: propagate a guest-chosen exit code to the real OS exit
+      // status -- unlike `main() -> Int`'s return value, which `_start`
+      // only prints. `process.exit()` halts synchronously, so nothing
+      // after this call in the guest ever runs; the return value below is
+      // unreachable but kept for host-import type-signature consistency.
+      process_exit(codeTagged) {
+        process.exit(Number(decodeHostInt(codeTagged)));
+        return 0n;
+      },
       // vibe/io host effects (linear codegen `vibe.*` module). Both stdin
       // readers draw from the SAME VIBE_STDIN_BYTES feed + cursor as the WASI
       // 0.2 input-stream bridge (preview2CliStreamsHost), so a linear-backend
