@@ -133,7 +133,12 @@ mkdir -p "$(dirname "$STAGE1_CORE_WASM")"
 if [ -z "$BASE_COMPILER" ]; then
   short_sha="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo local)"
   cached="$(ls -t "$PROJECT_ROOT"/_build/selfhost/generations/*_"$short_sha"/stage2.wasm 2>/dev/null | head -1 || true)"
-  if [ -n "$cached" ] && [ -s "$cached" ]; then
+  # #895 review: the commit-sha directory name alone doesn't prove the cached
+  # stage2.wasm reflects the CURRENT tree -- a dirty working copy (uncommitted
+  # edits under lib/, or to the build scripts/seed.json) keeps the same
+  # short_sha, so also require it pass the same source_changed_since
+  # freshness check used for STAGE1_CORE_WASM above before trusting it.
+  if [ -n "$cached" ] && [ -s "$cached" ] && ! source_changed_since "$cached"; then
     BASE_COMPILER="$cached"
     echo "[selfhost-cli-core] reusing base selfhost compiler: $(rel_path "$BASE_COMPILER")" >&2
   else
