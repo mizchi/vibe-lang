@@ -614,6 +614,16 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // process/time/shell stdlib whose functions call these.
   let need_sh_builtin = Map::has_key(used_builtin_names, "sh")
   let need_sh_lines_builtin = Map::has_key(used_builtin_names, "sh_lines")
+  // #865: structured subprocess result host imports -- `vibe_sh_capture_raw`
+  // runs the command once (handle), the three accessors read the cached
+  // {exit_code, stdout, stderr}, `vibe_sh_capture_close_raw` frees it. Same
+  // handle+accessor shape as the #794 HTTP client imports below. Gated on
+  // use, same fixpoint-safety discipline as sh/sh_lines above.
+  let need_sh_capture_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_raw")
+  let need_sh_capture_exit_code_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_exit_code_raw")
+  let need_sh_capture_stdout_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_stdout_raw")
+  let need_sh_capture_stderr_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_stderr_raw")
+  let need_sh_capture_close_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_close_raw")
   // Stdin/Stdout host effects for vibe/io: `Stdin::read_stream(n) -> String`
   // (`vibe.stdin_read_stream (i64) -> i64`, value-returning like fs_read_file),
   // `Stdout::write_stream(s) -> Unit` and `Stdout::write_char(c) -> Unit`
@@ -624,6 +634,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let need_stdin_read_stream_builtin = Map::has_key(used_builtin_names, "Stdin::read_stream")
   let need_stdout_write_stream_builtin = Map::has_key(used_builtin_names, "Stdout::write_stream")
   let need_stdout_write_char_builtin = Map::has_key(used_builtin_names, "Stdout::write_char")
+  // #865: `Stderr::write_stream(s) -> Unit` / `Stderr::write_char(c) -> Unit`
+  // (`vibe.stderr_write_stream` / `vibe.stderr_write_char (i64) -> ()`, void
+  // like stdout's), same shapes/gating as the Stdout pair above.
+  let need_stderr_write_stream_builtin = Map::has_key(used_builtin_names, "Stderr::write_stream")
+  let need_stderr_write_char_builtin = Map::has_key(used_builtin_names, "Stderr::write_char")
   // #762: `Path::ref` / `Path::resolve` both lower (compile_call) to the
   // `resolve_path` host import — resolve a path to absolute against the process
   // CWD. `vibe.resolve_path (i64) -> i64`, value-returning like fs_read_file,
@@ -930,6 +945,62 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   } else {
     -1
   }
+  // #865: `Process::capture` host imports -- reserved after http_close
+  // (before dbg_break), in the same order as their emission below. All five
+  // reuse EXISTING base func types (3 = `(i64)->i64`, 1 = `(i64)->()`), so no
+  // new type-section entry is needed (unlike #794's http_request).
+  let sh_capture_import_idx = if need_sh_capture_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let sh_capture_exit_code_import_idx = if need_sh_capture_exit_code_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let sh_capture_stdout_import_idx = if need_sh_capture_stdout_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let sh_capture_stderr_import_idx = if need_sh_capture_stderr_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let sh_capture_close_import_idx = if need_sh_capture_close_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #865: `Stderr::write_stream` / `Stderr::write_char` host imports --
+  // reserved after sh_capture_close (before dbg_break), same shapes as the
+  // Stdout pair (type 3 value-returning is N/A here; both are void type 1).
+  let stderr_write_stream_import_idx = if need_stderr_write_stream_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let stderr_write_char_import_idx = if need_stderr_write_char_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
   // debugger breakpoint (DAP P1): in break mode emit a conditional `vibe::dbg_break`
   // host import (() -> ()) called at each user-function entry. Default OFF, so
   // num_imported_funcs / func_offset are unchanged for normal builds (fixpoint).
@@ -1227,6 +1298,47 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   } else {
     fs_read_file_stub_idx
   }
+  // #865: never-called placeholders when unused, like the http fallbacks
+  // above. The four value-returning ops fall back to the fs_read_file stub
+  // (a `(i64)->i64` never-called placeholder); the void close op falls back
+  // to env_args_len_idx, mirroring fs_remove_idx/http_close_idx's own choice.
+  let sh_capture_idx = if sh_capture_import_idx >= 0 {
+    sh_capture_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let sh_capture_exit_code_idx = if sh_capture_exit_code_import_idx >= 0 {
+    sh_capture_exit_code_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let sh_capture_stdout_idx = if sh_capture_stdout_import_idx >= 0 {
+    sh_capture_stdout_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let sh_capture_stderr_idx = if sh_capture_stderr_import_idx >= 0 {
+    sh_capture_stderr_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let sh_capture_close_idx = if sh_capture_close_import_idx >= 0 {
+    sh_capture_close_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // #865: Stderr::write_stream / Stderr::write_char call targets -- void ops,
+  // same fallback shape as stdout_write_stream_idx/stdout_write_char_idx.
+  let stderr_write_stream_idx = if stderr_write_stream_import_idx >= 0 {
+    stderr_write_stream_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let stderr_write_char_idx = if stderr_write_char_import_idx >= 0 {
+    stderr_write_char_import_idx
+  } else {
+    env_args_len_idx
+  }
   let max_builtin_func_idx = str_lex_diff_idx
   let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
   let func_offset = num_imported_funcs + num_generated
@@ -1292,9 +1404,20 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         "sh" => sh_idx,
         // RAW half of sh_lines -- compile_call lowers the Array[String] surface.
         "vibe_sh_lines_raw" => sh_lines_idx,
+        // #865: structured subprocess result (raw dunder names -- called
+        // directly from lib/@vibe/process/process.vibe, same convention as
+        // the vibe_http_*_raw names above).
+        "vibe_sh_capture_raw" => sh_capture_idx,
+        "vibe_sh_capture_exit_code_raw" => sh_capture_exit_code_idx,
+        "vibe_sh_capture_stdout_raw" => sh_capture_stdout_idx,
+        "vibe_sh_capture_stderr_raw" => sh_capture_stderr_idx,
+        "vibe_sh_capture_close_raw" => sh_capture_close_idx,
         "Stdin::read_stream" => stdin_read_stream_idx,
         "Stdout::write_stream" => stdout_write_stream_idx,
         "Stdout::write_char" => stdout_write_char_idx,
+        // #865: Stderr, same shapes as the Stdout pair above.
+        "Stderr::write_stream" => stderr_write_stream_idx,
+        "Stderr::write_char" => stderr_write_char_idx,
         // #762: RAW host op behind Path::ref / Path::resolve.
         "resolve_path" => resolve_path_idx,
         "Profiler::now_us" => profiler_now_us_idx,
@@ -2953,6 +3076,70 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   if http_close_import_idx >= 0 {
     emit_name(import_content, "vibe")
     emit_name(import_content, "http_close")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #865: `vibe.sh_capture (i64) -> i64` (type 3, like fs_read_file) -- runs
+  // the command once and returns a handle.
+  if sh_capture_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sh_capture")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #865: `vibe.sh_capture_exit_code (i64) -> i64` (type 3, like fs_exists).
+  if sh_capture_exit_code_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sh_capture_exit_code")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #865: `vibe.sh_capture_stdout (i64) -> i64` (type 3, like fs_read_file).
+  if sh_capture_stdout_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sh_capture_stdout")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #865: `vibe.sh_capture_stderr (i64) -> i64` (type 3, like fs_read_file).
+  if sh_capture_stderr_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sh_capture_stderr")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #865: `vibe.sh_capture_close (i64) -> ()` (type 1, like fs_remove).
+  if sh_capture_close_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sh_capture_close")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #865: `vibe.stderr_write_stream (i64) -> ()` / `vibe.stderr_write_char
+  // (i64) -> ()` (type 1, like Stdout's pair).
+  if stderr_write_stream_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stderr_write_stream")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  if stderr_write_char_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stderr_write_char")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 1)
   } else {

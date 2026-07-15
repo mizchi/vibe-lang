@@ -1695,6 +1695,16 @@ async function main() {
   const httpResponses = new Map();
   let nextHttpHandle = 1;
 
+  // #865: structured subprocess result host state for `vibe.sh_capture*`,
+  // behind lib/@vibe/process's `vibe_sh_capture_*_raw` builtins. `sh_capture`
+  // runs the command ONCE (execSync with stdout/stderr captured separately
+  // instead of `sh`'s stdio:"inherit" / `sh_lines`'s combined+"error: "-prefix
+  // encoding) and parks {exitCode, stdout, stderr} in this map until
+  // sh_capture_close -- same handle-map shape as httpResponses above, so the
+  // 3 accessor imports are just cheap map reads (no re-exec).
+  const shCaptureResults = new Map();
+  let nextShCaptureHandle = 1;
+
   const vibeModule = new Proxy(
     {
       http_request(methodTagged, urlTagged, headersTagged, bodyTagged) {
@@ -1795,6 +1805,80 @@ async function main() {
           return encodeHostString(instanceRef, "error: " + stderr);
         }
       },
+      // #865: structured subprocess result behind lib/@vibe/process's
+      // `sh_capture(cmd) -> ShResult`. Unlike `sh_lines` (combines
+      // stdout+stderr into one packed string, and loses the real exit code
+      // behind an "error: " string prefix on failure), this runs the command
+      // ONCE via spawnSync -- which reports {status, stdout, stderr}
+      // separately for BOTH the success and failure case (execSync only
+      // returns stdout on success and throws on failure, so it can't give a
+      // uniform success/failure shape without a try/catch that duplicates
+      // the whole result plumbing) -- and parks the three fields behind a
+      // handle so the 3 accessor calls below are cheap map reads, not re-execs.
+      sh_capture(cmdTagged) {
+        const cmd = decodeStringArg(instanceRef, cmdTagged);
+        const res = cp.spawnSync(cmd, {
+          shell: "/bin/bash",
+          encoding: "utf-8",
+          maxBuffer: 64 * 1024 * 1024,
+        });
+        let exitCode;
+        let stderr = res.stderr || "";
+        if (res.error) {
+          // The shell/child itself failed to spawn (e.g. missing binary) --
+          // no real exit code exists, so use the shell "command not found"
+          // convention (127) and surface the spawn error on stderr.
+          exitCode = 127;
+          stderr = stderr || String((res.error && res.error.message) || res.error);
+        } else if (res.signal) {
+          // Killed by a signal rather than exiting normally; 128 is a
+          // reasonable non-zero sentinel (we don't have a portable
+          // signal-name -> number table here).
+          exitCode = 128;
+        } else {
+          exitCode = res.status === null || res.status === undefined ? 1 : res.status;
+        }
+        const handle = nextShCaptureHandle;
+        nextShCaptureHandle += 1;
+        shCaptureResults.set(handle, {
+          exitCode,
+          stdout: res.stdout || "",
+          stderr,
+        });
+        if (process.env.VIBE_DEBUG_SH === "1") {
+          console.error(
+            `[sh-capture] handle=${handle} exit=${exitCode} stdout_len=${(res.stdout || "").length} stderr_len=${stderr.length}`,
+          );
+        }
+        return encodeHostInt(handle);
+      },
+      sh_capture_exit_code(handleTagged) {
+        const entry = shCaptureResults.get(decodeHostInt(handleTagged));
+        if (!entry) {
+          throw new Error("sh_capture_exit_code: unknown handle");
+        }
+        return encodeHostInt(entry.exitCode);
+      },
+      sh_capture_stdout(handleTagged) {
+        const entry = shCaptureResults.get(decodeHostInt(handleTagged));
+        if (!entry) {
+          throw new Error("sh_capture_stdout: unknown handle");
+        }
+        return encodeHostString(instanceRef, entry.stdout);
+      },
+      sh_capture_stderr(handleTagged) {
+        const entry = shCaptureResults.get(decodeHostInt(handleTagged));
+        if (!entry) {
+          throw new Error("sh_capture_stderr: unknown handle");
+        }
+        return encodeHostString(instanceRef, entry.stderr);
+      },
+      // Tolerates unknown handles, like http_close above (a double-close
+      // must not kill the guest).
+      sh_capture_close(handleTagged) {
+        shCaptureResults.delete(decodeHostInt(handleTagged));
+        return 0n;
+      },
       // vibe/io host effects (linear codegen `vibe.*` module). Both stdin
       // readers draw from the SAME VIBE_STDIN_BYTES feed + cursor as the WASI
       // 0.2 input-stream bridge (preview2CliStreamsHost), so a linear-backend
@@ -1828,6 +1912,17 @@ async function main() {
       stdout_write_char(codeTagged) {
         const code = decodeHostInt(codeTagged);
         process.stdout.write(String.fromCharCode(code));
+        return 0n;
+      },
+      // #865: Stderr, same shape as the Stdout pair above but writing to fd 2.
+      stderr_write_stream(strTagged) {
+        const str = decodeStringArg(instanceRef, strTagged);
+        process.stderr.write(str);
+        return 0n;
+      },
+      stderr_write_char(codeTagged) {
+        const code = decodeHostInt(codeTagged);
+        process.stderr.write(String.fromCharCode(code));
         return 0n;
       },
       path(pathValue) {

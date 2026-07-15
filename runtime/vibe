@@ -363,6 +363,11 @@ case "$cmd" in
     [ "$#" -ge 1 ] || die "usage: vibe run [--trace] [--break <fn>[,<fn>...]] [--mem] [--alloc-site[=N]] <file.vibe> [entry]"
     [ "$brk" = "1" ] && [ -z "$break_spec" ] && die "usage: vibe run --break <fn>[,<fn>...] <file.vibe> [entry]"
     src="$1"; entry="${2:-main}"
+    # #865: forward any args beyond src/entry to the guest program as
+    # trailing argv (readable via `Env::args_len`/`Env::args_get`, which
+    # already worked -- this wrapper previously just dropped them).
+    extra_args=()
+    [ "$#" -gt 2 ] && extra_args=("${@:3}")
     [ -f "$src" ] || die "not found: $src"
     out="$(mktemp -t vibe-run-XXXXXX.wasm)"
     trap 'rm -f "$out" "$out.funcmap"' EXIT
@@ -437,7 +442,8 @@ case "$cmd" in
     rerr_fifo="$(mktemp -u -t vibe-run-err-XXXXXX)"; mkfifo "$rerr_fifo"
     annotate_run_stream "$out.funcmap" "$(basename "$src")" < "$rerr_fifo" >&2 &
     annot_pid=$!
-    env $trace_env $break_env $mem_env $alloc_env $funcmap_env $breakfile_env "$RUNNER" "$out" 2>"$rerr_fifo" || status=$?
+    env $trace_env $break_env $mem_env $alloc_env $funcmap_env $breakfile_env "$RUNNER" "$out" \
+      ${extra_args[@]+"${extra_args[@]}"} 2>"$rerr_fifo" || status=$?
     wait "$annot_pid" 2>/dev/null || true
     rm -f "$rerr_fifo"
     exit "$status"

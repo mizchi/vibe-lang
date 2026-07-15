@@ -6,22 +6,20 @@
 // monotonically over a long editing session. This is the explicit reclaim
 // path (see docs/build-cache.md).
 //
-// Usage (direct runner invocation forwards argv; the `vibe run` launcher
-// wrapper does not yet forward trailing args to the compiled program -- see
-// the pilot report for details, so prefer the env-var form below when going
-// through `scripts/vibe_run.sh` / `vibe run`):
-//   vibe run scripts/cache_clean.vibex             # delete every _build/vibe_* file
-//   vibe run scripts/cache_clean.vibex -- --dry-run   # (direct runner invocation only)
+// Usage (#865: `vibe run` / `scripts/vibe_run.sh` now forward trailing argv,
+// so the `--` form works through either the direct runner OR the launcher):
+//   vibe run scripts/cache_clean.vibex                # delete every _build/vibe_* file
+//   vibe run scripts/cache_clean.vibex -- --dry-run   # dry-run via argv
 //   VIBE_CACHE_CLEAN_DRY_RUN=1 vibe run scripts/cache_clean.vibex   # dry-run via env var
 //
-// Differences from scripts/cache_clean.sh, all a consequence of the current
-// stdlib/runtime surface (see the pilot report):
+// Differences from scripts/cache_clean.sh, a consequence of the current
+// stdlib/runtime surface (see the pilot report / #865):
 //   * dry-run can also be requested via VIBE_CACHE_CLEAN_DRY_RUN=1 (env var),
-//     since `vibe run`'s wrapper scripts do not forward argv today.
-//   * an unrecognized flag is silently ignored (there is no Stderr builtin to
-//     report it on, and no builtin to set a custom process exit code from a
-//     `vibe run` program, so the bash original's `exit 2` on a bad flag has
-//     no equivalent here).
+//     kept as a convenience alongside the now-working `-- --dry-run` argv form.
+//   * an unrecognized flag now reports to STDERR (via the new Stderr builtin,
+//     #865) and the process exits 2 -- matching scripts/cache_clean.sh's
+//     `echo ... >&2; exit 2` exactly (previously: silently ignored, no
+//     Stderr builtin and no way to return a custom process exit code).
 //   * file size is computed via Fs::read_bytes + Bytes::length (reads each
 //     file fully into memory) rather than `wc -c`; byte counts are identical,
 //     but this is O(bytes) not O(1) per file.
@@ -30,6 +28,24 @@ fn is_dry_run_flag(arg: String) -> Bool {
   if arg == "--dry-run" {
     true
   } else arg == "-n"
+}
+
+// First argv entry that isn't a recognized flag, or "" if every entry is
+// recognized (mirrors scripts/cache_clean.sh's `case "$arg" in ... *) ...
+// exit 2 ;; esac` -- the FIRST unrecognized arg is the one reported, same as
+// bash's for-loop-with-exit).
+fn find_bad_flag() -> String with { Env } {
+  let argc = Env::args_len()
+  let mut i = 0
+  let mut bad = ""
+  while i < argc {
+    let arg = Env::args_get(i)
+    if bad == "" && not(is_dry_run_flag(arg)) {
+      bad = arg
+    }
+    i = i + 1
+  }
+  bad
 }
 
 fn parse_dry_run() -> Bool with { Env } {
@@ -119,22 +135,38 @@ fn remove_all(paths: Array[String]) -> Unit with { Fs } {
   }
 }
 
-export let main = () -> Unit with { Fs, Env, Stdout } {
+fn do_clean() -> Int with { Fs, Env, Stdout } {
   let dry_run = parse_dry_run()
   let files = collect_cache_files("_build")
   let count = Array::length(files)
   if count == 0 {
     Stdout::write_stream("[cache-clean] no persistent cache files (_build/vibe_*) to reclaim\n")
+    0
   }
   else {
     let total = total_size(files)
     let human = human_size(total)
     if dry_run {
       Stdout::write_stream("[cache-clean] DRY RUN: would reclaim \{count} file(s), \{human} from _build/vibe_*\n")
+      0
     }
     else {
       remove_all(files)
       Stdout::write_stream("[cache-clean] reclaimed \{count} file(s), \{human} from _build/vibe_*\n")
+      0
     }
+  }
+}
+
+// #865: `main` now returns Int (the process exit code) instead of Unit --
+// `vibe run` / `scripts/vibe_run.sh` propagate it to the real OS exit status.
+export let main = () -> Int with { Fs, Env, Stdout, Stderr } {
+  let bad_flag = find_bad_flag()
+  if bad_flag == "" {
+    do_clean()
+  }
+  else {
+    Stderr::write_stream("cache-clean: unknown arg: \{bad_flag}\n")
+    2
   }
 }
