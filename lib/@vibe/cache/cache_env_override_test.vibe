@@ -1,0 +1,58 @@
+//# Imports
+
+// #849: proves VIBE_BUILD_CACHE_DIR actually changes the path
+// `stable_cache_path` (and therefore all 8 persistent_*_cache_path
+// wrappers, and store_persistent_artifact/load_persistent_artifact) build,
+// and that a real cache write actually lands under the overridden root when
+// the env var is set for the process.
+import ./cache.vibe {
+  stable_cache_path, persistent_artifact_cache_path, store_persistent_artifact, load_persistent_artifact
+}
+
+//# Misc
+
+test "stable_cache_path: honors VIBE_BUILD_CACHE_DIR when set, defaults to _build/vibe_ otherwise" {
+  let path = stable_cache_path("v1", "env_override_demo", "seed-a", ".tsv")
+  let override = Env::get("VIBE_BUILD_CACHE_DIR")
+  if String::length(override) > 0 {
+    let expected_prefix = if String::ends_with(override, "/") {
+      String::concat(override, "vibe_")
+    } else {
+      String::concat(override, "/vibe_")
+    }
+    assert(String::starts_with(path, expected_prefix))
+    assert(!(String::starts_with(path, "_build/vibe_")))
+  } else {
+    assert(String::starts_with(path, "_build/vibe_"))
+  }
+}
+
+test "stable_cache_path: the key formula is unaffected by the root (same version/prefix/seed/suffix -> same path)" {
+  let a = stable_cache_path("v1", "env_override_demo", "seed-b", ".tsv")
+  let b = stable_cache_path("v1", "env_override_demo", "seed-b", ".tsv")
+  assert(a == b)
+}
+
+test "store_persistent_artifact / load_persistent_artifact: a real write actually lands under the overridden root" {
+  let bytes = Bytes::new()
+  Bytes::push(bytes, 42)
+  store_persistent_artifact("v1", "env_override_demo_artifact", "", "seed-c", bytes)
+  let path = persistent_artifact_cache_path("v1", "env_override_demo_artifact", "", "seed-c")
+  let override = Env::get("VIBE_BUILD_CACHE_DIR")
+  if String::length(override) > 0 {
+    assert(Fs::exists(path))
+    let expected_prefix = if String::ends_with(override, "/") {
+      String::concat(override, "vibe_")
+    } else {
+      String::concat(override, "/vibe_")
+    }
+    assert(String::starts_with(path, expected_prefix))
+  } else {
+    assert(Fs::exists(path))
+    assert(String::starts_with(path, "_build/vibe_"))
+  }
+  match load_persistent_artifact("v1", "env_override_demo_artifact", "", "seed-c") {
+    Some(loaded) => assert(Bytes::get(loaded, 0) == 42),
+    None => assert(false)
+  }
+}

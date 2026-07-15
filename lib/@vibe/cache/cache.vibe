@@ -1,5 +1,51 @@
 //# Functions
 
+// #849: private Env effect + checker-only discharge, mirroring
+// module_graph_path.vibe's ADR-0065 pattern (VIBE_LIB / VIBE_HOME / HOME /
+// VIBE_REQUIRE_PINS) so `stable_cache_path` can read VIBE_BUILD_CACHE_DIR
+// without an `Env` row on its own signature or on any of the 8 exported
+// wrappers below (`persistent_artifact_cache_path` etc.) or their ~20-30
+// call sites across the compiler — `Env::get` compiles to the host env-get
+// import directly, so the handler arm here is never invoked at runtime.
+// The effect declaration is private — nothing outside this module sees it.
+effect Env {
+  Get(String) -> String
+}
+
+fn env_get_raw(name: String) -> String with { Env } {
+  Env::get(name)
+}
+
+fn read_env_discharged(name: String) -> String {
+  handle {
+    env_get_raw(name)
+  } with Env {
+    Get(_n) => resume("")
+  }
+}
+
+// #849: VIBE_BUILD_CACHE_DIR overrides the persistent-cache storage root so
+// parallel `git worktree` checkouts can share one physical cache directory
+// instead of each rebuilding it from scratch (the cache KEY is already
+// content/relative-path based, so it's safe to share as-is — see #849 audit
+// comment). Treated as a DIRECTORY ROOT: the existing "<prefix>_<token>
+// <suffix>" filename logic still appends into it via the "vibe_" convention,
+// so callers only need to point one env var at a shared directory rather
+// than reproduce today's "_build/vibe_" spelling verbatim. Unset/empty
+// falls back to today's literal "_build/vibe_" (unchanged default
+// behavior, no trailing slash — matches the historical hardcoded prefix).
+fn build_cache_root_prefix() -> String {
+  let raw = read_env_discharged("VIBE_BUILD_CACHE_DIR")
+  let len = String::length(raw)
+  if len == 0 {
+    "_build/vibe_"
+  } else if String::char_code_at(raw, len - 1) == 47 {
+    String::concat(raw, "vibe_")
+  } else {
+    String::concat(raw, "/vibe_")
+  }
+}
+
 export fn compact_string_fingerprint(source: String) -> String {
   let mod1 = 2147483647
   let mod2 = 2147483629
@@ -38,7 +84,7 @@ export fn stable_cache_path(version_tag: String, prefix: String, seed: String, s
     i = i + 1
   }
   let token = StringBuilder::freeze(token_sb)
-  String::concat("_build/vibe_", String::concat(prefix, String::concat("_", String::concat(token, suffix))))
+  String::concat(build_cache_root_prefix(), String::concat(prefix, String::concat("_", String::concat(token, suffix))))
 }
 
 fn build_sources_fingerprint(sources: Array[(String, String)]) -> String {
