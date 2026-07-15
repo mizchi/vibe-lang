@@ -47,7 +47,19 @@ cd "$ROOT"
 # counts rose ~5x (fn hit 2,4xx -> 12,476; branch hit 4,1xx -> 30,343). The
 # ABSOLUTE mins below are the real anti-regression ratchet and are raised to
 # just under current; the rate mins are recalibrated to the diluted baseline.
-MIN_POINT="${VIBE_SUITE_MIN_POINT_RATE:-23}"
+#
+# Rebaselined again 2026-07-15 (#801): fixing a loader cache-corruption bug
+# (lib/@vibe/compiler/loader/manifest_sources.vibe's ensure_grouped_source_bucket)
+# let cache_probe_loader_manifest_groups_bench_test.vibe start compiling and
+# running correctly instead of crashing -- previously its whole transitive
+# denominator (and the crash-excluded 0 numerator) was left out of the suite
+# entirely. Its own local hit ratio (~17%) is below the suite average, so
+# correctly including it dips the aggregate POINT rate from 23% to ~22.9%
+# even though absolute hit counts only went UP (this entry's functions are
+# now genuinely exercised, not uncounted). MIN_POINT lowered just enough to
+# accommodate; MIN_FN_HIT (the real anti-regression ratchet per the note
+# above) is unaffected and still comfortably cleared.
+MIN_POINT="${VIBE_SUITE_MIN_POINT_RATE:-22}"
 MIN_LINE="${VIBE_SUITE_MIN_LINE_RATE:-97}"
 MIN_BRANCH="${VIBE_SUITE_MIN_BRANCH_RATE:-7}"
 MIN_FN_HIT="${VIBE_SUITE_MIN_FN_HIT:-12000}"

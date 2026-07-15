@@ -469,7 +469,23 @@ fn empty_grouped_sources() -> Array[(String, Array[(String, String)])] {
   Array::slice([("", Array::slice([("", "")], 0, 0))], 0, 0)
 }
 
-fn ensure_grouped_source_bucket(groups: Array[(String, Array[(String, String)])], group_name: String) -> Array[(String, String)] {
+// #801 (系統2 follow-up): a bucket that does not exist yet MUST have its first
+// element pushed BEFORE the (group_name, bucket) tuple is embedded into
+// `groups` -- never the other way around. Pushing an EMPTY bucket into
+// `groups` first and mutating the returned handle afterward (the previous
+// shape of this function) let a `groups`-array growth event land between the
+// two pushes; the bucket handle the caller went on to push the first real
+// element into was then observed to diverge from the copy embedded in
+// `groups`, leaving a corrupted `path="0"` row behind (reproduced
+// deterministically for entry "lib/@vibe/compiler/loader/index.vibe": the
+// 11th distinct group, "vibe_core", landed exactly on this hazard while
+// every other group -- multi-row groups whose bucket is already "live" by
+// the time any subsequent `groups` growth happens, and single-row groups
+// created before the hazard's growth boundary -- did not). The already-safe
+// sibling `push_grouped_source` (loader/index.vibe) avoids this by always
+// populating a brand-new bucket with its first item BEFORE pushing the tuple
+// into the outer array; this seeded variant applies the same ordering here.
+fn ensure_grouped_source_bucket_seeded(groups: Array[(String, Array[(String, String)])], group_name: String, path: String, value: String) -> Array[(String, String)] {
   let mut i = 0
   let mut found = None
   while i < Array::length(groups) {
@@ -482,9 +498,13 @@ fn ensure_grouped_source_bucket(groups: Array[(String, Array[(String, String)])]
     }
   }
   match found {
-    Some(sources) => sources,
+    Some(sources) => {
+      Array::push(sources, (path, value))
+      sources
+    },
     None => {
       let sources = Array::slice([("", "")], 0, 0)
+      Array::push(sources, (path, value))
       Array::push(groups, (group_name, sources))
       sources
     }
@@ -502,16 +522,14 @@ fn build_grouped_sources_from_manifest_rows_with_lookup(base_dir: String, rows: 
     let path = join_path(base_dir, rel_path)
     match on_path(path) {
       Some(source) => {
-        let bucket = if has_last_group && last_group_name == group_name {
-          last_group_sources
+        if has_last_group && last_group_name == group_name {
+          Array::push(last_group_sources, (path, source))
         } else {
-          let ensured = ensure_grouped_source_bucket(groups, group_name)
+          let ensured = ensure_grouped_source_bucket_seeded(groups, group_name, path, source)
           last_group_name = group_name
           last_group_sources = ensured
           has_last_group = true
-          ensured
         }
-        Array::push(bucket, (path, source))
       },
       None => ()
     }
@@ -628,16 +646,14 @@ fn load_manifest_source_groups_by_path_index(base_dir: String, rows: Array[(Stri
     let (group_name, rel_path) = Array::get(rows, i)
     let path = join_path(base_dir, rel_path)
     if Map::has_key(needed_path_index, path) {
-      let bucket = if has_last_group && last_group_name == group_name {
-        last_group_sources
+      if has_last_group && last_group_name == group_name {
+        Array::push(last_group_sources, (path, Fs::read_file(path)))
       } else {
-        let ensured = ensure_grouped_source_bucket(groups, group_name)
+        let ensured = ensure_grouped_source_bucket_seeded(groups, group_name, path, Fs::read_file(path))
         last_group_name = group_name
         last_group_sources = ensured
         has_last_group = true
-        ensured
       }
-      Array::push(bucket, (path, Fs::read_file(path)))
     }
     i = i + 1
   }
