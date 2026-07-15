@@ -25,6 +25,20 @@ import ../../../../lib/@vibe/core {
 // marker check must happen wherever `.vibei`-suffixed sources are parsed.
 export let contract_facade_marker: String = "// vibe: contract facade (desugared from .vibei)\n"
 
+// #897 (ADR-0070 Phase 1): mirrors `contract_facade_marker`'s idempotency
+// role, for a DIFFERENT ingestion transform -- a sibling `.vibe` impl file
+// under a `.vpkg` directory gets that vpkg's directory-shared imports
+// PREPENDED to its own source text (see `contract_directory_shared_import_prefix_text`
+// below and `ingest_source_text_fs`/`collect_sources_rec` in loader/index.vibe,
+// the two call sites). Ingestion is applied more than once to the same
+// logical file in ordinary operation (`collect_source_groups_fs` re-ingests
+// every already-collected source; #740's comment documents the same
+// re-ingestion for the contract-facade case) -- without a marker, a second
+// pass would prepend the imports AGAIN, producing duplicate `import`
+// statements. The loader checks for this marker before prepending and skips
+// if already present, exactly like the facade marker check.
+export let vpkg_shared_import_marker: String = "// vibe: vpkg directory-shared imports (#897)\n"
+
 // ADR-0063 Phase C (#729): contract conformance engine for `.vibei` files.
 //
 // A contract file's top level declares the package's public API. This module
@@ -578,6 +592,93 @@ export fn classify_contract_stmts(stmts: Array[Stmt]) -> (Array[String], Array[S
 export fn contract_impl_import_raw_paths(stmts: Array[Stmt]) -> Array[String] with { Error } {
   let (raws, _) = classify_contract_stmts(stmts)
   raws
+}
+
+// #897 (ADR-0070 Phase 1): does every item of a qualified `import <path> as
+// <mod> only { x, y }` import get its dot-joined "mod.x" alias (parser.vibe's
+// `qualify_import_items`)? Real identifiers can never contain '.', so a "."
+// inside an item's alias is conclusive proof the import was written in the
+// namespaced `as ... only` form, not the unqualified `import <path> { x, y }`
+// form this module's directory-shared-scope feature applies to. Only the
+// unqualified form is shared with sibling impl files -- the namespaced form's
+// whole point is to keep `mod.x` the ONLY way in, so propagating it verbatim
+// would defeat that.
+fn import_items_are_dot_qualified(items: Array[(String, Option[String])]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    let (_, alias) = Array::get(items, i)
+    match alias {
+      Some(a) => if String::index_of(a, ".") >= 0 {
+        found = true
+      } else {
+        ()
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// #897 (ADR-0070 Phase 1): a `.vpkg` contract's own UNQUALIFIED external
+// dependency imports (`import @user/mod { x, y }`) -- the ones ADR-0070
+// says register `x`/`y` into the package directory's SHARED scope, so any
+// sibling `.vibe` implementation file can use them without its own import
+// line. Scans the same non-declaration statement list `classify_contract_stmts`
+// does (a contract's `extra`, pre-classification), but keeps the full
+// `SImport` node (raw path + item names/aliases) instead of collapsing to a
+// bare path string, and keeps only `@`-prefixed imports whose items are NOT
+// namespace-qualified (see `import_items_are_dot_qualified`). Relative
+// impl-file imports (`import ./impl.vibe {}`) and the namespaced `as mod
+// only` form are excluded -- neither participates in directory-shared scope.
+export fn contract_directory_shared_imports(stmts: Array[Stmt]) -> Array[Stmt] {
+  let out = Array::slice([
+    SExport(Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(raw_path, items) =>
+        if String::starts_with(raw_path, "@") && !import_items_are_dot_qualified(items) {
+          Array::push(out, SImport(raw_path, items))
+        } else {
+          ()
+        },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// #897: render a `.vpkg` contract's directory-shared imports (see
+// `contract_directory_shared_imports`) as literal `import ...` source lines,
+// one per statement, each newline-terminated -- ready to PREPEND verbatim to
+// a qualifying sibling `.vibe` file's own source text so every existing
+// import-processing code path (checker env-binding, whole-program merge
+// rename/alias-rewrite, header/dep extraction) sees the inherited import
+// exactly as if the sibling had written it itself. `print_stmt` round-trips
+// `SImport` back to valid `import <path> { name [as alias], ... }` syntax
+// (parser.vibe/printer.vibe), so this needs no bespoke formatting. Empty
+// input -> "" (nothing to prepend).
+export fn contract_directory_shared_import_prefix_text(stmts: Array[Stmt]) -> String {
+  let shared = contract_directory_shared_imports(stmts)
+  if Array::length(shared) == 0 {
+    ""
+  } else {
+    let lines = Array::slice([
+      ""
+    ], 0, 0)
+    let mut i = 0
+    while i < Array::length(shared) {
+      Array::push(lines, print_stmt(Array::get(shared, i)))
+      i = i + 1
+    }
+    String::concat(String::join(lines, "\n"), "\n")
+  }
 }
 
 // Desugar a conformance-checked contract to facade source text: one

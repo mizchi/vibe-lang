@@ -27,7 +27,7 @@ import ./header_cache.vibe {
 }
 
 import ../contract/index.vibe {
-  check_contract, classify_contract_stmts, contract_facade_marker, contract_facade_source, contract_hash, contract_surface_lines, extract_package_version, extract_require_pins, package_hash_from_sources, parse_contract_program, verify_publish_bump
+  check_contract, classify_contract_stmts, contract_directory_shared_import_prefix_text, contract_facade_marker, contract_facade_source, contract_hash, contract_surface_lines, extract_package_version, extract_require_pins, package_hash_from_sources, parse_contract_program, verify_publish_bump, vpkg_shared_import_marker
 }
 
 import ./manifest_sources.vibe {
@@ -646,6 +646,75 @@ fn load_source_if_cached_file_spec_matches(path: String, stat_token_text: String
 // #753: the marker constant moved to contract/index.vibe so the
 // persistent-header lane (header_cache.vibe) applies the same check.
 
+fn path_basename(path: String) -> String {
+  let idx = String::last_index_of(path, "/")
+  if idx < 0 {
+    path
+  } else {
+    path[idx + 1: String::length(path)]
+  }
+}
+
+// #897 (ADR-0070 Phase 1): mirrors `contract_sibling_impl_raws_rec`'s own
+// sibling-impl-file filter (header_cache.vibe) EXACTLY -- the same files
+// that get auto-discovered as implicit `.vpkg` package members are the ones
+// eligible to inherit that `.vpkg`'s directory-shared imports. Any spelling
+// of an index file, plus test/draft/`_`-prefixed files, never qualify.
+fn is_vpkg_shared_scope_member_basename(name: String) -> Bool {
+  name != "index.vibei" && name != "index.vibe" && name != "index.vpkg" && String::ends_with(name, ".vibe") && !String::ends_with(name, "_test.vibe") && !String::ends_with(name, ".draft.vibe") && !String::starts_with(name, "_")
+}
+
+// #897: the directory-shared `import @user/mod { x, y }` text to PREPEND to
+// `path`'s own source, if `path` is a qualifying sibling `.vibe` impl file of
+// a directory whose `index.vpkg` declares any (unqualified, `@`-prefixed)
+// dependency imports. "" when `path` doesn't qualify (itself a contract file,
+// a test/draft/`_`-prefixed file, or a directory with no `index.vpkg`) or the
+// vpkg declares no such imports. Reads `index.vpkg` FRESH from disk on every
+// call rather than caching anything about it here — every caller already
+// keys its OWN cache off a fingerprint of this function's return value baked
+// into the ingested source text (`compact_string_fingerprint`, throughout
+// runtime/index.vibe and header_cache.vibe's `load_or_parse_module_header_fs_impl`),
+// so a live re-read is what makes a change to `index.vpkg`'s shared imports
+// correctly invalidate every sibling's downstream caches — no separate
+// invalidation bookkeeping needed (the #801 stale-cache bug class this
+// avoids: caching a derived value under a key that does not depend on
+// everything the value was derived from).
+// Scoped to `.vpkg` only (#897 issue comments: `.vibei`'s legacy either/or
+// import behavior is deliberately left unchanged by this feature).
+fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with { Error, Fs } {
+  if is_contract_ext(path) {
+    ""
+  } else if !is_vpkg_shared_scope_member_basename(path_basename(path)) {
+    ""
+  } else {
+    let vpkg_path = String::concat(dir_of_path(path), "/index.vpkg")
+    if !Fs::exists(vpkg_path) {
+      ""
+    } else {
+      let (_, vpkg_pin_blanked) = extract_require_pins(Fs::read_file(vpkg_path))
+      let (_, _, vpkg_extra) = parse_contract_program(lex(vpkg_pin_blanked))
+      contract_directory_shared_import_prefix_text(vpkg_extra)
+    }
+  }
+}
+
+// #897: applies `vpkg_directory_shared_import_prefix_fs`, guarded by
+// `vpkg_shared_import_marker` so re-ingesting an already-ingested source
+// (routine: `collect_source_groups_fs` re-ingests every source it collects,
+// #740) does not prepend the inherited imports a second time.
+fn apply_vpkg_directory_shared_imports_fs(path: String, pin_blanked: String) -> String with { Error, Fs } {
+  if String::starts_with(pin_blanked, vpkg_shared_import_marker) {
+    pin_blanked
+  } else {
+    let prefix = vpkg_directory_shared_import_prefix_fs(path)
+    if prefix == "" {
+      pin_blanked
+    } else {
+      String::concat(vpkg_shared_import_marker, String::concat(prefix, pin_blanked))
+    }
+  }
+}
+
 export fn ingest_source_text_fs(path: String, raw: String) -> String with { Error, Fs } {
   let (_, pin_blanked) = extract_require_pins(raw)
   if is_contract_ext(path) {
@@ -655,7 +724,7 @@ export fn ingest_source_text_fs(path: String, raw: String) -> String with { Erro
       String::concat(contract_facade_marker, desugar_contract_source_fs(path, pin_blanked))
     }
   } else {
-    pin_blanked
+    apply_vpkg_directory_shared_imports_fs(path, pin_blanked)
   }
 }
 
@@ -1718,7 +1787,12 @@ fn collect_sources_rec(path: String, sources: Array[(String, String)], visited: 
     let source = if is_contract_ext(path) {
       String::concat(contract_facade_marker, desugar_contract_source_fs(path, pin_blanked))
     } else {
-      pin_blanked
+      // #897: directory-shared vpkg imports (see
+      // `apply_vpkg_directory_shared_imports_fs` above) apply here too --
+      // this cold walk builds `source` independently of `ingest_source_text_fs`
+      // (it needs `pins` separately, for pin verification below), so it must
+      // repeat the same ingestion step rather than silently skip it.
+      apply_vpkg_directory_shared_imports_fs(path, pin_blanked)
     }
     let (deps, _, _) = load_or_parse_module_header_fs(path, source, 0)
     // First, recurse into dependencies (imports and re-exports)
