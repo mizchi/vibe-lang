@@ -32,8 +32,9 @@ WARNING: the `-Sthreads` flag will be a hard error in Wasmtime 47.0.0 on 2026-07
   手順は historical reference として残し、新規開発では使わない。
 - **supported なスレッド面は core wasm の atomics + shared memory** に閉じる
   (`-W threads=y` + `-W shared-memory=y`)。これは廃止対象ではない。下記 §1。
-- 将来のマルチスレッド基盤は **shared-everything-threads** に移行する。Wasmtime に
-  実装が入ってから再評価する。tracking: #488。
+- 公開並行モデルは [ADR-0068](concurrency.md) の shared-nothing structured
+  concurrency とする。**shared-everything-threads** はその opt-in 高速化 backend
+  として、Wasmtime の不足実装が揃ってから再評価する。tracking: #488。
 - repo 内の active な gate (`scripts/test_selfhost_cli_*preview2*.sh` 等) は
   `VIBE_WASMTIME_WASM_FLAGS=...threads=y`（= `-W threads=y`、wasm proposal）だけを
   使い、廃止対象の `-S threads=y` は使っていない。これらは影響を受けない。
@@ -99,16 +100,24 @@ WASI Threads モジュールとして必要な形:
   - 43 系の実測では `concurrency-support=y` が必要。
   - 41 系は `-W concurrency-support=...` 自体が未対応（unknown option）。
 
-## 4. 移行先: shared-everything-threads
+## 4. 実験 backend: shared-everything-threads (#488)
 
 `-S threads`（wasi-threads）は core wasm の上に WASI 層で thread-spawn を載せる
-旧アプローチ。後継は WebAssembly の **shared-everything-threads** proposal
+旧アプローチ。Wasm 側の後継候補は **shared-everything-threads** proposal
 （`thread.spawn-ref` / `thread.spawn-indirect` / `thread.available-parallelism`
-等）で、Wasmtime 側の実装が揃ってから vibe 側の probe を組み直す。
+等）だが、これは vibe の公開 API ではない。Wasmtime 側の実装が揃ってから
+ADR-0068 の task/channel semantics を保つ lowering として probe を組み直す。
+
+#488 の現状では local patch 上の shared `i31` subset と既存 Component Model
+threading baseline は確認できる一方、上記 3 intrinsic は unsupported path に入り、
+proposal test と parser/runtime の名前にも差がある。通常 CI / release gate にはせず、
+feature detection 付きの opt-in probe に限定する。production 候補への昇格条件は
+[concurrency.md の #488 節](concurrency.md)を参照。
 
 - proposal: https://github.com/WebAssembly/shared-everything-threads
 - tracking issue: #488
 
 旧 probe (`src/x/threads/`, `just experimental_wasi_threads_probe`,
 `scripts/run_wasi_threads_probe.sh`) は既に repo から撤去済み。再導入する場合は
-wasi-threads ではなく shared-everything-threads を前提にする。
+wasi-threads ではなく、backend-neutral conformance test と分離した
+shared-everything opt-in probe とする。

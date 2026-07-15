@@ -7,12 +7,14 @@
 
 ## 戦略サマリ
 
-1. **WasmFX (stack-switching) はまだ来ない** — stage 2、実装は Wasmtime
-   のみで V8/node には当分入らない。今日エンジンで使えるのは JSPI
-   (phase 4、Chrome 137+) だけ。よって **replay handler の置換は Koka 式
-   evidence passing + yield bubbling が唯一の現実解**。vibe の静的 effect
-   row と相性が良く、replay の意味論的問題 (副作用の再実行、~16K bound)
-   も同時に解決する。
+1. **WasmFX (stack-switching) はまだ来ないが、JSPI は blocker ではない** —
+   WasmFX は stage 2。一方 JSPI は phase 4 で Chrome に出荷済み、Safari 27
+   beta も対応を告知し、Firefox は meta bug で実装を追跡している。JSPI は
+   Wasm stack の suspend/resume を解決するが、Worker/thread、task lifetime、
+   cancel、message isolation は解決しない。したがって browser version matrix を
+   0.4.0 の blocker にせず、公開並行モデルと host suspension lowering を分離する。
+   replay handler 自体は Koka 式 evidence passing + yield bubbling で置換し、
+   副作用の再実行と ~16K bound を解消する。
 2. その際 **IR に suspend 点を明示**しておけば、lowering を (a) 今日:
    evidence passing、(b) I/O: WASI 0.3 native async + JSPI、(c) 将来:
    WasmFX、に差し替えられる。ADR-0012 (async) と ADR-0068 (並行) は同じ
@@ -22,12 +24,12 @@
    差分価値が最大なのは **FBIP 系の未取り込み後半 (drop-guided reuse /
    TRMC)** と **Effekt の 2025 年成果 (one-shot 定数時間 resume /
    dynamic-wind)**。
-4. 並行モデルは ADR-0068 が proposed の今が設計制約の書き込み時:
-   **nursery = Spawn capability handler** (structured concurrency)、
-   **per-process heap + Perceus uniqueness による move send**、Verona BoC
-   の **cown 的な複数リソース atomic 確保** の 3 点。Go channel の失敗学
-   (close 責務不明・goroutine leak) は capability + スコープ束縛で構造的に
-   回避できる。
+4. 並行モデルは **nursery = Spawn capability handler**、typed channel、
+   task-local heap/evidence を核にする。message は deep-copy snapshot を基準とし、
+   Perceus の uniqueness は last-use と transitive arena ownership を証明できる場合の
+   move 最適化にだけ使う。Go channel の失敗学 (close 責務不明・goroutine leak) は
+   last-sender release + generative scope で構造的に回避する。Verona BoC の cown は
+   core 完成後の拡張候補とする。
 
 ## サーベイ (主要トピック)
 
@@ -37,13 +39,13 @@
 | Koka generalized evidence passing | Xie & Leijen, ICFP 2021 | replay 置換の本命。tail-resumptive perform = 直接呼び出し、非 tail は yield bubbling。GC/エンジン拡張不要 |
 | Effekt capability passing / region | OOPSLA 2023/2025, ICFP 2025 | vibe の capability effect と同型。one-shot resume の定数時間 capture、dynamic-wind (finalizer) |
 | wasm_of_ocaml の effect 実装 | Tarides 2025-02 | 選択的 CPS / JSPI / double translation の 3 モード。pure-by-default の vibe は CPS 対象最小化で有利 |
-| JSPI 標準化完了 | v8.dev, caniuse | Chrome 137+/Firefox 139+。node 上の async effect suspend の今日の手段 |
+| JSPI 標準化完了 | WebAssembly proposals, WebKit, Mozilla Bugzilla | phase 4。Chrome 出荷済み、Safari 27 beta 対応、Firefox 実装追跡中。host suspend の手段であり thread model ではない |
 | WASI 0.3 native async | Bytecode Alliance 2026-02 | async func / stream / future が canonical ABI 化。ADR-0012 の対象そのもの |
 | structured concurrency 主流化 | Trio/JEP 505/asyncio.TaskGroup | nursery を Spawn capability handler として表現すると vibe の transitive 強制と噛み合う |
 | OCaml 5 Eio / Picos | ocaml-multicore | scheduler を effect handler で書く見本。capability 注入は _start capability と同発想 |
 | Verona BoC (when/cown) | OOPSLA 2023 | actor の弱点 (複数リソース atomic 更新) を region 所有権で解決。ADR-0060/0068 に接続 |
 | Go channel 批判 | jtolio ほか | close 責務・方向・leak を型とスコープで表現せよという教訓 |
-| BEAM per-process heap | BEAM Book | GC 局所化 + fault isolation。Perceus の uniqueness で「refcount==1 は move send」にでき BEAM より有利 |
+| BEAM per-process heap | BEAM Book | GC 局所化 + fault isolation。vibe は deep-copy を基準にし、last-use + transitive arena closure を証明できるときだけ move へ最適化する |
 | MoonBit / Roc / Grain 動向 | moonbitlang.com ほか | MoonBit: wasm-gc 主軸 + component model + async 静的追跡。直接競合の座標 |
 | Flux (Liquid Types for Rust) | PLDI 2023, 2025 | where 契約 Phase 3 (SMT) の実装様式。決定可能述語に制限した二層構成 |
 | Modal Effect Types | Tang et al., OOPSLA 2025 | row 多相の注釈爆発を避ける形式化の参照点 (0.4.0 型システム形式化) |
@@ -75,8 +77,9 @@
 
 ### Medium priority
 
-5. **per-process heap + 所有権移転 send** (BEAM + Perceus uniqueness +
-   BoC) — ADR-0068 制約 (1)(2) の実装方針。0.4.0 で。方向の ADR 固定は今。
+5. **task-local heap + deep-copy send** (BEAM の isolation + structured
+   concurrency) — ADR-0068 の基準実装。所有権移転は root RC だけで判断せず、
+   last-use + transitive arena closure を証明できた後の最適化にする。
 6. **dynamic-wind (finalizer) セマンティクス** (Effekt OOPSLA 2025) —
    resource effect × 非局所脱出の資源解放規則。継続/cancel 導入の前提。
 7. **drop-guided reuse + TRMC** (Koka FP²) — Perceus backend の次の一手。
@@ -91,5 +94,8 @@
 ## 参照
 
 - 発端: ロードマップ 0.3.0/0.4.0 (ADR-0067、#805/#806)
-- 並行設計原則: ADR-0068
+- 並行設計原則: [ADR-0068 詳細仕様](concurrency.md)
 - lang-review round 1 の concurrency 所見 (#806 コメント) と整合
+- [WebAssembly proposal registry](https://github.com/WebAssembly/proposals)
+- [WebKit: JSPI in Safari 27 beta](https://webkit.org/blog/17967/news-from-wwdc26-webkit-in-safari-27-beta/)
+- [Mozilla JSPI tracking bug](https://bugzilla.mozilla.org/show_bug.cgi?id=1897981)

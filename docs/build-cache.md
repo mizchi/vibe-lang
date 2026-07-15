@@ -63,3 +63,19 @@ generation builds, fixtures, and everything else under `_build` are untouched. A
 full rebuild simply repopulates the cache. Because the key already version-tags
 on every codegen change, a clean is never *required* for correctness — only to
 reclaim disk.
+
+## Concurrent publication requirement
+
+Append-only keys avoid invalidation races but do not by themselves make a
+write atomic. The current implementation writes artifact bytes directly to the
+final cache path. Before ADR-0068 compiler workers or concurrent compiler
+processes may publish the same key, publication must move to a unique temporary
+file in the destination directory followed by atomic rename.
+
+Workers may compute an artifact, but the compiler coordinator owns publication.
+If two publishers race on the same content-derived key, either may win only
+after a complete write; the loser removes its temporary file. Readers must see
+the old complete value, the new complete value, or a miss, never partial bytes.
+A per-key single-flight table may avoid duplicate work but is not required for
+correctness. Automatic mid-build GC remains out of scope because it has the
+stronger cross-build reachability problem described above.
