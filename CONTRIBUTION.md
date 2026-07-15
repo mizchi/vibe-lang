@@ -257,9 +257,10 @@ clients/                  # Embeddings + distribution artifacts
 bootstrap/                # Committed seed compiler (seed/ + seed.json)
 tools/                    # Dev tooling: wasmtime_bench (raw-wasmtime microbench,
                           #   standalone Rust crate, not wired into pkf/CI)
+tools/async_host/         # Rust/wasmtime host runtime for async (sleep)
 integrations/             # Editor plugins (treesitter / vscode / zed)
 examples/                 # Example scripts (examples/wasm/ needs a host)
-examples/async_host/      # Rust/wasmtime host runtime for async (sleep)
+fixtures/                 # Test fixtures (compiler regression corpus)
 scripts/ pkspec/          # Build/test scripts + pkfire/pkspec definitions
 ```
 

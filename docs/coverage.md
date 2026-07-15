@@ -408,7 +408,7 @@ WASM で「何を coverage と見なすか」を分離するのが実務的:
 vibe ソース基準の line/branch ヒットを集計する。
 
 ```bash
-just coverage-wasm-source examples/pattern_coverage.vibe
+just coverage-wasm-source fixtures/pattern_coverage_test.vibe
 ```
 
 生成物:
