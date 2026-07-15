@@ -90,9 +90,8 @@ Rules:
 - Runtime gate (current CLI behavior):
   - `sleep(...)`, `yield` execution is disabled by default.
   - enable with `--unstable-async` (`vibe run/test/shell/bench ...`).
-  - `Threads::probe_wat()` execution is disabled by default.
-  - `Threads::runtime_hints()` execution is disabled by default.
-  - enable with `--unstable-threads`.
+  - concurrency の stable runtime API はまだ存在しない。過去の
+    `--unstable-threads` / `Threads::*` probe は公開契約ではない。
 
 Examples:
 
@@ -328,24 +327,20 @@ StdIO (wasi stream primitives for wasm/component-friendly interop):
   - `Stdin::read_char` -> `wasi:cli/stdin@0.2.0#get-stdin` + `wasi:io/streams@0.2.0#[method]input-stream.blocking-read`
   - `Stdin::read_stream` -> same as `Stdin::read_char` (cabi read-buffer -> vibe string)
 
-Threads (experimental, runtime-gated by `--unstable-threads`):
-- `Threads::probe_wat()` -> `String`
-- `Threads::runtime_hints()` -> `{ wasm_flags: Array[String], wasi_flags: Array[String], wasm_env: String, wasi_env: String }`
-- `Threads::channel_new(capacity: Int)` -> `Int` (channel id)
-- `Threads::send(channel_id: Int, message: String)` -> `Bool`
-- `Threads::recv(channel_id: Int)` -> `String` (`""` when empty)
-- `Threads::spawn(name: String, channel_id: Int)` -> `Int` (task id)
-- `Threads::wait(task_id: Int)` -> `Int` (current minimal runtime returns `0`)
-- `lib/@vibe/prelude/threads.vibe` は test-safe な pure contract 層を分離:
-  - `task_spec`, `channel_spec`, `actor_spec`, `deployment_plan`, `recommended_*`
-  - これらは通常 `vibe test` で実行可能
-  - runtime 呼び出し
-    (`probe_wat`, `runtime_hints`, `channel_new`, `spawn`, `send`, `recv`, `wait`)
-    のみ `--unstable-threads` 必須
+Concurrency (v0.4.0 proposed):
+- 過去の `Threads::*`（raw Int channel id、String message、probe/runtime hint）は
+  撤去済みの実験 API であり、現在の builtin surface ではない。
+- 現行 `Task[T]` は synchronous eager prototype で、並行実行の契約ではない。
+- 公開モデルは generative nursery、region-bound `Task` / typed channel、`Send`、
+  task-local handler evidence とする。詳細は
+  [ADR-0068 detailed concurrency spec](concurrency.md)。
+- JSPI / Worker、WASI Component Model、shared-everything-threads は公開 API ではなく
+  同じ意味論の backend lowering とする。
 
-Generated contract table:
+Historical builtin contract snapshot:
 - `docs/builtin_contract_table.generated.md`
-- regenerate with: `node scripts/gen_builtin_contract_table.mjs`
+- the old MoonBit-host generator has been retired; do not infer proposed concurrency
+  APIs from this snapshot
 
 ## WASM Primitive Type Aliases
 

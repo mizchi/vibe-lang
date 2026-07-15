@@ -109,11 +109,16 @@ WASI 0.3 の `stream<T>` を、vibe の `Iterator`（ADR-0044）と**同じコ�
 **狙い**: sync collection と async stream を**同じ pipeline コード**で書ける
 （effect row が `{}` か `{ Async }` かの差だけ）。`Iterator` の async 兄弟。
 
-### 2.5 構造化並行 + キャンセル — `Task[T]`（WASI 0.3 task / waitable-set / cancel）
+### 2.5 `Task[T]` eager prototype と v0.4.0 での置換
 
-WASI 0.3 の task / `waitable-set` / `future.cancel-*` を、**構造化並行**と
-**キャンセル**として言語に取り込む。子タスクは囲う async スコープに束縛され、
-スコープ離脱で join/cancel される（leak/孤児タスク無し）:
+> **公開意味論の source of truth は
+> [ADR-0068 詳細仕様](../concurrency.md)。** 本節の型は WASI 0.3 lowering を
+> 探索するために先行実装した historical prototype であり、region-bound
+> `Task[r,T]`、nursery、typed channel へ破壊的に置換する。WASI task /
+> `waitable-set` / `future.cancel-*` はその backend lowering として使い、
+> language surface を host primitive に固定しない。
+
+現行 front-end に着地している prototype surface は次のとおり:
 
 - `Task::spawn : (() -> T with { Async }) -> Task[T] with { Async }` — 子タスク生成
 - `Task::join : (Task[T]) -> T with { Async }` — 結果を待つ
@@ -122,10 +127,10 @@ WASI 0.3 の task / `waitable-set` / `future.cancel-*` を、**構造化並行**
 - `Task::timeout : (Int, () -> T with { Async }) -> Option[T] with { Async }`
   — 期限切れで `None`（内側 task を cancel）
 
-`await` がキャンセル点であり、cancellation は `Async` effect row に沿って伝播
-する。effect handler と相性が良く、spawn/join/cancel をハンドラで mock/制御
-できる（テスト容易・合成可能）。将来構文 `scope { ... }`（離脱で子を join/cancel）
-は後続。
+この surface の `spawn` はまだ child lifetime を型に持たず、`race` の loser
+ownership も定義していない。v0.4.0 では generative `nursery` が `Spawn[r]` handler
+を設置し、blocking `join` / channel operation が `Async::suspend` を要求する。
+cancel point、failure propagation、handler task-affinity は ADR-0068 に従う。
 
 #### 2.4/2.5 front-end（landed）
 

@@ -83,11 +83,15 @@
 
 ### 0.4.0 の内容
 
-1. **スレッドを念頭に置いた設計** — 目標モデルは **Go channel / Elixir 風
-   軽量プロセス**（軽量スレッド + message passing、ADR-0068）。
-   shared-everything-threads (#488) の実験基盤を本線化し、ランタイム・
-   effect 表面をこのモデル前提で設計し直す。0.3.0 までの全設計も
-   ADR-0068 の設計制約（グローバル可変状態を増やさない等）に従う。
+1. **shared-nothing structured concurrency** — generative nursery に束縛した
+   `Task` と typed channel、`Send`、cooperative cancel を公開モデルにする
+   （[ADR-0068 詳細仕様](concurrency.md)）。JSPI + Worker、WASI Component
+   Model、shared-everything-threads はこの意味論の交換可能な lowering とする。
+   JSPI の全 browser 出荷と #488 shared-everything の upstream 実装完了は
+   0.4.0 blocker にしない。#488 は opt-in probe を維持し、intrinsic/type gap と
+   backend differential gate が解消してから高速化 backend として昇格する。
+   0.3.0 までの全設計も ADR-0068 の制約（新しい mutable global を増やさない、
+   handler/continuation を task-local に保つ）に従う。
 2. **形式化を念頭に置いた型システムの設計** — checker 健全化
    （ADR「型健全性」系列）の先にある、仕様の形式化・機械検証を見据えた
    型システムの再設計。

@@ -101,10 +101,10 @@ Status: accepted and moved from `TODO.md`.
   `docs/vibe.md` now documents trait/impl rules, struct/enum details,
   placeholder lambda shorthand, `while`/`yield`, and member/index/pipe call
   forms.
-- Generated builtin contract table is published:
-  `docs/builtin_contract_table.generated.md` is generated from
-  checker/wasm builtin sources by `scripts/gen_builtin_contract_table.mjs` (also exposed as
-  `pkf run gen-builtin-contract-table`).
+- Historical builtin contract table is retained:
+  `docs/builtin_contract_table.generated.md` was generated from the retired MoonBit
+  host sources. Its generator/task no longer exists after selfhost cutover; current
+  selfhost builtin definitions and accepted/proposed ADRs are authoritative.
 - Import cycle reporting is implemented for path imports:
   import graph cycles are diagnosed in `stage: "import"` with `import cycle:`
   messages.

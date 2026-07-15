@@ -3,3 +3,5 @@ import VibeFormal.Proofs.SubsetCorrect
 import VibeFormal.Proofs.HandlerCorrect
 import VibeFormal.Proofs.AliasEquivalent
 import VibeFormal.Proofs.Examples
+import VibeFormal.Proofs.SchedulerCorrect
+import VibeFormal.Proofs.SchedulerExamples
