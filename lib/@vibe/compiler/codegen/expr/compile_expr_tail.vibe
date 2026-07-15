@@ -5,7 +5,7 @@ import ../../core {
 }
 
 import ../common_analysis {
-  collect_free_vars, collect_free_vars_indexed, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, mut_needs_ref_cell, proj_root_ident, scope_tail_proj_root
+  collect_free_vars, collect_free_vars_indexed, collect_free_vars_indexed_self, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, mut_needs_ref_cell, proj_root_ident, scope_tail_proj_root
 }
 
 import ../common_base {
@@ -1052,6 +1052,20 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     let body = get_eletrec_body(expr)
     let local_idx = next_local
     Array::push(local_names, name)
+    // #875 fix 2: hint compile_lambda (the immediate, sole callee that
+    // compiling an EFn value dispatches to) that NAME is this closure's own
+    // let-rec binding, so its capture computation force-includes NAME even if
+    // NAME collides with an unrelated entry in ctx.capture_name_index. Only
+    // set when `value` is actually an EFn (a non-lambda let-rec value, e.g.
+    // `let rec x = some_expr`, has no self-capture concept); compile_lambda
+    // consumes and clears this immediately, so it cannot leak to any other
+    // lambda compiled afterward. See CompileCtx.pending_letrec_self_name.
+    if is_efn(value) {
+      Array::truncate(ctx.pending_letrec_self_name, 0)
+      Array::push(ctx.pending_letrec_self_name, name)
+    } else {
+      ()
+    }
     let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
     emit_local_set(buf, local_idx)
     if is_efn(value) {
@@ -1066,7 +1080,13 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         Array::push(param_names_bp, pn)
         bpi = bpi + 1
       }
-      let caps = collect_free_vars_indexed(fn_body, param_names_bp, ctx.capture_name_index)
+      // #875 fix 2: same force-include as compile_lambda's own capture
+      // computation above -- this is a REDUNDANT recomputation (must match
+      // compile_lambda's `captures` exactly to find the right self_cap_idx
+      // slot), so it needs the same self_name override, passed directly
+      // since `name` is already in scope here (no ctx hint needed at this
+      // call site).
+      let caps = collect_free_vars_indexed_self(fn_body, param_names_bp, ctx.capture_name_index, name)
       let mut self_cap_idx = -1
       let mut bci = 0
       while bci < Array::length(caps) {

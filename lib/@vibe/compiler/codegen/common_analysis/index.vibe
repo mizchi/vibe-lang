@@ -2,10 +2,7 @@
 
 import ../../core/index.vibe {
   Expr, Pat, Stmt, TypeExpr,
-  bytebuf_push
-}
-
-import ../../core/sorted_index.vibe {
+  bytebuf_push,
   bsearch_leftmost, sorted_names_of
 }
 
@@ -853,6 +850,55 @@ export fn collect_free_vars_indexed(body: Expr, param_names: Array[String], fn_n
   let bound = Array::slice(param_names, 0, Array::length(param_names))
   collect_free_vars_expr(body, bound, fn_name_index, out)
   out
+}
+
+// #875 fix 2: like collect_free_vars_indexed, but forces `self_name` (the
+// closure's OWN `let rec NAME = (...) -> { ... }` binding name, or "" for
+// "no self-reference to force") into the result when `body` genuinely
+// references it as a free (lexically unshadowed) identifier -- even if
+// `self_name` ALSO happens to collide, by bare string equality, with an
+// unrelated entry already present in `fn_name_index` (ctx.capture_name_index,
+// a shared whole-program name index used to skip capturing bona fide global
+// func/ctor references).
+//
+// Why this is needed: collect_free_vars_expr's EIdent case treats ANY name
+// found in fn_name_index as "resolves globally, no capture needed" --
+// correct when the name really is only reachable as a global, but wrong when
+// it is ALSO the closure's own let-rec name. A `let rec check = (i) -> Bool
+// { ... check(i + 1) ... }` closure normally captures "check" as a free
+// variable precisely BECAUSE "check" is otherwise unknown to fn_name_index;
+// the failure mode only appears once some unrelated top-level function
+// (reachable via a widened whole-program-merge import graph, e.g. the
+// compile entry file's own unqualified top-level names) happens to share the
+// bare name "check". When that happens, compile_lambda's capture list
+// silently omits the self-reference, self_cap_idx (compile_expr_tail.vibe)
+// never fires, and the closure's own recursive call site falls through to
+// compile_call's func-table direct-call path -- calling the unrelated global
+// instead of itself (#875).
+//
+// Implementation: re-run the SAME free-var walk with an EMPTY fn_name_index
+// (so nothing is excluded as "a global") whenever the normal result doesn't
+// already contain self_name -- this reuses collect_free_vars_expr's existing,
+// well-tested lexical-shadowing logic (bound push/truncate per scope) exactly
+// as-is, so a self_name that IS legitimately shadowed by an inner binding of
+// the same name (e.g. a nested lambda parameter also named "check") is still
+// correctly excluded, matching normal shadowing semantics. Only runs the
+// second walk in the (rare) collision case, so the common case -- no
+// collision, self_name already present -- costs one array-membership check.
+export fn collect_free_vars_indexed_self(body: Expr, param_names: Array[String], fn_name_index: Array[String], self_name: String) -> Array[String] {
+  let captures = collect_free_vars_indexed(body, param_names, fn_name_index)
+  if self_name == "" || array_contains_str(captures, self_name) {
+    captures
+  } else {
+    let no_globals = common_analysis_fresh_string_array()
+    let unfiltered = collect_free_vars_indexed(body, param_names, no_globals)
+    if array_contains_str(unfiltered, self_name) {
+      Array::push(captures, self_name)
+      captures
+    } else {
+      captures
+    }
+  }
 }
 
 // The root identifier of a projection chain (EDot(...EDot(EIdent(root))...)), or

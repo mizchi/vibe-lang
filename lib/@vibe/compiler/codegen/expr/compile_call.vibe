@@ -3894,7 +3894,19 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       ce(buf, synth, local_names, next_local, ctx, ld)
     }
     else {
-      if fn_idx_in_list >= 0 {
+      // #875: a name that is BOTH a func_table entry (some unrelated
+      // top-level/entry-file function reachable in this merged program) AND a
+      // properly in-scope LOCAL binding (e.g. a nested `let rec NAME = ...`
+      // closure) must resolve to the LOCAL — lexical scoping always wins.
+      // Before this guard, `fn_idx_in_list >= 0` alone gated the direct-call
+      // path below, so a local closure whose bare name happened to collide
+      // with some other reachable function (most commonly the compile
+      // entry file's own top-level helpers, which build_export_rename_plan
+      // deliberately leaves unqualified) was miscompiled into a direct call
+      // to that unrelated function instead of a closure_resolve/call_indirect
+      // to the actual in-scope value — a wasm-validation-time arity mismatch
+      // with no compile-time diagnostic. See #875.
+      if fn_idx_in_list >= 0 && local_idx_hint < 0 {
         let fidx = Array::get(ctx.func_table.indices, fn_idx_in_list)
         let has_ret = Array::get(ctx.func_table.returns, fn_idx_in_list)
         let needs_env = Array::get(ctx.func_table.needs_env, fn_idx_in_list)
