@@ -1,0 +1,37 @@
+version 0.0.1
+
+// @vibe/graph — the selfhost compiler's incremental module DB (ADR-0070
+// Phase 3, #897): maps module path -> source, path -> fingerprint, path ->
+// dependency list, plus an eval counter, as one fixed-bucket hash-map-backed
+// linear value (callers must thread the returned db, not reuse a stale one
+// -- see graph.vibe's header comment). `RippleDb` is declared `opaque`: no
+// consumer (in-repo, including the compiler's own runtime/index.vibe,
+// confirmed via repo-wide grep) ever constructs or pattern-matches it
+// directly, only through ripple_new/ripple_get_*/ripple_set_source/
+// ripple_record_eval. `StrMap`/`DepsMap` (graph.vibe's internal bucket-map
+// representation, used only inside RippleDb's own variant payload) are
+// likewise never referenced outside graph.vibe -- but `check_contract`
+// still requires every exported type declared regardless of external
+// usage (same rule as fns; confirmed by a real conformance-check failure
+// when they were first left undeclared), so they're declared `opaque`
+// here too. `version` was `export let
+// version = "0.0.1"` directly in the old index.vibe facade -- a real
+// importable binding, not just contract metadata -- so it is preserved
+// verbatim as an implementation-file value (graph.vibe) with a matching
+// bodyless declaration here (Codex review precedent, PR #914).
+
+import ./graph.vibe {}
+
+let version: String
+
+opaque type StrMap
+opaque type DepsMap
+opaque type RippleDb
+
+fn ripple_new() -> RippleDb
+fn ripple_set_source(db: RippleDb, path: String, source: String) -> RippleDb
+fn ripple_get_source(db: RippleDb, path: String) -> Option[String]
+fn ripple_get_fingerprint(db: RippleDb, path: String) -> Option[String]
+fn ripple_get_deps(db: RippleDb, path: String) -> Option[Array[String]]
+fn ripple_record_eval(db: RippleDb, path: String, fingerprint: String, deps: Array[String]) -> RippleDb
+fn ripple_eval_count(db: RippleDb) -> Int
