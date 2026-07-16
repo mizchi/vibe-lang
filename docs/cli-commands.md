@@ -181,12 +181,15 @@ vibe fmt --dry-run <file...>
 
 ### normalize
 
-Normalize declaration order and apply dead code elimination, then format.
+Canonicalize a source file via the in-compiler normalize engine (#882):
+parse -> module-flatten -> DCE from exported roots -> section layout
+(`//# Imports / Types / Functions / Tests`) re-rendered through the AST
+printer. The default rewrites the file in place.
 
 ```
-vibe normalize <file...>
-vibe normalize --write <file...>
-vibe normalize --check <file...>
+vibe normalize <file.vibe>            # rewrite in place
+vibe normalize --check <file.vibe>    # exit 1 if not normalized (no write)
+vibe normalize --stdout <file.vibe>   # print the result (no write)
 ```
 
 ### init / new
