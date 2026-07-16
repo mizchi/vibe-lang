@@ -9,19 +9,28 @@ version 0.1.0
 // `import @vibe/core { ... }`; install with scripts/vibe_core_install.sh).
 //
 // v1 contents: sha1, leb128, list, set, hex, maps. map.vibe's `[K: Hash]`
-// generic-key helpers (get_by/has_by/get_or_by/get_or_else_by, the Hash
-// trait itself, length/is_empty) stay undeclared here — the .vibei contract
-// grammar cannot express a trait yet, and length/is_empty would collide
-// with the bare List/StringSet names below — so they're reachable only
-// from files inside this package (e.g. map_test.vibe imports map.vibe
-// directly). map_get.vibe carries the plain Map[String, V] helpers that
-// need no trait bound and no colliding name; it alone is declared below.
+// generic-key family is now declared below (#897/#912): trait-bounded
+// bodyless fn declarations parse and fingerprint through the same
+// parse_fn_signature/fn_sig_text path as unbounded ones (verified
+// empirically — the ".vibei grammar cannot express a trait" note that
+// used to live here was stale). `Hash` itself is declared `opaque type
+// Hash` — a trait has no SStruct/SEnum implementation for conformance to
+// find, but maps.vibe's `export ./r#map.vibe { ..., trait Hash }`
+// re-export discharges the declaration at face value (#847's re-export
+// trust), and the trait rides the merged program globally, so consumers
+// can `import @vibe/core { Hash }` and `impl Hash for TheirType`.
+//
+// map.vibe's `length`/`is_empty` (Map[String, V]) and math_extra.vibe's
+// `sum` (Array[Int]) stay UNDECLARED: each collides with a same-named
+// declaration for a different type below (List's length/sum, StringSet's
+// is_empty), and the facade can only allocate a declared name to one
+// definer. The exported-but-undeclared conformance sweep matches by NAME,
+// so these exports are legal — they remain reachable only from files
+// inside this package (map_test.vibe / math_prop_test.vibe import the
+// impl files directly), exactly the pre-.vpkg status quo.
 //
 // v2 (#766): base64, math (+ math_double), diff, uuid folded in from
-// @vibex (pure algorithms, zero prior consumers). math_extra.vibe's `sum`
-// (Array[Int]) stays undeclared for the same reason as map's length/
-// is_empty: it would collide with the bare `sum` already declared for
-// List[Int] below.
+// @vibex (pure algorithms, zero prior consumers).
 //
 // v3 (#841): bigint (arbitrary-precision signed integers) and rational
 // (arbitrary-precision rationals, built directly on bigint — both now
@@ -35,6 +44,9 @@ import ./list.vibe {}
 import ./set.vibe {}
 import ./hex.vibe {}
 import ./map_get.vibe {}
+import ./map.vibe {}
+import ./maps.vibe {}
+import ./math_extra.vibe {}
 import ./base64.vibe {}
 import ./diff.vibe {}
 import ./uuid.vibe {}
@@ -47,6 +59,15 @@ type List[T]
 type StringSet
 type BigInt
 type Rational
+
+// --- map (the [K: Hash] generic-key family; see header comment)
+opaque type Hash
+
+fn map_key_to_string[K: Hash](key: K) -> String
+fn get_by[K: Hash, V](m: Map[String, V], key: K) -> Option[V]
+fn has_by[K: Hash, V](m: Map[String, V], key: K) -> Bool
+fn get_or_by[K: Hash, V](m: Map[String, V], key: K, default: V) -> V
+fn get_or_else_by[K: Hash, V](m: Map[String, V], key: K, default: () -> V) -> V
 
 // --- sha1
 fn sha1(msg: String) -> String

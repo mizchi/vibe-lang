@@ -1,0 +1,61 @@
+version 0.0.1
+
+// @vibe/fs — mockable perform-based Fs wrappers (exists/read_file/
+// write_file) plus the deliberately direct-call stat_token (#795), and the
+// Fs effect declaration itself (ADR-0070 Phase 3, #897).
+//
+// `Fs` is a transparent effect definition (#752's contract convention for
+// effect rows, mirroring @vibe/process's `Process`, PR #920).
+// fs_effect.vibe KEEPS its own `export effect Fs` — effect defs are
+// invisible to check_contract's exported-but-undeclared sweep, the
+// duplicate definition is tolerated by the merge (empirically: this
+// package's own mock-handler tests pass with both present), and the
+// in-package tests (fs_test.vibe / fs_effect_test.vibe /
+// index_import_test.vibe) import it from `./fs_effect.vibe` directly.
+// Declaring it here matters post-#729 boundary sealing: external mockers
+// can no longer reach fs_effect.vibe, so `import @vibe/fs { Fs }` is their
+// only legal path. NOTE for external consumers: importing this facade also
+// pulls the qualified `Fs::` value aliases below into your unit, and —
+// qualified exports being exempt from the #716 rename — they capture
+// direct builtin `Fs::write_file`/`Fs::read_file`/`Fs::exists`/
+// `Fs::stat_token` calls, rerouting them through the perform-based
+// (mockable) wrappers (see fixtures/fs_readdir_test.vibe, which had to
+// stop importing this package for exactly that reason).
+//
+// `version` was `export let version = "0.0.1"` directly in the old
+// index.vibe facade — a real importable binding, not just contract
+// metadata — preserved as an implementation-file value (fs.vibe) with a
+// matching bodyless declaration here (Codex review precedent, PR #914).
+// The old facade ALSO defined the four qualified `Fs::` "canonical
+// collision-safe alias" bindings (`export let Fs::exists = exists`, ...).
+// Unlike @vibe/process's process_* aliases (PR #920) these could NOT be
+// re-expressed as wrapper fns: `perform Fs::<Op>` lowers to a call of the
+// builtin NAME `Fs::<op>` (builtin_name.vibe), and a fn def occupying that
+// name hijacks the lowering into an arity-broken call. They stay bare
+// value aliases in fs.vibe, with fs_aliases.vibe re-exporting them so
+// #847's re-export trust discharges the fn declarations below (a bare
+// alias has no signature for conformance to compare).
+
+import ./fs.vibe {}
+import ./fs_aliases.vibe {}
+import ./fs_effect.vibe {}
+
+let version: String
+
+effect Fs {
+  ReadFile(String) -> String;
+  WriteFile(String, String) -> Unit;
+  Exists(String) -> Bool;
+  Mkdir(String) -> Unit
+}
+
+fn exists(path: String) -> Bool with { Fs }
+fn read_file(path: String) -> String with { Fs }
+fn stat_token(path: String) -> Int with { Fs }
+fn write_file(path: String, content: String) -> Unit with { Fs }
+
+// --- canonical collision-safe aliases
+fn Fs::exists(path: String) -> Bool with { Fs }
+fn Fs::read_file(path: String) -> String with { Fs }
+fn Fs::stat_token(path: String) -> Int with { Fs }
+fn Fs::write_file(path: String, content: String) -> Unit with { Fs }

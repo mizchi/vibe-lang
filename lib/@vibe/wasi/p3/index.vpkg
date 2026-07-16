@@ -1,0 +1,99 @@
+version 0.0.1
+
+// @vibe/wasi/p3 — WASI Preview 3 (async/component-model) HTTP handler
+// surface: the typed Handler/Request/Response API (handler.vibe) and the
+// effect-friendly HttpRequest/HttpResponse wire helpers incl. the Error-
+// discharging `harness` (http_effect.vibe) (ADR-0070 Phase 3, #897).
+//
+// All five structs are declared TRANSPARENT (defined verbatim, not
+// opaque): handler_test.vibe / http_effect_test.vibe construct them and
+// assert `.status`/`.body`/`.serve` directly, so the field layouts are
+// real public API surface. The definitions moved here from handler.vibe /
+// http_effect.vibe, which reference them by name only (types are global in
+// the merged program, ShResult convention, PR #920). p3's
+// `HttpRequest`/`HttpResponse` deliberately shadow-name @vibe/http's
+// high-level structs — pre-existing, and the two packages never meet in
+// one merged program.
+//
+// The `example_*.vibe` component-entry demos were renamed to
+// `_example_*.vibe` (ADR-0070 explicit-only sources): each exports its own
+// `handler` fn with MUTUALLY CONFLICTING signatures ((String, String) ->
+// Int vs -> String), which .vpkg's unconditional implicit sibling
+// membership (#855) would otherwise pull into one facade — undeclarable
+// and self-colliding. As `_`-prefixed sources they stay explicitly
+// compilable demos (retargeted to `import .` so the transparent struct
+// defs reach them) without being package members.
+//
+// `version` was `export let version: String = "0.0.1"` directly in the old
+// index.vibe facade — a real importable binding, not just contract
+// metadata — preserved as an implementation-file value (handler.vibe) with
+// a matching bodyless declaration here (Codex review precedent, PR #914).
+//
+// Nested-package note (ADR-0070): this index.vpkg starts its OWN package
+// under lib/@vibe/wasi/ — the parent @vibe/wasi contract does not own p3's
+// sources, and imports in both directions must go through the respective
+// facades.
+
+import ./handler.vibe {}
+import ./http_effect.vibe {}
+
+let version: String
+
+struct Request {
+  method: String;
+  url: String;
+  headers: Map[String, String];
+  body: String
+}
+
+struct Response {
+  status: Int;
+  headers: Map[String, String];
+  body: String
+}
+
+struct Handler {
+  serve: (Request) -> Response
+}
+
+struct HttpRequest {
+  method: String;
+  url: String;
+  headers: Map[String, String];
+  body: String
+}
+
+struct HttpResponse {
+  status: Int;
+  headers: Map[String, String];
+  body: String
+}
+
+// --- handler (typed Handler/Request/Response API)
+fn status_ok() -> Int
+fn status_created() -> Int
+fn status_no_content() -> Int
+fn status_bad_request() -> Int
+fn status_not_found() -> Int
+fn status_method_not_allowed() -> Int
+fn status_internal_server_error() -> Int
+fn request_url(req: Request) -> String
+fn request_body(req: Request) -> String
+fn request_method(req: Request) -> String
+fn request_header(req: Request, name: String) -> Option[String]
+fn respond_json(status: Int, body: String) -> Response
+fn respond_text(status: Int, body: String) -> Response
+fn respond_empty(status: Int) -> Response
+
+// --- http_effect (wire helpers; exported by http_effect.vibe, only partly
+// re-exported by the old hand-written facade — conformance still requires
+// every exported def declared here, same as @vibe/socket's tcp.vibe, PR
+// #923)
+fn html(status: Int, body: String) -> HttpResponse
+fn json(status: Int, body: String) -> HttpResponse
+fn text(status: Int, body: String) -> HttpResponse
+fn empty(status: Int) -> HttpResponse
+fn redirect(url: String) -> HttpResponse
+fn error_to_response(err: String) -> HttpResponse
+fn serialize_response(resp: HttpResponse) -> String
+fn harness(user_handler: (HttpRequest) -> HttpResponse with { Error }) -> (String, String) -> String

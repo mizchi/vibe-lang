@@ -123,9 +123,10 @@ let first = match pair {
 Parse, query, and serialize JSON data.
 
 ```vibe
-// Convenience surface (throwing accessors). The Result-based primitives
-// (`parse`, `Json::get`, `json_as_*`) are exported from ./lib/@vibe/json.
-import ./lib/@vibe/json/json_convenience.vibe {
+// Convenience surface (throwing accessors), alongside the Result-based
+// primitives (`parse`, `Json::get`, `json_as_*`) — all declared in the
+// @vibe/json package contract (index.vpkg, #897).
+import ./lib/@vibe/json {
   Json::parse, Json::type_of, Json::string, Json::field,
   Json::length, Json::is_null, Json::keys
 }
