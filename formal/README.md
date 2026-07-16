@@ -52,6 +52,40 @@ pool, cancellation/finalizer behavior, bounded-channel linearizability, atomic
 cache publication, or correspondence with the selfhost compiler. Those require
 separate transition/conformance models and implementation differential tests.
 
+## Verified async execution properties
+
+The async model is a backend-independent labeled transition system for task and
+nursery lifecycle state. It proves that:
+
+- cancellation can become terminal only at dispatch, suspend, or blocked-wait
+  cancel points;
+- requesting cancellation is idempotent and cannot change a terminal task;
+- terminal task state and its repeated `join` result remain stable over every
+  accepted finite trace;
+- a child can spawn only into an open nursery;
+- nursery close requires every owned child to be terminal;
+- once a nursery is closed, its selected cause remains stable over every later
+  accepted finite trace;
+- the first observed child failure starts sibling cancellation without being
+  overwritten by later failures;
+- explicit cancellation of one child is compatible with a successful nursery
+  close after all children converge.
+
+Executable examples witness cancellation before first dispatch, completion
+winning before a later cancel point, fail-fast sibling cancellation, and
+successful close after explicit child cancellation.
+Negative examples show that the transition relation rejects spawn into a closed
+nursery and close while a live child remains.
+
+The model deliberately omits heaps, OS threads, backend queues, host waitables,
+channel buffers and linearization, infinite traces, fairness, and termination.
+It treats task terminalization as one logical transition; it therefore does not
+yet prove that the concrete #817 unwind implementation executes each registered
+finalizer exactly once. It also does not prove trace refinement for the current
+synchronous eager `Task` prototype or future cooperative, JSPI/Worker, WASI, and
+shared-everything backends. These are implementation bridge obligations, not
+properties established merely by `lake build`.
+
 ## Verified module-system properties
 
 - `index.vpkg` is the only package boundary and nearest-boundary ownership is

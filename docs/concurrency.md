@@ -172,7 +172,10 @@ terminal state は一度だけ確定し、以後変化しない。`join` は複�
 outcome を返す。`cancel` は idempotent で、terminal task には作用しない。
 
 cancel は cooperative である。`join`、blocking `send` / `recv`、`yield`、
-`sleep`、host await を cancel point とし、要求は次の cancel point で観測する。
+`sleep`、host await に加え、Ready task の dispatch を cancel point とする。したがって
+まだ body を開始していない child も dispatch 前に cancel できる。要求は次の cancel
+point で観測するが、Running task が次の cancel point より先に完了した場合は、その
+完了 outcome が確定してよい。
 cancel を観測しない CPU loop の prompt termination や fairness は v0.4.0 では
 保証しない。
 
@@ -187,6 +190,44 @@ cancel と non-local exit は stack を unwind し、登録済み finalizer を�
 実行しなければならない。したがって replay handler を generalized evidence
 passing + 明示 suspend IR へ置き換える #817 と、`dynamic-wind` 相当の finalization
 規則は、並行 runtime を compliant と呼ぶ前提である。
+
+## Lean lifecycle oracle
+
+task / nursery lifecycle の backend 非依存な部分は、次の Lean モデルを
+machine-checkable oracle とする。
+
+- `formal/VibeFormal/Async/State.lean`: task、nursery、cancel request の論理状態
+- `formal/VibeFormal/Async/Transition.lean`: scheduler event ごとの遷移関係
+- `formal/VibeFormal/Async/Trace.lean`: 許容された遷移だけからなる有限 trace
+- `formal/VibeFormal/Proofs/AsyncSafety.lean`: terminal outcome と join result の安定性
+- `formal/VibeFormal/Proofs/NurseryCorrect.lean`: spawn / close と nursery phase の安全性
+- `formal/VibeFormal/Proofs/AsyncExamples.lean`: 正例と、拒否される壊れた trace
+
+モデルでは task の未登録状態から `spawn` すると `Ready` になるため、上図の
+`Created` は独立状態として保持しない。`Suspended` は待機理由を持つ `Blocked` として
+表現する。task の terminal outcome は `Succeeded` / `Failed` / `Cancelled`、nursery
+は `Open` / `Cancelling` / `Closing` / `Closed` を持つ。
+
+遷移関係は次を固定する。
+
+1. `spawn` は nursery が `Open` で task id が未使用のときだけ許可する。
+2. cancel request は冪等であり、dispatch、suspend、blocked wait のいずれかでだけ
+   `Cancelled` として観測できる。
+3. 明示的に child 一個を cancel しても nursery の成功 cause は failure に変わらない。
+4. 複数 child の failure は scheduler が最初に観測したものを保持する。どれが最初かは
+   非決定的だが、`Closed` へ進む前に全 child が terminal でなければならない。
+5. terminal task と `Closed` nursery は後続 trace で変化しない。したがって複数回の
+   join は同じ outcome を観測する。
+
+実装は event trace をこの遷移関係へ射影できなければならない。cooperative、JSPI /
+Worker、WASI、shared-everything の差は、許容される次 event の選択として表し、公開
+lifecycle を別定義しない。
+
+この oracle は heap、thread、host waitable、channel queue、message linearization、
+fairness、無限 trace、finalizer stack をまだモデル化しない。特に terminal state の
+一回性は証明済みだが、具体的な unwind が各 finalizer をちょうど一度実行することは
+未証明であり、#817 の lowering と別の refinement proof / differential test が必要で
+ある。Channel semantics は後続の独立モデルでこの lifecycle oracle に接続する。
 
 ## Channel semantics
 

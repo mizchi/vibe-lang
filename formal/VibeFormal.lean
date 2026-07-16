@@ -6,3 +6,6 @@ import VibeFormal.Proofs.Examples
 import VibeFormal.Proofs.SchedulerCorrect
 import VibeFormal.Proofs.SchedulerExamples
 import VibeFormal.Proofs.ModuleExamples
+import VibeFormal.Proofs.AsyncSafety
+import VibeFormal.Proofs.NurseryCorrect
+import VibeFormal.Proofs.AsyncExamples
