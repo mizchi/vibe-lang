@@ -1,0 +1,64 @@
+//# Imports
+
+// Explicit-only naming controls discovery, not package scope. Once `_*.vibe`
+// or `*.draft.vibe` is reached by a relative edge, it inherits shared imports
+// from its nearest owner just like an explicitly-run test/bench companion.
+
+import ../entry/compiler/file_compile {
+  compile_file_fs_mode_rc
+}
+
+//# Functions
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = Array::slice([
+    0
+  ], 0, 0)
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+fn assert_wasm_magic(bytes: Bytes) -> Unit {
+  assert(Bytes::get(bytes, 0) == 0)
+  assert(Bytes::get(bytes, 1) == 97)
+  assert(Bytes::get(bytes, 2) == 115)
+  assert(Bytes::get(bytes, 3) == 109)
+}
+
+fn write_file(path: String, text: String) -> Unit with { Fs } {
+  Fs::write_bytes(path, string_to_bytes(text))
+}
+
+//# Tests
+
+test "vpkg shared import: explicitly reached private source inherits nearest package scope" {
+  let package_dir = "/tmp/vibe_compiler_vpkg_explicit_scope_private/pkg"
+  Fs::mkdir_p(package_dir)
+  let contract_path = String::concat(package_dir, "/index.vpkg")
+  let impl_path = String::concat(package_dir, "/impl.vibe")
+  let private_path = String::concat(package_dir, "/_helper.vibe")
+  write_file(contract_path, "import @vibe/random { seed }\n\nfn package_value() -> Int\n")
+  write_file(impl_path, "import ./_helper.vibe { private_value }\n\nexport fn package_value() -> Int { private_value() }\n")
+  write_file(private_path, "export fn private_value() -> Int { seed(41) }\n")
+  let bytes = compile_file_fs_mode_rc(contract_path, "package_value")
+  assert_wasm_magic(bytes)
+}
+
+test "vpkg shared import: explicitly reached descendant draft inherits nearest package scope" {
+  let package_dir = "/tmp/vibe_compiler_vpkg_explicit_scope_draft/pkg"
+  let draft_dir = String::concat(package_dir, "/sub")
+  Fs::mkdir_p(draft_dir)
+  let contract_path = String::concat(package_dir, "/index.vpkg")
+  let impl_path = String::concat(package_dir, "/impl.vibe")
+  let draft_path = String::concat(draft_dir, "/experiment.draft.vibe")
+  write_file(contract_path, "import @vibe/random { seed }\n\nfn package_value() -> Int\n")
+  write_file(impl_path, "import ./sub/experiment.draft.vibe { draft_value }\n\nexport fn package_value() -> Int { draft_value() }\n")
+  write_file(draft_path, "export fn draft_value() -> Int { seed(41) }\n")
+  let bytes = compile_file_fs_mode_rc(contract_path, "package_value")
+  assert_wasm_magic(bytes)
+}

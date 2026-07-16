@@ -1,6 +1,7 @@
 # vibe Module System v2 — 契約ファースト・パッケージシステム設計
 
-> Status: **implemented (A–G core, 2026-07-04)** (ADR-0063 / ADR-0064)。
+> Status: **implemented (A–G core, 2026-07-04; owner policy updated
+> 2026-07-16)** (ADR-0063 / ADR-0064 / ADR-0070)。
 > 全フェーズの中核が landing 済み: fn / module{} 削除 / .vibei 契約照合 +
 > facade + 境界強制 + opaque / content-addressed require + store + fmt pin
 > 挿入 + repin / where 契約の常時 runtime check / publish semver 機械検証 /
@@ -50,38 +51,39 @@ fn f(x~: Int, y~: Int) -> Int { x + y }        // labeled args
   同じ経路)。コンパイラ自身のソースで使うのは seed bump 後
   ([bootstrap.md](bootstrap.md) の手順に従う)。
 
-## 2. 境界規則 — index を持つディレクトリは境界
+## 2. 境界規則 — nearest `index.vpkg` owner
 
-> **index.vibe(i) を持つディレクトリは境界である。その外のファイルは、
-> その中身を index 経由でしか import できない。**
+> **`index.vpkg` だけが boundary である。各 source は最寄りの祖先
+> `index.vpkg` に所有される。**
 
-- この規則は**再帰的**に適用される。パッケージルートは「一番外側の境界」
-  にすぎず、パッケージ内サブディレクトリ (`syntax/`, `codegen/` 等) も
-  index を置けば同じ規則で境界になる。
-- 境界は**入方向のみ**制約する。境界内のファイルが外 (パッケージルートまで)
-  を相対 import するのは合法。
-- 相対 import は**パッケージルート (一番外側の index のあるディレクトリ) を
-  上に越えられない**。
-- 他パッケージの内部ファイルへの直接 import は禁止。外から見えるのは契約に
-  書かれた名前だけ。
-- 実装基盤: #716 の per-file export rename (`name_exp_<path>`) をパッケージ
-  hash 込み (`name_exp_<pkghash>_<path>`) に拡張する。
+- nested `index.vpkg` は別 package を開始する。
+- implementation import は importer と target の owner が同一の場合だけ許可。
+  親→子・子→親の両方向で、別 owner の内部 source へ直接入れない。
+- 別 owner から見える入口は相手の `index.vpkg` facade だけ。
+- `index.vibe` と legacy `index.vibei` は boundary ではない。ただし同じ
+  directory に複数の index spelling があれば hard error。
+- 暗黙 build root は `index.vpkg` 直下の通常 `*.vibe` のみ。subdirectory は
+  再帰 discovery せず、direct root の relative import/export で到達させる。
+- `_*.vibe` / `*.draft.vibe` は明示到達時だけ graph/hash に入り、最寄り owner の
+  `index.vpkg` shared import を継承する。
+- 正式な判定と実装対応は [module-system-oracle.md](module-system-oracle.md)。
 
 ## 3. 契約ファイル — index のトップレベル = 公開 API
 
 > **index ファイルのトップレベルに並んでいるものが、その境界の公開 API の
 > すべてである。**
 
-拡張子が変えるのは「body がインラインか、外部照合か」だけ:
+現在の contract/boundary は `index.vpkg`。旧 spelling は compatibility lane:
 
 | ファイル | 意味 |
 |---|---|
-| `index.vibei` | 宣言は **body なし**。実装は同ディレクトリの `.vibe` に書き、契約に照合される |
-| `index.vibe` | 宣言が **body を持つ** (実装込み)。小さいパッケージ・スクリプト向け |
+| `index.vpkg` | bodyless 公開契約、依存宣言、shared import、package boundary |
+| `index.vibei` | legacy bodyless 契約。boundary ではない |
+| `index.vibe` | legacy 実装込み index。boundary ではない |
 
 決め打ちの規則 (曖昧さ排除):
 
-1. 同一ディレクトリに `index.vibe` と `index.vibei` が両方あったら**ハードエラー**。
+1. 同一ディレクトリに複数の index spelling があれば**ハードエラー**。
 2. **モード混在禁止**: `index.vibe` 内の body なし `fn` はエラー、
    `index.vibei` 内の body 付き `fn` はエラー。
 3. `index.vibe` モードの private ヘルパは兄弟ファイルに書いて import する。
@@ -127,8 +129,9 @@ export ./syntax as syntax
 
 ## 5. コンテンツアドレス — バージョン = ハッシュ、semver は表示名
 
-- **package_hash**: パッケージディレクトリ (正規化ソース + 自分の `require`
-  行) 全体の merkle tree hash。`#ab12cd…` (短縮 prefix 可)。パッケージの
+- **package_hash**: `index.vpkg`、直下 production roots、そこから relative
+  edge で到達する同一 owner source、および自分の `require` 行の merkle tree
+  hash。`_*.vibe` / `*.draft.vibe` も明示到達時は含む。`#ab12cd…` (短縮 prefix 可)。パッケージの
   唯一の識別子であり、pin・store キー・依存解決のすべてがこれを使う。
 - **contract_hash**: index の宣言部のみ (require pin を除く) の hash。
   API 互換シグナル・依存側再チェックのキャッシュキー・publish 時 semver

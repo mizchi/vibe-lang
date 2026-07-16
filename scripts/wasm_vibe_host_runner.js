@@ -2011,6 +2011,12 @@ async function main() {
       },
       fs_stat_token(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
+        // Module/package loading reserves -1 as a stable non-regular-source
+        // witness. lstat is required here: stat would follow the link and make
+        // a symlink indistinguishable from its target.
+        if (fs.lstatSync(filePath).isSymbolicLink()) {
+          return encodeHostInt(-1n);
+        }
         const { lower, upper } = buildFsMetadataHashParts(filePath);
         return encodeHostInt(BigInt.asUintN(61, lower ^ upper));
       },

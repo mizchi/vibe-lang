@@ -730,9 +730,14 @@ let main = () -> Int { run() }
 | File | Purpose |
 |------|---------|
 | `*.vibe` | Source |
-| `index.vibe` | Package entry (exports `version`) |
-| `index.lock` | Dependency lock |
-| `*_test.vibe` | Tests |
+| `index.vpkg` | Package boundary, bodyless public contract, dependency/shared-import declarations |
+| `index.vibe` / `index.vibei` | Legacy index spellings; not package boundaries |
+| `*_test.vibe` | Explicitly-run test companion; excluded from normal build/hash and cannot be imported |
+| `*_bench.vibe` | Explicitly-run benchmark companion; same exclusion rules as tests |
+| `_*.vibe` / `*.draft.vibe` | Explicit-only source; excluded from discovery, but inherits nearest package shared imports and is hashed when reached by relative import |
+
+`index.vpkg` と同じ directory の通常 `*.vibe` だけが暗黙 build root。
+subdirectory source は direct root からの relative import/export で到達させる。
 
 ---
 

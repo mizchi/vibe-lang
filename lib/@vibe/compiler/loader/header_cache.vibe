@@ -13,7 +13,7 @@ import ../core/index.vibe {
 }
 
 import ../module_graph_path.vibe {
-  dir_of_path, is_contract_ext, resolve_import_path_candidates
+  dir_of_path, ensure_regular_source_fs, is_contract_ext, resolve_import_path_candidates
 }
 
 import ../runtime/eval_loader {
@@ -157,89 +157,40 @@ fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String, self_pat
   deps
 }
 
-// #847: is `path` a directory? NOTE: not `Fs::is_dir` — the fixed seed
-// compiler that bootstraps the compiler build predates that builtin
-// (bootstrap bump required first, same constraint as
-// `push_context_packages_under` above). `Fs::readdir` on a non-directory
-// TRAPS the whole wasm instance (a host-import error surfaces as an
-// unrecoverable trap, not a catchable vibe `Error`/`throw` — there is no
-// `handle {} with Error {}` escape hatch for it), so a real directory test
-// is required before ever calling it speculatively — a plain "does this
-// name end in .vibe" convention check is not enough: an ordinary sibling
-// file with no ".vibe" suffix (README.md, .gitkeep, LICENSE, ...) would be
-// misclassified as a directory and crash the whole discovery pass. Appending
-// "/." and testing with the already-seed-safe `Fs::exists` is a safe,
-// trap-free directory probe: POSIX stat on "<file>/." fails (ENOTDIR) for a
-// plain file, so `Fs::exists` (which swallows stat errors as `false`, never
-// traps) reports `false`; it reports `true` only for an actual directory.
-fn fs_is_directory(path: String) -> Bool with { Fs } {
-  Fs::exists(String::concat(path, "/."))
+// Direct production siblings of a contract package, as raw import spellings
+// (`./<name>`). Subdirectories are never scanned implicitly: their sources
+// enter the graph only through an explicit relative import from a direct root.
+// Fs::readdir is byte-sorted, so facade, hash, and dependency order remain
+// deterministic.
+fn directory_entry_path(dir: String, name: String) -> String {
+  if dir == "" {
+    name
+  } else if dir == "/" {
+    String::concat("/", name)
+  } else {
+    String::concat(dir, String::concat("/", name))
+  }
 }
 
-// #847: recursive half of `contract_sibling_impl_raws` — `sub_dir` is the
-// physical directory currently being scanned, `prefix` its raw-import-
-// spelling equivalent ("./" or "./nested/"). A readdir entry ending in
-// ".vibe" (other than "index.vibe"/"index.vibei" themselves, which cannot
-// be a sibling impl file) is a file; anything else that IS a directory
-// (`fs_is_directory`) is either a nested boundary or walked into; anything
-// else again (a non-.vibe FILE such as README.md) is silently ignored, same
-// as the original non-recursive top-level-only scan always did.
-fn contract_sibling_impl_raws_rec(sub_dir: String, prefix: String) -> Array[String] with { Error, Fs } {
+export fn contract_sibling_impl_raws(dir: String) -> Array[String] with { Error, Fs } {
   let out = Array::slice([
     ""
   ], 0, 0)
-  let names = Fs::readdir(sub_dir)
+  let scan_dir = if dir == "" { "." } else { dir }
+  let names = Fs::readdir(scan_dir)
   let mut i = 0
   while i < Array::length(names) {
     let name = Array::get(names, i)
-    if name == "index.vibei" || name == "index.vibe" || name == "index.vpkg" {
-      ()
-    } else if String::ends_with(name, ".vibe") && !String::ends_with(name, "_test.vibe") && !String::ends_with(name, "_bench.vibe") && !String::ends_with(name, ".draft.vibe") && !String::starts_with(name, "_") {
-      // #897/#855 (ADR-0070 Phase 1): test files, bench files, draft/scratch
-      // files, and `_`-prefixed files are never implicit implementation
-      // members -- pre-existing gap (header_cache.vibe's facade-reparse
-      // workaround comment above already documented `_test.vibe` leaking in
-      // here and routed around it rather than fixing discovery itself).
-      // `_bench.vibe` mirrors `_test.vibe`: scripts/install.sh,
-      // scripts/vibe_pkg.sh, and scripts/vibe_core_install.sh already treat
-      // `*_test.vibe`/`*_bench.vibe` as the same excluded pair when
-      // materializing a package (#912) -- this filter had only mirrored half
-      // of that pairing.
-      Array::push(out, String::concat(prefix, name))
+    if name != "index.vibei" && name != "index.vibe" && name != "index.vpkg" && String::ends_with(name, ".vibe") && !String::ends_with(name, "_test.vibe") && !String::ends_with(name, "_bench.vibe") && !String::ends_with(name, ".draft.vibe") && !String::starts_with(name, "_") {
+      let full = directory_entry_path(dir, name)
+      ensure_regular_source_fs(full)
+      Array::push(out, String::concat("./", name))
     } else {
-      let full = String::concat(sub_dir, String::concat("/", name))
-      if fs_is_directory(full) {
-        if Fs::exists(String::concat(full, "/index.vpkg")) || Fs::exists(String::concat(full, "/index.vibei")) || Fs::exists(String::concat(full, "/index.vibe")) {
-          Array::push(out, String::concat(prefix, name))
-        } else {
-          let nested = contract_sibling_impl_raws_rec(full, String::concat(prefix, String::concat(name, "/")))
-          let mut ni = 0
-          while ni < Array::length(nested) {
-            Array::push(out, Array::get(nested, ni))
-            ni = ni + 1
-          }
-        }
-      } else {
-        ()
-      }
+      ()
     }
     i = i + 1
   }
   out
-}
-
-// #730/#847: sibling implementation files of a contract package, as raw
-// import spellings ("./<name>", recursively "./<sub>/<name>" for nested
-// non-boundary subdirectories, or "./<sub>" for a nested subdirectory that is
-// itself an index.vibe(i) boundary). Used when an index.vibei declares NO
-// implementation imports: explicit `import ./impl.vibe {}` lines win when
-// present (their spelling is part of the package hash), discovery applies
-// otherwise. Fs::readdir returns names byte-sorted by the host, so facade
-// order, hash order, and dep order are deterministic. index.vibe cannot
-// appear among the top-level siblings — ingestion rejects index.vibe +
-// index.vibei coexistence first.
-export fn contract_sibling_impl_raws(dir: String) -> Array[String] with { Error, Fs } {
-  contract_sibling_impl_raws_rec(dir, "./")
 }
 
 // #897/#855 (ADR-0070 Phase 1): a .vpkg contract gets implicit membership

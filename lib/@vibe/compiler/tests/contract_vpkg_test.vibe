@@ -12,7 +12,11 @@
 // but with an index.vpkg instead of an index.vibei).
 
 import ../loader {
-  collect_all_sources_fs
+  collect_all_sources_fs, contract_package_hashes_fs
+}
+
+import ../loader/header_cache.vibe {
+  contract_sibling_impl_raws
 }
 
 import ../cache/persistent_cache.vibe {
@@ -44,6 +48,33 @@ fn remove_file_if_exists(path: String) -> Unit with { Fs } {
   } else {
     ()
   }
+}
+
+fn contains_string(items: Array[String], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn contains_source_path(sources: Array[(String, String)], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(sources) && !found {
+    let (path, _) = Array::get(sources, i)
+    if path == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
 }
 
 // Clears every persistent-cache lane `collect_all_sources_fs` may have
@@ -92,4 +123,260 @@ test "collect_all_sources_fs: index.vibei and index.vpkg coexisting is a hard er
       String::contains(msg, "a boundary has exactly one index") && String::contains(msg, "index.vibei") && String::contains(msg, "index.vpkg")
   }
   assert(failed_via_vpkg)
+}
+
+test "collect_all_sources_fs: nested package cannot import parent internals" {
+  let parent_dir = "/tmp/vibe_compiler_nested_owner_boundary/parent"
+  let nested_dir = String::concat(parent_dir, "/nested")
+  Fs::mkdir_p(nested_dir)
+  let parent_contract = String::concat(parent_dir, "/index.vpkg")
+  let parent_impl = String::concat(parent_dir, "/parent_impl.vibe")
+  let nested_contract = String::concat(nested_dir, "/index.vpkg")
+  let nested_impl = String::concat(nested_dir, "/nested_impl.vibe")
+  clear_caches_for(nested_contract)
+  clear_caches_for(nested_impl)
+  Fs::write_bytes(parent_contract, string_to_bytes("fn parent_value() -> Int\n"))
+  Fs::write_bytes(parent_impl, string_to_bytes("export fn parent_value() -> Int { 41 }\n"))
+  Fs::write_bytes(nested_contract, string_to_bytes("fn nested_value() -> Int\n"))
+  Fs::write_bytes(nested_impl, string_to_bytes("import ../parent_impl.vibe { parent_value }\n\nexport fn nested_value() -> Int { parent_value() + 1 }\n"))
+  let failed = handle {
+    let _ = collect_all_sources_fs(nested_contract)
+    false
+  } with Error {
+    Throw(msg) => String::contains(msg, "package boundary") && String::contains(msg, parent_dir)
+  }
+  assert(failed)
+}
+
+test "collect_all_sources_fs: parent package cannot import nested package internals" {
+  let parent_dir = "/tmp/vibe_compiler_parent_to_nested_owner_boundary/parent"
+  let nested_dir = String::concat(parent_dir, "/nested")
+  Fs::mkdir_p(nested_dir)
+  let parent_contract = String::concat(parent_dir, "/index.vpkg")
+  let parent_impl = String::concat(parent_dir, "/parent_impl.vibe")
+  let nested_contract = String::concat(nested_dir, "/index.vpkg")
+  let nested_impl = String::concat(nested_dir, "/nested_impl.vibe")
+  clear_caches_for(parent_contract)
+  clear_caches_for(parent_impl)
+  Fs::write_bytes(parent_contract, string_to_bytes("fn parent_value() -> Int\n"))
+  Fs::write_bytes(parent_impl, string_to_bytes("import ./nested/nested_impl.vibe { nested_value }\n\nexport fn parent_value() -> Int { nested_value() + 1 }\n"))
+  Fs::write_bytes(nested_contract, string_to_bytes("fn nested_value() -> Int\n"))
+  Fs::write_bytes(nested_impl, string_to_bytes("export fn nested_value() -> Int { 41 }\n"))
+  let failed = handle {
+    let _ = collect_all_sources_fs(parent_contract)
+    false
+  } with Error {
+    Throw(msg) => String::contains(msg, "package boundary") && String::contains(msg, nested_dir)
+  }
+  assert(failed)
+}
+
+test "contract_sibling_impl_raws: implicit roots are direct production siblings only" {
+  let package_dir = "/tmp/vibe_compiler_direct_sibling_roots/pkg"
+  let nested_dir = String::concat(package_dir, "/sub")
+  Fs::mkdir_p(nested_dir)
+  Fs::write_bytes(String::concat(package_dir, "/direct.vibe"), string_to_bytes("export fn direct() -> Int { 1 }\n"))
+  Fs::write_bytes(String::concat(nested_dir, "/nested.vibe"), string_to_bytes("export fn nested() -> Int { 2 }\n"))
+  let roots = contract_sibling_impl_raws(package_dir)
+  assert(contains_string(roots, "./direct.vibe"))
+  assert(!contains_string(roots, "./sub/nested.vibe"))
+}
+
+test "collect_all_sources_fs: index.vpkg and direct index.vibe entry is a hard error" {
+  let package_dir = "/tmp/vibe_compiler_vpkg_legacy_index_conflict/pkg"
+  Fs::mkdir_p(package_dir)
+  let contract_path = String::concat(package_dir, "/index.vpkg")
+  let legacy_path = String::concat(package_dir, "/index.vibe")
+  clear_caches_for(contract_path)
+  clear_caches_for(legacy_path)
+  Fs::write_bytes(contract_path, string_to_bytes("fn contract_value() -> Int\n"))
+  Fs::write_bytes(legacy_path, string_to_bytes("export fn legacy_value() -> Int { 1 }\n"))
+  let failed = handle {
+    let _ = collect_all_sources_fs(legacy_path)
+    false
+  } with Error {
+    Throw(msg) => String::contains(msg, "index.vpkg") && String::contains(msg, "index.vibe")
+  }
+  assert(failed)
+}
+
+test "collect_all_sources_fs: warm cache cannot hide a new index spelling conflict" {
+  let package_dir = "/tmp/vibe_compiler_vpkg_warm_conflict/pkg"
+  Fs::mkdir_p(package_dir)
+  let contract_path = String::concat(package_dir, "/index.vpkg")
+  let impl_path = String::concat(package_dir, "/impl.vibe")
+  let legacy_path = String::concat(package_dir, "/index.vibe")
+  clear_caches_for(contract_path)
+  remove_file_if_exists(legacy_path)
+  Fs::write_bytes(contract_path, string_to_bytes("fn package_value() -> Int\n"))
+  Fs::write_bytes(impl_path, string_to_bytes("export fn package_value() -> Int { 42 }\n"))
+  let _ = collect_all_sources_fs(contract_path)
+  Fs::write_bytes(legacy_path, string_to_bytes("export fn legacy_value() -> Int { 1 }\n"))
+  let failed = handle {
+    let _ = collect_all_sources_fs(contract_path)
+    false
+  } with Error {
+    Throw(msg) => String::contains(msg, "index.vpkg") && String::contains(msg, "index.vibe")
+  }
+  assert(failed)
+}
+
+test "collect_all_sources_fs: warm cache observes a newly-added nested boundary" {
+  let package_dir = "/tmp/vibe_compiler_vpkg_warm_nested_boundary/pkg"
+  let nested_dir = String::concat(package_dir, "/sub")
+  Fs::mkdir_p(nested_dir)
+  let contract_path = String::concat(package_dir, "/index.vpkg")
+  let impl_path = String::concat(package_dir, "/impl.vibe")
+  let helper_path = String::concat(nested_dir, "/helper.vibe")
+  let nested_contract = String::concat(nested_dir, "/index.vpkg")
+  clear_caches_for(contract_path)
+  remove_file_if_exists(nested_contract)
+  Fs::write_bytes(contract_path, string_to_bytes("fn package_value() -> Int\n"))
+  Fs::write_bytes(impl_path, string_to_bytes("import ./sub/helper.vibe { helper_value }\n\nexport fn package_value() -> Int { helper_value() }\n"))
+  Fs::write_bytes(helper_path, string_to_bytes("export fn helper_value() -> Int { 42 }\n"))
+  let _ = collect_all_sources_fs(contract_path)
+  Fs::write_bytes(nested_contract, string_to_bytes("fn nested_value() -> Int\n"))
+  let failed = handle {
+    let _ = collect_all_sources_fs(contract_path)
+    false
+  } with Error {
+    Throw(msg) => String::contains(msg, "package boundary") && String::contains(msg, nested_dir)
+  }
+  assert(failed)
+}
+
+test "collect_all_sources_fs: warm cache observes a new direct production root" {
+  let package_dir = "/tmp/vibe_compiler_vpkg_warm_direct_root/pkg"
+  Fs::mkdir_p(package_dir)
+  let contract_path = String::concat(package_dir, "/index.vpkg")
+  let impl_path = String::concat(package_dir, "/impl.vibe")
+  let added_path = String::concat(package_dir, "/added.vibe")
+  clear_caches_for(contract_path)
+  remove_file_if_exists(added_path)
+  Fs::write_bytes(contract_path, string_to_bytes("fn package_value() -> Int\n"))
+  Fs::write_bytes(impl_path, string_to_bytes("export fn package_value() -> Int { 42 }\n"))
+  let first = collect_all_sources_fs(contract_path)
+  assert(!contains_source_path(first, added_path))
+  Fs::write_bytes(added_path, string_to_bytes("// newly discovered direct root\n"))
+  let second = collect_all_sources_fs(contract_path)
+  assert(contains_source_path(second, added_path))
+}
+
+test "collect_all_sources_fs: symlink implementation source is rejected" {
+  let package_dir = "/tmp/vibe_compiler_vpkg_symlink_source/pkg"
+  Fs::mkdir_p(package_dir)
+  let contract_path = String::concat(package_dir, "/index.vpkg")
+  let target_path = String::concat(package_dir, "/impl_source.txt")
+  let linked_path = String::concat(package_dir, "/impl.vibe")
+  clear_caches_for(contract_path)
+  Fs::write_bytes(contract_path, string_to_bytes("fn linked_value() -> Int\n"))
+  Fs::write_bytes(target_path, string_to_bytes("export fn linked_value() -> Int { 42 }\n"))
+  let _ = sh("ln -sf impl_source.txt /tmp/vibe_compiler_vpkg_symlink_source/pkg/impl.vibe")
+  let failed = handle {
+    let _ = collect_all_sources_fs(contract_path)
+    false
+  } with Error {
+    Throw(msg) => String::contains(msg, "symlink") && String::contains(msg, linked_path)
+  }
+  assert(failed)
+}
+
+test "collect_all_sources_fs: symlink contract entry is rejected" {
+  let package_dir = "/tmp/vibe_compiler_vpkg_symlink_contract/pkg"
+  Fs::mkdir_p(package_dir)
+  let target_path = String::concat(package_dir, "/contract_source.txt")
+  let contract_path = String::concat(package_dir, "/index.vpkg")
+  clear_caches_for(contract_path)
+  Fs::write_bytes(target_path, string_to_bytes("fn linked_value() -> Int\n"))
+  let _ = sh("ln -sf contract_source.txt /tmp/vibe_compiler_vpkg_symlink_contract/pkg/index.vpkg")
+  let failed = handle {
+    let _ = collect_all_sources_fs(contract_path)
+    false
+  } with Error {
+    Throw(msg) => String::contains(msg, "symlink") && String::contains(msg, contract_path)
+  }
+  assert(failed)
+}
+
+test "collect_all_sources_fs: explicit symlink import target is rejected" {
+  let package_dir = "/tmp/vibe_compiler_vpkg_symlink_import/pkg"
+  let nested_dir = String::concat(package_dir, "/sub")
+  Fs::mkdir_p(nested_dir)
+  let contract_path = String::concat(package_dir, "/index.vpkg")
+  let impl_path = String::concat(package_dir, "/impl.vibe")
+  let target_path = String::concat(nested_dir, "/helper_source.txt")
+  let linked_path = String::concat(nested_dir, "/helper.vibe")
+  clear_caches_for(contract_path)
+  Fs::write_bytes(contract_path, string_to_bytes("fn linked_value() -> Int\n"))
+  Fs::write_bytes(impl_path, string_to_bytes("import ./sub/helper.vibe { helper_value }\n\nexport fn linked_value() -> Int { helper_value() }\n"))
+  Fs::write_bytes(target_path, string_to_bytes("export fn helper_value() -> Int { 42 }\n"))
+  let _ = sh("ln -sf helper_source.txt /tmp/vibe_compiler_vpkg_symlink_import/pkg/sub/helper.vibe")
+  let failed = handle {
+    let _ = collect_all_sources_fs(contract_path)
+    false
+  } with Error {
+    Throw(msg) => String::contains(msg, "symlink") && String::contains(msg, linked_path)
+  }
+  assert(failed)
+}
+
+test "collect_all_sources_fs: production cannot import a test companion" {
+  let package_dir = "/tmp/vibe_compiler_vpkg_companion_target/pkg"
+  Fs::mkdir_p(package_dir)
+  let contract_path = String::concat(package_dir, "/index.vpkg")
+  let impl_path = String::concat(package_dir, "/impl.vibe")
+  let test_path = String::concat(package_dir, "/impl_test.vibe")
+  clear_caches_for(contract_path)
+  clear_caches_for(impl_path)
+  clear_caches_for(test_path)
+  Fs::write_bytes(contract_path, string_to_bytes("fn public_value() -> Int\n"))
+  Fs::write_bytes(impl_path, string_to_bytes("import ./impl_test.vibe { test_value }\n\nexport fn public_value() -> Int { test_value() }\n"))
+  Fs::write_bytes(test_path, string_to_bytes("export fn test_value() -> Int { 42 }\n"))
+  let failed = handle {
+    let _ = collect_all_sources_fs(contract_path)
+    false
+  } with Error {
+    Throw(msg) => String::contains(msg, "companion") && String::contains(msg, test_path)
+  }
+  assert(failed)
+}
+
+test "collect_all_sources_fs: explicit private and draft dependencies are same-owner sources" {
+  let package_dir = "/tmp/vibe_compiler_vpkg_explicit_only/pkg"
+  Fs::mkdir_p(package_dir)
+  let contract_path = String::concat(package_dir, "/index.vpkg")
+  let impl_path = String::concat(package_dir, "/impl.vibe")
+  let private_path = String::concat(package_dir, "/_helper.vibe")
+  let draft_path = String::concat(package_dir, "/experiment.draft.vibe")
+  clear_caches_for(contract_path)
+  clear_caches_for(impl_path)
+  clear_caches_for(private_path)
+  clear_caches_for(draft_path)
+  Fs::write_bytes(contract_path, string_to_bytes("fn public_value() -> Int\n"))
+  Fs::write_bytes(impl_path, string_to_bytes("import ./_helper.vibe { private_value }\nimport ./experiment.draft.vibe { draft_value }\n\nexport fn public_value() -> Int { private_value() + draft_value() }\n"))
+  Fs::write_bytes(private_path, string_to_bytes("export fn private_value() -> Int { 20 }\n"))
+  Fs::write_bytes(draft_path, string_to_bytes("export fn draft_value() -> Int { 22 }\n"))
+  let sources = collect_all_sources_fs(contract_path)
+  assert(contains_source_path(sources, private_path))
+  assert(contains_source_path(sources, draft_path))
+}
+
+test "contract_package_hashes_fs: reachable explicit-only source content is covered" {
+  let package_dir = "/tmp/vibe_compiler_vpkg_explicit_only_hash/pkg"
+  Fs::mkdir_p(package_dir)
+  let contract_path = String::concat(package_dir, "/index.vpkg")
+  let impl_path = String::concat(package_dir, "/impl.vibe")
+  let private_path = String::concat(package_dir, "/_helper.vibe")
+  let draft_path = String::concat(package_dir, "/experiment.draft.vibe")
+  Fs::write_bytes(contract_path, string_to_bytes("fn public_value() -> Int\n"))
+  Fs::write_bytes(impl_path, string_to_bytes("import ./_helper.vibe { private_value }\nimport ./experiment.draft.vibe { draft_value }\n\nexport fn public_value() -> Int { private_value() + draft_value() }\n"))
+  Fs::write_bytes(private_path, string_to_bytes("export fn private_value() -> Int { 20 }\n"))
+  Fs::write_bytes(draft_path, string_to_bytes("export fn draft_value() -> Int { 22 }\n"))
+  let (hash1, _) = contract_package_hashes_fs(contract_path)
+  Fs::write_bytes(private_path, string_to_bytes("export fn private_value() -> Int { 21 }\n"))
+  let (hash2, _) = contract_package_hashes_fs(contract_path)
+  Fs::write_bytes(draft_path, string_to_bytes("export fn draft_value() -> Int { 23 }\n"))
+  let (hash3, _) = contract_package_hashes_fs(contract_path)
+  assert(hash1 != hash2)
+  assert(hash2 != hash3)
 }

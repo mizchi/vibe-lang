@@ -1,10 +1,12 @@
 # Vibe formal model
 
-This directory contains small Lean 4 models of Vibe's effect system and
-parallel compiler scheduler. Their sources of truth are
+This directory contains small Lean 4 models of Vibe's effect system,
+parallel compiler scheduler, and module system. Their sources of truth are
 [ADR-0071](../docs/effectset.md) and
-[ADR-0068](../docs/concurrency.md), not the current string-based checker or
-synchronous eager `Task` implementation.
+[ADR-0068](../docs/concurrency.md), plus
+[ADR-0070](../docs/module-system-oracle.md). The current string-based effect
+checker and synchronous eager `Task` implementation are not sources of truth.
+The module model is additionally locked to selfhost loader refinement tests.
 
 ## Verified in Phase 1
 
@@ -50,11 +52,28 @@ pool, cancellation/finalizer behavior, bounded-channel linearizability, atomic
 cache publication, or correspondence with the selfhost compiler. Those require
 separate transition/conformance models and implementation differential tests.
 
+## Verified module-system properties
+
+- `index.vpkg` is the only package boundary and nearest-boundary ownership is
+  deterministic;
+- nested packages cannot directly import parent implementations, nor can a
+  parent bypass a nested package facade;
+- implicit build roots are direct production siblings only;
+- test/bench companions are not roots, hash inputs, or import targets, while an
+  explicitly-run companion inherits its nearest package scope;
+- private/draft sources are explicit-only, inherit their nearest package scope,
+  and become hash inputs when reached;
+- conflicting index spellings and symlink sources make a workspace invalid.
+
+The model classifies an explicit-only source from a supplied reachability
+witness. It does not yet prove the filesystem loader's recursive graph walk;
+`contract_vpkg_test.vibe` is the current refinement guard for that bridge.
+
 ## Epistemic status
 
 `lake build --wfail` proves the theorems about these Lean models and rejects
-unfinished `sorry` declarations. It does **not** yet prove that the selfhost
-compiler implements either model. Effect rows need an implementation bridge
+unfinished `sorry` declarations. It does **not** yet prove every selfhost
+implementation transition. Effect rows need an implementation bridge
 such as a JSON oracle plus differential tests, followed by a simulation proof
 for the evidence-passing lowering planned in issue #817. Parallel compilation
 needs a worker-count/order differential oracle for module results, diagnostics,

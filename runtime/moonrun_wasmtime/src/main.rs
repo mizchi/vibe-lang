@@ -1598,6 +1598,12 @@ fn report_alloc_sites(
 // the same kernel timestamp tick with the same size would otherwise keep the
 // token identical (see buildFsMetadataHashParts in wasm_vibe_host_runner.js).
 fn vibe_stat_token(path: &str) -> i64 {
+    if fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return -1;
+    }
     match fs::metadata(path) {
         Ok(meta) => {
             let size = meta.len();
