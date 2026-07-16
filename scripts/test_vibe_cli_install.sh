@@ -72,6 +72,15 @@ check "vibe check good exit" "0" "$rc"
 "$VIBE" check "$proj/bad.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe check bad exit" "1" "$rc"
 
+# normalize (#882): --check flags an unnormalized file, in-place write fixes it
+printf 'fn nrm_helper(x: Int) -> Int {\n  x + 1\n}\n\nexport fn nrm_entry(n: Int) -> Int {\n  nrm_helper(n)\n}\n' > "$proj/nrm.vibe"
+"$VIBE" normalize --check "$proj/nrm.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
+check "vibe normalize --check flags unnormalized" "1" "$rc"
+"$VIBE" normalize "$proj/nrm.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
+check "vibe normalize write exit" "0" "$rc"
+"$VIBE" normalize --check "$proj/nrm.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
+check "vibe normalize --check clean after write" "0" "$rc"
+
 # diagnostic: the seed predates the .diag sidecar, so only assert the launcher
 # reports failure cleanly. A freshly built compiler additionally yields a real
 # message; assert that when the sidecar feature is present.
