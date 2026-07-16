@@ -139,27 +139,56 @@ vibe check <file...>
 vibe check --profile-tsv timing.tsv <file...>
 ```
 
-### shell (Interactive Shell)
+### shell (Compiled REPL) (#805)
 
-Interactive TUI shell for evaluating vibe expressions.
-
-```
-vibe shell
-vibe shell --tui           # TUI mode
-vibe shell --ai            # AI-assisted mode
-vibe shell --no-posix      # disable shell/POSIX commands
-```
-
-### shell-stdin
-
-Line-oriented shell reading from stdin. Suitable for piping input or non-interactive use.
+Minimal REPL implemented in the launcher. Per ADR-0034 there is **no
+interpreter**: the session is a buffer of top-level declarations kept in a
+temp dir, and every input line triggers a full recompile of that buffer
+through the same compile path as `vibe run` (accumulate + recompile).
 
 ```
-vibe shell-stdin
-vibe shell-stdin --no-prompt
-vibe shell-stdin --tty
-vibe shell-stdin --no-tty
+vibe shell                    # interactive (prompt on a tty)
+vibe shell prelude.vibe       # preload a file's declarations into the session
+printf '...\n' | vibe shell   # stdin not a tty: no prompts, scriptable
 ```
+
+Line classification:
+
+- A line starting with a declaration keyword (`fn`/`let`/`struct`/`enum`/
+  `type`/`import`/`effect`/`impl`/`trait`/`export`/`suberror`/`test`) is
+  appended to the session buffer. The append is validated by recompiling the
+  whole buffer; on any diagnostic it is **rolled back**, so the buffer can
+  never become poisoned.
+- Any other line is treated as an expression: it is wrapped in a synthetic
+  entry (the ADR-0069 wrap-in-main story) that binds the value and prints it
+  via string interpolation, compiled against the buffer, and the produced
+  wasm is executed. If the printable wrapper does not compile (e.g. the
+  needed effect row differs), it is retried effects-only with a notice.
+- REPL commands: `:help`, `:quit`/`:q`, `:list` (print the buffer),
+  `:clear`, `:load <file>` (append a file to the buffer, validated with
+  rollback), `:type <expr>` (inferred type, backed by the `vibe type-at`
+  editor primitive).
+
+Caveats (by design of the compiled model):
+
+- **Earlier side effects re-run on every expression line.** Each evaluation
+  compiles and runs a fresh program, so the whole session replays. This is
+  the honest compiled-REPL reading of ADR-0069's memoized-thunk semantics:
+  until binding-level memoization lands in the compiler, "memoization" is
+  re-computation from source, not a persistent process image.
+- Declarations must fit on one line (no multi-line continuation yet).
+- Diagnostics point into the composed session program: for a rejected
+  declaration/`:load` the reported line matches the `:list` buffer;
+  expression errors reference the synthetic wrapper.
+- Values without printable interpolation (closures, enums/structs without
+  `Show`) may print an opaque runtime value.
+- The session lives in a temp dir with a `lib` symlink, so stdlib imports
+  (`import ./lib/@vibe/...`) resolve; other relative imports do not move
+  with the session.
+
+The pre-#594 MoonBit-host `shell` variants (`--tui`, `--ai`, `--no-posix`)
+and the separate `shell-stdin` command were retired; `vibe shell` reads
+stdin line-oriented whenever stdin is not a tty.
 
 ### fetch / update-lock
 
@@ -256,14 +285,6 @@ Materialize transitive closure payload from a source file.
 vibe emit-closure-payload <in> <out>
 ```
 
-### wasm-shell-stdin
-
-Line-oriented shell that compiles each expression to a separate WASM file. Used for testing the compilation pipeline.
-
-```
-vibe wasm-shell-stdin [--no-prompt] [-o dir]
-```
-
 ### session-http / session-json
 
 Opt-in persistent session workers that accelerate `run`/`check`/`test` by keeping compilation state in memory.
@@ -282,9 +303,11 @@ Opt-in persistent session workers that accelerate `run`/`check`/`test` by keepin
 
 | Mode | Interface | Use Case |
 |------|-----------|----------|
-| `shell` | Interactive TUI | Day-to-day interactive exploration |
-| `shell-stdin` | stdin/stdout line shell | Scripting, piping, CI, editor integration |
-| `wasm-shell-stdin` | stdin/stdout, writes `.wasm` per expression | Internal: testing the WASM compilation pipeline |
+| `shell` (tty) | prompt loop, compiled REPL | Interactive exploration |
+| `shell` (piped stdin) | line-oriented, no prompts | Scripting, CI, editor integration |
+
+(The retired MoonBit-host `shell-stdin` / `wasm-shell-stdin` modes were
+removed in #594; both are covered by piping into `vibe shell`.)
 
 ## Global Flags
 
