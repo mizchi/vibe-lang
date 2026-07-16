@@ -1,0 +1,77 @@
+version 0.0.1
+
+// @vibe/json — JSON tree (Json), Result-based parse/stringify primitives,
+// the #777 direct-value `Json::` convenience accessors, and the JSON-RPC 2.0
+// message codec (ADR-0070 Phase 3, #897).
+//
+// `Json`, `RpcId`, and `RpcMessage` are declared `opaque type` here even
+// though their variant layout is real public surface (every consumer
+// pattern-matches and constructs JNull/JObj/..., IdNum/..., Request/...),
+// deliberately deviating from the transparent-when-fields-are-public
+// convention (ShResult, PR #920): a transparent enum definition lives only
+// in the FACADE unit, and enum VARIANTS do not resolve across units the way
+// type names do — sibling impl files (json_parse.vibe etc.) construct
+// JNull/JObj without importing them, which broke with "unknown name: JNull"
+// when the definitions moved here. The opaque declaration keeps the
+// exported definitions in json_types.vibe / jsonrpc.vibe and rides the same
+// #716 re-export machinery the old hand-written index.vibe used, so variant
+// visibility for consumers is unchanged. (Structs are different: @vibe/
+// process's ShResult literal/field-access resolves fine from impl units,
+// hence shell's FileEntry and socket's TcpEndpoint/TcpConnection stay
+// transparent in their contracts.)
+//
+// json.vibe is a pure re-export impl unit (the pre-contract internal
+// facade); it keeps re-exporting the Json type + fn surface so in-package
+// units that import it directly keep working, and #847's check_contract
+// re-export sweep pins every one of its names to a declaration below.
+//
+// `version` was `export let version = "0.0.1"` directly in the old
+// index.vibe facade — a real importable binding, not just contract
+// metadata — preserved as an implementation-file value (json_types.vibe)
+// with a matching bodyless declaration here (Codex review precedent, PR
+// #914). No other value aliases existed in the old facade.
+
+import ./json_types.vibe {}
+import ./json_parse.vibe {}
+import ./json_stringify.vibe {}
+import ./json_convenience.vibe {}
+import ./jsonrpc.vibe {}
+import ./json.vibe {}
+
+let version: String
+
+opaque type Json
+opaque type RpcId
+opaque type RpcMessage
+
+// --- json_types
+fn json_as_arr(j: Json) -> Result[Array[Json], String]
+fn json_as_num(j: Json) -> Result[Double, String]
+fn json_as_obj(j: Json) -> Result[Map[String, Json], String]
+fn json_as_str(j: Json) -> Result[String, String]
+fn json_as_bool(j: Json) -> Result[Bool, String]
+fn Json::get(j: Json, key: String) -> Result[Json, String]
+
+// --- json_parse / json_stringify
+fn parse(s: String) -> Result[(Json, Int), String]
+fn stringify(j: Json) -> String
+
+// --- json_convenience (#777 direct-value accessors, #847 Phase B surface)
+fn Json::parse(s: String) -> Json
+fn Json::stringify(j: Json) -> String
+fn Json::field(j: Json, key: String) -> Json
+fn Json::index(j: Json, idx: Int) -> Json
+fn Json::number(j: Json) -> Double
+fn Json::string(j: Json) -> String
+fn Json::bool(j: Json) -> Bool
+fn Json::is_null(j: Json) -> Bool
+fn Json::length(j: Json) -> Int
+fn Json::keys(j: Json) -> Array[String]
+fn Json::type_of(j: Json) -> String
+
+// --- jsonrpc
+fn parse_message(input: String) -> Result[RpcMessage, String]
+fn stringify_error(id: RpcId, code: Int, message: String, data: Json) -> String
+fn stringify_request(method: String, params: Json, id: RpcId) -> String
+fn stringify_response(id: RpcId, result: Json) -> String
+fn stringify_notification(method: String, params: Json) -> String
