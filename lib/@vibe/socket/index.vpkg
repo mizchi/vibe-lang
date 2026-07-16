@@ -1,0 +1,79 @@
+version 0.0.1
+
+// @vibe/socket — TCP client surface: typed endpoint/connection wrappers
+// (socket.vibe) over the raw fd-level tcp_* fns (tcp.vibe), plus the
+// TcpSocket effect declaration (ADR-0070 Phase 3, #897).
+//
+// `TcpEndpoint`/`TcpConnection` are declared TRANSPARENT (defined verbatim,
+// not opaque): socket_test.vibe asserts `.host`/`.port`/`.fd` directly, so
+// the field layout is real public API surface. The definitions moved here
+// from socket.vibe, which references them by name only (types are global in
+// the merged program, same convention as ShResult in @vibe/process, PR
+// #920).
+//
+// `TcpSocket` is a transparent effect definition (#752's contract
+// convention for effect rows, mirroring @vibe/process's `Process`, PR
+// #920). socket_effect.vibe KEEPS its own `export effect TcpSocket` —
+// effect defs are invisible to check_contract's exported-but-undeclared
+// sweep, the duplicate definition is tolerated by the merge (same
+// empirical result as @vibe/fs's `Fs` in this PR), and the in-package
+// mock-handler test imports it from `./socket_effect.vibe` directly.
+// Declaring it here matters post-#729 boundary sealing: external mockers
+// can no longer reach socket_effect.vibe. Note the wrappers in
+// socket.vibe/tcp.vibe perform the checker-BUILTIN `Socket` effect
+// (checker/builtins_net.vibe), not TcpSocket — both surfaces are
+// pre-existing, preserved as-is.
+//
+// `version` was `export let version = "0.0.1"` directly in the old
+// index.vibe facade — a real importable binding, not just contract
+// metadata — preserved as an implementation-file value (socket.vibe) with a
+// matching bodyless declaration here (Codex review precedent, PR #914).
+// The old facade ALSO defined four `socket_*` "canonical collision-safe
+// alias" bindings (`export let socket_connect = connect`, ...) as plain
+// VALUE aliases — re-expressed as real thin wrapper functions in
+// socket.vibe (same pattern as @vibe/process's process_* aliases, PR #920).
+
+import ./socket.vibe {}
+import ./socket_effect.vibe {}
+import ./tcp.vibe {}
+
+let version: String
+
+struct TcpEndpoint {
+  host: String;
+  port: Int
+}
+
+struct TcpConnection {
+  fd: Int
+}
+
+effect TcpSocket {
+  Connect(String, Int) -> Int;
+  Read(Int, Int) -> String;
+  Write(Int, String) -> Unit;
+  Close(Int) -> Unit
+}
+
+// --- socket
+fn endpoint(host: String, port: Int) -> TcpEndpoint
+fn connection(fd: Int) -> TcpConnection
+fn connection_fd(conn: TcpConnection) -> Int
+fn connect(target: TcpEndpoint) -> TcpConnection with { Socket }
+fn read(conn: TcpConnection, max_bytes: Int) -> String with { Socket }
+fn write(conn: TcpConnection, data: String) -> Unit with { Socket }
+fn close(conn: TcpConnection) -> Unit with { Socket }
+
+// --- socket (canonical collision-safe aliases)
+fn socket_connect(target: TcpEndpoint) -> TcpConnection with { Socket }
+fn socket_read(conn: TcpConnection, max_bytes: Int) -> String with { Socket }
+fn socket_write(conn: TcpConnection, data: String) -> Unit with { Socket }
+fn socket_close(conn: TcpConnection) -> Unit with { Socket }
+
+// --- tcp (raw fd api; exported by tcp.vibe but never re-exported by the
+// old hand-written facade — conformance still requires every exported def
+// declared here, same as @vibe/path's ref.vibe helpers, PR #914)
+fn tcp_connect(host: String, port: Int) -> Int with { Socket }
+fn tcp_read(fd: Int, max_bytes: Int) -> String with { Socket }
+fn tcp_write(fd: Int, data: String) -> Unit with { Socket }
+fn tcp_close(fd: Int) -> Unit with { Socket }
