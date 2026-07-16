@@ -3421,7 +3421,15 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
               let mut tpi = 0
               while tpi < tplen {
                 if use_explicit {
-                  Array::push(fresh_targs, resolve_type_expr(Array::get(targs, tpi), defs))
+                  // Resolve through the generic environment (same as param /
+                  // return annotations, ~line 3252): an explicit argument
+                  // naming an ENCLOSING fn's type parameter (`fn make[T](x:
+                  // T) -> Box[T] { Box[T]::{ v: x } }`) must become the
+                  // env-bound CtVar, not a rigid CtNamed("T") — otherwise the
+                  // construction's type loses its link to the quantified
+                  // param and `make(42).v` fails as `expected Int, got T`
+                  // (Codex review, PR #926).
+                  Array::push(fresh_targs, resolve_tparams_in(resolve_type_expr(Array::get(targs, tpi), defs), env))
                 } else {
                   match fresh_var(c2) {
                     (tv, nc) => {
