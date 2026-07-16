@@ -9,3 +9,4 @@ import VibeFormal.Proofs.ModuleExamples
 import VibeFormal.Proofs.AsyncSafety
 import VibeFormal.Proofs.NurseryCorrect
 import VibeFormal.Proofs.AsyncExamples
+import VibeFormal.Proofs.ParallelExamples
