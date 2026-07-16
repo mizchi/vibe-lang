@@ -1,0 +1,91 @@
+version 0.0.1
+
+// @vibe/io — stdin/stdout/stderr line- and byte-level I/O primitives
+// (ADR-0070 Phase 3, #897). No opaque/transparent types: every declared name
+// is a pure/effectful fn over primitives (String/Int/Bool/Option/Array) or a
+// `() -> Option[String] with { Stdin }` closure value (byte_stream.vibe),
+// never a struct/enum, so there is no type surface to declare.
+//
+// `read`/`print`/`println`/`read_char`/`read_line`/`read_n`/`read_all`/
+// `write_char` carry the checker-builtin `Stdin`/`Stdout` effects (no import
+// needed — see checker/builtins_system.vibe); `eprint`/`eprintln`/
+// `ewrite_char` (#865) carry `Stderr` the same way.
+//
+// `version` was `export let version = "0.0.1"` directly in the old
+// index.vibe facade — a REAL importable binding, not just metadata — so it
+// is preserved verbatim as an implementation-file value (io.vibe) with a
+// matching bodyless declaration here (Codex review, PR #914).
+//
+// The old index.vibe facade ALSO defined its "canonical collision-safe
+// aliases" (io_read, io_print, ...) as plain `export let io_read = read`
+// VALUE aliases directly in the facade file — real importable bindings,
+// same trap as `version`. A `.vpkg` facade only allocates a declared name to
+// an EXPORTED FN/type def in a sibling impl file (contract/index.vibe's
+// `contract_facade_source`/`collect_impl_fn_defs` matches an `SLet` whose
+// value is an `EFn`; a bare alias has no fn body), so these are re-expressed
+// as real thin wrapper functions in io.vibe (same names, signatures, and
+// effect rows) rather than value aliases — behaviorally identical for every
+// caller (see io/index_import_test.vibe, which only ever calls them).
+//
+// stdin_stream_main.vibe's `print_stdin_sum`/`echo_stdin`/`split_stdin`/
+// `stream_echo`/`stream_total`/`for_await_echo` are `export fn` in the impl
+// file but were never re-exported by the old index.vibe facade — like
+// @vibe/path's `ref.vibe` (PR #914), conformance still requires every
+// exported def declared here regardless of what the old hand-written facade
+// happened to surface.
+//
+// example_io.vibe (Codex review, PR #915) held only non-exported `fn`s
+// (greet/echo_line/write_abc) backing its own side-effecting `test` blocks
+// (stdin reads, stdout prints) — it was never a real package member, just
+// misnamed. Under implicit membership, ANY plain `.vibe` sibling not
+// matching the `_test.vibe`/`_bench.vibe`/`.draft.vibe`/`_`-prefix exclusion
+// gets merged into every consumer of this package, which would compile (and
+// on a no-entry `vibe test` run, EXECUTE) those side-effecting example tests
+// as a hidden side effect of merely importing @vibe/io. Renamed to
+// example_io_test.vibe so it's excluded like any other test file.
+
+import ./io.vibe {}
+import ./byte_stream.vibe {}
+import ./stdin_stream_main.vibe {}
+
+let version: String
+
+// --- io
+fn read(max_bytes: Int) -> String with { Stdin }
+fn print(s: String) -> Unit with { Stdout }
+fn println(s: String) -> Unit with { Stdout }
+fn read_char() -> Int with { Stdin }
+fn read_line() -> String with { Stdin }
+fn read_n(n: Int) -> String with { Stdin }
+fn read_all() -> String with { Stdin }
+fn write_char(code: Int) -> Unit with { Stdout }
+fn eprint(s: String) -> Unit with { Stderr }
+fn eprintln(s: String) -> Unit with { Stderr }
+fn ewrite_char(code: Int) -> Unit with { Stderr }
+
+// --- io (canonical collision-safe aliases)
+fn io_read(max_bytes: Int) -> String with { Stdin }
+fn io_read_all() -> String with { Stdin }
+fn io_read_n(n: Int) -> String with { Stdin }
+fn io_print(s: String) -> Unit with { Stdout }
+fn io_println(s: String) -> Unit with { Stdout }
+fn io_read_char() -> Int with { Stdin }
+fn io_read_line() -> String with { Stdin }
+fn io_write_char(code: Int) -> Unit with { Stdout }
+fn io_eprint(s: String) -> Unit with { Stderr }
+fn io_eprintln(s: String) -> Unit with { Stderr }
+fn io_ewrite_char(code: Int) -> Unit with { Stderr }
+
+// --- byte_stream
+fn stdin_stream(chunk_size: Int) -> (() -> Option[String] with { Stdin })
+fn stream_byte_length(next: () -> Option[String] with { Stdin }) -> Int with { Stdin }
+fn stream_to_string(next: () -> Option[String] with { Stdin }) -> String with { Stdin }
+fn stream_collect(next: () -> Option[String] with { Stdin }) -> Array[String] with { Stdin }
+
+// --- stdin_stream_main
+fn print_stdin_sum() -> Unit with { Stdin, Stdout }
+fn echo_stdin() -> Unit with { Stdin, Stdout }
+fn split_stdin() -> Unit with { Stdin, Stdout }
+fn stream_echo() -> Unit with { Stdin, Stdout }
+fn stream_total() -> Unit with { Stdin, Stdout }
+fn for_await_echo() -> Unit with { Stdin, Stdout }
