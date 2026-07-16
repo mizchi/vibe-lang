@@ -299,11 +299,11 @@ echo "[compiler-gate] normalize regression ok"
 # 6b. contract package regression (#729): an index.vibei contract package must
 #     resolve via a bare directory import (conformance-check + facade desugar,
 #     end to end through the current stage2), and its internals must NOT be
-#     importable from outside the boundary (incoming enforcement, Phase C-3).
+#     importable from a different nearest-owner package (#897 / ADR-0070).
 echo "[compiler-gate] 6b contract package + boundary regression (#729)"
 cdir="_build/_gate_contract"
 rm -rf "$cdir"; mkdir -p "$cdir/pkg"
-printf 'import ./impl.vibe {}\nfn add(x: Int, y: Int) -> Int\n' > "$cdir/pkg/index.vibei"
+printf 'import ./impl.vibe {}\nfn add(x: Int, y: Int) -> Int\n' > "$cdir/pkg/index.vpkg"
 printf 'export fn add(x: Int, y: Int) -> Int { x + y }\n' > "$cdir/pkg/impl.vibe"
 printf 'import ./pkg { add }\nexport let _start: () -> Int = () -> { add(40, 2) }\n' > "$cdir/ok.vibe"
 # #749 canary: run this compile with a COLD persistent cache. The runner's

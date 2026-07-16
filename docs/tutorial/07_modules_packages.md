@@ -35,20 +35,25 @@ test "package import" {
 }
 ```
 
-## 契約 (index.vibei) と version
+## 契約 (`index.vpkg`) と version
 
-パッケージの境界は `index.vibei` — 公開 API を bodyless 宣言で列挙した
+パッケージの境界は `index.vpkg` — 公開 API を bodyless 宣言で列挙した
 **契約**で、実装との一致はコンパイラが照合する。先頭に `version x.y.z`
 directive を置く。
 
 ```vibe
 version 1.0.0
 
-import ./impl.vibe {}
-
 type Counter                       // bodyless: 定義は impl 側
 fn add(x: Int, y: Int) -> Int      // 実装が一致しないとコンパイルエラー
 ```
+
+同じ directory の通常 `*.vibe` は暗黙 build root。subdirectory は再帰走査
+されないため、必要な source を root から relative import/export する。
+`*_test.vibe` / `*_bench.vibe` は通常 build/hash から除外されるが、明示実行時は
+最寄りの `index.vpkg` の package-private module と shared import を利用できる。
+`_*.vibe` / `*.draft.vibe` も暗黙 root にはならないが、明示 import された場合は
+同じ shared import を継承し、package hash に含まれる。
 
 ## pin — content hash が唯一の真実
 
