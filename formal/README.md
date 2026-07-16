@@ -52,6 +52,68 @@ pool, cancellation/finalizer behavior, bounded-channel linearizability, atomic
 cache publication, or correspondence with the selfhost compiler. Those require
 separate transition/conformance models and implementation differential tests.
 
+## Verified async execution properties
+
+The async model is a backend-independent labeled transition system for task and
+nursery lifecycle state. It proves that:
+
+- cancellation can become terminal only at dispatch, suspend, or blocked-wait
+  cancel points;
+- requesting cancellation is idempotent and cannot change a terminal task;
+- terminal task state and its repeated `join` result remain stable over every
+  accepted finite trace;
+- a child can spawn only into an open nursery;
+- nursery close requires every owned child to be terminal;
+- once a nursery is closed, its selected cause remains stable over every later
+  accepted finite trace;
+- the first observed child failure starts sibling cancellation without being
+  overwritten by later failures;
+- explicit cancellation of one child is compatible with a successful nursery
+  close after all children converge.
+
+Executable examples witness cancellation before first dispatch, completion
+winning before a later cancel point, fail-fast sibling cancellation, and
+successful close after explicit child cancellation.
+Negative examples show that the transition relation rejects spawn into a closed
+nursery and close while a live child remains.
+
+The model deliberately omits heaps, OS threads, backend queues, host waitables,
+channel buffers and linearization, infinite traces, fairness, and termination.
+It treats task terminalization as one logical transition; it therefore does not
+yet prove that the concrete #817 unwind implementation executes each registered
+finalizer exactly once. It also does not prove trace refinement for the current
+synchronous eager `Task` prototype or future cooperative, JSPI/Worker, WASI, and
+shared-everything backends. These are implementation bridge obligations, not
+properties established merely by `lake build`.
+
+## Verified parallel-refinement properties
+
+The parallel model overlays physical worker slots on the async lifecycle oracle
+without adding a second public task semantics. It proves that:
+
+- each physical step projects to an accepted async event, and every finite
+  physical trace projects to an accepted async trace;
+- running logical tasks and worker assignments remain in one-to-one
+  correspondence over every accepted parallel trace;
+- a worker may claim only an idle slot and a ready, non-cancelled task;
+- two workers can run two independent tasks concurrently, while a second claim
+  of an already-running task is rejected;
+- completion releases its worker slot while leaving the terminal task in the
+  async world;
+- under the task-local heap-owner contract, distinct workers cannot access the
+  same owned location.
+
+The model serializes physical events as an interleaving. This is adequate only
+under the stated no-shared-mutable-location contract; it is not a proof of a
+weak-memory or atomic instruction model. The heap-owner map is an abstract
+premise, so concrete deep copy, fresh allocation, arena transfer, and Wasm load
+and store enforcement remain refinement obligations. Worker fairness,
+preemption, host-worker failure, channels, finalizer execution, and actual
+backend trace extraction are also not yet proved. Each physical transition
+currently carries an explicit same/add/remove-running witness; deriving those
+witnesses from a concrete runtime transition and composing task ids with the
+compiler scheduler model remain future bridge proofs.
+
 ## Verified module-system properties
 
 - `index.vpkg` is the only package boundary and nearest-boundary ownership is
