@@ -10,6 +10,7 @@ private def subDir : Directory := ⟨["workspace", "pkg", "sub"]⟩
 private def nestedDir : Directory := ⟨["workspace", "pkg", "nested"]⟩
 
 private def entry : Source := Source.regular workspaceDir "main.vibe"
+private def compatibility : Source := Source.regular workspaceDir "shared.vibe"
 private def contract : Source := Source.regular packageDir "index.vpkg"
 private def api : Source := Source.regular packageDir "api.vibe"
 private def helper : Source := Source.regular subDir "helper.vibe"
@@ -23,7 +24,7 @@ private def legacyIndex : Source := Source.regular workspaceDir "index.vibe"
 private def legacyContract : Source := Source.regular workspaceDir "index.vibei"
 
 private def workspace : Workspace :=
-  ⟨[entry, contract, api, helper, testCompanion, benchCompanion,
+  ⟨[entry, compatibility, contract, api, helper, testCompanion, benchCompanion,
     privateScratch, draft, nestedContract, nestedImpl]⟩
 
 /-- Only index.vpkg introduces a boundary. -/
@@ -60,6 +61,10 @@ example : workspace.isImplicitBuildRoot packageDir privateScratch = false := by 
 /-- External clients enter through index.vpkg and cannot bypass it. -/
 example : workspace.importAllowed entry contract = true := by native_decide
 example : workspace.importAllowed entry api = false := by native_decide
+
+/-- Ownerless sources are public compatibility space for owned packages. -/
+example : workspace.importAllowed api compatibility = true := by native_decide
+example : workspace.importAllowed nestedImpl compatibility = true := by native_decide
 
 /-- An explicitly run test is a package companion with private implementation access. -/
 example : workspace.importAllowed testCompanion api = true := by native_decide

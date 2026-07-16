@@ -58,6 +58,8 @@ separate transition/conformance models and implementation differential tests.
   deterministic;
 - nested packages cannot directly import parent implementations, nor can a
   parent bypass a nested package facade;
+- ownerless sources are public compatibility space, without allowing an
+  ownerless importer to bypass an owned package facade;
 - implicit build roots are direct production siblings only;
 - test/bench companions are not roots, hash inputs, or import targets, while an
   explicitly-run companion inherits its nearest package scope;

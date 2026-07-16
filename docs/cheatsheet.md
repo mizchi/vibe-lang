@@ -738,6 +738,9 @@ let main = () -> Int { run() }
 
 `index.vpkg` と同じ directory の通常 `*.vibe` だけが暗黙 build root。
 subdirectory source は direct root からの relative import/export で到達させる。
+最寄りの `index.vpkg` がない source は公開 compatibility space として import
+できる。owner を持つ package の内部 source は同一 owner またはその
+`index.vpkg` facade 経由でのみ参照できる。
 
 ---
 

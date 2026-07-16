@@ -279,7 +279,8 @@ def TargetVisible
     (importer target : Source) : Prop :=
   match target.role with
   | .contract => Boundary workspace target.directory
-  | .legacyContract | .legacyIndex | .production | .explicitOnly => workspace.SameOwner importer target
+  | .legacyContract | .legacyIndex | .production | .explicitOnly =>
+      workspace.ownerOf target = none ∨ workspace.SameOwner importer target
   | .testCompanion | .benchCompanion | .ignored => False
 
 instance
@@ -290,8 +291,9 @@ instance
   split <;> infer_instance
 
 /--
-Production and explicitly-run companion files may see implementation files in
-their own package. Every other caller must enter a package through index.vpkg.
+Ownerless sources form a public compatibility space. Owned implementation files
+remain visible only to sources in the same package; other callers must enter an
+owned package through index.vpkg.
 -/
 def AllowedImport
     (workspace : Workspace)

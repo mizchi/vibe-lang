@@ -10,9 +10,11 @@ vibe の package/module policy は `formal/VibeFormal/Module/` の Lean model �
 
 1. `index.vpkg` だけが boundary である。source の owner は最寄りの祖先
    `index.vpkg`。nested `index.vpkg` は別 package を開始する。
-2. implementation target は importer と同じ owner に属さなければならない。
-   異なる owner 間では、相手の `index.vpkg` facade だけを import できる。
-   この制約は親→子・子→親の両方向に適用する。
+2. owner を持たない source は公開 compatibility space であり、owner の有無に
+   かかわらず import できる。owner を持つ implementation target は importer と
+   同じ owner に属さなければならない。異なる owner 間では、相手の
+   `index.vpkg` facade だけを import できる。この制約は親→子・子→親の両方向に
+   適用する。ownerless importer から owned implementation への bypass もできない。
 3. `index.vibe` と legacy `index.vibei` は boundary ではない。同じ directory に
    複数の index spelling が存在すれば、どれを entry にしても hard error。
 4. 暗黙 build root は `index.vpkg` と同じ directory にある通常の `*.vibe`
@@ -36,7 +38,7 @@ vibe の package/module policy は `formal/VibeFormal/Module/` の Lean model �
 | boundary・nearest owner | `Boundary` / `Workspace.ownerOf` | `nearest_vpkg_path_fs` |
 | direct implicit root | `IsImplicitBuildRoot` | `contract_sibling_impl_raws` |
 | companion shared scope | `InheritsSharedImports` | `vpkg_directory_shared_import_prefix_fs` |
-| owner visibility | `AllowedImport` | `enforce_incoming_boundary_fs` |
+| owner / ownerless visibility | `AllowedImport` | `enforce_incoming_boundary_fs` |
 | automatic/reachable hash input | `automaticallyIncludedInPackageHash` / `includedInPackageHash` | `collect_package_hash_source_closure_fs` |
 | cache-independent observation | policy functions are pure | `module_policy_context_fingerprint_fs` |
 | concrete witnesses | `Proofs/ModuleExamples.lean` | `tests/contract_vpkg_test.vibe`, `tests/contract_vpkg_shared_scope_test.vibe` |

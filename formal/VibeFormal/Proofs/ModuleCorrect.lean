@@ -86,18 +86,39 @@ theorem reachable_explicit_only_is_hashed
   simp [Source.includedInPackageHash,
     Source.automaticallyIncludedInPackageHash, role]
 
-/-- A production implementation cannot be imported across package ownership. -/
+/-- An owned production implementation cannot be imported across package ownership. -/
 theorem different_owner_cannot_import_production
     {workspace : Workspace}
     {importer target : Source}
     (production : target.role = .production)
+    (targetOwned : workspace.ownerOf target ≠ none)
     (different : workspace.ownerOf importer ≠ workspace.ownerOf target) :
     ¬workspace.AllowedImport importer target := by
   intro allowed
   rcases allowed with ⟨_, _, _, _, _, visible⟩
   unfold Workspace.TargetVisible at visible
   rw [production] at visible
-  exact different visible
+  rcases visible with ownerless | same
+  · exact targetOwned ownerless
+  · exact different same
+
+/-- A regular ownerless production source is public compatibility space. -/
+theorem ownerless_can_import_production
+    {workspace : Workspace}
+    {importer target : Source}
+    (valid : Valid workspace)
+    (importerPresent : SourcePresent workspace importer)
+    (targetPresent : SourcePresent workspace target)
+    (importerRegular : importer.kind = .regular)
+    (targetRegular : target.kind = .regular)
+    (production : target.role = .production)
+    (ownerless : workspace.ownerOf target = none) :
+    workspace.AllowedImport importer target := by
+  refine ⟨valid, importerPresent, targetPresent, importerRegular,
+    targetRegular, ?_⟩
+  unfold Workspace.TargetVisible
+  rw [production]
+  exact Or.inl ownerless
 
 /-- An explicitly-run companion may import a regular production source it owns. -/
 theorem same_owner_can_import_production
@@ -115,6 +136,6 @@ theorem same_owner_can_import_production
     targetRegular, ?_⟩
   unfold Workspace.TargetVisible
   rw [production]
-  exact same
+  exact Or.inr same
 
 end VibeFormal.Module

@@ -57,8 +57,11 @@ fn f(x~: Int, y~: Int) -> Int { x + y }        // labeled args
 > `index.vpkg` に所有される。**
 
 - nested `index.vpkg` は別 package を開始する。
-- implementation import は importer と target の owner が同一の場合だけ許可。
-  親→子・子→親の両方向で、別 owner の内部 source へ直接入れない。
+- owner を持たない source は公開 compatibility space として、owner の有無に
+  かかわらず import できる。
+- owner を持つ implementation import は importer と target の owner が同一の
+  場合だけ許可。親→子・子→親の両方向で、別 owner の内部 source へ直接入れず、
+  ownerless importer も owned implementation を bypass できない。
 - 別 owner から見える入口は相手の `index.vpkg` facade だけ。
 - `index.vibe` と legacy `index.vibei` は boundary ではない。ただし同じ
   directory に複数の index spelling があれば hard error。
