@@ -50,6 +50,16 @@
 #   vibe add     <name> <url> [dir]       add a dependency to vibe.deps + fetch
 #   vibe fetch   [--frozen] [dir]        vendor git/URL deps from vibe.deps + lock
 #   vibe verify  [dir]                    re-check vendored deps against vibe.lock
+#   vibe pkg     publish <pkg_dir>        publish a package: semver gate, CAS,
+#                                         transparency-log record (#805)
+#   vibe pkg     install <name>@<ver> [--store] [--allow-yanked]
+#                                         materialize a published version
+#                                         (verifies the log inclusion proof)
+#   vibe pkg     add <source-spec> [#pkg:sha1:<hex>] [--store]
+#                                         fetch straight from git, hash-verified
+#   vibe pkg     yank <name>@<ver>        mark a version yanked (append-only)
+#   vibe pkg     update <name> [--store]  switch to the newest non-yanked
+#                                         version, showing the contract diff
 #   vibe lsp                              start the stdio LSP server (diagnostics)
 #   vibe version                          print toolchain versions
 #   vibe self update [--cli-wasm <path>]  refresh compiler wasm + rebuild .cwasm
@@ -1052,6 +1062,25 @@ case "$cmd" in
     fi
     cat "$hout"
     rm -f "$hout" "$hout.diag"
+    ;;
+  pkg)
+    # vibe pkg publish|install|add|yank|update — the registry lane
+    # (#754/#755/#805) over $VIBE_HOME/{cache,lib,log}. Delegates to
+    # vibe_pkg.sh: the copy installed into the toolchain lib/ first
+    # (standalone install, no checkout), the repo copy when running from a
+    # checkout. The launcher hands over its own runner + compiler wasm via
+    # VIBE_PKG_RUNNER/VIBE_PKG_CLI_WASM, so the script needs no repo-local
+    # node host runner. Distinct from `vibe add/fetch/verify` (the
+    # vibe.deps/vibe.lock vendoring lane): `vibe pkg` is the content-
+    # addressed @scope/name package lane (ADR-0065).
+    pkg_sh=""
+    for cand in "$TOOLCHAIN_DIR/lib/vibe_pkg.sh" "$SELF/../scripts/vibe_pkg.sh"; do
+      [ -f "$cand" ] && { pkg_sh="$cand"; break; }
+    done
+    [ -n "$pkg_sh" ] || die "vibe pkg: vibe_pkg.sh not found (looked in $TOOLCHAIN_DIR/lib and the repo scripts/)"
+    cli="$(pick_cli)"
+    exec env VIBE_PKG_RUNNER="$RUNNER" VIBE_PKG_CLI_WASM="$cli" VIBE_HOME="$VIBE_HOME" \
+      bash "$pkg_sh" "$@"
     ;;
   version|--version|-V)
     echo "vibe (selfhost launcher)"

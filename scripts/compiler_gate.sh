@@ -800,6 +800,134 @@ fi
 rm -rf "$kdir" "$khome" "$khome2" "$krepo"
 echo "[compiler-gate] registry-less git resolution ok"
 
+# 6l. registry transparency log + yank (#805, ADR-0065 Phase 5 minimal
+#     slice): publish appends an ordinal record to $VIBE_HOME/log/records.tsv
+#     and maintains a Merkle head; install verifies (a) the served head
+#     commits to the served records (tamper check), (b) prefix consistency
+#     against the last head this client saw (the log may only ever extend),
+#     and (c) an inclusion proof for the claimed name@version -> hash record
+#     against the head root. yank is an append-only marking that install
+#     refuses without --allow-yanked while versions.tsv (the immutable
+#     version->hash mapping) stays untouched. The log dir is static files:
+#     VIBE_REGISTRY_LOG_DIR points a client at a served copy.
+echo "[compiler-gate] 6l registry transparency log + yank (#805)"
+lhome805="$(mktemp -d)"
+lsrc805="$lhome805/src/@gate805/logx"
+mkdir -p "$lsrc805"
+printf 'version 1.0.0\n\nfn triple(x: Int) -> Int\n' > "$lsrc805/index.vibei"
+printf 'export fn triple(x: Int) -> Int { x * 3 }\n' > "$lsrc805/impl.vibe"
+ldir805="_build/_gate_pkg805"
+rm -rf "$ldir805"; mkdir -p "$ldir805"
+# (1) publish appends a publish record and writes a merkle head
+if ! VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$lsrc805" > "$ldir805/pub1.log" 2>&1; then
+  echo "[compiler-gate] FAIL: publish of @gate805/logx@1.0.0 failed (#805)" >&2
+  cat "$ldir805/pub1.log" >&2; exit 1
+fi
+if ! awk -F'\t' '$1 == "0" && $2 == "publish" && $3 == "@gate805/logx@1.0.0"' "$lhome805/log/records.tsv" 2>/dev/null | grep -q .; then
+  echo "[compiler-gate] FAIL: publish did not append a transparency-log record (#805)" >&2
+  cat "$lhome805/log/records.tsv" 2>/dev/null >&2; exit 1
+fi
+if [ ! -s "$lhome805/log/head" ]; then
+  echo "[compiler-gate] FAIL: publish did not write a merkle head (#805)" >&2; exit 1
+fi
+cp "$lhome805/log/records.tsv" "$ldir805/log1.records"
+cp "$lhome805/log/head" "$ldir805/log1.head"
+# (2) a second publish extends the log; install verifies an inclusion proof
+printf 'version 1.1.0\n\nfn triple(x: Int) -> Int\nfn nona(x: Int) -> Int\n' > "$lsrc805/index.vibei"
+printf 'export fn triple(x: Int) -> Int { x * 3 }\nexport fn nona(x: Int) -> Int { x * 9 }\n' > "$lsrc805/impl.vibe"
+if ! VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$lsrc805" > "$ldir805/pub2.log" 2>&1; then
+  echo "[compiler-gate] FAIL: publish of @gate805/logx@1.1.0 failed (#805)" >&2
+  cat "$ldir805/pub2.log" >&2; exit 1
+fi
+if [ "$(wc -l < "$lhome805/log/records.tsv" | tr -d '[:space:]')" != "2" ]; then
+  echo "[compiler-gate] FAIL: second publish did not extend the log to 2 records (#805)" >&2
+  cat "$lhome805/log/records.tsv" >&2; exit 1
+fi
+if ! VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate805/logx@1.0.0" > "$ldir805/inst1.log" 2>&1; then
+  echo "[compiler-gate] FAIL: install of a logged version failed (#805)" >&2
+  cat "$ldir805/inst1.log" >&2; exit 1
+fi
+if ! grep -q "inclusion verified for @gate805/logx@1.0.0" "$ldir805/inst1.log"; then
+  echo "[compiler-gate] FAIL: install did not verify the log inclusion proof (#805)" >&2
+  cat "$ldir805/inst1.log" >&2; exit 1
+fi
+cp "$lhome805/log/records.tsv" "$ldir805/log2.records"
+cp "$lhome805/log/head" "$ldir805/log2.head"
+# (3) same-version republish with different content is still rejected — and
+#     the rejected publish must NOT grow the log
+printf 'export fn triple(x: Int) -> Int { x * 3 + 1 }\nexport fn nona(x: Int) -> Int { x * 9 }\n' > "$lsrc805/impl.vibe"
+if VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$lsrc805" > "$ldir805/pub3.log" 2>&1; then
+  echo "[compiler-gate] FAIL: same-version republish was accepted (#805)" >&2; exit 1
+fi
+if ! grep -q "same-version republish rejected" "$ldir805/pub3.log"; then
+  echo "[compiler-gate] FAIL: republish rejection lacks the expected message (#805)" >&2
+  cat "$ldir805/pub3.log" >&2; exit 1
+fi
+if [ "$(wc -l < "$lhome805/log/records.tsv" | tr -d '[:space:]')" != "2" ]; then
+  echo "[compiler-gate] FAIL: a rejected republish grew the transparency log (#805)" >&2; exit 1
+fi
+# (4) a tampered log head is detected before anything installs
+sed 's/\t/\tf00dfeed/' "$ldir805/log2.head" > "$lhome805/log/head"
+if VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate805/logx@1.1.0" > "$ldir805/inst2.log" 2>&1; then
+  echo "[compiler-gate] FAIL: install accepted a tampered log head (#805)" >&2; exit 1
+fi
+if ! grep -q "tampered log head" "$ldir805/inst2.log"; then
+  echo "[compiler-gate] FAIL: tampered-head rejection lacks the expected message (#805)" >&2
+  cat "$ldir805/inst2.log" >&2; exit 1
+fi
+cp "$ldir805/log2.head" "$lhome805/log/head"
+# (5) append-only consistency: rolling the log back to its (self-consistent)
+#     1-record state must be refused by a client that already saw 2 records
+cp "$ldir805/log1.records" "$lhome805/log/records.tsv"
+cp "$ldir805/log1.head" "$lhome805/log/head"
+if VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate805/logx@1.0.0" > "$ldir805/inst3.log" 2>&1; then
+  echo "[compiler-gate] FAIL: install accepted a truncated (rolled-back) log (#805)" >&2; exit 1
+fi
+if ! grep -q "log consistency violation" "$ldir805/inst3.log"; then
+  echo "[compiler-gate] FAIL: truncation rejection lacks the expected message (#805)" >&2
+  cat "$ldir805/inst3.log" >&2; exit 1
+fi
+cp "$ldir805/log2.records" "$lhome805/log/records.tsv"
+cp "$ldir805/log2.head" "$lhome805/log/head"
+# (6) yank: an append-only marking; install refuses it without --allow-yanked;
+#     the version->hash mapping stays immutable
+if ! VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh yank "@gate805/logx@1.1.0" > "$ldir805/yank.log" 2>&1; then
+  echo "[compiler-gate] FAIL: yank failed (#805)" >&2
+  cat "$ldir805/yank.log" >&2; exit 1
+fi
+if [ "$(wc -l < "$lhome805/log/records.tsv" | tr -d '[:space:]')" != "3" ]; then
+  echo "[compiler-gate] FAIL: yank did not append a log record (#805)" >&2; exit 1
+fi
+if VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate805/logx@1.1.0" > "$ldir805/inst4.log" 2>&1; then
+  echo "[compiler-gate] FAIL: install accepted a yanked version without --allow-yanked (#805)" >&2; exit 1
+fi
+if ! grep -q "yanked in the registry log" "$ldir805/inst4.log"; then
+  echo "[compiler-gate] FAIL: yank rejection lacks the expected message (#805)" >&2
+  cat "$ldir805/inst4.log" >&2; exit 1
+fi
+if ! VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate805/logx@1.1.0" --allow-yanked > "$ldir805/inst5.log" 2>&1; then
+  echo "[compiler-gate] FAIL: --allow-yanked did not override the yank refusal (#805)" >&2
+  cat "$ldir805/inst5.log" >&2; exit 1
+fi
+if ! awk -F'\t' '$1 == "@gate805/logx@1.1.0"' "$lhome805/cache/versions.tsv" | grep -q "pkg:sha1:"; then
+  echo "[compiler-gate] FAIL: yank disturbed the immutable version->hash mapping (#805)" >&2; exit 1
+fi
+# (7) the log dir is a servable static artifact: a copied dir passed via
+#     VIBE_REGISTRY_LOG_DIR verifies the same way
+rm -rf "$ldir805/served"
+cp -R "$lhome805/log" "$ldir805/served"
+if ! VIBE_HOME="$lhome805" VIBE_REGISTRY_LOG_DIR="$ldir805/served" VIBE_PKG_CLI_WASM="$stage2_wasm" \
+  bash scripts/vibe_pkg.sh install "@gate805/logx@1.0.0" > "$ldir805/inst6.log" 2>&1; then
+  echo "[compiler-gate] FAIL: install against a served log copy failed (#805)" >&2
+  cat "$ldir805/inst6.log" >&2; exit 1
+fi
+if ! grep -q "inclusion verified for @gate805/logx@1.0.0" "$ldir805/inst6.log"; then
+  echo "[compiler-gate] FAIL: served-copy install did not verify inclusion (#805)" >&2
+  cat "$ldir805/inst6.log" >&2; exit 1
+fi
+rm -rf "$ldir805" "$lhome805"
+echo "[compiler-gate] registry transparency log + yank ok"
+
 # 6d. where-contract + publish-gate regression (#731 / #732): a violated
 #     requires clause traps at runtime; the publish semver gate accepts an
 #     honest bump and rejects a dishonest one.
