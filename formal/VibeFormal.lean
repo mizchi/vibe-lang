@@ -5,3 +5,4 @@ import VibeFormal.Proofs.AliasEquivalent
 import VibeFormal.Proofs.Examples
 import VibeFormal.Proofs.SchedulerCorrect
 import VibeFormal.Proofs.SchedulerExamples
+import VibeFormal.Proofs.ModuleExamples

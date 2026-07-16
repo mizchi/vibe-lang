@@ -114,6 +114,48 @@ test "vpkg directory-shared import: incremental fs_compile lane resolves the inh
   assert_wasm_magic(bytes)
 }
 
+// The normal package scan excludes test/bench companions, but an explicitly
+// compiled companion still runs in the nearest enclosing vpkg's scope. It may
+// use both package-private production modules and dependency names declared by
+// that vpkg without becoming part of the package hash/build roots.
+test "vpkg shared import: explicit test companion inherits nearest package scope" {
+  let base_dir = "/tmp/vibe_compiler_vpkg_shared_scope_test_companion/pkg"
+  Fs::mkdir_p(base_dir)
+  let contract_path = String::concat(base_dir, "/index.vpkg")
+  let impl_path = String::concat(base_dir, "/impl.vibe")
+  let test_path = String::concat(base_dir, "/impl_test.vibe")
+  write_file(contract_path, "import @vibe/random { seed }\n\nfn package_value(x: Int) -> Int\n")
+  write_file(impl_path, "export fn package_value(x: Int) -> Int { x + 1 }\n")
+  write_file(test_path, "import ./impl.vibe { package_value }\n\nexport fn test_companion_entry() -> Int {\n  package_value(seed(41))\n}\n")
+  let bytes = compile_file_fs_mode_rc(test_path, "test_companion_entry")
+  assert_wasm_magic(bytes)
+}
+
+test "vpkg shared import: explicit bench companion inherits nearest package scope" {
+  let base_dir = "/tmp/vibe_compiler_vpkg_shared_scope_bench_companion/pkg"
+  Fs::mkdir_p(base_dir)
+  let contract_path = String::concat(base_dir, "/index.vpkg")
+  let impl_path = String::concat(base_dir, "/impl.vibe")
+  let bench_path = String::concat(base_dir, "/impl_bench.vibe")
+  write_file(contract_path, "import @vibe/random { seed }\n\nfn package_value(x: Int) -> Int\n")
+  write_file(impl_path, "export fn package_value(x: Int) -> Int { x + 1 }\n")
+  write_file(bench_path, "import ./impl.vibe { package_value }\n\nexport fn bench_companion_entry() -> Int {\n  package_value(seed(41))\n}\n")
+  let bytes = compile_file_fs_mode_rc(bench_path, "bench_companion_entry")
+  assert_wasm_magic(bytes)
+}
+
+test "vpkg shared import: descendant companion inherits the nearest ancestor package scope" {
+  let package_dir = "/tmp/vibe_compiler_vpkg_shared_scope_descendant/pkg"
+  let test_dir = String::concat(package_dir, "/sub")
+  Fs::mkdir_p(test_dir)
+  write_file(String::concat(package_dir, "/index.vpkg"), "import @vibe/random { seed }\n\nfn package_value(x: Int) -> Int\n")
+  write_file(String::concat(package_dir, "/impl.vibe"), "export fn package_value(x: Int) -> Int { x + 1 }\n")
+  let test_path = String::concat(test_dir, "/descendant_test.vibe")
+  write_file(test_path, "import ../impl.vibe { package_value }\n\nexport fn descendant_test_entry() -> Int {\n  package_value(seed(41))\n}\n")
+  let bytes = compile_file_fs_mode_rc(test_path, "descendant_test_entry")
+  assert_wasm_magic(bytes)
+}
+
 // #897 shadowing case (merge lane): `shadow_impl.vibe` declares its OWN
 // `seed`, with a DIFFERENT arity (2, vs. `@vibe/random`'s 1) than the
 // inherited import -- deliberately so the two are impossible to confuse by

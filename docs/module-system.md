@@ -1,9 +1,10 @@
 # vibe Module System (現行仕様)
 
-> **v2 設計が確定しています** (ADR-0063/0064, 2026-07-03):
-> [module-system-v2.md](module-system-v2.md)。契約ファイル `index.vibei` /
-> index 境界規則 / content-addressed `require` / `fn` 構文 / `module {}`
+> **v2 設計が確定しています** (ADR-0063/0064/0070, 2026-07-16):
+> [module-system-v2.md](module-system-v2.md)。契約・唯一の境界 `index.vpkg` /
+> nearest-owner 規則 / content-addressed `require` / `fn` 構文 / `module {}`
 > ブロック廃止。本ドキュメントは実装フェーズの進行に合わせて置き換えられる。
+> 実行可能な正本は [module-system-oracle.md](module-system-oracle.md)。
 >
 > **実装済み (2026-07-03)**: `fn` 構文 (#727, Phase A)。`module Name {}`
 > ブロックと `export module` は **削除済み** (#728, Phase B) — 以下の
