@@ -555,6 +555,28 @@ case "$cmd" in
       --addr "$addr" "$composed"
     ;;
   check)
+    if [ "${1:-}" = "--missing-vpkg" ]; then
+      # #897 (ADR-0070): `vibe check --missing-vpkg <root>` -- recursively
+      # report every directory under <root> still on the old index.vibei /
+      # bare index.vibe spelling. Mirrors the `hash)` case's env-var +
+      # adapter invocation shape below.
+      root="${2:-}"
+      [ -n "$root" ] || die "usage: vibe check --missing-vpkg <root>"
+      [ -d "$root" ] || die "not found: $root"
+      cli="$(pick_cli)"
+      mout="$(mktemp -t vibe-check-vpkg-XXXXXX)"
+      env VIBE_MISSING_VPKG_SCAN=1 "$RUNNER" "$cli" "$root" "$mout" __no_entry__ >/dev/null 2>&1 || true
+      if [ -s "$mout.diag" ]; then
+        cat "$mout.diag" >&2
+        rm -f "$mout" "$mout.diag"
+        die "missing-vpkg scan failed for $root"
+      fi
+      cat "$mout"
+      rc=1
+      grep -q '^ok: no directories missing index.vpkg' "$mout" 2>/dev/null && rc=0
+      rm -f "$mout" "$mout.diag"
+      exit "$rc"
+    fi
     [ "$#" -ge 1 ] || die "usage: vibe check <file.vibe> [entry]"
     src="$1"; entry="${2:-main}"
     [ -f "$src" ] || die "not found: $src"
