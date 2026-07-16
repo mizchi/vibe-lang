@@ -895,24 +895,29 @@ case "$cmd" in
       compile_to "$f" "$w" "__no_entry__"
     }
 
-    # Evaluate an expression: wrap it in a synthetic main that binds the value
-    # and prints it via string interpolation (works for Int/Bool/String/...).
-    # If that wrapper does not compile (e.g. the value's type has no
-    # interpolation support, or printing needs an effect row the wrapper lacks)
-    # retry a second wrapper that only executes the expression for its effects
-    # and say so. If both fail, report the FIRST wrapper's diagnostic. The
-    # harness import goes AFTER the buffer (legal in vibe) so buffer line
-    # numbers stay exact in diagnostics; a duplicate user import of
-    # stdout_write is harmless (verified: duplicate imports are accepted).
+    # Evaluate an expression: wrap it in a synthetic Int-returning let-entry
+    # and let the runner's entry-return print convention (ADR-0069 `let main`
+    # rule — the same channel `vibe run hello.vibe` prints 42 through) show
+    # the value. This is the ONLY printing channel that works on every
+    # runner/compile-mode combination today:
+    #   - prelude/io.vibe's stdout_write drags the io unit's whole `vibe::*`
+    #     host-import surface into the wasm — vibewt refuses to instantiate
+    #     (unknown import `vibe::stdin_read_char`); the PR #927 CI failure.
+    #   - the `println`/`print` checker builtins have no codegen lowering in
+    #     bare FS-mode compiles ("undefined variable (local): println @call").
+    #   - `Stdout::write_char` writes the raw TAGGED value (42 prints as
+    #     "hd") on both runners.
+    # Consequence: Int expressions print; non-Int expressions fall back to
+    # the effects-only wrapper below with an honest notice. Richer printing
+    # is blocked on the println-in-FS-mode gap (tracked in the #805 REPL
+    # follow-ups).
     repl_eval() {
       local expr="$1" rc=0
       local f="$repl_dir/__eval__.vibe" w="$repl_dir/__eval__.wasm"
       local err1="$repl_dir/__eval__.err1"
       { cat "$repl_buf"
-        printf 'import ./lib/@vibe/prelude/io.vibe { stdout_write }\n'
-        printf 'export let __repl_main__: () -> Unit with { Stdout } = () -> {\n'
-        printf '  let __repl_v__ = (\n%s\n  )\n' "$expr"
-        printf '  stdout_write("\\{__repl_v__}\\n")\n'
+        printf 'export let __repl_main__: () -> Int = () -> {\n'
+        printf '  (\n%s\n  )\n' "$expr"
         printf '}\n'
       } > "$f"
       if compile_to "$f" "$w" "__repl_main__" 2>"$err1"; then
@@ -921,15 +926,15 @@ case "$cmd" in
         return 0
       fi
       # Fallback wrapper is deliberately UNANNOTATED so the effect row is
-      # inferred — it absorbs expressions whose row does not fit the printable
-      # wrapper's `with { Stdout }`. Cost: the runner prints the entry's unit
-      # return as a trailing `0` line (annotated-Unit entries don't do this).
+      # inferred — it absorbs non-Int expressions and expressions whose row
+      # does not fit the Int wrapper. Cost: the runner prints the entry's
+      # unit return as a trailing `0` line (annotated-Unit entries don't).
       { cat "$repl_buf"
         printf 'export let __repl_main__ = () -> {\n'
         printf '  let _ = (\n%s\n  )\n  ()\n}\n' "$expr"
       } > "$f"
       if compile_to "$f" "$w" "__repl_main__" 2>/dev/null; then
-        echo "vibe shell: value is not printable; evaluated for effects only" >&2
+        echo "vibe shell: non-Int value; evaluated for effects only (use :type to inspect)" >&2
         "$RUNNER" "$w" || rc=$?
         [ "$rc" -ne 0 ] && echo "vibe shell: runtime error (exit $rc)" >&2
         return 0

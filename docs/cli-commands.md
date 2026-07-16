@@ -160,10 +160,15 @@ Line classification:
   whole buffer; on any diagnostic it is **rolled back**, so the buffer can
   never become poisoned.
 - Any other line is treated as an expression: it is wrapped in a synthetic
-  entry (the ADR-0069 wrap-in-main story) that binds the value and prints it
-  via string interpolation, compiled against the buffer, and the produced
-  wasm is executed. If the printable wrapper does not compile (e.g. the
-  needed effect row differs), it is retried effects-only with a notice.
+  Int-returning entry (the ADR-0069 `let main` return-print convention — the
+  same channel `vibe run` prints through), compiled against the buffer, and
+  the produced wasm is executed. If the Int wrapper does not compile (a
+  non-Int value, or an effect row the wrapper lacks), it is retried
+  effects-only with a notice — use `:type` to inspect non-Int values.
+  (Richer printing is blocked on known gaps: the `println`/`print` builtins
+  have no codegen lowering in bare FS-mode compiles, prelude/io's
+  `stdout_write` drags `vibe::*` host imports the standalone runner does not
+  define, and `Stdout::write_char` writes the raw tagged value.)
 - REPL commands: `:help`, `:quit`/`:q`, `:list` (print the buffer),
   `:clear`, `:load <file>` (append a file to the buffer, validated with
   rollback), `:type <expr>` (inferred type, backed by the `vibe type-at`
@@ -180,8 +185,8 @@ Caveats (by design of the compiled model):
 - Diagnostics point into the composed session program: for a rejected
   declaration/`:load` the reported line matches the `:list` buffer;
   expression errors reference the synthetic wrapper.
-- Values without printable interpolation (closures, enums/structs without
-  `Show`) may print an opaque runtime value.
+- Only Int values print today (see above); everything else evaluates
+  effects-only with a stderr notice.
 - The session lives in a temp dir with a `lib` symlink, so stdlib imports
   (`import ./lib/@vibe/...`) resolve; other relative imports do not move
   with the session.

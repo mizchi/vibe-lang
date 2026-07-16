@@ -292,6 +292,12 @@ log_append() {
   say "log: $op $key recorded (ordinal $ord, head $size:${root:0:12})"
 }
 
+log_has_publish() {
+  # does the log contain a publish record for $1 = name@version?
+  [ -f "$LOG_RECORDS" ] || return 1
+  awk -F'\t' -v k="$1" '$2 == "publish" && $3 == k { found = 1 } END { exit found ? 0 : 1 }' "$LOG_RECORDS"
+}
+
 log_client_verify() {
   # client-side lookup verification for $1 = name@version, $2 = the hash the
   # client is about to trust. Sets LOG_STATE to:
@@ -441,6 +447,16 @@ publish)
   recorded="$(lookup_version "$key")"
   if [ -n "$recorded" ]; then
     if [ "$recorded" = "$hash" ]; then
+      # Idempotent — but REPAIR a missing transparency record first: if a
+      # prior publish crashed between the versions.tsv append and log_append
+      # (unwritable log dir, interruption, full disk), the version would stay
+      # mapped without a publish record and every retry would exit here,
+      # permanently bypassing transparency + yank handling (Codex review,
+      # PR #927).
+      if ! log_has_publish "$key"; then
+        say "$key is mapped in versions.tsv but has no publish record — repairing the transparency log"
+        log_append publish "$key" "$hash" "$ct_hash" "local" "-"
+      fi
       say "$key already published as #$hash (idempotent)"
       exit 0
     fi
@@ -665,16 +681,22 @@ update)
   cur_hash="$PKG_HASH_OUT"
   cur_ct="$CT_HASH_OUT"
   cur_version="$(awk -F'\t' -v n="$name" -v h="$cur_hash" 'index($1, n "@") == 1 && $2 == h { v = substr($1, length(n) + 2) } END { print v }' "$VERSIONS_TSV")"
-  # newest non-yanked published version (publish order, like latest_version_of)
+  # newest non-yanked LOGGED publish (publish order, like latest_version_of).
+  # versions.tsv also holds TOFU mappings created by `add github:...` that
+  # have no publish record; selecting one of those would let update install
+  # a version with LOG_STATE=absent, silently bypassing inclusion + yank
+  # verification (Codex review, PR #927) — so candidates are restricted to
+  # versions with a publish record in the transparency log.
   best=""
   best_hash=""
   while IFS="$(printf '\t')" read -r k h; do
     case "$k" in "$name@"*) ;; *) continue ;; esac
+    log_has_publish "$k" || continue
     version_is_yanked "$k" && continue
     best="${k##*@}"
     best_hash="$h"
   done < "$VERSIONS_TSV"
-  [ -n "$best" ] || die "no non-yanked version of $name is published"
+  [ -n "$best" ] || die "no logged (published) non-yanked version of $name — git-added versions are updated by re-running 'add' with a new ref"
   if [ "$best" = "${cur_version:-}" ]; then
     say "$name is up to date (${cur_version} = #$cur_hash)"
     exit 0
