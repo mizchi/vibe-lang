@@ -1,0 +1,57 @@
+// #886: explicit type arguments on named struct constructor literals —
+// `Pair[Int]::{ a: 1, b: 2 }`. The explicit list must (a) parse, (b) match the
+// struct's declared type-parameter arity, (c) PIN the instantiation instead of
+// relying on #829's field-driven inference. Negative cases (arity mismatch,
+// field value vs pinned argument mismatch) are gate reject-cases in
+// scripts/compiler_gate.sh ("#886 explicit struct type args").
+
+struct Pair[T] {
+  a: T;
+  b: T
+}
+
+struct Bag[T] {
+  xs: Array[T]
+}
+
+struct Two[A, B] {
+  left: A;
+  right: B
+}
+
+test "explicit args agree with field inference" {
+  let p = Pair[Int]::{ a: 1, b: 2 }
+  assert_eq(p.a + p.b, 3)
+  let q = Pair[String]::{ a: "x", b: "y" }
+  assert_eq(String::concat(q.a, q.b), "xy")
+}
+
+test "explicit args pin an ambiguous empty-array field" {
+  // Field values alone cannot determine T here ([] is Array[?]); the
+  // explicit argument pins Bag[Int], so pushing an Int is well-typed.
+  let b = Bag[Int]::{ xs: [] }
+  Array::push(b.xs, 42)
+  assert_eq(Array::length(b.xs), 1)
+  assert_eq(Array::get(b.xs, 0), 42)
+}
+
+test "multi-param explicit args" {
+  let t = Two[Int, String]::{ left: 7, right: "seven" }
+  assert_eq(t.left, 7)
+  assert_eq(t.right, "seven")
+}
+
+test "nested generic explicit args" {
+  let rows = Pair[Array[Int]]::{ a: [1, 2], b: [3] }
+  assert_eq(Array::length(rows.a) + Array::length(rows.b), 3)
+  let grid = Bag[Array[String]]::{ xs: [] }
+  Array::push(grid.xs, ["a", "b"])
+  assert_eq(Array::length(Array::get(grid.xs, 0)), 2)
+}
+
+test "explicit args with field shorthand" {
+  let a = 10
+  let b = 20
+  let p = Pair[Int]::{ a, b }
+  assert_eq(p.a + p.b, 30)
+}

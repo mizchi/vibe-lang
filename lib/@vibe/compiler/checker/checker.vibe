@@ -3325,7 +3325,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
       }
       (CtUnit, s1, c1)
     },
-    ERecord(rn, fields) => {
+    ERecord(rn, fields, targs) => {
       let flen = Array::length(fields)
       let mut s1 = s
       let mut c1 = c
@@ -3398,19 +3398,38 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
               // fresh inference vars, so the field values determine the
               // construction's concrete type arguments (`Box::{ v: 1 }` is
               // `Box[Int]`, not CtUnknown → its field reads become checkable).
+              //
+              // #886: EXPLICIT type arguments (`Pair[Int]::{ .. }`) pin the
+              // instantiation instead: each declared param is substituted by
+              // the resolved explicit argument (no fresh var), so field values
+              // are checked against the pinned types (mismatches surface as
+              // `struct field type mismatch for <f>`) and the construction's
+              // type is exactly `CtNamed(rn, <explicit args>)` even when the
+              // field values alone could not determine a param (e.g. an
+              // empty-array field). An arity mismatch reports an error and
+              // falls back to #829's inference to avoid cascading errors.
               let tplen = Array::length(s_tparams)
+              let ntargs = Array::length(targs)
+              if ntargs > 0 && ntargs != tplen {
+                Array::push(errors, "struct \{rn} expects \{tplen} type argument(s), got \{ntargs} in `\{rn}[...]::{ ... }` (#886 explicit struct type arguments)")
+              }
+              let use_explicit = ntargs > 0 && ntargs == tplen
               let fresh_targs = Array::slice([
                 CtUnknown
               ], 0, 0)
               let mut c2 = c1
               let mut tpi = 0
               while tpi < tplen {
-                match fresh_var(c2) {
-                  (tv, nc) => {
-                    Array::push(fresh_targs, tv)
-                    c2 = nc
-                  },
-                  _ => ()
+                if use_explicit {
+                  Array::push(fresh_targs, resolve_type_expr(Array::get(targs, tpi), defs))
+                } else {
+                  match fresh_var(c2) {
+                    (tv, nc) => {
+                      Array::push(fresh_targs, tv)
+                      c2 = nc
+                    },
+                    _ => ()
+                  }
                 }
                 tpi = tpi + 1
               }
