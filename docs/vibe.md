@@ -651,12 +651,16 @@ let right = 2
 let q = Pair::{ left, right } // shorthand for { left: left, right: right }
 ```
 
-<!-- doctest-skip: 明示型引数 `Pair[Int]::{ ... }` は未実装 (#836) —
-     `Name[Args]::{` は located parse error ("explicit struct type arguments
-     ... are not supported yet") を返す仕様。field shorthand (`Pair::{ left,
-     right }`) は #836 で実装済み (上のブロック参照)。 -->
-```vibe skip
-let p = Pair[Int]::{ left: 1, right: 2 } // NOT YET SUPPORTED: located parse error
+```vibe
+struct Pair2[T] {
+  left: T;
+  right: T;
+}
+
+// #886: explicit type arguments pin the instantiation (arity-checked against
+// the struct's declared type params; field values are checked against the
+// pinned types instead of driving inference).
+let p = Pair2[Int]::{ left: 1, right: 2 }
 ```
 
 Rules:
@@ -676,9 +680,11 @@ Rules:
   binding named after the field (same shorthand as anonymous `record { ... }`
   literals).
 - Struct type arguments are inferred from the provided field expressions
-  (#829). Explicit type arguments (`Pair[Int]::{ ... }`) are documented as
-  spec surface but not yet implemented — the parser reports a located error
-  rather than silently accepting or misinterpreting the syntax.
+  (#829). Explicit type arguments (`Pair[Int]::{ ... }`, #886) are also
+  supported: the list must match the struct's declared type-parameter arity
+  (mismatch is a checker error) and PINS the instantiation — field values are
+  checked against the pinned types, which resolves cases inference alone
+  cannot (e.g. an empty-array field: `Bag[Int]::{ xs: [] }`).
 - `derive(TraitA, TraitB)` expands to corresponding `impl` entries for the
   declared type (duplicates ignored).
   Unknown traits or sealed-trait derive targets are rejected at type check.

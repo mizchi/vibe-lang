@@ -1,11 +1,11 @@
 //# Imports
 
 import ../ast {
-  Expr
+  Expr, TypeExpr
 }
 
 import ./parser_base.vibe {
-  _no_tb, _no_tp, collect_effect_names, empty_exprs, expect_tk, is_lambda_start, parse_param_list, parse_type_impl, peek, tk_name
+  _no_tb, _no_tp, collect_effect_names, empty_exprs, empty_type_exprs, expect_tk, is_lambda_start, parse_param_list, parse_type_impl, peek, tk_name
 }
 
 import ./token.vibe {
@@ -646,14 +646,13 @@ fn offset_at(starts: Array[Int], p: Int) -> Int {
   }
 }
 
-// #836: detect `Name[...]::{` (explicit struct type arguments on a named
+// #836/#886: detect `Name[...]::{` (explicit struct type arguments on a named
 // struct constructor literal, e.g. `Pair[Int]::{ left: 1, right: 2 }`).
 // `pos` is the TLBracket immediately after the constructor name. Skips the
 // balanced `[...]` span (mirrors `is_generic_fn_start`'s bracket-depth scan)
-// and checks whether it is immediately followed by `::{`. Used only to
-// recognize the pattern so `parse_ident_primary` can raise a clear, located
-// diagnostic — explicit type arguments are not implemented yet (see the
-// comment at the call site), so this never actually parses type arguments.
+// and checks whether it is immediately followed by `::{`. Disambiguates the
+// explicit-type-args constructor form from postfix indexing (`arr[i]`) before
+// `parse_ident_primary` commits to parsing the type-argument list (#886).
 fn is_struct_targs_ctor_start(tokens: Array[Token], pos: Int) -> Bool {
   let mut p = pos + 1
   let mut depth = 1
@@ -681,6 +680,31 @@ fn is_struct_targs_ctor_start(tokens: Array[Token], pos: Int) -> Bool {
   }
 }
 
+// #886: parse the comma-separated type-argument list of an explicit struct
+// constructor literal `Name[T1, T2, ...]::{ ... }`. `pos` is the token just
+// after the opening `[`. Returns the parsed arguments and the position just
+// after the closing `]`. Full type grammar (nested generics, tuples, fn
+// types) via `parse_type_impl`, same as annotation positions.
+fn parse_struct_ctor_targs(tokens: Array[Token], pos: Int, name: String) -> (Array[TypeExpr], Int) with { Error } {
+  match peek(tokens, pos) {
+    TRBracket => throw("expected at least one type argument in `\{name}[...]::{ ... }` at #\{pos}: write `\{name}::{ ... }` to infer the type arguments from the field values"),
+    _ => {
+      let (first, after_first) = parse_type_impl(tokens, pos, 0)
+      let targs = [
+        first
+      ]
+      let mut p = after_first
+      while tk_name(peek(tokens, p)) == "," {
+        let (next, after_next) = parse_type_impl(tokens, p + 1, 0)
+        Array::push(targs, next)
+        p = after_next
+      }
+      let end_pos = expect_tk(tokens, p, "]")
+      (targs, end_pos)
+    }
+  }
+}
+
 fn parse_ident_primary(tokens: Array[Token], starts: Array[Int], pos: Int, name: String, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
   if name == "true" {
     (EBool(true), pos + 1)
@@ -693,7 +717,7 @@ fn parse_ident_primary(tokens: Array[Token], starts: Array[Int], pos: Int, name:
       TLBrace => {
         let b = ArrayBuilder::new()
         let (fields, end_pos) = parse_record_literal_fields(tokens, starts, pos + 2, b, parse_recur)
-        (ERecord("", fields), end_pos)
+        (ERecord("", fields, empty_type_exprs()), end_pos)
       },
       _ => (EIdent(name, offset_at(starts, pos)), pos + 1)
     }
@@ -713,23 +737,24 @@ fn parse_ident_primary(tokens: Array[Token], starts: Array[Int], pos: Int, name:
         TLBrace => {
           let b = ArrayBuilder::new()
           let (fields, end_pos) = parse_ctor_record_fields(tokens, starts, pos + 3, b, parse_recur)
-          (ERecord(name, fields), end_pos)
+          (ERecord(name, fields, empty_type_exprs()), end_pos)
         },
         _ => (EIdent(name, offset_at(starts, pos)), pos + 1)
       },
-      // #836: `Name[Args]::{ ... }` (explicit struct type arguments) is
-      // documented spec surface (docs/vibe.md "Struct and enum details") but
-      // not implemented — the field values already determine the struct's
-      // type arguments via #829's instantiation inference, and threading an
-      // explicit type-argument list through to that inference would need a
-      // new AST carrier that every exhaustive `Expr` visitor in the compiler
-      // (desugar/normalize/perceus/codegen/checker_effects/...) would have to
-      // learn about. Rather than let this fall through to postfix indexing
-      // and surface a confusing "unexpected token: ::" once the `[...]` is
-      // misparsed as an index expression, recognize the shape up front and
-      // raise a clear, located error.
+      // #886: `Name[Args]::{ ... }` — explicit struct type arguments on a
+      // named struct constructor literal (deferred from #836). The bracket
+      // scan disambiguates from postfix indexing (`arr[i]`): only a balanced
+      // `[...]` immediately followed by `::{` parses as type arguments. The
+      // parsed list rides in ERecord's third slot; the checker validates it
+      // against the struct's declared type params and pins the instantiation
+      // (#829's inference otherwise derives the args from the field values).
       TLBracket => if is_struct_targs_ctor_start(tokens, pos + 1) {
-        throw("explicit struct type arguments (`\{name}[...]::{ ... }`) are not supported yet at #\{pos + 1}: write `\{name}::{ ... }` — field values already determine the type arguments (#829) — or annotate the binding, e.g. `let x: \{name}[T] = \{name}::{ ... }`")
+        let (targs, after_targs) = parse_struct_ctor_targs(tokens, pos + 2, name)
+        let dc_pos = expect_tk(tokens, after_targs, "::")
+        let brace_pos = expect_tk(tokens, dc_pos, "{")
+        let b = ArrayBuilder::new()
+        let (fields, end_pos) = parse_ctor_record_fields(tokens, starts, brace_pos, b, parse_recur)
+        (ERecord(name, fields, targs), end_pos)
       } else {
         (EIdent(name, offset_at(starts, pos)), pos + 1)
       },

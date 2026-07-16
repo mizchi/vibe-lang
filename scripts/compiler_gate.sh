@@ -372,6 +372,51 @@ fi
 rm -rf "$gsdir"
 echo "[compiler-gate] generic-struct contract arity regression ok"
 
+# 6b2b. explicit struct type arguments (#886): `Pair[Int]::{ .. }` pins the
+#      instantiation (parse + arity check + checker pinning). Positive: the
+#      explicit form compiles and runs, including a field inference alone
+#      cannot decide (empty array). Negatives: a type-argument arity mismatch
+#      and a field value conflicting with the pinned argument must both be
+#      rejected with their dedicated diagnostics (not a generic parse error).
+echo "[compiler-gate] 6b2b explicit struct type args (#886)"
+stdir="_build/_gate_struct_targs"
+rm -rf "$stdir"; mkdir -p "$stdir"
+printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nstruct Bag[T] {\n  xs: Array[T]\n}\n\nexport let _start: () -> Unit = () -> {\n  let p = Pair[Int]::{ a: 1, b: 2 }\n  assert_eq(p.a + p.b, 3)\n  let g = Bag[Int]::{ xs: [] }\n  Array::push(g.xs, 42)\n  assert_eq(Array::get(g.xs, 0), 42)\n  let n = Pair[Array[Int]]::{ a: [1, 2], b: [] }\n  assert_eq(Array::length(n.a), 2)\n}\n' > "$stdir/ok.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$stdir/ok.vibe" "$stdir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$stdir/ok.wasm" ]; then
+  echo "[compiler-gate] FAIL: explicit struct type args (#886) did not compile" >&2
+  cat "$stdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$stdir/ok.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: explicit struct type args (#886) compiled but trapped at runtime" >&2; exit 1
+fi
+printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nexport let _start: () -> Unit = () -> {\n  let p = Pair[Int, String]::{ a: 1, b: 2 }\n  assert_eq(p.a, 1)\n}\n' > "$stdir/arity.vibe"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$stdir/arity.vibe" "$stdir/arity.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$stdir/arity.wasm" ]; then
+  echo "[compiler-gate] FAIL: struct type-arg arity mismatch (#886) was not rejected" >&2; exit 1
+fi
+if ! grep -q "expects 1 type argument(s), got 2" "$stdir/arity.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: type-arg arity rejection lacks the expected diagnostic (#886)" >&2
+  cat "$stdir/arity.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nexport let _start: () -> Unit = () -> {\n  let p = Pair[String]::{ a: 1, b: 2 }\n  assert_eq(p.a, "x")\n}\n' > "$stdir/pin.vibe"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$stdir/pin.vibe" "$stdir/pin.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$stdir/pin.wasm" ]; then
+  echo "[compiler-gate] FAIL: field value conflicting with pinned type arg (#886) was not rejected" >&2; exit 1
+fi
+if ! grep -q "struct field type mismatch for a" "$stdir/pin.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: pinned-arg field mismatch rejection lacks the expected diagnostic (#886)" >&2
+  cat "$stdir/pin.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+rm -rf "$stdir"
+echo "[compiler-gate] explicit struct type args (#886) ok"
+
 # 6b3. cross-package contract import resolution regression (#842): a bare
 #      directory-style import inside an index.vibei CONTRACT (not just an
 #      implementation .vibe file) must resolve to the sibling package's own
