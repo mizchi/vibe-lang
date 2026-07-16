@@ -190,13 +190,17 @@ fi
 if [ "$DO_STDLIB" = "1" ]; then
   for pkg in @vibe/core @vibe/ast @vibe/parser; do
     src="$ROOT_DIR/lib/$pkg"
-    [ -f "$src/index.vibei" ] || { say "stdlib $pkg missing in checkout; skipped"; continue; }
+    [ -f "$src/index.vpkg" ] || [ -f "$src/index.vibei" ] || { say "stdlib $pkg missing in checkout; skipped"; continue; }
     src_hash="$("$TC_DIR/bin/vibe" hash "$src" | awk '/^package /{print $2}')"
     [ -n "$src_hash" ] || die "stdlib hash computation failed for $pkg"
     dest="$VIBE_HOME/lib/$pkg"
     rm -rf "$dest"
     mkdir -p "$dest"
-    cp "$src/index.vibei" "$dest/"
+    if [ -f "$src/index.vpkg" ]; then
+      cp "$src/index.vpkg" "$dest/"
+    else
+      cp "$src/index.vibei" "$dest/"
+    fi
     for f in "$src"/*.vibe; do
       [ -e "$f" ] || continue
       case "$(basename "$f")" in

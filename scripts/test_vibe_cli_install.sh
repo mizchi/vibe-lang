@@ -42,7 +42,7 @@ VIBE="$VIBE_BIN_DIR/vibe"
 [ -f "$VIBE_HOME/toolchains/main/lib/vibe-cli.cwasm" ] || [ -f "$VIBE_HOME/lib/vibe-cli.cwasm" ] \
   || { echo "FAIL: .cwasm not generated" >&2; exit 1; }
 [ -f "$VIBE_HOME/toolchain" ] || { echo "FAIL: default toolchain file not written" >&2; exit 1; }
-[ -f "$VIBE_HOME/lib/@vibe/core/index.vibei" ] || { echo "FAIL: stdlib @vibe/core not materialized" >&2; exit 1; }
+[ -f "$VIBE_HOME/lib/@vibe/core/index.vpkg" ] || [ -f "$VIBE_HOME/lib/@vibe/core/index.vibei" ] || { echo "FAIL: stdlib @vibe/core not materialized" >&2; exit 1; }
 echo "ok: install produced launcher + .cwasm + default toolchain + stdlib"
 pass=$((pass + 1))
 
