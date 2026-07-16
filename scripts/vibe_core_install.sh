@@ -18,7 +18,8 @@ dest=".vibe/store/@vibe/core"
 rm -rf "$dest"
 mkdir -p "$dest"
 # package files = the contract + its impl files (not tests/benches)
-cp "lib/@vibe/core/index.vibei" "$dest/"
+# #897: the contract is index.vpkg (renamed from index.vibei)
+cp "lib/@vibe/core/index.vpkg" "$dest/"
 for f in lib/@vibe/core/*.vibe; do
   base="$(basename "$f")"
   case "$base" in
@@ -30,7 +31,7 @@ done
 out="$(mktemp)"
 VIBE_HASH=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI" \
-  "$dest/index.vibei" "$out" __no_entry__ >/dev/null 2>&1 || true
+  "$dest/index.vpkg" "$out" __no_entry__ >/dev/null 2>&1 || true
 if ! grep -q '^package ' "$out" 2>/dev/null; then
   echo "vibe_core_install.sh: hash computation failed (CLI: $CLI)" >&2
   cat "$out.diag" 2>/dev/null >&2 || true
