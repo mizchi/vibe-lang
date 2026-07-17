@@ -48,13 +48,34 @@ export fn sqrt(x: Double) -> Double {
   if x <= 0.0 {
     0.0
   } else {
-    let mut guess = x
+    // #949: Newton from guess = x with a fixed iteration count fails for
+    // large inputs (each iteration only halves the exponent gap, so e.g.
+    // sqrt(1e40) needs ~66 halvings and 60 iterations aren't enough).
+    // Pre-scale the initial guess to a power of two just below sqrt(x):
+    // bring g up to >= 1, then halve while g*g still exceeds x. That
+    // leaves g in (sqrt(x)/2, sqrt(x)], so a handful of Newton steps
+    // converge quadratically for any finite magnitude.
+    //
+    // #772: Double comparisons must not sit directly in a `while` header
+    // (integer-compare fast-path miscompile) -- route through `let mut`
+    // Bools re-evaluated each iteration, as in `ln` above.
+    let mut g = x
+    let mut g_below_one = g < 1.0
+    while g_below_one {
+      g = g * 2.0
+      g_below_one = g < 1.0
+    }
+    let mut gg_above_x = g * g > x
+    while gg_above_x {
+      g = g * 0.5
+      gg_above_x = g * g > x
+    }
     let mut i = 0
-    while i < 60 {
-      guess = (guess + x / guess) * 0.5
+    while i < 8 {
+      g = (g + x / g) * 0.5
       i = i + 1
     }
-    guess
+    g
   }
 }
 
@@ -96,23 +117,34 @@ fn atan_small(x: Double) -> Double {
 
 export fn atan(x: Double) -> Double {
   if x > 1.0 {
-    // #772: `half_pi` (a global) minus a call result (`atan_small(...)`) --
+    // #772: `half_pi` (a global) minus a call result (`atan(...)`) --
     // neither operand is a literal or a parameter, so the codegen's
     // syntactic `expr_is_floatish` heuristic (which has no real type
     // information) can't recognize this subtraction as float arithmetic and
     // silently compiles it as an *integer* subtraction on the two boxed
     // Double bit patterns/pointers instead. `+ 0.0` forces recognition
     // without changing the value.
-    (half_pi + 0.0) - atan_small(1.0 / x)
+    //
+    // #949: recurse into the full `atan` (not `atan_small`) so that
+    // 1/x values in (0.5, 1) go through the argument reduction below --
+    // the bare 20-term Taylor series is ~1% off as |arg| approaches 1.
+    (half_pi + 0.0) - atan(1.0 / x)
   }
   else if x < -1.0 {
-    0.0 - half_pi - atan_small(1.0 / x)
+    0.0 - half_pi - atan(1.0 / x)
   }
-  else if x > 0.999999999 {
-    pi / 4.0
+  else if x > 0.5 {
+    // #949: the 20-term Taylor series converges too slowly near |x| = 1
+    // (atan(0.99) was off by ~1%). Reduce via the half-angle identity
+    // atan(x) = 2*atan(x / (1 + sqrt(1 + x^2))); for |x| <= 1 the reduced
+    // argument is <= sqrt(2) - 1 ~ 0.414, so one reduction step always
+    // lands in atan_small's fast-converging range.
+    let y = x / (1.0 + sqrt(1.0 + x * x))
+    2.0 * atan_small(y)
   }
-  else if x < -0.999999999 {
-    0.0 - pi / 4.0
+  else if x < -0.5 {
+    let y = x / (1.0 + sqrt(1.0 + x * x))
+    2.0 * atan_small(y)
   }
   else {
     atan_small(x)
@@ -167,16 +199,45 @@ export fn atan2(y: Double, x: Double) -> Double {
 }
 
 export fn exp_double(x: Double) -> Double {
-  let mut result = 1.0
-  let mut term = 1.0
-  let mut i = 1
-  while i < 30 {
-    let id = Int::to_double(i)
-    term = term * x / id
-    result = result + term
-    i = i + 1
+  // #949: a fixed 30-term Maclaurin series diverges for x <~ -8
+  // (catastrophic cancellation between huge alternating terms: exp(-10)
+  // came back negative) and loses precision for large positive x (the
+  // series is truncated long before the terms decay: exp(20) was off by
+  // ~2%). Fix both by (a) mapping negative arguments through
+  // 1/exp(-x), and (b) splitting the non-negative argument into integer
+  // + fractional parts: exp(k + f) = e^k * exp(f) with e^k built by
+  // repeated multiplication and the Maclaurin series only ever evaluated
+  // on f in [0, 1), where 30 terms give full double precision.
+  if x < 0.0 {
+    1.0 / exp_double(0.0 - x)
   }
-  result
+  else if x > 710.0 {
+    // exp overflows double range well before 710 (ln(DBL_MAX) ~ 709.78);
+    // return +inf directly instead of walking the integer-part loop.
+    1.0 / 0.0
+  }
+  else {
+    let mut int_pow = 1.0
+    let mut f = x
+    // #772: comparison routed through a `let mut` Bool, not the `while`
+    // header (integer-compare fast-path miscompile) -- see `ln` above.
+    let mut has_int_part = f >= 1.0
+    while has_int_part {
+      f = f - 1.0
+      int_pow = int_pow * e_const
+      has_int_part = f >= 1.0
+    }
+    let mut result = 1.0
+    let mut term = 1.0
+    let mut i = 1
+    while i < 30 {
+      let id = Int::to_double(i)
+      term = term * f / id
+      result = result + term
+      i = i + 1
+    }
+    int_pow * result
+  }
 }
 
 export fn pow_double(base: Double, exponent: Double) -> Double {

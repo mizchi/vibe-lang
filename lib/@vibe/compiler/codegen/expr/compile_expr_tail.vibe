@@ -21,7 +21,7 @@ import ../wasm_emit {
 }
 
 import ./compile_call.vibe {
-  compile_call
+  compile_call, cc_builtin_call_ret_kind, cc_expr_is_stringish
 }
 
 import ./compile_expr_tail2.vibe {
@@ -127,13 +127,16 @@ fn slot_is_floatish(ctx: CompileCtx, slot: Int) -> Bool {
 
 // #678: is the local in `slot` known to hold an Int/Bool? Mirrors
 // slot_is_floatish over ctx.int_local_slots. #769 encoding: `slot*4 + kind`,
-// kind 0 = cleared (non-int rebind of a reused slot), 1 = Int, 3 = Bool --
-// bit 0 still means "intish" (both 1 and 3), so every pre-existing intish
-// consumer is unchanged, while kind 3 additionally lets `__to_string` format
-// a bool-bound IDENT as "true"/"false" (the #784/#785-P2 gap: `let b = true;
-// "\{b}"` printed the raw integer). Most-recent entry wins; the log is pruned
-// at branch/arm boundaries (int_log_reset_above) so a slot reused by a
-// non-`let` binder reads false here rather than a stale entry.
+// kind 0 = cleared (reclassifying rebind of a reused slot), 1 = Int, 2 =
+// String (#950), 3 = Bool -- bit 0 still means "intish" (both 1 and 3), so
+// every pre-existing intish consumer is unchanged, while kind 3 additionally
+// lets `__to_string` format a bool-bound IDENT as "true"/"false" (the
+// #784/#785-P2 gap: `let b = true; "\{b}"` printed the raw integer) and kind
+// 2 routes a string-bound IDENT down `__to_string`'s identity path (the #950
+// gap: `let j = String::join([], "-"); "\{j}"` printed "0", the packed
+// empty-string encoding misread as an Int). Most-recent entry wins; the log
+// is pruned at branch/arm boundaries (int_log_reset_above) so a slot reused
+// by a non-`let` binder reads false here rather than a stale entry.
 fn slot_is_intish(ctx: CompileCtx, slot: Int) -> Bool {
   let arr = ctx.int_local_slots
   let mut j = Array::length(arr) - 1
@@ -159,6 +162,27 @@ fn slot_is_boolish(ctx: CompileCtx, slot: Int) -> Bool {
     let entry = Array::get(arr, j)
     if entry / 4 == slot {
       result = (entry % 4) == 3
+      j = -1
+    } else {
+      j = j - 1
+    }
+  }
+  result
+}
+
+// #950: is the local in `slot` known to hold specifically a String (kind 2)?
+// Consulted only by the rebind-clear logic at the `let`/`let mut` logging
+// sites (a non-string rebind of a previously-stringish slot must log a
+// kind-0 override, or a later bare-ident read would see the stale kind-2
+// entry and take __to_string's identity path on a non-string value).
+fn slot_is_stringish(ctx: CompileCtx, slot: Int) -> Bool {
+  let arr = ctx.int_local_slots
+  let mut j = Array::length(arr) - 1
+  let mut result = false
+  while j >= 0 {
+    let entry = Array::get(arr, j)
+    if entry / 4 == slot {
+      result = (entry % 4) == 2
       j = -1
     } else {
       j = j - 1
@@ -250,7 +274,7 @@ export fn expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtx) 
     let bcallee = get_ecall_callee(e)
     if is_eident(bcallee) {
       let bcn = get_eident_name(bcallee)
-      String::starts_with(bcn, "__arr_equals__") || (String::ends_with(bcn, "::equals") && Array::length(get_ecall_args(e)) == 2) || (bcn == "not" && Array::length(get_ecall_args(e)) == 1 && find_local_slot(local_names, "not") < 0 && expr_is_boolish(Array::get(get_ecall_args(e), 0), local_names, ctx))
+      String::starts_with(bcn, "__arr_equals__") || (String::ends_with(bcn, "::equals") && Array::length(get_ecall_args(e)) == 2) || (bcn == "not" && Array::length(get_ecall_args(e)) == 1 && find_local_slot(local_names, "not") < 0 && expr_is_boolish(Array::get(get_ecall_args(e), 0), local_names, ctx)) || cc_builtin_call_ret_kind(e, local_names, ctx) == 1
     } else if is_efn(bcallee) && Array::length(get_ecall_args(e)) == 1 {
       // #815: `let x: Bool = e` parses to the ascription marker
       // `((__asc: Bool) -> __asc)(e)` (ELet carries no type field, see
@@ -850,14 +874,16 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     }
     // #678: log whether this binding holds a definitely-integral value, so a
     // later bare-ident `==` on it bypasses the string-pointer-misreading `eq`.
-    // Always (re)log when the slot was previously int, so a non-int rebind of a
-    // reused slot overrides the earlier entry. #769 encoding: slot*4 + kind
-    // (0 clear / 1 int / 3 bool) -- see slot_is_intish.
+    // Always (re)log when the slot was previously classified, so a rebind of a
+    // reused slot overrides the earlier entry. #769/#950 encoding: slot*4 +
+    // kind (0 clear / 1 int / 2 string / 3 bool) -- see slot_is_intish.
     if expr_is_boolish(value, local_names, ctx) {
       Array::push(ctx.int_local_slots, local_idx * 4 + 3)
     } else if expr_is_intish(value, local_names, ctx) {
       Array::push(ctx.int_local_slots, local_idx * 4 + 1)
-    } else if slot_is_intish(ctx, local_idx) {
+    } else if cc_expr_is_stringish(value, local_names, ctx) {
+      Array::push(ctx.int_local_slots, local_idx * 4 + 2)
+    } else if slot_is_intish(ctx, local_idx) || slot_is_stringish(ctx, local_idx) {
       Array::push(ctx.int_local_slots, local_idx * 4)
     }
     // #724: log this binding's AGGREGATE shape (tuple arity / ctor-record
@@ -1123,13 +1149,16 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     }
     // #678: track integral mutable bindings too (an Int local stays Int across
     // reassignments — the checker forbids changing its type), so a bare-ident
-    // `==` on it uses the direct i64 path. #769: slot*4 + kind encoding, bool
-    // tracked as kind 3 (a mut Bool stays Bool across reassignments too).
+    // `==` on it uses the direct i64 path. #769/#950: slot*4 + kind encoding,
+    // bool tracked as kind 3, string as kind 2 (a mut Bool/String stays that
+    // type across reassignments too).
     if expr_is_boolish(value, local_names, ctx) {
       Array::push(ctx.int_local_slots, local_idx * 4 + 3)
     } else if expr_is_intish(value, local_names, ctx) {
       Array::push(ctx.int_local_slots, local_idx * 4 + 1)
-    } else if slot_is_intish(ctx, local_idx) {
+    } else if cc_expr_is_stringish(value, local_names, ctx) {
+      Array::push(ctx.int_local_slots, local_idx * 4 + 2)
+    } else if slot_is_intish(ctx, local_idx) || slot_is_stringish(ctx, local_idx) {
       Array::push(ctx.int_local_slots, local_idx * 4)
     }
     if mut_needs_ref_cell(body, name) {
