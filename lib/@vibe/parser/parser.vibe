@@ -878,7 +878,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
         } with Error {
           Throw(msg) => {
             let (err_pos, cleaned_msg) = extract_err_token_pos(msg, start_pos)
-            let anchor_pos = if err_pos < Array::length(starts) {
+            let anchor_pos = if err_pos >= start_pos && err_pos < Array::length(starts) {
               err_pos
             } else {
               start_pos
@@ -891,23 +891,16 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
             let (line, col) = offset_to_line_col(source, off)
             let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
             ArrayBuilder::push(diags, String::concat(loc, cleaned_msg))
-            None
-          }
-        }
-        match res {
-          Some((stmts, next)) => {
-            let mut ii = 0
-            while ii < Array::length(stmts) {
-              ArrayBuilder::push(b, Array::get(stmts, ii))
-              ii = ii + 1
-            }
-            pos = next
-          },
-          None => {
-            // Resynchronize: skip at least one token (guarantee progress),
+            // #946: resynchronize from the ERROR ANCHOR, not the statement
+            // start. Every token before the anchor was already consumed as
+            // part of this failed statement, so restarting the parse at each
+            // intervening recovery-point-looking token (e.g. the TLet inside
+            // a failed `export let ...`) re-reported the SAME error 4-5x with
+            // stray positions. Skip at least one token (progress guarantee),
             // then advance to the next recovery point (top-level statement
-            // start, TSemicolon, or TEof — see is_recovery_point).
-            let mut rp = start_pos + 1
+            // start, TSemicolon, or TEof — see is_recovery_point) and hand
+            // the position back through the normal Some path (zero stmts).
+            let mut rp = anchor_pos + 1
             let mut sync = false
             while !sync {
               if rp >= n {
@@ -921,7 +914,25 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
                 }
               }
             }
-            pos = rp
+            Some((Array::slice([
+              SExport(empty_names())
+            ], 0, 0), rp))
+          }
+        }
+        match res {
+          Some((stmts, next)) => {
+            let mut ii = 0
+            while ii < Array::length(stmts) {
+              ArrayBuilder::push(b, Array::get(stmts, ii))
+              ii = ii + 1
+            }
+            pos = next
+          },
+          None => {
+            // Unreachable: the Throw handler above always returns Some with
+            // an empty statement list and the resync position. Kept only for
+            // match exhaustiveness; consume one token if ever reached.
+            pos = start_pos + 1
           }
         }
       }
