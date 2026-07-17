@@ -2680,6 +2680,68 @@ fi
 rm -rf "$edir"
 echo "[compiler-gate] Error-as-perform equivalence ok (4, byte-identical)"
 
+# 27f. print primitives on the bare FS lane (#929/#930): the println/print
+#      checker builtins had no linear-lane lowering (any program not importing
+#      @vibe/io died with "undefined variable (local): println @call"), and the
+#      Stdout::write_char / Stderr::write_char / Stdin::read_stream host
+#      imports were called with guest-TAGGED ints (write_char(65) wrote byte
+#      130 — "42" printed as "hd"). println/print must compile standalone and
+#      print exact text; write_char must print the untagged byte; a source-
+#      provided println (shadow) must still win over the builtin lowering.
+echo "[compiler-gate] 27f/27 print primitives on the FS lane (#929/#930)"
+ppdir="_build/_gate_print_prims"
+rm -rf "$ppdir"; mkdir -p "$ppdir"
+cat > "$ppdir/prints.vibe" <<'EOF'
+fn main() -> Unit with { Stdout } {
+  println("hello gate")
+  print("forty")
+  print("two")
+  println("")
+  println("\{40 + 2}")
+  Stdout::write_char(String::char_code_at("A", 0))
+  Stdout::write_char(10)
+}
+EOF
+# The lowering must hold on BOTH linear lanes: the RC-canonical lane (raw
+# host ABI, #930 untag shims) and the non-RC lane this gate's global
+# VIBE_RC=0 pin compiles under (its generic call path untags import args
+# itself). Compile and run the same program once per lane.
+for pp_rc in 0 1; do
+  rm -f "$ppdir/prints.wasm" "$ppdir/prints.wasm.diag"
+  VIBE_RC="$pp_rc" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$ppdir/prints.vibe" "$ppdir/prints.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$ppdir/prints.wasm" ]; then
+    echo "[compiler-gate] FAIL: println/print program did not compile on the FS lane under VIBE_RC=$pp_rc (#929 regressed)" >&2
+    cat "$ppdir/prints.wasm.diag" 2>/dev/null >&2; exit 1
+  fi
+  pp_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$ppdir/prints.wasm" 2>/dev/null | head -n 4 | tr '\n' '|')"
+  if [ "$pp_out" != "hello gate|fortytwo|42|A|" ]; then
+    echo "[compiler-gate] FAIL: print primitives output '$pp_out' under VIBE_RC=$pp_rc (expected 'hello gate|fortytwo|42|A|'; #929/#930 regressed)" >&2; exit 1
+  fi
+done
+cat > "$ppdir/shadow.vibe" <<'EOF'
+fn println(s: String) -> Unit {
+  print("S\n")
+}
+
+fn main() -> Unit {
+  println("ignored")
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ppdir/shadow.vibe" "$ppdir/shadow.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$ppdir/shadow.wasm" ]; then
+  echo "[compiler-gate] FAIL: source-shadowed println did not compile (#929 shadow guard broke shadowing)" >&2; exit 1
+fi
+pp_shadow="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$ppdir/shadow.wasm" 2>/dev/null | head -n 1)"
+if [ "$pp_shadow" != "S" ]; then
+  echo "[compiler-gate] FAIL: source-shadowed println printed '$pp_shadow' (expected 'S'; builtin lowering must yield to source defs)" >&2; exit 1
+fi
+rm -rf "$ppdir"
+echo "[compiler-gate] print primitives ok"
+
 # 28. argument type checking: the checker used to SWALLOW argument unification
 #     failures (`unify_call_args` did `None => out`), so an ill-typed call like
 #     `f("x")` for `f: (Int) -> Int` was silently accepted. It now reports a

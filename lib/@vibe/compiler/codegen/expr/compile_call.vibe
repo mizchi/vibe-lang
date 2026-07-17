@@ -47,6 +47,24 @@ import ../int_parse_expr.vibe {
 // Without a retain the callee's param-drop frees it while the source still
 // references it — a double-free that corrupts the free list (e.g. derived
 // `T::equals` passing `a.items` to the consuming `__arr_equals__` helper, #704).
+// #929: non-throwing func-table membership probe (resolve_func throws on a
+// missing name). The println/print fallback lowering below must yield to a
+// SOURCE-provided definition (@vibe/io's println, or a user shadow) whenever
+// one is merged into the program.
+fn cc_ft_has(ft: FuncTable, name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(ft.names) {
+    if Array::get(ft.names, i) == name {
+      found = true
+      i = Array::length(ft.names)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 // Perceus emits no action for bare projections, so this guarded dup is the only
 // owner-increment. Scalars are no-ops; this is NOT applied to borrow-arg0
 // builtins (Array::get/length etc.), which do not drop their argument.
@@ -3651,6 +3669,57 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       } else {
         ()
       }
+      nl
+    }
+    else if ctx.enable_rc && (fname == "Stdout::write_char" || fname == "Stderr::write_char" || fname == "Stdin::read_stream") {
+      // #930: same raw-ABI shim shape as the #705 Fs::exists family and the
+      // #865 vibe_process_exit_raw case above -- these three were registered
+      // straight into the func table (linked_compile's name->import map) with
+      // NO shim, so the generic call path handed the host a guest-TAGGED int
+      // (write_char(65) wrote byte 130 -- "42" printed as "hd" -- and
+      // read_stream(n) read 2n bytes). Untag the int param; write_char's
+      // void import pushes Unit 0, read_stream's packed-string result passes
+      // through unchanged (same in both modes).
+      let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_i64_const(buf, 1)
+      emit_i64_shr_s(buf)
+      emit_call(buf, hi_idx)
+      if fname == "Stdin::read_stream" {
+        ()
+      } else {
+        emit_i64_const(buf, 0)
+      }
+      nl
+    }
+    else if (fname == "println" || fname == "print") && !cc_ft_has(ctx.func_table, fname) {
+      // #929: the println/print checker builtins had NO linear-lane lowering
+      // at all -- builtin_registry marks them in_linear_table=false on the
+      // assumption that "a real prelude source function" serves the linear
+      // lane (see the FixedArray comment above), but that function lives in
+      // @vibe/io, so any program that does not import it died at codegen
+      // with "undefined variable (local): println @call". When no SOURCE
+      // definition is merged (the cc_ft_has guard keeps @vibe/io's println
+      // and user shadows winning), lower directly onto the Stdout host
+      // imports on BOTH lanes: the packed-string arg passes through to
+      // write_stream unchanged (same in both modes), and println appends a
+      // RAW newline byte via write_char -- a direct emit_call to the import
+      // index bypasses each lane's arg conversion (the RC/raw ABI hands the
+      // host raw ints anyway, and the non-RC lane's untagging lives in the
+      // generic call path we are NOT going through), so the raw byte value
+      // is correct on BOTH lanes. Import gating in linked_compile.vibe
+      // includes println/print for exactly this path.
+      let (ws_idx, _, _) = resolve_func(ctx.func_table, "Stdout::write_stream")
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_call(buf, ws_idx)
+      if fname == "println" {
+        let (wc_idx, _, _) = resolve_func(ctx.func_table, "Stdout::write_char")
+        emit_i64_const(buf, 10)
+        emit_call(buf, wc_idx)
+      } else {
+        ()
+      }
+      emit_i64_const(buf, 0)
       nl
     }
     else if fname == "__rec_field" {

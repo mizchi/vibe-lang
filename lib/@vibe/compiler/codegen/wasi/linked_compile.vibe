@@ -686,8 +686,14 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // the compiler's own build uses none, so its bytes are unchanged. Revives the
   // io stdlib whose read/print/println/write_char helpers call these builtins.
   let need_stdin_read_stream_builtin = Map::has_key(used_builtin_names, "Stdin::read_stream")
-  let need_stdout_write_stream_builtin = Map::has_key(used_builtin_names, "Stdout::write_stream")
-  let need_stdout_write_char_builtin = Map::has_key(used_builtin_names, "Stdout::write_char")
+  // #929: the println/print BUILTIN lowering (compile_call.vibe) synthesizes
+  // calls onto these two imports when no source-provided println/print is
+  // merged, so their use also gates the imports in. collect_used_builtin_names
+  // only counts FREE names -- a program using @vibe/io's (or its own) println
+  // fn does not trip this, exactly matching the lowering's cc_ft_has guard.
+  let used_print_builtin = Map::has_key(used_builtin_names, "println") || Map::has_key(used_builtin_names, "print")
+  let need_stdout_write_stream_builtin = Map::has_key(used_builtin_names, "Stdout::write_stream") || used_print_builtin
+  let need_stdout_write_char_builtin = Map::has_key(used_builtin_names, "Stdout::write_char") || used_print_builtin
   // #865: `Stderr::write_stream(s) -> Unit` / `Stderr::write_char(c) -> Unit`
   // (`vibe.stderr_write_stream` / `vibe.stderr_write_char (i64) -> ()`, void
   // like stdout's), same shapes/gating as the Stdout pair above.
