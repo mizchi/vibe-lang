@@ -2669,8 +2669,16 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
 if [ -s "$edir/bad_resume_arm.wasm" ]; then
   echo "[compiler-gate] FAIL: resume(...) in a with-Error arm compiled (#640 regressed)" >&2; exit 1
 fi
+# 27e2 (#640 Stage 2): `throw(x)` desugars at PARSE time to the exact
+# `perform Error::Throw(x)` AST (single internal form), so the two spellings
+# must produce BYTE-IDENTICAL wasm — a much stronger pin than the equal-output
+# check above. If this ever diverges, the single-form invariant regressed
+# (e.g. one spelling grew its own lowering again).
+if ! cmp -s "$edir/via_perform.wasm" "$edir/via_throw.wasm"; then
+  echo "[compiler-gate] FAIL: throw vs perform Error::Throw wasm bytes differ (#640 Stage 2 single-form regressed)" >&2; exit 1
+fi
 rm -rf "$edir"
-echo "[compiler-gate] Error-as-perform equivalence ok (4)"
+echo "[compiler-gate] Error-as-perform equivalence ok (4, byte-identical)"
 
 # 28. argument type checking: the checker used to SWALLOW argument unification
 #     failures (`unify_call_args` did `None => out`), so an ill-typed call like

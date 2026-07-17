@@ -372,7 +372,28 @@ export fn print_expr(e: Expr) -> String {
     },
     ECall(callee, args, _) => match callee {
       EIdent("perform", _) => if Array::length(args) == 1 {
-        String::concat("perform ", print_expr(Array::get(args, 0)))
+        // #640 Stage 2: re-sugar the parser's `throw(x)` desugar (`perform
+        // Error::Throw(x)` shape) back to `throw(x)`. This keeps print
+        // round-trips stable for the ubiquitous `throw(` spelling and keeps
+        // the regenerated flat module source seed-compatible (the committed
+        // seed predates the Stage-1 tag-2 routing of the perform spelling).
+        // The explicit no-call `perform Error::Throw` (EIdent op) keeps its
+        // perform rendering below.
+        let resugar = match Array::get(args, 0) {
+          ECall(op_callee, op_args, _) => match op_callee {
+            EIdent(op_name, _) => if op_name == "Error::Throw" && Array::length(op_args) == 1 {
+              Some(Array::get(op_args, 0))
+            } else {
+              None
+            },
+            _ => None
+          },
+          _ => None
+        }
+        match resugar {
+          Some(payload) => String::concat("throw(", String::concat(print_expr(payload), ")")),
+          None => String::concat("perform ", print_expr(Array::get(args, 0)))
+        }
       } else {
         String::concat(print_expr(callee), String::concat("(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")))
       },

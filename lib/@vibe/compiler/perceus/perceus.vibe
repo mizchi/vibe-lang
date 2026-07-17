@@ -345,10 +345,39 @@ fn tail_is_borrow_ret_safe(known: Array[String], e0: Expr) -> Bool {
           ai = ai + 1
         }
       },
-      ECall(callee_e, _, _) =>
+      ECall(callee_e, cargs, _) =>
       match callee_e {
         EIdent(callee, _) =>
-        if !array_contains_str_pctx(known, callee) {
+        if callee == "perform" && Array::length(cargs) == 1 {
+          // #640 Stage 2: `throw(x)` now parses to `perform Error::Throw(x)`,
+          // so the #715 throwing-tail exemption below (EThrow) must also
+          // recognize this shape — a throwing tail never produces a value, so
+          // it cannot violate the borrow-returning invariant. Without this,
+          // every `match x { Ctor(..) => field, _ => throw(..) }` accessor is
+          // again rejected as borrow-returning and the #715 same-address
+          // double-free returns. Matched step-by-step (NOT one nested
+          // ECall(EIdent(..)) pattern) per the workaround note above.
+          let mut op_is_throw = false
+          match Array::get(cargs, 0) {
+            ECall(op_e, _, _) =>
+            match op_e {
+              EIdent(op_n, _) => if op_n == "Error::Throw" {
+                op_is_throw = true
+              } else {
+                ()
+              },
+              _ => ()
+            },
+            _ => ()
+          }
+          if op_is_throw {
+            ()
+          } else if !array_contains_str_pctx(known, callee) {
+            all_safe = false
+          } else {
+            ()
+          }
+        } else if !array_contains_str_pctx(known, callee) {
           all_safe = false
         } else {
           ()

@@ -530,6 +530,10 @@ let safe = handle { risky(0) } with Error { Throw(msg) => -1 }
 `throw(x)` は `perform Error::Throw(x)` と等価 (#640)。`Error` は再開不能
 (non-resumable) — `Error` arm の値がそのまま handle の結果になるため、
 arm 内の `resume(...)` は checker がエラーにする。
+Stage 2 (#640) で `throw(x)` は parse 時に `perform Error::Throw(x)` へ脱糖され、
+両綴りはパイプライン全体で単一の内部表現になった（printer は `throw(x)` に
+再糖衣する）。`perform Error::Throw(x)` は effect-row 上も `throw` と同じ扱い
+（`with { Error }` 宣言なしでも許容される、遍在 row）。
 
 ### Railway try (`?`) — `Result` and `Option` (#635)
 
