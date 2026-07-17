@@ -3,6 +3,8 @@ import VibeFormal.Proofs.SubsetCorrect
 import VibeFormal.Proofs.HandlerCorrect
 import VibeFormal.Proofs.AliasEquivalent
 import VibeFormal.Proofs.Examples
+import VibeFormal.Proofs.ErrorPolicyCorrect
+import VibeFormal.Proofs.ErrorPolicyExamples
 import VibeFormal.Proofs.SchedulerCorrect
 import VibeFormal.Proofs.SchedulerExamples
 import VibeFormal.Proofs.ModuleExamples

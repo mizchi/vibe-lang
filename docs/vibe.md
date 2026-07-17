@@ -17,8 +17,8 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 ## Goals
 
 - POSIX sh superset with a clear syntactic split.
-- Pure by default; effects are explicit (`with { ... }`) and can be locally
-  handled with effect handlers (`handle eff { ... }` pattern arms).
+- Pure by default; semantic effects including `Error` are explicit
+  (`with { ... }`) and can be locally discharged with effect handlers.
 - Content-addressed functions (Git blob compatible) with Unison-style aliases.
 - Incremental pipeline: CST -> AST -> monomorphized AST -> canonical S-expression -> hash.
 
@@ -60,8 +60,12 @@ Documented but excluded from standard tutorial:
 
 ## Effects
 
-Effects are explicit in function signatures and validated by effect
-compatibility plus handler matching.
+Semantic effects are explicit in function signatures and validated by effect
+compatibility plus handler matching. `Error` is checked and propagates like
+other operation requirements under ADR-0073.
+
+ADR-0073 and the Lean model are the specification Oracle. The current selfhost
+checker still has an Error exemption; #944 tracks bringing it into conformance.
 
 ```
 let run: () -> Unit with { Stdout } = () -> {
@@ -73,10 +77,15 @@ Rules:
 - Effect signature requirement:
   a function's declared effects must be a superset of the effects used inside.
   (`with { ... }` is the capability contract.)
+- Checked Error requirement:
+  `throw(x)`, `perform Error::Throw(x)`, and calls to a function annotated with
+  `with { Error }` require the caller to declare or handle `Error`.
 - Handler requirement:
   effects can be localized by `handle` arms that pattern-match the handled
   operation/error payload.
-- `with {}` is optional; omission means pure.
+- `with {}` is optional; omission means no semantic effect requirement,
+  including no escaping `Error`. It does not guarantee termination or exclude
+  panic, Wasm trap, or resource exhaustion.
 - `do` is not part of the current surface syntax.
 - Capability mapping is 1:1 with the runtime `CapabilitySet`.
 - Current builtin mapping:
@@ -103,21 +112,26 @@ let run: () -> Unit with { Stdout } = () -> { sh("ls") }
 // error: missing effect declaration for direct effectful builtin call
 let run: () -> Unit = () -> { sh("ls") }
 
-// error: caller must include callee effect
-let f: (Int) -> Int with { Error } = (x) -> { x }
-let g: (Int) -> Int = (y) -> { f(y) }
+// error: Error propagates transitively
+let fail: (String) -> Int with { Error } = (msg) -> { throw(msg) }
+let g: (String) -> Int = (msg) -> { fail(msg) }
 
-// ok: effect requirement is explicitly propagated
-let g2: (Int) -> Int with { Error } = (y) -> { f(y) }
+// ok: caller propagates Error explicitly
+let g2: (String) -> Int with { Error } = (msg) -> { fail(msg) }
 
 // ok: effect is localized by handler pattern
-let g3: (Int) -> Int = (y) -> {
-  handle { f(y) } with Error { Throw(_) => 0 }
+let g3: (String) -> Int = (msg) -> {
+  handle { fail(msg) } with Error { Throw(_) => 0 }
 }
 ```
 
 ### Error model (Result-first, current policy)
 
+- `Error` is checked: direct throws and transitive calls require declaration or
+  handling. An empty effect row excludes escaping `Error`, but not divergence
+  or runtime traps.
+- `fn main with { Error }` is allowed; the runtime boundary converts an
+  escaping Error into a diagnosed unsuccessful process outcome.
 - Standard error model is `Result[T, E]`.
 - Application/core pipelines should compose with `Result` (`map`,
   `and_then`/`bind`, `map_err`).

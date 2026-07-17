@@ -1,8 +1,9 @@
 # Vibe formal model
 
-This directory contains small Lean 4 models of Vibe's effect system,
-parallel compiler scheduler, and module system. Their sources of truth are
+This directory contains small Lean 4 models of Vibe's effect system and Error
+policy, parallel compiler scheduler, and module system. Their sources of truth are
 [ADR-0071](../docs/effectset.md) and
+[ADR-0073](../docs/error-effect-policy.md),
 [ADR-0068](../docs/concurrency.md), plus
 [ADR-0070](../docs/module-system-oracle.md). The current string-based effect
 checker and synchronous eager `Task` implementation are not sources of truth.
@@ -24,6 +25,28 @@ The model starts after name resolution. Undefined names, qualified-effectset
 membership, namespace collisions, and cycle rejection remain resolver proof
 obligations for a later phase. Open row variables, type safety, evidence
 passing, and compiler-to-Wasm simulation are also out of scope for Phase 1.
+
+## Verified checked Error policy properties
+
+- checked Error is the adopted executable static policy and rejects a
+  transitive bare throw from an empty declared row;
+- an admitted checked empty-row term cannot finish by raising Error or by
+  performing an undeclared capability operation;
+- handling Error removes the static Error requirement under the checked policy
+  and converts the modeled exceptional outcome to normal return;
+- an Error-declaring checked entry finishes through the runtime boundary as
+  either success or a diagnosed Error failure, never as an undeclared
+  capability operation;
+- ambient Error remains as a rejected comparison witness: it admits a
+  transitive bare throw from an empty declared row;
+- a deliberately broken checker that drops capability requirements admits a
+  concrete undeclared `Fs` operation, preserving a negative witness.
+
+This is a policy model for #944, not yet the full Vibe type-and-effect calculus.
+ADR-0073 decides that explicit `with { Error }` is a semantic row element, but
+the higher-order typing and subtyping proofs remain coupled to #939. The model
+also abstracts from payload types, divergence, traps, stack unwinding,
+finalizers, and backend exception representation.
 
 ## Verified compiler scheduler properties
 
