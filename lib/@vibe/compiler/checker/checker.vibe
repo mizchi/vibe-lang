@@ -9,7 +9,7 @@ import ./builtins.vibe {
 }
 
 import ./checker_pattern.vibe {
-  check_pattern
+  check_pattern, pat_has_unsupported_or_binding
 }
 
 import ./checker_resolve.vibe {
@@ -3463,6 +3463,16 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
         let mut ai = 0
         while ai < alen {
           let (pat, body) = Array::get(arms, ai)
+          // #951: `A(v) | B(v) => v` (or any or-pattern binding a variable in
+          // either branch) passes `check_pattern` (which only walks the LEFT
+          // branch) but codegen has no per-branch binding-extraction path for
+          // or-patterns and crashes with an unlocated internal error. Reject
+          // it here instead, as a normal located diagnostic.
+          if pat_has_unsupported_or_binding(pat) {
+            Array::push(errors, String::concat("or-pattern bindings are not supported yet: `A(v) | B(v)`-style patterns cannot bind variables in an or-branch (rewrite without a shared binding, e.g. separate arms with the same body, or bind after matching)", off_marker(railway_expr_off(body))))
+          } else {
+            ()
+          }
           let arm_env = check_pattern(pat, scr_ty, env, defs, errors)
           let (arm_ty, ns, nc) = check_expr(body, arm_env, defs, si, ci, errors, tytab)
           si = ns

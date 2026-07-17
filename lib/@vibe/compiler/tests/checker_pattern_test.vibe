@@ -6,7 +6,7 @@ import ../core {
 }
 
 import ../checker/index.vibe {
-  check_expr, check_pattern
+  check_expr, check_pattern, pat_has_unsupported_or_binding
 }
 
 import ../types.vibe {
@@ -39,6 +39,44 @@ fn check(expr: Expr, env: TypeEnv) -> Type {
   ], 0, 0)
   let (ty, _, _) = check_expr(expr, env, empty_defs(), SubstEmpty, 0, errors, Array::slice([(0, CtUnit)], 0, 0))
   ty
+}
+
+// Like `check`, but also returns the accumulated diagnostics (against a
+// caller-supplied `defs`, for enum-typed #951 or-pattern fixtures).
+fn check_with_errors(expr: Expr, env: TypeEnv, defs: Array[TypeDef]) -> Array[String] {
+  let errors = Array::slice([
+    ""
+  ], 0, 0)
+  let (_, _, _) = check_expr(expr, env, defs, SubstEmpty, 0, errors, Array::slice([(0, CtUnit)], 0, 0))
+  errors
+}
+
+fn str_contains(s: String, sub: String) -> Bool {
+  String::index_of(s, sub) >= 0
+}
+
+fn any_error_contains(errors: Array[String], sub: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(errors) {
+    if str_contains(Array::get(errors, i), sub) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// #951 fixture: `enum E { A(Int); B(Int) }`.
+fn e_defs() -> Array[TypeDef] {
+  [
+    TDEnum("E", Array::slice([""], 0, 0), [
+      ("A", [CtInt]),
+      ("B", [CtInt])
+    ])
+  ]
 }
 
 //# Misc
@@ -217,4 +255,88 @@ test "match CtOption Some arm resolves element" {
   ])
   let ty = check(expr, env)
   assert(types_equal(ty, CtInt))
+}
+
+// #951: `A(v) | B(v) => v` passes `check_pattern` (it only walks the LEFT
+// branch, so `v` resolves via `A`'s payload) but codegen has no per-branch
+// binding-extraction path for or-patterns and crashes with an unlocated
+// "undefined variable" internal error. The checker now rejects any
+// or-pattern that binds a variable in either branch — even when both
+// branches use the same name and type — with a located diagnostic instead.
+
+test "pat_has_unsupported_or_binding: same-name binding or-pattern is detected" {
+  let pat = POr(PCtor("A", [
+    PBind("v")
+  ]), PCtor("B", [
+    PBind("v")
+  ]))
+  assert(pat_has_unsupported_or_binding(pat))
+}
+
+test "pat_has_unsupported_or_binding: differing-name binding or-pattern is detected" {
+  let pat = POr(PCtor("A", [
+    PBind("v")
+  ]), PCtor("B", [
+    PBind("w")
+  ]))
+  assert(pat_has_unsupported_or_binding(pat))
+}
+
+test "pat_has_unsupported_or_binding: plain literal or-pattern is NOT flagged" {
+  let pat = POr(PInt(1), POr(PInt(2), PInt(3)))
+  assert(not(pat_has_unsupported_or_binding(pat)))
+}
+
+test "pat_has_unsupported_or_binding: nested inside a ctor arg is detected" {
+  // `Some(A(v) | B(v))` — the or-pattern is not the top-level arm pattern,
+  // it is nested inside another constructor's payload. codegen's nested
+  // `emit_pat_test`/`emit_sub_tests` recursion has the same binding gap at
+  // any depth, so detection must recurse into PCtor/PTuple/PStruct args too.
+  let pat = PCtor("Some", [
+    POr(PCtor("A", [
+      PBind("v")
+    ]), PCtor("B", [
+      PBind("v")
+    ]))
+  ])
+  assert(pat_has_unsupported_or_binding(pat))
+}
+
+test "#951 repro: `A(v) | B(v) => v` is rejected with a located diagnostic" {
+  let env = env_bind(EnvEmpty, "e", CtEnum("E"))
+  let pat = POr(PCtor("A", [
+    PBind("v")
+  ]), PCtor("B", [
+    PBind("v")
+  ]))
+  let expr = EMatch(EIdent("e", -1), [
+    (pat, EIdent("v", -1))
+  ])
+  let errors = check_with_errors(expr, env, e_defs())
+  assert(Array::length(errors) > 0)
+  assert(any_error_contains(errors, "or-pattern bindings are not supported yet"))
+}
+
+test "#951: differing binding names across or-branches (`A(v) | B(w)`) is rejected" {
+  let env = env_bind(EnvEmpty, "e", CtEnum("E"))
+  let pat = POr(PCtor("A", [
+    PBind("v")
+  ]), PCtor("B", [
+    PBind("w")
+  ]))
+  let expr = EMatch(EIdent("e", -1), [
+    (pat, EIdent("v", -1))
+  ])
+  let errors = check_with_errors(expr, env, e_defs())
+  assert(Array::length(errors) > 0)
+  assert(any_error_contains(errors, "or-pattern bindings are not supported yet"))
+}
+
+test "#951: plain non-binding or-pattern arm still type-checks (regression guard)" {
+  let expr = EMatch(EInt(2), [
+    (POr(PInt(1), POr(PInt(2), PInt(3))), EInt(100)),
+    (PWild, EInt(0))
+  ])
+  let errors = check_with_errors(expr, EnvEmpty, empty_defs())
+  assert(Array::length(errors) == 0)
 }
