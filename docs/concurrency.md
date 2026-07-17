@@ -172,7 +172,10 @@ terminal state は一度だけ確定し、以後変化しない。`join` は複�
 outcome を返す。`cancel` は idempotent で、terminal task には作用しない。
 
 cancel は cooperative である。`join`、blocking `send` / `recv`、`yield`、
-`sleep`、host await を cancel point とし、要求は次の cancel point で観測する。
+`sleep`、host await に加え、Ready task の dispatch を cancel point とする。したがって
+まだ body を開始していない child も dispatch 前に cancel できる。要求は次の cancel
+point で観測するが、Running task が次の cancel point より先に完了した場合は、その
+完了 outcome が確定してよい。
 cancel を観測しない CPU loop の prompt termination や fairness は v0.4.0 では
 保証しない。
 
@@ -187,6 +190,107 @@ cancel と non-local exit は stack を unwind し、登録済み finalizer を�
 実行しなければならない。したがって replay handler を generalized evidence
 passing + 明示 suspend IR へ置き換える #817 と、`dynamic-wind` 相当の finalization
 規則は、並行 runtime を compliant と呼ぶ前提である。
+
+## Lean lifecycle oracle
+
+task / nursery lifecycle の backend 非依存な部分は、次の Lean モデルを
+machine-checkable oracle とする。
+
+- `formal/VibeFormal/Async/State.lean`: task、nursery、cancel request の論理状態
+- `formal/VibeFormal/Async/Transition.lean`: scheduler event ごとの遷移関係
+- `formal/VibeFormal/Async/Trace.lean`: 許容された遷移だけからなる有限 trace
+- `formal/VibeFormal/Proofs/AsyncSafety.lean`: terminal outcome と join result の安定性
+- `formal/VibeFormal/Proofs/NurseryCorrect.lean`: spawn / close と nursery phase の安全性
+- `formal/VibeFormal/Proofs/AsyncExamples.lean`: 正例と、拒否される壊れた trace
+
+モデルでは task の未登録状態から `spawn` すると `Ready` になるため、上図の
+`Created` は独立状態として保持しない。`Suspended` は待機理由を持つ `Blocked` として
+表現する。task の terminal outcome は `Succeeded` / `Failed` / `Cancelled`、nursery
+は `Open` / `Cancelling` / `Closing` / `Closed` を持つ。
+
+遷移関係は次を固定する。
+
+1. `spawn` は nursery が `Open` で task id が未使用のときだけ許可する。
+2. cancel request は冪等であり、dispatch、suspend、blocked wait のいずれかでだけ
+   `Cancelled` として観測できる。
+3. 明示的に child 一個を cancel しても nursery の成功 cause は failure に変わらない。
+4. 複数 child の failure は scheduler が最初に観測したものを保持する。どれが最初かは
+   非決定的だが、`Closed` へ進む前に全 child が terminal でなければならない。
+5. terminal task と `Closed` nursery は後続 trace で変化しない。したがって複数回の
+   join は同じ outcome を観測する。
+
+実装は event trace をこの遷移関係へ射影できなければならない。cooperative、JSPI /
+Worker、WASI、shared-everything の差は、許容される次 event の選択として表し、公開
+lifecycle を別定義しない。
+
+この oracle は heap、thread、host waitable、channel queue、message linearization、
+fairness、無限 trace、finalizer stack をまだモデル化しない。特に terminal state の
+一回性は証明済みだが、具体的な unwind が各 finalizer をちょうど一度実行することは
+未証明であり、#817 の lowering と別の refinement proof / differential test が必要で
+ある。Channel semantics は後続の独立モデルでこの lifecycle oracle に接続する。
+
+### Parallel refinement oracle
+
+multi-worker backend は lifecycle を置き換えず、次の Lean overlay で async oracle を
+refine する。
+
+- `formal/VibeFormal/Parallel/State.lean`: worker slot、task assignment、heap owner
+- `formal/VibeFormal/Parallel/Transition.lean`: claim / release と async event への射影
+- `formal/VibeFormal/Parallel/Trace.lean`: physical worker trace
+- `formal/VibeFormal/Proofs/ParallelSafety.lean`: assignment invariant、trace refinement、
+  task-local heap の非共有
+- `formal/VibeFormal/Proofs/ParallelExamples.lean`: 二 worker 実行、release、二重 claim と
+  共有 access の拒否例
+
+各 `Running` task はちょうど一つの worker slot に割り当てられ、同じ task を二 worker
+が同時に claim できない。suspend / cancel / completion では slot を release し、wake 後
+の再 dispatch は別 worker を選んでもよい。worker affinity と task migration は公開の
+観測対象にしない。
+
+すべての parallel step は対応する async step を内包し、parallel trace 全体を既存の
+async trace へ射影できなければならない。したがって backend は thread を追加するために
+cancel point、first-failure、nursery close 条件を変更できない。物理的に同時な実行は
+event の interleaving として表す。task 間に共有 mutable location がないことを前提に、
+この順序付けは公開観測を失わない。
+
+heap safety は location ごとに owner task が一つだけ存在し、running task は owner が
+自分である location だけ access できる、という copy-on-send の抽象 contract で表す。
+この contract と worker assignment の一意性から、異なる worker は同じ task-local
+location に access できない。実装の deep copy、fresh allocation、move 最適化がこの
+owner relation を実現することは別の refinement obligation であり、現時点では Lean が
+具体的 allocator や Wasm memory access を検証したものではない。
+
+## Safe parallel API
+
+v0.4.0 では `Thread`、worker handle、shared reference を新しい公開 primitive にしない。
+安全な並列 API は既存の `nursery` / `Task[r, T]` / channel とし、`Task::spawn` された
+child を同時に実行するかは backend と host policy が決める。同じプログラムは
+cooperative な一 worker でも multi-worker でも同じ async oracle の trace だけを生成する。
+
+API boundary は次を必須とする。
+
+- spawn closure は `Spawnable[r]` を満たし、capture は `Send` value、許可された同一
+  region endpoint、fork-safe evidence に限る。戻り値は `T: Send` とする。
+- mutable cell、handler stack、continuation、`TaskContext`、`Task` / `Receiver` handle
+  を worker 境界へ渡さない。message と child result は deep-copy snapshot を基準とする。
+- raw blocking FFI を child から呼ばせず、host await は `Async::suspend` と明示された
+  adapter を通す。backend 内部の blocking pool は公開 `Thread` API にしない。
+- cancel / failure / finalizer は worker の kill ではなく task lifecycle event として処理
+  する。host が worker を強制終了した場合は task failure への安全な変換を証明できない
+  限り instance failure とする。
+- external effect の実行順が必要な場合は、一つの owner task へ channel で集約する。
+  worker id、completion time、CPU count から順序を作らない。
+
+worker 数は compiler driver の `--jobs N` や embedding host の runtime config など
+instance 外の resource policy とする。`N >= 1` を起動時に検証し、値を vibe program
+から取得する安定 API は設けない。generic CLI の具体的な option spelling は実装時に
+決める。これにより worker 数を増減しても program の分岐や compiler output が
+変わらない。
+
+`Parallel::map`、bounded work queue、ordered result collection は、上記 primitive から
+作る library combinator とする。特に `Parallel::map` は入力 index 順に結果を返し、
+task completion 順を公開しない。`FrozenArray[T]` と bounded channel の contract が
+実装されるまでは core primitive や安定 API として先行追加しない。
 
 ## Channel semantics
 

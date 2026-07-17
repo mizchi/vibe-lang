@@ -211,6 +211,13 @@ The executable design claims are represented under `formal/`:
 | schedule-independent final state | `complete_schedules_are_deterministic` |
 | byte/output determinism | `emitted_output_is_deterministic` |
 
+Physical worker ownership is modeled separately by `Parallel.Machine` and
+`Parallel.Step`. Its traces refine the generic async oracle and preserve the
+one-running-task/one-worker invariant. The compiler scheduler still treats one
+job completion as an atomic step; mapping `ModuleId` jobs to task ids and proving
+that a parallel task completion publishes exactly the corresponding
+`ModuleOutcome` is a future composition/refinement proof.
+
 The proof is conditional: workers must satisfy `JobCorrect`, and both schedules
 must reach `Complete`. It proves neither fairness nor that the current selfhost
 compiler implements the worker contract. Those are locked by runtime tests and
