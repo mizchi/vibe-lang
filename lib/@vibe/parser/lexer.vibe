@@ -808,8 +808,39 @@ export fn lex_with_offsets_recovering(source: String) -> (Array[Token], Array[In
         nl_before = skipped.1
       },
       None => {
-        // Skip the offending char and resume at the next non-ws position.
-        let skipped = skip_ws_with_newline(source, len, pos + 1)
+        // #963: resume PAST the failed construct, not inside it. A failure
+        // in a multi-char quoted token (string/char literal with a bad
+        // escape) would otherwise re-lex the token's interior and invent
+        // follow-on diagnostics (the backslash as an unexpected char, the
+        // closing quote as a new unterminated string). For quote-delimited
+        // constructs skip to just past the matching close quote (honoring
+        // backslash escapes; stop at newline/EOF for unterminated ones);
+        // anything else advances one char (progress guarantee).
+        let resume = if c == '"' || c == '\'' {
+          let mut j = pos + 1
+          let mut stop = false
+          while !stop {
+            if j >= len {
+              stop = true
+            } else {
+              let cc = String::char_code_at(source, j)
+              if cc == c {
+                j = j + 1
+                stop = true
+              } else if cc == 10 {
+                stop = true
+              } else if cc == 92 && j + 1 < len {
+                j = j + 2
+              } else {
+                j = j + 1
+              }
+            }
+          }
+          j
+        } else {
+          pos + 1
+        }
+        let skipped = skip_ws_with_newline(source, len, resume)
         pos = skipped.0
         nl_before = skipped.1
       }

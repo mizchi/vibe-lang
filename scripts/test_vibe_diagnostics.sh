@@ -70,6 +70,39 @@ else
   fail=$((fail + 1))
 fi
 
+# #963 (Codex P2 on #946): a bad escape INSIDE a string must yield exactly ONE
+# diagnostic. The recovering lexer resumes past the whole quoted construct;
+# resuming inside it re-lexed the interior and invented follow-on noise (the
+# backslash as an unexpected char, the closing quote as a new unterminated
+# string).
+badesc="$WORK/badesc.vibe"
+printf 'let s = "\\q"\n' > "$badesc"
+out_esc="$("$VIBE" diagnostics "$badesc" 2>/dev/null || true)"
+nesc="$(printf '%s\n' "$out_esc" | grep -c 'line ' || true)"
+if [ "$nesc" -eq 1 ] && printf '%s\n' "$out_esc" | grep -q 'line 1:9: invalid escape'; then
+  echo "ok: bad string escape -> exactly 1 located diagnostic"; pass=$((pass + 1))
+else
+  echo "FAIL: expected exactly 1 located diagnostic (line 1:9: invalid escape...), got:" >&2
+  printf '%s\n' "$out_esc" >&2
+  fail=$((fail + 1))
+fi
+
+# #963 (Codex P2 on #946): when a failed statement's error anchor IS the first
+# token of the NEXT top-level statement (`export let a =` runs into `test`),
+# recovery must resume AT that anchor so the second statement's own independent
+# error is still reported: exactly 2 diagnostics (line 2:1 + line 2:16).
+anchor2="$WORK/anchor2.vibe"
+printf 'export let a =\ntest "x" { 1 + }\n' > "$anchor2"
+out_a2="$("$VIBE" diagnostics "$anchor2" 2>/dev/null || true)"
+na2="$(printf '%s\n' "$out_a2" | grep -c 'line ' || true)"
+if [ "$na2" -eq 2 ] && printf '%s\n' "$out_a2" | grep -q 'line 2:1: ' && printf '%s\n' "$out_a2" | grep -q 'line 2:16: '; then
+  echo "ok: anchor-on-next-statement -> both independent errors reported"; pass=$((pass + 1))
+else
+  echo "FAIL: expected exactly 2 diagnostics (line 2:1 and line 2:16), got:" >&2
+  printf '%s\n' "$out_a2" >&2
+  fail=$((fail + 1))
+fi
+
 # A clean file -> empty output.
 clean="$WORK/clean.vibe"
 printf 'export let add = (a: Int, b: Int) -> Int { a + b }\n' > "$clean"

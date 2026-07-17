@@ -900,23 +900,36 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
             // then advance to the next recovery point (top-level statement
             // start, TSemicolon, or TEof — see is_recovery_point) and hand
             // the position back through the normal Some path (zero stmts).
-            let mut rp = anchor_pos + 1
-            let mut sync = false
-            while !sync {
-              if rp >= n {
-                sync = true
-              } else {
-                let t = peek(tokens, rp)
-                if is_recovery_point(t) {
+            // #963: if the anchor token IS itself a recovery point (the
+            // failed statement ran into the start of the NEXT top-level
+            // statement, e.g. `export let a =` followed by `test ...`),
+            // resume AT the anchor so that statement is parsed, not skipped.
+            // Progress stays guaranteed: this branch is only taken when
+            // anchor_pos > start_pos (the clamp above enforces
+            // anchor_pos >= start_pos), and the anchor+1 path always
+            // consumes at least one token.
+            let resync_pos = if anchor_pos > start_pos && is_recovery_point(peek(tokens, anchor_pos)) {
+              anchor_pos
+            } else {
+              let mut rp = anchor_pos + 1
+              let mut sync = false
+              while !sync {
+                if rp >= n {
                   sync = true
                 } else {
-                  rp = rp + 1
+                  let t = peek(tokens, rp)
+                  if is_recovery_point(t) {
+                    sync = true
+                  } else {
+                    rp = rp + 1
+                  }
                 }
               }
+              rp
             }
             Some((Array::slice([
               SExport(empty_names())
-            ], 0, 0), rp))
+            ], 0, 0), resync_pos))
           }
         }
         match res {
