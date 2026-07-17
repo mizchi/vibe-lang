@@ -2241,11 +2241,34 @@ fn try_sentinel(callee: Expr, args: Array[Expr]) -> Int {
   }
 }
 
+// #941: best-effort char offset of a railway operand, so the desugar-generated
+// failure-track nodes (`Err(e)` / `None`) carry the `?`/`let*` operand's own
+// source position — the checker's Option⇔Result mixing diagnostics anchor on
+// it. -1 (unlocated) when the operand carries no offset.
+fn railway_val_off(e: Expr) -> Int {
+  match e {
+    EIdent(_, off) => off,
+    ECall(callee, _, off) => if off >= 0 {
+      off
+    } else {
+      railway_val_off(callee)
+    },
+    EDot(base, _, off, _) => if off >= 0 {
+      off
+    } else {
+      railway_val_off(base)
+    },
+    EBinOp(_, lhs, _) => railway_val_off(lhs),
+    _ => -1
+  }
+}
+
 // #635: lower the `let* name = val <rest>` sentinel by `val`'s head type.
 // Option -> `match val { Some(name) => rest, None => None }`; else (Result, or
 // undeterminable -> default Result, today's behavior) the railway Result match
 // `match val { Ok(name) => rest, Err(__bind_err) => Err(__bind_err) }`.
 fn lower_try_bind(val: Expr, name: String, rest: Expr, inferred: Option[String]) -> Expr {
+  let voff = railway_val_off(val)
   match inferred {
     Some(tn) => if tn == "Option" {
       EMatch(val, [
@@ -2254,7 +2277,7 @@ fn lower_try_bind(val: Expr, name: String, rest: Expr, inferred: Option[String])
         ]), rest),
         (PCtor("None", Array::slice([
           PWild
-        ], 0, 0)), EIdent("None", -1))
+        ], 0, 0)), EIdent("None", voff))
       ])
     } else {
       EMatch(val, [
@@ -2263,9 +2286,9 @@ fn lower_try_bind(val: Expr, name: String, rest: Expr, inferred: Option[String])
         ]), rest),
         (PCtor("Err", [
           PBind("__bind_err")
-        ]), ECall(EIdent("Err", -1), [
+        ]), ECall(EIdent("Err", voff), [
           EIdent("__bind_err", -1)
-        ], -1))
+        ], voff))
       ])
     },
     None => EMatch(val, [
@@ -2274,9 +2297,9 @@ fn lower_try_bind(val: Expr, name: String, rest: Expr, inferred: Option[String])
       ]), rest),
       (PCtor("Err", [
         PBind("__bind_err")
-      ]), ECall(EIdent("Err", -1), [
+      ]), ECall(EIdent("Err", voff), [
         EIdent("__bind_err", -1)
-      ], -1))
+      ], voff))
     ])
   }
 }
@@ -2286,6 +2309,7 @@ fn lower_try_bind(val: Expr, name: String, rest: Expr, inferred: Option[String])
 // undeterminable -> default Result) -> yield on `Ok`, early-`return Err(e)` on
 // `Err`. Uses `EReturn`, so the enclosing function short-circuits.
 fn lower_try_op(val: Expr, inferred: Option[String]) -> Expr {
+  let voff = railway_val_off(val)
   match inferred {
     Some(tn) => if tn == "Option" {
       EMatch(val, [
@@ -2294,7 +2318,7 @@ fn lower_try_op(val: Expr, inferred: Option[String]) -> Expr {
         ]), EIdent("__try_v", -1)),
         (PCtor("None", Array::slice([
           PWild
-        ], 0, 0)), EReturn(EIdent("None", -1)))
+        ], 0, 0)), EReturn(EIdent("None", voff)))
       ])
     } else {
       EMatch(val, [
@@ -2303,9 +2327,9 @@ fn lower_try_op(val: Expr, inferred: Option[String]) -> Expr {
         ]), EIdent("__try_v", -1)),
         (PCtor("Err", [
           PBind("__try_e")
-        ]), EReturn(ECall(EIdent("Err", -1), [
+        ]), EReturn(ECall(EIdent("Err", voff), [
           EIdent("__try_e", -1)
-        ], -1)))
+        ], voff)))
       ])
     },
     None => EMatch(val, [
@@ -2314,9 +2338,9 @@ fn lower_try_op(val: Expr, inferred: Option[String]) -> Expr {
       ]), EIdent("__try_v", -1)),
       (PCtor("Err", [
         PBind("__try_e")
-      ]), EReturn(ECall(EIdent("Err", -1), [
+      ]), EReturn(ECall(EIdent("Err", voff), [
         EIdent("__try_e", -1)
-      ], -1)))
+      ], voff)))
     ])
   }
 }
