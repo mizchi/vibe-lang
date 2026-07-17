@@ -365,8 +365,9 @@ let nv = {                            // destructure also works in fn/block body
   (n, v)
 }
 
-// Map
-let m = map { "key": 42 }
+// Map (#960: the `map { ... }` literal was removed; use the Map:: API)
+let m = Map::from_pairs([("key", 42)])
+let e = Map::new()                    // empty map
 let mv = m["key"]
 
 // Builders (mutable construction)
@@ -429,9 +430,11 @@ let w_check = {
 >   so only a record literal and its `.field` read sharing one statement's own
 >   expression tree ever resolved). Destructuring (`let record { name: n } = r`)
 >   binds any field name and works in fn/block bodies too.
-> - **`map { ... }` literals + `Map::*` builtins + `m[k]` indexing** work
->   standalone (#760): `Map::get` / `has_key` / `set` / `keys` and the `m["k"]`
->   index sugar all lower correctly. (`lib/@vibe/core`'s `get`/`get_or`/
+> - **`Map::from_pairs([...])` / `Map::new()` + `Map::*` builtins + `m[k]`
+>   indexing** work standalone (#760/#960): `Map::get` / `has_key` / `set` /
+>   `keys` and the `m["k"]` index sugar all lower correctly. The old
+>   `map { ... }` literal was removed in #960 (it now reports a located parse
+>   error naming the replacement API). (`lib/@vibe/core`'s `get`/`get_or`/
 >   `has_key`/`keys`/`values` remain available for a richer Map API, #766.)
 
 ## Effects (core concept)

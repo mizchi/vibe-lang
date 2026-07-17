@@ -254,7 +254,7 @@ point.x
 [1, 2, 3]              // array
 record { x: 1, y: 2 }  // record
 record { x, y }         // shorthand (x: x, y: y)
-map { "key": value }    // string-keyed map
+Map::from_pairs([("key", value)])  // string-keyed map (#960: literal removed)
 ```
 
 ### Index

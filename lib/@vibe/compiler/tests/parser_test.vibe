@@ -378,32 +378,40 @@ test "let* parses to the type-directed railway sentinel" {
   assert(String::contains(printed, "Ok"))
 }
 
-test "Map::new and Map::from_pairs desugar to the map literal shape (#960)" {
-  // #960 Stage 1: `Map::new()` / `Map::from_pairs([("k", v), ...])` are
-  // parse-level desugars into the exact EMap node the `map { ... }` literal
-  // produces (same layer as the `throw(x)` desugar, #640 Stage 2), so the
-  // printer re-prints them as the literal and every downstream stage sees
-  // ONE form.
+test "Map::new and Map::from_pairs round-trip through the printer (#960)" {
+  // #960 Stage 2: `Map::new()` / `Map::from_pairs([("k", v), ...])` are the
+  // ONLY spellings — the parser desugars them into the EMap node and the
+  // printer prints EMap back as the same API calls, so flat module source
+  // round-trips.
   let empty = handle {
     parse_print("Map::new()")
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
   }
-  assert(empty == "map {}")
+  assert(empty == "Map::new()")
   let pairs = handle {
     parse_print("Map::from_pairs([(\"a\", 1), (\"b\", 2)])")
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
   }
-  assert(pairs == "map { a: 1, b: 2 }")
-  // Both spellings coexist in Stage 1: the literal still parses to the same
-  // shape (Stage 2 removes it after a seed bump).
+  assert(pairs == "Map::from_pairs([(\"a\", 1), (\"b\", 2)])")
+  // Stage 2 removed the literal: `map { ... }` is a located parse error that
+  // names the replacement API.
   let lit = handle {
     parse_print("map { \"a\": 1, \"b\": 2 }")
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
   }
-  assert(lit == pairs)
+  assert(String::starts_with(lit, "ERROR: "))
+  assert(String::contains(lit, "#960"))
+  assert(String::contains(lit, "Map::from_pairs"))
+  // `map` stays an ordinary identifier everywhere else (no `r#` needed).
+  let ident = handle {
+    parse_print("map(xs, f)")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(ident == "map(xs, f)")
 }
 
 test "Map::from_pairs rejects non-literal arguments (#960)" {

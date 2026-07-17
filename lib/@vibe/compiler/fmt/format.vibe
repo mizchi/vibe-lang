@@ -34,7 +34,6 @@ let k_if = 25
 let k_else = 26
 let k_match = 27
 let k_record = 28
-let k_map = 29
 let k_for = 30
 let k_in = 31
 let k_with = 32
@@ -110,7 +109,6 @@ let k_pipe = 102
 
 let c_brace_block = 0
 let c_brace_record = 1
-let c_brace_map = 2
 let c_brace_match = 3
 let c_brace_enum = 4
 let c_brace_effects = 5
@@ -245,33 +243,6 @@ fn lx_ident_end(lx: LX) -> Int {
   i
 }
 
-// Skip to the next significant char (used for context-sensitive `map`).
-fn lx_next_significant(lx: LX) -> Int {
-  let mut i = lx.pos
-  let mut result = -1
-  let mut going = true
-  while going && i < lx.len {
-    let ch = String::char_code_at(lx.input, i)
-    if is_ws_c(ch) || ch == '\n' {
-      i = i + 1
-    } else if ch == '/' && i + 1 < lx.len && String::char_code_at(lx.input, i + 1) == '/' {
-      i = i + 2
-      let mut inner = true
-      while inner && i < lx.len {
-        if String::char_code_at(lx.input, i) == '\n' {
-          inner = false
-        } else {
-          i = i + 1
-        }
-      }
-    } else {
-      result = ch
-      going = false
-    }
-  }
-  result
-}
-
 fn keyword_kind_for(text: String, lx: LX) -> Int {
   if text == "let" { k_let }
   else if text == "import" { k_import }
@@ -282,9 +253,6 @@ fn keyword_kind_for(text: String, lx: LX) -> Int {
   else if text == "else" { k_else }
   else if text == "match" { k_match }
   else if text == "record" { k_record }
-  else if text == "map" {
-    if lx_next_significant(lx) == '{' { k_map } else { k_name }
-  }
   else if text == "for" { k_for }
   else if text == "in" { k_in }
   else if text == "with" { k_with }
@@ -866,12 +834,12 @@ fn is_type_context_end(k: Int) -> Bool {
 }
 
 fn container_indents(c: Int) -> Bool {
-  c == c_brace_block || c == c_brace_record || c == c_brace_map ||
+  c == c_brace_block || c == c_brace_record ||
   c == c_brace_match || c == c_brace_enum || c == c_bracket_array
 }
 
 fn container_forces_list_newlines(c: Int) -> Bool {
-  c == c_brace_record || c == c_brace_map || c == c_brace_match ||
+  c == c_brace_record || c == c_brace_match ||
   c == c_brace_enum || c == c_bracket_array
 }
 
@@ -1055,21 +1023,10 @@ fn token_text_for_output(tok: LTok, next_kind: Int) -> String {
   } else if k == k_char {
     quote_char_literal(tok.text)
   } else if k == k_name {
+    // #960 Stage 2: the `map { ... }` literal is retired, so `map` is an
+    // ordinary identifier — no k_map soft keyword, no `r#` re-escaping.
     let trimmed = trim_ascii_ws(tok.text)
-    if trimmed == "map" {
-      // #945 follow-up: `map` is a soft keyword — the lexer produced k_name
-      // (not k_map) exactly when the bare spelling re-lexes as an identifier
-      // (`keyword_kind_for` / `lx_next_significant`). The only position where
-      // bare `map` would change meaning is directly before `{` (map literal),
-      // which can only arise from an explicit `r#map {` in the input — keep
-      // `r#` there, emit the plain spelling everywhere else (`Array::map`,
-      // `|> map(...)`, `fn map`, ...), matching what the user wrote.
-      if next_kind == k_lbrace {
-        String::concat("r#", trimmed)
-      } else {
-        trimmed
-      }
-    } else if should_escape_identifier_text(trimmed) {
+    if should_escape_identifier_text(trimmed) {
       String::concat("r#", trimmed)
     } else {
       trimmed
@@ -1083,7 +1040,6 @@ fn token_text_for_output(tok: LTok, next_kind: Int) -> String {
 
 fn container_kind_for_brace(prev_kind: Int) -> Int {
   if prev_kind == k_record { c_brace_record }
-  else if prev_kind == k_map { c_brace_map }
   else { c_brace_block }
 }
 
@@ -1114,7 +1070,7 @@ fn should_start_type_context_on_colon(container_stack: Array[Int]) -> Bool {
     true
   } else {
     let top = Array::get(container_stack, Array::length(container_stack) - 1)
-    !(top == c_brace_record || top == c_brace_map)
+    !(top == c_brace_record)
   }
 }
 
@@ -1437,7 +1393,7 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
                 bracket_depth != Array::get(pm_bracket, pml - 1) {
                 false
               } else {
-                prev_kind != k_match && prev_kind != k_record && prev_kind != k_map &&
+                prev_kind != k_match && prev_kind != k_record &&
                 prev_kind != k_if && prev_kind != k_else && prev_kind != k_none
               }
               if is_mb {

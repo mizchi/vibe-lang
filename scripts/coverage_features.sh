@@ -131,7 +131,7 @@ emit records <<'EOF'
 export let main: () -> Int = () -> {
   let r = record { name: "vibe", ver: 3 }
   let t = (1, "two", true)
-  let m = map { "k": 42 }
+  let m = Map::from_pairs([("k", 42)])
   let b = ArrayBuilder::new()
   ArrayBuilder::push(b, 10)
   ArrayBuilder::push(b, 20)

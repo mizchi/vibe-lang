@@ -47,8 +47,8 @@ String-keyed dictionary.
 // Richer Map API (get_or etc.) lives in lib/@vibe/core (#766)
 import ./lib/@vibe/core { get_or }
 
-// Create with map literal
-let m = map { a: 1, "b": 2 }
+// Create with the Map:: API (#960: the map literal was removed)
+let m = Map::from_pairs([("a", 1), ("b", 2)])
 
 test "map operations" {
   // Access
