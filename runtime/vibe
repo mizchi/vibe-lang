@@ -352,6 +352,65 @@ annotate_run_stream() {
   done
 }
 
+# #948: condense a failed `vibe test` run's captured stderr — a full
+# wasmtime/anyhow trap dump (wasm backtrace + 15+ Rust runner frames down to
+# pthread_create.c) — to the lines that matter: which test failed (the
+# `__test_<name>` frame), why (the `wasm trap:` reason), and the user-function
+# frames, each annotated ` (<base>:<line>)` via the same `.funcmap` sidecar
+# `vibe run` uses for trap annotation. If nothing recognizable is found the
+# raw stream is replayed verbatim so information is never lost.
+#   $1 = captured stderr file, $2 = funcmap path (""/missing ok), $3 = entry basename
+condense_test_trap() {
+  local errf="$1" fm="$2" base="$3" out
+  [ -s "$errf" ] || return 0
+  [ -f "$fm" ] || fm=""
+  out="$(awk -v base="$base" -v fmfile="$fm" '
+    BEGIN {
+      if (fmfile != "") {
+        while ((getline l < fmfile) > 0) {
+          n = split(l, a, "\t")
+          if (n >= 2 && a[1] != "" && a[2]+0 > 0) fmln[a[1]] = a[2]+0
+        }
+        close(fmfile)
+      }
+    }
+    !seen_test && match($0, /__test_[A-Za-z0-9_]+/) {
+      seen_test = 1
+      failing = substr($0, RSTART + 7, RLENGTH - 7)
+    }
+    !seen_reason && /RuntimeError:|wasm trap:/ {
+      seen_reason = 1
+      reason = $0
+      sub(/^[[:space:]]+/, "", reason)
+      sub(/^[0-9]+: /, "", reason)
+      sub(/^vibewt: /, "", reason)
+    }
+    nframes < 6 {
+      fn = ""
+      if (match($0, /^[[:space:]]+at [A-Za-z0-9_$.]+ \(wasm:/)) {
+        fn = $0; sub(/^[[:space:]]+at /, "", fn); sub(/ \(wasm:.*/, "", fn)
+      } else if ($0 ~ /<unknown>!/ && match($0, /![A-Za-z0-9_]+/)) {
+        fn = substr($0, RSTART + 1, RLENGTH - 1)
+      }
+      if (fn != "" && fn != "_start" && fn !~ /^__test_/) {
+        nframes++
+        if (fn in fmln) frames[nframes] = "  at " fn " (" base ":" fmln[fn] ")"
+        else            frames[nframes] = "  at " fn
+      }
+    }
+    END {
+      if (failing != "") print "  failing test: " failing
+      if (reason != "")  print "  trap: " reason
+      for (i = 1; i <= nframes; i++) print frames[i]
+    }
+  ' "$errf")"
+  if [ -n "$out" ]; then
+    printf '%s\n' "$out"
+  else
+    cat "$errf"
+  fi
+}
+
 cmd="${1:-help}"; shift || true
 case "$cmd" in
   run)
@@ -808,25 +867,39 @@ case "$cmd" in
         echo "FAIL (compile): $src"; failed=1; rm -f "$out" "$meta"; continue
       fi
       unset VIBE_TESTMETA_OUT
+      # #948: flag files with zero lowered `__test_` functions (a typo'd block
+      # otherwise passes silently via an empty `_start`). Zero tests stays ok
+      # (annotated, exit 0) so suites with helper-only files keep working.
+      n_tests="$({ grep -ao '__test_' "$out" 2>/dev/null || true; } | wc -l | tr -d '[:space:]')"
+      case "$n_tests" in ''|*[!0-9]*) n_tests=0 ;; esac
+      note=""
+      [ "$n_tests" = "0" ] && note=" (no tests found)"
       cacheable=0
       [ -s "$meta" ] && [ "$(cat "$meta" 2>/dev/null)" = "1" ] && cacheable=1
       key=""
       if [ "$no_cache" = "0" ] && [ "$cacheable" = "1" ]; then
         key="$(_sha256_file "$out")"
         if [ -n "$key" ] && [ -f "$tcache/$key.pass" ]; then
-          echo "ok (cached): $src"
+          echo "ok (cached): $src$note"
           rm -f "$out" "$meta"; continue
         fi
       fi
-      if "$RUNNER" "$out"; then
-        echo "ok:   $src"
+      # #948: capture the runner's stderr. On success replay it verbatim (tests
+      # may legitimately write to stderr); on failure condense the trap dump to
+      # the failing test name + trap reason + funcmap-annotated frames instead
+      # of 20+ lines of raw Rust/wasmtime backtrace burying the `__test_` line.
+      terr="$(mktemp -t vibe-testerr-XXXXXX)"
+      if "$RUNNER" "$out" 2>"$terr"; then
+        [ -s "$terr" ] && cat "$terr" >&2
+        echo "ok:   $src$note"
         if [ -n "$key" ]; then
           mkdir -p "$tcache" && : > "$tcache/$key.pass"
         fi
       else
         echo "FAIL: $src"; failed=1
+        condense_test_trap "$terr" "$out.funcmap" "$(basename "$src")" >&2
       fi
-      rm -f "$out" "$meta"
+      rm -f "$out" "$out.funcmap" "$meta" "$terr"
     done
     exit "$failed"
     ;;

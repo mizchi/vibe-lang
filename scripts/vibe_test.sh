@@ -96,6 +96,126 @@ VT_JOBS="${VIBE_TEST_JOBS:-$vt_hw_jobs}"
 vt_results="$(mktemp -d -t vibe-test-results-XXXXXX)"
 export ROOT_DIR coverage backend cli_wasm covdir vt_results
 
+# #948: count the lowered `__test_<name>` functions in a compiled test wasm.
+# Prefer a real name-section parse (a raw `grep -c __test_` double-counts under
+# --coverage, whose instrumentation embeds the names again in a data segment);
+# fall back to the grep occurrence count when python3 is unavailable — exact
+# for zero-vs-nonzero, which is all the "no tests found" note needs.
+vt_count_tests() {
+  local wasm="$1" n=""
+  if command -v python3 >/dev/null 2>&1; then
+    n="$(python3 - "$wasm" 2>/dev/null <<'PY' || true
+import sys
+b = open(sys.argv[1], "rb").read()
+def uleb(i):
+    r = s = 0
+    while True:
+        x = b[i]; i += 1
+        r |= (x & 0x7F) << s
+        if not (x & 0x80):
+            return r, i
+        s += 7
+i, count = 8, 0
+while i < len(b):
+    sid = b[i]; i += 1
+    size, i = uleb(i)
+    end = i + size
+    if sid == 0:
+        nlen, j = uleb(i)
+        if b[j:j + nlen] == b"name":
+            j += nlen
+            while j < end:
+                subid = b[j]; j += 1
+                ssize, j = uleb(j)
+                send = j + ssize
+                if subid == 1:  # function-name subsection
+                    cnt, k = uleb(j)
+                    for _ in range(cnt):
+                        _, k = uleb(k)
+                        ln, k = uleb(k)
+                        if b[k:k + ln].startswith(b"__test_"):
+                            count += 1
+                        k += ln
+                j = send
+    i = end
+print(count)
+PY
+)"
+  fi
+  case "$n" in ''|*[!0-9]*) n="" ;; esac
+  # No name section (the gc backend strips it) or no python3: fall back to the
+  # raw occurrence count (exports/data still carry the `__test_` strings).
+  if [ -z "$n" ] || [ "$n" = "0" ]; then
+    local g
+    g="$({ grep -ao '__test_' "$wasm" 2>/dev/null || true; } | wc -l | tr -d '[:space:]')"
+    case "$g" in ''|*[!0-9]*) g=0 ;; esac
+    if [ "$g" -gt 0 ] || [ -z "$n" ]; then n="$g"; fi
+  fi
+  printf '%s' "$n"
+}
+export -f vt_count_tests
+
+# #948: condense a failed run's captured stderr into indented detail lines.
+# The raw stream is a full node/V8 (or wasmtime) trap dump; the useful signal is
+#   * the `__test_<name>` frame  -> which test failed,
+#   * the trap reason line       -> why (RuntimeError / wasm trap ...),
+#   * the wasm frames            -> where (annotated file:line via the
+#     `<out>.funcmap` sidecar the FS compile already writes, same as `vibe run`).
+# Lines are indented so they can never collide with the `ok`/`FAIL` per-file
+# lines that coverage_suite.sh & friends parse.
+#   $1 = stderr capture file, $2 = funcmap path (may be missing), $3 = source basename
+vt_fail_detail() {
+  local errf="$1" fm="$2" base="$3"
+  [ -s "$errf" ] || return 0
+  awk -v base="$base" -v fmfile="$fm" '
+    BEGIN {
+      if (fmfile != "") {
+        while ((getline l < fmfile) > 0) {
+          n = split(l, a, "\t")
+          if (n >= 2 && a[1] != "" && a[2]+0 > 0) fmln[a[1]] = a[2]+0
+        }
+        close(fmfile)
+      }
+    }
+    # First __test_<name> frame = the failing test.
+    !seen_test && match($0, /__test_[A-Za-z0-9_]+/) {
+      seen_test = 1
+      failing = substr($0, RSTART + 7, RLENGTH - 7)
+    }
+    # First trap-reason line (backtrace frames never contain these markers;
+    # strip anyhow chain numbering / runner prefixes).
+    !seen_reason && /RuntimeError:|wasm trap:/ {
+      seen_reason = 1
+      reason = $0
+      sub(/^[[:space:]]+/, "", reason)
+      sub(/^[0-9]+: /, "", reason)
+      sub(/^vibewt: /, "", reason)
+    }
+    # Wasm backtrace frames (node: `at <fn> (wasm://...)`, wasmtime:
+    # `N: 0x.. - <unknown>!<fn>`), capped, annotated via the funcmap.
+    nframes < 6 {
+      fn = ""
+      if (match($0, /^[[:space:]]+at [A-Za-z0-9_$.]+ \(wasm:/)) {
+        fn = $0; sub(/^[[:space:]]+at /, "", fn); sub(/ \(wasm:.*/, "", fn)
+      } else if ($0 ~ /<unknown>!/ && match($0, /![A-Za-z0-9_]+/)) {
+        fn = substr($0, RSTART + 1, RLENGTH - 1)
+      }
+      # `__test_*` is reported as the failing test; `_start` is scaffolding.
+      if (fn != "" && fn != "_start" && fn !~ /^__test_/) {
+        nframes++
+        if (fn in fmln) frames[nframes] = "       at " fn " (" base ":" fmln[fn] ")"
+        else            frames[nframes] = "       at " fn
+      }
+    }
+    END {
+      if (failing != "") print "       failing test: " failing
+      if (reason != "")  print "       trap: " reason
+      for (i = 1; i <= nframes; i++) print frames[i]
+    }
+  ' "$errf"
+}
+export -f vt_fail_detail
+
 vt_worker() {
   local src="$1"
   local src_rel
@@ -125,25 +245,49 @@ vt_worker() {
       bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
       --invoke cli_main "$cli_wasm" "$src_rel" "$out_rel" "__no_entry__" \
       >/dev/null 2>&1 || [ ! -s "$ROOT_DIR/$out_rel" ]; then
-    echo "FAIL (compile) $src_rel"
+    # #948: surface the compiler's structured diagnostic (message + location)
+    # from the `<out>.diag` sidecar instead of a bare FAIL.
+    local cdetail=""
+    if [ -s "$ROOT_DIR/$out_rel.diag" ]; then
+      cdetail="$(head -1 "$ROOT_DIR/$out_rel.diag")"
+    fi
+    if [ -n "$cdetail" ]; then
+      printf 'FAIL (compile) %s\n       %s\n' "$src_rel" "$cdetail"
+    else
+      echo "FAIL (compile) $src_rel"
+    fi
     printf 'fail 0 0 0 0 0\n' > "$vt_results/$flat.res"
     return 0
+  fi
+
+  # #948: count the file's lowered `__test_<name>` functions (wasm name
+  # section) so a file whose test blocks were never recognized is flagged
+  # instead of silently passing as an empty `_start`. Zero tests keeps exit 0
+  # (an annotated ok, not a failure) so suites with helper-only files survive.
+  # The gc backend strips every `__test_` name from its wasm, so the count is
+  # unknowable there — leave it empty (no note, legacy summary).
+  local n_tests=""
+  if [ "$backend" != "gc" ]; then
+    n_tests="$(vt_count_tests "$ROOT_DIR/$out_rel")"
   fi
 
   local cov_out=""
   if [ "$coverage" = "1" ]; then
     cov_out="$covdir/$flat.json"
   fi
+  # #948: keep the runner's stderr — it names the failing `__test_` function
+  # (previously discarded, leaving a bare `FAIL <file>` with no test name).
   local run_ok=0
+  local run_err="$vt_results/$flat.err"
   if [ "$backend" = "gc" ]; then
     if timeout 60 wasmtime run -W gc=y,function-references=y,exceptions=y \
-        --invoke _start "$ROOT_DIR/$out_rel" >/dev/null 2>&1; then
+        --invoke _start "$ROOT_DIR/$out_rel" >/dev/null 2>"$run_err"; then
       run_ok=1
     fi
   else
     if VIBE_COV_OUT="$cov_out" VIBE_PREOPEN_DIR="$ROOT_DIR" \
         bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
-        --invoke _start "$out_rel" >/dev/null 2>&1; then
+        --invoke _start "$out_rel" >/dev/null 2>"$run_err"; then
       run_ok=1
     fi
   fi
@@ -171,14 +315,31 @@ for g in (r.get("branch") or {}).get("top_gaps", []):
     print(f"       branch gap: {g['fn']} {g['taken']}/{g['total']} taken")
 PY
       fi
-      printf 'ok %s %s %s %s 1\n' "$f_hit" "$f_total" "$b_hit" "$b_total" > "$vt_results/$flat.res"
+      printf 'ok %s %s %s %s 1 %s\n' "$f_hit" "$f_total" "$b_hit" "$b_total" "$n_tests" > "$vt_results/$flat.res"
     else
-      echo "ok   $src_rel"
-      printf 'ok 0 0 0 0 0\n' > "$vt_results/$flat.res"
+      # #948: annotate (don't fail) a file with zero recognized `test {}`
+      # blocks — a typo'd block otherwise passes silently via an empty _start.
+      if [ "$n_tests" = "0" ]; then
+        echo "ok   $src_rel (no tests found)"
+      else
+        echo "ok   $src_rel"
+      fi
+      printf 'ok 0 0 0 0 0 %s\n' "$n_tests" > "$vt_results/$flat.res"
     fi
+    rm -f "$run_err"
   else
-    echo "FAIL $src_rel"
-    printf 'fail 0 0 0 0 0\n' > "$vt_results/$flat.res"
+    # #948: FAIL + condensed detail in ONE write so parallel workers cannot
+    # interleave inside the block; detail lines are indented, so downstream
+    # `^(ok|FAIL) <file>` parsers (coverage_suite.sh) are unaffected.
+    local detail
+    detail="$(vt_fail_detail "$run_err" "$ROOT_DIR/$out_rel.funcmap" "$(basename "$src_rel")")"
+    if [ -n "$detail" ]; then
+      printf 'FAIL %s\n%s\n' "$src_rel" "$detail"
+    else
+      echo "FAIL $src_rel"
+    fi
+    printf 'fail 0 0 0 0 0 %s\n' "$n_tests" > "$vt_results/$flat.res"
+    rm -f "$run_err"
   fi
   return 0
 }
@@ -197,6 +358,8 @@ done < <(printf '%s\n' "${files[@]}" | grep -i cache)
 
 pass=0
 fail=0
+tests_total=0
+notest_files=0
 cov_fn_total=0
 cov_fn_hit=0
 cov_br_total=0
@@ -204,9 +367,12 @@ cov_br_hit=0
 cov_files=0
 for res in "$vt_results"/*.res; do
   [ -f "$res" ] || continue
-  read -r r_status r_fh r_ft r_bh r_bt r_cov < "$res"
+  read -r r_status r_fh r_ft r_bh r_bt r_cov r_nt < "$res"
+  case "${r_nt:-}" in ''|*[!0-9]*) r_nt=0 ;; esac
+  tests_total=$((tests_total + r_nt))
   if [ "$r_status" = "ok" ]; then
     pass=$((pass + 1))
+    [ "$r_nt" = "0" ] && notest_files=$((notest_files + 1))
     if [ "$r_cov" = "1" ]; then
       cov_fn_hit=$((cov_fn_hit + r_fh)); cov_fn_total=$((cov_fn_total + r_ft))
       cov_br_hit=$((cov_br_hit + r_bh)); cov_br_total=$((cov_br_total + r_bt))
@@ -218,7 +384,17 @@ for res in "$vt_results"/*.res; do
 done
 rm -rf "$vt_results"
 
-echo "[vibe-test] $pass passed, $fail failed (${#files[@]} files)"
+# #948: report the test-block total alongside the per-file counts (reporting
+# is still per file / all-or-nothing; true per-test pass/fail is a follow-up).
+# The gc backend cannot count tests (names stripped) — keep the legacy summary.
+if [ "$backend" = "gc" ]; then
+  echo "[vibe-test] $pass passed, $fail failed (${#files[@]} files)"
+else
+  echo "[vibe-test] $pass passed, $fail failed (${#files[@]} files, $tests_total tests)"
+  if [ "$notest_files" -gt 0 ]; then
+    echo "[vibe-test] note: $notest_files file(s) with no tests found"
+  fi
+fi
 if [ "$coverage" = "1" ] && [ "$cov_files" -gt 0 ]; then
   fn_pct=$(python3 -c "print(f'{($cov_fn_hit/$cov_fn_total*100):.2f}%' if $cov_fn_total else 'n/a')")
   br_pct=$(python3 -c "print(f'{($cov_br_hit/$cov_br_total*100):.2f}%' if $cov_br_total else 'n/a')")
