@@ -101,21 +101,30 @@ fi
 # #794: mirror the unit-test runner's echo-server start -- entries that drive
 # real HTTP mention the local echo endpoint; start tests/http_echo_server.py
 # for the run when any does (content-based, like the wasmtime gate below).
+# #934: port derived per worktree and exported as VIBE_HTTP_ECHO_PORT, same
+# as unit_test_runner.sh (the test reads the env var, default 18280).
 http_echo_pid=""
+http_echo_port="${VIBE_HTTP_ECHO_PORT:-$((18280 + $(printf '%s' "$ROOT" | cksum | cut -d' ' -f1) % 1000))}"
+export VIBE_HTTP_ECHO_PORT="$http_echo_port"
 start_http_echo_server_if_needed() {
   local need=0 f
   while IFS= read -r f; do
     case "$f" in ''|\#*) continue ;; esac
-    if [ -f "$f" ] && grep -q "127.0.0.1:18280" "$f"; then need=1; break; fi
+    if [ -f "$f" ] && grep -q "VIBE_HTTP_ECHO_PORT\|127.0.0.1:18280" "$f"; then need=1; break; fi
   done < "$ALLOWLIST"
   [ "$need" -eq 1 ] || return 0
   command -v python3 >/dev/null 2>&1 || return 0
   [ -f "$ROOT/tests/http_echo_server.py" ] || return 0
-  python3 "$ROOT/tests/http_echo_server.py" 18280 >/dev/null 2>&1 &
+  python3 "$ROOT/tests/http_echo_server.py" "$http_echo_port" >/dev/null 2>&1 &
   http_echo_pid=$!
   trap 'if [ -n "$http_echo_pid" ]; then kill "$http_echo_pid" 2>/dev/null || true; fi' EXIT
-  echo "[coverage-suite] started http echo server (pid $http_echo_pid, 127.0.0.1:18280)"
   sleep 1
+  if ! kill -0 "$http_echo_pid" 2>/dev/null; then
+    echo "[coverage-suite] WARN: http echo server failed to start on 127.0.0.1:$http_echo_port" >&2
+    http_echo_pid=""
+    return 0
+  fi
+  echo "[coverage-suite] started http echo server (pid $http_echo_pid, 127.0.0.1:$http_echo_port)"
 }
 start_http_echo_server_if_needed
 

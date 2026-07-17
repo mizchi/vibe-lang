@@ -62,26 +62,40 @@ fi
 
 # --- local HTTP echo server (#794) --------------------------------------------
 # lib/@vibe/http/http_e2e_test.vibe drives real HTTP against
-# tests/http_echo_server.py on 127.0.0.1:18280. Detection is content-based
-# (the endpoint string in the test source), like the wasmtime gate below. If
-# python3 is unavailable the server is not started and the affected tests
+# tests/http_echo_server.py. Detection is content-based (the env-override
+# marker / endpoint string in the test source), like the wasmtime gate below.
+# If python3 is unavailable the server is not started and the affected tests
 # fail with a connection error -- an honest signal, not a silent skip.
+#
+# #934: the port is derived from the repo path (18280 + hash % 1000) so
+# concurrent batteries in different worktrees each own a private server
+# instead of colliding on a fixed 18280 (where the first battery to finish
+# killed the shared server out from under the other). The test reads the
+# port from VIBE_HTTP_ECHO_PORT, exported below for the compiled test runs.
 http_echo_pid=""
+http_echo_port="${VIBE_HTTP_ECHO_PORT:-$((18280 + $(printf '%s' "$ROOT_DIR" | cksum | cut -d' ' -f1) % 1000))}"
+export VIBE_HTTP_ECHO_PORT="$http_echo_port"
 start_http_echo_server_if_needed() {
   local list_file="$1"
   local need=0 f
   while IFS= read -r f; do
     case "$f" in ''|\#*) continue ;; esac
-    if [ -f "$f" ] && grep -q "127.0.0.1:18280" "$f"; then need=1; break; fi
+    if [ -f "$f" ] && grep -q "VIBE_HTTP_ECHO_PORT\|127.0.0.1:18280" "$f"; then need=1; break; fi
   done < "$list_file"
   [ "$need" -eq 1 ] || return 0
   command -v python3 >/dev/null 2>&1 || return 0
   [ -f "$ROOT_DIR/tests/http_echo_server.py" ] || return 0
-  python3 "$ROOT_DIR/tests/http_echo_server.py" 18280 >/dev/null 2>&1 &
+  python3 "$ROOT_DIR/tests/http_echo_server.py" "$http_echo_port" >/dev/null 2>&1 &
   http_echo_pid=$!
   trap 'if [ -n "$http_echo_pid" ]; then kill "$http_echo_pid" 2>/dev/null || true; fi' EXIT
-  echo "[unit-test-runner] started http echo server (pid $http_echo_pid, 127.0.0.1:18280)"
   sleep 1
+  if ! kill -0 "$http_echo_pid" 2>/dev/null; then
+    echo "[unit-test-runner] WARN: http echo server failed to start on 127.0.0.1:$http_echo_port" >&2
+    echo "[unit-test-runner] WARN: (port in use? another battery in the SAME worktree would collide)" >&2
+    http_echo_pid=""
+    return 0
+  fi
+  echo "[unit-test-runner] started http echo server (pid $http_echo_pid, 127.0.0.1:$http_echo_port)"
 }
 
 # --- compile + run one test file; 0 = pass, 1 = fail --------------------------
