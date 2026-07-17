@@ -45,39 +45,25 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 
-MODULE_VERSION="$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' "$PROJECT_ROOT/moon.mod")"
+# Selfhost-only (#594): the toolchain version lives in the launcher
+# (runtime/vibe, VIBE_VERSION) — moon.mod / the MoonBit host are retired.
+LAUNCHER_VERSION="$(sed -n 's/^VIBE_VERSION="\([^"]*\)".*$/\1/p' "$PROJECT_ROOT/runtime/vibe" | head -1)"
 
-if [ "$MODULE_VERSION" != "$VERSION" ]; then
-  echo "release-assets: moon.mod version mismatch (got=$MODULE_VERSION expected=$VERSION)" >&2
+if [ "$LAUNCHER_VERSION" != "$VERSION" ]; then
+  echo "release-assets: runtime/vibe VIBE_VERSION mismatch (got=$LAUNCHER_VERSION expected=$VERSION)" >&2
   exit 1
 fi
 
 OUT_DIR="$PROJECT_ROOT/dist/release/$TAG"
-WASM_NAME="vibe-$TAG.wasm"
-README_NAME="README.vibe-wasm.md"
 MANIFEST_NAME="release-manifest.json"
 CHECKSUM_NAME="SHA256SUMS.txt"
 
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
-echo "[release-assets] building clients/wasm/vibe.wasm"
-(cd "$PROJECT_ROOT" && moon build --target wasm-gc --release src/lib)
-mkdir -p "$PROJECT_ROOT/clients/wasm"
-cp "$PROJECT_ROOT/_build/wasm-gc/release/build/lib/lib.wasm" \
-  "$PROJECT_ROOT/clients/wasm/vibe.wasm"
-
-echo "[release-assets] smoke testing clients/wasm/vibe.wasm"
-(cd "$PROJECT_ROOT" && bash scripts/test_wasm_vibe_wasmtime.sh clients/wasm/vibe.wasm)
-
-cp "$PROJECT_ROOT/clients/wasm/vibe.wasm" "$OUT_DIR/$WASM_NAME"
-cp "$PROJECT_ROOT/clients/wasm/README.md" "$OUT_DIR/$README_NAME"
-
 # --- selfhost compiler artifacts ---------------------------------------
-# Unlike vibe-<tag>.wasm (the MoonBit-host lib, which needs moonbit fs
-# host imports), these run the *selfhost* compiler and let a consumer
-# bootstrap the stage0 -> stage1 -> stage2 build WITHOUT building the
-# MoonBit host from the mooncakes registry. See
+# These run the *selfhost* compiler and let a consumer bootstrap the
+# stage0 -> stage1 -> stage2 build with no MoonBit toolchain. See
 # scripts/fetch_compiler.sh and docs/bootstrap.md.
 #   - vibe-selfhost-<tag>.wasm           : stage0 seed compiler wasm
 #                                          (instantiates under stock
@@ -135,8 +121,6 @@ cat > "$OUT_DIR/$MANIFEST_NAME" <<EOF
   "version": "$VERSION",
   "commit": "$commit_sha",
   "artifacts": [
-    "$WASM_NAME",
-    "$README_NAME",
     "$SELFHOST_WASM_NAME",
     "$SELFHOST_MODSRC_NAME",
     "$SELFHOST_SEED_JSON_NAME"
@@ -161,11 +145,11 @@ EOF
 (
   cd "$OUT_DIR"
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$WASM_NAME" "$README_NAME" "$SELFHOST_WASM_NAME" \
+    sha256sum "$SELFHOST_WASM_NAME" \
       "$SELFHOST_MODSRC_NAME" "$SELFHOST_SEED_JSON_NAME" "$MANIFEST_NAME" \
       > "$CHECKSUM_NAME"
   else
-    shasum -a 256 "$WASM_NAME" "$README_NAME" "$SELFHOST_WASM_NAME" \
+    shasum -a 256 "$SELFHOST_WASM_NAME" \
       "$SELFHOST_MODSRC_NAME" "$SELFHOST_SEED_JSON_NAME" "$MANIFEST_NAME" \
       > "$CHECKSUM_NAME"
   fi
@@ -173,8 +157,6 @@ EOF
 
 echo "[release-assets] staged assets:"
 printf '  %s\n' \
-  "$OUT_DIR/$WASM_NAME" \
-  "$OUT_DIR/$README_NAME" \
   "$OUT_DIR/$SELFHOST_WASM_NAME" \
   "$OUT_DIR/$SELFHOST_MODSRC_NAME" \
   "$OUT_DIR/$SELFHOST_SEED_JSON_NAME" \

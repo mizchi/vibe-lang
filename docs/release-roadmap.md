@@ -349,8 +349,8 @@
 
 - `pkf run install`（`Taskfile.pkl`）が native CLI を `~/.local/bin/vibe` に
   コピーする。これは開発者向けで、外部ユーザー向けの導線ではない。
-- `scripts/build_release_assets.sh` が GitHub Release 用 asset を生成する:
-  - `vibe-<tag>.wasm`（MoonBit host `src/lib` の wasm-gc library）
+- `scripts/build_release_assets.sh` が GitHub Release 用 asset を生成する
+  (selfhost-only 化済み — 旧 `vibe-<tag>.wasm` = MoonBit host lib は #594 で廃止):
   - `vibe-selfhost-<tag>.wasm`（stage0 seed compiler、stock wasmtime で実行可）
   - `vibe-selfhost-module-source-<tag>.vibe` / `-seed-<tag>.json` / `SHA256SUMS.txt`
   - `v*` tag push で `.github/workflows/release.yml` が公開。

@@ -1,8 +1,7 @@
-# vibe 0.3.0 (GA) リリースノート — 下書き
+# vibe 0.3.0 (GA) リリースノート
 
-> 下書き (2026-07-16 時点)。[着地待ち] マークの項目は対応 PR の merge を
-> もって確定し、本ノートから印を外す。リリース tag 前に owner が
-> チェックリスト (末尾) を消化すること。
+> 2026-07-17 確定。実装はすべて main にマージ済み (PR #927/#933/#935 ほか)。
+> リリース tag 前に owner が末尾のチェックリスト残項目を消化すること。
 
 0.2.0 (既知バグの消化サイクル、ADR-0066) から 0.3.0 (GA、ADR-0067 で
 1.0→0.3 に renumber) までの変更点。
@@ -15,13 +14,13 @@
   #897 stdlib 側完了)
 - **パッケージレジストリ (最小スライス)**: file-based transparency log
   (RFC6962 形状の Merkle inclusion/consistency 証明)、yank (append-only
-  marking)、`vibe pkg publish|install|add|yank|update` (#755/#805) [着地待ち: PR #927]
+  marking)、`vibe pkg publish|install|add|yank|update` (#755/#805, PR #927)
 - **コンパイル型 REPL `vibe shell`**: 宣言蓄積 + 再コンパイル方式
   (ADR-0034 のインタプリタなし方針を維持)、diagnostics での rollback、
-  `:type`/`:load`/`:list` (#805) [着地待ち: PR #927]
+  `:type`/`:load`/`:list` (#805, PR #927)
 - **inline wasm**: `fn f(a: Int) -> Int = wasm "(...)"` — linear backend
   限定の WAT 関数 body 直接記述、SIMD (0xFD) 対応の専用アセンブラ内蔵、
-  tagged-i64 ABI を明文化 (ADR-0072、#805) [着地待ち]
+  tagged-i64 ABI を明文化 (ADR-0072、#805, PR #933)
 - **`fn main {}` エントリポイント特殊化 + トップレベル副作用の制限**
   (ADR-0069 Phase 1)
 - **doctest 運用化**: cheatsheet / vibe.md / language-tour 全コードブロックが
@@ -39,9 +38,11 @@
   記述可能; @vibe/core の generic-key API が初めて外部公開)
 - effect 診断の精緻化: op シグネチャ検査 (#813)、import 越し row 強制
   (#812)、handler 網羅性 (#828)、row 伝播 soundness (#885)、
-  expected/actual の set-diff + `with { ... }` fix-it ヒント (#639) [着地待ち]
-- `perform Error::Throw(e)` が `throw e` と同一の lowering に (#640 Stage 1;
-  Error arm 内の `resume` はコンパイルエラー) [着地待ち]
+  expected/actual の set-diff + `with { ... }` fix-it ヒント (#639, PR #933)
+- Error の algebraic effect 化 (#640 Stage 1〜4, PR #933/#935): `throw(x)` は
+  parse 時に `perform Error::Throw(x)` へ脱糖され全パイプラインで単一内部形式
+  (両綴りの wasm は byte-identical)、Error arm 内の `resume` はコンパイル
+  エラー (非再開)、`EThrow` AST node は完全退役
 - `Process::exit()` による実 exit code 伝播 (#903)
 
 ## 標準ライブラリ
@@ -50,8 +51,8 @@
   統合 (#766/#841)、`[K: Hash]` generic-key API の公開
 - `@vibex` に collections / deque / pqueue / immut ほか追加
 - `println` / `print` が import なしの単体ファイルでも全 backend で動作
-  (#929)。`Stdout::write_char` 等の raw-ABI 経路の int 引数タグ化バグを修正
-  (#930) [着地待ち]
+  (#929, PR #933)。`Stdout::write_char` 等の raw-ABI 経路の int 引数
+  タグ化バグを修正 (#930, PR #933)
 
 ## ツールチェーン
 
@@ -64,19 +65,26 @@
 
 ## 既知の残項目 (GA 後継続)
 
-- compiler 内部ディレクトリの `.vpkg` 化残り (#897) と境界チェック
-  厳格化 (#847 Phase B — codegen/entry facade の設計判断待ち)
-- Error の algebraic effect 化の残段階 (#640 Stage 2+ — parser desugar /
-  配線整理 / EThrow 退役)
+- compiler 内部ディレクトリの `.vpkg` 化残り (cache/syntax/loader/codegen —
+  #847 Phase B の codegen/entry facade 設計判断待ち、分析は #847 に記載)
+- `EEThrowOutsideEffect` 診断と test 専用 legacy checker エントリの整理
+  (#640 の任意 Stage 5)
 - evidence-passing handler (#817、0.4 系)
 - prelude の契約化 (設計判断待ち)
-- trait bound 付き generic での UFCS 呼び出しの miscompile (#931 —
-  `K::method(x)` 形式は正常)
+- unit_test_runner の http echo server ポート衝突 (#934 — ローカル並行
+  実行のみ、CI 影響なし)
 
 ## リリース運用チェックリスト (owner)
 
 - [ ] 0.3.0 GA tag
-- [ ] `vibe version` / 配布物の version bump
-- [ ] 本ノートの [着地待ち] 解消
-- [ ] install スクリプト等配布チャネル確認
-- [ ] `docs/spec/1.0-freeze.md` の stable surface 定義を 0.3 に読み替え適用
+- [x] `vibe version` / 配布物の version bump (`VIBE_VERSION=0.3.0`)
+- [x] 本ノートの [着地待ち] 解消 (2026-07-17)
+- [x] release tag workflow の selfhost-only 化 (`build_release_assets.sh` が
+  retired な `moon.mod`/`moon build` を参照していた問題を修正。tag push で
+  selfhost seed / module source / manifest が publish される)
+- [x] install スクリプト等配布チャネル確認 (release asset 生成 +
+  `fetch_compiler.sh` 消費経路をローカル実測、install smoke は
+  `cli-install` workflow が multi-OS で検証)
+- [x] `docs/spec/1.0-freeze.md` の stable surface 定義を 0.3 に読み替え適用
+  (冒頭に発効ノート追記 — v0.3.0 タグから freeze 発効、0.x 間は
+  破壊的変更 = Minor で運用)
