@@ -382,8 +382,13 @@ of the syntax.
 (1, "two", true)
 record { x: 1, y: 2 }
 record { x, y }
-map { "key": 42 }
+Map::from_pairs([("key", 42)])
+Map::new()
 ```
+
+The former `map { "key": 42 }` literal was removed (#960); the `Map::` API
+spellings above are parse-level desugars into the same map node, and the old
+literal reports a located parse error naming the replacement.
 
 ### Effects And Error Boundaries
 

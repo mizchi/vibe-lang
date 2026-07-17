@@ -3192,7 +3192,7 @@ rm -rf "$mudir"
 echo "[compiler-gate] mutability discipline ok"
 
 # 32b. mutability discipline completeness (#629 step 3-2): an illegal reassignment
-#      of an immutable `let` must be flagged even when it sits inside a map literal
+#      of an immutable `let` must be flagged even when it sits inside a Map::from_pairs value
 #      (and likewise labeled arg / spread / break / continue — check_mutability_expr
 #      previously dropped these Expr forms to `_ => errors`, missing the violation).
 #      A `let mut` reassignment inside the same form must still compile (no over-reject).
@@ -3202,14 +3202,14 @@ rm -rf "$mu2dir"; mkdir -p "$mu2dir"
 cat > "$mu2dir/ok.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
   let mut x = 1
-  let m = map { "a": { x = 2; x } }
+  let m = Map::from_pairs([("a", { x = 2; x })])
   m["a"]
 }
 EOF
 cat > "$mu2dir/bad.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
   let x = 1
-  let m = map { "a": { x = 2; x } }
+  let m = Map::from_pairs([("a", { x = 2; x })])
   m["a"]
 }
 EOF
@@ -3217,7 +3217,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mu2dir/ok.vibe" "$mu2dir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$mu2dir/ok.wasm" ]; then
-  echo "[compiler-gate] FAIL: legal mut reassignment inside map literal did not compile (over-rejects)" >&2
+  echo "[compiler-gate] FAIL: legal mut reassignment inside Map::from_pairs value did not compile (over-rejects)" >&2
   cat "$mu2dir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \

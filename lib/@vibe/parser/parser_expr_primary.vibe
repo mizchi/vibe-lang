@@ -484,33 +484,6 @@ fn parse_bracket_primary(tokens: Array[Token], starts: Array[Int], pos: Int, par
   }
 }
 
-fn parse_map_literal_fields(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[(String, Expr)], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[(String, Expr)], Int) with { Error } {
-  match peek(tokens, pos) {
-    TRBrace => (ArrayBuilder::freeze(b), pos + 1),
-    TIdent(fname) => {
-      let colon_pos = expect_tk(tokens, pos + 1, ":")
-      let (val, next_pos) = parse_recur(tokens, colon_pos, 0)
-      ArrayBuilder::push(b, (fname, val))
-      match peek(tokens, next_pos) {
-        TComma => parse_map_literal_fields(tokens, starts, next_pos + 1, b, parse_recur),
-        TRBrace => (ArrayBuilder::freeze(b), next_pos + 1),
-        _ => throw("expected ',' or '}' in map literal")
-      }
-    },
-    TString(skey) => {
-      let colon_pos = expect_tk(tokens, pos + 1, ":")
-      let (val, next_pos) = parse_recur(tokens, colon_pos, 0)
-      ArrayBuilder::push(b, (skey, val))
-      match peek(tokens, next_pos) {
-        TComma => parse_map_literal_fields(tokens, starts, next_pos + 1, b, parse_recur),
-        TRBrace => (ArrayBuilder::freeze(b), next_pos + 1),
-        _ => throw("expected ',' or '}' in map literal")
-      }
-    },
-    _ => throw("expected field name or '}' in map literal")
-  }
-}
-
 fn parse_paren_tuple_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
   match peek(tokens, pos + 1) {
     TRParen => (EUnit, pos + 2),
@@ -738,11 +711,11 @@ fn parse_ident_primary(tokens: Array[Token], starts: Array[Int], pos: Int, name:
     }
   } else if name == "map" {
     match peek(tokens, pos + 1) {
-      TLBrace => {
-        let b = ArrayBuilder::new()
-        let (fields, end_pos) = parse_map_literal_fields(tokens, starts, pos + 2, b, parse_recur)
-        (EMap(fields), end_pos)
-      },
+      // #960 Stage 2: the `map { ... }` literal is retired. `map` before `{`
+      // stays detected here solely to give a located, actionable diagnostic
+      // (a plain unknown-name error would be misleading). Everywhere else
+      // `map` is an ordinary identifier (Iterator::map etc. need no `r#`).
+      TLBrace => throw("the `map { ... }` literal was removed (#960): use Map::from_pairs([(\"key\", value), ...]) or Map::new() at #\{pos}"),
       _ => (EIdent(name, offset_at(starts, pos)), pos + 1)
     }
   } else {

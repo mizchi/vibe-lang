@@ -130,7 +130,7 @@ let arr = [1, 2, 3]
 // Array::length(arr)         => 3
 
 // Map (string-keyed, all values must be same type)
-let m = map { a: 1, "b": 2 }
+let m = Map::from_pairs([("a", 1), ("b", 2)])
 // Map::get(m, "a")           => 1
 // Map::keys(m)               => ["a", "b"]
 
