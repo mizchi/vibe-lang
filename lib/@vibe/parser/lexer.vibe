@@ -759,6 +759,99 @@ export fn lex_with_offsets(source: String) -> (Array[Token], Array[Int], Array[I
   }
 }
 
+// #946: recovering variant of `lex_with_offsets` — NEVER throws. On a lex
+// error (unexpected character, bad escape, unterminated string, ...) it
+// records the 0-based char offset of the offending position plus the raw
+// error message into two parallel diagnostic arrays, skips ONE char (progress
+// guarantee), and keeps lexing. Returns (tokens, starts, ends, err_offsets,
+// err_msgs); err arrays empty = clean lex, identical token stream to
+// `lex_with_offsets`. Foundation for `vibe diagnostics` reporting lexer
+// errors as located diagnostics instead of an empty ("clean") report.
+export fn lex_with_offsets_recovering(source: String) -> (Array[Token], Array[Int], Array[Int], Array[Int], Array[String]) {
+  let len = String::length(source)
+  let b = ArrayBuilder::new()
+  let starts = ArrayBuilder::new()
+  let ends = ArrayBuilder::new()
+  let err_offsets = ArrayBuilder::new()
+  let err_msgs = ArrayBuilder::new()
+  let mut prev_tok = TEof
+  let first_skip = skip_ws_with_newline(source, len, 0)
+  let mut pos = first_skip.0
+  let mut nl_before = first_skip.1
+  while pos < len {
+    let c = String::char_code_at(source, pos)
+    let res = handle {
+      let (tok, next) = lex_one_token(source, len, pos)
+      Some((tok, next))
+    } with Error {
+      Throw(msg) => {
+        ArrayBuilder::push(err_offsets, pos)
+        ArrayBuilder::push(err_msgs, msg)
+        None
+      }
+    }
+    match res {
+      Some((tok, next)) => {
+        if (c == '[' || c == '(') && nl_before && is_expr_ending_tok(prev_tok) {
+          ArrayBuilder::push(b, TSemicolon)
+          ArrayBuilder::push(starts, pos)
+          ArrayBuilder::push(ends, pos)
+        } else {
+          ()
+        }
+        ArrayBuilder::push(b, tok)
+        ArrayBuilder::push(starts, pos)
+        ArrayBuilder::push(ends, next)
+        prev_tok = tok
+        let skipped = skip_ws_with_newline(source, len, next)
+        pos = skipped.0
+        nl_before = skipped.1
+      },
+      None => {
+        // #963: resume PAST the failed construct, not inside it. A failure
+        // in a multi-char quoted token (string/char literal with a bad
+        // escape) would otherwise re-lex the token's interior and invent
+        // follow-on diagnostics (the backslash as an unexpected char, the
+        // closing quote as a new unterminated string). For quote-delimited
+        // constructs skip to just past the matching close quote (honoring
+        // backslash escapes; stop at newline/EOF for unterminated ones);
+        // anything else advances one char (progress guarantee).
+        let resume = if c == '"' || c == '\'' {
+          let mut j = pos + 1
+          let mut stop = false
+          while !stop {
+            if j >= len {
+              stop = true
+            } else {
+              let cc = String::char_code_at(source, j)
+              if cc == c {
+                j = j + 1
+                stop = true
+              } else if cc == 10 {
+                stop = true
+              } else if cc == 92 && j + 1 < len {
+                j = j + 2
+              } else {
+                j = j + 1
+              }
+            }
+          }
+          j
+        } else {
+          pos + 1
+        }
+        let skipped = skip_ws_with_newline(source, len, resume)
+        pos = skipped.0
+        nl_before = skipped.1
+      }
+    }
+  }
+  ArrayBuilder::push(b, TEof)
+  ArrayBuilder::push(starts, len)
+  ArrayBuilder::push(ends, len)
+  (ArrayBuilder::freeze(b), ArrayBuilder::freeze(starts), ArrayBuilder::freeze(ends), ArrayBuilder::freeze(err_offsets), ArrayBuilder::freeze(err_msgs))
+}
+
 // Convert a 0-based char offset (from lex_with_offsets) to 1-based (line, col).
 // Source-span foundation: lets diagnostics report a real `line:col`.
 export fn offset_to_line_col(source: String, offset: Int) -> (Int, Int) {
