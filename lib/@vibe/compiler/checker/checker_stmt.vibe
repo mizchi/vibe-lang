@@ -13,7 +13,7 @@ import ../core/index.vibe {
 }
 
 import ./checker.vibe {
-  check_assignable, check_expr, detect_narrowed_generic_mismatch, fn_return_env_name, preserve_generic_instantiation
+  check_assignable, check_expr, detect_narrowed_generic_mismatch, fn_return_env_name, preserve_generic_instantiation, reject_resume_outside_handler
 }
 
 import ./checker_resolve.vibe {
@@ -279,6 +279,20 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
     let s = cur_s
     let c = cur_c
     let stmt = Array::get(stmts, idx)
+    // #942 (ADR-0050): resume-misuse walk — a call-position `resume(...)`
+    // outside any handler arm is rejected, and inside a (non-Error) arm it
+    // must sit in tail position. Runs on a throwaway lane per statement
+    // (only ADDS diagnostics; inference flow untouched). SModule bodies are
+    // covered by the recursive check_stmts call below.
+    match stmt {
+      SLet(_, _, _, _, rv) => reject_resume_outside_handler(rv, errors),
+      SLetMut(_, _, rv) => reject_resume_outside_handler(rv, errors),
+      SLetPat(_, rv) => reject_resume_outside_handler(rv, errors),
+      STest(_, rb) => reject_resume_outside_handler(rb, errors),
+      SBench(_, rb) => reject_resume_outside_handler(rb, errors),
+      SExpr(re) => reject_resume_outside_handler(re, errors),
+      _ => ()
+    }
     let (new_env, s1, c1) = match stmt {
       SLet(_, is_rec, name, ann, val) => {
         let (vt, ns0, nc) = if is_rec {

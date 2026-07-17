@@ -1,0 +1,138 @@
+//# Imports
+
+import ../checker/index.vibe {
+  check_program
+}
+
+import ../syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+// First checker error message for `source`, or "" when it checks clean.
+// (check_program throws the first collected diagnostic.)
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with Error {
+    Throw(msg) => msg
+  }
+}
+
+//# Misc
+
+// #942 (ADR-0050): the checker accepted two misuses of `resume`.
+// (1) resume OUTSIDE any handler arm compiled and died at runtime with an
+//     unhandled wasm exception (codegen emits the continuation throw
+//     unconditionally).
+// (2) a non-tail resume inside an arm (`let a = resume(1); resume(2)`)
+//     compiled and silently dropped everything after the first resume —
+//     the same shape the #814 k-convention rejection already refuses.
+// Both are now checker errors; the long-standing accept shapes (single tail
+// resume, branch-tail resumes, multi-statement arms ending in resume, nested
+// handles, arms without resume, `resume` as an ordinary binding name) stay
+// accepted.
+
+test "resume outside any handler arm is rejected" {
+  let src = "fn f() -> Int { resume(1); 2 }\nfn main() -> Int { f() }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "only valid inside a handler arm"))
+  assert(String::contains(msg, "#942"))
+}
+
+test "resume at a fn's tail but outside any handle is rejected" {
+  let src = "fn f() -> Int { resume(1) }\nfn main() -> Int { f() }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "only valid inside a handler arm"))
+}
+
+test "resume in the handled body (not in an arm) is rejected" {
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { resume(1) } with Ask { Get() => resume(2) } }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "only valid inside a handler arm"))
+}
+
+test "double resume via let-bind in one arm is rejected (non-tail)" {
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with Ask { Get() => { let a = resume(1); resume(2) } } }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "tail position"))
+  assert(String::contains(msg, "#942"))
+}
+
+test "statement-position resume followed by another resume is rejected" {
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with Ask { Get() => { resume(1); resume(2) } } }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "tail position"))
+}
+
+test "resume whose value feeds another expression is rejected (non-tail)" {
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() } with Ask { Get() => resume(1) + 1 } }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "tail position"))
+}
+
+test "resume inside a while loop in an arm is rejected (would resume per iteration)" {
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() } with Ask { Get() => { let mut i = 0\n  while i < 2 { resume(1)\n    i = i + 1 }\n  0 } } }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "tail position"))
+}
+
+test "single tail resume stays accepted" {
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with Ask { Get() => resume(1) } }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "multi-statement arm ending in tail resume stays accepted" {
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { let mut tick = 0\n  handle { perform Ask::Get() } with Ask { Get() => { tick = tick + 1\n    resume(tick) } } }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "branch-tail resumes (if/else) stay accepted" {
+  let src = "effect Gate { Check(Int) -> Int }\nfn main() -> Int { handle { perform Gate::Check(10) } with Gate { Check(n) => if n > 5 { resume(1) } else { resume(2) } } }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "match-arm tail resumes stay accepted" {
+  let src = "effect Gate { Check(Int) -> Int }\nfn main() -> Int { handle { perform Gate::Check(1) } with Gate { Check(n) => match n { 0 => resume(10), _ => resume(20) } } }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "nested handle with tail resumes at both levels stays accepted" {
+  let src = "effect Ask { Get() -> Int }\neffect Tell { Say(Int) -> Int }\nfn main() -> Int { handle { handle { perform Ask::Get() + perform Tell::Say(5) } with Tell { Say(n) => resume(n * 2) } } with Ask { Get() => resume(100) } }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "nested handle INSIDE an arm with its own tail resume stays accepted" {
+  let src = "effect Ask { Get() -> Int }\neffect Tell { Say(Int) -> Int }\nfn main() -> Int { handle { perform Ask::Get() } with Ask { Get() => handle { resume(perform Tell::Say(3)) } with Tell { Say(n) => resume(n + 1) } } }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "non-tail resume inside a nested handle's arm is rejected too" {
+  let src = "effect Ask { Get() -> Int }\neffect Tell { Say(Int) -> Int }\nfn main() -> Int { handle { perform Ask::Get() } with Ask { Get() => handle { resume(perform Tell::Say(3)) } with Tell { Say(n) => { let x = resume(n); resume(x) } } } }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "tail position"))
+}
+
+test "arm without resume stays accepted" {
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with Ask { Get() => 42 } }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "throw-then-resume arm shape stays accepted (resume is the block's tail)" {
+  let src = "effect Ask { Question(String) -> String }\nfn main() -> Int { handle { handle { let a = perform Ask::Question(\"ok?\")\n  String::length(a) } with Ask { Question(_q) => { throw(\"handler failure\")\n  resume(\"x\") } } } with Error { Throw(msg) => String::length(msg) } }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "resume as an ordinary (never-called) binding name stays accepted" {
+  let src = "fn pick(flag: Bool) -> Int { let resume = if flag { 1 } else { 2 }\n  let r = resume + 1\n  r }\nfn main() -> Int { pick(true) }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "Error arm resume keeps the #640 non-resumable message (not the #942 one)" {
+  let src = "fn main() -> Int { handle { throw(\"x\")\n  1 } with Error { Throw(_e) => resume(0) } }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "non-resumable"))
+  assert(String::contains(msg, "#640"))
+}
