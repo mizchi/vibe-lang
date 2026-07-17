@@ -1,0 +1,33 @@
+// #931: UFCS method call on a trait-BOUNDED type parameter.
+//
+// `k.probe_key()` where `k: K` and `[K: Hash]` must dispatch through the same
+// threaded witness dictionary as the qualified spelling `K::probe_key(k)`.
+// Before the fix the UFCS spelling compiled clean but the call stayed a bare
+// EDot, which codegen compiled as a struct-field read — a null-function call
+// at runtime (linear backend). Both spellings must agree: 97 * 1000 + 97.
+trait Hash {
+  probe_key(Self) -> Int
+}
+
+struct Point { x: Int; y: Int }
+
+impl Hash for Point {
+  probe_key(self) -> Int { self.x * 31 + self.y }
+}
+
+let get_qualified = [K: Hash](k: K) -> Int {
+  K::probe_key(k)
+}
+
+let get_ufcs = [K: Hash](k: K) -> Int {
+  k.probe_key()
+}
+
+let _start = () -> Int {
+  let p = Point::{ x: 3, y: 4 }
+  get_qualified(p) * 1000 + get_ufcs(p)
+}
+_start()
+
+__DATA__
+{"last": "97097"}

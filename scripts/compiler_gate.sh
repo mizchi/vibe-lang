@@ -1397,6 +1397,35 @@ fi
 rm -rf "$mgdir"
 echo "[compiler-gate] rank-1 trait-method generics regression ok"
 
+# 14c. UFCS method call on a trait-bounded type parameter (#931): inside a
+#      `[K: Hash]` generic, the UFCS spelling `k.probe_key()` must dispatch
+#      through the SAME threaded witness dict as the qualified spelling
+#      `K::probe_key(k)`. Before the fix the UFCS call stayed a bare EDot,
+#      which codegen compiled as a struct-field read — a silent null-function
+#      call at runtime. Uses the committed fixture (expected value pinned in
+#      its __DATA__ block: 97097 = qualified 97 * 1000 + UFCS 97); the
+#      fixture's top-level `_start()` echo line and __DATA__ tail are stripped
+#      for the ADR-0069 entry-based compile.
+echo "[compiler-gate] 14c/14 UFCS-on-bounded-tparam dict dispatch (#931)"
+ufcsdir="_build/_gate_ufcs_tparam"
+rm -rf "$ufcsdir"; mkdir -p "$ufcsdir"
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/trait_bound_ufcs_method.vibe > "$ufcsdir/ufcs.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ufcsdir/ufcs.vibe" "$ufcsdir/ufcs.wasm" _start >/dev/null 2>&1
+if [ ! -s "$ufcsdir/ufcs.wasm" ]; then
+  echo "[compiler-gate] FAIL: UFCS-on-bounded-tparam program did not compile" >&2
+  cat "$ufcsdir/ufcs.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+ufcs_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$ufcsdir/ufcs.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$ufcs_out" != "97097" ]; then
+  echo "[compiler-gate] FAIL: UFCS-on-bounded-tparam mismatch (got '$ufcs_out', want 97097 -> #931 regressed)" >&2
+  exit 1
+fi
+rm -rf "$ufcsdir"
+echo "[compiler-gate] UFCS-on-bounded-tparam dict dispatch ok (97097)"
+
 # 15. derive(...) structural generation regression (#638): `derive(Ord)` and
 #     `derive(Show)` on a struct must generate working `Type::compare` (-1/0/1
 #     lexicographic over fields) and `Type::to_string` free functions. Also

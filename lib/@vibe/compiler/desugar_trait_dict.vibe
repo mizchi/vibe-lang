@@ -2649,7 +2649,25 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
           // field is the closer binding), and unknown receivers keep the EDot
           // (codegen's existing paths).
           let robj = rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-          let as_recv_method = match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
+          // #931: UFCS on a trait-BOUNDED TYPE PARAMETER — `k.probe_key()`
+          // where `k: K` and `[K: Hash]` is in scope. The receiver's inferred
+          // "type name" is the tparam itself ("K"), which is neither a struct
+          // nor a concrete `K::method` top-level fn, so the concrete-method
+          // rewrite below missed it and the call stayed a bare EDot — codegen
+          // compiles a called EDot as a struct-field read, yielding a
+          // null-function call at runtime. Route it through the SAME threaded
+          // witness dict as the qualified spelling `K::probe_key(k)` (the
+          // EIdent arm above): `(dict.method)(k, args)`. Checked FIRST so both
+          // spellings resolve identically (the qualified path also consults
+          // find_dict_for_method before any concrete fallback).
+          let recv_tn = infer_arg_type_name(obj, struct_sets, var_types, fn_returns)
+          let as_tparam_dict = match recv_tn {
+            Some(tn) => find_dict_for_method(dict_binds, tn, m),
+            None => None
+          }
+          let as_recv_method = match as_tparam_dict {
+            Some(_) => None,
+            None => match recv_tn {
             Some(tn) => {
               let qual = String::concat(tn, String::concat("::", m))
               let is_field = struct_set_member(struct_sets, tn, m)
@@ -2660,10 +2678,14 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
               }
             },
             None => None
+            }
           }
-          match as_recv_method {
+          match as_tparam_dict {
+            Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), m, -1, -1), prepend_expr(robj, rwargs), off),
+            None => match as_recv_method {
             Some(qual) => ECall(EIdent(qual, doff), prepend_expr(robj, rwargs), off),
             None => ECall(EDot(robj, m, doff, fdoff), rwargs, off)
+            }
           }
         },
         _ => ECall(rewrite_expr(callee, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rwargs, off)
