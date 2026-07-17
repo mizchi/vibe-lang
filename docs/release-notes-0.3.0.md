@@ -1,0 +1,82 @@
+# vibe 0.3.0 (GA) リリースノート — 下書き
+
+> 下書き (2026-07-16 時点)。[着地待ち] マークの項目は対応 PR の merge を
+> もって確定し、本ノートから印を外す。リリース tag 前に owner が
+> チェックリスト (末尾) を消化すること。
+
+0.2.0 (既知バグの消化サイクル、ADR-0066) から 0.3.0 (GA、ADR-0067 で
+1.0→0.3 に renumber) までの変更点。
+
+## ハイライト
+
+- **Module System v2 完成**: 全パッケージが `.vpkg` 契約に移行し、`.vibei`
+  はリポジトリから消滅。契約 = 外部公開面の唯一の定義であり、境界内
+  ファイルへの直接 import はコンパイルエラー (ADR-0063/0070、#729 完了 /
+  #897 stdlib 側完了)
+- **パッケージレジストリ (最小スライス)**: file-based transparency log
+  (RFC6962 形状の Merkle inclusion/consistency 証明)、yank (append-only
+  marking)、`vibe pkg publish|install|add|yank|update` (#755/#805) [着地待ち: PR #927]
+- **コンパイル型 REPL `vibe shell`**: 宣言蓄積 + 再コンパイル方式
+  (ADR-0034 のインタプリタなし方針を維持)、diagnostics での rollback、
+  `:type`/`:load`/`:list` (#805) [着地待ち: PR #927]
+- **inline wasm**: `fn f(a: Int) -> Int = wasm "(...)"` — linear backend
+  限定の WAT 関数 body 直接記述、SIMD (0xFD) 対応の専用アセンブラ内蔵、
+  tagged-i64 ABI を明文化 (ADR-0072、#805) [着地待ち]
+- **`fn main {}` エントリポイント特殊化 + トップレベル副作用の制限**
+  (ADR-0069 Phase 1)
+- **doctest 運用化**: cheatsheet / vibe.md / language-tour 全コードブロックが
+  検証対象 (`pkf run doctest`)
+
+## 言語
+
+- 文法の冗長性削減: string interpolation を `\{expr}` に統一、
+  型宣言 body のセパレータを `;` に統一
+- トップレベル名前付き関数を `let` から `fn` へ全面移行 (ADR-0064、
+  4,856 関数) + `where { requires, ensures }` 形式化宣言 (#731 Phase 1)
+- generic struct 型パラメータ (#829) + struct literal の明示型引数
+  `Pair[Int]::{ .. }` (#886)
+- trait bound 付き契約宣言 (`fn get_by[K: Hash, V](...)` を `.vpkg` に
+  記述可能; @vibe/core の generic-key API が初めて外部公開)
+- effect 診断の精緻化: op シグネチャ検査 (#813)、import 越し row 強制
+  (#812)、handler 網羅性 (#828)、row 伝播 soundness (#885)、
+  expected/actual の set-diff + `with { ... }` fix-it ヒント (#639) [着地待ち]
+- `perform Error::Throw(e)` が `throw e` と同一の lowering に (#640 Stage 1;
+  Error arm 内の `resume` はコンパイルエラー) [着地待ち]
+- `Process::exit()` による実 exit code 伝播 (#903)
+
+## 標準ライブラリ
+
+- `@vibe/core` 拡充: BigInt / Rational 昇格、base64 / math / diff / uuid
+  統合 (#766/#841)、`[K: Hash]` generic-key API の公開
+- `@vibex` に collections / deque / pqueue / immut ほか追加
+- `println` / `print` が import なしの単体ファイルでも全 backend で動作
+  (#929)。`Stdout::write_char` 等の raw-ABI 経路の int 引数タグ化バグを修正
+  (#930) [着地待ち]
+
+## ツールチェーン
+
+- WASI p3 動作保証 gate (wasmtime 45/46 matrix、ratified wasi:http 0.3.0
+  cutover) (#821)
+- `vibe normalize` サブコマンド (#882)、`vibe check --missing-vpkg` (#910)
+- worktree 間で効くビルドキャッシュ (`VIBE_BUILD_CACHE_DIR`、#849)
+- bootstrap seed bump (`vpkg-support-2026-07-16`、byte-identical
+  自己再生 fixpoint 検証、#902)
+
+## 既知の残項目 (GA 後継続)
+
+- compiler 内部ディレクトリの `.vpkg` 化残り (#897) と境界チェック
+  厳格化 (#847 Phase B — codegen/entry facade の設計判断待ち)
+- Error の algebraic effect 化の残段階 (#640 Stage 2+ — parser desugar /
+  配線整理 / EThrow 退役)
+- evidence-passing handler (#817、0.4 系)
+- prelude の契約化 (設計判断待ち)
+- trait bound 付き generic での UFCS 呼び出しの miscompile (#931 —
+  `K::method(x)` 形式は正常)
+
+## リリース運用チェックリスト (owner)
+
+- [ ] 0.3.0 GA tag
+- [ ] `vibe version` / 配布物の version bump
+- [ ] 本ノートの [着地待ち] 解消
+- [ ] install スクリプト等配布チャネル確認
+- [ ] `docs/spec/1.0-freeze.md` の stable surface 定義を 0.3 に読み替え適用

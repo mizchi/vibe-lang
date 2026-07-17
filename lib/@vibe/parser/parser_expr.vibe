@@ -524,11 +524,96 @@ fn parse_fn_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: B
   }
 }
 
+// #805 (ADR-0072): `fn name(a: Int, b: Int) -> Int = wasm "(...)"` — an
+// inline-wasm-bodied fn (linear backend only). The declared signature is
+// TRUSTED, extern-let style; the body is raw WAT text carried through the
+// existing AST as the unspoofable marker call `%wasm("<text>")` (a real
+// `%`-ident can never be parsed in expression position — TPercent is only
+// the mod operator — so user source cannot forge it). Multiple adjacent
+// string literals are joined with newlines (the lexer has no raw/multiline
+// strings). v0.3 slice restrictions enforced here: monomorphic, empty
+// effect row, no where-contracts, and every param + the return type spelled
+// literally `Int` (raw 62-bit tagged i64 at the boundary, ADR-0055).
+fn parse_fn_wasm_body(tokens: Array[Token], pos: Int, exported: Bool, name: String, tps: Array[String], tbs: Array[(String, Array[String])], params: Array[(String, Option[TypeExpr])], ret_ty: TypeExpr, eff_opt: Option[String], reqs: Array[Expr], enss: Array[Expr]) -> (Stmt, Int) with { Error } {
+  // pos is at the token AFTER `= wasm`.
+  if Array::length(tps) > 0 {
+    throw("inline wasm fn '\{name}' cannot take type parameters (v0.3: monomorphic only) at #\{pos}")
+  } else {
+    ()
+  }
+  match eff_opt {
+    Some(_) => throw("inline wasm fn '\{name}' must have an empty effect row (remove the 'with { ... }' clause) at #\{pos}"),
+    None => ()
+  }
+  if Array::length(reqs) > 0 || Array::length(enss) > 0 {
+    throw("inline wasm fn '\{name}' cannot declare where-contracts at #\{pos}")
+  } else {
+    ()
+  }
+  let mut wi = 0
+  while wi < Array::length(params) {
+    let (pn, pt) = Array::get(params, wi)
+    let ok = match pt {
+      Some(TyName(tn)) => tn == "Int",
+      _ => false
+    }
+    if !ok {
+      throw("inline wasm fn '\{name}': param '\{pn}' must be typed Int (v0.3 slice: raw tagged i64 params only) at #\{pos}")
+    } else {
+      ()
+    }
+    wi = wi + 1
+  }
+  let ret_ok = match ret_ty {
+    TyName(rn) => rn == "Int",
+    _ => false
+  }
+  if !ret_ok {
+    throw("inline wasm fn '\{name}': return type must be Int (v0.3 slice: raw tagged i64 result only) at #\{pos}")
+  } else {
+    ()
+  }
+  match peek(tokens, pos) {
+    TString(first) => {
+      let mut text = first
+      let mut sp = pos + 1
+      let mut more = true
+      while more {
+        match peek(tokens, sp) {
+          TString(nxt) => {
+            text = String::concat(text, String::concat("\n", nxt))
+            sp = sp + 1
+          },
+          _ => {
+            more = false
+          }
+        }
+      }
+      let marker = ECall(EIdent("%wasm", -1), [
+        EString(text)
+      ], -1);
+      (SFnDecl(exported, name, EFn(tps, tbs, params, Some(ret_ty), None, marker), reqs, enss), sp)
+    },
+    _ => throw("expected WAT string literal after '= wasm' in fn '\{name}' at #\{pos}")
+  }
+}
+
 fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool) -> (Stmt, Int) with { Error } {
   let (head, sig, contracts, where_next) = parse_fn_signature(tokens, pos)
   let (name, tps, tbs) = head
   let (params, ret_ty, eff_opt) = sig
   let (reqs, enss) = contracts
+  // #805: `= wasm "..."` inline-wasm body form (see parse_fn_wasm_body).
+  let is_wasm_body = match peek(tokens, where_next) {
+    TEq => match peek(tokens, where_next + 1) {
+      TIdent(kw) => kw == "wasm",
+      _ => false
+    },
+    _ => false
+  }
+  if is_wasm_body {
+    parse_fn_wasm_body(tokens, where_next + 2, exported, name, tps, tbs, params, ret_ty, eff_opt, reqs, enss)
+  } else {
   let br = expect_tk(tokens, where_next, "{")
   let (body, end) = parse_impl(tokens, starts, br, mode_block)
   // ADR-0064 (#727/#731): keep the declaration form — including the where
@@ -538,6 +623,7 @@ fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exp
   // lower_fn_decl_stmt, applied by parse_stmt / parse_program before the
   // checker/codegen ever see the program.
   (SFnDecl(exported, name, EFn(tps, tbs, params, Some(ret_ty), eff_opt, body), reqs, enss), end)
+  }
 }
 
 // #731 (ADR-0064 §7 Phase 1): where-contract desugar + fn-declaration

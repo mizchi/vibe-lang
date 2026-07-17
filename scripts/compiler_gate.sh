@@ -1397,6 +1397,35 @@ fi
 rm -rf "$mgdir"
 echo "[compiler-gate] rank-1 trait-method generics regression ok"
 
+# 14c. UFCS method call on a trait-bounded type parameter (#931): inside a
+#      `[K: Hash]` generic, the UFCS spelling `k.probe_key()` must dispatch
+#      through the SAME threaded witness dict as the qualified spelling
+#      `K::probe_key(k)`. Before the fix the UFCS call stayed a bare EDot,
+#      which codegen compiled as a struct-field read — a silent null-function
+#      call at runtime. Uses the committed fixture (expected value pinned in
+#      its __DATA__ block: 97097 = qualified 97 * 1000 + UFCS 97); the
+#      fixture's top-level `_start()` echo line and __DATA__ tail are stripped
+#      for the ADR-0069 entry-based compile.
+echo "[compiler-gate] 14c/14 UFCS-on-bounded-tparam dict dispatch (#931)"
+ufcsdir="_build/_gate_ufcs_tparam"
+rm -rf "$ufcsdir"; mkdir -p "$ufcsdir"
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/trait_bound_ufcs_method.vibe > "$ufcsdir/ufcs.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ufcsdir/ufcs.vibe" "$ufcsdir/ufcs.wasm" _start >/dev/null 2>&1
+if [ ! -s "$ufcsdir/ufcs.wasm" ]; then
+  echo "[compiler-gate] FAIL: UFCS-on-bounded-tparam program did not compile" >&2
+  cat "$ufcsdir/ufcs.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+ufcs_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$ufcsdir/ufcs.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$ufcs_out" != "97097" ]; then
+  echo "[compiler-gate] FAIL: UFCS-on-bounded-tparam mismatch (got '$ufcs_out', want 97097 -> #931 regressed)" >&2
+  exit 1
+fi
+rm -rf "$ufcsdir"
+echo "[compiler-gate] UFCS-on-bounded-tparam dict dispatch ok (97097)"
+
 # 15. derive(...) structural generation regression (#638): `derive(Ord)` and
 #     `derive(Show)` on a struct must generate working `Type::compare` (-1/0/1
 #     lexicographic over fields) and `Type::to_string` free functions. Also
@@ -2214,6 +2243,69 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
 if [ -s "$pfdir/bad_transitive.wasm" ]; then
   echo "[compiler-gate] FAIL: undeclared transitive effect call compiled (#626 transitive enforcement regressed)" >&2; exit 1
 fi
+# #639: effect-row diagnostics — the transitive reject above must print the
+# EXPECTED vs ACTUAL rows as a set difference, and (since `mid` has no `with`
+# clause at all) a declare-form fix-it hint that blames the CALLER `mid`,
+# not the callee `leaf`.
+if ! grep -qF "effect row mismatch for 'mid': missing { Fs }" "$pfdir/bad_transitive.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: transitive reject lacks the effect-row set-difference diagnostic (#639)" >&2
+  cat "$pfdir/bad_transitive.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+if ! grep -qF "hint: declare 'fn mid(...) -> T with { Fs }'" "$pfdir/bad_transitive.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: no-row reject lacks the declare-form fix-it hint (#639)" >&2
+  cat "$pfdir/bad_transitive.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+# #639: a caller that already declares a row gets the add-form hint carrying
+# the sorted union (existing row preserved, missing effect appended).
+cat > "$pfdir/bad_row_single.vibe" <<'EOF'
+let leaf: (String) -> String with { Fs } = (p) -> {
+  Fs::read_file(p)
+}
+let mid: (String) -> String with { Error } = (p) -> {
+  leaf(p)
+}
+export let _start: () -> Int = () -> { 42 }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$pfdir/bad_row_single.vibe" "$pfdir/bad_row_single.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$pfdir/bad_row_single.wasm" ]; then
+  echo "[compiler-gate] FAIL: partially-declared transitive effect call compiled (#639)" >&2; exit 1
+fi
+if ! grep -qF "effect row mismatch for 'mid': missing { Fs } (declared with { Error }, requires { Error, Fs })" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: partial-row reject lacks the declared-vs-required diff (#639)" >&2
+  cat "$pfdir/bad_row_single.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+if ! grep -qF "hint: add 'with { Error, Fs }' to 'mid'" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: partial-row reject lacks the add-form fix-it hint (#639)" >&2
+  cat "$pfdir/bad_row_single.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+# #639: multiple missing effects at one call site aggregate into ONE sorted
+# set difference (leaf declares "Fs, Env" in reversed order; the diagnostic
+# must render "{ Env, Fs }").
+cat > "$pfdir/bad_row_multi.vibe" <<'EOF'
+let leaf: (String) -> String with { Fs, Env } = (p) -> {
+  Fs::read_file(p)
+}
+let mid: (String) -> String = (p) -> {
+  leaf(p)
+}
+export let _start: () -> Int = () -> { 42 }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$pfdir/bad_row_multi.vibe" "$pfdir/bad_row_multi.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$pfdir/bad_row_multi.wasm" ]; then
+  echo "[compiler-gate] FAIL: multi-effect transitive call compiled (#639)" >&2; exit 1
+fi
+if ! grep -qF "effect row mismatch for 'mid': missing { Env, Fs }" "$pfdir/bad_row_multi.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: multi-effect reject is not an aggregated sorted set difference (#639)" >&2
+  cat "$pfdir/bad_row_multi.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+if ! grep -qF "hint: declare 'fn mid(...) -> T with { Env, Fs }'" "$pfdir/bad_row_multi.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: multi-effect reject lacks the sorted fix-it hint (#639)" >&2
+  cat "$pfdir/bad_row_multi.wasm.diag" 2>/dev/null >&2; exit 1
+fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/good_transitive.vibe" "$pfdir/good_transitive.wasm" _start >/dev/null 2>&1 || true
@@ -2545,6 +2637,157 @@ if [ -s "$fadir/bad_unannot.wasm" ]; then
 fi
 rm -rf "$fadir"
 echo "[compiler-gate] for-await classification ok"
+
+# 27e. Error-as-perform equivalence (#640 Stage 1): `perform Error::Throw(x)`
+#      must be indistinguishable from `throw(x)` — both emit the EThrow wasm
+#      exception (tag 2), so the same `with Error` handler catches both.
+#      Previously the perform spelling was lowered with the out-of-range
+#      fallback effect tag (Error is never in effect_names) and ESCAPED the
+#      handler as an uncaught exception. Also pins #640's checker rule:
+#      Error is non-resumable, so resume(...) inside a with-Error arm is a
+#      compile error (the arm's value IS the handle result).
+echo "[compiler-gate] 27e/27 Error-as-perform equivalence + non-resumability (#640)"
+edir="_build/_gate_error_perform"
+rm -rf "$edir"; mkdir -p "$edir"
+cat > "$edir/via_perform.vibe" <<'EOF'
+let safe = () -> Int with { Error } {
+  perform Error::Throw("fail")
+  0
+}
+export let _start: () -> Int = () -> {
+  handle { safe() } with Error { Throw(msg) => String::length(msg) }
+}
+EOF
+cat > "$edir/via_throw.vibe" <<'EOF'
+let safe = () -> Int with { Error } {
+  throw("fail")
+  0
+}
+export let _start: () -> Int = () -> {
+  handle { safe() } with Error { Throw(msg) => String::length(msg) }
+}
+EOF
+cat > "$edir/bad_resume_arm.vibe" <<'EOF'
+let risky = () -> Int with { Error } {
+  throw("boom")
+  0
+}
+export let _start: () -> Int = () -> {
+  handle { risky() } with Error { Throw(_m) => resume(0) }
+}
+EOF
+# Codex P2 on #933: the rejection walk's catch-all used to end at EBreak /
+# ELoop (and EMap/ESpread/ELabeledArg/EContinue/ERecord), so a resume tucked
+# into `loop { break resume(0) }` reached codegen's meaningless tag-1 path.
+cat > "$edir/bad_resume_loop.vibe" <<'EOF'
+let risky = () -> Int with { Error } {
+  throw("boom")
+  0
+}
+export let _start: () -> Int = () -> {
+  handle { risky() } with Error { Throw(_m) => loop { break resume(0) } }
+}
+EOF
+for v in via_perform via_throw; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$edir/$v.vibe" "$edir/$v.wasm" _start >/dev/null 2>&1 || true
+  if [ ! -s "$edir/$v.wasm" ]; then
+    echo "[compiler-gate] FAIL: $v did not compile (#640)" >&2; exit 1
+  fi
+done
+perf_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/via_perform.wasm" 2>/dev/null | tail -n 1 || true)"
+throw_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/via_throw.wasm" 2>/dev/null | tail -n 1 || true)"
+if [ "$throw_out" != "4" ]; then
+  echo "[compiler-gate] FAIL: throw spelling returned '$throw_out' (expected 4)" >&2; exit 1
+fi
+if [ "$perf_out" != "$throw_out" ]; then
+  echo "[compiler-gate] FAIL: perform Error::Throw diverged from throw ('$perf_out' vs '$throw_out'; #640 regressed)" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edir/bad_resume_arm.vibe" "$edir/bad_resume_arm.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$edir/bad_resume_arm.wasm" ]; then
+  echo "[compiler-gate] FAIL: resume(...) in a with-Error arm compiled (#640 regressed)" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edir/bad_resume_loop.vibe" "$edir/bad_resume_loop.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$edir/bad_resume_loop.wasm" ]; then
+  echo "[compiler-gate] FAIL: resume(...) nested in loop/break inside a with-Error arm compiled (walk gap; Codex P2 on #933)" >&2; exit 1
+fi
+# 27e2 (#640 Stage 2): `throw(x)` desugars at PARSE time to the exact
+# `perform Error::Throw(x)` AST (single internal form), so the two spellings
+# must produce BYTE-IDENTICAL wasm — a much stronger pin than the equal-output
+# check above. If this ever diverges, the single-form invariant regressed
+# (e.g. one spelling grew its own lowering again).
+if ! cmp -s "$edir/via_perform.wasm" "$edir/via_throw.wasm"; then
+  echo "[compiler-gate] FAIL: throw vs perform Error::Throw wasm bytes differ (#640 Stage 2 single-form regressed)" >&2; exit 1
+fi
+rm -rf "$edir"
+echo "[compiler-gate] Error-as-perform equivalence ok (4, byte-identical)"
+
+# 27f. print primitives on the bare FS lane (#929/#930): the println/print
+#      checker builtins had no linear-lane lowering (any program not importing
+#      @vibe/io died with "undefined variable (local): println @call"), and the
+#      Stdout::write_char / Stderr::write_char / Stdin::read_stream host
+#      imports were called with guest-TAGGED ints (write_char(65) wrote byte
+#      130 — "42" printed as "hd"). println/print must compile standalone and
+#      print exact text; write_char must print the untagged byte; a source-
+#      provided println (shadow) must still win over the builtin lowering.
+echo "[compiler-gate] 27f/27 print primitives on the FS lane (#929/#930)"
+ppdir="_build/_gate_print_prims"
+rm -rf "$ppdir"; mkdir -p "$ppdir"
+cat > "$ppdir/prints.vibe" <<'EOF'
+fn main() -> Unit with { Stdout } {
+  println("hello gate")
+  print("forty")
+  print("two")
+  println("")
+  println("\{40 + 2}")
+  Stdout::write_char(String::char_code_at("A", 0))
+  Stdout::write_char(10)
+}
+EOF
+# The lowering must hold on BOTH linear lanes: the RC-canonical lane (raw
+# host ABI, #930 untag shims) and the non-RC lane this gate's global
+# VIBE_RC=0 pin compiles under (its generic call path untags import args
+# itself). Compile and run the same program once per lane.
+for pp_rc in 0 1; do
+  rm -f "$ppdir/prints.wasm" "$ppdir/prints.wasm.diag"
+  VIBE_RC="$pp_rc" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$ppdir/prints.vibe" "$ppdir/prints.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$ppdir/prints.wasm" ]; then
+    echo "[compiler-gate] FAIL: println/print program did not compile on the FS lane under VIBE_RC=$pp_rc (#929 regressed)" >&2
+    cat "$ppdir/prints.wasm.diag" 2>/dev/null >&2; exit 1
+  fi
+  pp_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$ppdir/prints.wasm" 2>/dev/null | head -n 4 | tr '\n' '|')"
+  if [ "$pp_out" != "hello gate|fortytwo|42|A|" ]; then
+    echo "[compiler-gate] FAIL: print primitives output '$pp_out' under VIBE_RC=$pp_rc (expected 'hello gate|fortytwo|42|A|'; #929/#930 regressed)" >&2; exit 1
+  fi
+done
+cat > "$ppdir/shadow.vibe" <<'EOF'
+fn println(s: String) -> Unit {
+  print("S\n")
+}
+
+fn main() -> Unit {
+  println("ignored")
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ppdir/shadow.vibe" "$ppdir/shadow.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$ppdir/shadow.wasm" ]; then
+  echo "[compiler-gate] FAIL: source-shadowed println did not compile (#929 shadow guard broke shadowing)" >&2; exit 1
+fi
+pp_shadow="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$ppdir/shadow.wasm" 2>/dev/null | head -n 1)"
+if [ "$pp_shadow" != "S" ]; then
+  echo "[compiler-gate] FAIL: source-shadowed println printed '$pp_shadow' (expected 'S'; builtin lowering must yield to source defs)" >&2; exit 1
+fi
+rm -rf "$ppdir"
+echo "[compiler-gate] print primitives ok"
 
 # 28. argument type checking: the checker used to SWALLOW argument unification
 #     failures (`unify_call_args` did `None => out`), so an ill-typed call like

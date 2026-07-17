@@ -8,14 +8,16 @@ import ../core {
 }
 
 import ../checker_effects.vibe {
-  EffectError, check_perform_effects_expr, check_perform_effects_stmt
+  EffectError, check_perform_effects_expr, check_perform_effects_stmt, check_perform_effects_stmts, effect_error_to_string
 }
 
 //# Functions
 
+// #639: the perform-discipline pass now reports row mismatches as
+// EEEffectRowMismatch (set difference + fix-it hint).
 fn is_perform_err(e: EffectError) -> Bool {
   match e {
-    EEPerformUndeclaredEffect(_, _) => true,
+    EEEffectRowMismatch(_, _, _, _) => true,
     _ => false
   }
 }
@@ -179,4 +181,50 @@ test "handle with an unqualified arm stays conservative" {
   ])
   let errors = check_perform_effects_expr(handle_expr, no_labels(), false)
   assert(eq(Array::length(errors), 0))
+}
+
+// #639: effect-row mismatch diagnostics — set difference + with-clause fix-it.
+
+test "row mismatch names the missing effect and suggests the augmented row" {
+  let body = fn_with(None, perform_op("Fs::ReadFile", EString("p")))
+  let sig = TyFn([
+    TyName("String")
+  ], TyName("String"), Some("Error"))
+  let stmt = SLet(false, false, "read", Some(sig), body)
+  let errors = check_perform_effects_stmt(stmt)
+  assert(Array::length(errors) > 0)
+  let msg = effect_error_to_string(Array::get(errors, 0))
+  assert(String::contains(msg, "effect row mismatch for 'read': missing { Fs }"))
+  assert(String::contains(msg, "declared with { Error }, requires { Error, Fs }"))
+  assert(String::contains(msg, "hint: add 'with { Error, Fs }' to 'read'"))
+}
+
+test "row mismatch with no declared row suggests a full declaration" {
+  let body = fn_with(None, perform_op("Fs::ReadFile", EString("p")))
+  let stmt = SLet(false, false, "load", None, body)
+  let errors = check_perform_effects_stmt(stmt)
+  assert(Array::length(errors) > 0)
+  let msg = effect_error_to_string(Array::get(errors, 0))
+  assert(String::contains(msg, "effect row mismatch for 'load': missing { Fs }"))
+  assert(String::contains(msg, "no 'with' clause, requires { Fs }"))
+  assert(String::contains(msg, "hint: declare 'fn load(...) -> T with { Fs }'"))
+}
+
+test "call-site mismatch aggregates, sorts, and blames the caller" {
+  // helper declares { Fs, Env } (reversed order on purpose); the caller has no
+  // row, so the whole difference surfaces at the CALL site, sorted, and the
+  // hint targets the CALLER's declaration.
+  let helper_body = fn_with(Some("Fs, Env"), EInt(1))
+  let helper = SLet(false, false, "helper", None, helper_body)
+  let caller_body = fn_with(None, ECall(EIdent("helper", -1), [
+    EInt(0)
+  ], -1))
+  let caller = SLet(false, false, "wrap", None, caller_body)
+  let errors = check_perform_effects_stmts([
+    helper, caller
+  ])
+  assert(Array::length(errors) > 0)
+  let msg = effect_error_to_string(Array::get(errors, 0))
+  assert(String::contains(msg, "effect row mismatch for 'wrap': missing { Env, Fs }"))
+  assert(String::contains(msg, "hint: declare 'fn wrap(...) -> T with { Env, Fs }'"))
 }

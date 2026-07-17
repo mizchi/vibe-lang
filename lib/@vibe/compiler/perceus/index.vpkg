@@ -1,0 +1,62 @@
+version 0.0.1
+
+// @vibe/compiler/perceus — the RC backend's Perceus dup/drop planner
+// (count + emit passes over a function body), the program-wide
+// borrow-return / scalar-return / heap-return name scans, and the
+// heap-param elaboration rewrite (ADR-0055/#702..#715 lineage). First
+// COMPILER-INTERNAL contract batch (ADR-0070 Phase 3, #897) — compiled
+// into the compiler itself via compiler_sources_manifest.tsv (group
+// `codegen`, dual-row: this contract + perceus.vibe).
+//
+// The old index.vibe was not a facade but the whole implementation (the
+// package is single-file), so it moved verbatim to perceus.vibe.
+//
+// `PerceusAction` is declared TRANSPARENT (defined verbatim here, deleted
+// from the impl): tests/perceus_rc_test.vibe reads `.kind`/`.name`
+// directly, so the field layout is real public API surface (@vibe/process
+// ShResult precedent, PR #920). `PerceusActionKind` stays `opaque` with
+// its `export enum` kept in perceus.vibe: the impl file itself constructs
+// and pattern-matches PaDup/PaDrop/PaAliasDup, and enum VARIANTS do not
+// resolve across units from a facade-only definition (@vibe/json
+// precedent — "unknown name: JNull"). Consumers keep full variant
+// visibility through the same #716 re-export machinery as before.
+//
+// `PCtx` (the planner's mutable count/emit state, parameter of
+// pc_emit/pc_count) is intentionally NOT declared: it was never exported
+// by the old index.vibe either — the exported pc_emit/pc_count signatures
+// name it as structural signature text only, and conformance compares
+// signatures textually, so declaring it `opaque` would have forced a new
+// `export struct PCtx` (a surface WIDENING this migration must not make).
+// No `version` binding existed (compiler-internal package).
+
+import ./perceus.vibe {}
+
+opaque type PerceusActionKind
+
+struct PerceusAction {
+  kind: PerceusActionKind;
+  name: String
+}
+
+// --- plan-action predicates
+fn pa_is_dup(a: PerceusAction) -> Bool
+fn pa_is_drop(a: PerceusAction) -> Bool
+fn pa_is_alias_dup(a: PerceusAction) -> Bool
+
+// --- program-wide name scans (threaded into every function's plan)
+fn compute_borrow_returning_names(stmts: Array[Stmt]) -> Array[String]
+fn compute_scalar_returning_names(stmts: Array[Stmt]) -> Array[String]
+fn compute_heap_returning(stmts: Array[Stmt]) -> Array[String]
+
+// --- heap-ness classification
+fn type_expr_is_heap(ot: Option[TypeExpr]) -> Bool
+fn param_is_heap_in_body(name: String, otype: Option[TypeExpr], body: Expr) -> Bool
+
+// --- planner passes and entry points
+fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int
+fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int
+fn build_perceus_plan(body: Expr) -> Array[PerceusAction]
+fn build_perceus_plan_with_params(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String]) -> Array[PerceusAction]
+
+// --- heap-param elaboration (run at the head of the RC pipeline)
+fn elaborate_heap_params(stmts: Array[Stmt]) -> Array[Stmt]

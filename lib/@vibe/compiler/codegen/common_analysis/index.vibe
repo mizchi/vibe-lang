@@ -634,6 +634,27 @@ fn is_inlined_scalar_builtin(name: String) -> Bool {
 // profile was string-equality scans under this function. Callers with a hot
 // loop pass a prebuilt index (ctx.capture_name_index); the Array-taking
 // wrapper below builds one per call for small/cold callers.
+// #640 Stage 2: recognize the parse-time desugar of `throw(x)` —
+// `ECall(EIdent("perform"), [ECall(EIdent("Error::Throw"), payload_args)])`
+// — and return its payload args. None for every other perform (or shape).
+fn ca_perform_error_throw_op_args(args: Array[Expr]) -> Option[Array[Expr]] {
+  if Array::length(args) == 1 {
+    match Array::get(args, 0) {
+      ECall(op_callee, op_args, _) => match op_callee {
+        EIdent(op_name, _) => if op_name == "Error::Throw" {
+          Some(op_args)
+        } else {
+          None
+        },
+        _ => None
+      },
+      _ => None
+    }
+  } else {
+    None
+  }
+}
+
 export fn collect_free_vars_expr(expr: Expr, bound: Array[String], fn_names: Array[String], out: Array[String]) -> Int {
   match expr {
     EIdent(name, _) => if array_contains_str(bound, name) {
@@ -669,7 +690,36 @@ export fn collect_free_vars_expr(expr: Expr, bound: Array[String], fn_names: Arr
     // lib/@vibe/prelude/string.vibe's string_index_of_from), wrongly
     // skipping its capture into a nested closure and crashing with
     // "undefined variable (ident)" at runtime.
-    ECall(EIdent(cname, _), args, _) => if !array_contains_str(bound, cname) && !(bsearch_leftmost(fn_names, cname) >= 0) && (is_inlined_async_builtin(cname) || is_inlined_scalar_builtin(cname)) {
+    ECall(EIdent(cname, _), args, _) => if cname == "perform" {
+      // #640 Stage 2: `throw(x)` parses to `perform Error::Throw(x)`. The
+      // magic `perform` callee and the `Error::Throw` op name are keywords,
+      // not capturable values — collecting them as free vars made every
+      // throw-bearing LOCAL closure capture a garbage "perform" slot and
+      // call through it (null call_indirect / signature mismatch at
+      // runtime; the #786 perform-in-closure shape, which throw never had
+      // as EThrow). Skip both and recurse into the payload only. A real
+      // `perform Eff::Op(..)` keeps the historical collection verbatim
+      // (those lambdas are dlh-hoisted before this analysis runs).
+      match ca_perform_error_throw_op_args(args) {
+        Some(op_args) => {
+          let mut i = 0
+          while i < Array::length(op_args) {
+            collect_free_vars_expr(Array::get(op_args, i), bound, fn_names, out)
+            i = i + 1
+          }
+          0
+        },
+        None => {
+          collect_free_vars_expr(EIdent(cname, 0), bound, fn_names, out)
+          let mut i = 0
+          while i < Array::length(args) {
+            collect_free_vars_expr(Array::get(args, i), bound, fn_names, out)
+            i = i + 1
+          }
+          0
+        }
+      }
+    } else if !array_contains_str(bound, cname) && !(bsearch_leftmost(fn_names, cname) >= 0) && (is_inlined_async_builtin(cname) || is_inlined_scalar_builtin(cname)) {
       let mut i = 0
       while i < Array::length(args) {
         collect_free_vars_expr(Array::get(args, i), bound, fn_names, out)

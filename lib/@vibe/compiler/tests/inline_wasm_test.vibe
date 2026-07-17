@@ -1,0 +1,188 @@
+//# Imports
+
+// #805 (ADR-0072): inline wasm — `fn f(a: Int, b: Int) -> Int = wasm "..."`.
+// Reject-cases (parse-level v0.3 slice restrictions, gc-backend rejection,
+// malformed WAT with a located error) plus the assembler's byte-level
+// contract and the printer round-trip. The happy runtime path is covered by
+// fixtures/inline_wasm_test.vibe (allowlisted).
+
+import ../syntax {
+  lex, parse_program, parse_program_preserving, print_stmt
+}
+
+import ../checker/index.vibe {
+  check_program
+}
+
+import ../codegen/wasi/index.vibe {
+  compile_wasi_module_impl
+}
+
+import ../codegen_gc.vibe {
+  compile_wasi_module_gc
+}
+
+import ../codegen/inline_wat.vibe {
+  compile_inline_wat
+}
+
+//# Functions
+
+fn parse_err(src: String) -> String {
+  handle {
+    let _ = parse_program(lex(src))
+    ""
+  } with Error {
+    Throw(msg) => msg
+  }
+}
+
+fn compiles_linear(src: String) -> Bool {
+  handle {
+    let stmts = parse_program(lex(src))
+    let _ = check_program(stmts)
+    let _ = compile_wasi_module_impl(stmts, "__no_entry__")
+    true
+  } with Error {
+    Throw(_) => false
+  }
+}
+
+fn gc_err(src: String) -> String {
+  handle {
+    let stmts = parse_program(lex(src))
+    let _ = compile_wasi_module_gc(stmts, "__no_entry__")
+    ""
+  } with Error {
+    Throw(msg) => msg
+  }
+}
+
+fn wat_err(wat: String) -> String {
+  handle {
+    let _ = compile_inline_wat("probe", wat, [
+      "a",
+      "b"
+    ])
+    ""
+  } with Error {
+    Throw(msg) => msg
+  }
+}
+
+//# Misc
+
+test "inline wasm assembler: byte-level contract (folded operand order)" {
+  // Folded form emits operands FIRST, then the operator — the raw bytes are
+  // exactly `local.get 0; local.get 1; i64.add` with no locals header and no
+  // trailing end (linked_compile's code-section builder adds both).
+  let bytes = compile_inline_wat("probe", "(i64.add (local.get $a) (local.get $b))", [
+    "a",
+    "b"
+  ])
+  assert(Bytes::length(bytes) == 5)
+  assert(bytes[0] == 0x20)
+  assert(bytes[1] == 0x00)
+  assert(bytes[2] == 0x20)
+  assert(bytes[3] == 0x01)
+  assert(bytes[4] == 0x7C)
+}
+
+test "inline wasm assembler: flat sequence equals folded form" {
+  let flat = compile_inline_wat("probe", "local.get $a local.get $b i64.add", [
+    "a",
+    "b"
+  ])
+  assert(Bytes::length(flat) == 5)
+  assert(flat[0] == 0x20)
+  assert(flat[4] == 0x7C)
+}
+
+test "inline wasm assembler: simd 0xFD prefix" {
+  // i64x2.splat = 0xFD 18
+  let bytes = compile_inline_wat("probe", "(i64x2.splat (local.get $a))", [
+    "a"
+  ])
+  assert(Bytes::length(bytes) == 4)
+  assert(bytes[0] == 0x20)
+  assert(bytes[1] == 0x00)
+  assert(bytes[2] == 0xFD)
+  assert(bytes[3] == 18)
+}
+
+test "inline wasm assembler: malformed WAT is a located error" {
+  let e1 = wat_err("(i64.addd (local.get $a) (local.get $b))")
+  assert(String::contains(e1, "unknown or unsupported instruction 'i64.addd'"))
+  assert(String::contains(e1, "WAT offset 1"))
+  let e2 = wat_err("(i64.add (local.get $a) (local.get $c))")
+  assert(String::contains(e2, "unknown local '$c'"))
+  let e3 = wat_err("(i64.add (local.get $a) (local.get $b)")
+  assert(String::contains(e3, "missing ')'"))
+  let e4 = wat_err("(br $nowhere)")
+  assert(String::contains(e4, "unknown label '$nowhere'"))
+  let e5 = wat_err("(call $f)")
+  assert(String::contains(e5, "not supported"))
+  let e6 = wat_err("block")
+  assert(String::contains(e6, "folded form"))
+}
+
+test "inline wasm assembler: lane and align immediates are validated (Codex P2 on #933)" {
+  // out-of-range / negative lane indices used to be truncated with `& 255`
+  // into a wasm file only the validator rejects
+  let e1 = wat_err("(i8x16.extract_lane_s 16 (local.get $a))")
+  assert(String::contains(e1, "lane index 16 is out of range for 'i8x16.extract_lane_s' (0..15)"))
+  let e2 = wat_err("(i64x2.replace_lane -1 (local.get $a) (local.get $b))")
+  assert(String::contains(e2, "lane index -1 is out of range"))
+  // align= used to floor-log2 any int (align=3 silently became align=2) and
+  // let over-aligned memargs through to the validator
+  let e3 = wat_err("(i32.load align=3 (local.get $a))")
+  assert(String::contains(e3, "align=3 is invalid (must be a positive power of two)"))
+  let e4 = wat_err("(i32.load align=16 (local.get $a))")
+  assert(String::contains(e4, "align=16 exceeds the instruction's natural alignment (4)"))
+  let e5 = wat_err("(i32.load align=0 (local.get $a))")
+  assert(String::contains(e5, "align=0 is invalid"))
+}
+
+test "inline wasm parse: v0.3 slice restrictions" {
+  // effect row
+  let e1 = parse_err("fn f(a: Int) -> Int with { Fs } = wasm \"(local.get $a)\"")
+  assert(String::contains(e1, "empty effect row"))
+  // generic type params
+  let e2 = parse_err("fn f[T](a: Int) -> Int = wasm \"(local.get $a)\"")
+  assert(String::contains(e2, "monomorphic only"))
+  // non-Int param
+  let e3 = parse_err("fn f(a: String) -> Int = wasm \"(local.get $a)\"")
+  assert(String::contains(e3, "must be typed Int"))
+  // non-Int return
+  let e4 = parse_err("fn f(a: Int) -> String = wasm \"(local.get $a)\"")
+  assert(String::contains(e4, "return type must be Int"))
+  // where-contract
+  let e5 = parse_err("fn f(a: Int) -> Int where { requires: a > 0 } = wasm \"(local.get $a)\"")
+  assert(String::contains(e5, "where-contracts"))
+  // missing WAT string
+  let e6 = parse_err("fn f(a: Int) -> Int = wasm { }")
+  assert(String::contains(e6, "expected WAT string literal"))
+}
+
+test "inline wasm: checker accepts and linear backend compiles" {
+  let src = "fn wadd(a: Int, b: Int) -> Int = wasm \"(i64.add (local.get $a) (local.get $b))\"\nfn use_it() -> Int { wadd(1, 2) }"
+  assert(compiles_linear(src))
+}
+
+test "inline wasm: gc backend rejects with a clear error" {
+  let src = "fn wadd(a: Int, b: Int) -> Int = wasm \"(i64.add (local.get $a) (local.get $b))\""
+  let e = gc_err(src)
+  assert(String::contains(e, "linear-backend only"))
+  assert(String::contains(e, "wadd"))
+}
+
+test "inline wasm: printer round-trips the = wasm form" {
+  let src = "fn wadd(a: Int, b: Int) -> Int = wasm \"(i64.add (local.get $a) (local.get $b))\""
+  let stmts = parse_program_preserving(lex(src))
+  assert(Array::length(stmts) == 1)
+  let printed = print_stmt(Array::get(stmts, 0))
+  assert(String::contains(printed, "= wasm \"(i64.add (local.get $a) (local.get $b))\""))
+  // and the printed form re-parses to the same print
+  let stmts2 = parse_program_preserving(lex(printed))
+  assert(print_stmt(Array::get(stmts2, 0)) == printed)
+}

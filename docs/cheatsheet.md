@@ -433,6 +433,9 @@ let w_check = {
 ## Effects (core concept)
 
 vibe is **pure by default**. Side effects are tracked in the type system.
+Missing effects are reported as a set difference (`effect row mismatch for 'f':
+missing { Fs } (declared with { Error }, requires { Error, Fs })`) with a
+`hint:` line suggesting the exact `with { ... }` row to declare (#639).
 
 ### Result-first pipeline (recommended)
 
@@ -523,6 +526,14 @@ let risky: (Int) -> Int with { Error } = (x) -> {
 // handle catches the effect
 let safe = handle { risky(0) } with Error { Throw(msg) => -1 }
 ```
+
+`throw(x)` は `perform Error::Throw(x)` と等価 (#640)。`Error` は再開不能
+(non-resumable) — `Error` arm の値がそのまま handle の結果になるため、
+arm 内の `resume(...)` は checker がエラーにする。
+Stage 2 (#640) で `throw(x)` は parse 時に `perform Error::Throw(x)` へ脱糖され、
+両綴りはパイプライン全体で単一の内部表現になった（printer は `throw(x)` に
+再糖衣する）。`perform Error::Throw(x)` は effect-row 上も `throw` と同じ扱い
+（`with { Error }` 宣言なしでも許容される、遍在 row）。
 
 ### Railway try (`?`) — `Result` and `Option` (#635)
 
@@ -727,6 +738,51 @@ let main = () -> Int { run() }
 - Top-level statements only (`let` / `enum` / `struct` / `impl` / ...).
 - `vibe fmt` / normalize refuses `#cfg` sources (formatting would delete disabled code).
 - Not usable inside the compiler's own source until the seed compiler understands it (see docs/bootstrap.md).
+
+## Inline wasm (`= wasm "..."`, linear backend only)
+
+A top-level `fn` may have a raw WAT (S-expression) body instead of a vibe body
+(#805, ADR-0072) — for hand-optimized hot paths and SIMD:
+
+<!-- doctest-skip: linear-backend 専用機能の構文提示 -->
+```vibe skip
+// mul must untag (>>1), multiply, retag (<<1) — see ABI note below
+fn fast_mul(a: Int, b: Int) -> Int = wasm
+  "(i64.shl (i64.mul (i64.shr_s (local.get $a) (i64.const 1))"
+  "                  (i64.shr_s (local.get $b) (i64.const 1)))"
+  "         (i64.const 1))"
+
+fn simd_add(a: Int, b: Int) -> Int = wasm
+  "(i64x2.extract_lane 0 (i64x2.add (i64x2.splat (local.get $a)) (i64x2.splat (local.get $b))))"
+```
+
+- **ABI contract (ADR-0055)**: params and result are RAW 62-bit tagged i64
+  values — `Int` n arrives as `n<<1`. There are NO automatic shims: untag with
+  `i64.shr_s 1`, retag with `i64.shl 1`. Tag-transparent ops (add/sub/and/or/
+  xor/compares) may skip the dance; mul/div/shift must not.
+- **Linear backend only** — the wasm-gc backend rejects it with a compile
+  error. The declared signature is trusted (extern-let style).
+- **v0.3 slice restrictions**: monomorphic only (no `[T]`), empty effect row,
+  no `where` contracts, every param and the return type spelled literally
+  `Int`. Locals are the fn's own params (`$name` or index; use params as
+  scratch via `local.set` — no `(local ...)` declarations). No `call` /
+  `global.*` / `br_table` / `f32.const` / `f64.const`.
+- **WAT text**: ordinary string literal(s) — the lexer has no raw/multiline
+  strings; adjacent literals after `= wasm` are joined with newlines. `;;`
+  line and `(; ;)` block comments work inside the text.
+- Folded S-expressions emit operands first (real WAT semantics); flat
+  sequences (`local.get $a local.get $b i64.add`) also work. Structured
+  control (`block`/`loop`/`if`) is folded-form only:
+  `(block $l (result i64) ...)`, `(if (result i64) <cond> (then ...) (else ...))`,
+  `br`/`br_if` with `$label` or relative depth.
+- SIMD (0xFD prefix) is supported: `v128.const i64x2 1 2`, splat /
+  extract_lane / replace_lane, lane arithmetic, bitwise, `all_true` /
+  `any_true` / `bitmask`, `v128.load` / `v128.store`.
+- Memory instructions address the runtime's linear memory directly — the heap
+  layout is NOT a stable interface; loads/stores are at-your-own-risk.
+- Not usable inside the compiler's own source until the seed compiler
+  understands the syntax (same bump discipline as `#cfg`, docs/bootstrap.md).
+- Examples: `fixtures/inline_wasm_test.vibe`.
 
 ## RC Debug Mode (`VIBE_RC=shadow`)
 

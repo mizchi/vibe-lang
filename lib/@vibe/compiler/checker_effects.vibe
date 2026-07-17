@@ -31,6 +31,12 @@ export enum EffectError {
   EEThrowOutsideEffect(String);
   EEEffectfulCallOutsideEffect(String);
   EEPerformUndeclaredEffect(String, String);
+  // #639: effect-row mismatch with the EXPECTED vs ACTUAL rows rendered as a
+  // set difference plus a fix-it hint for the `with { ... }` annotation.
+  // Fields (all pre-rendered ", "-joined label lists, deterministic order):
+  // (enclosing fn name or "" when unnamed, missing labels (sorted),
+  //  declared row (source order, "" when no row), required row (sorted union)).
+  EEEffectRowMismatch(String, String, String, String);
   EEAssignImmutable(String)
 }
 
@@ -404,6 +410,29 @@ export fn effect_error_to_string(err: EffectError) -> String {
     EEThrowOutsideEffect(msg) => String::concat("throw outside effectful context: ", msg),
     EEEffectfulCallOutsideEffect(name) => String::concat("effectful call outside effectful context: ", name),
     EEPerformUndeclaredEffect(op, eff) => String::concat("use of undeclared effect `", String::concat(eff, String::concat("` (", String::concat(op, "); add it to the function's `with { ... }` or wrap in a `handle`")))),
+    // #639: expected-vs-actual effect rows as a set difference, then ONE
+    // deterministic fix-it hint line targeting the enclosing declaration
+    // (for a call-site leak that is the CALLER, not the callee).
+    EEEffectRowMismatch(fname, missing, declared, required) => {
+      let head = if String::length(fname) > 0 {
+        String::concat("effect row mismatch for '", String::concat(fname, "'"))
+      } else {
+        "effect row mismatch"
+      }
+      let detail = if String::length(declared) > 0 {
+        String::concat(" (declared with { ", String::concat(declared, String::concat(" }, requires { ", String::concat(required, " })"))))
+      } else {
+        String::concat(" (no 'with' clause, requires { ", String::concat(required, " })"))
+      }
+      let hint = if String::length(fname) == 0 {
+        String::concat("\nhint: add 'with { ", String::concat(required, " }' to the enclosing function"))
+      } else if String::length(declared) == 0 {
+        String::concat("\nhint: declare 'fn ", String::concat(fname, String::concat("(...) -> T with { ", String::concat(required, " }'"))))
+      } else {
+        String::concat("\nhint: add 'with { ", String::concat(required, String::concat(" }' to '", String::concat(fname, "'"))))
+      }
+      String::concat(head, String::concat(": missing { ", String::concat(missing, String::concat(" }", String::concat(detail, hint)))))
+    },
     EEAssignImmutable(name) => String::concat("cannot assign to immutable binding `", String::concat(name, "` (declare it with `let mut`)"))
   }
 }
@@ -799,6 +828,82 @@ fn labels_union(a: Array[String], b: Array[String]) -> Array[String] {
   out
 }
 
+// #639: deterministic label ordering for effect-row diagnostics. Char-by-char
+// lexicographic compare, shorter-prefix-first on a tie — written out by hand
+// (see CLAUDE.md's length-first `String <` gotcha) so `{ Env, Fs }` always
+// renders in the same order.
+fn label_lt(a: String, b: String) -> Bool {
+  let la = String::length(a)
+  let lb = String::length(b)
+  let n = if la < lb {
+    la
+  } else {
+    lb
+  }
+  let mut i = 0
+  let mut decided = 0
+  while i < n && decided == 0 {
+    let ca = String::char_code_at(a, i)
+    let cb = String::char_code_at(b, i)
+    if ca < cb {
+      decided = 1
+    } else if ca > cb {
+      decided = 2
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if decided == 1 {
+    true
+  } else if decided == 2 {
+    false
+  } else {
+    la < lb
+  }
+}
+
+// Copying insertion sort (rows are tiny — a handful of labels at most).
+fn sort_labels(xs: Array[String]) -> Array[String] {
+  let out = Array::slice(xs, 0, Array::length(xs))
+  let mut i = 1
+  while i < Array::length(out) {
+    let key = Array::get(out, i)
+    let mut j = i
+    while j > 0 && label_lt(key, Array::get(out, j - 1)) {
+      Array::set(out, j, Array::get(out, j - 1))
+      j = j - 1
+    }
+    Array::set(out, j, key)
+    i = i + 1
+  }
+  out
+}
+
+fn join_labels(xs: Array[String]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(xs) {
+    if i == 0 {
+      out = Array::get(xs, i)
+    } else {
+      out = String::concat(out, String::concat(", ", Array::get(xs, i)))
+    }
+    i = i + 1
+  }
+  out
+}
+
+// #639: build the effect-row mismatch diagnostic for a perform/call whose
+// required effects are absent from the enclosing declaration's row. `missing`
+// is the set difference (callee requires minus caller declares), rendered
+// sorted; `required` is the sorted union the fix-it hint suggests declaring.
+fn make_row_mismatch(fn_name: String, declared: Array[String], missing: Array[String]) -> EffectError {
+  let missing_sorted = sort_labels(labels_union(no_str_labels(), missing))
+  let required = sort_labels(labels_union(declared, missing))
+  EEEffectRowMismatch(fn_name, join_labels(missing_sorted), join_labels(declared), join_labels(required))
+}
+
 // #626 criterion 2: a `handle ... with E` DISCHARGES E for its body — after
 // handling E the body need not declare it. The parser qualifies each handler
 // arm pattern as `E::Op`, so the discharged effect names are recoverable as the
@@ -1031,6 +1136,14 @@ fn merge_param_types_with_sig(ty: Option[TypeExpr], params: Array[(String, Optio
 // program's top level and at any call site with no enclosing function-typed
 // parameters in scope).
 export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]]) -> Array[EffectError] {
+  check_perform_effects_expr_tx_in("", root, root_declared, root_in_handle, fn_names, fn_effs, root_ov_names, root_ov_effs)
+}
+
+// #639: the same walk with the enclosing top-level binding's NAME threaded in
+// so row-mismatch diagnostics can blame the caller's declaration in the fix-it
+// hint. The name is constant per walk (lambdas are anonymous), so it rides as
+// a plain parameter, not on the work stack.
+fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]]) -> Array[EffectError] {
   let errors = Array::slice([
     EEThrowOutsideEffect("")
   ], 0, 0)
@@ -1050,8 +1163,18 @@ export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String]
                 ECall(op_callee, _, _) => match op_callee {
                   EIdent(op_name, _) => {
                     let eff = effect_name_of_op(op_name)
-                    if !in_handle && !decl_authorizes_effect(declared, eff) {
-                      Array::push(errors, EEPerformUndeclaredEffect(op_name, eff))
+                    // #640 Stage 2: `Error` is exempt from the DIRECT
+                    // discipline, exactly like the transitive slice below
+                    // (`teff != "Error"`) and builtin_call_effect's Error
+                    // carve-out — the throw row is pervasive (~970
+                    // un-annotated throw sites). `throw(x)` now parses to
+                    // `perform Error::Throw(x)`, so without this exemption
+                    // every one of those sites would newly require
+                    // `with { Error }`.
+                    if eff != "Error" && !in_handle && !decl_authorizes_effect(declared, eff) {
+                      Array::push(errors, make_row_mismatch(fn_name, declared, [
+                        eff
+                      ]))
                     } else {
                       ()
                     }
@@ -1063,7 +1186,9 @@ export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String]
             } else {
               match builtin_call_effect(name) {
                 Some(eff) => if !in_handle && !decl_authorizes_effect(declared, eff) {
-                  Array::push(errors, EEPerformUndeclaredEffect(name, eff))
+                  Array::push(errors, make_row_mismatch(fn_name, declared, [
+                    eff
+                  ]))
                 } else {
                   ()
                 },
@@ -1084,15 +1209,24 @@ export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String]
             // false positives (see `generic_effect_matrix_ok_passthrough_pure`).
             match lookup_fn_effs(fn_names, fn_effs, name) {
               Some(callee_effs) => {
+                // #639: aggregate every effect this call site leaks into ONE
+                // set-difference diagnostic ("missing { Env, Fs }") instead of
+                // one error per label.
+                let missing = no_str_labels()
                 let mut ti = 0
                 while ti < Array::length(callee_effs) {
                   let teff = Array::get(callee_effs, ti)
                   if String::length(teff) > 0 && teff != "Error" && teff != "Async" && !label_is_effect_var(teff) && !in_handle && !decl_authorizes_effect(declared, teff) {
-                    Array::push(errors, EEPerformUndeclaredEffect(name, teff))
+                    Array::push(missing, teff)
                   } else {
                     ()
                   }
                   ti = ti + 1
+                }
+                if Array::length(missing) > 0 {
+                  Array::push(errors, make_row_mismatch(fn_name, declared, missing))
+                } else {
+                  ()
                 }
               },
               None => ()
@@ -1108,15 +1242,22 @@ export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String]
             // literal-name membership is a sound check.
             match lookup_fn_effs(ov_names, ov_effs, name) {
               Some(param_effs) => {
+                // #639: aggregated exactly like the named-callee case above.
+                let missing = no_str_labels()
                 let mut pi = 0
                 while pi < Array::length(param_effs) {
                   let peff = Array::get(param_effs, pi)
                   if String::length(peff) > 0 && peff != "Error" && peff != "Async" && !in_handle && !decl_authorizes_effect(declared, peff) {
-                    Array::push(errors, EEPerformUndeclaredEffect(name, peff))
+                    Array::push(missing, peff)
                   } else {
                     ()
                   }
                   pi = pi + 1
+                }
+                if Array::length(missing) > 0 {
+                  Array::push(errors, make_row_mismatch(fn_name, declared, missing))
+                } else {
+                  ()
                 }
               },
               None => ()
@@ -1333,7 +1474,7 @@ export fn check_perform_effects_expr(root: Expr, root_declared: Array[String], r
   check_perform_effects_expr_tx(root, root_declared, root_in_handle, no_str_labels(), no_ov_effs(), no_str_labels(), no_ov_effs())
 }
 
-fn check_perform_effects_binding_tx(ty: Option[TypeExpr], body: Expr, fn_names: Array[String], fn_effs: Array[Array[String]]) -> Array[EffectError] {
+fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body: Expr, fn_names: Array[String], fn_effs: Array[Array[String]]) -> Array[EffectError] {
   let sig_labels = sig_type_effect_labels(ty)
   match body {
     // #885: build the callback-parameter overlay for THIS binding's own
@@ -1343,9 +1484,9 @@ fn check_perform_effects_binding_tx(ty: Option[TypeExpr], body: Expr, fn_names: 
     // redescend through a nested `EFn` node.
     EFn(_, _, params, _, eff, fbody) => {
       let (ov_names, ov_effs) = build_param_overlay(merge_param_types_with_sig(ty, params))
-      check_perform_effects_expr_tx(fbody, labels_union(sig_labels, effect_decl_labels(eff)), false, fn_names, fn_effs, ov_names, ov_effs)
+      check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(sig_labels, effect_decl_labels(eff)), false, fn_names, fn_effs, ov_names, ov_effs)
     },
-    _ => check_perform_effects_expr_tx(body, sig_labels, false, fn_names, fn_effs, no_str_labels(), no_ov_effs())
+    _ => check_perform_effects_expr_tx_in(fn_name, body, sig_labels, false, fn_names, fn_effs, no_str_labels(), no_ov_effs())
   }
 }
 
@@ -1373,8 +1514,8 @@ fn test_bench_ambient_effects() -> Array[String] {
 
 fn check_perform_effects_stmt_tx(stmt: Stmt, fn_names: Array[String], fn_effs: Array[Array[String]]) -> Array[EffectError] {
   match stmt {
-    SLet(_, _, _, ty, body) => check_perform_effects_binding_tx(ty, body, fn_names, fn_effs),
-    SLetMut(_, ty, body) => check_perform_effects_binding_tx(ty, body, fn_names, fn_effs),
+    SLet(_, _, name, ty, body) => check_perform_effects_binding_tx(name, ty, body, fn_names, fn_effs),
+    SLetMut(name, ty, body) => check_perform_effects_binding_tx(name, ty, body, fn_names, fn_effs),
     STest(_, body) => check_perform_effects_expr_tx(body, test_bench_ambient_effects(), false, fn_names, fn_effs, no_str_labels(), no_ov_effs()),
     SBench(_, body) => check_perform_effects_expr_tx(body, test_bench_ambient_effects(), false, fn_names, fn_effs, no_str_labels(), no_ov_effs()),
     SExpr(e) => check_perform_effects_expr_tx(e, effect_decl_labels(None), false, fn_names, fn_effs, no_str_labels(), no_ov_effs()),

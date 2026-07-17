@@ -24,6 +24,10 @@ import ../builtin_registry.vibe {
   builtin_registry, verify_lane_builtins
 }
 
+import ../inline_wat.vibe {
+  compile_inline_wat
+}
+
 import ../common_analysis {
   collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, scope_tail_proj_root, stmts_contain_exceptions
 }
@@ -84,6 +88,45 @@ fn gen_heap_grow_check_body() -> Bytes {
   b
 }
 
+// #805 (ADR-0072): collect the inline-wasm fns (`fn f(..) -> Int = wasm
+// "..."`, carried as the parser-internal `%wasm("<WAT>")` marker body) into
+// parallel name/WAT-text arrays and REPLACE each marker body with a neutral
+// EInt(0) IN PLACE — so every downstream analysis (Perceus plans, borrow/
+// scalar-return classification, string-table collection, coverage) sees an
+// ordinary trivial body and the WAT text never leaks into the data section.
+// The per-fn codegen loop then splices the assembled instruction bytes
+// (compile_inline_wat) instead of running compile_expr for these names.
+fn lc_extract_inline_wasm(stmts: Array[Stmt], names: Array[String], wats: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(iw_exp, iw_rec, iw_name, iw_ann, iw_expr) => match iw_expr {
+        EFn(iw_tps, iw_tbs, iw_params, iw_ret, iw_eff, iw_body) => match iw_body {
+          ECall(iw_cal, iw_args, _) => match iw_cal {
+            EIdent(iw_cn, _) => if iw_cn == "%wasm" && Array::length(iw_args) == 1 {
+              match Array::get(iw_args, 0) {
+                EString(iw_wat) => {
+                  Array::push(names, iw_name)
+                  Array::push(wats, iw_wat)
+                  Array::set(stmts, i, SLet(iw_exp, iw_rec, iw_name, iw_ann, EFn(iw_tps, iw_tbs, iw_params, iw_ret, iw_eff, EInt(0))))
+                },
+                _ => ()
+              }
+            } else {
+              ()
+            },
+            _ => ()
+          },
+          _ => ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 let default_wasi_memory_min_pages = 64
 
 export fn wasi_memory_min_pages_for_heap(heap_start: Int) -> Int {
@@ -116,6 +159,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // EFn def so calls do not route through the 0-param thunk registration
   // below (invalid wasm for any call arity). See import_alias_rewrite.vibe.
   rewrite_top_level_fn_alias_refs(stmts)
+  // #805: inline-wasm fns — extract WAT texts + neutralize marker bodies
+  // BEFORE any analysis below (see lc_extract_inline_wasm's doc comment).
+  let iw_names = lc_fresh_string_array()
+  let iw_wats = lc_fresh_string_array()
+  lc_extract_inline_wasm(stmts, iw_names, iw_wats)
   // #707: functions whose entire body is transitively a tail-call to a
   // borrow-returning builtin (Array::get/Map::get/__index) -- e.g. a thin
   // `peek(toks, pos) -> Array::get(toks, pos)` wrapper. Computed once over the
@@ -638,8 +686,14 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // the compiler's own build uses none, so its bytes are unchanged. Revives the
   // io stdlib whose read/print/println/write_char helpers call these builtins.
   let need_stdin_read_stream_builtin = Map::has_key(used_builtin_names, "Stdin::read_stream")
-  let need_stdout_write_stream_builtin = Map::has_key(used_builtin_names, "Stdout::write_stream")
-  let need_stdout_write_char_builtin = Map::has_key(used_builtin_names, "Stdout::write_char")
+  // #929: the println/print BUILTIN lowering (compile_call.vibe) synthesizes
+  // calls onto these two imports when no source-provided println/print is
+  // merged, so their use also gates the imports in. collect_used_builtin_names
+  // only counts FREE names -- a program using @vibe/io's (or its own) println
+  // fn does not trip this, exactly matching the lowering's cc_ft_has guard.
+  let used_print_builtin = Map::has_key(used_builtin_names, "println") || Map::has_key(used_builtin_names, "print")
+  let need_stdout_write_stream_builtin = Map::has_key(used_builtin_names, "Stdout::write_stream") || used_print_builtin
+  let need_stdout_write_char_builtin = Map::has_key(used_builtin_names, "Stdout::write_char") || used_print_builtin
   // #865: `Stderr::write_stream(s) -> Unit` / `Stderr::write_char(c) -> Unit`
   // (`vibe.stderr_write_stream` / `vibe.stderr_write_char (i64) -> ()`, void
   // like stdout's), same shapes/gating as the Stdout pair above.
@@ -2093,7 +2147,34 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       } else {
         ()
       }
-      let final_nl = compile_expr(body_buf, body, local_names, param_count, compile_ctx, -1)
+      // #805: an inline-wasm fn's instruction bytes come from the WAT
+      // assembler, not compile_expr (its AST body is a neutral EInt(0) after
+      // lc_extract_inline_wasm). Params are Int-only (parser-enforced), so
+      // no RC/Perceus bookkeeping applies; no extra locals are introduced
+      // (final_nl == param_count => meta extra 0).
+      let mut iw_found = -1
+      let mut iw_scan = 0
+      while iw_scan < Array::length(iw_names) {
+        if Array::get(iw_names, iw_scan) == fn_name_dbg {
+          iw_found = iw_scan
+          iw_scan = Array::length(iw_names)
+        } else {
+          iw_scan = iw_scan + 1
+        }
+      }
+      let final_nl = if iw_found >= 0 {
+        let iw_param_names = lc_fresh_string_array()
+        let mut iw_pi = 0
+        while iw_pi < Array::length(lc_norm_params) {
+          let (iw_pn, _) = Array::get(lc_norm_params, iw_pi)
+          Array::push(iw_param_names, iw_pn)
+          iw_pi = iw_pi + 1
+        }
+        bytebuf_push_buf(body_buf, compile_inline_wat(fn_name_dbg, Array::get(iw_wats, iw_found), iw_param_names))
+        param_count
+      } else {
+        compile_expr(body_buf, body, local_names, param_count, compile_ctx, -1)
+      }
       let mut tail_nl = final_nl
       if enable_rc && rc_drop_idx >= 0 {
         let tail_root = scope_tail_proj_root(body)
