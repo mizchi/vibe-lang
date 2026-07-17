@@ -1,0 +1,61 @@
+version 0.0.1
+
+// @vibe/compiler/contract — the .vpkg/.vibei contract conformance engine
+// itself (ADR-0063 Phase C, #729): bodyless-declaration parsing, impl
+// def/type collection, conformance checking, facade generation, contract /
+// package hashing, and the semver bump classifier (#731/#752/#847).
+// COMPILER-INTERNAL contract batch 2 (ADR-0070 Phase 3, #897) — compiled
+// into the compiler itself via compiler_sources_manifest.tsv (group
+// `loader`, dual-row: this contract + contract.vibe). Yes: the conformance
+// engine now checks its own contract.
+//
+// The old index.vibe was not a facade but the whole implementation (the
+// package is single-file), so it moved verbatim to contract.vibe. The
+// surface is fns plus two exported String constants (`let name: Type`
+// bodyless value declarations, #752; @vibe/cache `version` precedent,
+// PR #914). No exported types: every struct/enum this package touches
+// (Stmt/Token/TypeExpr) is owned by ../core / ../syntax and arrives as
+// structural signature text resolved against the implementation imports
+// when the facade is merged in (@vibe/symbol / @vibe/parser precedent —
+// no re-import needed here). The impl's trailing bare
+// `export { parse_contract_program, ... }` block (SExport) re-exports
+// names this file already defines+exports, is invisible to check_contract
+// (which only sees SLet defs and SReExport), and stays verbatim in
+// contract.vibe. No `version` binding existed (compiler-internal package).
+
+import ./contract.vibe {}
+
+// --- facade / shared-import markers (#740/#753, #897)
+let contract_facade_marker: String
+let vpkg_shared_import_marker: String
+
+// --- contract grammar
+fn parse_contract_program(tokens: Array[Token]) -> (Array[(String, String)], Array[(String, Int)], Array[Stmt]) with { Error }
+fn classify_contract_stmts(stmts: Array[Stmt]) -> (Array[String], Array[Stmt]) with { Error }
+fn contract_impl_import_raw_paths(stmts: Array[Stmt]) -> Array[String] with { Error }
+fn contract_directory_shared_imports(stmts: Array[Stmt]) -> Array[Stmt]
+fn contract_directory_shared_import_prefix_text(stmts: Array[Stmt]) -> String
+
+// --- implementation surface collection + conformance
+fn collect_impl_fn_defs(stmts: Array[Stmt]) -> Array[(String, Option[String], Bool)]
+fn collect_impl_type_defs(stmts: Array[Stmt]) -> Array[(String, Bool, Int)]
+fn check_contract(decls: Array[(String, String)], opaque_names: Array[(String, Int)], impl_stmts: Array[Stmt]) -> Array[String]
+
+// --- facade generation
+fn contract_facade_source(decls: Array[(String, String)], opaque_names: Array[(String, Int)], type_defs: Array[Stmt], impl_units: Array[(String, Array[Stmt])]) -> String with { Error }
+
+// --- hashing
+fn contract_hash(fn_decls: Array[(String, String)], opaque_names: Array[(String, Int)], type_defs: Array[Stmt]) -> String
+fn package_hash_from_sources(sources: Array[(String, String)]) -> String
+
+// --- version / pin grammar (#751/#752)
+fn is_strict_semver(v: String) -> Bool
+fn is_package_pin(h: String) -> Bool
+fn extract_require_pins(source: String) -> (Array[(String, String, String)], String) with { Error }
+fn extract_package_version(source: String) -> String with { Error }
+
+// --- semver surface diff (#731)
+fn contract_surface_lines(fn_decls: Array[(String, String)], opaque_names: Array[(String, Int)], type_defs: Array[Stmt]) -> Array[String]
+fn classify_contract_change(old_lines: Array[String], new_lines: Array[String]) -> String
+fn semver_bump_kind(prev: String, next: String) -> Option[String]
+fn verify_publish_bump(prev_version: String, next_version: String, old_lines: Array[String], new_lines: Array[String]) -> Array[String]
