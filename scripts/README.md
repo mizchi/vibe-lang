@@ -15,7 +15,8 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `vibe_test.sh` — run `test {}` blocks. `vibe_test_smoke.sh`
 - `vibe_fmt.sh` / `vibe_normalize.sh` (+ `*_smoke.sh`) — format / normalize
 - `vibe_cli.sh` (+ smoke) — drive the selfhost CLI wasm
-- `vibe_pkg.sh` — package fetch/add (hash-verified). `vibe_core_install.sh`
+- `vibe_pkg.sh` — package publish/install/add/yank/update (hash-verified,
+  transparency-log backed #805; `vibe pkg` delegates here). `vibe_core_install.sh`
 - `vibe_graph.js` — graph/symbol-index query
 
 ## Runtime & runners (wasm execution)

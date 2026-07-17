@@ -69,12 +69,18 @@ import @vibe/core { sha1 }
 `VIBE_REQUIRE_PINS=1` (release/publish の freeze) では pin なしの
 dev-mode 解決はエラーになる。
 
-## 配布コマンド (scripts/vibe_pkg.sh)
+## 配布コマンド (`vibe pkg` / scripts/vibe_pkg.sh)
+
+インストール済みの toolchain では `vibe pkg <cmd>`、repo 内では
+`scripts/vibe_pkg.sh <cmd>` (同一実装)。publish/yank は transparency log
+(`$VIBE_HOME/log`, #805) に追記され、install はその inclusion proof を検証する。
 
 ```bash
-vibe_pkg.sh publish lib/@you/pkg                 # semver gate + cache へ格納
-vibe_pkg.sh install @you/pkg@1.0.0               # ~/.vibe/lib へ materialize
-vibe_pkg.sh add github:owner/repo/dir@ref [#pin] # git から hash 検証付き取得
+vibe pkg publish lib/@you/pkg                 # semver gate + cache + log 追記
+vibe pkg install @you/pkg@1.0.0               # ~/.vibe/lib へ materialize (log 検証)
+vibe pkg add github:owner/repo/dir@ref [#pin] # git から hash 検証付き取得
+vibe pkg yank @you/pkg@1.0.0                  # 撤回マーキング (append-only)
+vibe pkg update @you/pkg                      # 最新 non-yanked へ (契約 diff 表示)
 ```
 
 詳細: [docs/adding-modules.md](../adding-modules.md) /

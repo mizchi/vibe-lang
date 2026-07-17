@@ -97,6 +97,22 @@ check "vibe test pass exit" "0" "$rc"
 "$VIBE" test "$proj/fail_test.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe test fail exit" "1" "$rc"
 
+# shell (#805): compiled REPL, accumulate + recompile. Scripted (non-tty)
+# session: declare a fn, evaluate an expression using it, feed a bad line
+# (must be rejected with a diagnostic, session must survive), then evaluate
+# another expression against the still-intact buffer.
+shell_err="$WORK/shell.err"
+shell_out="$(printf '%s\n' \
+  'fn double(x: Int) -> Int { x * 2 }' \
+  'double(21)' \
+  'this is not vibe !!!' \
+  'double(10) + 1' \
+  ':quit' \
+  | "$VIBE" shell 2>"$shell_err" || true)"
+check "vibe shell declares + evaluates" "42" "$(printf '%s\n' "$shell_out" | sed -n 1p)"
+check "vibe shell survives a bad line" "21" "$(printf '%s\n' "$shell_out" | sed -n 2p)"
+check "vibe shell reports the bad line" "yes" "$(grep -q 'error' "$shell_err" && echo yes || echo no)"
+
 # fetch: vendor a file:// dep, then run a program that imports it.
 fproj="$WORK/fproj"
 mkdir -p "$fproj"

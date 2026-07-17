@@ -46,10 +46,23 @@
 #   vibe bench   <file.vibe> [--iters N] [--warmup N]
 #                                         run bench {} blocks; report ns/op
 #                                         (min/p50/p95/mean), ops/sec, bytes/op
+#   vibe shell   [file.vibe]              interactive compiled REPL: declarations
+#                                         accumulate, each line recompiles+runs
+#                                         (type :help inside for commands)
 #   vibe new     <dir>                    scaffold a starter project
 #   vibe add     <name> <url> [dir]       add a dependency to vibe.deps + fetch
 #   vibe fetch   [--frozen] [dir]        vendor git/URL deps from vibe.deps + lock
 #   vibe verify  [dir]                    re-check vendored deps against vibe.lock
+#   vibe pkg     publish <pkg_dir>        publish a package: semver gate, CAS,
+#                                         transparency-log record (#805)
+#   vibe pkg     install <name>@<ver> [--store] [--allow-yanked]
+#                                         materialize a published version
+#                                         (verifies the log inclusion proof)
+#   vibe pkg     add <source-spec> [#pkg:sha1:<hex>] [--store]
+#                                         fetch straight from git, hash-verified
+#   vibe pkg     yank <name>@<ver>        mark a version yanked (append-only)
+#   vibe pkg     update <name> [--store]  switch to the newest non-yanked
+#                                         version, showing the contract diff
 #   vibe lsp                              start the stdio LSP server (diagnostics)
 #   vibe version                          print toolchain versions
 #   vibe self update [--cli-wasm <path>]  refresh compiler wasm + rebuild .cwasm
@@ -839,6 +852,202 @@ case "$cmd" in
     [ -n "$warmup" ] && bench_env="$bench_env VIBE_BENCH_WARMUP=$warmup"
     env $bench_env "$RUNNER" --bench "$out"
     ;;
+  shell)
+    # #805: `vibe shell [file.vibe]` — minimal compiled REPL.
+    #
+    # ADR-0034 mandates compiled-only execution (no interpreter), so the REPL
+    # is "accumulate + recompile": the session is a buffer of top-level
+    # declarations kept in a temp dir, and EVERY input line triggers a full
+    # recompile of that buffer through the same compile_to path as `vibe run`:
+    #   * a declaration line appends to the buffer, is validated by compiling
+    #     the whole buffer, and is ROLLED BACK on any diagnostic — the buffer
+    #     can never become poisoned;
+    #   * an expression line is wrapped in a synthetic entry (the ADR-0069
+    #     wrap-in-main story), compiled against the buffer, and the produced
+    #     wasm is executed. Because each evaluation is a fresh program run,
+    #     earlier side effects re-run on every line (see docs/cli-commands.md).
+    # stdin not a tty => no prompt is printed (bash `read -p` only prompts on a
+    # terminal), so `printf '...' | vibe shell` is deterministic for scripting.
+    repl_file=""
+    if [ "$#" -ge 1 ]; then repl_file="$1"; fi
+    repl_dir="$(mktemp -d -t vibe-shell-XXXXXX)"
+    trap 'rm -rf "$repl_dir"' EXIT
+    repl_buf="$repl_dir/session.vibe"
+    : > "$repl_buf"
+    # Stdlib imports (`import ./lib/@vibe/...`) resolve inside the session dir
+    # the same way the doctest harness resolves them: a `lib` symlink to the
+    # install/checkout lib root. (Relative imports of OTHER user files do not
+    # move with the session — load such files from their own directory.)
+    [ -d "$VIBE_HOME/lib" ] && ln -sfn "$VIBE_HOME/lib" "$repl_dir/lib"
+
+    # Validate the current buffer: compile buffer + an anchor fn with the test
+    # entry (`__no_entry__`), so the WHOLE buffer is parse+type checked, not
+    # just the decls reachable from one entry. The anchor mirrors the doctest
+    # harness's __doctest_anchor: a declaration-only buffer otherwise fails
+    # with "no functions found to compile". Diagnostics go to stderr via
+    # compile_to; line N in the reported location = line N of the buffer
+    # (`:list` shows it), because the anchor is appended after it.
+    repl_validate() {
+      local f="$repl_dir/__validate__.vibe" w="$repl_dir/__validate__.wasm"
+      { cat "$repl_buf"
+        printf 'export let __repl_anchor__: () -> Int = () -> { 0 }\n'
+      } > "$f"
+      compile_to "$f" "$w" "__no_entry__"
+    }
+
+    # Evaluate an expression: wrap it in a synthetic Int-returning let-entry
+    # and let the runner's entry-return print convention (ADR-0069 `let main`
+    # rule — the same channel `vibe run hello.vibe` prints 42 through) show
+    # the value. This is the ONLY printing channel that works on every
+    # runner/compile-mode combination today:
+    #   - prelude/io.vibe's stdout_write drags the io unit's whole `vibe::*`
+    #     host-import surface into the wasm — vibewt refuses to instantiate
+    #     (unknown import `vibe::stdin_read_char`); the PR #927 CI failure.
+    #   - the `println`/`print` checker builtins have no codegen lowering in
+    #     bare FS-mode compiles ("undefined variable (local): println @call").
+    #   - `Stdout::write_char` writes the raw TAGGED value (42 prints as
+    #     "hd") on both runners.
+    # Consequence: Int expressions print; non-Int expressions fall back to
+    # the effects-only wrapper below with an honest notice. Richer printing
+    # is blocked on the println-in-FS-mode gap (tracked in the #805 REPL
+    # follow-ups).
+    repl_eval() {
+      local expr="$1" rc=0
+      local f="$repl_dir/__eval__.vibe" w="$repl_dir/__eval__.wasm"
+      local err1="$repl_dir/__eval__.err1"
+      { cat "$repl_buf"
+        printf 'export let __repl_main__: () -> Int = () -> {\n'
+        printf '  (\n%s\n  )\n' "$expr"
+        printf '}\n'
+      } > "$f"
+      if compile_to "$f" "$w" "__repl_main__" 2>"$err1"; then
+        "$RUNNER" "$w" || rc=$?
+        [ "$rc" -ne 0 ] && echo "vibe shell: runtime error (exit $rc)" >&2
+        return 0
+      fi
+      # Fallback wrapper is deliberately UNANNOTATED so the effect row is
+      # inferred — it absorbs non-Int expressions and expressions whose row
+      # does not fit the Int wrapper. Cost: the runner prints the entry's
+      # unit return as a trailing `0` line (annotated-Unit entries don't).
+      { cat "$repl_buf"
+        printf 'export let __repl_main__ = () -> {\n'
+        printf '  let _ = (\n%s\n  )\n  ()\n}\n' "$expr"
+      } > "$f"
+      if compile_to "$f" "$w" "__repl_main__" 2>/dev/null; then
+        echo "vibe shell: non-Int value; evaluated for effects only (use :type to inspect)" >&2
+        "$RUNNER" "$w" || rc=$?
+        [ "$rc" -ne 0 ] && echo "vibe shell: runtime error (exit $rc)" >&2
+        return 0
+      fi
+      cat "$err1" >&2
+      return 1
+    }
+
+    # `:type <expr>` — bind the expression to a top-level probe let appended
+    # after the buffer, then ask the type-at editor primitive (the LSP hover
+    # backend) for the probe's inferred type. col 5 = first char of
+    # `__repl_t__` in `let __repl_t__ = (...)`. Empty output (bad expr /
+    # query miss) degrades to a notice, never kills the session.
+    repl_type() {
+      local expr="$1"
+      local f="$repl_dir/__type__.vibe" tline tout
+      cp "$repl_buf" "$f"
+      tline=$(( $(wc -l < "$f") + 1 ))
+      printf 'let __repl_t__ = (%s)\n' "$expr" >> "$f"
+      tout="$("$LAUNCHER" type-at "$f" "$tline" 5 2>/dev/null || true)"
+      if [ -n "$tout" ]; then
+        printf '%s\n' "$tout"
+      else
+        echo "vibe shell: could not infer a type for: $expr" >&2
+      fi
+    }
+
+    if [ -n "$repl_file" ]; then
+      [ -f "$repl_file" ] || die "not found: $repl_file"
+      cat "$repl_file" >> "$repl_buf"
+      printf '\n' >> "$repl_buf"
+      repl_validate || die "shell: preloaded file does not compile: $repl_file"
+    fi
+
+    while IFS= read -r -p 'vibe> ' repl_line; do
+      # trim surrounding whitespace; skip blank lines
+      repl_trimmed="${repl_line#"${repl_line%%[![:space:]]*}"}"
+      repl_trimmed="${repl_trimmed%"${repl_trimmed##*[![:space:]]}"}"
+      [ -n "$repl_trimmed" ] || continue
+      case "$repl_trimmed" in
+        :q|:quit)
+          break
+          ;;
+        :help)
+          cat <<'REPL_HELP'
+vibe shell — compiled REPL (accumulate + recompile; no interpreter)
+  :help            show this help
+  :quit, :q        exit
+  :list            print the session buffer (accumulated declarations)
+  :clear           reset the session buffer
+  :load <file>     append a file's declarations to the buffer (validated)
+  :type <expr>     print the inferred type of an expression
+Any line starting with a declaration keyword (fn/let/struct/enum/type/
+import/effect/impl/trait/export/suberror/test) is appended to the session
+buffer; the append is validated by a full recompile and rolled back on
+error. Any other line is compiled as an expression against the buffer and
+executed. Declarations must fit on one line. Each evaluation runs a fresh
+program, so earlier side effects re-run on every expression line.
+REPL_HELP
+          ;;
+        :list)
+          cat "$repl_buf"
+          ;;
+        :clear)
+          : > "$repl_buf"
+          echo "session cleared"
+          ;;
+        :load)
+          echo "usage: :load <file.vibe>" >&2
+          ;;
+        :load\ *)
+          repl_lf="${repl_trimmed#:load }"
+          if [ ! -f "$repl_lf" ]; then
+            echo "vibe shell: not found: $repl_lf" >&2
+            continue
+          fi
+          cp "$repl_buf" "$repl_buf.bak"
+          cat "$repl_lf" >> "$repl_buf"
+          printf '\n' >> "$repl_buf"
+          if repl_validate; then
+            rm -f "$repl_buf.bak"
+            echo "loaded $repl_lf"
+          else
+            mv -f "$repl_buf.bak" "$repl_buf"
+            echo "vibe shell: load rejected (buffer unchanged): $repl_lf" >&2
+          fi
+          ;;
+        :type)
+          echo "usage: :type <expr>" >&2
+          ;;
+        :type\ *)
+          repl_type "${repl_trimmed#:type }"
+          ;;
+        :*)
+          echo "vibe shell: unknown command: ${repl_trimmed%% *} (try :help)" >&2
+          ;;
+        fn\ *|let\ *|struct\ *|enum\ *|type\ *|import\ *|effect\ *|impl\ *|trait\ *|export\ *|suberror\ *|test\ *|//*)
+          cp "$repl_buf" "$repl_buf.bak"
+          printf '%s\n' "$repl_line" >> "$repl_buf"
+          if repl_validate; then
+            rm -f "$repl_buf.bak"
+          else
+            mv -f "$repl_buf.bak" "$repl_buf"
+            echo "vibe shell: declaration rejected (buffer unchanged)" >&2
+          fi
+          ;;
+        *)
+          repl_eval "$repl_trimmed" || true
+          ;;
+      esac
+    done
+    exit 0
+    ;;
   new)
     # vibe new <dir>  — scaffold a starter project (main.vibe + empty vibe.deps)
     [ "$#" -ge 1 ] || die "usage: vibe new <dir>"
@@ -1052,6 +1261,25 @@ case "$cmd" in
     fi
     cat "$hout"
     rm -f "$hout" "$hout.diag"
+    ;;
+  pkg)
+    # vibe pkg publish|install|add|yank|update — the registry lane
+    # (#754/#755/#805) over $VIBE_HOME/{cache,lib,log}. Delegates to
+    # vibe_pkg.sh: the copy installed into the toolchain lib/ first
+    # (standalone install, no checkout), the repo copy when running from a
+    # checkout. The launcher hands over its own runner + compiler wasm via
+    # VIBE_PKG_RUNNER/VIBE_PKG_CLI_WASM, so the script needs no repo-local
+    # node host runner. Distinct from `vibe add/fetch/verify` (the
+    # vibe.deps/vibe.lock vendoring lane): `vibe pkg` is the content-
+    # addressed @scope/name package lane (ADR-0065).
+    pkg_sh=""
+    for cand in "$TOOLCHAIN_DIR/lib/vibe_pkg.sh" "$SELF/../scripts/vibe_pkg.sh"; do
+      [ -f "$cand" ] && { pkg_sh="$cand"; break; }
+    done
+    [ -n "$pkg_sh" ] || die "vibe pkg: vibe_pkg.sh not found (looked in $TOOLCHAIN_DIR/lib and the repo scripts/)"
+    cli="$(pick_cli)"
+    exec env VIBE_PKG_RUNNER="$RUNNER" VIBE_PKG_CLI_WASM="$cli" VIBE_HOME="$VIBE_HOME" \
+      bash "$pkg_sh" "$@"
     ;;
   version|--version|-V)
     echo "vibe (selfhost launcher)"

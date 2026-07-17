@@ -96,10 +96,73 @@ vibe_pkg.sh add git:<url>@<ref>[#<sub/dir>]       [#pkg:sha1:<40hex>] [--store]
 - **移行**: Phase 0 の versions.tsv / provenance.tsv は形式そのまま log
   レコードの部分集合なので、レジストリ稼働時に初期 log へ取り込める
 
+## Phase 1 最小スライス (実装済み, #805)
+
+要件 1 (transparency log) と 5 (yank 不変) のファイルベース実装。DB もサーバ
+コードも持たない — 「レジストリ」は rsync / 静的 HTTP でそのまま配れる
+ディレクトリ 1 個で、`VIBE_REGISTRY_LOG_DIR` (default `$VIBE_HOME/log`) が
+それを指す。`vibe pkg publish|install|add|yank|update` (launcher #805) と
+`scripts/vibe_pkg.sh` (in-repo) が同一実装を共有する
+(`VIBE_PKG_RUNNER`/`VIBE_PKG_CLI_WASM` で hash エンジンを差し替え、install 時は
+toolchain の `lib/vibe_pkg.sh` に同梱されるので checkout 不要)。
+
+### ログのレイアウト
+
+- `records.tsv` — append-only、1 イベント 1 行:
+  `<ordinal>\t<op>\t<name@version>\t<pkg-hash>\t<contract-hash>\t<source>\t<commit>`
+  (`op` = `publish` | `yank`)。**レコードに wall-clock を含めない** — 順序は
+  log 順そのもの (ordinal = 0-based 行位置) なので、レコード列は決定的な
+  バイト列として再現・監査できる
+- `head` — `"<size>\t<merkle-root>"` 1 行。sumdb の STH に相当 (署名は
+  Phase 2 の scope 所有権/鍵の仕事で、この slice では未搭載)
+
+### Merkle / 検証 (この slice の保守的選択)
+
+- **hash**: sha256、RFC6962 流のドメイン分離 —
+  `leaf = sha256("leaf:" + record行)`, `node = sha256("node:" + L + ":" + R)`。
+  内部 node は raw bytes でなく **hex 文字列連結**を hash する (bash 検証器の
+  可搬性優先)。木の**形状** (largest-power-of-two split) は RFC6962 そのもの
+  なので、将来 @vibe/core sha1/sha256 上に vibe で書き直す検証器へ proof が
+  1:1 で移行できる
+- **install/add 時のクライアント検証**: (a) head が records に正確に commit
+  しているか再計算 (改竄検出)、(b) 前回見た head との **prefix 一貫性**
+  (`$VIBE_HOME/cache/log-head.seen.<logdir-digest>` に size+root を記録し、
+  head は「伸びる」ことしか許さない — 縮んだら truncation、prefix root が
+  変わったら history 書き換えで拒否)、(c) 該当 publish レコードの
+  **inclusion proof** (audit path を生成して root まで再計算)。静的ファイル
+  配信でクライアントは records 全体を持つため、consistency は O(log n)
+  proof でなく prefix 再計算で検証する — remote proof プロトコルは log が
+  full fetch に収まらなくなった段階の仕事
+- **publish** は log を伸ばす前に同じ self/consistency 検証を行う (改竄済み
+  log への追記を拒否)。version→hash 不変性 (同一 version 再公開拒否) は
+  従来どおり log 追記の前に判定されるので、拒否された publish は log を
+  伸ばさない
+- **yank** は `yank` レコードの追記のみ (要件 5)。versions.tsv / CAS は
+  不変で、既存 pin のビルドは動き続ける。`install` は yank された version を
+  `--allow-yanked` なしでは拒否、`add` (明示 source 指定の lane) は警告のみ。
+  git-add (TOFU) しか経ていない version は log に publish レコードがないので
+  yank 対象外 (phase-0 lane のまま)
+
+### 実装済みの範囲と既知の gap
+
+- `vibe pkg update <name>` は最新の **non-yanked** version へ切り替え、切り替え
+  前に contract hash の変化と contract (index.vibei) の textual diff を表示
+  する。要件 4 の canonical な diff (contract_surface_lines の集合差分 +
+  effect row の capability 分類) は compiler 側に shell から叩ける adapter
+  mode がまだ無いため未実装 — adapter mode (`VIBE_SURFACE=1` 相当) の追加が
+  次の一歩
+- scope 所有権 / 署名 (要件 2)、typosquat 検査、publish attestation
+  (要件 6 の log 掲載) は未実装 — log レコードの `source`/`commit` 列は
+  そのための席で、local publish は `local\t-` を書く
+- 検証: gate 6l (publish→log 追記 + inclusion 検証 / 拒否 republish が log を
+  伸ばさない / head 改竄検出 / truncation 拒否 / yank + --allow-yanked /
+  served copy を `VIBE_REGISTRY_LOG_DIR` で検証)
+
 ## 関連
 
 - ADR-0063 (content addressing / store / pin), ADR-0065 (layout / 解決順 /
   サプライチェーン要件)
 - #751 (解決順 + VIBE_LIB + freeze), #754 (version directive / cache /
-  materialize / 同一 version 再公開禁止), #755 (本設計)
-- `scripts/vibe_pkg.sh` (publish / install / add), gate 6h–6k
+  materialize / 同一 version 再公開禁止), #755 (本設計), #805 (Phase 1
+  最小スライス: transparency log + yank + `vibe pkg`)
+- `scripts/vibe_pkg.sh` (publish / install / add / yank / update), gate 6h–6l
