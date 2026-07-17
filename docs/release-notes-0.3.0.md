@@ -67,8 +67,8 @@
 
 - compiler 内部ディレクトリの `.vpkg` 化残り (cache/syntax/loader/codegen —
   #847 Phase B の codegen/entry facade 設計判断待ち、分析は #847 に記載)
-- `EEThrowOutsideEffect` 診断と test 専用 legacy checker エントリの整理
-  (#640 の任意 Stage 5)
+- `Error` は checked semantic effect として ADR-0073 で固定。transitive row 強制、
+  `EEThrowOutsideEffect` 診断、test 専用 legacy checker エントリを #944 で統合
 - evidence-passing handler (#817、0.4 系)
 - prelude の契約化 (設計判断待ち)
 - unit_test_runner の http echo server ポート衝突 (#934 — ローカル並行
