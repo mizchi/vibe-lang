@@ -362,6 +362,72 @@ fn desugar_placeholder_args(args: Array[Expr]) -> Array[Expr] {
   out
 }
 
+// #960 Stage 1: `Map::new()` / `Map::from_pairs([("k", v), ...])` are the
+// replacement spellings for the `map { ... }` literal (both coexist until
+// Stage 2 removes the literal after a seed bump). They are desugared HERE, at
+// the parse-postfix call-build site — the same layer as the `throw(x)` ->
+// `perform Error::Throw(x)` desugar (#640 Stage 2) — into the exact `EMap`
+// node the literal produces, so every downstream stage (checker, normalize,
+// both codegen backends) sees ONE form and needs ZERO changes. Parse-level
+// placement also keeps the two names from ever reaching the checker's
+// generic `Map::` builtin lookup (a residual non-call mention, e.g.
+// `x |> Map::from_pairs`, is rejected there as `unknown name` — an error,
+// never a silent miscompile). Only an array LITERAL of (string-literal,
+// value) tuple LITERALS is accepted for now; anything else throws a located
+// parse error. `pos` is the token index of the call's `(`, the "at #N"
+// located-diagnostic anchor (#816).
+fn empty_map_fields() -> Array[(String, Expr)] {
+  Array::slice([
+    ("", EUnit)
+  ], 0, 0)
+}
+
+fn map_from_pairs_fields(args: Array[Expr], pos: Int) -> Array[(String, Expr)] with { Error } {
+  if Array::length(args) != 1 {
+    throw("Map::from_pairs requires an array literal of (string literal, value) pairs for now (#960) at #\{pos}")
+  }
+  match Array::get(args, 0) {
+    EArray(elems) => {
+      let b = ArrayBuilder::new()
+      let mut i = 0
+      while i < Array::length(elems) {
+        match Array::get(elems, i) {
+          ETuple(kv) => if Array::length(kv) == 2 {
+            match Array::get(kv, 0) {
+              EString(k) => ArrayBuilder::push(b, (k, Array::get(kv, 1))),
+              _ => throw("Map::from_pairs requires an array literal of (string literal, value) pairs for now (#960): pair key is not a string literal at #\{pos}")
+            }
+          } else {
+            throw("Map::from_pairs requires an array literal of (string literal, value) pairs for now (#960): each pair must be a 2-tuple literal at #\{pos}")
+          },
+          _ => throw("Map::from_pairs requires an array literal of (string literal, value) pairs for now (#960): each element must be a tuple literal at #\{pos}")
+        }
+        i = i + 1
+      }
+      ArrayBuilder::freeze(b)
+    },
+    _ => throw("Map::from_pairs requires an array literal of (string literal, value) pairs for now (#960) at #\{pos}")
+  }
+}
+
+fn build_call_expr(expr: Expr, args: Array[Expr], pos: Int) -> Expr with { Error } {
+  let ctor_name = match expr {
+    EIdent(name, _) => name,
+    _ => ""
+  }
+  if ctor_name == "Map::new" {
+    if Array::length(args) == 0 {
+      EMap(empty_map_fields())
+    } else {
+      throw("Map::new takes no arguments (#960): use Map::from_pairs([(\"key\", value), ...]) to build a non-empty map at #\{pos}")
+    }
+  } else if ctor_name == "Map::from_pairs" {
+    EMap(map_from_pairs_fields(args, pos))
+  } else {
+    ECall(expr, args, callee_offset(expr))
+  }
+}
+
 fn parse_postfix(tokens: Array[Token], starts: Array[Int], pos: Int, expr: Expr, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
   match peek(tokens, pos) {
     TLParen => match expr {
@@ -390,7 +456,7 @@ fn parse_postfix(tokens: Array[Token], starts: Array[Int], pos: Int, expr: Expr,
       EForIn(_, _, _, _) => (expr, pos),
       EHandle(_, _) => (expr, pos),
       _ => match peek(tokens, pos + 1) {
-        TRParen => parse_postfix(tokens, starts, pos + 2, ECall(expr, empty_exprs(), callee_offset(expr)), parse_recur),
+        TRParen => parse_postfix(tokens, starts, pos + 2, build_call_expr(expr, empty_exprs(), pos), parse_recur),
         _ => {
           let b = ArrayBuilder::new()
           let (first_arg, next_pos) = parse_call_arg(tokens, starts, pos + 1, parse_recur)
@@ -402,7 +468,7 @@ fn parse_postfix(tokens: Array[Token], starts: Array[Int], pos: Int, expr: Expr,
           } else {
             args
           }
-          parse_postfix(tokens, starts, close_pos, ECall(expr, call_args, callee_offset(expr)), parse_recur)
+          parse_postfix(tokens, starts, close_pos, build_call_expr(expr, call_args, pos), parse_recur)
         }
       },
     },

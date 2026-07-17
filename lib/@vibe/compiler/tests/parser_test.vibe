@@ -377,3 +377,63 @@ test "let* parses to the type-directed railway sentinel" {
   // The continuation closure carries the bound name + the rest of the block.
   assert(String::contains(printed, "Ok"))
 }
+
+test "Map::new and Map::from_pairs desugar to the map literal shape (#960)" {
+  // #960 Stage 1: `Map::new()` / `Map::from_pairs([("k", v), ...])` are
+  // parse-level desugars into the exact EMap node the `map { ... }` literal
+  // produces (same layer as the `throw(x)` desugar, #640 Stage 2), so the
+  // printer re-prints them as the literal and every downstream stage sees
+  // ONE form.
+  let empty = handle {
+    parse_print("Map::new()")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(empty == "map {}")
+  let pairs = handle {
+    parse_print("Map::from_pairs([(\"a\", 1), (\"b\", 2)])")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(pairs == "map { a: 1, b: 2 }")
+  // Both spellings coexist in Stage 1: the literal still parses to the same
+  // shape (Stage 2 removes it after a seed bump).
+  let lit = handle {
+    parse_print("map { \"a\": 1, \"b\": 2 }")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(lit == pairs)
+}
+
+test "Map::from_pairs rejects non-literal arguments (#960)" {
+  // Only an array literal of (string literal, value) tuple literals is
+  // accepted for now — anything else must be a located parse error, never a
+  // silent miscompile.
+  let non_literal = handle {
+    parse_print("Map::from_pairs(pairs)")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::starts_with(non_literal, "ERROR: "))
+  assert(String::contains(non_literal, "#960"))
+  let bad_key = handle {
+    parse_print("Map::from_pairs([(k, 1)])")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::contains(bad_key, "#960"))
+  assert(String::contains(bad_key, "string literal"))
+  let non_tuple = handle {
+    parse_print("Map::from_pairs([1, 2])")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::contains(non_tuple, "tuple literal"))
+  let new_args = handle {
+    parse_print("Map::new(1)")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::contains(new_args, "Map::new takes no arguments"))
+}
