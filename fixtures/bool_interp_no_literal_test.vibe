@@ -44,3 +44,32 @@ test "annotated let binding interpolates as bool (#815)" {
   let c: Bool = f(1)
   assert("\{c}" == "false")
 }
+
+// #950: calls to bool-returning BUILTINS (String::contains etc.) must
+// interpolate as true/false via the builtin's declared return type
+// (cc_builtin_call_ret_kind), both directly and through an unannotated let
+// (kind-3 slot log). Previously both printed the raw 1/0.
+test "builtin bool call interpolates as bool (#950)" {
+  assert("\{String::contains("hello", "ell")}" == "true")
+  assert("\{String::contains("hello", "xyz")}" == "false")
+  assert("\{String::starts_with("hello", "he")}" == "true")
+  assert("\{String::ends_with("hello", "lo")}" == "true")
+  let b = String::contains("hello", "ell")
+  assert("\{b}" == "true")
+  let c = String::ends_with("hello", "he")
+  assert("\{c}" == "false")
+}
+
+// #950: `String::join([], sep)` returns the packed empty-string encoding 0
+// (ptr 0, len 0). The __to_string runtime string-pointer heuristic requires
+// ptr >= 64, so this legal empty string used to render as Int "0". The
+// String-typed segment now takes the identity path (kind-2 slot log /
+// declared builtin return type), so it renders as the empty string.
+test "empty join interpolates as empty string (#950)" {
+  let e: Array[String] = []
+  let j = String::join(e, "-")
+  assert(String::length(j) == 0)
+  assert("[\{j}]" == "[]")
+  assert("[\{String::join(e, "-")}]" == "[]")
+  assert("[\{String::join(["a", "b"], "-")}]" == "[a-b]")
+}
