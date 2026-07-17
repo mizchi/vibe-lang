@@ -208,7 +208,20 @@ export fn exp_double(x: Double) -> Double {
   // + fractional parts: exp(k + f) = e^k * exp(f) with e^k built by
   // repeated multiplication and the Maclaurin series only ever evaluated
   // on f in [0, 1), where 30 terms give full double precision.
-  if x < 0.0 {
+  if x < (0.0 - 709.0) {
+    // Codex P2 on #958: 1/exp(-x) divides by +inf once -x overflows
+    // (~709.78) and flushes the still-representable subnormal tail
+    // (exp underflows to true 0 only below ~-744). Square the
+    // half-argument instead — gradual underflow handles the subnormal
+    // range, and below ~-744 the product reaches 0 naturally.
+    // (`+ 0.0` on the call result and the Double annotation on the
+    // product: #772 — arithmetic with no literal/param operand is not
+    // recognized as float by the checker/codegen heuristics.)
+    let h = exp_double(x * 0.5) + 0.0
+    let hh: Double = h * h
+    hh
+  }
+  else if x < 0.0 {
     1.0 / exp_double(0.0 - x)
   }
   else if x > 710.0 {
