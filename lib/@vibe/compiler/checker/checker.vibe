@@ -3051,9 +3051,15 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                     }
                     hbi = hbi + 1
                   }
-                  let (_, hns, hnc) = check_expr(hbody, henv, defs, hs1, hc1, errors, tytab)
+                  let (harm_ty, hns, hnc) = check_expr(hbody, henv, defs, hs1, hc1, errors, tytab)
                   hs1 = hns
                   hc1 = hnc
+                  // #938: a non-resuming arm's value IS the handle result, so
+                  // it must unify with the body's type. Resume-tailed arms
+                  // type as CtUnknown (builtin resume), which the ground gate
+                  // in check_assignable waves through, so only arms returning
+                  // a concrete mismatching value are rejected.
+                  hs1 = check_assignable(subst_apply(hs1, hty), subst_apply(hs1, harm_ty), hs1, errors, "handler arm value type mismatch with the handle body's type", 0 - 1)
                   // resume(x): x must be assignable to the op's declared
                   // return type (ground-gated). Throwaway walk — nested
                   // handles are skipped (their resumes belong to inner arms).
@@ -3068,6 +3074,25 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
               // (`throw` / `perform Error::Throw` unwind for good; the arm's
               // value IS the handle result, so the resume never ran).
               reject_resume_in_error_arm(hbody, errors)
+              // #938: an Error arm never resumes, so its value IS the handle
+              // result — type the body (Throw's payload binds as String) and
+              // unify with the handle body's type. Ground-gated, so arms
+              // whose value involves unknowns (throw/rethrow etc.) pass.
+              let mut eaenv = env
+              if Array::length(hbinds) == 1 {
+                match Array::get(hbinds, 0) {
+                  PBind(eabname) => {
+                    eaenv = env_bind(eaenv, eabname, CtString)
+                  },
+                  _ => ()
+                }
+              } else {
+                ()
+              }
+              let (earm_ty, eans, eanc) = check_expr(hbody, eaenv, defs, hs1, hc1, errors, tytab)
+              hs1 = eans
+              hc1 = eanc
+              hs1 = check_assignable(subst_apply(hs1, hty), subst_apply(hs1, earm_ty), hs1, errors, "handler arm value type mismatch with the handle body's type", 0 - 1)
             } else {
               ()
             }
@@ -3776,6 +3801,47 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
       // the `return` form must be too. Propagating `et` makes them identical.
       (et, s1, c1)
     },
+    EMap(mpairs) => {
+      // #938: map literals were entirely untyped (fell through to CtUnknown),
+      // so `map { "a": 1, "b": "two" }` compiled and the stray String read
+      // back as a garbage Int. Check each entry and require pairwise
+      // homogeneous keys/values, ground-gated exactly like array literals
+      // (only when the first key/value type is a simple ground type).
+      let mut ms1 = s
+      let mut mc1 = c
+      let mut mvty: Type = CtUnknown
+      let mut mchk_v = false
+      let mut mi = 0
+      while mi < Array::length(mpairs) {
+        let (_, mve) = Array::get(mpairs, mi)
+        let (mvt, mvs, mvc) = check_expr(mve, env, defs, ms1, mc1, errors, tytab)
+        ms1 = mvs
+        mc1 = mvc
+        if mi == 0 {
+          mvty = mvt
+          mchk_v = map_literal_ground(subst_apply(ms1, mvt))
+        } else {
+          if mchk_v {
+            ms1 = check_assignable(mvty, subst_apply(ms1, mvt), ms1, errors, "map literal values have incompatible types", 0 - 1)
+          } else {
+            ()
+          }
+        }
+        mi = mi + 1
+      }
+      (CtUnknown, ms1, mc1)
+    },
     _ => (CtUnknown, s, c)
+  }
+}
+
+fn map_literal_ground(t: Type) -> Bool {
+  match t {
+    CtInt => true,
+    CtDouble => true,
+    CtBool => true,
+    CtString => true,
+    CtChar => true,
+    _ => false
   }
 }
