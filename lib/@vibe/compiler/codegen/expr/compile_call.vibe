@@ -3632,6 +3632,22 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       }
       nl
     }
+    else if ctx.enable_rc && (fname == "Stdout::write_char" || fname == "Stderr::write_char") {
+      // #930: same raw-ABI shim shape as the #705/#865 groups above -- the
+      // char-code param is a guest-tagged Int (n<<1), but the host import
+      // speaks raw untagged integers, so the generic call path handed the
+      // host the doubled tagged value directly (52 written as byte 104 'h',
+      // 50 as byte 100 'd' -- printing "42" as "hd"). Untag the param before
+      // the call. Unit return: push Unit 0 for the fallthrough, mirroring
+      // vibe_sh_capture_close_raw/vibe_process_exit_raw above.
+      let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_i64_const(buf, 1)
+      emit_i64_shr_s(buf)
+      emit_call(buf, hi_idx)
+      emit_i64_const(buf, 0)
+      nl
+    }
     else if fname == "__rec_field" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       let idx_expr = Array::get(args, 1)
