@@ -79,5 +79,8 @@
 - [ ] 0.3.0 GA tag
 - [x] `vibe version` / 配布物の version bump (`VIBE_VERSION=0.3.0`)
 - [x] 本ノートの [着地待ち] 解消 (2026-07-17)
+- [x] release tag workflow の selfhost-only 化 (`build_release_assets.sh` が
+  retired な `moon.mod`/`moon build` を参照していた問題を修正。tag push で
+  selfhost seed / module source / manifest が publish される)
 - [ ] install スクリプト等配布チャネル確認
 - [ ] `docs/spec/1.0-freeze.md` の stable surface 定義を 0.3 に読み替え適用
