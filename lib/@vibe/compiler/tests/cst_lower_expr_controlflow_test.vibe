@@ -137,7 +137,9 @@ test "lower EContinue" {
   }
 }
 
-test "lower EThrow" {
+test "lower NThrowExpr to perform Error::Throw" {
+  // #640 Stage 3: NThrowExpr lowers to the Stage 2 parser desugar shape
+  // (perform Error::Throw(expr)) instead of the retired EThrow node.
   let node = CNode(NThrowExpr, [
     CToken(TThrow),
     CNode(NStringExpr, [
@@ -145,7 +147,19 @@ test "lower EThrow" {
     ])
   ])
   match lower_expr(node) {
-    EThrow(_) => assert(true),
+    ECall(EIdent("perform", _), args, _) => {
+      assert(Array::length(args) == 1)
+      match Array::get(args, 0) {
+        ECall(EIdent("Error::Throw", _), inner, _) => {
+          assert(Array::length(inner) == 1)
+          match Array::get(inner, 0) {
+            EString(s) => assert(s == "err"),
+            _ => assert(false)
+          }
+        },
+        _ => assert(false)
+      }
+    },
     _ => assert(false)
   }
 }

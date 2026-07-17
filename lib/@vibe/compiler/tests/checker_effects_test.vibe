@@ -8,7 +8,7 @@ import ../core {
 }
 
 import ../checker_effects.vibe {
-  EffectError, check_effects_expr, check_effects_stmt, check_effects_stmts, effect_error_to_string
+  EffectError, check_effects_expr, effect_error_to_string
 }
 
 import ../types.vibe {
@@ -24,80 +24,14 @@ fn is_call_err(e: EffectError) -> Bool {
   }
 }
 
-fn is_throw_err(e: EffectError) -> Bool {
-  match e {
-    EEThrowOutsideEffect(_) => true,
-    _ => false
-  }
-}
-
 //# Misc
 
-test "throw outside effect reports error" {
-  let errors = check_effects_expr(EThrow(EString("fail")), EnvEmpty, false)
-  assert(eq(Array::length(errors), 1))
-  assert(is_throw_err(Array::get(errors, 0)))
-}
-
-test "throw inside effect context is OK" {
-  let errors = check_effects_expr(EThrow(EString("fail")), EnvEmpty, true)
-  assert(eq(Array::length(errors), 0))
-}
-
-test "throw inside EFn with effect annotation is OK" {
-  let fn_expr = EFn(Array::slice([
-    ""
-  ], 0, 0), Array::slice([
-    ("", Array::slice([
-      ""
-    ], 0, 0))
-  ], 0, 0), Array::slice([
-    ("x", None)
-  ], 0, 0), None, Some("Error"), EThrow(EString("fail")))
-  let errors = check_effects_expr(fn_expr, EnvEmpty, false)
-  assert(eq(Array::length(errors), 0))
-}
-
-test "throw inside EFn without effect annotation reports error" {
-  let fn_expr = EFn(Array::slice([
-    ""
-  ], 0, 0), Array::slice([
-    ("", Array::slice([
-      ""
-    ], 0, 0))
-  ], 0, 0), Array::slice([
-    ("x", None)
-  ], 0, 0), None, None, EThrow(EString("fail")))
-  let errors = check_effects_expr(fn_expr, EnvEmpty, false)
-  assert(eq(Array::length(errors), 1))
-  assert(is_throw_err(Array::get(errors, 0)))
-}
-
-test "handle allows throw in body" {
-  let handle_expr = EHandle(EThrow(EString("err")), [
-    (PBind("e"), EInt(0))
-  ])
-  let errors = check_effects_expr(handle_expr, EnvEmpty, false)
-  assert(eq(Array::length(errors), 0))
-}
-
-test "handle arm body uses outer effect context" {
-  let handle_expr = EHandle(EInt(1), [
-    (PBind("e"), EThrow(EString("rethrow")))
-  ])
-  // outer context has no effect => throw in arm body is error
-  let errors = check_effects_expr(handle_expr, EnvEmpty, false)
-  assert(eq(Array::length(errors), 1))
-  assert(is_throw_err(Array::get(errors, 0)))
-}
-
-test "handle arm body OK when outer has effect" {
-  let handle_expr = EHandle(EInt(1), [
-    (PBind("e"), EThrow(EString("rethrow")))
-  ])
-  let errors = check_effects_expr(handle_expr, EnvEmpty, true)
-  assert(eq(Array::length(errors), 0))
-}
+// #640 Stage 3: the EThrow-based tests that pinned EEThrowOutsideEffect on the
+// EThrow AST node were deleted. `throw(x)` now parses to
+// `perform Error::Throw(x)` (Stage 2), which deliberately bypasses that
+// node-level discipline via the Error carve-out, so those tests had no
+// live-pipeline equivalent. The ECall-based tests below still pin the
+// effectful-call discipline, and EEThrowOutsideEffect itself stays.
 
 test "calling throw builtin outside effect reports error" {
   let call_expr = ECall(EIdent("throw", -1), [
@@ -150,45 +84,6 @@ test "calling pure function outside effect is OK" {
   assert(eq(Array::length(errors), 0))
 }
 
-test "throw nested in let body outside effect" {
-  let expr = ELet("x", EInt(1), EThrow(EString("fail")), -1)
-  let errors = check_effects_expr(expr, EnvEmpty, false)
-  assert(eq(Array::length(errors), 1))
-}
-
-test "throw nested in if then outside effect" {
-  let expr = EIf(EBool(true), EThrow(EString("fail")), EInt(0))
-  let errors = check_effects_expr(expr, EnvEmpty, false)
-  assert(eq(Array::length(errors), 1))
-}
-
-test "multiple throws reports multiple errors" {
-  let expr = ESeq(EThrow(EString("a")), EThrow(EString("b")))
-  let errors = check_effects_expr(expr, EnvEmpty, false)
-  assert(eq(Array::length(errors), 2))
-}
-
-test "SLet with throw reports error" {
-  let stmt = SLet(false, false, "x", None, EThrow(EString("fail")))
-  let errors = check_effects_stmt(stmt, EnvEmpty)
-  assert(eq(Array::length(errors), 1))
-}
-
-test "SLet with effectful fn body is OK" {
-  let fn_body = EFn(Array::slice([
-    ""
-  ], 0, 0), Array::slice([
-    ("", Array::slice([
-      ""
-    ], 0, 0))
-  ], 0, 0), Array::slice([
-    ("x", None)
-  ], 0, 0), None, Some("Error"), EThrow(EString("fail")))
-  let stmt = SLet(false, false, "f", None, fn_body)
-  let errors = check_effects_stmt(stmt, EnvEmpty)
-  assert(eq(Array::length(errors), 0))
-}
-
 test "effect error formatting" {
   let e1 = EEThrowOutsideEffect("throw")
   let s1 = effect_error_to_string(e1)
@@ -196,13 +91,4 @@ test "effect error formatting" {
   let e2 = EEEffectfulCallOutsideEffect("Fs::read_file")
   let s2 = effect_error_to_string(e2)
   assert(String::length(s2) > 0)
-}
-
-test "check_effects_stmts collects errors from multiple stmts" {
-  let stmts = [
-    SLet(false, false, "a", None, EThrow(EString("a"))),
-    SExpr(EThrow(EString("b")))
-  ]
-  let errors = check_effects_stmts(stmts, EnvEmpty)
-  assert(eq(Array::length(errors), 2))
 }
