@@ -1,0 +1,102 @@
+// #805 (ADR-0072): inline wasm — `fn f(a: Int, ..) -> Int = wasm "(...)"`.
+// Linear backend only. ABI contract: params and result are RAW 62-bit tagged
+// i64 values (ADR-0055: Int n is represented as n<<1). The WAT author
+// untags/retags explicitly — there are no automatic shims.
+
+// Addition is tag-transparent: (2a) + (2b) == 2(a+b), so the tagged inputs
+// can be added directly. This ONLY works because the Int tag is a pure
+// left-shift; it is not a license to ignore the ABI (see wasm_mul below).
+fn wasm_add(a: Int, b: Int) -> Int = wasm "(i64.add (local.get $a) (local.get $b))"
+
+// Multiplication is NOT tag-transparent: (2a)*(2b) == 4ab == tagged(2ab) —
+// twice the right answer. The body must untag (i64.shr_s 1), multiply, and
+// retag (i64.shl 1). This is the canonical proof that inline wasm sees the
+// raw tagged ABI.
+fn wasm_mul(a: Int, b: Int) -> Int = wasm
+  "(i64.shl (i64.mul (i64.shr_s (local.get $a) (i64.const 1)) (i64.shr_s (local.get $b) (i64.const 1))) (i64.const 1))"
+
+// Naive mul on tagged values yields 2*(a*b) — asserted below to pin the ABI
+// contract in a test (if params ever stopped being raw tagged values, this
+// fixture fails loudly).
+fn wasm_mul_naive(a: Int, b: Int) -> Int = wasm "(i64.mul (local.get $a) (local.get $b))"
+
+// SIMD (0xFD prefix): splat both tagged inputs into i64x2 lanes, add
+// lane-wise (tag-transparent like scalar add), extract lane 0.
+fn wasm_simd_add(a: Int, b: Int) -> Int = wasm
+  "(i64x2.extract_lane 0 (i64x2.add (i64x2.splat (local.get $a)) (i64x2.splat (local.get $b))))"
+
+// v128.const + lane arithmetic: adds tagged 100 (i.e. raw 200) to lane 0.
+fn wasm_simd_add_const(a: Int) -> Int = wasm
+  "(i64x2.extract_lane 0 (i64x2.add (i64x2.splat (local.get $a)) (v128.const i64x2 200 0)))"
+
+// Structured control (folded-form only) + multi-string body (adjacent string
+// literals are joined with newlines) + params as scratch locals via
+// local.set. Sums n + (n-1) + ... + 1 into acc. Note the tag arithmetic:
+// `(i64.const 2)` is tagged 1, tagged compare (le_s) and tagged add/sub are
+// order/tag-preserving.
+fn wasm_sum_to(n: Int, acc: Int) -> Int = wasm
+  "(block $done"
+  "  (loop $top"
+  "    (br_if $done (i64.le_s (local.get $n) (i64.const 0)))"
+  "    (local.set $acc (i64.add (local.get $acc) (local.get $n)))"
+  "    (local.set $n (i64.sub (local.get $n) (i64.const 2)))"
+  "    (br $top)))"
+  "(local.get $acc)"
+
+// Folded if with a result type; ;; line comments are allowed in WAT text.
+fn wasm_max(a: Int, b: Int) -> Int = wasm
+  "(if (result i64) ;; tagged compare preserves order"
+  "  (i64.gt_s (local.get $a) (local.get $b))"
+  "  (then (local.get $a))"
+  "  (else (local.get $b)))"
+
+// Bitwise on raw tagged values: (2a & 2b) == 2(a & b) — and works untagged
+// too; exercise hex immediates + and/or/xor.
+fn wasm_mask_low(a: Int) -> Int = wasm "(i64.and (local.get $a) (i64.const 0x1FE))"
+
+// Exported inline-wasm fn: `export fn ... = wasm` parses through the same
+// path.
+export fn wasm_neg(a: Int) -> Int = wasm "(i64.sub (i64.const 0) (local.get $a))"
+
+//# Misc
+
+test "inline wasm: tagged add" {
+  assert(wasm_add(1, 2) == 3)
+  assert(wasm_add(40, 2) == 42)
+  assert(wasm_add(-5, 3) == -2)
+  assert(wasm_add(0, 0) == 0)
+}
+
+test "inline wasm: mul requires untag/retag (ABI-aware)" {
+  assert(wasm_mul(6, 7) == 42)
+  assert(wasm_mul(-3, 5) == -15)
+  assert(wasm_mul(0, 99) == 0)
+  // the naive body really sees raw tagged values: result is 2*(a*b)
+  assert(wasm_mul_naive(6, 7) == 84)
+}
+
+test "inline wasm: simd i64x2 add + extract_lane" {
+  assert(wasm_simd_add(20, 22) == 42)
+  assert(wasm_simd_add(-1, 1) == 0)
+  assert(wasm_simd_add_const(1) == 101)
+}
+
+test "inline wasm: folded loop/block/br_if with param scratch locals" {
+  assert(wasm_sum_to(5, 0) == 15)
+  assert(wasm_sum_to(1, 0) == 1)
+  assert(wasm_sum_to(0, 0) == 0)
+  assert(wasm_sum_to(10, 100) == 155)
+}
+
+test "inline wasm: folded if result" {
+  assert(wasm_max(3, 9) == 9)
+  assert(wasm_max(9, 3) == 9)
+  assert(wasm_max(-4, -7) == -4)
+}
+
+test "inline wasm: bitwise + hex immediates" {
+  assert(wasm_mask_low(255) == 255)
+  assert(wasm_mask_low(256) == 0)
+  assert(wasm_neg(41) == -41)
+  assert(wasm_neg(-41) == 41)
+}

@@ -530,7 +530,28 @@ export fn print_stmt(s: Stmt) -> String {
           }
           let head = String::concat(p, String::concat("fn ", String::concat(print_name(name), tp_str)))
           let sig = String::concat("(", String::concat(join(parts, ", "), String::concat(") -> ", String::concat(ret_str, String::concat(eff_str, where_str)))))
-          String::concat(head, String::concat(sig, String::concat(" { ", String::concat(print_expr(body), " }"))))
+          // #805 (ADR-0072): an inline-wasm body (the parser-internal
+          // `%wasm("<WAT>")` marker call) round-trips as `= wasm "..."` —
+          // printing the marker as a call would not re-parse (`%` is not an
+          // ident start in expression position).
+          let wasm_text = match body {
+            ECall(wcal, wargs, _) => match wcal {
+              EIdent(wname, _) => if wname == "%wasm" && Array::length(wargs) == 1 {
+                match Array::get(wargs, 0) {
+                  EString(wt) => Some(wt),
+                  _ => None
+                }
+              } else {
+                None
+              },
+              _ => None
+            },
+            _ => None
+          }
+          match wasm_text {
+            Some(wt) => String::concat(head, String::concat(sig, String::concat(" = wasm \"", String::concat(escape_string(wt), "\"")))),
+            None => String::concat(head, String::concat(sig, String::concat(" { ", String::concat(print_expr(body), " }"))))
+          }
         },
         // Defensive: a non-EFn value cannot be spelled in fn syntax; fall
         // back to the lowered let-rec form so output stays parseable.

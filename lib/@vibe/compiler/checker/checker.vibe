@@ -2003,6 +2003,29 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
         }
         let (tv, c2) = fresh_var(c1)
         (tv, s1, c2)
+      } else if name == "%wasm" {
+        // #805 (ADR-0072) inline wasm marker: only producible by the parser's
+        // `fn f(a: Int, ..) -> Int = wasm "..."` form (a `%`-ident cannot be
+        // parsed in expression position, so user source cannot forge it).
+        // The declared signature is trusted extern-let style; the call's
+        // value is a fresh var that unifies with the declared Int return.
+        // The single arg is the WAT text literal — shape-checked here
+        // defensively, never evaluated.
+        let wasm_shape_ok = if Array::length(args) == 1 {
+          match Array::get(args, 0) {
+            EString(_) => true,
+            _ => false
+          }
+        } else {
+          false
+        }
+        if !wasm_shape_ok {
+          Array::push(errors, "malformed inline wasm marker (expected a single WAT string literal)")
+        } else {
+          ()
+        }
+        let (tv, c2) = fresh_var(c)
+        (tv, s, c2)
       } else if name == "Some" {
         if Array::length(args) == 1 {
           let (at, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)

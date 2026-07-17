@@ -731,6 +731,51 @@ let main = () -> Int { run() }
 - `vibe fmt` / normalize refuses `#cfg` sources (formatting would delete disabled code).
 - Not usable inside the compiler's own source until the seed compiler understands it (see docs/bootstrap.md).
 
+## Inline wasm (`= wasm "..."`, linear backend only)
+
+A top-level `fn` may have a raw WAT (S-expression) body instead of a vibe body
+(#805, ADR-0072) — for hand-optimized hot paths and SIMD:
+
+<!-- doctest-skip: linear-backend 専用機能の構文提示 -->
+```vibe skip
+// mul must untag (>>1), multiply, retag (<<1) — see ABI note below
+fn fast_mul(a: Int, b: Int) -> Int = wasm
+  "(i64.shl (i64.mul (i64.shr_s (local.get $a) (i64.const 1))"
+  "                  (i64.shr_s (local.get $b) (i64.const 1)))"
+  "         (i64.const 1))"
+
+fn simd_add(a: Int, b: Int) -> Int = wasm
+  "(i64x2.extract_lane 0 (i64x2.add (i64x2.splat (local.get $a)) (i64x2.splat (local.get $b))))"
+```
+
+- **ABI contract (ADR-0055)**: params and result are RAW 62-bit tagged i64
+  values — `Int` n arrives as `n<<1`. There are NO automatic shims: untag with
+  `i64.shr_s 1`, retag with `i64.shl 1`. Tag-transparent ops (add/sub/and/or/
+  xor/compares) may skip the dance; mul/div/shift must not.
+- **Linear backend only** — the wasm-gc backend rejects it with a compile
+  error. The declared signature is trusted (extern-let style).
+- **v0.3 slice restrictions**: monomorphic only (no `[T]`), empty effect row,
+  no `where` contracts, every param and the return type spelled literally
+  `Int`. Locals are the fn's own params (`$name` or index; use params as
+  scratch via `local.set` — no `(local ...)` declarations). No `call` /
+  `global.*` / `br_table` / `f32.const` / `f64.const`.
+- **WAT text**: ordinary string literal(s) — the lexer has no raw/multiline
+  strings; adjacent literals after `= wasm` are joined with newlines. `;;`
+  line and `(; ;)` block comments work inside the text.
+- Folded S-expressions emit operands first (real WAT semantics); flat
+  sequences (`local.get $a local.get $b i64.add`) also work. Structured
+  control (`block`/`loop`/`if`) is folded-form only:
+  `(block $l (result i64) ...)`, `(if (result i64) <cond> (then ...) (else ...))`,
+  `br`/`br_if` with `$label` or relative depth.
+- SIMD (0xFD prefix) is supported: `v128.const i64x2 1 2`, splat /
+  extract_lane / replace_lane, lane arithmetic, bitwise, `all_true` /
+  `any_true` / `bitmask`, `v128.load` / `v128.store`.
+- Memory instructions address the runtime's linear memory directly — the heap
+  layout is NOT a stable interface; loads/stores are at-your-own-risk.
+- Not usable inside the compiler's own source until the seed compiler
+  understands the syntax (same bump discipline as `#cfg`, docs/bootstrap.md).
+- Examples: `fixtures/inline_wasm_test.vibe`.
+
 ## RC Debug Mode (`VIBE_RC=shadow`)
 
 `VIBE_RC=shadow vibe build app.vibe` compiles on the Perceus RC path with **shadow-liveness instrumentation**: every freed heap block is marked in a shadow byte table, and the FIRST `rc_dup`/`rc_drop` touching a freed block executes `unreachable` — a deterministic trap at the faulting operation, instead of free-list corruption that crashes later at an unrelated location ("moving target", see issue #715). Debug-only: adds a memory pad + per-dup/drop checks. Normal builds (`VIBE_RC=1`/unset) are byte-identical to before this feature.
