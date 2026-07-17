@@ -2563,8 +2563,14 @@ async function main() {
       throw err;
     }
   };
-  const resultToExitCode = (result) => {
+  const resultToExitCode = (result, isSelfhost) => {
     if (typeof result === "bigint") {
+      // Selfhost-compiled modules return untagged i64 values (same split as
+      // emitResult). Treating them as tagged shifted any multiple-of-4 exit
+      // code right by 2 (main returning 20 exited 5).
+      if (isSelfhost) {
+        return Number(result) | 0;
+      }
       return decodeTaggedOrRawInt(result);
     }
     if (typeof result === "number") {
@@ -2725,9 +2731,9 @@ async function main() {
       try {
         const req = JSON.parse(row);
         const args = Array.isArray(req.args) ? req.args.map(String) : [];
-        const { result, elapsedUs } = runInvokes(args);
+        const { result, isSelfhost, elapsedUs } = runInvokes(args);
         response = {
-          exit_code: resultToExitCode(result),
+          exit_code: resultToExitCode(result, isSelfhost),
           elapsed_us: Math.max(1, Math.round(elapsedUs)),
           stdout: capturedStdout,
         };
@@ -2780,7 +2786,7 @@ async function main() {
   const invoke = invokes[invokes.length - 1];
   emitResult(invoke, result, isSelfhost);
   if (invoke === "cli_main" || process.env.VIBE_RUNNER_EXIT_WITH_RESULT === "1") {
-    process.exitCode = resultToExitCode(result);
+    process.exitCode = resultToExitCode(result, isSelfhost);
   }
 }
 
