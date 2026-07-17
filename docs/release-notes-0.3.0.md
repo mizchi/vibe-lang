@@ -82,5 +82,9 @@
 - [x] release tag workflow の selfhost-only 化 (`build_release_assets.sh` が
   retired な `moon.mod`/`moon build` を参照していた問題を修正。tag push で
   selfhost seed / module source / manifest が publish される)
-- [ ] install スクリプト等配布チャネル確認
-- [ ] `docs/spec/1.0-freeze.md` の stable surface 定義を 0.3 に読み替え適用
+- [x] install スクリプト等配布チャネル確認 (release asset 生成 +
+  `fetch_compiler.sh` 消費経路をローカル実測、install smoke は
+  `cli-install` workflow が multi-OS で検証)
+- [x] `docs/spec/1.0-freeze.md` の stable surface 定義を 0.3 に読み替え適用
+  (冒頭に発効ノート追記 — v0.3.0 タグから freeze 発効、0.x 間は
+  破壊的変更 = Minor で運用)
