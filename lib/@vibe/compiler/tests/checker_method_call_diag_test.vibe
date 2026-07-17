@@ -1,0 +1,80 @@
+//# Imports
+
+import ../checker/index.vibe {
+  check_program
+}
+
+import ../syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+// First checker error message for `source`, or "" when it checks clean.
+// (check_program throws the first collected diagnostic.)
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with Error {
+    Throw(msg) => msg
+  }
+}
+
+//# Misc
+
+// #953: `l.total()` with only a BARE top-level `fn total(l: MyList)` used to
+// slip through the checker and die in codegen with an unlocated
+// "unknown struct field: total". The #736 contract is that dot-calls resolve
+// `Type::method` top-level fns; a bare fn keeps normal call semantics
+// (`total(l)` / `l |> total`). The checker now reports a located diagnostic.
+test "bare-fn dot call reports located no-method diagnostic" {
+  let src = "enum MyList { Nil; Cons(Int, MyList) }\nfn total(l: MyList) -> Int {\n  match l {\n    Nil => 0,\n    Cons(h, t) => h + total(t)\n  }\n}\nfn main() -> Int {\n  let l = Cons(1, Nil)\n  l.total()\n}\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "no method `total` on `MyList`"))
+  assert(String::contains(msg, "fn MyList::total"))
+  // A bare `fn total` IS in scope, so the hint spells out the two call forms
+  // that do work for it.
+  assert(String::contains(msg, "|> total"))
+  // NOTE: this harness parses via parse_program (no token offsets, all -1), so
+  // the [@off=..] marker is absent here; the located (line:col) form is
+  // covered by scripts/test_located_diagnostics.sh, which drives the
+  // offset-aware parse_program_located path.
+}
+
+test "no-method diagnostic without any bare fn suggests declaring it" {
+  let src = "enum MyList { Nil; Cons(Int, MyList) }\nfn main() -> Int {\n  let l = Cons(1, Nil)\n  l.size()\n}\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "no method `size` on `MyList`"))
+  assert(String::contains(msg, "fn MyList::size"))
+  assert(String::contains(msg, "|> size"))
+}
+
+test "Type::method dot call still checks clean" {
+  let src = "enum MyList { Nil; Cons(Int, MyList) }\nfn MyList::total(l: MyList) -> Int {\n  match l {\n    Nil => 0,\n    Cons(h, t) => h + MyList::total(t)\n  }\n}\nfn main() -> Int {\n  let l = Cons(1, Nil)\n  l.total()\n}\n"
+  assert(first_check_error(src) == "")
+}
+
+test "forward-declared Type::method dot call still checks clean" {
+  // `fn MyList::total` is declared AFTER the call site; check_stmts hoists
+  // top-level SLet names, so this must not trip the #953 diagnostic.
+  let src = "enum MyList { Nil; Cons(Int, MyList) }\nfn main() -> Int {\n  let l = Cons(1, Nil)\n  l.total()\n}\nfn MyList::total(l: MyList) -> Int {\n  match l {\n    Nil => 0,\n    Cons(h, t) => h + MyList::total(t)\n  }\n}\n"
+  assert(first_check_error(src) == "")
+}
+
+test "field-stored function call still checks clean" {
+  let src = "struct Box { val: Int; get: (Box) -> Int }\nfn from_field(b: Box) -> Int {\n  b.get(b)\n}\nfn main() -> Int {\n  let b = Box::{ val: 7, get: (s: Box) -> Int { s.val } }\n  from_field(b)\n}\n"
+  assert(first_check_error(src) == "")
+}
+
+test "pipe form of a bare fn is unchanged" {
+  let src = "enum MyList { Nil; Cons(Int, MyList) }\nfn total(l: MyList) -> Int {\n  match l {\n    Nil => 0,\n    Cons(h, t) => h + total(t)\n  }\n}\nfn main() -> Int {\n  let l = Cons(1, Nil)\n  l |> total\n}\n"
+  assert(first_check_error(src) == "")
+}
+
+test "unknown-typed receiver keeps the tolerant path" {
+  // Untyped lambda param -> receiver type is a var/unknown; the per-module
+  // tolerance for imported types rides the same gate, so no diagnostic here.
+  let src = "fn main() -> Int {\n  let poke = (x) -> x.whatever()\n  let _ = poke\n  0\n}\n"
+  assert(first_check_error(src) == "")
+}

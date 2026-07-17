@@ -190,13 +190,17 @@ prepend). A *compound* placeholder such as `_ * 2` is a section lambda
 `Array::map(xs, (v) -> v * 2)`.
 
 **Method-style calls** (#736): `xs.length()` and `xs |> length` resolve to
-`List::length(xs)` when `xs`'s type is a USER type declaring the method as a
-top-level fn — importing just the type is enough
+`List::length(xs)` when `xs`'s type is a USER type and the method is declared
+as a top-level fn in the **`Type::method` spelling** (`fn List::length(xs:
+List) -> Int`) — importing just the type is enough
 (`import ./list.vibe { List, list_of3 }` makes `list_of3(1,2,3) |> length`
-work). A struct FIELD of the same name wins over a method (field-stored
-function call), and a lexically visible bare function keeps normal call
-semantics. Builtin receivers (`Array`/`String`/...) keep their builtin
-`Type::method` forms — no bare-method sugar for them.
+work). A BARE top-level `fn total(l: MyList)` is *not* a method: it keeps
+normal call semantics (`total(l)`, and `l |> total` — the pipe is just a call),
+but `l.total()` does not resolve to it and reports a located
+``no method `total` on `MyList` `` diagnostic (#953). A struct FIELD of the same
+name wins over a method (field-stored function call). Builtin receivers
+(`Array`/`String`/...) keep their builtin `Type::method` forms — no
+bare-method sugar for them.
 
 ### Function combinators (point-free)
 
