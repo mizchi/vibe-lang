@@ -90,6 +90,17 @@ expect_contains "unknown-field access located at access site (line 3)" "line 3:"
 expect_matches "unknown-field carries an exact field range (colM-K)" "line 3:5-6:" \
   'struct Point { x: Int; y: Int }\nexport let get = (p: Point) -> Int {\n  p.z\n}\nexport let main = () -> Int { 0 }\n'
 
+# #953: method-style call `l.total()` with only a BARE top-level
+# `fn total(l: MyList)` in scope used to escape the checker and die in codegen
+# with an unlocated "unknown struct field: total". The checker now reports a
+# located "no method" diagnostic with an exact range over the method token
+# (`total` starts at col 3 on line 10: `  l.total()` -> the field token offset
+# feeds the [@off=N:M] marker).
+expect_contains "bare-fn dot call reports no-method (#953)" 'no method `total` on `MyList`' \
+  'enum MyList { Nil; Cons(Int, MyList) }\nfn total(l: MyList) -> Int {\n  match l {\n    Nil => 0,\n    Cons(h, t) => h + total(t)\n  }\n}\nexport let main = () -> Int {\n  let l = Cons(1, Nil)\n  l.total()\n}\n'
+expect_matches "bare-fn dot call no-method located with exact range (#953)" "line 10:5-10:" \
+  'enum MyList { Nil; Cons(Int, MyList) }\nfn total(l: MyList) -> Int {\n  match l {\n    Nil => 0,\n    Cons(h, t) => h + total(t)\n  }\n}\nexport let main = () -> Int {\n  let l = Cons(1, Nil)\n  l.total()\n}\n'
+
 # the internal [@off=N] offset marker must never leak into user-facing output.
 expect_missing() { # <desc> <needle-that-must-be-absent> <file.vibe content>
   local desc="$1" needle="$2"; shift 2

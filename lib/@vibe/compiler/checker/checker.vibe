@@ -2667,7 +2667,58 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
               },
               _ => match direct_ret {
                 Some(t) => (tab_call_ty(tytab, call_off, t), s3, c3),
-                None => (tab_call_ty(tytab, call_off, CtUnknown), s3, c3)
+                None => {
+                  // #953: method-style call `x.m()` on a receiver whose checked
+                  // type is a USER type DECLARED IN THIS CHECK'S defs, with no
+                  // `T::m` binding anywhere (env covers the whole program on the
+                  // merged FS-compile path, and check_stmts hoists every
+                  // top-level SLet — including `fn T::m` declared later — so an
+                  // absent binding means the method truly does not exist), no
+                  // builtin, and no struct field `m`. Codegen compiles a called
+                  // EDot as a struct-field read, so this previously escaped the
+                  // checker and died in codegen with an unlocated "unknown
+                  // struct field: m". Report it HERE, located at the method
+                  // token, with the #736 contract spelled out: dot-calls
+                  // resolve `T::m` top-level fns (a BARE `fn m(x: T)` is only
+                  // callable as `m(x)` / `x |> m`). Receivers of IMPORTED types
+                  // (no local typedef) keep the tolerant CtUnknown path — with
+                  // only the type imported, the method lives in the source
+                  // module and is resolved by the merged codegen (see the #736
+                  // comment on the bare-callee arm above).
+                  let no_field = match field_fn {
+                    None => true,
+                    _ => false
+                  }
+                  let local_user_ty = if type_prefix == "" {
+                    false
+                  } else {
+                    match find_typedef(defs, type_prefix) {
+                      Some(_) => true,
+                      None => false
+                    }
+                  }
+                  let has_method_binding = match env_lookup(env, qualified) {
+                    Some(_) => true,
+                    None => match lookup_builtin(qualified) {
+                      Some(_) => true,
+                      None => false
+                    }
+                  }
+                  if no_field && local_user_ty && !has_method_binding {
+                    let bare_hint = match env_lookup(env, method) {
+                      Some(_) => String::concat(String::concat("(...)` (a bare `fn ", method), String::concat("` is only callable as `", String::concat(method, String::concat("(x)` or `x |> ", String::concat(method, "`)"))))),
+                      // Codex P2 on #961: with no bare binding of this name,
+                      // suggesting `x |> method` re-enters the same fallback
+                      // and reproduces this diagnostic — only suggest the
+                      // Type::method declaration.
+                      None => "(...)`"
+                    }
+                    Array::push(errors, String::concat(String::concat("no method `", String::concat(method, String::concat("` on `", String::concat(type_prefix, "`: declare a top-level `fn ")))), String::concat(qualified, String::concat(bare_hint, off_marker_len(qcall_field_off, String::length(method))))))
+                  } else {
+                    ()
+                  }
+                  (tab_call_ty(tytab, call_off, CtUnknown), s3, c3)
+                }
               }
             }
           }

@@ -1038,7 +1038,7 @@ fn quote_char_literal(text: String) -> String {
 fn should_escape_identifier_text(text: String) -> Bool {
   text == "let" || text == "import" || text == "use" || text == "declare" ||
   text == "test" || text == "if" || text == "else" || text == "match" ||
-  text == "record" || text == "map" || text == "fn" || text == "rec" ||
+  text == "record" || text == "fn" || text == "rec" ||
   text == "type" || text == "enum" || text == "while" || text == "loop" ||
   text == "bench" || text == "mut" || text == "raise" || text == "yield" ||
   text == "break" || text == "continue" || text == "export" || text == "from" ||
@@ -1046,7 +1046,7 @@ fn should_escape_identifier_text(text: String) -> Bool {
   text == "true" || text == "false"
 }
 
-fn token_text_for_output(tok: LTok) -> String {
+fn token_text_for_output(tok: LTok, next_kind: Int) -> String {
   let k = tok.kind
   if k == k_string {
     quote_string_literal(tok.text)
@@ -1056,7 +1056,20 @@ fn token_text_for_output(tok: LTok) -> String {
     quote_char_literal(tok.text)
   } else if k == k_name {
     let trimmed = trim_ascii_ws(tok.text)
-    if should_escape_identifier_text(trimmed) {
+    if trimmed == "map" {
+      // #945 follow-up: `map` is a soft keyword — the lexer produced k_name
+      // (not k_map) exactly when the bare spelling re-lexes as an identifier
+      // (`keyword_kind_for` / `lx_next_significant`). The only position where
+      // bare `map` would change meaning is directly before `{` (map literal),
+      // which can only arise from an explicit `r#map {` in the input — keep
+      // `r#` there, emit the plain spelling everywhere else (`Array::map`,
+      // `|> map(...)`, `fn map`, ...), matching what the user wrote.
+      if next_kind == k_lbrace {
+        String::concat("r#", trimmed)
+      } else {
+        trimmed
+      }
+    } else if should_escape_identifier_text(trimmed) {
       String::concat("r#", trimmed)
     } else {
       trimmed
@@ -1367,7 +1380,7 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
       let rendered_text = if kind == k_comma && enum_top_level {
         ";"
       } else {
-        token_text_for_output(tok)
+        token_text_for_output(tok, next_kind)
       }
       if String::length(rendered_text) == 0 {
         i = i + 1
