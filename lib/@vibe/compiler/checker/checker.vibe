@@ -1704,6 +1704,103 @@ fn resume_walk_bind_pat(p: Pat, env: TypeEnv) -> TypeEnv {
 // so it only ADDS diagnostics (main inference flow untouched). Local binders
 // (let / let mut / let rec / match arms / for-in vars) are bound to CtUnknown
 // while descending so resume(local) doesn't report a false `unknown name`.
+// #640: walk a `with Error` handler arm body and reject any `resume(...)`
+// call. `Error` is non-resumable — `throw` / `perform Error::Throw` unwind
+// the stack for good (no perform-counter/memo replay machinery runs for tag
+// 2), so a resume in an Error arm never resumed anything; it was silently
+// meaningless. Nested EHandle subtrees are skipped (their resumes belong to
+// the inner handler's own arms, which may be resumable effects).
+fn reject_resume_in_error_arm(e: Expr, errors: Array[String]) -> Unit {
+  match e {
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(nm, off) => if nm == "resume" {
+          Array::push(errors, String::concat("Error is a non-resumable effect (#640); an Error arm's value IS the handle result — remove resume(...)", off_marker(off)))
+        } else {
+          ()
+        },
+        _ => reject_resume_in_error_arm(callee, errors)
+      }
+      let mut ri = 0
+      while ri < Array::length(args) {
+        reject_resume_in_error_arm(Array::get(args, ri), errors)
+        ri = ri + 1
+      }
+    },
+    EHandle(_, _) => (),
+    ELet(_, v, b, _) => {
+      reject_resume_in_error_arm(v, errors)
+      reject_resume_in_error_arm(b, errors)
+    },
+    ELetMut(_, v, b, _) => {
+      reject_resume_in_error_arm(v, errors)
+      reject_resume_in_error_arm(b, errors)
+    },
+    ELetRec(_, v, b) => {
+      reject_resume_in_error_arm(v, errors)
+      reject_resume_in_error_arm(b, errors)
+    },
+    ESeq(a, b) => {
+      reject_resume_in_error_arm(a, errors)
+      reject_resume_in_error_arm(b, errors)
+    },
+    EIf(cnd, t, el) => {
+      reject_resume_in_error_arm(cnd, errors)
+      reject_resume_in_error_arm(t, errors)
+      reject_resume_in_error_arm(el, errors)
+    },
+    EMatch(scr, marms) => {
+      reject_resume_in_error_arm(scr, errors)
+      let mut mi = 0
+      while mi < Array::length(marms) {
+        let (_, mb) = Array::get(marms, mi)
+        reject_resume_in_error_arm(mb, errors)
+        mi = mi + 1
+      }
+    },
+    EWhile(cnd, b) => {
+      reject_resume_in_error_arm(cnd, errors)
+      reject_resume_in_error_arm(b, errors)
+    },
+    EForIn(_, _, it, b) => {
+      reject_resume_in_error_arm(it, errors)
+      reject_resume_in_error_arm(b, errors)
+    },
+    EBinOp(_, l, r) => {
+      reject_resume_in_error_arm(l, errors)
+      reject_resume_in_error_arm(r, errors)
+    },
+    EUnaryOp(_, inner) => reject_resume_in_error_arm(inner, errors),
+    EAssign(_, v, b) => {
+      reject_resume_in_error_arm(v, errors)
+      reject_resume_in_error_arm(b, errors)
+    },
+    EAssignOp(_, _, v, b) => {
+      reject_resume_in_error_arm(v, errors)
+      reject_resume_in_error_arm(b, errors)
+    },
+    EFn(_, _, _, _, _, fb) => reject_resume_in_error_arm(fb, errors),
+    EThrow(inner) => reject_resume_in_error_arm(inner, errors),
+    EReturn(inner) => reject_resume_in_error_arm(inner, errors),
+    EDot(obj, _, _, _) => reject_resume_in_error_arm(obj, errors),
+    ETuple(items) => {
+      let mut ti = 0
+      while ti < Array::length(items) {
+        reject_resume_in_error_arm(Array::get(items, ti), errors)
+        ti = ti + 1
+      }
+    },
+    EArray(items) => {
+      let mut ti = 0
+      while ti < Array::length(items) {
+        reject_resume_in_error_arm(Array::get(items, ti), errors)
+        ti = ti + 1
+      }
+    },
+    _ => ()
+  }
+}
+
 fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> Subst {
   match e {
     ECall(callee, args, _) => {
@@ -2908,6 +3005,13 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                 },
                 None => Array::push(errors, String::concat("handler arm `", String::concat(String::substring(hqname, hci + 2, String::length(hqname)), String::concat("` is not an operation of effect ", String::substring(hqname, 0, hci)))))
               }
+            } else if hci > 0 && String::substring(hqname, 0, hci) == "Error" {
+              // #640 Stage 1: Error arms stay OUT of the #813 arm validation
+              // above (payload/arity/exhaustiveness unchanged), but a
+              // resume(...) inside one is rejected — Error is non-resumable
+              // (`throw` / `perform Error::Throw` unwind for good; the arm's
+              // value IS the handle result, so the resume never ran).
+              reject_resume_in_error_arm(hbody, errors)
             } else {
               ()
             }

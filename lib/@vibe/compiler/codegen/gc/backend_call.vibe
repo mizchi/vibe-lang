@@ -645,6 +645,23 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         } else {
           ""
         }
+        // #640: `perform Error::Throw(x)` IS `throw(x)` — route it to the same
+        // wasm exception the EThrow arm emits (tag 0 on the gc backend, see
+        // backend_expr.vibe), so a `with Error` handler catches both spellings.
+        if op_head == "Error::Throw" {
+          let mut enl = next_local
+          if expr_tag(op_expr) == 8 && Array::length(get_ecall_args(op_expr)) > 0 {
+            enl = ce(buf, Array::get(get_ecall_args(op_expr), 0), local_names, enl, ld)
+          } else {
+            emit_i64_const(buf, 0)
+          }
+          bytebuf_push(buf, 8)
+          leb128_encode_u32(buf, 0)
+          return enl
+        }
+        if String::index_of(op_head, "Error::") == 0 {
+          throw(String::concat("perform ", String::concat(op_head, ": the builtin Error effect has a single operation, Throw (#640)")))
+        }
         let op_canon = canonical_builtin_name(op_head)
         let __pf_len = Array::length(ctx.func_table.names)
         let mut pf_i = -1

@@ -527,6 +527,10 @@ let risky: (Int) -> Int with { Error } = (x) -> {
 let safe = handle { risky(0) } with Error { Throw(msg) => -1 }
 ```
 
+`throw(x)` は `perform Error::Throw(x)` と等価 (#640)。`Error` は再開不能
+(non-resumable) — `Error` arm の値がそのまま handle の結果になるため、
+arm 内の `resume(...)` は checker がエラーにする。
+
 ### Railway try (`?`) — `Result` and `Option` (#635)
 
 `e?` unwraps the success case and yields the inner value, or **early-`return`s**

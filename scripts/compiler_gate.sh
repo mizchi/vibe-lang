@@ -2609,6 +2609,69 @@ fi
 rm -rf "$fadir"
 echo "[compiler-gate] for-await classification ok"
 
+# 27e. Error-as-perform equivalence (#640 Stage 1): `perform Error::Throw(x)`
+#      must be indistinguishable from `throw(x)` — both emit the EThrow wasm
+#      exception (tag 2), so the same `with Error` handler catches both.
+#      Previously the perform spelling was lowered with the out-of-range
+#      fallback effect tag (Error is never in effect_names) and ESCAPED the
+#      handler as an uncaught exception. Also pins #640's checker rule:
+#      Error is non-resumable, so resume(...) inside a with-Error arm is a
+#      compile error (the arm's value IS the handle result).
+echo "[compiler-gate] 27e/27 Error-as-perform equivalence + non-resumability (#640)"
+edir="_build/_gate_error_perform"
+rm -rf "$edir"; mkdir -p "$edir"
+cat > "$edir/via_perform.vibe" <<'EOF'
+let safe = () -> Int with { Error } {
+  perform Error::Throw("fail")
+  0
+}
+export let _start: () -> Int = () -> {
+  handle { safe() } with Error { Throw(msg) => String::length(msg) }
+}
+EOF
+cat > "$edir/via_throw.vibe" <<'EOF'
+let safe = () -> Int with { Error } {
+  throw("fail")
+  0
+}
+export let _start: () -> Int = () -> {
+  handle { safe() } with Error { Throw(msg) => String::length(msg) }
+}
+EOF
+cat > "$edir/bad_resume_arm.vibe" <<'EOF'
+let risky = () -> Int with { Error } {
+  throw("boom")
+  0
+}
+export let _start: () -> Int = () -> {
+  handle { risky() } with Error { Throw(_m) => resume(0) }
+}
+EOF
+for v in via_perform via_throw; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$edir/$v.vibe" "$edir/$v.wasm" _start >/dev/null 2>&1 || true
+  if [ ! -s "$edir/$v.wasm" ]; then
+    echo "[compiler-gate] FAIL: $v did not compile (#640)" >&2; exit 1
+  fi
+done
+perf_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/via_perform.wasm" 2>/dev/null | tail -n 1 || true)"
+throw_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/via_throw.wasm" 2>/dev/null | tail -n 1 || true)"
+if [ "$throw_out" != "4" ]; then
+  echo "[compiler-gate] FAIL: throw spelling returned '$throw_out' (expected 4)" >&2; exit 1
+fi
+if [ "$perf_out" != "$throw_out" ]; then
+  echo "[compiler-gate] FAIL: perform Error::Throw diverged from throw ('$perf_out' vs '$throw_out'; #640 regressed)" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edir/bad_resume_arm.vibe" "$edir/bad_resume_arm.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$edir/bad_resume_arm.wasm" ]; then
+  echo "[compiler-gate] FAIL: resume(...) in a with-Error arm compiled (#640 regressed)" >&2; exit 1
+fi
+rm -rf "$edir"
+echo "[compiler-gate] Error-as-perform equivalence ok (4)"
+
 # 28. argument type checking: the checker used to SWALLOW argument unification
 #     failures (`unify_call_args` did `None => out`), so an ill-typed call like
 #     `f("x")` for `f: (Int) -> Int` was silently accepted. It now reports a

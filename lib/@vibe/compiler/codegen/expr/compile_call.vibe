@@ -1478,12 +1478,6 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       nl
     }
     else if !prefer_bound_call && fname == "perform" {
-      let mut nl = next_local
-      let g_rbuf = if ctx.enable_rc {
-        5
-      } else {
-        4
-      }
       let op_expr = Array::get(args, 0)
       let op_head = if is_eident(op_expr) {
         get_eident_name(op_expr)
@@ -1497,80 +1491,107 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       } else {
         ""
       }
-      let eff_tag = effect_name_to_tag(ctx.effect_names, op_head)
-      // #553: per-effect region stride; MUST match eff_reserve in
-      // linked_compile.vibe and compile_expr_tail6.vibe.
-      let eff_off = (eff_tag - 3) * 131072
-      emit_global_get(buf, g_rbuf)
-      emit_i32_const(buf, eff_off)
-      emit_i32_add(buf)
-      emit_i64_load(buf, 3, 0)
-      emit_global_set(buf, 1)
-      emit_global_get(buf, g_rbuf)
-      emit_i32_const(buf, eff_off)
-      emit_i32_add(buf)
-      emit_global_get(buf, 1)
-      emit_i64_const(buf, 1)
-      emit_i64_add(buf)
-      emit_i64_store(buf, 3, 0)
-      emit_global_get(buf, 1)
-      emit_global_get(buf, g_rbuf)
-      emit_i32_const(buf, eff_off)
-      emit_i32_add(buf)
-      emit_i64_load(buf, 3, 8)
-      emit_i64_lt_s(buf)
-      emit_if_i64(buf)
-      emit_global_get(buf, g_rbuf)
-      emit_i32_const(buf, eff_off)
-      emit_i32_add(buf)
-      emit_global_get(buf, 1)
-      emit_i64_const(buf, 8)
-      emit_i64_mul(buf)
-      emit_i32_wrap_i64(buf)
-      emit_i32_add(buf)
-      emit_i64_load(buf, 3, 16)
-      emit_else(buf)
-      // #665: record which operation is unwinding (stack-neutral global set).
-      let g_op_idx_global = if ctx.enable_rc {
-        6
-      } else {
-        5
-      }
-      emit_i64_const(buf, effect_op_index(ctx.effect_op_keys, op_head))
-      emit_global_set(buf, g_op_idx_global)
-      let op_canon = canonical_builtin_name(op_head)
-      let __ft_len = Array::length(ctx.func_table.names)
-      let mut op_is_builtin = false
-      let mut __op_i = 0
-      while __op_i < __ft_len {
-        if Array::get(ctx.func_table.names, __op_i) == op_canon {
-          op_is_builtin = true
-          __op_i = __ft_len
-        } else {
-          __op_i = __op_i + 1
-        }
-      }
-      if op_is_builtin {
-        nl = ce(buf, op_expr, local_names, nl, ctx, ld)
-      } else if expr_tag(op_expr) == 8 {
-        let op_args = get_ecall_args(op_expr)
-        if Array::length(op_args) > 1 {
-          // Multi-value payload (#548): pack all op args into a tuple (one heap
-          // ref threaded as the single thrown value); the handler arm pattern
-          // destructures it element-by-element in compile_expr_tail6.
-          nl = ce(buf, ETuple(op_args), local_names, nl, ctx, ld)
-        } else if Array::length(op_args) > 0 {
-          nl = ce(buf, Array::get(op_args, 0), local_names, nl, ctx, ld)
+      // #640: `perform Error::Throw(x)` IS `throw(x)`. `Error` is never in
+      // ctx.effect_names (linked_compile.vibe excludes it), so the generic
+      // lowering below would assign it the out-of-range fallback tag 3+n and
+      // a `with Error` handler (which catches tag 2, the EThrow tag — see
+      // compile_expr_tail6.vibe) would never see it. Emit the exact EThrow
+      // sequence instead (compile payload, throw tag 2), skipping the
+      // perform-counter/memo-region machinery — Error is non-resumable.
+      if op_head == "Error::Throw" {
+        let mut enl = next_local
+        if expr_tag(op_expr) == 8 && Array::length(get_ecall_args(op_expr)) > 0 {
+          enl = ce(buf, Array::get(get_ecall_args(op_expr), 0), local_names, enl, ctx, ld)
         } else {
           emit_i64_const(buf, 0)
         }
+        bytebuf_push(buf, 8)
+        bytebuf_push(buf, 2)
+        enl
+      } else if String::index_of(op_head, "Error::") == 0 {
+        throw(String::concat("perform ", String::concat(op_head, ": the builtin Error effect has a single operation, Throw (#640)")))
       } else {
-        emit_i64_const(buf, 0)
+        let mut nl = next_local
+        let g_rbuf = if ctx.enable_rc {
+          5
+        } else {
+          4
+        }
+        let eff_tag = effect_name_to_tag(ctx.effect_names, op_head)
+        // #553: per-effect region stride; MUST match eff_reserve in
+        // linked_compile.vibe and compile_expr_tail6.vibe.
+        let eff_off = (eff_tag - 3) * 131072
+        emit_global_get(buf, g_rbuf)
+        emit_i32_const(buf, eff_off)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 0)
+        emit_global_set(buf, 1)
+        emit_global_get(buf, g_rbuf)
+        emit_i32_const(buf, eff_off)
+        emit_i32_add(buf)
+        emit_global_get(buf, 1)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_i64_store(buf, 3, 0)
+        emit_global_get(buf, 1)
+        emit_global_get(buf, g_rbuf)
+        emit_i32_const(buf, eff_off)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 8)
+        emit_i64_lt_s(buf)
+        emit_if_i64(buf)
+        emit_global_get(buf, g_rbuf)
+        emit_i32_const(buf, eff_off)
+        emit_i32_add(buf)
+        emit_global_get(buf, 1)
+        emit_i64_const(buf, 8)
+        emit_i64_mul(buf)
+        emit_i32_wrap_i64(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 16)
+        emit_else(buf)
+        // #665: record which operation is unwinding (stack-neutral global set).
+        let g_op_idx_global = if ctx.enable_rc {
+          6
+        } else {
+          5
+        }
+        emit_i64_const(buf, effect_op_index(ctx.effect_op_keys, op_head))
+        emit_global_set(buf, g_op_idx_global)
+        let op_canon = canonical_builtin_name(op_head)
+        let __ft_len = Array::length(ctx.func_table.names)
+        let mut op_is_builtin = false
+        let mut __op_i = 0
+        while __op_i < __ft_len {
+          if Array::get(ctx.func_table.names, __op_i) == op_canon {
+            op_is_builtin = true
+            __op_i = __ft_len
+          } else {
+            __op_i = __op_i + 1
+          }
+        }
+        if op_is_builtin {
+          nl = ce(buf, op_expr, local_names, nl, ctx, ld)
+        } else if expr_tag(op_expr) == 8 {
+          let op_args = get_ecall_args(op_expr)
+          if Array::length(op_args) > 1 {
+            // Multi-value payload (#548): pack all op args into a tuple (one heap
+            // ref threaded as the single thrown value); the handler arm pattern
+            // destructures it element-by-element in compile_expr_tail6.
+            nl = ce(buf, ETuple(op_args), local_names, nl, ctx, ld)
+          } else if Array::length(op_args) > 0 {
+            nl = ce(buf, Array::get(op_args, 0), local_names, nl, ctx, ld)
+          } else {
+            emit_i64_const(buf, 0)
+          }
+        } else {
+          emit_i64_const(buf, 0)
+        }
+        bytebuf_push(buf, 8)
+        bytebuf_push(buf, eff_tag)
+        emit_end(buf)
+        nl
       }
-      bytebuf_push(buf, 8)
-      bytebuf_push(buf, eff_tag)
-      emit_end(buf)
-      nl
     }
     else if !prefer_bound_call && fname == "path" {
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
