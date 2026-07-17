@@ -16,6 +16,26 @@ fn approx(a: Double, b: Double) -> Bool {
   d < 0.0001
 }
 
+// #949: integer micro-unit comparison (v * 1e6, truncated toward zero) —
+// sidesteps the #772 raw-double comparison miscompiles entirely by asserting
+// on Ints. Tolerance: ±2 micro-units around the IEEE-truncated expectation.
+fn micro_in(v: Double, expected: Int) -> Bool {
+  let n = Double::to_int(v * 1000000.0)
+  n >= expected - 2 && n <= expected + 2
+}
+
+// Build 10^n programmatically: float literals above ~2^61 miscompile (the
+// mantissa is parsed through Int), so 1e20 / 1e40 cannot be written directly.
+fn pow10(n: Int) -> Double {
+  let mut r = 1.0
+  let mut i = 0
+  while i < n {
+    r = r * 10.0
+    i = i + 1
+  }
+  r
+}
+
 //# Misc
 
 test "sin 0" {
@@ -179,4 +199,69 @@ test "cos/acos roundtrip" {
 test "exp/ln roundtrip" {
   assert(approx(ln(exp_double(2.0)), 2.0))
   assert(approx(exp_double(ln(5.0)), 5.0))
+}
+
+test "exp negative args (#949)" {
+  // exp(-10) = 4.539993e-5, exp(-20) = 2.061154e-9 (both used to come back
+  // hugely wrong, even negative, from the truncated alternating series)
+  assert(micro_in(exp_double(-10.0) * 1000.0, 45399))
+  assert(micro_in(exp_double(-20.0) * 1000000000.0, 2061153))
+  assert(micro_in(exp_double(-1.0), 367879))
+}
+
+test "exp large positive args (#949)" {
+  // exp(5) = 148.4131591 (pre-#949 regression guard), exp(20) = 4.851652e8
+  // (used to be ~2% off from series truncation)
+  assert(micro_in(exp_double(5.0), 148413159))
+  assert(micro_in(exp_double(20.0) / 100000000.0, 4851651))
+  assert(micro_in(exp_double(0.0), 1000000))
+}
+
+test "sqrt large args (#949)" {
+  // sqrt(1e40) = 1e20 (used to return ~8.7e21: Newton from guess = x could
+  // not close a 66-halving exponent gap in 60 fixed iterations)
+  // #772: `+ 0.0` marks the slots floatish (initializer is a call result).
+  let e20 = pow10(20) + 0.0
+  let e40 = pow10(40) + 0.0
+  assert(micro_in(sqrt(e40) / e20, 1000000))
+  assert(micro_in(sqrt(10000000000.0) / 100000.0, 1000000))
+  assert(micro_in(sqrt(0.0000000001) * 100000.0, 1000000))
+}
+
+test "hypot large args (#949)" {
+  // #772: `+ 0.0` marks the slot floatish (initializer is a call result).
+  let e20 = pow10(20) + 0.0
+  assert(micro_in(hypot(3.0 * e20, 4.0 * e20) / e20, 5000000))
+  assert(micro_in(hypot(3.0, 4.0), 5000000))
+}
+
+test "atan near one (#949)" {
+  // atan(0.99) = 0.7803731, atan(0.999) = 0.7848975 (used to be ~1% off:
+  // the bare 20-term Taylor series converges too slowly as |x| -> 1)
+  assert(micro_in(atan(0.99), 780373))
+  assert(micro_in(atan(0.999), 784897))
+  assert(micro_in(atan(-0.99), -780373))
+  assert(micro_in(atan(1.01), 790373))
+}
+
+test "atan regression guard (#949)" {
+  assert(micro_in(atan(0.5), 463647))
+  assert(micro_in(atan(1.0), 785398))
+  assert(micro_in(atan(2.0), 1107148))
+  assert(micro_in(atan(-2.0), -1107148))
+  assert(micro_in(atan(0.7), 610725))
+}
+
+test "atan2 quadrants micro (#949)" {
+  assert(micro_in(atan2(1.0, 1.0), 785398))
+  assert(micro_in(atan2(1.0, -1.0), 2356194))
+  assert(micro_in(atan2(-1.0, -1.0), -2356194))
+  assert(micro_in(atan2(-1.0, 1.0), -785398))
+}
+
+test "asin/acos micro (#949)" {
+  assert(micro_in(asin(0.5), 523598))
+  assert(micro_in(acos(0.5), 1047197))
+  assert(micro_in(asin(0.9), 1119769))
+  assert(micro_in(acos(0.9), 451026))
 }
