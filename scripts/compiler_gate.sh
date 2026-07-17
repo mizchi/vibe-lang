@@ -2676,6 +2676,18 @@ export let _start: () -> Int = () -> {
   handle { risky() } with Error { Throw(_m) => resume(0) }
 }
 EOF
+# Codex P2 on #933: the rejection walk's catch-all used to end at EBreak /
+# ELoop (and EMap/ESpread/ELabeledArg/EContinue/ERecord), so a resume tucked
+# into `loop { break resume(0) }` reached codegen's meaningless tag-1 path.
+cat > "$edir/bad_resume_loop.vibe" <<'EOF'
+let risky = () -> Int with { Error } {
+  throw("boom")
+  0
+}
+export let _start: () -> Int = () -> {
+  handle { risky() } with Error { Throw(_m) => loop { break resume(0) } }
+}
+EOF
 for v in via_perform via_throw; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -2697,6 +2709,12 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   "$edir/bad_resume_arm.vibe" "$edir/bad_resume_arm.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$edir/bad_resume_arm.wasm" ]; then
   echo "[compiler-gate] FAIL: resume(...) in a with-Error arm compiled (#640 regressed)" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edir/bad_resume_loop.vibe" "$edir/bad_resume_loop.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$edir/bad_resume_loop.wasm" ]; then
+  echo "[compiler-gate] FAIL: resume(...) nested in loop/break inside a with-Error arm compiled (walk gap; Codex P2 on #933)" >&2; exit 1
 fi
 # 27e2 (#640 Stage 2): `throw(x)` desugars at PARSE time to the exact
 # `perform Error::Throw(x)` AST (single internal form), so the two spellings

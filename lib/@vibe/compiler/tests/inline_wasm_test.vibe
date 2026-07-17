@@ -126,6 +126,23 @@ test "inline wasm assembler: malformed WAT is a located error" {
   assert(String::contains(e6, "folded form"))
 }
 
+test "inline wasm assembler: lane and align immediates are validated (Codex P2 on #933)" {
+  // out-of-range / negative lane indices used to be truncated with `& 255`
+  // into a wasm file only the validator rejects
+  let e1 = wat_err("(i8x16.extract_lane_s 16 (local.get $a))")
+  assert(String::contains(e1, "lane index 16 is out of range for 'i8x16.extract_lane_s' (0..15)"))
+  let e2 = wat_err("(i64x2.replace_lane -1 (local.get $a) (local.get $b))")
+  assert(String::contains(e2, "lane index -1 is out of range"))
+  // align= used to floor-log2 any int (align=3 silently became align=2) and
+  // let over-aligned memargs through to the validator
+  let e3 = wat_err("(i32.load align=3 (local.get $a))")
+  assert(String::contains(e3, "align=3 is invalid (must be a positive power of two)"))
+  let e4 = wat_err("(i32.load align=16 (local.get $a))")
+  assert(String::contains(e4, "align=16 exceeds the instruction's natural alignment (4)"))
+  let e5 = wat_err("(i32.load align=0 (local.get $a))")
+  assert(String::contains(e5, "align=0 is invalid"))
+}
+
 test "inline wasm parse: v0.3 slice restrictions" {
   // effect row
   let e1 = parse_err("fn f(a: Int) -> Int with { Fs } = wasm \"(local.get $a)\"")

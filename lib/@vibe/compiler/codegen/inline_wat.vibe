@@ -287,6 +287,21 @@ fn iw_simd_table() -> Array[(String, Int)] {
 }
 
 // SIMD lane-immediate sub-opcodes (0xFD + sub + one lane byte).
+// Lane count of a SIMD lane-immediate op, from its shape prefix
+// (i8x16.* -> 16 lanes, ..., f64x2.* -> 2). Callers only pass names that
+// matched iw_simd_lane_table, so the fallthrough is the two-lane shapes.
+fn iw_lane_count(name: String) -> Int {
+  if String::starts_with(name, "i8x16.") {
+    16
+  } else if String::starts_with(name, "i16x8.") {
+    8
+  } else if String::starts_with(name, "i32x4.") || String::starts_with(name, "f32x4.") {
+    4
+  } else {
+    2
+  }
+}
+
 fn iw_simd_lane_table() -> Array[(String, Int)] {
   [
     ("i8x16.extract_lane_s", 21), ("i8x16.extract_lane_u", 22), ("i8x16.replace_lane", 23),
@@ -440,11 +455,22 @@ fn iw_memarg(fn_name: String, kinds: Array[Int], texts: Array[String], offs: Arr
         p = p + 1
       } else if String::starts_with(t, "align=") {
         let a = iw_parse_int(fn_name, String::substring(t, 6, String::length(t)), Array::get(offs, p))
+        // Codex P2 on #933: floor-log2 of an arbitrary int silently
+        // reinterpreted align=3 as align=2, and an over-aligned value
+        // (align=16 on i32.load) survived to fail only in the wasm
+        // validator. Malformed WAT must be rejected HERE with a located
+        // error: a positive power of two, at most the natural alignment.
+        if a <= 0 || (a & (a - 1)) != 0 {
+          throw(iw_err(fn_name, "align=\{a} is invalid (must be a positive power of two)", Array::get(offs, p)))
+        }
         let mut e = 0
         let mut av = a
         while av > 1 {
           e = e + 1
           av = av / 2
+        }
+        if e > default_align {
+          throw(iw_err(fn_name, "align=\{a} exceeds the instruction's natural alignment (\{1 << default_align})", Array::get(offs, p)))
         }
         align = e
         p = p + 1
@@ -589,6 +615,14 @@ fn iw_plain_op(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Stri
       if lane_sub >= 0 {
         let t = iw_want_word(fn_name, kinds, texts, offs, pos + 1, end, name)
         let lane = iw_parse_int(fn_name, t, Array::get(offs, pos + 1))
+        // Codex P2 on #933: `lane & 255` truncated out-of-range lane
+        // indices (i8x16.extract_lane_s 16, replace_lane -1) into a wasm
+        // file that only the validator rejects. Bound-check against the
+        // shape's lane count for the promised located error.
+        let lane_cnt = iw_lane_count(name)
+        if lane < 0 || lane >= lane_cnt {
+          throw(iw_err(fn_name, "lane index \{lane} is out of range for '\{name}' (0..\{lane_cnt - 1})", Array::get(offs, pos + 1)))
+        }
         bytebuf_push(buf, 0xFD)
         leb128_encode_u32(buf, lane_sub)
         bytebuf_push(buf, lane & 255)

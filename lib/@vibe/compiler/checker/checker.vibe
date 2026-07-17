@@ -1797,6 +1797,48 @@ fn reject_resume_in_error_arm(e: Expr, errors: Array[String]) -> Unit {
         ti = ti + 1
       }
     },
+    // Codex P2 on #933: the catch-all silently ended the walk for these
+    // recursive forms, so e.g. `Throw(_) => loop { break resume(0) }` or a
+    // resume tucked into a record/map literal escaped the non-resumable
+    // rejection and reached codegen's meaningless tag-1 path.
+    ERecord(_, fields, _) => {
+      let mut ti = 0
+      while ti < Array::length(fields) {
+        let (_, fe) = Array::get(fields, ti)
+        reject_resume_in_error_arm(fe, errors)
+        ti = ti + 1
+      }
+    },
+    ELoop(binds, b) => {
+      let mut ti = 0
+      while ti < Array::length(binds) {
+        let (_, be) = Array::get(binds, ti)
+        reject_resume_in_error_arm(be, errors)
+        ti = ti + 1
+      }
+      reject_resume_in_error_arm(b, errors)
+    },
+    ELabeledArg(_, _, inner) => reject_resume_in_error_arm(inner, errors),
+    EBreak(opt) => match opt {
+      Some(inner) => reject_resume_in_error_arm(inner, errors),
+      None => ()
+    },
+    EContinue(items) => {
+      let mut ti = 0
+      while ti < Array::length(items) {
+        reject_resume_in_error_arm(Array::get(items, ti), errors)
+        ti = ti + 1
+      }
+    },
+    EMap(pairs) => {
+      let mut ti = 0
+      while ti < Array::length(pairs) {
+        let (_, pe) = Array::get(pairs, ti)
+        reject_resume_in_error_arm(pe, errors)
+        ti = ti + 1
+      }
+    },
+    ESpread(inner) => reject_resume_in_error_arm(inner, errors),
     _ => ()
   }
 }
