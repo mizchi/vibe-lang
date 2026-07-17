@@ -433,6 +433,9 @@ let w_check = {
 ## Effects (core concept)
 
 vibe is **pure by default**. Side effects are tracked in the type system.
+Missing effects are reported as a set difference (`effect row mismatch for 'f':
+missing { Fs } (declared with { Error }, requires { Error, Fs })`) with a
+`hint:` line suggesting the exact `with { ... }` row to declare (#639).
 
 ### Result-first pipeline (recommended)
 

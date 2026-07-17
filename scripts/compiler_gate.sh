@@ -2214,6 +2214,69 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
 if [ -s "$pfdir/bad_transitive.wasm" ]; then
   echo "[compiler-gate] FAIL: undeclared transitive effect call compiled (#626 transitive enforcement regressed)" >&2; exit 1
 fi
+# #639: effect-row diagnostics — the transitive reject above must print the
+# EXPECTED vs ACTUAL rows as a set difference, and (since `mid` has no `with`
+# clause at all) a declare-form fix-it hint that blames the CALLER `mid`,
+# not the callee `leaf`.
+if ! grep -qF "effect row mismatch for 'mid': missing { Fs }" "$pfdir/bad_transitive.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: transitive reject lacks the effect-row set-difference diagnostic (#639)" >&2
+  cat "$pfdir/bad_transitive.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+if ! grep -qF "hint: declare 'fn mid(...) -> T with { Fs }'" "$pfdir/bad_transitive.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: no-row reject lacks the declare-form fix-it hint (#639)" >&2
+  cat "$pfdir/bad_transitive.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+# #639: a caller that already declares a row gets the add-form hint carrying
+# the sorted union (existing row preserved, missing effect appended).
+cat > "$pfdir/bad_row_single.vibe" <<'EOF'
+let leaf: (String) -> String with { Fs } = (p) -> {
+  Fs::read_file(p)
+}
+let mid: (String) -> String with { Error } = (p) -> {
+  leaf(p)
+}
+export let _start: () -> Int = () -> { 42 }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$pfdir/bad_row_single.vibe" "$pfdir/bad_row_single.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$pfdir/bad_row_single.wasm" ]; then
+  echo "[compiler-gate] FAIL: partially-declared transitive effect call compiled (#639)" >&2; exit 1
+fi
+if ! grep -qF "effect row mismatch for 'mid': missing { Fs } (declared with { Error }, requires { Error, Fs })" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: partial-row reject lacks the declared-vs-required diff (#639)" >&2
+  cat "$pfdir/bad_row_single.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+if ! grep -qF "hint: add 'with { Error, Fs }' to 'mid'" "$pfdir/bad_row_single.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: partial-row reject lacks the add-form fix-it hint (#639)" >&2
+  cat "$pfdir/bad_row_single.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+# #639: multiple missing effects at one call site aggregate into ONE sorted
+# set difference (leaf declares "Fs, Env" in reversed order; the diagnostic
+# must render "{ Env, Fs }").
+cat > "$pfdir/bad_row_multi.vibe" <<'EOF'
+let leaf: (String) -> String with { Fs, Env } = (p) -> {
+  Fs::read_file(p)
+}
+let mid: (String) -> String = (p) -> {
+  leaf(p)
+}
+export let _start: () -> Int = () -> { 42 }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$pfdir/bad_row_multi.vibe" "$pfdir/bad_row_multi.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$pfdir/bad_row_multi.wasm" ]; then
+  echo "[compiler-gate] FAIL: multi-effect transitive call compiled (#639)" >&2; exit 1
+fi
+if ! grep -qF "effect row mismatch for 'mid': missing { Env, Fs }" "$pfdir/bad_row_multi.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: multi-effect reject is not an aggregated sorted set difference (#639)" >&2
+  cat "$pfdir/bad_row_multi.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+if ! grep -qF "hint: declare 'fn mid(...) -> T with { Env, Fs }'" "$pfdir/bad_row_multi.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: multi-effect reject lacks the sorted fix-it hint (#639)" >&2
+  cat "$pfdir/bad_row_multi.wasm.diag" 2>/dev/null >&2; exit 1
+fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/good_transitive.vibe" "$pfdir/good_transitive.wasm" _start >/dev/null 2>&1 || true
