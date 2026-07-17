@@ -213,9 +213,10 @@ fn sorted(xs: Array[Int]) -> Bool      // 述語はただの pure 関数
   2. **Phase 2**: fuzz oracle。fuzz 基盤の「クラッシュしたか」に「契約違反」
      を追加する。
   3. **Phase 3**: SMT (Why3/Z3 系)。
-- vibe は pure by default で effect が型に載っているため、「仕様に使える
-  述語」= effect row が空の関数、が既に機械判定できる (MoonBit の
-  `#proof_pure` 相当のマーカーが不要)。
+- effect row が空なら、述語から semantic effect と Error が escape しないことは
+  機械判定できる。ただし divergence、panic、Wasm trap、OOM が別にあるため、
+  empty row だけでは totality は証明できない。Phase 3 の SMT 対象では termination
+  条件と partial primitive の扱いを追加で定義する。
 
 ## 8. publish 時の semver 検証 (Elm 方式)
 

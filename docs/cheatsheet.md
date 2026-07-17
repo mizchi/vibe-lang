@@ -432,7 +432,9 @@ let w_check = {
 
 ## Effects (core concept)
 
-vibe is **pure by default**. Side effects are tracked in the type system.
+vibe is **pure by default**. Semantic effects, including `Error`, are tracked in
+the type system. An empty row excludes escaping `Error`, but does not guarantee
+termination or exclude panic, Wasm trap, or resource exhaustion (ADR-0073).
 Missing effects are reported as a set difference (`effect row mismatch for 'f':
 missing { Fs } (declared with { Error }, requires { Error, Fs })`) with a
 `hint:` line suggesting the exact `with { ... }` row to declare (#639).
@@ -532,8 +534,10 @@ let safe = handle { risky(0) } with Error { Throw(msg) => -1 }
 arm 内の `resume(...)` は checker がエラーにする。
 Stage 2 (#640) で `throw(x)` は parse 時に `perform Error::Throw(x)` へ脱糖され、
 両綴りはパイプライン全体で単一の内部表現になった（printer は `throw(x)` に
-再糖衣する）。`perform Error::Throw(x)` は effect-row 上も `throw` と同じ扱い
-（`with { Error }` 宣言なしでも許容される、遍在 row）。
+再糖衣する）。`perform Error::Throw(x)` は effect-row 上も `throw` と同じ扱いで、
+現在の関数が `with { Error }` を宣言するか、囲む `handle Error` で放電する必要が
+ある。`fn main with { Error }` から escape した Error は runtime 最外周で診断付きの
+異常終了へ変換される。
 
 ### Railway try (`?`) — `Result` and `Option` (#635)
 

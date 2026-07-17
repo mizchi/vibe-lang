@@ -4,7 +4,9 @@ vibe uses an explicit effect system. Functions declare required effects with `wi
 
 ## Pure by default
 
-Functions without `with { ... }` are pure -- they cannot perform I/O or throw errors.
+Functions without `with { ... }` cannot perform semantic effects such as I/O or
+let an `Error` escape. An empty row does not guarantee termination or exclude
+panic, Wasm trap, or resource exhaustion.
 
 ```vibe
 let add: (Int, Int) -> Int = (a, b) -> { a + b }  // pure
@@ -60,12 +62,15 @@ let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }
 // => -1
 ```
 
-Calling a `with { Error }` function from a pure function requires `handle`:
+Calling a `with { Error }` function requires the caller to propagate or handle
+the effect:
 
 ```vibe
 let safe_div: (Int, Int) -> Int with { Error } = (a, b) -> {
   if eq(b, 0) { throw("division by zero") } else { a / b }
 }
+
+let may_raise: (Int) -> Int with { Error } = (x) -> { safe_div(x, 0) }
 
 let safe: (Int) -> Int = (x) -> {
   handle { safe_div(x, 0) } with Error { Throw(_) => 0 }
