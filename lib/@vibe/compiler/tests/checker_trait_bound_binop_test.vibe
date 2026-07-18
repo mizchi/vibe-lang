@@ -67,6 +67,27 @@ test "952: ord_clamp-shaped [T: Ord] fn accepts String AND Int call sites in one
   assert(check_source_ok("fn clamp3[T: Ord](x: T, lo: T, hi: T) -> T { if x < lo { lo } else if x > hi { hi } else x }\nlet _e = () -> { let s = clamp3(\"m\", \"a\", \"z\")\nlet n = clamp3(5, 0, 10)\nn }"))
 }
 
+// Codex P2 on #974: when only ONE operand carries the bound
+// (`fn bad[T: Ord, U](a: T, b: U) -> Bool { a < b }`), the operand-vs-operand
+// unify may bind T := U and the surviving var had NO recorded Ord bound --
+// generalize then exported an unbounded (U, U) -> Bool, so `bad(true, false)`
+// slipped past the call-site bound check. The bounds of BOTH operands' vars
+// are now re-recorded on the survivor.
+test "952 review: one-sided [T: Ord, U] keeps the Ord bound on the unified var" {
+  assert(check_source_err("fn bad[T: Ord, U](a: T, b: U) -> Bool { a < b }\nlet _e = () -> { bad(true, false) }"))
+  assert(check_source_ok("fn bad[T: Ord, U](a: T, b: U) -> Bool { a < b }\nlet _e = () -> { bad(1, 2) }"))
+  assert(check_source_ok("fn bad[T: Ord, U](a: T, b: U) -> Bool { a < b }\nlet _e = () -> { bad(\"a\", \"b\") }"))
+}
+
+// Concrete survivor: unifying the bounded var against a concrete operand
+// inside the body must keep the implements check (String has Ord, Bool
+// does not) -- mirroring what infer_named_trait_binop enforced before the
+// rigid pre-step existed.
+test "952 review: bounded var unified with a concrete operand keeps the implements check" {
+  assert(check_source_ok("fn f[T: Ord](a: T) -> Bool { a < \"x\" }\nlet _e = () -> { f(\"a\") }"))
+  assert(check_source_err("fn g[T: Ord](a: T) -> Bool { a < true }\nlet _e = () -> { g(true) }"))
+}
+
 test "952: my_lt[T: Ord] with Int still correct at runtime (regression)" {
   assert(my_lt_int(1, 2))
   assert(not(my_lt_int(2, 1)))
