@@ -1,0 +1,158 @@
+//# Imports
+
+// #943: named imports are validated against the target CONTRACT package's
+// (`index.vpkg` / `index.vibei`) declared export surface at header-resolution
+// time (loader/header_cache.vibe's validate_import_names_fs). Before this,
+// `import <pkg> { not_a_real_name }` compiled clean when unused, and
+// importing a PRIVATE name failed only much later, unlocated, deep in the
+// codegen merge ("undefined variable (local): <name>"). These tests cover
+// the loader-internal side via load_or_parse_module_header_fs (the exact
+// chokepoint the validation lives behind): reject nonexistent + private
+// names with a LOCATED error naming the import, and accept every import
+// shape the rule must not break (contract decl names, type names, qualified
+// names, plain-file imports, plain index.vibe facades — the last two are
+// deliberately unvalidated shapes).
+
+import ../cache/persistent_cache.vibe {
+  compact_string_fingerprint, persistent_module_header_cache_path
+}
+
+import ../loader {
+  load_or_parse_module_header_fs
+}
+
+//# Functions
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = Array::slice([
+    0
+  ], 0, 0)
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+fn remove_file_if_exists(path: String) -> Unit with { Fs } {
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+// Write `source` to `path` and clear its persistent module-header cache so
+// load_or_parse_module_header_fs takes the COLD lane (the only lane that
+// re-runs import-name validation; warm replays are content-keyed).
+fn write_cold(path: String, source: String) -> Unit with { Error, Fs } {
+  Fs::write_bytes(path, string_to_bytes(source))
+  remove_file_if_exists(persistent_module_header_cache_path(path, compact_string_fingerprint(source)))
+}
+
+// A .vpkg fixture package: `pub_fn` is contract surface, `priv_fn` exists
+// ONLY in the implementation file (the #943 "is_ws" shape).
+fn setup_vpkg_fixture(base_dir: String) -> String with { Error, Fs } {
+  let pkg_dir = String::concat(base_dir, "/pkg")
+  Fs::mkdir_p(pkg_dir)
+  let contract_path = String::concat(pkg_dir, "/index.vpkg")
+  let impl_path = String::concat(pkg_dir, "/impl.vibe")
+  write_cold(contract_path, "version 0.0.1\n\nimport ./impl.vibe {}\n\nfn pub_fn(x: Int) -> Int\n")
+  write_cold(impl_path, "fn priv_fn(x: Int) -> Int {\n  x + 1\n}\n\nexport fn pub_fn(x: Int) -> Int {\n  priv_fn(x)\n}\n")
+  pkg_dir
+}
+
+fn header_error_for(main_path: String, main_source: String) -> String with { Fs } {
+  handle {
+    let _ = load_or_parse_module_header_fs(main_path, main_source, 0)
+    ""
+  } with Error {
+    Throw(msg) => msg
+  }
+}
+
+//# Misc
+
+test "vpkg import: nonexistent name is rejected with a located error (#943 case 1)" {
+  let base_dir = "/tmp/vibe_compiler_import_contract_943_nonexistent"
+  let _ = setup_vpkg_fixture(base_dir)
+  let main_path = String::concat(base_dir, "/main.vibe")
+  let main_source = "import ./pkg { totally_not_a_real_name }\nexport fn run() -> Int {\n  1\n}\n"
+  write_cold(main_path, main_source)
+  let msg = header_error_for(main_path, main_source)
+  // Located at the import statement's path token (line 1, col 8), quoting
+  // the bad name — even though the import is never used.
+  assert(String::contains(msg, "line 1:8"))
+  assert(String::contains(msg, "\"totally_not_a_real_name\" is not exported by"))
+}
+
+test "vpkg import: private (impl-only) name is rejected at the import site (#943 case 2)" {
+  let base_dir = "/tmp/vibe_compiler_import_contract_943_private"
+  let _ = setup_vpkg_fixture(base_dir)
+  let main_path = String::concat(base_dir, "/main.vibe")
+  let main_source = "import ./pkg { priv_fn }\nexport fn run() -> Int {\n  priv_fn(1)\n}\n"
+  write_cold(main_path, main_source)
+  let msg = header_error_for(main_path, main_source)
+  assert(String::contains(msg, "line 1:8"))
+  assert(String::contains(msg, "\"priv_fn\" is not exported by"))
+}
+
+test "vpkg import: contract-declared names and non-value shapes are accepted" {
+  let base_dir = "/tmp/vibe_compiler_import_contract_943_accept"
+  let pkg_dir = String::concat(base_dir, "/pkg")
+  Fs::mkdir_p(pkg_dir)
+  let contract_path = String::concat(pkg_dir, "/index.vpkg")
+  let impl_path = String::concat(pkg_dir, "/impl.vibe")
+  write_cold(contract_path, "version 0.0.1\n\nimport ./impl.vibe {}\n\nopaque type Thing\n\nfn pub_fn(x: Int) -> Int\nfn Thing::size(t: Thing) -> Int\nlet answer: Int\n")
+  write_cold(impl_path, "export enum Thing {\n  MkThing(Int)\n}\n\nexport fn pub_fn(x: Int) -> Int {\n  x + 1\n}\n\nexport fn Thing::size(t: Thing) -> Int {\n  match t {\n    MkThing(n) => n\n  }\n}\n\nexport let answer: Int = 42\n")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  // A fn decl, a bodyless let, an (uppercase, unvalidated) type name, and a
+  // (qualified, unvalidated) Type::member — all must pass.
+  let main_source = "import ./pkg { pub_fn, answer, type Thing, Thing::size }\nexport fn run() -> Int {\n  pub_fn(answer)\n}\n"
+  write_cold(main_path, main_source)
+  let msg = header_error_for(main_path, main_source)
+  assert(msg == "")
+}
+
+test "plain-file import stays unvalidated (non-boundary shape)" {
+  let base_dir = "/tmp/vibe_compiler_import_contract_943_plainfile"
+  Fs::mkdir_p(base_dir)
+  let helper_path = String::concat(base_dir, "/helper.vibe")
+  write_cold(helper_path, "fn hidden(x: Int) -> Int {\n  x\n}\n\nexport fn shown(x: Int) -> Int {\n  hidden(x)\n}\n")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  // Direct-file imports within a package are deliberately NOT name-checked
+  // by the boundary rule (#943 scope note): the header lane must not throw
+  // here even for a name the target does not export.
+  let main_source = "import ./helper.vibe { hidden }\nexport fn run() -> Int {\n  hidden(1)\n}\n"
+  write_cold(main_path, main_source)
+  let msg = header_error_for(main_path, main_source)
+  assert(msg == "")
+}
+
+test "index.vibe facade stays unvalidated (leaky legacy shape, #716)" {
+  // A plain `index.vibe` facade's EFFECTIVE surface is leakier than its own
+  // re-export list (fixtures/import_visibility_float_eq_test.vibe imports
+  // `eq` through prelude/index.vibe even though the facade only lists
+  // `Float::eq`), so the facade's export list is not positive proof of
+  // absence — the #943 rule deliberately skips this shape entirely: both a
+  // listed and an unlisted name pass the header lane.
+  let base_dir = "/tmp/vibe_compiler_import_contract_943_facade"
+  let pkg_dir = String::concat(base_dir, "/pkg")
+  Fs::mkdir_p(pkg_dir)
+  let facade_path = String::concat(pkg_dir, "/index.vibe")
+  let impl_path = String::concat(pkg_dir, "/impl.vibe")
+  write_cold(impl_path, "export fn facade_fn(x: Int) -> Int {\n  x * 2\n}\n")
+  write_cold(facade_path, "export ./impl.vibe {\n  facade_fn\n}\n")
+  let main_ok_path = String::concat(base_dir, "/main_ok.vibe")
+  let main_ok_source = "import ./pkg { facade_fn }\nexport fn run() -> Int {\n  facade_fn(21)\n}\n"
+  write_cold(main_ok_path, main_ok_source)
+  let ok_msg = header_error_for(main_ok_path, main_ok_source)
+  assert(ok_msg == "")
+  let main_unlisted_path = String::concat(base_dir, "/main_unlisted.vibe")
+  let main_unlisted_source = "import ./pkg { not_in_facade }\nexport fn run() -> Int {\n  1\n}\n"
+  write_cold(main_unlisted_path, main_unlisted_source)
+  let unlisted_msg = header_error_for(main_unlisted_path, main_unlisted_source)
+  assert(unlisted_msg == "")
+}
