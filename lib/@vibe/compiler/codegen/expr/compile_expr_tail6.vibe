@@ -203,13 +203,20 @@ export fn compile_expr_tail6(buf: Bytes, body: Expr, arms: Array[(Pat, Expr)], l
     // itself) does not run it. MASK the body's names to an unresolvable
     // sentinel instead of truncating: the wasm local INDICES must stay
     // allocated (#665 — truncation would let sibling arms reuse live slots).
+    // ref_cell_names is name-keyed too: a captured `let mut n` in the body
+    // pushes "n" there, and with the names masked below an arm's `n` would
+    // resolve to the OUTER scalar slot while still being loaded through the
+    // ref-cell path (garbage). Unlike local slots, these entries carry no
+    // index, so plain truncation is the correct scope restore.
     let body_names_start = Array::length(local_names)
+    let body_ref_cells_start = Array::length(ctx.ref_cell_names)
     let _nl1 = compile_expr(buf, body, local_names, next_local, ctx, ld)
     let mut mask_i = body_names_start
     while mask_i < Array::length(local_names) {
       Array::set(local_names, mask_i, "")
       mask_i = mask_i + 1
     }
+    Array::truncate(ctx.ref_cell_names, body_ref_cells_start)
     emit_end(buf)
     emit_br(buf, 2)
     emit_end(buf)
@@ -322,6 +329,7 @@ export fn compile_expr_tail6(buf: Bytes, body: Expr, arms: Array[(Pat, Expr)], l
         // inside a later arm. Indices stay allocated (no truncate, #665);
         // only the NAMES are retired.
         let arm_names_start = Array::length(local_names)
+        let arm_ref_cells_start = Array::length(ctx.ref_cell_names)
         t6_bind_from_raw(buf, apat, raw_l, ctx, local_names)
         let anl = compile_expr(buf, abody, local_names, Array::length(local_names), ctx, ld)
         let mut arm_mask_i = arm_names_start
@@ -329,6 +337,7 @@ export fn compile_expr_tail6(buf: Bytes, body: Expr, arms: Array[(Pat, Expr)], l
           Array::set(local_names, arm_mask_i, "")
           arm_mask_i = arm_mask_i + 1
         }
+        Array::truncate(ctx.ref_cell_names, arm_ref_cells_start)
         if anl > max_nl {
           max_nl = anl
         } else {
@@ -364,6 +373,7 @@ export fn compile_expr_tail6(buf: Bytes, body: Expr, arms: Array[(Pat, Expr)], l
       Array::set(local_names, post_mask_i, "")
       post_mask_i = post_mask_i + 1
     }
+    Array::truncate(ctx.ref_cell_names, body_ref_cells_start)
     nl2
   } else {
     compile_expr(buf, body, local_names, next_local, ctx, ld)
