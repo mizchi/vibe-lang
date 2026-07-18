@@ -19,9 +19,17 @@ set -euo pipefail
 shard="${1:?missing shard argument: bootstrap|bootstrap-core|cli|check|coverage}"
 
 case "$shard" in
-  bootstrap-core|bootstrap)
+  bootstrap-core)
     bash scripts/check_bundle_sync.sh
     bash scripts/check_module_source_sync.sh
+    ;;
+  bootstrap)
+    bash scripts/check_bundle_sync.sh
+    bash scripts/check_module_source_sync.sh
+    # Live replacement for the retired MoonBit-host bootstrap/selfbuild gates:
+    # the moon-free seed->stage1->stage2(->stage3 fixpoint) build is exactly
+    # what those gates existed to protect.
+    bash scripts/compiler_gate.sh
     ;;
   cli)
     # Library `vibe test` smoke (selfhost-CLI-compilable subset; covers lib/@vibex/wasm and
