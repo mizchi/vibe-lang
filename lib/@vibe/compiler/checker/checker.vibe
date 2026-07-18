@@ -994,11 +994,50 @@ export fn fn_return_env_name(name: String) -> String {
 
 // #938: the ArrayBuilder container type — `CtNamed("ArrayBuilder", [elem])`,
 // the same shape `b: ArrayBuilder[T]` annotations resolve to. Used by the
-// builder call branches below and by the ELet value-restriction guard.
-export fn is_array_builder_ty(t: Type) -> Bool {
+// builder call branches below.
+fn is_array_builder_head(t: Type) -> Bool {
   match t {
     CtNamed(n, targs) => n == "ArrayBuilder" && Array::length(targs) == 1,
     _ => false
+  }
+}
+
+// #938 value-restriction predicate (Codex P1 on #977): true when a builder
+// occurs ANYWHERE in the value's type reachable without crossing a function
+// boundary — `(ArrayBuilder::new(), 0)`, `[ArrayBuilder::new()]`,
+// `Some(ArrayBuilder::new())` all alias ONE live builder, so their element
+// vars must stay un-quantified exactly like a bare builder's (a root-only
+// check let each lookup of the tuple re-instantiate a fresh element slot and
+// mixed pushes type-checked again). CtFn is deliberately NOT descended:
+// a function value creates a NEW builder per call, so generalizing
+// `() -> ArrayBuilder[v]` is sound and useful.
+export fn is_array_builder_ty(t: Type) -> Bool {
+  if is_array_builder_head(t) {
+    true
+  } else {
+    match t {
+      CtArray(e) => is_array_builder_ty(e),
+      CtOption(e) => is_array_builder_ty(e),
+      CtTuple(elems) => {
+        let mut i = 0
+        let mut found = false
+        while i < Array::length(elems) && !found {
+          found = is_array_builder_ty(Array::get(elems, i))
+          i = i + 1
+        }
+        found
+      },
+      CtNamed(_, targs) => {
+        let mut i = 0
+        let mut found = false
+        while i < Array::length(targs) && !found {
+          found = is_array_builder_ty(Array::get(targs, i))
+          i = i + 1
+        }
+        found
+      },
+      _ => false
+    }
   }
 }
 
