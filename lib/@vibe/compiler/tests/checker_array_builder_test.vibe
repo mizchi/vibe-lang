@@ -1,0 +1,48 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_ok, check_source_err
+}
+
+//# Misc
+
+// #938: ArrayBuilder's new/push/freeze were typed all-CtUnknown — no element
+// type ever flowed between them, so a builder could mix Int and String pushes
+// and freeze into an `Array[Int]` whose second element was a raw String
+// pointer (main returned 137438953473). The builder now carries a real
+// element slot (`CtNamed("ArrayBuilder", [v])`, the same shape an explicit
+// `ArrayBuilder[T]` annotation resolves to): the first push binds the slot,
+// later pushes must unify with it, freeze returns `CtArray(elem)`, and ELet
+// deliberately does NOT generalize the builder type (value restriction — a
+// quantified element var would re-instantiate per use and pushes could never
+// disagree).
+
+test "938 repro: mixed Int/String pushes into one builder are rejected" {
+  assert(check_source_err("fn f() -> Array[Int] {\n  let b = ArrayBuilder::new()\n  ArrayBuilder::push(b, 1)\n  ArrayBuilder::push(b, \"two\")\n  ArrayBuilder::freeze(b)\n}\nfn main() -> Int { let a = f()\n  let x: Int = Array::get(a, 1)\n  x }"))
+}
+
+test "938: freeze result type reaches the return annotation" {
+  // Homogeneous String pushes frozen into a declared Array[Int] return.
+  assert(check_source_err("fn f() -> Array[Int] {\n  let b = ArrayBuilder::new()\n  ArrayBuilder::push(b, \"one\")\n  ArrayBuilder::freeze(b)\n}\nfn main() -> Int { Array::length(f()) }"))
+}
+
+test "938: homogeneous builder stays accepted (Int and String)" {
+  assert(check_source_ok("fn f() -> Array[Int] {\n  let b = ArrayBuilder::new()\n  ArrayBuilder::push(b, 1)\n  ArrayBuilder::push(b, 2)\n  ArrayBuilder::freeze(b)\n}\nfn main() -> Int { Array::length(f()) }"))
+  assert(check_source_ok("fn g() -> Array[String] {\n  let b = ArrayBuilder::new()\n  ArrayBuilder::push(b, \"x\")\n  ArrayBuilder::push(b, \"y\")\n  ArrayBuilder::freeze(b)\n}\nfn main() -> Int { Array::length(g()) }"))
+}
+
+test "938: annotated ArrayBuilder[T] param is checked by the same rules" {
+  // The annotation resolves to the same CtNamed shape the value path uses.
+  assert(check_source_err("fn fill(b: ArrayBuilder[String]) -> Unit {\n  ArrayBuilder::push(b, 1)\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn fill(b: ArrayBuilder[String]) -> Unit {\n  ArrayBuilder::push(b, \"ok\")\n}\nfn main() -> Int { 0 }"))
+}
+
+test "938: empty builder freeze under a declared return stays accepted" {
+  // No pushes: the element var stays unbound and unifies with the annotation.
+  assert(check_source_ok("fn f() -> Array[Int] {\n  let b = ArrayBuilder::new()\n  ArrayBuilder::freeze(b)\n}\nfn main() -> Int { Array::length(f()) }"))
+}
+
+test "938: builder element can be an aggregate (tuple) and still unify" {
+  assert(check_source_ok("fn f() -> Array[(Int, String)] {\n  let b = ArrayBuilder::new()\n  ArrayBuilder::push(b, (1, \"a\"))\n  ArrayBuilder::push(b, (2, \"b\"))\n  ArrayBuilder::freeze(b)\n}\nfn main() -> Int { Array::length(f()) }"))
+  assert(check_source_err("fn f() -> Array[(Int, String)] {\n  let b = ArrayBuilder::new()\n  ArrayBuilder::push(b, (1, \"a\"))\n  ArrayBuilder::push(b, (2, 3))\n  ArrayBuilder::freeze(b)\n}\nfn main() -> Int { Array::length(f()) }"))
+}
