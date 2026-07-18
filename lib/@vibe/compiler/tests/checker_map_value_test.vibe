@@ -1,0 +1,70 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_ok, check_source_err
+}
+
+//# Misc
+
+// #983: every Map API's VALUE position was typed `CtUnknown` (the static
+// builtin table cannot mint per-call vars), so `Map::set(m, "b", "str")`
+// into a `Map[String, Int]` compiled clean and the consumer trapped at
+// runtime — #938's ArrayBuilder hole, one container over. Map literals
+// (`Map::new()` / `Map::from_pairs`) now carry a real value slot
+// (`CtNamed("Map", [CtString, v])`, the shape a `Map[String, V]` annotation
+// resolves to), `Map::set` checks the written value against it (ground-gated
+// via check_assignable), `Map::get`/`Map::values`/`Map::delete` propagate it,
+// and the #938 value restriction keeps a let-bound map's slot monomorphic.
+
+test "983 repro: setting a String value into an Int-valued map is rejected" {
+  assert(check_source_err("fn get_it(m: Map[String, Int]) -> Int {\n  Map::get(m, \"b\") + 1\n}\nfn main() -> Int {\n  let m = Map::from_pairs([(\"a\", 1)])\n  Map::set(m, \"b\", \"str\")\n  get_it(m)\n}"))
+}
+
+test "983: homogeneous set stays accepted" {
+  assert(check_source_ok("fn get_it(m: Map[String, Int]) -> Int {\n  Map::get(m, \"b\") + 1\n}\nfn main() -> Int {\n  let m = Map::from_pairs([(\"a\", 1)])\n  Map::set(m, \"b\", 40)\n  get_it(m)\n}"))
+}
+
+test "983/996: empty map reused at two value types stays accepted" {
+  // Map::set is a FUNCTIONAL update (fresh map, receiver untouched —
+  // measured), so a let-bound Map::new() generalizes and each derived map
+  // binds its own slot (#996 Codex P2: value-restricting Map mis-rejected
+  // this shape).
+  assert(check_source_ok("fn main() -> Int {\n  let empty = Map::new()\n  let ints = Map::set(empty, \"i\", 1)\n  let strings = Map::set(empty, \"s\", \"x\")\n  Map::size(ints) + Map::size(strings)\n}"))
+}
+
+test "983: a set-chain's concrete slot still rejects a mixed value" {
+  // The returned map of the first set is Map[String, Int] (concrete slot),
+  // so the second set in the chain keeps the #983 check.
+  assert(check_source_err("fn main() -> Int {\n  let m1 = Map::set(Map::new(), \"a\", 1)\n  let m2 = Map::set(m1, \"b\", \"str\")\n  Map::size(m2)\n}"))
+  assert(check_source_ok("fn main() -> Int {\n  let m1 = Map::set(Map::new(), \"a\", 1)\n  let m2 = Map::set(m1, \"b\", 2)\n  Map::size(m2)\n}"))
+}
+
+test "983: key type check is preserved" {
+  assert(check_source_err("fn main() -> Int {\n  let m = Map::from_pairs([(\"a\", 1)])\n  Map::set(m, 2, 3)\n  0\n}"))
+}
+
+test "983: Map::get result reaches a wrong consume" {
+  // Map::get returns the RAW stored value (0 on miss), not an Option.
+  assert(check_source_err("fn main() -> Int {\n  let m = Map::from_pairs([(\"a\", 1)])\n  let s: String = Map::get(m, \"a\")\n  0\n}"))
+  assert(check_source_ok("fn main() -> Int {\n  let m = Map::from_pairs([(\"a\", 1)])\n  let n: Int = Map::get(m, \"a\")\n  n\n}"))
+}
+
+test "983: annotated Map param checks set values" {
+  assert(check_source_err("fn put(m: Map[String, Int]) -> Unit {\n  let _ = Map::set(m, \"k\", \"nope\")\n  ()\n}\nfn main() -> Int { 0 }"))
+  assert(check_source_ok("fn put(m: Map[String, Int]) -> Unit {\n  let _ = Map::set(m, \"k\", 7)\n  ()\n}\nfn main() -> Int { 0 }"))
+}
+
+test "983: Map::values propagates the value slot" {
+  assert(check_source_err("fn main() -> Int {\n  let m = Map::from_pairs([(\"a\", 1)])\n  let vs: Array[String] = Map::values(m)\n  0\n}"))
+  assert(check_source_ok("fn main() -> Int {\n  let m = Map::from_pairs([(\"a\", 1)])\n  let vs: Array[Int] = Map::values(m)\n  Array::length(vs)\n}"))
+}
+
+test "983: untyped map receiver stays tolerated" {
+  // A lambda parameter with no annotation gives the receiver no map shape —
+  // the set/get checks must not fire (tolerate discipline).
+  assert(check_source_ok("fn main() -> Int {\n  let put = (m) -> {\n    let _ = Map::set(m, \"k\", 7)\n    0\n  }\n  0\n}"))
+}
+
+test "983: heterogeneous map literal keeps being rejected (#938)" {
+  assert(check_source_err("fn main() -> Int {\n  let m = Map::from_pairs([(\"a\", 1), (\"b\", \"two\")])\n  0\n}"))
+}
