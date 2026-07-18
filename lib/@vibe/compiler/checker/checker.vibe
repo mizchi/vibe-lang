@@ -1282,6 +1282,118 @@ fn infer_named_trait_binop(env: TypeEnv, left_ty: Type, right_ty: Type, trait_na
   }
 }
 
+fn binop_str_arr_contains(arr: Array[String], val: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == val {
+      found = true
+      i = Array::length(arr)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+// #952: a bound generic type parameter (`[T: Ord]` / `[T: Add]`) is checked
+// as a plain `CtVar(id)` carrying its trait bounds in the current `Subst`
+// (recorded by `subst_add_bound` when the `EFn` type-param header is
+// processed, read back via `subst_bounds_for`). The order/`+` binop paths
+// below try `unify_binop_candidate(_, _, CtInt, s)` FIRST as a fast path for
+// ordinary (unbound) local-var inference -- but `unify` treats ANY unbound
+// `CtVar` as freely unifiable with `CtInt` (no bound check), so that fast
+// path silently binds T := Int the first time `<`/`>`/`+` appears in a bound
+// generic function's OWN body, before any call site is even seen. That
+// poisons the substitution used to `generalize` the function's signature,
+// turning `fn my_lt[T: Ord](a: T, b: T) -> Bool { a < b }` into a
+// monomorphic `(Int, Int) -> Bool` -- so calling it with String args later
+// fails with "expected Int, got String" even though `impl Ord for String`
+// exists. `==`/`!=` never hit this because `is_equality_binop` only unifies
+// the two operands against EACH OTHER (never against a concrete target
+// type), so a bound CtVar is never concretized there.
+//
+// Fix: when either operand resolves (post-subst) to a CtVar whose recorded
+// bounds already include the needed trait, dispatch directly here -- unify
+// the operands against EACH OTHER only (mirroring the Eq path) and skip the
+// CtInt/CtDouble fast paths entirely, so the type parameter stays
+// rigid/polymorphic through the rest of the definition check. An ordinary
+// unbound CtVar (no recorded bounds -- the common unannotated-local-var
+// inference case, e.g. `fn f(x) { x < 5 }`) is untouched: `rigid_bound_operand`
+// returns false for it, so it still takes the existing
+// CtInt/CtDouble/struct-Ord(Add) fast path exactly as before.
+fn rigid_bound_operand(ty: Type, s: Subst, trait_name: String) -> Bool {
+  match subst_apply(s, ty) {
+    CtVar(id) => binop_str_arr_contains(subst_bounds_for(s, id), trait_name),
+    _ => false
+  }
+}
+
+// Bounds recorded on a var the operand-vs-operand unify just eliminated
+// (post-subst it is no longer a CtVar) would otherwise be dropped: in
+// `fn bad[T: Ord, U](a: T, b: U) { a < b }` unify may bind T := U, leaving
+// the surviving U with NO recorded Ord bound, so generalize exports an
+// unbounded (U, U) -> Bool and `bad(true, false)` sails through the
+// call-site bound check. Collect each operand's pre-unify var bounds so
+// they can be re-recorded on whatever survives.
+fn operand_var_bounds(ty: Type, s: Subst) -> Array[String] {
+  match subst_apply(s, ty) {
+    CtVar(id) => subst_bounds_for(s, id),
+    _ => Array::slice([""], 0, 0)
+  }
+}
+
+fn rigid_trait_bound_binop(env: TypeEnv, left_ty: Type, right_ty: Type, trait_name: String, s: Subst) -> Option[(Type, Subst)] {
+  if rigid_bound_operand(left_ty, s, trait_name) || rigid_bound_operand(right_ty, s, trait_name) {
+    let lb = operand_var_bounds(left_ty, s)
+    let rb = operand_var_bounds(right_ty, s)
+    match unify_same_binop_operands(left_ty, right_ty, s) {
+      Some((resolved, s1)) => match subst_apply(s1, resolved) {
+        CtVar(id) => {
+          // Var survivor: transfer every bound either operand carried that
+          // the survivor does not already record, so generalize keeps them.
+          let have = subst_bounds_for(s1, id)
+          let missing = ArrayBuilder::new()
+          let mut i = 0
+          while i < Array::length(lb) + Array::length(rb) {
+            let cand = if i < Array::length(lb) {
+              Array::get(lb, i)
+            } else {
+              Array::get(rb, i - Array::length(lb))
+            }
+            if !binop_str_arr_contains(have, cand) {
+              // (duplicates between lb and rb are harmless -- bound lookups
+              // only ever ask "contains", never count)
+              ArrayBuilder::push(missing, cand)
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          let missing_arr = ArrayBuilder::freeze(missing)
+          if Array::length(missing_arr) > 0 {
+            Some((resolved, subst_add_bound(s1, id, missing_arr)))
+          } else {
+            Some((resolved, s1))
+          }
+        },
+        other => if type_implements_trait(env, s1, other, trait_name) {
+          // Concrete survivor (e.g. `a < "x"` forcing T := String): only
+          // accept when it actually implements the required trait --
+          // mirroring infer_named_trait_binop, which handled this shape
+          // before the rigid pre-step existed.
+          Some((resolved, s1))
+        } else {
+          None
+        }
+      },
+      None => None
+    }
+  } else {
+    None
+  }
+}
+
 fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: Subst, errors: Array[String], tytab: Array[(Int, Type)]) -> (Type, Subst) {
   if is_logic_binop(op) {
     match unify_binop_candidate(left_ty, right_ty, CtBool, s) {
@@ -1321,32 +1433,38 @@ fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: 
     }
   }
   else if is_order_binop(op) {
-    match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
-      Some(s1) => (CtBool, s1),
-      None => match unify_binop_candidate(left_ty, right_ty, CtDouble, s) {
+    match rigid_trait_bound_binop(env, left_ty, right_ty, "Ord", s) {
+      Some((_, s1)) => (CtBool, s1),
+      None => match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
         Some(s1) => (CtBool, s1),
-        None => match infer_named_trait_binop(env, left_ty, right_ty, "Ord", s) {
-          Some((_, s1)) => (CtBool, s1),
-          None => {
-            Array::push(errors, String::concat("type mismatch in '", String::concat(op, "': operands must be Int or Double")))
-            (CtUnknown, s)
+        None => match unify_binop_candidate(left_ty, right_ty, CtDouble, s) {
+          Some(s1) => (CtBool, s1),
+          None => match infer_named_trait_binop(env, left_ty, right_ty, "Ord", s) {
+            Some((_, s1)) => (CtBool, s1),
+            None => {
+              Array::push(errors, String::concat("type mismatch in '", String::concat(op, "': operands must be Int or Double")))
+              (CtUnknown, s)
+            }
           }
         }
       }
     }
   }
   else if op == "+" {
-    match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
-      Some(s1) => (CtInt, s1),
-      None => match unify_binop_candidate(left_ty, right_ty, CtDouble, s) {
-        Some(s1) => (CtDouble, s1),
-        None => match unify_binop_candidate(left_ty, right_ty, CtString, s) {
-          Some(s1) => (CtString, s1),
-          None => match infer_named_trait_binop(env, left_ty, right_ty, "Add", s) {
-            Some((resolved, s1)) => (resolved, s1),
-            None => {
-              Array::push(errors, "type mismatch in '+': operands must be Int, Double, or String")
-              (CtUnknown, s)
+    match rigid_trait_bound_binop(env, left_ty, right_ty, "Add", s) {
+      Some((resolved, s1)) => (resolved, s1),
+      None => match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
+        Some(s1) => (CtInt, s1),
+        None => match unify_binop_candidate(left_ty, right_ty, CtDouble, s) {
+          Some(s1) => (CtDouble, s1),
+          None => match unify_binop_candidate(left_ty, right_ty, CtString, s) {
+            Some(s1) => (CtString, s1),
+            None => match infer_named_trait_binop(env, left_ty, right_ty, "Add", s) {
+              Some((resolved, s1)) => (resolved, s1),
+              None => {
+                Array::push(errors, "type mismatch in '+': operands must be Int, Double, or String")
+                (CtUnknown, s)
+              }
             }
           }
         }
