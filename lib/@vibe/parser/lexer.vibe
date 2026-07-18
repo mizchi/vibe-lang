@@ -4,6 +4,10 @@ import ./token.vibe {
   Token
 }
 
+import ./float_format.vibe {
+  parse_decimal_float
+}
+
 //# Functions
 
 fn is_ws(c: Int) -> Bool {
@@ -316,22 +320,37 @@ fn scan_interp_end(s: String, len: Int, idx: Int, depth: Int) -> Int with { Erro
   }
 }
 
-fn parse_frac_digits(s: String, len: Int, i: Int, acc: Double, scale: Double) -> (Double, Int) {
-  let mut out_i = i
-  let mut out_acc = acc
-  let mut out_scale = scale
-  let mut done = false
-  while out_i < len && !done {
-    let c = String::char_code_at(s, out_i)
-    if is_digit(c) {
-      out_acc = out_acc + Int::to_double(c - 48) / out_scale
-      out_scale = out_scale * 10.0
-      out_i = out_i + 1
+// #956: numeric literal followed directly by `e`/`E` + digits (or +/- digits)
+// looks like scientific notation, which vibe does not support — it used to
+// lex as `<number>` + identifier and surface as a confusing downstream
+// `unknown name: e20`. Reject it at the lexer with an explanatory error.
+fn check_no_scientific_suffix(s: String, len: Int, pos: Int) -> Unit with { Error } {
+  if pos < len {
+    let c = String::char_code_at(s, pos)
+    if c == 'e' || c == 'E' {
+      let looks_scientific = if pos + 1 < len {
+        let c1 = String::char_code_at(s, pos + 1)
+        if is_digit(c1) {
+          true
+        } else if (c1 == '+' || c1 == '-') && pos + 2 < len && is_digit(String::char_code_at(s, pos + 2)) {
+          true
+        } else {
+          false
+        }
+      } else {
+        false
+      }
+      if looks_scientific {
+        throw("scientific notation is not supported; write the digits out or compute the value")
+      } else {
+        ()
+      }
     } else {
-      done = true
+      ()
     }
+  } else {
+    ()
   }
-  (out_acc, out_i)
 }
 
 fn empty_string_array() -> Array[String] {
@@ -540,13 +559,16 @@ fn lex_decimal(s: String, len: Int, i: Int) -> (Token, Int) with { Error } {
   let after_field_dot = i >= 1 && String::char_code_at(s, i - 1) == '.' && (i < 2 || String::char_code_at(s, i - 2) != '.')
   if !after_field_dot && int_end < len && String::char_code_at(s, int_end) == '.' {
     if int_end + 1 < len && is_digit(String::char_code_at(s, int_end + 1)) {
-      let int_str = s[i: int_end]
-      let int_val = Int::to_double(parse_int_from_string(int_str))
-      let (frac_val, frac_end) = parse_frac_digits(s, len, int_end + 1, 0.0, 10.0);
+      let frac_end = scan_digits_end(s, len, int_end + 1)
+      // #956: build the Double from the full digit strings (correctly
+      // rounded), instead of routing the mantissa through Int (which
+      // silently wrapped past ~2.3e18).
+      let value = parse_decimal_float(s[i: int_end], s[int_end + 1: frac_end])
+      check_no_scientific_suffix(s, len, frac_end)
       if frac_end < len && String::char_code_at(s, frac_end) == 'f' {
-        (TFloat(int_val + frac_val), frac_end + 1)
+        (TFloat(value), frac_end + 1)
       } else {
-        (TFloat(int_val + frac_val), frac_end)
+        (TFloat(value), frac_end)
       }
     } else {
       let int_str = s[i: int_end];
@@ -554,10 +576,10 @@ fn lex_decimal(s: String, len: Int, i: Int) -> (Token, Int) with { Error } {
     }
   } else if int_end < len && String::char_code_at(s, int_end) == 'f' {
     // Integer-form float literal with an `f` suffix, e.g. `10f`, `0f`.
-    let int_str = s[i: int_end]
-    let int_val = Int::to_double(parse_int_from_string(int_str))
-    (TFloat(int_val), int_end + 1)
+    let value = parse_decimal_float(s[i: int_end], "")
+    (TFloat(value), int_end + 1)
   } else {
+    check_no_scientific_suffix(s, len, int_end)
     let int_str = s[i: int_end];
     (TInt(parse_int_from_string(int_str)), int_end)
   }

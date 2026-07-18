@@ -6,6 +6,548 @@ import ./polyfill.vibe {
 
 //# Functions
 
+// ---- #956: correctly-rounded decimal -> Double literal construction ----
+//
+// Float literals used to funnel their integer digits through the 62-bit
+// tagged Int (`parse_int_from_string`, which silently wraps past ~2.3e18) and
+// their fraction through a per-digit `d / scale` sum (one rounding error per
+// digit). `parse_decimal_float` below instead builds the IEEE-754 nearest
+// Double of the decimal digit string:
+//   - <= 15 significant digits and |exp10| <= 22: exact fast path (mantissa
+//     exact in Int -> Double, power of ten exact through 1e22, one rounding).
+//   - otherwise: accumulate up to 31 significant digits exactly in a
+//     double-double (hi/lo) value, apply the decimal exponent with dd
+//     multiplies/divides at power-of-two-rescaled magnitudes so nothing
+//     overflows/underflows mid-computation, and round once at the end
+//     (explicit ties-to-even handling on the subnormal grid).
+// Literals with more than 31 significant digits are correctly rounded unless
+// the discarded tail straddles a rounding boundary (error <= 1 ulp there;
+// exact decimal expansions of doubles always round-trip bit-identically
+// because a representable value sits half an ulp from any boundary).
+
+// NOTE on style: the whole algorithm is written as ONE function over `let
+// mut` locals rooted at float literals, with every float binop containing a
+// tracked-floatish operand, and NO user-fn calls inside float arithmetic.
+// The linear/RC backends classify float ops syntactically (#772/#797:
+// `expr_is_floatish`); helper functions returning Doubles / annotated lets
+// bound to calls are NOT recognized and silently miscompile to integer ops
+// (verified while fixing #956), so do not refactor this into small helpers.
+
+export fn parse_decimal_float(int_str: String, frac_str: String) -> Double {
+  let flen = String::length(frac_str)
+  let all = String::concat(int_str, frac_str)
+  let total = String::length(all)
+  let mut exp10 = 0 - flen
+  let mut start = 0
+  while start < total - 1 && String::char_code_at(all, start) == '0' {
+    start = start + 1
+  }
+  let mut end = total
+  while end - start > 1 && String::char_code_at(all, end - 1) == '0' {
+    end = end - 1
+    exp10 = exp10 + 1
+  }
+  if String::char_code_at(all, start) == '0' {
+    0.0
+  } else {
+    let nsig = end - start
+    if nsig <= 15 && exp10 + 22 >= 0 && exp10 <= 22 {
+      let mut m = 0
+      let mut k = start
+      while k < end {
+        m = m * 10 + (String::char_code_at(all, k) - 48)
+        k = k + 1
+      }
+      let mut pw = 1.0
+      let mut pj = 0
+      let pe = if exp10 >= 0 {
+        exp10
+      } else {
+        0 - exp10
+      }
+      while pj < pe {
+        pw = pw * 10.0
+        pj = pj + 1
+      }
+      if exp10 >= 0 {
+        Int::to_double(m) * pw
+      } else {
+        Int::to_double(m) / pw
+      }
+    } else {
+      let mut hi = 0.0
+      let mut lo = 0.0
+      let mut tp = 0.0
+      let mut tc = 0.0
+      let mut terr = 0.0
+      let mut ah = 0.0
+      let mut al = 0.0
+      let mut bh = 0.0
+      let mut bl = 0.0
+      let mut td = 0.0
+      let mut ph = 0.0
+      let mut pl = 0.0
+      let mut psmall = 0.0
+      let mut mph = 0.0
+      let mut mpl = 0.0
+      let mut tneg = 0.0
+      let mut q1 = 0.0
+      let mut q2 = 0.0
+      let mut p22 = 1.0
+      let mut p22i = 0
+      while p22i < 22 {
+        p22 = p22 * 10.0
+        p22i = p22i + 1
+      }
+      let mut absorb = 0
+      while exp10 > 0 && nsig + absorb < 31 {
+        absorb = absorb + 1
+        exp10 = exp10 - 1
+      }
+      let mut used = 0
+      let mut sticky = false
+      let mut k = start
+      let mut phase = 0
+      while phase < 2 {
+        let dostep = if phase == 0 {
+          k < end
+        } else {
+          k < absorb
+        }
+        if dostep {
+          let dig = if phase == 0 {
+            String::char_code_at(all, k) - 48
+          } else {
+            0
+          }
+          if phase == 1 || used < 31 {
+            // (hi, lo) = dd_mul_d(hi, lo, 10.0)
+            td = 10.0
+            tp = hi * (td * 1.0)
+            tc = 134217729.0 * hi
+            ah = tc - (tc - hi * 1.0)
+            al = hi - ah * 1.0
+            tc = 134217729.0 * td
+            bh = tc - (tc - td * 1.0)
+            bl = td - bh * 1.0
+            terr = ((ah * (bh * 1.0) - tp) + ah * (bl * 1.0) + al * (bh * 1.0)) + al * (bl * 1.0)
+            terr = terr + lo * (td * 1.0)
+            hi = tp + terr * 1.0
+            lo = terr - (hi - tp * 1.0)
+            if phase == 0 {
+              // (hi, lo) = dd_add_d(hi, lo, dig)
+              td = Int::to_double(dig)
+              tp = hi + td * 1.0
+              tc = tp - hi * 1.0
+              terr = (hi - (tp - tc * 1.0)) + (td - tc * 1.0)
+              terr = terr + lo * 1.0
+              hi = tp + terr * 1.0
+              lo = terr - (hi - tp * 1.0)
+            } else {
+              ()
+            }
+            used = used + 1
+          } else {
+            exp10 = exp10 + 1
+            if dig != 0 {
+              sticky = true
+            } else {
+              ()
+            }
+          }
+          k = k + 1
+        } else {
+          phase = phase + 1
+          k = if phase == 1 {
+            0
+          } else {
+            k
+          }
+        }
+      }
+      if sticky {
+        // (hi, lo) = dd_add_d(hi, lo, 0.5)
+        td = 0.5
+        tp = hi + td * 1.0
+        tc = tp - hi * 1.0
+        terr = (hi - (tp - tc * 1.0)) + (td - tc * 1.0)
+        terr = terr + lo * 1.0
+        hi = tp + terr * 1.0
+        lo = terr - (hi - tp * 1.0)
+      } else {
+        ()
+      }
+      let e_dec = exp10 + used - 1
+      if e_dec > 308 {
+        let mut infv = 1.0
+        let mut infi = 0
+        while infi < 1100 {
+          infv = infv * 2.0
+          infi = infi + 1
+        }
+        infv
+      } else if e_dec + 324 < 0 {
+        0.0
+      } else if exp10 > 0 {
+        // ---- positive decimal exponent ----
+        let big = exp10 > 270
+        let e_first = if big {
+          exp10 - 270
+        } else {
+          exp10
+        }
+        // (ph, pl) = dd 10^e_first
+        ph = 1.0
+        pl = 0.0
+        let mut ke = e_first
+        while ke > 22 {
+          tp = ph * (p22 * 1.0)
+          tc = 134217729.0 * ph
+          ah = tc - (tc - ph * 1.0)
+          al = ph - ah * 1.0
+          tc = 134217729.0 * p22
+          bh = tc - (tc - p22 * 1.0)
+          bl = p22 - bh * 1.0
+          terr = ((ah * (bh * 1.0) - tp) + ah * (bl * 1.0) + al * (bh * 1.0)) + al * (bl * 1.0)
+          terr = terr + pl * (p22 * 1.0)
+          ph = tp + terr * 1.0
+          pl = terr - (ph - tp * 1.0)
+          ke = ke - 22
+        }
+        psmall = 1.0
+        while ke > 0 {
+          psmall = psmall * 10.0
+          ke = ke - 1
+        }
+        tp = ph * (psmall * 1.0)
+        tc = 134217729.0 * ph
+        ah = tc - (tc - ph * 1.0)
+        al = ph - ah * 1.0
+        tc = 134217729.0 * psmall
+        bh = tc - (tc - psmall * 1.0)
+        bl = psmall - bh * 1.0
+        terr = ((ah * (bh * 1.0) - tp) + ah * (bl * 1.0) + al * (bh * 1.0)) + al * (bl * 1.0)
+        terr = terr + pl * (psmall * 1.0)
+        ph = tp + terr * 1.0
+        pl = terr - (ph - tp * 1.0)
+        // (hi, lo) = dd_mul_dd(hi, lo, ph, pl)
+        tp = hi * (ph * 1.0)
+        tc = 134217729.0 * hi
+        ah = tc - (tc - hi * 1.0)
+        al = hi - ah * 1.0
+        tc = 134217729.0 * ph
+        bh = tc - (tc - ph * 1.0)
+        bl = ph - bh * 1.0
+        terr = ((ah * (bh * 1.0) - tp) + ah * (bl * 1.0) + al * (bh * 1.0)) + al * (bl * 1.0)
+        terr = terr + (hi * (pl * 1.0) + lo * (ph * 1.0))
+        hi = tp + terr * 1.0
+        lo = terr - (hi - tp * 1.0)
+        if big {
+          // scale to 2^-128, multiply by 10^270, rescale exactly with an
+          // explicit overflow-boundary compare (B*2^-128 = 2^896 - 2^842)
+          let mut p128 = 1.0
+          let mut p128i = 0
+          while p128i < 128 {
+            p128 = p128 * 2.0
+            p128i = p128i + 1
+          }
+          let inv128 = 1.0 / p128
+          hi = hi * (inv128 * 1.0)
+          lo = lo * (inv128 * 1.0)
+          // (ph, pl) = dd 10^270
+          ph = 1.0
+          pl = 0.0
+          let mut ke2 = 270
+          while ke2 > 22 {
+            tp = ph * (p22 * 1.0)
+            tc = 134217729.0 * ph
+            ah = tc - (tc - ph * 1.0)
+            al = ph - ah * 1.0
+            tc = 134217729.0 * p22
+            bh = tc - (tc - p22 * 1.0)
+            bl = p22 - bh * 1.0
+            terr = ((ah * (bh * 1.0) - tp) + ah * (bl * 1.0) + al * (bh * 1.0)) + al * (bl * 1.0)
+            terr = terr + pl * (p22 * 1.0)
+            ph = tp + terr * 1.0
+            pl = terr - (ph - tp * 1.0)
+            ke2 = ke2 - 22
+          }
+          psmall = 1.0
+          while ke2 > 0 {
+            psmall = psmall * 10.0
+            ke2 = ke2 - 1
+          }
+          tp = ph * (psmall * 1.0)
+          tc = 134217729.0 * ph
+          ah = tc - (tc - ph * 1.0)
+          al = ph - ah * 1.0
+          tc = 134217729.0 * psmall
+          bh = tc - (tc - psmall * 1.0)
+          bl = psmall - bh * 1.0
+          terr = ((ah * (bh * 1.0) - tp) + ah * (bl * 1.0) + al * (bh * 1.0)) + al * (bl * 1.0)
+          terr = terr + pl * (psmall * 1.0)
+          ph = tp + terr * 1.0
+          pl = terr - (ph - tp * 1.0)
+          // (hi, lo) = dd_mul_dd(hi, lo, ph, pl)
+          tp = hi * (ph * 1.0)
+          tc = 134217729.0 * hi
+          ah = tc - (tc - hi * 1.0)
+          al = hi - ah * 1.0
+          tc = 134217729.0 * ph
+          bh = tc - (tc - ph * 1.0)
+          bl = ph - bh * 1.0
+          terr = ((ah * (bh * 1.0) - tp) + ah * (bl * 1.0) + al * (bh * 1.0)) + al * (bl * 1.0)
+          terr = terr + (hi * (pl * 1.0) + lo * (ph * 1.0))
+          hi = tp + terr * 1.0
+          lo = terr - (hi - tp * 1.0)
+          let mut b1 = 1.0
+          let mut b1i = 0
+          while b1i < 896 {
+            b1 = b1 * 2.0
+            b1i = b1i + 1
+          }
+          let mut b2 = 1.0
+          let mut b2i = 0
+          while b2i < 842 {
+            b2 = b2 * 2.0
+            b2i = b2i + 1
+          }
+          if hi > b1 * 1.0 || (hi == b1 * 1.0 && lo >= 0.0 - b2) {
+            let mut infv2 = 1.0
+            let mut infi2 = 0
+            while infi2 < 1100 {
+              infv2 = infv2 * 2.0
+              infi2 = infi2 + 1
+            }
+            infv2
+          } else {
+            hi * (p128 * 1.0) + lo * (p128 * 1.0)
+          }
+        } else {
+          hi + lo * 1.0
+        }
+      } else if exp10 < 0 {
+        // ---- negative decimal exponent: work at scale 2^660 ----
+        let mut p = 0 - exp10
+        let mut s660 = 1.0
+        let mut s660i = 0
+        while s660i < 660 {
+          s660 = s660 * 2.0
+          s660i = s660i + 1
+        }
+        hi = hi * (s660 * 1.0)
+        lo = lo * (s660 * 1.0)
+        let mut divs = if p > 292 {
+          2
+        } else {
+          1
+        }
+        if divs == 2 {
+          p = p - 146
+        } else {
+          ()
+        }
+        while divs > 0 {
+          let e_div = if divs == 2 {
+            146
+          } else {
+            p
+          }
+          // (ph, pl) = dd 10^e_div
+          ph = 1.0
+          pl = 0.0
+          let mut ke3 = e_div
+          while ke3 > 22 {
+            tp = ph * (p22 * 1.0)
+            tc = 134217729.0 * ph
+            ah = tc - (tc - ph * 1.0)
+            al = ph - ah * 1.0
+            tc = 134217729.0 * p22
+            bh = tc - (tc - p22 * 1.0)
+            bl = p22 - bh * 1.0
+            terr = ((ah * (bh * 1.0) - tp) + ah * (bl * 1.0) + al * (bh * 1.0)) + al * (bl * 1.0)
+            terr = terr + pl * (p22 * 1.0)
+            ph = tp + terr * 1.0
+            pl = terr - (ph - tp * 1.0)
+            ke3 = ke3 - 22
+          }
+          psmall = 1.0
+          while ke3 > 0 {
+            psmall = psmall * 10.0
+            ke3 = ke3 - 1
+          }
+          tp = ph * (psmall * 1.0)
+          tc = 134217729.0 * ph
+          ah = tc - (tc - ph * 1.0)
+          al = ph - ah * 1.0
+          tc = 134217729.0 * psmall
+          bh = tc - (tc - psmall * 1.0)
+          bl = psmall - bh * 1.0
+          terr = ((ah * (bh * 1.0) - tp) + ah * (bl * 1.0) + al * (bh * 1.0)) + al * (bl * 1.0)
+          terr = terr + pl * (psmall * 1.0)
+          ph = tp + terr * 1.0
+          pl = terr - (ph - tp * 1.0)
+          // (hi, lo) = dd_div_dd(hi, lo, ph, pl)
+          q1 = hi / (ph * 1.0)
+          tp = ph * (q1 * 1.0)
+          tc = 134217729.0 * ph
+          ah = tc - (tc - ph * 1.0)
+          al = ph - ah * 1.0
+          tc = 134217729.0 * q1
+          bh = tc - (tc - q1 * 1.0)
+          bl = q1 - bh * 1.0
+          terr = ((ah * (bh * 1.0) - tp) + ah * (bl * 1.0) + al * (bh * 1.0)) + al * (bl * 1.0)
+          terr = terr + pl * (q1 * 1.0)
+          mph = tp + terr * 1.0
+          mpl = terr - (mph - tp * 1.0)
+          tneg = 0.0 - mph
+          tp = hi + tneg * 1.0
+          tc = tp - hi * 1.0
+          terr = (hi - (tp - tc * 1.0)) + (tneg - tc * 1.0)
+          terr = terr + lo * 1.0 - mpl
+          q2 = (tp + terr * 1.0) / ph
+          hi = q1 + q2 * 1.0
+          lo = q2 - (hi - q1 * 1.0)
+          divs = divs - 1
+        }
+        let mut mns = 1.0
+        let mut mnsi = 0
+        while mnsi < 362 {
+          mns = mns * 0.5
+          mnsi = mnsi + 1
+        }
+        let inv660 = 1.0 / s660
+        if hi >= mns * 1.0 {
+          hi * (inv660 * 1.0)
+        } else {
+          let r0 = hi * (inv660 * 1.0)
+          let back = r0 * (s660 * 1.0)
+          let rem = (hi - back * 1.0) + lo * 1.0
+          let mut half = 1.0
+          let mut halfi = 0
+          while halfi < 415 {
+            half = half * 0.5
+            halfi = halfi + 1
+          }
+          let mut h537 = 1.0
+          let mut h537i = 0
+          while h537i < 537 {
+            h537 = h537 * 0.5
+            h537i = h537i + 1
+          }
+          let minsub = h537 * (h537 * 1.0)
+          if rem > half * 1.0 {
+            r0 + minsub * 1.0
+          } else if rem < 0.0 - half {
+            r0 - minsub * 1.0
+          } else if rem == half * 1.0 || rem == 0.0 - half {
+            let mut d537 = 1.0
+            let mut d537i = 0
+            while d537i < 537 {
+              d537 = d537 * 2.0
+              d537i = d537i + 1
+            }
+            let kunits = r0 * (d537 * 1.0) * (d537 * 1.0)
+            if Double::to_int(kunits) % 2 == 1 {
+              if rem > 0.0 {
+                r0 + minsub * 1.0
+              } else {
+                r0 - minsub * 1.0
+              }
+            } else {
+              r0
+            }
+          } else {
+            r0
+          }
+        }
+      } else {
+        hi + lo * 1.0
+      }
+    }
+  }
+}
+
+// ---- #956: exact decimal printing for doubles past the Int range ----
+//
+// `double_to_string_compiler` used `Double::to_int` on the integer part,
+// which breaks past 2^61. For such values (all of which are exact integers —
+// every double >= 2^53 is) we print the EXACT decimal expansion instead:
+// halve the value into the Int-safe range (exact), take the mantissa digits,
+// and double the decimal digit array back up. The exact expansion re-parses
+// bit-identically under `parse_decimal_float`.
+
+fn big_double_exact_int_decimal(abs_d: Double) -> String {
+  // 2^61 built by doubling a tracked literal-rooted mut (see the style NOTE
+  // above parse_decimal_float — annotated lets / big literals miscompile).
+  let mut two_61 = 1.0
+  let mut t61i = 0
+  while t61i < 61 {
+    two_61 = two_61 * 2.0
+    t61i = t61i + 1
+  }
+  let mut x = abs_d
+  let mut halvings = 0
+  // int-condition loop: a float-compare `while` condition miscompiles in the
+  // imported-module lane (see style NOTE above parse_decimal_float); the
+  // equivalent `if` compare inside an int-condition loop compiles correctly.
+  let mut halving_go = 1
+  while halving_go == 1 {
+    if x >= two_61 * 1.0 {
+      x = x * 0.5
+      halvings = halvings + 1
+    } else {
+      halving_go = 0
+    }
+  }
+  let m = Double::to_int(x)
+  let ms = __to_string(m)
+  let mlen = String::length(ms)
+  // decimal digits, least-significant first (finite doubles need <= 309)
+  let digits = Int64Array::make(340, 0)
+  let mut i = 0
+  while i < mlen {
+    Int64Array::set(digits, i, String::char_code_at(ms, mlen - 1 - i) - 48)
+    i = i + 1
+  }
+  let mut ndig = mlen
+  let mut h = 0
+  while h < halvings {
+    let mut carry = 0
+    let mut j = 0
+    while j < ndig {
+      let v = Int64Array::get(digits, j) * 2 + carry
+      Int64Array::set(digits, j, v % 10)
+      carry = v / 10
+      j = j + 1
+    }
+    if carry > 0 {
+      Int64Array::set(digits, ndig, carry)
+      ndig = ndig + 1
+    }
+    h = h + 1
+  }
+  let b = ArrayBuilder::new()
+  let mut j2 = ndig - 1
+  while j2 >= 0 {
+    ArrayBuilder::push(b, String::from_char_code(Int64Array::get(digits, j2) + 48))
+    j2 = j2 - 1
+  }
+  String::join(ArrayBuilder::freeze(b), "")
+}
+
+fn pos_inf_decimal_string() -> String {
+  // 10^309 overflows every double, so this re-parses to +inf
+  let b = ArrayBuilder::new()
+  ArrayBuilder::push(b, "1")
+  let mut i = 0
+  while i < 309 {
+    ArrayBuilder::push(b, "0")
+    i = i + 1
+  }
+  String::join(ArrayBuilder::freeze(b), "")
+}
+
 fn zero_pad_6(n: Int) -> String {
   let s = __to_string(n)
   let len = String::length(s)
@@ -44,6 +586,27 @@ export fn double_to_string_compiler(d: Double) -> String {
     } else {
       d
     }
+    let mut two_61 = 1.0
+    let mut t61i = 0
+    while t61i < 61 {
+      two_61 = two_61 * 2.0
+      t61i = t61i + 1
+    }
+    if abs_d >= two_61 * 1.0 {
+      // #956: Double::to_int overflows past 2^61 — print the exact decimal
+      // expansion instead (re-parses bit-identically; infinities print as
+      // 10^309, which re-parses to inf).
+      let body = if abs_d * 0.5 == abs_d {
+        pos_inf_decimal_string()
+      } else {
+        big_double_exact_int_decimal(abs_d)
+      }
+      if neg {
+        String::concat("-", body)
+      } else {
+        body
+      }
+    } else {
     let int_part = Double::to_int(abs_d)
     let frac = abs_d - Int::to_double(int_part)
     let scaled_raw = Double::to_int(frac * 1000000.0 + 0.5)
@@ -72,6 +635,7 @@ export fn double_to_string_compiler(d: Double) -> String {
       String::concat("-", body)
     } else {
       body
+    }
     }
   }
 }

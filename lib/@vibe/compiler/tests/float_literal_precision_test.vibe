@@ -1,0 +1,155 @@
+//# Imports
+
+// #956: float literals beyond the 62-bit tagged Int range used to silently
+// wrap (their mantissa was accumulated through Int), and multi-digit
+// fractions accumulated one rounding error per digit. These tests pin the
+// fixed behavior: every literal below parses to the IEEE-754 nearest Double
+// of its decimal digits (ground truth cross-checked against node's
+// `Number(...)`), and the compiler printer emits big values as their exact
+// decimal expansion so they re-parse bit-identically.
+
+import ../syntax {
+  lex,
+  double_to_string_compiler
+}
+
+//# Functions
+
+fn pow2(k: Int) -> Double {
+  let mut t = 1.0
+  let mut j = 0
+  while j < k {
+    t = t * 2.0
+    j = j + 1
+  }
+  t
+}
+
+// "" when the source lexes cleanly, otherwise the lexer error message.
+fn lex_err(source: String) -> String {
+  handle {
+    let n = Array::length(lex(source))
+    if n > 0 {
+      ""
+    } else {
+      ""
+    }
+  } with Error {
+    Throw(msg) => msg
+  }
+}
+
+fn lex_token_count(source: String) -> Int {
+  handle {
+    Array::length(lex(source))
+  } with Error {
+    Throw(_) => -1
+  }
+}
+
+fn is_scientific_err(source: String) -> Bool {
+  String::contains(lex_err(source), "scientific notation is not supported")
+}
+
+//# Tests
+
+test "big_float_literal_1e20" {
+  // The #956 probe: 1e20 written out. Used to come out as garbage
+  // (a/b + 0.0 gave 77662 instead of 1000000).
+  let a = 100000000000000000000.0
+  let b = 100000000000000.0
+  assert(Double::to_int(a / b + 0.0) == 1000000)
+  assert(a / b == 1000000.0)
+  // 1e20 is exactly representable: 1e20 == 2^20 * 5^20 * ... check against
+  // an exact power-of-two construction: 1e20 == 95367431640625 * 2^20
+  assert(a == 95367431640625.0 * pow2(20))
+}
+
+test "big_float_literal_2pow53_plus_1_ties_even" {
+  // 9007199254740993 == 2^53 + 1 is exactly halfway between two doubles;
+  // IEEE nearest (ties-to-even) is 2^53 itself.
+  assert(9007199254740993.0 == 9007199254740992.0)
+  assert(9007199254740993.0 == pow2(53))
+}
+
+test "big_float_literal_2pow61" {
+  // 2^61 is one past the Int literal range but exactly representable as a
+  // Double. Used to wrap negative through the tagged-Int mantissa.
+  let x = 2305843009213693952.0
+  assert(x == pow2(61))
+  assert(x == 9007199254740992.0 * 256.0)
+  assert(x > 0.0)
+}
+
+test "big_float_literal_30_digits_with_fraction" {
+  // Number("123456789012345678901234567890.5") == 7017705969039166 * 2^44
+  // (exact mantissa/exponent decomposition of the IEEE nearest double).
+  let x = 123456789012345678901234567890.5
+  assert(x == 7017705969039166.0 * pow2(44))
+}
+
+test "big_float_literal_49_digits" {
+  // Number("1234567890123456789012345678901234567890123456789")
+  //   == 7608612057496756 * 2^107
+  let x = 1234567890123456789012345678901234567890123456789.0
+  assert(x == 7608612057496756.0 * pow2(107))
+}
+
+test "long_fraction_correctly_rounded" {
+  // Number("0.30000000000000004444") is exactly 0.1 + 0.2's double.
+  assert(0.30000000000000004444 == 0.1 + 0.2)
+  // ... and NOT the 0.3 literal (one ulp below).
+  assert(0.30000000000000004444 != 0.3)
+}
+
+test "fraction_single_rounding" {
+  // Fractions now round once from the full decimal (the old per-digit sum
+  // gave 0.12000000000000001 for `0.12`).
+  assert(0.12 == 12.0 / 100.0)
+  assert(0.12 != 0.1 + 0.02)
+  assert(0.123 == 123.0 / 1000.0)
+}
+
+test "small_float_literals_unchanged" {
+  assert(1.5 * 4.0 == 6.0)
+  assert(0.25 * 8.0 == 2.0)
+  assert(0.1 == 1.0 / 10.0)
+  assert(10000000000.0 / 10000.0 == 1000000.0)
+  assert(0.000001 == 1.0 / 1000000.0)
+}
+
+test "f_suffix_literals_unchanged" {
+  assert(10f == 10.0)
+  assert(0f == 0.0)
+  assert(3.5f == 3.5)
+}
+
+test "scientific_notation_rejected_with_clear_error" {
+  assert(is_scientific_err("let a = 1e20"))
+  assert(is_scientific_err("let a = 1.5e10"))
+  assert(is_scientific_err("let a = 1E5"))
+  assert(is_scientific_err("let a = 1e+3"))
+  assert(is_scientific_err("let a = 2e-7"))
+}
+
+test "e_prefixed_identifier_after_number_still_lexes" {
+  // Only e/E followed by digits (or +/- digits) is rejected; a number
+  // followed by a normal identifier starting with 'e' stays two tokens.
+  assert(lex_token_count("1even") == 3)
+  assert(lex_err("let eq2 = e2x") == "")
+}
+
+test "printer_emits_exact_decimal_for_big_doubles" {
+  // double_to_string_compiler used Double::to_int, which broke past 2^61.
+  // Big integer-valued doubles now print their exact decimal expansion.
+  assert(double_to_string_compiler(100000000000000000000.0) == "100000000000000000000")
+  // 2^70 == 1180591620717411303424
+  assert(double_to_string_compiler(pow2(70)) == "1180591620717411303424")
+  assert(double_to_string_compiler(0.0 - pow2(70)) == "-1180591620717411303424")
+}
+
+test "printer_small_values_unchanged" {
+  assert(double_to_string_compiler(1.5) == "1.5")
+  assert(double_to_string_compiler(0.25) == "0.25")
+  assert(double_to_string_compiler(0.0 - 2.0) == "-2")
+}
