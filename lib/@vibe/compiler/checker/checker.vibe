@@ -992,6 +992,55 @@ export fn fn_return_env_name(name: String) -> String {
   String::concat("__fn_ret__:", name)
 }
 
+// #938: the ArrayBuilder container type — `CtNamed("ArrayBuilder", [elem])`,
+// the same shape `b: ArrayBuilder[T]` annotations resolve to. Used by the
+// builder call branches below.
+fn is_array_builder_head(t: Type) -> Bool {
+  match t {
+    CtNamed(n, targs) => n == "ArrayBuilder" && Array::length(targs) == 1,
+    _ => false
+  }
+}
+
+// #938 value-restriction predicate (Codex P1 on #977): true when a builder
+// occurs ANYWHERE in the value's type reachable without crossing a function
+// boundary — `(ArrayBuilder::new(), 0)`, `[ArrayBuilder::new()]`,
+// `Some(ArrayBuilder::new())` all alias ONE live builder, so their element
+// vars must stay un-quantified exactly like a bare builder's (a root-only
+// check let each lookup of the tuple re-instantiate a fresh element slot and
+// mixed pushes type-checked again). CtFn is deliberately NOT descended:
+// a function value creates a NEW builder per call, so generalizing
+// `() -> ArrayBuilder[v]` is sound and useful.
+export fn is_array_builder_ty(t: Type) -> Bool {
+  if is_array_builder_head(t) {
+    true
+  } else {
+    match t {
+      CtArray(e) => is_array_builder_ty(e),
+      CtOption(e) => is_array_builder_ty(e),
+      CtTuple(elems) => {
+        let mut i = 0
+        let mut found = false
+        while i < Array::length(elems) && !found {
+          found = is_array_builder_ty(Array::get(elems, i))
+          i = i + 1
+        }
+        found
+      },
+      CtNamed(_, targs) => {
+        let mut i = 0
+        let mut found = false
+        while i < Array::length(targs) && !found {
+          found = is_array_builder_ty(Array::get(targs, i))
+          i = i + 1
+        }
+        found
+      },
+      _ => false
+    }
+  }
+}
+
 fn direct_builtin_return(name: String) -> Option[Type] {
   if name == "Bytes::length" {
     Some(CtInt)
@@ -1602,7 +1651,16 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
       },
       ELet(name, val, body, _) => {
         let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab)
-        let gen = generalize(ns, vt)
+        // #938 value restriction: a builder is a MUTABLE container, so its
+        // element var must stay un-quantified — generalizing
+        // `CtNamed("ArrayBuilder", [v])` would re-instantiate a fresh v at
+        // every use and pushes could never constrain each other (the exact
+        // hole this issue is about). Bind the monotype instead.
+        let gen = if is_array_builder_ty(subst_apply(ns, vt)) {
+          vt
+        } else {
+          generalize(ns, vt)
+        }
         cenv = env_bind(cenv, name, gen)
         s1 = ns
         c1 = nc
@@ -2831,6 +2889,59 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
           _ => CtUnknown
         }
         (tab_call_ty(tytab, call_off, result), s2, c2)
+      } else if name == "ArrayBuilder::new" && Array::length(args) == 0 {
+        // #938: the builder ops were typed all-CtUnknown, so
+        // `ArrayBuilder::push(b, 1); ArrayBuilder::push(b, "two")` compiled
+        // clean and the frozen array leaked a raw String pointer through an
+        // `Array[Int]` annotation. Give the builder a REAL element slot:
+        // `CtNamed("ArrayBuilder", [fresh])` — the same shape an explicit
+        // `b: ArrayBuilder[String]` annotation already resolves to
+        // (checker_resolve TyApp fallback), so annotated params get checked
+        // by the same push/freeze rules for free. The fresh var is bound by
+        // the FIRST push and every later push must unify with it. (ELet's
+        // generalize deliberately skips this shape — see the value-restriction
+        // note at the ELet arm — or each use would re-instantiate the var and
+        // the pushes could never disagree.)
+        let (ev, c1) = fresh_var(c)
+        (tab_call_ty(tytab, call_off, CtNamed("ArrayBuilder", Array::slice([
+          ev
+        ], 0, 1))), s, c1)
+      } else if name == "ArrayBuilder::push" && Array::length(args) == 2 {
+        // #938: unify the pushed value with the builder's element slot. A
+        // builder that reaches here untyped (CtUnknown / var receiver from an
+        // un-annotated param) stays tolerant, exactly like Array::push's
+        // ground gate.
+        let (b_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        let (v_ty, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+        let s3 = match subst_apply(s2, b_ty) {
+          CtNamed(bn, bargs) => if bn == "ArrayBuilder" && Array::length(bargs) == 1 {
+            match unify(Array::get(bargs, 0), v_ty, s2) {
+              Some(su) => su,
+              None => {
+                Array::push(errors, String::concat("ArrayBuilder::push element type mismatch: builder holds ", String::concat(type_to_string(subst_apply(s2, Array::get(bargs, 0))), String::concat(", got ", String::concat(type_to_string(subst_apply(s2, v_ty)), off_marker_len(callee_off, String::length(name)))))))
+                s2
+              }
+            }
+          } else {
+            s2
+          },
+          _ => s2
+        }
+        (tab_call_ty(tytab, call_off, CtUnit), s3, c2)
+      } else if name == "ArrayBuilder::freeze" && Array::length(args) == 1 {
+        // #938: freeze returns an array of the builder's (now tracked) element
+        // type, so a wrong return/let annotation is caught by the ordinary
+        // unify instead of vanishing into CtArray(CtUnknown).
+        let (b_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        let result = match subst_apply(s1, b_ty) {
+          CtNamed(bn, bargs) => if bn == "ArrayBuilder" && Array::length(bargs) == 1 {
+            CtArray(subst_apply(s1, Array::get(bargs, 0)))
+          } else {
+            CtArray(CtUnknown)
+          },
+          _ => CtArray(CtUnknown)
+        }
+        (tab_call_ty(tytab, call_off, result), s1, c1)
       } else if name == "Array::push" && Array::length(args) == 2 {
         // `Array::push(a, v)` requires `v` to match `a`'s element type — pushing
         // a String into an `Array[Int]` was accepted (direct_call_return only
