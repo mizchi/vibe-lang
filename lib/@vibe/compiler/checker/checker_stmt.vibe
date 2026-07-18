@@ -13,7 +13,7 @@ import ../core/index.vibe {
 }
 
 import ./checker.vibe {
-  check_assignable, check_expr, detect_narrowed_generic_mismatch, fn_return_env_name, preserve_generic_instantiation, reject_resume_outside_handler
+  check_assignable, check_expr, detect_narrowed_generic_mismatch, fn_return_env_name, pat_binds_resume, preserve_generic_instantiation, reject_resume_outside_handler
 }
 
 import ./checker_resolve.vibe {
@@ -274,6 +274,72 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
     }
     hoist_i = hoist_i + 1
   }
+  // #942 (Codex P2 on #969): if any top-level declaration in this statement
+  // list binds the name `resume` (fn/let — fn decls are lowered to SLet
+  // before the checker — let-pattern, extern let, or an import), codegen's
+  // prefer_bound_call routes every `resume(x)` in the file to that BOUND
+  // function (a global name match, see codegen/expr/compile_call.vibe), so
+  // the #942 misuse walks must stand down for the whole list.
+  let mut resume_shadowed_top = false
+  let mut rst_i = idx
+  while rst_i < Array::length(stmts) {
+    match Array::get(stmts, rst_i) {
+      SLet(_, _, rstname, _, _) => if rstname == "resume" {
+        resume_shadowed_top = true
+      } else {
+        ()
+      },
+      SLetMut(rstname, _, _) => if rstname == "resume" {
+        resume_shadowed_top = true
+      } else {
+        ()
+      },
+      SExternLet(rstname, _) => if rstname == "resume" {
+        resume_shadowed_top = true
+      } else {
+        ()
+      },
+      SLetPat(rstpat, _) => if pat_binds_resume(rstpat) {
+        resume_shadowed_top = true
+      } else {
+        ()
+      },
+      SImport(_, rstnames) => {
+        let mut rn_i = 0
+        while rn_i < Array::length(rstnames) {
+          let (rn_name, rn_alias) = Array::get(rstnames, rn_i)
+          let rn_bound = match rn_alias {
+            Some(a) => a,
+            None => rn_name
+          }
+          if rn_bound == "resume" {
+            resume_shadowed_top = true
+          } else {
+            ()
+          }
+          rn_i = rn_i + 1
+        }
+      },
+      SReExport(_, rstnames) => {
+        let mut rn_i = 0
+        while rn_i < Array::length(rstnames) {
+          let (rn_name, rn_alias) = Array::get(rstnames, rn_i)
+          let rn_bound = match rn_alias {
+            Some(a) => a,
+            None => rn_name
+          }
+          if rn_bound == "resume" {
+            resume_shadowed_top = true
+          } else {
+            ()
+          }
+          rn_i = rn_i + 1
+        }
+      },
+      _ => ()
+    }
+    rst_i = rst_i + 1
+  }
   while idx < Array::length(stmts) {
     let env = cur_env
     let s = cur_s
@@ -283,14 +349,17 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
     // outside any handler arm is rejected, and inside a (non-Error) arm it
     // must sit in tail position. Runs on a throwaway lane per statement
     // (only ADDS diagnostics; inference flow untouched). SModule bodies are
-    // covered by the recursive check_stmts call below.
+    // covered by the recursive check_stmts call below. `resume_shadowed_top`
+    // (computed above): when a top-level declaration binds the name `resume`,
+    // codegen's prefer_bound_call routes every `resume(x)` to the bound
+    // function, so the misuse walk stands down (Codex P2 on #969).
     match stmt {
-      SLet(_, _, _, _, rv) => reject_resume_outside_handler(rv, errors),
-      SLetMut(_, _, rv) => reject_resume_outside_handler(rv, errors),
-      SLetPat(_, rv) => reject_resume_outside_handler(rv, errors),
-      STest(_, rb) => reject_resume_outside_handler(rb, errors),
-      SBench(_, rb) => reject_resume_outside_handler(rb, errors),
-      SExpr(re) => reject_resume_outside_handler(re, errors),
+      SLet(_, _, _, _, rv) => reject_resume_outside_handler(rv, resume_shadowed_top, errors),
+      SLetMut(_, _, rv) => reject_resume_outside_handler(rv, resume_shadowed_top, errors),
+      SLetPat(_, rv) => reject_resume_outside_handler(rv, resume_shadowed_top, errors),
+      STest(_, rb) => reject_resume_outside_handler(rb, resume_shadowed_top, errors),
+      SBench(_, rb) => reject_resume_outside_handler(rb, resume_shadowed_top, errors),
+      SExpr(re) => reject_resume_outside_handler(re, resume_shadowed_top, errors),
       _ => ()
     }
     let (new_env, s1, c1) = match stmt {

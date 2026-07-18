@@ -130,9 +130,62 @@ test "resume as an ordinary (never-called) binding name stays accepted" {
   assert(first_check_error(src) == "")
 }
 
+// Codex P2 on #969: callable bindings NAMED `resume` are routed to the bound
+// function by codegen's prefer_bound_call (a global name match) — they never
+// touch the continuation machinery and ran fine pre-#942, so the misuse
+// walks must stand down when `resume` is shadowed by a binder.
+
+test "top-level fn named resume stays callable outside handlers" {
+  let src = "fn resume(x: Int) -> Int { x * 2 }\nfn main() -> Int { resume(21) }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "local binding named resume stays callable outside handlers" {
+  let src = "fn main() -> Int { let resume = (x: Int) -> { x + 40 }\n  resume(2) }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "shadowing binding named resume inside an arm escapes the tail rule" {
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with Ask { Get() => { let resume = (x: Int) -> { x + 5 }\n  let y = resume(3)\n  y } } }\n"
+  assert(first_check_error(src) == "")
+}
+
+// Codex P2 on #969: `return resume(v)` as the arm's final expression is
+// semantically tail-resumptive (nothing after the resume ever runs; verified
+// at runtime pre-#942 to yield the same value as a plain tail resume).
+
+test "return resume(v) as the arm's final expression stays accepted" {
+  let src = "effect Ask { Get() -> Int }\nfn run() -> Int { handle { perform Ask::Get() + 100 } with Ask { Get() => return resume(1) } }\nfn main() -> Int { run() }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "unshadowed non-tail resume is still rejected when another local exists" {
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with Ask { Get() => { let other = 1\n  let a = resume(other)\n  resume(2) } } }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "tail position"))
+}
+
 test "Error arm resume keeps the #640 non-resumable message (not the #942 one)" {
   let src = "fn main() -> Int { handle { throw(\"x\")\n  1 } with Error { Throw(_e) => resume(0) } }\n"
   let msg = first_check_error(src)
   assert(String::contains(msg, "non-resumable"))
   assert(String::contains(msg, "#640"))
+}
+
+// Codex P2 on #970: a `resume` binding shadowed INSIDE the arm body (not just
+// via an arm payload binder) escapes the resume-VALUE check too, not just the
+// tail-position check — env_lookup(env, "resume") in check_resume_values now
+// sees the same lexical shadow the checker itself uses everywhere else.
+test "local resume binding inside an arm escapes the resume-value check" {
+  let src = "effect Ask { Get() -> String }\nfn go() -> String { handle { perform Ask::Get() } with Ask { Get() => { let resume = (x: Int) -> Int { x }\n  let n = resume(1)\n  \"ok\" } } }\nfn main() -> Int { String::length(go()) }\n"
+  assert(first_check_error(src) == "")
+}
+
+// Codex P2 on #970: a labeled/optional param keeps a trailing `~`/`?` in the
+// raw AST name until the checker/codegen strip it — `resume~: T` must still
+// be recognized as shadowing `resume` (fn_params_bind_resume now uses the
+// same param_base_name stripping check_expr's EFn arm uses).
+test "labeled param named resume stays callable outside handlers" {
+  let src = "let f: (resume~: (Int) -> Int) -> Int = (resume~) -> { resume(1) }\nfn main() -> Int { f(resume=(x: Int) -> Int { x + 9 }) }\n"
+  assert(first_check_error(src) == "")
 }
