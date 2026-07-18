@@ -1,0 +1,114 @@
+//# Imports
+
+// #947: regression coverage for the `vibe type-at` / `vibe binding-at` (LSP
+// hover / rename-references) position-mapping fixes — EOL-clamp, line-0,
+// string-interpolation offset, and CRLF. See type_at.vibe / binding_at.vibe
+// (line_col_to_offset / bind_line_col_to_offset) and
+// lib/@vibe/parser/parser_expr_primary.vibe (build_interp_expr /
+// shift_expr_offsets) for the fixes these tests pin down.
+
+import ./type_at.vibe {
+  type_at_source
+}
+
+import ./binding_at.vibe {
+  binding_occurrences
+}
+
+//# Functions
+
+fn occ_len(occ: Array[(Int, Int)]) -> Int {
+  Array::length(occ)
+}
+
+fn occ_contains(occ: Array[(Int, Int)], start: Int, end: Int) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(occ) {
+    let (s, e) = Array::get(occ, i)
+    if s == start && e == end {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+//# Misc
+
+// --- Item 1: col past end-of-line must NOT spill into the next line's
+// identifier -- it must clamp to "no result" (empty), not
+// `linestart + col - 1`.
+//   line 1 (52 chars): export let add = (a: Int, b: Int) -> Int { a + b }
+//   line 2:            export let subtract = (a: Int, b: Int) -> Int { a - b }
+// Column 63 on line 1 is far past line 1's own 52 characters; under the old
+// unclamped math `off = 0 + (63 - 1) = 62`, which lands inside "subtract" on
+// line 2 (offset 62) -- a col-past-EOL query silently resolving to an
+// unrelated identifier one line down.
+test "type-at: col past end-of-line clamps to empty, does not spill into next line" {
+  let src = "export let add = (a: Int, b: Int) -> Int { a + b }\nexport let subtract = (a: Int, b: Int) -> Int { a - b }\n"
+  assert(type_at_source(src, 1, 63) == "")
+  assert(occ_len(binding_occurrences(src, 1, 63)) == 0)
+  // Sanity: querying the real position of `subtract` still resolves.
+  assert(type_at_source(src, 2, 12) == "(Int, Int) -> Int")
+}
+
+// --- Item 1: line 0 is out of range (1-based) and must yield empty, not
+// alias into line 1 via `linestart(=0) + col - 1`.
+test "type-at: line 0 (invalid, 1-based) yields empty, does not alias to line 1" {
+  let src = "export let add = (a: Int, b: Int) -> Int { a + b }\n"
+  assert(type_at_source(src, 0, 12) == "")
+  assert(occ_len(binding_occurrences(src, 0, 12)) == 0)
+  // Sanity: the same column on the real line 1 resolves to `add`.
+  assert(type_at_source(src, 1, 12) == "(Int, Int) -> Int")
+}
+
+// --- Item 2: an identifier referenced inside a string interpolation
+// `\{...}` must resolve to its REAL source position, not a bogus span at
+// file-start offset 0 (previously: the interpolation fragment was re-lexed
+// in isolation, so its EIdent's offset was relative to the fragment (0),
+// colliding with whatever real declaration happened to sit at file offset 0
+// -- a rename using that span would have corrupted the file start).
+//   offset 0..3   "let "
+//   offset 4..7   "name"        (declaration)
+//   offset 19..48 "let greeting = \"hello \{name}\"\n"
+//   offset 43..46 "name"        (reference inside \{...})
+test "binding-at: identifier inside string interpolation resolves to its real span, not offset 0" {
+  let src = "let name = \"world\"\nlet greeting = \"hello \\{name}\"\n"
+  let occ = binding_occurrences(src, 1, 5)
+  // Exactly the declaration and the interpolation-internal use -- no extra
+  // (bogus) entries, in particular none starting at 0.
+  assert(occ_len(occ) == 2)
+  assert(occ_contains(occ, 4, 8))
+  assert(occ_contains(occ, 43, 47))
+  assert(not(occ_contains(occ, 0, 4)))
+}
+
+test "type-at: identifier inside string interpolation resolves its type" {
+  let src = "let name = \"world\"\nlet greeting = \"hello \\{name}\"\n"
+  assert(type_at_source(src, 2, 25) == "String")
+}
+
+// --- Item 3: CRLF files must not drift -- `\r` must not be counted as
+// addressable line content (so end-of-line clamping lands on the real
+// content boundary) while still not shifting any other offset (byte offsets
+// are unaffected; `\r` is an ordinary byte like any other, just excluded from
+// the "is this column still inside the line" boundary check).
+//   let ab = 1\r\n     -- offsets 0..11 (10 content chars + \r\n)
+//   let xy = 2\r\n     -- "xy" at offset 16..18
+test "binding-at: CRLF file resolves the correct byte offset" {
+  let src = "let ab = 1\r\nlet xy = 2\r\n"
+  let occ = binding_occurrences(src, 2, 5)
+  assert(occ_len(occ) == 1)
+  assert(occ_contains(occ, 16, 18))
+}
+
+test "binding-at: CRLF end-of-line clamp does not spill into the next line" {
+  let src = "let ab = 1\r\nlet xy = 2\r\n"
+  // Column 17 on line 1 is far past line 1's 10 real content chars; under the
+  // old unclamped math this used to land exactly on "xy" (offset 16) on line
+  // 2 -- the CRLF-file instance of the same col-past-EOL spillover as item 1.
+  assert(occ_len(binding_occurrences(src, 1, 17)) == 0)
+}

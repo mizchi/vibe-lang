@@ -1,7 +1,7 @@
 //# Imports
 
 import ../ast {
-  Expr, TypeExpr
+  Expr, Pat, TypeExpr
 }
 
 import ./parser_base.vibe {
@@ -18,6 +18,98 @@ import ./lexer.vibe {
 
 //# Functions
 
+// #947: `part` is re-lexed/parsed in ISOLATION (just its own text, not the
+// surrounding file), so every offset in the resulting Expr tree (EIdent,
+// ECall, ELet/ELetMut, EDot) is relative to the FRAGMENT (starts at 0), not
+// the real file. Shift every located offset by `delta` (the fragment's
+// absolute start offset in the original source) so hover / go-to-def / rename
+// on an identifier referenced inside `\{...}` resolves to its real position
+// instead of a bogus span at delta=0 (which used to collide with whatever
+// happened to sit at the very start of the file). Every Expr variant is
+// enumerated so a new variant is a compile error here, keeping this walker in
+// sync with the AST. Non-located constructs (string/int/bool literals,
+// bare structural nodes) pass through unchanged; -1 (synthetic/non-located)
+// offsets stay -1 rather than becoming `delta - 1`.
+fn shift_off(off: Int, delta: Int) -> Int {
+  if off < 0 {
+    off
+  } else {
+    off + delta
+  }
+}
+
+fn shift_expr_offsets(expr: Expr, delta: Int) -> Expr {
+  if delta == 0 {
+    expr
+  } else {
+    match expr {
+      EInt(_) => expr,
+      EFloat(_) => expr,
+      EString(_) => expr,
+      EBool(_) => expr,
+      EUnit => expr,
+      EIdent(name, off) => EIdent(name, shift_off(off, delta)),
+      ETuple(items) => ETuple(shift_exprs(items, delta)),
+      EArray(items) => EArray(shift_exprs(items, delta)),
+      ERecord(rn, fields, targs) => ERecord(rn, shift_field_exprs(fields, delta), targs),
+      EIf(c, t, e) => EIf(shift_expr_offsets(c, delta), shift_expr_offsets(t, delta), shift_expr_offsets(e, delta)),
+      ELet(n, v, b, soff) => ELet(n, shift_expr_offsets(v, delta), shift_expr_offsets(b, delta), shift_off(soff, delta)),
+      ELetRec(n, v, b) => ELetRec(n, shift_expr_offsets(v, delta), shift_expr_offsets(b, delta)),
+      ELetMut(n, v, b, soff) => ELetMut(n, shift_expr_offsets(v, delta), shift_expr_offsets(b, delta), shift_off(soff, delta)),
+      EAssign(n, v, b) => EAssign(n, shift_expr_offsets(v, delta), shift_expr_offsets(b, delta)),
+      EAssignOp(n, op, v, b) => EAssignOp(n, op, shift_expr_offsets(v, delta), shift_expr_offsets(b, delta)),
+      ESeq(a, b) => ESeq(shift_expr_offsets(a, delta), shift_expr_offsets(b, delta)),
+      EMatch(s, arms) => EMatch(shift_expr_offsets(s, delta), shift_arm_exprs(arms, delta)),
+      EHandle(s, arms) => EHandle(shift_expr_offsets(s, delta), shift_arm_exprs(arms, delta)),
+      EWhile(c, b) => EWhile(shift_expr_offsets(c, delta), shift_expr_offsets(b, delta)),
+      ELoop(params, b) => ELoop(shift_loop_param_exprs(params, delta), shift_expr_offsets(b, delta)),
+      EForIn(n, idx, it, b) => EForIn(n, idx, shift_expr_offsets(it, delta), shift_expr_offsets(b, delta)),
+      ECall(callee, args, off) => ECall(shift_expr_offsets(callee, delta), shift_exprs(args, delta), shift_off(off, delta)),
+      EBinOp(op, l, r) => EBinOp(op, shift_expr_offsets(l, delta), shift_expr_offsets(r, delta)),
+      EUnaryOp(op, e) => EUnaryOp(op, shift_expr_offsets(e, delta)),
+      EFn(tp, tb, params, ret, eff, body) => EFn(tp, tb, params, ret, eff, shift_expr_offsets(body, delta)),
+      EDot(e, field, off, fdoff) => EDot(shift_expr_offsets(e, delta), field, shift_off(off, delta), shift_off(fdoff, delta)),
+      ELabeledArg(l, n, v) => ELabeledArg(l, n, shift_expr_offsets(v, delta)),
+      EReturn(e) => EReturn(shift_expr_offsets(e, delta)),
+      EBreak(opt) => match opt {
+        Some(v) => EBreak(Some(shift_expr_offsets(v, delta))),
+        None => expr
+      },
+      EContinue(args) => EContinue(shift_exprs(args, delta)),
+      EMap(fields) => EMap(shift_field_exprs(fields, delta)),
+      ESpread(e) => ESpread(shift_expr_offsets(e, delta)),
+      EStringInterp(_) => expr
+    }
+  }
+}
+
+fn shift_exprs(items: Array[Expr], delta: Int) -> Array[Expr] {
+  for it in items {
+    shift_expr_offsets(it, delta)
+  }
+}
+
+fn shift_field_exprs(fields: Array[(String, Expr)], delta: Int) -> Array[(String, Expr)] {
+  for f in fields {
+    let (n, v) = f
+    (n, shift_expr_offsets(v, delta))
+  }
+}
+
+fn shift_arm_exprs(arms: Array[(Pat, Expr)], delta: Int) -> Array[(Pat, Expr)] {
+  for a in arms {
+    let (p, e) = a
+    (p, shift_expr_offsets(e, delta))
+  }
+}
+
+fn shift_loop_param_exprs(params: Array[(String, Expr)], delta: Int) -> Array[(String, Expr)] {
+  for p in params {
+    let (n, init) = p
+    (n, shift_expr_offsets(init, delta))
+  }
+}
+
 // Desugar a string-interpolation token's parts into a `String::concat` chain.
 // Parts alternate literal/expression by index (even = literal chunk, odd =
 // embedded expression SOURCE). The embedded expression is lexed and parsed as a
@@ -26,7 +118,14 @@ import ./lexer.vibe {
 // Each interpolated value is rendered via `__to_string`. Bare-identifier parts
 // parse to the same `EIdent` the previous (ident-only) path produced, so
 // existing interpolations are unchanged.
-fn build_interp_expr(parts: Array[String], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> Expr with { Error } {
+//
+// `offsets` (#947) carries, in lockstep with `parts`, the absolute source
+// offset of each part's start (-1 for literal/even parts, which don't need
+// one). Each fragment is parsed in isolation (offsets relative to the
+// fragment, starting at 0) then shifted by its recorded absolute offset via
+// `shift_expr_offsets`, so identifiers referenced inside `\{...}` carry their
+// real file position instead of a bogus fragment-relative one.
+fn build_interp_expr(parts: Array[String], offsets: Array[Int], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> Expr with { Error } {
   let concat_expr: (Expr, Expr) -> Expr = (a, b) -> {
     ECall(EIdent("String::concat", -1), [
       a,
@@ -52,7 +151,13 @@ fn build_interp_expr(parts: Array[String], parse_recur: (Array[Token], Int, Int)
         ()
       }
     } else {
-      let (pe, _) = parse_recur(lex(part), 0, 0)
+      let (pe0, _) = parse_recur(lex(part), 0, 0)
+      let frag_off = if i < Array::length(offsets) { Array::get(offsets, i) } else { -1 }
+      let pe = if frag_off >= 0 {
+        shift_expr_offsets(pe0, frag_off)
+      } else {
+        pe0
+      }
       let piece = ECall(EIdent("__to_string", -1), [
         pe
       ], -1)
@@ -756,7 +861,7 @@ export fn parse_primary(tokens: Array[Token], starts: Array[Int], pos: Int, pars
     TInt(n) => (EInt(n), pos + 1),
     TFloat(n) => (EFloat(n), pos + 1),
     TString(s) => (EString(s), pos + 1),
-    TStringInterp(parts) => (build_interp_expr(parts, parse_recur), pos + 1),
+    TStringInterp(parts, offs) => (build_interp_expr(parts, offs, parse_recur), pos + 1),
     TIdent(name) => parse_ident_primary(tokens, starts, pos, name, parse_recur),
     TLParen => parse_paren_primary(tokens, starts, pos, parse_recur),
     TLBracket => parse_bracket_primary(tokens, starts, pos, parse_recur),

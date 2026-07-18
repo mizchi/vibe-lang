@@ -49,27 +49,47 @@ import ../syntax {
 //# Functions
 
 // 1-based (line, col) -> 0-based char offset. Mirror of type_at.vibe's
-// line_col_to_offset: count newlines to reach the target line, add (col - 1),
-// clamp to [0, len].
+// line_col_to_offset (kept in sync — see its comment for the full rationale):
+// count newlines to reach the target line, add (col - 1). Returns -1
+// (invalid / no position) rather than clamping (#947) for `line`/`col` < 1,
+// `line` beyond EOF, or `col` past the end of that line's content (previously
+// unclamped, so a large `col` silently resolved into the NEXT line's
+// identifier). CRLF: a line's addressable content excludes a trailing '\r'
+// before the '\n', so query positions on CRLF files don't drift.
 fn bind_line_col_to_offset(source: String, line: Int, col: Int) -> Int {
-  let len = String::length(source)
-  let mut i = 0
-  let mut cur_line = 1
-  while cur_line < line && i < len {
-    if String::char_code_at(source, i) == 10 {
-      cur_line = cur_line + 1
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  let off = i + (col - 1)
-  if off < 0 {
-    0
-  } else if off > len {
-    len
+  if line < 1 || col < 1 {
+    -1
   } else {
-    off
+    let len = String::length(source)
+    let mut i = 0
+    let mut cur_line = 1
+    while cur_line < line && i < len {
+      if String::char_code_at(source, i) == 10 {
+        cur_line = cur_line + 1
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if cur_line < line {
+      -1
+    } else {
+      let mut line_end = i
+      while line_end < len && String::char_code_at(source, line_end) != 10 {
+        line_end = line_end + 1
+      }
+      let content_end = if line_end > i && String::char_code_at(source, line_end - 1) == 13 {
+        line_end - 1
+      } else {
+        line_end
+      }
+      let off = i + (col - 1)
+      if off > content_end {
+        -1
+      } else {
+        off
+      }
+    }
   }
 }
 
@@ -568,6 +588,14 @@ fn bind_insert_sorted_unique(out: Array[(Int, Int)], start: Int, end: Int) -> Un
 fn binding_occurrences_impl(source: String, line: Int, col: Int) -> Array[(Int, Int)] with { Error } {
   {
     let tgt = bind_line_col_to_offset(source, line, col)
+    let empty_out = Array::slice([
+      (0, 0)
+    ], 0, 0)
+    if tgt < 0 {
+      // Out-of-range (line, col) — see bind_line_col_to_offset (#947): no
+      // position to resolve, so no occurrences.
+      empty_out
+    } else {
     let (tokens, starts, _ends) = lex_with_offsets(source)
     let stmts = parse_program_located(tokens, starts, source)
     let st = bind_new_state(source)
@@ -594,6 +622,7 @@ fn binding_occurrences_impl(source: String, line: Int, col: Int) -> Array[(Int, 
         i = i + 1
       }
       out
+    }
     }
   }
 }
