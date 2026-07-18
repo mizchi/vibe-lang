@@ -62,8 +62,26 @@ test "labeled args: reordered labeled call type mismatch rejected" {
   assert(check_source_err("let add: (x~: Int, y~: String) -> Int = (x~, y~) -> { x }\nfn main() -> Int {\n  add(y=1, x=2)\n}"))
 }
 
-// Out-of-order labels on an UNLABELED fn bind positionally (no reorder pass
-// fires) — silently swapped bindings, so the checker rejects the call.
-test "labeled args: out-of-order labels on plain fn rejected" {
-  assert(check_source_err("fn f(x: Int, y: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(y=1, x=2)\n}"))
+// #986 follow-up: a fully-labeled out-of-order call to a PLAIN fn (no `~` in
+// the declaration) is also reordered by name — `fn` decls lower to
+// `SLet` + `EFn` before the pass, so the parameter names are known.
+test "labeled args: reordered labels on plain fn accepted" {
+  assert(check_source_ok("fn f(x: Int, y: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(y=1, x=2)\n}"))
+}
+
+// The name-based reorder means types follow the LABEL on plain fns too:
+// f(y=\"s\", x=1) against (x: Int, y: String) is fine...
+test "labeled args: reordered labels on plain fn follow label types" {
+  assert(check_source_ok("fn f(x: Int, y: String) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(y=\"s\", x=1)\n}"))
+}
+
+// ...and f(y=5, x=\"hello\") is rejected (both labels name the wrong type).
+test "labeled args: reordered labels on plain fn type mismatch rejected" {
+  assert(check_source_err("fn f(x: Int, y: String) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(y=5, x=\"hello\")\n}"))
+}
+
+// A PARTIALLY labeled call is never reordered (positional binding), so an
+// out-of-position label would silently swap — rejected.
+test "labeled args: partial out-of-order label rejected" {
+  assert(check_source_err("fn f(x: Int, y: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(y=1, 2)\n}"))
 }
