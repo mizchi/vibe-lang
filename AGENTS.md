@@ -32,10 +32,10 @@ pkf run test              # selfhost operation gate (commit 前の主チェッ�
 pkf run test-local        # affected tests only (fast inner loop)
 pkf run full-gate         # complete selfhost operation gate
 pkf run run -- args       # run main with args
-pkf affected --since=origin/main 'test:*'  # diff-aware package tests
 # 単一ファイルの型検査 / 診断: vibe diagnostics <file.vibe>
-# `fmt` は現状 no-op placeholder、`check`/`info`/`test-update` は
-# legacy moon 依存で #594 以降は無効。
+# `fmt` は現状 no-op placeholder (selfhost fmt 未移植)。moon 依存の
+# `check`/`info`/`test-update` や per-package `test:*` は dead-task
+# cleanup で Taskfile から削除済み。
 ```
 
 ## Project Structure
@@ -238,7 +238,7 @@ pkf run release-check  # fmt + info + check + test + vibe-normalize + bundle-siz
 
 ## pkfire / pkspec
 
-タスク runner は `Taskfile.pkl` (238 tasks)、テスト宣言は `pkspec/{VibeSpec,VibeTest}.pkl`。
+タスク runner は `Taskfile.pkl` (~100 tasks、dead-task cleanup 後)、テスト宣言は `pkspec/{VibeSpec,VibeTest}.pkl`。
 CI は `~/.cache/pkfire` を `actions/cache` でキャッシュしているため、
 変更がない subgraph は cache hit でスキップされる。
 詳細は [docs/pkfire-pkspec.md](docs/pkfire-pkspec.md)。

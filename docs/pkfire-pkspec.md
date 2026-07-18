@@ -14,7 +14,7 @@ and had sat unused since they were added. If a spec-coverage gate is wanted
 again, re-run `pkspec init --dir pkspec` and re-author `VibeTest.pkl` from
 scratch rather than resurrecting the old files.
 
-The task definitions live in `Taskfile.pkl` (238 tasks). Multi-line
+The task definitions live in `Taskfile.pkl` (~100 tasks after the dead-task cleanup). Multi-line
 shell that doesn't fit a single Pkl `cmd =` lives in `scripts/pkfire/*.sh`
 and is invoked directly. CI runs every job through `pkf run …` with
 `~/.cache/pkfire` persisted via `actions/cache` so unchanged subgraphs are

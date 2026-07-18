@@ -69,23 +69,22 @@ pkf run full-gate
 この task は次をまとめて確認する。
 
 - `generation-gate`: fixed seed -> stage1 -> stage2 -> stage3
-- `release-gates`: component / direct / command / cutover / golden WAT
-- `test-selfhost-corpus-gate`: corpus check parity REAL=0
-- `perf-kpi`: TOTAL compile <= 2.5x、TOTAL check <= 1.33x
-- `rss-kpi`: peak RSS compile/check <= 2.0x
+- `post-generation-gate` (`scripts/gate.sh --post-generation` -> `trial_gate.sh`):
+  moon-free selfhost sign-off一式
 
-stage generation は gate の先頭で固定している。release/corpus/perf/RSS を
-先に実行したあとに generation を走らせると、host runner 側の Node/Wasm 実行が
-segfault することがあるため、Taskfile では
+旧 host 比較系 (`test-selfhost-corpus-gate` / `perf-kpi` / `rss-kpi` /
+component parity) は MoonBit host 退役 (#594) でスクリプトごと退役済み。
+対応する task は Taskfile から削除した (dead-task cleanup)。
+
+stage generation は gate の先頭で固定している。post-generation 系を先に実行したあとに generation を走らせると、host runner
+側の Node/Wasm 実行が segfault することがあるため、Taskfile では
 `generation-gate` -> `post-generation-gate` の依存チェーンにしている。
 
 短い調査ループでは、必要な部分だけを単独で走らせてよい。
 
 ```bash
-pkf run release-gates
-pkf run test-selfhost-corpus-gate
-pkf run perf-kpi
-pkf run rss-kpi
+pkf run release-gates   # = scripts/compiler_gate.sh (moon-free)
+pkf run generation-gate
 ```
 
 ## Stop Criteria
