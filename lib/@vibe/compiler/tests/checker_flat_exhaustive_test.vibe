@@ -1,0 +1,50 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_ok, check_source_err
+}
+
+//# Misc
+
+// #940 Phase 1: the flat exhaustiveness check only looked at user enums
+// (TDEnum) — builtin `Option` and `Bool` scrutinees were never checked, so a
+// multi-arm match missing `None` (or `false`) compiled clean and trapped at
+// runtime on codegen's terminal `unreachable`. This closes exactly that flat
+// gap. Scope guards, both deliberate:
+//   - single-arm matches stay tolerated (syntactically indistinguishable
+//     from the partial-let desugar `let Some(v) = o`, a documented idiom);
+//   - nested-pattern completeness (tuples, ctor payloads, Int literals) is
+//     the Phase 2 usefulness algorithm, not this check.
+
+test "940: multi-arm Option match missing None is rejected" {
+  assert(check_source_err("fn f(o: Option[Int]) -> Int { match o { Some(1) => 1, Some(_) => 2 } }\nfn main() -> Int { f(Some(3)) }"))
+}
+
+test "940: multi-arm Option match missing Some is rejected" {
+  assert(check_source_err("fn f(o: Option[Int]) -> Int { match o { None => 0, None => 1 } }\nfn main() -> Int { f(None) }"))
+}
+
+test "940: Some/None two-arm Option match stays accepted" {
+  assert(check_source_ok("fn f(o: Option[Int]) -> Int { match o { Some(v) => v, None => 0 } }\nfn main() -> Int { f(Some(3)) }"))
+}
+
+test "940: Option match with a catch-all stays accepted" {
+  assert(check_source_ok("fn f(o: Option[Int]) -> Int { match o { Some(1) => 1, _ => 0 } }\nfn main() -> Int { f(None) }"))
+}
+
+test "940: multi-arm Bool match missing false is rejected" {
+  assert(check_source_err("fn f(b: Bool) -> Int { match b { true => 1, true => 2 } }\nfn main() -> Int { f(true) }"))
+}
+
+test "940: true/false Bool match stays accepted (and via or-pattern)" {
+  assert(check_source_ok("fn f(b: Bool) -> Int { match b { true => 1, false => 0 } }\nfn main() -> Int { f(true) }"))
+  assert(check_source_ok("fn f(b: Bool) -> Int { match b { true | false => 1, _ => 0 } }\nfn main() -> Int { f(true) }"))
+}
+
+test "940: single-arm partial-let over Option stays accepted (documented idiom)" {
+  assert(check_source_ok("fn f(o: Option[Int]) -> Int { let Some(v) = o\n  v }\nfn main() -> Int { f(Some(3)) }"))
+}
+
+test "940: `is` and let-else desugars carry a catch-all and stay accepted" {
+  assert(check_source_ok("fn f(o: Option[Int]) -> Bool { o is Some(_) }\nfn main() -> Int { if f(Some(1)) { 0 } else 1 }"))
+}

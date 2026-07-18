@@ -2044,6 +2044,37 @@ fn pat_is_catchall(pat: Pat) -> Bool {
 
 // Collect the constructor names a pattern matches at the TOP level (for enum
 // exhaustiveness). `POr` contributes from both sides; other patterns none.
+// #940 Phase 1: Bool-literal coverage names (`"true"` / `"false"`) for the
+// flat Bool exhaustiveness check, walking or-patterns like
+// collect_ctor_names_into does for ctor names.
+fn collect_bool_pats_into(pat: Pat, acc: Array[String]) -> Unit {
+  match pat {
+    PBool(b) => if b {
+      Array::push(acc, "true")
+    } else {
+      Array::push(acc, "false")
+    },
+    POr(l, r) => {
+      collect_bool_pats_into(l, acc)
+      collect_bool_pats_into(r, acc)
+    },
+    _ => ()
+  }
+}
+
+fn flat_names_contain(names: Array[String], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) && !found {
+    if Array::get(names, i) == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 fn collect_ctor_names_into(pat: Pat, acc: Array[String]) -> Unit {
   match pat {
     PCtor(name, _) => Array::push(acc, name),
@@ -4007,6 +4038,85 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
             _ => ()
           },
           None => ()
+        }
+        // #940 Phase 1: builtin `Option` and `Bool` scrutinees were not
+        // covered by the flat exhaustiveness check AT ALL (the comment above
+        // even said so) — `match o { Some(v) => v, Some-only arms }` or a
+        // Bool match missing `false` compiled clean and trapped at runtime
+        // (codegen's test chain ends in `unreachable`). Checked only for
+        // MULTI-arm matches: a single-arm match is syntactically
+        // indistinguishable from the partial-let desugar (`let Some(v) = o`,
+        // the cheatsheet's documented idiom), which must stay tolerated.
+        // Nested-pattern completeness (tuples, ctor payloads, literals) is
+        // the Phase 2 usefulness algorithm — this closes only the flat gap.
+        if alen >= 2 {
+          match subst_apply(si, scr_ty) {
+            CtOption(_) => {
+              let mut opt_catchall = false
+              let opt_covered = Array::slice([
+                ""
+              ], 0, 0)
+              let mut oax = 0
+              while oax < Array::length(arms) {
+                let (oapat, _) = Array::get(arms, oax)
+                if pat_is_catchall(oapat) {
+                  opt_catchall = true
+                } else {
+                  ()
+                }
+                collect_ctor_names_into(oapat, opt_covered)
+                oax = oax + 1
+              }
+              if opt_catchall {
+                ()
+              } else {
+                if !flat_names_contain(opt_covered, "Some") {
+                  Array::push(errors, "non-exhaustive match: variant `Some` of Option is not handled (add it or a `_` arm)")
+                } else {
+                  ()
+                }
+                if !flat_names_contain(opt_covered, "None") {
+                  Array::push(errors, "non-exhaustive match: variant `None` of Option is not handled (add it or a `_` arm)")
+                } else {
+                  ()
+                }
+              }
+            },
+            CtBool => {
+              let mut bool_catchall = false
+              let bool_covered = Array::slice([
+                ""
+              ], 0, 0)
+              let mut bax = 0
+              while bax < Array::length(arms) {
+                let (bapat, _) = Array::get(arms, bax)
+                if pat_is_catchall(bapat) {
+                  bool_catchall = true
+                } else {
+                  ()
+                }
+                collect_bool_pats_into(bapat, bool_covered)
+                bax = bax + 1
+              }
+              if bool_catchall {
+                ()
+              } else {
+                if !flat_names_contain(bool_covered, "true") {
+                  Array::push(errors, "non-exhaustive match: `true` is not handled for a Bool scrutinee (add it or a `_` arm)")
+                } else {
+                  ()
+                }
+                if !flat_names_contain(bool_covered, "false") {
+                  Array::push(errors, "non-exhaustive match: `false` is not handled for a Bool scrutinee (add it or a `_` arm)")
+                } else {
+                  ()
+                }
+              }
+            },
+            _ => ()
+          }
+        } else {
+          ()
         }
         (result_ty, si, ci)
       }
