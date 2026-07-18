@@ -1208,10 +1208,15 @@ export fn fn_return_env_name(name: String) -> String {
 
 // #938: the ArrayBuilder container type — `CtNamed("ArrayBuilder", [elem])`,
 // the same shape `b: ArrayBuilder[T]` annotations resolve to. Used by the
-// builder call branches below.
+// builder call branches below. #983: `Map` is the same kind of live mutable
+// container (`Map::set` writes through the shared value), so a map literal's
+// value slot (`CtNamed("Map", [CtString, v])`, the shape a `Map[String, V]`
+// annotation resolves to) needs the identical value restriction — a
+// quantified value var would re-instantiate per use and sets could never
+// constrain each other.
 fn is_array_builder_head(t: Type) -> Bool {
   match t {
-    CtNamed(n, targs) => n == "ArrayBuilder" && Array::length(targs) == 1,
+    CtNamed(n, targs) => (n == "ArrayBuilder" && Array::length(targs) == 1) || (n == "Map" && Array::length(targs) == 2),
     _ => false
   }
 }
@@ -3205,6 +3210,85 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
           _ => CtArray(CtUnknown)
         }
         (tab_call_ty(tytab, call_off, result), s1, c1)
+      } else if name == "Map::set" && Array::length(args) == 3 {
+        // #983: every Map API's VALUE position was `CtUnknown` (the static
+        // builtin table cannot mint per-call vars), so
+        // `Map::set(m, "b", "str")` into a `Map[String, Int]` compiled clean
+        // and trapped at the consumer. Map literals now carry a real value
+        // slot (`CtNamed("Map", [CtString, v])` — the shape a
+        // `Map[String, V]` annotation already resolves to), and set checks
+        // the written value against it, ground-gated via `check_assignable`
+        // (same tolerate discipline as Array::push — untyped/var receivers
+        // stay tolerant). The key check replicates the CtString param the
+        // bypassed table signature enforced.
+        let (m_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        let (k_ty, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+        let (v_ty, s3, c3) = check_expr(Array::get(args, 2), env, defs, s2, c2, errors, tytab)
+        let s4 = check_assignable(CtString, subst_apply(s3, k_ty), s3, errors, "argument type mismatch for Map::set", call_off)
+        let s5 = match subst_apply(s4, m_ty) {
+          CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+            check_assignable(subst_apply(s4, Array::get(margs, 1)), subst_apply(s4, v_ty), s4, errors, "Map::set value type mismatch", call_off)
+          } else {
+            s4
+          },
+          _ => s4
+        }
+        let mret = match subst_apply(s5, m_ty) {
+          CtNamed(mn2, margs2) => if mn2 == "Map" && Array::length(margs2) == 2 {
+            subst_apply(s5, m_ty)
+          } else {
+            CtNamed("Map", [CtString, CtUnknown])
+          },
+          _ => CtNamed("Map", [CtString, CtUnknown])
+        }
+        (tab_call_ty(tytab, call_off, mret), s5, c3)
+      } else if name == "Map::get" && Array::length(args) == 2 {
+        // #983: refine the result from bare CtUnknown to the receiver's value
+        // slot, so a wrongly-typed consume of the looked-up value is caught
+        // by the ordinary unify. NOTE: `Map::get` returns the RAW stored
+        // value (0 on a miss) — `declare Map::get(Map[T, U], T) -> U` in
+        // builtins/declarations.vibe and the linear codegen agree — NOT an
+        // Option. Untyped receivers keep the conservative CtUnknown.
+        let (m_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        let (k_ty, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+        let s3 = check_assignable(CtString, subst_apply(s2, k_ty), s2, errors, "argument type mismatch for Map::get", call_off)
+        let result = match subst_apply(s3, m_ty) {
+          CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+            subst_apply(s3, Array::get(margs, 1))
+          } else {
+            CtUnknown
+          },
+          _ => CtUnknown
+        }
+        (tab_call_ty(tytab, call_off, result), s3, c2)
+      } else if name == "Map::values" && Array::length(args) == 1 {
+        // #983: values() of a value-slotted map is `Array[v]`, not
+        // `Array[CtUnknown]`.
+        let (m_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        let result = match subst_apply(s1, m_ty) {
+          CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+            CtArray(subst_apply(s1, Array::get(margs, 1)))
+          } else {
+            CtArray(CtUnknown)
+          },
+          _ => CtArray(CtUnknown)
+        }
+        (tab_call_ty(tytab, call_off, result), s1, c1)
+      } else if name == "Map::delete" && Array::length(args) == 2 {
+        // #983: delete preserves the receiver's map type (value slot
+        // included) instead of collapsing it to `Map[String, CtUnknown]`.
+        let (m_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        let (k_ty, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+        let s3 = check_assignable(CtString, subst_apply(s2, k_ty), s2, errors, "argument type mismatch for Map::delete", call_off)
+        let mret = match subst_apply(s3, m_ty) {
+          CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+            subst_apply(s3, m_ty)
+          } else {
+            CtNamed("Map", [CtString, CtUnknown])
+          },
+          _ => CtNamed("Map", [CtString, CtUnknown])
+        }
+        (tab_call_ty(tytab, call_off, mret), s3, c2)
       } else if name == "Array::push" && Array::length(args) == 2 {
         // `Array::push(a, v)` requires `v` to match `a`'s element type — pushing
         // a String into an `Array[Int]` was accepted (direct_call_return only
@@ -5087,7 +5171,18 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
         }
         mi = mi + 1
       }
-      (CtUnknown, ms1, mc1)
+      // #983: surface the literal's value type as a REAL slot —
+      // `CtNamed("Map", [CtString, v])`, the exact shape a `Map[String, V]`
+      // annotation resolves to (checker_resolve's TyApp fallback) — so
+      // `Map::set`/`Map::get` can check against it. An empty literal
+      // (`Map::new()`) gets a fresh var, bound by the first set (ELet's
+      // value restriction keeps it un-quantified, same as ArrayBuilder).
+      if Array::length(mpairs) == 0 {
+        let (mv0, mc2) = fresh_var(mc1)
+        (CtNamed("Map", [CtString, mv0]), ms1, mc2)
+      } else {
+        (CtNamed("Map", [CtString, subst_apply(ms1, mvty)]), ms1, mc1)
+      }
     },
     ELabeledArg(_, _, la_val) => {
       // #986: desugar_labeled_args (run before checking — see check_program)
