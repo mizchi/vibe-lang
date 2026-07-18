@@ -5061,16 +5061,20 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
       (CtUnknown, ms1, mc1)
     },
     ELabeledArg(_, _, la_val) => {
-      // #986: a labeled argument (`f(x=1)`) used to fall through to the `_`
-      // wildcard arm below and type as CtUnknown — so labeled calls bypassed
-      // argument type checking entirely (`f(x="hello", y=5)` against
-      // `(x: Int, y: String)` compiled clean and returned garbage). The label
-      // is decorative at this level: codegen binds positionally (and
-      // desugar_labeled_args reorders fully-labeled calls into declared
-      // parameter order BEFORE the checker runs — see check_program), so the
-      // labeled arg's type is exactly its value's type. Label-name validation
-      // itself is a separate walk (check_labeled_arg_names_stmts).
-      check_expr(la_val, env, defs, s, c, errors, tytab)
+      // #986: desugar_labeled_args (run before checking — see check_program)
+      // RESOLVES labeled args whose callee's parameter names are known in this
+      // module: it reorders fully-labeled calls into declared order and strips
+      // the ELabeledArg wrappers, so those values reach the strict positional
+      // unification as plain args. An ELabeledArg that SURVIVES to this arm
+      // therefore has no label→position resolution available here — the
+      // callee is import-resolved (its param names live in another module,
+      // Codex P2-1 on #993), locally shadowed, a builtin with decorative flag
+      // labels (`sh_lines("ls", a = true)`), or an erroneous local shape that
+      // check_labeled_arg_names_stmts reports by name. Check the value for
+      // nested diagnostics but type the arg CtUnknown, so an unresolvable
+      // label is never falsely rejected by position.
+      let (_, la_s, la_c) = check_expr(la_val, env, defs, s, c, errors, tytab)
+      (CtUnknown, la_s, la_c)
     },
     _ => (CtUnknown, s, c)
   }

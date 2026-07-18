@@ -9,7 +9,7 @@ import ../checker_effects.vibe {
 }
 
 import ../core/index.vibe {
-  Expr, Stmt, TypeExpr, Subst, Type, TypeDef, TypeEnv, collect_subst_bounds_pairs, env_bind, env_cache, env_flat_bindings, env_lookup_flat, generalize, resolve_builtin, subst_apply, trait_defined, type_implements_trait, type_to_string
+  Expr, Pat, Stmt, TypeExpr, Subst, Type, TypeDef, TypeEnv, collect_subst_bounds_pairs, env_bind, env_cache, env_flat_bindings, env_lookup_flat, generalize, resolve_builtin, subst_apply, trait_defined, type_implements_trait, type_to_string
 }
 
 import ./checker.vibe {
@@ -1062,13 +1062,65 @@ fn labeled_name_check_call(fname: String, fname_off: Int, args: Array[Expr], pna
   }
 }
 
-fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], errors: Array[String]) -> Unit {
+// #986 (Codex P2-2 on #993): the walk tracks lexical shadowing — a local
+// binding (`let f = ..`, fn param, pattern bind, loop var) of a table name
+// suppresses validation for calls in its scope, since those calls resolve to
+// the local value whose parameter names the top-level table does not describe.
+// Same discipline as relabel_expr's `shadows` stack in desugar_trait_dict.vibe.
+fn labeled_walk_shadowed(shadows: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(shadows) {
+    if Array::get(shadows, i) == name {
+      found = true
+      i = Array::length(shadows)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn labeled_walk_pat_binds(pat: Pat, shadows: Array[String]) -> Unit {
+  match pat {
+    PBind(n) => Array::push(shadows, n),
+    PCtor(_, ps) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        labeled_walk_pat_binds(Array::get(ps, i), shadows)
+        i = i + 1
+      }
+    },
+    PTuple(ps) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        labeled_walk_pat_binds(Array::get(ps, i), shadows)
+        i = i + 1
+      }
+    },
+    POr(a, b) => {
+      labeled_walk_pat_binds(a, shadows)
+      labeled_walk_pat_binds(b, shadows)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        labeled_walk_pat_binds(fp, shadows)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], shadows: Array[String], errors: Array[String]) -> Unit {
   match e {
     ECall(callee, args, _) => {
-      labeled_name_check_expr(callee, tbl, errors)
+      labeled_name_check_expr(callee, tbl, shadows, errors)
       let mut i = 0
       while i < Array::length(args) {
-        labeled_name_check_expr(Array::get(args, i), tbl, errors)
+        labeled_name_check_expr(Array::get(args, i), tbl, shadows, errors)
         i = i + 1
       }
       match callee {
@@ -1084,7 +1136,7 @@ fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], errors:
             }
             li = li + 1
           }
-          if has_labeled {
+          if has_labeled && !labeled_walk_shadowed(shadows, fname) {
             match lookup_labeled_check_fn(tbl, fname) {
               Some(pnames) => labeled_name_check_call(fname, fname_off, args, pnames, errors),
               None => ()
@@ -1096,32 +1148,32 @@ fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], errors:
         _ => ()
       }
     },
-    ELabeledArg(_, _, v) => labeled_name_check_expr(v, tbl, errors),
+    ELabeledArg(_, _, v) => labeled_name_check_expr(v, tbl, shadows, errors),
     EBinOp(_, l, r) => {
-      labeled_name_check_expr(l, tbl, errors)
-      labeled_name_check_expr(r, tbl, errors)
+      labeled_name_check_expr(l, tbl, shadows, errors)
+      labeled_name_check_expr(r, tbl, shadows, errors)
     },
-    EUnaryOp(_, inner) => labeled_name_check_expr(inner, tbl, errors),
+    EUnaryOp(_, inner) => labeled_name_check_expr(inner, tbl, shadows, errors),
     ETuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        labeled_name_check_expr(Array::get(items, i), tbl, errors)
+        labeled_name_check_expr(Array::get(items, i), tbl, shadows, errors)
         i = i + 1
       }
     },
     EArray(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        labeled_name_check_expr(Array::get(items, i), tbl, errors)
+        labeled_name_check_expr(Array::get(items, i), tbl, shadows, errors)
         i = i + 1
       }
     },
-    ESpread(inner) => labeled_name_check_expr(inner, tbl, errors),
+    ESpread(inner) => labeled_name_check_expr(inner, tbl, shadows, errors),
     ERecord(_, fields, _) => {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, fv) = Array::get(fields, i)
-        labeled_name_check_expr(fv, tbl, errors)
+        labeled_name_check_expr(fv, tbl, shadows, errors)
         i = i + 1
       }
     },
@@ -1129,85 +1181,125 @@ fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], errors:
       let mut i = 0
       while i < Array::length(pairs) {
         let (_, pv) = Array::get(pairs, i)
-        labeled_name_check_expr(pv, tbl, errors)
+        labeled_name_check_expr(pv, tbl, shadows, errors)
         i = i + 1
       }
     },
     EIf(cnd, thn, els) => {
-      labeled_name_check_expr(cnd, tbl, errors)
-      labeled_name_check_expr(thn, tbl, errors)
-      labeled_name_check_expr(els, tbl, errors)
+      labeled_name_check_expr(cnd, tbl, shadows, errors)
+      labeled_name_check_expr(thn, tbl, shadows, errors)
+      labeled_name_check_expr(els, tbl, shadows, errors)
     },
-    ELet(_, v, b, _) => {
-      labeled_name_check_expr(v, tbl, errors)
-      labeled_name_check_expr(b, tbl, errors)
+    ELet(name, v, b, _) => {
+      labeled_name_check_expr(v, tbl, shadows, errors)
+      let mark = Array::length(shadows)
+      Array::push(shadows, name)
+      labeled_name_check_expr(b, tbl, shadows, errors)
+      Array::truncate(shadows, mark)
     },
-    ELetRec(_, v, b) => {
-      labeled_name_check_expr(v, tbl, errors)
-      labeled_name_check_expr(b, tbl, errors)
+    ELetRec(name, v, b) => {
+      let mark = Array::length(shadows)
+      Array::push(shadows, name)
+      labeled_name_check_expr(v, tbl, shadows, errors)
+      labeled_name_check_expr(b, tbl, shadows, errors)
+      Array::truncate(shadows, mark)
     },
-    ELetMut(_, v, b, _) => {
-      labeled_name_check_expr(v, tbl, errors)
-      labeled_name_check_expr(b, tbl, errors)
+    ELetMut(name, v, b, _) => {
+      labeled_name_check_expr(v, tbl, shadows, errors)
+      let mark = Array::length(shadows)
+      Array::push(shadows, name)
+      labeled_name_check_expr(b, tbl, shadows, errors)
+      Array::truncate(shadows, mark)
     },
     EAssign(_, v, k) => {
-      labeled_name_check_expr(v, tbl, errors)
-      labeled_name_check_expr(k, tbl, errors)
+      labeled_name_check_expr(v, tbl, shadows, errors)
+      labeled_name_check_expr(k, tbl, shadows, errors)
     },
     EAssignOp(_, _, v, k) => {
-      labeled_name_check_expr(v, tbl, errors)
-      labeled_name_check_expr(k, tbl, errors)
+      labeled_name_check_expr(v, tbl, shadows, errors)
+      labeled_name_check_expr(k, tbl, shadows, errors)
     },
     ESeq(a, b) => {
-      labeled_name_check_expr(a, tbl, errors)
-      labeled_name_check_expr(b, tbl, errors)
+      labeled_name_check_expr(a, tbl, shadows, errors)
+      labeled_name_check_expr(b, tbl, shadows, errors)
     },
     EMatch(scrut, arms) => {
-      labeled_name_check_expr(scrut, tbl, errors)
+      labeled_name_check_expr(scrut, tbl, shadows, errors)
       let mut i = 0
       while i < Array::length(arms) {
-        let (_, ab) = Array::get(arms, i)
-        labeled_name_check_expr(ab, tbl, errors)
+        let (ap, ab) = Array::get(arms, i)
+        let mark = Array::length(shadows)
+        labeled_walk_pat_binds(ap, shadows)
+        labeled_name_check_expr(ab, tbl, shadows, errors)
+        Array::truncate(shadows, mark)
         i = i + 1
       }
     },
     EHandle(scrut, arms) => {
-      labeled_name_check_expr(scrut, tbl, errors)
+      labeled_name_check_expr(scrut, tbl, shadows, errors)
       let mut i = 0
       while i < Array::length(arms) {
-        let (_, ab) = Array::get(arms, i)
-        labeled_name_check_expr(ab, tbl, errors)
+        let (ap, ab) = Array::get(arms, i)
+        let mark = Array::length(shadows)
+        labeled_walk_pat_binds(ap, shadows)
+        labeled_name_check_expr(ab, tbl, shadows, errors)
+        Array::truncate(shadows, mark)
         i = i + 1
       }
     },
     EWhile(cnd, body) => {
-      labeled_name_check_expr(cnd, tbl, errors)
-      labeled_name_check_expr(body, tbl, errors)
+      labeled_name_check_expr(cnd, tbl, shadows, errors)
+      labeled_name_check_expr(body, tbl, shadows, errors)
     },
     ELoop(inits, body) => {
       let mut i = 0
       while i < Array::length(inits) {
         let (_, iv) = Array::get(inits, i)
-        labeled_name_check_expr(iv, tbl, errors)
+        labeled_name_check_expr(iv, tbl, shadows, errors)
         i = i + 1
       }
-      labeled_name_check_expr(body, tbl, errors)
+      let mark = Array::length(shadows)
+      let mut pi = 0
+      while pi < Array::length(inits) {
+        let (pname, _) = Array::get(inits, pi)
+        Array::push(shadows, pname)
+        pi = pi + 1
+      }
+      labeled_name_check_expr(body, tbl, shadows, errors)
+      Array::truncate(shadows, mark)
     },
-    EForIn(_, _, iter, body) => {
-      labeled_name_check_expr(iter, tbl, errors)
-      labeled_name_check_expr(body, tbl, errors)
+    EForIn(name, idx, iter, body) => {
+      labeled_name_check_expr(iter, tbl, shadows, errors)
+      let mark = Array::length(shadows)
+      Array::push(shadows, name)
+      match idx {
+        Some(ix) => Array::push(shadows, ix),
+        None => ()
+      }
+      labeled_name_check_expr(body, tbl, shadows, errors)
+      Array::truncate(shadows, mark)
     },
-    EFn(_, _, _, _, _, body) => labeled_name_check_expr(body, tbl, errors),
-    EDot(obj, _, _, _) => labeled_name_check_expr(obj, tbl, errors),
-    EReturn(inner) => labeled_name_check_expr(inner, tbl, errors),
+    EFn(_, _, fparams, _, _, body) => {
+      let mark = Array::length(shadows)
+      let mut pi = 0
+      while pi < Array::length(fparams) {
+        let (pn, _) = Array::get(fparams, pi)
+        Array::push(shadows, labeled_param_base_name(pn))
+        pi = pi + 1
+      }
+      labeled_name_check_expr(body, tbl, shadows, errors)
+      Array::truncate(shadows, mark)
+    },
+    EDot(obj, _, _, _) => labeled_name_check_expr(obj, tbl, shadows, errors),
+    EReturn(inner) => labeled_name_check_expr(inner, tbl, shadows, errors),
     EBreak(opt) => match opt {
-      Some(inner) => labeled_name_check_expr(inner, tbl, errors),
+      Some(inner) => labeled_name_check_expr(inner, tbl, shadows, errors),
       None => ()
     },
     EContinue(exprs) => {
       let mut i = 0
       while i < Array::length(exprs) {
-        labeled_name_check_expr(Array::get(exprs, i), tbl, errors)
+        labeled_name_check_expr(Array::get(exprs, i), tbl, shadows, errors)
         i = i + 1
       }
     },
@@ -1217,12 +1309,24 @@ fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], errors:
 
 fn labeled_name_check_stmt(stmt: Stmt, tbl: Array[(String, Array[String])], errors: Array[String]) -> Unit {
   match stmt {
-    SLet(_, _, _, _, body) => labeled_name_check_expr(body, tbl, errors),
-    SLetMut(_, _, body) => labeled_name_check_expr(body, tbl, errors),
-    STest(_, body) => labeled_name_check_expr(body, tbl, errors),
-    SBench(_, body) => labeled_name_check_expr(body, tbl, errors),
-    SExpr(e) => labeled_name_check_expr(e, tbl, errors),
-    SLetPat(_, e) => labeled_name_check_expr(e, tbl, errors),
+    SLet(_, _, _, _, body) => labeled_name_check_expr(body, tbl, Array::slice([
+      ""
+    ], 0, 0), errors),
+    SLetMut(_, _, body) => labeled_name_check_expr(body, tbl, Array::slice([
+      ""
+    ], 0, 0), errors),
+    STest(_, body) => labeled_name_check_expr(body, tbl, Array::slice([
+      ""
+    ], 0, 0), errors),
+    SBench(_, body) => labeled_name_check_expr(body, tbl, Array::slice([
+      ""
+    ], 0, 0), errors),
+    SExpr(e) => labeled_name_check_expr(e, tbl, Array::slice([
+      ""
+    ], 0, 0), errors),
+    SLetPat(_, e) => labeled_name_check_expr(e, tbl, Array::slice([
+      ""
+    ], 0, 0), errors),
     SModule(_, _, ms) => {
       let mut i = 0
       while i < Array::length(ms) {

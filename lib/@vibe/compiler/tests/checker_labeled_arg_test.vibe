@@ -85,3 +85,19 @@ test "labeled args: reordered labels on plain fn type mismatch rejected" {
 test "labeled args: partial out-of-order label rejected" {
   assert(check_source_err("fn f(x: Int, y: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(y=1, 2)\n}"))
 }
+
+// Codex P2-2 on #993: a LOCAL binding shadowing a top-level fn name must
+// suppress the top-level label table — `f(y=1)` here calls the local closure
+// whose param IS `y`, so the top-level `f(x: Int)` labels don't apply.
+test "labeled args: local shadow of top-level fn accepted" {
+  assert(check_source_ok("fn f(x: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  let f = (y: Int) -> Int { y + 41 }\n  f(y=1)\n}"))
+}
+
+// Codex P2-1 on #993 (same mechanism, in-file shape): a labeled call whose
+// callee's parameter NAMES are not visible in this module's top-level table
+// (here: a fn-typed parameter; the cross-file `import { f }` case is
+// identical) must be tolerated, not positionally unified — the labels may be
+// declared in a different order than the call writes them.
+test "labeled args: callee without label info tolerated" {
+  assert(check_source_ok("fn call_it(g: (Int, String) -> Int) -> Int {\n  g(y=\"ok\", x=1)\n}\n\nfn main() -> Int {\n  call_it((x: Int, y: String) -> Int { x })\n}"))
+}

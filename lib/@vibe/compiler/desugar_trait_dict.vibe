@@ -5566,13 +5566,115 @@ fn reorder_labeled_args(args: Array[Expr], param_labels: Array[String]) -> Optio
 }
 
 ///|
-fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])]) -> Expr {
+// #986 (Codex P2-2 on #993): is `name` lexically shadowed at this point? The
+// table indexes TOP-LEVEL functions only, so a local binding of the same name
+// (`let f = (y) -> ..` / a fn param / a pattern bind) must suppress both the
+// reorder and the label-name validation — the call resolves to the local
+// value, whose parameter names the table knows nothing about.
+fn relabel_shadowed(shadows: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(shadows) {
+    if Array::get(shadows, i) == name {
+      found = true
+      i = Array::length(shadows)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+///|
+fn relabel_pat_binds(pat: Pat, shadows: Array[String]) -> Unit {
+  match pat {
+    PBind(n) => Array::push(shadows, n),
+    PCtor(_, ps) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        relabel_pat_binds(Array::get(ps, i), shadows)
+        i = i + 1
+      }
+    },
+    PTuple(ps) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        relabel_pat_binds(Array::get(ps, i), shadows)
+        i = i + 1
+      }
+    },
+    POr(a, b) => {
+      relabel_pat_binds(a, shadows)
+      relabel_pat_binds(b, shadows)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        relabel_pat_binds(fp, shadows)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+///|
+// Strip the ELabeledArg wrappers off a VALIDATED arg list (labels confirmed to
+// match their positions — either via a successful full reorder, or
+// individually below). Codegen binds positionally and ignores labels, so this
+// is semantically neutral there; for the checker it is the RESOLUTION MARKER:
+// a stripped arg participates in strict positional unification, while a
+// surviving ELabeledArg means "label correspondence unknown here" and types
+// tolerantly (see check_expr's ELabeledArg arm) — the erroneous local shapes
+// are reported by name (check_labeled_arg_names_stmts), and import-resolved
+// callees (whose param names this module cannot see, Codex P2-1 on #993) are
+// no longer falsely rejected by position.
+fn strip_labeled_wrappers(args: Array[Expr]) -> Array[Expr] {
+  let out = empty_expr_array()
+  let mut i = 0
+  while i < Array::length(args) {
+    match Array::get(args, i) {
+      ELabeledArg(_, _, v) => Array::push(out, v),
+      other => Array::push(out, other)
+    }
+    i = i + 1
+  }
+  out
+}
+
+///|
+// For a call that could NOT be fully reordered (partial labeling, or some
+// label mismatched): strip only the labeled args whose label already matches
+// the parameter at their own position — those are positionally correct
+// decorative labels and must stay strictly type-checked. Mismatched ones are
+// kept for the name-validation walk to report.
+fn strip_in_position_labels(args: Array[Expr], labels: Array[String]) -> Array[Expr] {
+  let out = empty_expr_array()
+  let mut i = 0
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    match arg {
+      ELabeledArg(lbl, m, v) => if i < Array::length(labels) && Array::get(labels, i) == lbl {
+        Array::push(out, v)
+      } else {
+        Array::push(out, ELabeledArg(lbl, m, v))
+      },
+      other => Array::push(out, other)
+    }
+    i = i + 1
+  }
+  out
+}
+
+///|
+fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[String]) -> Expr {
   match expr {
     ECall(callee, args, off) => {
       let rargs = for a in args {
-        relabel_expr(a, tbl)
+        relabel_expr(a, tbl, shadows)
       }
-      let rcallee = relabel_expr(callee, tbl)
+      let rcallee = relabel_expr(callee, tbl, shadows)
       // #986: `tbl` now holds EVERY top-level function (not just `~`-labeled
       // ones), so gate the linear table scan on the call actually carrying a
       // labeled argument — labeled calls are rare, plain calls are the entire
@@ -5590,12 +5692,16 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])]) -> Expr {
       }
       let final_args = if any_labeled_arg {
         match callee {
-          EIdent(fname, _) => match lookup_param_labels(tbl, fname) {
-            Some(labels) => match reorder_labeled_args(rargs, labels) {
-              Some(reordered) => reordered,
+          EIdent(fname, _) => if relabel_shadowed(shadows, fname) {
+            rargs
+          } else {
+            match lookup_param_labels(tbl, fname) {
+              Some(labels) => match reorder_labeled_args(rargs, labels) {
+                Some(reordered) => strip_labeled_wrappers(reordered),
+                None => strip_in_position_labels(rargs, labels)
+              },
               None => rargs
-            },
-            None => rargs
+            }
           },
           _ => rargs
         }
@@ -5604,15 +5710,15 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])]) -> Expr {
       }
       ECall(rcallee, final_args, off)
     },
-    EBinOp(op, l, r) => EBinOp(op, relabel_expr(l, tbl), relabel_expr(r, tbl)),
-    EUnaryOp(op, e) => EUnaryOp(op, relabel_expr(e, tbl)),
+    EBinOp(op, l, r) => EBinOp(op, relabel_expr(l, tbl, shadows), relabel_expr(r, tbl, shadows)),
+    EUnaryOp(op, e) => EUnaryOp(op, relabel_expr(e, tbl, shadows)),
     ETuple(elems) => ETuple(for e in elems {
-      relabel_expr(e, tbl)
+      relabel_expr(e, tbl, shadows)
     }),
     EArray(elems) => EArray(for e in elems {
-      relabel_expr(e, tbl)
+      relabel_expr(e, tbl, shadows)
     }),
-    ESpread(e) => ESpread(relabel_expr(e, tbl)),
+    ESpread(e) => ESpread(relabel_expr(e, tbl, shadows)),
     ERecord(rn, fields, targs) => {
       let out = Array::slice([
         ("", EUnit)
@@ -5620,7 +5726,7 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])]) -> Expr {
       let mut i = 0
       while i < Array::length(fields) {
         let (fname, fval) = Array::get(fields, i)
-        Array::push(out, (fname, relabel_expr(fval, tbl)))
+        Array::push(out, (fname, relabel_expr(fval, tbl, shadows)))
         i = i + 1
       }
       ERecord(rn, out, targs)
@@ -5632,58 +5738,121 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])]) -> Expr {
       let mut i = 0
       while i < Array::length(fields) {
         let (k, v) = Array::get(fields, i)
-        Array::push(out, (k, relabel_expr(v, tbl)))
+        Array::push(out, (k, relabel_expr(v, tbl, shadows)))
         i = i + 1
       }
       EMap(out)
     },
-    EIf(c, t, e) => EIf(relabel_expr(c, tbl), relabel_expr(t, tbl), relabel_expr(e, tbl)),
-    ELet(name, v, b, soff) => ELet(name, relabel_expr(v, tbl), relabel_expr(b, tbl), soff),
-    ELetRec(name, v, b) => ELetRec(name, relabel_expr(v, tbl), relabel_expr(b, tbl)),
-    ELetMut(name, v, b, soff) => ELetMut(name, relabel_expr(v, tbl), relabel_expr(b, tbl), soff),
-    EAssign(name, v, c) => EAssign(name, relabel_expr(v, tbl), relabel_expr(c, tbl)),
-    EAssignOp(name, op, v, c) => EAssignOp(name, op, relabel_expr(v, tbl), relabel_expr(c, tbl)),
-    ESeq(a, b) => ESeq(relabel_expr(a, tbl), relabel_expr(b, tbl)),
+    EIf(c, t, e) => EIf(relabel_expr(c, tbl, shadows), relabel_expr(t, tbl, shadows), relabel_expr(e, tbl, shadows)),
+    ELet(name, v, b, soff) => {
+      let rv = relabel_expr(v, tbl, shadows)
+      let mark = Array::length(shadows)
+      Array::push(shadows, name)
+      let rb = relabel_expr(b, tbl, shadows)
+      Array::truncate(shadows, mark)
+      ELet(name, rv, rb, soff)
+    },
+    ELetRec(name, v, b) => {
+      let mark = Array::length(shadows)
+      Array::push(shadows, name)
+      let rv = relabel_expr(v, tbl, shadows)
+      let rb = relabel_expr(b, tbl, shadows)
+      Array::truncate(shadows, mark)
+      ELetRec(name, rv, rb)
+    },
+    ELetMut(name, v, b, soff) => {
+      let rv = relabel_expr(v, tbl, shadows)
+      let mark = Array::length(shadows)
+      Array::push(shadows, name)
+      let rb = relabel_expr(b, tbl, shadows)
+      Array::truncate(shadows, mark)
+      ELetMut(name, rv, rb, soff)
+    },
+    EAssign(name, v, c) => EAssign(name, relabel_expr(v, tbl, shadows), relabel_expr(c, tbl, shadows)),
+    EAssignOp(name, op, v, c) => EAssignOp(name, op, relabel_expr(v, tbl, shadows), relabel_expr(c, tbl, shadows)),
+    ESeq(a, b) => ESeq(relabel_expr(a, tbl, shadows), relabel_expr(b, tbl, shadows)),
     EMatch(scrut, arms) => {
+      let rscrut = relabel_expr(scrut, tbl, shadows)
       let out = Array::slice([
         (PWild, EUnit)
       ], 0, 0)
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
-        Array::push(out, (p, relabel_expr(b, tbl)))
+        let mark = Array::length(shadows)
+        relabel_pat_binds(p, shadows)
+        Array::push(out, (p, relabel_expr(b, tbl, shadows)))
+        Array::truncate(shadows, mark)
         i = i + 1
       }
-      EMatch(relabel_expr(scrut, tbl), out)
+      EMatch(rscrut, out)
     },
     EHandle(scrut, arms) => {
+      let rscrut = relabel_expr(scrut, tbl, shadows)
       let out = Array::slice([
         (PWild, EUnit)
       ], 0, 0)
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
-        Array::push(out, (p, relabel_expr(b, tbl)))
+        let mark = Array::length(shadows)
+        relabel_pat_binds(p, shadows)
+        Array::push(out, (p, relabel_expr(b, tbl, shadows)))
+        Array::truncate(shadows, mark)
         i = i + 1
       }
-      EHandle(relabel_expr(scrut, tbl), out)
+      EHandle(rscrut, out)
     },
-    EWhile(c, b) => EWhile(relabel_expr(c, tbl), relabel_expr(b, tbl)),
-    ELoop(params, b) => ELoop(for param in params {
-      let (name, init) = param
-      (name, relabel_expr(init, tbl))
-    }, relabel_expr(b, tbl)),
-    EForIn(name, idx, iter, b) => EForIn(name, idx, relabel_expr(iter, tbl), relabel_expr(b, tbl)),
-    EFn(tp, bnds, params, rt, eff, b) => EFn(tp, bnds, params, rt, eff, relabel_expr(b, tbl)),
-    EDot(obj, field, off, fdoff) => EDot(relabel_expr(obj, tbl), field, off, fdoff),
-    ELabeledArg(label, name, b) => ELabeledArg(label, name, relabel_expr(b, tbl)),
-    EReturn(e) => EReturn(relabel_expr(e, tbl)),
+    EWhile(c, b) => EWhile(relabel_expr(c, tbl, shadows), relabel_expr(b, tbl, shadows)),
+    ELoop(params, b) => {
+      let rinits = for param in params {
+        let (name, init) = param
+        (name, relabel_expr(init, tbl, shadows))
+      }
+      let mark = Array::length(shadows)
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pname, _) = Array::get(params, pi)
+        Array::push(shadows, pname)
+        pi = pi + 1
+      }
+      let rb = relabel_expr(b, tbl, shadows)
+      Array::truncate(shadows, mark)
+      ELoop(rinits, rb)
+    },
+    EForIn(name, idx, iter, b) => {
+      let riter = relabel_expr(iter, tbl, shadows)
+      let mark = Array::length(shadows)
+      Array::push(shadows, name)
+      match idx {
+        Some(ix) => Array::push(shadows, ix),
+        None => ()
+      }
+      let rb = relabel_expr(b, tbl, shadows)
+      Array::truncate(shadows, mark)
+      EForIn(name, idx, riter, rb)
+    },
+    EFn(tp, bnds, params, rt, eff, b) => {
+      let mark = Array::length(shadows)
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pn, _) = Array::get(params, pi)
+        Array::push(shadows, strip_label_tilde(pn))
+        pi = pi + 1
+      }
+      let rb = relabel_expr(b, tbl, shadows)
+      Array::truncate(shadows, mark)
+      EFn(tp, bnds, params, rt, eff, rb)
+    },
+    EDot(obj, field, off, fdoff) => EDot(relabel_expr(obj, tbl, shadows), field, off, fdoff),
+    ELabeledArg(label, name, b) => ELabeledArg(label, name, relabel_expr(b, tbl, shadows)),
+    EReturn(e) => EReturn(relabel_expr(e, tbl, shadows)),
     EBreak(opt) => match opt {
-      Some(e) => EBreak(Some(relabel_expr(e, tbl))),
+      Some(e) => EBreak(Some(relabel_expr(e, tbl, shadows))),
       None => expr
     },
     EContinue(exprs) => EContinue(for e in exprs {
-      relabel_expr(e, tbl)
+      relabel_expr(e, tbl, shadows)
     }),
     _ => expr
   }
@@ -5692,12 +5861,12 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])]) -> Expr {
 ///|
 fn relabel_stmt(stmt: Stmt, tbl: Array[(String, Array[String])]) -> Stmt {
   match stmt {
-    SLet(ex, rc, name, ty, body) => SLet(ex, rc, name, ty, relabel_expr(body, tbl)),
-    SLetMut(name, ty, body) => SLetMut(name, ty, relabel_expr(body, tbl)),
-    STest(name, body) => STest(name, relabel_expr(body, tbl)),
-    SBench(name, body) => SBench(name, relabel_expr(body, tbl)),
-    SExpr(e) => SExpr(relabel_expr(e, tbl)),
-    SLetPat(pat, e) => SLetPat(pat, relabel_expr(e, tbl)),
+    SLet(ex, rc, name, ty, body) => SLet(ex, rc, name, ty, relabel_expr(body, tbl, empty_str_array())),
+    SLetMut(name, ty, body) => SLetMut(name, ty, relabel_expr(body, tbl, empty_str_array())),
+    STest(name, body) => STest(name, relabel_expr(body, tbl, empty_str_array())),
+    SBench(name, body) => SBench(name, relabel_expr(body, tbl, empty_str_array())),
+    SExpr(e) => SExpr(relabel_expr(e, tbl, empty_str_array())),
+    SLetPat(pat, e) => SLetPat(pat, relabel_expr(e, tbl, empty_str_array())),
     SModule(ex, name, stmts) => SModule(ex, name, for s in stmts {
       relabel_stmt(s, tbl)
     }),
