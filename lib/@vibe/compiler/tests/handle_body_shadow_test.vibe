@@ -1,0 +1,109 @@
+//# Functions
+
+// #965: in the bump (VIBE_RC=0) linear backend, names bound inside a HANDLED
+// body stayed in codegen's local_names while the handler arms compiled, and
+// resolve_local's last-wins lookup made an arm's reference to an outer
+// binding resolve to the body's (never-assigned-on-throw) wasm local — the
+// arm read 0. parse_program_recovering's resync scan was the production
+// casualty: its `rp >= n` read the parse_stmt tuple's inner `n` instead of
+// the tokens-total, so error recovery stopped at the first token (issue's
+// "inert resync"). The RC lane never hit this (uniquify_shadowed_bindings
+// α-renames shadows first), so these tests guard the semantics in-lane while
+// the bump lane is exercised by the self-compile chain itself (the compiler
+// is built with VIBE_RC=0) plus the resync probes on the PR.
+
+fn boom() -> Int with { Error } {
+  throw("x")
+}
+
+fn shadow_let() -> Int {
+  let n = 12
+  handle {
+    let n = boom()
+    n + 1
+  } with Error {
+    Throw(_m) => n
+  }
+}
+
+fn shadow_tuple() -> Int {
+  let k = 34
+  handle {
+    let (k, _j) = (boom(), 1)
+    k
+  } with Error {
+    Throw(_m) => k
+  }
+}
+
+// Codex P2 on #984: ref_cell_names is name-keyed too. A captured `let mut n`
+// in the body left "n" registered as a ref cell after the name mask, so the
+// arm resolved `n` to the outer scalar slot but loaded through the ref-cell
+// path (garbage). The mask now truncates body/arm ref-cell registrations.
+fn shadow_refcell() -> Int {
+  let n = 12
+  handle {
+    let mut n = 5
+    let bump = () -> { n = n + 1 }
+    bump()
+    let _z = boom()
+    n
+  } with Error {
+    Throw(_m) => n
+  }
+}
+
+// Same ref-cell leak existed between MATCH arms (compile_match truncated
+// local_names but not ref_cell_names): arm 1's captured `let mut n` made a
+// later arm's `n` read the outer slot through the ref-cell path.
+fn match_shadow_refcell(k: Int) -> Int {
+  let n = 12
+  match k {
+    1 => {
+      let mut n = 5
+      let bump = () -> { n = n + 1 }
+      bump()
+      n
+    },
+    _ => n
+  }
+}
+
+fn no_shadow() -> Int {
+  let m = 56
+  handle {
+    let inner = boom()
+    inner
+  } with Error {
+    Throw(_m) => m
+  }
+}
+
+//# Misc
+
+test "965: handler arm reads the OUTER binding when the body shadows it (let)" {
+  assert(shadow_let() == 12)
+}
+
+test "965: handler arm reads the OUTER binding when the body shadows it (tuple destructure)" {
+  assert(shadow_tuple() == 34)
+}
+
+test "965 review: arm reads the OUTER binding when the body shadows it with a captured mut (ref cell)" {
+  assert(shadow_refcell() == 12)
+}
+
+test "965 review: later match arm reads the OUTER binding after an arm shadows it with a captured mut" {
+  assert(match_shadow_refcell(1) == 6)
+  assert(match_shadow_refcell(2) == 12)
+}
+
+test "965: non-shadowing handle unchanged" {
+  assert(no_shadow() == 56)
+}
+
+test "965: code AFTER a handle still sees enclosing bindings" {
+  let q = 7
+  let r = handle { boom() } with Error { Throw(_m) => 1 }
+  assert(q + r == 8)
+}

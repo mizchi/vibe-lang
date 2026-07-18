@@ -270,6 +270,12 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
   let mut ai = 0
   let mut max_nl = nl1
   let names_len_at_match = Array::length(local_names)
+  // #965 review (#984): ref_cell_names is name-keyed. An arm's captured
+  // `let mut n` stayed registered as a ref cell after the local_names
+  // truncate below, so a LATER arm's `n` resolved to the outer scalar slot
+  // but was loaded through the ref-cell path (garbage in the bump lane; the
+  // RC lane α-renames shadows first). Restore it with the same discipline.
+  let ref_cells_at_match = Array::length(ctx.ref_cell_names)
   // #613 follow-up: discriminate literal sub-patterns at EVERY nesting level,
   // not just the top constructor-argument level. `load_field` is a thunk that
   // pushes the (tagged) value at this position. `emit_pat_test` emits a single
@@ -441,6 +447,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
   }
   while ai < num_cond_arms {
     Array::truncate(local_names, names_len_at_match)
+    Array::truncate(ctx.ref_cell_names, ref_cells_at_match)
     // #678: a previous arm may have logged integral slots >= names_len_at_match
     // that this arm's pattern binders (non-`let`, so they log nothing) reuse;
     // drop them so a string bound there is not misread as int by `==`.
@@ -758,6 +765,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
     ai = ai + 1
   }
   Array::truncate(local_names, names_len_at_match)
+  Array::truncate(ctx.ref_cell_names, ref_cells_at_match)
   // #678: same prune before the catch-all arm's pattern binders reuse the slots.
   int_log_reset_above(ctx, names_len_at_match)
   agg_log_reset_above2(ctx.agg_local_slots, ctx.agg_local_exprs, names_len_at_match)
