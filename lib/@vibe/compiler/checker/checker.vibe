@@ -8,6 +8,10 @@ import ./builtins.vibe {
   lookup_builtin
 }
 
+import ./checker_exhaustive.vibe {
+  match_nonexhaustive_witness
+}
+
 import ./checker_pattern.vibe {
   check_pattern, pat_has_unsupported_or_binding
 }
@@ -3903,6 +3907,11 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
         (CtUnknown, s1, c1)
       }
       else {
+        // #940 Phase 2 baseline: the nested usefulness check below only runs
+        // when THIS match produced no other diagnostics (pattern shape / arm
+        // type / flat exhaustiveness errors all suppress it — an ill-typed
+        // matrix would only yield a garbage witness on top of the real error).
+        let exh_base = Array::length(errors)
         let mut result_ty = CtUnknown
         // Whether to cross-check arm types. Enabled only when the first arm's
         // type resolves to a SIMPLE scalar (Int/Double/Bool/String/Char) — that
@@ -4143,6 +4152,29 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
               }
             },
             _ => ()
+          }
+        } else {
+          ()
+        }
+        // #940 Phase 2: nested usefulness (Maranget). Same arity gate as the
+        // flat checks above; additionally skipped when this match already has
+        // any diagnostic (no duplicate/garbage reports on top of a flat
+        // non-exhaustiveness or an ill-typed pattern). The ground gate,
+        // catch-all fast path and budget cap live inside
+        // match_nonexhaustive_witness (checker_exhaustive.vibe).
+        if (alen >= 2 || flat_guard_residual) && Array::length(errors) == exh_base {
+          let exh_pats = Array::slice([
+            PWild
+          ], 0, 0)
+          let mut exh_i = 0
+          while exh_i < alen {
+            let (exh_p, _) = Array::get(arms, exh_i)
+            Array::push(exh_pats, exh_p)
+            exh_i = exh_i + 1
+          }
+          match match_nonexhaustive_witness(subst_apply(si, scr_ty), exh_pats, defs) {
+            Some(exh_wit) => Array::push(errors, String::concat("non-exhaustive match: pattern `", String::concat(exh_wit, String::concat("` is not handled (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee)))))),
+            None => ()
           }
         } else {
           ()

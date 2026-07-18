@@ -1,0 +1,76 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_ok, check_source_err
+}
+
+//# Misc
+
+// #940 Phase 2: nested match exhaustiveness via Maranget usefulness
+// (checker/checker_exhaustive.vibe). The issue's repro shapes — nested
+// tuples, ctor payloads, or-patterns and bare literal matches — compiled
+// clean and trapped at runtime on codegen's terminal `unreachable`; they are
+// now compile errors with a concrete uncovered-witness diagnostic. Scope
+// guards stay deliberate: single-arm matches (partial-let idiom), matches
+// with a catch-all arm, and non-ground (generic) scrutinees are untouched.
+
+test "940p2: tuple with nested Option/Bool leak is rejected (issue repro a)" {
+  assert(check_source_err("fn f(p: (Option[Int], Bool)) -> Int { match p { (Some(v), true) => v, (None, _) => 0 } }\nfn main() -> Int { f((Some(5), false)) }"))
+}
+
+test "940p2: Bool pair with uncovered (true,false) is rejected (issue repro b)" {
+  assert(check_source_err("fn f(p: (Bool, Bool)) -> Int { match p { (true, true) => 1, (false, _) => 0 } }\nfn main() -> Int { f((true, false)) }"))
+}
+
+test "940p2: nested Some(Some(_))/None missing Some(None) is rejected (issue repro c)" {
+  assert(check_source_err("fn f(o: Option[Option[Int]]) -> Int { match o { Some(Some(v)) => v, None => 0 } }\nfn main() -> Int { f(Some(None)) }"))
+}
+
+test "940p2: Int literal match without a catch-all is rejected (issue repro d)" {
+  assert(check_source_err("fn f(n: Int) -> Int { match n { 1 => 1, 2 => 2 } }\nfn main() -> Int { f(3) }"))
+}
+
+test "940p2: String literal match without a catch-all is rejected" {
+  assert(check_source_err("fn f(s: String) -> Int { match s { \"a\" => 1, \"b\" => 2 } }\nfn main() -> Int { f(\"c\") }"))
+}
+
+test "940p2: or-pattern of literals inside a ctor payload is rejected" {
+  assert(check_source_err("fn f(o: Option[Int]) -> Int { match o { Some(1 | 2) => 1, None => 0 } }\nfn main() -> Int { f(Some(3)) }"))
+}
+
+test "940p2: user enum inside Option payload missing a variant is rejected" {
+  assert(check_source_err("enum Color { Red; Green; Blue }\nfn f(o: Option[Color]) -> Int { match o { Some(Red) => 1, Some(Green) => 2, None => 0 } }\nfn main() -> Int { f(Some(Blue)) }"))
+}
+
+test "940p2: generic enum payload literal-only arm is rejected" {
+  assert(check_source_err("enum Res[T] { Okv(T); Erv(String) }\nfn f(r: Res[Int]) -> Int { match r { Okv(1) => 1, Erv(_) => 0 } }\nfn main() -> Int { f(Okv(2)) }"))
+}
+
+test "940p2: fully covered tuple of Option/Bool stays accepted" {
+  assert(check_source_ok("fn f(p: (Option[Int], Bool)) -> Int { match p { (Some(v), true) => v, (Some(_), false) => 1, (None, _) => 0 } }\nfn main() -> Int { f((Some(5), false)) }"))
+}
+
+test "940p2: nested Option fully enumerated stays accepted" {
+  assert(check_source_ok("fn f(o: Option[Option[Int]]) -> Int { match o { Some(Some(v)) => v, Some(None) => 1, None => 0 } }\nfn main() -> Int { f(Some(None)) }"))
+}
+
+test "940p2: Bool pair fully enumerated (with or-pattern) stays accepted" {
+  assert(check_source_ok("fn f(p: (Bool, Bool)) -> Int { match p { (true, true) => 1, (true, false) => 2, (false, _) => 0 } }\nfn main() -> Int { f((true, false)) }"))
+  assert(check_source_ok("fn f(p: (Bool, Int)) -> Int { match p { (true | false, 0) => 0, (_, n) => n } }\nfn main() -> Int { f((true, 3)) }"))
+}
+
+test "940p2: catch-all arm keeps a nested match accepted" {
+  assert(check_source_ok("fn f(p: (Option[Int], Bool)) -> Int { match p { (Some(v), true) => v, _ => 0 } }\nfn main() -> Int { f((None, true)) }"))
+}
+
+test "940p2: literal arms with a trailing binding arm stay accepted" {
+  assert(check_source_ok("fn f(n: Int) -> Int { match n { 1 => 1, 2 => 2, m => m } }\nfn main() -> Int { f(3) }"))
+}
+
+test "940p2: generic scrutinee is not checked (ground gate)" {
+  assert(check_source_ok("fn f[T](p: (Option[T], Bool)) -> Int { match p { (Some(_), true) => 1, (None, _) => 0 } }\nfn main() -> Int { f((Some(1), true)) }"))
+}
+
+test "940p2: single-arm partial destructure idiom stays accepted" {
+  assert(check_source_ok("fn f(p: (Option[Int], Bool)) -> Int { match p { (Some(v), _) => v } }\nfn main() -> Int { f((Some(5), true)) }"))
+}
