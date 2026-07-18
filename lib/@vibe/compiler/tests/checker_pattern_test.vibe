@@ -332,6 +332,25 @@ test "#951: differing binding names across or-branches (`A(v) | B(w)`) is reject
   assert(any_error_contains(errors, "or-pattern bindings are not supported yet"))
 }
 
+test "#951: literal/block arm body still gets a located reject (scrutinee anchor)" {
+  // Codex P2 on #972: railway_expr_off has no case for literal / let / block
+  // bodies (`A(v) | B(v) => { let w = v; w }`) and returns -1 — the reject
+  // must then anchor on the match scrutinee instead of going unlocated.
+  let env = env_bind(EnvEmpty, "e", CtEnum("E"))
+  let pat = POr(PCtor("A", [
+    PBind("v")
+  ]), PCtor("B", [
+    PBind("v")
+  ]))
+  let expr = EMatch(EIdent("e", 7), [
+    (pat, EInt(5))
+  ])
+  let errors = check_with_errors(expr, env, e_defs())
+  assert(Array::length(errors) > 0)
+  assert(any_error_contains(errors, "or-pattern bindings are not supported yet"))
+  assert(any_error_contains(errors, "[@off=7]"))
+}
+
 test "#951: plain non-binding or-pattern arm still type-checks (regression guard)" {
   let expr = EMatch(EInt(2), [
     (POr(PInt(1), POr(PInt(2), PInt(3))), EInt(100)),

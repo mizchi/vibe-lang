@@ -3469,7 +3469,17 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
           // or-patterns and crashes with an unlocated internal error. Reject
           // it here instead, as a normal located diagnostic.
           if pat_has_unsupported_or_binding(pat) {
-            Array::push(errors, String::concat("or-pattern bindings are not supported yet: `A(v) | B(v)`-style patterns cannot bind variables in an or-branch (rewrite without a shared binding, e.g. separate arms with the same body, or bind after matching)", off_marker(railway_expr_off(body))))
+            // Anchor on the arm body when it has a usable offset; block /
+            // let / literal bodies have none (railway_expr_off => -1), so
+            // fall back to the match scrutinee — patterns carry no offsets,
+            // and an unlocated reject would defeat the point of this check.
+            let body_off = railway_expr_off(body)
+            let or_off = if body_off >= 0 {
+              body_off
+            } else {
+              railway_expr_off(scrutinee)
+            }
+            Array::push(errors, String::concat("or-pattern bindings are not supported yet: `A(v) | B(v)`-style patterns cannot bind variables in an or-branch (rewrite without a shared binding, e.g. separate arms with the same body, or bind after matching)", off_marker(or_off)))
           } else {
             ()
           }
