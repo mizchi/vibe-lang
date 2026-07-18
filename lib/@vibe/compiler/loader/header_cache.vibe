@@ -429,7 +429,15 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
   let mut warm_ok = false
   if Fs::exists(cache_path) {
     let parsed = parse_persistent_module_header_text(normalize_persistent_cache_text(Fs::read_file(cache_path)))
-    if package_index_deps_are_current(parsed.0) {
+    // #943 review (Codex P2): the cache key only covers the IMPORTER's
+    // source, so editing a target contract (dropping/renaming an export)
+    // while the importer is unchanged used to replay the stale header and
+    // skip import-name validation entirely. v2 entries record each
+    // contract-boundary dep's content fingerprint at build time; any
+    // mismatch (or a pre-v2 entry, which recorded none) falls through to
+    // the cold lane, which re-validates the import list against the
+    // CURRENT contract surface.
+    if parsed.3 && package_index_deps_are_current(parsed.0) && contract_dep_fingerprints_current(parsed.2) {
       warm_deps = parsed.0
       warm_exports = parsed.1
       warm_ok = true
@@ -546,7 +554,52 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
     let deps = header_result.0
     let exports = header_result.1
     let next_parse_count = header_result.2
-    Fs::write_file(cache_path, persistent_module_header_text(deps, exports))
+    Fs::write_file(cache_path, persistent_module_header_text(deps, exports, contract_dep_fingerprints_now(deps)))
     (deps, exports, next_parse_count)
   }
+}
+
+// Snapshot each contract-boundary dep's content fingerprint for the v2
+// header entry (#943 review). A dep that is not a contract boundary — or
+// whose file is not materialized — records nothing: the warm gate only
+// compares what was recorded, and a contract that APPEARS later changes
+// resolution winners, which the #801 package_index_deps_are_current gate
+// already catches.
+fn contract_dep_fingerprints_now(deps: Array[String]) -> Array[(String, String)] with { Fs } {
+  let out = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(deps) {
+    let d = Array::get(deps, i)
+    if is_contract_boundary_path(d) && Fs::exists(d) {
+      Array::push(out, (d, compact_string_fingerprint(Fs::read_file(d))))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Warm-gate check: every recorded contract fingerprint must still match the
+// on-disk contract text. A vanished or edited contract fails the gate and
+// forces a cold re-parse + re-validation of the importer's names.
+fn contract_dep_fingerprints_current(cdeps: Array[(String, String)]) -> Bool with { Fs } {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(cdeps) {
+    let (cpath, cfp) = Array::get(cdeps, i)
+    if ok {
+      if Fs::exists(cpath) {
+        ok = compact_string_fingerprint(Fs::read_file(cpath)) == cfp
+      } else {
+        ok = false
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
 }
