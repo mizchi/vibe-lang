@@ -4043,13 +4043,24 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
         // covered by the flat exhaustiveness check AT ALL (the comment above
         // even said so) — `match o { Some(v) => v, Some-only arms }` or a
         // Bool match missing `false` compiled clean and trapped at runtime
-        // (codegen's test chain ends in `unreachable`). Checked only for
-        // MULTI-arm matches: a single-arm match is syntactically
-        // indistinguishable from the partial-let desugar (`let Some(v) = o`,
-        // the cheatsheet's documented idiom), which must stay tolerated.
-        // Nested-pattern completeness (tuples, ctor payloads, literals) is
-        // the Phase 2 usefulness algorithm — this closes only the flat gap.
-        if alen >= 2 {
+        // (codegen's test chain ends in `unreachable`). Checked for
+        // MULTI-arm matches, plus (Codex P2 on #980) for ANY match whose
+        // scrutinee is the guard desugar's synthesized `__mg` temp: a failed
+        // guard falls through to `EMatch(__mg, rest)` (#666), and that
+        // residual can have a single arm (`match b { true if g => 1,
+        // false => 0 }` leaves `match __mg { false => 0 }` — `b == true &&
+        // !g` trapped). A single-arm match over anything else stays
+        // tolerated: it is syntactically indistinguishable from the
+        // partial-let desugar (`let Some(v) = o`, the cheatsheet's
+        // documented idiom), whose scrutinee is the user's own expression,
+        // never `__mg`. Nested-pattern completeness (tuples, ctor payloads,
+        // literals) is the Phase 2 usefulness algorithm — this closes only
+        // the flat gap.
+        let flat_guard_residual = match scrutinee {
+          EIdent(sn, _) => sn == "__mg",
+          _ => false
+        }
+        if alen >= 2 || flat_guard_residual {
           match subst_apply(si, scr_ty) {
             CtOption(_) => {
               let mut opt_catchall = false
