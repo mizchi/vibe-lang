@@ -1922,6 +1922,75 @@ fn handler_arm_pat_is_error(p: Pat) -> Bool {
   }
 }
 
+// #942 (Codex P2 on #969): does this pattern bind the name `resume`? Codegen's
+// prefer_bound_call (codegen/expr/compile_call.vibe) sends `resume(x)` to the
+// BOUND function whenever any top-level fn / local binding / binder named
+// `resume` is in scope — such calls never touch the continuation machinery,
+// so the #942 misuse walks must skip them (they ran fine pre-#942).
+export fn pat_binds_resume(p: Pat) -> Bool {
+  match p {
+    PBind(n) => n == "resume",
+    PCtor(_, ps) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(ps) {
+        if pat_binds_resume(Array::get(ps, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    PTuple(ps) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(ps) {
+        if pat_binds_resume(Array::get(ps, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    POr(a, b) => pat_binds_resume(a) || pat_binds_resume(b),
+    PStruct(_, fps) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fps) {
+        let (_, fp) = Array::get(fps, i)
+        if pat_binds_resume(fp) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+// #942 (Codex P2): does an EFn's parameter list bind `resume`?
+fn fn_params_bind_resume(params: Array[(String, Option[TypeExpr])]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(params) {
+    let (pn, _) = Array::get(params, i)
+    if pn == "resume" {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 // #942 (ADR-0050): inside a handler arm, `resume(...)` is one-shot and must be
 // the LAST thing the arm does. Codegen compiles resume as a continuation
 // throw, so any code after it silently never runs — `let a = resume(1);
@@ -1930,107 +1999,117 @@ fn handler_arm_pat_is_error(p: Pat) -> Bool {
 // k-convention non-tail continuation binder. Tail position distributes
 // through let/seq continuations and if/match branches (only one branch runs),
 // so `if c { resume(1) } else { resume(2) }` and multi-statement arms ending
-// in resume stay legal. Loop bodies are never tail (a resume there would run
-// per iteration). EFn subtrees are skipped wholesale — a resume inside a
-// nested lambda keeps its pre-#942 acceptance. A nested EHandle's handled
-// body inherits the current tail flag (its value IS the handle's value, and a
-// lexical resume there still targets THIS arm's continuation); its non-Error
-// arms restart a fresh tail walk of their own.
-fn check_arm_resume_tail(e: Expr, tail: Bool, errors: Array[String]) -> Unit {
+// in resume stay legal. `return resume(v)` inherits the tail flag (Codex P2
+// on #969 — return exits before anything else runs; pre-#942 it behaved
+// exactly like a plain tail resume at runtime). Loop bodies are never tail
+// (a resume there would run per iteration). EFn subtrees are skipped
+// wholesale — a resume inside a nested lambda keeps its pre-#942 acceptance.
+// A nested EHandle's handled body inherits the current tail flag (its value
+// IS the handle's value, and a lexical resume there still targets THIS arm's
+// continuation); its non-Error arms restart a fresh tail walk of their own.
+// `sh` = `resume` is shadowed by an enclosing binder (top-level fn/let,
+// local let/let-mut/let-rec, match/for/loop binders, arm payload binders):
+// codegen's prefer_bound_call routes such calls to the bound function, so
+// the tail discipline does not apply to them (Codex P2 on #969).
+fn check_arm_resume_tail(e: Expr, tail: Bool, sh: Bool, errors: Array[String]) -> Unit {
   match e {
     ECall(callee, args, _) => {
       match callee {
-        EIdent(nm, off) => if nm == "resume" && !tail {
+        EIdent(nm, off) => if nm == "resume" && !tail && !sh {
           Array::push(errors, String::concat("resume(...) must be the last expression of the handler arm (tail position) — code after a resume never runs, so a bound or repeated resume is silently dropped (#942, ADR-0050)", off_marker(off)))
         } else {
           ()
         },
-        _ => check_arm_resume_tail(callee, false, errors)
+        _ => check_arm_resume_tail(callee, false, sh, errors)
       }
       let mut ri = 0
       while ri < Array::length(args) {
-        check_arm_resume_tail(Array::get(args, ri), false, errors)
+        check_arm_resume_tail(Array::get(args, ri), false, sh, errors)
         ri = ri + 1
       }
     },
     EHandle(body, harms) => {
-      check_arm_resume_tail(body, tail, errors)
+      check_arm_resume_tail(body, tail, sh, errors)
       let mut hi = 0
       while hi < Array::length(harms) {
         let (hpat, hbody) = Array::get(harms, hi)
         if handler_arm_pat_is_error(hpat) {
           ()
         } else {
-          check_arm_resume_tail(hbody, true, errors)
+          check_arm_resume_tail(hbody, true, sh || pat_binds_resume(hpat), errors)
         }
         hi = hi + 1
       }
     },
-    ELet(_, v, b, _) => {
-      check_arm_resume_tail(v, false, errors)
-      check_arm_resume_tail(b, tail, errors)
+    ELet(ln, v, b, _) => {
+      check_arm_resume_tail(v, false, sh, errors)
+      check_arm_resume_tail(b, tail, sh || ln == "resume", errors)
     },
-    ELetMut(_, v, b, _) => {
-      check_arm_resume_tail(v, false, errors)
-      check_arm_resume_tail(b, tail, errors)
+    ELetMut(ln, v, b, _) => {
+      check_arm_resume_tail(v, false, sh, errors)
+      check_arm_resume_tail(b, tail, sh || ln == "resume", errors)
     },
-    ELetRec(_, v, b) => {
-      check_arm_resume_tail(v, false, errors)
-      check_arm_resume_tail(b, tail, errors)
+    ELetRec(ln, v, b) => {
+      check_arm_resume_tail(v, false, sh || ln == "resume", errors)
+      check_arm_resume_tail(b, tail, sh || ln == "resume", errors)
     },
     ESeq(a, b) => {
-      check_arm_resume_tail(a, false, errors)
-      check_arm_resume_tail(b, tail, errors)
+      check_arm_resume_tail(a, false, sh, errors)
+      check_arm_resume_tail(b, tail, sh, errors)
     },
     EIf(cnd, t, el) => {
-      check_arm_resume_tail(cnd, false, errors)
-      check_arm_resume_tail(t, tail, errors)
-      check_arm_resume_tail(el, tail, errors)
+      check_arm_resume_tail(cnd, false, sh, errors)
+      check_arm_resume_tail(t, tail, sh, errors)
+      check_arm_resume_tail(el, tail, sh, errors)
     },
     EMatch(scr, marms) => {
-      check_arm_resume_tail(scr, false, errors)
+      check_arm_resume_tail(scr, false, sh, errors)
       let mut mi = 0
       while mi < Array::length(marms) {
-        let (_, mb) = Array::get(marms, mi)
-        check_arm_resume_tail(mb, tail, errors)
+        let (mp, mb) = Array::get(marms, mi)
+        check_arm_resume_tail(mb, tail, sh || pat_binds_resume(mp), errors)
         mi = mi + 1
       }
     },
     EWhile(cnd, b) => {
-      check_arm_resume_tail(cnd, false, errors)
-      check_arm_resume_tail(b, false, errors)
+      check_arm_resume_tail(cnd, false, sh, errors)
+      check_arm_resume_tail(b, false, sh, errors)
     },
-    EForIn(_, _, it, b) => {
-      check_arm_resume_tail(it, false, errors)
-      check_arm_resume_tail(b, false, errors)
+    EForIn(v1, v2, it, b) => {
+      check_arm_resume_tail(it, false, sh, errors)
+      let for_sh = v1 == "resume" || (match v2 {
+        Some(v2n) => v2n == "resume",
+        None => false
+      })
+      check_arm_resume_tail(b, false, sh || for_sh, errors)
     },
     EBinOp(_, l, r) => {
-      check_arm_resume_tail(l, false, errors)
-      check_arm_resume_tail(r, false, errors)
+      check_arm_resume_tail(l, false, sh, errors)
+      check_arm_resume_tail(r, false, sh, errors)
     },
-    EUnaryOp(_, inner) => check_arm_resume_tail(inner, false, errors),
+    EUnaryOp(_, inner) => check_arm_resume_tail(inner, false, sh, errors),
     EAssign(_, v, b) => {
-      check_arm_resume_tail(v, false, errors)
-      check_arm_resume_tail(b, tail, errors)
+      check_arm_resume_tail(v, false, sh, errors)
+      check_arm_resume_tail(b, tail, sh, errors)
     },
     EAssignOp(_, _, v, b) => {
-      check_arm_resume_tail(v, false, errors)
-      check_arm_resume_tail(b, tail, errors)
+      check_arm_resume_tail(v, false, sh, errors)
+      check_arm_resume_tail(b, tail, sh, errors)
     },
     EFn(_, _, _, _, _, _) => (),
-    EReturn(inner) => check_arm_resume_tail(inner, false, errors),
-    EDot(obj, _, _, _) => check_arm_resume_tail(obj, false, errors),
+    EReturn(inner) => check_arm_resume_tail(inner, tail, sh, errors),
+    EDot(obj, _, _, _) => check_arm_resume_tail(obj, false, sh, errors),
     ETuple(items) => {
       let mut ti = 0
       while ti < Array::length(items) {
-        check_arm_resume_tail(Array::get(items, ti), false, errors)
+        check_arm_resume_tail(Array::get(items, ti), false, sh, errors)
         ti = ti + 1
       }
     },
     EArray(items) => {
       let mut ti = 0
       while ti < Array::length(items) {
-        check_arm_resume_tail(Array::get(items, ti), false, errors)
+        check_arm_resume_tail(Array::get(items, ti), false, sh, errors)
         ti = ti + 1
       }
     },
@@ -2038,28 +2117,34 @@ fn check_arm_resume_tail(e: Expr, tail: Bool, errors: Array[String]) -> Unit {
       let mut ti = 0
       while ti < Array::length(fields) {
         let (_, fe) = Array::get(fields, ti)
-        check_arm_resume_tail(fe, false, errors)
+        check_arm_resume_tail(fe, false, sh, errors)
         ti = ti + 1
       }
     },
     ELoop(binds, b) => {
       let mut ti = 0
+      let mut loop_sh = false
       while ti < Array::length(binds) {
-        let (_, be) = Array::get(binds, ti)
-        check_arm_resume_tail(be, false, errors)
+        let (bn, be) = Array::get(binds, ti)
+        if bn == "resume" {
+          loop_sh = true
+        } else {
+          ()
+        }
+        check_arm_resume_tail(be, false, sh, errors)
         ti = ti + 1
       }
-      check_arm_resume_tail(b, false, errors)
+      check_arm_resume_tail(b, false, sh || loop_sh, errors)
     },
-    ELabeledArg(_, _, inner) => check_arm_resume_tail(inner, false, errors),
+    ELabeledArg(_, _, inner) => check_arm_resume_tail(inner, false, sh, errors),
     EBreak(opt) => match opt {
-      Some(inner) => check_arm_resume_tail(inner, false, errors),
+      Some(inner) => check_arm_resume_tail(inner, false, sh, errors),
       None => ()
     },
     EContinue(items) => {
       let mut ti = 0
       while ti < Array::length(items) {
-        check_arm_resume_tail(Array::get(items, ti), false, errors)
+        check_arm_resume_tail(Array::get(items, ti), false, sh, errors)
         ti = ti + 1
       }
     },
@@ -2067,11 +2152,11 @@ fn check_arm_resume_tail(e: Expr, tail: Bool, errors: Array[String]) -> Unit {
       let mut ti = 0
       while ti < Array::length(pairs) {
         let (_, pe) = Array::get(pairs, ti)
-        check_arm_resume_tail(pe, false, errors)
+        check_arm_resume_tail(pe, false, sh, errors)
         ti = ti + 1
       }
     },
-    ESpread(inner) => check_arm_resume_tail(inner, false, errors),
+    ESpread(inner) => check_arm_resume_tail(inner, false, sh, errors),
     _ => ()
   }
 }
@@ -2087,101 +2172,111 @@ fn check_arm_resume_tail(e: Expr, tail: Bool, errors: Array[String]) -> Unit {
 // EHandle, the handled body is still "outside" (a resume there is not in any
 // arm); non-Error arm bodies switch to the check_arm_resume_tail walk above,
 // and Error arms are left to reject_resume_in_error_arm (#640).
-export fn reject_resume_outside_handler(e: Expr, errors: Array[String]) -> Unit {
+// `sh` = `resume` is shadowed by an enclosing binder (Codex P2 on #969):
+// codegen's prefer_bound_call routes `resume(x)` to the BOUND function
+// whenever a top-level fn/let named resume, a local binding, a lambda param,
+// or a match/for/loop binder named resume is in scope — such calls ran fine
+// pre-#942 and must stay accepted. check_stmts seeds `sh` from the top-level
+// declarations (fn resume / let resume / extern / imports).
+export fn reject_resume_outside_handler(e: Expr, sh: Bool, errors: Array[String]) -> Unit {
   match e {
     ECall(callee, args, _) => {
       match callee {
-        EIdent(nm, off) => if nm == "resume" {
+        EIdent(nm, off) => if nm == "resume" && !sh {
           Array::push(errors, String::concat("resume(...) is only valid inside a handler arm of `handle ... with` — outside one there is no continuation to resume (#942, ADR-0050)", off_marker(off)))
         } else {
           ()
         },
-        _ => reject_resume_outside_handler(callee, errors)
+        _ => reject_resume_outside_handler(callee, sh, errors)
       }
       let mut ri = 0
       while ri < Array::length(args) {
-        reject_resume_outside_handler(Array::get(args, ri), errors)
+        reject_resume_outside_handler(Array::get(args, ri), sh, errors)
         ri = ri + 1
       }
     },
     EHandle(body, harms) => {
-      reject_resume_outside_handler(body, errors)
+      reject_resume_outside_handler(body, sh, errors)
       let mut hi = 0
       while hi < Array::length(harms) {
         let (hpat, hbody) = Array::get(harms, hi)
         if handler_arm_pat_is_error(hpat) {
           ()
         } else {
-          check_arm_resume_tail(hbody, true, errors)
+          check_arm_resume_tail(hbody, true, sh || pat_binds_resume(hpat), errors)
         }
         hi = hi + 1
       }
     },
-    ELet(_, v, b, _) => {
-      reject_resume_outside_handler(v, errors)
-      reject_resume_outside_handler(b, errors)
+    ELet(ln, v, b, _) => {
+      reject_resume_outside_handler(v, sh, errors)
+      reject_resume_outside_handler(b, sh || ln == "resume", errors)
     },
-    ELetMut(_, v, b, _) => {
-      reject_resume_outside_handler(v, errors)
-      reject_resume_outside_handler(b, errors)
+    ELetMut(ln, v, b, _) => {
+      reject_resume_outside_handler(v, sh, errors)
+      reject_resume_outside_handler(b, sh || ln == "resume", errors)
     },
-    ELetRec(_, v, b) => {
-      reject_resume_outside_handler(v, errors)
-      reject_resume_outside_handler(b, errors)
+    ELetRec(ln, v, b) => {
+      reject_resume_outside_handler(v, sh || ln == "resume", errors)
+      reject_resume_outside_handler(b, sh || ln == "resume", errors)
     },
     ESeq(a, b) => {
-      reject_resume_outside_handler(a, errors)
-      reject_resume_outside_handler(b, errors)
+      reject_resume_outside_handler(a, sh, errors)
+      reject_resume_outside_handler(b, sh, errors)
     },
     EIf(cnd, t, el) => {
-      reject_resume_outside_handler(cnd, errors)
-      reject_resume_outside_handler(t, errors)
-      reject_resume_outside_handler(el, errors)
+      reject_resume_outside_handler(cnd, sh, errors)
+      reject_resume_outside_handler(t, sh, errors)
+      reject_resume_outside_handler(el, sh, errors)
     },
     EMatch(scr, marms) => {
-      reject_resume_outside_handler(scr, errors)
+      reject_resume_outside_handler(scr, sh, errors)
       let mut mi = 0
       while mi < Array::length(marms) {
-        let (_, mb) = Array::get(marms, mi)
-        reject_resume_outside_handler(mb, errors)
+        let (mp, mb) = Array::get(marms, mi)
+        reject_resume_outside_handler(mb, sh || pat_binds_resume(mp), errors)
         mi = mi + 1
       }
     },
     EWhile(cnd, b) => {
-      reject_resume_outside_handler(cnd, errors)
-      reject_resume_outside_handler(b, errors)
+      reject_resume_outside_handler(cnd, sh, errors)
+      reject_resume_outside_handler(b, sh, errors)
     },
-    EForIn(_, _, it, b) => {
-      reject_resume_outside_handler(it, errors)
-      reject_resume_outside_handler(b, errors)
+    EForIn(v1, v2, it, b) => {
+      reject_resume_outside_handler(it, sh, errors)
+      let for_sh = v1 == "resume" || (match v2 {
+        Some(v2n) => v2n == "resume",
+        None => false
+      })
+      reject_resume_outside_handler(b, sh || for_sh, errors)
     },
     EBinOp(_, l, r) => {
-      reject_resume_outside_handler(l, errors)
-      reject_resume_outside_handler(r, errors)
+      reject_resume_outside_handler(l, sh, errors)
+      reject_resume_outside_handler(r, sh, errors)
     },
-    EUnaryOp(_, inner) => reject_resume_outside_handler(inner, errors),
+    EUnaryOp(_, inner) => reject_resume_outside_handler(inner, sh, errors),
     EAssign(_, v, b) => {
-      reject_resume_outside_handler(v, errors)
-      reject_resume_outside_handler(b, errors)
+      reject_resume_outside_handler(v, sh, errors)
+      reject_resume_outside_handler(b, sh, errors)
     },
     EAssignOp(_, _, v, b) => {
-      reject_resume_outside_handler(v, errors)
-      reject_resume_outside_handler(b, errors)
+      reject_resume_outside_handler(v, sh, errors)
+      reject_resume_outside_handler(b, sh, errors)
     },
-    EFn(_, _, _, _, _, fb) => reject_resume_outside_handler(fb, errors),
-    EReturn(inner) => reject_resume_outside_handler(inner, errors),
-    EDot(obj, _, _, _) => reject_resume_outside_handler(obj, errors),
+    EFn(_, _, fparams, _, _, fb) => reject_resume_outside_handler(fb, sh || fn_params_bind_resume(fparams), errors),
+    EReturn(inner) => reject_resume_outside_handler(inner, sh, errors),
+    EDot(obj, _, _, _) => reject_resume_outside_handler(obj, sh, errors),
     ETuple(items) => {
       let mut ti = 0
       while ti < Array::length(items) {
-        reject_resume_outside_handler(Array::get(items, ti), errors)
+        reject_resume_outside_handler(Array::get(items, ti), sh, errors)
         ti = ti + 1
       }
     },
     EArray(items) => {
       let mut ti = 0
       while ti < Array::length(items) {
-        reject_resume_outside_handler(Array::get(items, ti), errors)
+        reject_resume_outside_handler(Array::get(items, ti), sh, errors)
         ti = ti + 1
       }
     },
@@ -2189,28 +2284,34 @@ export fn reject_resume_outside_handler(e: Expr, errors: Array[String]) -> Unit 
       let mut ti = 0
       while ti < Array::length(fields) {
         let (_, fe) = Array::get(fields, ti)
-        reject_resume_outside_handler(fe, errors)
+        reject_resume_outside_handler(fe, sh, errors)
         ti = ti + 1
       }
     },
     ELoop(binds, b) => {
       let mut ti = 0
+      let mut loop_sh = false
       while ti < Array::length(binds) {
-        let (_, be) = Array::get(binds, ti)
-        reject_resume_outside_handler(be, errors)
+        let (bn, be) = Array::get(binds, ti)
+        if bn == "resume" {
+          loop_sh = true
+        } else {
+          ()
+        }
+        reject_resume_outside_handler(be, sh, errors)
         ti = ti + 1
       }
-      reject_resume_outside_handler(b, errors)
+      reject_resume_outside_handler(b, sh || loop_sh, errors)
     },
-    ELabeledArg(_, _, inner) => reject_resume_outside_handler(inner, errors),
+    ELabeledArg(_, _, inner) => reject_resume_outside_handler(inner, sh, errors),
     EBreak(opt) => match opt {
-      Some(inner) => reject_resume_outside_handler(inner, errors),
+      Some(inner) => reject_resume_outside_handler(inner, sh, errors),
       None => ()
     },
     EContinue(items) => {
       let mut ti = 0
       while ti < Array::length(items) {
-        reject_resume_outside_handler(Array::get(items, ti), errors)
+        reject_resume_outside_handler(Array::get(items, ti), sh, errors)
         ti = ti + 1
       }
     },
@@ -2218,11 +2319,11 @@ export fn reject_resume_outside_handler(e: Expr, errors: Array[String]) -> Unit 
       let mut ti = 0
       while ti < Array::length(pairs) {
         let (_, pe) = Array::get(pairs, ti)
-        reject_resume_outside_handler(pe, errors)
+        reject_resume_outside_handler(pe, sh, errors)
         ti = ti + 1
       }
     },
-    ESpread(inner) => reject_resume_outside_handler(inner, errors),
+    ESpread(inner) => reject_resume_outside_handler(inner, sh, errors),
     _ => ()
   }
 }
