@@ -24,9 +24,19 @@ test "983: homogeneous set stays accepted" {
   assert(check_source_ok("fn get_it(m: Map[String, Int]) -> Int {\n  Map::get(m, \"b\") + 1\n}\nfn main() -> Int {\n  let m = Map::from_pairs([(\"a\", 1)])\n  Map::set(m, \"b\", 40)\n  get_it(m)\n}"))
 }
 
-test "983: empty map's slot is bound by the first set (value restriction)" {
-  assert(check_source_err("fn main() -> Int {\n  let m = Map::new()\n  Map::set(m, \"a\", 1)\n  Map::set(m, \"b\", \"str\")\n  0\n}"))
-  assert(check_source_ok("fn main() -> Int {\n  let m = Map::new()\n  Map::set(m, \"a\", 1)\n  Map::set(m, \"b\", 2)\n  0\n}"))
+test "983/996: empty map reused at two value types stays accepted" {
+  // Map::set is a FUNCTIONAL update (fresh map, receiver untouched —
+  // measured), so a let-bound Map::new() generalizes and each derived map
+  // binds its own slot (#996 Codex P2: value-restricting Map mis-rejected
+  // this shape).
+  assert(check_source_ok("fn main() -> Int {\n  let empty = Map::new()\n  let ints = Map::set(empty, \"i\", 1)\n  let strings = Map::set(empty, \"s\", \"x\")\n  Map::size(ints) + Map::size(strings)\n}"))
+}
+
+test "983: a set-chain's concrete slot still rejects a mixed value" {
+  // The returned map of the first set is Map[String, Int] (concrete slot),
+  // so the second set in the chain keeps the #983 check.
+  assert(check_source_err("fn main() -> Int {\n  let m1 = Map::set(Map::new(), \"a\", 1)\n  let m2 = Map::set(m1, \"b\", \"str\")\n  Map::size(m2)\n}"))
+  assert(check_source_ok("fn main() -> Int {\n  let m1 = Map::set(Map::new(), \"a\", 1)\n  let m2 = Map::set(m1, \"b\", 2)\n  Map::size(m2)\n}"))
 }
 
 test "983: key type check is preserved" {

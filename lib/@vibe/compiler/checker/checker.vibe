@@ -1208,15 +1208,19 @@ export fn fn_return_env_name(name: String) -> String {
 
 // #938: the ArrayBuilder container type — `CtNamed("ArrayBuilder", [elem])`,
 // the same shape `b: ArrayBuilder[T]` annotations resolve to. Used by the
-// builder call branches below. #983: `Map` is the same kind of live mutable
-// container (`Map::set` writes through the shared value), so a map literal's
-// value slot (`CtNamed("Map", [CtString, v])`, the shape a `Map[String, V]`
-// annotation resolves to) needs the identical value restriction — a
-// quantified value var would re-instantiate per use and sets could never
-// constrain each other.
+// builder call branches below. #983/#996 (Codex P2): `Map` is deliberately
+// NOT listed here — `Map::set` is a FUNCTIONAL update (the linear codegen
+// allocates a fresh count+1 map and leaves the receiver untouched; measured:
+// `Map::has_key(m, "a")` is false after `let m2 = Map::set(m, "a", 1)`), so
+// aliases of one empty `Map::new()` binding do NOT share a live value slot.
+// Value-restricting Map would mis-reject
+// `let e = Map::new(); Map::set(e, "i", 1); Map::set(e, "s", "x")` (two
+// independent derived maps). Generalizing the empty literal's fresh slot is
+// therefore sound; maps whose slot is already CONCRETE (from_pairs values,
+// annotations, a set-chain's returned type) keep the #983 value check.
 fn is_array_builder_head(t: Type) -> Bool {
   match t {
-    CtNamed(n, targs) => (n == "ArrayBuilder" && Array::length(targs) == 1) || (n == "Map" && Array::length(targs) == 2),
+    CtNamed(n, targs) => n == "ArrayBuilder" && Array::length(targs) == 1,
     _ => false
   }
 }
@@ -5175,8 +5179,10 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
       // `CtNamed("Map", [CtString, v])`, the exact shape a `Map[String, V]`
       // annotation resolves to (checker_resolve's TyApp fallback) — so
       // `Map::set`/`Map::get` can check against it. An empty literal
-      // (`Map::new()`) gets a fresh var, bound by the first set (ELet's
-      // value restriction keeps it un-quantified, same as ArrayBuilder).
+      // (`Map::new()`) gets a fresh var; a let-bound empty map GENERALIZES
+      // (#996 Codex P2: `Map::set` is a functional update, so aliases of the
+      // empty binding build independent maps — no value restriction; each
+      // use re-instantiates a fresh slot, bound by that use's own flow).
       if Array::length(mpairs) == 0 {
         let (mv0, mc2) = fresh_var(mc1)
         (CtNamed("Map", [CtString, mv0]), ms1, mc2)
