@@ -483,12 +483,181 @@ fn struct_fields_ground(dfields: Array[(String, Type)]) -> Bool {
   ok
 }
 
+// #939 helpers: detect a function VALUE laundering a concrete effect row away
+// through a pure-typed slot (HOF argument, let/struct-field/array annotation).
+// The strip_effects fallback below deliberately tolerates effect-only
+// differences — but for CONCRETE, non-exempt labels flowing in a COVARIANT
+// position that tolerance is the #939 soundness hole: the value's perform
+// executes with no handler and the program dies with an unhandled wasm
+// exception at runtime. Exemptions mirror checker_effects' transitive pass:
+// `Error` (pervasive un-annotated throw sites, #640), `Async`
+// (composition-allowed), and effect VARIABLES (single lowercase letter /
+// `$N` fresh vars — not decidable without call-site row unification, #885).
+fn effect_label_is_exempt(lbl: String) -> Bool {
+  let len = String::length(lbl)
+  if lbl == "Error" || lbl == "Async" {
+    true
+  } else if len == 1 {
+    String::char_code_at(lbl, 0) >= 97 && String::char_code_at(lbl, 0) <= 122
+  } else if len >= 2 {
+    String::char_code_at(lbl, 0) == 36
+  } else {
+    true
+  }
+}
+
+fn row_labels(row: Option[String]) -> Array[String] {
+  match row {
+    Some(r) => {
+      let parts = String::split(r, ",")
+      let out = Array::slice([
+        ""
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(parts) {
+        let t = String::trim(Array::get(parts, i))
+        if String::length(t) > 0 {
+          Array::push(out, t)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      out
+    },
+    None => Array::slice([
+      ""
+    ], 0, 0)
+  }
+}
+
+fn row_contains_label(row: Option[String], lbl: String) -> Bool {
+  let labels = row_labels(row)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(labels) && !found {
+    if Array::get(labels, i) == lbl {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+// First concrete, non-exempt effect label whose drop would let a perform run
+// with no handler. At each CtFn the ACTUAL side's own row must not carry a
+// label the EXPECTED side's row lacks; the return type recurses covariantly;
+// PARAMETER positions recurse with expected/actual SWAPPED (contravariance —
+// Codex P1 on #978: an `((Int) -> Int with { Logger }, Int) -> Int` slot
+// holding a pure-callback fn lets `h(eff, 1)` type-check while the callee
+// invokes the effectful callback with no handler, so at parameter positions
+// it is the EXPECTED param's concrete labels that must be tolerated by the
+// ACTUAL param). pure→effectful still passes in both directions by
+// construction, and an effectful parameter slot accepting a pure function
+// stays legal (the swap makes that the label-free side).
+fn effect_row_dropped(expected: Type, actual: Type) -> Option[String] {
+  match expected {
+    CtFn(eparams, eret, eeff) => match actual {
+      CtFn(aparams, aret, aeff) => {
+        let alabels = row_labels(aeff)
+        let mut i = 0
+        let mut dropped = None
+        let mut done = false
+        while i < Array::length(alabels) && !done {
+          let lbl = Array::get(alabels, i)
+          if !effect_label_is_exempt(lbl) && !row_contains_label(eeff, lbl) {
+            dropped = Some(lbl)
+            done = true
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        if !done && Array::length(eparams) == Array::length(aparams) {
+          let mut pi = 0
+          while pi < Array::length(eparams) && !done {
+            match effect_row_dropped(Array::get(aparams, pi), Array::get(eparams, pi)) {
+              Some(pl) => {
+                dropped = Some(pl)
+                done = true
+              },
+              None => ()
+            }
+            pi = pi + 1
+          }
+        } else {
+          ()
+        }
+        match dropped {
+          Some(l) => Some(l),
+          None => effect_row_dropped(eret, aret)
+        }
+      },
+      _ => None
+    },
+    CtArray(ee) => match actual {
+      CtArray(ae) => effect_row_dropped(ee, ae),
+      _ => None
+    },
+    CtOption(ee) => match actual {
+      CtOption(ae) => effect_row_dropped(ee, ae),
+      _ => None
+    },
+    CtTuple(ees) => match actual {
+      CtTuple(aes) => if Array::length(ees) == Array::length(aes) {
+        let mut i = 0
+        let mut dropped = None
+        let mut done = false
+        while i < Array::length(ees) && !done {
+          match effect_row_dropped(Array::get(ees, i), Array::get(aes, i)) {
+            Some(d) => {
+              dropped = Some(d)
+              done = true
+            },
+            None => ()
+          }
+          i = i + 1
+        }
+        dropped
+      } else {
+        None
+      },
+      _ => None
+    },
+    CtNamed(en, eargs) => match actual {
+      CtNamed(an, aargs) => if en == an && Array::length(eargs) == Array::length(aargs) {
+        let mut i = 0
+        let mut dropped = None
+        let mut done = false
+        while i < Array::length(eargs) && !done {
+          match effect_row_dropped(Array::get(eargs, i), Array::get(aargs, i)) {
+            Some(d) => {
+              dropped = Some(d)
+              done = true
+            },
+            None => ()
+          }
+          i = i + 1
+        }
+        dropped
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
 // Unify `expected` with `actual`, REPORTING only a genuine STRUCTURAL mismatch
 // (the checker historically swallowed these, accepting ill-typed programs).
 // `unify` already accepts `CtUnknown`/`CtVar` freely; on failure we retry with
 // effects erased, and tolerate the difference if the structure matches — effect
 // inference on function values is imprecise, so effect-only differences must not
-// be reported here. Returns the (possibly extended) substitution.
+// be reported here (EXCEPT a concrete covariant row drop — see
+// `effect_row_dropped` above, #939). Returns the (possibly extended)
+// substitution.
 export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array[String], what: String, off: Int) -> Subst {
   match unify(expected, actual, s) {
     Some(su) => su,
@@ -522,7 +691,22 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
       let eh = head_kind(subst_apply(s, expected))
       let ah = head_kind(subst_apply(s, actual))
       let head_differ = eh != 0 && ah != 0 && eh != ah
-      if structural || !(reportable || head_differ) {
+      if structural {
+        // #939: the structural retry tolerated EVERY effect-only difference,
+        // including a function value whose CONCRETE row silently vanishes
+        // into a pure-typed slot (HOF argument, let / struct field / array
+        // annotation) — the perform then runs with no handler and dies as an
+        // unhandled wasm exception at runtime. Report exactly that shape;
+        // pure→effectful subsumption and Error/Async/effect-var differences
+        // stay tolerated (see effect_row_dropped).
+        match effect_row_dropped(subst_apply(s, expected), subst_apply(s, actual)) {
+          Some(lbl) => {
+            Array::push(errors, String::concat(what, String::concat(": effect row mismatch: a value of type ", String::concat(type_to_string(subst_apply(s, actual)), String::concat(" cannot be used where ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(" is expected (the { ", String::concat(lbl, String::concat(" } effect would be dropped — no handler could ever run)", off_marker(off))))))))))
+            s
+          },
+          None => s
+        }
+      } else if !(reportable || head_differ) {
         s
       } else {
         Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), off_marker(off)))))))
