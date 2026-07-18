@@ -48,6 +48,38 @@ the higher-order typing and subtyping proofs remain coupled to #939. The model
 also abstracts from payload types, divergence, traps, stack unwinding,
 finalizers, and backend exception representation.
 
+## Verified call-typing properties
+
+The typed-core slice for #990 starts from resolved function signatures and
+models primitive types, arbitrarily nested nominal generic types, type
+variables, positional arguments, and fully-labeled arguments. It proves that:
+
+- nominal type equality retains both the constructor identity and every type
+  argument;
+- every accepted call carries evidence that argument resolution used the
+  declared parameter contract;
+- after generic inference, every accepted actual argument equals its
+  instantiated parameter type;
+- the reported return type is the unique instantiation of the signature return
+  pattern;
+- fully-labeled arguments resolve by ABI label rather than source order, while
+  unknown and duplicate labels are rejected;
+- builtin signatures use the same call relation as user functions rather than
+  a separate per-position allowlist.
+
+The executable corpus in `formal/oracle/call-typing.tsv` locks positive and
+negative witnesses for #938, #941, #981, #983, #985, and #986. Deliberately
+broken head-only and unchecked-argument predicates demonstrate that the corpus
+detects type-argument erasure and argument-check bypass.
+
+This slice begins after parsing, name resolution, signature collection, and
+generic-bound checking. It does not yet model function values, type-and-effect
+subtyping, optional parameters, mixed positional/labeled calls, implicit
+coercions, evaluation, or Wasm representation. The embedded Vibe sources are
+bridge fixtures. `examples/selfhost-call-oracle.sh` feeds them to the current
+selfhost checker and reports semantic drift, but passing the Lean corpus check
+alone does not prove implementation correspondence.
+
 ## Verified compiler scheduler properties
 
 - direct imports have a strictly smaller rank, so the modeled dependency graph
@@ -178,3 +210,26 @@ From the repository root, the equivalent project task is:
 ```sh
 pkf run formal-check
 ```
+
+This command also executes `OracleMain.lean` and rejects a stale committed
+`formal/oracle/call-typing.tsv`. It also tests the bridge's report, strict, and
+checker-error behavior against a deterministic fake checker. To inspect the
+generated corpus directly:
+
+```sh
+cd formal
+lake env lean --run OracleMain.lean
+```
+
+To compare the committed Oracle with the current selfhost checker:
+
+```sh
+pkf run formal-selfhost-oracle
+pkf run formal-selfhost-oracle -- --strict
+```
+
+The default is report-only because open implementation bugs may be intentional
+Oracle mismatches while being fixed. `--strict` exits 1 on any semantic drift.
+Both modes exit 2 when the checker cannot run. The comparison task is manual
+and non-gating; the Formal workflow still runs only for `formal/**` changes and
+does not build the selfhost compiler.
