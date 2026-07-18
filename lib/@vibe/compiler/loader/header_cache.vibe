@@ -141,6 +141,180 @@ fn resolve_checked_path_fs(base_dir: String, raw_path: String, self_path: String
   }
 }
 
+// #943: `import <pkg> { a, b }` / `export <pkg> { a, b }` names used to bind
+// blindly against whatever the resolved module's CHECKED env happened to
+// contain (runtime/index.vibe's `bind_import_names_from_cache` does a flat,
+// export-UNAWARE lookup): a nonexistent name silently became `CtUnknown` (no
+// error unless later used somewhere that needed a real type), and a
+// genuinely PRIVATE name silently bound its REAL type (every top-level def
+// is present in a checked module's env, exported or not) and only failed
+// much later, UNLOCATED, deep inside the codegen merge's export-aware
+// private-namespacing pass ("undefined variable (local): <name>", no
+// file/line, no mention of the import). Catch it HERE instead, at the same
+// call site that already resolves the raw import path and has the
+// importing module's own source text in scope for a line:col lookup
+// (mirrors `located_missing_import_error` above).
+//
+// Scope (deliberately conservative -- see #943 discussion): only checked
+// when the import target is a CONTRACT package boundary (`.../index.vpkg`
+// or `.../index.vibei` -- ADR-0063/ADR-0070's declared-surface packages,
+// the same shape #729/#847's boundary-enforcement machinery treats as the
+// sole authoritative entry point), and only for plain lowercase-leading
+// value names (see `is_lowercase_leading_plain_ident`). Shapes left
+// UNVALIDATED on purpose:
+//   - plain `index.vibe` facade directories: their effective surface is
+//     historically LEAKIER than the facade's own re-export list --
+//     fixtures/import_visibility_float_eq_test.vibe (#716) deliberately
+//     imports `eq` through prelude/index.vibe even though the facade only
+//     lists `Float::eq` (the merge-level export of float.vibe's `export
+//     let eq` is what actually binds). A facade's collect_exports list is
+//     therefore not a positive proof of absence.
+//   - direct-file imports (`import ../checker_effects.vibe { ... }`, the
+//     common compiler-internal shape): same-package edges are not a
+//     package-contract question at all.
+//   - a package whose store/lib copy is not materialized (unresolved
+//     `@scope/name` pin) -- the `Fs::exists` guard below.
+fn is_contract_boundary_path(path: String) -> Bool {
+  String::ends_with(path, "/index.vibei") || String::ends_with(path, "/index.vpkg")
+}
+
+// Type names, enum-variant constructors, and `Type::member` qualified items
+// (`import ../ast { type Json, Type::method }`) are excluded on purpose:
+// `collect_exports` (reused below for the VALUE namespace) enumerates enum
+// VARIANT constructors but never the enum/struct/alias/trait NAME itself, so
+// a routine, entirely legitimate `import ../core/index.vibe { Stmt, Expr,
+// TypeEnv, ... }` (used all over this compiler) would false-positive as "not
+// exported" if type-shaped names were checked against the same list. The
+// vibe convention is snake_case values / UpperCamelCase types (CLAUDE.md),
+// so a lowercase first letter reliably selects the VALUE namespace this
+// check can actually speak to.
+fn is_lowercase_leading_plain_ident(name: String) -> Bool {
+  if String::length(name) == 0 {
+    false
+  } else if String::index_of(name, "::") >= 0 {
+    false
+  } else {
+    let c = String::char_code_at(name, 0)
+    c >= 97 && c <= 122
+  }
+}
+
+fn string_array_contains_hc(items: Array[String], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+// The target's OWN export surface only -- deliberately NOT recursive (never
+// walks the target's own imports/deps). Reusing
+// `load_or_parse_module_header_fs_impl(resolved, ..)` here would recurse
+// into this same validation for the target's own import list, which
+// recurses again for ITS deps, and so on -- effectively re-validating the
+// whole transitive import graph from every single edge. This reads +
+// (contract-)parses `resolved` exactly once instead, mirroring the same
+// decls/opaques/collect_exports combination the contract-header branch above
+// already uses for its own `exports` result.
+fn resolved_export_names_fs(resolved: String) -> Array[String] with { Error, Fs } {
+  let source = Fs::read_file(resolved)
+  if is_contract_ext(resolved) && !String::starts_with(source, contract_facade_marker) {
+    let (_, pin_blanked) = extract_require_pins(source)
+    let (cdecls, copaques, cextra) = parse_contract_program(lex(pin_blanked))
+    let names = collect_exports(cextra)
+    let mut cdi = 0
+    while cdi < Array::length(cdecls) {
+      let (cdname, _) = Array::get(cdecls, cdi)
+      Array::push(names, cdname)
+      cdi = cdi + 1
+    }
+    let mut coi = 0
+    while coi < Array::length(copaques) {
+      let (coname, _) = Array::get(copaques, coi)
+      Array::push(names, coname)
+      coi = coi + 1
+    }
+    names
+  } else {
+    collect_exports(parse_program(lex(source)))
+  }
+}
+
+fn located_import_name_error(source: String, keyword: String, raw_path: String, name: String, display: String) -> String {
+  let base_msg = String::concat("\"", String::concat(name, String::concat("\" is not exported by ", display)))
+  let needle = String::concat(keyword, String::concat(" ", raw_path))
+  let needle_off = String::index_of(source, needle)
+  let off = if needle_off >= 0 {
+    needle_off + String::length(keyword) + 1
+  } else {
+    String::index_of(source, raw_path)
+  }
+  if off < 0 {
+    base_msg
+  } else {
+    let (line, col) = offset_to_line_col(source, off)
+    String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), String::concat(": ", base_msg)))))
+  }
+}
+
+// A friendly `@scope/name` label for the error message when derivable from
+// the resolved on-disk path (`.../lib/@vibe/json/index.vpkg` -> `@vibe/json`);
+// falls back to the raw import spelling otherwise.
+fn import_display_name(raw_path: String, resolved: String) -> String {
+  if String::starts_with(raw_path, "@") {
+    raw_path
+  } else {
+    let at = String::last_index_of(resolved, "@")
+    if at < 0 {
+      raw_path
+    } else {
+      let rest = String::substring(resolved, at, String::length(resolved))
+      let slash1 = String::index_of(rest, "/")
+      if slash1 < 0 {
+        raw_path
+      } else {
+        let after_scope = String::substring(rest, slash1 + 1, String::length(rest))
+        let slash2 = String::index_of(after_scope, "/")
+        if slash2 < 0 {
+          rest
+        } else {
+          String::substring(rest, 0, slash1 + 1 + slash2)
+        }
+      }
+    }
+  }
+}
+
+fn validate_import_names_fs(source: String, keyword: String, raw_path: String, resolved: String, names: Array[(String, Option[String])]) -> Unit with { Error, Fs } {
+  if is_contract_boundary_path(resolved) && Fs::exists(resolved) {
+    let mut dep_exports = Array::slice([
+      ""
+    ], 0, 0)
+    let mut loaded = false
+    let mut i = 0
+    while i < Array::length(names) {
+      let (name, _alias) = Array::get(names, i)
+      if is_lowercase_leading_plain_ident(name) {
+        if !loaded {
+          dep_exports = resolved_export_names_fs(resolved)
+          loaded = true
+        } else ()
+        if string_array_contains_hc(dep_exports, name) {
+          ()
+        } else {
+          throw(located_import_name_error(source, keyword, raw_path, name, import_display_name(raw_path, resolved)))
+        }
+      } else ()
+      i = i + 1
+    }
+  } else ()
+}
+
 fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String, self_path: String, source: String) -> Array[String] with { Error, Fs } {
   let deps = Array::slice([
     ""
@@ -148,8 +322,16 @@ fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String, self_pat
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(raw_path, _) => Array::push(deps, resolve_checked_path_fs(base_dir, raw_path, self_path, source, "import")),
-      SReExport(raw_path, _) => Array::push(deps, resolve_checked_path_fs(base_dir, raw_path, self_path, source, "export")),
+      SImport(raw_path, names) => {
+        let resolved = resolve_checked_path_fs(base_dir, raw_path, self_path, source, "import")
+        validate_import_names_fs(source, "import", raw_path, resolved, names)
+        Array::push(deps, resolved)
+      },
+      SReExport(raw_path, names) => {
+        let resolved = resolve_checked_path_fs(base_dir, raw_path, self_path, source, "export")
+        validate_import_names_fs(source, "export", raw_path, resolved, names)
+        Array::push(deps, resolved)
+      },
       _ => ()
     }
     i = i + 1
@@ -247,7 +429,15 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
   let mut warm_ok = false
   if Fs::exists(cache_path) {
     let parsed = parse_persistent_module_header_text(normalize_persistent_cache_text(Fs::read_file(cache_path)))
-    if package_index_deps_are_current(parsed.0) {
+    // #943 review (Codex P2): the cache key only covers the IMPORTER's
+    // source, so editing a target contract (dropping/renaming an export)
+    // while the importer is unchanged used to replay the stale header and
+    // skip import-name validation entirely. v2 entries record each
+    // contract-boundary dep's content fingerprint at build time; any
+    // mismatch (or a pre-v2 entry, which recorded none) falls through to
+    // the cold lane, which re-validates the import list against the
+    // CURRENT contract surface.
+    if parsed.3 && package_index_deps_are_current(parsed.0) && contract_dep_fingerprints_current(parsed.2) {
       warm_deps = parsed.0
       warm_exports = parsed.1
       warm_ok = true
@@ -364,7 +554,52 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
     let deps = header_result.0
     let exports = header_result.1
     let next_parse_count = header_result.2
-    Fs::write_file(cache_path, persistent_module_header_text(deps, exports))
+    Fs::write_file(cache_path, persistent_module_header_text(deps, exports, contract_dep_fingerprints_now(deps)))
     (deps, exports, next_parse_count)
   }
+}
+
+// Snapshot each contract-boundary dep's content fingerprint for the v2
+// header entry (#943 review). A dep that is not a contract boundary — or
+// whose file is not materialized — records nothing: the warm gate only
+// compares what was recorded, and a contract that APPEARS later changes
+// resolution winners, which the #801 package_index_deps_are_current gate
+// already catches.
+fn contract_dep_fingerprints_now(deps: Array[String]) -> Array[(String, String)] with { Fs } {
+  let out = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(deps) {
+    let d = Array::get(deps, i)
+    if is_contract_boundary_path(d) && Fs::exists(d) {
+      Array::push(out, (d, compact_string_fingerprint(Fs::read_file(d))))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Warm-gate check: every recorded contract fingerprint must still match the
+// on-disk contract text. A vanished or edited contract fails the gate and
+// forces a cold re-parse + re-validation of the importer's names.
+fn contract_dep_fingerprints_current(cdeps: Array[(String, String)]) -> Bool with { Fs } {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(cdeps) {
+    let (cpath, cfp) = Array::get(cdeps, i)
+    if ok {
+      if Fs::exists(cpath) {
+        ok = compact_string_fingerprint(Fs::read_file(cpath)) == cfp
+      } else {
+        ok = false
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
 }

@@ -28,22 +28,41 @@ fn strip_trailing_cr(line: String) -> String {
   }
 }
 
-fn parse_persistent_module_header_line(deps: Array[String], exports: Array[String], line: String, saw_version: Bool) -> Bool with { Error } {
+// Returns the version seen so far (0 = no version row yet). Version 2
+// (#943 review) adds `cdep\t<path>\t<fingerprint>` rows recording each
+// contract-boundary dep's content fingerprint at header-build time, so the
+// warm lane can detect a contract edited AFTER the importer was cached
+// (importer-keyed cache alone cannot see a target-side change). Version 1
+// entries still parse (no cdep rows, ver stays 1) — the warm gate treats
+// them as stale exactly once and rebuilds them as v2.
+fn parse_persistent_module_header_line(deps: Array[String], exports: Array[String], cdeps: Array[(String, String)], line: String, ver: Int) -> Int with { Error } {
   if String::length(line) == 0 {
-    saw_version
+    ver
   } else if has_prefix(line, "version\t") {
     let value = line[8: String::length(line)]
-    if !(value == "1") {
+    if value == "1" {
+      1
+    } else if value == "2" {
+      2
+    } else {
       throw("invalid persistent module header version")
     }
-    true
   } else if has_prefix(line, "dep\t") {
     let value = line[4: String::length(line)]
     if String::length(value) == 0 {
       throw("invalid persistent module header dep row")
     } else {
       Array::push(deps, value)
-      saw_version
+      ver
+    }
+  } else if has_prefix(line, "cdep\t") {
+    let value = line[5: String::length(line)]
+    let tab = String::index_of(value, "\t")
+    if tab <= 0 || tab >= String::length(value) - 1 {
+      throw("invalid persistent module header cdep row")
+    } else {
+      Array::push(cdeps, (value[0: tab], value[tab + 1: String::length(value)]))
+      ver
     }
   } else if has_prefix(line, "export\t") {
     let value = line[7: String::length(line)]
@@ -51,24 +70,37 @@ fn parse_persistent_module_header_line(deps: Array[String], exports: Array[Strin
       throw("invalid persistent module header export row")
     } else {
       Array::push(exports, value)
-      saw_version
+      ver
     }
   } else {
     throw(String::concat("invalid persistent module header row: ", line))
   }
 }
 
-export fn persistent_module_header_text(deps: Array[String], exports: Array[String]) -> String {
+// `contract_fps`: (resolved contract path, content fingerprint) per
+// contract-boundary dep, captured when the header was built (#943 review —
+// see parse_persistent_module_header_line).
+export fn persistent_module_header_text(deps: Array[String], exports: Array[String], contract_fps: Array[(String, String)]) -> String {
   // O(N) via StringBuilder; previously `out = String::concat(out, ...)`
   // over both `deps` and `exports` was O((D+E)²).
   let buf = StringBuilder::new()
-  StringBuilder::push(buf, "version\t1\n")
+  StringBuilder::push(buf, "version\t2\n")
   let mut i = 0
   while i < Array::length(deps) {
     StringBuilder::push(buf, "dep\t")
     StringBuilder::push(buf, Array::get(deps, i))
     StringBuilder::push(buf, "\n")
     i = i + 1
+  }
+  let mut c = 0
+  while c < Array::length(contract_fps) {
+    let (cpath, cfp) = Array::get(contract_fps, c)
+    StringBuilder::push(buf, "cdep\t")
+    StringBuilder::push(buf, cpath)
+    StringBuilder::push(buf, "\t")
+    StringBuilder::push(buf, cfp)
+    StringBuilder::push(buf, "\n")
+    c = c + 1
   }
   let mut j = 0
   while j < Array::length(exports) {
@@ -80,30 +112,36 @@ export fn persistent_module_header_text(deps: Array[String], exports: Array[Stri
   StringBuilder::freeze(buf)
 }
 
-export fn parse_persistent_module_header_text(raw: String) -> (Array[String], Array[String]) with { Error } {
+// Returns (deps, exports, contract_fps, is_v2). A version-1 entry parses
+// with empty contract_fps and is_v2 = false — the caller decides whether
+// that means "rebuild" (the warm gate does; see #943 review).
+export fn parse_persistent_module_header_text(raw: String) -> (Array[String], Array[String], Array[(String, String)], Bool) with { Error } {
   let deps = Array::slice([
     ""
   ], 0, 0)
   let exports = Array::slice([
     ""
   ], 0, 0)
-  let mut saw_version = false
+  let cdeps = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let mut ver = 0
   let len = String::length(raw)
   let mut line_start = 0
   let mut i = 0
   while i < len {
     if String::char_code_at(raw, i) == 10 {
       let line = strip_trailing_cr(raw[line_start: i])
-      saw_version = parse_persistent_module_header_line(deps, exports, line, saw_version)
+      ver = parse_persistent_module_header_line(deps, exports, cdeps, line, ver)
       line_start = i + 1
     }
     i = i + 1
   }
   let line = strip_trailing_cr(raw[line_start: len])
-  saw_version = parse_persistent_module_header_line(deps, exports, line, saw_version)
-  if !saw_version {
+  ver = parse_persistent_module_header_line(deps, exports, cdeps, line, ver)
+  if ver == 0 {
     throw("missing persistent module header version")
   } else {
-    (deps, exports)
+    (deps, exports, cdeps, ver == 2)
   }
 }

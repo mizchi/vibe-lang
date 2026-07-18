@@ -4,25 +4,71 @@ import ./header_codec.vibe {
   parse_persistent_module_header_text, persistent_module_header_text
 }
 
+//# Functions
+
+fn no_cfps() -> Array[(String, String)] {
+  Array::slice([
+    ("", "")
+  ], 0, 0)
+}
+
 //# Misc
 
-test "persistent_module_header_text: roundtrip" {
+test "persistent_module_header_text: roundtrip (v2, with contract fingerprints)" {
   let deps = [
     "./a.vibe",
-    "./b.vibe"
+    "lib/@vibe/json/index.vpkg"
   ]
   let exports = [
     "foo",
     "bar"
   ]
-  let text = persistent_module_header_text(deps, exports)
-  let (parsed_deps, parsed_exports) = parse_persistent_module_header_text(text)
+  let cfps = [
+    ("lib/@vibe/json/index.vpkg", "fp123")
+  ]
+  let text = persistent_module_header_text(deps, exports, cfps)
+  let (parsed_deps, parsed_exports, parsed_cfps, is_v2) = parse_persistent_module_header_text(text)
+  assert(is_v2)
   assert(Array::length(parsed_deps) == 2)
   assert(Array::get(parsed_deps, 0) == "./a.vibe")
-  assert(Array::get(parsed_deps, 1) == "./b.vibe")
+  assert(Array::get(parsed_deps, 1) == "lib/@vibe/json/index.vpkg")
   assert(Array::length(parsed_exports) == 2)
   assert(Array::get(parsed_exports, 0) == "foo")
   assert(Array::get(parsed_exports, 1) == "bar")
+  assert(Array::length(parsed_cfps) == 1)
+  let (cp, cf) = Array::get(parsed_cfps, 0)
+  assert(cp == "lib/@vibe/json/index.vpkg")
+  assert(cf == "fp123")
+}
+
+test "persistent_module_header_text: roundtrip with no contract deps" {
+  let deps = [
+    "./a.vibe"
+  ]
+  let exports = [
+    "foo"
+  ]
+  let text = persistent_module_header_text(deps, exports, no_cfps())
+  let (parsed_deps, parsed_exports, parsed_cfps, is_v2) = parse_persistent_module_header_text(text)
+  assert(is_v2)
+  assert(Array::length(parsed_deps) == 1)
+  assert(Array::length(parsed_exports) == 1)
+  assert(Array::length(parsed_cfps) == 0)
+}
+
+// #943 review: pre-v2 entries (written before contract fingerprints existed)
+// must still PARSE — the warm gate then sees is_v2 == false and treats the
+// entry as stale, rebuilding it as v2. A parse throw here would turn every
+// old cache entry into a compile error.
+test "parse_persistent_module_header_text: version-1 entry parses with is_v2 false" {
+  let raw = "version\t1\ndep\t./a.vibe\nexport\tfoo\n"
+  let (deps, exports, cfps, is_v2) = parse_persistent_module_header_text(raw)
+  assert(not(is_v2))
+  assert(Array::length(deps) == 1)
+  assert(Array::get(deps, 0) == "./a.vibe")
+  assert(Array::length(exports) == 1)
+  assert(Array::get(exports, 0) == "foo")
+  assert(Array::length(cfps) == 0)
 }
 
 test "parse_persistent_module_header_text: rejects invalid row" {
@@ -35,14 +81,25 @@ test "parse_persistent_module_header_text: rejects invalid row" {
   assert(ok)
 }
 
+test "parse_persistent_module_header_text: rejects malformed cdep row" {
+  let ok = handle {
+    let _ = parse_persistent_module_header_text("version\t2\ncdep\tno-fingerprint-field\n")
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(ok)
+}
+
 test "parse_persistent_module_header_text: accepts crlf rows" {
   let cr = String::from_char_code(13)
   let crlf = String::concat(cr, "\n")
   let raw = String::concat(
-    "version\t1",
+    "version\t2",
     String::concat(crlf, String::concat("dep\t./a.vibe", String::concat(crlf, String::concat("export\tfoo", crlf))))
   )
-  let (deps, exports) = parse_persistent_module_header_text(raw)
+  let (deps, exports, _cfps, is_v2) = parse_persistent_module_header_text(raw)
+  assert(is_v2)
   assert(Array::length(deps) == 1)
   assert(Array::get(deps, 0) == "./a.vibe")
   assert(Array::length(exports) == 1)
@@ -50,8 +107,9 @@ test "parse_persistent_module_header_text: accepts crlf rows" {
 }
 
 test "parse_persistent_module_header_text: accepts final row without trailing newline" {
-  let raw = "version\t1\ndep\t./a.vibe\nexport\tfoo"
-  let (deps, exports) = parse_persistent_module_header_text(raw)
+  let raw = "version\t2\ndep\t./a.vibe\nexport\tfoo"
+  let (deps, exports, _cfps, is_v2) = parse_persistent_module_header_text(raw)
+  assert(is_v2)
   assert(Array::length(deps) == 1)
   assert(Array::get(deps, 0) == "./a.vibe")
   assert(Array::length(exports) == 1)
