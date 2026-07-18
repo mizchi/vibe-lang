@@ -91,6 +91,39 @@ test "type-at: identifier inside string interpolation resolves its type" {
   assert(type_at_source(src, 2, 25) == "String")
 }
 
+// Codex P2 on #975: `parse_recur` anchors a fragment parse's located nodes at
+// outer_starts[fragment-token-index] -- the OUTER file's token table indexed
+// by the FRAGMENT's token positions -- which only lined up for a single token
+// sitting exactly at the fragment start. A leading space (`\{ name}`) or a
+// multi-token expression (`\{a + b}`) shifted spans onto the wrong
+// characters. Now each fragment is lexed with its own starts table and
+// remapped (remap_frag_off), so every token lands on its real position.
+//   line 2 = "let greeting = \"hello \{ name}\"" starting at offset 19;
+//   the fragment " name" starts at 43, so `name` spans 44..48.
+test "binding-at: interpolation fragment with a LEADING SPACE resolves the real span" {
+  let src = "let name = \"world\"\nlet greeting = \"hello \\{ name}\"\n"
+  let occ = binding_occurrences(src, 1, 5)
+  assert(occ_len(occ) == 2)
+  assert(occ_contains(occ, 4, 8))
+  assert(occ_contains(occ, 44, 48))
+}
+
+//   line 3 = "let s = \"\{a + b}\"" starting at offset 20; fragment
+//   "a + b" starts at 31: `a` at 31..32, `b` at 35..36.
+test "binding-at: MULTI-TOKEN interpolation fragment resolves each identifier's real span" {
+  let src = "let a = 1\nlet b = 2\nlet s = \"\\{a + b}\"\n"
+  let occ_a = binding_occurrences(src, 1, 5)
+  assert(occ_len(occ_a) == 2)
+  assert(occ_contains(occ_a, 4, 5))
+  assert(occ_contains(occ_a, 31, 32))
+  let occ_b = binding_occurrences(src, 2, 5)
+  assert(occ_len(occ_b) == 2)
+  assert(occ_contains(occ_b, 14, 15))
+  assert(occ_contains(occ_b, 35, 36))
+  // Hovering `b` INSIDE the fragment (line 3, col 16 = offset 35) types it.
+  assert(type_at_source(src, 3, 16) == "Int")
+}
+
 // --- Item 3: CRLF files must not drift -- `\r` must not be counted as
 // addressable line content (so end-of-line clamping lands on the real
 // content boundary) while still not shifting any other offset (byte offsets

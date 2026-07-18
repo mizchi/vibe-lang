@@ -13,100 +13,130 @@ import ./token.vibe {
 }
 
 import ./lexer.vibe {
-  lex
+  lex_with_offsets
 }
 
 //# Functions
 
-// #947: `part` is re-lexed/parsed in ISOLATION (just its own text, not the
-// surrounding file), so every offset in the resulting Expr tree (EIdent,
-// ECall, ELet/ELetMut, EDot) is relative to the FRAGMENT (starts at 0), not
-// the real file. Shift every located offset by `delta` (the fragment's
-// absolute start offset in the original source) so hover / go-to-def / rename
-// on an identifier referenced inside `\{...}` resolves to its real position
-// instead of a bogus span at delta=0 (which used to collide with whatever
-// happened to sit at the very start of the file). Every Expr variant is
-// enumerated so a new variant is a compile error here, keeping this walker in
-// sync with the AST. Non-located constructs (string/int/bool literals,
-// bare structural nodes) pass through unchanged; -1 (synthetic/non-located)
-// offsets stay -1 rather than becoming `delta - 1`.
-fn shift_off(off: Int, delta: Int) -> Int {
+// #947: rewrite every LOCATED offset in an interpolation fragment's parsed
+// Expr tree (EIdent, ECall, ELet/ELetMut, EDot, ...) through `f`, so hover /
+// go-to-def / rename on an identifier referenced inside `\{...}` resolves to
+// its real file position (see `remap_frag_off` below for the mapping used).
+// Every Expr variant is enumerated so a new variant is a compile error here,
+// keeping this walker in sync with the AST. Non-located constructs
+// (string/int/bool literals, bare structural nodes) pass through unchanged;
+// -1 (synthetic/non-located) offsets stay -1 and never reach `f`.
+fn map_located_off(off: Int, f: (Int) -> Int) -> Int {
   if off < 0 {
     off
   } else {
-    off + delta
+    f(off)
   }
 }
 
-fn shift_expr_offsets(expr: Expr, delta: Int) -> Expr {
-  if delta == 0 {
-    expr
-  } else {
+fn map_expr_offsets(expr: Expr, f: (Int) -> Int) -> Expr {
+  {
     match expr {
       EInt(_) => expr,
       EFloat(_) => expr,
       EString(_) => expr,
       EBool(_) => expr,
       EUnit => expr,
-      EIdent(name, off) => EIdent(name, shift_off(off, delta)),
-      ETuple(items) => ETuple(shift_exprs(items, delta)),
-      EArray(items) => EArray(shift_exprs(items, delta)),
-      ERecord(rn, fields, targs) => ERecord(rn, shift_field_exprs(fields, delta), targs),
-      EIf(c, t, e) => EIf(shift_expr_offsets(c, delta), shift_expr_offsets(t, delta), shift_expr_offsets(e, delta)),
-      ELet(n, v, b, soff) => ELet(n, shift_expr_offsets(v, delta), shift_expr_offsets(b, delta), shift_off(soff, delta)),
-      ELetRec(n, v, b) => ELetRec(n, shift_expr_offsets(v, delta), shift_expr_offsets(b, delta)),
-      ELetMut(n, v, b, soff) => ELetMut(n, shift_expr_offsets(v, delta), shift_expr_offsets(b, delta), shift_off(soff, delta)),
-      EAssign(n, v, b) => EAssign(n, shift_expr_offsets(v, delta), shift_expr_offsets(b, delta)),
-      EAssignOp(n, op, v, b) => EAssignOp(n, op, shift_expr_offsets(v, delta), shift_expr_offsets(b, delta)),
-      ESeq(a, b) => ESeq(shift_expr_offsets(a, delta), shift_expr_offsets(b, delta)),
-      EMatch(s, arms) => EMatch(shift_expr_offsets(s, delta), shift_arm_exprs(arms, delta)),
-      EHandle(s, arms) => EHandle(shift_expr_offsets(s, delta), shift_arm_exprs(arms, delta)),
-      EWhile(c, b) => EWhile(shift_expr_offsets(c, delta), shift_expr_offsets(b, delta)),
-      ELoop(params, b) => ELoop(shift_loop_param_exprs(params, delta), shift_expr_offsets(b, delta)),
-      EForIn(n, idx, it, b) => EForIn(n, idx, shift_expr_offsets(it, delta), shift_expr_offsets(b, delta)),
-      ECall(callee, args, off) => ECall(shift_expr_offsets(callee, delta), shift_exprs(args, delta), shift_off(off, delta)),
-      EBinOp(op, l, r) => EBinOp(op, shift_expr_offsets(l, delta), shift_expr_offsets(r, delta)),
-      EUnaryOp(op, e) => EUnaryOp(op, shift_expr_offsets(e, delta)),
-      EFn(tp, tb, params, ret, eff, body) => EFn(tp, tb, params, ret, eff, shift_expr_offsets(body, delta)),
-      EDot(e, field, off, fdoff) => EDot(shift_expr_offsets(e, delta), field, shift_off(off, delta), shift_off(fdoff, delta)),
-      ELabeledArg(l, n, v) => ELabeledArg(l, n, shift_expr_offsets(v, delta)),
-      EReturn(e) => EReturn(shift_expr_offsets(e, delta)),
+      EIdent(name, off) => EIdent(name, map_located_off(off, f)),
+      ETuple(items) => ETuple(map_exprs(items, f)),
+      EArray(items) => EArray(map_exprs(items, f)),
+      ERecord(rn, fields, targs) => ERecord(rn, map_field_exprs(fields, f), targs),
+      EIf(c, t, e) => EIf(map_expr_offsets(c, f), map_expr_offsets(t, f), map_expr_offsets(e, f)),
+      ELet(n, v, b, soff) => ELet(n, map_expr_offsets(v, f), map_expr_offsets(b, f), map_located_off(soff, f)),
+      ELetRec(n, v, b) => ELetRec(n, map_expr_offsets(v, f), map_expr_offsets(b, f)),
+      ELetMut(n, v, b, soff) => ELetMut(n, map_expr_offsets(v, f), map_expr_offsets(b, f), map_located_off(soff, f)),
+      EAssign(n, v, b) => EAssign(n, map_expr_offsets(v, f), map_expr_offsets(b, f)),
+      EAssignOp(n, op, v, b) => EAssignOp(n, op, map_expr_offsets(v, f), map_expr_offsets(b, f)),
+      ESeq(a, b) => ESeq(map_expr_offsets(a, f), map_expr_offsets(b, f)),
+      EMatch(s, arms) => EMatch(map_expr_offsets(s, f), map_arm_exprs(arms, f)),
+      EHandle(s, arms) => EHandle(map_expr_offsets(s, f), map_arm_exprs(arms, f)),
+      EWhile(c, b) => EWhile(map_expr_offsets(c, f), map_expr_offsets(b, f)),
+      ELoop(params, b) => ELoop(map_loop_param_exprs(params, f), map_expr_offsets(b, f)),
+      EForIn(n, idx, it, b) => EForIn(n, idx, map_expr_offsets(it, f), map_expr_offsets(b, f)),
+      ECall(callee, args, off) => ECall(map_expr_offsets(callee, f), map_exprs(args, f), map_located_off(off, f)),
+      EBinOp(op, l, r) => EBinOp(op, map_expr_offsets(l, f), map_expr_offsets(r, f)),
+      EUnaryOp(op, e) => EUnaryOp(op, map_expr_offsets(e, f)),
+      EFn(tp, tb, params, ret, eff, body) => EFn(tp, tb, params, ret, eff, map_expr_offsets(body, f)),
+      EDot(e, field, off, fdoff) => EDot(map_expr_offsets(e, f), field, map_located_off(off, f), map_located_off(fdoff, f)),
+      ELabeledArg(l, n, v) => ELabeledArg(l, n, map_expr_offsets(v, f)),
+      EReturn(e) => EReturn(map_expr_offsets(e, f)),
       EBreak(opt) => match opt {
-        Some(v) => EBreak(Some(shift_expr_offsets(v, delta))),
+        Some(v) => EBreak(Some(map_expr_offsets(v, f))),
         None => expr
       },
-      EContinue(args) => EContinue(shift_exprs(args, delta)),
-      EMap(fields) => EMap(shift_field_exprs(fields, delta)),
-      ESpread(e) => ESpread(shift_expr_offsets(e, delta)),
+      EContinue(args) => EContinue(map_exprs(args, f)),
+      EMap(fields) => EMap(map_field_exprs(fields, f)),
+      ESpread(e) => ESpread(map_expr_offsets(e, f)),
       EStringInterp(_) => expr
     }
   }
 }
 
-fn shift_exprs(items: Array[Expr], delta: Int) -> Array[Expr] {
+fn map_exprs(items: Array[Expr], f: (Int) -> Int) -> Array[Expr] {
   for it in items {
-    shift_expr_offsets(it, delta)
+    map_expr_offsets(it, f)
   }
 }
 
-fn shift_field_exprs(fields: Array[(String, Expr)], delta: Int) -> Array[(String, Expr)] {
-  for f in fields {
-    let (n, v) = f
-    (n, shift_expr_offsets(v, delta))
+fn map_field_exprs(fields: Array[(String, Expr)], f: (Int) -> Int) -> Array[(String, Expr)] {
+  for fld in fields {
+    let (n, v) = fld
+    (n, map_expr_offsets(v, f))
   }
 }
 
-fn shift_arm_exprs(arms: Array[(Pat, Expr)], delta: Int) -> Array[(Pat, Expr)] {
+fn map_arm_exprs(arms: Array[(Pat, Expr)], f: (Int) -> Int) -> Array[(Pat, Expr)] {
   for a in arms {
     let (p, e) = a
-    (p, shift_expr_offsets(e, delta))
+    (p, map_expr_offsets(e, f))
   }
 }
 
-fn shift_loop_param_exprs(params: Array[(String, Expr)], delta: Int) -> Array[(String, Expr)] {
+fn map_loop_param_exprs(params: Array[(String, Expr)], f: (Int) -> Int) -> Array[(String, Expr)] {
   for p in params {
     let (n, init) = p
-    (n, shift_expr_offsets(init, delta))
+    (n, map_expr_offsets(init, f))
+  }
+}
+
+// Invert `offset_at(outer_starts, p)`: parse_recur (a closure over the
+// OUTER file's token-starts table) anchors every located node in a
+// fragment parse at `outer_starts[p]` where p is a FRAGMENT token index —
+// meaningless as a file position (Codex P2 on #975; only the
+// single-token-at-fragment-start case lined up by accident). outer_starts
+// is nondecreasing, so binary-search the smallest p with
+// outer_starts[p] == off, then re-anchor at the fragment's OWN start for
+// that token (frag_starts[p], from lex_with_offsets on the fragment text)
+// plus the fragment's absolute base. Anything unrecoverable becomes -1
+// (unlocated) rather than pointing at the wrong character.
+fn remap_frag_off(off: Int, outer_starts: Array[Int], frag_starts: Array[Int], frag_base: Int) -> Int {
+  let n = Array::length(outer_starts)
+  let mut lo = 0
+  let mut hi = n - 1
+  let mut found = -1
+  while lo <= hi {
+    let mid = (lo + hi) / 2
+    let v = Array::get(outer_starts, mid)
+    if v < off {
+      lo = mid + 1
+    } else {
+      if v == off {
+        found = mid
+      } else {
+        ()
+      }
+      hi = mid - 1
+    }
+  }
+  if found >= 0 && found < Array::length(frag_starts) {
+    frag_base + Array::get(frag_starts, found)
+  } else {
+    -1
   }
 }
 
@@ -121,11 +151,15 @@ fn shift_loop_param_exprs(params: Array[(String, Expr)], delta: Int) -> Array[(S
 //
 // `offsets` (#947) carries, in lockstep with `parts`, the absolute source
 // offset of each part's start (-1 for literal/even parts, which don't need
-// one). Each fragment is parsed in isolation (offsets relative to the
-// fragment, starting at 0) then shifted by its recorded absolute offset via
-// `shift_expr_offsets`, so identifiers referenced inside `\{...}` carry their
-// real file position instead of a bogus fragment-relative one.
-fn build_interp_expr(parts: Array[String], offsets: Array[Int], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> Expr with { Error } {
+// one). Each fragment is lexed in isolation with its OWN token-starts table
+// (lex_with_offsets), parsed via `parse_recur` — which anchors located nodes
+// using the OUTER file's starts table it closed over, i.e. at
+// outer_starts[fragment-token-index] — and then remapped node-by-node via
+// `remap_frag_off` (invert outer_starts, re-anchor at frag_starts[p] +
+// fragment base), so identifiers referenced inside `\{...}` carry their real
+// file position for any fragment shape (leading spaces, multi-token
+// expressions), not just a single token at the fragment start.
+fn build_interp_expr(parts: Array[String], offsets: Array[Int], outer_starts: Array[Int], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> Expr with { Error } {
   let concat_expr: (Expr, Expr) -> Expr = (a, b) -> {
     ECall(EIdent("String::concat", -1), [
       a,
@@ -151,10 +185,11 @@ fn build_interp_expr(parts: Array[String], offsets: Array[Int], parse_recur: (Ar
         ()
       }
     } else {
-      let (pe0, _) = parse_recur(lex(part), 0, 0)
+      let (ftoks, fstarts, _fends) = lex_with_offsets(part)
+      let (pe0, _) = parse_recur(ftoks, 0, 0)
       let frag_off = if i < Array::length(offsets) { Array::get(offsets, i) } else { -1 }
       let pe = if frag_off >= 0 {
-        shift_expr_offsets(pe0, frag_off)
+        map_expr_offsets(pe0, (o) -> remap_frag_off(o, outer_starts, fstarts, frag_off))
       } else {
         pe0
       }
@@ -861,7 +896,7 @@ export fn parse_primary(tokens: Array[Token], starts: Array[Int], pos: Int, pars
     TInt(n) => (EInt(n), pos + 1),
     TFloat(n) => (EFloat(n), pos + 1),
     TString(s) => (EString(s), pos + 1),
-    TStringInterp(parts, offs) => (build_interp_expr(parts, offs, parse_recur), pos + 1),
+    TStringInterp(parts, offs) => (build_interp_expr(parts, offs, starts, parse_recur), pos + 1),
     TIdent(name) => parse_ident_primary(tokens, starts, pos, name, parse_recur),
     TLParen => parse_paren_primary(tokens, starts, pos, parse_recur),
     TLBracket => parse_bracket_primary(tokens, starts, pos, parse_recur),
