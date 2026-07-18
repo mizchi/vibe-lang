@@ -1,0 +1,69 @@
+//# Imports
+
+// #986: labeled-argument call checking. Labeled args (`f(x=1)`) used to fall
+// through check_expr's `_` wildcard arm and type as CtUnknown, so a labeled
+// call bypassed argument type checking entirely AND accepted nonexistent
+// label names. Positional binding is codegen's rule (after the
+// desugar_labeled_args reorder of fully-labeled calls), so the checker now
+// (a) types each labeled arg as its value and unifies positionally, and
+// (b) rejects unknown / out-of-declared-order label names for calls to
+// top-level let-bound functions.
+
+import ./checker_parity_test_support.vibe {
+  check_source_ok, check_source_err
+}
+
+//# Misc
+
+// Issue #986 repro: both argument types reversed — must be rejected.
+test "labeled args: fully reversed types rejected" {
+  assert(check_source_err("fn f(x: Int, y: String) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(x=\"hello\", y=5)\n}"))
+}
+
+// Only one of the labeled args has the wrong type — must be rejected.
+test "labeled args: single wrong type rejected" {
+  assert(check_source_err("fn f(x: Int, y: String) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(x=1, y=5)\n}"))
+}
+
+// Correct labeled call (declared labeled params, declared order) — accepted.
+test "labeled args: correct labeled call accepted" {
+  assert(check_source_ok("let add: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }\nfn main() -> Int {\n  add(x=1, y=2)\n}"))
+}
+
+// Correct labeled call against a plain `fn` declaration — accepted.
+test "labeled args: labeled call on plain fn accepted" {
+  assert(check_source_ok("fn f(x: Int, y: String) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(x=1, y=\"ok\")\n}"))
+}
+
+// Positional calls are unaffected: correct one accepted...
+test "labeled args: positional call unaffected ok" {
+  assert(check_source_ok("fn f(x: Int, y: String) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(1, \"ok\")\n}"))
+}
+
+// ...and a positional type mismatch still rejected.
+test "labeled args: positional mismatch still rejected" {
+  assert(check_source_err("fn f(x: Int, y: String) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(\"hello\", 5)\n}"))
+}
+
+// Nonexistent label names — rejected even when the value types line up.
+test "labeled args: unknown label names rejected" {
+  assert(check_source_err("fn f(x: Int, y: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(nosuch=1, alsono=2)\n}"))
+}
+
+// Fully-labeled out-of-order call to a LABELED fn is reordered by
+// desugar_labeled_args (name-based binding) — accepted.
+test "labeled args: reordered labeled call accepted" {
+  assert(check_source_ok("let add: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }\nfn main() -> Int {\n  add(y=2, x=1)\n}"))
+}
+
+// The reorder is name-based, so a type error must follow the LABEL, not the
+// call position: y=\"s\" against y~: Int is rejected even written first.
+test "labeled args: reordered labeled call type mismatch rejected" {
+  assert(check_source_err("let add: (x~: Int, y~: String) -> Int = (x~, y~) -> { x }\nfn main() -> Int {\n  add(y=1, x=2)\n}"))
+}
+
+// Out-of-order labels on an UNLABELED fn bind positionally (no reorder pass
+// fires) — silently swapped bindings, so the checker rejects the call.
+test "labeled args: out-of-order labels on plain fn rejected" {
+  assert(check_source_err("fn f(x: Int, y: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(y=1, x=2)\n}"))
+}
