@@ -13,7 +13,7 @@ import ../core/index.vibe {
 }
 
 import ./checker.vibe {
-  check_assignable, check_expr, detect_narrowed_generic_mismatch, fn_return_env_name, is_array_builder_ty, pat_binds_resume, preserve_generic_instantiation, reject_resume_outside_handler
+  check_assignable, check_expr, fn_return_env_name, is_array_builder_ty, pat_binds_resume, preserve_generic_instantiation, reject_resume_outside_handler
 }
 
 import ./checker_resolve.vibe {
@@ -375,20 +375,12 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
           Some(te) => {
             let resolved_te = resolve_type_expr(te, defs)
             let actual_v = subst_apply(ns0, vt)
-            let ns_a = check_assignable(resolved_te, actual_v, ns0, errors, String::concat("binding type mismatch for ", name), 0 - 1)
-            // #844: `check_assignable`'s polymorphism-tolerant heuristic never
-            // reports a same-name generic-struct/enum instantiation mismatch
-            // (it treats every `CtNamed` as non-ground to stay lenient for
-            // genuinely rigid/uninstantiated type parameters elsewhere) — so
-            // a bare-annotated binding's real type args, once laundered
-            // through the erasing bare `CtStruct` annotation, could be
-            // silently re-narrowed by a LATER unrelated annotation
-            // (`let x: Box = Box::{v:1}; let y: Box[String] = x`). Additively
-            // catch that specific shape here without touching the shared
-            // heuristic (see `detect_narrowed_generic_mismatch`'s doc comment
-            // in checker.vibe for the full reasoning and blast-radius
-            // analysis).
-            let ns_b = detect_narrowed_generic_mismatch(resolved_te, actual_v, ns_a, errors, String::concat("binding type mismatch for ", name), 0 - 1)
+            // #844/#981: `check_assignable` itself now reports the same-name
+            // concrete generic instantiation mismatch (its tolerate branch
+            // calls `detect_narrowed_generic_mismatch` — see checker.vibe),
+            // so the explicit second call this site used to make would
+            // double-report the same diagnostic — dropped.
+            let ns_b = check_assignable(resolved_te, actual_v, ns0, errors, String::concat("binding type mismatch for ", name), 0 - 1)
             // Prefer the RHS's real instantiated type over the erasing bare
             // annotation when `resolved_te` is a bare generic-struct
             // reference that `actual_v` already concretely instantiates, so a

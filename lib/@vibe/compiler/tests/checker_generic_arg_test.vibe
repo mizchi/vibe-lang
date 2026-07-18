@@ -1,0 +1,45 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_ok, check_source_err
+}
+
+//# Misc
+
+// #981: a user generic type's ARGUMENTS were never compared at the argument
+// position — `check_assignable`'s report gates both tolerate a `CtNamed`
+// head (`type_no_named` is false, `head_kind` is 0), so
+// `get_int(b: Box[Int])` called with a `Box[String]` compiled clean and read
+// heap-pointer garbage, while the builtin symmetric case and the RETURN
+// position were rejected. `check_assignable`'s tolerate branch now runs the
+// #844 same-name fully-concrete `CtNamed` check
+// (`detect_narrowed_generic_mismatch`), closing the argument-position hole
+// without touching the polymorphism tolerance (rigid params surface as
+// `CtNamed(T, [])` / the `[CtUnknown]` sentinel and stay tolerated).
+
+test "981 repro: generic struct with wrong type arg at argument position is rejected" {
+  assert(check_source_err("struct Box[T] { v: T }\nfn get_int(b: Box[Int]) -> Int { b.v + 1 }\nfn main() -> Int {\n  let b: Box[String] = Box::{ v: \"hello\" }\n  get_int(b)\n}"))
+}
+
+test "981: generic enum with wrong type arg at argument position is rejected" {
+  assert(check_source_err("enum MyOption[T] { MySome(T); MyNone }\nfn unwrap_int(o: MyOption[Int]) -> Int {\n  match o { MySome(v) => v, MyNone => 0 }\n}\nfn main() -> Int {\n  let o: MyOption[String] = MySome(\"str\")\n  unwrap_int(o)\n}"))
+}
+
+test "981: matching type arg stays accepted" {
+  assert(check_source_ok("struct Box[T] { v: T }\nfn get_int(b: Box[Int]) -> Int { b.v + 1 }\nfn main() -> Int {\n  let b: Box[Int] = Box::{ v: 41 }\n  get_int(b)\n}"))
+}
+
+test "981: genuinely generic parameter stays tolerated" {
+  // The callee's own type param instantiates to a fresh var — no report.
+  assert(check_source_ok("struct Box[T] { v: T }\nfn second[T](b: Box[T], d: Int) -> Int { d }\nfn main() -> Int {\n  let b: Box[String] = Box::{ v: \"hello\" }\n  second(b, 42)\n}"))
+}
+
+test "981: return-position mismatch keeps being rejected" {
+  assert(check_source_err("struct Box[T] { v: T }\nfn mk() -> Box[Int] {\n  let b: Box[String] = Box::{ v: \"hello\" }\n  b\n}\nfn main() -> Int { 0 }"))
+}
+
+test "981: #844 let re-narrowing keeps being rejected (single report path)" {
+  // The explicit detect_narrowed_generic_mismatch calls at the let sites were
+  // folded into check_assignable — the shape must still be rejected.
+  assert(check_source_err("struct Box[T] { v: T }\nfn main() -> Int {\n  let x: Box[Int] = Box::{ v: 1 }\n  let y: Box[String] = x\n  0\n}"))
+}

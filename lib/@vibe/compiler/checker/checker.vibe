@@ -711,7 +711,33 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
           None => s
         }
       } else if !(reportable || head_differ) {
-        s
+        // #981: a user generic type's ARGUMENTS were never compared here — a
+        // `CtNamed` head is kind 0 (tolerated by `head_differ`) and makes
+        // `type_no_named(actual)` false, so `get_int(b)` with
+        // `b: Box[String]` against `Box[Int]` sailed through this branch
+        // silently (compile clean, heap-pointer garbage at runtime), while
+        // the symmetric builtin (`Array[String]` vs `Array[Int]`) and the
+        // RETURN position were both rejected. Close exactly that hole with
+        // the proven #844 predicate (`detect_narrowed_generic_mismatch`):
+        // report ONLY a same-name, same-arity (> 0), fully-concrete `CtNamed`
+        // pair whose arguments fail to unify — a rigid/uninstantiated type
+        // parameter surfaces as `CtNamed(T, [])` / the `[CtUnknown]` sentinel
+        // and stays tolerated, so polymorphic code is not over-rejected.
+        // Additionally gate on the RAW expected type (BEFORE subst) being
+        // fully concrete: an expected that only became concrete through this
+        // call's own unification is not trustworthy — an IMPORTED generic
+        // fn's signature can cross-talk its type params through the flat
+        // import env (measured: `list_zip[A, B]` imported from
+        // lib/@vibe/core/list.vibe reported `expected List[String], got
+        // List[Int]` on its second argument — A's binding leaked into B's
+        // slot), and reporting that shape would reject valid polymorphic
+        // calls. A monomorphic signature (the #981 hole) is concrete without
+        // any substitution, so the genuine cases all keep reporting.
+        if type_fully_concrete(expected) {
+          detect_narrowed_generic_mismatch(expected, actual, s, errors, what, off)
+        } else {
+          s
+        }
       } else {
         Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), off_marker(off)))))))
         s
@@ -3720,8 +3746,11 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
             let (at, ns0, nc0) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
             let resolved = resolve_type_expr(ann_te, defs)
             let actual = subst_apply(ns0, at)
-            let ns1 = check_assignable(resolved, actual, ns0, errors, "binding type mismatch for a local let", call_off)
-            let ns2 = detect_narrowed_generic_mismatch(resolved, actual, ns1, errors, "binding type mismatch for a local let", call_off)
+            // #981: `check_assignable` now runs the #844 same-name concrete
+            // `CtNamed` check itself (its tolerate branch calls
+            // `detect_narrowed_generic_mismatch`), so the explicit second
+            // call this site used to make would double-report — dropped.
+            let ns2 = check_assignable(resolved, actual, ns0, errors, "binding type mismatch for a local let", call_off)
             let bound_ty = preserve_generic_instantiation(resolved, subst_apply(ns2, actual))
             (tab_call_ty(tytab, call_off, bound_ty), ns2, nc0)
           },
