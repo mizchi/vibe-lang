@@ -1,30 +1,27 @@
 #!/usr/bin/env bash
 # Selfhost release gate shards — extracted from justfile `ci-gates-shard`.
-# Usage: scripts/pkfire/gates_shard.sh <bootstrap|bootstrap-core|selfbuild|cli|check|coverage|corpus>
+# Usage: scripts/pkfire/gates_shard.sh <bootstrap|bootstrap-core|cli|check|coverage>
+#
+# Dead-reference cleanup (same pattern as #851 / #821): every script a shard
+# invokes must exist in-tree — a missing file kills the shard at that line
+# under `set -e` and everything after it silently never runs. The following
+# referenced scripts were retired with the MoonBit host (#594) or never
+# committed, and their invocations are dropped:
+#   test_selfhost_bootstrap_gate.sh, test_selfhost_wasi_selfbuild.sh
+#   (bootstrap/selfbuild), test_selfhost_check_command_parity.sh,
+#   test_selfhost_check_direct_parity.sh, test_selfhost_check_parity.sh,
+#   test_selfhost_wasi_http_boundary.sh, test_vibe_check_selfhost_byte_parity.sh,
+#   test_golden_wat.sh (check), bench_selfhost_perf.sh (coverage),
+#   test_selfhost_corpus_gate.sh (corpus).
+# The `selfbuild` and `corpus` shards had nothing left and were removed.
 set -euo pipefail
 
-shard="${1:?missing shard argument: bootstrap|bootstrap-core|selfbuild|cli|check|coverage|corpus}"
+shard="${1:?missing shard argument: bootstrap|bootstrap-core|cli|check|coverage}"
 
 case "$shard" in
-  bootstrap-core)
+  bootstrap-core|bootstrap)
     bash scripts/check_bundle_sync.sh
     bash scripts/check_module_source_sync.sh
-    scripts/test_selfhost_bootstrap_gate.sh
-    ;;
-  selfbuild)
-    VIBE_SELFBUILD_STRICT_RECURSIVE=1 \
-    VIBE_SELFBUILD_REQUIRE_TRUE_RECURSIVE=1 \
-    VIBE_SELFBUILD_MAX_TOTAL_SEC="${VIBE_SELFBUILD_MAX_TOTAL_SEC:-300}" \
-    scripts/test_selfhost_wasi_selfbuild.sh
-    ;;
-  bootstrap)
-    bash scripts/check_bundle_sync.sh
-    bash scripts/check_module_source_sync.sh
-    scripts/test_selfhost_bootstrap_gate.sh
-    VIBE_SELFBUILD_STRICT_RECURSIVE=1 \
-    VIBE_SELFBUILD_REQUIRE_TRUE_RECURSIVE=1 \
-    VIBE_SELFBUILD_MAX_TOTAL_SEC="${VIBE_SELFBUILD_MAX_TOTAL_SEC:-300}" \
-    scripts/test_selfhost_wasi_selfbuild.sh
     ;;
   cli)
     # Library `vibe test` smoke (selfhost-CLI-compilable subset; covers lib/@vibex/wasm and
@@ -48,24 +45,9 @@ case "$shard" in
   check)
     bash scripts/test_check_preview2_package.sh
     bash scripts/test_check_command_component.sh
-    bash scripts/test_selfhost_check_command_parity.sh
     bash scripts/test_check_direct_component.sh
-    bash scripts/test_selfhost_check_direct_parity.sh
-    ./scripts/test_selfhost_wasi_http_boundary.sh
-    VIBE_CHECK_PARITY_REQUIRE_PARITY=1 ./scripts/test_selfhost_check_parity.sh
-    bash scripts/test_vibe_check_selfhost_byte_parity.sh
-    scripts/test_golden_wat.sh
     ;;
   coverage)
-    VIBE_PERF_COMPILER_KIND=cli-core \
-    VIBE_PERF_CHECKER_KIND=cli-core \
-    VIBE_PERF_COMPILE_DAEMON=1 \
-    VIBE_PERF_CHECK_DAEMON=1 \
-    VIBE_PERF_RUNS=1 \
-    VIBE_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt \
-    VIBE_PERF_MAX_COMPILE_RATIO=2.5 \
-    VIBE_PERF_MAX_CHECK_RATIO=0.8 \
-    ./scripts/bench_selfhost_perf.sh
     # Rebaselined 2026-07-05 (allowlist 110 -> 224 diluted the rates while
     # absolute covered counts rose ~5x); rebaselined again 2026-07-15 (#801,
     # a loader-cache fix let a previously-crashing bench test start
@@ -80,16 +62,8 @@ case "$shard" in
     VIBE_SUITE_MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-29000}" \
     scripts/coverage_suite.sh
     ;;
-  corpus)
-    # Full-corpus selfhost compile gate (#492): every corpus .vibe must
-    # compile through the self-hosted compiler with no REAL language/checker
-    # gaps. `--gate` exits non-zero only on REAL gaps (MODE/TRIAGE harness
-    # artifacts do not trip it). Tracks selfhost expressiveness regressions on
-    # the path to dropping the MoonBit implementation.
-    bash scripts/test_selfhost_corpus_gate.sh --gate
-    ;;
   *)
-    echo "unknown shard: $shard (expected: bootstrap|bootstrap-core|selfbuild|cli|check|coverage|corpus)" >&2
+    echo "unknown shard: $shard (expected: bootstrap|bootstrap-core|cli|check|coverage)" >&2
     exit 1
     ;;
 esac
