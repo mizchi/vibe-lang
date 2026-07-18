@@ -4,15 +4,18 @@
 content-addressed caching) is the **canonical task runner** for vibe-lang —
 it replaces the former `justfile`.
 
-`pkspec/Packages.pkl` (the canonical package list, imported directly by
-`Taskfile.pkl` to generate one `test:<pkg>` task per package) is the only
-part of [`pkspec`](https://github.com/mizchi/pkspec) actually wired into the
+[`pkspec`](https://github.com/mizchi/pkspec) is not currently wired into the
 task graph. `pkspec/VibeSpec.pkl` / `VibeTest.pkl` — a spec↔test coverage
 companion tool — were removed: they were never consumed by `pkf run test` /
 `test-local` / any CI job beyond a standalone `pkspec check`/`coverage` step,
-and had sat unused since they were added. If a spec-coverage gate is wanted
-again, re-run `pkspec init --dir pkspec` and re-author `VibeTest.pkl` from
-scratch rather than resurrecting the old files.
+and had sat unused since they were added. `pkspec/Packages.pkl` (the former
+canonical MoonBit package list, imported by `Taskfile.pkl` to generate one
+`test:<pkg>` task per `src/` package) was also removed (#881): those tasks
+targeted the retired MoonBit host's `src/` tree (#594) and could never run
+after the selfhost-only cutover. If a spec-coverage gate or per-package
+differential testing is wanted again, re-run `pkspec init --dir pkspec` and
+re-author against the current `lib/@vibe/*` layout rather than resurrecting
+the old files.
 
 The task definitions live in `Taskfile.pkl` (238 tasks). Multi-line
 shell that doesn't fit a single Pkl `cmd =` lives in `scripts/pkfire/*.sh`
@@ -80,41 +83,15 @@ repo is git-ignored as a fallback.
   at evaluation time.
 - **Content-addressed cache**: re-running `pkf run check` after a no-op edit
   is a cache hit; `just check` always re-invokes `moon`.
-- **`pkf affected --since=origin/main`**: cheap PR-diff aware runs.
 
 For one-off shell tasks, `just <recipe>` is still the right choice — the
 pkfire Taskfile only mirrors the common entry points.
 
-### Differential test execution
-
-`Taskfile.pkl` generates one task per moon package under `src/`
-(`test:parser`, `test:checker`, `test:cmd-vibe`, …) whose `inputs` are
-scoped to that package's directory. Combine with pkfire's `affected` query
-and a `test:*` glob target to run only the packages whose files changed:
-
-```bash
-# vs a git ref (e.g. PR base)
-pkf affected --since=origin/main 'test:*'
-
-# explicit file list (CI helpers, scripts, hooks)
-pkf affected --files="$(git diff --name-only origin/main | paste -sd,)" 'test:*'
-
-# preview only — no commands run
-pkf affected --since=origin/main --dry-run --explain 'test:*'
-
-# full sweep, cache reuse for unchanged packages
-pkf run 'test:*'
-```
-
-The `'test:*'` glob is important: without it, `pkf affected` also pulls in
-wide-scope tasks (`check`, `test`, `release-check`, …) whose inputs cover
-all of `src/`. Names flatten `/` to `-` (e.g. `test:cmd-vibe` for
-`mizchi/vibe/cmd/vibe`) so a single glob covers all 32 packages.
-
-`pkf` treats each `moon test -p` as a black box; cross-package dep
-tracking (parser change → checker tests need rerun) is handled inside
-moon, not by pkfire. For the final pre-commit sweep, fall back to
-`just test` or `pkf run test`.
+Diff-aware, affected-only test selection for the selfhost `.vibe` tree is
+`pkf run test-local` (the `flaker`-driven `--profile local` affected
+strategy — see CLAUDE.md), not `pkf affected`: the per-`src/`-package
+`test:<pkg>` targets that `pkf affected … 'test:*'` used to select were
+removed (#881) along with the retired MoonBit host (#594).
 
 ## git hooks (`pkf hooks`)
 
@@ -135,7 +112,8 @@ pkf hooks uninstall    # remove the shims
 
 ## Status
 
-`pkspec/Packages.pkl` is load-bearing (imported directly by `Taskfile.pkl`)
-and stays. The `.github/workflows/pkfire-pkspec.yml` workflow now only runs
+`pkspec/` no longer has anything wired into the task graph — `Packages.pkl`
+was removed along with the `test:<pkg>` tasks it generated (#881). The
+`.github/workflows/pkfire-pkspec.yml` workflow now only runs
 `pkf format --check` + `pkf lint` — both required (no
 `continue-on-error`), sub-10s per PR.

@@ -32,7 +32,6 @@ pkf run test              # selfhost operation gate (commit 前の主チェッ�
 pkf run test-local        # affected tests only (fast inner loop)
 pkf run full-gate         # complete selfhost operation gate
 pkf run run -- args       # run main with args
-pkf affected --since=origin/main 'test:*'  # diff-aware package tests
 # 単一ファイルの型検査 / 診断: vibe diagnostics <file.vibe>
 # `fmt` は現状 no-op placeholder、`check`/`info`/`test-update` は
 # legacy moon 依存で #594 以降は無効。
