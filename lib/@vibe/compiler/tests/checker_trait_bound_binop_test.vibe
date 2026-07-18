@@ -1,0 +1,95 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_ok, check_source_err
+}
+
+import ../../../../lib/@vibe/prelude/index.vibe {
+  Eq, Ord, ord_clamp
+}
+
+//# Functions
+
+// #952: `<`/`>`/`+` inside a trait-bounded generic body were fixed to Int at
+// DEFINITION time: the checker's order/`+` binop paths tried
+// `unify_binop_candidate(_, _, CtInt, s)` first, and `unify` binds an unbound
+// `CtVar` -- including a rigid `[T: Ord]`/`[T: Add]` type parameter's var --
+// to CtInt with no bound check. That silently monomorphized the generic's
+// own signature to `(Int, Int) -> ...` the moment the operator was checked,
+// before any call site was seen, so every non-Int instantiation (String in
+// particular) failed with "argument type mismatch ...: expected Int, got
+// String". `==`/`!=` never had the bug (the equality path only unifies the
+// two operands against each other, never against a concrete target type).
+// The fix routes Ord/Add-bounded rigid type params the same way
+// (operand-vs-operand only), keyed off `subst_bounds_for`.
+//
+// NOTE on scope: this is the TYPING fix #952 asks for. RUNTIME dispatch of
+// `<`/`>`/`+` on an erased generic `T` still compiles to raw i64 ops (the
+// #695/#746 residual class: desugar's String rewrites are static-type
+// driven, and a generic body's `T` operand has no static String type), so
+// runtime assertions below are limited to Int instantiations; the String
+// cases assert the TYPING (compile-clean) behavior that #952 regressed.
+
+fn my_lt_int[T: Ord](a: T, b: T) -> Bool {
+  a < b
+}
+
+fn my_gt_int[T: Ord](a: T, b: T) -> Bool {
+  a > b
+}
+
+fn my_eq_gen[T: Eq](a: T, b: T) -> Bool {
+  a == b
+}
+
+//# Misc
+
+test "952: [T: Ord] `<` with String type-checks (was: expected Int, got String)" {
+  assert(check_source_ok("fn my_lt[T: Ord](a: T, b: T) -> Bool { a < b }\nlet _e = () -> { my_lt(\"a\", \"b\") }"))
+}
+
+test "952: [T: Ord] `>` / `<=` / `>=` with String type-check" {
+  assert(check_source_ok("fn my_gt[T: Ord](a: T, b: T) -> Bool { a > b }\nlet _e = () -> { my_gt(\"a\", \"b\") }"))
+  assert(check_source_ok("fn my_le[T: Ord](a: T, b: T) -> Bool { a <= b }\nlet _e = () -> { my_le(\"a\", \"b\") }"))
+  assert(check_source_ok("fn my_ge[T: Ord](a: T, b: T) -> Bool { a >= b }\nlet _e = () -> { my_ge(\"a\", \"b\") }"))
+}
+
+test "952: [T: Add] `+` with String type-checks when impl Add for String is in scope" {
+  assert(check_source_ok("trait Add\nimpl Add for Int\nimpl Add for String\nfn my_add[T: Add](a: T, b: T) -> T { a + b }\nlet _e = () -> { my_add(\"x\", \"y\") }"))
+}
+
+test "952: [T: Ord] generic still rejects unordered arg types" {
+  // Bool has no Ord impl -- the call-site bound check must still fire.
+  assert(check_source_err("fn my_lt[T: Ord](a: T, b: T) -> Bool { a < b }\nlet _e = () -> { my_lt(true, false) }"))
+}
+
+test "952: ord_clamp-shaped [T: Ord] fn accepts String AND Int call sites in one program" {
+  assert(check_source_ok("fn clamp3[T: Ord](x: T, lo: T, hi: T) -> T { if x < lo { lo } else if x > hi { hi } else x }\nlet _e = () -> { let s = clamp3(\"m\", \"a\", \"z\")\nlet n = clamp3(5, 0, 10)\nn }"))
+}
+
+test "952: my_lt[T: Ord] with Int still correct at runtime (regression)" {
+  assert(my_lt_int(1, 2))
+  assert(not(my_lt_int(2, 1)))
+  assert(my_gt_int(2, 1))
+  assert(not(my_gt_int(1, 2)))
+}
+
+test "952: prelude ord_clamp[T: Ord] with Int still correct at runtime (regression)" {
+  assert(eq(ord_clamp(5, 0, 10), 5))
+  assert(eq(ord_clamp(-1, 0, 10), 0))
+  assert(eq(ord_clamp(11, 0, 10), 10))
+}
+
+test "952: [T: Eq] `==` still polymorphic at runtime (regression)" {
+  assert(my_eq_gen(1, 1))
+  assert(not(my_eq_gen(1, 2)))
+  assert(my_eq_gen("x", "x"))
+}
+
+test "952: concrete top-level operators unaffected (regression)" {
+  assert("a" < "b")
+  assert(not("b" < "a"))
+  assert(1 + 2 == 3)
+  assert(1 < 2)
+  assert("foo" + "bar" == "foobar")
+}
