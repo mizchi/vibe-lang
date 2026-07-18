@@ -11,7 +11,6 @@ inductive Primitive where
   | bool
   | unit
   | bytes
-  | int64Array
   deriving DecidableEq, Repr
 
 mutual
@@ -61,7 +60,8 @@ def string : Ty := .prim .string
 def bool : Ty := .prim .bool
 def unit : Ty := .prim .unit
 def bytes : Ty := .prim .bytes
-def int64Array : Ty := .prim .int64Array
+/-- `Int64Array` is a source alias normalized to `Array[Int]`. -/
+def int64Array : Ty := .nominal "Array" (TyArgs.ofList [.int])
 
 def listAt? {α : Type} : List α → Nat → Option α
   | [], _ => none
@@ -90,7 +90,6 @@ def renderPrimitive : Primitive → String
   | .bool => "Bool"
   | .unit => "Unit"
   | .bytes => "Bytes"
-  | .int64Array => "Int64Array"
 
 mutual
   def render : Ty → String

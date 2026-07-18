@@ -4,8 +4,29 @@ set_option autoImplicit false
 
 namespace VibeFormal.Typing.Examples
 
+private def named (name : String) (arguments : List Ty) : Ty :=
+  .nominal name (TyArgs.ofList arguments)
+
+private def map (key value : Ty) : Ty := named "Map" [key, value]
+private def intArray : Ty := named "Array" [.int]
+
 example : Oracle.allCasesPass = true := by
   native_decide
+
+example : Ty.int64Array = intArray := by
+  rfl
+
+example : Oracle.mapValueAccepted.expected =
+    .accepted (map .string .int) [.string, .int] := by
+  rfl
+
+example : Oracle.mapValueMismatch.source =
+    "fn bad(m: Map[String,Int]) -> Map[String,Int] { Map::set(m, \"k\", \"bad\") }" := by
+  rfl
+
+example : Oracle.mapValueAccepted.source =
+    "fn good(m: Map[String,Int]) -> Map[String,Int] { Map::set(m, \"k\", 1) }" := by
+  rfl
 
 example : Oracle.boxArgumentMismatch.expected = .rejected .typeMismatch := by
   rfl
