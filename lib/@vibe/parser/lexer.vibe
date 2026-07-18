@@ -414,7 +414,7 @@ fn concat_string_parts(parts: Array[String], tail: String) -> String {
   StringBuilder::freeze(out)
 }
 
-fn lex_string_go(s: String, len: Int, idx: Int, start: Int, parts_acc: Array[String], has_interp: Bool, parts: ArrayBuilder[String]) -> (Token, Int) with { Error } {
+fn lex_string_go(s: String, len: Int, idx: Int, start: Int, parts_acc: Array[String], has_interp: Bool, parts: ArrayBuilder[String], offsets: ArrayBuilder[Int]) -> (Token, Int) with { Error } {
   let mut current_idx = idx
   let mut current_start = start
   let mut current_parts_acc = parts_acc
@@ -431,7 +431,8 @@ fn lex_string_go(s: String, len: Int, idx: Int, start: Int, parts_acc: Array[Str
       let value = concat_string_parts(current_parts_acc, s[current_start: current_idx])
       if current_has_interp {
         ArrayBuilder::push(parts, value)
-        out_tok = TStringInterp(ArrayBuilder::freeze(parts))
+        ArrayBuilder::push(offsets, -1)
+        out_tok = TStringInterp(ArrayBuilder::freeze(parts), ArrayBuilder::freeze(offsets))
         out_next = current_idx + 1
       } else {
         out_tok = TString(value)
@@ -466,9 +467,14 @@ fn lex_string_go(s: String, len: Int, idx: Int, start: Int, parts_acc: Array[Str
         throw(String::concat(eloc, "string interpolation \\(expr) was removed in 0.3.0; use \\{expr}"))
       } else if esc == '{' {
         ArrayBuilder::push(parts, concat_string_parts(current_parts_acc, chunk))
+        ArrayBuilder::push(offsets, -1)
         let interp_end = scan_interp_end(s, len, next + 1, 1)
         let expr_src = s[next + 1: interp_end]
         ArrayBuilder::push(parts, expr_src)
+        // #947: absolute source offset of `expr_src`'s first char, so a
+        // fragment re-lexed in isolation (build_interp_expr) can shift its
+        // (fragment-relative) offsets back to real file positions.
+        ArrayBuilder::push(offsets, next + 1)
         current_idx = interp_end + 1
         current_start = interp_end + 1
         current_parts_acc = empty_string_array()
@@ -506,7 +512,7 @@ fn lex_string_go(s: String, len: Int, idx: Int, start: Int, parts_acc: Array[Str
 }
 
 fn lex_string(s: String, len: Int, i: Int) -> (Token, Int) with { Error } {
-  lex_string_go(s, len, i + 1, i + 1, empty_string_array(), false, ArrayBuilder::new())
+  lex_string_go(s, len, i + 1, i + 1, empty_string_array(), false, ArrayBuilder::new(), ArrayBuilder::new())
 }
 
 fn scan_hex_digits_end(s: String, len: Int, i: Int) -> Int {

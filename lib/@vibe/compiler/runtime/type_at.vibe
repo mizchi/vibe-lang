@@ -30,30 +30,62 @@ import ../syntax {
 //# Functions
 
 // 1-based (line, col) -> 0-based char offset, the inverse of offset_to_line_col.
-// `col` is the position WITHIN a line (col 1 = first char of the line). We count
-// newlines: the offset of the start of line L is just past the (L-1)th newline,
-// then add (col - 1). Defensive: clamp at the source length.
+// `col` is the position WITHIN a line (col 1 = first char of the line, col
+// length+1 = just past the last char — a valid cursor position). We count
+// newlines: the offset of the start of line L is just past the (L-1)th
+// newline, then add (col - 1).
+//
+// Returns -1 (invalid / no position) for anything out of range, rather than
+// silently clamping (#947):
+//   - `line < 1` or `col < 1`: never valid (1-based).
+//   - `line` beyond the last line in `source`.
+//   - `col` past the END of that line's content — previously this fell
+//     through to `linestart + col - 1` unclamped, which for a large enough
+//     `col` landed on/inside the NEXT line (a col-past-EOL query silently
+//     resolved to an unrelated identifier a line down).
+// CRLF (#947): a line's addressable content excludes a trailing '\r' before
+// the '\n' — otherwise every query position (and reported span) on a CRLF
+// file drifts by one byte per preceding CRLF line, since the line's `\r` was
+// being counted as ordinary content here but not consistently elsewhere.
 fn line_col_to_offset(source: String, line: Int, col: Int) -> Int {
-  let len = String::length(source)
-  let mut i = 0
-  let mut cur_line = 1
-  // Advance to the first char of the target line.
-  while cur_line < line && i < len {
-    if String::char_code_at(source, i) == 10 {
-      cur_line = cur_line + 1
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  // i now points at the first char of `line` (or end). Add the column offset.
-  let off = i + (col - 1)
-  if off < 0 {
-    0
-  } else if off > len {
-    len
+  if line < 1 || col < 1 {
+    -1
   } else {
-    off
+    let len = String::length(source)
+    let mut i = 0
+    let mut cur_line = 1
+    // Advance to the first char of the target line.
+    while cur_line < line && i < len {
+      if String::char_code_at(source, i) == 10 {
+        cur_line = cur_line + 1
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if cur_line < line {
+      // `line` is past the last line in `source`.
+      -1
+    } else {
+      // i is the start of line `line`. Find the end of its content: the
+      // offset of the terminating '\n' (or `len` for the final line), then
+      // exclude a preceding '\r' (CRLF) so it isn't counted as content.
+      let mut line_end = i
+      while line_end < len && String::char_code_at(source, line_end) != 10 {
+        line_end = line_end + 1
+      }
+      let content_end = if line_end > i && String::char_code_at(source, line_end - 1) == 13 {
+        line_end - 1
+      } else {
+        line_end
+      }
+      let off = i + (col - 1)
+      if off > content_end {
+        -1
+      } else {
+        off
+      }
+    }
   }
 }
 
@@ -358,6 +390,13 @@ fn tytab_lookup(table: Array[(Int, Type)], off: Int) -> Option[Type] {
 export fn type_at_source(source: String, line: Int, col: Int) -> String {
   handle {
     let tgt = line_col_to_offset(source, line, col)
+    if tgt < 0 {
+      // Out-of-range (line, col): invalid `line`/`col` (< 1), `line` beyond
+      // EOF, or `col` past the end of that line's content (#947). No position
+      // to resolve, so no hover — matches the "position not over a located
+      // identifier" empty-result convention below.
+      ""
+    } else {
     let (tokens, starts, ends) = lex_with_offsets(source)
     let stmts = parse_program_located(tokens, starts, source)
     let hits = empty_hits()
@@ -390,6 +429,7 @@ export fn type_at_source(source: String, line: Int, col: Int) -> String {
           }
         }
       }
+    }
     }
   } with Error {
     Throw(_) => ""

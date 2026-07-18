@@ -1,7 +1,7 @@
 //# Imports
 
 import ../ast {
-  Expr, TypeExpr
+  Expr, Pat, TypeExpr
 }
 
 import ./parser_base.vibe {
@@ -13,10 +13,132 @@ import ./token.vibe {
 }
 
 import ./lexer.vibe {
-  lex
+  lex_with_offsets
 }
 
 //# Functions
+
+// #947: rewrite every LOCATED offset in an interpolation fragment's parsed
+// Expr tree (EIdent, ECall, ELet/ELetMut, EDot, ...) through `f`, so hover /
+// go-to-def / rename on an identifier referenced inside `\{...}` resolves to
+// its real file position (see `remap_frag_off` below for the mapping used).
+// Every Expr variant is enumerated so a new variant is a compile error here,
+// keeping this walker in sync with the AST. Non-located constructs
+// (string/int/bool literals, bare structural nodes) pass through unchanged;
+// -1 (synthetic/non-located) offsets stay -1 and never reach `f`.
+fn map_located_off(off: Int, f: (Int) -> Int) -> Int {
+  if off < 0 {
+    off
+  } else {
+    f(off)
+  }
+}
+
+fn map_expr_offsets(expr: Expr, f: (Int) -> Int) -> Expr {
+  {
+    match expr {
+      EInt(_) => expr,
+      EFloat(_) => expr,
+      EString(_) => expr,
+      EBool(_) => expr,
+      EUnit => expr,
+      EIdent(name, off) => EIdent(name, map_located_off(off, f)),
+      ETuple(items) => ETuple(map_exprs(items, f)),
+      EArray(items) => EArray(map_exprs(items, f)),
+      ERecord(rn, fields, targs) => ERecord(rn, map_field_exprs(fields, f), targs),
+      EIf(c, t, e) => EIf(map_expr_offsets(c, f), map_expr_offsets(t, f), map_expr_offsets(e, f)),
+      ELet(n, v, b, soff) => ELet(n, map_expr_offsets(v, f), map_expr_offsets(b, f), map_located_off(soff, f)),
+      ELetRec(n, v, b) => ELetRec(n, map_expr_offsets(v, f), map_expr_offsets(b, f)),
+      ELetMut(n, v, b, soff) => ELetMut(n, map_expr_offsets(v, f), map_expr_offsets(b, f), map_located_off(soff, f)),
+      EAssign(n, v, b) => EAssign(n, map_expr_offsets(v, f), map_expr_offsets(b, f)),
+      EAssignOp(n, op, v, b) => EAssignOp(n, op, map_expr_offsets(v, f), map_expr_offsets(b, f)),
+      ESeq(a, b) => ESeq(map_expr_offsets(a, f), map_expr_offsets(b, f)),
+      EMatch(s, arms) => EMatch(map_expr_offsets(s, f), map_arm_exprs(arms, f)),
+      EHandle(s, arms) => EHandle(map_expr_offsets(s, f), map_arm_exprs(arms, f)),
+      EWhile(c, b) => EWhile(map_expr_offsets(c, f), map_expr_offsets(b, f)),
+      ELoop(params, b) => ELoop(map_loop_param_exprs(params, f), map_expr_offsets(b, f)),
+      EForIn(n, idx, it, b) => EForIn(n, idx, map_expr_offsets(it, f), map_expr_offsets(b, f)),
+      ECall(callee, args, off) => ECall(map_expr_offsets(callee, f), map_exprs(args, f), map_located_off(off, f)),
+      EBinOp(op, l, r) => EBinOp(op, map_expr_offsets(l, f), map_expr_offsets(r, f)),
+      EUnaryOp(op, e) => EUnaryOp(op, map_expr_offsets(e, f)),
+      EFn(tp, tb, params, ret, eff, body) => EFn(tp, tb, params, ret, eff, map_expr_offsets(body, f)),
+      EDot(e, field, off, fdoff) => EDot(map_expr_offsets(e, f), field, map_located_off(off, f), map_located_off(fdoff, f)),
+      ELabeledArg(l, n, v) => ELabeledArg(l, n, map_expr_offsets(v, f)),
+      EReturn(e) => EReturn(map_expr_offsets(e, f)),
+      EBreak(opt) => match opt {
+        Some(v) => EBreak(Some(map_expr_offsets(v, f))),
+        None => expr
+      },
+      EContinue(args) => EContinue(map_exprs(args, f)),
+      EMap(fields) => EMap(map_field_exprs(fields, f)),
+      ESpread(e) => ESpread(map_expr_offsets(e, f)),
+      EStringInterp(_) => expr
+    }
+  }
+}
+
+fn map_exprs(items: Array[Expr], f: (Int) -> Int) -> Array[Expr] {
+  for it in items {
+    map_expr_offsets(it, f)
+  }
+}
+
+fn map_field_exprs(fields: Array[(String, Expr)], f: (Int) -> Int) -> Array[(String, Expr)] {
+  for fld in fields {
+    let (n, v) = fld
+    (n, map_expr_offsets(v, f))
+  }
+}
+
+fn map_arm_exprs(arms: Array[(Pat, Expr)], f: (Int) -> Int) -> Array[(Pat, Expr)] {
+  for a in arms {
+    let (p, e) = a
+    (p, map_expr_offsets(e, f))
+  }
+}
+
+fn map_loop_param_exprs(params: Array[(String, Expr)], f: (Int) -> Int) -> Array[(String, Expr)] {
+  for p in params {
+    let (n, init) = p
+    (n, map_expr_offsets(init, f))
+  }
+}
+
+// Invert `offset_at(outer_starts, p)`: parse_recur (a closure over the
+// OUTER file's token-starts table) anchors every located node in a
+// fragment parse at `outer_starts[p]` where p is a FRAGMENT token index —
+// meaningless as a file position (Codex P2 on #975; only the
+// single-token-at-fragment-start case lined up by accident). outer_starts
+// is nondecreasing, so binary-search the smallest p with
+// outer_starts[p] == off, then re-anchor at the fragment's OWN start for
+// that token (frag_starts[p], from lex_with_offsets on the fragment text)
+// plus the fragment's absolute base. Anything unrecoverable becomes -1
+// (unlocated) rather than pointing at the wrong character.
+fn remap_frag_off(off: Int, outer_starts: Array[Int], frag_starts: Array[Int], frag_base: Int) -> Int {
+  let n = Array::length(outer_starts)
+  let mut lo = 0
+  let mut hi = n - 1
+  let mut found = -1
+  while lo <= hi {
+    let mid = (lo + hi) / 2
+    let v = Array::get(outer_starts, mid)
+    if v < off {
+      lo = mid + 1
+    } else {
+      if v == off {
+        found = mid
+      } else {
+        ()
+      }
+      hi = mid - 1
+    }
+  }
+  if found >= 0 && found < Array::length(frag_starts) {
+    frag_base + Array::get(frag_starts, found)
+  } else {
+    -1
+  }
+}
 
 // Desugar a string-interpolation token's parts into a `String::concat` chain.
 // Parts alternate literal/expression by index (even = literal chunk, odd =
@@ -26,7 +148,18 @@ import ./lexer.vibe {
 // Each interpolated value is rendered via `__to_string`. Bare-identifier parts
 // parse to the same `EIdent` the previous (ident-only) path produced, so
 // existing interpolations are unchanged.
-fn build_interp_expr(parts: Array[String], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> Expr with { Error } {
+//
+// `offsets` (#947) carries, in lockstep with `parts`, the absolute source
+// offset of each part's start (-1 for literal/even parts, which don't need
+// one). Each fragment is lexed in isolation with its OWN token-starts table
+// (lex_with_offsets), parsed via `parse_recur` — which anchors located nodes
+// using the OUTER file's starts table it closed over, i.e. at
+// outer_starts[fragment-token-index] — and then remapped node-by-node via
+// `remap_frag_off` (invert outer_starts, re-anchor at frag_starts[p] +
+// fragment base), so identifiers referenced inside `\{...}` carry their real
+// file position for any fragment shape (leading spaces, multi-token
+// expressions), not just a single token at the fragment start.
+fn build_interp_expr(parts: Array[String], offsets: Array[Int], outer_starts: Array[Int], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> Expr with { Error } {
   let concat_expr: (Expr, Expr) -> Expr = (a, b) -> {
     ECall(EIdent("String::concat", -1), [
       a,
@@ -52,7 +185,14 @@ fn build_interp_expr(parts: Array[String], parse_recur: (Array[Token], Int, Int)
         ()
       }
     } else {
-      let (pe, _) = parse_recur(lex(part), 0, 0)
+      let (ftoks, fstarts, _fends) = lex_with_offsets(part)
+      let (pe0, _) = parse_recur(ftoks, 0, 0)
+      let frag_off = if i < Array::length(offsets) { Array::get(offsets, i) } else { -1 }
+      let pe = if frag_off >= 0 {
+        map_expr_offsets(pe0, (o) -> remap_frag_off(o, outer_starts, fstarts, frag_off))
+      } else {
+        pe0
+      }
       let piece = ECall(EIdent("__to_string", -1), [
         pe
       ], -1)
@@ -756,7 +896,7 @@ export fn parse_primary(tokens: Array[Token], starts: Array[Int], pos: Int, pars
     TInt(n) => (EInt(n), pos + 1),
     TFloat(n) => (EFloat(n), pos + 1),
     TString(s) => (EString(s), pos + 1),
-    TStringInterp(parts) => (build_interp_expr(parts, parse_recur), pos + 1),
+    TStringInterp(parts, offs) => (build_interp_expr(parts, offs, starts, parse_recur), pos + 1),
     TIdent(name) => parse_ident_primary(tokens, starts, pos, name, parse_recur),
     TLParen => parse_paren_primary(tokens, starts, pos, parse_recur),
     TLBracket => parse_bracket_primary(tokens, starts, pos, parse_recur),
