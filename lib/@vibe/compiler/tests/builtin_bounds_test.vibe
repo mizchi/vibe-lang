@@ -1,0 +1,58 @@
+//# Misc
+
+// #982: String::substring and Array::slice had ZERO bounds checks on the
+// linear backend — `substring("hello", 2, 10)` produced a length-8 zero-copy
+// view over adjacent heap, `substring("hello", 4, 2)` a u32-wrapped length of
+// ~4294967294, and `Array::slice([1,2,3], 1, 10)` copied raw heap garbage
+// (while `slice(a, 2, 0)` trapped inside the copy). Both bodies now clamp
+// start into [0, len] and end into [start', len] up front, so out-of-range
+// requests tolerantly truncate and inverted ranges yield the empty result.
+// These run against the freshly built stage2, exercising the emitted wasm.
+
+test "982: substring end past length clamps to the tail" {
+  assert(String::substring("hello", 2, 10) == "llo")
+  assert(String::length(String::substring("hello", 2, 10)) == 3)
+}
+
+test "982: substring inverted range yields empty" {
+  assert(String::substring("hello", 4, 2) == "")
+  assert(String::length(String::substring("hello", 4, 2)) == 0)
+}
+
+test "982: substring negative start clamps to 0" {
+  assert(String::substring("hello", 0 - 3, 2) == "he")
+}
+
+test "982: substring fully out of range yields empty" {
+  assert(String::substring("hello", 9, 12) == "")
+}
+
+test "982: in-range substring is unchanged" {
+  assert(String::substring("hello", 1, 4) == "ell")
+  assert(String::substring("hello", 0, 5) == "hello")
+}
+
+test "982: slice end past length clamps to the tail" {
+  let ys = Array::slice([1, 2, 3], 1, 10)
+  assert(Array::length(ys) == 2)
+  assert(Array::get(ys, 0) == 2)
+  assert(Array::get(ys, 1) == 3)
+}
+
+test "982: slice inverted range yields empty (used to trap)" {
+  assert(Array::length(Array::slice([1, 2, 3], 2, 0)) == 0)
+}
+
+test "982: slice negative start clamps to 0" {
+  let ws = Array::slice([1, 2, 3], 0 - 2, 2)
+  assert(Array::length(ws) == 2)
+  assert(Array::get(ws, 0) == 1)
+  assert(Array::get(ws, 1) == 2)
+}
+
+test "982: in-range slice is unchanged" {
+  let xs = Array::slice([10, 20, 30, 40], 1, 3)
+  assert(Array::length(xs) == 2)
+  assert(Array::get(xs, 0) == 20)
+  assert(Array::get(xs, 1) == 30)
+}
