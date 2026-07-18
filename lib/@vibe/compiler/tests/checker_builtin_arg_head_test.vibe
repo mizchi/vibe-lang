@@ -1,0 +1,57 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_ok, check_source_err
+}
+
+//# Misc
+
+// #985: builtin_arg_head_rest is a per-position allowlist, and Bytes::push's
+// pushed byte plus every Int64Array position were unlisted — so
+// `Bytes::push(b, "hello")` compiled clean and wrote a garbage byte (the
+// string pointer), and `Int64Array::set(w, 0, "hi")` stored a String pointer
+// into an i64 slot. These close exactly the audited gaps (push / fill / blit /
+// Int64Array get / set / make); polymorphic heads stay tolerated as before.
+
+test "985: Bytes::push with a String byte is rejected" {
+  assert(check_source_err("fn main() -> Int { let b = Bytes::new()\n  Bytes::push(b, \"hello\")\n  Bytes::length(b) }"))
+}
+
+test "985: Bytes::push with an Int byte stays accepted" {
+  assert(check_source_ok("fn main() -> Int { let b = Bytes::new()\n  Bytes::push(b, 65)\n  Bytes::length(b) }"))
+}
+
+test "985: Bytes::fill / Bytes::blit non-Int positions are rejected" {
+  assert(check_source_err("fn main() -> Int { let b = Bytes::new()\n  Bytes::fill(b, \"x\", 3)\n  0 }"))
+  assert(check_source_err("fn main() -> Int { let d = Bytes::new()\n  let s = Bytes::new()\n  Bytes::blit(d, s, \"o\", 1)\n  0 }"))
+  assert(check_source_err("fn main() -> Int { let d = Bytes::new()\n  Bytes::blit(d, 5, 0, 1)\n  0 }"))
+}
+
+test "985: Int64Array::set with a String value or index is rejected" {
+  assert(check_source_err("fn main() -> Int { let w = Int64Array::make(4, 0)\n  Int64Array::set(w, 0, \"hi\")\n  0 }"))
+  assert(check_source_err("fn main() -> Int { let w = Int64Array::make(4, 0)\n  Int64Array::set(w, \"i\", 1)\n  0 }"))
+}
+
+test "985: Int64Array::get with a String index is rejected" {
+  assert(check_source_err("fn main() -> Int { let w = Int64Array::make(4, 0)\n  Int64Array::get(w, \"i\")\n  0 }"))
+}
+
+test "985: Int64Array::make with a String init is rejected" {
+  assert(check_source_err("fn main() -> Int { let _w = Int64Array::make(4, \"z\")\n  0 }"))
+}
+
+// Codex P2 on #989: the make LENGTH is arg 0, which the rest-position table
+// never sees — `Int64Array::make("4", 0)` compiled with the String as the
+// codegen loop bound. Both makes now list Int in builtin_first_arg_head.
+test "985 review: make with a String length is rejected (Int64Array / FixedArray)" {
+  assert(check_source_err("fn main() -> Int { let _w = Int64Array::make(\"4\", 0)\n  0 }"))
+  assert(check_source_err("fn main() -> Int { let _a = FixedArray::make(\"4\", 0)\n  0 }"))
+}
+
+test "985 review: well-typed FixedArray::make stays accepted" {
+  assert(check_source_ok("fn main() -> Int { let a = FixedArray::make(4, 0)\n  FixedArray::get(a, 0) }"))
+}
+
+test "985: well-typed Int64Array round trip stays accepted" {
+  assert(check_source_ok("fn main() -> Int { let w = Int64Array::make(4, 0)\n  Int64Array::set(w, 0, 7)\n  Int64Array::get(w, 0) }"))
+}
