@@ -1975,13 +1975,27 @@ export fn pat_binds_resume(p: Pat) -> Bool {
   }
 }
 
-// #942 (Codex P2): does an EFn's parameter list bind `resume`?
+// #942 (Codex P2): does an EFn's parameter list bind `resume`? Labeled/
+// optional params keep a trailing `~`/`?` in the raw AST name (stripped by
+// the checker/codegen before binding, same as the labeled-param handling in
+// check_expr's EFn arm above) — strip it here too so `fn f(resume~: ...)`
+// is recognized as shadowing.
+fn param_base_name(raw_name: String) -> String {
+  let nlen = String::length(raw_name)
+  if nlen > 0 {
+    let lc = String::char_code_at(raw_name, nlen - 1)
+    if lc == '~' || lc == '?' {
+      raw_name[0: nlen - 1]
+    } else raw_name
+  } else raw_name
+}
+
 fn fn_params_bind_resume(params: Array[(String, Option[TypeExpr])]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(params) {
     let (pn, _) = Array::get(params, i)
-    if pn == "resume" {
+    if param_base_name(pn) == "resume" {
       found = true
     } else {
       ()
@@ -2332,16 +2346,23 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
   match e {
     ECall(callee, args, _) => {
       let mut s1 = s
+      // #942 (Codex P2 on #970): `env` is the normal lexical TypeEnv threaded
+      // through check_expr, already containing every enclosing binder (the
+      // top-level fn/let hoist, the arm's own payload binders via henv, and
+      // any local let/let-mut/let-rec/match-arm binder this walk itself adds
+      // below) — so a `resume` name already bound here is a real callable
+      // binding codegen's prefer_bound_call routes to, not the builtin.
+      let resume_shadowed = env_lookup(env, "resume") is Some(_)
       match callee {
         EIdent(nm, _) => {
           // A Unit-returning op discards the resumed value at the perform
           // site, so any resume argument is tolerated there (mirrors the
           // statement-position Unit tolerance elsewhere; the existing idiom
           // `Print(s) => resume(0)` for `Print(String) -> Unit` stays legal).
-          if nm == "resume" && Array::length(args) == 1 && !(ret_ty is CtUnit) {
+          if nm == "resume" && !resume_shadowed && Array::length(args) == 1 && !(ret_ty is CtUnit) {
             let (aty, ns, _) = check_expr(Array::get(args, 0), env, defs, s1, c, errors, tytab)
             s1 = check_assignable(ret_ty, subst_apply(ns, aty), ns, errors, "resume value type mismatch", 0 - 1)
-          } else if nm == "resume" && Array::length(args) == 0 && !(ret_ty is CtUnit) {
+          } else if nm == "resume" && !resume_shadowed && Array::length(args) == 0 && !(ret_ty is CtUnit) {
             // #828: `resume()` on a value-returning op used to reach codegen,
             // which indexes resume args[0] unconditionally — a compiler ICE
             // with no diagnostic. Reject it here instead.
