@@ -1,0 +1,747 @@
+//# Imports
+
+import ../core/index.vibe {
+  Pat, Type, TypeDef, find_typedef
+}
+
+import ./checker_resolve.vibe {
+  subst_type_params
+}
+
+//# Functions
+
+// #940 Phase 2: Maranget-style usefulness check for NESTED match
+// exhaustiveness. Phase 1 (checker.vibe) only covers the FLAT ctor layer
+// (user enums, builtin Option, Bool); nested tuples, ctor payloads and
+// literal patterns compiled clean and trapped on codegen's terminal
+// `unreachable`. This module answers one question: is the all-wildcard row
+// USEFUL w.r.t. the pattern matrix built from the match arms? If it is,
+// the match is non-exhaustive and a concrete uncovered witness pattern is
+// reconstructed for the diagnostic.
+//
+// Deliberate conservatisms (accept = stay silent), all to avoid false
+// positives on the compiler's own ~3,400 match sites:
+//   - ground gate: only a fully concrete scrutinee type is checked
+//     (type vars / unresolved named params are tolerated);
+//   - open scalars (Int / Char / String / Double): literals alone never
+//     count as covering — but a column full of wildcards is fine;
+//   - opaque columns (structs, arrays, fns, unknown): only accepted head
+//     patterns are irrefutable ones; any refutable head makes the whole
+//     check abstain;
+//   - budget cap: the recursion pays rows*cols per call from a fixed
+//     budget; running out silently accepts (no witness).
+
+fn exh_empty_pats() -> Array[Pat] {
+  Array::slice([
+    PWild
+  ], 0, 0)
+}
+
+fn exh_empty_strs() -> Array[String] {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+
+fn exh_empty_tys() -> Array[Type] {
+  Array::slice([
+    CtUnknown
+  ], 0, 0)
+}
+
+fn exh_empty_ctors() -> Array[(String, Array[Type], Int)] {
+  Array::slice([
+    ("", exh_empty_tys(), 0)
+  ], 0, 0)
+}
+
+fn exh_empty_rows() -> Array[Array[Pat]] {
+  Array::slice([
+    exh_empty_pats()
+  ], 0, 0)
+}
+
+fn exh_names_contain(names: Array[String], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) && !found {
+    if Array::get(names, i) == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+// Top-level catch-all: `_` / a bare binding, or an or-pattern with a
+// catch-all side.
+fn exh_pat_catchall(p: Pat) -> Bool {
+  match p {
+    PWild => true,
+    PBind(_) => true,
+    POr(l, r) => exh_pat_catchall(l) || exh_pat_catchall(r),
+    _ => false
+  }
+}
+
+// Wildcard HEAD for the matrix operations (matches every ctor of the column).
+fn exh_pat_is_wild(p: Pat) -> Bool {
+  match p {
+    PWild => true,
+    PBind(_) => true,
+    _ => false
+  }
+}
+
+// Irrefutable at every depth: matches ANY well-typed value of the column.
+// PCtor stays refutable (a single-variant enum would be irrefutable, but
+// abstaining is the safe direction here).
+fn exh_pat_irrefutable(p: Pat) -> Bool {
+  match p {
+    PWild => true,
+    PBind(_) => true,
+    PTuple(subs) => {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(subs) {
+        if !exh_pat_irrefutable(Array::get(subs, i)) {
+          ok = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      ok
+    },
+    PStruct(_, fields) => {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        if !exh_pat_irrefutable(fp) {
+          ok = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      ok
+    },
+    POr(l, r) => exh_pat_irrefutable(l) || exh_pat_irrefutable(r),
+    _ => false
+  }
+}
+
+// Or-pattern expansion: POr rows are duplicated per branch (binding
+// or-patterns are already rejected by #951, so no binding is lost).
+fn exh_flatten_or(p: Pat, out: Array[Pat]) -> Unit {
+  match p {
+    POr(l, r) => {
+      exh_flatten_or(l, out)
+      exh_flatten_or(r, out)
+    },
+    _ => Array::push(out, p)
+  }
+}
+
+fn exh_all_ground(ts: Array[Type], defs: Array[TypeDef]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(ts) {
+    if !exh_type_ground(Array::get(ts, i), defs) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+// Ground gate: no inference variable / rigid param anywhere. `CtNamed` is
+// only accepted as a REAL instantiated generic (all args concrete) or as a
+// bare reference that resolves to a known zero-param enum; the resolver's
+// unresolved sentinel `CtNamed(name, [CtUnknown])` and a bare unknown name
+// both fail the gate (see type_fully_concrete in checker.vibe, #844).
+fn exh_type_ground(t: Type, defs: Array[TypeDef]) -> Bool {
+  match t {
+    CtVar(_) => false,
+    CtUnknown => false,
+    CtForAll(_, _, _) => false,
+    CtNamed(n, args) => {
+      if Array::length(args) == 0 {
+        match find_typedef(defs, n) {
+          Some(TDEnum(_, eparams, _)) => Array::length(eparams) == 0,
+          _ => false
+        }
+      } else {
+        exh_all_ground(args, defs)
+      }
+    },
+    CtTuple(items) => exh_all_ground(items, defs),
+    CtArray(e) => exh_type_ground(e, defs),
+    CtOption(e) => exh_type_ground(e, defs),
+    CtFn(ps, r, _) => exh_all_ground(ps, defs) && exh_type_ground(r, defs),
+    _ => true
+  }
+}
+
+// Collect the distinct CtVar ids occurring anywhere in `t` into `acc`.
+fn exh_collect_vids(t: Type, acc: Array[Int]) -> Unit {
+  match t {
+    CtVar(v) => {
+      let mut i = 0
+      let mut seen = false
+      while i < Array::length(acc) {
+        if Array::get(acc, i) == v {
+          seen = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if seen {
+        ()
+      } else {
+        Array::push(acc, v)
+      }
+    },
+    CtTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        exh_collect_vids(Array::get(items, i), acc)
+        i = i + 1
+      }
+    },
+    CtArray(e) => exh_collect_vids(e, acc),
+    CtOption(e) => exh_collect_vids(e, acc),
+    CtNamed(_, nargs) => {
+      let mut i = 0
+      while i < Array::length(nargs) {
+        exh_collect_vids(Array::get(nargs, i), acc)
+        i = i + 1
+      }
+    },
+    CtFn(ps, r, _) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        exh_collect_vids(Array::get(ps, i), acc)
+        i = i + 1
+      }
+      exh_collect_vids(r, acc)
+    },
+    _ => ()
+  }
+}
+
+// Replace CtVar(vids[i]) by args[i] (positional), recursively.
+fn exh_subst_vids(t: Type, vids: Array[Int], args: Array[Type]) -> Type {
+  match t {
+    CtVar(v) => {
+      let mut idx = 0 - 1
+      let mut i = 0
+      while i < Array::length(vids) {
+        if Array::get(vids, i) == v {
+          idx = i
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if idx >= 0 && idx < Array::length(args) {
+        Array::get(args, idx)
+      } else {
+        t
+      }
+    },
+    CtTuple(items) => {
+      let acc = exh_empty_tys()
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(acc, exh_subst_vids(Array::get(items, i), vids, args))
+        i = i + 1
+      }
+      CtTuple(acc)
+    },
+    CtArray(e) => CtArray(exh_subst_vids(e, vids, args)),
+    CtOption(e) => CtOption(exh_subst_vids(e, vids, args)),
+    CtNamed(n, nargs) => {
+      let acc = exh_empty_tys()
+      let mut i = 0
+      while i < Array::length(nargs) {
+        Array::push(acc, exh_subst_vids(Array::get(nargs, i), vids, args))
+        i = i + 1
+      }
+      CtNamed(n, acc)
+    },
+    CtFn(ps, r, eff) => {
+      let acc = exh_empty_tys()
+      let mut i = 0
+      while i < Array::length(ps) {
+        Array::push(acc, exh_subst_vids(Array::get(ps, i), vids, args))
+        i = i + 1
+      }
+      CtFn(acc, exh_subst_vids(r, vids, args), eff)
+    },
+    _ => t
+  }
+}
+
+// Ctor universe of a user enum column: variant payload types instantiated
+// against the scrutinee's actual type args. A non-enum name classifies the
+// column opaque (kind 2).
+//
+// TDEnum stores a generic enum's payload types with the declared params
+// ALREADY substituted to fresh `CtVar(vid)`s (checker_stmt.vibe, SEnum) —
+// the name-based subst_type_params never fires on them. Those vids are
+// CONSECUTIVE per declaration (vid = c + param_index), so when the payloads
+// mention exactly `param_len` distinct vids, the sorted vids are provably
+// the full c..c+n-1 range in declaration order and can be mapped
+// positionally onto the scrutinee's actual args. When some param never
+// occurs in any payload the offset is ambiguous — the CtVars are left in
+// place and those columns abstain (opaque) downstream.
+fn exh_enum_ctors(en: String, args: Array[Type], defs: Array[TypeDef]) -> (Int, Array[(String, Array[Type], Int)]) {
+  match find_typedef(defs, en) {
+    Some(TDEnum(_, eparams, variants)) => {
+      let can_subst = Array::length(eparams) > 0 && Array::length(args) == Array::length(eparams)
+      let vids = Array::slice([
+        0
+      ], 0, 0)
+      if can_subst {
+        let mut ci = 0
+        while ci < Array::length(variants) {
+          let (_, cptys) = Array::get(variants, ci)
+          let mut cj = 0
+          while cj < Array::length(cptys) {
+            exh_collect_vids(Array::get(cptys, cj), vids)
+            cj = cj + 1
+          }
+          ci = ci + 1
+        }
+        // insertion sort (ascending) — tiny arrays
+        let mut si = 1
+        while si < Array::length(vids) {
+          let v = Array::get(vids, si)
+          let mut sj = si
+          let mut moving = true
+          while sj > 0 && moving {
+            if Array::get(vids, sj - 1) > v {
+              Array::set(vids, sj, Array::get(vids, sj - 1))
+              sj = sj - 1
+            } else {
+              moving = false
+            }
+          }
+          Array::set(vids, sj, v)
+          si = si + 1
+        }
+      } else {
+        ()
+      }
+      let vid_subst = can_subst && Array::length(vids) == Array::length(eparams)
+      let out = exh_empty_ctors()
+      let mut i = 0
+      while i < Array::length(variants) {
+        let (vn, ptys) = Array::get(variants, i)
+        let inst = if can_subst {
+          let acc = exh_empty_tys()
+          let mut j = 0
+          while j < Array::length(ptys) {
+            let named_done = subst_type_params(Array::get(ptys, j), eparams, args)
+            let vt = if vid_subst {
+              exh_subst_vids(named_done, vids, args)
+            } else {
+              named_done
+            }
+            Array::push(acc, vt)
+            j = j + 1
+          }
+          acc
+        } else {
+          ptys
+        }
+        Array::push(out, (vn, inst, 0))
+        i = i + 1
+      }
+      (0, out)
+    },
+    _ => (2, exh_empty_ctors())
+  }
+}
+
+// Column classification.
+// kind 0 = closed universe (ctors listed), kind 1 = open scalar
+// (Int/Char/String/Double — literals never cover), kind 2 = opaque.
+// Ctor entry = (name, payload types, ctor kind: 0 enum-like ctor /
+// 1 tuple / 2 bool literal).
+fn exh_column_ctors(t: Type, defs: Array[TypeDef]) -> (Int, Array[(String, Array[Type], Int)]) {
+  match t {
+    CtBool => (0, [
+      ("true", exh_empty_tys(), 2),
+      ("false", exh_empty_tys(), 2)
+    ]),
+    CtOption(e) => (0, [
+      ("Some", [
+        e
+      ], 0),
+      ("None", exh_empty_tys(), 0)
+    ]),
+    CtTuple(items) => (0, [
+      ("", items, 1)
+    ]),
+    CtEnum(en) => exh_enum_ctors(en, exh_empty_tys(), defs),
+    CtNamed(en, args) => exh_enum_ctors(en, args, defs),
+    CtInt => (1, exh_empty_ctors()),
+    CtChar => (1, exh_empty_ctors()),
+    CtString => (1, exh_empty_ctors()),
+    CtDouble => (1, exh_empty_ctors()),
+    _ => (2, exh_empty_ctors())
+  }
+}
+
+// Does this head pattern match ctor `cname` of kind `ckind`? Returns its
+// sub-patterns when it does (wildcard heads are handled by the caller).
+fn exh_head_subpats(p: Pat, cname: String, ckind: Int) -> Option[Array[Pat]] {
+  match p {
+    PCtor(n, subs) => if ckind == 0 && n == cname {
+      Some(subs)
+    } else {
+      None
+    },
+    PTuple(subs) => if ckind == 1 {
+      Some(subs)
+    } else {
+      None
+    },
+    PBool(b) => if ckind == 2 {
+      let bn = if b {
+        "true"
+      } else {
+        "false"
+      }
+      if bn == cname {
+        Some(exh_empty_pats())
+      } else {
+        None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+// Pad / truncate sub-patterns to the ctor's declared arity (arity errors are
+// reported by check_pattern; here we just stay well-formed).
+fn exh_pad_subs(subs: Array[Pat], arity: Int) -> Array[Pat] {
+  let out = exh_empty_pats()
+  let mut i = 0
+  while i < arity {
+    if i < Array::length(subs) {
+      Array::push(out, Array::get(subs, i))
+    } else {
+      Array::push(out, PWild)
+    }
+    i = i + 1
+  }
+  out
+}
+
+// New row = prefix pats ++ old row's columns 1.. (drop the head).
+fn exh_row_with_tail(prefix: Array[Pat], row: Array[Pat]) -> Array[Pat] {
+  let out = exh_empty_pats()
+  let mut i = 0
+  while i < Array::length(prefix) {
+    Array::push(out, Array::get(prefix, i))
+    i = i + 1
+  }
+  let mut j = 1
+  while j < Array::length(row) {
+    Array::push(out, Array::get(row, j))
+    j = j + 1
+  }
+  out
+}
+
+// Default matrix D(P): tails of the wildcard-headed rows.
+fn exh_default_rows(xrows: Array[Array[Pat]]) -> Array[Array[Pat]] {
+  let out = exh_empty_rows()
+  let mut i = 0
+  while i < Array::length(xrows) {
+    let row = Array::get(xrows, i)
+    if exh_pat_is_wild(Array::get(row, 0)) {
+      Array::push(out, exh_row_with_tail(exh_empty_pats(), row))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Tails of ALL rows (used for opaque columns whose heads are all
+// irrefutable — every head matches, so no row is dropped).
+fn exh_tail_rows(xrows: Array[Array[Pat]]) -> Array[Array[Pat]] {
+  let out = exh_empty_rows()
+  let mut i = 0
+  while i < Array::length(xrows) {
+    Array::push(out, exh_row_with_tail(exh_empty_pats(), Array::get(xrows, i)))
+    i = i + 1
+  }
+  out
+}
+
+fn exh_prepend(head: String, rest: Array[String]) -> Array[String] {
+  let out = exh_empty_strs()
+  Array::push(out, head)
+  let mut i = 0
+  while i < Array::length(rest) {
+    Array::push(out, Array::get(rest, i))
+    i = i + 1
+  }
+  out
+}
+
+fn exh_join(parts: Array[String], sep: String) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(parts) {
+    if i > 0 {
+      out = String::concat(out, sep)
+    } else {
+      ()
+    }
+    out = String::concat(out, Array::get(parts, i))
+    i = i + 1
+  }
+  out
+}
+
+fn exh_format_ctor(cname: String, ckind: Int, args: Array[String]) -> String {
+  if ckind == 1 {
+    String::concat("(", String::concat(exh_join(args, ", "), ")"))
+  } else if Array::length(args) == 0 {
+    cname
+  } else {
+    String::concat(cname, String::concat("(", String::concat(exh_join(args, ", "), ")")))
+  }
+}
+
+fn exh_wild_strs(arity: Int) -> Array[String] {
+  let out = exh_empty_strs()
+  let mut i = 0
+  while i < arity {
+    Array::push(out, "_")
+    i = i + 1
+  }
+  out
+}
+
+// Usefulness of the all-wildcard row w.r.t. `rows` over column types `tys`.
+// Some(witness-per-column) = an uncovered value shape exists (non-exhaustive);
+// None = covered (or the check abstained / ran out of budget).
+fn exh_find(rows: Array[Array[Pat]], tys: Array[Type], defs: Array[TypeDef], budget: Array[Int]) -> Option[Array[String]] {
+  let ncols = Array::length(tys)
+  if ncols == 0 {
+    if Array::length(rows) == 0 {
+      Some(exh_empty_strs())
+    } else {
+      None
+    }
+  } else {
+    let cost = Array::length(rows) * ncols + 1
+    let remaining = Array::get(budget, 0)
+    if remaining < cost {
+      None
+    } else {
+      Array::set(budget, 0, remaining - cost)
+      let xrows = exh_empty_rows()
+      let mut ri = 0
+      while ri < Array::length(rows) {
+        let row = Array::get(rows, ri)
+        let heads = exh_empty_pats()
+        exh_flatten_or(Array::get(row, 0), heads)
+        let mut hi = 0
+        while hi < Array::length(heads) {
+          let pref = exh_empty_pats()
+          Array::push(pref, Array::get(heads, hi))
+          Array::push(xrows, exh_row_with_tail(pref, row))
+          hi = hi + 1
+        }
+        ri = ri + 1
+      }
+      let rest_tys = Array::slice(tys, 1, ncols)
+      let (kind, ctors) = exh_column_ctors(Array::get(tys, 0), defs)
+      if kind == 0 {
+        // Head ctor names actually used in this column.
+        let used = exh_empty_strs()
+        let mut ui = 0
+        while ui < Array::length(xrows) {
+          match Array::get(Array::get(xrows, ui), 0) {
+            PCtor(n, _) => Array::push(used, n),
+            PBool(b) => if b {
+              Array::push(used, "true")
+            } else {
+              Array::push(used, "false")
+            },
+            PTuple(_) => Array::push(used, ""),
+            _ => ()
+          }
+          ui = ui + 1
+        }
+        let mut complete = true
+        let mut ki = 0
+        while ki < Array::length(ctors) {
+          let (cn0, _, _) = Array::get(ctors, ki)
+          if !exh_names_contain(used, cn0) {
+            complete = false
+          } else {
+            ()
+          }
+          ki = ki + 1
+        }
+        if complete {
+          // Complete signature: specialize on every ctor; the first one with
+          // an uncovered sub-shape yields the witness.
+          let mut result: Option[Array[String]] = None
+          let mut done = false
+          let mut ci = 0
+          while ci < Array::length(ctors) && !done {
+            let (cn, ptys, ck) = Array::get(ctors, ci)
+            let arity = Array::length(ptys)
+            let srows = exh_empty_rows()
+            let mut si = 0
+            while si < Array::length(xrows) {
+              let srow = Array::get(xrows, si)
+              let head = Array::get(srow, 0)
+              if exh_pat_is_wild(head) {
+                Array::push(srows, exh_row_with_tail(exh_pad_subs(exh_empty_pats(), arity), srow))
+              } else {
+                match exh_head_subpats(head, cn, ck) {
+                  Some(subs) => Array::push(srows, exh_row_with_tail(exh_pad_subs(subs, arity), srow)),
+                  None => ()
+                }
+              }
+              si = si + 1
+            }
+            let stys = exh_empty_tys()
+            let mut ti = 0
+            while ti < arity {
+              Array::push(stys, Array::get(ptys, ti))
+              ti = ti + 1
+            }
+            let mut ti2 = 0
+            while ti2 < Array::length(rest_tys) {
+              Array::push(stys, Array::get(rest_tys, ti2))
+              ti2 = ti2 + 1
+            }
+            match exh_find(srows, stys, defs, budget) {
+              Some(w) => {
+                let args = Array::slice(w, 0, arity)
+                let restw = Array::slice(w, arity, Array::length(w))
+                result = Some(exh_prepend(exh_format_ctor(cn, ck, args), restw))
+                done = true
+              },
+              None => ()
+            }
+            ci = ci + 1
+          }
+          result
+        } else {
+          // Incomplete signature: a missing ctor is the witness head when the
+          // tails are (or become) uncovered.
+          match exh_find(exh_default_rows(xrows), rest_tys, defs, budget) {
+            Some(w) => {
+              let mut head_str = "_"
+              let mut found_missing = false
+              let mut mi = 0
+              while mi < Array::length(ctors) && !found_missing {
+                let (mn, mptys, mk) = Array::get(ctors, mi)
+                if !exh_names_contain(used, mn) {
+                  head_str = exh_format_ctor(mn, mk, exh_wild_strs(Array::length(mptys)))
+                  found_missing = true
+                } else {
+                  mi = mi + 1
+                }
+              }
+              Some(exh_prepend(head_str, w))
+            },
+            None => None
+          }
+        }
+      } else if kind == 1 {
+        // Open scalar: literal heads never complete the column, so only the
+        // wildcard-headed rows can cover the rest.
+        match exh_find(exh_default_rows(xrows), rest_tys, defs, budget) {
+          Some(w) => Some(exh_prepend("_", w)),
+          None => None
+        }
+      } else {
+        // Opaque: safe only when every head always matches; a refutable head
+        // over a type we cannot enumerate makes the whole check abstain.
+        let mut all_irr = true
+        let mut oi = 0
+        while oi < Array::length(xrows) {
+          if !exh_pat_irrefutable(Array::get(Array::get(xrows, oi), 0)) {
+            all_irr = false
+          } else {
+            ()
+          }
+          oi = oi + 1
+        }
+        if all_irr {
+          match exh_find(exh_tail_rows(xrows), rest_tys, defs, budget) {
+            Some(w) => Some(exh_prepend("_", w)),
+            None => None
+          }
+        } else {
+          None
+        }
+      }
+    }
+  }
+}
+
+// #940 Phase 2 entry. Some(witness) = the arms do not cover every value of
+// `scr_ty` and `witness` is one uncovered pattern; None = covered, or the
+// check abstained (catch-all arm / non-ground scrutinee / budget).
+export fn match_nonexhaustive_witness(scr_ty: Type, pats: Array[Pat], defs: Array[TypeDef]) -> Option[String] {
+  let mut has_catchall = false
+  let mut i = 0
+  while i < Array::length(pats) {
+    if exh_pat_catchall(Array::get(pats, i)) {
+      has_catchall = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if has_catchall {
+    None
+  } else if !exh_type_ground(scr_ty, defs) {
+    None
+  } else {
+    let rows = exh_empty_rows()
+    let mut j = 0
+    while j < Array::length(pats) {
+      let row = exh_empty_pats()
+      Array::push(row, Array::get(pats, j))
+      Array::push(rows, row)
+      j = j + 1
+    }
+    let budget = [
+      4096
+    ]
+    match exh_find(rows, [
+      scr_ty
+    ], defs, budget) {
+      Some(w) => if Array::length(w) > 0 {
+        Some(Array::get(w, 0))
+      } else {
+        None
+      },
+      None => None
+    }
+  }
+}
