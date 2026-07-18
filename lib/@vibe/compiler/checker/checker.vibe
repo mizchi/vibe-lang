@@ -545,16 +545,21 @@ fn row_contains_label(row: Option[String], lbl: String) -> Bool {
   found
 }
 
-// First concrete, non-exempt effect label the ACTUAL side carries in a
-// covariant position that the EXPECTED side's row at the same position lacks.
-// CtFn PARAMETER positions are skipped entirely (contravariant — an effectful
-// parameter slot accepting a pure function is fine, and flipping the
-// direction there would be wrong, not just noisy). pure→effectful
-// (expected row ⊇ actual row) passes by construction.
+// First concrete, non-exempt effect label whose drop would let a perform run
+// with no handler. At each CtFn the ACTUAL side's own row must not carry a
+// label the EXPECTED side's row lacks; the return type recurses covariantly;
+// PARAMETER positions recurse with expected/actual SWAPPED (contravariance —
+// Codex P1 on #978: an `((Int) -> Int with { Logger }, Int) -> Int` slot
+// holding a pure-callback fn lets `h(eff, 1)` type-check while the callee
+// invokes the effectful callback with no handler, so at parameter positions
+// it is the EXPECTED param's concrete labels that must be tolerated by the
+// ACTUAL param). pure→effectful still passes in both directions by
+// construction, and an effectful parameter slot accepting a pure function
+// stays legal (the swap makes that the label-free side).
 fn effect_row_dropped(expected: Type, actual: Type) -> Option[String] {
   match expected {
-    CtFn(_, eret, eeff) => match actual {
-      CtFn(_, aret, aeff) => {
+    CtFn(eparams, eret, eeff) => match actual {
+      CtFn(aparams, aret, aeff) => {
         let alabels = row_labels(aeff)
         let mut i = 0
         let mut dropped = None
@@ -568,6 +573,21 @@ fn effect_row_dropped(expected: Type, actual: Type) -> Option[String] {
             ()
           }
           i = i + 1
+        }
+        if !done && Array::length(eparams) == Array::length(aparams) {
+          let mut pi = 0
+          while pi < Array::length(eparams) && !done {
+            match effect_row_dropped(Array::get(aparams, pi), Array::get(eparams, pi)) {
+              Some(pl) => {
+                dropped = Some(pl)
+                done = true
+              },
+              None => ()
+            }
+            pi = pi + 1
+          }
+        } else {
+          ()
         }
         match dropped {
           Some(l) => Some(l),
