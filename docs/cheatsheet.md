@@ -164,7 +164,7 @@ Array::fold(xs, 0, _ + _)
 | 4 | `+` `-` | |
 | 5 | `<<` `>>` | >> is arithmetic (sign-extending) |
 | 6-8 | `&` `^` `\|` | bitwise AND, XOR, OR |
-| 9 | `==` `!=` `<` `<=` `>` `>=` | non-assoc |
+| 9 | `==` `!=` `<` `<=` `>` `>=` `is` | non-assoc; `is` is the pattern-test operator (see below) |
 | 10 | `\|>` | pipe |
 | 11-12 | `&&` `\|\|` | short-circuit (desugar to if) |
 
@@ -311,6 +311,14 @@ let demo: (Option[(Int, Int)], Option[Int]) -> Int = (pt, opt) -> {
 if expr is Some(v) { use(v) }   // bind + test
 expr is None                     // -> Bool
 ```
+
+> **Precedence (#979):** `is` binds at the same tier as the comparison
+> operators (`==`, `<`, ...) -- strictly *tighter* than `&&`/`||`/`|>`, but no
+> tighter than arithmetic/bitwise operators. So `a && b is None` parses as
+> `a && (b is None)` (the natural reading), while `a + b is None` parses as
+> `(a + b) is None` (same as how `a + b < c` already grouped). Before #979,
+> `is` was checked only once, after the *entire* `&&`/`||` ladder had
+> already folded, so `a && b is None` misparsed as `(a && b) is None`.
 
 ## Type Definitions
 

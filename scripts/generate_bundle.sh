@@ -764,12 +764,68 @@ build_exact_adapter_merged_source() {
   printf '%s\n' "$merged_path"
 }
 
+# #979: writing $ADAPTER_MODULE_SOURCE_OUT (normally
+# lib/@vibe/compiler/cli_adapter_module_source.vibe, the committed flat
+# module source stage1/stage2 bootstrap FROM) used to `cp` the freshly
+# flattened candidate straight over the real destination with no check that
+# it actually compiles. A bad flatten (e.g. the merge/printer surfacing a
+# pre-existing parser bug) left a BROKEN file committed on disk; every
+# subsequent regen rebuilds the merge-flatten tool FROM that same broken
+# committed file (see build_exact_adapter_merged_source above), so the
+# failure was self-perpetuating -- recoverable only via `git checkout HEAD
+# -- lib/@vibe/compiler/cli_adapter_module_source.vibe`. Make the write
+# atomic and gated: compile-check the CANDIDATE with the seed compiler in a
+# throwaway tmp file first, and only `mv` the candidate into place (same
+# dir, so the rename is atomic) when that succeeds; otherwise leave
+# whatever was already at $ADAPTER_MODULE_SOURCE_OUT untouched and fail
+# loudly. When no seed wasm is available (e.g. tiny synthetic fixtures used
+# by generate_bundle_test.sh, which have no bootstrap/seed/ at all) the
+# check is skipped -- same "trust the pinned artifact" fallback
+# check_module_source_sync.sh already uses -- so this adds no new
+# dependency, only a safety gate where the seed is present.
+validate_module_source_compiles() {
+  local candidate="$1"
+  local seed_wasm="$PROJECT_ROOT/bootstrap/seed/selfhost_compiler.wasm"
+  if [ ! -f "$seed_wasm" ]; then
+    return 0
+  fi
+  mkdir -p "$PROJECT_ROOT/_build"
+  local check_wasm
+  check_wasm="$(mktemp "$PROJECT_ROOT/_build/module_source_validate.XXXXXX.wasm")"
+  local check_log="$check_wasm.log"
+  rm -f "$check_wasm"
+  local tool_node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_GENERATION_NODE_STACK_SIZE:-131072}}"
+  local ok=0
+  if (cd "$PROJECT_ROOT" && env VIBE_RC=0 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+    VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" \
+    VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$seed_wasm" \
+    "$candidate" "$check_wasm" cli_main >"$check_log" 2>&1); then
+    if [ -s "$check_wasm" ]; then
+      ok=1
+    fi
+  fi
+  if [ "$ok" != "1" ]; then
+    echo "generate_bundle: candidate module source failed to compile (#979 sticky-failure guard) -- leaving any existing $ADAPTER_MODULE_SOURCE_OUT untouched" >&2
+    cat "$check_wasm.diag" >&2 2>/dev/null || true
+    echo "--- runner output ---" >&2
+    tail -40 "$check_log" >&2 2>/dev/null || true
+  fi
+  rm -f "$check_wasm" "$check_wasm.diag" "$check_log"
+  [ "$ok" = "1" ]
+}
+
 write_adapter_bundle "" ""
 ADAPTER_MERGED_SOURCE_FILE="$(build_exact_adapter_merged_source)"
 ADAPTER_MODULE_SOURCE_FILE="$(build_adapter_module_source "$ADAPTER_MERGED_SOURCE_FILE")"
 if [ -n "$ADAPTER_MODULE_SOURCE_OUT" ]; then
+  if ! validate_module_source_compiles "$ADAPTER_MODULE_SOURCE_FILE"; then
+    exit 1
+  fi
   mkdir -p "$(dirname "$ADAPTER_MODULE_SOURCE_OUT")"
-  cp "$ADAPTER_MODULE_SOURCE_FILE" "$ADAPTER_MODULE_SOURCE_OUT"
+  ADAPTER_MODULE_SOURCE_OUT_TMP="$(mktemp "$(dirname "$ADAPTER_MODULE_SOURCE_OUT")/.$(basename "$ADAPTER_MODULE_SOURCE_OUT").XXXXXX")"
+  cp "$ADAPTER_MODULE_SOURCE_FILE" "$ADAPTER_MODULE_SOURCE_OUT_TMP"
+  mv "$ADAPTER_MODULE_SOURCE_OUT_TMP" "$ADAPTER_MODULE_SOURCE_OUT"
 fi
 write_adapter_bundle "$ADAPTER_MERGED_SOURCE_FILE" "$ADAPTER_MODULE_SOURCE_FILE"
 write_runtime_entry_bundle
