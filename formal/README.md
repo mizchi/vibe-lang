@@ -60,25 +60,38 @@ variables, positional arguments, and fully-labeled arguments. It proves that:
   declared parameter contract;
 - after generic inference, every accepted actual argument equals its
   instantiated parameter type;
+- repeated occurrences of one type variable share a single substitution,
+  including when they occur below a nominal type constructor;
 - the reported return type is the unique instantiation of the signature return
   pattern;
+- call arity is exact, and a call uses either positional arguments or labels
+  consistently rather than mixing the two modes;
 - fully-labeled arguments resolve by ABI label rather than source order, while
   unknown and duplicate labels are rejected;
 - builtin signatures use the same call relation as user functions rather than
-  a separate per-position allowlist.
+  a separate per-position allowlist;
+- `Map::set` is a functional update returning `Map[K,V]`, and source aliases
+  such as `Int64Array = Array[Int]` are normalized before core typing.
 
-The executable corpus in `formal/oracle/call-typing.tsv` locks positive and
-negative witnesses for #938, #941, #981, #983, #985, and #986. Deliberately
+The 25-case executable corpus in `formal/oracle/call-typing.tsv` locks positive
+and negative witnesses for #938, #981, #983, #985, #986, and #1001. Deliberately
 broken head-only and unchecked-argument predicates demonstrate that the corpus
-detects type-argument erasure and argument-check bypass.
+detects type-argument erasure, inconsistent repeated-variable inference, and
+argument-resolution bypass.
 
 This slice begins after parsing, name resolution, signature collection, and
 generic-bound checking. It does not yet model function values, type-and-effect
-subtyping, optional parameters, mixed positional/labeled calls, implicit
-coercions, evaluation, or Wasm representation. The embedded Vibe sources are
+subtyping, optional parameters, implicit coercions, evaluation, or Wasm
+representation. The embedded Vibe sources are
 bridge fixtures. `examples/selfhost-call-oracle.sh` feeds them to the current
 selfhost checker and reports semantic drift, but passing the Lean corpus check
-alone does not prove implementation correspondence.
+alone does not prove implementation correspondence. In particular, the `?` /
+`let*` railway desugaring from #941 is outside this call-only slice; a plain
+`Result`/`Option` call mismatch is retained as a nominal-head witness without
+claiming to model that closed issue's desugaring path.
+Remaining checker correspondence gaps, including nominal mismatches and mixed
+argument modes, are tracked in #1001; report mode preserves them as explicit
+counterexamples until the implementation agrees with the Oracle.
 
 ## Verified compiler scheduler properties
 
