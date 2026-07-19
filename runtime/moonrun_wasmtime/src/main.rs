@@ -746,12 +746,25 @@ fn run(args: Vec<String>) -> Result<i32> {
             // check`/`vibe diagnostics`'s `>/dev/null 2>&1 || true` wrapper
             // silently swallowed into "clean". Write the same `.diag` sidecar
             // the checker's own error paths use (selfhost_cli_adapter.vibe's
-            // emit_compile_diag reads it back from `VIBE_OUTPUT`/argv[1]) so
-            // those commands report a real (if unlocated) diagnostic instead.
+            // emit_compile_diag reads it back via read_arg_or_env(1,
+            // "VIBE_OUTPUT")) so those commands report a real (if unlocated)
+            // diagnostic instead.
+            //
+            // #1007 review (Codex P2): read_arg_or_env prefers the POSITIONAL
+            // arg over the env var (only falling back to VIBE_OUTPUT when the
+            // arg is absent) -- `runtime/vibe` never unsets an inherited
+            // VIBE_OUTPUT before invoking the runner, so preferring the env
+            // var here (as the first cut did) could write the sidecar beside
+            // a stale inherited path while the compiled program itself (and
+            // the shell script waiting on `$out.diag`) used the real
+            // positional one, silently losing the diagnostic all over again.
+            // Match read_arg_or_env's precedence: positional arg first.
             if matches!(e.downcast_ref::<Trap>(), Some(Trap::StackOverflow)) {
-                let output_path = std::env::var("VIBE_OUTPUT")
-                    .ok()
-                    .or_else(|| args.get(2).cloned());
+                let output_path = args
+                    .get(2)
+                    .cloned()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| std::env::var("VIBE_OUTPUT").ok());
                 if let Some(output_path) = output_path {
                     let _ = std::fs::write(
                         format!("{output_path}.diag"),
