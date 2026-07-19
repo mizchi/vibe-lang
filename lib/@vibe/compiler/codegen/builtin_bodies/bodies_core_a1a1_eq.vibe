@@ -81,3 +81,149 @@ export fn gen_eq_body(str_eq_idx: Int) -> Bytes {
   emit_end(b)
   b
 }
+
+// #973 review: `emit_looks_like_string` alone is too permissive for the
+// erased-generic dispatch below. ANY ordinary non-negative Int under 2^32
+// (i.e. essentially every everyday int -- 3, 4, 10, ...) has ptr==0 (its high
+// 32 bits are zero), and ptr(0) + len(anything up to memory_size) <=
+// memory_size is trivially true -- so `emit_looks_like_string` answers "yes"
+// for nearly all small ints, not just genuine strings. For `gen_eq_body`'s
+// `==`/`!=` that false positive is harmless: two DIFFERENT ints almost always
+// decode to different fake "lengths", so `str_eq`'s own length check still
+// answers "not equal" -- the same answer a raw compare would give (the only
+// accepted residual is #678's narrow "equal low words" coincidence). It is
+// NOT harmless for `+`: concatenating two int-reinterpreted-as-strings
+// produces a garbage packed value, not their sum -- confirmed empirically,
+// `my_add_gen(3, 4)` trapped instead of returning 7 with the plain heuristic.
+// Requiring `ptr >= 64` (the ORIGINAL pre-#664 bound) excludes every ordinary
+// small Int (whose implied ptr is 0..63) while a genuine String's
+// data-section/heap address in this codegen is always >= 64 -- INCLUDING
+// empty strings: `data_base` (the fixed start of the string data section,
+// `linked_compile.vibe`/`gc/backend_body.vibe`) is 64, so there is no
+// legitimate empty-string case with ptr < 64 to carve out here, unlike the
+// #664 residual this borrows its bound from.
+//
+// #973 P1 fix (Codex review on PR #1005): an EARLIER version of this
+// function additionally treated `len == 0` alone as "looks like a string"
+// (reasoning, incorrectly, that a real empty string might have ptr < 64).
+// That let (ptr=0, len=0) -- i.e. the packed representation of plain integer
+// `0` -- satisfy the strict check via the `len == 0` branch even though
+// `ptr >= 64` was false, so `num_add[T: Add](0, 0)` matched as "both look
+// like strings" and called `str_concat` instead of `i64.add`, returning a
+// garbage heap pointer instead of `0` -- confirmed empirically. Dropping the
+// `len == 0` disjunct (requiring `ptr >= 64` unconditionally) fixes this
+// while still accepting every genuine string, empty or not, per the
+// `data_base = 64` invariant above. The residual this narrows down to -- a
+// very large Int (implied ptr >= 64, i.e. the value is >= 64 * 2^32)
+// mistaken for a string -- is the same CLASS of accepted large-int residual
+// #664/#678 already carry for `eq`/`str_lex_diff`, just with a much smaller
+// trigger window than the plain heuristic's "any small int".
+fn emit_looks_like_string_strict(b: Bytes, slot: Int) -> Unit {
+  emit_looks_like_string(b, slot)
+  emit_local_get(b, slot)
+  emit_i64_const(b, 32)
+  bytebuf_push(b, 136)
+  emit_i64_const(b, 64)
+  emit_i64_ge_s(b)
+  bytebuf_push(b, 113)
+}
+
+// #973: runtime dispatch for `<`/`>`/`<=`/`>=` on an ERASED generic type
+// parameter (`[T: Ord]`). #952 keeps such a `T` rigid/polymorphic all the way
+// through the checker (no forced monomorphization to Int/Double/String), but
+// `Ord`/`Add` are method-less MARKER traits (declared with an empty body --
+// see `builtin_traits.vibe`), so `build_gens` never threads them a witness
+// dict (only method-bearing bounds get one). That leaves the desugar rewrite
+// in `desugar_trait_dict.vibe` with a STATIC type name of the bare type
+// parameter itself (e.g. "T", from `seed_var_types`'s generic `EFn` seeding)
+// at the `<`/`>`/`+` site -- nothing concrete to key a `String`-vs-`Int`
+// rewrite off, so it fell through to a raw signed i64 compare, which orders a
+// heap String operand's packed `(ptr<<32)|len` representation by POINTER, not
+// content (the `ord_clamp("m","a","z")` repro in #973).
+//
+// Uses `emit_looks_like_string_strict` (see above), NOT the plain
+// `emit_looks_like_string` `gen_eq_body` uses -- see that function's doc
+// comment for why the plain heuristic is unsafe here. The non-string fallback
+// is the EXACT signed i64 compare `emit_binop_op` already emits for the
+// monomorphic case, so Int operands (and Double bit patterns, already broken
+// independently of this fix -- the default linear/non-RC backend has no tag
+// distinguishing an Int from an f64 bit pattern, so that residual is a
+// separate, harder problem left untouched) behave identically to before this
+// function existed. Returns a sign value consumed the same way `str_lex_diff`
+// is: desugar rewrites `a <op> b` to `__generic_rel_diff(a, b) <op> 0`. Under
+// RC, scalar Int is tagged `n << 1` (see `str_lex_diff`'s own tagging
+// comment) -- doubling preserves sign so `< 0` would stay correct either way,
+// but the numeric-fallback branch tags its own -1/0/1 literals to match
+// convention; the string branch already returns a `str_lex_diff` result that
+// tags itself internally, so it is NOT re-tagged here (that would
+// double-shift it).
+export fn gen_generic_rel_diff_body(enable_rc: Bool, str_lex_diff_idx: Int) -> Bytes {
+  let neg1 = if enable_rc {
+    0 - 2
+  } else {
+    0 - 1
+  }
+  let pos1 = if enable_rc {
+    2
+  } else {
+    1
+  }
+  let b = bytebuf_new()
+  emit_looks_like_string_strict(b, 0)
+  emit_looks_like_string_strict(b, 1)
+  bytebuf_push(b, 113)
+  emit_if_i64(b)
+  emit_local_get(b, 0)
+  emit_local_get(b, 1)
+  emit_call(b, str_lex_diff_idx)
+  emit_else(b)
+  emit_local_get(b, 0)
+  emit_local_get(b, 1)
+  emit_i64_lt_s(b)
+  emit_if_i64(b)
+  emit_i64_const(b, neg1)
+  emit_else(b)
+  emit_local_get(b, 0)
+  emit_local_get(b, 1)
+  emit_i64_gt_s(b)
+  emit_if_i64(b)
+  emit_i64_const(b, pos1)
+  emit_else(b)
+  emit_i64_const(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_end(b)
+  b
+}
+
+// #973: runtime dispatch for `+` on an erased generic type parameter
+// (`[T: Add]`). Mirrors `gen_generic_rel_diff_body`'s string/numeric split
+// and ALSO uses `emit_looks_like_string_strict`, not the plain heuristic --
+// this one is not optional here (see that function's doc comment): the plain
+// heuristic answers "looks like a string" for nearly every ordinary small
+// Int, and concatenating two int-reinterpreted-as-strings produces a garbage
+// packed value, not their sum, with no rescue analogous to `str_eq`'s length
+// check or `str_lex_diff`'s tiebreak. String operands concat via
+// `str_concat_idx` (whose result is already the correctly-shaped packed
+// representation for its return type -- no extra tagging needed here),
+// non-string operands take the exact `emit_i64_add` the monomorphic Int path
+// already uses. Under RC, `tagged_a + tagged_b` already equals
+// `tagged(a + b)` (doubling is linear), matching `compile_expr.vibe`'s
+// existing RC `"+"` case, which likewise applies no post-add shift -- so this
+// needs no `enable_rc` parameter at all.
+export fn gen_generic_add_body(str_concat_idx: Int) -> Bytes {
+  let b = bytebuf_new()
+  emit_looks_like_string_strict(b, 0)
+  emit_looks_like_string_strict(b, 1)
+  bytebuf_push(b, 113)
+  emit_if_i64(b)
+  emit_local_get(b, 0)
+  emit_local_get(b, 1)
+  emit_call(b, str_concat_idx)
+  emit_else(b)
+  emit_local_get(b, 0)
+  emit_local_get(b, 1)
+  emit_i64_add(b)
+  emit_end(b)
+  b
+}
