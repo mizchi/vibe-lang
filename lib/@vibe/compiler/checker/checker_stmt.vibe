@@ -1166,23 +1166,42 @@ fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], shadows
             }
             li = li + 1
           }
-          if has_labeled && !labeled_walk_shadowed(shadows, fname) {
-            match lookup_labeled_check_fn(tbl, fname) {
-              // #1001: the pre-desugar pass ONLY checks for mixed positional/
-              // labeled arguments (on the ORIGINAL, not-yet-stripped args --
-              // see `check_mixed_argument_modes` below for why this must run
-              // before desugar_labeled_args). It must NOT also run the
-              // position/unknown-label checks here: those are only meaningful
-              // AFTER desugar_labeled_args has reordered a fully-labeled call
-              // into declared parameter order (a valid `f(y=2, x=1)` would
-              // otherwise misreport "out of declared parameter order" against
-              // its ORIGINAL, pre-reorder call-site order).
-              Some(pnames) => if pre_desugar {
+          if has_labeled {
+            if pre_desugar {
+              // #1001 review (Codex P2): mixed-mode is a purely syntactic
+              // call-shape check that needs no parameter-name resolution at
+              // all, so it must NOT be gated behind the same
+              // tbl-membership + not-shadowed lookup the position/unknown-
+              // label checks need (those genuinely require knowing the
+              // callee's real param names). Gating it that way let a call to
+              // any LOCAL closure with labeled params bypass the check
+              // entirely: `labeled_walk_shadowed` returns true for such a
+              // callee (it tracks every local let/param binding in scope,
+              // not just names that collide with a top-level table entry),
+              // so the check never ran. Run it whenever the callee resolves
+              // to a genuine user-level closure -- a local binding OR a
+              // known top-level fn -- either of which can legitimately
+              // declare labeled params. A callee that is neither (a genuine
+              // BUILTIN, some of which use a deliberate decorative
+              // flag-label convention -- `sh_lines("ls", a = true)` -- or an
+              // import/erroneous reference) stays tolerated, exactly like
+              // the post-desugar branch below already tolerates those
+              // shapes.
+              if labeled_walk_shadowed(shadows, fname) {
                 check_mixed_argument_modes(fname, fname_off, args, errors)
               } else {
-                labeled_name_check_call(fname, fname_off, args, pnames, errors)
-              },
-              None => ()
+                match lookup_labeled_check_fn(tbl, fname) {
+                  Some(_) => check_mixed_argument_modes(fname, fname_off, args, errors),
+                  None => ()
+                }
+              }
+            } else if !labeled_walk_shadowed(shadows, fname) {
+              match lookup_labeled_check_fn(tbl, fname) {
+                Some(pnames) => labeled_name_check_call(fname, fname_off, args, pnames, errors),
+                None => ()
+              }
+            } else {
+              ()
             }
           } else {
             ()
