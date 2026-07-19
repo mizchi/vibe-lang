@@ -1017,6 +1017,44 @@ fn lookup_labeled_check_fn(tbl: Array[(String, Array[String])], fname: String) -
   found
 }
 
+// #1001: the Oracle (formal/VibeFormal/Typing/Call.lean's `resolveArguments`)
+// rejects a call whose arguments mix `ELabeledArg` (`x=1`) and plain
+// positional (`"ok"`) forms UNCONDITIONALLY -- a call must be either
+// uniformly positional or uniformly labeled, regardless of whether a label
+// happens to already sit at its own declared parameter position. This check
+// MUST run on the ORIGINAL, pre-desugar argument list (see the `pre_desugar`
+// branch in `labeled_name_check_expr` above): `desugar_labeled_args`'s
+// `strip_in_position_labels` (desugar_trait_dict.vibe) silently unwraps any
+// label that already matches its own position, on the theory that it is a
+// harmless "decorative" label on an otherwise-fully-positional call -- so
+// `f(x=1, "ok")` desugars to the ordinary positional `f(1, "ok")`,
+// indistinguishable by the time codegen or a post-desugar checker pass would
+// see it from a call that was never labeled at all. Checking here, before
+// that stripping runs, is the only point where the genuine mix is still
+// observable.
+fn check_mixed_argument_modes(fname: String, fname_off: Int, args: Array[Expr], errors: Array[String]) -> Unit {
+  let mut has_labeled = false
+  let mut has_plain = false
+  let mut i = 0
+  while i < Array::length(args) {
+    match Array::get(args, i) {
+      ELabeledArg(_, _, _) => {
+        has_labeled = true
+      },
+      _ => {
+        has_plain = true
+      }
+    }
+    i = i + 1
+  }
+  if has_labeled && has_plain {
+    let marker = labeled_name_marker(fname_off, String::length(fname))
+    Array::push(errors, String::concat("call to ", String::concat(fname, String::concat(" mixes positional and labeled arguments — use either all positional or all labeled arguments", marker))))
+  } else {
+    ()
+  }
+}
+
 fn labeled_name_check_call(fname: String, fname_off: Int, args: Array[Expr], pnames: Array[String], errors: Array[String]) -> Unit {
   let mut ai = 0
   while ai < Array::length(args) {
@@ -1106,13 +1144,13 @@ fn labeled_walk_pat_binds(pat: Pat, shadows: Array[String]) -> Unit {
   }
 }
 
-fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], shadows: Array[String], errors: Array[String]) -> Unit {
+fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], shadows: Array[String], errors: Array[String], pre_desugar: Bool) -> Unit {
   match e {
     ECall(callee, args, _) => {
-      labeled_name_check_expr(callee, tbl, shadows, errors)
+      labeled_name_check_expr(callee, tbl, shadows, errors, pre_desugar)
       let mut i = 0
       while i < Array::length(args) {
-        labeled_name_check_expr(Array::get(args, i), tbl, shadows, errors)
+        labeled_name_check_expr(Array::get(args, i), tbl, shadows, errors, pre_desugar)
         i = i + 1
       }
       match callee {
@@ -1128,10 +1166,42 @@ fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], shadows
             }
             li = li + 1
           }
-          if has_labeled && !labeled_walk_shadowed(shadows, fname) {
-            match lookup_labeled_check_fn(tbl, fname) {
-              Some(pnames) => labeled_name_check_call(fname, fname_off, args, pnames, errors),
-              None => ()
+          if has_labeled {
+            if pre_desugar {
+              // #1001 review (Codex P2): mixed-mode is a purely syntactic
+              // call-shape check that needs no parameter-name resolution at
+              // all, so it must NOT be gated behind the same
+              // tbl-membership + not-shadowed lookup the position/unknown-
+              // label checks need (those genuinely require knowing the
+              // callee's real param names). Gating it that way let a call to
+              // any LOCAL closure with labeled params bypass the check
+              // entirely: `labeled_walk_shadowed` returns true for such a
+              // callee (it tracks every local let/param binding in scope,
+              // not just names that collide with a top-level table entry),
+              // so the check never ran. Run it whenever the callee resolves
+              // to a genuine user-level closure -- a local binding OR a
+              // known top-level fn -- either of which can legitimately
+              // declare labeled params. A callee that is neither (a genuine
+              // BUILTIN, some of which use a deliberate decorative
+              // flag-label convention -- `sh_lines("ls", a = true)` -- or an
+              // import/erroneous reference) stays tolerated, exactly like
+              // the post-desugar branch below already tolerates those
+              // shapes.
+              if labeled_walk_shadowed(shadows, fname) {
+                check_mixed_argument_modes(fname, fname_off, args, errors)
+              } else {
+                match lookup_labeled_check_fn(tbl, fname) {
+                  Some(_) => check_mixed_argument_modes(fname, fname_off, args, errors),
+                  None => ()
+                }
+              }
+            } else if !labeled_walk_shadowed(shadows, fname) {
+              match lookup_labeled_check_fn(tbl, fname) {
+                Some(pnames) => labeled_name_check_call(fname, fname_off, args, pnames, errors),
+                None => ()
+              }
+            } else {
+              ()
             }
           } else {
             ()
@@ -1140,32 +1210,32 @@ fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], shadows
         _ => ()
       }
     },
-    ELabeledArg(_, _, v) => labeled_name_check_expr(v, tbl, shadows, errors),
+    ELabeledArg(_, _, v) => labeled_name_check_expr(v, tbl, shadows, errors, pre_desugar),
     EBinOp(_, l, r) => {
-      labeled_name_check_expr(l, tbl, shadows, errors)
-      labeled_name_check_expr(r, tbl, shadows, errors)
+      labeled_name_check_expr(l, tbl, shadows, errors, pre_desugar)
+      labeled_name_check_expr(r, tbl, shadows, errors, pre_desugar)
     },
-    EUnaryOp(_, inner) => labeled_name_check_expr(inner, tbl, shadows, errors),
+    EUnaryOp(_, inner) => labeled_name_check_expr(inner, tbl, shadows, errors, pre_desugar),
     ETuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        labeled_name_check_expr(Array::get(items, i), tbl, shadows, errors)
+        labeled_name_check_expr(Array::get(items, i), tbl, shadows, errors, pre_desugar)
         i = i + 1
       }
     },
     EArray(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        labeled_name_check_expr(Array::get(items, i), tbl, shadows, errors)
+        labeled_name_check_expr(Array::get(items, i), tbl, shadows, errors, pre_desugar)
         i = i + 1
       }
     },
-    ESpread(inner) => labeled_name_check_expr(inner, tbl, shadows, errors),
+    ESpread(inner) => labeled_name_check_expr(inner, tbl, shadows, errors, pre_desugar),
     ERecord(_, fields, _) => {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, fv) = Array::get(fields, i)
-        labeled_name_check_expr(fv, tbl, shadows, errors)
+        labeled_name_check_expr(fv, tbl, shadows, errors, pre_desugar)
         i = i + 1
       }
     },
@@ -1173,81 +1243,81 @@ fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], shadows
       let mut i = 0
       while i < Array::length(pairs) {
         let (_, pv) = Array::get(pairs, i)
-        labeled_name_check_expr(pv, tbl, shadows, errors)
+        labeled_name_check_expr(pv, tbl, shadows, errors, pre_desugar)
         i = i + 1
       }
     },
     EIf(cnd, thn, els) => {
-      labeled_name_check_expr(cnd, tbl, shadows, errors)
-      labeled_name_check_expr(thn, tbl, shadows, errors)
-      labeled_name_check_expr(els, tbl, shadows, errors)
+      labeled_name_check_expr(cnd, tbl, shadows, errors, pre_desugar)
+      labeled_name_check_expr(thn, tbl, shadows, errors, pre_desugar)
+      labeled_name_check_expr(els, tbl, shadows, errors, pre_desugar)
     },
     ELet(name, v, b, _) => {
-      labeled_name_check_expr(v, tbl, shadows, errors)
+      labeled_name_check_expr(v, tbl, shadows, errors, pre_desugar)
       let mark = Array::length(shadows)
       Array::push(shadows, name)
-      labeled_name_check_expr(b, tbl, shadows, errors)
+      labeled_name_check_expr(b, tbl, shadows, errors, pre_desugar)
       Array::truncate(shadows, mark)
     },
     ELetRec(name, v, b) => {
       let mark = Array::length(shadows)
       Array::push(shadows, name)
-      labeled_name_check_expr(v, tbl, shadows, errors)
-      labeled_name_check_expr(b, tbl, shadows, errors)
+      labeled_name_check_expr(v, tbl, shadows, errors, pre_desugar)
+      labeled_name_check_expr(b, tbl, shadows, errors, pre_desugar)
       Array::truncate(shadows, mark)
     },
     ELetMut(name, v, b, _) => {
-      labeled_name_check_expr(v, tbl, shadows, errors)
+      labeled_name_check_expr(v, tbl, shadows, errors, pre_desugar)
       let mark = Array::length(shadows)
       Array::push(shadows, name)
-      labeled_name_check_expr(b, tbl, shadows, errors)
+      labeled_name_check_expr(b, tbl, shadows, errors, pre_desugar)
       Array::truncate(shadows, mark)
     },
     EAssign(_, v, k) => {
-      labeled_name_check_expr(v, tbl, shadows, errors)
-      labeled_name_check_expr(k, tbl, shadows, errors)
+      labeled_name_check_expr(v, tbl, shadows, errors, pre_desugar)
+      labeled_name_check_expr(k, tbl, shadows, errors, pre_desugar)
     },
     EAssignOp(_, _, v, k) => {
-      labeled_name_check_expr(v, tbl, shadows, errors)
-      labeled_name_check_expr(k, tbl, shadows, errors)
+      labeled_name_check_expr(v, tbl, shadows, errors, pre_desugar)
+      labeled_name_check_expr(k, tbl, shadows, errors, pre_desugar)
     },
     ESeq(a, b) => {
-      labeled_name_check_expr(a, tbl, shadows, errors)
-      labeled_name_check_expr(b, tbl, shadows, errors)
+      labeled_name_check_expr(a, tbl, shadows, errors, pre_desugar)
+      labeled_name_check_expr(b, tbl, shadows, errors, pre_desugar)
     },
     EMatch(scrut, arms) => {
-      labeled_name_check_expr(scrut, tbl, shadows, errors)
+      labeled_name_check_expr(scrut, tbl, shadows, errors, pre_desugar)
       let mut i = 0
       while i < Array::length(arms) {
         let (ap, ab) = Array::get(arms, i)
         let mark = Array::length(shadows)
         labeled_walk_pat_binds(ap, shadows)
-        labeled_name_check_expr(ab, tbl, shadows, errors)
+        labeled_name_check_expr(ab, tbl, shadows, errors, pre_desugar)
         Array::truncate(shadows, mark)
         i = i + 1
       }
     },
     EHandle(scrut, arms) => {
-      labeled_name_check_expr(scrut, tbl, shadows, errors)
+      labeled_name_check_expr(scrut, tbl, shadows, errors, pre_desugar)
       let mut i = 0
       while i < Array::length(arms) {
         let (ap, ab) = Array::get(arms, i)
         let mark = Array::length(shadows)
         labeled_walk_pat_binds(ap, shadows)
-        labeled_name_check_expr(ab, tbl, shadows, errors)
+        labeled_name_check_expr(ab, tbl, shadows, errors, pre_desugar)
         Array::truncate(shadows, mark)
         i = i + 1
       }
     },
     EWhile(cnd, body) => {
-      labeled_name_check_expr(cnd, tbl, shadows, errors)
-      labeled_name_check_expr(body, tbl, shadows, errors)
+      labeled_name_check_expr(cnd, tbl, shadows, errors, pre_desugar)
+      labeled_name_check_expr(body, tbl, shadows, errors, pre_desugar)
     },
     ELoop(inits, body) => {
       let mut i = 0
       while i < Array::length(inits) {
         let (_, iv) = Array::get(inits, i)
-        labeled_name_check_expr(iv, tbl, shadows, errors)
+        labeled_name_check_expr(iv, tbl, shadows, errors, pre_desugar)
         i = i + 1
       }
       let mark = Array::length(shadows)
@@ -1257,18 +1327,18 @@ fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], shadows
         Array::push(shadows, pname)
         pi = pi + 1
       }
-      labeled_name_check_expr(body, tbl, shadows, errors)
+      labeled_name_check_expr(body, tbl, shadows, errors, pre_desugar)
       Array::truncate(shadows, mark)
     },
     EForIn(name, idx, iter, body) => {
-      labeled_name_check_expr(iter, tbl, shadows, errors)
+      labeled_name_check_expr(iter, tbl, shadows, errors, pre_desugar)
       let mark = Array::length(shadows)
       Array::push(shadows, name)
       match idx {
         Some(ix) => Array::push(shadows, ix),
         None => ()
       }
-      labeled_name_check_expr(body, tbl, shadows, errors)
+      labeled_name_check_expr(body, tbl, shadows, errors, pre_desugar)
       Array::truncate(shadows, mark)
     },
     EFn(_, _, fparams, _, _, body) => {
@@ -1279,19 +1349,19 @@ fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], shadows
         Array::push(shadows, labeled_param_base_name(pn))
         pi = pi + 1
       }
-      labeled_name_check_expr(body, tbl, shadows, errors)
+      labeled_name_check_expr(body, tbl, shadows, errors, pre_desugar)
       Array::truncate(shadows, mark)
     },
-    EDot(obj, _, _, _) => labeled_name_check_expr(obj, tbl, shadows, errors),
-    EReturn(inner) => labeled_name_check_expr(inner, tbl, shadows, errors),
+    EDot(obj, _, _, _) => labeled_name_check_expr(obj, tbl, shadows, errors, pre_desugar),
+    EReturn(inner) => labeled_name_check_expr(inner, tbl, shadows, errors, pre_desugar),
     EBreak(opt) => match opt {
-      Some(inner) => labeled_name_check_expr(inner, tbl, shadows, errors),
+      Some(inner) => labeled_name_check_expr(inner, tbl, shadows, errors, pre_desugar),
       None => ()
     },
     EContinue(exprs) => {
       let mut i = 0
       while i < Array::length(exprs) {
-        labeled_name_check_expr(Array::get(exprs, i), tbl, shadows, errors)
+        labeled_name_check_expr(Array::get(exprs, i), tbl, shadows, errors, pre_desugar)
         i = i + 1
       }
     },
@@ -1299,30 +1369,30 @@ fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], shadows
   }
 }
 
-fn labeled_name_check_stmt(stmt: Stmt, tbl: Array[(String, Array[String])], errors: Array[String]) -> Unit {
+fn labeled_name_check_stmt(stmt: Stmt, tbl: Array[(String, Array[String])], errors: Array[String], pre_desugar: Bool) -> Unit {
   match stmt {
     SLet(_, _, _, _, body) => labeled_name_check_expr(body, tbl, Array::slice([
       ""
-    ], 0, 0), errors),
+    ], 0, 0), errors, pre_desugar),
     SLetMut(_, _, body) => labeled_name_check_expr(body, tbl, Array::slice([
       ""
-    ], 0, 0), errors),
+    ], 0, 0), errors, pre_desugar),
     STest(_, body) => labeled_name_check_expr(body, tbl, Array::slice([
       ""
-    ], 0, 0), errors),
+    ], 0, 0), errors, pre_desugar),
     SBench(_, body) => labeled_name_check_expr(body, tbl, Array::slice([
       ""
-    ], 0, 0), errors),
+    ], 0, 0), errors, pre_desugar),
     SExpr(e) => labeled_name_check_expr(e, tbl, Array::slice([
       ""
-    ], 0, 0), errors),
+    ], 0, 0), errors, pre_desugar),
     SLetPat(_, e) => labeled_name_check_expr(e, tbl, Array::slice([
       ""
-    ], 0, 0), errors),
+    ], 0, 0), errors, pre_desugar),
     SModule(_, _, ms) => {
       let mut i = 0
       while i < Array::length(ms) {
-        labeled_name_check_stmt(Array::get(ms, i), tbl, errors)
+        labeled_name_check_stmt(Array::get(ms, i), tbl, errors, pre_desugar)
         i = i + 1
       }
     },
@@ -1330,14 +1400,22 @@ fn labeled_name_check_stmt(stmt: Stmt, tbl: Array[(String, Array[String])], erro
   }
 }
 
-fn check_labeled_arg_names_stmts(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+// #1001: `pre_desugar` selects which of the two labeled-call checks runs (see
+// `labeled_name_check_expr`'s `pre_desugar` branch): `true` for the mixed-
+// argument-modes check, called BEFORE `desugar_labeled_args` in
+// `check_program`/`check_program_with_env` so it still sees each call's
+// original argument list; `false` (the pre-existing behavior) for the
+// unknown/out-of-order label checks, which must run AFTER desugar so a
+// validly-reordered fully-labeled call is not misjudged against its
+// original call-site order.
+fn check_labeled_arg_names_stmts(stmts: Array[Stmt], errors: Array[String], pre_desugar: Bool) -> Unit {
   let tbl = collect_labeled_check_fns(stmts)
   if Array::length(tbl) == 0 {
     ()
   } else {
     let mut i = 0
     while i < Array::length(stmts) {
-      labeled_name_check_stmt(Array::get(stmts, i), tbl, errors)
+      labeled_name_check_stmt(Array::get(stmts, i), tbl, errors, pre_desugar)
       i = i + 1
     }
   }
@@ -1359,6 +1437,13 @@ export fn check_program(stmts: Array[Stmt]) -> TypeEnv with { Error } {
   // sentinels (the codegen-time desugar runs later, but the FS-compile path
   // type-checks first). In-place, idempotent, inert without `let*`/`?`.
   desugar_railway_binds(stmts)
+  let errors = ArrayBuilder::new()
+  let frozen_errors = ArrayBuilder::freeze(errors)
+  // #1001: mixed positional/labeled argument-mode validation. Must run BEFORE
+  // desugar_labeled_args below — it silently strips a label that already
+  // matches its own declared position, which erases the only evidence that a
+  // call genuinely mixed argument modes (see check_mixed_argument_modes).
+  check_labeled_arg_names_stmts(stmts, frozen_errors, true)
   // #986: reorder fully-labeled calls into declared parameter order BEFORE
   // checking, so the checker unifies each labeled argument against the same
   // parameter position codegen will bind it to (the codegen-time desugar runs
@@ -1377,14 +1462,12 @@ export fn check_program(stmts: Array[Stmt]) -> TypeEnv with { Error } {
     register_builtin_traits(EnvEmpty)
   }
   let seeded_env = env_cache(seeded_raw_env)
-  let errors = ArrayBuilder::new()
-  let frozen_errors = ArrayBuilder::freeze(errors)
   let tytab = Array::slice([
     (0, CtUnit)
   ], 0, 0)
   // #986: labeled-argument name validation (unknown / out-of-order labels).
   // Must run after desugar_labeled_args above.
-  check_labeled_arg_names_stmts(stmts, frozen_errors)
+  check_labeled_arg_names_stmts(stmts, frozen_errors, false)
   let (env, final_s, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
   check_program_bounds(env, final_s, frozen_errors)
   collect_async_effect_errors(stmts, env, frozen_errors)
@@ -1435,6 +1518,10 @@ export fn check_program_with_env(stmts: Array[Stmt], initial_env: TypeEnv) -> Ty
       // #635: lower `let*`/`?` railway sentinels before checking (see
       // check_program). This path checks each imported/entry file pre-codegen.
       desugar_railway_binds(stmts)
+      let errors = ArrayBuilder::new()
+      let frozen_errors = ArrayBuilder::freeze(errors)
+      // #1001: mixed argument-mode validation before desugar (see check_program).
+      check_labeled_arg_names_stmts(stmts, frozen_errors, true)
       // #986: reorder fully-labeled calls before checking (see check_program).
       desugar_labeled_args(stmts)
       let empty_defs = Array::slice([
@@ -1449,13 +1536,11 @@ export fn check_program_with_env(stmts: Array[Stmt], initial_env: TypeEnv) -> Ty
         register_builtin_traits(cached_env)
       }
       let seeded_env = env_cache(seeded_raw_env)
-      let errors = ArrayBuilder::new()
-      let frozen_errors = ArrayBuilder::freeze(errors)
       let tytab = Array::slice([
         (0, CtUnit)
       ], 0, 0)
       // #986: labeled-argument name validation (see check_program).
-      check_labeled_arg_names_stmts(stmts, frozen_errors)
+      check_labeled_arg_names_stmts(stmts, frozen_errors, false)
       let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
       collect_async_effect_errors(stmts, env, frozen_errors)
       if Array::length(frozen_errors) > 0 {
