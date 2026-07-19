@@ -2,7 +2,7 @@
 # doctest_extract_run.sh — executable-docs harness (0.3.0 roadmap: doctest / *.vibe.md).
 #
 # Extracts ```vibe fenced code blocks from one or more markdown files and
-# compiles each one with the selfhost stage2 compiler (moon-free). Reports a
+# compiles each one with the selfhost stage2 compiler. Reports a
 # per-block PASS/FAIL/SKIP line and exits 1 if any block fails, so docs code
 # examples cannot silently rot.
 #

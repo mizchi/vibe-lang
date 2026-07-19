@@ -3,7 +3,7 @@
 # and perf/RSS-vs-host benches (test_selfhost_corpus_gate.sh,
 # bench_selfhost_perf.sh, bench_selfhost_rss.sh) plus the preview2/component
 # release gates — all comparisons against the MoonBit host, retired with src/.
-# The canonical moon-free gate is now scripts/compiler_gate.sh
+# The canonical gate is now scripts/compiler_gate.sh
 # (bundle/module-source sync + seed->stage1->stage2->stage3 fixpoint +
 # compile/run validation). Redirect here so existing entry points
 # (gate.sh, the `full-gate` task) keep working. The old `selfhost-trial-gate`

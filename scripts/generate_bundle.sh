@@ -500,7 +500,7 @@ run_host_vibe_cmd() {
   local release_vibe="$SCRIPT_PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
   local debug_vibe="$SCRIPT_PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe"
   if [ "$cmd" = "emit-module-source" ]; then
-    # #594 Stage 1b/seed-bump: prefer the selfhost seed compiler (moon-free).
+    # #594 Stage 1b/seed-bump: prefer the selfhost seed compiler.
     # The seed carries emit-module-source (VIBE_EMIT_MODULE_SOURCE mode), so the
     # flat module source needs no MoonBit host. Args are (input, output, entry),
     # rewritten to repo-root-relative for the wasm preopen. Force the legacy host

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Selfhost unit-test runner (#531 / #535).
 #
-# Compiles + runs every allowlisted `*_test.vibe` through the moon-free selfhost
+# Compiles + runs every allowlisted `*_test.vibe` through the selfhost
 # compiler. A file PASSES when it compiles (the compiler emits a `_start` that
 # runs the file's `test {}` blocks, selected via the `__no_entry__` entry) AND
 # that `_start` runs to completion (a failing `assert` traps the module).

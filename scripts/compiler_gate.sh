@@ -4,7 +4,7 @@
 # committed selfhost compiler source/bundles. Verifies:
 #   1. committed bundles are in sync with the compiler source,
 #   2. the committed flat module source is in sync (regenerated via the seed),
-#   3. the selfhost compiler self-reproduces moon-free (seed -> stage1 -> stage2
+#   3. the selfhost compiler self-reproduces (seed -> stage1 -> stage2
 #      -> stage3) with stage2 == stage3 (fixpoint) and each stage validates a
 #      compiled sample (compile -> run smoke).
 set -euo pipefail
@@ -23,7 +23,7 @@ bash scripts/check_bundle_sync.sh
 echo "[compiler-gate] 2/3 module-source sync (via seed)"
 bash scripts/check_module_source_sync.sh
 
-echo "[compiler-gate] 3/3 moon-free selfbuild seed->stage1->stage2->stage3"
+echo "[compiler-gate] 3/3 selfbuild seed->stage1->stage2->stage3"
 bash scripts/generations.sh build --stage3
 
 # Assert the stage2==stage3 fixpoint from the freshest generation manifest.
@@ -1921,7 +1921,7 @@ echo "[compiler-gate] cross-import trait-iterator element-type regression ok"
 #     Covers the sync `lazy_iter` and async `async_iter` combinator libraries
 #     (take / drop / take_while / enumerate / zip / flat_map / find / any / all,
 #     and the async `for await`-driven terminals) — these prelude tests are not
-#     otherwise exercised by the moon-free gate.
+#     otherwise exercised by the gate.
 echo "[compiler-gate] 21/21 prelude iterator combinator suites"
 for suite in lib/@vibe/prelude/lazy_iter_test.vibe lib/@vibe/prelude/async_iter_test.vibe; do
   out="_build/_gate_prelude_iter_$(basename "${suite%.vibe}").wasm"
@@ -2050,7 +2050,7 @@ echo "[compiler-gate] generic trait impl (Increment B, dict-of-dict) ok"
 # 24. async-lifted component EXECUTION on wasmtime (docs/spec/wasi-p3-async.md
 #     §3.1). The async-lift codegen (`comp_emit_component_wasm_async*` — task.return
 #     canon + async functype + async lift) is byte-tested on node, but the emitted
-#     component had no moon-free EXECUTION check (the only runner was the retired
+#     component had no EXECUTION check (the only runner was the retired
 #     host `vibe.exe`). `fixtures/async_lift_run42.component.wasm` is a committed
 #     async component (its `run()` returns 42) emitted by the selfhost codegen;
 #     here wasmtime runs it with the async-stackful flags and we assert 42 — so
