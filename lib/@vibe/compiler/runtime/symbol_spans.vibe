@@ -16,8 +16,10 @@
 // elsewhere in the statement body cannot be mis-located.
 //
 // FALLBACK (honest): a name whose offset cannot be recovered within its span is
-// simply omitted (never a crash). Resolution never throws: any failure is
-// swallowed and yields an empty list, so the LSP degrades to its regex scan.
+// simply omitted (never a crash). A genuine lex/parse failure on the source
+// itself, though, is NOT swallowed here (#946) -- it propagates as an Error so
+// the caller can tell "this file has no symbols" apart from "resolution
+// failed"; see selfhost_cli_adapter.vibe's VIBE_SYMBOLS handling.
 //
 // All strings are built with String::concat only (never `+`, never "\{x}"
 // interpolation): both mis-codegen to NUL in selfhost.
@@ -125,7 +127,7 @@ fn sym_walk_stmt(out: Array[(String, Int, Int, Int)], source: String, stmt: Stmt
 //   1. lex + parse with per-statement spans (parse_program_spans).
 //   2. for each top-level statement, scan its own [start, end) span for the
 //      declaration name and emit (name, kind, start, end); SModule recurses.
-// AST-accurate (see file header). Any failure is swallowed -> empty list.
+// AST-accurate (see file header).
 fn symbol_spans_impl(source: String) -> Array[(String, Int, Int, Int)] with { Error } {
   {
     let (tokens, starts, ends) = lex_with_offsets(source)
@@ -143,12 +145,12 @@ fn symbol_spans_impl(source: String) -> Array[(String, Int, Int, Int)] with { Er
   }
 }
 
-export fn symbol_spans(source: String) -> Array[(String, Int, Int, Int)] {
-  handle {
-    symbol_spans_impl(source)
-  } with Error {
-    Throw(_) => Array::slice([
-      ("", 0, 0, 0)
-    ], 0, 0)
-  }
+// #946: this used to swallow every failure (lex error, parse error) into a
+// bare empty list, making a genuine failure indistinguishable from "the file
+// legitimately declares no symbols" — the CLI adapter's `.diag` sidecar
+// convention (VIBE_SYMBOLS in selfhost_cli_adapter.vibe) can only report the
+// difference if the Error actually reaches it. Propagate instead of
+// catching; the sole caller now routes it to that sidecar.
+export fn symbol_spans(source: String) -> Array[(String, Int, Int, Int)] with { Error } {
+  symbol_spans_impl(source)
 }

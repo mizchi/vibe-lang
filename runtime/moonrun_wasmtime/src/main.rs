@@ -25,8 +25,8 @@ use std::time::Instant;
 
 use wasmtime::{
     bail, format_err, Caller, Config, Engine, ExternRef, ExternType, Instance, Linker, Module,
-    ResourceLimiter, Result, Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy, TypedFunc,
-    Val, ValType,
+    ResourceLimiter, Result, Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy, Trap,
+    TypedFunc, Val, ValType,
 };
 
 const FFI_END_OF_STRING_ARRAY: &str = "ffi_end_of_/string_array";
@@ -735,6 +735,31 @@ fn run(args: Vec<String>) -> Result<i32> {
             if e.downcast_ref::<BreakAbort>().is_some() {
                 eprintln!("vibewt: run aborted at breakpoint");
                 return Ok(130);
+            }
+            // #946(4): a pathologically deep expression (e.g. thousands of
+            // chained `+`) recurses the checker (itself compiled to wasm) past
+            // the configured wasm stack. wasmtime raises this as a graceful
+            // `Trap::StackOverflow` ("call stack exhausted") rather than a host
+            // crash, but nothing inside the compiled program's own
+            // `handle {...} with Error {...}` can intercept it -- it used to
+            // surface here as an ordinary trap message, which `vibe
+            // check`/`vibe diagnostics`'s `>/dev/null 2>&1 || true` wrapper
+            // silently swallowed into "clean". Write the same `.diag` sidecar
+            // the checker's own error paths use (selfhost_cli_adapter.vibe's
+            // emit_compile_diag reads it back from `VIBE_OUTPUT`/argv[1]) so
+            // those commands report a real (if unlocated) diagnostic instead.
+            if matches!(e.downcast_ref::<Trap>(), Some(Trap::StackOverflow)) {
+                let output_path = std::env::var("VIBE_OUTPUT")
+                    .ok()
+                    .or_else(|| args.get(2).cloned());
+                if let Some(output_path) = output_path {
+                    let _ = std::fs::write(
+                        format!("{output_path}.diag"),
+                        "expression too deeply nested (stack overflow while type-checking)\n",
+                    );
+                }
+                eprintln!("vibewt: stack overflow: expression too deeply nested");
+                return Ok(1);
             }
             // A guest trap (e.g. an uncaught vibe `throw`/type error surfacing as
             // a Wasm exception) should read as a tool error, not a runner crash —

@@ -177,5 +177,47 @@ else
   fail=$((fail + 1))
 fi
 
+# #946(4): a pathologically deep expression recurses the checker (itself
+# compiled to wasm) past the native call stack -- a host-level crash
+# (wasmtime's graceful `Trap::StackOverflow` in runtime/moonrun_wasmtime,
+# where this test's freshly `install.sh`-built toolchain actually runs; a JS
+# RangeError under the node-based scripts/wasm_vibe_host_runner.js) that no
+# `handle {...} with Error {...}` inside the compiled program can intercept.
+# This used to surface as a raw uncaught-exception crash dump that `vibe
+# check`/`vibe diagnostics`'s `>/dev/null 2>&1 || true` wrapper silently
+# swallowed into "clean". Both host runners now catch it and write the same
+# `.diag` sidecar the checker's own error paths use, so both commands report
+# a real (if unlocated) diagnostic instead.
+#
+# wasmtime's configured wasm-stack budget is 64 MiB (vs. V8's much smaller
+# default under node) -- empirically a 100,000-deep chain still completes
+# clean under the production (wasmtime) toolchain this test installs, while
+# 300,000 reliably overflows. 500,000 keeps a comfortable margin; a plain
+# `for` loop calling `printf` 500,000 times is too slow, so build the chain
+# with one `printf` call recycling its format string across `seq`'s args.
+deepexpr="$WORK/deepexpr.vibe"
+{
+  printf 'export fn f() -> Int {\n  1'
+  printf '%.0s + 1' $(seq 1 500000)
+  printf '\n}\n'
+} > "$deepexpr"
+out_deep="$("$VIBE" diagnostics "$deepexpr" 2>/dev/null || true)"
+if printf '%s\n' "$out_deep" | grep -qi 'too deeply nested'; then
+  echo "ok: pathologically deep expression -> diagnostic (not silently clean)"; pass=$((pass + 1))
+else
+  echo "FAIL: expected a 'too deeply nested' diagnostic for a 500000-deep expression, got:" >&2
+  printf '%s\n' "$out_deep" >&2
+  fail=$((fail + 1))
+fi
+deep_check_err="$WORK/deepexpr_check.stderr"
+"$VIBE" check "$deepexpr" >/dev/null 2>"$deep_check_err" && rc_deep_check=0 || rc_deep_check=$?
+if [ "$rc_deep_check" -ne 0 ] && grep -qi 'too deeply nested' "$deep_check_err" 2>/dev/null; then
+  echo "ok: vibe check on the same file also reports the crash, not just 'check failed'"; pass=$((pass + 1))
+else
+  echo "FAIL: expected 'vibe check' to fail with a 'too deeply nested' message (rc=$rc_deep_check):" >&2
+  cat "$deep_check_err" >&2 2>/dev/null
+  fail=$((fail + 1))
+fi
+
 echo "[vibe-diagnostics] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

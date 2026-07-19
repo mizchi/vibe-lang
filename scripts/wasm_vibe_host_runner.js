@@ -2791,6 +2791,27 @@ async function main() {
 }
 
 main().catch((err) => {
+  // #946(4): a pathologically deep expression (e.g. thousands of chained
+  // `+`) recurses the checker (itself compiled to wasm) past the native call
+  // stack. That blows up the whole wasm instance -- nothing inside the
+  // compiled program's own `handle {...} with Error {...}` can intercept a
+  // host-level stack overflow, so it used to surface as a raw uncaught-
+  // exception crash dump, which the `vibe check`/`vibe diagnostics` shell
+  // wrappers (`>/dev/null 2>&1 || true`) silently swallowed into "clean".
+  // Intercept it here instead and write the same `.diag` sidecar the
+  // adapter's own error paths use (selfhost_cli_adapter.vibe's
+  // emit_compile_diag), so those commands can report a real (if unlocated)
+  // diagnostic.
+  if (err instanceof RangeError && /call stack/i.test(err.message || "")) {
+    const outputPath = process.env.VIBE_OUTPUT;
+    if (outputPath) {
+      try {
+        fs.writeFileSync(`${outputPath}.diag`, "expression too deeply nested (stack overflow while type-checking)\n");
+      } catch (_) {}
+    }
+    console.error("[vibe] stack overflow: expression too deeply nested");
+    process.exit(1);
+  }
   // #cov: even a failed run (parse/type error, trap) exercised many branches
   // before unwinding — capture its coverage from the still-live instance memory.
   try {

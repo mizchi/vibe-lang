@@ -510,11 +510,24 @@ export fn cli_main() -> Int with { Error, Fs, Env } {
   // `NAME KIND START END` line per declared symbol (KIND = LSP SymbolKind int,
   // START/END = char offsets of the name), or empty when the file declares none.
   // Powers document-outline / go-to-definition without a text-regex scan.
+  //
+  // #946: `symbol_spans` throws (e.g. a lexer error on an unsupported
+  // character) was never caught here, so a genuine crash and "file declares
+  // no symbols" both produced the exact same empty `output_path` — the CLI
+  // launcher had no way to tell an editor "the outline failed" from "there's
+  // nothing to show". Route a thrown Error to the same `.diag` sidecar
+  // convention as VIBE_CHECK_ONLY below: `output_path` itself (the outline
+  // wire format LSP clients parse) is untouched on failure, so this can't
+  // emit a "plausible but wrong" symbol list.
   if Env::get("VIBE_SYMBOLS") == "1" {
-    let src = Fs::read_file(input_path)
-    let syms = symbol_spans(src)
-    Fs::write_bytes(output_path, adapter_string_to_bytes(join_symbol_spans(syms)))
-    return 0
+    return handle {
+      let src = Fs::read_file(input_path)
+      let syms = symbol_spans(src)
+      Fs::write_bytes(output_path, adapter_string_to_bytes(join_symbol_spans(syms)))
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
   }
   // `vibe diagnostics`: collect ALL syntax errors (recovering parser) or the
   // single located type error, one per line. A report, not a failure — always

@@ -1,0 +1,36 @@
+//# Imports
+
+// #946: `symbol_spans` used to swallow every failure (a lex/parse error on
+// the source) into a bare empty list -- indistinguishable from "this file
+// legitimately declares no symbols". It now propagates the Error instead, so
+// the CLI adapter's `.diag` sidecar (selfhost_cli_adapter.vibe's
+// VIBE_SYMBOLS handling) can report the real cause instead of a silent empty
+// outline.
+
+import ./symbol_spans.vibe {
+  symbol_spans
+}
+
+//# Functions
+
+//# Misc
+
+test "symbol_spans: a clean file returns its declarations" {
+  let syms = symbol_spans("export fn f(x: Int) -> Int { x + 1 }\n")
+  assert(Array::length(syms) == 1)
+}
+
+test "symbol_spans: a genuinely empty (comments-only) file returns an empty list, not an error" {
+  let syms = symbol_spans("// just a comment\n")
+  assert(Array::length(syms) == 0)
+}
+
+test "symbol_spans: a lex error propagates instead of silently returning empty (#946)" {
+  let msg = handle {
+    let _ = symbol_spans("export fn f() -> Int {\n  1 $ 2\n}\n")
+    ""
+  } with Error {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "unexpected character"))
+}
