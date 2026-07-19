@@ -1,12 +1,12 @@
 name: flaker-ci
 
 on:
-  # Disabled: this flaker sampling drove the MoonBit-host test suite, retired
-  # with src/ (#594). Manual-only until reworked on the selfhost test path.
+  # Manual-only: rewired from the retired MoonBit-host suite (#594) to the
+  # selfhost unit-test battery (#988 — flaker.toml custom runner via
+  # scripts/flaker_vibe_runner.mjs). Keep on workflow_dispatch until main
+  # accumulates a trusted baseline of selfhost runs, then wire into
+  # pull_request/push.
   workflow_dispatch:
-
-env:
-  VIBE_MOON_WARN_LIST: "-1-6-7-9-20-24-29"
 
 permissions:
   contents: read
@@ -19,16 +19,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Setup Vibe toolchain
-        uses: ./.github/actions/setup-vibe
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
         with:
           node-version: '24'
 
+      - name: Install wasmtime
+        # Optional for the unit-test battery: allowlisted files that shell
+        # out to the wasmtime CLI are skipped when it is missing (#769).
+        # Install it so sampled runs cover them. Version pinned to ci.yml's.
+        env:
+          WASMTIME_VERSION: v46.0.1
+        run: |
+          set -euo pipefail
+          dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
+          curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          echo "$PWD/$dir" >> "$GITHUB_PATH"
+
       - name: Install flaker
         run: npm install -g @mizchi/flaker
-
-      - name: Moon update
-        run: moon update
 
       - name: Restore flaker DB
         # SHA-version the main baseline so subsequent main pushes can
@@ -82,11 +91,11 @@ jobs:
             core.setOutput('count', String(files.length));
 
       - name: Sampled test run
-        # `continue-on-error`: flaker's moontest adapter occasionally
-        # exits non-zero on CI in ways we cannot reproduce locally (no
-        # log access for the runner). Keep the gate visible but
-        # non-blocking until main accumulates a baseline of real runs;
-        # flip to blocking once the signal is trusted.
+        # `continue-on-error`: keep the gate visible but non-blocking until
+        # main accumulates a baseline of real selfhost runs; flip to
+        # blocking once the signal is trusted. Note: without a prebuilt
+        # VIBE_STAGE2_WASM the first execute performs a fresh
+        # seed->stage1->stage2 selfbuild (scripts/unit_test_runner.sh).
         continue-on-error: true
         env:
           CHANGED_FILES: ${{ steps.changed.outputs.files }}

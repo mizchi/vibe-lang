@@ -32,6 +32,21 @@ jobs:
           echo "$PWD/$dir" >> "$GITHUB_PATH"
       - name: Compiler gate
         run: bash scripts/compiler_gate.sh
+      - name: Selfcompile KPI heap gate (#987)
+        # One real compile through the gate's freshly-built stage2, gated on
+        # the linear backend's bump-allocator high-water (heap_ptr_bytes).
+        # Unlike wall time it is byte-deterministic for a fixed (stage2,
+        # input) pair — scripts/selfcompile_kpi.sh isolates the build cache —
+        # so it can block CI without flakes. Threshold = committed baseline
+        # + 10%; the baseline tracks the compiler itself, so rebaseline it
+        # alongside intentional allocation changes (procedure in
+        # bench/selfhost_perf/heap_baseline.txt).
+        run: |
+          gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
+          baseline="$(grep -vE '^\s*(#|$)' bench/selfhost_perf/heap_baseline.txt | head -1)"
+          export VIBE_KPI_MAX_HEAP_BYTES=$(( baseline * 110 / 100 ))
+          echo "baseline=$baseline gate_max=$VIBE_KPI_MAX_HEAP_BYTES (+10%)"
+          bash scripts/selfcompile_kpi.sh "${gen}stage2.wasm"
       - name: vibe normalize smoke test (#882)
         # compiler_gate.sh's "normalize compile+run regression" section
         # exercises the normalize ENGINE directly (VIBE_NORMALIZE=1 against

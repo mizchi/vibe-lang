@@ -161,6 +161,36 @@ Both benches share `_build/wasm/opt/` and consult `.opt_level` so a
 runtime switch rebuilds the wasm-opt artifact rather than silently
 benching against the wrong level.
 
+## Selfcompile KPI heap gate (CI, #987)
+
+Driver: `scripts/selfcompile_kpi.sh <stage2.wasm> [input.vibe]`.
+
+One real compile through a selfhost stage2, reporting `wall_ms` and
+`heap_ptr_bytes` (linear backend bump-allocator high-water). With a cold
+isolated `VIBE_BUILD_CACHE_DIR` the heap number is **byte-deterministic**
+for a fixed (stage2, input) pair, so — unlike wall time — it gates CI
+without flakes.
+
+CI wiring (`.github/workflows/ci.yml`, step "Selfcompile KPI heap gate"):
+the compiler-gate job runs the script against its freshly-built stage2 and
+fails when `heap_ptr_bytes` exceeds the committed baseline in
+[`heap_baseline.txt`](heap_baseline.txt) by more than 10%
+(`VIBE_KPI_MAX_HEAP_BYTES = baseline * 110 / 100`).
+
+The baseline tracks the compiler itself: any change to
+`lib/@vibe/compiler/` (or the default input file) can move it. Rebaseline
+alongside intentional changes — in either direction; ratchet it down after
+an allocation win so the gate protects the win:
+
+```bash
+bash scripts/generations.sh build --out-dir /tmp/kpi_gen
+bash scripts/selfcompile_kpi.sh /tmp/kpi_gen/stage2.wasm
+# -> copy heap_ptr_bytes into bench/selfhost_perf/heap_baseline.txt
+```
+
+Commit the new number with the compiler change and note old -> new (and
+why) in the PR.
+
 ## Memory: peak RSS + wallclock
 
 Driver: `scripts/bench_selfhost_memory.sh` → `just bench-selfhost-memory`.
