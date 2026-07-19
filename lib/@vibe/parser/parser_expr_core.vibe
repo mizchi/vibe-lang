@@ -587,9 +587,19 @@ fn is_is_token(tok: Token) -> Bool {
   }
 }
 
-fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: Int, min_prec: Int, expr_start: Int, cmp_locked: Bool, consume_is: Bool, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
+fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: Int, min_prec: Int, expr_start: Int, cmp_locked: Bool, consume_is: Bool, is_top_atom: Bool, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
   let tok = peek(tokens, next)
-  if consume_is && !cmp_locked && 3 >= min_prec && is_is_token(tok) {
+  if consume_is && !cmp_locked && 3 >= min_prec && is_is_token(tok) && is_top_atom {
+    // #979 review (if-cond): a trailing `is pattern` on the UNFOLDED top
+    // atom (nothing combined onto `left` yet, e.g. bare `x is Some(v)`) is
+    // left unconsumed here for `parse_infix_if_cond`'s caller to special-case
+    // as the `if EXPR is PAT { bind } ` binding form. Once anything has been
+    // folded onto `left` (a `&&`/`||`/comparison/... already applied,
+    // `is_top_atom` false) or we're in a plain (non-if-cond) expression
+    // (`is_top_atom` always false from `parse_infix`), `is` falls through to
+    // the normal tier-3 fold below and yields a plain Bool with no binding.
+    (left, next)
+  } else if consume_is && !cmp_locked && 3 >= min_prec && is_is_token(tok) {
     // Attach `is pattern` directly to `left` at comparison tightness, then
     // keep looping (cmp_locked, like a comparison, so a further `is`/`==`
     // right after would need explicit parens) so the resulting Bool can
@@ -599,7 +609,7 @@ fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: 
       (pat, EBool(true)),
       (PWild, EBool(false))
     ])
-    parse_infix_loop(tokens, starts, combined, pn, min_prec, expr_start, true, consume_is, parse_recur)
+    parse_infix_loop(tokens, starts, combined, pn, min_prec, expr_start, true, consume_is, false, parse_recur)
   } else {
     let prec = binop_prec(tok)
     let should_stop = if prec < min_prec {
@@ -635,7 +645,7 @@ fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: 
         }
       }
       let (right0, right_next0) = parse_prefix(tokens, starts, next + 1, parse_recur)
-      let (right, rn) = parse_infix_loop(tokens, starts, right0, right_next0, prec + 1, next + 1, false, consume_is, parse_recur)
+      let (right, rn) = parse_infix_loop(tokens, starts, right0, right_next0, prec + 1, next + 1, false, consume_is, false, parse_recur)
       if is_pipe {
         if has_non_pipe_infix_top(tokens, next + 1, rn) {
           throw("cannot mix '|>' with other infix operators without explicit parentheses")
@@ -651,28 +661,44 @@ fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: 
       } else {
         cmp_locked
       }
-      parse_infix_loop(tokens, starts, combined, rn, min_prec, expr_start, next_cmp_locked, consume_is, parse_recur)
+      parse_infix_loop(tokens, starts, combined, rn, min_prec, expr_start, next_cmp_locked, consume_is, false, parse_recur)
     }
   }
 }
 
-// `parse_infix_no_is` walks the operator-precedence ladder *without*
-// consuming ANY `expr is pattern` test, at any tier. The `if-cond is
-// pat { ... }` special form (parsed in `parse_impl_dispatch` mode_if)
-// needs the pattern to remain on the token stream so it can capture it
-// as the if-cond's pattern arm; without this split the `is` gets
-// swallowed here and the outer dispatch sees a stray `{` it cannot match
-// against the if-cond pattern slot.
+// #979 P2 follow-up (Codex): `parse_infix_no_is` used to disable `is`
+// consumption at EVERY tier, so a nested `is` inside a `&&`/`||` (e.g.
+// `if ready && value is None { ... }`) never folded at comparison
+// tightness either -- the whole `ready && value` folded first (since `is`
+// wasn't recognized as an operator anywhere in this ladder), and the
+// trailing `is None` then bound against that whole (Bool) expression,
+// reproducing exactly the bug this issue's main fix already closed for
+// plain (non-if) expressions. Fixed by reusing the SAME tier-3 `is` fold
+// as `parse_infix` (`consume_is = true`, so `value is None` folds onto
+// `value` before combining with `&&`), gated by `is_top_atom = true`: a
+// trailing `is pattern` is left UNCONSUMED here only when it appears
+// directly on the unfolded top atom (nothing combined yet, e.g. bare
+// `x is Some(v)`) -- exactly the shape `parse_impl_dispatch` mode_if's
+// caller (below) still special-cases into the `if EXPR is PAT { bind }`
+// binding form. Once anything (`&&`/`||`/a comparison/...) has already
+// folded onto `left`, `is_top_atom` flips to `false` (see
+// `parse_infix_loop` above) and a subsequent `is` folds as a normal
+// tier-3 Bool test with no binding -- so `if ready && value is None { }`
+// now parses as `if (ready && (value is None)) { }`, matching the
+// documented precedence, while `if x is Some(v) { use(v) }` still binds
+// `v` in the then-branch exactly as before.
 export fn parse_infix_no_is(tokens: Array[Token], starts: Array[Int], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
   let (left0, next0) = parse_prefix(tokens, starts, pos, parse_recur)
-  parse_infix_loop(tokens, starts, left0, next0, min_prec, expr_start, false, false, parse_recur)
+  parse_infix_loop(tokens, starts, left0, next0, min_prec, expr_start, false, true, true, parse_recur)
 }
 
 // #979: `is` is folded directly into the precedence ladder (tier 3, same as
 // `==`/`<`/...) instead of being checked only once at the very end, so
 // `a && b is None` now parses as `a && (b is None)` rather than
-// `(a && b) is None`.
+// `(a && b) is None`. `is_top_atom = false` unconditionally here -- outside
+// an if-condition there is no special pattern-binding form, so even a bare
+// `x is Some(v)` folds straight to a Bool `EMatch` with no binding.
 export fn parse_infix(tokens: Array[Token], starts: Array[Int], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
   let (left0, next0) = parse_prefix(tokens, starts, pos, parse_recur)
-  parse_infix_loop(tokens, starts, left0, next0, min_prec, expr_start, false, true, parse_recur)
+  parse_infix_loop(tokens, starts, left0, next0, min_prec, expr_start, false, true, false, parse_recur)
 }
