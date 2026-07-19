@@ -27,7 +27,7 @@ of truth.
 
 The profiled file compile path already separates load, typecheck, bundle
 fingerprint, parse/merge, and final compile timings in
-`lib/@vibe/compiler/entry/compiler/file_compile/index.vibe`.
+`lib/@vibe/compiler/entry/compiler/file_compile/file_compile.vibe`.
 
 | Current phase | First parallel unit | Current barrier |
 | --- | --- | --- |

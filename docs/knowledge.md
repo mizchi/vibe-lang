@@ -638,7 +638,7 @@ top-level 関数が他の top-level 関数を機械的に capture すると、�
 
 ## K-019: selfhost bootstrap の真のボトルネックは `module_loader_test` / `file_compile_mode_test`
 
-- 場所: `scripts/test_selfhost_bootstrap_gate.sh`, `src/cmd/vibe/cli.mbt`, `lib/@vibe/compiler/loader/index.vibe`, `lib/@vibe/compiler/entry/compiler/file_compile/index.vibe`
+- 場所: `scripts/test_selfhost_bootstrap_gate.sh`, `src/cmd/vibe/cli.mbt`, `lib/@vibe/compiler/loader/index.vibe`, `lib/@vibe/compiler/entry/compiler/file_compile/file_compile.vibe`
 - 発見: 2026-03
 
 ### 背景
