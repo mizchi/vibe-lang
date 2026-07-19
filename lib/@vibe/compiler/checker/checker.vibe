@@ -1542,6 +1542,38 @@ fn type_name_prefix(ty: Type) -> String {
   }
 }
 
+// #994: builtin data types that can appear as a dot-call RECEIVER's checked
+// type (via `type_name_prefix` or a `CtNamed` head). An unresolved method on
+// one of these is definitely bogus -- there is no "it might be an imported
+// user type with the method defined elsewhere" escape hatch for a builtin.
+// Deliberately excludes namespace-only builtins (Fs, Http, Socket, Stdout,
+// ...) that are never a receiver VALUE's type, only ever called by
+// `Module::fn` name -- including them here would risk false positives on
+// legitimate qualified-import shortcut calls that happen to share a method
+// name.
+// #994 review: `Bool`/`Option`/`Result` are excluded even though they are
+// builtin heads. lib/@vibe/prelude/{bool,option,result}.vibe extend them
+// with real top-level `fn Bool::to_int` etc., and the *_type_import_test.vibe
+// fixtures use the "import just the type, dot-call resolves the method via
+// the merged program" idiom the #953 comment documents -- in an isolated
+// per-file check (as these unit tests exercise) the extension fn isn't in
+// `env` yet, so gating on this prefix here regressed 4 passing tests
+// (`no method ... on Bool/Option/Result`) that only compile correctly once
+// merged. No equivalent extension-via-type-import convention exists for the
+// container types below (grep confirms no prelude file extends Array/Bytes/
+// Map/...), so they keep the stricter check.
+fn is_known_builtin_receiver_prefix(prefix: String) -> Bool {
+  prefix == "String"
+  || prefix == "Bytes"
+  || prefix == "Array"
+  || prefix == "Map"
+  || prefix == "MapBuilder"
+  || prefix == "Int64Array"
+  || prefix == "FixedArray"
+  || prefix == "ArrayBuilder"
+  || prefix == "StringBuilder"
+}
+
 fn is_equality_binop(op: String) -> Bool {
   op == "=="
   || op == "!="
@@ -3679,6 +3711,40 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
         let resolved = subst_apply(s1, obj_ty)
         let type_prefix = type_name_prefix(resolved)
         let qualified = String::concat(type_prefix, String::concat("::", method))
+        let has_real_fn_binding = match env_lookup(env, qualified) {
+          Some(_) => true,
+          None => false
+        }
+        // #994: `desugar_trait_dict.vibe`'s dot-call lowering (the
+        // `EDot(obj, m, ...)` arm, `as_recv_method`) only rewrites a
+        // `.method(...)` call into a working `Type::method(...)` call when
+        // `fn_exists(fn_returns, qual)` -- i.e. `qual` is a REAL parsed
+        // top-level `fn` declaration. `env_lookup` reflects that exact same
+        // set of declarations. A `lookup_builtin` hit with NO `env_lookup`
+        // hit is a checker-only hardcoded signature (`Array::set`,
+        // `String::length`, ...) that has no corresponding parsed fn --
+        // codegen's EDot fallback then compiles the call as a struct-field
+        // READ and dies with an unlocated "unknown struct field: <method>"
+        // regardless of argument types (confirmed by probing EVERY builtin
+        // dot-call, well-typed or not: `a.set(0, 42)` fails identically to
+        // `a.set(0, "bad")`). Reject these HERE instead of silently
+        // accepting a call that can never compile.
+        if !has_real_fn_binding && is_known_builtin_receiver_prefix(type_prefix) {
+        match lookup_builtin(qualified) {
+          Some(_) => {
+            Array::push(errors, String::concat("dot-call syntax is not supported for the builtin method `", String::concat(qualified, String::concat("` -- call it as `", String::concat(qualified, String::concat("(...)`", off_marker_len(qcall_field_off, String::length(method))))))))
+            (tab_call_ty(tytab, call_off, CtUnknown), s1, c1)
+          },
+          None => {
+            let bare_hint = match env_lookup(env, method) {
+              Some(_) => String::concat(String::concat("(...)` (a bare `fn ", method), String::concat("` is only callable as `", String::concat(method, String::concat("(x)` or `x |> ", String::concat(method, "`)"))))),
+              None => "(...)`"
+            }
+            Array::push(errors, String::concat(String::concat("no method `", String::concat(method, String::concat("` on `", String::concat(type_prefix, "`: declare a top-level `fn ")))), String::concat(qualified, String::concat(bare_hint, off_marker_len(qcall_field_off, String::length(method))))))
+            (tab_call_ty(tytab, call_off, CtUnknown), s1, c1)
+          }
+        }
+        } else {
         let direct_ret = direct_call_return(env, qualified)
         let method_ty = match env_lookup(env, qualified) {
           Some(t) => {
@@ -3791,6 +3857,13 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                       None => false
                     }
                   }
+                  // #994: known builtin receiver prefixes (String/Array/...)
+                  // never reach this branch anymore -- they're intercepted
+                  // earlier (before `direct_ret`/`method_ty` are computed) so
+                  // codegen-unlowerable builtin dot-calls get a located error
+                  // instead of silently unifying against a tolerant
+                  // `CtUnknown` builtin signature. This diagnostic now only
+                  // covers genuinely LOCAL user types.
                   if no_field && local_user_ty && !has_method_binding {
                     let bare_hint = match env_lookup(env, method) {
                       Some(_) => String::concat(String::concat("(...)` (a bare `fn ", method), String::concat("` is only callable as `", String::concat(method, String::concat("(x)` or `x |> ", String::concat(method, "`)"))))),
@@ -3809,6 +3882,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
               }
             }
           }
+        }
         }
         }
         }
