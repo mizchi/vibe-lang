@@ -706,8 +706,96 @@ export fn gen_int_to_double_body() -> Bytes {
   b
 }
 
+// #982: substring had ZERO bounds checks — the packed `(ptr+start)<<32 |
+// (end-start)` view silently read adjacent heap for `end > len`, produced a
+// u32-wrapped length ~4294967294 for `end < start` (i64_extend_i32_u on the
+// negative difference), and read BEFORE the string for a negative `start`.
+// Clamp start into [0, len] and end into [start', len] up front (the same
+// tolerate-not-trap choice as Array::slice below), so every downstream packed
+// view stays inside the source string and `end < start` yields "". Locals:
+// 3/4 = existing i32 scratch, 5 = NEW i64 scratch holding len (meta bumped
+// 2/0 -> 2/1 at the linked_compile push_builtin site).
 export fn gen_str_substring_body(enable_rc: Bool) -> Bytes {
   let b = bytebuf_new()
+  // local5 = len (i64, untagged): the packed string's low 32 bits.
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, 5)
+  // param1 (start) := retag(clamp(untag(start), 0, len))
+  emit_local_get(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_i64_const(b, 0)
+  emit_i64_lt_s(b)
+  emit_if_i64(b)
+  emit_i64_const(b, 0)
+  emit_else(b)
+  emit_local_get(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_local_get(b, 5)
+  emit_i64_gt_s(b)
+  emit_if_i64(b)
+  emit_local_get(b, 5)
+  emit_else(b)
+  emit_local_get(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_end(b)
+  emit_end(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_local_set(b, 1)
+  // param2 (end) := retag(clamp(untag(end), untag(start'), len))
+  emit_local_get(b, 2)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_local_get(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_i64_lt_s(b)
+  emit_if_i64(b)
+  emit_local_get(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_else(b)
+  emit_local_get(b, 2)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_local_get(b, 5)
+  emit_i64_gt_s(b)
+  emit_if_i64(b)
+  emit_local_get(b, 5)
+  emit_else(b)
+  emit_local_get(b, 2)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_end(b)
+  emit_end(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_local_set(b, 2)
   emit_local_get(b, 0)
   emit_i64_const(b, 32)
   emit_i64_shr_s(b)

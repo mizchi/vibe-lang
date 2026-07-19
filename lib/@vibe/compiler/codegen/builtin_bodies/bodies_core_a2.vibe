@@ -30,6 +30,126 @@ export fn gen_identity_body() -> Bytes {
 
 export fn gen_arr_slice_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: Bool) -> Bytes {
   let b = bytebuf_new()
+  // #982: slice had ZERO bounds checks — `Array::slice([1,2,3], 1, 10)`
+  // memory_copy'd 9 elements of raw adjacent heap into the result and
+  // `Array::slice(a, 2, 0)` computed a negative count that trapped inside the
+  // copy (while Bytes::slice is bounds-checked, #811 — non-uniform). Clamp
+  // start into [0, len] and end into [start', len] up front, so an
+  // out-of-range slice tolerantly truncates and an inverted range yields [].
+  // Scratch i64 local for len: RC reuses existing local 10 (elem, set later
+  // before its own use); non-RC adds local 9 (meta bumped 6/0 -> 6/1 at the
+  // linked_compile push_builtin site).
+  let len_local = if enable_rc {
+    10
+  } else {
+    9
+  }
+  // len = value[4] (i64, untagged element count)
+  emit_local_get(b, 0)
+  if enable_rc {
+    emit_i64_const(b, -2)
+    emit_i64_and(b)
+  } else {
+    ()
+  }
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 4)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, len_local)
+  // param1 (start) := retag(clamp(untag(start), 0, len))
+  emit_local_get(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  } else {
+    ()
+  }
+  emit_i64_const(b, 0)
+  emit_i64_lt_s(b)
+  emit_if_i64(b)
+  emit_i64_const(b, 0)
+  emit_else(b)
+  emit_local_get(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  } else {
+    ()
+  }
+  emit_local_get(b, len_local)
+  emit_i64_gt_s(b)
+  emit_if_i64(b)
+  emit_local_get(b, len_local)
+  emit_else(b)
+  emit_local_get(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  } else {
+    ()
+  }
+  emit_end(b)
+  emit_end(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  } else {
+    ()
+  }
+  emit_local_set(b, 1)
+  // param2 (end) := retag(clamp(untag(end), untag(start'), len))
+  emit_local_get(b, 2)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  } else {
+    ()
+  }
+  emit_local_get(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  } else {
+    ()
+  }
+  emit_i64_lt_s(b)
+  emit_if_i64(b)
+  emit_local_get(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  } else {
+    ()
+  }
+  emit_else(b)
+  emit_local_get(b, 2)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  } else {
+    ()
+  }
+  emit_local_get(b, len_local)
+  emit_i64_gt_s(b)
+  emit_if_i64(b)
+  emit_local_get(b, len_local)
+  emit_else(b)
+  emit_local_get(b, 2)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  } else {
+    ()
+  }
+  emit_end(b)
+  emit_end(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  } else {
+    ()
+  }
+  emit_local_set(b, 2)
   if enable_rc {
     // ADR-0055 Stage 4: build the slice as a self-describing RC block, the same
     // shape as gen_arr_new / a literal array, so the recursive rc_drop and the

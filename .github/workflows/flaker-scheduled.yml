@@ -1,12 +1,11 @@
 name: flaker-scheduled
 
 on:
-  # Disabled: drove the MoonBit-host test suite, retired with src/ (#594).
-  # Manual-only until reworked on the selfhost test path.
+  # Manual-only: rewired from the retired MoonBit-host suite (#594) to the
+  # selfhost unit-test battery (#988 — flaker.toml custom runner via
+  # scripts/flaker_vibe_runner.mjs). Re-enable a cron schedule once the
+  # selfhost runs are trusted.
   workflow_dispatch:
-
-env:
-  VIBE_MOON_WARN_LIST: "-1-6-7-9-20-24-29"
 
 jobs:
   full-run:
@@ -15,31 +14,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Install MoonBit
-        run: bash scripts/install_moonbit.sh
-
-      - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
-
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '24'
 
+      - name: Install wasmtime
+        # Optional for the unit-test battery: allowlisted files that shell
+        # out to the wasmtime CLI are skipped when it is missing (#769).
+        # Install it so the full run covers them. Version pinned to ci.yml's.
+        env:
+          WASMTIME_VERSION: v46.0.1
+        run: |
+          set -euo pipefail
+          dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
+          curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          echo "$PWD/$dir" >> "$GITHUB_PATH"
+
       - name: Install flaker
         run: npm install -g @mizchi/flaker
-
-      - name: Moon update
-        run: moon update
-
-      - name: Cache MoonBit build
-        uses: actions/cache@v5
-        with:
-          path: |
-            _build
-            .mooncakes
-          key: moonbit-${{ runner.os }}-${{ hashFiles('.moon-version') }}-${{ hashFiles('moon.mod.json', 'src/**/*.mbt') }}
-          restore-keys: moonbit-${{ runner.os }}-${{ hashFiles('.moon-version') }}-
 
       - name: Restore flaker DB
         uses: actions/cache/restore@v4
@@ -49,6 +42,9 @@ jobs:
           restore-keys: flaker-db-
 
       - name: Full test run
+        # The custom runner's first execute builds a fresh
+        # seed->stage1->stage2 generation (scripts/unit_test_runner.sh),
+        # then runs the whole allowlist through it.
         run: flaker run --profile scheduled
 
       - name: Save flaker DB
