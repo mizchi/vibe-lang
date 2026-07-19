@@ -1392,6 +1392,13 @@ function findClosureEnv(instance, heapStart, tableSlot) {
 
 let instanceRefGlobal = null;
 let covWasmBytesGlobal = null;
+// #1007 review (Codex P2): exposes the REAL positional output arg (argv[1]
+// as the compiled program sees it via Env::args_get) to the top-level catch
+// handler below, which runs outside main()'s own scope. Set once, right
+// after main() finalizes `passthroughArgs` (never reassigned afterward, so
+// staleness in a --daemon/long-running context isn't a concern here — the
+// stack-overflow catch only fires once, ending the process).
+let passthroughArgsGlobal = null;
 
 // #cov: dump the function/branch hit bitmaps from the (possibly trapped)
 // instance's live memory to VIBE_COV_OUT. Called both after a clean run AND from
@@ -1625,6 +1632,7 @@ async function main() {
     benchSetup,
   } = parseArgs(process.argv.slice(2));
   let passthroughArgs = initialPassthroughArgs.slice();
+  passthroughArgsGlobal = passthroughArgs;
   if (passthroughArgs.length > 0) {
     if (process.env.VIBE_INPUT === undefined && passthroughArgs.length >= 1) {
       process.env.VIBE_INPUT = passthroughArgs[0];
@@ -2638,6 +2646,7 @@ async function main() {
 
   const runInvokes = (args) => {
     passthroughArgs = args.slice();
+    passthroughArgsGlobal = passthroughArgs;
     const profileRequest = extractProfileRequest(passthroughArgs);
     const profileStartNs = process.hrtime.bigint();
     let result;
@@ -2791,6 +2800,40 @@ async function main() {
 }
 
 main().catch((err) => {
+  // #946(4): a pathologically deep expression (e.g. thousands of chained
+  // `+`) recurses the checker (itself compiled to wasm) past the native call
+  // stack. That blows up the whole wasm instance -- nothing inside the
+  // compiled program's own `handle {...} with Error {...}` can intercept a
+  // host-level stack overflow, so it used to surface as a raw uncaught-
+  // exception crash dump, which the `vibe check`/`vibe diagnostics` shell
+  // wrappers (`>/dev/null 2>&1 || true`) silently swallowed into "clean".
+  // Intercept it here instead and write the same `.diag` sidecar the
+  // adapter's own error paths use (selfhost_cli_adapter.vibe's
+  // emit_compile_diag), so those commands can report a real (if unlocated)
+  // diagnostic.
+  //
+  // #1007 review (Codex P2): read_arg_or_env (selfhost_cli_adapter.vibe)
+  // prefers the POSITIONAL arg (Env::args_get) over the env var, only
+  // falling back to VIBE_OUTPUT when the arg is absent -- `runtime/vibe`
+  // never unsets an inherited VIBE_OUTPUT before invoking the runner, so
+  // preferring the env var here (as the first cut did) could write the
+  // sidecar beside a stale inherited path while the compiled program itself
+  // (and the shell script waiting on `$out.diag`) used the real positional
+  // one, silently losing the diagnostic all over again. Match
+  // read_arg_or_env's precedence: positional arg (passthroughArgsGlobal[1])
+  // first.
+  if (err instanceof RangeError && /call stack/i.test(err.message || "")) {
+    const outputPath =
+      (passthroughArgsGlobal && passthroughArgsGlobal[1]) ||
+      process.env.VIBE_OUTPUT;
+    if (outputPath) {
+      try {
+        fs.writeFileSync(`${outputPath}.diag`, "expression too deeply nested (stack overflow while type-checking)\n");
+      } catch (_) {}
+    }
+    console.error("[vibe] stack overflow: expression too deeply nested");
+    process.exit(1);
+  }
   // #cov: even a failed run (parse/type error, trap) exercised many branches
   // before unwinding — capture its coverage from the still-live instance memory.
   try {

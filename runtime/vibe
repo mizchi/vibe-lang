@@ -778,7 +778,7 @@ case "$cmd" in
     # are latency-amortized, so prefer correctness.
     cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
     out="$(mktemp -t vibe-symbols-XXXXXX)"
-    trap 'rm -f "$out"' EXIT
+    trap 'rm -f "$out" "$out.diag"' EXIT
     # Clear any inherited compile-mode envs so this query can't be diverted to the
     # compile path (which would emit wasm bytes instead of the symbol list).
     env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT \
@@ -787,6 +787,15 @@ case "$cmd" in
       VIBE_SYMBOLS=1 \
       VIBE_IMPORT_ABI=raw \
       "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
+    # #946: a lex/parse error crashing `symbol_spans` used to leave `$out`
+    # empty with no way to tell that apart from "genuinely no symbols" (both
+    # looked identical to a caller). The adapter now routes a thrown Error to
+    # `$out.diag` (same sidecar convention as `check)` below) instead of
+    # `$out` itself, so stdout here stays a pure outline (no risk of a
+    # "plausible but wrong" symbol line) while stderr surfaces the failure.
+    if [ -s "$out.diag" ]; then
+      echo "error: $(cat "$out.diag")" >&2
+    fi
     if [ -s "$out" ]; then cat "$out"; fi
     ;;
   diagnostics)
@@ -801,7 +810,7 @@ case "$cmd" in
     # type-error path trapped under the precompiled image on some hosts.
     cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
     out="$(mktemp -t vibe-diag-XXXXXX)"
-    trap 'rm -f "$out"' EXIT
+    trap 'rm -f "$out" "$out.diag"' EXIT
     # Clear any inherited compile-mode envs so a leaked VIBE_FS_COMPILE (etc.)
     # can't divert this into compiling and emitting wasm bytes as "diagnostics".
     # Don't `die` on a non-zero exit — emit whatever was written (a report, not a
@@ -811,6 +820,15 @@ case "$cmd" in
       VIBE_DIAGNOSTICS=1 \
       VIBE_IMPORT_ABI=raw \
       "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
+    # #946(4): a pathologically deep expression can overflow the native call
+    # stack while type-checking — a host-level crash (wasmtime's graceful
+    # `Trap::StackOverflow` in runtime/moonrun_wasmtime, or a JS RangeError in
+    # scripts/wasm_vibe_host_runner.js) rather than an ordinary diagnostic —
+    # that used to leave `$out` empty, reported as "clean" exactly like a
+    # genuinely error-free file. Both runners now write that crash to the same
+    # `.diag` sidecar the checker's own error paths use; surface it as a
+    # diagnostic line instead of silently treating the crash as clean.
+    if [ -s "$out.diag" ]; then cat "$out.diag"; fi
     # A clean file yields empty output; this subcommand always exits 0 (a report,
     # not a failure), so the LSP can treat empty as "no diagnostics".
     if [ -s "$out" ]; then cat "$out"; fi

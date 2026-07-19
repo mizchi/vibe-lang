@@ -25,8 +25,8 @@ use std::time::Instant;
 
 use wasmtime::{
     bail, format_err, Caller, Config, Engine, ExternRef, ExternType, Instance, Linker, Module,
-    ResourceLimiter, Result, Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy, TypedFunc,
-    Val, ValType,
+    ResourceLimiter, Result, Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy, Trap,
+    TypedFunc, Val, ValType,
 };
 
 const FFI_END_OF_STRING_ARRAY: &str = "ffi_end_of_/string_array";
@@ -735,6 +735,44 @@ fn run(args: Vec<String>) -> Result<i32> {
             if e.downcast_ref::<BreakAbort>().is_some() {
                 eprintln!("vibewt: run aborted at breakpoint");
                 return Ok(130);
+            }
+            // #946(4): a pathologically deep expression (e.g. thousands of
+            // chained `+`) recurses the checker (itself compiled to wasm) past
+            // the configured wasm stack. wasmtime raises this as a graceful
+            // `Trap::StackOverflow` ("call stack exhausted") rather than a host
+            // crash, but nothing inside the compiled program's own
+            // `handle {...} with Error {...}` can intercept it -- it used to
+            // surface here as an ordinary trap message, which `vibe
+            // check`/`vibe diagnostics`'s `>/dev/null 2>&1 || true` wrapper
+            // silently swallowed into "clean". Write the same `.diag` sidecar
+            // the checker's own error paths use (selfhost_cli_adapter.vibe's
+            // emit_compile_diag reads it back via read_arg_or_env(1,
+            // "VIBE_OUTPUT")) so those commands report a real (if unlocated)
+            // diagnostic instead.
+            //
+            // #1007 review (Codex P2): read_arg_or_env prefers the POSITIONAL
+            // arg over the env var (only falling back to VIBE_OUTPUT when the
+            // arg is absent) -- `runtime/vibe` never unsets an inherited
+            // VIBE_OUTPUT before invoking the runner, so preferring the env
+            // var here (as the first cut did) could write the sidecar beside
+            // a stale inherited path while the compiled program itself (and
+            // the shell script waiting on `$out.diag`) used the real
+            // positional one, silently losing the diagnostic all over again.
+            // Match read_arg_or_env's precedence: positional arg first.
+            if matches!(e.downcast_ref::<Trap>(), Some(Trap::StackOverflow)) {
+                let output_path = args
+                    .get(2)
+                    .cloned()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| std::env::var("VIBE_OUTPUT").ok());
+                if let Some(output_path) = output_path {
+                    let _ = std::fs::write(
+                        format!("{output_path}.diag"),
+                        "expression too deeply nested (stack overflow while type-checking)\n",
+                    );
+                }
+                eprintln!("vibewt: stack overflow: expression too deeply nested");
+                return Ok(1);
             }
             // A guest trap (e.g. an uncaught vibe `throw`/type error surfacing as
             // a Wasm exception) should read as a tool error, not a runner crash —
