@@ -5,7 +5,7 @@ import ./checker_parity_test_support.vibe {
 }
 
 import ../../../../lib/@vibe/prelude/index.vibe {
-  Eq, Ord, ord_clamp
+  Eq, Ord, Add, ord_clamp, ord_min, ord_max, ord_between, num_add
 }
 
 //# Functions
@@ -24,11 +24,16 @@ import ../../../../lib/@vibe/prelude/index.vibe {
 // (operand-vs-operand only), keyed off `subst_bounds_for`.
 //
 // NOTE on scope: this is the TYPING fix #952 asks for. RUNTIME dispatch of
-// `<`/`>`/`+` on an erased generic `T` still compiles to raw i64 ops (the
+// `<`/`>`/`+` on an erased generic `T` used to compile to raw i64 ops (the
 // #695/#746 residual class: desugar's String rewrites are static-type
-// driven, and a generic body's `T` operand has no static String type), so
-// runtime assertions below are limited to Int instantiations; the String
-// cases assert the TYPING (compile-clean) behavior that #952 regressed.
+// driven, and a generic body's `T` operand has no static String type). #973
+// closed that gap for `<`/`>`/`<=`/`>=`/`+` specifically: desugar_trait_dict.vibe
+// now recognizes an operand whose inferred static type is the bare erased
+// type-parameter name and routes it through a runtime tag-check dispatch
+// (gen_generic_rel_diff_body / gen_generic_add_body) instead of the hardcoded
+// binop -- see the String-instantiation runtime tests below. `==`/`!=` on an
+// erased generic remain the OUT-OF-SCOPE #695/#746 residual (unaffected by
+// #973 by design -- see the issue).
 
 fn my_lt_int[T: Ord](a: T, b: T) -> Bool {
   a < b
@@ -40,6 +45,10 @@ fn my_gt_int[T: Ord](a: T, b: T) -> Bool {
 
 fn my_eq_gen[T: Eq](a: T, b: T) -> Bool {
   a == b
+}
+
+fn my_add_gen[T: Add](a: T, b: T) -> T {
+  a + b
 }
 
 //# Misc
@@ -113,4 +122,56 @@ test "952: concrete top-level operators unaffected (regression)" {
   assert(1 + 2 == 3)
   assert(1 < 2)
   assert("foo" + "bar" == "foobar")
+}
+
+// #973: the repro from the issue. `ord_clamp("m", "a", "z")` type-checked
+// after #952 but returned "a" (raw i64 pointer compare on the packed String
+// value) instead of "m" (content compare). Fixed by desugar_trait_dict.vibe
+// routing `<`/`>` through gen_generic_rel_diff_body's runtime tag-check when
+// the operand's static type is the bare erased type parameter.
+test "973: [T: Ord] `<`/`>` on String now content-compares at runtime (was: pointer compare)" {
+  assert(my_lt_int("a", "b"))
+  assert(not(my_lt_int("b", "a")))
+  assert(my_gt_int("b", "a"))
+  assert(not(my_gt_int("a", "b")))
+}
+
+test "973: prelude ord_clamp[T: Ord] with String now correct at runtime (#973 repro)" {
+  assert(eq(ord_clamp("m", "a", "z"), "m"))
+  assert(eq(ord_clamp("Z", "a", "z"), "a"))
+  assert(eq(ord_clamp("q", "a", "p"), "p"))
+  // empty-string edge case: an empty String is still a valid packed value
+  // (ptr, len=0) the runtime "looks like a string" heuristic must recognize.
+  assert(eq(ord_clamp("", "a", "z"), "a"))
+}
+
+test "973: ord_min/ord_max/ord_between[T: Ord] with String at runtime" {
+  assert(eq(ord_max("apple", "banana"), "banana"))
+  assert(eq(ord_min("apple", "banana"), "apple"))
+  assert(ord_between("m", "a", "z"))
+  assert(not(ord_between("Z", "a", "z")))
+}
+
+test "973: same [T: Ord]-generic fn used with String AND Int in one compiled program dispatches per-call by ACTUAL runtime value" {
+  assert(eq(ord_clamp("m", "a", "z"), "m"))
+  assert(eq(ord_clamp(5, 0, 10), 5))
+  assert(eq(ord_clamp(-1, 0, 10), 0))
+  assert(eq(ord_clamp(11, 0, 10), 10))
+  assert(eq(ord_clamp("m", "a", "z"), "m"))
+}
+
+test "973: negative Int comparisons through an erased [T: Ord] generic (heuristic must not misclassify a negative Int as a String pointer)" {
+  assert(my_lt_int(0 - 5, 0 - 1))
+  assert(not(my_lt_int(0 - 1, 0 - 5)))
+  assert(eq(ord_clamp(0 - 100, 0 - 50, 0 - 1), 0 - 50))
+}
+
+test "973: [T: Add] `+` on String now concatenates at runtime through an erased generic (was: raw i64.add)" {
+  assert(eq(my_add_gen("foo", "bar"), "foobar"))
+  assert(eq(num_add("foo", "bar"), "foobar"))
+}
+
+test "973: [T: Add] `+` on Int through the same erased generic is unaffected (regression)" {
+  assert(eq(my_add_gen(3, 4), 7))
+  assert(eq(num_add(3, 4), 7))
 }

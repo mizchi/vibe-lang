@@ -1238,6 +1238,44 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
   }
 }
 
+// #973: known concrete/struct-like type names `infer_arg_type_name` can
+// report, for which the EXISTING per-type rewrites (String concat/relational,
+// struct `==`, Option/Result structural eq, ...) already apply, or correctly
+// do not. Anything else it returns `Some` for is, by construction, the bare
+// name of an in-scope generic type parameter: `seed_var_types` (and the `EFn`
+// arm of `rewrite_expr`) seed a parameter's own `[T]` annotation verbatim as
+// its "type name" — see #931's `as_tparam_dict`, which reuses the same
+// inference for method calls — and no other path in `infer_arg_type_name`
+// produces a non-concrete `Some`.
+fn is_concrete_or_known_type_name(t: String, struct_sets: Array[(String, Array[String])]) -> Bool {
+  t == "Int" || t == "Bool" || t == "String" || t == "Double" || t == "Float" || t == "Array" || t == "Map" || t == "Option" || t == "Result" || t == "Stream" || struct_set_has(struct_sets, t)
+}
+
+// #973: does either operand's inferred static type look like an ERASED
+// generic type parameter (`[T: Ord]` / `[T: Add]`) rather than a concrete
+// type `infer_arg_type_name` already has type-specific handling for? Routes
+// `<`/`>`/`<=`/`>=`/`+` through a runtime tag-check dispatch instead of the
+// hardcoded numeric binop when the checker (#952) lets a bound-but-unresolved
+// `T` survive to codegen with NO monomorphization and NO witness dict — Ord
+// and Add are method-less marker traits (`export trait Ord` with an empty
+// body; see builtin_traits.vibe), so `build_gens` never threads either one a
+// dict (only method-bearing bounds get one), leaving nothing concrete to key
+// a String-vs-Int rewrite off at this site. Without this, `x < lo` inside a
+// `fn ord_clamp[T: Ord](x: T, lo: T, ..)` body compiled a raw signed i64
+// compare, which orders a heap String's packed `(ptr<<32)|len` value by
+// POINTER, not content (#973's `ord_clamp("m", "a", "z")` repro).
+fn is_erased_generic_operand(l: Expr, r: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
+  let lg = match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
+    Some(t) => !is_concrete_or_known_type_name(t, struct_sets),
+    None => false
+  }
+  let rg = match infer_arg_type_name(r, struct_sets, var_types, fn_returns) {
+    Some(t) => !is_concrete_or_known_type_name(t, struct_sets),
+    None => false
+  }
+  lg || rg
+}
+
 // #760(3): `m[k]` parses to `__index(m, k)`, whose codegen array-indexes the
 // receiver — on a Map that reads its backing store as a positional array and
 // traps. Rewrite to `Map::get(m, k)` ONLY when the receiver is determinably
@@ -2981,6 +3019,15 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
             rl,
             rr
           ], -1), EInt(0))
+        } else if is_erased_generic_operand(l, r, struct_sets, var_types, fn_returns) {
+          // #973: neither operand is determinably String, but at least one is
+          // the bare name of an in-scope generic type parameter — the
+          // concrete runtime type is erased, so dispatch at runtime instead
+          // (see is_erased_generic_operand / gen_generic_rel_diff_body).
+          EBinOp(op, ECall(EIdent("__generic_rel_diff", -1), [
+            rl,
+            rr
+          ], -1), EInt(0))
         } else {
           EBinOp(op, rl, rr)
         }
@@ -3002,6 +3049,12 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         })
         if stringish {
           ECall(EIdent("String::concat", -1), [
+            rl,
+            rr
+          ], -1)
+        } else if is_erased_generic_operand(l, r, struct_sets, var_types, fn_returns) {
+          // #973: same erased-`[T: Add]` case as the relational branch above.
+          ECall(EIdent("__generic_add", -1), [
             rl,
             rr
           ], -1)

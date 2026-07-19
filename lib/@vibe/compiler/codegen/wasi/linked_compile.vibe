@@ -17,7 +17,7 @@ import ../../perceus {
 }
 
 import ../builtin_bodies {
-  gen_arr_concat_body, gen_arr_get_body, gen_arr_len_body, gen_arr_new_body, gen_arr_push_all_body, gen_arr_push_body, gen_arr_set_body, gen_arr_slice_body, gen_arr_truncate_body, gen_bytes_append_body, gen_bytes_concat_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_len_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body, gen_eq_body, gen_rc_alloc_body, gen_rc_drop_body, gen_selfhost_sources_proper_body, gen_selfhost_sources_stub_body, gen_simd_scan_alnum_body, gen_simd_skip_ws_body, gen_str_char_code_at_body, gen_str_concat_body, gen_str_eq_body, gen_str_lex_diff_body, gen_str_from_char_code_body, gen_str_len_body, gen_str_substring_body, gen_string_contains_body, gen_string_ends_with_body, gen_string_index_of_body, gen_string_join_body, gen_string_last_index_of_body, gen_string_split_body, gen_string_starts_with_body, gen_string_trim_body, static_arr_get_body, static_arr_len_body, static_arr_set_body, static_arr_truncate_body, static_double_to_int_body, static_fs_stub_body, static_fs_write_bytes_stub_body, static_identity_body, static_int_to_double_body, static_print_i64_body, static_print_str_body, static_str_char_code_at_body, static_str_eq_body, static_str_len_body
+  gen_arr_concat_body, gen_arr_get_body, gen_arr_len_body, gen_arr_new_body, gen_arr_push_all_body, gen_arr_push_body, gen_arr_set_body, gen_arr_slice_body, gen_arr_truncate_body, gen_bytes_append_body, gen_bytes_concat_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_len_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body, gen_eq_body, gen_generic_add_body, gen_generic_rel_diff_body, gen_rc_alloc_body, gen_rc_drop_body, gen_selfhost_sources_proper_body, gen_selfhost_sources_stub_body, gen_simd_scan_alnum_body, gen_simd_skip_ws_body, gen_str_char_code_at_body, gen_str_concat_body, gen_str_eq_body, gen_str_lex_diff_body, gen_str_from_char_code_body, gen_str_len_body, gen_str_substring_body, gen_string_contains_body, gen_string_ends_with_body, gen_string_index_of_body, gen_string_join_body, gen_string_last_index_of_body, gen_string_split_body, gen_string_starts_with_body, gen_string_trim_body, static_arr_get_body, static_arr_len_body, static_arr_set_body, static_arr_truncate_body, static_double_to_int_body, static_fs_stub_body, static_fs_write_bytes_stub_body, static_identity_body, static_int_to_double_body, static_print_i64_body, static_print_str_body, static_str_char_code_at_body, static_str_eq_body, static_str_len_body
 }
 
 import ../builtin_registry.vibe {
@@ -1161,6 +1161,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let simd_scan_alnum_idx = simd_skip_ws_idx + 1
   let simd_scan_alnum_str_idx = simd_scan_alnum_idx + 1
   let str_lex_diff_idx = simd_scan_alnum_str_idx + 1
+  // #973: erased-generic `[T: Ord]`/`[T: Add]` runtime dispatch (see the doc
+  // comment on gen_generic_rel_diff_body). Linear lane only -- desugar_trait_dicts
+  // is only invoked from this file, so no gc-lane index is needed.
+  let generic_rel_diff_idx = str_lex_diff_idx + 1
+  let generic_add_idx = generic_rel_diff_idx + 1
   let env_get_idx = if env_get_import_idx >= 0 {
     env_get_import_idx
   } else {
@@ -1415,7 +1420,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   } else {
     env_args_len_idx
   }
-  let max_builtin_func_idx = str_lex_diff_idx
+  let max_builtin_func_idx = generic_add_idx
   let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
   let func_offset = num_imported_funcs + num_generated
   let fn_indices_list = lc_fresh_int_array()
@@ -1508,6 +1513,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         "simd_scan_alnum_str" => simd_scan_alnum_str_idx,
         // #746: backs String < > <= >= (desugar rewrites to str_lex_diff(a,b) <op> 0).
         "str_lex_diff" => str_lex_diff_idx,
+        // #973: backs `<`/`>`/`<=`/`>=`/`+` on an erased `[T: Ord]`/`[T: Add]`
+        // generic operand (desugar_trait_dict.vibe rewrites the binop when the
+        // operand's static type is the bare unresolved type parameter).
+        "__generic_rel_diff" => generic_rel_diff_idx,
+        "__generic_add" => generic_add_idx,
         "print_int" => print_int_idx,
         "print_str" => print_str_idx,
         "String::length" => str_len_idx,
@@ -1717,6 +1727,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   push_builtin(gen_simd_scan_alnum_body(enable_rc, false), 1, 3, 8)
   push_builtin(gen_simd_scan_alnum_body(enable_rc, true), 1, 3, 8)
   push_builtin(gen_str_lex_diff_body(enable_rc), 7, 0, 4)
+  push_builtin(gen_generic_rel_diff_body(enable_rc, str_lex_diff_idx), 0, 0, 4)
+  push_builtin(gen_generic_add_body(str_concat_idx), 0, 0, 4)
   // #708: one counter cell shared across every function's lift pass, so each
   // lift site gets a distinct `__m_scrut_N` name (see lift_match_scrutinees).
   let m_scrut_counter = [0]
@@ -3618,6 +3630,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   Array::set(gen_sec_names, simd_scan_alnum_idx - num_imported_funcs, "__rt_simd_scan_alnum")
   Array::set(gen_sec_names, simd_scan_alnum_str_idx - num_imported_funcs, "__rt_simd_scan_alnum_str")
   Array::set(gen_sec_names, str_lex_diff_idx - num_imported_funcs, "__rt_str_lex_diff")
+  Array::set(gen_sec_names, generic_rel_diff_idx - num_imported_funcs, "__rt_generic_rel_diff")
+  Array::set(gen_sec_names, generic_add_idx - num_imported_funcs, "__rt_generic_add")
   let name_sec_names = gen_sec_names
   let mut usn_i = 0
   while usn_i < num_user_funcs {
