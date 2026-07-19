@@ -21,7 +21,7 @@ import ../common_extractors {
 }
 
 import ../wasm_emit {
-  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_full, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_f64_abs, emit_f64_ceil, emit_f64_floor, emit_f64_max, emit_f64_min, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data, emit_v128_load, emit_v128_store, emit_i8x16_splat, emit_i8x16_eq, emit_i8x16_le_u, emit_i8x16_ge_u, emit_v128_and, emit_v128_or, emit_v128_not, emit_i8x16_bitmask, emit_v128_any_true, emit_i8x16_all_true, emit_v128_const_splat_byte
+  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_full, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_const_lohi, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_f64_abs, emit_f64_ceil, emit_f64_floor, emit_f64_max, emit_f64_min, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data, emit_v128_load, emit_v128_store, emit_i8x16_splat, emit_i8x16_eq, emit_i8x16_le_u, emit_i8x16_ge_u, emit_v128_and, emit_v128_or, emit_v128_not, emit_i8x16_bitmask, emit_v128_any_true, emit_i8x16_all_true, emit_v128_const_splat_byte
 }
 
 import ./compile_lambda.vibe {
@@ -2113,17 +2113,59 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       nl + 6
     }
     else if fname == "Double::to_int" || fname == "Float::to_int" {
+      // #997: `i64.trunc_f64_s` TRAPS (an unhandled wasm trap, not a
+      // catchable vibe `Error`) on NaN, +-Infinity, or any magnitude
+      // outside the i64 range -- this is the inline lowering for a direct
+      // `Double::to_int(...)` call, which is the COMMON case and bypasses
+      // the builtin-body function table entirely (see
+      // gen_double_to_int_body / gc_gen_double_to_int_body for the
+      // indirect-call / first-class-value path, which carries the
+      // identical guard). No feature flag on this wasm target makes
+      // `i64.trunc_sat_f64_s` available, so NaN and out-of-i64-range
+      // values saturate to 0 by hand instead of trunc'ing at all.
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       if ctx.enable_rc {
         emit_unbox_float(buf)
       }
+      let val_l = nl
+      Array::push(local_names, "__d2i_val")
+      emit_local_set(buf, val_l)
+      // NaN: x != x is only true for NaN.
+      emit_local_get(buf, val_l)
+      emit_f64_reinterpret_i64(buf)
+      emit_local_get(buf, val_l)
+      emit_f64_reinterpret_i64(buf)
+      emit_f64_ne(buf)
+      emit_if_i64(buf)
+      emit_i64_const(buf, 0)
+      emit_else(buf)
+      // Upper bound: trunc_f64_s is defined for x < 2^63.
+      emit_local_get(buf, val_l)
+      emit_f64_reinterpret_i64(buf)
+      emit_f64_const_lohi(buf, 0, 1138753536)
+      emit_f64_lt(buf)
+      emit_if_i64(buf)
+      // Lower bound: trunc_f64_s is defined for x >= -2^63.
+      emit_local_get(buf, val_l)
+      emit_f64_reinterpret_i64(buf)
+      emit_f64_const_lohi(buf, 0, 3286237184)
+      emit_f64_ge(buf)
+      emit_if_i64(buf)
+      emit_local_get(buf, val_l)
       emit_f64_reinterpret_i64(buf)
       emit_i64_trunc_f64_s(buf)
+      emit_else(buf)
+      emit_i64_const(buf, 0)
+      emit_end(buf)
+      emit_else(buf)
+      emit_i64_const(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
       if ctx.enable_rc {
         emit_i64_const(buf, 1)
         emit_i64_shl(buf)
       }
-      nl
+      nl + 1
     }
     else if fname == "Int::to_double" || fname == "Int::to_float" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)

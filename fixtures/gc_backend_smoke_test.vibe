@@ -178,6 +178,20 @@ let float_batch: () -> Int = () -> {
   cmp1 + cmp2 + cmp3 + cmp4 + cmp5
 }
 
+// #997: `Double::to_int` lowers to wasm's `i64.trunc_f64_s`, which TRAPS
+// (an unhandled wasm trap, not a catchable `Error`) on NaN or +-Infinity --
+// on the gc backend just like the linear one (`gc_gen_double_to_int_body`
+// in codegen/gc/backend_builtins_numeric.vibe carries the identical NaN /
+// out-of-i64-range guard as the linear backend's `gen_double_to_int_body`).
+// These now saturate to 0 instead of trapping; ordinary in-range values
+// still truncate toward zero. Expected contribution: 0 + 0 + 0 + 37 = 37.
+let double_to_int_batch: () -> Int = () -> {
+  let nan = 0.0 / 0.0
+  let pinf = 1.0 / 0.0
+  let ninf = (0.0 - 1.0) / 0.0
+  Double::to_int(nan) + Double::to_int(pinf) + Double::to_int(ninf) + Double::to_int(3.7) * 10 + 7
+}
+
 export let main = () -> Int {
   let check: (Int) -> Int = (sp) -> {
     let a = if is_pos(sp) {
@@ -198,5 +212,5 @@ export let main = () -> Int {
     acc = acc + pick(i, "a")
     i = i + 1
   }
-  acc + check(5) + check(0 - 3) + grow_sum(30000) + enum_sum() + batch2() + float_batch()
+  acc + check(5) + check(0 - 3) + grow_sum(30000) + enum_sum() + batch2() + float_batch() + double_to_int_batch()
 }
