@@ -2599,8 +2599,8 @@ async function main() {
         const bytes = decodeHostBytes(instanceRef, result);
         const outPath =
           invoke === "selfbuild_compile_cli_adapter"
-            ? "_build/bench/selfhost_cli_adapter/selfhost_cli_stage1.wasm"
-            : "_build/bench/selfhost_wasi_selfbuild/index_stage2.wasm";
+            ? "_build/bench/cli_adapter/cli_stage1.wasm"
+            : "_build/bench/wasi_selfbuild/index_stage2.wasm";
         const outDir = path.dirname(outPath);
         if (!fs.existsSync(outDir)) {
           fs.mkdirSync(outDir, { recursive: true });
@@ -2808,11 +2808,11 @@ main().catch((err) => {
   // exception crash dump, which the `vibe check`/`vibe diagnostics` shell
   // wrappers (`>/dev/null 2>&1 || true`) silently swallowed into "clean".
   // Intercept it here instead and write the same `.diag` sidecar the
-  // adapter's own error paths use (selfhost_cli_adapter.vibe's
+  // adapter's own error paths use (cli_adapter.vibe's
   // emit_compile_diag), so those commands can report a real (if unlocated)
   // diagnostic.
   //
-  // #1007 review (Codex P2): read_arg_or_env (selfhost_cli_adapter.vibe)
+  // #1007 review (Codex P2): read_arg_or_env (cli_adapter.vibe)
   // prefers the POSITIONAL arg (Env::args_get) over the env var, only
   // falling back to VIBE_OUTPUT when the arg is absent -- `runtime/vibe`
   // never unsets an inherited VIBE_OUTPUT before invoking the runner, so

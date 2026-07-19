@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-OUT_DIR="$PROJECT_ROOT/_build/bench/selfhost_cli_adapter"
+OUT_DIR="$PROJECT_ROOT/_build/bench/cli_adapter"
 ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/lib/@vibe/compiler/cli_fixed_adapter.vibe}"
 STAGE_TIMEOUT_SEC="${VIBE_CLI_FIXED_ADAPTER_STAGE_TIMEOUT_SEC:-300}"
 DRIVER_COMPONENT="$OUT_DIR/fixed_adapter_driver.component.wasm"

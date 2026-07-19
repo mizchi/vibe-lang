@@ -14,7 +14,7 @@ ALLOW_UNPINNED_SEED="${VIBE_GENERATION_ALLOW_UNPINNED_SEED:-0}"
 CLI_INVOKE="${VIBE_GENERATION_CLI_INVOKE:-auto}"
 SELFBUILD_INVOKE="${VIBE_GENERATION_SELFBUILD_INVOKE:-auto}"
 FLAT_CLI_SOURCE="${VIBE_GENERATION_FLAT_CLI_SOURCE:-auto}"
-SELFBUILD_OUT="$PROJECT_ROOT/_build/bench/selfhost_wasi_selfbuild/index_stage2.wasm"
+SELFBUILD_OUT="$PROJECT_ROOT/_build/bench/wasi_selfbuild/index_stage2.wasm"
 NODE_STACK_SIZE="${VIBE_GENERATION_NODE_STACK_SIZE:-131072}"
 # Selfhost-generated wasm now emits guest-side memory.grow checks after heap
 # bumps, so raw ABI runs do not need a fixed host pre-grow. Keep the env knob as

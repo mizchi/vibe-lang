@@ -5,8 +5,8 @@ An experimental self-hosted compiler/tooling package for vibe-lang, written in v
 ## Status
 
 - Frontend and typecheck stages are implemented in vibe.
-- Multi-file `import` / `export` resolution is part of the active selfhost pipeline.
-- Mainline validation is now centered on compiled/selfhost fixture and CLI gates.
+- Multi-file `import` / `export` resolution is part of the active compiler pipeline.
+- Mainline validation is now centered on compiled fixture and CLI gates.
 - Current gates and remaining work are tracked via GitHub Issues and
   [docs/release-roadmap.md](../../docs/release-roadmap.md).
 
@@ -28,10 +28,10 @@ An experimental self-hosted compiler/tooling package for vibe-lang, written in v
 - Trait/type-def environment plumbing
 - Import surface checks in statement pass
 
-### Selfhost / Fixture Support
+### Fixture Support
 
 - Multi-file module loading with import cycle detection
-- Fixture parsing / roundtrip / typecheck helpers used by selfhost suites
+- Fixture parsing / roundtrip / typecheck helpers used by the test suites
 - Runtime fixture smoke coverage via the compiled backend
 
 ### Incremental Typecheck Experiment
@@ -60,7 +60,7 @@ just release-check
 Run focused compiler suites:
 
 ```bash
-just test-selfhost-typecheck-fixtures
-just test-selfhost-runtime-fixtures
-just test-selfhost-cli-core
+just test-typecheck-fixtures
+just test-runtime-fixtures
+just test-cli-core
 ```

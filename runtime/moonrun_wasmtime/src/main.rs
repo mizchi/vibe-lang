@@ -745,7 +745,7 @@ fn run(args: Vec<String>) -> Result<i32> {
             // surface here as an ordinary trap message, which `vibe
             // check`/`vibe diagnostics`'s `>/dev/null 2>&1 || true` wrapper
             // silently swallowed into "clean". Write the same `.diag` sidecar
-            // the checker's own error paths use (selfhost_cli_adapter.vibe's
+            // the checker's own error paths use (cli_adapter.vibe's
             // emit_compile_diag reads it back via read_arg_or_env(1,
             // "VIBE_OUTPUT")) so those commands report a real (if unlocated)
             // diagnostic instead.

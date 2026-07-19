@@ -31,7 +31,7 @@ The build-cache key is `persistent_cache_version_tag() | <content fingerprint>`,
 where the version tag is:
 
 ```
-v10 | cg-<selfhost_codegen_fingerprint()>
+v10 | cg-<codegen_fingerprint()>
 ```
 
 - `v10` — a manual knob bumped only on a cache **format** change (how `.hex` /

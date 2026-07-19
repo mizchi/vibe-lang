@@ -20,7 +20,7 @@
 # `<input> <output> <entry_name> [mode]` directly; see
 # lib/@vibe/cli/dispatch.vibe::selfhost_cli_dispatch_args). Compiling it needs
 # import resolution from the filesystem, which the base compiler's cli_main
-# only does under VIBE_FS_COMPILE=1 (lib/@vibe/compiler/selfhost_cli_adapter.vibe).
+# only does under VIBE_FS_COMPILE=1 (lib/@vibe/compiler/cli_adapter.vibe).
 #
 # Prints the resulting wasm path to stdout on success (mirrors the deleted
 # script's contract -- callers capture it via command substitution).

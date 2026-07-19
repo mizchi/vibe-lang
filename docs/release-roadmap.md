@@ -418,7 +418,7 @@
 >
 > **診断表面化 (UX/LSP 前提)**: コンパイルエラー時、compiler CLI が整形済み
 > 診断 String を `<output>.diag` サイドカーに書き、launcher が `error: <file>:
-> <message>` として表示するようにした（`selfhost_cli_adapter.vibe` cli_main を
+> <message>` として表示するようにした（`cli_adapter.vibe` cli_main を
 > `handle ... with Error { Throw(msg) => ... }` で包む）。trap/バックトレースの
 > 代わりに `unknown name: zzz` / `type mismatch ...` が出る。compiler gate
 > （bundle/module-source sync + stage2==stage3 fixpoint）green。
