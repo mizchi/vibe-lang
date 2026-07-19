@@ -101,3 +101,34 @@ test "labeled args: local shadow of top-level fn accepted" {
 test "labeled args: callee without label info tolerated" {
   assert(check_source_ok("fn call_it(g: (Int, String) -> Int) -> Int {\n  g(y=\"ok\", x=1)\n}\n\nfn main() -> Int {\n  call_it((x: Int, y: String) -> Int { x })\n}"))
 }
+
+// #1001 repro: mixing a labeled and a positional argument in the SAME call is
+// rejected UNCONDITIONALLY (the Oracle's `resolveArguments` rule), even
+// though the label (`x=1`) happens to already sit at its own declared
+// position — `desugar_labeled_args`'s `strip_in_position_labels` used to
+// silently unwrap exactly that label (treating it as a harmless "decorative"
+// label on an otherwise-positional call), turning this into the ordinary
+// positional `f(1, "ok")` before the checker or any post-desugar validation
+// pass ever saw the mix. `check_mixed_argument_modes` (checker_stmt.vibe) now
+// runs BEFORE that stripping, on the call's original argument list.
+test "1001 repro: mixed positional/labeled arguments rejected even when the label is in position" {
+  assert(check_source_err("let f: (x~: Int, y~: String) -> Int = (x~, y~) -> { x }\nfn main() -> Int { f(x=1, \"ok\") }"))
+}
+
+// Same shape, but the SECOND argument carries the label instead — still a
+// mix, still rejected regardless of which position the label sits at.
+test "1001: mixed positional/labeled arguments rejected (label on the second argument)" {
+  assert(check_source_err("let f: (x~: Int, y~: String) -> Int = (x~, y~) -> { x }\nfn main() -> Int { f(1, y=\"ok\") }"))
+}
+
+// A fully-labeled call in a DIFFERENT declared order is not a mix — it must
+// keep being accepted (regression guard for the #1001 fix: the mixed-mode
+// check must not fire on a genuinely all-labeled call).
+test "1001: fully-labeled out-of-order call is not a mix, stays accepted" {
+  assert(check_source_ok("let f: (x~: Int, y~: String) -> Int = (x~, y~) -> { x }\nfn main() -> Int { f(y=\"ok\", x=1) }"))
+}
+
+// A fully-positional call is not a mix either — stays accepted.
+test "1001: fully-positional call is not a mix, stays accepted" {
+  assert(check_source_ok("let f: (x~: Int, y~: String) -> Int = (x~, y~) -> { x }\nfn main() -> Int { f(1, \"ok\") }"))
+}

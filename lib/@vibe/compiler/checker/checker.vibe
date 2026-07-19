@@ -695,7 +695,19 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
       let eh = head_kind(subst_apply(s, expected))
       let ah = head_kind(subst_apply(s, actual))
       let head_differ = eh != 0 && ah != 0 && eh != ah
-      if structural {
+      // #1001: a `CtNamed` head is kind 0 in `head_kind` (may be a rigid type
+      // parameter), so `Result[Int,String]` vs `Option[Int]` — or the same
+      // pair nested inside `Array[_]`/`Option[_]`/a tuple/a fn signature —
+      // sails past `head_differ` untouched, and `detect_narrowed_generic_mismatch`
+      // below only fires on a SAME-name pair, so a genuinely DIFFERENT nominal
+      // head was never reported at all. Check that ahead of the existing
+      // gates; internally gated on `type_fully_concrete` so a still-rigid
+      // type parameter never triggers it.
+      let nominal_conflict = nominal_head_conflict(subst_apply(s, expected), subst_apply(s, actual))
+      if nominal_conflict {
+        Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), off_marker(off)))))))
+        s
+      } else if structural {
         // #939: the structural retry tolerated EVERY effect-only difference,
         // including a function value whose CONCRETE row silently vanishes
         // into a pure-typed slot (HOF argument, let / struct field / array
@@ -742,6 +754,123 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
         Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), off_marker(off)))))))
         s
       }
+    }
+  }
+}
+
+// #1001: the type's outer constructor's nominal name, when it is one that can
+// NEVER be a placeholder for a still-unresolved rigid type parameter --
+// `CtOption` (the builtin `Option[T]`; `Option` written as an annotation
+// resolves to this, not `CtNamed("Option", _)` -- see `railway_head` above)
+// and `CtEnum`/`CtStruct` (a RESOLVED reference to a declared enum/struct,
+// always concrete) are unconditionally trustworthy. A bare `CtNamed(n, _)`
+// is ambiguous -- it is ALSO how an uninstantiated generic type parameter
+// surfaces (`CtNamed("T", [])`) -- so it only counts when
+// `type_fully_concrete` confirms this occurrence is not that sentinel shape.
+// `None` means "nothing nominal to compare" (a type variable, a builtin
+// scalar, a container whose own head isn't itself nominal, etc).
+fn nominal_name_of(t: Type) -> Option[String] {
+  match t {
+    CtOption(_) => Some("Option"),
+    CtEnum(n) => Some(n),
+    CtStruct(n) => Some(n),
+    CtNamed(n, _) => if type_fully_concrete(t) {
+      Some(n)
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+// #1001: true when `expected` and `actual` carry a corresponding pair of
+// nominal names that DIFFER, anywhere in their structure -- e.g.
+// `Result[Int,String]` (`CtNamed`) vs `Option[Int]` (the builtin `CtOption`),
+// or the same pair nested inside `Array[_]`/`Option[_]`/a tuple/a fn
+// signature/a same-named `CtNamed`'s own type arguments (mirroring
+// `effect_row_dropped`'s traversal above). No instantiation of type
+// PARAMETERS can ever reconcile two DIFFERENT nominal names, so this is a
+// genuine mismatch regardless of arity or which concrete `Type` shape either
+// side happens to be represented as -- unlike `detect_narrowed_generic_mismatch`
+// below, which only catches a SAME-name `CtNamed`/`CtNamed` mismatch (e.g.
+// `Box[Int]` vs `Box[String]`, #981) and never even inspects a
+// `CtArray[Option[Int]]` vs `CtArray[Result[Int,String]]` pair's nested heads,
+// nor a builtin `CtOption` against a `CtNamed`/`CtEnum` nominal type, at all.
+fn nominal_head_conflict(expected: Type, actual: Type) -> Bool {
+  let direct_conflict = match nominal_name_of(expected) {
+    Some(en) => match nominal_name_of(actual) {
+      Some(an) => en != an,
+      None => false
+    },
+    None => false
+  }
+  if direct_conflict {
+    true
+  } else {
+    match expected {
+      CtNamed(_, eargs) => match actual {
+        CtNamed(_, aargs) => if Array::length(eargs) == Array::length(aargs) {
+          let mut i = 0
+          let mut conflict = false
+          while i < Array::length(eargs) && !conflict {
+            if nominal_head_conflict(Array::get(eargs, i), Array::get(aargs, i)) {
+              conflict = true
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          conflict
+        } else {
+          false
+        },
+        _ => false
+      },
+      CtArray(ee) => match actual {
+        CtArray(ae) => nominal_head_conflict(ee, ae),
+        _ => false
+      },
+      CtOption(ee) => match actual {
+        CtOption(ae) => nominal_head_conflict(ee, ae),
+        _ => false
+      },
+      CtTuple(ees) => match actual {
+        CtTuple(aes) => if Array::length(ees) == Array::length(aes) {
+          let mut i = 0
+          let mut conflict = false
+          while i < Array::length(ees) && !conflict {
+            if nominal_head_conflict(Array::get(ees, i), Array::get(aes, i)) {
+              conflict = true
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          conflict
+        } else {
+          false
+        },
+        _ => false
+      },
+      CtFn(eps, er, _) => match actual {
+        CtFn(aps, ar, _) => if Array::length(eps) == Array::length(aps) {
+          let mut i = 0
+          let mut conflict = nominal_head_conflict(er, ar)
+          while i < Array::length(eps) && !conflict {
+            if nominal_head_conflict(Array::get(eps, i), Array::get(aps, i)) {
+              conflict = true
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          conflict
+        } else {
+          false
+        },
+        _ => false
+      },
+      _ => false
     }
   }
 }
