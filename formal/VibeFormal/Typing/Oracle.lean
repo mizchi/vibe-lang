@@ -21,6 +21,17 @@ private def option (element : Ty) : Ty := named "Option" [element]
 private def identitySignature : Signature :=
   ⟨"identity", 1, [parameter (.var 0)], .var 0⟩
 
+private def sameTypeVariableSignature : Signature :=
+  ⟨"same", 1, [parameter (.var 0), parameter (.var 0)], .var 0⟩
+
+private def correlatedArraysSignature : Signature :=
+  ⟨"first", 1,
+    [parameter (array (.var 0)), parameter (array (.var 0))],
+    array (.var 0)⟩
+
+private def addSignature : Signature :=
+  ⟨"add", 0, [parameter .int, parameter .int], .int⟩
+
 private def getIntSignature : Signature :=
   ⟨"get_int", 0, [parameter (box .int)], .int⟩
 
@@ -77,6 +88,51 @@ def genericIdentity : OracleCase := {
   expected := .accepted .int [.int]
 }
 
+def sameTypeVariableAccepted : OracleCase := {
+  name := "same-type-variable-accepted"
+  issue := "#990"
+  source := "fn same[T](x: T, y: T) -> T { x } fn good() -> Int { same(1, 2) }"
+  signature := sameTypeVariableSignature
+  arguments := [positional .int, positional .int]
+  expected := .accepted .int [.int]
+}
+
+def sameTypeVariableMismatch : OracleCase := {
+  name := "same-type-variable-mismatch"
+  issue := "#990"
+  source := "fn same[T](x: T, y: T) -> T { x } fn bad() -> Int { same(1, \"bad\") }"
+  signature := sameTypeVariableSignature
+  arguments := [positional .int, positional .string]
+  expected := .rejected .typeMismatch
+}
+
+def nestedTypeVariableCorrelation : OracleCase := {
+  name := "nested-type-variable-correlation"
+  issue := "#990"
+  source := "fn first[T](a: Array[T], b: Array[T]) -> Array[T] { a } fn bad(a: Array[Int], b: Array[String]) -> Array[Int] { first(a, b) }"
+  signature := correlatedArraysSignature
+  arguments := [positional (array .int), positional (array .string)]
+  expected := .rejected .typeMismatch
+}
+
+def tooFewArguments : OracleCase := {
+  name := "too-few-arguments"
+  issue := "#990"
+  source := "fn add(x: Int, y: Int) -> Int { x + y } fn bad() -> Int { add(1) }"
+  signature := addSignature
+  arguments := [positional .int]
+  expected := .rejected .arityMismatch
+}
+
+def tooManyArguments : OracleCase := {
+  name := "too-many-arguments"
+  issue := "#990"
+  source := "fn add(x: Int, y: Int) -> Int { x + y } fn bad() -> Int { add(1, 2, 3) }"
+  signature := addSignature
+  arguments := [positional .int, positional .int, positional .int]
+  expected := .rejected .arityMismatch
+}
+
 def labeledReordered : OracleCase := {
   name := "labeled-reordered"
   issue := "#986"
@@ -106,7 +162,7 @@ def builderElementMismatch : OracleCase := {
 
 def resultOptionCallMismatch : OracleCase := {
   name := "result-option-mismatch"
-  issue := "#990"
+  issue := "#1001"
   source := "fn use_result(x: Result[Int,String]) -> Int { 0 } fn bad(o: Option[Int]) -> Int { use_result(o) }"
   signature := resultOptionCallSignature
   arguments := [positional (option .int)]
@@ -142,7 +198,7 @@ def nestedGenericArgumentMismatch : OracleCase := {
 
 def nestedNominalHeadMismatch : OracleCase := {
   name := "nested-nominal-head-mismatch"
-  issue := "#981"
+  issue := "#1001"
   source := "fn use_options(x: Array[Option[Int]]) -> Int { 0 } fn bad(x: Array[Result[Int,String]]) -> Int { use_options(x) }"
   signature := useOptionsSignature
   arguments := [positional (array (result .int .string))]
@@ -239,8 +295,22 @@ def labeledMissing : OracleCase := {
   expected := .rejected .arityMismatch
 }
 
+def mixedArgumentModes : OracleCase := {
+  name := "mixed-argument-modes"
+  issue := "#1001"
+  source := "let f: (x~: Int, y~: String) -> Int = (x~, y~) -> { x } fn bad() -> Int { f(x=1, \"ok\") }"
+  signature := labeledSignature
+  arguments := [labeled "x" .int, positional .string]
+  expected := .rejected .mixedArgumentModes
+}
+
 def cases : List OracleCase := [
   genericIdentity,
+  sameTypeVariableAccepted,
+  sameTypeVariableMismatch,
+  nestedTypeVariableCorrelation,
+  tooFewArguments,
+  tooManyArguments,
   labeledReordered,
   labeledPositional,
   builderElementMismatch,
@@ -258,7 +328,8 @@ def cases : List OracleCase := [
   labeledTypeMismatch,
   labeledUnknown,
   labeledDuplicate,
-  labeledMissing
+  labeledMissing,
+  mixedArgumentModes
 ]
 
 def OracleCase.actual (testCase : OracleCase) : CallOutcome :=
@@ -280,6 +351,12 @@ def brokenHeadOnlyAcceptsMapValueMismatch : Bool :=
 
 def brokenUncheckedAcceptsUnknownLabel : Bool :=
   brokenUncheckedAccepts labeledUnknown.signature labeledUnknown.arguments
+
+def brokenHeadOnlyAcceptsRepeatedVariableMismatch : Bool :=
+  brokenHeadOnlyAccepts sameTypeVariableMismatch.signature sameTypeVariableMismatch.arguments
+
+def brokenUncheckedAcceptsMixedArgumentModes : Bool :=
+  brokenUncheckedAccepts mixedArgumentModes.signature mixedArgumentModes.arguments
 
 private def renderErrorKind : CallErrorKind → String
   | .arityMismatch => "arity-mismatch"

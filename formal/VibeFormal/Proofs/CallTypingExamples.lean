@@ -31,6 +31,28 @@ example : Oracle.mapValueAccepted.source =
 example : Oracle.boxArgumentMismatch.expected = .rejected .typeMismatch := by
   rfl
 
+example : Oracle.sameTypeVariableAccepted.expected =
+    .accepted .int [.int] := by
+  rfl
+
+example : Oracle.sameTypeVariableMismatch.expected = .rejected .typeMismatch := by
+  rfl
+
+example : Oracle.nestedTypeVariableCorrelation.expected = .rejected .typeMismatch := by
+  rfl
+
+example : Oracle.tooFewArguments.expected = .rejected .arityMismatch := by
+  rfl
+
+example : Oracle.tooManyArguments.expected = .rejected .arityMismatch := by
+  rfl
+
+example : Oracle.mixedArgumentModes.expected = .rejected .mixedArgumentModes := by
+  rfl
+
+example : Oracle.cases.length = 25 := by
+  rfl
+
 example : Oracle.brokenHeadOnlyAcceptsBoxMismatch = true := by
   native_decide
 
@@ -41,6 +63,12 @@ example : Oracle.brokenHeadOnlyAcceptsMapValueMismatch = true := by
   native_decide
 
 example : Oracle.brokenUncheckedAcceptsUnknownLabel = true := by
+  native_decide
+
+example : Oracle.brokenHeadOnlyAcceptsRepeatedVariableMismatch = true := by
+  native_decide
+
+example : Oracle.brokenUncheckedAcceptsMixedArgumentModes = true := by
   native_decide
 
 end VibeFormal.Typing.Examples
