@@ -8,6 +8,10 @@ import ../core {
   dce_stmts
 }
 
+import ../../../../lib/@vibe/core {
+  array_empty
+}
+
 
 //# Functions
 
@@ -18,12 +22,8 @@ fn no_ty() -> Option[TypeExpr] {
 //# Misc
 
 test "empty stmts returns empty" {
-  let stmts = Array::slice([
-    SLet(false, false, "_dummy", no_ty(), EUnit)
-  ], 0, 0)
-  let result = dce_stmts(stmts, Array::slice([
-    ""
-  ], 0, 0))
+  let stmts = array_empty()
+  let result = dce_stmts(stmts, array_empty())
   assert(eq(Array::length(result), 0))
 }
 
@@ -41,18 +41,14 @@ test "single unused let is removed" {
   let stmts = [
     SLet(false, false, "foo", no_ty(), EInt(42))
   ]
-  let result = dce_stmts(stmts, Array::slice([
-    ""
-  ], 0, 0))
+  let result = dce_stmts(stmts, array_empty())
   assert(eq(Array::length(result), 0))
 }
 
 test "transitive dependency is kept" {
   let stmts = [
     SLet(false, false, "b", no_ty(), EInt(1)),
-    SLet(false, false, "a", no_ty(), ECall(EIdent("b", -1), Array::slice([
-      EUnit
-    ], 0, 0), -1))
+    SLet(false, false, "a", no_ty(), ECall(EIdent("b", -1), array_empty(), -1))
   ]
   let result = dce_stmts(stmts, [
     "a"
@@ -61,17 +57,13 @@ test "transitive dependency is kept" {
 }
 
 test "SEnum is always kept" {
-  let no_tys = Array::slice([
-    TyName("")
-  ], 0, 0)
+  let no_tys = array_empty()
   let stmts = [
-    SEnum(false, "MyEnum", Array::slice([""], 0, 0), [
+    SEnum(false, "MyEnum", array_empty(), [
       ("A", no_tys)
-    ], Array::slice([""], 0, 0))
+    ], array_empty())
   ]
-  let result = dce_stmts(stmts, Array::slice([
-    ""
-  ], 0, 0))
+  let result = dce_stmts(stmts, array_empty())
   assert(eq(Array::length(result), 1))
 }
 
@@ -79,17 +71,9 @@ test "SStruct is always kept" {
   let stmts = [
     SStruct(false, "MyStruct", [
       ("x", TyName("Int"))
-    ], Array::slice([
-      ""
-    ], 0, 0), Array::slice([
-      ""
-    ], 0, 0), Array::slice([
-      ""
-    ], 0, 0))
+    ], array_empty(), array_empty(), array_empty())
   ]
-  let result = dce_stmts(stmts, Array::slice([
-    ""
-  ], 0, 0))
+  let result = dce_stmts(stmts, array_empty())
   assert(eq(Array::length(result), 1))
 }
 
@@ -99,18 +83,14 @@ test "SImport is always kept" {
       ("bar", None)
     ])
   ]
-  let result = dce_stmts(stmts, Array::slice([
-    ""
-  ], 0, 0))
+  let result = dce_stmts(stmts, array_empty())
   assert(eq(Array::length(result), 1))
 }
 
 test "entry and deps kept, unrelated removed" {
   let stmts = [
     SLet(false, false, "helper", no_ty(), EInt(10)),
-    SLet(false, false, "main", no_ty(), ECall(EIdent("helper", -1), Array::slice([
-      EUnit
-    ], 0, 0), -1)),
+    SLet(false, false, "main", no_ty(), ECall(EIdent("helper", -1), array_empty(), -1)),
     SLet(false, false, "unused", no_ty(), EInt(99))
   ]
   let result = dce_stmts(stmts, [
@@ -159,15 +139,9 @@ test "deep transitive chain" {
 }
 
 test "EFn body refs are collected" {
-  let no_params = Array::slice([
-    ("", None)
-  ], 0, 0)
-  let no_tp = Array::slice([
-    ""
-  ], 0, 0)
-  let no_tb = Array::slice([
-    ("", no_tp)
-  ], 0, 0)
+  let no_params = array_empty()
+  let no_tp = array_empty()
+  let no_tb = array_empty()
   let stmts = [
     SLet(false, false, "helper", no_ty(), EInt(42)),
     SLet(false, false, "f", no_ty(), EFn(no_tp, no_tb, no_params, no_ty(), None, EIdent("helper", -1))),
@@ -185,22 +159,14 @@ test "STest is always kept" {
     STest("my test", EInt(1)),
     SLet(false, false, "unused", no_ty(), EInt(0))
   ]
-  let result = dce_stmts(stmts, Array::slice([
-    ""
-  ], 0, 0))
+  let result = dce_stmts(stmts, array_empty())
   // STest kept, unused removed
   assert(eq(Array::length(result), 1))
 }
 
 test "STest expression refs are kept" {
   let stmts = [
-    SLet(false, false, "helper", no_ty(), EFn(Array::slice([
-      ""
-    ], 0, 0), Array::slice([
-      ("", Array::slice([
-        ""
-      ], 0, 0))
-    ], 0, 0), [
+    SLet(false, false, "helper", no_ty(), EFn(array_empty(), array_empty(), [
       ("x", None)
     ], no_ty(), None, EIdent("x", -1))),
     STest("calls helper", ECall(EIdent("helper", -1), [
@@ -208,9 +174,7 @@ test "STest expression refs are kept" {
     ], -1)),
     SLet(false, false, "unused", no_ty(), EInt(0))
   ]
-  let result = dce_stmts(stmts, Array::slice([
-    ""
-  ], 0, 0))
+  let result = dce_stmts(stmts, array_empty())
   assert(eq(Array::length(result), 2))
 }
 
@@ -220,8 +184,6 @@ test "SBench expression refs are kept" {
     SBench("reads helper", EIdent("helper", -1)),
     SLet(false, false, "unused", no_ty(), EInt(0))
   ]
-  let result = dce_stmts(stmts, Array::slice([
-    ""
-  ], 0, 0))
+  let result = dce_stmts(stmts, array_empty())
   assert(eq(Array::length(result), 2))
 }
