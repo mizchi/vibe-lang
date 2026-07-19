@@ -65,10 +65,12 @@ variables, positional arguments, and fully-labeled arguments. It proves that:
 - fully-labeled arguments resolve by ABI label rather than source order, while
   unknown and duplicate labels are rejected;
 - builtin signatures use the same call relation as user functions rather than
-  a separate per-position allowlist.
+  a separate per-position allowlist;
+- `Map::set` is a functional update returning `Map[K,V]`, and source aliases
+  such as `Int64Array = Array[Int]` are normalized before core typing.
 
 The executable corpus in `formal/oracle/call-typing.tsv` locks positive and
-negative witnesses for #938, #941, #981, #983, #985, and #986. Deliberately
+negative witnesses for #938, #981, #983, #985, and #986. Deliberately
 broken head-only and unchecked-argument predicates demonstrate that the corpus
 detects type-argument erasure and argument-check bypass.
 
@@ -78,7 +80,10 @@ subtyping, optional parameters, mixed positional/labeled calls, implicit
 coercions, evaluation, or Wasm representation. The embedded Vibe sources are
 bridge fixtures. `examples/selfhost-call-oracle.sh` feeds them to the current
 selfhost checker and reports semantic drift, but passing the Lean corpus check
-alone does not prove implementation correspondence.
+alone does not prove implementation correspondence. In particular, the `?` /
+`let*` railway desugaring from #941 is outside this call-only slice; a plain
+`Result`/`Option` call mismatch is retained as a nominal-head witness without
+claiming to model that closed issue's desugaring path.
 
 ## Verified compiler scheduler properties
 
