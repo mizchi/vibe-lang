@@ -22,7 +22,7 @@ import ./entry/compiler/file_compile {
 }
 
 import ./entry/source_compile/wasi_only/linked_artifacts.vibe {
-  collect_linked_compile_inputs
+  collect_linked_compile_inputs, collect_linked_dep_inputs_for_stmts
 }
 
 import ./entry/source_compile/wasi_only/preprocess_interp.vibe {
@@ -39,6 +39,44 @@ import ./entry/source_compile/wasi_only/linked_library.vibe {
 
 import ./type_db.vibe {
   db_new
+}
+
+// #946(3,4): `vibe check` runs this same inline-wasm codegen validation (lane
+// index / align / etc.) as `vibe diagnostics` — see check_inline_wasm_fns'
+// doc comment in typecheck_fs.vibe. Without this, making `check` genuinely
+// codegen-free (Gate v2 #492, wired to the CLI by #946(3)) would have made it
+// blind to inline-wasm errors that used to be caught by the old full-compile
+// `check` — a regression trade for fixing the empty-file false-positive.
+// `locate_type_error` recovers the `line:col` prefix the OLD full-compile
+// `check` got for free via typecheck_fs.vibe's own db_typecheck_fs path
+// (finish_typecheck_fs_impl wraps every check_program Throw with it) —
+// without rewrapping here, check_linked_file's raw check_program message
+// would regress every located-diagnostic case check has (scripts/
+// test_located_diagnostics.sh).
+import ./runtime/typecheck_fs.vibe {
+  check_inline_wasm_fns, locate_type_error
+}
+
+// #946(3): re-parse the entry file WITH real char offsets for check_linked_file
+// (see its doc comment) — collect_linked_compile_inputs's own entry_stmts come
+// from linked_artifacts.vibe's read_program, which parses via the PLAIN
+// `parse_program(lex(source))` (no starts array => every node's offset is -1,
+// same pitfall parse_program_with_path's doc comment describes for
+// finish_typecheck_fs_impl). Re-parsing just the entry file is self-contained
+// (no shared-helper edit, so compile/build/debug paths that also flow through
+// read_program are untouched). Uses the RECOVERING parser (not
+// parse_program_located): every diagnostic parse_program_recovering emits is
+// ALREADY a full `line L:col C: msg` string (extract_err_token_pos +
+// offset_to_line_col at the point of the throw, in parser.vibe) — the same
+// robust locating parse_program_located does only for its own top-level
+// throws, missing errors that bubble up from nested expr-parsing helpers
+// (e.g. `export let bad = = 5`'s "unexpected token at #9: ..." came back
+// unlocated through parse_program_located but located through the recovering
+// parser). check_linked_file only wants the single FIRST parse error (`check`
+// is one-error-at-a-time; `vibe diagnostics` is the multi-diagnostic surface
+// — collect_all_diagnostics already uses this same recovering parser).
+import ./syntax {
+  lex_with_offsets, parse_program_recovering
 }
 
 //# Functions
@@ -138,12 +176,46 @@ export fn check_linked_file(input_path: String) -> Int with { Error, Fs } {
   // linked check): keep SImport stmts so check_program registers imported names,
   // expand interpolation, then check — but stop before codegen. Stripping
   // imports here would make every imported value read as `unknown name`.
-  let (entry_stmts, resolved_type_stmts, _linked_imports, _linked_dep_specs) = collect_linked_compile_inputs(input_path)
+  //
+  // #946(3): parse the entry file OURSELVES first (located + recovering —
+  // see the import comment above), then feed those stmts into
+  // collect_linked_dep_inputs_for_stmts for dep/import resolution, instead of
+  // calling collect_linked_compile_inputs (which re-parses the entry file
+  // itself via linked_artifacts.vibe's plain, unlocated, non-recovering
+  // read_program — any entry-file parse error there throws a RAW message
+  // before this function's own located handling ever runs).
+  let entry_source = Fs::read_file(input_path)
+  let (tokens, starts, _ends) = lex_with_offsets(entry_source)
+  let (entry_stmts, parse_diags) = parse_program_recovering(tokens, starts, entry_source)
+  if Array::length(parse_diags) > 0 {
+    // Already a full `line L:col C: msg` string (see the import comment
+    // above) -- report just the first, matching check's one-error-at-a-time
+    // convention (vibe diagnostics is the multi-diagnostic surface).
+    throw(Array::get(parse_diags, 0))
+  } else {
+    ()
+  }
+  let (resolved_type_stmts, _linked_imports, _linked_dep_specs) = collect_linked_dep_inputs_for_stmts(input_path, entry_stmts)
   let stmts = empty_stmt_array()
   append_stmt_array(stmts, resolved_type_stmts)
   append_stmt_array(stmts, entry_stmts)
   expand_interp_stmts(stmts)
-  let _ = check_program(stmts)
+  // #946(3): locate errors against the ENTRY file's own source text. `stmts`
+  // is the MERGED entry+deps statement list, so a [@off=N]/by-name location
+  // is only exact for errors whose blame is in the entry file itself (the
+  // common case, and the one every located-diagnostic regression test
+  // exercises); an error rooted in an imported dependency degrades to the
+  // unlocated message, same as before this fix, rather than mis-locating it
+  // against the wrong file's text.
+  handle {
+    let _ = check_program(stmts)
+    match check_inline_wasm_fns(stmts) {
+      Some(msg) => throw(locate_type_error(entry_source, msg)),
+      None => ()
+    }
+  } with Error {
+    Throw(msg) => throw(locate_type_error(entry_source, msg))
+  }
   0
 }
 
