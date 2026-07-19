@@ -68,3 +68,71 @@ test "parse unary not" {
   }
   assert(result == "(!x)")
 }
+
+// #979: `is` used to be checked only once, AFTER the whole `&&`/`||` ladder
+// had already folded, so `a && b is None` misparsed as `(a && b) is None`
+// (requiring `a && b`, a Bool, to satisfy a pattern test meant for `b`'s own
+// type -- a type error in practice, see checker_test / the issue repro).
+// `is` now binds at the same tier as the comparison operators (`==`, `<`,
+// ...): strictly tighter than `&&`/`||`, so `a && b is None` parses as
+// `a && (b is None)`.
+test "parse is binds tighter than &&" {
+  let result = handle {
+    parse_print("a && b is None")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "(a && match b { None => true, _ => false })")
+}
+
+test "parse is binds tighter than || (left operand)" {
+  let result = handle {
+    parse_print("b is None || a")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "(match b { None => true, _ => false } || a)")
+}
+
+test "parse is binds tighter than && (left operand)" {
+  let result = handle {
+    parse_print("b is None && a")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "(match b { None => true, _ => false } && a)")
+}
+
+// `is` binds no tighter than arithmetic (same tier as `==`/`<`): `a + b`
+// folds fully before `is` is checked, exactly like `a + b < c` would.
+test "parse is binds no tighter than +" {
+  let result = handle {
+    parse_print("a + b is None")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "match (a + b) { None => true, _ => false }")
+}
+
+// A bare `is` with no surrounding `&&`/`||` is unaffected by the precedence
+// change (kept as a baseline/no-regression check).
+test "parse bare is unaffected" {
+  let result = handle {
+    parse_print("x is None")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "match x { None => true, _ => false }")
+}
+
+// The exact `while COND && EXPR is PAT { .. }` shape from issue #979's repro
+// (a while-loop condition combining a comparison, `&&`, and a trailing
+// `is`). Must parse (and round-trip print) as `COND && (EXPR is PAT)`.
+test "parse is in while-loop && condition (#979)" {
+  let result = handle {
+    parse_print("while i < n && dropped is None { i = i + 1 }")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "while ((i < n) && match dropped { None => true, _ => false }) { { i = (i + 1); () } }")
+}

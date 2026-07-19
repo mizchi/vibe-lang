@@ -570,64 +570,94 @@ fn left_is_stmt_form(e: Expr) -> Bool {
   }
 }
 
-fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: Int, min_prec: Int, expr_start: Int, cmp_locked: Bool, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
-  let tok = peek(tokens, next)
-  let prec = binop_prec(tok)
-  let should_stop = if prec < min_prec {
-    true
-  } else if cmp_locked {
-    prec == 3
-  } else if left_is_stmt_form(left) {
-    // #760(5): a loop-form (while/loop/for-in) at statement position must not
-    // swallow a trailing unary `-1`/`+1` on the next line as binary +/-. Only
-    // `+`/`-` are ambiguous (they double as unary prefixes that begin a fresh
-    // statement); an unambiguously-infix operator must still fold, so a
-    // for-expression (which yields an array) stays pipeable, e.g.
-    // `(for x in xs { x }) |> Array::length`. (#763 review)
-    match tok {
-      TPlus => true,
-      TMinus => true,
-      _ => false
-    }
-  } else {
-    false
+// #979: `is` used to be checked ONLY once, after the whole infix ladder
+// (including `&&`/`||`) had already folded -- so `a && b is None` parsed as
+// `(a && b) is None` instead of the natural `a && (b is None)`. `is` now
+// binds at the same tier as the comparison operators (tier 3: `==`, `<`,
+// ...), i.e. strictly tighter than `&&`/`||`/`|>` (tiers 0-2) and no
+// tighter than arithmetic/bitwise (tiers 4-9) -- matching how a normal
+// comparison composes with the rest of the ladder. `is_is_token` recognizes
+// both the dedicated `TIs` keyword token and (defensively, matching the
+// pre-existing fallback below) a soft-keyword `TIdent("is")`.
+fn is_is_token(tok: Token) -> Bool {
+  match tok {
+    TIs => true,
+    TIdent(kw) => kw == "is",
+    _ => false
   }
-  if should_stop {
-    (left, next)
+}
+
+fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: Int, min_prec: Int, expr_start: Int, cmp_locked: Bool, consume_is: Bool, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
+  let tok = peek(tokens, next)
+  if consume_is && !cmp_locked && 3 >= min_prec && is_is_token(tok) {
+    // Attach `is pattern` directly to `left` at comparison tightness, then
+    // keep looping (cmp_locked, like a comparison, so a further `is`/`==`
+    // right after would need explicit parens) so the resulting Bool can
+    // still fold into an enclosing `&&`/`||`/`|>` at a looser tier.
+    let (pat, pn) = parse_pattern(tokens, next + 1)
+    let combined = EMatch(left, [
+      (pat, EBool(true)),
+      (PWild, EBool(false))
+    ])
+    parse_infix_loop(tokens, starts, combined, pn, min_prec, expr_start, true, consume_is, parse_recur)
   } else {
-    let is_pipe = match tok {
-      TPipeGt => true,
-      _ => false
-    }
-    let op = binop_op(tok)
-    if is_pipe {
-      if has_non_pipe_infix_top(tokens, expr_start, next) {
-        throw("cannot mix '|>' with other infix operators without explicit parentheses")
-      }
-    }
-    let (right0, right_next0) = parse_prefix(tokens, starts, next + 1, parse_recur)
-    let (right, rn) = parse_infix_loop(tokens, starts, right0, right_next0, prec + 1, next + 1, false, parse_recur)
-    if is_pipe {
-      if has_non_pipe_infix_top(tokens, next + 1, rn) {
-        throw("cannot mix '|>' with other infix operators without explicit parentheses")
-      }
-    }
-    let combined = if is_pipe {
-      pipe_desugar(left, right)
-    } else {
-      EBinOp(op, left, right)
-    }
-    let next_cmp_locked = if prec == 3 {
+    let prec = binop_prec(tok)
+    let should_stop = if prec < min_prec {
       true
+    } else if cmp_locked {
+      prec == 3
+    } else if left_is_stmt_form(left) {
+      // #760(5): a loop-form (while/loop/for-in) at statement position must not
+      // swallow a trailing unary `-1`/`+1` on the next line as binary +/-. Only
+      // `+`/`-` are ambiguous (they double as unary prefixes that begin a fresh
+      // statement); an unambiguously-infix operator must still fold, so a
+      // for-expression (which yields an array) stays pipeable, e.g.
+      // `(for x in xs { x }) |> Array::length`. (#763 review)
+      match tok {
+        TPlus => true,
+        TMinus => true,
+        _ => false
+      }
     } else {
-      cmp_locked
+      false
     }
-    parse_infix_loop(tokens, starts, combined, rn, min_prec, expr_start, next_cmp_locked, parse_recur)
+    if should_stop {
+      (left, next)
+    } else {
+      let is_pipe = match tok {
+        TPipeGt => true,
+        _ => false
+      }
+      let op = binop_op(tok)
+      if is_pipe {
+        if has_non_pipe_infix_top(tokens, expr_start, next) {
+          throw("cannot mix '|>' with other infix operators without explicit parentheses")
+        }
+      }
+      let (right0, right_next0) = parse_prefix(tokens, starts, next + 1, parse_recur)
+      let (right, rn) = parse_infix_loop(tokens, starts, right0, right_next0, prec + 1, next + 1, false, consume_is, parse_recur)
+      if is_pipe {
+        if has_non_pipe_infix_top(tokens, next + 1, rn) {
+          throw("cannot mix '|>' with other infix operators without explicit parentheses")
+        }
+      }
+      let combined = if is_pipe {
+        pipe_desugar(left, right)
+      } else {
+        EBinOp(op, left, right)
+      }
+      let next_cmp_locked = if prec == 3 {
+        true
+      } else {
+        cmp_locked
+      }
+      parse_infix_loop(tokens, starts, combined, rn, min_prec, expr_start, next_cmp_locked, consume_is, parse_recur)
+    }
   }
 }
 
 // `parse_infix_no_is` walks the operator-precedence ladder *without*
-// consuming a trailing `expr is pattern` test at the end. The `if-cond is
+// consuming ANY `expr is pattern` test, at any tier. The `if-cond is
 // pat { ... }` special form (parsed in `parse_impl_dispatch` mode_if)
 // needs the pattern to remain on the token stream so it can capture it
 // as the if-cond's pattern arm; without this split the `is` gets
@@ -635,28 +665,14 @@ fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: 
 // against the if-cond pattern slot.
 export fn parse_infix_no_is(tokens: Array[Token], starts: Array[Int], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
   let (left0, next0) = parse_prefix(tokens, starts, pos, parse_recur)
-  parse_infix_loop(tokens, starts, left0, next0, min_prec, expr_start, false, parse_recur)
+  parse_infix_loop(tokens, starts, left0, next0, min_prec, expr_start, false, false, parse_recur)
 }
 
+// #979: `is` is folded directly into the precedence ladder (tier 3, same as
+// `==`/`<`/...) instead of being checked only once at the very end, so
+// `a && b is None` now parses as `a && (b is None)` rather than
+// `(a && b) is None`.
 export fn parse_infix(tokens: Array[Token], starts: Array[Int], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
-  let (expr, en) = parse_infix_no_is(tokens, starts, pos, min_prec, expr_start, parse_recur)
-  match peek(tokens, en) {
-    TIs => {
-      let (pat, pn) = parse_pattern(tokens, en + 1)
-      (EMatch(expr, [
-        (pat, EBool(true)),
-        (PWild, EBool(false))
-      ]), pn)
-    },
-    TIdent(kw) => if kw == "is" {
-      let (pat, pn) = parse_pattern(tokens, en + 1)
-      (EMatch(expr, [
-        (pat, EBool(true)),
-        (PWild, EBool(false))
-      ]), pn)
-    } else {
-      (expr, en)
-    },
-    _ => (expr, en)
-  }
+  let (left0, next0) = parse_prefix(tokens, starts, pos, parse_recur)
+  parse_infix_loop(tokens, starts, left0, next0, min_prec, expr_start, false, true, parse_recur)
 }
