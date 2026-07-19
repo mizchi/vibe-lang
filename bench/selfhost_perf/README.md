@@ -1,8 +1,6 @@
 # Selfhost performance benchmarks
 
-Macro and micro benches for the self-hosted vibe compiler / checker. Pair
-with `bench/selfhost_check_parity` and `bench/selfhost_cutover` to keep
-host vs selfhost output equivalent.
+Macro and micro benches for the self-hosted vibe compiler / checker.
 
 ## Macro: stage-level wallclock
 

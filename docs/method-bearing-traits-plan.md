@@ -196,7 +196,7 @@ Tests / gate:
 - Extend `fixtures/typecheck/trait_with_methods.vibe` to cover signature storage.
 - Parser/printer round-trip case (guards normalize idempotency).
 - Substrate guard already committed: `fixtures/trait_dict_passing_substrate_test.vibe`.
-- Gate: `scripts/test_typecheck_fixtures.sh`, then `scripts/compiler_gate.sh`
+- Gate: `scripts/compiler_gate.sh`
   (authoritative seed→stage1→stage2→stage3 fixpoint + normalize round-trip). Regenerate
   the flat bundle (`scripts/generate_bundle.sh`) after AST changes.
 
