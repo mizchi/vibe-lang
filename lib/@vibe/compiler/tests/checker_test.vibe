@@ -138,28 +138,56 @@ test "unary negate double" {
   assert(types_equal(check(expr, EnvEmpty), CtDouble))
 }
 
-test "method call: string.length() => Int" {
+// #994: dot-call syntax on a builtin receiver (`s.length()`, `a.set(...)`)
+// used to unify against `lookup_builtin`'s tolerant `CtFn` signature here and
+// "succeed" — but codegen compiles a called `EDot` as a struct-field READ
+// unconditionally (confirmed by probing `a.set(0, 42)` and `a.set(0,
+// "bad")`: BOTH fail identically with "unknown struct field: set"), since
+// there is no parsed top-level `fn` for `desugar_trait_dict.vibe`'s UFCS
+// lowering to rewrite the call through. `check` accepting what `compile`
+// can never lower was exactly the reported bug; these three cases now
+// assert the located rejection instead of a tolerated success. The
+// qualified spelling (`String::length(s)`) is unaffected.
+test "method call: string.length() is rejected (builtin dot-call has no codegen lowering)" {
   let env = env_bind(EnvEmpty, "s", CtString)
   let expr = ECall(EDot(EIdent("s", -1), "length", -1, -1), Array::slice([
     EUnit
   ], 0, 0), -1)
-  assert(types_equal(check(expr, env), CtInt))
+  let caught = handle {
+    let _ = check(expr, env)
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(caught)
 }
 
-test "method call: string.concat(string) => String" {
+test "method call: string.concat(string) is rejected (builtin dot-call has no codegen lowering)" {
   let env = env_bind(EnvEmpty, "s", CtString)
   let expr = ECall(EDot(EIdent("s", -1), "concat", -1, -1), [
     EString("world")
   ], -1)
-  assert(types_equal(check(expr, env), CtString))
+  let caught = handle {
+    let _ = check(expr, env)
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(caught)
 }
 
-test "method call: array.length() => Int" {
+test "method call: array.length() is rejected (builtin dot-call has no codegen lowering)" {
   let env = env_bind(EnvEmpty, "a", CtArray(CtInt))
   let expr = ECall(EDot(EIdent("a", -1), "length", -1, -1), Array::slice([
     EUnit
   ], 0, 0), -1)
-  assert(types_equal(check(expr, env), CtInt))
+  let caught = handle {
+    let _ = check(expr, env)
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(caught)
 }
 
 test "builtin Array::truncate returns Unit" {
