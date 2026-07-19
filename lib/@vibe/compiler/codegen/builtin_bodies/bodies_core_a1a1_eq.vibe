@@ -96,14 +96,28 @@ export fn gen_eq_body(str_eq_idx: Int) -> Bytes {
 // produces a garbage packed value, not their sum -- confirmed empirically,
 // `my_add_gen(3, 4)` trapped instead of returning 7 with the plain heuristic.
 // Requiring `ptr >= 64` (the ORIGINAL pre-#664 bound) excludes every ordinary
-// small Int (whose implied ptr is 0..63) while a genuine non-empty String's
-// data-section/heap address in this codegen is always >= 64; `len == 0` keeps
-// the #664 empty-string carve-out (a real empty string may legitimately have
-// ptr < 64). The residual this narrows down to -- a very large Int (implied
-// ptr >= 64, i.e. the value is >= 64 * 2^32) mistaken for a string -- is the
-// same CLASS of accepted large-int residual #664/#678 already carry for
-// `eq`/`str_lex_diff`, just with a much smaller trigger window than the plain
-// heuristic's "any small int".
+// small Int (whose implied ptr is 0..63) while a genuine String's
+// data-section/heap address in this codegen is always >= 64 -- INCLUDING
+// empty strings: `data_base` (the fixed start of the string data section,
+// `linked_compile.vibe`/`gc/backend_body.vibe`) is 64, so there is no
+// legitimate empty-string case with ptr < 64 to carve out here, unlike the
+// #664 residual this borrows its bound from.
+//
+// #973 P1 fix (Codex review on PR #1005): an EARLIER version of this
+// function additionally treated `len == 0` alone as "looks like a string"
+// (reasoning, incorrectly, that a real empty string might have ptr < 64).
+// That let (ptr=0, len=0) -- i.e. the packed representation of plain integer
+// `0` -- satisfy the strict check via the `len == 0` branch even though
+// `ptr >= 64` was false, so `num_add[T: Add](0, 0)` matched as "both look
+// like strings" and called `str_concat` instead of `i64.add`, returning a
+// garbage heap pointer instead of `0` -- confirmed empirically. Dropping the
+// `len == 0` disjunct (requiring `ptr >= 64` unconditionally) fixes this
+// while still accepting every genuine string, empty or not, per the
+// `data_base = 64` invariant above. The residual this narrows down to -- a
+// very large Int (implied ptr >= 64, i.e. the value is >= 64 * 2^32)
+// mistaken for a string -- is the same CLASS of accepted large-int residual
+// #664/#678 already carry for `eq`/`str_lex_diff`, just with a much smaller
+// trigger window than the plain heuristic's "any small int".
 fn emit_looks_like_string_strict(b: Bytes, slot: Int) -> Unit {
   emit_looks_like_string(b, slot)
   emit_local_get(b, slot)
@@ -111,11 +125,6 @@ fn emit_looks_like_string_strict(b: Bytes, slot: Int) -> Unit {
   bytebuf_push(b, 136)
   emit_i64_const(b, 64)
   emit_i64_ge_s(b)
-  emit_local_get(b, slot)
-  emit_i64_const(b, 4294967295)
-  emit_i64_and(b)
-  emit_i64_eqz(b)
-  bytebuf_push(b, 114)
   bytebuf_push(b, 113)
 }
 
