@@ -29,7 +29,7 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `run_check_*_component.sh` / `run_cli_preview2_component.sh`
 
 ## Selfhost build / bootstrap
-- `compiler_gate.sh` — **moon-free sign-off** (seed→stage1→stage2→stage3
+- `compiler_gate.sh` — **sign-off** (seed→stage1→stage2→stage3
   fixpoint + compile/run validation); `pkf run test` / `release-check`
 - `gate.sh` / `trial_gate.sh` — operation gates
 - `generations.sh` (+ `_test`) — stage build driver

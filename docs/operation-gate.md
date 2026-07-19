@@ -70,7 +70,7 @@ pkf run full-gate
 
 - `generation-gate`: fixed seed -> stage1 -> stage2 -> stage3
 - `post-generation-gate` (`scripts/gate.sh --post-generation` -> `trial_gate.sh`):
-  moon-free selfhost sign-off一式
+  selfhost sign-off一式
 
 旧 host 比較系 (`test-selfhost-corpus-gate` / `perf-kpi` / `rss-kpi` /
 component parity) は MoonBit host 退役 (#594) でスクリプトごと退役済み。
@@ -83,7 +83,7 @@ stage generation は gate の先頭で固定している。post-generation 系�
 短い調査ループでは、必要な部分だけを単独で走らせてよい。
 
 ```bash
-pkf run release-gates   # = scripts/compiler_gate.sh (moon-free)
+pkf run release-gates   # = scripts/compiler_gate.sh
 pkf run generation-gate
 ```
 

@@ -17,7 +17,7 @@
 # Absolute paths under the repo root are rewritten to repo-relative.
 #
 # The CLI wasm path can be supplied with VIBE_CLI_WASM (e.g. a
-# moon-free generation build); otherwise it is built by build_selfhost_cli_core.sh.
+# prebuilt generation build); otherwise it is built by build_selfhost_cli_core.sh.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

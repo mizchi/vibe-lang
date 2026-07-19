@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build a fresh selfhost CLI compiler wasm from the current committed source,
-# moon-free (seed -> stage1 -> stage2 via the Rust/node runner). The resulting
+# Build a fresh selfhost CLI compiler wasm from the current committed source
+# (seed -> stage1 -> stage2 via the Rust/node runner). The resulting
 # stage2 wasm is the portable `vibe-cli.wasm` the installer ships and the runner
 # AOT-compiles to a host-specific `.cwasm` (docs/release-roadmap.md テーマ1).
 #

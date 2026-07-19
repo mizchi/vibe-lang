@@ -8,8 +8,8 @@
 # Historically this script used an already-built *host* `vibe` compiler
 # (MoonBit `moon run ... src/cmd/vibe -- compile ...`, or a native `VIBE_BIN`)
 # to compile an entry `.vibe` file into the selfhost CLI's "core" wasm. With
-# src/ gone there is no host compiler left; the moon-free equivalent is to use
-# an already-built *selfhost* compiler wasm (produced moon-free via the
+# src/ gone there is no host compiler left; the equivalent is to use
+# an already-built *selfhost* compiler wasm (produced via the
 # bootstrap seed -> stage1 -> stage2 pipeline, scripts/generations.sh --
 # the same machinery scripts/build_cli_wasm.sh uses for dist/cli/vibe-cli.wasm)
 # to compile the entry file instead.
@@ -125,7 +125,7 @@ fi
 
 mkdir -p "$(dirname "$STAGE1_CORE_WASM")"
 
-# Base compiler: an already-built moon-free selfhost compiler wasm, used to
+# Base compiler: an already-built selfhost compiler wasm, used to
 # compile ENTRY_PATH. HOST_MODE is accepted (and validated) for interface
 # compatibility with the retired moon-host script, but there is no separate
 # debug/release selfhost compiler build to pick between -- both modes build

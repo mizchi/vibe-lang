@@ -27,7 +27,7 @@ case "$shard" in
     bash scripts/check_bundle_sync.sh
     bash scripts/check_module_source_sync.sh
     # Live replacement for the retired MoonBit-host bootstrap/selfbuild gates:
-    # the moon-free seed->stage1->stage2(->stage3 fixpoint) build is exactly
+    # the seed->stage1->stage2(->stage3 fixpoint) build is exactly
     # what those gates existed to protect.
     bash scripts/compiler_gate.sh
     ;;

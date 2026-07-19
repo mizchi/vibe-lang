@@ -3,7 +3,7 @@
 # current compiler source (#594 Stage 1, moonbit-retirement).
 #
 # emit-module-source is a deterministic function of the committed compiler
-# source. The default (moon-free) build consumes the committed prebuilt
+# source. The default build consumes the committed prebuilt
 # lib/@vibe/compiler/cli_adapter_module_source.vibe instead of calling
 # the MoonBit host. This gate regenerates it through the host compiler
 # (VIBE_REGEN_MODULE_SOURCE=1) and fails on drift, so a stale
@@ -24,7 +24,7 @@ if [ ! -f "$EXPECTED" ]; then
   exit 1
 fi
 
-# Prefer the selfhost seed compiler (moon-free) to regenerate; the seed carries
+# Prefer the selfhost seed compiler to regenerate; the seed carries
 # emit-module-source. Fall back to the MoonBit host only if the seed is absent.
 # If neither is available, the freshness check cannot run and is skipped.
 have_emit=0

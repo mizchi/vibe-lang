@@ -4,8 +4,8 @@
 > implementation (`src/`, `moon.mod`) was retired. The compiler is built,
 > checked, and run entirely from the committed seed (`bootstrap/seed/`)
 > + selfhost source (`lib/@vibe/compiler/`, `lib/@vibe/cli/`) via the Rust/node wasm runner
-> — **no MoonBit toolchain (`moon`) is required**. The default gate is the
-> moon-free `pkf run release-check` → `scripts/compiler_gate.sh`.
+> — **no MoonBit toolchain (`moon`) is required**. The default gate is
+> `pkf run release-check` → `scripts/compiler_gate.sh`.
 >
 > Sections below that reference `moon` (`moon fmt/test/check/info`) or `src/`
 > describe the **retired** host flow and are kept only for historical context;
@@ -27,7 +27,7 @@ vibe 言語の構文・機能を把握するには、最初に [docs/cheatsheet.
 
 ```bash
 pkf list                  # show all tasks
-pkf run                   # default: release-check (moon-free selfhost sign-off)
+pkf run                   # default: release-check (selfhost sign-off)
 pkf run test              # selfhost operation gate (commit 前の主チェック)
 pkf run test-local        # affected tests only (fast inner loop)
 pkf run full-gate         # complete selfhost operation gate
