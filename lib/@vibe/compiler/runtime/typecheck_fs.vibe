@@ -873,15 +873,44 @@ export fn collect_all_diagnostics(source: String) -> Array[String] with { Error 
   if Array::length(lex_err_msgs) > 0 {
     // Report ONLY the lexer errors: the recovered token stream has holes, so
     // parse/type diagnostics on it would be follow-on noise.
+    //
+    // #997 review (Codex): a handful of lexer throw sites (the `\(expr)`
+    // interpolation-removal message, and #997's own scientific-notation /
+    // incomplete-exponent messages) embed their OWN precise `line L:C: `
+    // prefix directly in the message, because `lex_err_offsets` here always
+    // records the START offset of the enclosing `lex_one_token` call --
+    // wrong for a throw raised partway through a multi-char token (at the
+    // `e`/`E`, not the token's first digit). Blindly prepending the generic
+    // outer `loc` on top of an already-self-located message produced a
+    // doubled/conflicting location (`line 1:9: line 1:18: ...`, confirmed
+    // empirically via `vibe diagnostics` on `123456789e10`). Skip the outer
+    // prefix for messages that already start with "line " -- they're
+    // self-located and the outer offset would only be redundant or wrong.
+    //
+    // This also incidentally collapses a separate pre-existing duplication:
+    // a non-quote-delimited lex error (anything but a broken string/char
+    // literal) resumes ONE character past the failure and retries, so a
+    // multi-digit scientific-notation literal re-throws the SAME underlying
+    // error once per remaining digit (9 identical reports for
+    // `123456789e10`) -- previously each got a DIFFERENT (wrong) outer
+    // offset, defeating `dedupe_diagnostics`'s exact-string dedup below.
+    // With the outer prefix suppressed, all 9 become byte-identical and
+    // collapse to the single correctly-located report.
     let located = Array::slice([
       ""
     ], 0, 0)
     let mut i = 0
     while i < Array::length(lex_err_msgs) {
-      let off = Array::get(lex_err_offsets, i)
-      let (line, col) = offset_to_line_col(source, off)
-      let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
-      Array::push(located, String::concat(loc, Array::get(lex_err_msgs, i)))
+      let msg = Array::get(lex_err_msgs, i)
+      let entry = if String::starts_with(msg, "line ") {
+        msg
+      } else {
+        let off = Array::get(lex_err_offsets, i)
+        let (line, col) = offset_to_line_col(source, off)
+        let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+        String::concat(loc, msg)
+      }
+      Array::push(located, entry)
       i = i + 1
     }
     dedupe_diagnostics(located)

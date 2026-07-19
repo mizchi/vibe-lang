@@ -18,6 +18,20 @@ fn lex_len(source: String) -> Int {
   }
 }
 
+// "" when the source lexes cleanly, otherwise the lexer error message.
+fn lex_err(source: String) -> String {
+  handle {
+    let n = Array::length(lex(source))
+    if n > 0 {
+      ""
+    } else {
+      ""
+    }
+  } with Error {
+    Throw(msg) => msg
+  }
+}
+
 fn tokens_match(actual: Array[Token], expected: Array[Token]) -> Bool {
   if Array::length(actual) != Array::length(expected) {
     false
@@ -478,6 +492,34 @@ test "lex_zero" {
 
 test "lex_large_int" {
   assert(lex_ok("2305843009213693951"))
+}
+
+// #997: Int is 62-bit tagged (max 2^61-1 == 2305843009213693951). A literal
+// one past that boundary used to be silently accepted and its digit-run
+// accumulator (itself a plain vibe Int) wrapped into a bogus in-range
+// value instead of raising `IntLiteralOverflow` -- this was true on BOTH
+// the decimal and hex literal paths (the hex path had never had any
+// overflow check at all).
+test "lex_decimal_int_overflow_rejected" {
+  assert(lex_ok("2305843009213693951"))
+  assert(!lex_ok("2305843009213693952"))
+  assert(String::contains(lex_err("2305843009213693952"), "IntLiteralOverflow"))
+  // Nowhere near the boundary: a much larger decimal run must also be
+  // rejected, not silently wrap into some other in-range value.
+  assert(!lex_ok("99999999999999999999999999"))
+  assert(String::contains(lex_err("99999999999999999999999999"), "IntLiteralOverflow"))
+}
+
+test "lex_hex_int_overflow_rejected" {
+  // 0x1FFFFFFFFFFFFFFF == 2305843009213693951 == Int::max_value: still ok.
+  assert(lex_ok("0x1FFFFFFFFFFFFFFF"))
+  // 0x2000000000000000 == 2305843009213693952 == max_value + 1: rejected.
+  assert(!lex_ok("0x2000000000000000"))
+  assert(String::contains(lex_err("0x2000000000000000"), "IntLiteralOverflow"))
+  // Far beyond even a 64-bit range: must still be rejected, not silently
+  // wrap into `-1` (this literal's actual pre-fix behavior).
+  assert(!lex_ok("0xFFFFFFFFFFFFFFFF"))
+  assert(String::contains(lex_err("0xFFFFFFFFFFFFFFFF"), "IntLiteralOverflow"))
 }
 
 test "lex_string_interp_empty_expr" {
