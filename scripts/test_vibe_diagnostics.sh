@@ -113,5 +113,69 @@ else
   echo "FAIL: clean file should have no diagnostics, got '$out_clean'" >&2; fail=$((fail + 1))
 fi
 
+# #946(3): `vibe check` and `vibe diagnostics` must AGREE on an
+# empty/comments-only file. Before this fix, `check` reused the full compile
+# path and hard-errored ("no functions found to compile" -- a real BUILD
+# constraint, not a check-only one), while `diagnostics` correctly reported
+# clean on the identical input -- two contradictory judgments on one file.
+empty="$WORK/empty.vibe"
+printf '// just a comment\n' > "$empty"
+out_empty_diag="$("$VIBE" diagnostics "$empty" 2>/dev/null || true)"
+"$VIBE" check "$empty" >/dev/null 2>&1 && rc_empty_check=0 || rc_empty_check=$?
+if [ -z "$out_empty_diag" ] && [ "$rc_empty_check" -eq 0 ]; then
+  echo "ok: empty file -> check and diagnostics agree (both clean)"; pass=$((pass + 1))
+else
+  echo "FAIL: expected check exit 0 + empty diagnostics for a comment-only file (check rc=$rc_empty_check, diagnostics='$out_empty_diag')" >&2
+  fail=$((fail + 1))
+fi
+
+# #946(4): an inline-wasm codegen validation error (e.g. a SIMD lane index out
+# of range) must be a located diagnostic, not an empty ("clean") report --
+# `compile`/`check` already fail on this with a located error; `diagnostics`
+# used to report clean because it only ever ran the type checker, never the
+# inline-wasm assembler that actually catches this class of bug.
+badlane="$WORK/badlane.vibe"
+printf 'fn bad_lane(a: Int) -> Int = wasm "(i8x16.extract_lane_s 16 (local.get $a))"\n\nexport fn main() -> Int {\n  bad_lane(1)\n}\n' > "$badlane"
+out_badlane="$("$VIBE" diagnostics "$badlane" 2>/dev/null || true)"
+if printf '%s\n' "$out_badlane" | grep -q 'line 1:' && printf '%s\n' "$out_badlane" | grep -q 'lane index 16 is out of range'; then
+  echo "ok: inline-wasm lane error -> located diagnostic"; pass=$((pass + 1))
+else
+  echo "FAIL: expected a located 'lane index 16 is out of range' diagnostic, got:" >&2
+  printf '%s\n' "$out_badlane" >&2
+  fail=$((fail + 1))
+fi
+
+# #946(1,2): a unicode identifier char must report ONE diagnostic per actual
+# (possibly multi-byte) character, with the ORIGINAL character text -- not one
+# diagnostic per UTF-8 continuation BYTE, and not a mojibake replacement
+# character built from a single lone byte (String::from_char_code only ever
+# encodes one raw byte; this lexer is byte-indexed).
+unicode="$WORK/unicode.vibe"
+printf 'export let \xe3\x81\x93\xe3\x82\x93\xe3\x81\xab\xe3\x81\xa1\xe3\x81\xaf = 42\n' > "$unicode"
+out_unicode="$("$VIBE" diagnostics "$unicode" 2>/dev/null || true)"
+n_unicode="$(printf '%s\n' "$out_unicode" | grep -c 'line ' || true)"
+if [ "$n_unicode" -eq 5 ] && printf '%s\n' "$out_unicode" | grep -qF 'unexpected character: こ'; then
+  echo "ok: unicode identifier -> one diagnostic per character (5), real char in message"; pass=$((pass + 1))
+else
+  echo "FAIL: expected exactly 5 located diagnostics with the real characters, got:" >&2
+  printf '%s\n' "$out_unicode" >&2
+  fail=$((fail + 1))
+fi
+
+# #946(1,2): a leading UTF-8 BOM (EF BB BF) is skipped like any other editor
+# artifact, not reported as an unlexable character (matches every mainstream
+# tokenizer's handling of a leading BOM) -- both check and diagnostics must
+# agree the file is clean.
+bomf="$WORK/bom.vibe"
+printf '\xef\xbb\xbfexport let a = 1\n' > "$bomf"
+out_bom_diag="$("$VIBE" diagnostics "$bomf" 2>/dev/null || true)"
+"$VIBE" check "$bomf" >/dev/null 2>&1 && rc_bom_check=0 || rc_bom_check=$?
+if [ -z "$out_bom_diag" ] && [ "$rc_bom_check" -eq 0 ]; then
+  echo "ok: leading UTF-8 BOM is skipped (both check and diagnostics clean)"; pass=$((pass + 1))
+else
+  echo "FAIL: expected a leading BOM to be silently skipped (check rc=$rc_bom_check, diagnostics='$out_bom_diag')" >&2
+  fail=$((fail + 1))
+fi
+
 echo "[vibe-diagnostics] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

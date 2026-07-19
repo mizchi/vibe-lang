@@ -68,3 +68,114 @@ test "parse unary not" {
   }
   assert(result == "(!x)")
 }
+
+// #979: `is` used to be checked only once, AFTER the whole `&&`/`||` ladder
+// had already folded, so `a && b is None` misparsed as `(a && b) is None`
+// (requiring `a && b`, a Bool, to satisfy a pattern test meant for `b`'s own
+// type -- a type error in practice, see checker_test / the issue repro).
+// `is` now binds at the same tier as the comparison operators (`==`, `<`,
+// ...): strictly tighter than `&&`/`||`, so `a && b is None` parses as
+// `a && (b is None)`.
+test "parse is binds tighter than &&" {
+  let result = handle {
+    parse_print("a && b is None")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "(a && match b { None => true, _ => false })")
+}
+
+test "parse is binds tighter than || (left operand)" {
+  let result = handle {
+    parse_print("b is None || a")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "(match b { None => true, _ => false } || a)")
+}
+
+test "parse is binds tighter than && (left operand)" {
+  let result = handle {
+    parse_print("b is None && a")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "(match b { None => true, _ => false } && a)")
+}
+
+// `is` binds no tighter than arithmetic (same tier as `==`/`<`): `a + b`
+// folds fully before `is` is checked, exactly like `a + b < c` would.
+test "parse is binds no tighter than +" {
+  let result = handle {
+    parse_print("a + b is None")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "match (a + b) { None => true, _ => false }")
+}
+
+// A bare `is` with no surrounding `&&`/`||` is unaffected by the precedence
+// change (kept as a baseline/no-regression check).
+test "parse bare is unaffected" {
+  let result = handle {
+    parse_print("x is None")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "match x { None => true, _ => false }")
+}
+
+// The exact `while COND && EXPR is PAT { .. }` shape from issue #979's repro
+// (a while-loop condition combining a comparison, `&&`, and a trailing
+// `is`). Must parse (and round-trip print) as `COND && (EXPR is PAT)`.
+test "parse is in while-loop && condition (#979)" {
+  let result = handle {
+    parse_print("while i < n && dropped is None { i = i + 1 }")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "while ((i < n) && match dropped { None => true, _ => false }) { { i = (i + 1); () } }")
+}
+
+// #979 P2 follow-up (Codex review on PR #1003): `if`-conditions parse the
+// condition with `parse_infix_no_is`, which used to disable `is` at every
+// tier (not just the trailing one) so that a bare `x is Pat` at the top of
+// an if-condition stays available for the special `if EXPR is PAT { bind }`
+// form. That blanket disabling meant a NESTED `is` (e.g. combined with
+// `&&`) never got the tier-3 fold either -- `if ready && value is None { }`
+// still misparsed as `if (ready && value) is None { }`, unaffected by the
+// general-expression fix above. `is` now folds at tier 3 for any NESTED
+// occurrence inside an if-condition too (gated by `is_top_atom`, true only
+// for a trailing `is` on the still-unfolded top atom) -- so this now parses
+// as `if (ready && (value is None)) { }`.
+test "parse is in if && condition binds tighter (#979 P2)" {
+  let result = handle {
+    parse_print("if ready && value is None { 1 } else { 0 }")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "if (ready && match value { None => true, _ => false }) { 1 } else { 0 }")
+}
+
+// The special `if EXPR is PAT { bind } ` binding form (no `&&`/`||`
+// wrapping the `is`) must be entirely unaffected -- this is the
+// `is_top_atom` case that stays special-cased instead of folding to a
+// plain (non-binding) Bool `EMatch`. `parse_impl_dispatch`'s if-is-bind
+// sugar desugars directly to an `EMatch(cond, [(pat, then), (_, else)])`
+// AST node (see `parser_expr_dispatch.vibe`), which the printer renders
+// as a plain `match` -- identical to what a hand-written `match value {
+// Some(v) => v, _ => 0 }` would print, since they're the same AST shape.
+// This is a pre-existing printer property (not touched by this fix); what
+// this test actually locks down is that `v` still binds (parsing does NOT
+// throw/misparse and the pattern's variable is captured), which a runtime
+// probe (`value is Some(v) { use(v) }` returning the bound value) confirms
+// separately -- this printer-level test only guards against a parse
+// regression reintroducing the old `(EXPR) is PAT` misparse for this shape.
+test "parse if bare is bind form unaffected (#979 P2)" {
+  let result = handle {
+    parse_print("if value is Some(v) { v } else { 0 }")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "match value { Some(v) => v, _ => 0 }")
+}

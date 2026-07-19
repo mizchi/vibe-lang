@@ -689,3 +689,34 @@ test "wasi: bare raw-ident top-level fn named map, called locally (#832)" {
 test "wasi: bare top-level fn named map (no r# prefix), called locally (#832)" {
   assert_result("let map: (Int) -> Int = (x) -> { x + 1 }\nlet main: () -> Int = () -> { map(41) }", "main", "bare_map_no_rawident", "42")
 }
+
+// #997: `Double::to_int` used to lower straight to wasm's `i64.trunc_f64_s`,
+// which TRAPS (an unhandled wasm trap, not a catchable vibe `Error`) on
+// NaN, +-Infinity, or any magnitude outside the i64 range -- so calling it
+// on `0.0 / 0.0` aborted the whole program instead of returning a value.
+// This wasm target has no feature flag for `i64.trunc_sat_f64_s` (checked:
+// no wasm_emit helper for it exists, and none of this compiler's wasmtime
+// invocations enable the nontrapping-float-to-int-conversions proposal),
+// so these values now saturate to 0 instead.
+test "heap e2e: Double::to_int(NaN) does not trap, saturates to 0 (#997)" {
+  let src = "let main: () -> Int = () -> {\n  let nan = 0.0 / 0.0\n  Double::to_int(nan)\n}"
+  assert_result(src, "main", "double_to_int_nan", "0")
+}
+
+test "heap e2e: Double::to_int(+Infinity) does not trap, saturates to 0 (#997)" {
+  let src = "let main: () -> Int = () -> {\n  let inf = 1.0 / 0.0\n  Double::to_int(inf)\n}"
+  assert_result(src, "main", "double_to_int_pos_inf", "0")
+}
+
+test "heap e2e: Double::to_int(-Infinity) does not trap, saturates to 0 (#997)" {
+  let src = "let main: () -> Int = () -> {\n  let ninf = (0.0 - 1.0) / 0.0\n  Double::to_int(ninf)\n}"
+  assert_result(src, "main", "double_to_int_neg_inf", "0")
+}
+
+// The guard added for the above must not disturb ordinary in-range
+// truncation (still toward zero, matching `i64.trunc_f64_s`'s own
+// semantics): 3.7 -> 3, -2.9 -> -2.
+test "heap e2e: Double::to_int ordinary values still truncate toward zero (#997)" {
+  let src = "let main: () -> Int = () -> {\n  Double::to_int(3.7) * 100 + (0 - Double::to_int(0.0 - 2.9))\n}"
+  assert_result(src, "main", "double_to_int_ordinary", "302")
+}

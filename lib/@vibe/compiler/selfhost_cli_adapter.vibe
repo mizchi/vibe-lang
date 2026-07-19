@@ -41,6 +41,10 @@ import ./syntax {
   lex, parse_program
 }
 
+import ./cli_support.vibe {
+  check_linked_file
+}
+
 //# Functions
 
 // Basename of a path without its `.vibe` suffix — the default WIT world name
@@ -380,6 +384,28 @@ export fn cli_main() -> Int with { Error, Fs, Env } {
       if Array::length(perrors) > 0 {
         throw(String::join(perrors, "; "))
       } else ()
+      Fs::write_file(output_path, "ok\n")
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  } else ()
+  // #946(3): `vibe check` — parse + typecheck ONLY (imports resolved from the
+  // FS, same as VIBE_FS_COMPILE below), no codegen and no entry-function
+  // requirement. Before this, `vibe check` reused the full VIBE_FS_COMPILE
+  // (build) path, so an empty-or-comments-only file failed check with
+  // "no functions found to compile" (a real build/codegen constraint — you
+  // cannot emit a runnable wasm module with zero functions) while `vibe
+  // diagnostics` reported the SAME file clean: two contradictory judgments on
+  // one input. check_linked_file (Gate v2 #492) already implements the
+  // correct check-only semantics (it stops before codegen, so it has no
+  // notion of "no functions" or "missing entry" — both are build-only
+  // concerns) but was never wired to this CLI verb. Writes "ok\n" on a clean
+  // parse+typecheck; a parse/type error goes to the `.diag` sidecar, same
+  // convention as every other adapter mode.
+  if Env::get("VIBE_CHECK_ONLY") == "1" {
+    return handle {
+      let _ = check_linked_file(input_path)
       Fs::write_file(output_path, "ok\n")
       0
     } with Error {

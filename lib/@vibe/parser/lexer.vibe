@@ -26,6 +26,55 @@ fn is_alnum(c: Int) -> Bool {
   is_alpha(c) || is_digit(c)
 }
 
+// #946: byte-length of the UTF-8 sequence LED by byte `c` (a raw 0..255 byte,
+// as returned by String::char_code_at -- this lexer is byte-indexed, not
+// codepoint-indexed). 2/3/4 for a valid 2/3/4-byte lead byte, else 1 (ASCII,
+// a bare continuation byte 0x80..0xBF, or an invalid/overlong lead 0xF8..0xFF
+// all fall back to single-byte granularity -- there is nothing more sensible
+// to do with a malformed sequence, and 1 keeps the "advance at least one
+// byte" progress guarantee the recovering lexer relies on).
+fn utf8_seq_len(c: Int) -> Int {
+  if c >= 0xF0 && c <= 0xF7 {
+    4
+  } else if c >= 0xE0 && c <= 0xEF {
+    3
+  } else if c >= 0xC2 && c <= 0xDF {
+    2
+  } else {
+    1
+  }
+}
+
+// #946: byte-length of a leading UTF-8 BOM (EF BB BF, U+FEFF), else 0. Common
+// editors/Windows tools prepend this to "UTF-8" text files; treating it as
+// just another unlexable character produced a located-but-pointless lex
+// error on line 1 col 1 of an otherwise perfectly ordinary file. Every other
+// mainstream tokenizer silently skips a leading BOM, so this lexer does too
+// -- ONLY at absolute position 0 (a BOM anywhere else in the file is not
+// special and still lexes -- i.e. fails -- as ordinary bytes).
+fn skip_bom(source: String, len: Int) -> Int {
+  if len >= 3 && String::char_code_at(source, 0) == 0xEF && String::char_code_at(source, 1) == 0xBB && String::char_code_at(source, 2) == 0xBF {
+    3
+  } else {
+    0
+  }
+}
+
+// #946: the ORIGINAL bytes of the (possibly multi-byte UTF-8) character at
+// `pos`, clamped to `len` -- used to build a display-safe "unexpected
+// character: <text>" message. Slicing the source's own bytes (rather than
+// reconstructing them from the decoded codepoint) sidesteps
+// String::from_char_code entirely: that builtin only ever stores ONE raw
+// byte (see gen_str_from_char_code_body), so calling it on a lone
+// continuation byte produced mojibake (an invalid lone byte, not the
+// original multi-byte character) instead of the real character.
+fn utf8_char_text(source: String, len: Int, pos: Int) -> String {
+  let c = String::char_code_at(source, pos)
+  let seq_len = utf8_seq_len(c)
+  let clamp_end = if pos + seq_len <= len { pos + seq_len } else { len }
+  String::substring(source, pos, clamp_end)
+}
+
 fn lex_char(s: String, len: Int, i: Int) -> (Token, Int) with { Error } {
   let start = i + 1
   if start >= len {
@@ -320,28 +369,62 @@ fn scan_interp_end(s: String, len: Int, idx: Int, depth: Int) -> Int with { Erro
   }
 }
 
-// #956: numeric literal followed directly by `e`/`E` + digits (or +/- digits)
-// looks like scientific notation, which vibe does not support — it used to
-// lex as `<number>` + identifier and surface as a confusing downstream
-// `unknown name: e20`. Reject it at the lexer with an explanatory error.
+// #997: 1-based "line L:C: " prefix for a 0-based char offset, matching the
+// located-diagnostic convention used elsewhere in this lexer (see the
+// `\(expr)`-removal message below). The generic offset-based diagnostic
+// collector (`lex_with_offsets_recovering`) always records the START offset
+// of the enclosing `lex_one_token` call as the error location, so a throw
+// raised partway through a multi-char token (e.g. at the `e`/`E` of a long
+// numeric literal, not at its first digit) would otherwise be misattributed
+// to the token's start. Embedding the precise location directly in the
+// message — the same workaround already used for the `\(expr)` message —
+// keeps the report pointing at the actual offending character.
+fn located_prefix(s: String, pos: Int) -> String {
+  let mut eline = 1
+  let mut ecol = 1
+  let mut ei = 0
+  while ei < pos {
+    if String::char_code_at(s, ei) == '\n' {
+      eline = eline + 1
+      ecol = 1
+    } else {
+      ecol = ecol + 1
+    }
+    ei = ei + 1
+  }
+  String::concat("line ", String::concat(__to_string(eline), String::concat(":", String::concat(__to_string(ecol), ": "))))
+}
+
+// #956/#997: numeric literal followed directly by `e`/`E` + digits (or +/-
+// digits) looks like scientific notation, which vibe does not support — it
+// used to lex as `<number>` + identifier and surface as a confusing
+// downstream `unknown name: e20`. Reject it at the lexer with an
+// explanatory error, precisely located at the `e`/`E` (not the start of the
+// number — #997: the generic offset-based collector would otherwise blame
+// the wrong column for anything but a single-digit literal).
+//
+// #997: `e`/`E` immediately followed by a bare `+`/`-` with no digit after
+// it (`1e+`, `2e-`) is unambiguously a botched exponent, unlike a plain
+// identifier continuation (`1even` still lexes as `1` + `even`, #956's
+// `e_prefixed_identifier_after_number_still_lexes`) — a sign can never
+// legally continue an identifier, so there's no ambiguity to preserve for
+// that shape, and it used to silently fall through to the same confusing
+// `unknown name: e` diagnostic.
 fn check_no_scientific_suffix(s: String, len: Int, pos: Int) -> Unit with { Error } {
   if pos < len {
     let c = String::char_code_at(s, pos)
     if c == 'e' || c == 'E' {
-      let looks_scientific = if pos + 1 < len {
-        let c1 = String::char_code_at(s, pos + 1)
-        if is_digit(c1) {
-          true
-        } else if (c1 == '+' || c1 == '-') && pos + 2 < len && is_digit(String::char_code_at(s, pos + 2)) {
-          true
-        } else {
-          false
-        }
+      let has_sign = pos + 1 < len && (String::char_code_at(s, pos + 1) == '+' || String::char_code_at(s, pos + 1) == '-')
+      let digits_start = if has_sign {
+        pos + 2
       } else {
-        false
+        pos + 1
       }
-      if looks_scientific {
-        throw("scientific notation is not supported; write the digits out or compute the value")
+      let has_digits = digits_start < len && is_digit(String::char_code_at(s, digits_start))
+      if has_digits {
+        throw(String::concat(located_prefix(s, pos), "scientific notation is not supported; write the digits out or compute the value"))
+      } else if has_sign {
+        throw(String::concat(located_prefix(s, pos), "incomplete exponent: expected digit(s) after the sign in scientific notation"))
       } else {
         ()
       }
@@ -523,8 +606,25 @@ fn scan_hex_digits_end(s: String, len: Int, i: Int) -> Int {
   out
 }
 
-fn parse_hex_from_string(s: String) -> Int {
+// #997: Int is 62-bit tagged (range -2^61..2^61-1); a literal magnitude
+// above Int::max_value (2305843009213693951) cannot be represented.
+// Without a guard, the digit-accumulation loop below overflows vibe's OWN
+// `Int` (the accumulator is a plain tagged Int too) and silently wraps into
+// a bogus in-range value instead of raising `IntLiteralOverflow` — this
+// used to happen on EVERY numeric literal path (decimal AND hex; see
+// fixtures/err_parse_int_overflow_tagged.vibe, which predates any actual
+// check). The bound is checked digit-by-digit, BEFORE each multiply/add,
+// using the standard `acc > (max / base)`-style pre-check (mirrors the
+// runtime `Int::parse` guard in codegen/int_parse_expr.vibe) so the
+// overflow is caught at the exact moment it would occur, never after the
+// accumulator has already wrapped.
+
+fn parse_hex_from_string(s: String) -> Int with { Error } {
   let len = String::length(s)
+  // Int::max_value (0x1FFFFFFFFFFFFFFF) in base 16: floor(max/16) and
+  // max%16, precomputed so the per-digit check below never itself overflows.
+  let max_div_16 = 144115188075855871
+  let max_mod_16 = 15
   let mut i = 0
   let mut acc = 0
   while i < len {
@@ -534,19 +634,33 @@ fn parse_hex_from_string(s: String) -> Int {
     } else if c >= 'a' && c <= 'f' {
       c - 87
     } else c - 55
+    if acc > max_div_16 || (acc == max_div_16 && digit > max_mod_16) {
+      throw("IntLiteralOverflow: hex integer literal exceeds Int::max_value (2305843009213693951)")
+    } else {
+      ()
+    }
     acc = acc * 16 + digit
     i = i + 1
   }
   acc
 }
 
-fn parse_int_from_string(s: String) -> Int {
+fn parse_int_from_string(s: String) -> Int with { Error } {
   let len = String::length(s)
+  // Int::max_value in base 10: floor(max/10) and max%10.
+  let max_div_10 = 230584300921369395
+  let max_mod_10 = 1
   let mut i = 0
   let mut acc = 0
   while i < len {
     let c = String::char_code_at(s, i)
-    acc = acc * 10 + (c - 48)
+    let digit = c - 48
+    if acc > max_div_10 || (acc == max_div_10 && digit > max_mod_10) {
+      throw("IntLiteralOverflow: integer literal exceeds Int::max_value (2305843009213693951)")
+    } else {
+      ()
+    }
+    acc = acc * 10 + digit
     i = i + 1
   }
   acc
@@ -744,7 +858,18 @@ fn lex_one_token(source: String, len: Int, pos: Int) -> (Token, Int) with { Erro
     }
   } else if c == '\'' {
     lex_char(source, len, pos)
-  } else throw(String::concat("unexpected character: ", String::from_char_code(c)))
+  } else {
+    // #946: c >= 0x80 is (the lead byte of) a multi-byte UTF-8 character --
+    // report the ORIGINAL source bytes, not String::from_char_code(c) (which
+    // only ever encodes ONE raw byte and mojibake'd multi-byte characters
+    // into an invalid lone-byte "character").
+    let ch_text = if c >= 128 {
+      utf8_char_text(source, len, pos)
+    } else {
+      String::from_char_code(c)
+    }
+    throw(String::concat("unexpected character: ", ch_text))
+  }
 }
 
 // Position-tracking lexer: identical token production to `lex`, but also returns
@@ -759,7 +884,7 @@ export fn lex_with_offsets(source: String) -> (Array[Token], Array[Int], Array[I
     let starts = ArrayBuilder::new()
     let ends = ArrayBuilder::new()
     let mut prev_tok = TEof
-    let first_skip = skip_ws_with_newline(source, len, 0)
+    let first_skip = skip_ws_with_newline(source, len, skip_bom(source, len))
     let mut pos = first_skip.0
     let mut nl_before = first_skip.1
     while pos < len {
@@ -803,7 +928,7 @@ export fn lex_with_offsets_recovering(source: String) -> (Array[Token], Array[In
   let err_offsets = ArrayBuilder::new()
   let err_msgs = ArrayBuilder::new()
   let mut prev_tok = TEof
-  let first_skip = skip_ws_with_newline(source, len, 0)
+  let first_skip = skip_ws_with_newline(source, len, skip_bom(source, len))
   let mut pos = first_skip.0
   let mut nl_before = first_skip.1
   while pos < len {
@@ -865,6 +990,19 @@ export fn lex_with_offsets_recovering(source: String) -> (Array[Token], Array[In
             }
           }
           j
+        } else if c >= 128 {
+          // #946: a multi-byte UTF-8 character failed as a single logical
+          // token (identifiers/operators are ASCII-only) -- skip the WHOLE
+          // encoded sequence, not one byte at a time, or a single 3-byte
+          // character re-lexes as 3 separate "unexpected character" errors
+          // (one per continuation byte) instead of one error for the one
+          // character actually in the source.
+          let seq_len = utf8_seq_len(c)
+          if pos + seq_len <= len {
+            pos + seq_len
+          } else {
+            len
+          }
         } else {
           pos + 1
         }
@@ -905,7 +1043,7 @@ export fn lex(source: String) -> Array[Token] with { Error } {
   {
     let b = ArrayBuilder::new()
     let mut prev_tok = TEof
-    let first_skip = skip_ws_with_newline(source, len, 0)
+    let first_skip = skip_ws_with_newline(source, len, skip_bom(source, len))
     let mut pos = first_skip.0
     let mut nl_before = first_skip.1
     while pos < len {

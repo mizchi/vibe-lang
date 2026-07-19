@@ -459,6 +459,21 @@ export fn prepare_file_fs_cached(db: TypeDb, entry_path: String) -> TypeDb with 
   prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
 }
 
+// #946 P1 (Codex, PR #1006): `vibe check`'s "linked" dep collection
+// (collect_linked_dep_inputs_for_stmts, in linked_artifacts.vibe) exists to
+// feed the wasm import-linking codegen boundary -- it copies a dependency's
+// SEnum/struct declarations into the checked stmts but never a `let rec fn`
+// signature, so check_program never learned an imported function's real
+// type and a wrong-typed call site (e.g. `f("x")` against `fn f(x: Int)`)
+// typechecked cleanly no matter what was passed. Reuse prepare_file_fs_cached's
+// fs-mode source-group + db_typecheck_fs pipeline instead -- the same one
+// compile_file_fs_mode already relies on for a real compile's (working)
+// typecheck pass -- and stop before build_grouped_merged_stmts/codegen.
+export fn check_file_fs_mode(entry_path: String) -> Int with { Error, Fs } {
+  let _ = prepare_file_fs_cached(db_new(), entry_path)
+  0
+}
+
 export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: String) -> Bytes with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
