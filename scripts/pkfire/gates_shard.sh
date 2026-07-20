@@ -40,7 +40,7 @@ case "$shard" in
     # `set -e` and everything after it silently never ran:
     #   test_selfhost_cli_component_preview2.sh, test_selfhost_cli_command_parity.sh,
     #   test_selfhost_cli_direct_parity.sh, test_selfhost_cutover_gate.sh
-    # test_cli_core.sh exists but depends on build_selfhost_cli_core.sh
+    # test_cli_core.sh exists but depends on build_cli_core.sh
     # which was also never committed (recorded in #766 / PR #804). Restore each
     # from its spec contract before re-adding to this list.
     bash scripts/test_cli_preview2_package.sh

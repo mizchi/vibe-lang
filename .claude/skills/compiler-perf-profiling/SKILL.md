@@ -25,7 +25,7 @@ scripts/profile_compile.sh /tmp/gen/stage2.wasm foo.vibe 30
 
 ```bash
 S2=<stage2.wasm>   # 現行 stage2 (scripts/generations.sh build の成果物)
-VIBE_PREOPEN_DIR="$PWD" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$PWD" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   node --cpu-prof --cpu-prof-dir=/tmp --cpu-prof-name=compile.cpuprofile \
   scripts/wasm_vibe_host_runner.js --invoke cli_main "$S2" \
   lib/@vibe/compiler/tests/codegen_lexer_test.vibe /tmp/out.wasm __no_entry__
@@ -71,7 +71,7 @@ node runner の bench mode で回す:
 
 ```bash
 # compile (テストと同じ __no_entry__ sentinel で OK)
-VIBE_PREOPEN_DIR="$PWD" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$PWD" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$S2" \
   lib/@vibe/compiler/parser_bench.vibe /tmp/b.wasm __no_entry__
 
@@ -125,8 +125,8 @@ phase bench: selfhost_{lexer,parser,checker,codegen}_bench.vibe。
 
 ```bash
 # a. bundle regen (compiler source を触ったら必須)
-VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 \
-  VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/cli_adapter_module_source.vibe \
+VIBE_REGEN_MODULE_SOURCE=1 \
+  VIBE_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/cli_adapter_module_source.vibe \
   bash scripts/generate_bundle.sh
 
 # b. stage rebuild + fixpoint (stage2 == stage3 が絶対条件)

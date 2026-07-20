@@ -128,7 +128,7 @@ STAGE1_CORE_WASM="$(VIBE_CLI_CORE_OUT_DIR="$OUT_DIR" \
   VIBE_CLI_CORE_REBUILD=always \
   ENTRY_PATH="$ENTRY_PATH" \
   STAGE1_CORE_WASM="$STAGE1_CORE_WASM" \
-  bash "$PROJECT_ROOT/scripts/build_selfhost_cli_core.sh")" || exit $?
+  bash "$PROJECT_ROOT/scripts/build_cli_core.sh")" || exit $?
 
 cat >"$INPUT_SOURCE" <<'EOF'
 export let answer = () -> Int { 40 + 2 }

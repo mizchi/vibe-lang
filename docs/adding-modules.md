@@ -55,7 +55,7 @@ dev-mode の便宜で、pin があれば置き場所によらず hash 照合さ�
 
 ```bash
 # 個別テストの素振り (compile + run)
-env VIBE_PREOPEN_DIR="$PWD" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+env VIBE_PREOPEN_DIR="$PWD" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
   <stage2.wasm> path/to/foo_test.vibe /tmp/t.wasm __no_entry__
 env VIBE_PREOPEN_DIR="$PWD" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start /tmp/t.wasm
@@ -69,8 +69,8 @@ compiler 本体 (`lib/@vibe/compiler/`, `lib/@vibe/` の compiler 消費分) を
 場合は必ず:
 
 ```bash
-VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 \
-  VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/cli_adapter_module_source.vibe \
+VIBE_REGEN_MODULE_SOURCE=1 \
+  VIBE_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/cli_adapter_module_source.vibe \
   bash scripts/generate_bundle.sh
 bash scripts/generations.sh build --stage3 --out-dir _build/gen
 cmp _build/gen/stage2.wasm _build/gen/stage3.wasm   # fixpoint

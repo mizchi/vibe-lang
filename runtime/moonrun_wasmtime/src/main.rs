@@ -1367,7 +1367,7 @@ fn wasi_fd_write(
 // ---- selfhost raw-ABI (`vibe::*`) host imports ----
 //
 // The selfhost CLI wasm (entry `cli_main`) talks to the host through `vibe::*`
-// imports under the "raw" ABI (`VIBE_SELFHOST_IMPORT_ABI=raw`). Strings cross
+// imports under the "raw" ABI (`VIBE_IMPORT_ABI=raw`). Strings cross
 // the boundary packed into a single i64 = `(ptr << 32) | len` referencing the
 // guest's exported linear `memory`. Host-produced strings are bump-allocated on
 // the guest's exported `__heap_ptr` global. Ints/Bools are passed as raw i64.
