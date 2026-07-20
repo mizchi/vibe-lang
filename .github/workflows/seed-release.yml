@@ -1,0 +1,98 @@
+name: seed-release
+
+# Manually triggered: publishes a bootstrap-bump seed release. Not triggered
+# by tag push, because at the tag a bumper wants to publish,
+# bootstrap/seed.json already points at the NEW seed (that's what "adopt"
+# does) — a CI job checking out that commit can't fetch the new seed's own
+# not-yet-published release to use as stage0. Instead this job is told
+# explicitly which prior, already-published seed to reproduce from.
+#
+# See docs/bootstrap.md's "Seed artifact 配布" section for the full bump
+# procedure this fits into.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "New release tag to publish (must start with seed/), e.g. seed/map-from-pairs-2026-07-17"
+        required: true
+      source_ref:
+        description: "Commit whose compiler source to build the candidate from (defaults to the ref this workflow runs on)"
+        required: false
+      prior_seed_ref:
+        description: "Commit/tag whose bootstrap/seed.json pin to use as stage0 for the rebuild. Omit when source_ref's OWN bootstrap/seed.json already describes the seed to republish unchanged (e.g. this migration's first seed release); set to a ref BEFORE a real bootstrap-bump commit when the compiler source actually changed since the prior seed."
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate tag
+        run: |
+          case "${{ inputs.tag }}" in
+            seed/*) : ;;
+            *) echo "::error::tag must start with 'seed/' (got: ${{ inputs.tag }})"; exit 1 ;;
+          esac
+
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Install wasmtime
+        env:
+          WASMTIME_VERSION: v46.0.1
+        run: |
+          set -euo pipefail
+          dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
+          curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          echo "$PWD/$dir" >> "$GITHUB_PATH"
+
+      - name: Use prior seed pin for the rebuild (if specified)
+        if: ${{ inputs.prior_seed_ref != '' }}
+        run: git show "${{ inputs.prior_seed_ref }}:bootstrap/seed.json" > bootstrap/seed.json
+
+      - name: Ensure prior seed artifact (stage0 for this rebuild)
+        run: bash scripts/ensure_seed.sh
+
+      - name: Rebuild candidate deterministically
+        run: bash scripts/generations.sh build --stage3
+
+      - name: Restore this commit's own bootstrap/seed.json
+        if: ${{ inputs.prior_seed_ref != '' }}
+        run: git checkout -- bootstrap/seed.json
+
+      - name: Adopt candidate locally (uncommitted — this workspace only)
+        run: |
+          gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
+          bash scripts/generations.sh adopt --artifact "${gen}stage2.wasm" \
+            --tag "${{ inputs.tag }}" --source-commit "$(git rev-parse HEAD)"
+
+      - name: Build seed release assets
+        run: bash scripts/build_seed_release_assets.sh "${{ inputs.tag }}"
+
+      - name: Upload staged assets
+        uses: actions/upload-artifact@v6
+        with:
+          name: seed-release-assets-${{ inputs.tag }}
+          path: dist/release/${{ inputs.tag }}/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release (prerelease)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          target_commitish: ${{ inputs.source_ref || github.sha }}
+          prerelease: true
+          files: |
+            dist/release/${{ inputs.tag }}/*
+          fail_on_unmatched_files: true
+          generate_release_notes: false

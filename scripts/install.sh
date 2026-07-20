@@ -102,7 +102,7 @@ if [ -z "$CLI_WASM_SRC" ]; then
     CLI_WASM_SRC="$built"
     say "using freshly built compiler wasm: $CLI_WASM_SRC"
   else
-    CLI_WASM_SRC="$ROOT_DIR/bootstrap/seed/selfhost_compiler.wasm"
+    CLI_WASM_SRC="$ROOT_DIR/bootstrap/seed/compiler.wasm"
     say "build unavailable; using committed seed compiler as the CLI wasm"
   fi
 fi

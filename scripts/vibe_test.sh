@@ -40,7 +40,7 @@ if [ "$#" -lt 1 ]; then
   exit 2
 fi
 
-seed="$ROOT_DIR/bootstrap/seed/selfhost_compiler.wasm"
+seed="$ROOT_DIR/bootstrap/seed/compiler.wasm"
 outdir="$ROOT_DIR/_build/vibe_test"
 mkdir -p "$outdir"
 

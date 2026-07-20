@@ -101,6 +101,7 @@ VIBE_PROJECT_ROOT="$TMP_ROOT" \
 VIBE_GENERATION_RUNNER_SCRIPT="$TMP_ROOT/fake_cli_runner.sh" \
 VIBE_GENERATION_VALIDATE_WASM=0 \
 VIBE_GENERATION_VALIDATE_RUN=0 \
+VIBE_GENERATION_AUTO_FETCH_SEED=0 \
   bash "$SCRIPT" build --manifest "$TMP_ROOT/bootstrap/bad-seed.json" --out-dir "$TMP_ROOT/bad-out" >"$TMP_ROOT/bad.stdout" 2>"$TMP_ROOT/bad.stderr"
 bad_status=$?
 set -e
@@ -142,8 +143,8 @@ CLI_ROOT="$TMP_ROOT/cli_seed"
 mkdir -p "$CLI_ROOT/bootstrap" "$CLI_ROOT/bootstrap/seed" "$CLI_ROOT/scripts" "$CLI_ROOT/lib/@vibe/compiler"
 printf 'import ./dep.vibe { dep }\nexport let cli_main = () -> Int { dep() }\n' > "$CLI_ROOT/lib/@vibe/compiler/cli_support.vibe"
 printf 'export let dep = () -> Int { 0 }\n' > "$CLI_ROOT/lib/@vibe/compiler/dep.vibe"
-printf 'seed-cli\n' > "$CLI_ROOT/bootstrap/seed/selfhost_compiler.wasm"
-cli_seed_sha="$(shasum -a 256 "$CLI_ROOT/bootstrap/seed/selfhost_compiler.wasm" | awk '{print $1}')"
+printf 'seed-cli\n' > "$CLI_ROOT/bootstrap/seed/compiler.wasm"
+cli_seed_sha="$(shasum -a 256 "$CLI_ROOT/bootstrap/seed/compiler.wasm" | awk '{print $1}')"
 
 cat > "$CLI_ROOT/bootstrap/seed.json" <<EOF
 {
@@ -156,7 +157,7 @@ cat > "$CLI_ROOT/bootstrap/seed.json" <<EOF
     "entry": "lib/@vibe/compiler/cli_support.vibe",
     "entry_name": "cli_main",
     "artifact": {
-      "path": "bootstrap/seed/selfhost_compiler.wasm",
+      "path": "bootstrap/seed/compiler.wasm",
       "sha256": "$cli_seed_sha"
     }
   }

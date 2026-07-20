@@ -11,7 +11,7 @@ Status: accepted from 2026-06-12.
 
 - source commit: `39eab0519952ca72599b0b7064d00e3fbd2ac302`
 - seed tag: `selfhost-cutover-base-2026-06-12`
-- seed artifact: `bootstrap/seed/selfhost_compiler.wasm`
+- seed artifact: `bootstrap/seed/compiler.wasm`
 - seed sha256: `f9da8e285fe0c71c33670a2b9a13a49088dee3ec9a46d2175e975968c6b4b26b`
 - source of truth: `lib/@vibe/compiler/` and `lib/@vibe/cli/`
 - MoonBit `src/`: legacy bootstrap / fallback / host-runner 層。通常開発では触らない

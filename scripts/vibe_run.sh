@@ -58,7 +58,7 @@ if [ "$#" -gt 0 ] && [ "${1:-}" = "--" ]; then
   shift
 fi
 extra_args=("$@")
-seed="$ROOT_DIR/bootstrap/seed/selfhost_compiler.wasm"
+seed="$ROOT_DIR/bootstrap/seed/compiler.wasm"
 
 # Repo-root-relative source path for the wasm preopen.
 case "$src" in

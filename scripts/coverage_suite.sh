@@ -90,7 +90,7 @@ if [ -z "$cli" ]; then
   if [ -n "$gen" ] && [ -f "${gen}stage2.wasm" ]; then
     cli="${gen}stage2.wasm"
   else
-    cli="bootstrap/seed/selfhost_compiler.wasm"
+    cli="bootstrap/seed/compiler.wasm"
   fi
 fi
 if [ ! -f "$cli" ]; then

@@ -33,7 +33,7 @@ case "$src" in
 esac
 [ -f "$ROOT_DIR/$src_rel" ] || { echo "vibe_fmt.sh: not found: $src_rel" >&2; exit 2; }
 
-seed="$ROOT_DIR/bootstrap/seed/selfhost_compiler.wasm"
+seed="$ROOT_DIR/bootstrap/seed/compiler.wasm"
 entry_src="lib/@vibe/cli/fmt_entry.vibe"
 work="$ROOT_DIR/_build/vibe_fmt"
 mkdir -p "$work"

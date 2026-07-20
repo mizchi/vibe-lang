@@ -51,7 +51,7 @@ echo "[async-component-gate] wasmtime: $("$WASMTIME_BIN" --version)"
 COMPILER="${VIBE_ASYNC_GATE_COMPILER:-}"
 if [ -z "$COMPILER" ]; then
   COMPILER="$(ls -td "$PROJECT_ROOT"/_build/selfhost/generations/*/ 2>/dev/null | head -1)stage2.wasm"
-  [ -f "$COMPILER" ] || COMPILER="$PROJECT_ROOT/bootstrap/seed/selfhost_compiler.wasm"
+  [ -f "$COMPILER" ] || COMPILER="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
 fi
 echo "[async-component-gate] compiler: $COMPILER"
 
