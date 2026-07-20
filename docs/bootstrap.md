@@ -226,6 +226,11 @@ fetch しようとする自己参照になってしまう。`workflow_dispatch` 
 5. 公開された release は **prerelease** として Releases 一覧に載る。以降、
    `bootstrap/seed.json` の pin を見た全ての CI/ローカル環境が
    `scripts/ensure_seed.sh` 経由でこの release から自動的に fetch する。
+   (この repo は GitHub の "immutable releases" 設定が有効なため、
+   release は一旦 `draft: true` で作成して asset を添付し、その直後の
+   別ステップで `gh release edit --draft=false` により publish する
+   — `prerelease: true` だけだと asset upload 前に `release.published`
+   が発火し、asset 添付が `immutable release` エラーで失敗するため。)
 
 ### 既存の git 履歴中のバイナリ blob
 

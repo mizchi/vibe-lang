@@ -120,13 +120,27 @@ jobs:
           path: dist/release/${{ inputs.tag }}/*
           if-no-files-found: error
 
-      - name: Publish GitHub Release (prerelease)
+      - name: Publish GitHub Release (draft prerelease)
+        # This repo has GitHub's "immutable releases" setting enabled: once a
+        # release transitions to published, no more assets can be uploaded to
+        # it. softprops/action-gh-release with only `prerelease: true` (no
+        # `draft: true`) still fires `release.published` immediately, so the
+        # asset upload in this same step fails ("Cannot upload asset ... to
+        # an immutable release"). Creating it as a draft keeps it mutable
+        # while assets attach; the next step flips it to published as a
+        # separate, later action.
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
           target_commitish: ${{ inputs.source_ref || github.sha }}
           prerelease: true
+          draft: true
           files: |
             dist/release/${{ inputs.tag }}/*
           fail_on_unmatched_files: true
           generate_release_notes: false
+
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$SEED_TAG" --draft=false --repo "${{ github.repository }}"
