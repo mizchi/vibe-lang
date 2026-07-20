@@ -891,7 +891,7 @@ function buildFsMetadataHashParts(filePath) {
   // invalidation assert caught this once compiles got fast enough to fit in
   // one tick). Every atomicWriteFileSync allocates a fresh inode, so mixing
   // it in makes rename-based rewrites always change the token. Must mirror
-  // moonrun_wasmtime's vibe_stat_token exactly (shared cache/cwasm keys).
+  // vibewt's vibe_stat_token exactly (shared cache/cwasm keys).
   const ino = typeof stat.ino === "bigint" ? stat.ino : BigInt(stat.ino || 0);
   const lower = BigInt.asUintN(
     64,

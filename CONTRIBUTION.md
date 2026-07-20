@@ -249,8 +249,8 @@ lib/                      # All vibe source: stdlib + compiler + experimental
 └── @vibex/               #   experimental: math, regexp, url, uuid, toml, diff,
                           #   fmt, color, template, semver, quickcheck, base64, …
 
-runtime/                  # Host runtime: wasmtime runner (moonrun_wasmtime),
-│                         #   daemon client (moonrun_wt_client), `vibe` launcher
+runtime/                  # Host runtime: wasmtime runner (vibewt),
+│                         #   daemon client (vibewt_client), `vibe` launcher
 clients/                  # Embeddings + distribution artifacts
 ├── js/                   #   JS bindings (LSP / IDE / DAP / graph-query)
 └── wasm/                 #   distributed compiler wasm (vibe.wasm)

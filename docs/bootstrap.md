@@ -151,7 +151,7 @@ flat source が現在の source と食い違い、stage1/stage2 parity 失敗と
 
 cutover 後も runner と compiler artifact は分ける。
 
-- runner layer: `runtime/moonrun_wasmtime`、wasmtime flags、cwasm cache、
+- runner layer: `runtime/vibewt`、wasmtime flags、cwasm cache、
   host import、component adapter。
 - compiler wasm layer: `lib/@vibe/cli/` の CLI entry と `lib/@vibe/compiler/` の compiler 実装から作る dist/component/check entry。
 
