@@ -13,7 +13,7 @@ import ../common_analysis {
 }
 
 import ../common_base {
-  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, find_func_stmt, is_eident, ctor_table_index_of, resolve_func, resolve_local, struct_field_candidates, struct_field_dispatch_cases
+  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, find_func_stmt, find_local_slot, is_eident, ctor_table_index_of, resolve_func, resolve_local, struct_field_candidates, struct_field_dispatch_cases
 }
 
 import ../../builtin_name.vibe {
@@ -25,7 +25,7 @@ import ../double_to_string_expr.vibe {
 }
 
 import ../common_extractors {
-  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_ecall_args, get_ecall_callee, get_eident_name, get_estring_value, str_table_lookup
+  array_contains_int, array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_ecall_args, get_ecall_callee, get_eident_name, get_estring_value, str_table_lookup
 }
 
 import ../wasm_emit {
@@ -114,6 +114,25 @@ fn bc_expr_is_floatish(e: Expr, ctx: CompileCtxGc) -> Bool {
       EIdent(cn, _) => cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float",
       _ => false
     },
+    _ => false
+  }
+}
+
+// #1015: local mirror of backend_expr's gc_expr_is_boolish (same cycle
+// precedent as bc_expr_is_floatish above). Bool and Int share the same
+// gc-lane numeric representation, so this static shape-based classification
+// is the only way the `__to_string` dispatch below can route a Bool
+// argument to the "true"/"false" formatter instead of the generic runtime
+// dispatch (which would mis-render `true` as `"1"`).
+fn bc_expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+  match e {
+    EBool(_) => true,
+    EIdent(fname, _) => {
+      let slot = find_local_slot(local_names, fname)
+      slot >= 0 && array_contains_int(ctx.gc_bool_locals, slot)
+    },
+    EBinOp(op, _, _) => op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||",
+    EUnaryOp(op, _) => op == "!",
     _ => false
   }
 }
@@ -750,6 +769,49 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         // takes the synthesized Double formatter — the runtime-dispatch
         // builtin below reads the raw f64 bits as an integer.
         ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ld)
+      }
+      else if fname == "__to_string" && Array::length(args) == 1 && bc_expr_is_boolish(Array::get(args, 0), local_names, ctx) {
+        // #1015 (gc mirror of the linear fix): a statically-boolish argument
+        // takes the "true"/"false" formatter directly — the runtime-dispatch
+        // builtin below cannot distinguish Bool from Int (same
+        // representation on this lane) and would mis-render `true` as "1".
+        ce(buf, EIf(Array::get(args, 0), EString("true"), EString("false")), local_names, next_local, ld)
+      }
+      else if fname == "to_string" && ctx.gc_to_string_is_show_wrapper && Array::length(args) == 1 && (bc_expr_is_floatish(Array::get(args, 0), ctx) || bc_expr_is_boolish(Array::get(args, 0), local_names, ctx)) {
+        // #1015: gc-lane counterpart of the linear call-site fast path in
+        // expr/compile_call.vibe. The gc lane has no cross-file #716
+        // export-name mangling to key off (VIBE_BACKEND=gc is always a
+        // direct SINGLE-FILE compile — see cli_adapter.vibe's dispatch,
+        // "FS-import mode... stays linear-backend-only" — so the prelude's
+        // to_string can't even be imported here; exercising this path means
+        // the compiled file defines its own local `to_string[T: Show](x: T)
+        // -> String { __to_string(x) }`-shaped wrapper). Inside that
+        // wrapper's body `x` has the opaque generic type param T, so no
+        // param/let seeding (concrete "Bool"/"Float" annotations only) can
+        // make `bc_expr_is_boolish`/`bc_expr_is_floatish` recognize it --
+        // the SAME root cause as the linear bug. Bypass the wrapper call
+        // entirely and inline `__to_string(arg)` with the ORIGINAL call-site
+        // argument expression, which the two branches above then classify
+        // correctly.
+        //
+        // `ctx.gc_to_string_is_show_wrapper` (backend_body.vibe,
+        // gc_to_string_resolves_to_show_wrapper, computed once per compile)
+        // is the shadow guard: code review (#1015) correctly pointed out
+        // that a bare `fname == "to_string"` match, while safe against
+        // CROSS-file shadowing (the gc lane's single-file compile model
+        // rules that out -- a second same-named top-level fn is a compile
+        // error), is NOT safe against a SAME-file user `fn to_string(x:
+        // Bool) -> String { "custom" }` -- a real, different function that
+        // must keep running, not be silently replaced by this fast path.
+        // The flag verifies the actual "to_string" in THIS program
+        // structurally matches the trivial Show-forwarding wrapper shape
+        // before this branch is allowed to bypass it; a differently-shaped
+        // "to_string" (any real user function) leaves the flag false and
+        // this whole branch inert, falling through to the ordinary bound
+        // call below untouched.
+        ce(buf, ECall(EIdent("__to_string", -1), [
+          Array::get(args, 0)
+        ], -1), local_names, next_local, ld)
       }
       else if fname == "Int::to_string" || fname == "__to_string" {
         let ts_idx = gc_resolve_builtin_last(ctx.func_table, "__to_string")

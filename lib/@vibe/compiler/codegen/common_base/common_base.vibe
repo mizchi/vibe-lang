@@ -395,7 +395,54 @@ export struct CompileCtxGc {
   // ops — the unconditional i64 ops silently zeroed float-literal parsing
   // (lexer parse_frac_digits) when the gc-compiled compiler ran. Best-effort:
   // annotated Double params and tuple-destructured floats are NOT tracked.
+  //
+  // KNOWN LATENT BUG (found alongside #1015, not fixed here -- see
+  // gc_bool_locals below for the corrected design this should eventually
+  // adopt): this set is tracked by NAME, not by local SLOT INDEX, and is
+  // never pruned at branch/match-arm/for-in scope-exit boundaries (compare
+  // gc_agg_local_slots, which IS slot-indexed and pruned via
+  // agg_log_reset_above at every such boundary). So e.g. `if c { let x =
+  // 1.5; .. } else { let x = 1; f(x) }` can misclassify the else branch's
+  // `x` as floatish, because "x" from the then-branch is still in this set
+  // when the else-branch's same-named-but-different-slot `x` is checked.
+  // Tracked as a follow-up; out of scope for #1015 (which only touches
+  // Bool).
   gc_float_locals: Array[String];
+  // #1015: gc twin of the linear lane's int_local_slots kind-3 (boolish)
+  // tracking -- locals (params/lets) KNOWN to hold a Bool. Bool and Int
+  // share the same gc-lane numeric representation (no distinguishing
+  // runtime type tag between them, mirroring the linear backend), so the
+  // generic runtime `__to_string` dispatch cannot tell them apart; this
+  // set lets `bc_expr_is_boolish`/`gc_expr_is_boolish` recognize a
+  // Bool-typed identifier statically instead, the same way `gc_float_locals`
+  // lets floatish idents take the f64 path.
+  //
+  // Tracked by local SLOT INDEX (not name, unlike gc_float_locals above --
+  // see the KNOWN LATENT BUG note there): entries are pruned at every
+  // branch/match-arm/for-in scope-exit boundary via
+  // gc_slot_log_reset_above(ctx.gc_bool_locals, floor), the exact same
+  // "slot >= floor is about to be reused by a sibling scope, drop stale
+  // entries" discipline agg_log_reset_above already applies to
+  // gc_agg_local_slots at those same boundaries (see backend_expr.vibe's
+  // EIf/for-in/handle and backend_match.vibe's match-arm truncation sites).
+  // Without this, `if c { let b = true; to_string(b) } else { let b = 1;
+  // to_string(b) }` would misclassify the else branch's `b` (a DIFFERENT
+  // binding that happens to reuse the same now-freed slot) as boolish too.
+  gc_bool_locals: Array[Int];
+  // #1015: computed ONCE per compile (backend_body.vibe's
+  // gc_to_string_resolves_to_show_wrapper, before any CompileCtxGc is
+  // constructed) and copied unchanged into every ctx thereafter (including
+  // lambda ctxs, backend_lambda_ctx.vibe). True iff this program's own
+  // top-level `to_string` (if any) structurally matches the Show-bounded
+  // generic forwarding wrapper `to_string[T: Show](x: T) -> String {
+  // __to_string(x) }`. Gates backend_call.vibe's "to_string" call-site fast
+  // path -- required so a SAME-file user-defined `fn to_string(x: Bool) ->
+  // String { "custom" }` (a real, different function) is not silently
+  // replaced by the Bool/Float formatter (code review, #1015): the gc
+  // lane's single-file compile model rules out cross-file name collisions
+  // (unlike linear, which needs a mangled-name match), but not this
+  // same-file case.
+  gc_to_string_is_show_wrapper: Bool;
   // #724: gc twin of CompileCtx.agg_local_slots (same encoding + pruning
   // discipline) so the gc lane's structural ==/!= also covers non-literal
   // aggregate bindings. gc_-prefixed per the #722 field-collision convention.
@@ -449,6 +496,31 @@ export fn agg_log_reset_above(arr: Array[Int], floor: Int) -> Unit {
   while i < n {
     let e = Array::get(arr, i)
     if e / 256 < floor {
+      Array::set(arr, w, e)
+      w = w + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(arr, w)
+}
+
+// #1015: gc-lane twin of int_log_reset_above, for a PLAIN slot-indexed array
+// (no packed kind -- e.g. CompileCtxGc.gc_bool_locals, which unlike
+// CompileCtx.int_local_slots tracks exactly one thing, so entries are raw
+// slot ints rather than slot*4+kind). Same discipline: called right after
+// `local_names` is truncated to `floor` at a branch/match-arm/for-in
+// boundary, so a stale entry for a slot about to be reused by a sibling
+// scope does not leak into that sibling's classification of an unrelated
+// binding landing on the same freed slot.
+export fn gc_slot_log_reset_above(arr: Array[Int], floor: Int) -> Unit {
+  let n = Array::length(arr)
+  let mut w = 0
+  let mut i = 0
+  while i < n {
+    let e = Array::get(arr, i)
+    if e < floor {
       Array::set(arr, w, e)
       w = w + 1
     } else {

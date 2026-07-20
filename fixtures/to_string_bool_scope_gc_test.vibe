@@ -1,0 +1,33 @@
+// #1015 P1 regression: gc_bool_locals scope-leak (code review on #1015).
+//
+// ctx.gc_bool_locals is a slot-indexed tracking array, pruned to a floor
+// (gc_slot_log_reset_above) at every branch/match-arm/for-in scope-exit
+// boundary in lib/@vibe/compiler/codegen/gc/backend_expr.vibe /
+// backend_match.vibe -- mirroring how ctx.gc_agg_local_slots is already
+// pruned there (agg_log_reset_above). Before that pruning was added, an
+// EIf's then-branch binding a Bool at some local slot left a stale "this
+// slot is boolish" entry behind; the else-branch's `local_names` gets
+// correctly truncated back to the same floor and reused for a DIFFERENT,
+// non-Bool binding at the SAME slot number, but the (unpruned) tracking
+// array still said that slot was boolish -- so `__to_string` on the
+// else-branch's binding wrongly took the "true"/"false" formatter instead
+// of the integer-digit path.
+//
+// `pick`'s two branches each bind `b` as the FIRST local inside their own
+// branch, so both get the exact same slot number (both branches start
+// compiling from the same `next_local`) -- the precise slot-reuse
+// collision this regression targets.
+fn pick(cond: Bool) -> String {
+  if cond {
+    let b = true
+    __to_string(b)
+  } else {
+    let b = 1
+    __to_string(b)
+  }
+}
+
+test "gc lane: Bool tracking does not leak from one if/else branch to a rebound name in the other" {
+  assert(pick(true) == "true")
+  assert(pick(false) == "1")
+}

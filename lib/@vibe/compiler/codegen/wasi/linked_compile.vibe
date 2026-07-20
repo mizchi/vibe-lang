@@ -2103,9 +2103,21 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
             // let-bound floats do; without this, `a == b` on annotated float
             // params misses the f64 path and (under RC, where floats are
             // boxed) compares heap pointers — `1.5 == 1.5` came out false.
+            //
+            // #1015: Bool-typed params feed expr_is_boolish the same way
+            // (int_local_slots kind 3, #769 encoding slot*4+kind) let-bound
+            // bools do -- without this a Bool-typed param `b` passed straight
+            // to `to_string(b)` (e.g. `fn render(b: Bool) -> String {
+            // to_string(b) }`) is just a bare EIdent with no tracked slot
+            // info, so neither the call-site fast path in
+            // codegen/expr/compile_call.vibe nor `"\{b}"` interpolation can
+            // recognize it as Bool -- both fall through to the generic
+            // runtime bit-pattern heuristic and mis-render `true` as `"1"`.
             match pte {
               TyName(ptn) => if ptn == "Float" || ptn == "Double" {
                 Array::push(compile_ctx.float_local_slots, psi * 2 + 1)
+              } else if ptn == "Bool" {
+                Array::push(compile_ctx.int_local_slots, psi * 4 + 3)
               } else {
                 ()
               },

@@ -104,9 +104,127 @@ fn gc_reject_inline_wasm(stmts: Array[Stmt]) -> Unit with { Error } {
   }
 }
 
-export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String) -> Bytes with { Error } {
+// #1015: does this program's own top-level `to_string` (if it has one)
+// structurally match the Show-bounded generic forwarding wrapper
+// `to_string[T: Show](x: T) -> String { __to_string(x) }` -- exactly ONE
+// type param bounded by "Show", exactly one param whose annotation IS that
+// type param, and a body that's nothing but `__to_string(<that param>)`?
+//
+// This gates backend_call.vibe's "to_string" call-site fast path (bypassing
+// the wrapper call and inlining `__to_string(arg)` directly with the
+// original, statically classifiable argument expression). Code review
+// (#1015) correctly flagged that the gc lane's single-file compile model
+// rules out CROSS-file shadowing (mangled-name matching, as the linear lane
+// does, is unnecessary here) but NOT a SAME-file user function of the same
+// name: `fn to_string(x: Bool) -> String { "custom" }` is a real, different
+// function that must keep running when called, not be silently replaced by
+// the Bool/Float formatter. That user function fails this structural check
+// (no type params, a concrete Bool param, a body that isn't a bare
+// `__to_string` forward) and so is correctly left alone; only a body that
+// is ACTUALLY just forwarding to `__to_string` -- which can only ever
+// render the same "true"/"false"/digits output the fast path itself
+// produces -- passes.
+//
+// MUST be called on `stmts` BEFORE strip_generic_type_params runs (see
+// entry/source_compile/wasi_only/preprocess_strip.vibe): that pass
+// unconditionally zeroes EVERY top-level generic fn's type_params AND
+// bounds arrays (an erasure step, not specific to `to_string`), so by the
+// time compile_wasi_module_gc's own stmts are inspected, `to_string[T:
+// Show]`'s `type_params`/`bounds` are already `[]` and this check would
+// always see 0 type params -- always returning false, permanently
+// disabling the fast path (found via throw()-based instrumentation: the
+// first version of this check ran too late, inside compile_wasi_module_gc,
+// and never once returned true even for the genuine wrapper). Exported so
+// entry/source_compile/gc_only/gc_only.vibe (and the two other real
+// callers of compile_wasi_module_gc -- cli_gc_entry.vibe,
+// tests/codegen_test_support.vibe, neither of which strip at all) can call
+// it on their own pre-strip `stmts` and pass the result in.
+export fn gc_to_string_resolves_to_show_wrapper(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  let mut found_value = EUnit
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, tsw_name, _, tsw_value) => if tsw_name == "to_string" {
+        found = true
+        found_value = tsw_value
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if found {
+    gc_efn_is_show_to_string_wrapper(found_value)
+  } else {
+    false
+  }
+}
+
+fn gc_efn_is_show_to_string_wrapper(value: Expr) -> Bool {
+  match value {
+    EFn(tsw_tparams, tsw_bounds, tsw_params, _, _, tsw_body) => if Array::length(tsw_tparams) == 1 && Array::length(tsw_params) == 1 {
+      let tsw_tparam = Array::get(tsw_tparams, 0)
+      let (tsw_pname, tsw_pty) = Array::get(tsw_params, 0)
+      let tsw_ty_matches = match tsw_pty {
+        Some(TyName(tsw_ptn)) => tsw_ptn == tsw_tparam,
+        _ => false
+      }
+      tsw_ty_matches && gc_bounds_has_show(tsw_bounds, tsw_tparam) && gc_body_is_to_string_forward(tsw_body, tsw_pname)
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+fn gc_bounds_has_show(bounds: Array[(String, Array[String])], tparam: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(bounds) {
+    let (bname, btraits) = Array::get(bounds, i)
+    if bname == tparam {
+      let mut j = 0
+      while j < Array::length(btraits) {
+        if Array::get(btraits, j) == "Show" {
+          found = true
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// Is `body` exactly `__to_string(<pname>)` -- a bare one-arg forward of the
+// wrapper's own sole param to the `__to_string` builtin, nothing else?
+fn gc_body_is_to_string_forward(body: Expr, pname: String) -> Bool {
+  match body {
+    ECall(tsf_callee, tsf_args, _) => match tsf_callee {
+      EIdent(tsf_cn, _) => tsf_cn == "__to_string" && Array::length(tsf_args) == 1 && (match Array::get(tsf_args, 0) {
+        EIdent(tsf_an, _) => tsf_an == pname,
+        _ => false
+      }),
+      _ => false
+    },
+    _ => false
+  }
+}
+
+export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool) -> Bytes with { Error } {
   // #805: inline-wasm fns are linear-backend only — reject before any work.
   gc_reject_inline_wasm(stmts)
+  // #1015: `gc_to_string_is_wrapper` is a PARAMETER, not computed here --
+  // see the doc comment on gc_to_string_resolves_to_show_wrapper (which
+  // MUST run before strip_generic_type_params, and this function's own
+  // `stmts` have typically already been stripped by the time callers reach
+  // here).
   // Top-level `let f = g` function aliases: retarget references to the final
   // EFn def so calls do not route through a 0-param thunk registration
   // (invalid wasm for any call arity). See import_alias_rewrite.vibe.
@@ -598,7 +716,20 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String) -> Byte
           // #724 round 2: seed the aggregate-shape log from annotated params.
           // #744 gc mirror: seed float tracking from annotated Float/Double
           // params in the same walk (linear tracks these via float_local_slots).
+          // #1015 gc mirror: seed bool tracking from annotated Bool params in
+          // the same walk (linear tracks these via int_local_slots kind 3) --
+          // without this a Bool-typed top-level fn param passed to
+          // `to_string(b)` is an untracked bare EIdent and mis-renders `true`
+          // as `"1"` through the generic runtime dispatch (Bool and Int share
+          // the same gc-lane numeric representation, no distinguishing tag).
           let gc_float_names_f = array_empty()
+          // #1015: unlike gc_float_names_f (tracked by NAME, see the KNOWN
+          // LATENT BUG note on CompileCtxGc.gc_float_locals), this is
+          // tracked by SLOT INDEX -- `psi` IS the param's slot in
+          // local_names (params are pushed there in order starting at 0,
+          // just above this loop), matching gc_bool_locals' slot-indexed
+          // design.
+          let gc_bool_slots_f = array_empty()
           let gc_sig_ptypes = fn_type_param_types(gc_fn_ann)
           let mut psi = 0
           while psi < Array::length(params) {
@@ -628,6 +759,8 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String) -> Byte
                   TyName(ptn) => if ptn == "Float" || ptn == "Double" {
                     let (psname, _) = Array::get(params, psi)
                     Array::push(gc_float_names_f, psname)
+                  } else if ptn == "Bool" {
+                    Array::push(gc_bool_slots_f, psi)
                   } else {
                     ()
                   },
@@ -663,6 +796,8 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String) -> Byte
             gc_const_ivals: gc_const_ivals_l, gc_const_svals: gc_const_svals_l,
             gc_global_names: gc_global_names_l,
             gc_float_locals: gc_float_names_f,
+            gc_bool_locals: gc_bool_slots_f,
+            gc_to_string_is_show_wrapper: gc_to_string_is_wrapper,
             gc_agg_local_slots: gc_agg_slots_f,
             gc_agg_ret_names: gc_agg_ret_names_l,
             gc_agg_ret_infos: gc_agg_ret_infos_l
@@ -719,6 +854,8 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String) -> Byte
       gc_const_ivals: gc_const_ivals_l, gc_const_svals: gc_const_svals_l,
       gc_global_names: gc_global_names_l,
       gc_float_locals: array_empty(),
+      gc_bool_locals: array_empty(),
+      gc_to_string_is_show_wrapper: gc_to_string_is_wrapper,
       gc_agg_local_slots: array_empty(),
       gc_agg_ret_names: gc_agg_ret_names_l,
       gc_agg_ret_infos: gc_agg_ret_infos_l

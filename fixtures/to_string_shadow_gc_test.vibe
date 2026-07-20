@@ -1,0 +1,27 @@
+// #1015 P1 regression: the gc-lane (VIBE_BACKEND=gc / VIBE_TEST_BACKEND=gc)
+// twin of fixtures/to_string_shadow_test.vibe.
+//
+// A SAME-file user-defined `to_string(x: Bool) -> String { "custom" }` must
+// keep running unchanged, not get silently replaced by
+// lib/@vibe/compiler/codegen/gc/backend_call.vibe's "to_string" call-site
+// fast path. Code review (#1015) correctly pointed out that a bare `fname
+// == "to_string"` match, while safe against CROSS-file shadowing (the gc
+// lane's single-file compile model rules that out entirely -- a second
+// same-named top-level fn is a compile error), is NOT by itself safe
+// against this SAME-file case: the gc lane can only ever see the prelude's
+// Show-bounded generic wrapper as a LOCALLY re-declared function (no
+// cross-file import resolution on this lane), so a bare name match alone
+// cannot tell "the trivial forwarding wrapper" apart from "a real,
+// differently-behaved user function that happens to share the name". The
+// fix (ctx.gc_to_string_is_show_wrapper, backend_body.vibe) verifies the
+// callee's own body structurally forwards to `__to_string`; this function's
+// body plainly does not, so the flag is false and this fast path stays
+// inert here.
+fn to_string(x: Bool) -> String {
+  "custom"
+}
+
+test "gc lane: user-defined to_string shadowing the fast path is not overridden" {
+  assert(to_string(true) == "custom")
+  assert(to_string(false) == "custom")
+}
