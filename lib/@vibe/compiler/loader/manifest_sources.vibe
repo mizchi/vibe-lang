@@ -13,12 +13,16 @@ import ../cache/persistent_cache.vibe {
 }
 
 import ../module_graph_path.vibe {
-  contains_path, dir_of_path, normalize_path, path_set_add, path_set_contains, path_set_new,
-  resolve_import_path_candidates
+  contains_path, dir_of_path, is_contract_ext, normalize_path, path_set_add, path_set_contains,
+  path_set_new, resolve_import_path_candidates
 }
 
 import ../syntax {
   lex, Token, collect_import_path, peek, skip_semi
+}
+
+import ../contract {
+  extract_require_pins
 }
 
 //# Path helpers
@@ -63,9 +67,31 @@ fn resolve_manifest_dep_path(base_dir: String, raw_path: String, manifest_path_i
   }
 }
 
+// #1027: an `export <path> { names }` re-export's path can start with either
+// `./` (TDot, same-dir) or `../` (TDotDot, parent-dir) -- `../` lexes as a
+// SINGLE TDotDot token (see @vibe/parser's lexer.vibe / token.vibe / CLAUDE.md
+// "62-bit tagged" section notwithstanding, this is a lexer-level fact:
+// `collect_import_path` in @vibe/parser/parser_base.vibe treats TDot and
+// TDotDot as two distinct path-continuation tokens), NOT a repeated TDot.
+// Checking only TDot here silently treated any `export ../../foo { .. }`
+// statement in a manifest-tracked file (this is the fast hand-rolled scanner
+// used for files listed in compiler_sources_manifest.tsv, NOT the full
+// AST-based collect_import_deps_from_stmts in header_cache.vibe, which
+// already matches SReExport structurally and was unaffected) as a BARE
+// re-export of previously-imported names (no path, no dependency edge) --
+// every `../`-rooted export dependency was silently dropped from the
+// header-based transitive walk (collect_needed_paths_and_manifest_headers /
+// try_collect_manifest_sources_fs / collect_all_sources_fs). Every existing
+// facade in this tree happened to reexport via `./` only, so the gap was
+// latent until lib/@vibe/compiler/syntax/*.vibe (#897 batch 5) became the
+// first manifest-tracked files whose ENTIRE content is a single
+// `export ../../../../lib/@vibe/parser { .. }` statement -- collect_all_sources_fs
+// then silently dropped lib/@vibe/parser/index.vpkg (and everything only
+// reachable through it) from the compiler's own source closure.
 fn starts_with_reexport_path_token(tok: Token) -> Bool {
   match tok {
     TDot => true,
+    TDotDot => true,
     _ => false
   }
 }
@@ -224,9 +250,38 @@ fn scan_header_import_dep(tokens: Array[Token], pos: Int, base_dir: String, mani
   (resolve_manifest_dep_path(base_dir, raw_path, manifest_path_index), end_pos)
 }
 
-fn collect_manifest_header_deps_from_source(path: String, source: String, manifest_path_index: Map[String, Bool]) -> Array[String] with { Error, Fs } {
+// #1027: this scanner's main loop stops at the first top-level statement
+// that isn't `import`/`export` (a deliberate fast-path exploiting the
+// codebase convention that every file's imports come first -- see the
+// `done = true` fallthrough below). A `.vpkg` contract's grammar puts a
+// `version x.y.z` directive (and optional `require ...` pin lines) BEFORE
+// its `import ./x.vibe {}` lines, so scanning a contract file's RAW text
+// hit that fallthrough on line 1 and returned zero deps for EVERY
+// vpkg-ified directory (external package boundaries AND #897 compiler-
+// internal ones alike) -- this is the root cause of #1027's own title
+// ("collect_all_sources_fs undercounts vpkg-ified internal directories"):
+// the walk correctly resolves an import/export edge down to the target
+// `.vpkg` row (that part was always fine), but then found NO further
+// dependencies when it visited that row itself, so a directory's own impl
+// files never got scheduled. `extract_require_pins` (contract/contract.vibe)
+// already knows how to blank exactly this leading directive region (line-
+// based, tolerates comments/blank lines, stops at the first ordinary
+// statement) -- reuse it here instead of re-deriving the same rule, so the
+// import/export scan below sees the blanked (all-whitespace) directive
+// lines and continues straight through to the real import statements.
+fn manifest_header_scan_source(path: String, source: String) -> String with { Error } {
+  if is_contract_ext(path) {
+    let (_, blanked) = extract_require_pins(source)
+    blanked
+  } else {
+    source
+  }
+}
+
+fn collect_manifest_header_deps_from_source(path: String, raw_source: String, manifest_path_index: Map[String, Bool]) -> Array[String] with { Error, Fs } {
   let deps = array_empty()
   let base_dir = dir_of_path(path)
+  let source = manifest_header_scan_source(path, raw_source)
   let len = String::length(source)
   let mut pos = 0
   let mut done = false
