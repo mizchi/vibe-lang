@@ -52,13 +52,19 @@ test "collect_all_sources_fs: compiler index prefers manifest list" {
   let (last_path, _) = Array::get(sources, Array::length(sources) - 1)
   assert(first_path == "lib/@vibe/ast/index.vpkg")
   assert(last_path == "lib/@vibe/compiler/index.vibe")
-  // #1027: collect_all_sources_fs's header-based dependency walk resolves
-  // any vpkg-ified lib/@vibe/compiler/ subdirectory (codegen/gc, codegen/expr,
-  // codegen/wasm_emit, ...) down to just its index.vpkg row, dropping that
-  // directory's individual impl-file rows -- a pre-existing gap (already
-  // present after #1024) that pulls the count down as more directories are
-  // migrated (#897). This floor is a loose sanity check, not a pinned count
-  // (see the #769 note above); lowered here rather than papering over #1027.
+  // #1027 (fixed): collect_all_sources_fs's header-based dependency walk
+  // used to resolve any vpkg-ified lib/@vibe/compiler/ subdirectory
+  // (codegen/gc, codegen/expr, codegen/wasm_emit, syntax, ...) down to just
+  // its index.vpkg row, dropping that directory's individual impl-file rows
+  // -- root cause: collect_manifest_header_deps_from_source's fast scanner
+  // (loader/manifest_sources.vibe) stops at the first top-level statement
+  // that isn't import/export, and EVERY .vpkg contract starts with a
+  // `version x.y.z` directive line, so the scanner returned zero deps for
+  // any vpkg file it visited. Fixed by reusing contract/contract.vibe's
+  // extract_require_pins to blank the leading version/require directive
+  // region before scanning, same as header_cache.vibe's contract-aware lane
+  // already did. This floor stays a loose sanity check, not a pinned count
+  // (see the #769 note above) -- exact counts belong to the manifest.
   assert(Array::length(sources) > 50)
   assert(has_source_path(sources, "lib/@vibe/compiler/core/polyfill.vibe"))
   assert(has_source_path(sources, "lib/@vibe/compiler/core/bytebuf.vibe"))
