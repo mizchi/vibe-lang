@@ -10,9 +10,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-RT="$ROOT_DIR/runtime/moonrun_wasmtime/target/release/vibewt"
-if [ ! -x "$RT" ] || [ -n "$(find runtime/moonrun_wasmtime/src -name "*.rs" -newer "$RT" 2>/dev/null | head -1)" ]; then
-  cargo build --release --manifest-path runtime/moonrun_wasmtime/Cargo.toml >/dev/null
+RT="$ROOT_DIR/runtime/vibewt/target/release/vibewt"
+if [ ! -x "$RT" ] || [ -n "$(find runtime/vibewt/src -name "*.rs" -newer "$RT" 2>/dev/null | head -1)" ]; then
+  cargo build --release --manifest-path runtime/vibewt/Cargo.toml >/dev/null
 fi
 
 cli="$(bash scripts/build_cli_wasm.sh)"

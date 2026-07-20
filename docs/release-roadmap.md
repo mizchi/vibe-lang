@@ -354,7 +354,7 @@
   - `vibe-selfhost-<tag>.wasm`（stage0 seed compiler、stock wasmtime で実行可）
   - `vibe-selfhost-module-source-<tag>.vibe` / `-seed-<tag>.json` / `SHA256SUMS.txt`
   - `v*` tag push で `.github/workflows/release.yml` が公開。
-- 実行基盤は `runtime/moonrun_wasmtime`（Rust, `vibewt`）。compiler は
+- 実行基盤は `runtime/vibewt`（Rust, `vibewt`）。compiler は
   compiler wasm + wasmtime runner で動く（ADR-0056 cutover）。
 
 ### ギャップ（未確定）
@@ -375,7 +375,7 @@
 **canonical = 独自ビルドの wasmtime runner + vibe コンパイラ wasm の分離配布。
 インストール時に各環境で `.cwasm`（AOT precompile）をビルドする。**
 
-- 実行基盤は `runtime/moonrun_wasmtime`（`vibewt`）を「独自ビルドの wasmtime
+- 実行基盤は `runtime/vibewt`（`vibewt`）を「独自ビルドの wasmtime
   runner」として配布する。runner は portable wasm を受け取り、インストール時に
   ホスト固有の `.cwasm` へ AOT コンパイルしてキャッシュする
   （既存の `.cwasm` cache 機構 / ADR-0050・ADR-0056 を install フローに昇格）。
@@ -393,7 +393,7 @@
 - [x] **1-1 runner/compiler 分離の確定** — `vibewt` に compiler CLI が使う
       raw-ABI host import (`vibe::env-get`/`args-get`/`fs_*`) を実装し、runner が
       compiler wasm を実行基盤として動かせるようにした。compiler wasm は
-      差し替え可能 artifact として分離（`runtime/moonrun_wasmtime/src/main.rs`）。
+      差し替え可能 artifact として分離（`runtime/vibewt/src/main.rs`）。
 - [x] **1-2 install-time `.cwasm` ビルド** — `scripts/install.sh` が runner 取得後に
       `vibewt --precompile` で compiler wasm を host 固有 `.cwasm` へ AOT。
       launcher は runner より古い `.cwasm` を検出すると portable wasm に fallback。

@@ -26,7 +26,7 @@ bash scripts/install.sh
 
 This will:
 
-1. build (or reuse) the `vibewt` runner from `runtime/moonrun_wasmtime`,
+1. build (or reuse) the `vibewt` runner from `runtime/vibewt`,
 2. build a fresh compiler wasm from the current source (`scripts/build_cli_wasm.sh`,
    seed → stage1 → stage2), falling back to the committed seed if the build
    toolchain is unavailable,

@@ -19,14 +19,14 @@
 //! # Example
 //!
 //! ```no_run
-//! use moonrun_wt_client::Client;
+//! use vibewt_client::Client;
 //!
 //! let mut client = Client::spawn("/path/to/vibe_check_wasi.cwasm")?;
 //! let resp = client.send(&["--check", "src/main.vibe"])?;
 //! assert_eq!(resp.exit_code, 0);
 //! println!("checker stdout ({} us): {}", resp.elapsed_us, resp.stdout);
 //! // client is shut down when dropped — daemon receives EOF on its stdin.
-//! # Ok::<(), moonrun_wt_client::ClientError>(())
+//! # Ok::<(), vibewt_client::ClientError>(())
 //! ```
 
 use std::io::{BufRead, BufReader, Write};
@@ -131,7 +131,7 @@ impl Client {
         let bin = std::env::var_os("MOONRUN_WT_BIN")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                PathBuf::from("runtime/moonrun_wasmtime/target/release/vibewt")
+                PathBuf::from("runtime/vibewt/target/release/vibewt")
             });
         Self::spawn_with(bin, wasm_path)
     }

@@ -21,7 +21,7 @@ cat > "$TMP_ROOT/bootstrap/seed.json" <<EOF
     "tag": "test-seed-tag",
     "source_commit": "abc123",
     "entry": "lib/@vibe/compiler/index.vibe",
-    "entry_name": "main",
+    "entry_name": "cli_main",
     "artifact": {
       "path": "_build/selfhost/seed/selfhost_compiler.wasm",
       "sha256": "$seed_sha"
@@ -35,28 +35,19 @@ cat > "$TMP_ROOT/bootstrap/seed.json" <<EOF
 }
 EOF
 
-cat > "$TMP_ROOT/fake_runner.sh" <<'EOF'
+cat > "$TMP_ROOT/fake_cli_runner.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-compiler="$1"
-shift
-out=""
-entry=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -o) out="$2"; shift 2 ;;
-    --wasm|--wasm-mvp) shift ;;
-    *) entry="$1"; shift ;;
-  esac
-done
-[ -n "$out" ] || { echo "missing -o" >&2; exit 2; }
+[ "$1" = "--invoke" ] || { echo "fake_cli_runner: expected --invoke, got $1" >&2; exit 2; }
+invoke_name="$2"; compiler="$3"; entry="$4"; out="$5"; entry_name="${6:-}"
 mkdir -p "$(dirname "$out")"
-printf 'fake-wasm compiler=%s entry=%s\n' "$(basename "$compiler")" "$(basename "$entry")" > "$out"
+printf 'fake-wasm compiler=%s entry=%s invoke=%s entry_name=%s\n' \
+  "$(basename "$compiler")" "$(basename "$entry")" "$invoke_name" "$entry_name" > "$out"
 EOF
-chmod +x "$TMP_ROOT/fake_runner.sh"
+chmod +x "$TMP_ROOT/fake_cli_runner.sh"
 
 VIBE_PROJECT_ROOT="$TMP_ROOT" \
-VIBE_GENERATION_RUNNER="$TMP_ROOT/fake_runner.sh" \
+VIBE_GENERATION_RUNNER_SCRIPT="$TMP_ROOT/fake_cli_runner.sh" \
 VIBE_GENERATION_VALIDATE_WASM=0 \
 VIBE_GENERATION_VALIDATE_RUN=0 \
   bash "$SCRIPT" build --manifest "$TMP_ROOT/bootstrap/seed.json" --out-dir "$TMP_ROOT/out" --stage3
@@ -107,7 +98,7 @@ NODE
 
 set +e
 VIBE_PROJECT_ROOT="$TMP_ROOT" \
-VIBE_GENERATION_RUNNER="$TMP_ROOT/fake_runner.sh" \
+VIBE_GENERATION_RUNNER_SCRIPT="$TMP_ROOT/fake_cli_runner.sh" \
 VIBE_GENERATION_VALIDATE_WASM=0 \
 VIBE_GENERATION_VALIDATE_RUN=0 \
   bash "$SCRIPT" build --manifest "$TMP_ROOT/bootstrap/bad-seed.json" --out-dir "$TMP_ROOT/bad-out" >"$TMP_ROOT/bad.stdout" 2>"$TMP_ROOT/bad.stderr"

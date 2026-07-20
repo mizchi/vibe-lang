@@ -6,8 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="${VIBE_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
 DEFAULT_MANIFEST="$PROJECT_ROOT/bootstrap/seed.json"
 DEFAULT_OUT_ROOT="$PROJECT_ROOT/_build/selfhost/generations"
-RUNNER="${VIBE_GENERATION_RUNNER:-moonrun}"
-COMPILE_FLAG="${VIBE_GENERATION_COMPILE_FLAG:---wasm-mvp}"
+RUNNER_SCRIPT="${VIBE_GENERATION_RUNNER_SCRIPT:-$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh}"
 VALIDATE_WASM="${VIBE_GENERATION_VALIDATE_WASM:-1}"
 VALIDATE_RUN="${VIBE_GENERATION_VALIDATE_RUN:-1}"
 ALLOW_UNPINNED_SEED="${VIBE_GENERATION_ALLOW_UNPINNED_SEED:-0}"
@@ -23,7 +22,7 @@ NODE_STACK_SIZE="${VIBE_GENERATION_NODE_STACK_SIZE:-131072}"
 WASM_PRE_GROW_PAGES="${VIBE_GENERATION_WASM_PRE_GROW_PAGES:-0}"
 DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_GENERATION_DISABLE_PERSISTENT_ARTIFACT_CACHE:-1}"
 SKIP_RUN_INIT="${VIBE_GENERATION_SKIP_RUN_INIT:-1}"
-GENERATION_INVOKE_MODE="runner"
+GENERATION_INVOKE_MODE=""
 GENERATION_ENTRY=""
 
 usage() {
@@ -33,7 +32,6 @@ usage:
   scripts/generations.sh status [--manifest PATH] [--out-dir DIR]
   scripts/generations.sh build [--manifest PATH] [--out-dir DIR] [--entry PATH] [--stage3]
   scripts/generations.sh adopt --artifact PATH [--manifest PATH] [--name NAME] [--tag TAG] [--source-commit COMMIT]
-  scripts/generations.sh host-bootstrap-seed [--manifest PATH] [--entry PATH]
 
 The build command implements the Rust-style compiler generation policy:
 stage0 fixed seed -> stage1 current source -> stage2 current source.
@@ -138,7 +136,7 @@ verify_seed_artifact() {
   [ -f "$SEED_ARTIFACT_PATH" ] || die "seed artifact not found: $SEED_ARTIFACT_PATH"
   if [ -z "$SEED_ARTIFACT_SHA" ]; then
     if [ "$ALLOW_UNPINNED_SEED" != "1" ]; then
-      die "seed artifact sha256 is empty in $MANIFEST_PATH (run adopt/host-bootstrap-seed or set VIBE_GENERATION_ALLOW_UNPINNED_SEED=1)"
+      die "seed artifact sha256 is empty in $MANIFEST_PATH (run adopt or set VIBE_GENERATION_ALLOW_UNPINNED_SEED=1)"
     fi
     echo "[selfhost-gen] warning: seed artifact is not sha-pinned" >&2
     return
@@ -211,17 +209,6 @@ while (pos < buf.length) {
 NODE
 }
 
-run_compile() {
-  local label="$1"
-  local compiler="$2"
-  local entry="$3"
-  local out="$4"
-  mkdir -p "$(dirname "$out")"
-  echo "[selfhost-gen] $label"
-  "$RUNNER" "$compiler" "$COMPILE_FLAG" "$entry" -o "$out"
-  [ -s "$out" ] || die "$label did not produce output: $out"
-}
-
 use_cli_invoke() {
   local entry="$1"
   if [ "$CLI_INVOKE" = "1" ]; then
@@ -234,7 +221,7 @@ use_cli_invoke() {
   entry_rel="$(rel_path "$entry")"
   [ "$entry_rel" = "$SEED_ENTRY" ] && \
     [ "$SEED_ENTRY_NAME" = "cli_main" ] && \
-    [ -f "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" ]
+    [ -f "$RUNNER_SCRIPT" ]
 }
 
 run_cli_compile() {
@@ -272,7 +259,7 @@ run_cli_compile() {
       VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-$DISABLE_PERSISTENT_ARTIFACT_CACHE}" \
       VIBE_SKIP_RUN_INIT="$skip_run_init" \
       VIBE_NODE_WASM_FLAGS="$node_flags" \
-      bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+      bash "$RUNNER_SCRIPT" \
         --invoke cli_main \
         "$(rel_path "$compiler")" \
         "$(rel_path "$entry")" \
@@ -290,7 +277,7 @@ use_selfbuild_invoke() {
   if [ "$SELFBUILD_INVOKE" = "0" ]; then
     return 1
   fi
-  [ "$(rel_path "$entry")" = "$SEED_ENTRY" ] && [ -f "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" ]
+  [ "$(rel_path "$entry")" = "$SEED_ENTRY" ] && [ -f "$RUNNER_SCRIPT" ]
 }
 
 use_flat_cli_source() {
@@ -364,7 +351,6 @@ prepare_flat_cli_source() {
 select_generation_entry() {
   local out_dir="$1"
   local entry="$2"
-  GENERATION_INVOKE_MODE="runner"
   GENERATION_ENTRY="$entry"
   if use_cli_invoke "$entry"; then
     GENERATION_INVOKE_MODE="cli"
@@ -375,6 +361,8 @@ select_generation_entry() {
     fi
   elif use_selfbuild_invoke "$entry"; then
     GENERATION_INVOKE_MODE="selfbuild"
+  else
+    die "no viable compile invocation for entry $(rel_path "$entry"): neither cli_invoke nor selfbuild_invoke applies (expected seed.entry_name=cli_main matching seed.entry, or an explicit VIBE_GENERATION_CLI_INVOKE=1 override)"
   fi
 }
 
@@ -393,7 +381,7 @@ run_selfbuild_compile() {
       VIBE_WASM_PRE_GROW_PAGES="${VIBE_WASM_PRE_GROW_PAGES:-$WASM_PRE_GROW_PAGES}" \
       VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-$DISABLE_PERSISTENT_ARTIFACT_CACHE}" \
       VIBE_NODE_WASM_FLAGS="$node_flags" \
-      bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke selfbuild_compile_stage2 "$compiler"
+      bash "$RUNNER_SCRIPT" --invoke selfbuild_compile_stage2 "$compiler"
   )
   [ -s "$SELFBUILD_OUT" ] || die "$label did not produce recursive output: $SELFBUILD_OUT"
   cp "$SELFBUILD_OUT" "$out"
@@ -408,7 +396,6 @@ run_generation_compile() {
   case "$GENERATION_INVOKE_MODE" in
     cli) run_cli_compile "$label" "$compiler" "$entry" "$out" ;;
     selfbuild) run_selfbuild_compile "$label" "$compiler" "$out" ;;
-    runner) run_compile "$label" "$compiler" "$entry" "$out" ;;
     *) die "unknown generation invoke mode: $GENERATION_INVOKE_MODE" ;;
   esac
 }
@@ -766,38 +753,6 @@ command_adopt() {
   update_seed_manifest "$manifest" "$artifact" "$name" "$tag" "$source_commit" "$entry"
 }
 
-command_host_bootstrap_seed() {
-  local manifest="$DEFAULT_MANIFEST"
-  local entry=""
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --manifest) manifest="$(abs_path "$2")"; shift 2 ;;
-      --entry) entry="$(abs_path "$2")"; shift 2 ;;
-      -h|--help) usage; exit 0 ;;
-      *) die "unknown host-bootstrap-seed arg: $1" ;;
-    esac
-  done
-  load_seed "$manifest"
-  if [ -z "$entry" ]; then
-    entry="$(abs_path "$SEED_ENTRY")"
-  fi
-  local host_compiler_override="${VIBE_GENERATION_HOST_COMPILER_WASM:-}"
-  local host_compiler="${host_compiler_override:-$PROJECT_ROOT/_build/wasm/debug/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm}"
-  if [ -z "$host_compiler_override" ]; then
-    echo "[selfhost-gen] building MoonBit-host WASI compiler"
-    moon build --target wasm src/cmd/vibe_compile_wasi
-  elif [ ! -f "$host_compiler" ]; then
-    echo "[selfhost-gen] building MoonBit-host WASI compiler"
-    moon build --target wasm src/cmd/vibe_compile_wasi
-  fi
-  [ -f "$host_compiler" ] || die "host compiler wasm not found: $host_compiler"
-  local tmp_out
-  tmp_out="$PROJECT_ROOT/_build/selfhost/seed/.host_bootstrap_seed.tmp.wasm"
-  mkdir -p "$(dirname "$tmp_out")"
-  run_compile "host bootstrap compiler -> fixed seed" "$host_compiler" "$entry" "$tmp_out"
-  update_seed_manifest "$manifest" "$tmp_out" "$SEED_NAME" "$SEED_TAG" "$SEED_SOURCE_COMMIT" "$(rel_path "$entry")"
-}
-
 main() {
   local command="${1:-}"
   case "$command" in
@@ -805,7 +760,6 @@ main() {
     status) shift; command_status "$@" ;;
     build) shift; command_build "$@" ;;
     adopt) shift; command_adopt "$@" ;;
-    host-bootstrap-seed) shift; command_host_bootstrap_seed "$@" ;;
     -h|--help|"") usage; exit 0 ;;
     *) usage; die "unknown command: $command" ;;
   esac

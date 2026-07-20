@@ -1,28 +1,28 @@
-//! Small CLI exercising the `moonrun_wt_client` library.
+//! Small CLI exercising the `vibewt_client` library.
 //!
 //! Usage:
-//!   moonrun_wt_client <wasm-or-cwasm> <case> [<case>...]
-//!   moonrun_wt_client --runs N <wasm-or-cwasm> <case>
+//!   vibewt_client <wasm-or-cwasm> <case> [<case>...]
+//!   vibewt_client --runs N <wasm-or-cwasm> <case>
 //!
 //! Spawns one daemon, sends each case as a `--check <case>` request,
 //! prints `req_id\telapsed_us\texit_code` per response. Demonstrates
 //! the cold/warm gap (first response includes the ~179ms
 //! ensure_builtin_modules cost, subsequent ones don't).
 
-use moonrun_wt_client::Client;
+use vibewt_client::Client;
 use std::process::ExitCode;
 
 fn print_help() {
     eprintln!(
-        "moonrun_wt_client — daemon protocol exerciser\n\
+        "vibewt_client — daemon protocol exerciser\n\
          \n\
          USAGE:\n\
-           moonrun_wt_client <wasm|cwasm> <case> [<case>...]\n\
-           moonrun_wt_client --runs N <wasm|cwasm> <case>\n\
+           vibewt_client <wasm|cwasm> <case> [<case>...]\n\
+           vibewt_client --runs N <wasm|cwasm> <case>\n\
          \n\
          ENV:\n\
            MOONRUN_WT_BIN   path to vibewt (default: \n\
-                            runtime/moonrun_wasmtime/target/release/vibewt)\n"
+                            runtime/vibewt/target/release/vibewt)\n"
     );
 }
 
@@ -69,7 +69,7 @@ fn main() -> ExitCode {
     let mut client = match Client::spawn(wasm) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("moonrun_wt_client: {e}");
+            eprintln!("vibewt_client: {e}");
             return ExitCode::from(1);
         }
     };
@@ -90,7 +90,7 @@ fn main() -> ExitCode {
                 }
             }
             Err(e) => {
-                eprintln!("moonrun_wt_client: request failed: {e}");
+                eprintln!("vibewt_client: request failed: {e}");
                 return ExitCode::from(1);
             }
         }
@@ -104,7 +104,7 @@ fn main() -> ExitCode {
             }
         }
         Err(e) => {
-            eprintln!("moonrun_wt_client: daemon wait: {e}");
+            eprintln!("vibewt_client: daemon wait: {e}");
             return ExitCode::from(1);
         }
     }
