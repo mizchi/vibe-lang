@@ -12,6 +12,7 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+[ -n "${VIBE_CORE_CLI_WASM:-}" ] || bash "$ROOT_DIR/scripts/ensure_seed.sh"
 CLI="${VIBE_CORE_CLI_WASM:-bootstrap/seed/compiler.wasm}"
 
 dest=".vibe/store/@vibe/core"
