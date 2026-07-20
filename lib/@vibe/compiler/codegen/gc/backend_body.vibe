@@ -598,7 +598,14 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String) -> Byte
           // #724 round 2: seed the aggregate-shape log from annotated params.
           // #744 gc mirror: seed float tracking from annotated Float/Double
           // params in the same walk (linear tracks these via float_local_slots).
+          // #1015 gc mirror: seed bool tracking from annotated Bool params in
+          // the same walk (linear tracks these via int_local_slots kind 3) --
+          // without this a Bool-typed top-level fn param passed to
+          // `to_string(b)` is an untracked bare EIdent and mis-renders `true`
+          // as `"1"` through the generic runtime dispatch (Bool and Int share
+          // the same gc-lane numeric representation, no distinguishing tag).
           let gc_float_names_f = array_empty()
+          let gc_bool_names_f = array_empty()
           let gc_sig_ptypes = fn_type_param_types(gc_fn_ann)
           let mut psi = 0
           while psi < Array::length(params) {
@@ -628,6 +635,9 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String) -> Byte
                   TyName(ptn) => if ptn == "Float" || ptn == "Double" {
                     let (psname, _) = Array::get(params, psi)
                     Array::push(gc_float_names_f, psname)
+                  } else if ptn == "Bool" {
+                    let (psname, _) = Array::get(params, psi)
+                    Array::push(gc_bool_names_f, psname)
                   } else {
                     ()
                   },
@@ -663,6 +673,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String) -> Byte
             gc_const_ivals: gc_const_ivals_l, gc_const_svals: gc_const_svals_l,
             gc_global_names: gc_global_names_l,
             gc_float_locals: gc_float_names_f,
+            gc_bool_locals: gc_bool_names_f,
             gc_agg_local_slots: gc_agg_slots_f,
             gc_agg_ret_names: gc_agg_ret_names_l,
             gc_agg_ret_infos: gc_agg_ret_infos_l
@@ -719,6 +730,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String) -> Byte
       gc_const_ivals: gc_const_ivals_l, gc_const_svals: gc_const_svals_l,
       gc_global_names: gc_global_names_l,
       gc_float_locals: array_empty(),
+      gc_bool_locals: array_empty(),
       gc_agg_local_slots: array_empty(),
       gc_agg_ret_names: gc_agg_ret_names_l,
       gc_agg_ret_infos: gc_agg_ret_infos_l
