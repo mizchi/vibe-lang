@@ -285,20 +285,22 @@ back to parsing the source string.
 
 ## Conformance
 
-`lib/@vibe/compiler/tests/ast_binary_test.vibe` contains a small fixture
-("the smoke module") that exercises every tagged variant at least
-once. The implementation must produce stable, byte-identical output when
-serializing the smoke module across compiler versions, and must
-deserialize its own serialized output back to an equal `Module`. (This
-test originally also cross-checked against the retired MoonBit host's
-`src/core/serialize_binary_wbtest.mbt` and a shared fixture file; both
-were removed along with the host in #594.)
+`lib/@vibe/compiler/tests/ast_binary_test.vibe` covers the primitive
+encodings (`varint`, `svarint`, `bool`, `string`, `optstr`, `span`,
+`header`) with canonical-byte and roundtrip checks, plus a canonical
+byte sequence for the empty module (header + `array_count varint(0)`).
+It does **not** currently build a `Module` fixture that exercises every
+tagged variant — that broader roundtrip coverage still needs to be
+added. (This test originally also cross-checked against the retired
+MoonBit host's `src/core/serialize_binary_wbtest.mbt` and a shared
+fixture file; both were removed along with the host in #594.)
 
 Whenever a new variant is added:
 
 1. Pick the next unused tag in the relevant table above and update
    this document **first**.
-2. Extend the smoke module to cover it.
+2. Extend `ast_binary_test.vibe` (or the future full-variant `Module`
+   fixture, once added) to cover it.
 3. Update both serializers in lock-step.
 4. Bump the file version (`+1`) only if existing payloads change
    shape; pure additions don't require a version bump (the unknown-tag
