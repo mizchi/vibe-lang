@@ -91,18 +91,24 @@ fn pad_message(msg: String) -> String {
   let sb = StringBuilder::new()
   StringBuilder::push(sb, msg)
   StringBuilder::push(sb, String::from_char_code(128))
+  // A single reused zero-char string (strings are immutable) instead of a
+  // fresh `String::from_char_code(0)` allocation on every fill iteration —
+  // this loop runs up to 63 times per block just to reach the 56-mod-64
+  // boundary, so hoisting it cuts the dominant allocation source for short
+  // inputs (see sha1_bench.vibe — "sha1 empty" bytes_per_op).
+  let zero_char = String::from_char_code(0)
   let mut cur_len = len + 1
   while cur_len % 64 != 56 {
-    StringBuilder::push(sb, String::from_char_code(0))
+    StringBuilder::push(sb, zero_char)
     cur_len = cur_len + 1
   }
   // 64-bit big-endian bit-length tail. High 32 bits are always zero
   // for the input sizes we feed (≤ 2^32 / 8 bytes); the low 32 bits
   // are emitted explicitly.
-  StringBuilder::push(sb, String::from_char_code(0))
-  StringBuilder::push(sb, String::from_char_code(0))
-  StringBuilder::push(sb, String::from_char_code(0))
-  StringBuilder::push(sb, String::from_char_code(0))
+  StringBuilder::push(sb, zero_char)
+  StringBuilder::push(sb, zero_char)
+  StringBuilder::push(sb, zero_char)
+  StringBuilder::push(sb, zero_char)
   StringBuilder::push(sb, String::from_char_code(ushr(bit_len, 24)&255))
   StringBuilder::push(sb, String::from_char_code(ushr(bit_len, 16)&255))
   StringBuilder::push(sb, String::from_char_code(ushr(bit_len, 8)&255))
@@ -114,17 +120,20 @@ fn to_hex_char(i: Int) -> String {
   String::substring(hex_table, i, i + 1)
 }
 
-fn byte_to_hex(b: Int) -> String {
-  to_hex_char((b>>4)&15)|>String::concat(to_hex_char(b&15))
+// Push a byte's two hex nibbles directly into the digest's StringBuilder,
+// instead of building a throwaway 2-char `byte_to_hex` string (substring +
+// concat) that just gets pushed and discarded — one fewer allocation per
+// byte across the 20-byte digest.
+fn push_hex_byte(sb: StringBuilder, b: Int) -> Unit {
+  StringBuilder::push(sb, to_hex_char((b>>4)&15))
+  StringBuilder::push(sb, to_hex_char(b&15))
 }
 
-fn word_to_hex(w: Int) -> String {
-  let sb = StringBuilder::new()
-  StringBuilder::push(sb, byte_to_hex(ushr(w, 24)&255))
-  StringBuilder::push(sb, byte_to_hex(ushr(w, 16)&255))
-  StringBuilder::push(sb, byte_to_hex(ushr(w, 8)&255))
-  StringBuilder::push(sb, byte_to_hex(w&255))
-  StringBuilder::freeze(sb)
+fn word_to_hex_into(sb: StringBuilder, w: Int) -> Unit {
+  push_hex_byte(sb, ushr(w, 24)&255)
+  push_hex_byte(sb, ushr(w, 16)&255)
+  push_hex_byte(sb, ushr(w, 8)&255)
+  push_hex_byte(sb, w&255)
 }
 
 /// Build the 320-byte (80-word) SHA-1 schedule into a `Bytes` buffer.
@@ -200,13 +209,14 @@ fn process_rounds(i: Int, a: Int, b: Int, c: Int, d: Int, e: Int, w: Bytes) -> B
 fn process_blocks(msg: String, block_idx: Int, num_blocks: Int, h0: Int, h1: Int, h2: Int, h3: Int, h4: Int) -> String {
   if block_idx >= num_blocks {
     // Final 40-char hex digest assembled through a single StringBuilder
-    // freeze (5 word_to_hex pushes), not a tower of String::concat.
+    // freeze (40 nibble pushes directly into one buffer), not a tower of
+    // String::concat or 5 throwaway per-word strings.
     let sb = StringBuilder::new()
-    StringBuilder::push(sb, word_to_hex(h0))
-    StringBuilder::push(sb, word_to_hex(h1))
-    StringBuilder::push(sb, word_to_hex(h2))
-    StringBuilder::push(sb, word_to_hex(h3))
-    StringBuilder::push(sb, word_to_hex(h4))
+    word_to_hex_into(sb, h0)
+    word_to_hex_into(sb, h1)
+    word_to_hex_into(sb, h2)
+    word_to_hex_into(sb, h3)
+    word_to_hex_into(sb, h4)
     StringBuilder::freeze(sb)
   } else {
     let w = build_schedule(msg, block_idx * 64)
