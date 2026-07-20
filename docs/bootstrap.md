@@ -196,16 +196,20 @@ fetch しようとする自己参照になってしまう。`workflow_dispatch` 
    で手動起動する。入力:
    - `tag`: ステップ2で指定した `seed/<name>`。
    - `source_ref`: merge commit (省略時はデフォルトブランチの HEAD)。
-   - `prior_seed_ref`: **実際に compiler source を変えたリアルな bump の
-     場合のみ指定** — bump 前 (= 現在 `bootstrap/seed.json` に pin されている
-     seed がまだ有効だった) commit を指す。省略すると `source_ref` 自身の
-     `bootstrap/seed.json` を stage0 の pin として使う (= source が
-     変わっていない、あるいは既にそのコミット自身が正しい prior pin を
-     持っている場合。#1000 part 2 の移行時点の最初の release がこのケース:
-     既存の pin をそのまま republish するだけなので省略でよい)。
-   - CI は `scripts/ensure_seed.sh` で prior seed を取得 (git 履歴に
-     まだ committed されている最初期の release、あるいはそれ以降なら
-     過去の `seed/*` release から fetch) →
+   - `prior_seed_ref`: **必須**。`source_ref` 自身の `bootstrap/seed.json`
+     は (adopt がそう書き換えるので) 常にこれから publish しようとしている
+     「新しい」seed 自身を指しており、stage0 として使えない — 省略可能な
+     self-reference は存在しない。2 通りのケースがある:
+     - **#1000 part 2 の移行時点の最初の release**: `bootstrap/seed/compiler.wasm`
+       (または旧名 `selfhost_compiler.wasm`) がまだ git-tracked だった
+       commit (この移行 PR より前の main の任意の commit) を指す。CI は
+       その commit から artifact を `git show` で直接取り出す (release 不要)。
+     - **それ以降の通常の bump**: source を実際に変える前、直近の
+       `seed/*` release がまだ有効だった commit を指す。CI はその commit の
+       `bootstrap/seed.json` を一時的に読み込み、そこに pin された release
+       から `scripts/ensure_seed.sh` で fetch する。
+   - CI はどちらのケースかを自動判定 (`prior_seed_ref` で対象パスが
+     git-tracked かどうかを試す) し、prior artifact を確保 →
      `scripts/generations.sh build --stage3` で決定論的に再構築 →
      `scripts/generations.sh adopt` でこのワークスペース限定 (uncommitted)
      に artifact を確定 → asset を publish。

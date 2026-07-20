@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Ensures the seed compiler wasm pinned by bootstrap/seed.json is present
-# and sha256-correct on disk (bootstrap/seed/compiler.wasm is a local
-# build cache, gitignored — not committed to the repo). If it's missing
-# or doesn't match the pinned sha256, fetches it from its GitHub Release
-# (the `seed.tag` recorded in bootstrap/seed.json) via
-# scripts/fetch_compiler.sh --adopt-seed.
+# Ensures the seed compiler wasm pinned by bootstrap/seed.json (or a
+# --manifest override) is present and sha256-correct on disk
+# (bootstrap/seed/compiler.wasm is a local build cache, gitignored — not
+# committed to the repo). If it's missing or doesn't match the pinned
+# sha256, fetches it from its GitHub Release (the manifest's `seed.tag`)
+# via scripts/fetch_compiler.sh, then copies it to the manifest's own
+# `seed.artifact.path` itself — NOT via fetch_compiler.sh's --adopt-seed,
+# which always targets the project-default bootstrap/seed.json /
+# bootstrap/seed/compiler.wasm regardless of --manifest, so it can't be
+# used correctly when a custom manifest points elsewhere (e.g.
+# scripts/generations.sh build --manifest <alternate>).
 #
 # Fails fast (does not silently skip or fall back to an unpinned/stale
 # artifact) if the fetch is unsuccessful — see docs/bootstrap.md's CI
@@ -81,9 +86,16 @@ else
   echo "[ensure-seed] missing: $SEED_ARTIFACT_REL, fetching from release tag $SEED_TAG" >&2
 fi
 
-[ -n "$SEED_TAG" ] || die "bootstrap/seed.json has no seed.tag to fetch from"
+[ -n "$SEED_TAG" ] || die "$MANIFEST has no seed.tag to fetch from"
 
-bash "$SCRIPT_DIR/fetch_compiler.sh" "$SEED_TAG" --adopt-seed --no-module-source
+fetch_out="$(mktemp -d)"
+trap 'rm -rf "$fetch_out"' EXIT
+bash "$SCRIPT_DIR/fetch_compiler.sh" "$SEED_TAG" --out-dir "$fetch_out" --no-module-source
+
+fetched_wasm="$(find "$fetch_out" -maxdepth 1 -name '*.wasm' | head -1)"
+[ -n "$fetched_wasm" ] || die "fetch_compiler.sh did not produce a .wasm asset for tag $SEED_TAG"
+mkdir -p "$(dirname "$SEED_ARTIFACT_PATH")"
+cp "$fetched_wasm" "$SEED_ARTIFACT_PATH"
 
 actual="$(sha256_file "$SEED_ARTIFACT_PATH")"
 [ "$actual" = "$SEED_ARTIFACT_SHA" ] || \

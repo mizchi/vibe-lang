@@ -5,7 +5,11 @@ name: seed-release
 # bootstrap/seed.json already points at the NEW seed (that's what "adopt"
 # does) — a CI job checking out that commit can't fetch the new seed's own
 # not-yet-published release to use as stage0. Instead this job is told
-# explicitly which prior, already-published seed to reproduce from.
+# explicitly which prior, already-known seed to reproduce from.
+#
+# prior_seed_ref is required — there is no self-referential default that
+# works: source_ref's OWN bootstrap/seed.json always already describes the
+# NEW seed being published here, never a usable prior one.
 #
 # See docs/bootstrap.md's "Seed artifact 配布" section for the full bump
 # procedure this fits into.
@@ -20,8 +24,8 @@ on:
         description: "Commit whose compiler source to build the candidate from (defaults to the ref this workflow runs on)"
         required: false
       prior_seed_ref:
-        description: "Commit/tag whose bootstrap/seed.json pin to use as stage0 for the rebuild. Omit when source_ref's OWN bootstrap/seed.json already describes the seed to republish unchanged (e.g. this migration's first seed release); set to a ref BEFORE a real bootstrap-bump commit when the compiler source actually changed since the prior seed."
-        required: false
+        description: "Commit/tag to source the prior (stage0) seed artifact from. Two cases: (1) a pre-#1000-part-2 commit where bootstrap/seed/{compiler,selfhost_compiler}.wasm is still git-tracked (this migration's own bootstrap case — the artifact is extracted directly, no release needed), or (2) any later commit whose OWN bootstrap/seed.json already points at a real, previously-published seed/* release (the normal steady-state case)."
+        required: true
 
 permissions:
   contents: write
@@ -56,19 +60,25 @@ jobs:
           curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
 
-      - name: Use prior seed pin for the rebuild (if specified)
-        if: ${{ inputs.prior_seed_ref != '' }}
-        run: git show "${{ inputs.prior_seed_ref }}:bootstrap/seed.json" > bootstrap/seed.json
-
-      - name: Ensure prior seed artifact (stage0 for this rebuild)
-        run: bash scripts/ensure_seed.sh
+      - name: Acquire prior seed artifact (stage0 for this rebuild)
+        run: |
+          set -euo pipefail
+          ref="${{ inputs.prior_seed_ref }}"
+          mkdir -p bootstrap/seed
+          if git show "$ref:bootstrap/seed/compiler.wasm" > bootstrap/seed/compiler.wasm 2>/dev/null; then
+            echo "[seed-release] extracted prior artifact directly from $ref:bootstrap/seed/compiler.wasm (still git-tracked at that ref)"
+          elif git show "$ref:bootstrap/seed/selfhost_compiler.wasm" > bootstrap/seed/compiler.wasm 2>/dev/null; then
+            echo "[seed-release] extracted prior artifact directly from $ref:bootstrap/seed/selfhost_compiler.wasm (pre-#1000-part-2 path, still git-tracked at that ref)"
+          else
+            rm -f bootstrap/seed/compiler.wasm
+            echo "[seed-release] not git-tracked at $ref; using its bootstrap/seed.json pin to fetch from a prior release"
+            git show "$ref:bootstrap/seed.json" > bootstrap/seed.json
+            bash scripts/ensure_seed.sh
+            git checkout -- bootstrap/seed.json
+          fi
 
       - name: Rebuild candidate deterministically
         run: bash scripts/generations.sh build --stage3
-
-      - name: Restore this commit's own bootstrap/seed.json
-        if: ${{ inputs.prior_seed_ref != '' }}
-        run: git checkout -- bootstrap/seed.json
 
       - name: Adopt candidate locally (uncommitted — this workspace only)
         run: |
