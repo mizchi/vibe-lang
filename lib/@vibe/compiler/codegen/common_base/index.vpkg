@@ -1,0 +1,149 @@
+version 0.0.1
+
+// @vibe/compiler/codegen/common_base — the shared codegen substrate: the
+// linear-backend CompileCtx / wasm-gc-backend CompileCtxGc compile-context
+// structs plus the func/str/lambda/ctor lookup tables they carry, the branch-
+// coverage CovState, the interior-line-breakpoint DbgProv, and ~80 low-level
+// AST-shape predicates / wasm instruction emit helpers / ctor-table and
+// effect-tag lookups shared across every codegen backend and expr-compile
+// module (ADR-0070 Phase 3, #897, compiler-internal batch). Compiled into
+// the compiler itself via compiler_sources_manifest.tsv (group `codegen`,
+// dual-row: this contract + common_base.vibe).
+//
+// The old index.vibe was not a facade but the whole implementation (the
+// package is single-file: no sibling files in this directory), so it moved
+// verbatim to common_base.vibe. Unlike normalize/perceus/common_analysis,
+// this package DOES export real struct types (FuncTable, StrTable,
+// LambdaTable, CtorTable, CovState, CompileCtx, DbgProv, CompileCtxGc) that
+// other codegen packages construct/pattern-match/access fields on directly.
+// Per contract/contract.vibe's conformance checker, a package-owned struct
+// like this is declared as a bodyless (opaque-arity, TRANSPARENT — no
+// `opaque` keyword) `type Name` line: the real field list stays the single
+// source of truth in common_base.vibe, and check_contract only verifies the
+// name + arity match an exported top-level type def there. This is
+// DIFFERENT from @vibe/ast's index.vpkg, where the enums are the only
+// definition (the impl stub never redefines them) so the FULL body lives in
+// the contract; common_base's structs are the opposite shape (impl-owned,
+// contract just attests they exist), so only the bodyless form belongs
+// here. Expr/Pat/Stmt/TypeExpr (../../core) are plain structural signature
+// text, not declared at all (normalize/perceus precedent).
+//
+// Three external files previously imported this package by literal
+// `common_base/index.vibe` path instead of the bare directory form every
+// other consumer already used (`import ../common_base { .. }`):
+// entry/compiler/file_compile/file_compile.vibe, codegen/index.vibe, and
+// codegen/wasi/wasi.vibe. All three were switched to the bare form so every
+// consumer now reaches this package only through its index.vpkg.
+
+import ./common_base.vibe {}
+
+// Func/string/lambda-table lookups threaded through CompileCtx/CompileCtxGc.
+type FuncTable
+type StrTable
+type LambdaTable
+
+// Constructor/struct dispatch table threaded through CompileCtx/CompileCtxGc.
+type CtorTable
+
+// #cov branch coverage state (linear backend only). cov_disabled() when off.
+type CovState
+
+// The linear-backend compile context: func/str/lambda/ctor tables, RC
+// (Perceus) bookkeeping, branch-coverage and interior-line-breakpoint state,
+// and per-function shape-tracking logs. See common_base.vibe for the full
+// field list and their extensive per-field doc comments.
+type CompileCtx
+
+// Interior-line breakpoints (span-arc step5, multi-file): per-file
+// provenance the break codegen needs to emit `vibe::dbg_line(<file_id>,
+// <line>)` and a `vibe.dbgfiles` section. empty_dbg_prov() on non-break
+// builds.
+type DbgProv
+
+// The wasm-gc-backend twin of CompileCtx (gc_-prefixed fields where a name
+// would otherwise collide with CompileCtx's own field at a different slot
+// index — see common_base.vibe's field-collision comment on gc_ctor_table).
+type CompileCtxGc
+
+fn cov_disabled() -> CovState
+fn cov_emit_branch(buf: Bytes, cov: CovState) -> Unit
+fn empty_dbg_prov() -> DbgProv
+fn int_log_reset_above(ctx: CompileCtx, floor: Int) -> Unit
+fn agg_log_reset_above(arr: Array[Int], floor: Int) -> Unit
+fn agg_log_reset_above2(arr: Array[Int], exprs: Array[Expr], floor: Int) -> Unit
+fn agg_slot_lookup(arr: Array[Int], slot: Int) -> Int
+fn agg_expr_lookup(arr: Array[Int], exprs: Array[Expr], slot: Int) -> Expr
+fn agg_info_of_type_name(ct: CtorTable, tname: String) -> Int
+fn agg_info_of_type_expr(ct: CtorTable, te: TypeExpr) -> Int
+fn compute_agg_returning(stmts: Array[Stmt], ct: CtorTable, out_names: Array[String], out_infos: Array[Int]) -> Unit
+fn agg_ret_lookup(names: Array[String], infos: Array[Int], fname: String) -> Int
+fn find_local_slot(names: Array[String], name: String) -> Int
+fn agg_info_of_ident(arr: Array[Int], e: Expr, local_names: Array[String]) -> Int
+fn agg_expr_of_ident(arr: Array[Int], exprs: Array[Expr], e: Expr, local_names: Array[String]) -> Expr
+fn is_efn(expr: Expr) -> Bool
+fn is_pint(p: Pat) -> Bool
+fn is_pfloat(p: Pat) -> Bool
+fn is_slet(stmt: Stmt) -> Bool
+fn expr_tag(expr: Expr) -> Int
+fn is_pbind(p: Pat) -> Bool
+fn is_pbool(p: Pat) -> Bool
+fn is_pctor(p: Pat) -> Bool
+fn is_pwild(p: Pat) -> Bool
+fn is_earray(expr: Expr) -> Bool
+fn is_eident(expr: Expr) -> Bool
+fn is_etuple(expr: Expr) -> Bool
+fn is_ptuple(p: Pat) -> Bool
+fn is_erecord(expr: Expr) -> Bool
+fn is_pstring(p: Pat) -> Bool
+fn emit_i32_eq(buf: Bytes) -> Unit
+fn emit_i32_ne(buf: Bytes) -> Unit
+fn get_arm_pat(arm: (Pat, Expr)) -> Pat
+fn lookup_ctor(ctor_names: Array[String], name: String, i: Int) -> Int
+fn ctor_sorted_index(names: Array[String]) -> (Array[String], Array[Int])
+fn ctor_table_index_of(ct: CtorTable, name: String) -> Int
+fn struct_field_candidates(ct: CtorTable, field: String) -> Array[(Int, Int)]
+fn struct_field_dispatch_cases(cands: Array[(Int, Int)]) -> Array[(Int, Int)]
+fn struct_index_by_field_set(ct: CtorTable, lit_names: Array[String]) -> Int
+fn struct_tag_by_index(ct: CtorTable, si: Int) -> Int
+fn emit_i32_eqz(buf: Bytes) -> Unit
+fn emit_i32_mul(buf: Bytes) -> Unit
+fn emit_i32_sub(buf: Bytes) -> Unit
+fn emit_str_ref(buf: Bytes, offset: Int, length: Int) -> Unit
+fn get_arm_body(arm: (Pat, Expr)) -> Expr
+fn get_efn_body(expr: Expr) -> Expr with { Error }
+fn get_eif_cond(expr: Expr) -> Expr with { Error }
+fn get_eif_else(expr: Expr) -> Expr with { Error }
+fn get_eif_then(expr: Expr) -> Expr with { Error }
+fn get_elet_val(expr: Expr) -> Expr with { Error }
+fn is_ctor_call(value: Expr, ct: CtorTable) -> Bool
+fn resolve_func(ft: FuncTable, name: String) -> (Int, Int, Int) with { Error }
+fn emit_binop_op(buf: Bytes, op: String) -> Unit with { Error }
+fn emit_i32_ge_u(buf: Bytes) -> Unit
+fn emit_i32_gt_u(buf: Bytes) -> Unit
+fn emit_i64_load(buf: Bytes, align: Int, offset: Int) -> Unit
+fn get_ebinop_op(expr: Expr) -> String with { Error }
+fn get_elet_body(expr: Expr) -> Expr with { Error }
+fn get_elet_off(expr: Expr) -> Int with { Error }
+fn get_eletmut_off(expr: Expr) -> Int with { Error }
+fn get_elet_name(expr: Expr) -> String with { Error }
+fn get_func_body(stmt: Stmt) -> Expr with { Error }
+fn get_slet_expr(stmt: Stmt) -> Expr with { Error }
+fn get_slet_name(stmt: Stmt) -> String with { Error }
+fn get_slet_type(stmt: Stmt) -> Option[TypeExpr]
+fn resolve_local(names: Array[String], name: String, tag: String) -> Int with { Error }
+fn emit_i64_store(buf: Bytes, align: Int, offset: Int) -> Unit
+fn emit_box_float(buf: Bytes, ctx: CompileCtx, bits_local: Int, box_local: Int) -> Unit
+fn find_func_stmt(stmts: Array[Stmt], name: String) -> Stmt with { Error }
+fn emit_unbox_float(buf: Bytes) -> Unit
+fn emit_index_one(buf: Bytes, ctx: CompileCtx) -> Unit
+fn rc_shadow_base() -> Int
+fn rc_shadow_reserve() -> Int
+fn emit_rc_word_inc_saturating(buf: Bytes, push_addr: () -> Unit) -> Unit
+fn emit_rc_dup_guarded(buf: Bytes, local_idx: Int, rc_shadow: Bool) -> Unit
+fn fn_type_param_types(ty: Option[TypeExpr]) -> Option[Array[TypeExpr]]
+fn is_nullary_ctor_ident(value: Expr, ct: CtorTable) -> Bool
+fn name_has_effect_prefix(full: String, eff: String) -> Bool
+fn effect_name_to_tag(effect_names: Array[String], full: String) -> Int
+fn effect_op_declared_arity(keys: Array[String], arities: Array[Int], full: String) -> Int
+fn effect_op_index(keys: Array[String], full: String) -> Int
+fn emit_heap_grow_after_heap_set(buf: Bytes, ctx: CompileCtx) -> Unit
