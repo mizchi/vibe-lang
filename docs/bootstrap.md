@@ -107,15 +107,25 @@ commit」は分ける。これにより、常に固定 seed から HEAD を復�
 
 ## Seed artifact 配布 (GitHub Release, #1000 part 2)
 
-`bootstrap/seed/compiler.wasm` は **git 管理下に無い** (local build cache、
-gitignored)。以前は seed バイナリ (~1.4MB) を bootstrap bump のたびに git
-commit で丸ごと差し替えていたが、差分の効かないバイナリを積み重ねるだけで
-`.git` を圧迫する一方だったため (20 回のバイナリ commit で `.git` 824MB)、
-GitHub Release asset として配布する方式に切り替えた。
+seed バイナリ (~1.4MB) を bootstrap bump のたびに git commit で丸ごと
+差し替える運用は、差分の効かないバイナリを積み重ねるだけで `.git` を圧迫する
+一方だった (20 回のバイナリ commit で `.git` 824MB)。これを GitHub Release
+asset として配布する方式に切り替える。
+
+**ロールアウトは2段階**: `workflow_dispatch` で起動する `seed-release.yml`
+自体が default branch 上に無いと GitHub は dispatch を受け付けないため
+(タグ push 済みの branch を指定しても `workflow not found on the default
+branch` になる)、まず現状どおり `bootstrap/seed/compiler.wasm` を
+git 管理下に置いたままこの節の仕組み一式 (workflow・スクリプト群) だけを
+merge し、`seed-release` workflow が使えるようになってから最初の release
+(`seed/map-from-pairs-2026-07-17`) を実際に発行し、その後に
+`bootstrap/seed/compiler.wasm` を `git rm --cached` + `.gitignore` で
+実際に untrack する (part 2b, 別 commit/PR)。CI を一切壊さずに移行する
+ための順序であり、以下の記述は **untrack 後の定常状態** を説明する。
 
 `bootstrap/seed.json` には artifact の sha256 と、それを取得する release
-タグ (`seed.tag`) だけを記録する。実体は初回アクセス時にフェッチしてローカル
-にキャッシュする。
+タグ (`seed.tag`) だけを記録する (untrack 後)。実体は初回アクセス時に
+フェッチしてローカルにキャッシュする。
 
 - `scripts/ensure_seed.sh` — `bootstrap/seed.json` の pin と on-disk の
   `bootstrap/seed/compiler.wasm` を比較し、無いか sha256 が食い違っていれば
