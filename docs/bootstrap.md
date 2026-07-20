@@ -230,7 +230,11 @@ fetch しようとする自己参照になってしまう。`workflow_dispatch` 
    release は一旦 `draft: true` で作成して asset を添付し、その直後の
    別ステップで `gh release edit --draft=false` により publish する
    — `prerelease: true` だけだと asset upload 前に `release.published`
-   が発火し、asset 添付が `immutable release` エラーで失敗するため。)
+   が発火し、asset 添付が `immutable release` エラーで失敗するため。
+   同じ tag への再 dispatch は、その tag の release が既に publish 済み
+   なら (immutable のため二度と draft に戻せない) ワークフロー冒頭の
+   preflight で早期に fail する — 対処は `gh release delete <tag> --yes
+   --cleanup-tag` で削除してから再実行するか、別の tag を使うこと。)
 
 ### 既存の git 履歴中のバイナリ blob
 
