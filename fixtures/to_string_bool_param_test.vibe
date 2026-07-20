@@ -1,0 +1,38 @@
+// #1015 P1 regression: a Bool-TYPED PARAMETER (not a literal, not a
+// let-bound value) forwarded to the prelude's generic `to_string` must
+// render "true"/"false", not "1"/"0".
+//
+// `cc_expr_is_boolish` in lib/@vibe/compiler/codegen/expr/compile_call.vibe
+// classifies its argument by EXPRESSION SHAPE: literals, comparison/logical
+// binops, and -- via ctx.int_local_slots (kind 3) -- a bare ident that was
+// `let`-bound to a boolish value. A bare function PARAMETER `b: Bool` used
+// directly (`to_string(b)`) is just an EIdent with no such tracked slot
+// unless the param itself seeds one -- which, before #1015's second fix,
+// only happened for annotated Float/Double params (see
+// lib/@vibe/compiler/codegen/wasi/linked_compile.vibe's psi loop and
+// lib/@vibe/compiler/codegen/expr/compile_lambda.vibe's lfs_i loop), never
+// Bool. So `to_string(b)` for a Bool-typed param fell through to the
+// generic runtime bit-pattern heuristic and mis-rendered `true` as `"1"`
+// even after the #1015 call-site fast path was in place (that fast path
+// only fires when the ARGUMENT expression at to_string's own call site is
+// statically classifiable -- and `b` alone, without the param seeding
+// below, wasn't).
+import ../lib/@vibe/prelude/builtin_traits.vibe { to_string }
+
+fn render(b: Bool) -> String {
+  to_string(b)
+}
+
+let render_lambda: (Bool) -> String = (b) -> {
+  to_string(b)
+}
+
+test "to_string on a Bool-typed top-level fn param" {
+  assert(render(true) == "true")
+  assert(render(false) == "false")
+}
+
+test "to_string on a Bool-typed lambda param" {
+  assert(render_lambda(true) == "true")
+  assert(render_lambda(false) == "false")
+}

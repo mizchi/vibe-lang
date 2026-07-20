@@ -105,6 +105,24 @@ fn gc_expr_is_floatish(e: Expr, ctx: CompileCtxGc) -> Bool {
   }
 }
 
+// #1015: gc mirror of the linear lane's expr_is_boolish -- shape-based "is
+// this statically a Bool" test. Bool literals, comparison/logical operators,
+// unary `!`, and -- via ctx.gc_bool_locals -- a bare ident bound to a
+// Bool-typed param/let. Bool and Int share the same gc-lane numeric
+// representation (no distinguishing runtime type tag), so this static
+// classification is the only way to route a Bool argument to the
+// "true"/"false" formatter instead of the generic runtime `__to_string`
+// dispatch, which cannot tell them apart.
+fn gc_expr_is_boolish(e: Expr, ctx: CompileCtxGc) -> Bool {
+  match e {
+    EBool(_) => true,
+    EIdent(fname, _) => array_contains_str(ctx.gc_bool_locals, fname),
+    EBinOp(op, _, _) => op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||",
+    EUnaryOp(op, _) => op == "!",
+    _ => false
+  }
+}
+
 // #538 P4.5: is `e` syntactically a constructor value (ctor call or nullary
 // ctor ident)? Runtime values carry no type info, so — exactly like the
 // linear lane's emit_eq_value — the SHAPE of a literal operand decides the
@@ -665,6 +683,12 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       Array::push(local_names, name)
       if gc_expr_is_floatish(value, ctx) {
         Array::push(ctx.gc_float_locals, name)
+      } else if gc_expr_is_boolish(value, ctx) {
+        // #1015: mirrors the float branch above (and the linear ELet's
+        // kind-3 boolish log in compile_expr_tail.vibe) -- a `let`-bound
+        // boolish value lets a later `to_string(b)` / `"\{b}"` on the bare
+        // ident take the "true"/"false" formatter.
+        Array::push(ctx.gc_bool_locals, name)
       } else {
         ()
       }
@@ -789,6 +813,8 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       } else {
         if gc_expr_is_floatish(value, ctx) {
           Array::push(ctx.gc_float_locals, name)
+        } else if gc_expr_is_boolish(value, ctx) {
+          Array::push(ctx.gc_bool_locals, name)
         } else {
           ()
         }

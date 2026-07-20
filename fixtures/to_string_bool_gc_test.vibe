@@ -1,0 +1,55 @@
+// #1015 P2 regression: the gc-lane (VIBE_BACKEND=gc / VIBE_TEST_BACKEND=gc)
+// counterpart of the to_string(Bool) fix.
+//
+// The gc backend compiles a SINGLE self-contained file at a time -- no
+// cross-file FS import resolution (see cli_adapter.vibe's dispatch: the gc
+// lane is a direct-source-compile-only branch, mutually exclusive with
+// VIBE_FS_COMPILE), so this file cannot import the prelude's `to_string`
+// the way the linear-lane fixtures do. It instead defines its own
+// Show-bounded generic wrapper -- structurally identical to
+// lib/@vibe/prelude/builtin_traits.vibe's `to_string[T: Show](x: T) ->
+// String { __to_string(x) }` -- to exercise the same bug: inside that
+// wrapper `x` has the opaque generic type param, so it's untracked, and the
+// wrapper's OWN call `__to_string(x)` cannot statically classify it.
+//
+// Covers both fix halves added for #1015 P1/P2 on the gc lane
+// (lib/@vibe/compiler/codegen/gc/backend_call.vibe /
+// codegen/gc/backend_expr.vibe / codegen/gc/backend_body.vibe /
+// codegen/gc/backend_lambda_inner.vibe):
+//   1. the call-site fast path (bare `fname == "to_string"` match --
+//      the gc lane's single-file compile means no cross-file shadowing
+//      surface exists, unlike linear's #716-mangled multi-file merge, so
+//      this is safe without a mangled-name guard) for a Bool literal
+//      reaching the generic wrapper, and
+//   2. Bool-typed-param/let seeding of ctx.gc_bool_locals so a Bool-typed
+//      identifier (not just a literal) is also recognized.
+trait Show
+
+impl Show for Bool
+
+// NOTE: this wrapper must be named exactly `to_string` -- the gc-lane fast
+// path added for #1015 (lib/@vibe/compiler/codegen/gc/backend_call.vibe)
+// matches the literal bare name "to_string" (no #716 mangling exists on
+// this single-file-only lane). A differently-named wrapper (e.g.
+// `my_to_string`) would not exercise the fix at all and this file would
+// pass vacuously against the UNFIXED compiler too -- caught during
+// verification by first writing this fixture with the wrong name and
+// confirming it still failed, then fixing the name and confirming it
+// started passing.
+fn to_string[T: Show](x: T) -> String {
+  __to_string(x)
+}
+
+fn render(b: Bool) -> String {
+  to_string(b)
+}
+
+test "gc lane: to_string(true)/to_string(false) via a generic Show wrapper" {
+  assert(to_string(true) == "true")
+  assert(to_string(false) == "false")
+}
+
+test "gc lane: to_string on a Bool-typed fn param forwarded through the generic wrapper" {
+  assert(render(true) == "true")
+  assert(render(false) == "false")
+}
