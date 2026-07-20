@@ -83,7 +83,7 @@
 6. **dynamic-wind (finalizer) セマンティクス** (Effekt OOPSLA 2025) —
    resource effect × 非局所脱出の資源解放規則。継続/cancel 導入の前提。
 7. **drop-guided reuse + TRMC** (Koka FP²) — Perceus backend の次の一手。
-   selfhost ビルド自体が最大の受益者 (AST 再構築ホットパス)。
+   コンパイラ自身のビルドが最大の受益者 (AST 再構築ホットパス)。
 
 ### Low priority
 

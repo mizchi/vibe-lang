@@ -27,13 +27,13 @@ vibe 言語の構文・機能を把握するには、最初に [docs/cheatsheet.
 
 ```bash
 pkf list                  # show all tasks
-pkf run                   # default: release-check (selfhost sign-off)
-pkf run test              # selfhost operation gate (commit 前の主チェック)
+pkf run                   # default: release-check (full sign-off)
+pkf run test              # operation gate (commit 前の主チェック)
 pkf run test-local        # affected tests only (fast inner loop)
-pkf run full-gate         # complete selfhost operation gate
+pkf run full-gate         # complete operation gate
 pkf run run -- args       # run main with args
 # 単一ファイルの型検査 / 診断: vibe diagnostics <file.vibe>
-# `fmt` は現状 no-op placeholder (selfhost fmt 未移植)。moon 依存の
+# `fmt` は現状 no-op placeholder (未移植)。moon 依存の
 # `check`/`info`/`test-update` や per-package `test:*` は dead-task
 # cleanup で Taskfile から削除済み。
 ```
@@ -50,25 +50,17 @@ selfhost-only (#594) 以降、ソースはすべて vibe (`.vibe`)。旧 MoonBit
 - `index.vibei` - パッケージの契約 interface (bodyless 宣言 + conformance 照合)
 - `Taskfile.pkl` - pkfire タスク定義。`pkspec/*.pkl` - テスト宣言
 
-### MoonBit host vs selfhost — どちらに手を入れるか
+### 変更の入れ先
 
-vibe compiler は二層構造になっている:
+vibe compiler の実装は `lib/@vibe/compiler/` と `lib/@vibe/cli/` が source of
+truth。parser/checker/codegen/runtime compile だけでなく、CLI のコマンド挙動、
+adapter、bundle、component entry もここへ実装する。旧 MoonBit 実装 `src/` は
+#594 で完全に撤去済みなので、迷ったらここ以外に入れる場所はない。
 
-- **`lib/@vibe/compiler/` (selfhost: vibe で書かれた vibe compiler)** —
-  2026-06-12 以降の完全 selfhost 運用では source of truth。
-  parser/checker/codegen/runtime compile だけでなく、CLI のコマンド挙動、
-  adapter、bundle、component entry、parity gate もここを主対象として実装する。
-- **`src/` (MoonBit 実装)** — legacy bootstrap / fallback / host-runner 層。
-  通常開発では触らない。新機能、bugfix、CLI 挙動変更、builtin 追加は
-  `src/` へ入れず、`lib/@vibe/compiler/` 側だけで実装する。`src/` を変更するのは、
-  明示的に許可された bootstrap 破損の復旧、退役作業、または別ブランチでの
-  隔離作業に限る。
-
-selfhost cutover 後の Rust-style seed compiler / stage0-stage2 / bootstrap bump の運用は
+Rust-style seed compiler / stage0-stage2 / bootstrap bump の運用は
 [docs/bootstrap.md](docs/bootstrap.md) に従う。新しい syntax を
 compiler source 自体で使う場合は、先に seed compiler がその syntax を理解できる
 状態を tag し、bootstrap bump を通してから source を移行する。
-2026-06-12 以降の完全 selfhost 運用では
 [docs/operation-gate.md](docs/operation-gate.md) の判断基準に従い、節目で
 `pkf run full-gate` を通す。旧 `pkf run selfhost-trial-gate` 互換 alias は #850 Phase B で削除した。
 
@@ -76,18 +68,15 @@ compiler source 自体で使う場合は、先に seed compiler がその syntax
 - 「`vibe test foo.vibe` で挙動を変えたい / 新 builtin を追加したい」
   → `lib/@vibe/compiler/` 側だけを変更する
 - 「CLI の挙動を変えたい / コマンドを追加したい」
-  → `lib/@vibe/compiler/entry` / `selfhost_cli_*.vibe` / component adapter 側で実装する
-- 「selfhost が正しく自分でコンパイルできない」「dist wasm が壊れて
+  → `lib/@vibe/compiler/entry` / `lib/@vibe/cli/dispatch.vibe` の
+  `selfhost_cli_*` handler / component adapter 側で実装する
+- 「コンパイラが正しく自分でコンパイルできない」「dist wasm が壊れて
   いる」 → まず `lib/@vibe/compiler/` / bootstrap scripts / seed 管理を直し、
-  `pkf run full-gate` で確認する。`src/` 修正が必要に見える場合は
-  変更前に方針確認する
-- MoonBit host と selfhost の二重実装は増やさない。parity/cutover gate は
-  selfhost 側の正しさを確認するために使い、`src/` 追従の理由にしない
+  `pkf run full-gate` で確認する
 
 CI shard では:
-- `scripts/pkfire/gates_shard.sh bootstrap|cli|check|coverage`
-  が selfhost 側のゲートを走らせる
-- `pkf run full-gate` を完全 selfhost 継続判断の主 gate とする
+- `scripts/pkfire/gates_shard.sh bootstrap|cli|check|coverage` がゲートを走らせる
+- `pkf run full-gate` を継続運用判断の主 gate とする
 
 ## Coding Convention
 
@@ -97,7 +86,7 @@ CI shard では:
 ## Code Navigation (IMPORTANT)
 
 > `moon ide` / `moon doc` は MoonBit host 退役 (#594) で使えなくなった。
-> selfhost では `vibe lsp` とその基盤になっている editor query primitives を使う
+> 今は `vibe lsp` とその基盤になっている editor query primitives を使う
 > (#637, [docs/editor-and-debugging.md](docs/editor-and-debugging.md))。
 
 **コード探索は `vibe symbols` / `vibe type-at` / `vibe binding-at` を使う**
@@ -156,13 +145,13 @@ completion / signature help を提供する。詳細は
 ## Tooling
 
 > `moon fmt/info/test/check` は MoonBit host 退役 (#594) で使えなくなった。
-> selfhost の検証は `pkf` の selfhost gate と `vibe` CLI を使う。
+> 検証は `pkf` のゲートと `vibe` CLI を使う。
 
-- `pkf run test` — selfhost operation gate (`scripts/compiler_gate.sh`)。commit 前の主チェック。
-- `pkf run release-check` — full gate (fmt + info + check + test + selfhost gates)。
+- `pkf run test` — operation gate (`scripts/compiler_gate.sh`)。commit 前の主チェック。
+- `pkf run release-check` — full gate (fmt + info + check + test + operation gates)。
 - `pkf run test-local` — 変更影響範囲のテストのみ (fast inner loop、flaker 経由)。
 - 単一ファイルの型検査 / 診断は `vibe diagnostics <file.vibe>`（空出力 = clean）。
-- `pkf run fmt` は現状 no-op placeholder（selfhost fmt は未移植、#594）。
+- `pkf run fmt` は現状 no-op placeholder（未移植、#594）。
 
 ### `vibe test` / `vibe bench` backend 切り替え
 
@@ -233,7 +222,7 @@ pkf run test-local -- --profile scheduled
 ## Before Commit
 
 ```bash
-pkf run release-check  # fmt + info + check + test + vibe-normalize + bundle-size + selfhost gates
+pkf run release-check  # fmt + info + check + test + vibe-normalize + bundle-size + operation gates
 ```
 
 ## pkfire / pkspec

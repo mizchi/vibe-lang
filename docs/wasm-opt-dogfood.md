@@ -13,15 +13,15 @@ dependency. See `fixtures_inline_test.vibe`.
 
 ### End-to-end on real compiler output (local dogfood)
 To validate/measure on *real, non-trivial* programs we run the optimizer over
-the selfhost compiler's own output. The selfhost CLI's low-level path
-(`cli_main`) executes effectful `main` (the host compiler's final-expression
-model does not), so we host-build a selfhost compiler with an opt-in
+the compiler's own output. The CLI's low-level path
+(`cli_main`) executes effectful `main` (the retired MoonBit host compiler's
+final-expression model did not), so we host-build a compiler with an opt-in
 post-optimize hook and drive it via the node host runner:
 
 ```bash
 # 1) local-only hook in lib/@vibe/cli/dispatch.vibe: gate maybe-minify on
 #    VIBE_MINIFY_PASS (import minify_converge etc. from ../../lib/@vibe/optimizer). DO
-#    NOT COMMIT — it couples wasm_opt into the selfhost compiler (+~700 KB) and
+#    NOT COMMIT — it couples wasm_opt into the compiler (+~700 KB) and
 #    the fixed seed cannot self-compile it.
 # 2) host-build the dogfood compiler (~8s):
 vibe compile --wasm --force-cabi-realloc lib/@vibe/cli/entry.vibe -o /tmp/sc.wasm
@@ -44,9 +44,9 @@ is what surfaced it — the inline fixtures had no exception handling. Fixed in
 Validated real-code results (output VALID per wasm-opt, runs to the same value
 as the baseline):
 
-| program (selfhost-compiled) | baseline | vibe minify | runs | wasm-opt -Oz |
+| program | baseline | vibe minify | runs | wasm-opt -Oz |
 |-----------------------------|---------:|------------:|------|-------------:|
-| examples/selfhost_features  |     4153 |         834 | 0    |          707 |
+| examples/compiler_features  |     4153 |         834 | 0    |          707 |
 | examples/perform_handle     |     4613 |         858 | 86   |          720 |
 
 ~80% reduction on real output; on small programs now at or below `wasm-opt -Oz`
@@ -55,7 +55,7 @@ simplify-locals is the remaining lever).
 
 ### Function inlining (`inline_calls`) — closes most of the real-code gap
 
-Disassembling `rec.vibe` (selfhost-compiled, baseline 53 functions):
+Disassembling `rec.vibe` (baseline 53 functions):
 
 - our `minify` **before** `inline_calls`: **53 → 6 functions** (DCE is correct —
   all 6 survivors are genuinely `call`-reachable from `_start`/`main`).
@@ -93,7 +93,7 @@ this brings vibe `minify` to **366 B — smaller than `wasm-opt -Oz` (371 B)** �
 with the same global/tag counts (1 global, 1 tag) wasm-opt produces. `minify`
 was 393 B before these passes.
 
-Validated numbers (selfhost-compiled, every output VALID under wasm-opt and
+Validated numbers (every output VALID under wasm-opt and
 run-matching the baseline):
 
 | program          | baseline | vibe minify | red% | wasm-opt -Oz |
@@ -103,11 +103,11 @@ run-matching the baseline):
 | loop             |     3855 |         509 |  87% |            — |
 | str              |     3926 |         583 |  85% |            — |
 | arr              |     4001 |         816 |  80% |            — |
-| selfhost_features|     4153 |         834 |  80% |          707 |
+| compiler_features |     4153 |         834 |  80% |          707 |
 | perform_handle   |     4613 |         858 |  81% |          720 |
 
 Correctness has been validated end-to-end on 7 real programs (arrays, recursion,
-strings, enums/match, loops, plus examples/selfhost_features and
+strings, enums/match, loops, plus examples/compiler_features and
 examples/perform_handle): every `minify` output (now including `inline_calls`)
 is VALID under wasm-opt and runs to the same result as the baseline. Reductions
 range 79–90%:
@@ -119,7 +119,7 @@ range 79–90%:
 | str              |     3926 |         583 |  85% | ✅    | ✅ (0)     |
 | enum/match       |     3922 |         464 |  88% | ✅    | ✅ (20)    |
 | loop             |     3855 |         509 |  87% | ✅    | ✅ (5050)  |
-| selfhost_features|     4153 |         834 |  80% | ✅    | ✅ (0)     |
+| compiler_features |     4153 |         834 |  80% | ✅    | ✅ (0)     |
 | perform_handle   |     4613 |         858 |  81% | ✅    | ✅ (86)    |
 
 Baselines come from binaryen (installed via `npm i binaryen`):
@@ -185,7 +185,7 @@ byte-identical to a module that `wasm-opt` validates and `wasmtime` runs.
   in the scope *enclosing* the try_table (its own label not counted, target at
   `sp - 2 - label`), so a catch that targets or crosses a block pins it.
   Validated on real effectful output (`perform_handle`, runs to 86) and shrinks
-  `selfhost_features` 834 → 824 B.
+  `compiler_features` 834 → 824 B.
 
 A prerequisite fix landed here too: `decode_instr` now consumes the immediates
 of every `0xFC`-prefixed op (table/memory bulk ops). Previously `table.size`'s

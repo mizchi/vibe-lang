@@ -35,7 +35,7 @@ WARNING: the `-Sthreads` flag will be a hard error in Wasmtime 47.0.0 on 2026-07
 - 公開並行モデルは [ADR-0068](concurrency.md) の shared-nothing structured
   concurrency とする。**shared-everything-threads** はその opt-in 高速化 backend
   として、Wasmtime の不足実装が揃ってから再評価する。tracking: #488。
-- repo 内の active な gate (`scripts/test_selfhost_cli_*preview2*.sh` 等) は
+- repo 内の active な gate (`scripts/test_cli_*preview2*.sh` 等) は
   `VIBE_WASMTIME_WASM_FLAGS=...threads=y`（= `-W threads=y`、wasm proposal）だけを
   使い、廃止対象の `-S threads=y` は使っていない。これらは影響を受けない。
 

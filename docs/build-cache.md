@@ -1,6 +1,6 @@
 # Build cache layering & GC policy
 
-This note covers the **incremental build cache** the selfhost compiler writes
+This note covers the **incremental build cache** the compiler writes
 under `_build/vibe_*`, how its fingerprints relate to the ADR-0004
 content-address *identity* layer, and how to reclaim disk. It is the resolution
 record for #631 (cache GC) and #633 (hash-layer clarification).

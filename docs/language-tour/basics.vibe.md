@@ -436,7 +436,7 @@ let result = handle {
 
 Requires `--unstable-async` flag.
 
-<!-- doctest-skip: `yield` は selfhost build path 未サポート (--unstable-async gated の experimental 例) -->
+<!-- doctest-skip: `yield` は現行 build path 未サポート (--unstable-async gated の experimental 例) -->
 ```vibe skip
 let delayed: () -> Int with { Async } = () -> {
   yield

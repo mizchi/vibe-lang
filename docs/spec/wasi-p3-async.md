@@ -258,8 +258,7 @@ lowering 概要:
 4. async export（HTTP handler 等）は `task.return` で結果を返し、
    `async-lift` 規約で wasmtime に lift される。
 
-この lowering は selfhost compiler 側
-(`lib/@vibe/compiler/codegen/`) に実装する（CLAUDE.md の source-of-truth 方針）。
+この lowering は `lib/@vibe/compiler/codegen/` に実装する（CLAUDE.md の source-of-truth 方針）。
 既存の effect region / replay 機構とは独立した新パスとする。
 
 ### 3.1 M1b feasibility spike（landed、実測 — wasmtime 45.0.0 / x86_64 linux）
@@ -370,7 +369,7 @@ codegen は「self stream を作って書いて読む」ではなく、「**impo
 
 ### 3.2 M1b 実装ブループリント（byte-level encoding map）
 
-`cm_async_lift_probe.wat` を `wasm-tools dump` して抽出した、selfhost encoder が
+`cm_async_lift_probe.wat` を `wasm-tools dump` して抽出した、component encoder が
 emit すべき正確なバイト列（wasmtime 45 で検証済み）。`component_codegen.vibe`
 は既に async func type opcode `0x43`(67) と sync canon lift を持つので、不足は
 (a) async lift option、(b) `task.return` canon、(c) core 側の import + void entry。
@@ -708,7 +707,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 
 ## 7. 未解決事項
 
-- canonical ABI の async 状態機械を selfhost codegen で生成する際の frame
+- canonical ABI の async 状態機械を codegen で生成する際の frame
   レイアウト / suspend-resume の具体表現（M1 で確定）。
 - `Async` effect row と既存 effect row 推論の統合（await 透過性、`async fn`
   の effect 注釈規則）。

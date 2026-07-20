@@ -291,10 +291,11 @@ moonbitlang/core の構成を参考に、旧 `vibe/collection/{list,set}` /
   bare alias 衝突回避）があっても、いずれかの exported def が
   シグネチャ一致すれば満たされる。
 - **compiler 内部との関係**: build cache の identity hash は
-  `lib/@vibe/compiler/cache/sha1.vibe`（vendored twin）を使い、canonical
-  (`lib/@vibe/core/sha1.vibe`) との同期は selfhost gate step 6e が
-  comment 行を除いた diff で強制する。compiler が @vibe/core を
-  `require` で消費する形は #726/#730 の flattener 刷新後に移行する。
+  `lib/@vibe/core/sha1.vibe` を contract import 経由で直接消費する
+  (#726/#730 の flattener 刷新後に移行済み)。以前は vendored twin
+  `lib/@vibe/compiler/cache/sha1.vibe` を別途持ち、gate step 6e が
+  canonical との diff を強制していたが、その twin は #741 で削除され、
+  drift-check 自体が不要になった。
 - store 配布: `scripts/vibe_core_install.sh`（`.vibe/store/@vibe/core/`
   へ contract + impl をコピーし、VIBE_HASH でハッシュを表示）。
 - E2E: `fixtures/vibe_core_pkg_test.vibe` が契約 import 経由で

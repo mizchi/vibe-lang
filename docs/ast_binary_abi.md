@@ -1,14 +1,15 @@
 # AST Binary ABI v1
 
-Stable binary encoding for `@core.Module` shared by the MoonBit host
-implementation (`src/core/serialize_binary.mbt`,
-`src/core/deserialize_binary.mbt`) and the selfhost vibe compiler
-(`lib/@vibe/compiler/ast_binary.vibe`).
+Stable binary encoding for `@core.Module`, implemented in
+`lib/@vibe/compiler/ast_binary.vibe`. It was originally shared with the
+MoonBit host implementation (`src/core/serialize_binary.mbt`,
+`src/core/deserialize_binary.mbt`), retired in #594; the vibe compiler's
+implementation is now the sole and authoritative one.
 
 The format is the source of truth for the on-disk prelude AST cache
 (`~/.cache/vibe/prelude-<sha>.ast.bin`) and any other place where an
-AST has to cross a process boundary. Both implementations MUST agree
-byte-for-byte on roundtrips.
+AST has to cross a process boundary. Roundtrips MUST be byte-for-byte
+stable across compiler versions.
 
 ## Goals
 
@@ -37,7 +38,7 @@ recognize.
 | Name       | Encoding |
 |------------|----------|
 | `varint`   | LEB128 unsigned, max 10 bytes (i.e. fits u64). |
-| `svarint`  | Standard signed LEB128 (sleb128), max 10 bytes (i.e. fits i64). Chosen to align with wasm/DWARF conventions and reuse selfhost's existing `leb128_encode_s64`. |
+| `svarint`  | Standard signed LEB128 (sleb128), max 10 bytes (i.e. fits i64). Chosen to align with wasm/DWARF conventions and reuse the compiler's existing `leb128_encode_s64`. |
 | `bool`     | One byte: `0x00` = false, `0x01` = true. Any other value is malformed. |
 | `string`   | `varint` length N in bytes, followed by N bytes UTF-8. |
 | `optstr`   | One byte present flag (`0x00`=None, `0x01`=Some) + `string` if Some. |
@@ -282,21 +283,24 @@ of:
 The on-disk cache MUST treat any of these as a cache miss and fall
 back to parsing the source string.
 
-## Cross-implementation conformance
+## Conformance
 
-`lib/@vibe/compiler/ast_binary_test.vibe` and
-`src/core/serialize_binary_wbtest.mbt` each contain a small fixture
-("the smoke module") that exercises every tagged variant at least
-once. Both implementations must produce byte-identical output when
-serializing the smoke module, and both must deserialize the smoke
-fixture file (`docs/fixtures/ast_binary_smoke.bin`) back to an equal
-`Module`.
+`lib/@vibe/compiler/tests/ast_binary_test.vibe` covers the primitive
+encodings (`varint`, `svarint`, `bool`, `string`, `optstr`, `span`,
+`header`) with canonical-byte and roundtrip checks, plus a canonical
+byte sequence for the empty module (header + `array_count varint(0)`).
+It does **not** currently build a `Module` fixture that exercises every
+tagged variant — that broader roundtrip coverage still needs to be
+added. (This test originally also cross-checked against the retired
+MoonBit host's `src/core/serialize_binary_wbtest.mbt` and a shared
+fixture file; both were removed along with the host in #594.)
 
 Whenever a new variant is added:
 
 1. Pick the next unused tag in the relevant table above and update
    this document **first**.
-2. Extend the smoke module to cover it.
+2. Extend `ast_binary_test.vibe` (or the future full-variant `Module`
+   fixture, once added) to cover it.
 3. Update both serializers in lock-step.
 4. Bump the file version (`+1`) only if existing payloads change
    shape; pure additions don't require a version bump (the unknown-tag

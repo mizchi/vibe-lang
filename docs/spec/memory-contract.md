@@ -1,7 +1,7 @@
 # Memory management contract (linear / wasm-gc / Perceus RC)
 
 Status: living spec (tracks issue #493). This document pins the *current*
-behavior of the **selfhost** toolchain (`lib/@vibe/compiler/`, `vibe/cli/`) and
+behavior of the **compiler** toolchain (`lib/@vibe/compiler/`, `vibe/cli/`) and
 records the intended direction. The retired MoonBit host (`src/`, #594) is
 referenced only as historical context; nothing in `src/` is reachable from
 the production CLI anymore.
@@ -11,11 +11,11 @@ the linear backend stays the production default and is gaining Perceus RC
 so its "bump allocator, never free" leak becomes opt-out rather than the
 only behavior.**
 
-## Backend contract table (selfhost)
+## Backend contract table
 
 | | linear (today / default) | linear + Perceus RC (in progress) | wasm-gc |
 |---|---|---|---|
-| selfhost CLI entry | `compile --wasm` / `--wasm-linear`, `build --release`, `test`, `bench` | env opt-in `VIBE_RC` → `compile_source_wasi_only_rc`; **not** CLI-exposed | **not wired in the selfhost CLI** (`compile --wasm-gc` throws "not supported by selfhost cli yet"); reachable only via `VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` for host-import-free test/bench |
+| CLI entry | `compile --wasm` / `--wasm-linear`, `build --release`, `test`, `bench` | env opt-in `VIBE_RC` → `compile_source_wasi_only_rc`; **not** CLI-exposed | **not wired in the CLI** (`compile --wasm-gc` throws "not supported by selfhost cli yet"); reachable only via `VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` for host-import-free test/bench |
 | value representation | tagged `i64` (2-bit tag) | same tagged `i64` | linear-memory layout for tuple/struct/ctor + wasm-gc `struct`/`ref` for refcell/closure |
 | allocation | bump allocator | bump + (planned head free-list) | engine heap |
 | reclamation | **none (leaks linearly)** | Perceus dup/drop (analysis complete; drop **codegen Phase 3 WIP**) | engine GC (tracing) |
@@ -24,10 +24,10 @@ only behavior.**
 | known gaps | — | uniform object header only partly landed (tuples done, arrays/enums/closures pending); no drop emission yet; no wasmtime RC e2e gate | HOF / Iterator codegen gaps (`docs/spec/iterable-touch-points.md`); builtin parity; not CLI-reachable |
 | intended status | production default | future linear default (opt-out leak) | long-term primary target |
 
-The defaults above are exercised by the selfhost gate
+The defaults above are exercised by the gate
 (`scripts/compiler_gate.sh`), which compiles, runs, and self-reproduces
 through the linear `--wasm` path; the RC analysis path is exercised by
-`lib/@vibe/compiler/perceus_rc_test.vibe` (`test-selfhost-perceus`).
+`lib/@vibe/compiler/tests/perceus_rc_test.vibe`.
 
 ## Current CLI behavior (pin)
 
@@ -44,18 +44,18 @@ through the linear `--wasm` path; the RC analysis path is exercised by
 
 > README note: the README "Runtime Targets" table historically described the
 > MoonBit-host `vibe_compile_wasi` where `--wasm` selected wasm-gc. That is no
-> longer true for the selfhost CLI; the table has been corrected to match the
+> longer true for the CLI; the table has been corrected to match the
 > behavior pinned here.
 
-## Perceus RC status (selfhost) — experimental, in progress
+## Perceus RC status — experimental, in progress
 
-RC was **ported to selfhost** (it is no longer src/-only), but the
+RC was **ported into the compiler** (it is no longer src/-only), but the
 reclamation half is not finished. Detailed staged plan:
 [rc-port.md](rc-port.md); readiness:
 [rc-cutover-readiness.md](rc-cutover-readiness.md).
 
 - **Phase 1 — uniform object header (prerequisite):** *started*. RC's drop
-  helper needs a `[type_id][length]` header to recurse; the selfhost linear
+  helper needs a `[type_id][length]` header to recurse; the linear
   layout is otherwise headerless. Records/structs already carried a header;
   tuples now take one under `enable_rc` (type_id 3). Arrays / enums /
   closures still pending. Guarded by `CompileCtx.enable_rc`, proven
@@ -63,8 +63,8 @@ reclamation half is not finished. Detailed staged plan:
   (leaf objects). Leak profiler baseline: 16 B/iteration (bump, no RC);
   RC-mode tuple loop 24 B/iter (still leaking until Phase 3).
 - **Phase 2 — analysis pass:** *complete (bar cross-branch balancing)*.
-  `build_perceus_plan` in `lib/@vibe/compiler/perceus/index.vibe` mirrors the
-  validated `src/` semantics on the selfhost expression-oriented AST: calls
+  `build_perceus_plan` in `lib/@vibe/compiler/perceus/perceus.vibe` mirrors the
+  validated `src/` semantics on the compiler's expression-oriented AST: calls
   / field access / array index arg0 are borrows; pure-borrow / unused
   non-scalar bindings get a scope-end drop; multiply-used owning references
   dup. 14/14 isolation tests (`perceus_rc_test.vibe`).
@@ -99,8 +99,8 @@ reclamation half is not finished. Detailed staged plan:
 
 - ✅ memory-management contract table lives here (`docs/spec`).
 - ✅ `compile --wasm` / `--wasm-gc` / `build --release` / `test` / `bench`
-  backend defaults pinned above and exercised by the selfhost gate.
-- ✅ README backend description reconciled with the selfhost CLI.
-- ✅ Perceus RC marked experimental opt-in; selfhost port status and the
+  backend defaults pinned above and exercised by the gate.
+- ✅ README backend description reconciled with the current CLI.
+- ✅ Perceus RC marked experimental opt-in; port status and the
   remaining Phase 3 work are tracked in `rc-port.md`.
 - ✅ The "no reclamation / cycles leak" limitations are documented above.

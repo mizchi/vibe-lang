@@ -64,7 +64,7 @@ stage2 -> bootstrap bump の流れを追跡したいときの入口にする。
 の sha256 を更新する。bootstrap bump ではこの manifest 更新を独立 commit として
 扱う。`pkf run generation` は seed provenance に従い、安定した
 low-level compiler entry (`lib/@vibe/compiler/cli_support.vibe`) を flat source
-化して stage を回す。`build-selfhost-dist` / `test-cli-core` は
+化して stage を回す。`test-cli-core` は
 `lib/@vibe/cli/entry.vibe` を使う。split CLI entry を generation default に
 昇格する場合は、別の bootstrap bump として stage2/stage3、corpus、perf/RSS を
 通してから manifest entry を切り替える。
@@ -210,7 +210,7 @@ section id 0 (custom), name "vibe.abi", payload:
 抽出ロジックだけを検証する (CI/build 不要の smoke)。
 
 gate は `release-gates` に組み込まれ、`pkf run full-gate`
-(`trial_gate.sh`) の本流で走る。selfhost gate は本 gate の直前に
+(`trial_gate.sh`) の本流で走る。generation gate は本 gate の直前に
 `generations.sh build --stage3` で stage2/stage3 を生成するため、
 gate は既定 (`VIBE_DIST_PARITY_REUSE_STAGE2=1`) でその stage2 を再利用し、
 dist のみ fresh に build して比較する。stage2 再生成が前提なので、初回 green は

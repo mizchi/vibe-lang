@@ -1,4 +1,4 @@
-# Selfhost RC cutover readiness (ADR-0055 #493)
+# RC cutover readiness (ADR-0055 #493)
 
 Status: **NOT READY for cutover (real-corpus re-assessment, 2026-06-29).** The
 synthetic 8-program probe (`scripts/rc_cutover_readiness.sh`) is fully green, and
@@ -10,9 +10,9 @@ exercises derive macros, traits/dict dispatch, iterators, and structural
 equality, all of which have pre-existing RC bugs (see "Real test-corpus
 assessment"). **Do not flip the default until the real corpus reaches parity.**
 Measures
-whether the selfhost Perceus RC path is ready to become the selfhost linear
+whether the Perceus RC path is ready to become the linear
 default (cutover, #493 C/F). The reclaim
-suite (`scripts/verify_selfhost_rc.sh`) and heap-e2e gate exercise RC features in
+suite (`scripts/verify_rc.sh`) and heap-e2e gate exercise RC features in
 **isolation**; cutover needs realistic code that **mixes** them. The probe
 `scripts/rc_cutover_readiness.sh` compiles a corpus of feature-combined,
 allocation-heavy programs (each a parameterised `main(n)` loop returning a
@@ -184,15 +184,15 @@ compiler scale that the default bump path does not already have.**
 
 This was the first time stage1 was asked to compile the *whole* compiler (prior
 gates compile only small samples or a stub), so it surfaced several pre-existing
-**default-path** selfhost limitations. Two were real source bugs and are fixed:
+**default-path** limitations. Two were real source bugs and are fixed:
 
 1. **Newline-separated struct fields** — `struct HeapInferCtx { ctors: …\n
-   heap_fns: … }` (no `;`). The host MoonBit parser is lenient; the selfhost
+   heap_fns: … }` (no `;`). The (retired) host MoonBit parser was lenient; the
    parser only accepts `;`/`,`/`}` as field separators, so stage1 threw
    `expected ';', ',' or '}' in struct`. Fixed by using `;` (the convention
    every other struct already follows).
 2. **Struct-literal field punning** — `PerceusAction::{ kind, name }` (shorthand).
-   The selfhost parser mis-parses punned fields and runs into the next token
+   The parser mis-parses punned fields and runs into the next token
    (`unexpected token: ->`), per the CLAUDE.md gotcha. Fixed by writing explicit
    `kind: kind, name: name`.
 
@@ -220,12 +220,16 @@ End-to-end verified: the stage1 wasm-compiled compiler, invoked via
 wasm that runs to the same result as the default path** (17 == 17):
 
 ```bash
-# the cli-adapter gate's sample input compiled through the RC path:
+# the cli-adapter gate's sample input compiled through the RC path
+# (verified via the `scripts/test_selfhost_cli_adapter.sh` gate script at the
+# time of this measurement; that script was later pruned along with other
+# dead MoonBit-host scaffolding in #596 and has no direct replacement):
 VIBE_RC=1 bash scripts/test_selfhost_cli_adapter.sh
 ```
 
 **Not yet RC-routed (remaining cutover wiring).** The full selfbuild
-(`scripts/test_selfhost_wasi_selfbuild.sh`) does *not* honor `VIBE_RC`: its
+(verified at the time via `scripts/test_selfhost_wasi_selfbuild.sh`, also since
+pruned in #596) does *not* honor `VIBE_RC`: its
 recursive stage uses `selfbuild_compile_stage2` (`index.vibe`), which calls
 `compile_source_wasi_only` unconditionally and has no `Env` effect to read the
 toggle. Routing the bootstrap self-build through RC (add `Env` to

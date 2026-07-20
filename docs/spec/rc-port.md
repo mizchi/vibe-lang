@@ -53,8 +53,8 @@ is added.
 
 - **Verification harness in place** (the safety net for the layout change): the
   compiler's codegen unit tests only check wasm magic bytes (`assert_wasm`), which
-  is too weak to catch a layout regression. `lib/@vibe/compiler/codegen_heap_e2e_test.vibe`
-  (task `test-selfhost-heap-e2e`, 9/9) compiles heap-object source programs with
+  is too weak to catch a layout regression. `lib/@vibe/compiler/tests/codegen_heap_e2e_test.vibe`
+  (9/9) compiles heap-object source programs with
   the compiler's linear backend, runs them on wasmtime (`sh_lines("wasmtime run --invoke
   main …")`), and checks the *result* — covering tuple, nested tuple, array get,
   array builder, struct field, enum ctor + match payload, closure capture,
@@ -63,8 +63,8 @@ is added.
 - **Memory-leak profiling in place**: the compiler's linear backend exports its
   bump-allocator cursor as the `__heap_ptr` global. `scripts/measure_heap.mjs`
   reads it before/after invoking a function (on a minimal wasm host) to report
-  bytes allocated; `scripts/measure_selfhost_heap_leak.sh` compiles the same
-  allocating loop at two iteration counts and reports per-iteration heap growth.
+  bytes allocated; running it against the same allocating loop at two iteration
+  counts and diffing gives the per-iteration heap growth.
   Baseline (bump, no reclamation): **16 bytes/iteration** for a `(i, i+1)`
   tuple loop — i.e. it leaks linearly. The header change (Phase 1) only grows
   this by the header size (still leaking, as expected with no RC); once Perceus
@@ -85,14 +85,14 @@ is added.
 - Remaining for arrays / enums / closures: the same header treatment. Keep
   string/bytes fat pointers as today (leaf objects).
 - No refcount field yet, no behavior change: the parity gates
-  (`scripts/test_selfhost_*`) must show identical compiled output / runtime
-  results. This phase is purely structural.
+  (e.g. `scripts/rc_corpus_parity.sh`) must show identical compiled output /
+  runtime results. This phase is purely structural.
 - Risk: high (every offset moves). Mitigation: land incrementally per object
   kind, each guarded by the parity gate.
 
 ### Phase 2 — port the Perceus analysis pass — *complete (bar branch balancing)*
 
-- Ported the analysis to `lib/@vibe/compiler/perceus/index.vibe`
+- Ported the analysis to `lib/@vibe/compiler/perceus/perceus.vibe`
   (`build_perceus_plan : (Expr) -> Array[PerceusAction]`), pattern-matching the
   compiler's `Expr` enum directly. Because the compiler's AST is
   expression-oriented, scope is structural: an `ELet(x, val, body)` scopes `x`
@@ -113,7 +113,7 @@ is added.
   one owned reference and is dropped at scope end; the scalar check skips
   known non-heap values.
 - Unit-tested in isolation via the native vibe CLI
-  (`lib/@vibe/compiler/perceus_rc_test.vibe`, task `test-selfhost-perceus`, 14/14):
+  (`lib/@vibe/compiler/tests/perceus_rc_test.vibe`, 14/14):
   pure-borrow drop, moved-out (no drop), scalar (no drop), dup on double use,
   closure-call borrow + drop, nested borrow, branch-local drop, while-body
   per-iteration drop, for-in element drop, closure capture as owning use,

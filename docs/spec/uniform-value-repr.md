@@ -6,18 +6,19 @@ safety-critical slice + most leak fixes landed), Stage 5 measured. The only
 remaining implementation work is the **residual Stage 4 escape leaks**
 (container-owning-escape, and the narrow case of an unannotated owned param
 passed through whole rather than projected/matched) — all *safe* leaks (no
-use-after-free), and the gate that blocks RC cutover to the selfhost linear
+use-after-free), and the gate that blocks RC cutover to the linear
 default. Prerequisite
-for *recursive field drop* in the selfhost Perceus RC port
-(`docs/spec/rc-port.md`). The canonical implementation target is now
-the selfhost compiler under `lib/@vibe/compiler/`; the MoonBit `src/` backend is only
-a historical/reference point for this design. This documents the design the
-selfhost backend needs before the RC vertical can reclaim **nested** heap
+for *recursive field drop* in the Perceus RC port
+(`docs/spec/rc-port.md`). The canonical implementation target is
+the compiler under `lib/@vibe/compiler/`; the MoonBit `src/` backend was
+removed in #594 and is referenced here only as historical context for the
+design rationale. This documents the design the
+compiler needs before the RC vertical can reclaim **nested** heap
 (a dropped container freeing its heap fields) and **container/call escapes**.
 
 ## Why this is needed
 
-The selfhost linear backend's RC port reclaims the common scope-local and alias
+The linear backend's RC port reclaims the common scope-local and alias
 cases at 0 bytes/iteration (tuple / record / enum / closure-body / alias / array
 literal — `rc-port.md`). The remaining leak sources are:
 
@@ -29,7 +30,7 @@ literal — `rc-port.md`). The remaining leak sources are:
 Both need a generic `rc_drop` that, given a field value, can **decide at runtime
 whether it is a heap pointer** (to recurse / decrement). `src/` does exactly this
 (`wasm_codegen_rc.mbt::emit_rc_drop` → `(val & tag_mask) == tag_obj`, then
-`ptr = val & ~tag_mask`). The selfhost backend **cannot**, because:
+`ptr = val & ~tag_mask`). The compiler's backend **cannot**, because:
 
 ### Blocker 1 — integers are raw `i64`
 
@@ -64,7 +65,7 @@ sufficient on its own.)
 
 Make every runtime `i64` value **self-describing** so a generic drop can classify
 it. Chosen scheme (low-bit tagging), applied **only under `enable_rc`** so the
-default selfhost bootstrap path keeps raw `i64` (no perf/representation change,
+default bootstrap path keeps raw `i64` (no perf/representation change,
 no bootstrap risk):
 
 | value kind        | representation (low bits) | notes |
@@ -270,7 +271,7 @@ branch (mechanical but broad).
 
 ## Staged migration plan
 
-Each stage keeps the **selfhost bootstrap** green (default path unchanged) and is
+Each stage keeps the **bootstrap** green (default path unchanged) and is
 verified by the RC e2e + leak suite, which must be **expanded** to exercise every
 arithmetic / comparison / bitop / shift / float / nested-data case under
 `enable_rc` (current coverage is too thin to catch a tagging bug).
@@ -314,7 +315,7 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
      `gen_arr_new` returns `|1`; drop classifies arrays as `rc_kind 2`. The
      `data_ptr` indirection and growable buffer are unaffected (only the *value*
      pointer is tagged; internal fields stay even). Verified by
-     `scripts/verify_selfhost_rc.sh`: gate 41/41 (incl. array get/set/length/
+     `scripts/verify_rc.sh`: gate 41/41 (incl. array get/set/length/
      push/builder/grown) and array reclamation 0 B/iter. (An earlier attempt was
      reverted when the stale-cache trap hid that the array builtins are reached
      through `gen_*`; the reliable loop confirms it now.)
@@ -353,7 +354,7 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
      (`call self_idx`) to arbitrary depth; for an array it loops `length@value+4`
      elements behind `data_ptr@value+8`; then pushes the block to the free-list.
      Scope-end drops route through it (`local.get; call rc_drop_func_idx`).
-   Verified (`scripts/verify_selfhost_rc.sh`): the heap-e2e gate is 45/45
+   Verified (`scripts/verify_rc.sh`): the heap-e2e gate is 45/45
    (default vs RC identical, incl. 4 new nested-drop-in-loop cases — 2/3-level
    tuples, record-of-tuples, enum-payload-tuple — that both recurse and reuse
    the freed blocks), and a per-iteration **nested** tuple
@@ -588,7 +589,7 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    need field/element-type heap-ness — both larger than this local pass.
 5. **Stage 5 — verification & throughput. ◐ MEASURED.** The RC e2e gate (47/47,
    default vs RC identical on wasmtime) is the correctness signal;
-   `scripts/bench_selfhost_rc.{sh,mjs}` measures the payoff: each benchmark
+   `scripts/bench_rc.mjs` measures the payoff: each benchmark
    `main` runs an N-iteration allocating loop and is compiled both ways, then
    timed (median, fresh instance per run) with peak heap read from `__heap_ptr`.
 
