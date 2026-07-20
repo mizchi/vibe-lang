@@ -53,7 +53,7 @@ S2=$(ls -td _build/selfhost/generations/*/ 2>/dev/null | head -1)stage2.wasm
 [ -f "$S2" ] || S2=bootstrap/seed/selfhost_compiler.wasm
 
 # compile (entry が let main の場合は main、test ブロックだけなら __no_entry__)
-VIBE_PREOPEN_DIR=$PWD VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR=$PWD VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
   "$S2" path/to/prog.vibe path/to/prog.wasm main
 

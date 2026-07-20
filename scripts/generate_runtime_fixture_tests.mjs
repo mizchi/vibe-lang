@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// Generates selfhost runtime fixture test files for the selfhost compiler.
+// Generates runtime fixture test files for the vibe compiler.
 //
 // Mode 1 – list candidates:
 //   VIBE_RUNTIME_FIXTURE_LIST_ONLY=1 node scripts/generate_runtime_fixture_tests.mjs
@@ -19,7 +19,7 @@ import path from "node:path";
 const ROOT = process.cwd();
 const GENERATED_DIR = path.join(
   ROOT,
-  "lib/@vibe/compiler/_generated_selfhost_runtime_fixtures",
+  "lib/@vibe/compiler/_generated_runtime_fixtures",
 );
 
 // ---------------------------------------------------------------------------

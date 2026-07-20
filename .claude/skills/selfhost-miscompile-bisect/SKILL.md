@@ -15,21 +15,21 @@ backend X(wasm-gc lane 等)でコンパイルしたコンパイラ(以下「X-co
 
 ```bash
 # 1. 修正入りの linear CLI(stage2e)を作る: committed bundle を最新 stage2 でコンパイル
-VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 \
-  VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/cli_adapter_module_source.vibe \
+VIBE_REGEN_MODULE_SOURCE=1 \
+  VIBE_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/cli_adapter_module_source.vibe \
   bash scripts/generate_bundle.sh
 STAGE2="$(ls -t _build/selfhost/generations/*/stage2.wasm | head -1)"
-env VIBE_RC=0 VIBE_PREOPEN_DIR="$PWD" VIBE_SELFHOST_IMPORT_ABI=raw \
+env VIBE_RC=0 VIBE_PREOPEN_DIR="$PWD" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
   lib/@vibe/compiler/cli_adapter_module_source.vibe _build/gc538/stage2e.wasm cli_main
 
 # 2. stage2e で bundle を backend X でコンパイル(X-compiled compiler を得る)
-env VIBE_BACKEND=gc VIBE_RC=0 VIBE_PREOPEN_DIR="$PWD" VIBE_SELFHOST_IMPORT_ABI=raw \
+env VIBE_BACKEND=gc VIBE_RC=0 VIBE_PREOPEN_DIR="$PWD" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main _build/gc538/stage2e.wasm \
   lib/@vibe/compiler/cli_adapter_module_source.vibe _build/gc538/bundle_gc.wasm cli_main
 
 # 3. X-compiled compiler を実走(entry は _start: argv は "vibe" host import 経由)
-env VIBE_RC=0 VIBE_PREOPEN_DIR="$PWD" VIBE_SELFHOST_IMPORT_ABI=raw \
+env VIBE_RC=0 VIBE_PREOPEN_DIR="$PWD" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke _start _build/gc538/bundle_gc.wasm \
   <input.vibe> <out.wasm> main
 ```

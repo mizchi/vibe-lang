@@ -38,8 +38,8 @@ if [[ "$SKIP_MICRO" != "1" ]]; then
     --runs "$MICRO_RUNS" \
     --warmup "$WARMUP" \
     --json \
-    --case selfhost/loader_manifest_groups_linear \
-    --case selfhost/loader_manifest_groups_indexed \
+    --case loader_manifest_groups_linear \
+    --case loader_manifest_groups_indexed \
     --json-out "$GROUP_JSON_OUT" \
     "$GROUP_MATERIALIZE_BENCH_FILE"
 
@@ -48,9 +48,9 @@ if [[ "$SKIP_MICRO" != "1" ]]; then
     --runs "$MICRO_RUNS" \
     --warmup "$WARMUP" \
     --json \
-    --case selfhost/loader_manifest_list_filter_linear \
-    --case selfhost/loader_manifest_list_filter_path_indexed \
-    --case selfhost/loader_manifest_list_filter_indexed \
+    --case loader_manifest_list_filter_linear \
+    --case loader_manifest_list_filter_path_indexed \
+    --case loader_manifest_list_filter_indexed \
     --json-out "$LIST_JSON_OUT" \
     "$LIST_MATERIALIZE_BENCH_FILE"
 
