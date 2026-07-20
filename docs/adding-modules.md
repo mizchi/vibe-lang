@@ -5,7 +5,7 @@
 > selfhost-only 前提 ([archive/moonbit-retirement.md](archive/moonbit-retirement.md))。
 
 このリポジトリのライブラリは「テストが allowlist に載っていて、battery が
-回っている」ものだけが生きている。allowlist の外にあるコードは selfhost で
+回っている」ものだけが生きている。allowlist の外にあるコードはコンパイラで
 一度もコンパイルされず、host 時代の腐敗が溜まる (#742 で json / base64 /
 fmt から発掘された rot がその実例)。**新しいモジュールは必ずテストと
 allowlist をセットで足す。**

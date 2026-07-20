@@ -64,8 +64,8 @@ Semantic effects are explicit in function signatures and validated by effect
 compatibility plus handler matching. `Error` is checked and propagates like
 other operation requirements under ADR-0073.
 
-ADR-0073 and the Lean model are the specification Oracle. The current selfhost
-checker still has an Error exemption; #944 tracks bringing it into conformance.
+ADR-0073 and the Lean model are the specification Oracle. The current checker
+still has an Error exemption; #944 tracks bringing it into conformance.
 
 ```
 let run: () -> Unit with { Stdout } = () -> {
@@ -876,7 +876,7 @@ CLI:
 - `vibe compile [--wasm | --wasm-js-string | --wasm-mvp | --component | --wit | --wit-component] [-o out] <file>`
   emits IR (default) or wasm bytes.
   - `--wasm` = linear-memory backend (production default). `--wasm-gc` is not yet
-    wired into the selfhost compile CLI (throws); the gc backend is reachable via
+    wired into the compile CLI (throws); the gc backend is reachable via
     `VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` for pure test/bench.
 - Public CLI parser-consuming commands support `--syntax vibe` only.
 - `vibe shell` launches the TUI interactive shell (completion + layout, history).
@@ -892,7 +892,7 @@ CLI:
 
 Fixtures:
 - `fixtures/*.vibe` include a `__DATA__` JSON block and are exercised through the
-  selfhost gate (`pkf run full-gate`).
+  gate (`pkf run full-gate`).
 - Fields:
   - `last`: expected `Value::to_string()` (exact match).
   - `effects`: expected `Effect::to_string()` list (exact match).

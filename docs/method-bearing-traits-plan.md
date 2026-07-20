@@ -3,7 +3,7 @@
 Status: Phase 1 landed (2026-06-26). Concrete-receiver dispatch works in the
 bumped seed/CI toolchain; PR-2 (bound enforcement + dictionary passing) next.
 
-## Build gotcha (read before iterating on the selfhost compiler)
+## Build gotcha (read before iterating on the compiler)
 
 `scripts/generations.sh build` and `generate_bundle.sh` copy the
 **committed** `lib/@vibe/compiler/cli_adapter_module_source.vibe` by default

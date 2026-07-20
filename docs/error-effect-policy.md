@@ -80,7 +80,7 @@ empty row から `Fs` operation を許す negative witness を置く。
 ## Consequences
 
 - 「pure by default」に Error 非脱出の意味が戻る。ただし totality は意味しない。
-- selfhost compiler を含む既存コードへ Error annotation が推移的に伝播する。
+- compiler 自身を含む既存コードへ Error annotation が推移的に伝播する。
 - `map` / `apply` 等の高階 API は latent effect の検査と effect row polymorphism が
   必須になる。
 - `EEThrowOutsideEffect` / `EEEffectfulCallOutsideEffect` の legacy path は削除せず、
@@ -91,6 +91,6 @@ empty row から `Fs` operation を許す negative witness を置く。
 ## Epistemic status
 
 Lean は上記の抽象 term、checked policy、entry boundary に関する定理を証明する。
-selfhost checker がすべての構文・import・高階関数経路でこの judgment と一致すること、
+checker がすべての構文・import・高階関数経路でこの judgment と一致すること、
 Wasm exception unwind、診断文字列、finalizer exactly-once はまだ証明していない。
 checker との対応は #944 の regression fixture と後続 differential oracle で固定する。

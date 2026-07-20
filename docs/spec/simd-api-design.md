@@ -3,7 +3,7 @@
 ## Overview
 
 WASM SIMD (128-bit v128) を活用した 3 層 API 設計。
-selfhost compiler (`lib/@vibe/compiler/`) で WASM binary を直接生成する。
+compiler (`lib/@vibe/compiler/`) で WASM binary を直接生成する。
 
 ## Layer 1: Low-level (WASM 命令 1:1 マッピング、builtin)
 
@@ -127,7 +127,7 @@ self-build (数 MB) で GB 級の heap 成長 + scalar より遅い。
 末尾はスカラ fallback。最初の非空白 index、全空白なら len を返す。`compiler_gate.sh`
 step 40b で correctness を pin。
 
-**lexer 統合は見送り (データ判断)。** selfhost compiler source (447 files, 2.97MB) の
+**lexer 統合は見送り (データ判断)。** compiler source (447 files, 2.97MB) の
 空白ラン長分布を実測すると:
 
 | 指標 | 値 |

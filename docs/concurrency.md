@@ -38,7 +38,7 @@ prototype であり、本仕様を実装したものではない。撤去済み�
 6. WASI Component Model concurrency と shared-everything-threads は交換可能な
    backend とする。shared-everything は #488 の opt-in 実験であり、公開意味論や
    リリース条件を依存させない。
-7. selfhost compiler の import DAG 並列 typecheck を最初の CPU-bound dogfood
+7. compiler の import DAG 並列 typecheck を最初の CPU-bound dogfood
    とする。worker は immutable dependency snapshot から `ModuleOutcome` を返し、
    `TypeDb`、diagnostics、link、cache publish は coordinator が決定的順序で行う。
 
@@ -412,7 +412,7 @@ trace を受け取り、同じ backend・seed で再現可能にする。
 
 ## Compiler self-parallelization
 
-selfhost compiler を ADR-0068 の reference workload とする。最初の並列単位は import
+compiler を ADR-0068 の reference workload とする。最初の並列単位は import
 DAG 上で依存が terminal になった module の parse/typecheck であり、現在の mutable
 `TypeDb` を複数 task から共有しない。driver が source snapshot、DAG、result store、
 cache publish を所有し、worker は immutable な source + dependency interface から
@@ -518,7 +518,7 @@ Backend differential:
    と nursery state machine を実装する。
 4. region escape、`Send`、`Spawnable[r]`、fork-safe evidence の checker を実装する。
 5. deep-copy channel、cancel atomicity、failure propagation を実装する。
-6. selfhost compiler を `--jobs 1` の順序ランダム化 scheduler へ移し、module
+6. compiler を `--jobs 1` の順序ランダム化 scheduler へ移し、module
    outcome と Wasm bytes の決定性を固定してから module DAG を dogfood する。
 7. JSPI / Worker と WASI Component Model lowering を conformance suite に接続する。
 8. multi-worker を有効化し、最後に #488 shared-everything lowering と証明可能な

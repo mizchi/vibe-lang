@@ -412,8 +412,8 @@ let bytes_len = {
 ```vibe
 // Int64Array — fixed-size Int-typed buffer for word/hash workloads
 // (SHA-1 schedule, binary-protocol buffers, etc). #835: ported to the
-// selfhost checker/codegen as a thin alias onto Array[Int]'s own
-// make/get/set/length — the selfhost linear/gc backends already store the
+// checker/codegen as a thin alias onto Array[Int]'s own
+// make/get/set/length — the linear/gc backends already store the
 // full tagged Int per cell (no 32-bit truncation), so no separate i64-cell
 // object layout is needed the way the retired MoonBit host required.
 let w_check = {
@@ -425,7 +425,7 @@ let w_check = {
 }
 ```
 
-> **selfhost status (#760/#839):**
+> **status (#760/#839):**
 > - **Record dot access** (`r.name` on an anonymous `record { ... }`) lowers to
 >   the positional field read the destructure uses, and now resolves in every
 >   expression position — a `let` initializer (including a top-level `let`
@@ -456,7 +456,7 @@ missing { Fs } (declared with { Error }, requires { Error, Fs })`) with a
 
 ### Result-first pipeline (recommended)
 
-> **selfhost status (#760):** `Result` (`Ok`/`Err`, `Result::Ok`/`Result::Err`,
+> **status (#760):** `Result` (`Ok`/`Err`, `Result::Ok`/`Result::Err`,
 > `Result[T, E]`) is available standalone — the compiler auto-provides
 > `enum Result[T, E] { Ok(T); Err(E) }` for any program that references it and
 > neither declares nor imports its own. Declaring or importing a `Result` (e.g.
@@ -624,7 +624,7 @@ let main: () -> Unit with { Stdout } = () -> {
 
 operation の宣言 arity より 1 つ多い末尾パラメータを束縛する `k` 規約
 (`Emit(v, k) => v + k(0)`、non-tail 継続) は **旧 MoonBit fixture runner
-専用だった機能で、selfhost build path では未サポート** — checker が
+専用だった機能で、現行 build path では未サポート** — checker が
 `non-tail continuation binder (k-convention) is not supported by the build
 path` と reject する (#814)。非 tail 継続は evidence-passing handler 移行
 (#817) で対応予定。継続呼び出しは `resume(v)` を使う。

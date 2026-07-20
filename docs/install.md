@@ -155,7 +155,7 @@ This is an MVP of [docs/release-roadmap.md](release-roadmap.md) テーマ2 — s
 
 ## Editor support (LSP)
 
-`vibe lsp` starts a stdio LSP server that drives the selfhost compiler. It
+`vibe lsp` starts a stdio LSP server that drives the compiler. It
 provides: live diagnostics (all top-level parse errors via error recovery +
 located type error), document outline, go-to-definition, **typed hover**
 (inferred type of the identifier, including locals/params), completion,
@@ -198,7 +198,7 @@ precision work (call-site / expression-node spans) is tracked as span-arc in
 ## Updating the compiler independently of the runner
 
 The runner and the compiler wasm version independently. To move the compiler
-forward (e.g. to a newer selfhost build) without rebuilding the runner:
+forward (e.g. to a newer compiler build) without rebuilding the runner:
 
 ```bash
 vibe self update --cli-wasm path/to/new/vibe-cli.wasm

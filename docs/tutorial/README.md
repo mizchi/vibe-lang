@@ -25,11 +25,11 @@ vibe test docs/tutorial/          # 全章を一括実行
 | [06 テスト](06_tests.md) | test ブロック / assert / CLI ツーリング | `vibe test docs/tutorial/06_tests_test.vibe` |
 | [07 モジュールとパッケージ](07_modules_packages.md) | import / export / @scope パッケージ / 契約 / pin | `vibe test docs/tutorial/07_modules_packages_test.vibe` |
 
-各 `*_test.vibe` は selfhost コンパイラの unit バッテリー
+各 `*_test.vibe` はコンパイラの unit バッテリー
 (`scripts/unit_test_allowlist.txt`) に登録されていて、コンパイラが
 変わるたびに CI がこのチュートリアルを実際にコンパイル・実行する —
 つまりここの例文は**腐らない**。
 
 より網羅的なリファレンスは [docs/cheatsheet.md](../cheatsheet.md) と
-[docs/language-tour/](../language-tour/)。ただし一部の記述は selfhost 実装より
+[docs/language-tour/](../language-tour/)。ただし一部の記述は実装より
 先行している (差分に気づいたら本チュートリアルの実行結果が正)。

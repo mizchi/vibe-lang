@@ -1,4 +1,4 @@
-# ADR-0068 companion: selfhost compiler parallelism
+# ADR-0068 companion: compiler parallelism
 
 Status: proposed
 
@@ -9,7 +9,7 @@ Related: ADR-0040, ADR-0059, ADR-0063, ADR-0068, ADR-0071, #488, #806,
 
 ## Position
 
-The selfhost compiler is the reference CPU-bound workload for ADR-0068. It
+The compiler is the reference CPU-bound workload for ADR-0068. It
 must use the same shared-nothing `Nursery` / `Task` / channel semantics exposed
 to Vibe programs; compiler-only shared mutable memory is not a second
 concurrency model.
@@ -219,7 +219,7 @@ that a parallel task completion publishes exactly the corresponding
 `ModuleOutcome` is a future composition/refinement proof.
 
 The proof is conditional: workers must satisfy `JobCorrect`, and both schedules
-must reach `Complete`. It proves neither fairness nor that the current selfhost
+must reach `Complete`. It proves neither fairness nor that the current
 compiler implements the worker contract. Those are locked by runtime tests and
 differential compilation, not asserted by the Lean model.
 
@@ -242,7 +242,7 @@ differential compilation, not asserted by the Lean model.
 ### Phase 2: bounded parallel frontend
 
 - Run ready module jobs through the ADR-0068 nursery/channel implementation.
-- Start with a conservative worker bound because a full selfhost compile has a
+- Start with a conservative worker bound because a full compiler self-compile has a
   high heap watermark; measure throughput and peak RSS together.
 - Keep filesystem and persistent-cache writes in the driver.
 
@@ -265,7 +265,7 @@ differential compilation, not asserted by the Lean model.
 - expected diagnostics are values and remain stable across schedules;
 - unexpected task failure cancels the nursery and leaves no published partial
   cache artifact;
-- `--jobs 1/2/4` produce byte-identical Wasm on the selfhost compiler corpus;
+- `--jobs 1/2/4` produce byte-identical Wasm on the compiler corpus;
 - cold and warm compile time, peak guest heap, and host RSS are reported before
   raising the default worker count;
 - `cd formal && lake build --wfail` remains green without `sorry`.

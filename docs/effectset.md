@@ -192,7 +192,7 @@ effectset と一致する場合はその effectset の参照を優先する。ef
 
 ## Implementation and regression locks
 
-実装は selfhost compiler を source of truth とし、次の順で TDD する。
+実装は compiler を source of truth とし、次の順で TDD する。
 
 1. parser/printer: direct operation row、qualified/unqualified effectset、round-trip
 2. resolver: `OperationId`、import identity、member collision、cycle rejection

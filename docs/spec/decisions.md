@@ -103,8 +103,8 @@ Status: accepted and moved from `TODO.md`.
   forms.
 - Historical builtin contract table is retained:
   `docs/builtin_contract_table.generated.md` was generated from the retired MoonBit
-  host sources. Its generator/task no longer exists after selfhost cutover; current
-  selfhost builtin definitions and accepted/proposed ADRs are authoritative.
+  host sources. Its generator/task no longer exists after the selfhost cutover; the
+  current compiler's builtin definitions and accepted/proposed ADRs are authoritative.
 - Import cycle reporting is implemented for path imports:
   import graph cycles are diagnosed in `stage: "import"` with `import cycle:`
   messages.

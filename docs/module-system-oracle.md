@@ -3,7 +3,7 @@
 Status: ADR-0070 の実行可能な正本。2026-07-16。
 
 vibe の package/module policy は `formal/VibeFormal/Module/` の Lean model を
-正とし、selfhost loader はその判定を filesystem 上で refinement する。
+正とし、compiler の loader はその判定を filesystem 上で refinement する。
 旧 ADR-0063/0070 の incoming-only boundary と再帰 discovery は supersede する。
 
 ## 規則
@@ -31,7 +31,7 @@ vibe の package/module policy は `formal/VibeFormal/Module/` の Lean model �
 
 ## Oracle と実装の対応
 
-| 観測可能な規則 | Lean Oracle | selfhost refinement / regression guard |
+| 観測可能な規則 | Lean Oracle | implementation refinement / regression guard |
 |---|---|---|
 | filename role | `Source.role` | `loader/header_cache.vibe::contract_sibling_impl_raws` |
 | regular source・index 排他 | `Valid` | `ensure_regular_source_fs` / `validate_index_layout_fs` |
@@ -70,6 +70,6 @@ package hash も変わる。
 `pkf run formal-check` が証明するのは、有限 workspace model 上の分類・owner・
 visibility・hash-input 判定である。実 filesystem の path normalization、parser、
 cache、hash bytes、Wasm codegen が Lean から抽出されているわけではない。
-対応する refinement は selfhost regression tests と generation/fixpoint gate で
+対応する refinement は regression tests と generation/fixpoint gate で
 固定する。将来の強化候補は、fixture graph を Lean 入力へ変換する differential
 oracle と、package hash closure の graph reachability を帰納的に証明するモデル。

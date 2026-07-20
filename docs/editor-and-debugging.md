@@ -19,7 +19,7 @@ vibe lsp        # speaks LSP over stdin/stdout
 ```
 
 `vibe lsp` is a Language Server Protocol server that runs on the same wasmtime
-runner + selfhost compiler wasm as the rest of the toolchain (no separate
+runner + compiler wasm as the rest of the toolchain (no separate
 runtime to install — see ADR-0057 / the 1.0 freeze). Point any LSP client at
 the `vibe lsp` command. It provides:
 
