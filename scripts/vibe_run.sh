@@ -58,6 +58,7 @@ if [ "$#" -gt 0 ] && [ "${1:-}" = "--" ]; then
   shift
 fi
 extra_args=("$@")
+bash "$ROOT_DIR/scripts/ensure_seed.sh"
 seed="$ROOT_DIR/bootstrap/seed/compiler.wasm"
 
 # Repo-root-relative source path for the wasm preopen.

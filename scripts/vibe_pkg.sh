@@ -77,6 +77,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ -z "${VIBE_PKG_RUNNER:-}" ]; then
   cd "$ROOT_DIR"
 fi
+[ -n "${VIBE_PKG_CLI_WASM:-}" ] || bash "$ROOT_DIR/scripts/ensure_seed.sh"
 CLI="${VIBE_PKG_CLI_WASM:-$ROOT_DIR/bootstrap/seed/compiler.wasm}"
 VIBE_HOME="${VIBE_HOME:-$HOME/.vibe}"
 CACHE_DIR="$VIBE_HOME/cache"
