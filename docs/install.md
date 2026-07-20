@@ -97,7 +97,7 @@ bash scripts/install.sh [--prefix DIR]      # VIBE_HOME (default ~/.vibe)
 To install a released compiler instead of the seed, pass the release artifact:
 
 ```bash
-bash scripts/install.sh --cli-wasm vibe-selfhost-<tag>.wasm
+bash scripts/install.sh --cli-wasm vibe-compiler-<tag>.wasm
 ```
 
 ## Commands

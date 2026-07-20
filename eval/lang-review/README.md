@@ -50,7 +50,7 @@ committed seed) で compile+run できる:
 cd <repo-root>
 # stage2 (gate 実行後に存在すれば最新の言語) or seed (常に存在、少し古い)
 S2=$(ls -td _build/selfhost/generations/*/ 2>/dev/null | head -1)stage2.wasm
-[ -f "$S2" ] || S2=bootstrap/seed/selfhost_compiler.wasm
+[ -f "$S2" ] || S2=bootstrap/seed/compiler.wasm
 
 # compile (entry が let main の場合は main、test ブロックだけなら __no_entry__)
 VIBE_PREOPEN_DIR=$PWD VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \

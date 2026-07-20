@@ -34,7 +34,7 @@
 #   DOCTEST_STAGE2   compiler wasm to use. Default: newest
 #                    _build/selfhost/generations/*/stage2.wasm, resolved ONCE
 #                    at startup (concurrent bootstrap runs cannot swap it
-#                    mid-run); falls back to bootstrap/seed/selfhost_compiler.wasm.
+#                    mid-run); falls back to bootstrap/seed/compiler.wasm.
 #   DOCTEST_WORKDIR  scratch dir for extracted sources / wasm (default _build/doctest/<pid>)
 #   DOCTEST_KEEP=1   keep the work dir (default: removed on exit)
 #   DOCTEST_TIMEOUT  per-block compile/run timeout in seconds (default 120)
@@ -64,7 +64,7 @@ if [ -z "$stage2" ]; then
     # NOTE: docs document the CURRENT language; the committed seed (previous
     # bootstrap tag) may be too old to compile them. Prefer a built stage2
     # (or pass DOCTEST_STAGE2 explicitly).
-    stage2="bootstrap/seed/selfhost_compiler.wasm"
+    stage2="bootstrap/seed/compiler.wasm"
   fi
 fi
 if [ ! -s "$stage2" ]; then

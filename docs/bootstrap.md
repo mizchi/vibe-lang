@@ -105,28 +105,66 @@ bootstrap bump は最低限、以下を満たす。
 つまり「新機能を実装する commit」と「compiler source が新機能を使い始める
 commit」は分ける。これにより、常に固定 seed から HEAD を復元できる。
 
-## Release asset からの bootstrap (MoonBit host build なし)
+## Seed artifact 配布 (GitHub Release, #1000 part 2)
 
-self-compilation を「保証」するには、stage0 -> stage1 -> stage2 を **MoonBit host を
-ビルドせずに** 回せる必要がある。完全な registry (mooncakes) と native build が
-無い環境 (web/remote container 等) では `moon build src/cmd/vibe` が通らず、
-従来は flatten 工程 (`emit-module-source`) が host `vibe.exe` に依存していた。
+seed バイナリ (~1.4MB) を bootstrap bump のたびに git commit で丸ごと
+差し替える運用は、差分の効かないバイナリを積み重ねるだけで `.git` を圧迫する
+一方だった (20 回のバイナリ commit で `.git` 824MB)。これを GitHub Release
+asset として配布する方式に切り替える。
 
-これを解消するため、self-compilation に必要な 2 つの prebuilt artifact を
-**GitHub Release asset** として配布し、pull して使えるようにする。
+**ロールアウトは2段階**: `workflow_dispatch` で起動する `seed-release.yml`
+自体が default branch 上に無いと GitHub は dispatch を受け付けないため
+(タグ push 済みの branch を指定しても `workflow not found on the default
+branch` になる)、まず現状どおり `bootstrap/seed/compiler.wasm` を
+git 管理下に置いたままこの節の仕組み一式 (workflow・スクリプト群) だけを
+merge し、`seed-release` workflow が使えるようになってから最初の release
+(`seed/map-from-pairs-2026-07-17`) を実際に発行し、その後に
+`bootstrap/seed/compiler.wasm` を `git rm --cached` + `.gitignore` で
+実際に untrack する (part 2b, 別 commit/PR)。CI を一切壊さずに移行する
+ための順序であり、以下の記述は **untrack 後の定常状態** を説明する。
 
-- `vibe-selfhost-<tag>.wasm` — stage0 seed compiler wasm。stock wasmtime で
-  instantiate でき、`moonrun` 上で `cli_main` として動く。中身は
-  `bootstrap/seed/selfhost_compiler.wasm` (seed.json で sha256 pin)。
-- `vibe-selfhost-module-source-<tag>.vibe` — flatten 済みの flat module source。
+`bootstrap/seed.json` には artifact の sha256 と、それを取得する release
+タグ (`seed.tag`) だけを記録する (untrack 後)。実体は初回アクセス時に
+フェッチしてローカルにキャッシュする。
+
+- `scripts/ensure_seed.sh` — `bootstrap/seed.json` の pin と on-disk の
+  `bootstrap/seed/compiler.wasm` を比較し、無いか sha256 が食い違っていれば
+  `scripts/fetch_compiler.sh --adopt-seed` で取得する。一致していれば何もせず
+  即終了 (ネットワークに触らない)。`scripts/generations.sh` の
+  `verify_seed_artifact` から自動的に呼ばれるので、通常は明示的に叩く必要はない
+  (`VIBE_GENERATION_AUTO_FETCH_SEED=0` で無効化できる — CI のオフライン診断など、
+  意図的にフェッチさせたくない場合のみ使う)。
+- CI は `actions/cache` (`bootstrap/seed.json` の hash をキーにする) を
+  `scripts/ensure_seed.sh` の前段に置き、ウォームランナーはネットワーク不要で
+  済むようにする。取得に失敗した場合は **即座に fail** する — 古い/誤った
+  seed を黙って使うより安全なため。エラーメッセージが tag/URL と
+  `--from-dir` (air-gapped ミラー用) の使い方を案内する。
+
+### Release タグ体系
+
+- 製品リリース: `v*` (例 `v0.3.0`)。`.github/workflows/release.yml` が発火し、
+  `scripts/build_release_assets.sh` が publish する通常の GitHub Release。
+- bootstrap-bump seed リリース: `seed/<name>` (例
+  `seed/map-from-pairs-2026-07-17`、`<name>` は既存の `seed.name` 命名を踏襲)。
+  `.github/workflows/seed-release.yml` が発火し、
+  `scripts/build_seed_release_assets.sh` が publish する。バージョン概念が
+  無い (製品リリースではない) ので semver チェックは無く、**prerelease** として
+  作成する — 通常の Releases 一覧で `v*` と混ざって読みにくくならないように。
+
+どちらのリリースも同じ artifact trio を含む (共有ロジックは
+`scripts/build_compiler_seed_assets.sh`):
+
+- `vibe-compiler-<tag>.wasm` — stage0 seed compiler wasm。stock wasmtime で
+  instantiate でき、`cli_main` として動く。中身は `bootstrap/seed/compiler.wasm`
+  そのもの (seed.json で sha256 pin)。
+- `vibe-compiler-module-source-<tag>.vibe` — flatten 済みの flat module source。
   `emit-module-source` の出力 (= committed compiler source からの決定的関数) を
   pin したもの。これがあれば flatten で host `vibe.exe` を呼ばない。
-- `vibe-selfhost-seed-<tag>.json` / `release-manifest.json` / `SHA256SUMS.txt` —
-  provenance と整合性メタデータ。manifest の `selfhost` block に各 asset の
+- `vibe-compiler-seed-<tag>.json` / `release-manifest.json` / `SHA256SUMS.txt` —
+  provenance と整合性メタデータ。manifest の `compiler` block に各 asset の
   sha256 と `source_commit` が入る。
 
-publish は `scripts/build_release_assets.sh`、取得は
-`scripts/fetch_compiler.sh` (`pkf run fetch-compiler`)。
+取得は共通で `scripts/fetch_compiler.sh` (`pkf run fetch-compiler`)。
 
 ```bash
 # release から pull + sha256 検証し、prebuilt module source の env を出す
@@ -146,6 +184,56 @@ HEAD 開発で compiler source を変えた場合は stale になるため、そ
 flat source が現在の source と食い違い、stage1/stage2 parity 失敗として
 顕在化する (fetch 側は manifest の `source_commit` を、`--adopt-seed` 時は
 `seed.json` の sha256 を突き合わせて誤用を弾く)。
+
+### bootstrap bump の手順 (更新版)
+
+`seed-release.yml` は **tag push ではなく `workflow_dispatch`** で手動起動する
+— tag を push した時点の commit の `bootstrap/seed.json` はすでに「新しい」
+seed を指しているため (`adopt` がそう書き換える)、tag push を trigger に
+すると CI がその新しい seed 自身の (まだ存在しない) release から stage0 を
+fetch しようとする自己参照になってしまう。`workflow_dispatch` の
+`prior_seed_ref` 入力で「どの既存 (公開済み) seed を stage0 として使うか」を
+明示することでこれを避ける。
+
+1. `scripts/generations.sh build --stage3` で stage2 candidate を作り、
+   gate (上記) を通す。
+2. `scripts/generations.sh adopt --artifact <stage2.wasm> --name <name> \
+   --tag seed/<name> --source-commit <commit>` — `bootstrap/seed.json` を
+   更新 (artifact は `bootstrap/seed/compiler.wasm` へコピー、sha256/tag を
+   記録)。**`--tag` には必ず `seed/` prefix を付ける**。
+3. `bootstrap/seed.json` の更新を独立 commit にして PR、merge。
+4. merge 後、GitHub Actions の `seed-release` workflow を `workflow_dispatch`
+   で手動起動する。入力:
+   - `tag`: ステップ2で指定した `seed/<name>`。
+   - `source_ref`: merge commit (省略時はデフォルトブランチの HEAD)。
+   - `prior_seed_ref`: **必須**。`source_ref` 自身の `bootstrap/seed.json`
+     は (adopt がそう書き換えるので) 常にこれから publish しようとしている
+     「新しい」seed 自身を指しており、stage0 として使えない — 省略可能な
+     self-reference は存在しない。2 通りのケースがある:
+     - **#1000 part 2 の移行時点の最初の release**: `bootstrap/seed/compiler.wasm`
+       (または旧名 `selfhost_compiler.wasm`) がまだ git-tracked だった
+       commit (この移行 PR より前の main の任意の commit) を指す。CI は
+       その commit から artifact を `git show` で直接取り出す (release 不要)。
+     - **それ以降の通常の bump**: source を実際に変える前、直近の
+       `seed/*` release がまだ有効だった commit を指す。CI はその commit の
+       `bootstrap/seed.json` を一時的に読み込み、そこに pin された release
+       から `scripts/ensure_seed.sh` で fetch する。
+   - CI はどちらのケースかを自動判定 (`prior_seed_ref` で対象パスが
+     git-tracked かどうかを試す) し、prior artifact を確保 →
+     `scripts/generations.sh build --stage3` で決定論的に再構築 →
+     `scripts/generations.sh adopt` でこのワークスペース限定 (uncommitted)
+     に artifact を確定 → asset を publish。
+5. 公開された release は **prerelease** として Releases 一覧に載る。以降、
+   `bootstrap/seed.json` の pin を見た全ての CI/ローカル環境が
+   `scripts/ensure_seed.sh` 経由でこの release から自動的に fetch する。
+
+### 既存の git 履歴中のバイナリ blob
+
+この移行以前に git commit で積まれた seed バイナリの履歴 (~20 commit) は
+そのまま残す — history rewrite は既存の clone/fork/開いている PR を壊す
+破壊的操作であり、この移行の範囲外。新規のバイナリ commit が増えなくなる
+だけでも `.git` の肥大化は止まる。将来的に history を圧縮したくなったら、
+それは完全に別の、事前合意の上での単発メンテナンス作業として扱う。
 
 ## Layer split
 

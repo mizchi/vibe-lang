@@ -11,7 +11,7 @@ OUT_DIR=_build/evalgolden
 mkdir -p "$OUT_DIR"
 
 S2=$(ls -td _build/selfhost/generations/*/ 2>/dev/null | head -1)stage2.wasm
-[ -f "$S2" ] || S2=bootstrap/seed/selfhost_compiler.wasm
+[ -f "$S2" ] || S2=bootstrap/seed/compiler.wasm
 echo "[lang-review] compiler: $S2"
 
 pass=0

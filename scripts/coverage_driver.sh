@@ -14,7 +14,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-SEED="${VIBE_COV_SEED:-$ROOT_DIR/bootstrap/seed/selfhost_compiler.wasm}"
+SEED="${VIBE_COV_SEED:-$ROOT_DIR/bootstrap/seed/compiler.wasm}"
 FLAT="lib/@vibe/compiler/cli_adapter_module_source.vibe"
 DRIVER="scripts/coverage/cov_driver.vibe"
 RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"

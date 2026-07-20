@@ -133,6 +133,23 @@ load_seed() {
 }
 
 verify_seed_artifact() {
+  if [ -n "$SEED_ARTIFACT_SHA" ] && [ "${VIBE_GENERATION_AUTO_FETCH_SEED:-1}" = "1" ]; then
+    local needs_fetch=0
+    if [ ! -f "$SEED_ARTIFACT_PATH" ]; then
+      needs_fetch=1
+    else
+      local on_disk
+      on_disk="$(sha256_file "$SEED_ARTIFACT_PATH")"
+      [ "$on_disk" = "$SEED_ARTIFACT_SHA" ] || needs_fetch=1
+    fi
+    if [ "$needs_fetch" = "1" ]; then
+      # bootstrap/seed/*.wasm is a local build cache (gitignored), not
+      # git-tracked — missing or stale is the expected steady state after
+      # a fresh checkout or a seed.json bump. Fetch it from its pinned
+      # release tag; this fails fast (no silent fallback) if unreachable.
+      bash "$PROJECT_ROOT/scripts/ensure_seed.sh" --manifest "$MANIFEST_PATH"
+    fi
+  fi
   [ -f "$SEED_ARTIFACT_PATH" ] || die "seed artifact not found: $SEED_ARTIFACT_PATH"
   if [ -z "$SEED_ARTIFACT_SHA" ]; then
     if [ "$ALLOW_UNPINNED_SEED" != "1" ]; then

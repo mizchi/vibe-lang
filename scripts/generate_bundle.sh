@@ -505,7 +505,7 @@ run_host_vibe_cmd() {
     # flat module source needs no MoonBit host. Args are (input, output, entry),
     # rewritten to repo-root-relative for the wasm preopen. Force the legacy host
     # path with VIBE_EMIT_VIA_HOST=1.
-    local seed_wasm="$SCRIPT_PROJECT_ROOT/bootstrap/seed/selfhost_compiler.wasm"
+    local seed_wasm="$SCRIPT_PROJECT_ROOT/bootstrap/seed/compiler.wasm"
     if [ -f "$seed_wasm" ] && [ "${VIBE_EMIT_VIA_HOST:-0}" != "1" ]; then
       local emit_in="${1#"$SCRIPT_PROJECT_ROOT"/}"
       local emit_out="${2#"$SCRIPT_PROJECT_ROOT"/}"
@@ -719,7 +719,7 @@ build_exact_adapter_merged_source() {
   mkdir -p "$PROJECT_ROOT/_build"
   merged_path="$(mktemp "$PROJECT_ROOT/_build/cli_adapter_merged_source.XXXXXX")"
   local flatten_wasm="$PROJECT_ROOT/_build/merge_flatten_compiler.wasm"
-  local seed_wasm="$PROJECT_ROOT/bootstrap/seed/selfhost_compiler.wasm"
+  local seed_wasm="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
   local committed_module_source="$COMPILER_DIR/cli_adapter_module_source.vibe"
   local tool_node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_GENERATION_NODE_STACK_SIZE:-131072}}"
   local tool_log="$PROJECT_ROOT/_build/merge_flatten_compiler.log"
@@ -785,7 +785,7 @@ build_exact_adapter_merged_source() {
 # dependency, only a safety gate where the seed is present.
 validate_module_source_compiles() {
   local candidate="$1"
-  local seed_wasm="$PROJECT_ROOT/bootstrap/seed/selfhost_compiler.wasm"
+  local seed_wasm="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
   if [ ! -f "$seed_wasm" ]; then
     return 0
   fi
