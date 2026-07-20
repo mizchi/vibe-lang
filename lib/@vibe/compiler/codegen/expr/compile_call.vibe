@@ -931,6 +931,55 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       }
       nl
     }
+    else if (fname == "to_string" || String::starts_with(fname, "to_string_exp_")) && Array::length(args) == 1 && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_boolish(Array::get(args, 0), local_names, ctx) || cc_expr_is_stringish(Array::get(args, 0), local_names, ctx)) {
+      // #1015: the prelude generic wrapper `to_string[T: Show](x: T) -> String
+      // { __to_string(x) }` (lib/@vibe/prelude/builtin_traits.vibe) compiles
+      // to exactly ONE shared wasm function body -- there is no
+      // monomorphization pass that duplicates a generic function body per
+      // instantiation. Inside that body `x` is a bare parameter of the
+      // opaque type param T, so the `__to_string` builtin lowering below --
+      // which classifies its argument via the syntactic cc_expr_is_floatish/
+      // boolish/stringish checks -- can never recognize `x` as Bool/Float/
+      // String there; it always falls to the generic runtime bit-pattern
+      // heuristic. `Show` is a marker-only trait (never declared with method
+      // signatures, so #641's dictionary-passing desugar -- which only
+      // handles method-bearing traits -- never synthesizes a runtime witness
+      // for it) and Bool has NO runtime tag distinguishing it from Int:
+      // `true`/`false` compile to raw i64 1/0 (linear) or tagged 2/0 (RC),
+      // bit-identical to Int 1/0 in both backends. So the runtime heuristic
+      // cannot possibly classify a Bool argument reached this way -- it
+      // silently mis-stringifies `true` as `"1"` (confirmed via a standalone
+      // repro: the generic fallback itself does not crash for input 0/1, it
+      // just returns the wrong string; the reported "RuntimeError:
+      // unreachable" is `assert(to_string(true) == "true")` failing on that
+      // wrong value and THEN trapping).
+      //
+      // Fix: at the CALL SITE `to_string(arg)`, the ORIGINAL argument
+      // expression is still visible (unlike inside the generic body), so
+      // when it is statically classifiable by the same cc_expr_is_* checks
+      // the `__to_string` builtin uses, bypass the generic `to_string`
+      // function call entirely and inline it as `__to_string(arg)` directly
+      // -- hitting the correct existing static fast path. This is purely
+      // additive: a call whose argument is NOT statically classifiable
+      // (e.g. forwarding another opaque generic parameter) still falls
+      // through unchanged to the ordinary bound call below.
+      //
+      // `fname` is (almost) never the bare `"to_string"` at this point: #716
+      // export-name visibility renames every exported value def of a
+      // non-entry file to `name_exp_<sanitized path>` and rewrites every
+      // importer's reference to match, so a call to the prelude's `to_string`
+      // (defined in lib/@vibe/prelude/builtin_traits.vibe, a non-entry file)
+      // arrives here as `to_string_exp_lib__vibe_prelude_builtin_traits_vibe`
+      // -- verified with throw()-based instrumentation. A prior fix attempt
+      // for this issue special-cased only the bare `fname == "to_string"` and
+      // was reverted because it silently never fired for this exact reason;
+      // matching the `to_string_exp_` prefix too is what makes this fire for
+      // the real failing call. The bare name is also matched for the (rare)
+      // case where `to_string` is called from within its own defining file.
+      ce(buf, ECall(EIdent("__to_string", -1), [
+        Array::get(args, 0)
+      ], -1), local_names, next_local, ctx, ld)
+    }
     else if !prefer_bound_call && fname == "not" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       emit_i64_eqz(buf)
