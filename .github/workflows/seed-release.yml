@@ -53,6 +53,33 @@ jobs:
             *) echo "::error::tag must start with 'seed/' (got: $SEED_TAG)"; exit 1 ;;
           esac
 
+      - name: Reject retry against an already-published release
+        # This repo has immutable releases enabled: once a release for this
+        # tag is published, GitHub will never allow it to become a draft (or
+        # accept new assets) again — not even via a later `gh release edit
+        # --draft=false` in this same workflow. If a prior dispatch for this
+        # exact tag got far enough to publish (e.g. failed asset upload before
+        # this workflow had the draft-then-publish fix), action-gh-release
+        # will resolve that existing published release instead of creating a
+        # fresh draft, and the upload step will fail again the same way.
+        # Fail fast here with actionable guidance instead of burning a full
+        # build for a release that can never succeed.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if info="$(gh release view "$SEED_TAG" --repo "${{ github.repository }}" --json isDraft 2>/dev/null)"; then
+            is_draft="$(echo "$info" | jq -r '.isDraft')"
+            if [ "$is_draft" != "true" ]; then
+              echo "::error::release $SEED_TAG already exists and is published. This repo's immutable-releases setting means it can never accept new assets, even from this workflow's draft-then-publish flow."
+              echo "::error::Delete it first (gh release delete \"$SEED_TAG\" --yes --cleanup-tag) and re-dispatch, or publish under a new tag."
+              exit 1
+            fi
+            echo "[seed-release] found existing draft release for $SEED_TAG, will reuse it"
+          else
+            echo "[seed-release] no existing release for $SEED_TAG"
+          fi
+
       - name: Checkout
         uses: actions/checkout@v5
         with:
@@ -120,13 +147,27 @@ jobs:
           path: dist/release/${{ inputs.tag }}/*
           if-no-files-found: error
 
-      - name: Publish GitHub Release (prerelease)
+      - name: Publish GitHub Release (draft prerelease)
+        # This repo has GitHub's "immutable releases" setting enabled: once a
+        # release transitions to published, no more assets can be uploaded to
+        # it. softprops/action-gh-release with only `prerelease: true` (no
+        # `draft: true`) still fires `release.published` immediately, so the
+        # asset upload in this same step fails ("Cannot upload asset ... to
+        # an immutable release"). Creating it as a draft keeps it mutable
+        # while assets attach; the next step flips it to published as a
+        # separate, later action.
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
           target_commitish: ${{ inputs.source_ref || github.sha }}
           prerelease: true
+          draft: true
           files: |
             dist/release/${{ inputs.tag }}/*
           fail_on_unmatched_files: true
           generate_release_notes: false
+
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$SEED_TAG" --draft=false --repo "${{ github.repository }}"
