@@ -24,7 +24,7 @@ import ../wasi_only/preprocess_strip.vibe {
 }
 
 import ../../../codegen/gc {
-  compile_wasi_module_gc
+  compile_wasi_module_gc, gc_to_string_resolves_to_show_wrapper
 }
 
 // #847 Phase C exception: this file drives the wasm-gc backend
@@ -110,10 +110,18 @@ export fn compile_source_gc_only(source: String, entry_name: String) -> Bytes wi
   // rewrites inside codegen; pre-check rewriting is equivalent here).
   let effective_entry = lower_test_blocks_gc(stmts, entry_name)
   let _ = check_program(stmts)
+  // #1015: MUST run before strip_generic_type_params below -- that pass
+  // unconditionally zeroes every top-level generic fn's type_params/bounds
+  // (erasure, not specific to `to_string`), so checking the Show-bounded
+  // generic-wrapper shape after stripping would always see 0 type params
+  // and always return false, permanently disabling the gc-lane
+  // to_string(Bool) call-site fast path (codegen/gc/backend_call.vibe).
+  // See the doc comment on gc_to_string_resolves_to_show_wrapper.
+  let gc_to_string_is_wrapper = gc_to_string_resolves_to_show_wrapper(stmts)
   // Same effective order as the linear lane: strip source-level generic
   // params, then the trait-dict desugar (compile_wasi_module_linked_impl
   // runs it as its first step).
   strip_generic_type_params(stmts)
   desugar_trait_dicts(stmts)
-  compile_wasi_module_gc(stmts, effective_entry)
+  compile_wasi_module_gc(stmts, effective_entry, gc_to_string_is_wrapper)
 }

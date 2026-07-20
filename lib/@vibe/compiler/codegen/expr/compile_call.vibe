@@ -931,7 +931,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       }
       nl
     }
-    else if fname == namespace_exported_name("lib/@vibe/prelude/builtin_traits.vibe", "to_string") && Array::length(args) == 1 && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_boolish(Array::get(args, 0), local_names, ctx) || cc_expr_is_stringish(Array::get(args, 0), local_names, ctx)) {
+    else if Array::length(args) == 1 && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_boolish(Array::get(args, 0), local_names, ctx) || cc_expr_is_stringish(Array::get(args, 0), local_names, ctx)) && fname == namespace_exported_name("lib/@vibe/prelude/builtin_traits.vibe", "to_string") {
       // #1015: the prelude generic wrapper `to_string[T: Show](x: T) -> String
       // { __to_string(x) }` (lib/@vibe/prelude/builtin_traits.vibe) compiles
       // to exactly ONE shared wasm function body -- there is no
@@ -1001,6 +1001,20 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       // call (confirmed with throw()-based instrumentation: `prefer_bound_call
       // = T` at the real failing call site), and gating on `!prefer_bound_call`
       // would make this branch never fire at all.
+      //
+      // Condition order matters here (selfcompile KPI heap regression found
+      // during review): `namespace_exported_name(...)` builds a fresh string
+      // via StringBuilder on every call, and this bump-allocated compiler
+      // never reclaims that memory mid-compile, so evaluating it FIRST --
+      // as the original version of this branch did -- ran it once per
+      // ECall node in the ENTIRE compiled program (this `else if` chain is
+      // walked for every function call), not just once per `to_string`
+      // call. `&&` short-circuits (desugars to `if`, see docs/cheatsheet.md),
+      // so putting the cheap arity check and the shape-based
+      // floatish/boolish/stringish classification first means the
+      // allocating name comparison only runs for the rare 1-arg calls whose
+      // argument is already known-classifiable -- functionally identical
+      // result, far fewer StringBuilder allocations across a whole compile.
       ce(buf, ECall(EIdent("__to_string", -1), [
         Array::get(args, 0)
       ], -1), local_names, next_local, ctx, ld)
