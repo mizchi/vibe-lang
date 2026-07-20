@@ -1,0 +1,26 @@
+// #1015 regression: the call-site fast path in
+// lib/@vibe/compiler/codegen/expr/compile_call.vibe that inlines
+// `to_string(arg)` as `__to_string(arg)` for statically Bool/Float/String
+// arguments must be scoped EXACTLY to the prelude's own
+// `to_string[T: Show]` (lib/@vibe/prelude/builtin_traits.vibe), identified
+// by its unique post-#716-mangling name (namespace_exported_name), not by a
+// bare-name or prefix match on "to_string".
+//
+// This file deliberately does NOT import `to_string` from the prelude, and
+// instead defines its own top-level `to_string` directly (the exact
+// "bare in an entry file" shadowing scenario code review flagged): #716
+// export-name renaming never touches an entry file's own top-level defs, so
+// this function keeps the bare name "to_string" at codegen time -- the same
+// bare name a naive `fname == "to_string"` fast path would have matched,
+// silently discarding this function's real body and returning the
+// prelude's Bool/Float/String formatting instead. With the fix scoped to
+// the exact mangled prelude name, this user function's own body always
+// runs unchanged.
+fn to_string(x: Bool) -> String {
+  "custom"
+}
+
+test "user-defined to_string shadowing the prelude's is not overridden" {
+  assert(to_string(true) == "custom")
+  assert(to_string(false) == "custom")
+}
