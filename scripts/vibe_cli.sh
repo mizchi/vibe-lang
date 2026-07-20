@@ -17,7 +17,7 @@
 # Absolute paths under the repo root are rewritten to repo-relative.
 #
 # The CLI wasm path can be supplied with VIBE_CLI_WASM (e.g. a
-# prebuilt generation build); otherwise it is built by build_selfhost_cli_core.sh.
+# prebuilt generation build); otherwise it is built by build_cli_core.sh.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,7 +25,7 @@ CLI_WASM="${VIBE_CLI_WASM:-$ROOT_DIR/_build/bench/selfhost_cli_core/index_stage1
 
 if [ ! -f "$CLI_WASM" ]; then
   echo "[vibe-selfhost-cli] building selfhost CLI core wasm" >&2
-  bash "$ROOT_DIR/scripts/build_selfhost_cli_core.sh" >&2
+  bash "$ROOT_DIR/scripts/build_cli_core.sh" >&2
 fi
 
 # Rewrite absolute paths under the repo root to repo-relative for the preopen.

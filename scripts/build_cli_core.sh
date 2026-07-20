@@ -102,7 +102,7 @@ source_changed_since() {
   local artifact="$1"
   [ -f "$artifact" ] || return 0
   find "$PROJECT_ROOT/lib" -type f -name '*.vibe' -newer "$artifact" -print -quit 2>/dev/null | grep -q . ||
-    find "$PROJECT_ROOT/scripts" -maxdepth 1 -type f \( -name 'build_selfhost_cli_core.sh' -o -name 'build_cli_wasm.sh' -o -name 'generations.sh' \) -newer "$artifact" -print -quit 2>/dev/null | grep -q . ||
+    find "$PROJECT_ROOT/scripts" -maxdepth 1 -type f \( -name 'build_cli_core.sh' -o -name 'build_cli_wasm.sh' -o -name 'generations.sh' \) -newer "$artifact" -print -quit 2>/dev/null | grep -q . ||
     find "$PROJECT_ROOT/bootstrap" -maxdepth 2 -type f -name 'seed.json' -newer "$artifact" -print -quit 2>/dev/null | grep -q .
 }
 
