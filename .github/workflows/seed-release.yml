@@ -11,6 +11,13 @@ name: seed-release
 # works: source_ref's OWN bootstrap/seed.json always already describes the
 # NEW seed being published here, never a usable prior one.
 #
+# All `${{ inputs.* }}` values are passed into scripts via `env:` and
+# referenced as quoted shell variables, never interpolated directly into a
+# `run:` script body — GitHub Actions expands `${{ }}` as a textual
+# substitution before the shell parses the script, so interpolating an
+# input directly is a shell-injection risk if that input contains shell
+# metacharacters (a valid git tag can contain quotes, backslashes, etc.).
+#
 # See docs/bootstrap.md's "Seed artifact 配布" section for the full bump
 # procedure this fits into.
 
@@ -33,12 +40,17 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      SEED_TAG: ${{ inputs.tag }}
+      SOURCE_REF: ${{ inputs.source_ref }}
+      PRIOR_SEED_REF: ${{ inputs.prior_seed_ref }}
     steps:
       - name: Validate tag
         run: |
-          case "${{ inputs.tag }}" in
+          set -euo pipefail
+          case "$SEED_TAG" in
             seed/*) : ;;
-            *) echo "::error::tag must start with 'seed/' (got: ${{ inputs.tag }})"; exit 1 ;;
+            *) echo "::error::tag must start with 'seed/' (got: $SEED_TAG)"; exit 1 ;;
           esac
 
       - name: Checkout
@@ -63,7 +75,7 @@ jobs:
       - name: Acquire prior seed artifact (stage0 for this rebuild)
         run: |
           set -euo pipefail
-          ref="${{ inputs.prior_seed_ref }}"
+          ref="$PRIOR_SEED_REF"
           mkdir -p bootstrap/seed
           if git show "$ref:bootstrap/seed/compiler.wasm" > bootstrap/seed/compiler.wasm 2>/dev/null; then
             echo "[seed-release] extracted prior artifact directly from $ref:bootstrap/seed/compiler.wasm (still git-tracked at that ref)"
@@ -82,17 +94,29 @@ jobs:
 
       - name: Adopt candidate locally (uncommitted — this workspace only)
         run: |
+          set -euo pipefail
           gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
           bash scripts/generations.sh adopt --artifact "${gen}stage2.wasm" \
-            --tag "${{ inputs.tag }}" --source-commit "$(git rev-parse HEAD)"
+            --tag "$SEED_TAG" --source-commit "$(git rev-parse HEAD)"
 
       - name: Build seed release assets
-        run: bash scripts/build_seed_release_assets.sh "${{ inputs.tag }}"
+        run: bash scripts/build_seed_release_assets.sh "$SEED_TAG"
+
+      - name: Compute artifact-safe name
+        # actions/upload-artifact names can't contain the characters GitHub
+        # lists (", :, <, >, |, *, ?, \r, \n, \, /) — unlike the release tag
+        # itself, which allows most of them. Replace anything outside a safe
+        # allowlist rather than only the "/" actually exercised so far.
+        id: artifact_name
+        run: |
+          set -euo pipefail
+          safe="$(printf '%s' "$SEED_TAG" | tr -c 'A-Za-z0-9._-' '-')"
+          echo "value=seed-release-assets-$safe" >> "$GITHUB_OUTPUT"
 
       - name: Upload staged assets
         uses: actions/upload-artifact@v6
         with:
-          name: seed-release-assets-${{ inputs.tag }}
+          name: ${{ steps.artifact_name.outputs.value }}
           path: dist/release/${{ inputs.tag }}/*
           if-no-files-found: error
 
