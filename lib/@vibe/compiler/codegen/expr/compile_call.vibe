@@ -9,7 +9,7 @@ import ../../../../../lib/@vibe/core {
 }
 
 import ../../core {
-  Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
+  Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32, namespace_exported_name
 }
 
 import ../common_analysis {
@@ -931,7 +931,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       }
       nl
     }
-    else if (fname == "to_string" || String::starts_with(fname, "to_string_exp_")) && Array::length(args) == 1 && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_boolish(Array::get(args, 0), local_names, ctx) || cc_expr_is_stringish(Array::get(args, 0), local_names, ctx)) {
+    else if fname == namespace_exported_name("lib/@vibe/prelude/builtin_traits.vibe", "to_string") && Array::length(args) == 1 && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_boolish(Array::get(args, 0), local_names, ctx) || cc_expr_is_stringish(Array::get(args, 0), local_names, ctx)) {
       // #1015: the prelude generic wrapper `to_string[T: Show](x: T) -> String
       // { __to_string(x) }` (lib/@vibe/prelude/builtin_traits.vibe) compiles
       // to exactly ONE shared wasm function body -- there is no
@@ -964,18 +964,43 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       // (e.g. forwarding another opaque generic parameter) still falls
       // through unchanged to the ordinary bound call below.
       //
-      // `fname` is (almost) never the bare `"to_string"` at this point: #716
-      // export-name visibility renames every exported value def of a
-      // non-entry file to `name_exp_<sanitized path>` and rewrites every
+      // `fname` is essentially NEVER the bare `"to_string"` at this point:
+      // #716 export-name visibility renames every exported value def of a
+      // non-entry file to `name_exp_<sanitized path>` (namespace_exported_name,
+      // lib/@vibe/compiler/core/import_alias_rewrite.vibe) and rewrites every
       // importer's reference to match, so a call to the prelude's `to_string`
       // (defined in lib/@vibe/prelude/builtin_traits.vibe, a non-entry file)
       // arrives here as `to_string_exp_lib__vibe_prelude_builtin_traits_vibe`
       // -- verified with throw()-based instrumentation. A prior fix attempt
-      // for this issue special-cased only the bare `fname == "to_string"` and
-      // was reverted because it silently never fired for this exact reason;
-      // matching the `to_string_exp_` prefix too is what makes this fire for
-      // the real failing call. The bare name is also matched for the (rare)
-      // case where `to_string` is called from within its own defining file.
+      // for this issue special-cased only the bare name (fname equal to the
+      // plain string "to_string") and was silently dead code because it
+      // never fired for this reason.
+      //
+      // This match is intentionally the EXACT mangled name (via
+      // `namespace_exported_name` -- the SAME function the renaming pass
+      // itself uses, not a hand-copied string literal), not a bare-name or
+      // prefix match: an earlier version of this fix matched fname against
+      // either the bare "to_string" or, via String::starts_with, anything
+      // prefixed "to_string_exp_", which was unsound -- code review (#1015)
+      // correctly pointed out that
+      // (a) the bare form also matches a user's OWN `to_string` defined
+      // directly in an entry file (never renamed, so indistinguishable from
+      // the prelude's by name alone), and (b) the prefix form also matches
+      // ANY other file's own exported `to_string` (e.g. a user module
+      // exporting `to_string`, mangled to `to_string_exp_<that file's own
+      // sanitized path>`), silently overriding either user function's real
+      // behavior with the Bool/Float/String formatter. The exact mangled
+      // name embeds the full defining-file path, so it can only ever refer
+      // to THIS specific prelude definition. Guarding with `!prefer_bound_call`
+      // instead (as sibling `not`/`eq` branches above do) does NOT work here
+      // and was tried and rejected: unlike `not`/`eq`, which are pure
+      // compiler-provided fallbacks with no real backing definition unless a
+      // user shadows them, `to_string` ALWAYS resolves to a real declared
+      // function (the prelude's own, if nothing else) -- so `prefer_bound_call`
+      // is unconditionally true even for the correct, un-shadowed prelude
+      // call (confirmed with throw()-based instrumentation: `prefer_bound_call
+      // = T` at the real failing call site), and gating on `!prefer_bound_call`
+      // would make this branch never fire at all.
       ce(buf, ECall(EIdent("__to_string", -1), [
         Array::get(args, 0)
       ], -1), local_names, next_local, ctx, ld)
