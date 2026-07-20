@@ -159,13 +159,13 @@ corpus; the remaining cutover work is the mechanical default→RC switch itself
 ## Whole-compiler RC compile + the RC-vs-default parity gate
 
 `compile_wasi_rc` applied to the **entire merged compiler source**
-(`selfhost_cli_adapter_merged_source`, entry `cli_main`), executed on the host
+(`cli_adapter_merged_source`, entry `cli_main`), executed on the host
 MoonBit runtime, runs to completion with no error — i.e. **no RC codegen gap
 across any construct the compiler itself uses**.
 
 The stronger signal is to drive the compiler's *real* self-compile vehicle —
-the module-source + source-groups path (`build_selfhost_cli_adapter_bytes`,
-entry `cli_main`) — through **stage1** (the selfhost compiler, itself compiled to
+the module-source + source-groups path (`build_cli_adapter_bytes`,
+entry `cli_main`) — through **stage1** (the compiler, itself compiled to
 wasm). `scripts/test_rc_bootstrap.sh` does this under both backends via
 new entries `selfbuild_compile_cli_adapter_env` (default) and
 `selfbuild_compile_cli_adapter_rc_env` (RC, on the new
@@ -211,10 +211,10 @@ compile entries** route through the RC codegen when `VIBE_RC=1` (env; unset → 
 bump default is unchanged). `compile_source_wasi_only_rc`
 (`entry/source_compile/wasi_only/preprocess_compile.vibe`) mirrors
 `compile_source_wasi_only` on `compile_wasi_module_rc_impl`; `cli_main`
-(`selfhost_cli_adapter.vibe`) and `selfbuild_cli_args_entry` (`index.vibe` — the
+(`cli_adapter.vibe`) and `selfbuild_cli_args_entry` (`index.vibe` — the
 entry the **cli-adapter** gate uses) consult `VIBE_RC`.
 
-End-to-end verified: the stage1 wasm-compiled selfhost compiler, invoked via
+End-to-end verified: the stage1 wasm-compiled compiler, invoked via
 `selfbuild_cli_args_entry` with `VIBE_RC=1`, compiled a real RC-relevant program
 (enum `Option` with a nullary variant in an `if`, a closure, tuples) to **valid
 wasm that runs to the same result as the default path** (17 == 17):
