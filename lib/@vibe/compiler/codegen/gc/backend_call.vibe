@@ -25,7 +25,7 @@ import ../double_to_string_expr.vibe {
 }
 
 import ../common_extractors {
-  array_contains_int, array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_ecall_args, get_ecall_callee, get_eident_name, get_estring_value, str_table_lookup
+  array_contains_int, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_ecall_args, get_ecall_callee, get_eident_name, get_estring_value, str_table_lookup
 }
 
 import ../wasm_emit {
@@ -104,12 +104,17 @@ fn gc_resolve_builtin_last(ft: FuncTable, name: String) -> Int {
 // Local mirror of backend_expr's gc_expr_is_floatish (backend_expr imports
 // this file, so importing it back would cycle — same precedent as the linear
 // lane's cc_expr_is_floatish mirror in expr/compile_call.vibe).
-fn bc_expr_is_floatish(e: Expr, ctx: CompileCtxGc) -> Bool {
+// #1032: gc_float_locals is now slot-indexed (see its doc comment on
+// CompileCtxGc) -- mirrors bc_expr_is_boolish's slot resolution below.
+fn bc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
   match e {
     EFloat(_) => true,
-    EIdent(fname, _) => array_contains_str(ctx.gc_float_locals, fname),
-    EBinOp(op, l, r) => (op == "+" || op == "-" || op == "*" || op == "/") && (bc_expr_is_floatish(l, ctx) || bc_expr_is_floatish(r, ctx)),
-    EUnaryOp(op, x) => op == "-" && bc_expr_is_floatish(x, ctx),
+    EIdent(fname, _) => {
+      let slot = find_local_slot(local_names, fname)
+      slot >= 0 && array_contains_int(ctx.gc_float_locals, slot)
+    },
+    EBinOp(op, l, r) => (op == "+" || op == "-" || op == "*" || op == "/") && (bc_expr_is_floatish(l, local_names, ctx) || bc_expr_is_floatish(r, local_names, ctx)),
+    EUnaryOp(op, x) => op == "-" && bc_expr_is_floatish(x, local_names, ctx),
     ECall(fcallee, _, _) => match fcallee {
       EIdent(cn, _) => cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float",
       _ => false
@@ -764,7 +769,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_i64_and(buf)
         nl
       }
-      else if fname == "__to_string" && Array::length(args) == 1 && bc_expr_is_floatish(Array::get(args, 0), ctx) {
+      else if fname == "__to_string" && Array::length(args) == 1 && bc_expr_is_floatish(Array::get(args, 0), local_names, ctx) {
         // #744 (gc mirror of the linear fix): a statically-floatish argument
         // takes the synthesized Double formatter — the runtime-dispatch
         // builtin below reads the raw f64 bits as an integer.
@@ -777,7 +782,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         // representation on this lane) and would mis-render `true` as "1".
         ce(buf, EIf(Array::get(args, 0), EString("true"), EString("false")), local_names, next_local, ld)
       }
-      else if fname == "to_string" && ctx.gc_to_string_is_show_wrapper && Array::length(args) == 1 && (bc_expr_is_floatish(Array::get(args, 0), ctx) || bc_expr_is_boolish(Array::get(args, 0), local_names, ctx)) {
+      else if fname == "to_string" && ctx.gc_to_string_is_show_wrapper && Array::length(args) == 1 && (bc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || bc_expr_is_boolish(Array::get(args, 0), local_names, ctx)) {
         // #1015: gc-lane counterpart of the linear call-site fast path in
         // expr/compile_call.vibe. The gc lane has no cross-file #716
         // export-name mangling to key off (VIBE_BACKEND=gc is always a

@@ -394,20 +394,18 @@ export struct CompileCtxGc {
   // (like ref_cell_names). Arithmetic on a floatish operand emits real f64
   // ops — the unconditional i64 ops silently zeroed float-literal parsing
   // (lexer parse_frac_digits) when the gc-compiled compiler ran. Best-effort:
-  // annotated Double params and tuple-destructured floats are NOT tracked.
+  // tuple-destructured floats are NOT tracked.
   //
-  // KNOWN LATENT BUG (found alongside #1015, not fixed here -- see
-  // gc_bool_locals below for the corrected design this should eventually
-  // adopt): this set is tracked by NAME, not by local SLOT INDEX, and is
-  // never pruned at branch/match-arm/for-in scope-exit boundaries (compare
-  // gc_agg_local_slots, which IS slot-indexed and pruned via
-  // agg_log_reset_above at every such boundary). So e.g. `if c { let x =
-  // 1.5; .. } else { let x = 1; f(x) }` can misclassify the else branch's
-  // `x` as floatish, because "x" from the then-branch is still in this set
-  // when the else-branch's same-named-but-different-slot `x` is checked.
-  // Tracked as a follow-up; out of scope for #1015 (which only touches
-  // Bool).
-  gc_float_locals: Array[String];
+  // #1032: tracked by local SLOT INDEX (not name -- this used to be
+  // Array[String], the same latent scope-leak bug #1030 fixed for
+  // gc_bool_locals below: a name reused with a different type across
+  // sibling branches kept its stale classification from the other branch,
+  // e.g. `if c { let x = 1.5; .. } else { let x = 1; f(x) }` misclassified
+  // the else branch's `x` as floatish). Entries are pruned at every
+  // branch/match-arm/for-in scope-exit boundary via
+  // gc_slot_log_reset_above(ctx.gc_float_locals, floor), mirroring
+  // gc_bool_locals' discipline exactly (see its doc comment below).
+  gc_float_locals: Array[Int];
   // #1015: gc twin of the linear lane's int_local_slots kind-3 (boolish)
   // tracking -- locals (params/lets) KNOWN to hold a Bool. Bool and Int
   // share the same gc-lane numeric representation (no distinguishing
@@ -417,8 +415,7 @@ export struct CompileCtxGc {
   // Bool-typed identifier statically instead, the same way `gc_float_locals`
   // lets floatish idents take the f64 path.
   //
-  // Tracked by local SLOT INDEX (not name, unlike gc_float_locals above --
-  // see the KNOWN LATENT BUG note there): entries are pruned at every
+  // Tracked by local SLOT INDEX (not name): entries are pruned at every
   // branch/match-arm/for-in scope-exit boundary via
   // gc_slot_log_reset_above(ctx.gc_bool_locals, floor), the exact same
   // "slot >= floor is about to be reused by a sibling scope, drop stale

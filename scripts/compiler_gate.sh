@@ -4131,10 +4131,14 @@ rm -rf "$svdir"
 #     (ctx.gc_bool_locals is slot-indexed and pruned at every
 #     branch/match-arm/for-in scope exit, backend_expr.vibe /
 #     backend_match.vibe).
-echo "[compiler-gate] 40k/40 gc-lane to_string(Bool) regressions (#1015)"
+#   - to_string_float_scope_gc_test.vibe (#1032): the same if/else
+#     slot-reuse scope-leak, but for the pre-existing gc_float_locals field
+#     (from #744, predates #1015/#1030 entirely) -- now converted to the
+#     same slot-indexed + pruned design as gc_bool_locals.
+echo "[compiler-gate] 40k/40 gc-lane to_string(Bool/Float) regressions (#1015, #1032)"
 gcbdir="_build/_gate_gc_to_string_bool"
 rm -rf "$gcbdir"; mkdir -p "$gcbdir"
-for gcb_fixture in to_string_bool_gc_test to_string_shadow_gc_test to_string_bool_scope_gc_test; do
+for gcb_fixture in to_string_bool_gc_test to_string_shadow_gc_test to_string_bool_scope_gc_test to_string_float_scope_gc_test; do
   VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "fixtures/${gcb_fixture}.vibe" "$gcbdir/${gcb_fixture}.wasm" __no_entry__ >/dev/null 2>&1
@@ -4150,7 +4154,7 @@ for gcb_fixture in to_string_bool_gc_test to_string_shadow_gc_test to_string_boo
   fi
 done
 rm -rf "$gcbdir"
-echo "[compiler-gate] gc-lane to_string(Bool) regressions ok"
+echo "[compiler-gate] gc-lane to_string(Bool/Float) regressions ok"
 
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
