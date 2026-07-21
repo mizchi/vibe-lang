@@ -1,0 +1,159 @@
+version 0.0.1
+
+// @vibe/compiler/checker — ADR-0070 / #897 compiler-internal contract.
+// Directory-shared-scope package (20 files): the type checker's builtin
+// signature tables (builtins.vibe + 13 builtins_*.vibe lookup_* modules),
+// the core expression/statement checker (checker.vibe, checker_stmt.vibe),
+// pattern checking + exhaustiveness (checker_pattern.vibe,
+// checker_exhaustive.vibe), type-expr resolution (checker_resolve.vibe), and
+// the effect/mutability discipline passes (checker_effects.vibe — see
+// relocation note below). checker_facade.vibe (see naming note below)
+// re-exports a SUBSET of the surface (lookup_builtin, check_expr,
+// check_pattern, pat_has_unsupported_or_binding, resolve_type_expr,
+// check_program, check_program_type_table, check_program_with_env,
+// check_stmts) via the `export ./file.vibe { names }` SReExport form (#726);
+// every other name below is defined directly (`export fn`) in its own
+// sibling file and reaches outside importers purely through this package's
+// directory-shared scope + the facade generated from THIS contract (not
+// from checker_facade.vibe's own hand-written re-export list, which the
+// generated facade supersedes at ingestion time) — same shape as
+// codegen/expr's expr.vibe/core.vibe/support.vibe split.
+//
+// Naming-collision note: the established rename convention for this
+// migration batch is `git mv index.vibe <dirname>.vibe` (see
+// codegen/expr/expr.vibe, codegen/gc/gc.vibe, syntax/syntax.vibe). For this
+// directory the dirname is "checker", but `checker/checker.vibe` already
+// exists as a substantial (5.3k line) real implementation file — the core
+// expression checker, not a facade — so `git mv index.vibe checker.vibe`
+// would silently clobber it. `validate_index_layout_fs` also forbids
+// index.vibe and index.vpkg coexisting in the same directory ("a boundary
+// has exactly one index"), so leaving index.vibe in place unrenamed was not
+// an option either (loader/index.vibe::desugar_contract_source_fs). The old
+// index.vibe was therefore renamed to `checker_facade.vibe` instead —
+// non-colliding, and its content did not need any other change: directory
+// auto-discovery (`contract_sibling_impl_raws`) already reaches every other
+// sibling file regardless of what checker_facade.vibe itself re-exports, so
+// the facade file's existing partial re-export list stays correct as-is.
+//
+// checker_effects.vibe relocation note: this file used to live at
+// lib/@vibe/compiler/checker_effects.vibe (a sibling of the checker/
+// directory, not inside it) specifically so `checker/checker_stmt.vibe`
+// (which needs check_perform_effects_stmts_env etc. from it) could import it
+// as a "#847 Phase C exception" direct leaf import, deliberately bypassing
+// checker's own facade — routing that import through the facade would close
+// a real cycle (checker package -> checker_stmt.vibe -> checker_effects.vibe
+// -> checker package). Once checker/ became a real `index.vpkg` package
+// boundary, `enforce_incoming_boundary_fs` (#729) rejected that same direct
+// leaf import from OUTSIDE the package ("cannot import ... across a package
+// boundary"), since checker_effects.vibe itself was not a checker/ member —
+// and routing it through the package (the boundary-legal alternative)
+// reintroduced the exact cycle the leaf import had been added to avoid
+// (confirmed empirically: `type_db: import cycle detected at
+// checker/index.vpkg`). Moving checker_effects.vibe INTO checker/ resolves
+// both constraints at once: checker_stmt.vibe's own need for it becomes an
+// ordinary same-package sibling import (no facade indirection, no cycle),
+// and every outside consumer (entry/compiler/file_compile/file_compile.vibe,
+// several tests) now reaches its surface through this contract like any
+// other checker export. EffectError is declared transparently (bodyless,
+// no `opaque` keyword) rather than opaque, matching common_base's structs:
+// several tests pattern-match its constructors directly (e.g.
+// `EEEffectfulCallOutsideEffect(_) => true`), so the declaration only
+// attests name + arity while checker_effects.vibe's real enum definition
+// stays the single source of truth callers actually see.
+//
+// Compiled into the compiler itself via compiler_sources_manifest.tsv
+// (group `checker`): the old single `checker/index.vibe` row becomes a
+// dual row (this contract + checker_facade.vibe); the former top-level
+// `checker_effects.vibe` row is repointed to `checker/checker_effects.vibe`;
+// every other impl file in this directory already had its own manifest row
+// before this migration and is unchanged.
+
+import ./checker_facade.vibe {}
+
+// --- builtins.vibe
+fn lookup_builtin(name: String) -> Option[Type]
+
+// --- builtins_array.vibe
+fn lookup_array(name: String) -> Option[Type]
+
+// --- builtins_async.vibe
+fn lookup_async(name: String) -> Option[Type]
+
+// --- builtins_builders.vibe
+fn lookup_array_builder(name: String) -> Option[Type]
+fn lookup_string_builder(name: String) -> Option[Type]
+
+// --- builtins_bytes.vibe
+fn lookup_bytes(name: String) -> Option[Type]
+
+// --- builtins_fixed_array.vibe
+fn lookup_fixed_array(name: String) -> Option[Type]
+
+// --- builtins_fs.vibe
+fn lookup_fs(name: String) -> Option[Type]
+
+// --- builtins_map.vibe
+fn lookup_map(name: String) -> Option[Type]
+
+// --- builtins_misc.vibe
+fn lookup_misc(name: String) -> Option[Type]
+
+// --- builtins_net.vibe
+fn lookup_net(name: String) -> Option[Type]
+
+// --- builtins_simd.vibe
+fn lookup_simd(name: String) -> Option[Type]
+
+// --- builtins_string1.vibe
+fn lookup_string1(name: String) -> Option[Type]
+
+// --- builtins_string2.vibe
+fn lookup_string2(name: String) -> Option[Type]
+
+// --- builtins_system.vibe
+fn lookup_io(name: String) -> Option[Type]
+
+// --- checker.vibe
+fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array[String], what: String, off: Int) -> Subst
+fn detect_narrowed_generic_mismatch(expected: Type, actual: Type, s: Subst, errors: Array[String], what: String, off: Int) -> Subst
+fn preserve_generic_instantiation(resolved: Type, actual: Type) -> Type
+fn fn_return_env_name(name: String) -> String
+fn is_array_builder_ty(t: Type) -> Bool
+fn pat_binds_resume(p: Pat) -> Bool
+fn reject_resume_outside_handler(e: Expr, sh: Bool, errors: Array[String]) -> Unit
+fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (Type, Subst, Int)
+
+// --- checker_exhaustive.vibe
+fn match_nonexhaustive_witness(scr_ty: Type, pats: Array[Pat], defs: Array[TypeDef]) -> Option[String]
+
+// --- checker_pattern.vibe
+fn pat_has_unsupported_or_binding(pat: Pat) -> Bool
+fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> TypeEnv
+
+// --- checker_resolve.vibe
+fn subst_type_params(ty: Type, params: Array[String], args: Array[Type]) -> Type
+fn resolve_type_expr(te: TypeExpr, defs: Array[TypeDef]) -> Type
+
+// --- checker_stmt.vibe
+fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (TypeEnv, Subst, Int)
+fn check_program(stmts: Array[Stmt]) -> TypeEnv with { Error }
+fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], Subst) with { Error }
+fn check_program_with_env(stmts: Array[Stmt], initial_env: TypeEnv) -> TypeEnv with { Error }
+
+// --- checker_effects.vibe (relocated here, see header note above)
+type EffectError
+fn check_effects_expr(expr: Expr, env: TypeEnv, in_effect: Bool) -> Array[EffectError]
+fn check_effects_stmt(stmt: Stmt, env: TypeEnv) -> Array[EffectError]
+fn check_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError]
+fn effect_error_to_string(err: EffectError) -> String
+fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> Array[EffectError]
+fn check_async_effects_stmt(stmt: Stmt, env: TypeEnv) -> Array[EffectError]
+fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError]
+fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]]) -> Array[EffectError]
+fn check_perform_effects_expr(root: Expr, root_declared: Array[String], root_in_handle: Bool) -> Array[EffectError]
+fn check_perform_effects_stmt(stmt: Stmt) -> Array[EffectError]
+fn check_perform_effects_stmts(stmts: Array[Stmt]) -> Array[EffectError]
+fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError]
+fn file_tests_cacheable(stmts: Array[Stmt]) -> Bool
+fn check_mutability_expr(expr: Expr, mutable: Array[String]) -> Array[EffectError]
+fn check_mutability_stmts(stmts: Array[Stmt]) -> Array[EffectError]
