@@ -272,7 +272,7 @@ done < "$cli_adapter_index_rows_file"
 rm -f "$cli_adapter_index_rows_file"
 
 main_index_rows_file="$(mktemp)"
-python3 - "$COMPILER_DIR" "$MANIFEST" "index.vibe" >"$main_index_rows_file" <<'PY'
+python3 - "$COMPILER_DIR" "$MANIFEST" "compiler.vibe" >"$main_index_rows_file" <<'PY'
 import os
 import re
 import sys
