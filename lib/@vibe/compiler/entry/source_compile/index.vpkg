@@ -1,0 +1,52 @@
+version 0.0.1
+
+// @vibe/compiler/entry/source_compile — ADR-0070 / #897 compiler-internal
+// contract, part of entry/'s own explicit "high risk" sub-batch (issue #897
+// body: "高リスク (要個別設計判断)... entry/ とそのサブディレクトリ"),
+// migrated alongside entry/compiler/, entry/compiler/fs_compile/, and
+// entry/source_compile/wasi_only/ in the same batch. Its two subdirectories
+// (gc_only/, already migrated in an earlier #897 batch, and wasi_only/,
+// migrated in this same batch) are each their own separate index.vpkg
+// packages -- this directory's own facade does NOT re-export from either of
+// them (confirmed by reading source_compile.vibe: it has no reference to
+// gc_only or wasi_only at all), so this contract covers ONLY this
+// directory's own single file.
+//
+// Single-file package: source_compile.vibe (the old index.vibe, renamed --
+// see naming note below) is the whole directory-owned surface -- the
+// simplest, single-source-string compile drivers with no FS access
+// (compile_source, compile_source_wasi, compile_source_wasi_mode), each a
+// lex+parse+check+compile pipeline straight to the linear-backend codegen.
+//
+// Naming: no collision (entry/source_compile/source_compile.vibe did not
+// exist), old index.vibe moved verbatim to source_compile.vibe, same
+// convention as loader.vibe/runtime.vibe/core.vibe/wasi_only.vibe.
+//
+// External-caller fixes: none needed for real imports -- every existing
+// caller already used the bare package-form `import ./entry/source_compile
+// { .. }` / `import ../entry/source_compile { .. }` (confirmed via a
+// repo-wide grep for literal `entry/source_compile/index.vibe` leaf-path
+// references: zero hits outside this directory's own file). The only
+// literal-path references to the old spelling were four
+// `probe_lex_source_by_path` / `probe_parse_source_by_path` /
+// `probe_source_control_by_path` / `probe_parse_stmt_progress_source_by_path`
+// calls in selfbuild_gate_block_a.vibe, each keying into the manifest-
+// derived `compiler_sources()` array by exact literal path string -- updated
+// from "lib/@vibe/compiler/entry/source_compile/index.vibe" to
+// ".../source_compile.vibe" to track the manifest row rename below (a stale
+// literal there would have thrown "source not found" once the old key
+// vanished from compiler_sources()).
+//
+// No import cycle found: source_compile.vibe's own dependencies (syntax/,
+// checker/, codegen/, codegen/wasi, core/ -- all already vpkg) don't import
+// back into entry/source_compile/.
+//
+// Compiled into the compiler itself via compiler_sources_manifest.tsv
+// (group `entry`): the old single `entry/source_compile/index.vibe` row
+// becomes a dual row (this contract + source_compile.vibe).
+
+import ./source_compile.vibe {}
+
+fn compile_source(source: String) -> Bytes with { Error }
+fn compile_source_wasi(source: String, entry_name: String) -> Bytes with { Error }
+fn compile_source_wasi_mode(source: String, entry_name: String, mode: String) -> Bytes with { Error }
