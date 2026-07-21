@@ -25,7 +25,7 @@ version 0.0.1
 // with the aliased function's real type so they satisfy the same "val
 // <type>" fingerprint as bodyless `let name: Type` contract lines below.
 //
-// Directory-shared-scope package (46 impl files + this contract). Several
+// Directory-shared-scope package (44 impl files + this contract). Several
 // hazard categories turned up, each resolved the same way prior #897
 // batches resolved their analogous case:
 //
@@ -110,6 +110,76 @@ version 0.0.1
 // plain-imported by compiler.vibe, because cache_probe_support.vibe (a
 // normal member of this package) exports them directly with a real SLet def.
 //
+// (5) cli_probe_entry.vibe -> _cli_probe_entry.vibe: an orphaned standalone
+// arg/compile-probe harness (probe_arg0_len/probe_compile_len/...), zero
+// consumers anywhere in the repo (same shape as the (2) group above), so it
+// would ordinarily just join that list. It gets its own note because
+// excluding it isn't optional the way the (2)/(4) exclusions are: this file
+// imports `read_arg` from `../cli/dispatch.vibe`, and dispatch.vibe (the
+// `lib/@vibe/cli` package's entry point) in turn depends on this compiler
+// package. Every other #897 batch was a one-directional "downward" edge (the
+// compiler importing an already-migrated leaf package), so the new
+// directory-wide index.vpkg never had to represent a dependency back onto
+// itself. `lib/@vibe/cli` -> `lib/@vibe/compiler` is exactly that reverse
+// edge, and it is real (the CLI genuinely needs the compiler) -- it simply
+// never round-tripped through a single shared-scope node before. With this
+// file's `{}` presence-only import counted as a normal package dependency
+// edge (ADR-0070 Phase 1's ".vpkg gets implicit membership unconditionally"
+// merges auto-discovered siblings with explicit ones -- header_cache.vibe's
+// contract_sibling_impl_raws/merge_impl_raws_dedupe -- so leaving the import
+// out without renaming would not have helped: auto-discovery re-adds any
+// non-underscore .vibe file in the directory), `index.vpkg`'s own dependency
+// list included this file, which depends on dispatch.vibe, which resolves
+// its own `import ../compiler { ... }` back to this SAME index.vpkg node --
+// a same-node self-loop the type_db fs-mode cycle detector
+// (runtime/typecheck_fs.vibe::ensure_fingerprint_fs_go) rightly rejects.
+// Confirmed against a rebuilt (not stale-cached) stage1 compiler with a
+// minimal external `import ../compiler { lex, parse_program }` repro: the
+// live cycle stack was exactly
+// repro -> index.vpkg -> cli_probe_entry.vibe -> cli/dispatch.vibe -> index.vpkg.
+// Renamed with the leading-underscore exemption (same mechanism as the (2)
+// group) so contract_sibling_impl_raws' auto-discovery skips it entirely,
+// removing the edge instead of papering over one instance of it.
+//
+// (6) coverage_suite_run.vibe -> _coverage_suite_run.vibe: fixing (5) let
+// db_typecheck_fs's fs-mode graph walk proceed past the cycle for the first
+// time for ANY external consumer of this package, and it immediately hit a
+// second, independent, pre-existing problem living in this file specifically
+// -- confirmed unrelated to (5) by reproducing it standalone (`vibe test
+// lib/@vibe/compiler/coverage_suite_run.vibe` fails identically with zero
+// involvement of cli_probe_entry.vibe or index.vpkg). Two layered issues,
+// both now fixed here:
+//   (a) its `test { }` block called `Double::parse`, which is declared in
+//   builtins_extended.vibe's lookup_numeric (dead scaffolding -- referenced
+//   only by that file's own dedicated test, never wired into the real
+//   checker) but is NOT an actual checker-known builtin (#776; see
+//   lib/@vibex/wasm/wat_encoder/wat_encoder.vibe's parse_decimal_double,
+//   which hand-rolls the identical workaround for the identical reason).
+//   Replaced the three call sites with a small local decimal parser
+//   (parse_rate_double) instead of adding real Double::parse support
+//   (out of scope for this batch) or reaching into wat_encoder's fuller,
+//   scientific-notation-capable version across an unrelated package.
+//   (b) even once it compiles, the test block itself is unconditional: it
+//   `assert(false)`s unless VIBE_SUITE_REPORT_LIST/JSON/SUMMARY env vars are
+//   set. `vibe test`'s `_start` runs every test block in the WHOLE merged
+//   program, not just the entry file's own -- so as soon as this file's
+//   `test{}` genuinely entered any external consumer's compiled graph (via
+//   this package's blanket re-export), that consumer's own test run started
+//   failing on an unrelated, unconfigured "coverage suite run" test it never
+//   asked for. Confirmed exactly the same failure independent of import
+//   depth (lib/@vibe/cli/dispatch_test.vibe and 4 others, all through
+//   dispatch.vibe -> this package). This mirrors (5)'s hazard exactly:
+//   `coverage_suite_run.vibe` is itself an unreferenced standalone driver
+//   (zero consumers of parse_line_list_export anywhere in the repo, same
+//   verification as (2)/(5); not invoked by scripts/coverage_suite.sh or any
+//   Taskfile/pkspec target under its own name either -- fully dead as an
+//   entry point today), so it gets the same leading-underscore exclusion.
+// Kept the Double::parse fix even though the file is now excluded from the
+// package's facade: it is a real, independently-confirmed bug (not just a
+// vpkg-migration side effect), so leaving the file compilable on its own
+// (e.g. a future direct `vibe test` invocation) costs nothing and is simply
+// correct.
+//
 // Bodyless-declaration conventions used below (matching prior batches):
 // `fn` for every real function (whether written as `export fn` or
 // `export let name = (...) -> T { ... }`, an EFn-valued let — checker/checker.vibe,
@@ -147,13 +217,11 @@ import ./cli_adapter.vibe {}
 import ./cli_adapter_bundle.vibe {}
 import ./cli_direct_component_entry.vibe {}
 import ./cli_fixed_adapter.vibe {}
-import ./cli_probe_entry.vibe {}
 import ./cli_support.vibe {}
 import ./codegen_gc.vibe {}
 import ./compiler_sources_bundle.vibe {}
 import ./coverage_compile_vibe_sources.vibe {}
 import ./coverage_suite_lib.vibe {}
-import ./coverage_suite_run.vibe {}
 import ./cst.vibe {}
 import ./desugar.vibe {}
 import ./file_compile_hotspot_probe.vibe {}
@@ -422,18 +490,6 @@ fn cli_adapter_module_source() -> String
 // --- cli_direct_component_entry.vibe
 fn compile_cli_request(source: String, request: String) -> String
 
-// --- cli_probe_entry.vibe
-fn probe_arg0_len() -> Int
-fn probe_arg1_len() -> Int
-fn probe_arg2_len() -> Int
-fn probe_arg3_len() -> Int
-fn probe_args_len() -> Int with { Env }
-fn probe_source_len() -> Int with { Error, Fs, Env }
-fn probe_compile_len() -> Int with { Error, Fs, Env }
-fn probe_compile_file_len() -> Int with { Error, Fs, Env }
-fn probe_compile_library_len() -> Int with { Error, Fs, Env }
-fn probe_compile_linked_file_len() -> Int with { Error, Fs, Env }
-
 // --- cli_support.vibe
 fn compile_release_file_mode(input_path: String, entry_name: String, mode: String) -> Bytes with { Error, Fs }
 fn compile_release_file_mode_uncached(input_path: String, entry_name: String, mode: String) -> Bytes with { Error, Fs }
@@ -464,9 +520,6 @@ fn suite_report_json(report: SuiteReport, kpi: KpiResult) -> String
 fn build_summary_text(report: SuiteReport, kpi: KpiResult) -> String
 fn build_suite_report_from_json_texts(inputs: Array[CoverageCaseInput]) -> SuiteReport with { Error }
 fn write_suite_report_json_stream(report: SuiteReport, kpi: KpiResult) -> String
-
-// --- coverage_suite_run.vibe
-let parse_line_list_export: (String) -> Array[String]
 
 // --- cst.vibe
 type NodeKind
