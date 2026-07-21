@@ -1,0 +1,119 @@
+version 0.0.1
+
+// @vibe/compiler/entry/compiler/fs_compile — ADR-0070 / #897 compiler-
+// internal contract, part of entry/'s own explicit "high risk" sub-batch
+// (issue #897 body: "高リスク (要個別設計判断)... entry/ とそのサブディレ
+// クトリ"), migrated alongside entry/compiler/, entry/source_compile/, and
+// entry/source_compile/wasi_only/ in the same batch. Directory-shared-scope
+// package (2 impl files, ~1080 lines): the multi-module / source-group
+// compile drivers (prepare_modules_cached, compile_with_modules*,
+// compile_with_closure_sources_*, compile_with_source_groups_*, the
+// source_group_*_count selfbuild probes, fs_compile.vibe) plus the
+// import-closure ordering + path-resolution helpers backing them
+// (collect_inline_sources_ordered, source_lookup_*, closure_order.vibe).
+// Compiled into the compiler itself via compiler_sources_manifest.tsv
+// (group `entry`, dual-row: this contract + fs_compile.vibe;
+// closure_order.vibe already had its own row and is unchanged).
+//
+// Naming: the old index.vibe was not a facade but real implementation (the
+// directory's larger file, 823 lines), so it moved verbatim to
+// fs_compile.vibe -- no collision (fs_compile/fs_compile.vibe did not
+// exist), same convention as loader.vibe/runtime.vibe/core.vibe.
+//
+// Same-directory export-name collision (found only by reading both files'
+// export lists side by side, not by any build failure -- check_contract's
+// two-loop design tolerates two sibling files exporting the same name at
+// the same signature without erroring, see contract/contract.vibe's
+// check_contract, so this was silently latent): BOTH fs_compile.vibe and
+// closure_order.vibe defined their own `export fn closure_ordered_source_count
+// (main_source: String, main_path: String, sources: Array[(String, String)])
+// -> Int with { Error }` -- fs_compile.vibe's is a thin wrapper around the
+// imported `collect_inline_sources_ordered`, closure_order.vibe's is the
+// same computation inlined via its own private traversal helpers; both
+// return identical results for identical inputs, so this was accidental
+// duplication, not a real behavioral fork. Pre-migration this was harmless
+// (fs_compile.vibe never imports closure_order.vibe's copy by that name, so
+// each file's own local definition served its own callers -- entry/compiler
+// /index.vibe's facade calls fs_compile.vibe's version, the standalone
+// closure_order.vibe copy was only reachable via a direct leaf import from
+// tests/fs_compile_path_test.vibe). A single flat contract can only declare
+// a name once, so closure_order.vibe's copy is renamed
+// `closure_ordered_source_count_for_test` (matching its own sibling
+// `_for_test` helpers -- source_lookup_exists_for_test,
+// resolve_relative_path_for_test, first_import_resolved_path_for_test, ...);
+// tests/fs_compile_path_test.vibe (its only caller) is updated to the new
+// name and to the package-form import. fs_compile.vibe's own
+// closure_ordered_source_count is untouched and is what
+// entry/compiler/index.vpkg (this package's own facade consumer) declares
+// and re-exports.
+//
+// External-caller fixes (literal `entry/compiler/fs_compile/index.vibe` /
+// `entry/compiler/fs_compile/closure_order.vibe` leaf-path references,
+// now that leaf-file imports from outside the package are rejected by
+// enforce_incoming_boundary_fs): tests/fs_compile_path_test.vibe (leaf
+// import of closure_order.vibe -> package-form `../entry/compiler/fs_compile`,
+// plus the rename above), tests/module_loader_collect_sources_test.vibe
+// (the fs_compile-entry assertion now targets index.vpkg and expects both
+// fs_compile.vibe and closure_order.vibe alongside it, mirroring the
+// existing codegen/index.vpkg assertion in the same test),
+// selfbuild_gate_block_a.vibe's `selfbuild_probe_lex_entry_compiler` /
+// `selfbuild_probe_parse_entry_compiler` family reference
+// entry/compiler/index.vibe, not this directory, and are fixed by
+// entry/compiler/index.vpkg's own migration instead. No import cycle found:
+// fs_compile.vibe's own dependencies (syntax/, codegen/, codegen/wasi,
+// checker/, core/, loader/, runtime/, cache/persistent_cache.vibe,
+// module_graph_path.vibe -- all already vpkg or plain leaf files) don't
+// import back into entry/compiler/fs_compile/; loader/index.vpkg's and
+// runtime/index.vpkg's own header notes already record this directory as
+// one of their fixed external callers (leaf `runtime/typecheck_fs.vibe` /
+// `loader/manifest_sources.vibe` style references), confirming no reverse
+// edge exists.
+//
+// No exported types: TypeDb (../../../runtime) arrives as structural
+// signature text resolved against runtime/index.vpkg's own opaque
+// declaration (loader/runtime precedent -- no re-import needed here).
+
+import ./fs_compile.vibe {}
+
+// --- fs_compile.vibe
+fn source_group_total_source_count(source_groups: Array[(String, Array[(String, String)])]) -> Int
+fn source_group_ordered_source_count(main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Int with { Error }
+fn source_group_filtered_group_count(main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Int with { Error }
+fn prepare_modules_cached(db: TypeDb, main_path: String, main_source: String, sources: Array[(String, String)]) -> TypeDb with { Error }
+fn source_group_prepare_typecheck_count(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Int with { Error }
+fn grouped_source_merged_len(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Int with { Error }
+fn source_group_module_source_len(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Int with { Error }
+fn compile_with_modules(main_source: String, main_path: String, sources: Array[(String, String)]) -> Bytes with { Error }
+fn compile_with_modules_wasi(main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> Bytes with { Error }
+fn closure_ordered_source_count(main_source: String, main_path: String, sources: Array[(String, String)]) -> Int with { Error }
+fn closure_merged_stmt_count(main_source: String, main_path: String, sources: Array[(String, String)]) -> Int with { Error }
+fn closure_pruned_stmt_count(main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> Int with { Error }
+fn source_group_pruned_stmt_count(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])], entry_name: String) -> Int with { Error }
+fn compile_with_modules_cached(db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)]) -> (Bytes, TypeDb) with { Error }
+fn compile_with_modules_wasi_cached(db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> (Bytes, TypeDb) with { Error }
+fn compile_with_closure_sources_wasi_cached(db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> (Bytes, TypeDb) with { Error }
+fn compile_with_closure_sources_wasi_mode_cached(db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String, mode: String) -> (Bytes, TypeDb) with { Error }
+fn compile_with_closure_sources_wasi_unchecked_cached(db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> (Bytes, TypeDb) with { Error }
+fn compile_with_closure_sources_wasi_mode_unchecked_cached(db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String, mode: String) -> (Bytes, TypeDb) with { Error }
+fn compile_with_closure_sources_wasi_mode_unchecked(main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String, mode: String) -> Bytes with { Error }
+fn compile_with_closure_sources_wasi_mode_uncached(main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String, mode: String) -> Bytes with { Error }
+fn compile_with_source_groups_wasi_cached(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])], entry_name: String) -> (Bytes, TypeDb) with { Error }
+fn compile_with_source_groups_wasi_unchecked_cached(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])], entry_name: String) -> (Bytes, TypeDb) with { Error }
+fn compile_with_source_groups_via_module_source_wasi_unchecked_cached(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])], entry_name: String) -> (Bytes, TypeDb) with { Error }
+fn compile_with_source_groups_via_module_source_wasi_unchecked_rc(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])], entry_name: String) -> (Bytes, TypeDb) with { Error }
+fn compile_file_fs(entry_path: String, entry_name: String) -> Bytes with { Error, Fs, Env }
+fn compile_file_fs_module(entry_path: String) -> Bytes with { Error, Fs }
+fn prepare_file_fs_cached(db: TypeDb, entry_path: String) -> TypeDb with { Error, Fs }
+fn compile_file_fs_cached(db: TypeDb, entry_path: String, entry_name: String) -> (Bytes, TypeDb) with { Error, Fs, Env }
+fn compile_file_fs_module_cached(db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with { Error, Fs }
+
+// --- closure_order.vibe
+fn source_lookup_exists(sources: Array[(String, String)], path_key: String) -> Bool
+fn source_lookup_or_throw(sources: Array[(String, String)], path_key: String) -> String with { Error }
+fn source_lookup_exists_for_test(sources: Array[(String, String)], path_key: String) -> Bool
+fn resolve_relative_path_for_test(base_dir: String, raw_path: String) -> String
+fn first_import_resolved_path_for_test(main_source: String, main_path: String) -> String with { Error }
+fn first_import_source_len_for_test(main_source: String, main_path: String, sources: Array[(String, String)]) -> Int with { Error }
+fn source_lookup_or_throw_len_for_test(sources: Array[(String, String)], path_key: String) -> Int with { Error }
+fn closure_ordered_source_count_for_test(main_source: String, main_path: String, sources: Array[(String, String)]) -> Int with { Error }
+fn collect_inline_sources_ordered(main_path: String, main_source: String, sources: Array[(String, String)]) -> Array[(String, String)] with { Error }
