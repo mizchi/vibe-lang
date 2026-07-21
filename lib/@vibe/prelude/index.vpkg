@@ -1,0 +1,610 @@
+version 0.0.1
+
+// @vibe/prelude — the vibe language's own standard-library prelude
+// (Int/Float/Double/Bool/String/Array/Option/Result/Char/Bytes/Cmp/
+// StringView/Io/StringParser/Func/Iterator/LazyIter/AsyncIter). ADR-0070
+// Phase 3, #897: the last remaining plain `index.vibe` directory in the
+// LOW-RISK stdlib group (fs/json/http/shell/process/io/path/socket/symbol/
+// time/cache/graph/module/optimizer/wasi were already migrated).
+//
+// Implicit-import investigation (blast-radius check before migrating):
+// `prelude` is NOT wired into the loader as a magic always-imported package.
+// Every `.vibe` file that wants prelude names imports it explicitly (or
+// relies on the compiler's OWN synthetic-injection builtins below) — a plain
+// grep for "prelude" across loader/*.vibe and checker/*.vibe turns up no
+// "auto-import every file" hook. What looks like implicit prelude access is
+// actually TWO separate, narrower mechanisms that do not depend on this
+// package's facade shape at all, so the .vpkg boundary does not interact
+// with them:
+//   1. `Result`/`Ok`/`Err` are synthesized on demand by the checker
+//      (`desugar_trait_dict.vibe`'s `inject_prelude_result`): any program
+//      that mentions `Result` but doesn't already define it gets a
+//      non-exported `enum Result[T, E] { Ok(T); Err(E) }` injected directly
+//      into its own statement list, independent of whether this package is
+//      imported at all. `result.vibe`'s `export enum Result[T, E]` below is
+//      the real, exported definition its OWN sibling functions (`ok`, `err`,
+//      `bind`, ...) type-check against, and is exactly what the OLD
+//      `index.vibe` facade re-exported as bare `Result` — this migration
+//      preserves that (declared as `type Result[T, E]` below) without
+//      touching the injection mechanism.
+//   2. `Option`/`Some`/`None` are genuine compiler builtins (`CtOption`),
+//      never defined anywhere in this directory — `option.vibe` only
+//      defines helper functions OVER `Option`, never the type itself.
+// Neither mechanism reads this package's facade/contract text, so
+// tightening the boundary here cannot change how `Result`/`Option` resolve
+// in unrelated files. The one real leak the OLD plain-directory facade had
+// (`fixtures/import_visibility_float_eq_test.vibe` importing the bare `eq`
+// name that `float.vibe` exports but the old facade's own re-export block
+// never listed — reachable only because a plain `index.vibe` directory's
+// effective surface is leakier than its facade's own list, see
+// loader/header_cache.vibe's validate-layout comment) is a real name that
+// IS declared below (`let eq: (Float, Float) -> Bool`), so that fixture
+// still resolves `eq` through the new contract-enforced surface.
+//
+// Trait declarations (Eq/Add/Div/Mul/Ord/Sub/Hash/Signed, all from
+// `builtin_traits.vibe`): a bodyless `opaque type Name` is satisfied at
+// contract-conformance time purely by NAME, via the same re-export trust
+// boundary #847 already gives any `export ./impl.vibe { name }` line
+// (`check_contract`'s `collect_impl_type_defs` doesn't recognize `STrait`
+// at all — a trait has no struct/enum/alias shape to compare arity against
+// — so the ONLY way a trait name can satisfy a declaration is the
+// re-exported-at-face-value path). This is NOT a first-of-its-kind choice:
+// `lib/@vibe/core/index.vpkg` already established the pattern for `Hash`
+// (`opaque type Hash`, satisfied by `maps.vibe`'s `export ./r#map.vibe {
+// ..., trait Hash }` re-export) with the same reasoning spelled out in its
+// own header comment. This package is simply the first to need EIGHT of
+// them at once. `prelude.vibe` (renamed from the old `index.vibe` facade —
+// a directory may have exactly one of `index.vibe`/`index.vibei`/
+// `index.vpkg`, #729/#897 — content otherwise unchanged) keeps the
+// `export ./builtin_traits.vibe { Eq, Add, Div, Mul, Ord, Sub, Hash,
+// Signed, ... }` line that discharges these eight declarations.
+//
+// Builtin-intrinsic method declarations (`Int::to_double`, `String::
+// utf8_length`, `String::utf16_length`, `String::unicode_length`): these
+// four names have no `export fn` body anywhere in `int.vibe`/`string.vibe`
+// (verified by grep) — they are pure compiler builtins recognized directly
+// by the checker's builtin registry (`checker/builtins_misc.vibe`'s
+// `lookup_int_to_double`; `builtins/declarations.vibe`'s `declare
+// String::utf8_length(String) -> Int` etc.) with no vibe-source
+// implementation to match against. The OLD `index.vibe` facade already
+// re-exported them via `export ./int.vibe { ..., Int::to_double, ... }` /
+// `export ./string.vibe { ..., String::utf8_length, ... }` — syntactically
+// legal even though the named target has no definition in that file,
+// because `check_contract` never verifies a re-export's target actually
+// resolves (same #847 trust boundary as the traits above). `prelude.vibe`
+// keeps those lines, so these four declarations are discharged the same
+// way. (`Int::to_double` is additionally exercised directly inside this
+// very package — see `double.vibe`'s float/int conversions — so its
+// builtin status was never in doubt; it is real and load-bearing.)
+//
+// Every OTHER declaration below is a real `export fn` / `export let` (value
+// alias) / `export struct` / `export enum` / `export type` living directly
+// in one of this directory's sibling `.vibe` files, discovered by `.vpkg`'s
+// unconditional implicit membership (#897/#855) — including names the OLD
+// facade never re-exported at all (`iterator.vibe`, `lazy_iter.vibe`,
+// `async_iter.vibe` were not mentioned by any block in the old facade, and
+// several individual names — `String::split`/`to_upper`/`to_lower`,
+// `cmp.vibe`'s `*_by_key` trio, `io.vibe`'s `ansi_escape`/`tui_*` — were
+// exported but not re-exported either). Under the old plain-directory
+// scheme those were reachable only via directory-shared scope from WITHIN
+// the package; under `.vpkg` every exported name (from every production
+// sibling) must appear here or it is a conformance error, so they are all
+// promoted to real declared surface now.
+//
+// A BARE (unqualified) name that collides across sibling files — e.g.
+// `abs`/`clamp`/`max`/`min`/`signum`/`square`/`lerp`/`is_nan`/`is_zero`/
+// `is_negative`/`is_positive` across Int/Float/Double; `to_int`/`from_int`
+// across Bool/Char; `to_string`/`from_string` across builtin_traits.vibe/
+// char.vibe/string_view.vibe; `or`/`and`/`map_or`/`flatten`/`unwrap_or`/
+// `unwrap_or_else`/`or_else`/`and_then` across Option/Result/string_parser;
+// `get`/`length`/`filter`/`flatmap`/`zip`/`equals` across Array/Option/
+// Bytes — CANNOT be declared once per colliding type: `contract_facade_
+// source`'s allocation pass (contract/contract.vibe, the `allocated` array)
+// tracks a declared NAME as satisfied by whichever impl unit is scanned
+// first, with no signature disambiguation, so pushing two decl entries that
+// share one name always leaves the second permanently unallocated and
+// throws "some declarations have no implementation file" — a hard
+// constraint discovered empirically while migrating this package (its
+// scale of collisions, ~30 pairs, is unlike any prior migrated package).
+// Each collision keeps EXACTLY ONE bare declaration below — the winner is
+// whichever candidate the OLD `index.vibe` facade's own re-export block
+// already exposed bare (verified against the original file, e.g. `abs`/
+// `clamp`/`signum`/`is_zero` -> Int, `lerp`/`square` -> Float, `and_then`
+// -> string_parser, `get`/`length` -> Array, `from_string` -> string_view);
+// where NEITHER old-facade block exposed a bare winner (most of the pairs
+// above), one candidate is picked so check_contract's NAME-only "exported
+// but undeclared" sweep still covers every collision member (exactly
+// `@vibe/core`'s documented policy for `length`/`is_empty`/`sum` — the
+// LOSING side's function is still legal, still reachable from same-package
+// sibling files, and — unless it truly has no `Type::` qualified form at
+// all (char.vibe's to_int/from_int/to_string/from_string, and bytes.vibe's
+// get/length once Array wins those two names) — still reachable externally
+// via its own qualified name, all of which stay declared below regardless
+// of the bare-name outcome. See each section's own comment for the
+// specific winner/loser reasoning.
+//
+// `iterator.vibe`'s `Iterable[T]`, `lazy_iter.vibe`'s `Iterator[T]`, and
+// `async_iter.vibe`'s `AsyncIterator[T]` are method-bearing traits used only
+// as generic bounds / impl targets WITHIN this package and never
+// re-exported by any `export ./impl.vibe { ... }` line — unlike the eight
+// `builtin_traits.vibe` traits, they never appear in `collect_reexported_
+// names`, so (being invisible to `collect_impl_type_defs` like every trait)
+// they need no contract declaration at all and are simply absent below.
+
+import ./builtin_traits.vibe {}
+import ./int.vibe {}
+import ./float.vibe {}
+import ./double.vibe {}
+import ./bool.vibe {}
+import ./string.vibe {}
+import ./array.vibe {}
+import ./option.vibe {}
+import ./result.vibe {}
+import ./char.vibe {}
+import ./bytes.vibe {}
+import ./cmp.vibe {}
+import ./string_view.vibe {}
+import ./io.vibe {}
+import ./string_parser.vibe {}
+import ./func.vibe {}
+import ./iterator.vibe {}
+import ./lazy_iter.vibe {}
+import ./async_iter.vibe {}
+import ./prelude.vibe {}
+
+let version: String
+
+// --- types
+
+opaque type Eq
+opaque type Add
+opaque type Div
+opaque type Mul
+opaque type Ord
+opaque type Sub
+opaque type Hash
+opaque type Signed
+
+type Byte
+type Result[T, E]
+type ParseResult[T]
+type Parser[T]
+type ArrayView[T]
+type StringView
+type LazyIter[T]
+type AsyncIter[T]
+
+// --- builtin_traits (Eq/Add/Div/Mul/Ord/Sub/Hash/Signed impls live on the
+// builtins directly; these are the generic combinators built on top)
+fn cmp_eq[T: Eq](a: T, b: T) -> Bool
+fn cmp_ne[T: Eq](a: T, b: T) -> Bool
+fn num_abs[T: Signed + Ord + Sub](x: T) -> T
+fn num_add[T: Add](a: T, b: T) -> T
+fn num_div[T: Div](a: T, b: T) -> T
+fn num_mul[T: Mul](a: T, b: T) -> T
+fn num_sub[T: Sub](a: T, b: T) -> T
+fn ord_max[T: Ord](a: T, b: T) -> T
+fn ord_min[T: Ord](a: T, b: T) -> T
+fn ord_clamp[T: Ord](x: T, min_val: T, max_val: T) -> T
+fn num_clamp[T: Ord](x: T, min_val: T, max_val: T) -> T
+fn to_string[T: Show](x: T) -> String
+fn num_square[T: Mul](x: T) -> T
+fn ord_between[T: Ord + Eq](x: T, min_val: T, max_val: T) -> Bool
+fn hash_require[T: Hash](x: T) -> T
+
+// --- int
+fn pow(base: Int, exp: Int) -> Int
+fn is_zero(x: Int) -> Bool
+fn factorial(n: Int) -> Int
+fn fibonacci(n: Int) -> Int
+let max_value: Int
+let min_value: Int
+fn is_negative(x: Int) -> Bool
+fn is_positive(x: Int) -> Bool
+fn Int::abs(x: Int) -> Int
+fn abs(x: Int) -> Int
+fn gcd(a: Int, b: Int) -> Int
+fn lcm(a: Int, b: Int) -> Int
+fn Int::gcd(a: Int, b: Int) -> Int
+fn Int::lcm(a: Int, b: Int) -> Int
+fn Int::max(a: Int, b: Int) -> Int
+fn max(a: Int, b: Int) -> Int
+fn Int::min(a: Int, b: Int) -> Int
+fn min(a: Int, b: Int) -> Int
+fn Int::pow(base: Int, exp: Int) -> Int
+fn Int::clamp(x: Int, min_val: Int, max_val: Int) -> Int
+fn clamp(x: Int, min_val: Int, max_val: Int) -> Int
+fn Int::is_odd(x: Int) -> Bool
+fn is_odd(x: Int) -> Bool
+fn Int::signum(x: Int) -> Int
+fn signum(x: Int) -> Int
+fn Int::is_even(x: Int) -> Bool
+fn is_even(x: Int) -> Bool
+fn Int::is_zero(x: Int) -> Bool
+fn Int::factorial(n: Int) -> Int
+fn Int::fibonacci(n: Int) -> Int
+fn Int::is_negative(x: Int) -> Bool
+fn Int::is_positive(x: Int) -> Bool
+// builtin-intrinsic (checker/builtins_misc.vibe's lookup_int_to_double); no
+// export fn body anywhere in int.vibe, discharged via prelude.vibe's
+// re-export of int.vibe (see header comment)
+fn Int::to_double(x: Int) -> Double
+
+// --- float (bare names are `export let` value aliases: (Float,...) -> ...).
+// abs/max/min/clamp/signum/is_zero/is_negative/is_positive are ALSO exported
+// bare by int.vibe (and abs/max/min/clamp/signum ALSO by double.vibe) —
+// none of these bare Float forms were ever in the OLD facade's re-export
+// list (only `lerp`/`square` were), so Int's bare fn (or, for square/lerp,
+// nothing else) is kept as the sole bare owner and these stay declared only
+// as `Float::name` below; the plain-named `.vibe` def is still legal (name-
+// covered by Int's same-named bare decl) but not part of THIS package's
+// external bare-name surface. See header comment.
+let eq: (Float, Float) -> Bool
+let lerp: (Float, Float, Float) -> Float
+let is_nan: (Float) -> Bool
+let square: (Float) -> Float
+fn Float::eq(a: Float, b: Float) -> Bool
+fn Float::abs(x: Float) -> Float
+fn Float::max(a: Float, b: Float) -> Float
+fn Float::min(a: Float, b: Float) -> Float
+fn Float::lerp(a: Float, b: Float, t: Float) -> Float
+fn Float::clamp(x: Float, min_val: Float, max_val: Float) -> Float
+fn Float::is_nan(x: Float) -> Bool
+fn Float::signum(x: Float) -> Float
+fn Float::square(x: Float) -> Float
+fn Float::is_zero(x: Float) -> Bool
+fn Float::is_negative(x: Float) -> Bool
+fn Float::is_positive(x: Float) -> Bool
+
+// --- double (bare names are `export let` value aliases too). Same
+// collision policy as float.vibe above: abs/max/min/lerp/clamp/is_nan/
+// signum/square are never this package's bare-name surface (Int/Float win
+// those names, or nothing does) — only cube/trunc/fract/approx_eq/ceil/
+// floor/round are genuinely double-only bare names (also the ones the OLD
+// facade actually re-exported bare).
+let cube: (Double) -> Double
+let trunc: (Double) -> Double
+let fract: (Double) -> Double
+fn Double::abs(x: Double) -> Double
+let approx_eq: (Double, Double, Double) -> Bool
+fn Double::max(a: Double, b: Double) -> Double
+fn Double::min(a: Double, b: Double) -> Double
+fn Double::ceil(x: Double) -> Double
+let ceil: (Double) -> Double
+fn Double::cube(x: Double) -> Double
+fn Double::lerp(a: Double, b: Double, t: Double) -> Double
+fn Double::clamp(x: Double, min_val: Double, max_val: Double) -> Double
+fn Double::floor(x: Double) -> Double
+let floor: (Double) -> Double
+let round: (Double) -> Double
+fn Double::fract(x: Double) -> Double
+fn Double::round(x: Double) -> Double
+fn Double::trunc(x: Double) -> Double
+fn Double::is_nan(x: Double) -> Bool
+fn Double::signum(x: Double) -> Double
+fn Double::square(x: Double) -> Double
+fn Double::approx_eq(a: Double, b: Double, eps: Double) -> Bool
+
+// --- bool
+fn bool_nor(a: Bool, b: Bool) -> Bool
+fn nor(a: Bool, b: Bool) -> Bool
+fn bool_xor(a: Bool, b: Bool) -> Bool
+fn xor(a: Bool, b: Bool) -> Bool
+fn bool_all3(a: Bool, b: Bool, c: Bool) -> Bool
+fn all3(a: Bool, b: Bool, c: Bool) -> Bool
+fn bool_any3(a: Bool, b: Bool, c: Bool) -> Bool
+fn any3(a: Bool, b: Bool, c: Bool) -> Bool
+fn bool_nand(a: Bool, b: Bool) -> Bool
+fn nand(a: Bool, b: Bool) -> Bool
+fn bool_to_int(b: Bool) -> Int
+fn to_int(b: Bool) -> Int
+fn int_to_bool(n: Int) -> Bool
+fn from_int(n: Int) -> Bool
+fn bool_implies(a: Bool, b: Bool) -> Bool
+fn implies(a: Bool, b: Bool) -> Bool
+fn Bool::nor(a: Bool, b: Bool) -> Bool
+fn Bool::xor(a: Bool, b: Bool) -> Bool
+fn Bool::all3(a: Bool, b: Bool, c: Bool) -> Bool
+fn Bool::any3(a: Bool, b: Bool, c: Bool) -> Bool
+fn Bool::nand(a: Bool, b: Bool) -> Bool
+fn Bool::to_int(b: Bool) -> Int
+fn Bool::implies(a: Bool, b: Bool) -> Bool
+
+// --- string
+fn from_char_code(code: Int) -> String
+fn String::drop(s: String, n: Int) -> String
+fn String::head(s: String) -> String
+fn String::init(s: String) -> String
+fn String::last(s: String) -> String
+fn String::tail(s: String) -> String
+fn String::take(s: String, n: Int) -> String
+fn String::count(s: String, sub: String) -> Int
+fn String::equals(a: String, b: String) -> Bool
+fn String::repeat(s: String, n: Int) -> String
+fn String::compare(a: String, b: String) -> Int
+fn String::contains(s: String, sub: String) -> Bool
+fn String::index_of(s: String, sub: String) -> Int
+fn String::replace(s: String, pattern: String, replacement: String) -> String
+fn String::is_empty(s: String) -> Bool
+fn String::pad_left(s: String, target_len: Int, pad_char: String) -> String
+fn String::trim_end(s: String) -> String
+fn String::ends_with(s: String, suffix: String) -> Bool
+fn String::pad_right(s: String, target_len: Int, pad_char: String) -> String
+fn String::trim_start(s: String) -> String
+fn String::trim(s: String) -> String
+fn String::is_blank(s: String) -> Bool
+fn String::replace_all(s: String, pattern: String, replacement: String) -> String
+fn String::starts_with(s: String, prefix: String) -> Bool
+fn String::is_not_empty(s: String) -> Bool
+fn String::last_index_of(s: String, sub: String) -> Int
+fn String::split(s: String, sep: String) -> Array[String]
+fn String::to_upper(s: String) -> String
+fn String::to_lower(s: String) -> String
+fn Lines::parse(s: String) -> Array[String]
+fn Lines::stringify(lines: Array[String]) -> String
+fn PromptText::new(s: String) -> String
+// builtin-intrinsics (builtins/declarations.vibe); no export fn body
+// anywhere in string.vibe, discharged via prelude.vibe's re-export (see
+// header comment)
+fn String::utf8_length(s: String) -> Int
+fn String::utf16_length(s: String) -> Int
+fn String::unicode_length(s: String) -> Int
+
+// --- array
+fn all[T](xs: Array[T], pred: (x: T) -> Bool) -> Bool
+fn get[T](xs: Array[T], index: Int) -> Option[T]
+fn zip[A, B](xs: Array[A], ys: Array[B]) -> Array[(A, B)]
+fn find[T](xs: Array[T], pred: (x: T) -> Bool) -> Option[T]
+fn any[T](xs: Array[T], pred: (x: T) -> Bool) -> Bool
+fn fold[A, B](xs: Array[A], init: B, f: (acc: B, x: A) -> B) -> B
+fn head[T](xs: Array[T]) -> Option[T]
+fn iter[T, R](xs: Array[T], f: (x: T) -> R) -> Int
+fn last[T](xs: Array[T]) -> Option[T]
+fn slice[T](xs: Array[T], start: Int, end: Int) -> Array[T]
+fn append[T](xs: Array[T], ys: Array[T]) -> Array[T]
+fn filter[T](xs: Array[T], pred: (x: T) -> Bool) -> Array[T]
+fn length[T](xs: Array[T]) -> Int
+fn flatmap[A, B](xs: Array[A], f: (x: A) -> Array[B]) -> Array[B]
+fn reverse[T](xs: Array[T]) -> Array[T]
+fn is_empty[T](xs: Array[T]) -> Bool
+fn Array::map[A, B](xs: Array[A], f: (x: A) -> B) -> Array[B]
+
+// --- option (its own bodyless `export trait Eq` forward-declares the same
+// builtin_traits.vibe trait via directory-shared scope; no separate
+// contract entry needed). `zip`/`equals`/`filter`/`flatmap` are also
+// bare-exported by array.vibe (zip/filter/flatmap) or bytes.vibe (equals)
+// and NEITHER side was ever in the OLD facade's bare re-export list for
+// either collision candidate — Array/Bytes keep the bare name below (their
+// only route in, for equals/get/length which have no `Type::` qualified
+// form at all), Option keeps its fully qualified `Option::` forms.
+fn or[T](a: Option[T], b: Option[T]) -> Option[T]
+fn and[A, B](a: Option[A], b: Option[B]) -> Option[B]
+fn map_or[A, B](opt: Option[A], default: B, f: (x: A) -> B) -> B
+fn flatten[T](opt: Option[Option[T]]) -> Option[T]
+fn is_some[T](opt: Option[T]) -> Bool
+fn is_none[T](opt: Option[T]) -> Bool
+fn map_opt[A, B](opt: Option[A], f: (x: A) -> B) -> Option[B]
+fn or_else[T](a: Option[T], fallback: () -> Option[T]) -> Option[T]
+fn zip_sum(a: Option[Int], b: Option[Int]) -> Option[Int]
+fn unwrap_or[T](opt: Option[T], default: T) -> T
+fn unwrap_or_else[T](opt: Option[T], fallback: () -> T) -> T
+fn Option::or[T](a: Option[T], b: Option[T]) -> Option[T]
+fn Option::and[A, B](a: Option[A], b: Option[B]) -> Option[B]
+fn Option::zip[A, B](a: Option[A], b: Option[B]) -> Option[(A, B)]
+fn Option::equals[T: Eq](a: Option[T], b: Option[T]) -> Bool
+fn Option::filter[T](opt: Option[T], pred: (x: T) -> Bool) -> Option[T]
+fn Option::map_or[A, B](opt: Option[A], default: B, f: (x: A) -> B) -> B
+fn Option::flatmap[A, B](opt: Option[A], f: (x: A) -> Option[B]) -> Option[B]
+fn Option::flatten[T](opt: Option[Option[T]]) -> Option[T]
+fn Option::is_none[T](opt: Option[T]) -> Bool
+fn Option::is_some[T](opt: Option[T]) -> Bool
+fn Option::map_opt[A, B](opt: Option[A], f: (x: A) -> B) -> Option[B]
+fn Option::or_else[T](a: Option[T], fallback: () -> Option[T]) -> Option[T]
+fn Option::zip_sum(a: Option[Int], b: Option[Int]) -> Option[Int]
+fn Option::unwrap_or[T](opt: Option[T], default: T) -> T
+fn Option::unwrap_or_else[T](opt: Option[T], fallback: () -> T) -> T
+
+// --- result. map_or/flatten/unwrap_or/or/unwrap_or_else/or_else are also
+// bare-exported by option.vibe (Option wins those bare names above; see its
+// section comment) and and_then is also bare-exported by string_parser.vibe
+// (which wins it, matching the OLD facade's string_parser.vibe block) — none
+// of these six Result forms were ever in the OLD facade's bare result.vibe
+// re-export list either (only ok/err/bind/is_ok/is_err/map_ok/equals_by/
+// to_option/from_option were), so this preserves that non-exposure; every
+// one of them is still reachable externally via its `Result::` form below.
+fn ok[T, E](res: Result[T, E]) -> Option[T]
+fn err[T, E](res: Result[T, E]) -> Option[E]
+fn bind[T, E, U](res: Result[T, E], f: (x: T) -> Result[U, E]) -> Result[U, E]
+fn is_ok[T, E](res: Result[T, E]) -> Bool
+fn is_err[T, E](res: Result[T, E]) -> Bool
+fn map_ok[T, E, U](res: Result[T, E], f: (x: T) -> U) -> Result[U, E]
+fn map_err[T, E, F](res: Result[T, E], f: (e: E) -> F) -> Result[T, F]
+fn equals_by[T, E](a: Result[T, E], b: Result[T, E], ok_eq: (x: T, y: T) -> Bool, err_eq: (x: E, y: E) -> Bool) -> Bool
+fn to_option[T, E](res: Result[T, E]) -> Option[T]
+fn from_option[T, E](opt: Option[T], err_value: E) -> Result[T, E]
+fn Result::ok[T, E](res: Result[T, E]) -> Option[T]
+fn Result::or[T, E](res: Result[T, E], default: T) -> T
+fn Result::err[T, E](res: Result[T, E]) -> Option[E]
+fn Result::bind[T, E, U](res: Result[T, E], f: (x: T) -> Result[U, E]) -> Result[U, E]
+fn Result::is_ok[T, E](res: Result[T, E]) -> Bool
+fn Result::is_err[T, E](res: Result[T, E]) -> Bool
+fn Result::map_ok[T, E, U](res: Result[T, E], f: (x: T) -> U) -> Result[U, E]
+fn Result::map_or[T, E, U](res: Result[T, E], default: U, f: (x: T) -> U) -> U
+fn Result::flatten[T, E](res: Result[Result[T, E], E]) -> Result[T, E]
+fn Result::map_err[T, E, F](res: Result[T, E], f: (e: E) -> F) -> Result[T, F]
+fn Result::or_else[T, E](res: Result[T, E], fallback: () -> T) -> T
+fn Result::and_then[T, E, U](res: Result[T, E], f: (x: T) -> Result[U, E]) -> Result[U, E]
+fn Result::equals_by[T, E](a: Result[T, E], b: Result[T, E], ok_eq: (x: T, y: T) -> Bool, err_eq: (x: E, y: E) -> Bool) -> Bool
+fn Result::to_option[T, E](res: Result[T, E]) -> Option[T]
+fn Result::unwrap_or[T, E](res: Result[T, E], default: T) -> T
+fn Result::unwrap_or_else[T, E](res: Result[T, E], fallback: () -> T) -> T
+
+// --- char. to_int/from_int (also bare-exported by bool.vibe, for Bool) and
+// to_string (also bare-exported by builtin_traits.vibe, generic [T: Show])
+// and from_string (also bare-exported by string_view.vibe, returning
+// StringView) collide; char.vibe has no `Char::` qualified alternative for
+// any of them (unlike Int/Float/Double/Bool), so under the OLD facade none
+// of these four char.vibe conversions were EVER externally reachable at
+// all (the old facade's char.vibe block only ever listed the is_ascii*/
+// to_ascii* predicates) — that non-exposure is preserved as-is here.
+fn is_ascii(ch: Char) -> Bool
+fn is_ascii_digit(ch: Char) -> Bool
+fn is_ascii_hexdigit(ch: Char) -> Bool
+fn is_ascii_lowercase(ch: Char) -> Bool
+fn is_ascii_uppercase(ch: Char) -> Bool
+fn to_ascii_lowercase(ch: Char) -> Char
+fn to_ascii_uppercase(ch: Char) -> Char
+fn is_ascii_alphabetic(ch: Char) -> Bool
+fn is_ascii_alnum(ch: Char) -> Bool
+fn is_ascii_whitespace(ch: Char) -> Bool
+
+// --- bytes. `get`/`length` are also bare-exported by array.vibe, which
+// wins those two names (already in the OLD facade's bare array.vibe list);
+// `equals` collides with option.vibe's `equals[T: Eq]` but neither side was
+// ever in the OLD facade's bare list, and unlike Option (which keeps
+// `Option::equals` below) Bytes has no qualified alternative at all, so
+// Bytes keeps the bare `equals` name as its only route through the
+// boundary.
+fn equals(a: Bytes, b: Bytes) -> Bool
+fn is_byte(value: Int) -> Bool
+fn to_ascii(bytes: Bytes) -> Option[String]
+fn clamp_byte(value: Int) -> Int
+fn from_ascii(s: String) -> Option[Bytes]
+fn from_hex(hex: String) -> Option[Bytes]
+fn to_hex(bytes: Bytes) -> String
+
+// --- cmp
+fn minmax(a: Int, b: Int) -> (Int, Int)
+fn maximum(a: Int, b: Int) -> Int
+fn minimum(a: Int, b: Int) -> Int
+fn minmax_by[T](a: T, b: T, compare: (x: T, y: T) -> Int) -> (T, T)
+fn maximum_by[T](a: T, b: T, compare: (x: T, y: T) -> Int) -> T
+fn minimum_by[T](a: T, b: T, compare: (x: T, y: T) -> Int) -> T
+fn int_compare(a: Int, b: Int) -> Int
+fn float_compare(a: Float, b: Float) -> Int
+fn minmax_by_key[T, K](a: T, b: T, key: (x: T) -> K, compare_key: (x: K, y: K) -> Int) -> (T, T)
+fn double_compare(a: Double, b: Double) -> Int
+fn maximum_by_key[T, K](a: T, b: T, key: (x: T) -> K, compare_key: (x: K, y: K) -> Int) -> T
+fn minimum_by_key[T, K](a: T, b: T, key: (x: T) -> K, compare_key: (x: K, y: K) -> Int) -> T
+fn string_compare(a: String, b: String) -> Int
+
+// --- string_view
+fn from_array_range[T](source: Array[T], start: Int, end: Int) -> ArrayView[T]
+fn from_array[T](source: Array[T]) -> ArrayView[T]
+fn from_string_range(source: String, start: Int, end: Int) -> StringView
+fn from_string(source: String) -> StringView
+fn ArrayView::data[T](view: ArrayView[T]) -> Array[T]
+fn ArrayView::view[T](view: ArrayView[T], start: Int, end: Int) -> ArrayView[T]
+fn StringView::data(view: StringView) -> String
+fn StringView::view(view: StringView, start: Int, end: Int) -> StringView
+fn ArrayView::length[T](view: ArrayView[T]) -> Int
+fn ArrayView::get[T](view: ArrayView[T], index: Int) -> Option[T]
+fn StringView::length(view: StringView) -> Int
+fn StringView::get(view: StringView, index: Int) -> Option[String]
+fn ArrayView::is_empty[T](view: ArrayView[T]) -> Bool
+fn ArrayView::to_array[T](view: ArrayView[T]) -> Array[T]
+fn StringView::contains(view: StringView, needle: String) -> Bool
+fn StringView::index_of(view: StringView, needle: String) -> Int
+fn StringView::is_empty(view: StringView) -> Bool
+fn StringView::to_string(view: StringView) -> String
+fn StringView::has_prefix(view: StringView, prefix: String) -> Bool
+fn StringView::has_suffix(view: StringView, suffix: String) -> Bool
+fn ArrayView::start_offset[T](view: ArrayView[T]) -> Int
+fn StringView::char_code_at(view: StringView, index: Int) -> Int
+fn StringView::start_offset(view: StringView) -> Int
+
+// --- io (checker-builtin Stdin/Stdout effects, no import needed — see
+// checker/builtins_system.vibe)
+fn stdin_read(max_bytes: Int) -> String with { Stdin }
+fn ansi_escape(suffix: String) -> Unit with { Stdout }
+fn stdout_write(s: String) -> Unit with { Stdout }
+fn tap[T](x: T, f: (v: T) -> Unit with { Stdout }) -> T with { Stdout }
+fn tap_ok[T, E](res: Result[T, E], f: (v: T) -> Unit with { Stdout }) -> Result[T, E] with { Stdout }
+fn tap_err[T, E](res: Result[T, E], f: (v: E) -> Unit with { Stdout }) -> Result[T, E] with { Stdout }
+fn tap_some[T](opt: Option[T], f: (v: T) -> Unit with { Stdout }) -> Option[T] with { Stdout }
+fn stdout_writeln(s: String) -> Unit with { Stdout }
+fn stdin_read_line() -> String with { Stdin }
+fn tui_cursor_home() -> Unit with { Stdout }
+fn tui_clear_screen() -> Unit with { Stdout }
+fn tui_enter_alt_screen() -> Unit with { Stdout }
+fn tui_leave_alt_screen() -> Unit with { Stdout }
+
+// --- string_parser. `or_else` also collides with option.vibe/result.vibe's
+// bare `or_else` (Option wins that name, see the option.vibe section
+// comment above) — string_parser's own `or_else[T](Parser,Parser)->Parser`
+// is not part of this package's bare-name surface (it never was under the
+// OLD facade either). `and_then` is the one collision string_parser DOES
+// win (it was in the OLD facade's bare list; result.vibe's and_then was
+// not), so it stays declared bare here.
+fn map[A, B](parser: Parser[A], f: (x: A) -> B) -> Parser[B]
+fn run[T](parser: Parser[T], input: String) -> Option[T]
+fn char(expected: String) -> Parser[String]
+fn fail[T]() -> Parser[T]
+fn pure[T](value: T) -> Parser[T]
+fn literal(expected: String) -> Parser[String]
+fn and_then[A, B](parser: Parser[A], f: (x: A) -> Parser[B]) -> Parser[B]
+fn any_char(input: String, pos: Int) -> ParseResult[String]
+fn satisfy(pred: (ch: String) -> Bool) -> Parser[String]
+fn take_while(pred: (ch: String) -> Bool) -> Parser[String]
+fn take_while1(pred: (ch: String) -> Bool) -> Parser[String]
+fn spaces0(input: String, pos: Int) -> ParseResult[String]
+fn token[T](parser: Parser[T]) -> Parser[T]
+fn kw(name: String) -> Parser[String]
+fn spaces1(input: String, pos: Int) -> ParseResult[String]
+fn alpha(input: String, pos: Int) -> ParseResult[String]
+fn digit(input: String, pos: Int) -> ParseResult[String]
+fn digits1(input: String, pos: Int) -> ParseResult[String]
+fn alnum(input: String, pos: Int) -> ParseResult[String]
+fn identifier(input: String, pos: Int) -> ParseResult[String]
+fn uint(input: String, pos: Int) -> ParseResult[Int]
+
+// --- func
+fn compose[A, B, C](f: (x: A) -> B, g: (y: B) -> C) -> (z: A) -> C
+fn identity[A](x: A) -> A
+fn flip[A, B, C](f: (a: A, b: B) -> C) -> (b: B, a: A) -> C
+
+// --- iterator (Iterable[T] trait is method-bearing but never re-exported —
+// see header comment; no contract entry)
+fn Iterator::fold[C: Iterable, T, B](xs: C, init: B, f: (acc: B, x: T) -> B) -> B
+fn Iterator::iter[C: Iterable, T, R](xs: C, f: (x: T) -> R) -> Int
+fn Iterator::find[C: Iterable, T](xs: C, pred: (x: T) -> Bool) -> Option[T]
+fn Iterator::any[C: Iterable, T](xs: C, pred: (x: T) -> Bool) -> Bool
+fn Iterator::all[C: Iterable, T](xs: C, pred: (x: T) -> Bool) -> Bool
+fn Iterator::map[C: Iterable, A, B](xs: C, f: (x: A) -> B) -> Array[B]
+fn Iterator::filter[C: Iterable, T](xs: C, pred: (x: T) -> Bool) -> Array[T]
+fn Iterator::flatmap[C: Iterable, A, B](xs: C, f: (x: A) -> Array[B]) -> Array[B]
+
+// --- lazy_iter (its own Iterator[T] trait is method-bearing but never
+// re-exported — see header comment; no contract entry)
+fn lazy_iter_arr[T](xs: Array[T]) -> LazyIter[T]
+fn lazy_iter_map[T, U](src: LazyIter[T], f: (x: T) -> U) -> LazyIter[U]
+fn lazy_iter_filter[T](src: LazyIter[T], pred: (x: T) -> Bool) -> LazyIter[T]
+fn lazy_iter_collect[T](src: LazyIter[T]) -> Array[T]
+fn lazy_iter_fold[T, U](src: LazyIter[T], init: U, f: (acc: U, x: T) -> U) -> U
+fn lazy_iter_count[T](src: LazyIter[T]) -> Int
+fn lazy_iter_find[T](src: LazyIter[T], pred: (x: T) -> Bool) -> Option[T]
+fn lazy_iter_any[T](src: LazyIter[T], pred: (x: T) -> Bool) -> Bool
+fn lazy_iter_all[T](src: LazyIter[T], pred: (x: T) -> Bool) -> Bool
+fn lazy_iter_take_while[T](src: LazyIter[T], pred: (x: T) -> Bool) -> LazyIter[T]
+fn lazy_iter_take[T](src: LazyIter[T], n: Int) -> LazyIter[T]
+fn lazy_iter_drop[T](src: LazyIter[T], n: Int) -> LazyIter[T]
+fn lazy_iter_enumerate[T](src: LazyIter[T]) -> LazyIter[(Int, T)]
+fn lazy_iter_zip[T, U](a: LazyIter[T], b: LazyIter[U]) -> LazyIter[(T, U)]
+fn lazy_iter_flat_map[T, U](src: LazyIter[T], f: (x: T) -> Array[U]) -> LazyIter[U]
+
+// --- async_iter (its own AsyncIterator[T] trait is method-bearing but
+// never re-exported — see header comment; no contract entry. `Async` is
+// the checker-builtin effect, no import needed)
+fn async_iter_arr[T](xs: Array[T]) -> AsyncIter[T]
+fn async_iter_empty[T]() -> AsyncIter[T]
+fn async_iter_once[T](x: T) -> AsyncIter[T]
+fn async_iter_map[T, U](src: AsyncIter[T], f: (x: T) -> U) -> AsyncIter[U]
+fn async_iter_filter[T](src: AsyncIter[T], pred: (x: T) -> Bool) -> AsyncIter[T]
+fn async_iter_take[T](src: AsyncIter[T], n: Int) -> AsyncIter[T]
+fn async_iter_take_while[T](src: AsyncIter[T], pred: (x: T) -> Bool) -> AsyncIter[T]
+fn async_iter_collect[T](src: AsyncIter[T]) -> Array[T] with { Async }
+fn async_iter_fold[T, U](src: AsyncIter[T], init: U, f: (acc: U, x: T) -> U) -> U with { Async }
+fn async_iter_count[T](src: AsyncIter[T]) -> Int with { Async }
+fn async_iter_find[T](src: AsyncIter[T], pred: (x: T) -> Bool) -> Option[T] with { Async }
+fn async_iter_any[T](src: AsyncIter[T], pred: (x: T) -> Bool) -> Bool with { Async }
+fn async_iter_all[T](src: AsyncIter[T], pred: (x: T) -> Bool) -> Bool with { Async }
