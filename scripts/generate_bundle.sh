@@ -575,7 +575,7 @@ PY
   # (run in the compiler gate). Force regeneration through the host compiler with
   # VIBE_REGEN_MODULE_SOURCE=1 (used by that gate and by intentional
   # module-source bumps).
-  local committed_module_source="$COMPILER_DIR/cli_adapter_module_source.vibe"
+  local committed_module_source="$COMPILER_DIR/_cli_adapter_module_source.vibe"
   if [ "${VIBE_REGEN_MODULE_SOURCE:-0}" != "1" ] && [ -s "$committed_module_source" ]; then
     local module_source_path
     mkdir -p "$PROJECT_ROOT/_build"
@@ -698,7 +698,7 @@ write_runtime_entry_bundle() {
   write_vibe_chunked_string_function_from_file \
     "selfbuild_runtime_entry_source" \
     "selfbuild_runtime_entry_source" \
-    "$COMPILER_DIR/selfbuild_runtime_entry.vibe"
+    "$COMPILER_DIR/_selfbuild_runtime_entry.vibe"
   } > "$OUT_RUNTIME_ENTRY"
 }
 
@@ -720,7 +720,7 @@ build_exact_adapter_merged_source() {
   merged_path="$(mktemp "$PROJECT_ROOT/_build/cli_adapter_merged_source.XXXXXX")"
   local flatten_wasm="$PROJECT_ROOT/_build/merge_flatten_compiler.wasm"
   local seed_wasm="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
-  local committed_module_source="$COMPILER_DIR/cli_adapter_module_source.vibe"
+  local committed_module_source="$COMPILER_DIR/_cli_adapter_module_source.vibe"
   local tool_node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_GENERATION_NODE_STACK_SIZE:-131072}}"
   local tool_log="$PROJECT_ROOT/_build/merge_flatten_compiler.log"
   rm -f "$flatten_wasm" "$flatten_wasm.diag"
@@ -765,7 +765,7 @@ build_exact_adapter_merged_source() {
 }
 
 # #979: writing $ADAPTER_MODULE_SOURCE_OUT (normally
-# lib/@vibe/compiler/cli_adapter_module_source.vibe, the committed flat
+# lib/@vibe/compiler/_cli_adapter_module_source.vibe, the committed flat
 # module source stage1/stage2 bootstrap FROM) used to `cp` the freshly
 # flattened candidate straight over the real destination with no check that
 # it actually compiles. A bad flatten (e.g. the merge/printer surfacing a
@@ -773,7 +773,7 @@ build_exact_adapter_merged_source() {
 # subsequent regen rebuilds the merge-flatten tool FROM that same broken
 # committed file (see build_exact_adapter_merged_source above), so the
 # failure was self-perpetuating -- recoverable only via `git checkout HEAD
-# -- lib/@vibe/compiler/cli_adapter_module_source.vibe`. Make the write
+# -- lib/@vibe/compiler/_cli_adapter_module_source.vibe`. Make the write
 # atomic and gated: compile-check the CANDIDATE with the seed compiler in a
 # throwaway tmp file first, and only `mv` the candidate into place (same
 # dir, so the rename is atomic) when that succeeds; otherwise leave

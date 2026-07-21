@@ -70,7 +70,7 @@ compiler 本体 (`lib/@vibe/compiler/`, `lib/@vibe/` の compiler 消費分) を
 
 ```bash
 VIBE_REGEN_MODULE_SOURCE=1 \
-  VIBE_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/cli_adapter_module_source.vibe \
+  VIBE_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
   bash scripts/generate_bundle.sh
 bash scripts/generations.sh build --stage3 --out-dir _build/gen
 cmp _build/gen/stage2.wasm _build/gen/stage3.wasm   # fixpoint

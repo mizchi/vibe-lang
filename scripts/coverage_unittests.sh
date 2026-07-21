@@ -13,7 +13,7 @@ SEED="bootstrap/seed/compiler.wasm"
 # cli_main-unreachable (DCE'd) functions. Merge still counts only branches in
 # corpus-present functions, so a richer base only adds executed bits, never
 # inflates the denominator.
-FLAT="${VIBE_COV_FLAT:-lib/@vibe/compiler/cli_adapter_module_source.vibe}"
+FLAT="${VIBE_COV_FLAT:-lib/@vibe/compiler/_cli_adapter_module_source.vibe}"
 RUNNER="scripts/run_wasm_vibe_host_runner.sh"
 ACC="_build/coverage/selfhost-corpus/acc.json"
 OUT="_build/coverage/selfhost-ut"; rm -rf "$OUT"; mkdir -p "$OUT"
