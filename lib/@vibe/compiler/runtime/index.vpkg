@@ -1,0 +1,142 @@
+version 0.0.1
+
+// @vibe/compiler/runtime — ADR-0070 / #897 compiler-internal contract,
+// compiler-internal batch 8. Directory-shared-scope package (7 impl files,
+// ~4275 lines): the incremental type-check database (`TypeDb` + the
+// db_new/db_set_source/db_check_env/db_typecheck*/db_merged_source/
+// db_module_source/db_load_artifact/db_store_artifact family, runtime.vibe),
+// module-source reconstruction for the debugger funcmap sidecar
+// (module_source.vibe), editor-query primitives backing `vibe type-at` /
+// `vibe binding-at` / `vibe symbols` (type_at.vibe, binding_at.vibe,
+// symbol_spans.vibe), filesystem-driven typecheck + diagnostics collection
+// (typecheck_fs.vibe), and the persistent dep-list / type-env /
+// leaf-fingerprint cache codec (persistent_env_codec.vibe).
+//
+// Naming: no collision on the established `git mv index.vibe <dirname>.vibe`
+// convention (runtime/runtime.vibe didn't exist), same as loader/'s batch —
+// the old index.vibe moved verbatim to runtime.vibe.
+//
+// runtime.vibe is NOT a pure facade — like loader.vibe's and
+// checker_facade.vibe's siblings, it carries substantial real implementation
+// of its own (the whole `TypeDb` incremental-cache state machine) in
+// addition to importing and re-exporting a hand-picked subset of its
+// siblings' surfaces via existing `export ./file.vibe { .. }` SReExport
+// blocks (module_source.vibe, type_at.vibe, binding_at.vibe,
+// symbol_spans.vibe, typecheck_fs.vibe — added under #847). Those blocks
+// stay untouched: this contract is now the actual source of truth for the
+// package's full export surface (all names below, across all 7 files), so
+// runtime.vibe's partial, hand-picked re-export list is no longer
+// load-bearing for outside callers — they reach every name here through
+// this contract regardless of what runtime.vibe itself re-exports, exactly
+// like checker_facade.vibe's and loader.vibe's partial lists after their
+// own batches.
+//
+// Two-level SReExport nesting wrinkle: typecheck_fs.vibe is itself a
+// substantial-impl file (933 lines: locate_type_error,
+// ensure_fingerprint_fs_impl, check_inline_wasm_fns,
+// collect_all_diagnostics) carrying its OWN `export ./persistent_env_codec.vibe
+// { .. }` SReExport block — one level deeper than loader/'s shape, where
+// only the top-level facade had the SReExport pattern, not a sibling too.
+// This turned out not to matter for the contract: `contract_sibling_impl_raws`
+// directory auto-discovery reaches persistent_env_codec.vibe directly
+// regardless of what re-exports what, so its 6 exports below are declared
+// straight from its own file grouping, exactly as if typecheck_fs.vibe's
+// SReExport didn't exist. Verified empirically via
+// scripts/unit_test_runner.sh (full run), not just assumed.
+//
+// `export let`-bound functions: module_source.vibe's two exports are
+// `export let name: (Params) -> Ret with { Error } = (params) -> { .. }`
+// bindings, not `export fn`. No other already-migrated vpkg contract had
+// this exact shape (checked via `grep -rn '^export let .*-> .* with {'`
+// across every migrated directory — no hits besides this one). Confirmed
+// this still fingerprints as an ordinary fn signature for
+// `collect_impl_fn_defs`/`check_contract`: the parser's
+// `apply_generic_fn_annotation` (lib/@vibe/parser/parser_expr.vibe) injects
+// the let annotation's declared return type and effect row into the
+// lambda's own `EFn` node when the lambda itself doesn't specify them, so
+// the contract can declare both plain `fn name(params) -> Ret with { Error }`
+// below exactly like every `export fn` — no special contract syntax needed.
+//
+// No exported types besides `TypeDb`: TypeEnv/Stmt/Type/Expr (../core) are
+// plain structural signature text here, not declared at all (checker/
+// loader/ precedent — ../core itself is not yet migrated to vpkg, out of
+// scope for this batch); RippleDb (../../../../lib/@vibe/graph) is likewise
+// left undeclared, already covered by graph's own contract. `TypeDb` itself
+// is declared `opaque`: its real definition wraps a private `TypeDbState`
+// payload (itself wrapping private `StringTriple` — neither is `export`ed
+// in runtime.vibe, so neither needs a contract entry at all), and no
+// consumer (in-repo, confirmed via repo-wide grep) ever constructs or
+// pattern-matches a `TypeDb` directly, only through db_new/db_set_source/
+// db_check_env/... — same precedent as graph.vpkg's opaque `RippleDb`.
+//
+// External-caller fixes (literal `runtime/index.vibe` /
+// `runtime/typecheck_fs.vibe` paths → bare `../runtime` / `./runtime`
+// package form, now that leaf-file imports from outside the package are
+// rejected by enforce_incoming_boundary_fs): cli_adapter.vibe,
+// cli_support.vibe (was importing check_inline_wasm_fns/locate_type_error
+// straight from typecheck_fs.vibe — neither is re-exported by runtime.vibe's
+// own facade block, but both are covered here so the package-form import
+// still resolves), entry/compiler/fs_compile/index.vibe,
+// entry/compiler/file_compile/file_compile.vibe,
+// entry/cli_cache/cli_cache.vibe. No import cycle found: none of runtime/'s
+// own dependencies (checker/, codegen/, loader/, syntax/, cache/
+// persistent_cache.vibe, ../../../../lib/@vibe/graph — all already vpkg or
+// plain leaf imports of non-vpkg directories) import back into runtime/;
+// loader/ imports `../runtime/eval_loader` (a distinct, already-migrated
+// subpackage), never this directory's own index.vpkg/runtime.vibe.
+//
+// Compiled into the compiler itself via compiler_sources_manifest.tsv
+// (group `runtime`): the old single `runtime/index.vibe` row becomes a
+// dual row (this contract + runtime/runtime.vibe); typecheck_fs.vibe,
+// type_at.vibe, binding_at.vibe, symbol_spans.vibe,
+// persistent_env_codec.vibe, module_source.vibe already had their own rows
+// and are unchanged.
+
+import ./runtime.vibe {}
+
+// --- runtime.vibe
+opaque type TypeDb
+
+fn db_new() -> TypeDb
+fn db_set_source(db: TypeDb, path: String, source: String) -> TypeDb
+fn db_check_env(db: TypeDb, path: String) -> Option[TypeEnv]
+fn db_typecheck_count(db: TypeDb) -> Int
+fn db_parse_count(db: TypeDb) -> Int
+fn db_merge_count(db: TypeDb) -> Int
+fn db_module_source_count(db: TypeDb) -> Int
+fn db_codegen_count(db: TypeDb) -> Int
+fn db_typecheck(db: TypeDb, path: String) -> TypeDb with { Error }
+fn db_typecheck_fs(db: TypeDb, path: String) -> TypeDb with { Error, Fs }
+fn db_program_source(db: TypeDb, path: String) -> (String, String, TypeDb) with { Error }
+fn db_merged_source(db: TypeDb, _entry_path: String, sources: Array[(String, String)]) -> (String, String, TypeDb) with { Error }
+fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(String, String)])]) -> (String, String, TypeDb) with { Error }
+fn db_module_source(db: TypeDb, fingerprint: String, source: String) -> (String, TypeDb) with { Error }
+fn db_load_artifact(db: TypeDb, _path: String, kind: String, entry_name: String, fingerprint: String) -> Option[Bytes] with { Error }
+fn db_store_artifact(db: TypeDb, _path: String, kind: String, entry_name: String, fingerprint: String, bytes: Bytes) -> TypeDb
+
+// --- module_source.vibe
+fn build_module_source_from_source(source: String, entry_name: String) -> String with { Error }
+fn build_funcmap_from_source(source: String) -> String with { Error }
+
+// --- type_at.vibe
+fn type_at_source(source: String, line: Int, col: Int) -> String
+
+// --- binding_at.vibe
+fn binding_occurrences(source: String, line: Int, col: Int) -> Array[(Int, Int)]
+
+// --- symbol_spans.vibe
+fn symbol_spans(source: String) -> Array[(String, Int, Int, Int)] with { Error }
+
+// --- typecheck_fs.vibe
+fn locate_type_error(source: String, msg: String) -> String
+fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs }
+fn check_inline_wasm_fns(stmts: Array[Stmt]) -> Option[String]
+fn collect_all_diagnostics(source: String) -> Array[String] with { Error }
+
+// --- persistent_env_codec.vibe
+fn persistent_dep_list_text(deps: Array[String]) -> String
+fn load_persistent_dep_list(path: String, source: String) -> Option[Array[String]] with { Error, Fs }
+fn load_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with { Error, Fs }
+fn persistent_type_env_cache_text(env: TypeEnv) -> String
+fn load_persistent_leaf_fingerprint(path: String, source: String) -> Option[String] with { Error, Fs }
+fn persistent_leaf_fingerprint_text(fingerprint: String) -> String
