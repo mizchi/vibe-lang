@@ -37,9 +37,24 @@ import ../../../../../lib/@vibe/core {
 //     that precisely everywhere would need full scope tracking this pass
 //     does not do (see checker_capture.vibe's `bound` threading for what
 //     that would take);
+//   - a parameter, or anything bound anywhere in the body, is named
+//     `__stc_result` or starts with `__stc` (the reserved prefix this pass
+//     itself generates fresh names under) — this pass runs automatically,
+//     with no opt-in syntax the way `loop` has, so a user binding that
+//     happens to collide with a synthesized name must not be silently
+//     shadowed;
 //   - the body contains `EHandle` (effect handler) or `EReturn` (early
 //     return) anywhere — both interact with control flow in ways this local,
 //     structural rewrite does not attempt to reason about;
+//   - the body contains a nested `EFn` (closure literal) anywhere — turning
+//     a parameter into a shared mutable loop-carried cell (below) changes
+//     capture semantics for any closure that captures it: codegen boxes a
+//     captured mutable binding by reference, so a closure built in a
+//     non-final iteration and later invoked would observe a LATER
+//     iteration's value instead of a snapshot of its own invocation's value.
+//     Rejecting any nested closure is coarser than necessary (a closure
+//     that captures nothing of this function's parameters would actually be
+//     fine) but avoids needing real capture analysis here;
 //   - no tail-position call to the function's own name with matching arity
 //     is found at all (nothing to rewrite).
 //
@@ -92,6 +107,8 @@ fn stc_eligible(name: String, params: Array[(String, Option[TypeExpr])], param_n
     false
   } else if !stc_tail_has_self_call(body, name, arity) {
     false
+  } else if stc_params_bind_name(params, name) {
+    false
   } else if stc_expr_binds_name(body, name) {
     false
   } else {
@@ -134,16 +151,28 @@ fn stc_type_is_scalar(oty: Option[TypeExpr]) -> Bool {
   }
 }
 
-// --- shadow guard: does `expr` bind `target` ANYWHERE (not just in tail
-// position)? A conservative whole-body scan — see the module doc comment.
+// --- shadow guard: does `expr` bind `target`, OR anything under the
+// reserved `__stc` prefix this pass itself generates, ANYWHERE (not just in
+// tail position)? A conservative whole-body scan — see the module doc
+// comment. Folding the reserved-prefix check into the same traversal (via
+// `stc_name_unsafe` below) as the "is this the function's own name"
+// shadow-check keeps this a single pass instead of two.
+
+fn stc_is_reserved_name(n: String) -> Bool {
+  String::starts_with(n, "__stc")
+}
+
+fn stc_name_unsafe(n: String, target: String) -> Bool {
+  n == target || stc_is_reserved_name(n)
+}
 
 fn stc_expr_binds_name(expr: Expr, target: String) -> Bool {
   match expr {
-    ELet(n, v, b, _) => n == target || stc_expr_binds_name(v, target) || stc_expr_binds_name(b, target),
-    ELetMut(n, v, b, _) => n == target || stc_expr_binds_name(v, target) || stc_expr_binds_name(b, target),
-    ELetRec(n, v, b) => n == target || stc_expr_binds_name(v, target) || stc_expr_binds_name(b, target),
+    ELet(n, v, b, _) => stc_name_unsafe(n, target) || stc_expr_binds_name(v, target) || stc_expr_binds_name(b, target),
+    ELetMut(n, v, b, _) => stc_name_unsafe(n, target) || stc_expr_binds_name(v, target) || stc_expr_binds_name(b, target),
+    ELetRec(n, v, b) => stc_name_unsafe(n, target) || stc_expr_binds_name(v, target) || stc_expr_binds_name(b, target),
     EFn(_, _, params, _, _, b) => stc_params_bind_name(params, target) || stc_expr_binds_name(b, target),
-    EForIn(n, idx, it, b) => n == target || stc_opt_name_is(idx, target) || stc_expr_binds_name(it, target) || stc_expr_binds_name(b, target),
+    EForIn(n, idx, it, b) => stc_name_unsafe(n, target) || stc_opt_name_is(idx, target) || stc_expr_binds_name(it, target) || stc_expr_binds_name(b, target),
     EMatch(s, arms) => stc_expr_binds_name(s, target) || stc_arms_bind_name(arms, target),
     EHandle(s, arms) => stc_expr_binds_name(s, target) || stc_arms_bind_name(arms, target),
     EIf(c, t, e) => stc_expr_binds_name(c, target) || stc_expr_binds_name(t, target) || stc_expr_binds_name(e, target),
@@ -174,7 +203,7 @@ fn stc_expr_binds_name(expr: Expr, target: String) -> Bool {
 
 fn stc_opt_name_is(opt: Option[String], target: String) -> Bool {
   match opt {
-    Some(n) => n == target,
+    Some(n) => stc_name_unsafe(n, target),
     None => false
   }
 }
@@ -213,7 +242,7 @@ fn stc_params_bind_name(params: Array[(String, Option[TypeExpr])], target: Strin
   let mut found = false
   while i < Array::length(params) {
     let (pn, _) = Array::get(params, i)
-    if pn == target {
+    if stc_name_unsafe(pn, target) {
       found = true
     } else {
       ()
@@ -228,7 +257,7 @@ fn stc_loop_pairs_bind_name(pairs: Array[(String, Expr)], target: String) -> Boo
   let mut found = false
   while i < Array::length(pairs) {
     let (pn, init) = Array::get(pairs, i)
-    if pn == target || stc_expr_binds_name(init, target) {
+    if stc_name_unsafe(pn, target) || stc_expr_binds_name(init, target) {
       found = true
     } else {
       ()
@@ -240,7 +269,7 @@ fn stc_loop_pairs_bind_name(pairs: Array[(String, Expr)], target: String) -> Boo
 
 fn stc_pat_binds_name(pat: Pat, target: String) -> Bool {
   match pat {
-    PBind(n) => n == target,
+    PBind(n) => stc_name_unsafe(n, target),
     PCtor(_, ps) => stc_pats_bind_name(ps, target),
     PTuple(ps) => stc_pats_bind_name(ps, target),
     POr(a, b) => stc_pat_binds_name(a, target) || stc_pat_binds_name(b, target),
@@ -291,16 +320,22 @@ fn stc_arms_bind_name(arms: Array[(Pat, Expr)], target: String) -> Bool {
   found
 }
 
-// --- whole-body guard: bail if `EHandle`/`EReturn` appear anywhere.
+// --- whole-body guard: bail if `EHandle`/`EReturn`/a nested `EFn` (closure
+// literal) appear anywhere. The `EFn` case matches immediately rather than
+// recursing into the closure body: a nested closure ANYWHERE is enough to
+// reject (see the module doc comment on why -- captured-parameter semantics
+// would change under this rewrite), so there is nothing more to learn by
+// looking inside it, and merging this into the same traversal as the
+// EHandle/EReturn check avoids a second whole-body walk.
 
 fn stc_expr_has_handle_or_return(expr: Expr) -> Bool {
   match expr {
     EHandle(_, _) => true,
     EReturn(_) => true,
+    EFn(_, _, _, _, _, _) => true,
     ELet(_, v, b, _) => stc_expr_has_handle_or_return(v) || stc_expr_has_handle_or_return(b),
     ELetMut(_, v, b, _) => stc_expr_has_handle_or_return(v) || stc_expr_has_handle_or_return(b),
     ELetRec(_, v, b) => stc_expr_has_handle_or_return(v) || stc_expr_has_handle_or_return(b),
-    EFn(_, _, _, _, _, b) => stc_expr_has_handle_or_return(b),
     EForIn(_, _, it, b) => stc_expr_has_handle_or_return(it) || stc_expr_has_handle_or_return(b),
     EMatch(s, arms) => stc_expr_has_handle_or_return(s) || stc_arms_have_handle_or_return(arms),
     EIf(c, t, e) => stc_expr_has_handle_or_return(c) || stc_expr_has_handle_or_return(t) || stc_expr_has_handle_or_return(e),
