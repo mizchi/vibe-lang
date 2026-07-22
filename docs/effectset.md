@@ -1,6 +1,6 @@
 # ADR-0071: operation-level effect row と `effectset`
 
-Status: proposed
+Status: proposed (実装 step 1 は着地済み、2026-07-22 — 進捗セクション参照)
 
 Date: 2026-07-15
 
@@ -213,6 +213,32 @@ effectset と一致する場合はその effectset の参照を優先する。ef
    (yield bubbling による replay 全廃) 着手までに本 ADR の resolver/checker
    (項目 2–3) が着地している必要がある — 静的解決のみの ADR-0076 Phase 1–2
    はこの依存を受けない
+
+**進捗 (2026-07-22)**: 項目 1 (parser/printer) は着地済み。`with { Env::get }` の
+ような直接 operation row item と `effectset Name = { ... }` /
+`effectset Effect::Name = { ... }` 宣言の両方が parse・round-trip する
+(collect_effect_names の拡張、SEffectSet Stmt variant)。ただし
+`effectset` は checker (checker_stmt.vibe) が明示的に
+"not yet supported" と reject する — 宣言の中身 (member 展開・循環検出・
+衝突検出) は項目 2 (resolver) の残作業。`with { Env::get }` 自体は
+既存の文字列ラベルベースの effect row チェック機構 (row 全体を
+comma-joined `String` として扱う既存実装) にそのまま乗るため、
+単一 operation を指す row item は最小権限として機能する
+(caller 側の transitive call-graph チェックで実証済み) が、これは
+项目 3 の正式な OperationRef 正規化ではなく既存機構の副産物である点に
+注意。fixtures/effect_row_operation_item.vibe (項目1) /
+err_effectset_not_yet_supported.vibe (項目2) + compiler_gate.sh
+40m/40n で回帰を固定。
+
+**Bootstrap gotcha**: `lib/@vibe/parser/` 配下で「新しい関数を定義し、
+別ファイルからその関数を import で参照する」変更を同一コミットに含めると、
+`scripts/generate_bundle.sh` の merge/rename-plan ステップ
+(`_cli_adapter_module_source.vibe` を土台にビルドされる flatten tool)
+が新規のクロスファイル参照を解決できず `unknown name: <fn>` で失敗する
+ことがある (旧世代の flatten tool が新しい名前を知らないため)。
+回避策: 新しい関数を呼び出し元と同一ファイルに定義する
+(クロスファイル edge を増やさない)。既存のクロスファイル名を新しい
+import 元に追加するだけなら問題ない。
 
 最低限、次を回帰として固定する。
 
