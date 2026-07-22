@@ -217,18 +217,26 @@ effectset と一致する場合はその effectset の参照を優先する。ef
 **進捗 (2026-07-22)**: 項目 1 (parser/printer) は着地済み。`with { Env::get }` の
 ような直接 operation row item と `effectset Name = { ... }` /
 `effectset Effect::Name = { ... }` 宣言の両方が parse・round-trip する
-(collect_effect_names の拡張、SEffectSet Stmt variant)。ただし
-`effectset` は checker (checker_stmt.vibe) が明示的に
-"not yet supported" と reject する — 宣言の中身 (member 展開・循環検出・
-衝突検出) は項目 2 (resolver) の残作業。`with { Env::get }` 自体は
-既存の文字列ラベルベースの effect row チェック機構 (row 全体を
-comma-joined `String` として扱う既存実装) にそのまま乗るため、
-単一 operation を指す row item は最小権限として機能する
+(collect_effect_names の拡張、SEffectSet Stmt variant)。項目 2 (resolver)
+のうち、ADR の Decision セクションが名指しする 2 つの不正定義チェック
+— member 参照の循環 (`effectset A = { B }` / `effectset B = { A }` →
+"effectset cycle: A -> B -> A") と、qualified name の operation 名との
+衝突 (`effect Env { Read -> Int }` の下で `effectset Env::Read` を宣言
+すると reject) — は checker_stmt.vibe のローカル関数
+(es_detect_cycle / es_qualified_collision、全 stmt の事前収集パスで
+宣言順に依存しない) として着地済み。それ以外の `effectset` は依然
+checker が明示的に "not yet supported" と reject する — member の
+完全展開・`with { EffectsetName }` の実際の authorize は項目 3
+(checker: 展開・包含) の残作業。`with { Env::get }` (単一 operation の
+直接列挙) 自体は既存の文字列ラベルベースの effect row チェック機構
+(row 全体を comma-joined `String` として扱う既存実装) にそのまま乗る
+ため、単一 operation を指す row item は最小権限として機能する
 (caller 側の transitive call-graph チェックで実証済み) が、これは
-项目 3 の正式な OperationRef 正規化ではなく既存機構の副産物である点に
+項目 3 の正式な OperationRef 正規化ではなく既存機構の副産物である点に
 注意。fixtures/effect_row_operation_item.vibe (項目1) /
-err_effectset_not_yet_supported.vibe (項目2) + compiler_gate.sh
-40m/40n で回帰を固定。
+err_effectset_not_yet_supported.vibe・err_effectset_cycle.vibe・
+err_effectset_operation_collision.vibe (項目2) + compiler_gate.sh
+40m/40n/40o で回帰を固定。
 
 **Bootstrap gotcha**: `lib/@vibe/parser/` 配下で「新しい関数を定義し、
 別ファイルからその関数を import で参照する」変更を同一コミットに含めると、
