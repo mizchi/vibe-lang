@@ -40,8 +40,20 @@ import ../../core {
 // attempt to reason about), inlining is skipped entirely for that handle
 // and it is left for the existing replay codegen, matching today's
 // behavior exactly. A handle with some performs reachable and some hidden
-// behind such a boundary is a documented future improvement (Phase 2b) --
-// today it is all-or-nothing.
+// behind such a boundary is a documented future improvement -- today it is
+// all-or-nothing.
+//
+// Phase 2b (this revision): a call is also no longer an automatic bail-out
+// when its callee is one of a small, hand-audited set of builtin static
+// functions (idp_pure_builtin_names) that the checker's own builtin type
+// table (checker/builtins_string1.vibe, builtins_string2.vibe,
+// builtins_misc.vibe) records with effect `None` and with no function-typed
+// parameter -- i.e. calls that provably cannot themselves perform, and
+// cannot invoke any user-supplied closure that might. `String::equals` in a
+// handle body (fixtures/effect_handle_two_layer.vibe's cache-hit check) no
+// longer forces a bail-out just because it is a call. Calls to ordinary
+// user-defined functions (whose declared effect row this pass does not
+// consult) are still unconditionally unsafe.
 //
 // Runs once over the whole merged program, called from both codegen
 // backends' convergence points, mirroring rewrite_self_tail_calls
@@ -121,9 +133,12 @@ fn idp_table_lookup(table: (Array[String], Array[Array[String]], Array[Expr]), q
 // Treating "no EFn/EHandle" as sufficient to drop the wrapper would have
 // deleted the handler for that unseen perform entirely -- an unhandled
 // perform at runtime. Conservatively flagging every non-`perform` call as
-// unsafe avoids this; recognizing calls that are provably effect-free
-// (builtins, or user functions whose declared row excludes this effect)
-// is a documented follow-up (Phase 2b), not attempted here.
+// unsafe avoids this, EXCEPT for the fixed pure-builtin allowlist below
+// (idp_is_pure_builtin_call) -- those are checker-verified effect-free and
+// take no closure argument, so they cannot hide a perform. Recognizing
+// calls to user functions whose declared row excludes this effect is a
+// larger follow-up (needs the row/signature info this untyped AST pass
+// does not have), not attempted here.
 fn idp_has_unsafe_construct(expr: Expr) -> Bool {
   match expr {
     EFn(_, _, _, _, _, _) => true,
@@ -144,6 +159,8 @@ fn idp_has_unsafe_construct(expr: Expr) -> Bool {
       // being performed; only ITS OWN arguments need checking.
       EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
         idp_perform_operand_has_unsafe_construct(Array::get(args, 0))
+      } else if idp_is_pure_builtin_call(nm) {
+        idp_exprs_have_unsafe_construct(args)
       } else {
         idp_call_is_unsafe(callee) || idp_exprs_have_unsafe_construct(args)
       },
@@ -175,12 +192,58 @@ fn idp_has_unsafe_construct(expr: Expr) -> Bool {
 
 // Only a direct call to the `perform` builtin is safe; a call to anything
 // else (a named top-level function, a parameter-bound closure, a computed
-// callee expression) may reach a perform this pass cannot see.
+// callee expression) may reach a perform this pass cannot see. (The
+// pure-builtin allowlist is checked separately, before this function is
+// ever reached -- see idp_is_pure_builtin_call's call site.)
 fn idp_call_is_unsafe(callee: Expr) -> Bool {
   match callee {
     EIdent(nm, _) => nm != "perform",
     _ => true
   }
+}
+
+// Phase 2b: a fixed, hand-audited set of builtin static-call names, each
+// individually checked (as of this change) against the checker's builtin
+// type table to have effect `None` (pure -- see checker/builtins_string1.
+// vibe, builtins_string2.vibe, builtins_misc.vibe) AND no function-typed
+// parameter (so it cannot invoke a user-supplied closure that might
+// perform). Deliberately NOT a prefix/namespace match: builtins_misc.vibe
+// mixes pure entries (Int::to_string, Char::to_int, ...) with impure ones
+// in the SAME file (`print`, `println`, `throw` -- `throw` in particular
+// is documented there as going through the Error effect, i.e. it IS a
+// perform in disguise), so only exact, individually-verified names belong
+// here. Extending this list requires re-checking the new name's entry in
+// those files, not just adding a plausible-looking string.
+fn idp_pure_builtin_names() -> Array[String] {
+  [
+    "String::concat", "String::equals", "String::length", "String::substring",
+    "string_char_at", "String::trim", "String::split", "String::contains",
+    "String::index_of", "String::to_lower", "String::to_upper",
+    "String::ends_with", "String::starts_with", "String::char_code_at",
+    "String::last_index_of", "String::from_char_code", "String::join",
+    "Char::to_int", "Char::from_int",
+    "Int::to_double", "Int::to_float", "Int::to_string",
+    "Double::to_int", "Float::to_int",
+    "Double::to_string", "Float::to_string",
+    "Double::abs", "Double::floor", "Double::ceil",
+    "Double::max", "Double::min",
+    "Int::parse", "Double::parse"
+  ]
+}
+
+fn idp_is_pure_builtin_call(nm: String) -> Bool {
+  let names = idp_pure_builtin_names()
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == nm {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 // `operand` is `perform`'s single argument -- the operation application
