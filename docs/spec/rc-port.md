@@ -251,6 +251,37 @@ is added.
   reclamation.)
 - Everything stays gated behind `enable_rc`, default off.
 
+### Phase 3.5 — rc-check elision (almide comparison, #1056) — *narrow slice landed*
+
+- `build_perceus_plan`'s `ELet` alias handling (`lib/@vibe/compiler/perceus/perceus.vibe`)
+  now elides the dup+drop pair for an alias binding (`let a = t`) that would
+  otherwise duplicate `t`'s reference but is never itself referenced in its
+  body: the dup and the alias's own unconditional scope-end drop are a
+  provable no-op on the same memory with no intervening read. Occurrence-local
+  (uses the per-binding-id `uses`/`remaining` bookkeeping the analysis already
+  computes), so it needs no whole-function alias/escape analysis and carries
+  no new shadowing risk beyond what the existing name-keyed
+  `rc_alias_dup_names`/`rc_drop_names` codegen sets already have. Tested in
+  isolation (`perceus_rc_test.vibe`) and verified zero-regression: stage2==stage3
+  self-host fixpoint, `scripts/verify_rc.sh` byte-identical whole-compiler-under-RC
+  reproduction, and all `fixtures/rc_*_test.vibe` / shadow-liveness / reclaim-leak
+  gates unaffected.
+- This is the narrow, occurrence-local slice of what almide's
+  `alias_safety.rs` does with a full function-local fixpoint dataflow (eliding
+  redundant `MakeUnique`/COW rc-checks on provably-unaliased values) — see
+  `docs/pl-survey-2026-07.md` and `docs/BENCHMARKS.md`. vibe's RC has no
+  COW/`MakeUnique`-equivalent construct yet (arrays/maps are mutated in place
+  unconditionally, never copy-on-write-guarded), so a literal port of the rest
+  of almide's pass has no target to elide; this slice covers the one case
+  vibe's existing per-binding-id bookkeeping already has the data to prove
+  safe without new infrastructure.
+- Measured impact on `bench/binary_size/`'s 5-program suite and on the
+  compiler's own self-hosted source under RC: **none today** — neither
+  contains the target pattern (see `docs/BENCHMARKS.md`). Kept as a
+  zero-cost-when-unused safety net; broader rc-check elision (a real
+  alias/escape fixpoint, or COW guards once arrays/maps grow them) remains
+  future work.
+
 ### Phase 4 — verification & cutover
 
 - Add a wasmtime e2e gate for the compiler's RC backend, mirroring

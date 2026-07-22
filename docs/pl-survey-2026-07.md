@@ -99,6 +99,13 @@
    cost: medium、rc-port.md Phase 3 (drop codegen) 完了後の前提あり。
    関数ローカルな dataflow で証明可能 unaliased な値への rc>1 (MakeUnique
    相当) チェックを除去し、ホットループの不要な refcount 分岐を削る。
+   **Status (#1056, 2026-07-22): 狭い occurrence-local な一部分を実装済み**
+   — 未使用エイリアス (`let a = t` で `a` が一度も参照されない) の
+   dup+drop 相殺ペアを除去する (`perceus.vibe` の `ELet` 処理、
+   `rc-port.md` Phase 3.5)。vibe の RC には almide の `MakeUnique`
+   相当 (COW ガード) がまだ存在しないため、フルの fixpoint 版は
+   別途の下部構造が要る。5 本ベンチ・コンパイラ自身のソースいずれにも
+   対象パターンが現れず実測インパクトは今のところ 0 (`docs/BENCHMARKS.md`)。
 
 ### Low priority
 

@@ -278,3 +278,43 @@ test "perceus: handle arm pattern binding is dropped" {
   let plan = build_perceus_plan(h)
   assert(count_drops(plan, "v") == 1)
 }
+
+// #1056: an alias that would otherwise dup (source has other remaining owning
+// uses) but is itself never referenced anywhere in its body: the dup it would
+// emit and its own unconditional scope-end drop are a no-op pair (increment
+// then decrement, nothing observes the difference in between), so neither is
+// emitted at all. `b` (used) still dups normally is unaffected: with `a`
+// elided, `t`'s single remaining owning use transfers to `b` without a dup
+// (the "last alias, no dup" case), and `b`'s own drop still fires.
+test "perceus: unused alias with other remaining uses is elided (no dup, no drop)" {
+  // let t = (1, 2); let a = t; let b = t; b.0
+  let use_b = EDot(EIdent("b", -1), "0", -1, -1)
+  let innerb = ELet("b", EIdent("t", -1), use_b, -1)
+  let inner = ELet("a", EIdent("t", -1), innerb, -1)
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), inner, -1)
+  let plan = build_perceus_plan(body)
+  assert(count_alias_dups(plan, "a") == 0)
+  assert(count_drops(plan, "a") == 0)
+  assert(count_dups(plan, "a") == 0)
+  assert(count_drops(plan, "b") == 1)
+  assert(count_alias_dups(plan, "b") == 0)
+  assert(count_drops(plan, "t") == 0)
+  assert(count_all_drops(plan) == 1)
+}
+
+// #1056: the existing "dup all but last" semantics are unaffected when every
+// alias IS used — this is a regression guard so the elision above can never
+// silently widen to cover a genuinely-live alias.
+test "perceus: multi-alias dups all but the last (elision does not fire when used)" {
+  // let t = (1, 2); let a = t; let b = t; a.0 + b.1
+  let use2 = EBinOp("+", EDot(EIdent("a", -1), "0", -1, -1), EDot(EIdent("b", -1), "1", -1, -1))
+  let innerb = ELet("b", EIdent("t", -1), use2, -1)
+  let inner = ELet("a", EIdent("t", -1), innerb, -1)
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), inner, -1)
+  let plan = build_perceus_plan(body)
+  assert(count_alias_dups(plan, "a") == 1)
+  assert(count_alias_dups(plan, "b") == 0)
+  assert(count_drops(plan, "a") == 1)
+  assert(count_drops(plan, "b") == 1)
+  assert(count_drops(plan, "t") == 0)
+}
