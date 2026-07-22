@@ -4,7 +4,7 @@ Status: proposed
 
 Date: 2026-07-16
 
-Related: ADR-0012, ADR-0050, ADR-0060, ADR-0068, ADR-0071, #488, #806,
+Related: ADR-0012, ADR-0050, ADR-0060, ADR-0068, ADR-0071, ADR-0075, #488, #806,
 #817, #818, #906
 
 ## 位置づけ
@@ -373,6 +373,40 @@ closure の閉じた effect row を明示し、その operation の evidence が
 fork-safe と定めた built-in host capability だけを fork できる。user-defined handler
 は既定で task-local とし、user が fork-safe を宣言する surface は後続 ADR にする。
 
+### Executable authority contract
+
+ADR-0075 に従い、task/process が持つ authority は host と parent の部分集合とする。
+
+```text
+Root.authority  = VibexEntry.requires
+Child.authority = Child.transitiveRequirements
+
+Child.authority ⊆ Parent.authority ⊆ ComposedHost.provides
+Child.authority ⊆ ComposedHost.forkable
+```
+
+physical thread / Worker / worker slot は独自の ambient authority を持たない。実行中の
+task authority を一時的に借りるだけであり、task migration、worker pool reuse、worker
+数の変更で authority が増減してはならない。
+
+spawn closure の latent effect を root executable contract から落としてはならない。
+
+```text
+Req(spawn f)     = { Spawn[r]::spawn } ∪ Req(f)
+ForkReq(spawn f) = Req(f) ∪ ForkReq(f)
+```
+
+したがって child だけが `S3[Posts]::get_object` を行う場合も `.vibex` entry はその
+resource-qualified operation を要求する。provider/host が operation を提供するだけでなく
+fork-safe evidence として委譲可能でなければ spawn contract は満たされない。host が
+より強い operation を持っていても parent authority に無い operation を child へ渡す
+ことは禁止する。
+
+authority は v0.4.0 では immutable とし、動的 grant/revoke は導入しない。将来の
+`Process[Msg]` も同じ principal hierarchy を使い、親より長生きする場合は supervisor
+への ownership 移管を明示する。詳細、resource/provider contract、Lean Oracle は
+[vibex-runtime-contract.md](vibex-runtime-contract.md) を参照する。
+
 ## Memory and runtime context
 
 各 task は論理的に独立した heap / arena と `TaskContext` を持つ。単一 linear memory
@@ -510,6 +544,11 @@ Backend differential:
 - #488 probe は opt-in 環境だけで走り、不在を通常 CI failure にしない
 
 ## 実装順
+
+ADR-0075 の `.vibex` entry、semantic contract emission、local provider preflight は
+下記 runtime 実装と独立に先行できる。ただし child へ operation/resource 単位の
+evidence を実際に委譲する段階は、#817 の evidence passing と `TaskContext` 分離後に
+行う。
 
 1. 本仕様と negative/type fixtures を固定する。
 2. #817: replay handler を evidence passing + yield bubbling へ置換し、共通の

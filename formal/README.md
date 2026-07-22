@@ -1,10 +1,12 @@
 # Vibe formal model
 
 This directory contains small Lean 4 models of Vibe's effect system and Error
-policy, parallel compiler scheduler, and module system. Their sources of truth are
+policy, executable capability/resource contracts, parallel execution/compiler
+scheduling, and module system. Their sources of truth are
 [ADR-0071](../docs/effectset.md) and
 [ADR-0073](../docs/error-effect-policy.md),
-[ADR-0068](../docs/concurrency.md), plus
+[ADR-0068](../docs/concurrency.md),
+[ADR-0075](../docs/vibex-runtime-contract.md), plus
 [ADR-0070](../docs/module-system-oracle.md). The current string-based effect
 checker and synchronous eager `Task` implementation are not sources of truth.
 The module model is additionally locked to selfhost loader refinement tests.
@@ -181,6 +183,38 @@ backend trace extraction are also not yet proved. Each physical transition
 currently carries an explicit same/add/remove-running witness; deriving those
 witnesses from a concrete runtime transition and composing task ids with the
 compiler scheduler model remain future bridge proofs.
+
+## Verified executable capability-contract properties
+
+The capability model separates semantic operation authority, logical resource
+claims, provider lowering, host satisfaction, and physical worker assignment.
+It proves that:
+
+- resource identities are normalized effect arguments distinct from type and
+  nursery-region arguments;
+- executable Bool checks for binding satisfaction, host preflight, and spawn
+  delegation agree with their relational definitions;
+- successful preflight accounts for every entry requirement, while a missing
+  semantic operation prevents `main` from starting;
+- child authority is a subset of parent authority and, transitively, host
+  authority; a stronger host cannot implicitly grant an operation absent from
+  the parent;
+- forked child requirements must also belong to the host's fork-safe subset;
+- logical resource identity and kind both participate in binding satisfaction,
+  so a binding for another bucket does not satisfy the claim;
+- provider lowering leaves only unhandled source operations or operations
+  required by the provider itself, rather than treating S3 as an Http subtype;
+- a physical worker can perform only operations in its currently owned task's
+  authority, and those operations remain within the root host authority.
+
+Executable examples cover an S3-read contract, missing provider, wrong bucket
+binding, S3-to-Http lowering, read-to-write escalation rejection, and migration
+of one task between two physical workers.
+
+The current model does not prove provider implementation semantics, policy
+generation, provider-chain termination/ambiguity, manifest/WIT serialization,
+evidence-vector correspondence, or concrete Wasm worker isolation. Those are
+explicit compiler/runtime/provider refinement obligations in ADR-0075.
 
 ## Verified module-system properties
 
