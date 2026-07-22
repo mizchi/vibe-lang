@@ -23,7 +23,11 @@
    キャッシュ、capability effect、where 契約 Phase 1) は世界的にも先行。
    差分価値が最大なのは **FBIP 系の未取り込み後半 (drop-guided reuse /
    TRMC)** と **Effekt の 2025 年成果 (one-shot 定数時間 resume /
-   dynamic-wind)**。
+   dynamic-wind)**。ただし Perceus 実装の**成熟度**では Rust 製の類似言語
+   almide (LLM 向け関数型言語、wasm+native dual target) が一歩先を行く
+   — alias 解析による rc チェック除去や翻訳検証・形式証明まで踏み込んで
+   おり (下記サーベイ表)、vibe の rc-port.md Phase 3 完了後の次の一手の
+   参考になる。
 4. 並行モデルは **nursery = Spawn capability handler**、typed channel、
    task-local heap/evidence を核にする。message は deep-copy snapshot を基準とし、
    Perceus の uniqueness は last-use と transitive arena ownership を証明できる場合の
@@ -54,6 +58,8 @@
 | Rust merged doctests / Unison | Rust 2024 edition | doctest は最初から統合コンパイル + content-addressed キャッシュで |
 | Koka FP² / TRMC | ICFP 2023, POPL 2023 | Perceus の先: drop-guided reuse、fip/fbip 保証、cons 再帰のループ化 |
 | Ante (ownership × effects) | antelang.org 2025-05 | 継続が捕捉した線形資源の所有権問題 — 継続導入時に踏む課題の整理 |
+| almide (LLM 向け関数型言語、Rust 実装) | github.com/almide/almide crates/ 2026-07 | Perceus 実装の一般化で先行: `almide-mir/src/alias_safety.rs` が関数ローカル fixpoint dataflow で証明可能 unaliased な値への `MakeUnique` (rc>1 COW チェック) を除去する最適化パスを持つ。vibe は dup/drop 挿入止まり (rc-port.md Phase 3) でこの段階に未到達。さらに `translation_validation.rs` / `certificate.rs` + 別ワークスペース `almide-perceus-belt` (RC 規律の Lean 形式証明) で正しさを担保しており、vibe の unit test (`perceus_rc_test.vibe` 14 件) より検証が重い |
+| almide ベンチマーク手法 | github.com/almide/almide docs/BENCHMARKS.md | Hello World / FizzBuzz / 再帰 Fibonacci / Closure+call_indirect / Variant(match+float) の5本を「as shipped」と `wasm-opt -Oz` 後の両方でサイズ計測し継続運用。vibe は ADR-0038 に一回限りの5ベンチ表 (int_literal 等) はあるが継続計測ドキュメントがない。almide の5本は closure+indirect call・pattern match+float という vibe が手薄なコード生成経路を突いており、バイナリサイズ回帰ベンチとして流用価値が高い。加えて `almide-dojo` の Modification Survival Rate (AI 改変後もコンパイル・テストが通り続ける率) は vibe の「エージェント向け構造化診断」施策 (下記 High priority #4) の効果測定指標として転用できる |
 
 ## 取り込み提案 (優先順)
 
@@ -84,12 +90,21 @@
    resource effect × 非局所脱出の資源解放規則。継続/cancel 導入の前提。
 7. **drop-guided reuse + TRMC** (Koka FP²) — Perceus backend の次の一手。
    コンパイラ自身のビルドが最大の受益者 (AST 再構築ホットパス)。
+8. **wasm バイナリサイズ回帰ベンチ** (almide `docs/BENCHMARKS.md` 方式) —
+   cost: small。Hello World / FizzBuzz / 再帰 Fibonacci / Closure+call_indirect
+   / Variant(match+float) の5本を `wasm-opt -Oz` 前後で継続計測する
+   `docs/BENCHMARKS.md` を新設。ADR-0038 の一回限り計測を定常運用に格上げし、
+   closure・pattern match 系の回帰を捕捉する。
+9. **rc チェック除去の fixpoint 最適化** (almide `alias_safety.rs` 方式) —
+   cost: medium、rc-port.md Phase 3 (drop codegen) 完了後の前提あり。
+   関数ローカルな dataflow で証明可能 unaliased な値への rc>1 (MakeUnique
+   相当) チェックを除去し、ホットループの不要な refcount 分岐を削る。
 
 ### Low priority
 
-8. **Flux 流 refinement (where 契約 Phase 3)** — 決定可能述語に制限した
-   二層 SMT。GA ブロッカーではない。vibe は述語純粋性を effect row で
-   機械判定できるため導入条件は既に揃っている。
+10. **Flux 流 refinement (where 契約 Phase 3)** — 決定可能述語に制限した
+    二層 SMT。GA ブロッカーではない。vibe は述語純粋性を effect row で
+    機械判定できるため導入条件は既に揃っている。
 
 ## 参照
 
@@ -99,3 +114,6 @@
 - [WebAssembly proposal registry](https://github.com/WebAssembly/proposals)
 - [WebKit: JSPI in Safari 27 beta](https://webkit.org/blog/17967/news-from-wwdc26-webkit-in-safari-27-beta/)
 - [Mozilla JSPI tracking bug](https://bugzilla.mozilla.org/show_bug.cgi?id=1897981)
+- almide crates (Perceus RC 一般化・ベンチマーク手法の参照点、2026-07-22 調査):
+  [crates/almide-mir](https://github.com/almide/almide/tree/develop/crates/almide-mir)、
+  [docs/BENCHMARKS.md](https://github.com/almide/almide/blob/develop/docs/BENCHMARKS.md)
