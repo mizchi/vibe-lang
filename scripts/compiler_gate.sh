@@ -4193,6 +4193,35 @@ fi
 rm -rf "$m2dir"
 echo "[compiler-gate] handle-replay side-effect corruption regression guard ok (3013, ADR-0076 Phase 2 fix verified)"
 
+# 40m. ADR-0071 step 1 (#755, docs/effectset.md): a `with { ... }` row item
+#      may now name a single qualified operation (`Effect::op`), not just a
+#      whole effect name -- collect_effect_names in
+#      lib/@vibe/parser/parser_base.vibe. Parser-only slice: the row stays
+#      an opaque comma-joined String (no new AST shape), so round-trip is
+#      automatic; this gate just pins that the new grammar actually parses
+#      and compiles/runs end to end. Operation-level CHECKING (rejecting a
+#      perform of a DIFFERENT operation of the same effect when only one is
+#      named) is a separate, larger change (step 3), not covered here.
+echo "[compiler-gate] 40m/40 effect row operation-item grammar (ADR-0071 step 1/#755)"
+a71dir="_build/_gate_effectset_row_item"
+rm -rf "$a71dir"; mkdir -p "$a71dir"
+sed '/^__DATA__$/,$d' fixtures/effect_row_operation_item.vibe > "$a71dir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$a71dir/src.vibe" "$a71dir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$a71dir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_row_operation_item.vibe did not compile (with { Effect::op } row-item grammar regressed)" >&2
+  cat "$a71dir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+a71_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$a71dir/out.wasm" 2>&1 | tail -1)"
+if [ "$a71_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: effect_row_operation_item got '$a71_out' (want 42)" >&2
+  exit 1
+fi
+rm -rf "$a71dir"
+echo "[compiler-gate] effect row operation-item grammar ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the

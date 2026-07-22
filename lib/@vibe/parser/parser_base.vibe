@@ -825,16 +825,32 @@ fn parse_tparam_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) {
   }
 }
 
+// ADR-0071 (effectset): a row item is either a bare effect/effectset/row-var
+// identifier (`Env`) or a qualified single operation (`Env::get`) -- same
+// `Ident (:: Ident)?` qualification already used by parse_import_item and
+// parse_binding_name. The row itself stays a plain comma-joined `String`
+// (see TyFn/EFn's `Option[String]` field) so a qualified item round-trips
+// through the printer for free -- it just splices the text back verbatim,
+// no re-parsing. Checker-side recognition of `Effect::op` items (expanding
+// them to a single-operation row instead of rejecting as an unknown effect
+// name) is a separate, larger change (ADR-0071 step 3), not attempted here.
 fn collect_effect_names(tokens: Array[Token], pos: Int, acc: String) -> (String, Int) with { Error } {
   match peek(tokens, pos) {
     TRBrace => (acc, pos + 1),
     TIdent(name) => {
+      let (item, after_item) = match peek(tokens, pos + 1) {
+        TDoubleColon => match peek(tokens, pos + 2) {
+          TIdent(member) => (String::concat(name, String::concat("::", member)), pos + 3),
+          _ => throw("expected qualified operation name after '::' in effect list")
+        },
+        _ => (name, pos + 1)
+      }
       let new_acc = if String::length(acc) == 0 {
-        name
-      } else "\{acc}, \{name}"
-      match peek(tokens, pos + 1) {
-        TComma => collect_effect_names(tokens, pos + 2, new_acc),
-        TRBrace => (new_acc, pos + 2),
+        item
+      } else "\{acc}, \{item}"
+      match peek(tokens, after_item) {
+        TComma => collect_effect_names(tokens, after_item + 1, new_acc),
+        TRBrace => (new_acc, after_item + 1),
         _ => throw("expected ',' or '}' in effect list")
       }
     },
