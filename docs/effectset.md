@@ -1,6 +1,6 @@
 # ADR-0071: operation-level effect row と `effectset`
 
-Status: proposed (実装 step 1 は着地済み、2026-07-22 — 進捗セクション参照)
+Status: proposed (実装 step 1-2 は着地済み、step 3 は関数自身の宣言 row 展開のみ着地、2026-07-22 — 進捗セクション参照)
 
 Date: 2026-07-15
 
@@ -224,18 +224,29 @@ effectset と一致する場合はその effectset の参照を優先する。ef
 衝突 (`effect Env { Read -> Int }` の下で `effectset Env::Read` を宣言
 すると reject) — は checker_stmt.vibe のローカル関数
 (es_detect_cycle / es_qualified_collision、全 stmt の事前収集パスで
-宣言順に依存しない) として着地済み。それ以外の `effectset` は依然
-checker が明示的に "not yet supported" と reject する — member の
-完全展開・`with { EffectsetName }` の実際の authorize は項目 3
-(checker: 展開・包含) の残作業。`with { Env::get }` (単一 operation の
-直接列挙) 自体は既存の文字列ラベルベースの effect row チェック機構
-(row 全体を comma-joined `String` として扱う既存実装) にそのまま乗る
-ため、単一 operation を指す row item は最小権限として機能する
-(caller 側の transitive call-graph チェックで実証済み) が、これは
-項目 3 の正式な OperationRef 正規化ではなく既存機構の副産物である点に
-注意。fixtures/effect_row_operation_item.vibe (項目1) /
-err_effectset_not_yet_supported.vibe・err_effectset_cycle.vibe・
-err_effectset_operation_collision.vibe (項目2) + compiler_gate.sh
+宣言順に依存しない) として着地済み。
+
+項目 3 (checker: 展開・包含) のうち、**関数自身の宣言 row の展開**は
+着地済み: 循環・衝突のない `effectset` は (項目 2 時点の「常に reject」
+から変わり) 受理され、`with { EffectsetName }` を持つ関数自身の宣言
+row を実際に展開してから (checker_stmt.vibe の
+es_expand_stmts_effect_rows、純粋な AST 変換パス)、既存の文字列ラベル
+ベースの effect row 包含チェック機構 (checker_effects.vibe の
+decl_authorizes_effect 等、無改変) に渡す。`with { AskAll }`
+(effectset AskAll = { Ask::Get }) だけを宣言した関数が、
+`Ask::Get` を要求する別関数への呼び出しを正しく authorize できることを
+実証済み (fixtures/effect_effectset_expansion.vibe)。**未着手のまま
+残っている範囲**: 関数パラメータ自身の型に付く row (#885 callback
+overlay) の展開、handler レベルの operation 単位 discharge (項目 4)、
+contract/WIT の operation 単位 surface (項目 5)。`with { Env::get }`
+(単一 operation の直接列挙、effectset を介さない) 自体は既存の
+文字列ラベルベースの effect row チェック機構にそのまま乗るため、
+単一 operation を指す row item は最小権限として機能する (caller 側の
+transitive call-graph チェックで実証済み) が、これは正式な
+OperationRef 正規化ではなく既存機構の副産物である点に注意 (この点は
+変わっていない)。fixtures/effect_row_operation_item.vibe (項目1) /
+effect_effectset_expansion.vibe・err_effectset_cycle.vibe・
+err_effectset_operation_collision.vibe (項目2/3) + compiler_gate.sh
 40m/40n/40o で回帰を固定。
 
 **Bootstrap gotcha**: `lib/@vibe/parser/` 配下で「新しい関数を定義し、
