@@ -116,7 +116,7 @@ for _, rel in rows:
 # #897/Codex: optional non-capturing `as <mod> only` tail so a qualified
 # import's path capture doesn't swallow the " as h only" text as part of
 # the resolved path (the qualified grammar lives in lib/@vibe/parser/parser.vibe).
-dep_pattern = re.compile(r'^\s*(?:import|export)\s+(\.[\w./@\s-]+?)(?:\.vibe)?(?:\s+as\s+\w+\s+only)?\s*\{', re.MULTILINE)
+dep_pattern = re.compile(r'^\s*(?:import|export)\s+([.@][\w./@\s-]+?)(?:\.vibe)?(?:\s+as\s+\w+\s+only)?\s*\{', re.MULTILINE)
 
 def normalize_path(path: str) -> str:
     parts = []
@@ -132,9 +132,34 @@ def normalize_path(path: str) -> str:
         parts.append(seg)
     return "/".join(parts)
 
+COMPILER_AT_PREFIX = "@vibe/compiler"
+
 def resolve_path(base_rel: str, raw_path: str) -> str:
     base_dir = os.path.dirname(base_rel)
     raw_path = re.sub(r'\s*/\s*', '/', raw_path.strip())
+    if raw_path.startswith("@"):
+        # `@scope/name[/...]` package-qualified import (loader/header_cache.vibe's
+        # relative-import package-boundary check requires this spelling for
+        # any cross-package reference, including compiler-internal nested
+        # packages -- see docs on `enforce_relative_import_package_boundary_fs`).
+        # Only a path reaching back INSIDE this same compiler_dir tree
+        # (`@vibe/compiler/<sub>`) can be embedded in this bundle; anything
+        # else is a genuinely external package the real runtime loader
+        # resolves at compile time, not this textual bundler -- return the
+        # raw spelling unchanged so it naturally misses source_by_rel (same
+        # as an external dep always did: this dep_pattern used to require a
+        # leading `.`, so an external path was never even matched at all).
+        if raw_path == COMPILER_AT_PREFIX:
+            sub = ""
+        elif raw_path.startswith(COMPILER_AT_PREFIX + "/"):
+            sub = raw_path[len(COMPILER_AT_PREFIX) + 1:]
+        else:
+            return raw_path
+        prefix = sub + "/" if sub else ""
+        for idx_candidate in (prefix + "index.vpkg", prefix + "index.vibei", prefix + "index.vibe"):
+            if idx_candidate in source_by_rel:
+                return idx_candidate
+        return sub if sub else raw_path
     path = raw_path if raw_path.endswith(".vibe") else raw_path + ".vibe"
     if path.startswith("./") or path.startswith("../"):
         if base_dir:
@@ -367,7 +392,7 @@ for _, rel in rows:
 # #897/Codex: optional non-capturing `as <mod> only` tail so a qualified
 # import's path capture doesn't swallow the " as h only" text as part of
 # the resolved path (the qualified grammar lives in lib/@vibe/parser/parser.vibe).
-dep_pattern = re.compile(r'^\s*(?:import|export)\s+(\.[\w./@\s-]+?)(?:\.vibe)?(?:\s+as\s+\w+\s+only)?\s*\{', re.MULTILINE)
+dep_pattern = re.compile(r'^\s*(?:import|export)\s+([.@][\w./@\s-]+?)(?:\.vibe)?(?:\s+as\s+\w+\s+only)?\s*\{', re.MULTILINE)
 
 def normalize_path(path: str) -> str:
     parts = []
@@ -383,9 +408,34 @@ def normalize_path(path: str) -> str:
         parts.append(seg)
     return "/".join(parts)
 
+COMPILER_AT_PREFIX = "@vibe/compiler"
+
 def resolve_path(base_rel: str, raw_path: str) -> str:
     base_dir = os.path.dirname(base_rel)
     raw_path = re.sub(r'\s*/\s*', '/', raw_path.strip())
+    if raw_path.startswith("@"):
+        # `@scope/name[/...]` package-qualified import (loader/header_cache.vibe's
+        # relative-import package-boundary check requires this spelling for
+        # any cross-package reference, including compiler-internal nested
+        # packages -- see docs on `enforce_relative_import_package_boundary_fs`).
+        # Only a path reaching back INSIDE this same compiler_dir tree
+        # (`@vibe/compiler/<sub>`) can be embedded in this bundle; anything
+        # else is a genuinely external package the real runtime loader
+        # resolves at compile time, not this textual bundler -- return the
+        # raw spelling unchanged so it naturally misses source_by_rel (same
+        # as an external dep always did: this dep_pattern used to require a
+        # leading `.`, so an external path was never even matched at all).
+        if raw_path == COMPILER_AT_PREFIX:
+            sub = ""
+        elif raw_path.startswith(COMPILER_AT_PREFIX + "/"):
+            sub = raw_path[len(COMPILER_AT_PREFIX) + 1:]
+        else:
+            return raw_path
+        prefix = sub + "/" if sub else ""
+        for idx_candidate in (prefix + "index.vpkg", prefix + "index.vibei", prefix + "index.vibe"):
+            if idx_candidate in source_by_rel:
+                return idx_candidate
+        return sub if sub else raw_path
     path = raw_path if raw_path.endswith(".vibe") else raw_path + ".vibe"
     if path.startswith("./") or path.startswith("../"):
         if base_dir:

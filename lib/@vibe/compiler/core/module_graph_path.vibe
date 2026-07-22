@@ -1,4 +1,4 @@
-import ../../../../lib/@vibe/core {
+import @vibe/core {
   array_empty
 }
 
@@ -38,6 +38,45 @@ export fn ensure_regular_source_fs(path: String) -> Unit with { Error, Fs } {
   } else {
     ()
   }
+}
+
+export fn path_in_dir(dir: String, basename: String) -> String {
+  if dir == "" {
+    basename
+  } else if dir == "/" {
+    String::concat("/", basename)
+  } else {
+    String::concat(String::concat(dir, "/"), basename)
+  }
+}
+
+export fn vpkg_path_in_dir(dir: String) -> String {
+  path_in_dir(dir, "index.vpkg")
+}
+
+// The nearest enclosing index.vpkg is the package owner. Returning the
+// contract path (rather than the directory) also distinguishes a root package
+// from "no owner", where both directory strings would otherwise be empty.
+export fn nearest_vpkg_path_fs(path: String) -> String with { Fs } {
+  let mut current = dir_of_path(path)
+  let mut found = ""
+  let mut searching = true
+  while searching {
+    let candidate = vpkg_path_in_dir(current)
+    if Fs::exists(candidate) {
+      ensure_regular_source_fs(candidate)
+      found = candidate
+      searching = false
+    } else {
+      let parent = dir_of_path(current)
+      if parent == current {
+        searching = false
+      } else {
+        current = parent
+      }
+    }
+  }
+  found
 }
 
 // Linear membership scan used by `resolve_reexport_chain` to filter
