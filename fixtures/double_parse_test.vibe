@@ -4,7 +4,12 @@
 // "unknown name: Double::parse". Fixed in checker/builtins_misc.vibe
 // (lookup_int_parse, now also handling "Double::parse") and
 // codegen/common_base/double_parse_expr.vibe. Scientific notation ("1e10")
-// is not supported (deliberately narrow first version, see that file).
+// is not supported (deliberately narrow first version, see that file). The
+// digit accumulator also guards against a magnitude that would trip a
+// pre-existing, unrelated compiler bug (mutable Double locals corrupt near
+// 2^62, #1050) -- inputs whose integer digits would exceed Int::max_value
+// are rejected with None rather than risk a silently wrong value (Codex
+// review finding on #1049).
 
 test "Double::parse valid decimal" {
   let Some(v) = Double::parse("3.14")
@@ -63,5 +68,20 @@ test "Double::parse sign only" {
 
 test "Double::parse two dots" {
   let result = Double::parse("1.2.3")
+  assert(result is None)
+}
+
+test "Double::parse at safe magnitude boundary" {
+  let result = Double::parse("2305843009213693951")
+  assert(result is Some(_))
+}
+
+test "Double::parse rejects beyond safe magnitude boundary" {
+  let result = Double::parse("9999999999999999999")
+  assert(result is None)
+}
+
+test "Double::parse rejects very long digit string" {
+  let result = Double::parse("99999999999999999999999999999999999999.5")
   assert(result is None)
 }
