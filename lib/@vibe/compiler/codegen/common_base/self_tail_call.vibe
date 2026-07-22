@@ -1,0 +1,503 @@
+//# Imports
+
+import ../../core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  __to_string
+}
+
+import ../../../../../lib/@vibe/core {
+  array_empty
+}
+
+//# Functions
+
+// Self-tail-call optimization (#tco): a top-level `let f = (p0, p1, ...) ->
+// T { ... f(a0, a1, ...) ... }` whose ONLY self-references are calls to
+// itself in TAIL position compiles today to an ordinary wasm `call` at every
+// recursive step — confirmed by disassembly to overflow the native/wasm call
+// stack at a recursion depth in the low tens of thousands. `loop (i = 0, ..)
+// { ... continue(...) }` already compiles to genuine wasm `block`/`loop`/`br`
+// with zero stack growth (parser_expr_primary.vibe's parse_loop_primary +
+// desugar_loop_body). This pass rewrites a self-tail-recursive function body
+// into the SAME shape the parser already produces for an explicit `loop`, so
+// it inherits that already-proven-safe lowering: each function parameter is
+// shadowed by a fresh mutable local seeded from the parameter, the body is
+// wrapped in `while (true) { ... }`, a tail self-call becomes an assignment
+// to those mutable locals followed by a bare `continue`, and every other
+// tail expression becomes `__stc_result = <expr>; break`.
+//
+// Deliberately conservative (bail out to leave the original recursive `call`
+// untouched) whenever the shape is not obviously safe to rewrite:
+//   - the function's own name is shadowed anywhere in its body (a nested
+//     `let`/`let mut`/`let rec`/closure param/match-or-handle-pattern binding
+//     the same name) — a shadowed reference is NOT a self-call, and proving
+//     that precisely everywhere would need full scope tracking this pass
+//     does not do (see checker_capture.vibe's `bound` threading for what
+//     that would take);
+//   - the body contains `EHandle` (effect handler) or `EReturn` (early
+//     return) anywhere — both interact with control flow in ways this local,
+//     structural rewrite does not attempt to reason about;
+//   - no tail-position call to the function's own name with matching arity
+//     is found at all (nothing to rewrite).
+//
+// Runs once over the whole merged program, called from both codegen
+// backends' convergence points (mirrors desugar_trait_dicts /
+// rewrite_top_level_fn_alias_refs — see their call sites in
+// codegen/wasi/linked_compile.vibe and codegen/gc/backend_body.vibe).
+export fn rewrite_self_tail_calls(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, is_rec, name, ty, expr) => match expr {
+        EFn(tps, tbs, params, ret, eff, body) => {
+          let param_names = stc_param_names(params)
+          let arity = Array::length(param_names)
+          if stc_eligible(name, params, param_names, arity, body) {
+            let new_body = stc_build_loop_body(name, param_names, arity, body)
+            Array::set(stmts, i, SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, new_body)))
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn stc_param_names(params: Array[(String, Option[TypeExpr])]) -> Array[String] {
+  for p in params {
+    let (pn, _) = p
+    pn
+  }
+}
+
+fn stc_eligible(name: String, params: Array[(String, Option[TypeExpr])], param_names: Array[String], arity: Int, body: Expr) -> Bool {
+  if !stc_params_all_scalar(params) {
+    false
+  } else if stc_expr_binds_name(body, name) {
+    false
+  } else if stc_expr_has_handle_or_return(body) {
+    false
+  } else {
+    stc_tail_has_self_call(body, name, arity)
+  }
+}
+
+// Conservative safety valve: only rewrite when every parameter is an
+// unboxed scalar (Int/Bool/Float/Double/Unit, by declared type annotation).
+// The rewrite reassigns EVERY parameter's mutable local on every loop
+// iteration (mirroring how `loop (...)  { continue(...) }` already treats
+// its params — see the module doc comment), including parameters whose
+// value never actually changes across recursive calls. For a heap-managed
+// value (Array/String/struct/...) that redundant per-iteration reassignment
+// needs the same retain/release bookkeeping the RC (perceus) pass plans for
+// an ordinary `let mut`, and this pass runs too late in the pipeline to
+// replan that -- restricting to declared-scalar parameters sidesteps the
+// whole question. An unannotated parameter (`None`) is treated as NOT
+// scalar (conservative default: we cannot tell).
+fn stc_params_all_scalar(params: Array[(String, Option[TypeExpr])]) -> Bool {
+  let mut i = 0
+  let mut all_scalar = true
+  while i < Array::length(params) {
+    let (_, oty) = Array::get(params, i)
+    if !stc_type_is_scalar(oty) {
+      all_scalar = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  all_scalar
+}
+
+fn stc_type_is_scalar(oty: Option[TypeExpr]) -> Bool {
+  match oty {
+    Some(TyName(n)) => n == "Int" || n == "Bool" || n == "Float" || n == "Double",
+    Some(TyUnit) => true,
+    _ => false
+  }
+}
+
+// --- shadow guard: does `expr` bind `target` ANYWHERE (not just in tail
+// position)? A conservative whole-body scan — see the module doc comment.
+
+fn stc_expr_binds_name(expr: Expr, target: String) -> Bool {
+  match expr {
+    ELet(n, v, b, _) => n == target || stc_expr_binds_name(v, target) || stc_expr_binds_name(b, target),
+    ELetMut(n, v, b, _) => n == target || stc_expr_binds_name(v, target) || stc_expr_binds_name(b, target),
+    ELetRec(n, v, b) => n == target || stc_expr_binds_name(v, target) || stc_expr_binds_name(b, target),
+    EFn(_, _, params, _, _, b) => stc_params_bind_name(params, target) || stc_expr_binds_name(b, target),
+    EForIn(n, idx, it, b) => n == target || stc_opt_name_is(idx, target) || stc_expr_binds_name(it, target) || stc_expr_binds_name(b, target),
+    EMatch(s, arms) => stc_expr_binds_name(s, target) || stc_arms_bind_name(arms, target),
+    EHandle(s, arms) => stc_expr_binds_name(s, target) || stc_arms_bind_name(arms, target),
+    EIf(c, t, e) => stc_expr_binds_name(c, target) || stc_expr_binds_name(t, target) || stc_expr_binds_name(e, target),
+    ESeq(a, b) => stc_expr_binds_name(a, target) || stc_expr_binds_name(b, target),
+    EWhile(c, b) => stc_expr_binds_name(c, target) || stc_expr_binds_name(b, target),
+    ELoop(pairs, b) => stc_loop_pairs_bind_name(pairs, target) || stc_expr_binds_name(b, target),
+    ECall(callee, args, _) => stc_expr_binds_name(callee, target) || stc_exprs_bind_name(args, target),
+    EBinOp(_, l, r) => stc_expr_binds_name(l, target) || stc_expr_binds_name(r, target),
+    EUnaryOp(_, e2) => stc_expr_binds_name(e2, target),
+    EAssign(_, v, c) => stc_expr_binds_name(v, target) || stc_expr_binds_name(c, target),
+    EAssignOp(_, _, v, c) => stc_expr_binds_name(v, target) || stc_expr_binds_name(c, target),
+    EDot(o, _, _, _) => stc_expr_binds_name(o, target),
+    ELabeledArg(_, _, v) => stc_expr_binds_name(v, target),
+    EReturn(e2) => stc_expr_binds_name(e2, target),
+    EBreak(opt) => match opt {
+      Some(e2) => stc_expr_binds_name(e2, target),
+      None => false
+    },
+    EContinue(args) => stc_exprs_bind_name(args, target),
+    ETuple(elems) => stc_exprs_bind_name(elems, target),
+    EArray(elems) => stc_exprs_bind_name(elems, target),
+    ERecord(_, fields, _) => stc_fields_bind_name(fields, target),
+    EMap(fields) => stc_fields_bind_name(fields, target),
+    ESpread(e2) => stc_expr_binds_name(e2, target),
+    _ => false
+  }
+}
+
+fn stc_opt_name_is(opt: Option[String], target: String) -> Bool {
+  match opt {
+    Some(n) => n == target,
+    None => false
+  }
+}
+
+fn stc_exprs_bind_name(exprs: Array[Expr], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(exprs) {
+    if stc_expr_binds_name(Array::get(exprs, i), target) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn stc_fields_bind_name(fields: Array[(String, Expr)], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    if stc_expr_binds_name(v, target) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn stc_params_bind_name(params: Array[(String, Option[TypeExpr])], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(params) {
+    let (pn, _) = Array::get(params, i)
+    if pn == target {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn stc_loop_pairs_bind_name(pairs: Array[(String, Expr)], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(pairs) {
+    let (pn, init) = Array::get(pairs, i)
+    if pn == target || stc_expr_binds_name(init, target) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn stc_pat_binds_name(pat: Pat, target: String) -> Bool {
+  match pat {
+    PBind(n) => n == target,
+    PCtor(_, ps) => stc_pats_bind_name(ps, target),
+    PTuple(ps) => stc_pats_bind_name(ps, target),
+    POr(a, b) => stc_pat_binds_name(a, target) || stc_pat_binds_name(b, target),
+    PStruct(_, fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, p) = Array::get(fields, i)
+        if stc_pat_binds_name(p, target) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn stc_pats_bind_name(pats: Array[Pat], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(pats) {
+    if stc_pat_binds_name(Array::get(pats, i), target) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn stc_arms_bind_name(arms: Array[(Pat, Expr)], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) {
+    let (p, ex) = Array::get(arms, i)
+    if stc_pat_binds_name(p, target) || stc_expr_binds_name(ex, target) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// --- whole-body guard: bail if `EHandle`/`EReturn` appear anywhere.
+
+fn stc_expr_has_handle_or_return(expr: Expr) -> Bool {
+  match expr {
+    EHandle(_, _) => true,
+    EReturn(_) => true,
+    ELet(_, v, b, _) => stc_expr_has_handle_or_return(v) || stc_expr_has_handle_or_return(b),
+    ELetMut(_, v, b, _) => stc_expr_has_handle_or_return(v) || stc_expr_has_handle_or_return(b),
+    ELetRec(_, v, b) => stc_expr_has_handle_or_return(v) || stc_expr_has_handle_or_return(b),
+    EFn(_, _, _, _, _, b) => stc_expr_has_handle_or_return(b),
+    EForIn(_, _, it, b) => stc_expr_has_handle_or_return(it) || stc_expr_has_handle_or_return(b),
+    EMatch(s, arms) => stc_expr_has_handle_or_return(s) || stc_arms_have_handle_or_return(arms),
+    EIf(c, t, e) => stc_expr_has_handle_or_return(c) || stc_expr_has_handle_or_return(t) || stc_expr_has_handle_or_return(e),
+    ESeq(a, b) => stc_expr_has_handle_or_return(a) || stc_expr_has_handle_or_return(b),
+    EWhile(c, b) => stc_expr_has_handle_or_return(c) || stc_expr_has_handle_or_return(b),
+    ELoop(pairs, b) => stc_loop_pairs_have_handle_or_return(pairs) || stc_expr_has_handle_or_return(b),
+    ECall(callee, args, _) => stc_expr_has_handle_or_return(callee) || stc_exprs_have_handle_or_return(args),
+    EBinOp(_, l, r) => stc_expr_has_handle_or_return(l) || stc_expr_has_handle_or_return(r),
+    EUnaryOp(_, e2) => stc_expr_has_handle_or_return(e2),
+    EAssign(_, v, c) => stc_expr_has_handle_or_return(v) || stc_expr_has_handle_or_return(c),
+    EAssignOp(_, _, v, c) => stc_expr_has_handle_or_return(v) || stc_expr_has_handle_or_return(c),
+    EDot(o, _, _, _) => stc_expr_has_handle_or_return(o),
+    ELabeledArg(_, _, v) => stc_expr_has_handle_or_return(v),
+    EBreak(opt) => match opt {
+      Some(e2) => stc_expr_has_handle_or_return(e2),
+      None => false
+    },
+    EContinue(args) => stc_exprs_have_handle_or_return(args),
+    ETuple(elems) => stc_exprs_have_handle_or_return(elems),
+    EArray(elems) => stc_exprs_have_handle_or_return(elems),
+    ERecord(_, fields, _) => stc_fields_have_handle_or_return(fields),
+    EMap(fields) => stc_fields_have_handle_or_return(fields),
+    ESpread(e2) => stc_expr_has_handle_or_return(e2),
+    _ => false
+  }
+}
+
+fn stc_exprs_have_handle_or_return(exprs: Array[Expr]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(exprs) {
+    if stc_expr_has_handle_or_return(Array::get(exprs, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn stc_fields_have_handle_or_return(fields: Array[(String, Expr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    if stc_expr_has_handle_or_return(v) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn stc_loop_pairs_have_handle_or_return(pairs: Array[(String, Expr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(pairs) {
+    let (_, init) = Array::get(pairs, i)
+    if stc_expr_has_handle_or_return(init) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn stc_arms_have_handle_or_return(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    if stc_expr_has_handle_or_return(ex) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// --- tail-position self-call detection: recurses ONLY into structural tail
+// slots (mirrors parser_expr_primary.vibe's desugar_loop_body traversal).
+
+fn stc_is_self_call(expr: Expr, name: String, arity: Int) -> Bool {
+  match expr {
+    ECall(callee, args, _) => match callee {
+      EIdent(cn, _) => cn == name && Array::length(args) == arity,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+fn stc_tail_has_self_call(expr: Expr, name: String, arity: Int) -> Bool {
+  match expr {
+    EIf(_, t, e) => stc_tail_has_self_call(t, name, arity) || stc_tail_has_self_call(e, name, arity),
+    EMatch(_, arms) => stc_tail_arms_have_self_call(arms, name, arity),
+    ELet(_, _, b, _) => stc_tail_has_self_call(b, name, arity),
+    ELetMut(_, _, b, _) => stc_tail_has_self_call(b, name, arity),
+    ELetRec(_, _, b) => stc_tail_has_self_call(b, name, arity),
+    ESeq(_, b) => stc_tail_has_self_call(b, name, arity),
+    EAssign(_, _, c) => stc_tail_has_self_call(c, name, arity),
+    EAssignOp(_, _, _, c) => stc_tail_has_self_call(c, name, arity),
+    _ => stc_is_self_call(expr, name, arity)
+  }
+}
+
+fn stc_tail_arms_have_self_call(arms: Array[(Pat, Expr)], name: String, arity: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    if stc_tail_has_self_call(ex, name, arity) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// --- the rewrite itself.
+
+fn stc_build_loop_body(name: String, param_names: Array[String], arity: Int, body: Expr) -> Expr {
+  let transformed = stc_rewrite_tail(body, name, param_names, arity, 0)
+  let while_expr = EWhile(EBool(true), transformed)
+  let looped = ELetMut("__stc_result", EInt(0),
+    ESeq(while_expr, EIdent("__stc_result", -1)), -1)
+  let mut wrapped = looped
+  let mut wi = arity - 1
+  while wi >= 0 {
+    let pn = Array::get(param_names, wi)
+    wrapped = ELetMut(pn, EIdent(pn, -1), wrapped, -1)
+    wi = wi - 1
+  }
+  wrapped
+}
+
+// Recurses into tail slots exactly like stc_tail_has_self_call above; a self-
+// call in tail position becomes an assign-then-continue, every other tail
+// leaf becomes an assign-to-`__stc_result`-then-break. `seq` seeds the temp
+// names (`__stc<seq>_<argIdx>`) so nested self-calls under different tail
+// branches of the same function never collide with each other's temporaries.
+fn stc_rewrite_tail(expr: Expr, name: String, param_names: Array[String], arity: Int, seq: Int) -> Expr {
+  match expr {
+    EIf(c, t, e) => EIf(c, stc_rewrite_tail(t, name, param_names, arity, seq * 2 + 1), stc_rewrite_tail(e, name, param_names, arity, seq * 2 + 2)),
+    EMatch(s, arms) => EMatch(s, stc_rewrite_tail_arms(arms, name, param_names, arity, seq)),
+    ELet(n, v, b, off) => ELet(n, v, stc_rewrite_tail(b, name, param_names, arity, seq), off),
+    ELetMut(n, v, b, off) => ELetMut(n, v, stc_rewrite_tail(b, name, param_names, arity, seq), off),
+    ELetRec(n, v, b) => ELetRec(n, v, stc_rewrite_tail(b, name, param_names, arity, seq)),
+    ESeq(a, b) => ESeq(a, stc_rewrite_tail(b, name, param_names, arity, seq)),
+    EAssign(n, v, c) => EAssign(n, v, stc_rewrite_tail(c, name, param_names, arity, seq)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, v, stc_rewrite_tail(c, name, param_names, arity, seq)),
+    _ => if stc_is_self_call(expr, name, arity) {
+      stc_build_continue(expr, param_names, arity, seq)
+    } else {
+      EAssign("__stc_result", expr, EBreak(None))
+    }
+  }
+}
+
+fn stc_rewrite_tail_arms(arms: Array[(Pat, Expr)], name: String, param_names: Array[String], arity: Int, seq: Int) -> Array[(Pat, Expr)] {
+  let mut i = 0
+  let mut out = array_empty()
+  while i < Array::length(arms) {
+    let (p, ex) = Array::get(arms, i)
+    Array::push(out, (p, stc_rewrite_tail(ex, name, param_names, arity, seq * 101 + i)))
+    i = i + 1
+  }
+  out
+}
+
+// `f(a0, a1, ...)` in tail position -> bind each arg to a fresh temp (so
+// argument evaluation cannot observe partially-updated loop-carried
+// parameters, exactly like desugar_loop_body's `continue(args)` handling),
+// assign the temps into the parameters' mutable locals, then a bare
+// `continue` (codegen drops any EContinue payload — see the parser's
+// desugar_loop_body doc comment — so the payload here is only ever empty).
+fn stc_build_continue(call_expr: Expr, param_names: Array[String], arity: Int, seq: Int) -> Expr {
+  match call_expr {
+    ECall(_, args, _) => {
+      let mut result = EContinue(array_empty())
+      let mut ai = arity - 1
+      while ai >= 0 {
+        let tmp = stc_temp_name(seq, ai)
+        result = EAssign(Array::get(param_names, ai), EIdent(tmp, -1), result)
+        ai = ai - 1
+      }
+      let mut aj = arity - 1
+      while aj >= 0 {
+        let tmp = stc_temp_name(seq, aj)
+        result = ELet(tmp, Array::get(args, aj), result, -1)
+        aj = aj - 1
+      }
+      result
+    },
+    _ => call_expr
+  }
+}
+
+fn stc_temp_name(seq: Int, idx: Int) -> String {
+  String::concat("__stc", String::concat(__to_string(seq), String::concat("_", __to_string(idx))))
+}
