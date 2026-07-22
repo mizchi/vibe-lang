@@ -1539,7 +1539,36 @@ export fn check_module(source: String, path: String, sources: Array[(String, Str
 fn desugar_contract_source_fs(path: String, source: String) -> String with { Error, Fs } {
   let dir = dir_of_path(path)
   validate_index_layout_fs(path)
-  let (decls, opaque_names, extra) = parse_contract_program(lex(source))
+  let (decls_raw, opaque_names, extra) = parse_contract_program(lex(source))
+  // `source` here has already had its leading directive region blanked by
+  // extract_require_pins (see ingest_source_text_fs), so the directive must
+  // be read back from the ORIGINAL on-disk text via `path`.
+  let pkg_version = extract_package_version(Fs::read_file(path))
+  // #<version-synthesis>: `version` is already carried by the package's own
+  // leading `version x.y.z` directive (ADR-0065/#754) -- a contract no
+  // longer needs to also declare `let version: String`, nor does any impl
+  // file need to define it. Drop it from `decls` (so `check_contract` stops
+  // demanding an implementation for it) and synthesize the binding directly
+  // into the facade instead. Only do this when a directive actually exists
+  // (Codex review on #1054): a contract with a bare `let version: String`
+  // decl and NO `version x.y.z` directive is the pre-existing legacy shape
+  // (declared + hand-implemented, no synthesis) -- dropping it there too
+  // would strip the declaration out from under a real implementation with
+  // nothing to replace it, turning a legitimate impl into an undeclared
+  // export. A contract that still spells the old bodyless `let version:
+  // String` line alongside a real directive keeps parsing (this filter just
+  // makes it a no-op) so existing packages migrate at their own pace.
+  let decls = array_empty()
+  let mut dvi = 0
+  while dvi < Array::length(decls_raw) {
+    let (dname, dsig) = Array::get(decls_raw, dvi)
+    if dname == "version" && dsig == "val String" && pkg_version != "" {
+      ()
+    } else {
+      Array::push(decls, (dname, dsig))
+    }
+    dvi = dvi + 1
+  }
   let (impl_raws0, type_defs) = classify_contract_stmts(extra)
   // #730: explicit `import ./impl.vibe {}` declarations win; a contract that
   // declares none auto-discovers its sibling *.vibe files (Fs::readdir,
@@ -1604,7 +1633,12 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with { Err
   if Array::length(errors) > 0 {
     throw("\{path}: contract violation: \{String::join(errors, "; ")}")
   } else ()
-  contract_facade_source(decls, opaque_names, type_defs, impl_units)
+  let facade = contract_facade_source(decls, opaque_names, type_defs, impl_units)
+  if pkg_version == "" {
+    facade
+  } else {
+    String::concat(facade, "\nexport let version: String = \"\{pkg_version}\"\n")
+  }
 }
 
 // #730 (D-2): both content-addressing hashes of a contract package, from its

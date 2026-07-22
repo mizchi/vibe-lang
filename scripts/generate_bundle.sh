@@ -154,6 +154,56 @@ def resolve_path(base_rel: str, raw_path: str) -> str:
                 return idx_candidate
     return candidate
 
+# Mirror the RUNTIME loader's `.vpkg` sibling auto-discovery (ADR-0070 Phase
+# 1, `contract_sibling_impl_raws`/loader/header_cache.vibe): this reachability
+# walk is a separate, textual-only re-implementation (it runs before any
+# compiler exists, so it can't call the real desugar logic) that used to see
+# a package's impl files ONLY via the contract's own `import ./x.vibe {}`
+# lines. Since the runtime now auto-discovers those siblings for a `.vpkg`
+# UNCONDITIONALLY regardless of whether they're declared, a `.vpkg` with no
+# (or partial) explicit import lines was going stale here: this walker
+# treated the undeclared siblings as unreachable dead code and silently
+# pruned them from the bundle, even though the self-hosted compiler embeds
+# and needs them. Fixed by having the walker ITSELF auto-discover: whenever
+# it reaches a `.vpkg`, it also visits every sibling `.vibe` in that file's
+# directory, using the exact same exclusion rules as the vibe-side discovery
+# function.
+#
+# `.vibei` (legacy, loader.vibe's OTHER branch) keeps the OLD conditional
+# rule instead -- auto-discover only when the contract declares NO explicit
+# import lines at all; an explicit (even partial) list still means
+# explicit-only, no discovery -- so a legacy package can deliberately keep an
+# ordinary sibling file out of its contract (Codex review on #1054: treating
+# `.vibei` the same as `.vpkg` here could pull an intentionally-excluded
+# sibling into the bundle's source closure that the runtime would never load
+# for that same package).
+CONTRACT_SUFFIXES = (".vpkg", ".vibei")
+
+def wants_contract_discovery(rel: str, found_deps: int) -> bool:
+    if rel.endswith(".vpkg"):
+        return True
+    if rel.endswith(".vibei"):
+        return found_deps == 0
+    return False
+
+def contract_sibling_rels(rel: str):
+    real_dir = os.path.join(compiler_dir, os.path.dirname(rel))
+    if not os.path.isdir(real_dir):
+        return []
+    base_dir = os.path.dirname(rel)
+    out = []
+    for name in sorted(os.listdir(real_dir)):
+        if name in ("index.vpkg", "index.vibei", "index.vibe"):
+            continue
+        if not name.endswith(".vibe"):
+            continue
+        if name.endswith("_test.vibe") or name.endswith("_bench.vibe") or name.endswith(".draft.vibe"):
+            continue
+        if name.startswith("_"):
+            continue
+        out.append(normalize_path(base_dir + "/" + name) if base_dir else name)
+    return out
+
 reachable = set()
 
 # Manifest-completeness guard (#740 follow-up): an import that resolves to a
@@ -181,11 +231,18 @@ def visit(rel: str):
     if source is None:
         return
     reachable.add(rel)
+    found = 0
     for dep in dep_pattern.findall(source):
+        found += 1
         target = resolve_path(rel, dep)
         if target not in source_by_rel:
             record_gap(rel, target)
         visit(target)
+    if wants_contract_discovery(rel, found):
+        for sib in contract_sibling_rels(rel):
+            if sib not in source_by_rel:
+                record_gap(rel, sib)
+            visit(sib)
 
 visit(root_rel)
 index_by_rel = {}
@@ -205,8 +262,13 @@ def visit_ordered(rel: str):
     if source is None:
         return
     visited.add(rel)
+    found = 0
     for dep in dep_pattern.findall(source):
+        found += 1
         visit_ordered(resolve_path(rel, dep))
+    if wants_contract_discovery(rel, found):
+        for sib in contract_sibling_rels(rel):
+            visit_ordered(sib)
     ordered.append(rel)
 
 visit_ordered(root_rel)
@@ -225,11 +287,18 @@ def visit_bundle(rel: str):
     if source is None:
         return
     bundle_reachable.add(rel)
+    found = 0
     for dep in dep_pattern.findall(source):
+        found += 1
         target = resolve_path(rel, dep)
         if target not in source_by_rel:
             record_gap(rel, target)
         visit_bundle(target)
+    if wants_contract_discovery(rel, found):
+        for sib in contract_sibling_rels(rel):
+            if sib not in source_by_rel:
+                record_gap(rel, sib)
+            visit_bundle(sib)
 
 # Additional entry points for the main bundle
 bundle_extra_entries = os.environ.get("VIBE_BUNDLE_EXTRA_ENTRIES", "codegen/gc/index.vibe,index.vibe")
@@ -334,6 +403,38 @@ def resolve_path(base_rel: str, raw_path: str) -> str:
                 return idx_candidate
     return candidate
 
+# See the matching helper in the cli_adapter.vibe walk above: mirrors the
+# runtime loader's `.vpkg` sibling auto-discovery (unconditional) vs legacy
+# `.vibei` (only when no explicit import lines) so this textual walk doesn't
+# silently prune undeclared-but-real siblings, nor pull in a sibling a legacy
+# `.vibei` deliberately left out of its contract.
+CONTRACT_SUFFIXES = (".vpkg", ".vibei")
+
+def wants_contract_discovery(rel: str, found_deps: int) -> bool:
+    if rel.endswith(".vpkg"):
+        return True
+    if rel.endswith(".vibei"):
+        return found_deps == 0
+    return False
+
+def contract_sibling_rels(rel: str):
+    real_dir = os.path.join(compiler_dir, os.path.dirname(rel))
+    if not os.path.isdir(real_dir):
+        return []
+    base_dir = os.path.dirname(rel)
+    out = []
+    for name in sorted(os.listdir(real_dir)):
+        if name in ("index.vpkg", "index.vibei", "index.vibe"):
+            continue
+        if not name.endswith(".vibe"):
+            continue
+        if name.endswith("_test.vibe") or name.endswith("_bench.vibe") or name.endswith(".draft.vibe"):
+            continue
+        if name.startswith("_"):
+            continue
+        out.append(normalize_path(base_dir + "/" + name) if base_dir else name)
+    return out
+
 index_by_rel = {}
 for pair_index, (_, rel) in enumerate(rows):
     index_by_rel[rel] = pair_index
@@ -348,8 +449,13 @@ def visit_ordered(rel: str):
     if source is None:
         return
     visited.add(rel)
+    found = 0
     for dep in dep_pattern.findall(source):
+        found += 1
         visit_ordered(resolve_path(rel, dep))
+    if wants_contract_discovery(rel, found):
+        for sib in contract_sibling_rels(rel):
+            visit_ordered(sib)
     ordered.append(rel)
 
 visit_ordered(root_rel)
