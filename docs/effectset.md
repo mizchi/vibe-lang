@@ -1,6 +1,6 @@
 # ADR-0071: operation-level effect row と `effectset`
 
-Status: proposed (実装 step 1-2 は着地済み、step 3 は関数自身の宣言 row 展開のみ着地、2026-07-22 — 進捗セクション参照)
+Status: proposed (実装 step 1-2 は着地済み、step 3 は関数自身の宣言 row + パラメータ row の展開が着地、2026-07-22 — 進捗セクション参照)
 
 Date: 2026-07-15
 
@@ -226,28 +226,40 @@ effectset と一致する場合はその effectset の参照を優先する。ef
 (es_detect_cycle / es_qualified_collision、全 stmt の事前収集パスで
 宣言順に依存しない) として着地済み。
 
-項目 3 (checker: 展開・包含) のうち、**関数自身の宣言 row の展開**は
+項目 3 (checker: 展開・包含) のうち、**関数自身の宣言 row の展開**と
+**関数パラメータ自身の型に付く row (#885 callback overlay) の展開**は
 着地済み: 循環・衝突のない `effectset` は (項目 2 時点の「常に reject」
-から変わり) 受理され、`with { EffectsetName }` を持つ関数自身の宣言
-row を実際に展開してから (checker_stmt.vibe の
-es_expand_stmts_effect_rows、純粋な AST 変換パス)、既存の文字列ラベル
-ベースの effect row 包含チェック機構 (checker_effects.vibe の
-decl_authorizes_effect 等、無改変) に渡す。`with { AskAll }`
-(effectset AskAll = { Ask::Get }) だけを宣言した関数が、
-`Ask::Get` を要求する別関数への呼び出しを正しく authorize できることを
-実証済み (fixtures/effect_effectset_expansion.vibe)。**未着手のまま
-残っている範囲**: 関数パラメータ自身の型に付く row (#885 callback
-overlay) の展開、handler レベルの operation 単位 discharge (項目 4)、
-contract/WIT の operation 単位 surface (項目 5)。`with { Env::get }`
-(単一 operation の直接列挙、effectset を介さない) 自体は既存の
-文字列ラベルベースの effect row チェック機構にそのまま乗るため、
-単一 operation を指す row item は最小権限として機能する (caller 側の
-transitive call-graph チェックで実証済み) が、これは正式な
-OperationRef 正規化ではなく既存機構の副産物である点に注意 (この点は
-変わっていない)。fixtures/effect_row_operation_item.vibe (項目1) /
-effect_effectset_expansion.vibe・err_effectset_cycle.vibe・
-err_effectset_operation_collision.vibe (項目2/3) + compiler_gate.sh
-40m/40n/40o で回帰を固定。
+から変わり) 受理され、`with { EffectsetName }` を持つ row を実際に
+展開してから (checker_stmt.vibe の es_expand_stmts_effect_rows /
+es_expand_top_value、純粋な AST 変換パス)、既存の文字列ラベルベースの
+effect row 包含チェック機構に渡す。展開は check_program の最初
+(check_stmts より前) で一度だけ行う — 当初この展開を
+collect_async_effect_errors の直前だけに絞っていたところ、
+checker.vibe の effect_row_dropped (引数の型互換性チェック、
+check_stmts の一部として実行される、独立した別経路) が展開前の生の
+row 文字列を比較してしまい、`with { AskAll }` を持つコールバック
+引数を渡すと「未展開の "AskAll" と "Ask::Get" が一致しない」という
+誤検出で reject される実例が見つかった。展開のタイミングを
+check_stmts より前に前倒しすることで、この経路と perform-effect
+leak-through チェック (checker_effects.vibe の #885 overlay) の両方が
+展開後の row を見るようになり、修正された。`with { AskAll }` だけを
+宣言した関数・コールバック引数のどちらも、`Ask::Get` を要求する呼び出しを
+正しく authorize できることを実証済み
+(fixtures/effect_effectset_expansion.vibe /
+effect_effectset_param_expansion.vibe)。**未着手のまま残っている範囲**:
+handler レベルの operation 単位 discharge (項目 4 — 現状 `handle ...
+with Env` は Env 全体を一括で discharge しており、特定 operation だけを
+discharge する形にはなっていない)、contract/WIT の operation 単位
+surface (項目 5)。`with { Env::get }` (単一 operation の直接列挙、
+effectset を介さない) 自体は既存の文字列ラベルベースの effect row
+チェック機構にそのまま乗るため、単一 operation を指す row item は
+最小権限として機能する (caller 側の transitive call-graph チェックで
+実証済み) が、これは正式な OperationRef 正規化ではなく既存機構の
+副産物である点に注意 (この点は変わっていない)。
+fixtures/effect_row_operation_item.vibe (項目1) /
+effect_effectset_expansion.vibe・effect_effectset_param_expansion.vibe・
+err_effectset_cycle.vibe・err_effectset_operation_collision.vibe
+(項目2/3) + compiler_gate.sh 40m/40n/40o/40p で回帰を固定。
 
 **Bootstrap gotcha**: `lib/@vibe/parser/` 配下で「新しい関数を定義し、
 別ファイルからその関数を import で参照する」変更を同一コミットに含めると、
