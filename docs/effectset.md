@@ -1,6 +1,6 @@
 # ADR-0071: operation-level effect row と `effectset`
 
-Status: proposed (実装 step 1-2 は着地済み、step 3 は関数自身の宣言 row + パラメータ row の展開が着地、2026-07-22 — 進捗セクション参照)
+Status: proposed (実装 step 1-2-4 は着地済み、step 3 は関数自身の宣言 row + パラメータ row の展開が着地、2026-07-22 — 進捗セクション参照)
 
 Date: 2026-07-15
 
@@ -260,6 +260,26 @@ fixtures/effect_row_operation_item.vibe (項目1) /
 effect_effectset_expansion.vibe・effect_effectset_param_expansion.vibe・
 err_effectset_cycle.vibe・err_effectset_operation_collision.vibe
 (項目2/3) + compiler_gate.sh 40m/40n/40o/40p で回帰を固定。
+
+項目 4 (handler: operation 単位の discharge) も着地済み:
+`handle body with Effect {...}` は Effect の全 operation を exhaustive
+に扱う (ADR-0050、部分的な handling は表現不能) ため、bare な effect
+名を discharge することは、その全 qualified operation 名を discharge
+することと意味的に等価だが、collect_handle_effects
+(checker_effects.vibe) は従来 bare な effect 名しか記録しておらず、
+下流の包含チェックは厳密な文字列一致で行われるため、handled body が
+transitively 呼び出す関数が operation 単位の row
+(`with { Ask::Get }`、bare な effect ではなく) を宣言していると、
+handle が明らかにそれをカバーしているにも関わらず「still missing」と
+誤って reject されるケースがあった (修正前に実際に再現・確認)。
+collect_handle_effects が各 arm の bare effect 名に加えて fully
+qualified operation 名も discharge set に加えるよう修正し、ADR 本文の
+回帰ロック項目「`handle ... with Env` 後は body が要求した `Env`
+operation だけが消える」を実質的に満たす形になった。
+fixtures/effect_handle_operation_level_discharge.vibe +
+compiler_gate.sh 40q で回帰を固定。**未着手のまま残っている範囲**:
+contract/WIT の operation 単位 surface (項目 5)、ADR-0076 evidence
+vector への正規化 row の接続 (項目 6)。
 
 **Bootstrap gotcha**: `lib/@vibe/parser/` 配下で「新しい関数を定義し、
 別ファイルからその関数を import で参照する」変更を同一コミットに含めると、
