@@ -1,96 +1,107 @@
-//# @vibe/core/set — string set. The contract (index.vibei) re-exports the
-//# StringSet enum via its bodyless `type StringSet` declaration.
+//# @vibe/core/set — string set. The contract (index.vibei) re-exports
+//# StringSet as an opaque `type StringSet` declaration, so this file is free
+//# to choose its own internal representation. Backed by the compiler-builtin
+//# `Map[String, Bool]` (#841 item E2: the prior recursive linked-list
+//# enum made every operation O(n); the builtin map gives O(1)-ish
+//# contains/add). `remove` still rebuilds via Map::keys since there is no
+//# `Map::delete` builtin -- no worse than the old implementation, which was
+//# already O(n) there too.
 
 //# Types
 
-export enum StringSet {
-  Empty;
-  Node(String, StringSet)
+export struct StringSet {
+  entries: Map[String, Bool]
 }
 
 //# Functions
 
 export fn size(s: StringSet) -> Int {
-  match s {
-    Empty => 0,
-    Node(_, tail) => 1 + size(tail)
-  }
+  Array::length(Map::keys(s.entries))
 }
 
 export fn empty() -> StringSet {
-  Empty
-}
-
-export fn remove(s: StringSet, value: String) -> StringSet {
-  match s {
-    Empty => Empty,
-    Node(head, tail) => if head == value {
-      tail
-    } else Node(head, remove(tail, value))
-  }
+  StringSet::{ entries: Map::new() }
 }
 
 export fn contains(s: StringSet, value: String) -> Bool {
-  match s {
-    Empty => false,
-    Node(head, tail) => if head == value {
-      true
-    } else contains(tail, value)
-  }
+  Map::has_key(s.entries, value)
 }
 
 export fn add(s: StringSet, value: String) -> StringSet {
-  if contains(s, value) {
-    s
-  } else Node(value, s)
+  StringSet::{ entries: Map::set(s.entries, value, true) }
+}
+
+export fn remove(s: StringSet, value: String) -> StringSet {
+  let keys = Map::keys(s.entries)
+  let len = Array::length(keys)
+  let rec go = (i: Int, acc: Map[String, Bool]) -> Map[String, Bool] {
+    if i >= len {
+      acc
+    } else {
+      let k = Array::get(keys, i)
+      if k == value {
+        go(i + 1, acc)
+      } else go(i + 1, Map::set(acc, k, true))
+    }
+  }
+  StringSet::{ entries: go(0, Map::new()) }
 }
 
 export fn is_empty(s: StringSet) -> Bool {
-  s is Empty
+  Array::length(Map::keys(s.entries)) == 0
 }
 
 export fn set_union(a: StringSet, b: StringSet) -> StringSet {
-  let rec go = (rest: StringSet, acc: StringSet) -> StringSet {
-    match rest {
-      Empty => acc,
-      Node(head, tail) => go(tail, add(acc, head))
-    }
+  let keys = Map::keys(b.entries)
+  let len = Array::length(keys)
+  let rec go = (i: Int, acc: Map[String, Bool]) -> Map[String, Bool] {
+    if i >= len {
+      acc
+    } else go(i + 1, Map::set(acc, Array::get(keys, i), true))
   }
-  go(b, a)
+  StringSet::{ entries: go(0, a.entries) }
 }
 
 export fn from_array(values: Array[String]) -> StringSet {
   let len = Array::length(values)
-  let rec go = (i: Int, acc: StringSet) -> StringSet {
+  let rec go = (i: Int, acc: Map[String, Bool]) -> Map[String, Bool] {
     if i >= len {
       acc
-    } else go(i + 1, add(acc, Array::get(values, i)))
+    } else go(i + 1, Map::set(acc, Array::get(values, i), true))
   }
-  go(0, Empty)
+  StringSet::{ entries: go(0, Map::new()) }
 }
 
 export fn set_intersect(a: StringSet, b: StringSet) -> StringSet {
-  let rec go = (rest: StringSet, acc: StringSet) -> StringSet {
-    match rest {
-      Empty => acc,
-      Node(head, tail) => if contains(b, head) {
-        go(tail, add(acc, head))
-      } else go(tail, acc)
+  let keys = Map::keys(a.entries)
+  let len = Array::length(keys)
+  let rec go = (i: Int, acc: Map[String, Bool]) -> Map[String, Bool] {
+    if i >= len {
+      acc
+    } else {
+      let k = Array::get(keys, i)
+      if Map::has_key(b.entries, k) {
+        go(i + 1, Map::set(acc, k, true))
+      } else go(i + 1, acc)
     }
   }
-  go(a, Empty)
+  StringSet::{ entries: go(0, Map::new()) }
 }
 
 export fn set_difference(a: StringSet, b: StringSet) -> StringSet {
-  let rec go = (rest: StringSet, acc: StringSet) -> StringSet {
-    match rest {
-      Empty => acc,
-      Node(head, tail) => if contains(b, head) {
-        go(tail, acc)
-      } else go(tail, add(acc, head))
+  let keys = Map::keys(a.entries)
+  let len = Array::length(keys)
+  let rec go = (i: Int, acc: Map[String, Bool]) -> Map[String, Bool] {
+    if i >= len {
+      acc
+    } else {
+      let k = Array::get(keys, i)
+      if Map::has_key(b.entries, k) {
+        go(i + 1, acc)
+      } else go(i + 1, Map::set(acc, k, true))
     }
   }
-  go(a, Empty)
+  StringSet::{ entries: go(0, Map::new()) }
 }
 
 export fn set_value_to_string[T](value: T) -> String {
@@ -116,5 +127,5 @@ export fn from_array_by[T](values: Array[T]) -> StringSet {
       acc
     } else go(i + 1, add_by(acc, Array::get(values, i)))
   }
-  go(0, Empty)
+  go(0, empty())
 }

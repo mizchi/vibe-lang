@@ -705,7 +705,7 @@ Profiler::heap_bytes()  // with { Profiler } - current bump-heap pointer
                         // way now_us deltas attribute time (heap never shrinks)
 ```
 
-**Conversion**: `Int::to_string`, `Int::to_double`, `Double::to_int`, `String::from_char_code`, `Int::parse(s) -> Option[Int]` (10 進、先頭 `-` 可; 空文字列・非数字・`Int::max_value` 超えは `None`)
+**Conversion**: `Int::to_string`, `Int::to_double`, `Double::to_int`, `String::from_char_code`, `Int::parse(s) -> Option[Int]` (10 進、先頭 `-` 可; 空文字列・非数字・`Int::max_value` 超えは `None`), `Double::parse(s) -> Option[Double]` (符号・整数部・小数点付き小数部; 指数表記 `1e10` は非対応。linear backend のみ、gc backend は未対応)
 
 ## Idioms
 

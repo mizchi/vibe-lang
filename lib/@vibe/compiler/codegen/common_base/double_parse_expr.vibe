@@ -1,0 +1,78 @@
+//# Imports
+
+import ../../core {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+//# Functions
+
+// #841 (item E1): Double::parse(s) -> Option[Double], synthesized as ordinary
+// AST (same technique as int_parse_expr/double_to_string_expr) and lowered
+// via each backend's `ce`. Previously "Double::parse" had a declared builtin
+// signature (builtins/declarations.vibe) and a dead, never-consulted
+// checker-side type lookup (builtins_extended.vibe's lookup_numeric), but no
+// entry in the checker's real lookup_misc chain and no codegen dispatch at
+// all -- calling it anywhere traps at check time with "unknown name". Fixed
+// by registering it alongside Int::parse in checker/builtins_misc.vibe
+// (lookup_int_parse) and adding the dispatch branch + this synthesis.
+//
+// Accepts an optional leading '-'/'+', digits, and at most one '.' with
+// trailing fractional digits (e.g. "3.14", "-0.5", "+2", "5."). Any other
+// character, or a string with no digits at all, yields None. Scientific
+// notation ("1e10") is NOT supported -- deliberately narrow first version,
+// same spirit as Int::parse not supporting hex/octal; can be extended later
+// if a real caller needs it (lib/@vibex/wasm/wat_encoder/wat_encoder.vibe's
+// own hand-rolled parse_decimal_double already covers that case locally).
+export fn double_parse_expr(arg: Expr) -> Expr {
+  let c1: (String, Expr) -> Expr = (f, a0) -> {
+    ECall(EIdent(f, -1), [
+      a0
+    ], -1)
+  }
+  let c2: (String, Expr, Expr) -> Expr = (f, a0, a1) -> {
+    ECall(EIdent(f, -1), [
+      a0,
+      a1
+    ], -1)
+  }
+  let s = EIdent("__dp_s", -1)
+  let len = EIdent("__dp_len", -1)
+  let c0 = EIdent("__dp_c0", -1)
+  let neg = EIdent("__dp_neg", -1)
+  let start = EIdent("__dp_start", -1)
+  let i = EIdent("__dp_i", -1)
+  let mantissa = EIdent("__dp_mantissa", -1)
+  let frac_digits = EIdent("__dp_frac_digits", -1)
+  let seen_dot = EIdent("__dp_seen_dot", -1)
+  let seen_digit = EIdent("__dp_seen_digit", -1)
+  let ok = EIdent("__dp_ok", -1)
+  let ch = EIdent("__dp_ch", -1)
+  let mag = EIdent("__dp_mag", -1)
+  let pow_val = EIdent("__dp_pow_val", -1)
+  let pow_k = EIdent("__dp_pow_k", -1)
+  let scaled = EIdent("__dp_scaled", -1)
+  let is_digit_ch = EBinOp("&&", EBinOp(">=", ch, EInt(48)), EBinOp("<=", ch, EInt(57)))
+  let is_dot_ch = EBinOp("&&", EBinOp("==", ch, EInt(46)), EBinOp("==", seen_dot, EBool(false)))
+  let digit_step = ESeq(
+    EAssign("__dp_mantissa", EBinOp("+", EBinOp("*", mantissa, EInt(10)), EBinOp("-", ch, EInt(48))), EUnit),
+    ESeq(
+      EIf(seen_dot, EAssign("__dp_frac_digits", EBinOp("+", frac_digits, EInt(1)), EUnit), EUnit),
+      EAssign("__dp_seen_digit", EBool(true), EUnit)
+    )
+  )
+  let scan_step = EIf(is_digit_ch, digit_step, EIf(is_dot_ch, EAssign("__dp_seen_dot", EBool(true), EUnit), EAssign("__dp_ok", EBool(false), EUnit)))
+  let loop_body = ELet("__dp_ch", c2("String::char_code_at", s, i), ESeq(
+    scan_step,
+    EAssign("__dp_i", EBinOp("+", i, EInt(1)), EUnit)
+  ), -1)
+  let while_loop = EWhile(EBinOp("<", i, len), loop_body)
+  let pow_loop_body = ESeq(
+    EAssign("__dp_pow_val", EBinOp("*", pow_val, EFloat(10.0)), EUnit),
+    EAssign("__dp_pow_k", EBinOp("+", pow_k, EInt(1)), EUnit)
+  )
+  let pow_while = EWhile(EBinOp("<", pow_k, frac_digits), pow_loop_body)
+  let signed = EIf(neg, EBinOp("-", EFloat(0.0), scaled), scaled)
+  let success_case = ELet("__dp_mag", c1("Int::to_double", mantissa), ELetMut("__dp_pow_val", EFloat(1.0), ELetMut("__dp_pow_k", EInt(0), ESeq(pow_while, ELet("__dp_scaled", EBinOp("/", mag, pow_val), c1("Some", signed), -1)), -1), -1), -1)
+  let final_check = EIf(EBinOp("||", EBinOp("==", ok, EBool(false)), EBinOp("==", seen_digit, EBool(false))), EIdent("None", -1), success_case)
+  ELet("__dp_s", arg, ELet("__dp_len", c1("String::length", s), EIf(EBinOp("==", len, EInt(0)), EIdent("None", -1), ELet("__dp_c0", c2("String::char_code_at", s, EInt(0)), ELet("__dp_neg", EBinOp("==", c0, EInt(45)), ELet("__dp_start", EIf(EBinOp("||", EBinOp("==", c0, EInt(45)), EBinOp("==", c0, EInt(43))), EInt(1), EInt(0)), ELetMut("__dp_i", start, ELetMut("__dp_mantissa", EInt(0), ELetMut("__dp_frac_digits", EInt(0), ELetMut("__dp_seen_dot", EBool(false), ELetMut("__dp_seen_digit", EBool(false), ELetMut("__dp_ok", EBool(true), ESeq(while_loop, final_check), -1), -1), -1), -1), -1), -1), -1), -1), -1)), -1), -1)
+}
