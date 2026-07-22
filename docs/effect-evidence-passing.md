@@ -577,19 +577,33 @@ tail 値がそのまま暗黙の `resume(値)` として扱われている**。�
 effect の arm に真の abort/non-local-exit 意味論は存在せず (それは
 `Error` 専用の別経路)、全ての通常 effect arm は結局 tail-resumptive に
 帰着する。このリスクは解消したと見てよい — CPS/Outcome[R] を要さない
-という仮説をむしろ補強する結果。(b) 同じ effect に対する入れ子の
-`handle` (shadowing) で、どちらの evidence が呼ばれるべきかの解決が
-動的呼び出しチェーンの
-どちらの evidence が呼ばれるべきかの解決が動的呼び出しチェーンの
-どの時点で行われるか。(c) ADR-0068 (`docs/concurrency.md`) の
+という仮説をむしろ補強する結果。(b) **[検証済み・懸念解消]** 同じ
+effect に対する入れ子の `handle` (shadowing) で、どちらの evidence が
+呼ばれるべきかを実際に試したところ (`handle { handle { perform
+Ask::Get } with Ask { Get => resume(1) } } with Ask { Get => resume(2) }`、
+同じく gen_adr71k の stage2 でコンパイル・実行)、結果は `1` — 内側
+(lexically innermost = 動的に最も最近インストールされた) handler が
+勝つ、という通常の (dynamic scoping の) 期待どおりの意味論だった。
+これは evidence-dict スレッディングモデルでも変更なしに自然に成立する
+— 内側の `handle` の evidence は、trait dict の `dict_binds` が
+lexical scope でネストした generic 呼び出しを自然にシャドーする
+のと全く同じ理屈で、呼び出しチェーンに沿って外側の evidence を
+シャドーするだけでよい (新しい解決ロジックは不要)。このリスクも
+解消したと見てよい。(c) ADR-0068 (`docs/concurrency.md`) の
 async/`Spawn` 文脈で `Cont[R]` を経由した継続の保存が必要になる場面
 (本 ADR の「cancel と non-local exit」節で「据え置き」とされている
-finalizer 保証の話) と、この直接呼び出しモデルとの整合性。この 3 点が
-すべてクリアなら、Phase 3 の実装コストは当初想定より大幅に小さくなる
-(新規 IR ノード・新規 runtime 型が不要になり、Phase 2 の
+finalizer 保証の話) と、この直接呼び出しモデルとの整合性 — 3 点のうち
+唯一まだ未検証。(a)(b) が解消したことで、この仮説はかなり有望になった
+と見てよい: Phase 3 の実装コストは当初想定より大幅に小さくなる可能性が
+高い (新規 IR ノード・新規 runtime 型が不要になり、Phase 2 の
 `inline_direct_performs` を「静的に発見できる場合」の特殊高速路として
 残したまま、「動的 evidence 直接呼び出し」を fallback 経路として追加する
-だけで済む可能性がある) が、まだ確定した結論ではない。
+だけで済む)。(c) は ADR-0068 側の TaskContext/finalizer stack 実装が
+まだ存在しない (据え置き扱いのまま) ため、本 ADR の範囲だけでは検証
+できない — ADR-0068 の該当フェーズに到達してから改めて確認する。
+(a)(b) の解消と (c) の未検証状態を踏まえてもなお、まだ「確定した設計」
+ではなく「有望な作業仮説」の位置づけとする — Phase 3 実装着手時に
+75 本の fixture 回帰を通しながら最終確認すること。
 
 ## References
 
