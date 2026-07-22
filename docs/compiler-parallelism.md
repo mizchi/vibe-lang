@@ -223,6 +223,96 @@ must reach `Complete`. It proves neither fairness nor that the current
 compiler implements the worker contract. Those are locked by runtime tests and
 differential compilation, not asserted by the Lean model.
 
+## Runtime backend decision
+
+The production native/WASI target is a Wasmtime embedding host with a bounded
+OS-thread pool. The host shares one `Engine` and compiled compiler `Module`, but
+every worker owns a distinct `Store`, `Instance`, linear heap, and host context.
+Jobs and outcomes cross host channels as immutable values; no `SharedMemory` is
+required. This matches the language-level shared-nothing contract more directly
+than guest-side WASI Threads, whose instances share linear memory.
+
+The current Node.js worker/daemon implementation below is the accepted interim
+transport. It must retain the same `ModuleJob -> ModuleOutcome`, readiness,
+failure, trace, and canonical-commit contracts so that replacing it does not
+change the Lean model or observable compiler result. Wasmtime thread ids,
+stores, instances, and feature flags remain backend details rather than Vibe
+language values.
+
+## Host multi-worker prototype
+
+The first executable bridge lives in:
+
+- `scripts/parallel_scheduler_prototype.mjs`: coordinator-owned scheduling,
+  outcome publication, and canonical commit;
+- `scripts/parallel_scheduler_worker.mjs`: persistent `node:worker_threads`
+  workers receiving only a structured-cloned `ModuleJob` snapshot;
+- `scripts/parallel_selfhost_checker.mjs`: worker-private stage2 daemon
+  transport and check-result validation;
+- `scripts/parallel_scheduler_trace.mjs`: a pure trace validator;
+- `scripts/parallel_scheduler_prototype.test.mjs`: `jobs=1/2/4`, dependency,
+  diagnostic, double-claim, and worker-failure regressions;
+- `scripts/parallel_scheduler_selfhost.test.mjs`: differential checks against
+  the current selfhost compiler.
+
+The fast synthetic contract runs with
+`pkf run test-parallel-scheduler-prototype`. The real compiler bridge runs with
+`pkf run test-parallel-selfhost-scheduler`; it reuses a current-commit stage2
+artifact when available and otherwise builds one. Set
+`VIBE_PARALLEL_COMPILER_WASM` to select an explicit artifact.
+
+The prototype trace deliberately names the bridge points:
+
+| Prototype event | Model / contract point |
+| --- | --- |
+| `ready` | `Compiler.Ready`; every direct dependency is terminal |
+| `claim` | `Parallel.Event.claim`, projecting to `Async.Event.dispatch` |
+| `releaseComplete` | `Parallel.Event.releaseComplete`, projecting to task completion |
+| `publish` | coordinator-owned `Compiler.BuildState.finish` |
+| `commit` | canonical module-id order, independent of completion order |
+
+It uses real host threads but no `SharedArrayBuffer`: source text and dependency
+outcomes cross the worker boundary by structured clone, and workers cannot see
+the coordinator result map. There are two worker implementations behind the
+same scheduler:
+
+- `synthetic` hashes the immutable job and injects small test diagnostics;
+- `selfhost-check` keeps one isolated stage2 compiler daemon per worker and
+  invokes the production `VIBE_CHECK_ONLY` parse/typecheck path.
+
+The selfhost transport materializes the received source value only inside a
+worker-private temporary directory. This is an adapter detail, not permission
+for the job to inspect the project tree. A successful check must return both
+exit status zero and the canonical `ok` marker. A nonzero result is converted
+to `Diagnosed` only when the compiler produced its `.diag` value; a missing or
+malformed response is an infrastructure failure. All compiler daemons and
+temporary directories are coordinator-cleaned when the run completes or
+fails.
+
+The real bridge currently checks source-only leaf snapshots. Dependency
+outcomes participate in readiness and deterministic error propagation, but a
+dependency's public type/effect interface is not yet installed into the
+worker's checker environment. Consequently a module source containing imports
+is outside this prototype contract. Extracting an in-memory
+`ModuleJob -> ModuleArtifact` API from `check_linked_file` is still required
+before the production compiler can check an import DAG this way.
+
+Expected diagnostics are returned as values. An unexpected worker exception,
+compiler trap, daemon exit, or protocol violation fails the whole prototype run
+and terminates the pool; it is not converted into a recoverable compiler
+diagnostic.
+
+This is a bridge experiment, not the Vibe `Task` runtime and not evidence that
+the selfhost compiler already refines the Lean model. It does not implement
+`Nursery[r]`, cancellation/finalizers, channels, task-local heaps, `Send`, or
+#817 evidence passing. The current stage2 is executed by a child daemon owned by
+each host worker because the existing JavaScript host runner is process-shaped;
+the synthetic path itself executes directly on `worker_threads`. This validates
+the value/protocol seam and real parse/typecheck determinism, not yet a
+same-process compiler thread implementation or OS security sandbox. The next
+implementation step is the in-memory checker boundary above, followed by
+passing immutable dependency interfaces instead of only terminal outcomes.
+
 ## TDD implementation sequence
 
 ### Phase 0: oracle and measurement

@@ -41,6 +41,10 @@ prototype であり、本仕様を実装したものではない。撤去済み�
 7. compiler の import DAG 並列 typecheck を最初の CPU-bound dogfood
    とする。worker は immutable dependency snapshot から `ModuleOutcome` を返し、
    `TypeDb`、diagnostics、link、cache publish は coordinator が決定的順序で行う。
+8. native/WASI の production multi-worker backend は Wasmtime embedder が OS thread
+   を管理し、worker ごとに独立した `Store + Instance + heap` を所有する形を目標と
+   する。移行までは host Worker と worker-owned compiler daemon による shared-nothing
+   prototype を許容する。WASI Threads の shared linear memory は既定 backend にしない。
 
 ## 用語
 
@@ -472,6 +476,32 @@ cache atomicity、TDD gate、Lean model の対応は
 | browser JSPI | `WebAssembly.Suspending` / `promising` | Worker ごとの instance/heap + `postMessage` 相当 | Worker 数まで | JSPI は stack suspension のみ。task pinning を許す |
 | WASI Component Model | async lift/lower、waitable、task built-in | component/resource 境界 | host 実装次第 | vibe nursery が host より強い lifetime/fail-fast 規則を追加 |
 | shared-everything threads | thread intrinsic + shared store | task arena を論理分離。message API は不変 | host thread 数まで | #488 の opt-in 実験。zero-copy は証明時のみ |
+
+### Native/WASI backend implementation policy
+
+production の native/WASI multi-worker 実装は、guest が `wasi::thread-spawn` を直接
+呼ぶ形ではなく、Wasmtime embedding host が worker pool を所有する形を採る。
+`Engine` と compile 済み `Module` は host 内で共有できるが、各 worker は別々の OS
+thread、`Store`、`Instance`、linear memory、effect evidence table を持つ。worker 間で
+渡せるのは `Send` を満たす immutable snapshot/message だけであり、結果 publish と
+canonical commit は coordinator に限定する。
+
+この選択は backend 実装の決定であり、公開 `Task` API に thread id、Wasmtime flag、
+`Store`、shared memory を露出しない。Wasmtime Component Model threading が安定した
+場合も、同じ lifecycle trace、task-local heap/evidence、message-copy 契約を満たす
+adapter として置換する。
+
+移行までの executable prototype は Node.js `worker_threads` を scheduler/ownership
+境界に使い、実 selfhost check は各 worker が所有する永続 stage2 daemon で実行する。
+これは process-shaped な現行 JavaScript host runner を再利用する暫定 transport で
+あり、論理 `ModuleJob -> ModuleOutcome`、ready rule、failure classification、canonical
+commit は production backend と同じに保つ。transport の差は Lean oracle の状態や
+event 語彙へ入れない。
+
+Core Wasm Threads の shared memory/atomic と WASI Threads の guest-side spawn は、
+shared-nothing 基準意味論を実装するための必須機能ではない。これらを使う経路は
+#488 と同様に opt-in 実験とし、通常 backend へ昇格するには task-local isolation と
+同一 conformance trace を別途示さなければならない。
 
 JSPI は WebAssembly proposal registry で Phase 4、Safari 27 beta でも実装が告知され、
 Firefox も実装を追跡中である。browser version matrix は backend 選択の入力であって、
