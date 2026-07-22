@@ -172,6 +172,178 @@ fn es_qualified_collision(ed_names: Array[String], ed_ops_list: Array[Array[Stri
   }
 }
 
+// Collect every effectset (name -> raw member list) and effect (name ->
+// operation names) declared at or after `from_idx` in `stmts`, in one pass.
+// Shared by check_stmts' own pre-pass (order-independent cycle/collision
+// checking) and collect_async_effect_errors' row-expansion pass below (step
+// 3) so both walks agree on exactly the same tables.
+fn es_collect_tables(stmts: Array[Stmt], from_idx: Int) -> (Array[String], Array[Array[String]], Array[String], Array[Array[String]]) {
+  let es_names = array_empty()
+  let es_members_list = array_empty()
+  let ed_names = array_empty()
+  let ed_ops_list = array_empty()
+  let mut i = from_idx
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectSet(_, esname, esmembers) => {
+        Array::push(es_names, esname)
+        Array::push(es_members_list, esmembers)
+      },
+      SEffectDef(_, edname, _, edops) => {
+        let opnames = for op in edops {
+          let (opname, _, _) = op
+          opname
+        }
+        Array::push(ed_names, edname)
+        Array::push(ed_ops_list, opnames)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  (es_names, es_members_list, ed_names, ed_ops_list)
+}
+
+// ADR-0071 step 3 (#755) row expansion: recursively expand `name` into leaf
+// labels (ordinary effect/operation names -- not further-expandable
+// effectset names) via es_names/es_members_list, appending each freshly
+// seen leaf into `out` (deduped). `path` guards against cycles the SAME way
+// es_detect_cycle does (a name already on the current recursion path is
+// skipped, not re-expanded) so a cyclic definition -- already flagged as an
+// error by es_detect_cycle elsewhere in the SAME check_stmts pass -- cannot
+// hang this walk even though this function does not itself re-validate
+// acyclicity.
+fn es_expand_into(es_names: Array[String], es_members_list: Array[Array[String]], name: String, path: Array[String], out: Array[String]) -> Unit {
+  if es_string_array_contains(path, name) {
+    ()
+  } else {
+    let idx = es_index_of(es_names, name)
+    if idx < 0 {
+      if es_string_array_contains(out, name) {
+        ()
+      } else {
+        Array::push(out, name)
+      }
+    } else {
+      Array::push(path, name)
+      let members = Array::get(es_members_list, idx)
+      let mut mi = 0
+      while mi < Array::length(members) {
+        es_expand_into(es_names, es_members_list, Array::get(members, mi), path, out)
+        mi = mi + 1
+      }
+      Array::truncate(path, Array::length(path) - 1)
+    }
+  }
+}
+
+fn es_expand_label(es_names: Array[String], es_members_list: Array[Array[String]], name: String) -> Array[String] {
+  let out = array_empty()
+  es_expand_into(es_names, es_members_list, name, array_empty(), out)
+  out
+}
+
+fn es_join_comma(names: Array[String]) -> String {
+  let mut result = ""
+  let mut i = 0
+  while i < Array::length(names) {
+    if i == 0 {
+      result = Array::get(names, i)
+    } else {
+      result = String::concat(result, String::concat(", ", Array::get(names, i)))
+    }
+    i = i + 1
+  }
+  result
+}
+
+// Expand every effectset-name token in a raw comma-joined effect row
+// (TyFn/EFn's `Option[String]` field) into its flat leaf-label expansion,
+// leaving ordinary effect/operation labels and row variables untouched
+// (es_expand_label is a no-op passthrough for any name that isn't a known
+// effectset). `with { AskAll, Fs }` where `effectset AskAll = { Ask }`
+// becomes `"Ask, Fs"` -- from that point on, the EXISTING string-label-based
+// containment machinery (decl_authorizes_effect et al., unmodified) sees
+// only base labels, so `AskAll` now genuinely authorizes what it expands to
+// instead of needing to be literally re-declared verbatim by every caller.
+fn es_expand_row_string(row: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+  if Array::length(es_names) == 0 {
+    row
+  } else {
+    let raw = String::split(row, ", ")
+    let out = array_empty()
+    let mut i = 0
+    while i < Array::length(raw) {
+      let expanded = es_expand_label(es_names, es_members_list, Array::get(raw, i))
+      let mut j = 0
+      while j < Array::length(expanded) {
+        let e = Array::get(expanded, j)
+        if es_string_array_contains(out, e) {
+          ()
+        } else {
+          Array::push(out, e)
+        }
+        j = j + 1
+      }
+      i = i + 1
+    }
+    es_join_comma(out)
+  }
+}
+
+fn es_expand_opt_row(eff: Option[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Option[String] {
+  match eff {
+    Some(row) => Some(es_expand_row_string(row, es_names, es_members_list)),
+    None => None
+  }
+}
+
+fn es_expand_texpr(te: TypeExpr, es_names: Array[String], es_members_list: Array[Array[String]]) -> TypeExpr {
+  match te {
+    TyFn(params, ret, eff) => TyFn(params, ret, es_expand_opt_row(eff, es_names, es_members_list)),
+    _ => te
+  }
+}
+
+fn es_expand_opt_texpr(ty: Option[TypeExpr], es_names: Array[String], es_members_list: Array[Array[String]]) -> Option[TypeExpr] {
+  match ty {
+    Some(te) => Some(es_expand_texpr(te, es_names, es_members_list)),
+    None => None
+  }
+}
+
+fn es_expand_top_value(e: Expr, es_names: Array[String], es_members_list: Array[Array[String]]) -> Expr {
+  match e {
+    EFn(tps, tbs, params, ret, eff, body) => EFn(tps, tbs, params, ret, es_expand_opt_row(eff, es_names, es_members_list), body),
+    _ => e
+  }
+}
+
+// Rewrite a top-level binding's OWN declared effect row(s) -- the `ty`
+// annotation (`let f: () -> T with { Es } = ...`) and/or the EFn value's own
+// inline row (`let f = () -> T with { Es } { ... }`) -- expanding any
+// effectset-name token before check_perform_effects_stmts_env (unmodified)
+// sees it. Only the top-level function's OWN row is expanded here; a
+// parameter's function-typed row (the #885 callback-overlay case) is not
+// yet covered -- a documented follow-up, not attempted in this slice.
+fn es_expand_stmt_effect_rows(stmt: Stmt, es_names: Array[String], es_members_list: Array[Array[String]]) -> Stmt {
+  match stmt {
+    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, name, es_expand_opt_texpr(ty, es_names, es_members_list), es_expand_top_value(body, es_names, es_members_list)),
+    SLetMut(name, ty, body) => SLetMut(name, es_expand_opt_texpr(ty, es_names, es_members_list), es_expand_top_value(body, es_names, es_members_list)),
+    _ => stmt
+  }
+}
+
+fn es_expand_stmts_effect_rows(stmts: Array[Stmt], es_names: Array[String], es_members_list: Array[Array[String]]) -> Array[Stmt] {
+  if Array::length(es_names) == 0 {
+    stmts
+  } else {
+    for s in stmts {
+      es_expand_stmt_effect_rows(s, es_names, es_members_list)
+    }
+  }
+}
+
 // String::concat only (never `+` / interpolation — NUL-miscodegen hazard
 // here, same rule as checker.vibe off_marker).
 fn top_level_reject_msg(what: String, e: Expr) -> String {
@@ -390,30 +562,10 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
   // SEffectSet arm below can run es_detect_cycle/es_qualified_collision
   // regardless of declaration order (an effectset may reference another one
   // defined later in the same file, exactly like the SLet forward-reference
-  // case this hoist mirrors).
-  let es_names = array_empty()
-  let es_members_list = array_empty()
-  let ed_names = array_empty()
-  let ed_ops_list = array_empty()
-  let mut ecoll_i = idx
-  while ecoll_i < Array::length(stmts) {
-    match Array::get(stmts, ecoll_i) {
-      SEffectSet(_, esname, esmembers) => {
-        Array::push(es_names, esname)
-        Array::push(es_members_list, esmembers)
-      },
-      SEffectDef(_, edname, _, edops) => {
-        let opnames = for op in edops {
-          let (opname, _, _) = op
-          opname
-        }
-        Array::push(ed_names, edname)
-        Array::push(ed_ops_list, opnames)
-      },
-      _ => ()
-    }
-    ecoll_i = ecoll_i + 1
-  }
+  // case this hoist mirrors). Shared with collect_async_effect_errors below
+  // (step 3's row-expansion pass) via es_collect_tables so both walks stay
+  // in sync from one implementation.
+  let (es_names, es_members_list, ed_names, ed_ops_list) = es_collect_tables(stmts, idx)
   // #942 (Codex P2 on #969): if any top-level declaration in this statement
   // list binds the name `resume` (fn/let — fn decls are lowered to SLet
   // before the checker — let-pattern, extern let, or an import), codegen's
@@ -958,25 +1110,30 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
         (env, s, c)
       },
       SEffectSet(_, esname, _) => {
-        // ADR-0071 (#755) step 2: the ADR's Decision section calls out two
-        // specific invalid-definition cases by name -- a cycle through
-        // member references, and a qualified name colliding with an
-        // operation of the same effect (shared member namespace) -- so
-        // those get their OWN specific diagnostics via the resolver-core
-        // helpers above (using the whole-list pre-pass tables collected
-        // above, order-independent). Anything else still gets the generic
-        // "not yet supported" rejection: full resolution (actually
-        // authorizing a `with { EffectsetName }` row item) is step 3's
-        // checker work, not attempted here. Reject explicitly in all cases
-        // rather than silently accepting an unvalidated declaration (which
-        // would otherwise vanish with no diagnostic at all, since this
-        // match's catch-all below is a no-op).
+        // ADR-0071 (#755): the ADR's Decision section calls out two specific
+        // invalid-definition cases by name -- a cycle through member
+        // references, and a qualified name colliding with an operation of
+        // the same effect (shared member namespace) -- rejected here with
+        // their own specific diagnostics via the resolver-core helpers
+        // above (using the whole-list pre-pass tables, order-independent).
+        // A definition that is neither is now ACCEPTED (step 3): its
+        // members are used to expand any `with { EffectsetName }` row item
+        // that references it, via es_expand_stmts_effect_rows in
+        // collect_async_effect_errors below -- an accepted effectset
+        // genuinely has capability now, unlike step 2's placeholder
+        // "not yet supported" rejection for every definition regardless of
+        // validity. What full resolution does NOT yet cover: handler-level
+        // operation-level discharge (step 4), contract/WIT operation-level
+        // surface (step 5), and expanding a row inside a function
+        // PARAMETER's own type (the #885 callback-overlay case) -- those
+        // remain unimplemented, not silently wrong, since nothing consumes
+        // an effectset there yet.
         if es_qualified_collision(ed_names, ed_ops_list, esname) {
           Array::push(errors, String::concat("effectset '", String::concat(esname, "' collides with an operation of the same name declared on its effect (operations and effectsets share the effect-row member namespace) -- rename the effectset or the operation")))
         } else {
           match es_detect_cycle(es_names, es_members_list, esname, array_empty()) {
             Some(msg) => Array::push(errors, msg),
-            None => Array::push(errors, String::concat("effectset '", String::concat(esname, "' is not yet supported (ADR-0071 step 2/3, #755) -- declaration parses but is not resolved or usable in a 'with' clause yet")))
+            None => ()
           }
         }
         (env, s, c)
@@ -1034,7 +1191,18 @@ fn collect_async_effect_errors(stmts: Array[Stmt], env: TypeEnv, frozen_errors: 
       i = i + 1
     }
     if Array::length(frozen_errors) == 0 {
-      let perform_errs = check_perform_effects_stmts_env(stmts, env)
+      // ADR-0071 step 3 (#755): expand any effectset-name token in a
+      // top-level binding's OWN declared effect row into its flat
+      // leaf-label set BEFORE the (otherwise unmodified)
+      // check_perform_effects_stmts_env sees it -- `with { AskAll }`
+      // becomes e.g. `with { Ask }`, so the existing string-label
+      // containment machinery authorizes what AskAll actually expands to
+      // instead of requiring callers to re-declare it verbatim. Pure AST
+      // rewrite local to this file (see es_expand_stmts_effect_rows);
+      // check_perform_effects_stmts_env itself is untouched.
+      let (perform_es_names, perform_es_members_list, _, _) = es_collect_tables(stmts, 0)
+      let expanded_stmts = es_expand_stmts_effect_rows(stmts, perform_es_names, perform_es_members_list)
+      let perform_errs = check_perform_effects_stmts_env(expanded_stmts, env)
       let mut j = 0
       while j < Array::length(perform_errs) {
         Array::push(frozen_errors, effect_error_to_string(Array::get(perform_errs, j)))

@@ -4222,43 +4222,50 @@ fi
 rm -rf "$a71dir"
 echo "[compiler-gate] effect row operation-item grammar ok"
 
-# 40n. ADR-0071 step 2 (#755, docs/effectset.md): `effectset Name = { ... }`
-#      parses (lib/@vibe/parser/parser.vibe's parse_effectset_stmt) and
-#      round-trips through the printer (SEffectSet arm), but resolution is
-#      not implemented yet -- the checker (checker_stmt.vibe's SEffectSet
-#      case) explicitly rejects any effectset declaration with a clear
-#      "not yet supported" diagnostic rather than silently accepting an
-#      unvalidated, unusable one. This gate pins that explicit rejection so
-#      a future accidental silent-accept regression (e.g. someone adding a
-#      wildcard catch-all above the SEffectSet arm) is caught immediately.
-echo "[compiler-gate] 40n/40 effectset declaration parses + explicit not-yet-supported rejection (ADR-0071 step 2/#755)"
-a71bdir="_build/_gate_effectset_decl"
+# 40n. ADR-0071 step 3 (#755, docs/effectset.md): a VALID `effectset` (no
+#      cycle, no operation-name collision) is now ACCEPTED and its members
+#      are expanded into any `with { EffectsetName }` row item that
+#      references it (checker_stmt.vibe's es_expand_stmts_effect_rows),
+#      before the existing string-label containment machinery
+#      (decl_authorizes_effect et al., unmodified) runs. This gate compiles
+#      fixtures/effect_effectset_expansion.vibe, where a function's OWN
+#      declared row is JUST an effectset name (`with { AskAll }`) and that
+#      alone must authorize a transitively-called function requiring the
+#      operation the effectset expands to (`Ask::Get`) -- proving expansion
+#      is actually wired in, not just that the effectset parses. (Step 2's
+#      prior behavior -- rejecting EVERY effectset declaration regardless of
+#      validity -- is superseded by this step; see gate 40o below for what
+#      STILL gets rejected.)
+echo "[compiler-gate] 40n/40 effectset row expansion authorizes a transitive call (ADR-0071 step 3/#755)"
+a71bdir="_build/_gate_effectset_expand"
 rm -rf "$a71bdir"; mkdir -p "$a71bdir"
-sed '/^__DATA__$/,$d' fixtures/err_effectset_not_yet_supported.vibe > "$a71bdir/src.vibe"
+sed '/^__DATA__$/,$d' fixtures/effect_effectset_expansion.vibe > "$a71bdir/src.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$a71bdir/src.vibe" "$a71bdir/out.wasm" main >/dev/null 2>&1
-if [ -s "$a71bdir/out.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_effectset_not_yet_supported.vibe compiled successfully -- effectset declarations must still be explicitly rejected (ADR-0071 step 2/3 not landed yet)" >&2
-  exit 1
-fi
-if ! grep -q "effectset 'AskAll' is not yet supported" "$a71bdir/out.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_effectset_not_yet_supported.vibe did not produce the expected diagnostic" >&2
+if [ ! -s "$a71bdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_effectset_expansion.vibe did not compile -- effectset row expansion regressed" >&2
   cat "$a71bdir/out.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+a71b_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$a71bdir/out.wasm" 2>&1 | tail -1)"
+if [ "$a71b_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: effect_effectset_expansion got '$a71b_out' (want 42)" >&2
+  exit 1
+fi
 rm -rf "$a71bdir"
-echo "[compiler-gate] effectset declaration parse + explicit rejection ok"
+echo "[compiler-gate] effectset row expansion ok"
 
-# 40o. ADR-0071 step 2 resolver core (#755, docs/effectset.md): the ADR's
-#      Decision section calls out two specific invalid-definition cases by
-#      name -- a cycle through effectset member references, and a qualified
-#      name colliding with an operation of the same effect (shared
-#      effect-row member namespace) -- both implemented as local helpers in
+# 40o. ADR-0071 resolver core (#755, docs/effectset.md): the ADR's Decision
+#      section calls out two specific invalid-definition cases by name -- a
+#      cycle through effectset member references, and a qualified name
+#      colliding with an operation of the same effect (shared effect-row
+#      member namespace) -- both implemented as local helpers in
 #      checker_stmt.vibe (es_detect_cycle / es_qualified_collision) with a
-#      whole-statement-list pre-pass, order-independent. This gate pins both
-#      specific diagnostics so they don't silently regress back to the
-#      generic "not yet supported" message.
+#      whole-statement-list pre-pass, order-independent. Since step 3 (gate
+#      40n above) made a VALID effectset declaration succeed instead of
+#      always failing, this gate is what now proves an INVALID one still
+#      doesn't silently slip through to acceptance.
 echo "[compiler-gate] 40o/40 effectset cycle + operation-collision detection (ADR-0071 step 2/#755)"
 a71cdir="_build/_gate_effectset_resolver"
 rm -rf "$a71cdir"; mkdir -p "$a71cdir"
