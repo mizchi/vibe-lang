@@ -1,6 +1,6 @@
 # ADR-0071: operation-level effect row と `effectset`
 
-Status: proposed (実装 step 1-2-4 は着地済み、step 3 は関数自身の宣言 row + パラメータ row の展開が着地、step 5 は contract passthrough のみ着地、2026-07-22 — 進捗セクション参照)
+Status: proposed (実装 step 1-2-4 は着地済み、step 3 は関数自身の宣言 row + パラメータ row の展開が着地、step 5 は contract passthrough + signature matching が着地 (WIT 生成のみ残)、2026-07-22 — 進捗セクション参照)
 
 Date: 2026-07-15
 
@@ -285,19 +285,31 @@ alias として classify_contract_stmts (contract.vibe) を通過し、
 `index.vpkg` (ADR-0070 の boundary file) / legacy `index.vibei` の
 どちらの契約ファイル経由でも package facade を生き延びることを
 fixtures/contract_effectset_vpkg/ (実際の package import 境界を跨いだ
-end-to-end テスト) で実証済み。**この slice では直っていない、
-テスト中に見つかった既知のギャップ**: contract 側のシグネチャと
-実装側のシグネチャを照合する機構 (contract-vs-implementation
-signature matching) は effect row を厳密な文字列比較で照合しており
-effectset を認識しない — contract 側で `fn f() -> T with { AskAll }`
-と書き、実装側で展開後の operation を直接書くと、意味的に等価でも
-mismatch エラーになる。WIT 生成 (wit_gen.vibe) も同様に SEffectSet を
-まだ一切認識していない (既存の wildcard fallback により安全に
-無視されるだけで、クラッシュはしない)。**未着手のまま残っている
-範囲**: 上記 2 点 (signature matching の effectset 対応、WIT
-operation-level surface)、ADR-0076 evidence vector への正規化 row の
-接続 (項目 6)。fixtures/contract_effectset_vpkg_main.vibe +
-compiler_gate.sh 40r で回帰を固定。
+end-to-end テスト) で実証済み。fixtures/contract_effectset_vpkg_main.vibe
++ compiler_gate.sh 40r で回帰を固定。
+
+さらに、contract-vs-implementation の**signature matching**も
+effectset 対応が着地済み: check_contract (contract.vibe) は従来
+effect row を厳密な文字列比較で照合しており、contract 側で
+`fn f() -> T with { AskAll }` と書き実装側で展開後の operation を
+直接 `with { Ask::Get }` と書くと、意味的に等価でも mismatch エラーに
+なるバグがあった (修正前に実際に再現・確認)。check_contract に
+`contract_type_defs: Array[Stmt]` 引数を追加し、contract 自身の
+effectset 宣言から構築した ES table で両側の signature を比較前に
+展開するよう修正 (ctr_expand_sig_row、contract.vibe 内のローカル
+関数、クロスファイル参照なし)。この変更は package import 全体が通る
+check_contract の中核比較ロジックに触れるため、既存の contract テスト
+6 ファイル 43 test + effectset/handle fixture 一式で広範な回帰確認を
+実施 (fixtures/contract_conformance_test.vibe が check_contract を
+直接 18 箇所で呼んでいたため、既存の no_type_defs() ヘルパーで
+シグネチャ変更に追従させる修正も同時に必要だった)。
+fixtures/contract_effectset_signature_alias/ +
+compiler_gate.sh 40s で回帰を固定。
+
+**未着手のまま残っている範囲**: WIT 生成 (wit_gen.vibe) は SEffectSet
+をまだ一切認識していない (既存の wildcard fallback により安全に
+無視されるだけで、クラッシュはしない) — 項目 5 で唯一残っている
+ピース。ADR-0076 evidence vector への正規化 row の接続 (項目 6)。
 
 **Bootstrap gotcha**: `lib/@vibe/parser/` 配下で「新しい関数を定義し、
 別ファイルからその関数を import で参照する」変更を同一コミットに含めると、
