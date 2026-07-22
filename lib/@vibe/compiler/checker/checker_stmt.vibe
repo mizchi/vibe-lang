@@ -312,20 +312,31 @@ fn es_expand_opt_texpr(ty: Option[TypeExpr], es_names: Array[String], es_members
   }
 }
 
+// Also expands a PARAMETER's own function-typed annotation (the #885
+// callback-overlay case, e.g. `run(f: () -> Int with { AskAll }) -> Int`) --
+// es_expand_opt_texpr already handles any TypeExpr generically (it only
+// touches TyFn's effect slot, passing every other shape through unchanged),
+// so reusing it here for each param needs no new logic.
 fn es_expand_top_value(e: Expr, es_names: Array[String], es_members_list: Array[Array[String]]) -> Expr {
   match e {
-    EFn(tps, tbs, params, ret, eff, body) => EFn(tps, tbs, params, ret, es_expand_opt_row(eff, es_names, es_members_list), body),
+    EFn(tps, tbs, params, ret, eff, body) => {
+      let expanded_params = for p in params {
+        let (pname, pty) = p
+        (pname, es_expand_opt_texpr(pty, es_names, es_members_list))
+      }
+      EFn(tps, tbs, expanded_params, ret, es_expand_opt_row(eff, es_names, es_members_list), body)
+    },
     _ => e
   }
 }
 
 // Rewrite a top-level binding's OWN declared effect row(s) -- the `ty`
-// annotation (`let f: () -> T with { Es } = ...`) and/or the EFn value's own
-// inline row (`let f = () -> T with { Es } { ... }`) -- expanding any
-// effectset-name token before check_perform_effects_stmts_env (unmodified)
-// sees it. Only the top-level function's OWN row is expanded here; a
-// parameter's function-typed row (the #885 callback-overlay case) is not
-// yet covered -- a documented follow-up, not attempted in this slice.
+// annotation (`let f: () -> T with { Es } = ...`), the EFn value's own
+// inline row (`let f = () -> T with { Es } { ... }`), and every
+// PARAMETER's own function-typed row -- expanding any effectset-name token
+// before check_perform_effects_stmts_env (unmodified) sees it. A parameter
+// nested more than one level deep (a function-typed field inside a struct
+// parameter, for instance) is not covered -- a further, smaller follow-up.
 fn es_expand_stmt_effect_rows(stmt: Stmt, es_names: Array[String], es_members_list: Array[Array[String]]) -> Stmt {
   match stmt {
     SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, name, es_expand_opt_texpr(ty, es_names, es_members_list), es_expand_top_value(body, es_names, es_members_list)),
@@ -1734,9 +1745,24 @@ export fn check_program(stmts: Array[Stmt]) -> TypeEnv with { Error } {
   // #986: labeled-argument name validation (unknown / out-of-order labels).
   // Must run after desugar_labeled_args above.
   check_labeled_arg_names_stmts(stmts, frozen_errors, false)
-  let (env, final_s, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+  // ADR-0071 step 3 (#755): expand any effectset-name token in EVERY
+  // declared effect row (function signatures AND parameter types) into its
+  // flat leaf-label set ONCE here, before type-checking -- not just before
+  // collect_async_effect_errors below. Argument-compatibility checking
+  // (check_assignable's effect-row subtyping, checker.vibe) runs as part of
+  // check_stmts and independently compares raw row strings; feeding it an
+  // unexpanded "AskAll" against an already-expanded "Ask::Get" callee would
+  // report a false "effect would be dropped" mismatch even though the
+  // effectset actually covers it. A non-mutating copy (stmts itself, and
+  // whatever the caller does with it after check_program returns, are
+  // unaffected) is enough: codegen never reads the row's text content.
+  let expanded_stmts = {
+    let (top_es_names, top_es_members_list, _, _) = es_collect_tables(stmts, 0)
+    es_expand_stmts_effect_rows(stmts, top_es_names, top_es_members_list)
+  }
+  let (env, final_s, _) = check_stmts(expanded_stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
   check_program_bounds(env, final_s, frozen_errors)
-  collect_async_effect_errors(stmts, env, frozen_errors)
+  collect_async_effect_errors(expanded_stmts, env, frozen_errors)
   if Array::length(frozen_errors) > 0 {
     throw(Array::get(frozen_errors, 0))
   }

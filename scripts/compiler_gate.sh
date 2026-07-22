@@ -4298,6 +4298,39 @@ fi
 rm -rf "$a71cdir"
 echo "[compiler-gate] effectset cycle + operation-collision detection ok"
 
+# 40p. ADR-0071 step 3, parameter-type expansion (#755, docs/effectset.md):
+#      effectset row expansion also covers a function PARAMETER's own
+#      function-typed row (the #885 callback-overlay case), not just a
+#      function's own top-level declared row -- es_expand_top_value in
+#      checker_stmt.vibe walks `params`, and the expansion now runs ONCE,
+#      early, in check_program (before check_stmts) so BOTH the type-level
+#      argument-compatibility subtyping check (checker.vibe's
+#      effect_row_dropped) and the perform-effect leak-through check
+#      (checker_effects.vibe's #885 overlay) see already-expanded rows
+#      instead of comparing raw, never-equal strings like "AskAll" vs
+#      "Ask::Get". This gate compiles
+#      fixtures/effect_effectset_param_expansion.vibe, where a callback
+#      parameter's row is JUST an effectset name.
+echo "[compiler-gate] 40p/40 effectset parameter-type row expansion (ADR-0071 step 3/#755)"
+a71ddir="_build/_gate_effectset_param_expand"
+rm -rf "$a71ddir"; mkdir -p "$a71ddir"
+sed '/^__DATA__$/,$d' fixtures/effect_effectset_param_expansion.vibe > "$a71ddir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$a71ddir/src.vibe" "$a71ddir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$a71ddir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_effectset_param_expansion.vibe did not compile -- parameter-type effectset expansion regressed" >&2
+  cat "$a71ddir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+a71d_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$a71ddir/out.wasm" 2>&1 | tail -1)"
+if [ "$a71d_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: effect_effectset_param_expansion got '$a71d_out' (want 42)" >&2
+  exit 1
+fi
+rm -rf "$a71ddir"
+echo "[compiler-gate] effectset parameter-type row expansion ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the
