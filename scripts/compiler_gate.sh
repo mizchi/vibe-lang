@@ -4394,6 +4394,37 @@ fi
 rm -rf "$a71fdir"
 echo "[compiler-gate] effectset contract passthrough ok"
 
+# 40s. ADR-0071 step 5, signature-matching effectset awareness (#755,
+#      docs/effectset.md): check_contract (contract.vibe) previously
+#      compared a contract's and an implementation's effect row as raw,
+#      unexpanded strings -- a contract signature spelled with an
+#      effectset alias (`fn f() -> T with { AskAll }`) reported a false
+#      "signature mismatch" against an implementation spelled with the
+#      literal operations it expands to (`with { Ask::Get }`), even though
+#      they are semantically identical. check_contract now expands both
+#      sides (ctr_expand_sig_row, using an ES table built from the
+#      contract's own type_defs) before comparing. This gate compiles
+#      fixtures/contract_effectset_signature_alias_main.vibe, which imports
+#      fixtures/contract_effectset_signature_alias/ -- exactly that shape.
+echo "[compiler-gate] 40s/40 effectset contract signature-matching (ADR-0071 step 5/#755)"
+a71gdir="_build/_gate_effectset_sig_alias"
+rm -rf "$a71gdir"; mkdir -p "$a71gdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/contract_effectset_signature_alias_main.vibe" "$a71gdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$a71gdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: contract_effectset_signature_alias_main.vibe did not compile -- effectset-aware contract signature matching regressed" >&2
+  cat "$a71gdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+a71g_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$a71gdir/out.wasm" 2>&1 | tail -1)"
+if [ "$a71g_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: contract_effectset_signature_alias_main got '$a71g_out' (want 42)" >&2
+  exit 1
+fi
+rm -rf "$a71gdir"
+echo "[compiler-gate] effectset contract signature-matching ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the
