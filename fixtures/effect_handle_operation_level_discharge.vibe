@@ -1,0 +1,33 @@
+// ADR-0071 step 4 (docs/effectset.md, #755): `handle body with Effect {...}`
+// is exhaustive over every operation of Effect (ADR-0050 -- a handler can't
+// discharge only some operations), so discharging the bare effect name
+// ("Ask") is semantically equivalent to discharging every one of its
+// qualified operation names ("Ask::Get"). But collect_handle_effects
+// (checker_effects.vibe) previously only recorded the bare effect name,
+// and the containment check (decl_authorizes_effect) does exact
+// string-label matching -- so a handled body that TRANSITIVELY calls a
+// function declaring an operation-level row (`with { Ask::Get }`, not the
+// bare effect) was incorrectly rejected as still missing that requirement,
+// even though the handle plainly covers it. `read_one` here declares only
+// `with { Ask::Get }`; `main`'s handle discharges `Ask` (the arm targets
+// the whole effect) with NO further `with` clause of its own -- this must
+// compile now that collect_handle_effects also records the qualified
+// operation name for each arm.
+effect Ask {
+  Get -> Int
+}
+
+let read_one = () -> Int with { Ask::Get } {
+  perform Ask::Get
+}
+
+export let main = () -> Int {
+  handle {
+    read_one()
+  } with Ask {
+    Get => resume(42)
+  }
+}
+
+__DATA__
+{"last": "42"}

@@ -4331,6 +4331,38 @@ fi
 rm -rf "$a71ddir"
 echo "[compiler-gate] effectset parameter-type row expansion ok"
 
+# 40q. ADR-0071 step 4 (#755, docs/effectset.md): `handle body with Effect
+#      {...}` is exhaustive over every operation of Effect (ADR-0050), so
+#      discharging the bare effect name is semantically equivalent to
+#      discharging every one of its qualified operation names --
+#      collect_handle_effects (checker_effects.vibe) now records BOTH,
+#      instead of just the bare name, fixing a case where a handled body
+#      transitively calling a function with an operation-level declared row
+#      (`with { Ask::Get }`, not the bare effect `Ask`) was incorrectly
+#      rejected as still missing that requirement even though the handle
+#      plainly covers it. This gate compiles
+#      fixtures/effect_handle_operation_level_discharge.vibe, which has
+#      exactly that shape and NO with-clause of its own on main.
+echo "[compiler-gate] 40q/40 handler operation-level discharge (ADR-0071 step 4/#755)"
+a71edir="_build/_gate_effectset_handle_discharge"
+rm -rf "$a71edir"; mkdir -p "$a71edir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_operation_level_discharge.vibe > "$a71edir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$a71edir/src.vibe" "$a71edir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$a71edir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_operation_level_discharge.vibe did not compile -- handler operation-level discharge regressed" >&2
+  cat "$a71edir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+a71e_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$a71edir/out.wasm" 2>&1 | tail -1)"
+if [ "$a71e_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_operation_level_discharge got '$a71e_out' (want 42)" >&2
+  exit 1
+fi
+rm -rf "$a71edir"
+echo "[compiler-gate] handler operation-level discharge ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the
