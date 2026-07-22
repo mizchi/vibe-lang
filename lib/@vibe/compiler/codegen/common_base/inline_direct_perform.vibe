@@ -754,18 +754,37 @@ fn empty_str_array() -> Array[String] {
 // relaxation: a call to a name in `needing` is safe (that callee's own
 // body is scanned the same way as part of this same migration attempt).
 
+// NOTE (found by direct testing, not just review -- see docs/effect-
+// evidence-passing.md's Phase 3 implementation note): a needing-function
+// call nested inside an `EIf`/`EMatch`/`EWhile`/`EForIn`/`ELoop` branch
+// compiled to genuinely INVALID wasm ("not enough arguments on the stack
+// for call") even though the AST rewrite itself (edp_rewrite_handle_body/
+// edp_rewrite_needing_body) produces a structurally correct call with the
+// dict argument prepended -- some downstream codegen pass evidently
+// disagrees about the callee's arity specifically inside a branch. Root
+// cause not fully isolated; the safe fix is to make EVERY branching
+// construct unconditionally unsafe (same as EFn/EHandle/EDot) whenever a
+// needing-function call could be anywhere inside it, exactly like Phase 2's
+// own idp_has_unsafe_construct already treats EFn/EHandle -- this pass's
+// scope stays limited to straight-line code (ELet/ELetMut/ELetRec/ESeq/
+// EAssign/EAssignOp chains) with no control-flow branching at all whenever
+// it contains (or could contain) a needing-function call or perform. This
+// is strictly narrower than what was originally landed (which allowed
+// needing-calls inside branches) -- see fixtures/err_effect_evidence_
+// branch_regression.vibe for a fixture pinning this restriction itself.
 fn edp_has_unsafe_construct(expr: Expr, needing: Array[String]) -> Bool {
   match expr {
     EFn(_, _, _, _, _, _) => true,
     EHandle(_, _) => true,
+    EIf(_, _, _) => true,
+    EMatch(_, _) => true,
+    EWhile(_, _) => true,
+    EForIn(_, _, _, _) => true,
+    ELoop(_, _) => true,
     ELet(_, v, b, _) => edp_has_unsafe_construct(v, needing) || edp_has_unsafe_construct(b, needing),
     ELetMut(_, v, b, _) => edp_has_unsafe_construct(v, needing) || edp_has_unsafe_construct(b, needing),
     ELetRec(_, v, b) => edp_has_unsafe_construct(v, needing) || edp_has_unsafe_construct(b, needing),
     ESeq(a, b) => edp_has_unsafe_construct(a, needing) || edp_has_unsafe_construct(b, needing),
-    EIf(c, t, e) => edp_has_unsafe_construct(c, needing) || edp_has_unsafe_construct(t, needing) || edp_has_unsafe_construct(e, needing),
-    EMatch(s, arms) => edp_has_unsafe_construct(s, needing) || edp_arms_have_unsafe_construct(arms, needing),
-    EWhile(c, b) => edp_has_unsafe_construct(c, needing) || edp_has_unsafe_construct(b, needing),
-    EForIn(_, _, it, b) => edp_has_unsafe_construct(it, needing) || edp_has_unsafe_construct(b, needing),
     ECall(callee, args, _) => match callee {
       EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
         edp_perform_operand_has_unsafe_construct(Array::get(args, 0), needing)
@@ -795,7 +814,6 @@ fn edp_has_unsafe_construct(expr: Expr, needing: Array[String]) -> Bool {
     ERecord(_, fields, _) => edp_fields_have_unsafe_construct(fields, needing),
     EMap(fields) => edp_fields_have_unsafe_construct(fields, needing),
     ESpread(e2) => edp_has_unsafe_construct(e2, needing),
-    ELoop(pairs, b) => edp_pairs_have_unsafe_construct(pairs, needing) || edp_has_unsafe_construct(b, needing),
     _ => false
   }
 }
@@ -855,36 +873,6 @@ fn edp_fields_have_unsafe_construct(fields: Array[(String, Expr)], needing: Arra
   while i < Array::length(fields) {
     let (_, v) = Array::get(fields, i)
     if edp_has_unsafe_construct(v, needing) {
-      found = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
-}
-
-fn edp_pairs_have_unsafe_construct(pairs: Array[(String, Expr)], needing: Array[String]) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(pairs) {
-    let (_, v) = Array::get(pairs, i)
-    if edp_has_unsafe_construct(v, needing) {
-      found = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
-}
-
-fn edp_arms_have_unsafe_construct(arms: Array[(Pat, Expr)], needing: Array[String]) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(arms) {
-    let (_, ex) = Array::get(arms, i)
-    if edp_has_unsafe_construct(ex, needing) {
       found = true
     } else {
       ()

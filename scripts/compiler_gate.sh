@@ -4486,6 +4486,37 @@ fi
 rm -rf "$edpdir"
 echo "[compiler-gate] evidence-dict threading through a helper-function call ok"
 
+# 40v. ADR-0076 Phase 3 (#817): a needing-function call nested inside an
+#      `if`/`else` branch of a handle body used to compile to genuinely
+#      INVALID wasm ("not enough arguments on the stack for call") --
+#      found by direct testing, not review, while broadening coverage past
+#      gate 40u's straight-line shape. Fixed by making every branching
+#      construct (EIf/EMatch/EWhile/EForIn/ELoop) unconditionally unsafe in
+#      edp_has_unsafe_construct, same as EFn/EHandle/EDot already were --
+#      this pass's scope is straight-line handle-body code only. This gate
+#      pins that the branching case now compiles AND runs (a crash
+#      produces no output, which counts as FAIL regardless of the expected
+#      value) via the safe fallback to pre-existing replay codegen.
+echo "[compiler-gate] 40v/40 evidence-dict pass: branching handle body falls back safely, no invalid-wasm crash (ADR-0076 Phase 3/#817)"
+edpbdir="_build/_gate_evidence_dict_branch"
+rm -rf "$edpbdir"; mkdir -p "$edpbdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_branch_fallback.vibe > "$edpbdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpbdir/src.vibe" "$edpbdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpbdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_branch_fallback.vibe did not compile" >&2
+  cat "$edpbdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edpb_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpbdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edpb_out" != "3008" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_branch_fallback.vibe got '$edpb_out' (want 3008) -- either the invalid-wasm crash regressed, or replay's fallback behavior changed" >&2
+  exit 1
+fi
+rm -rf "$edpbdir"
+echo "[compiler-gate] evidence-dict pass branching fallback ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the

@@ -658,6 +658,27 @@ committed `_cli_adapter_module_source.vibe` を再利用する」経路に落ち
 機能した -- 今後 selfhost パイプラインの挙動を疑うときの再利用手順として
 記録しておく。
 
+**追記 3 (2026-07-22, 着地直後に発見・修正した実 バグ)**: 上記の第一
+スライス着地後、カバレッジを広げる目的で「needing 関数呼び出しが
+handle body の `if`/`match` 分岐の中にある」ケースを追加で直接テストした
+ところ、生成される wasm が実際に**invalid** (`WebAssembly.instantiate():
+... not enough arguments on the stack for call`) になり実行時に
+クラッシュする、という本物のバグを発見した (AST 書き換え自体は構造的に
+正しい呼び出しを生成しているにも関わらず、下流の何らかの codegen パスが
+分岐内の呼び出し先 arity について食い違った判断をしていた -- 根本原因は
+特定しきれていない)。この時点で `edp_has_unsafe_construct` は
+`EIf`/`EMatch`/`EWhile`/`EForIn`/`ELoop` の中まで再帰して needing 呼び出し
+を許可していたため、実際にこの形の handle body を書けば誰でも踏める
+状態だった。安全側に倒し、分岐構文を `EFn`/`EHandle`/`EDot` と同じく
+**常に unsafe** 扱いにする修正を即座に行った (このパスの対象は
+straight-line なコードのみに縮小する) -- fixtures/effect_handle_call_
+evidence_branch_fallback.vibe + compiler_gate.sh 40v で、分岐ケースが
+クラッシュせず安全に (未着地時と同じ) replay へフォールバックすることを
+回帰として固定した。教訓: 「AST 書き換えが構造的に正しく見える」ことと
+「生成される wasm が実際に valid である」ことは別の主張であり、新しい
+形の入力 (今回は「分岐の中」) を広げるたびに、レビューだけでなく実際に
+コンパイル・実行して確かめる必要がある。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect

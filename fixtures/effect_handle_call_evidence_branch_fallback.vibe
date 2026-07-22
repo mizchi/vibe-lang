@@ -1,0 +1,59 @@
+// ADR-0076 (#817) Phase 3 regression lock: a needing-function call nested
+// inside an `if`/`else` branch of a handle body used to compile to
+// genuinely INVALID wasm ("not enough arguments on the stack for call")
+// -- discovered by direct testing while broadening
+// evidence_dict_pass.vibe's coverage past the shape
+// fixtures/effect_handle_call_evidence.vibe exercises (which only has
+// straight-line handle-body code, no branching). Some downstream codegen
+// pass disagreed with the AST rewrite about the rewritten callee's arity
+// specifically inside a branch; root cause not fully isolated.
+//
+// Fixed conservatively: edp_has_unsafe_construct now treats EVERY
+// branching construct (EIf/EMatch/EWhile/EForIn/ELoop) as unconditionally
+// unsafe whenever it could contain a needing-function call, exactly like
+// EFn/EHandle/EDot already were -- this pass's scope is straight-line
+// handle-body code only. This fixture's handle body branches on `count`,
+// so it now falls back to the pre-existing replay codegen entirely
+// (unchanged from before evidence_dict_pass.vibe existed) instead of
+// crashing. Expected output is replay's own (separately pre-existing,
+// unrelated to this pass) behavior for a single perform reached through
+// one branch: replay re-executes the pre-perform statement once on the
+// resolving pass, so `count` is incremented twice before the perform
+// resolves and once after -- count == 3, c == 5, r == c + count == 8,
+// main() == 3 * 1000 + 8 == 3008. This fixture pins that exact value so a
+// future change to evidence_dict_pass.vibe's branch handling can't
+// silently reintroduce the invalid-wasm crash without this gate catching
+// it (a crash produces no output at all, which the gate below treats as
+// FAIL regardless of the expected value).
+effect Ask {
+  Get -> Int
+}
+
+let ask_helper = () -> Int with { Ask } {
+  perform Ask::Get
+}
+
+let compute = () -> (Int, Int) {
+  let mut count = 0
+  let r = handle {
+    count = count + 1
+    let c = if count > 0 {
+      ask_helper()
+    } else {
+      0
+    }
+    count = count + 1
+    c + count
+  } with Ask {
+    Get => resume(5)
+  }
+  (count, r)
+}
+
+export let main = () -> Int {
+  let (count, r) = compute()
+  count * 1000 + r
+}
+
+__DATA__
+{"last": "3008"}
