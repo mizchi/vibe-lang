@@ -528,6 +528,69 @@ Phase 3 でも再利用できる。
    リスクがあるため。ADR-0071 (docs/effectset.md) の step 6 の記述は
    この結論に合わせて更新する。
 
+**追記 2 (2026-07-22, replay 機構の実装精査から得た簡略化仮説 — 未検証、
+要 fixture 実証)**: 現行 replay 実装 (`compile_expr_tail6.vibe`) と
+`#942` (`check_arm_resume_tail`, checker.vibe:2617-2637) を実装レベルで
+精査した結果、**Phase 3 は当初想定した Outcome[R]/CPS 変換
+("yield bubbling") を必要としない可能性がある**、という仮説が得られた。
+確定した設計変更ではなく、実装着手前に fixture で検証すべき仮説として
+記録する。
+
+根拠: `#942` は「resume(...) は arm の tail 位置以外では compile error」
+という制約を、resume を呼ぶ場合に**強制**する (multi-shot・non-tail
+resume は現在の vibe ソース言語で構文的に構築不可能)。Xie & Leijen の
+generalized evidence passing 理論において、この「1 arm につき resume
+高々 1 回・必ず tail 位置」という性質はまさに "tail-resumptive" の定義
+そのものであり、tail-resumptive な handler は **CPS 変換なしの直接
+呼び出し** (perform → 対応する operation の evidence closure を
+ordinary call で呼び、closure 内の tail `resume(v)` はその closure の
+ordinary return として v を返すだけ) に還元できる、というのが
+Xie & Leijen 論文自身の核心的主張である。もしこれが vibe の全 handler
+に当てはまるなら (`#942` が resume を伴う全 arm に対してこれを機械的に
+強制しているため)、**「evidence dict を通常引数として呼び出しチェーンに
+沿って中継する (trait dict-passing の `find_dict_for_trait` と同型の
+スレッディング) だけで、replay loop・`eff_reserve`・memo アドレッシング
+を全廃できる」**ことになり、Outcome[R] 型も CPS 変換も新規に導入する
+必要がなくなる。Phase 2 (`inline_direct_performs`) が対応できていない
+のは「perform が静的に (AST 上で) 発見できない」ケース (closure 引数
+越し・nested handle・非純粋呼び出し越し) だけであり、これは
+「静的インライン展開」を「動的 evidence 直接呼び出し (dict 経由)」に
+置き換えるだけで解決する、CPS を要さない問題である可能性が高い。
+
+resume を一度も呼ばない arm (`Error` arm は `handler_arm_pat_is_error`
+で本チェックの対象外、それ以外の通常 effect の arm がノーリターン/
+abort 的に「resume せず arm 自身の値を handle 式全体の値にする」ことを
+意図的に書けるのかは本調査では未確定) は依然として非局所脱出
+(non-local exit) が必要になるが、これは replay の throw/`try_table`
+機構が今日すでに提供している経路をそのまま流用でき (abort は
+1 度しか実行されない性質上、replay 特有の「体を再実行する」問題を
+そもそも引き起こさない)、新規機構は不要と見込まれる。
+
+**この仮説が崩れる可能性のある具体的な検証対象** (Phase 3 着手時に
+`fixtures/effect_*.vibe` 75 本 + 新規 fixture で必ず確認すること):
+(a) **[検証済み・懸念解消]** resume を一度も呼ばない非 `Error` effect の
+arm を実際に試したところ (`handle { let x = perform Ask::Get; x + 100 }
+with Ask { Get => 42 }`、gen_adr71k の stage2 でコンパイル・実行)、結果は
+`142` (= 42 + 100) だった — つまり resume を書かない arm は「abort して
+handle 式全体の値を arm の値にする」という別意味論ではなく、**arm の
+tail 値がそのまま暗黙の `resume(値)` として扱われている**。ユーザ定義
+effect の arm に真の abort/non-local-exit 意味論は存在せず (それは
+`Error` 専用の別経路)、全ての通常 effect arm は結局 tail-resumptive に
+帰着する。このリスクは解消したと見てよい — CPS/Outcome[R] を要さない
+という仮説をむしろ補強する結果。(b) 同じ effect に対する入れ子の
+`handle` (shadowing) で、どちらの evidence が呼ばれるべきかの解決が
+動的呼び出しチェーンの
+どちらの evidence が呼ばれるべきかの解決が動的呼び出しチェーンの
+どの時点で行われるか。(c) ADR-0068 (`docs/concurrency.md`) の
+async/`Spawn` 文脈で `Cont[R]` を経由した継続の保存が必要になる場面
+(本 ADR の「cancel と non-local exit」節で「据え置き」とされている
+finalizer 保証の話) と、この直接呼び出しモデルとの整合性。この 3 点が
+すべてクリアなら、Phase 3 の実装コストは当初想定より大幅に小さくなる
+(新規 IR ノード・新規 runtime 型が不要になり、Phase 2 の
+`inline_direct_performs` を「静的に発見できる場合」の特殊高速路として
+残したまま、「動的 evidence 直接呼び出し」を fallback 経路として追加する
+だけで済む可能性がある) が、まだ確定した結論ではない。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
