@@ -77,15 +77,25 @@ fn stc_param_names(params: Array[(String, Option[TypeExpr])]) -> Array[String] {
   }
 }
 
+// Order matters for compile-time cost, not just correctness: `params_all_
+// scalar` and `tail_has_self_call` are cheap (the latter only walks tail
+// SLOTS, not the whole tree) and reject the overwhelming majority of
+// functions immediately, so the two whole-body scans below only run for the
+// rare function that's an actual self-tail-recursion candidate. Checking
+// them first (as an earlier version of this pass did) made
+// `rewrite_self_tail_calls` walk the FULL body of every scalar-only-param
+// function in the compiled program twice, regardless of whether it
+// self-recurses at all -- measurable overhead across thousands of functions
+// in a large program, caught by CI's self-compile heap-usage KPI gate.
 fn stc_eligible(name: String, params: Array[(String, Option[TypeExpr])], param_names: Array[String], arity: Int, body: Expr) -> Bool {
   if !stc_params_all_scalar(params) {
     false
+  } else if !stc_tail_has_self_call(body, name, arity) {
+    false
   } else if stc_expr_binds_name(body, name) {
     false
-  } else if stc_expr_has_handle_or_return(body) {
-    false
   } else {
-    stc_tail_has_self_call(body, name, arity)
+    !stc_expr_has_handle_or_return(body)
   }
 }
 
