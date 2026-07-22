@@ -25,9 +25,9 @@ vibe test docs/tutorial/     # ディレクトリ一括
 ## CLI ツーリング
 
 ```bash
-vibe run app.vibe            # コンパイルして実行 (main の返り値を表示)
+vibe run app.vibex           # コンパイルして fn main を実行
 vibe check app.vibe          # 型検査のみ
-vibe compile app.vibe -o app.wasm
+vibe compile app.vibex -o app.wasm
 vibe bench file.vibe         # bench {} ブロックを計測 (ns/op, ops/sec)
 
 # エディタ級のクエリ (LSP と同じ AST 解析)

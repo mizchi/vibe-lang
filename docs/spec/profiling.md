@@ -29,7 +29,7 @@ guest＋host を合わせた総ヒープ使用量を表す。
 オーバーヘッド。プログラム出力（stdout）は汚さず、レポートは stderr に出す。
 
 ```
-$ vibe run --mem prog.vibe
+$ vibe run --mem prog.vibex
 <program stdout>
 vibe::mem heap_base=131144 heap_peak=258152 allocated=127008 committed=4194304
 vibe: memory — allocated 124.0 KiB (127008 B), peak heap 252.1 KiB, committed 4.0 MiB
@@ -51,7 +51,7 @@ pure / 純計算プログラムは `allocated=0`。`committed` は wasm memory �
 wasmtime はこの limiter を通すので、タイムラインは完全。計装ゼロ・ホスト側のみ。
 
 ```
-$ vibe run --mem grow.vibe          # >4 MiB を確保するプログラム
+$ vibe run --mem grow.vibex         # >4 MiB を確保するプログラム
 vibe::mem heap_base=131144 heap_peak=6270152 allocated=6139008 committed=6291456 grow_events=32
 vibe: memory — allocated 5.9 MiB …, committed 6.0 MiB, 32 growth event(s)
 vibe::memgrow t_us=2066 from=4194304 to=4259840 pages=+1
@@ -78,7 +78,7 @@ vibe:   growth 4.0 MiB -> 6.0 MiB across 32 event(s), 2.07 ms … 2.50 ms
 ホスト側のみ・計装なし。epoch checks のコストは `--mem-sample` 時のみ（通常 / `vibe bench` は無影響）。
 
 ```
-$ vibe run --mem-sample long.vibe
+$ vibe run --mem-sample long.vibex
 vibe::memsample t_us=1235 heap=2459624
 vibe::memsample t_us=2314 heap=4571336
 …
@@ -101,7 +101,7 @@ vibe: heap samples — 12 over 1.21 ms … 13.36 ms, 2.4 MiB -> 19.2 MiB (peak 1
 break ビルド再利用なので、デフォルトの自己コンパイル経路は byte-identical（fixpoint 維持）。
 
 ```
-$ vibe run --alloc-site sites.vibe        # heavy()/light() を呼ぶプログラム
+$ vibe run --alloc-site sites.vibex       # heavy()/light() を呼ぶプログラム
 1250
 vibe::allocsite fn=heavy line=1 bytes=181200
 vibe::allocsite fn=light line=7 bytes=1456

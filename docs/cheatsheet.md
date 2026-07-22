@@ -9,13 +9,13 @@ WASM-targeting, pure-by-default language with algebraic effects. Compiled via Mo
 // checker reports `unknown function: String::stdout_write`).
 import ./lib/@vibe/prelude/io.vibe { stdout_write }
 
-let main: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   stdout_write("hello world\n")
 }
 ```
 
 ```bash
-vibe run hello.vibe        # compile & execute
+vibe run hello.vibex       # compile & execute
 vibe shell                 # interactive shell
 vibe test file.vibe        # run tests
 vibe check file.vibe       # type check only
@@ -603,8 +603,8 @@ let greet: (String) -> Unit with { Logger } = (name) -> {
   perform Logger::Log("hello \{name}")
 }
 
-// the handler arm calls stdout_write, so the enclosing function carries Stdout
-let main: () -> Unit with { Stdout } = () -> {
+// the handler arm calls stdout_write, so the executable entry carries Stdout
+fn main with { Stdout } {
   handle { greet("world") } with Logger {
     Log(msg) => {
       stdout_write(msg)
@@ -746,10 +746,10 @@ input
 let debug_dump = (x) -> { ... }   // exists ONLY when the `dev` flag is active
 
 #cfg(dev)
-let main = () -> Int { debug_dump(run()) }
+let run_mode = () -> Int { debug_dump(run()) }
 
 #cfg(release)
-let main = () -> Int { run() }
+let run_mode = () -> Int { run() }
 ```
 
 - Activate flags at compile time: `VIBE_CFG=dev vibe build app.vibe` (comma-separated for multiple).

@@ -2,9 +2,9 @@
 # Integration test for debugger テーマ3 / DAP P1 groundwork: a function-call
 # execution trace. `vibe run --trace <file>` must print the SEQUENCE of user
 # function entries, each annotated with its source location, e.g.:
-#   trace: main (prog.vibe:2)
-#   trace: helper (prog.vibe:1)
-#   trace: helper (prog.vibe:1)
+#   trace: main (prog.vibex:2)
+#   trace: helper (prog.vibex:1)
+#   trace: helper (prog.vibex:1)
 #
 # How it works (opt-in, default-off so the selfhost fixpoint is unaffected):
 #   * VIBE_DEBUG=1 codegen appends each entered user function's index to an
@@ -49,23 +49,23 @@ bad() { echo "FAIL: $1" >&2; fail=$((fail+1)); }
 
 proj="$WORK/proj"; mkdir -p "$proj"
 # helper (line 1) called twice; main (line 2) calls it.
-cat > "$proj/prog.vibe" <<'EOF'
+cat > "$proj/prog.vibex" <<'EOF'
 export let helper = (x: Int) -> Int { x * 2 }
-export let main = () -> Int { helper(20) + helper(1) }
+fn main with { Stdout } { Stdout::write_stream("\{helper(20) + helper(1)}\n") }
 EOF
 
 # 1. Plain `vibe run` is unaffected: prints 42, emits NO trace lines.
-plain="$("$VIBE" run "$proj/prog.vibe" 2>&1)"
-[ "$(printf '%s' "$plain" | tr -dc '0-9')" = "42" ] && ok "plain run computes 42" || bad "plain run did not print 42 (got: $plain)"
+plain="$("$VIBE" run "$proj/prog.vibex" 2>&1)"
+[ "$(printf '%s' "$plain" | grep -o '42' | head -1)" = "42" ] && ok "plain run computes 42" || bad "plain run did not print 42 (got: $plain)"
 if printf '%s\n' "$plain" | grep -q "trace:"; then bad "plain run leaked trace lines"; else ok "plain run emits no trace lines"; fi
 
 # 2. `vibe run --trace` emits the call sequence annotated with source lines.
-traced="$("$VIBE" run --trace "$proj/prog.vibe" 2>&1)"
+traced="$("$VIBE" run --trace "$proj/prog.vibex" 2>&1)"
 echo "----- vibe run --trace -----"; printf '%s\n' "$traced"; echo "----------------------------"
 [ "$(printf '%s' "$traced" | tr -dc '0-9' | grep -o '42' | head -1)" = "42" ] && ok "traced run still computes 42" || true
-printf '%s\n' "$traced" | grep -qF "trace: main (prog.vibe:2)" && ok "trace names main at its source line (2)" || bad "missing 'trace: main (prog.vibe:2)'"
-printf '%s\n' "$traced" | grep -qF "trace: helper (prog.vibe:1)" && ok "trace names helper at its source line (1)" || bad "missing 'trace: helper (prog.vibe:1)'"
-helper_hits="$(printf '%s\n' "$traced" | grep -cF "trace: helper (prog.vibe:1)")"
+printf '%s\n' "$traced" | grep -qF "trace: main (prog.vibex:2)" && ok "trace names main at its source line (2)" || bad "missing 'trace: main (prog.vibex:2)'"
+printf '%s\n' "$traced" | grep -qF "trace: helper (prog.vibex:1)" && ok "trace names helper at its source line (1)" || bad "missing 'trace: helper (prog.vibex:1)'"
+helper_hits="$(printf '%s\n' "$traced" | grep -cF "trace: helper (prog.vibex:1)")"
 [ "$helper_hits" -ge 2 ] && ok "helper appears >=2 times (called twice)" || bad "helper appeared $helper_hits time(s), expected >=2"
 
 echo "[test_vibe_trace_calls] $pass passed, $fail failed"

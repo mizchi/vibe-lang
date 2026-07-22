@@ -722,7 +722,7 @@ ADR-0051 (trait 解決 3 層化) を起点に、`docs/adr.md` の `proposed` 列
 
 1. **status と実装の照合**
    - `docs/adr.md` 表で proposed のものを取り、関連実装場所を grep で探す。
-   - 簡単な end-to-end コードで動作確認 (`vibe run /tmp/foo.vibe`)。
+   - 簡単な end-to-end コードで動作確認 (`vibe run /tmp/foo.vibex`)。
    - 動けば「実装済み・doc だけ古い」パターンなので、status 更新 + 補強 wbtest 1〜2 件の小 PR で済む。
 2. **動かない or 部分実装の場合**
    - host (MoonBit 実装) と selfhost (vibe 実装) のどちらが対応済みか確認。

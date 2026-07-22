@@ -181,15 +181,15 @@ vibe normalize analysis.vibe
 ### 4. エディタでリファクタ
 
 ```bash
-vim analysis.vibe   # or vscode with vibe extension
-vibe check analysis.vibe
-vibe run analysis.vibe
+vim analysis.vibex   # or vscode with vibe extension
+vibe check analysis.vibex
+vibe run analysis.vibex
 ```
 
 ### 5. テストを追加して品質保証
 
 ```bash
-# analysis.vibe の末尾にテストブロックを追加
+# analysis.vibex の末尾にテストブロックを追加
 vibe test analysis.vibe
 ```
 

@@ -121,8 +121,8 @@ fn main with { S3::Read[Posts], Stdout::write } {
 - process exit code は暗黙の `Int` return/print にしない。必要なら明示的な
   `Process::exit` operation として設計する。
 
-現在の `export let main: () -> Int` と、Int return を stdout へ暗黙 print する挙動は
-0.4.0 移行対象であり、canonical `.vibex` contract には含めない。
+value binding や `Int` return を entry とみなして stdout へ暗黙 print する挙動は
+canonical `.vibex` contract に含めない。
 
 ## Logical resource identity
 
@@ -387,7 +387,7 @@ conformance test を追加して段階的に bridge する。
 | 現状 | 放置した場合の負債 | 本 ADR の決定 |
 | --- | --- | --- |
 | `.vibex` が file convention に無く launcher 慣習 | compiler/toolごとにentry判定が分裂 | executable root、exactly-one `fn main` |
-| `export let main -> Int` と `fn main -> Unit` が混在 | exit/print/component ABI が固定できない | Unit main、Error/Process operationへ分離 |
+| value-bound/Int-return entry が残存 | exit/print/component ABI が固定できない | Unit main、Error/Process operationへ分離 |
 | main row の明示/推論が open | dependency updateでauthorityが無音拡大 | 明示 closed exact row |
 | WIT surface がexport関数だけ | non-export mainのhost requirementを表せない | `.vibex` mainをsemantic contract起点にする |
 | built-in host effect がWITコメントだけ | link前に不足検査できない | stable OperationIdとresidual importを生成 |
@@ -432,9 +432,19 @@ compiler manifest、provider lowering、host preflight、child authority の con
 
 ### Phase 1: `.vibex` entry hardening
 
+実装状況（2026-07-22）:
+
+- 実装済み: executable file kind、exactly-one/non-exported `fn main`、Unit/無引数、
+  明示 row、`.vibex` import拒否、固定 `main` entry、`.vibe` run拒否、CLI/script移行。
+- 未実装: checker が求める `Ractual = Rdeclared` の exact/closed row 検査。
+  現段階は構文上 row が書かれていることだけを検査し、semantic contract emission と
+  同時に Phase 2 で接地する。この差は target contract の緩和ではない。
+- `.vibex --wit` は Phase 2 まで拒否する。export-only の旧 WIT generator で
+  non-exported main の requirement を欠落させた artifact は生成しない。
+
 Red:
 
-- `.vibex` without main、multiple main、`export let main`、custom `--entry` をreject。
+- `.vibex` without main、multiple main、value-bound main、custom `--entry` をreject。
 - `.vibe` を `vibe run` した場合と `.vibex` importをreject。
 - open/inferred/overdeclared main rowをreject。
 

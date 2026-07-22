@@ -1,7 +1,7 @@
 //# Imports
 
 import ../syntax {
-  lex, parse_program
+  lex, parse_program, parse_program_preserving
 }
 
 import ../../../../lib/@vibe/core {
@@ -9,9 +9,11 @@ import ../../../../lib/@vibe/core {
 }
 
 import ../core {
+  Expr,
   Stmt,
   Subst,
   Type,
+  TypeExpr,
   TypeDef,
   TypeEnv,
   env_bind,
@@ -83,6 +85,81 @@ import ../cache {
   persistent_module_header_cache_path,
   persistent_source_group_cache_path,
   persistent_source_list_cache_path
+}
+
+// ADR-0075 Phase 1: `.vibex` is a language-level executable root, not a
+// launcher convention. Validate the preserving AST before fn declarations
+// are lowered to SLet so a value-bound main cannot masquerade as canonical
+// `fn main`. Exact operation-row equality is wired in a later phase; this
+// slice fixes the file/entry shape and requires an explicit row.
+fn validate_vibex_entry_source(path: String, source: String) -> Unit with { Error } {
+  if !String::ends_with(path, ".vibex") {
+    ()
+  } else {
+    let stmts = parse_program_preserving(lex(source))
+    let mut main_count = 0
+    let mut saw_value_main = false
+    let mut invalid_shape = false
+    let mut missing_effect_row = false
+    let mut exported_main = false
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SFnDecl(exported, name, value, _, _) => if name == "main" {
+          main_count = main_count + 1
+          if exported {
+            exported_main = true
+          } else {
+            ()
+          }
+          match value {
+            EFn(type_params, _, params, ret, effects, _) => {
+              let returns_unit = match ret {
+                Some(TyName(name)) => name == "Unit",
+                _ => false
+              }
+              if Array::length(type_params) != 0 || Array::length(params) != 0 || !returns_unit {
+                invalid_shape = true
+              } else {
+                ()
+              }
+              match effects {
+                Some(_) => (),
+                None => {
+                  missing_effect_row = true
+                }
+              }
+            },
+            _ => {
+              invalid_shape = true
+            }
+          }
+        } else {
+          ()
+        },
+        SLet(_, _, name, _, _) => if name == "main" {
+          saw_value_main = true
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    if saw_value_main {
+      throw("\{path}: value-bound main is not allowed in .vibex; use 'fn main with { ... } { ... }'")
+    } else if main_count != 1 {
+      throw("\{path}: .vibex executable requires exactly one fn main")
+    } else if exported_main {
+      throw("\{path}: .vibex fn main is an entry declaration and cannot be exported")
+    } else if invalid_shape {
+      throw("\{path}: .vibex fn main must have type () -> Unit")
+    } else if missing_effect_row {
+      throw("\{path}: .vibex fn main requires an explicit effect row; write 'with { }' for a pure entry")
+    } else {
+      ()
+    }
+  }
 }
 
 //# Path helpers
@@ -2204,6 +2281,12 @@ fn move_entry_last_grouped(groups: Array[(String, Array[(String, String)])], ent
 }
 
 export fn collect_source_groups_fs(entry_path: String) -> Array[(String, Array[(String, String)])] with { Error, Fs } {
+  if String::ends_with(entry_path, ".vibex") {
+    ensure_regular_source_fs(entry_path)
+    validate_vibex_entry_source(entry_path, Fs::read_file(entry_path))
+  } else {
+    ()
+  }
   let collected = match special_manifest_source_groups(entry_path) {
     Some((manifest_path, groups)) => {
       let _ = manifest_path

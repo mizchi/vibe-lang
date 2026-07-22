@@ -35,7 +35,7 @@ ok   foo_test.vibe  [cov fn 3/3, branch 3/4]
 `vibe run --coverage`（単一プログラムを実行しつつ計測）も同じ仕組み:
 
 ```bash
-scripts/vibe_run.sh --coverage path/to/prog.vibe [entry]
+scripts/vibe_run.sh --coverage path/to/prog.vibex [-- args...]
 ```
 
 プログラムの出力は stdout、`[vibe-cov]` サマリは stderr、JSON は
