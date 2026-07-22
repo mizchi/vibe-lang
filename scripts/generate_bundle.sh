@@ -113,6 +113,22 @@ for _, rel in rows:
         with open(full, "r", encoding="utf-8") as f:
             source_by_rel[rel] = f.read()
 
+# repo-rooted ("lib/@scope/name/...") -> manifest key, mirroring the SAME
+# ../../../ -> repo-root / bare -> lib/@vibe/compiler/ rule the bash bundle
+# writer applies to every embedded path below (#741/#766). A `@scope/name`
+# import resolves to this repo-rooted spelling (loader/header_cache.vibe's
+# resolve_import_path_candidates does the identical `lib/<raw_path>/...`
+# join at runtime), so this reverse index is what lets an `@`-qualified
+# import find its manifest row here.
+REPO_ROOTED_PREFIX = "../../../"
+repo_rooted_to_rel = {}
+for rel in source_by_rel:
+    if rel.startswith(REPO_ROOTED_PREFIX):
+        repo_rooted = rel[len(REPO_ROOTED_PREFIX):]
+    else:
+        repo_rooted = "lib/@vibe/compiler/" + rel
+    repo_rooted_to_rel[repo_rooted] = rel
+
 # #897/Codex: optional non-capturing `as <mod> only` tail so a qualified
 # import's path capture doesn't swallow the " as h only" text as part of
 # the resolved path (the qualified grammar lives in lib/@vibe/parser/parser.vibe).
@@ -132,8 +148,6 @@ def normalize_path(path: str) -> str:
         parts.append(seg)
     return "/".join(parts)
 
-COMPILER_AT_PREFIX = "@vibe/compiler"
-
 def resolve_path(base_rel: str, raw_path: str) -> str:
     base_dir = os.path.dirname(base_rel)
     raw_path = re.sub(r'\s*/\s*', '/', raw_path.strip())
@@ -142,24 +156,24 @@ def resolve_path(base_rel: str, raw_path: str) -> str:
         # relative-import package-boundary check requires this spelling for
         # any cross-package reference, including compiler-internal nested
         # packages -- see docs on `enforce_relative_import_package_boundary_fs`).
-        # Only a path reaching back INSIDE this same compiler_dir tree
-        # (`@vibe/compiler/<sub>`) can be embedded in this bundle; anything
-        # else is a genuinely external package the real runtime loader
-        # resolves at compile time, not this textual bundler -- return the
-        # raw spelling unchanged so it naturally misses source_by_rel (same
-        # as an external dep always did: this dep_pattern used to require a
-        # leading `.`, so an external path was never even matched at all).
-        if raw_path == COMPILER_AT_PREFIX:
-            sub = ""
-        elif raw_path.startswith(COMPILER_AT_PREFIX + "/"):
-            sub = raw_path[len(COMPILER_AT_PREFIX) + 1:]
-        else:
-            return raw_path
-        prefix = sub + "/" if sub else ""
-        for idx_candidate in (prefix + "index.vpkg", prefix + "index.vibei", prefix + "index.vibe"):
-            if idx_candidate in source_by_rel:
-                return idx_candidate
-        return sub if sub else raw_path
+        # Resolves the SAME way the real runtime loader does
+        # (resolve_import_path_candidates's `@` branch): `lib/<raw_path>/...`,
+        # repo-rooted. Look it up via repo_rooted_to_rel (mirrors this
+        # script's own ../../../ <-> lib/@vibe/compiler/ convention) to find
+        # its manifest row -- whether that row is INSIDE this compiler_dir
+        # tree (a compiler-internal `@vibe/compiler/<sub>` package) or a
+        # sibling package under lib/ (`@vibe/core`, `@vibe/json`, ...): #1066
+        # found the bundle silently dropping 18 lib/@vibe/core files (and
+        # every other cross-package dep) once they switched to `@` spelling,
+        # because this used to only recognize the compiler-internal case.
+        # A path with no manifest row at all (genuinely external, e.g. a
+        # store-pinned package with no lib/ dev-mode copy) returns unchanged,
+        # naturally missing source_by_rel like it always did.
+        lib_rel = "lib/" + raw_path
+        for idx_candidate in (lib_rel + "/index.vpkg", lib_rel + "/index.vibei", lib_rel + "/index.vibe"):
+            if idx_candidate in repo_rooted_to_rel:
+                return repo_rooted_to_rel[idx_candidate]
+        return raw_path
     path = raw_path if raw_path.endswith(".vibe") else raw_path + ".vibe"
     if path.startswith("./") or path.startswith("../"):
         if base_dir:
@@ -389,6 +403,22 @@ for _, rel in rows:
         with open(full, "r", encoding="utf-8") as f:
             source_by_rel[rel] = f.read()
 
+# repo-rooted ("lib/@scope/name/...") -> manifest key, mirroring the SAME
+# ../../../ -> repo-root / bare -> lib/@vibe/compiler/ rule the bash bundle
+# writer applies to every embedded path below (#741/#766). A `@scope/name`
+# import resolves to this repo-rooted spelling (loader/header_cache.vibe's
+# resolve_import_path_candidates does the identical `lib/<raw_path>/...`
+# join at runtime), so this reverse index is what lets an `@`-qualified
+# import find its manifest row here.
+REPO_ROOTED_PREFIX = "../../../"
+repo_rooted_to_rel = {}
+for rel in source_by_rel:
+    if rel.startswith(REPO_ROOTED_PREFIX):
+        repo_rooted = rel[len(REPO_ROOTED_PREFIX):]
+    else:
+        repo_rooted = "lib/@vibe/compiler/" + rel
+    repo_rooted_to_rel[repo_rooted] = rel
+
 # #897/Codex: optional non-capturing `as <mod> only` tail so a qualified
 # import's path capture doesn't swallow the " as h only" text as part of
 # the resolved path (the qualified grammar lives in lib/@vibe/parser/parser.vibe).
@@ -408,8 +438,6 @@ def normalize_path(path: str) -> str:
         parts.append(seg)
     return "/".join(parts)
 
-COMPILER_AT_PREFIX = "@vibe/compiler"
-
 def resolve_path(base_rel: str, raw_path: str) -> str:
     base_dir = os.path.dirname(base_rel)
     raw_path = re.sub(r'\s*/\s*', '/', raw_path.strip())
@@ -418,24 +446,24 @@ def resolve_path(base_rel: str, raw_path: str) -> str:
         # relative-import package-boundary check requires this spelling for
         # any cross-package reference, including compiler-internal nested
         # packages -- see docs on `enforce_relative_import_package_boundary_fs`).
-        # Only a path reaching back INSIDE this same compiler_dir tree
-        # (`@vibe/compiler/<sub>`) can be embedded in this bundle; anything
-        # else is a genuinely external package the real runtime loader
-        # resolves at compile time, not this textual bundler -- return the
-        # raw spelling unchanged so it naturally misses source_by_rel (same
-        # as an external dep always did: this dep_pattern used to require a
-        # leading `.`, so an external path was never even matched at all).
-        if raw_path == COMPILER_AT_PREFIX:
-            sub = ""
-        elif raw_path.startswith(COMPILER_AT_PREFIX + "/"):
-            sub = raw_path[len(COMPILER_AT_PREFIX) + 1:]
-        else:
-            return raw_path
-        prefix = sub + "/" if sub else ""
-        for idx_candidate in (prefix + "index.vpkg", prefix + "index.vibei", prefix + "index.vibe"):
-            if idx_candidate in source_by_rel:
-                return idx_candidate
-        return sub if sub else raw_path
+        # Resolves the SAME way the real runtime loader does
+        # (resolve_import_path_candidates's `@` branch): `lib/<raw_path>/...`,
+        # repo-rooted. Look it up via repo_rooted_to_rel (mirrors this
+        # script's own ../../../ <-> lib/@vibe/compiler/ convention) to find
+        # its manifest row -- whether that row is INSIDE this compiler_dir
+        # tree (a compiler-internal `@vibe/compiler/<sub>` package) or a
+        # sibling package under lib/ (`@vibe/core`, `@vibe/json`, ...): #1066
+        # found the bundle silently dropping 18 lib/@vibe/core files (and
+        # every other cross-package dep) once they switched to `@` spelling,
+        # because this used to only recognize the compiler-internal case.
+        # A path with no manifest row at all (genuinely external, e.g. a
+        # store-pinned package with no lib/ dev-mode copy) returns unchanged,
+        # naturally missing source_by_rel like it always did.
+        lib_rel = "lib/" + raw_path
+        for idx_candidate in (lib_rel + "/index.vpkg", lib_rel + "/index.vibei", lib_rel + "/index.vibe"):
+            if idx_candidate in repo_rooted_to_rel:
+                return repo_rooted_to_rel[idx_candidate]
+        return raw_path
     path = raw_path if raw_path.endswith(".vibe") else raw_path + ".vibe"
     if path.startswith("./") or path.startswith("../"):
         if base_dir:
