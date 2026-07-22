@@ -212,7 +212,7 @@ done
 
 echo
 echo "[gc-selfbuild] full-bundle gc compile (the selfbuild end goal):"
-BUNDLE_SRC="lib/@vibe/compiler/cli_adapter_module_source.vibe"
+BUNDLE_SRC="lib/@vibe/compiler/_cli_adapter_module_source.vibe"
 BUNDLE_OUT="$OUT_DIR/bundle_gc.wasm"
 rm -f "$BUNDLE_OUT" "$BUNDLE_OUT.diag"
 env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
