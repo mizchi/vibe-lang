@@ -1,6 +1,6 @@
 # ADR-0071: operation-level effect row と `effectset`
 
-Status: proposed (実装 step 1-2-4 は着地済み、step 3 は関数自身の宣言 row + パラメータ row の展開が着地、step 5 (contract passthrough + signature matching + WIT 生成) は完全着地、残るは step 6 のみ、2026-07-22 — 進捗セクション参照)
+Status: proposed (実装 step 1-2-4 は着地済み、step 3 は関数自身の宣言 row + パラメータ row の展開が着地、step 5 (contract passthrough + signature matching + WIT 生成) は完全着地。step 6 はチェッカー側の独立実装が不要と判明し、ADR-0076 Phase 3 の実装ステップに統合する方針を確定 — 単独の残タスクは無く、次の実装単位は ADR-0076 Phase 3 そのもの、2026-07-22 — 進捗セクション参照)
 
 Date: 2026-07-15
 
@@ -213,6 +213,32 @@ effectset と一致する場合はその effectset の参照を優先する。ef
    (yield bubbling による replay 全廃) 着手までに本 ADR の resolver/checker
    (項目 2–3) が着地している必要がある — 静的解決のみの ADR-0076 Phase 1–2
    はこの依存を受けない
+
+   **(2026-07-22 追記、docs/effect-evidence-passing.md 側で詳細調査済み)**:
+   調査の結果、本項目は「Phase 3 着手前の独立した準備ステップ」として
+   単独では実装しないことにした。理由: (a) `decl_authorizes_effect`
+   の row-polymorphism hack はチェッカーの健全性としては現状のままで
+   正しい (row 変数は「どんな row を渡されても動く」という
+   parametricity の主張そのもの) — チェッカー側に直すべきバグは無い。
+   (b) evidence 構築に足りないのは Phase 3 の codegen 側の情報のみで、
+   かつ trait dict-passing (desugar_trait_dict.vibe) の固定レイアウト
+   struct パターンをそのまま転用できない — trait dict は「trait の
+   メソッド一覧」という T に依存しない固定 field 集合を持つが、
+   effect row 変数は呼び出し箇所ごとに異なる (時には複数 effect の)
+   集合へ実体化されうるため、固定レイアウト struct という型自体が
+   存在しない。(c) 暫定方針として、evidence の runtime 表現を
+   `(OperationId, closure)` ペアの可変長ベクタ (固定 struct ではない)
+   にすることで、trait dict の「呼び出し元の dict をそのまま/フィルタ
+   して転送する」スレッディングの形だけを流用しつつ monomorphize を
+   避ける。`OperationId` はこのベクタのキーとしてのみ必要で、ADR-0071
+   の正規化 row をチェッカー全域に波及させる必要はない。よって本項目
+   6 は独立した先行実装をせず、**Phase 3 の段階導入計画ステップ 4/5
+   (evidence 直接呼び出し・yield bubbling の実装) に統合して行う**
+   — 消費者のいない状態でキー割り当てだけ先行実装すると、Phase 2 の
+   当初計画 (`EPerform`/`EResume` IR ノード) と同じく未使用の
+   scaffolding になるリスクがあるため。詳細は
+   docs/effect-evidence-passing.md の「追記 (2026-07-22, ADR-0071 step 6
+   着手時の調査で判明)」セクション参照。
 
 **進捗 (2026-07-22)**: 項目 1 (parser/printer) は着地済み。`with { Env::get }` の
 ような直接 operation row item と `effectset Name = { ... }` /

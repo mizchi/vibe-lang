@@ -475,6 +475,59 @@ Phase 3 でも再利用できる。
   は (a) を既定の想定とする (ADR-0071 の方が影響範囲が狭く、着地が
   早いと見込む)。
 
+**追記 (2026-07-22, ADR-0071 step 6 着手時の調査で判明)**: 上記の
+「ADR-0071 の構造化 row が必要」という依存を、実装可能な単位まで
+具体化する調査を行った結果、2 つの新しい事実が判明した。
+
+1. **row-polymorphism hack はチェッカーの健全性としては現状のままで
+   問題ない**。`decl_authorizes_effect` (checker_effects.vibe:719-732)
+   が row 変数ラベルを見た時点で無条件に authorize するのは、宣言時
+   点の型 (「この関数はどんな row `e` を渡されても動く」という
+   parametricity の主張そのもの) としては正しい。型検査を壊さずに
+   直せる/直すべき「バグ」ではない。実際に足りないのは、Phase 3 の
+   **codegen 側**が「この row 変数の実体化先の evidence をどう組み立て
+   渡すか」を決める情報であり、チェッカーの許可判定ロジックではない。
+   ADR-0071 の `OperationId`/`OperationRef` 正規化そのものを先に
+   チェッカー全体へ導入する必要はなく、Phase 3 の dict 構築ロジックが
+   要求する最小限の情報 (下記) だけを用意すればよい。
+2. **trait dict-passing の直接転用は shape の理由で成立しない**。
+   `desugar_trait_dict.vibe` の dict-passing (`thread_dict_params`
+   `:3036-3054`, `synth_dicts` `:1706-1738`, `find_dict_for_trait`
+   `:1590-1603`) が成立するのは、`TrDict[T]` が **T に依存せず常に固定
+   の field 集合**(trait 自身のメソッド一覧、`make_dict_struct_stmt`
+   `:919-931`) を持つからで、呼び出し側は「どの具体型か」だけを
+   `infer_arg_type_name` で静的に決めれば、あとは固定レイアウトの
+   struct を合成できる。一方 effect row 変数 `e` は、呼び出し箇所ごとに
+   **異なる、時には複数 effect の集合**(`with { e }` の実体化先が
+   `Ask` のときも `Ask, Fs` のときもある) に束縛されうるため、
+   「row 変数用の固定レイアウト struct」という型自体が存在しない —
+   trait dict の struct 版パターンをそのまま流用できない。
+   単一関数を実体化ごとに monomorphize すれば固定レイアウトを回復
+   できるが、effectful な HOF は compiler 自身のソースにも多数出現する
+   ため (#705 の RC 二値化 bundle size 予算を参照)、コード膨張が懸念
+   される。
+3. **暫定の解決方針 (実装は Phase 3 の一部として行う。ここでは方針だけ
+   決定する)**: 固定レイアウト struct ではなく、**(OperationId,
+   closure) のペアを並べた可変長ベクタ**を evidence 値の runtime 表現
+   とする — vtable ではなく Koka の evidence vector そのものの素直な
+   表現。row 変数の実体化先が単一 effect でも複数 effect でも同じ
+   ベクタ表現に載るため monomorphize が不要になり、trait dict の
+   `find_dict_for_trait` に相当する「呼び出し元が既に持っている
+   evidence をそのまま/フィルタして転送する」というスレッディングの
+   形だけを流用する (中身は固定 struct field アクセスではなくベクタの
+   線形探索または該当 operation だけの部分ベクタになる)。
+   `OperationId` はこのベクタのキーとしてだけ必要になる —
+   ADR-0071 の正規化 row をチェッカー全域に波及させる代わりに、
+   「各 effect operation に安定した数値/文字列キーを 1 つ割り当てる」
+   という最小のメタデータ生成だけで十分。よって **ADR-0071 step 6 は
+   「Phase 3 着手前の独立した準備ステップ」ではなく、Phase 3 の
+   dict/evidence-vector 構築ロジック実装 (段階導入計画のステップ 4/5)
+   に統合して行う** — 消費者が存在しない状態でキー割り当てだけを
+   先行実装すると、Phase 2 の当初計画 (`EPerform`/`EResume` IR ノード)
+   と同様に「実装したが実際の経路では使われない scaffolding」になる
+   リスクがあるため。ADR-0071 (docs/effectset.md) の step 6 の記述は
+   この結論に合わせて更新する。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
