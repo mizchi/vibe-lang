@@ -556,7 +556,23 @@ export fn classify_contract_stmts(stmts: Array[Stmt]) -> (Array[String], Array[S
       // ADR-0063). It passes into the facade verbatim, exported; the
       // implementation files use the effect but must not re-define it.
       SEffectDef(_, ename, etparams, eops) => Array::push(type_defs, SEffectDef(true, ename, etparams, eops)),
-      _ => throw("unsupported statement in a .vibei contract: only fn declarations, opaque type declarations, transparent type/effect definitions, and implementation-file imports are allowed (#729)")
+      // ADR-0071 (#755) step 5: an `effectset` is likewise a transparent,
+      // compile-time-only alias (no runtime identity of its own, same as
+      // SEffectDef) -- the ADR's Decision section explicitly calls out
+      // that it "は `index.vpkg` の contract symbol として import/export
+      // できる". Passes into the facade verbatim, exported, same as
+      // SEffectDef immediately above. The checker (checker_stmt.vibe)
+      // still independently validates cycle/collision on every effectset
+      // it type-checks, including ones that arrive via this contract path.
+      SEffectSet(_, esname, esmembers) => Array::push(type_defs, SEffectSet(true, esname, esmembers)),
+      // #729's original message said "a .vibei contract" -- this classifier
+      // is shared plumbing for BOTH `index.vpkg` (ADR-0070's boundary file,
+      // docs/module-system-oracle.md) and the legacy `index.vibei` spelling
+      // (not itself a boundary; kept only during migration), invoked from
+      // loader.vibe/header_cache.vibe regardless of which extension the
+      // directory actually has. "contract file" avoids implying vpkg
+      // callers hit vibei-specific rules.
+      _ => throw("unsupported statement in a contract file (index.vpkg / index.vibei): only fn declarations, opaque type declarations, transparent type/effect/effectset definitions, and implementation-file imports are allowed (#729)")
     }
     i = i + 1
   }

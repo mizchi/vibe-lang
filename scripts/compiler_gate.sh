@@ -4363,6 +4363,37 @@ fi
 rm -rf "$a71edir"
 echo "[compiler-gate] handler operation-level discharge ok"
 
+# 40r. ADR-0071 step 5, contract passthrough (#755, docs/effectset.md): an
+#      `effectset` is a transparent, compile-time-only alias like `effect`
+#      -- classify_contract_stmts (contract.vibe) now passes an SEffectSet
+#      through into the facade verbatim, exported, the same way it already
+#      does for SEffectDef, instead of hitting the "unsupported statement
+#      in a contract file" catch-all. This gate compiles
+#      fixtures/contract_effectset_vpkg_main.vibe, which imports
+#      fixtures/contract_effectset_vpkg/ (an index.vpkg declaring both
+#      `effect Ask` and `effectset AskAll` alongside a bodyless
+#      `fn read_one`) through the ordinary package-import path -- proving
+#      the declaration survives the contract facade end to end, not just
+#      that it parses in isolation.
+echo "[compiler-gate] 40r/40 effectset contract passthrough (ADR-0071 step 5/#755)"
+a71fdir="_build/_gate_effectset_contract"
+rm -rf "$a71fdir"; mkdir -p "$a71fdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/contract_effectset_vpkg_main.vibe" "$a71fdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$a71fdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: contract_effectset_vpkg_main.vibe did not compile -- effectset contract passthrough regressed" >&2
+  cat "$a71fdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+a71f_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$a71fdir/out.wasm" 2>&1 | tail -1)"
+if [ "$a71f_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: contract_effectset_vpkg_main got '$a71f_out' (want 42)" >&2
+  exit 1
+fi
+rm -rf "$a71fdir"
+echo "[compiler-gate] effectset contract passthrough ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the
