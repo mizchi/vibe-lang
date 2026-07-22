@@ -1,6 +1,6 @@
 # ADR-0076: effect handler を evidence passing 化する (suspend 点 IR で WasmFX/WASI 0.3 前方互換)
 
-Status: proposed
+Status: proposed (実装 Phase 1/2/2b は着地済み、2026-07-22 — 「段階導入計画」の実装ノート参照)
 
 Date: 2026-07-22
 
@@ -356,6 +356,27 @@ Large cost の機能なので、ADR-0061/0064/0072 と同じ「新構文/新経�
 各 Phase は 75 本の `fixtures/effect_*.vibe` と `compiler_gate.sh` の
 gate 26/27 (effect-call discipline / handle effect discharge) を
 壊さないことを前提条件とする。
+
+**実装ノート (2026-07-22, Phase 1/2/2b 着地)**: 実際に着地した Phase 2
+は上記の当初計画 (`EPerform`/`EResume` IR ノード導入 + 既存 replay
+codegen への薄いブリッジ) より単純な経路をとった —
+`lib/@vibe/compiler/codegen/common_base/inline_direct_perform.vibe` の
+`inline_direct_performs` は AST 変換パスとして実装され、新しい IR
+ノードを一切導入しない。#942 (`check_arm_resume_tail`) が既に
+「有効な handler arm は全て tail-resumptive」を保証している事実を使い、
+handle の BODY に `EFn`/`nested EHandle`/`perform` 以外への call が
+一切無いことを保証できた場合 (Phase 2b で純粋 builtin 呼び出しは
+この「call」判定から除外し適用範囲を拡大)、その handle 内の対応する
+`perform` を全て呼び出し元の arm body へ直接展開し、`EHandle` 自体を
+削除する — codegen (replay 経路含む) はこの handle を最初から見ない。
+条件を満たさない handle は今まで通り無変更で既存 replay codegen へ
+流れる (hybrid という結果は当初計画と同じだが、フォールバック機構が
+「新 IR ノード上のディスパッチ分岐」ではなく「変換パスの conservative
+bail-out」である点が異なる)。Phase 1 (M2 を fixture として pin) は
+計画通り着地。Phase 3 (yield bubbling) に着手する際は、この AST 変換
+アプローチを土台にするか、当初計画の IR ノード導入に切り替えるかを
+再検討すること — 少なくとも #942 ベースの tail-resumptive 判定は
+Phase 3 でも再利用できる。
 
 ## Implementation and regression locks
 
