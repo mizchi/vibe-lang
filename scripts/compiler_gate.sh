@@ -4250,6 +4250,47 @@ fi
 rm -rf "$a71bdir"
 echo "[compiler-gate] effectset declaration parse + explicit rejection ok"
 
+# 40o. ADR-0071 step 2 resolver core (#755, docs/effectset.md): the ADR's
+#      Decision section calls out two specific invalid-definition cases by
+#      name -- a cycle through effectset member references, and a qualified
+#      name colliding with an operation of the same effect (shared
+#      effect-row member namespace) -- both implemented as local helpers in
+#      checker_stmt.vibe (es_detect_cycle / es_qualified_collision) with a
+#      whole-statement-list pre-pass, order-independent. This gate pins both
+#      specific diagnostics so they don't silently regress back to the
+#      generic "not yet supported" message.
+echo "[compiler-gate] 40o/40 effectset cycle + operation-collision detection (ADR-0071 step 2/#755)"
+a71cdir="_build/_gate_effectset_resolver"
+rm -rf "$a71cdir"; mkdir -p "$a71cdir"
+sed '/^__DATA__$/,$d' fixtures/err_effectset_cycle.vibe > "$a71cdir/cycle.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$a71cdir/cycle.vibe" "$a71cdir/cycle.wasm" main >/dev/null 2>&1
+if [ -s "$a71cdir/cycle.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_effectset_cycle.vibe compiled successfully -- circular effectset references must be rejected" >&2
+  exit 1
+fi
+if ! grep -q "effectset cycle: A -> B -> A" "$a71cdir/cycle.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_effectset_cycle.vibe did not produce the expected cycle diagnostic" >&2
+  cat "$a71cdir/cycle.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+sed '/^__DATA__$/,$d' fixtures/err_effectset_operation_collision.vibe > "$a71cdir/collision.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$a71cdir/collision.vibe" "$a71cdir/collision.wasm" main >/dev/null 2>&1
+if [ -s "$a71cdir/collision.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_effectset_operation_collision.vibe compiled successfully -- an effectset colliding with an operation name must be rejected" >&2
+  exit 1
+fi
+if ! grep -q "collides with an operation of the same name" "$a71cdir/collision.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_effectset_operation_collision.vibe did not produce the expected collision diagnostic" >&2
+  cat "$a71cdir/collision.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$a71cdir"
+echo "[compiler-gate] effectset cycle + operation-collision detection ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the
