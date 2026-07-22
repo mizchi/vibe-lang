@@ -1,0 +1,35 @@
+// #1032 regression: gc_float_locals scope-leak (the Float analog of #1015
+// P1's gc_bool_locals scope-leak fixed in #1030 -- to_string_bool_scope_gc_test.vibe).
+//
+// ctx.gc_float_locals is now a slot-indexed tracking array, pruned to a
+// floor (gc_slot_log_reset_above) at every branch/match-arm/for-in
+// scope-exit boundary in lib/@vibe/compiler/codegen/gc/backend_expr.vibe /
+// backend_match.vibe -- mirroring how ctx.gc_bool_locals / gc_agg_local_slots
+// are already pruned there. Before that pruning was ported to
+// gc_float_locals, an EIf's then-branch binding a Double at some local slot
+// left a stale "this slot is floatish" entry behind; the else-branch's
+// `local_names` gets correctly truncated back to the same floor and reused
+// for a DIFFERENT, non-Float binding at the SAME slot number, but the
+// (unpruned, name-keyed) tracking array still said that slot's name was
+// floatish -- so `__to_string` on the else-branch's binding wrongly
+// reinterpreted the raw Int bits as an f64 instead of taking the integer-
+// digit path.
+//
+// `pick`'s two branches each bind `x` as the FIRST local inside their own
+// branch, so both get the exact same slot number (both branches start
+// compiling from the same `next_local`) -- the precise slot-reuse
+// collision this regression targets.
+fn pick(cond: Bool) -> String {
+  if cond {
+    let x = 1.5
+    __to_string(x)
+  } else {
+    let x = 42
+    __to_string(x)
+  }
+}
+
+test "gc lane: Float tracking does not leak from one if/else branch to a rebound name in the other" {
+  assert(pick(true) == "1.5")
+  assert(pick(false) == "42")
+}

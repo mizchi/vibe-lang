@@ -4131,10 +4131,15 @@ rm -rf "$svdir"
 #     (ctx.gc_bool_locals is slot-indexed and pruned at every
 #     branch/match-arm/for-in scope exit, backend_expr.vibe /
 #     backend_match.vibe).
+#   - to_string_float_scope_gc_test.vibe (#1032): the Float analog of the
+#     scope-leak fixture above -- ctx.gc_float_locals was the same
+#     name-keyed, unpruned design as gc_bool_locals pre-#1030 (a KNOWN
+#     LATENT BUG noted but not fixed there); now slot-indexed and pruned
+#     the same way.
 echo "[compiler-gate] 40k/40 gc-lane to_string(Bool) regressions (#1015)"
 gcbdir="_build/_gate_gc_to_string_bool"
 rm -rf "$gcbdir"; mkdir -p "$gcbdir"
-for gcb_fixture in to_string_bool_gc_test to_string_shadow_gc_test to_string_bool_scope_gc_test; do
+for gcb_fixture in to_string_bool_gc_test to_string_shadow_gc_test to_string_bool_scope_gc_test to_string_float_scope_gc_test; do
   VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "fixtures/${gcb_fixture}.vibe" "$gcbdir/${gcb_fixture}.wasm" __no_entry__ >/dev/null 2>&1
