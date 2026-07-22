@@ -154,6 +154,56 @@ def resolve_path(base_rel: str, raw_path: str) -> str:
                 return idx_candidate
     return candidate
 
+# Mirror the RUNTIME loader's `.vpkg` sibling auto-discovery (ADR-0070 Phase
+# 1, `contract_sibling_impl_raws`/loader/header_cache.vibe): this reachability
+# walk is a separate, textual-only re-implementation (it runs before any
+# compiler exists, so it can't call the real desugar logic) that used to see
+# a package's impl files ONLY via the contract's own `import ./x.vibe {}`
+# lines. Since the runtime now auto-discovers those siblings for a `.vpkg`
+# UNCONDITIONALLY regardless of whether they're declared, a `.vpkg` with no
+# (or partial) explicit import lines was going stale here: this walker
+# treated the undeclared siblings as unreachable dead code and silently
+# pruned them from the bundle, even though the self-hosted compiler embeds
+# and needs them. Fixed by having the walker ITSELF auto-discover: whenever
+# it reaches a `.vpkg`, it also visits every sibling `.vibe` in that file's
+# directory, using the exact same exclusion rules as the vibe-side discovery
+# function.
+#
+# `.vibei` (legacy, loader.vibe's OTHER branch) keeps the OLD conditional
+# rule instead -- auto-discover only when the contract declares NO explicit
+# import lines at all; an explicit (even partial) list still means
+# explicit-only, no discovery -- so a legacy package can deliberately keep an
+# ordinary sibling file out of its contract (Codex review on #1054: treating
+# `.vibei` the same as `.vpkg` here could pull an intentionally-excluded
+# sibling into the bundle's source closure that the runtime would never load
+# for that same package).
+CONTRACT_SUFFIXES = (".vpkg", ".vibei")
+
+def wants_contract_discovery(rel: str, found_deps: int) -> bool:
+    if rel.endswith(".vpkg"):
+        return True
+    if rel.endswith(".vibei"):
+        return found_deps == 0
+    return False
+
+def contract_sibling_rels(rel: str):
+    real_dir = os.path.join(compiler_dir, os.path.dirname(rel))
+    if not os.path.isdir(real_dir):
+        return []
+    base_dir = os.path.dirname(rel)
+    out = []
+    for name in sorted(os.listdir(real_dir)):
+        if name in ("index.vpkg", "index.vibei", "index.vibe"):
+            continue
+        if not name.endswith(".vibe"):
+            continue
+        if name.endswith("_test.vibe") or name.endswith("_bench.vibe") or name.endswith(".draft.vibe"):
+            continue
+        if name.startswith("_"):
+            continue
+        out.append(normalize_path(base_dir + "/" + name) if base_dir else name)
+    return out
+
 reachable = set()
 
 # Manifest-completeness guard (#740 follow-up): an import that resolves to a
@@ -181,11 +231,18 @@ def visit(rel: str):
     if source is None:
         return
     reachable.add(rel)
+    found = 0
     for dep in dep_pattern.findall(source):
+        found += 1
         target = resolve_path(rel, dep)
         if target not in source_by_rel:
             record_gap(rel, target)
         visit(target)
+    if wants_contract_discovery(rel, found):
+        for sib in contract_sibling_rels(rel):
+            if sib not in source_by_rel:
+                record_gap(rel, sib)
+            visit(sib)
 
 visit(root_rel)
 index_by_rel = {}
@@ -205,8 +262,13 @@ def visit_ordered(rel: str):
     if source is None:
         return
     visited.add(rel)
+    found = 0
     for dep in dep_pattern.findall(source):
+        found += 1
         visit_ordered(resolve_path(rel, dep))
+    if wants_contract_discovery(rel, found):
+        for sib in contract_sibling_rels(rel):
+            visit_ordered(sib)
     ordered.append(rel)
 
 visit_ordered(root_rel)
@@ -225,11 +287,18 @@ def visit_bundle(rel: str):
     if source is None:
         return
     bundle_reachable.add(rel)
+    found = 0
     for dep in dep_pattern.findall(source):
+        found += 1
         target = resolve_path(rel, dep)
         if target not in source_by_rel:
             record_gap(rel, target)
         visit_bundle(target)
+    if wants_contract_discovery(rel, found):
+        for sib in contract_sibling_rels(rel):
+            if sib not in source_by_rel:
+                record_gap(rel, sib)
+            visit_bundle(sib)
 
 # Additional entry points for the main bundle
 bundle_extra_entries = os.environ.get("VIBE_BUNDLE_EXTRA_ENTRIES", "codegen/gc/index.vibe,index.vibe")
@@ -272,7 +341,7 @@ done < "$cli_adapter_index_rows_file"
 rm -f "$cli_adapter_index_rows_file"
 
 main_index_rows_file="$(mktemp)"
-python3 - "$COMPILER_DIR" "$MANIFEST" "index.vibe" >"$main_index_rows_file" <<'PY'
+python3 - "$COMPILER_DIR" "$MANIFEST" "compiler.vibe" >"$main_index_rows_file" <<'PY'
 import os
 import re
 import sys
@@ -334,6 +403,38 @@ def resolve_path(base_rel: str, raw_path: str) -> str:
                 return idx_candidate
     return candidate
 
+# See the matching helper in the cli_adapter.vibe walk above: mirrors the
+# runtime loader's `.vpkg` sibling auto-discovery (unconditional) vs legacy
+# `.vibei` (only when no explicit import lines) so this textual walk doesn't
+# silently prune undeclared-but-real siblings, nor pull in a sibling a legacy
+# `.vibei` deliberately left out of its contract.
+CONTRACT_SUFFIXES = (".vpkg", ".vibei")
+
+def wants_contract_discovery(rel: str, found_deps: int) -> bool:
+    if rel.endswith(".vpkg"):
+        return True
+    if rel.endswith(".vibei"):
+        return found_deps == 0
+    return False
+
+def contract_sibling_rels(rel: str):
+    real_dir = os.path.join(compiler_dir, os.path.dirname(rel))
+    if not os.path.isdir(real_dir):
+        return []
+    base_dir = os.path.dirname(rel)
+    out = []
+    for name in sorted(os.listdir(real_dir)):
+        if name in ("index.vpkg", "index.vibei", "index.vibe"):
+            continue
+        if not name.endswith(".vibe"):
+            continue
+        if name.endswith("_test.vibe") or name.endswith("_bench.vibe") or name.endswith(".draft.vibe"):
+            continue
+        if name.startswith("_"):
+            continue
+        out.append(normalize_path(base_dir + "/" + name) if base_dir else name)
+    return out
+
 index_by_rel = {}
 for pair_index, (_, rel) in enumerate(rows):
     index_by_rel[rel] = pair_index
@@ -348,8 +449,13 @@ def visit_ordered(rel: str):
     if source is None:
         return
     visited.add(rel)
+    found = 0
     for dep in dep_pattern.findall(source):
+        found += 1
         visit_ordered(resolve_path(rel, dep))
+    if wants_contract_discovery(rel, found):
+        for sib in contract_sibling_rels(rel):
+            visit_ordered(sib)
     ordered.append(rel)
 
 visit_ordered(root_rel)
@@ -575,7 +681,7 @@ PY
   # (run in the compiler gate). Force regeneration through the host compiler with
   # VIBE_REGEN_MODULE_SOURCE=1 (used by that gate and by intentional
   # module-source bumps).
-  local committed_module_source="$COMPILER_DIR/cli_adapter_module_source.vibe"
+  local committed_module_source="$COMPILER_DIR/_cli_adapter_module_source.vibe"
   if [ "${VIBE_REGEN_MODULE_SOURCE:-0}" != "1" ] && [ -s "$committed_module_source" ]; then
     local module_source_path
     mkdir -p "$PROJECT_ROOT/_build"
@@ -698,7 +804,7 @@ write_runtime_entry_bundle() {
   write_vibe_chunked_string_function_from_file \
     "selfbuild_runtime_entry_source" \
     "selfbuild_runtime_entry_source" \
-    "$COMPILER_DIR/selfbuild_runtime_entry.vibe"
+    "$COMPILER_DIR/_selfbuild_runtime_entry.vibe"
   } > "$OUT_RUNTIME_ENTRY"
 }
 
@@ -720,7 +826,7 @@ build_exact_adapter_merged_source() {
   merged_path="$(mktemp "$PROJECT_ROOT/_build/cli_adapter_merged_source.XXXXXX")"
   local flatten_wasm="$PROJECT_ROOT/_build/merge_flatten_compiler.wasm"
   local seed_wasm="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
-  local committed_module_source="$COMPILER_DIR/cli_adapter_module_source.vibe"
+  local committed_module_source="$COMPILER_DIR/_cli_adapter_module_source.vibe"
   local tool_node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_GENERATION_NODE_STACK_SIZE:-131072}}"
   local tool_log="$PROJECT_ROOT/_build/merge_flatten_compiler.log"
   rm -f "$flatten_wasm" "$flatten_wasm.diag"
@@ -765,7 +871,7 @@ build_exact_adapter_merged_source() {
 }
 
 # #979: writing $ADAPTER_MODULE_SOURCE_OUT (normally
-# lib/@vibe/compiler/cli_adapter_module_source.vibe, the committed flat
+# lib/@vibe/compiler/_cli_adapter_module_source.vibe, the committed flat
 # module source stage1/stage2 bootstrap FROM) used to `cp` the freshly
 # flattened candidate straight over the real destination with no check that
 # it actually compiles. A bad flatten (e.g. the merge/printer surfacing a
@@ -773,7 +879,7 @@ build_exact_adapter_merged_source() {
 # subsequent regen rebuilds the merge-flatten tool FROM that same broken
 # committed file (see build_exact_adapter_merged_source above), so the
 # failure was self-perpetuating -- recoverable only via `git checkout HEAD
-# -- lib/@vibe/compiler/cli_adapter_module_source.vibe`. Make the write
+# -- lib/@vibe/compiler/_cli_adapter_module_source.vibe`. Make the write
 # atomic and gated: compile-check the CANDIDATE with the seed compiler in a
 # throwaway tmp file first, and only `mv` the candidate into place (same
 # dir, so the rename is atomic) when that succeeds; otherwise leave

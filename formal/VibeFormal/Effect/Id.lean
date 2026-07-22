@@ -22,11 +22,14 @@ structure OperationId where
 
 /--
 Normalized arguments retained by an instantiated generic effect. Phase 1
-models resolved type and region identities as natural-number atoms.
+models resolved type, region, and logical resource identities as
+natural-number atoms. Resource identities are distinct from nursery regions:
+`S3[Posts]` and `S3[Uploads]` must remain different authority requirements.
 -/
 inductive EffectArgument where
   | typeId (id : Nat)
   | regionId (id : Nat)
+  | resourceId (id : Nat)
   deriving DecidableEq, Repr
 
 /-- A fully resolved operation reference, as specified by ADR-0071. -/

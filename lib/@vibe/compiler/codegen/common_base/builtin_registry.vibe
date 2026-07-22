@@ -1,0 +1,377 @@
+//# Imports
+
+import ../../core {
+  Type
+}
+
+import ../../../../../lib/@vibe/core {
+  array_empty
+}
+
+//# Functions
+
+// #415: the central declarative registry of func-table builtins across
+// both backends. Row: (name, param_count, returns_value 0|1,
+// in_linear_table, in_gc_table).
+//
+// B-1: this registry DRIVES both lanes' registration. The linear builder
+// (wasi/linked_compile.vibe) and the gc builder (gc/backend_body.vibe) each
+// loop over these rows (filtered by their lane flag) and only resolve the
+// lane-local function/body INDEX via a per-lane match — names, param counts
+// and returns exist ONLY here. Adding a builtin = one row here + one index
+// match arm in each claiming lane (+ the import/body wiring). A row claiming
+// a lane whose index match has no arm fails every build by name; the
+// remaining verify_lane_builtins pass (below) guards any future hand-edited
+// registration path against drifting from this table (the wasm-gc HOF-gap
+// class of regression this issue exists to prevent).
+//
+// Lane semantics:
+// - in_linear_table / in_gc_table refer to the lane's FUNC-TABLE registration
+//   only. A name absent from a lane's table may still be served there by a
+//   callsite lowering (expr/compile_call.vibe, gc/backend_call.vibe) or by
+//   prelude vibe source — B-1 will classify those; B-0 pins what exists.
+// - Host imports (Fs::/Env::/sleep/...) are linear-only by design: the gc
+//   lane is the pure-test lane and gates host builtins out as a group.
+// B-2: rows now carry the CHECKER TYPE as the single source of truth.
+// param_count / returns for the lanes are DERIVED from that type
+// (builtin_registry() below); the checker resolves these names through
+// lookup_registry_builtin FIRST, so the per-namespace checker lookup files
+// no longer need (and must not re-add) arms for registry names.
+// checker_visible=false rows are codegen-internal (desugar/compile_call
+// artifacts, RC runtime hooks, canonical-name aliases) -- the checker never
+// sees those names, and their synthesized types only feed the derived
+// param/returns view.
+
+fn reg_p0() -> Array[Type] {
+  array_empty()
+}
+
+fn reg_p1(a: Type) -> Array[Type] {
+  let arr = reg_p0()
+  Array::push(arr, a)
+  arr
+}
+
+fn reg_p2(a: Type, b: Type) -> Array[Type] {
+  let arr = reg_p1(a)
+  Array::push(arr, b)
+  arr
+}
+
+fn reg_p3(a: Type, b: Type, c: Type) -> Array[Type] {
+  let arr = reg_p2(a, b)
+  Array::push(arr, c)
+  arr
+}
+
+fn reg_p4(a: Type, b: Type, c: Type, d: Type) -> Array[Type] {
+  let arr = reg_p3(a, b, c)
+  Array::push(arr, d)
+  arr
+}
+
+fn reg_p5(a: Type, b: Type, c: Type, d: Type, e: Type) -> Array[Type] {
+  let arr = reg_p4(a, b, c, d)
+  Array::push(arr, e)
+  arr
+}
+
+// typed row: (name, checker signature, in_linear_table, in_gc_table,
+// checker_visible). Module-level `let`: initialized ONCE (see
+// fixtures/module_let_memo_test.vibe) -- lookup_registry_builtin runs on
+// every unresolved-name lookup in the checker, and rebuilding 116 rows of
+// nested CtFn/Array values per call was allocation churn heavy enough to
+// crash the RC-mode in-process compiler tests.
+let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
+    ("Env::get", CtFn(reg_p1(CtString), CtString, Some("Env")), true, false, true),
+    ("Env::args_len", CtFn(reg_p0(), CtInt, Some("Env")), true, false, true),
+    ("Env::args_get", CtFn(reg_p1(CtInt), CtString, Some("Env")), true, false, true),
+    ("Fs::read_file", CtFn(reg_p1(CtString), CtString, Some("Fs")), true, false, true),
+    ("Fs::exists", CtFn(reg_p1(CtString), CtBool, Some("Fs")), true, false, true),
+    ("Fs::stat_token", CtFn(reg_p1(CtString), CtInt, Some("Fs")), true, false, true),
+    // #795: alias-collision-proof surface for the same import.
+    ("vibe_fs_stat_token_raw", CtFn(reg_p1(CtString), CtInt, Some("Fs")), true, false, true),
+    ("Fs::write_file", CtFn(reg_p2(CtString, CtString), CtUnit, Some("Fs")), true, false, true),
+    ("Fs::write_bytes", CtFn(reg_p2(CtString, CtBytes), CtUnit, Some("Fs")), true, false, true),
+    ("Fs::read_bytes", CtFn(reg_p1(CtString), CtBytes, Some("Fs")), true, false, true),
+    ("vibe_fs_read_dir_raw", CtFn(reg_p1(CtString), CtString, Some("Fs")), true, false, false),
+    ("sh", CtFn(reg_p1(CtString), CtString, Some("Process")), true, false, true),
+    ("vibe_sh_lines_raw", CtFn(reg_p1(CtString), CtString, Some("Process")), true, false, false),
+    // #865: structured subprocess result. `vibe_sh_capture_raw` runs the
+    // command ONCE (unlike a naive 3-accessor design that would re-run it)
+    // and parks {exit_code, stdout, stderr} behind a handle -- same
+    // handle+accessor shape as the #794 HTTP client imports below, chosen so
+    // a structured result doesn't require struct-returning host ABI work.
+    // checker_visible=true (unlike vibe_sh_lines_raw's raw half) because these
+    // are plain qualified names (no bare "sh"/"sh_lines" collision risk), so
+    // ordinary vibe source (lib/@vibe/process/process.vibe) calls them
+    // directly, mirroring lib/@vibe/http/http.vibe's `vibe_http_*_raw`
+    // direct-call convention -- no compile_call.vibe special-casing needed.
+    ("vibe_sh_capture_raw", CtFn(reg_p1(CtString), CtInt, Some("Process")), true, false, true),
+    ("vibe_sh_capture_exit_code_raw", CtFn(reg_p1(CtInt), CtInt, Some("Process")), true, false, true),
+    ("vibe_sh_capture_stdout_raw", CtFn(reg_p1(CtInt), CtString, Some("Process")), true, false, true),
+    ("vibe_sh_capture_stderr_raw", CtFn(reg_p1(CtInt), CtString, Some("Process")), true, false, true),
+    ("vibe_sh_capture_close_raw", CtFn(reg_p1(CtInt), CtUnit, Some("Process")), true, false, true),
+    // #903/#865: propagate a guest-chosen exit code to the real OS process
+    // exit status (unlike a `main() -> Int` return, which `_start` only
+    // PRINTS -- see ADR-0069's entry_returns_unit comment in
+    // codegen/wasi/linked_compile.vibe). Traps via the host runner's
+    // existing exit-trap mechanism (Rust `vibewt`: reuses ExitTrap, the
+    // same trap the legacy `__moonbit_sys_unstable::exit` import already
+    // used; JS runner: `process.exit(code)` directly) -- never returns.
+    ("vibe_process_exit_raw", CtFn(reg_p1(CtInt), CtUnit, Some("Process")), true, false, true),
+    ("Stdin::read_stream", CtFn(reg_p1(CtInt), CtString, Some("Stdin")), true, false, true),
+    ("Stdout::write_stream", CtFn(reg_p1(CtString), CtUnit, Some("Stdout")), true, false, true),
+    ("Stdout::write_char", CtFn(reg_p1(CtInt), CtUnit, Some("Stdout")), true, false, true),
+    // #865: Stderr, mirroring Stdout::write_stream / Stdout::write_char exactly
+    // (own host effect name "Stderr" so a function using only stderr does not
+    // need to declare `with { Stdout }`).
+    ("Stderr::write_stream", CtFn(reg_p1(CtString), CtUnit, Some("Stderr")), true, false, true),
+    ("Stderr::write_char", CtFn(reg_p1(CtInt), CtUnit, Some("Stderr")), true, false, true),
+    ("resolve_path", CtFn(reg_p1(CtString), CtString, None), true, false, false),
+    ("Fs::remove", CtFn(reg_p1(CtString), CtUnit, Some("Fs")), true, false, true),
+    ("Fs::mkdir_p", CtFn(reg_p1(CtString), CtUnit, Some("Fs")), true, false, true),
+    ("Fs::mkdir", CtFn(reg_p1(CtString), CtUnit, Some("Fs")), true, false, true),
+    ("Fs::chdir", CtFn(reg_p1(CtString), CtUnit, Some("Fs")), true, false, true),
+    ("Fs::copy", CtFn(reg_p2(CtString, CtString), CtUnit, Some("Fs")), true, false, true),
+    ("Fs::append", CtFn(reg_p2(CtString, CtString), CtUnit, Some("Fs")), true, false, true),
+    ("Fs::rename", CtFn(reg_p2(CtString, CtString), CtUnit, Some("Fs")), true, false, true),
+    ("Fs::is_dir", CtFn(reg_p1(CtString), CtBool, Some("Fs")), true, false, true),
+    ("Fs::is_file", CtFn(reg_p1(CtString), CtBool, Some("Fs")), true, false, true),
+    ("Fs::getcwd", CtFn(reg_p0(), CtString, Some("Fs")), true, false, true),
+    // #794: HTTP client host imports (vibe.http_*) -- host builtins are
+    // linear-only by design (the gc lane is the pure-test lane).
+    ("vibe_http_request_raw", CtFn(reg_p4(CtString, CtString, CtString, CtString), CtInt, Some("Http")), true, false, true),
+    ("vibe_http_response_status_raw", CtFn(reg_p1(CtInt), CtInt, Some("Http")), true, false, true),
+    ("vibe_http_response_header_raw", CtFn(reg_p2(CtInt, CtString), CtString, Some("Http")), true, false, true),
+    ("vibe_http_response_body_raw", CtFn(reg_p1(CtInt), CtString, Some("Http")), true, false, true),
+    ("vibe_http_close_raw", CtFn(reg_p1(CtInt), CtUnit, Some("Http")), true, false, true),
+    ("Profiler::now_us", CtFn(reg_p0(), CtInt, Some("Profiler")), true, false, true),
+    ("Profiler::NowUs", CtFn(reg_p0(), CtInt, None), true, false, false),
+    // Current bump-heap pointer (bytes) — the allocation analog of now_us,
+    // for per-phase memory attribution in profiles/benches.
+    ("Profiler::heap_bytes", CtFn(reg_p0(), CtInt, Some("Profiler")), true, false, true),
+    ("Profiler::HeapBytes", CtFn(reg_p0(), CtInt, None), true, false, false),
+    ("sleep", CtFn(reg_p1(CtInt), CtUnit, Some("Async")), true, false, true),
+    ("Stdin::read_char", CtFn(reg_p0(), CtInt, Some("Stdin")), true, false, true),
+    ("simd_skip_ws", CtFn(reg_p3(CtBytes, CtInt, CtInt), CtInt, None), true, false, true),
+    ("simd_scan_alnum", CtFn(reg_p3(CtBytes, CtInt, CtInt), CtInt, None), true, false, true),
+    ("simd_scan_alnum_str", CtFn(reg_p3(CtString, CtInt, CtInt), CtInt, None), true, false, true),
+    ("str_lex_diff", CtFn(reg_p2(CtString, CtString), CtInt, None), true, true, false),
+    // #973: erased-generic `[T: Ord]`/`[T: Add]` runtime dispatch for `<` `>`
+    // `<=` `>=` `+` (desugar_trait_dict.vibe rewrites the binop when the
+    // operand's static type is the bare, unresolved type parameter itself --
+    // see the doc comment on gen_generic_rel_diff_body). Linear-lane only:
+    // desugar_trait_dicts (the pass that emits these call sites) is invoked
+    // solely from wasi/linked_compile.vibe, so the gc lane never references
+    // these names and does not need a func-table row for them.
+    ("__generic_rel_diff", CtFn(reg_p2(CtInt, CtInt), CtInt, None), true, false, false),
+    ("__generic_add", CtFn(reg_p2(CtInt, CtInt), CtInt, None), true, false, false),
+    ("print_int", CtFn(reg_p1(CtInt), CtUnit, None), true, true, false),
+    ("print_str", CtFn(reg_p1(CtString), CtUnit, None), true, true, false),
+    ("String::length", CtFn(reg_p1(CtString), CtInt, None), true, true, true),
+    ("String::equals", CtFn(reg_p2(CtString, CtString), CtBool, None), true, true, true),
+    ("String::concat", CtFn(reg_p2(CtString, CtString), CtString, None), true, true, true),
+    ("array_new", CtFn(reg_p0(), CtArray(CtUnknown), None), true, true, true),
+    ("Array::length", CtFn(reg_p1(CtArray(CtUnknown)), CtInt, None), true, true, true),
+    ("Array::get", CtFn(reg_p2(CtArray(CtUnknown), CtInt), CtUnknown, None), true, true, true),
+    ("Array::push", CtFn(reg_p2(CtArray(CtUnknown), CtUnknown), CtUnit, None), true, true, true),
+    ("Array::push_all", CtFn(reg_p2(CtArray(CtUnknown), CtArray(CtUnknown)), CtUnit, None), true, true, true),
+    ("Array::set", CtFn(reg_p3(CtArray(CtUnknown), CtInt, CtUnknown), CtUnit, None), true, true, true),
+    ("Double::to_int", CtFn(reg_p1(CtDouble), CtInt, None), true, true, true),
+    ("Int::to_double", CtFn(reg_p1(CtInt), CtDouble, None), true, true, true),
+    ("String::char_code_at", CtFn(reg_p2(CtString, CtInt), CtInt, None), true, true, true),
+    ("String::from_char_code", CtFn(reg_p1(CtInt), CtString, None), true, true, true),
+    ("String::substring", CtFn(reg_p3(CtString, CtInt, CtInt), CtString, None), true, true, true),
+    ("Array::truncate", CtFn(reg_p2(CtArray(CtUnknown), CtInt), CtUnit, None), true, true, true),
+    ("String::join", CtFn(reg_p2(CtArray(CtString), CtString), CtString, None), true, true, true),
+    ("eq", CtFn(reg_p2(CtInt, CtInt), CtBool, None), true, true, true),
+    ("String::ends_with", CtFn(reg_p2(CtString, CtString), CtBool, None), true, true, true),
+    ("String::last_index_of", CtFn(reg_p2(CtString, CtString), CtInt, None), true, true, true),
+    ("String::index_of", CtFn(reg_p2(CtString, CtString), CtInt, None), true, true, true),
+    ("String::contains", CtFn(reg_p2(CtString, CtString), CtBool, None), true, true, true),
+    ("String::starts_with", CtFn(reg_p2(CtString, CtString), CtBool, None), true, true, true),
+    ("String::split", CtFn(reg_p2(CtString, CtString), CtArray(CtString), None), true, true, true),
+    ("String::trim", CtFn(reg_p1(CtString), CtString, None), true, true, true),
+    ("compiler_sources", CtFn(reg_p0(), CtString, None), true, false, false),
+    ("ArrayBuilder::new", CtFn(reg_p0(), CtUnknown, None), true, true, true),
+    ("ArrayBuilder::push", CtFn(reg_p2(CtUnknown, CtUnknown), CtUnit, None), true, true, true),
+    ("ArrayBuilder::freeze", CtFn(reg_p1(CtUnknown), CtArray(CtUnknown), None), true, true, true),
+    ("Array::slice", CtFn(reg_p3(CtArray(CtUnknown), CtInt, CtInt), CtArray(CtUnknown), None), true, true, true),
+    ("Array::concat", CtFn(reg_p2(CtArray(CtUnknown), CtArray(CtUnknown)), CtArray(CtUnknown), None), true, true, true),
+    ("Bytes::new", CtFn(reg_p0(), CtBytes, None), true, true, true),
+    ("Bytes::from_array", CtFn(reg_p1(CtArray(CtInt)), CtBytes, None), true, true, true),
+    ("Bytes::to_array", CtFn(reg_p1(CtBytes), CtArray(CtInt), None), true, true, true),
+    ("Bytes::length", CtFn(reg_p1(CtBytes), CtInt, None), true, true, true),
+    ("Bytes::get", CtFn(reg_p2(CtBytes, CtInt), CtInt, None), true, true, true),
+    ("Bytes::set", CtFn(reg_p3(CtBytes, CtInt, CtInt), CtUnit, None), true, true, true),
+    ("Bytes::push", CtFn(reg_p2(CtBytes, CtInt), CtUnit, None), true, true, true),
+    ("Bytes::append", CtFn(reg_p2(CtBytes, CtBytes), CtUnit, None), true, true, true),
+    ("Bytes::concat", CtFn(reg_p2(CtBytes, CtBytes), CtBytes, None), true, true, true),
+    ("Bytes::slice", CtFn(reg_p3(CtBytes, CtInt, CtInt), CtBytes, None), true, true, true),
+    ("Double::to_i64_bits", CtFn(reg_p1(CtDouble), CtInt, None), true, true, true),
+    ("__to_string", CtFn(reg_p1(CtUnknown), CtString, None), true, true, true),
+    ("vibe_rc_drop", CtFn(reg_p1(CtUnknown), CtUnit, None), true, false, false),
+    ("vibe_rc_alloc", CtFn(reg_p1(CtInt), CtInt, None), true, false, false),
+    ("vibe_heap_grow_check", CtFn(reg_p0(), CtUnit, None), true, false, false),
+    ("not", CtFn(reg_p1(CtBool), CtBool, None), false, true, true),
+    ("Bytes::blit", CtFn(reg_p4(CtBytes, CtBytes, CtInt, CtInt), CtUnit, None), false, true, true),
+    ("Bytes::fill", CtFn(reg_p3(CtBytes, CtInt, CtInt), CtUnit, None), false, true, true),
+    ("Double::from_i64_bits", CtFn(reg_p1(CtInt), CtDouble, None), false, true, true),
+    ("Double::to_float", CtFn(reg_p1(CtDouble), CtDouble, None), false, true, false),
+    ("Float::to_double", CtFn(reg_p1(CtDouble), CtDouble, None), false, true, false),
+    ("Char::to_int", CtFn(reg_p1(CtChar), CtInt, None), false, true, true),
+    ("Char::from_int", CtFn(reg_p1(CtInt), CtChar, None), false, true, true),
+    ("Int::to_float", CtFn(reg_p1(CtInt), CtDouble, None), false, true, true),
+    ("FixedArray::make", CtFn(reg_p2(CtInt, CtUnknown), CtArray(CtUnknown), None), false, true, true),
+    ("FixedArray::length", CtFn(reg_p1(CtArray(CtUnknown)), CtInt, None), false, true, true),
+    ("FixedArray::get", CtFn(reg_p2(CtArray(CtUnknown), CtInt), CtUnknown, None), false, true, true),
+    ("FixedArray::set", CtFn(reg_p3(CtArray(CtUnknown), CtInt, CtUnknown), CtUnit, None), false, true, true),
+    ("FixedArray::unsafe_set", CtFn(reg_p3(CtArray(CtUnknown), CtInt, CtUnknown), CtUnit, None), false, true, true),
+    ("FixedArray::blit", CtFn(reg_p5(CtArray(CtUnknown), CtInt, CtArray(CtUnknown), CtInt, CtInt), CtUnit, None), false, true, true),
+    // #835: Int64Array rides on the same linear-memory Array representation
+    // as FixedArray (Array[Int] already stores the full 62-bit tagged Int
+    // per cell, no i32-cell truncation in these backends — unlike the
+    // retired MoonBit host, which needed a distinct i64-cell object layout).
+    // So this is a pure name-level alias onto Array::make/length/get/set,
+    // just typed concretely as Array[Int] instead of FixedArray's generic
+    // Array[Unknown] (cheatsheet documents it strictly for Int word buffers).
+    ("Int64Array::make", CtFn(reg_p2(CtInt, CtInt), CtArray(CtInt), None), false, true, true),
+    ("Int64Array::length", CtFn(reg_p1(CtArray(CtInt)), CtInt, None), false, true, true),
+    ("Int64Array::get", CtFn(reg_p2(CtArray(CtInt), CtInt), CtInt, None), false, true, true),
+    ("Int64Array::set", CtFn(reg_p3(CtArray(CtInt), CtInt, CtInt), CtUnit, None), false, true, true),
+    ("StringBuilder::new", CtFn(reg_p0(), CtUnknown, None), false, true, true),
+    ("StringBuilder::push", CtFn(reg_p2(CtUnknown, CtString), CtUnit, None), false, true, true),
+    ("StringBuilder::freeze", CtFn(reg_p1(CtUnknown), CtString, None), false, true, true),
+    ("Map::get", CtFn(reg_p2(CtUnknown, CtString), CtUnknown, None), false, true, true),
+    ("Map::keys", CtFn(reg_p1(CtUnknown), CtArray(CtString), None), false, true, true),
+    ("MapBuilder::new", CtFn(reg_p0(), CtUnknown, None), false, true, true),
+    ("MapBuilder::set", CtFn(reg_p3(CtUnknown, CtString, CtUnknown), CtUnit, None), false, true, true),
+    ("MapBuilder::freeze", CtFn(reg_p1(CtUnknown), CtUnknown, None), false, true, true),
+    ("assert", CtFn(reg_p1(CtBool), CtUnit, None), false, true, true),
+    ("assert_true", CtFn(reg_p1(CtBool), CtUnit, None), false, true, true),
+    ("assert_eq", CtFn(reg_p2(CtUnknown, CtUnknown), CtUnit, None), false, true, true),
+    ("println", CtFn(reg_p1(CtString), CtUnit, None), false, true, true),
+    ("print", CtFn(reg_p1(CtString), CtUnit, None), false, true, true),
+    ("map_has", CtFn(reg_p2(CtUnknown, CtString), CtBool, None), false, true, true)
+  ]
+
+export fn builtin_registry_typed() -> Array[(String, Type, Bool, Bool, Bool)] {
+  registry_typed_rows
+}
+
+// Derived 5-tuple view for the two codegen lanes -- SAME shape as the B-0/B-1
+// table so wasi/linked_compile.vibe and gc/backend_body.vibe are unchanged:
+// param_count = the type's parameter count, returns = 0 iff the return type
+// is CtUnit.
+export fn builtin_registry() -> Array[(String, Int, Int, Bool, Bool)] {
+  let rows = builtin_registry_typed()
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (name, ty, in_linear, in_gc, _) = Array::get(rows, i)
+    let (pc, ret) = match ty {
+      CtFn(params, ret_ty, _) => {
+        let r = match ret_ty {
+          CtUnit => 0,
+          _ => 1
+        }
+        (Array::length(params), r)
+      },
+      _ => (0, 1)
+    }
+    Array::push(out, (name, pc, ret, in_linear, in_gc))
+    i = i + 1
+  }
+  out
+}
+
+// B-2: the checker-facing lookup, consulted FIRST by
+// checker/builtins.vibe::lookup_builtin. Only checker_visible rows resolve;
+// codegen-internal names stay invisible to user code.
+export fn lookup_registry_builtin(name: String) -> Option[Type] {
+  let rows = builtin_registry_typed()
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(rows) {
+    let (rname, ty, _, _, visible) = Array::get(rows, i)
+    if rname == name && visible {
+      found = Some(ty)
+      i = Array::length(rows)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+// #415 B-0: assert one lane's registered (names, param_counts, returns)
+// arrays agree with the registry. Called by each backend builder right after
+// it finishes its registration pushes; throws with a named diff on any
+// drift. O(n^2) over ~100 entries at compile start — noise next to a parse.
+export fn verify_lane_builtins(lane: String, names: Array[String], param_counts: Array[Int], returns: Array[Int]) -> Unit with { Error } {
+  let is_gc = lane == "gc"
+  let reg = builtin_registry()
+  // 1. every registered name must have a matching registry row
+  let mut i = 0
+  while i < Array::length(names) {
+    let n = Array::get(names, i)
+    let mut found = false
+    let mut ri = 0
+    while ri < Array::length(reg) {
+      let (rn, rp, rr, rlin, rgc) = Array::get(reg, ri)
+      if rn == n {
+        found = true
+        let claimed = if is_gc { rgc } else { rlin }
+        if claimed {
+          ()
+        } else {
+          throw("builtin registry drift: '\{n}' is registered by the \{lane} lane but the registry says it is not in that lane's table (lib/@vibe/compiler/codegen/builtin_registry.vibe, #415)")
+        }
+        if rp == Array::get(param_counts, i) && rr == Array::get(returns, i) {
+          ()
+        } else {
+          throw("builtin registry drift: '\{n}' signature mismatch in the \{lane} lane — registry says (params=\{rp}, returns=\{rr}), lane registered (params=\{Array::get(param_counts, i)}, returns=\{Array::get(returns, i)}) (#415)")
+        }
+        ri = Array::length(reg)
+      } else {
+        ri = ri + 1
+      }
+    }
+    if found {
+      ()
+    } else {
+      throw("builtin registry drift: '\{n}' is registered by the \{lane} lane but has no row in lib/@vibe/compiler/codegen/builtin_registry.vibe (#415) — add one (and decide the other lane explicitly)")
+    }
+    i = i + 1
+  }
+  // 2. every registry row claiming this lane must actually be registered.
+  // Exemption: the linear lane registers vibe_rc_drop/vibe_rc_alloc only when RC is
+  // enabled (VIBE_RC), so their absence in a bump-mode build is not drift —
+  // they stay direction-1 verified (if registered, the signature must match).
+  let mut ri2 = 0
+  while ri2 < Array::length(reg) {
+    let (rn2, _, _, rlin2, rgc2) = Array::get(reg, ri2)
+    let claimed2 = (if is_gc { rgc2 } else { rlin2 }) && not(String::starts_with(rn2, "vibe_rc_"))
+    if claimed2 {
+      let mut found2 = false
+      let mut i2 = 0
+      while i2 < Array::length(names) {
+        if Array::get(names, i2) == rn2 {
+          found2 = true
+          i2 = Array::length(names)
+        } else {
+          i2 = i2 + 1
+        }
+      }
+      if found2 {
+        ()
+      } else {
+        throw("builtin registry drift: registry claims '\{rn2}' is in the \{lane} lane's table but the lane did not register it (#415)")
+      }
+    } else {
+      ()
+    }
+    ri2 = ri2 + 1
+  }
+}

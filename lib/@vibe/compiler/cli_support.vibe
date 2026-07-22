@@ -12,7 +12,7 @@ import ./codegen/common_base {
   empty_dbg_prov
 }
 
-import ./core/index.vibe {
+import ./core {
   Stmt
 }
 
@@ -21,19 +21,19 @@ import ./entry/compiler/file_compile {
   compile_file_fs_mode_profiled
 }
 
-import ./entry/source_compile/wasi_only/linked_artifacts.vibe {
-  collect_linked_compile_inputs, collect_linked_dep_inputs_for_stmts
-}
-
-import ./entry/source_compile/wasi_only/preprocess_interp.vibe {
-  expand_interp_stmts
-}
-
-import ./entry/source_compile/wasi_only/path_utils.vibe {
-  empty_stmt_array
-}
-
-import ./entry/source_compile/wasi_only/linked_library.vibe {
+// #897: package-form import (wasi_only/ is now an index.vpkg boundary) --
+// these used to be three separate leaf imports (linked_artifacts.vibe,
+// preprocess_interp.vibe, linked_library.vibe), now merged into one. A
+// fourth leaf import (path_utils.vibe's `empty_stmt_array`) is dropped
+// entirely: it is a private helper only promoted to sibling-file visibility
+// within wasi_only/ (not part of this package's declared contract surface,
+// see wasi_only/index.vpkg's header), and its body is a one-line forward to
+// `@vibe/core`'s generic `array_empty[T]()` -- already imported below under
+// its own name, so the two call sites that used `empty_stmt_array()` now
+// call `array_empty()` directly instead.
+import ./entry/source_compile/wasi_only {
+  collect_linked_compile_inputs, collect_linked_dep_inputs_for_stmts,
+  expand_interp_stmts,
   compile_file_wasi_library
 }
 
@@ -53,7 +53,7 @@ import ./type_db.vibe {
 // here, check_linked_file's raw check_file_fs_mode/check_program message
 // would regress every located-diagnostic case check has (scripts/
 // test_located_diagnostics.sh).
-import ./runtime/typecheck_fs.vibe {
+import ./runtime {
   check_inline_wasm_fns, locate_type_error
 }
 
@@ -157,7 +157,7 @@ fn append_non_import_stmts(dst: Array[Stmt], src: Array[Stmt]) -> Unit {
 
 export fn build_linked_debug_entry(input_path: String, entry_name: String) -> (Bytes, Array[(String, String)]) with { Error, Fs } {
   let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs) = collect_linked_compile_inputs(input_path)
-  let main_stmts = empty_stmt_array()
+  let main_stmts = array_empty()
   append_stmt_array(main_stmts, resolved_type_stmts)
   append_non_import_stmts(main_stmts, entry_stmts)
   let bytes = compile_wasi_module_linked_impl(main_stmts, entry_name, empty_source_pairs(), linked_imports, false, false, false, false, false, false, empty_dbg_prov())
@@ -201,7 +201,7 @@ export fn check_linked_file(input_path: String) -> Int with { Error, Fs } {
   handle {
     let _ = check_file_fs_mode(input_path)
     let (resolved_type_stmts, _linked_imports, _linked_dep_specs) = collect_linked_dep_inputs_for_stmts(input_path, entry_stmts)
-    let stmts = empty_stmt_array()
+    let stmts = array_empty()
     append_stmt_array(stmts, resolved_type_stmts)
     append_stmt_array(stmts, entry_stmts)
     expand_interp_stmts(stmts)

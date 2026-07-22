@@ -1,0 +1,503 @@
+//# Aliases
+
+import ../../../lib/@vibe/json @json
+import ../../../lib/@vibe/module @module
+import ../../../lib/@vibe/shell @shell
+
+//# Imports
+
+export ./core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  Subst, Type, TypeDef, TypeEnv
+}
+
+export ./syntax {
+  lex,
+  print_expr,
+  print_pat,
+  print_program,
+  print_stmt,
+  print_type_expr,
+  Token,
+  token_to_string
+}
+
+export ./parser.vibe {
+  parse, parse_expr, parse_ok, parse_program, parse_stmt, parse_type
+}
+
+
+
+export ./type_db.vibe {
+  TypeDb, db_new, db_set_source, db_check_env, db_typecheck, db_typecheck_fs, db_typecheck_count,
+  db_parse_count, db_merge_count, db_module_source_count, db_codegen_count,
+  db_program_source, db_merged_source, db_grouped_merged_source, db_module_source,
+  db_load_artifact, db_store_artifact
+}
+
+import ./entry/cli_cache {
+  parse_batch_jobs_tsv, prepare_jobs_cached, compile_jobs_cached,
+  selfbuild_probe_cli_cache_counts, selfbuild_probe_cli_file_cache_counts
+}
+
+import ./cache_probe_support.vibe {
+  selfbuild_probe_type_db_cache_counts,
+  selfbuild_probe_type_db_fs_parse_counts,
+  selfbuild_probe_type_db_group_merge_counts,
+  selfbuild_probe_type_db_module_source_counts,
+  selfbuild_probe_type_db_codegen_counts
+}
+
+export ./checker {
+  check_program, check_program_with_env, check_stmts
+}
+
+export ./codegen {
+  compile_module, compile_wasi_module, compile_wasi_module_with_sources
+}
+
+import ./entry/source_compile {
+  compile_source, compile_source_wasi
+}
+
+import ./entry/source_compile/wasi_only {
+  compile_source_wasi_only, compile_source_wasi_only_rc
+}
+
+
+import ./entry/compiler/fs_compile {
+  compile_with_modules, compile_with_modules_wasi,
+  prepare_modules_cached, compile_with_modules_cached, compile_with_modules_wasi_cached,
+  compile_with_source_groups_via_module_source_wasi_unchecked_cached,
+  compile_with_source_groups_via_module_source_wasi_unchecked_rc,
+  compile_file_fs, compile_file_fs_module, prepare_file_fs_cached,
+  compile_file_fs_cached, compile_file_fs_module_cached
+}
+
+import ./cli_adapter_bundle.vibe {
+  cli_adapter_source_groups,
+  cli_adapter_merged_source, cli_adapter_module_source
+}
+
+import ./selfbuild_runtime_entry_bundle.vibe {
+  selfbuild_runtime_entry_source
+}
+
+
+//# Functions
+
+
+export let compiler_lex: (String) -> Array[Token] with { Error } = lex
+
+export let compiler_parse: (Array[Token]) -> Expr with { Error } = parse
+
+export let compiler_parse_ok: (Array[Token]) -> Bool = parse_ok
+
+export let compiler_print_pat: (Pat) -> String = print_pat
+
+export let compiler_parse_expr: (Array[Token], Int) -> (Expr, Int) with { Error } = parse_expr
+
+export let compiler_parse_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = parse_stmt
+
+export let compiler_parse_type: (Array[Token], Int) -> (TypeExpr, Int) with { Error } = parse_type
+
+export let compiler_print_expr: (Expr) -> String = print_expr
+
+export let compiler_print_stmt: (Stmt) -> String = print_stmt
+
+export let compiler_parse_program: (Array[Token]) -> Array[Stmt] with { Error } = parse_program
+
+export let compiler_print_program: (Array[Stmt]) -> String = print_program
+
+export let compiler_print_type_expr: (TypeExpr) -> String = print_type_expr
+
+fn build_cli_adapter_bytes() -> Bytes with { Error } {
+  let module_source = cli_adapter_module_source()
+  if module_source == "" {
+    throw("cli_adapter_module_source is empty")
+  }
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let source_groups = cli_adapter_source_groups()
+  let (bytes, _) = compile_with_source_groups_via_module_source_wasi_unchecked_cached(
+    db_new(),
+    module_source,
+    adapter_path,
+    source_groups,
+    "cli_main"
+  )
+  bytes
+}
+
+// ADR-0055 #493 cutover: RC-codegen variant of build_cli_adapter_bytes.
+// Compiles the WHOLE compiler (its own embedded module source) under
+// the Perceus RC backend. Running this through stage1 is the decisive
+// whole-compiler-under-RC validity signal for the cutover.
+fn build_cli_adapter_bytes_rc() -> Bytes with { Error } {
+  let module_source = cli_adapter_module_source()
+  if module_source == "" {
+    throw("cli_adapter_module_source is empty")
+  }
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let source_groups = cli_adapter_source_groups()
+  let (bytes, _) = compile_with_source_groups_via_module_source_wasi_unchecked_rc(
+    db_new(),
+    module_source,
+    adapter_path,
+    source_groups,
+    "cli_main"
+  )
+  bytes
+}
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = Bytes::new()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Bytes::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  out
+}
+
+fn compile_cli_adapter_to(output_path: String) -> Int with { Error, Fs } {
+  if output_path == "" {
+    1
+  } else {
+    let bytes = build_cli_adapter_bytes()
+    Fs::write_bytes(output_path, bytes)
+    0
+  }
+}
+
+let cli_trigger_path = "_build/bench/cli_adapter/.compile_cli_trigger"
+let cli_stage1_path = "_build/bench/cli_adapter/cli_stage1.wasm"
+let cli_merged_dump_path = "_build/bench/cli_adapter/cli_adapter_merged_dump.vibe"
+let cli_module_dump_path = "_build/bench/cli_adapter/cli_adapter_module_dump.vibe"
+
+// #768/#778/#769: the entries below use direct-call form
+// (Fs::exists/Fs::read_file/Env::get/Env::args_len/Env::args_get), not
+// `perform <Effect>::<Op>` -- the perform/effect-op codegen path for magic
+// host effects can crash with an uncaught wasm exception (#778) or fail to
+// resolve at all (#769's `undefined variable (ident): Env::ArgsLen`, hit
+// when this file is loaded standalone through the FS-compile dynamic
+// loader rather than the bundle-based self-hosting build) in a small
+// compiled unit. This file's own probe helpers below (`compile_source_wasi`
+// on a literal source string containing `perform Env::Get(...)`/
+// `perform Fs::ReadFile(...)`) are deliberately left untouched -- they test
+// that shape of code, not this file's own logic.
+
+// Lightweight entry for WASI _start/run wrapper.
+export fn selfbuild_entry() -> Int with { Error, Fs } {
+  handle {
+    if Fs::exists(cli_trigger_path) {
+      compile_cli_adapter_to(cli_stage1_path)
+    } else {
+      0
+    }
+  } with Error {
+    Throw(_) => 0
+  }
+}
+
+export fn selfbuild_write_cli_adapter() -> Int with { Error, Fs } {
+  compile_cli_adapter_to(cli_stage1_path)
+}
+
+export fn selfbuild_dump_cli_adapter_merged_source() -> Int with { Error, Fs } {
+  Fs::write_bytes(
+    cli_merged_dump_path,
+    string_to_bytes(cli_adapter_merged_source())
+  )
+  0
+}
+
+export fn selfbuild_dump_cli_adapter_module_source() -> Int with { Error, Fs } {
+  Fs::write_bytes(
+    cli_module_dump_path,
+    string_to_bytes(cli_adapter_module_source())
+  )
+  0
+}
+
+export fn selfbuild_dump_cli_adapter_merged_source_env() -> Int with { Error, Fs, Env } {
+  let output_path = Env::get("VIBE_OUTPUT")
+  Fs::write_bytes(output_path, string_to_bytes(cli_adapter_merged_source()))
+  0
+}
+
+export fn selfbuild_dump_cli_adapter_module_source_env() -> Int with { Error, Fs, Env } {
+  let output_path = Env::get("VIBE_OUTPUT")
+  Fs::write_bytes(output_path, string_to_bytes(cli_adapter_module_source()))
+  0
+}
+
+export fn probe_dump_cli_adapter_merged_source_env() -> Int with { Error, Fs, Env } {
+  let output_path = Env::get("VIBE_OUTPUT")
+  Fs::write_bytes(output_path, string_to_bytes(cli_adapter_merged_source()))
+  0
+}
+
+export fn probe_dump_cli_adapter_module_source_env() -> Int with { Error, Fs, Env } {
+  let output_path = Env::get("VIBE_OUTPUT")
+  Fs::write_bytes(output_path, string_to_bytes(cli_adapter_module_source()))
+  0
+}
+
+export fn probe_write_bytes_smoke() -> Int with { Error, Fs, Env } {
+  let output_path = Env::get("VIBE_OUTPUT")
+  Fs::write_bytes(output_path, string_to_bytes("ok\n"))
+  0
+}
+
+export fn selfbuild_cli_env_entry() -> Int with { Error, Fs, Env } {
+  let input_path = Env::get("VIBE_INPUT")
+  let output_path = Env::get("VIBE_OUTPUT")
+  let entry_name = Env::get("VIBE_ENTRY")
+  if input_path == "" {
+    1
+  }
+  else if output_path == "" {
+    1
+  }
+  else if entry_name == "" {
+    1
+  }
+  else {
+    let source = Fs::read_file(input_path)
+    let bytes = compile_source_wasi_only(source, entry_name)
+    Fs::write_bytes(output_path, bytes)
+    0
+  }
+}
+
+export fn selfbuild_probe_cli_env_read_len() -> Int with { Error, Fs, Env } {
+  let input_path = Env::get("VIBE_INPUT")
+  let source = Fs::read_file(input_path)
+  String::length(source)
+}
+
+export fn selfbuild_probe_cli_env_compile_len() -> Int with { Error, Fs, Env } {
+  let input_path = Env::get("VIBE_INPUT")
+  let entry_name = Env::get("VIBE_ENTRY")
+  let source = Fs::read_file(input_path)
+  let bytes = compile_source_wasi_only(source, entry_name)
+  Bytes::length(bytes)
+}
+
+export fn selfbuild_probe_cli_args_read_len() -> Int with { Error, Fs, Env } {
+  let input_path = if Env::args_len() > 0 { Env::args_get(0) } else { "" }
+  let source = Fs::read_file(input_path)
+  String::length(source)
+}
+
+export fn selfbuild_probe_cli_args_compile_len() -> Int with { Error, Fs, Env } {
+  let input_path = if Env::args_len() > 0 { Env::args_get(0) } else { "" }
+  let entry_name = if Env::args_len() > 2 { Env::args_get(2) } else { "" }
+  let source = Fs::read_file(input_path)
+  let bytes = compile_source_wasi_only(source, entry_name)
+  Bytes::length(bytes)
+}
+
+export fn selfbuild_cli_args_entry() -> Int with { Error, Fs, Env } {
+  let input_path = if Env::args_len() > 0 { Env::args_get(0) } else { "" }
+  let output_path = if Env::args_len() > 1 { Env::args_get(1) } else { "" }
+  let entry_name = if Env::args_len() > 2 { Env::args_get(2) } else { "" }
+  if input_path == "" {
+    1
+  }
+  else if output_path == "" {
+    1
+  }
+  else if entry_name == "" {
+    1
+  }
+  else {
+    let source = Fs::read_file(input_path)
+    // ADR-0055 #493 cutover: the Perceus RC codegen path is the DEFAULT; set
+    // VIBE_RC=0 to opt back into the legacy bump path. The #705 RC fixes brought
+    // the corpus to parity (28/29; v128 is RC-unsupported by design). The
+    // selfbuild / bootstrap / bump-baseline gates pin VIBE_RC=0 (scripts/*.sh) so
+    // they self-reproduce byte-identically on the proven bump path until an
+    // RC compiler self-build fixpoint is validated; everything else reclaims.
+    let bytes = if Env::get("VIBE_RC") != "0" {
+      compile_source_wasi_only_rc(source, entry_name)
+    } else {
+      compile_source_wasi_only(source, entry_name)
+    }
+    Fs::write_bytes(output_path, bytes)
+    0
+  }
+}
+
+export fn selfbuild_cli_entry() -> Int with { Error, Fs, Env } {
+  let input_path = "_build/bench/cli_adapter/adapter_input.vibe"
+  let output_path = "_build/bench/cli_adapter/adapter_output.wasm"
+  if input_path == "" {
+    1
+  }
+  else if output_path == "" {
+    1
+  }
+  else {
+    let (bytes, _) = compile_file_fs_cached(db_new(), input_path, "main")
+    Fs::write_bytes(output_path, bytes)
+    0
+  }
+}
+
+// selfbuild helper: use the compiler's own compile pipeline to compile stage2.
+export fn selfbuild_compile_stage2() -> Bytes with { Error } {
+  let main_source = selfbuild_runtime_entry_source()
+  if main_source == "" { throw("selfbuild_runtime_entry_source is empty") }
+  compile_source_wasi_only(main_source, "selfbuild_entry")
+}
+
+export fn selfbuild_compile_cli_adapter() -> Bytes with { Error } {
+  build_cli_adapter_bytes()
+}
+
+// ADR-0055 #493 cutover: whole-compiler-under-RC entry. Writes the RC-compiled
+// compiler to VIBE_OUTPUT. Invoked through stage1 by the rc bootstrap
+// gate so the compiler compiles *itself* under the Perceus RC backend.
+export fn selfbuild_compile_cli_adapter_rc_env() -> Int with { Error, Fs, Env } {
+  let output_path = Env::get("VIBE_OUTPUT")
+  if output_path == "" {
+    1
+  } else {
+    let bytes = build_cli_adapter_bytes_rc()
+    Fs::write_bytes(output_path, bytes)
+    0
+  }
+}
+
+// Companion default-backend entry, so the gate can compare RC vs default for the
+// same whole-compiler self-compile through one code path.
+export fn selfbuild_compile_cli_adapter_env() -> Int with { Error, Fs, Env } {
+  let output_path = Env::get("VIBE_OUTPUT")
+  if output_path == "" {
+    1
+  } else {
+    let bytes = build_cli_adapter_bytes()
+    Fs::write_bytes(output_path, bytes)
+    0
+  }
+}
+
+export fn selfbuild_probe_compile_cli_adapter_embedded_module_len() -> Int with { Error } {
+  let bytes = build_cli_adapter_bytes()
+  Bytes::length(bytes)
+}
+
+export fn selfbuild_probe_compile_env_get_len() -> Int with { Error } {
+  let bytes = compile_source_wasi(
+    "let main: () -> Int = () -> { let _x = perform Env::Get(\"VIBE_INPUT\"); 0 }",
+    "main"
+  )
+  Bytes::length(bytes)
+}
+
+export fn selfbuild_probe_compile_fs_read_file_len() -> Int with { Error } {
+  let bytes = compile_source_wasi(
+    "let main: () -> Int = () -> { let _x = perform Fs::ReadFile(\"/tmp/in.txt\"); 0 }",
+    "main"
+  )
+  Bytes::length(bytes)
+}
+
+export fn selfbuild_probe_compile_fs_write_bytes_len() -> Int with { Error } {
+  let bytes = compile_source_wasi(
+    "let main: () -> Int = () -> { Fs::write_bytes(\"/tmp/out.wasm\", Bytes::from_array([1])); 0 }",
+    "main"
+  )
+  Bytes::length(bytes)
+}
+
+export fn selfbuild_stage1_probe_cli_cache_counts() -> Int with { Error, Fs } {
+  selfbuild_probe_cli_cache_counts()
+}
+
+export fn selfbuild_stage1_probe_cli_file_cache_counts() -> Int with { Error, Fs } {
+  selfbuild_probe_cli_file_cache_counts()
+}
+
+export fn selfbuild_stage1_probe_type_db_cache_counts() -> Int with { Error } {
+  selfbuild_probe_type_db_cache_counts()
+}
+
+export fn selfbuild_stage1_probe_type_db_fs_parse_counts() -> Int with { Error, Fs } {
+  let helper_path = "_build/persistent_type_env_probe_helper.vibe"
+  let main_path = "_build/persistent_type_env_probe_main.vibe"
+  let helper_source = "export let add: () -> Int = () -> { 1 }"
+  let main_source = "import ./persistent_type_env_probe_helper.vibe { add }\nlet run: () -> Int = () -> { add() }"
+  Fs::write_bytes(helper_path, string_to_bytes(helper_source))
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  let db1 = db_typecheck_fs(
+    db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source),
+    main_path
+  )
+  let count1 = db_parse_count(db1)
+  let db2 = db_typecheck_fs(
+    db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source),
+    main_path
+  )
+  let count2 = db_parse_count(db2)
+  count1 * 1000 + count2
+}
+
+export fn selfbuild_stage1_probe_type_db_group_merge_counts() -> Int with { Error } {
+  selfbuild_probe_type_db_group_merge_counts()
+}
+
+export fn selfbuild_stage1_probe_type_db_module_source_counts() -> Int with { Error } {
+  selfbuild_probe_type_db_module_source_counts()
+}
+
+export fn selfbuild_stage1_probe_type_db_codegen_counts() -> Int with { Error } {
+  selfbuild_probe_type_db_codegen_counts()
+}
+
+// Debug probe: lex only
+export fn selfbuild_probe_lex() -> Int with { Error } {
+  let tokens = lex("let add: (Int, Int) -> Int = (a, b) -> { a + b }")
+  Array::length(tokens)
+}
+
+// Debug probe: parse only
+export fn selfbuild_probe_parse() -> Int with { Error } {
+  let tokens = lex("let add: (Int, Int) -> Int = (a, b) -> { a + b }")
+  let stmts = parse_program(tokens)
+  Array::length(stmts)
+}
+
+export {
+  Pat, lex, Expr, Stmt, Token, Type, TypeEnv, Subst, TypeDef, TypeDb,
+  parse, version, TypeExpr, parse_ok, print_pat, parse_expr, parse_stmt, parse_type,
+  print_expr, print_stmt, compiler_lex, parse_program, print_program, compiler_parse,
+  print_type_expr, token_to_string, compiler_parse_ok, compiler_print_pat,
+  compiler_parse_expr, compiler_parse_stmt, compiler_parse_type, compiler_print_expr,
+  compiler_print_stmt, compiler_parse_program, compiler_print_program,
+  compiler_print_type_expr,
+  check_program, check_program_with_env, check_stmts,
+  db_new, db_set_source, db_check_env, db_typecheck, db_typecheck_count,
+  db_parse_count, db_merge_count, db_module_source_count, db_codegen_count,
+  db_program_source, db_merged_source, db_grouped_merged_source, db_module_source,
+  db_load_artifact, db_store_artifact,
+  compile_module, compile_wasi_module, compile_wasi_module_with_sources,
+  compile_source, compile_source_wasi,
+  compile_with_modules, compile_with_modules_wasi, prepare_modules_cached,
+  compile_with_modules_cached, compile_with_modules_wasi_cached,
+  compile_file_fs, compile_file_fs_module, prepare_file_fs_cached,
+  compile_file_fs_cached, compile_file_fs_module_cached,
+  parse_batch_jobs_tsv, prepare_jobs_cached, compile_jobs_cached,
+  selfbuild_probe_cli_cache_counts, selfbuild_probe_cli_file_cache_counts,
+  selfbuild_probe_type_db_cache_counts, selfbuild_probe_type_db_fs_parse_counts,
+  selfbuild_probe_type_db_group_merge_counts,
+  selfbuild_probe_type_db_module_source_counts, selfbuild_probe_type_db_codegen_counts,
+  selfbuild_compile_stage2, selfbuild_compile_cli_adapter, selfbuild_entry,
+  selfbuild_write_cli_adapter, selfbuild_cli_env_entry,
+  selfbuild_cli_args_entry
+}

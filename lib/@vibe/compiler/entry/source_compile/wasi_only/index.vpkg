@@ -1,0 +1,147 @@
+version 0.0.1
+
+// @vibe/compiler/entry/source_compile/wasi_only — ADR-0070 / #897 compiler-
+// internal contract, part of entry/'s own explicit "high risk" sub-batch
+// (issue #897 body: "高リスク (要個別設計判断)... entry/ とそのサブディレ
+// クトリ"), migrated alongside entry/compiler/, entry/compiler/fs_compile/,
+// and entry/source_compile/ in the same batch. Its sibling
+// entry/source_compile/gc_only/ (the wasm-gc-backend analogue) was already
+// migrated in an earlier #897 batch -- see that package's index.vpkg for
+// the simpler single-file shape this directory does NOT have.
+//
+// Directory-shared-scope package: 22 impl files (~1164 lines), of which
+// only 13 carry a REAL exported def (`export fn`) -- the other 9 are pure
+// re-export shims, each pairing a genuine `export ./sibling.vibe { name }`
+// cross-file SReExport with a redundant bare `export { name }` block for
+// the same name (harmless: check_contract's collect_reexported_names only
+// looks at the SReExport form, so the trailing bare block is inert). The
+// 13 real-def files, grouped below: linked_artifacts.vibe (4),
+// linked_library.vibe (1), merge_sources.vibe (2), preprocess_compile.vibe
+// (4), preprocess_interp.vibe (1), preprocess_interp_parse.vibe (1),
+// preprocess_interp_rewrite_impl.vibe (1), preprocess_interp_string_build.vibe
+// (1), preprocess_interp_string_collect.vibe (1),
+// preprocess_interp_string_fold_core.vibe (1),
+// preprocess_interp_string_fold_loop.vibe (1),
+// preprocess_interp_string_fold_nonempty.vibe (1), preprocess_strip.vibe (1)
+// -- 20 names total, all declared below.
+//
+// Deliberately NOT declared (the #847-documented trap this migration keeps
+// hitting): path_utils.vibe's `empty_stmt_array` and linked_helpers.vibe's
+// `path_to_module_name` / `resolve_reexport_chain` are each a PRIVATE local
+// `fn` (no `export` on the fn itself) promoted to sibling-file visibility
+// ONLY via a trailing bare `export { name }` block -- collect_impl_fn_defs
+// sees them with `exported = false` (the SLet node's own flag, unaffected
+// by a later bare SExport), so declaring them here would fail check_contract
+// with "implemented but not exported by its implementation file" (the exact
+// documented trap for the bare `export {}` promotion shape). Nothing outside
+// this directory ever imported them by that name pre-migration either (only
+// sibling files did, via directory-shared scope / leaf imports within the
+// same directory, both still legal post-migration) -- confirmed via a
+// repo-wide grep, not assumed. merge_sources.vibe's `collect_merged_stmts_recursive`
+// is the same private+bare-exported shape and is likewise undeclared.
+//
+// Naming: no collision (wasi_only/wasi_only.vibe did not exist, mirroring
+// gc_only/gc_only.vibe's sibling precedent), old index.vibe moved verbatim
+// to wasi_only.vibe.
+//
+// External-caller fixes (literal leaf-path references into this directory
+// from OUTSIDE it, now that enforce_incoming_boundary_fs rejects them once
+// this directory is a package boundary):
+//   - lib/@vibe/compiler/index.vibe: `./entry/source_compile/wasi_only/index.vibe
+//     { compile_source_wasi_only, compile_source_wasi_only_rc }` -> bare
+//     `./entry/source_compile/wasi_only { .. }` package form.
+//   - tests/compiler_fs_test.vibe: had BOTH a leaf import of
+//     linked_artifacts.vibe (`collect_linked_compile_inputs`) and an
+//     existing package-form import in the same file -- merged into the one
+//     package-form import.
+//   - cli_adapter.vibe: two leaf imports (preprocess.vibe, merge_sources.vibe)
+//     merged into one package-form import.
+//   - cli_support.vibe: three leaf imports (linked_artifacts.vibe,
+//     preprocess_interp.vibe, linked_library.vibe) merged into one
+//     package-form import; the FOURTH leaf import (path_utils.vibe's
+//     `empty_stmt_array`) is dropped entirely rather than routed through the
+//     package form, since `empty_stmt_array` is one of the undeclared
+//     private names above (see that trap note) -- its body is a one-line
+//     forward to `@vibe/core`'s generic `array_empty[T]()`, already imported
+//     in cli_support.vibe under its own name, so the two call sites just
+//     call `array_empty()` directly instead.
+//   - selfbuild_gate_sources_b.vibe: five string-literal fixtures embedding
+//     `import ./entry/source_compile/wasi_only/index.vibe { .. }` as source
+//     TEXT (compiled via the FS lane, not parsed as this file's own
+//     imports) now target `./entry/source_compile/wasi_only/wasi_only.vibe`
+//     -- the renamed leaf file -- keeping each fixture's original "leaf
+//     import of an internal file" test shape intact (same fix codegen/'s
+//     own batch made for its analogous `./codegen/index.vibe` fixtures).
+//
+// No import cycle found: none of this directory's own dependencies
+// (checker/, codegen/wasi, codegen/common_base, core/, syntax/,
+// module_graph_path.vibe -- all already vpkg or plain leaf files) import
+// back into entry/source_compile/wasi_only/.
+//
+// Compiled into the compiler itself via compiler_sources_manifest.tsv
+// (group `entry`): the old single `entry/source_compile/wasi_only/index.vibe`
+// row becomes a dual row (this contract + wasi_only.vibe); the other 21
+// sibling files already had their own rows and are unchanged.
+//
+// No exported types: Stmt/Expr (../../../core) and Token (../../../syntax)
+// arrive as structural signature text (loader/runtime/core precedent -- no
+// re-import needed here).
+
+// --- linked_artifacts.vibe
+fn collect_linked_dep_inputs_for_stmts(entry_path: String, entry_stmts: Array[Stmt]) -> (Array[Stmt], Array[(String, String, Int, Int)], Array[(String, String)]) with { Error, Fs }
+fn collect_linked_compile_inputs(entry_path: String) -> (Array[Stmt], Array[Stmt], Array[(String, String, Int, Int)], Array[(String, String)]) with { Error, Fs }
+fn compile_file_wasi_linked_artifacts(entry_path: String, entry_name: String) -> (Bytes, Array[(String, String, Int, Int)], Array[(String, String)]) with { Error, Fs }
+fn compile_file_wasi_linked(entry_path: String, entry_name: String) -> (Bytes, Array[(String, String, Int, Int)]) with { Error, Fs }
+
+// --- linked_library.vibe
+fn compile_file_wasi_library(dep_path: String) -> Bytes with { Error, Fs }
+
+// --- merge_sources.vibe
+fn merged_program_source_fs(entry_path: String) -> String with { Error, Fs }
+fn compile_file_wasi_only(entry_path: String, entry_name: String) -> Bytes with { Error, Fs }
+
+// --- preprocess_compile.vibe
+fn compile_source_wasi_only(source: String, entry_name: String) -> Bytes with { Error }
+fn compile_source_wasi_only_coverage(source: String, entry_name: String) -> Bytes with { Error }
+fn compile_source_wasi_only_rc(source: String, entry_name: String) -> Bytes with { Error }
+fn compile_source_wasi_only_rc_shadow(source: String, entry_name: String) -> Bytes with { Error }
+
+// --- preprocess_interp.vibe
+fn expand_interp_stmts(stmts: Array[Stmt]) -> Unit with { Error }
+
+// --- preprocess_interp_parse.vibe
+fn parse_interp_expr(tokens: Array[Token]) -> Expr with { Error }
+
+// --- preprocess_interp_rewrite_impl.vibe
+fn rewrite_interp(e: Expr) -> Expr with { Error }
+
+// --- preprocess_interp_string_build.vibe
+fn rewrite_interp_string(parts: Array[String]) -> Expr with { Error }
+
+// --- preprocess_interp_string_collect.vibe
+fn collect_interp_exprs(parts: Array[String]) -> Array[Expr] with { Error }
+
+// --- preprocess_interp_string_fold_core.vibe
+fn fold_interp_exprs(result_arr: Array[Expr]) -> Expr
+
+// --- preprocess_interp_string_fold_loop.vibe
+fn fold_interp_exprs_loop(result_arr: Array[Expr], result_len: Int, result0: Expr, j0: Int) -> Expr
+
+// --- preprocess_interp_string_fold_nonempty.vibe
+fn fold_interp_exprs_nonempty(result_arr: Array[Expr], result_len: Int) -> Expr
+
+// --- preprocess_strip.vibe
+fn strip_generic_type_params(stmts: Array[Stmt]) -> Unit
+
+// --- component_codegen.vibe (relocated here from compiler/ top level,
+// #897 batch; single real external consumer was this directory's own
+// preprocess_compile.vibe, now an ordinary same-package sibling reference)
+fn comp_generate_string_trampoline(string_param_count: Int, call_run_init: Int) -> Bytes
+fn comp_emit_component_wasm(core_wasm: Bytes) -> Bytes
+fn comp_emit_component_wasm_with_lift(core_wasm: Bytes, export_name: String) -> Bytes
+fn comp_emit_component_wasm_with_string_lift(core_wasm: Bytes, target_func_name: String, export_name: String, string_param_count: Int, param_names: Array[String], is_async: Int) -> Bytes
+fn comp_emit_component_wasm_async(core_wasm: Bytes, export_name: String, result_valtype: Int) -> Bytes
+fn comp_emit_component_wasm_async_trampolined(main_core_wasm: Bytes, export_name: String, comp_result_valtype: Int) -> Bytes
+fn comp_emit_component_wasm_async_trampolined_p1(main_core_wasm: Bytes, export_name: String, comp_result_valtype: Int) -> Bytes
+fn comp_generate_string_trampoline_packed(string_param_count: Int) -> Bytes
+fn comp_emit_component_wasm_string_handler(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with { Error }

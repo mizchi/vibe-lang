@@ -160,9 +160,8 @@ Line classification:
   appended to the session buffer. The append is validated by recompiling the
   whole buffer; on any diagnostic it is **rolled back**, so the buffer can
   never become poisoned.
-- Any other line is treated as an expression: it is wrapped in a synthetic
-  Int-returning entry (the ADR-0069 `let main` return-print convention — the
-  same channel `vibe run` prints through), compiled against the buffer, and
+- Any other line is treated as an expression: it is wrapped in an internal
+  synthetic Int-returning harness (not a `.vibex` entry), compiled against the buffer, and
   the produced wasm is executed. If the Int wrapper does not compile (a
   non-Int value, or an effect row the wrapper lacks), it is retried
   effects-only with a notice — use `:type` to inspect non-Int values.
@@ -230,7 +229,7 @@ vibe normalize --stdout <file.vibe>   # print the result (no write)
 ### init / new
 
 - `vibe init [dir]` -- Create `index.vibe`, `index.lock`, and `.vibe/` in the target directory.
-- `vibe new <dir>` -- Scaffold a new project (init + `main.vibe`).
+- `vibe new <dir>` -- Scaffold a new project (init + `main.vibex`).
 
 ### Other User Commands
 

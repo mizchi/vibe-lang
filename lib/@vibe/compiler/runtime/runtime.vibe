@@ -1,0 +1,1333 @@
+//# Imports
+
+import ../core {
+  Stmt,
+  Type,
+  TypeEnv,
+  env_bind,
+  env_flat_bindings,
+  env_lookup_flat,
+  ExportRenamePlan,
+  append_import_alias_rewritten_non_import_stmts_with_renames,
+  append_non_import_stmts_without_alias_rewrite,
+  apply_export_renames_stmts,
+  build_export_rename_plan,
+  collect_import_alias_collision_locals,
+  collect_import_alias_collision_refs,
+  collect_import_value_renames,
+  export_plan_fingerprint_text,
+  export_plan_renames_for,
+  import_value_rename_locals,
+  namespace_private_value_stmts,
+  rewrite_imported_value_stmt_to_local,
+  stmts_have_import_deep,
+  dir_of_path,
+  resolve_import_path,
+  resolve_import_path_candidates
+}
+
+import ../../../../lib/@vibe/core {
+  array_empty
+}
+
+import ../checker {
+  check_program_with_env
+}
+
+import ./eval_loader {
+  contains_str
+}
+
+import ./typecheck_fs.vibe {
+  ensure_fingerprint_fs_impl,
+  load_persistent_dep_list,
+  load_persistent_leaf_fingerprint,
+  persistent_dep_list_text,
+  persistent_leaf_fingerprint_text,
+  persistent_type_env_cache_text,
+  load_persistent_type_env
+}
+
+import ../syntax {
+  lex,
+  parse_program,
+  print_program
+}
+
+import ../loader {
+  load_or_parse_module_header_fs
+}
+
+import ../cache {
+  persistent_dep_list_cache_path, persistent_leaf_fingerprint_cache_path,
+  persistent_type_env_cache_path
+}
+
+import ../../../../lib/@vibe/graph {
+  RippleDb,
+  ripple_eval_count,
+  ripple_get_deps,
+  ripple_get_fingerprint,
+  ripple_get_source,
+  ripple_new,
+  ripple_record_eval,
+  ripple_set_source
+}
+
+// #847 Phase C: facade re-exports so external callers reach this directory
+// only through runtime/index.vibe, not its internal files directly.
+export ./module_source.vibe {
+  build_module_source_from_source, build_funcmap_from_source
+}
+
+export ./type_at.vibe {
+  type_at_source
+}
+
+export ./binding_at.vibe {
+  binding_occurrences
+}
+
+export ./symbol_spans.vibe {
+  symbol_spans
+}
+
+export ./typecheck_fs.vibe {
+  collect_all_diagnostics
+}
+
+// Note: `eval_loader/` has its own `index.vibe` and is already its own
+// boundary (ADR-0063 applies recursively) — its two external callers
+// (`loader/index.vibe`, `loader/header_cache.vibe`) already import it via
+// that index, not an internal file, so it needs no re-export here. Routing
+// it through this facade instead would also create an import cycle: this
+// file already imports `../loader { load_or_parse_module_header_fs }`, so
+// `loader/index.vibe` importing back through `runtime/index.vibe` would be
+// `loader -> runtime/index.vibe -> loader`.
+
+//# Types
+
+enum StringTriple {
+  StringTriple(String, String, String)
+}
+
+enum TypeDbState {
+  TypeDbState(
+    RippleDb,
+    Array[(String, TypeEnv)],
+    Array[(String, String)],
+    Array[StringTriple],
+    Array[StringTriple],
+    Array[StringTriple],
+    Int,
+    Int,
+    Int,
+    Int
+  )
+}
+
+export enum TypeDb {
+  TypeDb(TypeDbState)
+}
+
+//# Functions
+
+fn unwrap_db(db: TypeDb) -> TypeDbState {
+  match db {
+    TypeDb(state) => state
+  }
+}
+
+fn wrap_db(state: TypeDbState) -> TypeDb {
+  TypeDb(state)
+}
+
+fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with { Error } {
+  handle {
+    parse_program(lex(source))
+  } with Error {
+    Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
+  }
+}
+
+fn add_dep(acc: Array[String], raw_path: String, base_dir: String) -> Array[String] {
+  // Mutates `acc` in place. Caller pattern is `acc = add_dep(acc, ...)`
+  // so the same reference is returned either way.
+  if String::length(raw_path) == 0 {
+    acc
+  } else {
+    let resolved = resolve_import_path(base_dir, raw_path)
+    if contains_str(acc, resolved) {
+      acc
+    } else {
+      Array::push(acc, resolved)
+      acc
+    }
+  }
+}
+
+fn empty_strings() -> Array[String] {
+  array_empty()
+}
+
+fn empty_dep_fps() -> Array[(String, String)] {
+  array_empty()
+}
+
+fn empty_env_cache() -> Array[(String, TypeEnv)] {
+  array_empty()
+}
+
+fn empty_string_pairs() -> Array[(String, String)] {
+  array_empty()
+}
+
+fn empty_string_triples() -> Array[StringTriple] {
+  array_empty()
+}
+
+fn empty_stmt_array() -> Array[Stmt] {
+  array_empty()
+}
+
+export fn db_new() -> TypeDb {
+  wrap_db(
+    TypeDbState(
+      ripple_new(),
+      empty_env_cache(),
+      empty_string_pairs(),
+      empty_string_triples(),
+      empty_string_triples(),
+      empty_string_triples(),
+      0,
+      0,
+      0,
+      0
+    )
+  )
+}
+
+fn lookup_string_pair(pairs: Array[(String, String)], key: String) -> Option[String] {
+  let len = Array::length(pairs)
+  let rec go: (Int) -> Option[String] = (i) -> {
+    if i >= len {
+      None
+    } else {
+      let (k, v) = Array::get(pairs, i)
+      if k == key {
+        Some(v)
+      } else {
+        go(i + 1)
+      }
+    }
+  }
+  go(0)
+}
+
+fn upsert_string_pair(pairs: Array[(String, String)], key: String, value: String) -> Array[(String, String)] {
+  let len = Array::length(pairs)
+  let b = ArrayBuilder::new()
+  let rec build: (Int) -> Array[(String, String)] = (i) -> {
+    if i >= len {
+      ArrayBuilder::push(b, (key, value))
+      ArrayBuilder::freeze(b)
+    } else {
+      let (k, v) = Array::get(pairs, i)
+      if k == key {
+        build(i + 1)
+      } else {
+        ArrayBuilder::push(b, (k, v))
+        build(i + 1)
+      }
+    }
+  }
+  build(0)
+}
+
+fn lookup_source_cache(cache: Array[StringTriple], path: String, fingerprint: String) -> Option[String] {
+  let len = Array::length(cache)
+  let rec go: (Int) -> Option[String] = (i) -> {
+    if i >= len {
+      None
+    } else {
+      match Array::get(cache, i) {
+        StringTriple(p, fp, source) =>
+          if p == path && fp == fingerprint {
+            Some(source)
+          } else {
+            go(i + 1)
+          }
+      }
+    }
+  }
+  go(0)
+}
+
+fn upsert_source_cache(cache: Array[StringTriple], path: String, fingerprint: String, source: String) -> Array[StringTriple] {
+  // O(N) in-place rebuild: previously each `Array::concat(acc, [x])`
+  // copied the entire prefix per iteration → O(N^2) for large source
+  // caches.
+  let out = empty_string_triples()
+  let mut i = 0
+  let len = Array::length(cache)
+  while i < len {
+    match Array::get(cache, i) {
+      StringTriple(p, fp, existing) =>
+        if p == path && fp == fingerprint {
+          ()
+        } else {
+          Array::push(out, StringTriple(p, fp, existing))
+        }
+    }
+    i = i + 1
+  }
+  Array::push(out, StringTriple(path, fingerprint, source))
+  out
+}
+
+fn append_source_cache_entries(cache: Array[StringTriple], entries: Array[StringTriple]) -> Array[StringTriple] {
+  if Array::length(entries) == 0 {
+    cache
+  } else {
+    let out = empty_string_triples()
+    let mut i = 0
+    while i < Array::length(cache) {
+      Array::push(out, Array::get(cache, i))
+      i = i + 1
+    }
+    let mut j = 0
+    while j < Array::length(entries) {
+      Array::push(out, Array::get(entries, j))
+      j = j + 1
+    }
+    out
+  }
+}
+
+export fn db_set_source(db: TypeDb, path: String, source: String) -> TypeDb {
+  match unwrap_db(db) {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) =>
+      wrap_db(
+        TypeDbState(
+          ripple_set_source(rdb, path, source),
+          env_cache,
+          dep_source_cache,
+          merged_cache,
+          module_source_cache,
+          artifact_cache,
+          parse_count,
+          merge_count,
+          module_source_count,
+          codegen_count
+        )
+      )
+  }
+}
+
+fn lookup_env_cache(cache: Array[(String, TypeEnv)], path: String) -> Option[TypeEnv] {
+  let len = Array::length(cache)
+  let rec go: (Int) -> Option[TypeEnv] = (i) -> {
+    if i >= len {
+      None
+    } else {
+      let (p, env) = Array::get(cache, i)
+      if p == path {
+        Some(env)
+      } else {
+        go(i + 1)
+      }
+    }
+  }
+  go(0)
+}
+
+fn resolve_cached_import_path(base_dir: String, raw_path: String, cache: Array[(String, TypeEnv)]) -> String {
+  let candidates = resolve_import_path_candidates(base_dir, raw_path)
+  let mut selected = ""
+  let mut i = 0
+  while i < Array::length(candidates) && selected == "" {
+    let candidate = Array::get(candidates, i)
+    match lookup_env_cache(cache, candidate) {
+      Some(_) => {
+        selected = candidate
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  if selected == "" {
+    resolve_import_path(base_dir, raw_path)
+  } else {
+    selected
+  }
+}
+
+export fn db_check_env(db: TypeDb, path: String) -> Option[TypeEnv] {
+  match unwrap_db(db) {
+    TypeDbState(_, cache, _, _, _, _, _, _, _, _) => lookup_env_cache(cache, path)
+  }
+}
+
+fn starts_with_upper(name: String) -> Bool {
+  if String::length(name) == 0 {
+    false
+  } else {
+    let c = String::char_code_at(name, 0)
+    c >= 65 && c <= 90
+  }
+}
+
+fn type_returns_name(ty: Type, type_name: String) -> Bool {
+  match ty {
+    CtEnum(name) => name == type_name,
+    CtNamed(name, _) => name == type_name,
+    CtFn(_, ret, _) => type_returns_name(ret, type_name),
+    CtForAll(_, _, body) => type_returns_name(body, type_name),
+    _ => false
+  }
+}
+
+fn bind_enum_constructor_companions(acc: TypeEnv, dep_bindings: Array[(String, Type)], enum_name: String) -> TypeEnv {
+  let mut out = acc
+  let mut i = 0
+  while i < Array::length(dep_bindings) {
+    let (candidate_name, candidate_ty) = Array::get(dep_bindings, i)
+    if candidate_name != enum_name && starts_with_upper(candidate_name) && type_returns_name(candidate_ty, enum_name) {
+      out = env_bind(out, candidate_name, candidate_ty)
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn bind_import_names_from_cache(acc: TypeEnv, resolved: String, names: Array[(String, Option[String])], cache: Array[(String, TypeEnv)]) -> TypeEnv {
+  let dep_env = match lookup_env_cache(cache, resolved) {
+    Some(e) => e,
+    None => EnvEmpty
+  }
+  let dep_bindings = env_flat_bindings(dep_env)
+  let nlen = Array::length(names)
+  let rec bind_names: (Int, TypeEnv) -> TypeEnv = (j, nacc) -> {
+    if j >= nlen {
+      nacc
+    } else {
+      let (name, alias) = Array::get(names, j)
+      let bound_name = match alias {
+        Some(a) => a,
+        None => name
+      }
+      let ty = match env_lookup_flat(dep_bindings, name) {
+        Some(t) => t,
+        None => CtUnknown
+      }
+      let with_name = env_bind(nacc, bound_name, ty)
+      let with_companions = match ty {
+        CtEnum(enum_name) => bind_enum_constructor_companions(with_name, dep_bindings, enum_name),
+        _ => if starts_with_upper(name) {
+          bind_enum_constructor_companions(with_name, dep_bindings, name)
+        } else {
+          with_name
+        }
+      }
+      bind_names(j + 1, with_companions)
+    }
+  }
+  bind_names(0, acc)
+}
+
+fn build_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)]) -> TypeEnv {
+  let len = Array::length(stmts)
+  let rec go: (Int, TypeEnv) -> TypeEnv = (i, acc) -> {
+    if i >= len {
+      acc
+    } else {
+      let next = match Array::get(stmts, i) {
+        SImport(raw_path, names) => {
+          let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
+          bind_import_names_from_cache(acc, resolved, names, cache)
+        },
+        SReExport(raw_path, names) => {
+          let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
+          bind_import_names_from_cache(acc, resolved, names, cache)
+        },
+        _ => acc
+      }
+      go(i + 1, next)
+    }
+  }
+  go(0, EnvEmpty)
+}
+
+fn upsert_env_cache(cache: Array[(String, TypeEnv)], path: String, env: TypeEnv) -> Array[(String, TypeEnv)] {
+  let len = Array::length(cache)
+  let b = ArrayBuilder::new()
+  let rec build: (Int) -> Array[(String, TypeEnv)] = (i) -> {
+    if i >= len {
+      ArrayBuilder::push(b, (path, env))
+      ArrayBuilder::freeze(b)
+    } else {
+      let (p, e) = Array::get(cache, i)
+      if p == path {
+        build(i + 1)
+      } else {
+        ArrayBuilder::push(b, (p, e))
+        build(i + 1)
+      }
+    }
+  }
+  build(0)
+}
+
+fn compact_string_fingerprint(source: String) -> String {
+  let mod1 = 2147483647
+  let mod2 = 2147483629
+  let step1 = 131
+  let step2 = 65599
+  let len = String::length(source)
+  let mut h1 = 17
+  let mut h2 = 29
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(source, i)
+    h1 = (h1 * step1 + c + 1) % mod1
+    h2 = (h2 * step2 + c + i + 1) % mod2
+    i = i + 1
+  }
+  String::concat(
+    __to_string(len),
+    String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2))))
+  )
+}
+
+fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> Unit with { Error, Fs } {
+  Fs::write_file(
+    persistent_type_env_cache_path(fingerprint),
+    persistent_type_env_cache_text(env)
+  )
+}
+
+fn build_fingerprint(source: String, dep_fps: Array[(String, String)]) -> String {
+  let mut acc = compact_string_fingerprint(source)
+  let mut i = 0
+  while i < Array::length(dep_fps) {
+    let dep_pair = Array::get(dep_fps, i)
+    let dep_path = dep_pair.0
+    let dep_fp = dep_pair.1
+    let next = String::concat(
+      acc,
+      String::concat("|", String::concat(dep_path, String::concat("=", dep_fp)))
+    )
+    acc = compact_string_fingerprint(next)
+    i = i + 1
+  }
+  acc
+}
+
+export fn db_typecheck_count(db: TypeDb) -> Int {
+  match unwrap_db(db) {
+    TypeDbState(rdb, _, _, _, _, _, _, _, _, _) => ripple_eval_count(rdb)
+  }
+}
+
+export fn db_parse_count(db: TypeDb) -> Int {
+  match unwrap_db(db) {
+    TypeDbState(_, _, _, _, _, _, parse_count, _, _, _) => parse_count
+  }
+}
+
+export fn db_merge_count(db: TypeDb) -> Int {
+  match unwrap_db(db) {
+    TypeDbState(_, _, _, _, _, _, _, merge_count, _, _) => merge_count
+  }
+}
+
+export fn db_module_source_count(db: TypeDb) -> Int {
+  match unwrap_db(db) {
+    TypeDbState(_, _, _, _, _, _, _, _, module_source_count, _) => module_source_count
+  }
+}
+
+export fn db_codegen_count(db: TypeDb) -> Int {
+  match unwrap_db(db) {
+    TypeDbState(_, _, _, _, _, _, _, _, _, codegen_count) => codegen_count
+  }
+}
+
+fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String) -> Array[String] {
+  let len = Array::length(stmts)
+  let rec go: (Int, Array[String]) -> Array[String] = (i, acc) -> {
+    if i >= len {
+      acc
+    } else {
+      let next = match Array::get(stmts, i) {
+        SImport(raw_path, _) => add_dep(acc, raw_path, base_dir),
+        SReExport(raw_path, _) => add_dep(acc, raw_path, base_dir),
+        _ => acc
+      }
+      go(i + 1, next)
+    }
+  }
+  go(0, empty_strings())
+}
+
+fn resolve_deps_for_source(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with { Error } {
+  match lookup_string_pair(dep_source_cache, path) {
+    Some(cached_source) =>
+      if cached_source == source {
+        match ripple_get_deps(rdb, path) {
+          Some(deps) => (deps, dep_source_cache, parse_count),
+          None => {
+            let stmts = parse_program_with_path(path, source)
+            let deps = collect_import_deps_from_stmts(stmts, dir_of_path(path))
+            (
+              deps,
+              upsert_string_pair(dep_source_cache, path, source),
+              parse_count + 1
+            )
+          }
+        }
+      } else {
+        let stmts = parse_program_with_path(path, source)
+        let deps = collect_import_deps_from_stmts(stmts, dir_of_path(path))
+        (
+          deps,
+          upsert_string_pair(dep_source_cache, path, source),
+          parse_count + 1
+        )
+      },
+    None => {
+      let stmts = parse_program_with_path(path, source)
+      let deps = collect_import_deps_from_stmts(stmts, dir_of_path(path))
+      (
+        deps,
+        upsert_string_pair(dep_source_cache, path, source),
+        parse_count + 1
+      )
+    }
+  }
+}
+
+fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with { Error, Fs } {
+  match load_persistent_dep_list(path, source) {
+    Some(deps) => (
+      deps,
+      upsert_string_pair(dep_source_cache, path, source),
+      parse_count
+    ),
+    None => {
+      let (deps, _, next_parse_count) = load_or_parse_module_header_fs(path, source, parse_count)
+      (
+        deps,
+        upsert_string_pair(dep_source_cache, path, source),
+        next_parse_count
+      )
+    }
+  }
+}
+
+fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with { Error, Fs } {
+  match lookup_string_pair(dep_source_cache, path) {
+    Some(cached_source) =>
+      if cached_source == source {
+        match ripple_get_deps(rdb, path) {
+          Some(deps) => (deps, dep_source_cache, parse_count),
+          None => load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
+        }
+      } else {
+        load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
+      },
+    None => load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
+  }
+}
+
+fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error } {
+  if contains_str(stack, path) {
+    throw(String::concat("type_db: import cycle detected at ", path))
+  } else {
+    match ripple_get_source(rdb, path) {
+      None => (String::concat("missing:", path), rdb, env_cache, dep_source_cache, parse_count),
+      Some(source) => {
+        let (deps, next_dep_source_cache, initial_parse_count) = resolve_deps_for_source(
+          rdb,
+          dep_source_cache,
+          path,
+          source,
+          parse_count
+        )
+        let dlen = Array::length(deps)
+        // Cycle-detection stack: push self before recursing, truncate back after.
+        // O(1) per frame vs. previous Array::concat(stack, [path]) which was O(depth) per frame.
+        let saved_stack_len = Array::length(stack)
+        Array::push(stack, path)
+        // Tail-recursive over `deps`, accumulating (dep_path, dep_fp)
+        // pairs into `dep_acc`. Previously each recursion did
+        // `Array::concat(dep_acc, [tuple])` — O(N) copy per step,
+        // O(N²) over the deps list. Mutating in place is safe because
+        // `dep_acc` flows linearly down the recursion (one path, no
+        // sibling branches that need the old prefix).
+        let rec resolve_nested: (Int, Array[(String, String)], RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) -> (Array[(String, String)], RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error } = (i, dep_acc, dep_db, dep_env_cache, dep_source_cache2, dep_parse_count) -> {
+          if i >= dlen {
+            (dep_acc, dep_db, dep_env_cache, dep_source_cache2, dep_parse_count)
+          } else {
+            let dep_path = Array::get(deps, i)
+            let (
+              dep_fp,
+              next_db,
+              next_env_cache,
+              next_dep_source_cache2,
+              next_parse_count
+            ) = ensure_fingerprint(
+              dep_db,
+              dep_env_cache,
+              dep_source_cache2,
+              dep_parse_count,
+              dep_path,
+              stack
+            )
+            Array::push(dep_acc, (dep_path, dep_fp))
+            resolve_nested(
+              i + 1,
+              dep_acc,
+              next_db,
+              next_env_cache,
+              next_dep_source_cache2,
+              next_parse_count
+            )
+          }
+        }
+        let resolved_nested = resolve_nested(
+          0,
+          empty_dep_fps(),
+          rdb,
+          env_cache,
+          next_dep_source_cache,
+          initial_parse_count
+        )
+        Array::truncate(stack, saved_stack_len)
+        let dep_fps = resolved_nested.0
+        let db_after_deps = resolved_nested.1
+        let env_cache_after_deps = resolved_nested.2
+        let dep_source_cache_after_deps = resolved_nested.3
+        let parse_count_after_deps = resolved_nested.4
+        let fingerprint = build_fingerprint(source, dep_fps)
+        match ripple_get_fingerprint(db_after_deps, path) {
+          Some(cached_fp) =>
+            if cached_fp == fingerprint {
+              (
+                fingerprint,
+                db_after_deps,
+                env_cache_after_deps,
+                dep_source_cache_after_deps,
+                parse_count_after_deps
+              )
+            } else {
+              let stmts = parse_program_with_path(path, source)
+              let final_parse_count = parse_count_after_deps + 1
+              let import_env = build_import_env(stmts, dir_of_path(path), env_cache_after_deps)
+              let checked_env = check_program_with_env(stmts, import_env)
+              let next_env_cache = upsert_env_cache(env_cache_after_deps, path, checked_env)
+              let next_db = ripple_record_eval(db_after_deps, path, fingerprint, deps)
+              (
+                fingerprint,
+                next_db,
+                next_env_cache,
+                dep_source_cache_after_deps,
+                final_parse_count
+              )
+            },
+          None => {
+            let stmts = parse_program_with_path(path, source)
+            let final_parse_count = parse_count_after_deps + 1
+            let import_env = build_import_env(stmts, dir_of_path(path), env_cache_after_deps)
+            let checked_env = check_program_with_env(stmts, import_env)
+            let next_env_cache = upsert_env_cache(env_cache_after_deps, path, checked_env)
+            let next_db = ripple_record_eval(db_after_deps, path, fingerprint, deps)
+            (
+              fingerprint,
+              next_db,
+              next_env_cache,
+              dep_source_cache_after_deps,
+              final_parse_count
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+export fn db_typecheck(db: TypeDb, path: String) -> TypeDb with { Error } {
+  match unwrap_db(db) {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
+      let (
+        _,
+        next_rdb,
+        next_env_cache,
+        next_dep_source_cache,
+        next_parse_count
+      ) = ensure_fingerprint(
+        rdb,
+        env_cache,
+        dep_source_cache,
+        parse_count,
+        path,
+        empty_strings()
+      )
+      wrap_db(
+        TypeDbState(
+          next_rdb,
+          next_env_cache,
+          next_dep_source_cache,
+          merged_cache,
+          module_source_cache,
+          artifact_cache,
+          next_parse_count,
+          merge_count,
+          module_source_count,
+          codegen_count
+        )
+      )
+    }
+  }
+}
+
+export fn db_typecheck_fs(db: TypeDb, path: String) -> TypeDb with { Error, Fs } {
+  match unwrap_db(db) {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
+      let (
+        _,
+        next_rdb,
+        next_env_cache,
+        next_dep_source_cache,
+        next_parse_count
+      ) = ensure_fingerprint_fs_impl(
+        rdb,
+        env_cache,
+        dep_source_cache,
+        parse_count,
+        path,
+        empty_strings()
+      )
+      wrap_db(
+        TypeDbState(
+          next_rdb,
+          next_env_cache,
+          next_dep_source_cache,
+          merged_cache,
+          module_source_cache,
+          artifact_cache,
+          next_parse_count,
+          merge_count,
+          module_source_count,
+          codegen_count
+        )
+      )
+    }
+  }
+}
+
+export fn db_program_source(db: TypeDb, path: String) -> (String, String, TypeDb) with { Error } {
+  let checked = db_typecheck(db, path)
+  match unwrap_db(checked) {
+    TypeDbState(rdb, _, _, _, _, _, _, _, _, _) =>
+      match ripple_get_source(rdb, path) {
+        None => throw(String::concat("missing:", path)),
+        Some(source) =>
+          match ripple_get_fingerprint(rdb, path) {
+            Some(fingerprint) => (source, fingerprint, checked),
+            None => (source, source, checked)
+          }
+      }
+  }
+}
+
+fn build_merge_fingerprint(sources: Array[(String, String)]) -> String {
+  let mut acc = "merged"
+  let mut i = 0
+  while i < Array::length(sources) {
+    let (_, source) = Array::get(sources, i)
+    let next = String::concat(
+      acc,
+      String::concat("|", compact_string_fingerprint(source))
+    )
+    acc = compact_string_fingerprint(next)
+    i = i + 1
+  }
+  acc
+}
+
+fn lookup_source_by_path(sources: Array[(String, String)], target_path: String) -> Option[String] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(sources) {
+    let (path, source) = Array::get(sources, i)
+    if path == target_path {
+      found = Some(source)
+      i = Array::length(sources)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
+// are the locals the export-rename plan already rewrites; the inline copy gets
+// the target file's export renames applied first.
+fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Unit with { Error } {
+  let refs = collect_import_alias_collision_refs(stmts)
+  let emitted = array_empty()
+  let base_dir = dir_of_path(current_path)
+  let mut i = 0
+  while i < Array::length(refs) {
+    let (raw_path, original, local) = Array::get(refs, i)
+    if !contains_str(emitted, local) && !contains_str(excluded_locals, local) {
+      let resolved = resolve_import_path(base_dir, raw_path)
+      match lookup_source_by_path(sources, resolved) {
+        Some(source) => {
+          let source_stmts = namespace_private_value_stmts(
+            resolved,
+            apply_export_renames_stmts(
+              parse_program_with_path(resolved, source),
+              export_plan_renames_for(plan, resolved)
+            )
+          )
+          let mut j = 0
+          let mut done = false
+          while j < Array::length(source_stmts) && !done {
+            match rewrite_imported_value_stmt_to_local(Array::get(source_stmts, j), original, local) {
+              Some(local_stmt) => {
+                Array::push(merged, local_stmt)
+                Array::push(emitted, local)
+                done = true
+              },
+              None => ()
+            }
+            j = j + 1
+          }
+        },
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+}
+
+// #716: parse every source once and expose (paths, stmts) for the export-
+// rename plan; the merge itself reuses the parsed statements.
+fn parse_merge_sources(sources: Array[(String, String)]) -> (Array[String], Array[Array[Stmt]]) with { Error } {
+  let file_paths = array_empty()
+  let file_stmts = array_empty()
+  let mut si = 0
+  while si < Array::length(sources) {
+    let (path, source) = Array::get(sources, si)
+    Array::push(file_paths, path)
+    Array::push(file_stmts, parse_program_with_path(path, source))
+    si = si + 1
+  }
+  (file_paths, file_stmts)
+}
+
+// One (sub)list of sources merged under a whole-program rename plan.
+// `collision_sources` spans the whole program so a collision-def import that
+// crosses a group boundary still resolves.
+fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, String)], file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, collision_sources: Array[(String, String)]) -> String with { Error } {
+  let merged = empty_stmt_array()
+  let source_count = Array::length(sources)
+  let mut si = 0
+  while si < source_count {
+    let path = Array::get(file_paths, si)
+    let stmts = Array::get(file_stmts, si)
+    let is_entry_source = if entry_path == "" {
+      si == source_count - 1
+    } else {
+      path == entry_path
+    }
+    let export_renamed = if is_entry_source {
+      stmts
+    } else {
+      apply_export_renames_stmts(stmts, export_plan_renames_for(plan, path))
+    }
+    let namespaced_stmts = if is_entry_source {
+      export_renamed
+    } else {
+      namespace_private_value_stmts(path, export_renamed)
+    }
+    if stmts_have_import_deep(stmts) {
+      let import_renames = collect_import_value_renames(plan, path, stmts)
+      let skipped_locals = collect_import_alias_collision_locals(stmts)
+      append_import_alias_collision_defs_from_sources(merged, path, stmts, collision_sources, plan, import_value_rename_locals(import_renames))
+      append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, import_renames)
+    } else {
+      append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
+    }
+    si = si + 1
+  }
+  print_program(merged)
+}
+
+fn build_merged_source(entry_path: String, sources: Array[(String, String)]) -> String with { Error } {
+  let (file_paths, file_stmts) = parse_merge_sources(sources)
+  let plan_entry = if entry_path == "" {
+    if Array::length(file_paths) > 0 {
+      Array::get(file_paths, Array::length(file_paths) - 1)
+    } else {
+      ""
+    }
+  } else {
+    entry_path
+  }
+  let plan = build_export_rename_plan(file_paths, file_stmts, plan_entry)
+  build_merged_source_with_plan(entry_path, sources, file_paths, file_stmts, plan, sources)
+}
+
+fn join_group_sources(group_sources: Array[String]) -> String {
+  let len = Array::length(group_sources)
+  // O(N) via StringBuilder; the recursive `String::concat(acc, ...)` was
+  // O(N²) over the source-group count.
+  let buf = StringBuilder::new()
+  let mut i = 0
+  while i < len {
+    let source = Array::get(group_sources, i)
+    if i > 0 {
+      StringBuilder::push(buf, "\n")
+    }
+    StringBuilder::push(buf, source)
+    i = i + 1
+  }
+  StringBuilder::freeze(buf)
+}
+
+export fn db_merged_source(db: TypeDb, _entry_path: String, sources: Array[(String, String)]) -> (String, String, TypeDb) with { Error } {
+  match unwrap_db(db) {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
+      let merge_fingerprint = build_merge_fingerprint(sources)
+      let merge_cache_key = "merged"
+      match lookup_source_cache(merged_cache, merge_cache_key, merge_fingerprint) {
+        Some(merged_source) => (merged_source, merge_fingerprint, db),
+        None => {
+          let merged_source = build_merged_source(_entry_path, sources)
+          let next_merged_cache = upsert_source_cache(
+            merged_cache,
+            merge_cache_key,
+            merge_fingerprint,
+            merged_source
+          )
+          (
+            merged_source,
+            merge_fingerprint,
+            wrap_db(
+              TypeDbState(
+                rdb,
+                env_cache,
+                dep_source_cache,
+                next_merged_cache,
+                module_source_cache,
+                artifact_cache,
+                parse_count,
+                merge_count + 1,
+                module_source_count,
+                codegen_count
+              )
+            )
+          )
+        }
+      }
+    }
+  }
+}
+
+export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(String, String)])]) -> (String, String, TypeDb) with { Error } {
+  match unwrap_db(db) {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
+      // Keep per-group results in side buffers, then append cache misses
+      // once. Rebuilding the full cache on every group miss is O(N^2) for
+      // the ~150-group compiler manifest.
+      let group_sources = empty_strings()
+      let mut grouped_fingerprint = "merged-groups"
+      let new_group_cache_entries = empty_string_triples()
+      let mut merge_count_acc = merge_count
+      // #716: the export-rename plan spans ALL groups (imports cross group
+      // boundaries), so every source is parsed once up front and the plan
+      // fingerprint is folded into each group's cache fingerprint — a change
+      // to the program's ambiguous-export set invalidates cached group merges
+      // even when the group's own sources are unchanged.
+      let flat_sources = array_empty()
+      let mut fgi = 0
+      while fgi < Array::length(groups) {
+        let (_, gsources) = Array::get(groups, fgi)
+        let mut fsi = 0
+        while fsi < Array::length(gsources) {
+          Array::push(flat_sources, Array::get(gsources, fsi))
+          fsi = fsi + 1
+        }
+        fgi = fgi + 1
+      }
+      let (flat_paths, flat_stmts) = parse_merge_sources(flat_sources)
+      let plan_entry = if Array::length(flat_paths) > 0 {
+        Array::get(flat_paths, Array::length(flat_paths) - 1)
+      } else {
+        ""
+      }
+      let plan = build_export_rename_plan(flat_paths, flat_stmts, plan_entry)
+      let plan_fp = compact_string_fingerprint(export_plan_fingerprint_text(plan))
+      let mut flat_idx = 0
+      let mut i = 0
+      while i < Array::length(groups) {
+        let (group_name, sources) = Array::get(groups, i)
+        let group_start = flat_idx
+        flat_idx = flat_idx + Array::length(sources)
+        let fingerprint = compact_string_fingerprint(
+          String::concat(build_merge_fingerprint(sources), String::concat("#", plan_fp))
+        )
+        let grouped_next = String::concat(
+          grouped_fingerprint,
+          String::concat("|", String::concat(group_name, String::concat("=", fingerprint)))
+        )
+        grouped_fingerprint = compact_string_fingerprint(grouped_next)
+        let cache_key = String::concat("merged-group|", group_name)
+        match lookup_source_cache(merged_cache, cache_key, fingerprint) {
+          Some(source) => {
+            Array::push(group_sources, source)
+          },
+          None =>
+            match lookup_source_cache(new_group_cache_entries, cache_key, fingerprint) {
+              Some(source) => {
+                Array::push(group_sources, source)
+              },
+              None => {
+                let group_paths = Array::slice(flat_paths, group_start, group_start + Array::length(sources))
+                let group_stmts = Array::slice(flat_stmts, group_start, group_start + Array::length(sources))
+                // #740: pass the WHOLE-merge plan entry, not "" — the empty
+                // entry made build_merged_source_with_plan treat the last
+                // file of EVERY GROUP as the entry (exports unrenamed), so
+                // group tails (ripple.vibe, desugar_trait_dict.vibe, ...)
+                // were missing their `_exp_` defs while callers referenced
+                // them.
+                let source = build_merged_source_with_plan(plan_entry, sources, group_paths, group_stmts, plan, flat_sources)
+                Array::push(new_group_cache_entries, StringTriple(cache_key, fingerprint, source))
+                merge_count_acc = merge_count_acc + 1
+                Array::push(group_sources, source)
+              }
+            }
+        }
+        i = i + 1
+      }
+      let next_merged_cache = append_source_cache_entries(merged_cache, new_group_cache_entries)
+      let next_merge_count = merge_count_acc
+      let grouped_cache_key = "merged-groups"
+      match lookup_source_cache(next_merged_cache, grouped_cache_key, grouped_fingerprint) {
+        Some(source) =>
+          (
+            source,
+            grouped_fingerprint,
+            wrap_db(
+              TypeDbState(
+                rdb,
+                env_cache,
+                dep_source_cache,
+                next_merged_cache,
+                module_source_cache,
+                artifact_cache,
+                parse_count,
+                next_merge_count,
+                module_source_count,
+                codegen_count
+              )
+            )
+          ),
+        None => {
+          let source = join_group_sources(group_sources)
+          let final_merged_cache = upsert_source_cache(
+            next_merged_cache,
+            grouped_cache_key,
+            grouped_fingerprint,
+            source
+          )
+          (
+            source,
+            grouped_fingerprint,
+            wrap_db(
+              TypeDbState(
+                rdb,
+                env_cache,
+                dep_source_cache,
+                final_merged_cache,
+                module_source_cache,
+                artifact_cache,
+                parse_count,
+                next_merge_count + 1,
+                module_source_count,
+                codegen_count
+              )
+            )
+          )
+        }
+      }
+    }
+  }
+}
+
+fn build_module_source(source: String) -> String with { Error } {
+  let stmts = parse_program(lex(source))
+  let filtered = empty_stmt_array()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    let keep = match stmt {
+      SLet(_, _, _, _, expr) => {
+        match expr {
+          EFn(_, _, _, _, _, _) => true,
+          _ => false
+        }
+      },
+      _ => false
+    }
+    if keep {
+      Array::push(filtered, stmt)
+    }
+    i = i + 1
+  }
+  print_program(filtered)
+}
+
+export fn db_module_source(db: TypeDb, fingerprint: String, source: String) -> (String, TypeDb) with { Error } {
+  match unwrap_db(db) {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
+      let module_cache_key = "module-source"
+      match lookup_source_cache(module_source_cache, module_cache_key, fingerprint) {
+        Some(module_source) => (module_source, db),
+        None => {
+          let module_source = build_module_source(source)
+          let next_module_source_cache = upsert_source_cache(
+            module_source_cache,
+            module_cache_key,
+            fingerprint,
+            module_source
+          )
+          (
+            module_source,
+            wrap_db(
+              TypeDbState(
+                rdb,
+                env_cache,
+                dep_source_cache,
+                merged_cache,
+                next_module_source_cache,
+                artifact_cache,
+                parse_count,
+                merge_count,
+                module_source_count + 1,
+                codegen_count
+              )
+            )
+          )
+        }
+      }
+    }
+  }
+}
+
+fn artifact_cache_key(kind: String, entry_name: String) -> String {
+  String::concat(kind, String::concat("|", entry_name))
+}
+
+fn bytes_to_hex_digit(n: Int) -> String {
+  if n < 10 {
+    __to_string(n)
+  } else if n == 10 {
+    "a"
+  } else if n == 11 {
+    "b"
+  } else if n == 12 {
+    "c"
+  } else if n == 13 {
+    "d"
+  } else if n == 14 {
+    "e"
+  } else {
+    "f"
+  }
+}
+
+fn nibble_from_hex_char(c: Int) -> Int with { Error } {
+  if c >= 48 && c <= 57 {
+    c - 48
+  } else if c >= 97 && c <= 102 {
+    c - 87
+  } else if c >= 65 && c <= 70 {
+    c - 55
+  } else {
+    throw("invalid hex digit")
+  }
+}
+
+fn bytes_to_hex(bytes: Bytes) -> String {
+  let len = Bytes::length(bytes)
+  let mut i = 0
+  // O(N) via StringBuilder; previously each `String::concat(out, ...)`
+  // copied the growing buffer, making this O(N²) for the N-byte module
+  // hashes this routine serialises.
+  let buf = StringBuilder::new()
+  while i < len {
+    let byte = Bytes::get(bytes, i)
+    let hi = byte / 16
+    let lo = byte % 16
+    StringBuilder::push(buf, bytes_to_hex_digit(hi))
+    StringBuilder::push(buf, bytes_to_hex_digit(lo))
+    i = i + 1
+  }
+  StringBuilder::freeze(buf)
+}
+
+fn hex_to_bytes(hex: String) -> Bytes with { Error } {
+  let len = String::length(hex)
+  if len % 2 != 0 {
+    throw("invalid hex length")
+  } else {
+    let out = Bytes::new()
+    let mut i = 0
+    while i < len {
+      let hi = nibble_from_hex_char(String::char_code_at(hex, i))
+      let lo = nibble_from_hex_char(String::char_code_at(hex, i + 1))
+      Bytes::push(out, hi * 16 + lo)
+      i = i + 2
+    }
+    out
+  }
+}
+
+export fn db_load_artifact(db: TypeDb, _path: String, kind: String, entry_name: String, fingerprint: String) -> Option[Bytes] with { Error } {
+  match unwrap_db(db) {
+    TypeDbState(_, _, _, _, _, artifact_cache, _, _, _, _) =>
+      match lookup_source_cache(artifact_cache, artifact_cache_key(kind, entry_name), fingerprint) {
+        Some(hex) => Some(hex_to_bytes(hex)),
+        None => None
+      }
+  }
+}
+
+export fn db_store_artifact(db: TypeDb, _path: String, kind: String, entry_name: String, fingerprint: String, bytes: Bytes) -> TypeDb {
+  match unwrap_db(db) {
+    TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) =>
+      wrap_db(
+        TypeDbState(
+          rdb,
+          env_cache,
+          dep_source_cache,
+          merged_cache,
+          module_source_cache,
+          upsert_source_cache(
+            artifact_cache,
+            artifact_cache_key(kind, entry_name),
+            fingerprint,
+            bytes_to_hex(bytes)
+          ),
+          parse_count,
+          merge_count,
+          module_source_count,
+          codegen_count + 1
+        )
+      )
+  }
+}

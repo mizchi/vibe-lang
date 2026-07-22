@@ -35,7 +35,7 @@ ok   foo_test.vibe  [cov fn 3/3, branch 3/4]
 `vibe run --coverage`（単一プログラムを実行しつつ計測）も同じ仕組み:
 
 ```bash
-scripts/vibe_run.sh --coverage path/to/prog.vibe [entry]
+scripts/vibe_run.sh --coverage path/to/prog.vibex [-- args...]
 ```
 
 プログラムの出力は stdout、`[vibe-cov]` サマリは stderr、JSON は
@@ -157,7 +157,7 @@ black-box corpus 単体は 68.8%。
 
 #### driver 計測（cyclic blocker を迂回した直接呼び出し）
 
-flat module source（`cli_adapter_module_source.vibe` = コンパイラ全体を
+flat module source（`_cli_adapter_module_source.vibe` = コンパイラ全体を
 import 無しで 1 ファイルに inline したもの）は循環 re-export を持たない。ここへ
 `scripts/coverage/cov_driver.vibe` を append し、entry `cov_driver_main` で
 compile+run すると、コンパイラの型/trait/env 関数を**直接** edge-case 入力で
@@ -197,7 +197,7 @@ in-scope）を直接叩ける。型/trait/env に加え以下も edge-case 入�
 の循環 re-export で FS-compile 不能）を、**循環 re-export を直さずに**回避した。
 
 鍵は **no-DCE merged source** (`_build/coverage/merged_nodce.vibe`)。flat module
-source (`cli_adapter_module_source.vibe`) は `build_module_source_from_source`
+source (`_cli_adapter_module_source.vibe`) は `build_module_source_from_source`
 が entry `cli_main` から DCE するため、テストだけが使う ~530 関数が欠落していた。
 代わりに `build_exact_adapter_merged_source` 相当の **DCE 前 merged source**
 （manifest 全ファイルを import 除去で連結 = 全 top-level 関数が in-scope、しかも

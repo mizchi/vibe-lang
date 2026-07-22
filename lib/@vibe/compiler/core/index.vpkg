@@ -1,0 +1,218 @@
+version 0.0.1
+
+// @vibe/compiler/core — ADR-0070 / #897 compiler-internal contract. This is
+// the LAST plain directory under lib/@vibe/compiler/ and the highest-risk
+// one: it owns the central type-system enums (`Type`/`TypeDef`/`TypeEnv`/
+// `Subst`, types.vibe) and re-exports the surface-syntax AST enums
+// (`Expr`/`Pat`/`Stmt`/`TypeExpr`) from the external @vibe/ast contract
+// package. All eight enums are pattern-matched and constructed EVERYWHERE
+// across the compiler (checker, codegen, normalize, perceus, every other
+// already-migrated package), so this header documents the type-declaration
+// reasoning in more depth than usual.
+//
+// Directory-shared-scope package (7 impl files + the facade): ast.vibe
+// (cross-package re-export shim, see below), bytebuf.vibe (wasm
+// bytecode-buffer / leb128 helpers), dce.vibe (dead-code elimination over
+// Stmt), polyfill.vibe (__to_string), sorted_index.vibe (sorted-name-table
+// binary search helpers), import_alias_rewrite.vibe (import-alias rewriting
+// + the whole-program export-rename plan), types.vibe (the type-system
+// core: unification, generalization, trait resolution, ...).
+//
+// -- Two-tier type-declaration strategy --
+//
+// (1) Expr/Pat/Stmt/TypeExpr: ast.vibe re-exports these from the EXTERNAL
+// @vibe/ast package (`export ../../../../lib/@vibe/ast { Expr, Pat, Stmt,
+// TypeExpr }`, rewritten from a bare `import {...}` + `export {...}`
+// two-step that does NOT satisfy check_contract as an implementation --
+// only a real local `export fn`/`export type` body or an SReExport counts).
+// They are declared BODYLESS here (`type Expr`, not a transparent copy of
+// @vibe/ast/index.vpkg's full enum bodies), mirroring syntax/index.vpkg's
+// identical `type Token` declaration for its own cross-package re-export of
+// @vibe/parser's Token. check_contract trusts a re-exported name at face
+// value (no body/arity comparison at all, see check_contract's `reexported`
+// handling in contract/contract.vibe) -- @vibe/ast/index.vpkg is what
+// actually pins Expr/Pat/Stmt/TypeExpr's shape, this contract only needs to
+// vouch that core/ makes the name available.
+//
+// (2) Type/TypeDef/TypeEnv/Subst: these are core/'s OWN definitions (real
+// `export enum` bodies in types.vibe, not a re-export), yet they are ALSO
+// declared BODYLESS here (`type Type`, not transparent), NOT full enum
+// bodies. This looks counterintuitive for a type this heavily pattern
+// -matched, but it is the established, triple-precedented pattern for
+// exactly this shape ("transparent enum with a REAL body already living in
+// a sibling impl file"):
+//   - @vibe/parser/index.vpkg's `type Token`: "a transparent contract
+//     definition would hit the impl-before-facade check order, #752 rule"
+//   - checker/index.vpkg's `type EffectError`: bodyless despite
+//     checker_effects.vibe constructing/matching it constantly
+//   - perceus/index.vpkg's `opaque type PerceusActionKind`: "enum VARIANTS
+//     do not resolve across units from a facade-only definition (@vibe/json
+//     precedent -- 'unknown name: JNull')... consumers keep full variant
+//     visibility through the same #716 re-export machinery as before"
+// A FULL transparent body is only correct when the contract IS the sole
+// source of the definition (@vibe/ast/index.vpkg's own Pat/Expr/Stmt/
+// TypeExpr: their impl file, ast.vibe, is an empty stub). Since types.vibe
+// independently carries the real `export enum Type { ... }` etc. bodies,
+// putting the same bodies here too would duplicate the definition through
+// the generated facade (the impl-before-facade hazard above) rather than
+// widen or change the surface. Bodyless declarations here do not narrow
+// what downstream consumers can do: check_contract/collect_impl_type_defs
+// still validates arity (0 for all four) against types.vibe's real defs,
+// and actual pattern-matching/construction resolves through the ordinary
+// dependency closure to types.vibe's real bodies -- proven by contract.vibe
+// itself already pattern-matching @vibe/parser's Token (also bodyless in
+// its origin contract) today.
+//
+// ExportRenamePlan (import_alias_rewrite.vibe) is declared fully `opaque`
+// (not even bodyless-transparent): no external caller accesses its fields
+// via dot-notation, every consumer goes through the accessor fns
+// (export_plan_renames_for, export_plan_rename_count,
+// export_plan_fingerprint_text, collect_import_value_renames), so the
+// struct's field layout is not part of the public surface (@vibe/compiler/
+// perceus's `PCtx`-not-declared caution: do not widen the surface beyond
+// what was already reachable through the old plain index.vibe facade).
+//
+// Naming: no collision on the established `git mv index.vibe <dirname>.vibe`
+// convention -- core/core.vibe did not exist, so the old facade moved
+// verbatim to core.vibe (its own re-export blocks, including the pre-#897
+// `export ./ast.vibe { Expr, Pat, Stmt, TypeExpr }` line, are left
+// untouched and are no longer load-bearing for outside importers now that
+// this contract's generated facade is the source of truth -- same
+// non-load-bearing-old-facade shape as checker_facade.vibe). ast.vibe is
+// listed BEFORE core.vibe below so ast.vibe's own re-export claims
+// Expr/Pat/Stmt/TypeExpr first in facade generation; core.vibe's
+// already-redundant re-export of the same names is simply skipped (already
+// allocated), exactly like checker_facade.vibe's redundant re-export block.
+//
+// No import cycle: core/'s only compiler-internal dependency (beyond its
+// own siblings) is ../module_graph_path.vibe (a top-level compiler file,
+// imported by import_alias_rewrite.vibe), which itself only imports the
+// external @vibe/core package -- it does not import core/ back.
+
+// --- ast (cross-package re-export from @vibe/ast, see header)
+type Expr
+type Pat
+type Stmt
+type TypeExpr
+
+// --- types (core/'s own type-system enums, see header)
+type Type
+type TypeDef
+type TypeEnv
+type Subst
+
+// --- core (facade)
+
+// --- polyfill
+fn __to_string(n: Int) -> String
+
+// --- bytebuf
+fn bytebuf_new() -> Bytes
+fn bytebuf_push(buf: Bytes, byte: Int) -> Unit
+fn bytebuf_push2(buf: Bytes, b1: Int, b2: Int) -> Unit
+fn bytebuf_push3(buf: Bytes, b1: Int, b2: Int, b3: Int) -> Unit
+fn bytebuf_push9(buf: Bytes, b1: Int, b2: Int, b3: Int, b4: Int, b5: Int, b6: Int, b7: Int, b8: Int, b9: Int) -> Unit
+fn bytebuf_length(buf: Bytes) -> Int
+fn bytebuf_push_buf(dst: Bytes, src: Bytes) -> Unit
+fn bytebuf_to_bytes(buf: Bytes) -> Bytes
+fn leb128_encode_s32(buf: Bytes, value: Int) -> Unit
+fn leb128_encode_s64(buf: Bytes, value: Int) -> Unit
+fn leb128_encode_u32(buf: Bytes, value: Int) -> Unit
+fn bytebuf_push_string(buf: Bytes, s: String) -> Unit
+fn bytebuf_push_section(out: Bytes, section_id: Int, content: Bytes) -> Unit
+fn bytebuf_push_opcode_s64(buf: Bytes, opcode: Int, value: Int) -> Unit
+fn bytebuf_push_opcode_u32(buf: Bytes, opcode: Int, value: Int) -> Unit
+fn bytebuf_push_vec_header(buf: Bytes, count: Int) -> Unit
+fn bytebuf_push_opcode_u32_u32(buf: Bytes, opcode: Int, a: Int, b: Int) -> Unit
+
+// --- dce
+fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stmt]
+fn dce_keep_flags(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Bool]
+
+// --- types
+fn env_bind(env: TypeEnv, name: String, ty: Type) -> TypeEnv
+fn env_cache(env: TypeEnv) -> TypeEnv
+fn fresh_var(c: Int) -> (Type, Int)
+fn occurs_in(id: Int, ty: Type) -> Bool
+fn env_lookup(env: TypeEnv, name: String) -> Option[Type]
+fn env_bind_all(env: TypeEnv, bindings: Array[(String, Type)]) -> TypeEnv
+fn find_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDef]
+fn subst_lookup(s: Subst, id: Int) -> Option[Type]
+fn trait_supers(env: TypeEnv, name: String) -> Array[String]
+fn trait_method_sig(env: TypeEnv, trait_name: String, method_name: String) -> Option[(Array[TypeExpr], TypeExpr)]
+fn type_name_has_iterator_impl(env: TypeEnv, type_name: String) -> Bool
+fn trait_method_sig_deep(env: TypeEnv, trait_name: String, method_name: String) -> Option[(Array[TypeExpr], TypeExpr)]
+fn subst_bounds_for(s: Subst, id: Int) -> Array[String]
+fn subst_apply(s: Subst, ty: Type) -> Type
+fn trait_defined(env: TypeEnv, name: String) -> Bool
+fn type_to_string(ty: Type) -> String
+fn env_lookup_flat(bindings: Array[(String, Type)], name: String) -> Option[Type]
+fn resolve_builtin(name: String) -> Option[Type]
+fn subst_add_bound(s: Subst, id: Int, bounds: Array[String]) -> Subst
+fn instantiate(ty: Type, c: Int) -> (Type, Int, Array[(Int, Array[String])])
+fn trait_is_subtrait(env: TypeEnv, sub: String, super_name: String) -> Bool
+fn collect_tvars(ty: Type) -> Array[Int]
+fn env_flat_bindings(env: TypeEnv) -> Array[(String, Type)]
+fn types_equal(a: Type, b: Type) -> Bool
+fn unify(a: Type, b: Type, s: Subst) -> Option[Subst]
+fn types_compatible(expected: Type, actual: Type) -> Bool
+fn impls_overlap_for(env: TypeEnv, trait_name: String, new_target: Type) -> Bool
+fn collect_subst_bounds_pairs(s: Subst) -> Array[(Int, Array[String])]
+fn generalize(s: Subst, ty: Type) -> Type
+fn type_implements_trait(env: TypeEnv, s: Subst, ty: Type, trait_name: String) -> Bool
+
+// --- import_alias_rewrite
+opaque type ExportRenamePlan
+
+fn rewrite_import_alias_expr(expr: Expr, aliases: Array[(String, String)]) -> Expr
+fn collect_import_aliases(stmts: Array[Stmt]) -> Array[(String, String)]
+fn collect_import_alias_collision_refs(stmts: Array[Stmt]) -> Array[(String, String, String)]
+fn collect_import_alias_collision_locals(stmts: Array[Stmt]) -> Array[String]
+fn rewrite_import_alias_stmt(stmt: Stmt, aliases: Array[(String, String)]) -> Stmt
+fn stmts_have_import_deep(stmts: Array[Stmt]) -> Bool
+fn append_non_import_stmts_without_alias_rewrite(merged: Array[Stmt], stmts: Array[Stmt]) -> Unit
+fn append_import_alias_rewritten_non_import_stmts_skipping(merged: Array[Stmt], stmts: Array[Stmt], skipped_locals: Array[String]) -> Unit
+fn append_import_alias_rewritten_non_import_stmts(merged: Array[Stmt], stmts: Array[Stmt]) -> Unit
+fn rewrite_imported_value_stmt_to_local(stmt: Stmt, original: String, local: String) -> Option[Stmt]
+fn namespace_private_value_stmts(path: String, stmts: Array[Stmt]) -> Array[Stmt]
+fn namespace_exported_name(path: String, name: String) -> String
+fn collect_export_def_value_names(stmts: Array[Stmt]) -> Array[String]
+fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array[Stmt]], entry_path: String) -> ExportRenamePlan
+fn export_plan_rename_count(plan: ExportRenamePlan) -> Int
+fn export_plan_renames_for(plan: ExportRenamePlan, path: String) -> Array[(String, String)]
+fn export_plan_fingerprint_text(plan: ExportRenamePlan) -> String
+fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stmts: Array[Stmt]) -> Array[(String, String)]
+fn import_value_rename_locals(renames: Array[(String, String)]) -> Array[String]
+fn apply_export_renames_stmts(stmts: Array[Stmt], renames: Array[(String, String)]) -> Array[Stmt]
+fn rewrite_top_level_fn_alias_refs(stmts: Array[Stmt]) -> Unit
+fn append_import_alias_rewritten_non_import_stmts_with_renames(merged: Array[Stmt], stmts: Array[Stmt], skipped_locals: Array[String], extra_renames: Array[(String, String)]) -> Unit
+
+// --- sorted_index
+fn str_lt(a: String, b: String) -> Bool
+fn sort_perm_by_names(names: Array[String]) -> Array[Int]
+fn apply_perm_strings(names: Array[String], perm: Array[Int]) -> Array[String]
+fn sorted_names_of(names: Array[String]) -> Array[String]
+fn bsearch_leftmost(sorted: Array[String], name: String) -> Int
+
+// --- module_graph_path (relocated here from compiler/ top level, #897
+// batch; needed leaf-directly by loader/, runtime/, entry/'s FS-compile
+// files, and cache/ -- see this batch's PR description for the full
+// consumer list)
+fn is_contract_ext(path: String) -> Bool
+fn dir_of_path(file_path: String) -> String
+fn ensure_regular_source_fs(path: String) -> Unit with { Error, Fs }
+fn contains_name(items: Array[String], name: String) -> Bool
+fn contains_path(visited: Array[String], path: String) -> Bool
+fn path_set_new() -> Array[Array[String]]
+fn path_set_contains(set: Array[Array[String]], path: String) -> Bool
+fn path_set_add(set: Array[Array[String]], path: String) -> Unit
+fn normalize_path(path: String) -> String
+fn get_export_name(items: Array[(String, Option[String])], name: String) -> String
+fn path_to_module_name(path: String) -> String
+fn path_has_relative_prefix(raw_path: String, len: Int) -> Bool
+fn resolve_import_path(base_dir: String, raw_path: String) -> String
+fn parse_vibe_lib_roots(vibe_lib: String, vibe_home: String, home: String) -> Array[String]
+fn external_lib_roots() -> Array[String]
+fn vibe_env_flag(name: String) -> Bool
+fn resolution_env_seed() -> String
+fn resolve_import_path_candidates(base_dir: String, raw_path: String) -> Array[String]

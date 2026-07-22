@@ -1,0 +1,1230 @@
+//# Imports
+
+import ./core {
+  Expr,
+  Stmt
+}
+
+import ../../../lib/@vibe/core {
+  array_empty
+}
+
+import ./cache {
+  build_file_compile_wasi_artifact_fingerprint, compact_string_fingerprint, persistent_artifact_cache_path, persistent_dep_list_cache_path, persistent_leaf_fingerprint_cache_path, persistent_module_header_cache_path, persistent_type_env_cache_path
+}
+
+import ./checker {
+  check_program
+}
+
+import ./codegen {
+  compile_wasi_module
+}
+
+import ./codegen/wasi {
+  compile_wasi_module_linked_impl
+}
+
+import ./codegen/common_base {
+  empty_dbg_prov
+}
+
+import ./entry/compiler/file_compile {
+  compile_file_fs_mode_cached
+}
+
+import ./entry/compiler/fs_compile {
+  closure_merged_stmt_count, closure_ordered_source_count, closure_pruned_stmt_count, compile_with_closure_sources_wasi_unchecked_cached, compile_with_modules_cached, compile_with_modules_wasi_cached, compile_with_source_groups_via_module_source_wasi_unchecked_cached, compile_with_source_groups_wasi_unchecked_cached, grouped_source_merged_len, prepare_modules_cached, source_group_filtered_group_count, source_group_module_source_len, source_group_ordered_source_count, source_group_prepare_typecheck_count, source_group_pruned_stmt_count, source_group_total_source_count
+}
+
+import ./entry/source_compile/wasi_only {
+  compile_source_wasi_only
+}
+
+import ./entry/source_compile {
+  compile_source, compile_source_wasi
+}
+
+import ./loader {
+  collect_all_sources_fs, collect_merged_stmts, collect_source_groups_fs
+}
+
+import ./selfbuild_gate_sources_a.vibe {
+  cli_adapter_like_args_only_source, cli_adapter_like_import_checker_stmt_unused_source, cli_adapter_like_import_codegen_unused_source, cli_adapter_like_import_codegen_wasi_unused_source, cli_adapter_like_import_compile_only_source, cli_adapter_like_import_compile_unused_source, cli_adapter_like_import_loader_unused_source, cli_adapter_like_import_runtime_unused_source, cli_adapter_like_import_source_compile_unused_source, cli_adapter_like_import_syntax_lexer_unused_source, cli_adapter_like_import_syntax_parser_unused_source, cli_adapter_like_literals_source, cli_adapter_like_plain_source, cli_adapter_like_source_compile_const_source
+}
+
+import ./selfbuild_gate_sources_b.vibe {
+  cli_adapter_closure_like_import_checker_stmt_unused_source, cli_adapter_closure_like_import_codegen_wasi_unused_source, cli_adapter_closure_like_import_source_compile_wasi_only_unused_source, cli_adapter_closure_like_import_syntax_lexer_unused_source, cli_adapter_closure_like_import_syntax_parser_unused_source, cli_adapter_closure_like_plain_source, cli_adapter_closure_like_source_compile_wasi_only_const_source, cli_adapter_like_args_source, cli_adapter_like_import_source_compile_wasi_only_unused_source, cli_adapter_like_source_compile_wasi_only_const_source, prepare_import_source_compile_wasi_only_path, prepare_import_source_compile_wasi_only_source
+}
+
+import ./selfbuild_gate_sources_c.vibe {
+  prepare_import_checker_stmt_path, prepare_import_checker_stmt_source, prepare_import_cli_cache_path, prepare_import_cli_cache_source, prepare_import_codegen_path, prepare_import_codegen_source, prepare_import_compiler_path, prepare_import_compiler_source, prepare_import_file_compile_path, prepare_import_file_compile_source, prepare_import_leaf_codegen_path, prepare_import_leaf_codegen_source, prepare_import_lexer_path, prepare_import_lexer_source, prepare_import_loader_path, prepare_import_loader_source, prepare_import_parser_path, prepare_import_parser_source, prepare_import_runtime_path, prepare_import_runtime_source, prepare_import_type_db_path, prepare_import_type_db_source
+}
+
+import ./cli_adapter_bundle.vibe {
+  cli_adapter_source_groups, cli_adapter_sources
+}
+
+import ./compiler_sources_bundle.vibe {
+  compiler_source_groups, compiler_sources
+}
+
+import ./syntax {
+  lex, parse_program, parse_stmt, Token
+}
+
+import ./type_db.vibe {
+  db_codegen_count, db_grouped_merged_source, db_merge_count, db_merged_source, db_module_source_count, db_new, db_parse_count, db_program_source, db_set_source, db_typecheck, db_typecheck_count, db_typecheck_fs
+}
+
+//# Functions
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = Bytes::new()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Bytes::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  out
+}
+
+fn probe_lex_source(source: String) -> Int with { Error } {
+  Array::length(lex(source))
+}
+
+fn probe_check_source(source: String) -> Int with { Error } {
+  let stmts = parse_program(lex(source))
+  let _ = check_program(stmts)
+  1
+}
+
+fn probe_parse_source(source: String) -> Int with { Error } {
+  let stmts = parse_program(lex(source))
+  Array::length(stmts)
+}
+
+fn probe_prepare_source(main_source: String, main_path: String) -> Int with { Error } {
+  let sources = compiler_sources()
+  if Array::length(sources) == 0 {
+    throw("sources is empty (stub)")
+  }
+  let prepared = prepare_modules_cached(db_new(), main_path, main_source, sources)
+  db_typecheck_count(prepared)
+}
+
+// #768/#778: direct-call form, not `perform Fs::Exists`/`perform Fs::Remove`
+// -- matches the working sibling copies of this exact helper in
+// cache_probe_support.vibe / entry/cli_cache and every
+// tests/*_test.vibe copy, avoiding the perform/effect-op crash risk in a
+// narrow-effect-surface compiled unit.
+fn remove_file_if_exists(path: String) -> Unit with { Fs } {
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+export fn selfbuild_probe_check() -> Int with { Error } {
+  let tokens = lex("let add: (Int, Int) -> Int = (a, b) -> { a + b }")
+  let stmts = parse_program(tokens)
+  let _ = check_program(stmts)
+  1
+}
+
+fn lookup_source(sources: Array[(String, String)], path: String) -> String with { Error } {
+  let mut i = 0
+  let mut found = false
+  let mut result = ""
+  while i < Array::length(sources) && !found {
+    let (candidate_path, source) = Array::get(sources, i)
+    if candidate_path == path {
+      result = source
+      found = true
+    }
+    i = i + 1
+  }
+  if found {
+    result
+  } else {
+    throw(String::concat("source not found: ", path))
+  }
+}
+
+fn probe_parse_import_stmt(source: String) -> Int with { Error } {
+  let tokens = lex(source)
+  let (_, next) = parse_stmt(tokens, [], 0)
+  next
+}
+
+export fn selfbuild_probe_char_at() -> Int with { Error } {
+  let s = "let add: (Int, Int) -> Int = (a, b) -> { a + b }"
+  String::char_code_at(s, 10)
+}
+
+export fn selfbuild_probe_compile() -> Int with { Error } {
+  let bytes = compile_source("let add: (Int, Int) -> Int = (a, b) -> { a + b }")
+  Bytes::length(bytes)
+}
+
+export fn selfbuild_probe_deep_if() -> Int with { Error } {
+  let c = 40
+  let result = if c == 43 {
+    1
+  }
+  else if c == 45 {
+    2
+  }
+  else if c == 42 {
+    3
+  }
+  else if c == 47 {
+    4
+  }
+  else if c == 37 {
+    5
+  }
+  else if c == 61 {
+    6
+  }
+  else if c == 33 {
+    7
+  }
+  else if c == 60 {
+    8
+  }
+  else if c == 62 {
+    9
+  }
+  else if c == 38 {
+    10
+  }
+  else if c == 124 {
+    11
+  }
+  else if c == 94 {
+    12
+  }
+  else if c == 40 {
+    13
+  }
+  else if c == 41 {
+    14
+  }
+  else if c == 123 {
+    15
+  }
+  else 0
+  result
+}
+
+fn probe_compile_source_len(source: String, entry_name: String) -> Int with { Error } {
+  let bytes = compile_source_wasi_only(source, entry_name)
+  Bytes::length(bytes)
+}
+
+export fn selfbuild_probe_fn_count() -> Int with { Error } {
+  let sources = compiler_sources()
+  let merged = collect_merged_stmts(sources)
+  let mut count = 0
+  let mut i = 0
+  while i < Array::length(merged) {
+    let stmt = Array::get(merged, i)
+    match stmt {
+      SLet(_, _, _, _, expr) => match expr {
+        EFn(_, _, _, _, _, _) => {
+          count = count + 1
+        },
+        _ => ()
+      }
+      ,
+      _ => ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+fn build_type_db_fingerprint(source: String, dep_fps: Array[(String, String)]) -> String {
+  let mut acc = compact_string_fingerprint(source)
+  let mut i = 0
+  while i < Array::length(dep_fps) {
+    let (dep_path, dep_fp) = Array::get(dep_fps, i)
+    acc = compact_string_fingerprint(String::concat(acc, String::concat("|", String::concat(dep_path, String::concat("=", dep_fp)))))
+    i = i + 1
+  }
+  acc
+}
+
+fn probe_lex_source_by_path(path: String) -> Int with { Error } {
+  let sources = compiler_sources()
+  if Array::length(sources) == 0 {
+    throw("sources is empty (stub)")
+  }
+  let source = lookup_source(sources, path)
+  let tokens = lex(source)
+  Array::length(tokens)
+}
+
+export fn selfbuild_probe_token_tag() -> Int with { Error } {
+  let tokens = lex("let x = 42")
+  let first = Array::get(tokens, 0)
+  let tag = match first {
+    TLet => 1,
+    TEof => 2,
+    _ => 0
+  }
+  Array::length(tokens) * 100 + tag
+}
+
+export fn selfbuild_probe_merged_len() -> Int with { Error } {
+  let sources = compiler_sources()
+  let merged = collect_merged_stmts(sources)
+  Array::length(merged)
+}
+
+fn probe_parse_source_by_path(path: String) -> Int with { Error } {
+  let sources = compiler_sources()
+  if Array::length(sources) == 0 {
+    throw("sources is empty (stub)")
+  }
+  let source = lookup_source(sources, path)
+  let stmts = parse_program(lex(source))
+  Array::length(stmts)
+}
+
+export fn selfbuild_probe_parse_count() -> Int with { Error } {
+  let tokens = lex("let x = 42")
+  let num_tokens = Array::length(tokens)
+  let stmts = parse_program(tokens)
+  let num_stmts = Array::length(stmts)
+  num_tokens * 1000 + num_stmts
+}
+
+export fn selfbuild_probe_sources_len() -> Int with { Error } {
+  let sources = compiler_sources()
+  Array::length(sources)
+}
+
+fn find_unexpected_control_char(source: String) -> Int {
+  let len = String::length(source)
+  let mut i = 0
+  let mut result = -1
+  while i < len && result < 0 {
+    let c = String::char_code_at(source, i)
+    let allowed = c == 9 || c == 10 || c == 13 || c >= 32
+    if !allowed {
+      result = i * 1000 + c
+    }
+    i = i + 1
+  }
+  result
+}
+
+fn probe_source_control_by_path(path: String) -> Int with { Error } {
+  let sources = compiler_sources()
+  if Array::length(sources) == 0 {
+    throw("sources is empty (stub)")
+  }
+  let source = lookup_source(sources, path)
+  find_unexpected_control_char(source)
+}
+
+fn selfbuild_probe_compile_first(n: Int) -> Int with { Error } {
+  let sources = compiler_sources()
+  let first = Array::slice(sources, 0, n)
+  let merged = collect_merged_stmts(first)
+  let entry_tokens = lex("export let __probe_entry: () -> Int = () -> { 0 }")
+  let entry_stmts = parse_program(entry_tokens)
+  let mut j = 0
+  while j < Array::length(entry_stmts) {
+    Array::push(merged, Array::get(entry_stmts, j))
+    j = j + 1
+  }
+  let bytes = compile_wasi_module(merged, "__probe_entry")
+  Bytes::length(bytes)
+}
+
+fn load_cli_adapter_merged_source() -> String with { Error } {
+  let sources = cli_adapter_sources()
+  if Array::length(sources) == 0 {
+    throw("cli_adapter_sources is empty")
+  }
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let adapter_source = lookup_source(sources, adapter_path)
+  let prepared = prepare_modules_cached(db_new(), adapter_path, adapter_source, sources)
+  let (merged_source, _, _) = db_merged_source(prepared, adapter_path, sources)
+  merged_source
+}
+
+fn probe_compile_cli_adapter_like(main_source: String) -> Int with { Error } {
+  let sources = compiler_sources()
+  if Array::length(sources) == 0 {
+    throw("sources is empty (stub)")
+  }
+  let (bytes, _) = compile_with_modules_wasi_cached(db_new(), main_source, "lib/@vibe/compiler/probe_cli_adapter_like.vibe", sources, "cli_main")
+  Bytes::length(bytes)
+}
+
+export fn selfbuild_probe_compile_export() -> Int with { Error } {
+  let bytes = compile_source_wasi("export let answer: () -> Int = () -> { 40 + 2 }", "answer")
+  Bytes::length(bytes)
+}
+
+export fn selfbuild_probe_linked_compile() -> Int with { Error } {
+  let source = "let result = add(1, 2)\nresult"
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  let linked = Array::slice([
+    ("lib", "add", 2, 1)
+  ], 0, 1)
+  let no_srcs = array_empty()
+  let bytes = compile_wasi_module_linked_impl(stmts, "run", no_srcs, linked, false, false, false, false, false, false, empty_dbg_prov())
+  Bytes::length(bytes)
+}
+
+fn load_cli_adapter_program_source() -> String with { Error } {
+  let sources = cli_adapter_sources()
+  if Array::length(sources) == 0 {
+    throw("cli_adapter_sources is empty")
+  }
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let adapter_source = lookup_source(sources, adapter_path)
+  let prepared = prepare_modules_cached(db_new(), adapter_path, adapter_source, sources)
+  let (program_source, _, _) = db_program_source(prepared, adapter_path)
+  program_source
+}
+
+export fn selfbuild_probe_compile_first_5() -> Int with { Error } {
+  selfbuild_probe_compile_first(5)
+}
+
+export fn selfbuild_probe_compile_first_8() -> Int with { Error } {
+  selfbuild_probe_compile_first(8)
+}
+
+export fn selfbuild_probe_library_compile() -> Int with { Error } {
+  let source = String::concat("export let add: (Int, Int) -> Int = (a, b) -> { a + b }\n", "export let mul: (Int, Int) -> Int = (a, b) -> { a * b }")
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  let _ = check_program(stmts)
+  let no_srcs = array_empty()
+  let no_linked = array_empty()
+  let bytes = compile_wasi_module_linked_impl(stmts, "_start", no_srcs, no_linked, true, false, false, false, false, false, empty_dbg_prov())
+  Bytes::length(bytes)
+}
+
+fn probe_parse_stmt_progress_source(source: String) -> Int with { Error } {
+  let tokens = lex(source)
+  let mut pos = 0
+  let mut stmt_index = 0
+  let mut result = -1
+  let mut done = false
+  while !done {
+    if pos >= Array::length(tokens) {
+      result = stmt_index * 100000 + pos
+      done = true
+    } else {
+      match Array::get(tokens, pos) {
+        TEof => {
+          result = stmt_index * 100000 + pos
+          done = true
+        },
+        _ => handle {
+          let (_, next) = parse_stmt(tokens, [], pos)
+          pos = next
+          stmt_index = stmt_index + 1
+        } with Error {
+          Throw(_) => {
+            result = stmt_index * 100000 + pos
+            done = true
+          }
+        }
+      }
+    }
+  }
+  result
+}
+
+export fn selfbuild_probe_compile_first_10() -> Int with { Error } {
+  selfbuild_probe_compile_first(10)
+}
+
+export fn selfbuild_probe_compile_first_15() -> Int with { Error } {
+  selfbuild_probe_compile_first(15)
+}
+
+export fn selfbuild_probe_compile_first_17() -> Int with { Error } {
+  selfbuild_probe_compile_first(17)
+}
+
+export fn selfbuild_probe_compile_first_18() -> Int with { Error } {
+  selfbuild_probe_compile_first(18)
+}
+
+export fn selfbuild_probe_compile_first_19() -> Int with { Error } {
+  selfbuild_probe_compile_first(19)
+}
+
+export fn selfbuild_probe_compile_first_20() -> Int with { Error } {
+  selfbuild_probe_compile_first(20)
+}
+
+export fn selfbuild_probe_compile_first_21() -> Int with { Error } {
+  selfbuild_probe_compile_first(21)
+}
+
+export fn selfbuild_probe_compile_first_22() -> Int with { Error } {
+  selfbuild_probe_compile_first(22)
+}
+
+export fn selfbuild_probe_compile_first_23() -> Int with { Error } {
+  selfbuild_probe_compile_first(23)
+}
+
+export fn selfbuild_probe_compile_first_24() -> Int with { Error } {
+  selfbuild_probe_compile_first(24)
+}
+
+export fn selfbuild_probe_compile_first_25() -> Int with { Error } {
+  selfbuild_probe_compile_first(25)
+}
+
+export fn selfbuild_probe_compile_first_26() -> Int with { Error } {
+  selfbuild_probe_compile_first(26)
+}
+
+export fn selfbuild_probe_compile_first_27() -> Int with { Error } {
+  selfbuild_probe_compile_first(27)
+}
+
+export fn selfbuild_probe_compile_first_28() -> Int with { Error } {
+  selfbuild_probe_compile_first(28)
+}
+
+export fn selfbuild_probe_compile_first_29() -> Int with { Error } {
+  selfbuild_probe_compile_first(29)
+}
+
+fn probe_parse_sources_first_failure(sources: Array[(String, String)]) -> Int with { Error } {
+  let mut i = 0
+  let mut result = -1
+  while i < Array::length(sources) && result < 0 {
+    let (_, source) = Array::get(sources, i)
+    handle {
+      let _ = parse_program(lex(source))
+      ()
+    } with Error {
+      Throw(_) => {
+        result = i * 1000000 + probe_parse_stmt_progress_source(source)
+      }
+    }
+    i = i + 1
+  }
+  result
+}
+
+fn probe_all_source_controls() -> Int with { Error } {
+  let sources = compiler_sources()
+  if Array::length(sources) == 0 {
+    throw("sources is empty (stub)")
+  }
+  let mut i = 0
+  let mut result = -1
+  while i < Array::length(sources) && result < 0 {
+    let (_, source) = Array::get(sources, i)
+    let control = find_unexpected_control_char(source)
+    if control >= 0 {
+      result = i * 1000000 + control
+    }
+    i = i + 1
+  }
+  result
+}
+
+export fn selfbuild_probe_lex_entry_compiler() -> Int with { Error } {
+  probe_lex_source_by_path("lib/@vibe/compiler/entry/compiler/compiler.vibe")
+}
+
+export fn selfbuild_probe_source_control_all() -> Int with { Error } {
+  probe_all_source_controls()
+}
+
+export fn selfbuild_probe_prepare_cli_adapter() -> Int with { Error } {
+  let sources = compiler_sources()
+  if Array::length(sources) == 0 {
+    throw("sources is empty (stub)")
+  }
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let adapter_source = lookup_source(sources, adapter_path)
+  let prepared = prepare_modules_cached(db_new(), adapter_path, adapter_source, sources)
+  db_typecheck_count(prepared)
+}
+
+export fn selfbuild_probe_parse_entry_compiler() -> Int with { Error } {
+  probe_parse_source_by_path("lib/@vibe/compiler/entry/compiler/compiler.vibe")
+}
+
+export fn selfbuild_probe_prepare_import_lexer() -> Int with { Error } {
+  probe_prepare_source(prepare_import_lexer_source, prepare_import_lexer_path)
+}
+
+export fn selfbuild_probe_source_control_lexer() -> Int with { Error } {
+  probe_source_control_by_path("lib/@vibe/compiler/lexer.vibe")
+}
+
+export fn selfbuild_probe_type_db_cache_counts() -> Int with { Error } {
+  let main_source = "let main: () -> Int = () -> { 1 + 2 }"
+  let db1 = db_set_source(db_new(), "main.vibe", main_source)
+  let db2 = db_typecheck(db1, "main.vibe")
+  let count1 = db_typecheck_count(db2)
+  let db3 = db_typecheck(db2, "main.vibe")
+  let count2 = db_typecheck_count(db3)
+  count1 * 1000 + count2
+}
+
+export fn selfbuild_probe_type_db_merge_counts() -> Int with { Error } {
+  let sources = [
+    ("helpers.vibe", "export let add: (Int, Int) -> Int = (a, b) -> { a + b }"),
+    ("main.vibe", "import ./helpers.vibe { add }\nlet main: () -> Int = () -> { add(1, 2) }")
+  ]
+  let (_, _, db1) = db_merged_source(db_new(), "main.vibe", sources)
+  let count1 = db_merge_count(db1)
+  let (_, _, db2) = db_merged_source(db1, "main.vibe", sources)
+  let count2 = db_merge_count(db2)
+  count1 * 1000 + count2
+}
+
+export fn selfbuild_probe_type_db_parse_counts() -> Int with { Error } {
+  let helper_source = "export let add: (Int, Int) -> Int = (a, b) -> { a + b }"
+  let main_source = "import ./helpers.vibe { add }\nlet main: () -> Int = () -> { add(1, 2) }"
+  let sources = [
+    ("helpers.vibe", helper_source)
+  ]
+  let db1 = prepare_modules_cached(db_new(), "main.vibe", main_source, sources)
+  let count1 = db_parse_count(db1)
+  let db2 = prepare_modules_cached(db1, "main.vibe", main_source, sources)
+  let count2 = db_parse_count(db2)
+  count1 * 1000 + count2
+}
+
+export fn selfbuild_probe_cli_adapter_exact_len() -> Int with { Error } {
+  String::length(load_cli_adapter_merged_source())
+}
+
+export fn selfbuild_probe_prepare_import_loader() -> Int with { Error } {
+  probe_prepare_source(prepare_import_loader_source, prepare_import_loader_path)
+}
+
+export fn selfbuild_probe_prepare_import_parser() -> Int with { Error } {
+  probe_prepare_source(prepare_import_parser_source, prepare_import_parser_path)
+}
+
+export fn selfbuild_probe_source_control_parser() -> Int with { Error } {
+  probe_source_control_by_path("lib/@vibe/compiler/parser.vibe")
+}
+
+fn probe_compile_cli_adapter_closure_like(main_source: String) -> Int with { Error } {
+  let adapter_path = "lib/@vibe/compiler/probe_cli_adapter_closure_like.vibe"
+  let sources = cli_adapter_sources()
+  if Array::length(sources) == 0 {
+    throw("cli_adapter_sources is empty")
+  }
+  let (bytes, _) = compile_with_closure_sources_wasi_unchecked_cached(db_new(), main_source, adapter_path, sources, "cli_main")
+  Bytes::length(bytes)
+}
+
+export fn selfbuild_probe_cli_adapter_stmt_count() -> Int with { Error } {
+  let program_source = load_cli_adapter_program_source()
+  let stmts = parse_program(lex(program_source))
+  Array::length(stmts)
+}
+
+export fn selfbuild_probe_compile_export_let_len() -> Int with { Error } {
+  probe_compile_source_len("export let helper: () -> Int = () -> { 1 }\nlet cli_main: () -> Int = () -> { helper() }", "cli_main")
+}
+
+export fn selfbuild_probe_prepare_import_codegen() -> Int with { Error } {
+  probe_prepare_source(prepare_import_codegen_source, prepare_import_codegen_path)
+}
+
+export fn selfbuild_probe_prepare_import_runtime() -> Int with { Error } {
+  probe_prepare_source(prepare_import_runtime_source, prepare_import_runtime_path)
+}
+
+export fn selfbuild_probe_prepare_import_type_db() -> Int with { Error } {
+  probe_prepare_source(prepare_import_type_db_source, prepare_import_type_db_path)
+}
+
+export fn selfbuild_probe_type_db_codegen_counts() -> Int with { Error } {
+  let main_source = "let main: () -> Int = () -> { 1 + 2 }"
+  let sources = array_empty()
+  let (_, db1) = compile_with_modules_cached(db_new(), main_source, "main.vibe", sources)
+  let count1 = db_codegen_count(db1)
+  let (_, db2) = compile_with_modules_cached(db1, main_source, "main.vibe", sources)
+  let count2 = db_codegen_count(db2)
+  count1 * 1000 + count2
+}
+
+export fn selfbuild_probe_cli_adapter_exact_check() -> Int with { Error } {
+  probe_check_source(load_cli_adapter_merged_source())
+}
+
+export fn selfbuild_probe_cli_adapter_group_count() -> Int with { Error } {
+  Array::length(cli_adapter_source_groups())
+}
+
+export fn selfbuild_probe_cli_adapter_program_len() -> Int with { Error } {
+  let program_source = load_cli_adapter_program_source()
+  String::length(program_source)
+}
+
+export fn selfbuild_probe_compile_export_enum_len() -> Int with { Error } {
+  probe_compile_source_len("export enum Flag { On; Off }\nlet cli_main: () -> Int = () -> { 0 }", "cli_main")
+}
+
+export fn selfbuild_probe_prepare_import_compiler() -> Int with { Error } {
+  probe_prepare_source(prepare_import_compiler_source, prepare_import_compiler_path)
+}
+
+export fn selfbuild_probe_type_db_fs_parse_counts() -> Int with { Error, Fs } {
+  let token = Fs::stat_token("_build")
+  let suffix = Int::to_string(token)
+  let helper_path = String::concat("_build/persistent_type_env_probe_helper_", String::concat(suffix, ".vibe"))
+  let main_path = String::concat("_build/persistent_type_env_probe_main_", String::concat(suffix, ".vibe"))
+  let helper_source = "export let add: () -> Int = () -> { 1 }"
+  let helper_filename = String::concat("persistent_type_env_probe_helper_", String::concat(suffix, ".vibe"))
+  let main_source = String::concat("import ./", String::concat(helper_filename, " { add }\nlet run: () -> Int = () -> { add() }"))
+  Fs::write_bytes(helper_path, string_to_bytes(helper_source))
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  let db1 = db_typecheck_fs(db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source), main_path)
+  let count1 = db_parse_count(db1)
+  let db2 = db_typecheck_fs(db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source), main_path)
+  let count2 = db_parse_count(db2)
+  count1 * 1000 + count2
+}
+
+export fn selfbuild_probe_lex_entry_source_compile() -> Int with { Error } {
+  probe_lex_source_by_path("lib/@vibe/compiler/entry/source_compile/source_compile.vibe")
+}
+
+export fn selfbuild_probe_prepare_import_cli_cache() -> Int with { Error } {
+  probe_prepare_source(prepare_import_cli_cache_source, prepare_import_cli_cache_path)
+}
+
+fn probe_parse_stmt_progress_source_by_path(path: String) -> Int with { Error } {
+  let sources = compiler_sources()
+  if Array::length(sources) == 0 {
+    throw("sources is empty (stub)")
+  }
+  let source = lookup_source(sources, path)
+  let tokens = lex(source)
+  let mut pos = 0
+  let mut stmt_index = 0
+  let mut result = -1
+  let mut done = false
+  while !done {
+    if pos >= Array::length(tokens) {
+      result = stmt_index * 100000 + pos
+      done = true
+    } else {
+      match Array::get(tokens, pos) {
+        TEof => {
+          result = stmt_index * 100000 + pos
+          done = true
+        },
+        _ => handle {
+          let (_, next) = parse_stmt(tokens, [], pos)
+          pos = next
+          stmt_index = stmt_index + 1
+        } with Error {
+          Throw(_) => {
+            result = stmt_index * 100000 + pos
+            done = true
+          }
+        }
+      }
+    }
+  }
+  result
+}
+
+export fn selfbuild_probe_cli_adapter_exact_control() -> Int with { Error } {
+  find_unexpected_control_char(load_cli_adapter_merged_source())
+}
+
+export fn selfbuild_probe_stage2_grouped_merged_len() -> Int with { Error } {
+  let main_path = "lib/@vibe/compiler/compiler.vibe"
+  let sources = compiler_sources()
+  let source_groups = compiler_source_groups()
+  if Array::length(sources) == 0 {
+    throw("sources is empty (stub)")
+  }
+  let main_source = lookup_source(sources, main_path)
+  grouped_source_merged_len(db_new(), main_source, main_path, source_groups)
+}
+
+export fn selfbuild_probe_cli_adapter_merged_control() -> Int with { Error } {
+  let merged_source = load_cli_adapter_merged_source()
+  find_unexpected_control_char(merged_source)
+}
+
+export fn selfbuild_probe_cli_adapter_source_control() -> Int with { Error } {
+  let sources = cli_adapter_sources()
+  if Array::length(sources) == 0 {
+    throw("cli_adapter_sources is empty")
+  }
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let adapter_source = lookup_source(sources, adapter_path)
+  find_unexpected_control_char(adapter_source)
+}
+
+export fn selfbuild_probe_loader_manifest_list_count() -> Int with { Error, Fs } {
+  let sources = collect_all_sources_fs("lib/@vibe/compiler/compiler.vibe")
+  Array::length(sources)
+}
+
+export fn selfbuild_probe_parse_entry_source_compile() -> Int with { Error } {
+  probe_parse_source_by_path("lib/@vibe/compiler/entry/source_compile/source_compile.vibe")
+}
+
+export fn selfbuild_probe_type_db_group_merge_counts() -> Int with { Error } {
+  let groups = [
+    ("core", [
+      ("helpers.vibe", "export let add: (Int, Int) -> Int = (a, b) -> { a + b }")
+    ]),
+    ("entry", [
+      ("main.vibe", "import ./helpers.vibe { add }\nlet main: () -> Int = () -> { add(1, 2) }")
+    ])
+  ]
+  let (_, _, db1) = db_grouped_merged_source(db_new(), groups)
+  let count1 = db_merge_count(db1)
+  let (_, _, db2) = db_grouped_merged_source(db1, groups)
+  let count2 = db_merge_count(db2)
+  count1 * 1000 + count2
+}
+
+export fn selfbuild_probe_cli_adapter_exact_lex_count() -> Int with { Error } {
+  probe_lex_source(load_cli_adapter_merged_source())
+}
+
+export fn selfbuild_probe_cli_adapter_program_control() -> Int with { Error } {
+  let program_source = load_cli_adapter_program_source()
+  find_unexpected_control_char(program_source)
+}
+
+export fn selfbuild_probe_prepare_import_checker_stmt() -> Int with { Error } {
+  probe_prepare_source(prepare_import_checker_stmt_source, prepare_import_checker_stmt_path)
+}
+
+export fn selfbuild_probe_prepare_import_file_compile() -> Int with { Error } {
+  probe_prepare_source(prepare_import_file_compile_source, prepare_import_file_compile_path)
+}
+
+export fn selfbuild_probe_prepare_import_leaf_codegen() -> Int with { Error } {
+  probe_prepare_source(prepare_import_leaf_codegen_source, prepare_import_leaf_codegen_path)
+}
+
+export fn selfbuild_probe_source_control_syntax_lexer() -> Int with { Error } {
+  probe_source_control_by_path("lib/@vibe/compiler/syntax/lexer.vibe")
+}
+
+export fn selfbuild_probe_cli_adapter_exact_stmt_count() -> Int with { Error } {
+  probe_parse_source(load_cli_adapter_merged_source())
+}
+
+export fn selfbuild_probe_compile_via_compiler_wrapper() -> Int with { Error } {
+  let sources = compiler_sources()
+  if Array::length(sources) == 0 {
+    throw("sources is empty (stub)")
+  }
+  let main_source =
+  "import ./entry/source_compile { compile_source_wasi }\nlet run: () -> Int with { Error } = () -> { let _bytes = compile_source_wasi(\"let main: () -> Int = () -> { 42 }\", \"main\"); 0 }"
+  let (bytes, _) = compile_with_modules_wasi_cached(db_new(), main_source, "lib/@vibe/compiler/probe_compile_wrapper.vibe", sources, "run")
+  Bytes::length(bytes)
+}
+
+export fn selfbuild_probe_parse_import_stmt_parent_dir() -> Int with { Error } {
+  probe_parse_import_stmt("import ../syntax/lexer.vibe { lex }")
+}
+
+export fn selfbuild_probe_source_control_syntax_parser() -> Int with { Error } {
+  probe_source_control_by_path("lib/@vibe/compiler/syntax/parser.vibe")
+}
+
+export fn selfbuild_probe_type_db_module_source_counts() -> Int with { Error } {
+  let main_source = "let main: () -> Int = () -> { 1 + 2 }"
+  let sources = array_empty()
+  let (_, db1) = compile_with_modules_cached(db_new(), main_source, "main_a.vibe", sources)
+  let count1 = db_module_source_count(db1)
+  let (_, db2) = compile_with_modules_cached(db1, main_source, "main_b.vibe", sources)
+  let count2 = db_module_source_count(db2)
+  count1 * 1000 + count2
+}
+
+export fn selfbuild_probe_cli_adapter_exact_compile_len() -> Int with { Error } {
+  probe_compile_source_len(load_cli_adapter_merged_source(), "cli_main")
+}
+
+export fn selfbuild_probe_cli_adapter_module_source_len() -> Int with { Error } {
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let sources = cli_adapter_sources()
+  let source_groups = cli_adapter_source_groups()
+  let adapter_source = lookup_source(sources, adapter_path)
+  source_group_module_source_len(db_new(), adapter_source, adapter_path, source_groups)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_like_args() -> Int with { Error } {
+  probe_compile_cli_adapter_like(cli_adapter_like_args_source)
+}
+
+export fn selfbuild_probe_parse_import_stmt_current_dir() -> Int with { Error } {
+  probe_parse_import_stmt("import ./syntax/lexer.vibe { lex }")
+}
+
+export fn selfbuild_probe_source_control_entry_compiler() -> Int with { Error } {
+  probe_source_control_by_path("lib/@vibe/compiler/entry/compiler/compiler.vibe")
+}
+
+export fn selfbuild_probe_cli_adapter_group_source_count() -> Int with { Error } {
+  source_group_total_source_count(cli_adapter_source_groups())
+}
+
+export fn selfbuild_probe_cli_adapter_grouped_merged_len() -> Int with { Error } {
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let sources = cli_adapter_sources()
+  let source_groups = cli_adapter_source_groups()
+  let adapter_source = lookup_source(sources, adapter_path)
+  grouped_source_merged_len(db_new(), adapter_source, adapter_path, source_groups)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_like_plain() -> Int with { Error } {
+  probe_compile_cli_adapter_like(cli_adapter_like_plain_source)
+}
+
+export fn selfbuild_probe_loader_manifest_groups_encoded() -> Int with { Error, Fs } {
+  let groups = collect_source_groups_fs("lib/@vibe/compiler/compiler.vibe")
+  Array::length(groups) * 1000 + source_group_total_source_count(groups)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_closure_len() -> Int with { Error } {
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let sources = cli_adapter_sources()
+  if Array::length(sources) == 0 {
+    throw("cli_adapter_sources is empty")
+  }
+  let adapter_source = lookup_source(sources, adapter_path)
+  let (bytes, _) = compile_with_closure_sources_wasi_unchecked_cached(db_new(), adapter_source, adapter_path, sources, "cli_main")
+  Bytes::length(bytes)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_grouped_len() -> Int with { Error } {
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let sources = cli_adapter_sources()
+  let source_groups = cli_adapter_source_groups()
+  if Array::length(sources) == 0 {
+    throw("cli_adapter_sources is empty")
+  }
+  let adapter_source = lookup_source(sources, adapter_path)
+  let (bytes, _) = compile_with_source_groups_wasi_unchecked_cached(db_new(), adapter_source, adapter_path, source_groups, "cli_main")
+  Bytes::length(bytes)
+}
+
+export fn selfbuild_probe_cli_adapter_filtered_group_count() -> Int with { Error } {
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let sources = cli_adapter_sources()
+  let source_groups = cli_adapter_source_groups()
+  let adapter_source = lookup_source(sources, adapter_path)
+  source_group_filtered_group_count(adapter_source, adapter_path, source_groups)
+}
+
+export fn selfbuild_probe_cli_adapter_ordered_source_count() -> Int with { Error } {
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let sources = cli_adapter_sources()
+  let source_groups = cli_adapter_source_groups()
+  let adapter_source = lookup_source(sources, adapter_path)
+  source_group_ordered_source_count(adapter_source, adapter_path, source_groups)
+}
+
+export fn selfbuild_probe_cli_adapter_source_first_failure() -> Int with { Error } {
+  probe_parse_sources_first_failure(cli_adapter_sources())
+}
+
+export fn selfbuild_probe_stage2_grouped_module_source_len() -> Int with { Error } {
+  let main_path = "lib/@vibe/compiler/compiler.vibe"
+  let sources = compiler_sources()
+  let source_groups = compiler_source_groups()
+  if Array::length(sources) == 0 {
+    throw("sources is empty (stub)")
+  }
+  let main_source = lookup_source(sources, main_path)
+  source_group_module_source_len(db_new(), main_source, main_path, source_groups)
+}
+
+export fn selfbuild_probe_stage2_grouped_pruned_stmt_count() -> Int with { Error } {
+  let main_path = "lib/@vibe/compiler/compiler.vibe"
+  let sources = compiler_sources()
+  let source_groups = compiler_source_groups()
+  if Array::length(sources) == 0 {
+    throw("sources is empty (stub)")
+  }
+  let main_source = lookup_source(sources, main_path)
+  source_group_pruned_stmt_count(db_new(), main_source, main_path, source_groups, "selfbuild_entry")
+}
+
+export fn selfbuild_probe_compile_cli_adapter_like_literals() -> Int with { Error } {
+  probe_compile_cli_adapter_like(cli_adapter_like_literals_source)
+}
+
+export fn selfbuild_probe_parse_import_stmt_grandparent_dir() -> Int with { Error } {
+  probe_parse_import_stmt("import ../../syntax/lexer.vibe { lex }")
+}
+
+export fn selfbuild_probe_type_db_fs_multi_dep_parse_counts() -> Int with { Error, Fs } {
+  let helper1_path = "_build/persistent_type_env_multi_dep_helper1.vibe"
+  let helper2_path = "_build/persistent_type_env_multi_dep_helper2.vibe"
+  let main_path = "_build/persistent_type_env_multi_dep_main.vibe"
+  let helper1_source = "export let add1: () -> Int = () -> { 1 }"
+  let helper2_source = "export let add2: () -> Int = () -> { 2 }"
+  let main_source = String::concat("import ./persistent_type_env_multi_dep_helper1.vibe { add1 }\n", String::concat("import ./persistent_type_env_multi_dep_helper2.vibe { add2 }\n", "let run: () -> Int = () -> { add1() + add2() }"))
+  Fs::write_bytes(helper1_path, string_to_bytes(helper1_source))
+  Fs::write_bytes(helper2_path, string_to_bytes(helper2_source))
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  let helper1_fp = build_type_db_fingerprint(helper1_source, array_empty())
+  let helper2_fp = build_type_db_fingerprint(helper2_source, array_empty())
+  let main_fp = build_type_db_fingerprint(main_source, [
+    (helper1_path, helper1_fp),
+    (helper2_path, helper2_fp)
+  ])
+  remove_file_if_exists(persistent_dep_list_cache_path(helper1_path, compact_string_fingerprint(helper1_source)))
+  remove_file_if_exists(persistent_dep_list_cache_path(helper2_path, compact_string_fingerprint(helper2_source)))
+  remove_file_if_exists(persistent_dep_list_cache_path(main_path, compact_string_fingerprint(main_source)))
+  // #769: keep in sync with the canonical copy in cache_probe_support.vibe --
+  // this duplicate predated the module-header / leaf-fingerprint caches, so a
+  // warm cache let the first db_typecheck_fs skip parses and the probe's
+  // expected fresh-parse count (6) failed (cache_probe_type_db_fs_multi_dep_
+  // bench_test's assert trap).
+  remove_file_if_exists(persistent_module_header_cache_path(helper1_path, compact_string_fingerprint(helper1_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(helper2_path, compact_string_fingerprint(helper2_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(helper1_path, compact_string_fingerprint(helper1_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(helper2_path, compact_string_fingerprint(helper2_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(main_path, compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_type_env_cache_path(helper1_fp))
+  remove_file_if_exists(persistent_type_env_cache_path(helper2_fp))
+  remove_file_if_exists(persistent_type_env_cache_path(main_fp))
+  let db1 = db_typecheck_fs(db_set_source(db_set_source(db_set_source(db_new(), helper1_path, helper1_source), helper2_path, helper2_source), main_path, main_source), main_path)
+  let count1 = db_parse_count(db1)
+  let db2 = db_typecheck_fs(db_set_source(db_set_source(db_set_source(db_new(), helper1_path, helper1_source), helper2_path, helper2_source), main_path, main_source), main_path)
+  let count2 = db_parse_count(db2)
+  count1 * 1000 + count2
+}
+
+export fn selfbuild_probe_compile_cli_adapter_like_args_only() -> Int with { Error } {
+  probe_compile_cli_adapter_like(cli_adapter_like_args_only_source)
+}
+
+export fn selfbuild_probe_parse_stmt_progress_entry_compiler() -> Int with { Error } {
+  probe_parse_stmt_progress_source_by_path("lib/@vibe/compiler/entry/compiler/compiler.vibe")
+}
+
+export fn selfbuild_probe_cli_adapter_prepare_typecheck_count() -> Int with { Error } {
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let sources = cli_adapter_sources()
+  let source_groups = cli_adapter_source_groups()
+  let adapter_source = lookup_source(sources, adapter_path)
+  source_group_prepare_typecheck_count(db_new(), adapter_source, adapter_path, source_groups)
+}
+
+export fn selfbuild_probe_source_control_entry_source_compile() -> Int with { Error } {
+  probe_source_control_by_path("lib/@vibe/compiler/entry/source_compile/source_compile.vibe")
+}
+
+export fn selfbuild_probe_stage2_grouped_filtered_group_count() -> Int with { Error } {
+  let main_path = "lib/@vibe/compiler/compiler.vibe"
+  let sources = compiler_sources()
+  let source_groups = compiler_source_groups()
+  if Array::length(sources) == 0 {
+    throw("sources is empty (stub)")
+  }
+  let main_source = lookup_source(sources, main_path)
+  source_group_filtered_group_count(main_source, main_path, source_groups)
+}
+
+export fn selfbuild_probe_stage2_grouped_ordered_source_count() -> Int with { Error } {
+  let main_path = "lib/@vibe/compiler/compiler.vibe"
+  let sources = compiler_sources()
+  let source_groups = compiler_source_groups()
+  if Array::length(sources) == 0 {
+    throw("sources is empty (stub)")
+  }
+  let main_source = lookup_source(sources, main_path)
+  source_group_ordered_source_count(main_source, main_path, source_groups)
+}
+
+export fn selfbuild_probe_cli_adapter_closure_merged_stmt_count() -> Int with { Error } {
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let sources = cli_adapter_sources()
+  if Array::length(sources) == 0 {
+    throw("cli_adapter_sources is empty")
+  }
+  let adapter_source = lookup_source(sources, adapter_path)
+  closure_merged_stmt_count(adapter_source, adapter_path, sources)
+}
+
+export fn selfbuild_probe_cli_adapter_closure_pruned_stmt_count() -> Int with { Error } {
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let sources = cli_adapter_sources()
+  if Array::length(sources) == 0 {
+    throw("cli_adapter_sources is empty")
+  }
+  let adapter_source = lookup_source(sources, adapter_path)
+  closure_pruned_stmt_count(adapter_source, adapter_path, sources, "cli_main")
+}
+
+export fn selfbuild_probe_cli_adapter_exact_parse_stmt_progress() -> Int with { Error } {
+  probe_parse_stmt_progress_source(load_cli_adapter_merged_source())
+}
+
+export fn selfbuild_probe_cli_adapter_grouped_pruned_stmt_count() -> Int with { Error } {
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let sources = cli_adapter_sources()
+  let source_groups = cli_adapter_source_groups()
+  if Array::length(sources) == 0 {
+    throw("cli_adapter_sources is empty")
+  }
+  let adapter_source = lookup_source(sources, adapter_path)
+  source_group_pruned_stmt_count(db_new(), adapter_source, adapter_path, source_groups, "cli_main")
+}
+
+export fn selfbuild_probe_file_compile_mode_same_content_counts() -> Int with { Error, Fs } {
+  let main_path = "_build/bench/file_compile_mode_same_content_probe_main.vibe"
+  let source = "let unused: () -> Int = () -> { 0 }\nlet run: () -> Int = () -> { 40 + 2 }"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let source_groups = collect_source_groups_fs(main_path)
+  remove_file_if_exists(persistent_artifact_cache_path("file-compile-wasi", "run", build_file_compile_wasi_artifact_fingerprint(source_groups, "run", "no-dce")))
+  let (_, _) = compile_file_fs_mode_cached(db_new(), main_path, "run", "no-dce")
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let (_, db2) = compile_file_fs_mode_cached(db_new(), main_path, "run", "no-dce")
+  db_parse_count(db2) * 1000 + db_codegen_count(db2)
+}
+
+export fn selfbuild_probe_cli_adapter_merged_parse_stmt_progress() -> Int with { Error } {
+  probe_parse_stmt_progress_source(load_cli_adapter_merged_source())
+}
+
+export fn selfbuild_probe_compile_cli_adapter_closure_like_plain() -> Int with { Error } {
+  probe_compile_cli_adapter_closure_like(cli_adapter_closure_like_plain_source)
+}
+
+export fn selfbuild_probe_cli_adapter_program_parse_stmt_progress() -> Int with { Error } {
+  probe_parse_stmt_progress_source(load_cli_adapter_program_source())
+}
+
+export fn selfbuild_probe_prepare_import_source_compile_wasi_only() -> Int with { Error } {
+  probe_prepare_source(prepare_import_source_compile_wasi_only_source, prepare_import_source_compile_wasi_only_path)
+}
+
+export fn selfbuild_probe_cli_adapter_closure_ordered_source_count() -> Int with { Error } {
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let sources = cli_adapter_sources()
+  if Array::length(sources) == 0 {
+    throw("cli_adapter_sources is empty")
+  }
+  let adapter_source = lookup_source(sources, adapter_path)
+  closure_ordered_source_count(adapter_source, adapter_path, sources)
+}
+
+export fn selfbuild_probe_parse_stmt_progress_entry_source_compile() -> Int with { Error } {
+  probe_parse_stmt_progress_source_by_path("lib/@vibe/compiler/entry/source_compile/source_compile.vibe")
+}
+
+export fn selfbuild_probe_compile_cli_adapter_via_module_source_len() -> Int with { Error } {
+  let adapter_path = "lib/@vibe/compiler/cli_adapter.vibe"
+  let sources = cli_adapter_sources()
+  let source_groups = cli_adapter_source_groups()
+  if Array::length(sources) == 0 {
+    throw("cli_adapter_sources is empty")
+  }
+  let adapter_source = lookup_source(sources, adapter_path)
+  let (bytes, _) = compile_with_source_groups_via_module_source_wasi_unchecked_cached(db_new(), adapter_source, adapter_path, source_groups, "cli_main")
+  Bytes::length(bytes)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_like_import_compile_only() -> Int with { Error } {
+  probe_compile_cli_adapter_like(cli_adapter_like_import_compile_only_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_like_import_loader_unused() -> Int with { Error } {
+  probe_compile_cli_adapter_like(cli_adapter_like_import_loader_unused_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_like_source_compile_const() -> Int with { Error } {
+  probe_compile_cli_adapter_like(cli_adapter_like_source_compile_const_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_like_import_codegen_unused() -> Int with { Error } {
+  probe_compile_cli_adapter_like(cli_adapter_like_import_codegen_unused_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_like_import_compile_unused() -> Int with { Error } {
+  probe_compile_cli_adapter_like(cli_adapter_like_import_compile_unused_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_like_import_runtime_unused() -> Int with { Error } {
+  probe_compile_cli_adapter_like(cli_adapter_like_import_runtime_unused_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_like_import_checker_stmt_unused() -> Int with { Error } {
+  probe_compile_cli_adapter_like(cli_adapter_like_import_checker_stmt_unused_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_like_import_codegen_wasi_unused() -> Int with { Error } {
+  probe_compile_cli_adapter_like(cli_adapter_like_import_codegen_wasi_unused_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_like_import_syntax_lexer_unused() -> Int with { Error } {
+  probe_compile_cli_adapter_like(cli_adapter_like_import_syntax_lexer_unused_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_like_import_syntax_parser_unused() -> Int with { Error } {
+  probe_compile_cli_adapter_like(cli_adapter_like_import_syntax_parser_unused_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_like_import_source_compile_unused() -> Int with { Error } {
+  probe_compile_cli_adapter_like(cli_adapter_like_import_source_compile_unused_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_like_source_compile_wasi_only_const() -> Int with { Error } {
+  probe_compile_cli_adapter_like(cli_adapter_like_source_compile_wasi_only_const_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_closure_like_import_checker_stmt_unused() -> Int with { Error } {
+  probe_compile_cli_adapter_closure_like(cli_adapter_closure_like_import_checker_stmt_unused_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_closure_like_import_codegen_wasi_unused() -> Int with { Error } {
+  probe_compile_cli_adapter_closure_like(cli_adapter_closure_like_import_codegen_wasi_unused_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_closure_like_import_syntax_lexer_unused() -> Int with { Error } {
+  probe_compile_cli_adapter_closure_like(cli_adapter_closure_like_import_syntax_lexer_unused_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_closure_like_import_syntax_parser_unused() -> Int with { Error } {
+  probe_compile_cli_adapter_closure_like(cli_adapter_closure_like_import_syntax_parser_unused_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_closure_like_source_compile_wasi_only_const() -> Int with { Error } {
+  probe_compile_cli_adapter_closure_like(cli_adapter_closure_like_source_compile_wasi_only_const_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_like_import_source_compile_wasi_only_unused() -> Int with { Error } {
+  probe_compile_cli_adapter_like(cli_adapter_like_import_source_compile_wasi_only_unused_source)
+}
+
+export fn selfbuild_probe_compile_cli_adapter_closure_like_import_source_compile_wasi_only_unused() -> Int with { Error } {
+  probe_compile_cli_adapter_closure_like(cli_adapter_closure_like_import_source_compile_wasi_only_unused_source)
+}

@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Selfhost `vibe run` (#594): compile a .vibe entry file (resolving imports from
+# Selfhost `vibe run` (#594): compile a .vibex executable root (resolving imports from
 # the filesystem) with the committed seed compiler, then execute it via the Rust
-# runner — no MoonBit host. Output (return value / effects) goes to stdout.
+# runner — no MoonBit host. Program output is produced through declared effects.
 #
-#   bash scripts/vibe_run.sh [--coverage] path/to/prog.vibe [entry] [-- arg...]
+#   bash scripts/vibe_run.sh [--coverage] path/to/prog.vibex [-- arg...]
 #
-# `entry` is the entry function name (default: main). Paths are interpreted
-# relative to, and must live under, the repo root (the wasm preopen dir).
-# Any arguments after `entry` (or after a literal `--`) are forwarded as
+# The entry is always `main` (ADR-0075); arbitrary entry names are internal
+# compiler ABI and are not accepted here. Paths are interpreted relative to,
+# and must live under, the repo root (the wasm preopen dir).
+# Any arguments after a literal `--` are forwarded as
 # trailing argv to the compiled program, readable via `Env::args_len` /
 # `Env::args_get` (#865 -- these host builtins already worked; this wrapper
 # previously just dropped anything past `entry` on the floor).
@@ -18,10 +19,8 @@
 # `[vibe-cov]` summary to stderr and writes the JSON report to
 # _build/vibe_run/<name>.cov.json.
 #
-# Exit code: the process exits with the program's own `main` return value
-# (an Int; a Unit-returning `main` exits 0) -- #865, mirroring a normal
-# Unix program's $?/set -e contract instead of always exiting 0 regardless
-# of what the program returned.
+# Exit code: canonical `main` returns Unit and exits 0. A non-zero exit is an
+# explicit Process operation (or a runtime trap), never an implicit Int result.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -40,19 +39,23 @@ done
 set -- ${_args[@]+"${_args[@]}"}
 
 if [ "$#" -lt 1 ]; then
-  echo "usage: vibe_run.sh [--coverage] <file.vibe> [entry]" >&2
+  echo "usage: vibe_run.sh [--coverage] <file.vibex> [-- arg...]" >&2
   exit 2
 fi
 
 src="$1"
 shift
-# #865: `entry` defaults to "main"; anything after it (or after a literal
-# `--` separator, so `vibe_run.sh prog.vibe -- --dry-run` works without
-# naming an entry) is trailing argv forwarded to the compiled program.
 entry="main"
+case "$src" in
+  *.vibex) ;;
+  *) echo "vibe run requires a .vibex executable root: $src" >&2; exit 2 ;;
+esac
+# #865: arguments after the literal `--` separator are guest argv. A second
+# positional argument used to select an arbitrary entry; ADR-0075 removes that
+# user-visible ABI.
 if [ "$#" -gt 0 ] && [ "${1:-}" != "--" ]; then
-  entry="$1"
-  shift
+  echo ".vibex entry is always main; arbitrary entry names are not allowed" >&2
+  exit 2
 fi
 if [ "$#" -gt 0 ] && [ "${1:-}" = "--" ]; then
   shift
@@ -69,7 +72,7 @@ case "$src" in
 esac
 [ -f "$ROOT_DIR/$src_rel" ] || { echo "vibe_run.sh: not found: $src_rel" >&2; exit 2; }
 
-out_rel="_build/vibe_run/$(basename "${src_rel%.vibe}").wasm"
+out_rel="_build/vibe_run/$(basename "${src_rel%.vibex}").wasm"
 mkdir -p "$ROOT_DIR/_build/vibe_run"
 
 # 1. compile (FS import resolution) via the seed. VIBE_COVERAGE=$coverage selects
@@ -85,12 +88,10 @@ VIBE_COVERAGE="$coverage" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IM
 #    so a plain exec still both runs the program and reports coverage.
 cov_out=""
 if [ "$coverage" = "1" ]; then
-  cov_out="$ROOT_DIR/_build/vibe_run/$(basename "${src_rel%.vibe}").cov.json"
+  cov_out="$ROOT_DIR/_build/vibe_run/$(basename "${src_rel%.vibex}").cov.json"
 fi
-# #865: VIBE_RUNNER_EXIT_WITH_RESULT=1 makes the runner reflect the program's
-# own returned Int (a Unit-returning `main` decodes to 0) into the process
-# exit status, instead of always exiting 0 regardless of what `main`
-# returned -- restoring the normal Unix $?/set -e contract for `vibe run`.
+# Keep the runner's result-to-status bridge enabled for the canonical Unit
+# result (0); explicit Process exit and traps still determine non-zero status.
 # Trailing argv (parsed above) is appended after $out_rel, exactly where the
 # runner's own arg parser (scripts/wasm_vibe_host_runner.js::parseArgs)
 # starts collecting `passthroughArgs` once it has seen the wasm path.

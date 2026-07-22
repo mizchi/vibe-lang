@@ -1,30 +1,22 @@
 //# Imports
 
 import ../../../syntax {
-  lex, parse_program
+  lex, parse_program, parse_stmt, Token
 }
 
 import ../../../../../../lib/@vibe/core {
   array_empty
 }
-import ../../../checker/index.vibe {
+import ../../../checker {
   check_program
 }
 
-import ../../../desugar_trait_dict.vibe {
+import ../../../codegen {
   desugar_trait_dicts
 }
 
-import ../wasi_only/preprocess_interp.vibe {
-  expand_interp_stmts
-}
-
-import ../wasi_only/preprocess_strip.vibe {
-  strip_generic_type_params
-}
-
 import ../../../codegen/gc {
-  compile_wasi_module_gc
+  compile_wasi_module_gc, gc_to_string_resolves_to_show_wrapper
 }
 
 // #847 Phase C exception: this file drives the wasm-gc backend
@@ -33,17 +25,182 @@ import ../../../codegen/gc {
 // codegen/gc/backend_expr.vibe) mirroring the two #875 miscompile bugs
 // already fixed for the linear/RC backends (compile_call.vibe,
 // common_analysis/common_analysis.vibe + compile_lambda.vibe + compile_expr_tail.vibe).
-// Routing this leaf import through core/index.vibe would grow this file's
-// whole-program-merge graph the same way the fixed #875 cases did; until the
-// gc-backend capture-analysis path gets its own fix (or a dedicated
-// gc-selfbuild regression gate exists — scripts/test_gc_selfbuild.sh is not
-// part of compiler_gate.sh today), leave this a direct core/ast.vibe leaf
-// import rather than risk it.
-import ../../../core/ast.vibe {
+// Routing this leaf import through core/index.vibe (now core/'s index.vpkg,
+// #897) would grow this file's whole-program-merge graph the same way the
+// fixed #875 cases did; until the gc-backend capture-analysis path gets its
+// own fix (or a dedicated gc-selfbuild regression gate exists --
+// scripts/test_gc_selfbuild.sh is not part of compiler_gate.sh today), avoid
+// core/'s directory-shared-scope package entirely. #897: core/ast.vibe is
+// itself now only a re-export shim of @vibe/ast (`export
+// ../../../../lib/@vibe/ast { Expr, Pat, Stmt, TypeExpr }`), and importing a
+// non-facade leaf inside a `.vpkg`-owned directory from OUTSIDE that
+// directory is rejected by loader.vibe's package-boundary enforcement
+// (enforce_incoming_boundary_fs) now that core/ has an index.vpkg -- so this
+// import is redirected straight to @vibe/ast, core/ast.vibe's own real
+// source, bypassing core/ (and its boundary) altogether. Same merge-graph
+// weight as before (core/ast.vibe added no real code of its own), still
+// skips types.vibe/import_alias_rewrite.vibe/dce.vibe/... entirely.
+import ../../../../../../lib/@vibe/ast {
   Expr, Stmt
 }
 
 //# Functions
+
+// #897: gc_only/wasi_only are SIBLING packages under entry/source_compile/,
+// each with its own index.vpkg. This file used to leaf-import
+// wasi_only/preprocess_interp.vibe + preprocess_strip.vibe directly (a
+// pre-existing #729 boundary violation that predates this migration batch,
+// simply never exercised because nothing previously validated
+// lib/@vibe/compiler/'s top-level directory as a real package -- cli_adapter.vibe,
+// a member of that new package, needs compile_source_gc_only from HERE,
+// so this file's own imports are now part of that package's validation
+// closure). Routing through `import ../wasi_only { .. }` (the boundary-
+// legal fix used for wasi_only's OTHER external callers, see that
+// package's index.vpkg header) instead produces a genuine `type_db: import
+// cycle detected at lib/@vibe/compiler/index.vpkg`: compiler.vibe (a
+// sibling of cli_adapter.vibe in that same top-level package) already
+// depends on wasi_only directly, and cli_adapter.vibe -> gc_only ->
+// wasi_only is a second, simultaneous path to the same package from
+// within the same top-level package's dependency-cycle-detection stack.
+// Neither the leaf import nor the package import works from inside that
+// closure. expand_interp_stmts/strip_generic_type_params (and the small
+// interpolation-rewrite chain expand_interp_stmts needs) are pure,
+// self-contained AST-rewrite helpers with no state and no interesting
+// external dependents beyond wasi_only's own preprocess_compile.vibe/
+// preprocess.vibe, so they are inlined here as private `gc_`-prefixed
+// duplicates rather than moved to a shared ancestor package (that would
+// mean relocating wasi_only's whole ~14-file preprocess_interp_*.vibe
+// cluster, real behavior-preserving but far larger surface than this
+// PR's scope) or left broken (blocking every external consumer of the
+// new lib/@vibe/compiler/index.vpkg package, which is the whole point of
+// this migration). If wasi_only's copies change, keep these in sync by
+// hand -- same tradeoff as gc_only's other #847-Phase-C direct-dependency
+// exceptions documented on the @vibe/ast import below.
+
+fn gc_concat_exprs(lhs: Expr, rhs: Expr) -> Expr {
+  let b = ArrayBuilder::new()
+  ArrayBuilder::push(b, lhs)
+  ArrayBuilder::push(b, rhs)
+  let args = ArrayBuilder::freeze(b)
+  ECall(EIdent("String::concat", -1), args, -1)
+}
+
+fn gc_fold_interp_exprs_loop(result_arr: Array[Expr], result_len: Int, result0: Expr, j0: Int) -> Expr {
+  let mut result = result0
+  let mut j = j0
+  while j < result_len {
+    let rhs = Array::get(result_arr, j)
+    result = gc_concat_exprs(result, rhs)
+    j = j + 1
+  }
+  result
+}
+
+fn gc_fold_interp_exprs_nonempty(result_arr: Array[Expr], result_len: Int) -> Expr {
+  let first = Array::get(result_arr, 0)
+  gc_fold_interp_exprs_loop(result_arr, result_len, first, 1)
+}
+
+fn gc_fold_interp_exprs(result_arr: Array[Expr]) -> Expr {
+  let result_len = Array::length(result_arr)
+  if result_len == 0 {
+    EString("")
+  } else {
+    gc_fold_interp_exprs_nonempty(result_arr, result_len)
+  }
+}
+
+fn gc_parse_interp_expr(tokens: Array[Token]) -> Expr with { Error } {
+  let (stmt, _) = parse_stmt(tokens, [], 0)
+  match stmt {
+    SExpr(expr) => expr,
+    _ => throw("expected interpolation expression")
+  }
+}
+
+fn gc_collect_interp_exprs(parts: Array[String]) -> Array[Expr] with { Error } {
+  let plen = Array::length(parts)
+  let exprs = ArrayBuilder::new()
+  let mut i = 0
+  while i < plen {
+    let lit = Array::get(parts, i)
+    if String::length(lit) > 0 {
+      ArrayBuilder::push(exprs, EString(lit))
+    }
+    if i + 1 < plen {
+      let expr_src = Array::get(parts, i + 1)
+      let part_tokens = lex(expr_src)
+      let part_expr = gc_parse_interp_expr(part_tokens)
+      ArrayBuilder::push(exprs, ECall(EIdent("__to_string", -1), [
+        part_expr
+      ], -1))
+    }
+    i = i + 2
+  }
+  ArrayBuilder::freeze(exprs)
+}
+
+fn gc_rewrite_interp_string(parts: Array[String]) -> Expr with { Error } {
+  let result_arr = gc_collect_interp_exprs(parts)
+  gc_fold_interp_exprs(result_arr)
+}
+
+fn gc_rewrite_interp(e: Expr) -> Expr with { Error } {
+  match e {
+    EStringInterp(parts) => gc_rewrite_interp_string(parts),
+    ELet(name, val, body, soff) => ELet(name, gc_rewrite_interp(val), gc_rewrite_interp(body), soff),
+    ELetMut(name, val, body, soff) => ELetMut(name, gc_rewrite_interp(val), gc_rewrite_interp(body), soff),
+    ELetRec(name, val, body) => ELetRec(name, gc_rewrite_interp(val), gc_rewrite_interp(body)),
+    ESeq(a, b) => ESeq(gc_rewrite_interp(a), gc_rewrite_interp(b)),
+    ECall(callee, args, off) => ECall(gc_rewrite_interp(callee), for arg in args {
+      gc_rewrite_interp(arg)
+    }, off),
+    EIf(c, t, e2) => EIf(gc_rewrite_interp(c), gc_rewrite_interp(t), gc_rewrite_interp(e2)),
+    EFn(tp, tb, params, ret, eff, body) => EFn(tp, tb, params, ret, eff, gc_rewrite_interp(body)),
+    EMatch(scrut, arms) => EMatch(gc_rewrite_interp(scrut), for arm in arms {
+      let (pat, body) = arm; (pat, gc_rewrite_interp(body))
+    }),
+    _ => e
+  }
+}
+
+fn expand_interp_stmts(stmts: Array[Stmt]) -> Unit with { Error } {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exp, is_rec, name, ann, expr) => Array::set(stmts, i, SLet(exp, is_rec, name, ann, gc_rewrite_interp(expr)))
+      ,
+      STest(name, expr) => Array::set(stmts, i, STest(name, gc_rewrite_interp(expr)))
+      ,
+      SBench(name, expr) => Array::set(stmts, i, SBench(name, gc_rewrite_interp(expr)))
+      ,
+      _ => ()
+    }
+    i = i + 1
+  }
+  // Method-bearing-trait dictionary passing (#641 PR-3). No-op unless the
+  // program declares a trait with method signatures.
+  desugar_trait_dicts(stmts)
+}
+
+fn strip_generic_type_params(stmts: Array[Stmt]) -> Unit {
+  let empty_tp = array_empty()
+  let empty_bounds = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(sl_exp, sl_rec, sl_name, sl_ann, sl_expr) => match sl_expr {
+        EFn(tparams, _, params, ret, eff, body) => if Array::length(tparams) > 0 {
+          Array::set(stmts, i, SLet(sl_exp, sl_rec, sl_name, sl_ann, EFn(empty_tp, empty_bounds, params, ret, eff, body)))
+        }
+        ,
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
 
 // #683: test/bench-block lowering for the gc lane, mirroring the linear
 // backend's in-codegen rewrite (codegen/wasi/linked_compile.vibe): each
@@ -110,10 +267,18 @@ export fn compile_source_gc_only(source: String, entry_name: String) -> Bytes wi
   // rewrites inside codegen; pre-check rewriting is equivalent here).
   let effective_entry = lower_test_blocks_gc(stmts, entry_name)
   let _ = check_program(stmts)
+  // #1015: MUST run before strip_generic_type_params below -- that pass
+  // unconditionally zeroes every top-level generic fn's type_params/bounds
+  // (erasure, not specific to `to_string`), so checking the Show-bounded
+  // generic-wrapper shape after stripping would always see 0 type params
+  // and always return false, permanently disabling the gc-lane
+  // to_string(Bool) call-site fast path (codegen/gc/backend_call.vibe).
+  // See the doc comment on gc_to_string_resolves_to_show_wrapper.
+  let gc_to_string_is_wrapper = gc_to_string_resolves_to_show_wrapper(stmts)
   // Same effective order as the linear lane: strip source-level generic
   // params, then the trait-dict desugar (compile_wasi_module_linked_impl
   // runs it as its first step).
   strip_generic_type_params(stmts)
   desugar_trait_dicts(stmts)
-  compile_wasi_module_gc(stmts, effective_entry)
+  compile_wasi_module_gc(stmts, effective_entry, gc_to_string_is_wrapper)
 }

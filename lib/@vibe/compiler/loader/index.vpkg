@@ -1,0 +1,116 @@
+version 0.0.1
+
+// @vibe/compiler/loader — ADR-0070 / #897 compiler-internal contract,
+// compiler-internal batch 7. Module-graph loading: source collection off
+// disk (collect_all_sources_fs / collect_source_groups_fs /
+// collect_sources_rec), persistent list/group/manifest-header caching (the
+// resolution_context_*, load_persistent_*, store_persistent_* families),
+// contract/publish-bump plumbing (contract_package_hashes_fs,
+// fill_require_pins_fs*, publish_check_fs), package-boundary enforcement
+// (enforce_incoming_boundary_fs, validate_index_layout_fs, vpkg directory
+// scanning), plus the tab-separated build manifest reader
+// (manifest_sources.vibe) and its persistent header-scan cache
+// (header_cache.vibe). Three files, no naming collision on the established
+// `git mv index.vibe <dirname>.vibe` rename convention (unlike checker/'s
+// and codegen/'s batches), so the old index.vibe moved verbatim to
+// loader.vibe.
+//
+// loader.vibe is NOT a pure facade — like codegen/common_base's batch, it
+// carries substantial real implementation of its own (source collection,
+// caching, contract/publish helpers) in addition to importing and
+// re-exporting a chosen subset of manifest_sources.vibe's surface. Its
+// existing `export ./manifest_sources.vibe { .. }` SReExport block (added
+// under #847, see its own comment in loader.vibe) stays untouched: this
+// contract is now the actual source of truth for the package's full export
+// surface (all 34 names below, across all 3 files), so the facade's
+// partial, hand-picked re-export list is no longer load-bearing for
+// outside callers — they reach every name here through this contract
+// regardless of what loader.vibe itself re-exports, exactly like
+// checker_facade.vibe's partial list after checker/'s batch.
+//
+// join_path naming wrinkle (the specific case #847 flagged this directory
+// as a "facade-design blocker" over): loader.vibe defines its own PRIVATE,
+// same-named `join_path` helper (a deliberate duplicate, see its own #740
+// comment) — so loader.vibe can never itself
+// `export ./manifest_sources.vibe { join_path }` without colliding with
+// its own local binding, and manifest_sources.vibe's `join_path` was
+// therefore unreachable through the old plain-index.vibe facade.
+// loader_hotspot_probe.vibe worked around this with a documented direct
+// leaf import straight from `loader/manifest_sources.vibe`. A .vpkg
+// contract has no such collision: it declares bodyless signatures, not
+// executable bindings, so `join_path` below (grouped under
+// manifest_sources.vibe) declares the export cleanly. The workaround leaf
+// import is retracted by this migration — loader_hotspot_probe.vibe now
+// gets `join_path` the same way as every other manifest_sources.vibe
+// export, through this contract's `import ../loader { .. }` package form.
+//
+// No exported types: TypeEnv/Stmt/Subst/Type (../core) and Map (builtin)
+// are plain structural signature text here, not declared at all
+// (normalize/perceus/contract precedent) — ../core itself was not yet
+// migrated to vpkg at the time of this batch (out of scope then), so
+// loader.vibe / header_cache.vibe kept their existing bare `import
+// ../core/index.vibe { .. }` style references unchanged. #897 batch 9
+// migrated core/ to its own index.vpkg and, per that contract's own
+// boundary-enforcement note, converted these two literal leaf-path
+// references to the bare `import ../core { .. }` package form (manifest_sources.vibe
+// never imported this compiler-internal ../core — its `@vibe/core` import
+// is the unrelated external stdlib package).
+//
+// External-caller fixes (literal `loader/index.vibe` /
+// `loader/manifest_sources.vibe` / `loader/header_cache.vibe` paths → bare
+// `../loader` / `./loader` package form, now that leaf-file imports from
+// outside the package are rejected by enforce_incoming_boundary_fs):
+// cli_adapter.vibe, loader_hotspot_probe.vibe (also folds its join_path
+// workaround import into the package form), loader_list_materialize_bench.vibe,
+// loader_materialize_bench.vibe, tests/contract_vpkg_test.vibe,
+// tests/loader_manifest_sources_test.vibe,
+// entry/source_compile/wasi_only/merge_sources.vibe,
+// entry/compiler/file_compile/file_compile.vibe,
+// entry/compiler/fs_compile/index.vibe. No import cycle found: none of
+// loader/'s own dependencies (checker/, runtime/eval_loader/, contract/,
+// syntax/ — all already vpkg) import back into loader/.
+//
+// Compiled into the compiler itself via compiler_sources_manifest.tsv
+// (group `loader`): the old single `loader/index.vibe` row becomes a dual
+// row (this contract + loader.vibe); header_cache.vibe and
+// manifest_sources.vibe already had their own rows and are unchanged.
+
+// --- loader.vibe
+fn resolution_context_fingerprint_fs() -> String with { Error, Fs }
+fn ingest_source_text_fs(path: String, raw: String) -> String with { Error, Fs }
+fn load_persistent_source_group_fingerprint_if_valid(entry_path: String) -> Option[String] with { Error, Fs }
+fn load_or_parse_module_header_fs(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with { Error, Fs }
+fn check_module(source: String, path: String, sources: Array[(String, String)], loading: Array[String], checked_cache: Array[(String, TypeEnv)]) -> TypeEnv with { Error }
+fn contract_package_hashes_fs(path: String) -> (String, String) with { Error, Fs }
+fn fill_require_pins_fs(source: String) -> String with { Error, Fs }
+fn fill_require_pins_fs_mode(source: String, repin: Bool) -> String with { Error, Fs }
+fn publish_check_fs(prev_contract_path: String, next_contract_path: String, prev_version: String, next_version: String) -> Array[String] with { Error, Fs }
+fn collect_all_sources_fs(entry_path: String) -> Array[(String, String)] with { Error, Fs }
+fn collect_source_groups_fs(entry_path: String) -> Array[(String, Array[(String, String)])] with { Error, Fs }
+fn collect_merged_stmts(sources: Array[(String, String)]) -> Array[Stmt] with { Error }
+fn find_missing_vpkg_dirs(root: String) -> Array[String] with { Error, Fs }
+fn check_missing_vpkg_dirs(root: String) -> Int with { Error, Fs }
+
+// --- header_cache.vibe
+fn contract_sibling_impl_raws(dir: String) -> Array[String] with { Error, Fs }
+fn merge_impl_raws_dedupe(explicit: Array[String], discovered: Array[String]) -> Array[String]
+fn load_or_parse_module_header_fs_impl(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with { Error, Fs }
+
+// --- manifest_sources.vibe
+fn join_path(base_dir: String, rel_path: String) -> String
+fn build_manifest_source_index(sources: Array[(String, String)]) -> Map[String, String]
+fn build_manifest_path_index(paths: Array[String]) -> Map[String, Bool]
+fn try_load_manifest_rows(entry_path: String) -> Option[(String, Array[(String, String)])] with { Error, Fs }
+fn load_manifest_full_sources(base_dir: String, rows: Array[(String, String)]) -> Array[(String, String)] with { Error, Fs }
+fn build_grouped_sources_from_manifest_row_source_index(base_dir: String, rows: Array[(String, String)], source_index: Map[String, String]) -> Array[(String, Array[(String, String)])]
+fn build_grouped_sources_from_manifest_rows(base_dir: String, rows: Array[(String, String)], sources: Array[(String, String)]) -> Array[(String, Array[(String, String)])]
+fn filter_manifest_sources_by_path_index(preloaded_sources: Array[(String, String)], needed_path_index: Map[String, Bool]) -> Array[(String, String)]
+fn filter_manifest_sources_by_paths(preloaded_sources: Array[(String, String)], needed_paths: Array[String]) -> Array[(String, String)]
+fn filter_manifest_sources_by_paths_linear(preloaded_sources: Array[(String, String)], needed_paths: Array[String]) -> Array[(String, String)]
+fn filter_manifest_sources_by_source_index(needed_paths: Array[String], preloaded_source_index: Map[String, String]) -> Array[(String, String)]
+fn probe_manifest_header_rows_count(entry_path: String) -> Int with { Error, Fs }
+fn probe_manifest_header_rows_uncached_count(entry_path: String) -> Int with { Error, Fs }
+fn probe_manifest_needed_paths_count(entry_path: String) -> Int with { Error, Fs }
+fn probe_manifest_scan_paths_count(entry_path: String) -> Int with { Error, Fs }
+fn try_collect_manifest_sources_fs(entry_path: String) -> Option[(String, Array[(String, String)])] with { Error, Fs }
+fn try_collect_manifest_source_groups_fs(entry_path: String) -> Option[(String, Array[(String, Array[(String, String)])])] with { Error, Fs }

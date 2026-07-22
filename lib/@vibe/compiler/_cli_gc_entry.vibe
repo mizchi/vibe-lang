@@ -1,0 +1,46 @@
+//# Imports
+
+import ./syntax {
+  lex, parse_program
+}
+import ./checker { check_program }
+import ./codegen/gc { compile_wasi_module_gc, gc_to_string_resolves_to_show_wrapper }
+
+//# Functions
+
+fn read_arg(index: Int) -> String with { Env } {
+  if perform Env::ArgsLen > index {
+    perform Env::ArgsGet(index)
+  } else {
+    ""
+  }
+}
+
+fn cli_main() -> Int with { Error, Fs, Env } {
+  let input_path = read_arg(0)
+  let output_path = read_arg(1)
+  let entry_name = read_arg(2)
+  if input_path == "" {
+    1
+  }
+  else if output_path == "" {
+    1
+  }
+  else if entry_name == "" {
+    1
+  }
+  else {
+    let source = perform Fs::ReadFile(input_path)
+    let tokens = lex(source)
+    let stmts = parse_program(tokens)
+    let _ = check_program(stmts)
+    // #1015: this entry never strips generic type params, so `stmts` here
+    // is still the pre-strip shape gc_to_string_resolves_to_show_wrapper
+    // needs (see its doc comment / gc_only.vibe's call for why ORDER
+    // matters when a strip pass IS in the pipeline).
+    let gc_to_string_is_wrapper = gc_to_string_resolves_to_show_wrapper(stmts)
+    let bytes = compile_wasi_module_gc(stmts, entry_name, gc_to_string_is_wrapper)
+    Fs::write_bytes(output_path, bytes)
+    0
+  }
+}

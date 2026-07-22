@@ -4,10 +4,6 @@ import ../../core {
   Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_buf, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32, rewrite_top_level_fn_alias_refs, sorted_names_of
 }
 
-import ../../desugar_trait_dict.vibe {
-  desugar_trait_dicts
-}
-
 import ../../../../../lib/@vibe/core {
   array_empty
 }
@@ -24,21 +20,14 @@ import ../builtin_bodies {
   gen_arr_concat_body, gen_arr_get_body, gen_arr_len_body, gen_arr_new_body, gen_arr_push_all_body, gen_arr_push_body, gen_arr_set_body, gen_arr_slice_body, gen_arr_truncate_body, gen_bytes_append_body, gen_bytes_concat_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_len_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body, gen_eq_body, gen_generic_add_body, gen_generic_rel_diff_body, gen_rc_alloc_body, gen_rc_drop_body, gen_sources_proper_body, gen_sources_stub_body, gen_simd_scan_alnum_body, gen_simd_skip_ws_body, gen_str_char_code_at_body, gen_str_concat_body, gen_str_eq_body, gen_str_lex_diff_body, gen_str_from_char_code_body, gen_str_len_body, gen_str_substring_body, gen_string_contains_body, gen_string_ends_with_body, gen_string_index_of_body, gen_string_join_body, gen_string_last_index_of_body, gen_string_split_body, gen_string_starts_with_body, gen_string_trim_body, static_arr_get_body, static_arr_len_body, static_arr_set_body, static_arr_truncate_body, static_double_to_int_body, static_fs_stub_body, static_fs_write_bytes_stub_body, static_identity_body, static_int_to_double_body, static_print_i64_body, static_print_str_body, static_str_char_code_at_body, static_str_eq_body, static_str_len_body
 }
 
-import ../builtin_registry.vibe {
-  builtin_registry, verify_lane_builtins
-}
-
-import ../inline_wat.vibe {
-  compile_inline_wat
-}
-
 import ../common_analysis {
   collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, scope_tail_proj_root, stmts_contain_exceptions
 }
 
 import ../common_base {
+  desugar_trait_dicts,
   rc_shadow_reserve,
-  CompileCtx, CovState, CtorTable, DbgProv, FuncTable, LambdaTable, StrTable, agg_info_of_type_expr, compute_agg_returning, ctor_sorted_index, emit_rc_dup_guarded, empty_dbg_prov, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, fn_type_param_types, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, get_slet_type, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CovState, CtorTable, DbgProv, FuncTable, LambdaTable, StrTable, agg_info_of_type_expr, compute_agg_returning, ctor_sorted_index, emit_rc_dup_guarded, empty_dbg_prov, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, fn_type_param_types, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, get_slet_type, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local, builtin_registry, verify_lane_builtins, compile_inline_wat
 }
 
 import ../common_extractors {
@@ -176,7 +165,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // `let __m_scrut = peek(...)`, see normalize/index.vibe) is recognized the
   // same as a direct `let v = Array::get(...)` one.
   let lc_borrow_ret_names = compute_borrow_returning_names(stmts)
-  // #710: see CompileCtx.scalar_ret_names' doc comment (common_base/index.vibe).
+  // #710: see CompileCtx.scalar_ret_names' doc comment (common_base/common_base.vibe).
   let lc_scalar_ret_names = compute_scalar_returning_names(stmts)
   let fn_names_list = lc_fresh_string_array()
   let fn_param_counts = lc_fresh_int_array()
@@ -2103,9 +2092,21 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
             // let-bound floats do; without this, `a == b` on annotated float
             // params misses the f64 path and (under RC, where floats are
             // boxed) compares heap pointers — `1.5 == 1.5` came out false.
+            //
+            // #1015: Bool-typed params feed expr_is_boolish the same way
+            // (int_local_slots kind 3, #769 encoding slot*4+kind) let-bound
+            // bools do -- without this a Bool-typed param `b` passed straight
+            // to `to_string(b)` (e.g. `fn render(b: Bool) -> String {
+            // to_string(b) }`) is just a bare EIdent with no tracked slot
+            // info, so neither the call-site fast path in
+            // codegen/expr/compile_call.vibe nor `"\{b}"` interpolation can
+            // recognize it as Bool -- both fall through to the generic
+            // runtime bit-pattern heuristic and mis-render `true` as `"1"`.
             match pte {
               TyName(ptn) => if ptn == "Float" || ptn == "Double" {
                 Array::push(compile_ctx.float_local_slots, psi * 2 + 1)
+              } else if ptn == "Bool" {
+                Array::push(compile_ctx.int_local_slots, psi * 4 + 3)
               } else {
                 ()
               },

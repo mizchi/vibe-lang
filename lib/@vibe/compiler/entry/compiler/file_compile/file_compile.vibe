@@ -1,14 +1,24 @@
 //# Imports
 
-import ../../../syntax/index.vibe {
+import ../../../syntax {
   lex, lex_with_offsets, parse_program, parse_program_located
 }
 
+// #897: this used to also import `empty_stmt_array` via a leaf path into
+// ../../source_compile/wasi_only/path_utils.vibe -- now that wasi_only/ is
+// an index.vpkg boundary, that leaf import is rejected
+// (enforce_incoming_boundary_fs, #729), and `empty_stmt_array` is one of
+// wasi_only/index.vpkg's deliberately undeclared private helpers (see that
+// contract's header). Its body is a one-line forward to this same
+// `array_empty[T]()`, already imported below, so the three call sites that
+// used `empty_stmt_array()` (building an empty Array[Stmt] accumulator) now
+// call `array_empty()` directly instead -- same fix cli_support.vibe needed
+// for the same reason.
 import ../../../../../../lib/@vibe/core {
   array_empty
 }
 
-import ../../../core/index.vibe {
+import ../../../core {
   ExportRenamePlan,
   append_import_alias_rewritten_non_import_stmts_with_renames,
   append_non_import_stmts_without_alias_rewrite,
@@ -22,14 +32,15 @@ import ../../../core/index.vibe {
   namespace_private_value_stmts,
   rewrite_imported_value_stmt_to_local,
   stmts_have_import_deep,
-  dce_stmts
+  dce_stmts,
+  dir_of_path, resolve_import_path
 }
 
-import ../../../codegen/index.vibe {
+import ../../../codegen {
   compile_module, compile_wasi_module, compile_wasi_module_rc, compile_wasi_module_rc_shadow, compile_wasi_module_coverage, compile_wasi_module_trace, compile_wasi_module_break
 }
 
-import ../../../codegen/common_base/index.vibe {
+import ../../../codegen/common_base {
   DbgProv
 }
 
@@ -37,28 +48,20 @@ import ../../../codegen/wasi {
   compile_wasi_module_impl
 }
 
-import ../../../loader/index.vibe {
+import ../../../loader {
   collect_source_groups_fs, load_persistent_source_group_fingerprint_if_valid
 }
 
-import ../../../module_graph_path.vibe {
-  dir_of_path, resolve_import_path
-}
-
-import ../../../checker_effects.vibe {
+import ../../../checker {
   file_tests_cacheable
 }
 
-import ../../source_compile/wasi_only/path_utils.vibe {
-  empty_stmt_array
-}
-
-import ../../../runtime/index.vibe {
+import ../../../runtime {
   TypeDb, db_new, db_set_source, db_typecheck, db_grouped_merged_source,
   db_typecheck_fs, db_module_source, db_load_artifact, db_store_artifact
 }
 
-import ../../../cache/persistent_cache.vibe {
+import ../../../cache {
   build_file_compile_module_artifact_fingerprint_from_group_fingerprint,
   build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint,
   build_file_compile_module_artifact_fingerprint,
@@ -276,7 +279,7 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
 }
 
 fn build_merged_stmts_from_sources(entry_path: String, sources: Array[(String, String)]) -> Array[Stmt] with { Error } {
-  let merged = empty_stmt_array()
+  let merged = array_empty()
   let source_count = Array::length(sources)
   let (file_paths, file_stmts) = parse_sources_for_merge(sources)
   let plan_entry = if entry_path == "" {
@@ -304,7 +307,7 @@ fn build_merged_stmts_from_sources(entry_path: String, sources: Array[(String, S
 }
 
 fn build_grouped_merged_stmts(source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with { Error } {
-  let merged = empty_stmt_array()
+  let merged = array_empty()
   // #716: the plan spans ALL groups (imports cross group boundaries), so the
   // flat source list is parsed once here and reused per group.
   let flat_sources = flatten_source_groups_local(source_groups)
@@ -387,7 +390,7 @@ fn file_newline_offsets(src: String) -> Array[Int] {
 // contributes; the append calls themselves mirror build_merged_stmts_from_sources
 // exactly, so `merged` is identical to the normal path.
 fn build_grouped_merged_stmts_prov(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[Array[Int]], Array[Int]) with { Error } {
-  let merged = empty_stmt_array()
+  let merged = array_empty()
   let files = array_empty()
   let file_nls = array_empty()
   let stmt_file_id = array_empty()

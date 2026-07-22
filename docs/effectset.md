@@ -115,9 +115,17 @@ EffectRow    = ({OperationRef...}, optional RowVariable)
 ```
 
 `EffectDefId` は package/module identity を含む定義 ID であり、表示名の文字列では
-ない。`NormalizedEffectArguments` は `State[Int]` や `Write[router]` の型・region
-引数を保持する。別 package がそれぞれ宣言した同名の `effect State`、または同じ
-generic effect の異なる instantiation は、異なる参照として扱う。
+ない。`NormalizedEffectArguments` は `State[Int]` の型引数、`Write[router]` の
+region 引数、`S3[Posts]` の logical resource 引数を別 kind として保持する。
+resource identity は nursery/borrow region と混同しない。別 package がそれぞれ宣言した
+同名の `effect State`、または同じ generic effect の異なる instantiation は、異なる
+参照として扱う。
+
+ADR-0075 の executable contract では resource-qualified operation を authority の最小
+単位とする。したがって `S3[Posts]::get_object` と
+`S3[Uploads]::get_object` は別 `OperationRef` であり、一方の host binding/evidence で
+他方を満たせない。logical resource name、physical ARN、通常の `String` 値は別の
+identity space とする。
 
 effectset は compile-time alias であり、runtime identity、独自 handler、独自
 continuation を持たない。`perform Env::Read` や

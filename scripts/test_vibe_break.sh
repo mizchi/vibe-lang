@@ -3,8 +3,8 @@
 # helper <file>` must pause at `helper`'s entry, print the call stack (naming
 # the entering function + its callers), then CONTINUE so the program finishes:
 #   breakpoint hit: helper
-#     at helper (prog.vibe:1)
-#     at main (prog.vibe:2)
+#     at helper (prog.vibex:1)
+#     at main (prog.vibex:2)
 #   42
 #
 # How it works (opt-in, default-off so the selfhost fixpoint is unaffected):
@@ -52,19 +52,19 @@ bad() { echo "FAIL: $1" >&2; fail=$((fail+1)); }
 
 proj="$WORK/proj"; mkdir -p "$proj"
 # helper (line 1) called by main (line 2).
-cat > "$proj/prog.vibe" <<'EOF'
+cat > "$proj/prog.vibex" <<'EOF'
 export let helper = (x: Int) -> Int { x * 2 }
-export let main = () -> Int { helper(21) }
+fn main with { Stdout } { Stdout::write_stream("\{helper(21)}\n") }
 EOF
 
 # 1. Plain `vibe run` is unaffected: prints 42, emits NO breakpoint output.
-plain="$("$VIBE" run "$proj/prog.vibe" 2>&1)"
-[ "$(printf '%s' "$plain" | tr -dc '0-9')" = "42" ] && ok "plain run computes 42" || bad "plain run did not print 42 (got: $plain)"
+plain="$("$VIBE" run "$proj/prog.vibex" 2>&1)"
+[ "$(printf '%s' "$plain" | grep -o '42' | head -1)" = "42" ] && ok "plain run computes 42" || bad "plain run did not print 42 (got: $plain)"
 if printf '%s\n' "$plain" | grep -q "breakpoint hit"; then bad "plain run leaked breakpoint output"; else ok "plain run emits no breakpoint output"; fi
 
 # 2. `vibe run --break helper` pauses at helper, prints the call stack, continues.
 #    VIBE_BREAK_AUTO=1 makes the runner auto-continue without reading stdin.
-broke="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break helper "$proj/prog.vibe" 2>&1)"
+broke="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break helper "$proj/prog.vibex" 2>&1)"
 echo "----- vibe run --break helper -----"; printf '%s\n' "$broke"; echo "-----------------------------------"
 printf '%s\n' "$broke" | grep -qF "breakpoint hit: helper" && ok "breakpoint hit names helper" || bad "missing 'breakpoint hit: helper'"
 # A stack frame must mention the caller `main`.

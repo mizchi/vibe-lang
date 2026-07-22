@@ -126,7 +126,7 @@ phase bench: selfhost_{lexer,parser,checker,codegen}_bench.vibe。
 ```bash
 # a. bundle regen (compiler source を触ったら必須)
 VIBE_REGEN_MODULE_SOURCE=1 \
-  VIBE_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/cli_adapter_module_source.vibe \
+  VIBE_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
   bash scripts/generate_bundle.sh
 
 # b. stage rebuild + fixpoint (stage2 == stage3 が絶対条件)

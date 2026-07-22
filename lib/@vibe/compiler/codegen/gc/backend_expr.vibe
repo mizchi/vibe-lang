@@ -13,11 +13,11 @@ import ../common_analysis {
 }
 
 import ../common_base {
-  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, expr_tag, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, find_func_stmt, ctor_table_index_of, resolve_func, resolve_local, agg_info_of_ident, agg_log_reset_above, agg_ret_lookup, agg_slot_lookup, find_local_slot, struct_field_candidates, struct_field_dispatch_cases, struct_index_by_field_set, struct_tag_by_index
+  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, expr_tag, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, find_func_stmt, ctor_table_index_of, resolve_func, resolve_local, agg_info_of_ident, agg_log_reset_above, agg_ret_lookup, agg_slot_lookup, find_local_slot, gc_slot_log_reset_above, struct_field_candidates, struct_field_dispatch_cases, struct_index_by_field_set, struct_tag_by_index
 }
 
 import ../common_extractors {
-  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, str_table_lookup
+  array_contains_int, array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, str_table_lookup
 }
 
 import ../wasm_emit {
@@ -91,16 +91,44 @@ fn gc_expr_is_intish(e: Expr) -> Bool {
 // int->float conversions, arithmetic over a floatish operand, and let-bound
 // locals recorded in ctx.gc_float_locals count; anything else (annotated
 // Double params, tuple-destructured floats) is best-effort untracked.
-fn gc_expr_is_floatish(e: Expr, ctx: CompileCtxGc) -> Bool {
+// #1032: a bare ident resolves to its CURRENT slot (find_local_slot) before
+// checking ctx.gc_float_locals -- mirrors gc_expr_is_boolish below, so a
+// name reused with a non-float binding in a sibling scope is not
+// misclassified via its old, now-stale slot entry.
+fn gc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
   match e {
     EFloat(_) => true,
-    EIdent(fname, _) => array_contains_str(ctx.gc_float_locals, fname),
-    EBinOp(op, l, r) => (op == "+" || op == "-" || op == "*" || op == "/") && (gc_expr_is_floatish(l, ctx) || gc_expr_is_floatish(r, ctx)),
-    EUnaryOp(op, x) => op == "-" && gc_expr_is_floatish(x, ctx),
+    EIdent(fname, _) => {
+      let slot = find_local_slot(local_names, fname)
+      slot >= 0 && array_contains_int(ctx.gc_float_locals, slot)
+    },
+    EBinOp(op, l, r) => (op == "+" || op == "-" || op == "*" || op == "/") && (gc_expr_is_floatish(l, local_names, ctx) || gc_expr_is_floatish(r, local_names, ctx)),
+    EUnaryOp(op, x) => op == "-" && gc_expr_is_floatish(x, local_names, ctx),
     ECall(fcallee, _, _) => match fcallee {
       EIdent(cn, _) => cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float",
       _ => false
     },
+    _ => false
+  }
+}
+
+// #1015: gc mirror of the linear lane's expr_is_boolish -- shape-based "is
+// this statically a Bool" test. Bool literals, comparison/logical operators,
+// unary `!`, and -- via ctx.gc_bool_locals -- a bare ident CURRENTLY bound
+// (via find_local_slot) to a slot tracked as boolish. Bool and Int share the
+// same gc-lane numeric representation (no distinguishing runtime type tag),
+// so this static classification is the only way to route a Bool argument to
+// the "true"/"false" formatter instead of the generic runtime `__to_string`
+// dispatch, which cannot tell them apart.
+fn gc_expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+  match e {
+    EBool(_) => true,
+    EIdent(fname, _) => {
+      let slot = find_local_slot(local_names, fname)
+      slot >= 0 && array_contains_int(ctx.gc_bool_locals, slot)
+    },
+    EBinOp(op, _, _) => op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||",
+    EUnaryOp(op, _) => op == "!",
     _ => false
   }
 }
@@ -500,7 +528,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       emit_i64_eqz(buf)
       emit_i64_extend_i32_s(buf)
       nle
-    } else if (op == "+" || op == "-" || op == "*" || op == "/") && (gc_expr_is_floatish(lhs, ctx) || gc_expr_is_floatish(rhs, ctx)) {
+    } else if (op == "+" || op == "-" || op == "*" || op == "/") && (gc_expr_is_floatish(lhs, local_names, ctx) || gc_expr_is_floatish(rhs, local_names, ctx)) {
       // Float arithmetic: locals hold raw f64 bits in i64; reinterpret both
       // sides, run the f64 op, reinterpret back. The unconditional i64 ops
       // below compute garbage on float bits (linear routes these through
@@ -520,7 +548,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       }
       emit_i64_reinterpret_f64(buf)
       nl2
-    } else if (op == "<" || op == ">" || op == "<=" || op == ">=") && (gc_expr_is_floatish(lhs, ctx) || gc_expr_is_floatish(rhs, ctx)) {
+    } else if (op == "<" || op == ">" || op == "<=" || op == ">=") && (gc_expr_is_floatish(lhs, local_names, ctx) || gc_expr_is_floatish(rhs, local_names, ctx)) {
       // Float ordering: signed-i64 compare of raw f64 bits inverts the order
       // whenever both sides are negative (and misranks mixed signs vs -0.0),
       // so route through real f64 comparisons (mirrors the linear lane).
@@ -545,7 +573,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       emit_binop_op(buf, op)
       nl2
     },
-    EUnaryOp(op, operand) => if op == "-" && gc_expr_is_floatish(operand, ctx) {
+    EUnaryOp(op, operand) => if op == "-" && gc_expr_is_floatish(operand, local_names, ctx) {
       // `0 - bits` integer-negates the f64 bit pattern; use f64.neg instead.
       let nl = ce(buf, operand, local_names, next_local, ld)
       emit_f64_reinterpret_i64(buf)
@@ -579,7 +607,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           let cnl = emit_gc_eq_value(buf, clhs, crhs, local_names, next_local, ctx, ld, compile_expr_gc)
           emit_i64_eqz(buf)
           cnl
-        } else if (cop == "<" || cop == ">" || cop == "<=" || cop == ">=") && (gc_expr_is_floatish(clhs, ctx) || gc_expr_is_floatish(crhs, ctx)) {
+        } else if (cop == "<" || cop == ">" || cop == "<=" || cop == ">=") && (gc_expr_is_floatish(clhs, local_names, ctx) || gc_expr_is_floatish(crhs, local_names, ctx)) {
           // Same f64-vs-raw-bits ordering fix as the EBinOp float comparison
           // branch; the fast path leaves the comparison's i32 for the `if`.
           let cnl1 = ce(buf, clhs, local_names, next_local, ld)
@@ -645,10 +673,14 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       emit_else(buf)
       Array::truncate(local_names, names_len_before)
       agg_log_reset_above(ctx.gc_agg_local_slots, names_len_before)
+      gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_before)
+      gc_slot_log_reset_above(ctx.gc_float_locals, names_len_before)
       let nl_else = ce(buf, else_e, local_names, nl1, ld_inner)
       emit_end(buf)
       Array::truncate(local_names, names_len_before)
       agg_log_reset_above(ctx.gc_agg_local_slots, names_len_before)
+      gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_before)
+      gc_slot_log_reset_above(ctx.gc_float_locals, names_len_before)
       let max_nl = if nl_then > nl_else {
         nl_then
       } else {
@@ -663,8 +695,17 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
     ELet(name, value, body, _) => {
       let local_idx = next_local
       Array::push(local_names, name)
-      if gc_expr_is_floatish(value, ctx) {
-        Array::push(ctx.gc_float_locals, name)
+      if gc_expr_is_floatish(value, local_names, ctx) {
+        // #1032: logged by SLOT (local_idx), not name -- see
+        // gc_float_locals' doc comment on CompileCtxGc.
+        Array::push(ctx.gc_float_locals, local_idx)
+      } else if gc_expr_is_boolish(value, local_names, ctx) {
+        // #1015: mirrors the float branch above (and the linear ELet's
+        // kind-3 boolish log in compile_expr_tail.vibe) -- a `let`-bound
+        // boolish value lets a later `to_string(b)` / `"\{b}"` on the bare
+        // ident take the "true"/"false" formatter. Logged by SLOT (local_idx),
+        // not name -- see gc_bool_locals' doc comment on CompileCtxGc.
+        Array::push(ctx.gc_bool_locals, local_idx)
       } else {
         ()
       }
@@ -787,8 +828,14 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         let nl2 = ce(buf, body, local_names, nl, ld)
         nl2
       } else {
-        if gc_expr_is_floatish(value, ctx) {
-          Array::push(ctx.gc_float_locals, name)
+        if gc_expr_is_floatish(value, local_names, ctx) {
+          // #1032: logged by SLOT (local_idx), not name -- see
+          // gc_float_locals' doc comment on CompileCtxGc.
+          Array::push(ctx.gc_float_locals, local_idx)
+        } else if gc_expr_is_boolish(value, local_names, ctx) {
+          // #1015: logged by SLOT (local_idx), not name -- see
+          // gc_bool_locals' doc comment on CompileCtxGc.
+          Array::push(ctx.gc_bool_locals, local_idx)
         } else {
           ()
         }
@@ -983,6 +1030,8 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       let final_nl = nl4 + 1
       Array::truncate(local_names, names_len_at_forin)
       agg_log_reset_above(ctx.gc_agg_local_slots, names_len_at_forin)
+      gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_at_forin)
+      gc_slot_log_reset_above(ctx.gc_float_locals, names_len_at_forin)
       while Array::length(local_names) < final_nl {
         Array::push(local_names, "")
       }
@@ -1008,7 +1057,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           emit_i64_eqz(buf)
           emit_i32_eqz(buf)
           wnl
-        } else if (wcop == "<" || wcop == ">" || wcop == "<=" || wcop == ">=") && (gc_expr_is_floatish(wlhs, ctx) || gc_expr_is_floatish(wrhs, ctx)) {
+        } else if (wcop == "<" || wcop == ">" || wcop == "<=" || wcop == ">=") && (gc_expr_is_floatish(wlhs, local_names, ctx) || gc_expr_is_floatish(wrhs, local_names, ctx)) {
           // Same f64-vs-raw-bits ordering fix as the EBinOp/EIf float
           // comparison branches; leaves the i32 for the shared eqz below.
           let wnl1 = ce(buf, wlhs, local_names, next_local, 0)
@@ -1310,6 +1359,8 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         emit_end(buf)
         Array::truncate(local_names, names_before_h)
         agg_log_reset_above(ctx.gc_agg_local_slots, names_before_h)
+        gc_slot_log_reset_above(ctx.gc_bool_locals, names_before_h)
+        gc_slot_log_reset_above(ctx.gc_float_locals, names_before_h)
         if nl_h2 > nl_h {
           nl_h = nl_h2
         }

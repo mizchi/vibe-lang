@@ -4,8 +4,8 @@
 # the entering function's NAMED argument values (DAP P4):
 #   breakpoint hit: helper
 #     args: [x=20]
-#     at helper (prog.vibe:1)
-#     at main (prog.vibe:2)
+#     at helper (prog.vibex:1)
+#     at main (prog.vibex:2)
 #
 # How it works (opt-in, default-off so the selfhost fixpoint is unaffected):
 #   * In break mode the codegen spills each user function's i64 parameters to a
@@ -53,20 +53,20 @@ bad() { echo "FAIL: $1" >&2; fail=$((fail+1)); }
 
 proj="$WORK/proj"; mkdir -p "$proj"
 # helper (line 1) called by main (line 2). main calls helper(20) then helper(1).
-cat > "$proj/prog.vibe" <<'EOF'
+cat > "$proj/prog.vibex" <<'EOF'
 export let helper = (x: Int) -> Int { x * 2 }
-export let main = () -> Int { helper(20) + helper(1) }
+fn main with { Stdout } { Stdout::write_stream("\{helper(20) + helper(1)}\n") }
 EOF
 
 # 1. Plain `vibe run` is unaffected: prints 42 (20*2 + 1*2), no breakpoint/args.
-plain="$("$VIBE" run "$proj/prog.vibe" 2>&1)"
-[ "$(printf '%s' "$plain" | tr -dc '0-9')" = "42" ] && ok "plain run computes 42" || bad "plain run did not print 42 (got: $plain)"
+plain="$("$VIBE" run "$proj/prog.vibex" 2>&1)"
+[ "$(printf '%s' "$plain" | grep -o '42' | head -1)" = "42" ] && ok "plain run computes 42" || bad "plain run did not print 42 (got: $plain)"
 if printf '%s\n' "$plain" | grep -q "args:"; then bad "plain run leaked args output"; else ok "plain run emits no args output"; fi
 
 # 2. `vibe run --break helper` pauses at helper and prints its NAMED argument
 #    values. The FIRST hit is helper(20), so the first `args:` line must report
 #    the parameter name x bound to 20, i.e. `x=20` (DAP P4).
-broke="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break helper "$proj/prog.vibe" 2>&1)"
+broke="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break helper "$proj/prog.vibex" 2>&1)"
 echo "----- vibe run --break helper -----"; printf '%s\n' "$broke"; echo "-----------------------------------"
 printf '%s\n' "$broke" | grep -qF "breakpoint hit: helper" && ok "breakpoint hit names helper" || bad "missing 'breakpoint hit: helper'"
 # An `args:` line must be present and the first one must report x=20.

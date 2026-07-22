@@ -47,12 +47,25 @@ fn find_group_sources(groups: Array[(String, Array[(String, String)])], target: 
 // manifest preference (first source = the manifest's first row) and
 // entry-last ordering; exact counts belong to the manifest, not this test.
 test "collect_all_sources_fs: compiler index prefers manifest list" {
-  let sources = collect_all_sources_fs("lib/@vibe/compiler/index.vibe")
+  let sources = collect_all_sources_fs("lib/@vibe/compiler/compiler.vibe")
   let (first_path, _) = Array::get(sources, 0)
   let (last_path, _) = Array::get(sources, Array::length(sources) - 1)
   assert(first_path == "lib/@vibe/ast/index.vpkg")
-  assert(last_path == "lib/@vibe/compiler/index.vibe")
-  assert(Array::length(sources) > 100)
+  assert(last_path == "lib/@vibe/compiler/compiler.vibe")
+  // #1027 (fixed): collect_all_sources_fs's header-based dependency walk
+  // used to resolve any vpkg-ified lib/@vibe/compiler/ subdirectory
+  // (codegen/gc, codegen/expr, codegen/wasm_emit, syntax, ...) down to just
+  // its index.vpkg row, dropping that directory's individual impl-file rows
+  // -- root cause: collect_manifest_header_deps_from_source's fast scanner
+  // (loader/manifest_sources.vibe) stops at the first top-level statement
+  // that isn't import/export, and EVERY .vpkg contract starts with a
+  // `version x.y.z` directive line, so the scanner returned zero deps for
+  // any vpkg file it visited. Fixed by reusing contract/contract.vibe's
+  // extract_require_pins to blank the leading version/require directive
+  // region before scanning, same as header_cache.vibe's contract-aware lane
+  // already did. This floor stays a loose sanity check, not a pinned count
+  // (see the #769 note above) -- exact counts belong to the manifest.
+  assert(Array::length(sources) > 50)
   assert(has_source_path(sources, "lib/@vibe/compiler/core/polyfill.vibe"))
   assert(has_source_path(sources, "lib/@vibe/compiler/core/bytebuf.vibe"))
   assert(has_source_path(sources, "lib/@vibe/compiler/core/ast.vibe"))
@@ -66,7 +79,7 @@ test "collect_all_sources_fs: compiler index prefers manifest list" {
   // linked_compile.vibe row.
   assert(has_source_path(sources, "lib/@vibe/compiler/codegen/wasi/index.vpkg"))
   assert(has_source_path(sources, "lib/@vibe/compiler/loader/manifest_sources.vibe"))
-  assert(has_source_path(sources, "lib/@vibe/compiler/loader/index.vibe"))
+  assert(has_source_path(sources, "lib/@vibe/compiler/loader/loader.vibe"))
   // #916: @vibe/cache is now a contract package (index.vpkg) -- like
   // parser/ast above, it arrives as its facade, not a separate cache.vibe row.
   assert(has_source_path(sources, "lib/@vibe/cache/index.vpkg"))
@@ -80,19 +93,32 @@ test "collect_all_sources_fs: non-manifest compiler entry keeps recursive collec
 }
 
 test "collect_all_sources_fs: fs_compile entry follows source imports without hardcoded deps" {
-  let sources = collect_all_sources_fs("lib/@vibe/compiler/entry/compiler/fs_compile/index.vibe")
-  assert(has_source_path(sources, "lib/@vibe/compiler/entry/compiler/fs_compile/index.vibe"))
+  // #897: fs_compile/ is now a contract package (index.vpkg) -- the entry
+  // itself moves to the contract path, and the renamed impl file
+  // (fs_compile.vibe, ex-index.vibe) plus the sibling closure_order.vibe
+  // arrive alongside it (contract_sibling_impl_raws directory discovery).
+  let sources = collect_all_sources_fs("lib/@vibe/compiler/entry/compiler/fs_compile/index.vpkg")
+  assert(has_source_path(sources, "lib/@vibe/compiler/entry/compiler/fs_compile/index.vpkg"))
+  assert(has_source_path(sources, "lib/@vibe/compiler/entry/compiler/fs_compile/fs_compile.vibe"))
   assert(has_source_path(sources, "lib/@vibe/compiler/entry/compiler/fs_compile/closure_order.vibe"))
   assert(has_source_path(sources, "lib/@vibe/compiler/cache/persistent_cache.vibe"))
-  assert(has_source_path(sources, "lib/@vibe/compiler/runtime/index.vibe"))
-  assert(has_source_path(sources, "lib/@vibe/compiler/codegen/index.vibe"))
+  assert(has_source_path(sources, "lib/@vibe/compiler/runtime/runtime.vibe"))
+  // #897: codegen/ (top level) is now a contract package (index.vpkg) --
+  // like codegen/wasi above, it arrives as its facade path.
+  assert(has_source_path(sources, "lib/@vibe/compiler/codegen/index.vpkg"))
+  // #897: cache/ is now a contract package (index.vpkg) too -- fs_compile.vibe
+  // imports it as `../../../cache { .. }`, so the facade path arrives
+  // alongside its sibling impl files (persistent_cache.vibe above,
+  // cache_underlying.vibe, codegen_fingerprint.vibe), same
+  // facade-plus-siblings shape as codegen/index.vpkg just above.
+  assert(has_source_path(sources, "lib/@vibe/compiler/cache/index.vpkg"))
 }
 
 // #769: rewritten (see the collect_all_sources_fs note above). Owns: manifest
 // group ORDER (first manifest group first, entry group last) and spot
 // membership; group counts and exact per-group sizes belong to the manifest.
 test "collect_source_groups_fs: compiler index keeps manifest groups" {
-  let groups = collect_source_groups_fs("lib/@vibe/compiler/index.vibe")
+  let groups = collect_source_groups_fs("lib/@vibe/compiler/compiler.vibe")
   assert(Array::length(groups) > 5)
   let (first_name, first_sources) = Array::get(groups, 0)
   let (last_name, last_sources) = Array::get(groups, Array::length(groups) - 1)
@@ -116,11 +142,11 @@ test "collect_source_groups_fs: compiler index keeps manifest groups" {
   match find_group_sources(groups, "loader") {
     Some(loader_sources) => {
       assert(has_source_path(loader_sources, "lib/@vibe/compiler/loader/manifest_sources.vibe"))
-      assert(has_source_path(loader_sources, "lib/@vibe/compiler/loader/index.vibe"))
+      assert(has_source_path(loader_sources, "lib/@vibe/compiler/loader/loader.vibe"))
     },
     None => assert(false)
   }
-  assert(has_source_path(last_sources, "lib/@vibe/compiler/index.vibe"))
+  assert(has_source_path(last_sources, "lib/@vibe/compiler/compiler.vibe"))
 }
 
 test "collect_source_groups_fs: manifest applies to cli adapter entry" {

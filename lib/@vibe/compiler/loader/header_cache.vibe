@@ -8,15 +8,12 @@ import ../../../../lib/@vibe/core {
   array_empty
 }
 
-import ../cache/persistent_cache.vibe {
+import ../cache {
   compact_string_fingerprint, normalize_persistent_cache_text, package_index_deps_are_current, persistent_module_header_cache_path
 }
 
-import ../core/index.vibe {
-  Stmt
-}
-
-import ../module_graph_path.vibe {
+import ../core {
+  Stmt,
   dir_of_path, ensure_regular_source_fs, is_contract_ext, resolve_import_path_candidates
 }
 
@@ -28,7 +25,7 @@ import ../syntax {
   lex, lex_with_offsets, offset_to_line_col, parse_program, parse_program_located
 }
 import ../contract {
-  classify_contract_stmts, contract_facade_marker, extract_require_pins, parse_contract_program
+  classify_contract_stmts, contract_facade_marker, extract_package_version, extract_require_pins, parse_contract_program
 }
 
 //# Functions
@@ -180,7 +177,7 @@ fn is_contract_boundary_path(path: String) -> Bool {
 // (`import ../ast { type Json, Type::method }`) are excluded on purpose:
 // `collect_exports` (reused below for the VALUE namespace) enumerates enum
 // VARIANT constructors but never the enum/struct/alias/trait NAME itself, so
-// a routine, entirely legitimate `import ../core/index.vibe { Stmt, Expr,
+// a routine, entirely legitimate `import ../core { Stmt, Expr,
 // TypeEnv, ... }` (used all over this compiler) would false-positive as "not
 // exported" if type-shaped names were checked against the same list. The
 // vibe convention is snake_case values / UpperCamelCase types (CLAUDE.md),
@@ -236,6 +233,15 @@ fn resolved_export_names_fs(resolved: String) -> Array[String] with { Error, Fs 
       let (coname, _) = Array::get(copaques, coi)
       Array::push(names, coname)
       coi = coi + 1
+    }
+    // `version` is synthesized into the facade from the package's own
+    // `version x.y.z` directive (see desugar_contract_source_fs) rather than
+    // requiring a `let version: String` contract decl -- mirror that here so
+    // this header-only export list agrees with the actual generated facade.
+    if extract_package_version(source) == "" || string_array_contains_hc(names, "version") {
+      ()
+    } else {
+      Array::push(names, "version")
     }
     names
   } else {
@@ -485,6 +491,14 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
         let (coname, _) = Array::get(copaques, coi)
         Array::push(cexports, coname)
         coi = coi + 1
+      }
+      // Mirror resolved_export_names_fs: `version` is synthesized into the
+      // facade from the package's own `version x.y.z` directive rather than
+      // requiring a `let version: String` contract decl.
+      if extract_package_version(source) == "" || string_array_contains_hc(cexports, "version") {
+        ()
+      } else {
+        Array::push(cexports, "version")
       }
       // #730: a contract with no implementation imports auto-discovers its
       // siblings — those files are deps of the header too, or an impl edit

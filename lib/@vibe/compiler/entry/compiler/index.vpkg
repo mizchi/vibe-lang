@@ -1,0 +1,95 @@
+version 0.0.1
+
+// @vibe/compiler/entry/compiler — ADR-0070 / #897 compiler-internal
+// contract. This is entry/'s own top-level facade and the LAST directory in
+// issue #897's explicit "high risk" grouping ("高リスク (要個別設計判断)
+// ... entry/ とそのサブディレクトリ"), migrated last in this batch (after
+// its two dependencies, entry/compiler/fs_compile/ and
+// entry/source_compile/, both migrated earlier in the same batch, so this
+// facade's `export` targets are already package boundaries by the time this
+// contract is written).
+//
+// Pure re-export facade, ZERO real fn bodies of its own: compiler.vibe (the
+// old index.vibe, renamed -- see naming note below) is three `export <path>
+// { names }` cross-package SReExport blocks and nothing else -- forwarding
+// a curated 20-name subset from ../source_compile (2 names),
+// ./fs_compile (11 names), and ./file_compile (7 names). Same shape as
+// codegen/index.vpkg's `export ./common_base { .. }` block, just with no
+// locally-owned names alongside it (codegen.vibe additionally owns 8 real
+// compile_* bodies; compiler.vibe owns none). check_contract's
+// collect_impl_fn_defs finds nothing here (no SLet at all, since there are
+// no real fn/let bodies), so nothing forces a "must declare" obligation --
+// but every name below still needs a bodyless declaration anyway, because
+// OTHER code that imports `../entry/compiler { name }` type-checks against
+// THIS contract's declared signatures, not against the underlying packages
+// directly (same reasoning as codegen/index.vpkg's re-exported-from-
+// common_base names).
+//
+// Signature source of truth: source_compile.vibe's own real bodies (via
+// entry/source_compile/index.vpkg), fs_compile.vibe's own real bodies (via
+// entry/compiler/fs_compile/index.vpkg), file_compile.vibe's own real
+// bodies (via entry/compiler/file_compile/index.vpkg, already migrated).
+// Note fs_compile.vibe ALSO independently exports its own
+// `compile_file_fs` / `compile_file_fs_module` / `prepare_file_fs_cached` /
+// `compile_file_fs_cached` / `compile_file_fs_module_cached` (older,
+// self-contained implementations) under the SAME names as file_compile.vibe's
+// newer versions -- compiler.vibe deliberately does NOT re-export
+// fs_compile's copies of these five names (only file_compile's, via the
+// `export ./file_compile { .. }` block), so there is no ambiguity here:
+// each declared name below traces to exactly one real body, matching
+// compiler.vibe's own unchanged selection.
+//
+// Naming: no collision (entry/compiler/compiler.vibe did not exist), old
+// index.vibe moved verbatim to compiler.vibe, same convention as
+// loader.vibe/runtime.vibe/core.vibe/wasi_only.vibe/source_compile.vibe.
+//
+// External-caller fixes: the four
+// `probe_lex_source_by_path` / `probe_parse_source_by_path` /
+// `probe_source_control_by_path` / `probe_parse_stmt_progress_source_by_path`
+// calls in selfbuild_gate_block_a.vibe that referenced the literal
+// "lib/@vibe/compiler/entry/compiler/index.vibe" path (a manifest-derived
+// `compiler_sources()` array key, not an import) are updated to
+// ".../compiler.vibe" to track the manifest row rename below. No other
+// literal `entry/compiler/index.vibe` leaf-path references exist repo-wide
+// (confirmed via grep) -- every real caller already used the bare
+// package-form `import ../entry/compiler { .. }` / `import ./entry/compiler
+// { .. }`.
+//
+// No import cycle found: this directory's three export targets
+// (../source_compile, ./fs_compile, ./file_compile) don't import back into
+// entry/compiler/ (confirmed by reading all three; none references
+// `entry/compiler` at all).
+//
+// Compiled into the compiler itself via compiler_sources_manifest.tsv
+// (group `entry`): the old single `entry/compiler/index.vibe` row becomes a
+// dual row (this contract + compiler.vibe).
+//
+// No exported types: TypeDb (../../runtime, via fs_compile/file_compile)
+// arrives as structural signature text (loader/runtime precedent -- no
+// re-import needed here).
+
+// --- re-exported from ../source_compile
+fn compile_source(source: String) -> Bytes with { Error }
+fn compile_source_wasi(source: String, entry_name: String) -> Bytes with { Error }
+
+// --- re-exported from ./fs_compile
+fn prepare_modules_cached(db: TypeDb, main_path: String, main_source: String, sources: Array[(String, String)]) -> TypeDb with { Error }
+fn compile_with_modules(main_source: String, main_path: String, sources: Array[(String, String)]) -> Bytes with { Error }
+fn compile_with_modules_wasi(main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> Bytes with { Error }
+fn compile_with_modules_cached(db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)]) -> (Bytes, TypeDb) with { Error }
+fn compile_with_modules_wasi_cached(db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> (Bytes, TypeDb) with { Error }
+fn compile_with_closure_sources_wasi_cached(db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> (Bytes, TypeDb) with { Error }
+fn compile_with_closure_sources_wasi_mode_cached(db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String, mode: String) -> (Bytes, TypeDb) with { Error }
+fn compile_with_closure_sources_wasi_unchecked_cached(db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> (Bytes, TypeDb) with { Error }
+fn compile_with_closure_sources_wasi_mode_unchecked_cached(db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String, mode: String) -> (Bytes, TypeDb) with { Error }
+fn compile_with_source_groups_wasi_cached(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])], entry_name: String) -> (Bytes, TypeDb) with { Error }
+fn compile_with_source_groups_wasi_unchecked_cached(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])], entry_name: String) -> (Bytes, TypeDb) with { Error }
+
+// --- re-exported from ./file_compile
+fn compile_file_fs(entry_path: String, entry_name: String) -> Bytes with { Error, Fs }
+fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: String) -> Bytes with { Error, Fs }
+fn compile_file_fs_module(entry_path: String) -> Bytes with { Error, Fs }
+fn prepare_file_fs_cached(db: TypeDb, entry_path: String) -> TypeDb with { Error, Fs }
+fn compile_file_fs_cached(db: TypeDb, entry_path: String, entry_name: String) -> (Bytes, TypeDb) with { Error, Fs }
+fn compile_file_fs_mode_cached(db: TypeDb, entry_path: String, entry_name: String, mode: String) -> (Bytes, TypeDb) with { Error, Fs }
+fn compile_file_fs_module_cached(db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with { Error, Fs }

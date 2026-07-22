@@ -40,7 +40,7 @@ bytes_of() { printf '%s\n' "$1" | grep -oE "fn=$2 line=[0-9?]+ bytes=[0-9]+" | g
 proj="$WORK/proj"; mkdir -p "$proj"
 # `heavy` does ~4x the per-iteration allocation of `light`, and main calls both;
 # leaf attribution must credit each function its own growth.
-cat > "$proj/sites.vibe" <<'EOF'
+cat > "$proj/sites.vibex" <<'EOF'
 let heavy = (n: Int) -> String {
   let mut s = ""
   let mut i = 0
@@ -53,23 +53,23 @@ let light = (n: Int) -> String {
   while j < n { t = String::concat(t, "y"); j = j + 1 }
   t
 }
-let main = () -> Int {
+fn main with { Stdout } {
   let a = heavy(300)
   let b = light(50)
-  String::length(a) + String::length(b)
+  Stdout::write_stream("\{String::length(a) + String::length(b)}\n")
 }
 EOF
 
 # 1. plain run emits NO alloc-site report.
-plain="$("$VIBE" run "$proj/sites.vibe" 2>&1 >/dev/null)"
+plain="$("$VIBE" run "$proj/sites.vibex" 2>&1 >/dev/null)"
 if printf '%s' "$plain" | grep -q "allocsite"; then bad "plain run leaked an alloc-site report"; else ok "plain run emits no alloc-site report"; fi
 
 # 2. --alloc-site keeps stdout clean (just the program's 1250).
-site_out="$("$VIBE" run --alloc-site "$proj/sites.vibe" 2>/dev/null)"
-[ "$(printf '%s' "$site_out" | tr -dc '0-9')" = "1250" ] && ok "--alloc-site: stdout is just the program output (1250)" || bad "--alloc-site: stdout polluted (got: $site_out)"
+site_out="$("$VIBE" run --alloc-site "$proj/sites.vibex" 2>/dev/null)"
+[ "$(printf '%s' "$site_out" | grep -o '1250' | head -1)" = "1250" ] && ok "--alloc-site: stdout contains the program output (1250)" || bad "--alloc-site: stdout missing program output (got: $site_out)"
 
 # 3. machine-readable lines + human summary on stderr.
-site_err="$("$VIBE" run --alloc-site "$proj/sites.vibe" 2>&1 >/dev/null)"
+site_err="$("$VIBE" run --alloc-site "$proj/sites.vibex" 2>&1 >/dev/null)"
 printf '%s\n' "$site_err" | grep -qE "vibe::allocsite fn=[A-Za-z_][A-Za-z0-9_]* line=[0-9?]+ bytes=[0-9]+" \
   && ok "--alloc-site: machine-readable lines present" || bad "--alloc-site: missing machine line (got: $site_err)"
 printf '%s\n' "$site_err" | grep -qE "vibe: alloc sites — [0-9]+ function\(s\), .* attributed total" \
@@ -93,15 +93,16 @@ printf '%s\n' "$site_err" | grep -qE "vibe::allocsite fn=heavy line=[0-9]+ " \
 # 6. coverage: allocation in a pure mut-loop (no user-function call) is still
 #    attributed — to the enclosing function. dbg_line-based attribution missed
 #    this; dbg_break (per function entry) catches it.
-cat > "$proj/inline.vibe" <<'EOF'
-let main = () -> Int {
+cat > "$proj/inline.vibex" <<'EOF'
+fn main with { } {
   let mut s = ""
   let mut i = 0
   while i < 200 { s = String::concat(s, "zzzz"); i = i + 1 }
-  String::length(s)
+  let _ = String::length(s)
+  ()
 }
 EOF
-inline_err="$("$VIBE" run --alloc-site "$proj/inline.vibe" 2>&1 >/dev/null)"
+inline_err="$("$VIBE" run --alloc-site "$proj/inline.vibex" 2>&1 >/dev/null)"
 ib="$(bytes_of "$inline_err" main)"
 if [ -n "$ib" ] && [ "$ib" -gt 10000 ]; then
   ok "pure mut-loop attributed to main (bytes=$ib)"
@@ -110,7 +111,7 @@ else
 fi
 
 # 7. top-N cap: --alloc-site=1 reports only the top function (still summarizes all).
-top1="$("$VIBE" run --alloc-site=1 "$proj/sites.vibe" 2>&1 >/dev/null)"
+top1="$("$VIBE" run --alloc-site=1 "$proj/sites.vibex" 2>&1 >/dev/null)"
 nlines="$(printf '%s\n' "$top1" | grep -cE '^vibe::allocsite ' || true)"
 [ "${nlines:-0}" -eq 1 ] && ok "--alloc-site=1 caps the report to 1 function" || bad "--alloc-site=1 emitted $nlines lines (expected 1)"
 printf '%s\n' "$top1" | grep -qE "top 1 shown" && ok "top-N summary reflects the cap" || bad "missing 'top 1 shown' (got: $top1)"

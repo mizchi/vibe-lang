@@ -4110,6 +4110,53 @@ else
 fi
 rm -rf "$svdir"
 
+# 40k. #1015 P2: gc-lane to_string(Bool) regressions -- the gc-backend twin
+#      of the linear-lane #1015 fix, plus the two shadow/scope-leak fixes
+#      code review found in the gc-lane port specifically. Same test-block
+#      compile+run pattern as step 5, with VIBE_BACKEND=gc swapped in for
+#      VIBE_FS_COMPILE=1 (per VIBE_TEST_BACKEND=gc's own compile_env
+#      selection in vibe_test.sh). Each fixture is single-file (the gc lane
+#      has no cross-file FS import resolution) and compiled+run separately.
+#   - to_string_bool_gc_test.vibe: a self-contained Show-bounded generic
+#     `to_string` wrapper (the gc lane cannot import the prelude's) and a
+#     Bool-typed fn param forwarding through it; both must render
+#     "true"/"false", not "1"/"0".
+#   - to_string_shadow_gc_test.vibe: a SAME-file user-defined `to_string(x:
+#     Bool) -> String { "custom" }` must NOT be silently overridden by the
+#     call-site fast path (ctx.gc_to_string_is_show_wrapper structural
+#     guard, backend_body.vibe).
+#   - to_string_bool_scope_gc_test.vibe: an if/else branch rebinding the
+#     same local slot to a non-Bool value in the other branch must not
+#     leak the Bool classification across the branch boundary
+#     (ctx.gc_bool_locals is slot-indexed and pruned at every
+#     branch/match-arm/for-in scope exit, backend_expr.vibe /
+#     backend_match.vibe).
+#   - to_string_float_scope_gc_test.vibe (#1032): the Float analog of the
+#     scope-leak fixture above -- ctx.gc_float_locals was the same
+#     name-keyed, unpruned design as gc_bool_locals pre-#1030 (a KNOWN
+#     LATENT BUG noted but not fixed there); now slot-indexed and pruned
+#     the same way.
+echo "[compiler-gate] 40k/40 gc-lane to_string(Bool) regressions (#1015)"
+gcbdir="_build/_gate_gc_to_string_bool"
+rm -rf "$gcbdir"; mkdir -p "$gcbdir"
+for gcb_fixture in to_string_bool_gc_test to_string_shadow_gc_test to_string_bool_scope_gc_test to_string_float_scope_gc_test; do
+  VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/${gcb_fixture}.vibe" "$gcbdir/${gcb_fixture}.wasm" __no_entry__ >/dev/null 2>&1
+  if [ ! -s "$gcbdir/${gcb_fixture}.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc-lane regression fixture ${gcb_fixture}.vibe did not compile" >&2
+    cat "$gcbdir/${gcb_fixture}.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+      --invoke _start "$gcbdir/${gcb_fixture}.wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: gc-lane regression fixture ${gcb_fixture}.vibe trapped" >&2
+    exit 1
+  fi
+done
+rm -rf "$gcbdir"
+echo "[compiler-gate] gc-lane to_string(Bool) regressions ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the
@@ -4457,5 +4504,31 @@ if [ "$g859_out" != "42" ]; then
 fi
 rm -rf "$g859dir"
 echo "[compiler-gate] top-level pattern let rejection (#859) ok"
+
+# 45/45 (#897 Phase 4, ADR-0070): every directory in the repo must have
+# migrated off the old index.vibei/bare-index.vibe facade to a proper
+# index.vpkg contract. This is the CI-required half of the diagnostic
+# implemented in loader/loader.vibe's find_missing_vpkg_dirs (Phase 1) --
+# a passive `vibe check` command is easy to forget to run by hand, so once
+# Phase 3 finished migrating all 76 directories this became a required gate
+# to prevent a future PR from silently reintroducing a plain index.vibe dir.
+echo "[compiler-gate] 45/45 missing index.vpkg scan (#897 Phase 4)"
+vpkgdir="_build/_gate_vpkg_scan"
+rm -rf "$vpkgdir"; mkdir -p "$vpkgdir"
+VIBE_MISSING_VPKG_SCAN=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ROOT_DIR" "$vpkgdir/scan.out" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$vpkgdir/scan.out" ]; then
+  echo "[compiler-gate] FAIL: missing-vpkg scan produced no output" >&2
+  cat "$vpkgdir/scan.out.diag" 2>/dev/null >&2
+  exit 1
+fi
+if ! grep -q "^ok: no directories missing index.vpkg" "$vpkgdir/scan.out"; then
+  echo "[compiler-gate] FAIL: directories still missing index.vpkg (#897 Phase 4):" >&2
+  cat "$vpkgdir/scan.out" >&2
+  exit 1
+fi
+rm -rf "$vpkgdir"
+echo "[compiler-gate] missing index.vpkg scan (#897 Phase 4) ok"
 
 echo "[compiler-gate] ok"

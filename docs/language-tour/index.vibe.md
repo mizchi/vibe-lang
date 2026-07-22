@@ -5,7 +5,7 @@ vibe is an ML-like statically typed scripting language with shell integration, t
 ## CLI
 
 ```bash
-vibe run file.vibe       # Run a script (executes `fn main`)
+vibe run file.vibex      # Run an executable root (executes `fn main`)
 vibe test file.vibe      # Run tests in a file
 vibe shell               # Interactive shell (PosixMode)
 vibe bench file.vibe     # Run benchmarks
@@ -32,12 +32,12 @@ test "greeting" {
 
 ## Entry Point
 
-The entry point is `fn main { ... }` (ADR-0069): the top level is
-declarations-only, and statements/side effects live in `main`. Capabilities
-are declared as `fn main with { Stdout, Fs } { ... }`. The legacy
-`let main: () -> Int = ...` form still runs (its Int result is printed) but
-`fn main` is the primary form going forward. When you `vibe build`, the
-generated WASM exports `_start` as the ABI entry point.
+A `.vibex` executable root contains exactly one non-exported
+`fn main with { ... } { ... }`. It takes no parameters, returns `Unit`, and its
+closed effect row is explicit (`with { }` for a pure entry). The top level is
+declarations-only, and statements/side effects live in `main`. A `.vibex` file
+cannot be imported. When you `vibe build`, `main` is lowered to the generated
+WASM `_start` ABI entry point.
 
 ```vibe
 import ./lib/@vibe/prelude/io.vibe { stdout_write }

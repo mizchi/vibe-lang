@@ -1,15 +1,11 @@
 //# Imports
 
-import ../../builtin_name.vibe {
-  canonical_builtin_name
-}
-
 import ../../../../../lib/@vibe/core {
   array_empty
 }
 
 import ../../core {
-  Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
+  Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32, namespace_exported_name
 }
 
 import ../common_analysis {
@@ -17,7 +13,8 @@ import ../common_analysis {
 }
 
 import ../common_base {
-  emit_rc_word_inc_saturating, CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, agg_expr_lookup, agg_slot_lookup, emit_rc_dup_guarded, effect_name_to_tag, effect_op_index, emit_binop_op, emit_box_float, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_index_one, emit_str_ref, emit_unbox_float, expr_tag, find_local_slot, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, ctor_table_index_of, resolve_func, resolve_local, struct_field_candidates, struct_field_dispatch_cases
+  canonical_builtin_name,
+  emit_rc_word_inc_saturating, CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, agg_expr_lookup, agg_slot_lookup, emit_rc_dup_guarded, effect_name_to_tag, effect_op_index, emit_binop_op, emit_box_float, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_index_one, emit_str_ref, emit_unbox_float, expr_tag, find_local_slot, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, ctor_table_index_of, resolve_func, resolve_local, struct_field_candidates, struct_field_dispatch_cases, double_to_string_expr, int_parse_expr, double_parse_expr
 }
 
 import ../common_extractors {
@@ -34,14 +31,6 @@ import ./compile_lambda.vibe {
 
 import ./compile_match.vibe {
   compile_match
-}
-
-import ../double_to_string_expr.vibe {
-  double_to_string_expr
-}
-
-import ../int_parse_expr.vibe {
-  int_parse_expr
 }
 
 //# Functions
@@ -930,6 +919,94 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
         ()
       }
       nl
+    }
+    else if Array::length(args) == 1 && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_boolish(Array::get(args, 0), local_names, ctx) || cc_expr_is_stringish(Array::get(args, 0), local_names, ctx)) && fname == namespace_exported_name("lib/@vibe/prelude/builtin_traits.vibe", "to_string") {
+      // #1015: the prelude generic wrapper `to_string[T: Show](x: T) -> String
+      // { __to_string(x) }` (lib/@vibe/prelude/builtin_traits.vibe) compiles
+      // to exactly ONE shared wasm function body -- there is no
+      // monomorphization pass that duplicates a generic function body per
+      // instantiation. Inside that body `x` is a bare parameter of the
+      // opaque type param T, so the `__to_string` builtin lowering below --
+      // which classifies its argument via the syntactic cc_expr_is_floatish/
+      // boolish/stringish checks -- can never recognize `x` as Bool/Float/
+      // String there; it always falls to the generic runtime bit-pattern
+      // heuristic. `Show` is a marker-only trait (never declared with method
+      // signatures, so #641's dictionary-passing desugar -- which only
+      // handles method-bearing traits -- never synthesizes a runtime witness
+      // for it) and Bool has NO runtime tag distinguishing it from Int:
+      // `true`/`false` compile to raw i64 1/0 (linear) or tagged 2/0 (RC),
+      // bit-identical to Int 1/0 in both backends. So the runtime heuristic
+      // cannot possibly classify a Bool argument reached this way -- it
+      // silently mis-stringifies `true` as `"1"` (confirmed via a standalone
+      // repro: the generic fallback itself does not crash for input 0/1, it
+      // just returns the wrong string; the reported "RuntimeError:
+      // unreachable" is `assert(to_string(true) == "true")` failing on that
+      // wrong value and THEN trapping).
+      //
+      // Fix: at the CALL SITE `to_string(arg)`, the ORIGINAL argument
+      // expression is still visible (unlike inside the generic body), so
+      // when it is statically classifiable by the same cc_expr_is_* checks
+      // the `__to_string` builtin uses, bypass the generic `to_string`
+      // function call entirely and inline it as `__to_string(arg)` directly
+      // -- hitting the correct existing static fast path. This is purely
+      // additive: a call whose argument is NOT statically classifiable
+      // (e.g. forwarding another opaque generic parameter) still falls
+      // through unchanged to the ordinary bound call below.
+      //
+      // `fname` is essentially NEVER the bare `"to_string"` at this point:
+      // #716 export-name visibility renames every exported value def of a
+      // non-entry file to `name_exp_<sanitized path>` (namespace_exported_name,
+      // lib/@vibe/compiler/core/import_alias_rewrite.vibe) and rewrites every
+      // importer's reference to match, so a call to the prelude's `to_string`
+      // (defined in lib/@vibe/prelude/builtin_traits.vibe, a non-entry file)
+      // arrives here as `to_string_exp_lib__vibe_prelude_builtin_traits_vibe`
+      // -- verified with throw()-based instrumentation. A prior fix attempt
+      // for this issue special-cased only the bare name (fname equal to the
+      // plain string "to_string") and was silently dead code because it
+      // never fired for this reason.
+      //
+      // This match is intentionally the EXACT mangled name (via
+      // `namespace_exported_name` -- the SAME function the renaming pass
+      // itself uses, not a hand-copied string literal), not a bare-name or
+      // prefix match: an earlier version of this fix matched fname against
+      // either the bare "to_string" or, via String::starts_with, anything
+      // prefixed "to_string_exp_", which was unsound -- code review (#1015)
+      // correctly pointed out that
+      // (a) the bare form also matches a user's OWN `to_string` defined
+      // directly in an entry file (never renamed, so indistinguishable from
+      // the prelude's by name alone), and (b) the prefix form also matches
+      // ANY other file's own exported `to_string` (e.g. a user module
+      // exporting `to_string`, mangled to `to_string_exp_<that file's own
+      // sanitized path>`), silently overriding either user function's real
+      // behavior with the Bool/Float/String formatter. The exact mangled
+      // name embeds the full defining-file path, so it can only ever refer
+      // to THIS specific prelude definition. Guarding with `!prefer_bound_call`
+      // instead (as sibling `not`/`eq` branches above do) does NOT work here
+      // and was tried and rejected: unlike `not`/`eq`, which are pure
+      // compiler-provided fallbacks with no real backing definition unless a
+      // user shadows them, `to_string` ALWAYS resolves to a real declared
+      // function (the prelude's own, if nothing else) -- so `prefer_bound_call`
+      // is unconditionally true even for the correct, un-shadowed prelude
+      // call (confirmed with throw()-based instrumentation: `prefer_bound_call
+      // = T` at the real failing call site), and gating on `!prefer_bound_call`
+      // would make this branch never fire at all.
+      //
+      // Condition order matters here (selfcompile KPI heap regression found
+      // during review): `namespace_exported_name(...)` builds a fresh string
+      // via StringBuilder on every call, and this bump-allocated compiler
+      // never reclaims that memory mid-compile, so evaluating it FIRST --
+      // as the original version of this branch did -- ran it once per
+      // ECall node in the ENTIRE compiled program (this `else if` chain is
+      // walked for every function call), not just once per `to_string`
+      // call. `&&` short-circuits (desugars to `if`, see docs/cheatsheet.md),
+      // so putting the cheap arity check and the shape-based
+      // floatish/boolish/stringish classification first means the
+      // allocating name comparison only runs for the rare 1-arg calls whose
+      // argument is already known-classifiable -- functionally identical
+      // result, far fewer StringBuilder allocations across a whole compile.
+      ce(buf, ECall(EIdent("__to_string", -1), [
+        Array::get(args, 0)
+      ], -1), local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "not" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
@@ -2189,6 +2266,9 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
     }
     else if fname == "Int::parse" {
       ce(buf, int_parse_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
+    }
+    else if fname == "Double::parse" {
+      ce(buf, double_parse_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
     }
     else if fname == "Double::abs" || fname == "Double::floor" || fname == "Double::ceil" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
