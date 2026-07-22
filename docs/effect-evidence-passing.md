@@ -4,7 +4,8 @@ Status: proposed
 
 Date: 2026-07-22
 
-Related: ADR-0003, ADR-0021, ADR-0050, ADR-0060, ADR-0071, ADR-0073, #626, #806, #817
+Related: ADR-0003, ADR-0012, ADR-0021, ADR-0050, ADR-0060, ADR-0068, ADR-0071,
+ADR-0073, #626, #806, #817, #818
 
 ## Context
 
@@ -211,6 +212,70 @@ wasm-gc は元々クロージャを `struct`/`ref` として first-class に持�
 「Error のみ」の暫定スタブから「evidence passing による完全な代数的
 effect」への昇格を同じ設計で行う。
 
+### 並行モデル (ADR-0068) との整合
+
+`docs/concurrency.md` (ADR-0068) は本 ADR に先んじて evidence の語彙と
+制約の一部を既に規定しており、本 ADR はそれと矛盾しないよう設計する。
+
+- ADR-0068 の実装順は「1. 本仕様と fixture を固定 → **2. #817:
+  replay handler を evidence passing + yield bubbling へ置換し、共通の
+  `Suspend` IR と finalizer unwind を作る** → 3. mutable global を
+  `TaskContext` へ集約 → …」であり、**本 ADR (#817) は並行 runtime が
+  「準拠」を名乗るための前提条件**として先に位置づけられている
+  (`docs/concurrency.md` の「cancel と non-local exit は stack を
+  unwind し…replay handler を generalized evidence passing + 明示
+  suspend IR へ置き換える #817…は、並行 runtime を compliant と呼ぶ
+  前提である」)。本 ADR の `EPerform`/`EHandle`/suspend 点 IR は、
+  ADR-0068 が指す「共通の `Suspend` IR」と同一のものとして設計する
+  (別の IR を用意しない)。
+- `Cont[R]` (yield bubbling の継続クロージャ) は ADR-0068 の
+  「continuation は task-affine、同じ task で一度だけ resume でき、
+  channel message / spawn capture / global state に保存できない」と
+  いう制約をそのまま満たす — 本 ADR は `Cont[R]` を通常のクロージャ
+  として実装するので `Send` 判定は ADR-0068 の allowlist
+  (`docs/concurrency.md` の `Send`/`Spawnable[r]` checker) が自動的に
+  除外する。本 ADR 側で追加の cross-task 制約を実装する必要はない。
+- evidence dict も同じ理由で既定では `Send`/fork-safe ではない。
+  ADR-0068 は「v0.4.0 では `Async`/`Spawn` runtime evidence と
+  package contract で fork-safe と定めた built-in host capability
+  だけを fork できる。user-defined handler は既定で task-local」と
+  定めており、本 ADR が生成する evidence (ユーザー定義 `effect` の
+  handler dict) はこの既定 (fork 不可) にそのまま従う。fork-safe な
+  ユーザー定義 handler を宣言する surface は ADR-0068 が「後続 ADR」に
+  委ねており、本 ADR のスコープにも含めない。
+- 本 ADR が replay 機構 (`eff_reserve` 固定領域、perform counter、resume
+  memo 配列というグローバル可変状態) を丸ごと削除することは、ADR-0068
+  が「`TaskContext` へ集約するか spawn 前に freeze する必要がある」と
+  名指ししていたグローバル可変状態の一つを**削除によって解消する** —
+  ADR-0068 の Phase 3 (mutable global の `TaskContext` 集約) の対象から
+  この分だけ縮小される。evidence dict/`Cont[R]` 自体は (通常のクロージャ
+  なので) 元々スタック/ヒープ上の値であり、集約すべきグローバル可変状態
+  ではない。
+
+### finalizer と dynamic-wind
+
+ADR-0068 は「cancel と non-local exit は stack を unwind し、登録済み
+finalizer をちょうど一度実行しなければならない」ことを並行 runtime の
+必須要件にしている。本 ADR の yield bubbling は `Outcome[R] = Done(R) |
+Yield(...)` という通常の値を関数間で返すだけなので、cancel/non-local
+exit 自体は既存の `Error`/`throw` の unwind 経路 (ADR-0073) と同じ
+機構で表現できる — 新しい unwind プリミティブを追加しない。ただし
+「finalizer をちょうど一度実行する」という**保証**は本 ADR の設計だけ
+からは自動的に出ない: `Cont[R]` を呼ばずに `Yield` を破棄する (=
+perform した computation を resume しないまま終了する) ケースで、
+`Cont[R]` が capture していたローカルの finalizer 相当 (Perceus の
+drop、あるいはユーザー定義の `handle ... with Error` によるクリーン
+アップ) が正しく実行されるかは、`Cont[R]` クロージャの RC drop 経路が
+「capture した値を最後まで正しく drop する」という既存の Perceus 保証
+に委ねられる。これは本 ADR のスコープでは**据え置きとする**: Effekt の
+dynamic-wind 相当の明示的な finalizer スタック機構 (`docs/pl-survey-2026-07.md`
+参照) を独自に導入するかどうかは、ADR-0068 の Phase 3 以降
+(`TaskContext` の finalizer stack 実装、`docs/concurrency.md` の
+`TaskContext` 構成要素に「finalizer stack」が既に列挙されている) で
+決める。本 ADR は「`Cont[R]` を破棄すれば通常の RC drop で capture 済み
+資源が解放される」という Perceus ベースの最小保証だけを約束し、
+明示的な finalizer 登録 API の要否は ADR-0068 側の判断に委ねる。
+
 ## Rejected alternatives
 
 - **replay の memo 領域を単純に拡張する**: `~16K` bound と副作用重複
@@ -249,7 +314,14 @@ Large cost の機能なので、ADR-0061/0064/0072 と同じ「新構文/新経�
   経路も evidence passing へ移行。replay loop・`eff_reserve`・memo
   アドレッシングを削除。`~16K` bound と M2 が全域で解消する。
   selfhost bootstrap bump が必要 (compiler 自身の effect 呼び出しが
-  新経路でコンパイルされる)。
+  新経路でコンパイルされる)。**前提**: 現行の「単一小文字ラベルは全
+  operation を authorize する」row-polymorphism hack には evidence dict
+  を組み立てるための operation 集合情報がなく、replay 経路を完全に
+  削除するにはこの hack を使う関数にも evidence を割り当てられる必要が
+  ある — ADR-0071 の構造化 row (少なくとも row variable 部分) が
+  Phase 3 着手までに着地していることを前提とする (詳細は下記
+  「検討済みの論点」参照)。着地していない場合は、hack を使う関数だけ
+  replay 経路を残す長期 hybrid に切り替える。
 - **Phase 4**: wasm-gc backend に同じ evidence 設計で完全な代数的
   effect handler を実装 (`with Error` スタブからの昇格)。
 - **Phase 5**: suspend 点 IR に WasmFX / WASI 0.3 async (JSPI) 向けの
@@ -298,23 +370,64 @@ gate 26/27 (effect-call discipline / handle effect discharge) を
 - 新 IR ノード (`EPerform`/`EResume`) の使用は fixtures/docs から開始し、
   compiler 自身のソースでの使用は Phase 3 の bootstrap bump 後
 
-## Open questions
+## 検討済みの論点 (Open questions からの解消)
 
-- tail-resumptive 判定を **handler 宣言時**に固定するか、**perform 呼び出し
-  ごと**(同じ handler でも呼び出し経路によって tail 位置かどうかが変わる
-  高階 handler のケース) に行うかは要検討。本 ADR は前者 (arm 単位) を
-  既定にしているが、`fixtures/effect_higher_order_*.vibe` 群で後者が
-  必要になる可能性がある。
-- 動的 evidence 解決 (row variable 越し) のコストが trait dict 版の
-  method 呼び出しと同等かどうかは実装後にベンチマークで確認する。
-- ADR-0060 の `Write[r]` region モデルが `let mut` を effect として
-  統一する場合、evidence passing はそのモデル上の `Write` operation にも
-  同じ tail-resumptive 判定を適用できるはずだが、`Write[r]` 自体が
-  proposed のまま未実装なので、順序 (evidence passing が先か
-  `Write[r]` が先か) は別途決める。
-- WASI 0.3 の component-model future/stream + JSPI lowering (Phase 5 (b))
-  は ADR-0012 の async 設計との統合方法が未確定 — 別 ADR に切り出す
-  可能性がある。
+設計確定にあたり、次の 4 点は「未決」ではなく本 ADR の決定として確定する。
+
+1. **tail-resumptive 判定の粒度は handler arm 単位に固定する**。
+   `fixtures/effect_higher_order_{basic,compose,swap,test_double}.vibe`
+   を精査した結果、これらの「高階」性は「effect を使う関数値を、handler
+   を設置する別関数へ引数として渡す」ことだけを指し、`handle ... with
+   Effect { Op(args) => body }` の **`body` 自体は常に固定されたソース
+   テキスト**である (呼び出し元がどんな `f` を渡すかに関わらず、その
+   handle 式の arm の形は変わらない)。vibe に「同じ arm が呼び出し経路
+   によって tail 位置かどうか変わる」ケースは存在しない — handler は
+   実行時に組み替わる値ではなく、lexical に固定された arm の集合だから
+   である。したがって「呼び出し経路ごとの判定」を検討する必要はなく、
+   arm 単位の静的判定 (本 ADR の既定) で十分かつ正確である。
+2. **動的 evidence 解決のコストは個別にベンチマークしない**。evidence
+   dict は method-bearing trait dict-passing と**同じ codegen 経路**を
+   再利用する設計 (上記) なので、コスト特性は trait dict 呼び出しの
+   それと構造的に同一になる。trait dict の呼び出しコストは既に実装済み・
+   受け入れ済みなので、evidence dict だけを対象にした追加のベンチマーク
+   を実装完了の前提条件にしない。実装後のスモークテストで生成コードの
+   形が trait dict のものと同型であることだけ確認すれば十分とする。
+3. **ADR-0060 (`Write[r]` region モデル) との順序依存はない**。evidence
+   passing は「今日 handle されている任意の effect」の実行戦略であり、
+   `let mut` を effect として統一するかどうかという型システム側の設計
+   (ADR-0060、proposed のまま未実装) とは独立である。`Write[r]` が
+   将来実装されても、それは evidence passing が既に扱える「もう一つの
+   handled effect」になるだけで、本 ADR 側の変更を要求しない。ADR-0060
+   実装の先後を待つ理由はない。
+4. **WASI 0.3 async / JSPI lowering は独立した後続 ADR に切り出す**。
+   `docs/concurrency.md` (ADR-0068) 自身の実装順が「1. 本仕様の fixture
+   固定 → 2. #817 (本 ADR) → 3. `TaskContext` 集約 → … → 7. JSPI/Worker
+   と WASI Component Model lowering」と定めており、JSPI 統合は本 ADR
+   より後の、複数ステップを経た段階の仕事として既に順序付けられている。
+   本 ADR は「後で追加できる形」(suspend 点 IR を差し替え可能にする)
+   だけを約束し、統合方法そのものの決定は ADR-0068 の該当フェーズに
+   到達した時点の別 ADR に委ねる。
+
+一方で、この確認作業で新たに顕在化した依存が 1 つある。
+
+- **Phase 3 (yield bubbling による replay 全廃) は ADR-0071 の正規化
+  row (少なくとも row variable の構造化表現) の着地を前提とする**。
+  現行の「単一小文字ラベルは全 operation を authorize する」という
+  row-polymorphism hack (`checker_effects.vibe` の
+  `label_is_effect_var`) には、evidence dict を組み立てるために必要な
+  「この関数が要求しうる operation の集合」という情報がそもそも存在
+  しない — dict の field を列挙できない。**Phase 1/2 (静的解決 +
+  tail-resumptive 高速パス) はこの制約を受けない**: 対象になる perform
+  はほぼ全て具体的effect使用であり (issue 自身の「解決率が極めて高い」
+  という主張どおり)、row-variable 越しの perform は Phase 2 の間
+  対象外のまま既存 replay 経路に残しておける。**Phase 3 で replay 経路
+  を完全に削除する時点で**、row-variable 越しの perform にも evidence
+  passing を適用できる必要があり、そのためには ADR-0071 の構造化
+  row 表現が必要になる。ADR-0071 が Phase 3 着手までに着地していない
+  場合は、(a) ADR-0071 を先に着地させるか、(b) 現行の hack を使う関数
+  だけ replay 経路を暫定的に残す長期 hybrid のいずれかを選ぶ — 本 ADR
+  は (a) を既定の想定とする (ADR-0071 の方が影響範囲が狭く、着地が
+  早いと見込む)。
 
 ## References
 
@@ -336,6 +449,12 @@ gate 26/27 (effect-call discipline / handle effect discharge) を
   ゼロコスト化の元祖の提案 (旧 MoonBit host 限定で実装され、#594 で
   当該実装は退役。本 ADR が selfhost 上での再実装にあたる)。
 - `docs/effectset.md` (ADR-0071) — operation-level 正規化 row。本 ADR の
-  `OperationId` はこの ADR の正規化形を第一の入力とする。
+  `OperationId` はこの ADR の正規化形を第一の入力とし、Phase 3 (yield
+  bubbling による replay 全廃) はこの ADR の row variable 構造化が
+  着地していることを前提とする。
+- `docs/concurrency.md` (ADR-0068) — 並行モデルの source of truth。
+  本 ADR (#817) をその実装順の 2 番目に置き、evidence/continuation の
+  task-affine 制約と `Suspend` IR という呼称を既に規定している。本 ADR
+  はその制約下で設計している (「並行モデル (ADR-0068) との整合」節参照)。
 - `docs/pl-survey-2026-07.md` — 本 ADR の元になったサーベイ項目。
 - `eval/lang-review/findings/2026-07-12-r2.md` M2 — replay の実測バグ。

@@ -4,8 +4,8 @@ Status: proposed
 
 Date: 2026-07-16
 
-Related: ADR-0012, ADR-0050, ADR-0060, ADR-0068, ADR-0071, ADR-0075, #488, #806,
-#817, #818, #906
+Related: ADR-0012, ADR-0050, ADR-0060, ADR-0068, ADR-0071, ADR-0075, ADR-0076,
+#488, #806, #817, #818, #906
 
 ## 位置づけ
 
@@ -192,8 +192,11 @@ Open -> Cancelling -> Closing -> Closed
 
 cancel と non-local exit は stack を unwind し、登録済み finalizer をちょうど一度
 実行しなければならない。したがって replay handler を generalized evidence
-passing + 明示 suspend IR へ置き換える #817 と、`dynamic-wind` 相当の finalization
-規則は、並行 runtime を compliant と呼ぶ前提である。
+passing + 明示 suspend IR へ置き換える ADR-0076 (#817) と、`dynamic-wind` 相当の
+finalization 規則は、並行 runtime を compliant と呼ぶ前提である
+(ADR-0076 は「Cont[R] を破棄すれば通常の RC drop で capture 済み資源が解放
+される」という Perceus ベースの最小保証までを約束し、明示的な finalizer 登録
+API の要否は本 ADR 側の判断に委ねている)。
 
 ## Lean lifecycle oracle
 
@@ -577,12 +580,15 @@ Backend differential:
 
 ADR-0075 の `.vibex` entry、semantic contract emission、local provider preflight は
 下記 runtime 実装と独立に先行できる。ただし child へ operation/resource 単位の
-evidence を実際に委譲する段階は、#817 の evidence passing と `TaskContext` 分離後に
-行う。
+evidence を実際に委譲する段階は、ADR-0076 (#817) の evidence passing と
+`TaskContext` 分離後に行う。
 
 1. 本仕様と negative/type fixtures を固定する。
-2. #817: replay handler を evidence passing + yield bubbling へ置換し、共通の
-   `Suspend` IR と finalizer unwind を作る。
+2. ADR-0076 (#817): replay handler を evidence passing + yield bubbling へ置換し、
+   共通の `Suspend` IR (ADR-0076 の `EPerform`/`EHandle`) と finalizer unwind を
+   作る。ADR-0076 のロールアウトは Phase 1〜3 相当 (M2 回帰 pin → tail-resumptive
+   hybrid → yield bubbling で replay 全廃) に分かれ、本項目が「compliant」と
+   見なせるのは ADR-0076 Phase 3 完了後。
 3. mutable global を `TaskContext` へ集約し、単一 thread の deterministic scheduler
    と nursery state machine を実装する。
 4. region escape、`Send`、`Spawnable[r]`、fork-safe evidence の checker を実装する。

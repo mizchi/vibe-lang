@@ -4,7 +4,7 @@ Status: proposed
 
 Date: 2026-07-15
 
-Related: ADR-0003, ADR-0021, ADR-0050, ADR-0063, #639, #755, #817
+Related: ADR-0003, ADR-0021, ADR-0050, ADR-0063, ADR-0076, #639, #755, #817
 
 ## Context
 
@@ -207,7 +207,12 @@ effectset と一致する場合はその effectset の参照を優先する。ef
 3. checker: 展開・包含・推移呼び出し・row variable との合成
 4. handler: operation-level discharge と handler-arm effect の再加算
 5. contract/WIT/diagnostics: normalized surface と operation-level diff
-6. codegen/evidence: 正規化 row を #817 の evidence vector 入力に接続
+6. codegen/evidence: 正規化 row を ADR-0076 (#817) の evidence vector 入力に
+   接続。ADR-0076 の row-polymorphic (row variable 越し) evidence 解決は
+   本 ADR の row variable 構造化が前提であり、ADR-0076 Phase 3
+   (yield bubbling による replay 全廃) 着手までに本 ADR の resolver/checker
+   (項目 2–3) が着地している必要がある — 静的解決のみの ADR-0076 Phase 1–2
+   はこの依存を受けない
 
 最低限、次を回帰として固定する。
 
@@ -232,4 +237,5 @@ tag を作り、bootstrap bump を完了してからとする。
   — extensible/scoped effect row と row polymorphism
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
-  — #817 で予定する正規化 row から evidence vector への lowering
+  — ADR-0076 (#817) が定める正規化 row から evidence vector への lowering。
+  設計詳細は [effect-evidence-passing.md](effect-evidence-passing.md)
