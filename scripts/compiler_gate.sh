@@ -4425,6 +4425,37 @@ fi
 rm -rf "$a71gdir"
 echo "[compiler-gate] effectset contract signature-matching ok"
 
+# 40t. ADR-0071 step 5, WIT generation effectset/qualified resolution (#755,
+#      docs/effectset.md): wit_gen.vibe previously resolved each raw
+#      effect-row label verbatim against the effect definitions it collected,
+#      so an `effectset` alias (`with { AskAll }`) or a bare qualified
+#      operation item with no accompanying plain effect-name item
+#      (`with { Ask::Get }`) never matched `Ask`'s definition and fell
+#      through to the "host capability effect ... no WIT mapping yet"
+#      comment marker, even though `Ask` has a real interface mapping.
+#      wit_gen.vibe now expands effectset aliases and resolves qualified
+#      operation items back to their underlying effect name before
+#      rendering. This gate compiles fixtures/wit_gen_effectset.vibe (one
+#      export using the effectset alias, one using the bare qualified item)
+#      via `vibe compile --wit` and diffs against the golden.
+echo "[compiler-gate] 40t/40 effect->WIT effectset/qualified resolution (ADR-0071 step 5/#755)"
+witesdir="_build/_gate_wit_effectset"
+rm -rf "$witesdir"; mkdir -p "$witesdir"
+VIBE_EMIT_WIT=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/wit_gen_effectset.vibe" "$witesdir/out.wit" main >/dev/null 2>&1
+if [ ! -s "$witesdir/out.wit" ]; then
+  echo "[compiler-gate] FAIL: VIBE_EMIT_WIT produced no output for wit_gen_effectset.vibe" >&2
+  cat "$witesdir/out.wit.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! diff -u "fixtures/wit_gen_effectset.golden.wit" "$witesdir/out.wit" >&2; then
+  echo "[compiler-gate] FAIL: WIT output differs from fixtures/wit_gen_effectset.golden.wit -- effectset/qualified WIT resolution regressed" >&2
+  exit 1
+fi
+rm -rf "$witesdir"
+echo "[compiler-gate] effect->WIT effectset/qualified resolution ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the

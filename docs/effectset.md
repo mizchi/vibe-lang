@@ -1,6 +1,6 @@
 # ADR-0071: operation-level effect row と `effectset`
 
-Status: proposed (実装 step 1-2-4 は着地済み、step 3 は関数自身の宣言 row + パラメータ row の展開が着地、step 5 は contract passthrough + signature matching が着地 (WIT 生成のみ残)、2026-07-22 — 進捗セクション参照)
+Status: proposed (実装 step 1-2-4 は着地済み、step 3 は関数自身の宣言 row + パラメータ row の展開が着地、step 5 (contract passthrough + signature matching + WIT 生成) は完全着地、残るは step 6 のみ、2026-07-22 — 進捗セクション参照)
 
 Date: 2026-07-15
 
@@ -306,10 +306,26 @@ check_contract の中核比較ロジックに触れるため、既存の contrac
 fixtures/contract_effectset_signature_alias/ +
 compiler_gate.sh 40s で回帰を固定。
 
-**未着手のまま残っている範囲**: WIT 生成 (wit_gen.vibe) は SEffectSet
-をまだ一切認識していない (既存の wildcard fallback により安全に
-無視されるだけで、クラッシュはしない) — 項目 5 で唯一残っている
-ピース。ADR-0076 evidence vector への正規化 row の接続 (項目 6)。
+さらに、**WIT 生成**(wit_gen.vibe) も effectset 対応が着地し、項目 5 が
+完全に着地した: 従来 wit_gen.vibe は `used_effects` を集める際に生の
+row label をそのまま effect 定義名として突き合わせていたため、
+`effectset` alias (`with { AskAll }`) や、対応する bare な effect 名の
+row item を伴わない qualified operation item 単独 (`with { Ask::Get }`)
+は effect 定義に一致せず、実際には WIT マッピングを持つ effect でも
+"host capability effect ... no WIT mapping yet" のコメントマーカーに
+フォールバックしてしまうバグがあった (修正前に実際に再現・確認)。
+checker_stmt.vibe / contract.vibe と同型のローカル関数群
+(wit_es_collect_into / wit_es_expand_into / wit_effect_name_of /
+wit_resolve_effect_names_into、wit_gen.vibe 内のみ、クロスファイル
+参照なし) を追加し、`used_effects` の収集ループで各 raw label を
+effectset 展開 + qualified→effect 名解決してから照合するよう修正。
+既存の effect->WIT golden (fixtures/wit_gen_http.vibe、通常の
+`with { Effect }` 形式) はバイト同一で無回帰であることを確認した上で、
+effectset alias と bare qualified item の両方をカバーする新規 golden
+fixtures/wit_gen_effectset.vibe + compiler_gate.sh 40t で回帰を固定。
+
+**未着手のまま残っている範囲**: ADR-0076 evidence vector への正規化 row
+の接続 (項目 6) のみ。
 
 **Bootstrap gotcha**: `lib/@vibe/parser/` 配下で「新しい関数を定義し、
 別ファイルからその関数を import で参照する」変更を同一コミットに含めると、
