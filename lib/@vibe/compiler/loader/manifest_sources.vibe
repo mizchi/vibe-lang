@@ -1,7 +1,7 @@
 //# Imports
 
 import ./header_cache.vibe {
-  load_or_parse_module_header_fs_impl
+  contract_sibling_impl_raws, load_or_parse_module_header_fs_impl, merge_impl_raws_dedupe
 }
 
 import ../../../../lib/@vibe/core {
@@ -328,7 +328,25 @@ fn collect_manifest_header_deps_from_source(path: String, raw_source: String, ma
       }
     }
   }
-  deps
+  // Mirror the full loader's unconditional `.vpkg` sibling auto-discovery
+  // (ADR-0070 Phase 1): this fast textual scanner only sees deps the
+  // contract's OWN `import ./x.vibe {}` lines spell out explicitly, so a
+  // `.vpkg` that relies on (now-legitimate) undeclared siblings silently
+  // dropped them from the manifest-preferring FS collection closure --
+  // same class of gap as #1027, just for auto-discovered rather than
+  // version-directive-blocked deps.
+  if String::ends_with(path, ".vpkg") {
+    let discovered_raws = contract_sibling_impl_raws(base_dir)
+    let mut di = 0
+    let discovered_deps = array_empty()
+    while di < Array::length(discovered_raws) {
+      Array::push(discovered_deps, resolve_manifest_dep_path(base_dir, Array::get(discovered_raws, di), manifest_path_index))
+      di = di + 1
+    }
+    merge_impl_raws_dedupe(deps, discovered_deps)
+  } else {
+    deps
+  }
 }
 
 fn collect_manifest_header_deps_from_source_with_context(path: String, source: String, manifest_path_index: Map[String, Bool]) -> Array[String] with { Error, Fs } {
