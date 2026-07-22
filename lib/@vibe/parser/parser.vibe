@@ -5,7 +5,7 @@ import ../ast {
 }
 
 import ./parser_base.vibe {
-  collect_import_path, empty_fields, empty_import_items, expect_tk, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_struct_field, parse_suberror_stmt, parse_tparam_names, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_derive_names, peek, skip_braced_body, skip_derive, tk_name
+  collect_effect_names, collect_import_path, empty_fields, empty_import_items, expect_tk, parse_binding_name, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_struct_field, parse_suberror_stmt, parse_tparam_names, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_derive_names, peek, skip_braced_body, skip_derive, tk_name
 }
 
 import ./parser_expr.vibe {
@@ -264,6 +264,29 @@ fn parse_toplevel_struct_stmt(tokens: Array[Token], pos: Int, exported: Bool) ->
   }
 }
 
+// ADR-0071 step 2: `effectset Name = { A, B, Effect::op }` / the qualified
+// form `effectset Effect::Name = { ... }` (name itself may be `Ident ::
+// Ident`, same qualification as parse_binding_name). Body reuses
+// collect_effect_names' item grammar (bare identifier or `Effect::op`) --
+// it already returns a comma-joined String, so the member list is
+// recovered by splitting that back into an Array[String]; no separate
+// item-collector needed. No type params yet (generic effectsets like
+// `State::Read[T]` are deferred to a later revision).
+fn parse_effectset_stmt(tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int) with { Error } {
+  let (name, after_name) = parse_binding_name(tokens, pos)
+  let ep = expect_tk(tokens, after_name, "=")
+  let bp = expect_tk(tokens, ep, "{")
+  let (joined, next) = collect_effect_names(tokens, bp, "")
+  let members = if String::length(joined) == 0 {
+    Array::slice([
+      ""
+    ], 0, 0)
+  } else {
+    String::split(joined, ", ")
+  }
+  (SEffectSet(exported, name, members), next)
+}
+
 fn parse_export_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with { Error } {
   match peek(tokens, pos) {
     TLet => parse_let_stmt(tokens, starts, pos + 1, true),
@@ -272,6 +295,8 @@ fn parse_export_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stm
     TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, true),
     TIdent(ident_name) => if ident_name == "effect" {
       parse_effect_stmt(tokens, pos + 1, true)
+    } else if ident_name == "effectset" {
+      parse_effectset_stmt(tokens, pos + 1, true)
     } else if ident_name == "fn" {
       parse_fn_stmt(tokens, starts, pos + 1, true)
     } else {
@@ -361,6 +386,7 @@ export fn parse_stmt_preserving(tokens: Array[Token], starts: Array[Int], pos: I
     TImport => parse_import_stmt(tokens, pos + 1),
     TIdent(name) => match name {
       "effect" => parse_effect_stmt(tokens, pos + 1, false),
+      "effectset" => parse_effectset_stmt(tokens, pos + 1, false),
       "extern" => parse_extern_let_stmt(tokens, pos + 1),
       "fn" => parse_fn_stmt(tokens, starts, pos + 1, false),
       "use" => throw("'use' syntax is removed; use 'import <module-ref> { ... }'"),
