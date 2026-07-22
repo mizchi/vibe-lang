@@ -26,6 +26,7 @@ import ../common_analysis {
 
 import ../common_base {
   desugar_trait_dicts,
+  rewrite_self_tail_calls,
   rc_shadow_reserve,
   CompileCtx, CovState, CtorTable, DbgProv, FuncTable, LambdaTable, StrTable, agg_info_of_type_expr, compute_agg_returning, ctor_sorted_index, emit_rc_dup_guarded, empty_dbg_prov, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, fn_type_param_types, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, get_slet_type, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local, builtin_registry, verify_lane_builtins, compile_inline_wat
 }
@@ -157,6 +158,13 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let iw_names = lc_fresh_string_array()
   let iw_wats = lc_fresh_string_array()
   lc_extract_inline_wasm(stmts, iw_names, iw_wats)
+  // #tco: rewrite a top-level function's self-tail-recursive calls into the
+  // same ELetMut/EWhile/EBreak/EContinue shape `loop (...) { continue(...) }`
+  // already lowers to (see self_tail_call.vibe) -- zero wasm call-stack
+  // growth per recursive step instead of an unbounded `call`. No-op unless a
+  // function is directly self-tail-recursive; runs before the borrow/scalar-
+  // return analyses below so they see the rewritten (loop-shaped) body.
+  rewrite_self_tail_calls(stmts)
   // #707: functions whose entire body is transitively a tail-call to a
   // borrow-returning builtin (Array::get/Map::get/__index) -- e.g. a thin
   // `peek(toks, pos) -> Array::get(toks, pos)` wrapper. Computed once over the
