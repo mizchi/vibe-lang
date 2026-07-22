@@ -679,6 +679,51 @@ evidence_branch_fallback.vibe + compiler_gate.sh 40v で、分岐ケースが
 形の入力 (今回は「分岐の中」) を広げるたびに、レビューだけでなく実際に
 コンパイル・実行して確かめる必要がある。
 
+**追記 4 (2026-07-22, 上記バグの根本原因調査 -- 未確定、次にここから
+着手すること)**: 「分岐の中を安全に再許可する」ための根本原因調査を
+行った。以下は静的読解だけで得られた所見であり、ランタイム計装による
+確認はまだ行っていない (確認せずに fix を当てるのはリスクが高いと判断し、
+今回は見送った)。
+
+除外できた仮説: 「`evidence_dict_pass` の書き換え前に構築された stale な
+arity テーブルを下流が参照している」という仮説は誤り。
+`linked_compile.vibe` の `fn_names_list`/`fn_param_counts` を含む全ての
+arity/signature テーブルは `evidence_dict_pass(stmts)` 呼び出し (line 189)
+より**後**に、書き換え済みの `stmts` から構築されている。
+
+除外できたもう 1 つの仮説: `edp_rewrite_needing_fn`
+(inline_direct_perform.vibe) は関数の `EFn` の `params` に dict 引数を
+先頭追加する一方、同じ `SLet` の `ty` (トップレベルの型注釈) はそのまま
+素通しする -- 一見「書き換え後の関数は実際の `EFn` params と自身の宣言
+`ty` の引数数が 1 だけ食い違う」ように見えたが、確認したところ
+`desugar_trait_dict.vibe` の `rewrite_stmt` (line 3075) も
+`SLet(exp, isrec, fname, ann, EFn(tparams, bounds, new_params, ret, eff,
+new_body))` と全く同じパターン (`ann`/`ty` は素通し、`params` だけ書き換え)
+を使っており、これは trait dict-passing が本番で長期間問題なく使って
+いる確立されたパターンだった。クラッシュの原因ではない。
+
+最有力の手がかり: `codegen/expr/compile_call.vibe` の `compile_call` は
+呼び出し名ごとに `fn_idx_in_list` (トップレベル関数テーブルでの位置) と
+`local_idx_hint` (現在スコープのローカル変数名リスト `local_names` 内での
+一致) の両方を調べ、`prefer_bound_call = fn_idx_in_list >= 0 ||
+local_idx_hint >= 0` で分岐する。直接呼び出し (dict 引数を含む正しい
+arity で `emit_call`) が選ばれるのは `fn_idx_in_list >= 0 &&
+local_idx_hint < 0` のときだけで、`local_idx_hint >= 0` (呼び出し名が
+`local_names` の中にも見つかる) だとクロージャ/ローカルシャドー呼び出し
+経路 (`resolve_local` + `emit_closure_call_tail`) に流れ、そちらは
+書き換え後の新しい arity とは無関係な別の呼び出し規約を使う。`EIf` の
+codegen (`codegen/expr/compile_expr.vibe`、`#678` 注記のあるブロック) は
+分岐ごとに `local_names` を `Array::truncate(local_names, names_len_before)`
+で復元する処理を持っており、これが `EIf` の中か外かで唯一
+「名前付き関数呼び出しに対する arity 判定ロジックが実際に変わりうる」
+場所である。`ask_helper` という名前が `EIf` の分岐の中でだけ誤って
+`local_names` に一致してしまう (=ローカル扱いされてしまう) 経路がある
+かどうかが本命の疑い所だが、`local_idx_hint`/`fn_idx_in_list`/
+`prefer_bound_call` を実際にログ計装して確認するところまでは今回
+到達できていない。次にこのバグへ取り組む際は、まずここ (compile_call.vibe
+の `local_idx_hint` 算出と、`EIf` 分岐前後の `local_names` の実際の中身)
+を計装して確認するところから始めること。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
