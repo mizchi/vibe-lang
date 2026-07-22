@@ -28,6 +28,7 @@ import ../common_base {
   desugar_trait_dicts,
   rewrite_self_tail_calls,
   inline_direct_performs,
+  evidence_dict_pass,
   rc_shadow_reserve,
   CompileCtx, CovState, CtorTable, DbgProv, FuncTable, LambdaTable, StrTable, agg_info_of_type_expr, compute_agg_returning, ctor_sorted_index, emit_rc_dup_guarded, empty_dbg_prov, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, fn_type_param_types, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, get_slet_type, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local, builtin_registry, verify_lane_builtins, compile_inline_wat
 }
@@ -174,6 +175,18 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // to named functions) that could hide a perform outside this direct scan,
   // leaving those handled by the existing replay-based lowering below.
   inline_direct_performs(stmts)
+  // ADR-0076 (#817) Phase 3, first slice: evidence-dict threading for the
+  // narrow case Phase 2 above cannot reach on its own -- a handle body that
+  // calls a named top-level function which itself performs the handled
+  // effect (docs/effect-evidence-passing.md "追記 2", evidence_dict_pass's
+  // own doc comment in common_base/inline_direct_perform.vibe -- appended to
+  // that existing cross-file-registered file rather than a new one, to
+  // avoid the bootstrap flatten gotcha documented in docs/effectset.md).
+  // Runs after Phase 2 so it only sees the handles Phase 2 did
+  // not already fully inline; whole-program-conservative and strictly
+  // additive (per-effect all-or-nothing), so it never touches a handle or
+  // function Phase 2 already resolved or that this pass cannot prove safe.
+  evidence_dict_pass(stmts)
   // #707: functions whose entire body is transitively a tail-call to a
   // borrow-returning builtin (Array::get/Map::get/__index) -- e.g. a thin
   // `peek(toks, pos) -> Array::get(toks, pos)` wrapper. Computed once over the

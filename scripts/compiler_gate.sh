@@ -4456,6 +4456,36 @@ fi
 rm -rf "$witesdir"
 echo "[compiler-gate] effect->WIT effectset/qualified resolution ok"
 
+# 40u. ADR-0076 Phase 3, first slice (#817): evidence_dict_pass (appended to
+#      common_base/inline_direct_perform.vibe -- see that file's doc comment
+#      -- to avoid the bootstrap flatten gotcha of a brand-new cross-file
+#      export + its first cross-file caller in the same commit). Same M2
+#      shape as gate 40l, except the two performs are reached via a helper
+#      function call (`ask_helper()`) instead of directly in the handle
+#      body -- exactly the case Phase 2 (inline_direct_perform.vibe's
+#      idp_has_unsafe_construct) bails out on, which fell to replay and
+#      reproduced the SAME 6016 corruption pre-fix. This gate pins the
+#      FIXED output (3013, same math as gate 40l) as a regression lock.
+echo "[compiler-gate] 40u/40 evidence-dict threading through a helper-function call (ADR-0076 Phase 3/#817)"
+edpdir="_build/_gate_evidence_dict_call"
+rm -rf "$edpdir"; mkdir -p "$edpdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence.vibe > "$edpdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpdir/src.vibe" "$edpdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence.vibe did not compile" >&2
+  cat "$edpdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edp_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edp_out" != "3013" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence.vibe got '$edp_out' (want 3013) -- evidence-dict threading through a helper call regressed" >&2
+  exit 1
+fi
+rm -rf "$edpdir"
+echo "[compiler-gate] evidence-dict threading through a helper-function call ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the

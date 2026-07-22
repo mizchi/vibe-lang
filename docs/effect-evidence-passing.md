@@ -1,6 +1,6 @@
 # ADR-0076: effect handler を evidence passing 化する (suspend 点 IR で WasmFX/WASI 0.3 前方互換)
 
-Status: proposed (実装 Phase 1/2/2b は着地済み、2026-07-22 — 「段階導入計画」の実装ノート参照)
+Status: proposed (実装 Phase 1/2/2b は着地済み、Phase 3 の第一スライス (evidence-dict のヘルパー関数呼び越し threading) も着地、2026-07-22 — 「段階導入計画」の実装ノート参照)
 
 Date: 2026-07-22
 
@@ -604,6 +604,59 @@ finalizer 保証の話) と、この直接呼び出しモデルとの整合性 �
 (a)(b) の解消と (c) の未検証状態を踏まえてもなお、まだ「確定した設計」
 ではなく「有望な作業仮説」の位置づけとする — Phase 3 実装着手時に
 75 本の fixture 回帰を通しながら最終確認すること。
+
+**実装ノート (2026-07-22, Phase 3 第一スライス着地)**: 上記の仮説に
+沿って、Phase 3 の最小スライスを実装・着地させた。対象は Phase 2
+(`inline_direct_performs`) が「named 関数呼び出し」を理由に bail-out
+する最狭のケース — handle の BODY が、宣言 row が **その 1 effect
+ちょうど**である top-level 関数を呼び、その関数自身が該当 effect を
+perform する形。このケースは実際に M2 と同型の replay 破損を再現する
+本物のバグだった (fixtures/effect_handle_call_evidence.vibe、修正前は
+6016、fixtures/effect_handle_replay_corruption.vibe と全く同じ壊れ方)。
+
+実装は `evidence_dict_pass` (`codegen/common_base/inline_direct_perform.vibe`
+に追記 -- 新規ファイルにすると「新規クロスファイル export + 同一コミットでの
+初回 import」で bootstrap の flatten 工程がその関数を黙って merge 結果から
+落とす、という新種の bootstrap gotcha を実際に踏んだため、既存の
+cross-file-registered ファイルへ追記する形に変更した。詳細は
+docs/effectset.md の「Bootstrap gotcha」注記、および本ノート末尾の
+デバッグ記録参照): 宣言 row が「ちょうど 1 effect」の関数を
+`desugar_trait_dict.vibe` の `TrDict[T]` と同型の struct
+(`__EvDict_<Effect>`、field はその effect の operation 名) を暗黙の
+先頭引数として受け取るよう書き換え、関数内の直接 `perform Effect::Op`
+をその引数の field 呼び出しへ置換する。対応する `handle` 側は
+arms から dict literal を合成し、対象関数への呼び出しにその場で渡した
+上で `EHandle` ラッパー自体を削除する (Phase 2 と同じく、対象になった
+handle は replay codegen を一切生成しない)。健全性は「関数は宣言 row が
+実際にその effect を含む場合にのみ対象になる」という既存チェッカーの
+保証に完全に依拠しており (本文書の「検討中の簡略化案」参照)、対象範囲外
+(row-variable 越し、複数 effect が同じ row に同居、closure/nested handle
+越し) は今まで通り無条件で replay に残る -- all-or-nothing で
+中途半端な適用はしない。fixtures/effect_handle_call_evidence.vibe
+(修正後 3013、M2 と同じ計算) + compiler_gate.sh 40u で回帰を固定。
+
+デバッグ記録 (今後同じ罠を踏まないための注記): 実装完了後の最初の
+selfhost ビルド+実行では、新規追加した処理が一見何も効果を及ぼしていない
+ように見えた (fixture が直り切らない/変化がない) が、これは実装のロジック
+自体のバグではなく、検証手順側の環境問題だった。原因は二重: (1)
+`generations.sh build` が内部で独自に `generate_bundle.sh` を呼ぶ際、
+呼び出し元シェルで export した `VIBE_REGEN_MODULE_SOURCE=1` を継承させる
+だけでは不十分で、`generations.sh` 自身がその内部呼び出しに
+`VIBE_ADAPTER_MODULE_SOURCE_OUT` を明示的に (一時ディレクトリ配下へ)
+渡すため、`VIBE_REGEN_MODULE_SOURCE` を渡さない限りそちらは常に「stale な
+committed `_cli_adapter_module_source.vibe` を再利用する」経路に落ちる
+-- 手元での `generate_bundle.sh` 単体実行が成功していても、続けて呼ぶ
+`generations.sh build` は依然として古いソースからビルドしてしまう。(2)
+`_cli_adapter_module_source.vibe` (committed ファイル) 自体の書き戻しは
+`VIBE_ADAPTER_MODULE_SOURCE_OUT` を明示的にその実パスへ設定した場合のみ
+発生し、`VIBE_REGEN_MODULE_SOURCE=1` だけでは書き戻されない
+(regenerate はするが、書き戻し先未指定なら一時ファイルへ捨てられる)。
+両方を正しく設定して初めて `compiler_gate.sh` gate 1 (bundle sync) も
+通った。「関数内に一時的な debug marker (main の本体を既知の定数へ
+上書きする) を仕込んで、実行結果から内部状態を直接読み出す」という
+手法が、effect 未宣言の `print` を使わずに済む安全なデバッグ手段として
+機能した -- 今後 selfhost パイプラインの挙動を疑うときの再利用手順として
+記録しておく。
 
 ## References
 
