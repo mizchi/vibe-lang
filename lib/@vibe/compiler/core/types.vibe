@@ -4,6 +4,10 @@ import ./ast.vibe {
   TypeExpr
 }
 
+import ./sorted_index.vibe {
+  apply_perm_strings, bsearch_leftmost, sort_perm_by_names
+}
+
 import ../../../../lib/@vibe/core {
   array_empty
 }
@@ -50,7 +54,13 @@ export enum TypeEnv {
   EnvTraitImpl(String, Type, TypeEnv);
   EnvTraitImplGen(String, Array[String], Array[(String, Array[String])], Type, TypeEnv);
   EnvFlat(Array[(String, Type)]);
-  EnvCached(Map[String, Type], TypeEnv)
+  // Sorted names/types pair (see core/sorted_index.vibe), instead of a
+  // Map[String, Type]: this compiler's `Map` is a flat assoc list, so
+  // `Map::has_key` + `Map::get` were TWO O(entries) linear scans per lookup
+  // -- exactly the "Map membership index is still linear" trap from #799.
+  // Names are unique (built by env_cache below), so a stable sort + leftmost
+  // bsearch gives the same result in O(log N) with no dedup step needed.
+  EnvCached(Array[String], Array[Type], TypeEnv)
 }
 
 export enum Subst {
@@ -70,7 +80,7 @@ export enum Subst {
 
 export fn env_bind(env: TypeEnv, name: String, ty: Type) -> TypeEnv {
   match env {
-    EnvCached(cache, rest) => EnvCached(cache, EnvBind(name, ty, rest)),
+    EnvCached(names_sorted, types_sorted, rest) => EnvCached(names_sorted, types_sorted, EnvBind(name, ty, rest)),
     _ => EnvBind(name, ty, env)
   }
 }
@@ -116,22 +126,28 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
           }
           done = true
         },
-        EnvCached(_, rest) => {
+        EnvCached(_, _, rest) => {
           cur = rest
         }
       }
     }
     let na = ArrayBuilder::freeze(names)
     let ta = ArrayBuilder::freeze(types)
-    let cache = MapBuilder::new()
-    let len = Array::length(na)
+    // `na`/`ta` are collected innermost-binding-first (the traversal above
+    // walks `cur = rest` outward from the head). A STABLE sort keeps that
+    // relative order among same-named entries, and bsearch_leftmost returns
+    // the leftmost (= innermost = correctly-shadowing) one -- so no reverse
+    // pass or dedup step is needed to match the old Map's "last set wins"
+    // (which was fed outermost-first specifically to get this same result).
+    let perm = sort_perm_by_names(na)
+    let names_sorted = apply_perm_strings(na, perm)
+    let types_sorted = array_empty()
     let mut i = 0
-    while i < len {
-      let idx = len - i - 1
-      MapBuilder::set(cache, Array::get(na, idx), Array::get(ta, idx))
+    while i < Array::length(perm) {
+      Array::push(types_sorted, Array::get(ta, Array::get(perm, i)))
       i = i + 1
     }
-    EnvCached(MapBuilder::freeze(cache), env)
+    EnvCached(names_sorted, types_sorted, env)
   }
 }
 
@@ -214,11 +230,14 @@ export fn env_lookup(env: TypeEnv, name: String) -> Option[Type] {
           done = true
         }
       },
-      EnvCached(cache, rest) => if Map::has_key(cache, name) {
-        result = Some(Map::get(cache, name))
-        done = true
-      } else {
-        cur = rest
+      EnvCached(names_sorted, types_sorted, rest) => {
+        let slot = bsearch_leftmost(names_sorted, name)
+        if slot >= 0 {
+          result = Some(Array::get(types_sorted, slot))
+          done = true
+        } else {
+          cur = rest
+        }
       }
     }
   }
@@ -310,7 +329,7 @@ export fn trait_supers(env: TypeEnv, name: String) -> Array[String] {
     EnvTraitImpl(_, _, rest) => trait_supers(rest, name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_supers(rest, name),
     EnvFlat(_) => empty,
-    EnvCached(_, rest) => trait_supers(rest, name)
+    EnvCached(_, _, rest) => trait_supers(rest, name)
   }
 }
 
@@ -342,7 +361,7 @@ export fn trait_method_sig(env: TypeEnv, trait_name: String, method_name: String
     EnvTraitImpl(_, _, rest) => trait_method_sig(rest, trait_name, method_name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_method_sig(rest, trait_name, method_name),
     EnvFlat(_) => None,
-    EnvCached(_, rest) => trait_method_sig(rest, trait_name, method_name)
+    EnvCached(_, _, rest) => trait_method_sig(rest, trait_name, method_name)
   }
 }
 
@@ -375,7 +394,7 @@ fn type_name_iterator_impl_scan(scan: TypeEnv, full: TypeEnv, type_name: String)
     },
     EnvTraitImplGen(_, _, _, _, rest) => type_name_iterator_impl_scan(rest, full, type_name),
     EnvFlat(_) => false,
-    EnvCached(_, rest) => type_name_iterator_impl_scan(rest, full, type_name)
+    EnvCached(_, _, rest) => type_name_iterator_impl_scan(rest, full, type_name)
   }
 }
 
@@ -651,7 +670,7 @@ export fn trait_defined(env: TypeEnv, name: String) -> Bool {
     EnvTraitImpl(_, _, rest) => trait_defined(rest, name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_defined(rest, name),
     EnvFlat(_) => false,
-    EnvCached(_, rest) => trait_defined(rest, name)
+    EnvCached(_, _, rest) => trait_defined(rest, name)
   }
 }
 
@@ -1136,7 +1155,7 @@ export fn env_flat_bindings(env: TypeEnv) -> Array[(String, Type)] {
             }
             done = true
           },
-          EnvCached(_, rest) => {
+          EnvCached(_, _, rest) => {
             cur = rest
           }
         }
@@ -1779,7 +1798,7 @@ export fn impls_overlap_for(env: TypeEnv, trait_name: String, new_target: Type) 
     } else impls_overlap_for(rest, trait_name, new_target),
     EnvTraitImplGen(_, _, _, _, rest) => impls_overlap_for(rest, trait_name, new_target),
     EnvFlat(_) => false,
-    EnvCached(_, rest) => impls_overlap_for(rest, trait_name, new_target)
+    EnvCached(_, _, rest) => impls_overlap_for(rest, trait_name, new_target)
   }
 }
 
@@ -1816,7 +1835,7 @@ fn type_implements_check_env(e: TypeEnv, trait_name: String, resolved: Type) -> 
     } else type_implements_check_env(rest, trait_name, resolved),
     EnvTraitImplGen(_, _, _, _, rest) => type_implements_check_env(rest, trait_name, resolved),
     EnvFlat(_) => false,
-    EnvCached(_, rest) => type_implements_check_env(rest, trait_name, resolved)
+    EnvCached(_, _, rest) => type_implements_check_env(rest, trait_name, resolved)
   }
 }
 
@@ -1881,7 +1900,7 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, trait_name: Strin
     } else type_implements_check_super(rest, full_env, trait_name, resolved),
     EnvTraitImplGen(_, _, _, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
     EnvFlat(_) => false,
-    EnvCached(_, rest) => type_implements_check_super(rest, full_env, trait_name, resolved)
+    EnvCached(_, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved)
   }
 }
 
@@ -1918,7 +1937,7 @@ fn trait_is_method_bearing(env: TypeEnv, trait_name: String) -> Bool {
     EnvTraitImpl(_, _, rest) => trait_is_method_bearing(rest, trait_name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_is_method_bearing(rest, trait_name),
     EnvFlat(_) => false,
-    EnvCached(_, rest) => trait_is_method_bearing(rest, trait_name)
+    EnvCached(_, _, rest) => trait_is_method_bearing(rest, trait_name)
   }
 }
 
@@ -1966,7 +1985,7 @@ fn generic_impl_satisfies(scan: TypeEnv, full: TypeEnv, s: Subst, trait_name: St
       } else generic_impl_satisfies(rest, full, s, trait_name, resolved)
     },
     EnvFlat(_) => false,
-    EnvCached(_, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved)
+    EnvCached(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved)
   }
 }
 
