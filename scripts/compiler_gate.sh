@@ -4500,4 +4500,30 @@ fi
 rm -rf "$g859dir"
 echo "[compiler-gate] top-level pattern let rejection (#859) ok"
 
+# 45/45 (#897 Phase 4, ADR-0070): every directory in the repo must have
+# migrated off the old index.vibei/bare-index.vibe facade to a proper
+# index.vpkg contract. This is the CI-required half of the diagnostic
+# implemented in loader/loader.vibe's find_missing_vpkg_dirs (Phase 1) --
+# a passive `vibe check` command is easy to forget to run by hand, so once
+# Phase 3 finished migrating all 76 directories this became a required gate
+# to prevent a future PR from silently reintroducing a plain index.vibe dir.
+echo "[compiler-gate] 45/45 missing index.vpkg scan (#897 Phase 4)"
+vpkgdir="_build/_gate_vpkg_scan"
+rm -rf "$vpkgdir"; mkdir -p "$vpkgdir"
+VIBE_MISSING_VPKG_SCAN=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ROOT_DIR" "$vpkgdir/scan.out" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$vpkgdir/scan.out" ]; then
+  echo "[compiler-gate] FAIL: missing-vpkg scan produced no output" >&2
+  cat "$vpkgdir/scan.out.diag" 2>/dev/null >&2
+  exit 1
+fi
+if ! grep -q "^ok: no directories missing index.vpkg" "$vpkgdir/scan.out"; then
+  echo "[compiler-gate] FAIL: directories still missing index.vpkg (#897 Phase 4):" >&2
+  cat "$vpkgdir/scan.out" >&2
+  exit 1
+fi
+rm -rf "$vpkgdir"
+echo "[compiler-gate] missing index.vpkg scan (#897 Phase 4) ok"
+
 echo "[compiler-gate] ok"
