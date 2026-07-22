@@ -37,7 +37,10 @@ bad() { echo "FAIL: $1" >&2; fail=$((fail+1)); }
 proj="$WORK/proj"; mkdir -p "$proj"
 cat > "$proj/pure.vibex" <<'EOF'
 let add = (a: Int, b: Int) -> Int { a + b }
-fn main with { Stdout } { Stdout::write_stream("\{add(2, 3)}\n") }
+fn main with { } { let _ = add(2, 3); () }
+EOF
+cat > "$proj/output.vibex" <<'EOF'
+fn main with { Stdout } { Stdout::write_stream("5\n") }
 EOF
 # Allocation-heavy: O(n^2) string build allocates a fresh string each iteration.
 cat > "$proj/alloc.vibex" <<'EOF'
@@ -54,17 +57,18 @@ fn main with { } { let _ = String::length(build(500)); () }
 EOF
 
 # 1. plain run emits NO memory report.
-plain_err="$("$VIBE" run "$proj/pure.vibex" 2>&1 >/dev/null)"
+plain_err="$("$VIBE" run "$proj/output.vibex" 2>&1 >/dev/null)"
 if printf '%s' "$plain_err" | grep -q "vibe::mem"; then bad "plain run leaked a memory report"; else ok "plain run emits no memory report"; fi
 
 # 2. --mem emits the machine-readable line + keeps stdout clean.
-pure_out="$("$VIBE" run --mem "$proj/pure.vibex" 2>/dev/null)"
-pure_err="$("$VIBE" run --mem "$proj/pure.vibex" 2>&1 >/dev/null)"
-[ "$(printf '%s' "$pure_out" | grep -o '5' | head -1)" = "5" ] && ok "--mem: stdout contains the program output (5)" || bad "--mem: stdout missing program output (got: $pure_out)"
-printf '%s\n' "$pure_err" | grep -qE "vibe::mem heap_base=[0-9]+ heap_peak=[0-9]+ allocated=[0-9]+ committed=[0-9]+" \
-  && ok "--mem: machine-readable line present" || bad "--mem: missing machine-readable line (got: $pure_err)"
+output_out="$("$VIBE" run --mem "$proj/output.vibex" 2>/dev/null)"
+output_err="$("$VIBE" run --mem "$proj/output.vibex" 2>&1 >/dev/null)"
+[ "$(printf '%s' "$output_out" | grep -o '5' | head -1)" = "5" ] && ok "--mem: stdout contains the program output (5)" || bad "--mem: stdout missing program output (got: $output_out)"
+printf '%s\n' "$output_err" | grep -qE "vibe::mem heap_base=[0-9]+ heap_peak=[0-9]+ allocated=[0-9]+ committed=[0-9]+" \
+  && ok "--mem: machine-readable line present" || bad "--mem: missing machine-readable line (got: $output_err)"
 
 # 3. pure program allocates ~0 bytes.
+pure_err="$("$VIBE" run --mem "$proj/pure.vibex" 2>&1 >/dev/null)"
 pure_alloc="$(printf '%s\n' "$pure_err" | grep -oE 'allocated=[0-9]+' | head -1 | cut -d= -f2)"
 [ "${pure_alloc:-x}" = "0" ] && ok "pure program allocates 0 bytes" || bad "pure program allocated=$pure_alloc (expected 0)"
 
