@@ -1806,6 +1806,25 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
         },
         _ => ()
       },
+      // `fn name(..) -> R { .. }` declares parse to SFnDecl, not SLet (see
+      // parse_fn_stmt_general) -- without this case every `fn`-declared
+      // function (the more common spelling) was invisible here, silently
+      // missing from the `for`/async-vs-sync desugar and other fn_returns
+      // consumers below.
+      SFnDecl(_, fname, body, _, _) => match body {
+        EFn(_, _, _, ret, _, _) => {
+          let rn = match ret {
+            Some(te) => match te {
+              TyName(n) => n,
+              TyApp(n, _) => n,
+              _ => ""
+            },
+            None => ""
+          }
+          Array::push(out, (fname, rn))
+        },
+        _ => ()
+      },
       // #672: map each enum variant constructor to its enum name, so a
       // `let t = Node(...)` binding resolves `t`'s type for the `==` dispatch
       // (infer_arg_type_name reads ctor calls through fn_returns).
@@ -2339,7 +2358,24 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
             let (name, _) = Array::get(ps, 0)
             let rwval = railway_rw(val, struct_sets, var_types, fn_returns)
             let inferred = infer_arg_type_name(val, struct_sets, var_types, fn_returns)
-            let body_vars = extend_var_types(var_types, name, inferred)
+            // #1064: `name` binds to the UNWRAPPED payload (`Some(name)`'s
+            // field), never to a value of `inferred`'s own type (the
+            // wrapper "Option"/"Result" of `val`) -- recording name ->
+            // inferred here conflated the two, so a later `name == <int
+            // literal>` in `rest` was misclassified by
+            // infer_arg_type_name's var_types lookup as an Option/Result
+            // operand and routed through the structural opt_eq_match/
+            // result_eq_match rewrite instead of a scalar comparison,
+            // silently computing nonsense (any comparison against a plain
+            // scalar payload behaved like it were reading through an actual
+            // Option/Result value's heap layout). No replacement type is
+            // recorded: fn_returns only carries the head name of a call's
+            // return type ("Option", not "Option[Int]"), so the payload's
+            // real type isn't recoverable here -- leaving `name` untracked
+            // falls through infer_arg_type_name to `None` (unknown type),
+            // which keeps the plain scalar `==`/`!=` codegen path, correct
+            // for the common case this railway-bind sugar exists for.
+            let body_vars = var_types
             let rwrest = railway_rw(rest, struct_sets, body_vars, fn_returns)
             lower_try_bind(rwval, name, rwrest, inferred)
           },
@@ -2555,7 +2591,24 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
             let (name, _) = Array::get(ps, 0)
             let rwval = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
             let inferred = infer_arg_type_name(val, struct_sets, var_types, fn_returns)
-            let body_vars = extend_var_types(var_types, name, inferred)
+            // #1064: `name` binds to the UNWRAPPED payload (`Some(name)`'s
+            // field), never to a value of `inferred`'s own type (the
+            // wrapper "Option"/"Result" of `val`) -- recording name ->
+            // inferred here conflated the two, so a later `name == <int
+            // literal>` in `rest` was misclassified by
+            // infer_arg_type_name's var_types lookup as an Option/Result
+            // operand and routed through the structural opt_eq_match/
+            // result_eq_match rewrite instead of a scalar comparison,
+            // silently computing nonsense (any comparison against a plain
+            // scalar payload behaved like it were reading through an actual
+            // Option/Result value's heap layout). No replacement type is
+            // recorded: fn_returns only carries the head name of a call's
+            // return type ("Option", not "Option[Int]"), so the payload's
+            // real type isn't recoverable here -- leaving `name` untracked
+            // falls through infer_arg_type_name to `None` (unknown type),
+            // which keeps the plain scalar `==`/`!=` codegen path, correct
+            // for the common case this railway-bind sugar exists for.
+            let body_vars = var_types
             let rwrest = rewrite_expr(rest, gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
             lower_try_bind(rwval, name, rwrest, inferred)
           },
