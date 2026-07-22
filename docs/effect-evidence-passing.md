@@ -120,26 +120,49 @@ lowering 戦略は `EPerform`/`EHandle` を消費する差し替え可能な pas
 将来の戦略追加は新しい lowering pass の追加であって、`EPerform`/`EHandle`
 を生成する checker/normalize 側の変更を要求しない。
 
-### 静的解決 (evidence 不要) と動的解決 (evidence を実引数で渡す)
+### evidence dict のスコープと解決 (**訂正版** — 2026-07-22 実装作業中に判明)
 
-vibe の effect row は静的に宣言され、handler は lexical scope で決まる
-(#817 の主張どおり、これ自体は正しい)。`perform Effect::Op(args)` の
-呼び出し経路 (perform から handle まで) 上のすべての関数が、その
-operation を**具体的な row として**(row variable 越しではなく) 宣言して
-いる場合、handler は**コンパイル時に一意に決まる**。この場合 evidence は
-実行時の値として存在する必要すらなく、`perform` はコンパイル時に選ばれた
-handler 実装への**直接呼び出し**へ完全に消える (dict そのものを持ち回ら
-ない — trait dict でいう「単相化された呼び出しは dict 引数なしで直接
-呼べる」場合と同じ)。
+初稿ではここを「呼び出し経路上に row variable が無ければ handler はコンパイル
+時に一意に決まり、evidence は完全に消える」と書いたが、これは誤りだった。
+`fixtures/effect_higher_order_swap.vibe` を精査すると反例になる: `compute`
+(effect row は `with { Env }` — row variable を一切含まない具体的な row) は
+`with_ten(compute)` と `with_hundred(compute)` の**両方**から呼ばれ、
+呼び出し先ごとに**異なる**handler がインストールされる。つまり「row variable
+が無いこと」は handler の一意性を全く保証しない — 一意性は「その関数の
+*特定の呼び出し* が、コンパイル時に判別可能な唯一の handler インストール
+経路の下にあるか」という、呼び出しグラフの reachability の問題であって、
+宣言された row の形からは決まらない。
 
-経路上のいずれかの関数が row variable (現行の「単一小文字ラベル」escape
-hatch、または ADR-0071 の `RowVariable`) 越しにその operation を要求して
-いる場合のみ、その関数は evidence dict を暗黙引数として受け取るよう
-コンパイルし、呼び出し側は具体 handler から dict を合成して渡す。
-「evidence を静的に消せるか、実引数として渡す必要があるか」は
-generic 関数が trait dict を静的に消せるか (単相化) 実引数で渡す必要が
-あるか (真に polymorphic) と同型の判定であり、同じ解析基盤
-(`desugar_trait_dict.vibe` の instantiation 判定) を拡張して求める。
+正しいモデルは、**trait dict-passing とまったく同じ**「dict はデフォルトで
+常に (暗黙引数として) 持ち回り、静的消去は monomorphization 相当の最適化」
+という形にする。
+
+- `handle { EXPR } with Effect { Op(args) => body }` の **EXPR 自身の直下**
+  (関数呼び出しを挟まない位置) にある `perform Effect::Op(args)` は、
+  handle 式が evidence を合成するその場で直接わかるので、コンパイル時に
+  handler 実装への直接呼び出しへ解決できる — dict は要らない。これは
+  trait dict でいう「具体型が呼び出し位置で分かっている単相呼び出し」と
+  同じ状況である。
+- `perform` が **関数呼び出しを 1 段以上挟んだ先** (`EXPR` が `f()` を呼び、
+  `f` の本体が perform する、というよくある形 — 実際
+  `fixtures/effect_higher_order_*.vibe` は**すべて**この形) にある場合、
+  `f` は evidence dict を暗黙引数として受け取るようコンパイルし、
+  `handle` 側が dict を合成して渡す。これは trait dict でいう「型引数が
+  外側から渡ってくる generic 関数」と同じ状況であり、`f` の effect row に
+  row variable があるかどうかとは無関係に発生する (`compute` の例のとおり)。
+- 「dict を静的に消せる」ケースを**呼び出しグラフ全体に一般化する** (`f`
+  が provably 単一の handle 経路の下でしか呼ばれないと証明して dict 引数
+  ごと消す) のは、trait dict の monomorphization/inlining と同じ**独立した
+  最適化**として後続に位置づける。Phase 2/3 の正しさはこれに依存しない
+  — dict は常に正しく機能する既定経路であり、消去は追加のボーナスに
+  すぎない。
+
+row variable (現行の「単一小文字ラベル」escape hatch、または ADR-0071 の
+`RowVariable`) は「dict を持ち回るかどうか」の判断基準ではなく、
+「**dict のどの operation フィールドが必要になるか、コンパイル時に列挙
+できるか**」の問題として引き続き関係する — ADR-0071 の構造化 row が
+Phase 3 (replay 全廃) の前提になる、という既存の結論 (下記「検討済みの
+論点」参照) はこの訂正後も変わらない。
 
 ### tail-resumptive 高速パス (ゼロコスト直接呼び出し)
 
@@ -287,10 +310,12 @@ dynamic-wind 相当の明示的な finalizer スタック機構 (`docs/pl-survey
 - **WasmFX が来るまで待つ**: stage 2、Wasmtime 限定。node/ブラウザで
   今日使えない。suspend 点 IR を用意しておけば WasmFX 到達後の
   lowering 追加は非破壊的にできるため、待つ理由がない。
-- **evidence を常に実引数で渡す (静的解決を省略)**: 呼び出し経路の
-  大半が具体 handler に静的に解決できるという vibe の実態
-  (issue の主張、本 ADR も支持) を活かさず、trait dict の単相化と
-  対称性が壊れる。
+- **row variable の有無だけで static/dynamic を判定する** (初稿の誤り):
+  `fixtures/effect_higher_order_swap.vibe` が反例 — row variable を含まない
+  具体的な effect row の関数 (`compute`) でも、呼び出しグラフ上で複数の
+  異なる handler インストール経路の下に置かれうる。dict の要否は宣言された
+  row の形ではなく呼び出しグラフの reachability で決まる (上記「evidence
+  dict のスコープと解決」参照)。
 
 ## 段階導入計画 (bootstrap bump は各段階の境界)
 
