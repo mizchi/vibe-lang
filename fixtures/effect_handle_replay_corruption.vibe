@@ -1,26 +1,20 @@
 // KNOWN BUG (M2, eval/lang-review/findings/2026-07-12-r2.md; tracked by
-// ADR-0076 / issue #817): `handle` is implemented by re-executing the whole
-// handled body from the top on every `resume` ("replay"). Only perform
-// *return values* are memoized across replay passes -- ordinary statements
-// (here, `count = count + 1`) genuinely re-run every pass, so N performs
-// cause N+1 full passes over any code that runs before the last resolved
-// perform. This corrupts both a side-channel counter AND the handle's own
-// return value (`a + b + count`), not just an isolated side effect.
+// ADR-0076 / issue #817): `handle` was implemented by re-executing the whole
+// handled body from the top on every `resume` ("replay"), corrupting both
+// side-channel state and the handle's own return value for handlers with
+// more than one perform preceded by non-perform statements.
 //
-// Ideal (once #817's evidence passing replaces replay, no re-execution):
+// Fixed by ADR-0076 Phase 2 (direct-perform inlining, common_base/
+// inline_direct_perform.vibe): this fixture's handled body has no
+// unsafe construct (no nested `handle`, no closures, no calls to named
+// functions that could hide a perform), so every `perform Ask::Get` is
+// inlined directly into the (tail-resumptive, per #942) `Get => resume(5)`
+// arm body instead of going through the replay loop. Each statement now
+// runs exactly once:
 //   count == 3 (one increment per statement, each runs exactly once)
 //   r == 5 + 5 + 3 == 13
 //   compute() == (3, 13)
-//
-// Current (replay, pinned by this fixture -- update the expected value
-// below when ADR-0076 Phase 2/3 lands and re-verify against the "ideal"
-// comment above instead):
-//   pass 1: count 0->1, reaches perform #0 unresolved, unwinds
-//   pass 2: count 1->2, perform #0 resolved (memoized 5), count 2->3,
-//           perform #1 unresolved, unwinds
-//   pass 3: count 3->4, perform #0 resolved, count 4->5, perform #1
-//           resolved, count 5->6, final expr `a + b + count` = 5+5+6 = 16
-//   compute() == (6, 16) -- count and r both wrong
+//   main() == 3 * 1000 + 13 == 3013
 effect Ask {
   Get -> Int
 }
@@ -46,4 +40,4 @@ export let main = () -> Int {
 }
 
 __DATA__
-{"last": "6016"}
+{"last": "3013"}

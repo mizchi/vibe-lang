@@ -1,0 +1,472 @@
+//# Imports
+
+import ../../core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr
+}
+
+//# Functions
+
+// ADR-0076 Phase 2 (evidence-passing effect handlers, #817), first slice.
+//
+// `handle { BODY } with Effect { Op(args) => arm_body, ... }` is compiled
+// today via a replay loop (compile_expr_tail6.vibe) that re-executes BODY
+// from the top on every resume -- the mechanism behind the M2 correctness
+// bug (fixtures/effect_handle_replay_corruption.vibe) and the ~16K perform
+// bound. #942 already guarantees, as a hard compile error otherwise, that
+// every `resume(e)` in a handler arm is in TAIL position with nothing after
+// it (single-shot, no post-processing) -- i.e. every arm body already has
+// exactly the shape ADR-0076 calls "tail-resumptive". This pass exploits
+// that: for a `perform Effect::Op(args)` that occurs DIRECTLY inside a
+// handle's own BODY (not behind an intervening function call, and not
+// inside a nested closure or a nested `handle`), the handler is known at
+// the exact point of the perform -- no runtime dispatch, no evidence dict,
+// no unwind is needed at all. The perform is replaced in place by the
+// matching arm's body (with each pattern-bound parameter let-bound to the
+// actual argument expression, and the arm's own tail `resume(e)` rewritten
+// to plain `e`), and if EVERY perform for this handle's operations turns
+// out to be reachable this way, the `EHandle` wrapper itself is dropped
+// entirely -- the compiled program has no handler machinery left for that
+// `handle` at all.
+//
+// This does NOT attempt the general case (evidence dicts threaded through
+// intervening function calls, ADR-0076's primary mechanism) -- that is a
+// separate, larger slice. Conservative bail-out: if a handle's BODY
+// contains any `EFn` (nested closure -- a perform inside it might run much
+// later, dynamically, possibly after this handle has already returned) or
+// any nested `EHandle` (handler-shadowing semantics this pass does not
+// attempt to reason about), inlining is skipped entirely for that handle
+// and it is left for the existing replay codegen, matching today's
+// behavior exactly. A handle with some performs reachable and some hidden
+// behind such a boundary is a documented future improvement (Phase 2b) --
+// today it is all-or-nothing.
+//
+// Runs once over the whole merged program, called from both codegen
+// backends' convergence points, mirroring rewrite_self_tail_calls
+// (self_tail_call.vibe) and desugar_trait_dicts.
+export fn inline_direct_performs(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, is_rec, name, ty, expr) => {
+        let new_expr = idp_rewrite(expr, idp_empty_table())
+        Array::set(stmts, i, SLet(exported, is_rec, name, ty, new_expr))
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+// Arm lookup table: parallel arrays (op qualified name, param bind names,
+// prepared body with tail resume(e) already rewritten to e). Empty arrays
+// mean "no handle scope currently active" -- performs never match.
+fn idp_empty_table() -> (Array[String], Array[Array[String]], Array[Expr]) {
+  (array_empty_str(), array_empty_arr_str(), array_empty_expr())
+}
+
+fn array_empty_str() -> Array[String] {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+
+fn array_empty_arr_str() -> Array[Array[String]] {
+  Array::slice([
+    array_empty_str()
+  ], 0, 0)
+}
+
+fn array_empty_expr() -> Array[Expr] {
+  Array::slice([
+    EUnit
+  ], 0, 0)
+}
+
+fn idp_table_is_empty(table: (Array[String], Array[Array[String]], Array[Expr])) -> Bool {
+  let (names, _, _) = table
+  Array::length(names) == 0
+}
+
+fn idp_table_lookup(table: (Array[String], Array[Array[String]], Array[Expr]), qname: String) -> Int {
+  let (names, _, _) = table
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(names) {
+    if Array::get(names, i) == qname {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// --- conservative bail-out guard.
+//
+// Inlining is only sound when EVERY perform matching this handle's
+// operations is actually reachable by this pass's own traversal. Two
+// things can hide one: (a) an `EFn`/nested `EHandle` (a perform inside
+// either might run later, dynamically, or is intercepted by a nearer
+// handler -- see the module doc comment), and (b) a call to anything
+// other than `perform` itself. (b) matters even with no lambda in sight:
+// `handle { f() } with Http { Fetch(_) => resume(...) } }` (exactly the
+// shape of every fixtures/effect_higher_order_*.vibe fixture) calls a
+// NAMED function `f` whose OWN body may perform Http::Fetch -- that
+// perform is not in `body`'s AST at all (it lives in f's separate
+// top-level definition), so this pass cannot see, let alone inline, it.
+// Treating "no EFn/EHandle" as sufficient to drop the wrapper would have
+// deleted the handler for that unseen perform entirely -- an unhandled
+// perform at runtime. Conservatively flagging every non-`perform` call as
+// unsafe avoids this; recognizing calls that are provably effect-free
+// (builtins, or user functions whose declared row excludes this effect)
+// is a documented follow-up (Phase 2b), not attempted here.
+fn idp_has_unsafe_construct(expr: Expr) -> Bool {
+  match expr {
+    EFn(_, _, _, _, _, _) => true,
+    EHandle(_, _) => true,
+    ELet(_, v, b, _) => idp_has_unsafe_construct(v) || idp_has_unsafe_construct(b),
+    ELetMut(_, v, b, _) => idp_has_unsafe_construct(v) || idp_has_unsafe_construct(b),
+    ELetRec(_, v, b) => idp_has_unsafe_construct(v) || idp_has_unsafe_construct(b),
+    ESeq(a, b) => idp_has_unsafe_construct(a) || idp_has_unsafe_construct(b),
+    EIf(c, t, e) => idp_has_unsafe_construct(c) || idp_has_unsafe_construct(t) || idp_has_unsafe_construct(e),
+    EMatch(s, arms) => idp_has_unsafe_construct(s) || idp_arms_have_unsafe_construct(arms),
+    EWhile(c, b) => idp_has_unsafe_construct(c) || idp_has_unsafe_construct(b),
+    EForIn(_, _, it, b) => idp_has_unsafe_construct(it) || idp_has_unsafe_construct(b),
+    ECall(callee, args, _) => match callee {
+      // `perform Effect::Op(args)` parses to `ECall(EIdent("perform"),
+      // [ECall(EIdent("Effect::Op"), args)])` (or `[EIdent("Effect::Op")]`
+      // for a zero-arg op) -- the operation's own qualified name is NOT a
+      // "call to something else" in the unsafe sense, it is the operation
+      // being performed; only ITS OWN arguments need checking.
+      EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
+        idp_perform_operand_has_unsafe_construct(Array::get(args, 0))
+      } else {
+        idp_call_is_unsafe(callee) || idp_exprs_have_unsafe_construct(args)
+      },
+      _ => idp_call_is_unsafe(callee) || idp_exprs_have_unsafe_construct(args)
+    },
+    EBinOp(_, l, r) => idp_has_unsafe_construct(l) || idp_has_unsafe_construct(r),
+    EUnaryOp(_, e2) => idp_has_unsafe_construct(e2),
+    EAssign(_, v, c) => idp_has_unsafe_construct(v) || idp_has_unsafe_construct(c),
+    EAssignOp(_, _, v, c) => idp_has_unsafe_construct(v) || idp_has_unsafe_construct(c),
+    // Any `.field`/method-style access is conservatively unsafe too (could
+    // be a method dispatch with hidden effects by the time this runs).
+    EDot(_, _, _, _) => true,
+    ELabeledArg(_, _, v) => idp_has_unsafe_construct(v),
+    EReturn(e2) => idp_has_unsafe_construct(e2),
+    EBreak(opt) => match opt {
+      Some(e2) => idp_has_unsafe_construct(e2),
+      None => false
+    },
+    EContinue(args) => idp_exprs_have_unsafe_construct(args),
+    ETuple(elems) => idp_exprs_have_unsafe_construct(elems),
+    EArray(elems) => idp_exprs_have_unsafe_construct(elems),
+    ERecord(_, fields, _) => idp_fields_have_unsafe_construct(fields),
+    EMap(fields) => idp_fields_have_unsafe_construct(fields),
+    ESpread(e2) => idp_has_unsafe_construct(e2),
+    ELoop(pairs, b) => idp_pairs_have_unsafe_construct(pairs) || idp_has_unsafe_construct(b),
+    _ => false
+  }
+}
+
+// Only a direct call to the `perform` builtin is safe; a call to anything
+// else (a named top-level function, a parameter-bound closure, a computed
+// callee expression) may reach a perform this pass cannot see.
+fn idp_call_is_unsafe(callee: Expr) -> Bool {
+  match callee {
+    EIdent(nm, _) => nm != "perform",
+    _ => true
+  }
+}
+
+// `operand` is `perform`'s single argument -- the operation application
+// itself (`EIdent(qname)` for zero args, `ECall(EIdent(qname), op_args)`
+// otherwise). The qualified operation name is never itself an unsafe call
+// target; only the actual argument expressions need checking.
+fn idp_perform_operand_has_unsafe_construct(operand: Expr) -> Bool {
+  match operand {
+    EIdent(_, _) => false,
+    ECall(op_callee, op_args, _) => match op_callee {
+      EIdent(_, _) => idp_exprs_have_unsafe_construct(op_args),
+      _ => true
+    },
+    _ => true
+  }
+}
+
+fn idp_exprs_have_unsafe_construct(exprs: Array[Expr]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(exprs) {
+    if idp_has_unsafe_construct(Array::get(exprs, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn idp_fields_have_unsafe_construct(fields: Array[(String, Expr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    if idp_has_unsafe_construct(v) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn idp_pairs_have_unsafe_construct(pairs: Array[(String, Expr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(pairs) {
+    let (_, v) = Array::get(pairs, i)
+    if idp_has_unsafe_construct(v) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn idp_arms_have_unsafe_construct(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    if idp_has_unsafe_construct(ex) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// --- per-arm preparation: bind names + tail resume(e) -> e.
+
+fn idp_pat_bind_names(pat: Pat) -> Array[String] {
+  match pat {
+    PCtor(_, subpats) => for p in subpats {
+      match p {
+        PBind(n) => n,
+        _ => "_"
+      }
+    },
+    _ => array_empty_str()
+  }
+}
+
+fn idp_pat_qname(pat: Pat) -> String {
+  match pat {
+    PCtor(name, _) => name,
+    _ => ""
+  }
+}
+
+// Replace every tail-position `resume(e)` with `e`. Mirrors #942's own
+// tail-position traversal (check_arm_resume_tail in checker.vibe) so the
+// two stay in lockstep: #942 already guarantees resume only ever appears
+// at exactly these tail slots, with nothing after it.
+fn idp_strip_tail_resume(expr: Expr) -> Expr {
+  match expr {
+    EIf(c, t, e) => EIf(c, idp_strip_tail_resume(t), idp_strip_tail_resume(e)),
+    EMatch(s, arms) => EMatch(s, idp_strip_tail_resume_arms(arms)),
+    ELet(n, v, b, off) => ELet(n, v, idp_strip_tail_resume(b), off),
+    ELetMut(n, v, b, off) => ELetMut(n, v, idp_strip_tail_resume(b), off),
+    ELetRec(n, v, b) => ELetRec(n, v, idp_strip_tail_resume(b)),
+    ESeq(a, b) => ESeq(a, idp_strip_tail_resume(b)),
+    EAssign(n, v, c) => EAssign(n, v, idp_strip_tail_resume(c)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, v, idp_strip_tail_resume(c)),
+    EReturn(e2) => EReturn(idp_strip_tail_resume(e2)),
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if nm == "resume" && Array::length(args) == 1 {
+        Array::get(args, 0)
+      } else {
+        expr
+      },
+      _ => expr
+    },
+    _ => expr
+  }
+}
+
+fn idp_strip_tail_resume_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
+  for a in arms {
+    let (p, ex) = a
+    (p, idp_strip_tail_resume(ex))
+  }
+}
+
+// --- the main rewrite.
+
+fn idp_rewrite(expr: Expr, table: (Array[String], Array[Array[String]], Array[Expr])) -> Expr {
+  match expr {
+    EHandle(body, arms) => idp_rewrite_handle(body, arms, table),
+    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, idp_rewrite(b, idp_empty_table())),
+    ELet(n, v, b, off) => ELet(n, idp_rewrite(v, table), idp_rewrite(b, table), off),
+    ELetMut(n, v, b, off) => ELetMut(n, idp_rewrite(v, table), idp_rewrite(b, table), off),
+    ELetRec(n, v, b) => ELetRec(n, idp_rewrite(v, table), idp_rewrite(b, table)),
+    ESeq(a, b) => ESeq(idp_rewrite(a, table), idp_rewrite(b, table)),
+    EIf(c, t, e) => EIf(idp_rewrite(c, table), idp_rewrite(t, table), idp_rewrite(e, table)),
+    EMatch(s, arms) => EMatch(idp_rewrite(s, table), idp_rewrite_arms(arms, table)),
+    EWhile(c, b) => EWhile(idp_rewrite(c, table), idp_rewrite(b, table)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, idp_rewrite(it, table), idp_rewrite(b, table)),
+    ECall(callee, args, off) => idp_rewrite_call(callee, args, off, table),
+    EBinOp(op, l, r) => EBinOp(op, idp_rewrite(l, table), idp_rewrite(r, table)),
+    EUnaryOp(op, e2) => EUnaryOp(op, idp_rewrite(e2, table)),
+    EAssign(n, v, c) => EAssign(n, idp_rewrite(v, table), idp_rewrite(c, table)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, idp_rewrite(v, table), idp_rewrite(c, table)),
+    EDot(o, f, off1, off2) => EDot(idp_rewrite(o, table), f, off1, off2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, idp_rewrite(v, table)),
+    EReturn(e2) => EReturn(idp_rewrite(e2, table)),
+    EBreak(opt) => EBreak(match opt {
+      Some(e2) => Some(idp_rewrite(e2, table)),
+      None => None
+    }),
+    EContinue(args) => EContinue(idp_rewrite_exprs(args, table)),
+    ETuple(elems) => ETuple(idp_rewrite_exprs(elems, table)),
+    EArray(elems) => EArray(idp_rewrite_exprs(elems, table)),
+    ERecord(n, fields, tas) => ERecord(n, idp_rewrite_fields(fields, table), tas),
+    EMap(fields) => EMap(idp_rewrite_fields(fields, table)),
+    ESpread(e2) => ESpread(idp_rewrite(e2, table)),
+    ELoop(pairs, b) => ELoop(idp_rewrite_pairs(pairs, table), idp_rewrite(b, table)),
+    _ => expr
+  }
+}
+
+fn idp_rewrite_exprs(exprs: Array[Expr], table: (Array[String], Array[Array[String]], Array[Expr])) -> Array[Expr] {
+  for e in exprs {
+    idp_rewrite(e, table)
+  }
+}
+
+fn idp_rewrite_fields(fields: Array[(String, Expr)], table: (Array[String], Array[Array[String]], Array[Expr])) -> Array[(String, Expr)] {
+  for f in fields {
+    let (n, v) = f
+    (n, idp_rewrite(v, table))
+  }
+}
+
+fn idp_rewrite_pairs(pairs: Array[(String, Expr)], table: (Array[String], Array[Array[String]], Array[Expr])) -> Array[(String, Expr)] {
+  for p in pairs {
+    let (n, v) = p
+    (n, idp_rewrite(v, table))
+  }
+}
+
+fn idp_rewrite_arms(arms: Array[(Pat, Expr)], table: (Array[String], Array[Array[String]], Array[Expr])) -> Array[(Pat, Expr)] {
+  for a in arms {
+    let (p, ex) = a
+    (p, idp_rewrite(ex, table))
+  }
+}
+
+fn idp_rewrite_handle(body: Expr, arms: Array[(Pat, Expr)], outer_table: (Array[String], Array[Array[String]], Array[Expr])) -> Expr {
+  if idp_has_unsafe_construct(body) {
+    // Conservative bail-out: leave this handle's own performs to the
+    // existing replay codegen. Still recurse into body/arms with a FRESH
+    // (empty) context -- any OTHER handle nested inside (which triggered
+    // this bail-out) gets its own independent chance to inline, and any
+    // stray perform for the now-inactive outer effect is simply left alone
+    // (matches ordinary lexical scoping: this pass never invents a target
+    // that codegen wouldn't otherwise resolve).
+    EHandle(idp_rewrite(body, idp_empty_table()), idp_rewrite_arms(arms, idp_empty_table()))
+  } else {
+    let op_names = for a in arms {
+      let (p, _) = a
+      idp_pat_qname(p)
+    }
+    let bind_names = for a in arms {
+      let (p, _) = a
+      idp_pat_bind_names(p)
+    }
+    let prepared_bodies = for a in arms {
+      let (_, ex) = a
+      idp_strip_tail_resume(idp_rewrite(ex, idp_empty_table()))
+    }
+    let table = (op_names, bind_names, prepared_bodies)
+    // No EFn/nested-handle boundary exists anywhere in `body`, so this
+    // rewrite is guaranteed to reach and inline every perform matching
+    // one of `arms` -- the result has none left, and the EHandle wrapper
+    // (and everything it would have compiled to: replay loop, per-effect
+    // reserved region, perform counter) can be dropped entirely.
+    idp_rewrite(body, table)
+  }
+}
+
+fn idp_rewrite_call(callee: Expr, args: Array[Expr], off: Int, table: (Array[String], Array[Array[String]], Array[Expr])) -> Expr {
+  match callee {
+    EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 && !idp_table_is_empty(table) {
+      idp_rewrite_perform(Array::get(args, 0), table)
+    } else {
+      ECall(idp_rewrite(callee, table), idp_rewrite_exprs(args, table), off)
+    },
+    _ => ECall(idp_rewrite(callee, table), idp_rewrite_exprs(args, table), off)
+  }
+}
+
+// `operand` is the perform's single argument: either `EIdent(qname)` for a
+// zero-arg operation, or `ECall(EIdent(qname), op_args)` for one with
+// arguments (see parser_expr_primary.vibe's parse_perform_primary).
+fn idp_rewrite_perform(operand: Expr, table: (Array[String], Array[Array[String]], Array[Expr])) -> Expr {
+  match operand {
+    EIdent(qname, _) => idp_splice_or_leave(qname, array_empty_expr(), operand, table),
+    ECall(op_callee, op_args, _) => match op_callee {
+      EIdent(qname, _) => idp_splice_or_leave(qname, idp_rewrite_exprs(op_args, table), operand, table),
+      _ => ECall(EIdent("perform", -1), [
+        idp_rewrite(operand, table)
+      ], -1)
+    },
+    _ => ECall(EIdent("perform", -1), [
+      idp_rewrite(operand, table)
+    ], -1)
+  }
+}
+
+fn idp_splice_or_leave(qname: String, actual_args: Array[Expr], original_operand: Expr, table: (Array[String], Array[Array[String]], Array[Expr])) -> Expr {
+  let idx = idp_table_lookup(table, qname)
+  if idx < 0 {
+    ECall(EIdent("perform", -1), [
+      original_operand
+    ], -1)
+  } else {
+    let (_, bind_names_list, prepared_bodies) = table
+    let bind_names = Array::get(bind_names_list, idx)
+    let prepared_body = Array::get(prepared_bodies, idx)
+    idp_bind_args(bind_names, actual_args, prepared_body)
+  }
+}
+
+// `let bind_0 = actual_0; let bind_1 = actual_1; ...; prepared_body` --
+// evaluates every argument exactly once, in left-to-right order, before the
+// (already tail-resume-stripped) arm body runs, matching ordinary function
+// call-argument semantics.
+fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_body: Expr) -> Expr {
+  let n = Array::length(bind_names)
+  let mut result = prepared_body
+  let mut i = n - 1
+  while i >= 0 {
+    if i < Array::length(actual_args) {
+      result = ELet(Array::get(bind_names, i), Array::get(actual_args, i), result, -1)
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  result
+}

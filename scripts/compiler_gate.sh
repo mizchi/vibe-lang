@@ -4159,19 +4159,20 @@ echo "[compiler-gate] gc-lane to_string(Bool) regressions ok"
 
 # 40l. handle-replay side-effect corruption regression guard (M2,
 #      eval/lang-review/findings/2026-07-12-r2.md; tracked by ADR-0076/#817).
-#      `handle` currently re-executes the whole handled body from the top on
+#      `handle` used to re-execute the whole handled body from the top on
 #      every `resume` ("replay"); this fixture has 2 performs + a `let mut`
-#      counter mutated around each, so replay's re-execution corrupts both
+#      counter mutated around each, so replay's re-execution corrupted both
 #      the counter and the handle's own return value in a specific,
 #      deterministic way (see the fixture's header comment for the full
-#      trace). This gate pins the CURRENT (buggy) output so the bug class
-#      cannot silently get worse -- fixtures/effect_*.vibe with `__DATA__`
+#      trace, pre-fix output was 6016). ADR-0076 Phase 2 (direct-perform
+#      inlining, common_base/inline_direct_perform.vibe) fixes this exact
+#      shape -- the handled body has no unsafe construct, so both performs
+#      inline directly into the tail-resumptive arm instead of going through
+#      replay. This gate now pins the FIXED output (3013 == 1000*3 +
+#      (5+5+3)) as a regression lock: fixtures/effect_*.vibe with `__DATA__`
 #      are not otherwise wired into any automated harness today
 #      (generate_runtime_fixture_tests.mjs explicitly excludes `perform`/
-#      `handle` sources). Once ADR-0076 Phase 2/3 lands, this assertion
-#      MUST change to "3013" (== 1000*3 + (5+5+3), the value the fixture's
-#      "Ideal" comment documents) -- a failure here after that point means
-#      evidence passing didn't actually fix replay re-execution.
+#      `handle` sources).
 echo "[compiler-gate] 40l/40 handle-replay side-effect corruption regression guard (M2/#817)"
 m2dir="_build/_gate_effect_replay_m2"
 rm -rf "$m2dir"; mkdir -p "$m2dir"
@@ -4185,12 +4186,12 @@ if [ ! -s "$m2dir/m2.wasm" ]; then
   exit 1
 fi
 m2_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$m2dir/m2.wasm" 2>&1 | tail -1)"
-if [ "$m2_out" != "6016" ]; then
-  echo "[compiler-gate] FAIL: effect_handle_replay_corruption got '$m2_out' (want 6016, the known-buggy replay value). If you just landed ADR-0076 evidence passing, update this gate's expected value to 3013 (the fixture's documented 'Ideal' value) instead of treating this as a failure." >&2
+if [ "$m2_out" != "3013" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_replay_corruption got '$m2_out' (want 3013, the ADR-0076 Phase 2 direct-perform-inlining fixed value). This means the fix regressed -- e.g. inline_direct_performs stopped firing for this fixture's shape and it fell back to buggy replay (6016)." >&2
   exit 1
 fi
 rm -rf "$m2dir"
-echo "[compiler-gate] handle-replay side-effect corruption regression guard ok (6016, known bug pinned)"
+echo "[compiler-gate] handle-replay side-effect corruption regression guard ok (3013, ADR-0076 Phase 2 fix verified)"
 
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
