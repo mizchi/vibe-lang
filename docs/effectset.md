@@ -1,6 +1,6 @@
 # ADR-0071: operation-level effect row と `effectset`
 
-Status: proposed (実装 step 1-2-4 は着地済み、step 3 は関数自身の宣言 row + パラメータ row の展開が着地、2026-07-22 — 進捗セクション参照)
+Status: proposed (実装 step 1-2-4 は着地済み、step 3 は関数自身の宣言 row + パラメータ row の展開が着地、step 5 は contract passthrough のみ着地、2026-07-22 — 進捗セクション参照)
 
 Date: 2026-07-15
 
@@ -277,9 +277,27 @@ qualified operation 名も discharge set に加えるよう修正し、ADR 本�
 回帰ロック項目「`handle ... with Env` 後は body が要求した `Env`
 operation だけが消える」を実質的に満たす形になった。
 fixtures/effect_handle_operation_level_discharge.vibe +
-compiler_gate.sh 40q で回帰を固定。**未着手のまま残っている範囲**:
-contract/WIT の operation 単位 surface (項目 5)、ADR-0076 evidence
-vector への正規化 row の接続 (項目 6)。
+compiler_gate.sh 40q で回帰を固定。
+
+項目 5 (contract/WIT/diagnostics) のうち、**contract passthrough**の
+一部は着地済み: `effectset` は `effect` と同じ透明な compile-time-only
+alias として classify_contract_stmts (contract.vibe) を通過し、
+`index.vpkg` (ADR-0070 の boundary file) / legacy `index.vibei` の
+どちらの契約ファイル経由でも package facade を生き延びることを
+fixtures/contract_effectset_vpkg/ (実際の package import 境界を跨いだ
+end-to-end テスト) で実証済み。**この slice では直っていない、
+テスト中に見つかった既知のギャップ**: contract 側のシグネチャと
+実装側のシグネチャを照合する機構 (contract-vs-implementation
+signature matching) は effect row を厳密な文字列比較で照合しており
+effectset を認識しない — contract 側で `fn f() -> T with { AskAll }`
+と書き、実装側で展開後の operation を直接書くと、意味的に等価でも
+mismatch エラーになる。WIT 生成 (wit_gen.vibe) も同様に SEffectSet を
+まだ一切認識していない (既存の wildcard fallback により安全に
+無視されるだけで、クラッシュはしない)。**未着手のまま残っている
+範囲**: 上記 2 点 (signature matching の effectset 対応、WIT
+operation-level surface)、ADR-0076 evidence vector への正規化 row の
+接続 (項目 6)。fixtures/contract_effectset_vpkg_main.vibe +
+compiler_gate.sh 40r で回帰を固定。
 
 **Bootstrap gotcha**: `lib/@vibe/parser/` 配下で「新しい関数を定義し、
 別ファイルからその関数を import で参照する」変更を同一コミットに含めると、
