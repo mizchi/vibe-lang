@@ -1,30 +1,31 @@
 //# Imports
 
-import ../../../../lib/@vibe/cache {
+import @vibe/cache {
   parse_persistent_module_header_text, persistent_module_header_text
 }
 
-import ../../../../lib/@vibe/core {
+import @vibe/core {
   array_empty
 }
 
-import ../cache {
+import @vibe/compiler/cache {
   compact_string_fingerprint, normalize_persistent_cache_text, package_index_deps_are_current, persistent_module_header_cache_path
 }
 
-import ../core {
+import @vibe/compiler/core {
   Stmt,
-  dir_of_path, ensure_regular_source_fs, is_contract_ext, resolve_import_path_candidates
+  dir_of_path, ensure_regular_source_fs, is_contract_ext, nearest_vpkg_path_fs,
+  path_has_relative_prefix, resolve_import_path_candidates
 }
 
-import ../runtime/eval_loader {
+import @vibe/compiler/runtime/eval_loader {
   collect_exports
 }
 
-import ../syntax {
+import @vibe/compiler/syntax {
   lex, lex_with_offsets, offset_to_line_col, parse_program, parse_program_located
 }
-import ../contract {
+import @vibe/compiler/contract {
   classify_contract_stmts, contract_facade_marker, extract_package_version, extract_require_pins, parse_contract_program
 }
 
@@ -127,9 +128,83 @@ fn located_missing_import_error(source: String, keyword: String, raw_path: Strin
   }
 }
 
+// The `@scope/name...` spelling a relative-import-boundary error should
+// suggest instead, derived from the resolved package owner's contract path
+// (`lib/@vibe/compiler/core/index.vpkg` -> `@vibe/compiler/core`,
+// `.vibe/store/@vibe/json/index.vpkg` -> `@vibe/json`). Unlike
+// `import_display_name` above (a short display label, truncated to the
+// first two `@scope/name` segments), this must reproduce the FULL lib/-
+// relative path so a compiler-internal nested package (no separate `@`
+// identity of its own) still gets a spelling that actually resolves.
+fn qualified_package_name_from_owner(owner: String) -> String {
+  let without_suffix = if String::ends_with(owner, "/index.vpkg") {
+    owner[0: String::length(owner) - String::length("/index.vpkg")]
+  } else if String::ends_with(owner, "/index.vibei") {
+    owner[0: String::length(owner) - String::length("/index.vibei")]
+  } else {
+    owner
+  }
+  if String::starts_with(without_suffix, "lib/") {
+    without_suffix[String::length("lib/"): String::length(without_suffix)]
+  } else if String::starts_with(without_suffix, ".vibe/store/") {
+    without_suffix[String::length(".vibe/store/"): String::length(without_suffix)]
+  } else {
+    without_suffix
+  }
+}
+
+// The message must contain the literal phrase "package boundary" and the
+// target owner's path: `enforce_incoming_boundary_fs`'s established
+// "cannot import ... across a package boundary" wording (loader.vibe,
+// #729) is what tests/fixtures across this tree assert on
+// (contract_vpkg_test.vibe's "nested package cannot import parent
+// internals" / "parent package cannot import nested package internals").
+fn located_package_boundary_error(source: String, keyword: String, raw_path: String, suggestion: String) -> String {
+  let base_msg = String::concat("relative ", String::concat(keyword, String::concat(" '", String::concat(raw_path, String::concat("' crosses a package boundary; use `", String::concat(keyword, String::concat(" ", String::concat(suggestion, "` instead"))))))))
+  let needle = String::concat(keyword, String::concat(" ", raw_path))
+  let needle_off = String::index_of(source, needle)
+  let off = if needle_off >= 0 {
+    needle_off + String::length(keyword) + 1
+  } else {
+    String::index_of(source, raw_path)
+  }
+  if off < 0 {
+    base_msg
+  } else {
+    let (line, col) = offset_to_line_col(source, off)
+    String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), String::concat(": ", base_msg)))))
+  }
+}
+
+// A relative (`./`, `../`) import must stay within the importing file's own
+// nearest `index.vpkg`-owned package -- reaching a DIFFERENT package,
+// including the neighbor's own facade, is only allowed via a qualified
+// `@scope/name` (or compiler-internal `@scope/name/...`) import. This closes
+// the loophole `enforce_incoming_boundary_fs` (loader.vibe) deliberately
+// leaves open for `@`-qualified imports of a neighbor's facade: that
+// exception is for the CORRECT spelling, not the relative one.
+//
+// `export` (re-export, SReExport) is exempt: the parser's export-statement
+// grammar has no `@scope/name` production at all (only `.`/`..`-prefixed
+// paths), so a boundary-crossing re-export has no alternative spelling to
+// migrate to yet -- enforcing this on `export` would just break working
+// facades with no fix available.
+fn enforce_relative_import_package_boundary_fs(raw_path: String, self_path: String, resolved: String, source: String, keyword: String) -> Unit with { Error, Fs } {
+  if keyword == "import" && path_has_relative_prefix(raw_path, String::length(raw_path)) {
+    let importer_owner = nearest_vpkg_path_fs(self_path)
+    let target_owner = nearest_vpkg_path_fs(resolved)
+    if importer_owner == "" || target_owner == "" || importer_owner == target_owner {
+      ()
+    } else {
+      throw(located_package_boundary_error(source, keyword, raw_path, qualified_package_name_from_owner(target_owner)))
+    }
+  } else ()
+}
+
 fn resolve_checked_path_fs(base_dir: String, raw_path: String, self_path: String, source: String, keyword: String) -> String with { Error, Fs } {
   let resolved = resolve_path_fs(base_dir, raw_path, self_path)
   if String::starts_with(raw_path, "@") || Fs::exists(resolved) {
+    enforce_relative_import_package_boundary_fs(raw_path, self_path, resolved, source, keyword)
     resolved
   } else {
     throw(located_missing_import_error(source, keyword, raw_path, resolved))
