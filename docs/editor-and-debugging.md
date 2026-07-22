@@ -78,8 +78,8 @@ When a program traps at runtime, backtrace frames name the user function *and*
 its source line, e.g.:
 
 ```
-  at boom (prog.vibe:1)
-  at main (prog.vibe:2)
+  at boom (prog.vibex:1)
+  at main (prog.vibex:2)
 ```
 
 This needs no flags — it comes from the wasm name section plus the `.funcmap`
@@ -88,36 +88,36 @@ sidecar the compiler writes for the entry file.
 ### Call trace (`--trace`)
 
 ```bash
-vibe run --trace prog.vibe
+vibe run --trace prog.vibex
 ```
 
 Compiles with function-call trace instrumentation and prints the entry
 sequence, each line annotated with its source location:
 
 ```
-trace: main (prog.vibe:2)
-trace: helper (prog.vibe:1)
+trace: main (prog.vibex:2)
+trace: helper (prog.vibex:1)
 ```
 
 ### Breakpoints (`--break`)
 
 ```bash
-vibe run --break helper prog.vibe              # break at one function (by name)
-vibe run --break helper,worker prog.vibe       # break at several
-vibe run --break prog.vibe:3 prog.vibe         # break at the function declared on line 3
-vibe run --break 3 prog.vibe                    # bare line (any file)
+vibe run --break helper prog.vibex              # break at one function (by name)
+vibe run --break helper,worker prog.vibex       # break at several
+vibe run --break prog.vibex:3 prog.vibex        # break at the function declared on line 3
+vibe run --break 3 prog.vibex                   # bare line (any file)
 ```
 
 A `<file>:<line>` (or bare `<line>`) breaks at that source line, and a name
 breaks at that function's entry. Both forms can be mixed in one comma-separated
 spec. Line breakpoints work at **interior** statement lines, not just function
 declarations: a single-file program compiled in break mode emits a
-`vibe::dbg_line` hook at each `let` / statement boundary, so `--break prog.vibe:7`
+`vibe::dbg_line` hook at each `let` / statement boundary, so `--break prog.vibex:7`
 pauses when execution reaches line 7 even mid-function. Stepping (`s`/`n`) then
 advances at line granularity.
 
 Interior-line breakpoints work across **multiple files**: `--break helper.vibe:3`
-pauses inside an imported module while `--break main.vibe:3` pauses in the entry
+pauses inside an imported module while `--break main.vibex:3` pauses in the entry
 file, even though both are "line 3" — the compiler records each statement's source
 file (a `vibe.dbgfiles` table) so the runner matches the breakpoint's `<file>`
 against the right one. One scope note: a statement whose value is a bare literal
@@ -129,8 +129,8 @@ Execution pauses at the entry of each named function and prints, to stderr:
 ```
 breakpoint hit: helper
   args: [x=20]
-  at helper (prog.vibe:1)
-  at main (prog.vibe:2)
+  at helper (prog.vibex:1)
+  at main (prog.vibex:2)
 ```
 
 `args:` shows the function's parameters by **name** (`x=20`) when the compiler

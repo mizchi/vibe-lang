@@ -61,9 +61,15 @@ fn starts_with(value: String, prefix: String) -> Bool {
   String::length(value) >= prefix_len && value[0: prefix_len] == prefix
 }
 
+fn is_vibex_path(path: String) -> Bool {
+  String::ends_with(path, ".vibex")
+}
+
 fn strip_vibe_suffix(path: String) -> String {
   let len = String::length(path)
-  if len >= 5 && path[len - 5: len] == ".vibe" {
+  if len >= 6 && path[len - 6: len] == ".vibex" {
+    path[0: len - 6]
+  } else if len >= 5 && path[len - 5: len] == ".vibe" {
     path[0: len - 5]
   } else {
     path
@@ -216,6 +222,7 @@ fn parse_compile_lite_args_with_profile(args: Array[String]) -> (String, String,
     let mut input_path = ""
     let mut output_path = ""
     let mut entry_name = "_start"
+    let mut saw_entry = false
     let mut mode = "mvp"
     let mut in_memory = false
     let mut profile_tsv_path = ""
@@ -267,6 +274,7 @@ fn parse_compile_lite_args_with_profile(args: Array[String]) -> (String, String,
         "--entry" => {
           i = i + 1
           entry_name = read_next_arg(args, i, arg)
+          saw_entry = true
           ()
         },
         "-o" => {
@@ -314,8 +322,15 @@ fn parse_compile_lite_args_with_profile(args: Array[String]) -> (String, String,
       throw("compile-lite: input path is required")
     } else if !in_memory && output_path == "" {
       throw("compile-lite: -o/--out is required")
+    } else if is_vibex_path(input_path) && saw_entry {
+      throw("compile-lite: --entry is not allowed for .vibex; the entry is always main")
     } else {
-      (input_path, output_path, entry_name, mode, in_memory, profile_tsv_path, profile_callstack_path)
+      let resolved_entry = if is_vibex_path(input_path) {
+        "main"
+      } else {
+        entry_name
+      }
+      (input_path, output_path, resolved_entry, mode, in_memory, profile_tsv_path, profile_callstack_path)
     }
   }
 }
@@ -369,7 +384,6 @@ export fn parse_compile_args(args: Array[String]) -> (String, String, String, St
   } else {
     let mut input_path = ""
     let mut output_path = ""
-    let entry_name = "_start"
     let mut mode = "mvp"
     let mut saw_wasm = false
     let mut i = 1
@@ -445,12 +459,15 @@ export fn parse_compile_args(args: Array[String]) -> (String, String, String, St
     }
     if input_path == "" {
       throw("compile: missing <file>")
+    } else if mode == "wit" && is_vibex_path(input_path) {
+      throw("compile: --wit for .vibex requires semantic contract emission")
     } else if mode == "wit" {
       let resolved_output = if output_path == "" {
         default_wit_output_path(input_path)
       } else {
         output_path
       }
+      let entry_name = if is_vibex_path(input_path) { "main" } else { "_start" }
       (input_path, resolved_output, entry_name, mode)
     } else if !saw_wasm {
       throw("compile: selfhost cli only supports --wasm/--wasm-linear (or --wit)")
@@ -460,6 +477,7 @@ export fn parse_compile_args(args: Array[String]) -> (String, String, String, St
       } else {
         output_path
       }
+      let entry_name = if is_vibex_path(input_path) { "main" } else { "_start" }
       (input_path, resolved_output, entry_name, mode)
     }
   }
@@ -486,7 +504,6 @@ export fn parse_build_args(args: Array[String]) -> (String, String, String, Stri
   } else {
     let mut input_path = ""
     let mut output_path = ""
-    let entry_name = "_start"
     let mut mode = "mvp"
     let mut i = 1
     while i < Array::length(args) {
@@ -530,6 +547,7 @@ export fn parse_build_args(args: Array[String]) -> (String, String, String, Stri
       } else {
         output_path
       }
+      let entry_name = if is_vibex_path(input_path) { "main" } else { "_start" }
       (input_path, resolved_output, entry_name, mode)
     }
   }
@@ -796,6 +814,9 @@ export fn selfhost_cli_low_level_args(input_path: String, output_path: String, e
   }
   else if entry_name == "" {
     1
+  }
+  else if is_vibex_path(input_path) && entry_name != "main" {
+    throw(".vibex executable entry is always main; arbitrary entry names are not allowed")
   }
   else if mode == "" || mode == "release" || mode == "no-dce" || mode == "mvp" {
     if !input_file_exists(input_path) {

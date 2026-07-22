@@ -303,7 +303,7 @@
      （`dbg_line_idx`/`dbg_line_nl`/`dbg_line_file_id`）へ載せ、`vibe.dbgfiles`
      custom section（basename 一覧）を発行。runner は file_id→basename を解決し
      `--break <file>:<line>` の file と照合するので、`helper.vibe:3`（import 先）と
-     `main.vibe:3`（entry）を正しく区別する。
+     `main.vibex:3`（entry）を正しく区別する。
      **完全 gate**: `debug_break && DbgProv に file あり` のときだけ発行するため
      既定 codegen は byte-identical（fixpoint d21309a 維持）。FS-compile path を
      `parse_program_located` 化して offset を供給（codegen は offset を読まないので
@@ -367,7 +367,7 @@
 
 ### ゴール
 
-「3 つの代表 OS（Linux/macOS/Windows）で 1 コマンドで入り、`vibe run hello.vibe`
+「3 つの代表 OS（Linux/macOS/Windows）で 1 コマンドで入り、`vibe run hello.vibex`
 が通る」状態を、再現可能な CI ジョブで保証する。
 
 ### 決定（2026-06-25）
@@ -552,7 +552,7 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
       `<output>.funcmap` サイドカー（エントリファイルのトップレベル関数名→ソース行、
       `build_funcmap_from_source` = `parse_program_spans` + `offset_to_line_col`）を
       best-effort 出力し、`vibe run` が runner の backtrace を捕捉して named frame に
-      `(file:line)` を付与する。trap が `<unknown>!boom (prog.vibe:1)` と表示される。
+      `(file:line)` を付与する。trap が `<unknown>!boom (prog.vibex:1)` と表示される。
       codegen/runner 変更不要。検証済み（`scripts/test_vibe_trace.sh`、
       `test_name_section.sh`、cli-install 34/0、compiler gate fixpoint green）。
       残: imported-module 関数の行（現状エントリファイルのみ）、命令オフセット粒度の
@@ -570,8 +570,8 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
       実行例:
       ```
       breakpoint hit: helper
-        at helper (prog.vibe:1)
-        at main (prog.vibe:2)
+        at helper (prog.vibex:1)
+        at main (prog.vibex:2)
       ```
 - [x] **3-P1 groundwork** — `vibe run --trace` = function-call 実行トレース。opt-in の
       debug codegen（`VIBE_DEBUG`）が各ユーザー関数入口で user-index を in-memory

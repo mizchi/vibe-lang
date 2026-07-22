@@ -68,6 +68,29 @@ test "selfhost cli parses compile-lite command args" {
   assert(!in_memory)
 }
 
+test "selfhost cli compile-lite selects main for vibex" {
+  let (input_path, output_path, entry_name, mode, in_memory) = parse_compile_lite_args([
+    "compile-lite", "--wasm-linear", "app.vibex", "-o", "app.wasm"
+  ])
+  assert(input_path == "app.vibex")
+  assert(output_path == "app.wasm")
+  assert(entry_name == "main")
+  assert(mode == "mvp")
+  assert(!in_memory)
+}
+
+test "selfhost cli compile-lite rejects entry override for vibex" {
+  let result = handle {
+    let _ = parse_compile_lite_args([
+      "compile-lite", "--wasm-linear", "--entry", "answer", "app.vibex", "-o", "app.wasm"
+    ])
+    "OK"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(result == "compile-lite: --entry is not allowed for .vibex; the entry is always main")
+}
+
 test "selfhost cli compile-lite rejects coverage with host parity message" {
   let result = handle {
     let _ = parse_compile_lite_args([
@@ -233,6 +256,28 @@ test "selfhost cli parses compile command args" {
   assert(mode == "no-dce")
 }
 
+test "selfhost cli compile selects main and strips vibex suffix" {
+  let (input_path, output_path, entry_name, mode) = parse_compile_args([
+    "compile", "--wasm-linear", "app.vibex"
+  ])
+  assert(input_path == "app.vibex")
+  assert(output_path == "dist/app.wasm")
+  assert(entry_name == "main")
+  assert(mode == "mvp")
+}
+
+test "selfhost cli compile rejects wit projection for vibex before semantic contracts" {
+  let result = handle {
+    let _ = parse_compile_args([
+      "compile", "--wit", "app.vibex"
+    ])
+    "OK"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(result == "compile: --wit for .vibex requires semantic contract emission")
+}
+
 test "selfhost cli compile consumes profile flag" {
   let (input_path, output_path, entry_name, mode) = parse_compile_args([
     "compile", "--wasm", "--profile", "/tmp/compile.pprof", "main.vibe"
@@ -281,6 +326,111 @@ test "selfhost cli parses build command args" {
   assert(output_path == "out.wasm")
   assert(entry_name == "_start")
   assert(mode == "debug")
+}
+
+test "selfhost cli build selects main and strips vibex suffix" {
+  let (input_path, output_path, entry_name, mode) = parse_build_args([
+    "build", "app.vibex"
+  ])
+  assert(input_path == "app.vibex")
+  assert(output_path == "app.wasm")
+  assert(entry_name == "main")
+  assert(mode == "mvp")
+}
+
+test "selfhost cli build accepts canonical vibex entry" {
+  let main_path = "/tmp/vibe_selfhost_cli_canonical_entry.vibex"
+  let output_path = "/tmp/vibe_selfhost_cli_canonical_entry.wasm"
+  Fs::write_bytes(main_path, string_to_bytes("fn main with { } { () }\n"))
+  let status = selfhost_cli_build_args([
+    "build", main_path, "-o", output_path
+  ])
+  assert(status == 0)
+  assert(Fs::exists(output_path))
+}
+
+test "selfhost cli build rejects vibex without main" {
+  let main_path = "/tmp/vibe_selfhost_cli_missing_main.vibex"
+  Fs::write_bytes(main_path, string_to_bytes("fn helper() -> Unit { () }\n"))
+  let result = handle {
+    let _ = selfhost_cli_build_args([
+      "build", main_path, "-o", "/tmp/vibe_selfhost_cli_missing_main.wasm"
+    ])
+    "OK"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(String::contains(result, ".vibex executable requires exactly one fn main"))
+}
+
+test "selfhost cli build rejects multiple vibex main declarations" {
+  let main_path = "/tmp/vibe_selfhost_cli_multiple_main.vibex"
+  Fs::write_bytes(main_path, string_to_bytes("fn main with { } { () }\nfn main with { } { () }\n"))
+  let result = handle {
+    let _ = selfhost_cli_build_args([
+      "build", main_path, "-o", "/tmp/vibe_selfhost_cli_multiple_main.wasm"
+    ])
+    "OK"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(String::contains(result, ".vibex executable requires exactly one fn main"))
+}
+
+test "selfhost cli build rejects value-bound main in vibex" {
+  let main_path = "/tmp/vibe_selfhost_cli_value_main.vibex"
+  Fs::write_bytes(main_path, string_to_bytes("let main = () -> Int { 0 }\n"))
+  let result = handle {
+    let _ = selfhost_cli_build_args([
+      "build", main_path, "-o", "/tmp/vibe_selfhost_cli_value_main.wasm"
+    ])
+    "OK"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(String::contains(result, "value-bound main is not allowed in .vibex"))
+}
+
+test "selfhost cli build rejects exported vibex main" {
+  let main_path = "/tmp/vibe_selfhost_cli_exported_main.vibex"
+  Fs::write_bytes(main_path, string_to_bytes("export fn main with { } { () }\n"))
+  let result = handle {
+    let _ = selfhost_cli_build_args([
+      "build", main_path, "-o", "/tmp/vibe_selfhost_cli_exported_main.wasm"
+    ])
+    "OK"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(String::contains(result, ".vibex fn main is an entry declaration and cannot be exported"))
+}
+
+test "selfhost cli build rejects noncanonical vibex main signature" {
+  let main_path = "/tmp/vibe_selfhost_cli_noncanonical_main.vibex"
+  Fs::write_bytes(main_path, string_to_bytes("fn main(x: Int) -> Int with { } { x }\n"))
+  let result = handle {
+    let _ = selfhost_cli_build_args([
+      "build", main_path, "-o", "/tmp/vibe_selfhost_cli_noncanonical_main.wasm"
+    ])
+    "OK"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(String::contains(result, ".vibex fn main must have type () -> Unit"))
+}
+
+test "selfhost cli build requires explicit vibex main effect row" {
+  let main_path = "/tmp/vibe_selfhost_cli_inferred_main_row.vibex"
+  Fs::write_bytes(main_path, string_to_bytes("fn main { () }\n"))
+  let result = handle {
+    let _ = selfhost_cli_build_args([
+      "build", main_path, "-o", "/tmp/vibe_selfhost_cli_inferred_main_row.wasm"
+    ])
+    "OK"
+  } with Error {
+    Throw(e) => e
+  }
+  assert(String::contains(result, ".vibex fn main requires an explicit effect row"))
 }
 
 test "selfhost cli build consumes profile flag" {

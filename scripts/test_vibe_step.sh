@@ -11,7 +11,7 @@
 # With the call chain main -> mid -> leaf, feeding `s\ns\ns\nc\n` should stop at
 # main, then step into mid, then leaf, then continue to completion. A step pause
 # prints `stopped at: <fn>` (vs `breakpoint hit:` for explicit break_set hits),
-# and each frame is funcmap-annotated `(prog.vibe:LINE)` like P1.
+# and each frame is funcmap-annotated `(prog.vibex:LINE)` like P1.
 #
 # Pure runner-side: the per-entry `vibe::dbg_break` hook already fires at every
 # user function entry; stepping is just the runner deciding WHEN to pause. The
@@ -51,25 +51,25 @@ bad() { echo "FAIL: $1" >&2; fail=$((fail+1)); }
 proj="$WORK/proj"; mkdir -p "$proj"
 # A clear call chain: main (line 3) -> mid (line 2) -> leaf (line 1). leaf(40)=41,
 # mid=42, main=42.
-cat > "$proj/prog.vibe" <<'EOF'
+cat > "$proj/prog.vibex" <<'EOF'
 export let leaf = (x: Int) -> Int { x + 1 }
 export let mid = (x: Int) -> Int { leaf(x) + 1 }
-export let main = () -> Int { mid(40) }
+fn main with { Stdout } { Stdout::write_stream("\{mid(40)}\n") }
 EOF
 
 # 1. Plain `vibe run` is unaffected: prints 42, emits NO debugger output.
-plain="$("$VIBE" run "$proj/prog.vibe" 2>&1)"
-[ "$(printf '%s' "$plain" | tr -dc '0-9')" = "42" ] && ok "plain run computes 42" || bad "plain run did not print 42 (got: $plain)"
+plain="$("$VIBE" run "$proj/prog.vibex" 2>&1)"
+[ "$(printf '%s' "$plain" | grep -o '42' | head -1)" = "42" ] && ok "plain run computes 42" || bad "plain run did not print 42 (got: $plain)"
 if printf '%s\n' "$plain" | grep -qE "breakpoint hit|stopped at"; then bad "plain run leaked debugger output"; else ok "plain run emits no debugger output"; fi
 
 # 2. VIBE_BREAK_AUTO=1 still auto-continues without reading stdin (existing behavior).
-auto="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break main "$proj/prog.vibe" 2>&1)"
+auto="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break main "$proj/prog.vibex" 2>&1)"
 printf '%s\n' "$auto" | grep -qF "breakpoint hit: main" && ok "auto: breakpoint hit names main" || bad "auto: missing 'breakpoint hit: main'"
 [ "$(printf '%s' "$auto" | tr -dc '0-9' | grep -o '42' | head -1)" = "42" ] && ok "auto: run still computes 42 (continued)" || bad "auto: did not print 42 (got: $auto)"
 
 # 3. Step script: break at main, then `s` step into mid, `s` step into leaf,
 #    then `c` continue. Assert the stepped-through functions appear in order.
-stepped="$(printf 's\ns\ns\nc\n' | "$VIBE" run --break main "$proj/prog.vibe" 2>&1)"
+stepped="$(printf 's\ns\ns\nc\n' | "$VIBE" run --break main "$proj/prog.vibex" 2>&1)"
 echo "----- step: printf 's\\ns\\ns\\nc\\n' | vibe run --break main -----"
 printf '%s\n' "$stepped"
 echo "------------------------------------------------------------------"
@@ -87,15 +87,15 @@ case "$order" in
   *) bad "step: pause order not main->mid->leaf (got: $order)" ;;
 esac
 
-# Funcmap annotation `(prog.vibe:LINE)` appears on stepped frames (P1 behavior).
-printf '%s\n' "$stepped" | grep -E "at (mid|leaf) \(prog\.vibe:[0-9]+\)" >/dev/null && ok "step: frames annotated with (prog.vibe:LINE)" || bad "step: missing (prog.vibe:LINE) annotation"
+# Funcmap annotation `(prog.vibex:LINE)` appears on stepped frames (P1 behavior).
+printf '%s\n' "$stepped" | grep -E "at (mid|leaf) \(prog\.vibex:[0-9]+\)" >/dev/null && ok "step: frames annotated with (prog.vibex:LINE)" || bad "step: missing (prog.vibex:LINE) annotation"
 
 # The program still completes and prints 42 after continuing.
 [ "$(printf '%s' "$stepped" | tr -dc '0-9' | grep -o '42' | head -1)" = "42" ] && ok "step: run completes and computes 42" || bad "step: did not print 42 (got: $stepped)"
 
 # 4. `n` (step over) at main skips into nested calls: with `n` then `c`, mid/leaf
 #    must NOT produce a `stopped at:` pause (depth of mid/leaf > pause_depth).
-over="$(printf 'n\nc\n' | "$VIBE" run --break main "$proj/prog.vibe" 2>&1)"
+over="$(printf 'n\nc\n' | "$VIBE" run --break main "$proj/prog.vibex" 2>&1)"
 if printf '%s\n' "$over" | grep -qE "stopped at: (mid|leaf)"; then
   bad "step-over: unexpectedly paused inside a nested call (got: $over)"
 else
@@ -104,12 +104,12 @@ fi
 [ "$(printf '%s' "$over" | tr -dc '0-9' | grep -o '42' | head -1)" = "42" ] && ok "step-over: run completes and computes 42" || bad "step-over: did not print 42 (got: $over)"
 
 # 5. `o` (finish) at main returns to a shallower frame (none) -> no further pause.
-fin="$(printf 'o\n' | "$VIBE" run --break main "$proj/prog.vibe" 2>&1)"
+fin="$(printf 'o\n' | "$VIBE" run --break main "$proj/prog.vibex" 2>&1)"
 [ "$(printf '%s' "$fin" | tr -dc '0-9' | grep -o '42' | head -1)" = "42" ] && ok "finish (o): run completes and computes 42" || bad "finish: did not print 42 (got: $fin)"
 
 # 6. `q` (quit) at main aborts with exit 130.
 qstatus=0
-printf 'q\n' | "$VIBE" run --break main "$proj/prog.vibe" >/dev/null 2>&1 || qstatus=$?
+printf 'q\n' | "$VIBE" run --break main "$proj/prog.vibex" >/dev/null 2>&1 || qstatus=$?
 [ "$qstatus" -eq 130 ] && ok "quit (q): aborts with exit 130" || bad "quit: expected exit 130, got $qstatus"
 
 echo "[test_vibe_step] $pass passed, $fail failed"

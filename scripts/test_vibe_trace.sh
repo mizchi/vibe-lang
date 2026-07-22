@@ -2,7 +2,7 @@
 # Integration test for debugger テーマ3 / M2: runtime traps point at the SOURCE
 # LINE. A program that traps inside a user function must, via `vibe run`, produce
 # a backtrace whose frame for that function is annotated with `(file:line)` —
-# e.g. `<unknown>!boom (prog.vibe:1)`.
+# e.g. `<unknown>!boom (prog.vibex:1)`.
 #
 # How it works (no codegen/runner changes):
 #   * the wasm "name" custom section (debugger P0) already names trap frames after
@@ -49,15 +49,15 @@ VIBE="$VIBE_BIN_DIR/vibe"
 proj="$WORK/proj"
 mkdir -p "$proj"
 # `boom` is defined on line 1, traps on integer divide-by-zero; main calls it.
-cat > "$proj/prog.vibe" <<'EOF'
+cat > "$proj/prog.vibex" <<'EOF'
 export let boom = (x: Int) -> Int { x / 0 }
-export let main = () -> Int { boom(3) }
+fn main with { } { let _ = boom(3); () }
 EOF
 
 # Run; it must trap (non-zero exit) and the stderr trace must annotate the `boom`
-# frame with (prog.vibe:1).
+# frame with (prog.vibex:1).
 set +e
-err="$("$VIBE" run "$proj/prog.vibe" 2>&1 >/dev/null)"
+err="$("$VIBE" run "$proj/prog.vibex" 2>&1 >/dev/null)"
 status=$?
 set -e
 
@@ -71,7 +71,7 @@ if [ "$status" -eq 0 ]; then
 fi
 
 # Primary assertion: the boom frame is annotated with its source line.
-want="boom (prog.vibe:1)"
+want="boom (prog.vibex:1)"
 if printf '%s\n' "$err" | grep -qF "$want"; then
   echo "ok: trap backtrace annotates trapping function with source line: '$want'"
 else

@@ -29,6 +29,10 @@ check() { # check <desc> <expected> <actual>
   fi
 }
 
+run_number() {
+  "$VIBE" run "$1" 2>/dev/null | grep -oE '[0-9]+' | head -1
+}
+
 echo "[test] installing into $VIBE_HOME"
 # Use the committed seed for speed/determinism; the launcher/runner path is what
 # we are testing, not a fresh compiler build.
@@ -48,28 +52,28 @@ pass=$((pass + 1))
 
 proj="$WORK/proj"
 mkdir -p "$proj"
-printf 'export let main = () -> Int { 40 + 2 }\n' > "$proj/hello.vibe"
+printf 'fn main with { Stdout } { Stdout::write_stream("42\\n") }\n' > "$proj/hello.vibex"
 printf 'export let add = (a: Int, b: Int) -> Int { a + b }\n' > "$proj/lib.vibe"
-printf 'import ./lib.vibe { add }\nexport let main = () -> Int { add(20, 22) }\n' > "$proj/app.vibe"
-printf 'export let main = () -> Int { nope + 1 }\n' > "$proj/bad.vibe"
+printf 'import ./lib.vibe { add }\nfn main with { Stdout } { Stdout::write_stream("\\{add(20, 22)}\\n") }\n' > "$proj/app.vibex"
+printf 'fn main with { } { let _ = nope + 1; () }\n' > "$proj/bad.vibex"
 printf 'test "ok" {\n  assert_eq(2 + 2, 4)\n}\n' > "$proj/pass_test.vibe"
 printf 'test "bad" {\n  assert_eq(2 + 2, 5)\n}\n' > "$proj/fail_test.vibe"
 
 # run: single file
-check "vibe run hello" "42" "$("$VIBE" run "$proj/hello.vibe" 2>/dev/null | tr -dc '0-9')"
+check "vibe run hello" "42" "$(run_number "$proj/hello.vibex")"
 # run: multi-file import resolution
-check "vibe run app (import)" "42" "$("$VIBE" run "$proj/app.vibe" 2>/dev/null | tr -dc '0-9')"
+check "vibe run app (import)" "42" "$(run_number "$proj/app.vibex")"
 
 # compile: produces a wasm
-"$VIBE" compile "$proj/hello.vibe" -o "$proj/hello.wasm" >/dev/null 2>&1 || true
+"$VIBE" compile "$proj/hello.vibex" -o "$proj/hello.wasm" >/dev/null 2>&1 || true
 check "vibe compile output exists" "yes" "$([ -s "$proj/hello.wasm" ] && echo yes || echo no)"
 
 # check: good file passes
-"$VIBE" check "$proj/app.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
+"$VIBE" check "$proj/app.vibex" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe check good exit" "0" "$rc"
 
 # check: bad file fails non-zero
-"$VIBE" check "$proj/bad.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
+"$VIBE" check "$proj/bad.vibex" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe check bad exit" "1" "$rc"
 
 # normalize (#882): --check flags an unnormalized file, in-place write fixes it
@@ -84,7 +88,7 @@ check "vibe normalize --check clean after write" "0" "$rc"
 # diagnostic: the seed predates the .diag sidecar, so only assert the launcher
 # reports failure cleanly. A freshly built compiler additionally yields a real
 # message; assert that when the sidecar feature is present.
-diag="$("$VIBE" check "$proj/bad.vibe" 2>&1 || true)"
+diag="$("$VIBE" check "$proj/bad.vibex" 2>&1 || true)"
 if echo "$diag" | grep -q "unknown name"; then
   check "vibe check bad diagnostic" "yes" "yes"
 else
@@ -118,12 +122,12 @@ fproj="$WORK/fproj"
 mkdir -p "$fproj"
 printf 'export let add = (a: Int, b: Int) -> Int { a + b }\n' > "$WORK/mathlib_src.vibe"
 printf 'mathlib file://%s/mathlib_src.vibe\n' "$WORK" > "$fproj/vibe.deps"
-printf 'import ./deps/mathlib.vibe { add }\nexport let main = () -> Int { add(40, 2) }\n' > "$fproj/app.vibe"
+printf 'import ./deps/mathlib.vibe { add }\nfn main with { Stdout } { Stdout::write_stream("\\{add(40, 2)}\\n") }\n' > "$fproj/app.vibex"
 "$VIBE" fetch "$fproj" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe fetch exit" "0" "$rc"
 check "vibe fetch wrote lock" "yes" "$([ -s "$fproj/vibe.lock" ] && echo yes || echo no)"
 check "vibe fetch vendored dep" "yes" "$([ -s "$fproj/deps/mathlib.vibe" ] && echo yes || echo no)"
-check "vibe run vendored dep" "42" "$("$VIBE" run "$fproj/app.vibe" 2>/dev/null | tr -dc '0-9')"
+check "vibe run vendored dep" "42" "$(run_number "$fproj/app.vibex")"
 
 # fetch: a git+ dependency from a local repo, vendored as a directory.
 if command -v git >/dev/null 2>&1; then
@@ -132,11 +136,11 @@ if command -v git >/dev/null 2>&1; then
   ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t && git add -A && git commit -q -m init )
   gproj="$WORK/gproj"; mkdir -p "$gproj"
   printf 'mathgit git+file://%s\n' "$repo" > "$gproj/vibe.deps"
-  printf 'import ./deps/mathgit/index.vibe { triple }\nexport let main = () -> Int { triple(14) }\n' > "$gproj/app.vibe"
+  printf 'import ./deps/mathgit/index.vibe { triple }\nfn main with { Stdout } { Stdout::write_stream("\\{triple(14)}\\n") }\n' > "$gproj/app.vibex"
   "$VIBE" fetch "$gproj" >/dev/null 2>&1 && rc=0 || rc=$?
   check "vibe fetch git+ exit" "0" "$rc"
   check "vibe fetch git+ records commit" "yes" "$(grep -q 'git:' "$gproj/vibe.lock" && echo yes || echo no)"
-  check "vibe run git+ dep" "42" "$("$VIBE" run "$gproj/app.vibe" 2>/dev/null | tr -dc '0-9')"
+  check "vibe run git+ dep" "42" "$(run_number "$gproj/app.vibex")"
 
   # transitive: project -> A (git) -> B (git); A declares B in its own vibe.deps
   rb="$WORK/rb"; mkdir -p "$rb"
@@ -148,11 +152,11 @@ if command -v git >/dev/null 2>&1; then
   ( cd "$ra" && git init -q && git config user.email t@t && git config user.name t && git add -A && git commit -q -m a )
   tproj="$WORK/tproj"; mkdir -p "$tproj"
   printf 'a git+file://%s\n' "$ra" > "$tproj/vibe.deps"
-  printf 'import ./deps/a/index.vibe { mid }\nexport let main = () -> Int { mid(4) }\n' > "$tproj/app.vibe"
+  printf 'import ./deps/a/index.vibe { mid }\nfn main with { Stdout } { Stdout::write_stream("\\{mid(4)}\\n") }\n' > "$tproj/app.vibex"
   "$VIBE" fetch "$tproj" >/dev/null 2>&1 && rc=0 || rc=$?
   check "vibe fetch transitive exit" "0" "$rc"
   check "vibe fetch vendored nested dep" "yes" "$([ -s "$tproj/deps/a/deps/base/index.vibe" ] && echo yes || echo no)"
-  check "vibe run transitive dep tree" "42" "$("$VIBE" run "$tproj/app.vibe" 2>/dev/null | tr -dc '0-9')"
+  check "vibe run transitive dep tree" "42" "$(run_number "$tproj/app.vibex")"
 
   # --frozen: pin to the lock's commit even after upstream moves on.
   fzproj="$WORK/fzproj"; mkdir -p "$fzproj"
@@ -166,8 +170,8 @@ if command -v git >/dev/null 2>&1; then
   # Re-fetch with --frozen: must restore the *old* commit's source (x*3).
   "$VIBE" fetch --frozen "$fzproj" >/dev/null 2>&1 && rc=0 || rc=$?
   check "vibe fetch --frozen exit" "0" "$rc"
-  printf 'import ./deps/mathgit/index.vibe { triple }\nexport let main = () -> Int { triple(14) }\n' > "$fzproj/app.vibe"
-  check "vibe fetch --frozen pins commit" "42" "$("$VIBE" run "$fzproj/app.vibe" 2>/dev/null | tr -dc '0-9')"
+  printf 'import ./deps/mathgit/index.vibe { triple }\nfn main with { Stdout } { Stdout::write_stream("\\{triple(14)}\\n") }\n' > "$fzproj/app.vibex"
+  check "vibe fetch --frozen pins commit" "42" "$(run_number "$fzproj/app.vibex")"
   newsha="$(awk '/^mathgit/{print $3}' "$fzproj/vibe.lock" | sed 's/git://')"
   check "vibe fetch --frozen keeps lock sha" "$pinsha" "$newsha"
 
@@ -193,10 +197,10 @@ if command -v git >/dev/null 2>&1; then
   ( cd "$srepo" && git add -A && git commit -q -m v2 && git tag v2.0.0 )
   sproj="$WORK/sproj"; mkdir -p "$sproj"
   printf 'semlib git+file://%s#^1.0\n' "$srepo" > "$sproj/vibe.deps"
-  printf 'import ./deps/semlib/index.vibe { v }\nexport let main = () -> Int { v() }\n' > "$sproj/app.vibe"
+  printf 'import ./deps/semlib/index.vibe { v }\nfn main with { Stdout } { Stdout::write_stream("\\{v()}\\n") }\n' > "$sproj/app.vibex"
   "$VIBE" fetch "$sproj" >/dev/null 2>&1 && rc=0 || rc=$?
   check "vibe fetch semver exit" "0" "$rc"
-  check "vibe fetch ^1.0 picks v1.2.0" "120" "$("$VIBE" run "$sproj/app.vibe" 2>/dev/null | tr -dc '0-9')"
+  check "vibe fetch ^1.0 picks v1.2.0" "120" "$(run_number "$sproj/app.vibex")"
   # An unsatisfiable constraint fails clearly.
   printf 'semlib git+file://%s#^9.0\n' "$srepo" > "$sproj/vibe.deps"
   "$VIBE" fetch "$sproj" >/dev/null 2>&1 && rc=0 || rc=$?
@@ -211,14 +215,14 @@ printf 'export let inc = (x: Int) -> Int { x + 1 }\n' > "$WORK/inclib.vibe"
 "$VIBE" add inclib "file://$WORK/inclib.vibe" "$aproj" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe add exit" "0" "$rc"
 check "vibe add wrote manifest + lock" "yes" "$([ -s "$aproj/vibe.deps" ] && [ -s "$aproj/vibe.lock" ] && echo yes || echo no)"
-printf 'import ./deps/inclib.vibe { inc }\nexport let main = () -> Int { inc(41) }\n' > "$aproj/app.vibe"
-check "vibe run added dep" "42" "$("$VIBE" run "$aproj/app.vibe" 2>/dev/null | tr -dc '0-9')"
+printf 'import ./deps/inclib.vibe { inc }\nfn main with { Stdout } { Stdout::write_stream("\\{inc(41)}\\n") }\n' > "$aproj/app.vibex"
+check "vibe run added dep" "42" "$(run_number "$aproj/app.vibex")"
 
 # new: scaffold a project and run it
 "$VIBE" new "$WORK/scaffold" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe new exit" "0" "$rc"
-check "vibe new scaffolds main + deps" "yes" "$([ -s "$WORK/scaffold/main.vibe" ] && [ -f "$WORK/scaffold/vibe.deps" ] && echo yes || echo no)"
-check "vibe run scaffold" "42" "$("$VIBE" run "$WORK/scaffold/main.vibe" 2>/dev/null | tr -dc '0-9')"
+check "vibe new scaffolds main + deps" "yes" "$([ -s "$WORK/scaffold/main.vibex" ] && [ -f "$WORK/scaffold/vibe.deps" ] && echo yes || echo no)"
+check "vibe run scaffold" "42" "$(run_number "$WORK/scaffold/main.vibex")"
 
 echo "[test] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

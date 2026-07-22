@@ -28,8 +28,8 @@
 //     positive, which does not occur in practice for cargo build output.
 //   * #865 closed the other two gaps this file used to document: the
 //     "not found" error paths now print to STDERR (the new Stderr builtin)
-//     and the process now exits 1 on failure (main returns Int, propagated
-//     by `vibe run` / `scripts/vibe_run.sh` to the real OS exit status) --
+//     and the process now exits 1 on failure through the explicit Process
+//     effect --
 //     matching scripts/wasmtime_bin.sh's `... >&2; exit 1` exactly. Every
 //     current bash caller already treats a wasmtime_bin.sh failure as
 //     non-fatal (`scripts/wasmtime_bin.sh 2>/dev/null || command -v
@@ -89,11 +89,9 @@ fn resolve_default() -> Int with { Fs, Process, Stdout, Stderr } {
   }
 }
 
-// #865: `main` now returns Int (the process exit code) instead of Unit --
-// `vibe run` / `scripts/vibe_run.sh` propagate it to the real OS exit status.
-export let main = () -> Int with { Fs, Env, Process, Stdout, Stderr } {
-  let override_bin = Env::get("WASMTIME_BIN")
-  if override_bin != "" {
+fn main with { Fs, Env, Process, Stdout, Stderr } {
+  let code = if Env::get("WASMTIME_BIN") != "" {
+    let override_bin = Env::get("WASMTIME_BIN")
     Stdout::write_stream("\{override_bin}\n")
     0
   }
@@ -102,5 +100,10 @@ export let main = () -> Int with { Fs, Env, Process, Stdout, Stderr } {
   }
   else {
     resolve_default()
+  }
+  if code != 0 {
+    vibe_process_exit_raw(code)
+  } else {
+    ()
   }
 }

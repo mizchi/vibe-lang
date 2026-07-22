@@ -18,8 +18,8 @@ Building the runner from source needs `git`, `bash`, and `cargo`; pass
 curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/scripts/installer.sh | bash
 . "$HOME/.vibe/env"   # or restart the shell — ~/.vibe/bin is the PATH entry
 vibe version
-echo 'export let main = () -> Int { 40 + 2 }' > hello.vibe
-vibe run hello.vibe        # -> 42
+echo 'fn main with { Stdout } { Stdout::write_stream("42\\n") }' > hello.vibex
+vibe run hello.vibex        # -> 42
 ```
 
 See [docs/install.md](docs/install.md) for the install layout, options, and how
@@ -43,11 +43,12 @@ fn Point::manhattan(p: Point) -> Int {
   p.x + p.y
 }
 
-export let main = () -> Int {
-  match safe_div(10, 2) {
+fn main with { Stdout } {
+  let result = match safe_div(10, 2) {
     Ok(v) => v + Point::manhattan(Point::{ x: 3, y: 4 }),
     Err(_) => -1
   }
+  Stdout::write_stream("\{result}\n")
 }
 ```
 

@@ -39,8 +39,8 @@ Then:
 
 ```bash
 vibe version
-echo 'export let main = () -> Int { 40 + 2 }' > hello.vibe
-vibe run hello.vibe        # -> 42
+echo 'fn main with { Stdout } { Stdout::write_stream("42\\n") }' > hello.vibex
+vibe run hello.vibex        # -> 42
 ```
 
 ### Install layout (rustup-style toolchains, #755)
@@ -103,10 +103,10 @@ bash scripts/install.sh --cli-wasm vibe-compiler-<tag>.wasm
 ## Commands
 
 ```
-vibe run     <file.vibe> [entry]      compile (resolving imports) then run
+vibe run     <file.vibex> [-- args]   compile the fixed `main` entry then run
 vibe compile <file.vibe> -o <out>     compile to a .wasm
 vibe build   <file.vibe> -o <out>     alias of compile
-vibe check   <file.vibe> [entry]      parse + typecheck (no output kept)
+vibe check   <file.vibe|file.vibex>   parse + typecheck (no output kept)
 vibe test    <file_test.vibe>...      compile + run test {} blocks
 vibe fetch   [project_dir]            vendor git/URL deps from vibe.deps + lock
 vibe lsp                              start the stdio LSP server (diagnostics)
@@ -115,8 +115,9 @@ vibe self update --cli-wasm <path>    refresh compiler wasm + rebuild .cwasm
 vibe help                             usage
 ```
 
-The default entry function is `main`. Pass a different entry as the second
-argument to `run`/`check`, or via `--entry` to `compile`/`build`.
+An executable root is a `.vibex` file with exactly one `fn main`; its
+user-visible entry cannot be overridden. Arbitrary entry names remain an
+internal compiler/test-harness ABI only.
 
 ## Dependencies (git/URL, MVP)
 
@@ -138,7 +139,7 @@ vibe fetch                     # downloads into ./deps/, writes vibe.lock
 ```vibe
 import ./deps/mathlib.vibe { add }        # single-file dep
 import ./deps/mymod/index.vibe { thing }  # git dep (vendored as a directory)
-export let main = () -> Int { add(40, 2) }
+fn main with { Stdout } { Stdout::write_stream("\{add(40, 2)}\n") }
 ```
 
 `vibe fetch` records each dep's resolved identity in `vibe.lock` for

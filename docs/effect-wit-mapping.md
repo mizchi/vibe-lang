@@ -1,5 +1,12 @@
 # Effect → WIT mapping (#537)
 
+> **Scope:** this document describes the current export-signature-based
+> implementation. ADR-0075's target `.vibex` contract uses `main`'s normalized
+> semantic row as its source boundary, retains resource-qualified operations,
+> composes providers, and generates WIT from the residual host row. Until that
+> migration lands, host-capability comments and Error-as-trap below are known
+> implementation/spec correspondence debt, not the target executable contract.
+
 `vibe compile --wit` (launcher) / `VIBE_EMIT_WIT=1` (compiler wasm) render a
 vibe file's **effect surface** as a WIT world. `vibe serve` writes the same
 WIT next to the handler component. Implementation:

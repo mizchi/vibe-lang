@@ -38,8 +38,8 @@ bad() { echo "FAIL: $1" >&2; fail=$((fail + 1)); }
 #   line 2: let a = 1       (bare literal -> breakable via the ELet stmt offset, #644)
 #   line 3: let b = a + 2   (identifier-led -> breakable)
 #   line 4: let c = b + 3   (identifier-led -> breakable)
-P="$WORK/p.vibe"
-printf 'export let main = () -> Int {\n  let a = 1\n  let b = a + 2\n  let c = b + 3\n  c\n}\n' > "$P"
+P="$WORK/p.vibex"
+printf 'fn main with { Stdout } {\n  let a = 1\n  let b = a + 2\n  let c = b + 3\n  Stdout::write_stream("\\{c}\\n")\n}\n' > "$P"
 
 # 0. (#644) break at line 2, a bare-literal `let a = 1`. The literal value
 #    carries no offset of its own; the ELet statement offset (the `let`
@@ -47,7 +47,7 @@ printf 'export let main = () -> Int {\n  let a = 1\n  let b = a + 2\n  let c = b
 #    Requires a fresh-built compiler (the committed seed predates #644).
 if [ "$fresh_cli" = "1" ]; then
   out2="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "$P:2" "$P" 2>&1 || true)"
-  if printf '%s' "$out2" | grep -qF "breakpoint hit: p.vibe:2"; then
+  if printf '%s' "$out2" | grep -qF "breakpoint hit: p.vibex:2"; then
     ok "bare-literal interior line 2 pauses (#644)"
   else
     bad "bare-literal line 2 should pause; got: $out2"
@@ -58,16 +58,16 @@ fi
 
 # 1. break at interior line 3 (mid-function, NOT the function decl line).
 out3="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "$P:3" "$P" 2>&1 || true)"
-if printf '%s' "$out3" | grep -qF "breakpoint hit: p.vibe:3"; then
-  ok "interior line 3 pauses (breakpoint hit: p.vibe:3)"
+if printf '%s' "$out3" | grep -qF "breakpoint hit: p.vibex:3"; then
+  ok "interior line 3 pauses (breakpoint hit: p.vibex:3)"
 else
   bad "interior line 3 should pause; got: $out3"
 fi
 
 # 2. break at interior line 4.
 out4="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "$P:4" "$P" 2>&1 || true)"
-if printf '%s' "$out4" | grep -qF "breakpoint hit: p.vibe:4"; then
-  ok "interior line 4 pauses (breakpoint hit: p.vibe:4)"
+if printf '%s' "$out4" | grep -qF "breakpoint hit: p.vibex:4"; then
+  ok "interior line 4 pauses (breakpoint hit: p.vibex:4)"
 else
   bad "interior line 4 should pause; got: $out4"
 fi
@@ -83,7 +83,7 @@ fi
 #    line 4 (labelled `stopped at:`). Confirms dbg_line drives line-granularity
 #    step, not just breakpoints.
 outs="$(printf 's\nc\n' | "$VIBE" run --break "$P:3" "$P" 2>&1 || true)"
-if printf '%s' "$outs" | grep -qF "stopped at: p.vibe:4"; then
+if printf '%s' "$outs" | grep -qF "stopped at: p.vibex:4"; then
   ok "step (s) from line 3 advances to the next statement line 4"
 else
   bad "step from line 3 should stop at line 4; got: $outs"
@@ -106,23 +106,23 @@ else
 fi
 
 # 7-8. MULTI-FILE: a `--break <file>:<line>` resolves to the right FILE. `compute`
-#      lives in helper.vibe; main.vibe imports it. dbg_line carries a file id so
-#      `helper.vibe:3` breaks in the imported module and `main.vibe:3` in the entry
+#      lives in helper.vibe; main.vibex imports it. dbg_line carries a file id so
+#      `helper.vibe:3` breaks in the imported module and `main.vibex:3` in the entry
 #      — the per-file provenance + `vibe.dbgfiles` table disambiguate colliding
 #      line numbers across files.
 printf 'export let compute = (n: Int) -> Int {\n  let doubled = n + n\n  let plused = doubled + 5\n  plused\n}\n' > "$WORK/helper.vibe"
-printf 'import ./helper.vibe { compute }\nexport let main = () -> Int {\n  let r = compute(10)\n  r\n}\n' > "$WORK/main.vibe"
-outh="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "helper.vibe:3" "$WORK/main.vibe" 2>&1 || true)"
+printf 'import ./helper.vibe { compute }\nfn main with { Stdout } {\n  let r = compute(10)\n  Stdout::write_stream("\\{r}\\n")\n}\n' > "$WORK/main.vibex"
+outh="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "helper.vibe:3" "$WORK/main.vibex" 2>&1 || true)"
 if printf '%s' "$outh" | grep -qF "breakpoint hit: helper.vibe:3"; then
   ok "multi-file: interior line in an IMPORTED module (helper.vibe:3) pauses"
 else
   bad "multi-file helper.vibe:3 should pause; got: $outh"
 fi
-outm="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "main.vibe:3" "$WORK/main.vibe" 2>&1 || true)"
-if printf '%s' "$outm" | grep -qF "breakpoint hit: main.vibe:3" && ! printf '%s' "$outm" | grep -qF "helper.vibe:3"; then
-  ok "multi-file: interior line in the ENTRY file (main.vibe:3) pauses, not the import"
+outm="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "main.vibex:3" "$WORK/main.vibex" 2>&1 || true)"
+if printf '%s' "$outm" | grep -qF "breakpoint hit: main.vibex:3" && ! printf '%s' "$outm" | grep -qF "helper.vibe:3"; then
+  ok "multi-file: interior line in the ENTRY file (main.vibex:3) pauses, not the import"
 else
-  bad "multi-file main.vibe:3 should pause (and not helper); got: $outm"
+  bad "multi-file main.vibex:3 should pause (and not helper); got: $outm"
 fi
 
 echo "----"

@@ -11,10 +11,10 @@
 #     runner.
 #
 # Subcommands:
-#   vibe run     <file.vibe> [entry]      compile (resolving imports) then run
-#   vibe run --trace <file.vibe> [entry]  run + print the function-call trace
+#   vibe run     <file.vibex> [-- args]   compile fixed `main`, then run
+#   vibe run --trace <file.vibex>         run + print the function-call trace
 #                                         (each entry annotated with file:line)
-#   vibe run --break <fn>[,<fn>...] <file.vibe> [entry]
+#   vibe run --break <fn>[,<fn>...] <file.vibex>
 #                                         pause at each named function's entry,
 #                                         print the call stack, then continue.
 #                                         At a pause type a step command (stdin):
@@ -23,9 +23,9 @@
 #                                           o/finish= finish current frame
 #                                           c/empty = continue
 #                                           q/quit  = abort the run
-#   vibe run --mem <file.vibe> [entry]    run + report bump-heap usage (peak /
+#   vibe run --mem <file.vibex>           run + report bump-heap usage (peak /
 #                                         total allocated) to stderr after exit
-#   vibe run --alloc-site[=N] <file.vibe> [entry]  run + report per-line alloc
+#   vibe run --alloc-site[=N] <file.vibex>  run + report per-line alloc
 #                                         attribution (top N sites) to stderr
 #   vibe compile <file.vibe> -o <out>     compile to a .wasm
 #   vibe compile --wit <file.vibe>        emit the WIT world for the file's
@@ -439,24 +439,19 @@ case "$cmd" in
       esac
     done
     set -- "${args[@]}"
-    [ "$#" -ge 1 ] || die "usage: vibe run [--trace] [--break <fn>[,<fn>...]] [--mem] [--alloc-site[=N]] <file.vibe> [entry]"
-    [ "$brk" = "1" ] && [ -z "$break_spec" ] && die "usage: vibe run --break <fn>[,<fn>...] <file.vibe> [entry]"
+    [ "$#" -ge 1 ] || die "usage: vibe run [--trace] [--break <fn>[,<fn>...]] [--mem] [--alloc-site[=N]] <file.vibex> [-- args]"
+    [ "$brk" = "1" ] && [ -z "$break_spec" ] && die "usage: vibe run --break <fn>[,<fn>...] <file.vibex>"
     src="$1"
-    # #865/#901 (Codex review): a literal `--` in position 2 is the argv
-    # separator (`vibe run prog.vibex -- --dry-run`), not an entry-function
-    # name -- treating it as one made the compiler search for an exported
-    # function literally named `--`. Only consume $2 as `entry` when it is
-    # NOT `--`; either way, everything after the (optional) entry name /
-    # separator forwards to the guest program as trailing argv (readable via
-    # `Env::args_len`/`Env::args_get`, which already worked -- this wrapper
-    # previously just dropped them).
-    if [ "$#" -ge 2 ] && [ "$2" != "--" ]; then
-      entry="$2"
-      shift 2
-    else
-      entry="main"
-      shift 1
-    fi
+    case "$src" in
+      *.vibex) ;;
+      *) die "vibe run requires a .vibex executable root: $src" ;;
+    esac
+    # ADR-0075: `main` is the only user-visible entry. A second positional
+    # value is no longer interpreted as an ABI symbol; guest argv starts only
+    # after the literal `--` separator.
+    [ "$#" -lt 2 ] || [ "$2" = "--" ] || die ".vibex entry is always main; arbitrary entry names are not allowed"
+    entry="main"
+    shift 1
     [ "$#" -ge 1 ] && [ "$1" = "--" ] && shift 1
     extra_args=("$@")
     [ -f "$src" ] || die "not found: $src"
@@ -473,7 +468,7 @@ case "$cmd" in
     # function (e.g. `<unknown>!boom`). The FS compile also wrote a `<out>.funcmap`
     # sidecar (name<TAB>line) for the entry file's top-level functions. We run the
     # runner capturing stderr, and for each frame naming a funcmap function append
-    # ` (<basename>:<line>)`, e.g. `<unknown>!boom (prog.vibe:1)`. stdout and the
+    # ` (<basename>:<line>)`, e.g. `<unknown>!boom (prog.vibex:1)`. stdout and the
     # exit status pass through unchanged; with no funcmap/no match stderr is
     # untouched. (See scripts/test_vibe_trace.sh.)
     status=0
@@ -540,19 +535,28 @@ case "$cmd" in
     exit "$status"
     ;;
   compile|build)
-    [ "$#" -ge 1 ] || die "usage: vibe $cmd <file.vibe> [-o <out.wasm>] [--entry <name>] [--wit]"
-    src=""; out=""; entry="main"; wit=0
+    [ "$#" -ge 1 ] || die "usage: vibe $cmd <file.vibe|file.vibex> [-o <out.wasm>] [--entry <name>] [--wit]"
+    src=""; out=""; entry="main"; entry_override=0; wit=0
     while [ "$#" -gt 0 ]; do
       case "$1" in
         -o|--output) out="$2"; shift 2 ;;
-        --entry) entry="$2"; shift 2 ;;
+        --entry) entry="$2"; entry_override=1; shift 2 ;;
         --wit) wit=1; shift ;;
         *) src="$1"; shift ;;
       esac
     done
     [ -n "$src" ] || die "no input file"
     [ -f "$src" ] || die "not found: $src"
+    case "$src" in
+      *.vibex)
+        [ "$entry_override" = "0" ] || die ".vibex entry is always main; --entry is not allowed"
+        entry="main"
+        ;;
+    esac
     if [ "$wit" = "1" ]; then
+      case "$src" in
+        *.vibex) die "--wit for .vibex requires semantic contract emission" ;;
+      esac
       # #537: emit the WIT world for the file's effect surface (exported
       # functions -> world exports, their `with { E }` rows -> world imports).
       # Contract: docs/effect-wit-mapping.md.
@@ -571,7 +575,12 @@ case "$cmd" in
       echo "wit $src -> $out"
       exit 0
     fi
-    [ -n "$out" ] || out="${src%.vibe}.wasm"
+    if [ -z "$out" ]; then
+      case "$src" in
+        *.vibex) out="${src%.vibex}.wasm" ;;
+        *) out="${src%.vibe}.wasm" ;;
+      esac
+    fi
     compile_to "$src" "$out" "$entry" || die "compilation failed: $src"
     echo "compiled $src -> $out"
     ;;
@@ -1034,7 +1043,7 @@ case "$cmd" in
 
     # Evaluate an expression: wrap it in a synthetic Int-returning let-entry
     # and let the runner's entry-return print convention (ADR-0069 `let main`
-    # rule — the same channel `vibe run hello.vibe` prints 42 through) show
+    # rule — the same internal channel used by the REPL today) show
     # the value. This is the ONLY printing channel that works on every
     # runner/compile-mode combination today:
     #   - prelude/io.vibe's stdout_write drags the io unit's whole `vibe::*`
@@ -1186,14 +1195,14 @@ REPL_HELP
     exit 0
     ;;
   new)
-    # vibe new <dir>  — scaffold a starter project (main.vibe + empty vibe.deps)
+    # vibe new <dir>  — scaffold a starter project (main.vibex + empty vibe.deps)
     [ "$#" -ge 1 ] || die "usage: vibe new <dir>"
     ndir="$1"
     [ -e "$ndir" ] && die "already exists: $ndir"
     mkdir -p "$ndir"
-    printf 'export let main = () -> Int {\n  40 + 2\n}\n' > "$ndir/main.vibe"
+    printf 'fn main with { Stdout } {\n  Stdout::write_stream("42\\n")\n}\n' > "$ndir/main.vibex"
     printf '# vibe dependencies: one `<name> <url>` per line (see `vibe add`).\n' > "$ndir/vibe.deps"
-    echo "created $ndir (run: vibe run $ndir/main.vibe)"
+    echo "created $ndir (run: vibe run $ndir/main.vibex)"
     ;;
   add)
     # vibe add <name> <url> [project_dir]
