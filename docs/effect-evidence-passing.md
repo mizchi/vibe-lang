@@ -1127,6 +1127,45 @@ field: value }` (`::` 付き、非糖衣形式) を使うことで回避した�
 regression fixture として追加。両方とも `edp_has_unsafe_construct` の
 module doc comment (「Not attempted here」段落) を更新して反映した。
 
+### 追記 14 (2026-07-23、同日): closure literal (`EFn`) の定義を解禁 --
+ただし呼び出し側の制約は未解決のまま残す
+
+`edp_has_unsafe_construct` の `EFn(_, _, _, _, _, _) => true` は
+「needing 関数の body 内のどこであれ closure を定義したら即
+migration 全体を disqualify する」という無条件の制約だった。他の
+拡張と同じ構造で緩和: closure の body を同じ関数で再帰チェックし、
+中身が既知の安全な構文だけなら定義そのものは安全と判定する。
+`edp_rewrite_needing_body`/`edp_rewrite_handle_body` にも対応する
+`EFn` ケースを追加し (body のみ再帰、params/type params/戻り値型/
+宣言 row はそのまま)、closure body 内の `perform ename::Op` は
+enclosing scope から**レキシカルにキャプチャした** `dict_pname` を
+通して正しく書き換えられる (これは通常の closure capture 意味論
+そのものであり、evidence dict 固有の特別扱いは不要)。
+
+**重要な残存スコープの発見**: この緩和は closure の**定義**を
+安全にするだけで、ローカル変数経由での closure **呼び出し**
+(`f()`、`f` がローカル変数でトップレベル関数名でない場合) は
+別の独立した制約のままである。`ECall` ケースの `else => true`
+フォールバックは「ローカル変数の callee」と「未知のトップレベル
+名の callee」を区別しないため、`f()` は closure の定義が安全に
+なった後も依然 unsafe 判定される。ローカル callee を安全に認識
+するには本物のスコープ追跡が必要 (このパスは AST レベルのみで
+持っていない) で、素朴に名前だけで判定すると `pure_fns`/`needing`
+の name-matching と同種の shadowing false-safety リスクを負う。
+
+結果として、この緩和の実用上の効果は見た目より狭い: needing 関数は
+自由に closure を「定義」できるようになった (未使用のまま、
+opaque データとして受け渡す、など) が、ローカル束縛経由で
+「呼び出す」ケースは依然 replay にフォールバックする。
+
+`fixtures/effect_handle_call_evidence_closure_literal.vibe`
+(gate 40ac、期待値 6) は、この境界を明示的に固定する: 定義した
+closure (`never_called`、body は `perform Ask::Get` を含む) を
+意図的に一度も呼び出さない構成にし、「定義が安全になったこと」と
+「呼び出しは別問題として未解決のまま残ること」の両方を同じ
+fixture で pin している。検証は今回も migration-plan probe で
+実施し、`Ask` が実際に migrate することを確認した。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect

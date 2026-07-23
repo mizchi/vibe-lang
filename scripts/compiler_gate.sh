@@ -4726,6 +4726,37 @@ fi
 rm -rf "$edpdotdir"
 echo "[compiler-gate] evidence-dict pass struct field read ok"
 
+# 40ac. ADR-0076 Phase 3 (#817): a needing function's body defines a
+#       closure LITERAL that itself performs the migrated effect
+#       (deliberately never invoked -- see the fixture's own doc comment
+#       for why calling an arbitrary local closure remains a separate,
+#       unaddressed restriction). edp_has_unsafe_construct's `EFn` case
+#       used to be unconditionally unsafe regardless of what the
+#       closure's own body contained; it now recurses into the body the
+#       same way as everywhere else. Verified (via a temporary
+#       migration-plan probe during development) that `Ask` genuinely
+#       migrates and the rewrite of the closure's body (dict capture)
+#       produces valid wasm even though the closure is unreachable.
+echo "[compiler-gate] 40ac/40 evidence-dict pass: closure literal defining a perform (ADR-0076 Phase 3/#817)"
+edpclodir="_build/_gate_evidence_dict_closure_literal"
+rm -rf "$edpclodir"; mkdir -p "$edpclodir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_closure_literal.vibe > "$edpclodir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpclodir/src.vibe" "$edpclodir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpclodir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_closure_literal.vibe did not compile" >&2
+  cat "$edpclodir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edpclo_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpclodir/out.wasm" 2>&1 | tail -1)"
+if [ "$edpclo_out" != "6" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_closure_literal.vibe got '$edpclo_out' (want 6) -- closure-literal eligibility regressed" >&2
+  exit 1
+fi
+rm -rf "$edpclodir"
+echo "[compiler-gate] evidence-dict pass closure literal ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the

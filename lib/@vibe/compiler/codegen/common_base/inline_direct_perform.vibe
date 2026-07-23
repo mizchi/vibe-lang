@@ -603,9 +603,9 @@ fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_b
 // left alone, matching today's behavior exactly.
 //
 // Not attempted here (left on replay, same as before this pass exists):
-// row-variable-polymorphic functions, closures hiding a perform, and any
-// effect for which even one handle site or needing function fails the
-// eligibility scan. A function whose row combines `E` with another effect
+// row-variable-polymorphic functions, and any effect for which even one
+// handle site or needing function fails the eligibility scan. A function
+// whose row combines `E` with another effect
 // (`edp_row_is_exactly`'s row-containment match) IS attempted, per-effect,
 // independently -- each effect in the row is eligibility-checked and
 // migrated (or not) on its own terms; see edp_row_is_exactly's doc comment
@@ -627,11 +627,28 @@ fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_b
 // effect_handle_call_evidence_struct_field.vibe -- despite this pass
 // having no type information: only the object expression being read
 // from can hide anything unsafe, which the existing traversal already
-// answers soundly regardless of the field's static type. Expanding
-// coverage further (effectset-expanded rows, deeper call chains through
-// eligible-but-indirect helpers -- e.g. a wrapper that merely forwards
-// to a needing function without itself declaring the effect) is
-// expected follow-up, not a soundness gap in what already lands here.
+// answers soundly regardless of the field's static type. A closure
+// LITERAL's own body (`EFn`) is ALSO safe to look inside now -- see
+// fixtures/effect_handle_call_evidence_closure_literal.vibe -- but this
+// covers only the closure's DEFINITION: CALLING an arbitrary local
+// closure (`f()` where `f` is a local variable, not a top-level function
+// name) is a SEPARATE, still-unaddressed restriction (the ECall case's
+// `else => true` fallback doesn't distinguish a local callee from an
+// unrecognized top-level one, and recognizing local callees safely would
+// need real scope tracking this AST-level pass doesn't have -- doing it
+// naively by name alone would risk exactly the kind of shadowing false-
+// safety `pure_fns`/`needing`'s name-matching could ALSO in principle hit,
+// see edp_pure_fn_names' considerations). So this relaxation's practical
+// effect is narrower than it sounds: a needing function may now freely
+// DEFINE closures (used as opaque data, passed to something already
+// recognized safe, or simply unused) without disqualifying migration,
+// but INVOKING one through a local binding still falls back to replay.
+// Expanding coverage further (effectset-expanded rows, deeper call
+// chains through eligible-but-indirect helpers -- e.g. a wrapper that
+// merely forwards to a needing function without itself declaring the
+// effect -- and local-closure invocation, once real scope tracking is
+// available) is expected follow-up, not a soundness gap in what already
+// lands here.
 // Two phases, deliberately NOT interleaved (see edp_row_is_exactly's doc
 // comment, "追記 8", for the bug this avoids): first decide eligibility
 // for EVERY effect against the still-completely-unmutated `stmts`, then
@@ -966,9 +983,31 @@ fn empty_str_array() -> Array[String] {
 // `EDot` case (recursing into `obj`, leaving the field name untouched)
 // for the same "the two traversals must agree" reason as everywhere else
 // in this function.
+//
+// `EFn(.., body)` -- a closure LITERAL -- now recurses into its own body
+// with the exact same check, instead of being unconditionally unsafe.
+// This is sound for the same structural reason as everywhere else in
+// this function: if the closure's body, scanned by this SAME recursive
+// traversal, contains nothing this pass doesn't already know how to
+// classify (a `perform` of `ename`, a call to a `needing`/`pure_fns`
+// member, or any of the other already-recognized safe shapes), then
+// whatever the closure eventually does when invoked -- once, many times,
+// stored and called later, whatever -- is exactly as well-understood as
+// any other code this pass already rewrites; nothing about closures
+// specifically weakens that. A `perform ename::Op` found inside the
+// closure's body IS rewritten (edp_rewrite_needing_body/edp_rewrite_
+// handle_body gained a matching `EFn` case, recursing into the body the
+// same way), using the closure's LEXICALLY CAPTURED `dict_pname` from
+// its enclosing scope -- an ordinary captured variable reference, no
+// different from any other value a closure captures, valid for as long
+// as the closure itself is (standard closure-capture semantics, entirely
+// orthogonal to anything effect-handling-specific). The closure's own
+// declared effect row (if any) is not consulted here; it's the type
+// checker's own bookkeeping, unrelated to whether this AST-level rewrite
+// can soundly transform the closure's body.
 fn edp_has_unsafe_construct(expr: Expr, needing: Array[String], ename: String, pure_fns: Array[String]) -> Bool {
   match expr {
-    EFn(_, _, _, _, _, _) => true,
+    EFn(_, _, _, _, _, body) => edp_has_unsafe_construct(body, needing, ename, pure_fns),
     EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
       true
     } else {
@@ -1477,6 +1516,13 @@ fn edp_rewrite_needing_fn(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, S
 // effect experiment that led to finding it.
 fn edp_rewrite_needing_body(expr: Expr, ename: String, dict_pname: String, needing: Array[String]) -> Expr {
   match expr {
+    // A closure literal's body is rewritten the same way its enclosing
+    // needing function's body is (edp_has_unsafe_construct already
+    // verified this is safe); the closure's own params/type params/
+    // return type/declared row are untouched, only its body. A perform
+    // of `ename` found inside resolves through `dict_pname` via ordinary
+    // lexical capture from the enclosing scope.
+    EFn(tps, tbs, params, ret, eff, body) => EFn(tps, tbs, params, ret, eff, edp_rewrite_needing_body(body, ename, dict_pname, needing)),
     // A nested EHandle for a DIFFERENT effect than `ename` is safe to
     // recurse into (edp_has_unsafe_construct already verified this, both
     // for its body and its arms -- see that function's doc comment); one
@@ -1676,6 +1722,13 @@ fn edp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_b
 // unrewritten, same failure mode.
 fn edp_rewrite_handle_body(expr: Expr, ename: String, op_names: Array[String], bind_names_list: Array[Array[String]], prepared_bodies: Array[Expr], dict_literal: Expr, needing: Array[String]) -> Expr {
   match expr {
+    // Same closure-literal handling as edp_rewrite_needing_body: a
+    // `perform ename::Op` inside a closure defined within this handle's
+    // body is spliced the same way as anywhere else in the body (pure
+    // AST substitution of the arm's prepared body, not a runtime
+    // reference -- see edp_splice_perform -- so it's exactly as valid
+    // wherever the closure ends up being called, sync or later).
+    EFn(tps, tbs, params, ret, eff, body) => EFn(tps, tbs, params, ret, eff, edp_rewrite_handle_body(body, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
     // Same nested-EHandle handling as edp_rewrite_needing_body: recurse
     // into a DIFFERENT effect's nested handle (splicing any `perform
     // ename::Op` found inside it exactly like anywhere else in this
