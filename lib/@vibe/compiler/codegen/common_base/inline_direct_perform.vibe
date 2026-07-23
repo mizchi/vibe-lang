@@ -776,11 +776,11 @@ fn edp_has_unsafe_construct(expr: Expr, needing: Array[String]) -> Bool {
   match expr {
     EFn(_, _, _, _, _, _) => true,
     EHandle(_, _) => true,
-    EIf(_, _, _) => true,
-    EMatch(_, _) => true,
-    EWhile(_, _) => true,
-    EForIn(_, _, _, _) => true,
-    ELoop(_, _) => true,
+    EIf(c, t, e) => edp_has_unsafe_construct(c, needing) || edp_has_unsafe_construct(t, needing) || edp_has_unsafe_construct(e, needing),
+    EMatch(s, arms) => edp_has_unsafe_construct(s, needing) || edp_arms_have_unsafe_construct(arms, needing),
+    EWhile(c, b) => edp_has_unsafe_construct(c, needing) || edp_has_unsafe_construct(b, needing),
+    EForIn(_, _, it, b) => edp_has_unsafe_construct(it, needing) || edp_has_unsafe_construct(b, needing),
+    ELoop(pairs, b) => edp_pairs_have_unsafe_construct(pairs, needing) || edp_has_unsafe_construct(b, needing),
     ELet(_, v, b, _) => edp_has_unsafe_construct(v, needing) || edp_has_unsafe_construct(b, needing),
     ELetMut(_, v, b, _) => edp_has_unsafe_construct(v, needing) || edp_has_unsafe_construct(b, needing),
     ELetRec(_, v, b) => edp_has_unsafe_construct(v, needing) || edp_has_unsafe_construct(b, needing),
@@ -873,6 +873,36 @@ fn edp_fields_have_unsafe_construct(fields: Array[(String, Expr)], needing: Arra
   while i < Array::length(fields) {
     let (_, v) = Array::get(fields, i)
     if edp_has_unsafe_construct(v, needing) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn edp_pairs_have_unsafe_construct(pairs: Array[(String, Expr)], needing: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(pairs) {
+    let (_, v) = Array::get(pairs, i)
+    if edp_has_unsafe_construct(v, needing) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn edp_arms_have_unsafe_construct(arms: Array[(Pat, Expr)], needing: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    if edp_has_unsafe_construct(ex, needing) {
       found = true
     } else {
       ()
@@ -1162,13 +1192,17 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
   }
   // Rewrite each handle site: synthesize a fresh evidence dict from its
   // arms, splice direct performs the same way Phase 2 does, pass the dict
-  // at calls to needing functions, and drop the EHandle wrapper.
-  let mut hi = 0
-  while hi < Array::length(handle_sites) {
-    let (body, arms) = Array::get(handle_sites, hi)
-    let new_body = edp_rewrite_handle_site(body, arms, ename, needing)
-    edp_replace_handle_in_stmts(stmts, body, arms, new_body)
-    hi = hi + 1
+  // at calls to needing functions, and drop the EHandle wrapper. Single
+  // pass over `stmts`, rewriting each matching EHandle node the moment it
+  // is found -- see edp_find_rewrite_handles's doc comment for why this
+  // replaced an earlier collect-then-re-find-by-equality design.
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, si, SLet(exported, is_rec, name, ty, edp_find_rewrite_handles(expr, ename, needing))),
+      _ => ()
+    }
+    si = si + 1
   }
   // Register the dict struct type once (idempotent, mirrors
   // desugar_trait_dict.vibe's own struct_decl_exists guard).
@@ -1424,165 +1458,97 @@ fn edp_splice_or_leave(qname: String, actual_args: Array[Expr], original_operand
   }
 }
 
-// Replace the (unique, reference-identified-by-structural-match) `EHandle`
-// node whose (body, arms) is exactly this pair with `new_body` -- the
-// handle site was found by edp_collect_handle_sites_expr walking the same
-// stmts array, so a structural walk here re-finds the exact same spot.
-fn edp_replace_handle_in_stmts(stmts: Array[Stmt], target_body: Expr, target_arms: Array[(Pat, Expr)], new_body: Expr) -> Unit {
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, i, SLet(exported, is_rec, name, ty, edp_replace_handle_expr(expr, target_body, target_arms, new_body))),
-      _ => ()
-    }
-    i = i + 1
-  }
-}
-
-fn edp_replace_handle_expr(expr: Expr, target_body: Expr, target_arms: Array[(Pat, Expr)], new_body: Expr) -> Expr {
+// Find every `EHandle` whose arms discharge `ename` and rewrite it via
+// edp_rewrite_handle_site, in the SAME traversal that finds it -- no
+// separate "collect, then re-find by structural equality" step.
+//
+// An earlier version collected handle sites (edp_collect_handle_sites)
+// and re-located each one afterward via a hand-rolled structural-equality
+// check (edp_same_handle/edp_expr_eq) covering only a handful of Expr
+// constructors (EIdent/ECall/ESeq/ELet/EBinOp/EAssign/EInt). Any handle
+// body containing an Expr shape outside that list -- EIf being the first
+// one actually hit -- made edp_expr_eq silently return false for the
+// handle's own body compared against itself, so edp_replace_handle_in_
+// stmts never found a match and left the ORIGINAL, unmodified handle body
+// in place. Meanwhile edp_rewrite_needing_fn (which locates functions by
+// NAME via fn_defs, not by re-matching an Expr) had already prepended the
+// evidence-dict parameter to the needing function's signature regardless
+// -- producing exactly the inconsistent state that crashed at the wasm
+// level ("not enough arguments on the stack for call"): a callee expecting
+// N+1 params, called from an unrewritten site still passing N. This was
+// the actual root cause of the branch-nested-call bug (docs/effect-
+// evidence-passing.md "追記 4"/"追記 6"), not the EIf/local_names
+// interaction originally suspected -- runtime instrumentation of
+// compile_call.vibe's local_idx_hint/fn_idx_in_list dispatch (which
+// correctly selected the direct-call path) ruled that out.
+//
+// This single-pass design can't have that failure mode: a handle is
+// rewritten the moment it's found, so there is no second "find it again"
+// step to fail. By this point (called only from edp_apply_migration,
+// itself only reached when edp_all_sites_eligible returned true for
+// `ename`), EVERY handle whose arms discharge `ename` anywhere in the
+// whole program is already known-eligible, so unconditionally rewriting
+// every occurrence found here is sound -- eligibility, not this
+// traversal, is what decides whether rewriting was safe to attempt at
+// all.
+fn edp_find_rewrite_handles(expr: Expr, ename: String, needing: Array[String]) -> Expr {
   match expr {
-    EHandle(body, arms) => if edp_same_handle(body, arms, target_body, target_arms) {
-      new_body
+    EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
+      edp_rewrite_handle_site(body, arms, ename, needing)
     } else {
-      EHandle(edp_replace_handle_expr(body, target_body, target_arms, new_body), for a in arms {
+      EHandle(edp_find_rewrite_handles(body, ename, needing), for a in arms {
         let (p, ex) = a
-        (p, edp_replace_handle_expr(ex, target_body, target_arms, new_body))
+        (p, edp_find_rewrite_handles(ex, ename, needing))
       })
     },
-    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, edp_replace_handle_expr(b, target_body, target_arms, new_body)),
-    ELet(n, v, b, off) => ELet(n, edp_replace_handle_expr(v, target_body, target_arms, new_body), edp_replace_handle_expr(b, target_body, target_arms, new_body), off),
-    ELetMut(n, v, b, off) => ELetMut(n, edp_replace_handle_expr(v, target_body, target_arms, new_body), edp_replace_handle_expr(b, target_body, target_arms, new_body), off),
-    ELetRec(n, v, b) => ELetRec(n, edp_replace_handle_expr(v, target_body, target_arms, new_body), edp_replace_handle_expr(b, target_body, target_arms, new_body)),
-    ESeq(a, b) => ESeq(edp_replace_handle_expr(a, target_body, target_arms, new_body), edp_replace_handle_expr(b, target_body, target_arms, new_body)),
-    EIf(c, t, e) => EIf(edp_replace_handle_expr(c, target_body, target_arms, new_body), edp_replace_handle_expr(t, target_body, target_arms, new_body), edp_replace_handle_expr(e, target_body, target_arms, new_body)),
-    EMatch(s, arms) => EMatch(edp_replace_handle_expr(s, target_body, target_arms, new_body), for a in arms {
+    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, edp_find_rewrite_handles(b, ename, needing)),
+    ELet(n, v, b, off) => ELet(n, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(b, ename, needing), off),
+    ELetMut(n, v, b, off) => ELetMut(n, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(b, ename, needing), off),
+    ELetRec(n, v, b) => ELetRec(n, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(b, ename, needing)),
+    ESeq(a, b) => ESeq(edp_find_rewrite_handles(a, ename, needing), edp_find_rewrite_handles(b, ename, needing)),
+    EIf(c, t, e) => EIf(edp_find_rewrite_handles(c, ename, needing), edp_find_rewrite_handles(t, ename, needing), edp_find_rewrite_handles(e, ename, needing)),
+    EMatch(s, arms) => EMatch(edp_find_rewrite_handles(s, ename, needing), for a in arms {
       let (p, ex) = a
-      (p, edp_replace_handle_expr(ex, target_body, target_arms, new_body))
+      (p, edp_find_rewrite_handles(ex, ename, needing))
     }),
-    EWhile(c, b) => EWhile(edp_replace_handle_expr(c, target_body, target_arms, new_body), edp_replace_handle_expr(b, target_body, target_arms, new_body)),
-    EForIn(n, idx, it, b) => EForIn(n, idx, edp_replace_handle_expr(it, target_body, target_arms, new_body), edp_replace_handle_expr(b, target_body, target_arms, new_body)),
-    ECall(callee, args, off) => ECall(edp_replace_handle_expr(callee, target_body, target_arms, new_body), for a in args {
-      edp_replace_handle_expr(a, target_body, target_arms, new_body)
+    EWhile(c, b) => EWhile(edp_find_rewrite_handles(c, ename, needing), edp_find_rewrite_handles(b, ename, needing)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, edp_find_rewrite_handles(it, ename, needing), edp_find_rewrite_handles(b, ename, needing)),
+    ECall(callee, args, off) => ECall(edp_find_rewrite_handles(callee, ename, needing), for a in args {
+      edp_find_rewrite_handles(a, ename, needing)
     }, off),
-    EBinOp(op, l, r) => EBinOp(op, edp_replace_handle_expr(l, target_body, target_arms, new_body), edp_replace_handle_expr(r, target_body, target_arms, new_body)),
-    EUnaryOp(op, e2) => EUnaryOp(op, edp_replace_handle_expr(e2, target_body, target_arms, new_body)),
-    EAssign(n, v, c) => EAssign(n, edp_replace_handle_expr(v, target_body, target_arms, new_body), edp_replace_handle_expr(c, target_body, target_arms, new_body)),
-    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_replace_handle_expr(v, target_body, target_arms, new_body), edp_replace_handle_expr(c, target_body, target_arms, new_body)),
-    EDot(o, f, off1, off2) => EDot(edp_replace_handle_expr(o, target_body, target_arms, new_body), f, off1, off2),
-    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_replace_handle_expr(v, target_body, target_arms, new_body)),
-    EReturn(e2) => EReturn(edp_replace_handle_expr(e2, target_body, target_arms, new_body)),
+    EBinOp(op, l, r) => EBinOp(op, edp_find_rewrite_handles(l, ename, needing), edp_find_rewrite_handles(r, ename, needing)),
+    EUnaryOp(op, e2) => EUnaryOp(op, edp_find_rewrite_handles(e2, ename, needing)),
+    EAssign(n, v, c) => EAssign(n, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(c, ename, needing)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(c, ename, needing)),
+    EDot(o, f, off1, off2) => EDot(edp_find_rewrite_handles(o, ename, needing), f, off1, off2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_find_rewrite_handles(v, ename, needing)),
+    EReturn(e2) => EReturn(edp_find_rewrite_handles(e2, ename, needing)),
     EBreak(opt) => EBreak(match opt {
-      Some(e2) => Some(edp_replace_handle_expr(e2, target_body, target_arms, new_body)),
+      Some(e2) => Some(edp_find_rewrite_handles(e2, ename, needing)),
       None => None
     }),
     EContinue(args) => EContinue(for a in args {
-      edp_replace_handle_expr(a, target_body, target_arms, new_body)
+      edp_find_rewrite_handles(a, ename, needing)
     }),
     ETuple(elems) => ETuple(for a in elems {
-      edp_replace_handle_expr(a, target_body, target_arms, new_body)
+      edp_find_rewrite_handles(a, ename, needing)
     }),
     EArray(elems) => EArray(for a in elems {
-      edp_replace_handle_expr(a, target_body, target_arms, new_body)
+      edp_find_rewrite_handles(a, ename, needing)
     }),
     ERecord(n, fields, tas) => ERecord(n, for f in fields {
       let (fn2, v) = f
-      (fn2, edp_replace_handle_expr(v, target_body, target_arms, new_body))
+      (fn2, edp_find_rewrite_handles(v, ename, needing))
     }, tas),
     EMap(fields) => EMap(for f in fields {
       let (fn2, v) = f
-      (fn2, edp_replace_handle_expr(v, target_body, target_arms, new_body))
+      (fn2, edp_find_rewrite_handles(v, ename, needing))
     }),
-    ESpread(e2) => ESpread(edp_replace_handle_expr(e2, target_body, target_arms, new_body)),
+    ESpread(e2) => ESpread(edp_find_rewrite_handles(e2, ename, needing)),
     ELoop(pairs, b) => ELoop(for p in pairs {
       let (n, v) = p
-      (n, edp_replace_handle_expr(v, target_body, target_arms, new_body))
-    }, edp_replace_handle_expr(b, target_body, target_arms, new_body)),
+      (n, edp_find_rewrite_handles(v, ename, needing))
+    }, edp_find_rewrite_handles(b, ename, needing)),
     _ => expr
-  }
-}
-
-// Structural equality on (body, arms) -- good enough to re-identify the
-// exact handle site edp_collect_handle_sites_expr found, since two
-// DIFFERENT handle sites for the same effect in the same program would
-// need byte-identical body ASTs to collide, which would make them
-// semantically interchangeable for this rewrite's purposes anyway (arms
-// are the same, so the same dict literal is correct for either).
-fn edp_same_handle(body: Expr, arms: Array[(Pat, Expr)], target_body: Expr, target_arms: Array[(Pat, Expr)]) -> Bool {
-  edp_expr_eq(body, target_body) && edp_arms_eq(arms, target_arms)
-}
-
-fn edp_arms_eq(a: Array[(Pat, Expr)], b: Array[(Pat, Expr)]) -> Bool {
-  if Array::length(a) != Array::length(b) {
-    false
-  } else {
-    let mut i = 0
-    let mut eq = true
-    while i < Array::length(a) {
-      let (pa, ea) = Array::get(a, i)
-      let (pb, eb) = Array::get(b, i)
-      if edp_pat_qname(pa) != edp_pat_qname(pb) || !edp_expr_eq(ea, eb) {
-        eq = false
-      } else {
-        ()
-      }
-      i = i + 1
-    }
-    eq
-  }
-}
-
-// A conservative structural-equality check: exact match on the shapes this
-// pass itself produces/consumes; anything it does not specifically
-// recognize falls back to `false` (never a false positive that could merge
-// two distinct handle sites).
-fn edp_expr_eq(a: Expr, b: Expr) -> Bool {
-  match a {
-    EIdent(na, _) => match b {
-      EIdent(nb, _) => na == nb,
-      _ => false
-    },
-    ECall(ca, aa, _) => match b {
-      ECall(cb, ab, _) => edp_expr_eq(ca, cb) && edp_expr_arrays_eq(aa, ab),
-      _ => false
-    },
-    ESeq(a1, a2) => match b {
-      ESeq(b1, b2) => edp_expr_eq(a1, b1) && edp_expr_eq(a2, b2),
-      _ => false
-    },
-    ELet(na, va, ba, _) => match b {
-      ELet(nb, vb, bb, _) => na == nb && edp_expr_eq(va, vb) && edp_expr_eq(ba, bb),
-      _ => false
-    },
-    EBinOp(opa, la, ra) => match b {
-      EBinOp(opb, lb, rb) => opa == opb && edp_expr_eq(la, lb) && edp_expr_eq(ra, rb),
-      _ => false
-    },
-    EAssign(na, va, ca) => match b {
-      EAssign(nb, vb, cb) => na == nb && edp_expr_eq(va, vb) && edp_expr_eq(ca, cb),
-      _ => false
-    },
-    EInt(ia) => match b {
-      EInt(ib) => ia == ib,
-      _ => false
-    },
-    _ => false
-  }
-}
-
-fn edp_expr_arrays_eq(a: Array[Expr], b: Array[Expr]) -> Bool {
-  if Array::length(a) != Array::length(b) {
-    false
-  } else {
-    let mut i = 0
-    let mut eq = true
-    while i < Array::length(a) {
-      if !edp_expr_eq(Array::get(a, i), Array::get(b, i)) {
-        eq = false
-      } else {
-        ()
-      }
-      i = i + 1
-    }
-    eq
   }
 }

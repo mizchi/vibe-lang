@@ -1,6 +1,6 @@
 # ADR-0076: effect handler を evidence passing 化する (suspend 点 IR で WasmFX/WASI 0.3 前方互換)
 
-Status: proposed (実装 Phase 1/2/2b は着地済み、Phase 3 の第一スライス (evidence-dict のヘルパー関数呼び越し threading) も着地、2026-07-22 — 「段階導入計画」の実装ノート参照)
+Status: proposed (実装 Phase 1/2/2b は着地済み、Phase 3 の第一スライス (evidence-dict のヘルパー関数呼び越し threading、分岐を含む handle body も対応) も着地、2026-07-23 — 「段階導入計画」の実装ノート参照)
 
 Date: 2026-07-22
 
@@ -745,6 +745,55 @@ error_mix.vibe + compiler_gate.sh 40w で回帰を固定 -- この fixture は
 呼ばない」形にしてあり、evidence_dict_pass が handle から到達可能かに
 関わらず row が一致する関数を機械的に全て移行対象にすることを利用して、
 実行時に踏まなくてもコンパイル時点でバグを再現できるようにしてある。
+
+**追記 6 (2026-07-23, 「追記 4」の根本原因を特定・修正)**: 「追記 4」で
+未確定のまま残していた分岐内呼び出しクラッシュの根本原因を、
+`compile_call.vibe` に一時的な debug throw (`with { Error }` を既に
+宣言している既存関数なので `print`/`Stdout` を新たに要求せず安全に
+埋め込めた) を仕込んで実際に計装し、特定した。
+
+結果、「追記 4」で本命視していた `local_idx_hint`/`fn_idx_in_list` の
+分岐判定は **無関係だった** (計装値: `fn_idx_in_list=0`,
+`local_idx_hint=-1` — 直接呼び出し経路が正しく選ばれていた)。真因は
+`args_len=0` (AST 側の書き換えが、呼び出しサイトに対して**全く適用
+されていなかった**) だった。
+
+原因は evidence_dict_pass 側の設計そのものにあった: handle サイトの
+書き換えは、まず `edp_collect_handle_sites` で対象 `EHandle` を
+「収集」し、後で `edp_replace_handle_in_stmts` が同じ `stmts` を
+もう一度歩いて **手製の構造的等価性チェック** (`edp_expr_eq`) で
+「収集したのと同じ handle」を再発見し、そこだけ差し替える、という
+2 段階の設計になっていた。ところが `edp_expr_eq` は
+`EIdent`/`ECall`/`ESeq`/`ELet`/`EBinOp`/`EAssign`/`EInt` の 7 種類しか
+扱っておらず、handle body に **それ以外の Expr** (今回踏んだ `EIf` を
+含む) が含まれると、body を自分自身と比較しても `false` を返し、
+「再発見」に静かに失敗していた。再発見に失敗した handle は
+**元の (書き換え前の) 呼び出しのまま** 放置される一方、needing 関数
+自身の署名は `edp_rewrite_needing_fn` という別の (名前ベースで
+`fn_defs` を引く、この等価性チェックに一切依存しない) 経路で
+**確実に書き換わっていた** ため、「呼び出し先は dict 引数込みの
+新しい arity を要求するのに、呼び出しサイトは古い arity のまま」
+という食い違った状態が生まれ、それが wasm レベルの arity mismatch
+として表出していた。EIf はこの不具合を最初に踏んだ具体例に過ぎず、
+`edp_expr_eq` が扱わない Expr 形なら (`ETuple`、`ELetMut`、`EMatch` 等
+何であれ) 同じクラスのバグを引き起こしうる、branch 固有ではない、
+より広いバグだったと判明した。
+
+修正: 「収集してから等価性で再発見する」2 段階設計を廃止し、
+`edp_find_rewrite_handles` という単一の走査関数に統合した --
+対象 effect にマッチする `EHandle` を**見つけたその場で直接書き換える**
+ため、そもそも「後で再発見する」フェーズが存在せず、このバグの
+クラス全体が構造的に発生しえなくなった。これに伴い、
+`edp_has_unsafe_construct` の `EIf`/`EMatch`/`EWhile`/`EForIn`/`ELoop`
+を再び「安全なら再帰して判定」する元の (broader な) 挙動へ戻した --
+このクラスのバグ自体が無くなったので、保守的な「分岐は常に unsafe」
+制限を維持する理由が無くなったため。fixtures/effect_handle_call_
+evidence_branch.vibe (旧 `..._branch_fallback.vibe` から改名・
+再テスト) は、分岐ケースが「クラッシュしないだけ」ではなく
+「evidence dict 経由で正しく (replay の重複実行なしに) 実行される」
+ことを固定するよう更新した (期待値: replay フォールバック時の `3008`
+ではなく、evidence dict 直接呼び出し時の正しい値 `2007`)。
+compiler_gate.sh 40v で回帰を固定。
 
 ## References
 

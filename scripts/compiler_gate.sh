@@ -4488,34 +4488,40 @@ echo "[compiler-gate] evidence-dict threading through a helper-function call ok"
 
 # 40v. ADR-0076 Phase 3 (#817): a needing-function call nested inside an
 #      `if`/`else` branch of a handle body used to compile to genuinely
-#      INVALID wasm ("not enough arguments on the stack for call") --
-#      found by direct testing, not review, while broadening coverage past
-#      gate 40u's straight-line shape. Fixed by making every branching
-#      construct (EIf/EMatch/EWhile/EForIn/ELoop) unconditionally unsafe in
-#      edp_has_unsafe_construct, same as EFn/EHandle/EDot already were --
-#      this pass's scope is straight-line handle-body code only. This gate
-#      pins that the branching case now compiles AND runs (a crash
-#      produces no output, which counts as FAIL regardless of the expected
-#      value) via the safe fallback to pre-existing replay codegen.
-echo "[compiler-gate] 40v/40 evidence-dict pass: branching handle body falls back safely, no invalid-wasm crash (ADR-0076 Phase 3/#817)"
+#      INVALID wasm ("not enough arguments on the stack for call"). Root-
+#      caused (docs/effect-evidence-passing.md "追記 6"): the handle-site
+#      rewrite used to collect handle sites then re-locate each one
+#      afterward via a hand-rolled structural-equality check covering only
+#      a handful of Expr constructors -- any OTHER shape (EIf being the
+#      first one hit) made it silently fail to re-find the site, leaving
+#      the handle body unmodified while the needing function's signature
+#      had already gained the extra evidence-dict parameter. Fixed by
+#      rewriting a matching EHandle the instant it's found, in one
+#      traversal (edp_find_rewrite_handles), eliminating the whole bug
+#      class regardless of which Expr shape appears -- branching
+#      constructs are now genuinely safe again, not just conservatively
+#      disallowed. This gate pins that the branching case now runs
+#      CORRECTLY (a single evidence-dict call, no replay-style duplicate
+#      execution) rather than merely not crashing.
+echo "[compiler-gate] 40v/40 evidence-dict pass: branching handle body runs correctly via the evidence dict (ADR-0076 Phase 3/#817)"
 edpbdir="_build/_gate_evidence_dict_branch"
 rm -rf "$edpbdir"; mkdir -p "$edpbdir"
-sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_branch_fallback.vibe > "$edpbdir/src.vibe"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_branch.vibe > "$edpbdir/src.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$edpbdir/src.vibe" "$edpbdir/out.wasm" main >/dev/null 2>&1
 if [ ! -s "$edpbdir/out.wasm" ]; then
-  echo "[compiler-gate] FAIL: effect_handle_call_evidence_branch_fallback.vibe did not compile" >&2
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_branch.vibe did not compile" >&2
   cat "$edpbdir/out.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
 edpb_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpbdir/out.wasm" 2>&1 | tail -1)"
-if [ "$edpb_out" != "3008" ]; then
-  echo "[compiler-gate] FAIL: effect_handle_call_evidence_branch_fallback.vibe got '$edpb_out' (want 3008) -- either the invalid-wasm crash regressed, or replay's fallback behavior changed" >&2
+if [ "$edpb_out" != "2007" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_branch.vibe got '$edpb_out' (want 2007) -- either the invalid-wasm crash regressed, or the evidence-dict rewrite for branching bodies regressed" >&2
   exit 1
 fi
 rm -rf "$edpbdir"
-echo "[compiler-gate] evidence-dict pass branching fallback ok"
+echo "[compiler-gate] evidence-dict pass branching handle body ok"
 
 # 40w. ADR-0076 Phase 3 (#817): a needing function (declared row exactly
 #      one effect) whose body ALSO performs `Error::Throw` -- legal per
