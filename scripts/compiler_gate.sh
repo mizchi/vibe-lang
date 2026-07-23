@@ -4182,6 +4182,35 @@ fi
 rm -rf "$gcclosdir"
 echo "[compiler-gate] wasm-gc backend closure literal row backfill ok (6)"
 
+# 40h6. ADR-0076 (#817) gc-backend follow-up: edp_has_unsafe_construct's
+#       pure-builtin allowlist was missing `__index` (`obj[i]` sugar),
+#       `Array::get`/`Map::get`/`Bytes::get`, and
+#       `Array::length`/`Map::size`/`Bytes::length` -- all individually
+#       checker-verified pure. A needing function's body calling any of
+#       these (e.g. `items[i]` inside a `while i < Array::length(items)`
+#       loop) was sunk to ineligible purely because the call wasn't on the
+#       allowlist. Harmless on linear (replay fallback); a hard
+#       "unsupported perform" error on gc, which has none.
+echo "[compiler-gate] 40h6/40 wasm-gc backend: __index/length pure-builtin allowlist gap (ADR-0076 gc follow-up)"
+gcidxdir="_build/_gate_gc_pure_builtin_index"
+rm -rf "$gcidxdir"; mkdir -p "$gcidxdir"
+sed '/^__DATA__$/,$d' fixtures/gc_backend_effect_pure_builtin_index.vibe > "$gcidxdir/src.vibe"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gcidxdir/src.vibe" "$gcidxdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$gcidxdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: gc_backend_effect_pure_builtin_index.vibe did not compile under VIBE_BACKEND=gc" >&2
+  cat "$gcidxdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+gcidx_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcidxdir/out.wasm" 2>&1 | tail -1)"
+if [ "$gcidx_out" != "3" ]; then
+  echo "[compiler-gate] FAIL: gc_backend_effect_pure_builtin_index.vibe under gc got '$gcidx_out' (want 3) -- pure-builtin allowlist regressed" >&2
+  exit 1
+fi
+rm -rf "$gcidxdir"
+echo "[compiler-gate] wasm-gc backend pure-builtin allowlist ok (3)"
+
 # 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
 #      must render fixtures/wit_gen_http.vibe byte-exactly as the committed
 #      golden. Pins the WIT mapping contract (docs/effect-wit-mapping.md):

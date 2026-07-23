@@ -1,0 +1,41 @@
+// ADR-0076 (#817) gc-backend follow-up: `edp_has_unsafe_construct`'s
+// pure-builtin allowlist (idp_pure_builtin_names/edp_pure_builtin_names,
+// codegen/common_base/inline_direct_perform.vibe) was missing `__index`
+// (what `obj[i]` desugars to), `Array::get`/`Map::get`/`Bytes::get`, and
+// `Array::length`/`Map::size`/`Bytes::length` -- all seven individually
+// checker-verified pure (no possible perform, no function-typed param).
+// A needing function whose body called any of these (e.g. `items[i]`
+// inside a `while i < Array::length(items) { ... }` loop) was sunk to
+// ineligible purely because the call wasn't on the allowlist, not because
+// of anything about the perform itself -- harmless on the linear backend
+// (falls back to replay codegen, still correct) but a hard "unsupported
+// perform" compile error on the gc backend, which has no such fallback.
+//   Log("a"), Log("b"), Log("c") each push into `logs`; result length == 3
+effect Logger {
+  Log(String) -> Unit
+}
+
+fn log_all(items: Array[String]) -> Unit with { Logger } {
+  let mut i = 0
+  while i < Array::length(items) {
+    perform Logger::Log(items[i])
+    i += 1
+  }
+}
+
+export let main = () -> Int {
+  let mut logs = ArrayBuilder::new()
+  handle {
+    log_all(["a", "b", "c"])
+  } with Logger {
+    Log(msg) => {
+      ArrayBuilder::push(logs, msg)
+      resume(())
+    }
+  }
+  let result = ArrayBuilder::freeze(logs)
+  Array::length(result)
+}
+
+__DATA__
+{"last": "3"}

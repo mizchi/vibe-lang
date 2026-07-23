@@ -232,7 +232,25 @@ fn idp_pure_builtin_names() -> Array[String] {
     "Double::to_string", "Float::to_string",
     "Double::abs", "Double::floor", "Double::ceil",
     "Double::max", "Double::min",
-    "Int::parse", "Double::parse"
+    "Int::parse", "Double::parse",
+    // #817 gc-backend follow-up (2026-07-23): `obj[i]` desugars to
+    // `__index(obj, i)` (desugar_trait_dict.vibe); `Array::get`/`Map::get`/
+    // `Bytes::get` are the same read operation spelled explicitly, and
+    // `Array::length`/`Map::size`/`Bytes::length` are the same class of
+    // pure, no-function-param builtin query. All seven are individually
+    // checker-verified pure (effect `None`, no function-typed parameter --
+    // checker/builtins_misc.vibe's lookup_index,
+    // builtins_array.vibe/builtins_map.vibe/builtins_bytes.vibe's own
+    // `*::get`/`*::length`/`Map::size` entries) and the `__index`/`*::get`
+    // subset is already treated as the same borrow-only-read equivalence
+    // class elsewhere in the compiler (perceus.vibe, common_analysis.vibe).
+    // Found missing via gc-backend coverage testing:
+    // `perform Logger::Log(items[i])` inside a `while i < Array::length
+    // (items) { ... }`-bodied needing function was sunk to ineligible
+    // purely because `items[i]`'s desugared `__index` call (and
+    // `Array::length`'s own call in the loop condition) weren't on this
+    // list, not because of anything about the perform itself.
+    "__index", "Array::get", "Map::get", "Bytes::get", "Array::length", "Map::size", "Bytes::length"
   ]
 }
 
@@ -1440,7 +1458,10 @@ fn edp_pure_builtin_names() -> Array[String] {
     "Double::to_string", "Float::to_string",
     "Double::abs", "Double::floor", "Double::ceil",
     "Double::max", "Double::min",
-    "Int::parse", "Double::parse"
+    "Int::parse", "Double::parse",
+    // Mirrors idp_pure_builtin_names' own addition (same doc comment, same
+    // audit) -- see that function's doc comment for the full rationale.
+    "__index", "Array::get", "Map::get", "Bytes::get", "Array::length", "Map::size", "Bytes::length"
   ]
 }
 
