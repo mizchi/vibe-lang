@@ -59,7 +59,7 @@
 | Koka FP² / TRMC | ICFP 2023, POPL 2023 | Perceus の先: drop-guided reuse、fip/fbip 保証、cons 再帰のループ化 |
 | Ante (ownership × effects) | antelang.org 2025-05 | 継続が捕捉した線形資源の所有権問題 — 継続導入時に踏む課題の整理 |
 | almide (LLM 向け関数型言語、Rust 実装) | github.com/almide/almide crates/ 2026-07 | Perceus 実装の一般化で先行: `almide-mir/src/alias_safety.rs` が関数ローカル fixpoint dataflow で証明可能 unaliased な値への `MakeUnique` (rc>1 COW チェック) を除去する最適化パスを持つ。vibe は dup/drop 挿入止まり (rc-port.md Phase 3) でこの段階に未到達。さらに `translation_validation.rs` / `certificate.rs` + 別ワークスペース `almide-perceus-belt` (RC 規律の Lean 形式証明) で正しさを担保しており、vibe の unit test (`perceus_rc_test.vibe` 14 件) より検証が重い |
-| almide ベンチマーク手法 | github.com/almide/almide docs/BENCHMARKS.md | Hello World / FizzBuzz / 再帰 Fibonacci / Closure+call_indirect / Variant(match+float) の5本を「as shipped」と `wasm-opt -Oz` 後の両方でサイズ計測し継続運用。vibe は ADR-0038 に一回限りの5ベンチ表 (int_literal 等) はあるが継続計測ドキュメントがない。almide の5本は closure+indirect call・pattern match+float という vibe が手薄なコード生成経路を突いており、バイナリサイズ回帰ベンチとして流用価値が高い。加えて `almide-dojo` の Modification Survival Rate (AI 改変後もコンパイル・テストが通り続ける率) は vibe の「エージェント向け構造化診断」施策 (下記 High priority #4) の効果測定指標として転用できる |
+| almide ベンチマーク手法 | github.com/almide/almide docs/BENCHMARKS.md | Hello World / FizzBuzz / 再帰 Fibonacci / Closure+call_indirect / Variant(match+float) の5本を「as shipped」と `wasm-opt -Oz` 後の両方でサイズ計測し継続運用。vibe は ADR-0038 に一回限りの5ベンチ表 (int_literal 等) はあるが継続計測ドキュメントがない。almide の5本は closure+indirect call・pattern match+float という vibe が手薄なコード生成経路を突いており、バイナリサイズ回帰ベンチとして流用価値が高い。加えて `almide-dojo` の Modification Survival Rate (AI 改変後もコンパイル・テストが通り続ける率) は vibe の「エージェント向け構造化診断」施策 (下記 High priority #4) の効果測定指標として転用できる。**Status (2026-07-22): 両方とも導入済み** — バイナリサイズは #1056 (`docs/BENCHMARKS.md`)、MSR + 同一モデル多言語比較 (almide "minigit" 相当) は `eval/msr/` / `eval/lang-bench/` (ハーネスのみ、初回ラウンド未実施) |
 
 ## 取り込み提案 (優先順)
 
@@ -102,6 +102,13 @@
    cost: medium、rc-port.md Phase 3 (drop codegen) 完了後の前提あり。
    関数ローカルな dataflow で証明可能 unaliased な値への rc>1 (MakeUnique
    相当) チェックを除去し、ホットループの不要な refcount 分岐を削る。
+   **Status (#1056, 2026-07-22): 狭い occurrence-local な一部分を実装済み**
+   — 未使用エイリアス (`let a = t` で `a` が一度も参照されない) の
+   dup+drop 相殺ペアを除去する (`perceus.vibe` の `ELet` 処理、
+   `rc-port.md` Phase 3.5)。vibe の RC には almide の `MakeUnique`
+   相当 (COW ガード) がまだ存在しないため、フルの fixpoint 版は
+   別途の下部構造が要る。5 本ベンチ・コンパイラ自身のソースいずれにも
+   対象パターンが現れず実測インパクトは今のところ 0 (`docs/BENCHMARKS.md`)。
 
 ### Low priority
 

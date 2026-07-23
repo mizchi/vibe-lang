@@ -1,14 +1,14 @@
 //# Imports
 
-import ../syntax {
+import @vibe/compiler/syntax {
   lex, parse_program, parse_program_preserving
 }
 
-import ../../../../lib/@vibe/core {
+import @vibe/core {
   array_empty
 }
 
-import ../core {
+import @vibe/compiler/core {
   Expr,
   Stmt,
   Subst,
@@ -22,21 +22,24 @@ import ../core {
   ensure_regular_source_fs,
   external_lib_roots,
   is_contract_ext,
+  nearest_vpkg_path_fs,
   normalize_path,
+  path_in_dir,
   resolve_import_path,
   resolve_import_path_candidates,
   vibe_env_flag,
+  vpkg_path_in_dir,
   contains_path,
   path_set_add,
   path_set_contains,
   path_set_new
 }
 
-import ../checker {
+import @vibe/compiler/checker {
   check_stmts
 }
 
-import ../runtime/eval_loader {
+import @vibe/compiler/runtime/eval_loader {
   collect_exports, load_and_parse
 }
 
@@ -44,7 +47,7 @@ import ./header_cache.vibe {
   contract_sibling_impl_raws, load_or_parse_module_header_fs_impl, merge_impl_raws_dedupe
 }
 
-import ../contract {
+import @vibe/compiler/contract {
   check_contract, classify_contract_stmts, contract_directory_shared_import_prefix_text, contract_facade_marker, contract_facade_source, contract_hash, contract_surface_lines, extract_package_version, extract_require_pins, package_hash_from_sources, parse_contract_program, verify_publish_bump, vpkg_shared_import_marker
 }
 
@@ -78,7 +81,7 @@ export ./manifest_sources.vibe {
   try_load_manifest_rows
 }
 
-import ../cache {
+import @vibe/compiler/cache {
   build_source_groups_fingerprint_from_compact_fingerprints,
   compact_string_fingerprint,
   normalize_persistent_cache_text,
@@ -876,20 +879,6 @@ fn is_vpkg_direct_production_basename(name: String) -> Bool {
   name != "index.vibei" && name != "index.vibe" && name != "index.vpkg" && String::ends_with(name, ".vibe") && !is_vpkg_companion_basename(name) && !String::ends_with(name, ".draft.vibe") && !String::starts_with(name, "_")
 }
 
-fn path_in_dir(dir: String, basename: String) -> String {
-  if dir == "" {
-    basename
-  } else if dir == "/" {
-    String::concat("/", basename)
-  } else {
-    String::concat(String::concat(dir, "/"), basename)
-  }
-}
-
-fn vpkg_path_in_dir(dir: String) -> String {
-  path_in_dir(dir, "index.vpkg")
-}
-
 fn validate_index_layout_fs(path: String) -> Unit with { Error, Fs } {
   ensure_regular_source_fs(path)
   let dir = dir_of_path(path)
@@ -906,31 +895,6 @@ fn validate_index_layout_fs(path: String) -> Unit with { Error, Fs } {
   if Array::length(present) > 1 {
     throw("\{String::join(present, " and ")} exist in \{dir} (#729/#897): a boundary has exactly one index")
   } else ()
-}
-
-// The nearest enclosing index.vpkg is the package owner. Returning the
-// contract path (rather than the directory) also distinguishes a root package
-// from "no owner", where both directory strings would otherwise be empty.
-fn nearest_vpkg_path_fs(path: String) -> String with { Fs } {
-  let mut current = dir_of_path(path)
-  let mut found = ""
-  let mut searching = true
-  while searching {
-    let candidate = vpkg_path_in_dir(current)
-    if Fs::exists(candidate) {
-      ensure_regular_source_fs(candidate)
-      found = candidate
-      searching = false
-    } else {
-      let parent = dir_of_path(current)
-      if parent == current {
-        searching = false
-      } else {
-        current = parent
-      }
-    }
-  }
-  found
 }
 
 // #897: the directory-shared `import @user/mod { x, y }` text to PREPEND to

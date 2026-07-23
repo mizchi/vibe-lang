@@ -1,6 +1,6 @@
 //# Imports
 
-import ../../core {
+import @vibe/compiler/core {
   Expr,
   Pat,
   Stmt,
@@ -9,7 +9,7 @@ import ../../core {
   str_lt
 }
 
-import ../../../../../lib/@vibe/core {
+import @vibe/core {
   array_empty
 }
 
@@ -1806,6 +1806,25 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
         },
         _ => ()
       },
+      // `fn name(..) -> R { .. }` declares parse to SFnDecl, not SLet (see
+      // parse_fn_stmt_general) -- without this case every `fn`-declared
+      // function (the more common spelling) was invisible here, silently
+      // missing from the `for`/async-vs-sync desugar and other fn_returns
+      // consumers below.
+      SFnDecl(_, fname, body, _, _) => match body {
+        EFn(_, _, _, ret, _, _) => {
+          let rn = match ret {
+            Some(te) => match te {
+              TyName(n) => n,
+              TyApp(n, _) => n,
+              _ => ""
+            },
+            None => ""
+          }
+          Array::push(out, (fname, rn))
+        },
+        _ => ()
+      },
       // #672: map each enum variant constructor to its enum name, so a
       // `let t = Node(...)` binding resolves `t`'s type for the `==` dispatch
       // (infer_arg_type_name reads ctor calls through fn_returns).
@@ -2147,6 +2166,35 @@ fn classify_sync_for_loop(name: String, idx: Option[String], iter: Expr, riter: 
   }
 }
 
+// #1064 (Codex review on the original fix): a railway-bound name's real type
+// is `val`'s PAYLOAD, not `val`'s own wrapper type -- conflating them broke
+// plain scalar payloads (the common case: `let* rv = half(x)`, `half: Int ->
+// Option[Int]`, `rv: Int`). But when `val` is a LITERAL nested constructor
+// (`let* outer = Some(Some(1))`), the payload genuinely IS an Option/Result
+// value, so `outer` DOES need a var_types entry -- otherwise a follow-up
+// `let* inner = outer` chaining through the bare identifier can't tell it
+// apart from a Result and defaults to the wrong (Ok/Err) arms. Recurse ONE
+// level into a literal `Some(x)`/`Ok(x)` (never `Err(x)` -- Err's own
+// payload is the error value, never itself railway-chained) to recover the
+// payload's head type for exactly this literal-nesting shape; every other
+// `val` shape (a call to a user function, a bare identifier, ...) has no
+// recoverable payload type here (`fn_returns` only carries a call's return
+// head, not its type arguments) and stays untracked, same as the plain
+// scalar fix.
+fn railway_bind_payload_type(val: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match val {
+    ECall(callee, inner_args, _) => match callee {
+      EIdent(cname, _) => if (cname == "Some" || cname == "Ok") && Array::length(inner_args) == 1 {
+        infer_arg_type_name(Array::get(inner_args, 0), struct_sets, var_types, fn_returns)
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
 // Extend the local var-type environment with `name` when its bound value's
 // type was inferable. A fresh array (copy) is returned so sibling scopes do not
 // see the binding.
@@ -2339,7 +2387,23 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
             let (name, _) = Array::get(ps, 0)
             let rwval = railway_rw(val, struct_sets, var_types, fn_returns)
             let inferred = infer_arg_type_name(val, struct_sets, var_types, fn_returns)
-            let body_vars = extend_var_types(var_types, name, inferred)
+            // #1064: `name` binds to the UNWRAPPED payload (`Some(name)`'s
+            // field), never to a value of `inferred`'s own type (the
+            // wrapper "Option"/"Result" of `val`) -- recording name ->
+            // inferred unconditionally here conflated the two, so a later
+            // `name == <int literal>` in `rest` was misclassified by
+            // infer_arg_type_name's var_types lookup as an Option/Result
+            // operand and routed through the structural opt_eq_match/
+            // result_eq_match rewrite instead of a scalar comparison,
+            // silently computing nonsense for the common scalar-payload
+            // case. `railway_bind_payload_type` recovers the real payload
+            // type for the one shape it CAN (a literal `Some(x)`/`Ok(x)`
+            // nesting, e.g. `let* outer = Some(Some(1))`) so a follow-up
+            // `let* inner = outer` still chains correctly; every other
+            // shape (a plain function call, a bare identifier, ...) stays
+            // untracked, falling through infer_arg_type_name to `None`,
+            // which keeps the plain scalar `==`/`!=` codegen path.
+            let body_vars = extend_var_types(var_types, name, railway_bind_payload_type(val, struct_sets, var_types, fn_returns))
             let rwrest = railway_rw(rest, struct_sets, body_vars, fn_returns)
             lower_try_bind(rwval, name, rwrest, inferred)
           },
@@ -2555,7 +2619,23 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
             let (name, _) = Array::get(ps, 0)
             let rwval = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
             let inferred = infer_arg_type_name(val, struct_sets, var_types, fn_returns)
-            let body_vars = extend_var_types(var_types, name, inferred)
+            // #1064: `name` binds to the UNWRAPPED payload (`Some(name)`'s
+            // field), never to a value of `inferred`'s own type (the
+            // wrapper "Option"/"Result" of `val`) -- recording name ->
+            // inferred unconditionally here conflated the two, so a later
+            // `name == <int literal>` in `rest` was misclassified by
+            // infer_arg_type_name's var_types lookup as an Option/Result
+            // operand and routed through the structural opt_eq_match/
+            // result_eq_match rewrite instead of a scalar comparison,
+            // silently computing nonsense for the common scalar-payload
+            // case. `railway_bind_payload_type` recovers the real payload
+            // type for the one shape it CAN (a literal `Some(x)`/`Ok(x)`
+            // nesting, e.g. `let* outer = Some(Some(1))`) so a follow-up
+            // `let* inner = outer` still chains correctly; every other
+            // shape (a plain function call, a bare identifier, ...) stays
+            // untracked, falling through infer_arg_type_name to `None`,
+            // which keeps the plain scalar `==`/`!=` codegen path.
+            let body_vars = extend_var_types(var_types, name, railway_bind_payload_type(val, struct_sets, var_types, fn_returns))
             let rwrest = rewrite_expr(rest, gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
             lower_try_bind(rwval, name, rwrest, inferred)
           },

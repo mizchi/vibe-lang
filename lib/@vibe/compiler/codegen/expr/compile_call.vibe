@@ -1,27 +1,27 @@
 //# Imports
 
-import ../../../../../lib/@vibe/core {
+import @vibe/core {
   array_empty
 }
 
-import ../../core {
+import @vibe/compiler/core {
   Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32, namespace_exported_name
 }
 
-import ../common_analysis {
+import @vibe/compiler/codegen/common_analysis {
   collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in
 }
 
-import ../common_base {
+import @vibe/compiler/codegen/common_base {
   canonical_builtin_name,
   emit_rc_word_inc_saturating, CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, agg_expr_lookup, agg_slot_lookup, emit_rc_dup_guarded, effect_name_to_tag, effect_op_index, emit_binop_op, emit_box_float, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_index_one, emit_str_ref, emit_unbox_float, expr_tag, find_local_slot, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, ctor_table_index_of, resolve_func, resolve_local, struct_field_candidates, struct_field_dispatch_cases, double_to_string_expr, int_parse_expr, double_parse_expr
 }
 
-import ../common_extractors {
+import @vibe/compiler/codegen/common_extractors {
   array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_earray_elems, get_eassign_body, get_eassign_name, get_eassign_val, get_eassignop_body, get_eassignop_name, get_eassignop_op, get_eassignop_val, get_ebinop_lhs, get_ebinop_rhs, get_ebool_value, get_ecall_args, get_ecall_callee, get_efloat_value, get_efn_params, get_eforin_body, get_eforin_iter, get_eforin_name, get_eident_name, get_eint_value, get_eletmut_body, get_eletmut_name, get_eletmut_val, get_eletrec_body, get_eletrec_name, get_eletrec_val, get_eseq_first, get_eseq_second, get_estring_value, get_etuple_elems, get_eunaryop_expr, get_eunaryop_op, get_ewhile_body, get_ewhile_cond, get_match_arms, get_match_scrutinee, get_pbind_name, get_pbool_value, get_pctor_args, get_pctor_name, get_pint_value, get_pstring_value, get_ptuple_pats, get_slet_export, str_table_lookup
 }
 
-import ../wasm_emit {
+import @vibe/compiler/codegen/wasm_emit {
   emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_full, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_const_lohi, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_f64_abs, emit_f64_ceil, emit_f64_floor, emit_f64_max, emit_f64_min, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data, emit_v128_load, emit_v128_store, emit_i8x16_splat, emit_i8x16_eq, emit_i8x16_le_u, emit_i8x16_ge_u, emit_v128_and, emit_v128_or, emit_v128_not, emit_i8x16_bitmask, emit_v128_any_true, emit_i8x16_all_true, emit_v128_const_splat_byte
 }
 
@@ -2201,6 +2201,16 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       let val_l = nl
       Array::push(local_names, "__d2i_val")
       emit_local_set(buf, val_l)
+      // #1050: under RC the truncated i64 gets tagged via `n << 1` below, and
+      // that shift itself overflows (silently flipping sign) once |n| reaches
+      // 2^62 -- even though trunc_f64_s is happily defined for any magnitude
+      // up to 2^63. So the bound guard has to protect the narrower domain the
+      // tag can actually carry (vibe's tagged Int range is +-2^61, see
+      // CLAUDE.md), not trunc_f64_s's own +-2^63 domain, whenever the result
+      // is going to be tagged. Anything the tag can't carry saturates to 0,
+      // consistent with the NaN saturation below instead of trunc'ing.
+      let bound_hi = if ctx.enable_rc { 1136656384 } else { 1138753536 }
+      let neg_bound_hi = if ctx.enable_rc { 3284140032 } else { 3286237184 }
       // NaN: x != x is only true for NaN.
       emit_local_get(buf, val_l)
       emit_f64_reinterpret_i64(buf)
@@ -2210,16 +2220,16 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_if_i64(buf)
       emit_i64_const(buf, 0)
       emit_else(buf)
-      // Upper bound: trunc_f64_s is defined for x < 2^63.
+      // Upper bound: x < 2^63 (or the narrower +-2^61 taggable bound under RC).
       emit_local_get(buf, val_l)
       emit_f64_reinterpret_i64(buf)
-      emit_f64_const_lohi(buf, 0, 1138753536)
+      emit_f64_const_lohi(buf, 0, bound_hi)
       emit_f64_lt(buf)
       emit_if_i64(buf)
-      // Lower bound: trunc_f64_s is defined for x >= -2^63.
+      // Lower bound: x >= -2^63 (or the narrower +-2^61 taggable bound under RC).
       emit_local_get(buf, val_l)
       emit_f64_reinterpret_i64(buf)
-      emit_f64_const_lohi(buf, 0, 3286237184)
+      emit_f64_const_lohi(buf, 0, neg_bound_hi)
       emit_f64_ge(buf)
       emit_if_i64(buf)
       emit_local_get(buf, val_l)
@@ -3005,6 +3015,21 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       nl + 7
     }
     else if fname == "Array::find" {
+      // #1065: `res_l` holds an `Option[T]`, NOT a raw scalar (unlike
+      // Array::any/all's plain Bool) -- Option's ctors are real heap objects
+      // (tag + fields, see the generic ctor-call path above / compile_expr's
+      // bare-EIdent nullary-ctor path), so "not found" must be a properly
+      // constructed `None` and "found" a properly constructed `Some(elem)`,
+      // never a raw `i64.const 0` / the bare unwrapped element. The original
+      // code stored raw values into res_l, so the returned "Option" was
+      // actually the naked element (or 0) with no tag/heap-object at all --
+      // `assert(Array::find(..) == Some(x))` then failed (a real, structural
+      // mismatch, not a name-resolution issue) and a failing `assert`
+      // compiles to an `unreachable` trap, which is what #1065 reported.
+      // Building None/Some(..) via `ce` on synthesized ctor-call ASTs (the
+      // same path a literal `Some(x)`/`None` expression takes) instead of
+      // hand-rolling the heap-object bytecode here keeps this in sync with
+      // however ctor construction is encoded, RC or not.
       let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
       let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
@@ -3025,6 +3050,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       Array::push(local_names, "__find_env")
       Array::push(local_names, "__find_elem")
       Array::push(local_names, "__find_res")
+      let mut nl2 = nl + 8
       emit_local_set(buf, fn_l)
       emit_local_set(buf, arr_l)
       emit_local_get(buf, arr_l)
@@ -3032,7 +3058,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_local_set(buf, len_l)
       emit_i64_const(buf, 0)
       emit_local_set(buf, i_l)
-      emit_i64_const(buf, 0)
+      nl2 = ce(buf, EIdent("None", -1), local_names, nl2, ctx, ld)
       emit_local_set(buf, res_l)
       emit_closure_resolve(buf, fn_l, slot_l, env_l)
       emit_block_void(buf)
@@ -3049,7 +3075,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
       emit_i32_wrap_i64(buf)
       emit_if_void(buf)
-      emit_local_get(buf, elem_l)
+      nl2 = ce(buf, ECall(EIdent("Some", -1), [EIdent("__find_elem", -1)], -1), local_names, nl2, ctx, ld)
       emit_local_set(buf, res_l)
       emit_br(buf, 2)
       emit_end(buf)
@@ -3061,7 +3087,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_end(buf)
       emit_end(buf)
       emit_local_get(buf, res_l)
-      nl + 8
+      nl2
     }
     else if fname == "Map::keys" {
       let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")

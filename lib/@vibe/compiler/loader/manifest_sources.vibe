@@ -4,24 +4,24 @@ import ./header_cache.vibe {
   contract_sibling_impl_raws, load_or_parse_module_header_fs_impl, merge_impl_raws_dedupe
 }
 
-import ../../../../lib/@vibe/core {
+import @vibe/core {
   array_empty
 }
 
-import ../cache {
+import @vibe/compiler/cache {
   compact_string_fingerprint, normalize_persistent_cache_text, persistent_manifest_header_cache_path
 }
 
-import ../core {
+import @vibe/compiler/core {
   contains_path, dir_of_path, is_contract_ext, normalize_path, path_set_add, path_set_contains,
   path_set_new, resolve_import_path_candidates
 }
 
-import ../syntax {
+import @vibe/compiler/syntax {
   lex, Token, collect_import_path, peek, skip_semi
 }
 
-import ../contract {
+import @vibe/compiler/contract {
   extract_require_pins
 }
 
@@ -45,7 +45,34 @@ export fn join_path(base_dir: String, rel_path: String) -> String {
 
 fn resolve_manifest_dep_path(base_dir: String, raw_path: String, manifest_path_index: Map[String, Bool]) -> String with { Error, Fs } {
   if String::length(raw_path) > 0 && String::char_code_at(raw_path, 0) == 64 {
-    raw_path
+    // A `@scope/name[...]` import used to mean "genuinely external package,
+    // not manifest-tracked" -- returning the raw spelling unresolved was
+    // harmless since manifest_path_index/should_schedule_manifest_dep never
+    // matched it either way. Now that a compiler-internal cross-package
+    // import ALSO uses `@vibe/compiler/<sub>` (loader/header_cache.vibe's
+    // relative-import package-boundary check requires it), the raw string
+    // must actually be resolved for those -- otherwise the dependency edge
+    // to that manifest-tracked sub-package silently vanishes from the fast
+    // manifest-based collection closure. Try real resolution first; fall
+    // back to the raw spelling (old behavior) only when no candidate is
+    // manifest-tracked, i.e. it really is external.
+    let candidates = resolve_import_path_candidates(base_dir, raw_path)
+    let mut i = 0
+    let mut found = ""
+    while i < Array::length(candidates) {
+      if found == "" {
+        let candidate = Array::get(candidates, i)
+        if Map::has_key(manifest_path_index, candidate) || Fs::exists(candidate) {
+          found = candidate
+        } else ()
+      } else ()
+      i = i + 1
+    }
+    if found == "" {
+      raw_path
+    } else {
+      found
+    }
   } else {
     let candidates = resolve_import_path_candidates(base_dir, raw_path)
     let mut i = 0
