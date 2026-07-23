@@ -6905,6 +6905,152 @@ export fn desugar_array_spread(stmts: Array[Stmt]) -> Unit {
 }
 
 ///|
+fn dtpw_exprs_bind_name(es: Array[Expr], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(es) && !found {
+    if dtpw_expr_binds_name(Array::get(es, i), name) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+///|
+// Does `expr` bind (shadow) `name` ANYWHERE within it -- as an EFn
+// parameter, a `let`/`let mut`/`let rec` name, a match/handle arm's
+// pattern binder, a for-loop's item/index name, or a `loop` parameter?
+// Full-coverage traversal mirroring dtpw_inline_expr's own node coverage.
+// See dtpw_collect_wrappers' call site for why this exists (#1074 review,
+// chatgpt-codex-connector P1: "Respect lexical shadowing in wrapper
+// inlining").
+fn dtpw_expr_binds_name(expr: Expr, name: String) -> Bool {
+  match expr {
+    EFn(_, _, params, _, _, body) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(params) && !found {
+        let (pn, _) = Array::get(params, i)
+        if dlh_strip_tilde(pn) == name {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found || dtpw_expr_binds_name(body, name)
+    },
+    ELet(n, v, b, _) => n == name || dtpw_expr_binds_name(v, name) || dtpw_expr_binds_name(b, name),
+    ELetRec(n, v, b) => n == name || dtpw_expr_binds_name(v, name) || dtpw_expr_binds_name(b, name),
+    ELetMut(n, v, b, _) => n == name || dtpw_expr_binds_name(v, name) || dtpw_expr_binds_name(b, name),
+    EForIn(n, idxn, it, b) => {
+      let idx_hit = match idxn {
+        Some(i2) => i2 == name,
+        None => false
+      }
+      n == name || idx_hit || dtpw_expr_binds_name(it, name) || dtpw_expr_binds_name(b, name)
+    },
+    ELoop(params, b) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(params) && !found {
+        let (pn, init) = Array::get(params, i)
+        if pn == name || dtpw_expr_binds_name(init, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found || dtpw_expr_binds_name(b, name)
+    },
+    EMatch(s, arms) => {
+      let mut i = 0
+      let mut found = dtpw_expr_binds_name(s, name)
+      while i < Array::length(arms) && !found {
+        let (p, b) = Array::get(arms, i)
+        let bound = array_empty()
+        dlh_pat_binds(p, bound)
+        if dlh_contains(bound, name) || dtpw_expr_binds_name(b, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EHandle(s, arms) => {
+      let mut i = 0
+      let mut found = dtpw_expr_binds_name(s, name)
+      while i < Array::length(arms) && !found {
+        let (p, b) = Array::get(arms, i)
+        let bound = array_empty()
+        dlh_pat_binds(p, bound)
+        if dlh_contains(bound, name) || dtpw_expr_binds_name(b, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ECall(callee, args, _) => dtpw_expr_binds_name(callee, name) || dtpw_exprs_bind_name(args, name),
+    EBinOp(_, l, r) => dtpw_expr_binds_name(l, name) || dtpw_expr_binds_name(r, name),
+    EUnaryOp(_, e) => dtpw_expr_binds_name(e, name),
+    ETuple(es) => dtpw_exprs_bind_name(es, name),
+    EArray(es) => dtpw_exprs_bind_name(es, name),
+    ESpread(e) => dtpw_expr_binds_name(e, name),
+    EContinue(es) => dtpw_exprs_bind_name(es, name),
+    ERecord(_, fs, _) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fs) && !found {
+        let (_, v) = Array::get(fs, i)
+        if dtpw_expr_binds_name(v, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMap(fs) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fs) && !found {
+        let (_, v) = Array::get(fs, i)
+        if dtpw_expr_binds_name(v, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EIf(c, t, e) => dtpw_expr_binds_name(c, name) || dtpw_expr_binds_name(t, name) || dtpw_expr_binds_name(e, name),
+    EAssign(_, v, c) => dtpw_expr_binds_name(v, name) || dtpw_expr_binds_name(c, name),
+    EAssignOp(_, _, v, c) => dtpw_expr_binds_name(v, name) || dtpw_expr_binds_name(c, name),
+    ESeq(a, b) => dtpw_expr_binds_name(a, name) || dtpw_expr_binds_name(b, name),
+    EWhile(c, b) => dtpw_expr_binds_name(c, name) || dtpw_expr_binds_name(b, name),
+    EDot(o, _, _, _) => dtpw_expr_binds_name(o, name),
+    ELabeledArg(_, _, e) => dtpw_expr_binds_name(e, name),
+    EReturn(e) => dtpw_expr_binds_name(e, name),
+    EBreak(opt) => match opt {
+      Some(e) => dtpw_expr_binds_name(e, name),
+      None => false
+    },
+    _ => false
+  }
+}
+
+///|
 // #1070 (narrow slice): a "trivial pass-through wrapper" is a top-level
 // `let name = (param) -> T with { ... } { param() }` -- exactly one
 // parameter, body is EXACTLY a zero-arg call to that same parameter and
@@ -6912,6 +7058,20 @@ export fn desugar_array_spread(stmts: Array[Stmt]) -> Unit {
 // true here (arity always matches: the wrapper always takes exactly 1 arg
 // and calls its param with exactly 0), kept as a tuple only for symmetry
 // with how this file's other collector helpers are shaped.
+//
+// A collected name is DROPPED again if it's shadowed ANYWHERE in the
+// program (any nested `let`/`let mut`/EFn parameter/match-or-handle-arm
+// binder/for-loop name/loop parameter reusing the same identifier) --
+// dtpw_inline_expr's rewrite matches call sites by NAME ONLY with no
+// scope tracking, so a shadowed name would otherwise get inlined at the
+// WRONG (shadowing) binding's call sites too, changing real program
+// behavior (#1074 review, chatgpt-codex-connector P1). This is
+// deliberately whole-program-conservative rather than precisely
+// scope-threaded: losing the optimization on the rare program that
+// happens to reuse a wrapper's name as a binder elsewhere is an
+// acceptable trade for guaranteed correctness, matching this file's
+// established "bail out entirely when it can't be proven safe" pattern
+// (see dlh_marker_only_called_directly's own doc comment).
 fn dtpw_collect_wrappers(stmts: Array[Stmt]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
@@ -6938,7 +7098,31 @@ fn dtpw_collect_wrappers(stmts: Array[Stmt]) -> Array[String] {
     }
     i = i + 1
   }
-  out
+  let safe = array_empty()
+  let mut j = 0
+  while j < Array::length(out) {
+    let wn = Array::get(out, j)
+    let mut shadowed = false
+    let mut k = 0
+    while k < Array::length(stmts) && !shadowed {
+      match Array::get(stmts, k) {
+        SLet(_, _, _, _, sv) => if dtpw_expr_binds_name(sv, wn) {
+          shadowed = true
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      k = k + 1
+    }
+    if !shadowed {
+      Array::push(safe, wn)
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  safe
 }
 
 // Rewrite every `ECall(EIdent(wname), [single_arg], off)` where `wname` is a

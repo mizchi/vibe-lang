@@ -1,0 +1,29 @@
+// #1074 PR review (chatgpt-codex-connector, P1): "Respect lexical shadowing
+// in wrapper inlining". dtpw_inline_trivial_wrappers (#1070 narrow slice,
+// desugar_trait_dict.vibe) used to match `apply(arg)` call sites by NAME
+// ONLY, with no scope tracking -- a top-level trivial wrapper
+// `apply = (f) -> f()` and a LOCAL binding that reuses the same name
+// (a function parameter here) would both get treated as "the wrapper",
+// silently rewriting the call at the SHADOWED site too.
+//
+// Here `outer`'s own parameter is ALSO named `apply` and does something
+// completely different (ignores its argument, always returns 99) --
+// before the fix, `apply(() -> Int { 1 })` inside `outer` was incorrectly
+// rewritten to `(() -> Int { 1 })()`, silently returning 1 instead of the
+// correct 99 (the shadowing parameter's own behavior). Fixed by making
+// dtpw_collect_wrappers drop a wrapper name from its output entirely if
+// it's EVER shadowed anywhere in the program (whole-program-conservative,
+// not precisely scope-threaded -- see its own doc comment).
+//   outer((x) -> 99) must call the PARAMETER apply, not the top-level one
+let apply = (f: () -> Int) -> Int { f() }
+
+let outer = (apply: (x: () -> Int) -> Int) -> Int {
+  apply(() -> Int { 1 })
+}
+
+export let main = () -> Int {
+  outer((x) -> 99)
+}
+
+__DATA__
+{"last": "99"}

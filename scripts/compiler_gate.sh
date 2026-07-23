@@ -5249,6 +5249,33 @@ fi
 rm -rf "$illladir"
 echo "[compiler-gate] inline effectful lambda literal labeled-arg fix ok (5)"
 
+# 40an. #1074 PR review (chatgpt-codex-connector, P1): trivial-wrapper
+#       inlining (#1070 narrow slice) used to match `apply(arg)` call sites
+#       by NAME ONLY, with no scope tracking -- a local binding (here, a
+#       function parameter) reusing a top-level trivial wrapper's name got
+#       incorrectly rewritten too, silently calling the wrong thing. Fixed
+#       by dropping a wrapper name entirely if it's ever shadowed anywhere
+#       in the program (dtpw_collect_wrappers).
+echo "[compiler-gate] 40an/40 trivial-wrapper inlining respects lexical shadowing (#1074 review)"
+dtpwsdir="_build/_gate_dtpw_wrapper_shadowed"
+rm -rf "$dtpwsdir"; mkdir -p "$dtpwsdir"
+sed '/^__DATA__$/,$d' fixtures/dtpw_wrapper_shadowed_by_parameter.vibe > "$dtpwsdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dtpwsdir/src.vibe" "$dtpwsdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$dtpwsdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: dtpw_wrapper_shadowed_by_parameter.vibe did not compile" >&2
+  cat "$dtpwsdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+dtpws_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$dtpwsdir/out.wasm" 2>&1 | tail -1)"
+if [ "$dtpws_out" != "99" ]; then
+  echo "[compiler-gate] FAIL: dtpw_wrapper_shadowed_by_parameter.vibe got '$dtpws_out' (want 99) -- trivial-wrapper shadowing fix regressed" >&2
+  exit 1
+fi
+rm -rf "$dtpwsdir"
+echo "[compiler-gate] trivial-wrapper inlining shadowing fix ok (99)"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the
