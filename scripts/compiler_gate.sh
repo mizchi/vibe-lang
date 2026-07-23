@@ -4469,7 +4469,7 @@ rm -rf "$a71cdir"; mkdir -p "$a71cdir"
 sed '/^__DATA__$/,$d' fixtures/err_effectset_cycle.vibe > "$a71cdir/cycle.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$a71cdir/cycle.vibe" "$a71cdir/cycle.wasm" main >/dev/null 2>&1
+  "$a71cdir/cycle.vibe" "$a71cdir/cycle.wasm" main >/dev/null 2>&1 || true
 if [ -s "$a71cdir/cycle.wasm" ]; then
   echo "[compiler-gate] FAIL: err_effectset_cycle.vibe compiled successfully -- circular effectset references must be rejected" >&2
   exit 1
@@ -4482,7 +4482,7 @@ fi
 sed '/^__DATA__$/,$d' fixtures/err_effectset_operation_collision.vibe > "$a71cdir/collision.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$a71cdir/collision.vibe" "$a71cdir/collision.wasm" main >/dev/null 2>&1
+  "$a71cdir/collision.vibe" "$a71cdir/collision.wasm" main >/dev/null 2>&1 || true
 if [ -s "$a71cdir/collision.wasm" ]; then
   echo "[compiler-gate] FAIL: err_effectset_operation_collision.vibe compiled successfully -- an effectset colliding with an operation name must be rejected" >&2
   exit 1
