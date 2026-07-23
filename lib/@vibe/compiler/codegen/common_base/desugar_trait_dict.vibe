@@ -4818,6 +4818,151 @@ fn dlh_has_perform(expr: Expr) -> Bool {
   }
 }
 
+// Collect the effect-name prefix (`split_qualified`'s head, or the bare
+// operand name if unqualified) of every `perform <qname>`/`perform
+// <qname>(args)` found in `expr`, deduped, into `out`. Mirrors
+// dlh_has_perform's exact traversal shape (same `Error::Throw` exclusion,
+// same set of recursed-into node kinds -- deliberately NOT into a nested
+// EFn, matching dlh_has_perform's own scope: a perform inside a DEEPER
+// nested closure is that closure's own concern when/if IT is separately
+// hoisted, not this one's).
+//
+// Exists to fix a real bug found via gc-backend coverage testing
+// (2026-07-23): a local closure with NO explicit `with {...}` annotation
+// (its `eff` field is `None` in the AST -- the checker infers its
+// effect row internally but never writes it back onto the node) that
+// performs an effect and gets lambda-lifted to a fresh top-level binding
+// by dlh_hoist_expr (the capture-free case) used to keep `eff = None` on
+// the hoisted definition too. `evidence_dict_pass` classifies TOP-LEVEL
+// functions as "needing" an effect purely by reading this row string
+// (codegen/common_base/inline_direct_perform.vibe's edp_collect_fn_defs),
+// so the hoisted function was silently never recognized as needing
+// anything, and its `perform` was never migrated -- harmless on the
+// linear backend (an un-rewritten perform just falls back to replay
+// codegen, still correct) but a hard "unsupported perform" compile error
+// on the gc backend, which has no such fallback. See
+// fixtures/effect_handle_call_evidence_closure_literal.vibe's
+// `never_called` for the exact shape that surfaced this.
+fn dlh_collect_performed_effect_names(expr: Expr, out: Array[String]) -> Unit {
+  match expr {
+    ECall(callee, args, _) => {
+      let head = match callee {
+        EIdent(n, _) => n == "perform",
+        _ => false
+      }
+      if head && Array::length(args) == 1 {
+        let operand = Array::get(args, 0)
+        let qname = match operand {
+          EIdent(qn, _) => Some(qn),
+          ECall(op_callee, _, _) => match op_callee {
+            EIdent(qn, _) => Some(qn),
+            _ => None
+          },
+          _ => None
+        }
+        match qname {
+          Some(qn) => if qn != "Error::Throw" {
+            let ename = match split_qualified(qn) {
+              Some((h, _)) => h,
+              None => qn
+            }
+            if dlh_contains(out, ename) {
+              ()
+            } else {
+              Array::push(out, ename)
+            }
+          } else {
+            ()
+          },
+          None => ()
+        }
+      } else {
+        ()
+      }
+      dlh_collect_performed_effect_names(callee, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        dlh_collect_performed_effect_names(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    EBinOp(_, l, r) => {
+      dlh_collect_performed_effect_names(l, out)
+      dlh_collect_performed_effect_names(r, out)
+    },
+    EUnaryOp(_, e) => dlh_collect_performed_effect_names(e, out),
+    EIf(c, t, e) => {
+      dlh_collect_performed_effect_names(c, out)
+      dlh_collect_performed_effect_names(t, out)
+      dlh_collect_performed_effect_names(e, out)
+    },
+    ELet(_, v, b, _) => {
+      dlh_collect_performed_effect_names(v, out)
+      dlh_collect_performed_effect_names(b, out)
+    },
+    ELetRec(_, v, b) => {
+      dlh_collect_performed_effect_names(v, out)
+      dlh_collect_performed_effect_names(b, out)
+    },
+    ELetMut(_, v, b, _) => {
+      dlh_collect_performed_effect_names(v, out)
+      dlh_collect_performed_effect_names(b, out)
+    },
+    EAssign(_, v, c) => {
+      dlh_collect_performed_effect_names(v, out)
+      dlh_collect_performed_effect_names(c, out)
+    },
+    EAssignOp(_, _, v, c) => {
+      dlh_collect_performed_effect_names(v, out)
+      dlh_collect_performed_effect_names(c, out)
+    },
+    ESeq(a, b) => {
+      dlh_collect_performed_effect_names(a, out)
+      dlh_collect_performed_effect_names(b, out)
+    },
+    EWhile(c, b) => {
+      dlh_collect_performed_effect_names(c, out)
+      dlh_collect_performed_effect_names(b, out)
+    },
+    EForIn(_, _, it, b) => {
+      dlh_collect_performed_effect_names(it, out)
+      dlh_collect_performed_effect_names(b, out)
+    },
+    EDot(o, _, _, _) => dlh_collect_performed_effect_names(o, out),
+    ELabeledArg(_, _, e) => dlh_collect_performed_effect_names(e, out),
+    EReturn(e) => dlh_collect_performed_effect_names(e, out),
+    EMatch(s, arms) => {
+      dlh_collect_performed_effect_names(s, out)
+      dlh_collect_performed_effect_names_arms(arms, out)
+    },
+    EHandle(s, _) => dlh_collect_performed_effect_names(s, out),
+    _ => ()
+  }
+}
+
+fn dlh_collect_performed_effect_names_arms(arms: Array[(Pat, Expr)], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, b) = Array::get(arms, i)
+    dlh_collect_performed_effect_names(b, out)
+    i = i + 1
+  }
+}
+
+fn dlh_join_comma(names: Array[String]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(names) {
+    if i == 0 {
+      out = Array::get(names, i)
+    } else {
+      out = String::concat(String::concat(out, ", "), Array::get(names, i))
+    }
+    i = i + 1
+  }
+  out
+}
+
 ///|
 fn dlh_has_perform_arms(arms: Array[(Pat, Expr)]) -> Bool {
   let mut i = 0
@@ -5603,7 +5748,32 @@ fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
   match expr {
     ELet(name, v, b, soff) => match v {
       EFn(tp, bnds, params, rt, eff, fbody) => {
-        let hoisted_fn = dlh_hoist_expr(EFn(tp, bnds, params, rt, eff, fbody), hoisted, ctr)
+        // Backfill a missing (unannotated) effect row from what the body
+        // actually performs BEFORE hoisting: a hoisted top-level function's
+        // row is what evidence_dict_pass's needing-classification reads
+        // (codegen/common_base/inline_direct_perform.vibe's
+        // edp_collect_fn_defs), so silently keeping `eff = None` here made
+        // an effect-performing hoisted closure invisible to that pass --
+        // see dlh_collect_performed_effect_names' doc comment for the full
+        // history (found via gc-backend coverage testing, 2026-07-23).
+        // Only fires when `eff` is genuinely absent; an explicit user-
+        // written row (however it's spelled) is left untouched.
+        let eff_is_blank = match eff {
+          None => true,
+          Some(es) => String::trim(es) == ""
+        }
+        let eff_fixed = if eff_is_blank {
+          let performed = empty_str_array()
+          dlh_collect_performed_effect_names(fbody, performed)
+          if Array::length(performed) == 0 {
+            eff
+          } else {
+            Some(dlh_join_comma(performed))
+          }
+        } else {
+          eff
+        }
+        let hoisted_fn = dlh_hoist_expr(EFn(tp, bnds, params, rt, eff_fixed, fbody), hoisted, ctr)
         let rest = dlh_hoist_expr(b, hoisted, ctr)
         let bad = empty_str_array()
         let mut pb = empty_str_array()

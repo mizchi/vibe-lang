@@ -4139,6 +4139,49 @@ fi
 rm -rf "$gcselfdir"
 echo "[compiler-gate] wasm-gc backend self-discharging needing function filtering ok (42)"
 
+# 40h5. ADR-0076 (#817) gc-backend follow-up: a local closure literal with
+#       NO explicit `with {...}` annotation (its `eff` field is blank in the
+#       AST -- the checker infers the row internally but never writes it
+#       back onto the node) that performs an effect and gets lambda-lifted
+#       to a fresh top-level binding (dlh_hoist_expr, the capture-free
+#       case) used to keep the BLANK row on the hoisted definition too --
+#       evidence_dict_pass classifies top-level "needing" functions purely
+#       by reading that row string, so the hoisted function was silently
+#       never recognized as needing anything and its `perform` was never
+#       migrated. Harmless on the linear backend (falls back to replay,
+#       still correct) but a hard "unsupported perform" error on gc, which
+#       has no such fallback.
+#
+#       Fixed in two parts: (1) dlh_hoist_expr now backfills a blank `eff`
+#       from what the closure's body actually performs BEFORE hoisting
+#       (dlh_collect_performed_effect_names); (2) edp_plan_migrations now
+#       tries the FULL needing set (including provably-dead functions like
+#       this fixture's deliberately-uncalled `never_called`) BEFORE falling
+#       back to dropping dead ones -- trying dead-code-dropping first would
+#       have UNDONE fix (1) by re-excluding this now-correctly-classified-
+#       but-still-dead function, right back to the same "unsupported
+#       perform" failure (found via direct testing after landing fix (1)
+#       alone still didn't fix this fixture under gc).
+echo "[compiler-gate] 40h5/40 wasm-gc backend: unannotated hoisted closure literal row backfill (ADR-0076 gc follow-up)"
+gcclosdir="_build/_gate_gc_closure_literal_row"
+rm -rf "$gcclosdir"; mkdir -p "$gcclosdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_closure_literal.vibe > "$gcclosdir/src.vibe"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gcclosdir/src.vibe" "$gcclosdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$gcclosdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_closure_literal.vibe did not compile under VIBE_BACKEND=gc" >&2
+  cat "$gcclosdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+gcclos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcclosdir/out.wasm" 2>&1 | tail -1)"
+if [ "$gcclos_out" != "6" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_closure_literal.vibe under gc got '$gcclos_out' (want 6) -- hoisted closure row backfill or try-full-before-dropping-dead regressed" >&2
+  exit 1
+fi
+rm -rf "$gcclosdir"
+echo "[compiler-gate] wasm-gc backend closure literal row backfill ok (6)"
+
 # 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
 #      must render fixtures/wit_gen_http.vibe byte-exactly as the committed
 #      golden. Pins the WIT mapping contract (docs/effect-wit-mapping.md):

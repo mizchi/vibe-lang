@@ -872,21 +872,57 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
   while ei < Array::length(effect_defs) {
     let (ename, ops) = Array::get(effect_defs, ei)
     let needing_all = edp_needing_names(fn_defs, ename, es_names, es_members_list)
-    let needing_live = edp_drop_unreachable_needing(needing_all, fn_defs, keep)
-    let needing = edp_drop_self_discharging_needing(needing_live, stmts, fn_defs, ename)
-    if Array::length(needing) == 0 {
-      ()
-    } else {
-      let handle_sites = edp_collect_handle_sites(stmts, ename)
-      if edp_all_sites_eligible(stmts, ename, needing, handle_sites, fn_defs) {
-        Array::push(plans, (ename, ops, needing, handle_sites))
-      } else {
-        ()
+    // Self-discharging exclusion is unconditional (a self-discharging
+    // function never needs the dict for itself, dead or not -- see
+    // edp_drop_self_discharging_needing's doc comment), so it applies to
+    // the FULL set before either eligibility attempt below.
+    let needing_full = edp_drop_self_discharging_needing(needing_all, stmts, fn_defs, ename)
+    match edp_try_plan_for_effect(stmts, ename, ops, needing_full, fn_defs) {
+      Some(plan) => Array::push(plans, plan),
+      None => {
+        // Fall back to dropping provably-DEAD needing functions and retry
+        // ONLY if the full set was ineligible -- trying the full set FIRST
+        // (rather than always dropping dead functions up front) matters:
+        // an independently-safe dead function (e.g. a hoisted closure
+        // whose own body is a bare `perform`, dlh_hoist_expr's row-
+        // backfill fix, 2026-07-23) should stay in `needing` and get
+        // properly migrated like any other safe function -- gc backend
+        // codegen still has to compile it even though it never runs, and
+        // a dead-but-still-present un-rewritten `perform` is exactly as
+        // fatal there as a live one. Dropping dead functions is only a
+        // NET WIN when the full set fails for some OTHER (unsafe, not
+        // dead) member -- see edp_drop_unreachable_needing's doc comment
+        // for why dropping in that case is always safe.
+        let needing_live = edp_drop_unreachable_needing(needing_full, fn_defs, keep)
+        if Array::length(needing_live) == Array::length(needing_full) {
+          ()
+        } else {
+          match edp_try_plan_for_effect(stmts, ename, ops, needing_live, fn_defs) {
+            Some(plan2) => Array::push(plans, plan2),
+            None => ()
+          }
+        }
       }
     }
     ei = ei + 1
   }
   plans
+}
+
+// Attempt eligibility for `needing` (already effect-set/self-discharge
+// filtered by the caller) against `stmts` as-is; `Some` iff every needing
+// function AND every handle site is safe.
+fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Option[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+  if Array::length(needing) == 0 {
+    None
+  } else {
+    let handle_sites = edp_collect_handle_sites(stmts, ename)
+    if edp_all_sites_eligible(stmts, ename, needing, handle_sites, fn_defs) {
+      Some((ename, ops, needing, handle_sites))
+    } else {
+      None
+    }
+  }
 }
 
 // --- effectset-aware row resolution.
