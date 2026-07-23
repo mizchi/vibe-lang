@@ -967,6 +967,66 @@ multi-effect row 自体の containment relax は今回も試みていない --
 `edp_rewrite_needing_body`/`edp_rewrite_handle_body` の網羅性バグは
 もう解消済みという前提から始められる。
 
+### 追記 11 (2026-07-23): multi-effect row containment を実際に有効化 --
+「追記 10」で見つけた網羅性バグが本当の原因だった
+
+「追記 10」の予告通り、網羅性バグ解消済みの状態から multi-effect
+row の containment relax に再度挑戦した (今回で 3 回目)。今回は
+まず `evidence_dict_pass` に一時的な計装 (`main` の body を
+`EInt(...)` で上書きし、どの effect が実際に migration plan を
+獲得したかをプログラム自身の戻り値として直接読み出す) を入れ、
+「本当に migration が発生しているのに偶然同じ値になっているだけ」
+という可能性を排除してから判断する方針を取った (このセッションで
+2 回、抽象推論だけの見立てが外れた反省を踏まえた)。
+
+結果: `effect_handle_multi_effect_row_fallback.vibe` に対して
+`edp_row_is_exactly` を containment に relax した状態で計装ビルドを
+実行すると、`Ask` の migration plan が**実際に生成・適用されている**
+ことを確認した (`Fs` は「追記 9」で特定した通り `ask_only_wrapper`
+の body が直接 `handle {...} with Ask {...}` である、という独立の
+理由で正しく除外される)。かつクラッシュせず、既存の fallback 値
+(3018) と**完全に同じ**値で安定して実行できた。両効果の値が
+一致するのは偶然ではなく、`Ask` の handler がこの fixture では
+純粋に tail-resumptive でリプレイに対して冪等な副作用しか持たない
+ため、evidence dict 経由でもリプレイ経由でも同じ答えになるという
+自然な帰結である (# 別効果の side effect が repeat 実行に敏感な
+ケースでの検証は今回未実施、今後の課題として残す)。
+
+これにより、「追記 9」「追記 10」で追っていた multi-effect row の
+クラッシュは、multi-effect 固有の問題では一切なく、`edp_rewrite_
+needing_body` の網羅性バグ (「追記 10」参照) が原因のすべてだった
+ことが最終的に確定した。計装を revert し、`edp_row_is_exactly` を
+containment 判定へ本採用 (実コードとしてコミット) した。
+
+安全性の根拠:
+- 各 effect は独立した per-tag メモリ領域 (`eff_off`) を使うため、
+  ある effect が evidence dict 化されて別の effect がまだ replay の
+  ままでも、互いの領域は衝突しない。
+- `edp_qname_is_for_effect` により、`edp_rewrite_needing_body` は
+  migration 対象の effect の perform だけを書き換え、他の effect の
+  perform (未対応の Error や、まだ migrate されていない他の effect)
+  はそのまま残す。
+- 1 つの needing 関数が複数の effect について「一部は evidence dict
+  化され、残りは replay に残る」状態は、上記 2 点により意味的に
+  安全 (readme の「追記 10」の分析通り)。
+
+既知の残存スコープ境界 (今回は対応しない、バグではない):
+同じ handle body が `handle ... with A { ... handle ... with B { ... }
+... }` のように**直接ネスト**している場合、外側の handle site 自身の
+body が `EHandle` ノードそのものになるため、`edp_has_unsafe_
+construct` が無条件に unsafe と判定し、外側の effect は migrate
+できない (ネストの一番内側の effect だけが migrate 可能)。中間
+wrapper 関数を経由するパターン (本 fixture の `ask_only_wrapper`)
+はこの制約に当たらないため両方 (少なくとも一方) が独立に migrate
+できる。
+
+`fixtures/effect_handle_multi_effect_row_fallback.vibe` と
+`compiler_gate.sh` gate 40x のコメントを新しい理解に合わせて更新
+(期待値 3018 自体は変わらず、「除外の正しさ」ではなく「per-effect
+migration の安定性」を pin する gate として説明を書き換えた)。
+`edp_row_is_exactly` のコメントも今回の経緯 (3 ラウンド目でようやく
+根本原因に到達) を記録した。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect

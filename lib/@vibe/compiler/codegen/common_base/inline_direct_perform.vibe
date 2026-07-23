@@ -603,13 +603,20 @@ fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_b
 // left alone, matching today's behavior exactly.
 //
 // Not attempted here (left on replay, same as before this pass exists):
-// row-variable-polymorphic functions, functions whose row combines `E`
-// with another effect, closures/nested handles hiding a perform, and any
-// effect for which even one handle site or needing function fails the
-// eligibility scan. Expanding coverage incrementally (multi-effect
-// functions, effectset-expanded rows, deeper call chains through
-// eligible-but-indirect helpers) is expected follow-up, not a soundness
-// gap in what already lands here.
+// row-variable-polymorphic functions, closures/nested handles hiding a
+// perform, and any effect for which even one handle site or needing
+// function fails the eligibility scan -- which includes the specific case
+// of a handle site whose own body is directly ANOTHER effect's `EHandle`
+// (a literal nested-handle shape), so only the innermost effect of such a
+// nest can currently migrate. A function whose row combines `E` with
+// another effect (`edp_row_is_exactly`'s row-containment match) IS
+// attempted, per-effect, independently -- each effect in the row is
+// eligibility-checked and migrated (or not) on its own terms; see
+// edp_row_is_exactly's doc comment for why this is sound and the history
+// of getting there. Expanding coverage further (effectset-expanded rows,
+// deeper call chains through eligible-but-indirect helpers, migrating an
+// effect whose only handle sites are behind a directly-nested handle) is
+// expected follow-up, not a soundness gap in what already lands here.
 // Two phases, deliberately NOT interleaved (see edp_row_is_exactly's doc
 // comment, "追記 8", for the bug this avoids): first decide eligibility
 // for EVERY effect against the still-completely-unmutated `stmts`, then
@@ -713,39 +720,79 @@ fn edp_collect_fn_defs(stmts: Array[Stmt]) -> Array[(Int, Bool, Bool, String, Op
   out
 }
 
-// First slice restriction (see module doc): only a row that is EXACTLY
-// this one effect name qualifies -- not merely containing it alongside
-// other effects, and not a row-variable label.
+// Row CONTAINMENT: a function whose row is several comma-joined effect
+// names (e.g. "Ask, Fs") qualifies for EACH effect's migration
+// independently, alongside a bare exact-match row. A row-variable label is
+// still excluded (containment only matches literal effect names present in
+// the row string).
 //
-// A relaxation to row CONTAINMENT (any row with `ename` as one of several
-// comma-joined labels) has now been tried and reverted TWICE
-// (2026-07-23). Round 1's crash was blamed on `edp_has_unsafe_construct`
-// treating every `EDot` as unconditionally unsafe -- a migrated effect's
-// own rewrite introduces `EDot` nodes, so a later effect's eligibility
-// re-scan of the same (now-mutated) body would see that artifact and
-// abort. That diagnosis was real (see edp_plan_migrations' doc comment
-// for the two-phase restructuring it motivated, which IS a genuine,
-// verified improvement kept in this file), but round 2 (re-testing the
-// SAME multi-effect fixture with the two-phase fix in place) produced
-// the BYTE-IDENTICAL crash -- meaning the EDot artifact was never
-// actually the cause of THIS crash. Retracing by hand: `ask_only_wrapper`
-// (needing `Fs`) has a body that IS DIRECTLY `handle {...} with Ask
-// {...}` -- an `EHandle` node for a completely different effect, sitting
-// right at the top of its own body, present in the ORIGINAL, unmutated
-// tree regardless of migration order. `EHandle(_, _) => true`
-// unconditionally in edp_has_unsafe_construct correctly (and
-// deliberately) rejects this on its own terms -- nothing to do with
-// EDot -- so `Fs`'s migration was ALWAYS going to abort for this
-// function, identically under both the old interleaved design and the
-// new two-phase one. Since `Ask`'s migration succeeds regardless
-// (`both_helper`, its only needing function, has no such issue) while
-// `Fs`'s aborts, the program ends up in the exact same "one effect
-// migrated through a function whose other effect's `perform` stays on
-// the old replay path" mixed state either way -- and that mixed state is
-// still what actually crashes, for a reason not yet isolated. Keep to
-// exact single-effect rows only until THAT interaction is understood.
+// This relaxation was tried and reverted TWICE on 2026-07-23 before being
+// shipped for real: both rounds crashed on
+// fixtures/effect_handle_multi_effect_row_fallback.vibe with an uncaught
+// exception, and two rounds of code-reading-only diagnosis (an EDot
+// artifact from one effect's own rewrite tripping a later effect's
+// eligibility re-scan; a needing function's body being directly another
+// effect's own `EHandle`) both turned out to be real but NOT the actual
+// cause once retested. Runtime instrumentation (temporarily exporting
+// every per-effect wasm exception tag by name, so an uncaught exception's
+// tag could be decoded from outside the module) finally isolated the true
+// cause: it had nothing to do with multi-effect rows at all.
+// edp_rewrite_needing_body's traversal was missing several positions
+// edp_has_unsafe_construct (its own eligibility check) already covered --
+// most simply, a `perform` bound via `let` rather than written as a bare
+// tail expression -- so a migrated function's own perform could pass
+// eligibility but be silently left un-rewritten, orphaning it once the
+// migration also dropped its handle site's `EHandle`. That bug (fixed
+// separately, see edp_rewrite_needing_body's doc comment) is what both
+// crashes actually were; `both_helper` in the multi-effect fixture happens
+// to bind both of its performs via `let`, so containment relaxation merely
+// exercised it via a different code path than the single-effect fixtures
+// that found and fixed it directly.
+//
+// With that fixed, re-testing the SAME multi-effect fixture under
+// containment (2026-07-23, round 3) -- confirmed via a temporary
+// migration-plan probe that `Ask`'s plan really is produced and applied,
+// not merely "coincidentally not crashing" -- compiles, self-hosts
+// (stage2==stage3), and runs to the SAME stable value the pre-Phase-3
+// replay fallback already produced (3018): `both_helper` needs `{Ask,
+// Fs}`; `Ask`'s migration succeeds (its only needing function and handle
+// site are both clean); `Fs`'s is correctly rejected on its own terms
+// because `ask_only_wrapper` (needing `Fs`) has a body that is directly
+// `handle {...} with Ask {...}` -- a genuine, deliberate
+// `edp_has_unsafe_construct` rejection (nested EHandle), independent of
+// this bug and independent of containment. `Ask` migrating to evidence-
+// dict while `Fs` stays on replay is safe: the two effects use disjoint
+// per-tag memory regions and neither codegen path depends on the other's
+// presence, so a needing function may freely have SOME of its performs
+// migrated and others still raw (edp_qname_is_for_effect already ensures
+// `edp_rewrite_needing_body` only ever touches performs for the effect
+// currently being migrated).
+//
+// Remaining known limitation, not addressed here: when the SAME handle
+// body is a `handle ... with A { ... handle ... with B { ... } ... }`
+// nest (rather than the wrapper-FUNCTION indirection this fixture uses),
+// the OUTER effect's handle site's own body is itself an `EHandle` node,
+// which edp_has_unsafe_construct unconditionally rejects -- so only the
+// INNERMOST effect of a directly-nested handle pair can currently migrate.
+// This is a real, understood scope boundary (documented, not a bug), left
+// for future Phase 3 work.
 fn edp_row_is_exactly(row: String, ename: String) -> Bool {
-  row == ename
+  if row == ename {
+    true
+  } else {
+    let parts = String::split(row, ",")
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(parts) {
+      if String::trim(Array::get(parts, i)) == ename {
+        found = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
 }
 
 fn edp_needing_names(fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String) -> Array[String] {

@@ -4557,17 +4557,22 @@ rm -rf "$edpemdir"
 echo "[compiler-gate] evidence-dict pass Error::Throw mixing ok"
 
 # 40x. ADR-0076 Phase 3 (#817): a function whose declared effect row
-#      contains MULTIPLE effects must be excluded from BOTH effects'
-#      evidence-dict migration entirely, falling back to the pre-existing
-#      replay codegen unchanged. A relaxation from exact-row-match to
-#      row-containment was tried and reverted after direct testing found
-#      it compiled but crashed at runtime for this exact shape (see
-#      inline_direct_perform.vibe's edp_row_is_exactly doc comment). This
-#      gate pins that the exclusion itself stays correct -- compiles and
-#      runs to a stable, deterministic, non-crashing result -- so a
-#      future change can't silently reintroduce the row-containment
-#      relaxation (and its crash) without this gate catching it.
-echo "[compiler-gate] 40x/40 evidence-dict pass: multi-effect row correctly excluded, falls back safely (ADR-0076 Phase 3/#817)"
+#      contains MULTIPLE effects (`{ Ask, Fs }`) migrates PER-EFFECT under
+#      row containment: `Ask` (clean, no disqualifying construct anywhere
+#      in its chain) genuinely migrates to evidence-dict; `Fs` correctly
+#      stays excluded because `ask_only_wrapper` (needing `Fs`) has a body
+#      that is directly `handle {...} with Ask {...}` -- a nested-EHandle
+#      shape edp_has_unsafe_construct unconditionally rejects (see
+#      inline_direct_perform.vibe's edp_row_is_exactly doc comment for the
+#      full history: containment was tried and reverted TWICE before this,
+#      both times crashing on what turned out to be an unrelated
+#      rewrite-coverage bug, not a multi-effect-row issue). This gate pins
+#      that a function partially migrated per-effect (some performs
+#      through the dict, others still on replay) stays stable and
+#      produces the SAME value (3018) it always has, so a future
+#      regression in either the containment logic or the per-effect
+#      disjointness it relies on gets caught.
+echo "[compiler-gate] 40x/40 evidence-dict pass: multi-effect row migrates per-effect under containment (ADR-0076 Phase 3/#817)"
 edpmedir="_build/_gate_evidence_dict_multi_effect"
 rm -rf "$edpmedir"; mkdir -p "$edpmedir"
 sed '/^__DATA__$/,$d' fixtures/effect_handle_multi_effect_row_fallback.vibe > "$edpmedir/src.vibe"

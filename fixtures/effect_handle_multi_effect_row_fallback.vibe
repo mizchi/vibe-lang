@@ -3,30 +3,40 @@
 // by two separate, non-nested handle sites reached through an
 // intermediate wrapper function.
 //
-// evidence_dict_pass.vibe's `needing` restriction requires a row to be
-// EXACTLY one effect name (edp_row_is_exactly). A relaxation to row
-// CONTAINMENT (any row with `ename` as one of several comma-joined
-// labels) was tried and reverted after direct testing found it produced
-// a REAL bug: this exact program compiled cleanly but crashed at runtime
-// with an uncaught exception instead of returning a value, even though
-// abstract reasoning about the per-effect-pass design (each effect's
-// migration independently gated by its own eligibility check) suggested
-// it should have been sound. The actual interaction was never fully
-// root-caused -- most likely a needing function ending up partially
-// migrated for one effect while its other effect's performs stay on the
-// old replay path, and something about that mixed state breaking
-// replay's own throw/catch bookkeeping.
+// evidence_dict_pass.vibe's `needing` restriction originally required a
+// row to be EXACTLY one effect name (edp_row_is_exactly). A relaxation to
+// row CONTAINMENT (any row with `ename` as one of several comma-joined
+// labels) was tried and reverted TWICE before being root-caused and
+// shipped for real (2026-07-23, see edp_row_is_exactly's doc comment):
+// the crash this fixture used to pin was never actually about
+// multi-effect rows -- it was an unrelated rewrite-coverage bug
+// (edp_rewrite_needing_body silently skipping `let`-bound performs) that
+// this exact fixture happened to trigger because `both_helper` binds both
+// its performs via `let`. With that bug fixed, containment is safe: `Ask`
+// (both_helper's only OTHER disqualifying-free effect) now genuinely
+// migrates to evidence-dict, verified via a temporary migration-plan
+// probe, not just "doesn't crash".
 //
-// This fixture pins that `both_helper` (row `{ Ask, Fs }`, neither
-// exactly `Ask` nor exactly `Fs`) is correctly excluded from BOTH
-// effects' `needing` sets and left entirely untouched by
-// evidence_dict_pass, falling through to the pre-existing replay codegen
-// unchanged -- the same path this exact shape used before ADR-0076
-// Phase 3 existed at all. The expected value (3018) is whatever
-// replay's own (separately pre-existing, out of scope for Phase 3 to
-// fix) semantics produce for this shape; the guarantee this locks down
-// is "compiles and runs to a stable, deterministic, non-crashing
-// result", not "produces the semantically ideal answer".
+// `Fs` still does NOT migrate here -- but for a real, independent, and
+// still-current reason: `ask_only_wrapper` (needing `Fs`) has a body that
+// is directly `handle {...} with Ask {...}`, an `EHandle` node
+// edp_has_unsafe_construct unconditionally (and correctly) rejects. This
+// is the known "directly-nested handle" scope boundary (only the
+// INNERMOST effect of a nested handle pair can currently migrate), not a
+// multi-effect-row limitation as such. So `both_helper`'s `Fs::Read`
+// still falls through to the pre-existing replay codegen for that one
+// effect, while its `Ask::Get` runs through the evidence dict -- a
+// function partially migrated per-effect, which is safe by design (the
+// two effects use disjoint per-tag memory regions and neither codegen
+// path depends on the other's presence).
+//
+// The expected value (3018) is UNCHANGED from before containment shipped:
+// `Ask`'s own handler here is genuinely tail-resumptive with no
+// observable side effect sensitive to redundant replay, so migrating it
+// to evidence-dict happens to produce the exact same numeric result
+// replay already did for this specific shape -- this fixture is a
+// regression lock on containment being safe and stable, not a
+// demonstration of migration changing the observable answer.
 effect Ask {
   Get -> Int
 }
