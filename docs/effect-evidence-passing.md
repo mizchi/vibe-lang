@@ -1027,6 +1027,57 @@ migration の安定性」を pin する gate として説明を書き換えた)�
 `edp_row_is_exactly` のコメントも今回の経緯 (3 ラウンド目でようやく
 根本原因に到達) を記録した。
 
+### 追記 12 (2026-07-23、同日): 「追記 11」で残した directly-nested handle
+制約も同日中に解消 -- `edp_has_unsafe_construct` に nested handle
+relaxation を追加
+
+「追記 11」の末尾で「既知の残存スコープ境界」として明記した制約
+(`handle ... with A { handle ... with B { ... } ... }` のように直接
+ネストしている場合、外側 effect の handle site 自身の body が
+`EHandle` ノードそのものになるため `edp_has_unsafe_construct` が
+無条件 unsafe 判定し、ネストの一番内側の effect だけが migrate
+できる) を、同じセッション内でさらに解消した。
+
+`edp_has_unsafe_construct` に `ename` (現在 migration 判定中の
+effect 名) を引数として追加し、`EHandle(body, arms)` を見つけた際に
+`edp_handle_matches_effect(arms, ename)` で判定: 同じ effect が
+ネストしている場合のみ従来通り無条件 unsafe のまま維持、**別の**
+effect の handle であれば body と arms の両方へ再帰する (arms は
+handler の本体であり `resume(...)` 呼び出しを含むのが通常だが、
+`resume` は今回から明示的に安全な呼び出しとして認識するよう追加した
+-- これは既存のどの呼び出し文脈でも無害な追加である、`resume` は
+handler arm の中でしか正当な構文として現れないため)。
+`edp_rewrite_needing_body`/`edp_rewrite_handle_body` にも同型の
+`EHandle` ケースを追加し、eligibility が許可する構造を rewrite 側も
+必ず辿れるようにした (「追記 10」で確立した「2 つのトラバーサルは
+常に一致していなければならない」という教訓を踏襲)。
+
+検証は今回も抽象推論だけに頼らず、`main` の body を migration plan
+情報でエンコードした `EInt` に置き換える計装ビルドで直接確認した:
+wrapper 関数を経由しない最小の直接ネスト fixture
+(`fixtures/effect_handle_multi_effect_nested_handles.vibe`、期待値
+7 == 3 + 4) で `A`・`B` 両方の migration plan が実際に生成・適用
+されていることを確認済み。
+
+さらに、`fixtures/effect_handle_multi_effect_row_fallback.vibe`
+(`ask_only_wrapper` 経由の wrapper-function パターン) を再テストした
+ところ、これも `Ask` に加えて `Fs` まで migrate するようになり、
+期待値が **3018 (replay で `count` が余分にインクリメントされていた
+劣化値) から 2017 (両方 evidence dict 化された場合の意味的に正しい
+値) へ変化した**。この値の変化自体が、今回の拡張が単なる「クラッシュ
+しなくなった」以上の、本物の正しさの改善であることを裏付けている。
+ファイル名も実態に合わせて `effect_handle_multi_effect_row_nested.vibe`
+へ変更し、doc comment と `compiler_gate.sh` gate 40x を全面的に
+書き換え、新規 gate 40z (`effect_handle_multi_effect_nested_handles.vibe`
+用) を追加した。
+
+これにより、「追記 11」で「今回は対応しない」としていたスコープ境界は
+実質的に解消され、ADR-0076 Phase 3 の evidence-dict passing は
+multi-effect row と directly-nested handle の両方の組み合わせを
+サポートするに至った。残るスコープ (row-variable 多相・
+effectset-expanded row・間接呼び出しチェーンの拡張) は
+`edp_has_unsafe_construct` の module doc に引き続き明記している。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect

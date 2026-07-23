@@ -1,0 +1,68 @@
+// ADR-0076 (#817) Phase 3: a minimal directly-nested handle pair for two
+// DIFFERENT effects (`handle { handle { both() } with A {...} } with B
+// {...}`), with no wrapper-function indirection at all -- the general
+// shape edp_has_unsafe_construct's nested-EHandle relaxation targets, kept
+// separate from fixtures/effect_handle_multi_effect_row_nested.vibe (which
+// combines this with a multi-effect row AND a wrapper function, closer to
+// a real-world "helper discharges one effect, caller discharges another"
+// pattern).
+//
+// Before this relaxation, `B`'s handle site here had a body that is
+// directly `handle { both() } with A {...}` -- an `EHandle` node
+// edp_has_unsafe_construct unconditionally rejected, so only `A` (the
+// innermost effect) could ever migrate; `B` was always excluded, no
+// matter how simple or safe its own contribution. edp_has_unsafe_construct
+// now recurses into a nested handle for a DIFFERENT effect (checking its
+// body and, since a handler arm's tail call is always `resume(...)`, its
+// arms too -- a bare `resume` call is recognized as safe rather than an
+// unrecognized, therefore-unsafe, callee) instead of rejecting it outright.
+// `edp_rewrite_needing_body`/`edp_rewrite_handle_body` mirror the same
+// traversal so whatever eligibility allows also gets correctly rewritten.
+//
+// Verified (via a temporary migration-plan probe during development,
+// confirming both `A` and `B` genuinely produce and apply a migration
+// plan, not merely "doesn't crash") that BOTH effects migrate to
+// evidence-dict here: `both`'s signature gains both dicts (`B`'s
+// prepended last, since `B`'s migration runs after `A`'s and re-derives
+// the current, already-`A`-migrated signature/call site fresh -- the
+// two-phase design's "decide all eligibility upfront against the
+// unmutated tree, then apply sequentially against the live tree" split
+// is exactly what makes this composition safe). No replay/frontier
+// machinery is used for either effect: `compute`'s body runs exactly once.
+//
+//   x == 3 (perform A::Get, resolved via A's evidence dict)
+//   y == 4 (perform B::Get, resolved via B's evidence dict)
+//   both() == x + y == 7
+//   main() == 7
+effect A {
+  Get -> Int
+}
+
+effect B {
+  Get -> Int
+}
+
+let both = () -> Int with { A, B } {
+  let x = perform A::Get
+  let y = perform B::Get
+  x + y
+}
+
+let compute = () -> Int {
+  handle {
+    handle {
+      both()
+    } with A {
+      Get => resume(3)
+    }
+  } with B {
+    Get => resume(4)
+  }
+}
+
+export let main = () -> Int {
+  compute()
+}
+
+__DATA__
+{"last": "7"}

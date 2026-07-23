@@ -4557,40 +4557,70 @@ rm -rf "$edpemdir"
 echo "[compiler-gate] evidence-dict pass Error::Throw mixing ok"
 
 # 40x. ADR-0076 Phase 3 (#817): a function whose declared effect row
-#      contains MULTIPLE effects (`{ Ask, Fs }`) migrates PER-EFFECT under
-#      row containment: `Ask` (clean, no disqualifying construct anywhere
-#      in its chain) genuinely migrates to evidence-dict; `Fs` correctly
-#      stays excluded because `ask_only_wrapper` (needing `Fs`) has a body
-#      that is directly `handle {...} with Ask {...}` -- a nested-EHandle
-#      shape edp_has_unsafe_construct unconditionally rejects (see
-#      inline_direct_perform.vibe's edp_row_is_exactly doc comment for the
-#      full history: containment was tried and reverted TWICE before this,
-#      both times crashing on what turned out to be an unrelated
-#      rewrite-coverage bug, not a multi-effect-row issue). This gate pins
-#      that a function partially migrated per-effect (some performs
-#      through the dict, others still on replay) stays stable and
-#      produces the SAME value (3018) it always has, so a future
-#      regression in either the containment logic or the per-effect
-#      disjointness it relies on gets caught.
-echo "[compiler-gate] 40x/40 evidence-dict pass: multi-effect row migrates per-effect under containment (ADR-0076 Phase 3/#817)"
+#      contains MULTIPLE effects (`{ Ask, Fs }`), discharged via a directly-
+#      nested handle pair split across a wrapper function
+#      (`ask_only_wrapper`'s body IS `handle {...} with Ask {...}`, itself
+#      inside `compute`'s `handle {...} with Fs {...}`). BOTH effects now
+#      migrate to evidence-dict independently: edp_has_unsafe_construct
+#      recurses into a nested handle for a DIFFERENT effect instead of
+#      unconditionally rejecting it (see inline_direct_perform.vibe's
+#      edp_has_unsafe_construct doc comment; this shape used to disqualify
+#      the outer effect entirely -- containment itself was tried and
+#      reverted TWICE before either fix landed, both times crashing on an
+#      unrelated rewrite-coverage bug, not a multi-effect-row issue -- see
+#      edp_row_is_exactly's doc comment for that history). With neither
+#      effect left on the old replay/frontier machinery, `compute`'s
+#      handled body now runs EXACTLY ONCE end to end -- this gate pins the
+#      semantically-ideal value (2017), not the old replay-inflated
+#      fallback value (3018) an earlier, less complete version of this
+#      pass used to produce for the same program.
+echo "[compiler-gate] 40x/40 evidence-dict pass: multi-effect row migrates both effects through a nested handle pair (ADR-0076 Phase 3/#817)"
 edpmedir="_build/_gate_evidence_dict_multi_effect"
 rm -rf "$edpmedir"; mkdir -p "$edpmedir"
-sed '/^__DATA__$/,$d' fixtures/effect_handle_multi_effect_row_fallback.vibe > "$edpmedir/src.vibe"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_multi_effect_row_nested.vibe > "$edpmedir/src.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$edpmedir/src.vibe" "$edpmedir/out.wasm" main >/dev/null 2>&1
 if [ ! -s "$edpmedir/out.wasm" ]; then
-  echo "[compiler-gate] FAIL: effect_handle_multi_effect_row_fallback.vibe did not compile" >&2
+  echo "[compiler-gate] FAIL: effect_handle_multi_effect_row_nested.vibe did not compile" >&2
   cat "$edpmedir/out.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
 edpme_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpmedir/out.wasm" 2>&1 | tail -1)"
-if [ "$edpme_out" != "3018" ]; then
-  echo "[compiler-gate] FAIL: effect_handle_multi_effect_row_fallback.vibe got '$edpme_out' (want 3018) -- multi-effect row exclusion regressed (either it silently reintroduced the crash, or a genuinely unrelated replay behavior change)" >&2
+if [ "$edpme_out" != "2017" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_multi_effect_row_nested.vibe got '$edpme_out' (want 2017) -- multi-effect nested-handle migration regressed" >&2
   exit 1
 fi
 rm -rf "$edpmedir"
-echo "[compiler-gate] evidence-dict pass multi-effect row exclusion ok"
+echo "[compiler-gate] evidence-dict pass multi-effect row nested-handle migration ok"
+
+# 40z. ADR-0076 Phase 3 (#817): a minimal directly-nested handle pair for
+#      TWO DIFFERENT effects (`handle { handle { both() } with A {...} }
+#      with B {...}`), no wrapper-function indirection at all -- the
+#      general case edp_has_unsafe_construct's nested-EHandle relaxation
+#      targets, isolated from gate 40x's multi-effect-row-plus-wrapper-
+#      function combination. Verified (via a temporary migration-plan
+#      probe during development) that BOTH `A` and `B` genuinely migrate to
+#      evidence-dict; this gate pins the resulting value (7 == 3 + 4).
+echo "[compiler-gate] 40z/40 evidence-dict pass: minimal directly-nested handle pair, both effects migrate (ADR-0076 Phase 3/#817)"
+edpnhdir="_build/_gate_evidence_dict_nested_handles"
+rm -rf "$edpnhdir"; mkdir -p "$edpnhdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_multi_effect_nested_handles.vibe > "$edpnhdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpnhdir/src.vibe" "$edpnhdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpnhdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_multi_effect_nested_handles.vibe did not compile" >&2
+  cat "$edpnhdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edpnh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpnhdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edpnh_out" != "7" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_multi_effect_nested_handles.vibe got '$edpnh_out' (want 7) -- directly-nested handle pair migration regressed" >&2
+  exit 1
+fi
+rm -rf "$edpnhdir"
+echo "[compiler-gate] evidence-dict pass directly-nested handle pair migration ok"
 
 # 40y. ADR-0076 Phase 3 (#817): a `perform` bound via `let` inside a needing
 #      function's OWN body (`let a = perform Ask::Get; a + 1`), rather than
