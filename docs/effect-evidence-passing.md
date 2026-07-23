@@ -1446,6 +1446,35 @@ apply; stored(inner2)` で `apply` が真に到達可能であり続けるケー
 従来どおり正しく安全側に倒すことを個別に検証した。`compiler_gate.sh`
 gate 40h3 で固定。
 
+### 追記 19 (2026-07-23、同日): 「自己 discharge」する needing 関数を除外
+
+追記18 と同じカバレッジ sweep で、`fixtures/effect_effectset_expansion.vibe`
+(および `effect_effectset_param_expansion.vibe`,
+`effect_row_operation_item.vibe`) が gc backend では依然
+`"only `with Error { Throw(..) => .. }`..."` で失敗することが判明した
+-- effectset-aware な row 解決自体は既に実装済みだったにもかかわらず。
+
+原因は別種: `main` の row `{Ask, Ask::Get}` は、
+`effect_effectset_expansion.vibe` 自身のコメントが説明するとおり、
+「`handle ... with Effect` 式を囲む宣言 row は effect 全体を authorize
+しなければならない」という別のチェッカー要件を満たすためだけに存在し、
+`main` の本体は文字通り `handle {..} with Ask {..}` そのもの -- 自分自身の
+中で完結して discharge しており、`ename` を dict として受け取る必要は
+一切ない。`edp_needing_names` は row 文字列しか見ないため区別できず、
+`main` は常に `needing` に含まれてしまう。`edp_has_unsafe_construct` は
+(一般ケースとしては正しく) 同じ effect の nested `EHandle` を unsafe と
+判定する ("nested handling of the SAME effect inside itself is not a
+shape this pass targets") -- が、ここでの「nested」は実際には
+関数の本体そのものであり、`edp_collect_handle_sites` によって既に
+独立に発見・migrate 対象になっている handle である。
+
+`edp_drop_self_discharging_needing` を追加し、needing 関数の本体が
+「ラップなしの、同じ effect に対する bare `EHandle`」に厳密に一致する
+場合のみ (ESeq 前置や ELet でのラップなどは対象外、意図的に狭いスコープ)
+`needing` から除外するようにした。A/B テストで確認: 上記 3 fixture は
+いずれも変更後 `VIBE_BACKEND=gc` でコンパイル・実行でき正しい値 (42) を
+返す。`compiler_gate.sh` gate 40h4 で固定。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
