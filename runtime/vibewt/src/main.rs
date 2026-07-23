@@ -18,7 +18,7 @@
 
 use std::any::Any;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -1881,6 +1881,59 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
                 .map_err(|e| format_err!("vibe stderr_write_char: {e}"))?;
             h.flush().ok();
             Ok(())
+        },
+    )?;
+    // #lsp-selfhost: `Stdin` (lib/@vibe/io) -- same pre-existing-JS-only gap
+    // as Stdout/Stderr above (#901), just never hit until a program that
+    // actually READS stdin (rather than only writing it) was run under this
+    // Rust runner: `scripts/wasm_vibe_host_runner.js`'s `stdin_read_char`/
+    // `stdin_read_stream` only ever fed a FIXED, pre-buffered
+    // `VIBE_STDIN_BYTES` env var set before the process starts (a testing
+    // convenience for one-shot batch fixtures, see that file's own comment),
+    // never a live incremental read from a real stdin pipe -- so any program
+    // using `Stdin::read_char`/`read_stream` failed to instantiate here at
+    // all (unknown import) and could never have worked interactively (e.g.
+    // piped from a live editor process) under either runner. Blocking reads
+    // straight off `std::io::stdin()`, matching Stdout/Stderr's write-
+    // straight-through-no-buffering semantics: `read_char` blocks for
+    // exactly one byte (-1 at EOF); `read_stream(n)` issues one blocking
+    // `Read::read` for up to `n` bytes and returns whatever came back
+    // (short reads preserved, "" at EOF) -- the "one bounded pull, cursor
+    // advances across calls" contract lib/@vibe/io/io.vibe's own doc
+    // comment documents. `.lock()` is re-acquired fresh each call (cheap,
+    // and correct: the underlying buffered reader is process-global, no
+    // state lives in the lock guard itself), matching every other stdio
+    // host function here.
+    linker.func_wrap(
+        "vibe",
+        "stdin_read_char",
+        |_caller: Caller<'_, HostState>| -> Result<i64> {
+            let mut buf = [0u8; 1];
+            let stdin = io::stdin();
+            let mut h = stdin.lock();
+            match h.read(&mut buf) {
+                Ok(0) => Ok(-1),
+                Ok(_) => Ok(buf[0] as i64),
+                Err(e) => Err(format_err!("vibe stdin_read_char: {e}")),
+            }
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "stdin_read_stream",
+        |mut caller: Caller<'_, HostState>, n: i64| -> Result<i64> {
+            if n <= 0 {
+                return vibe_alloc_packed_str(&mut caller, "");
+            }
+            let mut buf = vec![0u8; n as usize];
+            let read = {
+                let stdin = io::stdin();
+                let mut h = stdin.lock();
+                h.read(&mut buf)
+                    .map_err(|e| format_err!("vibe stdin_read_stream: {e}"))?
+            };
+            let s = String::from_utf8_lossy(&buf[..read]).into_owned();
+            vibe_alloc_packed_str(&mut caller, &s)
         },
     )?;
     // #901: `Process` effect (lib/@vibe/process) -- same pre-existing-JS-only

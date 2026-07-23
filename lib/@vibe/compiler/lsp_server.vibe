@@ -1,0 +1,725 @@
+// Self-hosted `vibe lsp` (docs/editor-and-debugging.md). Replaces the
+// Node.js `clients/js/lsp_server.js` shim, which shelled out to a fresh
+// `vibe` subprocess (a full wasm re-instantiation) for every single
+// hover/definition/rename/etc. request. The compiler-internal query
+// primitives it shelled out to (`@vibe/compiler/runtime`'s
+// `type_at_source`/`binding_occurrences`/`symbol_spans`/
+// `collect_all_diagnostics`) are ordinary in-process functions operating on
+// an in-memory source string, so this server calls them directly instead --
+// no subprocess, no temp files, no per-request wasm reload.
+//
+// Also serves as a real (non-toy) exercise of the effect system: the
+// JSON-RPC transport/dispatch layer below never calls into the compiler
+// itself -- `lsp_dispatch_request` only decides WHICH `Lsp` operation a
+// request needs and hands off to `lsp_run_with_handler`, which is the only
+// place any of them is `perform`ed or its real implementation lives. This
+// is capability injection via algebraic effects, not effect theater: the
+// dispatch code is written against the ABSTRACT `Lsp` interface only, and a
+// different handler (a mock for protocol-layer testing, a future handler
+// backed by a persistent incremental TypeDb instead of one-shot re-parses)
+// could be substituted without touching the transport or routing code.
+//
+// Effect-safety notes:
+// - (docs/cheatsheet.md's replay-handler rule: "handle body must stay pure
+//   until the final perform, or side effects before it re-run on every
+//   resume") `lsp_run_with_handler`'s handle body is an `if`/`else` chain
+//   whose every branch is EXACTLY one bare `perform`, nothing before or
+//   after -- safe under replay semantics regardless of which branch runs:
+//   there is no earlier side effect to duplicate, and re-executing the
+//   branch on `resume` re-evaluates the same deterministic condition and
+//   re-reaches the same (memoized) perform. Reading the next request, and
+//   writing the response, both happen OUTSIDE any handle, in the ordinary
+//   (non-effectful) main loop.
+// - `perform` and `handle` for `Lsp` are always textually co-located in
+//   `lsp_run_with_handler` itself, on purpose -- an earlier revision
+//   dispatched via a `body: () -> Json with { Lsp }` closure PARAMETER
+//   instead (built once per call site, passed in to be perform'd here).
+//   That compiled cleanly and even ran fine under this repo's Node.js dev/
+//   test runner, but trapped ("indirect call type mismatch") the moment it
+//   actually executed under real wasmtime: an effectful closure captured
+//   BY VALUE and invoked through an opaque higher-order-function parameter
+//   is exactly the still-open GENERAL case issue #1070 documents (this is
+//   NOT the same shape as this session's own #1070 fix, which covers a
+//   NEEDING function calling its own closure-typed parameter --
+//   `lsp_run_with_handler` isn't "needing" anything itself, since it fully
+//   discharges `Lsp` right there). See `lsp_run_with_handler`'s own doc
+//   comment for the restructured (closure-free, Int-tag-dispatched) shape
+//   that avoids it -- verified working end-to-end under real vibewt with
+//   genuinely piped stdin, not just this repo's own dev-runner test
+//   harness.
+//
+// Scope (v1): initialize/initialized/shutdown/exit, full-sync document
+// store (didOpen/didChange/didClose), hover, definition, references,
+// rename, documentSymbol, and diagnostics (published on every didOpen/
+// didChange/didSave -- there is no timer/debounce primitive available yet,
+// see docs/concurrency.md's "proposed, not implemented" status, so this
+// runs synchronously per edit rather than the JS server's 150ms debounce).
+// Deliberately deferred: workspace/symbol, callHierarchy, the `vibe/graph`
+// visualizer, and completion/signatureHelp -- these are backed by
+// clients/js/symbol_index.js's regex-based whole-workspace index and
+// clients/js/graph_query.js in the JS server, not by any compiler-internal
+// primitive; porting that indexing layer to vibe is a separate, larger
+// follow-up. `clients/js/lsp_server.js` remains available (see
+// runtime/vibe's `lsp` case) for workspace-wide features until then.
+
+//# Imports
+
+import @vibe/compiler/runtime {
+  type_at_source, binding_occurrences, symbol_spans, collect_all_diagnostics
+}
+
+import @vibe/parser {
+  offset_to_line_col
+}
+
+// Deliberately NOT using @vibe/json/jsonrpc.vibe's RpcMessage/RpcId/
+// parse_message/stringify_response/stringify_notification/stringify_error,
+// even though they're a ready-made JSON-RPC 2.0 codec: @vibe/http's `Http`
+// effect separately declares a same-named `Request` operation
+// (http_effect.vibe), and the whole-program merge/flatten this compiler's
+// own build goes through (needed to ship `vibe lsp` as part of the
+// distributed CLI) resolves same-named constructors across UNRELATED
+// packages by bare name once the referencing code is actually reachable
+// from an exported entry point -- confirmed empirically (not
+// hypothetical): `RpcMessage::Request(...)`, even explicitly qualified,
+// typechecks fine as dead code but fails ("argument type mismatch for
+// Request: expected RpcId, got Map[String, Json]" -- Http::Request's own
+// 4-String signature) the moment `lsp_main` actually calls into it, and the
+// same failure persists even routed through jsonrpc.vibe's own
+// PACKAGE-LOCAL (unqualified) constructor use once genuinely reachable --
+// i.e. this is not a scoping/qualification bug so much as a whole-program
+// reachability-sensitive name resolution bug in the bundle merge tool
+// itself (same underlying class as #1062's ctor_table_index_of, a
+// DIFFERENT consumer, not yet root-caused/fixed at the source). Sidestepped
+// by building the JSON-RPC envelope directly on `Json`/`Json::field`
+// (json_convenience.vibe's accessors, no colliding constructor names)
+// instead.
+import @vibe/json {
+  Json
+}
+
+//# Effects
+
+effect Lsp {
+  Hover(String, Int, Int) -> Json
+  Definition(String, Int, Int) -> Json
+  References(String, Int, Int) -> Json
+  Rename(String, Int, Int, String) -> Json
+  DocumentSymbol(String) -> Json
+  Diagnostics(String) -> Json
+}
+
+//# Content-Length transport (LSP over stdio)
+
+fn lsp_read_header_line() -> String with { Stdin } {
+  let mut acc = ""
+  let mut done = false
+  while not(done) {
+    let c = Stdin::read_char()
+    if c < 0 {
+      done = true
+    } else if c == 10 {
+      done = true
+    } else if c == 13 {
+      ()
+    } else {
+      acc = String::concat(acc, String::from_char_code(c))
+    }
+  }
+  acc
+}
+
+fn lsp_parse_uint_or(s: String, default: Int) -> Int {
+  let len = String::length(s)
+  if len == 0 {
+    default
+  } else {
+    let mut i = 0
+    let mut acc = 0
+    let mut ok = true
+    while ok && i < len {
+      let c = String::char_code_at(s, i)
+      if c >= '0' && c <= '9' {
+        acc = acc * 10 + (c - '0')
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    if ok { acc } else { default }
+  }
+}
+
+// Reads headers up to the blank line, returns the declared Content-Length
+// (-1 if the stream closed before any bytes arrived at all -- the "no more
+// messages" signal the main loop stops on; -1 with headers seen but no
+// Content-Length line is also treated as fatal for this message, since LSP
+// framing requires it).
+fn lsp_read_content_length() -> Int with { Stdin } {
+  let mut content_length = -1
+  let mut done = false
+  let mut saw_any = false
+  while not(done) {
+    let line = lsp_read_header_line()
+    if String::length(line) == 0 {
+      done = true
+    } else {
+      saw_any = true
+      if String::starts_with(line, "Content-Length:") {
+        let rest = String::trim(line[16: String::length(line)])
+        content_length = lsp_parse_uint_or(rest, -1)
+      } else {
+        ()
+      }
+    }
+  }
+  if saw_any {
+    content_length
+  } else {
+    -1
+  }
+}
+
+fn lsp_read_body(n: Int) -> String with { Stdin } {
+  let sb = StringBuilder::new()
+  let mut remaining = n
+  let mut eof = false
+  while remaining > 0 && not(eof) {
+    let chunk = Stdin::read_stream(remaining)
+    if String::length(chunk) == 0 {
+      eof = true
+    } else {
+      StringBuilder::push(sb, chunk)
+      remaining = remaining - String::length(chunk)
+    }
+  }
+  StringBuilder::freeze(sb)
+}
+
+// One full LSP message body, or None once the client closes stdin (normal
+// shutdown path when a client exits without sending `exit`, or after we
+// stop reading post-`exit`).
+fn lsp_read_message() -> Option[String] with { Stdin } {
+  let content_length = lsp_read_content_length()
+  if content_length < 0 {
+    None
+  } else {
+    Some(lsp_read_body(content_length))
+  }
+}
+
+fn lsp_write_message(body: String) -> Unit with { Stdout } {
+  let len = String::length(body)
+  Stdout::write_stream("Content-Length: ")
+  Stdout::write_stream(Int::to_string(len))
+  Stdout::write_stream("\r\n\r\n")
+  Stdout::write_stream(body)
+}
+
+//# JSON helpers
+
+fn jnum_int(n: Int) -> Json {
+  JNum(Int::to_double(n))
+}
+
+fn jpos(line: Int, character: Int) -> Json {
+  JObj(Map::from_pairs([
+    ("line", jnum_int(line)),
+    ("character", jnum_int(character))
+  ]))
+}
+
+fn jrange(start_line: Int, start_char: Int, end_line: Int, end_char: Int) -> Json {
+  JObj(Map::from_pairs([
+    ("start", jpos(start_line, start_char)),
+    ("end", jpos(end_line, end_char))
+  ]))
+}
+
+fn jrange_pos(p1: (Int, Int), p2: (Int, Int)) -> Json {
+  let (l1, c1) = p1
+  let (l2, c2) = p2
+  jrange(l1, c1, l2, c2)
+}
+
+fn jlocation(uri: String, r: Json) -> Json {
+  JObj(Map::from_pairs([
+    ("uri", JStr(uri)),
+    ("range", r)
+  ]))
+}
+
+// Extracts `params.textDocument.uri`; "" if absent/malformed.
+fn jparam_uri(params: Json) -> String {
+  Json::string(Json::field(Json::field(params, "textDocument"), "uri"))
+}
+
+fn jparam_line0(params: Json) -> Int {
+  Double::to_int(Json::number(Json::field(Json::field(params, "position"), "line")))
+}
+
+fn jparam_char0(params: Json) -> Int {
+  Double::to_int(Json::number(Json::field(Json::field(params, "position"), "character")))
+}
+
+// Char-offset (as returned by symbol_spans/binding_occurrences) -> LSP
+// 0-based (line, character), via the parser's own offset_to_line_col (which
+// returns 1-based line/col, matching the compiler's diagnostic convention).
+fn lsp_offset_to_pos(source: String, offset: Int) -> (Int, Int) {
+  let (line1, col1) = offset_to_line_col(source, offset)
+  (line1 - 1, col1 - 1)
+}
+
+//# Diagnostics: parsing "line L:C: message" into an LSP Diagnostic
+
+fn lsp_parse_diag_line(msg: String) -> Json {
+  if String::starts_with(msg, "line ") {
+    let after = msg[5: String::length(msg)]
+    let colon1 = String::index_of(after, ":")
+    if colon1 < 0 {
+      lsp_diag_fallback(msg)
+    } else {
+      let line_str = after[0: colon1]
+      let rest1 = after[colon1 + 1: String::length(after)]
+      let colon2 = String::index_of(rest1, ":")
+      if colon2 < 0 {
+        lsp_diag_fallback(msg)
+      } else {
+        let col_str = rest1[0: colon2]
+        let text = String::trim(rest1[colon2 + 1: String::length(rest1)])
+        let line1 = lsp_parse_uint_or(line_str, 1)
+        let col1 = lsp_parse_uint_or(col_str, 1)
+        let line0 = if line1 > 0 { line1 - 1 } else { 0 }
+        let col0 = if col1 > 0 { col1 - 1 } else { 0 }
+        JObj(Map::from_pairs([
+          ("range", jrange(line0, col0, line0, col0 + 1)),
+          ("severity", jnum_int(1)),
+          ("source", JStr("vibe")),
+          ("message", JStr(text))
+        ]))
+      }
+    }
+  } else {
+    lsp_diag_fallback(msg)
+  }
+}
+
+fn lsp_diag_fallback(msg: String) -> Json {
+  JObj(Map::from_pairs([
+    ("range", jrange(0, 0, 0, 1)),
+    ("severity", jnum_int(1)),
+    ("source", JStr("vibe")),
+    ("message", JStr(msg))
+  ]))
+}
+
+//# Lsp effect handler -- the real implementation, calling straight into
+//# @vibe/compiler/runtime (single-file scope, matching `vibe type-at` /
+//# `vibe binding-at` / `vibe symbols` / `vibe diagnostics` today; imports
+//# are not resolved, same limitation those CLI subcommands already have).
+
+fn lsp_handle_hover(source: String, line0: Int, char0: Int) -> Json {
+  let ty = type_at_source(source, line0 + 1, char0 + 1)
+  if String::length(ty) == 0 {
+    JNull
+  } else {
+    JObj(Map::from_pairs([
+      ("contents", JObj(Map::from_pairs([
+        ("kind", JStr("markdown")),
+        ("value", JStr(String::concat("```vibe\n", String::concat(ty, "\n```"))))
+      ])))
+    ]))
+  }
+}
+
+fn lsp_handle_definition(source: String, uri: String, line0: Int, char0: Int) -> Json {
+  let occ = binding_occurrences(source, line0 + 1, char0 + 1)
+  if Array::length(occ) == 0 {
+    JNull
+  } else {
+    let (start_off, _end_off) = Array::get(occ, 0)
+    let p = lsp_offset_to_pos(source, start_off)
+    let (l, c) = p
+    jlocation(uri, jrange(l, c, l, c))
+  }
+}
+
+fn lsp_handle_references(source: String, uri: String, line0: Int, char0: Int) -> Json {
+  let occ = binding_occurrences(source, line0 + 1, char0 + 1)
+  JArr(for pair in occ {
+    let (start_off, end_off) = pair
+    let ps = lsp_offset_to_pos(source, start_off)
+    let pe = lsp_offset_to_pos(source, end_off)
+    jlocation(uri, jrange_pos(ps, pe))
+  })
+}
+
+fn lsp_handle_rename(source: String, uri: String, line0: Int, char0: Int, new_name: String) -> Json {
+  let occ = binding_occurrences(source, line0 + 1, char0 + 1)
+  if Array::length(occ) == 0 {
+    JNull
+  } else {
+    let edits = for pair in occ {
+      let (start_off, end_off) = pair
+      let ps = lsp_offset_to_pos(source, start_off)
+      let pe = lsp_offset_to_pos(source, end_off)
+      JObj(Map::from_pairs([
+        ("range", jrange_pos(ps, pe)),
+        ("newText", JStr(new_name))
+      ]))
+    }
+    let changes = Map::set(Map::new(), uri, JArr(edits))
+    JObj(Map::from_pairs([
+      ("changes", JObj(changes))
+    ]))
+  }
+}
+
+fn lsp_handle_document_symbol(source: String) -> Json with { Error } {
+  let syms = symbol_spans(source)
+  JArr(for entry in syms {
+    let (name, kind, start_off, end_off) = entry
+    let ps = lsp_offset_to_pos(source, start_off)
+    let pe = lsp_offset_to_pos(source, end_off)
+    let r = jrange_pos(ps, pe)
+    JObj(Map::from_pairs([
+      ("name", JStr(name)),
+      ("kind", jnum_int(kind)),
+      ("range", r),
+      ("selectionRange", r)
+    ]))
+  })
+}
+
+fn lsp_handle_diagnostics(source: String) -> Json with { Error } {
+  let diags = collect_all_diagnostics(source)
+  JArr(for msg in diags {
+    lsp_parse_diag_line(msg)
+  })
+}
+
+// `document_symbol`/`diagnostics` declare `with { Error }` (symbol_spans/
+// collect_all_diagnostics can throw on a genuine internal failure, not just
+// "no symbols" -- see cli_adapter.vibe's own VIBE_SYMBOLS branch, which
+// routes a caught Throw to a `.diag` sidecar rather than treating it the
+// same as an empty result). Swallow to an empty array here: an LSP response
+// must always be well-formed JSON, and "no symbols/diagnostics found" and
+// "the query itself failed" both degrade to the same safe empty response --
+// there is no sidecar channel to report the latter differently over
+// JSON-RPC.
+fn lsp_document_symbol_safe(source: String) -> Json {
+  handle {
+    lsp_handle_document_symbol(source)
+  } with Error {
+    Throw(_) => JArr([])
+  }
+}
+
+fn lsp_diagnostics_safe(source: String) -> Json {
+  handle {
+    lsp_handle_diagnostics(source)
+  } with Error {
+    Throw(_) => JArr([])
+  }
+}
+
+// Which `Lsp` operation a given dispatch should perform -- see
+// lsp_run_with_handler's own doc comment for why this is a plain Int tag
+// rather than a closure value.
+fn lsp_op_hover() -> Int { 0 }
+fn lsp_op_definition() -> Int { 1 }
+fn lsp_op_references() -> Int { 2 }
+fn lsp_op_rename() -> Int { 3 }
+fn lsp_op_document_symbol() -> Int { 4 }
+fn lsp_op_diagnostics() -> Int { 5 }
+
+// The one place all six `Lsp` operations are actually implemented, and the
+// only place any of them is `perform`ed. `docs` is threaded in by
+// reference (an ordinary mutable-variable capture from the caller's scope,
+// per this file's own doc comment: document state is plain mutable state,
+// not itself effect-modeled -- the `Lsp` effect models the COMPILER-QUERY
+// capability, not the document store).
+//
+// Earlier revision dispatched via a `body: () -> Json with { Lsp }`
+// closure PARAMETER (`lsp_dispatch_request` built a one-line closure
+// literal per call site and passed it in here to be perform'd) -- this
+// compiled but trapped ("indirect call type mismatch") at runtime the
+// moment it actually ran under real wasmtime (via vibewt; confirmed
+// empirically, not caught by the Node dev-runner's own separate test
+// harness). Root cause: an effectful closure captured BY VALUE and invoked
+// through an opaque higher-order-function parameter is exactly the still-
+// open GENERAL case issue #1070 documents (distinct from, and not covered
+// by, this session's earlier #1070 fix for a NEEDING function calling its
+// own closure-typed parameter -- lsp_run_with_handler isn't itself
+// "needing" anything, since it fully discharges `Lsp` right here; nothing
+// downstream of it needs an evidence dict at all). Restructured so
+// `perform` and `handle` are always textually co-located in the SAME
+// function body (an `if`/`else` chain choosing which bare `perform`
+// executes, driven by `op` -- an ordinary Int, never a closure) --
+// precisely the "handle site sees the perform directly, no function-call
+// boundary in between" case ADR-0076 (docs/effect-evidence-passing.md)
+// documents as never needing an evidence dict or any closure-value
+// machinery at all, and the only shape actually exercised (transitively,
+// via #1069/#1070/#1074's whole regression corpus) under real wasmtime so
+// far. Each `if` branch's body is EXACTLY one bare perform -- replay-safe
+// by the same reasoning as every other handle in this file (see the
+// header comment): re-executing the branch on `resume` re-evaluates the
+// same deterministic `op` comparison and re-reaches the same (memoized)
+// perform, nothing else.
+fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, docs: Map[String, String]) -> Json {
+  handle {
+    if op == lsp_op_hover() {
+      perform Lsp::Hover(uri, l, c)
+    } else if op == lsp_op_definition() {
+      perform Lsp::Definition(uri, l, c)
+    } else if op == lsp_op_references() {
+      perform Lsp::References(uri, l, c)
+    } else if op == lsp_op_rename() {
+      perform Lsp::Rename(uri, l, c, new_name)
+    } else if op == lsp_op_document_symbol() {
+      perform Lsp::DocumentSymbol(uri)
+    } else {
+      perform Lsp::Diagnostics(uri)
+    }
+  } with Lsp {
+    Hover(u2, l2, c2) => resume(lsp_handle_hover(lsp_doc_text(docs, u2), l2, c2));
+    Definition(u2, l2, c2) => resume(lsp_handle_definition(lsp_doc_text(docs, u2), u2, l2, c2));
+    References(u2, l2, c2) => resume(lsp_handle_references(lsp_doc_text(docs, u2), u2, l2, c2));
+    Rename(u2, l2, c2, nn) => resume(lsp_handle_rename(lsp_doc_text(docs, u2), u2, l2, c2, nn));
+    DocumentSymbol(u2) => resume(lsp_document_symbol_safe(lsp_doc_text(docs, u2)));
+    Diagnostics(u2) => resume(lsp_diagnostics_safe(lsp_doc_text(docs, u2)))
+  }
+}
+
+fn lsp_doc_text(docs: Map[String, String], uri: String) -> String {
+  if Map::has_key(docs, uri) {
+    Map::get(docs, uri)
+  } else {
+    ""
+  }
+}
+
+//# Method dispatch: JSON-RPC method name -> Lsp effect operation
+
+fn lsp_capabilities() -> Json {
+  JObj(Map::from_pairs([
+    ("textDocumentSync", jnum_int(1)),
+    ("hoverProvider", JBool(true)),
+    ("definitionProvider", JBool(true)),
+    ("referencesProvider", JBool(true)),
+    ("renameProvider", JBool(true)),
+    ("documentSymbolProvider", JBool(true))
+  ]))
+}
+
+fn lsp_initialize_result() -> Json {
+  JObj(Map::from_pairs([
+    ("capabilities", lsp_capabilities()),
+    ("serverInfo", JObj(Map::from_pairs([
+      ("name", JStr("vibe-lsp-selfhost")),
+      ("version", JStr("0.1.0"))
+    ])))
+  ]))
+}
+
+// Handles one Request (has an `id`, needs a response) or Notification (no
+// response). Returns Some(result_json) for a request, None for a
+// notification or an unrecognized method the caller already replied `null`
+// to.
+fn lsp_dispatch_request(method: String, params: Json, docs: Map[String, String]) -> Json {
+  if method == "initialize" {
+    lsp_initialize_result()
+  } else if method == "textDocument/hover" {
+    let uri = jparam_uri(params)
+    let l = jparam_line0(params)
+    let c = jparam_char0(params)
+    lsp_run_with_handler(lsp_op_hover(), uri, l, c, "", docs)
+  } else if method == "textDocument/definition" {
+    let uri = jparam_uri(params)
+    let l = jparam_line0(params)
+    let c = jparam_char0(params)
+    lsp_run_with_handler(lsp_op_definition(), uri, l, c, "", docs)
+  } else if method == "textDocument/references" {
+    let uri = jparam_uri(params)
+    let l = jparam_line0(params)
+    let c = jparam_char0(params)
+    lsp_run_with_handler(lsp_op_references(), uri, l, c, "", docs)
+  } else if method == "textDocument/rename" {
+    let uri = jparam_uri(params)
+    let l = jparam_line0(params)
+    let c = jparam_char0(params)
+    let new_name = Json::string(Json::field(params, "newName"))
+    lsp_run_with_handler(lsp_op_rename(), uri, l, c, new_name, docs)
+  } else if method == "textDocument/documentSymbol" {
+    let uri = jparam_uri(params)
+    lsp_run_with_handler(lsp_op_document_symbol(), uri, 0, 0, "", docs)
+  } else if method == "shutdown" {
+    JNull
+  } else {
+    JNull
+  }
+}
+
+fn lsp_diagnostics_for(uri: String, docs: Map[String, String]) -> Json {
+  lsp_run_with_handler(lsp_op_diagnostics(), uri, 0, 0, "", docs)
+}
+
+//# Document store (plain mutable state -- see the effect handler's own doc
+//# comment for why this is deliberately NOT effect-modeled)
+
+fn lsp_apply_did_open(docs: Map[String, String], params: Json) -> Map[String, String] {
+  let uri = jparam_uri(params)
+  let text = Json::string(Json::field(Json::field(params, "textDocument"), "text"))
+  Map::set(docs, uri, text)
+}
+
+fn lsp_apply_did_change(docs: Map[String, String], params: Json) -> Map[String, String] {
+  let uri = jparam_uri(params)
+  let changes = Json::field(params, "contentChanges")
+  if Json::length(changes) == 0 {
+    docs
+  } else {
+    // Full-document sync (declared capability): the last change entry's
+    // `text` is the WHOLE new document, matching textDocumentSync=1.
+    let last = Json::index(changes, Json::length(changes) - 1)
+    let text = Json::string(Json::field(last, "text"))
+    Map::set(docs, uri, text)
+  }
+}
+
+fn lsp_apply_did_close(docs: Map[String, String], params: Json) -> Map[String, String] {
+  let uri = jparam_uri(params)
+  Map::delete(docs, uri)
+}
+
+//# JSON-RPC envelope (built directly on Json/Json::field -- see this
+//# file's import comment for why @vibe/json/jsonrpc.vibe's own RpcMessage/
+//# RpcId codec is deliberately not used here)
+
+// JNull on malformed JSON (Json::parse's own contract) -- lsp_env_method
+// below then reads as "" for such a message, which lsp_step's dispatch
+// already treats as a no-op.
+fn lsp_parse_envelope(body: String) -> Json {
+  Json::parse(body)
+}
+
+fn lsp_env_method(j: Json) -> String {
+  Json::string(Json::field(j, "method"))
+}
+
+fn lsp_env_params(j: Json) -> Json {
+  Json::field(j, "params")
+}
+
+// The raw `id` value (JNum/JStr), passed straight back into the response
+// envelope -- LSP/JSON-RPC ids round-trip opaquely, no need to model RpcId.
+fn lsp_env_id(j: Json) -> Json {
+  Json::field(j, "id")
+}
+
+// A message with a non-null `id` is a request (expects a response); one
+// with no/null `id` is a notification. (JSON-RPC technically allows a null
+// `id` ON a request too, an edge case no real LSP client sends -- treating
+// it as a notification here just means we silently skip replying to a
+// message that, practically, never occurs.)
+fn lsp_env_is_request(j: Json) -> Bool {
+  String::length(lsp_env_method(j)) > 0 && !Json::is_null(lsp_env_id(j))
+}
+
+fn lsp_env_is_notification(j: Json) -> Bool {
+  String::length(lsp_env_method(j)) > 0 && Json::is_null(lsp_env_id(j))
+}
+
+fn lsp_stringify_response(id: Json, result: Json) -> String {
+  Json::stringify(JObj(Map::from_pairs([
+    ("jsonrpc", JStr("2.0")),
+    ("id", id),
+    ("result", result)
+  ])))
+}
+
+fn lsp_stringify_notification(method: String, params: Json) -> String {
+  Json::stringify(JObj(Map::from_pairs([
+    ("jsonrpc", JStr("2.0")),
+    ("method", JStr(method)),
+    ("params", params)
+  ])))
+}
+
+//# Main loop
+
+fn lsp_send_response(id: Json, result: Json) -> Unit with { Stdout } {
+  lsp_write_message(lsp_stringify_response(id, result))
+}
+
+fn lsp_send_diagnostics_notification(uri: String, diags: Json) -> Unit with { Stdout } {
+  let params = JObj(Map::from_pairs([
+    ("uri", JStr(uri)),
+    ("diagnostics", diags)
+  ]))
+  lsp_write_message(lsp_stringify_notification("textDocument/publishDiagnostics", params))
+}
+
+// One iteration: read a message, act on it, write a response if needed.
+// Returns (new_docs, should_exit).
+fn lsp_step(docs: Map[String, String]) -> (Map[String, String], Bool) with { Stdin, Stdout } {
+  match lsp_read_message() {
+    None => (docs, true),
+    Some(body) => {
+      let msg = lsp_parse_envelope(body)
+      if lsp_env_is_request(msg) {
+        let method = lsp_env_method(msg)
+        let params = lsp_env_params(msg)
+        let id = lsp_env_id(msg)
+        let result = lsp_dispatch_request(method, params, docs)
+        lsp_send_response(id, result)
+        (docs, method == "shutdown")
+      } else if lsp_env_is_notification(msg) {
+        let method = lsp_env_method(msg)
+        let params = lsp_env_params(msg)
+        if method == "exit" {
+          (docs, true)
+        } else if method == "initialized" {
+          (docs, false)
+        } else if method == "textDocument/didOpen" {
+          let new_docs = lsp_apply_did_open(docs, params)
+          let uri = jparam_uri(params)
+          lsp_send_diagnostics_notification(uri, lsp_diagnostics_for(uri, new_docs))
+          (new_docs, false)
+        } else if method == "textDocument/didChange" {
+          let new_docs = lsp_apply_did_change(docs, params)
+          let uri = jparam_uri(params)
+          lsp_send_diagnostics_notification(uri, lsp_diagnostics_for(uri, new_docs))
+          (new_docs, false)
+        } else if method == "textDocument/didSave" {
+          let uri = jparam_uri(params)
+          lsp_send_diagnostics_notification(uri, lsp_diagnostics_for(uri, docs))
+          (docs, false)
+        } else if method == "textDocument/didClose" {
+          let new_docs = lsp_apply_did_close(docs, params)
+          let uri = jparam_uri(params)
+          lsp_send_diagnostics_notification(uri, JArr([]))
+          (new_docs, false)
+        } else {
+          (docs, false)
+        }
+      } else {
+        // No method (a response to a request WE sent, or malformed JSON) --
+        // this server issues no client-bound requests in v1, so there is
+        // nothing to correlate a reply against; nothing to do.
+        (docs, false)
+      }
+    }
+  }
+}
+
+export fn lsp_main() -> Int with { Stdin, Stdout } {
+  let mut docs = Map::new()
+  let mut running = true
+  while running {
+    let (new_docs, should_exit) = lsp_step(docs)
+    docs = new_docs
+    running = not(should_exit)
+  }
+  0
+}

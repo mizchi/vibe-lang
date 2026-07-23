@@ -1371,9 +1371,26 @@ REPL_HELP
     fi
     ;;
   lsp)
-    # Start the stdio LSP server (diagnostics). Editors configure `vibe lsp`.
-    # The node server is JSON-RPC plumbing; it drives this same launcher's
-    # `vibe check` for the actual compile. (docs/release-roadmap.md テーマ4 MVP.)
+    # `vibe lsp --selfhost` (#lsp-selfhost): the self-hosted server
+    # (lib/@vibe/compiler/lsp_server.vibe, compiled straight into the CLI
+    # wasm like `type-at`/`symbols`/`diagnostics`) -- no subprocess per
+    # request, calls the compiler's editor-query primitives directly.
+    # Covers initialize/didOpen/didChange/didClose/hover/definition/
+    # references/rename/documentSymbol/diagnostics. Does NOT yet cover
+    # workspace/symbol, callHierarchy, or the `vibe/graph` visualizer (those
+    # are backed by clients/js/symbol_index.js's/graph_query.js's
+    # whole-workspace index in the node server, not yet ported) -- opt-in
+    # via the flag until that gap closes, rather than replacing the default.
+    for lsp_arg in "$@"; do
+      if [ "$lsp_arg" = "--selfhost" ]; then
+        cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
+        exec env VIBE_LSP=1 VIBE_IMPORT_ABI=raw "$RUNNER" "$cli"
+      fi
+    done
+    # Default: start the stdio LSP server (diagnostics). Editors configure
+    # `vibe lsp`. The node server is JSON-RPC plumbing; it drives this same
+    # launcher's `vibe check`/`type-at`/etc. for the actual compile.
+    # (docs/release-roadmap.md テーマ4 MVP.)
     server="$TOOLCHAIN_DIR/lib/lsp_server.js"
     [ -f "$server" ] || server="$SELF/../../clients/js/lsp_server.js"
     [ -f "$server" ] || die "lsp server not found (looked in $TOOLCHAIN_DIR/lib and repo clients/js)"
