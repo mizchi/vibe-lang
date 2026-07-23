@@ -1,6 +1,6 @@
 # ADR-0076: effect handler を evidence passing 化する (suspend 点 IR で WasmFX/WASI 0.3 前方互換)
 
-Status: proposed (実装 Phase 1/2/2b は着地済み、Phase 3 の第一スライス (evidence-dict のヘルパー関数呼び越し threading、分岐を含む handle body も対応) も着地、2026-07-23 — 「段階導入計画」の実装ノート参照)
+Status: proposed (実装 Phase 1/2/2b は着地済み。Phase 3 は「CPS 新規実装」ではなく「evidence_dict_pass の静的カバレッジ拡大」に帰着することが判明 (追記 2/16) -- 2026-07-23 のセッションで multi-effect row・nested handle・pure helper 呼び出し・EDot・closure literal・effectset alias (whole-effect/qualified operation 双方)・row-variable tail・capture-free local closure invocation まで対象を拡大、加えて関連する closure+effect codegen バグ #1069 (capturing local closure の invocation) を修正、#1070 (by-value に渡された capturing closure) を新規発見・報告。「段階導入計画」の実装ノート・追記 9-16 参照)
 
 Date: 2026-07-22
 
@@ -335,18 +335,34 @@ Large cost の機能なので、ADR-0061/0064/0072 と同じ「新構文/新経�
   tail-resumptive operation は**引き続き既存の replay** へ振り分ける
   (hybrid — 高価値・低リスクな部分から先に落とす)。tail-resumptive な
   アームしか持たない handler は、この時点で M2 から解放される。
-- **Phase 3**: yield bubbling (選択的 CPS) を実装し、非 tail-resumptive
-  経路も evidence passing へ移行。replay loop・`eff_reserve`・memo
-  アドレッシングを削除。`~16K` bound と M2 が全域で解消する。
-  selfhost bootstrap bump が必要 (compiler 自身の effect 呼び出しが
-  新経路でコンパイルされる)。**前提**: 現行の「単一小文字ラベルは全
-  operation を authorize する」row-polymorphism hack には evidence dict
-  を組み立てるための operation 集合情報がなく、replay 経路を完全に
-  削除するにはこの hack を使う関数にも evidence を割り当てられる必要が
-  ある — ADR-0071 の構造化 row (少なくとも row variable 部分) が
-  Phase 3 着手までに着地していることを前提とする (詳細は下記
-  「検討済みの論点」参照)。着地していない場合は、hack を使う関数だけ
-  replay 経路を残す長期 hybrid に切り替える。
+- **Phase 3**: 当初は「yield bubbling (選択的 CPS) を実装し、非
+  tail-resumptive 経路も evidence passing へ移行」と計画されていたが、
+  「追記 2」「追記 16」の調査で **CPS 自体は現在コンパイル可能などの
+  vibe プログラムにも必要とされない可能性が高い** ことが分かった
+  (`#942`/`#814` が non-tail・multi-shot な resume をチェッカーレベルで
+  一律 reject するため、Xie & Leijen の定義上そもそも handler は既に
+  tail-resumptive)。従って Phase 3 の実態は「CPS ランタイムの新規実装」
+  ではなく、**`evidence_dict_pass` の静的カバレッジを、あらゆる
+  tail-resumptive な perform を direct call へ書き換えられる状態まで
+  漸進的に拡大し続けること** に帰着する -- 2026-07-23 のセッションで
+  実際にこの方向で拡張した範囲 (multi-effect row・nested handle・pure
+  helper 呼び出し・EDot・closure literal・effectset alias・qualified
+  operation・row-variable tail・capture-free local closure invocation)
+  はその一部。カバレッジが「コンパイル可能な全プログラム」に到達した
+  時点で replay codegen (`eff_reserve`・memo アドレッシング・loop) は
+  到達不能になり、削除できる -- `~16K` bound と M2 はそこで全域解消する。
+  唯一の未検証項目は ADR-0068 の `Cont`/finalizer まわりとの整合
+  (「追記 2」(c)) で、ADR-0068 側の TaskContext/finalizer stack 実装が
+  着地するまで本 ADR 単独では確認できない。selfhost bootstrap bump は
+  依然必要 (compiler 自身の effect 呼び出しが新経路でコンパイルされる
+  段階で)。**前提**: 現行の「単一小文字ラベルは全 operation を
+  authorize する」row-polymorphism hack には evidence dict を組み立てる
+  ための operation 集合情報がなく、replay 経路を完全に削除するには
+  この hack を使う関数にも evidence を割り当てられる必要がある —
+  ADR-0071 の構造化 row (少なくとも row variable 部分) が Phase 3 完了
+  までに着地していることを前提とする (詳細は下記「検討済みの論点」
+  参照)。着地していない場合は、hack を使う関数だけ replay 経路を残す
+  長期 hybrid に切り替える。
 - **Phase 4**: wasm-gc backend に同じ evidence 設計で完全な代数的
   effect handler を実装 (`with Error` スタブからの昇格)。
 - **Phase 5**: suspend 点 IR に WasmFX / WASI 0.3 async (JSPI) 向けの
@@ -1226,6 +1242,85 @@ replay-vs-evidence-dict の判別構造を使い、「compile が通って妥当
 異なる値になっていたはず)。検証は temporary migration-plan probe と
 両方の replay-check fixture (functional value のみの版、count 判別版)
 の両方で実施した。
+
+### 追記 16 (2026-07-23、同日): 「追記 2」の仮説を独立に再検証 -- Phase 3
+本体 (yield bubbling/CPS) は「現在コンパイル可能などの vibe プログラムに
+とっても不要」の可能性が高いことを確認、段階導入計画の記述を訂正
+
+「段階導入計画」節 (Phase 3) は当初「yield bubbling (選択的 CPS) を
+実装し、非 tail-resumptive 経路も evidence passing へ移行」と書かれて
+いるが、これは「追記 2」(2026-07-22) で既に「有望な作業仮説」として
+疑問視されていた: `#942` (`check_arm_resume_tail`) が「resume は arm の
+tail 位置以外では compile error」を機械的に強制するため、non-tail・
+multi-shot な resume はそもそも**現行の vibe ソース言語で構文的に
+構築不可能**であり、Xie & Leijen の定義上これは handler が既に
+tail-resumptive であることそのものを意味する -- つまり CPS 変換
+(yield bubbling) を要するプログラムが最初から存在しない可能性がある、
+という仮説。
+
+このセッション (2026-07-23) で本 ADR の実装拡張作業 (追記 9-15、
+evidence_dict_pass の適用範囲を multi-effect row・nested handle・
+pure helper・EDot・closure literal・effectset alias・qualified
+operation・row-variable tail・capture-free local closure invocation へ
+順次拡大) を進める過程で、この仮説を独立した調査で再検証した。結果:
+
+1. `#942`/`check_arm_resume_tail` (`checker.vibe:2637-2785`) は
+   syntactic な tail-position チェックであり、「resume の呼び出しが
+   arm の最終式でない」ケースだけでなく、「同じ arm 内で resume を
+   2 回呼ぶ」(2 回目は 1 回目の tail 位置には決してなり得ない ため
+   機械的に reject される) や「resume を値として保存・後で呼ぶ」も
+   まとめて reject する -- non-tail と multi-shot が別々の抜け道に
+   なっている訳ではなく、1 つのチェックで両方とも塞がれている。
+2. 旧 `Op(v, k) => v + k(0)` k-convention 構文 (非 tail 継続を明示的に
+   束縛する構文) は別途 `#814` (`checker.vibe:4508-4529`) が
+   「non-tail continuation binder (k-convention) is not supported by
+   the build path」として reject する。この構文を使う既存 fixture
+   (`effect_cps_mut_adr021.vibe`,
+   `effect_cps_accumulate.vibe`,
+   `effect_cps_product.vibe`,
+   `effect_cps_collect_array.vibe`,
+   `effect_generic_writer.vibe`) は**いずれも現行ビルドパスでは
+   コンパイルできない** -- historical/MoonBit-host 専用の遺物。
+3. `effect_multishot.vibe` は名前とは裏腹に、実際の multi-shot resume
+   を検証する fixture ではなく、「現行実装では multi-shot は不可能」
+   という制約を 2 つの独立した `handle` 呼び出しで回避する例を
+   ドキュメントしているだけ -- Phase 3 の CPS 実装が着地した**場合の**
+   将来の回帰対象として段階導入計画に予約されているプレースホルダで
+   あり、現時点で何かを検証しているわけではない。
+
+つまり「追記 2」(a)(b) で既に検証済みだった 2 点 (no-resume arm は暗黙
+tail resume として扱われる; nested handle の shadowing は evidence
+チェーンでそのまま成立する) に加えて、「そもそも現行チェッカーが
+non-tail/multi-shot な resume を一切通さない」という事実を独立に
+再確認したことで、「追記 2」の仮説はさらに補強された:
+**「Phase 3 本体 (yield bubbling/CPS) は、現在コンパイル可能などの
+vibe プログラムにも必要とされない」** -- CPS が必要になるのは、
+`#942`/`#814` のチェッカー制約を将来意図的に緩和して
+multi-shot/non-tail resume を新機能として解禁する場合に限られる。
+唯一の未検証項目 (「追記 2」(c): ADR-0068 の `Cont`/finalizer
+まわりとの整合) は ADR-0068 側の TaskContext/finalizer stack 実装が
+まだ存在しないため、本 ADR 単独では今回も検証できないまま据え置き。
+
+**実務上の帰結**: 「段階導入計画」の Phase 3 の文言 (「yield bubbling
+を実装し...」) は、それ自体が実装対象というより「一度実装が必要か
+どうか確認すべき仮説」であったと訂正して読むべきである。この仮説が
+(ADR-0068 の 1 点を除き) 成り立つ以上、**replay 機構
+(`eff_reserve`・memo アドレッシング・`~16K` perform 上限) を完全に
+削除できるかどうかは、CPS の新規実装ではなく、単に
+`evidence_dict_pass` の**静的カバレッジを広げ続けること** (このセッション
+で一貫して行ってきた作業そのもの: multi-effect row, nested handle,
+pure helper 呼び出し, EDot, closure literal, effectset alias, 
+qualified operation, row-variable tail, capture-free local closure
+invocation, ...) **にかかっている**。すべての `perform` を静的に
+evidence 直接呼び出しへ書き換えられる状態に到達すれば、replay
+codegen 自体は到達不能な死んだコードになり、削除できる -- これが
+「Phase 3 を完了させる」ことの実態であり、当初想定されていた
+「CPS ランタイムを新規実装する」大規模タスクとは性質が異なる、
+本質的にはこのセッションの延長線上にある漸進的なカバレッジ拡大作業
+である。段階導入計画の Phase 3 の記述は、この理解を反映するよう
+将来更新すべき (本追記はその根拠を記録するのみで、計画本文自体は
+まだ書き換えていない -- 次に本 ADR に着手する際に、この追記を踏まえて
+Phase 3 の文言を書き直すこと)。
 
 ## References
 
