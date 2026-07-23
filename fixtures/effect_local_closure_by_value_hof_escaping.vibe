@@ -1,0 +1,44 @@
+// #1070 (general case) safety boundary: a capturing effectful local
+// closure referenced MORE than once -- once passed by value into a
+// higher-order function's closure-typed parameter, and once called
+// directly -- must NOT be migrated to the evidence-dict ABI, because
+// edp_closure_param_universally_safe can only prove `apply`'s parameter
+// safe to widen if EVERY flow into it is provably a single-use,
+// individually-eligible closure literal; `inner` here is used twice
+// (`inner()` directly, and passed to `apply`), so
+// edp_count_ident_uses_stmts(..., "inner") is 2, and the whole position
+// is correctly left unmigrated -- `apply` falls back to its pre-existing
+// (unsafe -> replay) treatment exactly as before this session's #1070
+// general-case fix, and this must still compile and run to the correct
+// value rather than crash or silently miscompile.
+//   direct: perform resolves to 1, + captured base (100) == 101
+//   viaApply: perform resolves to 5, + captured base (100) == 105
+//   total == 206
+effect Ask {
+  Get -> Int
+}
+
+let apply = (f: () -> Int with { Ask }) -> Int with { Ask } {
+  f()
+}
+
+export let main = () -> Int {
+  let base = 100
+  let inner = () -> Int with { Ask } {
+    perform Ask::Get + base
+  }
+  let direct = handle {
+    inner()
+  } with Ask {
+    Get => resume(1)
+  }
+  let via_apply = handle {
+    apply(inner)
+  } with Ask {
+    Get => resume(5)
+  }
+  direct + via_apply
+}
+
+__DATA__
+{"last": "206"}

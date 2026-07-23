@@ -5305,6 +5305,72 @@ fi
 rm -rf "$edpsdir"
 echo "[compiler-gate] evidence-dict needing-forwarding shadowing fix ok (47)"
 
+# 40ap. #1070 (general case): a needing function calling its OWN
+#       closure-typed parameter (not another named needing function) --
+#       `apply_twice`'s body calls `f` (a `with { Ask }`-typed parameter)
+#       twice, so #1074's trivial-pass-through-wrapper inlining (a single
+#       same-arity call only) correctly declines to touch it. Previously
+#       this crashed at runtime ("null function or function signature
+#       mismatch"): the indirect call to `f` carried no evidence for
+#       `Ask`. Fixed by extending evidence_dict_pass to treat a call
+#       through a closure-typed parameter exactly like a call to another
+#       needing function (dict forwarded the same way), but ONLY when
+#       every call site of the owning function can be proven, across the
+#       whole program, to pass a migratable closure literal at that exact
+#       position (edp_closure_param_universally_safe/edp_own_closure_
+#       params in inline_direct_perform.vibe) -- both the caller
+#       (`apply_twice`) and the callee value (`inner`) are migrated
+#       together, never just one side.
+echo "[compiler-gate] 40ap/40 evidence-dict forwarding through an own closure-typed HOF parameter (#1070 general case)"
+edpgdir="_build/_gate_edp_closure_hof_general"
+rm -rf "$edpgdir"; mkdir -p "$edpgdir"
+sed '/^__DATA__$/,$d' fixtures/effect_local_closure_by_value_hof_general.vibe > "$edpgdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpgdir/src.vibe" "$edpgdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpgdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_by_value_hof_general.vibe did not compile" >&2
+  cat "$edpgdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edpg_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpgdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edpg_out" != "210" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_by_value_hof_general.vibe got '$edpg_out' (want 210) -- #1070 general-case closure-HOF-parameter fix regressed" >&2
+  exit 1
+fi
+rm -rf "$edpgdir"
+echo "[compiler-gate] evidence-dict forwarding through own closure-typed HOF parameter ok (210)"
+
+# 40aq. #1070 general-case safety boundary: a capturing effectful local
+#       closure used MORE than once (once passed by value into a
+#       closure-typed HOF parameter, once called directly) must NOT be
+#       migrated -- edp_closure_param_universally_safe can only prove a
+#       parameter position safe when every flow into it is a provably
+#       single-use closure literal; a second, unrelated use makes that
+#       unprovable, so the whole position stays on the pre-existing
+#       (unsafe -> replay) fallback instead of migrating one side without
+#       the other (which would be a wrong-arity miscompile, not just a
+#       missed optimization).
+echo "[compiler-gate] 40aq/40 closure-typed HOF parameter safety boundary: multi-use closure stays unmigrated (#1070 general case)"
+edpedir="_build/_gate_edp_closure_hof_escaping"
+rm -rf "$edpedir"; mkdir -p "$edpedir"
+sed '/^__DATA__$/,$d' fixtures/effect_local_closure_by_value_hof_escaping.vibe > "$edpedir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpedir/src.vibe" "$edpedir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpedir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_by_value_hof_escaping.vibe did not compile" >&2
+  cat "$edpedir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edpe_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpedir/out.wasm" 2>&1 | tail -1)"
+if [ "$edpe_out" != "206" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_by_value_hof_escaping.vibe got '$edpe_out' (want 206) -- #1070 closure-HOF-parameter safety boundary regressed" >&2
+  exit 1
+fi
+rm -rf "$edpedir"
+echo "[compiler-gate] closure-typed HOF parameter safety boundary ok (206)"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the

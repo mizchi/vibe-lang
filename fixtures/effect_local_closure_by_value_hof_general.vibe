@@ -1,0 +1,49 @@
+// #1070 (general case): a capturing effectful local closure passed BY
+// VALUE to a higher-order function whose body does something MORE than a
+// single trivial pass-through call -- here, calling its closure-typed
+// parameter TWICE. dtpw_inline_trivial_wrappers (the #1074-landed narrow
+// slice, see effect_local_closure_by_value_wrapper.vibe) only rewrites a
+// wrapper whose ENTIRE body is exactly one same-arity call to its sole
+// parameter; `apply_twice`'s body calls `f` twice, so that pass correctly
+// declines to touch it, leaving the real by-value HOF-argument case on
+// the table -- until now this crashed at runtime ("null function or
+// function signature mismatch") because `apply_twice`'s indirect call to
+// its own closure-typed parameter carried no evidence for `Ask`, while
+// `inner`'s compiled body (if ever migrated at all) would have expected
+// one.
+//
+// Fixed by extending `evidence_dict_pass` (inline_direct_perform.vibe):
+// a needing function's own closure-typed parameter is now treated like a
+// call to another needing function (dict forwarded the same way) --
+// PROVIDED every call site of the owning function can be proven, in the
+// whole program, to pass a migratable closure literal at that exact
+// position (edp_closure_param_universally_safe / edp_own_closure_params).
+// Here `apply_twice`'s only call site passes `inner`, itself referenced
+// exactly once in the whole program and individually eligible, so both
+// sides migrate: `apply_twice` gains an implicit dict parameter and
+// forwards it into `f(...)`; `inner` gains its own implicit dict
+// parameter and its `perform` now reads through it.
+//   perform Ask::Get resolves to 5, + captured base (100) == 105, called
+//   twice and summed == 210
+effect Ask {
+  Get -> Int
+}
+
+let apply_twice = (f: () -> Int with { Ask }) -> Int with { Ask } {
+  f() + f()
+}
+
+export let main = () -> Int {
+  let base = 100
+  let inner = () -> Int with { Ask } {
+    perform Ask::Get + base
+  }
+  handle {
+    apply_twice(inner)
+  } with Ask {
+    Get => resume(5)
+  }
+}
+
+__DATA__
+{"last": "210"}

@@ -2003,6 +2003,9 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
     false
   } else {
     let pure_fns = edp_pure_fn_names(fn_defs)
+    let es_names = array_empty()
+    let es_members_list = array_empty()
+    edp_es_collect_into(stmts, es_names, es_members_list)
     let mut hi = 0
     let mut ok = true
     while hi < Array::length(handle_sites) {
@@ -2017,11 +2020,23 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
     let mut ni = 0
     while ni < Array::length(needing) {
       let nm = Array::get(needing, ni)
-      match edp_find_fn_body(stmts, fn_defs, nm) {
-        Some(b) => if edp_has_unsafe_construct(b, needing, ename, pure_fns) {
-          ok = false
-        } else {
-          ()
+      match edp_find_fn_params_and_body(stmts, fn_defs, nm) {
+        // #1070 (general case): a call to this function's OWN closure-
+        // typed parameter is treated exactly like a call to another
+        // needing function (dict forwarding), but ONLY for the specific
+        // parameter positions edp_own_closure_params has proven safe
+        // across every call site in the whole program -- see that
+        // function's own doc comment and edp_apply_migration's mirrored
+        // computation (must use the same stmts view; this eligibility
+        // check runs strictly before either is mutated for `ename`).
+        Some((gparams, b)) => {
+          let own_cp = edp_own_closure_params(stmts, nm, gparams, ename, needing, pure_fns, es_names, es_members_list)
+          let call_safe = Array::concat(needing, edp_closure_param_names_only(own_cp))
+          if edp_has_unsafe_construct(b, call_safe, ename, pure_fns) {
+            ok = false
+          } else {
+            ()
+          }
         },
         None => {
           ok = false
@@ -2053,18 +2068,679 @@ fn edp_find_fn_body(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String,
   result
 }
 
+// --- #1070 (general case): a needing function calling an opaque
+// closure-typed PARAMETER of its own (`f()` where `f: () -> R with
+// {ename}`), instead of another named needing function. Static (AST-only)
+// analysis can never fully prove what closure VALUE flows into an
+// arbitrary parameter, so this is scoped deliberately narrowly and
+// conservatively: a parameter position is only ever treated as safe to
+// forward the dict through if EVERY call site of the owning function in
+// the whole program can be proven, by itself, to pass a migratable
+// closure LITERAL at that exact position (edp_closure_param_universally_
+// safe) -- any call passing something else (a non-identifier expression,
+// a missing argument, or an identifier that isn't a provably single-use,
+// row-matching, safe-bodied `let`-bound closure literal) makes the WHOLE
+// position ineligible, and the owning function falls back to its
+// pre-existing (unsafe -> replay) treatment exactly as before this
+// change. This two-sided requirement is essential, not a nicety: if only
+// the call site were rewritten (forwarding a dict argument) without the
+// actual closure VALUE also being recompiled to accept it, the extra
+// argument would land on a closure whose compiled arity doesn't expect
+// it -- silently wrong at best, a wrong-arity crash at worst. Provably
+// requiring BOTH sides before touching either is what keeps this sound.
+
+// A parameter's declared type denotes a function whose row is EXACTLY
+// `ename` (same effectset-aware matching edp_needing_names uses for
+// top-level functions, reused here for a parameter's own type instead of
+// a function's declared row).
+fn edp_type_is_fn_row_exactly(pty: Option[TypeExpr], ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Bool {
+  match pty {
+    Some(t) => match t {
+      TyFn(_, _, roweff) => match roweff {
+        Some(row) => edp_row_is_exactly(row, ename, es_names, es_members_list),
+        None => false
+      },
+      _ => false
+    },
+    None => false
+  }
+}
+
+// Like edp_find_fn_body but also returns the function's own params (needed
+// to inspect a parameter's declared type, which edp_collect_fn_defs never
+// captures).
+fn edp_find_fn_params_and_body(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], name: String) -> Option[(Array[(String, Option[TypeExpr])], Expr)] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(fn_defs) {
+    let (idx, _, _, nm, _, _) = Array::get(fn_defs, i)
+    if nm == name {
+      match Array::get(stmts, idx) {
+        SLet(_, _, _, _, EFn(_, _, params, _, _, body)) => {
+          result = Some((params, body))
+        },
+        _ => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  result
+}
+
+// Is `expr` an EFn literal whose OWN declared row is exactly `ename` and
+// whose body contains nothing edp_has_unsafe_construct rejects? This is
+// the exact eligibility bar a top-level needing function must also clear
+// -- reused here for a LOCAL closure literal considered for the same
+// dict-parameter treatment.
+fn edp_efn_eligible_for_migration(expr: Expr, ename: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Bool {
+  match expr {
+    EFn(_, _, _, _, eff, body) => {
+      let row = match eff {
+        Some(s) => s,
+        None => ""
+      }
+      edp_row_is_exactly(row, ename, es_names, es_members_list) && !edp_has_unsafe_construct(body, needing, ename, pure_fns)
+    },
+    _ => false
+  }
+}
+
+// Whole-program count of every `EIdent(name)` occurrence -- full coverage
+// mirroring edp_has_unsafe_construct/edp_rewrite_needing_body's own node
+// list (see those functions' doc comments for why missing a position here
+// would be unsafe, not just incomplete: undercounting could make a
+// closure look falsely single-use).
+fn edp_count_ident_uses_stmts(stmts: Array[Stmt], name: String) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => {
+        total = total + edp_count_ident_uses(expr, name)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  total
+}
+
+fn edp_count_ident_uses(expr: Expr, name: String) -> Int {
+  match expr {
+    EIdent(nm, _) => if nm == name {
+      1
+    } else {
+      0
+    },
+    EFn(_, _, _, _, _, body) => edp_count_ident_uses(body, name),
+    EHandle(body, arms) => edp_count_ident_uses(body, name) + edp_count_ident_uses_arms(arms, name),
+    EIf(c, t, e) => edp_count_ident_uses(c, name) + edp_count_ident_uses(t, name) + edp_count_ident_uses(e, name),
+    EMatch(s, arms) => edp_count_ident_uses(s, name) + edp_count_ident_uses_arms(arms, name),
+    EWhile(c, b) => edp_count_ident_uses(c, name) + edp_count_ident_uses(b, name),
+    EForIn(_, _, it, b) => edp_count_ident_uses(it, name) + edp_count_ident_uses(b, name),
+    ELoop(pairs, b) => edp_count_ident_uses_pairs(pairs, name) + edp_count_ident_uses(b, name),
+    ELet(_, v, b, _) => edp_count_ident_uses(v, name) + edp_count_ident_uses(b, name),
+    ELetMut(_, v, b, _) => edp_count_ident_uses(v, name) + edp_count_ident_uses(b, name),
+    ELetRec(_, v, b) => edp_count_ident_uses(v, name) + edp_count_ident_uses(b, name),
+    ESeq(a, b) => edp_count_ident_uses(a, name) + edp_count_ident_uses(b, name),
+    ECall(callee, args, _) => edp_count_ident_uses(callee, name) + edp_count_ident_uses_exprs(args, name),
+    EBinOp(_, l, r) => edp_count_ident_uses(l, name) + edp_count_ident_uses(r, name),
+    EUnaryOp(_, e2) => edp_count_ident_uses(e2, name),
+    EAssign(_, v, c) => edp_count_ident_uses(v, name) + edp_count_ident_uses(c, name),
+    EAssignOp(_, _, v, c) => edp_count_ident_uses(v, name) + edp_count_ident_uses(c, name),
+    EDot(o, _, _, _) => edp_count_ident_uses(o, name),
+    ELabeledArg(_, _, v) => edp_count_ident_uses(v, name),
+    EReturn(e2) => edp_count_ident_uses(e2, name),
+    EBreak(opt) => match opt {
+      Some(e2) => edp_count_ident_uses(e2, name),
+      None => 0
+    },
+    EContinue(args) => edp_count_ident_uses_exprs(args, name),
+    ETuple(elems) => edp_count_ident_uses_exprs(elems, name),
+    EArray(elems) => edp_count_ident_uses_exprs(elems, name),
+    ERecord(_, fields, _) => edp_count_ident_uses_fields(fields, name),
+    EMap(fields) => edp_count_ident_uses_fields(fields, name),
+    ESpread(e2) => edp_count_ident_uses(e2, name),
+    _ => 0
+  }
+}
+
+fn edp_count_ident_uses_exprs(exprs: Array[Expr], name: String) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(exprs) {
+    total = total + edp_count_ident_uses(Array::get(exprs, i), name)
+    i = i + 1
+  }
+  total
+}
+
+fn edp_count_ident_uses_arms(arms: Array[(Pat, Expr)], name: String) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    total = total + edp_count_ident_uses(ex, name)
+    i = i + 1
+  }
+  total
+}
+
+fn edp_count_ident_uses_pairs(pairs: Array[(String, Expr)], name: String) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(pairs) {
+    let (_, v) = Array::get(pairs, i)
+    total = total + edp_count_ident_uses(v, name)
+    i = i + 1
+  }
+  total
+}
+
+fn edp_count_ident_uses_fields(fields: Array[(String, Expr)], name: String) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    total = total + edp_count_ident_uses(v, name)
+    i = i + 1
+  }
+  total
+}
+
+// Whole-program count of `let`-bound (top-level SLet or nested ELet/
+// ELetRec) closure literals named `xname` that are individually eligible
+// (edp_efn_eligible_for_migration). Same full coverage as
+// edp_count_ident_uses.
+fn edp_count_safe_closure_bindings_stmts(stmts: Array[Stmt], xname: String, ename: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, nm, _, expr) => {
+        let self_hit = if nm == xname && edp_efn_eligible_for_migration(expr, ename, needing, pure_fns, es_names, es_members_list) {
+          1
+        } else {
+          0
+        }
+        total = total + self_hit + edp_count_safe_closure_bindings(expr, xname, ename, needing, pure_fns, es_names, es_members_list)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  total
+}
+
+fn edp_count_safe_closure_bindings(expr: Expr, xname: String, ename: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Int {
+  match expr {
+    ELet(n, v, b, _) => {
+      let self_hit = if n == xname && edp_efn_eligible_for_migration(v, ename, needing, pure_fns, es_names, es_members_list) {
+        1
+      } else {
+        0
+      }
+      self_hit + edp_count_safe_closure_bindings(v, xname, ename, needing, pure_fns, es_names, es_members_list) + edp_count_safe_closure_bindings(b, xname, ename, needing, pure_fns, es_names, es_members_list)
+    },
+    ELetRec(n, v, b) => {
+      let self_hit = if n == xname && edp_efn_eligible_for_migration(v, ename, needing, pure_fns, es_names, es_members_list) {
+        1
+      } else {
+        0
+      }
+      self_hit + edp_count_safe_closure_bindings(v, xname, ename, needing, pure_fns, es_names, es_members_list) + edp_count_safe_closure_bindings(b, xname, ename, needing, pure_fns, es_names, es_members_list)
+    },
+    EFn(_, _, _, _, _, body) => edp_count_safe_closure_bindings(body, xname, ename, needing, pure_fns, es_names, es_members_list),
+    EHandle(body, arms) => edp_count_safe_closure_bindings(body, xname, ename, needing, pure_fns, es_names, es_members_list) + edp_count_safe_closure_bindings_arms(arms, xname, ename, needing, pure_fns, es_names, es_members_list),
+    EIf(c, t, e) => edp_count_safe_closure_bindings(c, xname, ename, needing, pure_fns, es_names, es_members_list) + edp_count_safe_closure_bindings(t, xname, ename, needing, pure_fns, es_names, es_members_list) + edp_count_safe_closure_bindings(e, xname, ename, needing, pure_fns, es_names, es_members_list),
+    EMatch(s, arms) => edp_count_safe_closure_bindings(s, xname, ename, needing, pure_fns, es_names, es_members_list) + edp_count_safe_closure_bindings_arms(arms, xname, ename, needing, pure_fns, es_names, es_members_list),
+    EWhile(c, b) => edp_count_safe_closure_bindings(c, xname, ename, needing, pure_fns, es_names, es_members_list) + edp_count_safe_closure_bindings(b, xname, ename, needing, pure_fns, es_names, es_members_list),
+    EForIn(_, _, it, b) => edp_count_safe_closure_bindings(it, xname, ename, needing, pure_fns, es_names, es_members_list) + edp_count_safe_closure_bindings(b, xname, ename, needing, pure_fns, es_names, es_members_list),
+    ELoop(pairs, b) => edp_count_safe_closure_bindings_pairs(pairs, xname, ename, needing, pure_fns, es_names, es_members_list) + edp_count_safe_closure_bindings(b, xname, ename, needing, pure_fns, es_names, es_members_list),
+    ELetMut(_, v, b, _) => edp_count_safe_closure_bindings(v, xname, ename, needing, pure_fns, es_names, es_members_list) + edp_count_safe_closure_bindings(b, xname, ename, needing, pure_fns, es_names, es_members_list),
+    ESeq(a, b) => edp_count_safe_closure_bindings(a, xname, ename, needing, pure_fns, es_names, es_members_list) + edp_count_safe_closure_bindings(b, xname, ename, needing, pure_fns, es_names, es_members_list),
+    EAssign(_, v, c) => edp_count_safe_closure_bindings(v, xname, ename, needing, pure_fns, es_names, es_members_list) + edp_count_safe_closure_bindings(c, xname, ename, needing, pure_fns, es_names, es_members_list),
+    EAssignOp(_, _, v, c) => edp_count_safe_closure_bindings(v, xname, ename, needing, pure_fns, es_names, es_members_list) + edp_count_safe_closure_bindings(c, xname, ename, needing, pure_fns, es_names, es_members_list),
+    EDot(o, _, _, _) => edp_count_safe_closure_bindings(o, xname, ename, needing, pure_fns, es_names, es_members_list),
+    ELabeledArg(_, _, v) => edp_count_safe_closure_bindings(v, xname, ename, needing, pure_fns, es_names, es_members_list),
+    EReturn(e2) => edp_count_safe_closure_bindings(e2, xname, ename, needing, pure_fns, es_names, es_members_list),
+    EBreak(opt) => match opt {
+      Some(e2) => edp_count_safe_closure_bindings(e2, xname, ename, needing, pure_fns, es_names, es_members_list),
+      None => 0
+    },
+    ECall(callee, args, _) => edp_count_safe_closure_bindings(callee, xname, ename, needing, pure_fns, es_names, es_members_list) + edp_count_safe_closure_bindings_exprs(args, xname, ename, needing, pure_fns, es_names, es_members_list),
+    EBinOp(_, l, r) => edp_count_safe_closure_bindings(l, xname, ename, needing, pure_fns, es_names, es_members_list) + edp_count_safe_closure_bindings(r, xname, ename, needing, pure_fns, es_names, es_members_list),
+    EUnaryOp(_, e2) => edp_count_safe_closure_bindings(e2, xname, ename, needing, pure_fns, es_names, es_members_list),
+    EContinue(args) => edp_count_safe_closure_bindings_exprs(args, xname, ename, needing, pure_fns, es_names, es_members_list),
+    ETuple(elems) => edp_count_safe_closure_bindings_exprs(elems, xname, ename, needing, pure_fns, es_names, es_members_list),
+    EArray(elems) => edp_count_safe_closure_bindings_exprs(elems, xname, ename, needing, pure_fns, es_names, es_members_list),
+    ERecord(_, fields, _) => edp_count_safe_closure_bindings_fields(fields, xname, ename, needing, pure_fns, es_names, es_members_list),
+    EMap(fields) => edp_count_safe_closure_bindings_fields(fields, xname, ename, needing, pure_fns, es_names, es_members_list),
+    ESpread(e2) => edp_count_safe_closure_bindings(e2, xname, ename, needing, pure_fns, es_names, es_members_list),
+    _ => 0
+  }
+}
+
+fn edp_count_safe_closure_bindings_exprs(exprs: Array[Expr], xname: String, ename: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(exprs) {
+    total = total + edp_count_safe_closure_bindings(Array::get(exprs, i), xname, ename, needing, pure_fns, es_names, es_members_list)
+    i = i + 1
+  }
+  total
+}
+
+fn edp_count_safe_closure_bindings_arms(arms: Array[(Pat, Expr)], xname: String, ename: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    total = total + edp_count_safe_closure_bindings(ex, xname, ename, needing, pure_fns, es_names, es_members_list)
+    i = i + 1
+  }
+  total
+}
+
+fn edp_count_safe_closure_bindings_pairs(pairs: Array[(String, Expr)], xname: String, ename: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(pairs) {
+    let (_, v) = Array::get(pairs, i)
+    total = total + edp_count_safe_closure_bindings(v, xname, ename, needing, pure_fns, es_names, es_members_list)
+    i = i + 1
+  }
+  total
+}
+
+fn edp_count_safe_closure_bindings_fields(fields: Array[(String, Expr)], xname: String, ename: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    total = total + edp_count_safe_closure_bindings(v, xname, ename, needing, pure_fns, es_names, es_members_list)
+    i = i + 1
+  }
+  total
+}
+
+// Whole-program scan for `gname(args)` calls, collecting the bare
+// identifier found at `args[argpos]`. A call to `gname` whose argument at
+// that position is EITHER missing (arity mismatch we can't reason about)
+// OR present but not a bare identifier (a literal, a field access, an
+// inline lambda, ...) pushes the sentinel "##edp_unsafe##" instead --
+// edp_closure_param_universally_safe treats its presence, anywhere in the
+// result, as an unconditional "not safe" for the whole position.
+fn edp_collect_ecall_arg_idents(stmts: Array[Stmt], gname: String, argpos: Int) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out: Array[String]) -> Unit {
+  match expr {
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(nm, _) => if nm == gname {
+          if Array::length(args) > argpos {
+            match Array::get(args, argpos) {
+              EIdent(xn, _) => Array::push(out, xn),
+              _ => Array::push(out, "##edp_unsafe##")
+            }
+          } else {
+            Array::push(out, "##edp_unsafe##")
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      edp_collect_ecall_arg_idents_expr(callee, gname, argpos, out)
+      edp_collect_ecall_arg_idents_exprs(args, gname, argpos, out)
+    },
+    EFn(_, _, _, _, _, body) => edp_collect_ecall_arg_idents_expr(body, gname, argpos, out),
+    EHandle(body, arms) => {
+      edp_collect_ecall_arg_idents_expr(body, gname, argpos, out)
+      edp_collect_ecall_arg_idents_arms(arms, gname, argpos, out)
+    },
+    EIf(c, t, e) => {
+      edp_collect_ecall_arg_idents_expr(c, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(t, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(e, gname, argpos, out)
+    },
+    EMatch(s, arms) => {
+      edp_collect_ecall_arg_idents_expr(s, gname, argpos, out)
+      edp_collect_ecall_arg_idents_arms(arms, gname, argpos, out)
+    },
+    EWhile(c, b) => {
+      edp_collect_ecall_arg_idents_expr(c, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+    },
+    EForIn(_, _, it, b) => {
+      edp_collect_ecall_arg_idents_expr(it, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+    },
+    ELoop(pairs, b) => {
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (_, v) = Array::get(pairs, i)
+        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+        i = i + 1
+      }
+      edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+    },
+    ELet(_, v, b, _) => {
+      edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+    },
+    ELetMut(_, v, b, _) => {
+      edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+    },
+    ELetRec(_, v, b) => {
+      edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+    },
+    ESeq(a, b) => {
+      edp_collect_ecall_arg_idents_expr(a, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+    },
+    EBinOp(_, l, r) => {
+      edp_collect_ecall_arg_idents_expr(l, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(r, gname, argpos, out)
+    },
+    EUnaryOp(_, e2) => edp_collect_ecall_arg_idents_expr(e2, gname, argpos, out),
+    EAssign(_, v, c) => {
+      edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(c, gname, argpos, out)
+    },
+    EAssignOp(_, _, v, c) => {
+      edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(c, gname, argpos, out)
+    },
+    EDot(o, _, _, _) => edp_collect_ecall_arg_idents_expr(o, gname, argpos, out),
+    ELabeledArg(_, _, v) => edp_collect_ecall_arg_idents_expr(v, gname, argpos, out),
+    EReturn(e2) => edp_collect_ecall_arg_idents_expr(e2, gname, argpos, out),
+    EBreak(opt) => match opt {
+      Some(e2) => edp_collect_ecall_arg_idents_expr(e2, gname, argpos, out),
+      None => ()
+    },
+    EContinue(args) => edp_collect_ecall_arg_idents_exprs(args, gname, argpos, out),
+    ETuple(elems) => edp_collect_ecall_arg_idents_exprs(elems, gname, argpos, out),
+    EArray(elems) => edp_collect_ecall_arg_idents_exprs(elems, gname, argpos, out),
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+        i = i + 1
+      }
+    },
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+        i = i + 1
+      }
+    },
+    ESpread(e2) => edp_collect_ecall_arg_idents_expr(e2, gname, argpos, out),
+    _ => ()
+  }
+}
+
+fn edp_collect_ecall_arg_idents_exprs(exprs: Array[Expr], gname: String, argpos: Int, out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(exprs) {
+    edp_collect_ecall_arg_idents_expr(Array::get(exprs, i), gname, argpos, out)
+    i = i + 1
+  }
+}
+
+fn edp_collect_ecall_arg_idents_arms(arms: Array[(Pat, Expr)], gname: String, argpos: Int, out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    edp_collect_ecall_arg_idents_expr(ex, gname, argpos, out)
+    i = i + 1
+  }
+}
+
+// A closure-typed parameter position is safe to widen only if EVERY
+// candidate identifier found at that position (across the whole program)
+// is itself: used EXACTLY once anywhere (so no OTHER use could depend on
+// the pre-migration arity), and bound to at least one individually-
+// eligible closure literal. See this section's opening comment for why
+// both sides must hold.
+fn edp_closure_param_universally_safe(stmts: Array[Stmt], gname: String, pi: Int, ename: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Bool {
+  let candidates = edp_collect_ecall_arg_idents(stmts, gname, pi)
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(candidates) {
+    let xn = Array::get(candidates, i)
+    if xn == "##edp_unsafe##" {
+      ok = false
+    } else if edp_count_ident_uses_stmts(stmts, xn) != 1 {
+      ok = false
+    } else if edp_count_safe_closure_bindings_stmts(stmts, xn, ename, needing, pure_fns, es_names, es_members_list) < 1 {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+// For a needing function's own params, the (name, position) pairs of
+// closure-typed parameters that edp_closure_param_universally_safe has
+// cleared -- these are treated exactly like another needing function's
+// name when rewriting this function's own body (dict forwarded the same
+// way via edp_prepend_dict_arg).
+fn edp_own_closure_params(stmts: Array[Stmt], gname: String, gparams: Array[(String, Option[TypeExpr])], ename: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Array[(String, Int)] {
+  let out = array_empty()
+  let mut pi = 0
+  while pi < Array::length(gparams) {
+    let (pname, pty) = Array::get(gparams, pi)
+    if edp_type_is_fn_row_exactly(pty, ename, es_names, es_members_list) && edp_closure_param_universally_safe(stmts, gname, pi, ename, needing, pure_fns, es_names, es_members_list) {
+      Array::push(out, (edp_strip_tilde(pname), pi))
+    } else {
+      ()
+    }
+    pi = pi + 1
+  }
+  out
+}
+
+fn edp_closure_param_names_only(pairs: Array[(String, Int)]) -> Array[String] {
+  for p in pairs {
+    let (n, _) = p
+    n
+  }
+}
+
+// Migrates ONE closure literal binding (top-level SLet or nested ELet/
+// ELetRec named `xname`) in place: prepends the evidence-dict parameter
+// and rewrites its body exactly like a top-level needing function's own
+// definition (edp_rewrite_needing_fn). Only actually mutates if the
+// binding's value is still individually eligible at the point this runs
+// (edp_maybe_migrate_efn) -- a defensive re-check, not just trusting the
+// caller's earlier edp_closure_param_universally_safe verdict.
+fn edp_maybe_migrate_efn(expr: Expr, ename: String, dict_pname: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Option[Expr] {
+  match expr {
+    EFn(tps, tbs, params, ret, eff, body) => if edp_efn_eligible_for_migration(expr, ename, needing, pure_fns, es_names, es_members_list) {
+      let new_params = Array::concat([
+        (dict_pname, Some(TyName(edp_dict_struct_name(ename))))
+      ], params)
+      let new_body = edp_rewrite_needing_body(body, ename, dict_pname, needing)
+      Some(EFn(tps, tbs, new_params, ret, eff, new_body))
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+fn edp_migrate_closure_binding_stmts(stmts: Array[Stmt], xname: String, ename: String, dict_pname: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, is_rec, nm, ty, expr) => if nm == xname {
+        match edp_maybe_migrate_efn(expr, ename, dict_pname, needing, pure_fns, es_names, es_members_list) {
+          Some(new_expr) => Array::set(stmts, i, SLet(exported, is_rec, nm, ty, new_expr)),
+          None => ()
+        }
+      } else {
+        Array::set(stmts, i, SLet(exported, is_rec, nm, ty, edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)))
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn edp_migrate_closure_binding_expr(expr: Expr, xname: String, ename: String, dict_pname: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Expr {
+  match expr {
+    ELet(n, v, b, off) => if n == xname {
+      match edp_maybe_migrate_efn(v, ename, dict_pname, needing, pure_fns, es_names, es_members_list) {
+        Some(nv) => ELet(n, nv, edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), off),
+        None => ELet(n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), off)
+      }
+    } else {
+      ELet(n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), off)
+    },
+    ELetRec(n, v, b) => if n == xname {
+      match edp_maybe_migrate_efn(v, ename, dict_pname, needing, pure_fns, es_names, es_members_list) {
+        Some(nv) => ELetRec(n, nv, edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+        None => ELetRec(n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))
+      }
+    } else {
+      ELetRec(n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))
+    },
+    EFn(tps, tbs, params, ret, eff, body) => EFn(tps, tbs, params, ret, eff, edp_migrate_closure_binding_expr(body, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EHandle(body, arms) => EHandle(edp_migrate_closure_binding_expr(body, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), for a in arms {
+      let (p, ex) = a
+      (p, edp_migrate_closure_binding_expr(ex, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))
+    }),
+    EIf(c, t, e) => EIf(edp_migrate_closure_binding_expr(c, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(t, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(e, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EMatch(s, arms) => EMatch(edp_migrate_closure_binding_expr(s, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), for a in arms {
+      let (p, ex) = a
+      (p, edp_migrate_closure_binding_expr(ex, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))
+    }),
+    EWhile(c, b) => EWhile(edp_migrate_closure_binding_expr(c, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, edp_migrate_closure_binding_expr(it, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    ELoop(pairs, b) => ELoop(for p in pairs {
+      let (n, v) = p
+      (n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))
+    }, edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    ELetMut(n, v, b, off) => ELetMut(n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), off),
+    ESeq(a, b) => ESeq(edp_migrate_closure_binding_expr(a, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EAssign(n, v, c) => EAssign(n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(c, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(c, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EDot(o, f, off1, off2) => EDot(edp_migrate_closure_binding_expr(o, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), f, off1, off2),
+    ECall(callee, args, off) => ECall(callee, for a in args {
+      edp_migrate_closure_binding_expr(a, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
+    }, off),
+    EBinOp(op, l, r) => EBinOp(op, edp_migrate_closure_binding_expr(l, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(r, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EUnaryOp(op, e2) => EUnaryOp(op, edp_migrate_closure_binding_expr(e2, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EReturn(e2) => EReturn(edp_migrate_closure_binding_expr(e2, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EBreak(opt) => EBreak(match opt {
+      Some(e2) => Some(edp_migrate_closure_binding_expr(e2, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+      None => None
+    }),
+    EContinue(args) => EContinue(for a in args {
+      edp_migrate_closure_binding_expr(a, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
+    }),
+    ETuple(elems) => ETuple(for e2 in elems {
+      edp_migrate_closure_binding_expr(e2, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
+    }),
+    EArray(elems) => EArray(for e2 in elems {
+      edp_migrate_closure_binding_expr(e2, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
+    }),
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))
+    }),
+    ESpread(e2) => ESpread(edp_migrate_closure_binding_expr(e2, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    _ => expr
+  }
+}
+
 // --- applying an eligible migration.
 
 fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
   let dict_pname = edp_dict_param_name(ename)
   let dict_tyname = edp_dict_struct_name(ename)
+  let pure_fns = edp_pure_fn_names(fn_defs)
+  let es_names = array_empty()
+  let es_members_list = array_empty()
+  edp_es_collect_into(stmts, es_names, es_members_list)
+  // #1070 (general case): compute + commit closure-parameter migrations
+  // for EVERY needing function BEFORE any needing function's own
+  // params/body are rewritten below -- edp_collect_ecall_arg_idents scans
+  // call sites by ARGUMENT POSITION, which would be silently thrown off
+  // by an earlier needing-to-needing dict-forwarding rewrite prepending
+  // an argument to some OTHER call in between. Doing every function's
+  // read-only analysis (and Part B's closure-literal rewrites, which only
+  // ever touch OTHER statements -- the literals themselves, never a call
+  // site's argument list) in one pass up front, strictly before the
+  // rewrite loop that follows, keeps every position-based scan looking at
+  // the same unshifted view edp_all_sites_eligible already vetted this
+  // against.
+  let own_cp_map = array_empty()
+  let mut ni0 = 0
+  while ni0 < Array::length(needing) {
+    let gname = Array::get(needing, ni0)
+    match edp_find_fn_params_and_body(stmts, fn_defs, gname) {
+      Some((gparams, _)) => {
+        let own_cp = edp_own_closure_params(stmts, gname, gparams, ename, needing, pure_fns, es_names, es_members_list)
+        Array::push(own_cp_map, own_cp)
+        let mut cpi = 0
+        while cpi < Array::length(own_cp) {
+          let (_, ppos) = Array::get(own_cp, cpi)
+          let candidates = edp_collect_ecall_arg_idents(stmts, gname, ppos)
+          let mut ci = 0
+          while ci < Array::length(candidates) {
+            let xn = Array::get(candidates, ci)
+            if xn == "##edp_unsafe##" {
+              ()
+            } else {
+              edp_migrate_closure_binding_stmts(stmts, xn, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
+            }
+            ci = ci + 1
+          }
+          cpi = cpi + 1
+        }
+      },
+      None => Array::push(own_cp_map, array_empty())
+    }
+    ni0 = ni0 + 1
+  }
   // Rewrite each needing function's own definition in place: prepend the
   // evidence-dict parameter, and rewrite its body to call through it
-  // (direct performs) / forward it (calls to other needing functions).
+  // (direct performs) / forward it (calls to other needing functions, and
+  // -- per own_cp_map above -- calls through its own closure-typed
+  // parameters that were just proven safe to widen).
   let mut ni = 0
   while ni < Array::length(needing) {
     let nm = Array::get(needing, ni)
-    edp_rewrite_needing_fn(stmts, fn_defs, nm, ename, dict_pname, dict_tyname, needing)
+    let own_cp = Array::get(own_cp_map, ni)
+    let call_safe = Array::concat(needing, edp_closure_param_names_only(own_cp))
+    edp_rewrite_needing_fn(stmts, fn_defs, nm, ename, dict_pname, dict_tyname, call_safe)
     ni = ni + 1
   }
   // Rewrite each handle site: synthesize a fresh evidence dict from its
