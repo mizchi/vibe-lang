@@ -1475,6 +1475,46 @@ shape this pass targets") -- が、ここでの「nested」は実際には
 いずれも変更後 `VIBE_BACKEND=gc` でコンパイル・実行でき正しい値 (42) を
 返す。`compiler_gate.sh` gate 40h4 で固定。
 
+### 追記 20 (2026-07-23、同日): 未注釈のホイスト済みクロージャの row 補完
+
+同じカバレッジ sweep で `fixtures/effect_handle_call_evidence_closure_literal.vibe`
+(このフィクスチャ自身の履歴が「migrate されるはず」と明記しているにも
+関わらず) が `VIBE_BACKEND=gc` で依然失敗することが判明した。
+
+原因: `let never_called = () -> Int { perform Ask::Get }` は明示的な
+`with {...}` 注釈を持たない -- AST 上 `eff` フィールドは空のまま
+(チェッカーは内部で row を推論するが、node には書き戻さない)。
+`dlh_hoist_expr` (`desugar_trait_dict.vibe`、#786 の capture-free
+lambda-lifting) はこのクロージャをトップレベルへ昇格する際、空の
+`eff` をそのまま保存していた。`evidence_dict_pass` はトップレベル関数の
+「needing」判定を row 文字列だけで行う (`edp_collect_fn_defs`) ため、
+ホイストされた関数は一切 Ask を needs すると認識されず、その中の
+`perform` は migrate されないまま残る -- linear backend では
+un-rewritten な perform は replay codegen に fallback するだけで正しく
+動くため無害だが、fallback を持たない gc backend では
+`"unsupported perform"` のハードエラーになる。
+
+2 段階で修正した:
+1. `dlh_hoist_expr` が、ホイスト前に closure の本体が実際に perform
+   している効果名を `dlh_collect_performed_effect_names`
+   (`dlh_has_perform` と全く同じ traversal 形状) で収集し、空の row を
+   補完するようにした。
+2. これだけでは不十分だった (直接テストで確認): `edp_plan_migrations`
+   が「まず到達不能な needing 関数を落としてから eligibility を見る」
+   順序のままだと、修正1で正しく "Ask" と分類されるようになった
+   `never_called` (この fixture では意図的に一度も呼ばれない) が
+   `edp_drop_unreachable_needing` によって即座に除外され、結局同じ
+   gc エラーに戻ってしまう。`edp_plan_migrations` を
+   「まず (self-discharge のみ除外した) FULL な needing セットで
+   eligibility を試し、それが失敗した場合にのみ到達不能関数を落として
+   再試行する」順序に再構成した (`edp_try_plan_for_effect` を抽出) --
+   独立して安全な (本体が unsafe construct を含まない) 到達不能関数は
+   dead code を落とす必要が最初からなく、正しく migrate されるべきだった。
+
+直接テストで確認: `VIBE_BACKEND=gc` / linear 双方でコンパイル・実行でき
+正しい値 (6) を返す。既存の #1070 系・追記18・追記19 の fixture 群への
+影響がないことも個別に再確認した。`compiler_gate.sh` gate 40h5 で固定。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
