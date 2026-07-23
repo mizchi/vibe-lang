@@ -724,6 +724,28 @@ codegen (`codegen/expr/compile_expr.vibe`、`#678` 注記のあるブロック) 
 の `local_idx_hint` 算出と、`EIf` 分岐前後の `local_names` の実際の中身)
 を計装して確認するところから始めること。
 
+**追記 5 (2026-07-23, もう 1 つ発見・修正した実バグ)**: 上記の根本原因
+調査中、`#639` の残課題 (別件) を検討する過程で、`Error` が row 宣言
+不要 (#640 Stage 2) であることに着目し、直接テストしたところ、もう
+1 つの実バグを発見した -- 宣言 row がちょうど 1 effect (`Ask`) の
+needing 関数が、その本文で **`perform Error::Throw` も併せて行う**
+(row 宣言不要なので合法) と、実行時ではなく**コンパイル時エラー**
+(`unknown struct field: Error::Throw`) になっていた。原因は
+`edp_rewrite_perform_via_dict` が、本文中のどの `perform` も対象effect
+を区別せず無条件に evidence dict 経由の呼び出しへ書き換えていたため
+-- `Ask` 用の dict struct には `Get` field しか無いので、`Error::Throw`
+をその dict 経由で呼ぼうとして存在しない field 参照になっていた。
+`perform` の qualified 名の effect prefix が今回移行対象の `ename` と
+一致する場合のみ書き換え、それ以外 (理論上 `Error` しか起こりえない --
+他の effect が混在していれば checker の健全性により row がちょうど
+1 effect のままにはならない) はそのまま素通しするよう修正
+(`edp_qname_is_for_effect`)。fixtures/effect_handle_call_evidence_
+error_mix.vibe + compiler_gate.sh 40w で回帰を固定 -- この fixture は
+「`Error::Throw` だけを perform する needing 関数を宣言だけして一度も
+呼ばない」形にしてあり、evidence_dict_pass が handle から到達可能かに
+関わらず row が一致する関数を機械的に全て移行対象にすることを利用して、
+実行時に踏まなくてもコンパイル時点でバグを再現できるようにしてある。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect

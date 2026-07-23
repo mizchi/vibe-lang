@@ -4517,6 +4517,39 @@ fi
 rm -rf "$edpbdir"
 echo "[compiler-gate] evidence-dict pass branching fallback ok"
 
+# 40w. ADR-0076 Phase 3 (#817): a needing function (declared row exactly
+#      one effect) whose body ALSO performs `Error::Throw` -- legal per
+#      #640 Stage 2, which exempts `Error` from row declaration -- used to
+#      hit a COMPILE-TIME error ("unknown struct field") because
+#      edp_rewrite_perform_via_dict rewrote every perform through the
+#      evidence dict regardless of which effect it targeted. Fixed by
+#      checking the perform's own effect prefix before rewriting; anything
+#      else (only Error can occur here) is left untouched. This gate's
+#      fixture includes a needing function that ONLY performs
+#      Error::Throw and is never called -- evidence_dict_pass migrates
+#      every function whose row matches, not only ones reachable from a
+#      handle site, so its mere presence was enough to trigger the bug at
+#      compile time regardless of whether it ever runs.
+echo "[compiler-gate] 40w/40 evidence-dict pass: Error::Throw mixed into a needing function's body compiles (ADR-0076 Phase 3/#817)"
+edpemdir="_build/_gate_evidence_dict_error_mix"
+rm -rf "$edpemdir"; mkdir -p "$edpemdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_error_mix.vibe > "$edpemdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpemdir/src.vibe" "$edpemdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpemdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_error_mix.vibe did not compile" >&2
+  cat "$edpemdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edpem_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpemdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edpem_out" != "5" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_error_mix.vibe got '$edpem_out' (want 5)" >&2
+  exit 1
+fi
+rm -rf "$edpemdir"
+echo "[compiler-gate] evidence-dict pass Error::Throw mixing ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the

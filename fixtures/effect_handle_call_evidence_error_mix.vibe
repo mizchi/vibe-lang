@@ -1,0 +1,49 @@
+// ADR-0076 (#817) Phase 3 regression lock: a needing function (declared
+// row exactly `{ Ask }`) whose body performs `Error::Throw` -- legal per
+// #640 Stage 2, which exempts `Error` from row declaration entirely, so
+// a function can freely mix a declared effect's operations with `Error`
+// without declaring `with { Error }` -- used to hit a COMPILE-TIME error
+// ("unknown struct field: Error::Throw") instead of compiling at all.
+// edp_rewrite_perform_via_dict rewrote EVERY `perform` inside a needing
+// function's body through the evidence dict unconditionally, regardless
+// of which effect it actually targeted; since the dict struct for `Ask`
+// only has a `Get` field, rewriting a `perform Error::Throw` through it
+// produced a nonexistent field access.
+//
+// Fixed by checking the perform's own qualified effect prefix matches the
+// effect actually being migrated before rewriting it through the dict;
+// anything else (in practice, only `Error` can appear here -- any other
+// effect would already have to be in the function's declared row by the
+// checker's own soundness, contradicting "row is exactly Ask") is left
+// completely untouched and falls through to its own existing codegen.
+//
+// `only_throws` is declared but never called from `main` -- the bug was
+// purely a COMPILE-TIME failure triggered by the mere existence of a
+// needing function whose only perform targets a different effect, since
+// evidence_dict_pass migrates every function whose row matches, not only
+// ones reachable from a handle site. That keeps this fixture's expected
+// runtime output (from the actually-called `ask_helper`) unaffected by
+// `only_throws`'s presence -- the compile succeeding at all IS the
+// regression lock; the value below just confirms nothing else broke.
+effect Ask {
+  Get -> Int
+}
+
+let only_throws = () -> Int with { Ask } {
+  perform Error::Throw("never called")
+}
+
+let ask_helper = () -> Int with { Ask } {
+  perform Ask::Get
+}
+
+export let main = () -> Int {
+  handle {
+    ask_helper()
+  } with Ask {
+    Get => resume(5)
+  }
+}
+
+__DATA__
+{"last": "5"}

@@ -1250,11 +1250,40 @@ fn edp_prepend_dict_arg(dict_pname: String, args: Array[Expr]) -> Array[Expr] {
   ], args)
 }
 
+// A needing function's declared row is exactly `ename`, but it may still
+// contain a `perform` for a DIFFERENT effect that is exempt from row
+// declaration -- `Error` (#640 Stage 2: `perform Error::Throw`/`throw`
+// never needs a declared `with { Error }` row). Only a perform whose
+// qualified operation name's own effect prefix is `ename` gets rewritten
+// into a dict-field call; anything else (in practice, only Error) is left
+// completely untouched and falls through to its own existing codegen
+// (Error compiles unconditionally to a throw/trap, needing no evidence
+// dict or handler machinery at all, regardless of context).
+fn edp_qname_is_for_effect(qname: String, ename: String) -> Bool {
+  let (eff_opt, _) = edp_split_qualified(qname)
+  match eff_opt {
+    Some(e) => e == ename,
+    None => false
+  }
+}
+
 fn edp_rewrite_perform_via_dict(operand: Expr, ename: String, dict_pname: String, needing: Array[String]) -> Expr {
   match operand {
-    EIdent(qname, _) => ECall(EDot(EIdent(dict_pname, -1), edp_strip_effect_prefix(qname, ename), -1, -1), array_empty(), -1),
+    EIdent(qname, _) => if edp_qname_is_for_effect(qname, ename) {
+      ECall(EDot(EIdent(dict_pname, -1), edp_strip_effect_prefix(qname, ename), -1, -1), array_empty(), -1)
+    } else {
+      ECall(EIdent("perform", -1), [
+        operand
+      ], -1)
+    },
     ECall(op_callee, op_args, _) => match op_callee {
-      EIdent(qname, _) => ECall(EDot(EIdent(dict_pname, -1), edp_strip_effect_prefix(qname, ename), -1, -1), edp_rewrite_needing_body_exprs(op_args, ename, dict_pname, needing), -1),
+      EIdent(qname, _) => if edp_qname_is_for_effect(qname, ename) {
+        ECall(EDot(EIdent(dict_pname, -1), edp_strip_effect_prefix(qname, ename), -1, -1), edp_rewrite_needing_body_exprs(op_args, ename, dict_pname, needing), -1)
+      } else {
+        ECall(EIdent("perform", -1), [
+          ECall(op_callee, edp_rewrite_needing_body_exprs(op_args, ename, dict_pname, needing), -1)
+        ], -1)
+      },
       _ => ECall(EIdent("perform", -1), [
         operand
       ], -1)
