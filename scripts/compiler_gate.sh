@@ -4587,6 +4587,49 @@ fi
 rm -rf "$edpmedir"
 echo "[compiler-gate] evidence-dict pass multi-effect row exclusion ok"
 
+# 40y. ADR-0076 Phase 3 (#817): a `perform` bound via `let` inside a needing
+#      function's OWN body (`let a = perform Ask::Get; a + 1`), rather than
+#      written as a bare tail expression, used to compile cleanly but crash
+#      at runtime with an UNCAUGHT exception. edp_rewrite_needing_body (and
+#      its handle-site counterpart edp_rewrite_handle_body) rewrite a
+#      needing function's body by pattern-matching the same shapes
+#      edp_has_unsafe_construct already verified are safe, but the two
+#      traversals used to disagree about which positions they visit --
+#      edp_has_unsafe_construct correctly recurses into ELet's/EAssign's
+#      value/RHS position (among several others: EIf's condition, EMatch's
+#      scrutinee, EWhile/EForIn/ELoop bodies, ...) when deciding
+#      eligibility, but the two rewrite traversals only recursed into a
+#      narrower set of positions. A perform reached only through one of the
+#      skipped positions passed eligibility (nothing unsafe about it, by
+#      has_unsafe_construct's own correct judgment) but was silently left
+#      un-rewritten -- still a raw `perform`, throwing a tag the enclosing
+#      handle site no longer catches once migration drops it. Found via
+#      runtime instrumentation (temporarily exporting every per-effect wasm
+#      exception tag by name) while investigating an unrelated multi-
+#      effect-row crash; reproducible with a single exact-match effect,
+#      independent of that investigation. Fixed by making both rewrite
+#      traversals structurally mirror edp_has_unsafe_construct's coverage
+#      exactly.
+echo "[compiler-gate] 40y/40 evidence-dict pass: perform bound via let inside a needing function's own body (ADR-0076 Phase 3/#817)"
+edpletdir="_build/_gate_evidence_dict_let_bound"
+rm -rf "$edpletdir"; mkdir -p "$edpletdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_let_bound.vibe > "$edpletdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpletdir/src.vibe" "$edpletdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpletdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_let_bound.vibe did not compile" >&2
+  cat "$edpletdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edplet_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpletdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edplet_out" != "6" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_let_bound.vibe got '$edplet_out' (want 6) -- let-bound perform inside a needing function's body regressed (either an uncaught-exception crash or a wrong value)" >&2
+  exit 1
+fi
+rm -rf "$edpletdir"
+echo "[compiler-gate] evidence-dict pass let-bound perform ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the

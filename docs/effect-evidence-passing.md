@@ -912,6 +912,61 @@ revert 済み。2-phase 化 (`edp_plan_migrations`) は独立した改善とし�
 コード読解だけでの見立ては、このセッションで 2 回とも実際のクラッシュ
 との対応が外れており、十分な確信が得られていない。
 
+### 追記 10 (2026-07-23): ランタイム計装で multi-effect クラッシュの真因を
+特定 -- ただし multi-effect とは無関係の、既にシップ済みの健全性バグだった
+
+「追記 9」の結論通り、抽象推論だけでの見立てを 2 回とも外したため、
+今度は実際にランタイム計装で確認した。`edp_row_is_exactly` を
+containment へ一時的に relax し (実験用、revert 済み)、さらに
+`linked_compile.vibe` の export section を一時的にパッチして
+全ての per-effect wasm exception tag を名前付きで export するようにした
+上で (これも実験用、revert 済み) `effect_handle_multi_effect_row_fallback.vibe`
+を実行したところ、`wasm_vibe_host_runner.js` の tag 判定
+(`err.getArg(tag, 0)` が例外を投げずに成功する tag を探す) が
+**`Fs` ではなく `Ask` タグ**を uncaught exception として特定した。
+「追記 9」の手による見立て (`Fs` の migration が abort し、`Ask` は
+成功する) が正しいとすれば、uncaught になるのは `Fs` のはずで、
+`Ask` が uncaught になるのは矛盾する -- つまり「追記 9」の推測もまだ
+不完全だった。
+
+この矛盾を手がかりに `evidence_dict_pass` のコード自体を再点検した
+結果、**multi-effect や containment relax とは全く無関係の、独立した
+実装バグ**を発見した: `edp_rewrite_needing_body` (needing 関数自身の
+body を書き換えるトラバーサル) の `ELet`/`ELetMut`/`ELetRec`/`EAssign`/
+`EAssignOp` の各ケースが、値/RHS 位置 (`v`) を全く再帰していなかった
+(body/継続位置の `b`/`c` だけを再帰) -- 一方、eligibility を決める
+`edp_has_unsafe_construct` の同じ構文ケースは `v` も正しく再帰していた。
+つまり `let a = perform Ask::Get` のように **`let` で束縛された
+perform** は eligibility 判定 (「安全」) を正しく通過するにも関わらず、
+書き換え本体では一度も visit されず生の `perform` のまま残っていた
+-- そしてそのハンドラ側 (`EHandle`) は migration 成立の一部として
+既に除去されているため、この生の `perform` が投げる例外を
+キャッチする者が誰もいなくなり、uncaught exception でクラッシュする。
+
+再現に multi-effect も containment も不要であることを、exact-match
+のみの単一 effect + `let a = perform Ask::Get; a + 1` という最小
+フィクスチャ (`fixtures/effect_handle_call_evidence_let_bound.vibe`)
+で確認した -- containment を一切 relax していない、現在コミット
+済みの exact-match 版のコードだけで同じ uncaught tag=Ask クラッシュが
+再現した。**これは multi-effect 実験がたまたま踏んだだけの、
+既にシップされていた本物のソウンドネスギャップ**であり、直接の
+関連はない。
+
+同型の不整合は `edp_rewrite_handle_body` (ハンドルサイト側の
+書き換え) にも存在した (`EWhile`/`EForIn`/`ELoop`/`EUnaryOp`/
+`ELabeledArg`/`EBreak`/`EContinue`/`ETuple`/`EArray`/`ERecord`/
+`EMap`/`ESpread` を全く visit せず `_ => expr` にフォールスルー)。
+両トラバーサルを `edp_has_unsafe_construct` の構造と完全に一致する
+よう作り直し (全く同じ construct を全く同じ位置で再帰する)、
+新規 regression fixture (`effect_handle_call_evidence_let_bound.vibe`、
+期待値 6) と `compiler_gate.sh` gate 40y として固定した。
+
+multi-effect row 自体の containment relax は今回も試みていない --
+これは独立した別バグで、`edp_row_is_exactly` は exact match のまま
+据え置いている。次に multi-effect へ再挑戦する際は、この
+`edp_rewrite_needing_body`/`edp_rewrite_handle_body` の網羅性バグは
+もう解消済みという前提から始められる。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect

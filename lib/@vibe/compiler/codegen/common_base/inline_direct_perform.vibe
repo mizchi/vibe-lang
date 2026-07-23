@@ -1308,20 +1308,49 @@ fn edp_rewrite_needing_fn(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, S
 // find_dict_for_trait forwarding). By this point edp_has_unsafe_construct
 // has already verified this body contains nothing else that could hide a
 // perform (no EFn/EHandle/EDot/other calls), so this traversal only needs
-// to handle the shapes that check allows through.
+// to handle the shapes that check allows through -- but it must still visit
+// EVERY position edp_has_unsafe_construct visits, not just the ones a bare
+// tail-position perform happens to need. This traversal used to be missing
+// several of those positions -- ELet/ELetMut/ELetRec/EAssign/EAssignOp's
+// value/RHS slot, EIf's condition, EMatch's scrutinee, and EWhile/EForIn/
+// ELoop/EUnaryOp/ELabeledArg/EBreak/EContinue/ETuple/EArray/ERecord/EMap/
+// ESpread entirely (falling to the `_ => expr` passthrough) -- even though
+// edp_has_unsafe_construct's OWN traversal (the eligibility check that
+// gates whether this rewrite runs at all) already recursed into every one
+// of them. A perform reached only through one of those positions -- most
+// simply, bound via `let` (`let a = perform Ask::Get; ...`) rather than
+// written as a bare tail expression -- therefore passed eligibility
+// (nothing unsafe about it, by has_unsafe_construct's own correct
+// judgment) but was silently left un-rewritten: still a raw `perform`,
+// throwing a tag the enclosing handle site no longer catches once this
+// migration drops it -- producing an uncaught-exception crash at runtime
+// despite a clean compile. Found via runtime instrumentation (temporary
+// exported per-effect tags decoded the escaping exception as the MIGRATED
+// effect's own tag, not a foreign one -- see
+// fixtures/effect_handle_call_evidence_let_bound.vibe) while investigating
+// an unrelated multi-effect-row crash; independent of that investigation
+// and reproducible with a single exact-match effect, so this was a real,
+// already-shipped soundness gap, not something specific to the multi-
+// effect experiment that led to finding it.
 fn edp_rewrite_needing_body(expr: Expr, ename: String, dict_pname: String, needing: Array[String]) -> Expr {
   match expr {
-    EIf(c, t, e) => EIf(c, edp_rewrite_needing_body(t, ename, dict_pname, needing), edp_rewrite_needing_body(e, ename, dict_pname, needing)),
-    EMatch(s, arms) => EMatch(s, for a in arms {
+    EIf(c, t, e) => EIf(edp_rewrite_needing_body(c, ename, dict_pname, needing), edp_rewrite_needing_body(t, ename, dict_pname, needing), edp_rewrite_needing_body(e, ename, dict_pname, needing)),
+    EMatch(s, arms) => EMatch(edp_rewrite_needing_body(s, ename, dict_pname, needing), for a in arms {
       let (p, ex) = a
       (p, edp_rewrite_needing_body(ex, ename, dict_pname, needing))
     }),
-    ELet(n, v, b, off) => ELet(n, v, edp_rewrite_needing_body(b, ename, dict_pname, needing), off),
-    ELetMut(n, v, b, off) => ELetMut(n, v, edp_rewrite_needing_body(b, ename, dict_pname, needing), off),
-    ELetRec(n, v, b) => ELetRec(n, v, edp_rewrite_needing_body(b, ename, dict_pname, needing)),
+    EWhile(c, b) => EWhile(edp_rewrite_needing_body(c, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, edp_rewrite_needing_body(it, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing)),
+    ELoop(pairs, b) => ELoop(for p in pairs {
+      let (n, v) = p
+      (n, edp_rewrite_needing_body(v, ename, dict_pname, needing))
+    }, edp_rewrite_needing_body(b, ename, dict_pname, needing)),
+    ELet(n, v, b, off) => ELet(n, edp_rewrite_needing_body(v, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing), off),
+    ELetMut(n, v, b, off) => ELetMut(n, edp_rewrite_needing_body(v, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing), off),
+    ELetRec(n, v, b) => ELetRec(n, edp_rewrite_needing_body(v, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing)),
     ESeq(a, b) => ESeq(edp_rewrite_needing_body(a, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing)),
-    EAssign(n, v, c) => EAssign(n, v, edp_rewrite_needing_body(c, ename, dict_pname, needing)),
-    EAssignOp(n, op, v, c) => EAssignOp(n, op, v, edp_rewrite_needing_body(c, ename, dict_pname, needing)),
+    EAssign(n, v, c) => EAssign(n, edp_rewrite_needing_body(v, ename, dict_pname, needing), edp_rewrite_needing_body(c, ename, dict_pname, needing)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_rewrite_needing_body(v, ename, dict_pname, needing), edp_rewrite_needing_body(c, ename, dict_pname, needing)),
     EReturn(e2) => EReturn(edp_rewrite_needing_body(e2, ename, dict_pname, needing)),
     ECall(callee, args, off) => match callee {
       EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
@@ -1334,6 +1363,24 @@ fn edp_rewrite_needing_body(expr: Expr, ename: String, dict_pname: String, needi
       _ => ECall(callee, edp_rewrite_needing_body_exprs(args, ename, dict_pname, needing), off)
     },
     EBinOp(op, l, r) => EBinOp(op, edp_rewrite_needing_body(l, ename, dict_pname, needing), edp_rewrite_needing_body(r, ename, dict_pname, needing)),
+    EUnaryOp(op, e2) => EUnaryOp(op, edp_rewrite_needing_body(e2, ename, dict_pname, needing)),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_rewrite_needing_body(v, ename, dict_pname, needing)),
+    EBreak(opt) => EBreak(match opt {
+      Some(e2) => Some(edp_rewrite_needing_body(e2, ename, dict_pname, needing)),
+      None => None
+    }),
+    EContinue(args) => EContinue(edp_rewrite_needing_body_exprs(args, ename, dict_pname, needing)),
+    ETuple(elems) => ETuple(edp_rewrite_needing_body_exprs(elems, ename, dict_pname, needing)),
+    EArray(elems) => EArray(edp_rewrite_needing_body_exprs(elems, ename, dict_pname, needing)),
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_rewrite_needing_body(v, ename, dict_pname, needing))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_rewrite_needing_body(v, ename, dict_pname, needing))
+    }),
+    ESpread(e2) => ESpread(edp_rewrite_needing_body(e2, ename, dict_pname, needing)),
     _ => expr
   }
 }
@@ -1457,6 +1504,14 @@ fn edp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_b
   result
 }
 
+// Same completeness requirement as edp_rewrite_needing_body (see that
+// function's doc comment): the handle body's own eligibility was checked
+// with edp_has_unsafe_construct too (edp_all_sites_eligible calls it on
+// each handle site's body), so this traversal must visit every position
+// that check visits or a perform/needing-call reachable only through
+// EWhile/EForIn/ELoop/EUnaryOp/ELabeledArg/EBreak/EContinue/ETuple/EArray/
+// ERecord/EMap/ESpread would pass eligibility but silently stay
+// unrewritten, same failure mode.
 fn edp_rewrite_handle_body(expr: Expr, ename: String, op_names: Array[String], bind_names_list: Array[Array[String]], prepared_bodies: Array[Expr], dict_literal: Expr, needing: Array[String]) -> Expr {
   match expr {
     EIf(c, t, e) => EIf(edp_rewrite_handle_body(c, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(t, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(e, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
@@ -1464,6 +1519,12 @@ fn edp_rewrite_handle_body(expr: Expr, ename: String, op_names: Array[String], b
       let (p, ex) = a
       (p, edp_rewrite_handle_body(ex, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
     }),
+    EWhile(c, b) => EWhile(edp_rewrite_handle_body(c, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, edp_rewrite_handle_body(it, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    ELoop(pairs, b) => ELoop(for p in pairs {
+      let (n, v) = p
+      (n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
+    }, edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
     ELet(n, v, b, off) => ELet(n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), off),
     ELetMut(n, v, b, off) => ELetMut(n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), off),
     ELetRec(n, v, b) => ELetRec(n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
@@ -1482,6 +1543,24 @@ fn edp_rewrite_handle_body(expr: Expr, ename: String, op_names: Array[String], b
       _ => ECall(callee, edp_rewrite_handle_body_exprs(args, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), off)
     },
     EBinOp(op, l, r) => EBinOp(op, edp_rewrite_handle_body(l, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(r, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EUnaryOp(op, e2) => EUnaryOp(op, edp_rewrite_handle_body(e2, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EBreak(opt) => EBreak(match opt {
+      Some(e2) => Some(edp_rewrite_handle_body(e2, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+      None => None
+    }),
+    EContinue(args) => EContinue(edp_rewrite_handle_body_exprs(args, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    ETuple(elems) => ETuple(edp_rewrite_handle_body_exprs(elems, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EArray(elems) => EArray(edp_rewrite_handle_body_exprs(elems, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
+    }),
+    ESpread(e2) => ESpread(edp_rewrite_handle_body(e2, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
     _ => expr
   }
 }
