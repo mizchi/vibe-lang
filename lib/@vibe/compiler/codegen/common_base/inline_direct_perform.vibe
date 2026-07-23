@@ -779,6 +779,57 @@ fn edp_drop_unreachable_needing(needing: Array[String], fn_defs: Array[(Int, Boo
   out
 }
 
+// Drop any `needing` name whose OWN entire body is BARE `handle {..} with
+// ename {..}` -- e.g. `fixtures/effect_effectset_expansion.vibe`'s `main`,
+// declared `with { Ask, Ask::Get }` purely to satisfy a checker requirement
+// unrelated to evidence_dict_pass ("a `handle ... with Effect` expression's
+// enclosing declared row must authorize the whole effect name" -- see that
+// fixture's own doc comment), whose body never performs `ename` OUTSIDE the
+// handle it already fully discharges. `edp_needing_names` has no way to see
+// that distinction (it only reads the row string), so such a function was
+// always included in `needing`; `edp_has_unsafe_construct`, entirely
+// correctly for the GENERAL case, then flags a same-effect `EHandle` as
+// unsafe ("nested handling of the SAME effect inside itself is not a shape
+// this pass targets" -- see its own doc comment) -- but here that "nested"
+// handle IS the function's own whole body, not something hidden inside a
+// call chain this pass can't already see. It is ALREADY discovered and
+// rewritten independently via edp_collect_handle_sites/edp_find_rewrite_
+// handles (which scan every EHandle for `ename` in `stmts` directly, not
+// through `needing`), so dropping such a function from `needing` loses
+// nothing -- it never needed the dict passed to IT (nothing in its body
+// can observably require one once its own handle is excluded from
+// consideration), it only ever PROVIDES one for its own nested call(s).
+//
+// Deliberately narrow: only the exact bare-EHandle-as-whole-body shape
+// qualifies (no ESeq prefix, no wrapping ELet, etc.) -- anything else keeps
+// the function in `needing` and falls back to the existing (already sound)
+// conservative treatment, exactly as before this change existed.
+fn edp_drop_self_discharging_needing(needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String) -> Array[String] {
+  let out = array_empty()
+  let mut ni = 0
+  while ni < Array::length(needing) {
+    let nm = Array::get(needing, ni)
+    let drop = match edp_find_fn_body(stmts, fn_defs, nm) {
+      Some(body) => edp_body_is_bare_self_discharge(body, ename),
+      None => false
+    }
+    if drop {
+      ()
+    } else {
+      Array::push(out, nm)
+    }
+    ni = ni + 1
+  }
+  out
+}
+
+fn edp_body_is_bare_self_discharge(body: Expr, ename: String) -> Bool {
+  match body {
+    EHandle(_, arms) => edp_handle_matches_effect(arms, ename),
+    _ => false
+  }
+}
+
 fn edp_needing_name_reachable(name: String, fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool]) -> Bool {
   let mut fi = 0
   let mut result = true
@@ -821,7 +872,8 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
   while ei < Array::length(effect_defs) {
     let (ename, ops) = Array::get(effect_defs, ei)
     let needing_all = edp_needing_names(fn_defs, ename, es_names, es_members_list)
-    let needing = edp_drop_unreachable_needing(needing_all, fn_defs, keep)
+    let needing_live = edp_drop_unreachable_needing(needing_all, fn_defs, keep)
+    let needing = edp_drop_self_discharging_needing(needing_live, stmts, fn_defs, ename)
     if Array::length(needing) == 0 {
       ()
     } else {

@@ -4103,6 +4103,42 @@ fi
 rm -rf "$gcdeaddir"
 echo "[compiler-gate] wasm-gc backend dead needing function filtering ok (105)"
 
+# 40h4. ADR-0076 (#817) gc-backend follow-up: a needing function's OWN
+#       declared row can mention the migrated effect PURELY to satisfy a
+#       separate checker requirement ("a `handle ... with Effect`
+#       expression's enclosing declared row must authorize the whole effect
+#       name") while its entire body is nothing but `handle {..} with
+#       ename {..}` -- fully discharging the effect itself, never actually
+#       needing the evidence dict passed to it. edp_has_unsafe_construct
+#       correctly (for the general case) flags a same-effect nested
+#       `EHandle` as unsafe, which used to sink the WHOLE effect's
+#       migration whenever such a function existed. evidence_dict_pass now
+#       drops a needing function from consideration when its body is
+#       EXACTLY a bare same-effect `EHandle` (edp_drop_self_discharging_needing)
+#       -- its handle site is already discovered and migrated independently.
+#       fixtures/effect_effectset_expansion.vibe's `main` is exactly this
+#       shape; confirmed via direct testing that it failed under
+#       VIBE_BACKEND=gc with "only `with Error`..." before this change.
+echo "[compiler-gate] 40h4/40 wasm-gc backend: self-discharging needing function no longer blocks effect migration (ADR-0076 gc follow-up)"
+gcselfdir="_build/_gate_gc_self_discharge"
+rm -rf "$gcselfdir"; mkdir -p "$gcselfdir"
+sed '/^__DATA__$/,$d' fixtures/effect_effectset_expansion.vibe > "$gcselfdir/src.vibe"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gcselfdir/src.vibe" "$gcselfdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$gcselfdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_effectset_expansion.vibe did not compile under VIBE_BACKEND=gc" >&2
+  cat "$gcselfdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+gcself_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcselfdir/out.wasm" 2>&1 | tail -1)"
+if [ "$gcself_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: effect_effectset_expansion.vibe under gc got '$gcself_out' (want 42) -- self-discharging needing function filtering regressed" >&2
+  exit 1
+fi
+rm -rf "$gcselfdir"
+echo "[compiler-gate] wasm-gc backend self-discharging needing function filtering ok (42)"
+
 # 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
 #      must render fixtures/wit_gen_http.vibe byte-exactly as the committed
 #      golden. Pins the WIT mapping contract (docs/effect-wit-mapping.md):
