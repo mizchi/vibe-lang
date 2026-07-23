@@ -2201,6 +2201,16 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       let val_l = nl
       Array::push(local_names, "__d2i_val")
       emit_local_set(buf, val_l)
+      // #1050: under RC the truncated i64 gets tagged via `n << 1` below, and
+      // that shift itself overflows (silently flipping sign) once |n| reaches
+      // 2^62 -- even though trunc_f64_s is happily defined for any magnitude
+      // up to 2^63. So the bound guard has to protect the narrower domain the
+      // tag can actually carry (vibe's tagged Int range is +-2^61, see
+      // CLAUDE.md), not trunc_f64_s's own +-2^63 domain, whenever the result
+      // is going to be tagged. Anything the tag can't carry saturates to 0,
+      // consistent with the NaN saturation below instead of trunc'ing.
+      let bound_hi = if ctx.enable_rc { 1136656384 } else { 1138753536 }
+      let neg_bound_hi = if ctx.enable_rc { 3284140032 } else { 3286237184 }
       // NaN: x != x is only true for NaN.
       emit_local_get(buf, val_l)
       emit_f64_reinterpret_i64(buf)
@@ -2210,16 +2220,16 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_if_i64(buf)
       emit_i64_const(buf, 0)
       emit_else(buf)
-      // Upper bound: trunc_f64_s is defined for x < 2^63.
+      // Upper bound: x < 2^63 (or the narrower +-2^61 taggable bound under RC).
       emit_local_get(buf, val_l)
       emit_f64_reinterpret_i64(buf)
-      emit_f64_const_lohi(buf, 0, 1138753536)
+      emit_f64_const_lohi(buf, 0, bound_hi)
       emit_f64_lt(buf)
       emit_if_i64(buf)
-      // Lower bound: trunc_f64_s is defined for x >= -2^63.
+      // Lower bound: x >= -2^63 (or the narrower +-2^61 taggable bound under RC).
       emit_local_get(buf, val_l)
       emit_f64_reinterpret_i64(buf)
-      emit_f64_const_lohi(buf, 0, 3286237184)
+      emit_f64_const_lohi(buf, 0, neg_bound_hi)
       emit_f64_ge(buf)
       emit_if_i64(buf)
       emit_local_get(buf, val_l)
