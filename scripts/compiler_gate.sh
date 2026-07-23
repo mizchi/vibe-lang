@@ -4939,6 +4939,59 @@ fi
 rm -rf "$lcbvwdir"
 echo "[compiler-gate] local effectful closure passed through trivial wrapper ok (#1070 narrow slice)"
 
+# 40aj. #1070 narrow-slice safety boundary: dtpw_inline_trivial_wrappers must
+#       only rewrite call sites syntactically named after the wrapper itself
+#       (`apply(...)`). `apply` used as an ordinary VALUE -- aliased into
+#       another binding and called through THAT binding -- must keep working
+#       via apply's own untouched top-level definition, unaffected by the
+#       inlining pass.
+echo "[compiler-gate] 40aj/40 trivial-wrapper inlining leaves wrapper-as-value references correct (#1070 narrow slice)"
+lcwrvdir="_build/_gate_local_closure_wrapper_referenced_as_value"
+rm -rf "$lcwrvdir"; mkdir -p "$lcwrvdir"
+sed '/^__DATA__$/,$d' fixtures/effect_local_closure_wrapper_referenced_as_value.vibe > "$lcwrvdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$lcwrvdir/src.vibe" "$lcwrvdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$lcwrvdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_wrapper_referenced_as_value.vibe did not compile" >&2
+  cat "$lcwrvdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+lcwrv_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$lcwrvdir/out.wasm" 2>&1 | tail -1)"
+if [ "$lcwrv_out" != "30" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_wrapper_referenced_as_value.vibe got '$lcwrv_out' (want 30) -- trivial-wrapper inlining broke a wrapper-as-value reference" >&2
+  exit 1
+fi
+rm -rf "$lcwrvdir"
+echo "[compiler-gate] trivial-wrapper inlining wrapper-as-value reference ok (#1070 narrow slice)"
+
+# 40ak. #1070 narrow-slice safety boundary: dtpw_collect_wrappers must only
+#       recognize a wrapper whose body is EXACTLY a same-arity direct call
+#       to its own sole parameter with NO extra arguments. A function that
+#       calls its parameter WITH an argument is a different shape and must
+#       be left completely untouched -- inlining it the same way would drop
+#       the call's argument (the exact class of bug caught in
+#       dtpw_inline_expr's first draft before it shipped).
+echo "[compiler-gate] 40ak/40 trivial-wrapper inlining does not misfire on wrong-arity wrapper bodies (#1070 narrow slice)"
+lcwadir="_build/_gate_local_closure_wrapper_wrong_arity"
+rm -rf "$lcwadir"; mkdir -p "$lcwadir"
+sed '/^__DATA__$/,$d' fixtures/local_closure_wrapper_wrong_arity_not_inlined.vibe > "$lcwadir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$lcwadir/src.vibe" "$lcwadir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$lcwadir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: local_closure_wrapper_wrong_arity_not_inlined.vibe did not compile" >&2
+  cat "$lcwadir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+lcwa_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$lcwadir/out.wasm" 2>&1 | tail -1)"
+if [ "$lcwa_out" != "6" ]; then
+  echo "[compiler-gate] FAIL: local_closure_wrapper_wrong_arity_not_inlined.vibe got '$lcwa_out' (want 6) -- trivial-wrapper pattern misfired on a wrong-arity call" >&2
+  exit 1
+fi
+rm -rf "$lcwadir"
+echo "[compiler-gate] trivial-wrapper inlining wrong-arity non-match ok (#1070 narrow slice)"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the

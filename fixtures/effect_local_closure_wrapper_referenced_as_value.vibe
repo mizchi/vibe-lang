@@ -1,0 +1,36 @@
+// #1070 narrow-slice regression: dtpw_inline_trivial_wrappers
+// (desugar_trait_dict.vibe) only rewrites call sites that are syntactically
+// `apply(...)` -- a direct call to the wrapper's own top-level name. It must
+// NOT break `apply` used as an ordinary VALUE (stored in another binding,
+// then called through that binding). This fixture pins that: `apply` is
+// called directly (matches the trivial-wrapper pattern, gets inlined to
+// `inner1()`) AND indirectly via `let stored = apply; stored(inner2)`
+// (does not match -- `stored` is not the wrapper's own name -- so `apply`'s
+// own untouched top-level definition must still work correctly when called
+// through an aliased reference).
+//   apply(inner1) => 15, stored(inner2) => 15, total 30
+effect Ask {
+  Get -> Int
+}
+
+let apply = (f: () -> Int with { Ask }) -> Int with { Ask } {
+  f()
+}
+
+export let main = () -> Int {
+  let inner1 = () -> Int with { Ask } {
+    perform Ask::Get
+  }
+  let inner2 = () -> Int with { Ask } {
+    perform Ask::Get
+  }
+  let stored = apply
+  handle {
+    apply(inner1) + stored(inner2)
+  } with Ask {
+    Get => resume(15)
+  }
+}
+
+__DATA__
+{"last": "30"}
