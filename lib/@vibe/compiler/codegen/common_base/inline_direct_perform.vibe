@@ -1230,6 +1230,23 @@ fn edp_has_unsafe_construct(expr: Expr, needing: Array[String], ename: String, p
     ERecord(_, fields, _) => edp_fields_have_unsafe_construct(fields, needing, ename, pure_fns),
     EMap(fields) => edp_fields_have_unsafe_construct(fields, needing, ename, pure_fns),
     ESpread(e2) => edp_has_unsafe_construct(e2, needing, ename, pure_fns),
+    // `_ => false` also covers `EStringInterp` -- verified (2026-07-23), not
+    // an oversight: `expand_interp_stmts` (entry/source_compile/wasi_only/
+    // preprocess_interp.vibe) always fully rewrites every `EStringInterp`
+    // into ordinary EBinOp/ECall string-concat nodes BEFORE check_program,
+    // itself called before this pass ever runs (see
+    // preprocess_compile.vibe's `expand_interp_stmts(stmts); check_program
+    // (stmts); ...compile_wasi_module_*_impl(stmts, ...)` ordering, all four
+    // entry variants). An `EStringInterp` node containing an embedded
+    // `perform` therefore can never actually reach this traversal -- by the
+    // time it would, the perform is already an ordinary sub-expression of a
+    // string-concat chain, visited through EBinOp/ECall like any other.
+    // Checked directly (not assumed) after noticing this pass's own match
+    // arms, unlike edp_has_unsafe_construct's sibling in perceus.vibe/
+    // common_analysis.vibe/checker_warning.vibe/etc., never explicitly
+    // lists `EStringInterp` at all -- worth confirming once rather than
+    // leaving it as a plausible-looking gap for a future reader to
+    // re-investigate from scratch.
     _ => false
   }
 }
