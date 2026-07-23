@@ -4665,6 +4665,37 @@ fi
 rm -rf "$edpletdir"
 echo "[compiler-gate] evidence-dict pass let-bound perform ok"
 
+# 40aa. ADR-0076 Phase 3 (#817): a needing function's body calls an
+#       ordinary user-defined PURE helper function (no `with` clause, so
+#       the checker has already proven it performs no effect) that is
+#       neither a needing function itself nor a hand-listed
+#       `edp_pure_builtin_names` entry. edp_has_unsafe_construct now
+#       recognizes a call to any function whose OWN declared effect row is
+#       checker-verified empty (edp_pure_fn_names) as safe, generalizing
+#       the old hand-audited builtin allowlist to every pure user-defined
+#       function -- verified (via a temporary migration-plan probe during
+#       development) that `Ask` genuinely migrates here, not merely
+#       "produces the right answer via replay by coincidence".
+echo "[compiler-gate] 40aa/40 evidence-dict pass: call to a plain user-defined pure helper function (ADR-0076 Phase 3/#817)"
+edppurdir="_build/_gate_evidence_dict_pure_helper"
+rm -rf "$edppurdir"; mkdir -p "$edppurdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_pure_helper.vibe > "$edppurdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edppurdir/src.vibe" "$edppurdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edppurdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_pure_helper.vibe did not compile" >&2
+  cat "$edppurdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edppur_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edppurdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edppur_out" != "11" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_pure_helper.vibe got '$edppur_out' (want 11) -- pure-helper-call eligibility regressed" >&2
+  exit 1
+fi
+rm -rf "$edppurdir"
+echo "[compiler-gate] evidence-dict pass pure-helper call ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the

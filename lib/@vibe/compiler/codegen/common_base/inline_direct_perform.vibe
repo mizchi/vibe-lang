@@ -618,10 +618,15 @@ fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_b
 // wrapper function -- can have BOTH effects migrate independently, not
 // just the innermost one; see that function's doc comment for the
 // `resume` recognition this needed and fixtures/effect_handle_multi_
-// effect_nested_handles.vibe for the regression lock. Expanding coverage
+// effect_nested_handles.vibe for the regression lock. A call to a plain
+// user-defined function the checker has ALREADY proven pure (empty
+// declared row, `edp_pure_fn_names`) is ALSO safe now, not just the
+// hand-audited `edp_pure_builtin_names` allowlist -- see fixtures/
+// effect_handle_call_evidence_pure_helper.vibe. Expanding coverage
 // further (effectset-expanded rows, deeper call chains through eligible-
-// but-indirect helpers) is expected follow-up, not a soundness gap in what
-// already lands here.
+// but-indirect helpers -- e.g. a wrapper that merely forwards to a
+// needing function without itself declaring the effect) is expected
+// follow-up, not a soundness gap in what already lands here.
 // Two phases, deliberately NOT interleaved (see edp_row_is_exactly's doc
 // comment, "追記 8", for the bug this avoids): first decide eligibility
 // for EVERY effect against the still-completely-unmutated `stmts`, then
@@ -891,12 +896,14 @@ fn empty_str_array() -> Array[String] {
 }
 
 // --- eligibility: the same conservative-bail-out shape as
-// inline_direct_perform.vibe's idp_has_unsafe_construct, plus two
+// inline_direct_perform.vibe's idp_has_unsafe_construct, plus several
 // relaxations: a call to a name in `needing` is safe (that callee's own
-// body is scanned the same way as part of this same migration attempt),
-// and a nested `EHandle` for a DIFFERENT effect than the one currently
-// being checked (`ename`) is safe to look inside rather than an automatic
-// rejection -- see below.
+// body is scanned the same way as part of this same migration attempt); a
+// nested `EHandle` for a DIFFERENT effect than the one currently being
+// checked (`ename`) is safe to look inside rather than an automatic
+// rejection; and a call to a function the checker has ALREADY proven pure
+// (`pure_fns`, see edp_pure_fn_names) is safe regardless of whether it
+// happens to be hand-listed as a builtin -- see below.
 //
 // Branching constructs (EIf/EMatch/EWhile/EForIn/ELoop) ARE recursed into
 // (not unconditionally unsafe): a needing-function call nested inside one
@@ -919,57 +926,76 @@ fn empty_str_array() -> Array[String] {
 // DIFFERENT effect's migration) lets both shapes become eligible. See
 // edp_row_is_exactly's doc comment for the history of the wrapper-function
 // shape; this is the natural follow-up covering direct nesting too.
-// edp_rewrite_needing_body/edp_rewrite_handle_body mirror this EXACT
-// traversal (see their own doc comments for why the two must always
-// agree, per "追記 10").
-fn edp_has_unsafe_construct(expr: Expr, needing: Array[String], ename: String) -> Bool {
+//
+// A call to a function whose OWN declared effect row is checker-verified
+// empty (`pure_fns`) is safe without even recursing into ITS body: by the
+// checker's own soundness (#942, the same guarantee edp_collect_fn_defs's
+// doc comment cites for the row string itself) a function with no `with`
+// clause cannot perform ANY effect, ever, so it cannot possibly hide a
+// perform of `ename`, a call to a needing function, or anything else this
+// pass would need to rewrite -- generalizing the old hand-audited
+// `edp_pure_builtin_names` allowlist (kept as-is for the handful of
+// builtins the checker doesn't track as ordinary functions) to every
+// user-defined pure function too. Only the call's OWN ARGS still need
+// checking (they're evaluated in the CALLER's context, where a perform of
+// `ename` or a needing-call could legitimately appear).
+//
+// edp_rewrite_needing_body/edp_rewrite_handle_body mirror the EHandle/
+// needing-call traversal exactly (see their own doc comments for why the
+// two must always agree, per "追記 10") -- a call to a `pure_fns` member
+// needs NO corresponding rewrite-side change, since it already falls
+// through those functions' existing "recurse into args, leave the call
+// itself unchanged" default case, which is exactly correct here too.
+fn edp_has_unsafe_construct(expr: Expr, needing: Array[String], ename: String, pure_fns: Array[String]) -> Bool {
   match expr {
     EFn(_, _, _, _, _, _) => true,
     EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
       true
     } else {
-      edp_has_unsafe_construct(body, needing, ename) || edp_arms_have_unsafe_construct(arms, needing, ename)
+      edp_has_unsafe_construct(body, needing, ename, pure_fns) || edp_arms_have_unsafe_construct(arms, needing, ename, pure_fns)
     },
-    EIf(c, t, e) => edp_has_unsafe_construct(c, needing, ename) || edp_has_unsafe_construct(t, needing, ename) || edp_has_unsafe_construct(e, needing, ename),
-    EMatch(s, arms) => edp_has_unsafe_construct(s, needing, ename) || edp_arms_have_unsafe_construct(arms, needing, ename),
-    EWhile(c, b) => edp_has_unsafe_construct(c, needing, ename) || edp_has_unsafe_construct(b, needing, ename),
-    EForIn(_, _, it, b) => edp_has_unsafe_construct(it, needing, ename) || edp_has_unsafe_construct(b, needing, ename),
-    ELoop(pairs, b) => edp_pairs_have_unsafe_construct(pairs, needing, ename) || edp_has_unsafe_construct(b, needing, ename),
-    ELet(_, v, b, _) => edp_has_unsafe_construct(v, needing, ename) || edp_has_unsafe_construct(b, needing, ename),
-    ELetMut(_, v, b, _) => edp_has_unsafe_construct(v, needing, ename) || edp_has_unsafe_construct(b, needing, ename),
-    ELetRec(_, v, b) => edp_has_unsafe_construct(v, needing, ename) || edp_has_unsafe_construct(b, needing, ename),
-    ESeq(a, b) => edp_has_unsafe_construct(a, needing, ename) || edp_has_unsafe_construct(b, needing, ename),
+    EIf(c, t, e) => edp_has_unsafe_construct(c, needing, ename, pure_fns) || edp_has_unsafe_construct(t, needing, ename, pure_fns) || edp_has_unsafe_construct(e, needing, ename, pure_fns),
+    EMatch(s, arms) => edp_has_unsafe_construct(s, needing, ename, pure_fns) || edp_arms_have_unsafe_construct(arms, needing, ename, pure_fns),
+    EWhile(c, b) => edp_has_unsafe_construct(c, needing, ename, pure_fns) || edp_has_unsafe_construct(b, needing, ename, pure_fns),
+    EForIn(_, _, it, b) => edp_has_unsafe_construct(it, needing, ename, pure_fns) || edp_has_unsafe_construct(b, needing, ename, pure_fns),
+    ELoop(pairs, b) => edp_pairs_have_unsafe_construct(pairs, needing, ename, pure_fns) || edp_has_unsafe_construct(b, needing, ename, pure_fns),
+    ELet(_, v, b, _) => edp_has_unsafe_construct(v, needing, ename, pure_fns) || edp_has_unsafe_construct(b, needing, ename, pure_fns),
+    ELetMut(_, v, b, _) => edp_has_unsafe_construct(v, needing, ename, pure_fns) || edp_has_unsafe_construct(b, needing, ename, pure_fns),
+    ELetRec(_, v, b) => edp_has_unsafe_construct(v, needing, ename, pure_fns) || edp_has_unsafe_construct(b, needing, ename, pure_fns),
+    ESeq(a, b) => edp_has_unsafe_construct(a, needing, ename, pure_fns) || edp_has_unsafe_construct(b, needing, ename, pure_fns),
     ECall(callee, args, _) => match callee {
       EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
-        edp_perform_operand_has_unsafe_construct(Array::get(args, 0), needing, ename)
+        edp_perform_operand_has_unsafe_construct(Array::get(args, 0), needing, ename, pure_fns)
       } else if nm == "resume" {
-        edp_exprs_have_unsafe_construct(args, needing, ename)
+        edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns)
       } else if edp_is_pure_builtin_call(nm) {
-        edp_exprs_have_unsafe_construct(args, needing, ename)
+        edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns)
       } else if edp_str_array_contains(needing, nm) {
-        edp_exprs_have_unsafe_construct(args, needing, ename)
+        edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns)
+      } else if edp_str_array_contains(pure_fns, nm) {
+        edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns)
       } else {
         true
       },
       _ => true
     },
-    EBinOp(_, l, r) => edp_has_unsafe_construct(l, needing, ename) || edp_has_unsafe_construct(r, needing, ename),
-    EUnaryOp(_, e2) => edp_has_unsafe_construct(e2, needing, ename),
-    EAssign(_, v, c) => edp_has_unsafe_construct(v, needing, ename) || edp_has_unsafe_construct(c, needing, ename),
-    EAssignOp(_, _, v, c) => edp_has_unsafe_construct(v, needing, ename) || edp_has_unsafe_construct(c, needing, ename),
+    EBinOp(_, l, r) => edp_has_unsafe_construct(l, needing, ename, pure_fns) || edp_has_unsafe_construct(r, needing, ename, pure_fns),
+    EUnaryOp(_, e2) => edp_has_unsafe_construct(e2, needing, ename, pure_fns),
+    EAssign(_, v, c) => edp_has_unsafe_construct(v, needing, ename, pure_fns) || edp_has_unsafe_construct(c, needing, ename, pure_fns),
+    EAssignOp(_, _, v, c) => edp_has_unsafe_construct(v, needing, ename, pure_fns) || edp_has_unsafe_construct(c, needing, ename, pure_fns),
     EDot(_, _, _, _) => true,
-    ELabeledArg(_, _, v) => edp_has_unsafe_construct(v, needing, ename),
-    EReturn(e2) => edp_has_unsafe_construct(e2, needing, ename),
+    ELabeledArg(_, _, v) => edp_has_unsafe_construct(v, needing, ename, pure_fns),
+    EReturn(e2) => edp_has_unsafe_construct(e2, needing, ename, pure_fns),
     EBreak(opt) => match opt {
-      Some(e2) => edp_has_unsafe_construct(e2, needing, ename),
+      Some(e2) => edp_has_unsafe_construct(e2, needing, ename, pure_fns),
       None => false
     },
-    EContinue(args) => edp_exprs_have_unsafe_construct(args, needing, ename),
-    ETuple(elems) => edp_exprs_have_unsafe_construct(elems, needing, ename),
-    EArray(elems) => edp_exprs_have_unsafe_construct(elems, needing, ename),
-    ERecord(_, fields, _) => edp_fields_have_unsafe_construct(fields, needing, ename),
-    EMap(fields) => edp_fields_have_unsafe_construct(fields, needing, ename),
-    ESpread(e2) => edp_has_unsafe_construct(e2, needing, ename),
+    EContinue(args) => edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns),
+    ETuple(elems) => edp_exprs_have_unsafe_construct(elems, needing, ename, pure_fns),
+    EArray(elems) => edp_exprs_have_unsafe_construct(elems, needing, ename, pure_fns),
+    ERecord(_, fields, _) => edp_fields_have_unsafe_construct(fields, needing, ename, pure_fns),
+    EMap(fields) => edp_fields_have_unsafe_construct(fields, needing, ename, pure_fns),
+    ESpread(e2) => edp_has_unsafe_construct(e2, needing, ename, pure_fns),
     _ => false
   }
 }
@@ -998,22 +1024,42 @@ fn edp_is_pure_builtin_call(nm: String) -> Bool {
   edp_str_array_contains(edp_pure_builtin_names(), nm)
 }
 
-fn edp_perform_operand_has_unsafe_construct(operand: Expr, needing: Array[String], ename: String) -> Bool {
+// Every top-level function name whose declared effect row is
+// checker-verified empty (`""`, meaning no `with` clause at all -- #942's
+// same guarantee edp_collect_fn_defs's own doc comment cites). See
+// edp_has_unsafe_construct's doc comment for why a call to one of these is
+// always safe to treat as inert.
+fn edp_pure_fn_names(fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (_, _, _, name, _, row) = Array::get(fn_defs, i)
+    if row == "" {
+      Array::push(out, name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn edp_perform_operand_has_unsafe_construct(operand: Expr, needing: Array[String], ename: String, pure_fns: Array[String]) -> Bool {
   match operand {
     EIdent(_, _) => false,
     ECall(op_callee, op_args, _) => match op_callee {
-      EIdent(_, _) => edp_exprs_have_unsafe_construct(op_args, needing, ename),
+      EIdent(_, _) => edp_exprs_have_unsafe_construct(op_args, needing, ename, pure_fns),
       _ => true
     },
     _ => true
   }
 }
 
-fn edp_exprs_have_unsafe_construct(exprs: Array[Expr], needing: Array[String], ename: String) -> Bool {
+fn edp_exprs_have_unsafe_construct(exprs: Array[Expr], needing: Array[String], ename: String, pure_fns: Array[String]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(exprs) {
-    if edp_has_unsafe_construct(Array::get(exprs, i), needing, ename) {
+    if edp_has_unsafe_construct(Array::get(exprs, i), needing, ename, pure_fns) {
       found = true
     } else {
       ()
@@ -1023,12 +1069,12 @@ fn edp_exprs_have_unsafe_construct(exprs: Array[Expr], needing: Array[String], e
   found
 }
 
-fn edp_fields_have_unsafe_construct(fields: Array[(String, Expr)], needing: Array[String], ename: String) -> Bool {
+fn edp_fields_have_unsafe_construct(fields: Array[(String, Expr)], needing: Array[String], ename: String, pure_fns: Array[String]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(fields) {
     let (_, v) = Array::get(fields, i)
-    if edp_has_unsafe_construct(v, needing, ename) {
+    if edp_has_unsafe_construct(v, needing, ename, pure_fns) {
       found = true
     } else {
       ()
@@ -1038,12 +1084,12 @@ fn edp_fields_have_unsafe_construct(fields: Array[(String, Expr)], needing: Arra
   found
 }
 
-fn edp_pairs_have_unsafe_construct(pairs: Array[(String, Expr)], needing: Array[String], ename: String) -> Bool {
+fn edp_pairs_have_unsafe_construct(pairs: Array[(String, Expr)], needing: Array[String], ename: String, pure_fns: Array[String]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(pairs) {
     let (_, v) = Array::get(pairs, i)
-    if edp_has_unsafe_construct(v, needing, ename) {
+    if edp_has_unsafe_construct(v, needing, ename, pure_fns) {
       found = true
     } else {
       ()
@@ -1053,12 +1099,12 @@ fn edp_pairs_have_unsafe_construct(pairs: Array[(String, Expr)], needing: Array[
   found
 }
 
-fn edp_arms_have_unsafe_construct(arms: Array[(Pat, Expr)], needing: Array[String], ename: String) -> Bool {
+fn edp_arms_have_unsafe_construct(arms: Array[(Pat, Expr)], needing: Array[String], ename: String, pure_fns: Array[String]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(arms) {
     let (_, ex) = Array::get(arms, i)
-    if edp_has_unsafe_construct(ex, needing, ename) {
+    if edp_has_unsafe_construct(ex, needing, ename, pure_fns) {
       found = true
     } else {
       ()
@@ -1268,11 +1314,12 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
     // nothing to gain (and nothing unsound about skipping); leave it alone.
     false
   } else {
+    let pure_fns = edp_pure_fn_names(fn_defs)
     let mut hi = 0
     let mut ok = true
     while hi < Array::length(handle_sites) {
       let (body, _) = Array::get(handle_sites, hi)
-      if edp_has_unsafe_construct(body, needing, ename) {
+      if edp_has_unsafe_construct(body, needing, ename, pure_fns) {
         ok = false
       } else {
         ()
@@ -1283,7 +1330,7 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
     while ni < Array::length(needing) {
       let nm = Array::get(needing, ni)
       match edp_find_fn_body(stmts, fn_defs, nm) {
-        Some(b) => if edp_has_unsafe_construct(b, needing, ename) {
+        Some(b) => if edp_has_unsafe_construct(b, needing, ename, pure_fns) {
           ok = false
         } else {
           ()
