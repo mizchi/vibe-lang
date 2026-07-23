@@ -4041,6 +4041,33 @@ fi
 rm -rf "$gcdir"
 echo "[compiler-gate] wasm-gc backend smoke ok (101557)"
 
+# 40h2. ADR-0076 (#817) step 6: wasm-gc backend now also supports
+#       evidence-dict-eligible USER-DEFINED effects (not just
+#       `with Error { Throw(..) => .. }`), via the same evidence_dict_pass/
+#       inline_direct_performs AST rewrite the linear backend already used,
+#       now also wired into backend_body.vibe's compile_wasi_module_gc.
+#       Confirmed via A/B testing against a pre-change baseline that this
+#       fixture failed with "GC codegen: unsupported perform (no builtin
+#       mapping)" before this change.
+echo "[compiler-gate] 40h2/40 wasm-gc backend evidence-dict user-defined effect support (ADR-0076 step 6)"
+gcedir="_build/_gate_gc_evidence_dict"
+rm -rf "$gcedir"; mkdir -p "$gcedir"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/gc_backend_effect_evidence_dict.vibe" "$gcedir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$gcedir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: gc_backend_effect_evidence_dict.vibe did not compile under VIBE_BACKEND=gc" >&2
+  cat "$gcedir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+gce_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcedir/out.wasm" 2>&1 | tail -1)"
+if [ "$gce_out" != "17" ]; then
+  echo "[compiler-gate] FAIL: gc_backend_effect_evidence_dict.vibe got '$gce_out' (want 17) -- gc-lane evidence-dict wiring regressed" >&2
+  exit 1
+fi
+rm -rf "$gcedir"
+echo "[compiler-gate] wasm-gc backend evidence-dict user-defined effect support ok (17)"
+
 # 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
 #      must render fixtures/wit_gen_http.vibe byte-exactly as the committed
 #      golden. Pins the WIT mapping contract (docs/effect-wit-mapping.md):
