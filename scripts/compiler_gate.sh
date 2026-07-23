@@ -4556,6 +4556,37 @@ fi
 rm -rf "$edpemdir"
 echo "[compiler-gate] evidence-dict pass Error::Throw mixing ok"
 
+# 40x. ADR-0076 Phase 3 (#817): a function whose declared effect row
+#      contains MULTIPLE effects must be excluded from BOTH effects'
+#      evidence-dict migration entirely, falling back to the pre-existing
+#      replay codegen unchanged. A relaxation from exact-row-match to
+#      row-containment was tried and reverted after direct testing found
+#      it compiled but crashed at runtime for this exact shape (see
+#      inline_direct_perform.vibe's edp_row_is_exactly doc comment). This
+#      gate pins that the exclusion itself stays correct -- compiles and
+#      runs to a stable, deterministic, non-crashing result -- so a
+#      future change can't silently reintroduce the row-containment
+#      relaxation (and its crash) without this gate catching it.
+echo "[compiler-gate] 40x/40 evidence-dict pass: multi-effect row correctly excluded, falls back safely (ADR-0076 Phase 3/#817)"
+edpmedir="_build/_gate_evidence_dict_multi_effect"
+rm -rf "$edpmedir"; mkdir -p "$edpmedir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_multi_effect_row_fallback.vibe > "$edpmedir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpmedir/src.vibe" "$edpmedir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpmedir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_multi_effect_row_fallback.vibe did not compile" >&2
+  cat "$edpmedir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edpme_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpmedir/out.wasm" 2>&1 | tail -1)"
+if [ "$edpme_out" != "3018" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_multi_effect_row_fallback.vibe got '$edpme_out' (want 3018) -- multi-effect row exclusion regressed (either it silently reintroduced the crash, or a genuinely unrelated replay behavior change)" >&2
+  exit 1
+fi
+rm -rf "$edpmedir"
+echo "[compiler-gate] evidence-dict pass multi-effect row exclusion ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the

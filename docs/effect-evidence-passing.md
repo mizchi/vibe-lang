@@ -795,6 +795,38 @@ evidence_branch.vibe (旧 `..._branch_fallback.vibe` から改名・
 ではなく、evidence dict 直接呼び出し時の正しい値 `2007`)。
 compiler_gate.sh 40v で回帰を固定。
 
+**追記 7 (2026-07-23, multi-effect row 拡張を試みて即座に revert)**:
+「追記 6」の修正 (単一走査での書き換え) を踏まえ、`needing` の判定
+(`edp_row_is_exactly`、宣言 row がちょうど 1 effect であることを要求)
+を「row が複数 effect の comma-join でも、対象 effect が labels の
+1 つに含まれていればよい」という containment 判定へ緩和することを
+試みた。設計上の推論 (各 effect の migration は `evidence_dict_pass`
+の `ei` ループで独立した pass として走り、それぞれが自分の
+eligibility を独立に判定する。`perform` の書き換えは「追記 5」の
+Error 混在修正 (`edp_qname_is_for_effect`) で既に対象 effect ごとに
+選択的になっている。複数 pass にまたがる prepend は常に「現在の
+stmts の状態に対して先頭へ追加する」という対称な操作なので、
+signature 側と call-site 側の引数順序は自動的に揃うはず) では健全に
+見えたが、実際に「1 つの関数が `{ Ask, Fs }` 両方を要求し、2 つの
+**独立した** (nest していない) handle サイトでそれぞれ discharge
+される」形の具体的な fixture を書いて直接テストしたところ、
+コンパイルは通るが**実行時に uncaught exception でクラッシュする**、
+という実バグが見つかった。抽象的な推論だけでは見抜けなかった
+相互作用がある (おそらく: ある effect だけ evidence dict 化され、
+もう一方の effect の perform は旧来の replay 経路に残ったままになる
+「部分的に移行された」状態が、replay 自身の throw/catch の
+前提を壊す) ため、この緩和は**即座に revert** した。根本原因は
+未特定のまま、`edp_row_is_exactly` (exact match のみ) に戻し、
+「試して reverted した」こと自体を doc comment に記録した上で、
+このクラッシュを再現する具体的な fixture
+(fixtures/effect_handle_multi_effect_row_fallback.vibe) を
+「multi-effect row は evidence_dict_pass に一切触られず、既存の
+replay 経路へ安全にフォールバックし続ける」ことを固定する回帰テストと
+して追加した (compiler_gate.sh 40x)。multi-effect row 対応は
+このセッションでは着手しない — 次に着手する際は、まずこの具体的な
+クラッシュの根本原因を (今回の分岐バグと同じように) 実際に計装して
+特定するところから始めること。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect

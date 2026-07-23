@@ -1,0 +1,71 @@
+// ADR-0076 (#817) Phase 3 regression lock: a function whose declared
+// effect row contains MULTIPLE effects (here `{ Ask, Fs }`), discharged
+// by two separate, non-nested handle sites reached through an
+// intermediate wrapper function.
+//
+// evidence_dict_pass.vibe's `needing` restriction requires a row to be
+// EXACTLY one effect name (edp_row_is_exactly). A relaxation to row
+// CONTAINMENT (any row with `ename` as one of several comma-joined
+// labels) was tried and reverted after direct testing found it produced
+// a REAL bug: this exact program compiled cleanly but crashed at runtime
+// with an uncaught exception instead of returning a value, even though
+// abstract reasoning about the per-effect-pass design (each effect's
+// migration independently gated by its own eligibility check) suggested
+// it should have been sound. The actual interaction was never fully
+// root-caused -- most likely a needing function ending up partially
+// migrated for one effect while its other effect's performs stay on the
+// old replay path, and something about that mixed state breaking
+// replay's own throw/catch bookkeeping.
+//
+// This fixture pins that `both_helper` (row `{ Ask, Fs }`, neither
+// exactly `Ask` nor exactly `Fs`) is correctly excluded from BOTH
+// effects' `needing` sets and left entirely untouched by
+// evidence_dict_pass, falling through to the pre-existing replay codegen
+// unchanged -- the same path this exact shape used before ADR-0076
+// Phase 3 existed at all. The expected value (3018) is whatever
+// replay's own (separately pre-existing, out of scope for Phase 3 to
+// fix) semantics produce for this shape; the guarantee this locks down
+// is "compiles and runs to a stable, deterministic, non-crashing
+// result", not "produces the semantically ideal answer".
+effect Ask {
+  Get -> Int
+}
+
+effect Fs {
+  Read -> Int
+}
+
+let both_helper = () -> Int with { Ask, Fs } {
+  let a = perform Ask::Get
+  let b = perform Fs::Read
+  a + b
+}
+
+let ask_only_wrapper = () -> Int with { Fs } {
+  handle {
+    both_helper()
+  } with Ask {
+    Get => resume(5)
+  }
+}
+
+let compute = () -> (Int, Int) {
+  let mut count = 0
+  let r = handle {
+    count = count + 1
+    let v = ask_only_wrapper()
+    count = count + 1
+    v + count
+  } with Fs {
+    Read => resume(10)
+  }
+  (count, r)
+}
+
+export let main = () -> Int {
+  let (count, r) = compute()
+  count * 1000 + r
+}
+
+__DATA__
+{"last": "3018"}
