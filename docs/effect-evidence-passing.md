@@ -1640,6 +1640,52 @@ wrapper 特殊化 (#1015) を積み重ねて Int/String/Bool/Float だけ個別�
 3 つセットで設計・実装すべき一つの型システム機能であり、今回のセッ
 ションで着手する範囲には含めない。
 
+### 追記24 (2026-07-23): 追記23 の調査中に見つけた実バグを修正 (`ELet` 非経由の inline `EFn` literal)
+
+追記23 の row-polymorphism 調査中、row 多相とは無関係の、より基礎的な
+実バグを発見・修正した (commit `1c4aa64`)。let 束縛を一切経由しない
+inline なラムダリテラル (`(() -> Int with { Log } { perform ...; 42 })()`
+のような即時呼び出し (IIFE)、あるいは `with_log(() -> Int with { Log }
+{ perform ...; 42 })` のように「呼び出しサイトの ARGUMENT 位置」に直接
+書かれたラムダリテラル) が effect を perform すると、コンパイル時に
+不正な wasm (`invalid signature index`) を生成するか、実行時に
+`null function or function signature mismatch` で落ちていた。
+
+原因: `desugar_trait_dict.vibe` の `dlh_hoist_expr` にあるフック/
+closure-conversion ロジック (#786 の capture-free hoist、#1069 の
+capturing closure 変換) は例外なく `ELet(name, EFn(...), body)` という
+「let で名前に束縛されたクロージャ」の形にしかパターンマッチしない。
+名前を一切経由しない inline literal はこれらのどの規則にも一致せず、
+#786 以前からある壊れたローカルクロージャ+effect コンビネータの経路に
+素通しされていた。
+
+修正は 2 段階、どちらも「名前のない literal を、既存の (十分に検証
+済みの) `ELet`+`EFn` 処理に還元する」という同じ戦略:
+
+1. IIFE (`ECall(callee, args, off)` で `callee` 自身が直接 `EFn` の
+   場合): `ELet(fresh, callee, ECall(fresh, args, off), off)` に脱糖
+   してから再帰的に `dlh_hoist_expr` に戻す。
+2. 呼び出し ARGUMENT 位置に直接書かれた `EFn` literal: 呼び出しの
+   直前で fresh な名前に let 束縛してから (`dlh_letbind_literal_args`、
+   評価順は元の inline 位置と同じ左から右のまま保存)、同じく
+   `dlh_hoist_expr` に戻す。
+
+どちらも新しい closure-conversion コードは一切追加していない --
+既存の `ELet`/`EFn` 経路をそのまま再利用するだけ。
+
+スコープ: capture-free な literal のみ (直接検証済み)。capture する
+literal を HOF の引数として渡す形は、この修正によって合成された
+let 束縛が `dlh_marker_only_called_directly` から見て「値として渡され
+ていて直接呼び出しされていない」と正しく判定されるため、#1069 の
+closure-conversion が安全側に倒れて変換を諦め、#1070 の既知の未解決
+一般ケース (「値として渡された capturing closure」) にそのまま
+フォールバックする -- この修正の範囲外であり、意図した挙動。
+
+`fixtures/effect_inline_lambda_literal_hof_arg.vibe` (gate 40al) で
+IIFE・HOF 引数の両形状 (capture-free) を固定。seed compiler でのクリー
+ンな A/B テスト (修正前は同一クラッシュを再現) と、修正適用後の
+stage2==stage3 self-host fixpoint ビルドの両方で検証済み。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
