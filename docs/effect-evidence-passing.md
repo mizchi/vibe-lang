@@ -1322,6 +1322,33 @@ codegen 自体は到達不能な死んだコードになり、削除できる --
 まだ書き換えていない -- 次に本 ADR に着手する際に、この追記を踏まえて
 Phase 3 の文言を書き直すこと)。
 
+**「追記 2」(c) / ADR-0068 Cont/finalizer 整合の未検証状態について
+(2026-07-23、同日、精査)**: 本 ADR 側で繰り返し「唯一の未検証項目」
+として据え置いてきたこの項目を、`docs/concurrency.md` 側の記述を直接
+確認することで、その未検証の性質をより正確に特定した。同ドキュメント
+の Lean lifecycle oracle 節 (`docs/concurrency.md:234-237`) は、
+「この oracle は heap、thread、host waitable、channel queue、message
+linearization、fairness、無限 trace、**finalizer stack をまだ
+モデル化しない**。特に terminal state の一回性は証明済みだが、**具体的な
+unwind が各 finalizer をちょうど一度実行することは未証明であり、#817 の
+lowering と別の refinement proof / differential test が必要である**」
+と明記している。
+
+つまりこの項目は「本 ADR の実装を進めれば自然に解消する」類の未検証
+ではない -- ADR-0068 側の Lean 形式モデル
+(`formal/VibeFormal/Async/*.lean`) 自体が finalizer stack を
+まだ全く扱っておらず、それを追加した上で本 ADR (#817) の実際の
+lowering 実装との refinement proof (もしくは differential test) を
+別途書く、という **形式検証 (Lean での定理証明) の独立した作業**を
+要する。本セッションが一貫して行ってきた作業 (AST 変換パスの
+カバレッジ拡大、コード生成バグの発見・修正) とは全く異なる技能・
+ツールセットが必要であり、ADR-0076 側のコード変更だけでは原理的に
+解消できない -- ADR-0068 の該当フェーズ (Lean モデルの拡張) が
+独立して着手・完了されるまで、この一点はどう転んでも「未検証」の
+ままである。「追記 2」(c) を再度「未検証」と記録するだけでなく、
+なぜ・どのように未検証なのか (どの成果物が今存在しないのか) を
+具体的な参照箇所付きで確定させたことが本追記の内容である。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
