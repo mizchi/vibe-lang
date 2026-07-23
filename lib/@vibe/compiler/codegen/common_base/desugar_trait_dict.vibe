@@ -6516,6 +6516,145 @@ export fn desugar_array_spread(stmts: Array[Stmt]) -> Unit {
 }
 
 ///|
+// #1070 (narrow slice): a "trivial pass-through wrapper" is a top-level
+// `let name = (param) -> T with { ... } { param() }` -- exactly one
+// parameter, body is EXACTLY a zero-arg call to that same parameter and
+// nothing else. Collects (wrapper_name, needed) pairs; `needed` is always
+// true here (arity always matches: the wrapper always takes exactly 1 arg
+// and calls its param with exactly 0), kept as a tuple only for symmetry
+// with how this file's other collector helpers are shaped.
+fn dtpw_collect_wrappers(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(_, _, params, _, _, body)) => if Array::length(params) == 1 {
+        let (pname, _) = Array::get(params, 0)
+        let stripped = dlh_strip_tilde(pname)
+        match body {
+          ECall(callee, args, _) => match callee {
+            EIdent(cn, _) => if cn == stripped && Array::length(args) == 0 {
+              Array::push(out, name)
+            } else {
+              ()
+            },
+            _ => ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Rewrite every `ECall(EIdent(wname), [single_arg], off)` where `wname` is a
+// collected trivial wrapper into `ECall(single_arg, [], off)` -- calling the
+// argument directly instead of routing through the identity wrapper. Full
+// traversal (mirrors this file's other full-coverage passes); the wrapper's
+// own top-level definition is left completely untouched, so it remains
+// valid wherever else it's referenced (as a value, or with a different
+// arity that wouldn't match here anyway).
+fn dtpw_inline_expr(expr: Expr, wrappers: Array[String]) -> Expr {
+  match expr {
+    ECall(callee, args, off) => match callee {
+      EIdent(wn, _) => if dlh_contains(wrappers, wn) && Array::length(args) == 1 {
+        ECall(dtpw_inline_expr(Array::get(args, 0), wrappers), array_empty(), off)
+      } else {
+        ECall(dtpw_inline_expr(callee, wrappers), for a in args {
+          dtpw_inline_expr(a, wrappers)
+        }, off)
+      },
+      _ => ECall(dtpw_inline_expr(callee, wrappers), for a in args {
+        dtpw_inline_expr(a, wrappers)
+      }, off)
+    },
+    EBinOp(op, l, r) => EBinOp(op, dtpw_inline_expr(l, wrappers), dtpw_inline_expr(r, wrappers)),
+    EUnaryOp(op, e) => EUnaryOp(op, dtpw_inline_expr(e, wrappers)),
+    ETuple(es) => ETuple(for e in es {
+      dtpw_inline_expr(e, wrappers)
+    }),
+    EArray(es) => EArray(for e in es {
+      dtpw_inline_expr(e, wrappers)
+    }),
+    ESpread(e) => ESpread(dtpw_inline_expr(e, wrappers)),
+    EContinue(es) => EContinue(for e in es {
+      dtpw_inline_expr(e, wrappers)
+    }),
+    ERecord(rn, fs, targs) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (k, v) = Array::get(fs, i)
+        Array::push(out, (k, dtpw_inline_expr(v, wrappers)))
+        i = i + 1
+      }
+      ERecord(rn, out, targs)
+    },
+    EMap(fs) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (k, v) = Array::get(fs, i)
+        Array::push(out, (k, dtpw_inline_expr(v, wrappers)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    EIf(c, t, e) => EIf(dtpw_inline_expr(c, wrappers), dtpw_inline_expr(t, wrappers), dtpw_inline_expr(e, wrappers)),
+    ELet(n, v, b, soff) => ELet(n, dtpw_inline_expr(v, wrappers), dtpw_inline_expr(b, wrappers), soff),
+    ELetRec(n, v, b) => ELetRec(n, dtpw_inline_expr(v, wrappers), dtpw_inline_expr(b, wrappers)),
+    ELetMut(n, v, b, soff) => ELetMut(n, dtpw_inline_expr(v, wrappers), dtpw_inline_expr(b, wrappers), soff),
+    EAssign(n, v, c) => EAssign(n, dtpw_inline_expr(v, wrappers), dtpw_inline_expr(c, wrappers)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, dtpw_inline_expr(v, wrappers), dtpw_inline_expr(c, wrappers)),
+    ESeq(a, b) => ESeq(dtpw_inline_expr(a, wrappers), dtpw_inline_expr(b, wrappers)),
+    EWhile(c, b) => EWhile(dtpw_inline_expr(c, wrappers), dtpw_inline_expr(b, wrappers)),
+    EForIn(n, idxn, it, b) => EForIn(n, idxn, dtpw_inline_expr(it, wrappers), dtpw_inline_expr(b, wrappers)),
+    EDot(o, f, off, fdoff) => EDot(dtpw_inline_expr(o, wrappers), f, off, fdoff),
+    ELabeledArg(l, m, e) => ELabeledArg(l, m, dtpw_inline_expr(e, wrappers)),
+    EReturn(e) => EReturn(dtpw_inline_expr(e, wrappers)),
+    EBreak(opt) => EBreak(match opt {
+      Some(e) => Some(dtpw_inline_expr(e, wrappers)),
+      None => None
+    }),
+    EFn(tp, bnds, params, rt, eff, body) => EFn(tp, bnds, params, rt, eff, dtpw_inline_expr(body, wrappers)),
+    EMatch(s, arms) => EMatch(dtpw_inline_expr(s, wrappers), for a in arms {
+      let (p, b) = a
+      (p, dtpw_inline_expr(b, wrappers))
+    }),
+    EHandle(s, arms) => EHandle(dtpw_inline_expr(s, wrappers), for a in arms {
+      let (p, b) = a
+      (p, dtpw_inline_expr(b, wrappers))
+    }),
+    ELoop(params, b) => ELoop(for p in params {
+      let (pn, init) = p
+      (pn, dtpw_inline_expr(init, wrappers))
+    }, dtpw_inline_expr(b, wrappers)),
+    _ => expr
+  }
+}
+
+fn dtpw_inline_trivial_wrappers(stmts: Array[Stmt]) -> Unit {
+  let wrappers = dtpw_collect_wrappers(stmts)
+  if Array::length(wrappers) == 0 {
+    ()
+  } else {
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, i, SLet(exported, is_rec, name, ty, dtpw_inline_expr(expr, wrappers))),
+        _ => ()
+      }
+      i = i + 1
+    }
+  }
+}
+
+///|
 // Entry point: in-place dictionary-passing desugaring. No-op unless the program
 // declares at least one method-bearing trait. Idempotent: re-running (the
 // single-file pipeline desugars before generic-stripping and codegen re-runs on
@@ -6525,6 +6664,32 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit {
   // #790: lower array-literal spreads first, so no downstream pass or codegen
   // ever sees a raw ESpread.
   desugar_array_spread(stmts)
+  // #1070 (narrow slice): inline a trivial pass-through wrapper
+  // (`let apply = (f) -> { f() }`, body EXACTLY a same-arity direct call to
+  // its own sole parameter, nothing else) at each matching call site
+  // (`apply(x)` -> `x()`), before #786's hoist below. A capturing effectful
+  // closure PASSED BY VALUE through such a wrapper (`apply(inner)` where
+  // `inner` captures a local) crashes independent of #1069's closure-
+  // conversion fix -- #1069 only rewrites provably-direct call sites, and
+  // `inner` used as a bare argument to `apply` is exactly the "used as a
+  // value" shape it correctly declines to touch. This doesn't attempt the
+  // general problem (#1070's own analysis: real closure-conversion-to-
+  // value semantics, or fixing #786's still-unlocated deeper combinator
+  // bug) -- it only recognizes the specific case where the "value use" is
+  // itself immediately, trivially, and unconditionally a direct call one
+  // level removed, and short-circuits it back into an ordinary direct
+  // call BEFORE #786/#1069's hoist+conversion logic runs, so THAT already-
+  // verified machinery picks it up exactly as if the caller had written
+  // `inner()` directly. Always sound regardless of what the argument does
+  // (identity-wrapper inlining never changes observable behavior -- the
+  // wrapper's own row already required whatever effects the checker
+  // already validated at the original `apply(inner)` call site, and
+  // `inner()` requires the identical row by construction), and leaves the
+  // wrapper's own top-level definition untouched (usable as a value
+  // wherever else it's referenced) -- only matching call sites are
+  // rewritten, so a wrapper used BOTH as a value AND as a direct call
+  // elsewhere is still handled safely either way.
+  dtpw_inline_trivial_wrappers(stmts)
   // #786: hoist non-capturing effectful local lambdas to top-level functions
   // before any other pass. A local `let f = (x) -> { perform ... }` that captures
   // nothing gets promoted to a top-level `let f = ...`, so codegen emits a direct

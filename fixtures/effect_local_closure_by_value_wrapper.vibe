@@ -1,0 +1,50 @@
+// #1070 (narrow slice): a capturing effectful local closure passed BY
+// VALUE to a trivial pass-through wrapper (`apply = (f) -> { f() }`, body
+// EXACTLY a same-arity direct call to its own sole parameter) used to
+// crash at runtime ("null function or function signature mismatch") --
+// #1069's closure-conversion fix only rewrites provably-direct call sites,
+// and `apply(inner)` uses `inner` as a bare ARGUMENT, not a direct call
+// target, so it correctly declined to touch this shape, leaving it on
+// #786's still-broken combinator path.
+//
+// This is NOT the general fix #1070 itself describes as still needed
+// (real closure-conversion-to-value ABI semantics, or locating and fixing
+// #786's own still-unpinned deeper combinator bug) -- it's a narrower,
+// separately-verified slice: `desugar_trait_dict.vibe`'s
+// dtpw_inline_trivial_wrappers rewrites `apply(inner)` into `inner()`
+// BEFORE #786/#1069's hoist+closure-conversion logic ever runs, whenever
+// `apply`'s ENTIRE body is provably just "call my sole parameter with no
+// extra args" -- always sound regardless of what the argument does
+// (identity-wrapper inlining changes no observable behavior), and leaves
+// `apply`'s own top-level definition untouched for any other reference.
+// Once `apply(inner)` becomes `inner()`, it's an ordinary direct call --
+// exactly the shape #1069's already-verified closure conversion already
+// knows how to handle correctly.
+//
+// A genuinely non-trivial wrapper (one that does anything besides the
+// bare call) is correctly left untouched and unaffected by this pass --
+// not exercised by THIS fixture, but see the module's own commit history
+// for the negative-case testing this required before landing.
+//   perform Ask::Get resolves to 5, + captured base (100) == 105
+effect Ask {
+  Get -> Int
+}
+
+let apply = (f: () -> Int with { Ask }) -> Int with { Ask } {
+  f()
+}
+
+export let main = () -> Int {
+  let base = 100
+  let inner = () -> Int with { Ask } {
+    perform Ask::Get + base
+  }
+  handle {
+    apply(inner)
+  } with Ask {
+    Get => resume(5)
+  }
+}
+
+__DATA__
+{"last": "105"}

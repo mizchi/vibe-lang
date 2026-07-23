@@ -4908,6 +4908,37 @@ fi
 rm -rf "$lcccdir"
 echo "[compiler-gate] local effectful closure capture conversion ok (#1069)"
 
+# 40ai. #1070 (narrow slice): a capturing effectful local closure passed BY
+#       VALUE to a trivial pass-through wrapper (`apply = (f) -> { f() }`)
+#       used to crash at runtime -- #1069's closure conversion only
+#       rewrites provably-direct call sites, and `apply(inner)` uses
+#       `inner` as a bare argument, not a direct call target. Fixed by
+#       dtpw_inline_trivial_wrappers (desugar_trait_dict.vibe), which
+#       rewrites `apply(inner)` into `inner()` BEFORE #786/#1069's hoist+
+#       conversion logic runs, whenever `apply`'s entire body is provably
+#       just a same-arity direct call to its own sole parameter -- always
+#       sound (identity-wrapper inlining changes no observable behavior),
+#       leaving `apply`'s own definition untouched for any other use.
+echo "[compiler-gate] 40ai/40 capturing effectful closure passed by value through a trivial wrapper (#1070 narrow slice)"
+lcbvwdir="_build/_gate_local_closure_by_value_wrapper"
+rm -rf "$lcbvwdir"; mkdir -p "$lcbvwdir"
+sed '/^__DATA__$/,$d' fixtures/effect_local_closure_by_value_wrapper.vibe > "$lcbvwdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$lcbvwdir/src.vibe" "$lcbvwdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$lcbvwdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_by_value_wrapper.vibe did not compile" >&2
+  cat "$lcbvwdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+lcbvw_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$lcbvwdir/out.wasm" 2>&1 | tail -1)"
+if [ "$lcbvw_out" != "105" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_by_value_wrapper.vibe got '$lcbvw_out' (want 105) -- #1070's trivial-wrapper inlining regressed" >&2
+  exit 1
+fi
+rm -rf "$lcbvwdir"
+echo "[compiler-gate] local effectful closure passed through trivial wrapper ok (#1070 narrow slice)"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the
