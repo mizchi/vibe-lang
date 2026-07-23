@@ -1,0 +1,67 @@
+// ADR-0076 (#817) Phase 3: a needing function whose row is spelled with an
+// `effectset` alias (`with { AskAll }` where `effectset AskAll = { Ask }`)
+// rather than the bare effect name.
+//
+// checker_stmt.vibe's own effectset-name expansion (es_expand_stmts_effect_rows,
+// ADR-0071 step 3) deliberately runs on a NON-mutating copy of `stmts` used
+// only for type-checking -- its own comment says so explicitly: "codegen
+// never reads the row's text content". That premise stopped being true once
+// evidence_dict_pass (this ADR) started reading row text directly:
+// `ask_helper`'s row stays the literal string "AskAll" all the way through
+// to codegen, so edp_needing_names' string match against a bare "Ask" query
+// never matched it -- an effectset-declared function silently fell back to
+// replay codegen no matter how simple the alias, even a bare whole-effect
+// alias like this one.
+//
+// Found by writing this exact shape and confirming (via a temporary
+// migration-plan probe) that no plan was produced for `Ask` at all, then
+// tracing why rather than assuming a fix would work. Fixed the same way
+// wit_gen.vibe/contract.vibe/checker_stmt.vibe each already fix the
+// identical problem for their own consumers: a small local (re-)expansion
+// of the effectset tables inside inline_direct_perform.vibe itself
+// (edp_es_collect_into/edp_resolve_effect_names_into), re-run on `stmts` as
+// evidence_dict_pass actually receives them, used by edp_row_is_exactly.
+//
+// This fixture's `count`/`compute` shape mirrors
+// fixtures/effect_handle_call_evidence.vibe's own replay-vs-evidence-dict
+// discriminator: if `ask_helper` fell back to replay, the handled body
+// would re-execute from the top on `resume`, incrementing `count` an extra
+// time -- the exact M2 bug (#805) this ADR's Phase 2/3 already fixed for
+// bare effect names. Pinning `count == 2` (not replay-inflated) here is
+// what actually proves migration happened, not merely that the program
+// still produces a plausible-looking answer via the pre-existing fallback.
+//   count == 2 (one increment before ask_helper(), one after)
+//   a == 5 (perform Ask::Get, resolved via the evidence dict)
+//   r == a + count == 7
+//   compute() == (2, 7)
+//   main() == 2 * 1000 + 7 == 2007
+effect Ask {
+  Get -> Int
+}
+
+effectset AskAll = { Ask }
+
+let ask_helper = () -> Int with { AskAll } {
+  perform Ask::Get
+}
+
+let compute = () -> (Int, Int) {
+  let mut count = 0
+  let r = handle {
+    count = count + 1
+    let a = ask_helper()
+    count = count + 1
+    a + count
+  } with Ask {
+    Get => resume(5)
+  }
+  (count, r)
+}
+
+export let main = () -> Int {
+  let (count, r) = compute()
+  count * 1000 + r
+}
+
+__DATA__
+{"last": "2007"}

@@ -4757,6 +4757,43 @@ fi
 rm -rf "$edpclodir"
 echo "[compiler-gate] evidence-dict pass closure literal ok"
 
+# 40ad. ADR-0076 Phase 3 (#817): a needing function's row is spelled with an
+#       `effectset` alias (`with { AskAll }` where `effectset AskAll = {
+#       Ask }`) instead of the bare effect name. checker_stmt.vibe's own
+#       effectset expansion deliberately runs on a non-mutating copy of
+#       `stmts` used only for type-checking ("codegen never reads the row's
+#       text content") -- codegen (this pass included) actually sees the
+#       row string still literally "AskAll", so it silently fell back to
+#       replay no matter how simple the alias. Fixed with a small local
+#       (re-)expansion of the effectset tables inside
+#       inline_direct_perform.vibe itself (edp_es_collect_into/
+#       edp_resolve_effect_names_into), the same pattern wit_gen.vibe/
+#       contract.vibe/checker_stmt.vibe each already use for their own
+#       consumers of effect-row text. This gate's fixture uses the same
+#       replay-vs-evidence-dict `count` discriminator as gate 40u's own
+#       fixture: pinning `count == 2` (not replay-inflated) is what proves
+#       migration genuinely happened, not merely that the answer still
+#       looks plausible via the pre-existing fallback.
+echo "[compiler-gate] 40ad/40 evidence-dict pass: needing function's row spelled via an effectset alias (ADR-0076 Phase 3/#817)"
+edpesdir="_build/_gate_evidence_dict_effectset_alias"
+rm -rf "$edpesdir"; mkdir -p "$edpesdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_effectset_alias.vibe > "$edpesdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpesdir/src.vibe" "$edpesdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpesdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_effectset_alias.vibe did not compile" >&2
+  cat "$edpesdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edpes_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpesdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edpes_out" != "2007" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_effectset_alias.vibe got '$edpes_out' (want 2007) -- either effectset-alias row recognition regressed, or it regressed back to the replay-inflated value" >&2
+  exit 1
+fi
+rm -rf "$edpesdir"
+echo "[compiler-gate] evidence-dict pass effectset alias ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the

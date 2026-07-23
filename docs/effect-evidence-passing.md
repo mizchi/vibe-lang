@@ -1166,6 +1166,67 @@ closure (`never_called`、body は `perform Ask::Get` を含む) を
 fixture で pin している。検証は今回も migration-plan probe で
 実施し、`Ask` が実際に migrate することを確認した。
 
+### 追記 15 (2026-07-23、同日): effectset alias で宣言された row が
+一度も migrate されていなかった (「追記 6」以来のバグと同型の見落とし)
+
+module doc comment の「Not attempted here」節に残っていた
+「effectset-expanded rows」を検証目的で試したところ、単純な
+whole-effect alias (`effectset AskAll = { Ask }`、`with { AskAll }`)
+ですら **一度も migrate されていなかった** ことが判明した
+(temporary migration-plan probe で `plans` が空であることをまず確認、
+その後に理由を追跡 -- 「推測ではなく先に空であることを直接確認してから
+原因を追う」という、このセッションを通じて確立した手順)。
+
+原因は checker 側の既存の意図的な設計にあった:
+`checker_stmt.vibe::check_program` の
+`es_expand_stmts_effect_rows` (ADR-0071 step 3) は `stmts` の
+**non-mutating コピー** に対して effectset 名の展開を行い、
+それを型チェック専用に使う。そのコメントには明示的にこう書かれている:
+「codegen never reads the row's text content」-- つまり codegen が
+渡される実際の `EFn` の `eff` 文字列は展開されない生の
+`"AskAll"` のままで良い、という前提。この前提は
+`evidence_dict_pass` が row 文字列を直接読むようになった時点で
+既に成り立たなくなっていたが、誰も気づいていなかった。
+
+`edp_needing_names`/`edp_row_is_exactly` の comma-split + trim による
+文字列比較は、当然ながら生の `"AskAll"` を `"Ask"` と一致させられず、
+effectset で宣言されたどんな row (単純な whole-effect alias でさえ)
+も `needing` に一切含まれないまま静かに replay へフォールバックして
+いた -- コンパイルエラーにもならず、実行結果も (replay 自体は元々
+正しいので) 一見正しく見えるため、誰にも気づかれずに残っていた
+類のバグ。
+
+修正は `wit_gen.vibe`/`contract.vibe`/`checker_stmt.vibe` が
+それぞれ同じ問題を自分の消費者向けに解決している方法と全く同じ
+パターンを踏襲した: 新しい cross-file export を作らず (`docs/
+effectset.md` の bootstrap gotcha 参照)、`inline_direct_perform.vibe`
+自身に effectset テーブル収集・展開ロジックの小さなローカルコピー
+(`edp_es_collect_into`/`edp_es_expand_into`/`edp_effect_name_of`/
+`edp_resolve_effect_names_into`) を追加し、`stmts` を
+evidence_dict_pass が実際に受け取る形のまま (checker のコピーとは
+独立に) 自前で再展開する。`edp_row_is_exactly`/`edp_needing_names`
+はこのテーブルを引数に取るよう拡張し、comma-split した各 row item を
+effect 名の集合へ解決してから `ename` の有無を判定するようになった。
+
+effect 名の粒度までしか解決しない (operation 単位までは解決しない)
+設計は意図的: `edp_make_dict_struct_stmt` が作る dict struct は
+そもそも常に effect の全 operation 分のフィールドを持ち、handle site
+の arms も常に全 operation 分の closure を用意するため、
+operation-level effectset (`effectset Env::Read = { Env::get, ... }`)
+であっても「この row が effect X を要求するか」という
+evidence_dict_pass にとって唯一必要な問いには、effect 名まで
+解決すれば十分に答えられる -- 呼び出し側が宣言した operation
+の部分集合が全体のどのサブセットかを追跡する必要はない。
+
+`fixtures/effect_handle_call_evidence_effectset_alias.vibe`
+(gate 40ad、期待値 2007) は gate 40u と同じ `count` による
+replay-vs-evidence-dict の判別構造を使い、「compile が通って妥当な
+値を返す」ではなく「実際に migrate された」ことを直接 pin している
+(replay へ fallback していれば `count` が余分にインクリメントされ、
+異なる値になっていたはず)。検証は temporary migration-plan probe と
+両方の replay-check fixture (functional value のみの版、count 判別版)
+の両方で実施した。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
