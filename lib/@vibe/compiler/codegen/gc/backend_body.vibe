@@ -308,6 +308,27 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
         Array::push(ctor_type_names_list, sname)
         0
       },
+      // #817 gc-backend follow-up (2026-07-23): mirrors linked_compile.vibe's
+      // own SSuberror case exactly -- a suberror is a single-typed enum
+      // whose constructors produce a throwable value; register its ctors in
+      // the ctor table like an enum's so `KeyInvalid("x")` allocates a
+      // tagged value instead of hitting backend_call.vibe's "unknown
+      // constructor or function" error. This case was simply never added
+      // when the gc backend's own ctor-registration loop was written
+      // (SEnum/SStruct only) -- found via gc-backend coverage testing.
+      SSuberror(_, ename, variants) => {
+        type_index = type_index + 1
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, vfields) = Array::get(variants, vi)
+          Array::push(ctor_names_list, vname)
+          Array::push(ctor_tags_list, (type_index<<16)|vi)
+          Array::push(ctor_field_counts_list, Array::length(vfields))
+          Array::push(ctor_type_names_list, ename)
+          vi = vi + 1
+        }
+        0
+      },
       _ => 0
     }
     ei2 = ei2 + 1

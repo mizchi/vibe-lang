@@ -1,0 +1,36 @@
+// gc-backend follow-up: `suberror` constructors (e.g. `KeyInvalid("x")`)
+// were never registered in the wasm-gc backend's ctor table
+// (codegen/gc/backend_body.vibe's ctor-registration loop had SEnum/SStruct
+// cases but no SSuberror case, unlike the linear backend's
+// codegen/wasi/linked_compile.vibe, which has always had one) --
+// `throw(KeyInvalid(...))` hit backend_call.vibe's "unknown constructor or
+// function" hard error. Mirrors linked_compile.vibe's SSuberror handling
+// exactly: a suberror is a single-typed enum whose constructors produce a
+// throwable value, registered the same way an enum's variants are.
+//
+// Exercises the exact usage pattern real fixtures use (a suberror
+// constructed, thrown, and caught via a plain `Throw(_) => ...` arm that
+// never inspects the payload) -- confirmed via A/B testing against a
+// pre-change baseline that this failed under VIBE_BACKEND=gc with
+// "unknown constructor or function: KeyInvalid" before this fix, and that
+// enum/struct/suberror constructor type-index numbering all stay correct
+// together after adding the missing case.
+//   lookup("ok") -> 42; lookup("") -> caught (-1); lookup("missing") -> caught (-1)
+//   42 * 100 + (-1 + 1) * 10 + (-1 + 1) = 4200
+suberror KeyNotFound(String)
+suberror KeyInvalid(String)
+
+export let main = () -> Int {
+  let lookup: (String) -> Int with { Error } = (key) -> {
+    if key == "" { throw(KeyInvalid("empty key")) }
+    if key == "missing" { throw(KeyNotFound(key)) }
+    42
+  }
+  let r1 = handle { lookup("ok") } with Error { Throw(_) => -1 }
+  let r2 = handle { lookup("") } with Error { Throw(_) => -1 }
+  let r3 = handle { lookup("missing") } with Error { Throw(_) => -1 }
+  r1 * 100 + (r2 + 1) * 10 + (r3 + 1)
+}
+
+__DATA__
+{"last": "4200"}

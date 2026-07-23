@@ -4211,6 +4211,33 @@ fi
 rm -rf "$gcidxdir"
 echo "[compiler-gate] wasm-gc backend pure-builtin allowlist ok (3)"
 
+# 40h7. gc-backend follow-up: `suberror` constructors were never registered
+#       in the wasm-gc backend's ctor table (backend_body.vibe's ctor-
+#       registration loop had SEnum/SStruct cases but no SSuberror case,
+#       unlike linked_compile.vibe which has always had one) --
+#       `throw(KeyInvalid(...))` hit backend_call.vibe's "unknown
+#       constructor or function" hard error. Mirrors linked_compile.vibe's
+#       SSuberror handling exactly.
+echo "[compiler-gate] 40h7/40 wasm-gc backend: suberror constructor registration (gc follow-up)"
+gcsuberrdir="_build/_gate_gc_suberror_ctor"
+rm -rf "$gcsuberrdir"; mkdir -p "$gcsuberrdir"
+sed '/^__DATA__$/,$d' fixtures/gc_backend_suberror_ctor.vibe > "$gcsuberrdir/src.vibe"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gcsuberrdir/src.vibe" "$gcsuberrdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$gcsuberrdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: gc_backend_suberror_ctor.vibe did not compile under VIBE_BACKEND=gc" >&2
+  cat "$gcsuberrdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+gcsuberr_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcsuberrdir/out.wasm" 2>&1 | tail -1)"
+if [ "$gcsuberr_out" != "4200" ]; then
+  echo "[compiler-gate] FAIL: gc_backend_suberror_ctor.vibe under gc got '$gcsuberr_out' (want 4200) -- suberror ctor registration regressed" >&2
+  exit 1
+fi
+rm -rf "$gcsuberrdir"
+echo "[compiler-gate] wasm-gc backend suberror constructor registration ok (4200)"
+
 # 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
 #      must render fixtures/wit_gen_http.vibe byte-exactly as the committed
 #      golden. Pins the WIT mapping contract (docs/effect-wit-mapping.md):
