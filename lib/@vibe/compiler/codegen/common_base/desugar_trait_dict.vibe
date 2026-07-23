@@ -5744,6 +5744,55 @@ fn dlh_naa_scan_arms(arms: Array[(Pat, Expr)], names: Array[String], bad: Array[
 }
 
 ///|
+fn dlh_args_have_literal_efn(args: Array[Expr]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(args) && !found {
+    match Array::get(args, i) {
+      EFn(_, _, _, _, _, _) => { found = true },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+///|
+// Rewrites `callee(args...)` so every DIRECT `EFn` literal in `args` is
+// let-bound immediately before the call, left-to-right (same evaluation
+// order as the literal appearing inline): `callee(a, <lit>, b)` becomes
+// `let __dlh_arglit_N = <lit>; callee(a, __dlh_arglit_N, b)`. Non-literal
+// args are left untouched. See dlh_args_have_literal_efn's call site
+// (dlh_hoist_expr's ECall case) for why this exists.
+fn dlh_letbind_literal_args(callee: Expr, args: Array[Expr], off: Int, ctr: Array[Int]) -> Expr {
+  let new_args = array_empty()
+  let lits = array_empty()
+  let mut i = 0
+  while i < Array::length(args) {
+    let a = Array::get(args, i)
+    match a {
+      EFn(_, _, _, _, _, _) => {
+        let idx = Array::get(ctr, 0)
+        Array::set(ctr, 0, idx + 1)
+        let nm = "__dlh_arglit_\{idx}"
+        Array::push(lits, (nm, a))
+        Array::push(new_args, EIdent(nm, off))
+      },
+      other => Array::push(new_args, other)
+    }
+    i = i + 1
+  }
+  let mut wrapped = ECall(callee, new_args, off)
+  let mut k = Array::length(lits) - 1
+  while k >= 0 {
+    let (nm, lit) = Array::get(lits, k)
+    wrapped = ELet(nm, lit, wrapped, off)
+    k = k - 1
+  }
+  wrapped
+}
+
+///|
 fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
   match expr {
     ELet(name, v, b, soff) => match v {
@@ -5836,9 +5885,51 @@ fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
     },
     EBinOp(op, l, r) => EBinOp(op, dlh_hoist_expr(l, hoisted, ctr), dlh_hoist_expr(r, hoisted, ctr)),
     EUnaryOp(op, e) => EUnaryOp(op, dlh_hoist_expr(e, hoisted, ctr)),
-    ECall(callee, args, off) => ECall(dlh_hoist_expr(callee, hoisted, ctr), for a in args {
-      dlh_hoist_expr(a, hoisted, ctr)
-    }, off),
+    // A bare IIFE -- `(() -> ... { perform ... })()` -- calls an `EFn`
+    // literal directly with NO enclosing `ELet` at all. Every hoist/
+    // closure-conversion rule above (capture-free hoist, #1069's
+    // capturing-closure conversion) pattern-matches specifically on
+    // `ELet(name, EFn(...), body)`, so this shape evaded all of them and
+    // fell straight through to the pre-#786 broken local-closure+effect
+    // combinator path -- an effectful IIFE with ZERO captures produced
+    // invalid wasm ("invalid signature index") at compile time, found via
+    // testing effect_row_open.vibe-adjacent higher-order-function shapes
+    // (2026-07-23). Fix: desugar the IIFE into the ALREADY-handled
+    // `ELet(fresh, EFn(...), fresh())` shape and re-enter this same
+    // function -- reuses 100% of the existing, separately-verified
+    // ELet/EFn logic above with no new closure-conversion code.
+    ECall(callee, args, off) => match callee {
+      EFn(_, _, _, _, _, _) => {
+        let idx = Array::get(ctr, 0)
+        Array::set(ctr, 0, idx + 1)
+        let iife_name = "__dlh_iife_\{idx}"
+        dlh_hoist_expr(ELet(iife_name, callee, ECall(EIdent(iife_name, off), args, off), off), hoisted, ctr)
+      },
+      _ => if dlh_args_have_literal_efn(args) {
+        // An inline `EFn` literal passed as a CALL ARGUMENT (not the
+        // callee) to an ordinary (non-trivial-wrapper) named function --
+        // `with_log(() -> Int with { Log } { perform ...; 42 })` where
+        // `with_log`'s own body genuinely calls its parameter internally
+        // (`handle { f() } with Log { .. }`), not merely a same-arity
+        // forward `dtpw_inline_trivial_wrappers` (#1070) would already
+        // reduce to an IIFE. Verified via direct A/B testing (2026-07-23)
+        // that a NAMED closure (top-level, or already hoisted) passed the
+        // exact same way to the exact same `with_log` already works fine
+        // -- confirming the crash is specific to the literal itself
+        // having no name for any hoist/closure-conversion rule to latch
+        // onto, not to anything about `with_log`. Fix: synthesize a let-
+        // binding for each literal-EFn argument immediately before this
+        // call (semantics-preserving -- same left-to-right evaluation
+        // order as the literal appearing inline) so the existing ELet/EFn
+        // hoist logic above turns it into an ordinary named function
+        // reference, exactly like the already-working named-closure case.
+        dlh_hoist_expr(dlh_letbind_literal_args(callee, args, off, ctr), hoisted, ctr)
+      } else {
+        ECall(dlh_hoist_expr(callee, hoisted, ctr), for a in args {
+          dlh_hoist_expr(a, hoisted, ctr)
+        }, off)
+      }
+    },
     ETuple(es) => ETuple(for e in es {
       dlh_hoist_expr(e, hoisted, ctr)
     }),

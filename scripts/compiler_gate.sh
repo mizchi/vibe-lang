@@ -5189,6 +5189,40 @@ fi
 rm -rf "$lcwadir"
 echo "[compiler-gate] trivial-wrapper inlining wrong-arity non-match ok (#1070 narrow slice)"
 
+# 40al. Found while investigating effect_row_open.vibe (2026-07-23): an
+#       inline `EFn` lambda literal -- never let-bound to a name -- that
+#       performs an effect, either as a bare IIFE or passed as a CALL
+#       ARGUMENT to a named function that calls it internally, evaded every
+#       existing local-closure fix (#786/#1069/#1070, all pattern-matching
+#       on `ELet(name, EFn(...), body)`) and produced invalid wasm /
+#       crashed at runtime. Fixed in desugar_trait_dict.vibe's
+#       dlh_hoist_expr: an IIFE desugars into the already-handled
+#       `ELet(fresh, EFn(...), fresh())` shape; a literal-EFn call argument
+#       is let-bound immediately before the call
+#       (dlh_letbind_literal_args). Both reduce to the existing, separately
+#       -verified ELet/EFn hoist logic. Scope: capture-free literals only
+#       (a capturing literal passed as a HOF argument still hits #1070's
+#       already-known general case -- see the fixture's own doc comment).
+echo "[compiler-gate] 40al/40 inline effectful lambda literal (IIFE / HOF argument, capture-free) no longer crashes"
+illhadir="_build/_gate_inline_lambda_literal_hof_arg"
+rm -rf "$illhadir"; mkdir -p "$illhadir"
+sed '/^__DATA__$/,$d' fixtures/effect_inline_lambda_literal_hof_arg.vibe > "$illhadir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$illhadir/src.vibe" "$illhadir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$illhadir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_inline_lambda_literal_hof_arg.vibe did not compile" >&2
+  cat "$illhadir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+illha_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$illhadir/out.wasm" 2>&1 | tail -1)"
+if [ "$illha_out" != "10" ]; then
+  echo "[compiler-gate] FAIL: effect_inline_lambda_literal_hof_arg.vibe got '$illha_out' (want 10) -- inline lambda literal IIFE/HOF-arg fix regressed" >&2
+  exit 1
+fi
+rm -rf "$illhadir"
+echo "[compiler-gate] inline effectful lambda literal IIFE/HOF-arg fix ok (10)"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the

@@ -1,0 +1,69 @@
+// Found via effect_row_open.vibe-adjacent investigation (2026-07-23): an
+// inline `EFn` lambda literal -- one written directly at a call site, never
+// let-bound to a name -- performing an effect, used to produce genuinely
+// INVALID wasm ("invalid signature index" at compile time) or crash at
+// runtime ("null function or function signature mismatch"), in two related
+// shapes that both evaded every existing local-closure fix (#786/#1069/
+// #1070), because all of them pattern-match specifically on
+// `ELet(name, EFn(...), body)` -- an inline literal with no enclosing let
+// has no name for any of that machinery to latch onto:
+//
+//   1. A bare IIFE: `(() -> Int with { Log } { perform ...; 42 })()`.
+//   2. An inline literal passed as a CALL ARGUMENT (not the callee) to an
+//      ordinary named function whose body genuinely calls its parameter
+//      internally (not a #1070 trivial same-arity forward) -- e.g.
+//      `with_log(() -> Int with { Log } { perform ...; 42 })` where
+//      `with_log = (f) -> { handle { f() } with Log { ... } }`.
+//
+// Fixed in desugar_trait_dict.vibe's dlh_hoist_expr: an IIFE is desugared
+// into the already-handled `ELet(fresh, EFn(...), fresh())` shape; a
+// literal-EFn call ARGUMENT is let-bound immediately before the call
+// (`dlh_letbind_literal_args`, semantics-preserving left-to-right
+// evaluation order). Both reduce to the existing, separately-verified
+// ELet/EFn hoist logic -- no new closure-conversion code was needed. Note
+// this is NOT the row-polymorphism gap (docs/effect-evidence-passing.md
+// 追記23) -- the effect row here is fully monomorphic (`{ Log }` on both
+// sides), and the crash reproduces with zero row-variable involvement at
+// all; it just happened to be found while investigating that fixture.
+//
+// Scope: this fix only covers a CAPTURE-FREE literal (confirmed via direct
+// testing -- reduces to a plain top-level hoist, exactly like a named
+// function). A CAPTURING literal passed the same way (as a HOF argument,
+// not called directly at its own definition site) still falls through to
+// #1070's already-known, already-deferred general case: the synthesized
+// let-binding this fix introduces makes `dlh_marker_only_called_directly`
+// correctly see the closure used as a VALUE (passed into `with_log`, not
+// called directly in the visible scope), so #1069's closure-conversion
+// safely declines rather than risk an unsound rewrite. This fixture
+// deliberately stays capture-free to pin only what's actually fixed.
+//
+//   IIFE (handled by an OUTER handle, not a nested one): perform resolves
+//   to 5 -> 5
+//   with_log(inline lambda, no captures): perform resolves to 5 -> 5
+//   total: 5 + 5 = 10
+effect Log {
+  Get -> Int
+}
+
+let with_log = (f: () -> Int with { Log }) -> Int {
+  handle { f() } with Log {
+    Get => resume(5)
+  }
+}
+
+export let main = () -> Int {
+  let iife_result = handle {
+    (() -> Int with { Log } {
+      perform Log::Get
+    })()
+  } with Log {
+    Get => resume(5)
+  }
+  let hof_result = with_log(() -> Int with { Log } {
+    perform Log::Get
+  })
+  iife_result + hof_result
+}
+
+__DATA__
+{"last": "10"}
