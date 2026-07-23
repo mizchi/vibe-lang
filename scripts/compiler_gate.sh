@@ -5745,4 +5745,45 @@ fi
 rm -rf "$vpkgdir"
 echo "[compiler-gate] missing index.vpkg scan (#897 Phase 4) ok"
 
+# 46/46. Ctor Double-field match binding under RC (#1062; reverted attempt
+#        PR #1068 / commit 0269998). A pattern-bound constructor field
+#        (`Circle(r) => r * r`) was never registered into the float-local-slot
+#        tracking `let`-bound floats get, so a Double-typed field fell through
+#        to the integer-multiply path -- under RC that multiplies two boxed-
+#        float POINTERS together, producing a bogus pointer that traps with
+#        "memory access out of bounds" when dereferenced. The first fix
+#        attempt (PR #1068) added CompileCtx.ctor_float_fields +
+#        bind_match_pat's ctor_field_is_float consumer and correctly fixed
+#        this repro, but was reverted: the broader
+#        "scripts/unit_test_runner.sh" allowlist (462 files) showed ~37-39
+#        unrelated failures in parser/checker/printer tests that this gate's
+#        OWN narrower checks never exercised. Root cause of THAT regression:
+#        float_local_slots was never pruned at match-arm / if-else boundaries
+#        the way int_local_slots / agg_local_slots already are, so a sibling
+#        arm's non-float field reusing the same local slot number as an
+#        earlier arm's Double-typed bind inherited a stale "floatish" mark and
+#        took the f64 path for ordinary integer arithmetic (see
+#        float_log_reset_above in codegen/common_base/common_base.vibe, and
+#        fixtures/ctor_float_sibling_arm_slot_test.vibe which pins that class
+#        of bug directly, RC-independent). This gate compiles+runs the
+#        original #1062 repro under VIBE_RC=1 -- the OOB-trap-specific
+#        manifestation the issue was filed for.
+echo "[compiler-gate] 46/46 ctor Double-field match binding under RC (#1062)"
+c1062dir="_build/_gate_ctor_double_field_rc"
+rm -rf "$c1062dir"; mkdir -p "$c1062dir"
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/rc_ctor_double_field_match_test.vibe" "$c1062dir/c1062.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$c1062dir/c1062.wasm" ]; then
+  echo "[compiler-gate] FAIL: ctor Double-field match fixture did not compile under RC" >&2
+  cat "$c1062dir/c1062.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$c1062dir/c1062.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: ctor Double-field match fixture trapped under RC (#1062 regressed)" >&2; exit 1
+fi
+rm -rf "$c1062dir"
+echo "[compiler-gate] ctor Double-field match binding under RC (#1062) ok"
+
 echo "[compiler-gate] ok"
