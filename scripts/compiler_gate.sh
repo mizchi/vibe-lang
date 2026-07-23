@@ -4696,6 +4696,36 @@ fi
 rm -rf "$edppurdir"
 echo "[compiler-gate] evidence-dict pass pure-helper call ok"
 
+# 40ab. ADR-0076 Phase 3 (#817): a needing function's body reads a struct
+#       field (`b.value`, an `EDot`) rather than only ever binding/
+#       returning plain values. edp_has_unsafe_construct's `EDot` case
+#       used to be unconditionally unsafe (deliberately conservative --
+#       this AST-level pass has no type information); it now recurses
+#       into the object expression instead, since a bare `.field` READ
+#       (not a call through it) cannot itself hide a perform or a
+#       needing-call regardless of the field's static type. Verified (via
+#       a temporary migration-plan probe during development) that `Ask`
+#       genuinely migrates here.
+echo "[compiler-gate] 40ab/40 evidence-dict pass: struct field read via EDot (ADR-0076 Phase 3/#817)"
+edpdotdir="_build/_gate_evidence_dict_struct_field"
+rm -rf "$edpdotdir"; mkdir -p "$edpdotdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_struct_field.vibe > "$edpdotdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpdotdir/src.vibe" "$edpdotdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpdotdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_struct_field.vibe did not compile" >&2
+  cat "$edpdotdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edpdot_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpdotdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edpdot_out" != "6" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_struct_field.vibe got '$edpdot_out' (want 6) -- EDot eligibility regressed" >&2
+  exit 1
+fi
+rm -rf "$edpdotdir"
+echo "[compiler-gate] evidence-dict pass struct field read ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the

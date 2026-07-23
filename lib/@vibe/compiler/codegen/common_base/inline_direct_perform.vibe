@@ -622,11 +622,16 @@ fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_b
 // user-defined function the checker has ALREADY proven pure (empty
 // declared row, `edp_pure_fn_names`) is ALSO safe now, not just the
 // hand-audited `edp_pure_builtin_names` allowlist -- see fixtures/
-// effect_handle_call_evidence_pure_helper.vibe. Expanding coverage
-// further (effectset-expanded rows, deeper call chains through eligible-
-// but-indirect helpers -- e.g. a wrapper that merely forwards to a
-// needing function without itself declaring the effect) is expected
-// follow-up, not a soundness gap in what already lands here.
+// effect_handle_call_evidence_pure_helper.vibe. A bare `.field` READ
+// (`EDot`, not a call through it) is ALSO safe now -- see fixtures/
+// effect_handle_call_evidence_struct_field.vibe -- despite this pass
+// having no type information: only the object expression being read
+// from can hide anything unsafe, which the existing traversal already
+// answers soundly regardless of the field's static type. Expanding
+// coverage further (effectset-expanded rows, deeper call chains through
+// eligible-but-indirect helpers -- e.g. a wrapper that merely forwards
+// to a needing function without itself declaring the effect) is
+// expected follow-up, not a soundness gap in what already lands here.
 // Two phases, deliberately NOT interleaved (see edp_row_is_exactly's doc
 // comment, "追記 8", for the bug this avoids): first decide eligibility
 // for EVERY effect against the still-completely-unmutated `stmts`, then
@@ -946,6 +951,21 @@ fn empty_str_array() -> Array[String] {
 // needs NO corresponding rewrite-side change, since it already falls
 // through those functions' existing "recurse into args, leave the call
 // itself unchanged" default case, which is exactly correct here too.
+//
+// `EDot(obj, field, ..)` -- a plain `.field` read, NOT a call through it
+// (calling through a field is `ECall(EDot(..), args)`, which the ECall
+// case above still rejects via its `_ => true` fallback for any callee
+// shape besides a bare `EIdent`) -- is safe to recurse into `obj` for
+// rather than reject outright. Unlike the `needing`/`pure_fns` checks,
+// this needs NO type information and carries NO name-shadowing risk: it
+// isn't a name lookup at all, just "does the object expression being
+// read from hide anything unsafe", which the recursive traversal already
+// answers soundly for any `obj` shape. The field name itself is a bare
+// string, not a sub-expression, so there's nothing else to check.
+// edp_rewrite_needing_body/edp_rewrite_handle_body gained a matching
+// `EDot` case (recursing into `obj`, leaving the field name untouched)
+// for the same "the two traversals must agree" reason as everywhere else
+// in this function.
 fn edp_has_unsafe_construct(expr: Expr, needing: Array[String], ename: String, pure_fns: Array[String]) -> Bool {
   match expr {
     EFn(_, _, _, _, _, _) => true,
@@ -983,7 +1003,7 @@ fn edp_has_unsafe_construct(expr: Expr, needing: Array[String], ename: String, p
     EUnaryOp(_, e2) => edp_has_unsafe_construct(e2, needing, ename, pure_fns),
     EAssign(_, v, c) => edp_has_unsafe_construct(v, needing, ename, pure_fns) || edp_has_unsafe_construct(c, needing, ename, pure_fns),
     EAssignOp(_, _, v, c) => edp_has_unsafe_construct(v, needing, ename, pure_fns) || edp_has_unsafe_construct(c, needing, ename, pure_fns),
-    EDot(_, _, _, _) => true,
+    EDot(o, _, _, _) => edp_has_unsafe_construct(o, needing, ename, pure_fns),
     ELabeledArg(_, _, v) => edp_has_unsafe_construct(v, needing, ename, pure_fns),
     EReturn(e2) => edp_has_unsafe_construct(e2, needing, ename, pure_fns),
     EBreak(opt) => match opt {
@@ -1489,6 +1509,11 @@ fn edp_rewrite_needing_body(expr: Expr, ename: String, dict_pname: String, needi
     EAssign(n, v, c) => EAssign(n, edp_rewrite_needing_body(v, ename, dict_pname, needing), edp_rewrite_needing_body(c, ename, dict_pname, needing)),
     EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_rewrite_needing_body(v, ename, dict_pname, needing), edp_rewrite_needing_body(c, ename, dict_pname, needing)),
     EReturn(e2) => EReturn(edp_rewrite_needing_body(e2, ename, dict_pname, needing)),
+    // A bare `.field` read (NOT a call through it -- ECall's own EDot
+    // callee case never recurses through here, `_ => true`/its rewrite
+    // counterpart's `_ => ECall(...)` catch it independently) only needs
+    // its object expression rewritten; the field name is a bare string.
+    EDot(o, f, off1, off2) => EDot(edp_rewrite_needing_body(o, ename, dict_pname, needing), f, off1, off2),
     ECall(callee, args, off) => match callee {
       EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
         edp_rewrite_perform_via_dict(Array::get(args, 0), ename, dict_pname, needing)
@@ -1682,6 +1707,9 @@ fn edp_rewrite_handle_body(expr: Expr, ename: String, op_names: Array[String], b
     EAssign(n, v, c) => EAssign(n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(c, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
     EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(c, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
     EReturn(e2) => EReturn(edp_rewrite_handle_body(e2, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    // Same bare-`.field`-read handling as edp_rewrite_needing_body: only
+    // the object expression can hide anything that needs rewriting.
+    EDot(o, f, off1, off2) => EDot(edp_rewrite_handle_body(o, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), f, off1, off2),
     ECall(callee, args, off) => match callee {
       EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
         edp_splice_perform(Array::get(args, 0), op_names, bind_names_list, prepared_bodies)

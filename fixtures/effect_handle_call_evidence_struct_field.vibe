@@ -1,0 +1,56 @@
+// ADR-0076 (#817) Phase 3: a needing function's body reads a struct field
+// (`b.value`, an `EDot`) rather than avoiding field access entirely.
+//
+// edp_has_unsafe_construct's `EDot` case used to be unconditionally
+// unsafe, deliberately conservative because this AST-level pass has no
+// type information -- it cannot know whether `.field` reaches a plain
+// data field or something dispatched dynamically. But a BARE `.field`
+// READ (as opposed to a CALL through it, `obj.method(...)`, which the
+// ECall case's `_ => true` fallback for any non-`EIdent` callee still
+// correctly rejects) genuinely cannot itself perform an effect, call a
+// needing function, or hide anything this pass would need to rewrite --
+// it just reads a value out of a struct. No type information is needed
+// to know THAT; only the object expression being read from can matter,
+// and the existing recursive traversal already answers that soundly for
+// any shape. edp_has_unsafe_construct's `EDot` case now recurses into the
+// object expression (`o` in `EDot(o, field, ..)`) instead of rejecting
+// outright, and edp_rewrite_needing_body/edp_rewrite_handle_body gained a
+// matching `EDot` case (recurse into `o`, leave the field name untouched)
+// so a perform hidden inside the object expression -- e.g.
+// `(perform Ask::Get).some_field` -- still gets correctly rewritten.
+//
+// Note: `Box::{ value: a }` (not the `Box { value: a }` sugar) is used
+// here -- the sugar form has a parser ambiguity with block expressions in
+// `let`-initializer position that is unrelated to this fixture's actual
+// subject and pre-existing.
+//
+// Verified (via a temporary migration-plan probe during development)
+// that `Ask` genuinely migrates here.
+//
+//   a == 5 (perform Ask::Get, resolved via the evidence dict)
+//   b.value == 5
+//   main() == b.value + 1 == 6
+effect Ask {
+  Get -> Int
+}
+
+struct Box {
+  value: Int
+}
+
+let ask_helper = () -> Int with { Ask } {
+  let a = perform Ask::Get
+  let b = Box::{ value: a }
+  b.value + 1
+}
+
+export let main = () -> Int {
+  handle {
+    ask_helper()
+  } with Ask {
+    Get => resume(5)
+  }
+}
+
+__DATA__
+{"last": "6"}

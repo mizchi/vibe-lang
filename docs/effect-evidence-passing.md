@@ -1078,6 +1078,55 @@ multi-effect row と directly-nested handle の両方の組み合わせを
 effectset-expanded row・間接呼び出しチェーンの拡張) は
 `edp_has_unsafe_construct` の module doc に引き続き明記している。
 
+### 追記 13 (2026-07-23、同日): pure helper 呼び出しと EDot (struct field
+読み取り) の 2 つを追加で解禁
+
+同日中にさらに 2 つの eligibility 拡張を実施した。
+
+**Pure helper 呼び出し**: `edp_has_unsafe_construct` の `ECall` ケースは
+callee が `perform`/`resume`、手動で列挙した `edp_pure_builtin_names`
+のいずれか、または `needing` のメンバーでない限り無条件 unsafe だった
+-- ユーザー定義の普通の純粋関数 (`with` 節を持たない、つまりチェッカー
+が既に「何も perform しない」と証明済みの関数) を呼ぶだけで migration
+全体が disqualify されていた。`edp_pure_fn_names` (fn_defs から row=="" の
+関数名を集める) を追加し、そのメンバーへの呼び出しも安全と認識する
+ように拡張した -- #942 が保証する row 文字列そのものに基づく判定なので、
+呼び出し先の body を再帰チェックする必要すらない (row=="" は「一切
+perform できない」ことをチェッカー自身が既に証明済みだから)。
+
+開発中に一時的な migration-plan probe 自体にバグを作り込んでしまい
+(本物の機能ではなく、使い捨てデバッグ計装コードの方に)、一見「main()
+の戻り値が期待値の 2 倍になる」という不可解な結果に遭遇したが、probe
+コードを単純化・以前確立済みの安全なパターン (`main` 単体を上書き) に
+差し替えたところ即座に解消した。これもこのセッション終始一貫している
+教訓 (計装自体もバグを持ちうる、コード変更前後の A/B 比較で切り分ける)
+を再確認する出来事だった。
+
+**EDot (struct field 読み取り)**: `edp_has_unsafe_construct` の
+`EDot(_, _, _, _) => true` は元々無条件 unsafe だった (このパスには
+型情報が無いため、フィールドアクセスの先が何なのか判別できないという
+保守的な理由)。しかし `.field` の**単純な読み取り**は、それを**呼び出す**
+場合 (`obj.method(...)`、`ECall` の `EDot` callee は依然として `_ =>
+true` で拒否される) とは違い、型情報が無くても健全に安全と判定できる
+-- object 式自身が何を隠しているかだけが問題であり、既存の再帰
+トラバーサルがそれを型に関係なく正しく答える。`EDot(o, _, _, _) =>
+edp_has_unsafe_construct(o, ...)` へ緩和し、
+`edp_rewrite_needing_body`/`edp_rewrite_handle_body` にも対応する
+`EDot` ケース (object 式のみ再帰、フィールド名はそのまま) を追加した。
+
+検証は今回も migration-plan probe で実施し、`Ask` が実際に migrate
+していることを確認した (`fixtures/effect_handle_call_evidence_struct_
+field.vibe`、期待値 6)。開発中、`Type { field: value }` sugar 構文が
+`let` 初期化子の位置でパーサーのブロック式との曖昧性により失敗する
+ことに気づいた (これは今回の変更とは無関係の既存の挙動 -- 同じ
+既にコミット済みのビルドでも再現することを確認済み) が、`Type::{
+field: value }` (`::` 付き、非糖衣形式) を使うことで回避した。
+
+`fixtures/effect_handle_call_evidence_pure_helper.vibe` (gate 40aa) と
+`fixtures/effect_handle_call_evidence_struct_field.vibe` (gate 40ab) を
+regression fixture として追加。両方とも `edp_has_unsafe_construct` の
+module doc comment (「Not attempted here」段落) を更新して反映した。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
