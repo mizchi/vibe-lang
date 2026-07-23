@@ -119,6 +119,18 @@ export struct CompileCtx {
   func_offset: Int;
   ref_cell_names: Array[String];
   ctor_table: CtorTable;
+  // #1062: sparse `ctor_idx * 64 + field_idx` entries for constructor (enum
+  // variant / struct) fields whose DECLARED type is Double/Float, keyed by
+  // position in ctor_table.names (see ctor_table_index_of) and positional
+  // field index (see ctor_table's field_counts). Built once from the
+  // program's SEnum/SSuberror/SStruct declarations (the only place a
+  // constructor field's static type is available -- codegen itself is
+  // otherwise untyped, see float_local_slots below). Consulted by
+  // bind_match_pat (compile_match.vibe) so a pattern-bound field like `r` in
+  // `Circle(r) => r * r` gets registered into float_local_slots exactly like
+  // a `let`-bound float, instead of falling through to the integer-multiply
+  // path and treating a boxed-float pointer as a scalar (OOB trap under RC).
+  ctor_float_fields: Array[Int];
   thunk_names: Array[String];
   const_int_names: Array[String];
   const_int_values: Array[Int];
@@ -938,6 +950,24 @@ export fn ctor_table_index_of(ct: CtorTable, name: String) -> Int {
       Array::get(ct.names_sorted_pos, slot)
     }
   }
+}
+
+// #1062: is constructor `ctor_idx`'s positional field `field_idx` declared
+// Double/Float? See CompileCtx.ctor_float_fields for the encoding.
+export fn ctor_field_is_float(ctx: CompileCtx, ctor_idx: Int, field_idx: Int) -> Bool {
+  let arr = ctx.ctor_float_fields
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    let e = Array::get(arr, i)
+    if e / 64 == ctor_idx && e % 64 == field_idx {
+      found = true
+      i = Array::length(arr)
+    } else {
+      i = i + 1
+    }
+  }
+  found
 }
 
 // #722: candidates for a NAME-based struct field access. Returns

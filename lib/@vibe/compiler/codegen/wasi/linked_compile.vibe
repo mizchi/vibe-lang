@@ -71,6 +71,43 @@ fn lc_fresh_expr_array() -> Array[Expr] {
   ArrayBuilder::freeze(ArrayBuilder::new())
 }
 
+fn lc_fresh_type_expr_array() -> Array[TypeExpr] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+// #1062: positional field types for a struct declaration's field list,
+// dropping the names -- SEnum/SSuberror variants are already unnamed
+// (Array[TypeExpr]), but SStruct fields carry (name, type) pairs.
+fn struct_field_types(sfields: Array[(String, TypeExpr)]) -> Array[TypeExpr] {
+  let out = lc_fresh_type_expr_array()
+  let mut i = 0
+  while i < Array::length(sfields) {
+    let (_, ft) = Array::get(sfields, i)
+    Array::push(out, ft)
+    i = i + 1
+  }
+  out
+}
+
+// #1062: append `ctor_idx * 64 + field_idx` to `out` for every positional
+// field in `field_types` whose declared type is Double/Float (same TyName
+// check as the annotated-Float/Double-param seeding below). See
+// CompileCtx.ctor_float_fields.
+fn push_ctor_float_fields(out: Array[Int], ctor_idx: Int, field_types: Array[TypeExpr]) -> Unit {
+  let mut fi = 0
+  while fi < Array::length(field_types) {
+    match Array::get(field_types, fi) {
+      TyName(ftn) => if ftn == "Float" || ftn == "Double" {
+        Array::push(out, ctor_idx * 64 + fi)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    fi = fi + 1
+  }
+}
+
 
 fn lc_fresh_string_matrix() -> Array[Array[String]] {
   ArrayBuilder::freeze(ArrayBuilder::new())
@@ -290,6 +327,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let ctor_type_names_list = lc_fresh_string_array()
   Array::push(ctor_type_names_list, "Option")
   Array::push(ctor_type_names_list, "Option")
+  // #1062: sparse `ctor_idx * 64 + field_idx` entries for Double/Float-typed
+  // positional constructor fields (see CompileCtx.ctor_float_fields). Built
+  // alongside ctor_names_list/ctor_field_counts_list above so ctor_idx here
+  // always matches ctor_table_index_of's result for the same name.
+  let ctor_float_fields_list = lc_fresh_int_array()
   let mut type_index = 1
   let mut ei2 = 0
   while ei2 < Array::length(stmts) {
@@ -303,6 +345,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           Array::push(ctor_tags_list, (type_index<<16)|vi)
           Array::push(ctor_field_counts_list, Array::length(vfields))
           Array::push(ctor_type_names_list, ename)
+          push_ctor_float_fields(ctor_float_fields_list, Array::length(ctor_names_list) - 1, vfields)
           vi = vi + 1
         }
         0
@@ -313,6 +356,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         Array::push(ctor_tags_list, type_index<<16)
         Array::push(ctor_field_counts_list, Array::length(sfields))
         Array::push(ctor_type_names_list, sname)
+        push_ctor_float_fields(ctor_float_fields_list, Array::length(ctor_names_list) - 1, struct_field_types(sfields))
         0
       },
       SSuberror(_, ename, variants) => {
@@ -328,6 +372,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           Array::push(ctor_tags_list, (type_index<<16)|vi)
           Array::push(ctor_field_counts_list, Array::length(vfields))
           Array::push(ctor_type_names_list, ename)
+          push_ctor_float_fields(ctor_float_fields_list, Array::length(ctor_names_list) - 1, vfields)
           vi = vi + 1
         }
         0
@@ -2007,6 +2052,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       ctor_table: CtorTable::{
         names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, names_sorted: lc_ctor_names_sorted, names_sorted_pos: lc_ctor_names_sorted_pos
       },
+      ctor_float_fields: ctor_float_fields_list,
       thunk_names: thunk_names_list,
       const_int_names: const_int_names_list,
       const_int_values: const_int_values_list,
