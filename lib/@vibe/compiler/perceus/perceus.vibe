@@ -1247,13 +1247,45 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     }
     ,
     ELet(name, value, body, _) => {
+      let mut elide_dead_alias = false
       match value {
         EIdent(src, _) => {
           if Map::has_key(scope, src) {
             let sid = Map::get(scope, src)
             let rem = Array::get(ctx.remaining, sid)
             if rem > 1 && !Array::get(ctx.scalar, sid) {
-              pe_push(ctx, PaAliasDup, name)
+              // #1056 (almide `alias_safety.rs` comparison, rc check
+              // elision): this occurrence of `let name = src` would dup
+              // src's reference into `name`'s own slot. `ctx.next_id` is
+              // about to become `name`'s id (pe_declare below); `ctx.uses`
+              // at that id already holds `name`'s FINAL use count from the
+              // pc_count pass (borrow occurrences folded in by
+              // pctx_apply_borrow_retention, which runs before pc_emit
+              // starts) -- ids are assigned in identical tree order across
+              // both passes (see build_perceus_plan), so this id is exactly
+              // the one pc_count computed uses for. If that count is zero,
+              // `name` has NO occurrence anywhere in `body` (no owning use,
+              // no borrow): the dup this occurrence would emit and the
+              // unconditional scope-end drop `name` would otherwise get
+              // (pe_scope_end -- an unused non-scalar binding always keeps
+              // its one owned reference) are a pure no-op pair on the SAME
+              // memory with no intervening read -- increment then
+              // decrement, nothing observes the difference. Skipping both
+              // (no PaAliasDup here; `name`'s own `remaining` is zeroed
+              // right after pe_declare below so pe_scope_end's `remaining >
+              // 0` check does not fire) removes one dup + one drop of
+              // runtime rc traffic with no change in observable behavior.
+              // `src`'s own remaining-use bookkeeping is untouched (still
+              // decremented below exactly as without this elision) -- this
+              // occurrence still "spends" one of src's owning uses,
+              // precisely as if the dup had fired, so src's later
+              // occurrences / scope-end drop are unaffected.
+              if Array::get(ctx.uses, ctx.next_id) == 0 {
+                elide_dead_alias = true
+                0
+              } else {
+                pe_push(ctx, PaAliasDup, name)
+              }
             } else {
               0
             }
@@ -1268,6 +1300,9 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         _ => pc_emit(ctx, scope, value)
       }
       let id = pe_declare(ctx, name)
+      if elide_dead_alias {
+        Array::set(ctx.remaining, id, 0)
+      }
       pc_emit(ctx, Map::set(scope, name, id), body)
       pe_scope_end(ctx, id, name)
     },
