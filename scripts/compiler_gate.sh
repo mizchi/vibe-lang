@@ -4878,6 +4878,36 @@ fi
 rm -rf "$edplccfdir"
 echo "[compiler-gate] evidence-dict pass capture-free local closure call ok"
 
+# 40ah. #1069: a locally `let`-bound effectful closure that CAPTURES an
+#       ordinary enclosing local (a function parameter AND a local, in this
+#       fixture) used to miscompile to invalid wasm at instantiation --
+#       #786's own landed fix only lambda-lifts the CAPTURE-FREE case,
+#       leaving a capturing closure on the original broken local-closure+
+#       effect combinator path. Fixed via closure conversion in
+#       desugar_trait_dict.vibe's dlh_hoist_expr: a provably-safe capturing
+#       closure (every call site direct, no captured name ever reassigned)
+#       is now ALSO lambda-lifted, with captures threaded through as extra
+#       leading parameters.
+echo "[compiler-gate] 40ah/40 local effectful closure capturing an enclosing local now compiles and runs (#1069)"
+lcccdir="_build/_gate_local_closure_capture_conversion"
+rm -rf "$lcccdir"; mkdir -p "$lcccdir"
+sed '/^__DATA__$/,$d' fixtures/effect_local_closure_capture_conversion.vibe > "$lcccdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$lcccdir/src.vibe" "$lcccdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$lcccdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_capture_conversion.vibe did not compile" >&2
+  cat "$lcccdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+lccc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$lcccdir/out.wasm" 2>&1 | tail -1)"
+if [ "$lccc_out" != "1015" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_capture_conversion.vibe got '$lccc_out' (want 1015) -- #1069's closure conversion regressed" >&2
+  exit 1
+fi
+rm -rf "$lcccdir"
+echo "[compiler-gate] local effectful closure capture conversion ok (#1069)"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the
