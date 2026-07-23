@@ -3005,6 +3005,21 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       nl + 7
     }
     else if fname == "Array::find" {
+      // #1065: `res_l` holds an `Option[T]`, NOT a raw scalar (unlike
+      // Array::any/all's plain Bool) -- Option's ctors are real heap objects
+      // (tag + fields, see the generic ctor-call path above / compile_expr's
+      // bare-EIdent nullary-ctor path), so "not found" must be a properly
+      // constructed `None` and "found" a properly constructed `Some(elem)`,
+      // never a raw `i64.const 0` / the bare unwrapped element. The original
+      // code stored raw values into res_l, so the returned "Option" was
+      // actually the naked element (or 0) with no tag/heap-object at all --
+      // `assert(Array::find(..) == Some(x))` then failed (a real, structural
+      // mismatch, not a name-resolution issue) and a failing `assert`
+      // compiles to an `unreachable` trap, which is what #1065 reported.
+      // Building None/Some(..) via `ce` on synthesized ctor-call ASTs (the
+      // same path a literal `Some(x)`/`None` expression takes) instead of
+      // hand-rolling the heap-object bytecode here keeps this in sync with
+      // however ctor construction is encoded, RC or not.
       let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
       let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
@@ -3025,6 +3040,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       Array::push(local_names, "__find_env")
       Array::push(local_names, "__find_elem")
       Array::push(local_names, "__find_res")
+      let mut nl2 = nl + 8
       emit_local_set(buf, fn_l)
       emit_local_set(buf, arr_l)
       emit_local_get(buf, arr_l)
@@ -3032,7 +3048,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_local_set(buf, len_l)
       emit_i64_const(buf, 0)
       emit_local_set(buf, i_l)
-      emit_i64_const(buf, 0)
+      nl2 = ce(buf, EIdent("None", -1), local_names, nl2, ctx, ld)
       emit_local_set(buf, res_l)
       emit_closure_resolve(buf, fn_l, slot_l, env_l)
       emit_block_void(buf)
@@ -3049,7 +3065,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
       emit_i32_wrap_i64(buf)
       emit_if_void(buf)
-      emit_local_get(buf, elem_l)
+      nl2 = ce(buf, ECall(EIdent("Some", -1), [EIdent("__find_elem", -1)], -1), local_names, nl2, ctx, ld)
       emit_local_set(buf, res_l)
       emit_br(buf, 2)
       emit_end(buf)
@@ -3061,7 +3077,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_end(buf)
       emit_end(buf)
       emit_local_get(buf, res_l)
-      nl + 8
+      nl2
     }
     else if fname == "Map::keys" {
       let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
