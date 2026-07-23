@@ -871,6 +871,47 @@ eligibility 判定が前段の書き換え artifact を誤検出する」問題�
 高く説明がつくため、今後の着手時はまずこの仮説の妥当性を計装で
 検証するところから始めるとよい。
 
+**追記 9 (2026-07-23, 「追記 8」の仮説を実装したが同じクラッシュが再現
+-- 別の構造的原因を発見)**: 「追記 8」で見立てた「全 effect の
+eligibility 判定を書き換え開始前に一括で確定させる」設計を実際に
+`edp_plan_migrations` として実装した (`evidence_dict_pass` を
+「まず全 effect の migration plan を決定する」フェーズと「決定済みの
+plan を順に適用する」フェーズへ分離)。この 2-phase 化自体は
+単一 effect のケースでは挙動を一切変えない、副作用のない改善であり、
+実際に全ての既存 fixture (effect_handle_call_evidence, ..._branch,
+..._error_mix, multi_effect_row_fallback, replay_corruption) が
+以前と全く同じ値を返すことを確認した上でこのセッションでは維持する。
+
+しかし、この修正を適用した状態で「追記 7」と**全く同じ** multi-effect
+fixture を containment 判定へ戻して再テストしたところ、**バイト単位で
+同一のクラッシュ**が再現した。これは「追記 8」の見立て (EDot artifact
+問題) が**この特定のクラッシュの原因ではなかった**ことを意味する
+(EDot artifact 問題自体は実在する構造的欠陥として 2-phase 化で解消
+されたが、それとは別に、そもそも `ask_only_wrapper` (`Fs` needing) の
+body が**直接** `handle { ... } with Ask { ... }` そのものであり
+(`EHandle` ノードが body の最上位に元々存在する、書き換えとは無関係な
+事実)、`edp_has_unsafe_construct` の `EHandle(_, _) => true` が
+(EDot とは独立に、正しく) これを unsafe と判定して `Fs` の migration
+を最初から (2-phase 化の有無に関わらず) abort させていた。`Ask` の
+migration は (`both_helper` 側にはこの問題が無いため) 成功する一方
+`Fs` は abort する、という「一部の effect だけ evidence dict 化され、
+もう一方は旧来の replay に残る」混在状態は、interleaved 設計でも
+2-phase 設計でも**結果として同一**になり、それがクラッシュの真因で
+ある可能性が高い (この「混在状態そのものが replay の前提を壊す」と
+いう「追記 7」時点の当初の推測に実質的に回帰したことになる)。
+
+containment 判定は `edp_row_is_exactly` (exact match のみ) へ再度
+revert 済み。2-phase 化 (`edp_plan_migrations`) は独立した改善として
+維持する。次に multi-effect row へ着手する際は、「EDot artifact」
+「body が直接別 effect の handle」の 2 つの既知の eligibility 上の
+障害を回避できる (あるいは正しく扱える) ように eligibility/rewrite の
+設計を見直した上で、なお残る「一部の effect だけ migrate され、
+残りが旧来の replay に残る」混在状態が replay 側の前提とどう
+衝突するのかを、ランタイム計装 (「追記 6」の分岐バグ根本原因調査で
+使った手法) で直接確認するところから始めること — 抽象的な推論や
+コード読解だけでの見立ては、このセッションで 2 回とも実際のクラッシュ
+との対応が外れており、十分な確信が得られていない。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect

@@ -610,15 +610,67 @@ fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_b
 // functions, effectset-expanded rows, deeper call chains through
 // eligible-but-indirect helpers) is expected follow-up, not a soundness
 // gap in what already lands here.
+// Two phases, deliberately NOT interleaved (see edp_row_is_exactly's doc
+// comment, "追記 8", for the bug this avoids): first decide eligibility
+// for EVERY effect against the still-completely-unmutated `stmts`, then
+// apply every eligible migration in a separate pass afterward.
+//
+// Interleaving (decide effect A's eligibility, apply A's rewrite, decide
+// B's eligibility, apply B's rewrite, ...) was tried first and found
+// unsound for a function needing more than one effect: applying A's
+// rewrite introduces `EDot` nodes into that function's body (the
+// dict-field-access call an evidence-passed `perform` compiles to), and
+// `edp_has_unsafe_construct` treats every `EDot` as unconditionally
+// unsafe -- so B's eligibility check, re-scanning that SAME (now A-
+// mutated) body, would always see A's own rewrite as a disqualifying
+// construct and abort, even though nothing about the ORIGINAL program
+// was actually unsafe for B.
+//
+// Deciding all eligibility upfront sidesteps this entirely: by the time
+// ANY mutation happens, every effect's needing set, handle sites, and
+// eligibility verdict are already fixed facts about the original tree.
+// Applying migrations afterward is safe against each other's rewrites
+// because edp_apply_migration's actual rewrite step (edp_find_rewrite_
+// handles) always re-walks the CURRENT stmts fresh rather than trusting
+// a stale collected handle-site list, and edp_rewrite_needing_body only
+// pattern-matches specific ECall/EHandle shapes -- it already tolerates
+// (passes through unchanged) an EDot or an extra prepended argument left
+// by an earlier effect's migration, it just doesn't blanket-reject them
+// the way the eligibility check does.
 export fn evidence_dict_pass(stmts: Array[Stmt]) -> Unit {
   let effect_defs = edp_collect_effect_defs(stmts)
   let fn_defs = edp_collect_fn_defs(stmts)
+  let plans = edp_plan_migrations(stmts, effect_defs, fn_defs)
+  let mut pi = 0
+  while pi < Array::length(plans) {
+    let (ename, ops, needing, handle_sites) = Array::get(plans, pi)
+    edp_apply_migration(stmts, ename, ops, needing, handle_sites, fn_defs)
+    pi = pi + 1
+  }
+}
+
+// Decide eligibility for every effect against `stmts` as it is RIGHT NOW
+// (the caller must not have mutated anything yet) and return the plans
+// for the effects that qualify, in effect-declaration order.
+fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+  let plans = array_empty()
   let mut ei = 0
   while ei < Array::length(effect_defs) {
     let (ename, ops) = Array::get(effect_defs, ei)
-    edp_migrate_effect(stmts, ename, ops, fn_defs)
+    let needing = edp_needing_names(fn_defs, ename)
+    if Array::length(needing) == 0 {
+      ()
+    } else {
+      let handle_sites = edp_collect_handle_sites(stmts, ename)
+      if edp_all_sites_eligible(stmts, ename, needing, handle_sites, fn_defs) {
+        Array::push(plans, (ename, ops, needing, handle_sites))
+      } else {
+        ()
+      }
+    }
     ei = ei + 1
   }
+  plans
 }
 
 // --- collection.
@@ -666,23 +718,32 @@ fn edp_collect_fn_defs(stmts: Array[Stmt]) -> Array[(Int, Bool, Bool, String, Op
 // other effects, and not a row-variable label.
 //
 // A relaxation to row CONTAINMENT (any row with `ename` as one of several
-// comma-joined labels) was tried and reverted (2026-07-23): abstract
-// reasoning about per-effect-pass composition (each effect's migration
-// independently gated by its own eligibility check, edp_qname_is_for_
-// effect already making the perform-rewrite effect-specific) suggested it
-// should be sound, but a concrete two-independent-handle-sites multi-
-// effect fixture (one function needing both `Ask` and `Fs`, discharged by
-// two SEPARATE, non-nested handle sites reached through an intermediate
-// wrapper function) compiled cleanly but CRASHED at runtime with an
-// uncaught exception instead of producing the expected value -- a real,
-// unisolated interaction this pass's design does not yet account for
-// (most likely: a needing function partially migrated for one effect,
-// while its OTHER effect's performs remain on the old replay path, and
-// something about that mixed state breaks replay's own throw/catch
-// bookkeeping when the enclosing calls no longer match its assumptions).
-// Root-causing that composition bug is future work, not attempted here --
-// see the task backlog. Keep to exact single-effect rows only until it is
-// understood and fixed.
+// comma-joined labels) has now been tried and reverted TWICE
+// (2026-07-23). Round 1's crash was blamed on `edp_has_unsafe_construct`
+// treating every `EDot` as unconditionally unsafe -- a migrated effect's
+// own rewrite introduces `EDot` nodes, so a later effect's eligibility
+// re-scan of the same (now-mutated) body would see that artifact and
+// abort. That diagnosis was real (see edp_plan_migrations' doc comment
+// for the two-phase restructuring it motivated, which IS a genuine,
+// verified improvement kept in this file), but round 2 (re-testing the
+// SAME multi-effect fixture with the two-phase fix in place) produced
+// the BYTE-IDENTICAL crash -- meaning the EDot artifact was never
+// actually the cause of THIS crash. Retracing by hand: `ask_only_wrapper`
+// (needing `Fs`) has a body that IS DIRECTLY `handle {...} with Ask
+// {...}` -- an `EHandle` node for a completely different effect, sitting
+// right at the top of its own body, present in the ORIGINAL, unmutated
+// tree regardless of migration order. `EHandle(_, _) => true`
+// unconditionally in edp_has_unsafe_construct correctly (and
+// deliberately) rejects this on its own terms -- nothing to do with
+// EDot -- so `Fs`'s migration was ALWAYS going to abort for this
+// function, identically under both the old interleaved design and the
+// new two-phase one. Since `Ask`'s migration succeeds regardless
+// (`both_helper`, its only needing function, has no such issue) while
+// `Fs`'s aborts, the program ends up in the exact same "one effect
+// migrated through a function whose other effect's `perform` stays on
+// the old replay path" mixed state either way -- and that mixed state is
+// still what actually crashes, for a reason not yet isolated. Keep to
+// exact single-effect rows only until THAT interaction is understood.
 fn edp_row_is_exactly(row: String, ename: String) -> Bool {
   row == ename
 }
@@ -983,20 +1044,6 @@ fn edp_strip_tail_resume_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
 }
 
 // --- the migration for one effect.
-
-fn edp_migrate_effect(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
-  let needing = edp_needing_names(fn_defs, ename)
-  if Array::length(needing) == 0 {
-    ()
-  } else {
-    let handle_sites = edp_collect_handle_sites(stmts, ename)
-    if edp_all_sites_eligible(stmts, ename, needing, handle_sites, fn_defs) {
-      edp_apply_migration(stmts, ename, ops, needing, handle_sites, fn_defs)
-    } else {
-      ()
-    }
-  }
-}
 
 // Every top-level `EHandle` (searched via the same whole-program recursive
 // descent as the eligibility/rewrite passes) whose arms discharge `ename`
