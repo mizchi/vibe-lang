@@ -1549,6 +1549,36 @@ fallback するだけで正しく動く) だが、fallback を持たない gc ba
 依然コンパイルできない -- gc codegen の suberror コンストラクタ登録という、
 本 ADR のスコープ外の別問題である。
 
+### 追記 22 (2026-07-23、同日): (本 ADR のスコープ外) gc backend の suberror コンストラクタ未登録を別途修正
+
+追記21 で「スコープ外」と記録した `effect_advanced_test.vibe` の
+`"unknown constructor: NotFound"` を、evidence_dict_pass とは無関係の
+別問題として個別に調査・修正した (本項目は evidence-dict 設計そのものとは
+無関係だが、Error も effect の一種であり、同じカバレッジ調査の一環で
+見つかったため記録しておく)。
+
+原因: `codegen/gc/backend_body.vibe` の ctor 登録ループ (`SEnum`/`SStruct`
+から `CtorTable` を組み立てる) に `SSuberror` のケースが一度も存在
+しなかった -- linear backend 側の同等ループ
+(`codegen/wasi/linked_compile.vibe`) は最初から `SSuberror` を enum の
+variant と同じ扱いで登録していたが、gc 側だけこのケースが単純に
+抜けていた。`throw(KeyInvalid("x"))` は gc codegen が constructor を
+解決しようとした瞬間に `"unknown constructor or function"` のハード
+エラーになっていた。
+
+`linked_compile.vibe` の `SSuberror` 処理を (type_index/tag のエンコード
+まで含めて) そのまま移植する形で欠けていたケースを追加した。直接
+テストで確認: suberror を construct・throw・catch する (`Throw(_) =>
+...` で payload を見ない、実際の fixture が使うのと同じパターン) と
+`VIBE_BACKEND=gc` で linear backend と同じ結果になる。enum/struct/
+suberror の constructor が type_index の番号を共有しても正しく共存する
+ことも確認済み。`compiler_gate.sh` gate 40h7 で
+`fixtures/gc_backend_suberror_ctor.vibe` を通じて固定。
+
+なお、catch した suberror の payload に対する `__to_string` の結果が
+backend 間で異なる、より深い別の gap が残っている (実 fixture では
+一度も exercise されておらず、この修正のスコープ外、未調査のまま)。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
