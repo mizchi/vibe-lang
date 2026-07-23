@@ -1,0 +1,43 @@
+// KNOWN BUG (M2, eval/lang-review/findings/2026-07-12-r2.md; tracked by
+// ADR-0076 / issue #817): `handle` was implemented by re-executing the whole
+// handled body from the top on every `resume` ("replay"), corrupting both
+// side-channel state and the handle's own return value for handlers with
+// more than one perform preceded by non-perform statements.
+//
+// Fixed by ADR-0076 Phase 2 (direct-perform inlining, common_base/
+// inline_direct_perform.vibe): this fixture's handled body has no
+// unsafe construct (no nested `handle`, no closures, no calls to named
+// functions that could hide a perform), so every `perform Ask::Get` is
+// inlined directly into the (tail-resumptive, per #942) `Get => resume(5)`
+// arm body instead of going through the replay loop. Each statement now
+// runs exactly once:
+//   count == 3 (one increment per statement, each runs exactly once)
+//   r == 5 + 5 + 3 == 13
+//   compute() == (3, 13)
+//   main() == 3 * 1000 + 13 == 3013
+effect Ask {
+  Get -> Int
+}
+
+let compute = () -> (Int, Int) {
+  let mut count = 0
+  let r = handle {
+    count = count + 1
+    let a = perform Ask::Get
+    count = count + 1
+    let b = perform Ask::Get
+    count = count + 1
+    a + b + count
+  } with Ask {
+    Get => resume(5)
+  }
+  (count, r)
+}
+
+export let main = () -> Int {
+  let (count, r) = compute()
+  count * 1000 + r
+}
+
+__DATA__
+{"last": "3013"}

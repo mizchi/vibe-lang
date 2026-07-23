@@ -1,0 +1,57 @@
+// ADR-0076 (#817) Phase 3: a needing function's body defines a closure
+// LITERAL that itself performs the effect being migrated.
+//
+// edp_has_unsafe_construct's `EFn` case was unconditionally unsafe:
+// defining ANY closure ANYWHERE in a needing function's body disqualified
+// the entire migration, regardless of what the closure's own body
+// contained. It now recurses into the closure's body with the exact same
+// check instead -- sound for the same structural reason as everywhere
+// else in this function: if the closure's body contains nothing this
+// pass doesn't already know how to classify, whatever the closure
+// eventually does when invoked is exactly as well-understood as any
+// other code this pass already rewrites. A `perform ename::Op` found
+// inside IS rewritten (edp_rewrite_needing_body/edp_rewrite_handle_body
+// gained a matching `EFn` case), resolving through the closure's
+// LEXICALLY CAPTURED `dict_pname` -- an ordinary captured variable
+// reference, ordinary closure-capture semantics, nothing effect-
+// handling-specific about it.
+//
+// IMPORTANT SCOPE NOTE this fixture exists to pin: this relaxation makes
+// the closure's DEFINITION safe to look inside, but does NOT make CALLING
+// an arbitrary local closure (`f()` where `f` is a local variable, not a
+// top-level function name) safe -- that's a separate restriction in the
+// ECall case's `else => true` fallback, unrelated to and unaddressed by
+// this change (recognizing local-variable callees would need real scope
+// tracking this AST-level pass doesn't have, and risks name-shadowing
+// false-safety if done naively by string match). So the closure defined
+// here (`never_called`) is deliberately never invoked -- it exists only
+// to pin that DEFINING an effectful closure no longer blocks migration,
+// and that the rewrite of its body produces valid, correct wasm even
+// though the closure itself is unreachable at runtime.
+//
+// Verified (via a temporary migration-plan probe during development)
+// that `Ask` genuinely migrates both here and for a strictly simpler
+// case (a closure whose body doesn't reference the effect at all).
+//
+//   a == 5 (perform Ask::Get, resolved via the evidence dict)
+//   main() == a + 1 == 6
+effect Ask {
+  Get -> Int
+}
+
+let ask_helper = () -> Int with { Ask } {
+  let never_called = () -> Int { perform Ask::Get }
+  let a = perform Ask::Get
+  a + 1
+}
+
+export let main = () -> Int {
+  handle {
+    ask_helper()
+  } with Ask {
+    Get => resume(5)
+  }
+}
+
+__DATA__
+{"last": "6"}

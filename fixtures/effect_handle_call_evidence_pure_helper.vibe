@@ -1,0 +1,53 @@
+// ADR-0076 (#817) Phase 3: a needing function's body calls a plain,
+// user-defined PURE helper function (no `with` clause at all, so the
+// checker has already proven it performs no effect) that is neither a
+// needing function itself nor one of the hand-audited
+// `edp_pure_builtin_names`.
+//
+// edp_has_unsafe_construct's ECall case used to unconditionally reject any
+// call whose callee wasn't "perform"/"resume", a hand-listed pure
+// builtin, or itself a member of `needing` -- so calling an ordinary
+// user-defined pure function like `double` here disqualified the entire
+// migration, even though the checker's own effect-row inference had
+// already proven `double` cannot perform anything. edp_has_unsafe_
+// construct now also recognizes a call to any function whose OWN declared
+// effect row is checker-verified empty (`edp_pure_fn_names`, derived from
+// the same row string #942 already validates) as safe -- without even
+// needing to recurse into that function's body, since a function with no
+// `with` clause cannot perform ANY effect by the checker's own soundness.
+// No corresponding change was needed on the rewrite side
+// (edp_rewrite_needing_body/edp_rewrite_handle_body): a call to a name
+// outside `needing` already falls through their existing "recurse into
+// args, leave the call itself unchanged" default case, which is exactly
+// correct for a pure helper too.
+//
+// Verified (via a temporary migration-plan probe during development) that
+// `Ask` genuinely migrates here, not merely "produces the right answer
+// via replay by coincidence".
+//
+//   a == 5 (perform Ask::Get, resolved via the evidence dict)
+//   double(a) == 10
+//   main() == double(a) + 1 == 11
+effect Ask {
+  Get -> Int
+}
+
+let double = (x: Int) -> Int {
+  x * 2
+}
+
+let ask_helper = () -> Int with { Ask } {
+  let a = perform Ask::Get
+  double(a) + 1
+}
+
+export let main = () -> Int {
+  handle {
+    ask_helper()
+  } with Ask {
+    Get => resume(5)
+  }
+}
+
+__DATA__
+{"last": "11"}

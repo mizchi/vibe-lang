@@ -1,0 +1,51 @@
+// #1069 fix: a locally `let`-bound effectful closure that CAPTURES an
+// ordinary enclosing local (not just performing an effect) used to
+// miscompile to invalid wasm ("invalid signature index") at instantiation
+// -- the deeper "Layer 2" bug #786 diagnosed but never actually fixed
+// (#786's own landed fix, dlh_hoist_expr's lambda-lift, only ever covers
+// the CAPTURE-FREE case; a capturing closure was always left on the
+// original, broken local-closure+effect combinator path by design).
+//
+// Fixed via closure conversion (desugar_trait_dict.vibe's dlh_hoist_expr,
+// #1069): a capturing closure is now ALSO lambda-lifted to a fresh
+// top-level binding, with each captured name threaded through as an
+// extra leading parameter and each call site rewritten to pass the
+// captured value(s) explicitly -- the same working direct-call path
+// #786 already uses for the non-capturing case, just closure-converted
+// first. Restricted to closures where (a) every call site is provably a
+// direct call (dlh_marker_only_called_directly, reusing dlh_subst's
+// already-proven shadow-correctness -- a closure passed around as a
+// first-class value, not just called, is NOT converted, and is left on
+// the original broken path unchanged rather than risk an unsound
+// rewrite) and (b) no captured name is ever reassigned anywhere
+// reachable (dlh_names_ever_assigned -- pass-by-value at the call site
+// is only equivalent to capture-by-reference if nothing could ever
+// observe them diverging).
+//
+// This fixture exercises TWO captures at once (a function parameter `x`
+// and a local `y`), to pin that multiple simultaneous captures are
+// threaded through correctly, not just the single-capture case.
+//   perform Ask::Get resolves to 5 via the handler
+//   inner() == 5 + x + y == 5 + 1000 + 10 == 1015
+effect Ask {
+  Get -> Int
+}
+
+let ask_helper = (x: Int) -> Int with { Ask } {
+  let y = 10
+  let inner = () -> Int with { Ask } {
+    perform Ask::Get + x + y
+  }
+  inner()
+}
+
+export let main = () -> Int {
+  handle {
+    ask_helper(1000)
+  } with Ask {
+    Get => resume(5)
+  }
+}
+
+__DATA__
+{"last": "1015"}

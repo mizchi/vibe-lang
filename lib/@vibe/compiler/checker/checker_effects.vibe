@@ -900,6 +900,23 @@ fn make_row_mismatch(fn_name: String, declared: Array[String], missing: Array[St
 // `::`-prefixes of the arm constructor patterns. Returns the distinct effects a
 // handle discharges (empty if none could be determined — then the body stays
 // conservatively permissive, never over-strict).
+//
+// ADR-0071 (#755) step 4: ALSO push each arm's own fully-qualified operation
+// name (`Ask::Get`, not just the bare `Ask` prefix). `handle ... with Ask
+// {...}` is exhaustive over every operation of Ask (ADR-0050 -- a handler
+// can't discharge only some operations), so discharging the bare effect
+// name is semantically equivalent to discharging every one of its qualified
+// operation names. But the DOWNSTREAM containment check
+// (decl_authorizes_effect) does exact string-label matching: a handled
+// body that transitively calls a function declaring `with { Ask::Get }`
+// (operation-level, not the bare effect) previously reported that specific
+// requirement as still missing even though the handle plainly covers it --
+// "Ask" != "Ask::Get" as strings, and the discharge list only ever
+// contained the bare form. Pushing the qualified name too is a pure
+// widening (nothing that was authorized before stops being authorized; the
+// bare-effect-name discharge and its blanket effect_name_of_op-based
+// authorization inside the body are both untouched), so it only fixes this
+// gap without changing any other observable behavior.
 fn collect_handle_effects(arms: Array[(Pat, Expr)]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
@@ -920,6 +937,17 @@ fn collect_handle_effects(arms: Array[(Pat, Expr)]) -> Array[String] {
           }
           if !seen {
             Array::push(out, eff)
+          }
+          let mut qseen = false
+          let mut k = 0
+          while k < Array::length(out) {
+            if Array::get(out, k) == name {
+              qseen = true
+            }
+            k = k + 1
+          }
+          if !qseen {
+            Array::push(out, name)
           }
         }
       },

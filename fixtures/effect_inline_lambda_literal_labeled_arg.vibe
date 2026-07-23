@@ -1,0 +1,31 @@
+// Found while verifying the inline-lambda-literal IIFE/HOF-arg fix
+// (effect_inline_lambda_literal_hof_arg.vibe) against labeled-argument
+// syntax (docs/cheatsheet.md "Labeled arguments", `f(x=10, y=20)`):
+// dlh_args_have_literal_efn/dlh_letbind_literal_args only matched a BARE
+// `EFn` literal argument -- a literal one layer deeper inside an
+// `ELabeledArg` wrapper (`with_log(f = () -> ... { perform ... })`) still
+// evaded the fix entirely and crashed with the exact same "null function
+// or function signature mismatch" as the original bug. Confirmed via
+// direct A/B testing (2026-07-23) that this is a real, distinct gap in
+// the just-shipped fix's own coverage, not already handled by it. Fixed
+// by recursing one layer into ELabeledArg in both helpers, preserving the
+// label wrapper around the substituted identifier reference.
+//   perform Log::Get resolves to 5 -> 5
+effect Log {
+  Get -> Int
+}
+
+let with_log = (f~: () -> Int with { Log }) -> Int {
+  handle { f() } with Log {
+    Get => resume(5)
+  }
+}
+
+export let main = () -> Int {
+  with_log(f = () -> Int with { Log } {
+    perform Log::Get
+  })
+}
+
+__DATA__
+{"last": "5"}

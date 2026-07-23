@@ -1,10 +1,10 @@
 # ADR-0071: operation-level effect row と `effectset`
 
-Status: proposed
+Status: proposed (実装 step 1-2-4 は着地済み、step 3 は関数自身の宣言 row + パラメータ row の展開が着地、step 5 (contract passthrough + signature matching + WIT 生成) は完全着地。step 6 はチェッカー側の独立実装が不要と判明し、ADR-0076 Phase 3 の実装ステップに統合する方針を確定 — 単独の残タスクは無く、次の実装単位は ADR-0076 Phase 3 そのもの、2026-07-22 — 進捗セクション参照)
 
 Date: 2026-07-15
 
-Related: ADR-0003, ADR-0021, ADR-0050, ADR-0063, #639, #755, #817
+Related: ADR-0003, ADR-0021, ADR-0050, ADR-0063, ADR-0076, #639, #755, #817
 
 ## Context
 
@@ -207,7 +207,161 @@ effectset と一致する場合はその effectset の参照を優先する。ef
 3. checker: 展開・包含・推移呼び出し・row variable との合成
 4. handler: operation-level discharge と handler-arm effect の再加算
 5. contract/WIT/diagnostics: normalized surface と operation-level diff
-6. codegen/evidence: 正規化 row を #817 の evidence vector 入力に接続
+6. codegen/evidence: 正規化 row を ADR-0076 (#817) の evidence vector 入力に
+   接続。ADR-0076 の row-polymorphic (row variable 越し) evidence 解決は
+   本 ADR の row variable 構造化が前提であり、ADR-0076 Phase 3
+   (yield bubbling による replay 全廃) 着手までに本 ADR の resolver/checker
+   (項目 2–3) が着地している必要がある — 静的解決のみの ADR-0076 Phase 1–2
+   はこの依存を受けない
+
+   **(2026-07-22 追記、docs/effect-evidence-passing.md 側で詳細調査済み)**:
+   調査の結果、本項目は「Phase 3 着手前の独立した準備ステップ」として
+   単独では実装しないことにした。理由: (a) `decl_authorizes_effect`
+   の row-polymorphism hack はチェッカーの健全性としては現状のままで
+   正しい (row 変数は「どんな row を渡されても動く」という
+   parametricity の主張そのもの) — チェッカー側に直すべきバグは無い。
+   (b) evidence 構築に足りないのは Phase 3 の codegen 側の情報のみで、
+   かつ trait dict-passing (desugar_trait_dict.vibe) の固定レイアウト
+   struct パターンをそのまま転用できない — trait dict は「trait の
+   メソッド一覧」という T に依存しない固定 field 集合を持つが、
+   effect row 変数は呼び出し箇所ごとに異なる (時には複数 effect の)
+   集合へ実体化されうるため、固定レイアウト struct という型自体が
+   存在しない。(c) 暫定方針として、evidence の runtime 表現を
+   `(OperationId, closure)` ペアの可変長ベクタ (固定 struct ではない)
+   にすることで、trait dict の「呼び出し元の dict をそのまま/フィルタ
+   して転送する」スレッディングの形だけを流用しつつ monomorphize を
+   避ける。`OperationId` はこのベクタのキーとしてのみ必要で、ADR-0071
+   の正規化 row をチェッカー全域に波及させる必要はない。よって本項目
+   6 は独立した先行実装をせず、**Phase 3 の段階導入計画ステップ 4/5
+   (evidence 直接呼び出し・yield bubbling の実装) に統合して行う**
+   — 消費者のいない状態でキー割り当てだけ先行実装すると、Phase 2 の
+   当初計画 (`EPerform`/`EResume` IR ノード) と同じく未使用の
+   scaffolding になるリスクがあるため。詳細は
+   docs/effect-evidence-passing.md の「追記 (2026-07-22, ADR-0071 step 6
+   着手時の調査で判明)」セクション参照。
+
+**進捗 (2026-07-22)**: 項目 1 (parser/printer) は着地済み。`with { Env::get }` の
+ような直接 operation row item と `effectset Name = { ... }` /
+`effectset Effect::Name = { ... }` 宣言の両方が parse・round-trip する
+(collect_effect_names の拡張、SEffectSet Stmt variant)。項目 2 (resolver)
+のうち、ADR の Decision セクションが名指しする 2 つの不正定義チェック
+— member 参照の循環 (`effectset A = { B }` / `effectset B = { A }` →
+"effectset cycle: A -> B -> A") と、qualified name の operation 名との
+衝突 (`effect Env { Read -> Int }` の下で `effectset Env::Read` を宣言
+すると reject) — は checker_stmt.vibe のローカル関数
+(es_detect_cycle / es_qualified_collision、全 stmt の事前収集パスで
+宣言順に依存しない) として着地済み。
+
+項目 3 (checker: 展開・包含) のうち、**関数自身の宣言 row の展開**と
+**関数パラメータ自身の型に付く row (#885 callback overlay) の展開**は
+着地済み: 循環・衝突のない `effectset` は (項目 2 時点の「常に reject」
+から変わり) 受理され、`with { EffectsetName }` を持つ row を実際に
+展開してから (checker_stmt.vibe の es_expand_stmts_effect_rows /
+es_expand_top_value、純粋な AST 変換パス)、既存の文字列ラベルベースの
+effect row 包含チェック機構に渡す。展開は check_program の最初
+(check_stmts より前) で一度だけ行う — 当初この展開を
+collect_async_effect_errors の直前だけに絞っていたところ、
+checker.vibe の effect_row_dropped (引数の型互換性チェック、
+check_stmts の一部として実行される、独立した別経路) が展開前の生の
+row 文字列を比較してしまい、`with { AskAll }` を持つコールバック
+引数を渡すと「未展開の "AskAll" と "Ask::Get" が一致しない」という
+誤検出で reject される実例が見つかった。展開のタイミングを
+check_stmts より前に前倒しすることで、この経路と perform-effect
+leak-through チェック (checker_effects.vibe の #885 overlay) の両方が
+展開後の row を見るようになり、修正された。`with { AskAll }` だけを
+宣言した関数・コールバック引数のどちらも、`Ask::Get` を要求する呼び出しを
+正しく authorize できることを実証済み
+(fixtures/effect_effectset_expansion.vibe /
+effect_effectset_param_expansion.vibe)。**未着手のまま残っている範囲**:
+handler レベルの operation 単位 discharge (項目 4 — 現状 `handle ...
+with Env` は Env 全体を一括で discharge しており、特定 operation だけを
+discharge する形にはなっていない)、contract/WIT の operation 単位
+surface (項目 5)。`with { Env::get }` (単一 operation の直接列挙、
+effectset を介さない) 自体は既存の文字列ラベルベースの effect row
+チェック機構にそのまま乗るため、単一 operation を指す row item は
+最小権限として機能する (caller 側の transitive call-graph チェックで
+実証済み) が、これは正式な OperationRef 正規化ではなく既存機構の
+副産物である点に注意 (この点は変わっていない)。
+fixtures/effect_row_operation_item.vibe (項目1) /
+effect_effectset_expansion.vibe・effect_effectset_param_expansion.vibe・
+err_effectset_cycle.vibe・err_effectset_operation_collision.vibe
+(項目2/3) + compiler_gate.sh 40m/40n/40o/40p で回帰を固定。
+
+項目 4 (handler: operation 単位の discharge) も着地済み:
+`handle body with Effect {...}` は Effect の全 operation を exhaustive
+に扱う (ADR-0050、部分的な handling は表現不能) ため、bare な effect
+名を discharge することは、その全 qualified operation 名を discharge
+することと意味的に等価だが、collect_handle_effects
+(checker_effects.vibe) は従来 bare な effect 名しか記録しておらず、
+下流の包含チェックは厳密な文字列一致で行われるため、handled body が
+transitively 呼び出す関数が operation 単位の row
+(`with { Ask::Get }`、bare な effect ではなく) を宣言していると、
+handle が明らかにそれをカバーしているにも関わらず「still missing」と
+誤って reject されるケースがあった (修正前に実際に再現・確認)。
+collect_handle_effects が各 arm の bare effect 名に加えて fully
+qualified operation 名も discharge set に加えるよう修正し、ADR 本文の
+回帰ロック項目「`handle ... with Env` 後は body が要求した `Env`
+operation だけが消える」を実質的に満たす形になった。
+fixtures/effect_handle_operation_level_discharge.vibe +
+compiler_gate.sh 40q で回帰を固定。
+
+項目 5 (contract/WIT/diagnostics) のうち、**contract passthrough**の
+一部は着地済み: `effectset` は `effect` と同じ透明な compile-time-only
+alias として classify_contract_stmts (contract.vibe) を通過し、
+`index.vpkg` (ADR-0070 の boundary file) / legacy `index.vibei` の
+どちらの契約ファイル経由でも package facade を生き延びることを
+fixtures/contract_effectset_vpkg/ (実際の package import 境界を跨いだ
+end-to-end テスト) で実証済み。fixtures/contract_effectset_vpkg_main.vibe
++ compiler_gate.sh 40r で回帰を固定。
+
+さらに、contract-vs-implementation の**signature matching**も
+effectset 対応が着地済み: check_contract (contract.vibe) は従来
+effect row を厳密な文字列比較で照合しており、contract 側で
+`fn f() -> T with { AskAll }` と書き実装側で展開後の operation を
+直接 `with { Ask::Get }` と書くと、意味的に等価でも mismatch エラーに
+なるバグがあった (修正前に実際に再現・確認)。check_contract に
+`contract_type_defs: Array[Stmt]` 引数を追加し、contract 自身の
+effectset 宣言から構築した ES table で両側の signature を比較前に
+展開するよう修正 (ctr_expand_sig_row、contract.vibe 内のローカル
+関数、クロスファイル参照なし)。この変更は package import 全体が通る
+check_contract の中核比較ロジックに触れるため、既存の contract テスト
+6 ファイル 43 test + effectset/handle fixture 一式で広範な回帰確認を
+実施 (fixtures/contract_conformance_test.vibe が check_contract を
+直接 18 箇所で呼んでいたため、既存の no_type_defs() ヘルパーで
+シグネチャ変更に追従させる修正も同時に必要だった)。
+fixtures/contract_effectset_signature_alias/ +
+compiler_gate.sh 40s で回帰を固定。
+
+さらに、**WIT 生成**(wit_gen.vibe) も effectset 対応が着地し、項目 5 が
+完全に着地した: 従来 wit_gen.vibe は `used_effects` を集める際に生の
+row label をそのまま effect 定義名として突き合わせていたため、
+`effectset` alias (`with { AskAll }`) や、対応する bare な effect 名の
+row item を伴わない qualified operation item 単独 (`with { Ask::Get }`)
+は effect 定義に一致せず、実際には WIT マッピングを持つ effect でも
+"host capability effect ... no WIT mapping yet" のコメントマーカーに
+フォールバックしてしまうバグがあった (修正前に実際に再現・確認)。
+checker_stmt.vibe / contract.vibe と同型のローカル関数群
+(wit_es_collect_into / wit_es_expand_into / wit_effect_name_of /
+wit_resolve_effect_names_into、wit_gen.vibe 内のみ、クロスファイル
+参照なし) を追加し、`used_effects` の収集ループで各 raw label を
+effectset 展開 + qualified→effect 名解決してから照合するよう修正。
+既存の effect->WIT golden (fixtures/wit_gen_http.vibe、通常の
+`with { Effect }` 形式) はバイト同一で無回帰であることを確認した上で、
+effectset alias と bare qualified item の両方をカバーする新規 golden
+fixtures/wit_gen_effectset.vibe + compiler_gate.sh 40t で回帰を固定。
+
+**未着手のまま残っている範囲**: ADR-0076 evidence vector への正規化 row
+の接続 (項目 6) のみ。
+
+**Bootstrap gotcha**: `lib/@vibe/parser/` 配下で「新しい関数を定義し、
+別ファイルからその関数を import で参照する」変更を同一コミットに含めると、
+`scripts/generate_bundle.sh` の merge/rename-plan ステップ
+(`_cli_adapter_module_source.vibe` を土台にビルドされる flatten tool)
+が新規のクロスファイル参照を解決できず `unknown name: <fn>` で失敗する
+ことがある (旧世代の flatten tool が新しい名前を知らないため)。
+回避策: 新しい関数を呼び出し元と同一ファイルに定義する
+(クロスファイル edge を増やさない)。既存のクロスファイル名を新しい
+import 元に追加するだけなら問題ない。
 
 最低限、次を回帰として固定する。
 
@@ -232,4 +386,5 @@ tag を作り、bootstrap bump を完了してからとする。
   — extensible/scoped effect row と row polymorphism
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
-  — #817 で予定する正規化 row から evidence vector への lowering
+  — ADR-0076 (#817) が定める正規化 row から evidence vector への lowering。
+  設計詳細は [effect-evidence-passing.md](effect-evidence-passing.md)

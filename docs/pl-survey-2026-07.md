@@ -66,9 +66,12 @@
 ### High priority
 
 1. **evidence-passing handler backend (replay 置換)** — cost: large →
-   issue #817。effect row を evidence vector に落とし、tail-resumptive
-   perform を直接呼び出しへ。非 tail は yield bubbling。suspend 点を IR
-   で明示し WasmFX / WASI 0.3 async へ前方互換 (ADR-0012/0068 と同一 IR)。
+   issue #817。**設計確定 (2026-07-22, ADR-0076)**: effect row を
+   evidence vector に落とし、tail-resumptive perform を直接呼び出しへ。
+   非 tail は yield bubbling。suspend 点を IR で明示し WasmFX / WASI 0.3
+   async へ前方互換 (ADR-0012/0068 と同一 IR)。詳細は
+   [effect-evidence-passing.md](effect-evidence-passing.md)、実装は
+   5 段階のロールアウト計画に沿って別途着手する。
 2. **nursery = Spawn capability handler** — cost: medium → issue #818。
    0.4.0 の軽量プロセスを structured concurrency (スコープ終了時
    join/cancel、Spawn が effect row に現れる) で導入。channel 生存も

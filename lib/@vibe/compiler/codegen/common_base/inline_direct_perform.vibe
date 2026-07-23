@@ -1,0 +1,2559 @@
+//# Imports
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  dce_keep_flags
+}
+
+import @vibe/core {
+  array_empty
+}
+
+//# Functions
+
+// ADR-0076 Phase 2 (evidence-passing effect handlers, #817), first slice.
+//
+// `handle { BODY } with Effect { Op(args) => arm_body, ... }` is compiled
+// today via a replay loop (compile_expr_tail6.vibe) that re-executes BODY
+// from the top on every resume -- the mechanism behind the M2 correctness
+// bug (fixtures/effect_handle_replay_corruption.vibe) and the ~16K perform
+// bound. #942 already guarantees, as a hard compile error otherwise, that
+// every `resume(e)` in a handler arm is in TAIL position with nothing after
+// it (single-shot, no post-processing) -- i.e. every arm body already has
+// exactly the shape ADR-0076 calls "tail-resumptive". This pass exploits
+// that: for a `perform Effect::Op(args)` that occurs DIRECTLY inside a
+// handle's own BODY (not behind an intervening function call, and not
+// inside a nested closure or a nested `handle`), the handler is known at
+// the exact point of the perform -- no runtime dispatch, no evidence dict,
+// no unwind is needed at all. The perform is replaced in place by the
+// matching arm's body (with each pattern-bound parameter let-bound to the
+// actual argument expression, and the arm's own tail `resume(e)` rewritten
+// to plain `e`), and if EVERY perform for this handle's operations turns
+// out to be reachable this way, the `EHandle` wrapper itself is dropped
+// entirely -- the compiled program has no handler machinery left for that
+// `handle` at all.
+//
+// This does NOT attempt the general case (evidence dicts threaded through
+// intervening function calls, ADR-0076's primary mechanism) -- that is a
+// separate, larger slice. Conservative bail-out: if a handle's BODY
+// contains any `EFn` (nested closure -- a perform inside it might run much
+// later, dynamically, possibly after this handle has already returned) or
+// any nested `EHandle` (handler-shadowing semantics this pass does not
+// attempt to reason about), inlining is skipped entirely for that handle
+// and it is left for the existing replay codegen, matching today's
+// behavior exactly. A handle with some performs reachable and some hidden
+// behind such a boundary is a documented future improvement -- today it is
+// all-or-nothing.
+//
+// Phase 2b (this revision): a call is also no longer an automatic bail-out
+// when its callee is one of a small, hand-audited set of builtin static
+// functions (idp_pure_builtin_names) that the checker's own builtin type
+// table (checker/builtins_string1.vibe, builtins_string2.vibe,
+// builtins_misc.vibe) records with effect `None` and with no function-typed
+// parameter -- i.e. calls that provably cannot themselves perform, and
+// cannot invoke any user-supplied closure that might. `String::equals` in a
+// handle body (fixtures/effect_handle_two_layer.vibe's cache-hit check) no
+// longer forces a bail-out just because it is a call. Calls to ordinary
+// user-defined functions (whose declared effect row this pass does not
+// consult) are still unconditionally unsafe.
+//
+// Runs once over the whole merged program, called from both codegen
+// backends' convergence points, mirroring rewrite_self_tail_calls
+// (self_tail_call.vibe) and desugar_trait_dicts.
+export fn inline_direct_performs(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, is_rec, name, ty, expr) => {
+        let new_expr = idp_rewrite(expr, idp_empty_table())
+        Array::set(stmts, i, SLet(exported, is_rec, name, ty, new_expr))
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+// Arm lookup table: parallel arrays (op qualified name, param bind names,
+// prepared body with tail resume(e) already rewritten to e). Empty arrays
+// mean "no handle scope currently active" -- performs never match.
+fn idp_empty_table() -> (Array[String], Array[Array[String]], Array[Expr]) {
+  (array_empty_str(), array_empty_arr_str(), array_empty_expr())
+}
+
+fn array_empty_str() -> Array[String] {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+
+fn array_empty_arr_str() -> Array[Array[String]] {
+  Array::slice([
+    array_empty_str()
+  ], 0, 0)
+}
+
+fn array_empty_expr() -> Array[Expr] {
+  Array::slice([
+    EUnit
+  ], 0, 0)
+}
+
+fn idp_table_is_empty(table: (Array[String], Array[Array[String]], Array[Expr])) -> Bool {
+  let (names, _, _) = table
+  Array::length(names) == 0
+}
+
+fn idp_table_lookup(table: (Array[String], Array[Array[String]], Array[Expr]), qname: String) -> Int {
+  let (names, _, _) = table
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(names) {
+    if Array::get(names, i) == qname {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// --- conservative bail-out guard.
+//
+// Inlining is only sound when EVERY perform matching this handle's
+// operations is actually reachable by this pass's own traversal. Two
+// things can hide one: (a) an `EFn`/nested `EHandle` (a perform inside
+// either might run later, dynamically, or is intercepted by a nearer
+// handler -- see the module doc comment), and (b) a call to anything
+// other than `perform` itself. (b) matters even with no lambda in sight:
+// `handle { f() } with Http { Fetch(_) => resume(...) } }` (exactly the
+// shape of every fixtures/effect_higher_order_*.vibe fixture) calls a
+// NAMED function `f` whose OWN body may perform Http::Fetch -- that
+// perform is not in `body`'s AST at all (it lives in f's separate
+// top-level definition), so this pass cannot see, let alone inline, it.
+// Treating "no EFn/EHandle" as sufficient to drop the wrapper would have
+// deleted the handler for that unseen perform entirely -- an unhandled
+// perform at runtime. Conservatively flagging every non-`perform` call as
+// unsafe avoids this, EXCEPT for the fixed pure-builtin allowlist below
+// (idp_is_pure_builtin_call) -- those are checker-verified effect-free and
+// take no closure argument, so they cannot hide a perform. Recognizing
+// calls to user functions whose declared row excludes this effect is a
+// larger follow-up (needs the row/signature info this untyped AST pass
+// does not have), not attempted here.
+fn idp_has_unsafe_construct(expr: Expr) -> Bool {
+  match expr {
+    EFn(_, _, _, _, _, _) => true,
+    EHandle(_, _) => true,
+    ELet(_, v, b, _) => idp_has_unsafe_construct(v) || idp_has_unsafe_construct(b),
+    ELetMut(_, v, b, _) => idp_has_unsafe_construct(v) || idp_has_unsafe_construct(b),
+    ELetRec(_, v, b) => idp_has_unsafe_construct(v) || idp_has_unsafe_construct(b),
+    ESeq(a, b) => idp_has_unsafe_construct(a) || idp_has_unsafe_construct(b),
+    EIf(c, t, e) => idp_has_unsafe_construct(c) || idp_has_unsafe_construct(t) || idp_has_unsafe_construct(e),
+    EMatch(s, arms) => idp_has_unsafe_construct(s) || idp_arms_have_unsafe_construct(arms),
+    EWhile(c, b) => idp_has_unsafe_construct(c) || idp_has_unsafe_construct(b),
+    EForIn(_, _, it, b) => idp_has_unsafe_construct(it) || idp_has_unsafe_construct(b),
+    ECall(callee, args, _) => match callee {
+      // `perform Effect::Op(args)` parses to `ECall(EIdent("perform"),
+      // [ECall(EIdent("Effect::Op"), args)])` (or `[EIdent("Effect::Op")]`
+      // for a zero-arg op) -- the operation's own qualified name is NOT a
+      // "call to something else" in the unsafe sense, it is the operation
+      // being performed; only ITS OWN arguments need checking.
+      EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
+        idp_perform_operand_has_unsafe_construct(Array::get(args, 0))
+      } else if idp_is_pure_builtin_call(nm) {
+        idp_exprs_have_unsafe_construct(args)
+      } else {
+        idp_call_is_unsafe(callee) || idp_exprs_have_unsafe_construct(args)
+      },
+      _ => idp_call_is_unsafe(callee) || idp_exprs_have_unsafe_construct(args)
+    },
+    EBinOp(_, l, r) => idp_has_unsafe_construct(l) || idp_has_unsafe_construct(r),
+    EUnaryOp(_, e2) => idp_has_unsafe_construct(e2),
+    EAssign(_, v, c) => idp_has_unsafe_construct(v) || idp_has_unsafe_construct(c),
+    EAssignOp(_, _, v, c) => idp_has_unsafe_construct(v) || idp_has_unsafe_construct(c),
+    // Any `.field`/method-style access is conservatively unsafe too (could
+    // be a method dispatch with hidden effects by the time this runs).
+    EDot(_, _, _, _) => true,
+    ELabeledArg(_, _, v) => idp_has_unsafe_construct(v),
+    EReturn(e2) => idp_has_unsafe_construct(e2),
+    EBreak(opt) => match opt {
+      Some(e2) => idp_has_unsafe_construct(e2),
+      None => false
+    },
+    EContinue(args) => idp_exprs_have_unsafe_construct(args),
+    ETuple(elems) => idp_exprs_have_unsafe_construct(elems),
+    EArray(elems) => idp_exprs_have_unsafe_construct(elems),
+    ERecord(_, fields, _) => idp_fields_have_unsafe_construct(fields),
+    EMap(fields) => idp_fields_have_unsafe_construct(fields),
+    ESpread(e2) => idp_has_unsafe_construct(e2),
+    ELoop(pairs, b) => idp_pairs_have_unsafe_construct(pairs) || idp_has_unsafe_construct(b),
+    _ => false
+  }
+}
+
+// Only a direct call to the `perform` builtin is safe; a call to anything
+// else (a named top-level function, a parameter-bound closure, a computed
+// callee expression) may reach a perform this pass cannot see. (The
+// pure-builtin allowlist is checked separately, before this function is
+// ever reached -- see idp_is_pure_builtin_call's call site.)
+fn idp_call_is_unsafe(callee: Expr) -> Bool {
+  match callee {
+    EIdent(nm, _) => nm != "perform",
+    _ => true
+  }
+}
+
+// Phase 2b: a fixed, hand-audited set of builtin static-call names, each
+// individually checked (as of this change) against the checker's builtin
+// type table to have effect `None` (pure -- see checker/builtins_string1.
+// vibe, builtins_string2.vibe, builtins_misc.vibe) AND no function-typed
+// parameter (so it cannot invoke a user-supplied closure that might
+// perform). Deliberately NOT a prefix/namespace match: builtins_misc.vibe
+// mixes pure entries (Int::to_string, Char::to_int, ...) with impure ones
+// in the SAME file (`print`, `println`, `throw` -- `throw` in particular
+// is documented there as going through the Error effect, i.e. it IS a
+// perform in disguise), so only exact, individually-verified names belong
+// here. Extending this list requires re-checking the new name's entry in
+// those files, not just adding a plausible-looking string.
+fn idp_pure_builtin_names() -> Array[String] {
+  [
+    "String::concat", "String::equals", "String::length", "String::substring",
+    "string_char_at", "String::trim", "String::split", "String::contains",
+    "String::index_of", "String::to_lower", "String::to_upper",
+    "String::ends_with", "String::starts_with", "String::char_code_at",
+    "String::last_index_of", "String::from_char_code", "String::join",
+    "Char::to_int", "Char::from_int",
+    "Int::to_double", "Int::to_float", "Int::to_string",
+    "Double::to_int", "Float::to_int",
+    "Double::to_string", "Float::to_string",
+    "Double::abs", "Double::floor", "Double::ceil",
+    "Double::max", "Double::min",
+    "Int::parse", "Double::parse",
+    // #817 gc-backend follow-up (2026-07-23): `obj[i]` desugars to
+    // `__index(obj, i)` (desugar_trait_dict.vibe); `Array::get`/`Map::get`/
+    // `Bytes::get` are the same read operation spelled explicitly, and
+    // `Array::length`/`Map::size`/`Bytes::length` are the same class of
+    // pure, no-function-param builtin query. All seven are individually
+    // checker-verified pure (effect `None`, no function-typed parameter --
+    // checker/builtins_misc.vibe's lookup_index,
+    // builtins_array.vibe/builtins_map.vibe/builtins_bytes.vibe's own
+    // `*::get`/`*::length`/`Map::size` entries) and the `__index`/`*::get`
+    // subset is already treated as the same borrow-only-read equivalence
+    // class elsewhere in the compiler (perceus.vibe, common_analysis.vibe).
+    // Found missing via gc-backend coverage testing:
+    // `perform Logger::Log(items[i])` inside a `while i < Array::length
+    // (items) { ... }`-bodied needing function was sunk to ineligible
+    // purely because `items[i]`'s desugared `__index` call (and
+    // `Array::length`'s own call in the loop condition) weren't on this
+    // list, not because of anything about the perform itself.
+    "__index", "Array::get", "Map::get", "Bytes::get", "Array::length", "Map::size", "Bytes::length"
+  ]
+}
+
+fn idp_is_pure_builtin_call(nm: String) -> Bool {
+  let names = idp_pure_builtin_names()
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == nm {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// `operand` is `perform`'s single argument -- the operation application
+// itself (`EIdent(qname)` for zero args, `ECall(EIdent(qname), op_args)`
+// otherwise). The qualified operation name is never itself an unsafe call
+// target; only the actual argument expressions need checking.
+fn idp_perform_operand_has_unsafe_construct(operand: Expr) -> Bool {
+  match operand {
+    EIdent(_, _) => false,
+    ECall(op_callee, op_args, _) => match op_callee {
+      EIdent(_, _) => idp_exprs_have_unsafe_construct(op_args),
+      _ => true
+    },
+    _ => true
+  }
+}
+
+fn idp_exprs_have_unsafe_construct(exprs: Array[Expr]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(exprs) {
+    if idp_has_unsafe_construct(Array::get(exprs, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn idp_fields_have_unsafe_construct(fields: Array[(String, Expr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    if idp_has_unsafe_construct(v) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn idp_pairs_have_unsafe_construct(pairs: Array[(String, Expr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(pairs) {
+    let (_, v) = Array::get(pairs, i)
+    if idp_has_unsafe_construct(v) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn idp_arms_have_unsafe_construct(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    if idp_has_unsafe_construct(ex) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// --- per-arm preparation: bind names + tail resume(e) -> e.
+
+fn idp_pat_bind_names(pat: Pat) -> Array[String] {
+  match pat {
+    PCtor(_, subpats) => for p in subpats {
+      match p {
+        PBind(n) => n,
+        _ => "_"
+      }
+    },
+    _ => array_empty_str()
+  }
+}
+
+fn idp_pat_qname(pat: Pat) -> String {
+  match pat {
+    PCtor(name, _) => name,
+    _ => ""
+  }
+}
+
+// Replace every tail-position `resume(e)` with `e`. Mirrors #942's own
+// tail-position traversal (check_arm_resume_tail in checker.vibe) so the
+// two stay in lockstep: #942 already guarantees resume only ever appears
+// at exactly these tail slots, with nothing after it.
+fn idp_strip_tail_resume(expr: Expr) -> Expr {
+  match expr {
+    EIf(c, t, e) => EIf(c, idp_strip_tail_resume(t), idp_strip_tail_resume(e)),
+    EMatch(s, arms) => EMatch(s, idp_strip_tail_resume_arms(arms)),
+    ELet(n, v, b, off) => ELet(n, v, idp_strip_tail_resume(b), off),
+    ELetMut(n, v, b, off) => ELetMut(n, v, idp_strip_tail_resume(b), off),
+    ELetRec(n, v, b) => ELetRec(n, v, idp_strip_tail_resume(b)),
+    ESeq(a, b) => ESeq(a, idp_strip_tail_resume(b)),
+    EAssign(n, v, c) => EAssign(n, v, idp_strip_tail_resume(c)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, v, idp_strip_tail_resume(c)),
+    EReturn(e2) => EReturn(idp_strip_tail_resume(e2)),
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if nm == "resume" && Array::length(args) == 1 {
+        Array::get(args, 0)
+      } else {
+        expr
+      },
+      _ => expr
+    },
+    _ => expr
+  }
+}
+
+fn idp_strip_tail_resume_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
+  for a in arms {
+    let (p, ex) = a
+    (p, idp_strip_tail_resume(ex))
+  }
+}
+
+// --- the main rewrite.
+
+fn idp_rewrite(expr: Expr, table: (Array[String], Array[Array[String]], Array[Expr])) -> Expr {
+  match expr {
+    EHandle(body, arms) => idp_rewrite_handle(body, arms, table),
+    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, idp_rewrite(b, idp_empty_table())),
+    ELet(n, v, b, off) => ELet(n, idp_rewrite(v, table), idp_rewrite(b, table), off),
+    ELetMut(n, v, b, off) => ELetMut(n, idp_rewrite(v, table), idp_rewrite(b, table), off),
+    ELetRec(n, v, b) => ELetRec(n, idp_rewrite(v, table), idp_rewrite(b, table)),
+    ESeq(a, b) => ESeq(idp_rewrite(a, table), idp_rewrite(b, table)),
+    EIf(c, t, e) => EIf(idp_rewrite(c, table), idp_rewrite(t, table), idp_rewrite(e, table)),
+    EMatch(s, arms) => EMatch(idp_rewrite(s, table), idp_rewrite_arms(arms, table)),
+    EWhile(c, b) => EWhile(idp_rewrite(c, table), idp_rewrite(b, table)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, idp_rewrite(it, table), idp_rewrite(b, table)),
+    ECall(callee, args, off) => idp_rewrite_call(callee, args, off, table),
+    EBinOp(op, l, r) => EBinOp(op, idp_rewrite(l, table), idp_rewrite(r, table)),
+    EUnaryOp(op, e2) => EUnaryOp(op, idp_rewrite(e2, table)),
+    EAssign(n, v, c) => EAssign(n, idp_rewrite(v, table), idp_rewrite(c, table)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, idp_rewrite(v, table), idp_rewrite(c, table)),
+    EDot(o, f, off1, off2) => EDot(idp_rewrite(o, table), f, off1, off2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, idp_rewrite(v, table)),
+    EReturn(e2) => EReturn(idp_rewrite(e2, table)),
+    EBreak(opt) => EBreak(match opt {
+      Some(e2) => Some(idp_rewrite(e2, table)),
+      None => None
+    }),
+    EContinue(args) => EContinue(idp_rewrite_exprs(args, table)),
+    ETuple(elems) => ETuple(idp_rewrite_exprs(elems, table)),
+    EArray(elems) => EArray(idp_rewrite_exprs(elems, table)),
+    ERecord(n, fields, tas) => ERecord(n, idp_rewrite_fields(fields, table), tas),
+    EMap(fields) => EMap(idp_rewrite_fields(fields, table)),
+    ESpread(e2) => ESpread(idp_rewrite(e2, table)),
+    ELoop(pairs, b) => ELoop(idp_rewrite_pairs(pairs, table), idp_rewrite(b, table)),
+    _ => expr
+  }
+}
+
+fn idp_rewrite_exprs(exprs: Array[Expr], table: (Array[String], Array[Array[String]], Array[Expr])) -> Array[Expr] {
+  for e in exprs {
+    idp_rewrite(e, table)
+  }
+}
+
+fn idp_rewrite_fields(fields: Array[(String, Expr)], table: (Array[String], Array[Array[String]], Array[Expr])) -> Array[(String, Expr)] {
+  for f in fields {
+    let (n, v) = f
+    (n, idp_rewrite(v, table))
+  }
+}
+
+fn idp_rewrite_pairs(pairs: Array[(String, Expr)], table: (Array[String], Array[Array[String]], Array[Expr])) -> Array[(String, Expr)] {
+  for p in pairs {
+    let (n, v) = p
+    (n, idp_rewrite(v, table))
+  }
+}
+
+fn idp_rewrite_arms(arms: Array[(Pat, Expr)], table: (Array[String], Array[Array[String]], Array[Expr])) -> Array[(Pat, Expr)] {
+  for a in arms {
+    let (p, ex) = a
+    (p, idp_rewrite(ex, table))
+  }
+}
+
+fn idp_rewrite_handle(body: Expr, arms: Array[(Pat, Expr)], outer_table: (Array[String], Array[Array[String]], Array[Expr])) -> Expr {
+  if idp_has_unsafe_construct(body) {
+    // Conservative bail-out: leave this handle's own performs to the
+    // existing replay codegen. Still recurse into body/arms with a FRESH
+    // (empty) context -- any OTHER handle nested inside (which triggered
+    // this bail-out) gets its own independent chance to inline, and any
+    // stray perform for the now-inactive outer effect is simply left alone
+    // (matches ordinary lexical scoping: this pass never invents a target
+    // that codegen wouldn't otherwise resolve).
+    EHandle(idp_rewrite(body, idp_empty_table()), idp_rewrite_arms(arms, idp_empty_table()))
+  } else {
+    let op_names = for a in arms {
+      let (p, _) = a
+      idp_pat_qname(p)
+    }
+    let bind_names = for a in arms {
+      let (p, _) = a
+      idp_pat_bind_names(p)
+    }
+    let prepared_bodies = for a in arms {
+      let (_, ex) = a
+      idp_strip_tail_resume(idp_rewrite(ex, idp_empty_table()))
+    }
+    let table = (op_names, bind_names, prepared_bodies)
+    // No EFn/nested-handle boundary exists anywhere in `body`, so this
+    // rewrite is guaranteed to reach and inline every perform matching
+    // one of `arms` -- the result has none left, and the EHandle wrapper
+    // (and everything it would have compiled to: replay loop, per-effect
+    // reserved region, perform counter) can be dropped entirely.
+    idp_rewrite(body, table)
+  }
+}
+
+fn idp_rewrite_call(callee: Expr, args: Array[Expr], off: Int, table: (Array[String], Array[Array[String]], Array[Expr])) -> Expr {
+  match callee {
+    EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 && !idp_table_is_empty(table) {
+      idp_rewrite_perform(Array::get(args, 0), table)
+    } else {
+      ECall(idp_rewrite(callee, table), idp_rewrite_exprs(args, table), off)
+    },
+    _ => ECall(idp_rewrite(callee, table), idp_rewrite_exprs(args, table), off)
+  }
+}
+
+// `operand` is the perform's single argument: either `EIdent(qname)` for a
+// zero-arg operation, or `ECall(EIdent(qname), op_args)` for one with
+// arguments (see parser_expr_primary.vibe's parse_perform_primary).
+fn idp_rewrite_perform(operand: Expr, table: (Array[String], Array[Array[String]], Array[Expr])) -> Expr {
+  match operand {
+    EIdent(qname, _) => idp_splice_or_leave(qname, array_empty_expr(), operand, table),
+    ECall(op_callee, op_args, _) => match op_callee {
+      EIdent(qname, _) => idp_splice_or_leave(qname, idp_rewrite_exprs(op_args, table), operand, table),
+      _ => ECall(EIdent("perform", -1), [
+        idp_rewrite(operand, table)
+      ], -1)
+    },
+    _ => ECall(EIdent("perform", -1), [
+      idp_rewrite(operand, table)
+    ], -1)
+  }
+}
+
+fn idp_splice_or_leave(qname: String, actual_args: Array[Expr], original_operand: Expr, table: (Array[String], Array[Array[String]], Array[Expr])) -> Expr {
+  let idx = idp_table_lookup(table, qname)
+  if idx < 0 {
+    ECall(EIdent("perform", -1), [
+      original_operand
+    ], -1)
+  } else {
+    let (_, bind_names_list, prepared_bodies) = table
+    let bind_names = Array::get(bind_names_list, idx)
+    let prepared_body = Array::get(prepared_bodies, idx)
+    idp_bind_args(bind_names, actual_args, prepared_body)
+  }
+}
+
+// `let bind_0 = actual_0; let bind_1 = actual_1; ...; prepared_body` --
+// evaluates every argument exactly once, in left-to-right order, before the
+// (already tail-resume-stripped) arm body runs, matching ordinary function
+// call-argument semantics.
+fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_body: Expr) -> Expr {
+  let n = Array::length(bind_names)
+  let mut result = prepared_body
+  let mut i = n - 1
+  while i >= 0 {
+    if i < Array::length(actual_args) {
+      result = ELet(Array::get(bind_names, i), Array::get(actual_args, i), result, -1)
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  result
+}
+
+// ADR-0076 Phase 3 (evidence-passing effect handlers, #817), first slice
+// (docs/effect-evidence-passing.md "追記 2" hypothesis, 2026-07-22).
+//
+// Phase 2 (inline_direct_perform.vibe) only covers a `handle`'s BODY when
+// every `perform` for its operations is lexically reachable in that same
+// body -- a call to a named top-level function is an automatic bail-out,
+// because the callee's own perform (if any) lives in a different AST
+// location Phase 2's textual splice cannot see. That gap is a real,
+// currently-reproducible correctness bug, not just a missed optimization:
+// fixtures/effect_handle_call_evidence.vibe shows the SAME M2-style replay
+// corruption (a `let mut` counter incremented before two performs gets
+// double-counted) when the two performs are reached via a helper function
+// call instead of directly in the handle body.
+//
+// This pass covers the single narrowest case that closes that gap without
+// needing CPS/yield-bubbling (see the ADR's "追記 2" for why #942's
+// tail-resume-only-in-tail-position guarantee makes every handler arm
+// already tail-resumptive, so plain evidence-dict threading -- an ordinary
+// call/return, the same codegen shape as desugar_trait_dict.vibe's
+// dict-passing -- suffices; no new IR node or runtime continuation type is
+// introduced here):
+//
+//   - a top-level function `f` whose ENTIRE declared effect row is EXACTLY
+//     one user-defined effect name `E` (no row-variable, no other effect
+//     alongside it -- kept single-effect-only for this first slice so one
+//     function is never threaded for two different effects in the same
+//     pass, which would require reasoning about injection order);
+//   - every `perform E::Op(...)` anywhere in `f`'s own body (which, by the
+//     eligibility check below, cannot itself contain a nested closure,
+//     nested `handle`, or any call other than to `perform`/another such
+//     function/a pure builtin) is rewritten to call through an implicit
+//     "evidence dict" parameter prepended to `f`'s params -- a plain struct
+//     value with one field per operation of E, each field a closure built
+//     from a `handle`'s arm body (mirrors desugar_trait_dict.vibe's
+//     TrDict[T] exactly, just keyed by effect operation instead of trait
+//     method);
+//   - a `handle { BODY } with E { arms } }` whose only reason for failing
+//     Phase 2's stricter check is that BODY calls one or more such
+//     functions synthesizes the evidence dict from `arms` (same
+//     tail-resume-stripped arm bodies Phase 2 already knows how to
+//     prepare) and passes it at each such call, then drops the `EHandle`
+//     wrapper exactly as Phase 2 does -- no replay codegen is generated
+//     for it either.
+//
+// Soundness argument (why this cannot silently miscompile, only
+// under-optimize): a function is only ever added to the "needing" set when
+// its OWN declared row is EXACTLY `E` -- by the existing effect checker's
+// own soundness (checker/checker_effects.vibe's transitive perform-effect
+// check, unrelated to and unchanged by this pass), any `perform E::Op`
+// reachable from `f`'s body without crossing a nested `handle` for `E`
+// REQUIRES `f`'s declared row to already contain `E`; this pass never
+// invents authorization the checker did not already grant. The per-body
+// eligibility scan (edp_has_unsafe_construct) is the exact same
+// conservative bail-out shape as Phase 2's idp_has_unsafe_construct, with
+// the single addition that a call to a name in the already-computed
+// `needing` set is treated as safe (that callee's own body is itself
+// checked the same way before the whole migration for `E` is applied at
+// all). If ANY handle-for-`E` site or ANY needing-function body fails this
+// check, the ENTIRE migration for `E` is abandoned and every occurrence is
+// left completely untouched for the existing replay/Phase-2 codegen --
+// there is no partial or best-effort application. Effects with an empty
+// needing set (nothing to gain) or with any ineligible site are simply
+// left alone, matching today's behavior exactly.
+//
+// Not attempted here (left on replay, same as before this pass exists):
+// migrating a row VARIABLE itself (there is no concrete effect there to
+// migrate -- see edp_row_is_exactly's doc comment for why this is also
+// simply correct, not a limitation), and any effect for which even one
+// handle site or needing function fails the eligibility scan.
+//
+// A function whose row combines `E` with another concrete effect, OR with
+// an open row-variable tail (`with { Ask, e }`), IS attempted per-effect,
+// independently (`edp_row_is_exactly`'s row-containment match) -- each
+// effect in the row is eligibility-checked and migrated (or not) on its
+// own terms; see edp_row_is_exactly's doc comment for why this is sound
+// and the history of getting there for the concrete-effect-vs-concrete-
+// effect case. The row-variable-tail case was verified separately
+// (2026-07-23): `with { Ask, e }` migrates `Ask` too, exactly like any
+// other multi-effect row -- the row-variable token `e` simply never
+// matches any real declared effect name, so it's inert to this pass's own
+// matching logic. If the function body actually exercises whatever `e`
+// turns out to mean at a given call site (invoking a callback parameter
+// typed with that row, for instance), the pre-existing "unrecognized
+// callee is unsafe" rule in edp_has_unsafe_construct already rejects
+// that, independent of anything row-string-related.
+//
+// A handle site
+// (or needing function) whose own body is directly ANOTHER effect's
+// `EHandle` is ALSO no longer automatically excluded: edp_has_unsafe_
+// construct recurses into a nested handle for a DIFFERENT effect (its body
+// and arms) rather than rejecting it outright, so a directly-nested
+// `handle A { handle B {...} }` pair -- or the equivalent split across a
+// wrapper function -- can have BOTH effects migrate independently, not
+// just the innermost one; see that function's doc comment for the
+// `resume` recognition this needed and fixtures/effect_handle_multi_
+// effect_nested_handles.vibe for the regression lock. A call to a plain
+// user-defined function the checker has ALREADY proven pure (empty
+// declared row, `edp_pure_fn_names`) is ALSO safe now, not just the
+// hand-audited `edp_pure_builtin_names` allowlist -- see fixtures/
+// effect_handle_call_evidence_pure_helper.vibe. A bare `.field` READ
+// (`EDot`, not a call through it) is ALSO safe now -- see fixtures/
+// effect_handle_call_evidence_struct_field.vibe -- despite this pass
+// having no type information: only the object expression being read
+// from can hide anything unsafe, which the existing traversal already
+// answers soundly regardless of the field's static type. A closure
+// LITERAL's own body (`EFn`) is ALSO safe to look inside now -- see
+// fixtures/effect_handle_call_evidence_closure_literal.vibe -- covering
+// only the closure's DEFINITION: CALLING an arbitrary local closure
+// (`f()` where `f` is a local variable, not a top-level function name)
+// would still need real scope tracking this AST-level pass doesn't have
+// to recognize safely by name alone (risking the kind of shadowing
+// false-safety `pure_fns`/`needing`'s name-matching could ALSO in
+// principle hit -- see edp_pure_fn_names' considerations) -- EXCEPT this
+// turns out to already be a non-issue for the common, CAPTURE-FREE case:
+// #786 ("hoist non-capturing effectful local lambdas to top-level",
+// desugar_trait_dict.vibe) already lambda-lifts such a closure to a
+// fresh top-level binding BEFORE this pass ever runs, so by the time
+// edp_has_unsafe_construct sees the call site, it's already an ordinary
+// call to a genuine top-level function -- ALREADY handled correctly by
+// the existing needing-forwarding logic, no closure-specific code needed
+// here at all. Verified directly (2026-07-23) rather than assumed still
+// broken: see fixtures/effect_handle_call_evidence_local_closure_capture_
+// free.vibe. Only a local closure that ALSO captures an outer local (not
+// just the effect) remains excluded -- and not merely from this pass:
+// investigating this surfaced that the CAPTURING case independently hits
+// a pre-existing, deeper miscompilation bug in the closure+effect
+// combinator itself (invalid wasm at instantiation) that #786's own
+// landed fix explicitly declined to touch and that #786's own body had
+// already flagged as the harder, never-actually-fixed "Layer 2" of that
+// bug -- tracked separately as #1069, since it's a closure-codegen bug
+// independent of evidence_dict_pass, not something a row-migration pass
+// could paper over even in principle (the underlying replay path is
+// what's broken for that shape, migrated or not).
+//
+// A row spelled with an `effectset` alias (`with { AskAll }`) is ALSO
+// recognized now, at whatever granularity the alias expands to -- see
+// edp_row_is_exactly's doc comment for why the row string needed its own
+// local (re-)expansion here rather than trusting it was already expanded
+// by the time codegen sees it.
+//
+// (An earlier draft of this comment also listed "a wrapper that merely
+// forwards to a needing function without itself declaring the effect" as
+// a follow-up item -- verified, and removed, 2026-07-23: the checker
+// already rejects that program outright at compile time ("effect row
+// mismatch ... missing { E } (no 'with' clause, requires { E })"), so it
+// can never reach this pass at all. Not every item that sounds plausible
+// on paper turns out to be a real, reachable gap; this one wasn't either,
+// same lesson as the local-closure-invocation item above.)
+// Two phases, deliberately NOT interleaved (see edp_row_is_exactly's doc
+// comment, "追記 8", for the bug this avoids): first decide eligibility
+// for EVERY effect against the still-completely-unmutated `stmts`, then
+// apply every eligible migration in a separate pass afterward.
+//
+// Interleaving (decide effect A's eligibility, apply A's rewrite, decide
+// B's eligibility, apply B's rewrite, ...) was tried first and found
+// unsound for a function needing more than one effect: applying A's
+// rewrite introduces `EDot` nodes into that function's body (the
+// dict-field-access call an evidence-passed `perform` compiles to), and
+// `edp_has_unsafe_construct` treats every `EDot` as unconditionally
+// unsafe -- so B's eligibility check, re-scanning that SAME (now A-
+// mutated) body, would always see A's own rewrite as a disqualifying
+// construct and abort, even though nothing about the ORIGINAL program
+// was actually unsafe for B.
+//
+// Deciding all eligibility upfront sidesteps this entirely: by the time
+// ANY mutation happens, every effect's needing set, handle sites, and
+// eligibility verdict are already fixed facts about the original tree.
+// Applying migrations afterward is safe against each other's rewrites
+// because edp_apply_migration's actual rewrite step (edp_find_rewrite_
+// handles) always re-walks the CURRENT stmts fresh rather than trusting
+// a stale collected handle-site list, and edp_rewrite_needing_body only
+// pattern-matches specific ECall/EHandle shapes -- it already tolerates
+// (passes through unchanged) an EDot or an extra prepended argument left
+// by an earlier effect's migration, it just doesn't blanket-reject them
+// the way the eligibility check does.
+// `entry_name` (2026-07-23, gc-backend follow-up): a needing function can
+// become genuinely UNREACHABLE mid-pipeline -- e.g. dtpw_inline_trivial_wrappers
+// (desugar_trait_dict.vibe, #1070 narrow slice) rewrites `apply(inner)` into
+// `inner()`, leaving a trivial pass-through wrapper's own top-level `apply`
+// definition uncalled anywhere, yet `apply` still declares the migrated
+// effect in its row (it forwards an arbitrary closure argument's effect,
+// which this pass can never prove safe -- see edp_has_unsafe_construct's
+// "call to a non-statically-known target" rejection) and so used to sink
+// the WHOLE effect's eligibility to false, even though the offending
+// function can never actually run. `entry_name` lets edp_plan_migrations
+// reuse the SAME reachability engine `dce_stmts`/`dce_keep_flags`
+// (core/dce.vibe) already uses in production elsewhere in the compiler to
+// drop provably-dead needing functions from consideration before the
+// safety scan -- see edp_plan_migrations' doc comment for the full
+// analysis of why this is safe even if reachability is ever imprecise.
+export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Unit {
+  let effect_defs = edp_collect_effect_defs(stmts)
+  let fn_defs = edp_collect_fn_defs(stmts)
+  let keep = dce_keep_flags(stmts, [entry_name])
+  let plans = edp_plan_migrations(stmts, effect_defs, fn_defs, keep)
+  let mut pi = 0
+  while pi < Array::length(plans) {
+    let (ename, ops, needing, handle_sites) = Array::get(plans, pi)
+    edp_apply_migration(stmts, ename, ops, needing, handle_sites, fn_defs)
+    pi = pi + 1
+  }
+}
+
+// Drop any `needing` name whose OWN top-level definition `keep` (from
+// `dce_keep_flags`, computed against the real entry point) marks
+// unreachable -- a needing function that can never actually run at runtime
+// can never need the evidence dict at runtime either, so excluding it from
+// `needing` changes nothing observable, REGARDLESS of whether its body
+// would otherwise have been judged "safe" by edp_has_unsafe_construct.
+//
+// Why this can never cause a silent miscompile even if `keep`'s
+// reachability analysis is ever imprecise: `keep` is used ONLY to shrink
+// `needing` here, never to delete anything from `stmts` (dce_stmts itself
+// is not called). If `keep` ever under-approximates unreachability (wrongly
+// calls something dead that's actually still called somewhere), the
+// excluded function's own body -- if it directly performs the migrated
+// effect -- is simply left un-rewritten. That still-literal `perform` node
+// then hits exactly the same fallback every genuinely-ineligible perform
+// already hits today: the linear backend's pre-existing replay codegen
+// (still correct, just not the fast evidence-dict path), or the gc
+// backend's pre-existing "unsupported perform" hard compile error (loud,
+// not silent). Both are the SAME failure modes this pass already produces
+// for any effect it declines to migrate -- this filter can only ever
+// recover eligibility that dead code would otherwise block, never regress
+// a case that worked before it existed.
+fn edp_drop_unreachable_needing(needing: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool]) -> Array[String] {
+  let out = array_empty()
+  let mut ni = 0
+  while ni < Array::length(needing) {
+    let nm = Array::get(needing, ni)
+    if edp_needing_name_reachable(nm, fn_defs, keep) {
+      Array::push(out, nm)
+    } else {
+      ()
+    }
+    ni = ni + 1
+  }
+  out
+}
+
+// Local copy of dlh_strip_tilde (desugar_trait_dict.vibe) -- see
+// edp_pat_binds' own doc comment just below for why this file keeps local
+// copies rather than adding new cross-file callers.
+fn edp_strip_tilde(n: String) -> String {
+  let ln = String::length(n)
+  if ln > 0 && n[ln - 1:ln] == "~" {
+    n[0:ln - 1]
+  } else {
+    n
+  }
+}
+
+// Local copy of a pattern's bound names (mirrors dlh_pat_binds in
+// desugar_trait_dict.vibe -- kept as a separate local copy rather than a
+// cross-file import to avoid the bootstrap flatten gotcha documented
+// elsewhere in this file: a brand-new cross-file export + its first
+// cross-file caller in the SAME commit gets silently dropped by the
+// merge/flatten tool).
+fn edp_pat_binds(p: Pat, out: Array[String]) -> Unit {
+  match p {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        edp_pat_binds(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    PTuple(ps) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        edp_pat_binds(Array::get(ps, i), out)
+        i = i + 1
+      }
+    },
+    POr(a, b) => {
+      edp_pat_binds(a, out)
+      edp_pat_binds(b, out)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        edp_pat_binds(fp, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+// Does `expr` bind (shadow) `name` anywhere within it? Full-coverage
+// traversal mirroring edp_rewrite_needing_body's own node coverage, plus
+// match/handle arm pattern binders (which edp_rewrite_needing_body itself
+// doesn't need to examine, but shadow detection does). See
+// edp_drop_shadowed_needing's own doc comment for why this exists.
+fn edp_expr_binds_name(expr: Expr, name: String) -> Bool {
+  match expr {
+    EFn(_, _, params, _, _, body) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(params) && !found {
+        let (pn, _) = Array::get(params, i)
+        if edp_strip_tilde(pn) == name {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found || edp_expr_binds_name(body, name)
+    },
+    EHandle(body, arms) => {
+      let mut i = 0
+      let mut found = edp_expr_binds_name(body, name)
+      while i < Array::length(arms) && !found {
+        let (p, ex) = Array::get(arms, i)
+        let bound = array_empty()
+        edp_pat_binds(p, bound)
+        if edp_str_array_contains(bound, name) || edp_expr_binds_name(ex, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EIf(c, t, e2) => edp_expr_binds_name(c, name) || edp_expr_binds_name(t, name) || edp_expr_binds_name(e2, name),
+    EMatch(s, arms) => {
+      let mut i = 0
+      let mut found = edp_expr_binds_name(s, name)
+      while i < Array::length(arms) && !found {
+        let (p, ex) = Array::get(arms, i)
+        let bound = array_empty()
+        edp_pat_binds(p, bound)
+        if edp_str_array_contains(bound, name) || edp_expr_binds_name(ex, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EWhile(c, b) => edp_expr_binds_name(c, name) || edp_expr_binds_name(b, name),
+    EForIn(n, idx, it, b) => {
+      let idx_hit = match idx {
+        Some(i2) => i2 == name,
+        None => false
+      }
+      n == name || idx_hit || edp_expr_binds_name(it, name) || edp_expr_binds_name(b, name)
+    },
+    ELoop(pairs, b) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(pairs) && !found {
+        let (n, v) = Array::get(pairs, i)
+        if n == name || edp_expr_binds_name(v, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found || edp_expr_binds_name(b, name)
+    },
+    ELet(n, v, b, _) => n == name || edp_expr_binds_name(v, name) || edp_expr_binds_name(b, name),
+    ELetMut(n, v, b, _) => n == name || edp_expr_binds_name(v, name) || edp_expr_binds_name(b, name),
+    ELetRec(n, v, b) => n == name || edp_expr_binds_name(v, name) || edp_expr_binds_name(b, name),
+    ESeq(a, b) => edp_expr_binds_name(a, name) || edp_expr_binds_name(b, name),
+    EAssign(_, v, c) => edp_expr_binds_name(v, name) || edp_expr_binds_name(c, name),
+    EAssignOp(_, _, v, c) => edp_expr_binds_name(v, name) || edp_expr_binds_name(c, name),
+    EReturn(e2) => edp_expr_binds_name(e2, name),
+    EDot(o, _, _, _) => edp_expr_binds_name(o, name),
+    ECall(callee, args, _) => edp_expr_binds_name(callee, name) || edp_exprs_bind_name(args, name),
+    EBinOp(_, l, r) => edp_expr_binds_name(l, name) || edp_expr_binds_name(r, name),
+    EUnaryOp(_, e2) => edp_expr_binds_name(e2, name),
+    ELabeledArg(_, _, v) => edp_expr_binds_name(v, name),
+    EBreak(opt) => match opt {
+      Some(e2) => edp_expr_binds_name(e2, name),
+      None => false
+    },
+    EContinue(args) => edp_exprs_bind_name(args, name),
+    ETuple(elems) => edp_exprs_bind_name(elems, name),
+    EArray(elems) => edp_exprs_bind_name(elems, name),
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) && !found {
+        let (_, v) = Array::get(fields, i)
+        if edp_expr_binds_name(v, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMap(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) && !found {
+        let (_, v) = Array::get(fields, i)
+        if edp_expr_binds_name(v, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ESpread(e2) => edp_expr_binds_name(e2, name),
+    _ => false
+  }
+}
+
+fn edp_exprs_bind_name(es: Array[Expr], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(es) && !found {
+    if edp_expr_binds_name(Array::get(es, i), name) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// Drop any `needing` name that's shadowed ANYWHERE in the program (any
+// nested `let`/`let mut`/`let rec`, EFn parameter, match/handle arm
+// pattern binder, for-loop name, or loop parameter reusing the same
+// identifier as a top-level "needing" function). edp_rewrite_needing_body
+// matches a call's callee by NAME ONLY (`edp_str_array_contains(needing,
+// nm)`, line ~1952) with no scope tracking -- a local binding that
+// shadows a needing function's name would get the evidence-dict argument
+// prepended to ITS calls too, even though the local closure/value was
+// never rewritten to accept that extra parameter, producing an arity
+// mismatch / invalid generated call (#1074 PR review,
+// chatgpt-codex-connector P1: "Respect local shadowing when forwarding
+// evidence"). Deliberately whole-program-conservative rather than
+// precisely scope-threaded, matching edp_drop_self_discharging_needing's
+// own established pattern immediately below: losing eligibility for the
+// rare needing function whose name is ALSO reused as a shadowing binder
+// elsewhere is an acceptable trade for guaranteed correctness.
+fn edp_drop_shadowed_needing(needing: Array[String], stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut ni = 0
+  while ni < Array::length(needing) {
+    let nm = Array::get(needing, ni)
+    let mut shadowed = false
+    let mut si = 0
+    while si < Array::length(stmts) && !shadowed {
+      match Array::get(stmts, si) {
+        SLet(_, _, _, _, sv) => if edp_expr_binds_name(sv, nm) {
+          shadowed = true
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      si = si + 1
+    }
+    if shadowed {
+      ()
+    } else {
+      Array::push(out, nm)
+    }
+    ni = ni + 1
+  }
+  out
+}
+
+// Drop any `needing` name whose OWN entire body is BARE `handle {..} with
+// ename {..}` -- e.g. `fixtures/effect_effectset_expansion.vibe`'s `main`,
+// declared `with { Ask, Ask::Get }` purely to satisfy a checker requirement
+// unrelated to evidence_dict_pass ("a `handle ... with Effect` expression's
+// enclosing declared row must authorize the whole effect name" -- see that
+// fixture's own doc comment), whose body never performs `ename` OUTSIDE the
+// handle it already fully discharges. `edp_needing_names` has no way to see
+// that distinction (it only reads the row string), so such a function was
+// always included in `needing`; `edp_has_unsafe_construct`, entirely
+// correctly for the GENERAL case, then flags a same-effect `EHandle` as
+// unsafe ("nested handling of the SAME effect inside itself is not a shape
+// this pass targets" -- see its own doc comment) -- but here that "nested"
+// handle IS the function's own whole body, not something hidden inside a
+// call chain this pass can't already see. It is ALREADY discovered and
+// rewritten independently via edp_collect_handle_sites/edp_find_rewrite_
+// handles (which scan every EHandle for `ename` in `stmts` directly, not
+// through `needing`), so dropping such a function from `needing` loses
+// nothing -- it never needed the dict passed to IT (nothing in its body
+// can observably require one once its own handle is excluded from
+// consideration), it only ever PROVIDES one for its own nested call(s).
+//
+// Deliberately narrow: only the exact bare-EHandle-as-whole-body shape
+// qualifies (no ESeq prefix, no wrapping ELet, etc.) -- anything else keeps
+// the function in `needing` and falls back to the existing (already sound)
+// conservative treatment, exactly as before this change existed.
+fn edp_drop_self_discharging_needing(needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String) -> Array[String] {
+  let out = array_empty()
+  let mut ni = 0
+  while ni < Array::length(needing) {
+    let nm = Array::get(needing, ni)
+    let drop = match edp_find_fn_body(stmts, fn_defs, nm) {
+      Some(body) => edp_body_is_bare_self_discharge(body, ename),
+      None => false
+    }
+    if drop {
+      ()
+    } else {
+      Array::push(out, nm)
+    }
+    ni = ni + 1
+  }
+  out
+}
+
+fn edp_body_is_bare_self_discharge(body: Expr, ename: String) -> Bool {
+  match body {
+    EHandle(_, arms) => edp_handle_matches_effect(arms, ename),
+    _ => false
+  }
+}
+
+fn edp_needing_name_reachable(name: String, fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool]) -> Bool {
+  let mut fi = 0
+  let mut result = true
+  let mut found = false
+  while fi < Array::length(fn_defs) {
+    let (idx, _, _, nm, _, _) = Array::get(fn_defs, fi)
+    if nm == name && !found {
+      found = true
+      result = if idx >= 0 && idx < Array::length(keep) {
+        Array::get(keep, idx)
+      } else {
+        true
+      }
+    } else {
+      ()
+    }
+    fi = fi + 1
+  }
+  result
+}
+
+// Decide eligibility for every effect against `stmts` as it is RIGHT NOW
+// (the caller must not have mutated anything yet) and return the plans
+// for the effects that qualify, in effect-declaration order.
+//
+// `keep` (2026-07-23): per-stmt-index reachable flags from `dce_keep_flags`
+// (core/dce.vibe), computed by the caller against the SAME `entry_name` the
+// real compile uses. Before the safety scan below, `needing` is filtered
+// down to only the names `keep` marks reachable -- see
+// edp_drop_unreachable_needing's doc comment for why dropping a provably-
+// dead needing function can never cause a silent miscompile, only recover
+// eligibility that a dead function's un-provable body would otherwise sink
+// for the whole effect.
+fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+  let es_names = array_empty()
+  let es_members_list = array_empty()
+  edp_es_collect_into(stmts, es_names, es_members_list)
+  let plans = array_empty()
+  let mut ei = 0
+  while ei < Array::length(effect_defs) {
+    let (ename, ops) = Array::get(effect_defs, ei)
+    let needing_all = edp_needing_names(fn_defs, ename, es_names, es_members_list)
+    // Shadowed-name exclusion is ALSO unconditional (#1074 review: a
+    // needing function's name shadowed by a local binding elsewhere in
+    // the program is never safe to leave in `needing` regardless of
+    // dead-code/self-discharge status -- see edp_drop_shadowed_needing's
+    // own doc comment), so it applies before the self-discharging filter.
+    let needing_unshadowed = edp_drop_shadowed_needing(needing_all, stmts)
+    // Self-discharging exclusion is unconditional (a self-discharging
+    // function never needs the dict for itself, dead or not -- see
+    // edp_drop_self_discharging_needing's doc comment), so it applies to
+    // the FULL set before either eligibility attempt below.
+    let needing_full = edp_drop_self_discharging_needing(needing_unshadowed, stmts, fn_defs, ename)
+    match edp_try_plan_for_effect(stmts, ename, ops, needing_full, fn_defs) {
+      Some(plan) => Array::push(plans, plan),
+      None => {
+        // Fall back to dropping provably-DEAD needing functions and retry
+        // ONLY if the full set was ineligible -- trying the full set FIRST
+        // (rather than always dropping dead functions up front) matters:
+        // an independently-safe dead function (e.g. a hoisted closure
+        // whose own body is a bare `perform`, dlh_hoist_expr's row-
+        // backfill fix, 2026-07-23) should stay in `needing` and get
+        // properly migrated like any other safe function -- gc backend
+        // codegen still has to compile it even though it never runs, and
+        // a dead-but-still-present un-rewritten `perform` is exactly as
+        // fatal there as a live one. Dropping dead functions is only a
+        // NET WIN when the full set fails for some OTHER (unsafe, not
+        // dead) member -- see edp_drop_unreachable_needing's doc comment
+        // for why dropping in that case is always safe.
+        let needing_live = edp_drop_unreachable_needing(needing_full, fn_defs, keep)
+        if Array::length(needing_live) == Array::length(needing_full) {
+          ()
+        } else {
+          match edp_try_plan_for_effect(stmts, ename, ops, needing_live, fn_defs) {
+            Some(plan2) => Array::push(plans, plan2),
+            None => ()
+          }
+        }
+      }
+    }
+    ei = ei + 1
+  }
+  plans
+}
+
+// Attempt eligibility for `needing` (already effect-set/self-discharge
+// filtered by the caller) against `stmts` as-is; `Some` iff every needing
+// function AND every handle site is safe.
+fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Option[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+  if Array::length(needing) == 0 {
+    None
+  } else {
+    let handle_sites = edp_collect_handle_sites(stmts, ename)
+    if edp_all_sites_eligible(stmts, ename, needing, handle_sites, fn_defs) {
+      Some((ename, ops, needing, handle_sites))
+    } else {
+      None
+    }
+  }
+}
+
+// --- effectset-aware row resolution.
+//
+// A needing function's row string (EFn's own `eff` slot, taken verbatim by
+// edp_collect_fn_defs) can be spelled with an `effectset` alias --
+// `with { AskAll }` where `effectset AskAll = { Ask }` -- instead of the
+// bare effect name. checker_stmt.vibe's own effectset-expansion
+// (es_expand_stmts_effect_rows) deliberately runs on a NON-mutating COPY of
+// `stmts` used only for type-checking (see check_program's comment: "codegen
+// never reads the row's text content") -- the EFn node codegen actually
+// receives keeps the alias UNEXPANDED. That comment's premise no longer
+// holds now that evidence_dict_pass reads row text directly: without this,
+// `AskAll`-declared functions were silently excluded from migration even in
+// the simplest case (an effectset that's just a whole-effect alias),
+// invisibly falling back to the pre-existing replay codegen -- found by
+// writing a small effectset fixture and confirming, via a temporary
+// migration-plan probe, that no plan was produced for it at all, THEN
+// tracing why (edp_needing_names' string match against the still-literal
+// "AskAll" label never matches a bare "Ask" query) rather than assuming.
+//
+// Fixed the same way wit_gen.vibe/contract.vibe/checker_stmt.vibe each
+// already fix the identical problem for their own consumers: a small LOCAL
+// copy of the ES-table/cycle-safe-expansion shape (no new cross-file
+// reference -- see docs/effectset.md's bootstrap gotcha), re-run here on
+// `stmts` as evidence_dict_pass actually receives them. Resolving down to
+// EFFECT-name granularity (not operation-level) is enough for this pass's
+// purposes even for an operation-level effectset (`effectset Env::Read = {
+// Env::get, ...}`): the dict struct this pass builds always has one field
+// per operation the EFFECT declares (edp_make_dict_struct_stmt, from
+// effect_defs) and a handle site's arms already provide real closures for
+// every operation regardless of which subset a caller's row happened to
+// mention, so "does this row require effect X at all" is exactly the
+// question edp_needing_names needs answered, whether the original
+// declaration enumerated operations, named an effectset, or wrote the bare
+// effect name.
+fn edp_es_collect_into(stmts: Array[Stmt], es_names: Array[String], es_members_list: Array[Array[String]]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectSet(_, esname, esmembers) => {
+        Array::push(es_names, esname)
+        Array::push(es_members_list, esmembers)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn edp_es_expand_into(es_names: Array[String], es_members_list: Array[Array[String]], name: String, path: Array[String], out: Array[String]) -> Unit {
+  if edp_str_array_contains(path, name) {
+    ()
+  } else {
+    let idx = edp_str_array_index_of(es_names, name)
+    if idx < 0 {
+      if edp_str_array_contains(out, name) {
+        ()
+      } else {
+        Array::push(out, name)
+      }
+    } else {
+      Array::push(path, name)
+      let members = Array::get(es_members_list, idx)
+      let mut mi = 0
+      while mi < Array::length(members) {
+        edp_es_expand_into(es_names, es_members_list, Array::get(members, mi), path, out)
+        mi = mi + 1
+      }
+      Array::truncate(path, Array::length(path) - 1)
+    }
+  }
+}
+
+// Strip a qualified operation label (`Ask::Get`) down to its effect prefix
+// (`Ask`); a bare label (already an effect name, or a row-variable label
+// this pass doesn't recognize either way) passes through unchanged.
+fn edp_effect_name_of(label: String) -> String {
+  let idx = String::index_of(label, "::")
+  if idx > 0 {
+    String::substring(label, 0, idx)
+  } else {
+    label
+  }
+}
+
+// Resolve one raw row-item label to the underlying effect NAME(s) it
+// requires: expand it first if it's a known effectset (pushing each
+// expanded leaf's effect prefix), or just push its own effect prefix
+// directly otherwise. Appends into `out` (deduped by the caller).
+fn edp_resolve_effect_names_into(label: String, es_names: Array[String], es_members_list: Array[Array[String]], out: Array[String]) -> Unit {
+  if edp_str_array_contains(es_names, label) {
+    let leaves = array_empty()
+    edp_es_expand_into(es_names, es_members_list, label, array_empty(), leaves)
+    let mut li = 0
+    while li < Array::length(leaves) {
+      let ename = edp_effect_name_of(Array::get(leaves, li))
+      if edp_str_array_contains(out, ename) {
+        ()
+      } else {
+        Array::push(out, ename)
+      }
+      li = li + 1
+    }
+  } else {
+    let ename = edp_effect_name_of(label)
+    if edp_str_array_contains(out, ename) {
+      ()
+    } else {
+      Array::push(out, ename)
+    }
+  }
+}
+
+fn edp_str_array_index_of(arr: Array[String], v: String) -> Int {
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == v {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// --- collection.
+
+fn edp_collect_effect_defs(stmts: Array[Stmt]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectDef(_, name, _, ops) => Array::push(out, (name, ops)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// (stmt index, exported, is_rec, name, top-level type annotation, declared
+// effect row string ("" for none) -- taken directly from the EFn's own
+// `eff` slot, the same field #942/the checker already validate).
+fn edp_collect_fn_defs(stmts: Array[Stmt]) -> Array[(Int, Bool, Bool, String, Option[TypeExpr], String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, is_rec, name, ty, expr) => match expr {
+        EFn(_, _, _, _, eff, _) => {
+          let row = match eff {
+            Some(s) => s,
+            None => ""
+          }
+          Array::push(out, (i, exported, is_rec, name, ty, row))
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Row CONTAINMENT: a function whose row is several comma-joined effect
+// names (e.g. "Ask, Fs") qualifies for EACH effect's migration
+// independently, alongside a bare exact-match row. A row-variable label is
+// still excluded (containment only matches literal effect names present in
+// the row string).
+//
+// This relaxation was tried and reverted TWICE on 2026-07-23 before being
+// shipped for real: both rounds crashed on
+// fixtures/effect_handle_multi_effect_row_fallback.vibe with an uncaught
+// exception, and two rounds of code-reading-only diagnosis (an EDot
+// artifact from one effect's own rewrite tripping a later effect's
+// eligibility re-scan; a needing function's body being directly another
+// effect's own `EHandle`) both turned out to be real but NOT the actual
+// cause once retested. Runtime instrumentation (temporarily exporting
+// every per-effect wasm exception tag by name, so an uncaught exception's
+// tag could be decoded from outside the module) finally isolated the true
+// cause: it had nothing to do with multi-effect rows at all.
+// edp_rewrite_needing_body's traversal was missing several positions
+// edp_has_unsafe_construct (its own eligibility check) already covered --
+// most simply, a `perform` bound via `let` rather than written as a bare
+// tail expression -- so a migrated function's own perform could pass
+// eligibility but be silently left un-rewritten, orphaning it once the
+// migration also dropped its handle site's `EHandle`. That bug (fixed
+// separately, see edp_rewrite_needing_body's doc comment) is what both
+// crashes actually were; `both_helper` in the multi-effect fixture happens
+// to bind both of its performs via `let`, so containment relaxation merely
+// exercised it via a different code path than the single-effect fixtures
+// that found and fixed it directly.
+//
+// With that fixed, re-testing the SAME multi-effect fixture under
+// containment (2026-07-23, round 3) -- confirmed via a temporary
+// migration-plan probe that `Ask`'s plan really is produced and applied,
+// not merely "coincidentally not crashing" -- compiles, self-hosts
+// (stage2==stage3), and runs to the SAME stable value the pre-Phase-3
+// replay fallback already produced (3018): `both_helper` needs `{Ask,
+// Fs}`; `Ask`'s migration succeeds (its only needing function and handle
+// site are both clean); `Fs`'s is correctly rejected on its own terms
+// because `ask_only_wrapper` (needing `Fs`) has a body that is directly
+// `handle {...} with Ask {...}` -- a genuine, deliberate
+// `edp_has_unsafe_construct` rejection (nested EHandle), independent of
+// this bug and independent of containment. `Ask` migrating to evidence-
+// dict while `Fs` stays on replay is safe: the two effects use disjoint
+// per-tag memory regions and neither codegen path depends on the other's
+// presence, so a needing function may freely have SOME of its performs
+// migrated and others still raw (edp_qname_is_for_effect already ensures
+// `edp_rewrite_needing_body` only ever touches performs for the effect
+// currently being migrated).
+//
+// Follow-up (2026-07-23, same day): the directly-nested-handle scope
+// boundary noted above ("only the innermost effect of a nested handle
+// pair can migrate") is now also resolved -- edp_has_unsafe_construct
+// recurses into a nested EHandle for a DIFFERENT effect instead of
+// rejecting it outright, so BOTH effects of a `handle ... with A { handle
+// ... with B {...} }` nest (or the equivalent wrapper-function split this
+// fixture's own `ask_only_wrapper` uses) can migrate independently. See
+// edp_has_unsafe_construct's doc comment for that change, and fixtures/
+// effect_handle_multi_effect_nested_handles.vibe for a minimal regression
+// lock without the wrapper-function indirection. This fixture
+// (effect_handle_multi_effect_row_fallback.vibe) was updated accordingly:
+// `Fs` now migrates too (verified via the same migration-plan-probe
+// technique, not just "doesn't crash"), and its pinned value changed from
+// 3018 (the replay-inflated value, `Fs`'s handler body replaying an extra
+// time each pass) to 2017 (the semantically-ideal value once neither
+// effect duplicates any surrounding side effect) -- itself confirming
+// this is a genuine correctness improvement, not merely broader coverage.
+// Effectset-aware: `row` is comma-split, each item resolved to its
+// underlying effect name(s) via edp_resolve_effect_names_into (a no-op
+// pass-through for an already-bare effect name -- see that function's doc
+// comment, and edp_es_collect_into's for why this needs its own effectset
+// tables rather than trusting the row string to already be expanded).
+// `ename` qualifies if it appears in ANY item's resolved set.
+fn edp_row_is_exactly(row: String, ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Bool {
+  if row == ename {
+    true
+  } else {
+    let parts = String::split(row, ",")
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(parts) {
+      let label = String::trim(Array::get(parts, i))
+      let resolved = array_empty()
+      edp_resolve_effect_names_into(label, es_names, es_members_list, resolved)
+      if edp_str_array_contains(resolved, ename) {
+        found = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+fn edp_needing_names(fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (_, _, _, name, _, row) = Array::get(fn_defs, i)
+    if edp_row_is_exactly(row, ename, es_names, es_members_list) {
+      Array::push(out, name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn edp_str_array_contains(arr: Array[String], v: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == v {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// --- naming.
+
+fn edp_dict_struct_name(ename: String) -> String {
+  String::concat("__EvDict_", ename)
+}
+
+fn edp_dict_param_name(ename: String) -> String {
+  String::concat("__ev_", ename)
+}
+
+fn edp_strip_effect_prefix(qname: String, ename: String) -> String {
+  let prefix = String::concat(ename, "::")
+  let plen = String::length(prefix)
+  if String::length(qname) > plen && String::substring(qname, 0, plen) == prefix {
+    String::substring(qname, plen, String::length(qname))
+  } else {
+    qname
+  }
+}
+
+fn edp_struct_decl_exists(stmts: Array[Stmt], sname: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, n, _, _, _, _) => if n == sname {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn edp_make_dict_struct_stmt(ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)]) -> Stmt {
+  let fields = array_empty()
+  let mut i = 0
+  while i < Array::length(ops) {
+    let (opname, params, ret) = Array::get(ops, i)
+    Array::push(fields, (opname, TyFn(params, ret, None)))
+    i = i + 1
+  }
+  SStruct(false, edp_dict_struct_name(ename), fields, empty_str_array(), empty_str_array(), empty_str_array())
+}
+
+fn empty_str_array() -> Array[String] {
+  array_empty()
+}
+
+// --- eligibility: the same conservative-bail-out shape as
+// inline_direct_perform.vibe's idp_has_unsafe_construct, plus several
+// relaxations: a call to a name in `needing` is safe (that callee's own
+// body is scanned the same way as part of this same migration attempt); a
+// nested `EHandle` for a DIFFERENT effect than the one currently being
+// checked (`ename`) is safe to look inside rather than an automatic
+// rejection; and a call to a function the checker has ALREADY proven pure
+// (`pure_fns`, see edp_pure_fn_names) is safe regardless of whether it
+// happens to be hand-listed as a builtin -- see below.
+//
+// Branching constructs (EIf/EMatch/EWhile/EForIn/ELoop) ARE recursed into
+// (not unconditionally unsafe): a needing-function call nested inside one
+// used to compile to invalid wasm, but that was root-caused (docs/effect-
+// evidence-passing.md "追記 6") to a since-fixed handle-site rewrite bug
+// (edp_find_rewrite_handles replaced the old collect-then-re-find-by-
+// equality design that silently failed to re-locate branching handle
+// bodies), not anything inherent to branching itself -- see
+// fixtures/effect_handle_call_evidence_branch.vibe for the regression lock
+// on branching being genuinely safe now.
+//
+// `EHandle(body, arms)` for effect `ename` itself stays unconditionally
+// unsafe (nested handling of the SAME effect inside itself is not a shape
+// this pass targets). A NESTED handle for a DIFFERENT effect, though, is
+// exactly the "wrapper function discharges one effect, caller discharges
+// another" and "directly-nested `handle A { handle B {...} }`" shapes --
+// recursing into its body (and treating a `resume(...)` call in its own
+// arms as safe, mirroring the "perform"/needing-call special cases; a
+// handler arm's plain `resume` cannot itself hide anything unsafe for a
+// DIFFERENT effect's migration) lets both shapes become eligible. See
+// edp_row_is_exactly's doc comment for the history of the wrapper-function
+// shape; this is the natural follow-up covering direct nesting too.
+//
+// A call to a function whose OWN declared effect row is checker-verified
+// empty (`pure_fns`) is safe without even recursing into ITS body: by the
+// checker's own soundness (#942, the same guarantee edp_collect_fn_defs's
+// doc comment cites for the row string itself) a function with no `with`
+// clause cannot perform ANY effect, ever, so it cannot possibly hide a
+// perform of `ename`, a call to a needing function, or anything else this
+// pass would need to rewrite -- generalizing the old hand-audited
+// `edp_pure_builtin_names` allowlist (kept as-is for the handful of
+// builtins the checker doesn't track as ordinary functions) to every
+// user-defined pure function too. Only the call's OWN ARGS still need
+// checking (they're evaluated in the CALLER's context, where a perform of
+// `ename` or a needing-call could legitimately appear).
+//
+// edp_rewrite_needing_body/edp_rewrite_handle_body mirror the EHandle/
+// needing-call traversal exactly (see their own doc comments for why the
+// two must always agree, per "追記 10") -- a call to a `pure_fns` member
+// needs NO corresponding rewrite-side change, since it already falls
+// through those functions' existing "recurse into args, leave the call
+// itself unchanged" default case, which is exactly correct here too.
+//
+// `EDot(obj, field, ..)` -- a plain `.field` read, NOT a call through it
+// (calling through a field is `ECall(EDot(..), args)`, which the ECall
+// case above still rejects via its `_ => true` fallback for any callee
+// shape besides a bare `EIdent`) -- is safe to recurse into `obj` for
+// rather than reject outright. Unlike the `needing`/`pure_fns` checks,
+// this needs NO type information and carries NO name-shadowing risk: it
+// isn't a name lookup at all, just "does the object expression being
+// read from hide anything unsafe", which the recursive traversal already
+// answers soundly for any `obj` shape. The field name itself is a bare
+// string, not a sub-expression, so there's nothing else to check.
+// edp_rewrite_needing_body/edp_rewrite_handle_body gained a matching
+// `EDot` case (recursing into `obj`, leaving the field name untouched)
+// for the same "the two traversals must agree" reason as everywhere else
+// in this function.
+//
+// `EFn(.., body)` -- a closure LITERAL -- now recurses into its own body
+// with the exact same check, instead of being unconditionally unsafe.
+// This is sound for the same structural reason as everywhere else in
+// this function: if the closure's body, scanned by this SAME recursive
+// traversal, contains nothing this pass doesn't already know how to
+// classify (a `perform` of `ename`, a call to a `needing`/`pure_fns`
+// member, or any of the other already-recognized safe shapes), then
+// whatever the closure eventually does when invoked -- once, many times,
+// stored and called later, whatever -- is exactly as well-understood as
+// any other code this pass already rewrites; nothing about closures
+// specifically weakens that. A `perform ename::Op` found inside the
+// closure's body IS rewritten (edp_rewrite_needing_body/edp_rewrite_
+// handle_body gained a matching `EFn` case, recursing into the body the
+// same way), using the closure's LEXICALLY CAPTURED `dict_pname` from
+// its enclosing scope -- an ordinary captured variable reference, no
+// different from any other value a closure captures, valid for as long
+// as the closure itself is (standard closure-capture semantics, entirely
+// orthogonal to anything effect-handling-specific). The closure's own
+// declared effect row (if any) is not consulted here; it's the type
+// checker's own bookkeeping, unrelated to whether this AST-level rewrite
+// can soundly transform the closure's body.
+fn edp_has_unsafe_construct(expr: Expr, needing: Array[String], ename: String, pure_fns: Array[String]) -> Bool {
+  match expr {
+    EFn(_, _, _, _, _, body) => edp_has_unsafe_construct(body, needing, ename, pure_fns),
+    EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
+      true
+    } else {
+      edp_has_unsafe_construct(body, needing, ename, pure_fns) || edp_arms_have_unsafe_construct(arms, needing, ename, pure_fns)
+    },
+    EIf(c, t, e) => edp_has_unsafe_construct(c, needing, ename, pure_fns) || edp_has_unsafe_construct(t, needing, ename, pure_fns) || edp_has_unsafe_construct(e, needing, ename, pure_fns),
+    EMatch(s, arms) => edp_has_unsafe_construct(s, needing, ename, pure_fns) || edp_arms_have_unsafe_construct(arms, needing, ename, pure_fns),
+    EWhile(c, b) => edp_has_unsafe_construct(c, needing, ename, pure_fns) || edp_has_unsafe_construct(b, needing, ename, pure_fns),
+    EForIn(_, _, it, b) => edp_has_unsafe_construct(it, needing, ename, pure_fns) || edp_has_unsafe_construct(b, needing, ename, pure_fns),
+    ELoop(pairs, b) => edp_pairs_have_unsafe_construct(pairs, needing, ename, pure_fns) || edp_has_unsafe_construct(b, needing, ename, pure_fns),
+    ELet(_, v, b, _) => edp_has_unsafe_construct(v, needing, ename, pure_fns) || edp_has_unsafe_construct(b, needing, ename, pure_fns),
+    ELetMut(_, v, b, _) => edp_has_unsafe_construct(v, needing, ename, pure_fns) || edp_has_unsafe_construct(b, needing, ename, pure_fns),
+    ELetRec(_, v, b) => edp_has_unsafe_construct(v, needing, ename, pure_fns) || edp_has_unsafe_construct(b, needing, ename, pure_fns),
+    ESeq(a, b) => edp_has_unsafe_construct(a, needing, ename, pure_fns) || edp_has_unsafe_construct(b, needing, ename, pure_fns),
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
+        edp_perform_operand_has_unsafe_construct(Array::get(args, 0), needing, ename, pure_fns)
+      } else if nm == "resume" {
+        edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns)
+      } else if edp_is_pure_builtin_call(nm) {
+        edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns)
+      } else if edp_str_array_contains(needing, nm) {
+        edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns)
+      } else if edp_str_array_contains(pure_fns, nm) {
+        edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns)
+      } else {
+        true
+      },
+      _ => true
+    },
+    EBinOp(_, l, r) => edp_has_unsafe_construct(l, needing, ename, pure_fns) || edp_has_unsafe_construct(r, needing, ename, pure_fns),
+    EUnaryOp(_, e2) => edp_has_unsafe_construct(e2, needing, ename, pure_fns),
+    EAssign(_, v, c) => edp_has_unsafe_construct(v, needing, ename, pure_fns) || edp_has_unsafe_construct(c, needing, ename, pure_fns),
+    EAssignOp(_, _, v, c) => edp_has_unsafe_construct(v, needing, ename, pure_fns) || edp_has_unsafe_construct(c, needing, ename, pure_fns),
+    EDot(o, _, _, _) => edp_has_unsafe_construct(o, needing, ename, pure_fns),
+    ELabeledArg(_, _, v) => edp_has_unsafe_construct(v, needing, ename, pure_fns),
+    EReturn(e2) => edp_has_unsafe_construct(e2, needing, ename, pure_fns),
+    EBreak(opt) => match opt {
+      Some(e2) => edp_has_unsafe_construct(e2, needing, ename, pure_fns),
+      None => false
+    },
+    EContinue(args) => edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns),
+    ETuple(elems) => edp_exprs_have_unsafe_construct(elems, needing, ename, pure_fns),
+    EArray(elems) => edp_exprs_have_unsafe_construct(elems, needing, ename, pure_fns),
+    ERecord(_, fields, _) => edp_fields_have_unsafe_construct(fields, needing, ename, pure_fns),
+    EMap(fields) => edp_fields_have_unsafe_construct(fields, needing, ename, pure_fns),
+    ESpread(e2) => edp_has_unsafe_construct(e2, needing, ename, pure_fns),
+    // `_ => false` also covers `EStringInterp` -- verified (2026-07-23), not
+    // an oversight: `expand_interp_stmts` (entry/source_compile/wasi_only/
+    // preprocess_interp.vibe) always fully rewrites every `EStringInterp`
+    // into ordinary EBinOp/ECall string-concat nodes BEFORE check_program,
+    // itself called before this pass ever runs (see
+    // preprocess_compile.vibe's `expand_interp_stmts(stmts); check_program
+    // (stmts); ...compile_wasi_module_*_impl(stmts, ...)` ordering, all four
+    // entry variants). An `EStringInterp` node containing an embedded
+    // `perform` therefore can never actually reach this traversal -- by the
+    // time it would, the perform is already an ordinary sub-expression of a
+    // string-concat chain, visited through EBinOp/ECall like any other.
+    // Checked directly (not assumed) after noticing this pass's own match
+    // arms, unlike edp_has_unsafe_construct's sibling in perceus.vibe/
+    // common_analysis.vibe/checker_warning.vibe/etc., never explicitly
+    // lists `EStringInterp` at all -- worth confirming once rather than
+    // leaving it as a plausible-looking gap for a future reader to
+    // re-investigate from scratch.
+    _ => false
+  }
+}
+
+// Mirrors inline_direct_perform.vibe's idp_pure_builtin_names allowlist
+// exactly (same hand-audited, individually-verified set -- see that file's
+// doc comment for the auditing rule).
+fn edp_pure_builtin_names() -> Array[String] {
+  [
+    "String::concat", "String::equals", "String::length", "String::substring",
+    "string_char_at", "String::trim", "String::split", "String::contains",
+    "String::index_of", "String::to_lower", "String::to_upper",
+    "String::ends_with", "String::starts_with", "String::char_code_at",
+    "String::last_index_of", "String::from_char_code", "String::join",
+    "Char::to_int", "Char::from_int",
+    "Int::to_double", "Int::to_float", "Int::to_string",
+    "Double::to_int", "Float::to_int",
+    "Double::to_string", "Float::to_string",
+    "Double::abs", "Double::floor", "Double::ceil",
+    "Double::max", "Double::min",
+    "Int::parse", "Double::parse",
+    // Mirrors idp_pure_builtin_names' own addition (same doc comment, same
+    // audit) -- see that function's doc comment for the full rationale.
+    "__index", "Array::get", "Map::get", "Bytes::get", "Array::length", "Map::size", "Bytes::length"
+  ]
+}
+
+fn edp_is_pure_builtin_call(nm: String) -> Bool {
+  edp_str_array_contains(edp_pure_builtin_names(), nm)
+}
+
+// Every top-level function name whose declared effect row is
+// checker-verified empty (`""`, meaning no `with` clause at all -- #942's
+// same guarantee edp_collect_fn_defs's own doc comment cites). See
+// edp_has_unsafe_construct's doc comment for why a call to one of these is
+// always safe to treat as inert.
+fn edp_pure_fn_names(fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (_, _, _, name, _, row) = Array::get(fn_defs, i)
+    if row == "" {
+      Array::push(out, name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn edp_perform_operand_has_unsafe_construct(operand: Expr, needing: Array[String], ename: String, pure_fns: Array[String]) -> Bool {
+  match operand {
+    EIdent(_, _) => false,
+    ECall(op_callee, op_args, _) => match op_callee {
+      EIdent(_, _) => edp_exprs_have_unsafe_construct(op_args, needing, ename, pure_fns),
+      _ => true
+    },
+    _ => true
+  }
+}
+
+fn edp_exprs_have_unsafe_construct(exprs: Array[Expr], needing: Array[String], ename: String, pure_fns: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(exprs) {
+    if edp_has_unsafe_construct(Array::get(exprs, i), needing, ename, pure_fns) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn edp_fields_have_unsafe_construct(fields: Array[(String, Expr)], needing: Array[String], ename: String, pure_fns: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    if edp_has_unsafe_construct(v, needing, ename, pure_fns) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn edp_pairs_have_unsafe_construct(pairs: Array[(String, Expr)], needing: Array[String], ename: String, pure_fns: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(pairs) {
+    let (_, v) = Array::get(pairs, i)
+    if edp_has_unsafe_construct(v, needing, ename, pure_fns) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn edp_arms_have_unsafe_construct(arms: Array[(Pat, Expr)], needing: Array[String], ename: String, pure_fns: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    if edp_has_unsafe_construct(ex, needing, ename, pure_fns) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// --- per-arm preparation (identical shape to inline_direct_perform.vibe).
+
+fn edp_pat_bind_names(pat: Pat) -> Array[String] {
+  match pat {
+    PCtor(_, subpats) => for p in subpats {
+      match p {
+        PBind(n) => n,
+        _ => "_"
+      }
+    },
+    _ => empty_str_array()
+  }
+}
+
+fn edp_pat_qname(pat: Pat) -> String {
+  match pat {
+    PCtor(name, _) => name,
+    _ => ""
+  }
+}
+
+fn edp_strip_tail_resume(expr: Expr) -> Expr {
+  match expr {
+    EIf(c, t, e) => EIf(c, edp_strip_tail_resume(t), edp_strip_tail_resume(e)),
+    EMatch(s, arms) => EMatch(s, edp_strip_tail_resume_arms(arms)),
+    ELet(n, v, b, off) => ELet(n, v, edp_strip_tail_resume(b), off),
+    ELetMut(n, v, b, off) => ELetMut(n, v, edp_strip_tail_resume(b), off),
+    ELetRec(n, v, b) => ELetRec(n, v, edp_strip_tail_resume(b)),
+    ESeq(a, b) => ESeq(a, edp_strip_tail_resume(b)),
+    EAssign(n, v, c) => EAssign(n, v, edp_strip_tail_resume(c)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, v, edp_strip_tail_resume(c)),
+    EReturn(e2) => EReturn(edp_strip_tail_resume(e2)),
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if nm == "resume" && Array::length(args) == 1 {
+        Array::get(args, 0)
+      } else {
+        expr
+      },
+      _ => expr
+    },
+    _ => expr
+  }
+}
+
+fn edp_strip_tail_resume_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
+  for a in arms {
+    let (p, ex) = a
+    (p, edp_strip_tail_resume(ex))
+  }
+}
+
+// --- the migration for one effect.
+
+// Every top-level `EHandle` (searched via the same whole-program recursive
+// descent as the eligibility/rewrite passes) whose arms discharge `ename`
+// -- identified by the qualified prefix on the first arm's pattern, since a
+// `handle ... with Effect { ... }` block's arms are always all for the same
+// effect (ADR-0050).
+fn edp_collect_handle_sites(stmts: Array[Stmt], ename: String) -> Array[(Expr, Array[(Pat, Expr)])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => edp_collect_handle_sites_expr(expr, ename, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn edp_handle_matches_effect(arms: Array[(Pat, Expr)], ename: String) -> Bool {
+  if Array::length(arms) == 0 {
+    false
+  } else {
+    let (p, _) = Array::get(arms, 0)
+    let qname = edp_pat_qname(p)
+    let (eff_opt, _) = edp_split_qualified(qname)
+    match eff_opt {
+      Some(e) => e == ename,
+      None => false
+    }
+  }
+}
+
+fn edp_split_qualified(name: String) -> (Option[String], String) {
+  let idx = String::index_of(name, "::")
+  if idx > 0 {
+    (Some(String::substring(name, 0, idx)), String::substring(name, idx + 2, String::length(name)))
+  } else {
+    (None, name)
+  }
+}
+
+fn edp_collect_handle_sites_expr(expr: Expr, ename: String, out: Array[(Expr, Array[(Pat, Expr)])]) -> Unit {
+  match expr {
+    EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
+      Array::push(out, (body, arms))
+    } else {
+      edp_collect_handle_sites_expr(body, ename, out)
+    },
+    EFn(_, _, _, _, _, b) => edp_collect_handle_sites_expr(b, ename, out),
+    ELet(_, v, b, _) => {
+      edp_collect_handle_sites_expr(v, ename, out)
+      edp_collect_handle_sites_expr(b, ename, out)
+    },
+    ELetMut(_, v, b, _) => {
+      edp_collect_handle_sites_expr(v, ename, out)
+      edp_collect_handle_sites_expr(b, ename, out)
+    },
+    ELetRec(_, v, b) => {
+      edp_collect_handle_sites_expr(v, ename, out)
+      edp_collect_handle_sites_expr(b, ename, out)
+    },
+    ESeq(a, b) => {
+      edp_collect_handle_sites_expr(a, ename, out)
+      edp_collect_handle_sites_expr(b, ename, out)
+    },
+    EIf(c, t, e) => {
+      edp_collect_handle_sites_expr(c, ename, out)
+      edp_collect_handle_sites_expr(t, ename, out)
+      edp_collect_handle_sites_expr(e, ename, out)
+    },
+    EMatch(s, arms) => {
+      edp_collect_handle_sites_expr(s, ename, out)
+      for a in arms {
+        let (_, ex) = a
+        edp_collect_handle_sites_expr(ex, ename, out)
+      }
+    },
+    EWhile(c, b) => {
+      edp_collect_handle_sites_expr(c, ename, out)
+      edp_collect_handle_sites_expr(b, ename, out)
+    },
+    EForIn(_, _, it, b) => {
+      edp_collect_handle_sites_expr(it, ename, out)
+      edp_collect_handle_sites_expr(b, ename, out)
+    },
+    ECall(callee, args, _) => {
+      edp_collect_handle_sites_expr(callee, ename, out)
+      for a in args {
+        edp_collect_handle_sites_expr(a, ename, out)
+      }
+    },
+    EBinOp(_, l, r) => {
+      edp_collect_handle_sites_expr(l, ename, out)
+      edp_collect_handle_sites_expr(r, ename, out)
+    },
+    EUnaryOp(_, e2) => edp_collect_handle_sites_expr(e2, ename, out),
+    EAssign(_, v, c) => {
+      edp_collect_handle_sites_expr(v, ename, out)
+      edp_collect_handle_sites_expr(c, ename, out)
+    },
+    EAssignOp(_, _, v, c) => {
+      edp_collect_handle_sites_expr(v, ename, out)
+      edp_collect_handle_sites_expr(c, ename, out)
+    },
+    EDot(o, _, _, _) => edp_collect_handle_sites_expr(o, ename, out),
+    ELabeledArg(_, _, v) => edp_collect_handle_sites_expr(v, ename, out),
+    EReturn(e2) => edp_collect_handle_sites_expr(e2, ename, out),
+    EBreak(opt) => match opt {
+      Some(e2) => edp_collect_handle_sites_expr(e2, ename, out),
+      None => ()
+    },
+    EContinue(args) => for a in args {
+      edp_collect_handle_sites_expr(a, ename, out)
+    },
+    ETuple(elems) => for a in elems {
+      edp_collect_handle_sites_expr(a, ename, out)
+    },
+    EArray(elems) => for a in elems {
+      edp_collect_handle_sites_expr(a, ename, out)
+    },
+    ERecord(_, fields, _) => for f in fields {
+      let (_, v) = f
+      edp_collect_handle_sites_expr(v, ename, out)
+    },
+    EMap(fields) => for f in fields {
+      let (_, v) = f
+      edp_collect_handle_sites_expr(v, ename, out)
+    },
+    ESpread(e2) => edp_collect_handle_sites_expr(e2, ename, out),
+    ELoop(pairs, b) => {
+      for p in pairs {
+        let (_, v) = p
+        edp_collect_handle_sites_expr(v, ename, out)
+      }
+      edp_collect_handle_sites_expr(b, ename, out)
+    },
+    _ => ()
+  }
+}
+
+fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Bool {
+  if Array::length(handle_sites) == 0 {
+    // Nothing discharges `ename` anywhere -- by the checker's own
+    // soundness a `needing` function could never actually run, so there is
+    // nothing to gain (and nothing unsound about skipping); leave it alone.
+    false
+  } else {
+    let pure_fns = edp_pure_fn_names(fn_defs)
+    let mut hi = 0
+    let mut ok = true
+    while hi < Array::length(handle_sites) {
+      let (body, _) = Array::get(handle_sites, hi)
+      if edp_has_unsafe_construct(body, needing, ename, pure_fns) {
+        ok = false
+      } else {
+        ()
+      }
+      hi = hi + 1
+    }
+    let mut ni = 0
+    while ni < Array::length(needing) {
+      let nm = Array::get(needing, ni)
+      match edp_find_fn_body(stmts, fn_defs, nm) {
+        Some(b) => if edp_has_unsafe_construct(b, needing, ename, pure_fns) {
+          ok = false
+        } else {
+          ()
+        },
+        None => {
+          ok = false
+        }
+      }
+      ni = ni + 1
+    }
+    ok
+  }
+}
+
+fn edp_find_fn_body(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], name: String) -> Option[Expr] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(fn_defs) {
+    let (idx, _, _, nm, _, _) = Array::get(fn_defs, i)
+    if nm == name {
+      match Array::get(stmts, idx) {
+        SLet(_, _, _, _, EFn(_, _, _, _, _, body)) => {
+          result = Some(body)
+        },
+        _ => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  result
+}
+
+// --- applying an eligible migration.
+
+fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
+  let dict_pname = edp_dict_param_name(ename)
+  let dict_tyname = edp_dict_struct_name(ename)
+  // Rewrite each needing function's own definition in place: prepend the
+  // evidence-dict parameter, and rewrite its body to call through it
+  // (direct performs) / forward it (calls to other needing functions).
+  let mut ni = 0
+  while ni < Array::length(needing) {
+    let nm = Array::get(needing, ni)
+    edp_rewrite_needing_fn(stmts, fn_defs, nm, ename, dict_pname, dict_tyname, needing)
+    ni = ni + 1
+  }
+  // Rewrite each handle site: synthesize a fresh evidence dict from its
+  // arms, splice direct performs the same way Phase 2 does, pass the dict
+  // at calls to needing functions, and drop the EHandle wrapper. Single
+  // pass over `stmts`, rewriting each matching EHandle node the moment it
+  // is found -- see edp_find_rewrite_handles's doc comment for why this
+  // replaced an earlier collect-then-re-find-by-equality design.
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, si, SLet(exported, is_rec, name, ty, edp_find_rewrite_handles(expr, ename, needing))),
+      _ => ()
+    }
+    si = si + 1
+  }
+  // Register the dict struct type once (idempotent, mirrors
+  // desugar_trait_dict.vibe's own struct_decl_exists guard).
+  if edp_struct_decl_exists(stmts, dict_tyname) {
+    ()
+  } else {
+    Array::push(stmts, edp_make_dict_struct_stmt(ename, ops))
+  }
+}
+
+fn edp_rewrite_needing_fn(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], name: String, ename: String, dict_pname: String, dict_tyname: String, needing: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (idx, exported, is_rec, nm, ty, _) = Array::get(fn_defs, i)
+    if nm == name {
+      match Array::get(stmts, idx) {
+        SLet(_, _, _, _, EFn(tps, tbs, params, ret, eff, body)) => {
+          let new_params = Array::concat([
+            (dict_pname, Some(TyName(dict_tyname)))
+          ], params)
+          let new_body = edp_rewrite_needing_body(body, ename, dict_pname, needing)
+          Array::set(stmts, idx, SLet(exported, is_rec, nm, ty, EFn(tps, tbs, new_params, ret, eff, new_body)))
+        },
+        _ => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+// Rewrite a needing function's own body: a direct `perform E::Op(args)`
+// becomes a call through the received dict parameter's `Op` field; a call
+// to another needing function has the SAME received dict parameter
+// forwarded as its new leading argument (mirrors desugar_trait_dict.vibe's
+// find_dict_for_trait forwarding). By this point edp_has_unsafe_construct
+// has already verified this body contains nothing else that could hide a
+// perform (no EFn/EHandle/EDot/other calls), so this traversal only needs
+// to handle the shapes that check allows through -- but it must still visit
+// EVERY position edp_has_unsafe_construct visits, not just the ones a bare
+// tail-position perform happens to need. This traversal used to be missing
+// several of those positions -- ELet/ELetMut/ELetRec/EAssign/EAssignOp's
+// value/RHS slot, EIf's condition, EMatch's scrutinee, and EWhile/EForIn/
+// ELoop/EUnaryOp/ELabeledArg/EBreak/EContinue/ETuple/EArray/ERecord/EMap/
+// ESpread entirely (falling to the `_ => expr` passthrough) -- even though
+// edp_has_unsafe_construct's OWN traversal (the eligibility check that
+// gates whether this rewrite runs at all) already recursed into every one
+// of them. A perform reached only through one of those positions -- most
+// simply, bound via `let` (`let a = perform Ask::Get; ...`) rather than
+// written as a bare tail expression -- therefore passed eligibility
+// (nothing unsafe about it, by has_unsafe_construct's own correct
+// judgment) but was silently left un-rewritten: still a raw `perform`,
+// throwing a tag the enclosing handle site no longer catches once this
+// migration drops it -- producing an uncaught-exception crash at runtime
+// despite a clean compile. Found via runtime instrumentation (temporary
+// exported per-effect tags decoded the escaping exception as the MIGRATED
+// effect's own tag, not a foreign one -- see
+// fixtures/effect_handle_call_evidence_let_bound.vibe) while investigating
+// an unrelated multi-effect-row crash; independent of that investigation
+// and reproducible with a single exact-match effect, so this was a real,
+// already-shipped soundness gap, not something specific to the multi-
+// effect experiment that led to finding it.
+fn edp_rewrite_needing_body(expr: Expr, ename: String, dict_pname: String, needing: Array[String]) -> Expr {
+  match expr {
+    // A closure literal's body is rewritten the same way its enclosing
+    // needing function's body is (edp_has_unsafe_construct already
+    // verified this is safe); the closure's own params/type params/
+    // return type/declared row are untouched, only its body. A perform
+    // of `ename` found inside resolves through `dict_pname` via ordinary
+    // lexical capture from the enclosing scope.
+    EFn(tps, tbs, params, ret, eff, body) => EFn(tps, tbs, params, ret, eff, edp_rewrite_needing_body(body, ename, dict_pname, needing)),
+    // A nested EHandle for a DIFFERENT effect than `ename` is safe to
+    // recurse into (edp_has_unsafe_construct already verified this, both
+    // for its body and its arms -- see that function's doc comment); one
+    // matching `ename` itself is unconditionally unsafe and therefore
+    // never reaches this rewrite (eligibility already rejected it), so
+    // leave it structurally unchanged if somehow encountered defensively.
+    EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
+      expr
+    } else {
+      EHandle(edp_rewrite_needing_body(body, ename, dict_pname, needing), for a in arms {
+        let (p, ex) = a
+        (p, edp_rewrite_needing_body(ex, ename, dict_pname, needing))
+      })
+    },
+    EIf(c, t, e) => EIf(edp_rewrite_needing_body(c, ename, dict_pname, needing), edp_rewrite_needing_body(t, ename, dict_pname, needing), edp_rewrite_needing_body(e, ename, dict_pname, needing)),
+    EMatch(s, arms) => EMatch(edp_rewrite_needing_body(s, ename, dict_pname, needing), for a in arms {
+      let (p, ex) = a
+      (p, edp_rewrite_needing_body(ex, ename, dict_pname, needing))
+    }),
+    EWhile(c, b) => EWhile(edp_rewrite_needing_body(c, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, edp_rewrite_needing_body(it, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing)),
+    ELoop(pairs, b) => ELoop(for p in pairs {
+      let (n, v) = p
+      (n, edp_rewrite_needing_body(v, ename, dict_pname, needing))
+    }, edp_rewrite_needing_body(b, ename, dict_pname, needing)),
+    ELet(n, v, b, off) => ELet(n, edp_rewrite_needing_body(v, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing), off),
+    ELetMut(n, v, b, off) => ELetMut(n, edp_rewrite_needing_body(v, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing), off),
+    ELetRec(n, v, b) => ELetRec(n, edp_rewrite_needing_body(v, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing)),
+    ESeq(a, b) => ESeq(edp_rewrite_needing_body(a, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing)),
+    EAssign(n, v, c) => EAssign(n, edp_rewrite_needing_body(v, ename, dict_pname, needing), edp_rewrite_needing_body(c, ename, dict_pname, needing)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_rewrite_needing_body(v, ename, dict_pname, needing), edp_rewrite_needing_body(c, ename, dict_pname, needing)),
+    EReturn(e2) => EReturn(edp_rewrite_needing_body(e2, ename, dict_pname, needing)),
+    // A bare `.field` read (NOT a call through it -- ECall's own EDot
+    // callee case never recurses through here, `_ => true`/its rewrite
+    // counterpart's `_ => ECall(...)` catch it independently) only needs
+    // its object expression rewritten; the field name is a bare string.
+    EDot(o, f, off1, off2) => EDot(edp_rewrite_needing_body(o, ename, dict_pname, needing), f, off1, off2),
+    ECall(callee, args, off) => match callee {
+      EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
+        edp_rewrite_perform_via_dict(Array::get(args, 0), ename, dict_pname, needing)
+      } else if edp_str_array_contains(needing, nm) {
+        ECall(callee, edp_prepend_dict_arg(dict_pname, edp_rewrite_needing_body_exprs(args, ename, dict_pname, needing)), off)
+      } else {
+        ECall(callee, edp_rewrite_needing_body_exprs(args, ename, dict_pname, needing), off)
+      },
+      _ => ECall(callee, edp_rewrite_needing_body_exprs(args, ename, dict_pname, needing), off)
+    },
+    EBinOp(op, l, r) => EBinOp(op, edp_rewrite_needing_body(l, ename, dict_pname, needing), edp_rewrite_needing_body(r, ename, dict_pname, needing)),
+    EUnaryOp(op, e2) => EUnaryOp(op, edp_rewrite_needing_body(e2, ename, dict_pname, needing)),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_rewrite_needing_body(v, ename, dict_pname, needing)),
+    EBreak(opt) => EBreak(match opt {
+      Some(e2) => Some(edp_rewrite_needing_body(e2, ename, dict_pname, needing)),
+      None => None
+    }),
+    EContinue(args) => EContinue(edp_rewrite_needing_body_exprs(args, ename, dict_pname, needing)),
+    ETuple(elems) => ETuple(edp_rewrite_needing_body_exprs(elems, ename, dict_pname, needing)),
+    EArray(elems) => EArray(edp_rewrite_needing_body_exprs(elems, ename, dict_pname, needing)),
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_rewrite_needing_body(v, ename, dict_pname, needing))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_rewrite_needing_body(v, ename, dict_pname, needing))
+    }),
+    ESpread(e2) => ESpread(edp_rewrite_needing_body(e2, ename, dict_pname, needing)),
+    _ => expr
+  }
+}
+
+fn edp_rewrite_needing_body_exprs(exprs: Array[Expr], ename: String, dict_pname: String, needing: Array[String]) -> Array[Expr] {
+  for e in exprs {
+    edp_rewrite_needing_body(e, ename, dict_pname, needing)
+  }
+}
+
+fn edp_prepend_dict_arg(dict_pname: String, args: Array[Expr]) -> Array[Expr] {
+  Array::concat([
+    EIdent(dict_pname, -1)
+  ], args)
+}
+
+// A needing function's declared row is exactly `ename`, but it may still
+// contain a `perform` for a DIFFERENT effect that is exempt from row
+// declaration -- `Error` (#640 Stage 2: `perform Error::Throw`/`throw`
+// never needs a declared `with { Error }` row). Only a perform whose
+// qualified operation name's own effect prefix is `ename` gets rewritten
+// into a dict-field call; anything else (in practice, only Error) is left
+// completely untouched and falls through to its own existing codegen
+// (Error compiles unconditionally to a throw/trap, needing no evidence
+// dict or handler machinery at all, regardless of context).
+fn edp_qname_is_for_effect(qname: String, ename: String) -> Bool {
+  let (eff_opt, _) = edp_split_qualified(qname)
+  match eff_opt {
+    Some(e) => e == ename,
+    None => false
+  }
+}
+
+fn edp_rewrite_perform_via_dict(operand: Expr, ename: String, dict_pname: String, needing: Array[String]) -> Expr {
+  match operand {
+    EIdent(qname, _) => if edp_qname_is_for_effect(qname, ename) {
+      ECall(EDot(EIdent(dict_pname, -1), edp_strip_effect_prefix(qname, ename), -1, -1), array_empty(), -1)
+    } else {
+      ECall(EIdent("perform", -1), [
+        operand
+      ], -1)
+    },
+    ECall(op_callee, op_args, _) => match op_callee {
+      EIdent(qname, _) => if edp_qname_is_for_effect(qname, ename) {
+        ECall(EDot(EIdent(dict_pname, -1), edp_strip_effect_prefix(qname, ename), -1, -1), edp_rewrite_needing_body_exprs(op_args, ename, dict_pname, needing), -1)
+      } else {
+        ECall(EIdent("perform", -1), [
+          ECall(op_callee, edp_rewrite_needing_body_exprs(op_args, ename, dict_pname, needing), -1)
+        ], -1)
+      },
+      _ => ECall(EIdent("perform", -1), [
+        operand
+      ], -1)
+    },
+    _ => ECall(EIdent("perform", -1), [
+      operand
+    ], -1)
+  }
+}
+
+// --- rewriting a handle site.
+
+fn edp_rewrite_handle_site(body: Expr, arms: Array[(Pat, Expr)], ename: String, needing: Array[String]) -> Expr {
+  let op_names = for a in arms {
+    let (p, _) = a
+    edp_pat_qname(p)
+  }
+  let bind_names = for a in arms {
+    let (p, _) = a
+    edp_pat_bind_names(p)
+  }
+  let prepared_bodies = for a in arms {
+    let (_, ex) = a
+    edp_strip_tail_resume(ex)
+  }
+  let dict_literal = edp_build_dict_literal(ename, op_names, bind_names, prepared_bodies)
+  edp_rewrite_handle_body(body, ename, op_names, bind_names, prepared_bodies, dict_literal, needing)
+}
+
+fn edp_build_dict_literal(ename: String, op_names: Array[String], bind_names: Array[Array[String]], prepared_bodies: Array[Expr]) -> Expr {
+  let fields = array_empty()
+  let mut i = 0
+  while i < Array::length(op_names) {
+    let bare = edp_strip_effect_prefix(Array::get(op_names, i), ename)
+    let params = for n in Array::get(bind_names, i) {
+      (n, None)
+    }
+    let closure = EFn(empty_str_array(), array_empty(), params, None, None, Array::get(prepared_bodies, i))
+    Array::push(fields, (bare, closure))
+    i = i + 1
+  }
+  ERecord("", fields, array_empty())
+}
+
+fn edp_table_lookup(op_names: Array[String], qname: String) -> Int {
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(op_names) {
+    if Array::get(op_names, i) == qname {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn edp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_body: Expr) -> Expr {
+  let n = Array::length(bind_names)
+  let mut result = prepared_body
+  let mut i = n - 1
+  while i >= 0 {
+    if i < Array::length(actual_args) {
+      result = ELet(Array::get(bind_names, i), Array::get(actual_args, i), result, -1)
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  result
+}
+
+// Same completeness requirement as edp_rewrite_needing_body (see that
+// function's doc comment): the handle body's own eligibility was checked
+// with edp_has_unsafe_construct too (edp_all_sites_eligible calls it on
+// each handle site's body), so this traversal must visit every position
+// that check visits or a perform/needing-call reachable only through
+// EWhile/EForIn/ELoop/EUnaryOp/ELabeledArg/EBreak/EContinue/ETuple/EArray/
+// ERecord/EMap/ESpread would pass eligibility but silently stay
+// unrewritten, same failure mode.
+fn edp_rewrite_handle_body(expr: Expr, ename: String, op_names: Array[String], bind_names_list: Array[Array[String]], prepared_bodies: Array[Expr], dict_literal: Expr, needing: Array[String]) -> Expr {
+  match expr {
+    // Same closure-literal handling as edp_rewrite_needing_body: a
+    // `perform ename::Op` inside a closure defined within this handle's
+    // body is spliced the same way as anywhere else in the body (pure
+    // AST substitution of the arm's prepared body, not a runtime
+    // reference -- see edp_splice_perform -- so it's exactly as valid
+    // wherever the closure ends up being called, sync or later).
+    EFn(tps, tbs, params, ret, eff, body) => EFn(tps, tbs, params, ret, eff, edp_rewrite_handle_body(body, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    // Same nested-EHandle handling as edp_rewrite_needing_body: recurse
+    // into a DIFFERENT effect's nested handle (splicing any `perform
+    // ename::Op` found inside it exactly like anywhere else in this
+    // handle's own body); one matching `ename` itself never reaches here
+    // (eligibility already rejected it as unconditionally unsafe).
+    EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
+      expr
+    } else {
+      EHandle(edp_rewrite_handle_body(body, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), for a in arms {
+        let (p, ex) = a
+        (p, edp_rewrite_handle_body(ex, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
+      })
+    },
+    EIf(c, t, e) => EIf(edp_rewrite_handle_body(c, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(t, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(e, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EMatch(s, arms) => EMatch(edp_rewrite_handle_body(s, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), for a in arms {
+      let (p, ex) = a
+      (p, edp_rewrite_handle_body(ex, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
+    }),
+    EWhile(c, b) => EWhile(edp_rewrite_handle_body(c, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, edp_rewrite_handle_body(it, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    ELoop(pairs, b) => ELoop(for p in pairs {
+      let (n, v) = p
+      (n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
+    }, edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    ELet(n, v, b, off) => ELet(n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), off),
+    ELetMut(n, v, b, off) => ELetMut(n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), off),
+    ELetRec(n, v, b) => ELetRec(n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    ESeq(a, b) => ESeq(edp_rewrite_handle_body(a, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EAssign(n, v, c) => EAssign(n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(c, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(c, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EReturn(e2) => EReturn(edp_rewrite_handle_body(e2, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    // Same bare-`.field`-read handling as edp_rewrite_needing_body: only
+    // the object expression can hide anything that needs rewriting.
+    EDot(o, f, off1, off2) => EDot(edp_rewrite_handle_body(o, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), f, off1, off2),
+    ECall(callee, args, off) => match callee {
+      EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
+        edp_splice_perform(Array::get(args, 0), op_names, bind_names_list, prepared_bodies)
+      } else if edp_str_array_contains(needing, nm) {
+        ECall(callee, edp_prepend_expr(dict_literal, edp_rewrite_handle_body_exprs(args, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)), off)
+      } else {
+        ECall(callee, edp_rewrite_handle_body_exprs(args, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), off)
+      },
+      _ => ECall(callee, edp_rewrite_handle_body_exprs(args, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), off)
+    },
+    EBinOp(op, l, r) => EBinOp(op, edp_rewrite_handle_body(l, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(r, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EUnaryOp(op, e2) => EUnaryOp(op, edp_rewrite_handle_body(e2, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EBreak(opt) => EBreak(match opt {
+      Some(e2) => Some(edp_rewrite_handle_body(e2, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+      None => None
+    }),
+    EContinue(args) => EContinue(edp_rewrite_handle_body_exprs(args, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    ETuple(elems) => ETuple(edp_rewrite_handle_body_exprs(elems, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EArray(elems) => EArray(edp_rewrite_handle_body_exprs(elems, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
+    }),
+    ESpread(e2) => ESpread(edp_rewrite_handle_body(e2, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    _ => expr
+  }
+}
+
+fn edp_rewrite_handle_body_exprs(exprs: Array[Expr], ename: String, op_names: Array[String], bind_names_list: Array[Array[String]], prepared_bodies: Array[Expr], dict_literal: Expr, needing: Array[String]) -> Array[Expr] {
+  for e in exprs {
+    edp_rewrite_handle_body(e, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)
+  }
+}
+
+fn edp_prepend_expr(v: Expr, args: Array[Expr]) -> Array[Expr] {
+  Array::concat([
+    v
+  ], args)
+}
+
+fn edp_splice_perform(operand: Expr, op_names: Array[String], bind_names_list: Array[Array[String]], prepared_bodies: Array[Expr]) -> Expr {
+  match operand {
+    EIdent(qname, _) => edp_splice_or_leave(qname, array_empty(), operand, op_names, bind_names_list, prepared_bodies),
+    ECall(op_callee, op_args, _) => match op_callee {
+      EIdent(qname, _) => edp_splice_or_leave(qname, op_args, operand, op_names, bind_names_list, prepared_bodies),
+      _ => ECall(EIdent("perform", -1), [
+        operand
+      ], -1)
+    },
+    _ => ECall(EIdent("perform", -1), [
+      operand
+    ], -1)
+  }
+}
+
+fn edp_splice_or_leave(qname: String, actual_args: Array[Expr], original_operand: Expr, op_names: Array[String], bind_names_list: Array[Array[String]], prepared_bodies: Array[Expr]) -> Expr {
+  let idx = edp_table_lookup(op_names, qname)
+  if idx < 0 {
+    ECall(EIdent("perform", -1), [
+      original_operand
+    ], -1)
+  } else {
+    edp_bind_args(Array::get(bind_names_list, idx), actual_args, Array::get(prepared_bodies, idx))
+  }
+}
+
+// Find every `EHandle` whose arms discharge `ename` and rewrite it via
+// edp_rewrite_handle_site, in the SAME traversal that finds it -- no
+// separate "collect, then re-find by structural equality" step.
+//
+// An earlier version collected handle sites (edp_collect_handle_sites)
+// and re-located each one afterward via a hand-rolled structural-equality
+// check (edp_same_handle/edp_expr_eq) covering only a handful of Expr
+// constructors (EIdent/ECall/ESeq/ELet/EBinOp/EAssign/EInt). Any handle
+// body containing an Expr shape outside that list -- EIf being the first
+// one actually hit -- made edp_expr_eq silently return false for the
+// handle's own body compared against itself, so edp_replace_handle_in_
+// stmts never found a match and left the ORIGINAL, unmodified handle body
+// in place. Meanwhile edp_rewrite_needing_fn (which locates functions by
+// NAME via fn_defs, not by re-matching an Expr) had already prepended the
+// evidence-dict parameter to the needing function's signature regardless
+// -- producing exactly the inconsistent state that crashed at the wasm
+// level ("not enough arguments on the stack for call"): a callee expecting
+// N+1 params, called from an unrewritten site still passing N. This was
+// the actual root cause of the branch-nested-call bug (docs/effect-
+// evidence-passing.md "追記 4"/"追記 6"), not the EIf/local_names
+// interaction originally suspected -- runtime instrumentation of
+// compile_call.vibe's local_idx_hint/fn_idx_in_list dispatch (which
+// correctly selected the direct-call path) ruled that out.
+//
+// This single-pass design can't have that failure mode: a handle is
+// rewritten the moment it's found, so there is no second "find it again"
+// step to fail. By this point (called only from edp_apply_migration,
+// itself only reached when edp_all_sites_eligible returned true for
+// `ename`), EVERY handle whose arms discharge `ename` anywhere in the
+// whole program is already known-eligible, so unconditionally rewriting
+// every occurrence found here is sound -- eligibility, not this
+// traversal, is what decides whether rewriting was safe to attempt at
+// all.
+fn edp_find_rewrite_handles(expr: Expr, ename: String, needing: Array[String]) -> Expr {
+  match expr {
+    EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
+      edp_rewrite_handle_site(body, arms, ename, needing)
+    } else {
+      EHandle(edp_find_rewrite_handles(body, ename, needing), for a in arms {
+        let (p, ex) = a
+        (p, edp_find_rewrite_handles(ex, ename, needing))
+      })
+    },
+    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, edp_find_rewrite_handles(b, ename, needing)),
+    ELet(n, v, b, off) => ELet(n, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(b, ename, needing), off),
+    ELetMut(n, v, b, off) => ELetMut(n, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(b, ename, needing), off),
+    ELetRec(n, v, b) => ELetRec(n, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(b, ename, needing)),
+    ESeq(a, b) => ESeq(edp_find_rewrite_handles(a, ename, needing), edp_find_rewrite_handles(b, ename, needing)),
+    EIf(c, t, e) => EIf(edp_find_rewrite_handles(c, ename, needing), edp_find_rewrite_handles(t, ename, needing), edp_find_rewrite_handles(e, ename, needing)),
+    EMatch(s, arms) => EMatch(edp_find_rewrite_handles(s, ename, needing), for a in arms {
+      let (p, ex) = a
+      (p, edp_find_rewrite_handles(ex, ename, needing))
+    }),
+    EWhile(c, b) => EWhile(edp_find_rewrite_handles(c, ename, needing), edp_find_rewrite_handles(b, ename, needing)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, edp_find_rewrite_handles(it, ename, needing), edp_find_rewrite_handles(b, ename, needing)),
+    ECall(callee, args, off) => ECall(edp_find_rewrite_handles(callee, ename, needing), for a in args {
+      edp_find_rewrite_handles(a, ename, needing)
+    }, off),
+    EBinOp(op, l, r) => EBinOp(op, edp_find_rewrite_handles(l, ename, needing), edp_find_rewrite_handles(r, ename, needing)),
+    EUnaryOp(op, e2) => EUnaryOp(op, edp_find_rewrite_handles(e2, ename, needing)),
+    EAssign(n, v, c) => EAssign(n, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(c, ename, needing)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(c, ename, needing)),
+    EDot(o, f, off1, off2) => EDot(edp_find_rewrite_handles(o, ename, needing), f, off1, off2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_find_rewrite_handles(v, ename, needing)),
+    EReturn(e2) => EReturn(edp_find_rewrite_handles(e2, ename, needing)),
+    EBreak(opt) => EBreak(match opt {
+      Some(e2) => Some(edp_find_rewrite_handles(e2, ename, needing)),
+      None => None
+    }),
+    EContinue(args) => EContinue(for a in args {
+      edp_find_rewrite_handles(a, ename, needing)
+    }),
+    ETuple(elems) => ETuple(for a in elems {
+      edp_find_rewrite_handles(a, ename, needing)
+    }),
+    EArray(elems) => EArray(for a in elems {
+      edp_find_rewrite_handles(a, ename, needing)
+    }),
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_find_rewrite_handles(v, ename, needing))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_find_rewrite_handles(v, ename, needing))
+    }),
+    ESpread(e2) => ESpread(edp_find_rewrite_handles(e2, ename, needing)),
+    ELoop(pairs, b) => ELoop(for p in pairs {
+      let (n, v) = p
+      (n, edp_find_rewrite_handles(v, ename, needing))
+    }, edp_find_rewrite_handles(b, ename, needing)),
+    _ => expr
+  }
+}

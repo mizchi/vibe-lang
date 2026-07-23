@@ -1,0 +1,43 @@
+// ADR-0076 (#817) Phase 3: a needing function's row directly enumerates a
+// QUALIFIED operation (`with { Ask::Get }`, ADR-0071 step 1) instead of the
+// bare effect name -- no `effectset` alias involved at all, unlike
+// fixtures/effect_handle_call_evidence_effectset_alias.vibe.
+//
+// Exercises a genuinely different branch of edp_resolve_effect_names_into
+// than the effectset-alias fixture does: "Ask::Get" is never itself an
+// effectset name (es_names never contains it), so resolution falls straight
+// to edp_effect_name_of's `::`-prefix stripping rather than effectset
+// expansion. Written alongside the effectset-alias fix (2026-07-23) as a
+// completeness check -- confirmed via the same replay-vs-evidence-dict
+// `count` discriminator that this shape migrates too, not just that it
+// still compiles and produces a plausible answer.
+//   count == 2, a == 5, r == a + count == 7
+//   main() == 2 * 1000 + 7 == 2007
+effect Ask {
+  Get -> Int
+}
+
+let ask_helper = () -> Int with { Ask::Get } {
+  perform Ask::Get
+}
+
+let compute = () -> (Int, Int) {
+  let mut count = 0
+  let r = handle {
+    count = count + 1
+    let a = ask_helper()
+    count = count + 1
+    a + count
+  } with Ask {
+    Get => resume(5)
+  }
+  (count, r)
+}
+
+export let main = () -> Int {
+  let (count, r) = compute()
+  count * 1000 + r
+}
+
+__DATA__
+{"last": "2007"}

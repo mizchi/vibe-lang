@@ -1,0 +1,52 @@
+// ADR-0076 (#817) Phase 3, first slice: evidence_dict_pass.vibe.
+//
+// Same shape as fixtures/effect_handle_replay_corruption.vibe (M2), except
+// each `perform` is reached through a helper function call instead of
+// directly in the handle body. Before this fixture's fix, this hit the
+// SAME replay corruption bug: Phase 2 (inline_direct_perform.vibe) bails
+// out on any call to a named function (it cannot see whether that
+// function's own body performs), so the whole handle fell to the replay
+// codegen, which re-executes `compute`'s handled body from the top on
+// every `resume` -- re-running `count = count + 1` extra times.
+//
+// `ask_helper`'s entire declared row is exactly `Ask` (the narrowest case
+// evidence_dict_pass.vibe covers), so it gets an implicit evidence-dict
+// parameter threaded in instead: `perform Ask::Get` inside it becomes a
+// call through that dict, and `compute`'s handle body passes a
+// freshly-synthesized dict (built from its own arm) at each call to
+// `ask_helper` -- an ordinary call/return, no replay loop, so each
+// statement now runs exactly once, same expected values as M2:
+//   count == 3 (one increment per statement, each runs exactly once)
+//   r == 5 + 5 + 3 == 13
+//   compute() == (3, 13)
+//   main() == 3 * 1000 + 13 == 3013
+effect Ask {
+  Get -> Int
+}
+
+let ask_helper = () -> Int with { Ask } {
+  perform Ask::Get
+}
+
+let compute = () -> (Int, Int) {
+  let mut count = 0
+  let r = handle {
+    count = count + 1
+    let a = ask_helper()
+    count = count + 1
+    let b = ask_helper()
+    count = count + 1
+    a + b + count
+  } with Ask {
+    Get => resume(5)
+  }
+  (count, r)
+}
+
+export let main = () -> Int {
+  let (count, r) = compute()
+  count * 1000 + r
+}
+
+__DATA__
+{"last": "3013"}

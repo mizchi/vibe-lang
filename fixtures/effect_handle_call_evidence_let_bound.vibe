@@ -1,0 +1,54 @@
+// ADR-0076 (#817) Phase 3: a `perform` bound via `let` inside a needing
+// function's OWN body, rather than written as a bare tail expression.
+//
+// edp_rewrite_needing_body (and its handle-site counterpart,
+// edp_rewrite_handle_body) rewrite a needing function's body by pattern-
+// matching the same shapes edp_has_unsafe_construct already verified are
+// safe. The two traversals used to disagree about which positions they
+// visit: edp_has_unsafe_construct correctly recurses into ELet's/EAssign's
+// value/RHS position (among others) when deciding eligibility, but
+// edp_rewrite_needing_body's ELet/ELetMut/ELetRec/EAssign/EAssignOp cases
+// only recursed into the body/continuation, silently passing the value
+// position through UNCHANGED. `ask_helper`'s body here --
+// `let a = perform Ask::Get; a + 1` -- puts the perform in exactly that
+// skipped position: it correctly passed eligibility (nothing unsafe about
+// it) but was left as a raw, un-rewritten `perform`. Since this function
+// still qualifies for evidence-dict migration, its handle site gets its
+// `EHandle` wrapper dropped -- so the raw perform's throw now has no
+// handler left anywhere to catch it, producing an uncaught-exception
+// runtime crash despite a clean compile.
+//
+// Found via runtime instrumentation (temporarily exporting every
+// per-effect wasm exception tag by name) while investigating an unrelated
+// multi-effect-row crash -- decoding the escaping exception identified it
+// as the MIGRATED effect's own tag (Ask), not some foreign one, which
+// pointed straight at "the needing function's own perform never got
+// rewritten" rather than anything about replay/frontier interaction.
+// Reproducible with a single exact-match effect, independent of the
+// multi-effect investigation that led to finding it.
+//
+// Fixed by making edp_rewrite_needing_body (and edp_rewrite_handle_body)
+// structurally mirror edp_has_unsafe_construct's traversal exactly: every
+// position the eligibility check visits, the rewrite must visit too.
+//
+//   a == 5 (perform Ask::Get, resolved via the evidence dict)
+//   main() == a + 1 == 6
+effect Ask {
+  Get -> Int
+}
+
+let ask_helper = () -> Int with { Ask } {
+  let a = perform Ask::Get
+  a + 1
+}
+
+export let main = () -> Int {
+  handle {
+    ask_helper()
+  } with Ask {
+    Get => resume(5)
+  }
+}
+
+__DATA__
+{"last": "6"}

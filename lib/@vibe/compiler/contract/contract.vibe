@@ -362,10 +362,163 @@ fn array_contains_string(xs: Array[String], target: String) -> Bool {
   found
 }
 
+// ADR-0071 (#755) step 5: signature-matching effectset awareness. decls'
+// and defs' signature strings (fn_sig_text, above) render a fn's effect
+// row VERBATIM as parsed -- a contract spelled with an effectset alias
+// (`with { AskAll }`) and an implementation spelled with the literal
+// operations it expands to (`with { Ask::Get }`) are semantically
+// identical but compare unequal as raw strings, producing a false
+// "signature mismatch". Local to this file (no new cross-file reference --
+// see docs/effectset.md's bootstrap gotcha) since it needs its own
+// ES table built from the CONTRACT's own type_defs (the sole source of
+// truth for effect/effectset definitions; implementation files use but
+// never redefine them, same discipline as SEffectDef).
+fn ctr_es_index_of(names: Array[String], name: String) -> Int {
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn ctr_es_contains(arr: Array[String], v: String) -> Bool {
+  ctr_es_index_of(arr, v) >= 0
+}
+
+fn ctr_es_collect_tables(stmts: Array[Stmt]) -> (Array[String], Array[Array[String]]) {
+  let es_names = array_empty()
+  let es_members_list = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectSet(_, esname, esmembers) => {
+        Array::push(es_names, esname)
+        Array::push(es_members_list, esmembers)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  (es_names, es_members_list)
+}
+
+// Same cycle-safe DFS technique as checker_stmt.vibe's es_detect_cycle /
+// es_expand_into -- a cyclic effectset is rejected by the checker
+// separately (checker_stmt.vibe), but this pass runs independently at
+// load/conformance time and must not hang even on a source that hasn't
+// been through that check yet.
+fn ctr_es_expand_into(es_names: Array[String], es_members_list: Array[Array[String]], name: String, path: Array[String], out: Array[String]) -> Unit {
+  if ctr_es_contains(path, name) {
+    ()
+  } else {
+    let idx = ctr_es_index_of(es_names, name)
+    if idx < 0 {
+      if ctr_es_contains(out, name) {
+        ()
+      } else {
+        Array::push(out, name)
+      }
+    } else {
+      Array::push(path, name)
+      let members = Array::get(es_members_list, idx)
+      let mut mi = 0
+      while mi < Array::length(members) {
+        ctr_es_expand_into(es_names, es_members_list, Array::get(members, mi), path, out)
+        mi = mi + 1
+      }
+      Array::truncate(path, Array::length(path) - 1)
+    }
+  }
+}
+
+fn ctr_es_join_comma(names: Array[String]) -> String {
+  let mut result = ""
+  let mut i = 0
+  while i < Array::length(names) {
+    if i == 0 {
+      result = Array::get(names, i)
+    } else {
+      result = String::concat(result, String::concat(", ", Array::get(names, i)))
+    }
+    i = i + 1
+  }
+  result
+}
+
+fn ctr_es_expand_row_string(row: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+  let raw = String::split(row, ", ")
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(raw) {
+    let expanded = array_empty()
+    ctr_es_expand_into(es_names, es_members_list, Array::get(raw, i), array_empty(), expanded)
+    let mut j = 0
+    while j < Array::length(expanded) {
+      let e = Array::get(expanded, j)
+      if ctr_es_contains(out, e) {
+        ()
+      } else {
+        Array::push(out, e)
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  ctr_es_join_comma(out)
+}
+
+// `sig` is fn_sig_text's output; when a row is present it ALWAYS ends in
+// the exact suffix " with { ROW }" (see fn_sig_text above). Finds that
+// suffix (first "with {" is safe -- no other part of a rendered signature
+// can contain that substring), expands ROW's effectset-name tokens, and
+// rebuilds the string. A signature with no row, or one that doesn't match
+// the expected suffix shape, passes through completely unchanged (never
+// corrupt a string this pass doesn't recognize).
+fn ctr_expand_sig_row(sig: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+  if Array::length(es_names) == 0 {
+    sig
+  } else {
+    let marker = " with { "
+    let idx = String::index_of(sig, marker)
+    if idx < 0 {
+      sig
+    } else {
+      let slen = String::length(sig)
+      let mlen = String::length(marker)
+      if slen < idx + mlen + 2 {
+        sig
+      } else {
+        let last_two = String::substring(sig, slen - 2, slen)
+        if last_two != " }" {
+          sig
+        } else {
+          let head = String::substring(sig, 0, idx)
+          let row = String::substring(sig, idx + mlen, slen - 2)
+          let expanded = ctr_es_expand_row_string(row, es_names, es_members_list)
+          String::concat(head, String::concat(marker, String::concat(expanded, " }")))
+        }
+      }
+    }
+  }
+}
+
 // Check that `impl_stmts` provide exactly the contract surface. Returns a
 // list of human-readable conformance errors; empty = conformant.
-export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(String, Int)], impl_stmts: Array[Stmt]) -> Array[String] {
+// `contract_type_defs` (ADR-0071/#755): the CONTRACT's own classified type
+// definitions (classify_contract_stmts' second return value at the call
+// site) -- used only to build the effectset expansion table above, so a
+// contract signature spelled with an effectset alias and an
+// implementation spelled with its literal expansion compare as equal
+// instead of a false "signature mismatch".
+export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(String, Int)], impl_stmts: Array[Stmt], contract_type_defs: Array[Stmt]) -> Array[String] {
   let errors = array_empty()
+  let (ctr_es_names, ctr_es_members_list) = ctr_es_collect_tables(contract_type_defs)
   let defs = collect_impl_fn_defs(impl_stmts)
   // #847: a re-exported name has no signature to compare (SReExport carries
   // no type info) — it is accepted at face value as satisfying a declared
@@ -376,6 +529,13 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
   let mut di = 0
   while di < Array::length(decls) {
     let (dname, dsig) = Array::get(decls, di)
+    // ADR-0071 (#755): compare EXPANDED forms so a contract signature
+    // spelled with an effectset alias matches an implementation spelled
+    // with the literal operations it expands to (or vice versa) -- `dsig`
+    // itself (used in error messages / satisfied tracking below) stays the
+    // original, as-written text so a mismatch still quotes what the user
+    // actually typed, not an internal normalized form.
+    let dsig_expanded = ctr_expand_sig_row(dsig, ctr_es_names, ctr_es_members_list)
     // A declaration is satisfied by ANY exported def with a matching
     // signature. Same-name defs in OTHER package files (private aliases,
     // domain-local helpers) are legal and never violations by themselves —
@@ -390,7 +550,7 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
       if fname == dname {
         seen_any = true
         match fsig_opt {
-          Some(fsig) => if fsig == dsig {
+          Some(fsig) => if ctr_expand_sig_row(fsig, ctr_es_names, ctr_es_members_list) == dsig_expanded {
             if fexported {
               satisfied = true
             } else {
@@ -556,7 +716,23 @@ export fn classify_contract_stmts(stmts: Array[Stmt]) -> (Array[String], Array[S
       // ADR-0063). It passes into the facade verbatim, exported; the
       // implementation files use the effect but must not re-define it.
       SEffectDef(_, ename, etparams, eops) => Array::push(type_defs, SEffectDef(true, ename, etparams, eops)),
-      _ => throw("unsupported statement in a .vibei contract: only fn declarations, opaque type declarations, transparent type/effect definitions, and implementation-file imports are allowed (#729)")
+      // ADR-0071 (#755) step 5: an `effectset` is likewise a transparent,
+      // compile-time-only alias (no runtime identity of its own, same as
+      // SEffectDef) -- the ADR's Decision section explicitly calls out
+      // that it "は `index.vpkg` の contract symbol として import/export
+      // できる". Passes into the facade verbatim, exported, same as
+      // SEffectDef immediately above. The checker (checker_stmt.vibe)
+      // still independently validates cycle/collision on every effectset
+      // it type-checks, including ones that arrive via this contract path.
+      SEffectSet(_, esname, esmembers) => Array::push(type_defs, SEffectSet(true, esname, esmembers)),
+      // #729's original message said "a .vibei contract" -- this classifier
+      // is shared plumbing for BOTH `index.vpkg` (ADR-0070's boundary file,
+      // docs/module-system-oracle.md) and the legacy `index.vibei` spelling
+      // (not itself a boundary; kept only during migration), invoked from
+      // loader.vibe/header_cache.vibe regardless of which extension the
+      // directory actually has. "contract file" avoids implying vpkg
+      // callers hit vibei-specific rules.
+      _ => throw("unsupported statement in a contract file (index.vpkg / index.vibei): only fn declarations, opaque type declarations, transparent type/effect/effectset definitions, and implementation-file imports are allowed (#729)")
     }
     i = i + 1
   }

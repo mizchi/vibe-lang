@@ -1,0 +1,67 @@
+// ADR-0076 (#817) Phase 3: a needing-function call nested inside an
+// `if`/`else` branch of a handle body.
+//
+// Originally, evidence_dict_pass.vibe conservatively treated ANY
+// branching construct (EIf/EMatch/EWhile/EForIn/ELoop) as unconditionally
+// unsafe, because this exact shape used to compile to genuinely INVALID
+// wasm ("not enough arguments on the stack for call"). Root-causing that
+// bug (docs/effect-evidence-passing.md "追記 4"/"追記 6") found it had
+// nothing to do with branching per se: the handle-site REWRITE used to
+// work by collecting handle sites, then separately re-locating each one
+// afterward via a hand-rolled structural-equality check covering only a
+// handful of Expr constructors. A handle body containing any OTHER Expr
+// shape (EIf being the first one actually hit) made that equality check
+// silently fail to re-find the site, so the handle body was left
+// UNMODIFIED (still calling the needing function with its ORIGINAL
+// arity) while the needing function's OWN signature had already been
+// rewritten (by a separate, unrelated, name-based lookup) to expect the
+// extra evidence-dict parameter -- an inconsistent state that crashed at
+// the wasm level.
+//
+// Fixed by rewriting a matching `EHandle` the moment it is found, in a
+// single traversal, instead of collecting-then-re-finding by equality --
+// eliminating the whole class of bug regardless of which Expr shape
+// appears in a handle body, not just EIf. This let branching constructs
+// be safely re-admitted as safe in edp_has_unsafe_construct.
+//
+// This fixture pins that a branching handle body is now not merely safe
+// but CORRECT: the branch runs exactly once (no replay-style duplicate
+// execution), same evidence-dict path as the straight-line case in
+// fixtures/effect_handle_call_evidence.vibe.
+//   count == 2 (one increment before the branch, one after)
+//   c == 5 (perform Ask::Get, resolved via the evidence dict)
+//   r == c + count == 7
+//   compute() == (2, 7)
+//   main() == 2 * 1000 + 7 == 2007
+effect Ask {
+  Get -> Int
+}
+
+let ask_helper = () -> Int with { Ask } {
+  perform Ask::Get
+}
+
+let compute = () -> (Int, Int) {
+  let mut count = 0
+  let r = handle {
+    count = count + 1
+    let c = if count > 0 {
+      ask_helper()
+    } else {
+      0
+    }
+    count = count + 1
+    c + count
+  } with Ask {
+    Get => resume(5)
+  }
+  (count, r)
+}
+
+export let main = () -> Int {
+  let (count, r) = compute()
+  count * 1000 + r
+}
+
+__DATA__
+{"last": "2007"}

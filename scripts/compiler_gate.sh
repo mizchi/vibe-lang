@@ -4041,6 +4041,203 @@ fi
 rm -rf "$gcdir"
 echo "[compiler-gate] wasm-gc backend smoke ok (101557)"
 
+# 40h2. ADR-0076 (#817) step 6: wasm-gc backend now also supports
+#       evidence-dict-eligible USER-DEFINED effects (not just
+#       `with Error { Throw(..) => .. }`), via the same evidence_dict_pass/
+#       inline_direct_performs AST rewrite the linear backend already used,
+#       now also wired into backend_body.vibe's compile_wasi_module_gc.
+#       Confirmed via A/B testing against a pre-change baseline that this
+#       fixture failed with "GC codegen: unsupported perform (no builtin
+#       mapping)" before this change.
+echo "[compiler-gate] 40h2/40 wasm-gc backend evidence-dict user-defined effect support (ADR-0076 step 6)"
+gcedir="_build/_gate_gc_evidence_dict"
+rm -rf "$gcedir"; mkdir -p "$gcedir"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/gc_backend_effect_evidence_dict.vibe" "$gcedir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$gcedir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: gc_backend_effect_evidence_dict.vibe did not compile under VIBE_BACKEND=gc" >&2
+  cat "$gcedir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+gce_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcedir/out.wasm" 2>&1 | tail -1)"
+if [ "$gce_out" != "17" ]; then
+  echo "[compiler-gate] FAIL: gc_backend_effect_evidence_dict.vibe got '$gce_out' (want 17) -- gc-lane evidence-dict wiring regressed" >&2
+  exit 1
+fi
+rm -rf "$gcedir"
+echo "[compiler-gate] wasm-gc backend evidence-dict user-defined effect support ok (17)"
+
+# 40h3. ADR-0076 (#817) gc-backend follow-up: a needing function's OWN
+#       eligibility no longer sinks the whole effect's migration once it is
+#       provably UNREACHABLE (dead code) by the time evidence_dict_pass runs
+#       -- e.g. #1070's dtpw_inline_trivial_wrappers rewrites `apply(inner)`
+#       into `inner()`, leaving the trivial wrapper `apply`'s own top-level
+#       definition uncalled anywhere; `apply`'s body (`f()`, a call through
+#       an arbitrary closure PARAMETER) can never be proven safe by
+#       edp_has_unsafe_construct, but since it can never actually run, that
+#       no longer matters. evidence_dict_pass now reuses dce_keep_flags
+#       (core/dce.vibe, the SAME reachability engine dce_stmts already uses
+#       in production) to drop provably-dead needing functions before the
+#       safety scan. This is the SAME fixture as gate 40aj's linear-backend
+#       assertion (effect_local_closure_by_value_wrapper.vibe, want 105) --
+#       confirmed via direct A/B testing that it failed under
+#       VIBE_BACKEND=gc with "only `with Error`..." before this change.
+echo "[compiler-gate] 40h3/40 wasm-gc backend: dead needing function no longer blocks effect migration (ADR-0076 gc follow-up)"
+gcdeaddir="_build/_gate_gc_dead_needing"
+rm -rf "$gcdeaddir"; mkdir -p "$gcdeaddir"
+sed '/^__DATA__$/,$d' fixtures/effect_local_closure_by_value_wrapper.vibe > "$gcdeaddir/src.vibe"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gcdeaddir/src.vibe" "$gcdeaddir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$gcdeaddir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_by_value_wrapper.vibe did not compile under VIBE_BACKEND=gc" >&2
+  cat "$gcdeaddir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+gcdead_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcdeaddir/out.wasm" 2>&1 | tail -1)"
+if [ "$gcdead_out" != "105" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_by_value_wrapper.vibe under gc got '$gcdead_out' (want 105) -- dead-needing-function filtering regressed" >&2
+  exit 1
+fi
+rm -rf "$gcdeaddir"
+echo "[compiler-gate] wasm-gc backend dead needing function filtering ok (105)"
+
+# 40h4. ADR-0076 (#817) gc-backend follow-up: a needing function's OWN
+#       declared row can mention the migrated effect PURELY to satisfy a
+#       separate checker requirement ("a `handle ... with Effect`
+#       expression's enclosing declared row must authorize the whole effect
+#       name") while its entire body is nothing but `handle {..} with
+#       ename {..}` -- fully discharging the effect itself, never actually
+#       needing the evidence dict passed to it. edp_has_unsafe_construct
+#       correctly (for the general case) flags a same-effect nested
+#       `EHandle` as unsafe, which used to sink the WHOLE effect's
+#       migration whenever such a function existed. evidence_dict_pass now
+#       drops a needing function from consideration when its body is
+#       EXACTLY a bare same-effect `EHandle` (edp_drop_self_discharging_needing)
+#       -- its handle site is already discovered and migrated independently.
+#       fixtures/effect_effectset_expansion.vibe's `main` is exactly this
+#       shape; confirmed via direct testing that it failed under
+#       VIBE_BACKEND=gc with "only `with Error`..." before this change.
+echo "[compiler-gate] 40h4/40 wasm-gc backend: self-discharging needing function no longer blocks effect migration (ADR-0076 gc follow-up)"
+gcselfdir="_build/_gate_gc_self_discharge"
+rm -rf "$gcselfdir"; mkdir -p "$gcselfdir"
+sed '/^__DATA__$/,$d' fixtures/effect_effectset_expansion.vibe > "$gcselfdir/src.vibe"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gcselfdir/src.vibe" "$gcselfdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$gcselfdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_effectset_expansion.vibe did not compile under VIBE_BACKEND=gc" >&2
+  cat "$gcselfdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+gcself_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcselfdir/out.wasm" 2>&1 | tail -1)"
+if [ "$gcself_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: effect_effectset_expansion.vibe under gc got '$gcself_out' (want 42) -- self-discharging needing function filtering regressed" >&2
+  exit 1
+fi
+rm -rf "$gcselfdir"
+echo "[compiler-gate] wasm-gc backend self-discharging needing function filtering ok (42)"
+
+# 40h5. ADR-0076 (#817) gc-backend follow-up: a local closure literal with
+#       NO explicit `with {...}` annotation (its `eff` field is blank in the
+#       AST -- the checker infers the row internally but never writes it
+#       back onto the node) that performs an effect and gets lambda-lifted
+#       to a fresh top-level binding (dlh_hoist_expr, the capture-free
+#       case) used to keep the BLANK row on the hoisted definition too --
+#       evidence_dict_pass classifies top-level "needing" functions purely
+#       by reading that row string, so the hoisted function was silently
+#       never recognized as needing anything and its `perform` was never
+#       migrated. Harmless on the linear backend (falls back to replay,
+#       still correct) but a hard "unsupported perform" error on gc, which
+#       has no such fallback.
+#
+#       Fixed in two parts: (1) dlh_hoist_expr now backfills a blank `eff`
+#       from what the closure's body actually performs BEFORE hoisting
+#       (dlh_collect_performed_effect_names); (2) edp_plan_migrations now
+#       tries the FULL needing set (including provably-dead functions like
+#       this fixture's deliberately-uncalled `never_called`) BEFORE falling
+#       back to dropping dead ones -- trying dead-code-dropping first would
+#       have UNDONE fix (1) by re-excluding this now-correctly-classified-
+#       but-still-dead function, right back to the same "unsupported
+#       perform" failure (found via direct testing after landing fix (1)
+#       alone still didn't fix this fixture under gc).
+echo "[compiler-gate] 40h5/40 wasm-gc backend: unannotated hoisted closure literal row backfill (ADR-0076 gc follow-up)"
+gcclosdir="_build/_gate_gc_closure_literal_row"
+rm -rf "$gcclosdir"; mkdir -p "$gcclosdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_closure_literal.vibe > "$gcclosdir/src.vibe"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gcclosdir/src.vibe" "$gcclosdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$gcclosdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_closure_literal.vibe did not compile under VIBE_BACKEND=gc" >&2
+  cat "$gcclosdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+gcclos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcclosdir/out.wasm" 2>&1 | tail -1)"
+if [ "$gcclos_out" != "6" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_closure_literal.vibe under gc got '$gcclos_out' (want 6) -- hoisted closure row backfill or try-full-before-dropping-dead regressed" >&2
+  exit 1
+fi
+rm -rf "$gcclosdir"
+echo "[compiler-gate] wasm-gc backend closure literal row backfill ok (6)"
+
+# 40h6. ADR-0076 (#817) gc-backend follow-up: edp_has_unsafe_construct's
+#       pure-builtin allowlist was missing `__index` (`obj[i]` sugar),
+#       `Array::get`/`Map::get`/`Bytes::get`, and
+#       `Array::length`/`Map::size`/`Bytes::length` -- all individually
+#       checker-verified pure. A needing function's body calling any of
+#       these (e.g. `items[i]` inside a `while i < Array::length(items)`
+#       loop) was sunk to ineligible purely because the call wasn't on the
+#       allowlist. Harmless on linear (replay fallback); a hard
+#       "unsupported perform" error on gc, which has none.
+echo "[compiler-gate] 40h6/40 wasm-gc backend: __index/length pure-builtin allowlist gap (ADR-0076 gc follow-up)"
+gcidxdir="_build/_gate_gc_pure_builtin_index"
+rm -rf "$gcidxdir"; mkdir -p "$gcidxdir"
+sed '/^__DATA__$/,$d' fixtures/gc_backend_effect_pure_builtin_index.vibe > "$gcidxdir/src.vibe"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gcidxdir/src.vibe" "$gcidxdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$gcidxdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: gc_backend_effect_pure_builtin_index.vibe did not compile under VIBE_BACKEND=gc" >&2
+  cat "$gcidxdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+gcidx_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcidxdir/out.wasm" 2>&1 | tail -1)"
+if [ "$gcidx_out" != "3" ]; then
+  echo "[compiler-gate] FAIL: gc_backend_effect_pure_builtin_index.vibe under gc got '$gcidx_out' (want 3) -- pure-builtin allowlist regressed" >&2
+  exit 1
+fi
+rm -rf "$gcidxdir"
+echo "[compiler-gate] wasm-gc backend pure-builtin allowlist ok (3)"
+
+# 40h7. gc-backend follow-up: `suberror` constructors were never registered
+#       in the wasm-gc backend's ctor table (backend_body.vibe's ctor-
+#       registration loop had SEnum/SStruct cases but no SSuberror case,
+#       unlike linked_compile.vibe which has always had one) --
+#       `throw(KeyInvalid(...))` hit backend_call.vibe's "unknown
+#       constructor or function" hard error. Mirrors linked_compile.vibe's
+#       SSuberror handling exactly.
+echo "[compiler-gate] 40h7/40 wasm-gc backend: suberror constructor registration (gc follow-up)"
+gcsuberrdir="_build/_gate_gc_suberror_ctor"
+rm -rf "$gcsuberrdir"; mkdir -p "$gcsuberrdir"
+sed '/^__DATA__$/,$d' fixtures/gc_backend_suberror_ctor.vibe > "$gcsuberrdir/src.vibe"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gcsuberrdir/src.vibe" "$gcsuberrdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$gcsuberrdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: gc_backend_suberror_ctor.vibe did not compile under VIBE_BACKEND=gc" >&2
+  cat "$gcsuberrdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+gcsuberr_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcsuberrdir/out.wasm" 2>&1 | tail -1)"
+if [ "$gcsuberr_out" != "4200" ]; then
+  echo "[compiler-gate] FAIL: gc_backend_suberror_ctor.vibe under gc got '$gcsuberr_out' (want 4200) -- suberror ctor registration regressed" >&2
+  exit 1
+fi
+rm -rf "$gcsuberrdir"
+echo "[compiler-gate] wasm-gc backend suberror constructor registration ok (4200)"
+
 # 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
 #      must render fixtures/wit_gen_http.vibe byte-exactly as the committed
 #      golden. Pins the WIT mapping contract (docs/effect-wit-mapping.md):
@@ -4156,6 +4353,957 @@ for gcb_fixture in to_string_bool_gc_test to_string_shadow_gc_test to_string_boo
 done
 rm -rf "$gcbdir"
 echo "[compiler-gate] gc-lane to_string(Bool) regressions ok"
+
+# 40l. handle-replay side-effect corruption regression guard (M2,
+#      eval/lang-review/findings/2026-07-12-r2.md; tracked by ADR-0076/#817).
+#      `handle` used to re-execute the whole handled body from the top on
+#      every `resume` ("replay"); this fixture has 2 performs + a `let mut`
+#      counter mutated around each, so replay's re-execution corrupted both
+#      the counter and the handle's own return value in a specific,
+#      deterministic way (see the fixture's header comment for the full
+#      trace, pre-fix output was 6016). ADR-0076 Phase 2 (direct-perform
+#      inlining, common_base/inline_direct_perform.vibe) fixes this exact
+#      shape -- the handled body has no unsafe construct, so both performs
+#      inline directly into the tail-resumptive arm instead of going through
+#      replay. This gate now pins the FIXED output (3013 == 1000*3 +
+#      (5+5+3)) as a regression lock: fixtures/effect_*.vibe with `__DATA__`
+#      are not otherwise wired into any automated harness today
+#      (generate_runtime_fixture_tests.mjs explicitly excludes `perform`/
+#      `handle` sources).
+echo "[compiler-gate] 40l/40 handle-replay side-effect corruption regression guard (M2/#817)"
+m2dir="_build/_gate_effect_replay_m2"
+rm -rf "$m2dir"; mkdir -p "$m2dir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_replay_corruption.vibe > "$m2dir/m2_src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$m2dir/m2_src.vibe" "$m2dir/m2.wasm" main >/dev/null 2>&1
+if [ ! -s "$m2dir/m2.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_replay_corruption.vibe did not compile" >&2
+  cat "$m2dir/m2.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+m2_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$m2dir/m2.wasm" 2>&1 | tail -1)"
+if [ "$m2_out" != "3013" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_replay_corruption got '$m2_out' (want 3013, the ADR-0076 Phase 2 direct-perform-inlining fixed value). This means the fix regressed -- e.g. inline_direct_performs stopped firing for this fixture's shape and it fell back to buggy replay (6016)." >&2
+  exit 1
+fi
+rm -rf "$m2dir"
+echo "[compiler-gate] handle-replay side-effect corruption regression guard ok (3013, ADR-0076 Phase 2 fix verified)"
+
+# 40m. ADR-0071 step 1 (#755, docs/effectset.md): a `with { ... }` row item
+#      may now name a single qualified operation (`Effect::op`), not just a
+#      whole effect name -- collect_effect_names in
+#      lib/@vibe/parser/parser_base.vibe. Parser-only slice: the row stays
+#      an opaque comma-joined String (no new AST shape), so round-trip is
+#      automatic; this gate just pins that the new grammar actually parses
+#      and compiles/runs end to end. Operation-level CHECKING (rejecting a
+#      perform of a DIFFERENT operation of the same effect when only one is
+#      named) is a separate, larger change (step 3), not covered here.
+echo "[compiler-gate] 40m/40 effect row operation-item grammar (ADR-0071 step 1/#755)"
+a71dir="_build/_gate_effectset_row_item"
+rm -rf "$a71dir"; mkdir -p "$a71dir"
+sed '/^__DATA__$/,$d' fixtures/effect_row_operation_item.vibe > "$a71dir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$a71dir/src.vibe" "$a71dir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$a71dir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_row_operation_item.vibe did not compile (with { Effect::op } row-item grammar regressed)" >&2
+  cat "$a71dir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+a71_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$a71dir/out.wasm" 2>&1 | tail -1)"
+if [ "$a71_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: effect_row_operation_item got '$a71_out' (want 42)" >&2
+  exit 1
+fi
+rm -rf "$a71dir"
+echo "[compiler-gate] effect row operation-item grammar ok"
+
+# 40n. ADR-0071 step 3 (#755, docs/effectset.md): a VALID `effectset` (no
+#      cycle, no operation-name collision) is now ACCEPTED and its members
+#      are expanded into any `with { EffectsetName }` row item that
+#      references it (checker_stmt.vibe's es_expand_stmts_effect_rows),
+#      before the existing string-label containment machinery
+#      (decl_authorizes_effect et al., unmodified) runs. This gate compiles
+#      fixtures/effect_effectset_expansion.vibe, where a function's OWN
+#      declared row is JUST an effectset name (`with { AskAll }`) and that
+#      alone must authorize a transitively-called function requiring the
+#      operation the effectset expands to (`Ask::Get`) -- proving expansion
+#      is actually wired in, not just that the effectset parses. (Step 2's
+#      prior behavior -- rejecting EVERY effectset declaration regardless of
+#      validity -- is superseded by this step; see gate 40o below for what
+#      STILL gets rejected.)
+echo "[compiler-gate] 40n/40 effectset row expansion authorizes a transitive call (ADR-0071 step 3/#755)"
+a71bdir="_build/_gate_effectset_expand"
+rm -rf "$a71bdir"; mkdir -p "$a71bdir"
+sed '/^__DATA__$/,$d' fixtures/effect_effectset_expansion.vibe > "$a71bdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$a71bdir/src.vibe" "$a71bdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$a71bdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_effectset_expansion.vibe did not compile -- effectset row expansion regressed" >&2
+  cat "$a71bdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+a71b_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$a71bdir/out.wasm" 2>&1 | tail -1)"
+if [ "$a71b_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: effect_effectset_expansion got '$a71b_out' (want 42)" >&2
+  exit 1
+fi
+rm -rf "$a71bdir"
+echo "[compiler-gate] effectset row expansion ok"
+
+# 40o. ADR-0071 resolver core (#755, docs/effectset.md): the ADR's Decision
+#      section calls out two specific invalid-definition cases by name -- a
+#      cycle through effectset member references, and a qualified name
+#      colliding with an operation of the same effect (shared effect-row
+#      member namespace) -- both implemented as local helpers in
+#      checker_stmt.vibe (es_detect_cycle / es_qualified_collision) with a
+#      whole-statement-list pre-pass, order-independent. Since step 3 (gate
+#      40n above) made a VALID effectset declaration succeed instead of
+#      always failing, this gate is what now proves an INVALID one still
+#      doesn't silently slip through to acceptance.
+echo "[compiler-gate] 40o/40 effectset cycle + operation-collision detection (ADR-0071 step 2/#755)"
+a71cdir="_build/_gate_effectset_resolver"
+rm -rf "$a71cdir"; mkdir -p "$a71cdir"
+sed '/^__DATA__$/,$d' fixtures/err_effectset_cycle.vibe > "$a71cdir/cycle.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$a71cdir/cycle.vibe" "$a71cdir/cycle.wasm" main >/dev/null 2>&1 || true
+if [ -s "$a71cdir/cycle.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_effectset_cycle.vibe compiled successfully -- circular effectset references must be rejected" >&2
+  exit 1
+fi
+if ! grep -q "effectset cycle: A -> B -> A" "$a71cdir/cycle.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_effectset_cycle.vibe did not produce the expected cycle diagnostic" >&2
+  cat "$a71cdir/cycle.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+sed '/^__DATA__$/,$d' fixtures/err_effectset_operation_collision.vibe > "$a71cdir/collision.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$a71cdir/collision.vibe" "$a71cdir/collision.wasm" main >/dev/null 2>&1 || true
+if [ -s "$a71cdir/collision.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_effectset_operation_collision.vibe compiled successfully -- an effectset colliding with an operation name must be rejected" >&2
+  exit 1
+fi
+if ! grep -q "collides with an operation of the same name" "$a71cdir/collision.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_effectset_operation_collision.vibe did not produce the expected collision diagnostic" >&2
+  cat "$a71cdir/collision.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$a71cdir"
+echo "[compiler-gate] effectset cycle + operation-collision detection ok"
+
+# 40p. ADR-0071 step 3, parameter-type expansion (#755, docs/effectset.md):
+#      effectset row expansion also covers a function PARAMETER's own
+#      function-typed row (the #885 callback-overlay case), not just a
+#      function's own top-level declared row -- es_expand_top_value in
+#      checker_stmt.vibe walks `params`, and the expansion now runs ONCE,
+#      early, in check_program (before check_stmts) so BOTH the type-level
+#      argument-compatibility subtyping check (checker.vibe's
+#      effect_row_dropped) and the perform-effect leak-through check
+#      (checker_effects.vibe's #885 overlay) see already-expanded rows
+#      instead of comparing raw, never-equal strings like "AskAll" vs
+#      "Ask::Get". This gate compiles
+#      fixtures/effect_effectset_param_expansion.vibe, where a callback
+#      parameter's row is JUST an effectset name.
+echo "[compiler-gate] 40p/40 effectset parameter-type row expansion (ADR-0071 step 3/#755)"
+a71ddir="_build/_gate_effectset_param_expand"
+rm -rf "$a71ddir"; mkdir -p "$a71ddir"
+sed '/^__DATA__$/,$d' fixtures/effect_effectset_param_expansion.vibe > "$a71ddir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$a71ddir/src.vibe" "$a71ddir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$a71ddir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_effectset_param_expansion.vibe did not compile -- parameter-type effectset expansion regressed" >&2
+  cat "$a71ddir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+a71d_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$a71ddir/out.wasm" 2>&1 | tail -1)"
+if [ "$a71d_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: effect_effectset_param_expansion got '$a71d_out' (want 42)" >&2
+  exit 1
+fi
+rm -rf "$a71ddir"
+echo "[compiler-gate] effectset parameter-type row expansion ok"
+
+# 40q. ADR-0071 step 4 (#755, docs/effectset.md): `handle body with Effect
+#      {...}` is exhaustive over every operation of Effect (ADR-0050), so
+#      discharging the bare effect name is semantically equivalent to
+#      discharging every one of its qualified operation names --
+#      collect_handle_effects (checker_effects.vibe) now records BOTH,
+#      instead of just the bare name, fixing a case where a handled body
+#      transitively calling a function with an operation-level declared row
+#      (`with { Ask::Get }`, not the bare effect `Ask`) was incorrectly
+#      rejected as still missing that requirement even though the handle
+#      plainly covers it. This gate compiles
+#      fixtures/effect_handle_operation_level_discharge.vibe, which has
+#      exactly that shape and NO with-clause of its own on main.
+echo "[compiler-gate] 40q/40 handler operation-level discharge (ADR-0071 step 4/#755)"
+a71edir="_build/_gate_effectset_handle_discharge"
+rm -rf "$a71edir"; mkdir -p "$a71edir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_operation_level_discharge.vibe > "$a71edir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$a71edir/src.vibe" "$a71edir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$a71edir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_operation_level_discharge.vibe did not compile -- handler operation-level discharge regressed" >&2
+  cat "$a71edir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+a71e_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$a71edir/out.wasm" 2>&1 | tail -1)"
+if [ "$a71e_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_operation_level_discharge got '$a71e_out' (want 42)" >&2
+  exit 1
+fi
+rm -rf "$a71edir"
+echo "[compiler-gate] handler operation-level discharge ok"
+
+# 40r. ADR-0071 step 5, contract passthrough (#755, docs/effectset.md): an
+#      `effectset` is a transparent, compile-time-only alias like `effect`
+#      -- classify_contract_stmts (contract.vibe) now passes an SEffectSet
+#      through into the facade verbatim, exported, the same way it already
+#      does for SEffectDef, instead of hitting the "unsupported statement
+#      in a contract file" catch-all. This gate compiles
+#      fixtures/contract_effectset_vpkg_main.vibe, which imports
+#      fixtures/contract_effectset_vpkg/ (an index.vpkg declaring both
+#      `effect Ask` and `effectset AskAll` alongside a bodyless
+#      `fn read_one`) through the ordinary package-import path -- proving
+#      the declaration survives the contract facade end to end, not just
+#      that it parses in isolation.
+echo "[compiler-gate] 40r/40 effectset contract passthrough (ADR-0071 step 5/#755)"
+a71fdir="_build/_gate_effectset_contract"
+rm -rf "$a71fdir"; mkdir -p "$a71fdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/contract_effectset_vpkg_main.vibe" "$a71fdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$a71fdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: contract_effectset_vpkg_main.vibe did not compile -- effectset contract passthrough regressed" >&2
+  cat "$a71fdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+a71f_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$a71fdir/out.wasm" 2>&1 | tail -1)"
+if [ "$a71f_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: contract_effectset_vpkg_main got '$a71f_out' (want 42)" >&2
+  exit 1
+fi
+rm -rf "$a71fdir"
+echo "[compiler-gate] effectset contract passthrough ok"
+
+# 40s. ADR-0071 step 5, signature-matching effectset awareness (#755,
+#      docs/effectset.md): check_contract (contract.vibe) previously
+#      compared a contract's and an implementation's effect row as raw,
+#      unexpanded strings -- a contract signature spelled with an
+#      effectset alias (`fn f() -> T with { AskAll }`) reported a false
+#      "signature mismatch" against an implementation spelled with the
+#      literal operations it expands to (`with { Ask::Get }`), even though
+#      they are semantically identical. check_contract now expands both
+#      sides (ctr_expand_sig_row, using an ES table built from the
+#      contract's own type_defs) before comparing. This gate compiles
+#      fixtures/contract_effectset_signature_alias_main.vibe, which imports
+#      fixtures/contract_effectset_signature_alias/ -- exactly that shape.
+echo "[compiler-gate] 40s/40 effectset contract signature-matching (ADR-0071 step 5/#755)"
+a71gdir="_build/_gate_effectset_sig_alias"
+rm -rf "$a71gdir"; mkdir -p "$a71gdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/contract_effectset_signature_alias_main.vibe" "$a71gdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$a71gdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: contract_effectset_signature_alias_main.vibe did not compile -- effectset-aware contract signature matching regressed" >&2
+  cat "$a71gdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+a71g_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$a71gdir/out.wasm" 2>&1 | tail -1)"
+if [ "$a71g_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: contract_effectset_signature_alias_main got '$a71g_out' (want 42)" >&2
+  exit 1
+fi
+rm -rf "$a71gdir"
+echo "[compiler-gate] effectset contract signature-matching ok"
+
+# 40t. ADR-0071 step 5, WIT generation effectset/qualified resolution (#755,
+#      docs/effectset.md): wit_gen.vibe previously resolved each raw
+#      effect-row label verbatim against the effect definitions it collected,
+#      so an `effectset` alias (`with { AskAll }`) or a bare qualified
+#      operation item with no accompanying plain effect-name item
+#      (`with { Ask::Get }`) never matched `Ask`'s definition and fell
+#      through to the "host capability effect ... no WIT mapping yet"
+#      comment marker, even though `Ask` has a real interface mapping.
+#      wit_gen.vibe now expands effectset aliases and resolves qualified
+#      operation items back to their underlying effect name before
+#      rendering. This gate compiles fixtures/wit_gen_effectset.vibe (one
+#      export using the effectset alias, one using the bare qualified item)
+#      via `vibe compile --wit` and diffs against the golden.
+echo "[compiler-gate] 40t/40 effect->WIT effectset/qualified resolution (ADR-0071 step 5/#755)"
+witesdir="_build/_gate_wit_effectset"
+rm -rf "$witesdir"; mkdir -p "$witesdir"
+VIBE_EMIT_WIT=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/wit_gen_effectset.vibe" "$witesdir/out.wit" main >/dev/null 2>&1
+if [ ! -s "$witesdir/out.wit" ]; then
+  echo "[compiler-gate] FAIL: VIBE_EMIT_WIT produced no output for wit_gen_effectset.vibe" >&2
+  cat "$witesdir/out.wit.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! diff -u "fixtures/wit_gen_effectset.golden.wit" "$witesdir/out.wit" >&2; then
+  echo "[compiler-gate] FAIL: WIT output differs from fixtures/wit_gen_effectset.golden.wit -- effectset/qualified WIT resolution regressed" >&2
+  exit 1
+fi
+rm -rf "$witesdir"
+echo "[compiler-gate] effect->WIT effectset/qualified resolution ok"
+
+# 40u. ADR-0076 Phase 3, first slice (#817): evidence_dict_pass (appended to
+#      common_base/inline_direct_perform.vibe -- see that file's doc comment
+#      -- to avoid the bootstrap flatten gotcha of a brand-new cross-file
+#      export + its first cross-file caller in the same commit). Same M2
+#      shape as gate 40l, except the two performs are reached via a helper
+#      function call (`ask_helper()`) instead of directly in the handle
+#      body -- exactly the case Phase 2 (inline_direct_perform.vibe's
+#      idp_has_unsafe_construct) bails out on, which fell to replay and
+#      reproduced the SAME 6016 corruption pre-fix. This gate pins the
+#      FIXED output (3013, same math as gate 40l) as a regression lock.
+echo "[compiler-gate] 40u/40 evidence-dict threading through a helper-function call (ADR-0076 Phase 3/#817)"
+edpdir="_build/_gate_evidence_dict_call"
+rm -rf "$edpdir"; mkdir -p "$edpdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence.vibe > "$edpdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpdir/src.vibe" "$edpdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence.vibe did not compile" >&2
+  cat "$edpdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edp_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edp_out" != "3013" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence.vibe got '$edp_out' (want 3013) -- evidence-dict threading through a helper call regressed" >&2
+  exit 1
+fi
+rm -rf "$edpdir"
+echo "[compiler-gate] evidence-dict threading through a helper-function call ok"
+
+# 40v. ADR-0076 Phase 3 (#817): a needing-function call nested inside an
+#      `if`/`else` branch of a handle body used to compile to genuinely
+#      INVALID wasm ("not enough arguments on the stack for call"). Root-
+#      caused (docs/effect-evidence-passing.md "追記 6"): the handle-site
+#      rewrite used to collect handle sites then re-locate each one
+#      afterward via a hand-rolled structural-equality check covering only
+#      a handful of Expr constructors -- any OTHER shape (EIf being the
+#      first one hit) made it silently fail to re-find the site, leaving
+#      the handle body unmodified while the needing function's signature
+#      had already gained the extra evidence-dict parameter. Fixed by
+#      rewriting a matching EHandle the instant it's found, in one
+#      traversal (edp_find_rewrite_handles), eliminating the whole bug
+#      class regardless of which Expr shape appears -- branching
+#      constructs are now genuinely safe again, not just conservatively
+#      disallowed. This gate pins that the branching case now runs
+#      CORRECTLY (a single evidence-dict call, no replay-style duplicate
+#      execution) rather than merely not crashing.
+echo "[compiler-gate] 40v/40 evidence-dict pass: branching handle body runs correctly via the evidence dict (ADR-0076 Phase 3/#817)"
+edpbdir="_build/_gate_evidence_dict_branch"
+rm -rf "$edpbdir"; mkdir -p "$edpbdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_branch.vibe > "$edpbdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpbdir/src.vibe" "$edpbdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpbdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_branch.vibe did not compile" >&2
+  cat "$edpbdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edpb_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpbdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edpb_out" != "2007" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_branch.vibe got '$edpb_out' (want 2007) -- either the invalid-wasm crash regressed, or the evidence-dict rewrite for branching bodies regressed" >&2
+  exit 1
+fi
+rm -rf "$edpbdir"
+echo "[compiler-gate] evidence-dict pass branching handle body ok"
+
+# 40w. ADR-0076 Phase 3 (#817): a needing function (declared row exactly
+#      one effect) whose body ALSO performs `Error::Throw` -- legal per
+#      #640 Stage 2, which exempts `Error` from row declaration -- used to
+#      hit a COMPILE-TIME error ("unknown struct field") because
+#      edp_rewrite_perform_via_dict rewrote every perform through the
+#      evidence dict regardless of which effect it targeted. Fixed by
+#      checking the perform's own effect prefix before rewriting; anything
+#      else (only Error can occur here) is left untouched. This gate's
+#      fixture includes a needing function that ONLY performs
+#      Error::Throw and is never called -- evidence_dict_pass migrates
+#      every function whose row matches, not only ones reachable from a
+#      handle site, so its mere presence was enough to trigger the bug at
+#      compile time regardless of whether it ever runs.
+echo "[compiler-gate] 40w/40 evidence-dict pass: Error::Throw mixed into a needing function's body compiles (ADR-0076 Phase 3/#817)"
+edpemdir="_build/_gate_evidence_dict_error_mix"
+rm -rf "$edpemdir"; mkdir -p "$edpemdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_error_mix.vibe > "$edpemdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpemdir/src.vibe" "$edpemdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpemdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_error_mix.vibe did not compile" >&2
+  cat "$edpemdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edpem_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpemdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edpem_out" != "5" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_error_mix.vibe got '$edpem_out' (want 5)" >&2
+  exit 1
+fi
+rm -rf "$edpemdir"
+echo "[compiler-gate] evidence-dict pass Error::Throw mixing ok"
+
+# 40x. ADR-0076 Phase 3 (#817): a function whose declared effect row
+#      contains MULTIPLE effects (`{ Ask, Fs }`), discharged via a directly-
+#      nested handle pair split across a wrapper function
+#      (`ask_only_wrapper`'s body IS `handle {...} with Ask {...}`, itself
+#      inside `compute`'s `handle {...} with Fs {...}`). BOTH effects now
+#      migrate to evidence-dict independently: edp_has_unsafe_construct
+#      recurses into a nested handle for a DIFFERENT effect instead of
+#      unconditionally rejecting it (see inline_direct_perform.vibe's
+#      edp_has_unsafe_construct doc comment; this shape used to disqualify
+#      the outer effect entirely -- containment itself was tried and
+#      reverted TWICE before either fix landed, both times crashing on an
+#      unrelated rewrite-coverage bug, not a multi-effect-row issue -- see
+#      edp_row_is_exactly's doc comment for that history). With neither
+#      effect left on the old replay/frontier machinery, `compute`'s
+#      handled body now runs EXACTLY ONCE end to end -- this gate pins the
+#      semantically-ideal value (2017), not the old replay-inflated
+#      fallback value (3018) an earlier, less complete version of this
+#      pass used to produce for the same program.
+echo "[compiler-gate] 40x/40 evidence-dict pass: multi-effect row migrates both effects through a nested handle pair (ADR-0076 Phase 3/#817)"
+edpmedir="_build/_gate_evidence_dict_multi_effect"
+rm -rf "$edpmedir"; mkdir -p "$edpmedir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_multi_effect_row_nested.vibe > "$edpmedir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpmedir/src.vibe" "$edpmedir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpmedir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_multi_effect_row_nested.vibe did not compile" >&2
+  cat "$edpmedir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edpme_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpmedir/out.wasm" 2>&1 | tail -1)"
+if [ "$edpme_out" != "2017" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_multi_effect_row_nested.vibe got '$edpme_out' (want 2017) -- multi-effect nested-handle migration regressed" >&2
+  exit 1
+fi
+rm -rf "$edpmedir"
+echo "[compiler-gate] evidence-dict pass multi-effect row nested-handle migration ok"
+
+# 40z. ADR-0076 Phase 3 (#817): a minimal directly-nested handle pair for
+#      TWO DIFFERENT effects (`handle { handle { both() } with A {...} }
+#      with B {...}`), no wrapper-function indirection at all -- the
+#      general case edp_has_unsafe_construct's nested-EHandle relaxation
+#      targets, isolated from gate 40x's multi-effect-row-plus-wrapper-
+#      function combination. Verified (via a temporary migration-plan
+#      probe during development) that BOTH `A` and `B` genuinely migrate to
+#      evidence-dict; this gate pins the resulting value (7 == 3 + 4).
+echo "[compiler-gate] 40z/40 evidence-dict pass: minimal directly-nested handle pair, both effects migrate (ADR-0076 Phase 3/#817)"
+edpnhdir="_build/_gate_evidence_dict_nested_handles"
+rm -rf "$edpnhdir"; mkdir -p "$edpnhdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_multi_effect_nested_handles.vibe > "$edpnhdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpnhdir/src.vibe" "$edpnhdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpnhdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_multi_effect_nested_handles.vibe did not compile" >&2
+  cat "$edpnhdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edpnh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpnhdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edpnh_out" != "7" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_multi_effect_nested_handles.vibe got '$edpnh_out' (want 7) -- directly-nested handle pair migration regressed" >&2
+  exit 1
+fi
+rm -rf "$edpnhdir"
+echo "[compiler-gate] evidence-dict pass directly-nested handle pair migration ok"
+
+# 40y. ADR-0076 Phase 3 (#817): a `perform` bound via `let` inside a needing
+#      function's OWN body (`let a = perform Ask::Get; a + 1`), rather than
+#      written as a bare tail expression, used to compile cleanly but crash
+#      at runtime with an UNCAUGHT exception. edp_rewrite_needing_body (and
+#      its handle-site counterpart edp_rewrite_handle_body) rewrite a
+#      needing function's body by pattern-matching the same shapes
+#      edp_has_unsafe_construct already verified are safe, but the two
+#      traversals used to disagree about which positions they visit --
+#      edp_has_unsafe_construct correctly recurses into ELet's/EAssign's
+#      value/RHS position (among several others: EIf's condition, EMatch's
+#      scrutinee, EWhile/EForIn/ELoop bodies, ...) when deciding
+#      eligibility, but the two rewrite traversals only recursed into a
+#      narrower set of positions. A perform reached only through one of the
+#      skipped positions passed eligibility (nothing unsafe about it, by
+#      has_unsafe_construct's own correct judgment) but was silently left
+#      un-rewritten -- still a raw `perform`, throwing a tag the enclosing
+#      handle site no longer catches once migration drops it. Found via
+#      runtime instrumentation (temporarily exporting every per-effect wasm
+#      exception tag by name) while investigating an unrelated multi-
+#      effect-row crash; reproducible with a single exact-match effect,
+#      independent of that investigation. Fixed by making both rewrite
+#      traversals structurally mirror edp_has_unsafe_construct's coverage
+#      exactly.
+echo "[compiler-gate] 40y/40 evidence-dict pass: perform bound via let inside a needing function's own body (ADR-0076 Phase 3/#817)"
+edpletdir="_build/_gate_evidence_dict_let_bound"
+rm -rf "$edpletdir"; mkdir -p "$edpletdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_let_bound.vibe > "$edpletdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpletdir/src.vibe" "$edpletdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpletdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_let_bound.vibe did not compile" >&2
+  cat "$edpletdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edplet_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpletdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edplet_out" != "6" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_let_bound.vibe got '$edplet_out' (want 6) -- let-bound perform inside a needing function's body regressed (either an uncaught-exception crash or a wrong value)" >&2
+  exit 1
+fi
+rm -rf "$edpletdir"
+echo "[compiler-gate] evidence-dict pass let-bound perform ok"
+
+# 40aa. ADR-0076 Phase 3 (#817): a needing function's body calls an
+#       ordinary user-defined PURE helper function (no `with` clause, so
+#       the checker has already proven it performs no effect) that is
+#       neither a needing function itself nor a hand-listed
+#       `edp_pure_builtin_names` entry. edp_has_unsafe_construct now
+#       recognizes a call to any function whose OWN declared effect row is
+#       checker-verified empty (edp_pure_fn_names) as safe, generalizing
+#       the old hand-audited builtin allowlist to every pure user-defined
+#       function -- verified (via a temporary migration-plan probe during
+#       development) that `Ask` genuinely migrates here, not merely
+#       "produces the right answer via replay by coincidence".
+echo "[compiler-gate] 40aa/40 evidence-dict pass: call to a plain user-defined pure helper function (ADR-0076 Phase 3/#817)"
+edppurdir="_build/_gate_evidence_dict_pure_helper"
+rm -rf "$edppurdir"; mkdir -p "$edppurdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_pure_helper.vibe > "$edppurdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edppurdir/src.vibe" "$edppurdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edppurdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_pure_helper.vibe did not compile" >&2
+  cat "$edppurdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edppur_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edppurdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edppur_out" != "11" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_pure_helper.vibe got '$edppur_out' (want 11) -- pure-helper-call eligibility regressed" >&2
+  exit 1
+fi
+rm -rf "$edppurdir"
+echo "[compiler-gate] evidence-dict pass pure-helper call ok"
+
+# 40ab. ADR-0076 Phase 3 (#817): a needing function's body reads a struct
+#       field (`b.value`, an `EDot`) rather than only ever binding/
+#       returning plain values. edp_has_unsafe_construct's `EDot` case
+#       used to be unconditionally unsafe (deliberately conservative --
+#       this AST-level pass has no type information); it now recurses
+#       into the object expression instead, since a bare `.field` READ
+#       (not a call through it) cannot itself hide a perform or a
+#       needing-call regardless of the field's static type. Verified (via
+#       a temporary migration-plan probe during development) that `Ask`
+#       genuinely migrates here.
+echo "[compiler-gate] 40ab/40 evidence-dict pass: struct field read via EDot (ADR-0076 Phase 3/#817)"
+edpdotdir="_build/_gate_evidence_dict_struct_field"
+rm -rf "$edpdotdir"; mkdir -p "$edpdotdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_struct_field.vibe > "$edpdotdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpdotdir/src.vibe" "$edpdotdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpdotdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_struct_field.vibe did not compile" >&2
+  cat "$edpdotdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edpdot_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpdotdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edpdot_out" != "6" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_struct_field.vibe got '$edpdot_out' (want 6) -- EDot eligibility regressed" >&2
+  exit 1
+fi
+rm -rf "$edpdotdir"
+echo "[compiler-gate] evidence-dict pass struct field read ok"
+
+# 40ac. ADR-0076 Phase 3 (#817): a needing function's body defines a
+#       closure LITERAL that itself performs the migrated effect
+#       (deliberately never invoked -- see the fixture's own doc comment
+#       for why calling an arbitrary local closure remains a separate,
+#       unaddressed restriction). edp_has_unsafe_construct's `EFn` case
+#       used to be unconditionally unsafe regardless of what the
+#       closure's own body contained; it now recurses into the body the
+#       same way as everywhere else. Verified (via a temporary
+#       migration-plan probe during development) that `Ask` genuinely
+#       migrates and the rewrite of the closure's body (dict capture)
+#       produces valid wasm even though the closure is unreachable.
+echo "[compiler-gate] 40ac/40 evidence-dict pass: closure literal defining a perform (ADR-0076 Phase 3/#817)"
+edpclodir="_build/_gate_evidence_dict_closure_literal"
+rm -rf "$edpclodir"; mkdir -p "$edpclodir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_closure_literal.vibe > "$edpclodir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpclodir/src.vibe" "$edpclodir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpclodir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_closure_literal.vibe did not compile" >&2
+  cat "$edpclodir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edpclo_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpclodir/out.wasm" 2>&1 | tail -1)"
+if [ "$edpclo_out" != "6" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_closure_literal.vibe got '$edpclo_out' (want 6) -- closure-literal eligibility regressed" >&2
+  exit 1
+fi
+rm -rf "$edpclodir"
+echo "[compiler-gate] evidence-dict pass closure literal ok"
+
+# 40ad. ADR-0076 Phase 3 (#817): a needing function's row is spelled with an
+#       `effectset` alias (`with { AskAll }` where `effectset AskAll = {
+#       Ask }`) instead of the bare effect name. checker_stmt.vibe's own
+#       effectset expansion deliberately runs on a non-mutating copy of
+#       `stmts` used only for type-checking ("codegen never reads the row's
+#       text content") -- codegen (this pass included) actually sees the
+#       row string still literally "AskAll", so it silently fell back to
+#       replay no matter how simple the alias. Fixed with a small local
+#       (re-)expansion of the effectset tables inside
+#       inline_direct_perform.vibe itself (edp_es_collect_into/
+#       edp_resolve_effect_names_into), the same pattern wit_gen.vibe/
+#       contract.vibe/checker_stmt.vibe each already use for their own
+#       consumers of effect-row text. This gate's fixture uses the same
+#       replay-vs-evidence-dict `count` discriminator as gate 40u's own
+#       fixture: pinning `count == 2` (not replay-inflated) is what proves
+#       migration genuinely happened, not merely that the answer still
+#       looks plausible via the pre-existing fallback.
+echo "[compiler-gate] 40ad/40 evidence-dict pass: needing function's row spelled via an effectset alias (ADR-0076 Phase 3/#817)"
+edpesdir="_build/_gate_evidence_dict_effectset_alias"
+rm -rf "$edpesdir"; mkdir -p "$edpesdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_effectset_alias.vibe > "$edpesdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpesdir/src.vibe" "$edpesdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpesdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_effectset_alias.vibe did not compile" >&2
+  cat "$edpesdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edpes_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpesdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edpes_out" != "2007" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_effectset_alias.vibe got '$edpes_out' (want 2007) -- either effectset-alias row recognition regressed, or it regressed back to the replay-inflated value" >&2
+  exit 1
+fi
+rm -rf "$edpesdir"
+echo "[compiler-gate] evidence-dict pass effectset alias ok"
+
+# 40ae. ADR-0076 Phase 3 (#817): a needing function's row directly
+#       enumerates a QUALIFIED operation (`with { Ask::Get }`) instead of
+#       the bare effect name -- no `effectset` alias involved, exercising
+#       edp_effect_name_of's `::`-prefix stripping directly rather than
+#       effectset-table expansion (gate 40ad's own code path). Completeness
+#       check written alongside the effectset-alias fix.
+echo "[compiler-gate] 40ae/40 evidence-dict pass: needing function's row is a directly-qualified operation (ADR-0076 Phase 3/#817)"
+edpqodir="_build/_gate_evidence_dict_qualified_op"
+rm -rf "$edpqodir"; mkdir -p "$edpqodir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_qualified_op.vibe > "$edpqodir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpqodir/src.vibe" "$edpqodir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpqodir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_qualified_op.vibe did not compile" >&2
+  cat "$edpqodir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edpqo_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpqodir/out.wasm" 2>&1 | tail -1)"
+if [ "$edpqo_out" != "2007" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_qualified_op.vibe got '$edpqo_out' (want 2007) -- qualified-operation row recognition regressed, or it regressed back to the replay-inflated value" >&2
+  exit 1
+fi
+rm -rf "$edpqodir"
+echo "[compiler-gate] evidence-dict pass qualified-operation row ok"
+
+# 40af. ADR-0076 Phase 3 (#817): a needing function's row combines a
+#       concrete effect with an open row-variable TAIL (`with { Ask, e }`).
+#       Initially assumed a genuine limitation alongside the
+#       fully-row-polymorphic case; verified directly instead of continuing
+#       to assume -- this already migrates its concrete effect via the same
+#       row-containment mechanism as any other multi-effect row, since the
+#       row-variable token never matches a real declared effect name and
+#       is therefore inert to this pass's own matching logic.
+echo "[compiler-gate] 40af/40 evidence-dict pass: row combines a concrete effect with an open row-variable tail (ADR-0076 Phase 3/#817)"
+edprvdir="_build/_gate_evidence_dict_row_variable_tail"
+rm -rf "$edprvdir"; mkdir -p "$edprvdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_row_variable_tail.vibe > "$edprvdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edprvdir/src.vibe" "$edprvdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edprvdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_row_variable_tail.vibe did not compile" >&2
+  cat "$edprvdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edprv_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edprvdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edprv_out" != "2007" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_row_variable_tail.vibe got '$edprv_out' (want 2007) -- row-variable-tail row recognition regressed, or it regressed back to the replay-inflated value" >&2
+  exit 1
+fi
+rm -rf "$edprvdir"
+echo "[compiler-gate] evidence-dict pass row-variable-tail row ok"
+
+# 40ag. ADR-0076 Phase 3 (#817) + #786: a needing function's body calls a
+#       locally `let`-bound, CAPTURE-FREE closure that performs the
+#       migrated effect (not a top-level function name). #786 already
+#       lambda-lifts such a closure to a fresh top-level binding BEFORE
+#       evidence_dict_pass ever runs, so the call site becomes an ordinary
+#       call to a genuine top-level function -- no evidence_dict_pass
+#       changes needed for this to migrate correctly. This gate locks in
+#       that composition. (The CAPTURING case remains broken independent
+#       of evidence_dict_pass entirely -- #1069, a pre-existing closure-
+#       codegen bug #786's landed fix explicitly declined to touch.)
+echo "[compiler-gate] 40ag/40 evidence-dict pass: needing function calls a capture-free local closure (ADR-0076 Phase 3/#817, #786)"
+edplccfdir="_build/_gate_evidence_dict_local_closure_capture_free"
+rm -rf "$edplccfdir"; mkdir -p "$edplccfdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_local_closure_capture_free.vibe > "$edplccfdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edplccfdir/src.vibe" "$edplccfdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edplccfdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_local_closure_capture_free.vibe did not compile" >&2
+  cat "$edplccfdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edplccf_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edplccfdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edplccf_out" != "2007" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_local_closure_capture_free.vibe got '$edplccf_out' (want 2007) -- either #786's hoist regressed or evidence_dict_pass no longer forwards to the hoisted top-level name" >&2
+  exit 1
+fi
+rm -rf "$edplccfdir"
+echo "[compiler-gate] evidence-dict pass capture-free local closure call ok"
+
+# 40ah. #1069: a locally `let`-bound effectful closure that CAPTURES an
+#       ordinary enclosing local (a function parameter AND a local, in this
+#       fixture) used to miscompile to invalid wasm at instantiation --
+#       #786's own landed fix only lambda-lifts the CAPTURE-FREE case,
+#       leaving a capturing closure on the original broken local-closure+
+#       effect combinator path. Fixed via closure conversion in
+#       desugar_trait_dict.vibe's dlh_hoist_expr: a provably-safe capturing
+#       closure (every call site direct, no captured name ever reassigned)
+#       is now ALSO lambda-lifted, with captures threaded through as extra
+#       leading parameters.
+echo "[compiler-gate] 40ah/40 local effectful closure capturing an enclosing local now compiles and runs (#1069)"
+lcccdir="_build/_gate_local_closure_capture_conversion"
+rm -rf "$lcccdir"; mkdir -p "$lcccdir"
+sed '/^__DATA__$/,$d' fixtures/effect_local_closure_capture_conversion.vibe > "$lcccdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$lcccdir/src.vibe" "$lcccdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$lcccdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_capture_conversion.vibe did not compile" >&2
+  cat "$lcccdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+lccc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$lcccdir/out.wasm" 2>&1 | tail -1)"
+if [ "$lccc_out" != "1015" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_capture_conversion.vibe got '$lccc_out' (want 1015) -- #1069's closure conversion regressed" >&2
+  exit 1
+fi
+rm -rf "$lcccdir"
+echo "[compiler-gate] local effectful closure capture conversion ok (#1069)"
+
+# 40ai. #1070 (narrow slice): a capturing effectful local closure passed BY
+#       VALUE to a trivial pass-through wrapper (`apply = (f) -> { f() }`)
+#       used to crash at runtime -- #1069's closure conversion only
+#       rewrites provably-direct call sites, and `apply(inner)` uses
+#       `inner` as a bare argument, not a direct call target. Fixed by
+#       dtpw_inline_trivial_wrappers (desugar_trait_dict.vibe), which
+#       rewrites `apply(inner)` into `inner()` BEFORE #786/#1069's hoist+
+#       conversion logic runs, whenever `apply`'s entire body is provably
+#       just a same-arity direct call to its own sole parameter -- always
+#       sound (identity-wrapper inlining changes no observable behavior),
+#       leaving `apply`'s own definition untouched for any other use.
+echo "[compiler-gate] 40ai/40 capturing effectful closure passed by value through a trivial wrapper (#1070 narrow slice)"
+lcbvwdir="_build/_gate_local_closure_by_value_wrapper"
+rm -rf "$lcbvwdir"; mkdir -p "$lcbvwdir"
+sed '/^__DATA__$/,$d' fixtures/effect_local_closure_by_value_wrapper.vibe > "$lcbvwdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$lcbvwdir/src.vibe" "$lcbvwdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$lcbvwdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_by_value_wrapper.vibe did not compile" >&2
+  cat "$lcbvwdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+lcbvw_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$lcbvwdir/out.wasm" 2>&1 | tail -1)"
+if [ "$lcbvw_out" != "105" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_by_value_wrapper.vibe got '$lcbvw_out' (want 105) -- #1070's trivial-wrapper inlining regressed" >&2
+  exit 1
+fi
+rm -rf "$lcbvwdir"
+echo "[compiler-gate] local effectful closure passed through trivial wrapper ok (#1070 narrow slice)"
+
+# 40aj. #1070 narrow-slice safety boundary: dtpw_inline_trivial_wrappers must
+#       only rewrite call sites syntactically named after the wrapper itself
+#       (`apply(...)`). `apply` used as an ordinary VALUE -- aliased into
+#       another binding and called through THAT binding -- must keep working
+#       via apply's own untouched top-level definition, unaffected by the
+#       inlining pass.
+echo "[compiler-gate] 40aj/40 trivial-wrapper inlining leaves wrapper-as-value references correct (#1070 narrow slice)"
+lcwrvdir="_build/_gate_local_closure_wrapper_referenced_as_value"
+rm -rf "$lcwrvdir"; mkdir -p "$lcwrvdir"
+sed '/^__DATA__$/,$d' fixtures/effect_local_closure_wrapper_referenced_as_value.vibe > "$lcwrvdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$lcwrvdir/src.vibe" "$lcwrvdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$lcwrvdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_wrapper_referenced_as_value.vibe did not compile" >&2
+  cat "$lcwrvdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+lcwrv_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$lcwrvdir/out.wasm" 2>&1 | tail -1)"
+if [ "$lcwrv_out" != "30" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_wrapper_referenced_as_value.vibe got '$lcwrv_out' (want 30) -- trivial-wrapper inlining broke a wrapper-as-value reference" >&2
+  exit 1
+fi
+rm -rf "$lcwrvdir"
+echo "[compiler-gate] trivial-wrapper inlining wrapper-as-value reference ok (#1070 narrow slice)"
+
+# 40ak. #1070 narrow-slice safety boundary: dtpw_collect_wrappers must only
+#       recognize a wrapper whose body is EXACTLY a same-arity direct call
+#       to its own sole parameter with NO extra arguments. A function that
+#       calls its parameter WITH an argument is a different shape and must
+#       be left completely untouched -- inlining it the same way would drop
+#       the call's argument (the exact class of bug caught in
+#       dtpw_inline_expr's first draft before it shipped).
+echo "[compiler-gate] 40ak/40 trivial-wrapper inlining does not misfire on wrong-arity wrapper bodies (#1070 narrow slice)"
+lcwadir="_build/_gate_local_closure_wrapper_wrong_arity"
+rm -rf "$lcwadir"; mkdir -p "$lcwadir"
+sed '/^__DATA__$/,$d' fixtures/local_closure_wrapper_wrong_arity_not_inlined.vibe > "$lcwadir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$lcwadir/src.vibe" "$lcwadir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$lcwadir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: local_closure_wrapper_wrong_arity_not_inlined.vibe did not compile" >&2
+  cat "$lcwadir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+lcwa_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$lcwadir/out.wasm" 2>&1 | tail -1)"
+if [ "$lcwa_out" != "6" ]; then
+  echo "[compiler-gate] FAIL: local_closure_wrapper_wrong_arity_not_inlined.vibe got '$lcwa_out' (want 6) -- trivial-wrapper pattern misfired on a wrong-arity call" >&2
+  exit 1
+fi
+rm -rf "$lcwadir"
+echo "[compiler-gate] trivial-wrapper inlining wrong-arity non-match ok (#1070 narrow slice)"
+
+# 40al. Found while investigating effect_row_open.vibe (2026-07-23): an
+#       inline `EFn` lambda literal -- never let-bound to a name -- that
+#       performs an effect, either as a bare IIFE or passed as a CALL
+#       ARGUMENT to a named function that calls it internally, evaded every
+#       existing local-closure fix (#786/#1069/#1070, all pattern-matching
+#       on `ELet(name, EFn(...), body)`) and produced invalid wasm /
+#       crashed at runtime. Fixed in desugar_trait_dict.vibe's
+#       dlh_hoist_expr: an IIFE desugars into the already-handled
+#       `ELet(fresh, EFn(...), fresh())` shape; a literal-EFn call argument
+#       is let-bound immediately before the call
+#       (dlh_letbind_literal_args). Both reduce to the existing, separately
+#       -verified ELet/EFn hoist logic. Scope: capture-free literals only
+#       (a capturing literal passed as a HOF argument still hits #1070's
+#       already-known general case -- see the fixture's own doc comment).
+echo "[compiler-gate] 40al/40 inline effectful lambda literal (IIFE / HOF argument, capture-free) no longer crashes"
+illhadir="_build/_gate_inline_lambda_literal_hof_arg"
+rm -rf "$illhadir"; mkdir -p "$illhadir"
+sed '/^__DATA__$/,$d' fixtures/effect_inline_lambda_literal_hof_arg.vibe > "$illhadir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$illhadir/src.vibe" "$illhadir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$illhadir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_inline_lambda_literal_hof_arg.vibe did not compile" >&2
+  cat "$illhadir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+illha_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$illhadir/out.wasm" 2>&1 | tail -1)"
+if [ "$illha_out" != "10" ]; then
+  echo "[compiler-gate] FAIL: effect_inline_lambda_literal_hof_arg.vibe got '$illha_out' (want 10) -- inline lambda literal IIFE/HOF-arg fix regressed" >&2
+  exit 1
+fi
+rm -rf "$illhadir"
+echo "[compiler-gate] inline effectful lambda literal IIFE/HOF-arg fix ok (10)"
+
+# 40am. Found while verifying gate 40al against labeled-argument syntax
+#       (2026-07-23): a literal EFn one layer inside an ELabeledArg wrapper
+#       (`with_log(f = () -> ... { perform ... })`) evaded that fix
+#       entirely -- dlh_args_have_literal_efn/dlh_letbind_literal_args only
+#       matched a BARE EFn argument. Fixed by recursing one layer into
+#       ELabeledArg in both helpers.
+echo "[compiler-gate] 40am/40 inline effectful lambda literal as a LABELED call argument no longer crashes"
+illladir="_build/_gate_inline_lambda_literal_labeled_arg"
+rm -rf "$illladir"; mkdir -p "$illladir"
+sed '/^__DATA__$/,$d' fixtures/effect_inline_lambda_literal_labeled_arg.vibe > "$illladir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$illladir/src.vibe" "$illladir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$illladir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_inline_lambda_literal_labeled_arg.vibe did not compile" >&2
+  cat "$illladir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+illla_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$illladir/out.wasm" 2>&1 | tail -1)"
+if [ "$illla_out" != "5" ]; then
+  echo "[compiler-gate] FAIL: effect_inline_lambda_literal_labeled_arg.vibe got '$illla_out' (want 5) -- labeled-arg literal fix regressed" >&2
+  exit 1
+fi
+rm -rf "$illladir"
+echo "[compiler-gate] inline effectful lambda literal labeled-arg fix ok (5)"
+
+# 40an. #1074 PR review (chatgpt-codex-connector, P1): trivial-wrapper
+#       inlining (#1070 narrow slice) used to match `apply(arg)` call sites
+#       by NAME ONLY, with no scope tracking -- a local binding (here, a
+#       function parameter) reusing a top-level trivial wrapper's name got
+#       incorrectly rewritten too, silently calling the wrong thing. Fixed
+#       by dropping a wrapper name entirely if it's ever shadowed anywhere
+#       in the program (dtpw_collect_wrappers).
+echo "[compiler-gate] 40an/40 trivial-wrapper inlining respects lexical shadowing (#1074 review)"
+dtpwsdir="_build/_gate_dtpw_wrapper_shadowed"
+rm -rf "$dtpwsdir"; mkdir -p "$dtpwsdir"
+sed '/^__DATA__$/,$d' fixtures/dtpw_wrapper_shadowed_by_parameter.vibe > "$dtpwsdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dtpwsdir/src.vibe" "$dtpwsdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$dtpwsdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: dtpw_wrapper_shadowed_by_parameter.vibe did not compile" >&2
+  cat "$dtpwsdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+dtpws_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$dtpwsdir/out.wasm" 2>&1 | tail -1)"
+if [ "$dtpws_out" != "99" ]; then
+  echo "[compiler-gate] FAIL: dtpw_wrapper_shadowed_by_parameter.vibe got '$dtpws_out' (want 99) -- trivial-wrapper shadowing fix regressed" >&2
+  exit 1
+fi
+rm -rf "$dtpwsdir"
+echo "[compiler-gate] trivial-wrapper inlining shadowing fix ok (99)"
+
+# 40ao. #1074 PR review (chatgpt-codex-connector, P1): evidence_dict_pass's
+#       needing-forwarding rewrite (edp_rewrite_needing_body) also matched
+#       a call's callee by NAME ONLY against the global `needing` set, with
+#       no scope tracking -- a local binding shadowing a needing function's
+#       name got the evidence-dict argument incorrectly prepended to ITS
+#       calls too, even though the local closure was never rewritten to
+#       accept it (arity mismatch / invalid call). Fixed by
+#       edp_drop_shadowed_needing, applied unconditionally alongside the
+#       existing self-discharging-needing filter.
+echo "[compiler-gate] 40ao/40 evidence-dict needing-forwarding respects lexical shadowing (#1074 review)"
+edpsdir="_build/_gate_edp_needing_shadowed"
+rm -rf "$edpsdir"; mkdir -p "$edpsdir"
+sed '/^__DATA__$/,$d' fixtures/evidence_dict_needing_shadowed_by_local.vibe > "$edpsdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpsdir/src.vibe" "$edpsdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpsdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: evidence_dict_needing_shadowed_by_local.vibe did not compile" >&2
+  cat "$edpsdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edps_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpsdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edps_out" != "47" ]; then
+  echo "[compiler-gate] FAIL: evidence_dict_needing_shadowed_by_local.vibe got '$edps_out' (want 47) -- evidence-dict needing-forwarding shadowing fix regressed" >&2
+  exit 1
+fi
+rm -rf "$edpsdir"
+echo "[compiler-gate] evidence-dict needing-forwarding shadowing fix ok (47)"
 
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`

@@ -1,0 +1,46 @@
+// ADR-0076 (#817), 段階導入計画 step 6: the wasm-gc backend used to support
+// ONLY `with Error { Throw(..) => .. }` for `EHandle`/`perform` -- any other
+// effect hit backend_call.vibe's "unsupported perform (no builtin mapping)"
+// hard compile error (backend_expr.vibe's EHandle case rejected any handler
+// arm 0 pattern besides `Error::Throw`/`Throw` outright). Fixed by wiring
+// the SAME evidence-dict AST rewrite (inline_direct_performs +
+// evidence_dict_pass, codegen/common_base/inline_direct_perform.vibe) the
+// linear backend already used into the gc driver's pre-pass sequence
+// (backend_body.vibe's compile_wasi_module_gc, mirroring
+// codegen/wasi/linked_compile.vibe's call site) -- an evidence-dict-eligible
+// handle/perform is rewritten away into ordinary ERecord/EFn/EDot/ECall
+// nodes BEFORE gc codegen ever sees an EHandle/perform for a user-defined
+// effect, so no new gc-specific effect lowering code was needed for this
+// slice; still-ineligible handles (row-polymorphic helpers, non-tail-
+// resumptive arms) fall through to the original "Error only" error exactly
+// as before.
+//
+// This fixture exercises BOTH evidence_dict_pass's target case (a "needing"
+// helper, `via_helper`, that itself calls another needing function `direct`
+// and ALSO performs directly) and a multi-operation handler (`;`-separated
+// arms) under VIBE_BACKEND=gc -- confirmed via direct A/B testing against a
+// clean baseline build that this exact fixture failed to compile before
+// this change ("GC codegen: unsupported perform (no builtin mapping):
+// Ask::Get") and now compiles and runs correctly.
+//   direct() => Get resolves to 10; + GetOther resolves to 7 => 17
+effect Ask {
+  Get -> Int
+  GetOther -> Int
+}
+
+let direct = () -> Int with { Ask } {
+  perform Ask::Get
+}
+
+let via_helper = () -> Int with { Ask } {
+  direct() + perform Ask::GetOther
+}
+
+export let main = () -> Int {
+  handle {
+    via_helper()
+  } with Ask {
+    Get => resume(10);
+    GetOther => resume(7)
+  }
+}

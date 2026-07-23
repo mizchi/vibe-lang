@@ -4898,6 +4898,151 @@ fn dlh_has_perform(expr: Expr) -> Bool {
   }
 }
 
+// Collect the effect-name prefix (`split_qualified`'s head, or the bare
+// operand name if unqualified) of every `perform <qname>`/`perform
+// <qname>(args)` found in `expr`, deduped, into `out`. Mirrors
+// dlh_has_perform's exact traversal shape (same `Error::Throw` exclusion,
+// same set of recursed-into node kinds -- deliberately NOT into a nested
+// EFn, matching dlh_has_perform's own scope: a perform inside a DEEPER
+// nested closure is that closure's own concern when/if IT is separately
+// hoisted, not this one's).
+//
+// Exists to fix a real bug found via gc-backend coverage testing
+// (2026-07-23): a local closure with NO explicit `with {...}` annotation
+// (its `eff` field is `None` in the AST -- the checker infers its
+// effect row internally but never writes it back onto the node) that
+// performs an effect and gets lambda-lifted to a fresh top-level binding
+// by dlh_hoist_expr (the capture-free case) used to keep `eff = None` on
+// the hoisted definition too. `evidence_dict_pass` classifies TOP-LEVEL
+// functions as "needing" an effect purely by reading this row string
+// (codegen/common_base/inline_direct_perform.vibe's edp_collect_fn_defs),
+// so the hoisted function was silently never recognized as needing
+// anything, and its `perform` was never migrated -- harmless on the
+// linear backend (an un-rewritten perform just falls back to replay
+// codegen, still correct) but a hard "unsupported perform" compile error
+// on the gc backend, which has no such fallback. See
+// fixtures/effect_handle_call_evidence_closure_literal.vibe's
+// `never_called` for the exact shape that surfaced this.
+fn dlh_collect_performed_effect_names(expr: Expr, out: Array[String]) -> Unit {
+  match expr {
+    ECall(callee, args, _) => {
+      let head = match callee {
+        EIdent(n, _) => n == "perform",
+        _ => false
+      }
+      if head && Array::length(args) == 1 {
+        let operand = Array::get(args, 0)
+        let qname = match operand {
+          EIdent(qn, _) => Some(qn),
+          ECall(op_callee, _, _) => match op_callee {
+            EIdent(qn, _) => Some(qn),
+            _ => None
+          },
+          _ => None
+        }
+        match qname {
+          Some(qn) => if qn != "Error::Throw" {
+            let ename = match split_qualified(qn) {
+              Some((h, _)) => h,
+              None => qn
+            }
+            if dlh_contains(out, ename) {
+              ()
+            } else {
+              Array::push(out, ename)
+            }
+          } else {
+            ()
+          },
+          None => ()
+        }
+      } else {
+        ()
+      }
+      dlh_collect_performed_effect_names(callee, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        dlh_collect_performed_effect_names(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    EBinOp(_, l, r) => {
+      dlh_collect_performed_effect_names(l, out)
+      dlh_collect_performed_effect_names(r, out)
+    },
+    EUnaryOp(_, e) => dlh_collect_performed_effect_names(e, out),
+    EIf(c, t, e) => {
+      dlh_collect_performed_effect_names(c, out)
+      dlh_collect_performed_effect_names(t, out)
+      dlh_collect_performed_effect_names(e, out)
+    },
+    ELet(_, v, b, _) => {
+      dlh_collect_performed_effect_names(v, out)
+      dlh_collect_performed_effect_names(b, out)
+    },
+    ELetRec(_, v, b) => {
+      dlh_collect_performed_effect_names(v, out)
+      dlh_collect_performed_effect_names(b, out)
+    },
+    ELetMut(_, v, b, _) => {
+      dlh_collect_performed_effect_names(v, out)
+      dlh_collect_performed_effect_names(b, out)
+    },
+    EAssign(_, v, c) => {
+      dlh_collect_performed_effect_names(v, out)
+      dlh_collect_performed_effect_names(c, out)
+    },
+    EAssignOp(_, _, v, c) => {
+      dlh_collect_performed_effect_names(v, out)
+      dlh_collect_performed_effect_names(c, out)
+    },
+    ESeq(a, b) => {
+      dlh_collect_performed_effect_names(a, out)
+      dlh_collect_performed_effect_names(b, out)
+    },
+    EWhile(c, b) => {
+      dlh_collect_performed_effect_names(c, out)
+      dlh_collect_performed_effect_names(b, out)
+    },
+    EForIn(_, _, it, b) => {
+      dlh_collect_performed_effect_names(it, out)
+      dlh_collect_performed_effect_names(b, out)
+    },
+    EDot(o, _, _, _) => dlh_collect_performed_effect_names(o, out),
+    ELabeledArg(_, _, e) => dlh_collect_performed_effect_names(e, out),
+    EReturn(e) => dlh_collect_performed_effect_names(e, out),
+    EMatch(s, arms) => {
+      dlh_collect_performed_effect_names(s, out)
+      dlh_collect_performed_effect_names_arms(arms, out)
+    },
+    EHandle(s, _) => dlh_collect_performed_effect_names(s, out),
+    _ => ()
+  }
+}
+
+fn dlh_collect_performed_effect_names_arms(arms: Array[(Pat, Expr)], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, b) = Array::get(arms, i)
+    dlh_collect_performed_effect_names(b, out)
+    i = i + 1
+  }
+}
+
+fn dlh_join_comma(names: Array[String]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(names) {
+    if i == 0 {
+      out = Array::get(names, i)
+    } else {
+      out = String::concat(String::concat(out, ", "), Array::get(names, i))
+    }
+    i = i + 1
+  }
+  out
+}
+
 ///|
 fn dlh_has_perform_arms(arms: Array[(Pat, Expr)]) -> Bool {
   let mut i = 0
@@ -5234,11 +5379,574 @@ fn dlh_subst_arms(arms: Array[(Pat, Expr)], from: String, to: String) -> Array[(
 }
 
 ///|
+// #1069 follow-up: closure-conversion for a CAPTURING local effectful
+// lambda (`dlh_scan_free` found a non-empty `bad`). The plain rename
+// dlh_hoist_expr already does for the non-capturing case (dlh_subst,
+// `name` -> `fresh`) isn't enough here: every remaining occurrence of
+// `name` also needs the captured values threaded in as extra arguments,
+// which only makes sense at a CALL site -- `name` used as a bare value
+// anywhere else (passed on, stored, returned) has no sound rewrite once
+// hoisted (the hoisted top-level function now expects the captures as
+// its own leading parameters, not something a bare reference could
+// supply). Detecting "used only as a direct call target" needs the SAME
+// shadow-awareness dlh_scan_free/dlh_subst already have -- rather than
+// duplicate that scope-tracking a third time, reuse dlh_subst itself:
+// substitute `name` for a freshly-minted, globally-unique marker name
+// first (dlh_subst is already proven correct about not touching a
+// SHADOWED occurrence), then scan the marker's occurrences with a
+// deliberately simple, non-shadow-aware walk -- safe, because a fresh
+// unique marker can never collide with an unrelated binding the way
+// `name` itself could.
+fn dlh_mocd_scan(expr: Expr, marker: String, bad: Array[Bool]) -> Unit {
+  match expr {
+    EIdent(n, _) => if n == marker {
+      Array::set(bad, 0, true)
+    } else {
+      ()
+    },
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(n, _) => if n == marker {
+          ()
+        } else {
+          dlh_mocd_scan(callee, marker, bad)
+        },
+        _ => dlh_mocd_scan(callee, marker, bad)
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        dlh_mocd_scan(Array::get(args, i), marker, bad)
+        i = i + 1
+      }
+    },
+    EBinOp(_, l, r) => {
+      dlh_mocd_scan(l, marker, bad)
+      dlh_mocd_scan(r, marker, bad)
+    },
+    EUnaryOp(_, e) => dlh_mocd_scan(e, marker, bad),
+    ETuple(es) => {
+      let mut i = 0
+      while i < Array::length(es) {
+        dlh_mocd_scan(Array::get(es, i), marker, bad)
+        i = i + 1
+      }
+    },
+    EArray(es) => {
+      let mut i = 0
+      while i < Array::length(es) {
+        dlh_mocd_scan(Array::get(es, i), marker, bad)
+        i = i + 1
+      }
+    },
+    ESpread(e) => dlh_mocd_scan(e, marker, bad),
+    EContinue(es) => {
+      let mut i = 0
+      while i < Array::length(es) {
+        dlh_mocd_scan(Array::get(es, i), marker, bad)
+        i = i + 1
+      }
+    },
+    ERecord(_, fs, _) => {
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (_, v) = Array::get(fs, i)
+        dlh_mocd_scan(v, marker, bad)
+        i = i + 1
+      }
+    },
+    EMap(fs) => {
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (_, v) = Array::get(fs, i)
+        dlh_mocd_scan(v, marker, bad)
+        i = i + 1
+      }
+    },
+    EIf(c, t, e) => {
+      dlh_mocd_scan(c, marker, bad)
+      dlh_mocd_scan(t, marker, bad)
+      dlh_mocd_scan(e, marker, bad)
+    },
+    ELet(_, v, b, _) => {
+      dlh_mocd_scan(v, marker, bad)
+      dlh_mocd_scan(b, marker, bad)
+    },
+    ELetRec(_, v, b) => {
+      dlh_mocd_scan(v, marker, bad)
+      dlh_mocd_scan(b, marker, bad)
+    },
+    ELetMut(_, v, b, _) => {
+      dlh_mocd_scan(v, marker, bad)
+      dlh_mocd_scan(b, marker, bad)
+    },
+    EAssign(n, v, c) => {
+      if n == marker {
+        Array::set(bad, 0, true)
+      } else {
+        ()
+      }
+      dlh_mocd_scan(v, marker, bad)
+      dlh_mocd_scan(c, marker, bad)
+    },
+    EAssignOp(n, _, v, c) => {
+      if n == marker {
+        Array::set(bad, 0, true)
+      } else {
+        ()
+      }
+      dlh_mocd_scan(v, marker, bad)
+      dlh_mocd_scan(c, marker, bad)
+    },
+    ESeq(a, b) => {
+      dlh_mocd_scan(a, marker, bad)
+      dlh_mocd_scan(b, marker, bad)
+    },
+    EWhile(c, b) => {
+      dlh_mocd_scan(c, marker, bad)
+      dlh_mocd_scan(b, marker, bad)
+    },
+    EForIn(_, _, it, b) => {
+      dlh_mocd_scan(it, marker, bad)
+      dlh_mocd_scan(b, marker, bad)
+    },
+    EDot(o, _, _, _) => dlh_mocd_scan(o, marker, bad),
+    ELabeledArg(_, _, e) => dlh_mocd_scan(e, marker, bad),
+    EReturn(e) => dlh_mocd_scan(e, marker, bad),
+    EBreak(opt) => match opt {
+      Some(e) => dlh_mocd_scan(e, marker, bad),
+      None => ()
+    },
+    EFn(_, _, _, _, _, body) => dlh_mocd_scan(body, marker, bad),
+    EMatch(s, arms) => {
+      dlh_mocd_scan(s, marker, bad)
+      dlh_mocd_scan_arms(arms, marker, bad)
+    },
+    EHandle(s, arms) => {
+      dlh_mocd_scan(s, marker, bad)
+      dlh_mocd_scan_arms(arms, marker, bad)
+    },
+    ELoop(params, b) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        dlh_mocd_scan(init, marker, bad)
+        i = i + 1
+      }
+      dlh_mocd_scan(b, marker, bad)
+    },
+    _ => ()
+  }
+}
+
+fn dlh_mocd_scan_arms(arms: Array[(Pat, Expr)], marker: String, bad: Array[Bool]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, b) = Array::get(arms, i)
+    dlh_mocd_scan(b, marker, bad)
+    i = i + 1
+  }
+}
+
+fn dlh_marker_only_called_directly(expr: Expr, marker: String) -> Bool {
+  let bad = [
+    false
+  ]
+  dlh_mocd_scan(expr, marker, bad)
+  !Array::get(bad, 0)
+}
+
+// Rewrite every `ECall(EIdent(marker), args, off)` into `ECall(EIdent(fresh),
+// extra_names_as_idents ++ args, off)` -- the captured-value arguments the
+// newly-hoisted top-level function now expects as its leading parameters,
+// each just a bare reference to the SAME name it had in the original
+// (unshadowed, per dlh_marker_only_called_directly's guarantee) enclosing
+// scope, still valid at the call site since hoisting doesn't move the call
+// site itself, only the closure's OWN body. Full traversal (marker is
+// fresh/unique, no shadowing concern, so no bound-tracking needed here).
+fn dlh_prepend_and_rename_calls(expr: Expr, marker: String, fresh: String, extra_names: Array[String]) -> Expr {
+  match expr {
+    ECall(callee, args, off) => match callee {
+      EIdent(n, coff) => if n == marker {
+        let extra_args = for en in extra_names {
+          EIdent(en, coff)
+        }
+        ECall(EIdent(fresh, coff), Array::concat(extra_args, for a in args {
+          dlh_prepend_and_rename_calls(a, marker, fresh, extra_names)
+        }), off)
+      } else {
+        ECall(dlh_prepend_and_rename_calls(callee, marker, fresh, extra_names), for a in args {
+          dlh_prepend_and_rename_calls(a, marker, fresh, extra_names)
+        }, off)
+      },
+      _ => ECall(dlh_prepend_and_rename_calls(callee, marker, fresh, extra_names), for a in args {
+        dlh_prepend_and_rename_calls(a, marker, fresh, extra_names)
+      }, off)
+    },
+    EBinOp(op, l, r) => EBinOp(op, dlh_prepend_and_rename_calls(l, marker, fresh, extra_names), dlh_prepend_and_rename_calls(r, marker, fresh, extra_names)),
+    EUnaryOp(op, e) => EUnaryOp(op, dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)),
+    ETuple(es) => ETuple(for e in es {
+      dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)
+    }),
+    EArray(es) => EArray(for e in es {
+      dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)
+    }),
+    ESpread(e) => ESpread(dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)),
+    EContinue(es) => EContinue(for e in es {
+      dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)
+    }),
+    ERecord(rn, fs, targs) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (k, v) = Array::get(fs, i)
+        Array::push(out, (k, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names)))
+        i = i + 1
+      }
+      ERecord(rn, out, targs)
+    },
+    EMap(fs) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (k, v) = Array::get(fs, i)
+        Array::push(out, (k, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    EIf(c, t, e) => EIf(dlh_prepend_and_rename_calls(c, marker, fresh, extra_names), dlh_prepend_and_rename_calls(t, marker, fresh, extra_names), dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)),
+    ELet(n, v, b, soff) => ELet(n, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names), soff),
+    ELetRec(n, v, b) => ELetRec(n, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names)),
+    ELetMut(n, v, b, soff) => ELetMut(n, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names), soff),
+    EAssign(n, v, c) => EAssign(n, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names), dlh_prepend_and_rename_calls(c, marker, fresh, extra_names)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names), dlh_prepend_and_rename_calls(c, marker, fresh, extra_names)),
+    ESeq(a, b) => ESeq(dlh_prepend_and_rename_calls(a, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names)),
+    EWhile(c, b) => EWhile(dlh_prepend_and_rename_calls(c, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names)),
+    EForIn(n, idxn, it, b) => EForIn(n, idxn, dlh_prepend_and_rename_calls(it, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names)),
+    EDot(o, f, off, fdoff) => EDot(dlh_prepend_and_rename_calls(o, marker, fresh, extra_names), f, off, fdoff),
+    ELabeledArg(l, m, e) => ELabeledArg(l, m, dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)),
+    EReturn(e) => EReturn(dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)),
+    EBreak(opt) => EBreak(match opt {
+      Some(e) => Some(dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)),
+      None => None
+    }),
+    EFn(tp, bnds, params, rt, eff, body) => EFn(tp, bnds, params, rt, eff, dlh_prepend_and_rename_calls(body, marker, fresh, extra_names)),
+    EMatch(s, arms) => EMatch(dlh_prepend_and_rename_calls(s, marker, fresh, extra_names), for a in arms {
+      let (p, b) = a
+      (p, dlh_prepend_and_rename_calls(b, marker, fresh, extra_names))
+    }),
+    EHandle(s, arms) => EHandle(dlh_prepend_and_rename_calls(s, marker, fresh, extra_names), for a in arms {
+      let (p, b) = a
+      (p, dlh_prepend_and_rename_calls(b, marker, fresh, extra_names))
+    }),
+    ELoop(params, b) => ELoop(for p in params {
+      let (pn, init) = p
+      (pn, dlh_prepend_and_rename_calls(init, marker, fresh, extra_names))
+    }, dlh_prepend_and_rename_calls(b, marker, fresh, extra_names)),
+    _ => expr
+  }
+}
+
+fn dlh_dedup_names(names: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(names) {
+    let n = Array::get(names, i)
+    if dlh_contains(out, n) {
+      ()
+    } else {
+      Array::push(out, n)
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Closure conversion passes each captured name's CURRENT VALUE at the call
+// site as a plain argument -- correct only if that value can never diverge
+// from what a genuine reference-capturing closure would have seen, i.e.
+// the captured name is never reassigned anywhere the conversion could
+// observe (`let mut base = ...` captured and later mutated, or mutated
+// again inside the closure's OWN body such that the mutation should be
+// visible to code after the call, would silently do the WRONG thing under
+// pass-by-value). Deliberately conservative: flags `names` as unsafe if
+// EITHER `fbody` (the closure's own body) or `rest` (everything after the
+// closure definition, where call sites live) reassigns any of them via
+// `EAssign`/`EAssignOp`, regardless of whether the original declaration
+// was `let` or `let mut` -- simpler than tracking declaration-site
+// mutability precisely, and every bit as safe: nothing to observe
+// diverging means pass-by-value and capture-by-reference are behaviorally
+// identical for this specific program, whatever the declaration said.
+fn dlh_names_ever_assigned(expr: Expr, names: Array[String]) -> Bool {
+  let bad = [
+    false
+  ]
+  dlh_naa_scan(expr, names, bad)
+  Array::get(bad, 0)
+}
+
+fn dlh_naa_scan(expr: Expr, names: Array[String], bad: Array[Bool]) -> Unit {
+  match expr {
+    EAssign(n, v, c) => {
+      if dlh_contains(names, n) {
+        Array::set(bad, 0, true)
+      } else {
+        ()
+      }
+      dlh_naa_scan(v, names, bad)
+      dlh_naa_scan(c, names, bad)
+    },
+    EAssignOp(n, _, v, c) => {
+      if dlh_contains(names, n) {
+        Array::set(bad, 0, true)
+      } else {
+        ()
+      }
+      dlh_naa_scan(v, names, bad)
+      dlh_naa_scan(c, names, bad)
+    },
+    ECall(callee, args, _) => {
+      dlh_naa_scan(callee, names, bad)
+      let mut i = 0
+      while i < Array::length(args) {
+        dlh_naa_scan(Array::get(args, i), names, bad)
+        i = i + 1
+      }
+    },
+    EBinOp(_, l, r) => {
+      dlh_naa_scan(l, names, bad)
+      dlh_naa_scan(r, names, bad)
+    },
+    EUnaryOp(_, e) => dlh_naa_scan(e, names, bad),
+    ETuple(es) => {
+      let mut i = 0
+      while i < Array::length(es) {
+        dlh_naa_scan(Array::get(es, i), names, bad)
+        i = i + 1
+      }
+    },
+    EArray(es) => {
+      let mut i = 0
+      while i < Array::length(es) {
+        dlh_naa_scan(Array::get(es, i), names, bad)
+        i = i + 1
+      }
+    },
+    ESpread(e) => dlh_naa_scan(e, names, bad),
+    EContinue(es) => {
+      let mut i = 0
+      while i < Array::length(es) {
+        dlh_naa_scan(Array::get(es, i), names, bad)
+        i = i + 1
+      }
+    },
+    ERecord(_, fs, _) => {
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (_, v) = Array::get(fs, i)
+        dlh_naa_scan(v, names, bad)
+        i = i + 1
+      }
+    },
+    EMap(fs) => {
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (_, v) = Array::get(fs, i)
+        dlh_naa_scan(v, names, bad)
+        i = i + 1
+      }
+    },
+    EIf(c, t, e) => {
+      dlh_naa_scan(c, names, bad)
+      dlh_naa_scan(t, names, bad)
+      dlh_naa_scan(e, names, bad)
+    },
+    ELet(_, v, b, _) => {
+      dlh_naa_scan(v, names, bad)
+      dlh_naa_scan(b, names, bad)
+    },
+    ELetRec(_, v, b) => {
+      dlh_naa_scan(v, names, bad)
+      dlh_naa_scan(b, names, bad)
+    },
+    ELetMut(_, v, b, _) => {
+      dlh_naa_scan(v, names, bad)
+      dlh_naa_scan(b, names, bad)
+    },
+    ESeq(a, b) => {
+      dlh_naa_scan(a, names, bad)
+      dlh_naa_scan(b, names, bad)
+    },
+    EWhile(c, b) => {
+      dlh_naa_scan(c, names, bad)
+      dlh_naa_scan(b, names, bad)
+    },
+    EForIn(_, _, it, b) => {
+      dlh_naa_scan(it, names, bad)
+      dlh_naa_scan(b, names, bad)
+    },
+    EDot(o, _, _, _) => dlh_naa_scan(o, names, bad),
+    ELabeledArg(_, _, e) => dlh_naa_scan(e, names, bad),
+    EReturn(e) => dlh_naa_scan(e, names, bad),
+    EBreak(opt) => match opt {
+      Some(e) => dlh_naa_scan(e, names, bad),
+      None => ()
+    },
+    EFn(_, _, _, _, _, body) => dlh_naa_scan(body, names, bad),
+    EMatch(s, arms) => {
+      dlh_naa_scan(s, names, bad)
+      dlh_naa_scan_arms(arms, names, bad)
+    },
+    EHandle(s, arms) => {
+      dlh_naa_scan(s, names, bad)
+      dlh_naa_scan_arms(arms, names, bad)
+    },
+    ELoop(params, b) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        dlh_naa_scan(init, names, bad)
+        i = i + 1
+      }
+      dlh_naa_scan(b, names, bad)
+    },
+    _ => ()
+  }
+}
+
+fn dlh_naa_scan_arms(arms: Array[(Pat, Expr)], names: Array[String], bad: Array[Bool]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, b) = Array::get(arms, i)
+    dlh_naa_scan(b, names, bad)
+    i = i + 1
+  }
+}
+
+///|
+// Only ever matches an EFFECTFUL literal (dlh_has_perform on its body) --
+// found via a live regression (2026-07-23, fixtures/eq_array_option_fields.vibe
+// trapping "unreachable" in a derive(Eq)-generated equality helper, bisected
+// to this fix's own introducing commit): the original unguarded version
+// matched ANY literal EFn argument, including the PURE comparator closures
+// derive(Eq)/derive(Ord) generate for Array/Option/tuple field comparisons.
+// Wrapping a pure closure in a synthetic let-binding was assumed harmless
+// (closure construction has no side effects), but something downstream
+// (likely type inference/monomorphization for the generic higher-order
+// comparator call) broke when the literal stopped appearing directly at
+// the call site. Scoping this to effectful literals only -- exactly
+// mirroring dlh_hoist_expr's own ELet branch, which has always required
+// dlh_has_perform before touching a closure at all -- keeps every pure
+// closure completely untouched by this pass, restoring the pre-existing
+// (working) behavior for that case while keeping the IIFE/HOF-arg fix
+// for genuinely effectful literals.
+fn dlh_args_have_literal_efn(args: Array[Expr]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(args) && !found {
+    match Array::get(args, i) {
+      EFn(_, _, _, _, _, fbody) => if dlh_has_perform(fbody) { found = true } else { () },
+      // A labeled argument (`with_log(f = () -> ... { perform ... })`,
+      // cheatsheet "Labeled arguments") wraps the literal in ELabeledArg --
+      // found via testing this exact syntax against the IIFE/HOF-arg fix
+      // above (2026-07-23): it still crashed, since this check only
+      // matched a BARE EFn, not one hiding one layer deeper inside a label
+      // wrapper. Recurse one layer to catch it too.
+      ELabeledArg(_, _, inner) => match inner {
+        EFn(_, _, _, _, _, fbody) => if dlh_has_perform(fbody) { found = true } else { () },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+///|
+// Rewrites `callee(args...)` so every DIRECT `EFn` literal in `args` --
+// bare, or one layer inside an `ELabeledArg` wrapper (`f = () -> ...`) --
+// is let-bound immediately before the call, left-to-right (same evaluation
+// order as the literal appearing inline): `callee(a, <lit>, b)` becomes
+// `let __dlh_arglit_N = <lit>; callee(a, __dlh_arglit_N, b)`; a labeled
+// literal `callee(f = <lit>)` becomes
+// `let __dlh_arglit_N = <lit>; callee(f = __dlh_arglit_N)` (the label
+// wrapper is preserved, only its inner value is replaced). Non-literal
+// args are left untouched. See dlh_args_have_literal_efn's call site
+// (dlh_hoist_expr's ECall case) for why this exists.
+fn dlh_letbind_literal_args(callee: Expr, args: Array[Expr], off: Int, ctr: Array[Int]) -> Expr {
+  let new_args = array_empty()
+  let lits = array_empty()
+  let mut i = 0
+  while i < Array::length(args) {
+    let a = Array::get(args, i)
+    match a {
+      EFn(_, _, _, _, _, fbody) => if dlh_has_perform(fbody) {
+        let idx = Array::get(ctr, 0)
+        Array::set(ctr, 0, idx + 1)
+        let nm = "__dlh_arglit_\{idx}"
+        Array::push(lits, (nm, a))
+        Array::push(new_args, EIdent(nm, off))
+      } else {
+        Array::push(new_args, a)
+      },
+      ELabeledArg(lbl, mname, inner) => match inner {
+        EFn(_, _, _, _, _, fbody) => if dlh_has_perform(fbody) {
+          let idx = Array::get(ctr, 0)
+          Array::set(ctr, 0, idx + 1)
+          let nm = "__dlh_arglit_\{idx}"
+          Array::push(lits, (nm, inner))
+          Array::push(new_args, ELabeledArg(lbl, mname, EIdent(nm, off)))
+        } else {
+          Array::push(new_args, a)
+        },
+        _ => Array::push(new_args, a)
+      },
+      other => Array::push(new_args, other)
+    }
+    i = i + 1
+  }
+  let mut wrapped = ECall(callee, new_args, off)
+  let mut k = Array::length(lits) - 1
+  while k >= 0 {
+    let (nm, lit) = Array::get(lits, k)
+    wrapped = ELet(nm, lit, wrapped, off)
+    k = k - 1
+  }
+  wrapped
+}
+
+///|
 fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
   match expr {
     ELet(name, v, b, soff) => match v {
       EFn(tp, bnds, params, rt, eff, fbody) => {
-        let hoisted_fn = dlh_hoist_expr(EFn(tp, bnds, params, rt, eff, fbody), hoisted, ctr)
+        // Backfill a missing (unannotated) effect row from what the body
+        // actually performs BEFORE hoisting: a hoisted top-level function's
+        // row is what evidence_dict_pass's needing-classification reads
+        // (codegen/common_base/inline_direct_perform.vibe's
+        // edp_collect_fn_defs), so silently keeping `eff = None` here made
+        // an effect-performing hoisted closure invisible to that pass --
+        // see dlh_collect_performed_effect_names' doc comment for the full
+        // history (found via gc-backend coverage testing, 2026-07-23).
+        // Only fires when `eff` is genuinely absent; an explicit user-
+        // written row (however it's spelled) is left untouched.
+        let eff_is_blank = match eff {
+          None => true,
+          Some(es) => String::trim(es) == ""
+        }
+        let eff_fixed = if eff_is_blank {
+          let performed = empty_str_array()
+          dlh_collect_performed_effect_names(fbody, performed)
+          if Array::length(performed) == 0 {
+            eff
+          } else {
+            Some(dlh_join_comma(performed))
+          }
+        } else {
+          eff
+        }
+        let hoisted_fn = dlh_hoist_expr(EFn(tp, bnds, params, rt, eff_fixed, fbody), hoisted, ctr)
         let rest = dlh_hoist_expr(b, hoisted, ctr)
         let bad = empty_str_array()
         let mut pb = empty_str_array()
@@ -5259,6 +5967,40 @@ fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
           let fresh = "__hoisted_lam_\{idx}_\{name}"
           Array::push(hoisted, SLet(false, false, fresh, None, hoisted_fn))
           dlh_subst(rest, name, fresh)
+        } else if dlh_has_perform(fbody) && Array::length(bad) > 0 {
+          // #1069: `bad` is non-empty (the lambda captures at least one
+          // ordinary enclosing local) but it still performs -- the exact
+          // shape #786's own landed fix declined to touch, still hitting
+          // the original unregistered-closure-type/broken-combinator bug
+          // unless something else routes it around that path. Attempt
+          // closure conversion (see dlh_prepend_and_rename_calls' doc
+          // comment) rather than leaving it on the broken path
+          // unconditionally: only when every call site can be proven safe
+          // to rewrite (dlh_marker_only_called_directly, via dlh_subst's
+          // already-proven shadow-correctness). Falls through to the
+          // ORIGINAL (unchanged, currently-broken-for-this-shape) local-let
+          // behavior when it can't -- never worse than before this change,
+          // only sometimes better.
+          let idx = Array::get(ctr, 0)
+          Array::set(ctr, 0, idx + 1)
+          let marker = "__dlh_cc_marker_\{idx}"
+          let rest_marked = dlh_subst(rest, name, marker)
+          let captured = dlh_dedup_names(bad)
+          if dlh_marker_only_called_directly(rest_marked, marker) && !dlh_names_ever_assigned(fbody, captured) && !dlh_names_ever_assigned(rest, captured) {
+            let extra_params = for cn in captured {
+              (cn, None)
+            }
+            let new_params = Array::concat(extra_params, params)
+            let hoisted_fn2 = match hoisted_fn {
+              EFn(tp2, bnds2, _, rt2, eff2, hb2) => EFn(tp2, bnds2, new_params, rt2, eff2, hb2),
+              _ => hoisted_fn
+            }
+            let fresh = "__hoisted_lam_\{idx}_\{name}"
+            Array::push(hoisted, SLet(false, false, fresh, None, hoisted_fn2))
+            dlh_prepend_and_rename_calls(rest_marked, marker, fresh, captured)
+          } else {
+            ELet(name, hoisted_fn, rest, soff)
+          }
         } else {
           ELet(name, hoisted_fn, rest, soff)
         }
@@ -5267,9 +6009,55 @@ fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
     },
     EBinOp(op, l, r) => EBinOp(op, dlh_hoist_expr(l, hoisted, ctr), dlh_hoist_expr(r, hoisted, ctr)),
     EUnaryOp(op, e) => EUnaryOp(op, dlh_hoist_expr(e, hoisted, ctr)),
-    ECall(callee, args, off) => ECall(dlh_hoist_expr(callee, hoisted, ctr), for a in args {
-      dlh_hoist_expr(a, hoisted, ctr)
-    }, off),
+    // A bare IIFE -- `(() -> ... { perform ... })()` -- calls an `EFn`
+    // literal directly with NO enclosing `ELet` at all. Every hoist/
+    // closure-conversion rule above (capture-free hoist, #1069's
+    // capturing-closure conversion) pattern-matches specifically on
+    // `ELet(name, EFn(...), body)`, so this shape evaded all of them and
+    // fell straight through to the pre-#786 broken local-closure+effect
+    // combinator path -- an effectful IIFE with ZERO captures produced
+    // invalid wasm ("invalid signature index") at compile time, found via
+    // testing effect_row_open.vibe-adjacent higher-order-function shapes
+    // (2026-07-23). Fix: desugar the IIFE into the ALREADY-handled
+    // `ELet(fresh, EFn(...), fresh())` shape and re-enter this same
+    // function -- reuses 100% of the existing, separately-verified
+    // ELet/EFn logic above with no new closure-conversion code.
+    ECall(callee, args, off) => match callee {
+      EFn(_, _, _, _, _, cfbody) => if dlh_has_perform(cfbody) {
+        let idx = Array::get(ctr, 0)
+        Array::set(ctr, 0, idx + 1)
+        let iife_name = "__dlh_iife_\{idx}"
+        dlh_hoist_expr(ELet(iife_name, callee, ECall(EIdent(iife_name, off), args, off), off), hoisted, ctr)
+      } else {
+        ECall(dlh_hoist_expr(callee, hoisted, ctr), for a in args {
+          dlh_hoist_expr(a, hoisted, ctr)
+        }, off)
+      },
+      _ => if dlh_args_have_literal_efn(args) {
+        // An inline `EFn` literal passed as a CALL ARGUMENT (not the
+        // callee) to an ordinary (non-trivial-wrapper) named function --
+        // `with_log(() -> Int with { Log } { perform ...; 42 })` where
+        // `with_log`'s own body genuinely calls its parameter internally
+        // (`handle { f() } with Log { .. }`), not merely a same-arity
+        // forward `dtpw_inline_trivial_wrappers` (#1070) would already
+        // reduce to an IIFE. Verified via direct A/B testing (2026-07-23)
+        // that a NAMED closure (top-level, or already hoisted) passed the
+        // exact same way to the exact same `with_log` already works fine
+        // -- confirming the crash is specific to the literal itself
+        // having no name for any hoist/closure-conversion rule to latch
+        // onto, not to anything about `with_log`. Fix: synthesize a let-
+        // binding for each literal-EFn argument immediately before this
+        // call (semantics-preserving -- same left-to-right evaluation
+        // order as the literal appearing inline) so the existing ELet/EFn
+        // hoist logic above turns it into an ordinary named function
+        // reference, exactly like the already-working named-closure case.
+        dlh_hoist_expr(dlh_letbind_literal_args(callee, args, off, ctr), hoisted, ctr)
+      } else {
+        ECall(dlh_hoist_expr(callee, hoisted, ctr), for a in args {
+          dlh_hoist_expr(a, hoisted, ctr)
+        }, off)
+      }
+    },
     ETuple(es) => ETuple(for e in es {
       dlh_hoist_expr(e, hoisted, ctr)
     }),
@@ -6117,6 +6905,329 @@ export fn desugar_array_spread(stmts: Array[Stmt]) -> Unit {
 }
 
 ///|
+fn dtpw_exprs_bind_name(es: Array[Expr], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(es) && !found {
+    if dtpw_expr_binds_name(Array::get(es, i), name) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+///|
+// Does `expr` bind (shadow) `name` ANYWHERE within it -- as an EFn
+// parameter, a `let`/`let mut`/`let rec` name, a match/handle arm's
+// pattern binder, a for-loop's item/index name, or a `loop` parameter?
+// Full-coverage traversal mirroring dtpw_inline_expr's own node coverage.
+// See dtpw_collect_wrappers' call site for why this exists (#1074 review,
+// chatgpt-codex-connector P1: "Respect lexical shadowing in wrapper
+// inlining").
+fn dtpw_expr_binds_name(expr: Expr, name: String) -> Bool {
+  match expr {
+    EFn(_, _, params, _, _, body) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(params) && !found {
+        let (pn, _) = Array::get(params, i)
+        if dlh_strip_tilde(pn) == name {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found || dtpw_expr_binds_name(body, name)
+    },
+    ELet(n, v, b, _) => n == name || dtpw_expr_binds_name(v, name) || dtpw_expr_binds_name(b, name),
+    ELetRec(n, v, b) => n == name || dtpw_expr_binds_name(v, name) || dtpw_expr_binds_name(b, name),
+    ELetMut(n, v, b, _) => n == name || dtpw_expr_binds_name(v, name) || dtpw_expr_binds_name(b, name),
+    EForIn(n, idxn, it, b) => {
+      let idx_hit = match idxn {
+        Some(i2) => i2 == name,
+        None => false
+      }
+      n == name || idx_hit || dtpw_expr_binds_name(it, name) || dtpw_expr_binds_name(b, name)
+    },
+    ELoop(params, b) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(params) && !found {
+        let (pn, init) = Array::get(params, i)
+        if pn == name || dtpw_expr_binds_name(init, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found || dtpw_expr_binds_name(b, name)
+    },
+    EMatch(s, arms) => {
+      let mut i = 0
+      let mut found = dtpw_expr_binds_name(s, name)
+      while i < Array::length(arms) && !found {
+        let (p, b) = Array::get(arms, i)
+        let bound = array_empty()
+        dlh_pat_binds(p, bound)
+        if dlh_contains(bound, name) || dtpw_expr_binds_name(b, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EHandle(s, arms) => {
+      let mut i = 0
+      let mut found = dtpw_expr_binds_name(s, name)
+      while i < Array::length(arms) && !found {
+        let (p, b) = Array::get(arms, i)
+        let bound = array_empty()
+        dlh_pat_binds(p, bound)
+        if dlh_contains(bound, name) || dtpw_expr_binds_name(b, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ECall(callee, args, _) => dtpw_expr_binds_name(callee, name) || dtpw_exprs_bind_name(args, name),
+    EBinOp(_, l, r) => dtpw_expr_binds_name(l, name) || dtpw_expr_binds_name(r, name),
+    EUnaryOp(_, e) => dtpw_expr_binds_name(e, name),
+    ETuple(es) => dtpw_exprs_bind_name(es, name),
+    EArray(es) => dtpw_exprs_bind_name(es, name),
+    ESpread(e) => dtpw_expr_binds_name(e, name),
+    EContinue(es) => dtpw_exprs_bind_name(es, name),
+    ERecord(_, fs, _) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fs) && !found {
+        let (_, v) = Array::get(fs, i)
+        if dtpw_expr_binds_name(v, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMap(fs) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fs) && !found {
+        let (_, v) = Array::get(fs, i)
+        if dtpw_expr_binds_name(v, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EIf(c, t, e) => dtpw_expr_binds_name(c, name) || dtpw_expr_binds_name(t, name) || dtpw_expr_binds_name(e, name),
+    EAssign(_, v, c) => dtpw_expr_binds_name(v, name) || dtpw_expr_binds_name(c, name),
+    EAssignOp(_, _, v, c) => dtpw_expr_binds_name(v, name) || dtpw_expr_binds_name(c, name),
+    ESeq(a, b) => dtpw_expr_binds_name(a, name) || dtpw_expr_binds_name(b, name),
+    EWhile(c, b) => dtpw_expr_binds_name(c, name) || dtpw_expr_binds_name(b, name),
+    EDot(o, _, _, _) => dtpw_expr_binds_name(o, name),
+    ELabeledArg(_, _, e) => dtpw_expr_binds_name(e, name),
+    EReturn(e) => dtpw_expr_binds_name(e, name),
+    EBreak(opt) => match opt {
+      Some(e) => dtpw_expr_binds_name(e, name),
+      None => false
+    },
+    _ => false
+  }
+}
+
+///|
+// #1070 (narrow slice): a "trivial pass-through wrapper" is a top-level
+// `let name = (param) -> T with { ... } { param() }` -- exactly one
+// parameter, body is EXACTLY a zero-arg call to that same parameter and
+// nothing else. Collects (wrapper_name, needed) pairs; `needed` is always
+// true here (arity always matches: the wrapper always takes exactly 1 arg
+// and calls its param with exactly 0), kept as a tuple only for symmetry
+// with how this file's other collector helpers are shaped.
+//
+// A collected name is DROPPED again if it's shadowed ANYWHERE in the
+// program (any nested `let`/`let mut`/EFn parameter/match-or-handle-arm
+// binder/for-loop name/loop parameter reusing the same identifier) --
+// dtpw_inline_expr's rewrite matches call sites by NAME ONLY with no
+// scope tracking, so a shadowed name would otherwise get inlined at the
+// WRONG (shadowing) binding's call sites too, changing real program
+// behavior (#1074 review, chatgpt-codex-connector P1). This is
+// deliberately whole-program-conservative rather than precisely
+// scope-threaded: losing the optimization on the rare program that
+// happens to reuse a wrapper's name as a binder elsewhere is an
+// acceptable trade for guaranteed correctness, matching this file's
+// established "bail out entirely when it can't be proven safe" pattern
+// (see dlh_marker_only_called_directly's own doc comment).
+fn dtpw_collect_wrappers(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(_, _, params, _, _, body)) => if Array::length(params) == 1 {
+        let (pname, _) = Array::get(params, 0)
+        let stripped = dlh_strip_tilde(pname)
+        match body {
+          ECall(callee, args, _) => match callee {
+            EIdent(cn, _) => if cn == stripped && Array::length(args) == 0 {
+              Array::push(out, name)
+            } else {
+              ()
+            },
+            _ => ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let safe = array_empty()
+  let mut j = 0
+  while j < Array::length(out) {
+    let wn = Array::get(out, j)
+    let mut shadowed = false
+    let mut k = 0
+    while k < Array::length(stmts) && !shadowed {
+      match Array::get(stmts, k) {
+        SLet(_, _, _, _, sv) => if dtpw_expr_binds_name(sv, wn) {
+          shadowed = true
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      k = k + 1
+    }
+    if !shadowed {
+      Array::push(safe, wn)
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  safe
+}
+
+// Rewrite every `ECall(EIdent(wname), [single_arg], off)` where `wname` is a
+// collected trivial wrapper into `ECall(single_arg, [], off)` -- calling the
+// argument directly instead of routing through the identity wrapper. Full
+// traversal (mirrors this file's other full-coverage passes); the wrapper's
+// own top-level definition is left completely untouched, so it remains
+// valid wherever else it's referenced (as a value, or with a different
+// arity that wouldn't match here anyway).
+fn dtpw_inline_expr(expr: Expr, wrappers: Array[String]) -> Expr {
+  match expr {
+    ECall(callee, args, off) => match callee {
+      EIdent(wn, _) => if dlh_contains(wrappers, wn) && Array::length(args) == 1 {
+        ECall(dtpw_inline_expr(Array::get(args, 0), wrappers), array_empty(), off)
+      } else {
+        ECall(dtpw_inline_expr(callee, wrappers), for a in args {
+          dtpw_inline_expr(a, wrappers)
+        }, off)
+      },
+      _ => ECall(dtpw_inline_expr(callee, wrappers), for a in args {
+        dtpw_inline_expr(a, wrappers)
+      }, off)
+    },
+    EBinOp(op, l, r) => EBinOp(op, dtpw_inline_expr(l, wrappers), dtpw_inline_expr(r, wrappers)),
+    EUnaryOp(op, e) => EUnaryOp(op, dtpw_inline_expr(e, wrappers)),
+    ETuple(es) => ETuple(for e in es {
+      dtpw_inline_expr(e, wrappers)
+    }),
+    EArray(es) => EArray(for e in es {
+      dtpw_inline_expr(e, wrappers)
+    }),
+    ESpread(e) => ESpread(dtpw_inline_expr(e, wrappers)),
+    EContinue(es) => EContinue(for e in es {
+      dtpw_inline_expr(e, wrappers)
+    }),
+    ERecord(rn, fs, targs) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (k, v) = Array::get(fs, i)
+        Array::push(out, (k, dtpw_inline_expr(v, wrappers)))
+        i = i + 1
+      }
+      ERecord(rn, out, targs)
+    },
+    EMap(fs) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (k, v) = Array::get(fs, i)
+        Array::push(out, (k, dtpw_inline_expr(v, wrappers)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    EIf(c, t, e) => EIf(dtpw_inline_expr(c, wrappers), dtpw_inline_expr(t, wrappers), dtpw_inline_expr(e, wrappers)),
+    ELet(n, v, b, soff) => ELet(n, dtpw_inline_expr(v, wrappers), dtpw_inline_expr(b, wrappers), soff),
+    ELetRec(n, v, b) => ELetRec(n, dtpw_inline_expr(v, wrappers), dtpw_inline_expr(b, wrappers)),
+    ELetMut(n, v, b, soff) => ELetMut(n, dtpw_inline_expr(v, wrappers), dtpw_inline_expr(b, wrappers), soff),
+    EAssign(n, v, c) => EAssign(n, dtpw_inline_expr(v, wrappers), dtpw_inline_expr(c, wrappers)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, dtpw_inline_expr(v, wrappers), dtpw_inline_expr(c, wrappers)),
+    ESeq(a, b) => ESeq(dtpw_inline_expr(a, wrappers), dtpw_inline_expr(b, wrappers)),
+    EWhile(c, b) => EWhile(dtpw_inline_expr(c, wrappers), dtpw_inline_expr(b, wrappers)),
+    EForIn(n, idxn, it, b) => EForIn(n, idxn, dtpw_inline_expr(it, wrappers), dtpw_inline_expr(b, wrappers)),
+    EDot(o, f, off, fdoff) => EDot(dtpw_inline_expr(o, wrappers), f, off, fdoff),
+    ELabeledArg(l, m, e) => ELabeledArg(l, m, dtpw_inline_expr(e, wrappers)),
+    EReturn(e) => EReturn(dtpw_inline_expr(e, wrappers)),
+    EBreak(opt) => EBreak(match opt {
+      Some(e) => Some(dtpw_inline_expr(e, wrappers)),
+      None => None
+    }),
+    EFn(tp, bnds, params, rt, eff, body) => EFn(tp, bnds, params, rt, eff, dtpw_inline_expr(body, wrappers)),
+    EMatch(s, arms) => EMatch(dtpw_inline_expr(s, wrappers), for a in arms {
+      let (p, b) = a
+      (p, dtpw_inline_expr(b, wrappers))
+    }),
+    EHandle(s, arms) => EHandle(dtpw_inline_expr(s, wrappers), for a in arms {
+      let (p, b) = a
+      (p, dtpw_inline_expr(b, wrappers))
+    }),
+    ELoop(params, b) => ELoop(for p in params {
+      let (pn, init) = p
+      (pn, dtpw_inline_expr(init, wrappers))
+    }, dtpw_inline_expr(b, wrappers)),
+    _ => expr
+  }
+}
+
+fn dtpw_inline_trivial_wrappers(stmts: Array[Stmt]) -> Unit {
+  let wrappers = dtpw_collect_wrappers(stmts)
+  if Array::length(wrappers) == 0 {
+    ()
+  } else {
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, i, SLet(exported, is_rec, name, ty, dtpw_inline_expr(expr, wrappers))),
+        _ => ()
+      }
+      i = i + 1
+    }
+  }
+}
+
+///|
 // Entry point: in-place dictionary-passing desugaring. No-op unless the program
 // declares at least one method-bearing trait. Idempotent: re-running (the
 // single-file pipeline desugars before generic-stripping and codegen re-runs on
@@ -6126,6 +7237,32 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit {
   // #790: lower array-literal spreads first, so no downstream pass or codegen
   // ever sees a raw ESpread.
   desugar_array_spread(stmts)
+  // #1070 (narrow slice): inline a trivial pass-through wrapper
+  // (`let apply = (f) -> { f() }`, body EXACTLY a same-arity direct call to
+  // its own sole parameter, nothing else) at each matching call site
+  // (`apply(x)` -> `x()`), before #786's hoist below. A capturing effectful
+  // closure PASSED BY VALUE through such a wrapper (`apply(inner)` where
+  // `inner` captures a local) crashes independent of #1069's closure-
+  // conversion fix -- #1069 only rewrites provably-direct call sites, and
+  // `inner` used as a bare argument to `apply` is exactly the "used as a
+  // value" shape it correctly declines to touch. This doesn't attempt the
+  // general problem (#1070's own analysis: real closure-conversion-to-
+  // value semantics, or fixing #786's still-unlocated deeper combinator
+  // bug) -- it only recognizes the specific case where the "value use" is
+  // itself immediately, trivially, and unconditionally a direct call one
+  // level removed, and short-circuits it back into an ordinary direct
+  // call BEFORE #786/#1069's hoist+conversion logic runs, so THAT already-
+  // verified machinery picks it up exactly as if the caller had written
+  // `inner()` directly. Always sound regardless of what the argument does
+  // (identity-wrapper inlining never changes observable behavior -- the
+  // wrapper's own row already required whatever effects the checker
+  // already validated at the original `apply(inner)` call site, and
+  // `inner()` requires the identical row by construction), and leaves the
+  // wrapper's own top-level definition untouched (usable as a value
+  // wherever else it's referenced) -- only matching call sites are
+  // rewritten, so a wrapper used BOTH as a value AND as a direct call
+  // elsewhere is still handled safely either way.
+  dtpw_inline_trivial_wrappers(stmts)
   // #786: hoist non-capturing effectful local lambdas to top-level functions
   // before any other pass. A local `let f = (x) -> { perform ... }` that captures
   // nothing gets promoted to a top-level `let f = ...`, so codegen emits a direct

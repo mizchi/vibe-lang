@@ -13,7 +13,7 @@ import @vibe/compiler/codegen/common_analysis {
 }
 
 import @vibe/compiler/codegen/common_base {
-  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, agg_info_of_type_expr, compute_agg_returning, ctor_sorted_index, fn_type_param_types, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, lookup_ctor, resolve_func, resolve_local, builtin_registry, verify_lane_builtins, rewrite_self_tail_calls
+  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, agg_info_of_type_expr, compute_agg_returning, ctor_sorted_index, fn_type_param_types, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, lookup_ctor, resolve_func, resolve_local, builtin_registry, verify_lane_builtins, rewrite_self_tail_calls, inline_direct_performs, evidence_dict_pass
 }
 
 import @vibe/compiler/codegen/common_extractors {
@@ -228,6 +228,22 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   // #tco: see codegen/common_base/self_tail_call.vibe's doc comment (same
   // rewrite as the linear backend's call site in codegen/wasi/linked_compile.vibe).
   rewrite_self_tail_calls(stmts)
+  // ADR-0076 Phase 2/3 (#817), 段階導入計画 step 6: same evidence-dict AST
+  // rewrite as the linear backend's call site in
+  // codegen/wasi/linked_compile.vibe -- both passes only ever rewrite
+  // EHandle/perform into ordinary ERecord/EFn/EDot/ECall nodes (a plain
+  // closure-record dict threaded as an extra parameter), never touching
+  // linear-memory pointers/offsets, so the rewritten AST is exactly as
+  // backend-agnostic as any other desugaring here. A handle/perform this
+  // pass cannot prove eligible (row-polymorphic helper, non-tail-resumptive
+  // arm, etc.) is left untouched and still hits backend_expr.vibe's/
+  // backend_call.vibe's existing "only `with Error`/known builtins"
+  // fallback exactly as before -- this only shrinks what falls through to
+  // that fallback, it does not change the fallback itself. No-op on
+  // programs with no eligible handle (identical to the linear backend's
+  // unconditional call site), so this is strictly additive for gc codegen.
+  inline_direct_performs(stmts)
+  evidence_dict_pass(stmts, entry_name)
   let fn_names_list = array_empty()
   let fn_param_counts = array_empty()
   let fn_needs_env_list = array_empty()
@@ -290,6 +306,27 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
         Array::push(ctor_tags_list, type_index<<16)
         Array::push(ctor_field_counts_list, Array::length(sfields))
         Array::push(ctor_type_names_list, sname)
+        0
+      },
+      // #817 gc-backend follow-up (2026-07-23): mirrors linked_compile.vibe's
+      // own SSuberror case exactly -- a suberror is a single-typed enum
+      // whose constructors produce a throwable value; register its ctors in
+      // the ctor table like an enum's so `KeyInvalid("x")` allocates a
+      // tagged value instead of hitting backend_call.vibe's "unknown
+      // constructor or function" error. This case was simply never added
+      // when the gc backend's own ctor-registration loop was written
+      // (SEnum/SStruct only) -- found via gc-backend coverage testing.
+      SSuberror(_, ename, variants) => {
+        type_index = type_index + 1
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, vfields) = Array::get(variants, vi)
+          Array::push(ctor_names_list, vname)
+          Array::push(ctor_tags_list, (type_index<<16)|vi)
+          Array::push(ctor_field_counts_list, Array::length(vfields))
+          Array::push(ctor_type_names_list, ename)
+          vi = vi + 1
+        }
         0
       },
       _ => 0
