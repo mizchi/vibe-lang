@@ -1,6 +1,6 @@
 # ADR-0076: effect handler を evidence passing 化する (suspend 点 IR で WasmFX/WASI 0.3 前方互換)
 
-Status: proposed (実装 Phase 1/2/2b は着地済み。Phase 3 は「CPS 新規実装」ではなく「evidence_dict_pass の静的カバレッジ拡大」に帰着することが判明 (追記 2/16) -- 2026-07-23 のセッションで multi-effect row・nested handle・pure helper 呼び出し・EDot・closure literal・effectset alias (whole-effect/qualified operation 双方)・row-variable tail・capture-free local closure invocation まで対象を拡大、加えて関連する closure+effect codegen バグ #1069 (capturing local closure の invocation) を修正、#1070 (by-value に渡された capturing closure) を新規発見・報告。「段階導入計画」の実装ノート・追記 9-16 参照)
+Status: proposed (実装 Phase 1/2/2b は着地済み。Phase 3 は「CPS 新規実装」ではなく「evidence_dict_pass の静的カバレッジ拡大」に帰着することが判明 (追記 2/16) -- 2026-07-23 のセッションで multi-effect row・nested handle・pure helper 呼び出し・EDot・closure literal・effectset alias (whole-effect/qualified operation 双方)・row-variable tail・capture-free local closure invocation まで対象を拡大、加えて関連する closure+effect codegen バグ #1069 (capturing local closure の invocation) を修正、#1070 (by-value に渡された capturing closure) を新規発見・報告。「段階導入計画」step 6 (wasm-gc backend への evidence-dict 配線) も着地済み (追記17)。「段階導入計画」の実装ノート・追記 9-17 参照)
 
 Date: 2026-07-22
 
@@ -413,7 +413,11 @@ Phase 3 でも再利用できる。
 5. linear backend: yield bubbling (選択的 CPS 変換 + `Outcome[R]`) を
    実装し、replay codegen を削除。
 6. wasm-gc backend: 同じ evidence 設計で `EHandle` を実装 (Error 専用
-   スタブを一般化)。
+   スタブを一般化)。**着地済み (2026-07-23, 追記17)** -- ただし
+   evidence_dict_pass が到達できる部分集合 (直接呼び出しのみ・tail-
+   resumptive) に限る。row-polymorphic helper や replay 経路にしか
+   落とせないケースは引き続き Error-only エラーにフォールバックする
+   (linear backend の replay 機構自体は gc に移植していない)。
 7. suspend 点 IR に WasmFX/JSPI 向け代替 lowering の骨組みを追加
    (実装は本 ADR のスコープ外、swap 可能な形だけ用意する)。
 
@@ -1348,6 +1352,55 @@ lowering 実装との refinement proof (もしくは differential test) を
 ままである。「追記 2」(c) を再度「未検証」と記録するだけでなく、
 なぜ・どのように未検証なのか (どの成果物が今存在しないのか) を
 具体的な参照箇所付きで確定させたことが本追記の内容である。
+
+### 追記 17 (2026-07-23、同日): 「段階導入計画」step 6 -- wasm-gc backend
+への evidence-dict 配線を実装・着地
+
+`codegen/gc/backend_expr.vibe` の `EHandle` codegen はこれまで
+`with Error { Throw(..) => .. }` 以外のハンドラ arm パターンを
+ハードエラー (`"GC codegen: only `with Error { Throw(..) => .. }`
+handlers are supported"`) にしていた。同様に `codegen/gc/backend_call.vibe`
+の `perform` lowering も `Error::Throw` か既知の host-capability
+builtin (`Fs::ReadFile` 等) 以外は `"GC codegen: unsupported perform
+(no builtin mapping)"` で拒否していた -- ユーザー定義の algebraic
+effect は gc backend では一切コンパイルできなかった。
+
+`evidence_dict_pass`/`inline_direct_performs`
+(`codegen/common_base/inline_direct_perform.vibe`) は EHandle/perform
+を通常の `ERecord`/`EFn`/`EDot`/`ECall` ノードへ書き換えるだけの
+purely-AST-to-AST な変換で、linear memory のポインタ/オフセットには
+一切依存しない -- backend 非依存であることを確認した (research agent
+による調査、`inline_direct_perform.vibe:1817,1863-1875`
+`edp_rewrite_perform_via_dict`/`edp_build_dict_literal` 参照)。
+これまで linear backend の `codegen/wasi/linked_compile.vibe:177,189`
+からしか呼ばれておらず、gc backend の driver
+(`codegen/gc/backend_body.vibe`) には配線されていなかった -- gc
+backend 側の EHandle/perform が「常にサポート対象外」だった直接の
+原因はここにあった (evidence-dict 設計自体の欠陥ではなく、単に
+呼び出されていなかっただけ)。
+
+`backend_body.vibe`'s `compile_wasi_module_gc` に
+`inline_direct_performs(stmts)` / `evidence_dict_pass(stmts)` を
+`rewrite_self_tail_calls(stmts)` の直後 (linear backend と同じ
+相対位置) に追加した。evidence-dict 適格な handle/perform はこの時点で
+既に木から消えているため、gc codegen 側に新規の effect 固有 lowering
+コードは一切不要だった (既存の汎用 `ERecord`/`EFn`/`EDot` codegen が
+そのまま処理する)。適格と判定できない handle (row-polymorphic helper,
+non-tail-resumptive arm など) は従来どおり Error-only エラーへ
+フォールバックする -- linear backend の replay 機構
+(`eff_reserve`・memo アドレッシング) 自体は gc へ移植していないため、
+この一点は本変更のスコープ外のまま残る。
+
+クリーンなベースラインビルドに対する直接の A/B テストで、変更前は
+`fixtures/gc_backend_effect_evidence_dict.vibe` (needing helper が
+別の needing 関数を呼び、かつ multi-operation handler を持つ) が
+`VIBE_BACKEND=gc` 下で `"GC codegen: unsupported perform (no builtin
+mapping): Ask::Get"` に失敗すること、変更後は同じ fixture が
+コンパイル・実行でき正しい値 (17) を返すことを確認した。
+`compiler_gate.sh` gate 40h2 で固定。既存の gate 40h
+(`gc_backend_smoke_test.vibe` の `with Error` ケースを含む) と、
+linear backend 側の #1069/#1070/effectset alias 系 fixture 一式は
+影響を受けないことを個別に再確認済み。
 
 ## References
 
