@@ -176,22 +176,25 @@ fn located_package_boundary_error(source: String, keyword: String, raw_path: Str
   }
 }
 
-// A relative (`./`, `../`) import must stay within the importing file's own
-// nearest `index.vpkg`-owned package -- reaching a DIFFERENT package,
-// including the neighbor's own facade, is only allowed via a qualified
-// `@scope/name` (or compiler-internal `@scope/name/...`) import. This closes
-// the loophole `enforce_incoming_boundary_fs` (loader.vibe) deliberately
-// leaves open for `@`-qualified imports of a neighbor's facade: that
-// exception is for the CORRECT spelling, not the relative one.
+// A relative (`./`, `../`) import or export (re-export, SReExport) must stay
+// within the importing/re-exporting file's own nearest `index.vpkg`-owned
+// package -- reaching a DIFFERENT package, including the neighbor's own
+// facade, is only allowed via a qualified `@scope/name` (or
+// compiler-internal `@scope/name/...`) path. This closes the loophole
+// `enforce_incoming_boundary_fs` (loader.vibe) deliberately leaves open for
+// `@`-qualified imports of a neighbor's facade: that exception is for the
+// CORRECT spelling, not the relative one.
 //
-// `export` (re-export, SReExport) is still exempt here: the parser now
-// accepts an `@scope/name` re-export path, but the compiler's own source
-// hasn't migrated to it yet -- that migration needs a seed compiler that
-// understands the new grammar first (bootstrap discipline, docs/bootstrap.md).
-// Enforcement flips on for `export` in the follow-up change once the seed
-// is bumped and the existing boundary-crossing re-exports are migrated.
+// `export` used to be exempt here because the parser didn't accept an
+// `@scope/name` re-export path yet, so there was no qualified spelling to
+// migrate boundary-crossing re-exports to (bootstrap discipline,
+// docs/bootstrap.md -- the seed compiler must understand a new grammar
+// before compiler source can use it). The seed is now bumped past that
+// grammar (seed/export-scope-paths-2026-07-23) and every boundary-crossing
+// relative re-export in this tree has been migrated to `@scope/name`, so
+// `export` is enforced the same as `import` from here on.
 fn enforce_relative_import_package_boundary_fs(raw_path: String, self_path: String, resolved: String, source: String, keyword: String) -> Unit with { Error, Fs } {
-  if keyword == "import" && path_has_relative_prefix(raw_path, String::length(raw_path)) {
+  if (keyword == "import" || keyword == "export") && path_has_relative_prefix(raw_path, String::length(raw_path)) {
     let importer_owner = nearest_vpkg_path_fs(self_path)
     let target_owner = nearest_vpkg_path_fs(resolved)
     if importer_owner == "" || target_owner == "" || importer_owner == target_owner {
