@@ -1402,6 +1402,50 @@ mapping): Ask::Get"` に失敗すること、変更後は同じ fixture が
 linear backend 側の #1069/#1070/effectset alias 系 fixture 一式は
 影響を受けないことを個別に再確認済み。
 
+### 追記 18 (2026-07-23、同日): 到達不能な needing 関数を eligibility から除外
+
+追記17 の gc backend 配線を踏まえてカバレッジ実測 (107 本の
+`effect_*`/`handle_*` fixture を `VIBE_BACKEND=gc` 下でコンパイルする
+sweep) を行ったところ、`fixtures/effect_local_closure_by_value_wrapper.vibe`
+(#1070 の narrow-slice fixture、`fixtures/effect_local_closure_wrapper_referenced_as_value.vibe`
+も同様) が gc backend では依然 `"GC codegen: only `with Error { Throw(..)
+=> .. }` handlers are supported"` で失敗することが判明した。
+
+原因は `evidence_dict_pass` 自身の eligibility 判定にあった:
+`dtpw_inline_trivial_wrappers` (`desugar_trait_dict.vibe`) が
+`apply(inner)` を `inner()` へ書き換えた後も、trivial wrapper `apply`
+自身のトップレベル定義は残ったままで、その本体 `f()` (未知のクロージャ
+引数 `f` への呼び出し) は `edp_has_unsafe_construct` が安全と証明できない
+構造として扱う (#1070 の一般ケースが安全化できない理由そのもの)。
+`apply` はこの書き換え後にもう一切呼ばれない到達不能コードなのに、
+`needing` (このパスが effect 対象と見なす関数の集合) に残り続け、その
+「証明できない」本体が effect 全体の migration を丸ごとブロックしていた
+-- `apply` 以外の (安全と証明できる) needing 関数まで巻き添えになる。
+
+`evidence_dict_pass` に実際の `entry_name` を渡すよう変更し、
+`core/dce.vibe` の `dce_keep_flags` (既に `dce_stmts` が本番コードパスで
+使っている、同じ到達可能性エンジン) で計算した reachability を使って
+`needing` から到達不能な関数を eligibility スキャン前に除外するように
+した (`edp_drop_unreachable_needing`)。到達不能な関数は実行時に
+evidence dict を一切必要としないため、これを除外しても観測可能な挙動は
+変わらない -- reachability 判定が万一不正確でも (到達可能なものを誤って
+「到達不能」と扱ってしまっても)、除外された関数の未書き換えの
+`perform` は、このパスが migrate を諦めた場合と全く同じフォールバック
+(linear backend の replay codegen、または gc backend の既存の
+"unsupported perform" エラー) に落ちるだけで、サイレントな誤コンパイル
+にはならない (dce_stmts 自体は呼んでおらず `stmts` から何も削除しない
+-- eligibility 判定のみへの入力として使うだけ)。
+
+A/B テストで確認: `effect_local_closure_by_value_wrapper.vibe`
+(書き換え後に `apply` が真に到達不能になるケース) は変更後
+`VIBE_BACKEND=gc` でコンパイル・実行でき正しい値 (105) を返す。一方
+`effect_local_closure_wrapper_referenced_as_value.vibe` (`let stored =
+apply; stored(inner2)` で `apply` が真に到達可能であり続けるケース) は
+変更後も同じ理由で ineligible のままであることを確認 -- この変更が
+「本当に死んでいるコードだけ」を除外し、依然生きているコードは
+従来どおり正しく安全側に倒すことを個別に検証した。`compiler_gate.sh`
+gate 40h3 で固定。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
