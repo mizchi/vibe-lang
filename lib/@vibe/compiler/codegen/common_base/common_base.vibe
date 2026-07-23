@@ -498,6 +498,42 @@ export fn int_log_reset_above(ctx: CompileCtx, floor: Int) -> Unit {
   Array::truncate(arr, w)
 }
 
+// #1062 follow-up: the float-log twin of `int_log_reset_above`, for exactly
+// the same reason. `bind_match_pat` now logs a pattern-bound constructor
+// field into `float_local_slots` when its declared type is Double/Float (see
+// CompileCtx.ctor_float_fields), but a NON-float field bound at the SAME
+// local slot by a SIBLING match arm (arms share slot numbers -- `local_names`
+// is truncated back to `names_len_at_match` before every arm, see the call
+// sites in compile_match.vibe) never logs anything to override a stale
+// float=1 entry a PRIOR arm left at that slot. Left unpruned, that stale
+// entry survives via float_local_slots' normal "most recent entry per slot
+// wins" lookup (slot_is_floatish) and makes the later arm's plain Int/String
+// field take the f64 reinterpret-bits arithmetic path -- silently corrupting
+// ordinary integer arithmetic (discovered when re-enabling the ctor-float
+// check caused ~37 unrelated selfhost unit-test regressions: the compiler's
+// own AST enums, e.g. Expr/Pat/Token, mix a Double-carrying variant
+// (EFloat/PFloat/TFloat) with many non-float siblings matched in the same
+// `match`, at the same rotating slot numbers). Same compaction discipline as
+// int_log_reset_above: keep entries for slots < floor, truncate the rest.
+export fn float_log_reset_above(ctx: CompileCtx, floor: Int) -> Unit {
+  let arr = ctx.float_local_slots
+  let n = Array::length(arr)
+  let mut w = 0
+  let mut i = 0
+  while i < n {
+    let e = Array::get(arr, i)
+    // Entries are slot*2 + flag (see slot_is_floatish).
+    if e / 2 < floor {
+      Array::set(arr, w, e)
+      w = w + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(arr, w)
+}
+
 // #724: prune the aggregate-shape log (see CompileCtx.agg_local_slots) at the
 // same branch/arm boundaries as int_log_reset_above — a slot reused by a
 // non-`let` binder must not be read as a stale tuple/ctor, or the structural

@@ -1,0 +1,59 @@
+// #1062 follow-up: root-caused while re-adding bind_match_pat's ctor-float
+// check (see fixtures/rc_ctor_double_field_match_test.vibe and its doc
+// comment for the full history / PR #1068 revert).
+//
+// `local_names` is truncated back to the same starting length before EVERY
+// arm of a `match` compiles (see compile_match.vibe), so a Double-typed
+// field bound in one arm and a non-float field bound in a SIBLING arm land
+// at the SAME local slot number. bind_match_pat registers a Double-typed
+// bound field into `float_local_slots` (CompileCtx), and — without pruning
+// that log at the arm boundary the way `int_local_slots` / `agg_local_slots`
+// already are (see `float_log_reset_above` in
+// codegen/common_base/common_base.vibe) — the stale "floatish" mark for that
+// slot survives into the SIBLING arm's compilation. A later, unrelated
+// non-float field reusing the slot then takes the f64 reinterpret-bits
+// arithmetic path instead of plain integer ops, silently corrupting the
+// result. This is a pure CODEGEN-TIME hazard (both arms are compiled once,
+// statically, in the same pass) — it reproduces on a single call into
+// whichever arm binds the non-float field, no RC required.
+
+enum Node {
+  NFloat(Double);
+  NInt(Int);
+  NPair(Int, Int)
+}
+
+let describe = (n: Node) -> Int {
+  match n {
+    NFloat(r) => Double::to_int(r * r),
+    NInt(x) => x * x,
+    NPair(a, b) => a * b
+  }
+}
+
+test "sibling match arm after a Double-field bind stays integer arithmetic" {
+  assert(describe(NFloat(3.0)) == 9)
+  assert(describe(NInt(5)) == 25)
+  assert(describe(NPair(6, 7)) == 42)
+}
+
+// Same hazard across if/else branches (compile_expr.vibe's EIf handler also
+// resets int_local_slots/agg_local_slots at the then/else boundary — and now
+// float_local_slots too): a nested match in the `then` branch binds a Double
+// field, and the `else` branch's own non-float local reuses that slot.
+let describe2 = (n: Node, flag: Bool) -> Int {
+  if flag {
+    match n {
+      NFloat(r) => Double::to_int(r * r),
+      _ => 0
+    }
+  } else {
+    let y = 11
+    y * y
+  }
+}
+
+test "if/else branch after a Double-field bind in the then-branch stays integer arithmetic" {
+  assert(describe2(NFloat(3.0), true) == 9)
+  assert(describe2(NFloat(3.0), false) == 121)
+}

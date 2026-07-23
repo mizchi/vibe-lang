@@ -1,0 +1,49 @@
+// #1062: a Double-typed enum-constructor field bound by a pattern
+// (`Circle(r) => r * r`) was never registered into the float-local-slot
+// tracking `let`-bound floats get, so it fell through to the integer-multiply
+// path -- under RC (VIBE_RC=1) that multiplies two boxed-float POINTERS
+// together, producing a bogus pointer that traps with "memory access out of
+// bounds" when dereferenced. Under the default bump backend the same
+// misclassification does not trap (Double fields are unboxed raw f64 bits
+// there) but is still wrong: an i64 multiply of the raw f64 bit pattern is
+// not the same value as `r * r`. This fixture pins the actual VALUE, so it
+// catches both failure modes, and `scripts/compiler_gate.sh`'s dedicated
+// "ctor double-field match binding under RC" gate additionally forces
+// VIBE_RC=1 to exercise the OOB-trap-specific manifestation this issue was
+// filed for.
+//
+// See also PR #1068 (reverted in 0269998): the first attempt at this fix
+// added CompileCtx.ctor_float_fields + bind_match_pat's ctor_field_is_float
+// consumer, which correctly fixed this repro but was reverted because it
+// corrupted the compiler's OWN self-hosted build (scripts/unit_test_runner.sh,
+// ~37-39 unrelated failures in parser/checker/printer tests). Root cause of
+// the regression (fixed alongside re-adding this consumer): float_local_slots
+// was never pruned at match-arm/if-else boundaries the way int_local_slots /
+// agg_local_slots already are (see float_log_reset_above in
+// codegen/common_base/common_base.vibe) -- a sibling arm's non-float field
+// reusing the same local slot number as an earlier arm's Double-typed bind
+// inherited a stale "floatish" mark and took the f64 path for ordinary
+// int/string arithmetic. The compiler's own Expr/Pat/Token enums mix a
+// Double-carrying variant (EFloat/PFloat/TFloat) with many non-float
+// siblings matched in the same `match`, which is why the regression was so
+// broad.
+
+enum Shape {
+  Circle(Double);
+  Square(Double);
+  Rect(Int, Int)
+}
+
+let area = (s: Shape) -> Double {
+  match s {
+    Circle(r) => r * r,
+    Square(w) => w * w,
+    Rect(_, _) => 0.0
+  }
+}
+
+test "ctor double-field match binding" {
+  assert(area(Circle(3.0)) == 9.0)
+  assert(area(Square(4.0)) == 16.0)
+  assert(Double::to_int(area(Circle(1.5))) == 2)
+}

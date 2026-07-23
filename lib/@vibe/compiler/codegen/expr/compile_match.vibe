@@ -9,7 +9,7 @@ import @vibe/compiler/codegen/common_analysis {
 }
 
 import @vibe/compiler/codegen/common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_rc_dup_guarded, cov_emit_branch, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, agg_log_reset_above2, int_log_reset_above, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pfloat, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, ctor_table_index_of, resolve_func, resolve_local, emit_unbox_float
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_rc_dup_guarded, cov_emit_branch, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, agg_log_reset_above2, int_log_reset_above, float_log_reset_above, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pfloat, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, ctor_table_index_of, ctor_field_is_float, resolve_func, resolve_local, emit_unbox_float
 }
 
 import @vibe/compiler/codegen/common_extractors {
@@ -49,6 +49,16 @@ fn bind_match_pat(buf: Bytes, base_local: Int, container_pat: Pat, is_ctor_layou
   } else {
     get_ptuple_pats(container_pat)
   }
+  // #1062: a bound field's declared type is only known here for the ctor
+  // layout (a bare tuple pattern has no declared field types to consult) --
+  // resolve the matched constructor's ctor_idx ONCE per call so the loop
+  // below can ask ctor_field_is_float per positional field. -1 (not a ctor
+  // layout) makes ctor_field_is_float trivially return false.
+  let __bmp_ctor_idx = if is_ctor_layout {
+    ctor_table_index_of(ctx.ctor_table, get_pctor_name(container_pat))
+  } else {
+    -1
+  }
   let mut i = 0
   while i < Array::length(elems) {
     let ep = Array::get(elems, i)
@@ -73,6 +83,19 @@ fn bind_match_pat(buf: Bytes, base_local: Int, container_pat: Pat, is_ctor_layou
       emit_i32_wrap_i64(buf)
       emit_i64_load(buf, 3, off)
       emit_local_set(buf, fl)
+      // #1062: a Double/Float-typed constructor field bound by a pattern
+      // (`Circle(r) => r * r`) must be registered into float_local_slots
+      // exactly like a `let`-bound float, else it falls through to the
+      // integer-multiply path -- under RC that multiplies two boxed-float
+      // POINTERS together, producing a bogus pointer that traps ("memory
+      // access out of bounds") when later dereferenced. __bmp_ctor_idx is
+      // -1 for a bare tuple pattern, and ctor_field_is_float trivially
+      // returns false for a -1 ctor_idx, so this is a no-op there.
+      if ctor_field_is_float(ctx, __bmp_ctor_idx, i) {
+        Array::push(ctx.float_local_slots, fl * 2 + 1)
+      } else {
+        ()
+      }
       // #715 follow-up: this helper previously bound the field without ever
       // dup'ing it, regardless of how many owning uses `nm` has in `body` — a
       // matched field is a borrowed view sharing the container's refcount
@@ -453,6 +476,13 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
     // drop them so a string bound there is not misread as int by `==`.
     int_log_reset_above(ctx, names_len_at_match)
     agg_log_reset_above2(ctx.agg_local_slots, ctx.agg_local_exprs, names_len_at_match)
+    // #1062 follow-up: same prune for the float log -- a previous arm's
+    // Double-typed ctor-field bind (bind_match_pat, see ctor_field_is_float)
+    // may have logged a slot >= names_len_at_match that THIS arm's pattern
+    // binder reuses for a non-float field; without dropping it here the
+    // stale float=1 entry survives and misroutes the new field's arithmetic
+    // through the f64 path.
+    float_log_reset_above(ctx, names_len_at_match)
     let (__cond_p, __arm_body) = Array::get(__match_arms, ai)
     let __cond_done = if is_pfloat(__cond_p) {
       // Top-level float literal arm (`match d { 0.0 => .. }`): same f64
@@ -769,6 +799,9 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
   // #678: same prune before the catch-all arm's pattern binders reuse the slots.
   int_log_reset_above(ctx, names_len_at_match)
   agg_log_reset_above2(ctx.agg_local_slots, ctx.agg_local_exprs, names_len_at_match)
+  // #1062 follow-up: same prune for the float log -- see the analogous call
+  // above.
+  float_log_reset_above(ctx, names_len_at_match)
   let ld_catch = if ld >= 0 {
     ld + num_cond_arms
   } else {
