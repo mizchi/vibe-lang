@@ -827,6 +827,50 @@ replay 経路へ安全にフォールバックし続ける」ことを固定す�
 クラッシュの根本原因を (今回の分岐バグと同じように) 実際に計装して
 特定するところから始めること。
 
+**追記 8 (2026-07-23, 「追記 7」のクラッシュの構造的原因を特定)**:
+「追記 7」を revert した直後、`edp_row_is_exactly` を一時的に
+containment 判定へ戻して同じ fixture を再テストしたところ (compile は
+通り実行時 uncaught exception でクラッシュする、という同じ症状を
+再現)、手作業でのトレースにより **構造的な原因** (実行時計装は行って
+いないが、コードの読解だけで再現性のある論理的欠陥として特定できた)
+を突き止めた。
+
+`edp_has_unsafe_construct` は `EDot(_, _, _, _) => true` として
+**あらゆる `EDot` を無条件に unsafe** 扱いする。ところが Ask の
+migration 自身が、`both_helper` の body の `perform Ask::Get` を
+`EDot(EIdent("__ev_Ask"), "Get", -1, -1)()` という**まさに `EDot`
+ノード**へ書き換える (`edp_rewrite_perform_via_dict`)。Ask の
+migration が (`ei` ループで) 先に走り、`both_helper` の body を
+`stmts` 上で直接書き換えた**後**で、Fs の migration が (`edp_all_
+sites_eligible` の needing-function-body チェック経由で)
+`edp_find_fn_body(stmts, fn_defs, "both_helper")` を使って
+`both_helper` の body を**現在の (Ask 書き換え後の) 状態**で
+再取得し、`edp_has_unsafe_construct` に通す。この body には Ask が
+直前に埋め込んだ `EDot` が含まれているため、Fs 自身の migration の
+eligibility 判定はこの「自分より前の migration が生成した artifact」
+を理由に**必ず unsafe と判定して abort**する。
+
+これは 2 effect 目に限った偶然の不具合ではなく、**設計そのものの
+構造的欠陥**である: `evidence_dict_pass` の 각 effect ごとの
+eligibility 判定 (`edp_all_sites_eligible`) は毎回「その時点の
+`stmts` の現在の状態」を re-scan する設計になっているため、ある
+effect の migration が (`EDot` を導入するなどして) 対象コードを
+書き換えた**後**に、同じ関数が**別の** effect の needing 対象として
+再度チェックされると、前段の書き換え自体が新しい unsafe 要因として
+検出され、後段の migration を必ず妨げる。これは containment 緩和を
+やめて `edp_row_is_exactly` に戻している限り (ある関数が 2 つ以上の
+migration の対象に重複してなることがないので) 顕在化しないが、
+multi-effect row 対応に本格的に着手する際は、この「後段の
+eligibility 判定が前段の書き換え artifact を誤検出する」問題を
+先に解消する必要がある — 具体的には、全 effect の eligibility 判定を
+**どの migration もまだ書き換えていない、元の (unmutated) `stmts`**
+に対して**先に一括で** (現在のような `ei` ループ内での都度判定ではなく)
+行い、判定結果を確定させてから初めて実際の書き換えを開始する設計に
+改める必要があると見込まれる。ランタイム計装によるクラッシュの直接
+確認はまだ行っていないが、この構造的欠陥はコード読解だけで再現性
+高く説明がつくため、今後の着手時はまずこの仮説の妥当性を計装で
+検証するところから始めるとよい。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
