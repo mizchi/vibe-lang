@@ -1579,6 +1579,67 @@ suberror の constructor が type_index の番号を共有しても正しく共�
 backend 間で異なる、より深い別の gap が残っている (実 fixture では
 一度も exercise されておらず、この修正のスコープ外、未調査のまま)。
 
+### 追記23 (2026-07-23): `__to_string`/Show gap の調査結果、および行多相 (`{ Log, e }`) の正確なスコープ
+
+上の「未調査のまま」だった `__to_string` gap を実際にコードを読んで調査した。
+`codegen/gc/backend_builtins_numeric.vibe` の `gc_gen_to_string_body` は
+生の wasm バイト列を直接組み立てるヒューリスティック dispatcher で、
+「(linear-memory 由来の) 文字列ポインタらしい tagged i64 か」「そうでな
+ければ 10 進整数として描画する」の 2 択しか持たない。struct/enum/
+suberror のような GC-native な tagged 値を渡すと、どちらのケースにも
+一致せず不正な数字列になる (`KeyInvalid("...")` を渡すと `"2"` のような
+値になるのを確認)。これは「小さな抜け漏れ」ではなく、GC backend の
+`__to_string`/Show 経路がそもそもユーザー定義型への一般的な dispatch
+機構を持たない、という設計上の制約 (`bc_expr_is_floatish`/
+`bc_expr_is_boolish` のような compile-time 形状判定や `to_string`
+wrapper 特殊化 (#1015) を積み重ねて Int/String/Bool/Float だけ個別対応
+している状態)。修正は「バグ修正」ではなく「新しい dispatch 機構の設計」
+であり、このセッションのスコープには含めない。
+
+`fixtures/effect_row_open.vibe` (`{ Log | e }` という pipe 記法) がずっと
+「未実装の行多相構文」として挙げられてきたが、実際に調べると 2 段階の
+異なる話が混ざっていたことが分かった:
+
+1. `{ Log | e }` という pipe 記法そのものはパーサが理解できない
+   (`expected ',' or '}' in effect list`)。しかしこのコードベースの
+   実際の記法は `docs/cheatsheet.md` の "Effect polymorphism" 節が示す
+   とおり pipe ではなく **カンマ区切り** (`{ Ask, e }`) であり、
+   `fixtures/effect_handle_call_evidence_row_variable_tail.vibe` は
+   まさにこの記法で「効果行変数を含む row」がすでに動くことを pin して
+   いる。つまり pipe 記法自体は単なる誤記法で、真の未実装機能ではない。
+2. カンマ記法 `{ Log, e }` に書き直して直接検証したところ (probe、
+   commit 化はしていない)、`docs/cheatsheet.md` が示す **完全多相**
+   (`{ e }` のみ、関数本体がその効果行に一切触れず素通しするだけ) は
+   既に動くのに対し、`effect_row_open.vibe` が必要とする **混合行**
+   (`{ Log, e }` -- 具体的な効果 `Log` はその場でローカルに `handle`
+   しつつ、残りの `e` だけ呼び出し元に開いたまま伝播する) は
+   `checker.vibe:555` の `effect_row_dropped` (#939 のドロップ検出
+   セーフティネット) が `argument type mismatch ... (the { Db } effect
+   would be dropped — no handler could ever run)` として拒否すること
+   を直接確認した。原因は `effect_row_dropped` の
+   `!effect_label_is_exempt(lbl) && !row_contains_label(eeff, lbl)`
+   という判定 (`checker.vibe:565` 付近) が、ACTUAL 側の各ラベルを
+   EXPECTED 側の行に「そのラベル自体が文字通り含まれているか」だけで
+   照合しており、EXPECTED 側に開いた行変数 (`e` のような単一小文字
+   トークン) が存在する場合にそれが「まだ具体化されていない残りの
+   効果を吸収できる」ことを一切考慮していない、という一点に絞り込めた。
+
+したがって `{ Log, e }` のような混合行多相を実装するには、少なくとも
+(a) `effect_row_dropped` のこの判定を「EXPECTED 側に開いた行変数が
+あればアクチュアル側の未一致ラベルは吸収可能とみなす」よう緩和する
+だけでなく、(b) その手前の主たる型チェック/unification 経路
+(`effect_row_dropped` は `structural` retry の中でのみ呼ばれる
+フォールバックのエラー内容説明役であり、そもそもの合否判定はそれより
+前で行われている) で `e` を真の unification 変数として `{ Db }` に
+インスタンス化できるようにする必要があり、さらに (c) `evidence_dict_pass`
+をはじめとする codegen 側の row 解決ロジック (このセッション全体で
+拡張してきた `edp_resolve_effect_names_into` 等) が「呼び出しサイトご
+とに異なる具体化を持つ多相な行」を正しく扱えることを確認する必要が
+ある。(a) 単体のパッチでは checker のエラーメッセージを消せたとしても
+(b)(c) が未対応なら別の場所で誤ったコード生成につながりかねないため、
+3 つセットで設計・実装すべき一つの型システム機能であり、今回のセッ
+ションで着手する範囲には含めない。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
