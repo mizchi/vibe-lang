@@ -4820,6 +4820,34 @@ fi
 rm -rf "$edpqodir"
 echo "[compiler-gate] evidence-dict pass qualified-operation row ok"
 
+# 40af. ADR-0076 Phase 3 (#817): a needing function's row combines a
+#       concrete effect with an open row-variable TAIL (`with { Ask, e }`).
+#       Initially assumed a genuine limitation alongside the
+#       fully-row-polymorphic case; verified directly instead of continuing
+#       to assume -- this already migrates its concrete effect via the same
+#       row-containment mechanism as any other multi-effect row, since the
+#       row-variable token never matches a real declared effect name and
+#       is therefore inert to this pass's own matching logic.
+echo "[compiler-gate] 40af/40 evidence-dict pass: row combines a concrete effect with an open row-variable tail (ADR-0076 Phase 3/#817)"
+edprvdir="_build/_gate_evidence_dict_row_variable_tail"
+rm -rf "$edprvdir"; mkdir -p "$edprvdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_row_variable_tail.vibe > "$edprvdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edprvdir/src.vibe" "$edprvdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edprvdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_row_variable_tail.vibe did not compile" >&2
+  cat "$edprvdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edprv_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edprvdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edprv_out" != "2007" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_row_variable_tail.vibe got '$edprv_out' (want 2007) -- row-variable-tail row recognition regressed, or it regressed back to the replay-inflated value" >&2
+  exit 1
+fi
+rm -rf "$edprvdir"
+echo "[compiler-gate] evidence-dict pass row-variable-tail row ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the

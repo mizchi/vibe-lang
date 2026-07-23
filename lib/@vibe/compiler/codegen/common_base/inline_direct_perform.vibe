@@ -603,13 +603,28 @@ fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_b
 // left alone, matching today's behavior exactly.
 //
 // Not attempted here (left on replay, same as before this pass exists):
-// row-variable-polymorphic functions, and any effect for which even one
-// handle site or needing function fails the eligibility scan. A function
-// whose row combines `E` with another effect
-// (`edp_row_is_exactly`'s row-containment match) IS attempted, per-effect,
-// independently -- each effect in the row is eligibility-checked and
-// migrated (or not) on its own terms; see edp_row_is_exactly's doc comment
-// for why this is sound and the history of getting there. A handle site
+// migrating a row VARIABLE itself (there is no concrete effect there to
+// migrate -- see edp_row_is_exactly's doc comment for why this is also
+// simply correct, not a limitation), and any effect for which even one
+// handle site or needing function fails the eligibility scan.
+//
+// A function whose row combines `E` with another concrete effect, OR with
+// an open row-variable tail (`with { Ask, e }`), IS attempted per-effect,
+// independently (`edp_row_is_exactly`'s row-containment match) -- each
+// effect in the row is eligibility-checked and migrated (or not) on its
+// own terms; see edp_row_is_exactly's doc comment for why this is sound
+// and the history of getting there for the concrete-effect-vs-concrete-
+// effect case. The row-variable-tail case was verified separately
+// (2026-07-23): `with { Ask, e }` migrates `Ask` too, exactly like any
+// other multi-effect row -- the row-variable token `e` simply never
+// matches any real declared effect name, so it's inert to this pass's own
+// matching logic. If the function body actually exercises whatever `e`
+// turns out to mean at a given call site (invoking a callback parameter
+// typed with that row, for instance), the pre-existing "unrecognized
+// callee is unsafe" rule in edp_has_unsafe_construct already rejects
+// that, independent of anything row-string-related.
+//
+// A handle site
 // (or needing function) whose own body is directly ANOTHER effect's
 // `EHandle` is ALSO no longer automatically excluded: edp_has_unsafe_
 // construct recurses into a nested handle for a DIFFERENT effect (its body

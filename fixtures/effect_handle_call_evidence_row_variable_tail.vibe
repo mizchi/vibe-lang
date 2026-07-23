@@ -1,0 +1,58 @@
+// ADR-0076 (#817) Phase 3: a needing function's row combines a CONCRETE
+// effect with an open row-variable TAIL (`with { Ask, e }`, `e` lowercase
+// per this codebase's row-variable convention -- see
+// docs/cheatsheet.md's "Effect polymorphism" section).
+//
+// This was initially assumed to be a genuine limitation ("row-variable-
+// polymorphic functions" in this file's own module doc comment) alongside
+// the fully-row-polymorphic case (a row that's JUST a variable, no
+// concrete effect at all -- which correctly never migrates for any
+// specific effect, since there's nothing concrete to migrate). Verified
+// directly (2026-07-23) rather than continuing to assume: a MIXED row
+// like this one already migrates its concrete effect correctly, via the
+// exact same row-containment mechanism as any other multi-effect row
+// (fixtures/effect_handle_multi_effect_row_nested.vibe) -- the
+// row-variable token `e` simply never matches any real declared effect
+// name (edp_resolve_effect_names_into has nothing to expand it into), so
+// it's inert to this pass's own row-matching logic. Whatever `e` actually
+// means at a given call site is a completely separate question this
+// fixture doesn't need to answer: IF the function body ever exercised it
+// (invoking a callback parameter typed with that row, for instance), the
+// pre-existing "unrecognized callee is unsafe" rule in
+// edp_has_unsafe_construct already rejects that on its own terms,
+// independent of anything row-string-related.
+//
+// Uses the same `count`-based replay-vs-evidence-dict discriminator as
+// gate 40u's own fixture, so this pins that migration genuinely happens,
+// not merely that the program still compiles and returns a plausible
+// answer via the pre-existing fallback.
+//   count == 2, a == 5, r == a + count == 7
+//   main() == 2 * 1000 + 7 == 2007
+effect Ask {
+  Get -> Int
+}
+
+let ask_helper: () -> Int with { Ask, e } = () -> {
+  perform Ask::Get
+}
+
+let compute = () -> (Int, Int) {
+  let mut count = 0
+  let r = handle {
+    count = count + 1
+    let a = ask_helper()
+    count = count + 1
+    a + count
+  } with Ask {
+    Get => resume(5)
+  }
+  (count, r)
+}
+
+export let main = () -> Int {
+  let (count, r) = compute()
+  count * 1000 + r
+}
+
+__DATA__
+{"last": "2007"}
