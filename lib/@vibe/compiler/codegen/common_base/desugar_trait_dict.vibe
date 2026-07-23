@@ -5824,12 +5824,28 @@ fn dlh_naa_scan_arms(arms: Array[(Pat, Expr)], names: Array[String], bad: Array[
 }
 
 ///|
+// Only ever matches an EFFECTFUL literal (dlh_has_perform on its body) --
+// found via a live regression (2026-07-23, fixtures/eq_array_option_fields.vibe
+// trapping "unreachable" in a derive(Eq)-generated equality helper, bisected
+// to this fix's own introducing commit): the original unguarded version
+// matched ANY literal EFn argument, including the PURE comparator closures
+// derive(Eq)/derive(Ord) generate for Array/Option/tuple field comparisons.
+// Wrapping a pure closure in a synthetic let-binding was assumed harmless
+// (closure construction has no side effects), but something downstream
+// (likely type inference/monomorphization for the generic higher-order
+// comparator call) broke when the literal stopped appearing directly at
+// the call site. Scoping this to effectful literals only -- exactly
+// mirroring dlh_hoist_expr's own ELet branch, which has always required
+// dlh_has_perform before touching a closure at all -- keeps every pure
+// closure completely untouched by this pass, restoring the pre-existing
+// (working) behavior for that case while keeping the IIFE/HOF-arg fix
+// for genuinely effectful literals.
 fn dlh_args_have_literal_efn(args: Array[Expr]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(args) && !found {
     match Array::get(args, i) {
-      EFn(_, _, _, _, _, _) => { found = true },
+      EFn(_, _, _, _, _, fbody) => if dlh_has_perform(fbody) { found = true } else { () },
       // A labeled argument (`with_log(f = () -> ... { perform ... })`,
       // cheatsheet "Labeled arguments") wraps the literal in ELabeledArg --
       // found via testing this exact syntax against the IIFE/HOF-arg fix
@@ -5837,7 +5853,7 @@ fn dlh_args_have_literal_efn(args: Array[Expr]) -> Bool {
       // matched a BARE EFn, not one hiding one layer deeper inside a label
       // wrapper. Recurse one layer to catch it too.
       ELabeledArg(_, _, inner) => match inner {
-        EFn(_, _, _, _, _, _) => { found = true },
+        EFn(_, _, _, _, _, fbody) => if dlh_has_perform(fbody) { found = true } else { () },
         _ => ()
       },
       _ => ()
@@ -5865,20 +5881,24 @@ fn dlh_letbind_literal_args(callee: Expr, args: Array[Expr], off: Int, ctr: Arra
   while i < Array::length(args) {
     let a = Array::get(args, i)
     match a {
-      EFn(_, _, _, _, _, _) => {
+      EFn(_, _, _, _, _, fbody) => if dlh_has_perform(fbody) {
         let idx = Array::get(ctr, 0)
         Array::set(ctr, 0, idx + 1)
         let nm = "__dlh_arglit_\{idx}"
         Array::push(lits, (nm, a))
         Array::push(new_args, EIdent(nm, off))
+      } else {
+        Array::push(new_args, a)
       },
       ELabeledArg(lbl, mname, inner) => match inner {
-        EFn(_, _, _, _, _, _) => {
+        EFn(_, _, _, _, _, fbody) => if dlh_has_perform(fbody) {
           let idx = Array::get(ctr, 0)
           Array::set(ctr, 0, idx + 1)
           let nm = "__dlh_arglit_\{idx}"
           Array::push(lits, (nm, inner))
           Array::push(new_args, ELabeledArg(lbl, mname, EIdent(nm, off)))
+        } else {
+          Array::push(new_args, a)
         },
         _ => Array::push(new_args, a)
       },
@@ -6003,11 +6023,15 @@ fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
     // function -- reuses 100% of the existing, separately-verified
     // ELet/EFn logic above with no new closure-conversion code.
     ECall(callee, args, off) => match callee {
-      EFn(_, _, _, _, _, _) => {
+      EFn(_, _, _, _, _, cfbody) => if dlh_has_perform(cfbody) {
         let idx = Array::get(ctr, 0)
         Array::set(ctr, 0, idx + 1)
         let iife_name = "__dlh_iife_\{idx}"
         dlh_hoist_expr(ELet(iife_name, callee, ECall(EIdent(iife_name, off), args, off), off), hoisted, ctr)
+      } else {
+        ECall(dlh_hoist_expr(callee, hoisted, ctr), for a in args {
+          dlh_hoist_expr(a, hoisted, ctr)
+        }, off)
       },
       _ => if dlh_args_have_literal_efn(args) {
         // An inline `EFn` literal passed as a CALL ARGUMENT (not the
