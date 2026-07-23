@@ -4068,6 +4068,41 @@ fi
 rm -rf "$gcedir"
 echo "[compiler-gate] wasm-gc backend evidence-dict user-defined effect support ok (17)"
 
+# 40h3. ADR-0076 (#817) gc-backend follow-up: a needing function's OWN
+#       eligibility no longer sinks the whole effect's migration once it is
+#       provably UNREACHABLE (dead code) by the time evidence_dict_pass runs
+#       -- e.g. #1070's dtpw_inline_trivial_wrappers rewrites `apply(inner)`
+#       into `inner()`, leaving the trivial wrapper `apply`'s own top-level
+#       definition uncalled anywhere; `apply`'s body (`f()`, a call through
+#       an arbitrary closure PARAMETER) can never be proven safe by
+#       edp_has_unsafe_construct, but since it can never actually run, that
+#       no longer matters. evidence_dict_pass now reuses dce_keep_flags
+#       (core/dce.vibe, the SAME reachability engine dce_stmts already uses
+#       in production) to drop provably-dead needing functions before the
+#       safety scan. This is the SAME fixture as gate 40aj's linear-backend
+#       assertion (effect_local_closure_by_value_wrapper.vibe, want 105) --
+#       confirmed via direct A/B testing that it failed under
+#       VIBE_BACKEND=gc with "only `with Error`..." before this change.
+echo "[compiler-gate] 40h3/40 wasm-gc backend: dead needing function no longer blocks effect migration (ADR-0076 gc follow-up)"
+gcdeaddir="_build/_gate_gc_dead_needing"
+rm -rf "$gcdeaddir"; mkdir -p "$gcdeaddir"
+sed '/^__DATA__$/,$d' fixtures/effect_local_closure_by_value_wrapper.vibe > "$gcdeaddir/src.vibe"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gcdeaddir/src.vibe" "$gcdeaddir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$gcdeaddir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_by_value_wrapper.vibe did not compile under VIBE_BACKEND=gc" >&2
+  cat "$gcdeaddir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+gcdead_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcdeaddir/out.wasm" 2>&1 | tail -1)"
+if [ "$gcdead_out" != "105" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_by_value_wrapper.vibe under gc got '$gcdead_out' (want 105) -- dead-needing-function filtering regressed" >&2
+  exit 1
+fi
+rm -rf "$gcdeaddir"
+echo "[compiler-gate] wasm-gc backend dead needing function filtering ok (105)"
+
 # 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
 #      must render fixtures/wit_gen_http.vibe byte-exactly as the committed
 #      golden. Pins the WIT mapping contract (docs/effect-wit-mapping.md):

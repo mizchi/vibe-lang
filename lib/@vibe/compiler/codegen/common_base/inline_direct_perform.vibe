@@ -4,7 +4,8 @@ import ../../core {
   Expr,
   Pat,
   Stmt,
-  TypeExpr
+  TypeExpr,
+  dce_keep_flags
 }
 
 import ../../../../../lib/@vibe/core {
@@ -713,10 +714,26 @@ fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_b
 // (passes through unchanged) an EDot or an extra prepended argument left
 // by an earlier effect's migration, it just doesn't blanket-reject them
 // the way the eligibility check does.
-export fn evidence_dict_pass(stmts: Array[Stmt]) -> Unit {
+// `entry_name` (2026-07-23, gc-backend follow-up): a needing function can
+// become genuinely UNREACHABLE mid-pipeline -- e.g. dtpw_inline_trivial_wrappers
+// (desugar_trait_dict.vibe, #1070 narrow slice) rewrites `apply(inner)` into
+// `inner()`, leaving a trivial pass-through wrapper's own top-level `apply`
+// definition uncalled anywhere, yet `apply` still declares the migrated
+// effect in its row (it forwards an arbitrary closure argument's effect,
+// which this pass can never prove safe -- see edp_has_unsafe_construct's
+// "call to a non-statically-known target" rejection) and so used to sink
+// the WHOLE effect's eligibility to false, even though the offending
+// function can never actually run. `entry_name` lets edp_plan_migrations
+// reuse the SAME reachability engine `dce_stmts`/`dce_keep_flags`
+// (core/dce.vibe) already uses in production elsewhere in the compiler to
+// drop provably-dead needing functions from consideration before the
+// safety scan -- see edp_plan_migrations' doc comment for the full
+// analysis of why this is safe even if reachability is ever imprecise.
+export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Unit {
   let effect_defs = edp_collect_effect_defs(stmts)
   let fn_defs = edp_collect_fn_defs(stmts)
-  let plans = edp_plan_migrations(stmts, effect_defs, fn_defs)
+  let keep = dce_keep_flags(stmts, [entry_name])
+  let plans = edp_plan_migrations(stmts, effect_defs, fn_defs, keep)
   let mut pi = 0
   while pi < Array::length(plans) {
     let (ename, ops, needing, handle_sites) = Array::get(plans, pi)
@@ -725,10 +742,77 @@ export fn evidence_dict_pass(stmts: Array[Stmt]) -> Unit {
   }
 }
 
+// Drop any `needing` name whose OWN top-level definition `keep` (from
+// `dce_keep_flags`, computed against the real entry point) marks
+// unreachable -- a needing function that can never actually run at runtime
+// can never need the evidence dict at runtime either, so excluding it from
+// `needing` changes nothing observable, REGARDLESS of whether its body
+// would otherwise have been judged "safe" by edp_has_unsafe_construct.
+//
+// Why this can never cause a silent miscompile even if `keep`'s
+// reachability analysis is ever imprecise: `keep` is used ONLY to shrink
+// `needing` here, never to delete anything from `stmts` (dce_stmts itself
+// is not called). If `keep` ever under-approximates unreachability (wrongly
+// calls something dead that's actually still called somewhere), the
+// excluded function's own body -- if it directly performs the migrated
+// effect -- is simply left un-rewritten. That still-literal `perform` node
+// then hits exactly the same fallback every genuinely-ineligible perform
+// already hits today: the linear backend's pre-existing replay codegen
+// (still correct, just not the fast evidence-dict path), or the gc
+// backend's pre-existing "unsupported perform" hard compile error (loud,
+// not silent). Both are the SAME failure modes this pass already produces
+// for any effect it declines to migrate -- this filter can only ever
+// recover eligibility that dead code would otherwise block, never regress
+// a case that worked before it existed.
+fn edp_drop_unreachable_needing(needing: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool]) -> Array[String] {
+  let out = array_empty()
+  let mut ni = 0
+  while ni < Array::length(needing) {
+    let nm = Array::get(needing, ni)
+    if edp_needing_name_reachable(nm, fn_defs, keep) {
+      Array::push(out, nm)
+    } else {
+      ()
+    }
+    ni = ni + 1
+  }
+  out
+}
+
+fn edp_needing_name_reachable(name: String, fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool]) -> Bool {
+  let mut fi = 0
+  let mut result = true
+  let mut found = false
+  while fi < Array::length(fn_defs) {
+    let (idx, _, _, nm, _, _) = Array::get(fn_defs, fi)
+    if nm == name && !found {
+      found = true
+      result = if idx >= 0 && idx < Array::length(keep) {
+        Array::get(keep, idx)
+      } else {
+        true
+      }
+    } else {
+      ()
+    }
+    fi = fi + 1
+  }
+  result
+}
+
 // Decide eligibility for every effect against `stmts` as it is RIGHT NOW
 // (the caller must not have mutated anything yet) and return the plans
 // for the effects that qualify, in effect-declaration order.
-fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+//
+// `keep` (2026-07-23): per-stmt-index reachable flags from `dce_keep_flags`
+// (core/dce.vibe), computed by the caller against the SAME `entry_name` the
+// real compile uses. Before the safety scan below, `needing` is filtered
+// down to only the names `keep` marks reachable -- see
+// edp_drop_unreachable_needing's doc comment for why dropping a provably-
+// dead needing function can never cause a silent miscompile, only recover
+// eligibility that a dead function's un-provable body would otherwise sink
+// for the whole effect.
+fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
   let es_names = array_empty()
   let es_members_list = array_empty()
   edp_es_collect_into(stmts, es_names, es_members_list)
@@ -736,7 +820,8 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
   let mut ei = 0
   while ei < Array::length(effect_defs) {
     let (ename, ops) = Array::get(effect_defs, ei)
-    let needing = edp_needing_names(fn_defs, ename, es_names, es_members_list)
+    let needing_all = edp_needing_names(fn_defs, ename, es_names, es_members_list)
+    let needing = edp_drop_unreachable_needing(needing_all, fn_defs, keep)
     if Array::length(needing) == 0 {
       ()
     } else {
