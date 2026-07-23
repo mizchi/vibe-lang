@@ -5223,6 +5223,32 @@ fi
 rm -rf "$illhadir"
 echo "[compiler-gate] inline effectful lambda literal IIFE/HOF-arg fix ok (10)"
 
+# 40am. Found while verifying gate 40al against labeled-argument syntax
+#       (2026-07-23): a literal EFn one layer inside an ELabeledArg wrapper
+#       (`with_log(f = () -> ... { perform ... })`) evaded that fix
+#       entirely -- dlh_args_have_literal_efn/dlh_letbind_literal_args only
+#       matched a BARE EFn argument. Fixed by recursing one layer into
+#       ELabeledArg in both helpers.
+echo "[compiler-gate] 40am/40 inline effectful lambda literal as a LABELED call argument no longer crashes"
+illladir="_build/_gate_inline_lambda_literal_labeled_arg"
+rm -rf "$illladir"; mkdir -p "$illladir"
+sed '/^__DATA__$/,$d' fixtures/effect_inline_lambda_literal_labeled_arg.vibe > "$illladir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$illladir/src.vibe" "$illladir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$illladir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_inline_lambda_literal_labeled_arg.vibe did not compile" >&2
+  cat "$illladir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+illla_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$illladir/out.wasm" 2>&1 | tail -1)"
+if [ "$illla_out" != "5" ]; then
+  echo "[compiler-gate] FAIL: effect_inline_lambda_literal_labeled_arg.vibe got '$illla_out' (want 5) -- labeled-arg literal fix regressed" >&2
+  exit 1
+fi
+rm -rf "$illladir"
+echo "[compiler-gate] inline effectful lambda literal labeled-arg fix ok (5)"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the

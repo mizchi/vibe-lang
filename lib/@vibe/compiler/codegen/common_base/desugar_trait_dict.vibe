@@ -5750,6 +5750,16 @@ fn dlh_args_have_literal_efn(args: Array[Expr]) -> Bool {
   while i < Array::length(args) && !found {
     match Array::get(args, i) {
       EFn(_, _, _, _, _, _) => { found = true },
+      // A labeled argument (`with_log(f = () -> ... { perform ... })`,
+      // cheatsheet "Labeled arguments") wraps the literal in ELabeledArg --
+      // found via testing this exact syntax against the IIFE/HOF-arg fix
+      // above (2026-07-23): it still crashed, since this check only
+      // matched a BARE EFn, not one hiding one layer deeper inside a label
+      // wrapper. Recurse one layer to catch it too.
+      ELabeledArg(_, _, inner) => match inner {
+        EFn(_, _, _, _, _, _) => { found = true },
+        _ => ()
+      },
       _ => ()
     }
     i = i + 1
@@ -5758,10 +5768,14 @@ fn dlh_args_have_literal_efn(args: Array[Expr]) -> Bool {
 }
 
 ///|
-// Rewrites `callee(args...)` so every DIRECT `EFn` literal in `args` is
-// let-bound immediately before the call, left-to-right (same evaluation
+// Rewrites `callee(args...)` so every DIRECT `EFn` literal in `args` --
+// bare, or one layer inside an `ELabeledArg` wrapper (`f = () -> ...`) --
+// is let-bound immediately before the call, left-to-right (same evaluation
 // order as the literal appearing inline): `callee(a, <lit>, b)` becomes
-// `let __dlh_arglit_N = <lit>; callee(a, __dlh_arglit_N, b)`. Non-literal
+// `let __dlh_arglit_N = <lit>; callee(a, __dlh_arglit_N, b)`; a labeled
+// literal `callee(f = <lit>)` becomes
+// `let __dlh_arglit_N = <lit>; callee(f = __dlh_arglit_N)` (the label
+// wrapper is preserved, only its inner value is replaced). Non-literal
 // args are left untouched. See dlh_args_have_literal_efn's call site
 // (dlh_hoist_expr's ECall case) for why this exists.
 fn dlh_letbind_literal_args(callee: Expr, args: Array[Expr], off: Int, ctr: Array[Int]) -> Expr {
@@ -5777,6 +5791,16 @@ fn dlh_letbind_literal_args(callee: Expr, args: Array[Expr], off: Int, ctr: Arra
         let nm = "__dlh_arglit_\{idx}"
         Array::push(lits, (nm, a))
         Array::push(new_args, EIdent(nm, off))
+      },
+      ELabeledArg(lbl, mname, inner) => match inner {
+        EFn(_, _, _, _, _, _) => {
+          let idx = Array::get(ctr, 0)
+          Array::set(ctr, 0, idx + 1)
+          let nm = "__dlh_arglit_\{idx}"
+          Array::push(lits, (nm, inner))
+          Array::push(new_args, ELabeledArg(lbl, mname, EIdent(nm, off)))
+        },
+        _ => Array::push(new_args, a)
       },
       other => Array::push(new_args, other)
     }
