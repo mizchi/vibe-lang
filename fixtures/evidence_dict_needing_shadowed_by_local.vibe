@@ -1,0 +1,42 @@
+// #1074 PR review (chatgpt-codex-connector, P1): "Respect local shadowing
+// when forwarding evidence". evidence_dict_pass's needing-forwarding
+// rewrite (edp_rewrite_needing_body, inline_direct_perform.vibe) matched a
+// call's callee by NAME ONLY against the globally-collected `needing` set
+// (top-level functions that need the evidence dict threaded to them), with
+// no scope tracking. Here `via`'s own body locally binds a NEW `helper`
+// (pure, ignoring effects entirely) that shadows the TOP-LEVEL effectful
+// `helper` -- before the fix, `via`'s `helper()` call (correctly resolving
+// to the LOCAL, pure helper by ordinary lexical scoping) still got the
+// evidence-dict argument incorrectly prepended, since the local closure
+// was never rewritten to accept that extra parameter -- producing "null
+// function or function signature mismatch" at runtime (confirmed via
+// direct A/B testing against a pre-fix build, 2026-07-23). Fixed by
+// dropping a needing name from consideration entirely if it's shadowed
+// ANYWHERE in the program (edp_drop_shadowed_needing, applied
+// unconditionally alongside the existing self-discharging-needing filter).
+//   via() => local pure helper, ignores its own perform-free body, => 42
+//   helper() (outer, top-level) => perform Ask::Get resolves to 5 => 5
+//   total: 42 + 5 = 47
+effect Ask {
+  Get -> Int
+}
+
+let helper = () -> Int with { Ask } {
+  perform Ask::Get
+}
+
+let via = () -> Int with { Ask } {
+  let helper = () -> Int { 42 }
+  helper()
+}
+
+export let main = () -> Int {
+  handle {
+    via() + helper()
+  } with Ask {
+    Get => resume(5)
+  }
+}
+
+__DATA__
+{"last": "47"}

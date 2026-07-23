@@ -5276,6 +5276,35 @@ fi
 rm -rf "$dtpwsdir"
 echo "[compiler-gate] trivial-wrapper inlining shadowing fix ok (99)"
 
+# 40ao. #1074 PR review (chatgpt-codex-connector, P1): evidence_dict_pass's
+#       needing-forwarding rewrite (edp_rewrite_needing_body) also matched
+#       a call's callee by NAME ONLY against the global `needing` set, with
+#       no scope tracking -- a local binding shadowing a needing function's
+#       name got the evidence-dict argument incorrectly prepended to ITS
+#       calls too, even though the local closure was never rewritten to
+#       accept it (arity mismatch / invalid call). Fixed by
+#       edp_drop_shadowed_needing, applied unconditionally alongside the
+#       existing self-discharging-needing filter.
+echo "[compiler-gate] 40ao/40 evidence-dict needing-forwarding respects lexical shadowing (#1074 review)"
+edpsdir="_build/_gate_edp_needing_shadowed"
+rm -rf "$edpsdir"; mkdir -p "$edpsdir"
+sed '/^__DATA__$/,$d' fixtures/evidence_dict_needing_shadowed_by_local.vibe > "$edpsdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edpsdir/src.vibe" "$edpsdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edpsdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: evidence_dict_needing_shadowed_by_local.vibe did not compile" >&2
+  cat "$edpsdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edps_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edpsdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edps_out" != "47" ]; then
+  echo "[compiler-gate] FAIL: evidence_dict_needing_shadowed_by_local.vibe got '$edps_out' (want 47) -- evidence-dict needing-forwarding shadowing fix regressed" >&2
+  exit 1
+fi
+rm -rf "$edpsdir"
+echo "[compiler-gate] evidence-dict needing-forwarding shadowing fix ok (47)"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the

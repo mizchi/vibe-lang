@@ -797,6 +797,243 @@ fn edp_drop_unreachable_needing(needing: Array[String], fn_defs: Array[(Int, Boo
   out
 }
 
+// Local copy of dlh_strip_tilde (desugar_trait_dict.vibe) -- see
+// edp_pat_binds' own doc comment just below for why this file keeps local
+// copies rather than adding new cross-file callers.
+fn edp_strip_tilde(n: String) -> String {
+  let ln = String::length(n)
+  if ln > 0 && n[ln - 1:ln] == "~" {
+    n[0:ln - 1]
+  } else {
+    n
+  }
+}
+
+// Local copy of a pattern's bound names (mirrors dlh_pat_binds in
+// desugar_trait_dict.vibe -- kept as a separate local copy rather than a
+// cross-file import to avoid the bootstrap flatten gotcha documented
+// elsewhere in this file: a brand-new cross-file export + its first
+// cross-file caller in the SAME commit gets silently dropped by the
+// merge/flatten tool).
+fn edp_pat_binds(p: Pat, out: Array[String]) -> Unit {
+  match p {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        edp_pat_binds(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    PTuple(ps) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        edp_pat_binds(Array::get(ps, i), out)
+        i = i + 1
+      }
+    },
+    POr(a, b) => {
+      edp_pat_binds(a, out)
+      edp_pat_binds(b, out)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        edp_pat_binds(fp, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+// Does `expr` bind (shadow) `name` anywhere within it? Full-coverage
+// traversal mirroring edp_rewrite_needing_body's own node coverage, plus
+// match/handle arm pattern binders (which edp_rewrite_needing_body itself
+// doesn't need to examine, but shadow detection does). See
+// edp_drop_shadowed_needing's own doc comment for why this exists.
+fn edp_expr_binds_name(expr: Expr, name: String) -> Bool {
+  match expr {
+    EFn(_, _, params, _, _, body) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(params) && !found {
+        let (pn, _) = Array::get(params, i)
+        if edp_strip_tilde(pn) == name {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found || edp_expr_binds_name(body, name)
+    },
+    EHandle(body, arms) => {
+      let mut i = 0
+      let mut found = edp_expr_binds_name(body, name)
+      while i < Array::length(arms) && !found {
+        let (p, ex) = Array::get(arms, i)
+        let bound = array_empty()
+        edp_pat_binds(p, bound)
+        if edp_str_array_contains(bound, name) || edp_expr_binds_name(ex, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EIf(c, t, e2) => edp_expr_binds_name(c, name) || edp_expr_binds_name(t, name) || edp_expr_binds_name(e2, name),
+    EMatch(s, arms) => {
+      let mut i = 0
+      let mut found = edp_expr_binds_name(s, name)
+      while i < Array::length(arms) && !found {
+        let (p, ex) = Array::get(arms, i)
+        let bound = array_empty()
+        edp_pat_binds(p, bound)
+        if edp_str_array_contains(bound, name) || edp_expr_binds_name(ex, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EWhile(c, b) => edp_expr_binds_name(c, name) || edp_expr_binds_name(b, name),
+    EForIn(n, idx, it, b) => {
+      let idx_hit = match idx {
+        Some(i2) => i2 == name,
+        None => false
+      }
+      n == name || idx_hit || edp_expr_binds_name(it, name) || edp_expr_binds_name(b, name)
+    },
+    ELoop(pairs, b) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(pairs) && !found {
+        let (n, v) = Array::get(pairs, i)
+        if n == name || edp_expr_binds_name(v, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found || edp_expr_binds_name(b, name)
+    },
+    ELet(n, v, b, _) => n == name || edp_expr_binds_name(v, name) || edp_expr_binds_name(b, name),
+    ELetMut(n, v, b, _) => n == name || edp_expr_binds_name(v, name) || edp_expr_binds_name(b, name),
+    ELetRec(n, v, b) => n == name || edp_expr_binds_name(v, name) || edp_expr_binds_name(b, name),
+    ESeq(a, b) => edp_expr_binds_name(a, name) || edp_expr_binds_name(b, name),
+    EAssign(_, v, c) => edp_expr_binds_name(v, name) || edp_expr_binds_name(c, name),
+    EAssignOp(_, _, v, c) => edp_expr_binds_name(v, name) || edp_expr_binds_name(c, name),
+    EReturn(e2) => edp_expr_binds_name(e2, name),
+    EDot(o, _, _, _) => edp_expr_binds_name(o, name),
+    ECall(callee, args, _) => edp_expr_binds_name(callee, name) || edp_exprs_bind_name(args, name),
+    EBinOp(_, l, r) => edp_expr_binds_name(l, name) || edp_expr_binds_name(r, name),
+    EUnaryOp(_, e2) => edp_expr_binds_name(e2, name),
+    ELabeledArg(_, _, v) => edp_expr_binds_name(v, name),
+    EBreak(opt) => match opt {
+      Some(e2) => edp_expr_binds_name(e2, name),
+      None => false
+    },
+    EContinue(args) => edp_exprs_bind_name(args, name),
+    ETuple(elems) => edp_exprs_bind_name(elems, name),
+    EArray(elems) => edp_exprs_bind_name(elems, name),
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) && !found {
+        let (_, v) = Array::get(fields, i)
+        if edp_expr_binds_name(v, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMap(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) && !found {
+        let (_, v) = Array::get(fields, i)
+        if edp_expr_binds_name(v, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ESpread(e2) => edp_expr_binds_name(e2, name),
+    _ => false
+  }
+}
+
+fn edp_exprs_bind_name(es: Array[Expr], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(es) && !found {
+    if edp_expr_binds_name(Array::get(es, i), name) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// Drop any `needing` name that's shadowed ANYWHERE in the program (any
+// nested `let`/`let mut`/`let rec`, EFn parameter, match/handle arm
+// pattern binder, for-loop name, or loop parameter reusing the same
+// identifier as a top-level "needing" function). edp_rewrite_needing_body
+// matches a call's callee by NAME ONLY (`edp_str_array_contains(needing,
+// nm)`, line ~1952) with no scope tracking -- a local binding that
+// shadows a needing function's name would get the evidence-dict argument
+// prepended to ITS calls too, even though the local closure/value was
+// never rewritten to accept that extra parameter, producing an arity
+// mismatch / invalid generated call (#1074 PR review,
+// chatgpt-codex-connector P1: "Respect local shadowing when forwarding
+// evidence"). Deliberately whole-program-conservative rather than
+// precisely scope-threaded, matching edp_drop_self_discharging_needing's
+// own established pattern immediately below: losing eligibility for the
+// rare needing function whose name is ALSO reused as a shadowing binder
+// elsewhere is an acceptable trade for guaranteed correctness.
+fn edp_drop_shadowed_needing(needing: Array[String], stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut ni = 0
+  while ni < Array::length(needing) {
+    let nm = Array::get(needing, ni)
+    let mut shadowed = false
+    let mut si = 0
+    while si < Array::length(stmts) && !shadowed {
+      match Array::get(stmts, si) {
+        SLet(_, _, _, _, sv) => if edp_expr_binds_name(sv, nm) {
+          shadowed = true
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      si = si + 1
+    }
+    if shadowed {
+      ()
+    } else {
+      Array::push(out, nm)
+    }
+    ni = ni + 1
+  }
+  out
+}
+
 // Drop any `needing` name whose OWN entire body is BARE `handle {..} with
 // ename {..}` -- e.g. `fixtures/effect_effectset_expansion.vibe`'s `main`,
 // declared `with { Ask, Ask::Get }` purely to satisfy a checker requirement
@@ -890,11 +1127,17 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
   while ei < Array::length(effect_defs) {
     let (ename, ops) = Array::get(effect_defs, ei)
     let needing_all = edp_needing_names(fn_defs, ename, es_names, es_members_list)
+    // Shadowed-name exclusion is ALSO unconditional (#1074 review: a
+    // needing function's name shadowed by a local binding elsewhere in
+    // the program is never safe to leave in `needing` regardless of
+    // dead-code/self-discharge status -- see edp_drop_shadowed_needing's
+    // own doc comment), so it applies before the self-discharging filter.
+    let needing_unshadowed = edp_drop_shadowed_needing(needing_all, stmts)
     // Self-discharging exclusion is unconditional (a self-discharging
     // function never needs the dict for itself, dead or not -- see
     // edp_drop_self_discharging_needing's doc comment), so it applies to
     // the FULL set before either eligibility attempt below.
-    let needing_full = edp_drop_self_discharging_needing(needing_all, stmts, fn_defs, ename)
+    let needing_full = edp_drop_self_discharging_needing(needing_unshadowed, stmts, fn_defs, ename)
     match edp_try_plan_for_effect(stmts, ename, ops, needing_full, fn_defs) {
       Some(plan) => Array::push(plans, plan),
       None => {
