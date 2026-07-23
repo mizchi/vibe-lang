@@ -1,0 +1,69 @@
+// ADR-0076 (#817) Phase 3: a `perform` reached only by calling a locally
+// `let`-bound, CAPTURE-FREE closure (`let inner = () -> T with { E } {
+// ... }; inner()`, not a top-level function name).
+//
+// This was investigated as a possible extension for evidence_dict_pass
+// itself (module doc comment's "Not attempted here" list, "local-closure
+// invocation ... needs real lexical scope tracking"). Building and testing
+// a narrow, provably-safe inlining pass for it (capture-free closures
+// only, verified via free-identifier analysis) led to an unrelated
+// discovery: this exact shape ALREADY migrates correctly on the
+// currently-shipped compiler, with NO evidence_dict_pass changes needed
+// at all -- #786 ("hoist non-capturing effectful local lambdas to
+// top-level", lib/@vibe/compiler/codegen/common_base/desugar_trait_dict.
+// vibe) already lambda-lifts a capture-free local closure that performs
+// an effect to a fresh top-level binding BEFORE evidence_dict_pass ever
+// runs. Once hoisted, the call site is an ordinary call to a genuine
+// top-level function -- exactly what evidence_dict_pass's EXISTING,
+// unmodified `needing`-forwarding logic already handles, no
+// closure-specific code needed anywhere in this file.
+//
+// Locks in that this already-shipped combination (an ADR-0071-era fix, #786,
+// composing correctly with this session's ADR-0076 Phase 3 work) keeps
+// working, using the same `count`-based replay-vs-evidence-dict
+// discriminator as gate 40u's own fixture.
+//
+// The CAPTURING case (a local closure that ALSO references an outer local
+// variable, not just the effect) remains excluded -- not merely from
+// evidence_dict_pass, but from working AT ALL: it independently hits a
+// pre-existing, deeper miscompilation bug in the local-closure+effect
+// combinator itself (invalid wasm at instantiation), which #786's own
+// landed fix explicitly declined to touch (hoisting requires NO captures)
+// and which #786's own body had already flagged as the harder, unresolved
+// "Layer 2" of that bug. Tracked separately as #1069, since it's a
+// pre-existing closure-codegen bug independent of evidence_dict_pass, not
+// something an effect-row-migration pass could paper over even in
+// principle -- the underlying replay path is what's broken for that shape.
+//   count == 2, a == 5, r == a + count == 7
+//   main() == 2 * 1000 + 7 == 2007
+effect Ask {
+  Get -> Int
+}
+
+let ask_helper = () -> Int with { Ask } {
+  let inner = () -> Int with { Ask } {
+    perform Ask::Get
+  }
+  inner()
+}
+
+let compute = () -> (Int, Int) {
+  let mut count = 0
+  let r = handle {
+    count = count + 1
+    let a = ask_helper()
+    count = count + 1
+    a + count
+  } with Ask {
+    Get => resume(5)
+  }
+  (count, r)
+}
+
+export let main = () -> Int {
+  let (count, r) = compute()
+  count * 1000 + r
+}
+
+__DATA__
+{"last": "2007"}

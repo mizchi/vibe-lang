@@ -644,34 +644,48 @@ fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_b
 // from can hide anything unsafe, which the existing traversal already
 // answers soundly regardless of the field's static type. A closure
 // LITERAL's own body (`EFn`) is ALSO safe to look inside now -- see
-// fixtures/effect_handle_call_evidence_closure_literal.vibe -- but this
-// covers only the closure's DEFINITION: CALLING an arbitrary local
-// closure (`f()` where `f` is a local variable, not a top-level function
-// name) is a SEPARATE, still-unaddressed restriction (the ECall case's
-// `else => true` fallback doesn't distinguish a local callee from an
-// unrecognized top-level one, and recognizing local callees safely would
-// need real scope tracking this AST-level pass doesn't have -- doing it
-// naively by name alone would risk exactly the kind of shadowing false-
-// safety `pure_fns`/`needing`'s name-matching could ALSO in principle hit,
-// see edp_pure_fn_names' considerations). So this relaxation's practical
-// effect is narrower than it sounds: a needing function may now freely
-// DEFINE closures (used as opaque data, passed to something already
-// recognized safe, or simply unused) without disqualifying migration,
-// but INVOKING one through a local binding still falls back to replay.
+// fixtures/effect_handle_call_evidence_closure_literal.vibe -- covering
+// only the closure's DEFINITION: CALLING an arbitrary local closure
+// (`f()` where `f` is a local variable, not a top-level function name)
+// would still need real scope tracking this AST-level pass doesn't have
+// to recognize safely by name alone (risking the kind of shadowing
+// false-safety `pure_fns`/`needing`'s name-matching could ALSO in
+// principle hit -- see edp_pure_fn_names' considerations) -- EXCEPT this
+// turns out to already be a non-issue for the common, CAPTURE-FREE case:
+// #786 ("hoist non-capturing effectful local lambdas to top-level",
+// desugar_trait_dict.vibe) already lambda-lifts such a closure to a
+// fresh top-level binding BEFORE this pass ever runs, so by the time
+// edp_has_unsafe_construct sees the call site, it's already an ordinary
+// call to a genuine top-level function -- ALREADY handled correctly by
+// the existing needing-forwarding logic, no closure-specific code needed
+// here at all. Verified directly (2026-07-23) rather than assumed still
+// broken: see fixtures/effect_handle_call_evidence_local_closure_capture_
+// free.vibe. Only a local closure that ALSO captures an outer local (not
+// just the effect) remains excluded -- and not merely from this pass:
+// investigating this surfaced that the CAPTURING case independently hits
+// a pre-existing, deeper miscompilation bug in the closure+effect
+// combinator itself (invalid wasm at instantiation) that #786's own
+// landed fix explicitly declined to touch and that #786's own body had
+// already flagged as the harder, never-actually-fixed "Layer 2" of that
+// bug -- tracked separately as #1069, since it's a closure-codegen bug
+// independent of evidence_dict_pass, not something a row-migration pass
+// could paper over even in principle (the underlying replay path is
+// what's broken for that shape, migrated or not).
+//
 // A row spelled with an `effectset` alias (`with { AskAll }`) is ALSO
 // recognized now, at whatever granularity the alias expands to -- see
 // edp_row_is_exactly's doc comment for why the row string needed its own
 // local (re-)expansion here rather than trusting it was already expanded
-// by the time codegen sees it. Expanding coverage further (local-closure
-// invocation, once real scope tracking is available) is expected
-// follow-up, not a soundness gap in what already lands here. (An earlier
-// draft of this comment also listed "a wrapper that merely forwards to a
-// needing function without itself declaring the effect" as a similar
-// follow-up item -- verified, and removed, 2026-07-23: the checker
+// by the time codegen sees it.
+//
+// (An earlier draft of this comment also listed "a wrapper that merely
+// forwards to a needing function without itself declaring the effect" as
+// a follow-up item -- verified, and removed, 2026-07-23: the checker
 // already rejects that program outright at compile time ("effect row
 // mismatch ... missing { E } (no 'with' clause, requires { E })"), so it
 // can never reach this pass at all. Not every item that sounds plausible
-// on paper turns out to be a real, reachable gap; this one wasn't.)
+// on paper turns out to be a real, reachable gap; this one wasn't either,
+// same lesson as the local-closure-invocation item above.)
 // Two phases, deliberately NOT interleaved (see edp_row_is_exactly's doc
 // comment, "追記 8", for the bug this avoids): first decide eligibility
 // for EVERY effect against the still-completely-unmutated `stmts`, then

@@ -4848,6 +4848,36 @@ fi
 rm -rf "$edprvdir"
 echo "[compiler-gate] evidence-dict pass row-variable-tail row ok"
 
+# 40ag. ADR-0076 Phase 3 (#817) + #786: a needing function's body calls a
+#       locally `let`-bound, CAPTURE-FREE closure that performs the
+#       migrated effect (not a top-level function name). #786 already
+#       lambda-lifts such a closure to a fresh top-level binding BEFORE
+#       evidence_dict_pass ever runs, so the call site becomes an ordinary
+#       call to a genuine top-level function -- no evidence_dict_pass
+#       changes needed for this to migrate correctly. This gate locks in
+#       that composition. (The CAPTURING case remains broken independent
+#       of evidence_dict_pass entirely -- #1069, a pre-existing closure-
+#       codegen bug #786's landed fix explicitly declined to touch.)
+echo "[compiler-gate] 40ag/40 evidence-dict pass: needing function calls a capture-free local closure (ADR-0076 Phase 3/#817, #786)"
+edplccfdir="_build/_gate_evidence_dict_local_closure_capture_free"
+rm -rf "$edplccfdir"; mkdir -p "$edplccfdir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_call_evidence_local_closure_capture_free.vibe > "$edplccfdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edplccfdir/src.vibe" "$edplccfdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edplccfdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_local_closure_capture_free.vibe did not compile" >&2
+  cat "$edplccfdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edplccf_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edplccfdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edplccf_out" != "2007" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_call_evidence_local_closure_capture_free.vibe got '$edplccf_out' (want 2007) -- either #786's hoist regressed or evidence_dict_pass no longer forwards to the hoisted top-level name" >&2
+  exit 1
+fi
+rm -rf "$edplccfdir"
+echo "[compiler-gate] evidence-dict pass capture-free local closure call ok"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the
