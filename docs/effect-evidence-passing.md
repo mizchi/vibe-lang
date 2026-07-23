@@ -1515,6 +1515,40 @@ un-rewritten な perform は replay codegen に fallback するだけで正し�
 正しい値 (6) を返す。既存の #1070 系・追記18・追記19 の fixture 群への
 影響がないことも個別に再確認した。`compiler_gate.sh` gate 40h5 で固定。
 
+### 追記 21 (2026-07-23、同日): `__index`/length 系 builtin を pure allowlist に追加
+
+追記17 のカバレッジ実測 (VIBE_BACKEND=gc 下の 107 fixture sweep) を再度
+行ったところ (18/107 → 23/107 まで改善)、`fixtures/effect_advanced_test.vibe`
+の最初のテスト (`while i < Array::length(items) { perform
+Logger::Log(items[i]); i += 1 }`) が依然 migrate されないことが判明した。
+
+原因: `obj[i]` は `__index(obj, i)` へ desugar される
+(`desugar_trait_dict.vibe`) が、`__index` も `Array::length` も
+`idp_pure_builtin_names`/`edp_pure_builtin_names` の hand-audited
+allowlist に載っていなかった。`edp_has_unsafe_construct` は allowlist
+外の呼び出しを (perform/resume/needing 関数呼び出しでない限り)
+無条件に unsafe とみなすため、`log_all` のループ本体は perform
+そのものとは無関係に、`__index`/`Array::length` 呼び出しの存在だけで
+ineligible に沈んでいた。linear backend では無害 (replay codegen に
+fallback するだけで正しく動く) だが、fallback を持たない gc backend
+では `"unsupported perform"` のハードエラーになる。
+
+`__index`, `Array::get`, `Map::get`, `Bytes::get`,
+`Array::length`, `Map::size`, `Bytes::length` の 7 個を両 allowlist に
+追加した -- いずれも checker で個別に pure (`None` effect、関数型
+引数なし) と確認済み (`checker/builtins_misc.vibe`,
+`builtins_array.vibe`, `builtins_map.vibe`, `builtins_bytes.vibe`) で、
+`__index`/`*::get` 系はコンパイラの他の場所 (`perceus.vibe`,
+`common_analysis.vibe`) でも既に同じ「borrow のみの読み取り」同値類として
+扱われている。
+
+直接テストで確認: `VIBE_BACKEND=gc` でコンパイル・実行でき正しい値 (3) を
+返す。`compiler_gate.sh` gate 40h6 で `fixtures/gc_backend_effect_pure_builtin_index.vibe`
+を通じて固定。なお `effect_advanced_test.vibe` 全体は同じファイル内の
+別の (無関係な) `suberror NotFound` 由来の `"unknown constructor"` エラーで
+依然コンパイルできない -- gc codegen の suberror コンストラクタ登録という、
+本 ADR のスコープ外の別問題である。
+
 ## References
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
