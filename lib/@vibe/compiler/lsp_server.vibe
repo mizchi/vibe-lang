@@ -94,49 +94,16 @@ import @vibe/parser {
 // by building the JSON-RPC envelope directly on `Json`/`Json::field`
 // (json_convenience.vibe's accessors, no colliding constructor names)
 // instead.
+// The bare `{ Json }` type import is all that's needed: the FS lane's
+// bind_enum_constructor_companions (runtime/typecheck_fs.vibe) binds the
+// package's whole `Json::`-qualified export surface alongside the type.
+// This file previously carried local json_string/json_number/... helper
+// copies of the accessors as a workaround for #1080 (the FS lane only
+// bound companions whose RETURN type was Json, so Json::string et al --
+// which return String/Int/Bool -- didn't resolve); fixed at the source,
+// so the accessors are used directly again.
 import @vibe/json {
-  Json, stringify
-}
-
-// json_string/json_number/json_length/json_is_null: local replacements for
-// @vibe/json's Json::string/Json::number/Json::length/Json::is_null.
-// Plain FS-compile (as opposed to the bundled CLI build) fails to resolve a
-// qualified `Type::method(x)` call whose SOLE argument's static type is
-// exactly the qualifier type itself (confirmed via isolated repro: `Json::
-// field(j, key)` -- 2 args -- and `Json::parse(s: String)` -- 1 arg of a
-// DIFFERENT type -- both resolve fine; `Json::string(j: Json)` does not).
-// `lib/@vibe/cli/dispatch_test.vibe` and friends FS-compile this whole
-// package directly against its index.vpkg contract, so this bites here even
-// though the same calls compile fine through the bundle merge tool. Filed
-// as a follow-up; sidestepped here with plain pattern matching instead of
-// chasing the checker bug on the LSP feature's critical path.
-fn json_string(j: Json) -> String {
-  match j {
-    JStr(s) => s,
-    _ => ""
-  }
-}
-
-fn json_number(j: Json) -> Double {
-  match j {
-    JNum(n) => n,
-    _ => 0.0
-  }
-}
-
-fn json_length(j: Json) -> Int {
-  match j {
-    JArr(a) => Array::length(a),
-    JObj(m) => Array::length(Map::keys(m)),
-    _ => 0
-  }
-}
-
-fn json_is_null(j: Json) -> Bool {
-  match j {
-    JNull => true,
-    _ => false
-  }
+  Json
 }
 
 //# Effects
@@ -292,15 +259,15 @@ fn jlocation(uri: String, r: Json) -> Json {
 
 // Extracts `params.textDocument.uri`; "" if absent/malformed.
 fn jparam_uri(params: Json) -> String {
-  json_string(Json::field(Json::field(params, "textDocument"), "uri"))
+  Json::string(Json::field(Json::field(params, "textDocument"), "uri"))
 }
 
 fn jparam_line0(params: Json) -> Int {
-  Double::to_int(json_number(Json::field(Json::field(params, "position"), "line")))
+  Double::to_int(Json::number(Json::field(Json::field(params, "position"), "line")))
 }
 
 fn jparam_char0(params: Json) -> Int {
-  Double::to_int(json_number(Json::field(Json::field(params, "position"), "character")))
+  Double::to_int(Json::number(Json::field(Json::field(params, "position"), "character")))
 }
 
 //# UTF-16 <-> byte offset bridging (LSP positions are UTF-16 code units;
@@ -747,7 +714,7 @@ fn lsp_dispatch_request(method: String, params: Json, docs: Map[String, String])
     let uri = jparam_uri(params)
     let l = jparam_line0(params)
     let c = jparam_char0(params)
-    let new_name = json_string(Json::field(params, "newName"))
+    let new_name = Json::string(Json::field(params, "newName"))
     lsp_run_with_handler(lsp_op_rename(), uri, l, c, new_name, docs)
   } else if method == "textDocument/documentSymbol" {
     let uri = jparam_uri(params)
@@ -768,20 +735,20 @@ fn lsp_diagnostics_for(uri: String, docs: Map[String, String]) -> Json {
 
 fn lsp_apply_did_open(docs: Map[String, String], params: Json) -> Map[String, String] {
   let uri = jparam_uri(params)
-  let text = json_string(Json::field(Json::field(params, "textDocument"), "text"))
+  let text = Json::string(Json::field(Json::field(params, "textDocument"), "text"))
   Map::set(docs, uri, text)
 }
 
 fn lsp_apply_did_change(docs: Map[String, String], params: Json) -> Map[String, String] {
   let uri = jparam_uri(params)
   let changes = Json::field(params, "contentChanges")
-  if json_length(changes) == 0 {
+  if Json::length(changes) == 0 {
     docs
   } else {
     // Full-document sync (declared capability): the last change entry's
     // `text` is the WHOLE new document, matching textDocumentSync=1.
-    let last = Json::index(changes, json_length(changes) - 1)
-    let text = json_string(Json::field(last, "text"))
+    let last = Json::index(changes, Json::length(changes) - 1)
+    let text = Json::string(Json::field(last, "text"))
     Map::set(docs, uri, text)
   }
 }
@@ -803,7 +770,7 @@ fn lsp_parse_envelope(body: String) -> Json {
 }
 
 fn lsp_env_method(j: Json) -> String {
-  json_string(Json::field(j, "method"))
+  Json::string(Json::field(j, "method"))
 }
 
 fn lsp_env_params(j: Json) -> Json {
@@ -822,15 +789,15 @@ fn lsp_env_id(j: Json) -> Json {
 // it as a notification here just means we silently skip replying to a
 // message that, practically, never occurs.)
 fn lsp_env_is_request(j: Json) -> Bool {
-  String::length(lsp_env_method(j)) > 0 && !json_is_null(lsp_env_id(j))
+  String::length(lsp_env_method(j)) > 0 && !Json::is_null(lsp_env_id(j))
 }
 
 fn lsp_env_is_notification(j: Json) -> Bool {
-  String::length(lsp_env_method(j)) > 0 && json_is_null(lsp_env_id(j))
+  String::length(lsp_env_method(j)) > 0 && Json::is_null(lsp_env_id(j))
 }
 
 fn lsp_stringify_response(id: Json, result: Json) -> String {
-  stringify(JObj(Map::from_pairs([
+  Json::stringify(JObj(Map::from_pairs([
     ("jsonrpc", JStr("2.0")),
     ("id", id),
     ("result", result)
@@ -838,7 +805,7 @@ fn lsp_stringify_response(id: Json, result: Json) -> String {
 }
 
 fn lsp_stringify_notification(method: String, params: Json) -> String {
-  stringify(JObj(Map::from_pairs([
+  Json::stringify(JObj(Map::from_pairs([
     ("jsonrpc", JStr("2.0")),
     ("method", JStr(method)),
     ("params", params)
