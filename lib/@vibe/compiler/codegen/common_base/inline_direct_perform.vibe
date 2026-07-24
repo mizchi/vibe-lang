@@ -2974,7 +2974,12 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
           let mut ci = 0
           while ci < Array::length(candidates) {
             let xn = Array::get(candidates, ci)
-            if xn == "##edp_unsafe##" {
+            // Same needing-membership guard as the handle-owner loop
+            // below (see its comment): a candidate that is itself a
+            // needing top-level function gets the identical migration
+            // from edp_rewrite_needing_fn; migrating it here too would
+            // double-prepend the dict parameter.
+            if xn == "##edp_unsafe##" || edp_str_array_contains(needing, xn) {
               ()
             } else {
               edp_migrate_closure_binding_stmts(stmts, xn, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
@@ -3017,7 +3022,15 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
       let mut hci = 0
       while hci < Array::length(hc_candidates) {
         let xn = Array::get(hc_candidates, hci)
-        if xn == "##edp_unsafe##" {
+        // A candidate that is ALSO a needing top-level function (a
+        // capture-free closure literal hoisted by dlh_hoist_expr with its
+        // row backfilled -- 追記20 -- becomes exactly that) must NOT be
+        // migrated here: the needing-function rewrite loop below performs
+        // the IDENTICAL migration (same dict param, same body rewrite),
+        // and running both would prepend the dict parameter twice --
+        // caught live by gate 40al (effect_inline_lambda_literal_hof_arg,
+        // whose with_log argument hoists to a top-level needing fn).
+        if xn == "##edp_unsafe##" || edp_str_array_contains(needing, xn) {
           ()
         } else {
           edp_migrate_closure_binding_stmts(stmts, xn, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
