@@ -5911,6 +5911,32 @@ fi
 rm -rf "$g944cdir"
 echo "[compiler-gate] entry-boundary Error handler ok (#944 stage C)"
 
+# 44d. #1087: a NON-tail `throw` inline in a `handle .. with Error` body
+#      must abort the body -- the arm's value (1) is the handle's result,
+#      not the body's continuation value (41). The ADR-0076 Phase 2 inliner
+#      used to splice the arm in place of the perform (resumptive
+#      semantics), running the arm but discarding its value; Error arms are
+#      now excluded from that pass (idp_arms_discharge_error).
+echo "[compiler-gate] 44d/44 with-Error non-tail throw abort (#1087)"
+g1087dir="_build/_gate_1087"
+rm -rf "$g1087dir"; mkdir -p "$g1087dir"
+sed '/^__DATA__$/,$d' fixtures/effect_handle_error_nontail.vibe > "$g1087dir/src.vibe"
+rm -f "$g1087dir/out.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g1087dir/src.vibe" "$g1087dir/out.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$g1087dir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_error_nontail.vibe did not compile (#1087)" >&2
+  exit 1
+fi
+g1087_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$g1087dir/out.wasm" 2>/dev/null | tail -1)"
+if [ "$g1087_out" != "1" ]; then
+  echo "[compiler-gate] FAIL: effect_handle_error_nontail got '$g1087_out' (want 1, NOT 41) -- a non-tail throw in a with-Error handle body ran the body's continuation instead of aborting to the arm's value (#1087; check idp_arms_discharge_error in inline_direct_perform.vibe)" >&2
+  exit 1
+fi
+rm -rf "$g1087dir"
+echo "[compiler-gate] with-Error non-tail throw abort ok (#1087)"
+
 echo "[compiler-gate] 45/45 missing index.vpkg scan (#897 Phase 4)"
 vpkgdir="_build/_gate_vpkg_scan"
 rm -rf "$vpkgdir"; mkdir -p "$vpkgdir"

@@ -462,8 +462,36 @@ fn idp_rewrite_arms(arms: Array[(Pat, Expr)], table: (Array[String], Array[Array
   }
 }
 
+// #1087: `Error` is NON-resumable (#640) -- a `handle .. with Error` arm
+// never calls resume; its value must become the whole handle's result and
+// the rest of the body must NOT run. The splice below implements exactly
+// the opposite (resumptive) semantics: the arm body replaces the perform
+// in place, so its value becomes the PERFORM's result and the body's
+// continuation keeps running. In tail position the two coincide (which is
+// why the bug stayed hidden); for a non-tail `throw` the arm's value is
+// discarded and the body continues -- a silent wrong-value miscompile.
+// Any handle whose arms discharge an Error operation is therefore never
+// eligible for this pass and stays on the try_table lowering
+// (compile_expr_tail6.vibe), whose catch-and-branch shape aborts the body
+// correctly in every position.
+fn idp_arms_discharge_error(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) {
+    let (p, _) = Array::get(arms, i)
+    let q = idp_pat_qname(p)
+    if String::length(q) >= 7 && q[0:7] == "Error::" {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn idp_rewrite_handle(body: Expr, arms: Array[(Pat, Expr)], outer_table: (Array[String], Array[Array[String]], Array[Expr])) -> Expr {
-  if idp_has_unsafe_construct(body) {
+  if idp_has_unsafe_construct(body) || idp_arms_discharge_error(arms) {
     // Conservative bail-out: leave this handle's own performs to the
     // existing replay codegen. Still recurse into body/arms with a FRESH
     // (empty) context -- any OTHER handle nested inside (which triggered
