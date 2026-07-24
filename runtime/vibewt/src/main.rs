@@ -227,6 +227,13 @@ struct HostState {
     // are cheap map reads, not re-execs of the command.
     sh_capture_results: std::collections::HashMap<i64, ShCaptureResult>,
     next_sh_capture_handle: i64,
+    // #lsp-selfhost review follow-up: bytes read by `stdin_read_stream` that
+    // don't yet form a complete UTF-8 sequence (a pipe read can return a
+    // chunk boundary in the middle of a multi-byte character), held back
+    // across calls instead of being lossy-decoded and corrupted in place.
+    // See stdin_read_stream's own comment for why this matters for the
+    // self-hosted LSP's JSON-RPC framing.
+    stdin_pending: Vec<u8>,
 }
 
 // #901: {exit_code, stdout, stderr} parked behind a handle by `sh_capture`,
@@ -321,6 +328,7 @@ impl HostState {
             alloc_sites: std::collections::HashMap::new(),
             sh_capture_results: std::collections::HashMap::new(),
             next_sh_capture_handle: 1,
+            stdin_pending: Vec::new(),
         }
     }
 
@@ -1904,6 +1912,51 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
     // and correct: the underlying buffered reader is process-global, no
     // state lives in the lock guard itself), matching every other stdio
     // host function here.
+    // Length of the longest prefix of `buf` that ends on a complete UTF-8
+    // sequence boundary -- i.e. everything past the returned index (if any)
+    // is a lead byte whose continuation bytes haven't arrived yet. Used by
+    // `stdin_read_stream` so a pipe read that splits a multi-byte character
+    // across two `read()` calls doesn't get lossy-decoded (and thereby
+    // corrupted) in the earlier call; the incomplete tail is held back and
+    // prefixed onto the next read instead.
+    fn utf8_complete_prefix_len(buf: &[u8]) -> usize {
+        let len = buf.len();
+        if len == 0 {
+            return 0;
+        }
+        // Walk back over trailing continuation bytes (0x80..=0xBF, at most 3 --
+        // a well-formed sequence is at most 4 bytes total) to find the start of
+        // the last (possibly incomplete) sequence.
+        let mut lead_pos = len;
+        let mut back = 0;
+        while back < 3 && lead_pos > 0 && (buf[lead_pos - 1] & 0xC0) == 0x80 {
+            lead_pos -= 1;
+            back += 1;
+        }
+        if lead_pos == 0 {
+            // Nothing but continuation bytes within the lookback window and no
+            // lead byte in view -- not a shape a real UTF-8 stream produces;
+            // nothing sensible to hold back.
+            return len;
+        }
+        let lead = buf[lead_pos - 1];
+        let seq_len: usize = if (0xF0..=0xF7).contains(&lead) {
+            4
+        } else if (0xE0..=0xEF).contains(&lead) {
+            3
+        } else if (0xC2..=0xDF).contains(&lead) {
+            2
+        } else {
+            // ASCII, or not a valid multi-byte lead byte -- nothing pending.
+            return len;
+        };
+        if lead_pos - 1 + seq_len > len {
+            lead_pos - 1
+        } else {
+            len
+        }
+    }
+
     linker.func_wrap(
         "vibe",
         "stdin_read_char",
@@ -1925,14 +1978,30 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             if n <= 0 {
                 return vibe_alloc_packed_str(&mut caller, "");
             }
-            let mut buf = vec![0u8; n as usize];
+            let mut buf = std::mem::take(&mut caller.data_mut().stdin_pending);
+            let before_pending = buf.len();
+            buf.resize(before_pending + n as usize, 0);
             let read = {
                 let stdin = io::stdin();
                 let mut h = stdin.lock();
-                h.read(&mut buf)
+                h.read(&mut buf[before_pending..])
                     .map_err(|e| format_err!("vibe stdin_read_stream: {e}"))?
             };
-            let s = String::from_utf8_lossy(&buf[..read]).into_owned();
+            buf.truncate(before_pending + read);
+            // Hold back a trailing incomplete UTF-8 sequence (if any) for the
+            // next call instead of lossy-decoding it now -- see this closure's
+            // registration comment and utf8_complete_prefix_len's doc comment.
+            // At EOF (read == 0 and nothing new arrived) there's nothing left
+            // to wait for, so decode whatever's pending lossily rather than
+            // holding it forever.
+            let complete_len = if read == 0 {
+                buf.len()
+            } else {
+                utf8_complete_prefix_len(&buf)
+            };
+            let pending = buf.split_off(complete_len);
+            let s = String::from_utf8_lossy(&buf).into_owned();
+            caller.data_mut().stdin_pending = pending;
             vibe_alloc_packed_str(&mut caller, &s)
         },
     )?;

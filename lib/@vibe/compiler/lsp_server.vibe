@@ -303,12 +303,158 @@ fn jparam_char0(params: Json) -> Int {
   Double::to_int(json_number(Json::field(Json::field(params, "position"), "character")))
 }
 
+//# UTF-16 <-> byte offset bridging (LSP positions are UTF-16 code units;
+//# the compiler's own query primitives -- offset_to_line_col, and every
+//# byte offset symbol_spans/binding_occurrences returns -- are byte-
+//# indexed, matching @vibe/parser/lexer.vibe's own "byte-indexed, not
+//# codepoint-indexed" convention (see its String::char_code_at usage).
+//# Forwarding an LSP `character` straight into a byte-indexed query, or a
+//# byte column straight into an LSP response, silently misplaces every
+//# hover/definition/references/rename/documentSymbol touching non-ASCII
+//# text before the cursor on its line. `lsp_utf8_seq_len` is a copy of
+//# @vibe/parser/lexer.vibe's own (package-private, so not importable)
+//# helper of the same name.
+
+fn lsp_utf8_seq_len(b0: Int) -> Int {
+  if b0 >= 0xF0 && b0 <= 0xF7 {
+    4
+  } else if b0 >= 0xE0 && b0 <= 0xEF {
+    3
+  } else if b0 >= 0xC2 && b0 <= 0xDF {
+    2
+  } else {
+    1
+  }
+}
+
+// Decodes the Unicode scalar value of the (already-length-known) UTF-8
+// sequence starting at byte `pos`. A malformed/truncated sequence (should
+// not occur in valid document text, but LSP clients are untrusted input)
+// just decodes to whatever the available continuation bytes give --
+// `lsp_utf8_seq_len` already falls back to single-byte granularity for any
+// non-lead byte, so this never reads past what the caller determined.
+fn lsp_utf8_decode(source: String, pos: Int, seq_len: Int) -> Int {
+  if seq_len == 1 {
+    String::char_code_at(source, pos)
+  } else if seq_len == 2 {
+    let b0 = String::char_code_at(source, pos) & 0x1F
+    let b1 = String::char_code_at(source, pos + 1) & 0x3F
+    (b0 << 6) | b1
+  } else if seq_len == 3 {
+    let b0 = String::char_code_at(source, pos) & 0x0F
+    let b1 = String::char_code_at(source, pos + 1) & 0x3F
+    let b2 = String::char_code_at(source, pos + 2) & 0x3F
+    (b0 << 12) | (b1 << 6) | b2
+  } else {
+    let b0 = String::char_code_at(source, pos) & 0x07
+    let b1 = String::char_code_at(source, pos + 1) & 0x3F
+    let b2 = String::char_code_at(source, pos + 2) & 0x3F
+    let b3 = String::char_code_at(source, pos + 3) & 0x3F
+    (b0 << 18) | (b1 << 12) | (b2 << 6) | b3
+  }
+}
+
+// Byte offset where 0-based line `line0` starts in `source` (0 for line0
+// <= 0, else the byte right after that line's '\n'). A single linear scan
+// from the start; LSP requests are per-edit and this file has no
+// persistent line-offset index to consult instead.
+fn lsp_line_start_offset(source: String, line0: Int) -> Int {
+  if line0 <= 0 {
+    0
+  } else {
+    let len = String::length(source)
+    let mut pos = 0
+    let mut line = 0
+    let mut found = -1
+    while pos < len && found < 0 {
+      if String::char_code_at(source, pos) == 10 {
+        line = line + 1
+        if line == line0 {
+          found = pos + 1
+        }
+      }
+      pos = pos + 1
+    }
+    if found >= 0 {
+      found
+    } else {
+      len
+    }
+  }
+}
+
+// Byte offset of the end of the line starting at `line_start` (exclusive of
+// its trailing '\n', if any; end of string otherwise).
+fn lsp_line_end_offset(source: String, line_start: Int) -> Int {
+  let len = String::length(source)
+  let mut pos = line_start
+  while pos < len && String::char_code_at(source, pos) != 10 {
+    pos = pos + 1
+  }
+  pos
+}
+
+// LSP `character` (0-based UTF-16 code units into the line starting at
+// `line_start`, ending before `line_end`) -> 0-based BYTE offset from
+// `line_start`. A surrogate pair (astral codepoint, > U+FFFF) counts as 2
+// UTF-16 units but decodes from one 4-byte UTF-8 sequence.
+fn lsp_utf16_to_byte_col(source: String, line_start: Int, line_end: Int, utf16_target: Int) -> Int {
+  let mut pos = line_start
+  let mut units = 0
+  while pos < line_end && units < utf16_target {
+    let b0 = String::char_code_at(source, pos)
+    let seq_len = lsp_utf8_seq_len(b0)
+    let cp = lsp_utf8_decode(source, pos, seq_len)
+    let width = if cp > 0xFFFF {
+      2
+    } else {
+      1
+    }
+    pos = pos + seq_len
+    units = units + width
+  }
+  pos - line_start
+}
+
+// Reverse of lsp_utf16_to_byte_col: 0-based BYTE offset from `line_start`
+// -> 0-based UTF-16 code-unit count.
+fn lsp_byte_col_to_utf16(source: String, line_start: Int, byte_col: Int) -> Int {
+  let mut pos = line_start
+  let target = line_start + byte_col
+  let mut units = 0
+  while pos < target {
+    let b0 = String::char_code_at(source, pos)
+    let seq_len = lsp_utf8_seq_len(b0)
+    let cp = lsp_utf8_decode(source, pos, seq_len)
+    let width = if cp > 0xFFFF {
+      2
+    } else {
+      1
+    }
+    pos = pos + seq_len
+    units = units + width
+  }
+  units
+}
+
+// LSP 0-based (line, UTF-16 character) -> 0-based (line, BYTE column),
+// matching what type_at_source/binding_occurrences expect.
+fn lsp_pos_to_byte_col(source: String, line0: Int, utf16_char0: Int) -> Int {
+  let line_start = lsp_line_start_offset(source, line0)
+  let line_end = lsp_line_end_offset(source, line_start)
+  lsp_utf16_to_byte_col(source, line_start, line_end, utf16_char0)
+}
+
 // Char-offset (as returned by symbol_spans/binding_occurrences) -> LSP
-// 0-based (line, character), via the parser's own offset_to_line_col (which
-// returns 1-based line/col, matching the compiler's diagnostic convention).
+// 0-based (line, UTF-16 character), via the parser's own offset_to_line_col
+// (which returns 1-based (line, BYTE column), matching the compiler's
+// diagnostic convention) followed by the byte->UTF-16 bridge above.
 fn lsp_offset_to_pos(source: String, offset: Int) -> (Int, Int) {
   let (line1, col1) = offset_to_line_col(source, offset)
-  (line1 - 1, col1 - 1)
+  let line0 = line1 - 1
+  let byte_col0 = col1 - 1
+  let line_start = lsp_line_start_offset(source, line0)
+  (line0, lsp_byte_col_to_utf16(source, line_start, byte_col0))
 }
 
 //# Diagnostics: parsing "line L:C: message" into an LSP Diagnostic
@@ -523,10 +669,22 @@ fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, 
       perform Lsp::Diagnostics(uri)
     }
   } with Lsp {
-    Hover(u2, l2, c2) => resume(lsp_handle_hover(lsp_doc_text(docs, u2), l2, c2));
-    Definition(u2, l2, c2) => resume(lsp_handle_definition(lsp_doc_text(docs, u2), u2, l2, c2));
-    References(u2, l2, c2) => resume(lsp_handle_references(lsp_doc_text(docs, u2), u2, l2, c2));
-    Rename(u2, l2, c2, nn) => resume(lsp_handle_rename(lsp_doc_text(docs, u2), u2, l2, c2, nn));
+    Hover(u2, l2, c2) => resume({
+      let src = lsp_doc_text(docs, u2)
+      lsp_handle_hover(src, l2, lsp_pos_to_byte_col(src, l2, c2))
+    });
+    Definition(u2, l2, c2) => resume({
+      let src = lsp_doc_text(docs, u2)
+      lsp_handle_definition(src, u2, l2, lsp_pos_to_byte_col(src, l2, c2))
+    });
+    References(u2, l2, c2) => resume({
+      let src = lsp_doc_text(docs, u2)
+      lsp_handle_references(src, u2, l2, lsp_pos_to_byte_col(src, l2, c2))
+    });
+    Rename(u2, l2, c2, nn) => resume({
+      let src = lsp_doc_text(docs, u2)
+      lsp_handle_rename(src, u2, l2, lsp_pos_to_byte_col(src, l2, c2), nn)
+    });
     DocumentSymbol(u2) => resume(lsp_document_symbol_safe(lsp_doc_text(docs, u2)));
     Diagnostics(u2) => resume(lsp_diagnostics_safe(lsp_doc_text(docs, u2)))
   }
@@ -714,7 +872,13 @@ fn lsp_step(docs: Map[String, String]) -> (Map[String, String], Bool) with { Std
         let id = lsp_env_id(msg)
         let result = lsp_dispatch_request(method, params, docs)
         lsp_send_response(id, result)
-        (docs, method == "shutdown")
+        // Per the LSP spec's shutdown sequence: reply to `shutdown`, then
+        // keep serving (a well-behaved client sends nothing further, but
+        // MUST NOT see the connection close before its own `exit`
+        // notification arrives) until `exit` actually terminates the loop
+        // below. Terminating right here used to close stdout mid-teardown
+        // from the client's point of view.
+        (docs, false)
       } else if lsp_env_is_notification(msg) {
         let method = lsp_env_method(msg)
         let params = lsp_env_params(msg)
