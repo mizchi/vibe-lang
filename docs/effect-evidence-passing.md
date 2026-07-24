@@ -1686,7 +1686,94 @@ IIFE・HOF 引数の両形状 (capture-free) を固定。seed compiler でのク
 ンな A/B テスト (修正前は同一クラッシュを再現) と、修正適用後の
 stage2==stage3 self-host fixpoint ビルドの両方で検証済み。
 
-## References
+### 追記25 (2026-07-24): #1070 一般ケースの精密な repro と原因の特定 —
+「自前の handle 内で不透明なクロージャ型パラメータを呼ぶ」形が未カバー
+
+selfhost `vibe lsp` (#1077) のドッグフーディングで、`lsp_run_with_handler`
+の元設計 (`body: () -> Json with { Lsp }` を受け取り
+`handle { body() } with Lsp {...}` する関数) が実 wasmtime 下でのみ
+`indirect call type mismatch` で trap する事象が見つかった (Node
+dev-runner では通ってしまっていた)。#1077 では `lsp_run_with_handler` を
+`Int` タグ経由の dispatch に再構成して回避したが、根本原因は未修正の
+まま残っていた。#1070 を reopen し (誤って #1075 のマージ時に
+close されていた)、以下で最小 repro を切り出して原因を特定した。
+
+```vibe
+effect Ask {
+  Get -> Int
+}
+
+let run_with_handler = (f: () -> Int with { Ask }) -> Int {
+  handle {
+    f()
+  } with Ask {
+    Get => resume(42)
+  }
+}
+
+export let main = () -> Int {
+  let base = 100
+  let a = () -> Int with { Ask } { perform Ask::Get + base }
+  let b = () -> Int with { Ask } { perform Ask::Get + base + 1 }
+  run_with_handler(a) + run_with_handler(b)
+}
+// want: 285
+```
+
+**この repro は #1075 で pin 済みの `effect_local_closure_by_value_hof_general.vibe`
+(`apply_twice`) 系とは別モノ**: `apply_twice` は自分自身が `with { Ask }`
+という row を持つ「needing 関数」で、`edp_own_closure_params`
+(#1075、`inline_direct_perform.vibe`) がその closure 型パラメータへの
+呼び出しを、他の needing 関数への呼び出しと同様に dict 転送対象として
+扱える。一方 `run_with_handler` は `with { Ask }` を一切持たない —
+自分の中で `handle ... with Ask` を確立し、そこで **完結して discharge
+する** 関数であり、`edp_needing_names` の判定基準 (row 文字列に対象
+effect を含むか) では最初から「needing」に分類されない。したがって
+`edp_own_closure_params` の対象外であり、既存のどの eligibility 経路も
+この形を migrate しない。
+
+`dtpw_inline_trivial_wrappers` (#1074、narrow slice) も適用されない:
+対象は「本体が丸ごと `f(...)` という同 arity の直接呼び出しだけ」の
+関数に限定されるが、`run_with_handler` の本体は `f()` を `handle {...}
+with Ask {...}` で包んだものであり、`f()` 単体の直接呼び出しではない。
+
+A/B で確認した重要な事実: **`a` (と `b`) を個別に何度参照させても
+(1 回だけ / 2 回) 挙動は変わらず、常に `run_with_handler` の呼び出し
+箇所で crash する** — つまり trap の原因は closure 引数自体の
+「single-use 証明可能性」ではなく、`run_with_handler` という
+「自前 handle + 不透明クロージャパラメータ呼び出し」という**関数の形**
+そのものが、evidence-dict パス全体から見て未分類のまま古い (#786 由来の)
+combinator フォールバックに落ちることにある。
+
+もう一点: この repro は Node dev-runner (`scripts/wasm_vibe_host_runner.js`)
+と実 wasmtime (`runtime/vibewt`) の **両方**で同一に `null function or
+function signature mismatch` / `indirect call type mismatch` として
+crash する (元の `lsp_run_with_handler` 実例は wasmtime でのみ trap し
+Node では偶然通っていた — dev-runner 側の call_indirect 実装が
+実 wasm 仕様より緩い可能性を示唆するが、未調査)。この repro は
+どちらのランナーでも検出できるため、回帰ゲートとして dev-runner だけで
+十分カバーできる。
+
+**次のステップ (実装は本セッションでは未着手)**: `evidence_dict_pass`
+(または新設のパス) に、「`handle` サイトの本体が、囲む関数自身の
+closure 型パラメータへの呼び出し (`f()` 直接、または `f()` を含む式)
+である」ケースの eligibility を追加する必要がある。既存の
+`edp_own_closure_params` と概念上は同じ (呼び出しグラフ全体で個々の
+実引数 closure literal が個別に migrate 可能かを証明し、evidence dict
+を forwarding する) だが、トリガー条件を「囲む関数が needing である」
+ではなく「囲む関数がこの effect を discharge する handle を確立して
+いる」に一般化する必要がある。より広くは、closure 値そのものに
+evidence を持たせる真の closure-conversion-to-value ABI
+(#786 が示した「本質的な」修正方向) の方が、この種の未分類ケースを
+将来にわたって個別に列挙しなくて済む可能性がある — が、そちらは
+`emit_lambda_closure_gc`/`emit_closure_resolve`/`emit_closure_call_tail`
+(gc backend, `common_analysis.vibe`/`backend_lambda_emit.vibe`/
+`backend_call.vibe`) と `linked_compile.vibe` の arity ベース型登録
+全体に渡る、より大きな ABI 変更になる。
+
+未 pin (このケースはまだ修正されていないため、`fixtures/` には
+「成功する」__DATA__ 付きでは追加していない — 上記コードそのものが
+repro)。#1070 のコメントにも同じ repro と分析を記録済み。
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
