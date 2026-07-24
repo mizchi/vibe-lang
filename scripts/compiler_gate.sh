@@ -5881,6 +5881,36 @@ fi
 rm -rf "$g944dir"
 echo "[compiler-gate] opt-in checked-Error row discipline ok (#944 stage A)"
 
+# 44c. #944 (ADR-0073 stage C, "entry boundary A"): an entry declared
+#      `with { Error }` whose Throw escapes must produce the stderr
+#      diagnostic and evaluate to 1 (unsuccessful outcome) instead of
+#      leaking a raw WebAssembly.Exception out of the entry.
+echo "[compiler-gate] 44c/44 entry-boundary Error handler (#944 stage C)"
+g944cdir="_build/_gate_944c"
+rm -rf "$g944cdir"; mkdir -p "$g944cdir"
+sed '/^__DATA__$/,$d' fixtures/entry_error_boundary.vibe > "$g944cdir/src.vibe"
+rm -f "$g944cdir/out.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g944cdir/src.vibe" "$g944cdir/out.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$g944cdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: entry_error_boundary.vibe did not compile (#944 stage C)" >&2
+  cat "$g944cdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+g944c_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$g944cdir/out.wasm" 2>"$g944cdir/stderr.txt" | tail -1)"
+if [ "$g944c_out" != "1" ]; then
+  echo "[compiler-gate] FAIL: entry_error_boundary got '$g944c_out' (want 1) -- boundary handler value regressed (#944 stage C)" >&2
+  exit 1
+fi
+if ! grep -q "vibe: uncaught error: boom" "$g944cdir/stderr.txt"; then
+  echo "[compiler-gate] FAIL: entry_error_boundary stderr missing the boundary diagnostic (#944 stage C)" >&2
+  cat "$g944cdir/stderr.txt" >&2 || true
+  exit 1
+fi
+rm -rf "$g944cdir"
+echo "[compiler-gate] entry-boundary Error handler ok (#944 stage C)"
+
 echo "[compiler-gate] 45/45 missing index.vpkg scan (#897 Phase 4)"
 vpkgdir="_build/_gate_vpkg_scan"
 rm -rf "$vpkgdir"; mkdir -p "$vpkgdir"
