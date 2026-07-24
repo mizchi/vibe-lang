@@ -1171,7 +1171,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // `perform Error::Throw(x)`, so without this exemption
                     // every one of those sites would newly require
                     // `with { Error }`.
-                    if eff != "Error" && !in_handle && !decl_authorizes_effect(declared, eff) {
+                    if (eff != "Error" || error_row_checked()) && !in_handle && !decl_authorizes_effect(declared, eff) {
                       Array::push(errors, make_row_mismatch(fn_name, declared, [
                         eff
                       ]))
@@ -1216,7 +1216,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 let mut ti = 0
                 while ti < Array::length(callee_effs) {
                   let teff = Array::get(callee_effs, ti)
-                  if String::length(teff) > 0 && teff != "Error" && teff != "Async" && !label_is_effect_var(teff) && !in_handle && !decl_authorizes_effect(declared, teff) {
+                  if String::length(teff) > 0 && (teff != "Error" || error_row_checked()) && teff != "Async" && !label_is_effect_var(teff) && !in_handle && !decl_authorizes_effect(declared, teff) {
                     Array::push(missing, teff)
                   } else {
                     ()
@@ -1247,7 +1247,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 let mut pi = 0
                 while pi < Array::length(param_effs) {
                   let peff = Array::get(param_effs, pi)
-                  if String::length(peff) > 0 && peff != "Error" && peff != "Async" && !in_handle && !decl_authorizes_effect(declared, peff) {
+                  if String::length(peff) > 0 && (peff != "Error" || error_row_checked()) && peff != "Async" && !in_handle && !decl_authorizes_effect(declared, peff) {
                     Array::push(missing, peff)
                   } else {
                     ()
@@ -1496,6 +1496,37 @@ fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body:
 // no host handler would trap, so leaving it flagged is correct. Purity/caching
 // is judged separately by file_tests_cacheable (empty declared row), so a test
 // that reaches a host effect still correctly counts as impure/non-cacheable.
+// #944 (ADR-0073 implementation bridge, stage A): opt-in checked-Error
+// mode. The accepted owner decision makes `Error::Throw` a fully checked
+// semantic operation (direct throw and `with { Error }` callees propagate
+// to the caller's row; discharge via `handle ... with Error`), but the
+// tree still carries hundreds of row-less throw sites (#640 measured
+// ~970), so enforcement lands behind an explicit switch first:
+// `VIBE_CHECK_ERROR_ROW=1` (wired in cli_adapter.vibe). Default-off keeps
+// today's exemption byte-for-byte. The switch rides in a module-level
+// memo cell (fixtures/module_let_memo_test.vibe pattern) because the
+// effect discipline has no configuration threading and the checker
+// itself is pure (no Env row).
+//
+// Scope note: builtin_call_effect's own Error carve-out (a BUILTIN whose
+// declared row is Error) is deliberately NOT flipped by this switch --
+// which builtins should carry a semantic Error row is a separate
+// sub-decision tracked on #944.
+let error_row_mode_cell = array_empty()
+
+export fn set_error_row_checked(on: Bool) -> Unit {
+  Array::truncate(error_row_mode_cell, 0)
+  Array::push(error_row_mode_cell, if on {
+    1
+  } else {
+    0
+  })
+}
+
+fn error_row_checked() -> Bool {
+  Array::length(error_row_mode_cell) > 0 && Array::get(error_row_mode_cell, 0) == 1
+}
+
 fn test_bench_ambient_effects() -> Array[String] {
   [
     // #865: "Stderr" added alongside "Stdout" -- same ambient-host-handler
