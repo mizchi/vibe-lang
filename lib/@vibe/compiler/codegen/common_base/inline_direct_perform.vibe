@@ -1173,8 +1173,18 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
 // Attempt eligibility for `needing` (already effect-set/self-discharge
 // filtered by the caller) against `stmts` as-is; `Some` iff every needing
 // function AND every handle site is safe.
+//
+// An empty `needing` set is no longer an automatic None (#1070 second
+// slice): a SELF-DISCHARGING owner's closure-typed parameter
+// (edp_handle_owner_cps) needs migration even though nothing in the
+// program carries `ename` in a declared row -- the repro's whole point is
+// that `run_with_handler` has no row at all. Migration is still skipped
+// when there is neither a needing function NOR any proven owner param
+// (nothing to gain; matches the old behavior for every previously-planned
+// program exactly).
 fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Option[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
-  if Array::length(needing) == 0 {
+  let worth = Array::length(needing) > 0 || edp_any_handle_owner_cp(stmts, ename, needing, fn_defs)
+  if !worth {
     None
   } else {
     let handle_sites = edp_collect_handle_sites(stmts, ename)
@@ -1184,6 +1194,33 @@ fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String
       None
     }
   }
+}
+
+// Does ANY top-level function have at least one proven self-discharging-
+// owner closure param for `ename`? Read-only pre-scan used solely to
+// decide whether an empty-`needing` effect is still worth planning.
+fn edp_any_handle_owner_cp(stmts: Array[Stmt], ename: String, needing: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Bool {
+  let pure_fns = edp_pure_fn_names(fn_defs)
+  let es_names = array_empty()
+  let es_members_list = array_empty()
+  edp_es_collect_into(stmts, es_names, es_members_list)
+  let mut si = 0
+  let mut found = false
+  while si < Array::length(stmts) && !found {
+    match Array::get(stmts, si) {
+      SLet(_, _, snm, _, sval) => match sval {
+        EFn(_, _, sparams, _, _, sbody) => if Array::length(edp_handle_owner_cps(stmts, snm, sparams, sbody, ename, needing, pure_fns, es_names, es_members_list)) > 0 {
+          found = true
+        } else {
+          ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  found
 }
 
 // --- effectset-aware row resolution.
