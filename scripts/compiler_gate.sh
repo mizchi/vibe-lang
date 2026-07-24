@@ -6110,4 +6110,34 @@ send_check_reject "err_type_send_user_impl.vibe" '`Send` is a compiler-judged st
 rm -rf "$senddir"
 echo "[compiler-gate] ADR-0068 Send marker ok"
 
+# 49/49. #1085: RC over-drop for a param with a real consume (Array::set)
+#        in one branch and a #706 loop-borrow site (while + push) in the
+#        sibling branch of an append helper. The #725 epilogue emitted its
+#        "one unconditional drop" on every path, over-releasing the store
+#        on real-consume executions (use-after-free from the 3rd element,
+#        else arm not even executed). Fixed by lc_has_nonloop_consume
+#        (codegen/wasi/linked_compile.vibe) suppressing the loop-count
+#        drop in the mixed case. Runs under the default RC test lane and
+#        checks both the struct shape (silent corruption) and the closure
+#        shape (call_indirect trap): want 123123.
+echo "[compiler-gate] 49/49 RC branch+loop mixed-consume over-drop (#1085)"
+rc1085dir="_build/_gate_rc_branch_loop"
+rm -rf "$rc1085dir"; mkdir -p "$rc1085dir"
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/rc_branch_loop_mixed_consume_test.vibe > "$rc1085dir/src.vibe"
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$rc1085dir/src.vibe" "$rc1085dir/src.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$rc1085dir/src.wasm" ]; then
+  echo "[compiler-gate] FAIL: rc_branch_loop_mixed_consume fixture did not compile" >&2
+  cat "$rc1085dir/src.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rc1085_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$rc1085dir/src.wasm" 2>/dev/null | tail -1)"
+if [ "$rc1085_out" != "123123" ]; then
+  echo "[compiler-gate] FAIL: rc_branch_loop_mixed_consume got '$rc1085_out' (want 123123) -- #1085 over-drop regressed" >&2
+  exit 1
+fi
+rm -rf "$rc1085dir"
+echo "[compiler-gate] RC branch+loop mixed-consume over-drop (#1085) ok"
+
 echo "[compiler-gate] ok"
