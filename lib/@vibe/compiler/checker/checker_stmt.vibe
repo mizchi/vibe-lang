@@ -479,6 +479,37 @@ fn derive_name_is_known(name: String) -> Bool {
   name == "Eq" || name == "Ord" || name == "Show" || name == "Hash" || name == "Default"
 }
 
+// #1078: the name of a DIFFERENT enum (already registered in `defs`) that
+// declares a variant named `vname`, or None. Used to reject bare-name
+// constructor collisions at declaration time -- see the SEnum arm's
+// comment for why last-registered-wins shadowing makes these silently
+// wrong rather than merely ambiguous.
+fn find_other_enum_declaring_variant(defs: Array[TypeDef], enum_name: String, vname: String) -> Option[String] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(defs) {
+    match Array::get(defs, i) {
+      TDEnum(other_name, _, other_variants) => if other_name != enum_name {
+        let mut vi = 0
+        while vi < Array::length(other_variants) {
+          let (ovn, _) = Array::get(other_variants, vi)
+          if ovn == vname {
+            found = Some(other_name)
+          } else {
+            ()
+          }
+          vi = vi + 1
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn validate_derives(derives: Array[String], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(derives) {
@@ -839,6 +870,21 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
         let mut ci2 = 0
         while ci2 < Array::length(variants) {
           let (vname, vtypes) = Array::get(variants, ci2)
+          // #1078: a variant name already declared by a DIFFERENT enum in
+          // this (possibly whole-program-merged) unit is a hard error.
+          // The checker env is flat and name-keyed with last-registered-
+          // wins shadowing, and qualified CONSTRUCTION is not supported
+          // syntax -- so a bare `Mk(..)` in code written against the
+          // earlier enum silently resolves to this one's signature,
+          // producing an arity/argument-type mismatch pointing at the
+          // WRONG declaration (or, same-signature, a silent wrong-tag
+          // miscompile). Two unrelated packages only meet in one unit via
+          // the merge/flatten lane, which is exactly how #1078 was hit
+          // (@vibe/json's RpcMessage vs another merged package).
+          match find_other_enum_declaring_variant(defs, name, vname) {
+            Some(other) => Array::push(errors, String::concat(String::concat(String::concat(String::concat("constructor name collision: ", vname), " is declared by both "), other), String::concat(" and ", String::concat(name, " in the same compiled unit; bare constructor references are ambiguous (qualified construction is not supported) -- rename one variant")))),
+            None => ()
+          }
           let ctor_ty = if Array::length(vtypes) == 0 {
             ctor_result_type
           } else {
