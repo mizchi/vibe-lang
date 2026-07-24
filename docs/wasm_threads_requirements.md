@@ -1,24 +1,27 @@
 # wasm + threads 要件メモ
 
-更新日: 2026-06-21
+更新日: 2026-07-24
 現在の repo 既定:
 
-- `wasmtime 45.0.0` (`deps/wasmtime` submodule / `scripts/install_wasmtime_release.sh`)
+- `wasmtime 47.0.2` (`scripts/install_wasmtime_release.sh` / flake.nix / CI)
 
 元の実測対象:
 
 - `wasmtime 41.0.3 (db1c043b5 2026-02-04)` (system)
 - `wasmtime 43.0.0 (57b4bf56c 2026-02-06)` (`deps/wasmtime` submodule)
+- `wasmtime 47.0.2 (90fed3c6a 2026-07-21)` (§4 の shared-everything probe)
 
-## ⚠️ deprecation: WASI Threads (`-S threads=y`) は通常経路で非推奨 (#486)
+## ⚠️ removed: WASI Threads (`-S threads=y`) は 47.0.0 で削除済み (#486)
 
 `-S threads=y`（= `-Sthreads`、WASI Threads / `wasm32-wasip1-threads`）は
-**Wasmtime 47.0.0 (2026-07-20 予定) で hard error になり削除される**。
-Wasmtime 45/46 で `-S threads=y` を使うと次の警告が出る:
+**Wasmtime 47.0.0 で削除された**。47.0.2 実測:
 
 ```text
-WARNING: the `-Sthreads` flag will be a hard error in Wasmtime 47.0.0 on 2026-07-20.
+Error: the `-Sthreads` flag is no longer supported
 ```
+
+repo 内の active gate は `-W` 側 flag のみ使用しており影響なし（実測確認済み、
+2026-07-24 の 47.0.2 bump 時に grep で `-S threads` 使用ゼロを確認）。
 
 参考:
 
@@ -114,7 +117,34 @@ proposal test と parser/runtime の名前にも差がある。通常 CI / relea
 feature detection 付きの opt-in probe に限定する。production 候補への昇格条件は
 [concurrency.md の #488 節](concurrency.md)を参照。
 
+### wasmtime 47.0.2 実測 (2026-07-24)
+
+release binary `wasmtime 47.0.2 (90fed3c6a 2026-07-21)` / x86_64 linux での probe:
+
+- `-W shared-everything-threads[=y|n]` **flag 自体は存在し受理される**
+  （trivial module は flag 付きで実行可能）。
+- しかし **validation まで届かない stub**: `(type (shared (func)))` を含む
+  module は `-W shared-everything-threads=y`（`-W all-proposals=y` でも、
+  `function-references=y gc=y threads=y shared-memory=y` を足しても）
+  `shared composite types require the shared-everything-threads proposal`
+  で reject される。CLI flag が validator の feature set に配線されていない。
+- **bundled WAT parser が proposal の text syntax を知らない**: shared global
+  (`(global (shared (mut i32)) ...)`)、shared table、`ref.i31 (shared)`、
+  `thread.spawn_ref` / `thread.spawn_indirect` /
+  `thread.available_parallelism`（および `thread.spawn` /
+  `thread.hw_concurrency` の別名）はすべて parse error。
+- upstream docs（stability-wasm-proposals）でも proposal は **Unimplemented**
+  節、tracking は bytecodealliance/wasmtime#9466（2024-10 起票の stub のまま）。
+- baseline は不変: `-W threads=y -W shared-memory=y` での shared memory +
+  atomics は 47.0.2 でも動作 OK。`-S threads=y` は hard error（§上）。
+
+結論: **47.0.2 時点で shared-everything-threads は「有効化可能」ではない**。
+昇格条件 5（upstream release での再現）は未達のまま。#488 は引き続き opt-in
+probe に限定し、0.4.0 の thread 実装は ADR-0068 の shared-nothing 意味論
+（cooperative / Worker / WASI backend）で進める。
+
 - proposal: https://github.com/WebAssembly/shared-everything-threads
+- upstream tracking: https://github.com/bytecodealliance/wasmtime/issues/9466
 - tracking issue: #488
 
 旧 probe (`src/x/threads/`, `just experimental_wasi_threads_probe`,
