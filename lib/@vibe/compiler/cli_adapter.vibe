@@ -42,6 +42,10 @@ import ./cli_support.vibe {
   check_linked_file
 }
 
+import ./lsp_server.vibe {
+  lsp_main
+}
+
 //# Functions
 
 // Basename of a path without its `.vibe` suffix — the default WIT world name
@@ -318,7 +322,15 @@ fn adapter_serve_component(input_path: String, output_path: String) -> Int with 
   }
 }
 
-export fn cli_main() -> Int with { Error, Fs, Env } {
+export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
+  // `vibe lsp` (self-hosted, #lsp-selfhost): takes over stdin/stdout
+  // directly as a long-running JSON-RPC server -- unlike every other mode
+  // below, it never reads VIBE_INPUT/VIBE_OUTPUT or writes to output_path.
+  // Checked first so it never touches the one-shot input/output-file
+  // machinery the rest of this function assumes.
+  if Env::get("VIBE_LSP") == "1" {
+    return lsp_main()
+  }
   let input_path = own_host_string(read_arg_or_env(0, "VIBE_INPUT"))
   let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
   let entry_name = own_host_string(read_arg_or_env(2, "VIBE_ENTRY"))

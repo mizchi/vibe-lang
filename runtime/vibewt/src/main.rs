@@ -18,7 +18,7 @@
 
 use std::any::Any;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -227,6 +227,13 @@ struct HostState {
     // are cheap map reads, not re-execs of the command.
     sh_capture_results: std::collections::HashMap<i64, ShCaptureResult>,
     next_sh_capture_handle: i64,
+    // #lsp-selfhost review follow-up: bytes read by `stdin_read_stream` that
+    // don't yet form a complete UTF-8 sequence (a pipe read can return a
+    // chunk boundary in the middle of a multi-byte character), held back
+    // across calls instead of being lossy-decoded and corrupted in place.
+    // See stdin_read_stream's own comment for why this matters for the
+    // self-hosted LSP's JSON-RPC framing.
+    stdin_pending: Vec<u8>,
 }
 
 // #901: {exit_code, stdout, stderr} parked behind a handle by `sh_capture`,
@@ -321,6 +328,7 @@ impl HostState {
             alloc_sites: std::collections::HashMap::new(),
             sh_capture_results: std::collections::HashMap::new(),
             next_sh_capture_handle: 1,
+            stdin_pending: Vec::new(),
         }
     }
 
@@ -1881,6 +1889,120 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
                 .map_err(|e| format_err!("vibe stderr_write_char: {e}"))?;
             h.flush().ok();
             Ok(())
+        },
+    )?;
+    // #lsp-selfhost: `Stdin` (lib/@vibe/io) -- same pre-existing-JS-only gap
+    // as Stdout/Stderr above (#901), just never hit until a program that
+    // actually READS stdin (rather than only writing it) was run under this
+    // Rust runner: `scripts/wasm_vibe_host_runner.js`'s `stdin_read_char`/
+    // `stdin_read_stream` only ever fed a FIXED, pre-buffered
+    // `VIBE_STDIN_BYTES` env var set before the process starts (a testing
+    // convenience for one-shot batch fixtures, see that file's own comment),
+    // never a live incremental read from a real stdin pipe -- so any program
+    // using `Stdin::read_char`/`read_stream` failed to instantiate here at
+    // all (unknown import) and could never have worked interactively (e.g.
+    // piped from a live editor process) under either runner. Blocking reads
+    // straight off `std::io::stdin()`, matching Stdout/Stderr's write-
+    // straight-through-no-buffering semantics: `read_char` blocks for
+    // exactly one byte (-1 at EOF); `read_stream(n)` issues one blocking
+    // `Read::read` for up to `n` bytes and returns whatever came back
+    // (short reads preserved, "" at EOF) -- the "one bounded pull, cursor
+    // advances across calls" contract lib/@vibe/io/io.vibe's own doc
+    // comment documents. `.lock()` is re-acquired fresh each call (cheap,
+    // and correct: the underlying buffered reader is process-global, no
+    // state lives in the lock guard itself), matching every other stdio
+    // host function here.
+    // Length of the longest prefix of `buf` that ends on a complete UTF-8
+    // sequence boundary -- i.e. everything past the returned index (if any)
+    // is a lead byte whose continuation bytes haven't arrived yet. Used by
+    // `stdin_read_stream` so a pipe read that splits a multi-byte character
+    // across two `read()` calls doesn't get lossy-decoded (and thereby
+    // corrupted) in the earlier call; the incomplete tail is held back and
+    // prefixed onto the next read instead.
+    fn utf8_complete_prefix_len(buf: &[u8]) -> usize {
+        let len = buf.len();
+        if len == 0 {
+            return 0;
+        }
+        // Walk back over trailing continuation bytes (0x80..=0xBF, at most 3 --
+        // a well-formed sequence is at most 4 bytes total) to find the start of
+        // the last (possibly incomplete) sequence.
+        let mut lead_pos = len;
+        let mut back = 0;
+        while back < 3 && lead_pos > 0 && (buf[lead_pos - 1] & 0xC0) == 0x80 {
+            lead_pos -= 1;
+            back += 1;
+        }
+        if lead_pos == 0 {
+            // Nothing but continuation bytes within the lookback window and no
+            // lead byte in view -- not a shape a real UTF-8 stream produces;
+            // nothing sensible to hold back.
+            return len;
+        }
+        let lead = buf[lead_pos - 1];
+        let seq_len: usize = if (0xF0..=0xF7).contains(&lead) {
+            4
+        } else if (0xE0..=0xEF).contains(&lead) {
+            3
+        } else if (0xC2..=0xDF).contains(&lead) {
+            2
+        } else {
+            // ASCII, or not a valid multi-byte lead byte -- nothing pending.
+            return len;
+        };
+        if lead_pos - 1 + seq_len > len {
+            lead_pos - 1
+        } else {
+            len
+        }
+    }
+
+    linker.func_wrap(
+        "vibe",
+        "stdin_read_char",
+        |_caller: Caller<'_, HostState>| -> Result<i64> {
+            let mut buf = [0u8; 1];
+            let stdin = io::stdin();
+            let mut h = stdin.lock();
+            match h.read(&mut buf) {
+                Ok(0) => Ok(-1),
+                Ok(_) => Ok(buf[0] as i64),
+                Err(e) => Err(format_err!("vibe stdin_read_char: {e}")),
+            }
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "stdin_read_stream",
+        |mut caller: Caller<'_, HostState>, n: i64| -> Result<i64> {
+            if n <= 0 {
+                return vibe_alloc_packed_str(&mut caller, "");
+            }
+            let mut buf = std::mem::take(&mut caller.data_mut().stdin_pending);
+            let before_pending = buf.len();
+            buf.resize(before_pending + n as usize, 0);
+            let read = {
+                let stdin = io::stdin();
+                let mut h = stdin.lock();
+                h.read(&mut buf[before_pending..])
+                    .map_err(|e| format_err!("vibe stdin_read_stream: {e}"))?
+            };
+            buf.truncate(before_pending + read);
+            // Hold back a trailing incomplete UTF-8 sequence (if any) for the
+            // next call instead of lossy-decoding it now -- see this closure's
+            // registration comment and utf8_complete_prefix_len's doc comment.
+            // At EOF (read == 0 and nothing new arrived) there's nothing left
+            // to wait for, so decode whatever's pending lossily rather than
+            // holding it forever.
+            let complete_len = if read == 0 {
+                buf.len()
+            } else {
+                utf8_complete_prefix_len(&buf)
+            };
+            let pending = buf.split_off(complete_len);
+            let s = String::from_utf8_lossy(&buf).into_owned();
+            caller.data_mut().stdin_pending = pending;
+            vibe_alloc_packed_str(&mut caller, &s)
         },
     )?;
     // #901: `Process` effect (lib/@vibe/process) -- same pre-existing-JS-only

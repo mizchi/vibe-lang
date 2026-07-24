@@ -5786,4 +5786,66 @@ fi
 rm -rf "$c1062dir"
 echo "[compiler-gate] ctor Double-field match binding under RC (#1062) ok"
 
+# 47/47. Self-hosted `vibe lsp` (lib/@vibe/compiler/lsp_server.vibe,
+#        #lsp-selfhost): a full JSON-RPC 2.0 / Content-Length-framed
+#        initialize -> didOpen -> hover -> shutdown -> exit round trip,
+#        driven via scripts/wasm_vibe_host_runner.js's VIBE_STDIN_BYTES
+#        batch-feed (the same "vibe.*" linear-backend stdin host imports a
+#        real editor's live pipe exercises under vibewt -- this gate proves
+#        the wasm-level protocol/dispatch logic; it doesn't need vibewt
+#        itself, which compiler_gate.sh has no other dependency on and
+#        this sandbox doesn't have installed). Checks the hover response
+#        contains the correct inferred type for a simple two-arg function --
+#        this specific assertion is also a regression lock for the
+#        closure-crossing-a-HOF-parameter trap fixed while landing this
+#        feature (lsp_run_with_handler dispatches via a plain Int tag, not
+#        an effectful closure VALUE passed through a HOF parameter -- see
+#        that function's own doc comment for why: the closure-value form
+#        compiled fine and even ran fine under this same Node dev-runner,
+#        but trapped ("indirect call type mismatch") under real wasmtime,
+#        the still-open GENERAL case issue #1070 describes).
+echo "[compiler-gate] 47/47 self-hosted vibe lsp: initialize/didOpen/hover/shutdown/exit round trip"
+lspgatedir="_build/_gate_lsp_selfhost"
+rm -rf "$lspgatedir"; mkdir -p "$lspgatedir"
+python3 - "$lspgatedir/input.bin" <<'PYEOF'
+import json, sys
+
+def frame(obj):
+    body = json.dumps(obj)
+    b = body.encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+sample_source = "let add = (a: Int, b: Int) -> Int { a + b }\n\nexport let main = () -> Int { add(1, 2) }\n"
+msgs = [
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": "file:///gate.vibe", "languageId": "vibe", "version": 1, "text": sample_source}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 2, "method": "textDocument/hover", "params": {
+        "textDocument": {"uri": "file:///gate.vibe"}, "position": {"line": 0, "character": 5}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+]
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(msgs))
+PYEOF
+lsp_out="$lspgatedir/output.bin"
+VIBE_STDIN_BYTES="$(cat "$lspgatedir/input.bin")" \
+  VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" > "$lsp_out" 2>"$lspgatedir/stderr.log"
+if ! grep -q '"id":1,"result"' "$lsp_out" 2>/dev/null && ! grep -q '"id": 1, "result"' "$lsp_out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: self-hosted vibe lsp did not answer initialize" >&2
+  cat "$lspgatedir/stderr.log" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! grep -q '(Int, Int) -> Int' "$lsp_out"; then
+  echo "[compiler-gate] FAIL: self-hosted vibe lsp hover response missing/wrong (want '(Int, Int) -> Int')" >&2
+  cat "$lsp_out" >&2
+  exit 1
+fi
+rm -rf "$lspgatedir"
+echo "[compiler-gate] self-hosted vibe lsp round trip ok"
+
 echo "[compiler-gate] ok"
