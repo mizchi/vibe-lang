@@ -54,13 +54,19 @@
 // didChange/didSave -- there is no timer/debounce primitive available yet,
 // see docs/concurrency.md's "proposed, not implemented" status, so this
 // runs synchronously per edit rather than the JS server's 150ms debounce).
-// Deliberately deferred: workspace/symbol, callHierarchy, the `vibe/graph`
-// visualizer, and completion/signatureHelp -- these are backed by
-// clients/js/symbol_index.js's regex-based whole-workspace index and
-// clients/js/graph_query.js in the JS server, not by any compiler-internal
-// primitive; porting that indexing layer to vibe is a separate, larger
-// follow-up. `clients/js/lsp_server.js` remains available (see
-// runtime/vibe's `lsp` case) for workspace-wide features until then.
+//
+// Scope (v2, parity slice): completion (document declarations via
+// symbol_spans + language keywords; keywords-only on a parse failure),
+// signatureHelp (lexical backward callee scan + type_at_source, with
+// parameter labels split from the rendered "(A, B) -> R" type and
+// activeParameter from top-level commas), and workspace/symbol (searches
+// every OPEN document in the docs store -- deliberately not a filesystem
+// scan, keeping the entry row { Stdin, Stdout } with no Fs capability).
+// Still deferred: callHierarchy and the `vibe/graph` visualizer (backed by
+// clients/js/graph_query.js's whole-workspace index in the JS server;
+// porting that indexing layer is a separate follow-up), and on-disk
+// (unopened-file) workspace/symbol coverage. `clients/js/lsp_server.js`
+// remains available (see runtime/vibe's `lsp` case) for those until then.
 
 //# Imports
 
@@ -70,6 +76,10 @@ import @vibe/compiler/runtime {
 
 import @vibe/parser {
   offset_to_line_col
+}
+
+import @vibe/core {
+  array_empty
 }
 
 // Deliberately NOT using @vibe/json/jsonrpc.vibe's RpcMessage/RpcId/
@@ -115,6 +125,9 @@ effect Lsp {
   Rename(String, Int, Int, String) -> Json
   DocumentSymbol(String) -> Json
   Diagnostics(String) -> Json
+  Completion(String, Int, Int) -> Json
+  SignatureHelp(String, Int, Int) -> Json
+  WorkspaceSymbol(String) -> Json
 }
 
 //# Content-Length transport (LSP over stdio)
@@ -577,6 +590,269 @@ fn lsp_diagnostics_safe(source: String) -> Json {
   }
 }
 
+//# Completion / signature help / workspace-symbol (parity slice 2).
+//# Deliberately built on the SAME single-file compiler primitives as the
+//# rest of this server (symbol_spans / type_at_source), not on a ported
+//# clients/js/symbol_index.js whole-workspace regex index: completion
+//# offers the document's own declarations plus language keywords,
+//# signatureHelp resolves the callee identifier lexically and asks the
+//# checker for its inferred type, and workspace/symbol searches every OPEN
+//# document (the docs store) rather than scanning the filesystem -- the
+//# server's entry row stays { Stdin, Stdout }, no Fs capability needed.
+
+// SymbolKind (what symbol_spans emits) -> CompletionItemKind.
+fn lsp_completion_item_kind(sym_kind: Int) -> Int {
+  if sym_kind == 12 {
+    3
+  } else if sym_kind == 13 {
+    6
+  } else if sym_kind == 10 {
+    13
+  } else if sym_kind == 23 {
+    22
+  } else if sym_kind == 11 {
+    8
+  } else if sym_kind == 24 {
+    23
+  } else if sym_kind == 2 {
+    9
+  } else {
+    7
+  }
+}
+
+fn lsp_keyword_completions() -> Array[String] {
+  [
+    "let", "mut", "fn", "enum", "struct", "trait", "impl", "effect",
+    "effectset", "handle", "with", "perform", "resume", "match", "if",
+    "else", "while", "for", "in", "return", "break", "continue", "import",
+    "export", "test", "bench", "throw", "true", "false", "type"
+  ]
+}
+
+fn lsp_keyword_items() -> Array[Json] {
+  for kw in lsp_keyword_completions() {
+    JObj(Map::from_pairs([
+      ("label", JStr(kw)),
+      ("kind", jnum_int(14))
+    ]))
+  }
+}
+
+fn lsp_handle_completion(source: String) -> Json with { Error } {
+  let syms = symbol_spans(source)
+  let sym_items = for entry in syms {
+    let (name, kind, _, _) = entry
+    JObj(Map::from_pairs([
+      ("label", JStr(name)),
+      ("kind", jnum_int(lsp_completion_item_kind(kind)))
+    ]))
+  }
+  JArr(Array::concat(sym_items, lsp_keyword_items()))
+}
+
+// On a parse failure (mid-edit documents are routinely unparseable) degrade
+// to keywords-only rather than an empty list -- same "always well-formed
+// JSON" reasoning as lsp_document_symbol_safe above.
+fn lsp_completion_safe(source: String) -> Json {
+  handle {
+    lsp_handle_completion(source)
+  } with Error {
+    Throw(_) => JArr(lsp_keyword_items())
+  }
+}
+
+// Identifier byte for the backward callee scan: [A-Za-z0-9_] plus ':' so a
+// qualified callee (String::concat) scans as one token.
+fn lsp_is_ident_byte(b: Int) -> Bool {
+  (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95 || b == 58
+}
+
+// Backward scan from `cursor` for the innermost UNCLOSED '(' -- the call
+// whose argument list the cursor sits in. Returns (open_paren_offset,
+// top_level_commas_passed); open is -1 when the cursor is not inside an
+// argument list (including when the scan walks out of the enclosing block
+// through an unmatched '{'/'['). Purely lexical: does not skip string
+// literals or comments (acceptable for a v1 signature-help heuristic; the
+// worst case is no signature shown).
+fn lsp_call_open_paren(source: String, cursor: Int) -> (Int, Int) {
+  let mut pos = cursor - 1
+  let mut depth = 0
+  let mut commas = 0
+  let mut open_off = -1
+  let mut stopped = false
+  while pos >= 0 && open_off < 0 && !stopped {
+    let b = String::char_code_at(source, pos)
+    if b == 41 || b == 93 || b == 125 {
+      depth = depth + 1
+    } else if b == 40 {
+      if depth == 0 {
+        open_off = pos
+      } else {
+        depth = depth - 1
+      }
+    } else if b == 91 || b == 123 {
+      if depth > 0 {
+        depth = depth - 1
+      } else {
+        stopped = true
+      }
+    } else if b == 44 && depth == 0 {
+      commas = commas + 1
+    } else {
+      ()
+    }
+    if open_off < 0 {
+      pos = pos - 1
+    } else {
+      ()
+    }
+  }
+  (open_off, commas)
+}
+
+// The checker renders function types as "(A, B) -> R"; collect the
+// top-level comma-separated parameter labels of the FIRST paren group.
+fn lsp_signature_param_labels(ty: String) -> Array[String] {
+  let out = array_empty()
+  let len = String::length(ty)
+  if len == 0 || String::char_code_at(ty, 0) != 40 {
+    out
+  } else {
+    let mut depth = 1
+    let mut pos = 1
+    let mut seg_start = 1
+    let mut done = false
+    while pos < len && !done {
+      let b = String::char_code_at(ty, pos)
+      if b == 40 || b == 91 {
+        depth = depth + 1
+      } else if b == 41 || b == 93 {
+        depth = depth - 1
+        if depth == 0 {
+          if pos > seg_start {
+            Array::push(out, String::trim(ty[seg_start: pos]))
+          } else {
+            ()
+          }
+          done = true
+        } else {
+          ()
+        }
+      } else if b == 44 && depth == 1 {
+        Array::push(out, String::trim(ty[seg_start: pos]))
+        seg_start = pos + 1
+      } else {
+        ()
+      }
+      pos = pos + 1
+    }
+    out
+  }
+}
+
+fn lsp_handle_signature_help(source: String, line0: Int, byte_col: Int) -> Json {
+  let cursor = lsp_line_start_offset(source, line0) + byte_col
+  let (open_off, commas) = lsp_call_open_paren(source, cursor)
+  if open_off < 0 {
+    JNull
+  } else {
+    let mut e = open_off
+    while e > 0 && (String::char_code_at(source, e - 1) == 32 || String::char_code_at(source, e - 1) == 9) {
+      e = e - 1
+    }
+    let mut s = e
+    while s > 0 && lsp_is_ident_byte(String::char_code_at(source, s - 1)) {
+      s = s - 1
+    }
+    if s == e {
+      JNull
+    } else {
+      let name = source[s: e]
+      // type_at_source at the USE site reports the enclosing call's RESULT
+      // type (the callee ident inside an ECall resolves to what the call
+      // yields, e.g. plain "Int" for `add(1, 2)`), not the function type
+      // the signature needs. Resolve the callee to its DEFINITION first
+      // (same binding_occurrences contract lsp_handle_definition relies on:
+      // the first occurrence is the definition) and ask for the type
+      // there -- hovering a `let add = (a, b) -> ...` declaration name is
+      // exactly the query that renders "(Int, Int) -> Int".
+      let (l1, c1) = offset_to_line_col(source, s)
+      let occ = binding_occurrences(source, l1, c1)
+      let (tl, tc) = if Array::length(occ) > 0 {
+        let (def_start, _) = Array::get(occ, 0)
+        offset_to_line_col(source, def_start)
+      } else {
+        (l1, c1)
+      }
+      let ty = type_at_source(source, tl, tc)
+      if String::length(ty) == 0 {
+        JNull
+      } else {
+        let params = for p in lsp_signature_param_labels(ty) {
+          JObj(Map::from_pairs([
+            ("label", JStr(p))
+          ]))
+        }
+        JObj(Map::from_pairs([
+          ("signatures", JArr([
+            JObj(Map::from_pairs([
+              ("label", JStr(String::concat(name, String::concat(": ", ty)))),
+              ("parameters", JArr(params))
+            ]))
+          ])),
+          ("activeSignature", jnum_int(0)),
+          ("activeParameter", jnum_int(commas))
+        ]))
+      }
+    }
+  }
+}
+
+fn lsp_symbols_for_doc_safe(source: String) -> Array[(String, Int, Int, Int)] {
+  handle {
+    symbol_spans(source)
+  } with Error {
+    Throw(_) => Array::slice([
+      ("", 0, 0, 0)
+    ], 0, 0)
+  }
+}
+
+fn lsp_query_matches(name: String, query_lower: String) -> Bool {
+  String::length(query_lower) == 0 || String::contains(String::to_lower(name), query_lower)
+}
+
+fn lsp_handle_workspace_symbol(query: String, docs: Map[String, String]) -> Json {
+  let query_lower = String::to_lower(query)
+  let out = array_empty()
+  let uris = Map::keys(docs)
+  let mut ui = 0
+  while ui < Array::length(uris) {
+    let uri = Array::get(uris, ui)
+    let src = lsp_doc_text(docs, uri)
+    let syms = lsp_symbols_for_doc_safe(src)
+    let mut si = 0
+    while si < Array::length(syms) {
+      let (name, kind, start_off, end_off) = Array::get(syms, si)
+      if lsp_query_matches(name, query_lower) {
+        let ps = lsp_offset_to_pos(src, start_off)
+        let pe = lsp_offset_to_pos(src, end_off)
+        Array::push(out, JObj(Map::from_pairs([
+          ("name", JStr(name)),
+          ("kind", jnum_int(kind)),
+          ("location", jlocation(uri, jrange_pos(ps, pe)))
+        ])))
+      } else {
+        ()
+      }
+      si = si + 1
+    }
+    ui = ui + 1
+  }
+  JArr(out)
+}
+
 // Which `Lsp` operation a given dispatch should perform -- see
 // lsp_run_with_handler's own doc comment for why this is a plain Int tag
 // rather than a closure value.
@@ -586,6 +862,9 @@ fn lsp_op_references() -> Int { 2 }
 fn lsp_op_rename() -> Int { 3 }
 fn lsp_op_document_symbol() -> Int { 4 }
 fn lsp_op_diagnostics() -> Int { 5 }
+fn lsp_op_completion() -> Int { 6 }
+fn lsp_op_signature_help() -> Int { 7 }
+fn lsp_op_workspace_symbol() -> Int { 8 }
 
 // The one place all six `Lsp` operations are actually implemented, and the
 // only place any of them is `perform`ed. `docs` is threaded in by
@@ -632,6 +911,12 @@ fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, 
       perform Lsp::Rename(uri, l, c, new_name)
     } else if op == lsp_op_document_symbol() {
       perform Lsp::DocumentSymbol(uri)
+    } else if op == lsp_op_completion() {
+      perform Lsp::Completion(uri, l, c)
+    } else if op == lsp_op_signature_help() {
+      perform Lsp::SignatureHelp(uri, l, c)
+    } else if op == lsp_op_workspace_symbol() {
+      perform Lsp::WorkspaceSymbol(new_name)
     } else {
       perform Lsp::Diagnostics(uri)
     }
@@ -653,7 +938,13 @@ fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, 
       lsp_handle_rename(src, u2, l2, lsp_pos_to_byte_col(src, l2, c2), nn)
     });
     DocumentSymbol(u2) => resume(lsp_document_symbol_safe(lsp_doc_text(docs, u2)));
-    Diagnostics(u2) => resume(lsp_diagnostics_safe(lsp_doc_text(docs, u2)))
+    Diagnostics(u2) => resume(lsp_diagnostics_safe(lsp_doc_text(docs, u2)));
+    Completion(u2, _, _) => resume(lsp_completion_safe(lsp_doc_text(docs, u2)));
+    SignatureHelp(u2, l2, c2) => resume({
+      let src = lsp_doc_text(docs, u2)
+      lsp_handle_signature_help(src, l2, lsp_pos_to_byte_col(src, l2, c2))
+    });
+    WorkspaceSymbol(q) => resume(lsp_handle_workspace_symbol(q, docs))
   }
 }
 
@@ -674,7 +965,18 @@ fn lsp_capabilities() -> Json {
     ("definitionProvider", JBool(true)),
     ("referencesProvider", JBool(true)),
     ("renameProvider", JBool(true)),
-    ("documentSymbolProvider", JBool(true))
+    ("documentSymbolProvider", JBool(true)),
+    ("completionProvider", JObj(Map::from_pairs([
+      ("triggerCharacters", JArr([
+        JStr("."), JStr(":")
+      ]))
+    ]))),
+    ("signatureHelpProvider", JObj(Map::from_pairs([
+      ("triggerCharacters", JArr([
+        JStr("("), JStr(",")
+      ]))
+    ]))),
+    ("workspaceSymbolProvider", JBool(true))
   ]))
 }
 
@@ -719,6 +1021,19 @@ fn lsp_dispatch_request(method: String, params: Json, docs: Map[String, String])
   } else if method == "textDocument/documentSymbol" {
     let uri = jparam_uri(params)
     lsp_run_with_handler(lsp_op_document_symbol(), uri, 0, 0, "", docs)
+  } else if method == "textDocument/completion" {
+    let uri = jparam_uri(params)
+    let l = jparam_line0(params)
+    let c = jparam_char0(params)
+    lsp_run_with_handler(lsp_op_completion(), uri, l, c, "", docs)
+  } else if method == "textDocument/signatureHelp" {
+    let uri = jparam_uri(params)
+    let l = jparam_line0(params)
+    let c = jparam_char0(params)
+    lsp_run_with_handler(lsp_op_signature_help(), uri, l, c, "", docs)
+  } else if method == "workspace/symbol" {
+    let q = Json::string(Json::field(params, "query"))
+    lsp_run_with_handler(lsp_op_workspace_symbol(), "", 0, 0, q, docs)
   } else if method == "shutdown" {
     JNull
   } else {
