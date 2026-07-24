@@ -599,6 +599,32 @@ evidence を実際に委譲する段階は、ADR-0076 (#817) の evidence passin
 8. multi-worker を有効化し、最後に #488 shared-everything lowering と証明可能な
    move/zero-copy を opt-in で追加する。
 
+### 実装ノート (2026-07-24): cooperative run-to-completion slice
+
+`lib/@vibex/concurrent/` に本仕様の最初の runtime slice を追加した。単一
+thread の決定的 FIFO scheduler で、`spawn` は deferred(eager prototype は
+契約外のまま)、blocking 操作 (join / send / recv / nursery close) が ready
+queue を呼び出しスタック上で駆動する run-to-completion 方式。継続を使わない
+ため ADR-0076 Phase 3 の suspend IR を待たずに次を conformance lock として
+テストで固定した: join 冪等・terminal 安定、dispatch 前 cancel と cancel
+冪等、fail-fast sibling cancel + first-observed failure、child の
+`Error::Throw` → `Failed` 変換、`Err` 値は task failure ではない、bounded
+MPMC channel (capacity 0 rendezvous / `NegativeCapacity` / per-sender FIFO /
+last-sender release close / drain-then-`None` / closed send `Err(Closed)`)、
+nursery close の endpoint close。
+
+未実装(本 slice の scope 外、実装順の後続 step): region 生成性と escape
+check、`Send` / `Spawnable` 判定、blocking API の `Async::suspend` row、
+mid-run cancel 観測、deep-copy snapshot(単一 heap のため immutable 値の
+送信を前提)、`Task::yield`。双方が body 途中で block し合う 2 task
+(容量超過 producer + 貪欲 drain consumer の相互 block)は本方式では表現
+できず deadlock trap になる — suspend IR 着地後に内部を差し替える。
+
+実装中に #1070 の一般ケースが **pure closure でも再現する**ことを特定した
+(capturing closure を by-value 引数で callee に渡して store すると 3 個目
+から破損。effect/evidence 非依存)。`Nursery::spawn` は store を inline 化
+する workaround で回避している。最小 repro は #1070 のコメント参照。
+
 ## v0.4.0 に含めないもの
 
 - raw OS thread / Worker API、thread affinity、priority、CPU count の安定公開
