@@ -5801,12 +5801,13 @@ echo "[compiler-gate] top-level pattern let rejection (#859) ok"
 # a passive `vibe check` command is easy to forget to run by hand, so once
 # Phase 3 finished migrating all 76 directories this became a required gate
 # to prevent a future PR from silently reintroducing a plain index.vibe dir.
-# 44b. #944 (ADR-0073 stage A): opt-in checked-Error row discipline.
-#      Default OFF must keep today's exemption (a row-less caller of a
-#      `with { Error }` function compiles); VIBE_CHECK_ERROR_ROW=1 must
-#      reject it with the row-mismatch diagnostic, and a caller that
-#      discharges via `handle .. with Error` must still compile and run.
-echo "[compiler-gate] 44b/44 opt-in checked-Error row discipline (#944 stage A)"
+# 44b. #944 (ADR-0073 stage B): checked-Error row discipline is ON by
+#      default -- a row-less caller of a `with { Error }` function is
+#      rejected with the row-mismatch diagnostic; VIBE_CHECK_ERROR_ROW=0
+#      is the opt-out escape hatch that restores the old exemption; a
+#      caller that discharges via `handle .. with Error` compiles and
+#      runs under the default.
+echo "[compiler-gate] 44b/44 checked-Error row discipline default-on (#944 stage B)"
 g944dir="_build/_gate_944"
 rm -rf "$g944dir"; mkdir -p "$g944dir"
 cat > "$g944dir/leak.vibe" <<'EOF'
@@ -5842,20 +5843,20 @@ export let main = () -> Int {
 }
 EOF
 rm -f "$g944dir/leak_off.wasm"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+VIBE_CHECK_ERROR_ROW=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$g944dir/leak.vibe" "$g944dir/leak_off.wasm" main >/dev/null 2>&1 || true
 if [ ! -s "$g944dir/leak_off.wasm" ]; then
-  echo "[compiler-gate] FAIL: default-off checked-Error mode changed behavior (row-less caller of with{Error} fn no longer compiles)" >&2
+  echo "[compiler-gate] FAIL: VIBE_CHECK_ERROR_ROW=0 opt-out did not restore the old exemption (#944)" >&2
   cat "$g944dir/leak_off.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
 rm -f "$g944dir/leak_on.wasm"
-VIBE_CHECK_ERROR_ROW=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$g944dir/leak.vibe" "$g944dir/leak_on.wasm" main >/dev/null 2>&1 || true
 if [ -s "$g944dir/leak_on.wasm" ]; then
-  echo "[compiler-gate] FAIL: VIBE_CHECK_ERROR_ROW=1 did not reject the row-less caller (#944)" >&2
+  echo "[compiler-gate] FAIL: default-on checked-Error mode did not reject the row-less caller (#944)" >&2
   exit 1
 fi
 if ! grep -q "missing { Error }" "$g944dir/leak_on.wasm.diag" 2>/dev/null; then
@@ -5864,7 +5865,7 @@ if ! grep -q "missing { Error }" "$g944dir/leak_on.wasm.diag" 2>/dev/null; then
   exit 1
 fi
 rm -f "$g944dir/discharged.wasm"
-VIBE_CHECK_ERROR_ROW=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$g944dir/discharged.vibe" "$g944dir/discharged.wasm" main >/dev/null 2>&1 || true
 if [ ! -s "$g944dir/discharged.wasm" ]; then
