@@ -64,8 +64,14 @@ Semantic effects are explicit in function signatures and validated by effect
 compatibility plus handler matching. `Error` is checked and propagates like
 other operation requirements under ADR-0073.
 
-ADR-0073 and the Lean model are the specification Oracle. The current checker
-still has an Error exemption; #944 tracks bringing it into conformance.
+ADR-0073 and the Lean model are the specification Oracle. Since #944 the
+checker enforces the Error row by default: a direct `throw`/`perform
+Error::Throw`, a call to a `with { Error }` function, and an Error-rowed
+callback parameter all require the caller to declare or `handle` Error.
+An entry declared `with { Error }` gets a runtime boundary handler: an
+escaping Throw becomes `vibe: uncaught error: <msg>` on stderr and an
+unsuccessful (1) entry result. Remaining #944 tail: the builtin-call Error
+carve-out (sub-decision) and the temporary `VIBE_CHECK_ERROR_ROW=0` opt-out.
 
 ```
 let run: () -> Unit with { Stdout } = () -> {

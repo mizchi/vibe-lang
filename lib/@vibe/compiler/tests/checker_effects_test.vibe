@@ -4,88 +4,60 @@ import @vibe/compiler/core {
   Expr,
   Pat,
   Stmt,
-  TypeExpr,
-  Type, TypeEnv, env_bind
+  TypeExpr
 }
 
 import @vibe/compiler/checker {
-  EffectError, check_effects_expr, effect_error_to_string
-}
-
-//# Functions
-
-fn is_call_err(e: EffectError) -> Bool {
-  match e {
-    EEEffectfulCallOutsideEffect(_) => true,
-    _ => false
-  }
+  EffectError, effect_error_to_string
 }
 
 //# Misc
 
-// #640 Stage 3: the EThrow-based tests that pinned EEThrowOutsideEffect on the
-// EThrow AST node were deleted. `throw(x)` now parses to
-// `perform Error::Throw(x)` (Stage 2), which deliberately bypasses that
-// node-level discipline via the Error carve-out, so those tests had no
-// live-pipeline equivalent. The ECall-based tests below still pin the
-// effectful-call discipline, and EEThrowOutsideEffect itself stays.
+// #944 follow-up: the legacy `check_effects_expr` walk this file used to
+// harness (the pre-#933 `in_effect: Bool` discipline) was retired from
+// checker_effects.vibe -- it had no live-pipeline caller. The live
+// disciplines are pinned elsewhere: the row-based checked-Error rules by
+// compiler_gate.sh gates 44b/44c and the effect fixture corpus, the
+// Async-scoped pass by checker_async_effects_test.vibe. What remains here
+// is the rendering contract of the live EffectError variants, which
+// diagnostics output and several gate greps depend on verbatim.
 
-test "calling throw builtin outside effect reports error" {
-  let call_expr = ECall(EIdent("throw", -1), [
-    EString("fail")
-  ], -1)
-  let errors = check_effects_expr(call_expr, EnvEmpty, false)
-  // Should report effectful call error (throw is effectful builtin)
-  assert(Array::length(errors) > 0)
+test "effectful-call error formatting" {
+  let e = EEEffectfulCallOutsideEffect("await")
+  let s = effect_error_to_string(e)
+  assert(String::contains(s, "effectful call outside effectful context"))
+  assert(String::contains(s, "await"))
 }
 
-test "calling throw builtin inside effect is OK" {
-  let call_expr = ECall(EIdent("throw", -1), [
-    EString("fail")
-  ], -1)
-  let errors = check_effects_expr(call_expr, EnvEmpty, true)
-  assert(eq(Array::length(errors), 0))
+test "undeclared-effect error formatting includes op, effect and fix hint" {
+  let e = EEPerformUndeclaredEffect("Fs::read_file", "Fs")
+  let s = effect_error_to_string(e)
+  assert(String::contains(s, "undeclared effect"))
+  assert(String::contains(s, "Fs"))
+  assert(String::contains(s, "with { ... }"))
 }
 
-test "calling effectful user function outside effect reports error" {
-  let env = env_bind(EnvEmpty, "my_fn", CtFn([
-    CtInt
-  ], CtString, Some("Error")))
-  let call_expr = ECall(EIdent("my_fn", -1), [
-    EInt(1)
-  ], -1)
-  let errors = check_effects_expr(call_expr, env, false)
-  assert(Array::length(errors) > 0)
-  assert(is_call_err(Array::get(errors, 0)))
+test "effect row mismatch formatting: declared row present" {
+  let e = EEEffectRowMismatch("f", "Fs", "Error", "Error, Fs")
+  let s = effect_error_to_string(e)
+  assert(String::contains(s, "effect row mismatch for 'f'"))
+  assert(String::contains(s, "missing { Fs }"))
+  assert(String::contains(s, "declared with { Error }"))
+  assert(String::contains(s, "requires { Error, Fs }"))
+  assert(String::contains(s, "hint: add 'with { Error, Fs }' to 'f'"))
 }
 
-test "calling effectful user function inside effect is OK" {
-  let env = env_bind(EnvEmpty, "my_fn", CtFn([
-    CtInt
-  ], CtString, Some("Error")))
-  let call_expr = ECall(EIdent("my_fn", -1), [
-    EInt(1)
-  ], -1)
-  let errors = check_effects_expr(call_expr, env, true)
-  assert(eq(Array::length(errors), 0))
+test "effect row mismatch formatting: no declared row" {
+  let e = EEEffectRowMismatch("g", "Error", "", "Error")
+  let s = effect_error_to_string(e)
+  assert(String::contains(s, "effect row mismatch for 'g'"))
+  assert(String::contains(s, "no 'with' clause"))
+  assert(String::contains(s, "hint: declare 'fn g(...) -> T with { Error }'"))
 }
 
-test "calling pure function outside effect is OK" {
-  let env = env_bind(EnvEmpty, "pure_fn", CtFn([
-    CtInt
-  ], CtInt, None))
-  let call_expr = ECall(EIdent("pure_fn", -1), [
-    EInt(1)
-  ], -1)
-  let errors = check_effects_expr(call_expr, env, false)
-  assert(eq(Array::length(errors), 0))
-}
-
-test "effect error formatting" {
-  let e1 = EEThrowOutsideEffect("throw")
-  let s1 = effect_error_to_string(e1)
-  assert(String::length(s1) > 0)
-  let e2 = EEEffectfulCallOutsideEffect("Fs::read_file")
-  let s2 = effect_error_to_string(e2)
-  assert(String::length(s2) > 0)
+test "assign-immutable error formatting" {
+  let e = EEAssignImmutable("x")
+  let s = effect_error_to_string(e)
+  assert(String::contains(s, "cannot assign to immutable binding"))
+  assert(String::contains(s, "let mut"))
 }

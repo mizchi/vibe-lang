@@ -83,10 +83,15 @@ empty row から `Fs` operation を許す negative witness を置く。
 - compiler 自身を含む既存コードへ Error annotation が推移的に伝播する。
 - `map` / `apply` 等の高階 API は latent effect の検査と effect row polymorphism が
   必須になる。
-- `EEThrowOutsideEffect` / `EEEffectfulCallOutsideEffect` の legacy path は削除せず、
-  operation-level row checker の正式な診断として統合する。
-- current checker の Error exemption は Oracle 違反であり、#944 の implementation
-  bridge で段階的に解消する。
+- legacy 診断は row checker へ統合済み (#944 follow-up):
+  row なし `throw` は `EEEffectRowMismatch` の `missing { Error }` として報告される
+  (`EEThrowOutsideEffect` は構築箇所ゼロのまま退役)。`EEEffectfulCallOutsideEffect`
+  は Async-scoped pass (`check_async_effects_*`) の正式診断として存続。
+  旧 `check_effects_expr` walk (in_effect: Bool の全 effect 一律規律) は
+  live-pipeline 呼び出しゼロのため削除。
+- current checker の Error exemption は #944 stage A-C (デフォルト on 化 + entry
+  boundary) で解消済み。残: builtin-call carve-out の sub-decision と
+  `VIBE_CHECK_ERROR_ROW=0` opt-out の退役。
 
 ## Epistemic status
 
