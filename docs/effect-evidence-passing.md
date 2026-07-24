@@ -1775,6 +1775,52 @@ evidence を持たせる真の closure-conversion-to-value ABI
 「成功する」__DATA__ 付きでは追加していない — 上記コードそのものが
 repro)。#1070 のコメントにも同じ repro と分析を記録済み。
 
+### 追記26 (2026-07-24): 追記25 のケースを実装 — `edp_handle_owner_cps`
+(self-discharging owner の closure param)
+
+追記25 で提案した「小さい方」の修正方向を実装した。
+`edp_handle_owner_cps` (`inline_direct_perform.vibe`) が、needing でない
+関数 F について「F の closure 型パラメータ p (row がちょうど ename) が、
+F 自身の確立する ename-handle の body の中でのみ直接呼び出されている」
+形を検出し、#1075 の `edp_own_closure_params` と同一の全プログラム
+call-site 証明 (`edp_closure_param_universally_safe`: 全 call site が
+single-use かつ個別 migrate 可能な closure literal を渡す) に加えて、
+row を持たないことに起因する 2 つの追加ガードを課す:
+
+1. **owner が値として一切参照されないこと** (`edp_fn_used_as_value`:
+   EIdent 出現数 == 直接呼び出し数)。needing owner は自分の row によって
+   「エイリアス経由の呼び出しも必ず ename-authorized な文脈に置かれ、
+   そこの eligibility スキャンが unknown-name call として弾く」ことが
+   型システムから保証されるが、self-discharging owner は row を持たない
+   ため純粋コードから `let alias = owner; alias(other)` で呼べてしまい、
+   `other` は migrate されないのに handle body は dict を渡す — という
+   arity 不一致を静的に排除する唯一の健全な方法が値参照ゼロの要求。
+
+2. **パラメータの全使用が、owner 自身の ename-handle body 内の直接
+   呼び出しであること** (`edp_param_uses_confined_to_handle_calls`)。
+   needing owner は本体全体が書き換え対象なので任意の位置の呼び出しに
+   dict が転送されるが、こちらは handle body しか書き換えないため、
+   handle 外の使用 (先行呼び出し・handler arm 内参照・別関数への
+   受け渡し) が残ると migrate 済み closure に対して旧 arity の呼び出しが
+   残ってしまう。
+
+eligibility (`edp_all_sites_eligible`) の handle-site 検査は、フラットな
+handle_sites リストから「トップレベル文ごとに owner 帰属で検査」する
+形に再構成した — owner の証明済み param 名はその文の site にだけ
+safe-call 集合として加わる (#1074 review の shadowing 教訓どおり、
+名前だけのマッチをプログラム全域に広げない)。apply
+(`edp_apply_migration`) 側は phase 1 (全文を読み取りのみで解析、
+eligibility が見たのと同じ未変更ビュー) → phase 2 (literal migrate) →
+handle 書き換え時に per-stmt 拡張 needing、の順で mirror する。
+
+fixture: `fixtures/effect_local_closure_handle_owner_param.vibe`
+(want 285)、gate 40ar。seed A/B: 修正前 stage2 では同 fixture が
+"null function or function signature mismatch" で crash することを確認。
+なお owner がエイリアスされるケース (`let alias = run_with_handler`) は
+ガード (1) により ineligible → 従来どおり #786 経路へフォールバック
+する — そのフォールバック自体が壊れているのが #1070 の残り
+(closure-value ABI、追記25 の「大きい方」) であり、本追記のスコープ外。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し

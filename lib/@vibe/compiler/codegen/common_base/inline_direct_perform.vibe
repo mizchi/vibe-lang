@@ -2006,16 +2006,40 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
     let es_names = array_empty()
     let es_members_list = array_empty()
     edp_es_collect_into(stmts, es_names, es_members_list)
-    let mut hi = 0
+    // Handle sites are checked PER TOP-LEVEL STATEMENT (not from the flat
+    // `handle_sites` list, which carries no owner attribution): a site
+    // inside a self-discharging owner function may call that owner's own
+    // proven-safe closure-typed parameters (#1070 second slice,
+    // edp_handle_owner_cps), which extends the safe-call set for exactly
+    // that statement's sites and no others -- per-owner scoping matters
+    // (#1074 review: name-only matching without scoping is how the
+    // shadowing bug happened).
     let mut ok = true
-    while hi < Array::length(handle_sites) {
-      let (body, _) = Array::get(handle_sites, hi)
-      if edp_has_unsafe_construct(body, needing, ename, pure_fns) {
-        ok = false
-      } else {
-        ()
+    let mut hsi = 0
+    while hsi < Array::length(stmts) {
+      match Array::get(stmts, hsi) {
+        SLet(_, _, snm, _, sval) => {
+          let hext = match sval {
+            EFn(_, _, sparams, _, _, sbody) => edp_closure_param_names_only(edp_handle_owner_cps(stmts, snm, sparams, sbody, ename, needing, pure_fns, es_names, es_members_list)),
+            _ => empty_str_array()
+          }
+          let call_safe_h = Array::concat(needing, hext)
+          let sites = array_empty()
+          edp_collect_handle_sites_expr(sval, ename, sites)
+          let mut hi = 0
+          while hi < Array::length(sites) {
+            let (body, _) = Array::get(sites, hi)
+            if edp_has_unsafe_construct(body, call_safe_h, ename, pure_fns) {
+              ok = false
+            } else {
+              ()
+            }
+            hi = hi + 1
+          }
+        },
+        _ => ()
       }
-      hi = hi + 1
+      hsi = hsi + 1
     }
     let mut ni = 0
     while ni < Array::length(needing) {
@@ -2568,6 +2592,203 @@ fn edp_closure_param_names_only(pairs: Array[(String, Int)]) -> Array[String] {
   }
 }
 
+// --- #1070 (general case, second slice -- docs/effect-evidence-passing.md
+// 追記25): a function that establishes its OWN `handle ... with ename` and
+// calls an opaque closure-typed PARAMETER inside that handle's body,
+// WITHOUT itself carrying `ename` in its declared row (it fully discharges
+// the effect locally, so edp_needing_names never classifies it as needing
+// and edp_own_closure_params never applies to it). The self-hosted
+// `vibe lsp`'s original `lsp_run_with_handler` (#1077) was exactly this
+// shape, and it trapped ("indirect call type mismatch") under real
+// wasmtime while passing under the Node dev-runner.
+//
+// Treatment mirrors edp_own_closure_params exactly -- prove BOTH sides
+// (every flowing closure literal AND every call through the parameter)
+// before touching either; see that section's opening comment for why
+// one-sided rewriting is unsound -- with two EXTRA guards the
+// needing-owner case gets for free from the type system:
+//
+// (1) the owner must never be referenced as a bare VALUE anywhere in the
+//     program (edp_fn_used_as_value): `let alias = owner` followed by
+//     `alias(other_closure)` invokes the owner through a name
+//     edp_collect_ecall_arg_idents cannot see, so `other_closure` would
+//     never be migrated while the owner's rewritten handle body
+//     unconditionally passes the dict -- an arity mismatch. A NEEDING
+//     owner is protected from this by its own row: any call to it,
+//     however aliased, must sit in an `ename`-authorized context that
+//     eligibility already scans (the aliased call is then flagged as an
+//     unknown-name call there). A self-discharging owner has NO row, so
+//     its calls can sit in completely pure code no eligibility scan ever
+//     visits -- requiring zero value references is the only sound option.
+//
+// (2) every use of the parameter inside the owner's body must be a DIRECT
+//     CALL located inside one of the owner's own `ename`-handle bodies
+//     (edp_param_uses_confined_to_handle_calls). A needing owner's WHOLE
+//     body gets rewritten (every call through the param receives the
+//     forwarded dict), but here only the handle bodies are rewritten --
+//     a use outside them (a call before the handle, a reference in a
+//     handler arm, a pass-along to another function) would keep the old
+//     arity against a closure that HAS been migrated.
+
+// Count of `name(args)` calls (ECall whose callee is exactly
+// EIdent(name)) -- full traversal mirroring edp_count_ident_uses' node
+// list (an undercounted position could make a value-reference look like
+// a call, or vice versa; both comparisons below need exact counts).
+fn edp_count_direct_calls(expr: Expr, name: String) -> Int {
+  match expr {
+    ECall(callee, args, _) => {
+      let self_hit = match callee {
+        EIdent(nm, _) => if nm == name {
+          1
+        } else {
+          0
+        },
+        _ => edp_count_direct_calls(callee, name)
+      }
+      self_hit + edp_count_direct_calls_exprs(args, name)
+    },
+    EFn(_, _, _, _, _, body) => edp_count_direct_calls(body, name),
+    EHandle(body, arms) => edp_count_direct_calls(body, name) + edp_count_direct_calls_arms(arms, name),
+    EIf(c, t, e) => edp_count_direct_calls(c, name) + edp_count_direct_calls(t, name) + edp_count_direct_calls(e, name),
+    EMatch(s, arms) => edp_count_direct_calls(s, name) + edp_count_direct_calls_arms(arms, name),
+    EWhile(c, b) => edp_count_direct_calls(c, name) + edp_count_direct_calls(b, name),
+    EForIn(_, _, it, b) => edp_count_direct_calls(it, name) + edp_count_direct_calls(b, name),
+    ELoop(pairs, b) => {
+      let mut total = 0
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (_, v) = Array::get(pairs, i)
+        total = total + edp_count_direct_calls(v, name)
+        i = i + 1
+      }
+      total + edp_count_direct_calls(b, name)
+    },
+    ELet(_, v, b, _) => edp_count_direct_calls(v, name) + edp_count_direct_calls(b, name),
+    ELetMut(_, v, b, _) => edp_count_direct_calls(v, name) + edp_count_direct_calls(b, name),
+    ELetRec(_, v, b) => edp_count_direct_calls(v, name) + edp_count_direct_calls(b, name),
+    ESeq(a, b) => edp_count_direct_calls(a, name) + edp_count_direct_calls(b, name),
+    EBinOp(_, l, r) => edp_count_direct_calls(l, name) + edp_count_direct_calls(r, name),
+    EUnaryOp(_, e2) => edp_count_direct_calls(e2, name),
+    EAssign(_, v, c) => edp_count_direct_calls(v, name) + edp_count_direct_calls(c, name),
+    EAssignOp(_, _, v, c) => edp_count_direct_calls(v, name) + edp_count_direct_calls(c, name),
+    EDot(o, _, _, _) => edp_count_direct_calls(o, name),
+    ELabeledArg(_, _, v) => edp_count_direct_calls(v, name),
+    EReturn(e2) => edp_count_direct_calls(e2, name),
+    EBreak(opt) => match opt {
+      Some(e2) => edp_count_direct_calls(e2, name),
+      None => 0
+    },
+    EContinue(args) => edp_count_direct_calls_exprs(args, name),
+    ETuple(elems) => edp_count_direct_calls_exprs(elems, name),
+    EArray(elems) => edp_count_direct_calls_exprs(elems, name),
+    ERecord(_, fields, _) => edp_count_direct_calls_fields(fields, name),
+    EMap(fields) => edp_count_direct_calls_fields(fields, name),
+    ESpread(e2) => edp_count_direct_calls(e2, name),
+    _ => 0
+  }
+}
+
+fn edp_count_direct_calls_exprs(exprs: Array[Expr], name: String) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(exprs) {
+    total = total + edp_count_direct_calls(Array::get(exprs, i), name)
+    i = i + 1
+  }
+  total
+}
+
+fn edp_count_direct_calls_arms(arms: Array[(Pat, Expr)], name: String) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    total = total + edp_count_direct_calls(ex, name)
+    i = i + 1
+  }
+  total
+}
+
+fn edp_count_direct_calls_fields(fields: Array[(String, Expr)], name: String) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    total = total + edp_count_direct_calls(v, name)
+    i = i + 1
+  }
+  total
+}
+
+fn edp_count_direct_calls_stmts(stmts: Array[Stmt], name: String) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => {
+        total = total + edp_count_direct_calls(expr, name)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  total
+}
+
+// Guard (1): any EIdent occurrence of `fname` that is NOT the callee of a
+// direct call is a value reference (stored, passed along, returned...).
+fn edp_fn_used_as_value(stmts: Array[Stmt], fname: String) -> Bool {
+  edp_count_ident_uses_stmts(stmts, fname) > edp_count_direct_calls_stmts(stmts, fname)
+}
+
+// Guard (2): every occurrence of `pname` in `body` is a direct call AND
+// sits inside one of `body`'s own `ename`-handle bodies. Requires at
+// least one use -- a never-used parameter has nothing to gain from
+// widening. Nested same-effect handles would double-count uses here
+// (edp_collect_handle_sites_expr collects both levels), failing the
+// equality -- conservative, and such shapes are ineligible anyway
+// (edp_has_unsafe_construct rejects same-effect nesting).
+fn edp_param_uses_confined_to_handle_calls(body: Expr, pname: String, ename: String) -> Bool {
+  let total = edp_count_ident_uses(body, pname)
+  let sites = array_empty()
+  edp_collect_handle_sites_expr(body, ename, sites)
+  let mut uses_in = 0
+  let mut calls_in = 0
+  let mut i = 0
+  while i < Array::length(sites) {
+    let (hb, _) = Array::get(sites, i)
+    uses_in = uses_in + edp_count_ident_uses(hb, pname)
+    calls_in = calls_in + edp_count_direct_calls(hb, pname)
+    i = i + 1
+  }
+  total > 0 && total == uses_in && uses_in == calls_in
+}
+
+// The (name, position) pairs of `fname`'s closure-typed parameters that
+// clear every guard above plus the same universal call-site proof the
+// needing-owner path uses. `fname` must NOT itself be needing (needing
+// owners take the edp_own_closure_params path; a needing owner containing
+// a same-effect handle is ineligible regardless).
+fn edp_handle_owner_cps(stmts: Array[Stmt], fname: String, fparams: Array[(String, Option[TypeExpr])], fbody: Expr, ename: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Array[(String, Int)] {
+  let out = array_empty()
+  if edp_str_array_contains(needing, fname) || edp_fn_used_as_value(stmts, fname) {
+    out
+  } else {
+    let mut pi = 0
+    while pi < Array::length(fparams) {
+      let (pname_raw, pty) = Array::get(fparams, pi)
+      let pname = edp_strip_tilde(pname_raw)
+      if edp_type_is_fn_row_exactly(pty, ename, es_names, es_members_list) && !edp_expr_binds_name(fbody, pname) && edp_param_uses_confined_to_handle_calls(fbody, pname, ename) && edp_closure_param_universally_safe(stmts, fname, pi, ename, needing, pure_fns, es_names, es_members_list) {
+        Array::push(out, (pname, pi))
+      } else {
+        ()
+      }
+      pi = pi + 1
+    }
+    out
+  }
+}
+
 // Migrates ONE closure literal binding (top-level SLet or nested ELet/
 // ELetRec named `xname`) in place: prepends the evidence-dict parameter
 // and rewrites its body exactly like a top-level needing function's own
@@ -2730,6 +2951,46 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
     }
     ni0 = ni0 + 1
   }
+  // #1070 second slice (edp_handle_owner_cps): the same up-front
+  // analyze-then-commit for SELF-DISCHARGING owners' closure params.
+  // Phase 1 is strictly read-only across ALL statements (mirroring the
+  // exact unmutated view edp_all_sites_eligible vetted) before Phase 2
+  // migrates any closure literal -- a literal bound inside one owner's
+  // body can be an argument to a DIFFERENT owner, so interleaving
+  // analysis with mutation could diverge from what eligibility saw.
+  let hcp_by_stmt = array_empty()
+  let mut hsi0 = 0
+  while hsi0 < Array::length(stmts) {
+    match Array::get(stmts, hsi0) {
+      SLet(_, _, snm, _, sval) => match sval {
+        EFn(_, _, sparams, _, _, sbody) => Array::push(hcp_by_stmt, (snm, edp_handle_owner_cps(stmts, snm, sparams, sbody, ename, needing, pure_fns, es_names, es_members_list))),
+        _ => Array::push(hcp_by_stmt, ("", array_empty()))
+      },
+      _ => Array::push(hcp_by_stmt, ("", array_empty()))
+    }
+    hsi0 = hsi0 + 1
+  }
+  let mut hsi1 = 0
+  while hsi1 < Array::length(hcp_by_stmt) {
+    let (howner, hcps) = Array::get(hcp_by_stmt, hsi1)
+    let mut hcpi = 0
+    while hcpi < Array::length(hcps) {
+      let (_, ppos) = Array::get(hcps, hcpi)
+      let hc_candidates = edp_collect_ecall_arg_idents(stmts, howner, ppos)
+      let mut hci = 0
+      while hci < Array::length(hc_candidates) {
+        let xn = Array::get(hc_candidates, hci)
+        if xn == "##edp_unsafe##" {
+          ()
+        } else {
+          edp_migrate_closure_binding_stmts(stmts, xn, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
+        }
+        hci = hci + 1
+      }
+      hcpi = hcpi + 1
+    }
+    hsi1 = hsi1 + 1
+  }
   // Rewrite each needing function's own definition in place: prepend the
   // evidence-dict parameter, and rewrite its body to call through it
   // (direct performs) / forward it (calls to other needing functions, and
@@ -2752,7 +3013,16 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
   let mut si = 0
   while si < Array::length(stmts) {
     match Array::get(stmts, si) {
-      SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, si, SLet(exported, is_rec, name, ty, edp_find_rewrite_handles(expr, ename, needing))),
+      SLet(exported, is_rec, name, ty, expr) => {
+        // Extend the safe-call set with THIS statement's own proven
+        // closure params (if it is a self-discharging owner) so its
+        // handle bodies' calls through them get the dict literal
+        // prepended -- scoped to this statement only, mirroring the
+        // per-owner eligibility check exactly.
+        let (_, hcps2) = Array::get(hcp_by_stmt, si)
+        let needing_h = Array::concat(needing, edp_closure_param_names_only(hcps2))
+        Array::set(stmts, si, SLet(exported, is_rec, name, ty, edp_find_rewrite_handles(expr, ename, needing_h)))
+      },
       _ => ()
     }
     si = si + 1
