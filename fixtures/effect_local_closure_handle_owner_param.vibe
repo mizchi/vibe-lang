@@ -1,0 +1,50 @@
+// #1070 (general case, second slice -- docs/effect-evidence-passing.md
+// 追記25): a capturing effectful local closure passed BY VALUE to a
+// function that establishes its OWN `handle ... with Ask` and calls the
+// closure-typed parameter inside that handle's body -- WITHOUT the owner
+// carrying `with { Ask }` in its own row (it fully discharges the effect
+// locally, so it is never "needing" and edp_own_closure_params/#1075's
+// fix never applies to it). This is the exact shape the self-hosted
+// `vibe lsp`'s original `lsp_run_with_handler` (#1077) had, which
+// compiled cleanly, ran under the Node dev-runner in that real-world
+// instance, but trapped ("indirect call type mismatch") under real
+// wasmtime -- while THIS minimal form crashes identically under BOTH
+// runners ("null function or function signature mismatch"), so the
+// dev-runner-based gate suffices to pin it.
+//
+// Fixed by edp_handle_owner_cps (inline_direct_perform.vibe): the owner's
+// closure-typed parameter is proven safe with the same whole-program
+// universal-call-site requirement as #1075's needing-owner case, PLUS two
+// extra guards its missing row makes necessary (no value references to
+// the owner anywhere; every param use is a direct call inside the owner's
+// own Ask-handle bodies) -- then the flowing closure literals gain the
+// implicit dict parameter and the handle-body calls pass the handle
+// site's own synthesized dict.
+//   run_with_handler(a): perform resolves to 42, + captured base (100) => 142
+//   run_with_handler(b): 42 + 100 + 1                                  => 143
+//   total                                                              => 285
+effect Ask {
+  Get -> Int
+}
+
+let run_with_handler = (f: () -> Int with { Ask }) -> Int {
+  handle {
+    f()
+  } with Ask {
+    Get => resume(42)
+  }
+}
+
+export let main = () -> Int {
+  let base = 100
+  let a = () -> Int with { Ask } {
+    perform Ask::Get + base
+  }
+  let b = () -> Int with { Ask } {
+    perform Ask::Get + base + 1
+  }
+  run_with_handler(a) + run_with_handler(b)
+}
+
+__DATA__
+{"last": "285"}

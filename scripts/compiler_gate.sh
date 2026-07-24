@@ -5371,6 +5371,37 @@ fi
 rm -rf "$edpedir"
 echo "[compiler-gate] closure-typed HOF parameter safety boundary ok (206)"
 
+# 40ar. #1070 (general case, second slice -- docs/effect-evidence-passing.md
+#       追記25): a SELF-DISCHARGING owner -- a function with NO `with { Ask }`
+#       row that establishes its own `handle .. with Ask` and calls its
+#       closure-typed parameter inside that handle's body. Never "needing"
+#       (no row), so 40ap's edp_own_closure_params path can't see it; was
+#       the exact shape #1077's original lsp_run_with_handler trapped on
+#       under real wasmtime. Fixed by edp_handle_owner_cps
+#       (inline_direct_perform.vibe): same universal call-site proof as
+#       40ap plus the two extra guards a missing row makes necessary (no
+#       value references to the owner; every param use is a direct call
+#       inside the owner's own Ask-handle bodies).
+echo "[compiler-gate] 40ar/40 self-discharging owner's closure-typed parameter (#1070 general case, second slice)"
+edphdir="_build/_gate_edp_handle_owner_param"
+rm -rf "$edphdir"; mkdir -p "$edphdir"
+sed '/^__DATA__$/,$d' fixtures/effect_local_closure_handle_owner_param.vibe > "$edphdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edphdir/src.vibe" "$edphdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$edphdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_handle_owner_param.vibe did not compile" >&2
+  cat "$edphdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+edph_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$edphdir/out.wasm" 2>&1 | tail -1)"
+if [ "$edph_out" != "285" ]; then
+  echo "[compiler-gate] FAIL: effect_local_closure_handle_owner_param.vibe got '$edph_out' (want 285) -- #1070 self-discharging-owner closure-param fix regressed" >&2
+  exit 1
+fi
+rm -rf "$edphdir"
+echo "[compiler-gate] self-discharging owner's closure-typed parameter ok (285)"
+
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
 #     (a) ok_fnmain: the paren-less/annotation-less `fn main with { Stdout } { .. }`
 #         special form compiles as `let main: () -> Unit with { Stdout }` and the
