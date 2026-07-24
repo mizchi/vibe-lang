@@ -5682,6 +5682,50 @@ echo "[compiler-gate] generic-struct annotation re-narrowing regression (#844) o
 #     top-level statements have no such continuation). Same treatment #830
 #     already gave the `record { .. }` form: reject with a clear, LOCATED
 #     error instead of the misleading internal crash.
+# 43b. #1078: two enums declaring a same-named variant in one compiled unit
+#      is a hard, descriptive error naming both enums -- previously the
+#      flat name-keyed env silently resolved every bare construction to the
+#      LAST-registered signature, producing an arity/argument-type mismatch
+#      pointing at the WRONG declaration (or a silent wrong-tag miscompile
+#      when signatures matched). Unrelated packages meet in one unit via
+#      the merge/flatten lane, which is how #1078 was originally hit.
+echo "[compiler-gate] 43b/43 enum constructor name collision rejection (#1078)"
+g1078dir="_build/_gate_1078"
+rm -rf "$g1078dir"; mkdir -p "$g1078dir"
+cat > "$g1078dir/ctor_collision.vibe" <<'EOF'
+enum AEnum {
+  Mk(Int)
+}
+
+enum BEnum {
+  Mk(String, String)
+}
+
+fn use_a() -> AEnum {
+  Mk(1)
+}
+
+export let main = () -> Int {
+  let a = use_a()
+  1
+}
+EOF
+rm -f "$g1078dir/ctor_collision.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g1078dir/ctor_collision.vibe" "$g1078dir/ctor_collision.wasm" main >/dev/null 2>&1 || true
+if [ -s "$g1078dir/ctor_collision.wasm" ]; then
+  echo "[compiler-gate] FAIL: same-named variant across two enums compiled (should be rejected, #1078)" >&2
+  exit 1
+fi
+if ! grep -q "constructor name collision" "$g1078dir/ctor_collision.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: ctor-collision diag missing the descriptive #1078 message (still the misleading wrong-declaration mismatch?)" >&2
+  cat "$g1078dir/ctor_collision.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$g1078dir"
+echo "[compiler-gate] enum constructor name collision rejection ok (#1078)"
+
 echo "[compiler-gate] 44/44 top-level pattern let rejection (#859)"
 g859dir="_build/_gate_859"
 rm -rf "$g859dir"; mkdir -p "$g859dir"
