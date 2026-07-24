@@ -443,7 +443,12 @@ export fn Parallel::map[T: Send, U: Send](n: TaskGroup, xs: Array[T], f: (T) -> 
   let mut i = 0
   while i < len {
     let x = Array::get(xs, i)
-    let t = TaskGroup::spawn(n, () -> { f(x) })
+    // #944 checked-Error row discipline: annotate the thunk's row so the
+    // latent { Error } stays on the closure value instead of being
+    // attributed to Parallel::map's own row (map never performs — child
+    // failures surface as join results).
+    let thunk: () -> U with { Error } = () -> { f(x) }
+    let t = TaskGroup::spawn(n, thunk)
     ArrayBuilder::push(hb, t)
     i = i + 1
   }
