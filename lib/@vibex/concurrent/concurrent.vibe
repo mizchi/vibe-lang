@@ -420,6 +420,41 @@ export fn Sender::release[T](s: Sender[T]) -> Unit {
   }
 }
 
+//# Combinators
+
+// Parallel::map (docs/concurrency.md "Safe parallel API"): spawn one
+// child per element, return results in INPUT INDEX order — task
+// completion order is not observable. The first child failure (or
+// cancellation) is returned as the map's error; remaining children are
+// cancelled by the nursery's fail-fast when they have not started yet.
+export struct Parallel { tag: Int }
+
+export fn Parallel::map[T, U](n: Nursery, xs: Array[T], f: (T) -> U with { Error }) -> Result[Array[U], TaskError] {
+  let len = Array::length(xs)
+  let hb = ArrayBuilder::new()
+  let mut i = 0
+  while i < len {
+    let x = Array::get(xs, i)
+    let t = Nursery::spawn(n, () -> { f(x) })
+    ArrayBuilder::push(hb, t)
+    i = i + 1
+  }
+  let handles = ArrayBuilder::freeze(hb)
+  let rb = ArrayBuilder::new()
+  loop (j = 0) {
+    if j >= len {
+      break Ok(ArrayBuilder::freeze(rb))
+    }
+    match TaskHandle::join(Array::get(handles, j)) {
+      Ok(v) => {
+        ArrayBuilder::push(rb, v)
+        continue(j + 1)
+      },
+      Err(e) => break Err(e)
+    }
+  }
+}
+
 // Receive: Some(message) in linearization order, or None once the
 // channel is closed and drained. Blocks by driving ready tasks;
 // blocking with no runnable task traps (deadlock).

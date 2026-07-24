@@ -3,9 +3,10 @@
 import ./concurrent.vibe {
   type Nursery, type TaskHandle, type TaskError, type SendError,
   type ChannelConfigError, type Sender, type Receiver, type Channel,
+  type Parallel,
   Nursery::run, Nursery::spawn, TaskHandle::join, TaskHandle::cancel,
   Channel::bounded, Sender::send, Sender::clone, Sender::release,
-  Receiver::recv
+  Receiver::recv, Parallel::map
 }
 
 //# Lifecycle conformance locks (docs/concurrency.md)
@@ -439,6 +440,55 @@ test "pipeline: body consumes a spawned producer past capacity" {
   })
   match r {
     Ok(joined) => assert(joined is Ok(150)),
+    Err(_) => assert(false)
+  }
+}
+
+test "Parallel::map returns results in input index order" {
+  let r = Nursery::run((n) -> {
+    Parallel::map(n, [1, 2, 3, 4, 5], (x) -> { x * x })
+  })
+  match r {
+    Ok(mapped) => match mapped {
+      Ok(sq) => {
+        assert_eq(Array::length(sq), 5)
+        assert_eq(Array::get(sq, 0), 1)
+        assert_eq(Array::get(sq, 1), 4)
+        assert_eq(Array::get(sq, 2), 9)
+        assert_eq(Array::get(sq, 3), 16)
+        assert_eq(Array::get(sq, 4), 25)
+      },
+      Err(_) => assert(false)
+    },
+    Err(_) => assert(false)
+  }
+}
+
+test "Parallel::map surfaces the first failure" {
+  let r: Result[Result[Array[Int], TaskError], TaskError] = Nursery::run((n) -> {
+    Parallel::map(n, [1, 2, 3], (x) -> {
+      if x == 2 { throw("map-boom") }
+      x
+    })
+  })
+  // Inner: the map observed the failure. Outer: the nursery reports the
+  // same first failure at close.
+  match r {
+    Err(TaskError::Failed(msg)) => assert_eq(msg, "map-boom"),
+    _ => assert(false)
+  }
+}
+
+test "Parallel::map on an empty input is Ok([])" {
+  let r = Nursery::run((n) -> {
+    let empty: Array[Int] = []
+    Parallel::map(n, empty, (x) -> { x })
+  })
+  match r {
+    Ok(mapped) => match mapped {
+      Ok(out) => assert_eq(Array::length(out), 0),
+      Err(_) => assert(false)
+    },
     Err(_) => assert(false)
   }
 }
