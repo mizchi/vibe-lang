@@ -270,11 +270,13 @@ export fn TaskGroup::spawn[T: Send](n: TaskGroup, f: () -> T with { Error }) -> 
       }
     }
   }
-  // The append is INLINE on purpose: a capturing closure passed by value
-  // into a helper fn and STORED there miscompiles on the current build
-  // path (#1085, the remaining store sub-case of #1070 — reproduces with
-  // a pure closure, no effects involved), so `runner` must not cross a
-  // function boundary before it is stored. Both arrays share n.count and
+  // The append is INLINE on purpose: an append helper of the shape
+  // `if has-space { Array::set(.., v) .. } else { while { push(.., v) } .. }`
+  // over-drops v under RC (#1085 — the #706/#725 loop-borrow epilogue
+  // drop fires unconditionally even when the real-consume `set` arm ran;
+  // not closure-specific, reproduces with plain structs). The inline
+  // form is accounted through the ELet/loop path instead of the
+  // param-epilogue path and stays correct. Both arrays share n.count and
   // always grow together.
   let cap = Array::length(n.runners)
   if n.count < cap {
