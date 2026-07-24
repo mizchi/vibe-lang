@@ -625,6 +625,28 @@ mid-run cancel 観測、deep-copy snapshot(単一 heap のため immutable 値�
 から破損。effect/evidence 非依存)。`Nursery::spawn` は store を inline 化
 する workaround で回避している。最小 repro は #1070 のコメント参照。
 
+### 実装ノート (2026-07-24 追記): `Send` marker (実装順 step 4 の第一片)
+
+checker に compiler 判定の structural `Send` を実装した。`Send` は
+`register_builtin_traits` で trait def として seed され(primitive は
+nominal impl も併記)、`[T: Send]` bound の enforcement は
+`check_program_bounds` から `type_send_ok`
+(`checker/checker_trait.vibe`) に dispatch する。判定は本書の
+allowlist どおり: primitives / tuple / Option / Result / mut field を
+持たない struct / enum(generic instantiation・再帰型は coinductive)
+が Send、`Array` / `Bytes` / closure / mut-field struct / 未解決型は
+非 Send。`impl Send for X` は「compiler-judged marker」として reject。
+generic enum は TDEnum が payload を宣言時 fresh `CtVar` で保存する
+ため、ctor の `CtForAll` binder から var id を回収して positional に
+置換する(struct は名前ベースの `subst_type_params` で足りる)。
+
+fixtures: `send_bound_structural.vibe`(positive, 実行 42)+
+`err_type_send_{array_bound,mut_struct_bound,closure_bound,user_impl}`、
+compiler gate 47/47。`@vibex/concurrent` の `Nursery::spawn` /
+`Channel::bounded` / `Parallel::map` に `[T: Send]` bound を配線済み。
+未着手: spawn closure の capture 検査(`Spawnable`)、`Sender[r,T]` の
+同一 nursery 特例、region 生成性。
+
 ## v0.4.0 に含めないもの
 
 - raw OS thread / Worker API、thread affinity、priority、CPU count の安定公開

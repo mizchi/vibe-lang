@@ -21,11 +21,13 @@
 //     FIFO, close on last Sender release, nursery-close closes endpoints,
 //     drain-then-None, Err(Closed) on send-after-close.
 //   NOT implemented yet (deferred, tracked by ADR-0068 implementation
-//   order) — region generativity + escape checking, `Send` /
-//     `Spawnable[r]` capture checking, Async::suspend effect rows on the
-//     blocking API, mid-run cancel observation, deep-copy message
-//     snapshots (single-heap: callers must send immutable values),
-//     Task::yield.
+//   order) — region generativity + escape checking, `Spawnable[r]`
+//     capture checking, Async::suspend effect rows on the blocking API,
+//     mid-run cancel observation, deep-copy message snapshots
+//     (single-heap: callers must send immutable values), Task::yield.
+//   Message/result types ARE `Send`-bounded: spawn results, channel
+//     elements, and Parallel::map inputs/outputs carry `[T: Send]`
+//     (compiler-judged structural marker, checker/checker_trait.vibe).
 //
 // Naming: the task handle is `TaskHandle` (not the spec's `Task[r, T]`)
 // because `Task::*` is claimed by the retired eager builtin prototype in
@@ -244,7 +246,7 @@ export fn Nursery::run[T](body: (Nursery) -> T with { e }) -> Result[T, TaskErro
 // an Error::Throw reaching the child boundary becomes Failed(msg) and
 // triggers fail-fast. Spawning into a nursery that is no longer Open
 // (closing/closed, or cancelling after a sibling failure) traps.
-export fn Nursery::spawn[T](n: Nursery, f: () -> T with { Error }) -> TaskHandle[T] {
+export fn Nursery::spawn[T: Send](n: Nursery, f: () -> T with { Error }) -> TaskHandle[T] {
   conc_require(n.phase == 0)
   let rc = ResCell::{ value: None }
   let cell = TaskCell::{ status: 0, cancel_requested: false, fail_msg: "" }
@@ -352,7 +354,7 @@ fn chan_closed[T](c: Channel[T]) -> Bool {
 
 // Bounded MPMC channel. Capacity 0 is a rendezvous channel; negative
 // capacity is a configuration error.
-export fn Channel::bounded[T](n: Nursery, capacity: Int) -> Result[(Sender[T], Receiver[T]), ChannelConfigError] {
+export fn Channel::bounded[T: Send](n: Nursery, capacity: Int) -> Result[(Sender[T], Receiver[T]), ChannelConfigError] {
   if capacity < 0 {
     Err(NegativeCapacity)
   } else {
@@ -429,7 +431,7 @@ export fn Sender::release[T](s: Sender[T]) -> Unit {
 // cancelled by the nursery's fail-fast when they have not started yet.
 export struct Parallel { tag: Int }
 
-export fn Parallel::map[T, U](n: Nursery, xs: Array[T], f: (T) -> U with { Error }) -> Result[Array[U], TaskError] {
+export fn Parallel::map[T: Send, U: Send](n: Nursery, xs: Array[T], f: (T) -> U with { Error }) -> Result[Array[U], TaskError] {
   let len = Array::length(xs)
   let hb = ArrayBuilder::new()
   let mut i = 0
