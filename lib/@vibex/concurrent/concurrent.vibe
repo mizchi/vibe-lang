@@ -4,7 +4,7 @@
 // This is the FIRST runtime slice of the ADR-0068 semantics: a
 // deterministic single-threaded scheduler where `spawn` defers the child
 // thunk into a FIFO ready queue and blocking operations (join / send /
-// recv / nursery close) drive that queue on the caller's stack
+// recv / task-group close) drive that queue on the caller's stack
 // ("thread-of-control borrowing"). No continuations are involved, so a
 // dispatched task always runs to completion; mid-body suspension and the
 // preemptive cancel points of the full spec arrive with the ADR-0076
@@ -15,10 +15,10 @@
 //   implemented — deferred spawn, FIFO deterministic dispatch, join
 //     idempotence on stable terminal outcomes, cancel-before-dispatch,
 //     cancel idempotence, fail-fast sibling cancel + first-observed
-//     failure as the nursery result, child Error::Throw -> Failed
+//     failure as the task group result, child Error::Throw -> Failed
 //     conversion, recoverable child failure as a Result *value*, bounded
 //     MPMC channel (capacity 0 = rendezvous, NegativeCapacity), per-sender
-//     FIFO, close on last Sender release, nursery-close closes endpoints,
+//     FIFO, close on last Sender release, group-close closes endpoints,
 //     drain-then-None, Err(Closed) on send-after-close.
 //   NOT implemented yet (deferred, tracked by ADR-0068 implementation
 //   order) — region generativity + escape checking, `Spawnable[r]`
@@ -32,14 +32,17 @@
 // Naming: the task handle is `TaskHandle` (not the spec's `Task[r, T]`)
 // because `Task::*` is claimed by the retired eager builtin prototype in
 // the compiler's builtin dispatch table; the spelling converges when the
-// builtin surface is replaced.
+// builtin surface is replaced. The scope type is `TaskGroup` — the spec
+// (docs/concurrency.md) calls the CONCEPT a "nursery" (Trio lineage),
+// but the library uses the asyncio/Swift spelling, which is the most
+// widely trained/recognized name for exactly these semantics.
 //
 // Blocking with no runnable task is a genuine deadlock in this model and
 // traps (a `where requires` contract failure) rather than inventing an
 // outcome. The main shape this bites: two spawned tasks that BOTH block
 // mid-body against each other (e.g. a producer overflowing capacity while
 // a dispatched consumer drains greedily) — that interleaving needs real
-// suspension. Drive such pipelines from the nursery body side, or size
+// suspension. Drive such pipelines from the task group body side, or size
 // the capacity to the burst, until the suspend IR lands.
 
 //# Types
@@ -52,9 +55,9 @@ export struct TaskCell {
   mut fail_msg: String
 }
 
-// Nursery phase codes: 0 open, 1 cancelling (fail-fast in progress),
+// Task-group phase codes: 0 open, 1 cancelling (fail-fast in progress),
 // 2 closing (body returned, draining children), 3 closed.
-export struct Nursery {
+export struct TaskGroup {
   mut tasks: Array[TaskCell];
   mut runners: Array[() -> Unit];
   mut count: Int;
@@ -67,7 +70,7 @@ export struct Nursery {
 export struct ResCell[T] { mut value: Option[T] }
 
 export struct TaskHandle[T] {
-  nursery: Nursery;
+  group: TaskGroup;
   cell: TaskCell;
   result: ResCell[T]
 }
@@ -99,7 +102,7 @@ export struct Ring[T] {
 // `pend_seq` / `pend_consumed` are monotone counters that let a blocked
 // sender detect that its own message was taken (FIFO order).
 export struct Channel[T] {
-  nursery: Nursery;
+  group: TaskGroup;
   capacity: Int;
   mut senders: Int;
   mut closed: Bool;
@@ -182,7 +185,7 @@ fn ring_take[T](r: Ring[T]) -> T {
 // Dispatch the next Ready task in spawn (FIFO) order. Returns false when
 // no Ready task exists. This is THE scheduler: deterministic, and safe to
 // call reentrantly (a dispatched task's blocking op may call it again).
-fn drive_one(n: Nursery) -> Bool {
+fn drive_one(n: TaskGroup) -> Bool {
   let idx = loop (i = n.next) {
     if i >= n.count { break -1 }
     let c = Array::get(n.tasks, i)
@@ -195,7 +198,7 @@ fn drive_one(n: Nursery) -> Bool {
     let c = Array::get(n.tasks, idx)
     if c.cancel_requested || n.failing {
       // Ready -> dispatch is a cancel point: a cancel requested before
-      // dispatch, or a failing nursery (fail-fast sibling cancel),
+      // dispatch, or a failing task group (fail-fast sibling cancel),
       // resolves the task as Cancelled without running its body.
       c.status = 4
     } else {
@@ -207,17 +210,17 @@ fn drive_one(n: Nursery) -> Bool {
   }
 }
 
-//# Nursery
+//# TaskGroup
 
-// `nursery { n => body }` as a library function until the dedicated
-// syntax lands: introduces the scope, runs body, then joins all
-// remaining children (normal close). The nursery result is
+// The spec's `nursery { n => body }` construct as a library function
+// until the dedicated syntax lands: introduces the scope, runs body,
+// then joins all remaining children (normal close). The group result is
 // Err(Failed(first observed failure)) when any child failed, otherwise
-// Ok(body result). NOTE (MVP): a `throw` escaping the body itself is not
-// yet converted to a nursery failure — it propagates as a normal Error
-// effect of `e`.
-export fn Nursery::run[T](body: (Nursery) -> T with { e }) -> Result[T, TaskError] with { e } {
-  let n = Nursery::{
+// Ok(body result). NOTE (MVP): a `throw` escaping the body itself is
+// not yet converted to a group failure — it propagates as a normal
+// Error effect of `e`.
+export fn TaskGroup::run[T](body: (TaskGroup) -> T with { e }) -> Result[T, TaskError] with { e } {
+  let n = TaskGroup::{
     tasks: empty_cells(),
     runners: empty_runners(),
     count: 0,
@@ -244,9 +247,9 @@ export fn Nursery::run[T](body: (Nursery) -> T with { e }) -> Result[T, TaskErro
 // Deferred spawn: the child is queued Ready and does NOT run here (the
 // eager builtin prototype is out of contract). The thunk may throw —
 // an Error::Throw reaching the child boundary becomes Failed(msg) and
-// triggers fail-fast. Spawning into a nursery that is no longer Open
+// triggers fail-fast. Spawning into a task group that is no longer Open
 // (closing/closed, or cancelling after a sibling failure) traps.
-export fn Nursery::spawn[T: Send](n: Nursery, f: () -> T with { Error }) -> TaskHandle[T] {
+export fn TaskGroup::spawn[T: Send](n: TaskGroup, f: () -> T with { Error }) -> TaskHandle[T] {
   conc_require(n.phase == 0)
   let rc = ResCell::{ value: None }
   let cell = TaskCell::{ status: 0, cancel_requested: false, fail_msg: "" }
@@ -307,7 +310,7 @@ export fn Nursery::spawn[T: Send](n: Nursery, f: () -> T with { Error }) -> Task
     n.tasks = nt
   }
   n.count = n.count + 1
-  TaskHandle::{ nursery: n, cell: cell, result: rc }
+  TaskHandle::{ group: n, cell: cell, result: rc }
 }
 
 //# TaskHandle
@@ -331,7 +334,7 @@ export fn TaskHandle::join[T](h: TaskHandle[T]) -> Result[T, TaskError] {
     // s == 1: join cycle through the dispatch stack — deadlock.
     conc_require(s == 0)
     // s == 0: the target is still Ready somewhere in the queue.
-    conc_require(drive_one(h.nursery))
+    conc_require(drive_one(h.group))
     continue(d)
   }
 }
@@ -348,19 +351,19 @@ export fn TaskHandle::cancel[T](h: TaskHandle[T]) -> Unit {
 //# Channel
 
 fn chan_closed[T](c: Channel[T]) -> Bool {
-  // Closed by last-sender release, or by the owning nursery leaving its
+  // Closed by last-sender release, or by the owning task group leaving its
   // Open/Cancelling phases (normal close closes remaining endpoints).
-  c.closed || c.nursery.phase >= 2
+  c.closed || c.group.phase >= 2
 }
 
 // Bounded MPMC channel. Capacity 0 is a rendezvous channel; negative
 // capacity is a configuration error.
-export fn Channel::bounded[T: Send](n: Nursery, capacity: Int) -> Result[(Sender[T], Receiver[T]), ChannelConfigError] {
+export fn Channel::bounded[T: Send](n: TaskGroup, capacity: Int) -> Result[(Sender[T], Receiver[T]), ChannelConfigError] {
   if capacity < 0 {
     Err(NegativeCapacity)
   } else {
     let core = Channel::{
-      nursery: n,
+      group: n,
       capacity: capacity,
       senders: 1,
       closed: false,
@@ -399,7 +402,7 @@ export fn Sender::send[T](s: Sender[T], v: T) -> Result[Unit, SendError] {
   loop (d = 0) {
     if c.pend_consumed > myseq { break Ok(()) }
     if chan_closed(c) { break Err(Closed) }
-    conc_require(drive_one(c.nursery))
+    conc_require(drive_one(c.group))
     continue(d)
   }
 }
@@ -429,16 +432,16 @@ export fn Sender::release[T](s: Sender[T]) -> Unit {
 // child per element, return results in INPUT INDEX order — task
 // completion order is not observable. The first child failure (or
 // cancellation) is returned as the map's error; remaining children are
-// cancelled by the nursery's fail-fast when they have not started yet.
+// cancelled by the task group's fail-fast when they have not started yet.
 export struct Parallel { tag: Int }
 
-export fn Parallel::map[T: Send, U: Send](n: Nursery, xs: Array[T], f: (T) -> U with { Error }) -> Result[Array[U], TaskError] {
+export fn Parallel::map[T: Send, U: Send](n: TaskGroup, xs: Array[T], f: (T) -> U with { Error }) -> Result[Array[U], TaskError] {
   let len = Array::length(xs)
   let hb = ArrayBuilder::new()
   let mut i = 0
   while i < len {
     let x = Array::get(xs, i)
-    let t = Nursery::spawn(n, () -> { f(x) })
+    let t = TaskGroup::spawn(n, () -> { f(x) })
     ArrayBuilder::push(hb, t)
     i = i + 1
   }
@@ -482,7 +485,7 @@ export fn Receiver::recv[T](r: Receiver[T]) -> Option[T] {
       break Some(v)
     }
     if chan_closed(c) { break None }
-    conc_require(drive_one(c.nursery))
+    conc_require(drive_one(c.group))
     continue(d)
   }
   c.waiting_recv = c.waiting_recv - 1

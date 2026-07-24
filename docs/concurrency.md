@@ -620,10 +620,16 @@ mid-run cancel 観測、deep-copy snapshot(単一 heap のため immutable 値�
 (容量超過 producer + 貪欲 drain consumer の相互 block)は本方式では表現
 できず deadlock trap になる — suspend IR 着地後に内部を差し替える。
 
+命名: 本書の概念名 nursery (Trio 系譜) は spec 用語として維持し、
+library の型/APIは `TaskGroup` (asyncio / Swift 系譜) とした —
+LLM/読者にとって最も広く学習・認知されている綴りを採る判断
+(2026-07-24)。将来の構文糖衣も `taskgroup { g => ... }` を予定。
+
 実装中に #1070 の一般ケースが **pure closure でも再現する**ことを特定した
 (capturing closure を by-value 引数で callee に渡して store すると 3 個目
-から破損。effect/evidence 非依存)。`Nursery::spawn` は store を inline 化
-する workaround で回避している。最小 repro は #1070 のコメント参照。
+から破損。effect/evidence 非依存)。`TaskGroup::spawn` は store を inline 化
+する workaround で回避している。最小 repro は #1070 のコメント参照
+(store サブケースは #1085 へ切り出し済み)。
 
 ### 実装ノート (2026-07-24 追記): `Send` marker (実装順 step 4 の第一片)
 
@@ -642,7 +648,7 @@ generic enum は TDEnum が payload を宣言時 fresh `CtVar` で保存する
 
 fixtures: `send_bound_structural.vibe`(positive, 実行 42)+
 `err_type_send_{array_bound,mut_struct_bound,closure_bound,user_impl}`、
-compiler gate 47/47。`@vibex/concurrent` の `Nursery::spawn` /
+compiler gate 47/47。`@vibex/concurrent` の `TaskGroup::spawn` /
 `Channel::bounded` / `Parallel::map` に `[T: Send]` bound を配線済み。
 未着手: spawn closure の capture 検査(`Spawnable`)、`Sender[r,T]` の
 同一 nursery 特例、region 生成性。

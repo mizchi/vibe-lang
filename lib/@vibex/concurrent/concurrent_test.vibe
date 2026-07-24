@@ -1,10 +1,10 @@
 //# Imports
 
 import ./concurrent.vibe {
-  type Nursery, type TaskHandle, type TaskError, type SendError,
+  type TaskGroup, type TaskHandle, type TaskError, type SendError,
   type ChannelConfigError, type Sender, type Receiver, type Channel,
   type Parallel,
-  Nursery::run, Nursery::spawn, TaskHandle::join, TaskHandle::cancel,
+  TaskGroup::run, TaskGroup::spawn, TaskHandle::join, TaskHandle::cancel,
   Channel::bounded, Sender::send, Sender::clone, Sender::release,
   Receiver::recv, Parallel::map
 }
@@ -13,8 +13,8 @@ import ./concurrent.vibe {
 
 test "spawn is deferred: child does not run before join" {
   let seen = [0]
-  let r = Nursery::run((n) -> {
-    let t = Nursery::spawn(n, () -> {
+  let r = TaskGroup::run((n) -> {
+    let t = TaskGroup::spawn(n, () -> {
       Array::set(seen, 0, 1)
       42
     })
@@ -36,8 +36,8 @@ test "spawn is deferred: child does not run before join" {
 }
 
 test "join is idempotent: repeated joins observe the same outcome" {
-  let r = Nursery::run((n) -> {
-    let t = Nursery::spawn(n, () -> { 7 })
+  let r = TaskGroup::run((n) -> {
+    let t = TaskGroup::spawn(n, () -> { 7 })
     let a = TaskHandle::join(t)
     let b = TaskHandle::join(t)
     (a, b)
@@ -53,10 +53,10 @@ test "join is idempotent: repeated joins observe the same outcome" {
 
 test "dispatch order is deterministic FIFO in spawn order" {
   let log = ArrayBuilder::new()
-  let r = Nursery::run((n) -> {
-    let t1 = Nursery::spawn(n, () -> { ArrayBuilder::push(log, 1) })
-    let t2 = Nursery::spawn(n, () -> { ArrayBuilder::push(log, 2) })
-    let t3 = Nursery::spawn(n, () -> { ArrayBuilder::push(log, 3) })
+  let r = TaskGroup::run((n) -> {
+    let t1 = TaskGroup::spawn(n, () -> { ArrayBuilder::push(log, 1) })
+    let t2 = TaskGroup::spawn(n, () -> { ArrayBuilder::push(log, 2) })
+    let t3 = TaskGroup::spawn(n, () -> { ArrayBuilder::push(log, 3) })
     // Joining the LAST task drives the queue; earlier spawns run first.
     let _ = TaskHandle::join(t3)
     let _ = TaskHandle::join(t1)
@@ -71,10 +71,10 @@ test "dispatch order is deterministic FIFO in spawn order" {
   assert_eq(Array::get(order, 2), 3)
 }
 
-test "nursery close joins children the body never joined" {
+test "task-group close joins children the body never joined" {
   let seen = [0]
-  let r = Nursery::run((n) -> {
-    let _t = Nursery::spawn(n, () -> { Array::set(seen, 0, 1) })
+  let r = TaskGroup::run((n) -> {
+    let _t = TaskGroup::spawn(n, () -> { Array::set(seen, 0, 1) })
     // body returns without joining; normal close must run the child
     99
   })
@@ -84,8 +84,8 @@ test "nursery close joins children the body never joined" {
 
 test "cancel before dispatch resolves Cancelled without running the body" {
   let seen = [0]
-  let r = Nursery::run((n) -> {
-    let t = Nursery::spawn(n, () -> {
+  let r = TaskGroup::run((n) -> {
+    let t = TaskGroup::spawn(n, () -> {
       Array::set(seen, 0, 1)
       0
     })
@@ -103,8 +103,8 @@ test "cancel before dispatch resolves Cancelled without running the body" {
 }
 
 test "cancel after terminal is a no-op" {
-  let r = Nursery::run((n) -> {
-    let t = Nursery::spawn(n, () -> { 5 })
+  let r = TaskGroup::run((n) -> {
+    let t = TaskGroup::spawn(n, () -> { 5 })
     let first = TaskHandle::join(t)
     TaskHandle::cancel(t)
     let second = TaskHandle::join(t)
@@ -119,9 +119,9 @@ test "cancel after terminal is a no-op" {
   }
 }
 
-test "explicitly cancelled child does not fail the nursery" {
-  let r = Nursery::run((n) -> {
-    let t = Nursery::spawn(n, () -> { 1 })
+test "explicitly cancelled child does not fail the task group" {
+  let r = TaskGroup::run((n) -> {
+    let t = TaskGroup::spawn(n, () -> { 1 })
     TaskHandle::cancel(t)
     123
   })
@@ -130,9 +130,9 @@ test "explicitly cancelled child does not fail the nursery" {
 
 //# Failure conformance locks
 
-test "unhandled child throw becomes Failed(msg) and fails the nursery" {
-  let r: Result[Int, TaskError] = Nursery::run((n) -> {
-    let t = Nursery::spawn(n, () -> {
+test "unhandled child throw becomes Failed(msg) and fails the task group" {
+  let r: Result[Int, TaskError] = TaskGroup::run((n) -> {
+    let t = TaskGroup::spawn(n, () -> {
       throw("boom")
       0
     })
@@ -143,7 +143,7 @@ test "unhandled child throw becomes Failed(msg) and fails the nursery" {
     }
     7
   })
-  // The nursery result reports the first observed failure even though
+  // The group result reports the first observed failure even though
   // the body itself completed normally.
   match r {
     Err(TaskError::Failed(msg)) => assert_eq(msg, "boom"),
@@ -153,12 +153,12 @@ test "unhandled child throw becomes Failed(msg) and fails the nursery" {
 
 test "fail-fast: sibling still Ready when a child fails is cancelled" {
   let seen = [0]
-  let r: Result[Int, TaskError] = Nursery::run((n) -> {
-    let _bad = Nursery::spawn(n, () -> {
+  let r: Result[Int, TaskError] = TaskGroup::run((n) -> {
+    let _bad = TaskGroup::spawn(n, () -> {
       throw("first-failure")
       0
     })
-    let _good = Nursery::spawn(n, () -> {
+    let _good = TaskGroup::spawn(n, () -> {
       Array::set(seen, 0, 1)
       0
     })
@@ -174,8 +174,8 @@ test "fail-fast: sibling still Ready when a child fails is cancelled" {
 }
 
 test "child Err value is a recoverable result, not a task failure" {
-  let r = Nursery::run((n) -> {
-    let t = Nursery::spawn(n, () -> {
+  let r = TaskGroup::run((n) -> {
+    let t = TaskGroup::spawn(n, () -> {
       let out: Result[Int, String] = Err("recoverable")
       out
     })
@@ -193,7 +193,7 @@ test "child Err value is a recoverable result, not a task failure" {
 //# Channel conformance locks
 
 test "negative capacity is a configuration error" {
-  let r = Nursery::run((n) -> {
+  let r = TaskGroup::run((n) -> {
     let ch: Result[(Sender[Int], Receiver[Int]), ChannelConfigError] =
       Channel::bounded(n, -1)
     assert(ch is Err(ChannelConfigError::NegativeCapacity))
@@ -203,7 +203,7 @@ test "negative capacity is a configuration error" {
 }
 
 test "bounded buffer preserves per-sender FIFO order" {
-  let r = Nursery::run((n) -> {
+  let r = TaskGroup::run((n) -> {
     match Channel::bounded(n, 2) {
       Err(_) => -1,
       Ok((s, rx)) => {
@@ -220,7 +220,7 @@ test "bounded buffer preserves per-sender FIFO order" {
 }
 
 test "close on last sender release: drain buffered messages then None" {
-  let r = Nursery::run((n) -> {
+  let r = TaskGroup::run((n) -> {
     match Channel::bounded(n, 4) {
       Err(_) => -1,
       Ok((s, rx)) => {
@@ -240,7 +240,7 @@ test "close on last sender release: drain buffered messages then None" {
 }
 
 test "send to a closed channel is Err(Closed)" {
-  let r = Nursery::run((n) -> {
+  let r = TaskGroup::run((n) -> {
     match Channel::bounded(n, 1) {
       Err(_) => -1,
       Ok((s, _rx)) => {
@@ -259,7 +259,7 @@ test "send to a closed channel is Err(Closed)" {
 }
 
 test "clone keeps the channel open until every sender is released" {
-  let r = Nursery::run((n) -> {
+  let r = TaskGroup::run((n) -> {
     match Channel::bounded(n, 4) {
       Err(_) => -1,
       Ok((s1, rx)) => {
@@ -282,11 +282,11 @@ test "clone keeps the channel open until every sender is released" {
 }
 
 test "recv blocks by driving a spawned producer (buffer path)" {
-  let r = Nursery::run((n) -> {
+  let r = TaskGroup::run((n) -> {
     match Channel::bounded(n, 1) {
       Err(_) => -1,
       Ok((s, rx)) => {
-        let _p = Nursery::spawn(n, () -> {
+        let _p = TaskGroup::spawn(n, () -> {
           let _ = Sender::send(s, 77)
           Sender::release(s)
           0
@@ -303,11 +303,11 @@ test "recv blocks by driving a spawned producer (buffer path)" {
 }
 
 test "rendezvous (capacity 0): recv drives the producer and pairs up" {
-  let r = Nursery::run((n) -> {
+  let r = TaskGroup::run((n) -> {
     match Channel::bounded(n, 0) {
       Err(_) => -1,
       Ok((s, rx)) => {
-        let _p = Nursery::spawn(n, () -> {
+        let _p = TaskGroup::spawn(n, () -> {
           let a = Sender::send(s, 1)
           let b = Sender::send(s, 2)
           Sender::release(s)
@@ -326,12 +326,12 @@ test "rendezvous (capacity 0): recv drives the producer and pairs up" {
 }
 
 test "rendezvous (capacity 0): sender blocks until a consumer task runs" {
-  let r = Nursery::run((n) -> {
+  let r = TaskGroup::run((n) -> {
     match Channel::bounded(n, 0) {
       Err(_) => -1,
       Ok((s, rx)) => {
         let got = [0 - 1]
-        let _consumer = Nursery::spawn(n, () -> {
+        let _consumer = TaskGroup::spawn(n, () -> {
           match Receiver::recv(rx) {
             Some(v) => Array::set(got, 0, v),
             None => ()
@@ -352,13 +352,13 @@ test "rendezvous (capacity 0): sender blocks until a consumer task runs" {
 }
 
 test "full buffer send blocks and is promoted when a consumer drains" {
-  let r = Nursery::run((n) -> {
+  let r = TaskGroup::run((n) -> {
     match Channel::bounded(n, 1) {
       Err(_) => -1,
       Ok((s, rx)) => {
         let _ = Sender::send(s, 1)
         let drained = [0]
-        let _consumer = Nursery::spawn(n, () -> {
+        let _consumer = TaskGroup::spawn(n, () -> {
           match Receiver::recv(rx) {
             Some(v) => Array::set(drained, 0, v),
             None => ()
@@ -379,17 +379,17 @@ test "full buffer send blocks and is promoted when a consumer drains" {
   assert(r is Ok(0))
 }
 
-test "nursery close closes remaining endpoints" {
+test "task-group close closes remaining endpoints" {
   let escaped: Array[Option[Receiver[Int]]] = [None]
-  let r = Nursery::run((n) -> {
+  let r = TaskGroup::run((n) -> {
     match Channel::bounded(n, 2) {
       Err(_) => -1,
       Ok((s, rx)) => {
         let _ = Sender::send(s, 9)
-        // Deliberately leak the receiver out of the nursery. Region
+        // Deliberately leak the receiver out of the task group. Region
         // escape will be a STATIC error once `r`-generativity lands
         // (ADR-0068 implementation order step 4); until then the runtime
-        // closes the endpoint at nursery close.
+        // closes the endpoint at task-group close.
         Array::set(escaped, 0, Some(rx))
         0
       }
@@ -398,7 +398,7 @@ test "nursery close closes remaining endpoints" {
   assert(r is Ok(0))
   match Array::get(escaped, 0) {
     Some(rx) => {
-      // The nursery has closed: buffered messages drain, then None.
+      // The task group has closed: buffered messages drain, then None.
       assert(Receiver::recv(rx) is Some(9))
       assert(Receiver::recv(rx) is None)
     },
@@ -413,11 +413,11 @@ test "pipeline: body consumes a spawned producer past capacity" {
   // as deposits for the committed receiver (rendezvous linearization) —
   // strict suspension-based backpressure interleaving needs the ADR-0076
   // suspend IR (see module header).
-  let r = Nursery::run((n) -> {
+  let r = TaskGroup::run((n) -> {
     match Channel::bounded(n, 2) {
       Err(_) => Err(Cancelled),
       Ok((s, rx)) => {
-        let _producer = Nursery::spawn(n, () -> {
+        let _producer = TaskGroup::spawn(n, () -> {
           let mut i = 1
           while i <= 5 {
             let _ = Sender::send(s, i * 10)
@@ -445,7 +445,7 @@ test "pipeline: body consumes a spawned producer past capacity" {
 }
 
 test "Parallel::map returns results in input index order" {
-  let r = Nursery::run((n) -> {
+  let r = TaskGroup::run((n) -> {
     Parallel::map(n, [1, 2, 3, 4, 5], (x) -> { x * x })
   })
   match r {
@@ -465,13 +465,13 @@ test "Parallel::map returns results in input index order" {
 }
 
 test "Parallel::map surfaces the first failure" {
-  let r: Result[Result[Array[Int], TaskError], TaskError] = Nursery::run((n) -> {
+  let r: Result[Result[Array[Int], TaskError], TaskError] = TaskGroup::run((n) -> {
     Parallel::map(n, [1, 2, 3], (x) -> {
       if x == 2 { throw("map-boom") }
       x
     })
   })
-  // Inner: the map observed the failure. Outer: the nursery reports the
+  // Inner: the map observed the failure. Outer: the task group reports the
   // same first failure at close.
   match r {
     Err(TaskError::Failed(msg)) => assert_eq(msg, "map-boom"),
@@ -480,7 +480,7 @@ test "Parallel::map surfaces the first failure" {
 }
 
 test "Parallel::map on an empty input is Ok([])" {
-  let r = Nursery::run((n) -> {
+  let r = TaskGroup::run((n) -> {
     let empty: Array[Int] = []
     Parallel::map(n, empty, (x) -> { x })
   })
@@ -494,11 +494,11 @@ test "Parallel::map on an empty input is Ok([])" {
 }
 
 test "pipeline: spawned producer and consumer within capacity" {
-  let r = Nursery::run((n) -> {
+  let r = TaskGroup::run((n) -> {
     match Channel::bounded(n, 8) {
       Err(_) => Err(Cancelled),
       Ok((s, rx)) => {
-        let _producer = Nursery::spawn(n, () -> {
+        let _producer = TaskGroup::spawn(n, () -> {
           let mut i = 1
           while i <= 5 {
             let _ = Sender::send(s, i * 10)
@@ -507,7 +507,7 @@ test "pipeline: spawned producer and consumer within capacity" {
           Sender::release(s)
           0
         })
-        let consumer = Nursery::spawn(n, () -> {
+        let consumer = TaskGroup::spawn(n, () -> {
           let mut sum = 0
           let mut going = true
           while going {
