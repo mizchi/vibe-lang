@@ -1,0 +1,30 @@
+//# Imports
+
+// #1080 regression: importing just the TYPE (`{ Json }`) must bring the
+// package's whole `Json::`-qualified export surface into scope under the
+// FS-compile lane -- including the accessors whose RETURN type is not
+// Json. bind_enum_constructor_companions (runtime/typecheck_fs.vibe) used
+// to bind companions only when their return type equals the imported type
+// (the enum-constructor rule), so `Json::parse`/`Json::field` (return
+// Json) resolved while `Json::string`/`Json::length`/... (return
+// String/Int/...) failed with "unknown name". This test deliberately
+// imports ONLY `Json` and calls every #777 accessor.
+import @vibe/json {
+  Json
+}
+
+//# Misc
+
+test "Json:: accessors resolve from a bare type import (#1080)" {
+  let j = Json::parse("{\"s\":\"hi\",\"n\":2,\"b\":true,\"a\":[1,2,3]}")
+  assert(Json::string(Json::field(j, "s")) == "hi")
+  assert(Json::number(Json::field(j, "n")) == 2.0)
+  assert(Json::bool(Json::field(j, "b")))
+  assert(Json::length(Json::field(j, "a")) == 3)
+  assert(Json::number(Json::index(Json::field(j, "a"), 1)) == 2.0)
+  assert(!Json::is_null(Json::field(j, "s")))
+  assert(Json::is_null(Json::field(j, "missing")))
+  assert(Json::type_of(j) == "object")
+  assert(Array::length(Json::keys(j)) == 4)
+  assert(String::length(Json::stringify(j)) > 0)
+}

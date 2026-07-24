@@ -114,12 +114,24 @@ fn type_returns_name(ty: Type, type_name: String) -> Bool {
   }
 }
 
+// Companions bound alongside an imported type `T`: (a) constructors and
+// constructor-like functions RETURNING T (the original rule -- written
+// for enum constructors, whose type is always `... -> T`), and (b) any
+// export whose NAME is qualified with `T::` (#1080): the #777
+// `Json::string`-style direct-value accessors are exported under the
+// type's qualified namespace but RETURN a different type (String/Int/
+// Bool/...), so rule (a) never bound them -- importing `{ Json }` gave
+// you `Json::parse`/`Json::field` (return Json, matched (a) by
+// coincidence) but "unknown name: Json::string" for the other 8 of the
+// 11 documented accessors. The bundle-merge lane resolves these by name
+// against the merged unit and never had the gap; only this FS lane did.
 fn bind_enum_constructor_companions(acc: TypeEnv, dep_bindings: Array[(String, Type)], enum_name: String) -> TypeEnv {
+  let qual_prefix = String::concat(enum_name, "::")
   let mut out = acc
   let mut i = 0
   while i < Array::length(dep_bindings) {
     let (candidate_name, candidate_ty) = Array::get(dep_bindings, i)
-    if candidate_name != enum_name && starts_with_upper(candidate_name) && type_returns_name(candidate_ty, enum_name) {
+    if candidate_name != enum_name && starts_with_upper(candidate_name) && (type_returns_name(candidate_ty, enum_name) || String::starts_with(candidate_name, qual_prefix)) {
       out = env_bind(out, candidate_name, candidate_ty)
     }
     i = i + 1
