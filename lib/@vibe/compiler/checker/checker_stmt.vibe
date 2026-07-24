@@ -1218,6 +1218,19 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
 // caller, not violated, so they are skipped. One `no impl `Trait` for `Type``
 // error per unsatisfied bound (matches fixtures/err_type_trait_*bound* messages).
 fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Array[String]) -> Unit {
+  check_program_bounds_impl(env, s, defs, errors, false)
+}
+
+// send_only: the FS/import path (check_program_with_env) checks ONLY the
+// compiler-judged `Send` bound. User-trait bounds cannot be enforced there
+// yet: imported files' `impl` declarations are not propagated into the
+// entry file's TypeEnv, so a cross-module `impl Hash for String` would be
+// invisible and every such bound would false-positive (found empirically:
+// builtin_traits_test / iterator_test / to_string_bool_param_test).
+// `Send` needs no user impls — its structural judgment plus the seeded
+// primitive impls are complete in any env — so it is safe to enforce
+// everywhere.
+fn check_program_bounds_impl(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Array[String], send_only: Bool) -> Unit {
   let pairs = collect_subst_bounds_pairs(s)
   let n = Array::length(pairs)
   let mut i = 0
@@ -1238,6 +1251,8 @@ fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Ar
             true
           } else if b == "Send" {
             type_send_ok(env, s, defs, resolved)
+          } else if send_only {
+            true
           } else {
             type_implements_trait(env, s, resolved, b)
           }
@@ -1883,7 +1898,13 @@ export fn check_program_with_env(stmts: Array[Stmt], initial_env: TypeEnv) -> Ty
       let tytab = array_empty()
       // #986: labeled-argument name validation (see check_program).
       check_labeled_arg_names_stmts(stmts, frozen_errors, false)
-      let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+      let (env, final_s, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+      // #1090 review: the FS typecheck path (every file with imports) went
+      // through here and never enforced trait bounds, so `[T: Send]` on an
+      // imported generic fn was silently bypassed. Enforce the Send bound
+      // here (send_only — see check_program_bounds_impl for why user-trait
+      // bounds cannot be enforced on this path yet).
+      check_program_bounds_impl(env, final_s, empty_defs, frozen_errors, true)
       collect_async_effect_errors(stmts, env, frozen_errors)
       if Array::length(frozen_errors) > 0 {
         throw(Array::get(frozen_errors, 0))

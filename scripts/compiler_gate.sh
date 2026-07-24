@@ -6178,6 +6178,34 @@ send_check_reject "err_type_send_array_bound.vibe" 'no impl `Send` for `Array[In
 send_check_reject "err_type_send_mut_struct_bound.vibe" 'no impl `Send` for `Counter`' "mut"
 send_check_reject "err_type_send_closure_bound.vibe" 'no impl `Send` for `' "clos"
 send_check_reject "err_type_send_user_impl.vibe" '`Send` is a compiler-judged structural marker' "impl"
+# #1090 review: the coinductive guard keys on constructor + ARGS — a
+# recursive occurrence with different arguments must still be checked.
+send_check_reject "err_type_send_nonregular_recursion.vibe" 'no impl `Send` for `LoopT[Int]`' "nonreg"
+# #1090 review: bounds are enforced on the IMPORT (check_program_with_env /
+# FS) path too — a consumer importing a [T: Send] fn must not bypass it.
+cat > "$senddir/send_dep.vibe" <<'SENDDEP'
+export let want_send = [T: Send](x: T) -> T { x }
+SENDDEP
+cat > "$senddir/send_use.vibe" <<'SENDUSE'
+import ./send_dep.vibe { want_send }
+
+fn main {
+  let _ = want_send([1, 2, 3])
+  ()
+}
+SENDUSE
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$senddir/send_use.vibe" "$senddir/send_use.wasm" main >/dev/null 2>&1 || true
+if [ -s "$senddir/send_use.wasm" ]; then
+  echo "[compiler-gate] FAIL: Send bound bypassed on the import path (send_use.vibe compiled)" >&2
+  exit 1
+fi
+if ! grep -qF 'no impl `Send` for `Array[Int]`' "$senddir/send_use.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: import-path Send violation did not produce the expected diagnostic" >&2
+  cat "$senddir/send_use.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
 rm -rf "$senddir"
 echo "[compiler-gate] ADR-0068 Send marker ok"
 
