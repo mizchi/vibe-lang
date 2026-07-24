@@ -24,32 +24,32 @@
           overlays = [ (import rust-overlay) ];
         };
 
-        # Rust 1.93+ required for wasmtime 45.
+        # Rust 1.93+ required for wasmtime 45+.
         rustToolchain = pkgs.rust-bin.stable."1.93.0".default.override {
           targets = [ "wasm32-wasip1" "wasm32-wasip2" ];
         };
 
-        wasmtimeVersion = "45.0.0";
+        wasmtimeVersion = "47.0.2";
         wasmtimeArtifact = {
           aarch64-darwin = {
             arch = "aarch64";
             os = "macos";
-            hash = "sha256-jFiaH+tleN39dtTuB7rFUdfzBp1s75sq5eh+YwtRmNs=";
+            hash = "sha256-BtU69C7zy+9cfUTBSmaTs0Vqw9nfAJUPsgIHXicxTz4=";
           };
           x86_64-darwin = {
             arch = "x86_64";
             os = "macos";
-            hash = "sha256-sBtCFhPZ4GcQPvtwHNZvQ2Agsy9ulVEl+snq80+lvOc=";
+            hash = "sha256-VIs393TVXoRfHQQH2dm7uoeZy6vkXWF9XQEncGut0Is=";
           };
           aarch64-linux = {
             arch = "aarch64";
             os = "linux";
-            hash = "sha256-SicIO6jTxkUmstRp9Q5lOctMHdnQgzbg2JU7ymFnN+M=";
+            hash = "sha256-W7P+BodqHD9AQ3gVkLTApp6SN1SQI8zUQcGAg/Ed7NU=";
           };
           x86_64-linux = {
             arch = "x86_64";
             os = "linux";
-            hash = "sha256-nZLm3ARjD2F+Dl1TIyelqResSJhYfgf0+3pfx//+92A=";
+            hash = "sha256-nshXUWSROXEbalBhxPSKQUEr+bGrmKCLmSTKc/IspXU=";
           };
         }.${system};
         wasmtimeRelease = pkgs.stdenvNoCC.mkDerivation {

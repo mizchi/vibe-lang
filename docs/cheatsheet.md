@@ -350,6 +350,11 @@ export open trait Show                     // extensible outside module
 
 impl Eq for Int
 impl [T: Eq] Eq for Array[T]              // conditional impl
+
+// `Send` (ADR-0068) is a COMPILER-JUDGED structural marker, not a user
+// trait: `[T: Send]` accepts primitives, tuples, Option/Result, and
+// immutable structs/enums built from Send parts; Array/Bytes, closures,
+// and `mut`-field structs are rejected. `impl Send for X` is an error.
 ```
 
 ## Collections

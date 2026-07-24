@@ -5,7 +5,11 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Subst, Type, TypeEnv, impls_overlap_for, trait_defined, type_implements_trait, TypeExpr
+  Subst, Type, TypeDef, TypeEnv, env_lookup, find_typedef, impls_overlap_for, subst_apply, trait_defined, type_implements_trait, TypeExpr
+}
+
+import ./checker_resolve.vibe {
+  subst_type_params
 }
 
 //# Functions
@@ -30,6 +34,217 @@ fn empty_strings() -> Array[String] {
 
 export fn satisfies_bound(env: TypeEnv, s: Subst, ty: Type, bound: String) -> Bool {
   type_implements_trait(env, s, ty, bound)
+}
+
+// ADR-0068: `Send` is a compiler-judged structural marker, not a user
+// trait (docs/concurrency.md "`Send` と capture safety"). A type is Send
+// when a value can cross a task/channel boundary as a deep-copy
+// snapshot. Initial allowlist, conservative:
+//   Send    — Unit/Bool/Int/Double/String/Char; tuples, Option, and
+//             user structs/enums (incl. Result) whose components are all
+//             Send and which have no `mut` field.
+//   not Send — Array/Bytes (mutable interior), closures, mut-field
+//             structs, effects, unresolved vars/unknowns, and any named
+//             type without a visible definition (host resources etc.).
+// Recursive types are handled coinductively: a recursive occurrence of a
+// type already being checked does not fail the check on its own.
+export fn type_send_ok(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type) -> Bool {
+  send_ok_rec(env, s, defs, ty, empty_strings())
+}
+
+fn send_seen_has(seen: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(seen) {
+    if Array::get(seen, i) == name {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn send_seen_with(seen: Array[String], name: String) -> Array[String] {
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < Array::length(seen) {
+    ArrayBuilder::push(b, Array::get(seen, i))
+    i = i + 1
+  }
+  ArrayBuilder::push(b, name)
+  ArrayBuilder::freeze(b)
+}
+
+fn send_ok_all(env: TypeEnv, s: Subst, defs: Array[TypeDef], tys: Array[Type], seen: Array[String]) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(tys) {
+    if not(send_ok_rec(env, s, defs, Array::get(tys, i), seen)) {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
+fn send_ok_named(env: TypeEnv, s: Subst, defs: Array[TypeDef], name: String, targs: Array[Type], seen: Array[String]) -> Bool {
+  if send_seen_has(seen, name) {
+    true
+  } else {
+    match find_typedef(defs, name) {
+      Some(td) => match td {
+        TDStruct(_, fields, mut_fields, tparams) => {
+          if Array::length(mut_fields) > 0 {
+            false
+          } else if Array::length(tparams) != Array::length(targs) {
+            false
+          } else {
+            let inner = send_seen_with(seen, name)
+            let mut i = 0
+            let mut ok = true
+            while i < Array::length(fields) {
+              let (_, ft) = Array::get(fields, i)
+              let inst = subst_type_params(ft, tparams, targs)
+              if not(send_ok_rec(env, s, defs, inst, inner)) {
+                ok = false
+              }
+              i = i + 1
+            }
+            ok
+          }
+        },
+        TDEnum(_, tparams, variants) => {
+          if Array::length(tparams) != Array::length(targs) {
+            false
+          } else if Array::length(tparams) == 0 {
+            // Monomorphic enum: TDEnum payloads are stored as resolved
+            // concrete/named types — recurse directly.
+            let inner = send_seen_with(seen, name)
+            let mut vi = 0
+            let mut ok = true
+            while vi < Array::length(variants) {
+              let (_, payloads) = Array::get(variants, vi)
+              let mut pi = 0
+              while pi < Array::length(payloads) {
+                if not(send_ok_rec(env, s, defs, Array::get(payloads, pi), inner)) {
+                  ok = false
+                }
+                pi = pi + 1
+              }
+              vi = vi + 1
+            }
+            ok
+          } else {
+            // Generic enum: the SEnum handler stores payload types with the
+            // declaration's FRESH CtVar ids (not the param names), so
+            // name-based substitution cannot instantiate them. Recover the
+            // var ids from the constructor's env binding —
+            // `CtForAll(param_var_ids, _, CtFn(payloads, _))` — and
+            // substitute those ids with targs.
+            let inner = send_seen_with(seen, name)
+            let mut vi = 0
+            let mut ok = true
+            while vi < Array::length(variants) {
+              let (vname, payloads) = Array::get(variants, vi)
+              if Array::length(payloads) > 0 {
+                match env_lookup(env, vname) {
+                  Some(cty) => match cty {
+                    CtForAll(vids, _, inner_ty) => match inner_ty {
+                      CtFn(args, _, _) => {
+                        let mut pi = 0
+                        while pi < Array::length(args) {
+                          let inst = send_subst_vars(Array::get(args, pi), vids, targs)
+                          if not(send_ok_rec(env, s, defs, inst, inner)) {
+                            ok = false
+                          }
+                          pi = pi + 1
+                        }
+                      },
+                      _ => { ok = false }
+                    },
+                    _ => { ok = false }
+                  },
+                  None => { ok = false }
+                }
+              } else {
+                ()
+              }
+              vi = vi + 1
+            }
+            ok
+          }
+        },
+        TDAlias(_, params, body) => {
+          if Array::length(params) != Array::length(targs) {
+            false
+          } else {
+            send_ok_rec(env, s, defs, subst_type_params(body, params, targs), send_seen_with(seen, name))
+          }
+        },
+        TDEffect(_, _) => false
+      },
+      None => false
+    }
+  }
+}
+
+// Substitute declaration-scoped CtVar ids (a generic enum ctor's
+// CtForAll binder list) with concrete type arguments, positionally.
+fn send_subst_vars(ty: Type, vids: Array[Int], args: Array[Type]) -> Type {
+  match ty {
+    CtVar(v) => {
+      let mut idx = 0 - 1
+      let mut i = 0
+      while i < Array::length(vids) {
+        if Array::get(vids, i) == v {
+          idx = i
+        }
+        i = i + 1
+      }
+      if idx >= 0 && idx < Array::length(args) {
+        Array::get(args, idx)
+      } else {
+        ty
+      }
+    },
+    CtArray(e) => CtArray(send_subst_vars(e, vids, args)),
+    CtOption(e) => CtOption(send_subst_vars(e, vids, args)),
+    CtTuple(es) => CtTuple(for e in es {
+      send_subst_vars(e, vids, args)
+    }),
+    CtNamed(nm, targs) => CtNamed(nm, for a in targs {
+      send_subst_vars(a, vids, args)
+    }),
+    CtFn(ps, ret, eff) => {
+      let rp = for p in ps {
+        send_subst_vars(p, vids, args)
+      }
+      CtFn(rp, send_subst_vars(ret, vids, args), eff)
+    },
+    _ => ty
+  }
+}
+
+fn send_ok_rec(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, seen: Array[String]) -> Bool {
+  match subst_apply(s, ty) {
+    CtInt => true,
+    CtDouble => true,
+    CtBool => true,
+    CtString => true,
+    CtChar => true,
+    CtUnit => true,
+    CtTuple(ts) => send_ok_all(env, s, defs, ts, seen),
+    CtOption(e) => send_ok_rec(env, s, defs, e, seen),
+    CtArray(_) => false,
+    CtBytes => false,
+    CtFn(_, _, _) => false,
+    CtEnum(name) => send_ok_named(env, s, defs, name, no_type_args(), seen),
+    CtStruct(name) => send_ok_named(env, s, defs, name, no_type_args(), seen),
+    CtNamed(name, targs) => send_ok_named(env, s, defs, name, targs, seen),
+    CtVar(_) => false,
+    CtForAll(_, _, _) => false,
+    CtUnknown => false
+  }
 }
 
 export fn check_bounds_satisfied(env: TypeEnv, s: Subst, ty: Type, bounds: Array[String]) -> Array[String] {
@@ -117,7 +332,20 @@ export fn register_builtin_traits(env: TypeEnv) -> TypeEnv {
   let e55 = EnvTraitImpl("Div", u32_type, e54)
   let e56 = EnvTraitImpl("Div", u64_type, e55)
   let e57 = EnvTraitImpl("Div", i16_type, e56)
-  e57
+  // ADR-0068 `Send`: register the trait def (so `[T: Send]` bounds are
+  // known) plus nominal impls for the sendable primitives, which keeps
+  // the non-structural resolution paths (generic-impl bounds, UFCS
+  // helpers) working for primitive instantiations. Composite structural
+  // judgment lives in type_send_ok; user `impl Send` is rejected in the
+  // SImpl handler.
+  let e58 = EnvTraitDef("Send", no_supers, false, nm, e57)
+  let e59 = EnvTraitImpl("Send", CtInt, e58)
+  let e60 = EnvTraitImpl("Send", CtDouble, e59)
+  let e61 = EnvTraitImpl("Send", CtString, e60)
+  let e62 = EnvTraitImpl("Send", CtBool, e61)
+  let e63 = EnvTraitImpl("Send", CtUnit, e62)
+  let e64 = EnvTraitImpl("Send", CtChar, e63)
+  e64
 }
 
 export fn validate_supers_defined(env: TypeEnv, supers: Array[String]) -> Array[String] {

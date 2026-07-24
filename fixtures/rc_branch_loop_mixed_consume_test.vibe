@@ -1,0 +1,105 @@
+// #1085: a param consumed by a REAL store (Array::set) in one branch of
+// an append helper, with a #706 loop-borrow site (ArrayBuilder::push in a
+// while loop) in the sibling branch, was over-dropped: the #725 epilogue
+// emitted its "one unconditional drop" even on executions that took the
+// real-consume arm, releasing the reference the array slot now owned.
+// Use-after-free from the 3rd stored element on (the freed block gets
+// reused by the next allocation). The else arm does not even need to
+// execute — the bug was in the static budget. Fixed by suppressing the
+// loop-count epilogue drop when a non-loop consuming occurrence exists
+// (lc_has_nonloop_consume, codegen/wasi/linked_compile.vibe).
+//
+// Covers both the struct shape (silent data corruption) and the closure
+// shape (call_indirect trap — issue #1085's original @vibex/concurrent
+// TaskGroup::spawn repro).
+struct S { mut v: Int }
+
+struct PRes { mut value: Int }
+
+fn append_s(buf: Array[S], count: Int, v: S) -> Array[S] {
+  let cap = Array::length(buf)
+  if count < cap {
+    Array::set(buf, count, v)
+    buf
+  } else {
+    let b = ArrayBuilder::new()
+    let mut i = 0
+    while i < 8 {
+      ArrayBuilder::push(b, v)
+      i = i + 1
+    }
+    let nb = ArrayBuilder::freeze(b)
+    let mut j = 0
+    while j < count {
+      Array::set(nb, j, Array::get(buf, j))
+      j = j + 1
+    }
+    nb
+  }
+}
+
+fn spawn_s(buf: Array[S], count: Int, k: Int) -> Array[S] {
+  let s = S::{ v: k }
+  append_s(buf, count, s)
+}
+
+fn append_r(buf: Array[() -> Unit], count: Int, v: () -> Unit) -> Array[() -> Unit] {
+  let cap = Array::length(buf)
+  if count < cap {
+    Array::set(buf, count, v)
+    buf
+  } else {
+    let b = ArrayBuilder::new()
+    let mut i = 0
+    while i < 8 {
+      ArrayBuilder::push(b, v)
+      i = i + 1
+    }
+    let nb = ArrayBuilder::freeze(b)
+    let mut j = 0
+    while j < count {
+      Array::set(nb, j, Array::get(buf, j))
+      j = j + 1
+    }
+    nb
+  }
+}
+
+fn spawn_r(buf: Array[() -> Unit], count: Int, rc: PRes, k: Int) -> Array[() -> Unit] {
+  let r: () -> Unit = () -> {
+    rc.value = k
+  }
+  append_r(buf, count, r)
+}
+
+let _start = () -> Int {
+  // struct shape: grow on call 1 (loop arm), set on calls 2-3 (real
+  // consume arm — these were the over-dropped stores)
+  let empty_s: Array[S] = ArrayBuilder::freeze(ArrayBuilder::new())
+  let b1 = spawn_s(empty_s, 0, 1)
+  let b2 = spawn_s(b1, 1, 2)
+  let b3 = spawn_s(b2, 2, 3)
+  let part1 = Array::get(b3, 0).v * 100 + Array::get(b3, 1).v * 10 + Array::get(b3, 2).v
+
+  // closure shape: same helper pattern, elements invoked afterwards
+  let empty_r: Array[() -> Unit] = ArrayBuilder::freeze(ArrayBuilder::new())
+  let rc1 = PRes::{ value: 0 }
+  let rc2 = PRes::{ value: 0 }
+  let rc3 = PRes::{ value: 0 }
+  let c1 = spawn_r(empty_r, 0, rc1, 1)
+  let c2 = spawn_r(c1, 1, rc2, 2)
+  let c3 = spawn_r(c2, 2, rc3, 3)
+  let g0 = Array::get(c3, 0)
+  let g1 = Array::get(c3, 1)
+  let g2 = Array::get(c3, 2)
+  g0()
+  g1()
+  g2()
+  let part2 = rc1.value * 100 + rc2.value * 10 + rc3.value
+
+  part1 * 1000 + part2
+}
+_start()
+
+__DATA__
+{"last":"123123"}

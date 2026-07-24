@@ -77,6 +77,178 @@ fn lc_fresh_type_expr_array() -> Array[TypeExpr] {
   ArrayBuilder::freeze(ArrayBuilder::new())
 }
 
+// #1085: builtins whose arg0 is BORROWED (kept in sync with
+// cc_is_borrow_arg0_call in codegen/expr/compile_call.vibe and
+// is_borrow_arg0_call in perceus/perceus.vibe).
+fn lc_is_borrow_arg0_call(f: String) -> Bool {
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "__rec_field"
+}
+
+// #1085: does `name` have a consuming occurrence OUTSIDE any loop body?
+// The #725 single unconditional epilogue drop for a loop-consumed param
+// is only sound when EVERY consuming occurrence is a loop-borrow site
+// (per-iteration protective dup makes those net-zero, so the param's own
+// reference always survives to the epilogue). A consuming occurrence
+// outside a loop (e.g. `Array::set(buf, i, v)` in a sibling branch of
+// the loop) transfers the own reference on the paths that execute it,
+// and the unconditional drop then over-releases the stored value —
+// use-after-free (issue #1085's minimal repro; the else arm does not
+// even need to run). Occurrence rules mirror consume_count
+// (common_analysis/perceus): borrow-arg0 idents, match/handle
+// scrutinee idents, and call-callee idents do not consume. Loop bodies
+// (EWhile / ELoop / EForIn) are skipped — occurrences there are the
+// loop-borrow sites themselves. Branches use OR (existence), which
+// over-approximates toward suppressing the epilogue drop: the loop-only
+// path then leaks one reference, the safe direction.
+fn lc_has_nonloop_consume(e: Expr, name: String) -> Bool {
+  match e {
+    EIdent(n, _) => n == name,
+    ETuple(items) => lc_hnc_any(items, name),
+    EArray(items) => lc_hnc_any(items, name),
+    ERecord(_, fields, _) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        if lc_has_nonloop_consume(v, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMap(fields) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        if lc_has_nonloop_consume(v, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EIf(c, t, el) => lc_has_nonloop_consume(c, name) || lc_has_nonloop_consume(t, name) || lc_has_nonloop_consume(el, name),
+    ELet(_, v, b, _) => lc_has_nonloop_consume(v, name) || lc_has_nonloop_consume(b, name),
+    ELetRec(_, v, b) => lc_has_nonloop_consume(v, name) || lc_has_nonloop_consume(b, name),
+    ELetMut(_, v, b, _) => lc_has_nonloop_consume(v, name) || lc_has_nonloop_consume(b, name),
+    EAssign(_, v, b) => lc_has_nonloop_consume(v, name) || lc_has_nonloop_consume(b, name),
+    EAssignOp(_, _, v, b) => lc_has_nonloop_consume(v, name) || lc_has_nonloop_consume(b, name),
+    ESeq(a, b) => lc_has_nonloop_consume(a, name) || lc_has_nonloop_consume(b, name),
+    EMatch(s, arms) => {
+      let scr = match s {
+        EIdent(_, _) => false,
+        _ => lc_has_nonloop_consume(s, name)
+      }
+      let mut found = scr
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ab) = Array::get(arms, i)
+        if lc_has_nonloop_consume(ab, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EHandle(s, arms) => {
+      let scr = match s {
+        EIdent(_, _) => false,
+        _ => lc_has_nonloop_consume(s, name)
+      }
+      let mut found = scr
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ab) = Array::get(arms, i)
+        if lc_has_nonloop_consume(ab, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EWhile(c, _) => lc_has_nonloop_consume(c, name),
+    ELoop(params, _) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, v) = Array::get(params, i)
+        if lc_has_nonloop_consume(v, name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EForIn(_, _, it, _) => lc_has_nonloop_consume(it, name),
+    ECall(callee, args, _) => {
+      let borrow0 = match callee {
+        EIdent(f, _) => lc_is_borrow_arg0_call(f),
+        _ => false
+      }
+      let callee_c = match callee {
+        EIdent(_, _) => false,
+        _ => lc_has_nonloop_consume(callee, name)
+      }
+      let mut found = callee_c
+      let mut i = 0
+      while i < Array::length(args) {
+        let skip_borrowed_head = borrow0 && i == 0 && (match Array::get(args, i) {
+          EIdent(_, _) => true,
+          _ => false
+        })
+        if skip_borrowed_head {
+          ()
+        } else if lc_has_nonloop_consume(Array::get(args, i), name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EBinOp(_, l, r) => lc_has_nonloop_consume(l, name) || lc_has_nonloop_consume(r, name),
+    EUnaryOp(_, x) => lc_has_nonloop_consume(x, name),
+    EFn(_, _, _, _, _, fb) => lc_has_nonloop_consume(fb, name),
+    EDot(x, _, _, _) => lc_has_nonloop_consume(x, name),
+    ELabeledArg(_, _, v) => lc_has_nonloop_consume(v, name),
+    EReturn(x) => lc_has_nonloop_consume(x, name),
+    EBreak(opt) => match opt {
+      Some(v) => lc_has_nonloop_consume(v, name),
+      None => false
+    },
+    EContinue(args) => lc_hnc_any(args, name),
+    ESpread(x) => lc_has_nonloop_consume(x, name),
+    _ => false
+  }
+}
+
+fn lc_hnc_any(items: Array[Expr], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(items) {
+    if lc_has_nonloop_consume(Array::get(items, i), name) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 // #1062: positional field types for a struct declaration's field list,
 // dropping the names -- SEnum/SSuberror variants are already unnamed
 // (Array[TypeExpr]), but SStruct fields carry (name, type) pairs.
@@ -2367,7 +2539,10 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
             }
             tcle = tcle + 1
           }
-          if array_contains_str(lc_heap_params, tcn) && (array_contains_str(rc_drops, tcn) || tcn_loop_extra > 0) && tcn == tail_root {
+          // #1085: the loop-count clause only applies when every consuming
+          // occurrence is a loop site (see lc_has_nonloop_consume).
+          let tcn_loop_drop = tcn_loop_extra > 0 && !lc_has_nonloop_consume(body, tcn)
+          if array_contains_str(lc_heap_params, tcn) && (array_contains_str(rc_drops, tcn) || tcn_loop_drop) && tcn == tail_root {
             need_dup = true
           } else {
             ()
@@ -2408,7 +2583,19 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
               }
               tdle = tdle + 1
             }
-            if array_contains_str(rc_drops, tdn) || tdn_loop_count > 0 {
+            // #1085: the "one epilogue drop when loop sites exist" rule
+            // (#725) assumed every textual consume is a net-zero loop site.
+            // When a NON-loop consuming occurrence also exists (e.g.
+            // `Array::set(buf, i, v)` in a sibling branch of the loop), the
+            // path through that real consume transfers the param's own
+            // reference and the unconditional drop over-releases the stored
+            // value (use-after-free — the loop arm does not even need to
+            // execute). Suppress the loop-count drop in that mixed case;
+            // the loop-only path then leaks one reference per call, which
+            // is the safe direction until path-sensitive accounting lands
+            // (fixtures/rc_branch_loop_mixed_consume_test.vibe).
+            let tdn_loop_drop = tdn_loop_count > 0 && !lc_has_nonloop_consume(body, tdn)
+            if array_contains_str(rc_drops, tdn) || tdn_loop_drop {
               emit_local_get(body_buf, tdj)
               emit_call(body_buf, rc_drop_idx)
             } else {

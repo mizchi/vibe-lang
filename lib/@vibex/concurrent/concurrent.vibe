@@ -1,0 +1,500 @@
+// @vibex/concurrent — ADR-0068 shared-nothing structured concurrency,
+// cooperative run-to-completion slice (docs/concurrency.md).
+//
+// This is the FIRST runtime slice of the ADR-0068 semantics: a
+// deterministic single-threaded scheduler where `spawn` defers the child
+// thunk into a FIFO ready queue and blocking operations (join / send /
+// recv / task-group close) drive that queue on the caller's stack
+// ("thread-of-control borrowing"). No continuations are involved, so a
+// dispatched task always runs to completion; mid-body suspension and the
+// preemptive cancel points of the full spec arrive with the ADR-0076
+// Phase 3 suspend IR and replace the internals here without changing this
+// surface.
+//
+// Conformance scope (vs docs/concurrency.md):
+//   implemented — deferred spawn, FIFO deterministic dispatch, join
+//     idempotence on stable terminal outcomes, cancel-before-dispatch,
+//     cancel idempotence, fail-fast sibling cancel + first-observed
+//     failure as the task group result, child Error::Throw -> Failed
+//     conversion, recoverable child failure as a Result *value*, bounded
+//     MPMC channel (capacity 0 = rendezvous, NegativeCapacity), per-sender
+//     FIFO, close on last Sender release, group-close closes endpoints,
+//     drain-then-None, Err(Closed) on send-after-close.
+//   NOT implemented yet (deferred, tracked by ADR-0068 implementation
+//   order) — region generativity + escape checking, `Spawnable[r]`
+//     capture checking, Async::suspend effect rows on the blocking API,
+//     mid-run cancel observation, deep-copy message snapshots
+//     (single-heap: callers must send immutable values), Task::yield.
+//   Message/result types ARE `Send`-bounded: spawn results, channel
+//     elements, and Parallel::map inputs/outputs carry `[T: Send]`
+//     (compiler-judged structural marker, checker/checker_trait.vibe).
+//
+// Naming: the task handle is `TaskHandle` (not the spec's `Task[r, T]`)
+// because `Task::*` is claimed by the retired eager builtin prototype in
+// the compiler's builtin dispatch table; the spelling converges when the
+// builtin surface is replaced. The scope type is `TaskGroup` — the spec
+// (docs/concurrency.md) calls the CONCEPT a "nursery" (Trio lineage),
+// but the library uses the asyncio/Swift spelling, which is the most
+// widely trained/recognized name for exactly these semantics.
+//
+// Blocking with no runnable task is a genuine deadlock in this model and
+// traps (a `where requires` contract failure) rather than inventing an
+// outcome. The main shape this bites: two spawned tasks that BOTH block
+// mid-body against each other (e.g. a producer overflowing capacity while
+// a dispatched consumer drains greedily) — that interleaving needs real
+// suspension. Drive such pipelines from the task group body side, or size
+// the capacity to the burst, until the suspend IR lands.
+
+//# Types
+
+// Task status codes (internal): 0 ready, 1 running, 2 succeeded,
+// 3 failed, 4 cancelled. Terminal states (2/3/4) never change again.
+export struct TaskCell {
+  mut status: Int;
+  mut cancel_requested: Bool;
+  mut fail_msg: String
+}
+
+// Task-group phase codes: 0 open, 1 cancelling (fail-fast in progress),
+// 2 closing (body returned, draining children), 3 closed.
+export struct TaskGroup {
+  mut tasks: Array[TaskCell];
+  mut runners: Array[() -> Unit];
+  mut count: Int;
+  mut next: Int;
+  mut phase: Int;
+  mut failing: Bool;
+  mut fail_msg: String
+}
+
+export struct ResCell[T] { mut value: Option[T] }
+
+export struct TaskHandle[T] {
+  group: TaskGroup;
+  cell: TaskCell;
+  result: ResCell[T]
+}
+
+export enum TaskError {
+  Failed(String);
+  Cancelled
+}
+
+export enum SendError {
+  Closed
+}
+
+export enum ChannelConfigError {
+  NegativeCapacity
+}
+
+// Internal growable ring queue (deque-style: filler-grown because a
+// default value of an arbitrary T cannot be conjured).
+export struct Ring[T] {
+  mut buf: Array[T];
+  mut head: Int;
+  mut len: Int
+}
+
+// Channel core. `pend` holds messages whose send is either blocked
+// (buffer full / rendezvous with no receiver yet) or deposited for a
+// receiver that is currently blocked below us on the stack.
+// `pend_seq` / `pend_consumed` are monotone counters that let a blocked
+// sender detect that its own message was taken (FIFO order).
+export struct Channel[T] {
+  group: TaskGroup;
+  capacity: Int;
+  mut senders: Int;
+  mut closed: Bool;
+  mut waiting_recv: Int;
+  buf: Ring[T];
+  pend: Ring[T];
+  mut pend_seq: Int;
+  mut pend_consumed: Int
+}
+
+export struct Sender[T] { ch: Channel[T] }
+
+export struct Receiver[T] { ch: Channel[T] }
+
+//# Internal helpers
+
+// Runtime invariant / deadlock trap: violating the requires-contract
+// traps deterministically at the faulting operation.
+fn conc_require(ok: Bool) -> Unit where { requires: ok } {
+  ()
+}
+
+fn empty_cells() -> Array[TaskCell] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+fn empty_runners() -> Array[() -> Unit] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+fn ring_new[T]() -> Ring[T] {
+  Ring::{
+    buf: ArrayBuilder::freeze(ArrayBuilder::new()),
+    head: 0,
+    len: 0
+  }
+}
+
+// Grow the ring to the next capacity, linearizing head -> 0. `filler`
+// (the element being pushed) fills fresh slots.
+fn ring_grow[T](r: Ring[T], filler: T) -> Unit {
+  let old_cap = Array::length(r.buf)
+  let new_cap = if old_cap > 0 { old_cap * 2 } else { 8 }
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < new_cap {
+    ArrayBuilder::push(b, filler)
+    i = i + 1
+  }
+  let nbuf = ArrayBuilder::freeze(b)
+  let mut j = 0
+  while j < r.len {
+    Array::set(nbuf, j, Array::get(r.buf, (r.head + j) % old_cap))
+    j = j + 1
+  }
+  r.buf = nbuf
+  r.head = 0
+}
+
+fn ring_push[T](r: Ring[T], v: T) -> Unit {
+  if r.len >= Array::length(r.buf) {
+    ring_grow(r, v)
+  }
+  let cap = Array::length(r.buf)
+  Array::set(r.buf, (r.head + r.len) % cap, v)
+  r.len = r.len + 1
+}
+
+// Take the front element; caller must have checked len > 0 (traps
+// otherwise).
+fn ring_take[T](r: Ring[T]) -> T {
+  conc_require(r.len > 0)
+  let cap = Array::length(r.buf)
+  let v = Array::get(r.buf, r.head)
+  r.head = (r.head + 1) % cap
+  r.len = r.len - 1
+  v
+}
+
+// Dispatch the next Ready task in spawn (FIFO) order. Returns false when
+// no Ready task exists. This is THE scheduler: deterministic, and safe to
+// call reentrantly (a dispatched task's blocking op may call it again).
+fn drive_one(n: TaskGroup) -> Bool {
+  let idx = loop (i = n.next) {
+    if i >= n.count { break -1 }
+    let c = Array::get(n.tasks, i)
+    if c.status == 0 { break i } else { continue(i + 1) }
+  }
+  if idx < 0 {
+    false
+  } else {
+    n.next = idx
+    let c = Array::get(n.tasks, idx)
+    if c.cancel_requested || n.failing {
+      // Ready -> dispatch is a cancel point: a cancel requested before
+      // dispatch, or a failing task group (fail-fast sibling cancel),
+      // resolves the task as Cancelled without running its body.
+      c.status = 4
+    } else {
+      c.status = 1
+      let r = Array::get(n.runners, idx)
+      r()
+    }
+    true
+  }
+}
+
+//# TaskGroup
+
+// The spec's `nursery { n => body }` construct as a library function
+// until the dedicated syntax lands: introduces the scope, runs body,
+// then joins all remaining children (normal close). The group result is
+// Err(Failed(first observed failure)) when any child failed, otherwise
+// Ok(body result). NOTE (MVP): a `throw` escaping the body itself is
+// not yet converted to a group failure — it propagates as a normal
+// Error effect of `e`.
+export fn TaskGroup::run[T](body: (TaskGroup) -> T with { e }) -> Result[T, TaskError] with { e } {
+  let n = TaskGroup::{
+    tasks: empty_cells(),
+    runners: empty_runners(),
+    count: 0,
+    next: 0,
+    phase: 0,
+    failing: false,
+    fail_msg: ""
+  }
+  let v = body(n)
+  // Normal body end starts joining unfinished children.
+  n.phase = 2
+  let mut progressed = true
+  while progressed {
+    progressed = drive_one(n)
+  }
+  n.phase = 3
+  if n.failing {
+    Err(Failed(n.fail_msg))
+  } else {
+    Ok(v)
+  }
+}
+
+// Deferred spawn: the child is queued Ready and does NOT run here (the
+// eager builtin prototype is out of contract). The thunk may throw —
+// an Error::Throw reaching the child boundary becomes Failed(msg) and
+// triggers fail-fast. Spawning into a task group that is no longer Open
+// (closing/closed, or cancelling after a sibling failure) traps.
+export fn TaskGroup::spawn[T: Send](n: TaskGroup, f: () -> T with { Error }) -> TaskHandle[T] {
+  conc_require(n.phase == 0)
+  let rc = ResCell::{ value: None }
+  let cell = TaskCell::{ status: 0, cancel_requested: false, fail_msg: "" }
+  let runner: () -> Unit = () -> {
+    handle {
+      let v = f()
+      rc.value = Some(v)
+      cell.status = 2
+    } with Error {
+      Throw(msg) => {
+        cell.status = 3
+        cell.fail_msg = msg
+        if !n.failing {
+          n.failing = true
+          n.fail_msg = msg
+          if n.phase == 0 { n.phase = 1 }
+        }
+      }
+    }
+  }
+  // The append is INLINE on purpose: an append helper of the shape
+  // `if has-space { Array::set(.., v) .. } else { while { push(.., v) } .. }`
+  // over-drops v under RC (#1085 — the #706/#725 loop-borrow epilogue
+  // drop fires unconditionally even when the real-consume `set` arm ran;
+  // not closure-specific, reproduces with plain structs). The inline
+  // form is accounted through the ELet/loop path instead of the
+  // param-epilogue path and stays correct. Both arrays share n.count and
+  // always grow together.
+  let cap = Array::length(n.runners)
+  if n.count < cap {
+    Array::set(n.tasks, n.count, cell)
+    Array::set(n.runners, n.count, runner)
+  } else {
+    let ncap = if cap > 0 { cap * 2 } else { 8 }
+    let rb = ArrayBuilder::new()
+    let mut i = 0
+    while i < ncap {
+      ArrayBuilder::push(rb, runner)
+      i = i + 1
+    }
+    let nr = ArrayBuilder::freeze(rb)
+    let mut j = 0
+    while j < n.count {
+      Array::set(nr, j, Array::get(n.runners, j))
+      j = j + 1
+    }
+    n.runners = nr
+    let tb = ArrayBuilder::new()
+    let mut i2 = 0
+    while i2 < ncap {
+      ArrayBuilder::push(tb, cell)
+      i2 = i2 + 1
+    }
+    let nt = ArrayBuilder::freeze(tb)
+    let mut j2 = 0
+    while j2 < n.count {
+      Array::set(nt, j2, Array::get(n.tasks, j2))
+      j2 = j2 + 1
+    }
+    n.tasks = nt
+  }
+  n.count = n.count + 1
+  TaskHandle::{ group: n, cell: cell, result: rc }
+}
+
+//# TaskHandle
+
+// Join: drives the scheduler until the target task is terminal, then
+// returns its outcome. Terminal outcomes are stable — joining again
+// returns the same value. Joining a task that is currently Running
+// (i.e. the join forms a cycle through the dispatch stack) is a
+// deadlock and traps.
+export fn TaskHandle::join[T](h: TaskHandle[T]) -> Result[T, TaskError] {
+  loop (d = 0) {
+    let s = h.cell.status
+    if s == 2 {
+      break match h.result.value {
+        Some(v) => Ok(v),
+        None => Err(Failed("concurrent: missing result"))
+      }
+    }
+    if s == 3 { break Err(Failed(h.cell.fail_msg)) }
+    if s == 4 { break Err(Cancelled) }
+    // s == 1: join cycle through the dispatch stack — deadlock.
+    conc_require(s == 0)
+    // s == 0: the target is still Ready somewhere in the queue.
+    conc_require(drive_one(h.group))
+    continue(d)
+  }
+}
+
+// Cooperative cancel request: idempotent; a no-op on terminal tasks.
+// Observed at the Ready -> dispatch cancel point (a task whose body
+// already started runs to completion in this MVP — mid-run cancel
+// points arrive with the suspend IR).
+export fn TaskHandle::cancel[T](h: TaskHandle[T]) -> Unit {
+  let c = h.cell
+  c.cancel_requested = true
+}
+
+//# Channel
+
+fn chan_closed[T](c: Channel[T]) -> Bool {
+  // Closed by last-sender release, or by the owning task group leaving its
+  // Open/Cancelling phases (normal close closes remaining endpoints).
+  c.closed || c.group.phase >= 2
+}
+
+// Bounded MPMC channel. Capacity 0 is a rendezvous channel; negative
+// capacity is a configuration error.
+export fn Channel::bounded[T: Send](n: TaskGroup, capacity: Int) -> Result[(Sender[T], Receiver[T]), ChannelConfigError] {
+  if capacity < 0 {
+    Err(NegativeCapacity)
+  } else {
+    let core = Channel::{
+      group: n,
+      capacity: capacity,
+      senders: 1,
+      closed: false,
+      waiting_recv: 0,
+      buf: ring_new(),
+      pend: ring_new(),
+      pend_seq: 0,
+      pend_consumed: 0
+    }
+    Ok((Sender::{ ch: core }, Receiver::{ ch: core }))
+  }
+}
+
+// Send: Ok when the message is linearized (buffered, deposited for a
+// committed receiver, or consumed by a receiver we drove). Err(Closed)
+// on a closed channel. Blocking with no runnable task traps (deadlock).
+export fn Sender::send[T](s: Sender[T], v: T) -> Result[Unit, SendError] {
+  let c = s.ch
+  if chan_closed(c) { return Err(Closed) }
+  if c.capacity > 0 && c.buf.len < c.capacity && c.pend.len == 0 {
+    ring_push(c.buf, v)
+    return Ok(())
+  }
+  if c.waiting_recv > 0 {
+    // A receiver below us on the stack is committed to taking the next
+    // message: deposit is the rendezvous linearization point.
+    ring_push(c.pend, v)
+    c.pend_seq = c.pend_seq + 1
+    return Ok(())
+  }
+  // Block: register the message and drive other tasks until a receiver
+  // consumes it (FIFO by pend_seq).
+  ring_push(c.pend, v)
+  let myseq = c.pend_seq
+  c.pend_seq = c.pend_seq + 1
+  loop (d = 0) {
+    if c.pend_consumed > myseq { break Ok(()) }
+    if chan_closed(c) { break Err(Closed) }
+    conc_require(drive_one(c.group))
+    continue(d)
+  }
+}
+
+// Clone a sender endpoint (MPMC). Each clone must eventually be
+// released; the channel closes when the live sender count reaches zero.
+export fn Sender::clone[T](s: Sender[T]) -> Sender[T] {
+  let c = s.ch
+  c.senders = c.senders + 1
+  Sender::{ ch: c }
+}
+
+// Release a sender handle (models the affine drop until affine handles
+// land). The last release closes the channel: buffered messages remain
+// receivable, then recv returns None.
+export fn Sender::release[T](s: Sender[T]) -> Unit {
+  let c = s.ch
+  if c.senders > 0 {
+    c.senders = c.senders - 1
+    if c.senders == 0 { c.closed = true }
+  }
+}
+
+//# Combinators
+
+// Parallel::map (docs/concurrency.md "Safe parallel API"): spawn one
+// child per element, return results in INPUT INDEX order — task
+// completion order is not observable. The first child failure (or
+// cancellation) is returned as the map's error; remaining children are
+// cancelled by the task group's fail-fast when they have not started yet.
+export struct Parallel { tag: Int }
+
+export fn Parallel::map[T: Send, U: Send](n: TaskGroup, xs: Array[T], f: (T) -> U with { Error }) -> Result[Array[U], TaskError] {
+  let len = Array::length(xs)
+  let hb = ArrayBuilder::new()
+  let mut i = 0
+  while i < len {
+    let x = Array::get(xs, i)
+    // #944 checked-Error row discipline: annotate the thunk's row so the
+    // latent { Error } stays on the closure value instead of being
+    // attributed to Parallel::map's own row (map never performs — child
+    // failures surface as join results).
+    let thunk: () -> U with { Error } = () -> { f(x) }
+    let t = TaskGroup::spawn(n, thunk)
+    ArrayBuilder::push(hb, t)
+    i = i + 1
+  }
+  let handles = ArrayBuilder::freeze(hb)
+  let rb = ArrayBuilder::new()
+  loop (j = 0) {
+    if j >= len {
+      break Ok(ArrayBuilder::freeze(rb))
+    }
+    match TaskHandle::join(Array::get(handles, j)) {
+      Ok(v) => {
+        ArrayBuilder::push(rb, v)
+        continue(j + 1)
+      },
+      Err(e) => break Err(e)
+    }
+  }
+}
+
+// Receive: Some(message) in linearization order, or None once the
+// channel is closed and drained. Blocks by driving ready tasks;
+// blocking with no runnable task traps (deadlock).
+export fn Receiver::recv[T](r: Receiver[T]) -> Option[T] {
+  let c = r.ch
+  c.waiting_recv = c.waiting_recv + 1
+  let out = loop (d = 0) {
+    if c.buf.len > 0 {
+      let v = ring_take(c.buf)
+      // Promote the oldest blocked send into the freed buffer slot.
+      if c.pend.len > 0 && c.capacity > 0 {
+        let p = ring_take(c.pend)
+        ring_push(c.buf, p)
+        c.pend_consumed = c.pend_consumed + 1
+      }
+      break Some(v)
+    }
+    if c.pend.len > 0 {
+      // Rendezvous / deposited message: take it directly.
+      let v = ring_take(c.pend)
+      c.pend_consumed = c.pend_consumed + 1
+      break Some(v)
+    }
+    if chan_closed(c) { break None }
+    conc_require(drive_one(c.group))
+    continue(d)
+  }
+  c.waiting_recv = c.waiting_recv - 1
+  out
+}

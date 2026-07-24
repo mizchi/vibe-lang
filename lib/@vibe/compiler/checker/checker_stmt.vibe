@@ -1,7 +1,7 @@
 //# Imports
 
 import ./checker_trait.vibe {
-  register_builtin_traits
+  register_builtin_traits, type_send_ok
 }
 
 import @vibe/core {
@@ -1123,6 +1123,13 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
         (EnvTraitDef(name, supers, is_open, methods, env), s, c)
       },
       SImpl(tparams, tbounds, trait_name, type_name) => {
+        // ADR-0068: `Send` is compiler-judged (structural); user impls
+        // would let a non-sendable type cross task/channel boundaries.
+        if trait_name == "Send" {
+          Array::push(errors, "`Send` is a compiler-judged structural marker and cannot be implemented; remove `impl Send`")
+        } else {
+          ()
+        }
         let target = match resolve_builtin(type_name) {
           Some(t) => t,
           None => CtNamed(type_name, array_empty())
@@ -1210,7 +1217,7 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
 // satisfy its bounds. Unresolved (still-polymorphic) vars are inherited by the
 // caller, not violated, so they are skipped. One `no impl `Trait` for `Type``
 // error per unsatisfied bound (matches fixtures/err_type_trait_*bound* messages).
-fn check_program_bounds(env: TypeEnv, s: Subst, errors: Array[String]) -> Unit {
+fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Array[String]) -> Unit {
   let pairs = collect_subst_bounds_pairs(s)
   let n = Array::length(pairs)
   let mut i = 0
@@ -1225,7 +1232,16 @@ fn check_program_bounds(env: TypeEnv, s: Subst, errors: Array[String]) -> Unit {
         let mut bi = 0
         while bi < bn {
           let b = Array::get(bounds, bi)
-          if b != "" && not(type_implements_trait(env, s, resolved, b)) {
+          // ADR-0068: `Send` is judged structurally from the type
+          // definitions (type_send_ok), not from user impls.
+          let sat = if b == "" {
+            true
+          } else if b == "Send" {
+            type_send_ok(env, s, defs, resolved)
+          } else {
+            type_implements_trait(env, s, resolved, b)
+          }
+          if b != "" && not(sat) {
             Array::push(errors, String::concat("no impl `", String::concat(b, String::concat("` for `", String::concat(type_to_string(resolved), "`")))))
           }
           bi = bi + 1
@@ -1807,7 +1823,7 @@ export fn check_program(stmts: Array[Stmt]) -> TypeEnv with { Error } {
     es_expand_stmts_effect_rows(stmts, top_es_names, top_es_members_list)
   }
   let (env, final_s, _) = check_stmts(expanded_stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
-  check_program_bounds(env, final_s, frozen_errors)
+  check_program_bounds(env, final_s, empty_defs, frozen_errors)
   collect_async_effect_errors(expanded_stmts, env, frozen_errors)
   if Array::length(frozen_errors) > 0 {
     throw(Array::get(frozen_errors, 0))
