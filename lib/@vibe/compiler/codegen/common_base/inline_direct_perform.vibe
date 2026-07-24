@@ -2806,23 +2806,63 @@ fn edp_param_uses_confined_to_handle_calls(body: Expr, pname: String, ename: Str
 // needing-owner path uses. `fname` must NOT itself be needing (needing
 // owners take the edp_own_closure_params path; a needing owner containing
 // a same-effect handle is ineligible regardless).
+// PERF (#1082 review, caught by scripts/profile_compile.sh): guard order
+// matters enormously here. This function runs for EVERY top-level
+// function x EVERY effect (edp_any_handle_owner_cp, the per-stmt
+// eligibility loop, and apply's analysis phase), and `edp_fn_used_as_value`
+// walks the WHOLE program -- running it unconditionally made
+// edp_count_ident_uses/edp_count_direct_calls 61% of total compile CPU
+// (76.8s wall for codegen_lexer_test vs ~8s before). The overwhelming
+// majority of functions have no closure-typed parameter with the exact
+// row at all, so every whole-program scan is gated behind the cheap,
+// function-local checks (param row match, then per-param body-local
+// shadow/confinement) and runs at most once per surviving owner.
 fn edp_handle_owner_cps(stmts: Array[Stmt], fname: String, fparams: Array[(String, Option[TypeExpr])], fbody: Expr, ename: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Array[(String, Int)] {
   let out = array_empty()
-  if edp_str_array_contains(needing, fname) || edp_fn_used_as_value(stmts, fname) {
+  let mut has_row_param = false
+  let mut hp = 0
+  while hp < Array::length(fparams) {
+    let (_, hpty) = Array::get(fparams, hp)
+    if edp_type_is_fn_row_exactly(hpty, ename, es_names, es_members_list) {
+      has_row_param = true
+    } else {
+      ()
+    }
+    hp = hp + 1
+  }
+  if !has_row_param || edp_str_array_contains(needing, fname) {
     out
   } else {
+    // Body-local pre-filters per param, BEFORE the whole-program scans.
+    let local_ok = array_empty()
     let mut pi = 0
     while pi < Array::length(fparams) {
       let (pname_raw, pty) = Array::get(fparams, pi)
       let pname = edp_strip_tilde(pname_raw)
-      if edp_type_is_fn_row_exactly(pty, ename, es_names, es_members_list) && !edp_expr_binds_name(fbody, pname) && edp_param_uses_confined_to_handle_calls(fbody, pname, ename) && edp_closure_param_universally_safe(stmts, fname, pi, ename, needing, pure_fns, es_names, es_members_list) {
-        Array::push(out, (pname, pi))
+      if edp_type_is_fn_row_exactly(pty, ename, es_names, es_members_list) && !edp_expr_binds_name(fbody, pname) && edp_param_uses_confined_to_handle_calls(fbody, pname, ename) {
+        Array::push(local_ok, (pname, pi))
       } else {
         ()
       }
       pi = pi + 1
     }
-    out
+    if Array::length(local_ok) == 0 {
+      out
+    } else if edp_fn_used_as_value(stmts, fname) {
+      out
+    } else {
+      let mut li = 0
+      while li < Array::length(local_ok) {
+        let (pname, ppos) = Array::get(local_ok, li)
+        if edp_closure_param_universally_safe(stmts, fname, ppos, ename, needing, pure_fns, es_names, es_members_list) {
+          Array::push(out, (pname, ppos))
+        } else {
+          ()
+        }
+        li = li + 1
+      }
+      out
+    }
   }
 }
 
