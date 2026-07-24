@@ -5801,6 +5801,116 @@ echo "[compiler-gate] top-level pattern let rejection (#859) ok"
 # a passive `vibe check` command is easy to forget to run by hand, so once
 # Phase 3 finished migrating all 76 directories this became a required gate
 # to prevent a future PR from silently reintroducing a plain index.vibe dir.
+# 44b. #944 (ADR-0073 stage B): checked-Error row discipline is ON by
+#      default -- a row-less caller of a `with { Error }` function is
+#      rejected with the row-mismatch diagnostic; VIBE_CHECK_ERROR_ROW=0
+#      is the opt-out escape hatch that restores the old exemption; a
+#      caller that discharges via `handle .. with Error` compiles and
+#      runs under the default.
+echo "[compiler-gate] 44b/44 checked-Error row discipline default-on (#944 stage B)"
+g944dir="_build/_gate_944"
+rm -rf "$g944dir"; mkdir -p "$g944dir"
+cat > "$g944dir/leak.vibe" <<'EOF'
+fn boom(x: Int) -> Int with { Error } {
+  if x == 0 {
+    throw("zero")
+  }
+  x
+}
+
+fn pure_caller(x: Int) -> Int {
+  boom(x)
+}
+
+export let main = () -> Int {
+  pure_caller(1)
+}
+EOF
+cat > "$g944dir/discharged.vibe" <<'EOF'
+fn boom(x: Int) -> Int with { Error } {
+  if x == 0 {
+    throw("zero")
+  }
+  x
+}
+
+export let main = () -> Int {
+  handle {
+    boom(1)
+  } with Error {
+    Throw(_) => 0
+  }
+}
+EOF
+rm -f "$g944dir/leak_off.wasm"
+VIBE_CHECK_ERROR_ROW=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g944dir/leak.vibe" "$g944dir/leak_off.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$g944dir/leak_off.wasm" ]; then
+  echo "[compiler-gate] FAIL: VIBE_CHECK_ERROR_ROW=0 opt-out did not restore the old exemption (#944)" >&2
+  cat "$g944dir/leak_off.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -f "$g944dir/leak_on.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g944dir/leak.vibe" "$g944dir/leak_on.wasm" main >/dev/null 2>&1 || true
+if [ -s "$g944dir/leak_on.wasm" ]; then
+  echo "[compiler-gate] FAIL: default-on checked-Error mode did not reject the row-less caller (#944)" >&2
+  exit 1
+fi
+if ! grep -q "missing { Error }" "$g944dir/leak_on.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: checked-Error rejection diag missing the row-mismatch message (#944)" >&2
+  cat "$g944dir/leak_on.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -f "$g944dir/discharged.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g944dir/discharged.vibe" "$g944dir/discharged.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$g944dir/discharged.wasm" ]; then
+  echo "[compiler-gate] FAIL: checked-Error mode rejected a handle-with-Error discharge (over-strict, #944)" >&2
+  cat "$g944dir/discharged.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+g944_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$g944dir/discharged.wasm" 2>&1 | tail -1)"
+if [ "$g944_out" != "1" ]; then
+  echo "[compiler-gate] FAIL: checked-Error discharged sample got '$g944_out' (want 1)" >&2
+  exit 1
+fi
+rm -rf "$g944dir"
+echo "[compiler-gate] opt-in checked-Error row discipline ok (#944 stage A)"
+
+# 44c. #944 (ADR-0073 stage C, "entry boundary A"): an entry declared
+#      `with { Error }` whose Throw escapes must produce the stderr
+#      diagnostic and evaluate to 1 (unsuccessful outcome) instead of
+#      leaking a raw WebAssembly.Exception out of the entry.
+echo "[compiler-gate] 44c/44 entry-boundary Error handler (#944 stage C)"
+g944cdir="_build/_gate_944c"
+rm -rf "$g944cdir"; mkdir -p "$g944cdir"
+sed '/^__DATA__$/,$d' fixtures/entry_error_boundary.vibe > "$g944cdir/src.vibe"
+rm -f "$g944cdir/out.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g944cdir/src.vibe" "$g944cdir/out.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$g944cdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: entry_error_boundary.vibe did not compile (#944 stage C)" >&2
+  cat "$g944cdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+g944c_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$g944cdir/out.wasm" 2>"$g944cdir/stderr.txt" | tail -1)"
+if [ "$g944c_out" != "1" ]; then
+  echo "[compiler-gate] FAIL: entry_error_boundary got '$g944c_out' (want 1) -- boundary handler value regressed (#944 stage C)" >&2
+  exit 1
+fi
+if ! grep -q "vibe: uncaught error: boom" "$g944cdir/stderr.txt"; then
+  echo "[compiler-gate] FAIL: entry_error_boundary stderr missing the boundary diagnostic (#944 stage C)" >&2
+  cat "$g944cdir/stderr.txt" >&2 || true
+  exit 1
+fi
+rm -rf "$g944cdir"
+echo "[compiler-gate] entry-boundary Error handler ok (#944 stage C)"
+
 echo "[compiler-gate] 45/45 missing index.vpkg scan (#897 Phase 4)"
 vpkgdir="_build/_gate_vpkg_scan"
 rm -rf "$vpkgdir"; mkdir -p "$vpkgdir"

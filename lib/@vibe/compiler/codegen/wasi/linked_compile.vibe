@@ -182,6 +182,89 @@ fn linked_type_expr_is_unit(t: TypeExpr) -> Bool {
   }
 }
 
+// #944 (ADR-0073 stage C, "entry boundary A"): does a declared row text
+// contain the literal effect label "Error" as a whole token? Row text is a
+// comma-separated label list ("Error", "Error, Fs", "Stdout, Error", ...);
+// substring matching alone would false-positive on a user effect named
+// e.g. "ErrorLog", so each comma-separated piece is trimmed and compared
+// exactly.
+fn lc_row_has_error(eff: Option[String]) -> Bool {
+  match eff {
+    Some(row) => {
+      let mut found = false
+      let mut start = 0
+      let n = String::length(row)
+      let mut i = 0
+      while i <= n {
+        let at_sep = if i == n {
+          true
+        } else {
+          String::char_code_at(row, i) == 44
+        }
+        if at_sep {
+          if String::trim(String::substring(row, start, i)) == "Error" {
+            found = true
+          } else {
+            ()
+          }
+          start = i + 1
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    None => false
+  }
+}
+
+// #944 (ADR-0073 stage C): the runtime outermost Error handler. When the
+// ENTRY function's own declared row carries `Error` (`fn main with
+// { Error }` is allowed under checked-Error), an escaping `Error::Throw`
+// must become a diagnosed, unsuccessful process outcome -- not a raw
+// `WebAssembly.Exception` leaking past the entry into the host. Rewrites
+// the entry function's body, post-check/pre-codegen, into
+//
+//   handle { <body> } with Error {
+//     Throw(msg) => { Stderr::...(diagnostic); 1 }
+//   }
+//
+// so the existing (well-exercised) `with Error` handle lowering does all
+// the work -- no new codegen. The arm never resumes (Error is
+// non-resumable, #640), so replay semantics are irrelevant here. Entries
+// with no `Error` in their row are untouched: under default-on checked
+// Error (stage B) they cannot leak a Throw in the first place. The
+// `__no_entry__` test-runner lane never matches an SLet by this name, so
+// test `_start` synthesis (whose trap-on-assert semantics the unit-test
+// runner depends on) is untouched.
+fn lc_wrap_entry_error_boundary(stmts: Array[Stmt], entry_name: String) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == entry_name && lc_row_has_error(eff) {
+        let diag = ESeq(ECall(EIdent("Stderr::write_stream", -1), [
+          EString("vibe: uncaught error: ")
+        ], -1), ESeq(ECall(EIdent("Stderr::write_stream", -1), [
+          EIdent("__entry_err_msg", -1)
+        ], -1), ESeq(ECall(EIdent("Stderr::write_stream", -1), [
+          EString("\n")
+        ], -1), EInt(1))))
+        let wrapped = EHandle(body, [
+          (PCtor("Error::Throw", [
+            PBind("__entry_err_msg")
+          ]), diag)
+        ])
+        Array::set(stmts, i, SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, wrapped)))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, prov: DbgProv) -> Bytes with { Error } {
   // Method-bearing-trait dictionary passing (#641 PR-3). Universal codegen
   // convergence point — runs here on the fully merged program before generic
@@ -204,6 +287,12 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // function is directly self-tail-recursive; runs before the borrow/scalar-
   // return analyses below so they see the rewritten (loop-shaped) body.
   rewrite_self_tail_calls(stmts)
+  // #944 (ADR-0073 stage C): entry-boundary Error handler -- see
+  // lc_wrap_entry_error_boundary's doc comment. Runs BEFORE the effect
+  // passes below so the synthesized handle is visible to them like any
+  // hand-written one, and before collect_used_builtin_names so the
+  // diagnostic's Stderr host import is collected.
+  lc_wrap_entry_error_boundary(stmts, entry_name)
   // ADR-0076 (#817) Phase 2: inline `perform` calls that are structurally
   // reachable-only-via-tail-resumptive-handler-arms directly into their
   // handler arm body (single-shot fast path -- no replay loop, no memoized
