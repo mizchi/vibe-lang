@@ -1,0 +1,134 @@
+name: perf
+
+# Continuous performance tracking (bench/perf/README.md "Continuous perf
+# tracking" section):
+#   - every PR gets a sticky "📊 Perf report" comment comparing its metrics
+#     against the latest main baseline (updated in place on new pushes),
+#   - every main push appends a snapshot to the `bench-data` branch
+#     (data/main.jsonl + latest.json), which is what PRs baseline against.
+#
+# Metrics come from scripts/bench_metrics.sh: deterministic allocation/size
+# numbers (selfcompile heap, stage2/bundle/sample-wasm sizes, bytes/op of the
+# tracked `bench {}` series) plus advisory wall times. This workflow never
+# blocks merges — the blocking allocation gate stays in ci.yml (KPI heap step).
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  perf-metrics:
+    name: perf-metrics
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cache seed artifact
+        uses: actions/cache@v4
+        with:
+          path: bootstrap/seed/compiler.wasm
+          key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
+      - name: Ensure seed artifact
+        run: bash scripts/ensure_seed.sh
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Cache stage2 (keyed on seed + flat module source)
+        id: stage2-cache
+        uses: actions/cache@v4
+        with:
+          path: _build/_ci_shard_gen
+          key: stage2-v1-${{ hashFiles('bootstrap/seed.json', 'lib/@vibe/compiler/_cli_adapter_module_source.vibe', 'scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Build stage2 from committed flat module source
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        run: |
+          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
+            bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Cache vibewt build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            runtime/vibewt/target
+          key: vibewt-v1-${{ hashFiles('runtime/vibewt/Cargo.lock', 'runtime/vibewt/Cargo.toml', 'runtime/vibewt/src/**') }}
+          restore-keys: vibewt-v1-
+      - name: Build vibewt (micro-bench runtime)
+        run: cargo build --release --manifest-path runtime/vibewt/Cargo.toml
+      - name: Collect metrics
+        run: |
+          bash scripts/bench_metrics.sh _build/_ci_shard_gen/stage2.wasm _build/bench_metrics.json
+          cat _build/bench_metrics.json
+      - name: Fetch baseline from bench-data branch
+        run: |
+          if git fetch --depth 1 origin bench-data 2>/dev/null; then
+            git show FETCH_HEAD:latest.json > _build/bench_baseline.json 2>/dev/null || true
+          fi
+          ls -la _build/bench_baseline.json 2>/dev/null || echo "no baseline yet"
+      - name: Render report
+        run: |
+          node scripts/bench_report.mjs _build/bench_metrics.json _build/bench_baseline.json \
+            > _build/bench_report.md
+          cat _build/bench_report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upsert PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('_build/bench_report.md', 'utf8');
+            const marker = '<!-- vibe-perf-report -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments,
+              { owner, repo, issue_number, per_page: 100 });
+            const mine = comments.find(c => c.body && c.body.includes(marker));
+            if (mine) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+      - name: Append snapshot to bench-data branch (main only)
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Retry loop: concurrent main pushes race on the data branch; the
+          # payload is append-only so refetch + reapply + push is always safe.
+          for attempt in 1 2 3; do
+            rm -rf _build/bench-data
+            if git fetch --depth 1 origin bench-data 2>/dev/null; then
+              git worktree add _build/bench-data FETCH_HEAD
+            else
+              git worktree add --detach _build/bench-data
+              (cd _build/bench-data && git checkout --orphan bench-data && git rm -rf --quiet . || true)
+            fi
+            mkdir -p _build/bench-data/data
+            cat _build/bench_metrics.json | tr -d '\n' >> _build/bench-data/data/main.jsonl
+            echo >> _build/bench-data/data/main.jsonl
+            cp _build/bench_metrics.json _build/bench-data/latest.json
+            (
+              cd _build/bench-data
+              git add -A
+              git commit -m "perf: snapshot ${GITHUB_SHA::9}"
+            )
+            if git -C _build/bench-data push origin HEAD:refs/heads/bench-data; then
+              break
+            fi
+            git worktree remove --force _build/bench-data || true
+            [ "$attempt" -lt 3 ] || { echo "::error::failed to push bench-data after 3 attempts"; exit 1; }
+            sleep $((attempt * 3))
+          done
+          git worktree remove --force _build/bench-data || true
+      - name: Upload metrics artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-metrics
+          path: |
+            _build/bench_metrics.json
+            _build/bench_report.md
