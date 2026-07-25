@@ -15,6 +15,23 @@ Methodology and case set: [`bench/binary_size/README.md`](../bench/binary_size/R
 bash scripts/bench_binary_size.sh [cli.wasm]
 ```
 
+### Measured 2026-07-25 (post-#1107 Phase 4 funcref-table minimization)
+
+The element section now registers only the table slots codegen actually
+materialized a closure value for (run-compressed active segments; unused
+slots stay `ref.null`). Small programs shed a few entries; the dist CLI
+sheds most of its table (2,751 entries / 5,446 B → 117 entries / 265 B,
+stage2 1,447,135 → 1,442,550 B) — and, more importantly, the downstream
+DCE root set collapses with it (`docs/wasm-opt-dogfood.md`).
+
+| program | `VIBE_RC=0` (bump, prod default) | `VIBE_RC=1` (Perceus RC) |
+|---|---:|---:|
+| hello_world | 771 B | 792 B |
+| fizzbuzz | 1,204 B | 1,334 B |
+| fib | 726 B | 756 B |
+| closure_indirect | 946 B | 2,609 B |
+| variant_float | 2,493 B | 5,328 B |
+
 ### Measured 2026-07-25 (post-ADR-0077 release strip)
 
 ADR-0077 changed what "as shipped" means for executables: the compiler now

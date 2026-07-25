@@ -2367,7 +2367,17 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       bytebuf_push(buf, 1)
       nl
     }
-    else if !prefer_bound_call && fname == "assert" {
+    else if fname == "assert" {
+      // #1095: no `!prefer_bound_call` guard here (assert_true / assert_eq
+      // below never had one). Inside a lambda, capture analysis lists the
+      // free name `assert` as a capture; the creation site cannot resolve it
+      // and stores 0, so the "bound call" dispatched call_indirect through a
+      // ZERO closure — table slot 0, i.e. an arbitrary user function. Before
+      // #1107 Phase 4 that slot always happened to be populated, silently
+      // NO-OPing every assert in a closure (concurrent_test's asserts never
+      // actually asserted); with the minimized funcref table it surfaced as
+      // "null function" traps. Builtin statement asserts cannot be shadowed
+      // meaningfully, so always compile the builtin form.
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       emit_i32_wrap_i64(buf)
       emit_if_void(buf)
