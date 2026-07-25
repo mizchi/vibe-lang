@@ -78,7 +78,14 @@ export struct TaskCell {
   // to its next suspend (or completion). Uniform (Int) -> Unit so the
   // group can hold heterogeneous tasks; the T-aware settle logic lives in
   // the wrapper closure TaskHandle::park builds.
-  mut cont: Option[(Int) -> Unit]
+  mut cont: Option[(Int) -> Unit];
+  // Parked as a POLLER (Suspend(1) — waiting on an external condition it
+  // re-checks on every wake, e.g. send_wait/recv_wait) rather than a
+  // productive cooperative yield (Suspend(0)). pump_all's deadlock trap
+  // only fires when EVERY parked task is a poller: resuming a yielder
+  // always advances its body, so yielders are never deadlock evidence
+  // (Codex review on #1110 — a lone task yielding 3+ times must not trap).
+  mut wait_poll: Bool
 }
 
 // Task-group phase codes: 0 open, 1 cancelling (fail-fast in progress),
@@ -305,7 +312,7 @@ export fn TaskGroup::run[T](body: (TaskGroup) -> T with { e }) -> Result[T, Task
 export fn TaskGroup::spawn[T: Send](n: TaskGroup, f: () -> T with { Error }) -> TaskHandle[T] {
   conc_require(n.phase == 0)
   let rc = ResCell::{ value: None }
-  let cell = TaskCell::{ status: 0, cancel_requested: false, fail_msg: "", cont: None }
+  let cell = TaskCell::{ status: 0, cancel_requested: false, fail_msg: "", cont: None, wait_poll: false }
   let runner: () -> Unit = () -> {
     handle {
       let v = f()
@@ -586,6 +593,13 @@ export fn Receiver::recv[T](r: Receiver[T]) -> Option[T] {
 //     }
 //   })
 //
+// Arms should PROPAGATE the suspend reason: `TaskHandle::park_poll(h,
+// resume, r == 1)` (payload convention: 0 = cooperative yield, 1 = poll
+// wait). Plain `TaskHandle::park` records a YIELD — safe for pure
+// yielding bodies, but a body that blocks in send_wait/recv_wait under a
+// plain-park arm is invisible to pump_all's deadlock trap (it livelocks
+// instead of trapping; Codex review on #1111).
+//
 // The body is subject to the suspend lowering's eligibility rules
 // (docs/effect-evidence-passing.md 追記27-29): performs and calls to
 // row-carrying functions on the let/seq/tail/branch-tail spine; other
@@ -624,7 +638,7 @@ export fn TaskGroup::spawn_suspend[T: Send](n: TaskGroup, f: () -> T with { Asyn
     SDone(v)
   } with Async {
     Suspend(r) => {
-      TaskHandle::park(h, resume)
+      TaskHandle::park_poll(h, resume, r == 1)
       SParked
     }
   })
@@ -637,7 +651,7 @@ export fn TaskGroup::spawn_suspend[T: Send](n: TaskGroup, f: () -> T with { Asyn
 export fn TaskGroup::adopt[T: Send](n: TaskGroup) -> TaskHandle[T] {
   conc_require(n.phase == 0)
   let rc = ResCell::{ value: None }
-  let cell = TaskCell::{ status: 1, cancel_requested: false, fail_msg: "", cont: None }
+  let cell = TaskCell::{ status: 1, cancel_requested: false, fail_msg: "", cont: None, wait_poll: false }
   Array::push(n.adopted, cell)
   TaskHandle::{ group: n, cell: cell, result: rc }
 }
@@ -663,11 +677,23 @@ export fn TaskHandle::settle[T](h: TaskHandle[T], step: TaskStep[T]) -> Unit {
 // body with the wake value; if the body runs to completion the wrapper
 // settles the result, and if it suspends again the arm has already
 // re-parked (this same function) before the wrapper observes SParked.
+// Compatibility form: records a cooperative YIELD (wait_poll = false).
+// Use park_poll with the arm's suspend payload when the body may block
+// on a channel, or the deadlock trap cannot see the wait.
 export fn TaskHandle::park[T](h: TaskHandle[T], k: (Int) -> TaskStep[T]) -> Unit {
+  TaskHandle::park_poll(h, k, false)
+}
+
+// Park with an explicit wait kind: `poll = true` marks the task as
+// waiting on an external condition (deadlock-trap eligible, see
+// TaskCell.wait_poll). spawn_suspend derives it from the Suspend payload
+// (1 = poll wait — the convention the blocking channel ops use).
+export fn TaskHandle::park_poll[T](h: TaskHandle[T], k: (Int) -> TaskStep[T], poll: Bool) -> Unit {
   let cell = h.cell
   let rc = h.result
   let grp = h.group
   cell.status = 5
+  cell.wait_poll = poll
   cell.cont = Some((rv: Int) -> {
     cell.status = 1
     match k(rv) {
@@ -717,6 +743,7 @@ export fn TaskGroup::pump(n: TaskGroup) -> Bool {
       match c.cont {
         Some(k) => {
           c.cont = None
+          c.wait_poll = false
           k(0)
           ()
         },
@@ -738,21 +765,49 @@ export fn TaskGroup::pump_all(n: TaskGroup) -> Unit {
     let before = n.progress
     go = TaskGroup::pump(n)
     if go {
-      if n.progress == before {
+      if n.progress == before && conc_all_parked_polling(n) {
         stall = stall + 1
       } else {
         stall = 0
       }
-      // A full round-robin sweep of every adopted slot with zero progress
-      // can only repeat itself (the scheduler is deterministic and no wake
-      // can originate outside this loop) — blocked-forever channel waits
-      // land here. Trap like every other deadlock (drive_one's rule)
-      // instead of livelocking.
+      // A full round-robin sweep in which every parked task is a POLLER
+      // (Suspend(1) — waiting on an external condition) and zero progress
+      // was made can only repeat itself: the scheduler is deterministic
+      // and no wake can originate outside this loop — blocked-forever
+      // channel waits land here. Trap like every other deadlock
+      // (drive_one's rule) instead of livelocking. Cooperative YIELDS
+      // (Suspend(0)) never count: resuming one always advances its body,
+      // so a lone task yielding any number of times completes normally
+      // (an infinitely-yielding body is an ordinary infinite loop, not a
+      // deadlock).
       conc_require(stall <= Array::length(n.adopted))
     } else {
       ()
     }
   }
+}
+
+// Every currently-parked adopted task is a poller (wait_poll). False when
+// nothing is parked (vacuous sweeps must not accumulate stall).
+fn conc_all_parked_polling(n: TaskGroup) -> Bool {
+  let mut any = false
+  let mut all = true
+  let mut i = 0
+  while i < Array::length(n.adopted) {
+    let c = Array::get(n.adopted, i)
+    if c.status == 5 {
+      any = true
+      if c.wait_poll {
+        ()
+      } else {
+        all = false
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  any && all
 }
 
 //# Blocking channel ops (suspend-based)
@@ -796,7 +851,7 @@ fn conc_send_wait_consumed[T](c: Channel[T], myseq: Int) -> Result[Unit, SendErr
   } else if chan_closed(c) {
     Err(Closed)
   } else {
-    let _w = perform Async::Suspend(0)
+    let _w = perform Async::Suspend(1)
     conc_send_wait_consumed(c, myseq)
   }
 }
@@ -828,7 +883,7 @@ export fn Receiver::recv_wait[T](r: Receiver[T]) -> Option[T] with { Async } {
   } else if chan_closed(c) {
     None
   } else {
-    let _w = perform Async::Suspend(0)
+    let _w = perform Async::Suspend(1)
     Receiver::recv_wait(r)
   }
 }

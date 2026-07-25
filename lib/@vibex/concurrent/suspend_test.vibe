@@ -5,9 +5,9 @@ import ./concurrent.vibe {
   type Channel, type Sender, type Receiver, type SendError, type ChannelConfigError,
   TaskGroup::run, TaskGroup::adopt, TaskGroup::pump, TaskGroup::pump_all,
   TaskGroup::spawn_suspend,
-  TaskHandle::settle, TaskHandle::park, TaskHandle::wake,
+  TaskHandle::settle, TaskHandle::park, TaskHandle::park_poll, TaskHandle::wake,
   TaskHandle::join, TaskHandle::cancel,
-  Channel::bounded, Sender::send_wait, Sender::release, Receiver::recv_wait
+  Channel::bounded, Sender::send, Sender::send_wait, Sender::release, Receiver::recv_wait
 }
 
 //# Types
@@ -41,7 +41,7 @@ test "adopted tasks interleave mid-body via Async::Suspend" {
       SDone(100)
     } with Async {
       Suspend(r) => {
-        TaskHandle::park(ha, resume)
+        TaskHandle::park_poll(ha, resume, r == 1)
         SParked
       }
     })
@@ -55,7 +55,7 @@ test "adopted tasks interleave mid-body via Async::Suspend" {
       SDone(200)
     } with Async {
       Suspend(r) => {
-        TaskHandle::park(hb, resume)
+        TaskHandle::park_poll(hb, resume, r == 1)
         SParked
       }
     })
@@ -206,6 +206,73 @@ test "spawn_suspend with a pure body settles synchronously" {
     match TaskHandle::join(h) {
       Ok(v) => v,
       Err(_) => -1
+    }
+  })
+  assert(match out {
+    Ok(v) => v == 42,
+    Err(_) => false
+  })
+}
+
+// Codex review (#1111): the ADOPTION-lane canonical arm must propagate
+// the suspend reason (park_poll(h, resume, r == 1)); a channel wait
+// parked through it is poller-classified, so a deliverable message
+// resumes it and an undeliverable one would TRAP (not livelock). Here:
+// an adopted consumer blocks in recv_wait, the run body then supplies
+// the message through the stack-driving send, and pump_all delivers.
+test "adoption-lane recv_wait parks as a poller and resumes on delivery" {
+  let out = TaskGroup::run((g) -> {
+    match Channel::bounded(g, 1) {
+      Ok(pair) => {
+        let (tx, rx) = pair
+        let h = TaskGroup::adopt(g)
+        TaskHandle::settle(h, handle {
+          let r1 = Receiver::recv_wait(rx)
+          let a = match r1 {
+            Some(v) => v,
+            None => 0 - 1
+          }
+          SDone(a * 3)
+        } with Async {
+          Suspend(r) => {
+            TaskHandle::park_poll(h, resume, r == 1)
+            SParked
+          }
+        })
+        let _s = Sender::send(tx, 14)
+        Sender::release(tx)
+        TaskGroup::pump_all(g)
+        match TaskHandle::join(h) {
+          Ok(v) => v,
+          Err(_) => 0 - 1
+        }
+      },
+      Err(_) => 0 - 999
+    }
+  })
+  assert(match out {
+    Ok(v) => v == 42,
+    Err(_) => false
+  })
+}
+
+// Codex review regression (#1110): a LONE task that yields (Suspend(0))
+// three or more times must complete normally — cooperative yields carry
+// no progress bump, and the first deadlock-detector counted them as
+// stalls (traps at the 3rd consecutive yield of a single task). Yields
+// are never deadlock evidence; only pollers (Suspend(1)) are.
+test "a lone spawn_suspend task may yield three times without tripping the deadlock trap" {
+  let out = TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let _y1 = perform Async::Suspend(0)
+      let _y2 = perform Async::Suspend(0)
+      let _y3 = perform Async::Suspend(0)
+      21
+    })
+    TaskGroup::pump_all(g)
+    match TaskHandle::join(h) {
+      Ok(v) => v * 2,
+      Err(_) => 0 - 1
     }
   })
   assert(match out {
