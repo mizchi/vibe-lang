@@ -2127,6 +2127,37 @@ pin、(ii) spawn 2 本の mid-body interleave (suspend_test の spawn 版)、
 (iii) 規約衝突 (4.) の compile error pin、(iv) row-var closure が
 引き続き error である pin。
 
+**実装ノート (同日、A/B 着地)**:
+
+- Vertical A は設計通り (creation dup + class-7 再帰 drop + letrec
+  self-skip + `md_capturing_fn_count` 撤去)。fixture
+  `rc_closure_owned_capture_escape.vibe` (gate 52、want 4067) が
+  borrow モデルの silent corruption (50067) を pin。gate 51 (38013) は
+  無変更で green (補償が creation 側へ移っただけ)。
+- Vertical B は suspend_cps_pass の 5 フェーズ化で実装:
+  (1) CPS-mode effect 収集 → (2) 全 stmt prepass (literal step-split +
+  E-row param 位置の arg 規約 fixup) → (3) 既存 walk + scope threading →
+  (4) clone worklist → (5) 規約整合ガード。
+- **top-level fn 値 (SLet の EFn) は prepass の split 対象外** — そこは
+  3b の needing-fn 世界 (original 無変更 + clone)。当初 top ノードにも
+  criterion (iii) を適用して dual entry を破壊し、clone が split 済み
+  body から再 clone されて `Done(Y(..))` の二重包みになった
+  (`effect_resume_call_bubbling` trap で発覚)。literal split は
+  「式位置の literal」に限る。
+- **suspend する closure literal には明示 row 注釈が必須**:
+  `() -> T with { E } { ... }`。#761 により無注釈 lambda の effect は
+  enclosing の declared row へ継承 (誤検出回避のための既定) されるため、
+  literal 自身の row に封じ込めるには注釈で宣言する。注釈なしだと
+  enclosing fn の row mismatch として checker が弾く (安全側)。
+- capture-free な literal 引数は upstream #786 hoisting で top-level fn
+  化されて届く — その場合は prepass の「E-row param 位置の needing fn
+  参照 → clone 参照」書き換えが同じ規約を配線する (capturing literal は
+  hoist されず in-place split)。
+- fixtures: `effect_closure_cps_param.vibe` (2130、resume 値形 2-yield
+  trace)、`err_effect_closure_cps_mixed_convention.vibe` (guard reject)、
+  gate 53。spawn 版 interleave は `suspend_test.vibe` の
+  `spawn_suspend` 2 テスト (library-level lock、battery 経由)。
+
 #### Vertical C: replay loop の撤去 (Phase 3d)
 
 dispatch カバレッジ実測の結論: **bootstrap は replay loop に依存して

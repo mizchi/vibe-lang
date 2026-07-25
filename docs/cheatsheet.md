@@ -659,6 +659,16 @@ let/seq/tail/分岐 tail に直接現れる必要がある。**concrete な row 
 呼び出しは stderr 診断つきで trap する。post-processing は値経由
 (`let k = resume  let r = k(v)  r + 7`) で書く。
 
+**closure 値経由の suspend も可** (closure-CPS ABI, ADR-0076 追記31):
+`fn run_with(f: () -> Int with { E }) -> Int { handle { f() } with E
+{...} }` のように、suspend する body を **closure 引数**として渡せる
+(handle site を library 側に置ける — `TaskGroup::spawn_suspend` が
+この形)。suspend する closure literal には**明示 row 注釈が必要**:
+`() -> Int with { E } { ... }` (無注釈 lambda の effect は enclosing の
+row へ継承されるため、#761)。同じ effect を「resume 値参照の handler」
+と「tail-resumptive handler」で混在させたまま closure を step-compile
+するプログラムは compile error (規約整合ガード)。
+
 operation の宣言 arity より 1 つ多い末尾パラメータを束縛する `k` 規約
 (`Emit(v, k) => v + k(0)`、non-tail 継続) は **旧 MoonBit fixture runner
 専用だった機能で、現行 build path では未サポート** — checker が
