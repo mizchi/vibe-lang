@@ -3787,8 +3787,20 @@ export fn suspend_cps_pass(stmts: Array[Stmt]) -> Array[String] {
     0
   }) {
     match Array::get(stmts, ip) {
-      SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, ip, SLet(exported, is_rec, name, ty, scps_prepass_expr(expr, ecfgs, ctx, st, split_effs))),
-      SLetMut(name, ty, expr) => Array::set(stmts, ip, SLetMut(name, ty, scps_prepass_expr(expr, ecfgs, ctx, st, split_effs))),
+      // A TOP-LEVEL fn value is the 3b needing-fn world: the ORIGINAL must
+      // stay untouched (dual entry -- cps callers go through the
+      // __scps_cps_* clone), so the literal-split rule must not apply to
+      // the top node itself; only its body's NESTED literals are prepass
+      // material. Splitting it here double-wrapped the clone (emit_clone
+      // re-split an already-split body into Done(Y(..))).
+      SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, ip, SLet(exported, is_rec, name, ty, match expr {
+        EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, scps_prepass_expr(b, ecfgs, ctx, st, split_effs)),
+        _ => scps_prepass_expr(expr, ecfgs, ctx, st, split_effs)
+      })),
+      SLetMut(name, ty, expr) => Array::set(stmts, ip, SLetMut(name, ty, match expr {
+        EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, scps_prepass_expr(b, ecfgs, ctx, st, split_effs)),
+        _ => scps_prepass_expr(expr, ecfgs, ctx, st, split_effs)
+      })),
       SExpr(expr) => Array::set(stmts, ip, SExpr(scps_prepass_expr(expr, ecfgs, ctx, st, split_effs))),
       STest(tn, expr) => Array::set(stmts, ip, STest(tn, scps_prepass_expr(expr, ecfgs, ctx, st, split_effs))),
       SBench(bn, expr) => Array::set(stmts, ip, SBench(bn, scps_prepass_expr(expr, ecfgs, ctx, st, split_effs))),
