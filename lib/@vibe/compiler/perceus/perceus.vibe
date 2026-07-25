@@ -244,15 +244,17 @@ fn is_v128_box_call(fname: String) -> Bool {
 }
 
 fn array_contains_str_pctx(arr: Array[String], s: String) -> Bool {
+  // #1100: early-exit — this membership scan is one of the plan's hottest
+  // loops and used to keep scanning the whole array after a hit.
+  let n = Array::length(arr)
   let mut i = 0
   let mut found = false
-  while i < Array::length(arr) {
+  while !found && i < n {
     if Array::get(arr, i) == s {
       found = true
     } else {
-      ()
+      i = i + 1
     }
-    i = i + 1
   }
   found
 }
@@ -1375,8 +1377,20 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       pc_emit(ctx, scope, cond)
       let snap = copy_ints(ctx.remaining)
       pc_emit(ctx, scope, then_e)
-      let then_rem = copy_ints(ctx.remaining)
-      restore_prefix(ctx.remaining, snap)
+      // #1100 alloc cut: swap the prefix instead of taking a SECOND copy —
+      // one pass both restores `remaining` to the pre-branch values (what
+      // restore_prefix did) and captures the then-branch's values into
+      // `snap`'s buffer (what the `then_rem` copy was for). Same values in
+      // the same places, one allocation instead of two per `if`; the
+      // branch-snapshot copies were the plan's largest allocation source
+      // on a full-closure compile.
+      let mut sw = 0
+      while sw < Array::length(snap) {
+        let then_v = Array::get(ctx.remaining, sw)
+        Array::set(ctx.remaining, sw, Array::get(snap, sw))
+        Array::set(snap, sw, then_v)
+        sw = sw + 1
+      }
       pc_emit(ctx, scope, else_e)
       // #705: leave the MIN remaining over both branches. A binding consumed in
       // one branch (e.g. a param threaded into a ctor in the `then`) but not the
@@ -1385,10 +1399,11 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       // a double free. Min means a binding consumed on ANY path is not
       // re-dropped (the non-consuming path leaks one ref, which is safe) instead
       // of the consuming path double-freeing (crash). Prefix-only (outer ids).
+      // (`snap` holds the THEN branch's values after the swap above.)
       let mut i = 0
       while i < Array::length(snap) {
-        if Array::get(then_rem, i) < Array::get(ctx.remaining, i) {
-          Array::set(ctx.remaining, i, Array::get(then_rem, i))
+        if Array::get(snap, i) < Array::get(ctx.remaining, i) {
+          Array::set(ctx.remaining, i, Array::get(snap, i))
         } else {
           ()
         }
@@ -1666,21 +1681,30 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       let snap_u = copy_ints(ctx.uses)
       let snap_b = copy_ints(ctx.borrows)
       pc_count(ctx, scope, then_e)
-      let then_u = copy_ints(ctx.uses)
-      let then_b = copy_ints(ctx.borrows)
-      restore_prefix(ctx.uses, snap_u)
-      restore_prefix(ctx.borrows, snap_b)
+      // #1100 alloc cut: swap the prefixes instead of taking SECOND copies
+      // (`then_u`/`then_b`) — one pass restores uses/borrows to the
+      // pre-branch values and captures the then-branch's values into the
+      // snap buffers. 2 allocations per `if` instead of 4.
+      let mut sw = 0
+      while sw < Array::length(snap_u) {
+        let tu = Array::get(ctx.uses, sw)
+        Array::set(ctx.uses, sw, Array::get(snap_u, sw))
+        Array::set(snap_u, sw, tu)
+        let tb = Array::get(ctx.borrows, sw)
+        Array::set(ctx.borrows, sw, Array::get(snap_b, sw))
+        Array::set(snap_b, sw, tb)
+        sw = sw + 1
+      }
       pc_count(ctx, scope, else_e)
+      // Merge = per-id MAX over the two branches. The previous delta form
+      // (`base + max(then - base, else - base)`) is algebraically the same
+      // number — the base cancels — so dropping it changes no plan. After
+      // the swap above, snap_u/snap_b hold the THEN branch's values and
+      // ctx.uses/ctx.borrows hold the ELSE branch's.
       let mut id = 0
       while id < Array::length(snap_u) {
-        let base_u = Array::get(snap_u, id)
-        let dt = Array::get(then_u, id) - base_u
-        let de = Array::get(ctx.uses, id) - base_u
-        Array::set(ctx.uses, id, base_u + int_max(dt, de))
-        let base_b = Array::get(snap_b, id)
-        let dtb = Array::get(then_b, id) - base_b
-        let deb = Array::get(ctx.borrows, id) - base_b
-        Array::set(ctx.borrows, id, base_b + int_max(dtb, deb))
+        Array::set(ctx.uses, id, int_max(Array::get(snap_u, id), Array::get(ctx.uses, id)))
+        Array::set(ctx.borrows, id, int_max(Array::get(snap_b, id), Array::get(ctx.borrows, id)))
         id = id + 1
       }
       0
