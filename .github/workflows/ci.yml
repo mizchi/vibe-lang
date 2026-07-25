@@ -10,6 +10,19 @@ on:
 # selfhost-only gate: bundle/module-source sync + seed->stage1->stage2
 # ->stage3 selfbuild with the stage2==stage3 fixpoint and per-stage compile/run
 # validation. No MoonBit toolchain is installed or used.
+#
+# Wall-time layout (2026-07 rework, target: required checks green < 5min):
+#   - compiler-gate      (~2.5min) gate script + KPI + normalize smoke
+#   - unit-tests 0..2    (~3min)   weight-balanced shards of the 467-file
+#                                  battery; each shard self-builds stage2 from
+#                                  the committed flat module source (~20-30s,
+#                                  cached across runs on the same source)
+#                                  instead of waiting on compiler-gate
+#   - coverage-suite     main-only, its own job (used to run INSIDE
+#                                  compiler-gate and double its wall time)
+#   - wasi-p3-gate       needs compiler-gate's stage2 artifact (unchanged)
+# All jobs start at t=0; nothing on the required path serializes behind
+# another job.
 jobs:
   compiler-gate:
     name: compiler-gate
@@ -68,40 +81,6 @@ jobs:
         # test in here too so that path is gated (it was previously defined
         # but never invoked by any workflow).
         run: bash scripts/vibe_normalize_smoke.sh
-      - name: Compiler unit-test runner (allowlist)
-        # Reuse the stage2 the gate just built (no second selfbuild). Runs the
-        # allowlisted *_test.vibe corpus (#531/#535) — the regression net for
-        # language/stdlib features the compiler doesn't exercise during selfbuild.
-        run: |
-          gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1)"
-          VIBE_STAGE2_WASM="${gen}stage2.wasm" \
-            bash scripts/unit_test_runner.sh
-      - name: Selfhost suite coverage gate (#535)
-        # Re-runs the allowlist under function/branch hit instrumentation and
-        # enforces the ratcheting minimum rates (defaults in the script; raise
-        # them as coverage improves, lowering needs a rationale in the PR).
-        #
-        # main-only (2026-07, CI wall-time review): this step recompiles +
-        # reruns the ENTIRE allowlist a second time (~4-4.5min, comparable to
-        # the plain "Compiler unit-test runner" step above) purely to measure
-        # coverage % and incidentally exercise the instrumented codegen path.
-        # Skipping it on pull_request halves compiler-gate's wall time for the
-        # common PR-CI case; it still runs on every push to main, so an
-        # instrumentation-only miscompile is caught at most one merge late,
-        # never silently for good. Revert to unconditional if that lag proves
-        # unacceptable.
-        if: github.event_name != 'pull_request'
-        run: |
-          gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1)"
-          VIBE_SUITE_CLI_WASM="${gen}stage2.wasm" \
-            bash scripts/coverage_suite.sh
-      - name: Upload compiler suite coverage report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: compiler-suite-coverage
-          path: _build/coverage/selfhost-suite/selfhost_suite.report.json
-          if-no-files-found: ignore
       - name: Stage stage2 for downstream gates (#821)
         run: |
           gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
@@ -113,6 +92,128 @@ jobs:
           name: compiler-stage2
           path: _build/ci-artifacts/stage2.wasm
           if-no-files-found: error
+
+  # The 467-file selfhost unit-test battery (#531/#535), weight-balanced into
+  # parallel shards (scripts/unit_test_weights.tsv drives the LPT partition
+  # inside unit_test_runner.sh). Each shard builds its own stage2 from the
+  # committed flat module source — seed->stage1->stage2 is ~20-30s with the
+  # bundle regeneration skipped, and the result is byte-identical to the
+  # gate's stage2 (the gate separately verifies the committed flat source is
+  # in sync and that the build reaches the stage2==stage3 fixpoint) — so the
+  # shards run concurrently with compiler-gate instead of behind it.
+  unit-tests:
+    name: unit-tests (shard ${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cache seed artifact
+        uses: actions/cache@v4
+        with:
+          path: bootstrap/seed/compiler.wasm
+          key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
+      - name: Ensure seed artifact
+        run: bash scripts/ensure_seed.sh
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Install wasmtime
+        env:
+          WASMTIME_VERSION: v47.0.2
+        run: |
+          set -euo pipefail
+          dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
+          curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          echo "$PWD/$dir" >> "$GITHUB_PATH"
+      - name: Cache stage2 (keyed on seed + flat module source)
+        # The stage2 build is a deterministic function of (seed, committed
+        # flat module source, runner). When neither changed since a previous
+        # run, restore it and skip the ~30s build entirely.
+        id: stage2-cache
+        uses: actions/cache@v4
+        with:
+          path: _build/_ci_shard_gen
+          key: stage2-v1-${{ hashFiles('bootstrap/seed.json', 'lib/@vibe/compiler/_cli_adapter_module_source.vibe', 'scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Build stage2 from committed flat module source
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        run: |
+          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
+            bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Restore persistent compile cache
+        # Content-keyed compiler cache (_build/vibe_selfhost_*, see
+        # docs/build-cache.md): every row's key folds in the codegen
+        # fingerprint, so entries from an older compiler are simply ignored
+        # on lookup — restoring is always safe, and a warm cache shaves
+        # ~25% off the per-file compiles when the compiler is unchanged.
+        uses: actions/cache@v4
+        with:
+          path: _build/vibe_selfhost_*
+          key: vibecache-v1-${{ hashFiles('lib/@vibe/compiler/cache/codegen_fingerprint.vibe') }}-shard${{ matrix.shard }}-${{ github.run_id }}
+          restore-keys: |
+            vibecache-v1-${{ hashFiles('lib/@vibe/compiler/cache/codegen_fingerprint.vibe') }}-shard${{ matrix.shard }}-
+      - name: Compiler unit-test runner (shard ${{ matrix.shard }}/3)
+        run: |
+          VIBE_STAGE2_WASM="$PWD/_build/_ci_shard_gen/stage2.wasm" \
+          VIBE_UNIT_TEST_SHARD="${{ matrix.shard }}/3" \
+            bash scripts/unit_test_runner.sh
+
+  # Selfhost suite coverage gate (#535), main-only. Re-runs the entire
+  # allowlist under function/branch hit instrumentation and enforces the
+  # ratcheting minimums (defaults in scripts/coverage_suite.sh; raise them as
+  # coverage improves, lowering needs a rationale in the PR). This used to be
+  # a step INSIDE compiler-gate, doubling that job's wall time on every main
+  # push; as its own job it overlaps everything else and the required path
+  # never waits on it. An instrumentation-only miscompile is still caught at
+  # most one merge late, never silently for good.
+  coverage-suite:
+    name: coverage-suite (main only)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cache seed artifact
+        uses: actions/cache@v4
+        with:
+          path: bootstrap/seed/compiler.wasm
+          key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
+      - name: Ensure seed artifact
+        run: bash scripts/ensure_seed.sh
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Install wasmtime
+        env:
+          WASMTIME_VERSION: v47.0.2
+        run: |
+          set -euo pipefail
+          dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
+          curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          echo "$PWD/$dir" >> "$GITHUB_PATH"
+      - name: Cache stage2 (keyed on seed + flat module source)
+        id: stage2-cache
+        uses: actions/cache@v4
+        with:
+          path: _build/_ci_shard_gen
+          key: stage2-v1-${{ hashFiles('bootstrap/seed.json', 'lib/@vibe/compiler/_cli_adapter_module_source.vibe', 'scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Build stage2 from committed flat module source
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        run: |
+          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
+            bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Selfhost suite coverage gate (#535)
+        run: |
+          VIBE_SUITE_CLI_WASM="$PWD/_build/_ci_shard_gen/stage2.wasm" \
+            bash scripts/coverage_suite.sh
+      - name: Upload compiler suite coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiler-suite-coverage
+          path: _build/coverage/selfhost-suite/selfhost_suite.report.json
+          if-no-files-found: ignore
 
   # WASI p3 guarantee (#821): vibe-built async components + the wasi:http p3
   # serve pipeline must run on pinned wasmtime versions, with missing tools
@@ -200,7 +301,7 @@ jobs:
   # Aggregate required check (branch protection requires "ci-required").
   ci-required:
     name: ci-required
-    needs: [compiler-gate]
+    needs: [compiler-gate, unit-tests]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -208,6 +309,10 @@ jobs:
         run: |
           if [ "${{ needs.compiler-gate.result }}" != "success" ]; then
             echo "::error::compiler-gate did not succeed (${{ needs.compiler-gate.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.unit-tests.result }}" != "success" ]; then
+            echo "::error::unit-tests did not succeed (${{ needs.unit-tests.result }})"
             exit 1
           fi
           echo "all required jobs passed"

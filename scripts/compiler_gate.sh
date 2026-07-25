@@ -17,14 +17,18 @@ cd "$ROOT_DIR"
 echo "[compiler-gate] 0/3 builtin parity (#415 B-3)"
 bash scripts/check_builtin_parity.sh
 
-echo "[compiler-gate] 1/3 bundle sync"
-bash scripts/check_bundle_sync.sh
-
-echo "[compiler-gate] 2/3 module-source sync (via seed)"
-bash scripts/check_module_source_sync.sh
+echo "[compiler-gate] 1-2/3 bundle + module-source sync (via seed, combined)"
+# One generate_bundle.sh pass checks both the three bundles and the flat
+# module source (VIBE_CHECK_BUNDLES_TOO=1) — the previous separate
+# check_bundle_sync.sh step re-ran the same ~25s generation a second time.
+VIBE_CHECK_BUNDLES_TOO=1 bash scripts/check_module_source_sync.sh
 
 echo "[compiler-gate] 3/3 selfbuild seed->stage1->stage2->stage3"
-bash scripts/generations.sh build --stage3
+# The sync check above just proved the committed flat module source is
+# byte-identical to what generate_bundle.sh would regenerate, so feed it to
+# the selfbuild directly instead of paying a third ~25s regeneration.
+VIBE_PREBUILT_MODULE_SOURCE="lib/@vibe/compiler/_cli_adapter_module_source.vibe" \
+  bash scripts/generations.sh build --stage3
 
 # Assert the stage2==stage3 fixpoint from the freshest generation manifest.
 latest_gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1 || true)"

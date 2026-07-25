@@ -79,3 +79,23 @@ the old complete value, the new complete value, or a miss, never partial bytes.
 A per-key single-flight table may avoid duplicate work but is not required for
 correctness. Automatic mid-build GC remains out of scope because it has the
 stronger cross-build reachability problem described above.
+
+## CI caches (2026-07 wall-time rework)
+
+`.github/workflows/ci.yml` persists three caches across runs via
+`actions/cache`:
+
+| Cache | Path | Key | Why it's safe |
+|-------|------|-----|---------------|
+| Seed artifact | `bootstrap/seed/compiler.wasm` | hash of `bootstrap/seed.json` | pinned release asset; the manifest hash IS its identity |
+| Shard stage2 | `_build/_ci_shard_gen/` | hash of seed manifest + committed flat module source + generations/runner scripts | the stage2 build is a deterministic function of exactly those inputs; on any compiler change the flat source changes and the key misses |
+| Persistent compile cache | `_build/vibe_selfhost_*` | hash of `cache/codegen_fingerprint.vibe` (per shard) | every cache row already folds the codegen fingerprint into its own key (see above), so rows from another compiler version are ignored on lookup — restoring can never serve a stale artifact |
+
+The unit-test battery itself is split across parallel matrix jobs with
+`VIBE_UNIT_TEST_SHARD=i/N`; the partition is weight-balanced from
+`scripts/unit_test_weights.tsv` (regeneration procedure in that file's
+header). Isolated per-test cache roots (`VIBE_BUILD_CACHE_DIR`) let the
+cache-inspecting tests run inside the parallel fan-out instead of a
+sequential tail — except the few tests that assert on the default root's own
+semantics, which stay sequential (see `strict_cache_tail` in
+`scripts/unit_test_runner.sh`).
