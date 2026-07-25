@@ -1944,72 +1944,13 @@ fn get_export_func_indices(bytes: Bytes) -> Array[Int] {
 }
 
 export fn find_reachable(bytes: Bytes) -> Array[Int] {
-  let graph = build_call_graph(bytes)
-  // Same root set as dce_remove (collect_func_roots): exports + start +
-  // element-segment entries + ref.func targets. Exports-only roots let the
-  // stubbing `dce` stub a function still live through the funcref table —
-  // caught by scripts/minify_gate.sh on closure_indirect (#1107 Phase 2):
-  // round 2 of minify_converge takes the `dce` fallback branch (dce_remove
-  // has already converged), which then stubbed the closure bodies.
-  let roots = collect_func_roots(bytes)
-  let import_count = count_import_funcs(bytes)
-  let mut max_func_idx = import_count
-  let mut gi2 = 0
-  while gi2 < Array::length(graph) {
-    let (func_idx, callees) = Array::get(graph, gi2)
-    if func_idx >= max_func_idx {
-      max_func_idx = func_idx + 1
-    }
-    let mut ci2 = 0
-    while ci2 < Array::length(callees) {
-      let callee = Array::get(callees, ci2)
-      if callee >= max_func_idx {
-        max_func_idx = callee + 1
-      }
-      ci2 = ci2 + 1
-    }
-    gi2 = gi2 + 1
-  }
-  let visited = FixedArray::make(max_func_idx + 1, 0)
-  let reachable = Array::slice([
-    (0)
-  ], 0, 0)
-  let queue = Array::slice([
-    (0)
-  ], 0, 0)
-  let mut ri = 0
-  while ri < Array::length(roots) {
-    let root = Array::get(roots, ri)
-    if (root >= 0) && (root <= max_func_idx) && (FixedArray::get(visited, root) == 0) {
-      FixedArray::set(visited, root, 1)
-      Array::push(queue, root)
-      Array::push(reachable, root)
-    }
-    ri = ri + 1
-  }
-  let mut qi = 0
-  while qi < Array::length(queue) {
-    let current = Array::get(queue, qi)
-    let mut gi = 0
-    while gi < Array::length(graph) {
-      let (func_idx, callees) = Array::get(graph, gi)
-      if func_idx == current {
-        let mut ci = 0
-        while ci < Array::length(callees) {
-          let callee = Array::get(callees, ci)
-          if (callee >= 0) && (callee <= max_func_idx) && (FixedArray::get(visited, callee) == 0) {
-            FixedArray::set(visited, callee, 1)
-            Array::push(reachable, callee)
-            Array::push(queue, callee)
-          }
-          ci = ci + 1
-        }
-      }
-      gi = gi + 1
-    }
-    qi = qi + 1
-  }
-  reachable
+  // #1109: delegate to reachable_from (O(1) graph index BFS) with the full
+  // root set (exports + start + elem + ref.func — collect_func_roots), the
+  // same roots dce_remove uses. The old private copy of the BFS re-scanned
+  // the whole call-graph array per dequeued function, which is what made a
+  // single stubbing-dce round on the 7,600-function vibec core take the
+  // better part of an hour.
+  reachable_from(bytes, collect_func_roots(bytes))
 }
 
 export fn dce(bytes: Bytes) -> Bytes {
@@ -2153,6 +2094,19 @@ fn reachable_from(bytes: Bytes, roots: Array[Int]) -> Array[Int] {
     ri0 = ri0 + 1
   }
   let visited = FixedArray::make(max_func_idx + 2, 0)
+  // #1109: O(1) func_idx -> graph position index. The BFS below used to
+  // re-scan the whole graph array per dequeued function (O(queue * graph) —
+  // ~30x slower than linear on the 7,600-function vibec core, where a single
+  // dce round sat for the better part of an hour).
+  let graph_pos = FixedArray::make(max_func_idx + 2, -1)
+  let mut gpi = 0
+  while gpi < Array::length(graph) {
+    let (gp_idx, _) = Array::get(graph, gpi)
+    if (gp_idx >= 0) && (gp_idx <= max_func_idx) {
+      FixedArray::set(graph_pos, gp_idx, gpi)
+    }
+    gpi = gpi + 1
+  }
   let reachable = Array::slice([
     (0)
   ], 0, 0)
@@ -2172,10 +2126,10 @@ fn reachable_from(bytes: Bytes, roots: Array[Int]) -> Array[Int] {
   let mut qi = 0
   while qi < Array::length(queue) {
     let current = Array::get(queue, qi)
-    let mut gi = 0
-    while gi < Array::length(graph) {
-      let (func_idx, callees) = Array::get(graph, gi)
-      if func_idx == current {
+    let gi = FixedArray::get(graph_pos, current)
+    if gi >= 0 {
+      let (_, callees) = Array::get(graph, gi)
+      {
         let mut ci = 0
         while ci < Array::length(callees) {
           let callee = Array::get(callees, ci)
@@ -2187,7 +2141,6 @@ fn reachable_from(bytes: Bytes, roots: Array[Int]) -> Array[Int] {
           ci = ci + 1
         }
       }
-      gi = gi + 1
     }
     qi = qi + 1
   }
