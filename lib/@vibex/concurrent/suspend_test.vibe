@@ -2,10 +2,12 @@
 
 import ./concurrent.vibe {
   type TaskGroup, type TaskHandle, type TaskError, type TaskStep,
+  type Channel, type Sender, type Receiver, type SendError, type ChannelConfigError,
   TaskGroup::run, TaskGroup::adopt, TaskGroup::pump, TaskGroup::pump_all,
   TaskGroup::spawn_suspend,
   TaskHandle::settle, TaskHandle::park, TaskHandle::wake,
-  TaskHandle::join, TaskHandle::cancel
+  TaskHandle::join, TaskHandle::cancel,
+  Channel::bounded, Sender::send_wait, Sender::release, Receiver::recv_wait
 }
 
 //# Types
@@ -208,6 +210,117 @@ test "spawn_suspend with a pure body settles synchronously" {
   })
   assert(match out {
     Ok(v) => v == 42,
+    Err(_) => false
+  })
+}
+
+// Channel blocking (ADR-0076 追記31 の続きスライス): the shape the module
+// header called out as impossible under run-to-completion — a producer
+// overflowing a capacity-1 channel while the consumer drains — now works
+// with BOTH sides as plain spawn_suspend closures. send_wait deposits and
+// suspends when the buffer is full; recv_wait suspends while empty;
+// pump_all round-robins them. The log pins the exact deterministic
+// interleaving (producer logs 1..3 after each send, consumer logs 100+v
+// after each recv).
+test "spawn_suspend producer/consumer block mid-body through a capacity-1 channel" {
+  let log: Array[Int] = []
+  let out = TaskGroup::run((g) -> {
+    match Channel::bounded(g, 1) {
+      Ok(pair) => {
+        let (tx, rx) = pair
+        let hp = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+          let _a = Sender::send_wait(tx, 10)
+          Array::push(log, 1)
+          let _b = Sender::send_wait(tx, 20)
+          Array::push(log, 2)
+          let _c = Sender::send_wait(tx, 30)
+          Array::push(log, 3)
+          Sender::release(tx)
+          0
+        })
+        let hc = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+          let r1 = Receiver::recv_wait(rx)
+          let a = match r1 {
+            Some(v) => v,
+            None => 0 - 1
+          }
+          Array::push(log, 100 + a)
+          let r2 = Receiver::recv_wait(rx)
+          let b = match r2 {
+            Some(v) => v,
+            None => 0 - 1
+          }
+          Array::push(log, 100 + b)
+          let r3 = Receiver::recv_wait(rx)
+          let c = match r3 {
+            Some(v) => v,
+            None => 0 - 1
+          }
+          Array::push(log, 100 + c)
+          a * 100 + b * 10 + c
+        })
+        TaskGroup::pump_all(g)
+        let rp = match TaskHandle::join(hp) {
+          Ok(v) => v,
+          Err(_) => 0 - 1
+        }
+        let rc = match TaskHandle::join(hc) {
+          Ok(v) => v,
+          Err(_) => 0 - 1
+        }
+        rp * 10000 + rc
+      },
+      Err(_) => 0 - 999
+    }
+  })
+  assert(match out {
+    Ok(v) => v == 1230,
+    Err(_) => false
+  })
+  assert(Array::length(log) == 6)
+  assert(Array::get(log, 0) == 1)
+  assert(Array::get(log, 1) == 110)
+  assert(Array::get(log, 2) == 120)
+  assert(Array::get(log, 3) == 2)
+  assert(Array::get(log, 4) == 3)
+  assert(Array::get(log, 5) == 130)
+}
+
+// Rendezvous (capacity 0): the suspended sender deposits first (the
+// linearization point), parks, and is woken after the receiver consumes.
+test "spawn_suspend rendezvous send_wait/recv_wait on a capacity-0 channel" {
+  let out = TaskGroup::run((g) -> {
+    match Channel::bounded(g, 0) {
+      Ok(pair) => {
+        let (tx, rx) = pair
+        let hp = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+          let _a = Sender::send_wait(tx, 7)
+          Sender::release(tx)
+          1
+        })
+        let hc = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+          let r = Receiver::recv_wait(rx)
+          match r {
+            Some(v) => v,
+            None => 0 - 1
+          }
+        })
+        TaskGroup::pump_all(g)
+        let rp = match TaskHandle::join(hp) {
+          Ok(v) => v,
+          Err(_) => 0 - 1
+        }
+        let rc = match TaskHandle::join(hc) {
+          Ok(v) => v,
+          Err(_) => 0 - 1
+        }
+        rp * 10 + rc
+      },
+      Err(_) => 0 - 999
+    }
+  })
+  assert(match out {
+    Ok(v) => v == 17,
     Err(_) => false
   })
 }

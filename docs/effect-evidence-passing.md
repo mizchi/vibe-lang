@@ -2233,6 +2233,20 @@ frontier 付き replay loop の第一級消費者は以下だけ:
    **非 Error handle が frontier 経路に落ちること自体を hard error 化**
    して打ち切る (evidence vector 表現の実装は本 vertical の範囲外)。
 
+### 追記33 (2026-07-25): channel blocking スライスと desugar 内部
+primitive の safe-mut 追加
+
+`@vibex/concurrent` の `Sender::send_wait` / `Receiver::recv_wait`
+(`with { Async }`、deposit → suspend → 自己再帰リトライ) を closure-CPS
+機構の上に実装した (docs/concurrency.md 実装ノート参照)。compiler 側の
+変更は 1 点だけ: `scps_is_safe_mut_builtin` に parser desugar の内部
+primitive **`__set_field`** (`o.f = v` の脱糖先) と **`__index`**
+(`a[i]`) を追加した。suspend-class clone body が struct field を変異する
+(Channel.pend_seq 等) と `__set_field` の ECall として届き、safe list に
+無いため "cannot see through" で reject されていた。両者とも
+checker-verified effect-free / function-typed 引数なしで、追記30 の
+基準そのまま。idp/edp の共有 list に足さない理由も追記30 と同一。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し
