@@ -20,8 +20,16 @@
 // honest if a pass regresses: on any anomaly the INPUT bytes are written
 // through unchanged so a broken optimizer can never corrupt a build.
 
+// #1109-1: `--single-round` runs ONE minify round instead of converging
+// in-process. The optimizer allocates through the bump allocator and never
+// frees, so 16 converge rounds over a 1.4MB module exhaust wasm memory —
+// scripts/minify_wasm.sh loops single-round invocations instead (each run is
+// a fresh instance, so memory resets between rounds). `--keep-exports a,b,c`
+// filters the export section down to the named entries FIRST, so a library
+// build (e.g. the vibec core, where every sibling export roots its own call
+// graph) can be DCE'd down to one entry point's reachable set.
 import @vibe/optimizer {
-  minify_converge
+  filter_exports, minify, minify_converge
 }
 
 fn collect_args() -> Array[String] with { Env } {
@@ -47,7 +55,7 @@ fn user_arg(args: Array[String], index: Int) -> String {
   }
 }
 
-fn run_opt(input_path: String, output_path: String) -> Int with { Fs, Stdout, Stderr } {
+fn run_opt(input_path: String, output_path: String, single_round: Bool, keep_exports: String) -> Int with { Fs, Stdout, Stderr } {
   let input = Fs::read_bytes(input_path)
   let before = Bytes::length(input)
   if before == 0 {
@@ -55,14 +63,23 @@ fn run_opt(input_path: String, output_path: String) -> Int with { Fs, Stdout, St
     1
   }
   else {
-    let minified = minify_converge(input)
+    let filtered = if keep_exports == "" {
+      input
+    } else {
+      filter_exports(input, String::split(keep_exports, ","))
+    }
+    let minified = if single_round {
+      minify(filtered)
+    } else {
+      minify_converge(filtered)
+    }
     let after = Bytes::length(minified)
-    // Anomaly guard: never emit something bigger than the input or an
-    // obviously-truncated module (below the 8-byte wasm header).
-    let out_bytes = if after >= 8 && after <= before {
+    // Anomaly guard: never emit something bigger than the (filtered) input
+    // or an obviously-truncated module (below the 8-byte wasm header).
+    let out_bytes = if after >= 8 && after <= Bytes::length(filtered) {
       minified
     } else {
-      input
+      filtered
     }
     Fs::write_bytes(output_path, out_bytes)
     let written = Bytes::length(out_bytes)
@@ -73,14 +90,34 @@ fn run_opt(input_path: String, output_path: String) -> Int with { Fs, Stdout, St
 
 fn main with { Fs, Env, Process, Stdout, Stderr } {
   let args = collect_args()
-  let input_path = user_arg(args, 0)
-  let output_path = user_arg(args, 1)
+  let mut input_path = ""
+  let mut output_path = ""
+  let mut single_round = false
+  let mut keep_exports = ""
+  let argc = Array::length(args)
+  let mut ai = 0
+  while ai < argc {
+    let a = args[ai]
+    if a == "--single-round" {
+      single_round = true
+    } else if a == "--keep-exports" && ai + 1 < argc {
+      keep_exports = args[ai + 1]
+      ai = ai + 1
+    } else if input_path == "" {
+      input_path = a
+    } else if output_path == "" {
+      output_path = a
+    } else {
+      ()
+    }
+    ai = ai + 1
+  }
   let code = if input_path == "" || output_path == "" {
-    Stderr::write_stream("usage: vibe-opt <input.wasm> <output.wasm>\n")
+    Stderr::write_stream("usage: vibe-opt [--single-round] [--keep-exports a,b,c] <input.wasm> <output.wasm>\n")
     2
   }
   else {
-    run_opt(input_path, output_path)
+    run_opt(input_path, output_path, single_round, keep_exports)
   }
   if code != 0 {
     vibe_process_exit_raw(code)
