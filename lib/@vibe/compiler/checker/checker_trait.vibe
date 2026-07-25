@@ -5,7 +5,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Subst, Type, TypeDef, TypeEnv, env_lookup, find_typedef, impls_overlap_for, subst_apply, trait_defined, type_implements_trait, TypeExpr
+  Subst, Type, TypeDef, TypeEnv, env_lookup, find_typedef, impls_overlap_for, subst_apply, trait_defined, type_implements_trait, type_to_string, TypeExpr
 }
 
 import ./checker_resolve.vibe {
@@ -87,9 +87,30 @@ fn send_ok_all(env: TypeEnv, s: Subst, defs: Array[TypeDef], tys: Array[Type], s
   ok
 }
 
+// Render the coinductive-guard key for a named type INCLUDING its type
+// arguments (#1090 review): keying on the constructor name alone let a
+// recursive occurrence with DIFFERENT arguments (e.g. `Loop[Array[Int]]`
+// inside `Loop[Int]`) be treated as already-proven, skipping the check
+// of the new arguments entirely.
+fn send_seen_key(s: Subst, name: String, targs: Array[Type]) -> String {
+  let mut key = name
+  let mut i = 0
+  while i < Array::length(targs) {
+    key = String::concat(key, String::concat("|", type_to_string(subst_apply(s, Array::get(targs, i)))))
+    i = i + 1
+  }
+  key
+}
+
 fn send_ok_named(env: TypeEnv, s: Subst, defs: Array[TypeDef], name: String, targs: Array[Type], seen: Array[String]) -> Bool {
-  if send_seen_has(seen, name) {
+  let key = send_seen_key(s, name, targs)
+  if send_seen_has(seen, key) {
     true
+  } else if Array::length(seen) >= 32 {
+    // Non-regular recursion (each level instantiating a NEW key, e.g.
+    // W[T] containing W[Array[T]]) never revisits a key — cap the descent
+    // and reject conservatively instead of diverging.
+    false
   } else {
     match find_typedef(defs, name) {
       Some(td) => match td {
@@ -99,7 +120,7 @@ fn send_ok_named(env: TypeEnv, s: Subst, defs: Array[TypeDef], name: String, tar
           } else if Array::length(tparams) != Array::length(targs) {
             false
           } else {
-            let inner = send_seen_with(seen, name)
+            let inner = send_seen_with(seen, key)
             let mut i = 0
             let mut ok = true
             while i < Array::length(fields) {
@@ -119,7 +140,7 @@ fn send_ok_named(env: TypeEnv, s: Subst, defs: Array[TypeDef], name: String, tar
           } else if Array::length(tparams) == 0 {
             // Monomorphic enum: TDEnum payloads are stored as resolved
             // concrete/named types — recurse directly.
-            let inner = send_seen_with(seen, name)
+            let inner = send_seen_with(seen, key)
             let mut vi = 0
             let mut ok = true
             while vi < Array::length(variants) {
@@ -141,7 +162,7 @@ fn send_ok_named(env: TypeEnv, s: Subst, defs: Array[TypeDef], name: String, tar
             // var ids from the constructor's env binding —
             // `CtForAll(param_var_ids, _, CtFn(payloads, _))` — and
             // substitute those ids with targs.
-            let inner = send_seen_with(seen, name)
+            let inner = send_seen_with(seen, key)
             let mut vi = 0
             let mut ok = true
             while vi < Array::length(variants) {
@@ -178,7 +199,7 @@ fn send_ok_named(env: TypeEnv, s: Subst, defs: Array[TypeDef], name: String, tar
           if Array::length(params) != Array::length(targs) {
             false
           } else {
-            send_ok_rec(env, s, defs, subst_type_params(body, params, targs), send_seen_with(seen, name))
+            send_ok_rec(env, s, defs, subst_type_params(body, params, targs), send_seen_with(seen, key))
           }
         },
         TDEffect(_, _) => false
