@@ -2247,6 +2247,65 @@ primitive **`__set_field`** (`o.f = v` の脱糖先) と **`__index`**
 checker-verified effect-free / function-typed 引数なしで、追記30 の
 基準そのまま。idp/edp の共有 list に足さない理由も追記30 と同一。
 
+### 追記34 (2026-07-25): closure-value evidence の設計 — 「型主導・全域」
+での dict-param 化 (追記25 の解決形)
+
+実装前調査 (evidence dict の受け渡し実態 / closure layout 変更の blast
+radius) と実測から確定した設計。**結論: 追記25 が想定した「closure 値
+そのものに evidence を持たせる env slot / ABI 変更」は不要**。closure-CPS
+(追記31 Vertical B) と同じ「規約は checker の row 型で静的に決まる」原理を
+edp に適用すれば、既存の dict-param 機構 (trait dict と同形の先頭 value
+引数) のまま #1070 一般ケースが解ける。
+
+**確定した事実**:
+- evidence は既に「先頭 param + 呼び出し側 prepend」の構造的 ABI
+  (`edp_rewrite_needing_fn` / `edp_prepend_dict_arg` / anonymous ERecord)。
+  closure literal への param 前置も `edp_maybe_migrate_efn` (#1075) として
+  実装済み。
+- #1070 系の 4 制約 (single-use / universal-call-site / no-value-reference /
+  handle-confinement) は全て「同じ closure 値が migrated ABI と未 migration
+  ABI の両方から呼ばれると arity が割れる」ことの回避 proof。従って
+  **migration を proof-directed-partial から type-directed-total に変えれば
+  4 制約は原理ごと消える**: row に E を含む関数型の値は、literal も param
+  も local も named-fn 参照も一律「`__ev_E` を先頭に取る」規約でコンパイル
+  する。同じ row 型 = 同じ arity なので mismatch が構造的に起きない。
+- `effect_local_closure_by_value_hof_escaping` 形は実測で本物の replay
+  実行 (副作用カウンタ probe: handle body 再実行で hits=4、M2 重複あり)。
+  dtpw wrapper inlining は当たっていない (agent の静的追跡は誤り)。
+  移行後は hits=2 (M2 解消) — 値 206 は不変。
+
+**変換規則 (edp の拡張、全て AST レベル)**:
+1. row に E を含む **annotated closure literal** → 無条件で `__ev_E`
+   param 前置 + body 書き換え (既存 edp_maybe_migrate_efn の証明ゲートを
+   型主導に置換)。無注釈 literal は #761 により enclosing row へ帰属する
+   ので、suspend 側 (追記31) と同じ「明示 row 注釈必須」規約。
+2. **row-E typed param/local 経由の呼び出し** `f(a)` → `f(<ev>, a)`。
+   `<ev>` は lexical に決まる: 囲む needing fn の `__ev_E` param、または
+   handle site の dict literal。
+3. **needing fn の値参照** — migrated named fn は既に arity+1 なので、
+   値としてそのまま row-E closure 型位置に流せる (規約が一致するため
+   wrapper 合成は不要)。
+4. **整合ガード (v1)**: row-E closure 値が存在するプログラムでは E の
+   migration が全域で成立しなければ hard error (replay への silent
+   fallback 禁止 — scps の規約整合ガードと同型)。row-E closure 値が
+   存在しないプログラムは従来の proof-directed 動作のまま
+   (`evidence_dict_needing_shadowed_by_local` の negative pin は不変)。
+5. row 変数 (`with { e }`) は据え置き (evidence vector 表現は後続、本文
+   529-549 の決定通り)。
+
+**やらないこと (調査で棄却)**: env slot 方式 (Option B) は creation 時に
+evidence が存在しない (dict は handle site 生成で、closure は site の外で
+作られる) ため dynamic write channel が必要になり、static closure
+`(slot<<2)|2` の物質化・class-7 drop の slot 迂回など ~30 emit site に
+波及する。hidden arg 方式 (Option A) は全 user fn / linked import の
+cross-module ABI を破壊し bootstrap seed と衝突する。型主導 dict-param は
+どちらのコストも払わない。
+
+**着地順**: V1 = 型主導 total 化 + hof_escaping の evidence 移行
+(re-baseline: 値 206 不変、M2 重複解消を新 fixture で pin) + ガード。
+V2 = 一次 replay 消費者ゼロ化の確認後、frontier 経路 (uses_frontier /
+perform counter・memo / eff_reserve) の削除。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し
