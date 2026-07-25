@@ -257,7 +257,7 @@ pick_cli() {
 # Compile $1 (.vibe) → $2 (.wasm) with entry $3, resolving imports from the FS.
 # Returns non-zero on a parse/type/codegen error so callers can report cleanly.
 compile_to() {
-  local src="$1" out="$2" entry="$3" debug="${4:-}" brk="${5:-}"
+  local src="$1" out="$2" entry="$3" debug="${4:-}" brk="${5:-}" keep_names="${6:-}"
   local cli; cli="$(pick_cli)"
   mkdir -p "$(dirname "$out")"
   rm -f "$out" "$out.diag"
@@ -273,7 +273,13 @@ compile_to() {
   local debug_env=""
   [ "$debug" = "1" ] && debug_env="VIBE_DEBUG=1"
   [ "$brk" = "1" ] && debug_env="VIBE_DEBUG_BREAK=1"
-  env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw $debug_env \
+  # Binary-size (#1100): the compiler strips the name section from release
+  # executables by default. Dev-loop commands (`vibe run`/`vibe shell`) pass
+  # keep_names=1 so runtime trap backtraces keep naming user functions (the
+  # funcmap annotator below matches frames by those names).
+  local names_env=""
+  [ "$keep_names" = "1" ] && names_env="VIBE_WASM_NAMES=1"
+  env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw $debug_env $names_env \
     "$RUNNER" "$cli" "$src" "$out" "$entry" >/dev/null 2>"$rerr" || true
   if [ -s "$out" ]; then
     rm -f "$out.diag" "$rerr"
@@ -462,7 +468,7 @@ case "$cmd" in
     # So compile with break instrumentation if either `--break` or `--alloc-site`.
     compile_brk="$brk"
     [ "$allocsite" = "1" ] && compile_brk=1
-    compile_to "$src" "$out" "$entry" "$trace" "$compile_brk" || die "compilation failed: $src"
+    compile_to "$src" "$out" "$entry" "$trace" "$compile_brk" 1 || die "compilation failed: $src"
     # debugger テーマ3 / M2: runtime traps point at the SOURCE LINE. The wasm
     # "name" custom section already makes trap backtrace frames name the user
     # function (e.g. `<unknown>!boom`). The FS compile also wrote a `<out>.funcmap`
@@ -1066,7 +1072,7 @@ case "$cmd" in
         printf '  (\n%s\n  )\n' "$expr"
         printf '}\n'
       } > "$f"
-      if compile_to "$f" "$w" "__repl_main__" 2>"$err1"; then
+      if compile_to "$f" "$w" "__repl_main__" "" "" 1 2>"$err1"; then
         "$RUNNER" "$w" || rc=$?
         [ "$rc" -ne 0 ] && echo "vibe shell: runtime error (exit $rc)" >&2
         return 0
@@ -1079,7 +1085,7 @@ case "$cmd" in
         printf 'export let __repl_main__ = () -> {\n'
         printf '  let _ = (\n%s\n  )\n  ()\n}\n' "$expr"
       } > "$f"
-      if compile_to "$f" "$w" "__repl_main__" 2>/dev/null; then
+      if compile_to "$f" "$w" "__repl_main__" "" "" 1 2>/dev/null; then
         echo "vibe shell: non-Int value; evaluated for effects only (use :type to inspect)" >&2
         "$RUNNER" "$w" || rc=$?
         [ "$rc" -ne 0 ] && echo "vibe shell: runtime error (exit $rc)" >&2

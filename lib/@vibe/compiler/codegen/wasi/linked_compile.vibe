@@ -3845,6 +3845,90 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     }
     emit_element_section_active(out, table_func_indices)
   }
+  // Binary-size: replace the bodies of generated runtime helpers that no
+  // reachable body ever calls with a 1-instruction `unreachable` stub. The
+  // helper index block [num_imported_funcs, func_offset) is emitted
+  // unconditionally (every call site references FIXED indices computed above),
+  // so helpers cannot simply be omitted — but an unreferenced body can shrink
+  // to `unreachable` without moving any index. Reachability is a worklist
+  // byte-scan over final body bytes for `call`(0x10)/`ref.func`(0xd2)
+  // immediates that decode into the helper range, seeded from every
+  // non-helper body (user fns + entry glue + lambdas; the funcref table only
+  // holds user/lambda indices). A stray 0x10 inside some other immediate can
+  // only FALSE-POSITIVE (keeps an unused helper) — never drops a used one,
+  // since every real call's opcode byte is also visited. Skipped for
+  // instrumentation builds so debug tooling sees unmodified bodies.
+  if !coverage && !debug_trace && !debug_break && !rc_shadow {
+    let builtin_used = lc_fresh_bool_array()
+    let mut sbu_i = 0
+    while sbu_i < num_generated {
+      Array::push(builtin_used, false)
+      sbu_i = sbu_i + 1
+    }
+    let scan_queue = lc_fresh_int_array()
+    let mut sbr = num_generated
+    while sbr < Array::length(bodies) {
+      Array::push(scan_queue, sbr)
+      sbr = sbr + 1
+    }
+    let mut sq_i = 0
+    while sq_i < Array::length(scan_queue) {
+      let sb_body = Array::get(bodies, Array::get(scan_queue, sq_i))
+      sq_i = sq_i + 1
+      let sb_len = Bytes::length(sb_body)
+      let mut sb_p = 0
+      while sb_p < sb_len {
+        let sb_op = Bytes::get(sb_body, sb_p)
+        if sb_op == 16 || sb_op == 210 {
+          let mut sb_q = sb_p + 1
+          let mut sb_v = 0
+          let mut sb_shift = 0
+          let mut sb_more = true
+          let mut sb_valid = false
+          while sb_more && sb_q < sb_len && sb_shift < 35 {
+            let sb_byte = Bytes::get(sb_body, sb_q)
+            sb_v = sb_v | ((sb_byte & 127) << sb_shift)
+            sb_q = sb_q + 1
+            if (sb_byte & 128) == 0 {
+              sb_more = false
+              sb_valid = true
+            } else {
+              sb_shift = sb_shift + 7
+            }
+          }
+          if sb_valid && sb_v >= num_imported_funcs && sb_v < func_offset {
+            let sb_pos = sb_v - num_imported_funcs
+            if !Array::get(builtin_used, sb_pos) {
+              Array::set(builtin_used, sb_pos, true)
+              Array::push(scan_queue, sb_pos)
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        sb_p = sb_p + 1
+      }
+    }
+    let mut sb_k = 0
+    while sb_k < num_generated {
+      if !Array::get(builtin_used, sb_k) {
+        let sb_stub = bytebuf_new()
+        bytebuf_push(sb_stub, 0)
+        Array::set(bodies, sb_k, sb_stub)
+        Array::set(meta_i32, sb_k, 0)
+        Array::set(meta_i64, sb_k, 0)
+      } else {
+        ()
+      }
+      sb_k = sb_k + 1
+    }
+  } else {
+    ()
+  }
   let code_content = bytebuf_new()
   bytebuf_push_vec_header(code_content, Array::length(bodies))
   let mut ci = 0

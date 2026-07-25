@@ -39,7 +39,7 @@ import @vibe/compiler/syntax {
 }
 
 import ./cli_support.vibe {
-  check_linked_file
+  check_linked_file, strip_executable_wasm_env
 }
 
 import ./lsp_server.vibe {
@@ -484,7 +484,18 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
           compile_file_fs_mode(input_path, entry_name, "no-dce")
         }
       }
-      Fs::write_bytes(output_path, bytes)
+      // Binary-size (#1100): release executables ship without the name
+      // section / module-linking exports. Instrumented builds (coverage /
+      // trace / break / rc-shadow) are debug artifacts whose tooling reads
+      // both, so they stay untouched; so do `__no_entry__` test/bench builds
+      // (gated inside strip_executable_wasm_env).
+      let fs_instrumented = Env::get("VIBE_COVERAGE") == "1" || Env::get("VIBE_DEBUG_BREAK") == "1" || Env::get("VIBE_DEBUG") == "1" || Env::get("VIBE_RC") == "shadow"
+      let out_bytes = if fs_instrumented {
+        bytes
+      } else {
+        strip_executable_wasm_env(bytes, entry_name)
+      }
+      Fs::write_bytes(output_path, out_bytes)
       // Best-effort `.funcmap` sidecar (entry-file top-level funcs -> line). A
       // failure to build/write it must NOT fail the compile (the wasm is already
       // written), so swallow any Error::Throw here. The discarded result is bound
@@ -634,7 +645,18 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
         compile_source_for_rc_flag(source_cfg, entry_name, rc_flag)
       }
       profile_memory_mark(mark_memory)
-      Fs::write_bytes(output_path, bytes)
+      // Binary-size (#1100): same release strip as the FS-compile lane above.
+      // This single-source lane builds the compiler's own stage wasm
+      // (generations.sh), so the dist CLI sheds its name section and the
+      // 700+ `*_exp_lib__*` module-linking exports here. gc / coverage /
+      // rc-shadow lanes stay untouched (parity and debug tooling).
+      let ss_instrumented = Env::get("VIBE_COVERAGE") == "1" || Env::get("VIBE_BACKEND") == "gc" || rc_flag == "shadow"
+      let ss_out_bytes = if ss_instrumented {
+        bytes
+      } else {
+        strip_executable_wasm_env(bytes, entry_name)
+      }
+      Fs::write_bytes(output_path, ss_out_bytes)
       profile_memory_mark(mark_memory)
       0
     } with Error {

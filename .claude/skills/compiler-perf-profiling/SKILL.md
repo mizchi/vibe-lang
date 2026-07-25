@@ -53,6 +53,11 @@ for fn, us in c.most_common(20):
   `__rt_str_eq` / `__rt_arr_get` / `__rt_rc_drop` など (#799 で命名済み。
   もし `wasm-function[N]` が上位に出たら name section の命名漏れ —
   linked_compile.vibe の gen_sec_names に追記する)。
+- **ADR-0077 以降、release ビルドは name section を既定で strip する**。
+  プロファイル対象の stage2/CLI wasm は **`VIBE_WASM_NAMES=1` を付けて
+  ビルドし直す**こと (例: `VIBE_WASM_NAMES=1 bash scripts/generations.sh
+  build --out-dir /tmp/prof_gen`)。全フレームが `wasm-function[N]` に
+  なったら strip 済み wasm を profiling している。
 - **`(garbage collector)`** = V8 側。wasm linear memory の grow コピーや
   runner JS のアロケーション churn が原因のことが多い。
 - **runner JS の関数** (findClosureEnv 等) が上位に出たら**ハーネス側の異常**を
