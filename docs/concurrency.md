@@ -695,7 +695,7 @@ suspendable task の第一スライスを実装した:
 
 cancel は parked 状態でも観測されるようになった (mid-run cancel 観測の
 第一歩)。fail-fast と adopted task の統合 (parked sibling の自動
-cancel) は次スライス。既知の RC 制限 (#1097): suspend body の継続が関数ローカルを capture し、同一関数に suspend site が複数あると RC lane で trap — capture 対象はモジュール toplevel に置く。
+cancel) は次スライス。#1097 (suspend 継続の local capture × 複数 site の RC trap) は根治済み — match payload を capture する closure literal ごとに payload dup を1 つ追加 (`md_capturing_fn_count`)。suspend_test がローカル capture 形のままregression lock。
 
 ## v0.4.0 に含めないもの
 

@@ -1365,3 +1365,354 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
     ESpread(x) => md_consume_count(x, name)
   }
 }
+
+// #1097: does `name` occur FREE anywhere in `e` (shadow-aware: a rebinding
+// let / param / pattern binder / loop binder hides the outer `name` in its
+// scope)? Used by md_capturing_fn_count to decide whether a closure
+// literal captures a matched payload; transitive occurrences inside inner
+// closures count (the outer literal must capture `name` to supply them).
+fn md_name_free_in(e: Expr, name: String) -> Bool {
+  match e {
+    EIdent(n, _) => n == name,
+    ECall(callee, args, _) => md_name_free_in(callee, name) || md_nfi_any(args, name),
+    ELet(n, v, b, _) => md_name_free_in(v, name) || (n != name && md_name_free_in(b, name)),
+    ELetMut(n, v, b, _) => md_name_free_in(v, name) || (n != name && md_name_free_in(b, name)),
+    ELetRec(n, v, b) => if n == name {
+      false
+    } else {
+      md_name_free_in(v, name) || md_name_free_in(b, name)
+    },
+    ESeq(a, b) => md_name_free_in(a, name) || md_name_free_in(b, name),
+    EIf(c, t, el) => md_name_free_in(c, name) || md_name_free_in(t, name) || md_name_free_in(el, name),
+    EMatch(s, arms) => {
+      let mut hit = md_name_free_in(s, name)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ex) = Array::get(arms, i)
+        if !md_cfc_pat_binds(p, name) && md_name_free_in(ex, name) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EHandle(s, arms) => {
+      let mut hit = md_name_free_in(s, name)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ex) = Array::get(arms, i)
+        if !md_cfc_pat_binds(p, name) && md_name_free_in(ex, name) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EFn(_, _, params, _, _, b) => !md_cfc_params_bind(params, name) && md_name_free_in(b, name),
+    EWhile(c, b) => md_name_free_in(c, name) || md_name_free_in(b, name),
+    EForIn(v1, v2, it, b) => {
+      let bound = v1 == name || (match v2 {
+        Some(v2n) => v2n == name,
+        None => false
+      })
+      md_name_free_in(it, name) || (!bound && md_name_free_in(b, name))
+    },
+    ELoop(pairs, b) => {
+      let mut bound = false
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (n, v) = Array::get(pairs, i)
+        if n == name {
+          bound = true
+        } else {
+          ()
+        }
+        if md_name_free_in(v, name) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit || (!bound && md_name_free_in(b, name))
+    },
+    EBinOp(_, l, r) => md_name_free_in(l, name) || md_name_free_in(r, name),
+    EUnaryOp(_, x) => md_name_free_in(x, name),
+    EAssign(_, v, b) => md_name_free_in(v, name) || md_name_free_in(b, name),
+    EAssignOp(_, _, v, b) => md_name_free_in(v, name) || md_name_free_in(b, name),
+    EReturn(x) => md_name_free_in(x, name),
+    EDot(o, _, _, _) => md_name_free_in(o, name),
+    ELabeledArg(_, _, v) => md_name_free_in(v, name),
+    EBreak(opt) => match opt {
+      Some(x) => md_name_free_in(x, name),
+      None => false
+    },
+    EContinue(args) => md_nfi_any(args, name),
+    ETuple(items) => md_nfi_any(items, name),
+    EArray(items) => md_nfi_any(items, name),
+    ERecord(_, fields, _) => md_nfi_fields(fields, name),
+    EMap(fields) => md_nfi_fields(fields, name),
+    ESpread(x) => md_name_free_in(x, name),
+    _ => false
+  }
+}
+
+fn md_nfi_any(es: Array[Expr], name: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(es) {
+    if md_name_free_in(Array::get(es, i), name) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn md_nfi_fields(fields: Array[(String, Expr)], name: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    if md_name_free_in(v, name) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn md_cfc_pat_binds(p: Pat, name: String) -> Bool {
+  match p {
+    PBind(n) => n == name,
+    PCtor(_, ps) => md_cfc_pats_bind(ps, name),
+    PTuple(ps) => md_cfc_pats_bind(ps, name),
+    POr(a, b) => md_cfc_pat_binds(a, name) || md_cfc_pat_binds(b, name),
+    PStruct(_, fields) => {
+      let mut i = 0
+      let mut hit = false
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        if md_cfc_pat_binds(fp, name) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    _ => false
+  }
+}
+
+fn md_cfc_pats_bind(ps: Array[Pat], name: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(ps) {
+    if md_cfc_pat_binds(Array::get(ps, i), name) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn md_cfc_params_bind(params: Array[(String, Option[TypeExpr])], name: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(params) {
+    let (pn, _) = Array::get(params, i)
+    let ln = String::length(pn)
+    let base = if ln > 0 {
+      let c = String::char_code_at(pn, ln - 1)
+      if c == '~' || c == '?' {
+        pn[0: ln - 1]
+      } else {
+        pn
+      }
+    } else {
+      pn
+    }
+    if base == name {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+// #1097: how many closure LITERALS in `e`'s own scope capture `name`?
+// A matched ctor field is a BORROWED view of the scrutinee (#702/#705);
+// a closure literal capturing it stores the raw pointer into its env
+// WITHOUT owning it (compile_lambda's borrow-capture model), so a
+// capturing closure that ESCAPES the arm (stored into a container,
+// returned, passed on) outlives the scrutinee and its env entry dangles
+// — the #1097 use-after-free (suspend continuations re-captured by the
+// resume wrapper were the reproducer, but the shape is plain vibe).
+// compile_match therefore adds ONE payload dup per capturing literal on
+// top of the per-consume dups, so every env reference is backed by an
+// owned count for the payload block. The extra reference is deliberately
+// never reclaimed (plain captures stay borrow-class in the closure's
+// class-7 drop): a bounded leak per arm execution is strictly safer than
+// the use-after-free, and the owned-captures closure ABI (the same work
+// the closure-CPS ABI needs) replaces this accounting wholesale.
+//
+// Counting rules mirror md_consume_count's shape: sequential children
+// SUM, alternative children (if/match/handle arms) take the MAX (an
+// upper bound on any executed path — over-count leaks, under-count
+// crashes). A literal counts at most ONCE regardless of how many times
+// `name` occurs under it, and NESTED literals under a capturing literal
+// add nothing extra: the inner closure reaches `name` through the outer
+// env, whose lifetime the outer's own +1 already backs.
+export fn md_capturing_fn_count(e: Expr, name: String) -> Int {
+  match e {
+    EFn(_, _, params, _, _, b) => if !md_cfc_params_bind(params, name) && md_name_free_in(b, name) {
+      1
+    } else {
+      0
+    },
+    ECall(callee, args, _) => {
+      let mut acc = md_capturing_fn_count(callee, name)
+      let mut i = 0
+      while i < Array::length(args) {
+        acc = acc + md_capturing_fn_count(Array::get(args, i), name)
+        i = i + 1
+      }
+      acc
+    },
+    ELet(n, v, b, _) => md_capturing_fn_count(v, name) + (if n == name {
+      0
+    } else {
+      md_capturing_fn_count(b, name)
+    }),
+    ELetMut(n, v, b, _) => md_capturing_fn_count(v, name) + (if n == name {
+      0
+    } else {
+      md_capturing_fn_count(b, name)
+    }),
+    ELetRec(n, v, b) => if n == name {
+      0
+    } else {
+      md_capturing_fn_count(v, name) + md_capturing_fn_count(b, name)
+    },
+    ESeq(a, b) => md_capturing_fn_count(a, name) + md_capturing_fn_count(b, name),
+    EIf(c, t, el) => md_capturing_fn_count(c, name) + md_cfc_max(md_capturing_fn_count(t, name), md_capturing_fn_count(el, name)),
+    EMatch(s, arms) => {
+      let mut mx = 0
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ex) = Array::get(arms, i)
+        if md_cfc_pat_binds(p, name) {
+          ()
+        } else {
+          mx = md_cfc_max(mx, md_capturing_fn_count(ex, name))
+        }
+        i = i + 1
+      }
+      md_capturing_fn_count(s, name) + mx
+    },
+    EHandle(s, arms) => {
+      let mut mx = 0
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ex) = Array::get(arms, i)
+        if md_cfc_pat_binds(p, name) {
+          ()
+        } else {
+          mx = md_cfc_max(mx, md_capturing_fn_count(ex, name))
+        }
+        i = i + 1
+      }
+      md_capturing_fn_count(s, name) + mx
+    },
+    EWhile(c, b) => md_capturing_fn_count(c, name) + md_capturing_fn_count(b, name),
+    EForIn(v1, v2, it, b) => {
+      let bound = v1 == name || (match v2 {
+        Some(v2n) => v2n == name,
+        None => false
+      })
+      md_capturing_fn_count(it, name) + (if bound {
+        0
+      } else {
+        md_capturing_fn_count(b, name)
+      })
+    },
+    ELoop(pairs, b) => {
+      let mut bound = false
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (n, v) = Array::get(pairs, i)
+        if n == name {
+          bound = true
+        } else {
+          ()
+        }
+        acc = acc + md_capturing_fn_count(v, name)
+        i = i + 1
+      }
+      acc + (if bound {
+        0
+      } else {
+        md_capturing_fn_count(b, name)
+      })
+    },
+    EBinOp(_, l, r) => md_capturing_fn_count(l, name) + md_capturing_fn_count(r, name),
+    EUnaryOp(_, x) => md_capturing_fn_count(x, name),
+    EAssign(_, v, b) => md_capturing_fn_count(v, name) + md_capturing_fn_count(b, name),
+    EAssignOp(_, _, v, b) => md_capturing_fn_count(v, name) + md_capturing_fn_count(b, name),
+    EReturn(x) => md_capturing_fn_count(x, name),
+    EDot(o, _, _, _) => md_capturing_fn_count(o, name),
+    ELabeledArg(_, _, v) => md_capturing_fn_count(v, name),
+    EBreak(opt) => match opt {
+      Some(x) => md_capturing_fn_count(x, name),
+      None => 0
+    },
+    EContinue(args) => md_cfc_sum(args, name),
+    ETuple(items) => md_cfc_sum(items, name),
+    EArray(items) => md_cfc_sum(items, name),
+    ERecord(_, fields, _) => md_cfc_sum_fields(fields, name),
+    EMap(fields) => md_cfc_sum_fields(fields, name),
+    ESpread(x) => md_capturing_fn_count(x, name),
+    _ => 0
+  }
+}
+
+fn md_cfc_max(a: Int, b: Int) -> Int {
+  if a > b { a } else { b }
+}
+
+fn md_cfc_sum(es: Array[Expr], name: String) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < Array::length(es) {
+    acc = acc + md_capturing_fn_count(Array::get(es, i), name)
+    i = i + 1
+  }
+  acc
+}
+
+fn md_cfc_sum_fields(fields: Array[(String, Expr)], name: String) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    acc = acc + md_capturing_fn_count(v, name)
+    i = i + 1
+  }
+  acc
+}

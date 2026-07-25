@@ -1,0 +1,74 @@
+// #1097: a closure literal in a match arm that CAPTURES the pattern-bound
+// payload (here: the enum-carried continuation closure `k`) used to store
+// a borrowed pointer in its env; once the wrapper escaped (pushed into a
+// global) and the scrutinee died with the enclosing lambda frame, the env
+// entry dangled — with a SECOND site reusing the freed block, calling the
+// stored wrapper trapped (table index out of bounds / unreachable under
+// shadow RC). Fixed by backing each capturing literal with one payload
+// dup (md_capturing_fn_count, compile_match). The heap-closure payload
+// requires `log`: a capture-free continuation compiles to a static
+// closure and never dangles, which is why suspend fixtures with only
+// global arrays never hit this.
+enum Step {
+  SDoneQ(Int);
+  SYldQ(Int, (Int) -> Step)
+}
+
+let conts: Array[(Int) -> Int] = []
+
+let _start = () -> Int {
+  let log: Array[Int] = []
+  let drive0 = (st: Step) -> Int {
+    match st {
+      SDoneQ(v) => v,
+      SYldQ(t, k) => {
+        let w = (rv: Int) -> Int {
+          match k(rv) {
+            SDoneQ(v2) => v2,
+            SYldQ(t2, k2) => -9
+          }
+        }
+        Array::push(conts, w)
+        0 - 1
+      }
+    }
+  }
+  let r1 = drive0({
+    Array::push(log, 1)
+    SYldQ(0, (a: Int) -> Step {
+      Array::push(log, 3)
+      SDoneQ(a + 10)
+    })
+  })
+  let drive1 = (st: Step) -> Int {
+    match st {
+      SDoneQ(v) => v,
+      SYldQ(t, k) => {
+        let w = (rv: Int) -> Int {
+          match k(rv) {
+            SDoneQ(v2) => v2,
+            SYldQ(t2, k2) => -9
+          }
+        }
+        Array::push(conts, w)
+        0 - 2
+      }
+    }
+  }
+  let r2 = drive1(SYldQ(0, (b: Int) -> Step {
+    SDoneQ(b + 20)
+  }))
+  let x1 = (Array::get(conts, 0))(5)
+  let x2 = (Array::get(conts, 1))(6)
+  let mut digits = 0
+  let mut i = 0
+  while i < Array::length(log) {
+    digits = digits * 10 + Array::get(log, i)
+    i = i + 1
+  }
+  (r1 + r2 + x1 + x2) * 1000 + digits
+}
+_start()
+
+__DATA__
+{"last":"38013"}

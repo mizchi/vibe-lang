@@ -6329,4 +6329,32 @@ scps_check_reject "err_effect_resume_store_loop.vibe" "let/seq/tail/branch-tail 
 rm -rf "$scpsdir"
 echo "[compiler-gate] ADR-0076 Phase 3a first-class resume ok"
 
+# 51/51. #1097: a closure literal capturing a MATCH-BOUND payload used to
+#        hold it as an unowned env borrow; when the wrapper escaped and
+#        the scrutinee died with its lambda frame, a second suspend-shaped
+#        site reused the freed block and the stored wrapper trapped.
+#        compile_match now backs each capturing literal with one payload
+#        dup (md_capturing_fn_count). Runs under the RC lane; want 38013
+#        (r's + resumed values + the log digits — silent-corruption pin,
+#        not just no-trap).
+echo "[compiler-gate] 51/51 RC match-payload closure capture (#1097)"
+rc1097dir="_build/_gate_rc_payload_capture"
+rm -rf "$rc1097dir"; mkdir -p "$rc1097dir"
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/rc_match_payload_closure_capture_test.vibe > "$rc1097dir/src.vibe"
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$rc1097dir/src.vibe" "$rc1097dir/src.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$rc1097dir/src.wasm" ]; then
+  echo "[compiler-gate] FAIL: rc_match_payload_closure_capture fixture did not compile" >&2
+  cat "$rc1097dir/src.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rc1097_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$rc1097dir/src.wasm" 2>/dev/null | tail -1)"
+if [ "$rc1097_out" != "38013" ]; then
+  echo "[compiler-gate] FAIL: rc_match_payload_closure_capture got '$rc1097_out' (want 38013) -- #1097 regressed" >&2
+  exit 1
+fi
+rm -rf "$rc1097dir"
+echo "[compiler-gate] RC match-payload closure capture (#1097) ok"
+
 echo "[compiler-gate] ok"

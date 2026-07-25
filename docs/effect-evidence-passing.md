@@ -2018,10 +2018,17 @@ Phase 3a/3b の lowering 上で green。パターンの要点:
   保存される — #1070 の store ケースはこの shape (capturing closure を
   引数渡し→struct field へ保存→後で呼ぶ) では現行 head で正しく動く
   ことを probe で確認済み。
-- RC 会計の未踏ケースを 1 つ発見 (#1097): body 分割継続が関数ローカルを
-  capture し、同一関数に suspend site が 2 つ以上あると RC lane で
-  over-drop trap する (RC=0 は正しい値 / arm 側 capture は無害 /
-  1 site は無害)。回避は capture 対象をモジュール toplevel に置くこと。
+- RC 会計の未踏ケースを 1 つ発見し**修正済み** (#1097): match で
+  pattern-bind した payload (継続 closure) を arm 内の closure literal が
+  capture すると、env は borrow のまま scrutinee が先に死んで dangle
+  していた (2 つ目の site が freed block を再利用した時点で trap;
+  capture-free 継続は static closure なので無害だった)。修正は
+  compile_match の payload dup 数に「capture する literal 1 個につき
+  +1」を加算する `md_capturing_fn_count` (common_analysis)。過剰分は
+  bounded leak (owned-captures closure ABI までの暫定)。fixture
+  `rc_match_payload_closure_capture_test.vibe` + gate 51、
+  suspend_test の interleave はローカル配列 capture に戻して
+  library-level の regression lock とした。
 - eligibility の実用上の穴として `Array::push` 等の mutation builtin が
   body で呼べなかったため、`scps_is_safe_mut_builtin` を追加した。
   idp_pure_builtin_names と別リストにしたのは意図的: 共有リストへの
