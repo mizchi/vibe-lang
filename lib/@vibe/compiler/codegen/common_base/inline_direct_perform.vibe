@@ -3730,6 +3730,24 @@ fn edp_find_rewrite_handles(expr: Expr, ename: String, needing: Array[String]) -
 // gc codegen instead.
 export fn suspend_cps_pass(stmts: Array[Stmt]) -> Array[String] {
   let errs = array_empty_str()
+  // #1102 perf: allocation-free pre-scan. scps_rewrite reconstructs every
+  // node, so it must only run on statements that actually contain a
+  // triggered handle — and when NOTHING triggers (every ordinary program,
+  // including the compiler itself), skip the fact-table construction
+  // below entirely. See scps_expr_has_trigger.
+  let mut any_trigger = false
+  let mut i0 = 0
+  while i0 < Array::length(stmts) {
+    if scps_stmt_has_trigger(Array::get(stmts, i0)) {
+      any_trigger = true
+    } else {
+      ()
+    }
+    i0 = i0 + 1
+  }
+  if !any_trigger {
+    errs
+  } else {
   let effect_defs = edp_collect_effect_defs(stmts)
   let fn_defs = edp_collect_fn_defs(stmts)
   let es_names = array_empty()
@@ -3740,13 +3758,17 @@ export fn suspend_cps_pass(stmts: Array[Stmt]) -> Array[String] {
   let st = (scps_ctr_box(), array_empty_str(), array_empty_str(), array_empty_str(), array_empty_str(), scps_empty_stmts(), errs)
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, i, SLet(exported, is_rec, name, ty, scps_rewrite(expr, ctx, st))),
-      SLetMut(name, ty, expr) => Array::set(stmts, i, SLetMut(name, ty, scps_rewrite(expr, ctx, st))),
-      SExpr(expr) => Array::set(stmts, i, SExpr(scps_rewrite(expr, ctx, st))),
-      STest(tn, expr) => Array::set(stmts, i, STest(tn, scps_rewrite(expr, ctx, st))),
-      SBench(bn, expr) => Array::set(stmts, i, SBench(bn, scps_rewrite(expr, ctx, st))),
-      _ => ()
+    if scps_stmt_has_trigger(Array::get(stmts, i)) {
+      match Array::get(stmts, i) {
+        SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, i, SLet(exported, is_rec, name, ty, scps_rewrite(expr, ctx, st))),
+        SLetMut(name, ty, expr) => Array::set(stmts, i, SLetMut(name, ty, scps_rewrite(expr, ctx, st))),
+        SExpr(expr) => Array::set(stmts, i, SExpr(scps_rewrite(expr, ctx, st))),
+        STest(tn, expr) => Array::set(stmts, i, STest(tn, scps_rewrite(expr, ctx, st))),
+        SBench(bn, expr) => Array::set(stmts, i, SBench(bn, scps_rewrite(expr, ctx, st))),
+        _ => ()
+      }
+    } else {
+      ()
     }
     i = i + 1
   }
@@ -3764,6 +3786,7 @@ export fn suspend_cps_pass(stmts: Array[Stmt]) -> Array[String] {
     j = j + 1
   }
   errs
+  }
 }
 
 // --- pass state accessors. st = (site counter box, injected effect list,
@@ -5045,4 +5068,173 @@ fn scps_is_safe_mut_builtin(nm: String) -> Bool {
     i = i + 1
   }
   found
+}
+
+// --- allocation-free trigger pre-scan (#1102 perf). scps_rewrite
+// reconstructs every node it walks, so running it unconditionally deep-
+// copied the ENTIRE program's top-level bodies on every compile — for a
+// program with no suspend-class handles at all (the compiler itself:
+// ~4k handles, every one a plain `with Error`) that was pure allocation
+// churn, a measurable slice of the selfcompile heap KPI. This walk
+// allocates nothing and answers "does this expression contain ANY handle
+// arm that value-references `resume`?"; the pass skips fact-table
+// construction entirely when no statement triggers, and leaves
+// non-triggering statements' trees fully shared (unreconstructed).
+fn scps_expr_has_trigger(e: Expr) -> Bool {
+  match e {
+    EHandle(b, arms) => {
+      let mut hit = scps_expr_has_trigger(b)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ex) = Array::get(arms, i)
+        if scps_arm_refs_resume_value(ex, scps_pat_binds_resume(p)) || scps_expr_has_trigger(ex) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EFn(_, _, _, _, _, b) => scps_expr_has_trigger(b),
+    ELet(_, v, b, _) => scps_expr_has_trigger(v) || scps_expr_has_trigger(b),
+    ELetMut(_, v, b, _) => scps_expr_has_trigger(v) || scps_expr_has_trigger(b),
+    ELetRec(_, v, b) => scps_expr_has_trigger(v) || scps_expr_has_trigger(b),
+    ESeq(a, b) => scps_expr_has_trigger(a) || scps_expr_has_trigger(b),
+    EIf(c, t, el) => scps_expr_has_trigger(c) || scps_expr_has_trigger(t) || scps_expr_has_trigger(el),
+    EMatch(s, arms) => {
+      let mut hit = scps_expr_has_trigger(s)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ex) = Array::get(arms, i)
+        if scps_expr_has_trigger(ex) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EWhile(c, b) => scps_expr_has_trigger(c) || scps_expr_has_trigger(b),
+    EForIn(_, _, it, b) => scps_expr_has_trigger(it) || scps_expr_has_trigger(b),
+    ELoop(pairs, b) => {
+      let mut hit = scps_expr_has_trigger(b)
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (_, v) = Array::get(pairs, i)
+        if scps_expr_has_trigger(v) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    ECall(callee, args, _) => {
+      let mut hit = scps_expr_has_trigger(callee)
+      let mut i = 0
+      while i < Array::length(args) {
+        if scps_expr_has_trigger(Array::get(args, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EBinOp(_, l, r) => scps_expr_has_trigger(l) || scps_expr_has_trigger(r),
+    EUnaryOp(_, x) => scps_expr_has_trigger(x),
+    EAssign(_, v, b) => scps_expr_has_trigger(v) || scps_expr_has_trigger(b),
+    EAssignOp(_, _, v, b) => scps_expr_has_trigger(v) || scps_expr_has_trigger(b),
+    EReturn(x) => scps_expr_has_trigger(x),
+    EDot(o, _, _, _) => scps_expr_has_trigger(o),
+    ELabeledArg(_, _, v) => scps_expr_has_trigger(v),
+    EBreak(opt) => match opt {
+      Some(x) => scps_expr_has_trigger(x),
+      None => false
+    },
+    EContinue(args) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(args) {
+        if scps_expr_has_trigger(Array::get(args, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    ETuple(items) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(items) {
+        if scps_expr_has_trigger(Array::get(items, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EArray(items) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(items) {
+        if scps_expr_has_trigger(Array::get(items, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    ERecord(_, fields, _) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        if scps_expr_has_trigger(v) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EMap(fields) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        if scps_expr_has_trigger(v) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    ESpread(x) => scps_expr_has_trigger(x),
+    _ => false
+  }
+}
+
+fn scps_stmt_has_trigger(s: Stmt) -> Bool {
+  match s {
+    SLet(_, _, _, _, expr) => scps_expr_has_trigger(expr),
+    SLetMut(_, _, expr) => scps_expr_has_trigger(expr),
+    SExpr(expr) => scps_expr_has_trigger(expr),
+    STest(_, expr) => scps_expr_has_trigger(expr),
+    SBench(_, expr) => scps_expr_has_trigger(expr),
+    _ => false
+  }
 }
