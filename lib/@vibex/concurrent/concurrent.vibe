@@ -89,7 +89,12 @@ export struct TaskGroup {
   mut fail_msg: String;
   // Suspendable (adopted) tasks — driven by pump/wake, not drive_one.
   mut adopted: Array[TaskCell];
-  mut pump_next: Int
+  mut pump_next: Int;
+  // Monotone progress counter (channel blocking slice): bumped on every
+  // channel push/take and every suspendable-task settle. pump_all uses it
+  // to detect a full no-progress sweep of parked tasks (= deadlock trap
+  // instead of livelock, mirroring drive_one's conc_require rule).
+  mut progress: Int
 }
 
 export struct ResCell[T] { mut value: Option[T] }
@@ -148,6 +153,13 @@ export struct Receiver[T] { ch: Channel[T] }
 // traps deterministically at the faulting operation.
 fn conc_require(ok: Bool) -> Unit where { requires: ok } {
   ()
+}
+
+// Bump the group's progress counter (channel push/take, task settle).
+// Kept row-free and trivially eligible so suspend-lowered clone bodies
+// may call it (ADR-0076 追記31: concrete Async-free row callees are safe).
+fn conc_progress(n: TaskGroup) -> Unit {
+  n.progress = n.progress + 1
 }
 
 fn empty_cells() -> Array[TaskCell] {
@@ -254,7 +266,8 @@ export fn TaskGroup::run[T](body: (TaskGroup) -> T with { e }) -> Result[T, Task
     failing: false,
     fail_msg: "",
     adopted: empty_cells(),
-    pump_next: 0
+    pump_next: 0,
+    progress: 0
   }
   let v = body(n)
   // Normal body end starts joining unfinished children.
@@ -431,6 +444,7 @@ export fn Sender::send[T](s: Sender[T], v: T) -> Result[Unit, SendError] {
   if chan_closed(c) { return Err(Closed) }
   if c.capacity > 0 && c.buf.len < c.capacity && c.pend.len == 0 {
     ring_push(c.buf, v)
+    conc_progress(c.group)
     return Ok(())
   }
   if c.waiting_recv > 0 {
@@ -438,6 +452,7 @@ export fn Sender::send[T](s: Sender[T], v: T) -> Result[Unit, SendError] {
     // message: deposit is the rendezvous linearization point.
     ring_push(c.pend, v)
     c.pend_seq = c.pend_seq + 1
+    conc_progress(c.group)
     return Ok(())
   }
   // Block: register the message and drive other tasks until a receiver
@@ -527,12 +542,14 @@ export fn Receiver::recv[T](r: Receiver[T]) -> Option[T] {
         ring_push(c.buf, p)
         c.pend_consumed = c.pend_consumed + 1
       }
+      conc_progress(c.group)
       break Some(v)
     }
     if c.pend.len > 0 {
       // Rendezvous / deposited message: take it directly.
       let v = ring_take(c.pend)
       c.pend_consumed = c.pend_consumed + 1
+      conc_progress(c.group)
       break Some(v)
     }
     if chan_closed(c) { break None }
@@ -630,6 +647,7 @@ export fn TaskHandle::settle[T](h: TaskHandle[T], step: TaskStep[T]) -> Unit {
     SDone(v) => {
       h.result.value = Some(v)
       h.cell.status = 2
+      conc_progress(h.group)
       ()
     },
     SParked => ()
@@ -644,6 +662,7 @@ export fn TaskHandle::settle[T](h: TaskHandle[T], step: TaskStep[T]) -> Unit {
 export fn TaskHandle::park[T](h: TaskHandle[T], k: (Int) -> TaskStep[T]) -> Unit {
   let cell = h.cell
   let rc = h.result
+  let grp = h.group
   cell.status = 5
   cell.cont = Some((rv: Int) -> {
     cell.status = 1
@@ -651,6 +670,7 @@ export fn TaskHandle::park[T](h: TaskHandle[T], k: (Int) -> TaskStep[T]) -> Unit
       SDone(v) => {
         rc.value = Some(v)
         cell.status = 2
+        conc_progress(grp)
         ()
       },
       SParked => ()
@@ -709,7 +729,102 @@ export fn TaskGroup::pump(n: TaskGroup) -> Bool {
 // against each other interleave deterministically (round-robin).
 export fn TaskGroup::pump_all(n: TaskGroup) -> Unit {
   let mut go = true
+  let mut stall = 0
   while go {
+    let before = n.progress
     go = TaskGroup::pump(n)
+    if go {
+      if n.progress == before {
+        stall = stall + 1
+      } else {
+        stall = 0
+      }
+      // A full round-robin sweep of every adopted slot with zero progress
+      // can only repeat itself (the scheduler is deterministic and no wake
+      // can originate outside this loop) — blocked-forever channel waits
+      // land here. Trap like every other deadlock (drive_one's rule)
+      // instead of livelocking.
+      conc_require(stall <= Array::length(n.adopted))
+    } else {
+      ()
+    }
+  }
+}
+
+//# Blocking channel ops (suspend-based)
+
+// Channel blocking for SUSPENDABLE tasks (ADR-0076 追記31 closure-CPS の
+// 続きスライス): `with { Async }` の row を持つ send/recv。バッファに
+// 空きがない / メッセージがない間は `perform Async::Suspend(0)` で park
+// し、pump/pump_all のラウンドロビンで再開されるたびに再検査する
+// (suspend lowering は loop spine 非対応なので、リトライは自己再帰 —
+// 3b の再帰 clone がそのまま面倒を見る)。既存の stack-driving
+// `Sender::send` / `Receiver::recv` (drive_one でスタック上の他タスクを
+// 走らせる) とは独立で、どちらも同じ linearization (buf / pend /
+// pend_seq / pend_consumed) を共有する。
+
+// Send for suspendable tasks. Buffered fast path; otherwise the message
+// is DEPOSITED into `pend` first (the linearization point — rendezvous
+// receivers and buffer promotion consume from there) and the task
+// suspends until its own seq is consumed (FIFO).
+export fn Sender::send_wait[T](s: Sender[T], v: T) -> Result[Unit, SendError] with { Async } {
+  let c = s.ch
+  if chan_closed(c) {
+    Err(Closed)
+  } else if c.capacity > 0 && c.buf.len < c.capacity && c.pend.len == 0 {
+    ring_push(c.buf, v)
+    conc_progress(c.group)
+    Ok(())
+  } else {
+    ring_push(c.pend, v)
+    let myseq = c.pend_seq
+    c.pend_seq = c.pend_seq + 1
+    conc_send_wait_consumed(c, myseq)
+  }
+}
+
+// Suspend until the deposited message (seq `myseq`) is consumed. A close
+// while parked surfaces as Err(Closed), matching Sender::send's blocked
+// branch.
+fn conc_send_wait_consumed[T](c: Channel[T], myseq: Int) -> Result[Unit, SendError] with { Async } {
+  if c.pend_consumed > myseq {
+    Ok(())
+  } else if chan_closed(c) {
+    Err(Closed)
+  } else {
+    let _w = perform Async::Suspend(0)
+    conc_send_wait_consumed(c, myseq)
+  }
+}
+
+// Receive for suspendable tasks: Some(message) in linearization order
+// (buffer first, then deposited/rendezvous messages), None once closed
+// and drained; suspends while open and empty. Does NOT touch
+// `waiting_recv` — that flag belongs to the stack-driving rendezvous
+// protocol (a suspended receiver is not "committed below the sender on
+// the stack"; deposits still reach it through `pend`).
+export fn Receiver::recv_wait[T](r: Receiver[T]) -> Option[T] with { Async } {
+  let c = r.ch
+  if c.buf.len > 0 {
+    let v = ring_take(c.buf)
+    if c.pend.len > 0 && c.capacity > 0 {
+      let p = ring_take(c.pend)
+      ring_push(c.buf, p)
+      c.pend_consumed = c.pend_consumed + 1
+    } else {
+      ()
+    }
+    conc_progress(c.group)
+    Some(v)
+  } else if c.pend.len > 0 {
+    let v = ring_take(c.pend)
+    c.pend_consumed = c.pend_consumed + 1
+    conc_progress(c.group)
+    Some(v)
+  } else if chan_closed(c) {
+    None
+  } else {
+    let _w = perform Async::Suspend(0)
+    Receiver::recv_wait(r)
   }
 }
