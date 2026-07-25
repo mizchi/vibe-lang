@@ -819,12 +819,36 @@ fn lsp_symbols_for_doc_safe(source: String) -> Array[(String, Int, Int, Int)] {
   }
 }
 
+// Local ASCII fold instead of String::to_lower: to_lower is a PRELUDE
+// function, and while it resolves fine in ordinary user programs (and in
+// the FS-compiled `vibe lsp` binary), the compiler's own MERGED unit
+// (compiler_sources_bundle -- what the s5_entry/s5_wasm tests compile
+// through the library API) does not include the prelude, so a bare call
+// dies there with "undefined variable (local): String::to_lower @call".
+// Symbol names are ASCII identifiers, so an ASCII fold is also correct.
+fn lsp_ascii_lower(s: String) -> String {
+  let len = String::length(s)
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < len {
+    let code = String::char_code_at(s, i)
+    let lower = if code >= 65 && code <= 90 {
+      code + 32
+    } else {
+      code
+    }
+    StringBuilder::push(sb, String::from_char_code(lower))
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
 fn lsp_query_matches(name: String, query_lower: String) -> Bool {
-  String::length(query_lower) == 0 || String::contains(String::to_lower(name), query_lower)
+  String::length(query_lower) == 0 || String::contains(lsp_ascii_lower(name), query_lower)
 }
 
 fn lsp_handle_workspace_symbol(query: String, docs: Map[String, String]) -> Json {
-  let query_lower = String::to_lower(query)
+  let query_lower = lsp_ascii_lower(query)
   let out = array_empty()
   let uris = Map::keys(docs)
   let mut ui = 0
