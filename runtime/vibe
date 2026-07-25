@@ -605,7 +605,28 @@ case "$cmd" in
         done
       fi
       [ -n "$opt_wasm" ] && [ -f "$opt_wasm" ] || die "--minify: vibe-opt.wasm not found; build it with scripts/build_vibe_opt.sh or set VIBE_OPT_WASM"
-      "$RUNNER" "$opt_wasm" "$out" "$out" || die "--minify failed for $out"
+      # Converge one round per invocation (#1109): the optimizer allocates via
+      # the bump allocator and never frees, so in-process converge exhausts
+      # guest memory on large modules; a fresh instance per round resets it.
+      # Feature-detect --single-round in the artifact (same grep trick as the
+      # VIBE_CHECK_ONLY probe above) — an older vibe-opt.wasm would read the
+      # flag as its input path, so fall back to one in-process converge there.
+      if grep -aq -- "--single-round" "$opt_wasm" 2>/dev/null; then
+        mtmp="$(mktemp -t vibe-minify-XXXXXX.wasm)"
+        mprev=$(wc -c <"$out")
+        mrounds=0
+        while [ "$mrounds" -lt "${VIBE_MINIFY_MAX_ROUNDS:-16}" ]; do
+          "$RUNNER" "$opt_wasm" --single-round "$out" "$mtmp" >/dev/null || { rm -f "$mtmp"; die "--minify failed for $out"; }
+          msize=$(wc -c <"$mtmp")
+          mv "$mtmp" "$out"
+          mrounds=$((mrounds + 1))
+          [ "$msize" -lt "$mprev" ] || break
+          mprev="$msize"
+        done
+        rm -f "$mtmp"
+      else
+        "$RUNNER" "$opt_wasm" "$out" "$out" || die "--minify failed for $out"
+      fi
     fi
     echo "compiled $src -> $out"
     ;;
