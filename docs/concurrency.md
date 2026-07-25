@@ -687,7 +687,18 @@ suspendable task の第一スライスを実装した:
   追記31 Vertical B) の着地で handle site が library 内部へ移り、caller
   は `() -> T with { Async } { ... }` の plain closure を渡すだけに
   なった (suspend する literal には明示 row 注釈が必要、#761)。
-  channel API の mid-body blocking は同じ機構で続けられる (次スライス)。
+- **channel の mid-body blocking も着地**: `Sender::send_wait` /
+  `Receiver::recv_wait` (`with { Async }`)。バッファ満杯の send は
+  deposit → suspend → 消費 (pend_consumed) を自己再帰で待ち、空の recv
+  は suspend → 再検査 (loop spine 非対応のためリトライは再帰 — 3b の
+  再帰 clone がそのまま処理する)。capacity-0 rendezvous も同経路。
+  producer が capacity-1 を溢れさせ consumer が drain する相互 blocking
+  (run-to-completion では不可能と header が明記していた形) が
+  suspend_test.vibe で conformance lock 済み。`TaskGroup.progress`
+  カウンタ + `pump_all` の全周無進捗検出で、詰まった channel 待ちは
+  livelock ではなく deadlock trap になる (drive_one の規則と同型)。
+  stack-driving の `Sender::send` / `Receiver::recv` は無変更で、両者は
+  同じ linearization (buf/pend/pend_seq/pend_consumed) を共有する。
 - conformance lock (`suspend_test.vibe`): **2 task の mid-body 相互
   interleave** (run-to-completion では不可能だった形 — log が厳密交互)、
   wake 値の suspension point への配達、parked task の cancel (継続 drop
