@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/entry/source_compile/wasi_only {
-  comp_emit_component_wasm, comp_emit_component_wasm_async, comp_emit_component_wasm_async_trampolined, comp_emit_component_wasm_async_trampolined_p1, comp_emit_component_wasm_string_handler, comp_emit_component_wasm_with_lift, comp_emit_component_wasm_with_string_lift, comp_generate_string_trampoline, comp_generate_string_trampoline_packed
+  comp_emit_component_wasm, comp_emit_component_wasm_async, comp_emit_component_wasm_async_trampolined, comp_emit_component_wasm_async_trampolined_p1, comp_emit_component_wasm_string_handler, comp_emit_component_wasm_string_handler_stubbed, comp_emit_component_wasm_with_lift, comp_emit_component_wasm_with_string_lift, comp_generate_string_trampoline, comp_generate_string_trampoline_packed
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -527,4 +527,106 @@ test "component #537: string handler rejects a wrong signature" {
     Throw(_) => true
   }
   assert(rejected)
+}
+
+// #1107 Phase 5 (vibec): a library core whose SIBLING exports reference host
+// functions carries `vibe.*` imports even though the lifted entry never
+// reaches them. Same shape as build_test_core_packed_handler, plus an import
+// section with vibe.env-get / vibe.fs_read_file ((i64) -> i64). The handler
+// becomes core func index 2 (after the two imports).
+fn build_test_core_packed_handler_with_vibe_imports() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let type_content = bytebuf_new()
+  bytebuf_push_vec_header(type_content, 2)
+  emit_func_type_raw(type_content, [
+    126,
+    126,
+    126,
+    126,
+    126
+  ], [
+    126
+  ])
+  emit_func_type_raw(type_content, [
+    126
+  ], [
+    126
+  ])
+  bytebuf_push_section(out, 1, type_content)
+  let import_content = bytebuf_new()
+  bytebuf_push_vec_header(import_content, 2)
+  emit_name(import_content, "vibe")
+  emit_name(import_content, "env-get")
+  bytebuf_push(import_content, 0)
+  leb128_encode_u32(import_content, 1)
+  emit_name(import_content, "vibe")
+  emit_name(import_content, "fs_read_file")
+  bytebuf_push(import_content, 0)
+  leb128_encode_u32(import_content, 1)
+  bytebuf_push_section(out, 2, import_content)
+  emit_function_section(out, [
+    0
+  ])
+  emit_memory_section(out, 1)
+  let global_content = bytebuf_new()
+  leb128_encode_u32(global_content, 1)
+  bytebuf_push(global_content, 127)
+  bytebuf_push(global_content, 1)
+  bytebuf_push(global_content, 65)
+  bytebuf_push(global_content, 8)
+  bytebuf_push(global_content, 11)
+  bytebuf_push_section(out, 6, global_content)
+  let export_content = bytebuf_new()
+  bytebuf_push_vec_header(export_content, 3)
+  emit_name(export_content, "handler")
+  bytebuf_push(export_content, 0)
+  leb128_encode_u32(export_content, 2)
+  emit_name(export_content, "memory")
+  bytebuf_push(export_content, 2)
+  leb128_encode_u32(export_content, 0)
+  emit_name(export_content, "__heap_ptr")
+  bytebuf_push(export_content, 3)
+  leb128_encode_u32(export_content, 0)
+  bytebuf_push_section(out, 7, export_content)
+  let h_body = bytebuf_new()
+  emit_local_get(h_body, 0)
+  emit_code_section(out, [
+    h_body
+  ])
+  bytebuf_to_bytes(out)
+}
+
+test "component #1107: strict string handler rejects vibe.* imports" {
+  let core = build_test_core_packed_handler_with_vibe_imports()
+  let rejected = handle {
+    let _ = comp_emit_component_wasm_string_handler(core, "handler", "handler", [
+      "method",
+      "url",
+      "headers",
+      "body"
+    ])
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(rejected)
+}
+
+test "component #1107: stubbed string handler hosts vibe.* imports" {
+  let core = build_test_core_packed_handler_with_vibe_imports()
+  let comp = comp_emit_component_wasm_string_handler_stubbed(core, "handler", "handler", [
+    "method",
+    "url",
+    "headers",
+    "body"
+  ])
+  assert(Bytes::get(comp, 0) == 0)
+  assert(Bytes::get(comp, 4) == 13)
+  // the stub module must export a same-name stub for every vibe.* import
+  // (plus the usual fd_write), and the component must still lift the handler.
+  assert(component_bytes_contains(comp, "env-get") == 1)
+  assert(component_bytes_contains(comp, "fs_read_file") == 1)
+  assert(component_bytes_contains(comp, "fd_write") == 1)
+  assert(component_bytes_contains(comp, "handler") == 1)
 }
