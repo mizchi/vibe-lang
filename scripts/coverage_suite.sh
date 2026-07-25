@@ -177,7 +177,15 @@ mkdir -p "$OUT_DIR"
 run_log="$OUT_DIR/vibe_test.log"
 # vibe_test.sh exits non-zero when any entry fails; the pass-rate threshold
 # below decides gate success, so tolerate the exit code here.
-VIBE_TEST_CLI_WASM="$ROOT/$cli" bash scripts/vibe_test.sh --coverage "${entries[@]}" \
+# $cli may be absolute (CI passes VIBE_SUITE_CLI_WASM that way) — only
+# rebase relative paths onto $ROOT. Blindly prefixing doubled the path
+# ("$ROOT//home/runner/…") and instantly failed all 467 compiles on the
+# first standalone coverage-suite run (2026-07-25).
+case "$cli" in
+  /*) cli_abs="$cli" ;;
+  *) cli_abs="$ROOT/$cli" ;;
+esac
+VIBE_TEST_CLI_WASM="$cli_abs" bash scripts/vibe_test.sh --coverage "${entries[@]}" \
   | tee "$run_log" || true
 
 python3 - "$run_log" "$COV_DIR" "$REPORT" "$MIN_POINT" "$MIN_LINE" "$MIN_BRANCH" "$MIN_FN_HIT" "$MIN_BRANCH_HIT" <<'PY'
