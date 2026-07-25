@@ -5937,6 +5937,42 @@ fi
 rm -rf "$g1087dir"
 echo "[compiler-gate] with-Error non-tail throw abort ok (#1087)"
 
+# 44e. #1092: `vibe diagnostics` on a file whose FIRST error sits past a
+#      multi-KB prefix must report it, not blow the wasm call stack. The
+#      prelude's String::index_of (and its sibling scanners) used to recurse
+#      once per scanned character via a local `let rec` closure -- a
+#      call_indirect self-call the top-level-only TCO pass never loop-ifies
+#      -- so the located-error path (which searches the whole source text)
+#      crashed with "RangeError: Maximum call stack size exceeded" at a
+#      ~4-5KB error offset (lsp_server.vibe was undiagnosable). The prelude
+#      scanners are iterative now; this pins that.
+echo "[compiler-gate] 44e/44 diagnostics on multi-KB source with a late error (#1092)"
+g1092dir="_build/_gate_1092"
+rm -rf "$g1092dir"; mkdir -p "$g1092dir"
+{
+  i=0
+  while [ $i -lt 300 ]; do
+    printf 'fn f%d(x: Int) -> Int {\n  x + %d\n}\n\n' "$i" "$i"
+    i=$((i + 1))
+  done
+  printf 'fn g(n: Int) -> Int {\n  unknown_name_xyz(n)\n}\n'
+} > "$g1092dir/src.vibe"
+rm -f "$g1092dir/diag.txt"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$g1092dir/src.vibe" "$g1092dir/diag.txt" >/dev/null 2>&1 || true
+if [ ! -f "$g1092dir/diag.txt" ]; then
+  echo "[compiler-gate] FAIL: diagnostics crashed on a ~11KB source with a late error (#1092 regressed -- check the prelude string scanners for reintroduced per-char recursion)" >&2
+  exit 1
+fi
+if ! grep -q "unknown name: unknown_name_xyz" "$g1092dir/diag.txt"; then
+  echo "[compiler-gate] FAIL: diagnostics on the late-error source missed the error (#1092)" >&2
+  cat "$g1092dir/diag.txt" >&2 || true
+  exit 1
+fi
+rm -rf "$g1092dir"
+echo "[compiler-gate] diagnostics on multi-KB source ok (#1092)"
+
 echo "[compiler-gate] 45/45 missing index.vpkg scan (#897 Phase 4)"
 vpkgdir="_build/_gate_vpkg_scan"
 rm -rf "$vpkgdir"; mkdir -p "$vpkgdir"
