@@ -71,11 +71,26 @@ cd "$ROOT"
 # above, not a coverage regression. MIN_POINT lowered just enough to
 # accommodate with a small margin; MIN_FN_HIT is unaffected and still
 # cleared by ~3x (34,710 vs 12,000).
-MIN_POINT="${VIBE_SUITE_MIN_POINT_RATE:-20}"
+#
+# Rebaselined again 2026-07-25: the run-up to 0.4.0 roughly doubled the
+# corpus again (224 -> 467 allowlisted files) and landed several large
+# subsystems in the compiler tree that every compiler test's merged program
+# now pulls into its denominator (#1086 checked-Error row + entry boundary,
+# #1090 threads/@vibex/concurrent + structural Send, #1091 LSP server
+# completion/signatureHelp/workspaceSymbol, #1093/#1094 follow-ups):
+# functions 45,324/322,132 (14.07%), branches 122,370/1,928,107 (6.35%) on
+# main -- absolute hit counts at all-time highs (fn 34,710 -> 45,324,
+# branch ~99k -> 122,370) while the rates diluted below the old 20%/7%
+# floors, failing every main push since 2026-07-23. Same dilution shape as
+# the #801/#847 notes above, not a coverage regression. Rate mins lowered
+# just under current; the ABSOLUTE mins (the real ratchet) are RAISED to
+# just under current instead (12,000 -> 42,000 fn, 29,000 -> 113,000
+# branch), which protects strictly more coverage than the old floors did.
+MIN_POINT="${VIBE_SUITE_MIN_POINT_RATE:-13}"
 MIN_LINE="${VIBE_SUITE_MIN_LINE_RATE:-97}"
-MIN_BRANCH="${VIBE_SUITE_MIN_BRANCH_RATE:-7}"
-MIN_FN_HIT="${VIBE_SUITE_MIN_FN_HIT:-12000}"
-MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-29000}"
+MIN_BRANCH="${VIBE_SUITE_MIN_BRANCH_RATE:-6}"
+MIN_FN_HIT="${VIBE_SUITE_MIN_FN_HIT:-42000}"
+MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-113000}"
 
 ALLOWLIST="scripts/unit_test_allowlist.txt"
 OUT_DIR="_build/coverage/selfhost-suite"

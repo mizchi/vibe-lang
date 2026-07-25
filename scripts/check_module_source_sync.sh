@@ -63,12 +63,45 @@ if [ ! -s "$TMP_MODULE_SOURCE" ]; then
   exit 1
 fi
 
-if cmp -s "$EXPECTED" "$TMP_MODULE_SOURCE"; then
-  echo "selfhost module source sync: ok"
-  exit 0
+status=0
+if ! cmp -s "$EXPECTED" "$TMP_MODULE_SOURCE"; then
+  echo "selfhost module source sync: drift detected; regenerate $EXPECTED" >&2
+  echo "  (VIBE_REGEN_MODULE_SOURCE=1 VIBE_ADAPTER_MODULE_SOURCE_OUT=$EXPECTED bash scripts/generate_bundle.sh)" >&2
+  diff -u "$EXPECTED" "$TMP_MODULE_SOURCE" >&2 || true
+  status=1
 fi
 
-echo "selfhost module source sync: drift detected; regenerate $EXPECTED" >&2
-echo "  (VIBE_REGEN_MODULE_SOURCE=1 VIBE_ADAPTER_MODULE_SOURCE_OUT=$EXPECTED bash scripts/generate_bundle.sh)" >&2
-diff -u "$EXPECTED" "$TMP_MODULE_SOURCE" >&2 || true
-exit 1
+# VIBE_CHECK_BUNDLES_TOO=1 (CI wall-time, 2026-07): the generate_bundle.sh run
+# above already produced all three bundles as a side effect of regenerating
+# the module source, so comparing them here makes a separate
+# check_bundle_sync.sh invocation (a second full ~25s generate_bundle.sh run)
+# redundant for callers that want both checks — compiler_gate.sh passes this
+# flag and drops its standalone bundle-sync step. check_bundle_sync.sh remains
+# for standalone use (pkf run check-bundle-sync).
+if [ "${VIBE_CHECK_BUNDLES_TOO:-0}" = "1" ]; then
+  check_bundle_pair() {
+    local expected_path="$1" generated_path="$2"
+    if [ ! -f "$expected_path" ]; then
+      echo "selfhost bundle sync: expected bundle not found: $expected_path" >&2
+      status=1
+      return 0
+    fi
+    if ! cmp -s "$expected_path" "$generated_path"; then
+      echo "selfhost bundle sync: drift detected; regenerate $expected_path" >&2
+      diff -u "$expected_path" "$generated_path" >&2 || true
+      status=1
+    fi
+    return 0
+  }
+  check_bundle_pair "$COMPILER_DIR/cli_adapter_bundle.vibe" "$TMP_ROOT/cli_adapter_bundle.vibe"
+  check_bundle_pair "$COMPILER_DIR/selfbuild_runtime_entry_bundle.vibe" "$TMP_ROOT/selfbuild_runtime_entry_bundle.vibe"
+  check_bundle_pair "$COMPILER_DIR/compiler_sources_bundle.vibe" "$TMP_ROOT/sources_bundle.vibe"
+  if [ "$status" -eq 0 ]; then
+    echo "selfhost bundle sync: ok"
+  fi
+fi
+
+if [ "$status" -eq 0 ]; then
+  echo "selfhost module source sync: ok"
+fi
+exit "$status"

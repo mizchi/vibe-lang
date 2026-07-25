@@ -177,7 +177,62 @@ fi
 
 # --- default: run the allowlist, fail on any regression -----------------------
 [ -f "$ALLOWLIST" ] || { echo "[unit-test-runner] FAIL: allowlist not found: $ALLOWLIST" >&2; exit 1; }
-start_http_echo_server_if_needed "$ALLOWLIST"
+
+# --- shard selection (CI wall-time, 2026-07) -----------------------------------
+# VIBE_UNIT_TEST_SHARD="i/N" (0-based) runs only the i-th of N weight-balanced
+# partitions, so CI can fan the battery across parallel matrix jobs. Per-file
+# cost is extremely skewed (a dozen 30-80s compiles next to hundreds of <1s
+# ones), so plain round-robin would leave one shard 3-4x slower than the rest;
+# instead entries are LPT-assigned (heaviest first onto the least-loaded
+# shard) using the recorded weights in scripts/unit_test_weights.tsv
+# (total ms per file; regenerate procedure in that file's header). Files
+# missing from the weights table get a median-ish default so new tests don't
+# unbalance anything. The assignment is deterministic for a fixed
+# (allowlist, weights, N): the union of all N shards is exactly the full
+# battery and shards are disjoint.
+WEIGHTS="${VIBE_UNIT_TEST_WEIGHTS:-$ROOT_DIR/scripts/unit_test_weights.tsv}"
+effective_entries="$(mktemp -t vibe-unit-entries-XXXXXX)"
+grep -vE '^[[:space:]]*#' "$ALLOWLIST" | sed '/^[[:space:]]*$/d' > "$effective_entries"
+if [ -n "${VIBE_UNIT_TEST_SHARD:-}" ]; then
+  case "$VIBE_UNIT_TEST_SHARD" in
+    */*) : ;;
+    *) echo "[unit-test-runner] FAIL: VIBE_UNIT_TEST_SHARD must be i/N (e.g. 0/3)" >&2; exit 2 ;;
+  esac
+  shard_i="${VIBE_UNIT_TEST_SHARD%%/*}"
+  shard_n="${VIBE_UNIT_TEST_SHARD##*/}"
+  if ! [ "$shard_i" -ge 0 ] 2>/dev/null || ! [ "$shard_n" -ge 1 ] 2>/dev/null || [ "$shard_i" -ge "$shard_n" ]; then
+    echo "[unit-test-runner] FAIL: bad shard spec: $VIBE_UNIT_TEST_SHARD" >&2; exit 2
+  fi
+  sharded="$(mktemp -t vibe-unit-shard-XXXXXX)"
+  awk -F'\t' -v i="$shard_i" -v n="$shard_n" -v weights="$WEIGHTS" '
+    BEGIN {
+      while ((getline line < weights) > 0) {
+        if (line ~ /^[[:space:]]*(#|$)/) continue
+        split(line, a, "\t")
+        w[a[1]] = a[2] + 0
+      }
+      close(weights)
+    }
+    { files[NR] = $0; wt[NR] = ($0 in w) ? w[$0] : 1500 }
+    END {
+      # LPT: sort by weight desc (stable by original order), greedy-assign.
+      for (k = 1; k <= NR; k++) order[k] = k
+      for (a1 = 1; a1 <= NR; a1++)
+        for (b1 = a1 + 1; b1 <= NR; b1++)
+          if (wt[order[b1]] > wt[order[a1]]) { t = order[a1]; order[a1] = order[b1]; order[b1] = t }
+      for (s = 0; s < n; s++) load[s] = 0
+      for (k = 1; k <= NR; k++) {
+        best = 0
+        for (s = 1; s < n; s++) if (load[s] < load[best]) best = s
+        load[best] += wt[order[k]]
+        if (best == i) print files[order[k]]
+      }
+    }' "$effective_entries" > "$sharded"
+  mv "$sharded" "$effective_entries"
+  echo "[unit-test-runner] shard $VIBE_UNIT_TEST_SHARD: $(wc -l < "$effective_entries") of $(grep -cvE '^[[:space:]]*(#|$)' "$ALLOWLIST") allowlisted files"
+fi
+
+start_http_echo_server_if_needed "$effective_entries"
 # #769: some allowlisted tests shell out to the standalone `wasmtime` CLI
 # (wasm_emit_test / codegen_heap_e2e_test run their compiled samples through
 # it). CI installs wasmtime (ci.yml), so they are covered there; sandboxes
@@ -214,7 +269,7 @@ if [ "$JOBS" -le 1 ]; then
     else
       echo "FAIL: $f -- ${LAST_DIAG:-}" >&2; fails=$((fails+1))
     fi
-  done < "$ALLOWLIST"
+  done < "$effective_entries"
 else
   echo "[unit-test-runner] running with $JOBS parallel jobs (VIBE_UNIT_TEST_JOBS)"
   results_dir="$(mktemp -d -t vibe-unit-results-XXXXXX)"
@@ -232,6 +287,38 @@ else
       : > "$results_dir/$key.skip"
       return 0
     fi
+    # Tests that touch persistent-cache state (_build/vibe_*) cannot share
+    # the ambient cache with concurrent workers -- the cache-file counts /
+    # contents they assert on shift underneath them (persistent_cache_test
+    # flaked exactly this way on the first parallel run). They used to run in
+    # a sequential tail after the fan-out, but that tail includes the 30-50s
+    # cache_probe_* bench compiles and serialized minutes of CI wall time.
+    # Instead give each such test a PRIVATE cache root via the
+    # VIBE_BUILD_CACHE_DIR override (#849, cache/cache_underlying.vibe) --
+    # both the outer stage2 compile of the file and the compiled test's own
+    # inner compiles inherit it, so the state they assert on is exclusively
+    # theirs and they can join the parallel fan-out. (A handful of tests
+    # that assert on the DEFAULT cache-root semantics themselves cannot run
+    # under the override -- they stay in a small sequential tail, see
+    # strict_cache_tail below.)
+    # The private root must live under the repo root: the compiled test runs
+    # with VIBE_PREOPEN_DIR=$ROOT_DIR as its only WASI preopen, so a /tmp
+    # cache dir would be unreachable from inside the module.
+    local iso_cache=""
+    if [ "${UNIT_WORKER_NO_ISOLATION:-0}" != "1" ]; then
+      case "$f" in
+        *[Cc]ache*)
+          mkdir -p "$ROOT_DIR/_build"
+          iso_cache="$(mktemp -d "$ROOT_DIR/_build/vibe_unit_isocache.XXXXXX")"
+          export VIBE_BUILD_CACHE_DIR="$iso_cache"
+          ;;
+      esac
+    fi
+    # VIBE_UNIT_TEST_TIME_REPORT=<dir>: record per-file wall ms (compile+run),
+    # one file per test to stay atomic under -P. `cat <dir>/* | sort` after a
+    # full unsharded run regenerates scripts/unit_test_weights.tsv.
+    local t0=0
+    [ -n "${VIBE_UNIT_TEST_TIME_REPORT:-}" ] && t0="$(date +%s%N)"
     if run_one "$f"; then
       echo "ok:   $f"
       : > "$results_dir/$key.ok"
@@ -239,20 +326,32 @@ else
       echo "FAIL: $f -- ${LAST_DIAG:-}" >&2
       printf '%s -- %s\n' "$f" "${LAST_DIAG:-}" > "$results_dir/$key.fail"
     fi
+    if [ -n "${VIBE_UNIT_TEST_TIME_REPORT:-}" ]; then
+      mkdir -p "$VIBE_UNIT_TEST_TIME_REPORT"
+      printf '%s\t%s\n' "$f" "$(( ($(date +%s%N) - t0) / 1000000 ))" \
+        > "$VIBE_UNIT_TEST_TIME_REPORT/$key.tsv"
+    fi
+    if [ -n "$iso_cache" ]; then
+      unset VIBE_BUILD_CACHE_DIR
+      rm -rf "$iso_cache"
+    fi
     return 0
   }
   export -f unit_worker run_one
-  # Tests that INSPECT the shared persistent-cache state (_build/vibe_*)
-  # cannot run while other workers' compiles are writing it -- the cache-file
-  # counts/contents they assert on shift underneath them (persistent_cache_test
-  # flaked exactly this way on the first parallel run). Anything with "cache"
-  # in its path runs in a sequential tail after the fan-out instead.
-  all_entries="$(grep -vE '^[[:space:]]*#' "$ALLOWLIST" | sed '/^[[:space:]]*$/d')"
-  printf '%s\n' "$all_entries" | grep -vi cache \
+  # strict_cache_tail: tests that assert on the DEFAULT persistent-cache
+  # root's own semantics (cache_underlying_env_override_test exercises the
+  # VIBE_BUILD_CACHE_DIR override itself; the persistent_* trio asserts
+  # default-root invalidation behavior). An ambient VIBE_BUILD_CACHE_DIR
+  # breaks them (verified empirically), so they run WITHOUT the override in
+  # a short sequential tail after the fan-out -- they total ~5s of compile
+  # plus ~40s of run, vs the multi-minute tail the old
+  # "everything-matching-cache" rule serialized.
+  strict_cache_re='cache_underlying_env_override_test\.vibe$|/persistent_cache_test\.vibe$|loader_persistent_cache_test\.vibe$|persistent_fs_compile_cache_test\.vibe$'
+  { grep -vE "$strict_cache_re" "$effective_entries" || true; } \
     | xargs -P "$JOBS" -I{} bash -c 'unit_worker "$@"' _ {}
   while IFS= read -r f; do
-    [ -n "$f" ] && unit_worker "$f"
-  done < <(printf '%s\n' "$all_entries" | grep -i cache)
+    [ -n "$f" ] && UNIT_WORKER_NO_ISOLATION=1 unit_worker "$f"
+  done < <(grep -E "$strict_cache_re" "$effective_entries" || true)
   n_ok=$(ls "$results_dir" | grep -c '\.ok$' || true)
   skips=$(ls "$results_dir" | grep -c '\.skip$' || true)
   fails=$(ls "$results_dir" | grep -c '\.fail$' || true)
@@ -260,6 +359,7 @@ else
   rm -rf "$results_dir"
 fi
 
+rm -f "$effective_entries"
 summary="[unit-test-runner] $((total-fails))/$total allowlisted unit-test files passed"
 if [ "$skips" -ne 0 ]; then
   summary="$summary ($skips skipped: wasmtime not installed)"
