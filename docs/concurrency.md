@@ -699,6 +699,13 @@ suspendable task の第一スライスを実装した:
   livelock ではなく deadlock trap になる (drive_one の規則と同型)。
   stack-driving の `Sender::send` / `Receiver::recv` は無変更で、両者は
   同じ linearization (buf/pend/pend_seq/pend_consumed) を共有する。
+  **Suspend payload 規約**: `0` = cooperative yield / `1` = poll wait。
+  adoption-site の arm は理由を伝播する
+  `TaskHandle::park_poll(h, resume, r == 1)` を canonical とする —
+  plain `park` は yield 扱いなので、channel 待ちを plain park で park
+  すると deadlock trap に見えず livelock になる (#1111 Codex review)。
+  yield は deadlock の証拠に数えない (resume は常に body を前進させる;
+  無限 yield は通常の無限ループ)。
 - conformance lock (`suspend_test.vibe`): **2 task の mid-body 相互
   interleave** (run-to-completion では不可能だった形 — log が厳密交互)、
   wake 値の suspension point への配達、parked task の cancel (継続 drop

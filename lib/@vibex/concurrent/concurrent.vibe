@@ -593,6 +593,13 @@ export fn Receiver::recv[T](r: Receiver[T]) -> Option[T] {
 //     }
 //   })
 //
+// Arms should PROPAGATE the suspend reason: `TaskHandle::park_poll(h,
+// resume, r == 1)` (payload convention: 0 = cooperative yield, 1 = poll
+// wait). Plain `TaskHandle::park` records a YIELD — safe for pure
+// yielding bodies, but a body that blocks in send_wait/recv_wait under a
+// plain-park arm is invisible to pump_all's deadlock trap (it livelocks
+// instead of trapping; Codex review on #1111).
+//
 // The body is subject to the suspend lowering's eligibility rules
 // (docs/effect-evidence-passing.md 追記27-29): performs and calls to
 // row-carrying functions on the let/seq/tail/branch-tail spine; other
@@ -670,6 +677,9 @@ export fn TaskHandle::settle[T](h: TaskHandle[T], step: TaskStep[T]) -> Unit {
 // body with the wake value; if the body runs to completion the wrapper
 // settles the result, and if it suspends again the arm has already
 // re-parked (this same function) before the wrapper observes SParked.
+// Compatibility form: records a cooperative YIELD (wait_poll = false).
+// Use park_poll with the arm's suspend payload when the body may block
+// on a channel, or the deadlock trap cannot see the wait.
 export fn TaskHandle::park[T](h: TaskHandle[T], k: (Int) -> TaskStep[T]) -> Unit {
   TaskHandle::park_poll(h, k, false)
 }
