@@ -1,0 +1,79 @@
+// Debug helper for lib/@vibe/optimizer (#1107 Phase 2): apply the minify
+// pipeline one pass at a time, writing each intermediate module to
+// <prefix>.NN.wasm so a shell loop can find the first stage whose output
+// stops validating / running correctly. Not part of any gate — a bisection
+// tool kept next to vibe_opt.vibex for optimizer debugging.
+//
+// Usage: vibe-opt-debug <input.wasm> <out_prefix>
+
+import @vibe/optimizer {
+  directize, call_forwarding, fold_table_size, eliminate_dead_stores,
+  optimize_code_section, inline_empty_calls, inline_calls, remove_dead_blocks,
+  drop_unused_tables, dce_remove, drop_unused_globals, drop_unused_tags,
+  propagate_local_copies, coalesce_locals, remove_unused_types,
+  remove_empty_sections, strip_custom_sections
+}
+
+fn collect_args() -> Array[String] with { Env } {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let argc = Env::args_len()
+  let mut i = 0
+  while i < argc {
+    Array::push(out, Env::args_get(i))
+    i = i + 1
+  }
+  out
+}
+
+fn write_stage(prefix: String, idx: Int, name: String, bytes: Bytes) -> Unit with { Fs, Stdout } {
+  let path = "\{prefix}.\{idx}.wasm"
+  Fs::write_bytes(path, bytes)
+  Stdout::write_stream("stage \{idx} \{name}: \{Bytes::length(bytes)}B -> \{path}\n")
+}
+
+fn main with { Fs, Env, Stdout, Stderr } {
+  let args = collect_args()
+  if Array::length(args) < 2 {
+    Stderr::write_stream("usage: vibe-opt-debug <input.wasm> <out_prefix>\n")
+  }
+  else {
+    let input = Fs::read_bytes(args[0])
+    let prefix = args[1]
+    let s1 = strip_custom_sections(input)
+    write_stage(prefix, 1, "strip_custom_sections", s1)
+    let s2 = directize(s1)
+    write_stage(prefix, 2, "directize", s2)
+    let s3 = call_forwarding(s2)
+    write_stage(prefix, 3, "call_forwarding", s3)
+    let s3t = fold_table_size(s3)
+    write_stage(prefix, 4, "fold_table_size", s3t)
+    let s3d = eliminate_dead_stores(s3t)
+    write_stage(prefix, 5, "eliminate_dead_stores", s3d)
+    let s4a = optimize_code_section(s3d)
+    write_stage(prefix, 6, "optimize_code_section", s4a)
+    let s4b = inline_empty_calls(s4a)
+    write_stage(prefix, 7, "inline_empty_calls", s4b)
+    let s4c = inline_calls(s4b)
+    write_stage(prefix, 8, "inline_calls", s4c)
+    let s4d = remove_dead_blocks(s4c)
+    write_stage(prefix, 9, "remove_dead_blocks", s4d)
+    let s4 = drop_unused_tables(s4d)
+    write_stage(prefix, 10, "drop_unused_tables", s4)
+    let s5 = dce_remove(s4)
+    write_stage(prefix, 11, "dce_remove", s5)
+    let s5g = drop_unused_globals(s5)
+    write_stage(prefix, 12, "drop_unused_globals", s5g)
+    let s5t = drop_unused_tags(s5g)
+    write_stage(prefix, 13, "drop_unused_tags", s5t)
+    let s5p = propagate_local_copies(s5t)
+    write_stage(prefix, 14, "propagate_local_copies", s5p)
+    let s6 = coalesce_locals(s5p)
+    write_stage(prefix, 15, "coalesce_locals", s6)
+    let s7 = remove_unused_types(s6)
+    write_stage(prefix, 16, "remove_unused_types", s7)
+    let s8 = remove_empty_sections(s7)
+    write_stage(prefix, 17, "remove_empty_sections", s8)
+  }
+}

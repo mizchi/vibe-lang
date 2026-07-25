@@ -236,3 +236,48 @@ genuinely reachable in our call graph). They need:
 
 These are tracked as follow-up work; each is validated with the
 `wasm-opt`/`wasmtime` oracle loop above before landing.
+
+## 2026-07-25 — standalone artifact + real-corpus gate (#1107 Phase 2)
+
+The extraction blocker above is resolved: `Fs::read_bytes`/`Fs::write_bytes`
+work under both hosts, so the optimizer now ships as an **independent
+artifact** instead of a local-only hook:
+
+- `scripts/vibe_opt.vibex` — standalone entry (`vibe-opt <in.wasm> <out.wasm>`,
+  runs `minify_converge`; anomaly guard writes the input through unchanged).
+- `bash scripts/build_vibe_opt.sh` — builds `_build/vibe-opt.wasm` (~300 KB)
+  with the committed seed (or `$VIBE_STAGE2_WASM`). The compiler itself stays
+  uncoupled, per the constraint at the top of this note.
+- `vibe build --minify` (runtime/vibe) — opt-in post-processing of the
+  compiled executable via the artifact (`$VIBE_OPT_WASM` /
+  `$TOOLCHAIN_DIR/lib/vibe-opt.wasm` / `_build/vibe-opt.wasm`).
+- `bash scripts/minify_gate.sh` (pkf task `minify-gate`) — the
+  semantics-preservation gate: for a runnable corpus (effectful, closure/
+  `call_indirect`, variant+float, string-heavy), compile → run baseline →
+  minify → `wasmtime compile -W exceptions=y` validate → run → require
+  identical stdout + exit code and a size that never grows.
+
+First run of that gate over real programs caught **three latent correctness
+bugs**, all fixed in `wasm_opt.vibe`:
+
+1. `remove_unused_types` collected/remapped type refs only from the func +
+   import sections; `call_indirect`'s typeidx immediate and func-type
+   blocktypes in code bodies were neither rooted nor renumbered
+   (closure_indirect: "type index out of bounds").
+2. `find_reachable` (the stubbing `dce`'s reachability) rooted only exports,
+   while `dce_remove` used the full root set (exports + start + elem +
+   `ref.func`). Round 2 of `minify_converge` takes the `dce` fallback branch
+   once `dce_remove` has converged, which then stubbed closure bodies still
+   live through the funcref table (closure_indirect: runtime `unreachable`).
+3. `decode_instr` had no case for `f32.const`/`f64.const` (0x43/0x44): the raw
+   little-endian constant bytes were parsed as opcodes, and any byte that
+   looked like `local.get/set/tee` was "remapped" by `inline_calls`' `+base`
+   local rewrite, silently corrupting float constants (variant_float: prints
+   65 instead of 31).
+
+Gate corpus results after the fixes (baseline → minified):
+hello_world 6,988→404 B (-94%), fib 6,958→368 B (-94%), fizzbuzz 7,469→897 B
+(-87%), closure_indirect 7,194→1,208 B (-83%), variant_float 9,306→2,635 B
+(-71%), perform_handle 8,108→896 B (-88%), compiler_features 7,805→1,487 B
+(-80%). All VALID and run-identical. Baselines here are ADR-0077-stripped
+release outputs — the two layers compose.

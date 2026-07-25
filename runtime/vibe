@@ -31,6 +31,9 @@
 #   vibe compile --wit <file.vibe>        emit the WIT world for the file's
 #                                         effect surface (docs/effect-wit-mapping.md)
 #   vibe build   <file.vibe> -o <out>     alias of compile
+#   vibe compile|build --minify ...       post-optimize the output with the
+#                                         standalone vibe-opt.wasm artifact
+#                                         (scripts/build_vibe_opt.sh, #1107)
 #   vibe serve   <handler.vibe> [--port N] compile + compose with the wasi-http
 #                                         P3 adapter + `wasmtime serve` (#537)
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
@@ -541,13 +544,14 @@ case "$cmd" in
     exit "$status"
     ;;
   compile|build)
-    [ "$#" -ge 1 ] || die "usage: vibe $cmd <file.vibe|file.vibex> [-o <out.wasm>] [--entry <name>] [--wit]"
-    src=""; out=""; entry="main"; entry_override=0; wit=0
+    [ "$#" -ge 1 ] || die "usage: vibe $cmd <file.vibe|file.vibex> [-o <out.wasm>] [--entry <name>] [--wit] [--minify]"
+    src=""; out=""; entry="main"; entry_override=0; wit=0; minify=0
     while [ "$#" -gt 0 ]; do
       case "$1" in
         -o|--output) out="$2"; shift 2 ;;
         --entry) entry="$2"; entry_override=1; shift 2 ;;
         --wit) wit=1; shift ;;
+        --minify) minify=1; shift ;;
         *) src="$1"; shift ;;
       esac
     done
@@ -588,6 +592,21 @@ case "$cmd" in
       esac
     fi
     compile_to "$src" "$out" "$entry" || die "compilation failed: $src"
+    # #1107 Phase 2: `--minify` post-processes the executable with the
+    # standalone size optimizer (`vibe-opt.wasm`, lib/@vibe/optimizer built as
+    # its own artifact — see scripts/build_vibe_opt.sh). Deliberately opt-in
+    # while it accumulates mileage; scripts/minify_gate.sh is the
+    # semantics-preservation gate (stdout compare + wasmtime validate).
+    if [ "$minify" = "1" ]; then
+      opt_wasm="${VIBE_OPT_WASM:-}"
+      if [ -z "$opt_wasm" ]; then
+        for cand in "$TOOLCHAIN_DIR/lib/vibe-opt.wasm" "$PWD/_build/vibe-opt.wasm"; do
+          [ -f "$cand" ] && { opt_wasm="$cand"; break; }
+        done
+      fi
+      [ -n "$opt_wasm" ] && [ -f "$opt_wasm" ] || die "--minify: vibe-opt.wasm not found; build it with scripts/build_vibe_opt.sh or set VIBE_OPT_WASM"
+      "$RUNNER" "$opt_wasm" "$out" "$out" || die "--minify failed for $out"
+    fi
     echo "compiled $src -> $out"
     ;;
   serve)

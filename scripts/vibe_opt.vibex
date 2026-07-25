@@ -1,0 +1,90 @@
+// vibe-opt — standalone wasm size optimizer entry (#1107 Phase 2).
+//
+// The in-house optimizer (lib/@vibe/optimizer, docs/wasm-opt-dogfood.md) is
+// deliberately NOT linked into the compiler: coupling it in costs ~700KB of
+// compiler size and the frozen bootstrap seed cannot self-compile the pair
+// (the known ADR-0070 constraint). Instead this file is the root of an
+// INDEPENDENT artifact, `vibe-opt.wasm`, built by scripts/build_vibe_opt.sh
+// and invoked by `vibe build --minify` (runtime/vibe) as a post-processing
+// step over an already-compiled executable.
+//
+// Usage (as a wasm program under the node host runner or vibewt):
+//   vibe-opt <input.wasm> <output.wasm>
+//
+// Reads the module, runs minify_converge (true DCE with renumbering, constant
+// folding, single-call-site inlining, table/global/tag DCE — every pass is a
+// pure Bytes -> Bytes transform), writes the result, and reports the size
+// delta to stdout. Exit codes: 0 ok, 2 usage error, 1 read/size failure.
+// A minified output LARGER than the input never happens (converge keeps the
+// smaller of before/after each pass), but the guard below keeps the artifact
+// honest if a pass regresses: on any anomaly the INPUT bytes are written
+// through unchanged so a broken optimizer can never corrupt a build.
+
+import @vibe/optimizer {
+  minify_converge
+}
+
+fn collect_args() -> Array[String] with { Env } {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let argc = Env::args_len()
+  let mut i = 0
+  while i < argc {
+    Array::push(out, Env::args_get(i))
+    i = i + 1
+  }
+  out
+}
+
+// Both hosts (vibewt and the node runner) exclude the program path from
+// Env::args_get — index 0 is already the first user argument.
+fn user_arg(args: Array[String], index: Int) -> String {
+  if index < Array::length(args) {
+    args[index]
+  } else {
+    ""
+  }
+}
+
+fn run_opt(input_path: String, output_path: String) -> Int with { Fs, Stdout, Stderr } {
+  let input = Fs::read_bytes(input_path)
+  let before = Bytes::length(input)
+  if before == 0 {
+    Stderr::write_stream("vibe-opt: empty or unreadable input: \{input_path}\n")
+    1
+  }
+  else {
+    let minified = minify_converge(input)
+    let after = Bytes::length(minified)
+    // Anomaly guard: never emit something bigger than the input or an
+    // obviously-truncated module (below the 8-byte wasm header).
+    let out_bytes = if after >= 8 && after <= before {
+      minified
+    } else {
+      input
+    }
+    Fs::write_bytes(output_path, out_bytes)
+    let written = Bytes::length(out_bytes)
+    Stdout::write_stream("vibe-opt: \{input_path} \{before}B -> \{output_path} \{written}B\n")
+    0
+  }
+}
+
+fn main with { Fs, Env, Process, Stdout, Stderr } {
+  let args = collect_args()
+  let input_path = user_arg(args, 0)
+  let output_path = user_arg(args, 1)
+  let code = if input_path == "" || output_path == "" {
+    Stderr::write_stream("usage: vibe-opt <input.wasm> <output.wasm>\n")
+    2
+  }
+  else {
+    run_opt(input_path, output_path)
+  }
+  if code != 0 {
+    vibe_process_exit_raw(code)
+  } else {
+    ()
+  }
+}
