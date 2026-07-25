@@ -33,6 +33,45 @@ bash scripts/selfcompile_kpi.sh /tmp/kpi_gen/stage2.wasm
 Commit the new number with the compiler change and note old -> new (and
 why) in the PR.
 
+## Continuous perf tracking (per-PR report + main history)
+
+`.github/workflows/perf.yml` runs on every PR and every main push
+(non-blocking — the blocking allocation gate stays in ci.yml's KPI step):
+
+- `scripts/bench_metrics.sh <stage2.wasm> [out.json]` collects one snapshot:
+  - **deterministic**: selfcompile `heap_ptr_bytes` (cold cache), stage2 /
+    committed-bundle / flat-module-source byte sizes, compiled wasm size of
+    every `bench/binary_size/` sample, and `bytes_per_op` of every `bench {}`
+    block listed in [`tracked_benches.txt`](tracked_benches.txt),
+  - **advisory** (wall time, noisy on shared runners): selfcompile `wall_ms`
+    (median of 3) and `ns_p50` per tracked bench.
+- `scripts/bench_report.mjs current.json [baseline.json]` renders the
+  markdown comparison — deterministic rows flag at ±2%, advisory rows only
+  at ±15%.
+- **Per-PR**: the workflow upserts a sticky "📊 Perf report" comment on the
+  PR (marker `<!-- vibe-perf-report -->`), comparing against the latest
+  main snapshot. Pushing new commits updates the same comment.
+- **History**: every main push appends the snapshot to the `bench-data`
+  branch (`data/main.jsonl`, one JSON object per line, plus `latest.json` =
+  the PR baseline). Plot or diff over time straight from that branch:
+
+  ```bash
+  git fetch origin bench-data
+  git show origin/bench-data:data/main.jsonl | tail -20 \
+    | node -e 'process.stdin.on("data",()=>{}); ...'   # or jq
+  ```
+
+To track a new micro bench, add its file to `tracked_benches.txt` (keep the
+whole list fast — it runs on every PR). To track a new size sample, drop a
+standalone `main`-entry program into `bench/binary_size/`. Run locally:
+
+```bash
+bash scripts/generations.sh build --out-dir /tmp/gen
+cargo build --release --manifest-path runtime/vibewt/Cargo.toml  # micro benches
+bash scripts/bench_metrics.sh /tmp/gen/stage2.wasm /tmp/m.json
+node scripts/bench_report.mjs /tmp/m.json            # vs no baseline
+```
+
 ## Micro: vibe bench probes
 
 Files:
