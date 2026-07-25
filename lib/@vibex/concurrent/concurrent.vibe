@@ -574,6 +574,38 @@ export enum TaskStep[T] {
   SParked
 }
 
+// Transparent suspension effect (#752: the declaration IS the contract —
+// index.vpkg declares the same shape; user units redeclare it locally and
+// match by definition). Declared here so spawn_suspend's own handle can
+// discharge it inside the library.
+effect Async {
+  Suspend(Int) -> Int
+}
+
+// Spawn a SUSPENDABLE task: the handle site lives INSIDE the library
+// (closure-CPS ABI, ADR-0076 追記31 Vertical B) — the caller passes a
+// plain `() -> T with { Async }` body and never writes the handle
+// boilerplate. The body runs eagerly to its first suspend (adopt
+// semantics: the cell starts Running, never enters the drive_one queue);
+// mid-body suspends park the continuation for pump/pump_all/wake.
+// The suspend lowering compiles `f` step-returning at the call site
+// (the literal is CPS-split for Async) and this body bubbles the steps
+// it returns, so `f()` below is a needing call through a closure value —
+// the exact shape 3c could not express lexically.
+export fn TaskGroup::spawn_suspend[T: Send](n: TaskGroup, f: () -> T with { Async }) -> TaskHandle[T] {
+  let h = TaskGroup::adopt(n)
+  TaskHandle::settle(h, handle {
+    let v = f()
+    SDone(v)
+  } with Async {
+    Suspend(r) => {
+      TaskHandle::park(h, resume)
+      SParked
+    }
+  })
+  h
+}
+
 // Register a suspendable task with the group. The body runs (to its
 // first suspend) at the adoption site immediately after, so the cell
 // starts Running rather than Ready; it never enters the drive_one queue.
