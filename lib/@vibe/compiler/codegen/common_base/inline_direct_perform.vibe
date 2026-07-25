@@ -1223,11 +1223,19 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
 // (nothing to gain; matches the old behavior for every previously-planned
 // program exactly).
 fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Option[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
-  let worth = Array::length(needing) > 0 || edp_any_handle_owner_cp(stmts, ename, needing, fn_defs)
+  // ADR-0076 追記31 Vertical C (replay 撤去): a handle site EXISTING is
+  // itself worth planning for — a self-discharging dispatcher whose body
+  // performs the effect directly (lsp_server.vibe's Lsp handler is the
+  // canonical shape: every branch a bare perform, every arm tail-resume)
+  // has an empty `needing` set and was invisibly replay-bound before.
+  // Eligibility (edp_all_sites_eligible / edp_has_unsafe_construct) still
+  // decides migration site-by-site, and zero collected sites still bails
+  // (edp_all_sites_eligible returns false on an empty site list).
+  let handle_sites = edp_collect_handle_sites(stmts, ename)
+  let worth = Array::length(needing) > 0 || Array::length(handle_sites) > 0 || edp_any_handle_owner_cp(stmts, ename, needing, fn_defs)
   if !worth {
     None
   } else {
-    let handle_sites = edp_collect_handle_sites(stmts, ename)
     if edp_all_sites_eligible(stmts, ename, needing, handle_sites, fn_defs) {
       Some((ename, ops, needing, handle_sites))
     } else {
