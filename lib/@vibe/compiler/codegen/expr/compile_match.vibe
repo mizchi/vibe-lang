@@ -5,7 +5,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/codegen/common_analysis {
-  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, md_consume_count, md_capturing_fn_count
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, md_consume_count
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -102,14 +102,13 @@ fn bind_match_pat(buf: Bytes, base_local: Int, container_pat: Pat, is_ctor_layou
       // (see #702/#705 at the inline call sites in `compile_match`), so an
       // owning consume plus the container's own recursive drop double-frees
       // the same block. Mirror the inline sites' guarded per-consume dup.
-      // #1097: ALSO one dup per closure literal in the arm body that
-      // CAPTURES `nm` — closure envs hold captures as borrows
-      // (compile_lambda's #705 model), so an escaping closure otherwise
-      // outlives the scrutinee-owned payload and its env entry dangles
-      // (the suspend-lowering resume wrapper capturing the continuation
-      // payload was the reproducer). See md_capturing_fn_count.
+      // #1097 (historical): this used to ALSO add one dup per closure
+      // literal capturing `nm` (md_capturing_fn_count) because closure envs
+      // held captures as borrows. The owned-captures ABI (ADR-0076 追記31
+      // Vertical A) moved that +1 into compile_lambda's creation-site dup,
+      // so only the owning-consume compensation remains here.
       if ctx.enable_rc {
-        emit_rc_dup_guarded_n(buf, fl, md_consume_count(body, nm) + md_capturing_fn_count(body, nm), ctx.rc_shadow)
+        emit_rc_dup_guarded_n(buf, fl, md_consume_count(body, nm), ctx.rc_shadow)
       } else {
         ()
       }
@@ -239,10 +238,10 @@ fn bind_struct_pat(buf: Bytes, base_local: Int, sname: String, fields: Array[(St
       emit_i64_load(buf, 3, off)
       emit_local_set(buf, fl)
       // #715 follow-up: same missing-dup gap as `bind_match_pat` above, for an
-      // irrefutable struct-pattern field. #1097: same capturing-literal
-      // dup as bind_match_pat too.
+      // irrefutable struct-pattern field. The former #1097 capturing-literal
+      // term moved to compile_lambda's creation-site dup (owned-captures).
       if ctx.enable_rc {
-        emit_rc_dup_guarded_n(buf, fl, md_consume_count(body, nm) + md_capturing_fn_count(body, nm), ctx.rc_shadow)
+        emit_rc_dup_guarded_n(buf, fl, md_consume_count(body, nm), ctx.rc_shadow)
       } else {
         ()
       }

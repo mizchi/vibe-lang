@@ -3,6 +3,7 @@
 import ./concurrent.vibe {
   type TaskGroup, type TaskHandle, type TaskError, type TaskStep,
   TaskGroup::run, TaskGroup::adopt, TaskGroup::pump, TaskGroup::pump_all,
+  TaskGroup::spawn_suspend,
   TaskHandle::settle, TaskHandle::park, TaskHandle::wake,
   TaskHandle::join, TaskHandle::cancel
 }
@@ -139,6 +140,74 @@ test "cancel on a parked task resolves Cancelled and drops the continuation" {
   })
   assert(match out {
     Ok(v) => v == 1,
+    Err(_) => false
+  })
+}
+
+// closure-CPS (ADR-0076 追記31 Vertical B): the handle site lives inside
+// spawn_suspend (the library) — the task bodies here are PLAIN closures
+// with an Async row, no user-side handle boilerplate at all. The suspend
+// lowering step-compiles the two literals at this call site and
+// spawn_suspend's internal handle bubbles the steps through its `f()`
+// closure-param call. Pins the same strict 1..6 alternation as the
+// adoption-site test above; `log` stays a function-local (owned-captures
+// escape coverage on the same shape).
+test "spawn_suspend interleaves two plain closure bodies" {
+  let log: Array[Int] = []
+  let out = TaskGroup::run((g) -> {
+    let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      Array::push(log, 1)
+      let _a = perform Async::Suspend(0)
+      Array::push(log, 3)
+      let _b = perform Async::Suspend(0)
+      Array::push(log, 5)
+      100
+    })
+    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      Array::push(log, 2)
+      let _a = perform Async::Suspend(0)
+      Array::push(log, 4)
+      let _b = perform Async::Suspend(0)
+      Array::push(log, 6)
+      200
+    })
+    TaskGroup::pump_all(g)
+    let ra = match TaskHandle::join(ha) {
+      Ok(v) => v,
+      Err(_) => -1
+    }
+    let rb = match TaskHandle::join(hb) {
+      Ok(v) => v,
+      Err(_) => -1
+    }
+    ra + rb
+  })
+  assert(match out {
+    Ok(v) => v == 300,
+    Err(_) => false
+  })
+  assert(Array::length(log) == 6)
+  assert(Array::get(log, 0) == 1)
+  assert(Array::get(log, 1) == 2)
+  assert(Array::get(log, 2) == 3)
+  assert(Array::get(log, 3) == 4)
+  assert(Array::get(log, 4) == 5)
+  assert(Array::get(log, 5) == 6)
+}
+
+// A pure body (no perform at all) passed to spawn_suspend still settles:
+// the arg-position rule Done-wraps the literal so it matches the step
+// convention spawn_suspend's transformed body expects.
+test "spawn_suspend with a pure body settles synchronously" {
+  let out = TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn_suspend(g, () -> 6 * 7)
+    match TaskHandle::join(h) {
+      Ok(v) => v,
+      Err(_) => -1
+    }
+  })
+  assert(match out {
+    Ok(v) => v == 42,
     Err(_) => false
   })
 }

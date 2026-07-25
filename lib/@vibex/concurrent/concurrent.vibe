@@ -49,11 +49,15 @@
 // available through the suspendable-task API at the bottom of this file
 // (TaskGroup::adopt / TaskHandle::park / wake / pump — `Async::Suspend`
 // + first-class `resume`). Two adopted tasks CAN block mid-body against
-// each other and interleave (suspend_test.vibe). The run-to-completion
-// caveats above still apply to `spawn`ed tasks: routing a SPAWNED task's
-// body through the suspend lowering needs the closure-CPS ABI (the
-// lowering is lexical; a stored `() -> T` runner cannot suspend), which
-// is the remaining gap before the channel API can block mid-body.
+// each other and interleave (suspend_test.vibe).
+//
+// 追記31 UPDATE (closure-CPS ABI landed): `TaskGroup::spawn_suspend`
+// moves the handle site INSIDE the library — the caller passes a plain
+// `() -> T with { Async } { ... }` closure (explicit row annotation
+// required, #761) and never writes handle boilerplate. The legacy
+// run-to-completion `spawn` keeps its deferred-FIFO semantics unchanged;
+// the channel API's mid-body blocking rides the same closure-CPS
+// machinery as the next slice.
 
 //# Types
 
@@ -572,6 +576,38 @@ export fn Receiver::recv[T](r: Receiver[T]) -> Option[T] {
 export enum TaskStep[T] {
   SDone(T);
   SParked
+}
+
+// Transparent suspension effect (#752: the declaration IS the contract —
+// index.vpkg declares the same shape; user units redeclare it locally and
+// match by definition). Declared here so spawn_suspend's own handle can
+// discharge it inside the library.
+effect Async {
+  Suspend(Int) -> Int
+}
+
+// Spawn a SUSPENDABLE task: the handle site lives INSIDE the library
+// (closure-CPS ABI, ADR-0076 追記31 Vertical B) — the caller passes a
+// plain `() -> T with { Async }` body and never writes the handle
+// boilerplate. The body runs eagerly to its first suspend (adopt
+// semantics: the cell starts Running, never enters the drive_one queue);
+// mid-body suspends park the continuation for pump/pump_all/wake.
+// The suspend lowering compiles `f` step-returning at the call site
+// (the literal is CPS-split for Async) and this body bubbles the steps
+// it returns, so `f()` below is a needing call through a closure value —
+// the exact shape 3c could not express lexically.
+export fn TaskGroup::spawn_suspend[T: Send](n: TaskGroup, f: () -> T with { Async }) -> TaskHandle[T] {
+  let h = TaskGroup::adopt(n)
+  TaskHandle::settle(h, handle {
+    let v = f()
+    SDone(v)
+  } with Async {
+    Suspend(r) => {
+      TaskHandle::park(h, resume)
+      SParked
+    }
+  })
+  h
 }
 
 // Register a suspendable task with the group. The body runs (to its

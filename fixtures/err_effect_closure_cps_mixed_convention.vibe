@@ -1,0 +1,31 @@
+// closure-CPS ABI (ADR-0076 追記31 Vertical B) convention guard: once a
+// closure literal is step-compiled for an effect (here: the run_with
+// argument), an UNTRIGGERED handle for the same effect elsewhere in the
+// program would call closure values of that row under the value
+// convention — silent corruption. v1 pins this as a HARD compile error
+// ("mixing the step convention").
+effect Yield {
+  Emit(Int) -> Int
+}
+
+fn run_with(f: () -> Int with { Yield }) -> Int {
+  handle {
+    let a = f()
+    a
+  } with Yield {
+    Emit(p) => {
+      let k = resume
+      k(p)
+    }
+  }
+}
+
+let _start = () -> Int {
+  let a = run_with(() -> Int with { Yield } { perform Yield::Emit(1) })
+  let b = handle {
+    perform Yield::Emit(2)
+  } with Yield {
+    Emit(p) => resume(p + 1)
+  }
+  a + b
+}

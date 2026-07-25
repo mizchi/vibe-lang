@@ -2037,6 +2037,202 @@ Phase 3a/3b の lowering 上で green。パターンの要点:
   巻き込むため。suspend lowering に必要な性質は「perform できない・
   user closure を呼べない」だけで、mutation の有無は無関係。
 
+### 追記31 (2026-07-25): owned-captures ABI + closure-CPS + replay 撤去の設計
+
+3c までの残ギャップ (追記30「次の大物」) に着手するにあたり、実装前調査
+(closure コンパイルモデル・handle dispatch カバレッジ・本 ADR の既決事項の
+棚卸し) から確定した設計。3 つの vertical を A → B → C の順で入れる。
+依存関係: B は A を前提とする (park で継続 closure が生成 frame を越えて
+escape するため、borrow env のままでは health が #1097 の場当たり dup に
+恒久依存する)。C は B の後に着手し、カバレッジ実測で範囲を最終決定する。
+
+#### Vertical A: owned-captures closure ABI (RC lane)
+
+現行 (#705): closure env の plain capture は **borrow** (creation で dup
+しない)。補償は (i) callee prologue の per-invocation dup
+(`md_consume_count` 分, compile_lambda.vibe:105-125) と (ii) #1097 の
+match-payload 場当たり dup (`md_capturing_fn_count`) の 2 系統。
+ref-cell capture (class 8) だけは例外的に owned (odd-tag + inc,
+compile_lambda.vibe:404-421)。
+
+変更 (すべて RC lane のみ。bump lane は header がなく drop も無いので不変。
+gc backend も不変):
+
+1. **creation で全 capture を guarded dup** (compile_lambda.vibe:422-427 の
+   plain 分岐に追加)。scalar (even) は guarded dup が no-op、string/bytes
+   fat pointer は rc runtime の high32 ガードで no-op — dup/drop 両側とも
+   no-op なので釣り合う。未解決 capture (0 格納) も even なので無害。
+2. **rc_drop の class 7 (closure) を再帰 drop 化**
+   (bodies_core_a1a2.vibe:480-548): 現行は class-8 probe に合致した
+   slot だけ再帰していたのを、odd slot の無条件 drop に置き換える
+   (class-1 field vector の loop と同型になる。#769 の high32 ガードは
+   generic drop 入口が持っているので probe 側の特別扱いは不要になる)。
+3. **letrec self-capture は weak のまま** (cycle 回避): self slot は
+   creation 時 0 で置かれ letrec binder が後から patch する
+   (compile_expr_tail.vibe:1110-1125, dup なし = 従来通り)。drop 側は
+   `slot & -4 == 自 env の block アドレス` の slot を skip する。
+   自己参照以外の一般 cycle は RC の既知の限界としてリーク許容。
+4. **#1097 の `md_capturing_fn_count` 補償を撤去** (compile_match.vibe の
+   2 dup site から該当項を除去、common_analysis の関数自体は削除)。
+   creation dup が同じ +1 を普遍的に供給するため、残すと +2 で恒久リーク
+   が倍増する。**1 と 4 は同一コミットで入れること。**
+5. **prologue の per-invocation dup (#705) は維持**。owned-captures が
+   直すのは escape/lifetime であり、per-call の消費収支 (env は常に
+   ちょうど 1 参照を保有、body は呼び出し毎に消費) は別問題。
+
+検証: `rc_match_payload_closure_capture_test` (38013) は無変更で green
+のまま (leak が消えるだけ)、新 fixture として「heap capture を持つ closure
+が生成 frame の死後に呼ばれる」escape ケース (borrow では use-after-free、
+owned で正値) を VIBE_RC=1 で pin。heap KPI は capture dup 分の増と
+#1097 leak 撤去分の減が相殺方向 — CI 実測で判断。
+
+#### Vertical B: closure-CPS ABI
+
+**wasm レベルの ABI 変更は不要**というのが調査の主結論: closure 型は
+linear backend では全 arity `(i64 × (k+1)) -> i64` の 1 本 (type index
+9+k) で、step enum 値も普通の i64 tagged value。「呼び出し規約の分岐」
+(追記30) は関数型の row で静的に決まり、checker が row 不一致の代入・
+適用を既に弾くため、実行時 dispatch も第 2 slot も要らない。全て
+suspend_cps_pass 内の AST 変換で完結する:
+
+1. **CPS-mode effect**: triggered handle site (arm が resume を値参照)
+   を 1 つでも持つ effect E。scps の pre-scan で判定済みの情報。
+2. **E-needing closure literal の step 化**: body から E の perform が
+   (scps の needing 解析で) 到達可能な `EFn` literal は、body を
+   `scps_split_tail` で分割した step-returning 形で **1 回だけ**
+   コンパイルする (named fn の `__scps_cps_E_f` と違い original を残さ
+   ない — closure は値が 1 つで dual entry を持てないため)。
+3. **closure 値経由の needing call**: 現行 hard error
+   ("cannot see through") のうち、callee の row が **具体的に E を含む**
+   と静的に分かるものを bubble 書き換えに緩和する:
+   `let x = f(a) REST` → `__scps_bubble_E(f(a), (x) -> REST')`、
+   tail は step passthrough。row の出所は (α) 囲む fn の param 宣言型
+   `TyFn(_, _, Some(row))` (top-level fn の param 注釈は必須なので常に
+   ある)、(β) 同一 spine 上で 2. の step 化対象 literal に let 束縛された
+   local。それ以外 (row 変数、注釈なし中間 local) は従来通り hard error。
+4. **規約整合の全域ガード**: closure は単一コンパイルなので、同じ E に
+   ついて「triggered handle」と「untriggered handle (evidence/idp/replay
+   行き)」が併存し、かつ E-needing closure literal が存在するプログラムは
+   規約が衝突する。この組み合わせは scps pre-scan で検出して hard error
+   にする (v1。effect を分割せよというメッセージ)。closure literal が
+   無ければ従来通り併存可 (3b の dual-entry が吸収する)。
+5. **@vibex/concurrent への接続**: `TaskGroup::spawn(g, f)` を
+   suspendable に差し替え (handle site を spawn 内部へ移動、
+   f: `() -> T with { Async }` param 経由の needing call が 3. の (α))。
+   adoption-site handle 制約 (追記30) はこれで解消。channel の mid-body
+   blocking は同じ機構で spawn の後に続ける。
+
+fixtures: (i) library fn 内 handle + closure param 経由 suspend の正値
+pin、(ii) spawn 2 本の mid-body interleave (suspend_test の spawn 版)、
+(iii) 規約衝突 (4.) の compile error pin、(iv) row-var closure が
+引き続き error である pin。
+
+**実装ノート (同日、A/B 着地)**:
+
+- Vertical A は設計通り (creation dup + class-7 再帰 drop + letrec
+  self-skip + `md_capturing_fn_count` 撤去)。fixture
+  `rc_closure_owned_capture_escape.vibe` (gate 52、want 4067) が
+  borrow モデルの silent corruption (50067) を pin。gate 51 (38013) は
+  無変更で green (補償が creation 側へ移っただけ)。
+- Vertical B は suspend_cps_pass の 5 フェーズ化で実装:
+  (1) CPS-mode effect 収集 → (2) 全 stmt prepass (literal step-split +
+  E-row param 位置の arg 規約 fixup) → (3) 既存 walk + scope threading →
+  (4) clone worklist → (5) 規約整合ガード。
+- **top-level fn 値 (SLet の EFn) は prepass の split 対象外** — そこは
+  3b の needing-fn 世界 (original 無変更 + clone)。当初 top ノードにも
+  criterion (iii) を適用して dual entry を破壊し、clone が split 済み
+  body から再 clone されて `Done(Y(..))` の二重包みになった
+  (`effect_resume_call_bubbling` trap で発覚)。literal split は
+  「式位置の literal」に限る。
+- **suspend する closure literal には明示 row 注釈が必須**:
+  `() -> T with { E } { ... }`。#761 により無注釈 lambda の effect は
+  enclosing の declared row へ継承 (誤検出回避のための既定) されるため、
+  literal 自身の row に封じ込めるには注釈で宣言する。注釈なしだと
+  enclosing fn の row mismatch として checker が弾く (安全側)。
+- capture-free な literal 引数は upstream #786 hoisting で top-level fn
+  化されて届く — その場合は prepass の「E-row param 位置の needing fn
+  参照 → clone 参照」書き換えが同じ規約を配線する (capturing literal は
+  hoist されず in-place split)。
+- fixtures: `effect_closure_cps_param.vibe` (2130、resume 値形 2-yield
+  trace)、`err_effect_closure_cps_mixed_convention.vibe` (guard reject)、
+  gate 53。spawn 版 interleave は `suspend_test.vibe` の
+  `spawn_suspend` 2 テスト (library-level lock、battery 経由)。
+
+### 追記32 (2026-07-25): Vertical C 第一スライス — replay loop の
+first-party 実行消滅
+
+追記31 の Vertical C を 2 手で実施し、**first-party 非テストコードで
+replay back-edge が実行時に走る箇所は 0 になった** (frontier codegen の
+削除自体は未実施 — 下記 quarantine)。
+
+1. **Profiler の perform 直呼び化**: `profiler_now_us` (cli/dispatch.vibe
+   / entry/compiler/file_compile) の `perform Profiler::NowUs` を builtin
+   `Profiler::now_us()` の直呼びへ。調査で判明した旧経路の実態:
+   entry.vibe の handler は `NowUs => resume(0)` で、replay は handle
+   body (CLI dispatch 全体!) を perform 毎に再実行し、memo に残るのは
+   resume 値の 0 だけ — `--profile-tsv` は「全 stage 0µs + 本体 N+1 回
+   実行」だった。builtin 自身の row が `Profiler` を持つため全 signature
+   が row-neutral に保たれ、entry/dispatch_test の handler は dead arm
+   として残存 (throw が二度と届かない)。dispatch_test の fake-tick
+   handler が担っていた「非ゼロ elapsed の保証」は実タイムスタンプが
+   引き継ぐ。
+2. **edp worth 拡張**: `edp_try_plan_for_effect` の worth に「handle
+   site が存在する」を追加。needing 空の self-discharging dispatcher
+   (lsp_server.vibe の Lsp handler: 全分岐 bare perform + 全 arm tail
+   resume、branch 条件は row "" の pure fn) が不可視に replay 行き
+   だったのを evidence 移行対象へ。適格性は従来の site 単位判定のまま
+   なので、eligible な site に限れば replay と evidence は意味論等価
+   (M2 重複は unsafe body でしか顕在化せず、unsafe body は migrate
+   しない) — 既存 replay-pin fixture の値は全て不変で gate green。
+   Lsp 形の probe は同値のまま -204 bytes (replay 機構消滅) を確認。
+
+**quarantine (frontier codegen が残る非 Error handle、いずれも実行時に
+throw が届かない or fixture 専用)**:
+- entry.vibe / dispatch_test の Profiler handle — dead arm (row 放流の
+  ためだけに残存。撤去には entry row への Profiler 追加が必要で、
+  component export 面の変更になるため見送り)
+- cache_underlying.vibe / module_graph_path.vibe の Env handle —
+  元から vacuous (body は builtin 直呼びで throw しない)
+- `fixtures/effect_local_closure_by_value_hof_escaping.vibe` (206) —
+  唯一の「本物の replay 実行」残存。#786 fallback (closure 値経由の
+  HOF) で、evidence 移行には追記25 の closure-value evidence ABI が
+  必要。**frontier 経路 (uses_frontier / perform counter・memo /
+  eff_reserve) の削除はこの fixture 級の shape の migration が前提** —
+  次の実装単位。`is_error` 単発経路は Error の実装として残る (replay
+  ではない)。
+
+#### Vertical C: replay loop の撤去 (Phase 3d)
+
+dispatch カバレッジ実測の結論: **bootstrap は replay loop に依存して
+いない**。compiler 自身の ~4k handle は全て `with Error` で、tail6 の
+`is_error` 分岐は `uses_frontier = false` の単発実行 (replay ではない)。
+frontier 付き replay loop の第一級消費者は以下だけ:
+
+- `lsp_server.vibe` の Lsp handler (self-discharging、replay-safe に
+  書かれている旨のコメント付き) — `vibe lsp` 実行時のみ
+- `cli/entry.vibe` の Profiler handler — `--profile-tsv` /
+  `--profile-callstack` 指定時のみ throw が発生 (通常は不活性)
+- replay 値/経路に pin された fixtures: `effect_local_closure_by_value_hof_escaping`
+  (206, #786 fallback), `effect_handle_two_layer`,
+  `gc_backend_effect_pure_builtin_index`, gate 4b (#737 深い再帰 resume
+  canary、FileIo memo 経路)
+
+撤去手順 (B 着地後に実測で再スコープ):
+1. Lsp / Profiler の 2 site を evidence 適格へ移行するか、effect を
+   使わない直接 dispatch へ書き換える。
+2. gate 4b の FileIo 再帰 shape と two_layer の nested handle shape を
+   edp のカバレッジ拡張 (pure builtin list / nested 緩和) で evidence へ
+   吸収し、期待値を replay 値から単発実行値へ re-baseline する
+   (M2 の解消そのもの)。
+3. 全一次消費者が移行できた時点で、tail6 の frontier 経路
+   (`uses_frontier` 側) と perform 側の counter/memo 短絡
+   (compile_call.vibe:1777-1804)、`eff_reserve` 領域を削除する。
+   `is_error` 単発経路は Error の実装として残る (これは replay ではない)。
+   row-polymorphism hack 経由で evidence を組めない関数が残る場合は、
+   本文の決定通り「その関数だけ replay を残す hybrid」ではなく、
+   **非 Error handle が frontier 経路に落ちること自体を hard error 化**
+   して打ち切る (evidence vector 表現の実装は本 vertical の範囲外)。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し

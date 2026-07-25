@@ -681,12 +681,13 @@ suspendable task の第一スライスを実装した:
   `pump_all` (yield された task を round-robin で駆動)。
   `effect Async { Suspend(Int) -> Int }` は package contract の透明
   宣言 (#752)。
-- task body は **adoption site の `handle ... with Async` の中で走る**
-  (canonical shape は concurrent.vibe の Suspendable tasks 節)。
-  suspend lowering は lexical なので、library 内部に保存された closure
-  runner からは suspend できない — `spawn` 側の内部差し替えと channel
-  API の mid-body blocking は **closure-CPS ABI** (row に suspend 対象
-  effect を持つ closure 値の step-returning 化) が残ギャップ。
+- task body の handle site は 2 通り: adoption site (`adopt`/`settle` の
+  canonical shape、concurrent.vibe の Suspendable tasks 節) と、
+  **`TaskGroup::spawn_suspend(g, f)`** — closure-CPS ABI (ADR-0076
+  追記31 Vertical B) の着地で handle site が library 内部へ移り、caller
+  は `() -> T with { Async } { ... }` の plain closure を渡すだけに
+  なった (suspend する literal には明示 row 注釈が必要、#761)。
+  channel API の mid-body blocking は同じ機構で続けられる (次スライス)。
 - conformance lock (`suspend_test.vibe`): **2 task の mid-body 相互
   interleave** (run-to-completion では不可能だった形 — log が厳密交互)、
   wake 値の suspension point への配達、parked task の cancel (継続 drop
@@ -695,7 +696,7 @@ suspendable task の第一スライスを実装した:
 
 cancel は parked 状態でも観測されるようになった (mid-run cancel 観測の
 第一歩)。fail-fast と adopted task の統合 (parked sibling の自動
-cancel) は次スライス。#1097 (suspend 継続の local capture × 複数 site の RC trap) は根治済み — match payload を capture する closure literal ごとに payload dup を1 つ追加 (`md_capturing_fn_count`)。suspend_test がローカル capture 形のままregression lock。
+cancel) は次スライス。#1097 (suspend 継続の local capture × 複数 site の RC trap) は根治済み — 当初の `md_capturing_fn_count` 補償は owned-captures closure ABI (ADR-0076 追記31 Vertical A: closure env が heap capture を creation dup で所有し class-7 drop が再帰解放) に置き換わり、補償テーブルは撤去された。suspend_test がローカル capture 形のままregression lock。
 
 ## v0.4.0 に含めないもの
 

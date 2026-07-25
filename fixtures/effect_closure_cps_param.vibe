@@ -1,0 +1,35 @@
+// closure-CPS ABI (ADR-0076 追記31 Vertical B): the handle site lives in a
+// LIBRARY function and the suspending body arrives as a plain closure
+// argument — the shape 3c's lexical lowering could not express. The
+// literal at the call site is step-compiled (its row carries Yield), and
+// run_with's handle body bubbles the steps returned by the `f()` call
+// through its closure param (an α-seeded cps local).
+//
+// Value trace (want 2130): f's first Emit(5) parks in arm#1; k(6) drives
+// the rest: x=6, second Emit(6) hits arm#2; its k(7) drives to the end:
+// y=7, f()=13, handle body Done(13*10=130) → arm#2 returns 130+1000=1130
+// → arm#1's k(6) evaluates to 1130 → 1130+1000=2130.
+effect Yield {
+  Emit(Int) -> Int
+}
+
+fn run_with(f: () -> Int with { Yield }) -> Int {
+  handle {
+    let a = f()
+    a * 10
+  } with Yield {
+    Emit(p) => {
+      let k = resume
+      let r1 = k(p + 1)
+      r1 + 1000
+    }
+  }
+}
+
+let _start = () -> Int {
+  run_with(() -> Int with { Yield } {
+    let x = perform Yield::Emit(5)
+    let y = perform Yield::Emit(x)
+    x + y
+  })
+}

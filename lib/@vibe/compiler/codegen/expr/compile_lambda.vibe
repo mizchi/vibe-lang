@@ -424,6 +424,21 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
           emit_i32_wrap_i64(buf)
           emit_local_get(buf, __cap_resolve)
           emit_i64_store(buf, 3, cap_off + csi * 8)
+          // owned-captures ABI (ADR-0076 追記31 Vertical A): the env OWNS
+          // every heap capture — dup at creation, released by the closure's
+          // class-7 recursive drop. Scalars and string/bytes fat pointers are
+          // no-ops on BOTH sides (guarded dup mirrors gen_rc_drop_body's
+          // entry checks), so the pair stays balanced across all shapes.
+          // The let-rec SELF capture stays weak (no dup; the binder patches
+          // the slot after creation and the drop loop skips self-pointing
+          // slots) — dup'ing here would (a) leak one stale closure per loop
+          // iteration when the letrec local is re-bound, and (b) make the
+          // self-cycle unreclaimable.
+          if ctx.enable_rc && cap_name != self_name {
+            emit_rc_dup_guarded(buf, __cap_resolve, ctx.rc_shadow)
+          } else {
+            ()
+          }
         }
       } else {
         emit_local_get(buf, ptr_local)

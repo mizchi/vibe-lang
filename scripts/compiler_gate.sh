@@ -6357,4 +6357,70 @@ fi
 rm -rf "$rc1097dir"
 echo "[compiler-gate] RC match-payload closure capture (#1097) ok"
 
+# 52/52. owned-captures ABI (ADR-0076 追記31 Vertical A): a closure env OWNS
+#        its heap captures — creation-site dup + class-7 recursive drop.
+#        The fixture generalizes #1097 beyond match payloads: a borrowed
+#        view (Array::get) captured by an escaping closure survives the
+#        owner's scope-end recursive drop. Under the old borrow model the
+#        freed element block was reused by churn() and the escaped closure
+#        read the reused contents (got 50067, silent corruption).
+echo "[compiler-gate] 52/52 RC owned-captures escape (ADR-0076 追記31)"
+rcocdir="_build/_gate_rc_owned_capture"
+rm -rf "$rcocdir"; mkdir -p "$rcocdir"
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/rc_closure_owned_capture_escape.vibe "$rcocdir/esc.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$rcocdir/esc.wasm" ]; then
+  echo "[compiler-gate] FAIL: rc_closure_owned_capture_escape fixture did not compile" >&2
+  cat "$rcocdir/esc.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rcoc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$rcocdir/esc.wasm" 2>/dev/null | tail -1)"
+if [ "$rcoc_out" != "4067" ]; then
+  echo "[compiler-gate] FAIL: rc_closure_owned_capture_escape got '$rcoc_out' (want 4067) -- owned-captures regressed" >&2
+  exit 1
+fi
+rm -rf "$rcocdir"
+echo "[compiler-gate] RC owned-captures escape ok"
+
+# 53/53. closure-CPS ABI (ADR-0076 追記31 Vertical B): a suspending body
+#        passed as a plain closure ARGUMENT into a library-side handle.
+#        The literal is step-compiled at the call site and the handle body
+#        bubbles the steps returned through its closure param (α-seeded
+#        cps local). Positive pin 2130 (two-yield resume-value trace) +
+#        the v1 convention guard (an untriggered handle for a
+#        step-compiled effect is a hard error).
+echo "[compiler-gate] 53/53 closure-CPS param suspend (ADR-0076 追記31)"
+ccpsdir="_build/_gate_closure_cps"
+rm -rf "$ccpsdir"; mkdir -p "$ccpsdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/effect_closure_cps_param.vibe "$ccpsdir/param.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$ccpsdir/param.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_closure_cps_param fixture did not compile" >&2
+  cat "$ccpsdir/param.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+ccps_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$ccpsdir/param.wasm" 2>/dev/null | tail -1)"
+if [ "$ccps_out" != "2130" ]; then
+  echo "[compiler-gate] FAIL: effect_closure_cps_param got '$ccps_out' (want 2130) -- closure-CPS regressed" >&2
+  exit 1
+fi
+rm -f "$ccpsdir/mixed.wasm"
+cp fixtures/err_effect_closure_cps_mixed_convention.vibe "$ccpsdir/mixed.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ccpsdir/mixed.vibe" "$ccpsdir/mixed.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$ccpsdir/mixed.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_effect_closure_cps_mixed_convention compiled (must be a hard error)" >&2
+  exit 1
+fi
+if ! grep -qF "mixing the step convention" "$ccpsdir/mixed.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: mixed-convention fixture did not produce the expected diagnostic" >&2
+  cat "$ccpsdir/mixed.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$ccpsdir"
+echo "[compiler-gate] closure-CPS param suspend ok"
+
 echo "[compiler-gate] ok"
