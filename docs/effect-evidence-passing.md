@@ -2158,6 +2158,49 @@ pin、(ii) spawn 2 本の mid-body interleave (suspend_test の spawn 版)、
   gate 53。spawn 版 interleave は `suspend_test.vibe` の
   `spawn_suspend` 2 テスト (library-level lock、battery 経由)。
 
+### 追記32 (2026-07-25): Vertical C 第一スライス — replay loop の
+first-party 実行消滅
+
+追記31 の Vertical C を 2 手で実施し、**first-party 非テストコードで
+replay back-edge が実行時に走る箇所は 0 になった** (frontier codegen の
+削除自体は未実施 — 下記 quarantine)。
+
+1. **Profiler の perform 直呼び化**: `profiler_now_us` (cli/dispatch.vibe
+   / entry/compiler/file_compile) の `perform Profiler::NowUs` を builtin
+   `Profiler::now_us()` の直呼びへ。調査で判明した旧経路の実態:
+   entry.vibe の handler は `NowUs => resume(0)` で、replay は handle
+   body (CLI dispatch 全体!) を perform 毎に再実行し、memo に残るのは
+   resume 値の 0 だけ — `--profile-tsv` は「全 stage 0µs + 本体 N+1 回
+   実行」だった。builtin 自身の row が `Profiler` を持つため全 signature
+   が row-neutral に保たれ、entry/dispatch_test の handler は dead arm
+   として残存 (throw が二度と届かない)。dispatch_test の fake-tick
+   handler が担っていた「非ゼロ elapsed の保証」は実タイムスタンプが
+   引き継ぐ。
+2. **edp worth 拡張**: `edp_try_plan_for_effect` の worth に「handle
+   site が存在する」を追加。needing 空の self-discharging dispatcher
+   (lsp_server.vibe の Lsp handler: 全分岐 bare perform + 全 arm tail
+   resume、branch 条件は row "" の pure fn) が不可視に replay 行き
+   だったのを evidence 移行対象へ。適格性は従来の site 単位判定のまま
+   なので、eligible な site に限れば replay と evidence は意味論等価
+   (M2 重複は unsafe body でしか顕在化せず、unsafe body は migrate
+   しない) — 既存 replay-pin fixture の値は全て不変で gate green。
+   Lsp 形の probe は同値のまま -204 bytes (replay 機構消滅) を確認。
+
+**quarantine (frontier codegen が残る非 Error handle、いずれも実行時に
+throw が届かない or fixture 専用)**:
+- entry.vibe / dispatch_test の Profiler handle — dead arm (row 放流の
+  ためだけに残存。撤去には entry row への Profiler 追加が必要で、
+  component export 面の変更になるため見送り)
+- cache_underlying.vibe / module_graph_path.vibe の Env handle —
+  元から vacuous (body は builtin 直呼びで throw しない)
+- `fixtures/effect_local_closure_by_value_hof_escaping.vibe` (206) —
+  唯一の「本物の replay 実行」残存。#786 fallback (closure 値経由の
+  HOF) で、evidence 移行には追記25 の closure-value evidence ABI が
+  必要。**frontier 経路 (uses_frontier / perform counter・memo /
+  eff_reserve) の削除はこの fixture 級の shape の migration が前提** —
+  次の実装単位。`is_error` 単発経路は Error の実装として残る (replay
+  ではない)。
+
 #### Vertical C: replay loop の撤去 (Phase 3d)
 
 dispatch カバレッジ実測の結論: **bootstrap は replay loop に依存して
