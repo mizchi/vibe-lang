@@ -648,11 +648,16 @@ let r = handle {
 // あとで (Array::get(conts, 0))(5) を呼ぶと残りの body が走って 50
 ```
 
-制約 (depth-0, linear backend のみ): resume を値参照する handle の body
-では、対象 effect の perform は let/seq/tail/分岐 tail に直接現れる必要が
-あり、body 内の呼び出しは perform と pure builtin のみ (違反は compile
-error)。同じ継続の 2 回目の呼び出しは stderr 診断つきで trap する。
-post-processing は値経由 (`let k = resume  let r = k(v)  r + 7`) で書く。
+制約 (linear backend のみ): resume を値参照する handle の body では、
+対象 effect の perform (と、row にその effect を持つ関数の呼び出し) は
+let/seq/tail/分岐 tail に直接現れる必要がある。**concrete な row に
+対象 effect を含む top-level 関数の呼び出しは可** (3b yield bubbling —
+再帰も可; callee には CPS clone が合成され、元の関数は他の呼び出し元
+向けに無変更)。それ以外に呼べるのは perform / pure builtin / ctor /
+「concrete row が対象 effect を含まない関数」。row 変数 (`with { e }`)
+付き callee・loop 内の perform は compile error。同じ継続の 2 回目の
+呼び出しは stderr 診断つきで trap する。post-processing は値経由
+(`let k = resume  let r = k(v)  r + 7`) で書く。
 
 operation の宣言 arity より 1 つ多い末尾パラメータを束縛する `k` 規約
 (`Emit(v, k) => v + k(0)`、non-tail 継続) は **旧 MoonBit fixture runner

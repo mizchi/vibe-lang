@@ -6253,10 +6253,12 @@ echo "[compiler-gate] RC branch+loop mixed-consume over-drop (#1085) ok"
 #        (want 10230); post-processing through the value form
 #        (`let k = resume  let r = k(v)  r + 7`, want 1017). Runtime: the
 #        second call of the same continuation writes the one-shot message
-#        to stderr and traps (assert). Negative: a non-tail DIRECT
-#        resume(...) call stays rejected (#942 unchanged), and a
-#        triggered-but-ineligible body (perform reached through a function
-#        call) is a HARD compile error, never a silent replay fallback.
+#        to stderr and traps. Phase 3b (yield bubbling): a suspend body
+#        may call concrete-row functions carrying the effect -- CPS
+#        clones + per-effect bubble combinator (want 3131365). Negative:
+#        a non-tail DIRECT resume(...) call stays rejected (#942
+#        unchanged); a row-variable callee and a perform inside a loop
+#        are HARD compile errors, never a silent replay fallback.
 echo "[compiler-gate] 50/50 ADR-0076 Phase 3a first-class resume (suspend CPS)"
 scpsdir="_build/_gate_scps"
 rm -rf "$scpsdir"; mkdir -p "$scpsdir"
@@ -6280,6 +6282,14 @@ scps_run_expect() {
 }
 scps_run_expect "effect_resume_store_scheduler.vibe" "10230" "sched"
 scps_run_expect "effect_resume_value_postprocess.vibe" "1017" "post"
+# Phase 3b yield bubbling: a suspend-class handle body calling row-carrying
+# helpers (incl. a recursive one) -- CPS clones + per-effect bubble
+# combinator, two sites sharing one step enum (want 3131365).
+scps_run_expect "effect_resume_call_bubbling.vibe" "3131365" "bubble"
+# trivial row-var wrapper + capture-free closure: normalized upstream
+# (#786 hoist + trivial-wrapper inlining) into a plain needing call the
+# clone/bubble machinery handles (want -95).
+scps_run_expect "effect_resume_rowvar_wrapper_normalized.vibe" "-95" "norm"
 # one-shot violation: must NOT produce a value; the failure output carries
 # the one-shot stderr diagnostic before the assert trap.
 sed '/^_start()$/d' fixtures/effect_resume_one_shot_trap.vibe > "$scpsdir/once.vibe"
@@ -6315,6 +6325,7 @@ scps_check_reject() {
 }
 scps_check_reject "err_resume_non_tail.vibe" "must be the last expression of the handler arm" "nontail"
 scps_check_reject "err_effect_resume_store_ineligible.vibe" "cannot see through" "inelig"
+scps_check_reject "err_effect_resume_store_loop.vibe" "let/seq/tail/branch-tail spine" "loop"
 rm -rf "$scpsdir"
 echo "[compiler-gate] ADR-0076 Phase 3a first-class resume ok"
 

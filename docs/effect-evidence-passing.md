@@ -1948,6 +1948,58 @@ gc backend は当面 ineligible (linear 先行)。
 マーカーになっている。3c は @vibex/concurrent の TaskCell に継続 slot を
 足して cooperative scheduler の内部を suspend ベースへ差し替える。
 
+### 追記29 (2026-07-25): Phase 3b 実装 — yield bubbling (call 越え suspend)
+
+3a の「body 内の call は perform と pure builtin のみ」制約を解除した。
+suspend-class の handle body から、**concrete な row に対象 effect を含む
+top-level 関数を呼べる** (再帰含む)。wasm_of_ocaml の選択的 CPS +
+double compilation を per-effect enum で実装:
+
+1. **step 型を per-site から per-effect へ**: `__ScpsStep_<E>`
+   (`__ScpsDone_<E>` + effect **宣言**の全 op ぶんの
+   `__ScpsY_<E>_<op>`)。site と clone をまたいで共有するには site 独立の
+   型が必要 (3a の per-site enum はこの時点で廃止)。backend は untyped
+   tagged なので Done の payload 型が呼び出し元ごとに違っても問題ない。
+2. **bubble combinator**: effect ごとに
+   `let rec __scps_bubble_E = (st, k) -> match st { Done(v) => k(v),
+   Y_op(p.., kk) => Y_op(p.., (rv) -> __scps_bubble_E(kk(rv), k)) }` を
+   1 個 inject。「callee の step を 1 段上へ再 wrap する」の実体。
+3. **CPS clone (double compilation)**: row が E を含む callee `f` ごとに
+   `__scps_cps_E_f` を合成 — f の body を同じ spine split に通した版
+   (直接 perform → Y 構築、needing call → bubble 合成、worklist で再帰)。
+   **オリジナルの f は無変更** — replay / Phase 2 inline / evidence-dict
+   の呼び出し元はビット単位で今まで通り。clone の EFn は意図的に
+   `eff=None`: evidence_dict_pass は row 文字列から needing 集合を作るの
+   で、perform を失った clone が E の evidence 適格性を沈めないため。
+4. **call site**: `let x = f(a)  REST` →
+   `__scps_bubble_E(__scps_cps_E_f(a), (x) -> split(REST))`。
+   tail `f(a)` → `__scps_cps_E_f(a)` (step passthrough — Done がそのまま
+   この計算の Done)。
+5. **緩和された call policy** (soundness は checker の row 検査に還元):
+   body 内で安全な call = perform / pure builtin / enum・suberror ctor /
+   **concrete row が E を含まず row 変数も持たない** top-level 関数
+   (unhandled な E perform が f から到達可能なら checker が f の row に
+   E か row 変数を強制する — だから concrete E-free row は E を perform
+   できない)。row 変数 (`with { e }`) を持つ non-needing callee は
+   closure 引数経由で E を注入されうるので hard error のまま (これが
+   3b の残 TODO マーカー)。loop / let mut spine 上の suspend も未対応。
+
+**上流正規化との相互作用 (実測)**: trivial な row-var wrapper
+(`apply(f) = f()`) + capture-free closure の組は、本 pass の前に
+#786 lambda hoisting (closure → row 付き top-level fn) と
+desugar_trait_dict の trivial-wrapper inlining (`apply(inner)` →
+`inner()`) で「row が E を含む関数への直接呼び出し」へ潰れるため、
+row-var reject を踏まずに 3b がそのまま処理する (最初の reject fixture
+がこれで compile に成功して発覚)。reject を踏むのは non-trivial
+wrapper + capturing closure の組から。
+
+fixtures: `effect_resume_call_bubbling.vibe` (helper 途中 suspend +
+再帰 helper の多段 suspend + 2 site で enum 共有、want 3131365)、
+`effect_resume_rowvar_wrapper_normalized.vibe` (上記正規化の positive
+pin、want -95)、`err_effect_resume_store_ineligible.vibe` (non-trivial
+row-var callee reject)、`err_effect_resume_store_loop.vibe` (loop spine
+reject)。gate 50 更新。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し

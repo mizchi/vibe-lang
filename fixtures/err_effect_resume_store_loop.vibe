@@ -1,0 +1,30 @@
+// ADR-0076 Phase 3a/3b (#817): performs of the handled effect must sit
+// directly on the handle body's let/seq/tail/branch-tail spine when an
+// arm captures `resume` as a value -- a perform inside a LOOP has no
+// single continuation split point at depth 0 (loop-to-recursion
+// conversion is future work), so this is a hard compile error.
+effect Async {
+  Suspend(Int) -> Int
+}
+
+let sunk: Array[(Int) -> Int] = []
+
+let _start = () -> Int {
+  handle {
+    let mut i = 0
+    while i < 3 {
+      let _ = perform Async::Suspend(i)
+      i = i + 1
+    }
+    i
+  } with Async {
+    Suspend(t) => {
+      Array::push(sunk, resume)
+      0 - t
+    }
+  }
+}
+_start()
+
+__DATA__
+{"error_contains":"let/seq/tail/branch-tail spine"}
