@@ -4534,9 +4534,15 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                   // arm body (the trailing k binder stays CtUnknown).
                   let mut henv = env
                   let mut hbi = 0
+                  let mut hbinds_shadow_resume = false
                   while hbi < hblen {
                     match Array::get(hbinds, hbi) {
                       PBind(hbname) => {
+                        if hbname == "resume" {
+                          hbinds_shadow_resume = true
+                        } else {
+                          ()
+                        }
                         henv = env_bind(henv, hbname, if hbi < hplen {
                           Array::get(hparams, hbi)
                         } else {
@@ -4547,7 +4553,27 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                     }
                     hbi = hbi + 1
                   }
-                  let (harm_ty, hns, hnc) = check_expr(hbody, henv, defs, hs1, hc1, errors, tytab)
+                  // ADR-0076 Phase 3a (#817): `resume` is a first-class
+                  // one-shot value inside a declared-effect handler arm —
+                  // bind it as (op return type) -> (handle result type) so
+                  // an arm can STORE it and call it later (the suspend
+                  // class, ADR-0068's Async::suspend). Only check_expr gets
+                  // this binding: check_resume_values below keeps the
+                  // pre-binding henv so its resume_shadowed detection and
+                  // direct-call argument checks are unchanged, and #942's
+                  // tail constraint on the DIRECT call form stays in force
+                  // (check_arm_resume_tail is a separate syntactic walk that
+                  // only looks at call sites — a bare value reference never
+                  // trips it). A payload binder literally named `resume`
+                  // keeps shadowing (no extra binding on top of it).
+                  let henv_arm = if hbinds_shadow_resume {
+                    henv
+                  } else {
+                    env_bind(henv, "resume", CtFn([
+                      hret
+                    ], subst_apply(hs1, hres), None))
+                  }
+                  let (harm_ty, hns, hnc) = check_expr(hbody, henv_arm, defs, hs1, hc1, errors, tytab)
                   hs1 = hns
                   hc1 = hnc
                   // #938: a non-resuming arm's value IS the handle result, so

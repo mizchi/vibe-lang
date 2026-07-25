@@ -1895,6 +1895,59 @@ one-shot trap を pin)、非 tail 直呼びが引き続き #942 で reject さ�
 ことの pin、tail-resumptive / no-resume の既存 fixture 群の非退行、
 gc backend は当面 ineligible (linear 先行)。
 
+### 追記28 (2026-07-25): Phase 3a 実装着地 — 追記27 の設計どおり、初回で
+
+**実装 (2 箇所 + gate)**:
+
+1. **checker** (`checker/checker.vibe` EHandle の declared-effect arm 検査):
+   arm body の check_expr にだけ `resume : CtFn([op戻り型], handle結果型,
+   None)` を束縛した `henv_arm` を渡す。`check_resume_values` は束縛前の
+   `henv` のまま (resume_shadowed 検出と直呼び引数検査を不変に保つ)。
+   payload binder が literal に `resume` という名前ならユーザの束縛が勝つ
+   (追加束縛しない)。#942 の tail 制約 (`check_arm_resume_tail`) は
+   call site だけを見る別 walk なので値参照では発火しない — 直呼び形の
+   制約は完全に不変。
+2. **codegen** (`codegen/common_base/inline_direct_perform.vibe` 末尾に
+   `suspend_cps_pass` を追記 — 新規ファイルにしなかったのは
+   evidence_dict_pass と同じ bootstrap flatten 回避)。
+   `compile_wasi_module_linked_impl` の `lc_wrap_entry_error_boundary` 直後
+   / `inline_direct_performs` 直前に配線 (Phase 2 / evidence pass は
+   本 pass が残した site しか見ない)。trigger = arm が `resume` を裸の値と
+   して参照する handle site (shadow 追跡は #942 と同じ規則)。
+   ineligible な triggered site は error list 経由で `throw` する hard
+   compile error (replay に silent fallback しない — 値参照 arm は replay
+   では compile できないため)。
+3. **eligibility (depth-0)**: (a) 対象 op の perform が body の
+   let/seq/tail/branch-tail spine 上に直接現れる (loop / let mut spine /
+   ネスト式位置は 3b)、(b) body 内の call は perform か
+   `idp_pure_builtin_names` のみ (それ以外は動的 perform を隠しうる)、
+   (c) nested handle / target-perform 入り closure なし、(d) Error:: arm
+   との混在なし。arm body 側は無制限 (driver 上ではただのコード)。
+4. **lowering 詳細**: per-site `__ScpsStepN` enum (`__ScpsDoneN(R)` +
+   arm ごと `__ScpsYN_i(P.., k)`) を SEnum で inject、body を継続 closure
+   に分割、`let rec __scps_driveN` が dispatch。driver の各 arm は
+   `let __scps_onceN = [false]` + `let resume = (rv) -> if once[0] {
+   stderr 診断 + assert(false) trap } else { once[0]=true;
+   __scps_driveN(k(rv)) }` を束縛して元の arm body を無変更で置く。
+   one-shot trap を `Error::Throw` にしなかったのは、#944 entry boundary
+   が Error row を宣言した entry しか wrap しない (row なしプログラムでは
+   raw WebAssembly.Exception が host に漏れてメッセージが消える) ため。
+5. **検証**: scheduler 形 fixture
+   (`fixtures/effect_resume_store_scheduler.vibe`, want 10230 — 2 回の
+   suspend を外側から順に resume して完走)、値経由 post-processing
+   (`effect_resume_value_postprocess.vibe`, want 1017)、one-shot 二重
+   resume trap (`effect_resume_one_shot_trap.vibe`)、非 tail 直呼び #942
+   非退行 (`err_resume_non_tail.vibe`)、ineligible hard error
+   (`err_effect_resume_store_ineligible.vibe`)。gate 50/50。stage2=stage3
+   fixpoint 維持 (コンパイラ自身の ~4k with-Error handle は trigger しない
+   ことの実証でもある)。
+
+**3b への引き継ぎ**: yield bubbling (perform が関数呼び出しの向こうに
+ある場合に callee の戻りを `__Step` 系へ持ち上げる)。3a の
+「call があったら hard error」の error message がそのまま 3b の TODO
+マーカーになっている。3c は @vibex/concurrent の TaskCell に継続 slot を
+足して cooperative scheduler の内部を suspend ベースへ差し替える。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し

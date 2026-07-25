@@ -1,0 +1,38 @@
+// ADR-0076 Phase 3a (#817, docs/effect-evidence-passing.md 追記27): the
+// suspend handler class. The arm STORES `resume` as a first-class value
+// and returns without calling it -- the handle returns the arm's value
+// (the suspension). Calling the stored one-shot continuation later runs
+// the remaining body up to the next perform, where the SAME driver hands
+// out the next continuation -- exactly the scheduler shape ADR-0068's
+// Async::suspend needs (@vibex/concurrent).
+effect Async {
+  Suspend(Int) -> Int
+}
+
+let conts: Array[(Int) -> Int] = []
+
+let _start = () -> Int {
+  let r1 = handle {
+    let a = perform Async::Suspend(1)
+    let b = perform Async::Suspend(2)
+    a + b
+  } with Async {
+    Suspend(t) => {
+      Array::push(conts, resume)
+      0 - t
+    }
+  }
+  // r1 = -1: the first suspend's arm value IS the handle result.
+  let k1 = Array::get(conts, 0)
+  let r2 = k1(10)
+  // r2 = -2: resuming a=10 ran the body to the second suspend, whose arm
+  // stored the next continuation and suspended again.
+  let k2 = Array::get(conts, 1)
+  let r3 = k2(20)
+  // r3 = 30: resuming b=20 completed the body (10 + 20).
+  (0 - r1) * 10000 + (0 - r2) * 100 + r3
+}
+_start()
+
+__DATA__
+{"last":"10230"}

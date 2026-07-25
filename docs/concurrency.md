@@ -653,6 +653,19 @@ compiler gate 47/47。`@vibex/concurrent` の `TaskGroup::spawn` /
 未着手: spawn closure の capture 検査(`Spawnable`)、`Sender[r,T]` の
 同一 nursery 特例、region 生成性。
 
+### 実装ノート (2026-07-25 追記): suspend 継続の第一級化 (ADR-0076 Phase 3a)
+
+実装順 step 2 の入口が着地: handler arm が `resume` を第一級 one-shot 値
+として保存し、後から別の dynamic extent で呼べるようになった (linear
+backend、depth-0 — perform が handle body 直下にある場合のみ)。これは
+本 ADR の `Async::suspend` が要求する「scheduler が継続を受け取る」形
+そのもので、`fixtures/effect_resume_store_scheduler.vibe` が
+suspend → 外部から resume → 次の suspend → 完走のサイクルを pin する。
+次の一手 (3c) は `TaskCell` に継続 slot を足して cooperative scheduler
+の run-to-completion 制約 (mid-body の相互 blocking 不可) を解除する
+こと。詳細は [effect-evidence-passing.md](effect-evidence-passing.md)
+追記27/28。
+
 ## v0.4.0 に含めないもの
 
 - raw OS thread / Worker API、thread affinity、priority、CPU count の安定公開

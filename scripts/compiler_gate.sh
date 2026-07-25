@@ -6243,4 +6243,79 @@ fi
 rm -rf "$rc1085dir"
 echo "[compiler-gate] RC branch+loop mixed-consume over-drop (#1085) ok"
 
+# 50/50. ADR-0076 Phase 3a (#817, docs/effect-evidence-passing.md 追記27):
+#        first-class `resume` (suspend handler class) via the depth-0
+#        suspend CPS lowering (suspend_cps_pass in codegen/common_base/
+#        inline_direct_perform.vibe + the checker's arm-scope `resume`
+#        binding). Positive: the scheduler shape -- an arm STORES resume,
+#        the handle returns the suspension value, and the stored one-shot
+#        continuations drive the remaining body suspend-by-suspend
+#        (want 10230); post-processing through the value form
+#        (`let k = resume  let r = k(v)  r + 7`, want 1017). Runtime: the
+#        second call of the same continuation writes the one-shot message
+#        to stderr and traps (assert). Negative: a non-tail DIRECT
+#        resume(...) call stays rejected (#942 unchanged), and a
+#        triggered-but-ineligible body (perform reached through a function
+#        call) is a HARD compile error, never a silent replay fallback.
+echo "[compiler-gate] 50/50 ADR-0076 Phase 3a first-class resume (suspend CPS)"
+scpsdir="_build/_gate_scps"
+rm -rf "$scpsdir"; mkdir -p "$scpsdir"
+scps_run_expect() {
+  local fixture="$1" want="$2" tag="$3"
+  sed '/^_start()$/d; /^__DATA__$/,$d' "fixtures/$fixture" > "$scpsdir/$tag.vibe"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$scpsdir/$tag.vibe" "$scpsdir/$tag.wasm" _start >/dev/null 2>&1 || true
+  if [ ! -s "$scpsdir/$tag.wasm" ]; then
+    echo "[compiler-gate] FAIL: $fixture did not compile -- Phase 3a suspend lowering regressed" >&2
+    cat "$scpsdir/$tag.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  local out
+  out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$scpsdir/$tag.wasm" 2>/dev/null | tail -1)"
+  if [ "$out" != "$want" ]; then
+    echo "[compiler-gate] FAIL: $fixture got '$out' (want $want)" >&2
+    exit 1
+  fi
+}
+scps_run_expect "effect_resume_store_scheduler.vibe" "10230" "sched"
+scps_run_expect "effect_resume_value_postprocess.vibe" "1017" "post"
+# one-shot violation: must NOT produce a value; the failure output carries
+# the one-shot stderr diagnostic before the assert trap.
+sed '/^_start()$/d' fixtures/effect_resume_one_shot_trap.vibe > "$scpsdir/once.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$scpsdir/once.vibe" "$scpsdir/once.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$scpsdir/once.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_resume_one_shot_trap.vibe did not compile" >&2
+  cat "$scpsdir/once.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+scps_once_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$scpsdir/once.wasm" 2>&1 || true)"
+if ! printf '%s' "$scps_once_out" | grep -q "one-shot continuation called twice"; then
+  echo "[compiler-gate] FAIL: double resume did not trap with the one-shot message; output was:" >&2
+  printf '%s\n' "$scps_once_out" >&2
+  exit 1
+fi
+scps_check_reject() {
+  local fixture="$1" needle="$2" tag="$3"
+  sed '/^_start()$/d; /^__DATA__$/,$d' "fixtures/$fixture" > "$scpsdir/$tag.vibe"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$scpsdir/$tag.vibe" "$scpsdir/$tag.wasm" _start >/dev/null 2>&1 || true
+  if [ -s "$scpsdir/$tag.wasm" ]; then
+    echo "[compiler-gate] FAIL: $fixture compiled successfully -- must be rejected" >&2
+    exit 1
+  fi
+  if ! grep -qF "$needle" "$scpsdir/$tag.wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: $fixture did not produce the expected diagnostic ($needle)" >&2
+    cat "$scpsdir/$tag.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+}
+scps_check_reject "err_resume_non_tail.vibe" "must be the last expression of the handler arm" "nontail"
+scps_check_reject "err_effect_resume_store_ineligible.vibe" "cannot see through" "inelig"
+rm -rf "$scpsdir"
+echo "[compiler-gate] ADR-0076 Phase 3a first-class resume ok"
+
 echo "[compiler-gate] ok"

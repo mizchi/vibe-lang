@@ -1,0 +1,29 @@
+// ADR-0076 Phase 3a (#817): a handler arm that captures `resume` as a
+// value requires the depth-0 suspend lowering, and that lowering cannot
+// see through a function call in the handled body (the callee's perform
+// is reached dynamically -- Phase 3b yield bubbling territory). This must
+// be a HARD compile error, never a silent fallback to the replay path.
+effect Async {
+  Suspend(Int) -> Int
+}
+
+let helper = (x: Int) -> Int with { Async } {
+  perform Async::Suspend(x)
+}
+
+let sunk: Array[(Int) -> Int] = []
+
+let _start = () -> Int {
+  handle {
+    helper(3)
+  } with Async {
+    Suspend(t) => {
+      Array::push(sunk, resume)
+      0 - t
+    }
+  }
+}
+_start()
+
+__DATA__
+{"error_contains":"cannot see through"}
