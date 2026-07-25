@@ -1821,6 +1821,80 @@ fixture: `fixtures/effect_local_closure_handle_owner_param.vibe`
 する — そのフォールバック自体が壊れているのが #1070 の残り
 (closure-value ABI、追記25 の「大きい方」) であり、本追記のスコープ外。
 
+### 追記27 (2026-07-25): Phase 3a 設計 — `resume` の第一級化と
+depth-0 suspend CPS (ADR-0068 実装順 step 2 の入口、#817/#1081)
+
+**前提実測 (2026-07-25、stage2 = #1094 相当)**: 現行 surface は
+「tail-resumptive か no-resume か」を既に完全に静的強制している:
+
+- 非 tail の `resume(...)` 呼び出し → checker が reject
+  (`resume(...) must be the last expression of the handler arm` — #942)
+- `resume` の値参照 (`let k = resume`) → `unknown name: resume`
+  (call 構文としてのみ存在)
+
+したがって suspend (第三のクラス: **arm が resume を呼ばずに保存し、
+後で別の dynamic extent から一度だけ呼ぶ** — ADR-0068 の
+`Async::suspend` が要求) は、壊れた既存挙動の migration なしに
+「新しい許可」として追加できる。replay の M2 系の心配も無い (その形は
+そもそもコンパイルされない)。
+
+**Surface (3a)**: handler arm 内で `resume` を第一級値として束縛する。
+
+- checker: arm scope に `resume : (ResumeArg) -> HandleResult` を束縛
+  (op の宣言戻り型 → ResumeArg、handle 式の型 → HandleResult)。
+  直接呼び出し形 `resume(v)` の #942 tail 制約は**維持**
+  (tail-resumptive 高速経路の適格性シグナルを保つ)。値参照した場合のみ
+  新 lowering へ。post-processing (`let r = k(1)  r + 1000`) は値経由で
+  自然に許可される (driver 上では arm はただのコード)。
+- one-shot: 動的 flag で二重呼び出しを trap (静的 affine 検査は後続)。
+
+**Lowering (3a、depth-0)**: codegen-time の AST-to-AST pass
+(`evidence_dict_pass` と同じ位置に配線)。trigger は「arm が resume を
+値参照する handle site」。3a の適用条件: 対象 effect の perform が
+handle body の**直下** (関数呼び出しを跨がない) にのみ現れること。
+
+per-site 合成 (すべて既存 AST ノード + 既存 closure 機構):
+
+```text
+enum __Step_N {                        // handle site N ごとに inject
+  __Done_N(R);                         // body 正常完了 (R = body の型)
+  __Y_N_op(P..., (Q) -> __Step_N)      // op ごとに variant:
+}                                      //   payload + 継続 closure
+
+body を perform 境界で nested closure に分割:
+  { s1  let x = perform E::Op(a)  rest }
+  → () -> { s1  __Y_N_op(a, (x) -> { rest を再帰変換 }) }
+
+driver を合成:
+  let rec __drive_N : (__Step_N) -> R' = (st) -> match st {
+    __Done_N(v) => v への body-value 側変換,
+    __Y_N_op(p.., k) => ARM[ resume := (rv) -> __drive_N(k(rv)) ]
+  }
+  handle 式全体 → __drive_N((body thunk)())
+```
+
+- 継続 closure の capture は既存 closure conversion がそのまま扱う
+  (#1085 の RC 修正で「closure を helper へ渡して store」系の地雷は
+  除去済み。`Cont` の解放は ADR-0076 本文の「RC drop で解放」保証)。
+- arm が resume を保存して呼ばず返れば handle は arm の値で返る。
+  保存された `(rv) -> __drive_N(k(rv))` を後で呼べば、残り body が
+  次の suspend まで走り、そこで**同じ driver が再帰的に arm を評価**
+  する — scheduler が新しい継続を再び受け取る。ADR-0068 の
+  `TaskCell` に継続 slot を足すだけで cooperative scheduler の内部を
+  差し替えられる。
+
+**3b (bubbling) への拡張線**: CPS 対象 effect を row に持つ関数の戻りを
+`__Step` 系へ持ち上げ、call site を `match step { Done → 継続,
+Yielded → 再 wrap して上へ }` に書き換える (wasm_of_ocaml の選択的
+CPS)。変換対象は静的 row から機械列挙できる。depth-0 で driver /
+one-shot / RC 経路を固めてから深さを解禁する。
+
+**検証計画**: scheduler 形 fixture (arm が resume を配列に保存 → handle
+は Suspended を返す → 外側が継続を呼ぶ → 残り body が走る → 順序と
+one-shot trap を pin)、非 tail 直呼びが引き続き #942 で reject される
+ことの pin、tail-resumptive / no-resume の既存 fixture 群の非退行、
+gc backend は当面 ineligible (linear 先行)。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し
