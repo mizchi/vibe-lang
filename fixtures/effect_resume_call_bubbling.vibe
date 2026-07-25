@@ -1,0 +1,68 @@
+// ADR-0076 Phase 3b (#817): yield bubbling -- a suspend-class handle
+// body may CALL a named top-level function whose concrete row carries
+// the handled effect. The callee gets a CPS clone (__scps_cps_*) whose
+// performs yield steps, composed back into the caller's spine with the
+// per-effect __scps_bubble combinator; the ORIGINAL function is untouched
+// for every other caller. Covers: a helper that suspends mid-body
+// (bubble at a let), a recursive helper (self-call bubbling, several
+// suspends deep), and two handle sites sharing one per-effect step enum.
+effect Async {
+  Suspend(Int) -> Int
+}
+
+let conts: Array[(Int) -> Int] = []
+
+let step2 = (x: Int) -> Int with { Async } {
+  let b = perform Async::Suspend(x + 1)
+  b * 2
+}
+
+let sumup = (n: Int) -> Int with { Async } {
+  if n == 0 {
+    0
+  } else {
+    let v = perform Async::Suspend(n)
+    let rest = sumup(n - 1)
+    v + rest
+  }
+}
+
+let _start = () -> Int {
+  // site A: direct suspend, then a suspend INSIDE a called helper.
+  let ra = handle {
+    let a = perform Async::Suspend(1)
+    let c = step2(a)
+    c + 5
+  } with Async {
+    Suspend(t) => {
+      Array::push(conts, resume)
+      0 - t
+    }
+  }
+  // ra = -1 (direct suspend). Resuming a=10 runs into step2, which
+  // suspends with 11; resuming that with 100 finishes: 100*2 + 5 = 205.
+  let ra2 = (Array::get(conts, 0))(10)
+  let ra3 = (Array::get(conts, 1))(100)
+  let val_a = (0 - ra) * 100000 + (0 - ra2) * 1000 + ra3
+  // val_a = 1*100000 + 11*1000 + 205 = 111205
+  // site B: recursion -- sumup(3) suspends at 3, 2, 1, then sums the
+  // resumed values 30 + 20 + 10 = 60.
+  let rb = handle {
+    sumup(3)
+  } with Async {
+    Suspend(t) => {
+      Array::push(conts, resume)
+      0 - t
+    }
+  }
+  let rb2 = (Array::get(conts, 2))(30)
+  let rb3 = (Array::get(conts, 3))(20)
+  let rb4 = (Array::get(conts, 4))(10)
+  let val_b = (0 - rb) * 1000000 + (0 - rb2) * 10000 + (0 - rb3) * 100 + rb4
+  // val_b = 3*1000000 + 2*10000 + 1*100 + 60 = 3020160
+  val_a + val_b
+}
+_start()
+
+__DATA__
+{"last":"3131365"}

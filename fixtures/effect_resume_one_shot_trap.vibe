@@ -1,0 +1,27 @@
+// ADR-0076 Phase 3a (#817): a stored continuation is ONE-SHOT. The second
+// call of the same continuation must fail loudly (a stderr diagnostic
+// followed by an assert trap), never silently re-run the body. Driven by
+// the compiler gate (expects a runtime failure mentioning the one-shot
+// violation) -- no __DATA__ pin because the run must NOT produce a value.
+effect Async {
+  Suspend(Int) -> Int
+}
+
+let conts: Array[(Int) -> Int] = []
+
+let _start = () -> Int {
+  let r1 = handle {
+    let a = perform Async::Suspend(1)
+    a
+  } with Async {
+    Suspend(t) => {
+      Array::push(conts, resume)
+      0 - t
+    }
+  }
+  let k = Array::get(conts, 0)
+  let x = k(5)
+  let y = k(6)
+  r1 + x + y
+}
+_start()

@@ -653,6 +653,50 @@ compiler gate 47/47。`@vibex/concurrent` の `TaskGroup::spawn` /
 未着手: spawn closure の capture 検査(`Spawnable`)、`Sender[r,T]` の
 同一 nursery 特例、region 生成性。
 
+### 実装ノート (2026-07-25 追記): suspend 継続の第一級化 (ADR-0076 Phase 3a)
+
+実装順 step 2 の入口が着地: handler arm が `resume` を第一級 one-shot 値
+として保存し、後から別の dynamic extent で呼べるようになった (linear
+backend、depth-0 — perform が handle body 直下にある場合のみ)。これは
+本 ADR の `Async::suspend` が要求する「scheduler が継続を受け取る」形
+そのもので、`fixtures/effect_resume_store_scheduler.vibe` が
+suspend → 外部から resume → 次の suspend → 完走のサイクルを pin する。
+次の一手 (3c) は `TaskCell` に継続 slot を足して cooperative scheduler
+の run-to-completion 制約 (mid-body の相互 blocking 不可) を解除する
+こと。詳細は [effect-evidence-passing.md](effect-evidence-passing.md)
+追記27/28。
+
+### 実装ノート (2026-07-25 追記2): 3c — suspendable task
+(`@vibex/concurrent` への接続、run-to-completion 制約の部分解除)
+
+Phase 3b (yield bubbling、追記29) を受けて、`@vibex/concurrent` に
+suspendable task の第一スライスを実装した:
+
+- `TaskCell` に**継続 slot** (`mut cont: Option[(Int) -> Unit]`) と
+  parked 状態 (status 5) を追加。`TaskGroup` は adopted list +
+  round-robin の pump カーソルを持つ。
+- 新 API: `TaskGroup::adopt` / `TaskHandle::settle` / `TaskHandle::park`
+  (arm の第一級 `resume` を T 消去 wrapper で slot へ保存) /
+  `TaskHandle::wake(v)` (wake 値を届けて再開) / `TaskGroup::pump` /
+  `pump_all` (yield された task を round-robin で駆動)。
+  `effect Async { Suspend(Int) -> Int }` は package contract の透明
+  宣言 (#752)。
+- task body は **adoption site の `handle ... with Async` の中で走る**
+  (canonical shape は concurrent.vibe の Suspendable tasks 節)。
+  suspend lowering は lexical なので、library 内部に保存された closure
+  runner からは suspend できない — `spawn` 側の内部差し替えと channel
+  API の mid-body blocking は **closure-CPS ABI** (row に suspend 対象
+  effect を持つ closure 値の step-returning 化) が残ギャップ。
+- conformance lock (`suspend_test.vibe`): **2 task の mid-body 相互
+  interleave** (run-to-completion では不可能だった形 — log が厳密交互)、
+  wake 値の suspension point への配達、parked task の cancel (継続 drop
+  = RC 解放、ADR-0076 の保証)、suspend しない body の同期 settle。
+  parked のまま group close → deadlock trap (join と同じ規則)。
+
+cancel は parked 状態でも観測されるようになった (mid-run cancel 観測の
+第一歩)。fail-fast と adopted task の統合 (parked sibling の自動
+cancel) は次スライス。#1097 (suspend 継続の local capture × 複数 site の RC trap) は根治済み — match payload を capture する closure literal ごとに payload dup を1 つ追加 (`md_capturing_fn_count`)。suspend_test がローカル capture 形のままregression lock。
+
 ## v0.4.0 に含めないもの
 
 - raw OS thread / Worker API、thread affinity、priority、CPU count の安定公開

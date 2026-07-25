@@ -1,0 +1,38 @@
+// ADR-0076 Phase 3b (#817) interplay pin: a TRIVIAL row-polymorphic
+// wrapper (`apply(f) = f()`) called with a CAPTURE-FREE effectful closure
+// is normalized away before the suspend lowering ever runs -- #786
+// lambda hoisting lifts the closure to a top-level fn whose row carries
+// the effect, and desugar_trait_dict's trivial-wrapper inlining rewrites
+// `apply(inner)` to `inner()` -- leaving a plain needing call the Phase
+// 3b clone/bubble machinery handles. Locks that this composition keeps
+// working (a regression would surface as an unhandled perform at
+// runtime, or as a spurious ineligibility error).
+effect Async {
+  Suspend(Int) -> Int
+}
+
+let apply = (f: () -> Int with { e }) -> Int with { e } {
+  f()
+}
+
+let conts: Array[(Int) -> Int] = []
+
+let _start = () -> Int {
+  let r = handle {
+    apply(() -> {
+      perform Async::Suspend(1)
+    })
+  } with Async {
+    Suspend(t) => {
+      Array::push(conts, resume)
+      0 - t
+    }
+  }
+  // r = -1 (suspended); resuming with 5 finishes the hoisted closure
+  // body, so the handle's driver completes with 5.
+  r * 100 + (Array::get(conts, 0))(5)
+}
+_start()
+
+__DATA__
+{"last":"-95"}

@@ -44,15 +44,33 @@
 // a dispatched consumer drains greedily) — that interleaving needs real
 // suspension. Drive such pipelines from the task group body side, or size
 // the capacity to the burst, until the suspend IR lands.
+//
+// 3c UPDATE (ADR-0076 Phase 3a/3b landed): mid-body suspension IS now
+// available through the suspendable-task API at the bottom of this file
+// (TaskGroup::adopt / TaskHandle::park / wake / pump — `Async::Suspend`
+// + first-class `resume`). Two adopted tasks CAN block mid-body against
+// each other and interleave (suspend_test.vibe). The run-to-completion
+// caveats above still apply to `spawn`ed tasks: routing a SPAWNED task's
+// body through the suspend lowering needs the closure-CPS ABI (the
+// lowering is lexical; a stored `() -> T` runner cannot suspend), which
+// is the remaining gap before the channel API can block mid-body.
 
 //# Types
 
 // Task status codes (internal): 0 ready, 1 running, 2 succeeded,
-// 3 failed, 4 cancelled. Terminal states (2/3/4) never change again.
+// 3 failed, 4 cancelled, 5 parked (suspended mid-body; `cont` holds the
+// continuation — ADR-0076 Phase 3a/3b first-class resume). Terminal
+// states (2/3/4) never change again.
 export struct TaskCell {
   mut status: Int;
   mut cancel_requested: Bool;
-  mut fail_msg: String
+  mut fail_msg: String;
+  // The continuation slot (ADR-0068 実装ノート 3c): a parked suspendable
+  // task's wrapped resume — calling it with the wake value runs the task
+  // to its next suspend (or completion). Uniform (Int) -> Unit so the
+  // group can hold heterogeneous tasks; the T-aware settle logic lives in
+  // the wrapper closure TaskHandle::park builds.
+  mut cont: Option[(Int) -> Unit]
 }
 
 // Task-group phase codes: 0 open, 1 cancelling (fail-fast in progress),
@@ -64,7 +82,10 @@ export struct TaskGroup {
   mut next: Int;
   mut phase: Int;
   mut failing: Bool;
-  mut fail_msg: String
+  mut fail_msg: String;
+  // Suspendable (adopted) tasks — driven by pump/wake, not drive_one.
+  mut adopted: Array[TaskCell];
+  mut pump_next: Int
 }
 
 export struct ResCell[T] { mut value: Option[T] }
@@ -227,7 +248,9 @@ export fn TaskGroup::run[T](body: (TaskGroup) -> T with { e }) -> Result[T, Task
     next: 0,
     phase: 0,
     failing: false,
-    fail_msg: ""
+    fail_msg: "",
+    adopted: empty_cells(),
+    pump_next: 0
   }
   let v = body(n)
   // Normal body end starts joining unfinished children.
@@ -235,6 +258,15 @@ export fn TaskGroup::run[T](body: (TaskGroup) -> T with { e }) -> Result[T, Task
   let mut progressed = true
   while progressed {
     progressed = drive_one(n)
+  }
+  // Closing with a still-parked (or mid-resume) adopted task is a
+  // deadlock — nothing inside run can produce its wake value — so trap,
+  // mirroring join's rule, instead of silently dropping the task.
+  let mut ai = 0
+  while ai < Array::length(n.adopted) {
+    let ac = Array::get(n.adopted, ai)
+    conc_require(ac.status == 2 || ac.status == 3 || ac.status == 4)
+    ai = ai + 1
   }
   n.phase = 3
   if n.failing {
@@ -252,7 +284,7 @@ export fn TaskGroup::run[T](body: (TaskGroup) -> T with { e }) -> Result[T, Task
 export fn TaskGroup::spawn[T: Send](n: TaskGroup, f: () -> T with { Error }) -> TaskHandle[T] {
   conc_require(n.phase == 0)
   let rc = ResCell::{ value: None }
-  let cell = TaskCell::{ status: 0, cancel_requested: false, fail_msg: "" }
+  let cell = TaskCell::{ status: 0, cancel_requested: false, fail_msg: "", cont: None }
   let runner: () -> Unit = () -> {
     handle {
       let v = f()
@@ -342,12 +374,20 @@ export fn TaskHandle::join[T](h: TaskHandle[T]) -> Result[T, TaskError] {
 }
 
 // Cooperative cancel request: idempotent; a no-op on terminal tasks.
-// Observed at the Ready -> dispatch cancel point (a task whose body
-// already started runs to completion in this MVP — mid-run cancel
-// points arrive with the suspend IR).
+// Observed at the Ready -> dispatch cancel point, and — since the 3c
+// suspendable-task slice — at the PARKED state: cancelling a parked task
+// resolves it Cancelled immediately and DROPS its stored continuation
+// (the RC drop frees everything the continuation captured — the
+// ADR-0076 "Cont は RC drop で解放" guarantee).
 export fn TaskHandle::cancel[T](h: TaskHandle[T]) -> Unit {
   let c = h.cell
   c.cancel_requested = true
+  if c.status == 5 {
+    c.status = 4
+    c.cont = None
+  } else {
+    ()
+  }
 }
 
 //# Channel
@@ -497,4 +537,143 @@ export fn Receiver::recv[T](r: Receiver[T]) -> Option[T] {
   }
   c.waiting_recv = c.waiting_recv - 1
   out
+}
+
+//# Suspendable tasks (ADR-0068 実装ノート 3c — ADR-0076 Phase 3a/3b の
+//# first-class resume を scheduler に接続する最初のスライス)
+
+// A suspendable task is DRIVEN FROM USER CODE: the task body runs inside
+// a `handle ... with Async` written at the adoption site (the suspend
+// lowering needs the body lexically -- calling a stored closure from
+// library code cannot suspend until the closure-CPS ABI lands), its arm
+// parks `resume` into the task's continuation slot, and the group's
+// pump/wake APIs later run the stored continuation to the next suspend.
+// Canonical shape:
+//
+//   let h = TaskGroup::adopt(g)
+//   TaskHandle::settle(h, handle {
+//     ...body, `perform Async::Suspend(reason)` at suspension points...
+//     SDone(result)
+//   } with Async {
+//     Suspend(r) => {
+//       TaskHandle::park(h, resume)
+//       SParked
+//     }
+//   })
+//
+// The body is subject to the suspend lowering's eligibility rules
+// (docs/effect-evidence-passing.md 追記27-29): performs and calls to
+// row-carrying functions on the let/seq/tail/branch-tail spine; other
+// calls limited to pure builtins / constructors / provably-Async-free
+// functions.
+
+// The step a suspendable task's handle produces: the user wraps the
+// body's value in SDone; the parking arm returns SParked.
+export enum TaskStep[T] {
+  SDone(T);
+  SParked
+}
+
+// Register a suspendable task with the group. The body runs (to its
+// first suspend) at the adoption site immediately after, so the cell
+// starts Running rather than Ready; it never enters the drive_one queue.
+export fn TaskGroup::adopt[T: Send](n: TaskGroup) -> TaskHandle[T] {
+  conc_require(n.phase == 0)
+  let rc = ResCell::{ value: None }
+  let cell = TaskCell::{ status: 1, cancel_requested: false, fail_msg: "", cont: None }
+  Array::push(n.adopted, cell)
+  TaskHandle::{ group: n, cell: cell, result: rc }
+}
+
+// Record the handle-site result of a suspendable task: SDone settles the
+// task (the body finished without suspending, or this is the value of a
+// later resume leg via the park wrapper); SParked means the arm already
+// parked the continuation.
+export fn TaskHandle::settle[T](h: TaskHandle[T], step: TaskStep[T]) -> Unit {
+  match step {
+    SDone(v) => {
+      h.result.value = Some(v)
+      h.cell.status = 2
+      ()
+    },
+    SParked => ()
+  }
+}
+
+// Park the arm's first-class `resume` into the task's continuation slot.
+// The stored wrapper is uniform (Int) -> Unit: calling it resumes the
+// body with the wake value; if the body runs to completion the wrapper
+// settles the result, and if it suspends again the arm has already
+// re-parked (this same function) before the wrapper observes SParked.
+export fn TaskHandle::park[T](h: TaskHandle[T], k: (Int) -> TaskStep[T]) -> Unit {
+  let cell = h.cell
+  let rc = h.result
+  cell.status = 5
+  cell.cont = Some((rv: Int) -> {
+    cell.status = 1
+    match k(rv) {
+      SDone(v) => {
+        rc.value = Some(v)
+        cell.status = 2
+        ()
+      },
+      SParked => ()
+    }
+  })
+  ()
+}
+
+// Deliver a wake value to a specific parked task, resuming it on the
+// caller's stack. False when the task is not currently parked (running,
+// terminal, or already woken -- the continuation slot is one-shot at the
+// cell level too, on top of the lowering's own one-shot trap).
+export fn TaskHandle::wake[T](h: TaskHandle[T], v: Int) -> Bool {
+  let c = h.cell
+  if c.status == 5 {
+    match c.cont {
+      Some(k) => {
+        c.cont = None
+        k(v)
+        true
+      },
+      None => false
+    }
+  } else {
+    false
+  }
+}
+
+// Resume ONE parked adopted task with wake value 0 (cooperative yield),
+// round-robin from just after the last pumped slot so two tasks that
+// re-park immediately keep alternating. False when nothing is parked.
+export fn TaskGroup::pump(n: TaskGroup) -> Bool {
+  let total = Array::length(n.adopted)
+  loop (step = 0) {
+    if step >= total { break false }
+    let i = (n.pump_next + step) % total
+    let c = Array::get(n.adopted, i)
+    if c.status == 5 {
+      n.pump_next = (i + 1) % total
+      match c.cont {
+        Some(k) => {
+          c.cont = None
+          k(0)
+          ()
+        },
+        None => ()
+      }
+      break true
+    } else {
+      continue(step + 1)
+    }
+  }
+}
+
+// Pump until no adopted task is parked. Tasks that yield in a cycle
+// against each other interleave deterministically (round-robin).
+export fn TaskGroup::pump_all(n: TaskGroup) -> Unit {
+  let mut go = true
+  while go {
+    go = TaskGroup::pump(n)
+  }
 }

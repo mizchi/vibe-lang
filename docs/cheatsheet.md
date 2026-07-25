@@ -627,6 +627,38 @@ fn main with { Stdout } {
 > 可変状態の蓄積は handler arm 側か handle の外に置く。この制約は
 > evidence-passing handler 移行 (#817) で解消予定。
 
+**`resume` は arm 内で第一級の one-shot 値** (ADR-0076 Phase 3a, #817):
+直接呼び出し `resume(v)` は tail 位置限定のまま (#942) だが、値として
+束縛・保存すればふつうの closure として後から (一度だけ) 呼べる —
+scheduler が継続を受け取る suspend パターンの基盤 (ADR-0068)。
+
+```vibe
+effect Async { Suspend(Int) -> Int }
+let conts: Array[(Int) -> Int] = []
+
+let r = handle {
+  let a = perform Async::Suspend(1)
+  a * 10
+} with Async {
+  Suspend(t) => {
+    Array::push(conts, resume)   // 保存して…
+    0 - t                        // …arm の値で handle が「サスペンド」
+  }
+}
+// あとで (Array::get(conts, 0))(5) を呼ぶと残りの body が走って 50
+```
+
+制約 (linear backend のみ): resume を値参照する handle の body では、
+対象 effect の perform (と、row にその effect を持つ関数の呼び出し) は
+let/seq/tail/分岐 tail に直接現れる必要がある。**concrete な row に
+対象 effect を含む top-level 関数の呼び出しは可** (3b yield bubbling —
+再帰も可; callee には CPS clone が合成され、元の関数は他の呼び出し元
+向けに無変更)。それ以外に呼べるのは perform / pure builtin / ctor /
+「concrete row が対象 effect を含まない関数」。row 変数 (`with { e }`)
+付き callee・loop 内の perform は compile error。同じ継続の 2 回目の
+呼び出しは stderr 診断つきで trap する。post-processing は値経由
+(`let k = resume  let r = k(v)  r + 7`) で書く。
+
 operation の宣言 arity より 1 つ多い末尾パラメータを束縛する `k` 規約
 (`Emit(v, k) => v + k(0)`、non-tail 継続) は **旧 MoonBit fixture runner
 専用だった機能で、現行 build path では未サポート** — checker が

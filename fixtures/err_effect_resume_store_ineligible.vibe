@@ -1,0 +1,41 @@
+// ADR-0076 Phase 3a/3b (#817): a handler arm that captures `resume` as a
+// value requires the suspend lowering, and that lowering cannot see
+// through a callee whose declared row is a row VARIABLE -- the variable
+// can be instantiated to the handled effect via a closure argument the
+// pass cannot track. This must be a HARD compile error, never a silent
+// fallback to the replay path. (The concrete-row callee case is
+// SUPPORTED since Phase 3b -- fixtures/effect_resume_call_bubbling.vibe.)
+//
+// The wrapper must be NON-trivial and the closure must CAPTURE: a
+// trivial `apply(f) = f()` with a capture-free closure is normalized
+// away upstream (#786 lambda hoisting + trivial-wrapper inlining) into a
+// plain call to a row-carrying top-level fn, which the suspend lowering
+// then handles legitimately -- see fixtures/
+// effect_resume_rowvar_wrapper_normalized.vibe for that positive pin.
+effect Async {
+  Suspend(Int) -> Int
+}
+
+let apply2 = (f: (Int) -> Int with { e }, bias: Int) -> Int with { e } {
+  bias + f(bias)
+}
+
+let sunk: Array[(Int) -> Int] = []
+
+let _start = () -> Int {
+  let cap = 7
+  handle {
+    apply2((x) -> {
+      perform Async::Suspend(x + cap)
+    }, 2)
+  } with Async {
+    Suspend(t) => {
+      Array::push(sunk, resume)
+      0 - t
+    }
+  }
+}
+_start()
+
+__DATA__
+{"error_contains":"cannot see through"}

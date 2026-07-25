@@ -1821,6 +1821,222 @@ fixture: `fixtures/effect_local_closure_handle_owner_param.vibe`
 する — そのフォールバック自体が壊れているのが #1070 の残り
 (closure-value ABI、追記25 の「大きい方」) であり、本追記のスコープ外。
 
+### 追記27 (2026-07-25): Phase 3a 設計 — `resume` の第一級化と
+depth-0 suspend CPS (ADR-0068 実装順 step 2 の入口、#817/#1081)
+
+**前提実測 (2026-07-25、stage2 = #1094 相当)**: 現行 surface は
+「tail-resumptive か no-resume か」を既に完全に静的強制している:
+
+- 非 tail の `resume(...)` 呼び出し → checker が reject
+  (`resume(...) must be the last expression of the handler arm` — #942)
+- `resume` の値参照 (`let k = resume`) → `unknown name: resume`
+  (call 構文としてのみ存在)
+
+したがって suspend (第三のクラス: **arm が resume を呼ばずに保存し、
+後で別の dynamic extent から一度だけ呼ぶ** — ADR-0068 の
+`Async::suspend` が要求) は、壊れた既存挙動の migration なしに
+「新しい許可」として追加できる。replay の M2 系の心配も無い (その形は
+そもそもコンパイルされない)。
+
+**Surface (3a)**: handler arm 内で `resume` を第一級値として束縛する。
+
+- checker: arm scope に `resume : (ResumeArg) -> HandleResult` を束縛
+  (op の宣言戻り型 → ResumeArg、handle 式の型 → HandleResult)。
+  直接呼び出し形 `resume(v)` の #942 tail 制約は**維持**
+  (tail-resumptive 高速経路の適格性シグナルを保つ)。値参照した場合のみ
+  新 lowering へ。post-processing (`let r = k(1)  r + 1000`) は値経由で
+  自然に許可される (driver 上では arm はただのコード)。
+- one-shot: 動的 flag で二重呼び出しを trap (静的 affine 検査は後続)。
+
+**Lowering (3a、depth-0)**: codegen-time の AST-to-AST pass
+(`evidence_dict_pass` と同じ位置に配線)。trigger は「arm が resume を
+値参照する handle site」。3a の適用条件: 対象 effect の perform が
+handle body の**直下** (関数呼び出しを跨がない) にのみ現れること。
+
+per-site 合成 (すべて既存 AST ノード + 既存 closure 機構):
+
+```text
+enum __Step_N {                        // handle site N ごとに inject
+  __Done_N(R);                         // body 正常完了 (R = body の型)
+  __Y_N_op(P..., (Q) -> __Step_N)      // op ごとに variant:
+}                                      //   payload + 継続 closure
+
+body を perform 境界で nested closure に分割:
+  { s1  let x = perform E::Op(a)  rest }
+  → () -> { s1  __Y_N_op(a, (x) -> { rest を再帰変換 }) }
+
+driver を合成:
+  let rec __drive_N : (__Step_N) -> R' = (st) -> match st {
+    __Done_N(v) => v への body-value 側変換,
+    __Y_N_op(p.., k) => ARM[ resume := (rv) -> __drive_N(k(rv)) ]
+  }
+  handle 式全体 → __drive_N((body thunk)())
+```
+
+- 継続 closure の capture は既存 closure conversion がそのまま扱う
+  (#1085 の RC 修正で「closure を helper へ渡して store」系の地雷は
+  除去済み。`Cont` の解放は ADR-0076 本文の「RC drop で解放」保証)。
+- arm が resume を保存して呼ばず返れば handle は arm の値で返る。
+  保存された `(rv) -> __drive_N(k(rv))` を後で呼べば、残り body が
+  次の suspend まで走り、そこで**同じ driver が再帰的に arm を評価**
+  する — scheduler が新しい継続を再び受け取る。ADR-0068 の
+  `TaskCell` に継続 slot を足すだけで cooperative scheduler の内部を
+  差し替えられる。
+
+**3b (bubbling) への拡張線**: CPS 対象 effect を row に持つ関数の戻りを
+`__Step` 系へ持ち上げ、call site を `match step { Done → 継続,
+Yielded → 再 wrap して上へ }` に書き換える (wasm_of_ocaml の選択的
+CPS)。変換対象は静的 row から機械列挙できる。depth-0 で driver /
+one-shot / RC 経路を固めてから深さを解禁する。
+
+**検証計画**: scheduler 形 fixture (arm が resume を配列に保存 → handle
+は Suspended を返す → 外側が継続を呼ぶ → 残り body が走る → 順序と
+one-shot trap を pin)、非 tail 直呼びが引き続き #942 で reject される
+ことの pin、tail-resumptive / no-resume の既存 fixture 群の非退行、
+gc backend は当面 ineligible (linear 先行)。
+
+### 追記28 (2026-07-25): Phase 3a 実装着地 — 追記27 の設計どおり、初回で
+
+**実装 (2 箇所 + gate)**:
+
+1. **checker** (`checker/checker.vibe` EHandle の declared-effect arm 検査):
+   arm body の check_expr にだけ `resume : CtFn([op戻り型], handle結果型,
+   None)` を束縛した `henv_arm` を渡す。`check_resume_values` は束縛前の
+   `henv` のまま (resume_shadowed 検出と直呼び引数検査を不変に保つ)。
+   payload binder が literal に `resume` という名前ならユーザの束縛が勝つ
+   (追加束縛しない)。#942 の tail 制約 (`check_arm_resume_tail`) は
+   call site だけを見る別 walk なので値参照では発火しない — 直呼び形の
+   制約は完全に不変。
+2. **codegen** (`codegen/common_base/inline_direct_perform.vibe` 末尾に
+   `suspend_cps_pass` を追記 — 新規ファイルにしなかったのは
+   evidence_dict_pass と同じ bootstrap flatten 回避)。
+   `compile_wasi_module_linked_impl` の `lc_wrap_entry_error_boundary` 直後
+   / `inline_direct_performs` 直前に配線 (Phase 2 / evidence pass は
+   本 pass が残した site しか見ない)。trigger = arm が `resume` を裸の値と
+   して参照する handle site (shadow 追跡は #942 と同じ規則)。
+   ineligible な triggered site は error list 経由で `throw` する hard
+   compile error (replay に silent fallback しない — 値参照 arm は replay
+   では compile できないため)。
+3. **eligibility (depth-0)**: (a) 対象 op の perform が body の
+   let/seq/tail/branch-tail spine 上に直接現れる (loop / let mut spine /
+   ネスト式位置は 3b)、(b) body 内の call は perform か
+   `idp_pure_builtin_names` のみ (それ以外は動的 perform を隠しうる)、
+   (c) nested handle / target-perform 入り closure なし、(d) Error:: arm
+   との混在なし。arm body 側は無制限 (driver 上ではただのコード)。
+4. **lowering 詳細**: per-site `__ScpsStepN` enum (`__ScpsDoneN(R)` +
+   arm ごと `__ScpsYN_i(P.., k)`) を SEnum で inject、body を継続 closure
+   に分割、`let rec __scps_driveN` が dispatch。driver の各 arm は
+   `let __scps_onceN = [false]` + `let resume = (rv) -> if once[0] {
+   stderr 診断 + assert(false) trap } else { once[0]=true;
+   __scps_driveN(k(rv)) }` を束縛して元の arm body を無変更で置く。
+   one-shot trap を `Error::Throw` にしなかったのは、#944 entry boundary
+   が Error row を宣言した entry しか wrap しない (row なしプログラムでは
+   raw WebAssembly.Exception が host に漏れてメッセージが消える) ため。
+5. **検証**: scheduler 形 fixture
+   (`fixtures/effect_resume_store_scheduler.vibe`, want 10230 — 2 回の
+   suspend を外側から順に resume して完走)、値経由 post-processing
+   (`effect_resume_value_postprocess.vibe`, want 1017)、one-shot 二重
+   resume trap (`effect_resume_one_shot_trap.vibe`)、非 tail 直呼び #942
+   非退行 (`err_resume_non_tail.vibe`)、ineligible hard error
+   (`err_effect_resume_store_ineligible.vibe`)。gate 50/50。stage2=stage3
+   fixpoint 維持 (コンパイラ自身の ~4k with-Error handle は trigger しない
+   ことの実証でもある)。
+
+**3b への引き継ぎ**: yield bubbling (perform が関数呼び出しの向こうに
+ある場合に callee の戻りを `__Step` 系へ持ち上げる)。3a の
+「call があったら hard error」の error message がそのまま 3b の TODO
+マーカーになっている。3c は @vibex/concurrent の TaskCell に継続 slot を
+足して cooperative scheduler の内部を suspend ベースへ差し替える。
+
+### 追記29 (2026-07-25): Phase 3b 実装 — yield bubbling (call 越え suspend)
+
+3a の「body 内の call は perform と pure builtin のみ」制約を解除した。
+suspend-class の handle body から、**concrete な row に対象 effect を含む
+top-level 関数を呼べる** (再帰含む)。wasm_of_ocaml の選択的 CPS +
+double compilation を per-effect enum で実装:
+
+1. **step 型を per-site から per-effect へ**: `__ScpsStep_<E>`
+   (`__ScpsDone_<E>` + effect **宣言**の全 op ぶんの
+   `__ScpsY_<E>_<op>`)。site と clone をまたいで共有するには site 独立の
+   型が必要 (3a の per-site enum はこの時点で廃止)。backend は untyped
+   tagged なので Done の payload 型が呼び出し元ごとに違っても問題ない。
+2. **bubble combinator**: effect ごとに
+   `let rec __scps_bubble_E = (st, k) -> match st { Done(v) => k(v),
+   Y_op(p.., kk) => Y_op(p.., (rv) -> __scps_bubble_E(kk(rv), k)) }` を
+   1 個 inject。「callee の step を 1 段上へ再 wrap する」の実体。
+3. **CPS clone (double compilation)**: row が E を含む callee `f` ごとに
+   `__scps_cps_E_f` を合成 — f の body を同じ spine split に通した版
+   (直接 perform → Y 構築、needing call → bubble 合成、worklist で再帰)。
+   **オリジナルの f は無変更** — replay / Phase 2 inline / evidence-dict
+   の呼び出し元はビット単位で今まで通り。clone の EFn は意図的に
+   `eff=None`: evidence_dict_pass は row 文字列から needing 集合を作るの
+   で、perform を失った clone が E の evidence 適格性を沈めないため。
+4. **call site**: `let x = f(a)  REST` →
+   `__scps_bubble_E(__scps_cps_E_f(a), (x) -> split(REST))`。
+   tail `f(a)` → `__scps_cps_E_f(a)` (step passthrough — Done がそのまま
+   この計算の Done)。
+5. **緩和された call policy** (soundness は checker の row 検査に還元):
+   body 内で安全な call = perform / pure builtin / enum・suberror ctor /
+   **concrete row が E を含まず row 変数も持たない** top-level 関数
+   (unhandled な E perform が f から到達可能なら checker が f の row に
+   E か row 変数を強制する — だから concrete E-free row は E を perform
+   できない)。row 変数 (`with { e }`) を持つ non-needing callee は
+   closure 引数経由で E を注入されうるので hard error のまま (これが
+   3b の残 TODO マーカー)。loop / let mut spine 上の suspend も未対応。
+
+**上流正規化との相互作用 (実測)**: trivial な row-var wrapper
+(`apply(f) = f()`) + capture-free closure の組は、本 pass の前に
+#786 lambda hoisting (closure → row 付き top-level fn) と
+desugar_trait_dict の trivial-wrapper inlining (`apply(inner)` →
+`inner()`) で「row が E を含む関数への直接呼び出し」へ潰れるため、
+row-var reject を踏まずに 3b がそのまま処理する (最初の reject fixture
+がこれで compile に成功して発覚)。reject を踏むのは non-trivial
+wrapper + capturing closure の組から。
+
+fixtures: `effect_resume_call_bubbling.vibe` (helper 途中 suspend +
+再帰 helper の多段 suspend + 2 site で enum 共有、want 3131365)、
+`effect_resume_rowvar_wrapper_normalized.vibe` (上記正規化の positive
+pin、want -95)、`err_effect_resume_store_ineligible.vibe` (non-trivial
+row-var callee reject)、`err_effect_resume_store_loop.vibe` (loop spine
+reject)。gate 50 更新。
+
+### 追記30 (2026-07-25): 3c — @vibex/concurrent への接続と
+safe-mut builtin list
+
+`@vibex/concurrent` に suspendable task API (adopt/settle/park/wake/
+pump — docs/concurrency.md 実装ノート「3c」参照) を実装し、2 task の
+mid-body 相互 interleave の conformance lock (`suspend_test.vibe`) が
+Phase 3a/3b の lowering 上で green。パターンの要点:
+
+- handle site は adoption site (user code) に置く — lowering は lexical
+  なので、library に保存された closure runner からは suspend できない。
+  `spawn` 内部の差し替えと channel の mid-body blocking は
+  **closure-CPS ABI** (row に suspend 対象 effect を持つ closure 値を
+  step-returning 形でコンパイルし、呼び出し規約を分岐する) が前提 —
+  これが Phase 3 の次の大物。
+- arm の `resume` は `TaskHandle::park(h, resume)` で fn 境界を越えて
+  保存される — #1070 の store ケースはこの shape (capturing closure を
+  引数渡し→struct field へ保存→後で呼ぶ) では現行 head で正しく動く
+  ことを probe で確認済み。
+- RC 会計の未踏ケースを 1 つ発見し**修正済み** (#1097): match で
+  pattern-bind した payload (継続 closure) を arm 内の closure literal が
+  capture すると、env は borrow のまま scrutinee が先に死んで dangle
+  していた (2 つ目の site が freed block を再利用した時点で trap;
+  capture-free 継続は static closure なので無害だった)。修正は
+  compile_match の payload dup 数に「capture する literal 1 個につき
+  +1」を加算する `md_capturing_fn_count` (common_analysis)。過剰分は
+  bounded leak (owned-captures closure ABI までの暫定)。fixture
+  `rc_match_payload_closure_capture_test.vibe` + gate 51、
+  suspend_test の interleave はローカル配列 capture に戻して
+  library-level の regression lock とした。
+- eligibility の実用上の穴として `Array::push` 等の mutation builtin が
+  body で呼べなかったため、`scps_is_safe_mut_builtin` を追加した。
+  idp_pure_builtin_names と別リストにしたのは意図的: 共有リストへの
+  追加は Phase 2 inline / evidence pass の適格性 (= replay 側の副作用
+  重複回数) を同時に変えてしまい、replay 値で pin 済みの fixture 群を
+  巻き込むため。suspend lowering に必要な性質は「perform できない・
+  user closure を呼べない」だけで、mutation の有無は無関係。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し
