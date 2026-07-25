@@ -214,6 +214,31 @@ test "spawn_suspend with a pure body settles synchronously" {
   })
 }
 
+// Codex review regression (#1110): a LONE task that yields (Suspend(0))
+// three or more times must complete normally — cooperative yields carry
+// no progress bump, and the first deadlock-detector counted them as
+// stalls (traps at the 3rd consecutive yield of a single task). Yields
+// are never deadlock evidence; only pollers (Suspend(1)) are.
+test "a lone spawn_suspend task may yield three times without tripping the deadlock trap" {
+  let out = TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let _y1 = perform Async::Suspend(0)
+      let _y2 = perform Async::Suspend(0)
+      let _y3 = perform Async::Suspend(0)
+      21
+    })
+    TaskGroup::pump_all(g)
+    match TaskHandle::join(h) {
+      Ok(v) => v * 2,
+      Err(_) => 0 - 1
+    }
+  })
+  assert(match out {
+    Ok(v) => v == 42,
+    Err(_) => false
+  })
+}
+
 // Channel blocking (ADR-0076 追記31 の続きスライス): the shape the module
 // header called out as impossible under run-to-completion — a producer
 // overflowing a capacity-1 channel while the consumer drains — now works
