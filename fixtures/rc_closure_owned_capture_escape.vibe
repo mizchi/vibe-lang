@@ -1,0 +1,26 @@
+// owned-captures ABI (ADR-0076 追記31 Vertical A): a closure env must OWN
+// its heap captures. The dangling shape generalizes #1097 beyond match
+// payloads: `row` is a BORROWED view (Array::get) of `arr`'s element; the
+// closure captures `row`, escapes, and `arr`'s scope-end recursive drop
+// frees the element block. churn() then reuses the freed block through the
+// free list, so calling the escaped closure reads the reused block's
+// contents (silent corruption). With owned captures the closure creation
+// dups `row` (env holds its own reference across the owner's drop) and the
+// closure's class-7 recursive drop releases it. want 4067 (f()=4, x=67).
+fn make_f() -> () -> Int {
+  let arr = [[1, 2], [3, 4]]
+  let row = Array::get(arr, 1)
+  () -> Int { Array::get(row, 1) }
+}
+
+fn churn() -> Int {
+  let a = [7, 8]
+  let b = [40, 50, 60]
+  Array::get(a, 0) + Array::get(b, 2)
+}
+
+let _start = () -> Int {
+  let f = make_f()
+  let x = churn()
+  f() * 1000 + x
+}

@@ -477,12 +477,18 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool) -> Bytes {
   emit_local_get(b, 6)
   emit_call(b, self_idx)
   emit_end(b)
-  // #699 closure (class 7): the env at vptr+8 holds `count`(@vptr+4) captures.
-  // Captures are BORROWED (no dup at capture) EXCEPT owned RC ref cells, which
-  // are stored odd-tagged with their own class byte 8. Drop only those (each was
-  // dup'd at capture); all other captures — scalars and borrowed heap values
-  // (class 1/5/6/7) — are skipped, preserving the borrowed-capture model. Then
-  // fall through to the common free.
+  // closure (class 7): the env at vptr+8 holds `count`(@vptr+4) captures.
+  // owned-captures ABI (ADR-0076 追記31 Vertical A): every capture is OWNED —
+  // compile_lambda dups plain heap captures at creation and #699 ref cells
+  // keep their odd-tagged unguarded inc — so drop each slot recursively,
+  // exactly like the class-1 field-vector loop (the recursive call's own
+  // entry checks skip scalars and string/bytes fat pointers, which received
+  // no dup; that includes the old #769 hazard, since the probe that trapped
+  // on odd-length captured strings is gone). The ONE exception is the
+  // let-rec SELF capture: the binder patches the closure into its own env
+  // without a dup (a dup would make the self-cycle unreclaimable), so skip
+  // any slot whose untagged pointer is this block's own vptr. Then fall
+  // through to the common free.
   emit_local_get(b, 2)
   emit_i32_const(b, 7)
   emit_i32_eq(b)
@@ -506,37 +512,14 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool) -> Bytes {
   emit_i64_load(b, 3, 8)
   emit_local_set(b, 6)
   emit_local_get(b, 6)
-  emit_i64_const(b, 1)
-  emit_i64_and(b)
-  emit_i32_wrap_i64(b)
-  emit_if_void(b)
-  // #769: ALSO require high32 == 0 (same leaf-fat-pointer rule as this
-  // function's own entry check above). A captured STRING is (ptr<<32)|len;
-  // an ODD length passes the bit-0 test, and `(v & -2) - 1` then wraps the
-  // LOW word: a captured 1-char string gave address 0xFFFFFFFF and the class
-  // byte probe itself trapped OOB (parser_roundtrip_test's escape_string,
-  // which captures its String param in a closure); longer odd-length strings
-  // silently probed low memory and could false-positive into a wild
-  // recursive drop.
-  emit_local_get(b, 6)
-  emit_i64_const(b, 32)
-  emit_i64_shr_s(b)
-  emit_i64_eqz(b)
-  emit_if_void(b)
-  emit_local_get(b, 6)
   emit_i64_const(b, -2)
   emit_i64_and(b)
   emit_i32_wrap_i64(b)
-  emit_i32_const(b, 1)
-  emit_i32_sub(b)
-  emit_i32_load8_u(b, 0, 0)
-  emit_i32_const(b, 8)
-  emit_i32_eq(b)
+  emit_local_get(b, 1)
+  emit_i32_ne(b)
   emit_if_void(b)
   emit_local_get(b, 6)
   emit_call(b, self_idx)
-  emit_end(b)
-  emit_end(b)
   emit_end(b)
   emit_local_get(b, 4)
   emit_i32_const(b, 1)

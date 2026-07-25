@@ -6357,4 +6357,30 @@ fi
 rm -rf "$rc1097dir"
 echo "[compiler-gate] RC match-payload closure capture (#1097) ok"
 
+# 52/52. owned-captures ABI (ADR-0076 追記31 Vertical A): a closure env OWNS
+#        its heap captures — creation-site dup + class-7 recursive drop.
+#        The fixture generalizes #1097 beyond match payloads: a borrowed
+#        view (Array::get) captured by an escaping closure survives the
+#        owner's scope-end recursive drop. Under the old borrow model the
+#        freed element block was reused by churn() and the escaped closure
+#        read the reused contents (got 50067, silent corruption).
+echo "[compiler-gate] 52/52 RC owned-captures escape (ADR-0076 追記31)"
+rcocdir="_build/_gate_rc_owned_capture"
+rm -rf "$rcocdir"; mkdir -p "$rcocdir"
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/rc_closure_owned_capture_escape.vibe "$rcocdir/esc.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$rcocdir/esc.wasm" ]; then
+  echo "[compiler-gate] FAIL: rc_closure_owned_capture_escape fixture did not compile" >&2
+  cat "$rcocdir/esc.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rcoc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$rcocdir/esc.wasm" 2>/dev/null | tail -1)"
+if [ "$rcoc_out" != "4067" ]; then
+  echo "[compiler-gate] FAIL: rc_closure_owned_capture_escape got '$rcoc_out' (want 4067) -- owned-captures regressed" >&2
+  exit 1
+fi
+rm -rf "$rcocdir"
+echo "[compiler-gate] RC owned-captures escape ok"
+
 echo "[compiler-gate] ok"
