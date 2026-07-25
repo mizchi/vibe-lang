@@ -1,0 +1,168 @@
+//# Imports
+
+import ./concurrent.vibe {
+  type TaskGroup, type TaskHandle, type TaskError, type TaskStep,
+  TaskGroup::run, TaskGroup::adopt, TaskGroup::pump, TaskGroup::pump_all,
+  TaskHandle::settle, TaskHandle::park, TaskHandle::wake,
+  TaskHandle::join, TaskHandle::cancel
+}
+
+//# Types
+
+// Transparent effect declaration (#752): matches the package contract's
+// Async by definition — the declaration IS the contract.
+effect Async {
+  Suspend(Int) -> Int
+}
+
+//# Misc
+
+// #1097: `log` deliberately lives at MODULE level, not as a local of the
+// test/closure. A suspend continuation capturing a FUNCTION-LOCAL trips
+// an RC over-drop when the same function has a second suspend site
+// (globals are not captures, so this shape is safe; arm-side captures
+// like the task handles below are unaffected either way).
+let log: Array[Int] = []
+
+// THE capability run-to-completion could not express (concurrent.vibe's
+// old header note): two tasks blocking mid-body against each other.
+// Both bodies suspend twice; pump_all round-robins the stored
+// continuations, so the log interleaves 1..6 in strict alternation.
+test "adopted tasks interleave mid-body via Async::Suspend" {
+  let out = TaskGroup::run((g) -> {
+    let ha = TaskGroup::adopt(g)
+    TaskHandle::settle(ha, handle {
+      Array::push(log, 1)
+      let _w1 = perform Async::Suspend(0)
+      Array::push(log, 3)
+      let _w2 = perform Async::Suspend(0)
+      Array::push(log, 5)
+      SDone(100)
+    } with Async {
+      Suspend(r) => {
+        TaskHandle::park(ha, resume)
+        SParked
+      }
+    })
+    let hb = TaskGroup::adopt(g)
+    TaskHandle::settle(hb, handle {
+      Array::push(log, 2)
+      let _w1 = perform Async::Suspend(0)
+      Array::push(log, 4)
+      let _w2 = perform Async::Suspend(0)
+      Array::push(log, 6)
+      SDone(200)
+    } with Async {
+      Suspend(r) => {
+        TaskHandle::park(hb, resume)
+        SParked
+      }
+    })
+    TaskGroup::pump_all(g)
+    let ra = match TaskHandle::join(ha) {
+      Ok(v) => v,
+      Err(_) => -1
+    }
+    let rb = match TaskHandle::join(hb) {
+      Ok(v) => v,
+      Err(_) => -1
+    }
+    ra + rb
+  })
+  assert(match out {
+    Ok(v) => v == 300,
+    Err(_) => false
+  })
+  assert(Array::length(log) == 6)
+  assert(Array::get(log, 0) == 1)
+  assert(Array::get(log, 1) == 2)
+  assert(Array::get(log, 2) == 3)
+  assert(Array::get(log, 3) == 4)
+  assert(Array::get(log, 4) == 5)
+  assert(Array::get(log, 5) == 6)
+}
+
+test "wake delivers the resume value to the suspension point" {
+  let out = TaskGroup::run((g) -> {
+    let h = TaskGroup::adopt(g)
+    TaskHandle::settle(h, handle {
+      let got = perform Async::Suspend(7)
+      SDone(got * 2)
+    } with Async {
+      Suspend(r) => {
+        TaskHandle::park(h, resume)
+        SParked
+      }
+    })
+    let woke = TaskHandle::wake(h, 21)
+    let again = TaskHandle::wake(h, 99)
+    let r = match TaskHandle::join(h) {
+      Ok(v) => v,
+      Err(_) => -1
+    }
+    if woke && !again {
+      r
+    } else {
+      -2
+    }
+  })
+  assert(match out {
+    Ok(v) => v == 42,
+    Err(_) => false
+  })
+}
+
+test "cancel on a parked task resolves Cancelled and drops the continuation" {
+  let out = TaskGroup::run((g) -> {
+    let h = TaskGroup::adopt(g)
+    TaskHandle::settle(h, handle {
+      let got = perform Async::Suspend(0)
+      SDone(got)
+    } with Async {
+      Suspend(r) => {
+        TaskHandle::park(h, resume)
+        SParked
+      }
+    })
+    TaskHandle::cancel(h)
+    let woke = TaskHandle::wake(h, 1)
+    let cancelled = match TaskHandle::join(h) {
+      Ok(_) => false,
+      Err(e) => match e {
+        Cancelled => true,
+        Failed(_) => false
+      }
+    }
+    if !woke && cancelled {
+      1
+    } else {
+      0
+    }
+  })
+  assert(match out {
+    Ok(v) => v == 1,
+    Err(_) => false
+  })
+}
+
+test "a body that never suspends settles synchronously" {
+  let out = TaskGroup::run((g) -> {
+    let h = TaskGroup::adopt(g)
+    TaskHandle::settle(h, handle {
+      SDone(11 * 3)
+    } with Async {
+      Suspend(r) => {
+        TaskHandle::park(h, resume)
+        SParked
+      }
+    })
+    match TaskHandle::join(h) {
+      Ok(v) => v,
+      Err(_) => -1
+    }
+  })
+  assert(match out {
+    Ok(v) => v == 33,
+    Err(_) => false
+  })
+}

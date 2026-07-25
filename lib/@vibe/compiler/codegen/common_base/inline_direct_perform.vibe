@@ -4420,7 +4420,7 @@ fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], Int), ctx
           },
           _ => false
         }
-      } else if idp_is_pure_builtin_call(nm) || scps_is_ctor_name(ctx, nm) || edp_str_array_contains(needing, nm) {
+      } else if idp_is_pure_builtin_call(nm) || scps_is_safe_mut_builtin(nm) || scps_is_ctor_name(ctx, nm) || edp_str_array_contains(needing, nm) {
         scps_exprs_calls_ok(args, sctx, ctx)
       } else {
         let (is_fn, row) = scps_fn_row_of(ctx, nm)
@@ -5013,4 +5013,36 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
     }, scps_rewrite(b, ctx, st)),
     _ => e
   }
+}
+
+// Additional builtins that are safe in a SUSPEND-lowered body but are
+// deliberately NOT on idp_pure_builtin_names: they MUTATE (Array::push /
+// Array::set / builder ops) or trap (assert), so adding them to the
+// shared list would newly change which handles Phase 2's INLINE pass
+// (and evidence_dict_pass) migrate off the replay path -- a behavior
+// change for replay-pinned fixtures this pass has no business making.
+// For the suspend lowering the only property that matters is the same
+// one the pure list encodes: checker-verified effect `None` and no
+// function-typed parameter, so the call can neither perform the handled
+// effect itself nor invoke a user closure that might. Each name below
+// was checked against the checker's builtin tables on those two axes.
+fn scps_is_safe_mut_builtin(nm: String) -> Bool {
+  let names = [
+    "Array::push", "Array::set", "Array::slice",
+    "ArrayBuilder::new", "ArrayBuilder::push", "ArrayBuilder::freeze",
+    "Map::set", "Map::delete", "Bytes::set",
+    "StringBuilder::new", "StringBuilder::push", "StringBuilder::freeze",
+    "assert"
+  ]
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == nm {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }

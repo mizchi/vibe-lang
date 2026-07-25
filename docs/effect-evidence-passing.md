@@ -2000,6 +2000,36 @@ pin、want -95)、`err_effect_resume_store_ineligible.vibe` (non-trivial
 row-var callee reject)、`err_effect_resume_store_loop.vibe` (loop spine
 reject)。gate 50 更新。
 
+### 追記30 (2026-07-25): 3c — @vibex/concurrent への接続と
+safe-mut builtin list
+
+`@vibex/concurrent` に suspendable task API (adopt/settle/park/wake/
+pump — docs/concurrency.md 実装ノート「3c」参照) を実装し、2 task の
+mid-body 相互 interleave の conformance lock (`suspend_test.vibe`) が
+Phase 3a/3b の lowering 上で green。パターンの要点:
+
+- handle site は adoption site (user code) に置く — lowering は lexical
+  なので、library に保存された closure runner からは suspend できない。
+  `spawn` 内部の差し替えと channel の mid-body blocking は
+  **closure-CPS ABI** (row に suspend 対象 effect を持つ closure 値を
+  step-returning 形でコンパイルし、呼び出し規約を分岐する) が前提 —
+  これが Phase 3 の次の大物。
+- arm の `resume` は `TaskHandle::park(h, resume)` で fn 境界を越えて
+  保存される — #1070 の store ケースはこの shape (capturing closure を
+  引数渡し→struct field へ保存→後で呼ぶ) では現行 head で正しく動く
+  ことを probe で確認済み。
+- RC 会計の未踏ケースを 1 つ発見 (#1097): body 分割継続が関数ローカルを
+  capture し、同一関数に suspend site が 2 つ以上あると RC lane で
+  over-drop trap する (RC=0 は正しい値 / arm 側 capture は無害 /
+  1 site は無害)。回避は capture 対象をモジュール toplevel に置くこと。
+- eligibility の実用上の穴として `Array::push` 等の mutation builtin が
+  body で呼べなかったため、`scps_is_safe_mut_builtin` を追加した。
+  idp_pure_builtin_names と別リストにしたのは意図的: 共有リストへの
+  追加は Phase 2 inline / evidence pass の適格性 (= replay 側の副作用
+  重複回数) を同時に変えてしまい、replay 値で pin 済みの fixture 群を
+  巻き込むため。suspend lowering に必要な性質は「perform できない・
+  user closure を呼べない」だけで、mutation の有無は無関係。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し
