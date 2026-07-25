@@ -281,6 +281,94 @@ test "a lone spawn_suspend task may yield three times without tripping the deadl
   })
 }
 
+// Fail-fast × suspendable (ADR-0068 次スライス): a spawn_suspend body
+// whose Error::Throw escapes converts to Failed, records the group's
+// first observed failure, and AUTO-CANCELS parked siblings (their stored
+// continuations are dropped). Case 1: the throw happens on the settle
+// leg (before any suspend) — the sibling parked first and never wakes.
+test "spawn_suspend Error on the settle leg fails fast and cancels the parked sibling" {
+  let out = TaskGroup::run((g) -> {
+    let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let _w = perform Async::Suspend(0)
+      100
+    })
+    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
+      throw("boom")
+    })
+    TaskGroup::pump_all(g)
+    let a_cancelled = match TaskHandle::join(ha) {
+      Ok(_) => false,
+      Err(e) => match e {
+        Cancelled => true,
+        Failed(_) => false
+      }
+    }
+    let b_failed = match TaskHandle::join(hb) {
+      Ok(_) => false,
+      Err(e) => match e {
+        Cancelled => false,
+        Failed(m) => m == "boom"
+      }
+    }
+    if a_cancelled && b_failed {
+      1
+    } else {
+      0
+    }
+  })
+  assert(match out {
+    Ok(_) => false,
+    Err(e) => match e {
+      Failed(m) => m == "boom",
+      Cancelled => false
+    }
+  })
+}
+
+// Case 2: the throw happens on a RESUMED leg (after a suspend) — it runs
+// on the pump's stack, caught by the park wrapper's per-leg Error
+// boundary. The parked sibling is cancelled by the fail-fast sweep.
+test "spawn_suspend Error after a resume fails fast from the pump stack" {
+  let out = TaskGroup::run((g) -> {
+    let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
+      let _w = perform Async::Suspend(0)
+      throw("later")
+    })
+    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let _w1 = perform Async::Suspend(0)
+      let _w2 = perform Async::Suspend(0)
+      200
+    })
+    TaskGroup::pump_all(g)
+    let a_failed = match TaskHandle::join(ha) {
+      Ok(_) => false,
+      Err(e) => match e {
+        Cancelled => false,
+        Failed(m) => m == "later"
+      }
+    }
+    let b_cancelled = match TaskHandle::join(hb) {
+      Ok(_) => false,
+      Err(e) => match e {
+        Cancelled => true,
+        Failed(_) => false
+      }
+    }
+    if a_failed && b_cancelled {
+      1
+    } else {
+      0
+    }
+  })
+  assert(match out {
+    Ok(_) => false,
+    Err(e) => match e {
+      Failed(m) => m == "later",
+      Cancelled => false
+    }
+  })
+}
+
 // Channel blocking (ADR-0076 追記31 の続きスライス): the shape the module
 // header called out as impossible under run-to-completion — a producer
 // overflowing a capacity-1 channel while the consumer drains — now works

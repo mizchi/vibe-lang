@@ -62,6 +62,10 @@
 // Sender::send_wait / Receiver::recv_wait (bottom of this file) suspend
 // instead of stack-driving, so the producer-overflows-capacity shape the
 // header above calls out now works with plain spawn_suspend closures.
+// Fail-fast is integrated with the suspendable lane too: an Error::Throw
+// escaping a spawn_suspend body (settle leg OR a resumed leg on the
+// pump's stack) converts to Failed and auto-cancels parked siblings
+// (conc_fail_cell).
 
 //# Types
 
@@ -171,6 +175,39 @@ fn conc_require(ok: Bool) -> Unit where { requires: ok } {
 // may call it (ADR-0076 追記31: concrete Async-free row callees are safe).
 fn conc_progress(n: TaskGroup) -> Unit {
   n.progress = n.progress + 1
+}
+
+// Fail-fast entry for the SUSPENDABLE lane (mirrors spawn's runner-side
+// Error conversion): mark the cell Failed, record the group's first
+// observed failure, and auto-cancel parked adopted siblings — their
+// stored continuations are DROPPED (RC frees the captures, the ADR-0076
+// "Cont は RC drop で解放" guarantee) so pump_all has nothing left to
+// deliver and the group close observes terminal states only. Ready
+// run-to-completion siblings are covered by the existing dispatch-time
+// cancel point (drive_one checks n.failing). Counts as progress (a
+// terminal transition).
+fn conc_fail_cell(n: TaskGroup, cell: TaskCell, msg: String) -> Unit {
+  cell.status = 3
+  cell.fail_msg = msg
+  cell.cont = None
+  if !n.failing {
+    n.failing = true
+    n.fail_msg = msg
+    if n.phase == 0 { n.phase = 1 }
+  }
+  let mut i = 0
+  while i < Array::length(n.adopted) {
+    let c = Array::get(n.adopted, i)
+    if c.status == 5 {
+      c.status = 4
+      c.cont = None
+      c.wait_poll = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  conc_progress(n)
 }
 
 fn empty_cells() -> Array[TaskCell] {
@@ -631,17 +668,28 @@ effect Async {
 // (the literal is CPS-split for Async) and this body bubbles the steps
 // it returns, so `f()` below is a needing call through a closure value —
 // the exact shape 3c could not express lexically.
-export fn TaskGroup::spawn_suspend[T: Send](n: TaskGroup, f: () -> T with { Async }) -> TaskHandle[T] {
+export fn TaskGroup::spawn_suspend[T: Send](n: TaskGroup, f: () -> T with { Async, Error }) -> TaskHandle[T] {
   let h = TaskGroup::adopt(n)
-  TaskHandle::settle(h, handle {
-    let v = f()
-    SDone(v)
-  } with Async {
-    Suspend(r) => {
-      TaskHandle::park_poll(h, resume, r == 1)
+  let step = handle {
+    handle {
+      let v = f()
+      SDone(v)
+    } with Async {
+      Suspend(r) => {
+        TaskHandle::park_poll(h, resume, r == 1)
+        SParked
+      }
+    }
+  } with Error {
+    Throw(msg) => {
+      // Error escaping the first (settle) leg: Failed conversion +
+      // fail-fast, exactly like spawn's runner. The Async handle is
+      // CPS-lowered (no exceptions), so only real throws land here.
+      conc_fail_cell(n, h.cell, msg)
       SParked
     }
-  })
+  }
+  TaskHandle::settle(h, step)
   h
 }
 
@@ -696,7 +744,18 @@ export fn TaskHandle::park_poll[T](h: TaskHandle[T], k: (Int) -> TaskStep[T], po
   cell.wait_poll = poll
   cell.cont = Some((rv: Int) -> {
     cell.status = 1
-    match k(rv) {
+    // Each resumed leg gets its own Error boundary: a throw AFTER a
+    // suspend runs on the pump's stack, outside spawn_suspend's own
+    // handler — without this it would unwind straight out of pump_all.
+    let step = handle {
+      k(rv)
+    } with Error {
+      Throw(msg) => {
+        conc_fail_cell(grp, cell, msg)
+        SParked
+      }
+    }
+    match step {
       SDone(v) => {
         rc.value = Some(v)
         cell.status = 2
