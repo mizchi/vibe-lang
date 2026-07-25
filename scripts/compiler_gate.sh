@@ -6072,6 +6072,17 @@ msgs = [
     frame({"jsonrpc": "2.0", "id": 2, "method": "textDocument/hover", "params": {
         "textDocument": {"uri": "file:///gate.vibe"}, "position": {"line": 0, "character": 5}
     }}),
+    # parity slice 2: completion / signatureHelp / workspace-symbol.
+    # signatureHelp position: line 2 "export let main = () -> Int { add(1, 2) }",
+    # character 34 = just after "add(" -- callee backscan must find `add` and
+    # ask the checker for its type.
+    frame({"jsonrpc": "2.0", "id": 4, "method": "textDocument/completion", "params": {
+        "textDocument": {"uri": "file:///gate.vibe"}, "position": {"line": 2, "character": 0}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 5, "method": "textDocument/signatureHelp", "params": {
+        "textDocument": {"uri": "file:///gate.vibe"}, "position": {"line": 2, "character": 34}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 6, "method": "workspace/symbol", "params": {"query": "ad"}}),
     frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
     frame({"jsonrpc": "2.0", "method": "exit"}),
 ]
@@ -6092,8 +6103,32 @@ if ! grep -q '(Int, Int) -> Int' "$lsp_out"; then
   cat "$lsp_out" >&2
   exit 1
 fi
+# parity slice 2 assertions: completion offers the document's own `add`
+# declaration AND a language keyword; signatureHelp resolves the callee and
+# renders "add: (Int, Int) -> Int"; workspace/symbol finds `add` in the open
+# doc with its location.
+if ! grep -Eq '"label": ?"add"' "$lsp_out"; then
+  echo "[compiler-gate] FAIL: self-hosted vibe lsp completion missing document symbol 'add'" >&2
+  cat "$lsp_out" >&2
+  exit 1
+fi
+if ! grep -Eq '"label": ?"handle"' "$lsp_out"; then
+  echo "[compiler-gate] FAIL: self-hosted vibe lsp completion missing keyword item 'handle'" >&2
+  cat "$lsp_out" >&2
+  exit 1
+fi
+if ! grep -Eq '"label": ?"add: \(Int, Int\) -> Int"' "$lsp_out"; then
+  echo "[compiler-gate] FAIL: self-hosted vibe lsp signatureHelp missing 'add: (Int, Int) -> Int' (callee backscan or type_at regressed)" >&2
+  cat "$lsp_out" >&2
+  exit 1
+fi
+if ! grep -Eq '"name": ?"add"' "$lsp_out"; then
+  echo "[compiler-gate] FAIL: self-hosted vibe lsp workspace/symbol missing 'add'" >&2
+  cat "$lsp_out" >&2
+  exit 1
+fi
 rm -rf "$lspgatedir"
-echo "[compiler-gate] self-hosted vibe lsp round trip ok"
+echo "[compiler-gate] self-hosted vibe lsp round trip ok (incl. completion/signatureHelp/workspace-symbol)"
 
 # 48/48. ADR-0068 `Send` marker (docs/concurrency.md "`Send` と capture
 #        safety"): compiler-judged structural marker for task/channel
