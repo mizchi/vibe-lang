@@ -177,7 +177,20 @@ export class SelfhostChecker {
           `selfhost worker reported ok but exited ${response.exit_code}`,
         );
       }
-      return { diagnostic: null, env: env ?? "" };
+      // An "ok" with no usable environment must NOT be published as a
+      // checked outcome. Dependents skip writing dep<i>.env for an empty
+      // env, which makes their imports lenient again -- so a truncated or
+      // missing env.out would quietly turn real type errors in every
+      // dependent into a clean check. Even an empty environment
+      // serializes a version header, so "nonempty" is the right bar, and
+      // failing the run is the right response to a malformed worker
+      // answer.
+      if (typeof env !== "string" || env.trim().length === 0) {
+        throw new Error(
+          `selfhost worker reported ok for "${module.id}" without a usable env.out`,
+        );
+      }
+      return { diagnostic: null, env };
     }
     if (outcome !== "diag") {
       throw new Error(`unknown module job outcome: ${JSON.stringify(outcome)}`);

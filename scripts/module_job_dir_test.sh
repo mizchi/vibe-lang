@@ -144,6 +144,23 @@ else
   note "control ok (same call is lenient with no dependency env)"
 fi
 
+# --- job 3b: a TRUNCATED dependency env is an infrastructure failure -----
+# Codex review (P1) on #1121. The dangerous case is not a missing
+# dependency env but a present-and-unusable one: skipping it would make the
+# importer's imports lenient again, so a truncated file would turn the type
+# error above into a clean check. Silent leniency is the failure mode this
+# whole transport exists to prevent, so it must fail the run instead.
+: > "$bad/dep0.env"
+run_job "$bad"
+if [ "$JOB_EXIT" -eq 0 ]; then
+  die "truncated dep0.env exited 0 -- an unusable dependency env was silently treated as 'no env', which makes imports lenient"
+elif [ -n "$JOB_OUTCOME" ]; then
+  die "truncated dep0.env still wrote outcome.txt='$JOB_OUTCOME'"
+else
+  note "truncated dependency env rejected (exit $JOB_EXIT)"
+fi
+rm -f "$bad/dep0.env"
+
 # --- job 4: a type error is a VALUE, not a worker failure ----------------
 broken="$work/broken"; mkdir -p "$broken"
 cat > "$broken/source.vibe" <<'EOF'

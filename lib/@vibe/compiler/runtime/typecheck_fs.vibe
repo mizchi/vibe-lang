@@ -437,6 +437,28 @@ export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] w
     } with Error {
       Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
     }
+    // Bound the memo. It is process-wide, and `vibe --daemon` (the #906
+    // worker transport reuses one) serves many compiles from one process:
+    // each edited source is a new (path, source) pair, so an unbounded memo
+    // grows monotonically in guest memory -- full source AND AST per entry
+    // -- and the linear scan above gets slower with every historical
+    // version retained.
+    //
+    // The win this memo exists for is WITHIN one compile: the typecheck
+    // walk parses every module, then the merge parses them all again, so
+    // the whole module set has to be resident at once. The cap is
+    // therefore set well above a self-compile's module count (264 manifest
+    // rows) rather than to some small number. Clearing outright instead of
+    // evicting one entry keeps this branch simple; at 1024 vs 264 it can
+    // only trigger after hundreds of edits in a single daemon, and it
+    // costs one compile's worth of re-parsing when it does.
+    if Array::length(parse_memo_paths) >= 1024 {
+      Array::truncate(parse_memo_paths, 0)
+      Array::truncate(parse_memo_sources, 0)
+      Array::truncate(parse_memo_stmts, 0)
+    } else {
+      ()
+    }
     Array::push(parse_memo_paths, path)
     Array::push(parse_memo_sources, source)
     Array::push(parse_memo_stmts, parsed)
@@ -795,7 +817,15 @@ export fn run_module_job_dir(dir: String) -> Unit with { Error, Fs } {
     if Fs::exists(env_file) {
       match parse_persistent_type_env(Fs::read_file(env_file)) {
         Some(env) => Array::push(dep_envs, (Array::get(deps, i), env)),
-        None => ()
+        // A dep<i>.env that exists but does not decode is an
+        // INFRASTRUCTURE failure, not "no environment". Skipping it would
+        // drop the dependency's interface and make its imports lenient
+        // again, so a truncated file would turn real type errors into a
+        // clean check -- the silent-success mode this whole transport is
+        // built to avoid. (parse_persistent_type_env returns None only for
+        // a missing version header, i.e. an empty or truncated file; a
+        // malformed row already throws.)
+        None => throw(String::concat("module job: unreadable dependency environment: ", env_file))
       }
     } else {
       ()
