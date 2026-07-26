@@ -1,19 +1,26 @@
 // #1074 PR review (chatgpt-codex-connector, P1): "Respect local shadowing
 // when forwarding evidence". evidence_dict_pass's needing-forwarding
-// rewrite (edp_rewrite_needing_body, inline_direct_perform.vibe) matched a
+// rewrite (edp_rewrite_needing_body, inline_direct_perform.vibe) matches a
 // call's callee by NAME ONLY against the globally-collected `needing` set
 // (top-level functions that need the evidence dict threaded to them), with
 // no scope tracking. Here `via`'s own body locally binds a NEW `helper`
 // (pure, ignoring effects entirely) that shadows the TOP-LEVEL effectful
-// `helper` -- before the fix, `via`'s `helper()` call (correctly resolving
-// to the LOCAL, pure helper by ordinary lexical scoping) still got the
-// evidence-dict argument incorrectly prepended, since the local closure
-// was never rewritten to accept that extra parameter -- producing "null
-// function or function signature mismatch" at runtime (confirmed via
-// direct A/B testing against a pre-fix build, 2026-07-23). Fixed by
-// dropping a needing name from consideration entirely if it's shadowed
-// ANYWHERE in the program (edp_drop_shadowed_needing, applied
-// unconditionally alongside the existing self-discharging-needing filter).
+// `helper` -- before the #1074 fix, `via`'s `helper()` call (correctly
+// resolving to the LOCAL, pure helper by ordinary lexical scoping) still
+// got the evidence-dict argument incorrectly prepended, since the local
+// closure was never rewritten to accept that extra parameter -- producing
+// "null function or function signature mismatch" at runtime.
+//
+// History: #1074 fixed this by dropping a shadowed needing name entirely
+// (edp_drop_shadowed_needing), which parked this program on the replay
+// frontier -- this fixture was the last remaining genuine replay
+// execution. ADR-0076 追記34 V2 removed replay, so the shadowing binder
+// is now α-renamed instead (edp_alpha_rename_shadowed, fresh
+// `__edpsh_N_helper`): the name-only match becomes exact, `helper`
+// migrates like any other needing function, and the local call still
+// resolves to the (renamed) pure closure. The value is unchanged; what
+// this fixture pins flipped from "shadowing suppresses migration safely"
+// to "shadowing no longer suppresses migration at all".
 //   via() => local pure helper, ignores its own perform-free body, => 42
 //   helper() (outer, top-level) => perform Ask::Get resolves to 5 => 5
 //   total: 42 + 5 = 47

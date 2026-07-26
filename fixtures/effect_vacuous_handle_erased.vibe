@@ -1,0 +1,32 @@
+// ADR-0076 追記34 V2: vacuous-handle elimination. `effect Env` here puns
+// the HOST Env row on purpose (the same shape as cache_underlying.vibe /
+// module_graph_path.vibe's read_env_discharged): the handled body calls
+// the `Env::get` BUILTIN directly -- there is no `perform Env::Get`
+// anywhere in the program -- so the handler arm can never receive
+// control. The checker still uses the handle for row discharge (that is
+// its whole purpose), and evidence_dict_pass now erases the dead handle
+// in codegen instead of routing it to the (removed) replay frontier.
+// want 46: the unset env var reads as "", length 0, plus 46.
+effect Env {
+  Get(String) -> String
+}
+
+fn env_get_raw(name: String) -> String with { Env } {
+  Env::get(name)
+}
+
+fn read_env_discharged(name: String) -> String {
+  handle {
+    env_get_raw(name)
+  } with Env {
+    Get(_n) => resume("")
+  }
+}
+
+let _start = () -> Int {
+  let v = read_env_discharged("VIBE_V2_VACUOUS_HANDLE_PROBE_UNSET")
+  String::length(v) + 46
+}
+
+__DATA__
+{"last": "46"}

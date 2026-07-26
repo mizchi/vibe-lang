@@ -34,156 +34,26 @@ import ./compile_match.vibe {
 
 //# Functions
 
-// #665: bind a multi-operation handler arm's payload from a temp local holding
-// the thrown value (instead of the operand stack), so each arm in the dispatch
-// chain rebinds the same payload per its own pattern. Mirrors the single-arm
-// binding but loads from `raw_l`.
-fn t6_bind_from_raw(buf: Bytes, arm_pat: Pat, raw_l: Int, ctx: CompileCtx, local_names: Array[String]) -> Unit with { Error } {
-  if is_pctor(arm_pat) {
-    let cargs = get_pctor_args(arm_pat)
-    let decl_arity = effect_op_declared_arity(ctx.effect_op_keys, ctx.effect_op_arities, get_pctor_name(arm_pat))
-    if decl_arity > 1 {
-      let ncargs = Array::length(cargs)
-      let mut ci = 0
-      while ci < decl_arity {
-        if ci < ncargs {
-          let cp = Array::get(cargs, ci)
-          if is_pbind(cp) {
-            let pname = get_pbind_name(cp)
-            let fl = Array::length(local_names)
-            emit_local_get(buf, raw_l)
-            if ctx.enable_rc {
-              emit_i64_const(buf, -2)
-              emit_i64_and(buf)
-            } else {
-              ()
-            }
-            emit_i32_wrap_i64(buf)
-            emit_i64_load(buf, 3, if ctx.enable_rc {
-              8 + ci * 8
-            } else {
-              ci * 8
-            })
-            emit_local_set(buf, fl)
-            Array::push(local_names, pname)
-            if ctx.enable_rc {
-              emit_rc_dup_guarded(buf, fl, ctx.rc_shadow)
-            } else {
-              ()
-            }
-          } else if is_pwild(cp) {
-            ()
-          } else {
-            throw("handle: only simple bindings or '_' are supported in multi-argument effect op patterns (see #548)")
-          }
-        } else {
-          ()
-        }
-        ci = ci + 1
-      }
-      if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
-        emit_local_get(buf, raw_l)
-        emit_call(buf, ctx.rc_drop_func_idx)
-      } else {
-        ()
-      }
-    } else if Array::length(cargs) > 0 && is_pbind(Array::get(cargs, 0)) {
-      let pname = get_pbind_name(Array::get(cargs, 0))
-      let bl = Array::length(local_names)
-      emit_local_get(buf, raw_l)
-      emit_local_set(buf, bl)
-      Array::push(local_names, pname)
-    } else {
-      ()
-    }
-  } else {
-    ()
-  }
-}
-
-// #665: count the operations declared by `eff_name` in the global op-key table.
-fn t6_effect_op_count(op_keys: Array[String], eff_name: String) -> Int {
-  let mut c = 0
-  let mut i = 0
-  while i < Array::length(op_keys) {
-    let k = Array::get(op_keys, i)
-    let sep = String::index_of(k, "::")
-    if sep > 0 && k[0:sep] == eff_name {
-      c = c + 1
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  c
-}
-
-
 export fn compile_expr_tail6(buf: Bytes, body: Expr, arms: Array[(Pat, Expr)], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } {
   if Array::length(arms) > 0 {
     let (catch_pat, fallback_expr) = Array::get(arms, 0)
     let is_error = is_pctor(catch_pat) && get_pctor_name(catch_pat) == "Error::Throw"
-    // #665: a handler over a MULTI-operation effect must dispatch the performed
-    // operation (g_op_index) to the matching arm. Single-operation effects and
-    // `Error` keep the original single-arm path unchanged.
-    let handled_eff = if is_pctor(catch_pat) {
-      let op_full = get_pctor_name(catch_pat)
-      let sep = String::index_of(op_full, "::")
-      if sep > 0 {
-        op_full[0:sep]
-      } else {
-        ""
-      }
+    // ADR-0076 追記34 V2: the replay frontier is gone, so this function
+    // lowers ONLY `with Error` handles. Every reachable non-Error handle
+    // has already been consumed upstream (inline_direct_performs, scps,
+    // evidence_dict_pass -- whose live-handle check hard-errors on any
+    // survivor); the only non-Error handle that can still get here sits in
+    // a provably-DEAD function (dce keep flag false) that codegen must
+    // still emit, so it lowers to a single `unreachable` (valid in an i64
+    // expression position via stack polymorphism, and by construction
+    // never executed).
+    if !is_error {
+      bytebuf_push(buf, 0)
+      next_local
     } else {
-      ""
-    }
-    let needs_op_dispatch = !is_error && String::length(handled_eff) > 0 && t6_effect_op_count(ctx.effect_op_keys, handled_eff) > 1
-    let g_op_idx_global = if ctx.enable_rc {
-      6
-    } else {
-      5
-    }
-    let catch_tag = if is_error {
-      2
-    } else if is_pctor(catch_pat) {
-      effect_name_to_tag(ctx.effect_names, get_pctor_name(catch_pat))
-    } else {
-      3 + Array::length(ctx.effect_names)
-    }
-    let uses_frontier = !is_error
-    // #553: per-effect region stride; MUST match eff_reserve in
-    // linked_compile.vibe and compile_call.vibe.
-    let eff_off = (catch_tag - 3) * 131072
-    let g_rbuf = if ctx.enable_rc {
-      5
-    } else {
-      4
-    }
-    let g_cur = if ctx.enable_rc {
-      3
-    } else {
-      2
-    }
-    if uses_frontier {
-      emit_global_get(buf, g_rbuf)
-      emit_i32_const(buf, eff_off)
-      emit_i32_add(buf)
-      emit_i64_const(buf, 0)
-      emit_i64_store(buf, 3, 8)
-    } else {
-      ()
-    }
+    let catch_tag = 2
     emit_block_i64(buf)
     emit_loop_void(buf)
-    if uses_frontier {
-      emit_global_get(buf, g_rbuf)
-      emit_i32_const(buf, eff_off)
-      emit_i32_add(buf)
-      emit_i64_const(buf, 0)
-      emit_i64_store(buf, 3, 0)
-    } else {
-      ()
-    }
     emit_block_i64(buf)
     bytebuf_push(buf, 31)
     bytebuf_push(buf, 126)
@@ -220,11 +90,7 @@ export fn compile_expr_tail6(buf: Bytes, body: Expr, arms: Array[(Pat, Expr)], l
     emit_end(buf)
     emit_br(buf, 2)
     emit_end(buf)
-    let raw_l = Array::length(local_names)
-    if needs_op_dispatch {
-      emit_local_set(buf, raw_l)
-      Array::push(local_names, "__eff_raw")
-    } else if is_pctor(catch_pat) {
+    if is_pctor(catch_pat) {
       let cargs = get_pctor_args(catch_pat)
       let decl_arity = effect_op_declared_arity(ctx.effect_op_keys, ctx.effect_op_arities, get_pctor_name(catch_pat))
       if decl_arity > 1 {
@@ -291,15 +157,6 @@ export fn compile_expr_tail6(buf: Bytes, body: Expr, arms: Array[(Pat, Expr)], l
     } else {
       emit_drop(buf)
     }
-    if uses_frontier {
-      emit_global_get(buf, g_rbuf)
-      emit_i32_const(buf, eff_off)
-      emit_i32_add(buf)
-      emit_i64_extend_i32_u(buf)
-      emit_global_set(buf, g_cur)
-    } else {
-      ()
-    }
     emit_block_i64(buf)
     bytebuf_push(buf, 31)
     bytebuf_push(buf, 126)
@@ -307,55 +164,7 @@ export fn compile_expr_tail6(buf: Bytes, body: Expr, arms: Array[(Pat, Expr)], l
     bytebuf_push(buf, 0)
     bytebuf_push(buf, 1)
     bytebuf_push(buf, 0)
-    let nl2 = if needs_op_dispatch {
-      // #665: dispatch the unwinding operation (g_op_index) to the matching arm.
-      // No truncation of local_names between arms (avoids reusing wasm-local
-      // indices that a sibling/earlier handler's arm bodies leave live).
-      let mut max_nl = Array::length(local_names)
-      let mut di = 0
-      while di < Array::length(arms) {
-        let (apat, abody) = Array::get(arms, di)
-        let aop = if is_pctor(apat) {
-          effect_op_index(ctx.effect_op_keys, get_pctor_name(apat))
-        } else {
-          0 - 1
-        }
-        emit_global_get(buf, g_op_idx_global)
-        emit_i64_const(buf, aop)
-        emit_i64_eq(buf)
-        emit_if_i64(buf)
-        // #965: same masking discipline between dispatch arms — an earlier
-        // arm's binds (payload names + its body's lets) must not resolve
-        // inside a later arm. Indices stay allocated (no truncate, #665);
-        // only the NAMES are retired.
-        let arm_names_start = Array::length(local_names)
-        let arm_ref_cells_start = Array::length(ctx.ref_cell_names)
-        t6_bind_from_raw(buf, apat, raw_l, ctx, local_names)
-        let anl = compile_expr(buf, abody, local_names, Array::length(local_names), ctx, ld)
-        let mut arm_mask_i = arm_names_start
-        while arm_mask_i < Array::length(local_names) {
-          Array::set(local_names, arm_mask_i, "")
-          arm_mask_i = arm_mask_i + 1
-        }
-        Array::truncate(ctx.ref_cell_names, arm_ref_cells_start)
-        if anl > max_nl {
-          max_nl = anl
-        } else {
-          ()
-        }
-        emit_else(buf)
-        di = di + 1
-      }
-      bytebuf_push(buf, 0)
-      let mut ce = 0
-      while ce < Array::length(arms) {
-        emit_end(buf)
-        ce = ce + 1
-      }
-      max_nl
-    } else {
-      compile_expr(buf, fallback_expr, local_names, Array::length(local_names), ctx, ld)
-    }
+    let nl2 = compile_expr(buf, fallback_expr, local_names, Array::length(local_names), ctx, ld)
     emit_end(buf)
     emit_br(buf, 2)
     emit_end(buf)
@@ -365,9 +174,9 @@ export fn compile_expr_tail6(buf: Bytes, body: Expr, arms: Array[(Pat, Expr)], l
     bytebuf_push(buf, 0)
     emit_end(buf)
     // #965: retire everything this handle introduced (payload binds,
-    // __eff_raw/__eff_payload temps, arm-body lets) before compilation
-    // continues past the handle expression — same last-wins leak one level
-    // out. Indices stay allocated (no truncate, #665).
+    // __eff_payload temps, arm-body lets) before compilation continues
+    // past the handle expression — same last-wins leak one level out.
+    // Indices stay allocated (no truncate, #665).
     let mut post_mask_i = body_names_start
     while post_mask_i < Array::length(local_names) {
       Array::set(local_names, post_mask_i, "")
@@ -375,6 +184,7 @@ export fn compile_expr_tail6(buf: Bytes, body: Expr, arms: Array[(Pat, Expr)], l
     }
     Array::truncate(ctx.ref_cell_names, body_ref_cells_start)
     nl2
+    }
   } else {
     compile_expr(buf, body, local_names, next_local, ctx, ld)
   }

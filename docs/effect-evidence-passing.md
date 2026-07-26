@@ -2187,17 +2187,18 @@ replay back-edge が実行時に走る箇所は 0 になった** (frontier codeg
    Lsp 形の probe は同値のまま -204 bytes (replay 機構消滅) を確認。
 
 **quarantine (frontier codegen が残る非 Error handle、いずれも実行時に
-throw が届かない or fixture 専用)**:
+throw が届かない or fixture 専用)** — **追記34 V2 で全解消 (2026-07-26)**:
 - entry.vibe / dispatch_test の Profiler handle — dead arm (row 放流の
-  ためだけに残存。撤去には entry row への Profiler 追加が必要で、
-  component export 面の変更になるため見送り)
+  ためだけに残存)。**V2 の vacuous-handle elimination が source 無変更の
+  まま codegen で消去**。
 - cache_underlying.vibe / module_graph_path.vibe の Env handle —
-  元から vacuous (body は builtin 直呼びで throw しない)
+  元から vacuous (body は builtin 直呼びで throw しない)。**同上、VHE で
+  消去** (host-row label pun の解 — 追記34 V2 実装ノート参照)。
 - `fixtures/effect_local_closure_by_value_hof_escaping.vibe` (206) —
   当時唯一の「本物の replay 実行」残存 (#786 fallback)。**追記34 V1 の
-  型主導 total 化で evidence へ移行済み** — 残る replay 実行は
-  shadowed-needing negative pin クラスのみ。`is_error` 単発経路は
-  Error の実装として残る (replay ではない)。
+  型主導 total 化で evidence へ移行済み**。shadowed-needing クラスも
+  V2 の α-rename + local-literal safety で evidence 化。`is_error`
+  単発経路は Error の実装として残る (replay ではない)。
 
 #### Vertical C: replay loop の撤去 (Phase 3d)
 
@@ -2215,21 +2216,19 @@ frontier 付き replay loop の第一級消費者は以下だけ:
   `gc_backend_effect_pure_builtin_index`, gate 4b (#737 深い再帰 resume
   canary、FileIo memo 経路)
 
-撤去手順 (B 着地後に実測で再スコープ):
-1. Lsp / Profiler の 2 site を evidence 適格へ移行するか、effect を
-   使わない直接 dispatch へ書き換える。
-2. gate 4b の FileIo 再帰 shape と two_layer の nested handle shape を
-   edp のカバレッジ拡張 (pure builtin list / nested 緩和) で evidence へ
-   吸収し、期待値を replay 値から単発実行値へ re-baseline する
-   (M2 の解消そのもの)。
-3. 全一次消費者が移行できた時点で、tail6 の frontier 経路
-   (`uses_frontier` 側) と perform 側の counter/memo 短絡
-   (compile_call.vibe:1777-1804)、`eff_reserve` 領域を削除する。
-   `is_error` 単発経路は Error の実装として残る (これは replay ではない)。
-   row-polymorphism hack 経由で evidence を組めない関数が残る場合は、
-   本文の決定通り「その関数だけ replay を残す hybrid」ではなく、
-   **非 Error handle が frontier 経路に落ちること自体を hard error 化**
-   して打ち切る (evidence vector 表現の実装は本 vertical の範囲外)。
+撤去手順 (B 着地後に実測で再スコープ) — **追記34 V2 で完了 (2026-07-26)**:
+1. ~~Lsp / Profiler の 2 site を evidence 適格へ移行するか、effect を
+   使わない直接 dispatch へ書き換える。~~ Lsp は Vertical C で evidence
+   移行済み、Profiler は V2 の vacuous-handle elimination が消去。
+2. ~~gate 4b の FileIo 再帰 shape と two_layer の nested handle shape を
+   edp のカバレッジ拡張で evidence へ吸収し re-baseline する。~~ V1/V2 の
+   カバレッジ (containment / nested 他効果 / local-literal safety) で
+   evidence 化。
+3. ~~tail6 の frontier 経路と perform 側の counter/memo 短絡、
+   `eff_reserve` 領域を削除する。~~ 削除済み。`is_error` 単発経路は Error
+   の実装として存続。**非 Error handle が migration をすり抜けて live に
+   残ることは hard error** (evidence vector 表現は引き続き本 vertical の
+   範囲外 — row 変数 `with { e }` の callee は今も不適格要因)。
 
 ### 追記33 (2026-07-25): channel blocking スライスと desugar 内部
 primitive の safe-mut 追加
@@ -2330,6 +2329,76 @@ perform counter・memo / eff_reserve) の削除。
   `evidence_dict_needing_shadowed_by_local` (negative pin、mode OFF) の
   クラスのみ**になった。V2 (frontier 削除) の残作業 = shadowed-needing
   クラスの扱いの決定 (hard error 化 or 命名規則) + 削除本体。
+
+**V2 実装ノート (2026-07-26、frontier 物理削除)**:
+
+replay エンジンを codegen から物理削除した。着地は 4 パーツ:
+
+1. **vacuous-handle elimination (VHE)**。effect E について、program 全体に
+   「user handler に到達しうる perform」が 1 つも無ければ、E の全 handle
+   を body に置換して消去する (`edp_program_user_performs` /
+   `edp_erase_effect_handles`、evidence_dict_pass の先頭)。row discharge は
+   checker の仕事で codegen 到達時点では済んでいるので、消去は意味論不変
+   (arm は構造的に dead)。**host-mapped op (`canonical_builtin_name` が知る
+   Env::Get / Fs::ReadFile / Profiler::NowUs 等 22 個、local copy
+   `edp_host_mapped_op`) の perform はカウントしない** — これらは V2 で
+   builtin 直呼び (throw なし、下記 3) になり、handler arm に到達できない。
+   これが V2 のブロッカーだった host-row label pun の解:
+   cache_underlying.vibe / module_graph_path.vibe の module-private Env
+   handle と entry.vibe / dispatch_test の dead-arm Profiler handle は
+   **source 無変更のまま** VHE が消し、Env の builtin-charged needing 集合が
+   migration に入ることも無い。rename 案 (private effect の改名) は
+   「handle の存在自体が host row の discharge 機構」なので不成立と判明
+   (改名すると row が上流へ漏れる)、reachability narrowing 案は前回
+   revert の通り不健全 — 「そもそも handler が発火しえない handle を
+   節ごと消す」のが唯一の健全解だった。
+2. **shadowed-needing の解消 = seed-scoped α-rename + local-literal call
+   safety**。(a) needing 名を shadow する binder を `__edpsh_N_<name>` に
+   α-rename (`edp_alpha_rename_shadowed`、RC lane の
+   uniquify_shadowed_bindings (#712) の seed 限定版 local copy)。name-only
+   match が正確になり、#1074 の program-wide drop
+   (edp_drop_shadowed_needing) は「rename が拾えなかった残骸を落とす
+   保守ネット」に格下げ。(b) eligibility
+   (edp_has_unsafe_construct) を scope-tracked 化: `let`/`let rec` 束縛の
+   closure literal 名への呼び出しは safe (literal body は同 traversal が
+   定義位置で検査済み、内部の perform は edp_rewrite_needing_body が
+   in place で書き換え、dict は通常の closure capture で届く)。param /
+   `let mut` / pattern binder による shadow は last-wins で global 集合
+   (needing / pure_fns) より優先して UNSAFE — #1074 と同型の「local
+   rebind を top-level と誤認する」穴を pure_fns 側でも塞いだ。この (b)
+   が無いと「effectful fn 内の pure local helper closure」という普通の
+   コードが全部 reject になる (replay という受け皿の消滅で顕在化)。
+   `evidence_dict_needing_shadowed_by_local` は negative pin (47, replay)
+   から **positive pin (47, evidence)** に反転。
+3. **perform 側**: counter/memo 短絡 (compile_call.vibe) を削除。
+   host-mapped op は builtin 直呼びが perform の値そのものになる
+   (**throw しない** — 旧経路は builtin 結果を throw して handler 経由で
+   memo/replay していた)。それ以外の perform は payload + bare throw
+   (dead code でのみ残存しうる。実行されたら unhandled trap)。`resume` は
+   codegen 到達自体を internal error 化 (tail6 が非 Error arm を
+   コンパイルしなくなったので到達不能)。
+4. **handle 側 + 領域**: compile_expr_tail6 は `with Error` 専用に縮退
+   (Error 経路は byte 単位で不変)。非 Error handle の到達は dead fn 内
+   のみ許され、単一の `unreachable` に落とす。live な非 Error handle が
+   migration 後に残っていたら evidence_dict_pass が hard error
+   (`edp_first_live_replay_handle`、dce keep flags で dead fn は除外)。
+   `eff_reserve` は 0 — module ごとに (n_effects+1) × 128 KiB の
+   below-frontier 領域が消えた。#665 の multi-op dispatch / #553 の
+   memo 領域 / #737 の深い再帰 resume 経路は機構ごと消滅。
+
+**意味論の意図的変更 (どちらも replay-era artifact の削除)**:
+- host-mapped op の perform を user handle で「横取り」する形
+  (`handle {..} with Env { Get(n) => resume("fake") }` の下で
+  `perform Env::Get(x)`) は、旧実装では arm が builtin の **結果** を
+  payload として受けて resume 値で上書きできた (引数ではなく結果が届く
+  replay 依存の奇妙な形)。V2 では builtin 直呼びになり handler は
+  発火しない。in-tree の該当例はゼロ (レガシー dead file とコンパイル
+  専用テスト文字列のみ)。
+- 非 Error handle で evidence 移行できない形は一律 hard error
+  (`err_effect_handle_replay_removed.vibe` が needle
+  "replay engine was removed" で pin)。旧 silent replay は消滅。
+
+gate 55 (vacuous 46 / reject needle)、40ao (shadowed 47、evidence 化)。
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)

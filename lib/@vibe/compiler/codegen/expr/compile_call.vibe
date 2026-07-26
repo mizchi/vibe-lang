@@ -1764,53 +1764,18 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       } else if String::index_of(op_head, "Error::") == 0 {
         throw(String::concat("perform ", String::concat(op_head, ": the builtin Error effect has a single operation, Throw (#640)")))
       } else {
+        // ADR-0076 追記34 V2: the perform-counter/memo frontier is gone.
+        // A host-mapped op (canonical_builtin_name knows it) now compiles
+        // to its direct builtin call and IS the perform's value -- no
+        // throw, no replay round-trip (this is also what makes the
+        // vacuous-handle elimination in evidence_dict_pass sound: a
+        // host-mapped perform can no longer reach a user handler arm at
+        // all). Any OTHER perform surviving to codegen sits in code
+        // evidence_dict_pass's live-handle check proved unreachable-or-
+        // unhandled, so it lowers to its payload plus a bare throw that
+        // can only ever trap as an unhandled effect if it somehow runs.
         let mut nl = next_local
-        let g_rbuf = if ctx.enable_rc {
-          5
-        } else {
-          4
-        }
         let eff_tag = effect_name_to_tag(ctx.effect_names, op_head)
-        // #553: per-effect region stride; MUST match eff_reserve in
-        // linked_compile.vibe and compile_expr_tail6.vibe.
-        let eff_off = (eff_tag - 3) * 131072
-        emit_global_get(buf, g_rbuf)
-        emit_i32_const(buf, eff_off)
-        emit_i32_add(buf)
-        emit_i64_load(buf, 3, 0)
-        emit_global_set(buf, 1)
-        emit_global_get(buf, g_rbuf)
-        emit_i32_const(buf, eff_off)
-        emit_i32_add(buf)
-        emit_global_get(buf, 1)
-        emit_i64_const(buf, 1)
-        emit_i64_add(buf)
-        emit_i64_store(buf, 3, 0)
-        emit_global_get(buf, 1)
-        emit_global_get(buf, g_rbuf)
-        emit_i32_const(buf, eff_off)
-        emit_i32_add(buf)
-        emit_i64_load(buf, 3, 8)
-        emit_i64_lt_s(buf)
-        emit_if_i64(buf)
-        emit_global_get(buf, g_rbuf)
-        emit_i32_const(buf, eff_off)
-        emit_i32_add(buf)
-        emit_global_get(buf, 1)
-        emit_i64_const(buf, 8)
-        emit_i64_mul(buf)
-        emit_i32_wrap_i64(buf)
-        emit_i32_add(buf)
-        emit_i64_load(buf, 3, 16)
-        emit_else(buf)
-        // #665: record which operation is unwinding (stack-neutral global set).
-        let g_op_idx_global = if ctx.enable_rc {
-          6
-        } else {
-          5
-        }
-        emit_i64_const(buf, effect_op_index(ctx.effect_op_keys, op_head))
-        emit_global_set(buf, g_op_idx_global)
         let op_canon = canonical_builtin_name(op_head)
         let __ft_len = Array::length(ctx.func_table.names)
         let mut op_is_builtin = false
@@ -1825,24 +1790,24 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
         }
         if op_is_builtin {
           nl = ce(buf, op_expr, local_names, nl, ctx, ld)
-        } else if expr_tag(op_expr) == 8 {
-          let op_args = get_ecall_args(op_expr)
-          if Array::length(op_args) > 1 {
-            // Multi-value payload (#548): pack all op args into a tuple (one heap
-            // ref threaded as the single thrown value); the handler arm pattern
-            // destructures it element-by-element in compile_expr_tail6.
-            nl = ce(buf, ETuple(op_args), local_names, nl, ctx, ld)
-          } else if Array::length(op_args) > 0 {
-            nl = ce(buf, Array::get(op_args, 0), local_names, nl, ctx, ld)
+        } else {
+          if expr_tag(op_expr) == 8 {
+            let op_args = get_ecall_args(op_expr)
+            if Array::length(op_args) > 1 {
+              // Multi-value payload (#548): pack all op args into a tuple (one
+              // heap ref threaded as the single thrown value).
+              nl = ce(buf, ETuple(op_args), local_names, nl, ctx, ld)
+            } else if Array::length(op_args) > 0 {
+              nl = ce(buf, Array::get(op_args, 0), local_names, nl, ctx, ld)
+            } else {
+              emit_i64_const(buf, 0)
+            }
           } else {
             emit_i64_const(buf, 0)
           }
-        } else {
-          emit_i64_const(buf, 0)
+          bytebuf_push(buf, 8)
+          bytebuf_push(buf, eff_tag)
         }
-        bytebuf_push(buf, 8)
-        bytebuf_push(buf, eff_tag)
-        emit_end(buf)
         nl
       }
     }
@@ -2338,34 +2303,15 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "resume" {
-      let g_cur = if ctx.enable_rc {
-        3
-      } else {
-        2
-      }
-      emit_global_get(buf, g_cur)
-      emit_i32_wrap_i64(buf)
-      emit_global_get(buf, g_cur)
-      emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, 8)
-      emit_i64_const(buf, 8)
-      emit_i64_mul(buf)
-      emit_i32_wrap_i64(buf)
-      emit_i32_add(buf)
-      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      emit_i64_store(buf, 3, 16)
-      emit_global_get(buf, g_cur)
-      emit_i32_wrap_i64(buf)
-      emit_global_get(buf, g_cur)
-      emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, 8)
-      emit_i64_const(buf, 1)
-      emit_i64_add(buf)
-      emit_i64_store(buf, 3, 8)
-      emit_i64_const(buf, 0)
-      bytebuf_push(buf, 8)
-      bytebuf_push(buf, 1)
-      nl
+      // ADR-0076 追記34 V2: the replay engine (memo region + tag-1 rethrow
+      // this call used to compile to) is gone. Every lowering that keeps
+      // `resume` meaningful rewrites it away before codegen (edp's
+      // tail-resumptive dict members, scps's continuation calls), and
+      // compile_expr_tail6 no longer compiles non-Error handler arms at
+      // all -- so a `resume` reaching this point means an upstream pass
+      // failed to consume its handle. Fail loudly instead of emitting a
+      // write into a region that no longer exists.
+      throw("internal: `resume` reached codegen -- its handle was neither migrated (evidence dict) nor CPS-transformed (suspend class), and the replay engine was removed (ADR-0076 追記34 V2)")
     }
     else if fname == "assert" {
       // #1095: no `!prefer_bound_call` guard here (assert_true / assert_eq
