@@ -2130,9 +2130,15 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
     // __ev_E param), and each fn's own row-E-typed params are safe inside
     // that fn — no call-site proofs. Row-E literal BODIES join the safety
     // check below (each is compiled with the same widened set).
-    let td_binds = empty_str_array()
+    let td_binds_raw = empty_str_array()
     let td_lits = array_empty()
-    edp_row_lit_scan(stmts, ename, needing, es_names, es_members_list, td_binds, td_lits)
+    edp_row_lit_scan(stmts, ename, needing, es_names, es_members_list, td_binds_raw, td_lits)
+    // #1116 Codex P1: drop names that are ALSO bound to a non-evidence
+    // value in some other scope — widening those program-wide would
+    // rewrite an unrelated same-named call at the wrong arity.
+    let td_poison = empty_str_array()
+    edp_collect_poison_stmts(stmts, ename, needing, es_names, es_members_list, td_poison)
+    let td_binds = edp_filter_unpoisoned(td_binds_raw, td_poison)
     let td_mode = Array::length(td_binds) > 0 || Array::length(td_lits) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list)
     // Handle sites are checked PER TOP-LEVEL STATEMENT (not from the flat
     // `handle_sites` list, which carries no owner attribution): a site
@@ -2333,16 +2339,32 @@ fn edp_find_fn_params_and_body(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bo
 // evidence_dict_pass's returned error list (never a silent replay
 // fallback) — the frontier-deletion prerequisite.
 
+// #1116 Codex review (P1): the idempotency check must be EFFECT-SPECIFIC.
+// A `with { A, B }` literal gets `__ev_A` from A's sweep; a blanket
+// `starts_with(p0, "__ev_")` would then make B's sweep skip it, so B's
+// perform escapes after B's handler is removed. Check for THIS effect's
+// dict param by exact name, scanning ALL params (a prior effect's param
+// is prepended AHEAD of this one, so it is not necessarily param 0).
+fn edp_params_have_dict(params: Array[(String, Option[TypeExpr])], dict_pname: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(params) {
+    let (pn, _) = Array::get(params, i)
+    if pn == dict_pname {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn edp_efn_row_carries(expr: Expr, ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Bool {
   match expr {
     EFn(_, _, params, _, eff, _) => match eff {
       Some(row) => {
-        let already = if Array::length(params) > 0 {
-          let (p0, _) = Array::get(params, 0)
-          String::starts_with(p0, "__ev_")
-        } else {
-          false
-        }
+        let already = edp_params_have_dict(params, edp_dict_param_name(ename))
         !already && edp_row_is_exactly(row, ename, es_names, es_members_list)
       },
       None => false
@@ -2387,6 +2409,236 @@ fn edp_row_lit_scan(stmts: Array[Stmt], ename: String, needing: Array[String], e
       SBench(_, expr) => edp_row_lit_scan_expr(expr, ename, needing, es_names, es_members_list, binds, lits),
       _ => ()
     }
+    i = i + 1
+  }
+}
+
+// #1116 Codex review (P1): `binds` is a program-wide flat name list, so a
+// name bound to a row-E literal in one scope would widen EVERY same-named
+// call — including an unrelated pure `f` bound in another scope, which
+// would be miscompiled to `f(__ev_E)`. Collect POISONED names: any name
+// bound (anywhere, any binder form) to something that is NOT an
+// evidence-taking value for this effect. A name that is both a row-E bind
+// somewhere and poisoned elsewhere is dropped from the widening set —
+// call sites through it then fail eligibility (a hard error, loud) rather
+// than silently mismatching arity. Names bound uniquely to a row-E value
+// (the common shape: `let inner = () -> _ with { E } {..}`) are never
+// poisoned and stay widened.
+fn edp_filter_unpoisoned(binds: Array[String], poison: Array[String]) -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(binds) {
+    let nm = Array::get(binds, i)
+    if edp_str_array_contains(poison, nm) || edp_str_array_contains(out, nm) {
+      ()
+    } else {
+      Array::push(out, nm)
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn edp_collect_poison_stmts(stmts: Array[Stmt], ename: String, needing: Array[String], es_names: Array[String], es_members_list: Array[Array[String]], poison: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => match expr {
+        EFn(_, _, params, _, _, fb) => {
+          edp_poison_params(params, poison)
+          edp_collect_poison_expr(fb, ename, needing, es_names, es_members_list, poison)
+        },
+        _ => edp_collect_poison_expr(expr, ename, needing, es_names, es_members_list, poison)
+      },
+      SLetMut(_, _, expr) => edp_collect_poison_expr(expr, ename, needing, es_names, es_members_list, poison),
+      SExpr(expr) => edp_collect_poison_expr(expr, ename, needing, es_names, es_members_list, poison),
+      STest(_, expr) => edp_collect_poison_expr(expr, ename, needing, es_names, es_members_list, poison),
+      SBench(_, expr) => edp_collect_poison_expr(expr, ename, needing, es_names, es_members_list, poison),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn edp_poison_params(params: Array[(String, Option[TypeExpr])], poison: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pn, _) = Array::get(params, i)
+    let nm = edp_strip_tilde(pn)
+    if edp_str_array_contains(poison, nm) {
+      ()
+    } else {
+      Array::push(poison, nm)
+    }
+    i = i + 1
+  }
+}
+
+fn edp_poison_add(nm: String, poison: Array[String]) -> Unit {
+  if edp_str_array_contains(poison, nm) {
+    ()
+  } else {
+    Array::push(poison, nm)
+  }
+}
+
+fn edp_collect_poison_expr(e: Expr, ename: String, needing: Array[String], es_names: Array[String], es_members_list: Array[Array[String]], poison: Array[String]) -> Unit {
+  match e {
+    ELet(n, v, b, _) => {
+      if !edp_row_lit_bindable(v, ename, needing, es_names, es_members_list) {
+        edp_poison_add(n, poison)
+      } else {
+        ()
+      }
+      edp_collect_poison_expr(v, ename, needing, es_names, es_members_list, poison)
+      edp_collect_poison_expr(b, ename, needing, es_names, es_members_list, poison)
+    },
+    ELetRec(n, v, b) => {
+      if !edp_row_lit_bindable(v, ename, needing, es_names, es_members_list) {
+        edp_poison_add(n, poison)
+      } else {
+        ()
+      }
+      edp_collect_poison_expr(v, ename, needing, es_names, es_members_list, poison)
+      edp_collect_poison_expr(b, ename, needing, es_names, es_members_list, poison)
+    },
+    ELetMut(n, v, b, _) => {
+      edp_poison_add(n, poison)
+      edp_collect_poison_expr(v, ename, needing, es_names, es_members_list, poison)
+      edp_collect_poison_expr(b, ename, needing, es_names, es_members_list, poison)
+    },
+    EFn(_, _, params, _, _, fb) => {
+      edp_poison_params(params, poison)
+      edp_collect_poison_expr(fb, ename, needing, es_names, es_members_list, poison)
+    },
+    ESeq(a, b) => {
+      edp_collect_poison_expr(a, ename, needing, es_names, es_members_list, poison)
+      edp_collect_poison_expr(b, ename, needing, es_names, es_members_list, poison)
+    },
+    EIf(c, t, el) => {
+      edp_collect_poison_expr(c, ename, needing, es_names, es_members_list, poison)
+      edp_collect_poison_expr(t, ename, needing, es_names, es_members_list, poison)
+      edp_collect_poison_expr(el, ename, needing, es_names, es_members_list, poison)
+    },
+    EMatch(sc, arms) => {
+      edp_collect_poison_expr(sc, ename, needing, es_names, es_members_list, poison)
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (pp, ex) = Array::get(arms, ai)
+        edp_poison_pat(pp, poison)
+        edp_collect_poison_expr(ex, ename, needing, es_names, es_members_list, poison)
+        ai = ai + 1
+      }
+    },
+    EHandle(bd, arms) => {
+      edp_collect_poison_expr(bd, ename, needing, es_names, es_members_list, poison)
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (pp, ex) = Array::get(arms, ai)
+        edp_poison_pat(pp, poison)
+        edp_collect_poison_expr(ex, ename, needing, es_names, es_members_list, poison)
+        ai = ai + 1
+      }
+    },
+    ECall(callee, args, _) => {
+      edp_collect_poison_expr(callee, ename, needing, es_names, es_members_list, poison)
+      let mut ai = 0
+      while ai < Array::length(args) {
+        edp_collect_poison_expr(Array::get(args, ai), ename, needing, es_names, es_members_list, poison)
+        ai = ai + 1
+      }
+    },
+    EWhile(c, b) => {
+      edp_collect_poison_expr(c, ename, needing, es_names, es_members_list, poison)
+      edp_collect_poison_expr(b, ename, needing, es_names, es_members_list, poison)
+    },
+    EForIn(n, idx, it, b) => {
+      edp_poison_add(n, poison)
+      match idx {
+        Some(ix) => edp_poison_add(ix, poison),
+        None => ()
+      }
+      edp_collect_poison_expr(it, ename, needing, es_names, es_members_list, poison)
+      edp_collect_poison_expr(b, ename, needing, es_names, es_members_list, poison)
+    },
+    ELoop(pairs, b) => {
+      let mut pi = 0
+      while pi < Array::length(pairs) {
+        let (n, v) = Array::get(pairs, pi)
+        edp_poison_add(n, poison)
+        edp_collect_poison_expr(v, ename, needing, es_names, es_members_list, poison)
+        pi = pi + 1
+      }
+      edp_collect_poison_expr(b, ename, needing, es_names, es_members_list, poison)
+    },
+    EBinOp(_, l, r) => {
+      edp_collect_poison_expr(l, ename, needing, es_names, es_members_list, poison)
+      edp_collect_poison_expr(r, ename, needing, es_names, es_members_list, poison)
+    },
+    EUnaryOp(_, x) => edp_collect_poison_expr(x, ename, needing, es_names, es_members_list, poison),
+    EAssign(_, v, c) => {
+      edp_collect_poison_expr(v, ename, needing, es_names, es_members_list, poison)
+      edp_collect_poison_expr(c, ename, needing, es_names, es_members_list, poison)
+    },
+    EAssignOp(_, _, v, c) => {
+      edp_collect_poison_expr(v, ename, needing, es_names, es_members_list, poison)
+      edp_collect_poison_expr(c, ename, needing, es_names, es_members_list, poison)
+    },
+    EReturn(x) => edp_collect_poison_expr(x, ename, needing, es_names, es_members_list, poison),
+    EDot(o, _, _, _) => edp_collect_poison_expr(o, ename, needing, es_names, es_members_list, poison),
+    ELabeledArg(_, _, v) => edp_collect_poison_expr(v, ename, needing, es_names, es_members_list, poison),
+    EBreak(opt) => match opt {
+      Some(x) => edp_collect_poison_expr(x, ename, needing, es_names, es_members_list, poison),
+      None => ()
+    },
+    EContinue(args) => {
+      let mut ai = 0
+      while ai < Array::length(args) {
+        edp_collect_poison_expr(Array::get(args, ai), ename, needing, es_names, es_members_list, poison)
+        ai = ai + 1
+      }
+    },
+    ETuple(items) => {
+      let mut ai = 0
+      while ai < Array::length(items) {
+        edp_collect_poison_expr(Array::get(items, ai), ename, needing, es_names, es_members_list, poison)
+        ai = ai + 1
+      }
+    },
+    EArray(items) => {
+      let mut ai = 0
+      while ai < Array::length(items) {
+        edp_collect_poison_expr(Array::get(items, ai), ename, needing, es_names, es_members_list, poison)
+        ai = ai + 1
+      }
+    },
+    ERecord(_, fields, _) => {
+      let mut ai = 0
+      while ai < Array::length(fields) {
+        let (_, v) = Array::get(fields, ai)
+        edp_collect_poison_expr(v, ename, needing, es_names, es_members_list, poison)
+        ai = ai + 1
+      }
+    },
+    EMap(fields) => {
+      let mut ai = 0
+      while ai < Array::length(fields) {
+        let (_, v) = Array::get(fields, ai)
+        edp_collect_poison_expr(v, ename, needing, es_names, es_members_list, poison)
+        ai = ai + 1
+      }
+    },
+    ESpread(x) => edp_collect_poison_expr(x, ename, needing, es_names, es_members_list, poison),
+    _ => ()
+  }
+}
+
+fn edp_poison_pat(p: Pat, poison: Array[String]) -> Unit {
+  let names = empty_str_array()
+  edp_pat_binds(p, names)
+  let mut i = 0
+  while i < Array::length(names) {
+    edp_poison_add(Array::get(names, i), poison)
     i = i + 1
   }
 }
@@ -3342,14 +3594,11 @@ fn edp_sweep_row_lits_expr(e: Expr, ename: String, dict_pname: String, call_safe
 
 fn edp_maybe_migrate_efn(expr: Expr, ename: String, dict_pname: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Option[Expr] {
   match expr {
-    // 追記34: a literal the type-directed sweep already migrated must not
-    // be double-prepended by the proof-path revisit.
-    EFn(tps, tbs, params, ret, eff, body) => if (if Array::length(params) > 0 {
-      let (p00, _) = Array::get(params, 0)
-      String::starts_with(p00, "__ev_")
-    } else {
-      false
-    }) {
+    // 追記34: a literal the type-directed sweep already migrated FOR THIS
+    // EFFECT must not be double-prepended by the proof-path revisit
+    // (#1116 Codex P1: effect-specific — a `with { A, B }` literal already
+    // carrying `__ev_A` still needs `__ev_B`).
+    EFn(tps, tbs, params, ret, eff, body) => if edp_params_have_dict(params, dict_pname) {
       None
     } else if edp_efn_eligible_for_migration(expr, ename, needing, pure_fns, es_names, es_members_list) {
       let new_params = Array::concat([
@@ -3568,9 +3817,15 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
   // row-E-typed params. Runs BEFORE the needing rewrites so those see the
   // already-swept literals (the __ev_ first-param guard makes any later
   // proof-path re-visit a no-op).
-  let td_binds = empty_str_array()
+  let td_binds_raw = empty_str_array()
   let td_lits0 = array_empty()
-  edp_row_lit_scan(stmts, ename, needing, es_names, es_members_list, td_binds, td_lits0)
+  edp_row_lit_scan(stmts, ename, needing, es_names, es_members_list, td_binds_raw, td_lits0)
+  // #1116 Codex P1: same shadow-poison filter as eligibility (both views
+  // must agree on the widened set, or apply widens what eligibility did
+  // not vet).
+  let td_poison0 = empty_str_array()
+  edp_collect_poison_stmts(stmts, ename, needing, es_names, es_members_list, td_poison0)
+  let td_binds = edp_filter_unpoisoned(td_binds_raw, td_poison0)
   let td_mode = Array::length(td_binds) > 0 || Array::length(td_lits0) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list)
   if td_mode {
     let td_safe = Array::concat(needing, td_binds)

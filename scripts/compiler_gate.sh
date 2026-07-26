@@ -6459,6 +6459,20 @@ if ! grep -qF "type-directed evidence" "$tdevdir/inelig.wasm.diag" 2>/dev/null; 
   cat "$tdevdir/inelig.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+rm -f "$tdevdir/multi.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/effect_closure_value_evidence_multi.vibe "$tdevdir/multi.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$tdevdir/multi.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_closure_value_evidence_multi fixture did not compile" >&2
+  cat "$tdevdir/multi.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+multi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$tdevdir/multi.wasm" 2>/dev/null | tail -1)"
+if [ "$multi_out" != "33" ]; then
+  echo "[compiler-gate] FAIL: effect_closure_value_evidence_multi got '$multi_out' (want 33; a blanket __ev_ guard drops __ev_B and the raw B perform escapes -- #1116 Codex P1)" >&2
+  exit 1
+fi
 rm -rf "$tdevdir"
 echo "[compiler-gate] type-directed closure evidence ok"
 
