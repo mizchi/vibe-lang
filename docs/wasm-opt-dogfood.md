@@ -281,3 +281,36 @@ hello_world 6,988→404 B (-94%), fib 6,958→368 B (-94%), fizzbuzz 7,469→897
 (-71%), perform_handle 8,108→896 B (-88%), compiler_features 7,805→1,487 B
 (-80%). All VALID and run-identical. Baselines here are ADR-0077-stripped
 release outputs — the two layers compose.
+
+## 2026-07-26 — RC アロケータ律速の発見と per-pass 実行 (#1109-1)
+
+dist CLI (1.4MB) への 1 round が 4m20s、vibec core (4.9MB) は round 1 が
+時間内に終わらない問題を `node --cpu-prof` で調査した結果:
+
+- **self 時間の 97.4% が `__rt_rc_alloc`** — vibe-opt.wasm が Perceus RC で
+  ビルドされており、optimizer のアロケーションパターン (モジュール全体の
+  Bytes/span 配列を pass ごとに再構築) で free-list 探索が退化していた。
+- 対策: `build_vibe_opt.sh` が **`VIBE_RC=0` (bump) でビルド**するよう変更。
+  round-per-process 運用ではメモリはプロセス破棄で回収されるので bump で
+  問題ない。効果: **1 round 4m20s → 9.4s (約26倍)**、出力は RC 版と
+  バイト同一。vibe-opt.wasm 自体も 300KB → 60KB。
+- ただし bump では **4.9MB 入力の 1 round が wasm の 4GB 上限を突破**する
+  (heap_ptr wrap → OOB trap)。`vibe-opt --pass <name>` + `minify_wasm.sh
+  --per-pass` で **1 pass = 1 プロセス**に分割 (17 invocations/round)。
+  小 corpus で per-pass == single-round の結果一致を確認。
+
+実測 (bump + per-pass 後):
+
+| 対象 | before | after | 時間 |
+|---|---:|---:|---:|
+| dist CLI (converge 16 rounds) | 1,459,037 B | 1,398,525 B (-4.1%) | 59s |
+| vibec core (`--keep-exports compile_cli_request,memory,__heap_ptr`) | 4,917,753 B | 3,750,335 B (**-23%**) | 1m45s |
+
+vibec の縮小 core は componentize + jco transpile 後もブラウザ PoC
+(in-memory compile → WebAssembly.instantiate → 42) を全て通過。
+`build_vibec.sh` はこの縮小を既定で行う (`VIBE_VIBEC_NO_MINIFY=1` で skip)。
+
+残レバー: dist CLI の -4% は cli_main から真に到達可能なコードが大半で
+あることを意味する。次の伸び代は body-level simplify-locals (上記の
+2026-07-25 節) と、vibec の request プロトコル面だけに絞ったさらに狭い
+entry の検討。

@@ -101,8 +101,10 @@ node はヘッドレス代替として使っているだけで、driver のコ�
 
 - component core は export 名 lift 依存のため ADR-0077 の export フィルタは
   `__no_entry__` を対象外にしており、そのまま安全。
-- core は library ビルドで全 export が生きるため現状 ~4.9MB。配布時は
-  Phase 2 の `vibe-opt.wasm`(export root からの真の DCE)で `compile` 面
-  だけ残す縮小が次のレバー(#1107 Phase 5 残項目)。
+- core は library ビルドでは ~4.9MB だが、`build_vibec.sh` が既定で
+  `minify_wasm.sh --keep-exports compile_cli_request,memory,__heap_ptr
+  --per-pass` により compile 面だけへ DCE し **~3.85MB (-22%)** に縮小する
+  (#1109-1)。縮小 component でもブラウザ PoC は全通過。`VIBE_VIBEC_NO_MINIFY=1`
+  で skip 可。
 - Phase 4 (funcref table 最小化) は elem root を減らすため、この DCE の
   効きをそのまま良くする。

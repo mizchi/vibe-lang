@@ -59,11 +59,23 @@ if [ ! -s "$TOOL" ]; then
 fi
 rm -f "$TOOL.diag" "$TOOL.funcmap"
 
-# 3. wrap the core into the component.
+# 3. shrink the core to the compile face (#1109): the library build keeps
+#    every sibling export's call graph alive (~4.9MB); filtering exports down
+#    to {compile_cli_request, memory, __heap_ptr} and running vibe-opt's true
+#    DCE drops it ~23%. --per-pass because a whole round over a module this
+#    size exhausts the 4GB wasm space under the bump allocator. Verified: the
+#    minified component passes the full jco browser PoC (compile -> run 42).
+#    VIBE_VIBEC_NO_MINIFY=1 skips (e.g. while debugging the optimizer itself).
+if [ "${VIBE_VIBEC_NO_MINIFY:-}" != "1" ]; then
+  bash "$ROOT/scripts/minify_wasm.sh" "$CORE" "$CORE" \
+    --keep-exports compile_cli_request,memory,__heap_ptr --per-pass
+fi
+
+# 4. wrap the core into the component.
 $RUN "$TOOL" "$CORE" "$COMPONENT"
 [ -s "$COMPONENT" ] || { echo "build_vibec: componentize failed" >&2; exit 1; }
 
-# 4. WIT sidecar — the world the component implements (compile face only;
+# 5. WIT sidecar — the world the component implements (compile face only;
 #    the vfs face is future work, see docs/vibec-component.md).
 cat > "$WIT" <<'EOF'
 package vibe:vibec@0.1.0;
