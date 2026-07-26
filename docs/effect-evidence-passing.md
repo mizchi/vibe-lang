@@ -2409,6 +2409,20 @@ replay エンジンを codegen から物理削除した。着地は 4 パーツ:
   受けないので inert。top-level 束縛が無い規約名のみを inert callee
   集合 (pure_fns) に追加 (`edp_append_free_host_inert_names` —
   同名 top-level fn/value がある場合は通常規則のまま)。
+- **perform-free row-E fn の inert 化** (`edp_fn_is_perform_free` /
+  `edp_append_perform_free_row_fns`): body が E を perform せず全 call が
+  inert な row-E fn (fs の stat_token = raw host call 1 本) は dict 不要
+  なので needing から除外し、呼び出しも inert 扱い。migration して
+  しまうと「handle 外からの naked call」(test の real-host lane) が
+  dict を供給できず arity break する — index_import_test の stat_token
+  test が実測でこれを踏んだ。plan filter と eligibility/apply の
+  pure_fns append が同一 predicate・同一順で計算し verdicts を一致させる。
+- **checker-builtin effect label の handle** (SEffectDef なし):
+  `effect Http {..}` 宣言なしで builtin Http row を discharge する
+  儀式的 handle (http_e2e_test) は migration の作りようがない (dict の
+  op 表が無い) → **"Http" を test/bench の ambient row に追加**
+  (test_bench_ambient_effects、Fs/Env と同じ host-handler 理屈) して
+  handle 自体を不要化し、e2e test から儀式 wrapper を撤去した。
 
 **意味論の意図的変更 (どちらも replay-era artifact の削除)**:
 - host-mapped op の perform を user handle で「横取り」する形

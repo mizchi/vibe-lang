@@ -2061,7 +2061,26 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
     // function never needs the dict for itself, dead or not -- see
     // edp_drop_self_discharging_needing's doc comment), so it applies to
     // the FULL set before either eligibility attempt below.
-    let needing_full = edp_drop_self_discharging_needing(needing_unshadowed, stmts, fn_defs, ename)
+    let needing_sd = edp_drop_self_discharging_needing(needing_unshadowed, stmts, fn_defs, ename)
+    // ADR-0076 追記34 V2: perform-free exclusion -- a row-E fn that cannot
+    // perform E needs no dict and must NOT get one (its call sites may sit
+    // outside any handle; see edp_fn_is_perform_free's doc comment). The
+    // same predicate feeds the pure_fns appends inside eligibility/apply,
+    // so both views classify these names identically.
+    let pf_inert = edp_pure_fn_names(fn_defs)
+    edp_append_free_host_inert_names(stmts, pf_inert)
+    edp_append_perform_free_row_fns(stmts, fn_defs, ename, pf_inert)
+    let needing_full = array_empty()
+    let mut pfi = 0
+    while pfi < Array::length(needing_sd) {
+      let pf_nm = Array::get(needing_sd, pfi)
+      if edp_str_array_contains(pf_inert, pf_nm) {
+        ()
+      } else {
+        Array::push(needing_full, pf_nm)
+      }
+      pfi = pfi + 1
+    }
     match edp_try_plan_for_effect(stmts, ename, ops, needing_full, fn_defs) {
       Some(plan) => Array::push(plans, plan),
       None => {
@@ -2161,6 +2180,7 @@ fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String
 fn edp_any_handle_owner_cp(stmts: Array[Stmt], ename: String, needing: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Bool {
   let pure_fns = edp_pure_fn_names(fn_defs)
   edp_append_free_host_inert_names(stmts, pure_fns)
+  edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns)
   let es_names = array_empty()
   let es_members_list = array_empty()
   edp_es_collect_into(stmts, es_names, es_members_list)
@@ -2901,6 +2921,48 @@ fn edp_name_is_host_raw_shape(nm: String) -> Bool {
   String::starts_with(nm, "vibe_") && String::ends_with(nm, "_raw")
 }
 
+// ADR-0076 追記34 V2: a row-E function that provably cannot PERFORM E --
+// no `perform E::op` anywhere in its body and every call inert (pure
+// builtin / row-free top-level fn / free host-raw name; an unknown,
+// local-value, or needing callee disqualifies) -- needs no evidence dict
+// at runtime, so it is kept OUT of `needing` (edp_plan_migrations) and
+// calls to it are inert (appended into `pure_fns` at every safety-scan
+// construction site). This is what lets a host-discharge wrapper like
+// lib/@vibe/fs's `stat_token` (row Fs, body = one raw host call) keep
+// being invoked NAKED from a test while its perform-based siblings'
+// mock handles migrate the same effect: migrating it would prepend a
+// dict parameter that its uncovered call sites can never supply (arity
+// break at runtime, caught live by index_import_test's stat_token test).
+// Single pass in candidate order, no fixpoint -- a perform-free fn whose
+// only blemish is calling a LATER-listed perform-free sibling stays
+// needing (conservative; both the plan filter and the pure_fns appends
+// iterate the same order over the same base, so their verdicts agree).
+fn edp_fn_is_perform_free(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], nm: String, ename: String, base_inert: Array[String]) -> Bool {
+  match edp_find_fn_body(stmts, fn_defs, nm) {
+    Some(body) => !edp_performs_user_effect_expr(body, ename) && !edp_has_unsafe_construct(body, empty_str_array(), ename, base_inert),
+    None => false
+  }
+}
+
+fn edp_append_perform_free_row_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, pure_fns: Array[String]) -> Unit {
+  let es_names = array_empty()
+  let es_members_list = array_empty()
+  edp_es_collect_into(stmts, es_names, es_members_list)
+  let candidates = edp_needing_names(fn_defs, ename, es_names, es_members_list)
+  let mut i = 0
+  while i < Array::length(candidates) {
+    let nm = Array::get(candidates, i)
+    if edp_str_array_contains(pure_fns, nm) {
+      ()
+    } else if edp_fn_is_perform_free(stmts, fn_defs, nm, ename, pure_fns) {
+      Array::push(pure_fns, nm)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
 fn edp_append_free_host_inert_names(stmts: Array[Stmt], pure_fns: Array[String]) -> Unit {
   let top_names = empty_str_array()
   let mut ti = 0
@@ -3363,6 +3425,7 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
   } else {
     let pure_fns = edp_pure_fn_names(fn_defs)
     edp_append_free_host_inert_names(stmts, pure_fns)
+    edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns)
     let es_names = array_empty()
     let es_members_list = array_empty()
     edp_es_collect_into(stmts, es_names, es_members_list)
@@ -5005,6 +5068,7 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
   let dict_tyname = edp_dict_struct_name(ename)
   let pure_fns = edp_pure_fn_names(fn_defs)
   edp_append_free_host_inert_names(stmts, pure_fns)
+  edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns)
   let es_names = array_empty()
   let es_members_list = array_empty()
   edp_es_collect_into(stmts, es_names, es_members_list)
