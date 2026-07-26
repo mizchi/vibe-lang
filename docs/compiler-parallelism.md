@@ -315,19 +315,51 @@ passing immutable dependency interfaces instead of only terminal outcomes.
 
 ## TDD implementation sequence
 
-### Phase 0: oracle and measurement
+### Phase 0: oracle and measurement — done
 
 - Record cold/warm `load/type/bundle/parse/compile/total` timings and peak heap.
 - Add a sequential randomized-ready-order executor with no real parallelism.
 - Red: different ready orders, worker counts, or repeated runs must produce
   byte-identical Wasm and identical canonical diagnostics/cache values.
 
-### Phase 1: module job extraction
+`VIBE_DEP_ORDER_SEED` permutes every node's dependency visit order in
+`runtime/typecheck_fs.vibe` (0 = identity = the production walk), and
+`scripts/dep_order_oracle.sh` asserts byte-identical wasm across seeds with a
+cold cache per run. The recorded dep order stays declaration order —
+`build_fingerprint` folds it in sequence, so permuting the record would change
+every fingerprint and defeat the invariance being measured.
+
+The oracle refuses to run against a compiler binary that contains no
+`VIBE_DEP_ORDER_SEED` literal. Without that guard it passes vacuously, which
+is not a hypothetical: a failed bundle regen once left the previous adapter in
+place and five seeds "passed" against a compiler that could not read them.
+
+### Phase 1: module job extraction — partial
 
 - Extract pure header parse and `check_module` functions.
 - Replace recursive accumulator threading with `ModuleOutcome` plus a single
   coordinator commit path.
 - Differentially compare the new `--jobs 1` path with the old compiler.
+
+`ModuleJob` / `ModuleOutcome` / `check_module` / `commit_module_outcome` exist
+in `runtime/typecheck_fs.vibe`, and `scripts/compiler_differential.sh` holds
+the byte-identity comparison against the previous compiler.
+
+Three gaps remain before Phase 2 can rely on this seam:
+
+- `check_module` still carries an `Error` row. Type errors are values inside
+  `Diagnosed`, but parse errors are not — making them values would relabel
+  every parse diagnostic, so it waits for the canonical diagnostic ordering.
+- The driver still fails fast on the first `Diagnosed` rather than collecting
+  a canonical set, so today's behaviour is preserved exactly.
+- `ModuleJob.dep_envs` is the driver's whole resolved environment table, not
+  the ordered direct-dependency interfaces the contract above calls for.
+  `build_import_env` resolves import paths against it, so narrowing changes
+  which entry an import binds to. A worker handed the superset still cannot
+  observe the driver, but narrowing is a real prerequisite for isolation.
+
+The accumulator threading in `ensure_fingerprint_fs_go` is unchanged — only
+the per-module leaf work was lifted out. `FrozenArray[T]` is not implemented.
 
 ### Phase 2: bounded parallel frontend
 

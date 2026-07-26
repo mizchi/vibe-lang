@@ -637,32 +637,93 @@ export fn locate_type_error(source: String, msg: String) -> String {
   }
 }
 
+// --- #906 Phase 1: module job / outcome seam ----------------------------
+//
+// Phase 2 hands one module at a time to a worker that cannot touch the
+// filesystem or the driver's accumulators. This splits the existing
+// per-module work along exactly that line, with no parallelism and no
+// change in behaviour:
+//
+//   driver  resolves dependency environments (the only Fs the work needs)
+//           and packs them into a ModuleJob value
+//   worker  check_module : ModuleJob -> ModuleOutcome, no Fs row
+//   driver  commit_module_outcome performs every write
+//
+// check_module still carries `Error` because parse errors are not yet
+// values -- only type errors are. Making parse diagnostics part of
+// ModuleOutcome would change today's messages, so it is left to the phase
+// that also introduces the canonical diagnostic ordering.
+// ModuleJob is defined TRANSPARENTLY in this package's contract
+// (index.vpkg), not here -- the perceus/ PerceusAction precedent. Its field
+// layout is the worker contract itself, so it belongs in the contract
+// rather than being an opaque handle; record literals and field access
+// resolve from impl units against the contract definition.
+export enum ModuleOutcome {
+  Checked(String, String, TypeEnv);
+  Diagnosed(String, Array[String])
+}
+
+// Pure module check. No Fs: the dependency environments it needs are
+// already values inside the job.
+export fn check_module(job: ModuleJob) -> ModuleOutcome with { Error } {
+  // Parse stays OUTSIDE the handler below: parse errors currently
+  // propagate verbatim, while type errors get located and path-prefixed.
+  // Folding both into one handler would relabel every parse diagnostic.
+  let stmts = parse_program_with_path(job.path, job.source)
+  let import_env = build_import_env(stmts, dir_of_path(job.path), job.dep_envs)
+  handle {
+    let checked_env = match import_env {
+      EnvEmpty => check_program(stmts),
+      _ => check_program_with_env(stmts, import_env)
+    }
+    Checked(job.path, job.fingerprint, checked_env)
+  } with Error {
+    Throw(msg) => Diagnosed(job.path, [String::concat(String::concat(job.path, ": "), locate_type_error(job.source, msg))])
+  }
+}
+
+// Coordinator-owned commit. Every filesystem and accumulator write for a
+// module happens here and nowhere else.
+fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, job: ModuleJob, outcome: ModuleOutcome) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
+  match outcome {
+    // Diagnostics are values as far as the worker is concerned, but the
+    // driver still fails fast on the first one so the observable behaviour
+    // is byte-identical to the pre-Phase-1 compiler. Collecting them into
+    // a canonical set is Phase 2's job.
+    Diagnosed(_, diags) => if Array::length(diags) > 0 {
+      throw(Array::get(diags, 0))
+    } else {
+      throw(String::concat(job.path, ": type error"))
+    },
+    Checked(path, fingerprint, checked_env) => {
+      store_persistent_type_env(fingerprint, checked_env)
+      if Array::length(job.deps) == 0 {
+        Fs::write_file(persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(job.source)), persistent_leaf_fingerprint_text(fingerprint))
+      } else {
+        ()
+      }
+      let next_env_cache = upsert_env_cache(env_cache, path, checked_env)
+      let next_db = ripple_record_eval(rdb, path, fingerprint, job.deps)
+      (fingerprint, next_db, next_env_cache, dep_source_cache, parse_count)
+    }
+  }
+}
+
 fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
   if Fs::exists(persistent_type_env_cache_path(fingerprint)) {
     let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
     (fingerprint, next_db, env_cache, dep_source_cache, parse_count)
   } else {
-    let stmts = parse_program_with_path(path, source)
-    let final_parse_count = parse_count + 1
     let import_env_cache = ensure_env_cache_for_paths(rdb, env_cache, deps)
-    let import_env = build_import_env(stmts, dir_of_path(path), import_env_cache)
-    let checked_env = handle {
-      match import_env {
-        EnvEmpty => check_program(stmts),
-        _ => check_program_with_env(stmts, import_env)
-      }
-    } with Error {
-      Throw(msg) => throw(String::concat(String::concat(path, ": "), locate_type_error(source, msg)))
+    let job = ModuleJob::{
+      path: path,
+      source: source,
+      deps: deps,
+      fingerprint: fingerprint,
+      dep_envs: import_env_cache
     }
-    store_persistent_type_env(fingerprint, checked_env)
-    if Array::length(deps) == 0 {
-      Fs::write_file(persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(source)), persistent_leaf_fingerprint_text(fingerprint))
-    } else {
-      ()
-    }
-    let next_env_cache = upsert_env_cache(import_env_cache, path, checked_env)
-    let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
-    (fingerprint, next_db, next_env_cache, dep_source_cache, final_parse_count)
+    let outcome = check_module(job)
+    commit_module_outcome(rdb, import_env_cache, dep_source_cache, parse_count + 1, job, outcome)
   }
 }
 
