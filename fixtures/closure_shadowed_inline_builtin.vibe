@@ -32,6 +32,29 @@ fn triple_via_shadowed(mul: (Int) -> Int) -> Int {
   inner()
 }
 
+// #1120 Codex review (P1): the OTHER direction. A non-recursive `let`
+// binder is NOT in scope inside its own initializer, so `add(x, y)` below
+// means the BUILTIN add -- but codegen pushes the binder's slot before
+// compiling the value (its index has to be reserved), so the fix above had
+// to be careful not to treat that not-yet-initialized slot as an enclosing
+// shadow and capture it (that made this trap). `let rec` keeps its name
+// visible; only non-recursive `let`/`let mut` mask it for the value.
+//   add_builtin:     let-bound shadow, initializer uses the builtin => 3
+//   add_builtin_mut: same via `let mut`                             => 3
+fn add_builtin() -> Int {
+  let add = (x: Int, y: Int) -> Int {
+    add(x, y)
+  }
+  add(1, 2)
+}
+
+fn add_builtin_mut() -> Int {
+  let mut add = (x: Int, y: Int) -> Int {
+    add(x, y)
+  }
+  add(1, 2)
+}
+
 let _start = () -> Int {
   let b = id_via_shadowed((x: Bool) -> Bool {
     x
@@ -43,8 +66,8 @@ let _start = () -> Int {
     1
   } else {
     0
-  }
+  } + add_builtin() + add_builtin_mut()
 }
 
 __DATA__
-{"last": "22"}
+{"last": "28"}

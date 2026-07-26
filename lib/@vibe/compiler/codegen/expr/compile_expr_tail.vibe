@@ -859,8 +859,19 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     let body = get_elet_body(expr)
     let local_idx = next_local
     emit_dbg_line_stmt(buf, value, get_elet_off(expr), ctx)
+    // #1120 Codex review (P1): the slot is pushed BEFORE the value compiles
+    // (its index must be reserved), but a NON-RECURSIVE `let` binder is not
+    // in scope inside its own initializer -- `let add = (x, y) -> Int {
+    // add(x, y) }` deliberately means the BUILTIN add. Mask the name for the
+    // duration of the value so nothing resolves to (or, since #1114, treats
+    // as an enclosing shadow and captures) the not-yet-initialized slot; the
+    // INDEX stays allocated, only the name is hidden, and it is restored
+    // before the body compiles. `let rec` keeps its name visible -- that is
+    // what makes self-reference work (see ctx.pending_letrec_self_name).
     Array::push(local_names, name)
+    Array::set(local_names, local_idx, "")
     let nl = compile_expr(buf, retain_wrap_let_value(value, name, ctx), local_names, next_local + 1, ctx, ld)
+    Array::set(local_names, local_idx, name)
     emit_local_set(buf, local_idx)
     let val_is_float = expr_is_floatish(value, local_names, ctx)
     if val_is_float {
@@ -1139,6 +1150,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     let local_idx = next_local
     emit_dbg_line_stmt(buf, value, get_eletmut_off(expr), ctx)
     Array::push(local_names, name)
+    // #1120 Codex review (P1): same non-recursive-binder masking as ELet
+    // above -- `let mut add = (x, y) -> Int { add(x, y) }` means the BUILTIN
+    // add. Restored right after each branch compiles the value, before the
+    // body (where the binder IS in scope).
+    Array::set(local_names, local_idx, "")
     if expr_is_floatish(value, local_names, ctx) {
       Array::push(ctx.float_local_slots, local_idx * 2 + 1)
     } else if slot_is_floatish(ctx, local_idx) {
@@ -1193,6 +1209,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         emit_local_get(buf, local_idx)
         emit_i32_wrap_i64(buf)
         let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
+        Array::set(local_names, local_idx, name)
         emit_i64_store(buf, 3, 0)
         let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
         emit_local_get(buf, local_idx)
@@ -1212,6 +1229,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       emit_local_get(buf, local_idx)
       emit_i32_wrap_i64(buf)
       let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
+      Array::set(local_names, local_idx, name)
       emit_i64_store(buf, 3, 0)
       let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
       nl2
@@ -1219,6 +1237,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     } else {
       // #768: same branch-tail retain rewrite as ELet (see retain_wrap_let_value).
       let nl = compile_expr(buf, retain_wrap_let_value(value, name, ctx), local_names, next_local + 1, ctx, ld)
+      Array::set(local_names, local_idx, name)
       emit_local_set(buf, local_idx)
       // #791: classify AFTER the value is compiled + stored (local_idx now
       // holds it), matching ELet's ordering -- classify_let_value_heap's

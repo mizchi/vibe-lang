@@ -6552,12 +6552,12 @@ if [ ! -s "$csibdir/out.wasm" ]; then
   exit 1
 fi
 csib_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$csibdir/out.wasm" 2>/dev/null | tail -1)"
-if [ "$csib_out" != "22" ]; then
-  echo "[compiler-gate] FAIL: closure_shadowed_inline_builtin got '$csib_out' (want 22) -- a shadowed inline builtin fell back to the builtin instead of the captured closure (#1114)" >&2
+if [ "$csib_out" != "28" ]; then
+  echo "[compiler-gate] FAIL: closure_shadowed_inline_builtin got '$csib_out' (want 28) -- either a shadowed inline builtin fell back to the builtin instead of the captured closure (#1114), or a non-recursive let binder was treated as an enclosing shadow inside its own initializer (#1120 Codex P1)" >&2
   exit 1
 fi
 rm -rf "$csibdir"
-echo "[compiler-gate] closure shadowed inline builtin ok (22)"
+echo "[compiler-gate] closure shadowed inline builtin ok (28)"
 
 # 57/57. #1078: an enum CONSTRUCTOR and an effect OPERATION that share a bare
 #        name, declared by two UNRELATED packages, must still resolve to the
