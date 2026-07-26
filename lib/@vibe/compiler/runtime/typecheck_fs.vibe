@@ -308,6 +308,71 @@ fn upsert_string_pair(pairs: Array[(String, String)], key: String, value: String
   pairs
 }
 
+// --- #906 Phase 0: ready-order oracle -----------------------------------
+//
+// The import-DAG walk below visits a module's dependencies in DECLARATION
+// order. Phase 2 will hand ready modules to workers, at which point the
+// visit order becomes whatever the scheduler picks -- so the property that
+// has to hold before any of that is built is "the order dependencies are
+// visited cannot change the output". This seed makes that property
+// TESTABLE today, with no real parallelism: a non-zero seed permutes each
+// node's dependency visit order deterministically, and
+// scripts/dep_order_oracle.sh asserts the compiled wasm is byte-identical
+// across seeds.
+//
+// The switch rides in a module-level cell rather than a parameter for the
+// same reason set_error_row_checked (checker/checker_effects.vibe) does:
+// the typecheck walk is pure (no Env row) and threading a config value
+// through every frame of a recursion that already carries five accumulators
+// would be far more invasive than the thing being tested.
+//
+// Seed 0 (the default, and what every production build uses) is the
+// identity permutation -- byte-for-byte the pre-#906 walk.
+let dep_order_seed_cell = array_empty()
+
+export fn set_dep_order_seed(seed: Int) -> Unit {
+  Array::truncate(dep_order_seed_cell, 0)
+  Array::push(dep_order_seed_cell, seed)
+}
+
+fn dep_order_seed() -> Int {
+  if Array::length(dep_order_seed_cell) > 0 {
+    Array::get(dep_order_seed_cell, 0)
+  } else {
+    0
+  }
+}
+
+// A permutation of [0, n) as a visit order. Identity when no seed is set.
+// Otherwise a seeded Fisher-Yates using a small LCG -- deterministic for a
+// given (seed, n), so a failing oracle run is exactly reproducible.
+fn dep_visit_order(n: Int) -> Array[Int] {
+  let order = array_empty()
+  let mut i = 0
+  while i < n {
+    Array::push(order, i)
+    i = i + 1
+  }
+  let seed = dep_order_seed()
+  if seed == 0 || n < 2 {
+    order
+  } else {
+    // LCG (Numerical Recipes constants), kept inside 31 bits so the 62-bit
+    // Int never overflows and the sequence is identical on every backend.
+    let mut state = seed
+    let mut j = n - 1
+    while j > 0 {
+      state = (state * 1664525 + 1013904223) & 2147483647
+      let k = state % (j + 1)
+      let tmp = Array::get(order, j)
+      Array::set(order, j, Array::get(order, k))
+      Array::set(order, k, tmp)
+      j = j - 1
+    }
+    order
+  }
+}
+
 // #1100: process-local parse memo. A cold fs-mode compile parses the SAME
 // source text TWICE -- once here for the typecheck walk (only on a
 // persistent type-env cache MISS, see finish_typecheck_fs_impl) and once
@@ -688,16 +753,36 @@ fn ensure_fingerprint_fs_go(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
                 let mut env_cache_after_deps = env_cache
                 let mut dep_source_cache_after_deps = next_dep_source_cache
                 let mut parse_count_after_deps = initial_parse_count
-                let dep_fps = empty_dep_fps()
+                // #906 Phase 0: VISIT order is permutable (dep_visit_order --
+                // identity unless a seed is set), but the RECORDED order must
+                // stay declaration order: build_fingerprint below folds
+                // dep_fps in sequence, so permuting the record would change
+                // every fingerprint and defeat the very invariance this is
+                // meant to test. Fingerprints therefore land in per-index
+                // slots and are collected in declaration order afterwards.
+                let visit = dep_visit_order(dlen)
+                let dep_fp_slots = empty_stack()
+                let mut sfill = 0
+                while sfill < dlen {
+                  Array::push(dep_fp_slots, "")
+                  sfill = sfill + 1
+                }
                 while i < dlen {
-                  let dep_path = Array::get(deps, i)
+                  let di = Array::get(visit, i)
+                  let dep_path = Array::get(deps, di)
                   let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint_fs_go(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, dep_path, stack)
                   db_after_deps = next_db
                   env_cache_after_deps = next_env_cache
                   dep_source_cache_after_deps = next_dep_source_cache2
                   parse_count_after_deps = next_parse_count
-                  Array::push(dep_fps, (dep_path, dep_fp))
+                  Array::set(dep_fp_slots, di, dep_fp)
                   i = i + 1
+                }
+                let dep_fps = empty_dep_fps()
+                let mut fpi = 0
+                while fpi < dlen {
+                  Array::push(dep_fps, (Array::get(deps, fpi), Array::get(dep_fp_slots, fpi)))
+                  fpi = fpi + 1
                 }
                 Array::truncate(stack, saved_stack_len)
                 let fingerprint = build_fingerprint(source, dep_fps)
@@ -734,16 +819,30 @@ fn ensure_fingerprint_fs_go(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
               let mut env_cache_after_deps = env_cache
               let mut dep_source_cache_after_deps = next_dep_source_cache
               let mut parse_count_after_deps = initial_parse_count
-              let dep_fps = empty_dep_fps()
+              // #906 Phase 0: see the slot comment in the first dep loop above.
+              let visit = dep_visit_order(dlen)
+              let dep_fp_slots = empty_stack()
+              let mut sfill = 0
+              while sfill < dlen {
+                Array::push(dep_fp_slots, "")
+                sfill = sfill + 1
+              }
               while i < dlen {
-                let dep_path = Array::get(deps, i)
+                let di = Array::get(visit, i)
+                let dep_path = Array::get(deps, di)
                 let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint_fs_go(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, dep_path, stack)
                 db_after_deps = next_db
                 env_cache_after_deps = next_env_cache
                 dep_source_cache_after_deps = next_dep_source_cache2
                 parse_count_after_deps = next_parse_count
-                Array::push(dep_fps, (dep_path, dep_fp))
+                Array::set(dep_fp_slots, di, dep_fp)
                 i = i + 1
+              }
+              let dep_fps = empty_dep_fps()
+              let mut fpi = 0
+              while fpi < dlen {
+                Array::push(dep_fps, (Array::get(deps, fpi), Array::get(dep_fp_slots, fpi)))
+                fpi = fpi + 1
               }
               Array::truncate(stack, saved_stack_len)
               let fingerprint = build_fingerprint(source, dep_fps)
@@ -780,16 +879,30 @@ fn ensure_fingerprint_fs_go(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
             let mut env_cache_after_deps = env_cache
             let mut dep_source_cache_after_deps = next_dep_source_cache
             let mut parse_count_after_deps = initial_parse_count
-            let dep_fps = empty_dep_fps()
+            // #906 Phase 0: see the slot comment in the first dep loop above.
+            let visit = dep_visit_order(dlen)
+            let dep_fp_slots = empty_stack()
+            let mut sfill = 0
+            while sfill < dlen {
+              Array::push(dep_fp_slots, "")
+              sfill = sfill + 1
+            }
             while i < dlen {
-              let dep_path = Array::get(deps, i)
+              let di = Array::get(visit, i)
+              let dep_path = Array::get(deps, di)
               let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint_fs_go(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, dep_path, stack)
               db_after_deps = next_db
               env_cache_after_deps = next_env_cache
               dep_source_cache_after_deps = next_dep_source_cache2
               parse_count_after_deps = next_parse_count
-              Array::push(dep_fps, (dep_path, dep_fp))
+              Array::set(dep_fp_slots, di, dep_fp)
               i = i + 1
+            }
+            let dep_fps = empty_dep_fps()
+            let mut fpi = 0
+            while fpi < dlen {
+              Array::push(dep_fps, (Array::get(deps, fpi), Array::get(dep_fp_slots, fpi)))
+              fpi = fpi + 1
             }
             Array::truncate(stack, saved_stack_len)
             let fingerprint = build_fingerprint(source, dep_fps)

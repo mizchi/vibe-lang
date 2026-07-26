@@ -15,7 +15,8 @@ import @vibe/compiler/entry/source_compile/gc_only {
 
 import @vibe/compiler/runtime {
   build_module_source_from_source, build_funcmap_from_source,
-  type_at_source, binding_occurrences, symbol_spans, collect_all_diagnostics
+  type_at_source, binding_occurrences, symbol_spans, collect_all_diagnostics,
+  set_dep_order_seed
 }
 
 import @vibe/compiler/loader {
@@ -338,6 +339,22 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
     ()
   } else {
     set_error_row_checked(true)
+  }
+  // #906 Phase 0: dependency-visit-order oracle. A non-zero seed permutes
+  // each node's dep visit order (set_dep_order_seed, runtime/typecheck_fs.vibe);
+  // the compiled output must stay byte-identical across seeds, which is what
+  // scripts/dep_order_oracle.sh asserts. Unset (or 0) is the identity
+  // permutation -- the production walk -- so this is inert unless a test
+  // sets it. Read here with the other mode switches so every lane (file
+  // compile, FS compile, diagnostics) sees the same order.
+  let dep_seed_text = Env::get("VIBE_DEP_ORDER_SEED")
+  if dep_seed_text == "" {
+    ()
+  } else {
+    match Int::parse(dep_seed_text) {
+      Some(dep_seed) => set_dep_order_seed(dep_seed),
+      None => ()
+    }
   }
   // `vibe lsp` (self-hosted, #lsp-selfhost): takes over stdin/stdout
   // directly as a long-running JSON-RPC server -- unlike every other mode
