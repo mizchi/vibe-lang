@@ -319,9 +319,18 @@ first version of the test did exactly that. The assertion is that calling an
 imported function with the WRONG argument type is diagnosed, and that the same
 call is lenient once the environment is withheld.
 
-Still missing before the prototype can drive a real import DAG: the
-coordinator must order jobs by the dependency graph and thread each
-`env.out` into its dependents' job directories.
+The coordinator now threads it. `SelfhostChecker.check` builds the job
+directory, writes each dependency's environment as a positional `dep<i>.env`
+in declaration order, and returns the module's own `env.out` in its artifact
+so dependents receive it. Readiness already guaranteed a dependency was
+terminal before a dependent was claimed; that terminal outcome now carries
+the interface as well as the verdict.
+
+`scripts/parallel_scheduler_selfhost.test.mjs` runs a two-module import DAG
+through real `worker_threads` at `jobs=1/2/4` with identical output. It uses
+the same discriminator as gate 58 — the wrong-argument-type case — because a
+call to an imported name alone is lenient and would pass against a bridge
+that discarded the environment.
 
 Expected diagnostics are returned as values. An unexpected worker exception,
 compiler trap, daemon exit, or protocol violation fails the whole prototype run
@@ -394,14 +403,19 @@ the per-module leaf work was lifted out. `FrozenArray[T]` is not implemented.
   high heap watermark; measure throughput and peak RSS together.
 - Keep filesystem and persistent-cache writes in the driver.
 
-The worker-side half is done: `VIBE_MODULE_JOB_DIR=1` checks a module with
-imports inside a job-directory sandbox and returns diagnostics as values
-(see "Host multi-worker prototype" above).
+The worker/coordinator bridge is done: `VIBE_MODULE_JOB_DIR=1` checks a
+module with imports inside a job-directory sandbox and returns diagnostics as
+values, and the host coordinator threads each dependency's interface into its
+dependents' jobs, so a real import DAG runs across `worker_threads` at
+`jobs=1/2/4` with identical output (see "Host multi-worker prototype" above).
 
-Nothing runs in parallel yet. There is no `--jobs` flag, the production
-compile path still walks the import DAG serially, and the coordinator does
-not yet thread `env.out` between job directories. Wall-clock parallelism is
-Phase 2's remaining work, not something this transport already delivers.
+What that is NOT: the production compiler is unchanged. There is no `--jobs`
+flag on `vibe`, `ensure_fingerprint_fs_go` still walks the import DAG
+serially in one process, and nothing a user runs today goes faster. The
+parallel path exists only under the host prototype, on projects the test
+constructs. Wiring it into the real compile path — and measuring throughput
+against peak RSS, since a self-compile has a high heap watermark — is the
+remaining Phase 2 work.
 
 ### Phase 3: immutable whole-program plan
 
