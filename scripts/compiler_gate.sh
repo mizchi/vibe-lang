@@ -6559,4 +6559,86 @@ fi
 rm -rf "$csibdir"
 echo "[compiler-gate] closure shadowed inline builtin ok (22)"
 
+# 57/57. #1078: an enum CONSTRUCTOR and an effect OPERATION that share a bare
+#        name, declared by two UNRELATED packages, must still resolve to the
+#        right declaration once BOTH are reachable in one merged program.
+#        The reported failure ("argument type mismatch for Request: expected
+#        RpcId, got Map[String, Json]") was specific to the merge/flatten
+#        whole-program view -- ordinary FS-mode compilation never reproduced
+#        it -- so this gate drives the REAL merge lane
+#        (VIBE_EMIT_MERGED_SOURCE=1, the same mode generate_bundle.sh uses)
+#        and then compiles its output, rather than compiling the sources
+#        directly. Note the merge STRIPS the qualification: `Msg::Request(..)`
+#        in a pattern comes out as bare `Request(..)`, which is exactly the
+#        state the bare-name resolution has to get right.
+echo "[compiler-gate] 57/57 merged-program ctor/effect-op name collision across packages (#1078)"
+c1078dir="_build/_gate_ctor_effect_collision"
+rm -rf "$c1078dir"; mkdir -p "$c1078dir/pkga" "$c1078dir/pkgb"
+cat > "$c1078dir/pkga/index.vibe" <<'VEOF'
+export enum Msg {
+  Request(String, Int, Bool);
+  Reply(Int)
+}
+
+export fn make_req(m: String, id: Int) -> Msg {
+  Msg::Request(m, id, true)
+}
+
+export fn req_id(r: Msg) -> Int {
+  match r {
+    Msg::Request(_m, id, _f) => id,
+    Msg::Reply(id) => id
+  }
+}
+VEOF
+cat > "$c1078dir/pkgb/index.vibe" <<'VEOF'
+export effect Net {
+  Request(String, String, String, String) -> Int
+}
+
+export fn fetch(url: String) -> Int with { Net } {
+  perform Net::Request("GET", url, "", "")
+}
+VEOF
+cat > "$c1078dir/main.vibe" <<'VEOF'
+import ./pkga/index.vibe { Msg, make_req, req_id }
+import ./pkgb/index.vibe { Net, fetch }
+
+// BOTH declarations reachable from the exported entry: the enum ctor via
+// make_req/req_id, the effect op via the handled fetch call.
+export let main = () -> Int {
+  let n = req_id(make_req("hello", 40))
+  let f = handle {
+    fetch("http://127.0.0.1:1/x")
+  } with Net {
+    Request(_m, _u, _h, _b) => resume(2)
+  }
+  n + f
+}
+VEOF
+rm -f "$c1078dir/merged.vibe" "$c1078dir/merged.vibe.diag"
+VIBE_EMIT_MERGED_SOURCE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$c1078dir/main.vibe" "$c1078dir/merged.vibe" main >/dev/null 2>&1 || true
+if [ ! -s "$c1078dir/merged.vibe" ]; then
+  echo "[compiler-gate] FAIL: merge/flatten of the ctor/effect-op collision program failed (#1078)" >&2
+  cat "$c1078dir/merged.vibe.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$c1078dir/merged.vibe" "$c1078dir/out.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$c1078dir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: merged ctor/effect-op collision program did not compile -- bare-name resolution picked the wrong declaration (#1078)" >&2
+  cat "$c1078dir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+c1078_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$c1078dir/out.wasm" 2>&1 | tail -1)"
+if [ "$c1078_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: merged ctor/effect-op collision program got '$c1078_out' (want 42) -- #1078 regressed" >&2
+  exit 1
+fi
+rm -rf "$c1078dir"
+echo "[compiler-gate] merged ctor/effect-op collision ok (42)"
+
 echo "[compiler-gate] ok"
