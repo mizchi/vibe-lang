@@ -706,6 +706,14 @@ suspendable task の第一スライスを実装した:
   すると deadlock trap に見えず livelock になる (#1111 Codex review)。
   yield は deadlock の証拠に数えない (resume は常に body を前進させる;
   無限 yield は通常の無限ループ)。
+- **fail-fast × suspendable の統合も着地**: `spawn_suspend` の body row は
+  `{ Async, Error }` になり、escape した `Error::Throw` は Failed へ変換
+  される。settle leg は spawn_suspend 内の外側 Error handle (Async handle
+  は CPS 化済みなので handler 越え resume は存在せず #543 の罠は当たら
+  ない)、resume 後の leg は park wrapper の per-leg Error boundary が
+  受ける (pump の stack 上で走るため)。失敗は group の first-observed
+  failure を記録し、**parked sibling を自動 cancel** (継続 drop = RC 解放)
+  して pump_all を自然終了させる。run は Err(Failed(first)) を返す。
 - conformance lock (`suspend_test.vibe`): **2 task の mid-body 相互
   interleave** (run-to-completion では不可能だった形 — log が厳密交互)、
   wake 値の suspension point への配達、parked task の cancel (継続 drop

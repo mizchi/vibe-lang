@@ -4,7 +4,7 @@ import ./concurrent.vibe {
   type TaskGroup, type TaskHandle, type TaskError, type TaskStep,
   type Channel, type Sender, type Receiver, type SendError, type ChannelConfigError,
   TaskGroup::run, TaskGroup::adopt, TaskGroup::pump, TaskGroup::pump_all,
-  TaskGroup::spawn_suspend,
+  TaskGroup::spawn, TaskGroup::spawn_suspend,
   TaskHandle::settle, TaskHandle::park, TaskHandle::park_poll, TaskHandle::wake,
   TaskHandle::join, TaskHandle::cancel,
   Channel::bounded, Sender::send, Sender::send_wait, Sender::release, Receiver::recv_wait
@@ -278,6 +278,119 @@ test "a lone spawn_suspend task may yield three times without tripping the deadl
   assert(match out {
     Ok(v) => v == 42,
     Err(_) => false
+  })
+}
+
+// Fail-fast × suspendable (ADR-0068 次スライス): a spawn_suspend body
+// whose Error::Throw escapes converts to Failed, records the group's
+// first observed failure, and AUTO-CANCELS parked siblings (their stored
+// continuations are dropped). Case 1: the throw happens on the settle
+// leg (before any suspend) — the sibling parked first and never wakes.
+test "spawn_suspend Error on the settle leg fails fast and cancels the parked sibling" {
+  let out = TaskGroup::run((g) -> {
+    let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let _w = perform Async::Suspend(0)
+      100
+    })
+    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
+      throw("boom")
+    })
+    TaskGroup::pump_all(g)
+    let a_cancelled = match TaskHandle::join(ha) {
+      Ok(_) => false,
+      Err(e) => match e {
+        Cancelled => true,
+        Failed(_) => false
+      }
+    }
+    let b_failed = match TaskHandle::join(hb) {
+      Ok(_) => false,
+      Err(e) => match e {
+        Cancelled => false,
+        Failed(m) => m == "boom"
+      }
+    }
+    if a_cancelled && b_failed {
+      1
+    } else {
+      0
+    }
+  })
+  assert(match out {
+    Ok(_) => false,
+    Err(e) => match e {
+      Failed(m) => m == "boom",
+      Cancelled => false
+    }
+  })
+}
+
+// Case 2: the throw happens on a RESUMED leg (after a suspend) — it runs
+// on the pump's stack, caught by the park wrapper's per-leg Error
+// boundary. The parked sibling is cancelled by the fail-fast sweep.
+test "spawn_suspend Error after a resume fails fast from the pump stack" {
+  let out = TaskGroup::run((g) -> {
+    let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
+      let _w = perform Async::Suspend(0)
+      throw("later")
+    })
+    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let _w1 = perform Async::Suspend(0)
+      let _w2 = perform Async::Suspend(0)
+      200
+    })
+    TaskGroup::pump_all(g)
+    let a_failed = match TaskHandle::join(ha) {
+      Ok(_) => false,
+      Err(e) => match e {
+        Cancelled => false,
+        Failed(m) => m == "later"
+      }
+    }
+    let b_cancelled = match TaskHandle::join(hb) {
+      Ok(_) => false,
+      Err(e) => match e {
+        Cancelled => true,
+        Failed(_) => false
+      }
+    }
+    if a_failed && b_cancelled {
+      1
+    } else {
+      0
+    }
+  })
+  assert(match out {
+    Ok(_) => false,
+    Err(e) => match e {
+      Failed(m) => m == "later",
+      Cancelled => false
+    }
+  })
+}
+
+// #1115 Codex review: BOTH failure lanes must run the fail-fast sweep.
+// A run-to-completion spawn child throwing (dispatched by run's close
+// drive) cancels the parked suspendable sibling — without the shared
+// sweep the close-time terminal check would TRAP on the still-parked
+// cell instead of returning Err(Failed(...)).
+test "a spawn-lane failure cancels a parked spawn_suspend sibling" {
+  let out = TaskGroup::run((g) -> {
+    let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let _w = perform Async::Suspend(0)
+      100
+    })
+    let _hb = TaskGroup::spawn(g, () -> Int with { Error } {
+      throw("spawn-lane")
+    })
+    7
+  })
+  assert(match out {
+    Ok(_) => false,
+    Err(e) => match e {
+      Failed(m) => m == "spawn-lane",
+      Cancelled => false
+    }
   })
 }
 
