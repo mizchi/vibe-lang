@@ -79,13 +79,28 @@ round=1
 run_round "${KEEP_ARGS[*]:-}"
 size=$(wc -c <"$work/cur.wasm")
 echo "[minify-wasm] round 1: $prev -> $size"
+prev="$size"
 
-while [ "$size" -lt "$prev" ] && [ "$round" -lt "$MAX_ROUNDS" ]; do
-  prev="$size"
+# Each subsequent round must strictly shrink to be kept. With --per-pass a
+# single pass is allowed to grow (dce_auto etc. compare whole rounds, not
+# passes), so a complete round can come out equal-or-larger than what went
+# in; run_round already overwrote cur.wasm by the time we can check, so back
+# up before running and restore on a non-shrinking round instead of letting
+# it become the final output.
+while [ "$round" -lt "$MAX_ROUNDS" ]; do
+  cp "$work/cur.wasm" "$work/prev_round.wasm"
   round=$((round + 1))
   run_round ""
   size=$(wc -c <"$work/cur.wasm")
   echo "[minify-wasm] round $round: $prev -> $size"
+  if [ "$size" -ge "$prev" ]; then
+    mv "$work/prev_round.wasm" "$work/cur.wasm"
+    size="$prev"
+    round=$((round - 1))
+    echo "[minify-wasm] did not shrink further; keeping round $round's result"
+    break
+  fi
+  prev="$size"
 done
 
 cp "$work/cur.wasm" "$OUT"
