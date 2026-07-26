@@ -6490,4 +6490,48 @@ fi
 rm -rf "$tdevdir"
 echo "[compiler-gate] type-directed closure evidence ok"
 
+# 55/55. replay frontier removal (ADR-0076 追記34 V2): the replay engine is
+#        gone from codegen. (a) A handle whose effect is never user-performed
+#        anywhere (the host-row label-pun shape: the body calls the Env::get
+#        BUILTIN directly, so the arms are dead) is erased by the
+#        vacuous-handle elimination and the program compiles + runs. (b) A
+#        live non-Error handle the evidence migration cannot reach is a HARD
+#        error, never a silent fallback. (c) The shadowed-needing class
+#        (gate 40ao, 47) now migrates via the seed-scoped α-rename +
+#        local-literal call safety instead of parking on replay -- its pin
+#        already asserts the value; this section pins the two new behaviors.
+echo "[compiler-gate] 55/55 replay frontier removal (ADR-0076 追記34 V2)"
+v2dir="_build/_gate_replay_removed"
+rm -rf "$v2dir"; mkdir -p "$v2dir"
+sed '/^__DATA__$/,$d' fixtures/effect_vacuous_handle_erased.vibe > "$v2dir/vacuous.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$v2dir/vacuous.vibe" "$v2dir/vacuous.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$v2dir/vacuous.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_vacuous_handle_erased fixture did not compile" >&2
+  cat "$v2dir/vacuous.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+v2_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$v2dir/vacuous.wasm" 2>/dev/null | tail -1)"
+if [ "$v2_out" != "46" ]; then
+  echo "[compiler-gate] FAIL: effect_vacuous_handle_erased got '$v2_out' (want 46) -- vacuous-handle elimination regressed" >&2
+  exit 1
+fi
+rm -f "$v2dir/reject.wasm"
+cp fixtures/err_effect_handle_replay_removed.vibe "$v2dir/reject.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$v2dir/reject.vibe" "$v2dir/reject.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$v2dir/reject.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_effect_handle_replay_removed compiled (a live unmigratable non-Error handle must be a hard error)" >&2
+  exit 1
+fi
+if ! grep -qF "replay engine was removed" "$v2dir/reject.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: replay-removed reject fixture did not produce the expected diagnostic" >&2
+  cat "$v2dir/reject.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$v2dir"
+echo "[compiler-gate] replay frontier removal ok"
+
 echo "[compiler-gate] ok"

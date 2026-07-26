@@ -620,12 +620,15 @@ fn main with { Stdout } {
 ```
 
 継続呼び出しは `resume(v)` が canonical (one-shot tail-resumptive, ADR-0050)。
-> **replay 実装の制約 (#817 まで)**: 現行の handler は resume 時に handle
-> body を**先頭から再実行** (replay) する実装のため、handle body 内の
-> 副作用 (print / `let mut` の更新など) は perform ごとに再実行される。
-> **handle body は最後の perform まで pure に保つこと** — 副作用や
-> 可変状態の蓄積は handler arm 側か handle の外に置く。この制約は
-> evidence-passing handler 移行 (#817) で解消予定。
+> **evidence-passing 実装 (#817, ADR-0076 追記34 V2 で replay 全廃)**:
+> handler は evidence dict への直接呼び出し (tail-resumptive) か
+> suspend CPS (first-class resume) にコンパイルされ、handle body は
+> **常に一度だけ実行される** (旧 replay 実装の副作用重複と ~16K perform
+> 上限は消滅)。代償として、handle body から届く perform は migration が
+> 静的に追える形 (直接 perform / named top-level fn 呼び出し /
+> row 注釈付き closure literal / let 束縛の local closure) に限られる —
+> 追えない形 (row 変数 `with { e }` の callee 経由など) の非 Error handle
+> は **compile error** になる ("replay engine was removed")。
 
 **`resume` は arm 内で第一級の one-shot 値** (ADR-0076 Phase 3a, #817):
 直接呼び出し `resume(v)` は tail 位置限定のまま (#942) だが、値として
