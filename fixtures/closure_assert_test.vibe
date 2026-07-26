@@ -1,0 +1,27 @@
+// #1095 regression: a bare `assert(...)` call inside a closure/lambda body
+// was wrongly recorded as a free variable to capture (common_analysis.vibe's
+// is_inlined_scalar_builtin missed "assert", unlike "not"/"add"/"sub"/"mul"/
+// "lt" fixed for #773). That bogus capture forced compile_call.vibe's
+// `prefer_bound_call` to true, skipping assert's inline `unreachable` trap
+// lowering and instead emitting a `call_indirect` against a garbage/unbound
+// slot -- crashing with "null function or function signature mismatch"
+// instead of tripping the assertion normally.
+test "assert inside closure body does not corrupt capture" {
+  let f = (x: Int) -> Int {
+    assert(x > 0)
+    x + 1
+  }
+  assert(f(1) == 2)
+  assert(f(41) == 42)
+}
+
+test "assert inside nested closure body does not corrupt capture" {
+  let make = () -> (Int) -> Int {
+    (x: Int) -> Int {
+      assert(x >= 0)
+      x * 2
+    }
+  }
+  let g = make()
+  assert(g(3) == 6)
+}
