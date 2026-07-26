@@ -26,7 +26,13 @@ mkdir -p "$(dirname "$OUT")"
 rm -f "$OUT" "$OUT.diag"
 
 cd "$ROOT"
-env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+# VIBE_RC=0 (#1109): build the optimizer on the bump allocator. Under RC the
+# free-list search allocator (__rt_rc_alloc) degenerates on the optimizer's
+# allocation pattern — a cpu-profile of one minify round over the 1.4MB dist
+# CLI showed 97% of wall time inside __rt_rc_alloc. Bump never frees, which
+# is fine here: scripts/minify_wasm.sh and the launcher's --minify loop run
+# ONE round per process, so memory is reclaimed by instance teardown.
+env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_RC=0 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
   "$COMPILER" scripts/vibe_opt.vibex "$OUT" main >/dev/null 2>&1 || true
 

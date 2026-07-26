@@ -12,11 +12,16 @@
 //
 // usage: node scripts/vibec_poc_driver.mjs [transpiled-dir]
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const dir = process.argv[2] || "_build/vibec/jco";
-const mod = await import(pathToFileURL(`${dir}/vibec.component.js`).href);
+const entry = readdirSync(dir).find((f) => f.endsWith(".js"));
+if (!entry) {
+  console.error(`PoC FAIL: no transpiled .js module in ${dir}`);
+  process.exit(1);
+}
+const mod = await import(pathToFileURL(`${dir}/${entry}`).href);
 const compile = mod.compile;
 if (typeof compile !== "function") {
   console.error("PoC FAIL: transpiled module does not export compile()");
