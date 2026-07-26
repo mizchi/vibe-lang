@@ -843,13 +843,24 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
     vhn = vhn + 1
   }
   edp_collect_handle_effect_names(stmts, vhe_names)
+  let vhe_fn_defs = edp_collect_fn_defs(stmts)
+  let vhe_fn_names = edp_all_fn_names(vhe_fn_defs)
+  let vhe_inert = edp_pure_fn_names(vhe_fn_defs)
+  edp_append_free_host_inert_names(stmts, vhe_inert)
   let mut vhi = 0
   while vhi < Array::length(vhe_names) {
     let vh_name = Array::get(vhe_names, vhi)
     if edp_program_user_performs(stmts, vh_name) {
-      ()
+      // Per-HANDLE vacuity: some sites of this effect may still be
+      // provably dead even though the program performs it elsewhere (see
+      // edp_body_may_perform). Erasing those is what keeps a client-only
+      // handle over a builtin effect label compilable next to unrelated
+      // server-side perform wrappers.
+      edp_erase_effect_handles(stmts, vh_name, edp_collect_performing_fns(stmts, vhe_fn_defs, vh_name), vhe_inert, vhe_fn_names)
     } else {
-      edp_erase_effect_handles(stmts, vh_name)
+      // Nothing performs it anywhere: every site is vacuous, no
+      // reachability analysis needed (empty performing set).
+      edp_erase_effect_handles(stmts, vh_name, empty_str_array(), vhe_inert, vhe_fn_names)
     }
     vhi = vhi + 1
   }
@@ -1019,6 +1030,274 @@ fn edp_performs_user_effect_exprs(es: Array[Expr], ename: String) -> Bool {
   found
 }
 
+// --- per-handle vacuity (#1119 Codex review, P2) -------------------------
+//
+// Whether a SPECIFIC handle is vacuous is a question about ITS OWN body,
+// not about the program. The first cut asked "does the program perform E
+// anywhere", which is too coarse: `lib/@vibe/http` declares server-side
+// wrappers that DO `perform Http::Listen`, so the program-level answer was
+// yes and http_e2e_test's client-only handle — whose body reaches nothing
+// but direct host calls — stayed, then hard-errored (Http is a checker
+// BUILTIN effect, so migration has no operation list to build a dict
+// from). Per-handle reachability is also strictly more precise for the
+// declared-effect pun sites the coarse rule already covered.
+//
+// `perf_fns` is the transitive set of top-level functions that can perform
+// E (edp_collect_performing_fns). A body "may perform" if it contains a
+// direct `perform E::op`, calls a member of `perf_fns`, or makes any call
+// this analysis cannot resolve to a known-inert target — the unresolved
+// case is deliberately conservative, since guessing wrong here would erase
+// a handler that really does fire.
+fn edp_body_may_perform(body: Expr, ename: String, perf_fns: Array[String], inert: Array[String], fn_names: Array[String]) -> Bool {
+  if edp_user_perform_effect_of(body) == ename {
+    true
+  } else {
+    match body {
+      ECall(callee, args, _) => match callee {
+        EIdent(nm, _) => if nm == "perform" {
+          // A perform of a DIFFERENT effect: only its operand's arguments
+          // can reach further code.
+          edp_may_perform_exprs(args, ename, perf_fns, inert, fn_names)
+        } else if edp_str_array_contains(perf_fns, nm) {
+          true
+        } else if edp_str_array_contains(inert, nm) || edp_is_pure_builtin_call(nm) || edp_name_is_host_raw_shape(nm) || nm == "resume" || edp_str_array_contains(fn_names, nm) {
+          // Known-inert or a known top-level fn already proven not to
+          // perform E (it would be in perf_fns otherwise).
+          edp_may_perform_exprs(args, ename, perf_fns, inert, fn_names)
+        } else {
+          true
+        },
+        _ => true
+      },
+      EHandle(b, arms) => if edp_handle_matches_effect(arms, ename) {
+        // A nested same-effect handle discharges its own body; only the
+        // arms can still reach outward.
+        edp_may_perform_arms(arms, ename, perf_fns, inert, fn_names)
+      } else {
+        edp_body_may_perform(b, ename, perf_fns, inert, fn_names) || edp_may_perform_arms(arms, ename, perf_fns, inert, fn_names)
+      },
+      EFn(_, _, _, _, _, b) => edp_body_may_perform(b, ename, perf_fns, inert, fn_names),
+      EIf(c, t, e2) => edp_body_may_perform(c, ename, perf_fns, inert, fn_names) || edp_body_may_perform(t, ename, perf_fns, inert, fn_names) || edp_body_may_perform(e2, ename, perf_fns, inert, fn_names),
+      EMatch(s, arms) => edp_body_may_perform(s, ename, perf_fns, inert, fn_names) || edp_may_perform_arms(arms, ename, perf_fns, inert, fn_names),
+      EWhile(c, b) => edp_body_may_perform(c, ename, perf_fns, inert, fn_names) || edp_body_may_perform(b, ename, perf_fns, inert, fn_names),
+      EForIn(_, _, it, b) => edp_body_may_perform(it, ename, perf_fns, inert, fn_names) || edp_body_may_perform(b, ename, perf_fns, inert, fn_names),
+      ELoop(pairs, b) => edp_may_perform_pairs(pairs, ename, perf_fns, inert, fn_names) || edp_body_may_perform(b, ename, perf_fns, inert, fn_names),
+      ELet(_, v, b, _) => edp_body_may_perform(v, ename, perf_fns, inert, fn_names) || edp_body_may_perform(b, ename, perf_fns, inert, fn_names),
+      ELetMut(_, v, b, _) => edp_body_may_perform(v, ename, perf_fns, inert, fn_names) || edp_body_may_perform(b, ename, perf_fns, inert, fn_names),
+      ELetRec(_, v, b) => edp_body_may_perform(v, ename, perf_fns, inert, fn_names) || edp_body_may_perform(b, ename, perf_fns, inert, fn_names),
+      ESeq(a, b) => edp_body_may_perform(a, ename, perf_fns, inert, fn_names) || edp_body_may_perform(b, ename, perf_fns, inert, fn_names),
+      EAssign(_, v, c) => edp_body_may_perform(v, ename, perf_fns, inert, fn_names) || edp_body_may_perform(c, ename, perf_fns, inert, fn_names),
+      EAssignOp(_, _, v, c) => edp_body_may_perform(v, ename, perf_fns, inert, fn_names) || edp_body_may_perform(c, ename, perf_fns, inert, fn_names),
+      EReturn(e2) => edp_body_may_perform(e2, ename, perf_fns, inert, fn_names),
+      EDot(o, _, _, _) => edp_body_may_perform(o, ename, perf_fns, inert, fn_names),
+      EBinOp(_, l, r) => edp_body_may_perform(l, ename, perf_fns, inert, fn_names) || edp_body_may_perform(r, ename, perf_fns, inert, fn_names),
+      EUnaryOp(_, e2) => edp_body_may_perform(e2, ename, perf_fns, inert, fn_names),
+      ELabeledArg(_, _, v) => edp_body_may_perform(v, ename, perf_fns, inert, fn_names),
+      EBreak(opt) => match opt {
+        Some(e2) => edp_body_may_perform(e2, ename, perf_fns, inert, fn_names),
+        None => false
+      },
+      EContinue(args) => edp_may_perform_exprs(args, ename, perf_fns, inert, fn_names),
+      ETuple(elems) => edp_may_perform_exprs(elems, ename, perf_fns, inert, fn_names),
+      EArray(elems) => edp_may_perform_exprs(elems, ename, perf_fns, inert, fn_names),
+      ERecord(_, fields, _) => edp_may_perform_fields(fields, ename, perf_fns, inert, fn_names),
+      EMap(fields) => edp_may_perform_fields(fields, ename, perf_fns, inert, fn_names),
+      ESpread(e2) => edp_body_may_perform(e2, ename, perf_fns, inert, fn_names),
+      _ => false
+    }
+  }
+}
+
+fn edp_may_perform_exprs(es: Array[Expr], ename: String, perf_fns: Array[String], inert: Array[String], fn_names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(es) && !found {
+    found = edp_body_may_perform(Array::get(es, i), ename, perf_fns, inert, fn_names)
+    i = i + 1
+  }
+  found
+}
+
+fn edp_may_perform_arms(arms: Array[(Pat, Expr)], ename: String, perf_fns: Array[String], inert: Array[String], fn_names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) && !found {
+    let (_, ex) = Array::get(arms, i)
+    found = edp_body_may_perform(ex, ename, perf_fns, inert, fn_names)
+    i = i + 1
+  }
+  found
+}
+
+fn edp_may_perform_pairs(pairs: Array[(String, Expr)], ename: String, perf_fns: Array[String], inert: Array[String], fn_names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(pairs) && !found {
+    let (_, v) = Array::get(pairs, i)
+    found = edp_body_may_perform(v, ename, perf_fns, inert, fn_names)
+    i = i + 1
+  }
+  found
+}
+
+fn edp_may_perform_fields(fields: Array[(String, Expr)], ename: String, perf_fns: Array[String], inert: Array[String], fn_names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(fields) && !found {
+    let (_, v) = Array::get(fields, i)
+    found = edp_body_may_perform(v, ename, perf_fns, inert, fn_names)
+    i = i + 1
+  }
+  found
+}
+
+// Top-level function names that can perform `ename`: seeded with the ones
+// whose body carries a direct `perform ename::op` (syntactically, anywhere
+// inside -- nested closures included, since a literal defined here can be
+// called from anywhere), then closed transitively over calls-by-name until
+// the set stops growing. A function reached only through an unresolvable
+// callee is NOT added here -- edp_body_may_perform handles that case
+// directly by refusing to erase.
+fn edp_collect_performing_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String) -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (_, _, _, nm, _, _) = Array::get(fn_defs, i)
+    match edp_find_fn_body(stmts, fn_defs, nm) {
+      Some(body) => if edp_performs_user_effect_expr(body, ename) && !edp_str_array_contains(out, nm) {
+        Array::push(out, nm)
+      } else {
+        ()
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  let mut grew = true
+  let mut rounds = 0
+  while grew && rounds < Array::length(fn_defs) + 1 {
+    grew = false
+    rounds = rounds + 1
+    let mut j = 0
+    while j < Array::length(fn_defs) {
+      let (_, _, _, nm2, _, _) = Array::get(fn_defs, j)
+      if edp_str_array_contains(out, nm2) {
+        ()
+      } else {
+        match edp_find_fn_body(stmts, fn_defs, nm2) {
+          Some(body2) => if edp_body_calls_any(body2, out) {
+            Array::push(out, nm2)
+            grew = true
+          } else {
+            ()
+          },
+          None => ()
+        }
+      }
+      j = j + 1
+    }
+  }
+  out
+}
+
+// Does `expr` contain a call whose callee is a bare name in `names`?
+fn edp_body_calls_any(expr: Expr, names: Array[String]) -> Bool {
+  match expr {
+    ECall(callee, args, _) => {
+      let hit = match callee {
+        EIdent(nm, _) => edp_str_array_contains(names, nm),
+        _ => false
+      }
+      hit || edp_body_calls_any(callee, names) || edp_calls_any_exprs(args, names)
+    },
+    EFn(_, _, _, _, _, b) => edp_body_calls_any(b, names),
+    EHandle(b, arms) => edp_body_calls_any(b, names) || edp_calls_any_arms(arms, names),
+    EIf(c, t, e2) => edp_body_calls_any(c, names) || edp_body_calls_any(t, names) || edp_body_calls_any(e2, names),
+    EMatch(s, arms) => edp_body_calls_any(s, names) || edp_calls_any_arms(arms, names),
+    EWhile(c, b) => edp_body_calls_any(c, names) || edp_body_calls_any(b, names),
+    EForIn(_, _, it, b) => edp_body_calls_any(it, names) || edp_body_calls_any(b, names),
+    ELoop(pairs, b) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(pairs) && !found {
+        let (_, v) = Array::get(pairs, i)
+        found = edp_body_calls_any(v, names)
+        i = i + 1
+      }
+      found || edp_body_calls_any(b, names)
+    },
+    ELet(_, v, b, _) => edp_body_calls_any(v, names) || edp_body_calls_any(b, names),
+    ELetMut(_, v, b, _) => edp_body_calls_any(v, names) || edp_body_calls_any(b, names),
+    ELetRec(_, v, b) => edp_body_calls_any(v, names) || edp_body_calls_any(b, names),
+    ESeq(a, b) => edp_body_calls_any(a, names) || edp_body_calls_any(b, names),
+    EAssign(_, v, c) => edp_body_calls_any(v, names) || edp_body_calls_any(c, names),
+    EAssignOp(_, _, v, c) => edp_body_calls_any(v, names) || edp_body_calls_any(c, names),
+    EReturn(e2) => edp_body_calls_any(e2, names),
+    EDot(o, _, _, _) => edp_body_calls_any(o, names),
+    EBinOp(_, l, r) => edp_body_calls_any(l, names) || edp_body_calls_any(r, names),
+    EUnaryOp(_, e2) => edp_body_calls_any(e2, names),
+    ELabeledArg(_, _, v) => edp_body_calls_any(v, names),
+    EBreak(opt) => match opt {
+      Some(e2) => edp_body_calls_any(e2, names),
+      None => false
+    },
+    EContinue(args) => edp_calls_any_exprs(args, names),
+    ETuple(elems) => edp_calls_any_exprs(elems, names),
+    EArray(elems) => edp_calls_any_exprs(elems, names),
+    ERecord(_, fields, _) => edp_calls_any_fields(fields, names),
+    EMap(fields) => edp_calls_any_fields(fields, names),
+    ESpread(e2) => edp_body_calls_any(e2, names),
+    _ => false
+  }
+}
+
+fn edp_calls_any_exprs(es: Array[Expr], names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(es) && !found {
+    found = edp_body_calls_any(Array::get(es, i), names)
+    i = i + 1
+  }
+  found
+}
+
+fn edp_calls_any_arms(arms: Array[(Pat, Expr)], names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) && !found {
+    let (_, ex) = Array::get(arms, i)
+    found = edp_body_calls_any(ex, names)
+    i = i + 1
+  }
+  found
+}
+
+fn edp_calls_any_fields(fields: Array[(String, Expr)], names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(fields) && !found {
+    let (_, v) = Array::get(fields, i)
+    found = edp_body_calls_any(v, names)
+    i = i + 1
+  }
+  found
+}
+
+fn edp_all_fn_names(fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (_, _, _, nm, _, _) = Array::get(fn_defs, i)
+    if edp_str_array_contains(out, nm) {
+      ()
+    } else {
+      Array::push(out, nm)
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn edp_program_user_performs(stmts: Array[Stmt], ename: String) -> Bool {
   let mut found = false
   let mut i = 0
@@ -1046,82 +1325,82 @@ fn edp_program_user_performs(stmts: Array[Stmt], ename: String) -> Bool {
   found
 }
 
-// Erase every `handle { body } with ename { ... }` (replace the node with
-// its own rewritten body) -- only ever called for an effect
-// edp_program_user_performs proved has no user-reachable perform, so the
-// arms are dead code by construction.
-fn edp_erase_effect_handles_expr(expr: Expr, ename: String) -> Expr {
+// Erase a `handle { body } with ename { ... }` (replace the node with its
+// own body) when the body provably cannot perform `ename`; see
+// edp_body_may_perform for the reachability rule. Handles whose body can
+// (or might) perform stay put for ordinary migration.
+fn edp_erase_effect_handles_expr(expr: Expr, ename: String, perf_fns: Array[String], inert: Array[String], fn_names: Array[String]) -> Expr {
   match expr {
     EHandle(body, arms) => {
-      let body2 = edp_erase_effect_handles_expr(body, ename)
-      if edp_handle_matches_effect(arms, ename) {
+      let body2 = edp_erase_effect_handles_expr(body, ename, perf_fns, inert, fn_names)
+      if edp_handle_matches_effect(arms, ename) && !edp_body_may_perform(body, ename, perf_fns, inert, fn_names) {
         body2
       } else {
         EHandle(body2, for a in arms {
           let (p, ex) = a
-          (p, edp_erase_effect_handles_expr(ex, ename))
+          (p, edp_erase_effect_handles_expr(ex, ename, perf_fns, inert, fn_names))
         })
       }
     },
-    EFn(tps, tbs, params, ret, eff, body) => EFn(tps, tbs, params, ret, eff, edp_erase_effect_handles_expr(body, ename)),
-    EIf(c, t, e2) => EIf(edp_erase_effect_handles_expr(c, ename), edp_erase_effect_handles_expr(t, ename), edp_erase_effect_handles_expr(e2, ename)),
-    EMatch(s, arms) => EMatch(edp_erase_effect_handles_expr(s, ename), for a in arms {
+    EFn(tps, tbs, params, ret, eff, body) => EFn(tps, tbs, params, ret, eff, edp_erase_effect_handles_expr(body, ename, perf_fns, inert, fn_names)),
+    EIf(c, t, e2) => EIf(edp_erase_effect_handles_expr(c, ename, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(t, ename, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(e2, ename, perf_fns, inert, fn_names)),
+    EMatch(s, arms) => EMatch(edp_erase_effect_handles_expr(s, ename, perf_fns, inert, fn_names), for a in arms {
       let (p, ex) = a
-      (p, edp_erase_effect_handles_expr(ex, ename))
+      (p, edp_erase_effect_handles_expr(ex, ename, perf_fns, inert, fn_names))
     }),
-    EWhile(c, b) => EWhile(edp_erase_effect_handles_expr(c, ename), edp_erase_effect_handles_expr(b, ename)),
-    EForIn(n, idx, it, b) => EForIn(n, idx, edp_erase_effect_handles_expr(it, ename), edp_erase_effect_handles_expr(b, ename)),
+    EWhile(c, b) => EWhile(edp_erase_effect_handles_expr(c, ename, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(b, ename, perf_fns, inert, fn_names)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, edp_erase_effect_handles_expr(it, ename, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(b, ename, perf_fns, inert, fn_names)),
     ELoop(pairs, b) => ELoop(for pr in pairs {
       let (n, v) = pr
-      (n, edp_erase_effect_handles_expr(v, ename))
-    }, edp_erase_effect_handles_expr(b, ename)),
-    ELet(n, v, b, off) => ELet(n, edp_erase_effect_handles_expr(v, ename), edp_erase_effect_handles_expr(b, ename), off),
-    ELetMut(n, v, b, off) => ELetMut(n, edp_erase_effect_handles_expr(v, ename), edp_erase_effect_handles_expr(b, ename), off),
-    ELetRec(n, v, b) => ELetRec(n, edp_erase_effect_handles_expr(v, ename), edp_erase_effect_handles_expr(b, ename)),
-    ESeq(a, b) => ESeq(edp_erase_effect_handles_expr(a, ename), edp_erase_effect_handles_expr(b, ename)),
-    EAssign(n, v, c) => EAssign(n, edp_erase_effect_handles_expr(v, ename), edp_erase_effect_handles_expr(c, ename)),
-    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_erase_effect_handles_expr(v, ename), edp_erase_effect_handles_expr(c, ename)),
-    EReturn(e2) => EReturn(edp_erase_effect_handles_expr(e2, ename)),
-    EDot(o, f, off1, off2) => EDot(edp_erase_effect_handles_expr(o, ename), f, off1, off2),
-    ECall(callee, args, off) => ECall(edp_erase_effect_handles_expr(callee, ename), edp_erase_effect_handles_exprs(args, ename), off),
-    EBinOp(op, l, r) => EBinOp(op, edp_erase_effect_handles_expr(l, ename), edp_erase_effect_handles_expr(r, ename)),
-    EUnaryOp(op, e2) => EUnaryOp(op, edp_erase_effect_handles_expr(e2, ename)),
-    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_erase_effect_handles_expr(v, ename)),
+      (n, edp_erase_effect_handles_expr(v, ename, perf_fns, inert, fn_names))
+    }, edp_erase_effect_handles_expr(b, ename, perf_fns, inert, fn_names)),
+    ELet(n, v, b, off) => ELet(n, edp_erase_effect_handles_expr(v, ename, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(b, ename, perf_fns, inert, fn_names), off),
+    ELetMut(n, v, b, off) => ELetMut(n, edp_erase_effect_handles_expr(v, ename, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(b, ename, perf_fns, inert, fn_names), off),
+    ELetRec(n, v, b) => ELetRec(n, edp_erase_effect_handles_expr(v, ename, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(b, ename, perf_fns, inert, fn_names)),
+    ESeq(a, b) => ESeq(edp_erase_effect_handles_expr(a, ename, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(b, ename, perf_fns, inert, fn_names)),
+    EAssign(n, v, c) => EAssign(n, edp_erase_effect_handles_expr(v, ename, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(c, ename, perf_fns, inert, fn_names)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_erase_effect_handles_expr(v, ename, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(c, ename, perf_fns, inert, fn_names)),
+    EReturn(e2) => EReturn(edp_erase_effect_handles_expr(e2, ename, perf_fns, inert, fn_names)),
+    EDot(o, f, off1, off2) => EDot(edp_erase_effect_handles_expr(o, ename, perf_fns, inert, fn_names), f, off1, off2),
+    ECall(callee, args, off) => ECall(edp_erase_effect_handles_expr(callee, ename, perf_fns, inert, fn_names), edp_erase_effect_handles_exprs(args, ename, perf_fns, inert, fn_names), off),
+    EBinOp(op, l, r) => EBinOp(op, edp_erase_effect_handles_expr(l, ename, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(r, ename, perf_fns, inert, fn_names)),
+    EUnaryOp(op, e2) => EUnaryOp(op, edp_erase_effect_handles_expr(e2, ename, perf_fns, inert, fn_names)),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_erase_effect_handles_expr(v, ename, perf_fns, inert, fn_names)),
     EBreak(opt) => EBreak(match opt {
-      Some(e2) => Some(edp_erase_effect_handles_expr(e2, ename)),
+      Some(e2) => Some(edp_erase_effect_handles_expr(e2, ename, perf_fns, inert, fn_names)),
       None => None
     }),
-    EContinue(args) => EContinue(edp_erase_effect_handles_exprs(args, ename)),
-    ETuple(elems) => ETuple(edp_erase_effect_handles_exprs(elems, ename)),
-    EArray(elems) => EArray(edp_erase_effect_handles_exprs(elems, ename)),
+    EContinue(args) => EContinue(edp_erase_effect_handles_exprs(args, ename, perf_fns, inert, fn_names)),
+    ETuple(elems) => ETuple(edp_erase_effect_handles_exprs(elems, ename, perf_fns, inert, fn_names)),
+    EArray(elems) => EArray(edp_erase_effect_handles_exprs(elems, ename, perf_fns, inert, fn_names)),
     ERecord(rn, fields, targs) => ERecord(rn, for f in fields {
       let (fn2, v) = f
-      (fn2, edp_erase_effect_handles_expr(v, ename))
+      (fn2, edp_erase_effect_handles_expr(v, ename, perf_fns, inert, fn_names))
     }, targs),
     EMap(fields) => EMap(for f in fields {
       let (fn2, v) = f
-      (fn2, edp_erase_effect_handles_expr(v, ename))
+      (fn2, edp_erase_effect_handles_expr(v, ename, perf_fns, inert, fn_names))
     }),
-    ESpread(e2) => ESpread(edp_erase_effect_handles_expr(e2, ename)),
+    ESpread(e2) => ESpread(edp_erase_effect_handles_expr(e2, ename, perf_fns, inert, fn_names)),
     _ => expr
   }
 }
 
-fn edp_erase_effect_handles_exprs(es: Array[Expr], ename: String) -> Array[Expr] {
+fn edp_erase_effect_handles_exprs(es: Array[Expr], ename: String, perf_fns: Array[String], inert: Array[String], fn_names: Array[String]) -> Array[Expr] {
   for e in es {
-    edp_erase_effect_handles_expr(e, ename)
+    edp_erase_effect_handles_expr(e, ename, perf_fns, inert, fn_names)
   }
 }
 
-fn edp_erase_effect_handles(stmts: Array[Stmt], ename: String) -> Unit {
+fn edp_erase_effect_handles(stmts: Array[Stmt], ename: String, perf_fns: Array[String], inert: Array[String], fn_names: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, i, SLet(exported, is_rec, name, ty, edp_erase_effect_handles_expr(expr, ename))),
-      SLetMut(nm, ty, expr) => Array::set(stmts, i, SLetMut(nm, ty, edp_erase_effect_handles_expr(expr, ename))),
-      SExpr(expr) => Array::set(stmts, i, SExpr(edp_erase_effect_handles_expr(expr, ename))),
-      STest(tn, expr) => Array::set(stmts, i, STest(tn, edp_erase_effect_handles_expr(expr, ename))),
-      SBench(bn, expr) => Array::set(stmts, i, SBench(bn, edp_erase_effect_handles_expr(expr, ename))),
+      SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, i, SLet(exported, is_rec, name, ty, edp_erase_effect_handles_expr(expr, ename, perf_fns, inert, fn_names))),
+      SLetMut(nm, ty, expr) => Array::set(stmts, i, SLetMut(nm, ty, edp_erase_effect_handles_expr(expr, ename, perf_fns, inert, fn_names))),
+      SExpr(expr) => Array::set(stmts, i, SExpr(edp_erase_effect_handles_expr(expr, ename, perf_fns, inert, fn_names))),
+      STest(tn, expr) => Array::set(stmts, i, STest(tn, edp_erase_effect_handles_expr(expr, ename, perf_fns, inert, fn_names))),
+      SBench(bn, expr) => Array::set(stmts, i, SBench(bn, edp_erase_effect_handles_expr(expr, ename, perf_fns, inert, fn_names))),
       _ => ()
     }
     i = i + 1
