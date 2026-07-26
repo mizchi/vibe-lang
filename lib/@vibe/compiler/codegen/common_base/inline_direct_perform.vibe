@@ -2331,12 +2331,30 @@ fn edp_str_array_index_of(arr: Array[String], v: String) -> Int {
 
 // --- collection.
 
+// ADR-0076 追記34 V2: dedup by NAME. The merge lane can pull the same
+// effect-declaring file in twice under two import spellings (lib/@vibe/fs's
+// fs_effect.vibe reaches index_import_test both through the package index
+// and through a direct `./fs_effect.vibe` import), leaving two identical
+// `SEffectDef`s in the merged program. Planning the same label twice made
+// edp_apply_migration run twice, double-prepending the dict parameter on
+// every needing definition while handle-site calls (consumed by the first
+// application) carried it once -- an arity-broken invalid module ("not
+// enough arguments on the stack", found live on index_import_test the
+// moment test-block handles joined migration). Harmless pre-V2 only
+// because zero collected handle sites meant the duplicated label never
+// got a plan at all.
 fn edp_collect_effect_defs(stmts: Array[Stmt]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])] {
   let out = array_empty()
+  let seen = empty_str_array()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SEffectDef(_, name, _, ops) => Array::push(out, (name, ops)),
+      SEffectDef(_, name, _, ops) => if edp_str_array_contains(seen, name) {
+        ()
+      } else {
+        Array::push(seen, name)
+        Array::push(out, (name, ops))
+      },
       _ => ()
     }
     i = i + 1
@@ -5290,7 +5308,16 @@ fn edp_rewrite_needing_fn(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, S
     let (idx, exported, is_rec, nm, ty, _) = Array::get(fn_defs, i)
     if nm == name {
       match Array::get(stmts, idx) {
-        SLet(_, _, _, _, EFn(tps, tbs, params, ret, eff, body)) => {
+        // ADR-0076 追記34 V2: effect-specific idempotency guard (#1116's
+        // edp_params_have_dict), mirroring edp_maybe_migrate_efn's own --
+        // a def already carrying THIS effect's dict parameter must not be
+        // rewritten again (double param prepend + double dict forwarding
+        // at its needing calls). Belt to edp_collect_effect_defs' name
+        // dedup braces: either alone prevents the duplicate-SEffectDef
+        // double apply, together they keep it structurally impossible.
+        SLet(_, _, _, _, EFn(tps, tbs, params, ret, eff, body)) => if edp_params_have_dict(params, dict_pname) {
+          ()
+        } else {
           let new_params = Array::concat([
             (dict_pname, Some(TyName(dict_tyname)))
           ], params)

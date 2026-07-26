@@ -2374,14 +2374,18 @@ replay エンジンを codegen から物理削除した。着地は 4 パーツ:
    `evidence_dict_needing_shadowed_by_local` は negative pin (47, replay)
    から **positive pin (47, evidence)** に反転。
 3. **perform 側**: counter/memo 短絡 (compile_call.vibe) を削除。codegen
-   に届く perform = migration されなかった perform (live handle なし)。
-   host-mapped op は builtin 直呼びが perform の値そのものになる
-   (**throw しない** — 旧経路は builtin 結果を throw して handler 経由で
-   memo/replay していた。unhandled でも trap せず値が返るようになった)。
-   それ以外の perform は payload + bare throw (dead code か真に
-   unhandled な user effect。実行されたら unhandled trap)。`resume` は
-   codegen 到達自体を internal error 化 (tail6 が非 Error arm を
-   コンパイルしなくなったので到達不能)。
+   に届く perform = migration されなかった perform (live handle なし) =
+   実行されたら必ず unhandled なので、旧 memo-miss leg と同じ
+   「値 (host-mapped は builtin 呼び, それ以外は payload) + bare throw」
+   に縮退。throw の stack polymorphism は dead 経路の validity にも
+   効いている — canonical builtin 名を占有する value alias (fs.vibe #795) を
+   持つ program では op_is_builtin leg の再帰コンパイルが alias hijack
+   で不整合 stack を残すが、throw 下では無害 (V2 初版が host-mapped の
+   throw を落として direct wiring を試み、dead な fs wrapper が invalid
+   wasm になって発覚 — 「unhandled host perform が値を返す」改善は
+   alias hijack の是正とセットで後続)。`resume` は codegen 到達自体を
+   internal error 化 (tail6 が非 Error arm をコンパイルしなくなったので
+   到達不能)。
    **stmt カバレッジ**: `test`/`bench` block と top-level expr /
    `let mut` は今まで edp の handle 収集・eligibility・apply の対象外で、
    その中の handle は全て silent replay だった。V2 で site-bearing
@@ -2417,6 +2421,16 @@ replay エンジンを codegen から物理削除した。着地は 4 パーツ:
   dict を供給できず arity break する — index_import_test の stat_token
   test が実測でこれを踏んだ。plan filter と eligibility/apply の
   pure_fns append が同一 predicate・同一順で計算し verdicts を一致させる。
+- **重複 SEffectDef の二重 apply** (invalid wasm): merge lane は同じ
+  effect 宣言ファイルを 2 つの import 綴りで二重に取り込みうる
+  (index_import_test は package index 経由と `./fs_effect.vibe` 直の
+  両方で fs_effect.vibe に到達)。同一 label を 2 回 plan/apply すると
+  needing def の dict param が二重前置され (call 側は初回 apply で
+  消費済みの handle が 1 個しか付けない)、"not enough arguments on the
+  stack" の invalid module になる — pre-V2 は test handle が収集されず
+  plan 自体が立たなかったため潜伏。`edp_collect_effect_defs` の name
+  dedup + `edp_rewrite_needing_fn` の effect-specific idempotency guard
+  (#1116 の edp_params_have_dict) の二重防御で構造的に不可能化。
 - **checker-builtin effect label の handle** (SEffectDef なし):
   `effect Http {..}` 宣言なしで builtin Http row を discharge する
   儀式的 handle (http_e2e_test) は migration の作りようがない (dict の
