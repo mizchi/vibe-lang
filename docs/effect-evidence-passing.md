@@ -2397,6 +2397,19 @@ replay エンジンを codegen から物理削除した。着地は 4 パーツ:
    below-frontier 領域が消えた。#665 の multi-op dispatch / #553 の
    memo 領域 / #737 の深い再帰 resume 経路は機構ごと消滅。
 
+**replay の受け皿消滅が顕在化させた eligibility カバレッジ穴 (battery
+実測、いずれも今まで silent replay に落ちていた)**:
+- `__to_string` (string interp の desugar 生成物、gate 4b) と `not`
+  (quickcheck_effect の `if not(prop())`) が pure builtin list に無く
+  needing body を ineligible に沈めていた → 両 list (idp/edp) に追加。
+- raw host-import 呼び出し (`vibe_<area>_<op>_raw` 規約 —
+  lib/@vibe/http client 側 #794、lib/@vibe/fs の stat_token) が
+  「不明 callee」扱いで package の effect 全体を all-or-nothing で
+  沈めていた → host import は user effect を perform できず closure も
+  受けないので inert。top-level 束縛が無い規約名のみを inert callee
+  集合 (pure_fns) に追加 (`edp_append_free_host_inert_names` —
+  同名 top-level fn/value がある場合は通常規則のまま)。
+
 **意味論の意図的変更 (どちらも replay-era artifact の削除)**:
 - host-mapped op の perform を user handle で「横取り」する形
   (`handle {..} with Env { Get(n) => resume("fake") }` の下で
