@@ -20,3 +20,10 @@ npx --yes @bytecodealliance/jco transpile "$OUT_DIR/vibec.component.wasm" \
   -o "$OUT_DIR/jco" --no-wasi-shim >/dev/null
 
 node scripts/vibec_poc_driver.mjs "$OUT_DIR/jco"
+
+# Hosted face (#1109-2): the vfs interface as component imports, driven with
+# an in-memory filesystem (instantiation API so the driver injects the vfs).
+npx --yes @bytecodealliance/jco transpile "$OUT_DIR/vibec.hosted.component.wasm" \
+  -o "$OUT_DIR/jco_hosted" --no-wasi-shim --instantiation async >/dev/null
+
+node scripts/vibec_hosted_poc_driver.mjs "$OUT_DIR/jco_hosted"

@@ -50,25 +50,37 @@ request プロトコル(`cli_direct_component_entry.vibe` と同一):
 
 エラーは一律 `""`(Error は内部で discharge)。
 
-## vfs callback 面(設計のみ、未実装)
+## vfs callback 面(#1109-2 で実装済み)
 
-FS 依存のホスト(ネイティブ CLI 等)が大きなプロジェクトを inline hex に
-せず渡せるようにする第二面。将来 world をこう拡張する:
+FS 依存のホストが大きなプロジェクトを inline hex にせず渡せる第二面。
+`vibec.hosted.component.wasm` が実装する world(`vibec-hosted.wit` 同梱):
 
 ```wit
 world vibec-hosted {
-  import vfs: interface {
-    read-file: func(path: string) -> result<string, string>;
-    exists: func(path: string) -> bool;
-    read-dir: func(path: string) -> list<string>;
-  }
-  export compile-file: func(input-path: string, entry-name: string, mode: string) -> result<list<u8>, string>;
+  import read-file:  func(path: string) -> string;   // 無いパスは trap
+  import exists:     func(path: string) -> bool;
+  import read-dir:   func(path: string) -> string;   // "\n" 結合の名前列
+  import stat-token: func(path: string) -> s64;      // 安定トークン; -1 = 非通常
+  export compile-file: func(input-path: string, request: string) -> string;
 }
 ```
 
-実装は cli_adapter の `VIBE_FS_COMPILE` 経路(compile_to)の import 解決を
-`vfs` interface 経由に差し替える形になる。compile 単発 API が先に実績を
-積むまで保留(#1107 Phase 5 チェックボックス残)。
+- entry は `compile_file_request(input_path, request)`
+  (cli_direct_component_entry.vibe)— request プロトコルは `compile` と同一
+  (len-mode / hex-chunk-mode)、コンパイルは `compile_release_file_mode_uncached`。
+- componentize は `comp_emit_component_wasm_string_handler_vfs`:
+  core の `vibe.fs_*` import を canon lower した component import へ接続する。
+  instantiation の循環(main は vfs を import、vfs の lowering は main の
+  memory が必要)は wit-component と同型の **shim/fixup 方式**で切る —
+  funcref table 付き shim → main → memory/__heap_ptr alias → bump realloc
+  module → canon lower(memory+realloc option)→ raw i64⇔canonical ptr/len
+  変換 adapter(active elem で shim の table に impl を植える)。
+  raw ABI の要請で realloc は `__heap_ptr` を常時 8-align に保つ
+  (低位ビットタグと衝突するため)。書き込み系 host import
+  (fs_write_file/fs_write_bytes)はゼロ no-op stub = cache miss 扱い。
+- PoC: `scripts/vibec_hosted_poc_driver.mjs` — in-memory Map を vfs として
+  multi-file プログラム(`import ./lib.vibe`)を compile → 実行 42 まで
+  ブラウザ相当 API のみで通過(`vibec_browser_poc.sh` が両面を検証)。
 
 ## ブラウザ PoC
 

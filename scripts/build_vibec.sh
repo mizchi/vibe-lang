@@ -29,7 +29,10 @@ RUN="bash $ROOT/scripts/run_wasm_vibe_host_runner.sh"
 mkdir -p "$OUT_DIR"
 CORE="$OUT_DIR/vibec.core.wasm"
 COMPONENT="$OUT_DIR/vibec.component.wasm"
+HOSTED_CORE="$OUT_DIR/vibec.hosted.core.wasm"
+HOSTED_COMPONENT="$OUT_DIR/vibec.hosted.component.wasm"
 WIT="$OUT_DIR/vibec.wit"
+HOSTED_WIT="$OUT_DIR/vibec-hosted.wit"
 TOOL="$OUT_DIR/vibec_componentize.wasm"
 
 cd "$ROOT"
@@ -59,21 +62,27 @@ if [ ! -s "$TOOL" ]; then
 fi
 rm -f "$TOOL.diag" "$TOOL.funcmap"
 
-# 3. shrink the core to the compile face (#1109): the library build keeps
-#    every sibling export's call graph alive (~4.9MB); filtering exports down
-#    to {compile_cli_request, memory, __heap_ptr} and running vibe-opt's true
-#    DCE drops it ~23%. --per-pass because a whole round over a module this
-#    size exhausts the 4GB wasm space under the bump allocator. Verified: the
-#    minified component passes the full jco browser PoC (compile -> run 42).
+# 3. shrink each face's core (#1109): the library build keeps every sibling
+#    export's call graph alive (~5MB); filtering exports down to one face +
+#    {memory, __heap_ptr} and running vibe-opt's true DCE drops ~23%.
+#    --per-pass because a whole round over a module this size exhausts the
+#    4GB wasm space under the bump allocator. Verified: both minified
+#    components pass their full jco PoCs (in-memory compile -> run 42).
 #    VIBE_VIBEC_NO_MINIFY=1 skips (e.g. while debugging the optimizer itself).
+cp "$CORE" "$HOSTED_CORE"
 if [ "${VIBE_VIBEC_NO_MINIFY:-}" != "1" ]; then
   bash "$ROOT/scripts/minify_wasm.sh" "$CORE" "$CORE" \
     --keep-exports compile_cli_request,memory,__heap_ptr --per-pass
+  bash "$ROOT/scripts/minify_wasm.sh" "$HOSTED_CORE" "$HOSTED_CORE" \
+    --keep-exports compile_file_request,memory,__heap_ptr --per-pass
 fi
 
-# 4. wrap the core into the component.
+# 4. wrap the cores into the two components: the pure compile face and the
+#    vfs-hosted face (#1109-2 — fs imports lifted to the WIT vfs interface).
 $RUN "$TOOL" "$CORE" "$COMPONENT"
 [ -s "$COMPONENT" ] || { echo "build_vibec: componentize failed" >&2; exit 1; }
+$RUN "$TOOL" --vfs "$HOSTED_CORE" "$HOSTED_COMPONENT"
+[ -s "$HOSTED_COMPONENT" ] || { echo "build_vibec: hosted componentize failed" >&2; exit 1; }
 
 # 5. WIT sidecar — the world the component implements (compile face only;
 #    the vfs face is future work, see docs/vibec-component.md).
@@ -95,6 +104,28 @@ world vibec {
 }
 EOF
 
-echo "vibec core      -> $CORE ($(wc -c <"$CORE") bytes)"
-echo "vibec component -> $COMPONENT ($(wc -c <"$COMPONENT") bytes)"
-echo "vibec wit       -> $WIT"
+cat > "$HOSTED_WIT" <<'EOF'
+package vibe:vibec@0.1.0;
+
+world vibec-hosted {
+  /// Host-provided virtual filesystem (#1109-2). The core's Fs host imports
+  /// are lifted here, so the HOST decides what a path means: the real
+  /// filesystem under wasmtime, an in-memory map in a browser IDE.
+  import read-file:  func(path: string) -> string;        // traps if missing
+  import exists:     func(path: string) -> bool;
+  import read-dir:   func(path: string) -> string;        // "\n"-joined names
+  import stat-token: func(path: string) -> s64;           // stable content token; -1 = non-regular
+
+  /// Same request protocol as world vibec's `compile`, but the first
+  /// argument is a real PATH resolved through the vfs imports above:
+  ///   "len-mode:<mode>:<entry>"            -> compiled byte length
+  ///   "hex-chunk-mode:<mode>:<entry>:<n>"  -> n-th 1024-byte hex chunk
+  /// Returns "" on any error.
+  export compile-file: func(input-path: string, request: string) -> string;
+}
+EOF
+
+echo "vibec core             -> $CORE ($(wc -c <"$CORE") bytes)"
+echo "vibec component        -> $COMPONENT ($(wc -c <"$COMPONENT") bytes)"
+echo "vibec hosted component -> $HOSTED_COMPONENT ($(wc -c <"$HOSTED_COMPONENT") bytes)"
+echo "vibec wit              -> $WIT / $HOSTED_WIT"

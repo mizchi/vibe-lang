@@ -204,6 +204,8 @@ fn emit_alias_section(buf: Bytes, core_instance_idx: Int, names: Array[String], 
 
 let comp_valtype_string = 115
 
+let comp_valtype_bool = 127
+
 let component_version_0 = 13
 
 let component_version_1 = 0
@@ -1791,12 +1793,30 @@ fn comp_generate_host_stub_module(vibe_names: Array[String], vibe_sigs: Array[Ar
   let mut bi = 0
   while bi < n {
     let body = bytebuf_new()
-    if Array::get(vibe_names, bi) == "env-get" {
-      emit_i64_const(body, 0)
+    let sn = Array::get(vibe_names, bi)
+    // Zero-stubs: env-get -> raw-ABI empty string ("unset"); the fs WRITE
+    // pair -> silently dropped (the only writer on the compile path is the
+    // persistent header/artifact cache, and dropping a cache write is
+    // semantically a cache miss); profile-now-us -> 0 (no clock). Everything
+    // else traps (`unreachable`) — those imports are dynamically dead per
+    // the lifted entry's effect row, and trapping (instead of fabricating a
+    // value) surfaces any violation of that proof immediately.
+    if sn == "env-get" || sn == "fs_write_file" || sn == "fs_write_bytes" || sn == "profile-now-us" {
+      // Match the import's declared result shape: nothing for void, a typed
+      // zero otherwise (i64 for the raw ABI, i32 defensively).
+      let sig = Array::get(vibe_sigs, bi)
+      let pc = Array::get(sig, 0)
+      let rc = Array::get(sig, 1 + pc)
+      if rc >= 1 {
+        if Array::get(sig, 2 + pc) == 127 {
+          emit_i32_const(body, 0)
+        } else {
+          emit_i64_const(body, 0)
+        }
+      } else {
+        ()
+      }
     } else {
-      // unreachable — this import is dynamically dead per the lifted entry's
-      // effect row; trapping (instead of fabricating a value) surfaces any
-      // violation of that proof immediately.
       bytebuf_push(body, 0)
     }
     Array::push(bodies, body)
@@ -1957,5 +1977,716 @@ fn comp_emit_string_handler_impl(core_wasm: Bytes, target_func_name: String, exp
   emit_canon_lift_func(canon_content, 1, 0, 1, 0, 2)
   emit_raw_content(buf, canon_content)
   emit_comp_export_section(buf, export_name, 0)
+  bytebuf_to_bytes(buf)
+}
+
+// ============================================================================
+// #1109-2 (vibec-hosted, the vfs face of #857): component whose FILESYSTEM
+// comes from a WIT-imported vfs interface. The core's `vibe.fs_*` host
+// imports are routed to canon-LOWERED component imports:
+//
+//   import read-file:  func(path: string) -> string
+//   import exists:     func(path: string) -> bool
+//   import read-dir:   func(path: string) -> string   (newline-joined names)
+//   import stat-token: func(path: string) -> s64      (-1 = non-regular)
+//
+// Instantiation is circular on paper (main imports vfs; lowering vfs needs
+// main's memory), so we break it with wit-component's shim/fixup dance:
+//   shim (table + raw-sig forwarders) -> main(vibe=shim+stubs) -> alias
+//   memory/__heap_ptr -> realloc module -> canon lower (memory+realloc) ->
+//   adapter module (raw i64 <-> canonical ptr/len trampolines) whose ACTIVE
+//   ELEMENT segment plants its impls into the shim's table.
+// The compile-face export is lifted exactly like the string handler.
+// ============================================================================
+
+// Raw-sig forwarder module: table 4 funcref (exported "t") + one (i64)->i64
+// forwarder per vfs function, each `call_indirect` through its fixed slot
+// (0 read_file, 1 exists, 2 read_dir, 3 stat_token). Slots are planted later
+// by the adapter module's active element segment.
+fn comp_generate_vfs_shim() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 1)
+  emit_func_type_raw(tc, [
+    126
+  ], [
+    126
+  ])
+  bytebuf_push_section(out, 1, tc)
+  emit_function_section(out, [
+    0,
+    0,
+    0,
+    0
+  ])
+  let table_sec = bytebuf_new()
+  leb128_encode_u32(table_sec, 1)
+  bytebuf_push(table_sec, 112)
+  bytebuf_push(table_sec, 0)
+  leb128_encode_u32(table_sec, 4)
+  bytebuf_push_section(out, 4, table_sec)
+  let export_sec = bytebuf_new()
+  leb128_encode_u32(export_sec, 5)
+  emit_name(export_sec, "fs_read_file")
+  bytebuf_push(export_sec, 0)
+  leb128_encode_u32(export_sec, 0)
+  emit_name(export_sec, "fs_exists")
+  bytebuf_push(export_sec, 0)
+  leb128_encode_u32(export_sec, 1)
+  emit_name(export_sec, "fs_read_dir")
+  bytebuf_push(export_sec, 0)
+  leb128_encode_u32(export_sec, 2)
+  emit_name(export_sec, "fs_stat_token")
+  bytebuf_push(export_sec, 0)
+  leb128_encode_u32(export_sec, 3)
+  emit_name(export_sec, "t")
+  bytebuf_push(export_sec, 1)
+  leb128_encode_u32(export_sec, 0)
+  bytebuf_push_section(out, 7, export_sec)
+  let code_sec = bytebuf_new()
+  leb128_encode_u32(code_sec, 4)
+  let mut slot = 0
+  while slot < 4 {
+    let body = bytebuf_new()
+    leb128_encode_u32(body, 0)
+    emit_local_get(body, 0)
+    emit_i32_const(body, slot)
+    bytebuf_push(body, 17)
+    leb128_encode_u32(body, 0)
+    leb128_encode_u32(body, 0)
+    bytebuf_push(body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(body))
+    bytebuf_push_buf(code_sec, body)
+    slot = slot + 1
+  }
+  bytebuf_push_section(out, 10, code_sec)
+  bytebuf_to_bytes(out)
+}
+
+// Standalone bump cabi_realloc over the MAIN module's memory + __heap_ptr
+// (imported as env.*) — the same body comp_generate_string_trampoline_packed
+// embeds, needed here BEFORE the trampoline exists because the canon-lowered
+// vfs imports allocate their result strings through it.
+fn comp_generate_vfs_realloc() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 1)
+  emit_func_type_raw(tc, [
+    127,
+    127,
+    127,
+    127
+  ], [
+    127
+  ])
+  bytebuf_push_section(out, 1, tc)
+  let import_sec = bytebuf_new()
+  leb128_encode_u32(import_sec, 2)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "__heap_ptr")
+  bytebuf_push(import_sec, 3)
+  bytebuf_push(import_sec, 127)
+  bytebuf_push(import_sec, 1)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "memory")
+  bytebuf_push(import_sec, 2)
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 0)
+  bytebuf_push_section(out, 2, import_sec)
+  emit_function_section(out, [
+    0
+  ])
+  emit_export_section(out, "cabi_realloc", 0)
+  let code_sec = bytebuf_new()
+  leb128_encode_u32(code_sec, 1)
+  let realloc_body = bytebuf_new()
+  leb128_encode_u32(realloc_body, 1)
+  leb128_encode_u32(realloc_body, 1)
+  bytebuf_push(realloc_body, 127)
+  // Unlike the trampoline's realloc (which only ever serves its own 8-byte
+  // retptr), THIS one is the canonical-lowering allocator for vfs result
+  // strings, which request align=1/exact length — and the raw ABI requires
+  // __heap_ptr to STAY 8-aligned (heap pointers carry low-bit tags; an
+  // unaligned bump poisons every later allocation into "tagged" garbage).
+  // So: p = (heap + 7) & ~7; heap = p + ((new_size + 7) & ~7).
+  bytebuf_push(realloc_body, 35)
+  leb128_encode_u32(realloc_body, 0)
+  emit_i32_const(realloc_body, 7)
+  emit_i32_add(realloc_body)
+  emit_i32_const(realloc_body, -8)
+  bytebuf_push(realloc_body, 113)
+  emit_local_set(realloc_body, 4)
+  emit_local_get(realloc_body, 4)
+  emit_local_get(realloc_body, 3)
+  emit_i32_const(realloc_body, 7)
+  emit_i32_add(realloc_body)
+  emit_i32_const(realloc_body, -8)
+  bytebuf_push(realloc_body, 113)
+  emit_i32_add(realloc_body)
+  bytebuf_push(realloc_body, 36)
+  leb128_encode_u32(realloc_body, 0)
+  bytebuf_push(realloc_body, 35)
+  leb128_encode_u32(realloc_body, 0)
+  bytebuf_push(realloc_body, 63)
+  bytebuf_push(realloc_body, 0)
+  emit_i32_const(realloc_body, 16)
+  bytebuf_push(realloc_body, 116)
+  bytebuf_push(realloc_body, 75)
+  bytebuf_push(realloc_body, 4)
+  bytebuf_push(realloc_body, 64)
+  bytebuf_push(realloc_body, 35)
+  leb128_encode_u32(realloc_body, 0)
+  emit_i32_const(realloc_body, 65535)
+  emit_i32_add(realloc_body)
+  emit_i32_const(realloc_body, 16)
+  bytebuf_push(realloc_body, 118)
+  bytebuf_push(realloc_body, 63)
+  bytebuf_push(realloc_body, 0)
+  bytebuf_push(realloc_body, 107)
+  bytebuf_push(realloc_body, 64)
+  bytebuf_push(realloc_body, 0)
+  bytebuf_push(realloc_body, 26)
+  bytebuf_push(realloc_body, 11)
+  emit_local_get(realloc_body, 4)
+  bytebuf_push(realloc_body, 11)
+  leb128_encode_u32(code_sec, Bytes::length(realloc_body))
+  bytebuf_push_buf(code_sec, realloc_body)
+  bytebuf_push_section(out, 10, code_sec)
+  bytebuf_to_bytes(out)
+}
+
+// Adapter/fixup module: converts the raw ABI ((ptr<<32)|len i64 strings) to
+// the canonical lowered signatures and plants its impls into the shim's
+// table via an active element segment at instantiation time.
+fn comp_generate_vfs_adapter() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  // types: 0 = (i32,i32,i32)->() lowered string->string
+  //        1 = (i32,i32)->i32   lowered string->bool
+  //        2 = (i32,i32)->i64   lowered string->s64
+  //        3 = (i64)->i64       raw impls
+  //        4 = (i32 x4)->i32    cabi_realloc
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 5)
+  emit_func_type_raw(tc, [
+    127,
+    127,
+    127
+  ], array_empty())
+  emit_func_type_raw(tc, [
+    127,
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127,
+    127
+  ], [
+    126
+  ])
+  emit_func_type_raw(tc, [
+    126
+  ], [
+    126
+  ])
+  emit_func_type_raw(tc, [
+    127,
+    127,
+    127,
+    127
+  ], [
+    127
+  ])
+  bytebuf_push_section(out, 1, tc)
+  // imports: vfs.read-file f0 t0, vfs.exists f1 t1, vfs.read-dir f2 t0,
+  // vfs.stat-token f3 t2, env.cabi_realloc f4 t4, env.memory, env.t (table)
+  let import_sec = bytebuf_new()
+  leb128_encode_u32(import_sec, 7)
+  emit_name(import_sec, "vfs")
+  emit_name(import_sec, "read-file")
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 0)
+  emit_name(import_sec, "vfs")
+  emit_name(import_sec, "exists")
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 1)
+  emit_name(import_sec, "vfs")
+  emit_name(import_sec, "read-dir")
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 0)
+  emit_name(import_sec, "vfs")
+  emit_name(import_sec, "stat-token")
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 2)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "cabi_realloc")
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 4)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "memory")
+  bytebuf_push(import_sec, 2)
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 0)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "t")
+  bytebuf_push(import_sec, 1)
+  bytebuf_push(import_sec, 112)
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 4)
+  bytebuf_push_section(out, 2, import_sec)
+  // funcs: f5 impl_read_file, f6 impl_exists, f7 impl_read_dir, f8 impl_stat
+  emit_function_section(out, [
+    3,
+    3,
+    3,
+    3
+  ])
+  // active elem: table 0 offset 0 -> [f5, f6, f7, f8]
+  let elem_sec = bytebuf_new()
+  leb128_encode_u32(elem_sec, 1)
+  bytebuf_push(elem_sec, 0)
+  emit_i32_const(elem_sec, 0)
+  bytebuf_push(elem_sec, 11)
+  leb128_encode_u32(elem_sec, 4)
+  leb128_encode_u32(elem_sec, 5)
+  leb128_encode_u32(elem_sec, 6)
+  leb128_encode_u32(elem_sec, 7)
+  leb128_encode_u32(elem_sec, 8)
+  bytebuf_push_section(out, 9, elem_sec)
+  let code_sec = bytebuf_new()
+  leb128_encode_u32(code_sec, 4)
+  // impl_read_file / impl_read_dir (string result via retptr)
+  let mut sri = 0
+  while sri < 2 {
+    let body = bytebuf_new()
+    leb128_encode_u32(body, 1)
+    leb128_encode_u32(body, 1)
+    bytebuf_push(body, 127)
+    // retptr = cabi_realloc(0,0,4,8)
+    emit_i32_const(body, 0)
+    emit_i32_const(body, 0)
+    emit_i32_const(body, 4)
+    emit_i32_const(body, 8)
+    bytebuf_push(body, 16)
+    leb128_encode_u32(body, 4)
+    emit_local_set(body, 1)
+    // ptr = wrap(arg >> 32); len = wrap(arg)
+    emit_local_get(body, 0)
+    emit_i64_const(body, 32)
+    bytebuf_push(body, 136)
+    bytebuf_push(body, 167)
+    emit_local_get(body, 0)
+    bytebuf_push(body, 167)
+    emit_local_get(body, 1)
+    bytebuf_push(body, 16)
+    leb128_encode_u32(body, if sri == 0 {
+      0
+    } else {
+      2
+    })
+    // (extend_u([retptr]) << 32) | extend_u([retptr+4])
+    emit_local_get(body, 1)
+    bytebuf_push(body, 40)
+    leb128_encode_u32(body, 2)
+    leb128_encode_u32(body, 0)
+    bytebuf_push(body, 173)
+    emit_i64_const(body, 32)
+    bytebuf_push(body, 134)
+    emit_local_get(body, 1)
+    bytebuf_push(body, 40)
+    leb128_encode_u32(body, 2)
+    leb128_encode_u32(body, 4)
+    bytebuf_push(body, 173)
+    bytebuf_push(body, 132)
+    bytebuf_push(body, 11)
+    // impl order in the code section is f5(read_file), f6(exists),
+    // f7(read_dir), f8(stat) — emit exists between the two string impls.
+    if sri == 0 {
+      leb128_encode_u32(code_sec, Bytes::length(body))
+      bytebuf_push_buf(code_sec, body)
+      let exists_body = bytebuf_new()
+      leb128_encode_u32(exists_body, 0)
+      emit_local_get(exists_body, 0)
+      emit_i64_const(exists_body, 32)
+      bytebuf_push(exists_body, 136)
+      bytebuf_push(exists_body, 167)
+      emit_local_get(exists_body, 0)
+      bytebuf_push(exists_body, 167)
+      bytebuf_push(exists_body, 16)
+      leb128_encode_u32(exists_body, 1)
+      bytebuf_push(exists_body, 173)
+      bytebuf_push(exists_body, 11)
+      leb128_encode_u32(code_sec, Bytes::length(exists_body))
+      bytebuf_push_buf(code_sec, exists_body)
+    } else {
+      leb128_encode_u32(code_sec, Bytes::length(body))
+      bytebuf_push_buf(code_sec, body)
+      let stat_body = bytebuf_new()
+      leb128_encode_u32(stat_body, 0)
+      emit_local_get(stat_body, 0)
+      emit_i64_const(stat_body, 32)
+      bytebuf_push(stat_body, 136)
+      bytebuf_push(stat_body, 167)
+      emit_local_get(stat_body, 0)
+      bytebuf_push(stat_body, 167)
+      bytebuf_push(stat_body, 16)
+      leb128_encode_u32(stat_body, 3)
+      bytebuf_push(stat_body, 11)
+      leb128_encode_u32(code_sec, Bytes::length(stat_body))
+      bytebuf_push_buf(code_sec, stat_body)
+    }
+    sri = sri + 1
+  }
+  bytebuf_push_section(out, 10, code_sec)
+  bytebuf_to_bytes(out)
+}
+
+export fn comp_emit_component_wasm_string_handler_vfs(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with { Error } {
+  let string_param_count = Array::length(param_names)
+  // Validate the target export exists with the packed-string core signature
+  // (same contract as comp_emit_string_handler_impl).
+  let export_names = array_empty()
+  let export_func_indices = new_int_array()
+  let export_type_sigs = array_empty()
+  let _ = parse_core_exports(core_wasm, export_names, export_func_indices, export_type_sigs)
+  let mut target_sig_ok = false
+  let mut target_found = false
+  let mut ei = 0
+  while ei < Array::length(export_names) {
+    if Array::get(export_names, ei) == target_func_name {
+      target_found = true
+      let sig = Array::get(export_type_sigs, ei)
+      let core_param_count = string_param_count + 1
+      if Array::length(sig) == (core_param_count + 3) {
+        let mut ok = Array::get(sig, 0) == core_param_count
+        let mut pi = 0
+        while pi < core_param_count {
+          if Array::get(sig, 1 + pi) != 126 {
+            ok = false
+          }
+          pi = pi + 1
+        }
+        if Array::get(sig, 1 + core_param_count) != 1 {
+          ok = false
+        }
+        if Array::get(sig, 2 + core_param_count) != 126 {
+          ok = false
+        }
+        target_sig_ok = ok
+      }
+      ei = Array::length(export_names)
+    } else {
+      ei = ei + 1
+    }
+  }
+  if !target_found {
+    throw("component(vfs): core module does not export '\{target_func_name}'")
+  }
+  if !target_sig_ok {
+    throw("component(vfs): '\{target_func_name}' must take \{string_param_count} String params and return String")
+  }
+  // Classify the core's imports: the four fs_* vfs functions route to the
+  // shim, every other vibe.* import gets a local stub, fd_write is the
+  // usual wasi stub, anything else is rejected.
+  let imp_modules = array_empty()
+  let imp_names = array_empty()
+  let imp_type_indices = new_int_array()
+  let imp_type_sigs = array_empty()
+  let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  let vibe_import_names = array_empty()
+  let stub_names = array_empty()
+  let stub_sigs = array_empty()
+  let mut ii = 0
+  while ii < import_count {
+    let im = Array::get(imp_modules, ii)
+    let ifn = Array::get(imp_names, ii)
+    if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
+      ()
+    } else if im == "vibe" {
+      Array::push(vibe_import_names, ifn)
+      if ifn == "fs_read_file" || ifn == "fs_exists" || ifn == "fs_read_dir" || ifn == "fs_stat_token" {
+        ()
+      } else {
+        Array::push(stub_names, ifn)
+        Array::push(stub_sigs, Array::get(imp_type_sigs, Array::get(imp_type_indices, ii)))
+      }
+    } else {
+      throw("component(vfs): unsupported host import '\{im}.\{ifn}'")
+    }
+    ii = ii + 1
+  }
+  let stub_count = Array::length(stub_names)
+  // Core func index plan (aliases + lowers appear in emission order):
+  //   0..3            shim forwarders (fs_read_file/exists/read_dir/stat_token)
+  //   4..3+S          stub funcs
+  //   4+S             target func (from main)
+  //   5+S             vfs cabi_realloc (realloc module)
+  //   6+S..9+S        canon-lowered vfs imports
+  //   10+S, 11+S      trampoline canon_func + trampoline cabi_realloc
+  let f_target = 4 + stub_count
+  let f_realloc = 5 + stub_count
+  let f_lower0 = 6 + stub_count
+  let f_canon = 10 + stub_count
+  let f_tramp_realloc = 11 + stub_count
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  // S1: component types 0-3 for the vfs imports.
+  bytebuf_push(buf, section_type)
+  let vfs_types = bytebuf_new()
+  leb128_encode_u32(vfs_types, 4)
+  let path_param = array_empty()
+  Array::push(path_param, "path")
+  emit_comp_func_type(vfs_types, [
+    comp_valtype_string
+  ], path_param, [
+    comp_valtype_string
+  ], 0)
+  emit_comp_func_type(vfs_types, [
+    comp_valtype_string
+  ], path_param, [
+    comp_valtype_bool
+  ], 0)
+  emit_comp_func_type(vfs_types, [
+    comp_valtype_string
+  ], path_param, [
+    comp_valtype_string
+  ], 0)
+  emit_comp_func_type(vfs_types, [
+    comp_valtype_string
+  ], path_param, [
+    comp_valtype_s64
+  ], 0)
+  emit_raw_content(buf, vfs_types)
+  // S2: component imports read-file/exists/read-dir/stat-token -> funcs 0-3.
+  let vfs_import_names = array_empty()
+  Array::push(vfs_import_names, "read-file")
+  Array::push(vfs_import_names, "exists")
+  Array::push(vfs_import_names, "read-dir")
+  Array::push(vfs_import_names, "stat-token")
+  emit_comp_import_section(buf, vfs_import_names, 4)
+  // S3-S8: core modules 0..5.
+  emit_core_module_section(buf, core_wasm)
+  emit_core_module_section(buf, comp_generate_string_trampoline_packed(string_param_count))
+  emit_core_module_section(buf, comp_generate_host_stub_module(stub_names, stub_sigs))
+  emit_core_module_section(buf, comp_generate_vfs_shim())
+  emit_core_module_section(buf, comp_generate_vfs_realloc())
+  emit_core_module_section(buf, comp_generate_vfs_adapter())
+  // S9: instance 0 = stub, S10: instance 1 = shim.
+  emit_core_instance_instantiate_section(buf, 2, array_empty())
+  emit_core_instance_instantiate_section(buf, 3, array_empty())
+  // S11: alias the shim forwarders (core funcs 0-3).
+  let shim_fn_names = array_empty()
+  Array::push(shim_fn_names, "fs_read_file")
+  Array::push(shim_fn_names, "fs_exists")
+  Array::push(shim_fn_names, "fs_read_dir")
+  Array::push(shim_fn_names, "fs_stat_token")
+  emit_alias_section(buf, 1, shim_fn_names, [
+    core_sort_func,
+    core_sort_func,
+    core_sort_func,
+    core_sort_func
+  ])
+  // S12: alias the stub funcs (core funcs 4..3+S).
+  let stub_sorts = new_int_array()
+  let mut ssi = 0
+  while ssi < stub_count {
+    Array::push(stub_sorts, core_sort_func)
+    ssi = ssi + 1
+  }
+  emit_alias_section(buf, 0, stub_names, stub_sorts)
+  // S13: synthetic "vibe" instance covering every vibe.* import of the core.
+  let vibe_inst_names = array_empty()
+  let vibe_inst_sorts = new_int_array()
+  let vibe_inst_indices = new_int_array()
+  let mut vi = 0
+  while vi < Array::length(vibe_import_names) {
+    let vn = Array::get(vibe_import_names, vi)
+    Array::push(vibe_inst_names, vn)
+    Array::push(vibe_inst_sorts, core_sort_func)
+    if vn == "fs_read_file" {
+      Array::push(vibe_inst_indices, 0)
+    } else if vn == "fs_exists" {
+      Array::push(vibe_inst_indices, 1)
+    } else if vn == "fs_read_dir" {
+      Array::push(vibe_inst_indices, 2)
+    } else if vn == "fs_stat_token" {
+      Array::push(vibe_inst_indices, 3)
+    } else {
+      let mut sj = 0
+      let mut found_at = -1
+      while sj < stub_count {
+        if Array::get(stub_names, sj) == vn && found_at == -1 {
+          found_at = sj
+        }
+        sj = sj + 1
+      }
+      Array::push(vibe_inst_indices, 4 + found_at)
+    }
+    vi = vi + 1
+  }
+  emit_core_instance_from_exports_sorted(buf, vibe_inst_names, vibe_inst_sorts, vibe_inst_indices)
+  // S14: instance 3 = main, wasi from the stub instance, vibe from instance 2.
+  emit_core_instance_instantiate_args(buf, 0, [
+    "wasi_snapshot_preview1",
+    "vibe"
+  ], [
+    0,
+    2
+  ])
+  // S15: alias target func + memory + __heap_ptr from main (instance 3).
+  let main_alias_names = array_empty()
+  Array::push(main_alias_names, target_func_name)
+  Array::push(main_alias_names, "memory")
+  Array::push(main_alias_names, "__heap_ptr")
+  emit_alias_section(buf, 3, main_alias_names, [
+    core_sort_func,
+    core_sort_mem,
+    core_sort_global
+  ])
+  // S16/S17: realloc env (instance 4) + realloc module (instance 5).
+  let renv_names = array_empty()
+  Array::push(renv_names, "__heap_ptr")
+  Array::push(renv_names, "memory")
+  emit_core_instance_from_exports_sorted(buf, renv_names, [
+    core_sort_global,
+    core_sort_mem
+  ], [
+    0,
+    0
+  ])
+  emit_core_instance_instantiate_args(buf, 4, [
+    "env"
+  ], [
+    4
+  ])
+  // S18: alias cabi_realloc (core func 5+S) from instance 5.
+  let realloc_names = array_empty()
+  Array::push(realloc_names, "cabi_realloc")
+  emit_alias_section(buf, 5, realloc_names, [
+    core_sort_func
+  ])
+  // S19: canon lower the four vfs imports (core funcs 6+S..9+S). String
+  // results (read-file/read-dir) need memory + realloc; the scalar-result
+  // ones need memory only (their string PARAM is read out of core memory).
+  bytebuf_push(buf, section_canon)
+  let lower_content = bytebuf_new()
+  leb128_encode_u32(lower_content, 4)
+  let mut li = 0
+  while li < 4 {
+    bytebuf_push(lower_content, 1)
+    bytebuf_push(lower_content, 0)
+    leb128_encode_u32(lower_content, li)
+    if li == 0 || li == 2 {
+      leb128_encode_u32(lower_content, 3)
+      bytebuf_push(lower_content, 0)
+      bytebuf_push(lower_content, 3)
+      leb128_encode_u32(lower_content, 0)
+      bytebuf_push(lower_content, 4)
+      leb128_encode_u32(lower_content, f_realloc)
+    } else {
+      leb128_encode_u32(lower_content, 2)
+      bytebuf_push(lower_content, 0)
+      bytebuf_push(lower_content, 3)
+      leb128_encode_u32(lower_content, 0)
+    }
+    li = li + 1
+  }
+  emit_raw_content(buf, lower_content)
+  // S20: alias the shim's table (table 0).
+  let table_names = array_empty()
+  Array::push(table_names, "t")
+  emit_alias_section(buf, 1, table_names, [
+    1
+  ])
+  // S21: synthetic "vfs" instance of the lowered funcs (instance 6).
+  let vfs_inst_names = array_empty()
+  Array::push(vfs_inst_names, "read-file")
+  Array::push(vfs_inst_names, "exists")
+  Array::push(vfs_inst_names, "read-dir")
+  Array::push(vfs_inst_names, "stat-token")
+  emit_core_instance_from_exports_sorted(buf, vfs_inst_names, [
+    core_sort_func,
+    core_sort_func,
+    core_sort_func,
+    core_sort_func
+  ], [
+    f_lower0,
+    f_lower0 + 1,
+    f_lower0 + 2,
+    f_lower0 + 3
+  ])
+  // S22: synthetic adapter env {cabi_realloc, memory, t} (instance 7).
+  let aenv_names = array_empty()
+  Array::push(aenv_names, "cabi_realloc")
+  Array::push(aenv_names, "memory")
+  Array::push(aenv_names, "t")
+  emit_core_instance_from_exports_sorted(buf, aenv_names, [
+    core_sort_func,
+    core_sort_mem,
+    1
+  ], [
+    f_realloc,
+    0,
+    0
+  ])
+  // S23: instance 8 = adapter (fixup: its active elem plants the impls).
+  emit_core_instance_instantiate_args(buf, 5, [
+    "vfs",
+    "env"
+  ], [
+    6,
+    7
+  ])
+  // S24: synthetic trampoline env (instance 9).
+  let tenv_names = array_empty()
+  Array::push(tenv_names, "target_func")
+  Array::push(tenv_names, "__heap_ptr")
+  Array::push(tenv_names, "memory")
+  emit_core_instance_from_exports_sorted(buf, tenv_names, [
+    core_sort_func,
+    core_sort_global,
+    core_sort_mem
+  ], [
+    f_target,
+    0,
+    0
+  ])
+  // S25: instance 10 = trampoline; S26: alias canon_func + its realloc.
+  emit_core_instance_instantiate_args(buf, 1, [
+    "env"
+  ], [
+    9
+  ])
+  let tramp_names = array_empty()
+  Array::push(tramp_names, "canon_func")
+  Array::push(tramp_names, "cabi_realloc")
+  emit_alias_section(buf, 10, tramp_names, [
+    core_sort_func,
+    core_sort_func
+  ])
+  // S27: component type 4 = the export's (string...) -> string.
+  bytebuf_push(buf, section_type)
+  let export_type = bytebuf_new()
+  leb128_encode_u32(export_type, 1)
+  let comp_param_types = new_int_array()
+  let mut pt = 0
+  while pt < string_param_count {
+    Array::push(comp_param_types, comp_valtype_string)
+    pt = pt + 1
+  }
+  emit_comp_func_type(export_type, comp_param_types, param_names, [
+    comp_valtype_string
+  ], 0)
+  emit_raw_content(buf, export_type)
+  // S28: canon lift (memory 0 + trampoline realloc); S29: export (comp func 4).
+  bytebuf_push(buf, section_canon)
+  let lift_content = bytebuf_new()
+  leb128_encode_u32(lift_content, 1)
+  emit_canon_lift_func(lift_content, f_canon, 4, 1, 0, f_tramp_realloc)
+  emit_raw_content(buf, lift_content)
+  emit_comp_export_section(buf, export_name, 4)
   bytebuf_to_bytes(buf)
 }
