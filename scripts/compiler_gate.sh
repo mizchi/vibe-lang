@@ -6641,4 +6641,16 @@ fi
 rm -rf "$c1078dir"
 echo "[compiler-gate] merged ctor/effect-op collision ok (42)"
 
+# 58/58. #906 Phase 2: the worker transport. A worker gets a job directory
+# as its entire filesystem sandbox and must be able to check a module WITH
+# imports, using dependency environments handed to it as values. Delegated
+# because the interesting part is the negative controls -- an unresolved
+# import is lenient, so the assertion has to be that the dependency's
+# SIGNATURE arrived, not just its name.
+echo "[compiler-gate] 58/58 module job dir worker transport (#906 Phase 2)"
+if ! bash "$ROOT_DIR/scripts/module_job_dir_test.sh" "$stage2_wasm"; then
+  echo "[compiler-gate] FAIL: module job dir worker transport regressed (#906 Phase 2)" >&2
+  exit 1
+fi
+
 echo "[compiler-gate] ok"

@@ -16,7 +16,7 @@ import @vibe/compiler/entry/source_compile/gc_only {
 import @vibe/compiler/runtime {
   build_module_source_from_source, build_funcmap_from_source,
   type_at_source, binding_occurrences, symbol_spans, collect_all_diagnostics,
-  set_dep_order_seed
+  set_dep_order_seed, run_module_job_dir
 }
 
 import @vibe/compiler/loader {
@@ -445,6 +445,27 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
   // concerns) but was never wired to this CLI verb. Writes "ok\n" on a clean
   // parse+typecheck; a parse/type error goes to the `.diag` sidecar, same
   // convention as every other adapter mode.
+  // #906 Phase 2: worker mode. `input_path` is a JOB DIRECTORY, not a
+  // source file, and it is the worker's entire filesystem sandbox --
+  // see run_module_job_dir (runtime/typecheck_fs.vibe) for its layout.
+  //
+  // This is checked BEFORE VIBE_CHECK_ONLY because the two answer different
+  // questions: check-only resolves a module's imports off the real
+  // filesystem, which is precisely what a worker must not do. A worker
+  // receives its dependencies' environments as values in the job.
+  if Env::get("VIBE_MODULE_JOB_DIR") == "1" {
+    return handle {
+      run_module_job_dir(input_path)
+      0
+    } with Error {
+      // A throw here is an infrastructure failure (unreadable or malformed
+      // job dir), NOT a compiler diagnostic -- run_module_job_dir already
+      // turned every diagnostic into a value in the job dir. The
+      // coordinator must be able to tell those apart, so this goes to the
+      // .diag sidecar and a nonzero exit, leaving no outcome.txt behind.
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  } else ()
   if Env::get("VIBE_CHECK_ONLY") == "1" {
     return handle {
       let _ = check_linked_file(input_path)

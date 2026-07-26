@@ -40,7 +40,7 @@ import @vibe/compiler/runtime/eval_loader {
 }
 
 export ./persistent_env_codec.vibe {
-  load_persistent_dep_list, load_persistent_leaf_fingerprint, load_persistent_type_env, persistent_dep_list_text, persistent_leaf_fingerprint_text, persistent_type_env_cache_text
+  load_persistent_dep_list, load_persistent_leaf_fingerprint, load_persistent_type_env, parse_persistent_type_env, persistent_dep_list_text, persistent_leaf_fingerprint_text, persistent_type_env_cache_text
 }
 
 //# Functions
@@ -705,6 +705,131 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
       let next_env_cache = upsert_env_cache(env_cache, path, checked_env)
       let next_db = ripple_record_eval(rdb, path, fingerprint, job.deps)
       (fingerprint, next_db, next_env_cache, dep_source_cache, parse_count)
+    }
+  }
+}
+
+// --- #906 Phase 2: worker entry ------------------------------------------
+//
+// The transport boundary. A worker is handed a JOB DIRECTORY and may touch
+// nothing else -- it is the whole preopen sandbox:
+//
+//   <dir>/job.txt      version / path / fingerprint / dep rows
+//   <dir>/source.vibe  the module source, verbatim
+//   <dir>/dep<i>.env   dependency i's serialized public environment
+//   <dir>/outcome.txt  written here: "ok" or "diag"
+//   <dir>/env.out      written here on ok: the checked environment
+//   <dir>/diag.txt     written here on diag: one diagnostic per line
+//
+// This is what docs/compiler-parallelism.md calls the missing in-memory
+// ModuleJob -> ModuleArtifact API. Without it a worker could only check
+// leaf modules: the type-env cache is keyed by a fingerprint derived from
+// the whole transitive source snapshot, which is precisely what a worker
+// must not see, so a worker can never look its own dependencies up. Here
+// the driver hands them over as values instead.
+//
+// `path` in job.txt is the module's LOGICAL path, not the materialized
+// temp file. It never gets opened -- it is the base directory that
+// build_import_env resolves each import against, so the dep<i>.env entries
+// bind to the same names they would in a serial compile. Getting this
+// wrong does not fail loudly; it silently binds imports to nothing.
+fn job_dir_path(dir: String, name: String) -> String {
+  String::concat(String::concat(dir, "/"), name)
+}
+
+fn parse_job_rows(job_text: String) -> (String, String, Array[String]) with { Error } {
+  let lines = String::split(normalize_persistent_cache_text(job_text), "\n")
+  let len = Array::length(lines)
+  let deps = empty_stack()
+  let mut path = ""
+  let mut fingerprint = ""
+  let mut version_ok = false
+  let mut i = 0
+  while i < len {
+    let line = Array::get(lines, i)
+    if String::length(line) == 0 {
+      ()
+    } else {
+      let parts = String::split(line, "\t")
+      if Array::length(parts) != 2 {
+        throw(String::concat("invalid module job row: ", line))
+      } else {
+        let key = Array::get(parts, 0)
+        let value = Array::get(parts, 1)
+        if key == "version" {
+          if value == "1" {
+            version_ok = true
+          } else {
+            throw(String::concat("unsupported module job version: ", value))
+          }
+        } else if key == "path" {
+          path = value
+        } else if key == "fingerprint" {
+          fingerprint = value
+        } else if key == "dep" {
+          Array::push(deps, value)
+        } else {
+          throw(String::concat("unknown module job row: ", line))
+        }
+      }
+    }
+    i = i + 1
+  }
+  if !version_ok {
+    throw("module job is missing its version row")
+  } else if String::length(path) == 0 {
+    throw("module job is missing its path row")
+  } else {
+    (path, fingerprint, deps)
+  }
+}
+
+export fn run_module_job_dir(dir: String) -> Unit with { Error, Fs } {
+  let (path, fingerprint, deps) = parse_job_rows(Fs::read_file(job_dir_path(dir, "job.txt")))
+  let source = Fs::read_file(job_dir_path(dir, "source.vibe"))
+  let dep_envs = array_empty()
+  let mut i = 0
+  let dlen = Array::length(deps)
+  while i < dlen {
+    let env_file = job_dir_path(dir, String::concat(String::concat("dep", __to_string(i)), ".env"))
+    if Fs::exists(env_file) {
+      match parse_persistent_type_env(Fs::read_file(env_file)) {
+        Some(env) => Array::push(dep_envs, (Array::get(deps, i), env)),
+        None => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let job = ModuleJob::{
+    path: path,
+    source: source,
+    deps: deps,
+    fingerprint: fingerprint,
+    dep_envs: dep_envs
+  }
+  // Parse errors are still an `Error` out of check_module (see the Phase 1
+  // note above). At the transport boundary they have to become a value
+  // regardless -- a worker that throws is an infrastructure failure, which
+  // the coordinator treats as fatal rather than as a compiler diagnostic.
+  let outcome = handle {
+    check_module(job)
+  } with Error {
+    Throw(msg) => Diagnosed(path, [msg])
+  }
+  // outcome.txt is written LAST in both arms. It is the commit marker: a
+  // coordinator that sees it knows env.out / diag.txt are already complete,
+  // so a worker killed mid-write leaves an obviously unfinished job dir
+  // rather than a plausible-looking wrong answer.
+  match outcome {
+    Checked(_, _, env) => {
+      Fs::write_file(job_dir_path(dir, "env.out"), persistent_type_env_cache_text(env))
+      Fs::write_file(job_dir_path(dir, "outcome.txt"), "ok")
+    },
+    Diagnosed(_, diags) => {
+      Fs::write_file(job_dir_path(dir, "diag.txt"), String::join(diags, "\n"))
+      Fs::write_file(job_dir_path(dir, "outcome.txt"), "diag")
     }
   }
 }

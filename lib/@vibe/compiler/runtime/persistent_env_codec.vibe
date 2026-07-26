@@ -374,54 +374,64 @@ fn rebuild_persistent_type_env(bindings: Array[(String, Type)]) -> TypeEnv {
   EnvFlat(bindings)
 }
 
+// #906 Phase 2: the decode half of the type-env cache, split out of
+// load_persistent_type_env so a value can be reconstituted from TEXT rather
+// than only from a file at a fingerprint-derived path.
+//
+// A worker checking a module with imports has to be handed its
+// dependencies' public environments. It cannot go find them: the cache key
+// is derived from the whole transitive source snapshot, which is exactly
+// what a worker is not allowed to see. So the driver serializes each
+// dependency env with persistent_type_env_cache_text and the worker decodes
+// it here -- the same bytes the on-disk cache holds, moved as a value.
+export fn parse_persistent_type_env(text: String) -> Option[TypeEnv] with { Error } {
+  let lines = String::split(normalize_persistent_cache_text(text), "\n")
+  let len = Array::length(lines)
+  let rec go: (Int, Bool, Array[(String, Type)]) -> Option[TypeEnv] with { Error } = (index, version_ok, bindings) -> {
+    if index >= len {
+      if version_ok {
+        Some(rebuild_persistent_type_env(bindings))
+      } else {
+        None
+      }
+    } else {
+      let line = Array::get(lines, index)
+      if String::length(line) == 0 {
+        go(index + 1, version_ok, bindings)
+      } else {
+        let parts = String::split(line, "\t")
+        if !version_ok {
+          if Array::length(parts) == 2 &&
+          Array::get(parts, 0) == "version" &&
+          Array::get(parts, 1) == "1" {
+            go(index + 1, true, bindings)
+          } else {
+            throw(String::concat("invalid persistent type env header: ", line))
+          }
+        } else if Array::length(parts) == 3 && Array::get(parts, 0) == "bind" {
+          let raw_type = Array::get(parts, 2)
+          let (ty, end_pos) = parse_cached_type(raw_type, 0)
+          if end_pos != String::length(raw_type) {
+            throw(String::concat("invalid persistent type env bind row: ", line))
+          } else {
+            Array::push(bindings, (Array::get(parts, 1), ty))
+            go(index + 1, true, bindings)
+          }
+        } else {
+          throw(String::concat("invalid persistent type env row: ", line))
+        }
+      }
+    }
+  }
+  go(0, false, array_empty())
+}
+
 export fn load_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with { Error, Fs } {
   let path = persistent_type_env_cache_path(fingerprint)
   if !(Fs::exists(path)) {
     None
   } else {
-    let lines = String::split(normalize_persistent_cache_text(Fs::read_file(path)), "\n")
-    let len = Array::length(lines)
-    let rec go: (Int, Bool, Array[(String, Type)]) -> Option[TypeEnv] with { Error } = (index, version_ok, bindings) -> {
-      if index >= len {
-        if version_ok {
-          Some(rebuild_persistent_type_env(bindings))
-        } else {
-          None
-        }
-      } else {
-        let line = Array::get(lines, index)
-        if String::length(line) == 0 {
-          go(index + 1, version_ok, bindings)
-        } else {
-          let parts = String::split(line, "\t")
-          if !version_ok {
-            if Array::length(parts) == 2 &&
-            Array::get(parts, 0) == "version" &&
-            Array::get(parts, 1) == "1" {
-              go(index + 1, true, bindings)
-            } else {
-              throw(String::concat("invalid persistent type env header: ", line))
-            }
-          } else if Array::length(parts) == 3 && Array::get(parts, 0) == "bind" {
-            let raw_type = Array::get(parts, 2)
-            let (ty, end_pos) = parse_cached_type(raw_type, 0)
-            if end_pos != String::length(raw_type) {
-              throw(String::concat("invalid persistent type env bind row: ", line))
-            } else {
-              // Was `Array::concat(bindings, [tuple])` — O(N) copy per
-              // row, O(N²) over the file. Linear-recursive accumulation
-              // through `go`, so push-mutating the shared `bindings`
-              // is equivalent to the per-call rebuild.
-              Array::push(bindings, (Array::get(parts, 1), ty))
-              go(index + 1, true, bindings)
-            }
-          } else {
-            throw(String::concat("invalid persistent type env row: ", line))
-          }
-        }
-      }
-    }
-    go(0, false, array_empty())
+    parse_persistent_type_env(Fs::read_file(path))
   }
 }
 

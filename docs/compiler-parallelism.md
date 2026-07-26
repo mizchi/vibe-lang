@@ -289,13 +289,39 @@ malformed response is an infrastructure failure. All compiler daemons and
 temporary directories are coordinator-cleaned when the run completes or
 fails.
 
-The real bridge currently checks source-only leaf snapshots. Dependency
-outcomes participate in readiness and deterministic error propagation, but a
-dependency's public type/effect interface is not yet installed into the
-worker's checker environment. Consequently a module source containing imports
-is outside this prototype contract. Extracting an in-memory
-`ModuleJob -> ModuleArtifact` API from `check_linked_file` is still required
-before the production compiler can check an import DAG this way.
+The real bridge originally checked source-only leaf snapshots: a dependency's
+public interface was not installed into the worker's checker environment, so a
+module source containing imports was outside the prototype contract.
+
+That API now exists. `VIBE_MODULE_JOB_DIR=1` makes the compiler read a job
+directory — which is also its whole preopen sandbox — and answer with a value:
+
+```text
+<dir>/job.txt      version / path / fingerprint / dep rows
+<dir>/source.vibe  the module source, verbatim
+<dir>/dep<i>.env   dependency i's serialized public environment
+<dir>/outcome.txt  "ok" or "diag", written LAST as the commit marker
+<dir>/env.out      on ok: the checked environment
+<dir>/diag.txt     on diag: one diagnostic per line
+```
+
+A worker cannot look its own dependencies up — the type-env cache key derives
+from the whole transitive source snapshot, which is exactly what it may not
+see — so the driver serializes each dependency environment with
+`persistent_type_env_cache_text` and the worker decodes it with
+`parse_persistent_type_env`. The `path` row is the module's LOGICAL path; it
+is never opened, but it is the base directory every import resolves against.
+
+`scripts/module_job_dir_test.sh` (compiler gate 58) pins the contract. Its
+assertion is not "a module with an import checks clean" — an unresolved import
+is lenient, so that passes even when the environment is discarded, and the
+first version of the test did exactly that. The assertion is that calling an
+imported function with the WRONG argument type is diagnosed, and that the same
+call is lenient once the environment is withheld.
+
+Still missing before the prototype can drive a real import DAG: the
+coordinator must order jobs by the dependency graph and thread each
+`env.out` into its dependents' job directories.
 
 Expected diagnostics are returned as values. An unexpected worker exception,
 compiler trap, daemon exit, or protocol violation fails the whole prototype run
@@ -361,12 +387,21 @@ Three gaps remain before Phase 2 can rely on this seam:
 The accumulator threading in `ensure_fingerprint_fs_go` is unchanged — only
 the per-module leaf work was lifted out. `FrozenArray[T]` is not implemented.
 
-### Phase 2: bounded parallel frontend
+### Phase 2: bounded parallel frontend — transport only
 
 - Run ready module jobs through the ADR-0068 nursery/channel implementation.
 - Start with a conservative worker bound because a full compiler self-compile has a
   high heap watermark; measure throughput and peak RSS together.
 - Keep filesystem and persistent-cache writes in the driver.
+
+The worker-side half is done: `VIBE_MODULE_JOB_DIR=1` checks a module with
+imports inside a job-directory sandbox and returns diagnostics as values
+(see "Host multi-worker prototype" above).
+
+Nothing runs in parallel yet. There is no `--jobs` flag, the production
+compile path still walks the import DAG serially, and the coordinator does
+not yet thread `env.out` between job directories. Wall-clock parallelism is
+Phase 2's remaining work, not something this transport already delivers.
 
 ### Phase 3: immutable whole-program plan
 
