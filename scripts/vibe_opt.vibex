@@ -29,7 +29,64 @@
 // build (e.g. the vibec core, where every sibling export roots its own call
 // graph) can be DCE'd down to one entry point's reachable set.
 import @vibe/optimizer {
-  filter_exports, minify, minify_converge
+  call_forwarding, coalesce_locals, dce, dce_remove, directize,
+  drop_unused_globals, drop_unused_tables, drop_unused_tags,
+  eliminate_dead_stores, filter_exports, fold_table_size, inline_calls,
+  inline_empty_calls, minify, minify_converge, optimize_code_section,
+  propagate_local_copies, remove_dead_blocks, remove_empty_sections,
+  remove_unused_types, strip_custom_sections, binary_size
+}
+
+// #1109: run exactly ONE named pass (minify's pipeline order) so the driver
+// can put each pass in its own process — a full round over a 4.9MB module
+// exhausts the 4GB wasm address space under the bump allocator, but any
+// single pass fits comfortably. "dce_auto" replicates minify's size-guarded
+// choice between dce_remove (physical removal) and dce (stubbing).
+// Unknown names return the input unchanged (the driver treats that as a
+// hard error by name-checking first).
+fn run_single_pass(input: Bytes, pass: String) -> Bytes {
+  if pass == "strip_custom_sections" {
+    strip_custom_sections(input)
+  } else if pass == "directize" {
+    directize(input)
+  } else if pass == "call_forwarding" {
+    call_forwarding(input)
+  } else if pass == "fold_table_size" {
+    fold_table_size(input)
+  } else if pass == "eliminate_dead_stores" {
+    eliminate_dead_stores(input)
+  } else if pass == "optimize_code_section" {
+    optimize_code_section(input)
+  } else if pass == "inline_empty_calls" {
+    inline_empty_calls(input)
+  } else if pass == "inline_calls" {
+    inline_calls(input)
+  } else if pass == "remove_dead_blocks" {
+    remove_dead_blocks(input)
+  } else if pass == "drop_unused_tables" {
+    drop_unused_tables(input)
+  } else if pass == "dce_auto" {
+    let removed = dce_remove(input)
+    if binary_size(removed) < binary_size(input) {
+      removed
+    } else {
+      dce(input)
+    }
+  } else if pass == "drop_unused_globals" {
+    drop_unused_globals(input)
+  } else if pass == "drop_unused_tags" {
+    drop_unused_tags(input)
+  } else if pass == "propagate_local_copies" {
+    propagate_local_copies(input)
+  } else if pass == "coalesce_locals" {
+    coalesce_locals(input)
+  } else if pass == "remove_unused_types" {
+    remove_unused_types(input)
+  } else if pass == "remove_empty_sections" {
+    remove_empty_sections(input)
+  } else {
+    input
+  }
 }
 
 fn collect_args() -> Array[String] with { Env } {
@@ -55,7 +112,7 @@ fn user_arg(args: Array[String], index: Int) -> String {
   }
 }
 
-fn run_opt(input_path: String, output_path: String, single_round: Bool, keep_exports: String) -> Int with { Fs, Stdout, Stderr } {
+fn run_opt(input_path: String, output_path: String, single_round: Bool, keep_exports: String, pass: String) -> Int with { Fs, Stdout, Stderr } {
   let input = Fs::read_bytes(input_path)
   let before = Bytes::length(input)
   if before == 0 {
@@ -68,15 +125,21 @@ fn run_opt(input_path: String, output_path: String, single_round: Bool, keep_exp
     } else {
       filter_exports(input, String::split(keep_exports, ","))
     }
-    let minified = if single_round {
+    let minified = if pass != "" {
+      run_single_pass(filtered, pass)
+    } else if single_round {
       minify(filtered)
     } else {
       minify_converge(filtered)
     }
     let after = Bytes::length(minified)
-    // Anomaly guard: never emit something bigger than the (filtered) input
-    // or an obviously-truncated module (below the 8-byte wasm header).
-    let out_bytes = if after >= 8 && after <= Bytes::length(filtered) {
+    // Anomaly guard: never emit an obviously-truncated module (below the
+    // 8-byte wasm header). Whole-pipeline modes additionally reject growth;
+    // --pass mode must NOT (a single pass may legitimately grow — e.g.
+    // inline_calls before the DCE that pays it off — and the DRIVER compares
+    // sizes per ROUND, not per pass).
+    let grew_ok = pass != ""
+    let out_bytes = if after >= 8 && (grew_ok || after <= Bytes::length(filtered)) {
       minified
     } else {
       filtered
@@ -94,6 +157,7 @@ fn main with { Fs, Env, Process, Stdout, Stderr } {
   let mut output_path = ""
   let mut single_round = false
   let mut keep_exports = ""
+  let mut pass = ""
   let argc = Array::length(args)
   let mut ai = 0
   while ai < argc {
@@ -102,6 +166,9 @@ fn main with { Fs, Env, Process, Stdout, Stderr } {
       single_round = true
     } else if a == "--keep-exports" && ai + 1 < argc {
       keep_exports = args[ai + 1]
+      ai = ai + 1
+    } else if a == "--pass" && ai + 1 < argc {
+      pass = args[ai + 1]
       ai = ai + 1
     } else if input_path == "" {
       input_path = a
@@ -113,11 +180,11 @@ fn main with { Fs, Env, Process, Stdout, Stderr } {
     ai = ai + 1
   }
   let code = if input_path == "" || output_path == "" {
-    Stderr::write_stream("usage: vibe-opt [--single-round] [--keep-exports a,b,c] <input.wasm> <output.wasm>\n")
+    Stderr::write_stream("usage: vibe-opt [--single-round] [--pass <name>] [--keep-exports a,b,c] <input.wasm> <output.wasm>\n")
     2
   }
   else {
-    run_opt(input_path, output_path, single_round, keep_exports)
+    run_opt(input_path, output_path, single_round, keep_exports, pass)
   }
   if code != 0 {
     vibe_process_exit_raw(code)

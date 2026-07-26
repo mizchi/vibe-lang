@@ -4,6 +4,10 @@ import @vibe/compiler/entry/compiler/fs_compile {
   compile_with_closure_sources_wasi_mode_uncached
 }
 
+import ./cli_support.vibe {
+  compile_release_file_mode_uncached
+}
+
 import @vibe/core {
   array_empty
 }
@@ -252,6 +256,72 @@ export fn compile_cli_request(source: String, request: String) -> String {
           let entry_name = request[mode_sep + 1: entry_sep]
           let chunk_index = parse_decimal_int(request, entry_sep + 1, request_len)
           let byte_len = ensure_compiled(source, entry_name, mode)
+          let start = chunk_index * hex_chunk_size
+          if start < 0 || start >= byte_len {
+            ""
+          } else {
+            let remaining = byte_len - start
+            let count = if remaining < hex_chunk_size {
+              remaining
+            } else {
+              hex_chunk_size
+            }
+            encode_cached_hex_chunk(start, count)
+          }
+        }
+      }
+    }
+    else {
+      ""
+    }
+  } with Error {
+    Throw(_) => ""
+  }
+}
+
+fn ensure_compiled_file(input_path: String, entry_name: String, mode: String) -> Int with { Error, Fs } {
+  let cache_key = cache_key_for(String::concat("file:", input_path), entry_name, mode)
+  if cache_key_matches(cache_key) {
+    Array::get(cached_compile_len, 0)
+  } else {
+    let bytes = compile_release_file_mode_uncached(input_path, entry_name, mode)
+    remember_compiled_bytes(cache_key, bytes)
+  }
+}
+
+// #1109-2 (vibec-hosted, the vfs face of #857): same request protocol as
+// compile_cli_request, but the first argument is a real PATH whose reads go
+// through the Fs host imports — which the vfs componentizer
+// (comp_emit_component_wasm_string_handler_vfs) lifts to the component's
+// imported `vfs` interface, so the HOST decides what a path means (real
+// filesystem under wasmtime, an in-memory map in a browser). Errors are
+// discharged to "" exactly like compile_cli_request.
+export fn compile_file_request(input_path: String, request: String) -> String with { Fs } {
+  handle {
+    let request_len = String::length(request)
+    if request_len >= 9 && request[0: 9] == "len-mode:" {
+      let sep = find_colon(request, 9, request_len)
+      if sep == -1 {
+        ""
+      } else {
+        let mode = request[9: sep]
+        let entry_name = request[sep + 1: request_len]
+        __to_string(ensure_compiled_file(input_path, entry_name, mode))
+      }
+    }
+    else if request_len >= 15 && request[0: 15] == "hex-chunk-mode:" {
+      let mode_sep = find_colon(request, 15, request_len)
+      if mode_sep == -1 {
+        ""
+      } else {
+        let entry_sep = find_colon(request, mode_sep + 1, request_len)
+        if entry_sep == -1 {
+          ""
+        } else {
+          let mode = request[15: mode_sep]
+          let entry_name = request[mode_sep + 1: entry_sep]
+          let chunk_index = parse_decimal_int(request, entry_sep + 1, request_len)
+          let byte_len = ensure_compiled_file(input_path, entry_name, mode)
           let start = chunk_index * hex_chunk_size
           if start < 0 || start >= byte_len {
             ""

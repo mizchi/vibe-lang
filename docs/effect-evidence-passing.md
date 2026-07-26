@@ -2434,9 +2434,13 @@ replay エンジンを codegen から物理削除した。着地は 4 パーツ:
 - **checker-builtin effect label の handle** (SEffectDef なし):
   `effect Http {..}` 宣言なしで builtin Http row を discharge する
   儀式的 handle (http_e2e_test) は migration の作りようがない (dict の
-  op 表が無い) → **"Http" を test/bench の ambient row に追加**
-  (test_bench_ambient_effects、Fs/Env と同じ host-handler 理屈) して
-  handle 自体を不要化し、e2e test から儀式 wrapper を撤去した。
+  op 表が無い)。初版は "Http" を test/bench ambient row に足して回避したが、
+  非 test の同型 wrapper が残ると hard error になる穴を Codex が指摘
+  (#1119 P2) → **VHE の候補集合を「宣言された effect + handle site が
+  名指す label」に拡張** (`edp_collect_handle_effect_names`)。builtin
+  label でも perform ゼロなら消去されるので、http_e2e_test は元の
+  wrapper 付きのまま compile し、それ自体がこの経路の回帰 pin になる
+  (ambient 追加は撤回)。`Error` は唯一実 codegen を持つので候補から除外。
 
 **意味論の意図的変更 (どちらも replay-era artifact の削除)**:
 - host-mapped op の perform を user handle で「横取り」する形

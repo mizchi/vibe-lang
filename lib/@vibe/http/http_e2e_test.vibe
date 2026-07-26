@@ -7,9 +7,10 @@ import ./http.vibe {
 //# Functions
 
 // Real-network e2e against the runner's `vibe.http_*` host imports. As in
-// lib/@vibe/fs/fs_test.vibe, the client ops compile to direct host-import
-// calls (#794), so the requests hit the real test server — Http is ambient
-// in test blocks (ADR-0076 追記34 V2), no row-discharge wrapper needed.
+// lib/@vibe/fs/fs_test.vibe, the `handle ... with Http { ... }` blocks only
+// discharge the Http row for the checker — the client ops compile to direct
+// host-import calls (#794), so the arm is never invoked and the requests hit
+// the real test server.
 //
 // The echo-server port is overridable via VIBE_HTTP_ECHO_PORT (#934: a fixed
 // port collides when concurrent worktree batteries each start their own
@@ -43,25 +44,41 @@ fn do_404(base: String) -> Bool with { Http } {
 
 //# Misc
 
-// ADR-0076 追記34 V2: the vacuous `handle .. with Http { Listen => .. }`
-// wrappers are gone. They existed only to discharge the Http row for the
-// checker (the arms never fired -- see the header comment), which stopped
-// compiling once the replay engine was removed (`Http` is a checker
-// BUILTIN effect with no `effect Http {..}` declaration, so the evidence
-// migration has nothing to build a dict from). Http is now ambient in
-// test/bench blocks like Fs/Env (test_bench_ambient_effects,
-// checker/checker_effects.vibe), so the client fns are called directly.
+// The `handle ... with Http { ... }` blocks below ALSO pin ADR-0076 追記34
+// V2's vacuous-handle elimination for checker-BUILTIN effect labels
+// (#1119 Codex review, P2): `Http` has no `effect Http {..}` declaration,
+// so the evidence migration has no operation list to build a dict from and
+// cannot migrate these sites -- but nothing in the program performs Http
+// either (the client ops are direct host calls), so the arms are provably
+// dead and the whole handle is erased in codegen. Candidate collection
+// reads handler sites, not just declared effects, precisely so this shape
+// keeps compiling.
 test "http GET request" {
   let base = base_from(Env::get("VIBE_HTTP_ECHO_PORT"))
-  assert(do_get(base))
+  let ok = handle {
+    do_get(base)
+  } with Http {
+    Listen(_p) => resume(0)
+  }
+  assert(ok)
 }
 
 test "http POST echo" {
   let base = base_from(Env::get("VIBE_HTTP_ECHO_PORT"))
-  assert(do_post_echo(base))
+  let ok = handle {
+    do_post_echo(base)
+  } with Http {
+    Listen(_p) => resume(0)
+  }
+  assert(ok)
 }
 
 test "http 404 response" {
   let base = base_from(Env::get("VIBE_HTTP_ECHO_PORT"))
-  assert(do_404(base))
+  let ok = handle {
+    do_404(base)
+  } with Http {
+    Listen(_p) => resume(0)
+  }
+  assert(ok)
 }
