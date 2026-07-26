@@ -58,7 +58,7 @@ import @vibe/compiler/checker {
 
 import @vibe/compiler/runtime {
   TypeDb, db_new, db_set_source, db_typecheck, db_grouped_merged_source,
-  db_typecheck_fs, db_module_source, db_load_artifact, db_store_artifact
+  db_typecheck_fs, db_module_source, db_load_artifact, db_store_artifact, parse_program_with_path
 }
 
 import @vibe/compiler/cache {
@@ -183,18 +183,15 @@ fn lookup_source_by_path(sources: Array[(String, String)], target_path: String) 
   found
 }
 
+// #1100: was a byte-for-byte duplicate of runtime's parse_program_with_path
+// (same located lex+parse, same `<path>: <msg>` wrapping), so a cold compile
+// parsed every source twice -- once for the typecheck walk and once here for
+// the merge. Route both through the memoized one; it hands back a fresh
+// top-level array each call, which is what the in-place desugars downstream
+// require. Interior-line breakpoints (span-arc step5) still get their real
+// EIdent char-offsets: the memoized parse is the same located one.
 fn parse_program_for_path(path: String, source: String) -> Array[Stmt] with { Error } {
-  handle {
-    // Interior-line breakpoints (span-arc step5): parse via the span-aware
-    // `parse_program_located` so EIdent nodes carry real source char-offsets
-    // (offset_to_line then maps them to lines for `vibe::dbg_line`). Offsets are
-    // inert for normal codegen (no codegen path reads them), so the default
-    // wasm output is unchanged — only the gated break path consumes them.
-    let (tokens, starts, _ends) = lex_with_offsets(source)
-    parse_program_located(tokens, starts, source)
-  } with Error {
-    Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
-  }
+  parse_program_with_path(path, source)
 }
 
 // #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`

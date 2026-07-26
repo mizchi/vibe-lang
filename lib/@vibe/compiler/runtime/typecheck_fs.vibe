@@ -308,17 +308,74 @@ fn upsert_string_pair(pairs: Array[(String, String)], key: String, value: String
   pairs
 }
 
-fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with { Error } {
-  handle {
-    // Located lex+parse so EIdent (and other) nodes carry real source char
-    // offsets; the checker rides those offsets into type diagnostics via the
-    // [@off=N] marker (decoded by locate_type_error). The plain
-    // `parse_program(lex(source))` passed an empty starts array, leaving every
-    // offset at -1, so located type errors fell back to a first-occurrence scan.
-    let (tokens, starts, _ends) = lex_with_offsets(source)
-    parse_program_located(tokens, starts, source)
-  } with Error {
-    Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
+// #1100: process-local parse memo. A cold fs-mode compile parses the SAME
+// source text TWICE -- once here for the typecheck walk (only on a
+// persistent type-env cache MISS, see finish_typecheck_fs_impl) and once
+// again for the merge (parse_sources_for_merge, file_compile.vibe). Both
+// sites ran the identical `lex_with_offsets` + `parse_program_located` pair
+// under the identical `<path>: <msg>` error wrapping, so the second parse
+// was pure waste -- #1100's phase attribution measured the merge parse at
+// 102 MB of a ~850 MB cold selfcompile.
+//
+// Keyed by (path, EXACT source text). The source is compared in full rather
+// than fingerprinted: a same-path re-ingest with different text is a real
+// shape (#897's vpkg shared-import prefix marker), and a full compare is
+// far cheaper than the parse it guards.
+//
+// The memo hands out a SHALLOW COPY of the top-level statement array, never
+// the stored one. check_program mutates its argument in place --
+// inject_prelude_result APPENDS the Result enum, and
+// inject_trait_method_generics / desugar_railway_binds /
+// desugar_labeled_args each `Array::set(stmts, i, <rewritten>)` -- so
+// handing out the pristine array directly would leak a per-file Result
+// declaration (one per file, all merged together) and pre-desugared
+// statements into the merge. Every one of those mutators writes only at the
+// TOP level (verified: they rebuild each Stmt functionally and write it
+// back by index), so a fresh top-level array is complete isolation; the
+// Stmt values themselves are immutable enum payloads.
+//
+// A throwing parse is NOT memoized: the cells stay untouched, so a second
+// caller re-parses and re-throws identically.
+let parse_memo_paths: Array[String] = [
+]
+
+let parse_memo_sources: Array[String] = [
+]
+
+let parse_memo_stmts: Array[Array[Stmt]] = [
+]
+
+export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with { Error } {
+  let n = Array::length(parse_memo_paths)
+  let mut i = 0
+  let mut hit = -1
+  while i < n && hit < 0 {
+    if Array::get(parse_memo_paths, i) == path && Array::get(parse_memo_sources, i) == source {
+      hit = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if hit >= 0 {
+    let cached = Array::get(parse_memo_stmts, hit)
+    Array::slice(cached, 0, Array::length(cached))
+  } else {
+    let parsed = handle {
+      // Located lex+parse so EIdent (and other) nodes carry real source char
+      // offsets; the checker rides those offsets into type diagnostics via the
+      // [@off=N] marker (decoded by locate_type_error). The plain
+      // `parse_program(lex(source))` passed an empty starts array, leaving every
+      // offset at -1, so located type errors fell back to a first-occurrence scan.
+      let (tokens, starts, _ends) = lex_with_offsets(source)
+      parse_program_located(tokens, starts, source)
+    } with Error {
+      Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
+    }
+    Array::push(parse_memo_paths, path)
+    Array::push(parse_memo_sources, source)
+    Array::push(parse_memo_stmts, parsed)
+    Array::slice(parsed, 0, Array::length(parsed))
   }
 }
 
