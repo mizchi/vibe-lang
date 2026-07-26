@@ -6423,4 +6423,43 @@ fi
 rm -rf "$ccpsdir"
 echo "[compiler-gate] closure-CPS param suspend ok"
 
+# 54/54. type-directed closure evidence (ADR-0076 追記34 V1): the
+#        hof_escaping shape (closure used as direct call AND by-value HOF
+#        arg) migrates to evidence — the replay M2 side-effect duplication
+#        is gone (hits 4 → 2, pinned via a row-free bump helper). The
+#        guard makes an ineligible closure-value program a hard error
+#        instead of a silent replay fallback.
+echo "[compiler-gate] 54/54 type-directed closure evidence (ADR-0076 追記34)"
+tdevdir="_build/_gate_td_evidence"
+rm -rf "$tdevdir"; mkdir -p "$tdevdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/effect_closure_value_evidence_m2.vibe "$tdevdir/m2.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$tdevdir/m2.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_closure_value_evidence_m2 fixture did not compile" >&2
+  cat "$tdevdir/m2.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+tdev_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$tdevdir/m2.wasm" 2>/dev/null | tail -1)"
+if [ "$tdev_out" != "2062" ]; then
+  echo "[compiler-gate] FAIL: effect_closure_value_evidence_m2 got '$tdev_out' (want 2062; 2064 = replay M2 duplication returned)" >&2
+  exit 1
+fi
+rm -f "$tdevdir/inelig.wasm"
+cp fixtures/err_closure_value_evidence_ineligible.vibe "$tdevdir/inelig.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdevdir/inelig.vibe" "$tdevdir/inelig.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$tdevdir/inelig.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_closure_value_evidence_ineligible compiled (must be a hard error)" >&2
+  exit 1
+fi
+if ! grep -qF "type-directed evidence" "$tdevdir/inelig.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: ineligible closure-value fixture did not produce the expected diagnostic" >&2
+  cat "$tdevdir/inelig.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$tdevdir"
+echo "[compiler-gate] type-directed closure evidence ok"
+
 echo "[compiler-gate] ok"

@@ -787,17 +787,23 @@ fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_b
 // drop provably-dead needing functions from consideration before the
 // safety scan -- see edp_plan_migrations' doc comment for the full
 // analysis of why this is safe even if reachability is ever imprecise.
-export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Unit {
+// Returns the pass's hard-error list (ADR-0076 追記34: a program holding
+// row-E closure VALUES whose migration cannot complete must fail loudly,
+// never fall back to replay — the caller turns a non-empty list into a
+// compile error, mirroring suspend_cps_pass's contract).
+export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[String] {
+  let errs = empty_str_array()
   let effect_defs = edp_collect_effect_defs(stmts)
   let fn_defs = edp_collect_fn_defs(stmts)
   let keep = dce_keep_flags(stmts, [entry_name])
-  let plans = edp_plan_migrations(stmts, effect_defs, fn_defs, keep)
+  let plans = edp_plan_migrations(stmts, effect_defs, fn_defs, keep, errs)
   let mut pi = 0
   while pi < Array::length(plans) {
     let (ename, ops, needing, handle_sites) = Array::get(plans, pi)
     edp_apply_migration(stmts, ename, ops, needing, handle_sites, fn_defs)
     pi = pi + 1
   }
+  errs
 }
 
 // Drop any `needing` name whose OWN top-level definition `keep` (from
@@ -1158,7 +1164,7 @@ fn edp_needing_name_reachable(name: String, fn_defs: Array[(Int, Bool, Bool, Str
 // dead needing function can never cause a silent miscompile, only recover
 // eligibility that a dead function's un-provable body would otherwise sink
 // for the whole effect.
-fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool], errs: Array[String]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
   let es_names = array_empty()
   let es_members_list = array_empty()
   edp_es_collect_into(stmts, es_names, es_members_list)
@@ -1195,13 +1201,34 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
         // dead) member -- see edp_drop_unreachable_needing's doc comment
         // for why dropping in that case is always safe.
         let needing_live = edp_drop_unreachable_needing(needing_full, fn_defs, keep)
+        let mut planned2 = false
         if Array::length(needing_live) == Array::length(needing_full) {
           ()
         } else {
           match edp_try_plan_for_effect(stmts, ename, ops, needing_live, fn_defs) {
-            Some(plan2) => Array::push(plans, plan2),
+            Some(plan2) => {
+              Array::push(plans, plan2)
+              planned2 = true
+            },
             None => ()
           }
+        }
+        // ADR-0076 追記34 V1 guard: a program that holds row-E closure
+        // VALUES compiles them under the __ev-taking convention, so a
+        // failed migration cannot silently fall back to replay (an
+        // unmigrated caller would call a migrated closure at the wrong
+        // arity). Hard error; the message names the effect.
+        if !planned2 {
+          let gb = empty_str_array()
+          let gl = array_empty()
+          edp_row_lit_scan(stmts, ename, es_names, es_members_list, gb, gl)
+          if Array::length(gb) > 0 || Array::length(gl) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list) {
+            Array::push(errs, String::concat(String::concat("effect ", ename), " has closure values whose row carries it (type-directed evidence, ADR-0076 追記34), but its evidence migration is not fully eligible -- a handle body, a needing function, or a row-carrying closure literal calls something the pass cannot see through; replay fallback is not available for closure-value programs"))
+          } else {
+            ()
+          }
+        } else {
+          ()
         }
       }
     }
@@ -2091,6 +2118,16 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
     let es_names = array_empty()
     let es_members_list = array_empty()
     edp_es_collect_into(stmts, es_names, es_members_list)
+    // ADR-0076 追記34 V1: type-directed widening. When the program holds
+    // row-E closure VALUES, names directly bound to row-E literals are
+    // safe callees everywhere (the sweep gives every such literal the
+    // __ev_E param), and each fn's own row-E-typed params are safe inside
+    // that fn — no call-site proofs. Row-E literal BODIES join the safety
+    // check below (each is compiled with the same widened set).
+    let td_binds = empty_str_array()
+    let td_lits = array_empty()
+    edp_row_lit_scan(stmts, ename, es_names, es_members_list, td_binds, td_lits)
+    let td_mode = Array::length(td_binds) > 0 || Array::length(td_lits) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list)
     // Handle sites are checked PER TOP-LEVEL STATEMENT (not from the flat
     // `handle_sites` list, which carries no owner attribution): a site
     // inside a self-discharging owner function may call that owner's own
@@ -2108,7 +2145,15 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
             EFn(_, _, sparams, _, _, sbody) => edp_closure_param_names_only(edp_handle_owner_cps(stmts, snm, sparams, sbody, ename, needing, pure_fns, es_names, es_members_list)),
             _ => empty_str_array()
           }
-          let call_safe_h = Array::concat(needing, hext)
+          let tdext = if td_mode {
+            match sval {
+              EFn(_, _, sparams2, _, _, _) => Array::concat(td_binds, edp_row_typed_param_names(sparams2, ename, es_names, es_members_list)),
+              _ => td_binds
+            }
+          } else {
+            empty_str_array()
+          }
+          let call_safe_h = Array::concat(Array::concat(needing, hext), tdext)
           let sites = array_empty()
           edp_collect_handle_sites_expr(sval, ename, sites)
           let mut hi = 0
@@ -2140,7 +2185,12 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
         // check runs strictly before either is mutated for `ename`).
         Some((gparams, b)) => {
           let own_cp = edp_own_closure_params(stmts, nm, gparams, ename, needing, pure_fns, es_names, es_members_list)
-          let call_safe = Array::concat(needing, edp_closure_param_names_only(own_cp))
+          let tdext2 = if td_mode {
+            Array::concat(td_binds, edp_row_typed_param_names(gparams, ename, es_names, es_members_list))
+          } else {
+            empty_str_array()
+          }
+          let call_safe = Array::concat(Array::concat(needing, edp_closure_param_names_only(own_cp)), tdext2)
           if edp_has_unsafe_construct(b, call_safe, ename, pure_fns) {
             ok = false
           } else {
@@ -2152,6 +2202,23 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
         }
       }
       ni = ni + 1
+    }
+    // ADR-0076 追記34 V1: every row-E literal's BODY must be compilable
+    // under the same widened set (its own row-E params + the bound names).
+    let mut tli = 0
+    while tli < Array::length(td_lits) {
+      match Array::get(td_lits, tli) {
+        EFn(_, _, lparams, _, _, lbody) => {
+          let lsafe = Array::concat(Array::concat(needing, td_binds), edp_row_typed_param_names(lparams, ename, es_names, es_members_list))
+          if edp_has_unsafe_construct(lbody, lsafe, ename, pure_fns) {
+            ok = false
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      }
+      tli = tli + 1
     }
     ok
   }
@@ -2243,6 +2310,244 @@ fn edp_find_fn_params_and_body(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bo
 // the exact eligibility bar a top-level needing function must also clear
 // -- reused here for a LOCAL closure literal considered for the same
 // dict-parameter treatment.
+// --- ADR-0076 追記34 V1: type-directed closure evidence.
+//
+// closure-value mode for effect E: the program contains a VALUE of a
+// function type whose row carries E — an annotated closure literal
+// (`() -> T with { E } { .. }`) or a fn-typed parameter annotation. In
+// this mode migration is TYPE-directed and TOTAL: every row-E literal
+// gets the `__ev_E` leading param, every call through a row-E-typed name
+// forwards evidence, and a named needing fn used as a value already has
+// the same arity after its own rewrite. The same row type always means
+// the same arity program-wide, so the #1070-family call-site proofs
+// (single-use / universal-call-site / no-value-reference /
+// handle-confinement) are unnecessary here — they remain only for
+// programs with NO row-E values (mode off), where behavior is unchanged.
+// Ineligibility in this mode is a HARD error surfaced through
+// evidence_dict_pass's returned error list (never a silent replay
+// fallback) — the frontier-deletion prerequisite.
+
+fn edp_efn_row_carries(expr: Expr, ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Bool {
+  match expr {
+    EFn(_, _, params, _, eff, _) => match eff {
+      Some(row) => {
+        let already = if Array::length(params) > 0 {
+          let (p0, _) = Array::get(params, 0)
+          String::starts_with(p0, "__ev_")
+        } else {
+          false
+        }
+        !already && edp_row_is_exactly(row, ename, es_names, es_members_list)
+      },
+      None => false
+    },
+    _ => false
+  }
+}
+
+fn edp_row_typed_param_names(params: Array[(String, Option[TypeExpr])], ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pn, pty) = Array::get(params, i)
+    if edp_type_is_fn_row_exactly(pty, ename, es_names, es_members_list) {
+      Array::push(out, edp_strip_tilde(pn))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Scan (read-only) for row-E closure literals: `binds` collects names
+// DIRECTLY let/letrec-bound to one (call sites through those names get
+// evidence prepended), `lits` collects every row-E literal expression
+// (each body must pass the safety check; the sweep migrates them all).
+// Top-level `SLet name = <row-E EFn>` is deliberately NOT a bind — that
+// is a needing fn (row containment on its own eff slot) and the needing
+// rewrite owns it.
+fn edp_row_lit_scan(stmts: Array[Stmt], ename: String, es_names: Array[String], es_members_list: Array[Array[String]], binds: Array[String], lits: Array[Expr]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => match expr {
+        EFn(_, _, _, _, _, fb) => edp_row_lit_scan_expr(fb, ename, es_names, es_members_list, binds, lits),
+        _ => edp_row_lit_scan_expr(expr, ename, es_names, es_members_list, binds, lits)
+      },
+      SLetMut(_, _, expr) => edp_row_lit_scan_expr(expr, ename, es_names, es_members_list, binds, lits),
+      SExpr(expr) => edp_row_lit_scan_expr(expr, ename, es_names, es_members_list, binds, lits),
+      STest(_, expr) => edp_row_lit_scan_expr(expr, ename, es_names, es_members_list, binds, lits),
+      SBench(_, expr) => edp_row_lit_scan_expr(expr, ename, es_names, es_members_list, binds, lits),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn edp_row_lit_scan_expr(e: Expr, ename: String, es_names: Array[String], es_members_list: Array[Array[String]], binds: Array[String], lits: Array[Expr]) -> Unit {
+  if edp_efn_row_carries(e, ename, es_names, es_members_list) {
+    Array::push(lits, e)
+  } else {
+    ()
+  }
+  match e {
+    ELet(n, v, b, _) => {
+      if edp_efn_row_carries(v, ename, es_names, es_members_list) {
+        Array::push(binds, n)
+      } else {
+        ()
+      }
+      edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(b, ename, es_names, es_members_list, binds, lits)
+    },
+    ELetRec(n, v, b) => {
+      if edp_efn_row_carries(v, ename, es_names, es_members_list) {
+        Array::push(binds, n)
+      } else {
+        ()
+      }
+      edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(b, ename, es_names, es_members_list, binds, lits)
+    },
+    ELetMut(_, v, b, _) => {
+      edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(b, ename, es_names, es_members_list, binds, lits)
+    },
+    EFn(_, _, _, _, _, fb) => edp_row_lit_scan_expr(fb, ename, es_names, es_members_list, binds, lits),
+    ESeq(a, b) => {
+      edp_row_lit_scan_expr(a, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(b, ename, es_names, es_members_list, binds, lits)
+    },
+    EIf(c, t, el) => {
+      edp_row_lit_scan_expr(c, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(t, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(el, ename, es_names, es_members_list, binds, lits)
+    },
+    EMatch(sc, arms) => {
+      edp_row_lit_scan_expr(sc, ename, es_names, es_members_list, binds, lits)
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, ex) = Array::get(arms, ai)
+        edp_row_lit_scan_expr(ex, ename, es_names, es_members_list, binds, lits)
+        ai = ai + 1
+      }
+    },
+    EHandle(bd, arms) => {
+      edp_row_lit_scan_expr(bd, ename, es_names, es_members_list, binds, lits)
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, ex) = Array::get(arms, ai)
+        edp_row_lit_scan_expr(ex, ename, es_names, es_members_list, binds, lits)
+        ai = ai + 1
+      }
+    },
+    ECall(callee, args, _) => {
+      edp_row_lit_scan_expr(callee, ename, es_names, es_members_list, binds, lits)
+      let mut ai = 0
+      while ai < Array::length(args) {
+        edp_row_lit_scan_expr(Array::get(args, ai), ename, es_names, es_members_list, binds, lits)
+        ai = ai + 1
+      }
+    },
+    EWhile(c, b) => {
+      edp_row_lit_scan_expr(c, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(b, ename, es_names, es_members_list, binds, lits)
+    },
+    EForIn(_, _, it, b) => {
+      edp_row_lit_scan_expr(it, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(b, ename, es_names, es_members_list, binds, lits)
+    },
+    ELoop(pairs, b) => {
+      let mut pi = 0
+      while pi < Array::length(pairs) {
+        let (_, v) = Array::get(pairs, pi)
+        edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits)
+        pi = pi + 1
+      }
+      edp_row_lit_scan_expr(b, ename, es_names, es_members_list, binds, lits)
+    },
+    EBinOp(_, l, r) => {
+      edp_row_lit_scan_expr(l, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(r, ename, es_names, es_members_list, binds, lits)
+    },
+    EUnaryOp(_, x) => edp_row_lit_scan_expr(x, ename, es_names, es_members_list, binds, lits),
+    EAssign(_, v, c) => {
+      edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(c, ename, es_names, es_members_list, binds, lits)
+    },
+    EAssignOp(_, _, v, c) => {
+      edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(c, ename, es_names, es_members_list, binds, lits)
+    },
+    EReturn(x) => edp_row_lit_scan_expr(x, ename, es_names, es_members_list, binds, lits),
+    EDot(o, _, _, _) => edp_row_lit_scan_expr(o, ename, es_names, es_members_list, binds, lits),
+    ELabeledArg(_, _, v) => edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits),
+    EBreak(opt) => match opt {
+      Some(x) => edp_row_lit_scan_expr(x, ename, es_names, es_members_list, binds, lits),
+      None => ()
+    },
+    EContinue(args) => {
+      let mut ai = 0
+      while ai < Array::length(args) {
+        edp_row_lit_scan_expr(Array::get(args, ai), ename, es_names, es_members_list, binds, lits)
+        ai = ai + 1
+      }
+    },
+    ETuple(items) => {
+      let mut ai = 0
+      while ai < Array::length(items) {
+        edp_row_lit_scan_expr(Array::get(items, ai), ename, es_names, es_members_list, binds, lits)
+        ai = ai + 1
+      }
+    },
+    EArray(items) => {
+      let mut ai = 0
+      while ai < Array::length(items) {
+        edp_row_lit_scan_expr(Array::get(items, ai), ename, es_names, es_members_list, binds, lits)
+        ai = ai + 1
+      }
+    },
+    ERecord(_, fields, _) => {
+      let mut ai = 0
+      while ai < Array::length(fields) {
+        let (_, v) = Array::get(fields, ai)
+        edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits)
+        ai = ai + 1
+      }
+    },
+    EMap(fields) => {
+      let mut ai = 0
+      while ai < Array::length(fields) {
+        let (_, v) = Array::get(fields, ai)
+        edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits)
+        ai = ai + 1
+      }
+    },
+    ESpread(x) => edp_row_lit_scan_expr(x, ename, es_names, es_members_list, binds, lits),
+    _ => ()
+  }
+}
+
+// Any top-level fn with a row-E-typed parameter?
+fn edp_any_row_typed_param(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(fn_defs) {
+    let (idx, _, _, _, _, _) = Array::get(fn_defs, i)
+    match Array::get(stmts, idx) {
+      SLet(_, _, _, _, EFn(_, _, params, _, _, _)) => if Array::length(edp_row_typed_param_names(params, ename, es_names, es_members_list)) > 0 {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn edp_efn_eligible_for_migration(expr: Expr, ename: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Bool {
   match expr {
     EFn(_, _, _, _, eff, body) => {
@@ -2921,9 +3226,112 @@ fn edp_handle_owner_cps(stmts: Array[Stmt], fname: String, fparams: Array[(Strin
 // binding's value is still individually eligible at the point this runs
 // (edp_maybe_migrate_efn) -- a defensive re-check, not just trusting the
 // caller's earlier edp_closure_param_universally_safe verdict.
+// ADR-0076 追記34 V1: unconditionally migrate every row-E closure literal
+// (bottom-up: nested literals first). `call_safe` already carries needing
+// + the literal-bound names; each literal's own row-E params are added
+// per literal.
+fn edp_sweep_row_lits_stmts(stmts: Array[Stmt], ename: String, dict_pname: String, call_safe: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, is_rec, nm, ty, expr) => match expr {
+        // Top-level fn VALUES are the needing rewrite's domain; sweep
+        // only their bodies' nested literals.
+        EFn(tps, tbs, params, ret, eff, fb) => Array::set(stmts, i, SLet(exported, is_rec, nm, ty, EFn(tps, tbs, params, ret, eff, edp_sweep_row_lits_expr(fb, ename, dict_pname, call_safe, es_names, es_members_list)))),
+        _ => Array::set(stmts, i, SLet(exported, is_rec, nm, ty, edp_sweep_row_lits_expr(expr, ename, dict_pname, call_safe, es_names, es_members_list)))
+      },
+      SLetMut(nm, ty, expr) => Array::set(stmts, i, SLetMut(nm, ty, edp_sweep_row_lits_expr(expr, ename, dict_pname, call_safe, es_names, es_members_list))),
+      SExpr(expr) => Array::set(stmts, i, SExpr(edp_sweep_row_lits_expr(expr, ename, dict_pname, call_safe, es_names, es_members_list))),
+      STest(tn, expr) => Array::set(stmts, i, STest(tn, edp_sweep_row_lits_expr(expr, ename, dict_pname, call_safe, es_names, es_members_list))),
+      SBench(bn, expr) => Array::set(stmts, i, SBench(bn, edp_sweep_row_lits_expr(expr, ename, dict_pname, call_safe, es_names, es_members_list))),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn edp_sweep_row_lits_expr(e: Expr, ename: String, dict_pname: String, call_safe: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Expr {
+  match e {
+    EFn(tps, tbs, params, ret, eff, body) => {
+      let body2 = edp_sweep_row_lits_expr(body, ename, dict_pname, call_safe, es_names, es_members_list)
+      let node2 = EFn(tps, tbs, params, ret, eff, body2)
+      if edp_efn_row_carries(node2, ename, es_names, es_members_list) {
+        let lsafe = Array::concat(call_safe, edp_row_typed_param_names(params, ename, es_names, es_members_list))
+        let new_params = Array::concat([
+          (dict_pname, Some(TyName(edp_dict_struct_name(ename))))
+        ], params)
+        EFn(tps, tbs, new_params, ret, eff, edp_rewrite_needing_body(body2, ename, dict_pname, lsafe))
+      } else {
+        node2
+      }
+    },
+    ELet(n, v, b, off) => ELet(n, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(b, ename, dict_pname, call_safe, es_names, es_members_list), off),
+    ELetRec(n, v, b) => ELetRec(n, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(b, ename, dict_pname, call_safe, es_names, es_members_list)),
+    ELetMut(n, v, b, off) => ELetMut(n, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(b, ename, dict_pname, call_safe, es_names, es_members_list), off),
+    ESeq(a, b) => ESeq(edp_sweep_row_lits_expr(a, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(b, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EIf(c, t, el) => EIf(edp_sweep_row_lits_expr(c, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(t, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(el, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EMatch(sc, arms) => EMatch(edp_sweep_row_lits_expr(sc, ename, dict_pname, call_safe, es_names, es_members_list), for a in arms {
+      let (pp, ex) = a
+      (pp, edp_sweep_row_lits_expr(ex, ename, dict_pname, call_safe, es_names, es_members_list))
+    }),
+    EHandle(bd, arms) => EHandle(edp_sweep_row_lits_expr(bd, ename, dict_pname, call_safe, es_names, es_members_list), for a in arms {
+      let (pp, ex) = a
+      (pp, edp_sweep_row_lits_expr(ex, ename, dict_pname, call_safe, es_names, es_members_list))
+    }),
+    ECall(callee, args, off) => ECall(edp_sweep_row_lits_expr(callee, ename, dict_pname, call_safe, es_names, es_members_list), for a in args {
+      edp_sweep_row_lits_expr(a, ename, dict_pname, call_safe, es_names, es_members_list)
+    }, off),
+    EWhile(c, b) => EWhile(edp_sweep_row_lits_expr(c, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(b, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, edp_sweep_row_lits_expr(it, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(b, ename, dict_pname, call_safe, es_names, es_members_list)),
+    ELoop(pairs, b) => ELoop(for pr in pairs {
+      let (n, v) = pr
+      (n, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list))
+    }, edp_sweep_row_lits_expr(b, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EBinOp(op, l, r) => EBinOp(op, edp_sweep_row_lits_expr(l, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(r, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EUnaryOp(op, x) => EUnaryOp(op, edp_sweep_row_lits_expr(x, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EAssign(n, v, c) => EAssign(n, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(c, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(c, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EReturn(x) => EReturn(edp_sweep_row_lits_expr(x, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EDot(o, f, o1, o2) => EDot(edp_sweep_row_lits_expr(o, ename, dict_pname, call_safe, es_names, es_members_list), f, o1, o2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EBreak(opt) => EBreak(match opt {
+      Some(x) => Some(edp_sweep_row_lits_expr(x, ename, dict_pname, call_safe, es_names, es_members_list)),
+      None => None
+    }),
+    EContinue(args) => EContinue(for a in args {
+      edp_sweep_row_lits_expr(a, ename, dict_pname, call_safe, es_names, es_members_list)
+    }),
+    ETuple(items) => ETuple(for a in items {
+      edp_sweep_row_lits_expr(a, ename, dict_pname, call_safe, es_names, es_members_list)
+    }),
+    EArray(items) => EArray(for a in items {
+      edp_sweep_row_lits_expr(a, ename, dict_pname, call_safe, es_names, es_members_list)
+    }),
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list))
+    }),
+    ESpread(x) => ESpread(edp_sweep_row_lits_expr(x, ename, dict_pname, call_safe, es_names, es_members_list)),
+    _ => e
+  }
+}
+
 fn edp_maybe_migrate_efn(expr: Expr, ename: String, dict_pname: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Option[Expr] {
   match expr {
-    EFn(tps, tbs, params, ret, eff, body) => if edp_efn_eligible_for_migration(expr, ename, needing, pure_fns, es_names, es_members_list) {
+    // 追記34: a literal the type-directed sweep already migrated must not
+    // be double-prepended by the proof-path revisit.
+    EFn(tps, tbs, params, ret, eff, body) => if (if Array::length(params) > 0 {
+      let (p00, _) = Array::get(params, 0)
+      String::starts_with(p00, "__ev_")
+    } else {
+      false
+    }) {
+      None
+    } else if edp_efn_eligible_for_migration(expr, ename, needing, pure_fns, es_names, es_members_list) {
       let new_params = Array::concat([
         (dict_pname, Some(TyName(edp_dict_struct_name(ename))))
       ], params)
@@ -3134,11 +3542,35 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
   // (direct performs) / forward it (calls to other needing functions, and
   // -- per own_cp_map above -- calls through its own closure-typed
   // parameters that were just proven safe to widen).
+  // ADR-0076 追記34 V1 (type-directed sweep): migrate EVERY row-E closure
+  // literal in place — prepend __ev_E and rewrite the body — and widen the
+  // safe-call sets with the literal-bound names + each fn's own
+  // row-E-typed params. Runs BEFORE the needing rewrites so those see the
+  // already-swept literals (the __ev_ first-param guard makes any later
+  // proof-path re-visit a no-op).
+  let td_binds = empty_str_array()
+  let td_lits0 = array_empty()
+  edp_row_lit_scan(stmts, ename, es_names, es_members_list, td_binds, td_lits0)
+  let td_mode = Array::length(td_binds) > 0 || Array::length(td_lits0) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list)
+  if td_mode {
+    let td_safe = Array::concat(needing, td_binds)
+    edp_sweep_row_lits_stmts(stmts, ename, dict_pname, td_safe, es_names, es_members_list)
+  } else {
+    ()
+  }
   let mut ni = 0
   while ni < Array::length(needing) {
     let nm = Array::get(needing, ni)
     let own_cp = Array::get(own_cp_map, ni)
-    let call_safe = Array::concat(needing, edp_closure_param_names_only(own_cp))
+    let tdw = if td_mode {
+      match edp_find_fn_params_and_body(stmts, fn_defs, nm) {
+        Some((gparams2, _)) => Array::concat(td_binds, edp_row_typed_param_names(gparams2, ename, es_names, es_members_list)),
+        None => td_binds
+      }
+    } else {
+      empty_str_array()
+    }
+    let call_safe = Array::concat(Array::concat(needing, edp_closure_param_names_only(own_cp)), tdw)
     edp_rewrite_needing_fn(stmts, fn_defs, nm, ename, dict_pname, dict_tyname, call_safe)
     ni = ni + 1
   }
@@ -3158,7 +3590,15 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
         // prepended -- scoped to this statement only, mirroring the
         // per-owner eligibility check exactly.
         let (_, hcps2) = Array::get(hcp_by_stmt, si)
-        let needing_h = Array::concat(needing, edp_closure_param_names_only(hcps2))
+        let tdh = if td_mode {
+          match expr {
+            EFn(_, _, sparams3, _, _, _) => Array::concat(td_binds, edp_row_typed_param_names(sparams3, ename, es_names, es_members_list)),
+            _ => td_binds
+          }
+        } else {
+          empty_str_array()
+        }
+        let needing_h = Array::concat(Array::concat(needing, edp_closure_param_names_only(hcps2)), tdh)
         Array::set(stmts, si, SLet(exported, is_rec, name, ty, edp_find_rewrite_handles(expr, ename, needing_h)))
       },
       _ => ()

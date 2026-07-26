@@ -1,0 +1,29 @@
+// ADR-0076 追記34 V1 guard: a program holding row-E closure VALUES
+// compiles them under the __ev-taking convention, so a migration that
+// cannot complete must be a HARD error — never a silent replay fallback
+// (an unmigrated caller would call a migrated closure at the wrong
+// arity). Here the literal's body nests a handle for the SAME effect,
+// which edp_has_unsafe_construct rejects.
+effect Ask {
+  Get -> Int
+}
+
+let apply = (f: () -> Int with { Ask }) -> Int with { Ask } {
+  f()
+}
+
+let _start = () -> Int {
+  let lit = () -> Int with { Ask } {
+    let inner_v = handle {
+      perform Ask::Get
+    } with Ask {
+      Get => resume(9)
+    }
+    perform Ask::Get + inner_v
+  }
+  handle {
+    apply(lit)
+  } with Ask {
+    Get => resume(1)
+  }
+}

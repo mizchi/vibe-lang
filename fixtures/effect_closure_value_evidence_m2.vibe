@@ -1,0 +1,41 @@
+// ADR-0076 追記34 V1 (type-directed closure evidence): the
+// hof_escaping shape — a closure used BOTH as a direct call and as a
+// by-value HOF argument — now migrates to the evidence path, which
+// removes the replay M2 side-effect duplication. `bump` is a row-free
+// helper (edp_pure_fn_names admits it), so the body-side counter is
+// edp-eligible; under replay the handle bodies re-executed once per
+// perform and hits inflated to 4 (probe measured 2064 pre-migration).
+// want 2062: direct = 101, via_apply = 105 → 206 * 10 + hits(2).
+effect Ask {
+  Get -> Int
+}
+
+let hits: Array[Int] = []
+
+fn bump() -> Int {
+  Array::push(hits, 1)
+  0
+}
+
+let apply = (f: () -> Int with { Ask }) -> Int with { Ask } {
+  f()
+}
+
+let _start = () -> Int {
+  let base = 100
+  let inner = () -> Int with { Ask } {
+    let _h = bump()
+    perform Ask::Get + base
+  }
+  let direct = handle {
+    inner()
+  } with Ask {
+    Get => resume(1)
+  }
+  let via_apply = handle {
+    apply(inner)
+  } with Ask {
+    Get => resume(5)
+  }
+  (direct + via_apply) * 10 + Array::length(hits)
+}

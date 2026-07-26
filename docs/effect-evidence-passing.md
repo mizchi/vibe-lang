@@ -2194,12 +2194,10 @@ throw が届かない or fixture 専用)**:
 - cache_underlying.vibe / module_graph_path.vibe の Env handle —
   元から vacuous (body は builtin 直呼びで throw しない)
 - `fixtures/effect_local_closure_by_value_hof_escaping.vibe` (206) —
-  唯一の「本物の replay 実行」残存。#786 fallback (closure 値経由の
-  HOF) で、evidence 移行には追記25 の closure-value evidence ABI が
-  必要。**frontier 経路 (uses_frontier / perform counter・memo /
-  eff_reserve) の削除はこの fixture 級の shape の migration が前提** —
-  次の実装単位。`is_error` 単発経路は Error の実装として残る (replay
-  ではない)。
+  当時唯一の「本物の replay 実行」残存 (#786 fallback)。**追記34 V1 の
+  型主導 total 化で evidence へ移行済み** — 残る replay 実行は
+  shadowed-needing negative pin クラスのみ。`is_error` 単発経路は
+  Error の実装として残る (replay ではない)。
 
 #### Vertical C: replay loop の撤去 (Phase 3d)
 
@@ -2305,6 +2303,33 @@ cross-module ABI を破壊し bootstrap seed と衝突する。型主導 dict-pa
 (re-baseline: 値 206 不変、M2 重複解消を新 fixture で pin) + ガード。
 V2 = 一次 replay 消費者ゼロ化の確認後、frontier 経路 (uses_frontier /
 perform counter・memo / eff_reserve) の削除。
+
+**実装ノート (同日、V1 着地)**:
+
+- 実装は edp 内で完結: `edp_row_lit_scan` (row-E literal / 直接束縛名の
+  read-only 収集) + `edp_any_row_typed_param` で closure-value mode を
+  判定し、mode ON なら (i) eligibility の call_safe を「literal 束縛名 +
+  各 fn 自身の row-E param 名」で型主導に拡張し row-E literal body も
+  安全性検査へ参加、(ii) apply 側で `edp_sweep_row_lits_stmts` が全
+  row-E literal を無条件 migration (bottom-up、`__ev_` 先頭 param の
+  idempotency guard で proof 経路との二重前置を防止)、(iii) needing /
+  handle rewrite の safe-call set にも同じ拡張。mode OFF (row-E closure
+  値なし) は全経路が従来と bit 同一。
+- **ガード**: mode ON で migration が成立しない場合は
+  `evidence_dict_pass` が error list を返し (suspend_cps_pass と同じ
+  契約に変更、callers throw)、replay への silent fallback を禁止。
+- 実測: `effect_local_closure_by_value_hof_escaping` (206) は evidence
+  移行後も値不変で green のまま、M2 重複は
+  `effect_closure_value_evidence_m2.vibe` (2062、replay なら 2064) が
+  pin — gate 54。ineligible guard は
+  `err_closure_value_evidence_ineligible.vibe` (同一 effect の nested
+  handle) が pin。40 系 (call_evidence 3013 / hof_general 210 /
+  handle_owner_param 285 / wrapper 105 / shadowed negative 47) は全て
+  値不変。
+- これにより**「本物の replay 実行」の残存は
+  `evidence_dict_needing_shadowed_by_local` (negative pin、mode OFF) の
+  クラスのみ**になった。V2 (frontier 削除) の残作業 = shadowed-needing
+  クラスの扱いの決定 (hard error 化 or 命名規則) + 削除本体。
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
