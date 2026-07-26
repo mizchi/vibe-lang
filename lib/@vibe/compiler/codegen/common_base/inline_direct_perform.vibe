@@ -805,18 +805,21 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
   let errs = empty_str_array()
   let effect_defs = edp_collect_effect_defs(stmts)
   // ADR-0076 追記34 V2 step 1: vacuous-handle elimination. An effect with
-  // ZERO user-reachable performs anywhere in the program (host-mapped
-  // performs like `perform Env::Get` compile to a direct builtin call and
-  // can never throw to a user handler -- see compile_call.vibe's
-  // op_is_builtin branch) has provably-dead handler arms at every one of
-  // its handle sites, so the whole `handle { body } with E { ... }` node
-  // is just `body`. Erasing it here (the checker already consumed the
-  // node for row discharge -- that job is done by this point) is what
-  // legalizes the host-row label-pun sites (cache_underlying.vibe /
+  // ZERO performs anywhere in the program has provably-dead handler arms
+  // at every one of its handle sites (nothing can ever throw its tag;
+  // direct builtin CALLS like `Env::get(..)` never reach a user handler),
+  // so the whole `handle { body } with E { ... }` node is just `body`.
+  // Erasing it here (the checker already consumed the node for row
+  // discharge -- that job is done by this point) is what legalizes the
+  // host-row label-pun sites (cache_underlying.vibe /
   // module_graph_path.vibe's module-private `effect Env` discharging the
   // HOST Env row of the Env::get builtin, and entry.vibe / dispatch_test's
   // dead-arm Profiler handles) without touching their source rows and
   // without Env's builtin-charged needing set ever entering migration.
+  // An effect that IS performed somewhere keeps all its handles and goes
+  // through ordinary migration -- including host-effect-label mocks like
+  // fs_effect_test's `handle {..} with Fs {..}` over `perform
+  // Fs::ReadFile` (see edp_user_perform_effect_of's doc comment).
   let mut vhi = 0
   while vhi < Array::length(effect_defs) {
     let (vh_name, _) = Array::get(effect_defs, vhi)
@@ -863,44 +866,16 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
 
 // --- ADR-0076 追記34 V2: replay-frontier removal support. ---------------
 //
-// Local copy of canonical_builtin_name's DOMAIN (builtin_name.vibe) -- the
-// set of effect-operation spellings that compile to a direct host-builtin
-// call instead of a throwing perform. Kept as a local copy per this file's
-// established convention (see edp_strip_tilde / edp_pat_binds). If an op
-// is added to canonical_builtin_name but not here, the failure mode is
-// LOUD (its handles stay, the live-handle check below rejects the
-// program), never a silent miscompile.
-fn edp_host_mapped_op(op: String) -> Bool {
-  match op {
-    "Fs::ReadFile" => true,
-    "Fs::WriteFile" => true,
-    "Fs::ReadBytes" => true,
-    "Fs::WriteBytes" => true,
-    "Fs::Exists" => true,
-    "Fs::StatToken" => true,
-    "Fs::ReadDir" => true,
-    "Fs::IsDir" => true,
-    "Fs::IsFile" => true,
-    "Fs::Mkdir" => true,
-    "Fs::MkdirP" => true,
-    "Fs::Getcwd" => true,
-    "Fs::Chdir" => true,
-    "Fs::Remove" => true,
-    "Fs::Copy" => true,
-    "Fs::Append" => true,
-    "Fs::Rename" => true,
-    "Env::Get" => true,
-    "Env::ArgsLen" => true,
-    "Env::ArgsGet" => true,
-    "Profiler::NowUs" => true,
-    "Profiler::HeapBytes" => true,
-    _ => false
-  }
-}
-
-// The effect name of a perform that can actually reach a USER handler at
-// runtime, or "" when `expr` is not such a perform (not a perform at all,
-// or a host-mapped op that compiles to a direct builtin call).
+// The effect name a `perform` targets, or "" when `expr` is not a perform.
+// EVERY perform counts here, including ones whose op is host-mapped
+// (`perform Fs::ReadFile` etc.): a user handle over a host-effect label is
+// the in-tree MOCKING pattern (lib/@vibe/fs's fs_effect_test /
+// index_import_test), and keeping those handles makes edp migrate them
+// like any user effect -- the arm now receives the operation's ARGUMENTS
+// and its resume value wins outright (under replay the real builtin ran
+// first, side effects included, and the arm was thrown its RESULT). Only
+// a perform with NO handle anywhere compiles to the direct builtin call
+// (see compile_call.vibe's op_is_builtin branch).
 fn edp_user_perform_effect_of(expr: Expr) -> String {
   match expr {
     ECall(callee, args, _) => match callee {
@@ -913,7 +888,7 @@ fn edp_user_perform_effect_of(expr: Expr) -> String {
           EIdent(qn, _) => qn,
           _ => ""
         }
-        if String::length(q) > 0 && !edp_host_mapped_op(q) {
+        if String::length(q) > 0 {
           edp_effect_name_of(q)
         } else {
           ""
@@ -1370,13 +1345,21 @@ fn edp_alpha_rename_shadowed(stmts: Array[Stmt], effect_defs: Array[(String, Arr
         let mut shadowed = false
         let mut si = 0
         while si < Array::length(stmts) && !shadowed {
-          match Array::get(stmts, si) {
-            SLet(_, _, _, _, sv) => if edp_expr_binds_name(sv, nm) {
+          let sv_opt = match Array::get(stmts, si) {
+            SLet(_, _, _, _, sv) => Some(sv),
+            SLetMut(_, _, sv) => Some(sv),
+            SExpr(sv) => Some(sv),
+            STest(_, sv) => Some(sv),
+            SBench(_, sv) => Some(sv),
+            _ => None
+          }
+          match sv_opt {
+            Some(sv) => if edp_expr_binds_name(sv, nm) {
               shadowed = true
             } else {
               ()
             },
-            _ => ()
+            None => ()
           }
           si = si + 1
         }
@@ -1398,8 +1381,16 @@ fn edp_alpha_rename_shadowed(stmts: Array[Stmt], effect_defs: Array[(String, Arr
     ]
     let mut i = 0
     while i < Array::length(stmts) {
-      match Array::get(stmts, i) {
-        SLet(exported, is_rec, name, ty, expr) => {
+      let expr_opt = match Array::get(stmts, i) {
+        SLet(_, _, _, _, expr) => Some(expr),
+        SLetMut(_, _, expr) => Some(expr),
+        SExpr(expr) => Some(expr),
+        STest(_, expr) => Some(expr),
+        SBench(_, expr) => Some(expr),
+        _ => None
+      }
+      match expr_opt {
+        Some(expr) => {
           let mut hits = false
           let mut sj = 0
           while sj < Array::length(seed) && !hits {
@@ -1409,12 +1400,20 @@ fn edp_alpha_rename_shadowed(stmts: Array[Stmt], effect_defs: Array[(String, Arr
           if hits {
             let env_names = empty_str_array()
             let env_repl = empty_str_array()
-            Array::set(stmts, i, SLet(exported, is_rec, name, ty, edp_ar_expr(expr, seed, env_names, env_repl, counter)))
+            let new_expr = edp_ar_expr(expr, seed, env_names, env_repl, counter)
+            match Array::get(stmts, i) {
+              SLet(exported, is_rec, name, ty, _) => Array::set(stmts, i, SLet(exported, is_rec, name, ty, new_expr)),
+              SLetMut(nm2, ty2, _) => Array::set(stmts, i, SLetMut(nm2, ty2, new_expr)),
+              SExpr(_) => Array::set(stmts, i, SExpr(new_expr)),
+              STest(tn2, _) => Array::set(stmts, i, STest(tn2, new_expr)),
+              SBench(bn2, _) => Array::set(stmts, i, SBench(bn2, new_expr)),
+              _ => ()
+            }
           } else {
             ()
           }
         },
-        _ => ()
+        None => ()
       }
       i = i + 1
     }
@@ -1929,13 +1928,21 @@ fn edp_drop_shadowed_needing(needing: Array[String], stmts: Array[Stmt]) -> Arra
     let mut shadowed = false
     let mut si = 0
     while si < Array::length(stmts) && !shadowed {
-      match Array::get(stmts, si) {
-        SLet(_, _, _, _, sv) => if edp_expr_binds_name(sv, nm) {
+      let sv_opt = match Array::get(stmts, si) {
+        SLet(_, _, _, _, sv) => Some(sv),
+        SLetMut(_, _, sv) => Some(sv),
+        SExpr(sv) => Some(sv),
+        STest(_, sv) => Some(sv),
+        SBench(_, sv) => Some(sv),
+        _ => None
+      }
+      match sv_opt {
+        Some(sv) => if edp_expr_binds_name(sv, nm) {
           shadowed = true
         } else {
           ()
         },
-        _ => ()
+        None => ()
       }
       si = si + 1
     }
@@ -3009,12 +3016,23 @@ fn edp_strip_tail_resume_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
 // -- identified by the qualified prefix on the first arm's pattern, since a
 // `handle ... with Effect { ... }` block's arms are always all for the same
 // effect (ADR-0050).
+// ADR-0076 追記34 V2: `test`/`bench` blocks and top-level expressions are
+// site-bearing statements too. They were invisible to collection (and to
+// eligibility / apply, which mirror this stmt coverage) for as long as the
+// replay engine silently absorbed their handles; with replay gone they
+// migrate like any SLet body -- and the whole-program claims the closure-
+// param proofs make (edp_own_closure_params: "across every call site in
+// the whole program") now actually see every statement kind.
 fn edp_collect_handle_sites(stmts: Array[Stmt], ename: String) -> Array[(Expr, Array[(Pat, Expr)])] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, _, _, expr) => edp_collect_handle_sites_expr(expr, ename, out),
+      SLetMut(_, _, expr) => edp_collect_handle_sites_expr(expr, ename, out),
+      SExpr(expr) => edp_collect_handle_sites_expr(expr, ename, out),
+      STest(_, expr) => edp_collect_handle_sites_expr(expr, ename, out),
+      SBench(_, expr) => edp_collect_handle_sites_expr(expr, ename, out),
       _ => ()
     }
     i = i + 1
@@ -3182,10 +3200,25 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
     let mut ok = true
     let mut hsi = 0
     while hsi < Array::length(stmts) {
-      match Array::get(stmts, hsi) {
-        SLet(_, _, snm, _, sval) => {
-          let hext = match sval {
-            EFn(_, _, sparams, _, _, sbody) => edp_closure_param_names_only(edp_handle_owner_cps(stmts, snm, sparams, sbody, ename, needing, pure_fns, es_names, es_members_list)),
+      // ADR-0076 追記34 V2: non-SLet site-bearing statements (test/bench
+      // blocks, top-level exprs, `let mut`) get the base safe-call set --
+      // no owner-closure-param extension (that proof is tied to a named
+      // fn's own params) and the bare td_binds widening.
+      let sval_opt = match Array::get(stmts, hsi) {
+        SLet(_, _, _, _, sv) => Some(sv),
+        SLetMut(_, _, sv) => Some(sv),
+        SExpr(sv) => Some(sv),
+        STest(_, sv) => Some(sv),
+        SBench(_, sv) => Some(sv),
+        _ => None
+      }
+      match sval_opt {
+        Some(sval) => {
+          let hext = match Array::get(stmts, hsi) {
+            SLet(_, _, snm, _, _) => match sval {
+              EFn(_, _, sparams, _, _, sbody) => edp_closure_param_names_only(edp_handle_owner_cps(stmts, snm, sparams, sbody, ename, needing, pure_fns, es_names, es_members_list)),
+              _ => empty_str_array()
+            },
             _ => empty_str_array()
           }
           let tdext = if td_mode {
@@ -3210,7 +3243,7 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
             hi = hi + 1
           }
         },
-        _ => ()
+        None => ()
       }
       hsi = hsi + 1
     }
@@ -4126,6 +4159,10 @@ fn edp_collect_ecall_arg_idents(stmts: Array[Stmt], gname: String, argpos: Int) 
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, _, _, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
+      SLetMut(_, _, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
+      SExpr(expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
+      STest(_, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
+      SBench(_, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
       _ => ()
     }
     i = i + 1
@@ -4686,6 +4723,10 @@ fn edp_migrate_closure_binding_stmts(stmts: Array[Stmt], xname: String, ename: S
       } else {
         Array::set(stmts, i, SLet(exported, is_rec, nm, ty, edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)))
       },
+      SLetMut(nm2, ty2, expr) => Array::set(stmts, i, SLetMut(nm2, ty2, edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))),
+      SExpr(expr) => Array::set(stmts, i, SExpr(edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))),
+      STest(tn, expr) => Array::set(stmts, i, STest(tn, edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))),
+      SBench(bn, expr) => Array::set(stmts, i, SBench(bn, edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))),
       _ => ()
     }
     i = i + 1
@@ -4936,6 +4977,41 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
         }
         let needing_h = Array::concat(Array::concat(needing, edp_closure_param_names_only(hcps2)), tdh)
         Array::set(stmts, si, SLet(exported, is_rec, name, ty, edp_find_rewrite_handles(expr, ename, needing_h)))
+      },
+      // ADR-0076 追記34 V2: non-SLet site-bearing statements, mirroring
+      // eligibility's own coverage (base needing + bare td_binds; no
+      // owner-closure-param extension).
+      SLetMut(nm2, ty2, expr) => {
+        let tdh2 = if td_mode {
+          td_binds
+        } else {
+          empty_str_array()
+        }
+        Array::set(stmts, si, SLetMut(nm2, ty2, edp_find_rewrite_handles(expr, ename, Array::concat(needing, tdh2))))
+      },
+      SExpr(expr) => {
+        let tdh2 = if td_mode {
+          td_binds
+        } else {
+          empty_str_array()
+        }
+        Array::set(stmts, si, SExpr(edp_find_rewrite_handles(expr, ename, Array::concat(needing, tdh2))))
+      },
+      STest(tn2, expr) => {
+        let tdh2 = if td_mode {
+          td_binds
+        } else {
+          empty_str_array()
+        }
+        Array::set(stmts, si, STest(tn2, edp_find_rewrite_handles(expr, ename, Array::concat(needing, tdh2))))
+      },
+      SBench(bn2, expr) => {
+        let tdh2 = if td_mode {
+          td_binds
+        } else {
+          empty_str_array()
+        }
+        Array::set(stmts, si, SBench(bn2, edp_find_rewrite_handles(expr, ename, Array::concat(needing, tdh2))))
       },
       _ => ()
     }

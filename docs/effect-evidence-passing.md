@@ -2335,23 +2335,26 @@ perform counter・memo / eff_reserve) の削除。
 replay エンジンを codegen から物理削除した。着地は 4 パーツ:
 
 1. **vacuous-handle elimination (VHE)**。effect E について、program 全体に
-   「user handler に到達しうる perform」が 1 つも無ければ、E の全 handle
-   を body に置換して消去する (`edp_program_user_performs` /
-   `edp_erase_effect_handles`、evidence_dict_pass の先頭)。row discharge は
-   checker の仕事で codegen 到達時点では済んでいるので、消去は意味論不変
-   (arm は構造的に dead)。**host-mapped op (`canonical_builtin_name` が知る
-   Env::Get / Fs::ReadFile / Profiler::NowUs 等 22 個、local copy
-   `edp_host_mapped_op`) の perform はカウントしない** — これらは V2 で
-   builtin 直呼び (throw なし、下記 3) になり、handler arm に到達できない。
-   これが V2 のブロッカーだった host-row label pun の解:
-   cache_underlying.vibe / module_graph_path.vibe の module-private Env
-   handle と entry.vibe / dispatch_test の dead-arm Profiler handle は
-   **source 無変更のまま** VHE が消し、Env の builtin-charged needing 集合が
-   migration に入ることも無い。rename 案 (private effect の改名) は
-   「handle の存在自体が host row の discharge 機構」なので不成立と判明
-   (改名すると row が上流へ漏れる)、reachability narrowing 案は前回
-   revert の通り不健全 — 「そもそも handler が発火しえない handle を
-   節ごと消す」のが唯一の健全解だった。
+   perform が 1 つも無ければ、E の全 handle を body に置換して消去する
+   (`edp_program_user_performs` / `edp_erase_effect_handles`、
+   evidence_dict_pass の先頭)。row discharge は checker の仕事で codegen
+   到達時点では済んでいるので、消去は意味論不変 (E の tag を throw
+   しうるものが存在せず、builtin 直呼び `Env::get(..)` は handler に
+   届かない — arm は構造的に dead)。これが V2 のブロッカーだった
+   host-row label pun の解: cache_underlying.vibe /
+   module_graph_path.vibe の module-private Env handle と entry.vibe /
+   dispatch_test の dead-arm Profiler handle は **source 無変更のまま**
+   VHE が消し、Env の builtin-charged needing 集合が migration に入る
+   ことも無い (compiler program に perform Env/Profiler はゼロ)。
+   rename 案 (private effect の改名) は「handle の存在自体が host row の
+   discharge 機構」なので不成立と判明 (改名すると row が上流へ漏れる)、
+   reachability narrowing 案は前回 revert の通り不健全 — 「そもそも
+   handler が発火しえない handle を節ごと消す」のが唯一の健全解だった。
+   perform が存在する effect は host-label pun でも handle を保持して
+   通常の migration に乗る — fs_effect_test の `with Fs` mock は arm が
+   op の**引数**を受けて resume 値がそのまま勝つ (replay 時代は real
+   builtin が先に走って arm には**結果**が届いていた) 正しい mock
+   意味論になった。
 2. **shadowed-needing の解消 = seed-scoped α-rename + local-literal call
    safety**。(a) needing 名を shadow する binder を `__edpsh_N_<name>` に
    α-rename (`edp_alpha_rename_shadowed`、RC lane の
@@ -2370,13 +2373,21 @@ replay エンジンを codegen から物理削除した。着地は 4 パーツ:
    コードが全部 reject になる (replay という受け皿の消滅で顕在化)。
    `evidence_dict_needing_shadowed_by_local` は negative pin (47, replay)
    から **positive pin (47, evidence)** に反転。
-3. **perform 側**: counter/memo 短絡 (compile_call.vibe) を削除。
+3. **perform 側**: counter/memo 短絡 (compile_call.vibe) を削除。codegen
+   に届く perform = migration されなかった perform (live handle なし)。
    host-mapped op は builtin 直呼びが perform の値そのものになる
    (**throw しない** — 旧経路は builtin 結果を throw して handler 経由で
-   memo/replay していた)。それ以外の perform は payload + bare throw
-   (dead code でのみ残存しうる。実行されたら unhandled trap)。`resume` は
+   memo/replay していた。unhandled でも trap せず値が返るようになった)。
+   それ以外の perform は payload + bare throw (dead code か真に
+   unhandled な user effect。実行されたら unhandled trap)。`resume` は
    codegen 到達自体を internal error 化 (tail6 が非 Error arm を
    コンパイルしなくなったので到達不能)。
+   **stmt カバレッジ**: `test`/`bench` block と top-level expr /
+   `let mut` は今まで edp の handle 収集・eligibility・apply の対象外で、
+   その中の handle は全て silent replay だった。V2 で site-bearing
+   statement として一級化 (collect / eligibility / apply / α-rename /
+   shadow 検出 / closure-arg candidate 収集を統一) — test 内 mock
+   handler が evidence で動く。
 4. **handle 側 + 領域**: compile_expr_tail6 は `with Error` 専用に縮退
    (Error 経路は byte 単位で不変)。非 Error handle の到達は dead fn 内
    のみ許され、単一の `unreachable` に落とす。live な非 Error handle が
