@@ -84,26 +84,26 @@ import @vibe/core {
 
 // Deliberately NOT using @vibe/json/jsonrpc.vibe's RpcMessage/RpcId/
 // parse_message/stringify_response/stringify_notification/stringify_error,
-// even though they're a ready-made JSON-RPC 2.0 codec: @vibe/http's `Http`
-// effect separately declares a same-named `Request` operation
-// (http_effect.vibe), and the whole-program merge/flatten this compiler's
-// own build goes through (needed to ship `vibe lsp` as part of the
-// distributed CLI) resolves same-named constructors across UNRELATED
-// packages by bare name once the referencing code is actually reachable
-// from an exported entry point -- confirmed empirically (not
-// hypothetical): `RpcMessage::Request(...)`, even explicitly qualified,
-// typechecks fine as dead code but fails ("argument type mismatch for
-// Request: expected RpcId, got Map[String, Json]" -- Http::Request's own
-// 4-String signature) the moment `lsp_main` actually calls into it, and the
-// same failure persists even routed through jsonrpc.vibe's own
-// PACKAGE-LOCAL (unqualified) constructor use once genuinely reachable --
-// i.e. this is not a scoping/qualification bug so much as a whole-program
-// reachability-sensitive name resolution bug in the bundle merge tool
-// itself (same underlying class as #1062's ctor_table_index_of, a
-// DIFFERENT consumer, not yet root-caused/fixed at the source). Sidestepped
-// by building the JSON-RPC envelope directly on `Json`/`Json::field`
-// (json_convenience.vibe's accessors, no colliding constructor names)
-// instead.
+// even though they're a ready-made JSON-RPC 2.0 codec.
+//
+// HISTORY (#1078): this started as a WORKAROUND. @vibe/http declares a
+// same-named `Request` effect operation, and the whole-program
+// merge/flatten this compiler's own build goes through was mis-resolving
+// the two `Request` declarations by bare name once the referencing code
+// became reachable from an exported entry ("argument type mismatch for
+// Request: expected RpcId, got Map[String, Json]"). That is FIXED as of
+// 2026-07-26 -- re-verified by driving the real merge lane with both
+// declarations reachable in one merged program (compiler_gate.sh 57 pins
+// the shape; the http effect has since also been split into
+// HttpServer/HttpClient/HttpIncoming, and the compiler bundle no longer
+// pulls in @vibe/http at all).
+//
+// It stays hand-rolled because that is now the SIMPLER code, not because
+// the codec is unusable: LSP ids round-trip opaquely (see lsp_env_id), so
+// modelling them as `RpcId` and unwrapping `parse_message`'s
+// `Result[RpcMessage, String]` would add structure this server never
+// reads. Reach for jsonrpc.vibe here if a future need actually wants the
+// typed message enum.
 // The bare `{ Json }` type import is all that's needed: the FS lane's
 // bind_enum_constructor_companions (runtime/typecheck_fs.vibe) binds the
 // package's whole `Json::`-qualified export surface alongside the type.

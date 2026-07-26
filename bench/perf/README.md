@@ -33,6 +33,36 @@ bash scripts/selfcompile_kpi.sh /tmp/kpi_gen/stage2.wasm
 Commit the new number with the compiler change and note old -> new (and
 why) in the PR.
 
+## Compiler output size ratchet (`scripts/size_ratchet.sh`, #1109-4)
+
+The second blocking gate. It compiles every `bench/binary_size/*.vibe`
+sample with the freshly-built stage2 and fails when any result exceeds its
+entry in [`size_baseline.txt`](size_baseline.txt) by more than **2%**
+(`VIBE_SIZE_TOLERANCE_PCT` overrides). Like the heap number these sizes are
+byte-deterministic for a fixed (stage2, sample) pair, so the gate cannot
+flake; the tolerance is tight because they move only when codegen itself
+changes.
+
+**Gated: what the compiler PRODUCES. Not gated: what the compiler IS.** A
+codegen regression here makes every user program bigger, so it is worth
+blocking on. The compiler's own artifacts (`stage2.wasm`, the committed
+bundles, the flat module source) legitimately grow whenever a feature lands
+— ADR-0076 追記34 V2 alone added ~2.4% — so gating them would fight ordinary
+development. The perf report below still tracks them.
+
+The gate also fails when the baseline lists a sample that no longer exists,
+so the table cannot silently drift out of sync with the corpus.
+
+```bash
+bash scripts/generations.sh build --out-dir /tmp/size_gen
+bash scripts/size_ratchet.sh /tmp/size_gen/stage2.wasm --print
+# -> copy the reported lines into bench/perf/size_baseline.txt
+```
+
+Same discipline as the heap baseline: rebaseline in either direction with
+the codegen change, ratcheting DOWN after a size win so the gate protects
+it, and note old -> new (and why) in the PR.
+
 ## Continuous perf tracking (per-PR report + main history)
 
 `.github/workflows/perf.yml` runs on every PR and every main push

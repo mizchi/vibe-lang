@@ -1,0 +1,73 @@
+// #1114: a NESTED closure calling a bare inlined-builtin name (`not`,
+// `add`, `sub`, `mul`, `lt`, `assert`, and the async builtins) must invoke
+// an ENCLOSING local binding of that name when one exists, not the
+// builtin.
+//
+// `collect_free_vars_expr`'s inlined-builtin skip (#773) only consulted the
+// innermost lambda's OWN binders plus the top-level `fn_names` table. A
+// lambda's `bound` set is re-seeded per lambda from its own parameters, so
+// for `inner` (no params) it is empty and `outer`'s parameter `not` was
+// invisible: the skip fired, `not` was never captured, and the call
+// silently lowered to the BUILTIN logical-not. That is a wrong VALUE, not
+// a crash -- `outer` below would return `not(true)` == false instead of
+// invoking the identity closure it was handed.
+//
+// Fixed by threading the enclosing compile scope's locals into the check
+// (compile_lambda passes `local_names`); a shadowed name now falls through
+// to ordinary capture.
+//   dbl_via_shadowed: `mul` shadowed by a param that TRIPLES => 7*3 == 21
+//   id_via_shadowed:  `not` shadowed by the identity => true (not false)
+//   total: 21 + 1 == 22
+fn id_via_shadowed(not: (Bool) -> Bool) -> Bool {
+  let inner = () -> Bool {
+    not(true)
+  }
+  inner()
+}
+
+fn triple_via_shadowed(mul: (Int) -> Int) -> Int {
+  let inner = () -> Int {
+    mul(7)
+  }
+  inner()
+}
+
+// #1120 Codex review (P1): the OTHER direction. A non-recursive `let`
+// binder is NOT in scope inside its own initializer, so `add(x, y)` below
+// means the BUILTIN add -- but codegen pushes the binder's slot before
+// compiling the value (its index has to be reserved), so the fix above had
+// to be careful not to treat that not-yet-initialized slot as an enclosing
+// shadow and capture it (that made this trap). `let rec` keeps its name
+// visible; only non-recursive `let`/`let mut` mask it for the value.
+//   add_builtin:     let-bound shadow, initializer uses the builtin => 3
+//   add_builtin_mut: same via `let mut`                             => 3
+fn add_builtin() -> Int {
+  let add = (x: Int, y: Int) -> Int {
+    add(x, y)
+  }
+  add(1, 2)
+}
+
+fn add_builtin_mut() -> Int {
+  let mut add = (x: Int, y: Int) -> Int {
+    add(x, y)
+  }
+  add(1, 2)
+}
+
+let _start = () -> Int {
+  let b = id_via_shadowed((x: Bool) -> Bool {
+    x
+  })
+  let n = triple_via_shadowed((x: Int) -> Int {
+    x * 3
+  })
+  n + if b {
+    1
+  } else {
+    0
+  } + add_builtin() + add_builtin_mut()
+}
+
+__DATA__
+{"last": "28"}

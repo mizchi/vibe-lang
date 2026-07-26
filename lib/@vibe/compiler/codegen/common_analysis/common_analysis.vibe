@@ -664,7 +664,22 @@ fn ca_perform_error_throw_op_args(args: Array[Expr]) -> Option[Array[Expr]] {
   }
 }
 
+// #1114: the inlined-builtin skip below must also yield to a LOCAL binding
+// in an ENCLOSING scope. `bound` only ever holds the innermost lambda's own
+// binders (it is re-seeded per lambda from that lambda's parameters -- see
+// collect_free_vars_indexed), and `fn_names` only holds TOP-LEVEL names, so
+// neither can see that e.g. `fn outer(not: (Bool) -> Bool)` binds `not` for
+// a nested `() -> { not(true) }`. Without `encl` the skip fired, `not` was
+// never captured, and the call silently lowered to the BUILTIN logical-not
+// instead of invoking the parameter -- a wrong VALUE, not a crash.
+// `encl` is the enclosing compile scope's local names, threaded from
+// compile_lambda; the public wrapper passes an empty array, which reproduces
+// the previous behavior exactly for every other caller.
 export fn collect_free_vars_expr(expr: Expr, bound: Array[String], fn_names: Array[String], out: Array[String]) -> Int {
+  collect_free_vars_expr_sc(expr, bound, fn_names, common_analysis_fresh_string_array(), out)
+}
+
+fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[String], encl: Array[String], out: Array[String]) -> Int {
   match expr {
     EIdent(name, _) => if array_contains_str(bound, name) {
       0
@@ -685,11 +700,11 @@ export fn collect_free_vars_expr(expr: Expr, bound: Array[String], fn_names: Arr
     EString(_) => 0,
     EUnit => 0,
     EBinOp(_, lhs, rhs) => {
-      collect_free_vars_expr(lhs, bound, fn_names, out); collect_free_vars_expr(rhs, bound, fn_names, out)
+      collect_free_vars_expr_sc(lhs, bound, fn_names, encl, out); collect_free_vars_expr_sc(rhs, bound, fn_names, encl, out)
     },
-    EUnaryOp(_, operand) => collect_free_vars_expr(operand, bound, fn_names, out),
+    EUnaryOp(_, operand) => collect_free_vars_expr_sc(operand, bound, fn_names, encl, out),
     EIf(cond, then_e, else_e) => {
-      collect_free_vars_expr(cond, bound, fn_names, out); collect_free_vars_expr(then_e, bound, fn_names, out); collect_free_vars_expr(else_e, bound, fn_names, out)
+      collect_free_vars_expr_sc(cond, bound, fn_names, encl, out); collect_free_vars_expr_sc(then_e, bound, fn_names, encl, out); collect_free_vars_expr_sc(else_e, bound, fn_names, encl, out)
     },
     // #773/regression fix: the inlined-builtin skip only applies to a bare
     // name used as a CALL CALLEE (`sub(a, b)`), never to a plain identifier
@@ -713,67 +728,67 @@ export fn collect_free_vars_expr(expr: Expr, bound: Array[String], fn_names: Arr
         Some(op_args) => {
           let mut i = 0
           while i < Array::length(op_args) {
-            collect_free_vars_expr(Array::get(op_args, i), bound, fn_names, out)
+            collect_free_vars_expr_sc(Array::get(op_args, i), bound, fn_names, encl, out)
             i = i + 1
           }
           0
         },
         None => {
-          collect_free_vars_expr(EIdent(cname, 0), bound, fn_names, out)
+          collect_free_vars_expr_sc(EIdent(cname, 0), bound, fn_names, encl, out)
           let mut i = 0
           while i < Array::length(args) {
-            collect_free_vars_expr(Array::get(args, i), bound, fn_names, out)
+            collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, out)
             i = i + 1
           }
           0
         }
       }
-    } else if !array_contains_str(bound, cname) && !(bsearch_leftmost(fn_names, cname) >= 0) && (is_inlined_async_builtin(cname) || is_inlined_scalar_builtin(cname)) {
+    } else if !array_contains_str(bound, cname) && !(bsearch_leftmost(fn_names, cname) >= 0) && !array_contains_str(encl, cname) && (is_inlined_async_builtin(cname) || is_inlined_scalar_builtin(cname)) {
       let mut i = 0
       while i < Array::length(args) {
-        collect_free_vars_expr(Array::get(args, i), bound, fn_names, out)
+        collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, out)
         i = i + 1
       }
       0
     } else {
-      collect_free_vars_expr(EIdent(cname, 0), bound, fn_names, out)
+      collect_free_vars_expr_sc(EIdent(cname, 0), bound, fn_names, encl, out)
       let mut i = 0
       while i < Array::length(args) {
-        collect_free_vars_expr(Array::get(args, i), bound, fn_names, out)
+        collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, out)
         i = i + 1
       }
       0
     },
     ECall(callee, args, _) => {
-      collect_free_vars_expr(callee, bound, fn_names, out)
+      collect_free_vars_expr_sc(callee, bound, fn_names, encl, out)
       let mut i = 0
       while i < Array::length(args) {
-        collect_free_vars_expr(Array::get(args, i), bound, fn_names, out)
+        collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, out)
         i = i + 1
       }
       0
     },
     ELet(name, value, body, _) => {
-      collect_free_vars_expr(value, bound, fn_names, out)
+      collect_free_vars_expr_sc(value, bound, fn_names, encl, out)
       let saved = Array::length(bound)
       Array::push(bound, name)
-      collect_free_vars_expr(body, bound, fn_names, out)
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
       Array::truncate(bound, saved)
       0
     },
     ELetRec(name, value, body) => {
       let saved = Array::length(bound)
       Array::push(bound, name)
-      collect_free_vars_expr(value, bound, fn_names, out)
-      collect_free_vars_expr(body, bound, fn_names, out)
+      collect_free_vars_expr_sc(value, bound, fn_names, encl, out)
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
       Array::truncate(bound, saved)
       0
     },
     ELetMut(name, value, body, _) => {
-      collect_free_vars_expr(value, bound, fn_names, out)
+      collect_free_vars_expr_sc(value, bound, fn_names, encl, out)
       let saved = Array::length(bound)
       Array::push(bound, name)
-      collect_free_vars_expr(body, bound, fn_names, out)
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
       Array::truncate(bound, saved)
       0
     },
@@ -790,7 +805,7 @@ export fn collect_free_vars_expr(expr: Expr, bound: Array[String], fn_names: Arr
         Array::push(out, name)
         0
       }
-      collect_free_vars_expr(value, bound, fn_names, out); collect_free_vars_expr(body, bound, fn_names, out)
+      collect_free_vars_expr_sc(value, bound, fn_names, encl, out); collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
     },
     EAssignOp(name, _, value, body) => {
       if array_contains_str(bound, name) || bsearch_leftmost(fn_names, name) >= 0 || array_contains_str(out, name) {
@@ -799,30 +814,30 @@ export fn collect_free_vars_expr(expr: Expr, bound: Array[String], fn_names: Arr
         Array::push(out, name)
         0
       }
-      collect_free_vars_expr(value, bound, fn_names, out); collect_free_vars_expr(body, bound, fn_names, out)
+      collect_free_vars_expr_sc(value, bound, fn_names, encl, out); collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
     },
     ESeq(first, second) => {
-      collect_free_vars_expr(first, bound, fn_names, out); collect_free_vars_expr(second, bound, fn_names, out)
+      collect_free_vars_expr_sc(first, bound, fn_names, encl, out); collect_free_vars_expr_sc(second, bound, fn_names, encl, out)
     },
     EWhile(cond, body) => {
-      collect_free_vars_expr(cond, bound, fn_names, out); collect_free_vars_expr(body, bound, fn_names, out)
+      collect_free_vars_expr_sc(cond, bound, fn_names, encl, out); collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
     },
     EForIn(var_name, index_name, iter_e, body) => {
-      collect_free_vars_expr(iter_e, bound, fn_names, out)
+      collect_free_vars_expr_sc(iter_e, bound, fn_names, encl, out)
       let saved = Array::length(bound)
       Array::push(bound, var_name)
       match index_name {
         Some(index_name) => Array::push(bound, index_name),
         None => ()
       }
-      collect_free_vars_expr(body, bound, fn_names, out)
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
       Array::truncate(bound, saved)
       0
     },
     ETuple(elems) => {
       let mut i = 0
       while i < Array::length(elems) {
-        collect_free_vars_expr(Array::get(elems, i), bound, fn_names, out)
+        collect_free_vars_expr_sc(Array::get(elems, i), bound, fn_names, encl, out)
         i = i + 1
       }
       0
@@ -830,19 +845,19 @@ export fn collect_free_vars_expr(expr: Expr, bound: Array[String], fn_names: Arr
     EArray(elems) => {
       let mut i = 0
       while i < Array::length(elems) {
-        collect_free_vars_expr(Array::get(elems, i), bound, fn_names, out)
+        collect_free_vars_expr_sc(Array::get(elems, i), bound, fn_names, encl, out)
         i = i + 1
       }
       0
     },
     EMatch(scrutinee, arms) => {
-      collect_free_vars_expr(scrutinee, bound, fn_names, out)
+      collect_free_vars_expr_sc(scrutinee, bound, fn_names, encl, out)
       let mut i = 0
       while i < Array::length(arms) {
         let (arm_pat, arm_expr) = Array::get(arms, i)
         let saved = Array::length(bound)
         collect_pattern_bindings(arm_pat, bound)
-        collect_free_vars_expr(arm_expr, bound, fn_names, out)
+        collect_free_vars_expr_sc(arm_expr, bound, fn_names, encl, out)
         Array::truncate(bound, saved)
         i = i + 1
       }
@@ -861,34 +876,34 @@ export fn collect_free_vars_expr(expr: Expr, bound: Array[String], fn_names: Arr
         Array::push(bound, pname)
         pi = pi + 1
       }
-      collect_free_vars_expr(body, bound, fn_names, out)
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
       Array::truncate(bound, saved)
       0
     },
     EBreak(_) => 0,
     EContinue(_) => 0,
-    EReturn(msg) => collect_free_vars_expr(msg, bound, fn_names, out),
+    EReturn(msg) => collect_free_vars_expr_sc(msg, bound, fn_names, encl, out),
     EHandle(body, arms) => {
-      collect_free_vars_expr(body, bound, fn_names, out)
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, out)
       let mut hi = 0
       while hi < Array::length(arms) {
         let (_, arm_expr) = Array::get(arms, hi)
-        collect_free_vars_expr(arm_expr, bound, fn_names, out)
+        collect_free_vars_expr_sc(arm_expr, bound, fn_names, encl, out)
         hi = hi + 1
       }
       0
     },
-    EDot(obj, _, _, _) => collect_free_vars_expr(obj, bound, fn_names, out),
+    EDot(obj, _, _, _) => collect_free_vars_expr_sc(obj, bound, fn_names, encl, out),
     ERecord(_, fields, _) => {
       let mut ri = 0
       while ri < Array::length(fields) {
         let (_, fval) = Array::get(fields, ri)
-        collect_free_vars_expr(fval, bound, fn_names, out)
+        collect_free_vars_expr_sc(fval, bound, fn_names, encl, out)
         ri = ri + 1
       }
       0
     },
-    ELabeledArg(_, _, arg_expr) => collect_free_vars_expr(arg_expr, bound, fn_names, out),
+    ELabeledArg(_, _, arg_expr) => collect_free_vars_expr_sc(arg_expr, bound, fn_names, encl, out),
     _ => 0
   }
 }
@@ -903,10 +918,17 @@ export fn collect_free_vars(body: Expr, param_names: Array[String], fn_names: Ar
 // #799 perf: index-taking entry -- the index is built ONCE per compile
 // (linked_compile) and reused for every lambda.
 export fn collect_free_vars_indexed(body: Expr, param_names: Array[String], fn_name_index: Array[String]) -> Array[String] {
+  collect_free_vars_indexed_sc(body, param_names, fn_name_index, common_analysis_fresh_string_array())
+}
+
+// #1114: same, plus the ENCLOSING compile scope's local names -- a bare
+// inlined-builtin call callee that one of those shadows must be captured,
+// not inline-lowered. See collect_free_vars_expr's doc comment.
+fn collect_free_vars_indexed_sc(body: Expr, param_names: Array[String], fn_name_index: Array[String], encl: Array[String]) -> Array[String] {
   let out = common_analysis_fresh_string_array()
   // Make a mutable copy of param_names for stack-based push/truncate
   let bound = Array::slice(param_names, 0, Array::length(param_names))
-  collect_free_vars_expr(body, bound, fn_name_index, out)
+  collect_free_vars_expr_sc(body, bound, fn_name_index, encl, out)
   out
 }
 
@@ -943,13 +965,16 @@ export fn collect_free_vars_indexed(body: Expr, param_names: Array[String], fn_n
 // correctly excluded, matching normal shadowing semantics. Only runs the
 // second walk in the (rare) collision case, so the common case -- no
 // collision, self_name already present -- costs one array-membership check.
-export fn collect_free_vars_indexed_self(body: Expr, param_names: Array[String], fn_name_index: Array[String], self_name: String) -> Array[String] {
-  let captures = collect_free_vars_indexed(body, param_names, fn_name_index)
+// `encl` (#1114): the enclosing compile scope's local names, so a bare
+// inlined-builtin call callee shadowed by one of them is captured instead
+// of inline-lowered. Pass an empty array for "no enclosing locals".
+export fn collect_free_vars_indexed_self(body: Expr, param_names: Array[String], fn_name_index: Array[String], self_name: String, encl: Array[String]) -> Array[String] {
+  let captures = collect_free_vars_indexed_sc(body, param_names, fn_name_index, encl)
   if self_name == "" || array_contains_str(captures, self_name) {
     captures
   } else {
     let no_globals = common_analysis_fresh_string_array()
-    let unfiltered = collect_free_vars_indexed(body, param_names, no_globals)
+    let unfiltered = collect_free_vars_indexed_sc(body, param_names, no_globals, encl)
     if array_contains_str(unfiltered, self_name) {
       Array::push(captures, self_name)
       captures
