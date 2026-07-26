@@ -436,6 +436,46 @@ export fn emit_table_section_funcref(out: Bytes, num_entries: Int) -> Unit {
   bytebuf_push_section(out, sec_table, content)
 }
 
+// #1107 Phase 4: like emit_element_section_active, but takes PARALLEL arrays
+// of (table slot, function index), sorted ascending by slot, and emits one
+// active segment (flag 0, table 0, i32.const offset) per RUN of consecutive
+// slots — so slots between runs stay ref.null without padding entries. Used
+// by the linear backend to register only the closure-materialized slots
+// recorded in CompileCtx.table_slots_used.
+export fn emit_element_section_active_runs(out: Bytes, slots: Array[Int], func_indices: Array[Int]) -> Unit {
+  let n = Array::length(slots)
+  let mut runs = 0
+  let mut i = 0
+  while i < n {
+    if i == 0 || Array::get(slots, i) != Array::get(slots, i - 1) + 1 {
+      runs = runs + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, runs)
+  let mut s = 0
+  while s < n {
+    let mut e = s + 1
+    while e < n && Array::get(slots, e) == Array::get(slots, e - 1) + 1 {
+      e = e + 1
+    }
+    bytebuf_push(content, 0)
+    emit_i32_const(content, Array::get(slots, s))
+    emit_end(content)
+    leb128_encode_u32(content, e - s)
+    let mut k = s
+    while k < e {
+      leb128_encode_u32(content, Array::get(func_indices, k))
+      k = k + 1
+    }
+    s = e
+  }
+  bytebuf_push_section(out, sec_element, content)
+}
+
 export fn emit_element_section_active(out: Bytes, func_indices: Array[Int]) -> Unit {
   let content = bytebuf_new()
   bytebuf_push_vec_header(content, 1)

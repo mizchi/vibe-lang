@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/codegen/wasm_emit {
-  emit_code_section, emit_export_section, emit_func_type_raw, emit_function_section, emit_header, emit_i32_add, emit_i32_const, emit_i32_store, emit_i64_const, emit_local_get, emit_local_set, emit_name
+  emit_code_section, emit_export_section, emit_export_section_multi, emit_func_type_raw, emit_function_section, emit_header, emit_i32_add, emit_i32_const, emit_i32_store, emit_i64_const, emit_local_get, emit_local_set, emit_name
 }
 
 //# Functions
@@ -1706,6 +1706,107 @@ export fn comp_generate_string_trampoline_packed(string_param_count: Int) -> Byt
 // other than wasi_snapshot_preview1.fd_write (stubbed to a no-op) are
 // rejected: a serve handler must be a pure function of its request params.
 export fn comp_emit_component_wasm_string_handler(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with { Error } {
+  comp_emit_string_handler_impl(core_wasm, target_func_name, export_name, param_names, false)
+}
+
+// #1107 Phase 5 (vibec, the implementation shape of #857): like
+// comp_emit_component_wasm_string_handler, but SATISFIES the core's `vibe.*`
+// host imports with local stubs instead of rejecting them — `env-get` returns
+// the raw-ABI empty string (i64 0 = ptr 0 / len 0, i.e. "unset", the same
+// value an unset variable yields on a real host) and every other `vibe.*`
+// import traps (`unreachable`). Intended for cores whose lifted entry's
+// effect row proves those imports dynamically unreachable: the vibec core's
+// `compile_cli_request` carries no Env/Fs row (sources arrive inline, output
+// leaves as hex chunks), so its `vibe.env-get`/`vibe.fs_*` imports exist only
+// because SIBLING exports of the library build reference them. The serve
+// path stays on the strict-reject variant above so an impure handler still
+// fails at componentize time, not at runtime.
+export fn comp_emit_component_wasm_string_handler_stubbed(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with { Error } {
+  comp_emit_string_handler_impl(core_wasm, target_func_name, export_name, param_names, true)
+}
+
+// One stub core module exporting `fd_write` plus a same-signature stub for
+// each requested `vibe.*` import (see comp_emit_component_wasm_string_handler_stubbed).
+// With empty inputs it degenerates to the fd_write-only stub.
+fn comp_generate_host_stub_module(vibe_names: Array[String], vibe_sigs: Array[Array[Int]]) -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let n = Array::length(vibe_names)
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, n + 1)
+  emit_func_type_raw(tc, [
+    127,
+    127,
+    127,
+    127
+  ], [
+    127
+  ])
+  let mut ti = 0
+  while ti < n {
+    let sig = Array::get(vibe_sigs, ti)
+    let pc = Array::get(sig, 0)
+    let params = new_int_array()
+    let mut pi = 0
+    while pi < pc {
+      Array::push(params, Array::get(sig, 1 + pi))
+      pi = pi + 1
+    }
+    let rc = Array::get(sig, 1 + pc)
+    let results = new_int_array()
+    let mut ri = 0
+    while ri < rc {
+      Array::push(results, Array::get(sig, 2 + pc + ri))
+      ri = ri + 1
+    }
+    emit_func_type_raw(tc, params, results)
+    ti = ti + 1
+  }
+  bytebuf_push_section(out, 1, tc)
+  let ftypes = new_int_array()
+  Array::push(ftypes, 0)
+  let mut fsi = 0
+  while fsi < n {
+    Array::push(ftypes, fsi + 1)
+    fsi = fsi + 1
+  }
+  emit_function_section(out, ftypes)
+  let exp_names = array_empty()
+  let exp_idxs = new_int_array()
+  Array::push(exp_names, "fd_write")
+  Array::push(exp_idxs, 0)
+  let mut ei = 0
+  while ei < n {
+    Array::push(exp_names, Array::get(vibe_names, ei))
+    Array::push(exp_idxs, ei + 1)
+    ei = ei + 1
+  }
+  emit_export_section_multi(out, exp_names, exp_idxs)
+  let bodies = Array::slice([
+    (bytebuf_new())
+  ], 0, 0)
+  let fd_body = bytebuf_new()
+  emit_i32_const(fd_body, 0)
+  Array::push(bodies, fd_body)
+  let mut bi = 0
+  while bi < n {
+    let body = bytebuf_new()
+    if Array::get(vibe_names, bi) == "env-get" {
+      emit_i64_const(body, 0)
+    } else {
+      // unreachable — this import is dynamically dead per the lifted entry's
+      // effect row; trapping (instead of fabricating a value) surfaces any
+      // violation of that proof immediately.
+      bytebuf_push(body, 0)
+    }
+    Array::push(bodies, body)
+    bi = bi + 1
+  }
+  emit_code_section(out, bodies)
+  bytebuf_to_bytes(out)
+}
+
+fn comp_emit_string_handler_impl(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String], stub_vibe: Bool) -> Bytes with { Error } {
   let string_param_count = Array::length(param_names)
   // Validate the target export exists with the packed-string core signature.
   let export_names = array_empty()
@@ -1750,18 +1851,24 @@ export fn comp_emit_component_wasm_string_handler(core_wasm: Bytes, target_func_
   if !target_sig_ok {
     throw("component: '\{target_func_name}' must take \{string_param_count} String params and return String")
   }
-  // Reject host imports the stub cannot satisfy.
+  // Reject host imports the stub cannot satisfy (stub_vibe additionally
+  // hosts `vibe.*` imports with local stubs — see the _stubbed wrapper).
   let imp_modules = array_empty()
   let imp_names = array_empty()
   let imp_type_indices = new_int_array()
   let imp_type_sigs = array_empty()
   let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  let vibe_stub_names = array_empty()
+  let vibe_stub_sigs = array_empty()
   let mut ii = 0
   while ii < import_count {
     let im = Array::get(imp_modules, ii)
     let ifn = Array::get(imp_names, ii)
     if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
       ()
+    } else if stub_vibe && im == "vibe" {
+      Array::push(vibe_stub_names, ifn)
+      Array::push(vibe_stub_sigs, Array::get(imp_type_sigs, Array::get(imp_type_indices, ii)))
     } else {
       throw("component: handler uses host import '\{im}.\{ifn}' (a serve handler must be pure; only stdout via fd_write is stubbed)")
     }
@@ -1771,15 +1878,18 @@ export fn comp_emit_component_wasm_string_handler(core_wasm: Bytes, target_func_
   emit_component_header(buf)
   emit_core_module_section(buf, core_wasm)
   emit_core_module_section(buf, comp_generate_string_trampoline_packed(string_param_count))
-  emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
-  // core instance 0: fd_write stub (module 2)
+  emit_core_module_section(buf, comp_generate_host_stub_module(vibe_stub_names, vibe_stub_sigs))
+  // core instance 0: host stub (module 2): fd_write (+ vibe.* stubs when
+  // stub_vibe collected any)
   emit_core_instance_instantiate_section(buf, 2, array_empty())
-  // core instance 1: main (module 0), wasi_snapshot_preview1 satisfied by the
-  // stub when the core imports it (an argument for an import the module does
-  // not declare is legal and ignored).
+  // core instance 1: main (module 0), wasi_snapshot_preview1 / vibe satisfied
+  // by the stub instance when the core imports them (an argument for an
+  // import the module does not declare is legal and ignored).
   emit_core_instance_instantiate_args(buf, 0, [
-    "wasi_snapshot_preview1"
+    "wasi_snapshot_preview1",
+    "vibe"
   ], [
+    0,
     0
   ])
   // core func 0 = target, core mem 0 = main memory, core global 0 = __heap_ptr

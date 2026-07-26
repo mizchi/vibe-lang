@@ -3,7 +3,7 @@
 import ../compiler {
   check_linked_file, compile_release_file_mode, compile_release_file_mode_profiled,
   compile_release_file_mode_uncached, compile_release_file_mode_uncached_profiled,
-  write_linked_debug_build,
+  write_linked_debug_build, strip_executable_wasm_env,
   serve_handler_param_names, validate_serve_handler, wit_from_program,
   lex, parse_program
 }
@@ -222,6 +222,16 @@ fn input_file_exists(input_path: String) -> Bool with { Fs } {
   Fs::exists(input_path)
 }
 
+// Binary-size (#1100): every EXECUTABLE artifact this dispatch layer writes
+// goes through the release strip (drop the name section, keep only the
+// exports runners address by name). serve stays on a plain write — its core
+// module's exports are lifted by name into the component. Debug builds go
+// through write_linked_debug_build, not here. VIBE_WASM_NAMES=1 /
+// VIBE_WASM_KEEP_EXPORTS=1 opt out (see strip_executable_wasm_env).
+fn write_executable_wasm(output_path: String, bytes: Bytes, entry_name: String) -> Unit with { Fs, Env } {
+  Fs::write_bytes(output_path, strip_executable_wasm_env(bytes, entry_name))
+}
+
 fn parse_compile_lite_args_with_profile(args: Array[String]) -> (String, String, String, String, Bool, String, String) with { Error } {
   if Array::length(args) == 0 || Array::get(args, 0) != "compile-lite" {
     throw("compile-lite: expected command")
@@ -356,7 +366,7 @@ export fn selfhost_cli_compile_lite_args(args: Array[String]) -> Int with { Erro
     if in_memory {
       0
     } else {
-      Fs::write_bytes(output_path, bytes)
+      write_executable_wasm(output_path, bytes, entry_name)
       0
     }
   } else {
@@ -373,7 +383,7 @@ export fn selfhost_cli_compile_lite_args(args: Array[String]) -> Int with { Erro
       0
     } else {
       let write_start = profiler_now_us()
-      Fs::write_bytes(output_path, bytes)
+      write_executable_wasm(output_path, bytes, entry_name)
       let write_us = elapsed_profile_us_since(write_start)
       let total_us = elapsed_profile_us_since(total_start)
       write_optional_profile(profile_tsv_path, compile_lite_profile_tsv(load_us, type_us, bundle_us, parse_us, compile_us, write_us, total_us))
@@ -498,7 +508,7 @@ export fn selfhost_cli_compile_args(args: Array[String]) -> Int with { Error, Fs
     1
   } else {
     let bytes = compile_release_file_mode_for_cli(input_path, entry_name, mode)
-    Fs::write_bytes(output_path, bytes)
+    write_executable_wasm(output_path, bytes, entry_name)
     0
   }
 }
@@ -569,7 +579,7 @@ export fn selfhost_cli_build_args(args: Array[String]) -> Int with { Error, Fs, 
     0
   } else {
     let bytes = compile_release_file_mode_for_cli(input_path, entry_name, mode)
-    Fs::write_bytes(output_path, bytes)
+    write_executable_wasm(output_path, bytes, entry_name)
     0
   }
 }
@@ -780,14 +790,14 @@ fn profile_callstack_env() -> String with { Env } {
   Env::get("VIBE_PROFILE_CALLSTACK")
 }
 
-export fn selfhost_cli_low_level_args_profiled(input_path: String, output_path: String, entry_name: String, mode: String, profile_tsv_path: String, profile_callstack_path: String) -> Int with { Error, Fs, Profiler } {
+export fn selfhost_cli_low_level_args_profiled(input_path: String, output_path: String, entry_name: String, mode: String, profile_tsv_path: String, profile_callstack_path: String) -> Int with { Error, Fs, Env, Profiler } {
   if !input_file_exists(input_path) {
     1
   } else {
     let total_start = profiler_now_us()
     let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_uncached_profiled(input_path, entry_name, mode)
     let write_start = profiler_now_us()
-    Fs::write_bytes(output_path, bytes)
+    write_executable_wasm(output_path, bytes, entry_name)
     let write_us = elapsed_profile_us_since(write_start)
     let total_us = elapsed_profile_us_since(total_start)
     write_optional_profile(profile_tsv_path, compile_lite_profile_tsv(load_us, type_us, bundle_us, parse_us, compile_us, write_us, total_us))
@@ -803,7 +813,7 @@ fn low_level_compile_release_profiled(input_path: String, output_path: String, e
     let total_start = profiler_now_us()
     let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_profiled(input_path, entry_name, mode)
     let write_start = profiler_now_us()
-    Fs::write_bytes(output_path, bytes)
+    write_executable_wasm(output_path, bytes, entry_name)
     let write_us = elapsed_profile_us_since(write_start)
     let total_us = elapsed_profile_us_since(total_start)
     write_optional_profile(profile_tsv_path, compile_lite_profile_tsv(load_us, type_us, bundle_us, parse_us, compile_us, write_us, total_us))
@@ -833,7 +843,7 @@ export fn selfhost_cli_low_level_args(input_path: String, output_path: String, e
       let profile_callstack_path = profile_callstack_env()
       if profile_tsv_path == "" && profile_callstack_path == "" {
         let bytes = compile_release_file_mode_for_cli(input_path, entry_name, mode)
-        Fs::write_bytes(output_path, bytes)
+        write_executable_wasm(output_path, bytes, entry_name)
         0
       } else {
         low_level_compile_release_profiled(input_path, output_path, entry_name, mode, profile_tsv_path, profile_callstack_path)

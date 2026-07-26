@@ -15,7 +15,47 @@ Methodology and case set: [`bench/binary_size/README.md`](../bench/binary_size/R
 bash scripts/bench_binary_size.sh [cli.wasm]
 ```
 
-### Measured 2026-07-22 (`bootstrap/seed/compiler.wasm`, linear backend)
+### Measured 2026-07-25 (post-#1107 Phase 4 funcref-table minimization)
+
+The element section now registers only the table slots codegen actually
+materialized a closure value for (run-compressed active segments; unused
+slots stay `ref.null`). Small programs shed a few entries; the dist CLI
+sheds most of its table (2,751 entries / 5,446 B → 117 entries / 265 B,
+stage2 1,447,135 → 1,442,550 B) — and, more importantly, the downstream
+DCE root set collapses with it (`docs/wasm-opt-dogfood.md`).
+
+| program | `VIBE_RC=0` (bump, prod default) | `VIBE_RC=1` (Perceus RC) |
+|---|---:|---:|
+| hello_world | 771 B | 792 B |
+| fizzbuzz | 1,204 B | 1,334 B |
+| fib | 726 B | 756 B |
+| closure_indirect | 946 B | 2,609 B |
+| variant_float | 2,493 B | 5,328 B |
+
+### Measured 2026-07-25 (post-ADR-0077 release strip)
+
+ADR-0077 changed what "as shipped" means for executables: the compiler now
+stubs generated runtime helpers no reachable body calls (`unreachable`
+one-instruction bodies at unchanged indices), drops the `name` custom
+section, and filters exports down to what runners address by name
+(`VIBE_WASM_NAMES=1` / `VIBE_WASM_KEEP_EXPORTS=1` opt out).
+
+| program | `VIBE_RC=0` (bump, prod default) | `VIBE_RC=1` (Perceus RC) | vs 07-22 rc0 |
+|---|---:|---:|---:|
+| hello_world | 780 B | 801 B | -86% |
+| fizzbuzz | 1,214 B | 1,344 B | -80% |
+| fib | 736 B | 766 B | -87% |
+| closure_indirect | 948 B | 2,611 B | -84% |
+| variant_float | 2,504 B | 5,339 B | -61% |
+
+The RC premium also collapses on the tiny cases (hello_world 780 vs 801 B):
+most of the old 1.2–1.5x gap was the always-emitted RC-variant helper
+bodies, which are now stubbed when unused. The dist CLI wasm itself sheds
+the name section (163KB) + 700-odd `*_exp_lib__*` module-linking exports
+(56KB): 1,656,107 → 1,409,578 B (-14.9%) for the same source compiled
+unstripped vs stripped.
+
+### Measured 2026-07-22 (`bootstrap/seed/compiler.wasm`, linear backend — pre-strip baseline)
 
 | program | `VIBE_RC=0` (bump, prod default) | `VIBE_RC=1` (Perceus RC) | `wasm-opt -Oz` |
 |---|---:|---:|---:|

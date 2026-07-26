@@ -31,6 +31,9 @@
 #   vibe compile --wit <file.vibe>        emit the WIT world for the file's
 #                                         effect surface (docs/effect-wit-mapping.md)
 #   vibe build   <file.vibe> -o <out>     alias of compile
+#   vibe compile|build --minify ...       post-optimize the output with the
+#                                         standalone vibe-opt.wasm artifact
+#                                         (scripts/build_vibe_opt.sh, #1107)
 #   vibe serve   <handler.vibe> [--port N] compile + compose with the wasi-http
 #                                         P3 adapter + `wasmtime serve` (#537)
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
@@ -257,7 +260,7 @@ pick_cli() {
 # Compile $1 (.vibe) → $2 (.wasm) with entry $3, resolving imports from the FS.
 # Returns non-zero on a parse/type/codegen error so callers can report cleanly.
 compile_to() {
-  local src="$1" out="$2" entry="$3" debug="${4:-}" brk="${5:-}"
+  local src="$1" out="$2" entry="$3" debug="${4:-}" brk="${5:-}" keep_names="${6:-}"
   local cli; cli="$(pick_cli)"
   mkdir -p "$(dirname "$out")"
   rm -f "$out" "$out.diag"
@@ -273,7 +276,13 @@ compile_to() {
   local debug_env=""
   [ "$debug" = "1" ] && debug_env="VIBE_DEBUG=1"
   [ "$brk" = "1" ] && debug_env="VIBE_DEBUG_BREAK=1"
-  env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw $debug_env \
+  # Binary-size (#1100): the compiler strips the name section from release
+  # executables by default. Dev-loop commands (`vibe run`/`vibe shell`) pass
+  # keep_names=1 so runtime trap backtraces keep naming user functions (the
+  # funcmap annotator below matches frames by those names).
+  local names_env=""
+  [ "$keep_names" = "1" ] && names_env="VIBE_WASM_NAMES=1"
+  env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw $debug_env $names_env \
     "$RUNNER" "$cli" "$src" "$out" "$entry" >/dev/null 2>"$rerr" || true
   if [ -s "$out" ]; then
     rm -f "$out.diag" "$rerr"
@@ -462,7 +471,7 @@ case "$cmd" in
     # So compile with break instrumentation if either `--break` or `--alloc-site`.
     compile_brk="$brk"
     [ "$allocsite" = "1" ] && compile_brk=1
-    compile_to "$src" "$out" "$entry" "$trace" "$compile_brk" || die "compilation failed: $src"
+    compile_to "$src" "$out" "$entry" "$trace" "$compile_brk" 1 || die "compilation failed: $src"
     # debugger テーマ3 / M2: runtime traps point at the SOURCE LINE. The wasm
     # "name" custom section already makes trap backtrace frames name the user
     # function (e.g. `<unknown>!boom`). The FS compile also wrote a `<out>.funcmap`
@@ -535,13 +544,14 @@ case "$cmd" in
     exit "$status"
     ;;
   compile|build)
-    [ "$#" -ge 1 ] || die "usage: vibe $cmd <file.vibe|file.vibex> [-o <out.wasm>] [--entry <name>] [--wit]"
-    src=""; out=""; entry="main"; entry_override=0; wit=0
+    [ "$#" -ge 1 ] || die "usage: vibe $cmd <file.vibe|file.vibex> [-o <out.wasm>] [--entry <name>] [--wit] [--minify]"
+    src=""; out=""; entry="main"; entry_override=0; wit=0; minify=0
     while [ "$#" -gt 0 ]; do
       case "$1" in
         -o|--output) out="$2"; shift 2 ;;
         --entry) entry="$2"; entry_override=1; shift 2 ;;
         --wit) wit=1; shift ;;
+        --minify) minify=1; shift ;;
         *) src="$1"; shift ;;
       esac
     done
@@ -582,6 +592,42 @@ case "$cmd" in
       esac
     fi
     compile_to "$src" "$out" "$entry" || die "compilation failed: $src"
+    # #1107 Phase 2: `--minify` post-processes the executable with the
+    # standalone size optimizer (`vibe-opt.wasm`, lib/@vibe/optimizer built as
+    # its own artifact — see scripts/build_vibe_opt.sh). Deliberately opt-in
+    # while it accumulates mileage; scripts/minify_gate.sh is the
+    # semantics-preservation gate (stdout compare + wasmtime validate).
+    if [ "$minify" = "1" ]; then
+      opt_wasm="${VIBE_OPT_WASM:-}"
+      if [ -z "$opt_wasm" ]; then
+        for cand in "$TOOLCHAIN_DIR/lib/vibe-opt.wasm" "$PWD/_build/vibe-opt.wasm"; do
+          [ -f "$cand" ] && { opt_wasm="$cand"; break; }
+        done
+      fi
+      [ -n "$opt_wasm" ] && [ -f "$opt_wasm" ] || die "--minify: vibe-opt.wasm not found; build it with scripts/build_vibe_opt.sh or set VIBE_OPT_WASM"
+      # Converge one round per invocation (#1109): the optimizer allocates via
+      # the bump allocator and never frees, so in-process converge exhausts
+      # guest memory on large modules; a fresh instance per round resets it.
+      # Feature-detect --single-round in the artifact (same grep trick as the
+      # VIBE_CHECK_ONLY probe above) — an older vibe-opt.wasm would read the
+      # flag as its input path, so fall back to one in-process converge there.
+      if grep -aq -- "--single-round" "$opt_wasm" 2>/dev/null; then
+        mtmp="$(mktemp -t vibe-minify-XXXXXX.wasm)"
+        mprev=$(wc -c <"$out")
+        mrounds=0
+        while [ "$mrounds" -lt "${VIBE_MINIFY_MAX_ROUNDS:-16}" ]; do
+          "$RUNNER" "$opt_wasm" --single-round "$out" "$mtmp" >/dev/null || { rm -f "$mtmp"; die "--minify failed for $out"; }
+          msize=$(wc -c <"$mtmp")
+          mv "$mtmp" "$out"
+          mrounds=$((mrounds + 1))
+          [ "$msize" -lt "$mprev" ] || break
+          mprev="$msize"
+        done
+        rm -f "$mtmp"
+      else
+        "$RUNNER" "$opt_wasm" "$out" "$out" || die "--minify failed for $out"
+      fi
+    fi
     echo "compiled $src -> $out"
     ;;
   serve)
@@ -1066,7 +1112,7 @@ case "$cmd" in
         printf '  (\n%s\n  )\n' "$expr"
         printf '}\n'
       } > "$f"
-      if compile_to "$f" "$w" "__repl_main__" 2>"$err1"; then
+      if compile_to "$f" "$w" "__repl_main__" "" "" 1 2>"$err1"; then
         "$RUNNER" "$w" || rc=$?
         [ "$rc" -ne 0 ] && echo "vibe shell: runtime error (exit $rc)" >&2
         return 0
@@ -1079,7 +1125,7 @@ case "$cmd" in
         printf 'export let __repl_main__ = () -> {\n'
         printf '  let _ = (\n%s\n  )\n  ()\n}\n' "$expr"
       } > "$f"
-      if compile_to "$f" "$w" "__repl_main__" 2>/dev/null; then
+      if compile_to "$f" "$w" "__repl_main__" "" "" 1 2>/dev/null; then
         echo "vibe shell: non-Int value; evaluated for effects only (use :type to inspect)" >&2
         "$RUNNER" "$w" || rc=$?
         [ "$rc" -ne 0 ] && echo "vibe shell: runtime error (exit $rc)" >&2

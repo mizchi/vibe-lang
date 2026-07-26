@@ -269,7 +269,19 @@ fn decode_instr(body: Bytes, pos: Int) -> (Int, Int, Int) {
                               }
                               (op, 0, pp)
                             } else {
-                              if (op == 0x3F) || (op == 0x40) {
+                              if op == 0x43 {
+                                // f32.const: 4 raw little-endian bytes. Without
+                                // this (and 0x44 below) the span walk treats
+                                // constant bytes as opcodes; a byte that looks
+                                // like local.get/set/tee then gets "remapped"
+                                // by inline_calls' +base rewrite, silently
+                                // corrupting float constants (caught by
+                                // scripts/minify_gate.sh on variant_float).
+                                (op, 0, pos + 5)
+                              } else if op == 0x44 {
+                                // f64.const: 8 raw little-endian bytes.
+                                (op, 0, pos + 9)
+                              } else if (op == 0x3F) || (op == 0x40) {
                                 (op, 0, pos + 2)
                               } else {
                                 if op == 0xFC {
@@ -1932,66 +1944,13 @@ fn get_export_func_indices(bytes: Bytes) -> Array[Int] {
 }
 
 export fn find_reachable(bytes: Bytes) -> Array[Int] {
-  let graph = build_call_graph(bytes)
-  let roots = get_export_func_indices(bytes)
-  let import_count = count_import_funcs(bytes)
-  let mut max_func_idx = import_count
-  let mut gi2 = 0
-  while gi2 < Array::length(graph) {
-    let (func_idx, callees) = Array::get(graph, gi2)
-    if func_idx >= max_func_idx {
-      max_func_idx = func_idx + 1
-    }
-    let mut ci2 = 0
-    while ci2 < Array::length(callees) {
-      let callee = Array::get(callees, ci2)
-      if callee >= max_func_idx {
-        max_func_idx = callee + 1
-      }
-      ci2 = ci2 + 1
-    }
-    gi2 = gi2 + 1
-  }
-  let visited = FixedArray::make(max_func_idx + 1, 0)
-  let reachable = Array::slice([
-    (0)
-  ], 0, 0)
-  let queue = Array::slice([
-    (0)
-  ], 0, 0)
-  let mut ri = 0
-  while ri < Array::length(roots) {
-    let root = Array::get(roots, ri)
-    if (root >= 0) && (root <= max_func_idx) && (FixedArray::get(visited, root) == 0) {
-      FixedArray::set(visited, root, 1)
-      Array::push(queue, root)
-      Array::push(reachable, root)
-    }
-    ri = ri + 1
-  }
-  let mut qi = 0
-  while qi < Array::length(queue) {
-    let current = Array::get(queue, qi)
-    let mut gi = 0
-    while gi < Array::length(graph) {
-      let (func_idx, callees) = Array::get(graph, gi)
-      if func_idx == current {
-        let mut ci = 0
-        while ci < Array::length(callees) {
-          let callee = Array::get(callees, ci)
-          if (callee >= 0) && (callee <= max_func_idx) && (FixedArray::get(visited, callee) == 0) {
-            FixedArray::set(visited, callee, 1)
-            Array::push(reachable, callee)
-            Array::push(queue, callee)
-          }
-          ci = ci + 1
-        }
-      }
-      gi = gi + 1
-    }
-    qi = qi + 1
-  }
-  reachable
+  // #1109: delegate to reachable_from (O(1) graph index BFS) with the full
+  // root set (exports + start + elem + ref.func — collect_func_roots), the
+  // same roots dce_remove uses. The old private copy of the BFS re-scanned
+  // the whole call-graph array per dequeued function, which is what made a
+  // single stubbing-dce round on the 7,600-function vibec core take the
+  // better part of an hour.
+  reachable_from(bytes, collect_func_roots(bytes))
 }
 
 export fn dce(bytes: Bytes) -> Bytes {
@@ -2135,6 +2094,19 @@ fn reachable_from(bytes: Bytes, roots: Array[Int]) -> Array[Int] {
     ri0 = ri0 + 1
   }
   let visited = FixedArray::make(max_func_idx + 2, 0)
+  // #1109: O(1) func_idx -> graph position index. The BFS below used to
+  // re-scan the whole graph array per dequeued function (O(queue * graph) —
+  // ~30x slower than linear on the 7,600-function vibec core, where a single
+  // dce round sat for the better part of an hour).
+  let graph_pos = FixedArray::make(max_func_idx + 2, -1)
+  let mut gpi = 0
+  while gpi < Array::length(graph) {
+    let (gp_idx, _) = Array::get(graph, gpi)
+    if (gp_idx >= 0) && (gp_idx <= max_func_idx) {
+      FixedArray::set(graph_pos, gp_idx, gpi)
+    }
+    gpi = gpi + 1
+  }
   let reachable = Array::slice([
     (0)
   ], 0, 0)
@@ -2154,10 +2126,10 @@ fn reachable_from(bytes: Bytes, roots: Array[Int]) -> Array[Int] {
   let mut qi = 0
   while qi < Array::length(queue) {
     let current = Array::get(queue, qi)
-    let mut gi = 0
-    while gi < Array::length(graph) {
-      let (func_idx, callees) = Array::get(graph, gi)
-      if func_idx == current {
+    let gi = FixedArray::get(graph_pos, current)
+    if gi >= 0 {
+      let (_, callees) = Array::get(graph, gi)
+      {
         let mut ci = 0
         while ci < Array::length(callees) {
           let callee = Array::get(callees, ci)
@@ -2169,7 +2141,6 @@ fn reachable_from(bytes: Bytes, roots: Array[Int]) -> Array[Int] {
           ci = ci + 1
         }
       }
-      gi = gi + 1
     }
     qi = qi + 1
   }
@@ -3018,6 +2989,127 @@ fn collect_used_type_indices(bytes: Bytes) -> Array[Int] {
   used
 }
 
+// Code bodies reference type indices too: `call_indirect`'s typeidx immediate
+// and any block/loop/if/try_table blocktype encoded as a NON-NEGATIVE sleb (a
+// func-type index; value-type shorthands encode negative). remove_unused_types
+// used to collect/remap only func+import section refs, so a call_indirect's
+// type was renumbered out from under the code section — caught by
+// scripts/minify_gate.sh on bench/binary_size/closure_indirect.vibe as
+// "type index out of bounds" (#1107 Phase 2). These two helpers close that
+// gap: collect marks code-referenced types as used, rewrite renumbers them.
+fn collect_body_type_refs(body: Bytes, used: Array[Int]) -> Unit {
+  let body_len = Bytes::length(body)
+  if body_len < 2 {
+    ()
+  }
+  else {
+    let (local_count, lp) = read_uleb128(body, 0)
+    let mut pos = lp
+    let mut lc = 0
+    while lc < local_count {
+      let (_, tp) = read_uleb128(body, pos)
+      pos = tp + 1
+      lc = lc + 1
+    }
+    let code_start = pos
+    let code_end = body_len - 1
+    if code_start >= code_end {
+      ()
+    }
+    else {
+      let spans = parse_body_spans(body, code_start, code_end)
+      let mut i = 0
+      while i < Array::length(spans) {
+        let (s_i, _, op_i) = Array::get(spans, i)
+        if (op_i == 0x02) || (op_i == 0x03) || (op_i == 0x04) || (op_i == 0x1F) {
+          let (bt, _) = read_sleb128(body, s_i + 1)
+          if bt >= 0 && array_contains_int(used, bt) == false {
+            Array::push(used, bt)
+          } else {
+            ()
+          }
+        } else if op_i == 0x11 {
+          let (tidx, _) = read_uleb128(body, s_i + 1)
+          if array_contains_int(used, tidx) == false {
+            Array::push(used, tidx)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    }
+  }
+}
+
+fn rewrite_body_types(body: Bytes, type_map: Array[Int]) -> Bytes {
+  let body_len = Bytes::length(body)
+  if body_len < 2 {
+    copy_bytes(body, 0, body_len)
+  }
+  else {
+    let (local_count, lp) = read_uleb128(body, 0)
+    let mut pos = lp
+    let mut lc = 0
+    while lc < local_count {
+      let (_, tp) = read_uleb128(body, pos)
+      pos = tp + 1
+      lc = lc + 1
+    }
+    let code_start = pos
+    let code_end = body_len - 1
+    if code_start >= code_end {
+      copy_bytes(body, 0, body_len)
+    }
+    else {
+      let spans = parse_body_spans(body, code_start, code_end)
+      let out = Bytes::new()
+      let mut ci = 0
+      while ci < code_start {
+        Bytes::push(out, body[ci]); ci = ci + 1
+      }
+      let mut i = 0
+      while i < Array::length(spans) {
+        let (s_i, e_i, op_i) = Array::get(spans, i)
+        if (op_i == 0x02) || (op_i == 0x03) || (op_i == 0x04) || (op_i == 0x1F) {
+          let (bt, p1) = read_sleb128(body, s_i + 1)
+          if bt >= 0 {
+            Bytes::push(out, op_i)
+            let nt = if (bt < Array::length(type_map)) && (Array::get(type_map, bt) >= 0) {
+              Array::get(type_map, bt)
+            } else {
+              bt
+            }
+            write_sleb128(out, nt)
+            // try_table: the catch vec after the blocktype carries no type
+            // refs — copy it through verbatim. Plain block headers end at p1.
+            copy_span_bytes(out, body, p1, e_i)
+          } else {
+            copy_span_bytes(out, body, s_i, e_i)
+          }
+        } else if op_i == 0x11 {
+          Bytes::push(out, 0x11)
+          let (tidx, p1) = read_uleb128(body, s_i + 1)
+          let nt = if (tidx < Array::length(type_map)) && (Array::get(type_map, tidx) >= 0) {
+            Array::get(type_map, tidx)
+          } else {
+            tidx
+          }
+          write_uleb128(out, nt)
+          copy_span_bytes(out, body, p1, e_i)
+        } else {
+          copy_span_bytes(out, body, s_i, e_i)
+        }
+        i = i + 1
+      }
+      Bytes::push(out, 0x0B)
+      out
+    }
+  }
+}
+
 export fn remove_unused_types(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
@@ -3026,6 +3118,23 @@ export fn remove_unused_types(bytes: Bytes) -> Bytes {
   else {
     let used = collect_used_type_indices(bytes)
     let sections = list_sections(bytes)
+    // Merge in type refs from code bodies (call_indirect / func-type
+    // blocktypes) so they are neither dropped nor left stale below.
+    let mut cs = 0
+    while cs < Array::length(sections) {
+      let (csid, coff, csz) = Array::get(sections, cs)
+      if csid == 10 {
+        let bodies = parse_code_bodies(bytes, coff, csz)
+        let mut bi = 0
+        while bi < Array::length(bodies) {
+          collect_body_type_refs(Array::get(bodies, bi), used)
+          bi = bi + 1
+        }
+      } else {
+        ()
+      }
+      cs = cs + 1
+    }
     let mut type_count = 0
     let mut ts = 0
     while ts < Array::length(sections) {
@@ -3081,8 +3190,23 @@ export fn remove_unused_types(bytes: Bytes) -> Bytes {
             let new_content = remap_import_section(bytes, off, sz, type_map)
             emit_section(out, 2, new_content)
           } else {
-            let content = copy_bytes(bytes, off, off + sz)
-            emit_section(out, sid, content)
+            if sid == 10 {
+              // Renumber call_indirect typeidx + func-type blocktypes in every
+              // body (collected above, so nothing referenced here was dropped).
+              let bodies = parse_code_bodies(bytes, off, sz)
+              let rewritten = Array::slice([
+                (Bytes::new())
+              ], 0, 0)
+              let mut rbi = 0
+              while rbi < Array::length(bodies) {
+                Array::push(rewritten, rewrite_body_types(Array::get(bodies, rbi), type_map))
+                rbi = rbi + 1
+              }
+              emit_section(out, 10, rebuild_code_section(rewritten))
+            } else {
+              let content = copy_bytes(bytes, off, off + sz)
+              emit_section(out, sid, content)
+            }
           }
         }
       }
