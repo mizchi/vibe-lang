@@ -2,27 +2,33 @@
 // compiles them under the __ev-taking convention, so a migration that
 // cannot complete must be a HARD error — never a silent replay fallback
 // (an unmigrated caller would call a migrated closure at the wrong
-// arity). Here the literal's body nests a handle for the SAME effect,
-// which edp_has_unsafe_construct rejects.
+// arity). Ineligibility here comes from `via`, a ROW-VARIABLE callee in
+// the needing wrapper's body (not pure, not needing — the pass cannot
+// see through it). The wrapper is non-trivial (dtpw won't inline it) and
+// the literal CAPTURES `base` (dlh won't hoist it), so no upstream
+// normalization can legalize this shape — the earlier draft of this
+// fixture used a nested same-effect handle and was silently normalized
+// into a legitimately compilable program.
 effect Ask {
   Get -> Int
 }
 
-let apply = (f: () -> Int with { Ask }) -> Int with { Ask } {
-  f()
+fn via(n: Int) -> Int with { e } {
+  n
+}
+
+let apply2 = (f: () -> Int with { Ask }) -> Int with { Ask } {
+  let x = f()
+  via(x)
 }
 
 let _start = () -> Int {
+  let base = 7
   let lit = () -> Int with { Ask } {
-    let inner_v = handle {
-      perform Ask::Get
-    } with Ask {
-      Get => resume(9)
-    }
-    perform Ask::Get + inner_v
+    perform Ask::Get + base
   }
   handle {
-    apply(lit)
+    apply2(lit)
   } with Ask {
     Get => resume(1)
   }

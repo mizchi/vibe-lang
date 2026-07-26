@@ -1221,8 +1221,14 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
         if !planned2 {
           let gb = empty_str_array()
           let gl = array_empty()
-          edp_row_lit_scan(stmts, ename, es_names, es_members_list, gb, gl)
-          if Array::length(gb) > 0 || Array::length(gl) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list) {
+          edp_row_lit_scan(stmts, ename, needing_full, es_names, es_members_list, gb, gl)
+          // Guard scope: only when HANDLE SITES for E remain in the tree.
+          // Zero sites means nothing can fall to replay — the suspend
+          // lane (ADR-0076 Phase 3a/3b) transforms its handles BEFORE
+          // this pass, so a CPS-mode effect's row-E closure values (e.g.
+          // spawn_suspend's `f: () -> T with { Async, Error }` param)
+          // follow the STEP convention and are none of edp's business.
+          if Array::length(edp_collect_handle_sites(stmts, ename)) > 0 && (Array::length(gb) > 0 || Array::length(gl) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list)) {
             Array::push(errs, String::concat(String::concat("effect ", ename), " has closure values whose row carries it (type-directed evidence, ADR-0076 追記34), but its evidence migration is not fully eligible -- a handle body, a needing function, or a row-carrying closure literal calls something the pass cannot see through; replay fallback is not available for closure-value programs"))
           } else {
             ()
@@ -2126,7 +2132,7 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
     // check below (each is compiled with the same widened set).
     let td_binds = empty_str_array()
     let td_lits = array_empty()
-    edp_row_lit_scan(stmts, ename, es_names, es_members_list, td_binds, td_lits)
+    edp_row_lit_scan(stmts, ename, needing, es_names, es_members_list, td_binds, td_lits)
     let td_mode = Array::length(td_binds) > 0 || Array::length(td_lits) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list)
     // Handle sites are checked PER TOP-LEVEL STATEMENT (not from the flat
     // `handle_sites` list, which carries no owner attribution): a site
@@ -2367,25 +2373,39 @@ fn edp_row_typed_param_names(params: Array[(String, Option[TypeExpr])], ename: S
 // Top-level `SLet name = <row-E EFn>` is deliberately NOT a bind — that
 // is a needing fn (row containment on its own eff slot) and the needing
 // rewrite owns it.
-fn edp_row_lit_scan(stmts: Array[Stmt], ename: String, es_names: Array[String], es_members_list: Array[Array[String]], binds: Array[String], lits: Array[Expr]) -> Unit {
+fn edp_row_lit_scan(stmts: Array[Stmt], ename: String, needing: Array[String], es_names: Array[String], es_members_list: Array[Array[String]], binds: Array[String], lits: Array[Expr]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, _, _, expr) => match expr {
-        EFn(_, _, _, _, _, fb) => edp_row_lit_scan_expr(fb, ename, es_names, es_members_list, binds, lits),
-        _ => edp_row_lit_scan_expr(expr, ename, es_names, es_members_list, binds, lits)
+        EFn(_, _, _, _, _, fb) => edp_row_lit_scan_expr(fb, ename, needing, es_names, es_members_list, binds, lits),
+        _ => edp_row_lit_scan_expr(expr, ename, needing, es_names, es_members_list, binds, lits)
       },
-      SLetMut(_, _, expr) => edp_row_lit_scan_expr(expr, ename, es_names, es_members_list, binds, lits),
-      SExpr(expr) => edp_row_lit_scan_expr(expr, ename, es_names, es_members_list, binds, lits),
-      STest(_, expr) => edp_row_lit_scan_expr(expr, ename, es_names, es_members_list, binds, lits),
-      SBench(_, expr) => edp_row_lit_scan_expr(expr, ename, es_names, es_members_list, binds, lits),
+      SLetMut(_, _, expr) => edp_row_lit_scan_expr(expr, ename, needing, es_names, es_members_list, binds, lits),
+      SExpr(expr) => edp_row_lit_scan_expr(expr, ename, needing, es_names, es_members_list, binds, lits),
+      STest(_, expr) => edp_row_lit_scan_expr(expr, ename, needing, es_names, es_members_list, binds, lits),
+      SBench(_, expr) => edp_row_lit_scan_expr(expr, ename, needing, es_names, es_members_list, binds, lits),
       _ => ()
     }
     i = i + 1
   }
 }
 
-fn edp_row_lit_scan_expr(e: Expr, ename: String, es_names: Array[String], es_members_list: Array[Array[String]], binds: Array[String], lits: Array[Expr]) -> Unit {
+// A binding counts as evidence-taking when its value is a row-E literal
+// OR a direct value reference to a needing fn (post-migration both have
+// the __ev-leading arity, so calls through the binding prepend evidence).
+fn edp_row_lit_bindable(v: Expr, ename: String, needing: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Bool {
+  if edp_efn_row_carries(v, ename, es_names, es_members_list) {
+    true
+  } else {
+    match v {
+      EIdent(nm, _) => edp_str_array_contains(needing, nm),
+      _ => false
+    }
+  }
+}
+
+fn edp_row_lit_scan_expr(e: Expr, ename: String, needing: Array[String], es_names: Array[String], es_members_list: Array[Array[String]], binds: Array[String], lits: Array[Expr]) -> Unit {
   if edp_efn_row_carries(e, ename, es_names, es_members_list) {
     Array::push(lits, e)
   } else {
@@ -2393,118 +2413,118 @@ fn edp_row_lit_scan_expr(e: Expr, ename: String, es_names: Array[String], es_mem
   }
   match e {
     ELet(n, v, b, _) => {
-      if edp_efn_row_carries(v, ename, es_names, es_members_list) {
+      if edp_row_lit_bindable(v, ename, needing, es_names, es_members_list) {
         Array::push(binds, n)
       } else {
         ()
       }
-      edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits)
-      edp_row_lit_scan_expr(b, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(v, ename, needing, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(b, ename, needing, es_names, es_members_list, binds, lits)
     },
     ELetRec(n, v, b) => {
-      if edp_efn_row_carries(v, ename, es_names, es_members_list) {
+      if edp_row_lit_bindable(v, ename, needing, es_names, es_members_list) {
         Array::push(binds, n)
       } else {
         ()
       }
-      edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits)
-      edp_row_lit_scan_expr(b, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(v, ename, needing, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(b, ename, needing, es_names, es_members_list, binds, lits)
     },
     ELetMut(_, v, b, _) => {
-      edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits)
-      edp_row_lit_scan_expr(b, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(v, ename, needing, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(b, ename, needing, es_names, es_members_list, binds, lits)
     },
-    EFn(_, _, _, _, _, fb) => edp_row_lit_scan_expr(fb, ename, es_names, es_members_list, binds, lits),
+    EFn(_, _, _, _, _, fb) => edp_row_lit_scan_expr(fb, ename, needing, es_names, es_members_list, binds, lits),
     ESeq(a, b) => {
-      edp_row_lit_scan_expr(a, ename, es_names, es_members_list, binds, lits)
-      edp_row_lit_scan_expr(b, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(a, ename, needing, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(b, ename, needing, es_names, es_members_list, binds, lits)
     },
     EIf(c, t, el) => {
-      edp_row_lit_scan_expr(c, ename, es_names, es_members_list, binds, lits)
-      edp_row_lit_scan_expr(t, ename, es_names, es_members_list, binds, lits)
-      edp_row_lit_scan_expr(el, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(c, ename, needing, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(t, ename, needing, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(el, ename, needing, es_names, es_members_list, binds, lits)
     },
     EMatch(sc, arms) => {
-      edp_row_lit_scan_expr(sc, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(sc, ename, needing, es_names, es_members_list, binds, lits)
       let mut ai = 0
       while ai < Array::length(arms) {
         let (_, ex) = Array::get(arms, ai)
-        edp_row_lit_scan_expr(ex, ename, es_names, es_members_list, binds, lits)
+        edp_row_lit_scan_expr(ex, ename, needing, es_names, es_members_list, binds, lits)
         ai = ai + 1
       }
     },
     EHandle(bd, arms) => {
-      edp_row_lit_scan_expr(bd, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(bd, ename, needing, es_names, es_members_list, binds, lits)
       let mut ai = 0
       while ai < Array::length(arms) {
         let (_, ex) = Array::get(arms, ai)
-        edp_row_lit_scan_expr(ex, ename, es_names, es_members_list, binds, lits)
+        edp_row_lit_scan_expr(ex, ename, needing, es_names, es_members_list, binds, lits)
         ai = ai + 1
       }
     },
     ECall(callee, args, _) => {
-      edp_row_lit_scan_expr(callee, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(callee, ename, needing, es_names, es_members_list, binds, lits)
       let mut ai = 0
       while ai < Array::length(args) {
-        edp_row_lit_scan_expr(Array::get(args, ai), ename, es_names, es_members_list, binds, lits)
+        edp_row_lit_scan_expr(Array::get(args, ai), ename, needing, es_names, es_members_list, binds, lits)
         ai = ai + 1
       }
     },
     EWhile(c, b) => {
-      edp_row_lit_scan_expr(c, ename, es_names, es_members_list, binds, lits)
-      edp_row_lit_scan_expr(b, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(c, ename, needing, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(b, ename, needing, es_names, es_members_list, binds, lits)
     },
     EForIn(_, _, it, b) => {
-      edp_row_lit_scan_expr(it, ename, es_names, es_members_list, binds, lits)
-      edp_row_lit_scan_expr(b, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(it, ename, needing, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(b, ename, needing, es_names, es_members_list, binds, lits)
     },
     ELoop(pairs, b) => {
       let mut pi = 0
       while pi < Array::length(pairs) {
         let (_, v) = Array::get(pairs, pi)
-        edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits)
+        edp_row_lit_scan_expr(v, ename, needing, es_names, es_members_list, binds, lits)
         pi = pi + 1
       }
-      edp_row_lit_scan_expr(b, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(b, ename, needing, es_names, es_members_list, binds, lits)
     },
     EBinOp(_, l, r) => {
-      edp_row_lit_scan_expr(l, ename, es_names, es_members_list, binds, lits)
-      edp_row_lit_scan_expr(r, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(l, ename, needing, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(r, ename, needing, es_names, es_members_list, binds, lits)
     },
-    EUnaryOp(_, x) => edp_row_lit_scan_expr(x, ename, es_names, es_members_list, binds, lits),
+    EUnaryOp(_, x) => edp_row_lit_scan_expr(x, ename, needing, es_names, es_members_list, binds, lits),
     EAssign(_, v, c) => {
-      edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits)
-      edp_row_lit_scan_expr(c, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(v, ename, needing, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(c, ename, needing, es_names, es_members_list, binds, lits)
     },
     EAssignOp(_, _, v, c) => {
-      edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits)
-      edp_row_lit_scan_expr(c, ename, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(v, ename, needing, es_names, es_members_list, binds, lits)
+      edp_row_lit_scan_expr(c, ename, needing, es_names, es_members_list, binds, lits)
     },
-    EReturn(x) => edp_row_lit_scan_expr(x, ename, es_names, es_members_list, binds, lits),
-    EDot(o, _, _, _) => edp_row_lit_scan_expr(o, ename, es_names, es_members_list, binds, lits),
-    ELabeledArg(_, _, v) => edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits),
+    EReturn(x) => edp_row_lit_scan_expr(x, ename, needing, es_names, es_members_list, binds, lits),
+    EDot(o, _, _, _) => edp_row_lit_scan_expr(o, ename, needing, es_names, es_members_list, binds, lits),
+    ELabeledArg(_, _, v) => edp_row_lit_scan_expr(v, ename, needing, es_names, es_members_list, binds, lits),
     EBreak(opt) => match opt {
-      Some(x) => edp_row_lit_scan_expr(x, ename, es_names, es_members_list, binds, lits),
+      Some(x) => edp_row_lit_scan_expr(x, ename, needing, es_names, es_members_list, binds, lits),
       None => ()
     },
     EContinue(args) => {
       let mut ai = 0
       while ai < Array::length(args) {
-        edp_row_lit_scan_expr(Array::get(args, ai), ename, es_names, es_members_list, binds, lits)
+        edp_row_lit_scan_expr(Array::get(args, ai), ename, needing, es_names, es_members_list, binds, lits)
         ai = ai + 1
       }
     },
     ETuple(items) => {
       let mut ai = 0
       while ai < Array::length(items) {
-        edp_row_lit_scan_expr(Array::get(items, ai), ename, es_names, es_members_list, binds, lits)
+        edp_row_lit_scan_expr(Array::get(items, ai), ename, needing, es_names, es_members_list, binds, lits)
         ai = ai + 1
       }
     },
     EArray(items) => {
       let mut ai = 0
       while ai < Array::length(items) {
-        edp_row_lit_scan_expr(Array::get(items, ai), ename, es_names, es_members_list, binds, lits)
+        edp_row_lit_scan_expr(Array::get(items, ai), ename, needing, es_names, es_members_list, binds, lits)
         ai = ai + 1
       }
     },
@@ -2512,7 +2532,7 @@ fn edp_row_lit_scan_expr(e: Expr, ename: String, es_names: Array[String], es_mem
       let mut ai = 0
       while ai < Array::length(fields) {
         let (_, v) = Array::get(fields, ai)
-        edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits)
+        edp_row_lit_scan_expr(v, ename, needing, es_names, es_members_list, binds, lits)
         ai = ai + 1
       }
     },
@@ -2520,11 +2540,11 @@ fn edp_row_lit_scan_expr(e: Expr, ename: String, es_names: Array[String], es_mem
       let mut ai = 0
       while ai < Array::length(fields) {
         let (_, v) = Array::get(fields, ai)
-        edp_row_lit_scan_expr(v, ename, es_names, es_members_list, binds, lits)
+        edp_row_lit_scan_expr(v, ename, needing, es_names, es_members_list, binds, lits)
         ai = ai + 1
       }
     },
-    ESpread(x) => edp_row_lit_scan_expr(x, ename, es_names, es_members_list, binds, lits),
+    ESpread(x) => edp_row_lit_scan_expr(x, ename, needing, es_names, es_members_list, binds, lits),
     _ => ()
   }
 }
@@ -3550,7 +3570,7 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
   // proof-path re-visit a no-op).
   let td_binds = empty_str_array()
   let td_lits0 = array_empty()
-  edp_row_lit_scan(stmts, ename, es_names, es_members_list, td_binds, td_lits0)
+  edp_row_lit_scan(stmts, ename, needing, es_names, es_members_list, td_binds, td_lits0)
   let td_mode = Array::length(td_binds) > 0 || Array::length(td_lits0) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list)
   if td_mode {
     let td_safe = Array::concat(needing, td_binds)
