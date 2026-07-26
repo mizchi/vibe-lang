@@ -2450,7 +2450,12 @@ replay エンジンを codegen から物理削除した。着地は 4 パーツ:
   (`err_effect_handle_replay_removed.vibe` が needle
   "replay engine was removed" で pin)。旧 silent replay は消滅。
 
-gate 55 (vacuous 46 / reject needle)、40ao (shadowed 47、evidence 化)。
+検証: stage2==stage3 fixpoint、compiler gate 55/55 (新設 55 = vacuous 46 /
+reject needle "replay engine was removed"、40ao = shadowed 47 の evidence
+化、4b = FileIo 深再帰が evidence 経由で 42)、unit battery 469/469
+(fs/http/quickcheck/tutorial の test-block handle 群が evidence で green、
+fs mock は正しい意味論で不変、http_e2e は ambient Http + 直接呼び出しに
+書き換え)。
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
