@@ -195,6 +195,17 @@ fn conc_fail_cell(n: TaskGroup, cell: TaskCell, msg: String) -> Unit {
     n.fail_msg = msg
     if n.phase == 0 { n.phase = 1 }
   }
+  conc_cancel_parked(n)
+  conc_progress(n)
+}
+
+// Fail-fast sweep shared by BOTH failure lanes (#1115 Codex review): a
+// run-to-completion child's Throw (spawn's runner) must cancel parked
+// suspendable siblings exactly like a suspendable failure does —
+// otherwise the parked sibling either keeps running under a later
+// pump_all or leaves run's terminal-state check to TRAP instead of
+// returning Err(Failed(...)).
+fn conc_cancel_parked(n: TaskGroup) -> Unit {
   let mut i = 0
   while i < Array::length(n.adopted) {
     let c = Array::get(n.adopted, i)
@@ -207,7 +218,6 @@ fn conc_fail_cell(n: TaskGroup, cell: TaskCell, msg: String) -> Unit {
     }
     i = i + 1
   }
-  conc_progress(n)
 }
 
 fn empty_cells() -> Array[TaskCell] {
@@ -364,6 +374,7 @@ export fn TaskGroup::spawn[T: Send](n: TaskGroup, f: () -> T with { Error }) -> 
           n.fail_msg = msg
           if n.phase == 0 { n.phase = 1 }
         }
+        conc_cancel_parked(n)
       }
     }
   }

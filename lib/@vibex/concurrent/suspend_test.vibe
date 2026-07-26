@@ -4,7 +4,7 @@ import ./concurrent.vibe {
   type TaskGroup, type TaskHandle, type TaskError, type TaskStep,
   type Channel, type Sender, type Receiver, type SendError, type ChannelConfigError,
   TaskGroup::run, TaskGroup::adopt, TaskGroup::pump, TaskGroup::pump_all,
-  TaskGroup::spawn_suspend,
+  TaskGroup::spawn, TaskGroup::spawn_suspend,
   TaskHandle::settle, TaskHandle::park, TaskHandle::park_poll, TaskHandle::wake,
   TaskHandle::join, TaskHandle::cancel,
   Channel::bounded, Sender::send, Sender::send_wait, Sender::release, Receiver::recv_wait
@@ -364,6 +364,31 @@ test "spawn_suspend Error after a resume fails fast from the pump stack" {
     Ok(_) => false,
     Err(e) => match e {
       Failed(m) => m == "later",
+      Cancelled => false
+    }
+  })
+}
+
+// #1115 Codex review: BOTH failure lanes must run the fail-fast sweep.
+// A run-to-completion spawn child throwing (dispatched by run's close
+// drive) cancels the parked suspendable sibling — without the shared
+// sweep the close-time terminal check would TRAP on the still-parked
+// cell instead of returning Err(Failed(...)).
+test "a spawn-lane failure cancels a parked spawn_suspend sibling" {
+  let out = TaskGroup::run((g) -> {
+    let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let _w = perform Async::Suspend(0)
+      100
+    })
+    let _hb = TaskGroup::spawn(g, () -> Int with { Error } {
+      throw("spawn-lane")
+    })
+    7
+  })
+  assert(match out {
+    Ok(_) => false,
+    Err(e) => match e {
+      Failed(m) => m == "spawn-lane",
       Cancelled => false
     }
   })
