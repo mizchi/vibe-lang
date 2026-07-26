@@ -2443,14 +2443,35 @@ fn edp_collect_poison_stmts(stmts: Array[Stmt], ename: String, needing: Array[St
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, _, _, expr) => match expr {
+      // #1117 Codex P1: the top-level binder NAME must be poisoned too when
+      // its value is not evidence-taking. A top-level `let f = <pure>`
+      // sharing a name with a nested row-E closure `f` would otherwise keep
+      // `f` widened and rewrite the top-level call with an extra evidence
+      // arg. A row-E EFn / needing-ref top-level binding stays un-poisoned
+      // (it is itself widened via the needing rewrite).
+      SLet(_, _, snm, _, expr) => match expr {
         EFn(_, _, params, _, _, fb) => {
-          edp_poison_params(params, poison)
+          if edp_row_lit_bindable(expr, ename, needing, es_names, es_members_list) {
+            ()
+          } else {
+            edp_poison_add(snm, poison)
+          }
+          edp_poison_params(params, ename, es_names, es_members_list, poison)
           edp_collect_poison_expr(fb, ename, needing, es_names, es_members_list, poison)
         },
-        _ => edp_collect_poison_expr(expr, ename, needing, es_names, es_members_list, poison)
+        _ => {
+          if edp_row_lit_bindable(expr, ename, needing, es_names, es_members_list) {
+            ()
+          } else {
+            edp_poison_add(snm, poison)
+          }
+          edp_collect_poison_expr(expr, ename, needing, es_names, es_members_list, poison)
+        }
       },
-      SLetMut(_, _, expr) => edp_collect_poison_expr(expr, ename, needing, es_names, es_members_list, poison),
+      SLetMut(snm, _, expr) => {
+        edp_poison_add(snm, poison)
+        edp_collect_poison_expr(expr, ename, needing, es_names, es_members_list, poison)
+      },
       SExpr(expr) => edp_collect_poison_expr(expr, ename, needing, es_names, es_members_list, poison),
       STest(_, expr) => edp_collect_poison_expr(expr, ename, needing, es_names, es_members_list, poison),
       SBench(_, expr) => edp_collect_poison_expr(expr, ename, needing, es_names, es_members_list, poison),
@@ -2460,15 +2481,24 @@ fn edp_collect_poison_stmts(stmts: Array[Stmt], ename: String, needing: Array[St
   }
 }
 
-fn edp_poison_params(params: Array[(String, Option[TypeExpr])], poison: Array[String]) -> Unit {
+// #1117 Codex P2: a parameter whose type is a row-E function is ITSELF
+// evidence-taking (widened by edp_row_typed_param_names), so poisoning it
+// would wrongly drop a legitimately-widened name and hard-error a valid
+// program. Poison only params that will NOT receive this effect's
+// evidence.
+fn edp_poison_params(params: Array[(String, Option[TypeExpr])], ename: String, es_names: Array[String], es_members_list: Array[Array[String]], poison: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(params) {
-    let (pn, _) = Array::get(params, i)
-    let nm = edp_strip_tilde(pn)
-    if edp_str_array_contains(poison, nm) {
+    let (pn, pty) = Array::get(params, i)
+    if edp_type_is_fn_row_exactly(pty, ename, es_names, es_members_list) {
       ()
     } else {
-      Array::push(poison, nm)
+      let nm = edp_strip_tilde(pn)
+      if edp_str_array_contains(poison, nm) {
+        ()
+      } else {
+        Array::push(poison, nm)
+      }
     }
     i = i + 1
   }
@@ -2508,7 +2538,7 @@ fn edp_collect_poison_expr(e: Expr, ename: String, needing: Array[String], es_na
       edp_collect_poison_expr(b, ename, needing, es_names, es_members_list, poison)
     },
     EFn(_, _, params, _, _, fb) => {
-      edp_poison_params(params, poison)
+      edp_poison_params(params, ename, es_names, es_members_list, poison)
       edp_collect_poison_expr(fb, ename, needing, es_names, es_members_list, poison)
     },
     ESeq(a, b) => {

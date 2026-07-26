@@ -1,0 +1,31 @@
+// #1117 Codex review (P1): a top-level pure function `dbl` sharing its
+// name with a nested row-E closure `dbl` in another scope must NOT be
+// widened program-wide — its own call site would otherwise get a stray
+// evidence argument (arity miscompile). The poison set now includes
+// non-evidence top-level binder names, so the top-level `dbl(x)` stays a
+// plain 1-arg call while the nested row-E `dbl` is migrated on its own.
+// want 42: run_with resumes Ask::Get with 6, nested dbl doubles it to
+// 12, then top-level dbl(15) = 30 → 12 + 30 = 42.
+effect Ask {
+  Get -> Int
+}
+
+fn dbl(x: Int) -> Int {
+  x * 2
+}
+
+fn run_with(f: () -> Int with { Ask }) -> Int with { Ask } {
+  f()
+}
+
+let _start = () -> Int {
+  let via = handle {
+    let dbl = () -> Int with { Ask } {
+      perform Ask::Get * 2
+    }
+    run_with(dbl)
+  } with Ask {
+    Get => resume(6)
+  }
+  via + dbl(15)
+}

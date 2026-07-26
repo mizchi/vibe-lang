@@ -6473,6 +6473,20 @@ if [ "$multi_out" != "33" ]; then
   echo "[compiler-gate] FAIL: effect_closure_value_evidence_multi got '$multi_out' (want 33; a blanket __ev_ guard drops __ev_B and the raw B perform escapes -- #1116 Codex P1)" >&2
   exit 1
 fi
+rm -f "$tdevdir/shadow.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/effect_closure_value_evidence_shadow.vibe "$tdevdir/shadow.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$tdevdir/shadow.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_closure_value_evidence_shadow fixture did not compile" >&2
+  cat "$tdevdir/shadow.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+shadow_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$tdevdir/shadow.wasm" 2>/dev/null | tail -1)"
+if [ "$shadow_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: effect_closure_value_evidence_shadow got '$shadow_out' (want 42; a top-level pure fn sharing a name with a nested row-E closure must not get a stray evidence arg -- #1117 Codex P1)" >&2
+  exit 1
+fi
 rm -rf "$tdevdir"
 echo "[compiler-gate] type-directed closure evidence ok"
 
