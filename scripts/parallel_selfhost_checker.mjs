@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -39,7 +40,12 @@ export class SelfhostChecker {
     }
     Object.assign(env, {
       VIBE_PREOPEN_DIR: this.workRoot,
-      VIBE_CHECK_ONLY: "1",
+      // #906 Phase 2: job-dir mode, not VIBE_CHECK_ONLY. Check-only resolves
+      // a module's imports off the real filesystem, which is exactly what a
+      // worker must not do -- and it is why this bridge could previously
+      // only handle leaf snapshots. In job-dir mode the dependency
+      // environments arrive as values the coordinator supplies.
+      VIBE_MODULE_JOB_DIR: "1",
       VIBE_IMPORT_ABI: "raw",
       VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE: "1",
     });
@@ -109,56 +115,98 @@ export class SelfhostChecker {
     });
   }
 
-  async check(module) {
+  async readIfPresent(path) {
+    try {
+      return await readFile(path, "utf8");
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    }
+  }
+
+  // Check one module inside a job directory. `dependencies` are the
+  // coordinator's terminal outcomes for this module's direct dependencies,
+  // IN DECLARATION ORDER -- dep<i>.env is positional, so reordering them
+  // would silently bind imports to the wrong environments.
+  //
+  // Returns { diagnostic, env }: `env` is the module's serialized public
+  // environment, which the coordinator hands to this module's dependents.
+  // That is the whole point of the job dir -- a worker cannot look a
+  // dependency up in the type-env cache, because the key derives from the
+  // transitive source snapshot it is not allowed to see.
+  async check(module, dependencies = []) {
     await this.start();
     const stem = fingerprint(module.id).slice(0, 16);
-    const sourcePath = `${stem}.vibe`;
-    const outputPath = `${stem}.checked`;
-    const diagnosticPath = `${outputPath}.diag`;
-    const sourceFile = join(this.workRoot, sourcePath);
-    const outputFile = join(this.workRoot, outputPath);
-    const diagnosticFile = join(this.workRoot, diagnosticPath);
-    await writeFile(sourceFile, module.source, "utf8");
-    await rm(outputFile, { force: true });
-    await rm(diagnosticFile, { force: true });
+    const jobName = `job-${stem}`;
+    const jobDir = join(this.workRoot, jobName);
+    await rm(jobDir, { recursive: true, force: true });
+    await mkdir(jobDir, { recursive: true });
 
-    const response = await this.request([sourcePath, outputPath, "__no_entry__"]);
-    let diagnostic = "";
-    let marker = "";
-    try {
-      marker = (await readFile(outputFile, "utf8")).trim();
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+    const rows = ["version\t1", `path\t${module.id}`, `fingerprint\t${stem}`];
+    for (const dependency of dependencies) rows.push(`dep\t${dependency.id}`);
+    await writeFile(join(jobDir, "job.txt"), `${rows.join("\n")}\n`, "utf8");
+    await writeFile(join(jobDir, "source.vibe"), module.source, "utf8");
+    for (const [index, dependency] of dependencies.entries()) {
+      const env = dependency.outcome?.artifact?.env;
+      if (typeof env !== "string" || env.length === 0) continue;
+      await writeFile(join(jobDir, `dep${index}.env`), env, "utf8");
     }
-    try {
-      diagnostic = (await readFile(diagnosticFile, "utf8")).trim();
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-    await rm(sourceFile, { force: true });
-    await rm(outputFile, { force: true });
-    await rm(diagnosticFile, { force: true });
 
-    if (response.exit_code === 0 && marker === "ok" && diagnostic.length === 0) {
-      return null;
-    }
-    if (response.exit_code === 0) {
+    const response = await this.request([jobName, `${jobName}/worker.out`, "__no_entry__"]);
+    const outcome = (await this.readIfPresent(join(jobDir, "outcome.txt")))?.trim() ?? "";
+    const diagnostic = (await this.readIfPresent(join(jobDir, "diag.txt")))?.trim() ?? "";
+    const env = await this.readIfPresent(join(jobDir, "env.out"));
+    const workerDiag = (
+      await this.readIfPresent(join(jobDir, "worker.out.diag"))
+    )?.trim();
+    await rm(jobDir, { recursive: true, force: true });
+
+    // A missing outcome.txt is an infrastructure failure, never a
+    // diagnostic: the worker writes it last precisely so its absence means
+    // "this did not finish", not "this module is fine".
+    if (outcome.length === 0) {
       throw new Error(
-        `selfhost checker returned success without its canonical ok marker (marker=${JSON.stringify(marker)}, diagnostic=${JSON.stringify(diagnostic)})`,
+        workerDiag ??
+          response.error ??
+          `selfhost worker exited ${response.exit_code} without writing an outcome`,
       );
+    }
+    if (outcome === "ok") {
+      if (response.exit_code !== 0) {
+        throw new Error(
+          `selfhost worker reported ok but exited ${response.exit_code}`,
+        );
+      }
+      // An "ok" with no usable environment must NOT be published as a
+      // checked outcome. Dependents skip writing dep<i>.env for an empty
+      // env, which makes their imports lenient again -- so a truncated or
+      // missing env.out would quietly turn real type errors in every
+      // dependent into a clean check. Even an empty environment
+      // serializes a version header, so "nonempty" is the right bar, and
+      // failing the run is the right response to a malformed worker
+      // answer.
+      if (typeof env !== "string" || env.trim().length === 0) {
+        throw new Error(
+          `selfhost worker reported ok for "${module.id}" without a usable env.out`,
+        );
+      }
+      return { diagnostic: null, env };
+    }
+    if (outcome !== "diag") {
+      throw new Error(`unknown module job outcome: ${JSON.stringify(outcome)}`);
     }
     if (diagnostic.length === 0) {
-      throw new Error(
-        response.error ??
-          `selfhost checker exited ${response.exit_code} without a diagnostic`,
-      );
+      throw new Error("selfhost worker reported a diagnostic outcome with no diagnostic");
     }
     return {
-      module: module.id,
-      start: 0,
-      end: module.source.length,
-      code: "E_SELFHOST_CHECK",
-      message: diagnostic,
+      diagnostic: {
+        module: module.id,
+        start: 0,
+        end: module.source.length,
+        code: "E_SELFHOST_CHECK",
+        message: diagnostic,
+      },
+      env: "",
     };
   }
 }

@@ -57,16 +57,27 @@ async function compile(job) {
     };
   }
 
-  const diagnostic =
+  // #906 Phase 2: the selfhost path returns the module's public environment
+  // alongside its diagnostic, so the coordinator can hand it to dependents.
+  // Without that a worker could only ever check leaf modules.
+  const checked =
     selfhostChecker === null
-      ? diagnosticFromSource(job.module)
-      : await selfhostChecker.check(job.module);
-  if (diagnostic) return { kind: "diagnosed", diagnostics: [diagnostic] };
+      ? { diagnostic: diagnosticFromSource(job.module), env: "" }
+      : await selfhostChecker.check(job.module, job.dependencies);
+  if (checked.diagnostic) {
+    return { kind: "diagnosed", diagnostics: [checked.diagnostic] };
+  }
 
   return {
     kind: "checked",
     artifact: {
       module: job.module.id,
+      // This module's own env is not hashed directly below -- it is a
+      // function of the source and dependency envs that already are. Note
+      // that a DEPENDENCY's env does reach the fingerprint, through the
+      // dependency outcome, so a dependency whose interface changed
+      // produces a different fingerprint here.
+      env: checked.env,
       fingerprint: fingerprint({
         checker: workerData.execution.kind,
         id: job.module.id,

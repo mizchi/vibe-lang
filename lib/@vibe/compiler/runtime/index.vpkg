@@ -128,6 +128,46 @@ fn symbol_spans(source: String) -> Array[(String, Int, Int, Int)] with { Error }
 // --- typecheck_fs.vibe
 fn locate_type_error(source: String, msg: String) -> String
 fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs }
+// #1100: memoized located lex+parse shared by the typecheck walk and the
+// merge (see typecheck_fs.vibe). Returns a fresh top-level statement array
+// on every call -- check_program mutates its argument in place.
+fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with { Error }
+// #906 Phase 0: permute each node's dependency VISIT order (0 = identity,
+// the production default). Makes "visit order cannot change the output"
+// testable before any real parallelism exists -- see typecheck_fs.vibe.
+fn set_dep_order_seed(seed: Int) -> Unit
+// #906 Phase 1: the module job / outcome seam. `check_module` is the unit a
+// Phase 2 worker will receive; it takes no `Fs` row because every
+// dependency environment it needs is already a value inside the job, and
+// the driver performs all writes (commit_module_outcome, private). These
+// are exported with no cross-file caller yet on purpose -- the bootstrap
+// flatten drops a brand-new cross-file export and its first cross-file
+// caller when they land in the same commit.
+// Defined transparently here rather than as an opaque handle (perceus/
+// PerceusAction precedent): the field layout IS the worker contract.
+// dep_envs is the driver's resolved environment table -- the doc's
+// contract is "ordered direct-dependency interfaces", and this is a
+// superset (the whole cache), because build_import_env resolves import
+// paths against it and narrowing changes which entry an import binds to.
+// Narrowing to the direct deps is a prerequisite for real worker
+// isolation, not for this seam.
+struct ModuleJob {
+  path: String;
+  source: String;
+  deps: Array[String];
+  fingerprint: String;
+  dep_envs: Array[(String, TypeEnv)]
+}
+// Declared opaque like graph's RippleDb / json's RpcMessage: nothing
+// outside the package inspects it yet. Phase 2's driver will need either
+// accessors or a real variant declaration here.
+opaque type ModuleOutcome
+fn check_module(job: ModuleJob) -> ModuleOutcome with { Error }
+// #906 Phase 2: the worker transport entry. `dir` is a job directory and
+// is the worker's ENTIRE filesystem sandbox -- see typecheck_fs.vibe for
+// its layout and for why the job's `path` row must be the module's logical
+// path rather than the materialized temp file.
+fn run_module_job_dir(dir: String) -> Unit with { Error, Fs }
 fn check_inline_wasm_fns(stmts: Array[Stmt]) -> Option[String]
 fn collect_all_diagnostics(source: String) -> Array[String] with { Error }
 
@@ -135,6 +175,11 @@ fn collect_all_diagnostics(source: String) -> Array[String] with { Error }
 fn persistent_dep_list_text(deps: Array[String]) -> String
 fn load_persistent_dep_list(path: String, source: String) -> Option[Array[String]] with { Error, Fs }
 fn load_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with { Error, Fs }
+// #906 Phase 2: the decode half of the above, split out so a dependency's
+// environment can be reconstituted from TEXT. A worker cannot look its own
+// dependencies up in the cache -- the key derives from the whole
+// transitive source snapshot -- so the driver hands them over as values.
+fn parse_persistent_type_env(text: String) -> Option[TypeEnv] with { Error }
 fn persistent_type_env_cache_text(env: TypeEnv) -> String
 fn load_persistent_leaf_fingerprint(path: String, source: String) -> Option[String] with { Error, Fs }
 fn persistent_leaf_fingerprint_text(fingerprint: String) -> String

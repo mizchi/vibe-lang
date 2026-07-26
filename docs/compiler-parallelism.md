@@ -289,13 +289,48 @@ malformed response is an infrastructure failure. All compiler daemons and
 temporary directories are coordinator-cleaned when the run completes or
 fails.
 
-The real bridge currently checks source-only leaf snapshots. Dependency
-outcomes participate in readiness and deterministic error propagation, but a
-dependency's public type/effect interface is not yet installed into the
-worker's checker environment. Consequently a module source containing imports
-is outside this prototype contract. Extracting an in-memory
-`ModuleJob -> ModuleArtifact` API from `check_linked_file` is still required
-before the production compiler can check an import DAG this way.
+The real bridge originally checked source-only leaf snapshots: a dependency's
+public interface was not installed into the worker's checker environment, so a
+module source containing imports was outside the prototype contract.
+
+That API now exists. `VIBE_MODULE_JOB_DIR=1` makes the compiler read a job
+directory — which is also its whole preopen sandbox — and answer with a value:
+
+```text
+<dir>/job.txt      version / path / fingerprint / dep rows
+<dir>/source.vibe  the module source, verbatim
+<dir>/dep<i>.env   dependency i's serialized public environment
+<dir>/outcome.txt  "ok" or "diag", written LAST as the commit marker
+<dir>/env.out      on ok: the checked environment
+<dir>/diag.txt     on diag: one diagnostic per line
+```
+
+A worker cannot look its own dependencies up — the type-env cache key derives
+from the whole transitive source snapshot, which is exactly what it may not
+see — so the driver serializes each dependency environment with
+`persistent_type_env_cache_text` and the worker decodes it with
+`parse_persistent_type_env`. The `path` row is the module's LOGICAL path; it
+is never opened, but it is the base directory every import resolves against.
+
+`scripts/module_job_dir_test.sh` (compiler gate 58) pins the contract. Its
+assertion is not "a module with an import checks clean" — an unresolved import
+is lenient, so that passes even when the environment is discarded, and the
+first version of the test did exactly that. The assertion is that calling an
+imported function with the WRONG argument type is diagnosed, and that the same
+call is lenient once the environment is withheld.
+
+The coordinator now threads it. `SelfhostChecker.check` builds the job
+directory, writes each dependency's environment as a positional `dep<i>.env`
+in declaration order, and returns the module's own `env.out` in its artifact
+so dependents receive it. Readiness already guaranteed a dependency was
+terminal before a dependent was claimed; that terminal outcome now carries
+the interface as well as the verdict.
+
+`scripts/parallel_scheduler_selfhost.test.mjs` runs a two-module import DAG
+through real `worker_threads` at `jobs=1/2/4` with identical output. It uses
+the same discriminator as gate 58 — the wrong-argument-type case — because a
+call to an imported name alone is lenient and would pass against a bridge
+that discarded the environment.
 
 Expected diagnostics are returned as values. An unexpected worker exception,
 compiler trap, daemon exit, or protocol violation fails the whole prototype run
@@ -315,26 +350,72 @@ passing immutable dependency interfaces instead of only terminal outcomes.
 
 ## TDD implementation sequence
 
-### Phase 0: oracle and measurement
+### Phase 0: oracle and measurement — done
 
 - Record cold/warm `load/type/bundle/parse/compile/total` timings and peak heap.
 - Add a sequential randomized-ready-order executor with no real parallelism.
 - Red: different ready orders, worker counts, or repeated runs must produce
   byte-identical Wasm and identical canonical diagnostics/cache values.
 
-### Phase 1: module job extraction
+`VIBE_DEP_ORDER_SEED` permutes every node's dependency visit order in
+`runtime/typecheck_fs.vibe` (0 = identity = the production walk), and
+`scripts/dep_order_oracle.sh` asserts byte-identical wasm across seeds with a
+cold cache per run. The recorded dep order stays declaration order —
+`build_fingerprint` folds it in sequence, so permuting the record would change
+every fingerprint and defeat the invariance being measured.
+
+The oracle refuses to run against a compiler binary that contains no
+`VIBE_DEP_ORDER_SEED` literal. Without that guard it passes vacuously, which
+is not a hypothetical: a failed bundle regen once left the previous adapter in
+place and five seeds "passed" against a compiler that could not read them.
+
+### Phase 1: module job extraction — partial
 
 - Extract pure header parse and `check_module` functions.
 - Replace recursive accumulator threading with `ModuleOutcome` plus a single
   coordinator commit path.
 - Differentially compare the new `--jobs 1` path with the old compiler.
 
-### Phase 2: bounded parallel frontend
+`ModuleJob` / `ModuleOutcome` / `check_module` / `commit_module_outcome` exist
+in `runtime/typecheck_fs.vibe`, and `scripts/compiler_differential.sh` holds
+the byte-identity comparison against the previous compiler.
+
+Three gaps remain before Phase 2 can rely on this seam:
+
+- `check_module` still carries an `Error` row. Type errors are values inside
+  `Diagnosed`, but parse errors are not — making them values would relabel
+  every parse diagnostic, so it waits for the canonical diagnostic ordering.
+- The driver still fails fast on the first `Diagnosed` rather than collecting
+  a canonical set, so today's behaviour is preserved exactly.
+- `ModuleJob.dep_envs` is the driver's whole resolved environment table, not
+  the ordered direct-dependency interfaces the contract above calls for.
+  `build_import_env` resolves import paths against it, so narrowing changes
+  which entry an import binds to. A worker handed the superset still cannot
+  observe the driver, but narrowing is a real prerequisite for isolation.
+
+The accumulator threading in `ensure_fingerprint_fs_go` is unchanged — only
+the per-module leaf work was lifted out. `FrozenArray[T]` is not implemented.
+
+### Phase 2: bounded parallel frontend — transport only
 
 - Run ready module jobs through the ADR-0068 nursery/channel implementation.
 - Start with a conservative worker bound because a full compiler self-compile has a
   high heap watermark; measure throughput and peak RSS together.
 - Keep filesystem and persistent-cache writes in the driver.
+
+The worker/coordinator bridge is done: `VIBE_MODULE_JOB_DIR=1` checks a
+module with imports inside a job-directory sandbox and returns diagnostics as
+values, and the host coordinator threads each dependency's interface into its
+dependents' jobs, so a real import DAG runs across `worker_threads` at
+`jobs=1/2/4` with identical output (see "Host multi-worker prototype" above).
+
+What that is NOT: the production compiler is unchanged. There is no `--jobs`
+flag on `vibe`, `ensure_fingerprint_fs_go` still walks the import DAG
+serially in one process, and nothing a user runs today goes faster. The
+parallel path exists only under the host prototype, on projects the test
+constructs. Wiring it into the real compile path — and measuring throughput
+against peak RSS, since a self-compile has a high heap watermark — is the
+remaining Phase 2 work.
 
 ### Phase 3: immutable whole-program plan
 

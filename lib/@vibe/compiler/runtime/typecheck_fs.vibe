@@ -40,7 +40,7 @@ import @vibe/compiler/runtime/eval_loader {
 }
 
 export ./persistent_env_codec.vibe {
-  load_persistent_dep_list, load_persistent_leaf_fingerprint, load_persistent_type_env, persistent_dep_list_text, persistent_leaf_fingerprint_text, persistent_type_env_cache_text
+  load_persistent_dep_list, load_persistent_leaf_fingerprint, load_persistent_type_env, parse_persistent_type_env, persistent_dep_list_text, persistent_leaf_fingerprint_text, persistent_type_env_cache_text
 }
 
 //# Functions
@@ -308,17 +308,161 @@ fn upsert_string_pair(pairs: Array[(String, String)], key: String, value: String
   pairs
 }
 
-fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with { Error } {
-  handle {
-    // Located lex+parse so EIdent (and other) nodes carry real source char
-    // offsets; the checker rides those offsets into type diagnostics via the
-    // [@off=N] marker (decoded by locate_type_error). The plain
-    // `parse_program(lex(source))` passed an empty starts array, leaving every
-    // offset at -1, so located type errors fell back to a first-occurrence scan.
-    let (tokens, starts, _ends) = lex_with_offsets(source)
-    parse_program_located(tokens, starts, source)
-  } with Error {
-    Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
+// --- #906 Phase 0: ready-order oracle -----------------------------------
+//
+// The import-DAG walk below visits a module's dependencies in DECLARATION
+// order. Phase 2 will hand ready modules to workers, at which point the
+// visit order becomes whatever the scheduler picks -- so the property that
+// has to hold before any of that is built is "the order dependencies are
+// visited cannot change the output". This seed makes that property
+// TESTABLE today, with no real parallelism: a non-zero seed permutes each
+// node's dependency visit order deterministically, and
+// scripts/dep_order_oracle.sh asserts the compiled wasm is byte-identical
+// across seeds.
+//
+// The switch rides in a module-level cell rather than a parameter for the
+// same reason set_error_row_checked (checker/checker_effects.vibe) does:
+// the typecheck walk is pure (no Env row) and threading a config value
+// through every frame of a recursion that already carries five accumulators
+// would be far more invasive than the thing being tested.
+//
+// Seed 0 (the default, and what every production build uses) is the
+// identity permutation -- byte-for-byte the pre-#906 walk.
+let dep_order_seed_cell = array_empty()
+
+export fn set_dep_order_seed(seed: Int) -> Unit {
+  Array::truncate(dep_order_seed_cell, 0)
+  Array::push(dep_order_seed_cell, seed)
+}
+
+fn dep_order_seed() -> Int {
+  if Array::length(dep_order_seed_cell) > 0 {
+    Array::get(dep_order_seed_cell, 0)
+  } else {
+    0
+  }
+}
+
+// A permutation of [0, n) as a visit order. Identity when no seed is set.
+// Otherwise a seeded Fisher-Yates using a small LCG -- deterministic for a
+// given (seed, n), so a failing oracle run is exactly reproducible.
+fn dep_visit_order(n: Int) -> Array[Int] {
+  let order = array_empty()
+  let mut i = 0
+  while i < n {
+    Array::push(order, i)
+    i = i + 1
+  }
+  let seed = dep_order_seed()
+  if seed == 0 || n < 2 {
+    order
+  } else {
+    // LCG (Numerical Recipes constants), kept inside 31 bits so the 62-bit
+    // Int never overflows and the sequence is identical on every backend.
+    let mut state = seed
+    let mut j = n - 1
+    while j > 0 {
+      state = (state * 1664525 + 1013904223) & 2147483647
+      let k = state % (j + 1)
+      let tmp = Array::get(order, j)
+      Array::set(order, j, Array::get(order, k))
+      Array::set(order, k, tmp)
+      j = j - 1
+    }
+    order
+  }
+}
+
+// #1100: process-local parse memo. A cold fs-mode compile parses the SAME
+// source text TWICE -- once here for the typecheck walk (only on a
+// persistent type-env cache MISS, see finish_typecheck_fs_impl) and once
+// again for the merge (parse_sources_for_merge, file_compile.vibe). Both
+// sites ran the identical `lex_with_offsets` + `parse_program_located` pair
+// under the identical `<path>: <msg>` error wrapping, so the second parse
+// was pure waste -- #1100's phase attribution measured the merge parse at
+// 102 MB of a ~850 MB cold selfcompile.
+//
+// Keyed by (path, EXACT source text). The source is compared in full rather
+// than fingerprinted: a same-path re-ingest with different text is a real
+// shape (#897's vpkg shared-import prefix marker), and a full compare is
+// far cheaper than the parse it guards.
+//
+// The memo hands out a SHALLOW COPY of the top-level statement array, never
+// the stored one. check_program mutates its argument in place --
+// inject_prelude_result APPENDS the Result enum, and
+// inject_trait_method_generics / desugar_railway_binds /
+// desugar_labeled_args each `Array::set(stmts, i, <rewritten>)` -- so
+// handing out the pristine array directly would leak a per-file Result
+// declaration (one per file, all merged together) and pre-desugared
+// statements into the merge. Every one of those mutators writes only at the
+// TOP level (verified: they rebuild each Stmt functionally and write it
+// back by index), so a fresh top-level array is complete isolation; the
+// Stmt values themselves are immutable enum payloads.
+//
+// A throwing parse is NOT memoized: the cells stay untouched, so a second
+// caller re-parses and re-throws identically.
+let parse_memo_paths: Array[String] = [
+]
+
+let parse_memo_sources: Array[String] = [
+]
+
+let parse_memo_stmts: Array[Array[Stmt]] = [
+]
+
+export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with { Error } {
+  let n = Array::length(parse_memo_paths)
+  let mut i = 0
+  let mut hit = -1
+  while i < n && hit < 0 {
+    if Array::get(parse_memo_paths, i) == path && Array::get(parse_memo_sources, i) == source {
+      hit = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if hit >= 0 {
+    let cached = Array::get(parse_memo_stmts, hit)
+    Array::slice(cached, 0, Array::length(cached))
+  } else {
+    let parsed = handle {
+      // Located lex+parse so EIdent (and other) nodes carry real source char
+      // offsets; the checker rides those offsets into type diagnostics via the
+      // [@off=N] marker (decoded by locate_type_error). The plain
+      // `parse_program(lex(source))` passed an empty starts array, leaving every
+      // offset at -1, so located type errors fell back to a first-occurrence scan.
+      let (tokens, starts, _ends) = lex_with_offsets(source)
+      parse_program_located(tokens, starts, source)
+    } with Error {
+      Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
+    }
+    // Bound the memo. It is process-wide, and `vibe --daemon` (the #906
+    // worker transport reuses one) serves many compiles from one process:
+    // each edited source is a new (path, source) pair, so an unbounded memo
+    // grows monotonically in guest memory -- full source AND AST per entry
+    // -- and the linear scan above gets slower with every historical
+    // version retained.
+    //
+    // The win this memo exists for is WITHIN one compile: the typecheck
+    // walk parses every module, then the merge parses them all again, so
+    // the whole module set has to be resident at once. The cap is
+    // therefore set well above a self-compile's module count (264 manifest
+    // rows) rather than to some small number. Clearing outright instead of
+    // evicting one entry keeps this branch simple; at 1024 vs 264 it can
+    // only trigger after hundreds of edits in a single daemon, and it
+    // costs one compile's worth of re-parsing when it does.
+    if Array::length(parse_memo_paths) >= 1024 {
+      Array::truncate(parse_memo_paths, 0)
+      Array::truncate(parse_memo_sources, 0)
+      Array::truncate(parse_memo_stmts, 0)
+    } else {
+      ()
+    }
+    Array::push(parse_memo_paths, path)
+    Array::push(parse_memo_sources, source)
+    Array::push(parse_memo_stmts, parsed)
+    Array::slice(parsed, 0, Array::length(parsed))
   }
 }
 
@@ -515,32 +659,226 @@ export fn locate_type_error(source: String, msg: String) -> String {
   }
 }
 
+// --- #906 Phase 1: module job / outcome seam ----------------------------
+//
+// Phase 2 hands one module at a time to a worker that cannot touch the
+// filesystem or the driver's accumulators. This splits the existing
+// per-module work along exactly that line, with no parallelism and no
+// change in behaviour:
+//
+//   driver  resolves dependency environments (the only Fs the work needs)
+//           and packs them into a ModuleJob value
+//   worker  check_module : ModuleJob -> ModuleOutcome, no Fs row
+//   driver  commit_module_outcome performs every write
+//
+// check_module still carries `Error` because parse errors are not yet
+// values -- only type errors are. Making parse diagnostics part of
+// ModuleOutcome would change today's messages, so it is left to the phase
+// that also introduces the canonical diagnostic ordering.
+// ModuleJob is defined TRANSPARENTLY in this package's contract
+// (index.vpkg), not here -- the perceus/ PerceusAction precedent. Its field
+// layout is the worker contract itself, so it belongs in the contract
+// rather than being an opaque handle; record literals and field access
+// resolve from impl units against the contract definition.
+export enum ModuleOutcome {
+  Checked(String, String, TypeEnv);
+  Diagnosed(String, Array[String])
+}
+
+// Pure module check. No Fs: the dependency environments it needs are
+// already values inside the job.
+export fn check_module(job: ModuleJob) -> ModuleOutcome with { Error } {
+  // Parse stays OUTSIDE the handler below: parse errors currently
+  // propagate verbatim, while type errors get located and path-prefixed.
+  // Folding both into one handler would relabel every parse diagnostic.
+  let stmts = parse_program_with_path(job.path, job.source)
+  let import_env = build_import_env(stmts, dir_of_path(job.path), job.dep_envs)
+  handle {
+    let checked_env = match import_env {
+      EnvEmpty => check_program(stmts),
+      _ => check_program_with_env(stmts, import_env)
+    }
+    Checked(job.path, job.fingerprint, checked_env)
+  } with Error {
+    Throw(msg) => Diagnosed(job.path, [String::concat(String::concat(job.path, ": "), locate_type_error(job.source, msg))])
+  }
+}
+
+// Coordinator-owned commit. Every filesystem and accumulator write for a
+// module happens here and nowhere else.
+fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, job: ModuleJob, outcome: ModuleOutcome) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
+  match outcome {
+    // Diagnostics are values as far as the worker is concerned, but the
+    // driver still fails fast on the first one so the observable behaviour
+    // is byte-identical to the pre-Phase-1 compiler. Collecting them into
+    // a canonical set is Phase 2's job.
+    Diagnosed(_, diags) => if Array::length(diags) > 0 {
+      throw(Array::get(diags, 0))
+    } else {
+      throw(String::concat(job.path, ": type error"))
+    },
+    Checked(path, fingerprint, checked_env) => {
+      store_persistent_type_env(fingerprint, checked_env)
+      if Array::length(job.deps) == 0 {
+        Fs::write_file(persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(job.source)), persistent_leaf_fingerprint_text(fingerprint))
+      } else {
+        ()
+      }
+      let next_env_cache = upsert_env_cache(env_cache, path, checked_env)
+      let next_db = ripple_record_eval(rdb, path, fingerprint, job.deps)
+      (fingerprint, next_db, next_env_cache, dep_source_cache, parse_count)
+    }
+  }
+}
+
+// --- #906 Phase 2: worker entry ------------------------------------------
+//
+// The transport boundary. A worker is handed a JOB DIRECTORY and may touch
+// nothing else -- it is the whole preopen sandbox:
+//
+//   <dir>/job.txt      version / path / fingerprint / dep rows
+//   <dir>/source.vibe  the module source, verbatim
+//   <dir>/dep<i>.env   dependency i's serialized public environment
+//   <dir>/outcome.txt  written here: "ok" or "diag"
+//   <dir>/env.out      written here on ok: the checked environment
+//   <dir>/diag.txt     written here on diag: one diagnostic per line
+//
+// This is what docs/compiler-parallelism.md calls the missing in-memory
+// ModuleJob -> ModuleArtifact API. Without it a worker could only check
+// leaf modules: the type-env cache is keyed by a fingerprint derived from
+// the whole transitive source snapshot, which is precisely what a worker
+// must not see, so a worker can never look its own dependencies up. Here
+// the driver hands them over as values instead.
+//
+// `path` in job.txt is the module's LOGICAL path, not the materialized
+// temp file. It never gets opened -- it is the base directory that
+// build_import_env resolves each import against, so the dep<i>.env entries
+// bind to the same names they would in a serial compile. Getting this
+// wrong does not fail loudly; it silently binds imports to nothing.
+fn job_dir_path(dir: String, name: String) -> String {
+  String::concat(String::concat(dir, "/"), name)
+}
+
+fn parse_job_rows(job_text: String) -> (String, String, Array[String]) with { Error } {
+  let lines = String::split(normalize_persistent_cache_text(job_text), "\n")
+  let len = Array::length(lines)
+  let deps = empty_stack()
+  let mut path = ""
+  let mut fingerprint = ""
+  let mut version_ok = false
+  let mut i = 0
+  while i < len {
+    let line = Array::get(lines, i)
+    if String::length(line) == 0 {
+      ()
+    } else {
+      let parts = String::split(line, "\t")
+      if Array::length(parts) != 2 {
+        throw(String::concat("invalid module job row: ", line))
+      } else {
+        let key = Array::get(parts, 0)
+        let value = Array::get(parts, 1)
+        if key == "version" {
+          if value == "1" {
+            version_ok = true
+          } else {
+            throw(String::concat("unsupported module job version: ", value))
+          }
+        } else if key == "path" {
+          path = value
+        } else if key == "fingerprint" {
+          fingerprint = value
+        } else if key == "dep" {
+          Array::push(deps, value)
+        } else {
+          throw(String::concat("unknown module job row: ", line))
+        }
+      }
+    }
+    i = i + 1
+  }
+  if !version_ok {
+    throw("module job is missing its version row")
+  } else if String::length(path) == 0 {
+    throw("module job is missing its path row")
+  } else {
+    (path, fingerprint, deps)
+  }
+}
+
+export fn run_module_job_dir(dir: String) -> Unit with { Error, Fs } {
+  let (path, fingerprint, deps) = parse_job_rows(Fs::read_file(job_dir_path(dir, "job.txt")))
+  let source = Fs::read_file(job_dir_path(dir, "source.vibe"))
+  let dep_envs = array_empty()
+  let mut i = 0
+  let dlen = Array::length(deps)
+  while i < dlen {
+    let env_file = job_dir_path(dir, String::concat(String::concat("dep", __to_string(i)), ".env"))
+    if Fs::exists(env_file) {
+      match parse_persistent_type_env(Fs::read_file(env_file)) {
+        Some(env) => Array::push(dep_envs, (Array::get(deps, i), env)),
+        // A dep<i>.env that exists but does not decode is an
+        // INFRASTRUCTURE failure, not "no environment". Skipping it would
+        // drop the dependency's interface and make its imports lenient
+        // again, so a truncated file would turn real type errors into a
+        // clean check -- the silent-success mode this whole transport is
+        // built to avoid. (parse_persistent_type_env returns None only for
+        // a missing version header, i.e. an empty or truncated file; a
+        // malformed row already throws.)
+        None => throw(String::concat("module job: unreadable dependency environment: ", env_file))
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let job = ModuleJob::{
+    path: path,
+    source: source,
+    deps: deps,
+    fingerprint: fingerprint,
+    dep_envs: dep_envs
+  }
+  // Parse errors are still an `Error` out of check_module (see the Phase 1
+  // note above). At the transport boundary they have to become a value
+  // regardless -- a worker that throws is an infrastructure failure, which
+  // the coordinator treats as fatal rather than as a compiler diagnostic.
+  let outcome = handle {
+    check_module(job)
+  } with Error {
+    Throw(msg) => Diagnosed(path, [msg])
+  }
+  // outcome.txt is written LAST in both arms. It is the commit marker: a
+  // coordinator that sees it knows env.out / diag.txt are already complete,
+  // so a worker killed mid-write leaves an obviously unfinished job dir
+  // rather than a plausible-looking wrong answer.
+  match outcome {
+    Checked(_, _, env) => {
+      Fs::write_file(job_dir_path(dir, "env.out"), persistent_type_env_cache_text(env))
+      Fs::write_file(job_dir_path(dir, "outcome.txt"), "ok")
+    },
+    Diagnosed(_, diags) => {
+      Fs::write_file(job_dir_path(dir, "diag.txt"), String::join(diags, "\n"))
+      Fs::write_file(job_dir_path(dir, "outcome.txt"), "diag")
+    }
+  }
+}
+
 fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
   if Fs::exists(persistent_type_env_cache_path(fingerprint)) {
     let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
     (fingerprint, next_db, env_cache, dep_source_cache, parse_count)
   } else {
-    let stmts = parse_program_with_path(path, source)
-    let final_parse_count = parse_count + 1
     let import_env_cache = ensure_env_cache_for_paths(rdb, env_cache, deps)
-    let import_env = build_import_env(stmts, dir_of_path(path), import_env_cache)
-    let checked_env = handle {
-      match import_env {
-        EnvEmpty => check_program(stmts),
-        _ => check_program_with_env(stmts, import_env)
-      }
-    } with Error {
-      Throw(msg) => throw(String::concat(String::concat(path, ": "), locate_type_error(source, msg)))
+    let job = ModuleJob::{
+      path: path,
+      source: source,
+      deps: deps,
+      fingerprint: fingerprint,
+      dep_envs: import_env_cache
     }
-    store_persistent_type_env(fingerprint, checked_env)
-    if Array::length(deps) == 0 {
-      Fs::write_file(persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(source)), persistent_leaf_fingerprint_text(fingerprint))
-    } else {
-      ()
-    }
-    let next_env_cache = upsert_env_cache(import_env_cache, path, checked_env)
-    let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
-    (fingerprint, next_db, next_env_cache, dep_source_cache, final_parse_count)
+    let outcome = check_module(job)
+    commit_module_outcome(rdb, import_env_cache, dep_source_cache, parse_count + 1, job, outcome)
   }
 }
 
@@ -631,16 +969,36 @@ fn ensure_fingerprint_fs_go(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
                 let mut env_cache_after_deps = env_cache
                 let mut dep_source_cache_after_deps = next_dep_source_cache
                 let mut parse_count_after_deps = initial_parse_count
-                let dep_fps = empty_dep_fps()
+                // #906 Phase 0: VISIT order is permutable (dep_visit_order --
+                // identity unless a seed is set), but the RECORDED order must
+                // stay declaration order: build_fingerprint below folds
+                // dep_fps in sequence, so permuting the record would change
+                // every fingerprint and defeat the very invariance this is
+                // meant to test. Fingerprints therefore land in per-index
+                // slots and are collected in declaration order afterwards.
+                let visit = dep_visit_order(dlen)
+                let dep_fp_slots = empty_stack()
+                let mut sfill = 0
+                while sfill < dlen {
+                  Array::push(dep_fp_slots, "")
+                  sfill = sfill + 1
+                }
                 while i < dlen {
-                  let dep_path = Array::get(deps, i)
+                  let di = Array::get(visit, i)
+                  let dep_path = Array::get(deps, di)
                   let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint_fs_go(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, dep_path, stack)
                   db_after_deps = next_db
                   env_cache_after_deps = next_env_cache
                   dep_source_cache_after_deps = next_dep_source_cache2
                   parse_count_after_deps = next_parse_count
-                  Array::push(dep_fps, (dep_path, dep_fp))
+                  Array::set(dep_fp_slots, di, dep_fp)
                   i = i + 1
+                }
+                let dep_fps = empty_dep_fps()
+                let mut fpi = 0
+                while fpi < dlen {
+                  Array::push(dep_fps, (Array::get(deps, fpi), Array::get(dep_fp_slots, fpi)))
+                  fpi = fpi + 1
                 }
                 Array::truncate(stack, saved_stack_len)
                 let fingerprint = build_fingerprint(source, dep_fps)
@@ -677,16 +1035,30 @@ fn ensure_fingerprint_fs_go(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
               let mut env_cache_after_deps = env_cache
               let mut dep_source_cache_after_deps = next_dep_source_cache
               let mut parse_count_after_deps = initial_parse_count
-              let dep_fps = empty_dep_fps()
+              // #906 Phase 0: see the slot comment in the first dep loop above.
+              let visit = dep_visit_order(dlen)
+              let dep_fp_slots = empty_stack()
+              let mut sfill = 0
+              while sfill < dlen {
+                Array::push(dep_fp_slots, "")
+                sfill = sfill + 1
+              }
               while i < dlen {
-                let dep_path = Array::get(deps, i)
+                let di = Array::get(visit, i)
+                let dep_path = Array::get(deps, di)
                 let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint_fs_go(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, dep_path, stack)
                 db_after_deps = next_db
                 env_cache_after_deps = next_env_cache
                 dep_source_cache_after_deps = next_dep_source_cache2
                 parse_count_after_deps = next_parse_count
-                Array::push(dep_fps, (dep_path, dep_fp))
+                Array::set(dep_fp_slots, di, dep_fp)
                 i = i + 1
+              }
+              let dep_fps = empty_dep_fps()
+              let mut fpi = 0
+              while fpi < dlen {
+                Array::push(dep_fps, (Array::get(deps, fpi), Array::get(dep_fp_slots, fpi)))
+                fpi = fpi + 1
               }
               Array::truncate(stack, saved_stack_len)
               let fingerprint = build_fingerprint(source, dep_fps)
@@ -723,16 +1095,30 @@ fn ensure_fingerprint_fs_go(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
             let mut env_cache_after_deps = env_cache
             let mut dep_source_cache_after_deps = next_dep_source_cache
             let mut parse_count_after_deps = initial_parse_count
-            let dep_fps = empty_dep_fps()
+            // #906 Phase 0: see the slot comment in the first dep loop above.
+            let visit = dep_visit_order(dlen)
+            let dep_fp_slots = empty_stack()
+            let mut sfill = 0
+            while sfill < dlen {
+              Array::push(dep_fp_slots, "")
+              sfill = sfill + 1
+            }
             while i < dlen {
-              let dep_path = Array::get(deps, i)
+              let di = Array::get(visit, i)
+              let dep_path = Array::get(deps, di)
               let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint_fs_go(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, dep_path, stack)
               db_after_deps = next_db
               env_cache_after_deps = next_env_cache
               dep_source_cache_after_deps = next_dep_source_cache2
               parse_count_after_deps = next_parse_count
-              Array::push(dep_fps, (dep_path, dep_fp))
+              Array::set(dep_fp_slots, di, dep_fp)
               i = i + 1
+            }
+            let dep_fps = empty_dep_fps()
+            let mut fpi = 0
+            while fpi < dlen {
+              Array::push(dep_fps, (Array::get(deps, fpi), Array::get(dep_fp_slots, fpi)))
+              fpi = fpi + 1
             }
             Array::truncate(stack, saved_stack_len)
             let fingerprint = build_fingerprint(source, dep_fps)
