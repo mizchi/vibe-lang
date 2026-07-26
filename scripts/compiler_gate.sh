@@ -6534,4 +6534,29 @@ fi
 rm -rf "$v2dir"
 echo "[compiler-gate] replay frontier removal ok"
 
+# 56/56. #1114: a nested closure calling a bare inlined-builtin name must
+#        invoke an ENCLOSING local binding that shadows it, not the builtin.
+#        The #773 skip only saw the innermost lambda's own binders + the
+#        top-level fn table, so a parameter named `not`/`mul`/... was never
+#        captured and the call silently produced the BUILTIN's value.
+echo "[compiler-gate] 56/56 closure captures enclosing-scope shadow of an inlined builtin (#1114)"
+csibdir="_build/_gate_closure_shadow_builtin"
+rm -rf "$csibdir"; mkdir -p "$csibdir"
+sed '/^__DATA__$/,$d' fixtures/closure_shadowed_inline_builtin.vibe > "$csibdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$csibdir/src.vibe" "$csibdir/out.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$csibdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: closure_shadowed_inline_builtin.vibe did not compile" >&2
+  cat "$csibdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+csib_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$csibdir/out.wasm" 2>/dev/null | tail -1)"
+if [ "$csib_out" != "22" ]; then
+  echo "[compiler-gate] FAIL: closure_shadowed_inline_builtin got '$csib_out' (want 22) -- a shadowed inline builtin fell back to the builtin instead of the captured closure (#1114)" >&2
+  exit 1
+fi
+rm -rf "$csibdir"
+echo "[compiler-gate] closure shadowed inline builtin ok (22)"
+
 echo "[compiler-gate] ok"
