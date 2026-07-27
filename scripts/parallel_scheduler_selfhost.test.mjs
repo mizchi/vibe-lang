@@ -139,6 +139,40 @@ test("a dependency's interface crosses the worker boundary", async () => {
   assert.match(diagnosed.diagnostics[0].message, /expected Int, got String/);
 });
 
+// #1126 Codex review. A module can import the same dependency through two
+// SEPARATE import statements (valid vibe; the serial compiler accepts it),
+// and check_module's build_fingerprint folds a dependency's fingerprint
+// once PER OCCURRENCE. `dependencies` has to stay deduped (the scheduler's
+// own uniqueness requirement -- a module only needs each distinct
+// dependency ready once), so `dependencyOccurrences` is what actually
+// drives the fold. Isolated from file discovery here: this constructs the
+// module list by hand, differing ONLY in whether MAIN's
+// dependencyOccurrences repeats DEP once or twice, and asserts the
+// resulting fingerprints differ -- proving the occurrence COUNT itself
+// reaches build_fingerprint, not just DEP's identity.
+test("repeated dependency occurrences fold into the fingerprint multiple times", async () => {
+  const execution = { kind: "selfhost-check", compilerWasm };
+  const depModule = { id: DEP_ID, dependencies: [], source: "export fn dep_value(n: Int) -> Int {\n  n + 41\n}\n" };
+  const mainSource = "import ./dep.vibe {\n  dep_value\n}\n\nexport fn answer() -> Int {\n  dep_value(1)\n}\n";
+
+  const once = await runParallelProject(
+    [depModule, { id: MAIN_ID, dependencies: [DEP_ID], dependencyOccurrences: [DEP_ID], source: mainSource }],
+    { jobs: 2, execution },
+  );
+  const twice = await runParallelProject(
+    [depModule, { id: MAIN_ID, dependencies: [DEP_ID], dependencyOccurrences: [DEP_ID, DEP_ID], source: mainSource }],
+    { jobs: 2, execution },
+  );
+
+  assert.equal(once.outcomes.get(MAIN_ID).kind, "checked");
+  assert.equal(twice.outcomes.get(MAIN_ID).kind, "checked");
+  assert.notEqual(
+    once.outcomes.get(MAIN_ID).artifact.fingerprint,
+    twice.outcomes.get(MAIN_ID).artifact.fingerprint,
+    "MAIN's fingerprint did not change when its dependencyOccurrences count changed -- the occurrence list is not reaching build_fingerprint's fold",
+  );
+});
+
 test("import DAG outcomes are identical for jobs=1/2/4", async () => {
   const execution = { kind: "selfhost-check", compilerWasm };
   const sequential = await runParallelProject(importDagProject("1"), {

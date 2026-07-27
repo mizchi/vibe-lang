@@ -789,11 +789,22 @@ fn parse_job_rows(job_text: String) -> (String, Array[String], Array[String]) wi
       let plen = Array::length(parts)
       let key = if plen > 0 { Array::get(parts, 0) } else { "" }
       if key == "dep" {
+        let dep_path = Array::get(parts, 1)
+        let dep_fp = Array::get(parts, 2)
         if plen != 3 {
           throw(String::concat("invalid module job dep row (want path + fingerprint): ", line))
+        } else if String::length(dep_path) == 0 || String::length(dep_fp) == 0 {
+          // Codex review (#1126): a row with an empty path or fingerprint
+          // column (e.g. a trailing tab, `dep\t/dep.vibe\t`) still has 3
+          // parts and would otherwise pass the column-count check above.
+          // An empty fingerprint folds into build_fingerprint the same way
+          // regardless of which dependency revision produced it, so two
+          // different revisions would silently collide on one fingerprint
+          // instead of the job being rejected as malformed.
+          throw(String::concat("invalid module job dep row (empty path or fingerprint): ", line))
         } else {
-          Array::push(deps, Array::get(parts, 1))
-          Array::push(dep_fps, Array::get(parts, 2))
+          Array::push(deps, dep_path)
+          Array::push(dep_fps, dep_fp)
         }
       } else if plen != 2 {
         throw(String::concat("invalid module job row: ", line))

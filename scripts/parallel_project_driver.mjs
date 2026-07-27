@@ -90,7 +90,25 @@ export async function discoverProject(compilerWasm, entryPaths) {
         listDeps(compilerWasm, cacheDir, path),
         readFile(path, "utf8"),
       ]);
-      modules.set(path, { id: path, dependencies: deps, source });
+      // `deps` (VIBE_LIST_DEPS' raw output) has one entry PER IMPORT
+      // STATEMENT -- collect_import_deps_from_stmts (loader/header_cache.
+      // vibe) does not dedupe, and a module importing different names from
+      // the same file through two `import` statements is valid vibe that
+      // the serial compiler accepts. `dependencies` (deduped) is the
+      // scheduler edge list -- normalizeParallelProject requires it
+      // unique, and readiness genuinely only needs each distinct module
+      // once. `dependencyOccurrences` keeps every repeat, in order, so
+      // parallel_selfhost_checker.mjs can fold each dependency's
+      // fingerprint the same number of times build_fingerprint would in a
+      // serial compile (#1126 Codex review) -- deduping here silently
+      // instead would make a worker compute a DIFFERENT fingerprint than
+      // the serial compiler for any module with a repeated import.
+      modules.set(path, {
+        id: path,
+        dependencies: [...new Set(deps)],
+        dependencyOccurrences: deps,
+        source,
+      });
       for (const dep of deps) {
         if (!seen.has(dep)) {
           seen.add(dep);

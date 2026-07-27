@@ -18,6 +18,7 @@ const LEAF = join(SAMPLE_DIR, "leaf.vibe");
 const MID = join(SAMPLE_DIR, "mid.vibe");
 const MAIN = join(SAMPLE_DIR, "main.vibe");
 const MAIN_BROKEN = join(SAMPLE_DIR, "main_broken.vibe");
+const MAIN_REPEATED = join(SAMPLE_DIR, "main_repeated_import.vibe");
 
 // #906. Everything up to this point (module_job_dir_test.sh,
 // parallel_scheduler_selfhost.test.mjs) checks either the worker transport
@@ -53,6 +54,29 @@ test("a signature error two hops away surfaces through discovery + the worker po
   const diagnosed = result.outcomes.get(MAIN_BROKEN);
   assert.equal(diagnosed.kind, "diagnosed");
   assert.match(diagnosed.diagnostics[0].message, /argument type mismatch for mid_value: expected Int, got String/);
+});
+
+// #1126 Codex review. main_repeated_import.vibe imports leaf.vibe through
+// TWO separate `import` statements -- valid vibe, and the serial compiler
+// accepts it -- so VIBE_LIST_DEPS reports leaf.vibe twice.
+// normalizeParallelProject requires `dependencies` unique (a real
+// readiness-graph constraint: a module only needs each distinct dependency
+// ready once), so the first version of this driver threw "duplicate
+// dependency" on exactly this file. This is the regression pin.
+test("a module that imports the same file twice is discovered and checked once", async () => {
+  const modules = await discoverProject(compilerWasm, [MAIN_REPEATED]);
+  const byId = new Map(modules.map((m) => [m.id, m]));
+  const main = byId.get(MAIN_REPEATED);
+  assert.deepEqual(main.dependencies, [LEAF], "the scheduler edge list must be deduped");
+  assert.deepEqual(
+    main.dependencyOccurrences,
+    [LEAF, LEAF],
+    "the occurrence list must preserve BOTH import statements -- this is what feeds build_fingerprint's fold",
+  );
+
+  const result = await checkProjectParallel(compilerWasm, [MAIN_REPEATED], 2);
+  assert.equal(result.outcomes.get(LEAF).kind, "checked");
+  assert.equal(result.outcomes.get(MAIN_REPEATED).kind, "checked");
 });
 
 test("real-project outcomes are identical for jobs=1/2/4", async () => {

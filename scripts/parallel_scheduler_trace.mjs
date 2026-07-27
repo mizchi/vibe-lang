@@ -34,11 +34,26 @@ export function normalizeParallelProject(project) {
       Number.isInteger(workMs) && workMs >= 0,
       `workMs for "${candidate.id}" must be a non-negative integer`,
     );
+    // `dependencyOccurrences` is the SCHEDULER-EDGE list's raw counterpart:
+    // a real module can import the same file through more than one import
+    // statement (valid vibe, and the serial compiler accepts it), which
+    // makes `dependencies` -- required unique for readiness bookkeeping --
+    // lossy for one purpose: check_module's build_fingerprint folds a
+    // dependency's fingerprint once PER OCCURRENCE, and a worker has to
+    // replicate that exactly to land on the fingerprint the serial
+    // compiler would compute (#1126 Codex review). Defaults to
+    // `dependencies` itself (each entry once) so callers that never had
+    // repeated imports -- every hand-built test module list before this --
+    // see no behavior change.
+    const dependencyOccurrences = candidate.dependencyOccurrences
+      ? [...candidate.dependencyOccurrences]
+      : [...candidate.dependencies];
     modules.set(
       candidate.id,
       deepFreeze({
         id: candidate.id,
         dependencies: [...candidate.dependencies],
+        dependencyOccurrences,
         source: candidate.source,
         workMs,
         crash: candidate.crash === true,
@@ -59,6 +74,12 @@ export function normalizeParallelProject(project) {
         `duplicate dependency "${dependency}" of "${module.id}"`,
       );
       seen.add(dependency);
+    }
+    for (const occurrence of module.dependencyOccurrences) {
+      invariant(
+        typeof occurrence === "string" && seen.has(occurrence),
+        `dependencyOccurrences entry "${occurrence}" of "${module.id}" is not one of its declared dependencies`,
+      );
     }
   }
 

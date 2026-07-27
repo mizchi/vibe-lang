@@ -267,6 +267,39 @@ else
   note "dep row missing its fingerprint column rejected (exit $JOB_EXIT)"
 fi
 
+# Codex review (#1126): a `dep` row with an EMPTY fingerprint column (still
+# 3 tab-separated parts, so the column-count check alone would accept it)
+# must also be rejected -- an empty fingerprint folds into build_fingerprint
+# identically regardless of which dependency revision produced it, so two
+# different revisions would silently collide on one fingerprint instead of
+# the job being treated as malformed.
+badfpempty="$work/badfpempty"; mkdir -p "$badfpempty"
+printf 'version\t1\npath\t%s/badfpempty.vibe\ndep\t%s/dep.vibe\t\n' "$LOGICAL_ROOT" "$LOGICAL_ROOT" > "$badfpempty/job.txt"
+: > "$badfpempty/source.vibe"
+
+run_job "$badfpempty"
+if [ "$JOB_EXIT" -eq 0 ]; then
+  die "a dep row with an empty fingerprint column exited 0"
+elif [ -n "$JOB_OUTCOME" ]; then
+  die "a dep row with an empty fingerprint column still wrote outcome.txt='$JOB_OUTCOME'"
+else
+  note "dep row with empty fingerprint column rejected (exit $JOB_EXIT)"
+fi
+
+# Same for an empty PATH column.
+badpathempty="$work/badpathempty"; mkdir -p "$badpathempty"
+printf 'version\t1\npath\t%s/badpathempty.vibe\ndep\t\tsome-fp\n' "$LOGICAL_ROOT" > "$badpathempty/job.txt"
+: > "$badpathempty/source.vibe"
+
+run_job "$badpathempty"
+if [ "$JOB_EXIT" -eq 0 ]; then
+  die "a dep row with an empty path column exited 0"
+elif [ -n "$JOB_OUTCOME" ]; then
+  die "a dep row with an empty path column still wrote outcome.txt='$JOB_OUTCOME'"
+else
+  note "dep row with empty path column rejected (exit $JOB_EXIT)"
+fi
+
 if [ "$fail" -ne 0 ]; then
   exit 1
 fi
