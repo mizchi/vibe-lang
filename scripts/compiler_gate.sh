@@ -6847,7 +6847,7 @@ echo "[compiler-gate] ADR-0068 Spawnable[r] capture check ok"
 # hand-written `TaskGroup::run(...)` call. Negative: the EXISTING region-
 # escape check (hardcoded by name on `TaskGroup::run`, unchanged by this
 # sugar) still rejects a leaked `TaskHandle`.
-echo "[compiler-gate] 62/63 ADR-0068 taskgroup { g => body } syntax sugar (#1081 step 4)"
+echo "[compiler-gate] 62/66 ADR-0068 taskgroup { g => body } syntax sugar (#1081 step 4)"
 taskgroupdir="_build/_gate_taskgroup_sugar"
 rm -rf "$taskgroupdir"; mkdir -p "$taskgroupdir"
 sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/region_ok_taskgroup_sugar.vibe > "$taskgroupdir/pos.vibe"
@@ -6900,7 +6900,7 @@ echo "[compiler-gate] taskgroup { g => body } syntax sugar ok"
 # the closure is Spawnable-legal (checker_spawnable.vibe falls back to
 # type_send_ok), where the same capture of a plain Array[Int] is rejected
 # (fixtures/err_spawnable_capture_array.vibe, gate 61 above, unaffected).
-echo "[compiler-gate] 63/64 FrozenArray[T] Send-eligible immutable container (#906)"
+echo "[compiler-gate] 63/66 FrozenArray[T] Send-eligible immutable container (#906)"
 frozenarrdir="_build/_gate_frozen_array"
 rm -rf "$frozenarrdir"; mkdir -p "$frozenarrdir"
 sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/region_ok_frozen_array_basic.vibe > "$frozenarrdir/basic.vibe"
@@ -6969,7 +6969,7 @@ echo "[compiler-gate] FrozenArray[T] Send-eligible immutable container ok"
 #        can't silently drift; see #639's discussion for why the riskier
 #        "over-declared with{} is itself a hard error" reading was
 #        deliberately NOT implemented.
-echo "[compiler-gate] 64/64 effect-row mismatch diagnostic snapshots (#639)"
+echo "[compiler-gate] 64/66 effect-row mismatch diagnostic snapshots (#639)"
 eff639dir="_build/_gate_eff639"
 rm -rf "$eff639dir"; mkdir -p "$eff639dir"
 cp fixtures/err_effect_missing_annotation.vibe "$eff639dir/no_with.vibe"
@@ -6980,7 +6980,7 @@ if [ -s "$eff639dir/no_with.wasm" ]; then
   echo "[compiler-gate] FAIL: err_effect_missing_annotation.vibe compiled successfully -- must be rejected" >&2
   exit 1
 fi
-if ! grep -qF "missing { Ask } (no 'with' clause, requires { Ask })" "$eff639dir/no_with.wasm.diag" 2>/dev/null; then
+if ! grep -qF "missing { Ask::Value } (no 'with' clause, requires { Ask::Value })" "$eff639dir/no_with.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: err_effect_missing_annotation.vibe did not produce the expected diagnostic" >&2
   cat "$eff639dir/no_with.wasm.diag" 2>/dev/null >&2 || true
   exit 1
@@ -7000,5 +7000,59 @@ if ! grep -qF "missing { Fs } (declared with { Ask, Ask::Get }, requires { Ask, 
 fi
 rm -rf "$eff639dir"
 echo "[compiler-gate] effect-row mismatch diagnostic snapshots ok"
+
+# 65/65. #1157: a zero-arg `perform Eff::Op` (no parens) previously bypassed
+#        the direct effect-row check entirely (silent soundness gap -- see
+#        #1157 for the repro). Pin that it is now rejected with the same
+#        message as the parenthesized form.
+echo "[compiler-gate] 65/66 zero-arg perform (no parens) effect-row check (#1157)"
+eff1157dir="_build/_gate_eff1157"
+rm -rf "$eff1157dir"; mkdir -p "$eff1157dir"
+cp fixtures/err_effect_zero_arg_perform_no_parens.vibe "$eff1157dir/x.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$eff1157dir/x.vibe" "$eff1157dir/x.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$eff1157dir/x.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_effect_zero_arg_perform_no_parens.vibe compiled successfully -- must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF "missing { Ask::Get } (no 'with' clause, requires { Ask::Get })" "$eff1157dir/x.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_effect_zero_arg_perform_no_parens.vibe did not produce the expected diagnostic" >&2
+  cat "$eff1157dir/x.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$eff1157dir"
+echo "[compiler-gate] zero-arg perform effect-row check ok"
+
+# 66/66. #1161 (Codex review of #1157's fix): a DIRECT-discipline mismatch
+#        must report the qualified operation, not the stripped base effect
+#        name, when the enclosing function already declares a SIBLING
+#        operation of the same effect at operation granularity -- otherwise
+#        the generated fix-it would grant the whole effect and over-widen
+#        the caller's capability surface (docs/effectset.md's operation-
+#        level diagnostic contract).
+echo "[compiler-gate] 66/66 operation-level fix-it precision for partial rows (#1161)"
+eff1161dir="_build/_gate_eff1161"
+rm -rf "$eff1161dir"; mkdir -p "$eff1161dir"
+cp fixtures/err_effect_op_level_partial_row_bare_perform.vibe "$eff1161dir/x.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$eff1161dir/x.vibe" "$eff1161dir/x.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$eff1161dir/x.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_effect_op_level_partial_row_bare_perform.vibe compiled successfully -- must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF "missing { Ask::Get } (declared with { Ask::Other }, requires { Ask::Get, Ask::Other })" "$eff1161dir/x.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_effect_op_level_partial_row_bare_perform.vibe did not produce the expected diagnostic" >&2
+  cat "$eff1161dir/x.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! grep -qF "hint: add 'with { Ask::Get, Ask::Other }' to 'asks'" "$eff1161dir/x.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_effect_op_level_partial_row_bare_perform.vibe did not produce the expected operation-level fix-it hint" >&2
+  cat "$eff1161dir/x.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$eff1161dir"
+echo "[compiler-gate] operation-level fix-it precision ok"
 
 echo "[compiler-gate] ok"
