@@ -61,7 +61,7 @@ fn add(x: Int, y: Int) -> Int      // 実装が一致しないとコンパイル
 オフラインで hash を再検証するので、置き場所や取得経路は信頼しなくてよい。
 
 ```vibe
-require @vibe/core 0.1.0 = #pkg:sha1:<40hex>   // `vibe hash` で計算
+require @vibe/core 0.2.0 = #pkg:sha1:<40hex>   // `vibe hash` で計算
 
 import @vibe/core { sha1 }
 ```
