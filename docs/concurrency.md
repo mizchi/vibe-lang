@@ -782,6 +782,19 @@ choose する fresh var を返す `instantiate` しかなく、型に scope タ�
   spawn+join、42 で正常終了)、`err_region_escape_return.vibe` (戻り値
   escape、reject)。両方とも `Send` marker (48/48) と同じ
   `send_check_reject` 型のヘルパーパターンで gate に配線。
+- **既知のギャップ 2 (PR #1135 Codex review P1、試みて撤回)**: 特殊扱いは
+  callee の**リテラルな綴り** `"TaskGroup::run"` に対する文字列一致であり、
+  `let run = TaskGroup::run; run((n) => ...)` のような first-class alias、
+  import rename、higher-order wrapper はこの一致をすり抜けて `r` が
+  普通の unifiable `CtVar` になる(escape 検査が一切走らない)。一度、
+  文字列一致の代わりに callee の**構造的な形**(`(body: (TaskGroup[r]) ->
+  T with {e}) -> Result[T, TaskError] with {e}`)で一致させる修正を試みたが、
+  コンパイラ自身のソース中の無関係な 1 引数呼び出しに誤爆し unit battery
+  20 ファイルが実行時 trap で regress した(`TaskError` が実際には
+  `CtEnum("TaskError")` に解決される — `CtNamed` だと決め打っていた
+  一箇所のバグで露呈)ため撤回し、リテラル一致に戻した。alias/rename/
+  wrapper 経由のすり抜けは this slice の既知のギャップとして
+  `lib/@vibex/concurrent/index.vpkg` の `r` コメントに明記した。
 - **未着手のまま**: `Spawnable[r]` capture check(#1081 step 3 の後半)。
   設計中に判明した理由: この checker の呼び出しチェックはボトムアップ
   (引数を先に `check_expr` で独立に検査してから呼び出し先の型へ
