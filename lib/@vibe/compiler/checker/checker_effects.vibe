@@ -389,6 +389,17 @@ fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
   ok
 }
 
+// A DIRECT `perform EffName::Op` is authorized if the declared row names
+// either the whole effect (`EffName`) or, per ADR-0071's operation-level row
+// items, the exact operation (`EffName::Op`) itself -- e.g. `with { Ask::Get
+// }` must authorize a bare `perform Ask::Get` in the same function, exactly
+// as it already authorizes a transitive call to a callee declaring `{
+// Ask::Get }` (that check compares the full qualified label directly,
+// without stripping to the base effect name).
+fn decl_authorizes_op(labels: Array[String], op_name: String) -> Bool {
+  decl_authorizes_effect(labels, effect_name_of_op(op_name)) || decl_authorizes_effect(labels, op_name)
+}
+
 // `perform EffName::Op` — the op identifier is `EffName::Op`; the effect is the
 // segment before `::`.
 fn effect_name_of_op(op_name: String) -> String {
@@ -829,7 +840,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // `perform Error::Throw(x)`, so without this exemption
                     // every one of those sites would newly require
                     // `with { Error }`.
-                    if (eff != "Error" || error_row_checked()) && !in_handle && !decl_authorizes_effect(declared, eff) {
+                    if (eff != "Error" || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, op_name) {
                       Array::push(errors, make_row_mismatch(fn_name, declared, [
                         eff
                       ]))
@@ -838,6 +849,20 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     }
                   },
                   _ => ()
+                },
+                // #1157: a zero-arg operation (`Op -> T`, no parens) parses
+                // its `perform` argument as a bare `EIdent`, not an `ECall`
+                // — same direct-discipline check as the parenthesized form
+                // above, just without an args list to look past.
+                EIdent(op_name, _) => {
+                  let eff = effect_name_of_op(op_name)
+                  if (eff != "Error" || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, op_name) {
+                    Array::push(errors, make_row_mismatch(fn_name, declared, [
+                      eff
+                    ]))
+                  } else {
+                    ()
+                  }
                 },
                 _ => ()
               }

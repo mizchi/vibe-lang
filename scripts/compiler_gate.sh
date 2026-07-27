@@ -6969,7 +6969,7 @@ echo "[compiler-gate] FrozenArray[T] Send-eligible immutable container ok"
 #        can't silently drift; see #639's discussion for why the riskier
 #        "over-declared with{} is itself a hard error" reading was
 #        deliberately NOT implemented.
-echo "[compiler-gate] 64/64 effect-row mismatch diagnostic snapshots (#639)"
+echo "[compiler-gate] 64/65 effect-row mismatch diagnostic snapshots (#639)"
 eff639dir="_build/_gate_eff639"
 rm -rf "$eff639dir"; mkdir -p "$eff639dir"
 cp fixtures/err_effect_missing_annotation.vibe "$eff639dir/no_with.vibe"
@@ -7000,5 +7000,28 @@ if ! grep -qF "missing { Fs } (declared with { Ask, Ask::Get }, requires { Ask, 
 fi
 rm -rf "$eff639dir"
 echo "[compiler-gate] effect-row mismatch diagnostic snapshots ok"
+
+# 65/65. #1157: a zero-arg `perform Eff::Op` (no parens) previously bypassed
+#        the direct effect-row check entirely (silent soundness gap -- see
+#        #1157 for the repro). Pin that it is now rejected with the same
+#        message as the parenthesized form.
+echo "[compiler-gate] 65/65 zero-arg perform (no parens) effect-row check (#1157)"
+eff1157dir="_build/_gate_eff1157"
+rm -rf "$eff1157dir"; mkdir -p "$eff1157dir"
+cp fixtures/err_effect_zero_arg_perform_no_parens.vibe "$eff1157dir/x.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$eff1157dir/x.vibe" "$eff1157dir/x.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$eff1157dir/x.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_effect_zero_arg_perform_no_parens.vibe compiled successfully -- must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF "missing { Ask } (no 'with' clause, requires { Ask })" "$eff1157dir/x.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_effect_zero_arg_perform_no_parens.vibe did not produce the expected diagnostic" >&2
+  cat "$eff1157dir/x.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$eff1157dir"
+echo "[compiler-gate] zero-arg perform effect-row check ok"
 
 echo "[compiler-gate] ok"
