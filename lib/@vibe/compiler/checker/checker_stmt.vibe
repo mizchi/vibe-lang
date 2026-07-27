@@ -20,6 +20,10 @@ import ./checker.vibe {
   check_assignable, check_expr, fn_return_env_name, is_array_builder_ty, is_region_tagged_ty, pat_binds_resume, preserve_generic_instantiation, reject_resume_outside_handler
 }
 
+import ./checker_spawnable.vibe {
+  check_spawnable_mut_captures_stmts
+}
+
 import ./checker_resolve.vibe {
   resolve_type_expr, subst_type_params
 }
@@ -1845,6 +1849,18 @@ export fn check_program(stmts: Array[Stmt]) -> TypeEnv with { Error } {
   let (env, final_s, _) = check_stmts(expanded_stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
   check_program_bounds(env, final_s, empty_defs, frozen_errors)
   collect_async_effect_errors(expanded_stmts, env, frozen_errors)
+  // #1081 step 3 Phase B (Codex review, PR #1151): `let mut` capture
+  // rejection is purely syntactic (no env/Subst needed) and must see the
+  // WHOLE program, not just one `TaskGroup::run` call's own body -- a
+  // `let mut` declared in the enclosing top-level function before calling
+  // `TaskGroup::run` is invisible to a per-call check. Run once per
+  // top-level declaration (checker_spawnable.vibe).
+  let spawnable_mut_errors = check_spawnable_mut_captures_stmts(stmts)
+  let mut smi = 0
+  while smi < Array::length(spawnable_mut_errors) {
+    Array::push(frozen_errors, Array::get(spawnable_mut_errors, smi))
+    smi = smi + 1
+  }
   if Array::length(frozen_errors) > 0 {
     throw(Array::get(frozen_errors, 0))
   }
@@ -1911,6 +1927,15 @@ export fn check_program_with_env(stmts: Array[Stmt], initial_env: TypeEnv) -> Ty
       // bounds cannot be enforced on this path yet).
       check_program_bounds_impl(env, final_s, empty_defs, frozen_errors, true)
       collect_async_effect_errors(stmts, env, frozen_errors)
+      // #1081 step 3 Phase B (Codex review, PR #1151): see check_program's
+      // matching call for why this runs whole-program rather than per
+      // `TaskGroup::run` call.
+      let spawnable_mut_errors = check_spawnable_mut_captures_stmts(stmts)
+      let mut smi = 0
+      while smi < Array::length(spawnable_mut_errors) {
+        Array::push(frozen_errors, Array::get(spawnable_mut_errors, smi))
+        smi = smi + 1
+      }
       if Array::length(frozen_errors) > 0 {
         throw(Array::get(frozen_errors, 0))
       }
