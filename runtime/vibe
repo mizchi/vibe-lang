@@ -336,9 +336,31 @@ maybe_warm_frontend_cache() {
   # itself uses for the real compile -- a .cwasm AOT image is wasmtime-
   # specific and cannot be loaded here, so this always uses the portable
   # $CLI_WASM even when pick_cli would have chosen the .cwasm below.
-  local src_abs; src_abs="$(cd "$(dirname "$src")" && pwd)/$(basename "$src")"
+  #
+  # `$src` is passed VERBATIM (not resolved to an absolute path) -- it must
+  # be the exact same string compile_to below receives. The driver resolves
+  # every import relative to this path (dir_of_path), and build_fingerprint
+  # folds each dependency's PATH, not just its content hash, into the
+  # importer's own fingerprint (runtime/typecheck_fs.vibe). An absolute path
+  # here and a relative one at compile_to would make the two passes derive
+  # DIFFERENT fingerprints for the same importer, so every warmed non-leaf
+  # entry would sit under a key the serial walk never looks up -- silently
+  # making `--jobs` a no-op for exactly the common `vibe build src/main.vibe`
+  # case (Codex review, PR #1144).
   local out_log; out_log="$(mktemp -t vibe-jobs-warm-XXXXXX)"
-  if ! timeout 600 node "$driver" "$CLI_WASM" "$src_abs" "$jobs" "$PWD" "$node_runner" >"$out_log" 2>&1; then
+  # macOS has no GNU `timeout` by default (only available via `gtimeout` from
+  # Homebrew coreutils) -- dispatch through whichever is present, or run
+  # unguarded (the job/CI-level timeout still bounds a true hang). Same
+  # idiom as scripts/test_vibe_library.sh's run_guarded.
+  local warm_status=0
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 600 node "$driver" "$CLI_WASM" "$src" "$jobs" "$PWD" "$node_runner" >"$out_log" 2>&1 || warm_status=$?
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout 600 node "$driver" "$CLI_WASM" "$src" "$jobs" "$PWD" "$node_runner" >"$out_log" 2>&1 || warm_status=$?
+  else
+    node "$driver" "$CLI_WASM" "$src" "$jobs" "$PWD" "$node_runner" >"$out_log" 2>&1 || warm_status=$?
+  fi
+  if [ "$warm_status" -ne 0 ]; then
     echo "vibe: --jobs=$jobs frontend pre-warm failed, compiling serially: $(tail -1 "$out_log")" >&2
   fi
   rm -f "$out_log"

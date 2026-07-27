@@ -111,6 +111,49 @@ else
   die "diagnostic mismatch: serial=[$serial_diag] post-warm=[$jobs4_diag]"
 fi
 
+# --- 4. regression pin (Codex review, PR #1144): a RELATIVE entry path
+#        must warm the SAME cache key the serial walk looks up. build_fingerprint
+#        folds each dependency's PATH (not just its content hash) into the
+#        importer's own fingerprint, so passing an absolute path to the warm
+#        pass and a relative one to compile_to (or vice versa) makes every
+#        non-leaf warmed entry land under a key the serial walk never
+#        requests -- silently turning `--jobs` into a no-op for exactly the
+#        common `vibe build src/main.vibe` case. This drives the real
+#        `runtime/vibe --jobs` entry point, not the driver script directly,
+#        since the bug was in how runtime/vibe passed $src to each phase.
+cache_keys() { find "$1/_build" -iname "*selfhost_type_env_v2*" 2>/dev/null | sed 's#.*/##' | sort; }
+
+rel_warm="$(mktemp -d)"
+cp "$work"/leaf.vibe "$work"/mid.vibe "$work"/main.vibe "$rel_warm/"
+( cd "$rel_warm" && VIBE_RUNNER="$RUNNER" VIBE_CLI_WASM="$COMPILER_WASM" \
+    bash "$PROJECT_ROOT/runtime/vibe" build main.vibe -o out.wasm --entry main_value --jobs 4 \
+    >/dev/null 2>rel_warm_err.txt ) || true
+warm_keys="$(cache_keys "$rel_warm")"
+if grep -qi "pre-warm failed" "$rel_warm/rel_warm_err.txt" 2>/dev/null; then
+  die "relative-path --jobs run's pre-warm silently failed: $(cat "$rel_warm/rel_warm_err.txt")"
+elif [ -z "$warm_keys" ]; then
+  die "relative-path --jobs run produced no persistent cache entries at all"
+fi
+
+rel_serial="$(mktemp -d)"
+cp "$work"/leaf.vibe "$work"/mid.vibe "$work"/main.vibe "$rel_serial/"
+( cd "$rel_serial" && VIBE_RUNNER="$RUNNER" VIBE_CLI_WASM="$COMPILER_WASM" \
+    bash "$PROJECT_ROOT/runtime/vibe" build main.vibe -o out.wasm --entry main_value \
+    >/dev/null 2>&1 )
+serial_keys="$(cache_keys "$rel_serial")"
+
+if [ "$warm_keys" = "$serial_keys" ]; then
+  note "relative-path cache-key parity ok ($(echo "$warm_keys" | grep -c .) keys, warm and serial agree)"
+else
+  die "relative-path cache-key MISMATCH between --jobs warm and plain serial: warm=[$warm_keys] serial=[$serial_keys]"
+fi
+if cmp -s "$rel_warm/out.wasm" "$rel_serial/out.wasm"; then
+  note "byte-identical: relative-path --jobs vs plain serial output"
+else
+  die "relative-path --jobs output differs from plain serial output"
+fi
+rm -rf "$rel_warm" "$rel_serial"
+
 if [ "$fail" -eq 0 ]; then
   echo "[jobs-warm] ok"
   exit 0
