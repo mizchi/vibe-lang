@@ -1,0 +1,34 @@
+// #906: end-to-end proof that FrozenArray[T] is Send-eligible where
+// Array[T] is not -- a `TaskGroup::spawn` closure capturing a
+// FrozenArray[Int] (built OUTSIDE the closure, so this is a genuine
+// cross-boundary capture, not a same-nursery endpoint) is Spawnable-legal
+// (checker_spawnable.vibe's capture check falls back to type_send_ok,
+// #1081 step 3 Phase B), while the same capture of a plain Array[Int]
+// is rejected (fixtures/err_spawnable_capture_array.vibe). This is the
+// #906 (compiler self-parallelization) motivating use case:
+// docs/compiler-parallelism.md needs a Send-eligible immutable bulk
+// container to pass data like diagnostics lists across the
+// TaskGroup::spawn boundary.
+import @vibex/concurrent { TaskGroup, TaskHandle }
+
+let _start = () -> Int {
+  let data = [10, 10, 20]
+  let fa = FrozenArray::from_array(data)
+  let result = TaskGroup::run((n) -> {
+    let t = TaskGroup::spawn(n, () -> {
+      FrozenArray::get(fa, 0) + FrozenArray::get(fa, 1) + FrozenArray::get(fa, 2)
+    })
+    match TaskHandle::join(t) {
+      Ok(v) => v,
+      Err(_) => 0 - 1
+    }
+  })
+  match result {
+    Ok(v) => v,
+    Err(_) => 0 - 1
+  }
+}
+_start()
+
+__DATA__
+{"last":"40"}

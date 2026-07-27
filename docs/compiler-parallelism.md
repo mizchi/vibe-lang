@@ -86,6 +86,24 @@ the compiler multi-worker gate. Serializing every AST/interface through
 compiler dogfood into a serialization benchmark. Mutable `Array`, `Bytes`,
 handler evidence, and continuation values remain non-`Send`.
 
+**Status (#906):** `FrozenArray[T]` is implemented as a checker-only
+phantom-type distinction over `Array[T]`'s exact same runtime layout — the
+same technique `ArrayBuilder[T]` already uses (`ArrayBuilder::freeze` is a
+pure identity cast; so are `FrozenArray::from_array`/`FrozenArray::to_array`).
+Surface: `FrozenArray::from_array`, `FrozenArray::get`, `FrozenArray::length`,
+`FrozenArray::to_array` — no mutation methods, deliberately. `Send`'s
+structural judgment (`send_ok_rec`, checker/checker_trait.vibe) treats
+`FrozenArray[T]` as `Send` exactly when `T` is, so a `FrozenArray[Diagnostic]`
+(assuming `Diagnostic` is itself `Send`) can now cross a `TaskGroup::spawn`
+boundary where the equivalent `Array[Diagnostic]` is rejected. Fixtures:
+`fixtures/region_ok_frozen_array_basic.vibe`,
+`fixtures/send_bound_frozen_array.vibe`,
+`fixtures/err_type_send_frozen_array_of_array_bound.vibe`,
+`fixtures/region_ok_frozen_array_taskgroup_capture.vibe` (compiler_gate.sh
+gate 63). Not yet done: nothing in the module-job pipeline below actually
+produces or threads a `FrozenArray[Diagnostic]` value yet — `Diagnosed`'s
+payload above is still illustrative until a later phase wires it through.
+
 Conceptually, the operation-level effect boundary is:
 
 ```vibe skip
@@ -425,7 +443,8 @@ The accumulator threading in `ensure_fingerprint_fs_go` is unchanged — only
 the per-module leaf work was lifted out. It is still a depth-first recursion
 whose call stack, not an explicit ready/running/terminal set, is what
 currently encodes "wait until dependencies are done". `FrozenArray[T]` is
-not implemented.
+now implemented (checker-only phantom type over `Array[T]`, see the Status
+note above) but not yet threaded through this recursion.
 
 Turning that recursion into a worklist a real dispatcher can drive does not
 help by itself: vibe runs as one process per invocation, so bookkeeping
