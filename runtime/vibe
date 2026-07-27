@@ -619,7 +619,7 @@ case "$cmd" in
         --entry) entry="$2"; entry_override=1; shift 2 ;;
         --wit) wit=1; shift ;;
         --minify) minify=1; shift ;;
-        --jobs) jobs="$2"; shift 2 ;;
+        --jobs) [ "$#" -ge 2 ] || die "--jobs requires a value"; jobs="$2"; shift 2 ;;
         *) src="$1"; shift ;;
       esac
     done
@@ -815,9 +815,25 @@ case "$cmd" in
       rm -f "$dout" "$dout.diag"
       exit "$rc"
     fi
-    [ "$#" -ge 1 ] || die "usage: vibe check <file.vibe>"
-    src="$1"
+    src=""; jobs=1
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --jobs) [ "$#" -ge 2 ] || die "--jobs requires a value"; jobs="$2"; shift 2 ;;
+        *) [ -z "$src" ] || die "usage: vibe check [--jobs N] <file.vibe>"; src="$1"; shift ;;
+      esac
+    done
+    [ -n "$src" ] || die "usage: vibe check [--jobs N] <file.vibe>"
+    case "$jobs" in
+      ''|*[!0-9]*) die "--jobs must be a positive integer, got: $jobs" ;;
+    esac
+    [ "$jobs" -ge 1 ] || die "--jobs must be a positive integer, got: $jobs"
     [ -f "$src" ] || die "not found: $src"
+    # #906 Phase 2 (real-check wiring): same best-effort pre-warm `build`
+    # already gets (maybe_warm_frontend_cache above) -- `check` walks the
+    # exact same import graph via the exact same persistent type-env cache,
+    # it just stops before codegen, so the warm pass helps identically and
+    # is equally a no-op/never-fails when --jobs is left at its default 1.
+    maybe_warm_frontend_cache "$jobs" "$src"
     cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
     # #946(3): parse + typecheck ONLY (imports resolved from the FS) — no
     # codegen, no entry-function requirement. Previously this reused the full
@@ -1112,20 +1128,32 @@ case "$cmd" in
     # compilation already folds source+deps+compiler into those bytes). Only PASS
     # is cached — a fail always re-runs. `--no-cache` bypasses the cache entirely.
     no_cache=0
+    jobs=1
     files=""
-    for a in "$@"; do
-      case "$a" in
-        --no-cache) no_cache=1 ;;
-        *) files="$files $a" ;;
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --no-cache) no_cache=1; shift ;;
+        --jobs) [ "$#" -ge 2 ] || die "--jobs requires a value"; jobs="$2"; shift 2 ;;
+        *) files="$files $1"; shift ;;
       esac
     done
+    case "$jobs" in
+      ''|*[!0-9]*) die "--jobs must be a positive integer, got: $jobs" ;;
+    esac
+    [ "$jobs" -ge 1 ] || die "--jobs must be a positive integer, got: $jobs"
     # shellcheck disable=SC2086
     set -- $files
-    [ "$#" -ge 1 ] || die "usage: vibe test [--no-cache] <file_test.vibe> [more_test.vibe...]"
+    [ "$#" -ge 1 ] || die "usage: vibe test [--no-cache] [--jobs N] <file_test.vibe> [more_test.vibe...]"
     tcache="${VIBE_TEST_CACHE:-$VIBE_HOME/cache/test}"
     failed=0
     for src in "$@"; do
       [ -f "$src" ] || die "not found: $src"
+      # #906 Phase 2 (real-test wiring): same best-effort pre-warm `build`/
+      # `check` get -- each test file is its own compile entry with its own
+      # import graph, so warm it before this file's own compile_to below
+      # (never changes output, only ever helps or no-ops; see
+      # maybe_warm_frontend_cache's own doc comment above).
+      maybe_warm_frontend_cache "$jobs" "$src"
       out="$(mktemp -t vibe-test-XXXXXX.wasm)"
       meta="$out.testmeta"
       rm -f "$meta"

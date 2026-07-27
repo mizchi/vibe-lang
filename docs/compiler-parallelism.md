@@ -553,9 +553,11 @@ byte-identical Wasm between `--jobs 1` and `--jobs 4` on the fixture diamond
 project, in addition to the diagnostic-equality check above.
 
 What that is still NOT: this only speeds up (or no-ops) the frontend
-check — parse/typecheck — never codegen or linking, and only for `vibe
-build`/`compile`, not `check`/`test`/`diagnostics` (not wired there yet,
-though the same `maybe_warm_frontend_cache` helper would apply unchanged).
+check — parse/typecheck — never codegen or linking. It is now wired into
+`vibe build`/`compile`, `check`, and `test` (each call site just parses its
+own `--jobs N` and calls the same `maybe_warm_frontend_cache` before its
+existing compile/check loop, unchanged) but not `diagnostics` (not wired
+there yet, though the same helper would apply unchanged there too).
 It requires Node (the coordinator uses `worker_threads`) even when the
 installed toolchain's own runner is the Rust `vibewt`, so it is scoped to a
 dev checkout of this repo — see the "Shared-everything migration note" below
