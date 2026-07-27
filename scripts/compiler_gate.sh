@@ -6880,7 +6880,88 @@ fi
 rm -rf "$taskgroupdir"
 echo "[compiler-gate] taskgroup { g => body } syntax sugar ok"
 
-# 63/63. #639: effect-row mismatch diagnostic snapshots -- criterion 1 (no
+# #906 (compiler self-parallelization prerequisite,
+# docs/compiler-parallelism.md "FrozenArray"): FrozenArray[T] is a
+# checker-only phantom-type distinction over Array[T]'s exact same runtime
+# layout (mirrors ArrayBuilder's new/push/freeze technique, checker.vibe
+# #938 -- from_array/to_array are pure identity casts, get/length alias
+# Array::get/Array::length's own bodies). Its whole point is the Send
+# judgment: checker_trait.vibe's send_ok_rec now has a
+# CtNamed("FrozenArray", [elem]) arm recognizing it Send exactly when
+# `elem` is, unlike Array[T] (permanently rejected, unaffected). Four
+# fixtures: (1) region_ok_frozen_array_basic.vibe -- functional smoke test
+# of from_array/get/length/to_array, compiled+run. (2)
+# send_bound_frozen_array.vibe -- FrozenArray[Int] satisfies a `[T: Send]`
+# bound, compiled+run. (3) err_type_send_frozen_array_of_array_bound.vibe
+# -- the judgment truly recurses: FrozenArray[Array[Int]] (non-Send
+# element) is still rejected. (4)
+# region_ok_frozen_array_taskgroup_capture.vibe -- end-to-end: a
+# `TaskGroup::spawn` closure capturing a FrozenArray[Int] built OUTSIDE
+# the closure is Spawnable-legal (checker_spawnable.vibe falls back to
+# type_send_ok), where the same capture of a plain Array[Int] is rejected
+# (fixtures/err_spawnable_capture_array.vibe, gate 61 above, unaffected).
+echo "[compiler-gate] 63/64 FrozenArray[T] Send-eligible immutable container (#906)"
+frozenarrdir="_build/_gate_frozen_array"
+rm -rf "$frozenarrdir"; mkdir -p "$frozenarrdir"
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/region_ok_frozen_array_basic.vibe > "$frozenarrdir/basic.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$frozenarrdir/basic.vibe" "$frozenarrdir/basic.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$frozenarrdir/basic.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_frozen_array_basic.vibe did not compile" >&2
+  cat "$frozenarrdir/basic.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+frozenarr_basic_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$frozenarrdir/basic.wasm" 2>/dev/null | tail -1)"
+if [ "$frozenarr_basic_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: region_ok_frozen_array_basic.vibe got '$frozenarr_basic_out' (want 42)" >&2
+  exit 1
+fi
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/send_bound_frozen_array.vibe > "$frozenarrdir/send.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$frozenarrdir/send.vibe" "$frozenarrdir/send.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$frozenarrdir/send.wasm" ]; then
+  echo "[compiler-gate] FAIL: send_bound_frozen_array.vibe did not compile -- FrozenArray[Int] Send acceptance regressed" >&2
+  cat "$frozenarrdir/send.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+frozenarr_send_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$frozenarrdir/send.wasm" 2>/dev/null | tail -1)"
+if [ "$frozenarr_send_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: send_bound_frozen_array.vibe got '$frozenarr_send_out' (want 42)" >&2
+  exit 1
+fi
+sed '/^__DATA__$/,$d' fixtures/err_type_send_frozen_array_of_array_bound.vibe > "$frozenarrdir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$frozenarrdir/neg.vibe" "$frozenarrdir/neg.wasm" main >/dev/null 2>&1 || true
+if [ -s "$frozenarrdir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_type_send_frozen_array_of_array_bound.vibe compiled successfully -- must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF 'no impl `Send` for `FrozenArray[Array[Int]]`' "$frozenarrdir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_type_send_frozen_array_of_array_bound.vibe did not produce the expected diagnostic" >&2
+  cat "$frozenarrdir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/region_ok_frozen_array_taskgroup_capture.vibe > "$frozenarrdir/capture.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$frozenarrdir/capture.vibe" "$frozenarrdir/capture.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$frozenarrdir/capture.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_frozen_array_taskgroup_capture.vibe did not compile -- FrozenArray Spawnable capture regressed" >&2
+  cat "$frozenarrdir/capture.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+frozenarr_capture_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$frozenarrdir/capture.wasm" 2>/dev/null | tail -1)"
+if [ "$frozenarr_capture_out" != "40" ]; then
+  echo "[compiler-gate] FAIL: region_ok_frozen_array_taskgroup_capture.vibe got '$frozenarr_capture_out' (want 40)" >&2
+  exit 1
+fi
+rm -rf "$frozenarrdir"
+echo "[compiler-gate] FrozenArray[T] Send-eligible immutable container ok"
+
+# 64/64. #639: effect-row mismatch diagnostic snapshots -- criterion 1 (no
 #        'with' clause at all) and criterion 2 (a `handle` locally
 #        discharges one effect while another stays genuinely missing; the
 #        message must show the handled one folded into "declared" rather
@@ -6888,7 +6969,7 @@ echo "[compiler-gate] taskgroup { g => body } syntax sugar ok"
 #        can't silently drift; see #639's discussion for why the riskier
 #        "over-declared with{} is itself a hard error" reading was
 #        deliberately NOT implemented.
-echo "[compiler-gate] 63/63 effect-row mismatch diagnostic snapshots (#639)"
+echo "[compiler-gate] 64/64 effect-row mismatch diagnostic snapshots (#639)"
 eff639dir="_build/_gate_eff639"
 rm -rf "$eff639dir"; mkdir -p "$eff639dir"
 cp fixtures/err_effect_missing_annotation.vibe "$eff639dir/no_with.vibe"

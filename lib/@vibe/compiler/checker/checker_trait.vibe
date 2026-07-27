@@ -265,7 +265,21 @@ fn send_ok_rec(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, seen: Arr
     CtFn(_, _, _) => false,
     CtEnum(name) => send_ok_named(env, s, defs, name, no_type_args(), seen),
     CtStruct(name) => send_ok_named(env, s, defs, name, no_type_args(), seen),
-    CtNamed(name, targs) => send_ok_named(env, s, defs, name, targs, seen),
+    // #906: FrozenArray[T] is a checker-only phantom-type wrapper over
+    // Array[T]'s exact same (mutable-looking, but never mutated through this
+    // type) runtime layout -- see checker.vibe's FrozenArray::* ECall
+    // branches and codegen/gc/backend_body.vibe's identity-cast aliasing.
+    // Unlike Array[T] (always rejected, CtArray(_) => false above), a
+    // FrozenArray is Send exactly when its element type is, since nothing
+    // reachable through it can mutate after capture. Must be checked before
+    // the generic CtNamed(...) fallback below, which only resolves
+    // user-defined struct/enum typedefs and would reject FrozenArray as an
+    // unknown name.
+    CtNamed(name, targs) => if name == "FrozenArray" && Array::length(targs) == 1 {
+      send_ok_rec(env, s, defs, Array::get(targs, 0), seen)
+    } else {
+      send_ok_named(env, s, defs, name, targs, seen)
+    },
     CtVar(_) => false,
     CtForAll(_, _, _) => false,
     CtUnknown => false

@@ -1,0 +1,23 @@
+// #906: FrozenArray[T]'s Send judgment (checker_trait.vibe send_ok_rec's
+// CtNamed("FrozenArray", [elem]) arm) -- a FrozenArray[T] is Send exactly
+// when T is, since the surface has no mutation methods at all, so nothing
+// reachable through it can change after capture. This is the whole point
+// of the feature (#906, docs/compiler-parallelism.md): Array[T] itself
+// stays permanently rejected (CtArray(_) => false in send_ok_rec,
+// unaffected by this change; see fixtures/err_type_send_array_bound.vibe),
+// but a FrozenArray[Int] snapshot now satisfies a `[T: Send]` bound.
+// Companion negative: fixtures/err_type_send_frozen_array_of_array_bound.vibe
+// pins that the judgment truly recurses -- wrapping a non-Send element
+// (Array[Int]) in a FrozenArray does NOT itself confer Send.
+let want_send = [T: Send](x: T) -> T { x }
+
+let _start = () -> Int {
+  let a = [1, 2, 39]
+  let fa = FrozenArray::from_array(a)
+  let ok = want_send(fa)
+  FrozenArray::get(ok, 0) + FrozenArray::get(ok, 1) + FrozenArray::get(ok, 2)
+}
+_start()
+
+__DATA__
+{"last":"42"}
