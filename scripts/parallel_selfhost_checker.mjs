@@ -125,15 +125,32 @@ export class SelfhostChecker {
   }
 
   // Check one module inside a job directory. `dependencies` are the
-  // coordinator's terminal outcomes for this module's direct dependencies,
-  // IN DECLARATION ORDER -- dep<i>.env is positional, so reordering them
-  // would silently bind imports to the wrong environments.
+  // coordinator's terminal outcomes for this module's direct dependencies
+  // (deduped by resolved path -- see dependencyOccurrences below for why
+  // that isn't the whole picture). Each dependency must carry its own
+  // `outcome.artifact.fingerprint`, computed by an earlier call to this
+  // same method -- see the `fingerprint` field below.
   //
-  // Returns { diagnostic, env }: `env` is the module's serialized public
-  // environment, which the coordinator hands to this module's dependents.
-  // That is the whole point of the job dir -- a worker cannot look a
-  // dependency up in the type-env cache, because the key derives from the
-  // transitive source snapshot it is not allowed to see.
+  // `module.dependencyOccurrences` (set by normalizeParallelProject,
+  // defaulting to one occurrence per dependency) is what actually drives
+  // the `dep` rows and dep<i>.env files, IN DECLARATION ORDER -- dep<i>.env
+  // is positional, so reordering it would silently bind imports to the
+  // wrong environments. A real module can import the same file through
+  // more than one import statement (valid vibe; the serial compiler
+  // accepts it), and check_module's build_fingerprint folds a dependency's
+  // fingerprint once PER OCCURRENCE -- so replaying `dependencies` (deduped
+  // to satisfy the scheduler's own uniqueness requirement) here instead
+  // would compute a DIFFERENT fingerprint than the serial compiler would
+  // for the same source (#1126 Codex review).
+  //
+  // Returns { diagnostic, env, fingerprint }: `env` is the module's
+  // serialized public environment, which the coordinator hands to this
+  // module's dependents (a worker cannot look a dependency up in the
+  // type-env cache -- the key derives from the transitive source snapshot
+  // it is not allowed to see). `fingerprint` is this module's OWN identity,
+  // computed by check_module (build_fingerprint) from its source and its
+  // dependencies' fingerprints -- never invented here, so it lands at the
+  // exact persistent-cache key a serial compile would look under.
   async check(module, dependencies = []) {
     await this.start();
     const stem = fingerprint(module.id).slice(0, 16);
@@ -142,12 +159,29 @@ export class SelfhostChecker {
     await rm(jobDir, { recursive: true, force: true });
     await mkdir(jobDir, { recursive: true });
 
-    const rows = ["version\t1", `path\t${module.id}`, `fingerprint\t${stem}`];
-    for (const dependency of dependencies) rows.push(`dep\t${dependency.id}`);
+    const byId = new Map(dependencies.map((dependency) => [dependency.id, dependency]));
+    const occurrences = module.dependencyOccurrences ?? dependencies.map((d) => d.id);
+
+    const rows = ["version\t1", `path\t${module.id}`];
+    for (const depId of occurrences) {
+      const dependency = byId.get(depId);
+      if (!dependency) {
+        throw new Error(
+          `"${module.id}" has a dependencyOccurrences entry "${depId}" the scheduler never resolved a terminal outcome for`,
+        );
+      }
+      const depFingerprint = dependency.outcome?.artifact?.fingerprint;
+      if (typeof depFingerprint !== "string" || depFingerprint.length === 0) {
+        throw new Error(
+          `dependency "${depId}" of "${module.id}" has no checked fingerprint -- cannot compute a canonical fingerprint for "${module.id}" without it`,
+        );
+      }
+      rows.push(`dep\t${depId}\t${depFingerprint}`);
+    }
     await writeFile(join(jobDir, "job.txt"), `${rows.join("\n")}\n`, "utf8");
     await writeFile(join(jobDir, "source.vibe"), module.source, "utf8");
-    for (const [index, dependency] of dependencies.entries()) {
-      const env = dependency.outcome?.artifact?.env;
+    for (const [index, depId] of occurrences.entries()) {
+      const env = byId.get(depId)?.outcome?.artifact?.env;
       if (typeof env !== "string" || env.length === 0) continue;
       await writeFile(join(jobDir, `dep${index}.env`), env, "utf8");
     }
@@ -156,6 +190,9 @@ export class SelfhostChecker {
     const outcome = (await this.readIfPresent(join(jobDir, "outcome.txt")))?.trim() ?? "";
     const diagnostic = (await this.readIfPresent(join(jobDir, "diag.txt")))?.trim() ?? "";
     const env = await this.readIfPresent(join(jobDir, "env.out"));
+    const computedFingerprint = (
+      await this.readIfPresent(join(jobDir, "fingerprint.out"))
+    )?.trim();
     const workerDiag = (
       await this.readIfPresent(join(jobDir, "worker.out.diag"))
     )?.trim();
@@ -190,7 +227,17 @@ export class SelfhostChecker {
           `selfhost worker reported ok for "${module.id}" without a usable env.out`,
         );
       }
-      return { diagnostic: null, env };
+      // Same failure shape as the env.out check above: a missing
+      // fingerprint.out must not be papered over with an invented one.
+      // Nothing else in the pipeline can verify a made-up value against
+      // check_module's canonical build_fingerprint, so a dependent job
+      // would carry it forward as if it were real and never notice.
+      if (typeof computedFingerprint !== "string" || computedFingerprint.length === 0) {
+        throw new Error(
+          `selfhost worker reported ok for "${module.id}" without a fingerprint.out`,
+        );
+      }
+      return { diagnostic: null, env, fingerprint: computedFingerprint };
     }
     if (outcome !== "diag") {
       throw new Error(`unknown module job outcome: ${JSON.stringify(outcome)}`);

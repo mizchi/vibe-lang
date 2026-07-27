@@ -40,4 +40,5 @@ fi
 
 echo "[parallel-selfhost] compiler=$COMPILER_WASM" >&2
 VIBE_PARALLEL_COMPILER_WASM="$COMPILER_WASM" \
-  node --test scripts/parallel_scheduler_selfhost.test.mjs
+  node --test scripts/parallel_scheduler_selfhost.test.mjs \
+  scripts/parallel_project_driver.test.mjs

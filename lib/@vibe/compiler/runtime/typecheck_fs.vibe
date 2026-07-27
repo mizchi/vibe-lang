@@ -693,12 +693,20 @@ export fn check_module(job: ModuleJob) -> ModuleOutcome with { Error } {
   // Folding both into one handler would relabel every parse diagnostic.
   let stmts = parse_program_with_path(job.path, job.source)
   let import_env = build_import_env(stmts, dir_of_path(job.path), job.dep_envs)
+  // The CANONICAL fingerprint, computed the same way the serial walk
+  // computes it (build_fingerprint, same file) from the same inputs: this
+  // module's own source and each dependency's fingerprint in declaration
+  // order. A worker that invented its own cache key -- or trusted one
+  // handed to it -- could publish a checked environment that the serial
+  // driver would never look up, which would make a parallel pre-check pass
+  // silently do nothing.
+  let fingerprint = build_fingerprint(job.source, job.dep_fps)
   handle {
     let checked_env = match import_env {
       EnvEmpty => check_program(stmts),
       _ => check_program_with_env(stmts, import_env)
     }
-    Checked(job.path, job.fingerprint, checked_env)
+    Checked(job.path, fingerprint, checked_env)
   } with Error {
     Throw(msg) => Diagnosed(job.path, [String::concat(String::concat(job.path, ": "), locate_type_error(job.source, msg))])
   }
@@ -759,12 +767,17 @@ fn job_dir_path(dir: String, name: String) -> String {
   String::concat(String::concat(dir, "/"), name)
 }
 
-fn parse_job_rows(job_text: String) -> (String, String, Array[String]) with { Error } {
+// `dep` rows carry the dependency's path AND its already-computed
+// fingerprint (`dep\t<path>\t<fingerprint>`) -- three columns, unlike every
+// other row. There is deliberately no `fingerprint` row for the job's OWN
+// identity: that is check_module's output (via build_fingerprint), never
+// an input a caller could get wrong or fail to keep in sync.
+fn parse_job_rows(job_text: String) -> (String, Array[String], Array[String]) with { Error } {
   let lines = String::split(normalize_persistent_cache_text(job_text), "\n")
   let len = Array::length(lines)
   let deps = empty_stack()
+  let dep_fps = empty_stack()
   let mut path = ""
-  let mut fingerprint = ""
   let mut version_ok = false
   let mut i = 0
   while i < len {
@@ -773,10 +786,29 @@ fn parse_job_rows(job_text: String) -> (String, String, Array[String]) with { Er
       ()
     } else {
       let parts = String::split(line, "\t")
-      if Array::length(parts) != 2 {
+      let plen = Array::length(parts)
+      let key = if plen > 0 { Array::get(parts, 0) } else { "" }
+      if key == "dep" {
+        let dep_path = Array::get(parts, 1)
+        let dep_fp = Array::get(parts, 2)
+        if plen != 3 {
+          throw(String::concat("invalid module job dep row (want path + fingerprint): ", line))
+        } else if String::length(dep_path) == 0 || String::length(dep_fp) == 0 {
+          // Codex review (#1126): a row with an empty path or fingerprint
+          // column (e.g. a trailing tab, `dep\t/dep.vibe\t`) still has 3
+          // parts and would otherwise pass the column-count check above.
+          // An empty fingerprint folds into build_fingerprint the same way
+          // regardless of which dependency revision produced it, so two
+          // different revisions would silently collide on one fingerprint
+          // instead of the job being rejected as malformed.
+          throw(String::concat("invalid module job dep row (empty path or fingerprint): ", line))
+        } else {
+          Array::push(deps, dep_path)
+          Array::push(dep_fps, dep_fp)
+        }
+      } else if plen != 2 {
         throw(String::concat("invalid module job row: ", line))
       } else {
-        let key = Array::get(parts, 0)
         let value = Array::get(parts, 1)
         if key == "version" {
           if value == "1" {
@@ -786,10 +818,6 @@ fn parse_job_rows(job_text: String) -> (String, String, Array[String]) with { Er
           }
         } else if key == "path" {
           path = value
-        } else if key == "fingerprint" {
-          fingerprint = value
-        } else if key == "dep" {
-          Array::push(deps, value)
         } else {
           throw(String::concat("unknown module job row: ", line))
         }
@@ -802,21 +830,24 @@ fn parse_job_rows(job_text: String) -> (String, String, Array[String]) with { Er
   } else if String::length(path) == 0 {
     throw("module job is missing its path row")
   } else {
-    (path, fingerprint, deps)
+    (path, deps, dep_fps)
   }
 }
 
 export fn run_module_job_dir(dir: String) -> Unit with { Error, Fs } {
-  let (path, fingerprint, deps) = parse_job_rows(Fs::read_file(job_dir_path(dir, "job.txt")))
+  let (path, deps, dep_fps) = parse_job_rows(Fs::read_file(job_dir_path(dir, "job.txt")))
   let source = Fs::read_file(job_dir_path(dir, "source.vibe"))
   let dep_envs = array_empty()
+  let job_dep_fps = array_empty()
   let mut i = 0
   let dlen = Array::length(deps)
   while i < dlen {
+    let dep_path = Array::get(deps, i)
+    Array::push(job_dep_fps, (dep_path, Array::get(dep_fps, i)))
     let env_file = job_dir_path(dir, String::concat(String::concat("dep", __to_string(i)), ".env"))
     if Fs::exists(env_file) {
       match parse_persistent_type_env(Fs::read_file(env_file)) {
-        Some(env) => Array::push(dep_envs, (Array::get(deps, i), env)),
+        Some(env) => Array::push(dep_envs, (dep_path, env)),
         // A dep<i>.env that exists but does not decode is an
         // INFRASTRUCTURE failure, not "no environment". Skipping it would
         // drop the dependency's interface and make its imports lenient
@@ -836,7 +867,7 @@ export fn run_module_job_dir(dir: String) -> Unit with { Error, Fs } {
     path: path,
     source: source,
     deps: deps,
-    fingerprint: fingerprint,
+    dep_fps: job_dep_fps,
     dep_envs: dep_envs
   }
   // Parse errors are still an `Error` out of check_module (see the Phase 1
@@ -853,8 +884,14 @@ export fn run_module_job_dir(dir: String) -> Unit with { Error, Fs } {
   // so a worker killed mid-write leaves an obviously unfinished job dir
   // rather than a plausible-looking wrong answer.
   match outcome {
-    Checked(_, _, env) => {
+    Checked(_, fingerprint, env) => {
       Fs::write_file(job_dir_path(dir, "env.out"), persistent_type_env_cache_text(env))
+      // The module's own identity, as check_module computed it -- an
+      // OUTPUT of this job, needed by the coordinator to build the NEXT
+      // job's `dep\t<path>\t<fingerprint>` row for this module's
+      // dependents, and eventually to publish this environment at the
+      // real persistent-cache path a serial compile would look under.
+      Fs::write_file(job_dir_path(dir, "fingerprint.out"), fingerprint)
       Fs::write_file(job_dir_path(dir, "outcome.txt"), "ok")
     },
     Diagnosed(_, diags) => {
@@ -864,7 +901,15 @@ export fn run_module_job_dir(dir: String) -> Unit with { Error, Fs } {
   }
 }
 
-fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
+// `fingerprint` is the already-folded build_fingerprint(source, dep_fps)
+// every call site computed to decide whether to call this function at all
+// (the Fs::exists / ripple_record_eval fast path below needs that folded
+// value, not the raw pairs). `dep_fps` is the SAME per-dependency pairs
+// that fold produced, passed through unfolded too so the ModuleJob built
+// below carries the real inputs check_module needs to compute (and thereby
+// cross-check) that identical fingerprint itself, the same way a worker
+// would -- one canonical computation, not a value trusted from the caller.
+fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)], fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
   if Fs::exists(persistent_type_env_cache_path(fingerprint)) {
     let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
     (fingerprint, next_db, env_cache, dep_source_cache, parse_count)
@@ -874,7 +919,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
       path: path,
       source: source,
       deps: deps,
-      fingerprint: fingerprint,
+      dep_fps: dep_fps,
       dep_envs: import_env_cache
     }
     let outcome = check_module(job)
@@ -1007,10 +1052,10 @@ fn ensure_fingerprint_fs_go(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
                   if cached_fp == fingerprint {
                     (fingerprint, db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps)
                   } else {
-                    finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, fingerprint)
+                    finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, dep_fps, fingerprint)
                   },
                   None =>
-                  finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, fingerprint)
+                  finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, dep_fps, fingerprint)
                 }
               }
             }
@@ -1067,10 +1112,10 @@ fn ensure_fingerprint_fs_go(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
                 if cached_fp == fingerprint {
                   (fingerprint, db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps)
                 } else {
-                  finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, fingerprint)
+                  finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, dep_fps, fingerprint)
                 },
                 None =>
-                finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, fingerprint)
+                finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, dep_fps, fingerprint)
               }
             }
           }
@@ -1127,10 +1172,10 @@ fn ensure_fingerprint_fs_go(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
               if cached_fp == fingerprint {
                 (fingerprint, db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps)
               } else {
-                finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, fingerprint)
+                finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, dep_fps, fingerprint)
               },
               None =>
-              finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, fingerprint)
+              finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, dep_fps, fingerprint)
             }
           }
         }
