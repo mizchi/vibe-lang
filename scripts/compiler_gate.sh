@@ -6807,4 +6807,44 @@ fi
 rm -rf "$spawnabledir"
 echo "[compiler-gate] ADR-0068 Spawnable[r] capture check ok"
 
+# 62/62. #639: effect-row mismatch diagnostic snapshots -- criterion 1 (no
+#        'with' clause at all) and criterion 2 (a `handle` locally
+#        discharges one effect while another stays genuinely missing; the
+#        message must show the handled one folded into "declared" rather
+#        than re-flagging it as missing). Pins the exact wording so it
+#        can't silently drift; see #639's discussion for why the riskier
+#        "over-declared with{} is itself a hard error" reading was
+#        deliberately NOT implemented.
+echo "[compiler-gate] 62/62 effect-row mismatch diagnostic snapshots (#639)"
+eff639dir="_build/_gate_eff639"
+rm -rf "$eff639dir"; mkdir -p "$eff639dir"
+cp fixtures/err_effect_missing_annotation.vibe "$eff639dir/no_with.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$eff639dir/no_with.vibe" "$eff639dir/no_with.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$eff639dir/no_with.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_effect_missing_annotation.vibe compiled successfully -- must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF "missing { Ask } (no 'with' clause, requires { Ask })" "$eff639dir/no_with.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_effect_missing_annotation.vibe did not produce the expected diagnostic" >&2
+  cat "$eff639dir/no_with.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+cp fixtures/err_effect_handle_partial_discharge.vibe "$eff639dir/partial.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$eff639dir/partial.vibe" "$eff639dir/partial.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$eff639dir/partial.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_effect_handle_partial_discharge.vibe compiled successfully -- must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF "missing { Fs } (declared with { Ask, Ask::Get }, requires { Ask, Ask::Get, Fs })" "$eff639dir/partial.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_effect_handle_partial_discharge.vibe did not produce the expected diagnostic" >&2
+  cat "$eff639dir/partial.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$eff639dir"
+echo "[compiler-gate] effect-row mismatch diagnostic snapshots ok"
+
 echo "[compiler-gate] ok"
