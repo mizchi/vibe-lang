@@ -1043,6 +1043,187 @@ export fn package_hash_from_sources(sources: Array[(String, String)]) -> String 
 // tail-append). semver is strict: bare x.y.z or ^x.y.z, full triple only.
 // The constraint is edit-time tooling metadata; the build consumes only the
 // hash. The hash is REQUIRED here until fmt pin-insertion lands (D-3).
+//
+// #1128: the leading directive region additionally carries the package
+// HEADER itself (`index.vpkg` only, though nothing here special-cases the
+// file extension -- any file's leading region may carry these same
+// directives, exactly as `version` always could):
+//
+//   name = @scope/pkg
+//   version = x.y.z
+//   main = true            (optional; parsed only, no compiler behavior
+//                            yet -- reserved, #1128)
+//   description =
+//     #|line one
+//     #|line two
+//   deps = {
+//     @scope/pkg2 : x.y.z
+//   }
+//   generated_hash = <#pkg:sha1:<40hex> or empty until computed>
+//
+// `version = x.y.z` (with `=`) is the PREFERRED spelling going forward, but
+// the old bare `version x.y.z` (ADR-0065/#754) is still accepted, NOT an
+// error -- see the `version` branch below for why (short version: the
+// bootstrap seed that builds the compiler itself only understands the old
+// spelling, and `lib/@vibe/compiler/**` plus its direct dependency closure
+// stay on it until a dedicated bootstrap-bump migrates them). Every OTHER
+// package in the repo has been migrated to the new header (name/version=/
+// description/deps/generated_hash). None of the header fields (including
+// `name`/`version`/`description`, "required" per the #1128 convention) are
+// hard-enforced by this scanner or by the loader -- doing so would also
+// reject the handful of `fixtures/contract_*` test packages that
+// deliberately carry a minimal or absent header to exercise the
+// conformance engine in isolation. This scanner accepts a header with any
+// subset of fields present (including none at all), since it also runs
+// over plain consumer files that carry only `require` lines.
+// `description`'s `#|` continuation lines reuse the language's own `#|`
+// multi-line string alignment rule (#854): every continuation line's `#|`
+// must sit at the same column as the block's first, or it's a located
+// error. `deps` declares this package's OWN external version constraints
+// -- `import @scope/pkg { names }` elsewhere remains pure name resolution
+// (never carries a version); `deps` is the single authoritative place a
+// package states what it needs and at what version, deliberately separate
+// from name resolution so the two can't silently drift into two competing
+// sources of truth. Cross-checking `deps` against a package's actual
+// `import` statements (catching an undeclared external dependency) is
+// deliberately NOT wired into the live loader here -- see
+// `deps_missing_for_imports` below, a standalone checker a future gate can
+// call once the shape has been exercised in practice. `generated_hash` is
+// the package's own content hash (same `#pkg:sha1:<40hex>` shape a
+// `require` pin already uses) -- left empty until a publish step computes
+// and writes it back; this pass only parses it.
+
+// `@scope/name` or a nested `@scope/name/sub/...` (e.g. `@vibe/wasi/p3`,
+// `@vibe/compiler/runtime`) -- at least two `/`-separated segments, not
+// exactly two, and every segment (including the `@scope` head) non-empty:
+// rejects `@/pkg`, `@scope/`, `@scope//pkg`.
+fn is_package_name(n: String) -> Bool {
+  if !String::starts_with(n, "@") {
+    false
+  } else {
+    let segs = String::split(n, "/")
+    if Array::length(segs) < 2 || String::length(Array::get(segs, 0)) <= 1 {
+      false
+    } else {
+      let mut i = 1
+      let mut ok = true
+      while i < Array::length(segs) {
+        if String::length(Array::get(segs, i)) == 0 {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    }
+  }
+}
+
+// N spaces, same length as `s` -- used to blank a directive line to spaces
+// while preserving byte length (so downstream offsets never shift).
+fn blank_of(s: String) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < String::length(s) {
+    StringBuilder::push(sb, " ")
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+// Parses one `@scope/pkg : x.y.z` deps entry (already trimmed).
+fn parse_deps_entry(trimmed: String) -> (String, String) with { Error } {
+  let parts = String::split(trimmed, ":")
+  if Array::length(parts) != 2 {
+    throw("malformed deps entry (expected: @scope/pkg : x.y.z): \{trimmed}")
+  } else ()
+  let dname = String::trim(Array::get(parts, 0))
+  let dver = String::trim(Array::get(parts, 1))
+  if !is_package_name(dname) {
+    throw("deps package name must be @scope/name: \{trimmed}")
+  } else ()
+  if !is_strict_semver(dver) {
+    throw("deps version must be a strict semver triple (x.y.z): \{trimmed}")
+  } else ()
+  (dname, dver)
+}
+
+// Consume `description =`'s `#|` continuation lines starting at `start`
+// (just past the `description =` line's own newline). Returns (joined
+// description text, position just past the last consumed line, the
+// blanked+newline-preserving text for those consumed lines). Stops at the
+// first line that is not a `#|` line at the established column -- that
+// line is NOT consumed here (the outer scanner sees it fresh).
+fn consume_description_block(source: String, len: Int, start: Int) -> (String, Int, String) with { Error } {
+  let parts = array_empty()
+  let sb = StringBuilder::new()
+  let mut pos = start
+  let mut col = -1
+  let mut cont = true
+  while cont && pos < len {
+    let mut nl = pos
+    while nl < len && String::char_code_at(source, nl) != 10 {
+      nl = nl + 1
+    }
+    let dline = String::substring(source, pos, nl)
+    let mut j = 0
+    while j < String::length(dline) && (String::char_code_at(dline, j) == ' ' || String::char_code_at(dline, j) == '\t') {
+      j = j + 1
+    }
+    let is_bar = j + 1 < String::length(dline) && String::char_code_at(dline, j) == '#' && String::char_code_at(dline, j + 1) == '|'
+    if is_bar {
+      if col < 0 {
+        col = j
+      } else if j != col {
+        throw("description #| continuation must be indented to column \{__to_string(col + 1)}: \{dline}")
+      } else ()
+      Array::push(parts, String::substring(dline, j + 2, String::length(dline)))
+      StringBuilder::push(sb, blank_of(dline))
+      if nl < len {
+        StringBuilder::push(sb, "\n")
+      } else ()
+      pos = nl + 1
+    } else {
+      cont = false
+    }
+  }
+  (String::join(parts, "\n"), pos, StringBuilder::freeze(sb))
+}
+
+// Consume a `deps = {` block starting at `start` (just past that line's own
+// newline), through and including the line that is exactly `}`. Returns
+// (entries, position just past the closing `}` line, blanked text).
+fn consume_deps_block(source: String, len: Int, start: Int) -> (Array[(String, String)], Int, String) with { Error } {
+  let entries = array_empty()
+  let sb = StringBuilder::new()
+  let mut pos = start
+  let mut closed = false
+  while !closed && pos < len {
+    let mut nl = pos
+    while nl < len && String::char_code_at(source, nl) != 10 {
+      nl = nl + 1
+    }
+    let dline = String::substring(source, pos, nl)
+    let dtrimmed = String::trim(dline)
+    if dtrimmed == "}" {
+      StringBuilder::push(sb, blank_of(dline))
+      closed = true
+    } else if String::length(dtrimmed) == 0 {
+      StringBuilder::push(sb, dline)
+    } else {
+      let (dname, dver) = parse_deps_entry(dtrimmed)
+      Array::push(entries, (dname, dver))
+      StringBuilder::push(sb, blank_of(dline))
+    }
+    if nl < len {
+      StringBuilder::push(sb, "\n")
+    } else ()
+    pos = nl + 1
+  }
+  if !closed {
+    throw("unterminated deps block (missing closing '}')")
+  } else ()
+  (entries, pos, StringBuilder::freeze(sb))
+}
 
 fn is_digit_run(s: String, from: Int, to: Int) -> Bool {
   if to <= from {
@@ -1125,13 +1306,24 @@ fn split_fields(line: String) -> Array[String] {
 // extract_package_version below. The raw line stays in the file text, so it
 // is part of the package hash by construction: a version change is a new
 // artifact, and version->hash immutability is checkable.
-export fn extract_require_pins(source: String) -> (Array[(String, String, String)], String) with { Error } {
+fn scan_package_header(source: String) -> (Array[(String, String, String)], String, String, Bool, String, Array[(String, String)], String, String) with { Error } {
   let pins = array_empty()
+  let deps = array_empty()
   let sb = StringBuilder::new()
   let len = String::length(source)
   let mut pos = 0
   let mut scanning = true
+  let mut name = ""
+  let mut version = ""
+  let mut main = false
+  let mut description = ""
+  let mut generated_hash = ""
+  let mut seen_name = false
   let mut seen_version = false
+  let mut seen_main = false
+  let mut seen_description = false
+  let mut seen_deps = false
+  let mut seen_hash = false
   while pos < len {
     let mut nl = pos
     while nl < len && String::char_code_at(source, nl) != 10 {
@@ -1139,39 +1331,121 @@ export fn extract_require_pins(source: String) -> (Array[(String, String, String
     }
     let line = String::substring(source, pos, nl)
     let trimmed = String::trim(line)
-    let is_require = scanning && String::starts_with(trimmed, "require ")
-    let is_version = scanning && String::starts_with(trimmed, "version ")
-    if is_version {
+    let mut next_pos = nl + 1
+    if !scanning {
+      StringBuilder::push(sb, line)
+    } else if String::starts_with(trimmed, "version =") {
+      if seen_version {
+        throw("duplicate version directive: \{trimmed}")
+      } else ()
+      let v = String::trim(String::substring(trimmed, 9, String::length(trimmed)))
+      if String::starts_with(v, "^") || !is_strict_semver(v) {
+        throw("version directive must be an exact semver triple (x.y.z): \{trimmed}")
+      } else ()
+      version = v
+      seen_version = true
+      StringBuilder::push(sb, blank_of(line))
+    } else if String::starts_with(trimmed, "version ") {
+      // Legacy bare `version x.y.z` (ADR-0065/#754), pre-#1128. Still
+      // accepted, NOT an error: the compiler's own `lib/@vibe/compiler/**`
+      // packages (plus their direct dependency closure -- @vibe/ast,
+      // @vibe/cache, @vibe/core, @vibe/graph, @vibe/json, @vibe/module,
+      // @vibe/parser, @vibe/prelude) are read by the bootstrap seed while
+      // building the compiler itself (scripts/generate_bundle.sh's
+      // merge-flatten step); the frozen seed predates #1128 and understands
+      // only this spelling. Migrating those packages to `version = x.y.z`
+      // (or any other new #1128 directive) requires a dedicated
+      // bootstrap-bump cycle first (docs/bootstrap.md) -- out of scope here.
+      // New/non-bootstrap packages should prefer `version = x.y.z`.
       let vfields = split_fields(trimmed)
       if Array::length(vfields) != 2 {
         throw("malformed version directive (expected: version x.y.z): \{trimmed}")
       } else ()
-      let vver = Array::get(vfields, 1)
-      if String::starts_with(vver, "^") || !is_strict_semver(vver) {
+      let v = Array::get(vfields, 1)
+      if String::starts_with(v, "^") || !is_strict_semver(v) {
         throw("version directive must be an exact semver triple (x.y.z): \{trimmed}")
       } else ()
       if seen_version {
         throw("duplicate version directive: \{trimmed}")
       } else ()
+      version = v
       seen_version = true
-      let mut vbi = 0
-      while vbi < String::length(line) {
-        StringBuilder::push(sb, " ")
-        vbi = vbi + 1
+      StringBuilder::push(sb, blank_of(line))
+    } else if String::starts_with(trimmed, "name =") {
+      if seen_name {
+        throw("duplicate name directive: \{trimmed}")
+      } else ()
+      let n = String::trim(String::substring(trimmed, 6, String::length(trimmed)))
+      if !is_package_name(n) {
+        throw("name directive must be @scope/name: \{trimmed}")
+      } else ()
+      name = n
+      seen_name = true
+      StringBuilder::push(sb, blank_of(line))
+    } else if String::starts_with(trimmed, "main =") {
+      if seen_main {
+        throw("duplicate main directive: \{trimmed}")
+      } else ()
+      let m = String::trim(String::substring(trimmed, 6, String::length(trimmed)))
+      if m == "true" {
+        main = true
+      } else if m == "false" {
+        main = false
+      } else {
+        throw("main directive must be true or false: \{trimmed}")
       }
-    } else if is_require {
+      seen_main = true
+      StringBuilder::push(sb, blank_of(line))
+    } else if String::starts_with(trimmed, "generated_hash =") {
+      if seen_hash {
+        throw("duplicate generated_hash directive: \{trimmed}")
+      } else ()
+      let gh = String::trim(String::substring(trimmed, 17, String::length(trimmed)))
+      if (String::length(gh) > 0) && !is_package_pin(gh) {
+        throw("generated_hash must be empty or #pkg:sha1:<40hex>: \{trimmed}")
+      } else ()
+      generated_hash = gh
+      seen_hash = true
+      StringBuilder::push(sb, blank_of(line))
+    } else if trimmed == "description =" {
+      if seen_description {
+        throw("duplicate description directive: \{trimmed}")
+      } else ()
+      StringBuilder::push(sb, blank_of(line))
+      let (dtext, dpos, dblanked) = consume_description_block(source, len, nl + 1)
+      description = dtext
+      seen_description = true
+      StringBuilder::push(sb, dblanked)
+      next_pos = dpos
+    } else if trimmed == "deps = {}" {
+      if seen_deps {
+        throw("duplicate deps directive: \{trimmed}")
+      } else ()
+      seen_deps = true
+      StringBuilder::push(sb, blank_of(line))
+    } else if trimmed == "deps = {" {
+      if seen_deps {
+        throw("duplicate deps directive: \{trimmed}")
+      } else ()
+      StringBuilder::push(sb, blank_of(line))
+      let (dentries, dpos, dblanked) = consume_deps_block(source, len, nl + 1)
+      deps_extend(deps, dentries)
+      seen_deps = true
+      StringBuilder::push(sb, dblanked)
+      next_pos = dpos
+    } else if String::starts_with(trimmed, "require ") {
       let fields = split_fields(trimmed)
       let nfields = Array::length(fields)
       if nfields != 5 && nfields != 3 {
         throw("malformed require line (expected: require @scope/name x.y.z [= #pkg:sha1:<40hex>]): \{trimmed}")
       } else ()
-      let name = Array::get(fields, 1)
-      let ver = Array::get(fields, 2)
-      if !String::starts_with(name, "@") {
-        throw("require package name must start with '@': \{name}")
+      let rname = Array::get(fields, 1)
+      let rver = Array::get(fields, 2)
+      if !String::starts_with(rname, "@") {
+        throw("require package name must start with '@': \{rname}")
       } else ()
-      if !is_strict_semver(ver) {
-        throw("require version must be a strict semver triple (x.y.z or ^x.y.z): \{ver}")
+      if !is_strict_semver(rver) {
+        throw("require version must be a strict semver triple (x.y.z or ^x.y.z): \{rver}")
       } else ()
       // Unpinned (3-field) form: accepted at parse so `vibe fmt` can fill
       // the pin offline from the store (D-3); the BUILD still refuses to
@@ -1191,60 +1465,126 @@ export fn extract_require_pins(source: String) -> (Array[(String, String, String
       } else {
         ""
       }
-      Array::push(pins, (name, ver, pin_hash))
-      // blank the line, preserving its byte length
-      let mut bi = 0
-      while bi < String::length(line) {
-        StringBuilder::push(sb, " ")
-        bi = bi + 1
-      }
+      Array::push(pins, (rname, rver, pin_hash))
+      StringBuilder::push(sb, blank_of(line))
+    } else if String::length(trimmed) == 0 || String::starts_with(trimmed, "//") {
+      StringBuilder::push(sb, line)
     } else {
-      if String::length(trimmed) == 0 || String::starts_with(trimmed, "//") {
-        ()
-      } else {
-        scanning = false
-      }
+      scanning = false
       StringBuilder::push(sb, line)
     }
     if nl < len {
       StringBuilder::push(sb, "\n")
     } else ()
-    pos = nl + 1
+    pos = next_pos
   }
-  (pins, StringBuilder::freeze(sb))
+  (pins, name, version, main, description, deps, generated_hash, StringBuilder::freeze(sb))
 }
 
-// #754: read the `version x.y.z` directive from a contract's leading
-// directive region ("" when absent). Same scanning rules as
-// extract_require_pins — only the region before the first ordinary
-// statement counts.
-export fn extract_package_version(source: String) -> String with { Error } {
-  let len = String::length(source)
-  let mut pos = 0
-  let mut found = ""
-  let mut scanning = true
-  while pos < len && scanning {
-    let mut nl = pos
-    while nl < len && String::char_code_at(source, nl) != 10 {
-      nl = nl + 1
-    }
-    let trimmed = String::trim(String::substring(source, pos, nl))
-    if String::starts_with(trimmed, "version ") {
-      let vfields = split_fields(trimmed)
-      if Array::length(vfields) == 2 {
-        found = Array::get(vfields, 1)
-        scanning = false
-      } else {
-        throw("malformed version directive (expected: version x.y.z): \{trimmed}")
-      }
-    } else if String::length(trimmed) == 0 || String::starts_with(trimmed, "//") || String::starts_with(trimmed, "require ") {
-      ()
-    } else {
-      scanning = false
-    }
-    pos = nl + 1
+fn deps_extend(deps: Array[(String, String)], more: Array[(String, String)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(more) {
+    Array::push(deps, Array::get(more, i))
+    i = i + 1
   }
-  found
+}
+
+// ADR-0063 §6 (#730 D-2) / #1128: (name, constraint, pin) triples for every
+// `require` line, plus the source with EVERY recognized leading directive
+// (require, version, name, main, description, deps, generated_hash) blanked
+// to spaces (byte length preserved, so downstream offsets never shift).
+export fn extract_require_pins(source: String) -> (Array[(String, String, String)], String) with { Error } {
+  let (pins, _name, _version, _main, _description, _deps, _hash, blanked) = scan_package_header(source)
+  (pins, blanked)
+}
+
+// #754/#1128: read the `version = x.y.z` directive ("" when absent).
+export fn extract_package_version(source: String) -> String with { Error } {
+  let (_pins, _name, version, _main, _description, _deps, _hash, _blanked) = scan_package_header(source)
+  version
+}
+
+// #1128: read the `name = @scope/pkg` directive ("" when absent).
+export fn extract_package_name(source: String) -> String with { Error } {
+  let (_pins, name, _version, _main, _description, _deps, _hash, _blanked) = scan_package_header(source)
+  name
+}
+
+// #1128: read the `main = true|false` directive (false when absent —
+// parsed only, no compiler behavior attached yet; see the header-scanner
+// doc comment above).
+export fn extract_package_main(source: String) -> Bool with { Error } {
+  let (_pins, _name, _version, main, _description, _deps, _hash, _blanked) = scan_package_header(source)
+  main
+}
+
+// #1128: read the `description = \n  #|...` block, joined with "\n"
+// ("" when absent).
+export fn extract_package_description(source: String) -> String with { Error } {
+  let (_pins, _name, _version, _main, description, _deps, _hash, _blanked) = scan_package_header(source)
+  description
+}
+
+// #1128: read the `deps = { @scope/pkg : x.y.z ... }` block (empty array
+// when absent).
+export fn extract_package_deps(source: String) -> Array[(String, String)] with { Error } {
+  let (_pins, _name, _version, _main, _description, deps, _hash, _blanked) = scan_package_header(source)
+  deps
+}
+
+// #1128: read the `generated_hash = ...` directive ("" when absent or not
+// yet computed).
+export fn extract_package_generated_hash(source: String) -> String with { Error } {
+  let (_pins, _name, _version, _main, _description, _deps, hash, _blanked) = scan_package_header(source)
+  hash
+}
+
+// #1128: every external (`@scope/pkg`) name referenced by a NON-relative
+// `import` statement across `impl_sources`, that has no matching entry in
+// `deps`. A standalone checker, deliberately NOT wired into the live
+// loader path yet (see the header-scanner doc comment above) — exercise it
+// against the real package graph first, then decide where it gates.
+// `impl_sources` should be the package's own sibling implementation files
+// (not `deps`' OWN transitive dependencies — only this package's direct,
+// textually-visible imports matter here).
+export fn deps_missing_for_imports(deps: Array[(String, String)], impl_sources: Array[String]) -> Array[String] {
+  let missing = array_empty()
+  let mut si = 0
+  while si < Array::length(impl_sources) {
+    let src = Array::get(impl_sources, si)
+    let len = String::length(src)
+    let mut pos = 0
+    while pos < len {
+      let mut nl = pos
+      while nl < len && String::char_code_at(src, nl) != 10 {
+        nl = nl + 1
+      }
+      let trimmed = String::trim(String::substring(src, pos, nl))
+      if String::starts_with(trimmed, "import @") {
+        let after = String::substring(trimmed, 7, String::length(trimmed))
+        let mut ei = 0
+        while ei < String::length(after) && String::char_code_at(after, ei) != ' ' {
+          ei = ei + 1
+        }
+        let pkg = String::substring(after, 0, ei)
+        let mut found = false
+        let mut di = 0
+        while di < Array::length(deps) {
+          let (dname, _dver) = Array::get(deps, di)
+          if dname == pkg {
+            found = true
+          } else ()
+          di = di + 1
+        }
+        if !found && !str_in(missing, pkg) {
+          Array::push(missing, pkg)
+        } else ()
+      } else ()
+      pos = nl + 1
+    }
+    si = si + 1
+  }
+  missing
 }
 
 // ADR-0063 §8 (#732 Phase F): Elm-style machine-verified semver. The
