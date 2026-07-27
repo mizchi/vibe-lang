@@ -380,7 +380,25 @@ place and five seeds "passed" against a compiler that could not read them.
 in `runtime/typecheck_fs.vibe`, and `scripts/compiler_differential.sh` holds
 the byte-identity comparison against the previous compiler.
 
-Three gaps remain before Phase 2 can rely on this seam:
+`ModuleJob` no longer carries a `fingerprint` field. An earlier cut had the
+caller supply one, and `check_module` simply echoed it back into `Checked`
+without ever consulting it — a purely decorative field that made every
+worker-computed cache key caller-chosen, so nothing a worker published could
+land at the persistent-cache path (`persistent_type_env_cache_path`, keyed by
+`build_fingerprint`) a serial compile would actually look under. Any future
+coordinator step that tries to pre-warm that cache from parallel workers
+would have silently done nothing. `ModuleJob.dep_fps` now carries each
+dependency's own fingerprint (declaration order, matching `deps`/`dep_envs`),
+and `check_module` computes the canonical fingerprint itself via
+`build_fingerprint(job.source, job.dep_fps)` — an output of the job, never an
+input trusted from the caller. `scripts/module_job_dir_test.sh` and
+`parallel_scheduler_selfhost.test.mjs` both assert dependency-fingerprint
+*sensitivity*: change only a dependency's fingerprint and the importer's own
+computed fingerprint must change too, and it must match the
+`build_fingerprint` shape (`<len>:<hash>:<hash>`) rather than the worker
+transport's own synthetic hash.
+
+Remaining gaps before Phase 2 can rely on this seam:
 
 - `check_module` still carries an `Error` row. Type errors are values inside
   `Diagnosed`, but parse errors are not — making them values would relabel
@@ -392,9 +410,27 @@ Three gaps remain before Phase 2 can rely on this seam:
   `build_import_env` resolves import paths against it, so narrowing changes
   which entry an import binds to. A worker handed the superset still cannot
   observe the driver, but narrowing is a real prerequisite for isolation.
+- No coordinator step publishes a worker's checked environment to the REAL
+  persistent cache. `run_module_job_dir`'s writes are sandboxed to the job
+  directory on purpose (a worker's whole filesystem IS the job dir), so even
+  with the fingerprint now correct, nothing outside the job directory sees
+  it. Publishing requires either a host-side "commit" step that writes
+  `env.out` to `persistent_type_env_cache_path(fingerprint)` directly, or a
+  vibe-side primitive that performs that write given a batch of
+  (fingerprint, env-text) pairs — deliberately not decided here, since
+  re-deriving the cache's path scheme on the host would be the same class of
+  drift risk the fingerprint fix above just closed.
 
 The accumulator threading in `ensure_fingerprint_fs_go` is unchanged — only
-the per-module leaf work was lifted out. `FrozenArray[T]` is not implemented.
+the per-module leaf work was lifted out. It is still a depth-first recursion
+whose call stack, not an explicit ready/running/terminal set, is what
+currently encodes "wait until dependencies are done". Turning that into a
+worklist a real dispatcher can drive is unstarted, and — because vibe runs as
+one process per invocation — the dispatcher that would actually gain
+wall-clock parallelism from it has to live in a host driver anyway (extending
+`scripts/parallel_scheduler_prototype.mjs` to discover a REAL project's
+import graph from disk, rather than only the synthetic in-memory module
+lists its tests construct today). `FrozenArray[T]` is not implemented.
 
 ### Phase 2: bounded parallel frontend — transport only
 

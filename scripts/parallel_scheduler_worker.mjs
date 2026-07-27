@@ -62,7 +62,7 @@ async function compile(job) {
   // Without that a worker could only ever check leaf modules.
   const checked =
     selfhostChecker === null
-      ? { diagnostic: diagnosticFromSource(job.module), env: "" }
+      ? { diagnostic: diagnosticFromSource(job.module), env: "", fingerprint: null }
       : await selfhostChecker.check(job.module, job.dependencies);
   if (checked.diagnostic) {
     return { kind: "diagnosed", diagnostics: [checked.diagnostic] };
@@ -72,21 +72,26 @@ async function compile(job) {
     kind: "checked",
     artifact: {
       module: job.module.id,
-      // This module's own env is not hashed directly below -- it is a
-      // function of the source and dependency envs that already are. Note
-      // that a DEPENDENCY's env does reach the fingerprint, through the
-      // dependency outcome, so a dependency whose interface changed
-      // produces a different fingerprint here.
       env: checked.env,
-      fingerprint: fingerprint({
-        checker: workerData.execution.kind,
-        id: job.module.id,
-        source: job.module.source,
-        dependencies: job.dependencies.map((dependency) => ({
-          id: dependency.id,
-          outcome: dependency.outcome,
-        })),
-      }),
+      // The selfhost checker returns the CANONICAL fingerprint --
+      // check_module's own build_fingerprint(source, dep_fps), the same
+      // value the serial compiler would derive for this module -- not a
+      // value this script invents. The synthetic-hash fallback below only
+      // applies to the `synthetic` execution kind (no real compiler, used
+      // by the fast prototype-contract tests), where there is no
+      // build_fingerprint to defer to and the hash only needs to be
+      // deterministic in source + dependency outcomes, not canonical.
+      fingerprint:
+        checked.fingerprint ??
+        fingerprint({
+          checker: workerData.execution.kind,
+          id: job.module.id,
+          source: job.module.source,
+          dependencies: job.dependencies.map((dependency) => ({
+            id: dependency.id,
+            outcome: dependency.outcome,
+          })),
+        }),
     },
   };
 }
