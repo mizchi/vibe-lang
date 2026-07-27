@@ -267,6 +267,62 @@ else
   fail=$((fail + 1))
 fi
 
+# #820 sub-item 2 (structured fix-it, minimal slice): an effect-row-mismatch
+# diagnostic's `data` field names the exact function + operations to add, with
+# NO position (resolving `target` to a location is `vibe symbols`'s job, kept
+# out of this field on purpose -- see lsp_server.vibe's lsp_effect_row_mismatch_fix).
+fixit="$WORK/fixit.vibe"
+printf 'effect Ask {\n  Value(String) -> Int\n}\n\nfn asks() -> Int {\n  perform Ask::Value("q")\n}\n' > "$fixit"
+out_fixit_json="$("$VIBE" diagnostics --json "$fixit" 2>/dev/null || true)"
+if python3 -c "
+import json, sys
+d = json.loads(sys.argv[1])
+assert len(d) == 1, f'expected 1 entry, got {len(d)}'
+fix = d[0]['data']
+assert fix is not None, d[0]
+assert fix['kind'] == 'add_with_clause', fix
+assert fix['target'] == 'asks', fix
+assert fix['add'] == ['Ask::Value'], fix
+assert fix['with'] == ['Ask::Value'], fix
+assert 'vibe symbols' in fix['note'], fix
+" "$out_fixit_json" 2>/tmp/vibe_diag_json_err; then
+  echo "ok: --json effect-row-mismatch carries a structured fix-it in data"; pass=$((pass + 1))
+else
+  echo "FAIL: --json fix-it data malformed:" >&2
+  cat /tmp/vibe_diag_json_err >&2 2>/dev/null
+  printf '%s\n' "$out_fixit_json" >&2
+  fail=$((fail + 1))
+fi
+rm -f /tmp/vibe_diag_json_err
+
+# `vibe symbols` must actually resolve the fix-it's `target` to a real
+# position, proving the documented hand-off works end-to-end (not just that
+# both commands run in isolation).
+if "$VIBE" symbols "$fixit" | grep -qE '^asks [0-9]+ [0-9]+ [0-9]+$'; then
+  echo "ok: vibe symbols resolves the fix-it's target function to a position"; pass=$((pass + 1))
+else
+  echo "FAIL: vibe symbols did not resolve 'asks' to a position:" >&2
+  "$VIBE" symbols "$fixit" >&2 2>/dev/null
+  fail=$((fail + 1))
+fi
+
+# A non-effect diagnostic (plain syntax error) must carry data: null, not a
+# spuriously-matched fix-it.
+out_lex_fix_json="$("$VIBE" diagnostics --json "$lexerr" 2>/dev/null || true)"
+if python3 -c "
+import json, sys
+d = json.loads(sys.argv[1])
+assert d[0]['data'] is None, d[0]
+" "$out_lex_fix_json" 2>/tmp/vibe_diag_json_err; then
+  echo "ok: --json non-effect diagnostic has data: null"; pass=$((pass + 1))
+else
+  echo "FAIL: --json non-effect diagnostic's data field malformed:" >&2
+  cat /tmp/vibe_diag_json_err >&2 2>/dev/null
+  printf '%s\n' "$out_lex_fix_json" >&2
+  fail=$((fail + 1))
+fi
+rm -f /tmp/vibe_diag_json_err
+
 # Plain-text mode must be byte-identical to before `--json` existed (no
 # accidental behavior change to the default path).
 out_plain_again="$("$VIBE" diagnostics "$lexerr" 2>/dev/null || true)"
