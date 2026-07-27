@@ -899,11 +899,14 @@ enforce しない (fixtures/contract_* の最小契約テストを壊さない�
 `description` の `#|` 継続行は言語本体の `#|` 複数行文字列と同じ
 インデント一致ルールに従う。`deps` は依存先の版数制約を宣言する場所
 であり、`import @scope/pkg { ... }` は名前解決専用のまま (版数を持たない)。
-旧 `version x.y.z` (`=` なし) は互換のため引き続き受理される —
+旧 `version x.y.z` (`=` なし) は互換のため引き続き受理される。
 `lib/@vibe/compiler/**` とその直接依存 (`@vibe/ast`/`cache`/`core`/
-`graph`/`json`/`module`/`parser`/`prelude`) はコンパイラ自身の bootstrap
-seed がまだ新形式を理解しないため、専用の bootstrap-bump が済むまで
-この spelling のまま。
+`graph`/`json`/`module`/`parser`/`prelude`、計 36 ファイル) はコンパイラ
+自身の bootstrap seed が新形式を理解しないため当初は旧 spelling のまま
+据え置かれていたが、bootstrap-bump (#1145 follow-up 1) 後に新形式へ移行
+済み — `fixtures/contract_*` (conformance engine の最小契約テスト、`version`
+行自体を持たない) のような、意図的に旧/最小形式のままの契約だけがこの
+互換パスを使い続ける。
 
 `deps` 宣言と実際の `import` 文の突き合わせは `vibe check --deps-missing
 <root>` (#1145 follow-up 2) で検証できる。`compiler_gate.sh` gate 60 が
