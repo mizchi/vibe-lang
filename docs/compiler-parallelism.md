@@ -592,7 +592,10 @@ a new one introduced here.
   cache artifact;
 - `--jobs 1/2/4` produce byte-identical Wasm on the compiler corpus;
 - cold and warm compile time, peak guest heap, and host RSS are reported before
-  raising the default worker count;
+  raising the default worker count (`pkf run jobs-kpi` /
+  `scripts/jobs_kpi.sh`, added #906 -- this reports the numbers, it does not
+  itself decide the default worker count should change; that's still a
+  separate, deliberate decision once the numbers exist);
 - `cd formal && lake build --wfail` remains green without `sorry`.
 
 ## Shared-everything migration note (2026-07-27)
