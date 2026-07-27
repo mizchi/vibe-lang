@@ -7,7 +7,7 @@
 ```vibe run
 import @vibe/prelude { stdout_write }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   let v = if 1 < 2 { "yes" } else { "no" }
   stdout_write("v = \{v}\n")
 }
@@ -35,7 +35,7 @@ fn find_first_neg(arr: Array[Int]) -> Int {
   return -1
 }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   stdout_write("find_first_neg([3, 1, -2, 5]) = \{find_first_neg([3, 1, -2, 5])}\n")
   stdout_write("find_first_neg([1, 2]) = \{find_first_neg([1, 2])}\n")
 }
@@ -54,7 +54,7 @@ find_first_neg([1, 2]) = -1
 ```vibe run
 import @vibe/prelude { stdout_write }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   let sum = loop (i = 0, acc = 0) {
     if i >= 10 { break acc }
     continue(i + 1, acc + i)
@@ -72,7 +72,7 @@ sum = 45
 ```vibe run
 import @vibe/prelude { stdout_write }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   let doubled = for x in [1, 2, 3] { x * 2 }        // [2, 4, 6]
   let with_index = for i, x in [10, 20] { i + x }   // [10, 21]
   stdout_write("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]\n")
@@ -93,7 +93,7 @@ with_index = [10, 21]
 ```vibe run
 import @vibe/prelude { stdout_write }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   let trimmed_len = "  hi  " |> String::trim |> String::length
   let arr_len = [1, 2, 3] |> Array::length
   let mapped = [1, 2, 3] |> Array::map(_, _ * 2)

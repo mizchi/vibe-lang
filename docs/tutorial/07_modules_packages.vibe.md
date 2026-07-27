@@ -29,7 +29,7 @@ import パスはエントリファイルの root ディレクトリの外に出�
 import @vibe/prelude { stdout_write }
 import ./support/mathx.vibe { triple }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   stdout_write("triple(14) = \{triple(14)}\n")
 }
 ```
@@ -48,7 +48,7 @@ triple(14) = 42
 import @vibe/prelude { stdout_write }
 import @vibe/core { sha1, hex_encode }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   stdout_write("length(sha1(\"vibe\")) = \{String::length(sha1("vibe"))}\n")
   stdout_write("hex_encode(\"hi\") = \{hex_encode("hi")}\n")
 }

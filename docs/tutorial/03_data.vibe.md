@@ -7,7 +7,7 @@
 ```vibe run
 import @vibe/prelude { stdout_write }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   let t = (1, "two", true)
   stdout_write("t.0 = \{t.0}\n")
 
@@ -38,7 +38,7 @@ import @vibe/prelude { stdout_write }
 
 struct Point { x: Int; y: Int } derive(Eq, Ord, Show)
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   let p = Point::{ x: 1, y: 2 }
   stdout_write("p.x = \{p.x}\n")
   stdout_write("compare(p, {x:1,y:3}) = \{Point::compare(p, Point::{ x: 1, y: 3 })}\n")  // derive(Ord): -1 / 0 / 1
@@ -69,7 +69,7 @@ fn area(s: Shape) -> Int {
   }
 }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   stdout_write("area(Circle(2)) = \{area(Circle(2))}\n")
   stdout_write("area(Rect(6, 7)) = \{area(Rect(6, 7))}\n")
 }
@@ -94,7 +94,7 @@ fn classify(n: Int) -> String {
   }
 }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   stdout_write("classify(0) = \{classify(0)}\n")
   stdout_write("classify(2) = \{classify(2)}\n")
   stdout_write("classify(-5) = \{classify(-5)}\n")
@@ -114,7 +114,7 @@ classify(99) = big
 ```vibe run
 import @vibe/prelude { stdout_write }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   let (a, b) = (1, 2)
   stdout_write("a + b = \{a + b}\n")
 
@@ -139,7 +139,7 @@ opt is Some(_) = true
 ```vibe run
 import @vibe/prelude { stdout_write }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   let arr = {
     let bld = ArrayBuilder::new()
     ArrayBuilder::push(bld, 1)
