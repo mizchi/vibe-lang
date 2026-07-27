@@ -795,26 +795,83 @@ choose する fresh var を返す `instantiate` しかなく、型に scope タ�
   一箇所のバグで露呈)ため撤回し、リテラル一致に戻した。alias/rename/
   wrapper 経由のすり抜けは this slice の既知のギャップとして
   `lib/@vibex/concurrent/index.vpkg` の `r` コメントに明記した。
-- **未着手のまま**: `Spawnable[r]` capture check(#1081 step 3 の後半)。
-  設計中に判明した理由: この checker の呼び出しチェックはボトムアップ
-  (引数を先に `check_expr` で独立に検査してから呼び出し先の型へ
-  unify する)なので、`TaskGroup::spawn(n, f)` を検査する時点では
-  `n` の region はまだ skolem へ unify されていないことが多い(unify は
-  nursery body 全体を検査し終えたあとの `TaskGroup::run` 側の後処理で
-  初めて起こる)。そのため spawn 呼び出しの場で inline に「capture の
-  region が `n` と同じか」を比較すると、両方が未解決な metavariable
-  同士をたまたま unify してしまい誤って許可する、または既に解決済みの
-  「別の」nursery の skolem と誤って unify されて紛らわしいエラーに
-  なる、という不健全さが生じる。正しい形は region 生成性と同じく
-  「その場」ではなく **nursery body 全体を検査し終えて s_final が
-  確定した後の第二パス**として実装すること — checker が既に
-  すべての識別子参照について `(offset, 推論型)` を記録している
-  `tytab: Array[(Int, Type)]` を read-only の副チャンネルとして使い、
-  body の AST を再度(副作用なしで)歩いて `TaskGroup::spawn`/
-  `spawn_suspend` の呼び出しノードを見つけ、closure が capture する
-  自由変数を offset 付きで集め、`tytab` からそれぞれの型を引いて
-  `s_final` で zonk してから `Send` か同一 region の endpoint かを
-  判定する。`check_expr` のシグネチャ自体を変える必要はない。
+### 実装ノート (2026-07-27 追記2): `Spawnable[r]` capture check (#1081 step 3 後半)
+
+上の「未着手のまま」で懸念していた不健全さ(`n` の region が spawn 呼び出し
+時点ではまだ skolem へ unify されていない)は実際に起こるが、**inline での
+判定自体は健全であることが判明した** — deferred な第二パスは不要だった。
+理由: `TaskGroup::spawn(n, f)` を検査する時点で `n` の region はまだ
+skolem ではなく、この nursery body の `EFn` パラメータ検査(checker.vibe
+の `EFn` 分岐、無注釈パラメータに `fresh_var` を新規発行する箇所)で
+割り当てられた、その場限りの `CtVar` のままである。しかし **異なる
+`TaskGroup::run` 呼び出しは必ず異なる `EFn` パラメータ検査を経る**ため、
+必ず異なる(プログラム全体を貫くモノトニックなカウンタから発行された)
+`CtVar` id を得る。したがって「capture の region の zonk 結果」と
+「`n` 自身の region の zonk 結果」を比較する際、**両者が構造的に
+`CtNamed(skolem_name, [])` なら name で比較、まだ未解決な `CtVar` 同士
+なら var id の一致で比較**すれば、後者の場合でも誤って許可することは
+ない(同じ nursery 由来の capture だけが同じ var id を共有し、別の
+nursery の capture は必ず異なる var id を持つ)。実装は
+`checker/checker_spawnable.vibe` の `sp_same_region`。
+
+- **checker 側の配線**: `TaskGroup::run` と同じ場所(`checker.vibe` の
+  `ECall(EIdent(name),...)` 分岐)に `"TaskGroup::spawn"` /
+  `"TaskGroup::spawn_suspend"` の枝を追加。通常の呼び出しチェック
+  (instantiate → 両引数を `check_expr` → `unify_call_args`)をそのまま
+  行った**上で**、`n` (第一引数)の zonk 済み region 型引数を
+  `check_spawnable_captures`(`checker_spawnable.vibe`)に渡す。
+- **capture 収集**: `checker_capture.vibe`(root package `@vibe/compiler`)
+  の `collect_free_vars` は checker package から import できない
+  (checker package は root package の依存元であり、逆方向 import は
+  循環になる)。codegen 側にも別実装(`codegen/common_analysis/
+  common_analysis.vibe` の `collect_free_vars_expr`)がすでに存在し、
+  この codebase では「解析目的ごとに package 内で複製する」のが既定の
+  パターンなので、`checker_spawnable.vibe` 内に自前の走査を複製した。
+  **`ECall` の callee 位置にある裸の識別子は capture として数えない**
+  (builtin/トップレベル関数/コンストラクタはランタイムの capture を
+  要しない一方、`let cb = ...; TaskGroup::spawn(n, () -> { cb() })`
+  のように capture された**ローカルの closure 値**を間接呼び出しする
+  ケースはこの slice では検出できない — 未対応、既知のギャップとして
+  記録)。
+- **判定**: `sp_spawnable_ok`(`checker_spawnable.vibe`)— `type_send_ok`
+  を満たすか、または `TaskGroup[r]`/`TaskHandle[r,_]`/`Sender[r,_]`/
+  `Receiver[r,_]` で `r` が spawn 呼び出し自身の region と一致する場合に
+  legal。
+- **副産物のバグ修正 (checker 全体に影響、Phase B 固有ではない)**:
+  検証中に `check_pattern`(`checker_pattern.vibe` の `PCtor` 分岐)の
+  ジェネリック enum ペイロード置換が **常に無効化されていた**ことが
+  判明した — `defs`(`TDEnum`)に保存されるペイロード型は
+  `checker_stmt.vibe` の `SEnum` 処理時点で既に宣言時の固定 `CtVar` id
+  へ置換済みなのに、`check_pattern` 側は名前ベースの `subst_type_params`
+  で(存在しない)`CtNamed(paramname, [])` を探そうとしていたため、
+  一致せず静かに no-op していた。プレーンな `Result[Int, String]` の
+  `Ok(a)` だけで再現する(region も Sender も無関係)一般バグで、
+  `CtUnknown` 相当の緩い型がどこでも許容されるために誰も気付いていな
+  かった。`checker_trait.vibe` の `send_ok_named`/`send_subst_vars`
+  (`Send` 判定がジェネリック enum に対してすでに正しく行っている、
+  ctor の `env` 束縛スキーム `CtForAll(param_var_ids, _, ...)` から
+  実際の var id を復元して置換する手法)を `check_pattern` にも適用して
+  修正。`Foo[r]` のような一般ケースでも `Ok(a)` の `a` が正しく型付け
+  されるようになった、副作用として広い範囲の改善。
+- **副産物のバグ修正 2**: 地域タグ付き endpoint (`TaskGroup`/
+  `TaskHandle`/`Sender`/`Receiver`) を `let` で束縛すると通常の
+  Hindley-Milner let 多相と同様に generalize され、以後の各参照が独立
+  した fresh instantiation を得てしまい、region の同一性が失われる
+  ("同じ nursery 由来" を正しく判定できなくなる)。`ArrayBuilder` の
+  既存の value-restriction 特例(`is_array_builder_ty`)と全く同じ理由
+  で `is_region_tagged_ty` を追加し、同じ扱いにした。
+- **fixtures/compiler_gate.sh 60/60**: `region_ok_spawnable_capture.vibe`
+  (同一 nursery の `Sender` capture、42 で正常終了)、
+  `err_spawnable_capture_array.vibe`(非 Send な outer `Array` capture、
+  reject)、`err_spawnable_capture_cross_region.vibe`(別 nursery の
+  `Sender` capture、reject)。
+- **既知のギャップ**: `TaskGroup::run` と同じ alias/rename/wrapper すり
+  抜け(リテラル名一致のみ)。間接呼び出しされるローカル closure 値の
+  capture は検出しない(上記)。adoption レーン(`TaskGroup::adopt` +
+  `TaskHandle::settle`)は `TaskGroup::spawn`/`spawn_suspend` の呼び出し
+  形をしていないため、この check の対象外のまま(`suspend_test.vibe`
+  の adoption-site テストが `log: Array[Int]` を無検査で capture できる
+  のはこのため — 意図した既存の適用範囲どおり)。
 
 ## v0.4.0 に含めないもの
 

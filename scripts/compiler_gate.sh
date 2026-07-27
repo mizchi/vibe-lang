@@ -6718,4 +6718,63 @@ fi
 rm -rf "$depsdir"
 echo "[compiler-gate] deps missing-for-imports scan (#1145 follow-up 2) ok"
 
+# 61/61. #1081 step 3 Phase B: `Spawnable[r]` capture check for
+# `TaskGroup::spawn`/`TaskGroup::spawn_suspend`. Like `TaskGroup::run`
+# above, hardcoded by literal qualified name (same alias/rename bypass
+# caveat, see checker.vibe/docs/concurrency.md). A captured free variable
+# must be structurally `Send`, or a `TaskGroup`/`TaskHandle`/`Sender`/
+# `Receiver` endpoint tagged with THIS spawn call's own region. Positive: a
+# same-region `Sender` capture through `Channel::bounded` keeps compiling
+# and running (region_ok_spawnable_capture.vibe, 42) -- the exact "capture
+# an endpoint from THIS nursery" case the roadmap calls out as
+# inexpressible without regions. Negative: a plain outer `Array` capture
+# (err_spawnable_capture_array.vibe) and a `Sender` captured from a
+# DIFFERENT (outer) nursery (err_spawnable_capture_cross_region.vibe) are
+# both STATIC errors.
+echo "[compiler-gate] 61/61 ADR-0068 Spawnable[r] capture check (#1081 step 3 Phase B)"
+spawnabledir="_build/_gate_spawnable"
+rm -rf "$spawnabledir"; mkdir -p "$spawnabledir"
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/region_ok_spawnable_capture.vibe > "$spawnabledir/pos.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$spawnabledir/pos.vibe" "$spawnabledir/pos.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$spawnabledir/pos.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_capture.vibe did not compile -- same-region Sender capture regressed" >&2
+  cat "$spawnabledir/pos.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+spawnable_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos.wasm" 2>/dev/null | tail -1)"
+if [ "$spawnable_pos_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_capture.vibe got '$spawnable_pos_out' (want 42)" >&2
+  exit 1
+fi
+sed '/^__DATA__$/,$d' fixtures/err_spawnable_capture_array.vibe > "$spawnabledir/neg_array.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$spawnabledir/neg_array.vibe" "$spawnabledir/neg_array.wasm" main >/dev/null 2>&1 || true
+if [ -s "$spawnabledir/neg_array.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_spawnable_capture_array.vibe compiled successfully -- must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF 'no impl `Spawnable` for `Array[Int]`' "$spawnabledir/neg_array.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_spawnable_capture_array.vibe did not produce the expected diagnostic" >&2
+  cat "$spawnabledir/neg_array.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+sed '/^__DATA__$/,$d' fixtures/err_spawnable_capture_cross_region.vibe > "$spawnabledir/neg_cross.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$spawnabledir/neg_cross.vibe" "$spawnabledir/neg_cross.wasm" main >/dev/null 2>&1 || true
+if [ -s "$spawnabledir/neg_cross.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_spawnable_capture_cross_region.vibe compiled successfully -- must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF 'no impl `Spawnable`' "$spawnabledir/neg_cross.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_spawnable_capture_cross_region.vibe did not produce the expected diagnostic" >&2
+  cat "$spawnabledir/neg_cross.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$spawnabledir"
+echo "[compiler-gate] ADR-0068 Spawnable[r] capture check ok"
+
 echo "[compiler-gate] ok"
