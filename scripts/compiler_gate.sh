@@ -7060,7 +7060,20 @@ echo "[compiler-gate] operation-level fix-it precision ok"
 #        ingestion. Pure shell (scripts/gen_context_pack.sh), no wasm
 #        involved -- pin determinism, the expected section markers, and the
 #        missing-input error path.
+#
+#        Codex review (PR #1162): the pack's own text claims every golden
+#        example "compiled and ran against the current compiler" -- that
+#        claim must actually be re-verified against THIS gate run's stage2
+#        (eval/lang-review/run_golden.sh, the existing writability
+#        regression check), not just assumed still true. A compiler change
+#        that broke a golden example without anyone re-running run_golden.sh
+#        separately would otherwise ship a pack that lies about its own
+#        examples.
 echo "[compiler-gate] 67/67 vibe context-pack generator (#820 sub-item 3)"
+if ! bash eval/lang-review/run_golden.sh; then
+  echo "[compiler-gate] FAIL: eval/lang-review/run_golden.sh -- the golden corpus context-pack bundles no longer compiles/runs as claimed" >&2
+  exit 1
+fi
 ctxpackdir="_build/_gate_ctxpack"
 rm -rf "$ctxpackdir"; mkdir -p "$ctxpackdir"
 bash scripts/gen_context_pack.sh "$ROOT_DIR" > "$ctxpackdir/a.md"
