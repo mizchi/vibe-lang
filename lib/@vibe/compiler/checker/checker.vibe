@@ -3512,6 +3512,56 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
           _ => CtArray(CtUnknown)
         }
         (tab_call_ty(tytab, call_off, result), s1, c1)
+      } else if name == "FrozenArray::from_array" && Array::length(args) == 1 {
+        // #906: FrozenArray[T] is a checker-only phantom-type distinction over
+        // Array[T]'s exact same runtime layout -- same technique as
+        // ArrayBuilder above (freeze is a pure identity cast; here from_array
+        // is too). Capture the argument's element type into
+        // CtNamed("FrozenArray", [elem]) so get/to_array recover a real type
+        // instead of CtUnknown. A non-concrete argument (var/unknown
+        // receiver) stays tolerant, matching Array::reverse's own fallback.
+        let (a_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        let elem = match subst_apply(s1, a_ty) {
+          CtArray(e) => e,
+          _ => CtUnknown
+        }
+        (tab_call_ty(tytab, call_off, CtNamed("FrozenArray", Array::slice([
+          elem
+        ], 0, 1))), s1, c1)
+      } else if name == "FrozenArray::to_array" && Array::length(args) == 1 {
+        // #906: the reverse of from_array -- unwraps a tracked FrozenArray
+        // element type back into an ordinary Array[T], same shape as
+        // ArrayBuilder::freeze above.
+        let (fa_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        let result = match subst_apply(s1, fa_ty) {
+          CtNamed(fn0, fargs) => if fn0 == "FrozenArray" && Array::length(fargs) == 1 {
+            CtArray(subst_apply(s1, Array::get(fargs, 0)))
+          } else {
+            CtArray(CtUnknown)
+          },
+          _ => CtArray(CtUnknown)
+        }
+        (tab_call_ty(tytab, call_off, result), s1, c1)
+      } else if name == "FrozenArray::get" && Array::length(args) == 2 {
+        // #906: same element-type extraction as Array::get, over a tracked
+        // FrozenArray receiver instead of CtArray.
+        let (fa_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        let (_, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+        let result = match subst_apply(s2, fa_ty) {
+          CtNamed(fn1, fargs1) => if fn1 == "FrozenArray" && Array::length(fargs1) == 1 {
+            subst_apply(s2, Array::get(fargs1, 0))
+          } else {
+            CtUnknown
+          },
+          _ => CtUnknown
+        }
+        (tab_call_ty(tytab, call_off, result), s2, c2)
+      } else if name == "FrozenArray::length" && Array::length(args) == 1 {
+        // #906: length is not element-type-dependent -- always Int, but the
+        // receiver still needs checking (consistent with every other builtin
+        // branch here checking all of its arguments).
+        let (_, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        (tab_call_ty(tytab, call_off, CtInt), s1, c1)
       } else if name == "Map::set" && Array::length(args) == 3 {
         // #983: every Map API's VALUE position was `CtUnknown` (the static
         // builtin table cannot mint per-call vars), so
