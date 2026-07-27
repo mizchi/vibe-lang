@@ -875,6 +875,36 @@ subdirectory source は direct root からの relative import/export で到達�
 できる。owner を持つ package の内部 source は同一 owner またはその
 `index.vpkg` facade 経由でのみ参照できる。
 
+### `index.vpkg` ヘッダー (#1128)
+
+契約本体 (bodyless `fn`/`type`) の前に置く、`name`/`version`/`description`/
+`deps`/`main`/`generated_hash` のディレクティブ行:
+
+```vibe
+name = @scope/pkg
+version = x.y.z
+main = true          // 任意。パースのみ、意味づけは未実装 (予約)
+description =
+  #|一行目
+  #|二行目
+deps = {
+  @scope/dep : x.y.z
+}
+
+generated_hash =      // 任意。publish 時に自動挿入 (#pkg:sha1:<40hex>)
+```
+
+`name`/`version`/`description` は規約上必須だが、コンパイラはハード
+enforce しない (fixtures/contract_* の最小契約テストを壊さないため)。
+`description` の `#|` 継続行は言語本体の `#|` 複数行文字列と同じ
+インデント一致ルールに従う。`deps` は依存先の版数制約を宣言する場所
+であり、`import @scope/pkg { ... }` は名前解決専用のまま (版数を持たない)。
+旧 `version x.y.z` (`=` なし) は互換のため引き続き受理される —
+`lib/@vibe/compiler/**` とその直接依存 (`@vibe/ast`/`cache`/`core`/
+`graph`/`json`/`module`/`parser`/`prelude`) はコンパイラ自身の bootstrap
+seed がまだ新形式を理解しないため、専用の bootstrap-bump が済むまで
+この spelling のまま。
+
 ---
 
 *Full reference: [docs/spec/syntax.md](spec/syntax.md) / [syntax-reference.md](language-tour/syntax-reference.md) / [language-tour/](language-tour/)*
