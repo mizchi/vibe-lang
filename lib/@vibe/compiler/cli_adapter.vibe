@@ -44,7 +44,8 @@ import ./cli_support.vibe {
 }
 
 import ./lsp_server.vibe {
-  lsp_main
+  lsp_main,
+  lsp_diagnostics_json_string
 }
 
 import @vibe/compiler/checker {
@@ -688,10 +689,19 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
   // `vibe diagnostics`: collect ALL syntax errors (recovering parser) or the
   // single located type error, one per line. A report, not a failure — always
   // returns 0 (empty output means clean).
+  // #820 sub-item 1: `VIBE_DIAGNOSTICS_JSON=1` (`vibe diagnostics --json`)
+  // emits the same diagnostics as a JSON array instead, reusing the LSP
+  // server's existing "line L:C: message" -> Diagnostic parser
+  // (lsp_diagnostics_json_string) so there is exactly one structured
+  // diagnostic shape shared by the editor protocol and the CLI.
   if Env::get("VIBE_DIAGNOSTICS") == "1" {
     let src = Fs::read_file(input_path)
-    let diags = collect_all_diagnostics(src)
-    Fs::write_bytes(output_path, adapter_string_to_bytes(join_lines(diags)))
+    if Env::get("VIBE_DIAGNOSTICS_JSON") == "1" {
+      Fs::write_bytes(output_path, adapter_string_to_bytes(lsp_diagnostics_json_string(src)))
+    } else {
+      let diags = collect_all_diagnostics(src)
+      Fs::write_bytes(output_path, adapter_string_to_bytes(join_lines(diags)))
+    }
     return 0
   }
   // #726: emit the MERGED whole program as source text. `input_path` is an

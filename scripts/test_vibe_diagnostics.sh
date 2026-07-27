@@ -219,5 +219,64 @@ else
   fail=$((fail + 1))
 fi
 
+# #820 sub-item 1: `--json` emits the same diagnostics as an LSP-shaped
+# JSON array (0-based line/character, matching the LSP protocol, unlike the
+# 1-based `line L:C:` text form above) instead of plain text.
+out_lex_json="$("$VIBE" diagnostics --json "$lexerr" 2>/dev/null || true)"
+if python3 -c "
+import json, sys
+d = json.loads(sys.argv[1])
+assert len(d) == 1, f'expected 1 entry, got {len(d)}'
+e = d[0]
+assert e['range']['start']['line'] == 0, e
+assert e['range']['start']['character'] == 17, e  # 0-based: 'line 1:18' -> character 17
+assert 'unexpected character' in e['message'], e
+assert e['source'] == 'vibe', e
+" "$out_lex_json" 2>/tmp/vibe_diag_json_err; then
+  echo "ok: --json lexer diagnostic has correct 0-based range + message"; pass=$((pass + 1))
+else
+  echo "FAIL: --json lexer diagnostic malformed:" >&2
+  cat /tmp/vibe_diag_json_err >&2 2>/dev/null
+  printf '%s\n' "$out_lex_json" >&2
+  fail=$((fail + 1))
+fi
+rm -f /tmp/vibe_diag_json_err
+
+out_multi_json="$("$VIBE" diagnostics --json "$multi" 2>/dev/null || true)"
+if python3 -c "
+import json, sys
+d = json.loads(sys.argv[1])
+assert len(d) == 2, f'expected 2 entries, got {len(d)}'
+lines = sorted(e['range']['start']['line'] for e in d)
+assert lines == [0, 2], lines  # 0-based: source lines 1 and 3
+" "$out_multi_json" 2>/tmp/vibe_diag_json_err; then
+  echo "ok: --json reports both independent syntax errors as separate entries"; pass=$((pass + 1))
+else
+  echo "FAIL: --json multi-error output malformed:" >&2
+  cat /tmp/vibe_diag_json_err >&2 2>/dev/null
+  printf '%s\n' "$out_multi_json" >&2
+  fail=$((fail + 1))
+fi
+rm -f /tmp/vibe_diag_json_err
+
+out_clean_json="$("$VIBE" diagnostics --json "$clean" 2>/dev/null || true)"
+if [ "$out_clean_json" = "[]" ]; then
+  echo "ok: --json clean file -> [] (valid JSON, not empty output)"; pass=$((pass + 1))
+else
+  echo "FAIL: expected --json clean file to print '[]', got '$out_clean_json'" >&2
+  fail=$((fail + 1))
+fi
+
+# Plain-text mode must be byte-identical to before `--json` existed (no
+# accidental behavior change to the default path).
+out_plain_again="$("$VIBE" diagnostics "$lexerr" 2>/dev/null || true)"
+if [ "$out_plain_again" = "$out_lex" ]; then
+  echo "ok: plain-text mode unaffected by --json's existence"; pass=$((pass + 1))
+else
+  echo "FAIL: plain-text diagnostics output changed:" >&2
+  printf 'before: %s\nafter:  %s\n' "$out_lex" "$out_plain_again" >&2
+  fail=$((fail + 1))
+fi
+
 echo "[vibe-diagnostics] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1
