@@ -1,0 +1,35 @@
+// #1081 step 3 Phase B (Spawnable[r] capture check): a spawn closure
+// capturing a SAME-REGION Sender endpoint (from this same nursery's own
+// Channel::bounded) is Spawnable-legal -- the exact case the roadmap calls
+// out as inexpressible without regions. Positive regression pin alongside
+// the two negative fixtures (err_spawnable_capture_array.vibe,
+// err_spawnable_capture_cross_region.vibe).
+import @vibex/concurrent { TaskGroup, TaskHandle, Channel, Sender, Receiver }
+
+let _start = () -> Int {
+  let result = TaskGroup::run((n) -> {
+    match Channel::bounded(n, 1) {
+      Ok((tx, rx)) => {
+        let t = TaskGroup::spawn(n, () -> {
+          let _ = Sender::send(tx, 42)
+          Sender::release(tx)
+          0
+        })
+        let _ = TaskHandle::join(t)
+        match Receiver::recv(rx) {
+          Some(v) => v,
+          None => 0 - 1
+        }
+      },
+      Err(_) => 0 - 1
+    }
+  })
+  match result {
+    Ok(v) => v,
+    Err(_) => 0 - 1
+  }
+}
+_start()
+
+__DATA__
+{"last":"42"}
