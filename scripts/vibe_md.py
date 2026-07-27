@@ -118,7 +118,11 @@ def parse_blocks(text):
         j = i + 1
         closed = False
         while j < n:
-            if re.match(r"^%s\s*$" % re.escape(fence), lines[j]):
+            # CommonMark: a closing fence needs AT LEAST as many backticks as
+            # the opening one (a longer run still closes it), not an exact
+            # length match -- a doc using ```` to close a ``` block is valid
+            # markdown and must not be reported as unterminated.
+            if re.match(r"^`{%d,}\s*$" % len(fence), lines[j]):
                 closed = True
                 break
             body.append(lines[j])
@@ -381,14 +385,35 @@ def main():
     workdir_preexisted = os.path.isdir(workdir)
     os.makedirs(workdir, exist_ok=True)
     created = []
-    compiler_copy = os.path.join(workdir, "compiler.wasm")
+    # Collision-free name (unlike "lib" below, nothing requires this exact
+    # name) -- a fixed "compiler.wasm" would silently overwrite, and then
+    # delete on cleanup, a caller-owned file that happened to have that name.
+    compiler_copy = os.path.join(workdir, f".vibe_md_compiler_{os.getpid()}.wasm")
     shutil.copyfile(compiler, compiler_copy)
     created.append(compiler_copy)
+    # "lib" is not a free choice: every extracted block sits directly in
+    # workdir's root (matching doctest_extract_run.sh), and both relative
+    # (`./lib/...`) and package-style (`@scope/name` -> `lib/@scope/name`)
+    # import resolution need a real `lib` entry there. If one already exists
+    # from a caller-supplied workdir, reuse it in place when it already
+    # points at this repo's lib/ (idempotent -- e.g. a prior run of this
+    # script against the same workdir); otherwise it's a genuine conflict
+    # with caller-owned data, so fail loudly instead of overwriting it.
     lib_link = os.path.join(workdir, "lib")
-    if os.path.islink(lib_link) or os.path.exists(lib_link):
-        os.remove(lib_link)
-    os.symlink(os.path.join(ROOT, "lib"), lib_link)
-    created.append(lib_link)
+    lib_target = os.path.join(ROOT, "lib")
+    if os.path.islink(lib_link):
+        if os.path.realpath(lib_link) != os.path.realpath(lib_target):
+            print(f"vibe_md: {lib_link} already exists and points elsewhere; "
+                  f"refusing to overwrite (pass a different VIBE_MD_WORKDIR)", file=sys.stderr)
+            return 2
+        # already correct; not ours to create or clean up
+    elif os.path.exists(lib_link):
+        print(f"vibe_md: {lib_link} already exists and is not the expected "
+              f"symlink; refusing to overwrite (pass a different VIBE_MD_WORKDIR)", file=sys.stderr)
+        return 2
+    else:
+        os.symlink(lib_target, lib_link)
+        created.append(lib_link)
 
     timeout = int(os.environ.get("VIBE_MD_TIMEOUT", "120"))
 
