@@ -1,0 +1,112 @@
+# 02 — 制御フロー
+
+前章: [01 値と関数](01_values_functions.vibe.md)
+
+## if は式
+
+```vibe run
+import @vibe/prelude { stdout_write }
+
+let _start: () -> Unit with { Stdout } = () -> {
+  let v = if 1 < 2 { "yes" } else { "no" }
+  stdout_write("v = \{v}\n")
+}
+```
+
+```output
+v = yes
+```
+
+## while と早期 return
+
+`return` は関数全体から抜ける (ループだけではない)。
+
+```vibe run
+import @vibe/prelude { stdout_write }
+
+fn find_first_neg(arr: Array[Int]) -> Int {
+  let mut i = 0
+  while i < Array::length(arr) {
+    if Array::get(arr, i) < 0 { return i }
+    i = i + 1
+  }
+  // 落とし穴: ブロックの直後に裸の `-1` を置くと二項マイナスに読まれる。
+  // 末尾の負値は `return -1` と書く。
+  return -1
+}
+
+let _start: () -> Unit with { Stdout } = () -> {
+  stdout_write("find_first_neg([3, 1, -2, 5]) = \{find_first_neg([3, 1, -2, 5])}\n")
+  stdout_write("find_first_neg([1, 2]) = \{find_first_neg([1, 2])}\n")
+}
+```
+
+```output
+find_first_neg([3, 1, -2, 5]) = 2
+find_first_neg([1, 2]) = -1
+```
+
+## loop — パラメータ付き末尾再帰
+
+`loop (引数 = 初期値, ...)` + `continue(次の値...)` + `break 結果`。
+可変変数なしで畳み込みが書ける。
+
+```vibe run
+import @vibe/prelude { stdout_write }
+
+let _start: () -> Unit with { Stdout } = () -> {
+  let sum = loop (i = 0, acc = 0) {
+    if i >= 10 { break acc }
+    continue(i + 1, acc + i)
+  }
+  stdout_write("sum = \{sum}\n")
+}
+```
+
+```output
+sum = 45
+```
+
+## for-in は Array を返す
+
+```vibe run
+import @vibe/prelude { stdout_write }
+
+let _start: () -> Unit with { Stdout } = () -> {
+  let doubled = for x in [1, 2, 3] { x * 2 }        // [2, 4, 6]
+  let with_index = for i, x in [10, 20] { i + x }   // [10, 21]
+  stdout_write("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]\n")
+  stdout_write("with_index = [\{Array::get(with_index, 0)}, \{Array::get(with_index, 1)}]\n")
+}
+```
+
+```output
+doubled = [2, 4, 6]
+with_index = [10, 21]
+```
+
+## パイプ演算子
+
+`x |> f` は `f(x)`。値は既定で第 1 引数に入り、`_` で位置を指定できる。
+`_ * 2` のような複合プレースホルダは section ラムダになる。
+
+```vibe run
+import @vibe/prelude { stdout_write }
+
+let _start: () -> Unit with { Stdout } = () -> {
+  let trimmed_len = "  hi  " |> String::trim |> String::length
+  let arr_len = [1, 2, 3] |> Array::length
+  let mapped = [1, 2, 3] |> Array::map(_, _ * 2)
+  stdout_write("trimmed_len = \{trimmed_len}\n")
+  stdout_write("arr_len = \{arr_len}\n")
+  stdout_write("mapped = [\{Array::get(mapped, 0)}, \{Array::get(mapped, 1)}, \{Array::get(mapped, 2)}]\n")
+}
+```
+
+```output
+trimmed_len = 2
+arr_len = 3
+mapped = [2, 4, 6]
+```
+
+次章: [03 データ](03_data.vibe.md)

@@ -1,6 +1,6 @@
 # 06 — テストとツーリング
 
-実行: `vibe test docs/tutorial/06_tests_test.vibe`
+前章: [05 エフェクト](05_effects.vibe.md)
 
 ## test ブロック
 
@@ -40,4 +40,16 @@ vibe lsp                             # LSP サーバ (stdio)
 vibe hash lib/@vibe/core
 ```
 
-次章: [07 モジュールとパッケージ](07_modules_packages.md)
+## このチュートリアル自身も実行可能ドキュメント
+
+この章まで含め `docs/tutorial/*.vibe.md` はすべて #1142 の `.vibe.md` 形式
+— ` ```vibe run ` ブロックは実際にコンパイル・実行され、直後の
+` ```output ` は本物の実行結果。手元で検証・再生成するには:
+
+```bash
+python3 scripts/vibe_md.py check docs/tutorial/*.vibe.md   # 検証 (embedded output が古ければ FAIL)
+python3 scripts/vibe_md.py write docs/tutorial/*.vibe.md   # 実行して output を書き直す
+pkf run vibe-md-tutorial                                   # check のタスク化
+```
+
+次章: [07 モジュールとパッケージ](07_modules_packages.vibe.md)

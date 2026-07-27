@@ -1,13 +1,15 @@
 # 07 — モジュールとパッケージ
 
-実行: `vibe test docs/tutorial/07_modules_packages_test.vibe`
+前章: [06 テスト](06_tests.vibe.md)
 (リポジトリ root か、@vibe/core が materialize 済みの環境で)
 
 ## export と相対 import
 
 1 ファイル = 1 モジュール。公開したいものに `export`、使う側は選択 import。
 
-```vibe
+```vibe skip
+// skip: シンタックス一覧 (./lib.vibe と ./subdir はこのリポジトリに実在しない
+// 例示パス) — 動く例は次の run ブロック (support/mathx.vibe から triple を import)
 // support/mathx.vibe
 export fn triple(x: Int) -> Int { x * 3 }
 
@@ -20,29 +22,56 @@ import ./subdir { helper }                // ディレクトリ import -> index.
 import パスはエントリファイルの root ディレクトリの外に出られない
 (サンドボックス規則)。
 
+実際に [support/mathx.vibe](support/mathx.vibe) から `triple` を import して
+動かす:
+
+```vibe run
+import @vibe/prelude { stdout_write }
+import ./support/mathx.vibe { triple }
+
+let _start: () -> Unit with { Stdout } = () -> {
+  stdout_write("triple(14) = \{triple(14)}\n")
+}
+```
+
+```output
+triple(14) = 42
+```
+
 ## @scope/name パッケージ
 
 `@scope/name` は ADR-0065 の解決順で探索される:
 `.vibe/store/` (pin 検証済み) → workspace `lib/` → `VIBE_LIB`
 (既定 `~/.vibe/lib` — curl インストーラが stdlib をここに置く)。
 
-```vibe
+```vibe run
+import @vibe/prelude { stdout_write }
 import @vibe/core { sha1, hex_encode }
 
-test "package import" {
-  assert_eq(String::length(sha1("vibe")), 40)
-  assert(hex_encode("hi") == "6869")
+let _start: () -> Unit with { Stdout } = () -> {
+  stdout_write("length(sha1(\"vibe\")) = \{String::length(sha1("vibe"))}\n")
+  stdout_write("hex_encode(\"hi\") = \{hex_encode("hi")}\n")
 }
+```
+
+```output
+length(sha1("vibe")) = 40
+hex_encode("hi") = 6869
 ```
 
 ## 契約 (`index.vpkg`) と version
 
 パッケージの境界は `index.vpkg` — 公開 API を bodyless 宣言で列挙した
-**契約**で、実装との一致はコンパイラが照合する。先頭に `version x.y.z`
-directive を置く。
+**契約**で、実装との一致はコンパイラが照合する。#1128 以降は構造化ヘッダー
+(`name =` / `version =` / `description =` / `deps = { ... }`) が標準形:
 
-```vibe
-version 1.0.0
+```vibe skip
+// skip: index.vpkg ヘッダー例 (docs/adding-modules.md 参照)
+name = @you/counter
+version = 1.0.0
+description =
+  #|A tiny counter contract
+deps = {}
 
 type Counter                       // bodyless: 定義は impl 側
 fn add(x: Int, y: Int) -> Int      // 実装が一致しないとコンパイルエラー
@@ -60,7 +89,8 @@ fn add(x: Int, y: Int) -> Int      // 実装が一致しないとコンパイル
 再現可能ビルドでは require 行で **内容 hash** を固定する。ビルドは毎回
 オフラインで hash を再検証するので、置き場所や取得経路は信頼しなくてよい。
 
-```vibe
+```vibe skip
+// skip: require directive は import/export と独立に module header に置く例示
 require @vibe/core 0.2.0 = #pkg:sha1:<40hex>   // `vibe hash` で計算
 
 import @vibe/core { sha1 }
