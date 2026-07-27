@@ -1,0 +1,770 @@
+//# Imports
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, Subst, Type, TypeDef, TypeEnv, env_lookup, subst_apply, type_to_string
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./checker_trait.vibe {
+  type_send_ok
+}
+
+//# Functions
+
+// #1081 step 3 Phase B: `Spawnable[r]` capture check for `TaskGroup::spawn` /
+// `TaskGroup::spawn_suspend`. Free-variable collection duplicated here
+// (rather than shared with checker_capture.vibe or codegen's own copy) —
+// this package cannot import the root `@vibe/compiler` package (it is
+// itself a dependency of the root package; importing back would be a
+// package cycle), and codegen's copy lives in yet another separate
+// package for its own ABI purpose. Per-package duplication of this exact
+// analysis is already the established pattern in this codebase (compare
+// codegen/common_analysis/common_analysis.vibe's `collect_free_vars_expr`).
+
+fn sp_empty_strings() -> Array[String] {
+  array_empty()
+}
+
+fn sp_array_contains_str(arr: Array[String], v: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == v {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn sp_add_unique(arr: Array[String], v: String) -> Unit {
+  if sp_array_contains_str(arr, v) {
+    ()
+  } else {
+    Array::push(arr, v)
+  }
+}
+
+fn sp_append_all(dst: Array[String], src: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(src) {
+    Array::push(dst, Array::get(src, i))
+    i = i + 1
+  }
+}
+
+fn sp_clone_strings(items: Array[String]) -> Array[String] {
+  let out = sp_empty_strings()
+  sp_append_all(out, items)
+  out
+}
+
+fn sp_bound_with(bound: Array[String], extras: Array[String]) -> Array[String] {
+  let out = sp_clone_strings(bound)
+  sp_append_all(out, extras)
+  out
+}
+
+fn sp_bound_with_one(bound: Array[String], name: String) -> Array[String] {
+  let out = sp_clone_strings(bound)
+  Array::push(out, name)
+  out
+}
+
+fn sp_collect_pat_bindings(pat: Pat, out: Array[String]) -> Unit {
+  match pat {
+    PBind(name) => Array::push(out, name),
+    PCtor(_, pats) => {
+      let mut i = 0
+      while i < Array::length(pats) {
+        sp_collect_pat_bindings(Array::get(pats, i), out)
+        i = i + 1
+      }
+    },
+    PTuple(pats) => {
+      let mut i = 0
+      while i < Array::length(pats) {
+        sp_collect_pat_bindings(Array::get(pats, i), out)
+        i = i + 1
+      }
+    },
+    POr(a, b) => {
+      sp_collect_pat_bindings(a, out)
+      sp_collect_pat_bindings(b, out)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fpat) = Array::get(fields, i)
+        sp_collect_pat_bindings(fpat, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+// Free variables of `expr`, given the names already `bound` by enclosing
+// closure params / lets / match arms. A call's CALLEE, when it is a bare
+// identifier, is NOT counted as a capture: it is either a compiler
+// builtin (`Array::set`), a top-level function (`helper()`), or a
+// constructor (`Some(x)`) -- none of these need an environment slot
+// captured at runtime. This intentionally also excludes a directly-called
+// LOCAL closure variable (`let cb = ...; TaskGroup::spawn(n, () -> {
+// cb() })`) from capture analysis -- a documented, accepted gap (this
+// checker has no indirect-call capture analysis yet), matching the
+// project's existing precedent for this class of limitation (see
+// TaskGroup::run's alias-bypass gap, checker.vibe). A callee that is NOT a
+// bare identifier (`EDot` receiver, `ECall` result, ...) is walked
+// normally -- `sender.send_wait(v)` still captures `sender` via the EDot
+// arm below.
+fn sp_collect_free_vars(expr: Expr, bound: Array[String]) -> Array[String] {
+  let result = sp_empty_strings()
+  match expr {
+    EIdent(name, _) => {
+      if sp_array_contains_str(bound, name) {
+        ()
+      } else {
+        sp_add_unique(result, name)
+      }
+      result
+    },
+    EInt(_) => result,
+    EFloat(_) => result,
+    EString(_) => result,
+    EBool(_) => result,
+    EUnit => result,
+    ELet(name, val, body, _) => {
+      sp_append_all(result, sp_collect_free_vars(val, bound))
+      sp_append_all(result, sp_collect_free_vars(body, sp_bound_with_one(bound, name)))
+      result
+    },
+    ELetRec(name, val, body) => {
+      let nb = sp_bound_with_one(bound, name)
+      sp_append_all(result, sp_collect_free_vars(val, nb))
+      sp_append_all(result, sp_collect_free_vars(body, nb))
+      result
+    },
+    ELetMut(name, val, body, _) => {
+      sp_append_all(result, sp_collect_free_vars(val, bound))
+      sp_append_all(result, sp_collect_free_vars(body, sp_bound_with_one(bound, name)))
+      result
+    },
+    EAssign(name, val, cont) => {
+      if sp_array_contains_str(bound, name) {
+        ()
+      } else {
+        sp_add_unique(result, name)
+      }
+      sp_append_all(result, sp_collect_free_vars(val, bound))
+      sp_append_all(result, sp_collect_free_vars(cont, bound))
+      result
+    },
+    EAssignOp(name, _, val, cont) => {
+      if sp_array_contains_str(bound, name) {
+        ()
+      } else {
+        sp_add_unique(result, name)
+      }
+      sp_append_all(result, sp_collect_free_vars(val, bound))
+      sp_append_all(result, sp_collect_free_vars(cont, bound))
+      result
+    },
+    EFn(_, _, params, _, _, body) => {
+      let pnames = sp_empty_strings()
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pname, _) = Array::get(params, i)
+        Array::push(pnames, pname)
+        i = i + 1
+      }
+      sp_append_all(result, sp_collect_free_vars(body, sp_bound_with(bound, pnames)))
+      result
+    },
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(_, _) => (),
+        _ => sp_append_all(result, sp_collect_free_vars(callee, bound))
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        sp_append_all(result, sp_collect_free_vars(Array::get(args, i), bound))
+        i = i + 1
+      }
+      result
+    },
+    EIf(cond, then_e, else_e) => {
+      sp_append_all(result, sp_collect_free_vars(cond, bound))
+      sp_append_all(result, sp_collect_free_vars(then_e, bound))
+      sp_append_all(result, sp_collect_free_vars(else_e, bound))
+      result
+    },
+    ESeq(a, b) => {
+      sp_append_all(result, sp_collect_free_vars(a, bound))
+      sp_append_all(result, sp_collect_free_vars(b, bound))
+      result
+    },
+    EBinOp(_, left, right) => {
+      sp_append_all(result, sp_collect_free_vars(left, bound))
+      sp_append_all(result, sp_collect_free_vars(right, bound))
+      result
+    },
+    EUnaryOp(_, operand) => {
+      sp_append_all(result, sp_collect_free_vars(operand, bound))
+      result
+    },
+    EWhile(cond, body) => {
+      sp_append_all(result, sp_collect_free_vars(cond, bound))
+      sp_append_all(result, sp_collect_free_vars(body, bound))
+      result
+    },
+    ELoop(params, body) => {
+      let mut b2 = sp_clone_strings(bound)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (name, init) = Array::get(params, i)
+        sp_append_all(result, sp_collect_free_vars(init, b2))
+        b2 = sp_bound_with_one(b2, name)
+        i = i + 1
+      }
+      sp_append_all(result, sp_collect_free_vars(body, b2))
+      result
+    },
+    EForIn(name, index_name, iter, body) => {
+      sp_append_all(result, sp_collect_free_vars(iter, bound))
+      let b2 = sp_bound_with_one(bound, name)
+      let b3 = match index_name {
+        Some(ixn) => sp_bound_with_one(b2, ixn),
+        None => b2
+      }
+      sp_append_all(result, sp_collect_free_vars(body, b3))
+      result
+    },
+    EMatch(scrut, arms) => {
+      sp_append_all(result, sp_collect_free_vars(scrut, bound))
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, ai)
+        let pat_binds = sp_empty_strings()
+        sp_collect_pat_bindings(pat, pat_binds)
+        sp_append_all(result, sp_collect_free_vars(arm_body, sp_bound_with(bound, pat_binds)))
+        ai = ai + 1
+      }
+      result
+    },
+    EHandle(body, arms) => {
+      sp_append_all(result, sp_collect_free_vars(body, bound))
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, ai)
+        let pat_binds = sp_empty_strings()
+        sp_collect_pat_bindings(pat, pat_binds)
+        sp_append_all(result, sp_collect_free_vars(arm_body, sp_bound_with(bound, pat_binds)))
+        ai = ai + 1
+      }
+      result
+    },
+    ETuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        sp_append_all(result, sp_collect_free_vars(Array::get(elems, i), bound))
+        i = i + 1
+      }
+      result
+    },
+    EArray(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        sp_append_all(result, sp_collect_free_vars(Array::get(elems, i), bound))
+        i = i + 1
+      }
+      result
+    },
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        sp_append_all(result, sp_collect_free_vars(fval, bound))
+        i = i + 1
+      }
+      result
+    },
+    EDot(obj, _, _, _) => {
+      sp_append_all(result, sp_collect_free_vars(obj, bound))
+      result
+    },
+    EReturn(e) => {
+      sp_append_all(result, sp_collect_free_vars(e, bound))
+      result
+    },
+    ELabeledArg(_, _, e) => {
+      sp_append_all(result, sp_collect_free_vars(e, bound))
+      result
+    },
+    EBreak(opt) => {
+      match opt {
+        Some(e) => sp_append_all(result, sp_collect_free_vars(e, bound)),
+        None => ()
+      }
+      result
+    },
+    EContinue(exprs) => {
+      let mut i = 0
+      while i < Array::length(exprs) {
+        sp_append_all(result, sp_collect_free_vars(Array::get(exprs, i), bound))
+        i = i + 1
+      }
+      result
+    },
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        sp_append_all(result, sp_collect_free_vars(fval, bound))
+        i = i + 1
+      }
+      result
+    },
+    ESpread(e) => {
+      sp_append_all(result, sp_collect_free_vars(e, bound))
+      result
+    },
+    EStringInterp(_) => result
+  }
+}
+
+// A same-region endpoint. Two shapes both count: both sides are the SAME
+// `CtNamed` region skolem (compared by name -- the skolem `#region_<n>` is
+// a plain string, see checker.vibe's `type_mentions_named`); OR both sides
+// are still the SAME unresolved `CtVar` id. The second shape is not a
+// fallback for "unknown, so assume equal" -- it is REQUIRED for
+// correctness: `TaskGroup::spawn`/`TaskGroup::spawn_suspend` are checked
+// WHILE still inside the enclosing `TaskGroup::run` body, before that
+// body's own closure has been unified against its `TaskGroup[r]` skolem
+// parameter (checker.vibe's escape check runs its `unify(CtFn(body_params,
+// ...), ...)` only AFTER the whole body is checked) -- so at spawn-check
+// time `n`'s own region is still whatever fresh var the body's untyped
+// closure parameter got, not yet the skolem itself. Two endpoints that
+// share that SAME not-yet-resolved var (both zonked through the identical
+// running Subst) are still provably the same nursery: nothing outside this
+// one `TaskGroup::run` call could have produced or observed that var, and
+// a DIFFERENT nursery's endpoint would carry a DIFFERENT var (its own
+// `TaskGroup::run` call mints its own fresh closure parameter and its own
+// skolem) or, if already resolved, a different skolem name.
+fn sp_same_region(a: Type, b: Type) -> Bool {
+  match (a, b) {
+    (CtNamed(n1, _), CtNamed(n2, _)) => n1 == n2,
+    (CtVar(v1), CtVar(v2)) => v1 == v2,
+    _ => false
+  }
+}
+
+// A capture is Spawnable-legal when it is structurally `Send`, or when it
+// is a `TaskGroup[r]` / `TaskHandle[r,_]` / `Sender[r,_]` / `Receiver[r,_]`
+// tagged with THIS spawn call's own region (`r_here`) -- an endpoint from
+// a DIFFERENT nursery is rejected exactly like any other non-Send value.
+fn sp_spawnable_ok(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, r_here: Type) -> Bool {
+  if type_send_ok(env, s, defs, ty) {
+    true
+  } else {
+    match ty {
+      CtNamed(n, targs) => if n == "TaskGroup" && Array::length(targs) == 1 {
+        sp_same_region(Array::get(targs, 0), r_here)
+      } else if (n == "TaskHandle" || n == "Sender" || n == "Receiver") && Array::length(targs) == 2 {
+        sp_same_region(Array::get(targs, 0), r_here)
+      } else {
+        false
+      },
+      _ => false
+    }
+  }
+}
+
+// Entry point: given the closure literal passed as the second argument to
+// `TaskGroup::spawn`/`TaskGroup::spawn_suspend` and the ALREADY-ZONKED
+// region argument of the `n: TaskGroup[r_here]` passed as the first, check
+// every captured free variable and return one error message per violation
+// (empty when the check passes). A non-literal closure argument (`let f =
+// ...; TaskGroup::spawn(n, f)`) is opaque to this analysis and tolerated --
+// same documented-gap shape as the region-escape check's alias bypass.
+export fn check_spawnable_captures(env: TypeEnv, s: Subst, defs: Array[TypeDef], f_expr: Expr, r_here: Type) -> Array[String] {
+  match f_expr {
+    EFn(_, _, params, _, _, body) => {
+      let pnames = sp_empty_strings()
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pname, _) = Array::get(params, i)
+        Array::push(pnames, pname)
+        i = i + 1
+      }
+      let free = sp_collect_free_vars(body, pnames)
+      let out = sp_empty_strings()
+      let mut fi = 0
+      while fi < Array::length(free) {
+        let vname = Array::get(free, fi)
+        match env_lookup(env, vname) {
+          Some(vty) => {
+            let resolved = subst_apply(s, vty)
+            if sp_spawnable_ok(env, s, defs, resolved, r_here) {
+              ()
+            } else {
+              Array::push(out, String::concat("no impl `Spawnable` for `", String::concat(type_to_string(resolved), String::concat("`: capture `", String::concat(vname, "` is neither Send nor a same-nursery endpoint")))))
+            }
+          },
+          // Not a real value binding in scope (shouldn't happen for a
+          // genuine capture -- e.g. a name resolved only via a builtin
+          // table or trait-method dispatch, which sp_collect_free_vars's
+          // callee-position exclusion should already keep out). Tolerate.
+          None => ()
+        }
+        fi = fi + 1
+      }
+      out
+    },
+    _ => sp_empty_strings()
+  }
+}
+
+// Codex review (PR #1150, P1): `type_send_ok` judges structural TYPE alone
+// -- `let mut counter = 0; TaskGroup::spawn(n, () -> { counter += 1; 0 })`
+// captures a `CtInt` (Send) with no record that its BINDING is mutable, so
+// `check_spawnable_captures` above accepts it even though
+// docs/concurrency.md explicitly lists "captured `let mut`" as never Send,
+// independent of the captured value's type -- sharing a mutable cell
+// across the spawn boundary is exactly what `Spawnable[r]` exists to
+// forbid. `TypeEnv` (core/types.vibe) carries no mutability flag at all
+// (`EnvBind(String, Type, TypeEnv)`), and `check_mut_capture`/
+// `collect_mut_bindings` (root `@vibe/compiler` package's
+// checker_capture.vibe) already exist for a mutable-capture judgment but
+// are (a) unreachable from this package (see the file-header note above)
+// and (b) never actually wired into any real check today -- exported and
+// unit-tested only. Mutability is a purely SYNTACTIC property of the
+// SOURCE, though, so no env/Subst lookup is needed at all: walk the
+// raw AST of the enclosing `TaskGroup::run` body ONCE (below), collect
+// every name introduced by `ELetMut` anywhere in it (conservative: no
+// scope-exit removal -- shadowing a name with an unrelated inner `let mut`
+// only makes this MORE conservative, never lets a real mutable capture
+// through), find every nested `TaskGroup::spawn`/`spawn_suspend` call's
+// closure argument, and flag any free variable of that closure that is
+// also a collected `let mut` name -- independent of, and in addition to,
+// `check_spawnable_captures`'s Send/same-region judgment above.
+
+fn sp_walk_letmut_binary(a: Expr, b: Expr, out: Array[String]) -> Unit {
+  sp_collect_letmut_names(a, out)
+  sp_collect_letmut_names(b, out)
+}
+
+fn sp_collect_letmut_names(expr: Expr, out: Array[String]) -> Unit {
+  match expr {
+    ELetMut(name, val, body, _) => {
+      Array::push(out, name)
+      sp_walk_letmut_binary(val, body, out)
+    },
+    ELet(_, val, body, _) => sp_walk_letmut_binary(val, body, out),
+    ELetRec(_, val, body) => sp_walk_letmut_binary(val, body, out),
+    ESeq(a, b) => sp_walk_letmut_binary(a, b, out),
+    EIf(c, t, e) => {
+      sp_collect_letmut_names(c, out)
+      sp_walk_letmut_binary(t, e, out)
+    },
+    EAssign(_, val, cont) => sp_walk_letmut_binary(val, cont, out),
+    EAssignOp(_, _, val, cont) => sp_walk_letmut_binary(val, cont, out),
+    EBinOp(_, l, r) => sp_walk_letmut_binary(l, r, out),
+    EUnaryOp(_, e) => sp_collect_letmut_names(e, out),
+    EWhile(c, b) => sp_walk_letmut_binary(c, b, out),
+    ELoop(params, body) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        sp_collect_letmut_names(init, out)
+        i = i + 1
+      }
+      sp_collect_letmut_names(body, out)
+    },
+    EForIn(_, _, iter, body) => sp_walk_letmut_binary(iter, body, out),
+    // Descend into nested closures too -- a `let mut` declared in an
+    // enclosing closure is visible to a spawn call nested further inside.
+    EFn(_, _, _, _, _, body) => sp_collect_letmut_names(body, out),
+    ECall(callee, args, _) => {
+      sp_collect_letmut_names(callee, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        sp_collect_letmut_names(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    EMatch(scrut, arms) => {
+      sp_collect_letmut_names(scrut, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, body) = Array::get(arms, i)
+        sp_collect_letmut_names(body, out)
+        i = i + 1
+      }
+    },
+    EHandle(body, arms) => {
+      sp_collect_letmut_names(body, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, i)
+        sp_collect_letmut_names(arm_body, out)
+        i = i + 1
+      }
+    },
+    ETuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        sp_collect_letmut_names(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    EArray(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        sp_collect_letmut_names(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        sp_collect_letmut_names(fval, out)
+        i = i + 1
+      }
+    },
+    EDot(obj, _, _, _) => sp_collect_letmut_names(obj, out),
+    EReturn(e) => sp_collect_letmut_names(e, out),
+    ELabeledArg(_, _, e) => sp_collect_letmut_names(e, out),
+    EBreak(opt) => match opt {
+      Some(e) => sp_collect_letmut_names(e, out),
+      None => ()
+    },
+    EContinue(exprs) => {
+      let mut i = 0
+      while i < Array::length(exprs) {
+        sp_collect_letmut_names(Array::get(exprs, i), out)
+        i = i + 1
+      }
+    },
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        sp_collect_letmut_names(fval, out)
+        i = i + 1
+      }
+    },
+    ESpread(e) => sp_collect_letmut_names(e, out),
+    _ => ()
+  }
+}
+
+fn sp_walk_spawn_binary(a: Expr, b: Expr, out: Array[Expr]) -> Unit {
+  sp_collect_spawn_closures(a, out)
+  sp_collect_spawn_closures(b, out)
+}
+
+// Collect the CLOSURE ARGUMENT of every `TaskGroup::spawn`/
+// `TaskGroup::spawn_suspend` call reachable anywhere in `expr` (including
+// through nested closures -- a spawn call inside another spawn's body is
+// still reachable from the outer nursery's `let mut` scope).
+fn sp_collect_spawn_closures(expr: Expr, out: Array[Expr]) -> Unit {
+  match expr {
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(name, _) => if (name == "TaskGroup::spawn" || name == "TaskGroup::spawn_suspend") && Array::length(args) == 2 {
+          Array::push(out, Array::get(args, 1))
+        } else {
+          ()
+        },
+        _ => sp_collect_spawn_closures(callee, out)
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        sp_collect_spawn_closures(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    ELetMut(_, val, body, _) => sp_walk_spawn_binary(val, body, out),
+    ELet(_, val, body, _) => sp_walk_spawn_binary(val, body, out),
+    ELetRec(_, val, body) => sp_walk_spawn_binary(val, body, out),
+    ESeq(a, b) => sp_walk_spawn_binary(a, b, out),
+    EIf(c, t, e) => {
+      sp_collect_spawn_closures(c, out)
+      sp_walk_spawn_binary(t, e, out)
+    },
+    EAssign(_, val, cont) => sp_walk_spawn_binary(val, cont, out),
+    EAssignOp(_, _, val, cont) => sp_walk_spawn_binary(val, cont, out),
+    EBinOp(_, l, r) => sp_walk_spawn_binary(l, r, out),
+    EUnaryOp(_, e) => sp_collect_spawn_closures(e, out),
+    EWhile(c, b) => sp_walk_spawn_binary(c, b, out),
+    ELoop(params, body) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        sp_collect_spawn_closures(init, out)
+        i = i + 1
+      }
+      sp_collect_spawn_closures(body, out)
+    },
+    EForIn(_, _, iter, body) => sp_walk_spawn_binary(iter, body, out),
+    EFn(_, _, _, _, _, body) => sp_collect_spawn_closures(body, out),
+    EMatch(scrut, arms) => {
+      sp_collect_spawn_closures(scrut, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, body) = Array::get(arms, i)
+        sp_collect_spawn_closures(body, out)
+        i = i + 1
+      }
+    },
+    EHandle(body, arms) => {
+      sp_collect_spawn_closures(body, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, i)
+        sp_collect_spawn_closures(arm_body, out)
+        i = i + 1
+      }
+    },
+    ETuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        sp_collect_spawn_closures(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    EArray(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        sp_collect_spawn_closures(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        sp_collect_spawn_closures(fval, out)
+        i = i + 1
+      }
+    },
+    EDot(obj, _, _, _) => sp_collect_spawn_closures(obj, out),
+    EReturn(e) => sp_collect_spawn_closures(e, out),
+    ELabeledArg(_, _, e) => sp_collect_spawn_closures(e, out),
+    EBreak(opt) => match opt {
+      Some(e) => sp_collect_spawn_closures(e, out),
+      None => ()
+    },
+    EContinue(exprs) => {
+      let mut i = 0
+      while i < Array::length(exprs) {
+        sp_collect_spawn_closures(Array::get(exprs, i), out)
+        i = i + 1
+      }
+    },
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        sp_collect_spawn_closures(fval, out)
+        i = i + 1
+      }
+    },
+    ESpread(e) => sp_collect_spawn_closures(e, out),
+    _ => ()
+  }
+}
+
+// Entry point (per lexical scope): collect every `let mut` name visible
+// anywhere in `scope_body` and flag any spawn/spawn_suspend closure
+// reachable from it that captures one, regardless of that name's type.
+// Purely syntactic -- no `env`/`Subst` needed.
+//
+// Codex review (PR #1151, P1): the first version of this check anchored
+// `scope_body` on the `TaskGroup::run` call's OWN closure argument, so a
+// `let mut counter = 0` declared in the ENCLOSING function BEFORE calling
+// `TaskGroup::run` (rather than inside the run body itself) was invisible
+// to `sp_collect_letmut_names` -- an inline spawn closure could still
+// capture and mutate it, exactly the sharing this check exists to reject.
+// Fixed by anchoring on the WHOLE enclosing top-level declaration's body
+// instead (`check_spawnable_mut_captures_stmts` below calls this once per
+// top-level `fn`/`let`/`test`/`bench`, not once per `TaskGroup::run`
+// call) -- `sp_collect_letmut_names`/`sp_collect_spawn_closures` already
+// descend into nested closures, so a `let mut` and a `TaskGroup::run` +
+// `spawn` anywhere in the SAME top-level declaration are both reachable
+// from one call, regardless of which is textually first.
+//
+// Still-accepted gap (not closed by this fix, and not attempted): a
+// mutable binding captured by a HELPER FUNCTION that itself calls
+// `TaskGroup::spawn` -- e.g. passing `counter` into a separate top-level
+// `fn helper(c) { TaskGroup::spawn(n, () -> { c += 1 }) }` -- is
+// interprocedural (would need call-graph / alias tracking across
+// separate top-level declarations) and out of scope for this purely
+// per-declaration AST sweep. Every case in THIS PR's own fixtures and the
+// existing `@vibex/concurrent` test suite keeps the mutable binding and
+// the spawn call within one top-level declaration, which this now covers.
+fn check_spawnable_mut_captures_scope(scope_body: Expr) -> Array[String] {
+  let mut_names = sp_empty_strings()
+  sp_collect_letmut_names(scope_body, mut_names)
+  let spawn_closures = array_empty()
+  sp_collect_spawn_closures(scope_body, spawn_closures)
+  let out = sp_empty_strings()
+  let mut si = 0
+  while si < Array::length(spawn_closures) {
+    match Array::get(spawn_closures, si) {
+      EFn(_, _, sparams, _, _, sbody) => {
+        let spnames = sp_empty_strings()
+        let mut pi = 0
+        while pi < Array::length(sparams) {
+          let (pname, _) = Array::get(sparams, pi)
+          Array::push(spnames, pname)
+          pi = pi + 1
+        }
+        let free = sp_collect_free_vars(sbody, spnames)
+        let mut fi = 0
+        while fi < Array::length(free) {
+          let vname = Array::get(free, fi)
+          if sp_array_contains_str(mut_names, vname) {
+            Array::push(out, String::concat("no impl `Spawnable` for a `let mut` binding: capture `", String::concat(vname, "` shares a mutable cell across the spawn boundary")))
+          } else {
+            ()
+          }
+          fi = fi + 1
+        }
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  out
+}
+
+// Entry point: run `check_spawnable_mut_captures_scope` once per
+// top-level declaration with a body (function/`let`/`test`/`bench`/bare
+// top-level expression), recursing into `SModule` blocks. Called once
+// per program (checker_stmt.vibe's `check_program`/
+// `check_program_with_env`), not per `TaskGroup::run`/spawn call site.
+export fn check_spawnable_mut_captures_stmts(stmts: Array[Stmt]) -> Array[String] {
+  let out = sp_empty_strings()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, body) => sp_append_all(out, check_spawnable_mut_captures_scope(body)),
+      SLetMut(_, _, body) => sp_append_all(out, check_spawnable_mut_captures_scope(body)),
+      STest(_, body) => sp_append_all(out, check_spawnable_mut_captures_scope(body)),
+      SBench(_, body) => sp_append_all(out, check_spawnable_mut_captures_scope(body)),
+      SExpr(body) => sp_append_all(out, check_spawnable_mut_captures_scope(body)),
+      SModule(_, _, inner) => sp_append_all(out, check_spawnable_mut_captures_stmts(inner)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}

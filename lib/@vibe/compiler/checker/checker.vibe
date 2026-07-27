@@ -24,6 +24,10 @@ import ./checker_resolve.vibe {
   resolve_type_expr, subst_type_params
 }
 
+import ./checker_spawnable.vibe {
+  check_spawnable_captures
+}
+
 //# Functions
 
 fn min_int(a: Int, b: Int) -> Int {
@@ -1435,6 +1439,47 @@ fn is_array_builder_head(t: Type) -> Bool {
   }
 }
 
+// #1081 step 3 Phase B: true when a `TaskGroup[r]` / `TaskHandle[r,_]` /
+// `Sender[r,_]` / `Receiver[r,_]` region-tagged endpoint occurs anywhere in
+// the value's type. Generalizing a `let`-bound endpoint (ordinary
+// Hindley-Milner let-polymorphism, `generalize`) would sever its region
+// argument from the skolem `TaskGroup::run` minted -- EVERY later reference
+// re-instantiates a FRESH, unconnected region var, so `check_spawnable_
+// captures`'s same-region comparison (checker_spawnable.vibe) could never
+// see two endpoints from the same nursery as equal. Same value-restriction
+// shape as `is_array_builder_ty` right below (a mutable container has the
+// identical "generalizing loses the identity a later use needs" problem);
+// bind the monotype instead.
+export fn is_region_tagged_ty(t: Type) -> Bool {
+  match t {
+    CtNamed(n, targs) => if n == "TaskGroup" && Array::length(targs) == 1 {
+      true
+    } else if (n == "TaskHandle" || n == "Sender" || n == "Receiver") && Array::length(targs) == 2 {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(targs) && !found {
+        found = is_region_tagged_ty(Array::get(targs, i))
+        i = i + 1
+      }
+      found
+    },
+    CtArray(e) => is_region_tagged_ty(e),
+    CtOption(e) => is_region_tagged_ty(e),
+    CtTuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) && !found {
+        found = is_region_tagged_ty(Array::get(elems, i))
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
 // #938 value-restriction predicate (Codex P1 on #977): true when a builder
 // occurs ANYWHERE in the value's type reachable without crossing a function
 // boundary — `(ArrayBuilder::new(), 0)`, `[ArrayBuilder::new()]`,
@@ -2153,7 +2198,8 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // `CtNamed("ArrayBuilder", [v])` would re-instantiate a fresh v at
         // every use and pushes could never constrain each other (the exact
         // hole this issue is about). Bind the monotype instead.
-        let gen = if is_array_builder_ty(subst_apply(ns, vt)) {
+        let vt_resolved = subst_apply(ns, vt)
+        let gen = if is_array_builder_ty(vt_resolved) || is_region_tagged_ty(vt_resolved) {
           vt
         } else {
           generalize(ns, vt)
@@ -3775,6 +3821,16 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                             } else {
                               ()
                             }
+                            // #1081 step 3 Phase B: the `let mut` capture
+                            // check (Codex review, PR #1150/#1151) runs as
+                            // a SEPARATE whole-program pass
+                            // (check_spawnable_mut_captures_stmts, wired
+                            // into check_program/check_program_with_env in
+                            // checker_stmt.vibe), not per `TaskGroup::run`
+                            // call -- it needs to see `let mut` bindings
+                            // declared in the ENCLOSING scope, outside this
+                            // call's own body, which this call site alone
+                            // cannot observe.
                             (tab_call_ty(tytab, call_off, subst_apply(s_unified, run_ret)), s_unified, c_body)
                           },
                           None => {
@@ -3798,6 +3854,60 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
           // Reachable: the outer condition only matches the literal name
           // `"TaskGroup::run"`, not that it actually resolves in `env`
           // (e.g. the package isn't imported here at all).
+          None => {
+            Array::push(errors, String::concat("unknown name: ", name))
+            (tab_call_ty(tytab, call_off, CtUnknown), s, c)
+          }
+        }
+      } else if (name == "TaskGroup::spawn" || name == "TaskGroup::spawn_suspend") && Array::length(args) == 2 {
+        // #1081 step 3 Phase B: `Spawnable[r]` capture check. Like
+        // `TaskGroup::run` above, there is no general `Spawnable`
+        // trait/bound in this checker -- these two qualified names are
+        // special-cased by literal spelling (same alias/rename bypass
+        // caveat as TaskGroup::run, documented in docs/concurrency.md).
+        // This branch does exactly the SAME instantiate + check-args +
+        // unify work the generic call-checking fallback below would (so
+        // ordinary type errors on `n`/`f` are unaffected), then additionally
+        // zonks `n`'s region argument and walks the closure literal's
+        // captured free variables against `check_spawnable_captures`.
+        match env_lookup(env, name) {
+          Some(scheme) => {
+            let (ti, c1, new_bounds) = instantiate(scheme, c)
+            let mut s0 = s
+            let mut bi = 0
+            while bi < Array::length(new_bounds) {
+              let (vid, bounds) = Array::get(new_bounds, bi)
+              if Array::length(bounds) != 0 {
+                s0 = subst_add_bound(s0, vid, bounds)
+              } else {
+                ()
+              }
+              bi = bi + 1
+            }
+            match ti {
+              CtFn(param_tys, ret_ty, _) => {
+                let (a0_ty, s1, c2) = check_expr(Array::get(args, 0), env, defs, s0, c1, errors, tytab)
+                let (a1_ty, s2, c3) = check_expr(Array::get(args, 1), env, defs, s1, c2, errors, tytab)
+                let arg_tys = [a0_ty, a1_ty]
+                let s3 = unify_call_args(param_tys, arg_tys, s2, errors, name, callee_off)
+                match subst_apply(s3, a0_ty) {
+                  CtNamed(tg_name, tg_args) => if tg_name == "TaskGroup" && Array::length(tg_args) == 1 {
+                    let violations = check_spawnable_captures(env, s3, defs, Array::get(args, 1), Array::get(tg_args, 0))
+                    let mut vi = 0
+                    while vi < Array::length(violations) {
+                      Array::push(errors, String::concat(Array::get(violations, vi), off_marker_len(callee_off, String::length(name))))
+                      vi = vi + 1
+                    }
+                  } else {
+                    ()
+                  },
+                  _ => ()
+                }
+                (tab_call_ty(tytab, call_off, subst_apply(s3, ret_ty)), s3, c3)
+              },
+              _ => (tab_call_ty(tytab, call_off, CtUnknown), s0, c1)
+            }
+          },
           None => {
             Array::push(errors, String::concat("unknown name: ", name))
             (tab_call_ty(tytab, call_off, CtUnknown), s, c)

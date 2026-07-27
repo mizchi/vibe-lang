@@ -1,15 +1,15 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Pat, Type, TypeDef, TypeEnv, env_bind, find_typedef
+  Pat, Type, TypeDef, TypeEnv, env_bind, env_lookup
 }
 
 import @vibe/core {
   array_empty
 }
 
-import ./checker_resolve.vibe {
-  subst_type_params
+import ./checker_trait.vibe {
+  send_subst_vars
 }
 
 //# Functions
@@ -227,22 +227,54 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
         Some(info) => {
           let (enum_name, raw_payload) = info
           // Instantiate the variant's field types for a parameterized enum:
-          // substitute the enum's formal params with the scrutinee's actual type
-          // args (e.g. matching `Ok(inner)` on `Result[Result[T,E], E]` types
-          // `inner` as `Result[T,E]`, not the bare enum param).
+          // substitute the enum's formal params with the scrutinee's actual
+          // type args (e.g. matching `Ok(inner)` on `Result[Result[T,E], E]`
+          // types `inner` as `Result[T,E]`, not the bare enum param).
+          //
+          // #1081 step 3 Phase B investigation: `raw_payload` (from
+          // `find_ctor_in_defs`/`defs`'s `TDEnum`) is NOT name-parameterized
+          // -- `checker_stmt.vibe`'s `SEnum` processing already substitutes
+          // the enum's declared param NAMES with FRESH, fixed declaration-
+          // time `CtVar` ids before storing a variant's field types (see its
+          // `param_var_types`/`resolved_variants`). A name-based
+          // `subst_type_params(pt, eparams_names, sargs)` against that
+          // already-var-id-substituted payload can never match anything (no
+          // `CtNamed(paramname, [])` node survives that first substitution),
+          // so it silently no-ops -- `Ok(a)` on a generic `Result[Int,
+          // String]` bound `a` to the enum's raw, disconnected declaration-
+          // time var instead of `Int` for every parameterized enum ctor
+          // (reproduces with a plain `enum Result[T,E]{Ok(T);Err(E)}`,
+          // nothing region- or Sender-specific -- found chasing why a
+          // same-region `Sender` capture through `Channel::bounded`'s
+          // `Ok((s,rx))` pattern lost `s`'s type entirely).
+          //
+          // The fix mirrors `checker_trait.vibe`'s `send_ok_named` (the
+          // `Send` judgment's generic-enum case), which already solves this
+          // correctly for that other consumer: recover the SAME fixed var
+          // ids via the constructor's own `env`-bound scheme --
+          // `CtForAll(param_var_ids, _, CtFn(payload_types_with_var_ids,
+          // ret, _))` -- and substitute THOSE ids (not names) with the
+          // scrutinee's actual type args.
           let payload_types = match scrutinee_ty {
-            CtNamed(_, sargs) => match find_typedef(defs, enum_name) {
-              Some(td) => match td {
-                TDEnum(_, eparams, _) => if Array::length(eparams) > 0 && Array::length(sargs) > 0 {
-                  for pt in raw_payload {
-                    subst_type_params(pt, eparams, sargs)
-                  }
-                } else {
-                  raw_payload
+            CtNamed(_, sargs) => if Array::length(sargs) > 0 {
+              match env_lookup(env, name) {
+                Some(scheme) => match scheme {
+                  CtForAll(param_var_ids, _, inner) => if Array::length(param_var_ids) == Array::length(sargs) {
+                    match inner {
+                      CtFn(fn_payload_tys, _, _) => for pt in fn_payload_tys {
+                        send_subst_vars(pt, param_var_ids, sargs)
+                      },
+                      _ => raw_payload
+                    }
+                  } else {
+                    raw_payload
+                  },
+                  _ => raw_payload
                 },
-                _ => raw_payload
-              },
-              None => raw_payload
+                None => raw_payload
+              }
+            } else {
+              raw_payload
             },
             _ => raw_payload
           }
