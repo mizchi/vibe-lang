@@ -793,6 +793,28 @@ case "$cmd" in
       rm -f "$mout" "$mout.diag"
       exit "$rc"
     fi
+    if [ "${1:-}" = "--deps-missing" ]; then
+      # #1145 follow-up 2: `vibe check --deps-missing <root>` -- recursively
+      # report every #1128-migrated index.vpkg whose own imports reference
+      # an external package absent from its `deps` block. Mirrors
+      # `--missing-vpkg` immediately above.
+      root="${2:-}"
+      [ -n "$root" ] || die "usage: vibe check --deps-missing <root>"
+      [ -d "$root" ] || die "not found: $root"
+      cli="$(pick_cli)"
+      dout="$(mktemp -t vibe-check-deps-XXXXXX)"
+      env VIBE_DEPS_MISSING_SCAN=1 "$RUNNER" "$cli" "$root" "$dout" __no_entry__ >/dev/null 2>&1 || true
+      if [ -s "$dout.diag" ]; then
+        cat "$dout.diag" >&2
+        rm -f "$dout" "$dout.diag"
+        die "deps-missing scan failed for $root"
+      fi
+      cat "$dout"
+      rc=1
+      grep -q '^ok: no missing deps declarations' "$dout" 2>/dev/null && rc=0
+      rm -f "$dout" "$dout.diag"
+      exit "$rc"
+    fi
     [ "$#" -ge 1 ] || die "usage: vibe check <file.vibe>"
     src="$1"
     [ -f "$src" ] || die "not found: $src"
@@ -1018,14 +1040,16 @@ case "$cmd" in
     trap 'rm -f "$out" "$out.diag" "$out.err"' EXIT
     # Clear inherited adapter-mode envs. Compile-mode leaks (VIBE_FS_COMPILE
     # etc.) would divert this into compiling wasm bytes as the "normalized
-    # source"; worse, the adapter handles VIBE_HASH / VIBE_MISSING_VPKG_SCAN /
-    # VIBE_FILL_PINS / VIBE_PUBLISH_CHECK BEFORE VIBE_NORMALIZE, so a leaked
-    # selector would write a hash/report as $out and the default write mode
-    # would copy it OVER the user's source file.
+    # source"; worse, the adapter handles VIBE_HASH / VIBE_HASH_WRITE /
+    # VIBE_MISSING_VPKG_SCAN / VIBE_DEPS_MISSING_SCAN / VIBE_FILL_PINS /
+    # VIBE_PUBLISH_CHECK BEFORE VIBE_NORMALIZE, so a leaked selector would
+    # write a hash/report as $out and the default write mode would copy it
+    # OVER the user's source file.
     env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_TYPE_AT -u VIBE_DOC_AT \
         -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_COVERAGE -u VIBE_DEBUG \
         -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
-        -u VIBE_HASH -u VIBE_MISSING_VPKG_SCAN -u VIBE_FILL_PINS \
+        -u VIBE_HASH -u VIBE_HASH_WRITE \
+        -u VIBE_MISSING_VPKG_SCAN -u VIBE_DEPS_MISSING_SCAN -u VIBE_FILL_PINS \
         -u VIBE_PUBLISH_CHECK \
       VIBE_NORMALIZE=1 \
       VIBE_IMPORT_ABI=raw \
@@ -1552,10 +1576,18 @@ REPL_HELP
     exec env VIBE_BIN="$LAUNCHER" node "$server" "$@"
     ;;
   hash)
-    # `vibe hash <pkg_dir|index.vibei>` — print the contract/package content
-    # hashes (ADR-0063 §5). The require-pin spelling is `#<package-line>`.
+    # `vibe hash [--write] <pkg_dir|index.vibei>` — print the
+    # contract/package content hashes (ADR-0063 §5). The require-pin
+    # spelling is `#<package-line>`. `--write` (#1145 follow-up 3) instead
+    # rewrites the target index.vpkg's `generated_hash = ` directive in
+    # place with the computed package hash.
+    write=0
+    if [ "${1:-}" = "--write" ]; then
+      write=1
+      shift
+    fi
     target="${1:-}"
-    [ -n "$target" ] || die "usage: vibe hash <pkg_dir|index.vibei>"
+    [ -n "$target" ] || die "usage: vibe hash [--write] <pkg_dir|index.vibei>"
     if [ -d "$target" ]; then
       # #897 (ADR-0070): a directory argument may be on either spelling --
       # .vpkg is the preferred/current one, .vibei the legacy one still
@@ -1569,15 +1601,32 @@ REPL_HELP
     fi
     [ -f "$target" ] || die "not found: $target"
     cli="$(pick_cli)"
-    hout="$(mktemp -t vibe-hash-XXXXXX)"
-    env VIBE_HASH=1 "$RUNNER" "$cli" "$target" "$hout" __no_entry__ >/dev/null 2>&1 || true
-    if ! grep -q '^package ' "$hout" 2>/dev/null; then
-      cat "$hout.diag" 2>/dev/null >&2 || true
+    if [ "$write" = "1" ]; then
+      case "$target" in
+        *.vpkg) ;;
+        *) die "vibe hash --write requires an index.vpkg target (got $target); generated_hash is a #1128 directive, the legacy index.vibei format has no such field" ;;
+      esac
+      wout="$(mktemp -t vibe-hash-write-XXXXXX)"
+      env VIBE_HASH_WRITE=1 "$RUNNER" "$cli" "$target" "$wout" __no_entry__ >/dev/null 2>&1 || true
+      if [ ! -s "$wout" ] || [ -s "$wout.diag" ]; then
+        cat "$wout.diag" 2>/dev/null >&2 || true
+        rm -f "$wout" "$wout.diag"
+        die "hash write failed for $target"
+      fi
+      cp "$wout" "$target"
+      grep '^generated_hash = ' "$target" | sed "s|^|wrote to $target: |"
+      rm -f "$wout" "$wout.diag"
+    else
+      hout="$(mktemp -t vibe-hash-XXXXXX)"
+      env VIBE_HASH=1 "$RUNNER" "$cli" "$target" "$hout" __no_entry__ >/dev/null 2>&1 || true
+      if ! grep -q '^package ' "$hout" 2>/dev/null; then
+        cat "$hout.diag" 2>/dev/null >&2 || true
+        rm -f "$hout" "$hout.diag"
+        die "hash computation failed for $target"
+      fi
+      cat "$hout"
       rm -f "$hout" "$hout.diag"
-      die "hash computation failed for $target"
     fi
-    cat "$hout"
-    rm -f "$hout" "$hout.diag"
     ;;
   pkg)
     # vibe pkg publish|install|add|yank|update — the registry lane

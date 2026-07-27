@@ -6699,4 +6699,23 @@ fi
 rm -rf "$regiondir"
 echo "[compiler-gate] ADR-0068 region generativity ok"
 
+echo "[compiler-gate] 60/60 deps missing-for-imports scan (#1145 follow-up 2)"
+depsdir="_build/_gate_deps_scan"
+rm -rf "$depsdir"; mkdir -p "$depsdir"
+VIBE_DEPS_MISSING_SCAN=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ROOT_DIR" "$depsdir/scan.out" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$depsdir/scan.out" ]; then
+  echo "[compiler-gate] FAIL: deps-missing scan produced no output" >&2
+  cat "$depsdir/scan.out.diag" 2>/dev/null >&2
+  exit 1
+fi
+if ! grep -q "^ok: no missing deps declarations" "$depsdir/scan.out"; then
+  echo "[compiler-gate] FAIL: index.vpkg packages with deps missing an import's package (#1128/#1145):" >&2
+  cat "$depsdir/scan.out" >&2
+  exit 1
+fi
+rm -rf "$depsdir"
+echo "[compiler-gate] deps missing-for-imports scan (#1145 follow-up 2) ok"
+
 echo "[compiler-gate] ok"
