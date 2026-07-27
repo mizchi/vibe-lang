@@ -110,6 +110,8 @@ vibe check   <file.vibe|file.vibex>   parse + typecheck (no output kept)
 vibe test    <file_test.vibe>...      compile + run test {} blocks
 vibe fetch   [project_dir]            vendor git/URL deps from vibe.deps + lock
 vibe lsp                              start the stdio LSP server (diagnostics)
+vibe context-pack [--out FILE]        emit cheatsheet + verified golden examples
+                                       as one file (AI-harness context, #820)
 vibe version                          print toolchain versions
 vibe self update --cli-wasm <path>    refresh compiler wasm + rebuild .cwasm
 vibe help                             usage

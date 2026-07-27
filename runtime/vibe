@@ -73,6 +73,8 @@
 #   vibe pkg     update <name> [--store]  switch to the newest non-yanked
 #                                         version, showing the contract diff
 #   vibe lsp                              start the stdio LSP server (diagnostics)
+#   vibe context-pack [--out FILE]        emit cheatsheet + verified golden
+#                                         examples as one file (AI-harness context, #820)
 #   vibe version                          print toolchain versions
 #   vibe self update [--cli-wasm <path>]  refresh compiler wasm + rebuild .cwasm
 #   vibe help                             this message
@@ -1701,6 +1703,33 @@ REPL_HELP
     cli="$(pick_cli)"
     exec env VIBE_PKG_RUNNER="$RUNNER" VIBE_PKG_CLI_WASM="$cli" VIBE_HOME="$VIBE_HOME" \
       bash "$pkg_sh" "$@"
+    ;;
+  context-pack)
+    # vibe context-pack [--out FILE]  (#820 sub-item 3)
+    # Emit the bundled language cheatsheet + verified golden-example corpus
+    # as one file, for feeding into an AI harness as context. Prefers the
+    # toolchain's pre-built asset (installed layout, generated once at
+    # install time by scripts/install.sh); falls back to generating it live
+    # from a dev checkout's docs/eval tree when no such asset was shipped
+    # (e.g. this launcher running straight out of the repo).
+    cpout="-"
+    if [ "${1:-}" = "--out" ]; then
+      cpout="${2:?usage: vibe context-pack [--out FILE]}"
+      shift 2
+    fi
+    cpasset="$TOOLCHAIN_DIR/lib/context-pack.md"
+    cpgen="$TOOLCHAIN_DIR/scripts/gen_context_pack.sh"
+    if [ -f "$cpasset" ]; then
+      if [ "$cpout" = "-" ]; then cat "$cpasset"; else cp "$cpasset" "$cpout"; fi
+    elif [ -f "$cpgen" ]; then
+      if [ "$cpout" = "-" ]; then
+        bash "$cpgen" "$TOOLCHAIN_DIR"
+      else
+        bash "$cpgen" "$TOOLCHAIN_DIR" > "$cpout"
+      fi
+    else
+      die "vibe context-pack: no pre-built asset ($cpasset) and no generator ($cpgen) found -- this installation doesn't ship the context pack"
+    fi
     ;;
   version|--version|-V)
     echo "vibe $VIBE_VERSION (selfhost launcher)"

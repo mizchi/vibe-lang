@@ -138,6 +138,18 @@ if [ -f "$ROOT_DIR/clients/js/lsp_server.js" ]; then
     say "lsp graph query -> $TC_DIR/lib/graph_query.js"
   fi
 fi
+# `vibe context-pack` (#820 sub-item 3): a bundled cheatsheet + verified
+# golden-example corpus for AI-harness context ingestion. The source
+# docs/eval tree isn't shipped with the installed toolchain, so generate
+# the bundle once here and ship the result as a toolchain-local asset.
+if [ -f "$ROOT_DIR/scripts/gen_context_pack.sh" ]; then
+  if bash "$ROOT_DIR/scripts/gen_context_pack.sh" "$ROOT_DIR" > "$TC_DIR/lib/context-pack.md.tmp" 2>/dev/null; then
+    mv "$TC_DIR/lib/context-pack.md.tmp" "$TC_DIR/lib/context-pack.md"
+    say "context pack -> $TC_DIR/lib/context-pack.md"
+  else
+    rm -f "$TC_DIR/lib/context-pack.md.tmp"
+  fi
+fi
 
 # 5. dispatcher + default toolchain ----------------------------------------
 cat > "$VIBE_HOME/bin/vibe" <<'DISPATCH'
