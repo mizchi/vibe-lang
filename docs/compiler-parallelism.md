@@ -475,7 +475,7 @@ manifest. Whether that overhead is negligible next to real typechecking
 work, or needs to be parallelized itself before it's worth using, is
 unmeasured.
 
-### Phase 2: bounded parallel frontend — transport only
+### Phase 2: bounded parallel frontend — wired as a cache pre-warm
 
 - Run ready module jobs through the ADR-0068 nursery/channel implementation.
 - Start with a conservative worker bound because a full compiler self-compile has a
@@ -488,13 +488,67 @@ values, and the host coordinator threads each dependency's interface into its
 dependents' jobs, so a real import DAG runs across `worker_threads` at
 `jobs=1/2/4` with identical output (see "Host multi-worker prototype" above).
 
-What that is NOT: the production compiler is unchanged. There is no `--jobs`
-flag on `vibe`, `ensure_fingerprint_fs_go` still walks the import DAG
-serially in one process, and nothing a user runs today goes faster. The
-parallel path exists only under the host prototype, on projects the test
-constructs. Wiring it into the real compile path — and measuring throughput
-against peak RSS, since a self-compile has a high heap watermark — is the
-remaining Phase 2 work.
+**`vibe build|compile --jobs N` now reaches the real compile path**, but not
+by replacing `ensure_fingerprint_fs_go`. That recursion still runs, serially,
+on every compile — Phase 1's "remaining gaps" note above is still true: a
+worklist inside one guest process gains nothing, since real parallelism only
+comes from a host driving multiple wasm instances. Instead, `--jobs N`
+(`runtime/vibe`'s `maybe_warm_frontend_cache`, N > 1) runs BEFORE the
+existing serial `compile_to()`, as a pure cache pre-warm:
+
+1. Discover the entry file's import DAG (`VIBE_LIST_DEPS`, batched through
+   `scripts/parallel_frontend_warm.mjs`, a `projectRoot`-parameterized sibling
+   of `scripts/parallel_project_driver.mjs`).
+2. Check every module through the existing `worker_threads` +
+   `VIBE_MODULE_JOB_DIR` coordinator/worker stack, unchanged.
+3. Publish every `Checked` outcome's environment to the REAL persistent-cache
+   path — not the job-dir sandbox — via a new adapter mode,
+   `VIBE_PUBLISH_ENV_CACHE=1` (`run_publish_env_cache_dir`,
+   `runtime/typecheck_fs.vibe`). This closes the exact gap Phase 1's
+   "remaining gaps" section left open: a worker's checked environment now
+   reaches `persistent_type_env_cache_path(fingerprint)`, the path the serial
+   walk's `finish_typecheck_fs_impl` checks with a plain `Fs::exists` before
+   ever calling `check_module` again. The publish step never re-derives that
+   path itself — it reads it out of the compiler via one extra wasm
+   invocation — because the path folds in this build's own
+   `codegen_fingerprint`, which a host process has no reliable way to
+   reproduce (the same drift risk the `ModuleJob.dep_fps` fingerprint fix
+   above closed for cache keys, here applied to cache paths).
+4. `compile_to()` then runs exactly as it always has, unconditionally.
+
+The correctness argument this rests on: a `Diagnosed` module is simply
+absent from the publish manifest, so the serial walk re-checks it from
+scratch and reports the identical diagnostic (pinned by
+`scripts/test_parallel_frontend_warm.sh`, which asserts byte-for-byte
+diagnostic equality between a plain serial compile and a `--jobs`-prewarmed
+one on the same failing input). Every prerequisite this needs — `node` on
+`PATH`, the dev-repo driver scripts existing next to `TOOLCHAIN_DIR` — is
+checked before anything runs; missing either just skips the pre-warm with a
+stderr note and falls through to the unmodified serial path. This is why
+`--jobs` needs no soundness argument of its own: it can only ever save the
+serial walk redundant work or do nothing, never change what a build produces.
+`scripts/test_parallel_frontend_warm.sh` (opt-in Taskfile task
+`test-parallel-frontend-warm`, matching `test-parallel-selfhost-scheduler`'s
+precedent — neither is wired into `test`/`full-gate` yet) asserts
+byte-identical Wasm between `--jobs 1` and `--jobs 4` on the fixture diamond
+project, in addition to the diagnostic-equality check above.
+
+What that is still NOT: this only speeds up (or no-ops) the frontend
+check — parse/typecheck — never codegen or linking, and only for `vibe
+build`/`compile`, not `check`/`test`/`diagnostics` (not wired there yet,
+though the same `maybe_warm_frontend_cache` helper would apply unchanged).
+It requires Node (the coordinator uses `worker_threads`) even when the
+installed toolchain's own runner is the Rust `vibewt`, so it is scoped to a
+dev checkout of this repo — see the "Shared-everything migration note" below
+and #1143 for the broader runtime-portability question this leaves open.
+Discovery still pays one `vibe` subprocess launch per file
+(`VIBE_LIST_DEPS`), unmeasured against a project the size of the compiler's
+own manifest; worker-count tuning against peak RSS is still open; and the
+persistent-cache write itself is still a direct `Fs::write_file`; `--jobs`
+does not add a temp-file+rename step, so two concurrent `vibe build --jobs`
+invocations racing on the same fingerprint is the same pre-existing hazard
+the Cache publication section above already flags for the serial path, not
+a new one introduced here.
 
 ### Phase 3: immutable whole-program plan
 
@@ -519,3 +573,80 @@ remaining Phase 2 work.
 - cold and warm compile time, peak guest heap, and host RSS are reported before
   raising the default worker count;
 - `cd formal && lake build --wfail` remains green without `sorry`.
+
+## Shared-everything migration note (2026-07-27)
+
+The design above is shared-nothing throughout: every worker owns a distinct
+`Store`/`Instance`/linear heap, and jobs/outcomes cross the host boundary as
+copied values (job-directory text files today, an eventual channel/message
+transport later). This section records what a later move to a
+shared-everything design (#488) would actually require, so today's choice
+isn't accidentally load-bearing in a way that closes that door. It is a
+forward-looking note, not a plan — none of this is scheduled work.
+
+**It isn't available to choose today.** `docs/wasm_threads_requirements.md`
+§4's 47.0.2 probe found the `shared-everything-threads` proposal's CLI flag
+accepted but not wired into Wasmtime's validator or WAT parser (`shared
+composite types require the shared-everything-threads proposal`, upstream
+tracking `bytecodealliance/wasmtime#9466`, still unimplemented). Only core
+wasm atomics + shared memory (`-W threads=y -W shared-memory=y`) work today,
+and WASI Threads (`-S threads=y`) was removed in Wasmtime 47.0.0. This note
+exists so the constraints are on record before that changes, not because a
+switch is imminent.
+
+What would have to change, by layer:
+
+- **Wasm runtime/build.** Workers would need to import one shared `Memory`
+  instead of each owning an independent one — `wasmtime::SharedMemory`
+  configured once and given to every `Instance`, or (once implemented)
+  guest-side `thread.spawn_ref`. `runtime/vibewt` and
+  `scripts/wasm_vibe_host_runner.js` both gain a second instantiation mode.
+- **Allocator and GC.** The current bump/free-list allocator assumes
+  exclusive ownership of its heap; a shared heap needs an atomic-CAS-safe
+  allocator at minimum. wasm-gc is much worse: today each worker's GC heap
+  is independent by construction, so nothing needs a concurrent collector.
+  A shared heap needs one, which is a different-sized project than
+  anything else in this list. Realistically, shared-everything stays
+  linear-memory-only for a long time — this matches which backend the
+  47.0.2 probe above targeted.
+- **Language level — this is the real gap, not a tuning problem.** `Send` in
+  the checker today means "safe to move across a task boundary," which is
+  free to grant because the cooperative scheduler never actually runs two
+  task bodies at once — crossing a boundary is just a copy at a suspend
+  point. Real parallel execution needs a second, stricter notion (Rust's
+  `Send`/`Sync` split is the reference point): "safe for two threads to
+  hold concurrently." Nothing in the checker today distinguishes these, and
+  there is no lock/mutex/atomic type in the language to make a value
+  legitimately meet the stricter bar. The `TaskGroup::run` region-escape
+  check (this doc's sibling, `docs/concurrency.md`) only proves a value
+  doesn't outlive its nursery scope — it says nothing about two concurrently
+  running tasks touching the same value without synchronization, which is a
+  different defect class (data races) that needs a different analysis.
+  `TaskCell`/`ResCell`/`Ring` in `lib/@vibex/concurrent/concurrent.vibe` are
+  plain non-atomic cells today, built on the "only one task body executes at
+  an instant" invariant; that invariant is exactly what real threads remove.
+- **Formal model.** `formal/`'s current proof target is schedule
+  independence under a one-task-executes-at-a-time semantics
+  (`Parallel.Machine`/`Parallel.Step` model physical worker ownership
+  separately and are not yet composed with the compiler scheduler proof).
+  Shared-everything's correctness target is closer to linearizability/
+  data-race-freedom, which is a different proof technique, not an extension
+  of the existing one.
+- **Trace validator.** `parallel_scheduler_trace.mjs` checks a strict
+  sequential `ready/claim/releaseComplete/publish/commit` event log against
+  one coordinator's view. Real concurrent shared-memory writes need a
+  happens-before-style check instead of a total order, since there may be no
+  single coordinator serializing every state transition anymore.
+
+**A narrower middle path exists and is worth remembering:** restrict sharing
+to publish-once, read-only data — e.g. an interned string/symbol table or an
+already-`Checked` module's `TypeEnv`, shared by reference only after it is
+permanently frozen. That sidesteps most of the list above: no allocator
+change beyond "this region is never freed," no GC problem (nothing in the
+shared region is ever collected), no `Send`/`Sync` split needed beyond "an
+immutable value is trivially `Sync`," and no race freedom proof beyond "this
+was written exactly once before any reader observed it." If shared-everything
+is ever pursued, this is the shape most likely to land first — it composes
+naturally with the `ModuleJob`/`ModuleOutcome` publish step this document's
+Phase 2 already uses, by replacing "copy the env text" with "hand out a
+reference to the frozen env" without touching anything else in the pipeline.

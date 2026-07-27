@@ -34,6 +34,11 @@
 #   vibe compile|build --minify ...       post-optimize the output with the
 #                                         standalone vibe-opt.wasm artifact
 #                                         (scripts/build_vibe_opt.sh, #1107)
+#   vibe compile|build --jobs N ...       best-effort parallel pre-warm of the
+#                                         type-env cache before the (unchanged)
+#                                         serial compile (#906 Phase 2, dev
+#                                         checkout only -- see
+#                                         docs/compiler-parallelism.md)
 #   vibe serve   <handler.vibe> [--port N] compile + compose with the wasi-http
 #                                         P3 adapter + `wasmtime serve` (#537)
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
@@ -300,6 +305,45 @@ compile_to() {
   return 1
 }
 
+# #906 Phase 2 (real-build wiring): best-effort pre-warm of the persistent
+# type-env cache before compile_to's serial walk. `$1` jobs, `$2` entry
+# source file. This ONLY ever helps or no-ops -- it never changes what
+# compile_to below produces, and it never fails the build: any missing
+# prerequisite (node, the dev-repo driver scripts) or any failure inside
+# the driver itself (discovery error, worker crash, publish failure) is
+# reported to stderr and swallowed, falling straight through to the
+# unconditional serial compile that already runs after every call site.
+#
+# The driver (scripts/parallel_frontend_warm.mjs) lives in this repo's own
+# `scripts/` directory, not in the installed-toolchain layout `vibe` also
+# runs from -- so this is only ever active in a dev checkout, gated on the
+# script actually being found next to TOOLCHAIN_DIR.
+maybe_warm_frontend_cache() {
+  local jobs="$1" src="$2"
+  [ "$jobs" -gt 1 ] || return 0
+  local driver="$TOOLCHAIN_DIR/scripts/parallel_frontend_warm.mjs"
+  local node_runner="$TOOLCHAIN_DIR/scripts/run_wasm_vibe_host_runner.sh"
+  if [ ! -f "$driver" ] || [ ! -f "$node_runner" ]; then
+    echo "vibe: --jobs=$jobs needs the dev-repo parallel driver scripts (not found under $TOOLCHAIN_DIR/scripts); compiling serially" >&2
+    return 0
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    echo "vibe: --jobs=$jobs needs node on PATH for the parallel frontend driver; compiling serially" >&2
+    return 0
+  fi
+  # The Node worker pool always talks to the wasm through the Node runner
+  # (worker_threads is a Node API) regardless of which runner this launcher
+  # itself uses for the real compile -- a .cwasm AOT image is wasmtime-
+  # specific and cannot be loaded here, so this always uses the portable
+  # $CLI_WASM even when pick_cli would have chosen the .cwasm below.
+  local src_abs; src_abs="$(cd "$(dirname "$src")" && pwd)/$(basename "$src")"
+  local out_log; out_log="$(mktemp -t vibe-jobs-warm-XXXXXX)"
+  if ! timeout 600 node "$driver" "$CLI_WASM" "$src_abs" "$jobs" "$PWD" "$node_runner" >"$out_log" 2>&1; then
+    echo "vibe: --jobs=$jobs frontend pre-warm failed, compiling serially: $(tail -1 "$out_log")" >&2
+  fi
+  rm -f "$out_log"
+}
+
 # Live, line-buffered funcmap annotator for the runner's stderr (replaces an awk
 # filter whose block-buffered FIFO input deadlocked interactive `--break` / DAP
 # stepping — see the FIFO comment in the `run` case). Reads stdin, writes the
@@ -545,18 +589,23 @@ case "$cmd" in
     exit "$status"
     ;;
   compile|build)
-    [ "$#" -ge 1 ] || die "usage: vibe $cmd <file.vibe|file.vibex> [-o <out.wasm>] [--entry <name>] [--wit] [--minify]"
-    src=""; out=""; entry="main"; entry_override=0; wit=0; minify=0
+    [ "$#" -ge 1 ] || die "usage: vibe $cmd <file.vibe|file.vibex> [-o <out.wasm>] [--entry <name>] [--wit] [--minify] [--jobs N]"
+    src=""; out=""; entry="main"; entry_override=0; wit=0; minify=0; jobs=1
     while [ "$#" -gt 0 ]; do
       case "$1" in
         -o|--output) out="$2"; shift 2 ;;
         --entry) entry="$2"; entry_override=1; shift 2 ;;
         --wit) wit=1; shift ;;
         --minify) minify=1; shift ;;
+        --jobs) jobs="$2"; shift 2 ;;
         *) src="$1"; shift ;;
       esac
     done
     [ -n "$src" ] || die "no input file"
+    case "$jobs" in
+      ''|*[!0-9]*) die "--jobs must be a positive integer, got: $jobs" ;;
+    esac
+    [ "$jobs" -ge 1 ] || die "--jobs must be a positive integer, got: $jobs"
     [ -f "$src" ] || die "not found: $src"
     case "$src" in
       *.vibex)
@@ -592,6 +641,7 @@ case "$cmd" in
         *) out="${src%.vibe}.wasm" ;;
       esac
     fi
+    maybe_warm_frontend_cache "$jobs" "$src"
     compile_to "$src" "$out" "$entry" || die "compilation failed: $src"
     # #1107 Phase 2: `--minify` post-processes the executable with the
     # standalone size optimizer (`vibe-opt.wasm`, lib/@vibe/optimizer built as
