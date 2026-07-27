@@ -6804,10 +6804,83 @@ if ! grep -qF "no impl \`Spawnable\` for a \`let mut\` binding" "$spawnabledir/n
   cat "$spawnabledir/neg_letmut_outer.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# Codex review (PR #1152, P1): the whole-program `let mut` capture pass
+# used to collect every `let mut` name reachable ANYWHERE in a top-level
+# declaration into one flat, scope-blind list and cross-match by name
+# alone -- so an unrelated `let mut x` in a sibling closure made a
+# lexically-distinct, genuinely-immutable `x` captured elsewhere look
+# mutable too. Must compile and run cleanly.
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/region_ok_spawnable_capture_shadowed_letmut.vibe > "$spawnabledir/pos_shadow.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$spawnabledir/pos_shadow.vibe" "$spawnabledir/pos_shadow.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$spawnabledir/pos_shadow.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_capture_shadowed_letmut.vibe did not compile -- scope-blind let-mut false positive regressed" >&2
+  cat "$spawnabledir/pos_shadow.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+spawnable_shadow_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos_shadow.wasm" 2>/dev/null | tail -1)"
+if [ "$spawnable_shadow_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_capture_shadowed_letmut.vibe got '$spawnable_shadow_out' (want 42)" >&2
+  exit 1
+fi
+# Codex review (PR #1152, P2): the whole-program `let mut` capture pass
+# also used to lose the `[@off=...]` source-offset marker, degrading
+# `vibe diagnostics`/LSP to an unlocated error. The located-diagnostics
+# layer decodes `[@off=N:M]` into a `line L:C-C` range before writing the
+# .diag file (confirmed empirically -- the raw `[@off=...]` marker itself
+# never reaches this file), so check for THAT rendered form instead.
+if ! grep -qE 'line [0-9]+:[0-9]+-[0-9]+' "$spawnabledir/neg_letmut_outer.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_spawnable_capture_letmut_outer_scope.vibe diagnostic lost its located line:col-col source range" >&2
+  cat "$spawnabledir/neg_letmut_outer.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
 rm -rf "$spawnabledir"
 echo "[compiler-gate] ADR-0068 Spawnable[r] capture check ok"
 
-# 62/62. #639: effect-row mismatch diagnostic snapshots -- criterion 1 (no
+# #1081 step 4 (surface polish): `taskgroup { g => body }` is pure parser
+# sugar for `TaskGroup::run((g) -> { body })` -- no dedicated AST node, no
+# desugar pass, no checker special-casing (docs/concurrency.md's naming
+# note: the actually-implemented library type is `TaskGroup`, not the
+# earlier illustrative `Nursery`/`Task`/`Spawn[r]` capability-effect
+# design). Positive: the sugar compiles + runs identically to a
+# hand-written `TaskGroup::run(...)` call. Negative: the EXISTING region-
+# escape check (hardcoded by name on `TaskGroup::run`, unchanged by this
+# sugar) still rejects a leaked `TaskHandle`.
+echo "[compiler-gate] 62/63 ADR-0068 taskgroup { g => body } syntax sugar (#1081 step 4)"
+taskgroupdir="_build/_gate_taskgroup_sugar"
+rm -rf "$taskgroupdir"; mkdir -p "$taskgroupdir"
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/region_ok_taskgroup_sugar.vibe > "$taskgroupdir/pos.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$taskgroupdir/pos.vibe" "$taskgroupdir/pos.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$taskgroupdir/pos.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_taskgroup_sugar.vibe did not compile" >&2
+  cat "$taskgroupdir/pos.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+taskgroup_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$taskgroupdir/pos.wasm" 2>/dev/null | tail -1)"
+if [ "$taskgroup_pos_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: region_ok_taskgroup_sugar.vibe got '$taskgroup_pos_out' (want 42)" >&2
+  exit 1
+fi
+sed '/^__DATA__$/,$d' fixtures/err_taskgroup_sugar_region_escape.vibe > "$taskgroupdir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$taskgroupdir/neg.vibe" "$taskgroupdir/neg.wasm" main >/dev/null 2>&1 || true
+if [ -s "$taskgroupdir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_taskgroup_sugar_region_escape.vibe compiled successfully -- must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF 'region escapes its nursery scope' "$taskgroupdir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_taskgroup_sugar_region_escape.vibe did not produce the expected diagnostic" >&2
+  cat "$taskgroupdir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$taskgroupdir"
+echo "[compiler-gate] taskgroup { g => body } syntax sugar ok"
+
+# 63/63. #639: effect-row mismatch diagnostic snapshots -- criterion 1 (no
 #        'with' clause at all) and criterion 2 (a `handle` locally
 #        discharges one effect while another stays genuinely missing; the
 #        message must show the handled one folded into "declared" rather
@@ -6815,7 +6888,7 @@ echo "[compiler-gate] ADR-0068 Spawnable[r] capture check ok"
 #        can't silently drift; see #639's discussion for why the riskier
 #        "over-declared with{} is itself a hard error" reading was
 #        deliberately NOT implemented.
-echo "[compiler-gate] 62/62 effect-row mismatch diagnostic snapshots (#639)"
+echo "[compiler-gate] 63/63 effect-row mismatch diagnostic snapshots (#639)"
 eff639dir="_build/_gate_eff639"
 rm -rf "$eff639dir"; mkdir -p "$eff639dir"
 cp fixtures/err_effect_missing_annotation.vibe "$eff639dir/no_with.vibe"

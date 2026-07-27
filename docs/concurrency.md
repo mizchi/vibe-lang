@@ -873,6 +873,41 @@ nursery の capture は必ず異なる var id を持つ)。実装は
   の adoption-site テストが `log: Array[Int]` を無検査で capture できる
   のはこのため — 意図した既存の適用範囲どおり)。
 
+### 実装ノート (2026-07-27 追記3): `taskgroup { g => body }` 構文糖衣 (#1081 step 4 の一部)
+
+実装順 step 4「表面仕上げ」のうち、構文糖衣の部分を実装した。もう一方
+(blocking API への `Async::suspend` row 付与) はすでに
+`Sender::send_wait`/`Receiver::recv_wait`/`TaskGroup::spawn_suspend` の
+既存シグネチャで満たされていたため、追加作業は不要だった。
+
+- 命名は 2026-07-24 の実装ノートにある「library の型/API は `TaskGroup`」
+  という決定に従う。本書冒頭の illustrative セクション (`nursery { n =>
+  body }`、`Task::spawn`、`Spawn[r]` capability effect)
+  は初期の aspirational 設計であり、実装は別の(より単純な、effect を使わ
+  ない region ベースの)形になっているため、構文糖衣も `nursery` ではなく
+  `taskgroup` を採用する。
+- `taskgroup { g => body }` は `TaskGroup::run((g) -> { body })` への
+  純粋な parse-time 書き換えであり、専用の AST variant も desugar pass も
+  checker 側の特別扱いも追加していない — parser が今日の手書き
+  `TaskGroup::run(...)` 呼び出しと全く同じ `ECall`/`EFn` 形を直接構築する
+  だけなので、region escape check・`Spawnable[r]` capture check は無変更
+  のまま sugar 越しにも適用される(`err_taskgroup_sugar_region_escape.vibe`
+  で確認)。
+- 実装: `lib/@vibe/parser/lexer.vibe`(`taskgroup` キーワード追加、識別子
+  長 9 の分岐)、`token.vibe`(`TTaskGroup` variant)、
+  `parser_expr_primary.vibe`(`parse_control_primary` から mode 26 へ
+  ディスパッチ)、`parser_expr_dispatch.vibe`(mode 26: `{` → 束縛識別子
+  → `=>` → body(mode 0、match arm の body と同じ規約 — 複文は
+  `{ ... }` で自分から囲む必要がある)→ `}`)。
+- 現状は今日の手書き呼び出しと同様、呼び出し側が
+  `import @vibex/concurrent { TaskGroup }` を書く必要がある — この
+  sugar 自体は import を暗黙に注入しない(そうする既存の仕組みがこの
+  コンパイラに存在しないため、範囲外とした)。
+- fixtures/compiler_gate.sh 62/62: `region_ok_taskgroup_sugar.vibe`
+  (sugar 経由の spawn+join、42 で正常終了)、
+  `err_taskgroup_sugar_region_escape.vibe`(sugar body から漏れた
+  `TaskHandle`、reject)。
+
 ## v0.4.0 に含めないもの
 
 - raw OS thread / Worker API、thread affinity、priority、CPU count の安定公開

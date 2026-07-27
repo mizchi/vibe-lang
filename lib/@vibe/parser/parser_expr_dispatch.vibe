@@ -1100,6 +1100,34 @@ export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int
       ,
       _ => throw("expected identifier after 'for'")
     }
+  } else if mode == 26 {
+    // `taskgroup { g => body }` is pure sugar for `TaskGroup::run((g) -> {
+    // body })` -- no dedicated AST node, no desugar pass, no checker
+    // special-casing. Resolves through the ordinary `TaskGroup::run` name
+    // lookup, so the caller still needs `import @vibex/concurrent {
+    // TaskGroup }` in scope (matching every hand-written call site today;
+    // there is no auto-import mechanism in this compiler to inject one).
+    let off = Array::get(starts, pos)
+    let br = expect_tk(tokens, pos, "{")
+    let (gname, gn) = match peek(tokens, br) {
+      TIdent(name) => (name, br + 1),
+      _ => throw("expected a binder name after 'taskgroup {'")
+    }
+    let arrow = expect_tk(tokens, gn, "=>")
+    let (body, bn) = parse_recur(tokens, arrow, 0)
+    let close = expect_tk(tokens, bn, "}")
+    let tparams = Array::slice([
+      ""
+    ], 0, 0)
+    let tbounds = Array::slice([
+      ("", tparams)
+    ], 0, 0)
+    let lam = EFn(tparams, tbounds, [
+      (gname, None)
+    ], None, None, body)
+    (ECall(EIdent("TaskGroup::run", off), [
+      lam
+    ], off), close)
   } else {
     let actual = tk_name(peek(tokens, pos))
     throw("internal parser error: unknown parse mode \{mode} at #\{pos} token=\{actual}")
