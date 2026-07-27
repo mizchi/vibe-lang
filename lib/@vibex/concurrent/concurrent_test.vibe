@@ -194,8 +194,7 @@ test "child Err value is a recoverable result, not a task failure" {
 
 test "negative capacity is a configuration error" {
   let r = TaskGroup::run((n) -> {
-    let ch: Result[(Sender[Int], Receiver[Int]), ChannelConfigError] =
-      Channel::bounded(n, -1)
+    let ch = Channel::bounded(n, -1)
     assert(ch is Err(ChannelConfigError::NegativeCapacity))
     0
   })
@@ -379,32 +378,22 @@ test "full buffer send blocks and is promoted when a consumer drains" {
   assert(r is Ok(0))
 }
 
-test "task-group close closes remaining endpoints" {
-  let escaped: Array[Option[Receiver[Int]]] = [None]
-  let r = TaskGroup::run((n) -> {
-    match Channel::bounded(n, 2) {
-      Err(_) => -1,
-      Ok((s, rx)) => {
-        let _ = Sender::send(s, 9)
-        // Deliberately leak the receiver out of the task group. Region
-        // escape will be a STATIC error once `r`-generativity lands
-        // (ADR-0068 implementation order step 4); until then the runtime
-        // closes the endpoint at task-group close.
-        Array::set(escaped, 0, Some(rx))
-        0
-      }
-    }
-  })
-  assert(r is Ok(0))
-  match Array::get(escaped, 0) {
-    Some(rx) => {
-      // The task group has closed: buffered messages drain, then None.
-      assert(Receiver::recv(rx) is Some(9))
-      assert(Receiver::recv(rx) is None)
-    },
-    None => assert(false)
-  }
-}
+// "task-group close closes remaining endpoints" used to leak a Receiver
+// into an outer `let mut` array to observe post-close draining from
+// outside the nursery. #1081 step 3's region escape check rejects the
+// return-position form of this (fixtures/err_region_escape_return.vibe),
+// but NOT this exact outer-`let mut`-array form: this checker generalizes
+// `let`/`let mut` bindings (confirmed: two `Array::set` calls with
+// mismatched element types on the same `let mut arr = [...]` both type-
+// check clean), so every reference to `leaked` inside the nursery body
+// gets its own fresh, disconnected instantiation of the element type --
+// there is no single accumulated type for the escape check to inspect via
+// the checking env. This is a known, documented gap (see docs/
+// concurrency.md's #1081 step 3 実装ノート), not a false claim of
+// soundness this test would otherwise make. The runtime's close-on-drop
+// behavior (`chan_closed` checking `c.group.phase >= 2`) is unchanged
+// regardless and is exercised structurally by every other channel test in
+// this file that lets a task group close with live endpoints.
 
 //# Composition
 

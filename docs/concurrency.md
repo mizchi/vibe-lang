@@ -724,6 +724,85 @@ cancel は parked 状態でも観測されるようになった (mid-run cancel 
 第一歩)。fail-fast と adopted task の統合 (parked sibling の自動
 cancel) は次スライス。#1097 (suspend 継続の local capture × 複数 site の RC trap) は根治済み — 当初の `md_capturing_fn_count` 補償は owned-captures closure ABI (ADR-0076 追記31 Vertical A: closure env が heap capture を creation dup で所有し class-7 drop が再帰解放) に置き換わり、補償テーブルは撤去された。suspend_test がローカル capture 形のままregression lock。
 
+### 実装ノート (2026-07-27 追記): region 生成性 (実装順 step 4、#1081 step 3)
+
+`TaskGroup::run` が呼び出しごとに新しい生成的 region を発行するようになった。
+checker に一般化された rank-2 多相や `Region` bound の仕組みは存在しない
+(確認済み — `CtForAll` は `let`/`letrec` の通常多相のみ、呼び出し側が
+choose する fresh var を返す `instantiate` しかなく、型に scope タグを
+付けて escape を検査する既存機構もゼロだった)。そのため `TaskGroup::run`
+という qualified name を `resume` と同様に checker が直書きで特殊扱いする
+(`checker/checker.vibe` の `ECall(EIdent(name),...)` 分岐、`name ==
+"TaskGroup::run"` の枝)。
+
+- **region の表現**: `CtNamed("#region_" + gensym, [])`。`#` を含む名前は
+  lexer が識別子として受理しないため、パースされたソースは絶対にこの名前を
+  偽造できない。`TaskGroup::run` の呼び出しごとに、通常なら fresh `CtVar`
+  になるはずの `r` 型パラメータをこの rigid skolem へ直接 bind してから
+  body を検査する。
+- **struct へ `r` を追加する際の罠**: `TaskGroup[r]`/`TaskHandle[r,T]`/
+  `Channel[r,T]`/`Sender[r,T]`/`Receiver[r,T]` の型引数は、構築時
+  `struct_fields_ground` (checker.vibe) が「宣言済みフィールド型がすべて
+  ground なら型引数を丸ごと捨てて `CtStruct` に潰す」ため、`r` を使う
+  フィールドが一つも無い構造体 (`TaskGroup` は元々どの型パラメータも
+  使っていなかった) では型引数が構築のたびに消えて追跡できない。
+  `TaskGroup` に `_region_witness: (r) -> r`(恒等関数、実行時には一度も
+  呼ばれない)という phantom field を足すだけで `type_is_ground` が
+  `CtFn` の中の `r` 参照を検出し非 ground 判定になる — unsafe cast も
+  新しい checker 機構も要らない。`TaskHandle`/`Channel`/`Sender`/
+  `Receiver` は元々 `group`/`ch` フィールド経由で `r` を含む型
+  (`TaskGroup[r]`/`Channel[r,T]`) を参照するため witness 不要。
+- **escape check の実装**: `TaskGroup::run` の呼び出しを検査し終えた
+  「その場」で 2 種類のチェックを行う(`Send` の `check_program_bounds_impl`
+  のような遅延・全体パスではない — この呼び出し固有の skolem が対象なので
+  即座に判定できる):
+  1. **戻り値位置**: body の戻り値型(`T`)を最終 subst で zonk し、
+     skolem 名を含んでいれば reject。
+  2. **外側 capture**: 呼び出し時点の `env` に見えているすべての
+     binding を(`env_cache` と同じ cons chain 走査で)集め、最終 subst
+     で zonk して skolem 名を含むものが無いか調べる。呼び出し前に存在した
+     bindings だけを見るので、body 内で新しく `let` された名前は対象外。
+- **既知のギャップ (未解決、正直に記録)**: 外側 capture check は
+  **generalize された `let`/`let mut` local へのリークを検出できない**。
+  実測: `let mut arr = [None]` に対して型の異なる 2 回の `Array::set`
+  (`Some(1)` → `Some("str")`) がどちらも通ることを確認済み — この
+  checker は `let`/`let mut` binding を(mutable でも)generalize する
+  ため、body 内で `arr` を参照するたびに独立した fresh instantiation が
+  返り、env に保存された scheme 自体は一切変化しない。したがって
+  `let mut leaked = [None]; TaskGroup::run((n) => { ...; Array::set(leaked,
+  0, Some(rx)) })` のような、旧 `concurrent_test.vibe` が実際に使っていた
+  leak パターンは **現状のこの slice では検出できない**。戻り値位置の
+  escape (`fixtures/err_region_escape_return.vibe`) だけがこの slice の
+  確定した保証であり、`fixtures/err_region_escape_outer_mut.vibe` のような
+  「必ず reject される」fixture は追加していない(誤って通ってしまう
+  fixture を追加するのは不正直なので)。閉じるには generalize を
+  region-checking 中だけ抑制するか、型に依存しない AST ベースの escape
+  追跡が必要 — 次スライスの課題として残す。
+- **fixtures/compiler_gate.sh 59/59**: `region_ok_basic.vibe` (非 escape、
+  spawn+join、42 で正常終了)、`err_region_escape_return.vibe` (戻り値
+  escape、reject)。両方とも `Send` marker (48/48) と同じ
+  `send_check_reject` 型のヘルパーパターンで gate に配線。
+- **未着手のまま**: `Spawnable[r]` capture check(#1081 step 3 の後半)。
+  設計中に判明した理由: この checker の呼び出しチェックはボトムアップ
+  (引数を先に `check_expr` で独立に検査してから呼び出し先の型へ
+  unify する)なので、`TaskGroup::spawn(n, f)` を検査する時点では
+  `n` の region はまだ skolem へ unify されていないことが多い(unify は
+  nursery body 全体を検査し終えたあとの `TaskGroup::run` 側の後処理で
+  初めて起こる)。そのため spawn 呼び出しの場で inline に「capture の
+  region が `n` と同じか」を比較すると、両方が未解決な metavariable
+  同士をたまたま unify してしまい誤って許可する、または既に解決済みの
+  「別の」nursery の skolem と誤って unify されて紛らわしいエラーに
+  なる、という不健全さが生じる。正しい形は region 生成性と同じく
+  「その場」ではなく **nursery body 全体を検査し終えて s_final が
+  確定した後の第二パス**として実装すること — checker が既に
+  すべての識別子参照について `(offset, 推論型)` を記録している
+  `tytab: Array[(Int, Type)]` を read-only の副チャンネルとして使い、
+  body の AST を再度(副作用なしで)歩いて `TaskGroup::spawn`/
+  `spawn_suspend` の呼び出しノードを見つけ、closure が capture する
+  自由変数を offset 付きで集め、`tytab` からそれぞれの型を引いて
+  `s_final` で zonk してから `Send` か同一 region の endpoint かを
+  判定する。`check_expr` のシグネチャ自体を変える必要はない。
+
 ## v0.4.0 に含めないもの
 
 - raw OS thread / Worker API、thread affinity、priority、CPU count の安定公開

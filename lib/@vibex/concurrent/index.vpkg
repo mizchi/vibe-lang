@@ -7,20 +7,33 @@ version 0.0.1
 // スタック上で駆動する (thread-of-control borrowing)。継続 (ADR-0076
 // Phase 3 suspend IR) が入ったら内部を差し替え、surface は維持する。
 //
-// 未実装 (ADR-0068 実装順で後続): region generativity / escape check、
-// `Send` / `Spawnable` capture check、blocking API の Async::suspend row、
+// `r` (#1081 step 3): a generative region tag. `TaskGroup::run` mints a
+// fresh, compiler-rigid region per call and rejects the call if a
+// region-tagged value (this nursery's own `TaskGroup[rg]`/`TaskHandle[r,_]`/
+// `Sender[r,_]`/`Receiver[r,_]`) escapes via the body's return value or an
+// outer `let mut` capture. `TaskGroup::spawn`/`::spawn_suspend` additionally
+// require every capture of the spawned closure to be `Send` OR an endpoint
+// of THIS SAME region — the `Spawnable[rg]` check docs/concurrency.md calls
+// for. Both checks are hardcoded to these specific qualified names in the
+// checker (no general rank-2/`Region`-bound language feature yet); see
+// docs/concurrency.md's dated 実装ノート for the exact scope and the
+// still-open gaps.
+//
+// 未実装 (ADR-0068 実装順で後続): `nursery { }` 構文糖衣、一般化された
+// `Region` bound (現状は `TaskGroup::run`/`::spawn`/`::spawn_suspend` の
+// qualified name 直書き特殊扱い)、blocking API の Async::suspend row、
 // mid-run cancel 観測、message deep-copy (単一 heap — immutable 値を送る
 // こと)、Task::yield。task handle の綴りは builtin `Task::*` (退役予定の
 // eager prototype) との衝突回避で `TaskHandle`。
 
-type TaskGroup
-type TaskHandle[T]
+type TaskGroup[rg]
+type TaskHandle[rg, T]
 type TaskError
 type SendError
 type ChannelConfigError
-type Channel[T]
-type Sender[T]
-type Receiver[T]
+type Channel[rg, T]
+type Sender[rg, T]
+type Receiver[rg, T]
 
 // internal representation types (exported for same-package tests only;
 // opaque with type params is not yet supported, #729)
@@ -28,19 +41,19 @@ opaque type TaskCell
 type ResCell[T]
 type Ring[T]
 
-fn TaskGroup::run[T](body: (TaskGroup) -> T with { e }) -> Result[T, TaskError] with { e }
-fn TaskGroup::spawn[T: Send](n: TaskGroup, f: () -> T with { Error }) -> TaskHandle[T]
-fn TaskHandle::join[T](h: TaskHandle[T]) -> Result[T, TaskError]
-fn TaskHandle::cancel[T](h: TaskHandle[T]) -> Unit
-fn Channel::bounded[T: Send](n: TaskGroup, capacity: Int) -> Result[(Sender[T], Receiver[T]), ChannelConfigError]
-fn Sender::send[T](s: Sender[T], v: T) -> Result[Unit, SendError]
-fn Sender::clone[T](s: Sender[T]) -> Sender[T]
-fn Sender::release[T](s: Sender[T]) -> Unit
-fn Receiver::recv[T](r: Receiver[T]) -> Option[T]
+fn TaskGroup::run[T, rg](body: (TaskGroup[rg]) -> T with { e }) -> Result[T, TaskError] with { e }
+fn TaskGroup::spawn[rg, T: Send](n: TaskGroup[rg], f: () -> T with { Error }) -> TaskHandle[rg, T]
+fn TaskHandle::join[rg, T](h: TaskHandle[rg, T]) -> Result[T, TaskError]
+fn TaskHandle::cancel[rg, T](h: TaskHandle[rg, T]) -> Unit
+fn Channel::bounded[rg, T: Send](n: TaskGroup[rg], capacity: Int) -> Result[(Sender[rg, T], Receiver[rg, T]), ChannelConfigError]
+fn Sender::send[rg, T](s: Sender[rg, T], v: T) -> Result[Unit, SendError]
+fn Sender::clone[rg, T](s: Sender[rg, T]) -> Sender[rg, T]
+fn Sender::release[rg, T](s: Sender[rg, T]) -> Unit
+fn Receiver::recv[rg, T](rh: Receiver[rg, T]) -> Option[T]
 
 // combinators (index-ordered results; completion order not observable)
 type Parallel
-fn Parallel::map[T: Send, U: Send](n: TaskGroup, xs: Array[T], f: (T) -> U with { Error }) -> Result[Array[U], TaskError]
+fn Parallel::map[rg, T: Send, U: Send](n: TaskGroup[rg], xs: Array[T], f: (T) -> U with { Error }) -> Result[Array[U], TaskError]
 
 // --- suspendable tasks (ADR-0068 実装ノート 3c; ADR-0076 Phase 3a/3b の
 // first-class resume が前提)。task body は adoption site の
@@ -53,21 +66,21 @@ effect Async {
 
 type TaskStep[T]
 
-fn TaskGroup::adopt[T: Send](n: TaskGroup) -> TaskHandle[T]
+fn TaskGroup::adopt[rg, T: Send](n: TaskGroup[rg]) -> TaskHandle[rg, T]
 // closure-CPS (ADR-0076 追記31 Vertical B): handle site は library 内部。
 // caller は plain な closure body を渡すだけ。escaping Error::Throw は
 // Failed へ変換され fail-fast (parked sibling の自動 cancel) を起こす。
-fn TaskGroup::spawn_suspend[T: Send](n: TaskGroup, f: () -> T with { Async, Error }) -> TaskHandle[T]
-fn TaskGroup::pump(n: TaskGroup) -> Bool
-fn TaskGroup::pump_all(n: TaskGroup) -> Unit
+fn TaskGroup::spawn_suspend[rg, T: Send](n: TaskGroup[rg], f: () -> T with { Async, Error }) -> TaskHandle[rg, T]
+fn TaskGroup::pump[rg](n: TaskGroup[rg]) -> Bool
+fn TaskGroup::pump_all[rg](n: TaskGroup[rg]) -> Unit
 // blocking channel ops for suspendable tasks (suspend+retry; the
 // stack-driving Sender::send / Receiver::recv stay unchanged)
-fn Sender::send_wait[T](s: Sender[T], v: T) -> Result[Unit, SendError] with { Async }
-fn Receiver::recv_wait[T](r: Receiver[T]) -> Option[T] with { Async }
-fn TaskHandle::settle[T](h: TaskHandle[T], step: TaskStep[T]) -> Unit
-fn TaskHandle::park[T](h: TaskHandle[T], k: (Int) -> TaskStep[T]) -> Unit
+fn Sender::send_wait[rg, T](s: Sender[rg, T], v: T) -> Result[Unit, SendError] with { Async }
+fn Receiver::recv_wait[rg, T](rh: Receiver[rg, T]) -> Option[T] with { Async }
+fn TaskHandle::settle[rg, T](h: TaskHandle[rg, T], step: TaskStep[T]) -> Unit
+fn TaskHandle::park[rg, T](h: TaskHandle[rg, T], k: (Int) -> TaskStep[T]) -> Unit
 // park with an explicit wait kind: poll=true marks an external-condition
 // wait (deadlock-trap eligible). Suspend payload convention: 0 = yield,
 // 1 = poll wait (the blocking channel ops use 1).
-fn TaskHandle::park_poll[T](h: TaskHandle[T], k: (Int) -> TaskStep[T], poll: Bool) -> Unit
-fn TaskHandle::wake[T](h: TaskHandle[T], v: Int) -> Bool
+fn TaskHandle::park_poll[rg, T](h: TaskHandle[rg, T], k: (Int) -> TaskStep[T], poll: Bool) -> Unit
+fn TaskHandle::wake[rg, T](h: TaskHandle[rg, T], v: Int) -> Bool

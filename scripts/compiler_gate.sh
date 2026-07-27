@@ -6653,4 +6653,50 @@ if ! bash "$ROOT_DIR/scripts/module_job_dir_test.sh" "$stage2_wasm"; then
   exit 1
 fi
 
+# 59/59. #1081 step 3: ADR-0068 region generativity. `TaskGroup::run`
+# mints a fresh, compiler-rigid region skolem (hardcoded to this qualified
+# name -- no general rank-2/`Region`-bound mechanism, see docs/
+# concurrency.md's dated 実装ノート) and rejects the call if the region
+# escapes via the body's return value. Positive: a plain spawn+join inside
+# one nursery keeps compiling and running (region_ok_basic.vibe, 42).
+# Negative: returning a `TaskHandle` obtained inside the nursery is a
+# STATIC error (err_region_escape_return.vibe). Known gap, documented
+# rather than silently claimed: an outer-capture check also runs (scans
+# every binding visible at the call site after the body is checked), but
+# this checker generalizes `let`/`let mut` bindings, so a leak into an
+# already-generalized local `let mut` cell is NOT caught by this slice --
+# only the return-position escape is a hard guarantee here.
+echo "[compiler-gate] 59/59 ADR-0068 region generativity (#1081 step 3)"
+regiondir="_build/_gate_region"
+rm -rf "$regiondir"; mkdir -p "$regiondir"
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/region_ok_basic.vibe > "$regiondir/pos.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$regiondir/pos.vibe" "$regiondir/pos.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$regiondir/pos.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_basic.vibe did not compile -- plain non-escaping nursery use regressed" >&2
+  cat "$regiondir/pos.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+region_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$regiondir/pos.wasm" 2>/dev/null | tail -1)"
+if [ "$region_pos_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: region_ok_basic.vibe got '$region_pos_out' (want 42)" >&2
+  exit 1
+fi
+sed '/^__DATA__$/,$d' fixtures/err_region_escape_return.vibe > "$regiondir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$regiondir/neg.vibe" "$regiondir/neg.wasm" main >/dev/null 2>&1 || true
+if [ -s "$regiondir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_region_escape_return.vibe compiled successfully -- must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF 'region escapes its nursery scope' "$regiondir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_region_escape_return.vibe did not produce the expected diagnostic" >&2
+  cat "$regiondir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$regiondir"
+echo "[compiler-gate] ADR-0068 region generativity ok"
+
 echo "[compiler-gate] ok"

@@ -392,6 +392,99 @@ fn type_is_ground(t: Type) -> Bool {
   }
 }
 
+// #1081 step 3: does a FULLY-ZONKED type contain a `CtNamed` with exactly
+// this name anywhere in its structure? Used to detect a region skolem
+// (`"#region_<n>"`, unforgeable by parsed source) escaping its
+// `TaskGroup::run` call. The caller must `subst_apply` before calling this
+// — an un-zonked `CtVar` cannot be inspected here (deliberately no
+// substitution lookup: this function has no `Subst` to chase, and the two
+// call sites both already pass zonked input).
+fn type_mentions_named(ty: Type, name: String) -> Bool {
+  match ty {
+    CtNamed(n, targs) => if n == name {
+      true
+    } else {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(targs) {
+        if type_mentions_named(Array::get(targs, i), name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    CtTuple(items) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(items) {
+        if type_mentions_named(Array::get(items, i), name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    CtArray(e) => type_mentions_named(e, name),
+    CtOption(e) => type_mentions_named(e, name),
+    CtFn(ps, ret, _) => {
+      let mut found = type_mentions_named(ret, name)
+      let mut i = 0
+      while i < Array::length(ps) {
+        if type_mentions_named(Array::get(ps, i), name) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    CtForAll(_, _, body) => type_mentions_named(body, name),
+    _ => false
+  }
+}
+
+// #1081 step 3: every (name, type) binding currently visible in `env`,
+// walking the same cons-chain shape `env_cache` (core/types.vibe) already
+// walks — trait-def/impl layers carry no ordinary value binding and are
+// skipped, matching that traversal. Used by the `TaskGroup::run` escape
+// check to scan every OUTER binding (never a binding local to the nursery
+// body itself, since those live in a DERIVED env built while checking the
+// body, not in the `env` captured at the call site) for a leaked region
+// skolem after the body has been checked.
+fn collect_env_bindings(env: TypeEnv, acc: Array[(String, Type)]) -> Unit {
+  match env {
+    EnvEmpty => (),
+    EnvBind(n, ty, rest) => {
+      Array::push(acc, (n, ty))
+      collect_env_bindings(rest, acc)
+    },
+    EnvTraitDef(_, _, _, _, rest) => collect_env_bindings(rest, acc),
+    EnvTraitImpl(_, _, rest) => collect_env_bindings(rest, acc),
+    EnvTraitImplGen(_, _, _, _, rest) => collect_env_bindings(rest, acc),
+    EnvFlat(bindings) => {
+      let mut i = 0
+      while i < Array::length(bindings) {
+        Array::push(acc, Array::get(bindings, i))
+        i = i + 1
+      }
+    },
+    EnvCached(names, types, rest) => {
+      let mut i = 0
+      while i < Array::length(names) {
+        Array::push(acc, (Array::get(names, i), Array::get(types, i)))
+        i = i + 1
+      }
+      collect_env_bindings(rest, acc)
+    }
+  }
+}
+
 // True when a type mentions no RIGID type parameter (`CtNamed` / `CtForAll`) but
 // MAY contain inference variables (`CtVar`). Used to recognise an `actual` type
 // whose only flexibility is unification variables: if such a type fails to unify
@@ -3612,6 +3705,92 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
           _ => CtUnknown
         }
         (tab_call_ty(tytab, call_off, result), s3, c2)
+      } else if name == "TaskGroup::run" && Array::length(args) == 1 {
+        // #1081 step 3: `TaskGroup::run` mints a fresh generative region.
+        // There is no general rank-2/`Region`-bound mechanism in this
+        // checker (see docs/concurrency.md's dated 実装ノート) — this
+        // qualified name is special-cased exactly like `resume`/`perform`/
+        // `Some` above. The scheme's `r` type parameter is instantiated to
+        // a fresh RIGID skolem (a `CtNamed` name no parsed source can ever
+        // spell — the lexer rejects `#` in identifiers) instead of an
+        // ordinary unifiable `CtVar`, so nothing outside this call can be
+        // coerced into it by accident; only a real escape reaches it, which
+        // the two checks below catch by scanning fully-zonked types for the
+        // skolem's name.
+        match env_lookup(env, "TaskGroup::run") {
+          Some(scheme) => {
+            let (ti, c1, new_bounds) = instantiate(scheme, c)
+            let mut s0 = s
+            let mut bi = 0
+            while bi < Array::length(new_bounds) {
+              let (vid, bounds) = Array::get(new_bounds, bi)
+              if Array::length(bounds) != 0 {
+                s0 = subst_add_bound(s0, vid, bounds)
+              } else {
+                ()
+              }
+              bi = bi + 1
+            }
+            match ti {
+              CtFn(run_params, run_ret, _) => match Array::get(run_params, 0) {
+                CtFn(body_params, body_ret, body_eff) => match Array::get(body_params, 0) {
+                  CtNamed(tg_name, tg_args) => if tg_name == "TaskGroup" && Array::length(tg_args) == 1 {
+                    match Array::get(tg_args, 0) {
+                      CtVar(rv_id) => {
+                        let skolem_name = String::concat("#region_", __to_string(c1))
+                        let s_skolem = SubstBind(rv_id, CtNamed(skolem_name, []), s0)
+                        let (bt, s_body, c_body) = check_expr(Array::get(args, 0), env, defs, s_skolem, c1 + 1, errors, tytab)
+                        match unify(CtFn(body_params, body_ret, body_eff), bt, s_body) {
+                          Some(s_unified) => {
+                            let zonked_ret = subst_apply(s_unified, body_ret)
+                            if type_mentions_named(zonked_ret, skolem_name) {
+                              Array::push(errors, String::concat("region escapes its nursery scope: the value returned from this TaskGroup::run body still depends on its own Nursery/Task/Sender/Receiver token", off_marker_len(callee_off, String::length(name))))
+                            } else {
+                              ()
+                            }
+                            let outer_bindings = array_empty()
+                            collect_env_bindings(env, outer_bindings)
+                            let mut oi = 0
+                            let mut leaked = false
+                            while oi < Array::length(outer_bindings) {
+                              let (_, oty) = Array::get(outer_bindings, oi)
+                              if !leaked && type_mentions_named(subst_apply(s_unified, oty), skolem_name) {
+                                leaked = true
+                              } else {
+                                ()
+                              }
+                              oi = oi + 1
+                            }
+                            if leaked {
+                              Array::push(errors, String::concat("region escapes its nursery scope: an outer binding now depends on this TaskGroup::run call's own Nursery/Task/Sender/Receiver token", off_marker_len(callee_off, String::length(name))))
+                            } else {
+                              ()
+                            }
+                            (tab_call_ty(tytab, call_off, subst_apply(s_unified, run_ret)), s_unified, c_body)
+                          },
+                          None => {
+                            Array::push(errors, String::concat("argument type mismatch for TaskGroup::run", off_marker_len(callee_off, String::length(name))))
+                            (tab_call_ty(tytab, call_off, CtUnknown), s_body, c_body)
+                          }
+                        }
+                      },
+                      _ => (tab_call_ty(tytab, call_off, CtUnknown), s0, c1)
+                    }
+                  } else {
+                    (tab_call_ty(tytab, call_off, CtUnknown), s0, c1)
+                  },
+                  _ => (tab_call_ty(tytab, call_off, CtUnknown), s0, c1)
+                },
+                _ => (tab_call_ty(tytab, call_off, CtUnknown), s0, c1)
+              },
+              _ => (tab_call_ty(tytab, call_off, CtUnknown), s0, c1)
+            }
+          },
+          None => {
+            Array::push(errors, "unknown name: TaskGroup::run")
+            (tab_call_ty(tytab, call_off, CtUnknown), s, c)
+          }
+        }
       } else {
         match direct_call_return(env, name) {
           Some(ret_ty) => {
