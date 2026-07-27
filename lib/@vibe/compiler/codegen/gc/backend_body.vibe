@@ -21,7 +21,7 @@ import @vibe/compiler/codegen/common_extractors {
 }
 
 import @vibe/compiler/codegen/wasm_emit {
-  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_struct_get, emit_struct_new, emit_struct_set, emit_struct_type_raw, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data
+  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active_runs, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_struct_get, emit_struct_new, emit_struct_set, emit_struct_type_raw, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data
 }
 
 import @vibe/compiler/codegen/builtin_bodies {
@@ -737,6 +737,14 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   // #746: same packed-string layout as the linear lane, generator shared
   // verbatim (untagged ints in the gc lane -> enable_rc=false).
   push_gc_builtin(gen_str_lex_diff_body(false), 7, 0, 4)
+  // #1109 gc parity (linear twin: linked_compile.vibe's table_slots_used):
+  // module-wide recorder of funcref-table slots codegen actually
+  // materializes as closure values. Created once here -- every CompileCtxGc
+  // constructed below (per-function and the globals-init ctx) shares this
+  // array by reference -- and consumed by the element-section emission,
+  // which registers only the recorded slots (see CompileCtx.table_slots_used
+  // in common_base.vibe for the full rationale).
+  let table_slots_used = array_empty()
   let mut bi = 0
   while bi < num_user_funcs {
     let stmt = Array::get(user_func_stmts, bi)
@@ -838,7 +846,8 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
             gc_to_string_is_show_wrapper: gc_to_string_is_wrapper,
             gc_agg_local_slots: gc_agg_slots_f,
             gc_agg_ret_names: gc_agg_ret_names_l,
-            gc_agg_ret_infos: gc_agg_ret_infos_l
+            gc_agg_ret_infos: gc_agg_ret_infos_l,
+            table_slots_used: table_slots_used
           }
           let final_nl = compile_expr_gc(body_buf, body, local_names, param_count, func_ctx, -1)
           Array::push(bodies, body_buf)
@@ -896,7 +905,8 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
       gc_to_string_is_show_wrapper: gc_to_string_is_wrapper,
       gc_agg_local_slots: array_empty(),
       gc_agg_ret_names: gc_agg_ret_names_l,
-      gc_agg_ret_infos: gc_agg_ret_infos_l
+      gc_agg_ret_infos: gc_agg_ret_infos_l,
+      table_slots_used: table_slots_used
     }
     let init_locals = array_empty()
     let mut ginit = 0
@@ -1153,18 +1163,49 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   leb128_encode_u32(export_content, 0)
   bytebuf_push_section(out, 7, export_content)
   if total_table_entries > 0 {
+    // #1109 gc parity (linear twin: linked_compile.vibe's element-section
+    // rebuild, ~3841-3886): register ONLY the slots codegen recorded a
+    // closure value for (table_slots_used), not every user function +
+    // lambda. A slot no closure carries can never be call_indirect'ed, so it
+    // stays ref.null; slot numbering and the declared table size are
+    // untouched. Run-compressed active segments skip the gaps.
+    let slot_used_flags = array_empty()
+    let mut sfi = 0
+    while sfi < total_table_entries {
+      Array::push(slot_used_flags, false)
+      sfi = sfi + 1
+    }
+    let mut tsu = 0
+    while tsu < Array::length(table_slots_used) {
+      let ts = Array::get(table_slots_used, tsu)
+      if ts >= 0 && ts < total_table_entries {
+        Array::set(slot_used_flags, ts, true)
+      } else {
+        ()
+      }
+      tsu = tsu + 1
+    }
+    let table_slots = array_empty()
     let table_func_indices = array_empty()
     let mut tei = 0
-    while tei < num_user_funcs {
-      Array::push(table_func_indices, func_offset + tei)
+    while tei < total_table_entries {
+      if Array::get(slot_used_flags, tei) {
+        Array::push(table_slots, tei)
+        Array::push(table_func_indices, if tei < num_user_funcs {
+          func_offset + tei
+        } else {
+          start_func_idx + 1 + (tei - num_user_funcs)
+        })
+      } else {
+        ()
+      }
       tei = tei + 1
     }
-    let mut tej = 0
-    while tej < num_lambdas {
-      Array::push(table_func_indices, start_func_idx + 1 + tej)
-      tej = tej + 1
+    if Array::length(table_slots) > 0 {
+      emit_element_section_active_runs(out, table_slots, table_func_indices)
+    } else {
+      ()
     }
-    emit_element_section_active(out, table_func_indices)
   }
   let code_content = bytebuf_new()
   bytebuf_push_vec_header(code_content, Array::length(bodies))
