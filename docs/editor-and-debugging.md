@@ -68,6 +68,15 @@ vibe diagnostics --json <file.vibe>       # same diagnostics as a JSON array of 
   `--json` reuses the same `[@off=N]`-derived offsets `vibe lsp`'s
   `publishDiagnostics` uses, wrapped as `{range, severity, source, message}`
   objects — no separate structured-diagnostic format to keep in sync.
+- Each `--json` entry also carries a `data` field (#820 sub-item 2): `null`
+  for most diagnostics, or a structured fix-it for an effect-row mismatch —
+  `{kind: "add_with_clause", target: <function name>, add: [<missing
+  operations>], with: [<full resulting row>], note}`. `target` is a NAME, not
+  a position: resolve it to a location with `vibe symbols <file>` (which
+  already returns `NAME KIND START END` char offsets) rather than expecting a
+  span in the diagnostic itself — the checker only tracks function names and
+  effect rows today, not per-declaration source spans, so `data` doesn't
+  pretend otherwise.
 
 ---
 

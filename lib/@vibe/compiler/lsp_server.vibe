@@ -440,6 +440,88 @@ fn lsp_offset_to_pos(source: String, offset: Int) -> (Int, Int) {
 
 //# Diagnostics: parsing "line L:C: message" into an LSP Diagnostic
 
+// #820 sub-item 2 (structured fix-it, minimal slice): recover the
+// effect-row-mismatch's structured fields (target function name, the
+// exact operations to add, the resulting required row) from the message
+// text `effect_error_to_string` (checker_effects.vibe) already built them
+// into -- NOT re-deriving anything the checker didn't already compute,
+// and deliberately NOT attempting to locate a source position for
+// `target`. Resolving a function name to its declaration span is `vibe
+// symbols`'s job (already-shipped, AST-accurate); duplicating that as an
+// approximate offset here would be exactly the kind of half-working
+// fix-it this sub-item was previously deferred to avoid shipping. `note`
+// spells out that hand-off explicitly so a consumer doesn't assume a
+// span is present.
+fn lsp_split_labels(s: String) -> Array[String] {
+  if String::length(s) == 0 {
+    array_empty()
+  } else {
+    let out = array_empty()
+    let mut rest = s
+    let mut go = true
+    while go {
+      let idx = String::index_of(rest, ", ")
+      if idx < 0 {
+        Array::push(out, rest)
+        go = false
+      } else {
+        Array::push(out, rest[0:idx])
+        rest = rest[idx + 2: String::length(rest)]
+      }
+    }
+    out
+  }
+}
+
+fn lsp_effect_row_mismatch_fix(text: String) -> Json {
+  let prefix = "effect row mismatch for '"
+  if !String::starts_with(text, prefix) {
+    JNull
+  } else {
+    let after_prefix = text[String::length(prefix): String::length(text)]
+    let close_quote = String::index_of(after_prefix, "'")
+    if close_quote < 0 {
+      JNull
+    } else {
+      let fname = after_prefix[0:close_quote]
+      let missing_marker = ": missing { "
+      let rest = after_prefix[close_quote: String::length(after_prefix)]
+      let mi = String::index_of(rest, missing_marker)
+      if mi < 0 {
+        JNull
+      } else {
+        let after_missing = rest[mi + String::length(missing_marker): String::length(rest)]
+        let mend = String::index_of(after_missing, " }")
+        if mend < 0 {
+          JNull
+        } else {
+          let missing_str = after_missing[0:mend]
+          let req_marker = "requires { "
+          let ri = String::index_of(after_missing, req_marker)
+          if ri < 0 {
+            JNull
+          } else {
+            let after_req = after_missing[ri + String::length(req_marker): String::length(after_missing)]
+            let rend = String::index_of(after_req, " })")
+            if rend < 0 {
+              JNull
+            } else {
+              let required_str = after_req[0:rend]
+              JObj(Map::from_pairs([
+                ("kind", JStr("add_with_clause")),
+                ("target", JStr(fname)),
+                ("add", JArr(for x in lsp_split_labels(missing_str) { JStr(x) })),
+                ("with", JArr(for x in lsp_split_labels(required_str) { JStr(x) })),
+                ("note", JStr("no position included -- resolve `target`'s declaration via `vibe symbols <file>`"))
+              ]))
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 fn lsp_parse_diag_line(msg: String) -> Json {
   if String::starts_with(msg, "line ") {
     let after = msg[5: String::length(msg)]
@@ -459,11 +541,15 @@ fn lsp_parse_diag_line(msg: String) -> Json {
         let col1 = lsp_parse_uint_or(col_str, 1)
         let line0 = if line1 > 0 { line1 - 1 } else { 0 }
         let col0 = if col1 > 0 { col1 - 1 } else { 0 }
+        // #820 sub-item 2: `data` follows the LSP Diagnostic.data convention
+        // (present, JNull when there's no structured fix -- e.g. every
+        // diagnostic that isn't an effect-row mismatch).
         JObj(Map::from_pairs([
           ("range", jrange(line0, col0, line0, col0 + 1)),
           ("severity", jnum_int(1)),
           ("source", JStr("vibe")),
-          ("message", JStr(text))
+          ("message", JStr(text)),
+          ("data", lsp_effect_row_mismatch_fix(text))
         ]))
       }
     }
@@ -477,7 +563,8 @@ fn lsp_diag_fallback(msg: String) -> Json {
     ("range", jrange(0, 0, 0, 1)),
     ("severity", jnum_int(1)),
     ("source", JStr("vibe")),
-    ("message", JStr(msg))
+    ("message", JStr(msg)),
+    ("data", lsp_effect_row_mismatch_fix(msg))
   ]))
 }
 
