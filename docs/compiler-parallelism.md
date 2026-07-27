@@ -424,13 +424,56 @@ Remaining gaps before Phase 2 can rely on this seam:
 The accumulator threading in `ensure_fingerprint_fs_go` is unchanged — only
 the per-module leaf work was lifted out. It is still a depth-first recursion
 whose call stack, not an explicit ready/running/terminal set, is what
-currently encodes "wait until dependencies are done". Turning that into a
-worklist a real dispatcher can drive is unstarted, and — because vibe runs as
-one process per invocation — the dispatcher that would actually gain
-wall-clock parallelism from it has to live in a host driver anyway (extending
-`scripts/parallel_scheduler_prototype.mjs` to discover a REAL project's
-import graph from disk, rather than only the synthetic in-memory module
-lists its tests construct today). `FrozenArray[T]` is not implemented.
+currently encodes "wait until dependencies are done". `FrozenArray[T]` is
+not implemented.
+
+Turning that recursion into a worklist a real dispatcher can drive does not
+help by itself: vibe runs as one process per invocation, so bookkeeping
+readiness explicitly inside that one process gains no wall-clock parallelism
+on its own. The dispatcher that would actually gain something has to live in
+a host driver, dispatching real OS-level work (the `worker_threads` +
+per-worker `vibe --daemon` child process pattern already in
+`parallel_scheduler_worker.mjs`/`parallel_selfhost_checker.mjs`) — which
+means it needs a REAL project's import graph, not only the synthetic
+in-memory module lists `parallel_scheduler_selfhost.test.mjs` builds by
+hand.
+
+`scripts/parallel_project_driver.mjs` is that discovery step.
+`VIBE_MODULE_JOB_DIR` needs its dependencies' RESOLVED paths and each
+dependency's checked interface; the compiler already resolves import paths
+for the serial walk (`load_or_parse_module_header_fs`, the same primitive
+`resolve_deps_for_source_fs` in `typecheck_fs.vibe` calls), so a new
+`VIBE_LIST_DEPS=1` adapter mode exposes exactly that instead of
+re-deriving import resolution on the host — the same drift risk the
+fingerprint fix above closed for cache keys, applied to graph edges instead
+of hashes: a second "how does an import resolve" implementation wouldn't
+fail loudly, it would silently walk the wrong graph. The driver does a BFS
+from one or more entry files, shelling `vibe` once per newly-discovered
+file to list its deps, and dedupes by resolved path in one `seen` set
+shared across the whole walk — real project graphs are routinely diamonds
+(one leaf reached through two importers), not trees, and deduping by
+"which importer mentioned it first" would double-schedule the shared leaf.
+
+`scripts/fixtures/parallel_project_sample/` is a small on-disk fixture
+project (`leaf.vibe` ← `mid.vibe` and `leaf.vibe` ← `main.vibe`, a genuine
+diamond) that `scripts/parallel_project_driver.test.mjs` discovers and
+checks end to end. Its `main_broken.vibe` variant is the first TWO-HOP
+proof in this line of work: it calls `mid_value` with the wrong argument
+type, and `mid_value`'s real signature only exists in the checker's
+environment because `leaf.vibe`'s checked interface reached `mid.vibe`
+first. Every earlier test proved one hop (a job directly importing a
+checked dependency); this proves the chain holds when discovery, worker
+dispatch, and environment threading all compose across more than one edge,
+on files that live on disk rather than in a test's memory.
+
+This is still discovery-and-check only, run by hand from a test. It is not
+wired into `vibe build`, there is no `--jobs` flag, and no wall-clock
+timing has been measured — the discovery walk itself pays one `vibe`
+subprocess launch per file just to learn its dependencies, which nobody
+has profiled against a project the size of the compiler's own ~260-module
+manifest. Whether that overhead is negligible next to real typechecking
+work, or needs to be parallelized itself before it's worth using, is
+unmeasured.
 
 ### Phase 2: bounded parallel frontend — transport only
 

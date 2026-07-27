@@ -20,7 +20,7 @@ import @vibe/compiler/runtime {
 }
 
 import @vibe/compiler/loader {
-  contract_package_hashes_fs, fill_require_pins_fs_mode, find_missing_vpkg_dirs, publish_check_fs
+  contract_package_hashes_fs, fill_require_pins_fs_mode, find_missing_vpkg_dirs, load_or_parse_module_header_fs, publish_check_fs
 }
 
 import @vibe/compiler/entry/compiler/file_compile {
@@ -463,6 +463,28 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
       // turned every diagnostic into a value in the job dir. The
       // coordinator must be able to tell those apart, so this goes to the
       // .diag sidecar and a nonzero exit, leaving no outcome.txt behind.
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  } else ()
+  // #906: resolved-dependency discovery for a HOST-SIDE project DAG walker.
+  // A host driver building ModuleJob values for the worker transport needs
+  // each file's direct dependencies as RESOLVED paths, in the same
+  // declaration order ensure_fingerprint_fs_go itself would see them --
+  // getting either wrong doesn't fail loudly, it silently walks the wrong
+  // graph. This calls load_or_parse_module_header_fs, the exact primitive
+  // resolve_deps_for_source_fs (runtime/typecheck_fs.vibe) uses, rather
+  // than re-deriving import resolution on the host: a second
+  // implementation of "how an import path resolves" is exactly the drift
+  // risk the #906 fingerprint fix (ModuleJob.dep_fps) closed for cache
+  // keys, and the same risk here would silently walk the wrong graph
+  // instead. One resolved path per line; empty for a leaf module.
+  if Env::get("VIBE_LIST_DEPS") == "1" {
+    return handle {
+      let source = Fs::read_file(input_path)
+      let (deps, _exports, _parse_count) = load_or_parse_module_header_fs(input_path, source, 0)
+      Fs::write_file(output_path, String::concat(String::join(deps, "\n"), "\n"))
+      0
+    } with Error {
       Throw(msg) => emit_compile_diag(output_path, msg)
     }
   } else ()
