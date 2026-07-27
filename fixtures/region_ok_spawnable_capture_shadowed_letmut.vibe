@@ -1,0 +1,37 @@
+// #1081 step 3 Phase B (Codex review, PR #1152, P1): a spawn closure
+// capturing a genuinely-IMMUTABLE outer binding must keep compiling even
+// when an UNRELATED `let mut` of the same name exists in a lexically
+// distinct (sibling) closure in the same top-level declaration. The
+// second version of `check_spawnable_mut_captures` collected every `let
+// mut` name reachable ANYWHERE in the declaration into one flat,
+// scope-blind list and cross-matched spawn closures against it by name
+// alone -- so `helper`'s own `let mut x` below made the earlier, wholly
+// unrelated immutable `x` captured by the spawn closure look mutable too.
+// Positive regression pin alongside
+// err_spawnable_capture_letmut.vibe/err_spawnable_capture_letmut_outer_scope.vibe.
+import @vibex/concurrent { TaskGroup, TaskHandle }
+
+let _start = () -> Int {
+  let x = 40
+  let result = TaskGroup::run((n) -> {
+    let h = TaskGroup::spawn(n, () -> { x + 1 })
+    TaskHandle::join(h)
+  })
+  let helper = () -> {
+    let mut x = 0
+    x = x + 1
+    x
+  }
+  let extra = helper()
+  match result {
+    Ok(inner) => match inner {
+      Ok(v) => v + extra,
+      Err(_) => 0 - 1
+    },
+    Err(_) => 0 - 1
+  }
+}
+_start()
+
+__DATA__
+{"last":"42"}
