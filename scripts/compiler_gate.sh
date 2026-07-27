@@ -6838,4 +6838,46 @@ fi
 rm -rf "$spawnabledir"
 echo "[compiler-gate] ADR-0068 Spawnable[r] capture check ok"
 
+# #1081 step 4 (surface polish): `taskgroup { g => body }` is pure parser
+# sugar for `TaskGroup::run((g) -> { body })` -- no dedicated AST node, no
+# desugar pass, no checker special-casing (docs/concurrency.md's naming
+# note: the actually-implemented library type is `TaskGroup`, not the
+# earlier illustrative `Nursery`/`Task`/`Spawn[r]` capability-effect
+# design). Positive: the sugar compiles + runs identically to a
+# hand-written `TaskGroup::run(...)` call. Negative: the EXISTING region-
+# escape check (hardcoded by name on `TaskGroup::run`, unchanged by this
+# sugar) still rejects a leaked `TaskHandle`.
+echo "[compiler-gate] 62/62 ADR-0068 taskgroup { g => body } syntax sugar (#1081 step 4)"
+taskgroupdir="_build/_gate_taskgroup_sugar"
+rm -rf "$taskgroupdir"; mkdir -p "$taskgroupdir"
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/region_ok_taskgroup_sugar.vibe > "$taskgroupdir/pos.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$taskgroupdir/pos.vibe" "$taskgroupdir/pos.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$taskgroupdir/pos.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_taskgroup_sugar.vibe did not compile" >&2
+  cat "$taskgroupdir/pos.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+taskgroup_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$taskgroupdir/pos.wasm" 2>/dev/null | tail -1)"
+if [ "$taskgroup_pos_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: region_ok_taskgroup_sugar.vibe got '$taskgroup_pos_out' (want 42)" >&2
+  exit 1
+fi
+sed '/^__DATA__$/,$d' fixtures/err_taskgroup_sugar_region_escape.vibe > "$taskgroupdir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$taskgroupdir/neg.vibe" "$taskgroupdir/neg.wasm" main >/dev/null 2>&1 || true
+if [ -s "$taskgroupdir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_taskgroup_sugar_region_escape.vibe compiled successfully -- must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF 'region escapes its nursery scope' "$taskgroupdir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_taskgroup_sugar_region_escape.vibe did not produce the expected diagnostic" >&2
+  cat "$taskgroupdir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$taskgroupdir"
+echo "[compiler-gate] taskgroup { g => body } syntax sugar ok"
+
 echo "[compiler-gate] ok"
