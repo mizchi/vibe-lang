@@ -25,7 +25,7 @@ import ./checker_resolve.vibe {
 }
 
 import ./checker_spawnable.vibe {
-  check_spawnable_captures
+  check_spawnable_captures, check_spawnable_mut_captures
 }
 
 //# Functions
@@ -3820,6 +3820,24 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                               Array::push(errors, String::concat("region escapes its nursery scope: an outer binding now depends on this TaskGroup::run call's own Nursery/Task/Sender/Receiver token", off_marker_len(callee_off, String::length(name))))
                             } else {
                               ()
+                            }
+                            // #1081 step 3 Phase B (Codex review, PR #1150,
+                            // P1): `check_spawnable_captures` (the spawn/
+                            // spawn_suspend call-site branch below) judges a
+                            // capture's TYPE alone, so a `let mut` binding
+                            // whose value happens to be Send (e.g. a plain
+                            // `Int` counter) was silently accepted even
+                            // though docs/concurrency.md forbids ANY
+                            // captured `let mut`, independent of its type.
+                            // Mutability is purely syntactic (no `env`/
+                            // `Subst` needed), so this is a separate,
+                            // purely-AST-based sweep of the whole nursery
+                            // body, run once here rather than per spawn call.
+                            let mut_violations = check_spawnable_mut_captures(Array::get(args, 0))
+                            let mut mvi = 0
+                            while mvi < Array::length(mut_violations) {
+                              Array::push(errors, String::concat(Array::get(mut_violations, mvi), off_marker_len(callee_off, String::length(name))))
+                              mvi = mvi + 1
                             }
                             (tab_call_ty(tytab, call_off, subst_apply(s_unified, run_ret)), s_unified, c_body)
                           },

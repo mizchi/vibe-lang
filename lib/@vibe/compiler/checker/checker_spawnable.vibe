@@ -429,3 +429,302 @@ export fn check_spawnable_captures(env: TypeEnv, s: Subst, defs: Array[TypeDef],
     _ => sp_empty_strings()
   }
 }
+
+// Codex review (PR #1150, P1): `type_send_ok` judges structural TYPE alone
+// -- `let mut counter = 0; TaskGroup::spawn(n, () -> { counter += 1; 0 })`
+// captures a `CtInt` (Send) with no record that its BINDING is mutable, so
+// `check_spawnable_captures` above accepts it even though
+// docs/concurrency.md explicitly lists "captured `let mut`" as never Send,
+// independent of the captured value's type -- sharing a mutable cell
+// across the spawn boundary is exactly what `Spawnable[r]` exists to
+// forbid. `TypeEnv` (core/types.vibe) carries no mutability flag at all
+// (`EnvBind(String, Type, TypeEnv)`), and `check_mut_capture`/
+// `collect_mut_bindings` (root `@vibe/compiler` package's
+// checker_capture.vibe) already exist for a mutable-capture judgment but
+// are (a) unreachable from this package (see the file-header note above)
+// and (b) never actually wired into any real check today -- exported and
+// unit-tested only. Mutability is a purely SYNTACTIC property of the
+// SOURCE, though, so no env/Subst lookup is needed at all: walk the
+// raw AST of the enclosing `TaskGroup::run` body ONCE (below), collect
+// every name introduced by `ELetMut` anywhere in it (conservative: no
+// scope-exit removal -- shadowing a name with an unrelated inner `let mut`
+// only makes this MORE conservative, never lets a real mutable capture
+// through), find every nested `TaskGroup::spawn`/`spawn_suspend` call's
+// closure argument, and flag any free variable of that closure that is
+// also a collected `let mut` name -- independent of, and in addition to,
+// `check_spawnable_captures`'s Send/same-region judgment above.
+
+fn sp_walk_letmut_binary(a: Expr, b: Expr, out: Array[String]) -> Unit {
+  sp_collect_letmut_names(a, out)
+  sp_collect_letmut_names(b, out)
+}
+
+fn sp_collect_letmut_names(expr: Expr, out: Array[String]) -> Unit {
+  match expr {
+    ELetMut(name, val, body, _) => {
+      Array::push(out, name)
+      sp_walk_letmut_binary(val, body, out)
+    },
+    ELet(_, val, body, _) => sp_walk_letmut_binary(val, body, out),
+    ELetRec(_, val, body) => sp_walk_letmut_binary(val, body, out),
+    ESeq(a, b) => sp_walk_letmut_binary(a, b, out),
+    EIf(c, t, e) => {
+      sp_collect_letmut_names(c, out)
+      sp_walk_letmut_binary(t, e, out)
+    },
+    EAssign(_, val, cont) => sp_walk_letmut_binary(val, cont, out),
+    EAssignOp(_, _, val, cont) => sp_walk_letmut_binary(val, cont, out),
+    EBinOp(_, l, r) => sp_walk_letmut_binary(l, r, out),
+    EUnaryOp(_, e) => sp_collect_letmut_names(e, out),
+    EWhile(c, b) => sp_walk_letmut_binary(c, b, out),
+    ELoop(params, body) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        sp_collect_letmut_names(init, out)
+        i = i + 1
+      }
+      sp_collect_letmut_names(body, out)
+    },
+    EForIn(_, _, iter, body) => sp_walk_letmut_binary(iter, body, out),
+    // Descend into nested closures too -- a `let mut` declared in an
+    // enclosing closure is visible to a spawn call nested further inside.
+    EFn(_, _, _, _, _, body) => sp_collect_letmut_names(body, out),
+    ECall(callee, args, _) => {
+      sp_collect_letmut_names(callee, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        sp_collect_letmut_names(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    EMatch(scrut, arms) => {
+      sp_collect_letmut_names(scrut, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, body) = Array::get(arms, i)
+        sp_collect_letmut_names(body, out)
+        i = i + 1
+      }
+    },
+    EHandle(body, arms) => {
+      sp_collect_letmut_names(body, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, i)
+        sp_collect_letmut_names(arm_body, out)
+        i = i + 1
+      }
+    },
+    ETuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        sp_collect_letmut_names(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    EArray(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        sp_collect_letmut_names(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        sp_collect_letmut_names(fval, out)
+        i = i + 1
+      }
+    },
+    EDot(obj, _, _, _) => sp_collect_letmut_names(obj, out),
+    EReturn(e) => sp_collect_letmut_names(e, out),
+    ELabeledArg(_, _, e) => sp_collect_letmut_names(e, out),
+    EBreak(opt) => match opt {
+      Some(e) => sp_collect_letmut_names(e, out),
+      None => ()
+    },
+    EContinue(exprs) => {
+      let mut i = 0
+      while i < Array::length(exprs) {
+        sp_collect_letmut_names(Array::get(exprs, i), out)
+        i = i + 1
+      }
+    },
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        sp_collect_letmut_names(fval, out)
+        i = i + 1
+      }
+    },
+    ESpread(e) => sp_collect_letmut_names(e, out),
+    _ => ()
+  }
+}
+
+fn sp_walk_spawn_binary(a: Expr, b: Expr, out: Array[Expr]) -> Unit {
+  sp_collect_spawn_closures(a, out)
+  sp_collect_spawn_closures(b, out)
+}
+
+// Collect the CLOSURE ARGUMENT of every `TaskGroup::spawn`/
+// `TaskGroup::spawn_suspend` call reachable anywhere in `expr` (including
+// through nested closures -- a spawn call inside another spawn's body is
+// still reachable from the outer nursery's `let mut` scope).
+fn sp_collect_spawn_closures(expr: Expr, out: Array[Expr]) -> Unit {
+  match expr {
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(name, _) => if (name == "TaskGroup::spawn" || name == "TaskGroup::spawn_suspend") && Array::length(args) == 2 {
+          Array::push(out, Array::get(args, 1))
+        } else {
+          ()
+        },
+        _ => sp_collect_spawn_closures(callee, out)
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        sp_collect_spawn_closures(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    ELetMut(_, val, body, _) => sp_walk_spawn_binary(val, body, out),
+    ELet(_, val, body, _) => sp_walk_spawn_binary(val, body, out),
+    ELetRec(_, val, body) => sp_walk_spawn_binary(val, body, out),
+    ESeq(a, b) => sp_walk_spawn_binary(a, b, out),
+    EIf(c, t, e) => {
+      sp_collect_spawn_closures(c, out)
+      sp_walk_spawn_binary(t, e, out)
+    },
+    EAssign(_, val, cont) => sp_walk_spawn_binary(val, cont, out),
+    EAssignOp(_, _, val, cont) => sp_walk_spawn_binary(val, cont, out),
+    EBinOp(_, l, r) => sp_walk_spawn_binary(l, r, out),
+    EUnaryOp(_, e) => sp_collect_spawn_closures(e, out),
+    EWhile(c, b) => sp_walk_spawn_binary(c, b, out),
+    ELoop(params, body) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        sp_collect_spawn_closures(init, out)
+        i = i + 1
+      }
+      sp_collect_spawn_closures(body, out)
+    },
+    EForIn(_, _, iter, body) => sp_walk_spawn_binary(iter, body, out),
+    EFn(_, _, _, _, _, body) => sp_collect_spawn_closures(body, out),
+    EMatch(scrut, arms) => {
+      sp_collect_spawn_closures(scrut, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, body) = Array::get(arms, i)
+        sp_collect_spawn_closures(body, out)
+        i = i + 1
+      }
+    },
+    EHandle(body, arms) => {
+      sp_collect_spawn_closures(body, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, i)
+        sp_collect_spawn_closures(arm_body, out)
+        i = i + 1
+      }
+    },
+    ETuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        sp_collect_spawn_closures(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    EArray(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        sp_collect_spawn_closures(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        sp_collect_spawn_closures(fval, out)
+        i = i + 1
+      }
+    },
+    EDot(obj, _, _, _) => sp_collect_spawn_closures(obj, out),
+    EReturn(e) => sp_collect_spawn_closures(e, out),
+    ELabeledArg(_, _, e) => sp_collect_spawn_closures(e, out),
+    EBreak(opt) => match opt {
+      Some(e) => sp_collect_spawn_closures(e, out),
+      None => ()
+    },
+    EContinue(exprs) => {
+      let mut i = 0
+      while i < Array::length(exprs) {
+        sp_collect_spawn_closures(Array::get(exprs, i), out)
+        i = i + 1
+      }
+    },
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        sp_collect_spawn_closures(fval, out)
+        i = i + 1
+      }
+    },
+    ESpread(e) => sp_collect_spawn_closures(e, out),
+    _ => ()
+  }
+}
+
+// Entry point: given the `TaskGroup::run` call's own body closure literal
+// (`Array::get(args, 0)` at the call site), collect every `let mut` name
+// visible anywhere in it and flag any spawn/spawn_suspend closure that
+// captures one, regardless of that name's type. Purely syntactic --
+// no `env`/`Subst` needed. A non-literal run-body argument is opaque
+// (same documented-gap shape as the region-escape check's alias bypass).
+export fn check_spawnable_mut_captures(run_body_expr: Expr) -> Array[String] {
+  match run_body_expr {
+    EFn(_, _, _, _, _, _) => {
+      let mut_names = sp_empty_strings()
+      sp_collect_letmut_names(run_body_expr, mut_names)
+      let spawn_closures = array_empty()
+      sp_collect_spawn_closures(run_body_expr, spawn_closures)
+      let out = sp_empty_strings()
+      let mut si = 0
+      while si < Array::length(spawn_closures) {
+        match Array::get(spawn_closures, si) {
+          EFn(_, _, sparams, _, _, sbody) => {
+            let spnames = sp_empty_strings()
+            let mut pi = 0
+            while pi < Array::length(sparams) {
+              let (pname, _) = Array::get(sparams, pi)
+              Array::push(spnames, pname)
+              pi = pi + 1
+            }
+            let free = sp_collect_free_vars(sbody, spnames)
+            let mut fi = 0
+            while fi < Array::length(free) {
+              let vname = Array::get(free, fi)
+              if sp_array_contains_str(mut_names, vname) {
+                Array::push(out, String::concat("no impl `Spawnable` for a `let mut` binding: capture `", String::concat(vname, "` shares a mutable cell across the spawn boundary")))
+              } else {
+                ()
+              }
+              fi = fi + 1
+            }
+          },
+          _ => ()
+        }
+        si = si + 1
+      }
+      out
+    },
+    _ => sp_empty_strings()
+  }
+}
