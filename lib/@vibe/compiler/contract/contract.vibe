@@ -1095,9 +1095,27 @@ export fn package_hash_from_sources(sources: Array[(String, String)]) -> String 
 
 // `@scope/name` or a nested `@scope/name/sub/...` (e.g. `@vibe/wasi/p3`,
 // `@vibe/compiler/runtime`) -- at least two `/`-separated segments, not
-// exactly two.
+// exactly two, and every segment (including the `@scope` head) non-empty:
+// rejects `@/pkg`, `@scope/`, `@scope//pkg`.
 fn is_package_name(n: String) -> Bool {
-  String::starts_with(n, "@") && Array::length(String::split(n, "/")) >= 2
+  if !String::starts_with(n, "@") {
+    false
+  } else {
+    let segs = String::split(n, "/")
+    if Array::length(segs) < 2 || String::length(Array::get(segs, 0)) <= 1 {
+      false
+    } else {
+      let mut i = 1
+      let mut ok = true
+      while i < Array::length(segs) {
+        if String::length(Array::get(segs, i)) == 0 {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    }
+  }
 }
 
 // N spaces, same length as `s` -- used to blank a directive line to spaces
@@ -1382,7 +1400,11 @@ fn scan_package_header(source: String) -> (Array[(String, String, String)], Stri
       if seen_hash {
         throw("duplicate generated_hash directive: \{trimmed}")
       } else ()
-      generated_hash = String::trim(String::substring(trimmed, 17, String::length(trimmed)))
+      let gh = String::trim(String::substring(trimmed, 17, String::length(trimmed)))
+      if (String::length(gh) > 0) && !is_package_pin(gh) {
+        throw("generated_hash must be empty or #pkg:sha1:<40hex>: \{trimmed}")
+      } else ()
+      generated_hash = gh
       seen_hash = true
       StringBuilder::push(sb, blank_of(line))
     } else if trimmed == "description =" {
