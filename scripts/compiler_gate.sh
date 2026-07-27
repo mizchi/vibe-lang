@@ -6847,7 +6847,7 @@ echo "[compiler-gate] ADR-0068 Spawnable[r] capture check ok"
 # hand-written `TaskGroup::run(...)` call. Negative: the EXISTING region-
 # escape check (hardcoded by name on `TaskGroup::run`, unchanged by this
 # sugar) still rejects a leaked `TaskHandle`.
-echo "[compiler-gate] 62/66 ADR-0068 taskgroup { g => body } syntax sugar (#1081 step 4)"
+echo "[compiler-gate] 62/67 ADR-0068 taskgroup { g => body } syntax sugar (#1081 step 4)"
 taskgroupdir="_build/_gate_taskgroup_sugar"
 rm -rf "$taskgroupdir"; mkdir -p "$taskgroupdir"
 sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/region_ok_taskgroup_sugar.vibe > "$taskgroupdir/pos.vibe"
@@ -6900,7 +6900,7 @@ echo "[compiler-gate] taskgroup { g => body } syntax sugar ok"
 # the closure is Spawnable-legal (checker_spawnable.vibe falls back to
 # type_send_ok), where the same capture of a plain Array[Int] is rejected
 # (fixtures/err_spawnable_capture_array.vibe, gate 61 above, unaffected).
-echo "[compiler-gate] 63/66 FrozenArray[T] Send-eligible immutable container (#906)"
+echo "[compiler-gate] 63/67 FrozenArray[T] Send-eligible immutable container (#906)"
 frozenarrdir="_build/_gate_frozen_array"
 rm -rf "$frozenarrdir"; mkdir -p "$frozenarrdir"
 sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/region_ok_frozen_array_basic.vibe > "$frozenarrdir/basic.vibe"
@@ -6969,7 +6969,7 @@ echo "[compiler-gate] FrozenArray[T] Send-eligible immutable container ok"
 #        can't silently drift; see #639's discussion for why the riskier
 #        "over-declared with{} is itself a hard error" reading was
 #        deliberately NOT implemented.
-echo "[compiler-gate] 64/66 effect-row mismatch diagnostic snapshots (#639)"
+echo "[compiler-gate] 64/67 effect-row mismatch diagnostic snapshots (#639)"
 eff639dir="_build/_gate_eff639"
 rm -rf "$eff639dir"; mkdir -p "$eff639dir"
 cp fixtures/err_effect_missing_annotation.vibe "$eff639dir/no_with.vibe"
@@ -7005,7 +7005,7 @@ echo "[compiler-gate] effect-row mismatch diagnostic snapshots ok"
 #        the direct effect-row check entirely (silent soundness gap -- see
 #        #1157 for the repro). Pin that it is now rejected with the same
 #        message as the parenthesized form.
-echo "[compiler-gate] 65/66 zero-arg perform (no parens) effect-row check (#1157)"
+echo "[compiler-gate] 65/67 zero-arg perform (no parens) effect-row check (#1157)"
 eff1157dir="_build/_gate_eff1157"
 rm -rf "$eff1157dir"; mkdir -p "$eff1157dir"
 cp fixtures/err_effect_zero_arg_perform_no_parens.vibe "$eff1157dir/x.vibe"
@@ -7031,7 +7031,7 @@ echo "[compiler-gate] zero-arg perform effect-row check ok"
 #        the generated fix-it would grant the whole effect and over-widen
 #        the caller's capability surface (docs/effectset.md's operation-
 #        level diagnostic contract).
-echo "[compiler-gate] 66/66 operation-level fix-it precision for partial rows (#1161)"
+echo "[compiler-gate] 66/67 operation-level fix-it precision for partial rows (#1161)"
 eff1161dir="_build/_gate_eff1161"
 rm -rf "$eff1161dir"; mkdir -p "$eff1161dir"
 cp fixtures/err_effect_op_level_partial_row_bare_perform.vibe "$eff1161dir/x.vibe"
@@ -7054,5 +7054,47 @@ if ! grep -qF "hint: add 'with { Ask::Get, Ask::Other }' to 'asks'" "$eff1161dir
 fi
 rm -rf "$eff1161dir"
 echo "[compiler-gate] operation-level fix-it precision ok"
+
+# 67/67. #820 sub-item 3: `vibe context-pack` bundles docs/cheatsheet.md +
+#        the verified eval/lang-review/golden corpus for AI-harness context
+#        ingestion. Pure shell (scripts/gen_context_pack.sh), no wasm
+#        involved -- pin determinism, the expected section markers, and the
+#        missing-input error path.
+#
+#        Codex review (PR #1162): the pack's own text claims every golden
+#        example "compiled and ran against the current compiler" -- that
+#        claim must actually be re-verified against THIS gate run's stage2
+#        (eval/lang-review/run_golden.sh, the existing writability
+#        regression check), not just assumed still true. A compiler change
+#        that broke a golden example without anyone re-running run_golden.sh
+#        separately would otherwise ship a pack that lies about its own
+#        examples.
+echo "[compiler-gate] 67/67 vibe context-pack generator (#820 sub-item 3)"
+if ! bash eval/lang-review/run_golden.sh; then
+  echo "[compiler-gate] FAIL: eval/lang-review/run_golden.sh -- the golden corpus context-pack bundles no longer compiles/runs as claimed" >&2
+  exit 1
+fi
+ctxpackdir="_build/_gate_ctxpack"
+rm -rf "$ctxpackdir"; mkdir -p "$ctxpackdir"
+bash scripts/gen_context_pack.sh "$ROOT_DIR" > "$ctxpackdir/a.md"
+bash scripts/gen_context_pack.sh "$ROOT_DIR" > "$ctxpackdir/b.md"
+if ! cmp -s "$ctxpackdir/a.md" "$ctxpackdir/b.md"; then
+  echo "[compiler-gate] FAIL: gen_context_pack.sh is not deterministic" >&2
+  exit 1
+fi
+if ! grep -qF "## Quick Start" "$ctxpackdir/a.md"; then
+  echo "[compiler-gate] FAIL: context pack missing cheatsheet content" >&2
+  exit 1
+fi
+if ! grep -qF "### 01_fizzbuzz" "$ctxpackdir/a.md"; then
+  echo "[compiler-gate] FAIL: context pack missing golden example section" >&2
+  exit 1
+fi
+if bash scripts/gen_context_pack.sh "$ctxpackdir" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: gen_context_pack.sh must fail on a dir with no docs/eval tree" >&2
+  exit 1
+fi
+rm -rf "$ctxpackdir"
+echo "[compiler-gate] vibe context-pack generator ok"
 
 echo "[compiler-gate] ok"

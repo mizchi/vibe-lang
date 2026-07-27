@@ -70,6 +70,14 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+# Codex review (PR #1162): an explicit --cli-wasm selects a compiler that
+# may not match this checkout's HEAD (e.g. an older release artifact) --
+# captured BEFORE the compiler-wasm block below can default CLI_WASM_SRC to
+# a checkout-matched build, so the context-pack step can tell the two cases
+# apart.
+CLI_WASM_EXPLICIT=0
+[ -n "$CLI_WASM_SRC" ] && CLI_WASM_EXPLICIT=1
+
 say() { echo "[install] $*"; }
 die() { echo "[install] error: $*" >&2; exit 1; }
 
@@ -136,6 +144,29 @@ if [ -f "$ROOT_DIR/clients/js/lsp_server.js" ]; then
   if [ -f "$ROOT_DIR/clients/js/graph_query.js" ]; then
     install -m 0644 "$ROOT_DIR/clients/js/graph_query.js" "$TC_DIR/lib/graph_query.js"
     say "lsp graph query -> $TC_DIR/lib/graph_query.js"
+  fi
+fi
+# `vibe context-pack` (#820 sub-item 3): a bundled cheatsheet + verified
+# golden-example corpus for AI-harness context ingestion. The source
+# docs/eval tree isn't shipped with the installed toolchain, so generate
+# the bundle once here and ship the result as a toolchain-local asset.
+#
+# Codex review (PR #1162): this checkout's docs/eval tree only describes
+# THIS checkout's compiler. With an explicit --cli-wasm (installing a
+# released/older/different compiler than this checkout's HEAD), a pack
+# generated from the checkout could describe syntax or APIs the installed
+# compiler doesn't actually support -- so skip generating it in that case
+# rather than shipping a version-mismatched pack. The default flow (no
+# --cli-wasm, CLI_WASM_SRC built from or defaulting to this checkout) is
+# unaffected: the pack and the compiler always come from the same source.
+if [ "$CLI_WASM_EXPLICIT" = "1" ]; then
+  say "skipping context pack (explicit --cli-wasm may not match this checkout's docs/eval)"
+elif [ -f "$ROOT_DIR/scripts/gen_context_pack.sh" ]; then
+  if bash "$ROOT_DIR/scripts/gen_context_pack.sh" "$ROOT_DIR" > "$TC_DIR/lib/context-pack.md.tmp" 2>/dev/null; then
+    mv "$TC_DIR/lib/context-pack.md.tmp" "$TC_DIR/lib/context-pack.md"
+    say "context pack -> $TC_DIR/lib/context-pack.md"
+  else
+    rm -f "$TC_DIR/lib/context-pack.md.tmp"
   fi
 fi
 
