@@ -53,8 +53,10 @@ fn main with { Stdout } {
 ```
 
 New to the language? Start with the runnable tour:
-[docs/tutorial/](docs/tutorial/README.md) — every chapter is a `vibe test`-able
-file, so the examples are executed by CI and cannot rot.
+[docs/tutorial/](docs/tutorial/README.md) — every chapter is a `*.vibe.md`
+executable doc (#1142): code blocks are compiled and run, and the printed
+output is embedded right in the markdown, so the examples and their results
+cannot drift apart.
 
 ## Features
 
