@@ -1,0 +1,99 @@
+// vibe examples — effect declarations as first-class values (#752).
+//
+// `Predicate` and `Transform` are declared once and referenced by name from
+// any function; `perform`/`handle` at the call site supplies the concrete
+// behavior. See effects.vibe / perform_handle.vibe for the `with { Error }`
+// and multi-layer `handle` patterns.
+
+//# Effects
+
+effect Predicate {
+  Test(Int) -> Bool
+}
+
+effect Transform {
+  Apply(Int) -> Int
+}
+
+//# Functions
+
+export fn empty_array[T]() -> Array[T] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+// map_effect: (Array[Int]) -> Array[Int] with {Transform}
+export fn map_effect(arr: Array[Int]) -> Array[Int] with { Transform } {
+  let b = ArrayBuilder::new()
+  for x in arr {
+    ArrayBuilder::push(b, perform Transform::Apply(x))
+  }
+  ArrayBuilder::freeze(b)
+}
+
+// filter_effect: (Array[Int]) -> Array[Int] with {Predicate}
+export fn filter_effect(arr: Array[Int]) -> Array[Int] with { Predicate } {
+  let b = ArrayBuilder::new()
+  for x in arr {
+    if perform Predicate::Test(x) {
+      ArrayBuilder::push(b, x)
+    }
+  }
+  ArrayBuilder::freeze(b)
+}
+
+//# Misc
+
+test "empty_array creates typed empty array" {
+  let xs: Array[Int] = empty_array()
+  assert(Array::length(xs) == 0)
+  Array::push(xs, 42)
+  assert(Array::length(xs) == 1)
+  assert(Array::get(xs, 0) == 42)
+}
+
+test "filter all pass" {
+  let result = handle {
+    let a = perform Predicate::Test(2)
+    let b = perform Predicate::Test(4)
+    let c = perform Predicate::Test(6)
+    let mut count = 0
+    if a {
+      count = count + 1
+    }
+    if b {
+      count = count + 1
+    }
+    if c {
+      count = count + 1
+    }
+    count
+  } with Predicate {
+    Test(_x) => resume(true)
+  }
+  assert(result == 3)
+}
+
+test "map double" {
+  let result = handle {
+    let a = perform Transform::Apply(5)
+    let b = perform Transform::Apply(10)
+    a + b
+  } with Transform {
+    Apply(x) => resume(x * 2)
+  }
+  // 10 + 20 = 30
+  assert(result == 30)
+}
+
+test "swap behavior" {
+  // Same logic, different Transform handler
+  let result = handle {
+    let a = perform Transform::Apply(5)
+    let b = perform Transform::Apply(10)
+    a + b
+  } with Transform {
+    Apply(x) => resume(x + 100)
+  }
+  // 105 + 110 = 215
+  assert(result == 215)
+}
