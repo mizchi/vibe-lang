@@ -71,7 +71,8 @@
 //# Imports
 
 import @vibe/compiler/runtime {
-  type_at_source, binding_occurrences, symbol_spans, collect_all_diagnostics
+  type_at_source, binding_occurrences, symbol_spans, collect_all_diagnostics,
+  doc_at_source
 }
 
 import @vibe/parser {
@@ -487,13 +488,26 @@ fn lsp_diag_fallback(msg: String) -> Json {
 
 fn lsp_handle_hover(source: String, line0: Int, char0: Int) -> Json {
   let ty = type_at_source(source, line0 + 1, char0 + 1)
-  if String::length(ty) == 0 {
+  let doc = doc_at_source(source, line0 + 1, char0 + 1)
+  if String::length(ty) == 0 && String::length(doc) == 0 {
     JNull
   } else {
+    let ty_block = if String::length(ty) == 0 {
+      ""
+    } else {
+      String::concat("```vibe\n", String::concat(ty, "\n```"))
+    }
+    let body = if String::length(doc) == 0 {
+      ty_block
+    } else if String::length(ty_block) == 0 {
+      doc
+    } else {
+      String::concat(ty_block, String::concat("\n\n", doc))
+    }
     JObj(Map::from_pairs([
       ("contents", JObj(Map::from_pairs([
         ("kind", JStr("markdown")),
-        ("value", JStr(String::concat("```vibe\n", String::concat(ty, "\n```"))))
+        ("value", JStr(body))
       ])))
     ]))
   }

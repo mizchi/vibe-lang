@@ -1,0 +1,51 @@
+//# Imports
+
+// `vibe doc-at` — Rust-`///`-style doc comment lookup for hover (#854).
+// Given a (line, col), resolve the identifier under the cursor to its
+// declaring binding (reusing binding_at.vibe's scope-aware occurrence
+// search — the smallest-offset occurrence is the declaration site) and
+// return the `///` doc comment text immediately preceding that
+// declaration's line, or "" when there is none. Same single-file scope
+// limitation as type_at.vibe / binding_at.vibe: imports are not resolved,
+// so only same-file declarations are covered.
+
+import @vibe/compiler/syntax {
+  collect_doc_comments, offset_to_line_col
+}
+
+import ./binding_at.vibe {
+  binding_occurrences
+}
+
+//# Functions
+
+fn doc_lookup(docs: Array[(Int, String)], line: Int) -> String {
+  let mut i = 0
+  let mut found = ""
+  while i < Array::length(docs) {
+    let (doc_line, text) = Array::get(docs, i)
+    if doc_line == line {
+      found = text
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+export fn doc_at_source(source: String, line: Int, col: Int) -> String {
+  let occ = binding_occurrences(source, line, col)
+  if Array::length(occ) == 0 {
+    ""
+  } else {
+    // binding_occurrences returns spans sorted by start ascending (#635
+    // bind_insert_sorted_unique) -- the first entry is the smallest source
+    // offset, i.e. the declaration site for ordinary (non-recursive-forward)
+    // top-level/local bindings.
+    let (def_off, _def_end) = Array::get(occ, 0)
+    let (def_line, _def_col) = offset_to_line_col(source, def_off)
+    let docs = collect_doc_comments(source)
+    doc_lookup(docs, def_line)
+  }
+}

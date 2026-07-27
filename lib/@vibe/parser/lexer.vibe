@@ -442,6 +442,156 @@ fn empty_string_array() -> Array[String] {
   ], 0, 0)
 }
 
+// 0-based column (char offset from the start of its line) of `pos`.
+fn column_of(source: String, pos: Int) -> Int {
+  let mut i = pos
+  let mut col = 0
+  while i > 0 && String::char_code_at(source, i - 1) != '\n' {
+    i = i - 1
+    col = col + 1
+  }
+  col
+}
+
+// `#|` multi-line raw string literal (MoonBit-style). `source[pos] == '#'`
+// and `source[pos + 1] == '|'` on entry. Each participating physical line's
+// `#` must sit at the SAME column as the block's first `#` — a later line
+// starting with `#|` at a DIFFERENT column is a located lex error, never a
+// silently different/shorter block. A following line that does not start
+// with `#|` at all (whatever its indentation) simply ends the block — that
+// is not an error, just where the literal stops. Content is the raw text
+// after `#|` up to end of line, verbatim (no escape processing, no
+// interpolation); participating lines are joined with "\n". Produces an
+// ordinary TString so the parser/checker/codegen need no changes to accept
+// one — `#|` is purely an alternate spelling for a (possibly multi-line)
+// string literal.
+fn lex_multiline_string(source: String, len: Int, pos: Int) -> (Token, Int) with { Error } {
+  let col = column_of(source, pos)
+  let buf = StringBuilder::new()
+  let mut cur = pos
+  let mut first = true
+  let mut running = true
+  let mut final_next = pos
+  while running {
+    let content_start = cur + 2
+    let mut k = content_start
+    while k < len && String::char_code_at(source, k) != '\n' {
+      k = k + 1
+    }
+    let content_end = if k > content_start && String::char_code_at(source, k - 1) == '\r' {
+      k - 1
+    } else {
+      k
+    }
+    if !first {
+      StringBuilder::push(buf, "\n")
+    } else {
+      ()
+    }
+    first = false
+    StringBuilder::push(buf, String::substring(source, content_start, content_end))
+    final_next = k
+    if k >= len {
+      running = false
+    } else {
+      // k is at the '\n' ending this line; inspect the next physical line.
+      let next_line_start = k + 1
+      let mut m = next_line_start
+      while m < len && (String::char_code_at(source, m) == ' ' || String::char_code_at(source, m) == '\t') {
+        m = m + 1
+      }
+      if m + 1 < len && String::char_code_at(source, m) == '#' && String::char_code_at(source, m + 1) == '|' {
+        let next_col = m - next_line_start
+        if next_col == col {
+          cur = m
+        } else {
+          throw(String::concat(located_prefix(source, m), "#| multi-line string continuation must start at the same column as the opening #|"))
+        }
+      } else {
+        running = false
+      }
+    }
+  }
+  (TString(StringBuilder::freeze(buf)), final_next)
+}
+
+// Rust-style outer doc comments: consecutive `///` lines (not `////...` —
+// four or more slashes is an ordinary comment, matching rustc) are
+// concatenated (joined by "\n", one leading space after `///` stripped when
+// present) and associated with the 1-based line number of the next
+// non-blank, non-`///` line — the declaration the block documents. A blank
+// line (or EOF) immediately after the block breaks attachment: nothing is
+// emitted for it, same as a doc comment with no following item in Rust.
+// This is a plain text scan over `source`, independent of tokenization —
+// `///` lines are still ordinary `//` comments to the tokenizer (silently
+// skipped by skip_ws_with_newline exactly as before); this function is the
+// only place that gives them meaning, for hover/`vibe doc-at` consumers.
+export fn collect_doc_comments(source: String) -> Array[(Int, String)] {
+  let len = String::length(source)
+  let out = ArrayBuilder::new()
+  let mut i = 0
+  let mut line = 1
+  let mut acc = ArrayBuilder::new()
+  let mut in_block = false
+  while i < len {
+    let mut j = i
+    while j < len && (String::char_code_at(source, j) == ' ' || String::char_code_at(source, j) == '\t') {
+      j = j + 1
+    }
+    let has3 = j + 2 < len && String::char_code_at(source, j) == '/' && String::char_code_at(source, j + 1) == '/' && String::char_code_at(source, j + 2) == '/'
+    let is_doc = has3 && !(j + 3 < len && String::char_code_at(source, j + 3) == '/')
+    let mut k = i
+    while k < len && String::char_code_at(source, k) != '\n' {
+      k = k + 1
+    }
+    let line_end = if k > i && String::char_code_at(source, k - 1) == '\r' {
+      k - 1
+    } else {
+      k
+    }
+    if is_doc {
+      let content_start0 = j + 3
+      let content_start = if content_start0 < line_end && String::char_code_at(source, content_start0) == ' ' {
+        content_start0 + 1
+      } else {
+        content_start0
+      }
+      ArrayBuilder::push(acc, String::substring(source, content_start, line_end))
+      in_block = true
+    } else {
+      if in_block {
+        if j < line_end {
+          ArrayBuilder::push(out, (line, join_doc_lines(ArrayBuilder::freeze(acc))))
+        } else {
+          ()
+        }
+        acc = ArrayBuilder::new()
+        in_block = false
+      } else {
+        ()
+      }
+    }
+    i = if k < len { k + 1 } else { k }
+    line = line + 1
+  }
+  ArrayBuilder::freeze(out)
+}
+
+fn join_doc_lines(lines: Array[String]) -> String {
+  let buf = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(lines) {
+    if i > 0 {
+      StringBuilder::push(buf, "\n")
+    } else {
+      ()
+    }
+    StringBuilder::push(buf, Array::get(lines, i))
+    i = i + 1
+  }
+  StringBuilder::freeze(buf)
+}
+
 fn skip_until_newline(s: String, len: Int, i: Int) -> Int {
   let mut out = i
   let mut done = false
@@ -831,7 +981,11 @@ fn lex_one_token(source: String, len: Int, pos: Int) -> (Token, Int) with { Erro
       (TDoubleColon, pos + 2)
     } else (TColon, pos + 1)
   } else if c == '#' {
-    (THash, pos + 1)
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '|' {
+      lex_multiline_string(source, len, pos)
+    } else {
+      (THash, pos + 1)
+    }
   } else if c == '~' {
     (TTilde, pos + 1)
   } else if c == '?' {
