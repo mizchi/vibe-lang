@@ -27,12 +27,10 @@ cd "$ROOT_DIR"
 ALLOW=(
   lib/@vibe/prelude/func_test.vibe
   lib/@vibe/prelude/lazy_iter_test.vibe
-  lib/@vibex/wasm/component_parser/component_parser_test.vibe
-  lib/@vibex/wasm/wasm_parser/wasm_parser_test.vibe
-  lib/@vibex/wasm/wat_parser/wat_parser_test.vibe
-  lib/@vibex/args/parser_import_test.vibe
-  lib/@vibex/effect_demo/effect_demo_effect_test.vibe
-  lib/@vibex/effect_demo/effect_demo_test.vibe
+  lib/@vibex/wasm_component_parser/component_parser_test.vibe
+  lib/@vibex/wasm_parser/wasm_parser_test.vibe
+  lib/@vibex/wasm_wat_parser/wat_parser_test.vibe
+  lib/@vibex/argparse/parser_import_test.vibe
   lib/@vibex/jsonschema/validate_test.vibe
   lib/@vibe/core/math_test.vibe
   lib/@vibex/scan/index_import_test.vibe
