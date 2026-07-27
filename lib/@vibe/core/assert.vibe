@@ -1,0 +1,40 @@
+// @vibe/core — assert_false / inspect (#1061).
+//
+// assert/assert_true/assert_eq are compiler builtins (checker +
+// both codegen backends) that trap with no message on failure; there is
+// no runtime string-formatting machinery backing them. assert_false and
+// inspect are deliberately plain library functions built on top of those
+// builtins plus the generic __to_string builtin (already used this way by
+// set.vibe / map.vibe), not new compiler builtins -- no codegen/checker
+// changes needed to add them.
+//
+// inspect(value, content) is a minimal inline-snapshot assertion: it
+// stringifies `value` and compares it against the `content` literal
+// already written at the call site, printing both on mismatch so the
+// caller can copy the actual output back into source by hand. There is
+// no `--update` auto-rewrite of the source file (yet) -- that would need
+// source-position-aware rewriting tooling and is left as follow-up.
+//
+// Caveat (#1015): __to_string on a fully-generic `T` cannot statically
+// classify a Bool value the way the specially-named prelude `to_string[T:
+// Show]` wrapper can (see fixtures/to_string_bool_param_test.vibe) -- a
+// Bool passed through `inspect` renders as the raw tagged-int "1"/"0",
+// not "true"/"false". Same pre-existing gap as set.vibe's
+// set_value_to_string / map.vibe's hash_key, which call __to_string the
+// same way.
+
+//# Functions
+
+export fn assert_false(b: Bool) -> Unit {
+  assert_true(!b)
+}
+
+export fn inspect[T](value: T, content: String) -> Unit {
+  let actual = __to_string(value)
+  if actual == content {
+    ()
+  } else {
+    println(String::concat("inspect mismatch:\n  actual:   ", String::concat(actual, String::concat("\n  expected: ", content))))
+    assert_true(false)
+  }
+}
