@@ -229,46 +229,32 @@ jobs:
           if-no-files-found: ignore
 
   # WASI p3 guarantee (#821): vibe-built async components + the wasi:http p3
-  # serve pipeline must run on pinned wasmtime versions, with missing tools
-  # treated as FAILURES (no silent skip). Not yet folded into ci-required;
-  # promote once green for a week on the wasmtime 46 primary leg.
+  # serve pipeline must run on pinned wasmtime, with missing tools treated as
+  # FAILURES (no silent skip). Not yet folded into ci-required; promote once
+  # green for a week on the wasmtime 47 leg.
+  #
+  # Single leg, ratified WASI 0.3.0 (#821 cutover, done): the vendored WIT
+  # (lib/@vibe/wasi/wit/p3) was refreshed to wasi:http@0.3.0, matching what
+  # wasmtime 46+ serves by default (component-model-async on by default
+  # too). Both phases pass. A wasmtime 45.x compat leg (phase A / async only
+  # -- 45 only ever served the pre-cutover RC world, so it couldn't link
+  # phase B / http at all) was dropped once 47 had been the sole target
+  # everywhere else in this repo for a while; see git history if 45 compat
+  # ever needs re-checking.
   wasi-p3-gate:
-    name: wasi-p3-gate (wasmtime ${{ matrix.wasmtime }})
+    name: wasi-p3-gate (wasmtime v47.0.2)
     needs: [compiler-gate]
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Primary leg, ratified WASI 0.3.0 (#821 cutover, done): the
-          # vendored WIT (lib/@vibe/wasi/wit/p3) was refreshed to
-          # wasi:http@0.3.0, matching what wasmtime 46+ serves by default
-          # (component-model-async on by default too). Both phases pass.
-          - wasmtime: v47.0.2
-            phases: "async,http"
-          # Compat leg: wasmtime 45.x only ever served the RC world
-          # (wasi:http@0.3.0-rc-2026-03-15), which the repo no longer
-          # vendors post-cutover, so phase B (http) cannot link against it
-          # any more (mirrors the "resource implementation is missing"
-          # failure 46 used to hit against the RC world pre-cutover).
-          # Phase A (async component vertical) doesn't touch the wasi:http
-          # WIT at all, so it still passes unchanged with the wasmtime 45 RC
-          # flag set — kept as a smoke test that the async component path
-          # doesn't regress on the older runtime during the wasmtime 46
-          # rollout. Drop this leg once 46 has been the sole target for a
-          # while and 45 compat is no longer a concern.
-          - wasmtime: v45.0.2
-            phases: "async"
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-      - name: Install wasmtime ${{ matrix.wasmtime }}
+      - name: Install wasmtime v47.0.2
         run: |
           set -euo pipefail
-          dir="wasmtime-${{ matrix.wasmtime }}-x86_64-linux"
-          curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${{ matrix.wasmtime }}/${dir}.tar.xz" | tar -xJ
+          dir="wasmtime-v47.0.2-x86_64-linux"
+          curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/v47.0.2/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
       - name: Install wasm-tools / wac
         # Prebuilt release binaries (validated versions; cargo install is the
@@ -306,7 +292,7 @@ jobs:
       - name: WASI p3 guarantee gate
         env:
           VIBE_P3_GATE_REQUIRE_TOOLS: "1"
-          VIBE_P3_GATE_PHASES: ${{ matrix.phases }}
+          VIBE_P3_GATE_PHASES: "async,http"
           VIBE_ASYNC_GATE_COMPILER: ${{ github.workspace }}/_build/ci-artifacts/stage2.wasm
           VIBE_SERVE_CLI_WASM: ${{ github.workspace }}/_build/ci-artifacts/stage2.wasm
         run: bash scripts/test_wasi_p3_guarantee_gate.sh

@@ -141,22 +141,39 @@ jobs:
         with:
           node-version: "22"
 
+      # Swatinem/rust-cache, not a raw actions/cache path list: a plain
+      # actions/cache restore of runtime/vibewt/target keeps the archived
+      # mtimes from whenever the cache was saved, while actions/checkout
+      # (which runs before this step) resets every source file to the
+      # current checkout time -- cargo's fingerprinting sees "source newer
+      # than build output" and recompiles the entire dependency tree on
+      # every run regardless of cache hit/miss. rust-cache normalizes this
+      # (and dedupes registry/target caching by Cargo.lock hash) so a real
+      # cache hit is actually incremental.
       - name: Cache cargo + runner build
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            runtime/vibewt/target
-          key: cli-install-cargo-${{ matrix.os }}-${{ hashFiles('runtime/vibewt/Cargo.lock', 'runtime/vibewt/src/**') }}
-          restore-keys: |
-            cli-install-cargo-${{ matrix.os }}-
+          workspaces: runtime/vibewt
 
       - name: Cache seed artifact
         uses: actions/cache@v4
         with:
           path: bootstrap/seed/compiler.wasm
           key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
+
+      # scripts/build_cli_wasm.sh's own content-fingerprint cache (git tree
+      # hash of lib/ + the seed pin) lives under _build/cli_wasm_cache/ --
+      # persisting it here means every group in the smoke matrix below that
+      # calls build_cli_wasm.sh (directly or via install.sh) gets a cache hit
+      # instead of a full seed->stage1->stage2 rebuild whenever lib/ and the
+      # seed pin are unchanged since the last run on this branch. Within the
+      # `debug` group alone this used to mean 7 back-to-back full rebuilds
+      # for byte-identical output.
+      - name: Cache built CLI wasm
+        uses: actions/cache@v4
+        with:
+          path: _build/cli_wasm_cache
+          key: cli-wasm-${{ matrix.os }}-${{ hashFiles('lib/**', 'bootstrap/seed.json') }}
 
       - name: Ensure seed artifact
         # bootstrap/seed/compiler.wasm is a local build cache (gitignored,
