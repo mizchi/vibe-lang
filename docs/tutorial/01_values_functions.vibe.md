@@ -13,7 +13,7 @@
 ```vibe run
 import @vibe/prelude { stdout_write }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   let x: Int = 42          // 62-bit tagged。リテラル上限 2^61-1
   let d: Double = 3.14     // 64-bit float (小数点リテラルの既定)
   let b: Bool = true
@@ -48,7 +48,7 @@ vibe は純粋がデフォルト。ローカルな可変状態は `let mut` で�
 ```vibe run
 import @vibe/prelude { stdout_write }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   let y = {
     let mut v = 0
     v += 1
@@ -82,7 +82,7 @@ let inc: (Int) -> Int = (x) -> { x + 1 }              // let 形式
 
 let scaled: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x * 10 + y }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   stdout_write("add(1, 2) = \{add(1, 2)}\n")
   stdout_write("fact(5) = \{fact(5)}\n")
   stdout_write("identity(7) = \{identity(7)}\n")
@@ -104,7 +104,7 @@ scaled(x=4, y=2) = 42
 ```vibe run
 import @vibe/prelude { stdout_write }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   let xs = [1, 2, 3]
   let doubled = Array::map(xs, _ * 2)         // (v) -> v * 2 の section
   let total = Array::fold(xs, 0, _ + _)       // (acc, v) -> acc + v

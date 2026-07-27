@@ -48,6 +48,7 @@ vibe type-at <file.vibe> <line> <col>     # inferred type of the identifier at 1
 vibe binding-at <file.vibe> <line> <col>  # source spans (START END char offsets) of every occurrence of that binding
 vibe symbols <file.vibe>                  # declaration outline (NAME KIND START END per line)
 vibe diagnostics <file.vibe>              # all diagnostics, one per line; empty output = clean
+vibe diagnostics --json <file.vibe>       # same diagnostics as a JSON array of LSP Diagnostic objects (#820)
 ```
 
 - `type-at` powers hover. Empty output means there is no env-visible
@@ -63,7 +64,10 @@ vibe diagnostics <file.vibe>              # all diagnostics, one per line; empty
   module-nested symbols and never reports a name that only appears in a string
   or comment.
 - `diagnostics` always exits 0 (it is a *report*, not a pass/fail), so a clean
-  file simply yields no output.
+  file simply yields no output (plain mode) or `[]` (`--json` mode).
+  `--json` reuses the same `[@off=N]`-derived offsets `vibe lsp`'s
+  `publishDiagnostics` uses, wrapped as `{range, severity, source, message}`
+  objects — no separate structured-diagnostic format to keep in sync.
 
 ---
 

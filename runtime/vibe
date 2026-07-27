@@ -984,11 +984,20 @@ case "$cmd" in
     if [ -s "$out" ]; then cat "$out"; fi
     ;;
   diagnostics)
-    # vibe diagnostics <file.vibe>
+    # vibe diagnostics [--json] <file.vibe>
     # Print ALL diagnostics, one per line: every top-level syntax error (the
     # recovering parser resynchronizes past each failed statement) or, when the
     # file parses clean, the single located type error. Empty output = clean.
-    [ "$#" -ge 1 ] || die "usage: vibe diagnostics <file.vibe>"
+    # `--json` (#820 sub-item 1) emits the same diagnostics as a JSON array of
+    # LSP-shaped Diagnostic objects (range/severity/source/message) instead --
+    # a machine-readable form for tooling/agents, sharing its parser with the
+    # `vibe lsp` publishDiagnostics path (lsp_diagnostics_json_string).
+    diag_json=0
+    if [ "${1:-}" = "--json" ]; then
+      diag_json=1
+      shift
+    fi
+    [ "$#" -ge 1 ] || die "usage: vibe diagnostics [--json] <file.vibe>"
     src="$1"
     [ -f "$src" ] || die "not found: $src"
     # Use the portable .wasm (not the AOT .cwasm): the recovering-parser /
@@ -1000,9 +1009,12 @@ case "$cmd" in
     # can't divert this into compiling and emitting wasm bytes as "diagnostics".
     # Don't `die` on a non-zero exit — emit whatever was written (a report, not a
     # failure) so the LSP treats empty as "no diagnostics" / falls back.
+    diag_json_env=""
+    [ "$diag_json" = "1" ] && diag_json_env=1
     env -u VIBE_FS_COMPILE -u VIBE_TYPE_AT -u VIBE_DOC_AT -u VIBE_NORMALIZE \
         -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_DIAGNOSTICS=1 \
+      VIBE_DIAGNOSTICS_JSON="$diag_json_env" \
       VIBE_IMPORT_ABI=raw \
       "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
     # #946(4): a pathologically deep expression can overflow the native call
@@ -1013,7 +1025,22 @@ case "$cmd" in
     # genuinely error-free file. Both runners now write that crash to the same
     # `.diag` sidecar the checker's own error paths use; surface it as a
     # diagnostic line instead of silently treating the crash as clean.
-    if [ -s "$out.diag" ]; then cat "$out.diag"; fi
+    # In --json mode this crash text never went through cli_adapter.vibe (the
+    # process trapped at the host level before it could run), so it isn't
+    # valid JSON on its own -- wrap it into a minimal one-entry array instead
+    # of leaking raw text to a JSON consumer.
+    if [ -s "$out.diag" ]; then
+      if [ "$diag_json" = "1" ]; then
+        diag_msg="$(cat "$out.diag" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')"
+        printf '[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"severity":1,"source":"vibe","message":"%s"}]\n' "$diag_msg"
+      else
+        cat "$out.diag"
+      fi
+    elif [ "$diag_json" = "1" ] && [ ! -s "$out" ]; then
+      # Clean file, JSON mode: still emit valid JSON (an empty array), not
+      # empty output -- a JSON consumer must always get parseable JSON.
+      echo "[]"
+    fi
     # A clean file yields empty output; this subcommand always exits 0 (a report,
     # not a failure), so the LSP can treat empty as "no diagnostics".
     if [ -s "$out" ]; then cat "$out"; fi

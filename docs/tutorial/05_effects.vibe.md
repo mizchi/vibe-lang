@@ -15,7 +15,7 @@ fn risky(x: Int) -> Int with { Error } {
   100 / x
 }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   // handle がエフェクトを捕まえて値に落とす
   let safe = handle { risky(0) } with Error { Throw(_msg) => -1 }
   let fine = handle { risky(4) } with Error { Throw(_msg) => -1 }
@@ -47,7 +47,7 @@ fn answer_of(q: String) -> Int with { Ask } {
   perform Ask::Value(q) + 1
 }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   // handler が resume(v) で perform 地点に値を返す (one-shot tail-resumptive)
   let v = handle { answer_of("life") } with Ask {
     Value(_q) => resume(41)
@@ -75,7 +75,7 @@ fn apply_twice(f~: (Int) -> Int with { e }, x~: Int) -> Int with { e } {
   f(f(x))
 }
 
-let _start: () -> Unit with { Stdout } = () -> {
+fn main with { Stdout } {
   stdout_write("apply_twice = \{apply_twice(f=(n) -> n * 2, x=10)}\n")
 }
 ```

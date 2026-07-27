@@ -17,8 +17,11 @@ convention as scripts/doctest_extract_run.sh:
   ```vibe skip   excluded from verification (put the reason in a leading
                  comment on the block's first line)
 
-A ```vibe run block must export `_start` (`with { Stdout }` etc. as
-needed). The immediately following ```output fenced block (blank lines in
+A ```vibe run block must define `fn main with { Stdout } { .. }` (or the
+`let main: () -> T = () -> { .. }` long form) — compiled with entry `main`
+and then invoked via the WASI `_start` wrapper the compiler generates for
+it, same as `vibe build`/`vibe run` on a real `.vibex` entry file. The
+immediately following ```output fenced block (blank lines in
 between are allowed; anything else breaks the association) holds the
 embedded stdout:
   - `write` mode creates or updates it to match the actual run.
@@ -49,6 +52,11 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FENCE_RE = re.compile(r"^(`{3,})\s*(\S*)\s*(.*)$")
+
+
+class MalformedDocError(Exception):
+    """The markdown itself is broken (e.g. an unterminated ``` fence) --
+    distinct from a block that compiled/ran and failed verification."""
 
 
 def resolve_stage2():
@@ -110,16 +118,25 @@ def parse_blocks(text):
         j = i + 1
         closed = False
         while j < n:
-            if re.match(r"^%s\s*$" % re.escape(fence), lines[j]):
+            # CommonMark: a closing fence needs AT LEAST as many backticks as
+            # the opening one (a longer run still closes it), not an exact
+            # length match -- a doc using ```` to close a ``` block is valid
+            # markdown and must not be reported as unterminated.
+            if re.match(r"^`{%d,}\s*$" % len(fence), lines[j]):
                 closed = True
                 break
             body.append(lines[j])
             j += 1
         if not closed:
-            # unterminated fence: treat rest of file as plain text, don't crash
-            tokens.append(("text", lines[i]))
-            i += 1
-            continue
+            # An unterminated fence silently dropped to plain text would let
+            # an editing mistake (deleted closing ```) remove a ```vibe run
+            # block from verification instead of failing loudly -- the doc
+            # would then show unverified example code that check has never
+            # actually compiled or run.
+            raise MalformedDocError(
+                f"unterminated ``` fence starting at line {i + 1} "
+                f"(lang={lang!r}): no matching closing fence found"
+            )
         close_line = lines[j]
         blk = Block(lang, arg, start_line, body)
         blk.open_line = open_line
@@ -176,13 +193,15 @@ def sh(cmd, env=None, timeout=None):
         return 124, "", f"timeout after {timeout}s"
 
 
-def link_sibling_dir(md_path, workdir):
+def link_sibling_dir(md_path, workdir, created):
     """Blocks are extracted straight into workdir's root (matching
     doctest_extract_run.sh), so a block's `./foo` import resolves against
     workdir, not against md_path's real directory. Symlink every non-.md
     sibling of md_path into workdir (idempotent) so relative imports to a
     doc's own support files (e.g. docs/tutorial/support/mathx.vibe) still
     resolve the same way they would for a real file living next to the doc.
+    Every path this creates is appended to `created` so a caller-owned
+    workdir (see main()) can be cleaned up precisely instead of via rmtree.
     """
     src_dir = os.path.dirname(os.path.abspath(md_path))
     for name in os.listdir(src_dir):
@@ -192,14 +211,15 @@ def link_sibling_dir(md_path, workdir):
         if os.path.islink(link) or os.path.exists(link):
             continue
         os.symlink(os.path.join(src_dir, name), link)
+        created.append(link)
 
 
-def process_file(md_path, workdir, compiler, timeout, results):
+def process_file(md_path, workdir, compiler, timeout, results, created):
     with open(md_path, encoding="utf-8") as f:
         text = f.read()
     tokens = parse_blocks(text)
     pairs = link_run_output_pairs(tokens)
-    link_sibling_dir(md_path, workdir)
+    link_sibling_dir(md_path, workdir, created)
 
     base = re.sub(r"[^A-Za-z0-9_]", "_", os.path.splitext(os.path.basename(md_path))[0])
     n = 0
@@ -217,7 +237,15 @@ def process_file(md_path, workdir, compiler, timeout, results):
         with open(src, "w", encoding="utf-8") as f:
             f.write("\n".join(blk.code_lines) + "\n")
         out = src[:-len(".vibe")] + ".wasm"
-        entry = "_start" if blk.mode == "run" else "__no_entry__"
+        created.append(src)
+        created.append(out)
+        created.append(out + ".diag")
+        # `main` (not `_start`) is the entry name the compiler lowers --
+        # it generates a WASI `_start` wrapper around it as a side effect,
+        # which is what actually gets invoked below (single, clean
+        # invocation; invoking `main` directly double-runs it because the
+        # runner's own module-init probe already calls `_start` once).
+        entry = "main" if blk.mode == "run" else "__no_entry__"
 
         env = dict(os.environ)
         env["VIBE_PREOPEN_DIR"] = ROOT
@@ -268,6 +296,14 @@ def process_file(md_path, workdir, compiler, timeout, results):
             results.append((label, "FAIL", f"[run] {reason}", blk))
             continue
 
+        # A ```output block is line-based markdown text: reading it back can
+        # never distinguish "last line ends with \n" from "last line
+        # doesn't" -- reconstruction always adds a trailing \n. Normalize
+        # actual stdout the same way (append one if missing, unless it's
+        # empty) so a program whose last stdout_write omits the trailing
+        # newline still round-trips write -> check as a clean PASS.
+        if rout and not rout.endswith("\n"):
+            rout += "\n"
         blk.actual_stdout = rout
         out_blk = pairs.get(id(blk))
         expected = None
@@ -342,13 +378,42 @@ def main():
         return 2
 
     workdir = os.environ.get("VIBE_MD_WORKDIR") or os.path.join(ROOT, "_build/vibe_md", str(os.getpid()))
+    # A caller-supplied VIBE_MD_WORKDIR may already exist and hold unrelated
+    # files -- only rmtree the whole directory on exit if THIS run is the one
+    # that created it; otherwise track and remove only the specific files/
+    # symlinks this run added, so a caller-owned directory is never blown away.
+    workdir_preexisted = os.path.isdir(workdir)
     os.makedirs(workdir, exist_ok=True)
-    compiler_copy = os.path.join(workdir, "compiler.wasm")
+    created = []
+    # Collision-free name (unlike "lib" below, nothing requires this exact
+    # name) -- a fixed "compiler.wasm" would silently overwrite, and then
+    # delete on cleanup, a caller-owned file that happened to have that name.
+    compiler_copy = os.path.join(workdir, f".vibe_md_compiler_{os.getpid()}.wasm")
     shutil.copyfile(compiler, compiler_copy)
+    created.append(compiler_copy)
+    # "lib" is not a free choice: every extracted block sits directly in
+    # workdir's root (matching doctest_extract_run.sh), and both relative
+    # (`./lib/...`) and package-style (`@scope/name` -> `lib/@scope/name`)
+    # import resolution need a real `lib` entry there. If one already exists
+    # from a caller-supplied workdir, reuse it in place when it already
+    # points at this repo's lib/ (idempotent -- e.g. a prior run of this
+    # script against the same workdir); otherwise it's a genuine conflict
+    # with caller-owned data, so fail loudly instead of overwriting it.
     lib_link = os.path.join(workdir, "lib")
-    if os.path.islink(lib_link) or os.path.exists(lib_link):
-        os.remove(lib_link)
-    os.symlink(os.path.join(ROOT, "lib"), lib_link)
+    lib_target = os.path.join(ROOT, "lib")
+    if os.path.islink(lib_link):
+        if os.path.realpath(lib_link) != os.path.realpath(lib_target):
+            print(f"vibe_md: {lib_link} already exists and points elsewhere; "
+                  f"refusing to overwrite (pass a different VIBE_MD_WORKDIR)", file=sys.stderr)
+            return 2
+        # already correct; not ours to create or clean up
+    elif os.path.exists(lib_link):
+        print(f"vibe_md: {lib_link} already exists and is not the expected "
+              f"symlink; refusing to overwrite (pass a different VIBE_MD_WORKDIR)", file=sys.stderr)
+        return 2
+    else:
+        os.symlink(lib_target, lib_link)
+        created.append(lib_link)
 
     timeout = int(os.environ.get("VIBE_MD_TIMEOUT", "120"))
 
@@ -363,7 +428,11 @@ def main():
                 print(f"vibe_md: no such file: {md_path}", file=sys.stderr)
                 return 2
             results = []
-            tokens, pairs = process_file(md_path, workdir, compiler_copy, timeout, results)
+            try:
+                tokens, pairs = process_file(md_path, workdir, compiler_copy, timeout, results, created)
+            except MalformedDocError as e:
+                print(f"vibe_md: {md_path}: {e}", file=sys.stderr)
+                return 2
             if mode == "write":
                 rewrite_file(md_path, tokens, pairs)
             for label, status, reason, blk in results:
@@ -385,7 +454,15 @@ def main():
                     print(f"PASS  {label}")
     finally:
         if os.environ.get("VIBE_MD_KEEP", "0") != "1":
-            shutil.rmtree(workdir, ignore_errors=True)
+            if workdir_preexisted:
+                for path in created:
+                    if os.path.islink(path) or os.path.isfile(path):
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
+            else:
+                shutil.rmtree(workdir, ignore_errors=True)
 
     print()
     print(f"vibe_md: {total} blocks — {total - fail - skipped} pass, {fail} fail, {skipped} skip")
