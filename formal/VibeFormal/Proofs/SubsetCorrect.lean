@@ -61,4 +61,42 @@ theorem Subset.union_left_iff {left right declared : Normalized} :
     · exact subsetLeft operation inLeft
     · exact subsetRight operation inRight
 
+/-
+`Equivalent` (Row.lean) is used by `NormalizeCorrect.lean` to state that
+`normalize` preserves meaning, but had no algebraic lemmas of its own --
+this closes the same preorder-to-partial-order gap the `Subset` lemmas
+above set up but didn't finish: `Subset.antisymm` is the standard
+"mutual Subset implies Equivalent" fact, and needs `Equivalent` to
+actually be an equivalence relation to be useful downstream.
+-/
+
+/-- `Equivalent` is reflexive: a row always denotes the same operations as itself. -/
+theorem Equivalent.refl (row : Normalized) : Equivalent row row :=
+  fun _ => Iff.rfl
+
+/-- `Equivalent` is symmetric. -/
+theorem Equivalent.symm {left right : Normalized} (h : Equivalent left right) :
+    Equivalent right left :=
+  fun operation => (h operation).symm
+
+/-- `Equivalent` is transitive. -/
+theorem Equivalent.trans {left middle right : Normalized}
+    (leftMiddle : Equivalent left middle) (middleRight : Equivalent middle right) :
+    Equivalent left right :=
+  fun operation => (leftMiddle operation).trans (middleRight operation)
+
+/--
+`Subset` is antisymmetric up to `Equivalent`: two rows that each authorize
+the other denote the same operation set. This is the standard closing
+lemma that promotes the `Subset` preorder (`refl`/`trans` above) to a
+partial order, and is exactly what a future row-subsumption proof needs
+to conclude two effect rows are interchangeable rather than merely
+mutually-authorizing.
+-/
+theorem Subset.antisymm {left right : Normalized}
+    (leftRight : Subset left right) (rightLeft : Subset right left) :
+    Equivalent left right :=
+  fun operation => ⟨fun membership => leftRight operation membership,
+                     fun membership => rightLeft operation membership⟩
+
 end VibeFormal.EffectRow
