@@ -901,6 +901,57 @@ export fn run_module_job_dir(dir: String) -> Unit with { Error, Fs } {
   }
 }
 
+// #906 Phase 2 (real-build wiring): the batch publish counterpart to
+// run_module_job_dir. `manifest.txt` holds one `<fingerprint>\t<envfile>`
+// row per module a host driver wants published; `<envfile>` is read
+// relative to `dir` and written VERBATIM to the real persistent-cache path
+// -- it is already `persistent_type_env_cache_text`-encoded, because it is
+// literally a copy of some job dir's `env.out` (see run_module_job_dir
+// above), so there is nothing to parse or re-encode here. Two publishers
+// racing on the same fingerprint is a same-value collision, not a
+// conflict: the path is content-addressed, and a checker producing two
+// different envs for one fingerprint would already violate the
+// jobs=1/2/4 byte-identity gate elsewhere.
+fn parse_publish_manifest_rows(text: String) -> Array[(String, String)] with { Error } {
+  let lines = String::split(normalize_persistent_cache_text(text), "\n")
+  let rows = array_empty()
+  let mut i = 0
+  let len = Array::length(lines)
+  while i < len {
+    let line = Array::get(lines, i)
+    if String::length(line) == 0 {
+      ()
+    } else {
+      let parts = String::split(line, "\t")
+      if Array::length(parts) != 2 {
+        throw(String::concat("invalid publish manifest row (want fingerprint + envfile): ", line))
+      } else {
+        let fingerprint = Array::get(parts, 0)
+        let env_file = Array::get(parts, 1)
+        if String::length(fingerprint) == 0 || String::length(env_file) == 0 {
+          throw(String::concat("invalid publish manifest row (empty fingerprint or envfile): ", line))
+        } else {
+          Array::push(rows, (fingerprint, env_file))
+        }
+      }
+    }
+    i = i + 1
+  }
+  rows
+}
+
+export fn run_publish_env_cache_dir(dir: String) -> Unit with { Error, Fs } {
+  let rows = parse_publish_manifest_rows(Fs::read_file(job_dir_path(dir, "manifest.txt")))
+  let mut i = 0
+  let len = Array::length(rows)
+  while i < len {
+    let (fingerprint, env_file) = Array::get(rows, i)
+    let env_text = Fs::read_file(job_dir_path(dir, env_file))
+    Fs::write_file(persistent_type_env_cache_path(fingerprint), env_text)
+    i = i + 1
+  }
+}
+
 // `fingerprint` is the already-folded build_fingerprint(source, dep_fps)
 // every call site computed to decide whether to call this function at all
 // (the Fs::exists / ripple_record_eval fast path below needs that folded

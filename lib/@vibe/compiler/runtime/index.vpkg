@@ -185,6 +185,21 @@ fn check_module(job: ModuleJob) -> ModuleOutcome with { Error }
 // its layout and for why the job's `path` row must be the module's logical
 // path rather than the materialized temp file.
 fn run_module_job_dir(dir: String) -> Unit with { Error, Fs }
+// #906 Phase 2 (real-build wiring): the batch counterpart to
+// run_module_job_dir. A host-side parallel pre-warm driver runs many workers
+// against private job-dir sandboxes, then makes ONE call here with a
+// directory holding `manifest.txt` (one `<fingerprint>\t<envfile>` row per
+// successfully-checked module) plus each row's env file, verbatim from that
+// job's `env.out`. This writes each env to the REAL persistent-cache path
+// a serial compile would look under -- not the job-dir sandbox -- so the
+// driver never re-derives persistent_type_env_cache_path itself (that path
+// folds in this build's own codegen_fingerprint, which a host process has
+// no way to reproduce without risking the exact drift #906's dep_fps fix
+// closed for cache keys, applied to paths instead). Diagnosed modules are
+// simply absent from the manifest; the always-run serial fallback rechecks
+// them and produces the identical diagnostic, so correctness never depends
+// on this call succeeding.
+fn run_publish_env_cache_dir(dir: String) -> Unit with { Error, Fs }
 fn check_inline_wasm_fns(stmts: Array[Stmt]) -> Option[String]
 fn collect_all_diagnostics(source: String) -> Array[String] with { Error }
 

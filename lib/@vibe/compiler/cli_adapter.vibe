@@ -16,7 +16,7 @@ import @vibe/compiler/entry/source_compile/gc_only {
 import @vibe/compiler/runtime {
   build_module_source_from_source, build_funcmap_from_source,
   type_at_source, binding_occurrences, symbol_spans, collect_all_diagnostics,
-  set_dep_order_seed, run_module_job_dir, doc_at_source
+  set_dep_order_seed, run_module_job_dir, run_publish_env_cache_dir, doc_at_source
 }
 
 import @vibe/compiler/loader {
@@ -463,6 +463,20 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
       // turned every diagnostic into a value in the job dir. The
       // coordinator must be able to tell those apart, so this goes to the
       // .diag sidecar and a nonzero exit, leaving no outcome.txt behind.
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  } else ()
+  // #906 Phase 2 (real-build wiring): batch publish for a host-side
+  // parallel pre-warm driver. `input_path` is a directory holding
+  // `manifest.txt` plus each row's env file -- see run_publish_env_cache_dir
+  // (runtime/typecheck_fs.vibe) for the exact layout and why the driver
+  // hands this off instead of writing the real cache path itself.
+  if Env::get("VIBE_PUBLISH_ENV_CACHE") == "1" {
+    return handle {
+      run_publish_env_cache_dir(input_path)
+      Fs::write_file(output_path, "ok\n")
+      0
+    } with Error {
       Throw(msg) => emit_compile_diag(output_path, msg)
     }
   } else ()
