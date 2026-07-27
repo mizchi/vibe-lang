@@ -279,8 +279,21 @@ export fn compile_cli_request(source: String, request: String) -> String {
   }
 }
 
+// The vfs's `stat-token` import is a stable per-path content token (see
+// docs/vibec-component.md). compile_cli_request's cache key is naturally
+// content-addressed (the source text IS part of the key), but this file
+// variant's content lives on the host, so folding stat_token(input_path)
+// into the key here means a long-lived hosted component that recompiles the
+// same path after the host edits it (the common browser-IDE case) gets a
+// fresh compile instead of a stale cached result from before the edit.
+// This covers edits to the entry file itself; edits to files it imports are
+// not tracked (would need the module resolver to report every path it
+// touched, which this entry point does not do).
 fn ensure_compiled_file(input_path: String, entry_name: String, mode: String) -> Int with { Error, Fs } {
-  let cache_key = cache_key_for(String::concat("file:", input_path), entry_name, mode)
+  let content_token = Fs::stat_token(input_path)
+  let cache_key = cache_key_for(
+    String::concat("file:", String::concat(__to_string(content_token), String::concat(":", input_path))),
+    entry_name, mode)
   if cache_key_matches(cache_key) {
     Array::get(cached_compile_len, 0)
   } else {

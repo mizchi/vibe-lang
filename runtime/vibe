@@ -613,17 +613,26 @@ case "$cmd" in
       # flag as its input path, so fall back to one in-process converge there.
       if grep -aq -- "--single-round" "$opt_wasm" 2>/dev/null; then
         mtmp="$(mktemp -t vibe-minify-XXXXXX.wasm)"
+        mback="$(mktemp -t vibe-minify-backup-XXXXXX.wasm)"
         mprev=$(wc -c <"$out")
         mrounds=0
+        # #1122: back up before each round and restore on a non-shrinking
+        # round instead of committing it to $out first and only then
+        # checking — a round that doesn't shrink must not become the final
+        # output (mirrors the same fix in scripts/minify_wasm.sh).
         while [ "$mrounds" -lt "${VIBE_MINIFY_MAX_ROUNDS:-16}" ]; do
-          "$RUNNER" "$opt_wasm" --single-round "$out" "$mtmp" >/dev/null || { rm -f "$mtmp"; die "--minify failed for $out"; }
+          cp "$out" "$mback"
+          "$RUNNER" "$opt_wasm" --single-round "$out" "$mtmp" >/dev/null || { rm -f "$mtmp" "$mback"; die "--minify failed for $out"; }
           msize=$(wc -c <"$mtmp")
-          mv "$mtmp" "$out"
           mrounds=$((mrounds + 1))
-          [ "$msize" -lt "$mprev" ] || break
+          if [ "$msize" -ge "$mprev" ]; then
+            mv "$mback" "$out"
+            break
+          fi
+          mv "$mtmp" "$out"
           mprev="$msize"
         done
-        rm -f "$mtmp"
+        rm -f "$mtmp" "$mback"
       else
         "$RUNNER" "$opt_wasm" "$out" "$out" || die "--minify failed for $out"
       fi
