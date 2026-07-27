@@ -6730,9 +6730,11 @@ echo "[compiler-gate] deps missing-for-imports scan (#1145 follow-up 2) ok"
 # inexpressible without regions. Negative: a plain outer `Array` capture
 # (err_spawnable_capture_array.vibe), a `Sender` captured from a
 # DIFFERENT (outer) nursery (err_spawnable_capture_cross_region.vibe), and
-# a captured `let mut` binding regardless of its (Send) type
-# (err_spawnable_capture_letmut.vibe, Codex review PR #1150 P1) are all
-# STATIC errors.
+# a captured `let mut` binding regardless of its (Send) type, whether
+# declared inside the run body (err_spawnable_capture_letmut.vibe) or in
+# the ENCLOSING scope before calling TaskGroup::run
+# (err_spawnable_capture_letmut_outer_scope.vibe, Codex review PR #1151
+# P1) are all STATIC errors.
 echo "[compiler-gate] 61/61 ADR-0068 Spawnable[r] capture check (#1081 step 3 Phase B)"
 spawnabledir="_build/_gate_spawnable"
 rm -rf "$spawnabledir"; mkdir -p "$spawnabledir"
@@ -6787,6 +6789,19 @@ fi
 if ! grep -qF "no impl \`Spawnable\` for a \`let mut\` binding" "$spawnabledir/neg_letmut.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: err_spawnable_capture_letmut.vibe did not produce the expected diagnostic" >&2
   cat "$spawnabledir/neg_letmut.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+sed '/^__DATA__$/,$d' fixtures/err_spawnable_capture_letmut_outer_scope.vibe > "$spawnabledir/neg_letmut_outer.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$spawnabledir/neg_letmut_outer.vibe" "$spawnabledir/neg_letmut_outer.wasm" main >/dev/null 2>&1 || true
+if [ -s "$spawnabledir/neg_letmut_outer.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_spawnable_capture_letmut_outer_scope.vibe compiled successfully -- must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF "no impl \`Spawnable\` for a \`let mut\` binding" "$spawnabledir/neg_letmut_outer.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_spawnable_capture_letmut_outer_scope.vibe did not produce the expected diagnostic" >&2
+  cat "$spawnabledir/neg_letmut_outer.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
 rm -rf "$spawnabledir"

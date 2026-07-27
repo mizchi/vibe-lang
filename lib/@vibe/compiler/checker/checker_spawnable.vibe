@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Subst, Type, TypeDef, TypeEnv, env_lookup, subst_apply, type_to_string
+  Expr, Pat, Stmt, Subst, Type, TypeDef, TypeEnv, env_lookup, subst_apply, type_to_string
 }
 
 import @vibe/core {
@@ -682,49 +682,89 @@ fn sp_collect_spawn_closures(expr: Expr, out: Array[Expr]) -> Unit {
   }
 }
 
-// Entry point: given the `TaskGroup::run` call's own body closure literal
-// (`Array::get(args, 0)` at the call site), collect every `let mut` name
-// visible anywhere in it and flag any spawn/spawn_suspend closure that
-// captures one, regardless of that name's type. Purely syntactic --
-// no `env`/`Subst` needed. A non-literal run-body argument is opaque
-// (same documented-gap shape as the region-escape check's alias bypass).
-export fn check_spawnable_mut_captures(run_body_expr: Expr) -> Array[String] {
-  match run_body_expr {
-    EFn(_, _, _, _, _, _) => {
-      let mut_names = sp_empty_strings()
-      sp_collect_letmut_names(run_body_expr, mut_names)
-      let spawn_closures = array_empty()
-      sp_collect_spawn_closures(run_body_expr, spawn_closures)
-      let out = sp_empty_strings()
-      let mut si = 0
-      while si < Array::length(spawn_closures) {
-        match Array::get(spawn_closures, si) {
-          EFn(_, _, sparams, _, _, sbody) => {
-            let spnames = sp_empty_strings()
-            let mut pi = 0
-            while pi < Array::length(sparams) {
-              let (pname, _) = Array::get(sparams, pi)
-              Array::push(spnames, pname)
-              pi = pi + 1
-            }
-            let free = sp_collect_free_vars(sbody, spnames)
-            let mut fi = 0
-            while fi < Array::length(free) {
-              let vname = Array::get(free, fi)
-              if sp_array_contains_str(mut_names, vname) {
-                Array::push(out, String::concat("no impl `Spawnable` for a `let mut` binding: capture `", String::concat(vname, "` shares a mutable cell across the spawn boundary")))
-              } else {
-                ()
-              }
-              fi = fi + 1
-            }
-          },
-          _ => ()
+// Entry point (per lexical scope): collect every `let mut` name visible
+// anywhere in `scope_body` and flag any spawn/spawn_suspend closure
+// reachable from it that captures one, regardless of that name's type.
+// Purely syntactic -- no `env`/`Subst` needed.
+//
+// Codex review (PR #1151, P1): the first version of this check anchored
+// `scope_body` on the `TaskGroup::run` call's OWN closure argument, so a
+// `let mut counter = 0` declared in the ENCLOSING function BEFORE calling
+// `TaskGroup::run` (rather than inside the run body itself) was invisible
+// to `sp_collect_letmut_names` -- an inline spawn closure could still
+// capture and mutate it, exactly the sharing this check exists to reject.
+// Fixed by anchoring on the WHOLE enclosing top-level declaration's body
+// instead (`check_spawnable_mut_captures_stmts` below calls this once per
+// top-level `fn`/`let`/`test`/`bench`, not once per `TaskGroup::run`
+// call) -- `sp_collect_letmut_names`/`sp_collect_spawn_closures` already
+// descend into nested closures, so a `let mut` and a `TaskGroup::run` +
+// `spawn` anywhere in the SAME top-level declaration are both reachable
+// from one call, regardless of which is textually first.
+//
+// Still-accepted gap (not closed by this fix, and not attempted): a
+// mutable binding captured by a HELPER FUNCTION that itself calls
+// `TaskGroup::spawn` -- e.g. passing `counter` into a separate top-level
+// `fn helper(c) { TaskGroup::spawn(n, () -> { c += 1 }) }` -- is
+// interprocedural (would need call-graph / alias tracking across
+// separate top-level declarations) and out of scope for this purely
+// per-declaration AST sweep. Every case in THIS PR's own fixtures and the
+// existing `@vibex/concurrent` test suite keeps the mutable binding and
+// the spawn call within one top-level declaration, which this now covers.
+fn check_spawnable_mut_captures_scope(scope_body: Expr) -> Array[String] {
+  let mut_names = sp_empty_strings()
+  sp_collect_letmut_names(scope_body, mut_names)
+  let spawn_closures = array_empty()
+  sp_collect_spawn_closures(scope_body, spawn_closures)
+  let out = sp_empty_strings()
+  let mut si = 0
+  while si < Array::length(spawn_closures) {
+    match Array::get(spawn_closures, si) {
+      EFn(_, _, sparams, _, _, sbody) => {
+        let spnames = sp_empty_strings()
+        let mut pi = 0
+        while pi < Array::length(sparams) {
+          let (pname, _) = Array::get(sparams, pi)
+          Array::push(spnames, pname)
+          pi = pi + 1
         }
-        si = si + 1
-      }
-      out
-    },
-    _ => sp_empty_strings()
+        let free = sp_collect_free_vars(sbody, spnames)
+        let mut fi = 0
+        while fi < Array::length(free) {
+          let vname = Array::get(free, fi)
+          if sp_array_contains_str(mut_names, vname) {
+            Array::push(out, String::concat("no impl `Spawnable` for a `let mut` binding: capture `", String::concat(vname, "` shares a mutable cell across the spawn boundary")))
+          } else {
+            ()
+          }
+          fi = fi + 1
+        }
+      },
+      _ => ()
+    }
+    si = si + 1
   }
+  out
+}
+
+// Entry point: run `check_spawnable_mut_captures_scope` once per
+// top-level declaration with a body (function/`let`/`test`/`bench`/bare
+// top-level expression), recursing into `SModule` blocks. Called once
+// per program (checker_stmt.vibe's `check_program`/
+// `check_program_with_env`), not per `TaskGroup::run`/spawn call site.
+export fn check_spawnable_mut_captures_stmts(stmts: Array[Stmt]) -> Array[String] {
+  let out = sp_empty_strings()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, body) => sp_append_all(out, check_spawnable_mut_captures_scope(body)),
+      SLetMut(_, _, body) => sp_append_all(out, check_spawnable_mut_captures_scope(body)),
+      STest(_, body) => sp_append_all(out, check_spawnable_mut_captures_scope(body)),
+      SBench(_, body) => sp_append_all(out, check_spawnable_mut_captures_scope(body)),
+      SExpr(body) => sp_append_all(out, check_spawnable_mut_captures_scope(body)),
+      SModule(_, _, inner) => sp_append_all(out, check_spawnable_mut_captures_stmts(inner)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
 }
