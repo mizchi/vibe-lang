@@ -48,7 +48,7 @@ import ./header_cache.vibe {
 }
 
 import @vibe/compiler/contract {
-  check_contract, classify_contract_stmts, contract_directory_shared_import_prefix_text, contract_facade_marker, contract_facade_source, contract_hash, contract_surface_lines, extract_package_version, extract_require_pins, package_hash_from_sources, parse_contract_program, verify_publish_bump, vpkg_shared_import_marker
+  canonicalize_for_hash, check_contract, classify_contract_stmts, contract_directory_shared_import_prefix_text, contract_facade_marker, contract_facade_source, contract_hash, contract_surface_lines, deps_missing_for_imports, extract_package_deps, extract_package_name, extract_package_version, extract_require_pins, package_hash_from_sources, parse_contract_program, replace_generated_hash_directive, verify_publish_bump, vpkg_shared_import_marker
 }
 
 import ./manifest_sources.vibe {
@@ -1793,7 +1793,12 @@ export fn contract_package_hashes_fs(path: String) -> (String, String) with { Er
   } else {
     path[contract_last_slash + 1: String::length(path)]
   }
-  Array::push(sources, (contract_basename, raw))
+  // #1145 follow-up 3: `generated_hash` stores this package's own content
+  // hash -- feed it back into what gets hashed and the hash would depend on
+  // hash-writing history instead of on the file, so it's always blanked to
+  // empty here (a no-op for the common case where it's already empty; see
+  // canonicalize_for_hash's own comment).
+  Array::push(sources, (contract_basename, canonicalize_for_hash(raw)))
   let mut ri = 0
   if String::ends_with(package_contract, ".vpkg") {
     let visited = path_set_new()
@@ -1820,6 +1825,20 @@ export fn contract_package_hashes_fs(path: String) -> (String, String) with { Er
     }
   }
   (package_hash_from_sources(sources), contract_hash(decls, opaques, type_defs))
+}
+
+// #1145 follow-up 3: computes this package's content hash the same way
+// `vibe hash` does (contract_package_hashes_fs blanks the file's own
+// `generated_hash` before hashing, so a stale value here never leaks into
+// its own hash -- see that function's comment) and returns the file's full
+// text with `generated_hash = ` rewritten to the computed pin. Read-only
+// like every other fs-mode adapter entry point: the caller writes the
+// result back wherever it wants (same convention as VIBE_FILL_PINS).
+// Idempotent: re-running against the written-back file recomputes and
+// returns the identical hash.
+export fn write_generated_hash_fs(path: String) -> String with { Error, Fs } {
+  let (pkg_hash, _ct_hash) = contract_package_hashes_fs(path)
+  replace_generated_hash_directive(Fs::read_file(path), "#\{pkg_hash}")
 }
 
 // #730 (D-3): fill missing require pins OFFLINE from the workspace store.
@@ -2483,5 +2502,93 @@ export fn check_missing_vpkg_dirs(root: String) -> Int with { Error, Fs } {
     0
   } else {
     throw(String::concat("missing index.vpkg (#897) in: ", String::join(missing, ", ")))
+  }
+}
+
+// #1145 follow-up 2: for the `index.vpkg` at `dir` (if any), checks that
+// every external (`@scope/pkg`) import in its own production impl files
+// (the same discovery `contract_package_hashes_fs` uses: explicit
+// `import ./x.vibe {}` entries plus contract_sibling_impl_raws' auto-
+// discovered siblings -- tests/benches excluded) has a matching `deps`
+// entry. A package that predates the #1128 migration (no `name = `
+// directive) has nothing to check yet -- `deps` declarations are opt-in
+// until the bootstrap-bump migrates the remaining closure (#1145
+// follow-up 1).
+fn package_deps_missing(dir: String) -> Array[String] with { Error, Fs } {
+  let vpkg_path = String::concat(dir, "/index.vpkg")
+  if !Fs::exists(vpkg_path) {
+    array_empty()
+  } else {
+    let raw = Fs::read_file(vpkg_path)
+    let name = extract_package_name(raw)
+    if name == "" {
+      array_empty()
+    } else {
+      let deps = extract_package_deps(raw)
+      let (_pins, blanked) = extract_require_pins(raw)
+      let (_decls, _opaques, extra) = parse_contract_program(lex(blanked))
+      let (impl_raws0, _type_defs) = classify_contract_stmts(extra)
+      let impl_raws = merge_impl_raws_dedupe(impl_raws0, contract_sibling_impl_raws(dir))
+      let impl_sources = array_empty()
+      let mut i = 0
+      while i < Array::length(impl_raws) {
+        let resolved = resolve_path_fs(dir, Array::get(impl_raws, i))
+        Array::push(impl_sources, Fs::read_file(resolved))
+        i = i + 1
+      }
+      let missing = deps_missing_for_imports(deps, impl_sources)
+      let out = array_empty()
+      let mut mi = 0
+      while mi < Array::length(missing) {
+        Array::push(out, "\{dir}: import of \{Array::get(missing, mi)} not declared in deps")
+        mi = mi + 1
+      }
+      out
+    }
+  }
+}
+
+fn deps_missing_scan_rec(dir: String, out: Array[String]) -> Unit with { Error, Fs } {
+  let here = package_deps_missing(dir)
+  let mut hi = 0
+  while hi < Array::length(here) {
+    Array::push(out, Array::get(here, hi))
+    hi = hi + 1
+  }
+  let names = Fs::readdir(dir)
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    if !vpkg_scan_skip_dir(name) {
+      let full = String::concat(dir, String::concat("/", name))
+      if vpkg_scan_is_directory(full) {
+        deps_missing_scan_rec(full, out)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+// find_deps_missing: (String) -> Array[String] with { Error, Fs }
+// #1145 follow-up 2: recursively scans every `index.vpkg` under `root` for
+// deps declarations missing an entry that its own imports require.
+export fn find_deps_missing(root: String) -> Array[String] with { Error, Fs } {
+  let out = array_empty()
+  deps_missing_scan_rec(root, out)
+  out
+}
+
+// check_deps_missing: (String) -> Int with { Error, Fs }
+// #1145 follow-up 2: `vibe check --deps-missing <root>` diagnostic.
+export fn check_deps_missing(root: String) -> Int with { Error, Fs } {
+  let missing = find_deps_missing(root)
+  if Array::length(missing) == 0 {
+    0
+  } else {
+    throw(String::concat("deps missing for imports (#1128/#1145): ", String::join(missing, "; ")))
   }
 }

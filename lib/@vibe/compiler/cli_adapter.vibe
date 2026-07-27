@@ -20,7 +20,7 @@ import @vibe/compiler/runtime {
 }
 
 import @vibe/compiler/loader {
-  contract_package_hashes_fs, fill_require_pins_fs_mode, find_missing_vpkg_dirs, load_or_parse_module_header_fs, publish_check_fs
+  contract_package_hashes_fs, fill_require_pins_fs_mode, find_deps_missing, find_missing_vpkg_dirs, load_or_parse_module_header_fs, publish_check_fs, write_generated_hash_fs
 }
 
 import @vibe/compiler/entry/compiler/file_compile {
@@ -381,6 +381,21 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
       Throw(msg) => emit_compile_diag(output_path, msg)
     }
   } else ()
+  // #1145 follow-up 3: `vibe hash --write <index.vpkg>` -- computes the
+  // same package content hash as VIBE_HASH above and writes the file's full
+  // text, with `generated_hash = ` rewritten to the computed pin, to the
+  // output path. input_path itself is left untouched (same read-only
+  // convention as VIBE_FILL_PINS above); the launcher copies output_path
+  // over the real target in place.
+  if Env::get("VIBE_HASH_WRITE") == "1" {
+    return handle {
+      let rewritten = write_generated_hash_fs(input_path)
+      Fs::write_file(output_path, rewritten)
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  } else ()
   // #897 (ADR-0070): `vibe check --missing-vpkg <root>` -- recursively scan
   // `input_path` (a directory) for every boundary directory still on the
   // old `index.vibei`/bare `index.vibe` spelling. Writes "ok: none missing"
@@ -392,6 +407,24 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
       let missing = find_missing_vpkg_dirs(input_path)
       if Array::length(missing) == 0 {
         Fs::write_file(output_path, "ok: no directories missing index.vpkg under \{input_path}\n")
+      } else {
+        Fs::write_file(output_path, String::concat(String::join(missing, "\n"), "\n"))
+      }
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  } else ()
+  // #1145 follow-up 2: `vibe check --deps-missing <root>` -- recursively
+  // scan `input_path` for #1128-migrated `index.vpkg` files (ones with a
+  // `name = ` directive) whose own production imports reference an
+  // external package absent from their `deps` block. Same "ok: none" /
+  // newline-joined-list shape as VIBE_MISSING_VPKG_SCAN immediately above.
+  if Env::get("VIBE_DEPS_MISSING_SCAN") == "1" {
+    return handle {
+      let missing = find_deps_missing(input_path)
+      if Array::length(missing) == 0 {
+        Fs::write_file(output_path, "ok: no missing deps declarations under \{input_path}\n")
       } else {
         Fs::write_file(output_path, String::concat(String::join(missing, "\n"), "\n"))
       }

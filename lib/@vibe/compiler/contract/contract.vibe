@@ -1539,6 +1539,75 @@ export fn extract_package_generated_hash(source: String) -> String with { Error 
   hash
 }
 
+// #1145 follow-up 3: true when `source`'s leading directive region has a
+// `generated_hash = ` line at all (only #1128-migrated files do). Plain
+// existence check, never throws -- lets a caller decide whether to touch
+// the directive without first committing to `replace_generated_hash_directive`'s
+// throw-if-absent contract.
+fn has_generated_hash_directive(source: String) -> Bool {
+  let lines = String::split(source, "\n")
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(lines) && !found {
+    if String::starts_with(String::trim(Array::get(lines, i)), "generated_hash =") {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+// #1145 follow-up 3: blanks `source`'s `generated_hash = ` directive to
+// empty when present, unchanged otherwise. `generated_hash` stores this
+// package's own content hash -- feeding a stale value into the very
+// content being hashed would make the hash depend on hash-writing history
+// instead of on the file, so `contract_package_hashes_fs` runs every
+// `.vpkg` file through this before hashing (a no-op for the common case
+// where the directive is already empty, so `vibe hash`'s output for every
+// package migrated to #1128 with an unwritten hash is unaffected).
+export fn canonicalize_for_hash(source: String) -> String with { Error } {
+  if has_generated_hash_directive(source) {
+    replace_generated_hash_directive(source, "")
+  } else {
+    source
+  }
+}
+
+// #1145 follow-up 3: rewrites the `generated_hash = ` directive line to
+// `new_value` verbatim (no `#pkg:sha1:` validation here -- callers pass
+// either "" to canonicalize before hashing, or an already-computed pin).
+// Requires exactly one such line; `scan_package_header` already rejects a
+// file with more than one, and a file that predates the #1128 migration
+// (no `generated_hash = ` line at all) is rejected rather than silently
+// inserting one -- deciding WHERE to insert a missing directive is a
+// migration decision, not this tool's job.
+export fn replace_generated_hash_directive(source: String, new_value: String) -> String with { Error } {
+  let lines = String::split(source, "\n")
+  let out = array_empty()
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if (!found) && String::starts_with(String::trim(line), "generated_hash =") {
+      found = true
+      let replacement = if String::length(new_value) == 0 {
+        "generated_hash ="
+      } else {
+        "generated_hash = \{new_value}"
+      }
+      Array::push(out, replacement)
+    } else {
+      Array::push(out, line)
+    }
+    i = i + 1
+  }
+  if !found {
+    throw("no generated_hash directive found (this tool only rewrites #1128-migrated index.vpkg files)")
+  } else ()
+  String::join(out, "\n")
+}
+
 // #1128: every external (`@scope/pkg`) name referenced by a NON-relative
 // `import` statement across `impl_sources`, that has no matching entry in
 // `deps`. A standalone checker, deliberately NOT wired into the live

@@ -905,6 +905,15 @@ enforce しない (fixtures/contract_* の最小契約テストを壊さない�
 seed がまだ新形式を理解しないため、専用の bootstrap-bump が済むまで
 この spelling のまま。
 
+`deps` 宣言と実際の `import` 文の突き合わせは `vibe check --deps-missing
+<root>` (#1145 follow-up 2) で検証できる。`compiler_gate.sh` gate 60 が
+リポジトリ全体に対してこれを実行するので、`name = ` を持つ (#1128 移行済み)
+パッケージで宣言漏れがあれば CI で検出される。`generated_hash` は
+`vibe hash --write <pkg_dir|index.vpkg>` (#1145 follow-up 3) で計算・書き
+戻しできる — 自己参照 (書き込んだ値が次の計算の入力に混ざる) を避けるため、
+ハッシュ計算は常にその index.vpkg 自身の `generated_hash` 行を空白化した
+上で行われ、再実行しても同じ値になる (idempotent)。
+
 ---
 
 *Full reference: [docs/spec/syntax.md](spec/syntax.md) / [syntax-reference.md](language-tour/syntax-reference.md) / [language-tour/](language-tour/)*
