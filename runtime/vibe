@@ -38,6 +38,7 @@
 #                                         P3 adapter + `wasmtime serve` (#537)
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
 #   vibe type-at <file.vibe> <line> <col> print the inferred type at a position
+#   vibe doc-at  <file.vibe> <line> <col> print the `///` doc comment at a position (#854)
 #   vibe binding-at <file.vibe> <line> <col> print binding occurrence spans (START END per line)
 #   vibe symbols <file.vibe>              print declaration outline (NAME KIND START END per line)
 #   vibe diagnostics <file.vibe>          print all syntax/type diagnostics
@@ -748,7 +749,7 @@ case "$cmd" in
     if grep -aq "VIBE_CHECK_ONLY" "$cli" 2>/dev/null; then
       out="$(mktemp -t vibe-check-XXXXXX)"
       trap 'rm -f "$out" "$out.diag"' EXIT
-      env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_TYPE_AT -u VIBE_BINDING_AT \
+      env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_TYPE_AT -u VIBE_DOC_AT -u VIBE_BINDING_AT \
           -u VIBE_SYMBOLS -u VIBE_NORMALIZE -u VIBE_COVERAGE -u VIBE_DEBUG \
           -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
         VIBE_CHECK_ONLY=1 \
@@ -800,6 +801,32 @@ case "$cmd" in
       "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
     if [ -s "$out" ]; then cat "$out"; fi
     ;;
+  doc-at)
+    # vibe doc-at <file.vibe> <line> <col>
+    # Print the Rust-`///`-style doc comment attached to the identifier's
+    # declaration at a 1-based (line, col). Empty output means there is no
+    # doc comment there (#854). Same single-file-scope limitation as type-at.
+    [ "$#" -ge 3 ] || die "usage: vibe doc-at <file.vibe> <line> <col>"
+    src="$1"; da_line="$2"; da_col="$3"
+    [ -f "$src" ] || die "not found: $src"
+    # Use the portable .wasm (not the AOT .cwasm) for this query: the recovering
+    # parser / type-error path trapped under the precompiled image on some hosts,
+    # and these LSP queries are latency-amortized, so prefer correctness.
+    cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
+    out="$(mktemp -t vibe-docat-XXXXXX)"
+    trap 'rm -f "$out"' EXIT
+    # Clear any inherited compile-mode envs so this query can't be diverted to
+    # the compile path (which would emit wasm bytes instead of the doc text).
+    # Don't `die` on a non-zero exit — emit whatever (possibly empty) result was
+    # written so the LSP degrades gracefully instead of the whole query failing.
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT \
+        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
+        -u VIBE_EMIT_MODULE_SOURCE \
+      VIBE_DOC_AT=1 VIBE_TYPE_LINE="$da_line" VIBE_TYPE_COL="$da_col" \
+      VIBE_IMPORT_ABI=raw \
+      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
+    if [ -s "$out" ]; then cat "$out"; fi
+    ;;
   binding-at)
     # vibe binding-at <file.vibe> <line> <col>
     # Print the source spans of every occurrence of the identifier binding under
@@ -820,7 +847,7 @@ case "$cmd" in
     # compile path (which would emit wasm bytes instead of the occurrence list).
     # Don't `die` on a non-zero exit — emit whatever (possibly empty) result was
     # written so the LSP degrades gracefully instead of the whole query failing.
-    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT \
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
         -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_BINDING_AT=1 VIBE_TYPE_LINE="$ba_line" VIBE_TYPE_COL="$ba_col" \
       VIBE_IMPORT_ABI=raw \
@@ -845,7 +872,7 @@ case "$cmd" in
     trap 'rm -f "$out" "$out.diag"' EXIT
     # Clear any inherited compile-mode envs so this query can't be diverted to the
     # compile path (which would emit wasm bytes instead of the symbol list).
-    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT \
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
         -u VIBE_BINDING_AT -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
         -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_SYMBOLS=1 \
@@ -879,7 +906,7 @@ case "$cmd" in
     # can't divert this into compiling and emitting wasm bytes as "diagnostics".
     # Don't `die` on a non-zero exit — emit whatever was written (a report, not a
     # failure) so the LSP treats empty as "no diagnostics" / falls back.
-    env -u VIBE_FS_COMPILE -u VIBE_TYPE_AT -u VIBE_NORMALIZE \
+    env -u VIBE_FS_COMPILE -u VIBE_TYPE_AT -u VIBE_DOC_AT -u VIBE_NORMALIZE \
         -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_DIAGNOSTICS=1 \
       VIBE_IMPORT_ABI=raw \
@@ -923,7 +950,7 @@ case "$cmd" in
     # VIBE_FILL_PINS / VIBE_PUBLISH_CHECK BEFORE VIBE_NORMALIZE, so a leaked
     # selector would write a hash/report as $out and the default write mode
     # would copy it OVER the user's source file.
-    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_TYPE_AT \
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_TYPE_AT -u VIBE_DOC_AT \
         -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_COVERAGE -u VIBE_DEBUG \
         -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
         -u VIBE_HASH -u VIBE_MISSING_VPKG_SCAN -u VIBE_FILL_PINS \

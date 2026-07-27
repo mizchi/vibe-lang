@@ -4,7 +4,8 @@ import @vibe/compiler/syntax {
   lex,
   lex_ok,
   Token,
-  token_to_string
+  token_to_string,
+  collect_doc_comments
 }
 
 
@@ -662,4 +663,95 @@ test "lex_single_char_input" {
     TIdent("x"),
     TEof
   ]))
+}
+
+// `#|` multi-line raw string literal (#854-adjacent syntax work).
+test "lex_multiline_string_single_line" {
+  assert(lex_match("#|hello", [
+    TString("hello"),
+    TEof
+  ]))
+}
+
+test "lex_multiline_string_two_lines" {
+  assert(lex_match("#|hello\n#|world", [
+    TString("hello\nworld"),
+    TEof
+  ]))
+}
+
+test "lex_multiline_string_indented_block" {
+  assert(lex_match("let x =\n  #|hello\n  #|world\nx", [
+    TLet,
+    TIdent("x"),
+    TEq,
+    TString("hello\nworld"),
+    TIdent("x"),
+    TEof
+  ]))
+}
+
+test "lex_multiline_string_stops_at_non_pipe_line" {
+  // A following line that is not `#|`-prefixed at all simply ends the block
+  // (not an error) -- the blank line here just terminates it.
+  assert(lex_match("#|hello\n\nx", [
+    TString("hello"),
+    TIdent("x"),
+    TEof
+  ]))
+}
+
+test "lex_multiline_string_indent_mismatch_is_error" {
+  assert(!lex_ok("  #|hello\n#|world"))
+}
+
+test "lex_multiline_string_indent_mismatch_error_message" {
+  let msg = lex_err("  #|hello\n#|world")
+  assert(msg != "")
+}
+
+// Rust-style `///` doc comments (#854). `///` is still an ordinary `//`
+// comment to the tokenizer (verified above via lex_match on plain `//`
+// lines being silently skipped) -- collect_doc_comments is the separate
+// entry point that gives it meaning.
+test "collect_doc_comments_single_line" {
+  let docs = collect_doc_comments("/// hello\nfn f() -> Int { 1 }")
+  assert(Array::length(docs) == 1)
+  let (line, text) = Array::get(docs, 0)
+  assert(line == 2)
+  assert(text == "hello")
+}
+
+test "collect_doc_comments_multi_line_joined" {
+  let docs = collect_doc_comments("/// line one\n/// line two\nfn f() -> Int { 1 }")
+  assert(Array::length(docs) == 1)
+  let (line, text) = Array::get(docs, 0)
+  assert(line == 3)
+  assert(text == "line one\nline two")
+}
+
+test "collect_doc_comments_no_leading_space_preserved" {
+  let docs = collect_doc_comments("///no space\nfn f() -> Int { 1 }")
+  let (_line, text) = Array::get(docs, 0)
+  assert(text == "no space")
+}
+
+test "collect_doc_comments_four_slashes_is_not_doc" {
+  let docs = collect_doc_comments("//// not a doc comment\nfn f() -> Int { 1 }")
+  assert(Array::length(docs) == 0)
+}
+
+test "collect_doc_comments_blank_line_breaks_attachment" {
+  let docs = collect_doc_comments("/// orphaned\n\nfn f() -> Int { 1 }")
+  assert(Array::length(docs) == 0)
+}
+
+test "collect_doc_comments_plain_comment_is_not_doc" {
+  let docs = collect_doc_comments("// plain\nfn f() -> Int { 1 }")
+  assert(Array::length(docs) == 0)
+}
+
+test "collect_doc_comments_none_present" {
+  let docs = collect_doc_comments("fn f() -> Int { 1 }")
+  assert(Array::length(docs) == 0)
 }
