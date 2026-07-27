@@ -1017,7 +1017,7 @@ if [ -z "$core_pin" ]; then
   cat "$cdir6f/install.out" >&2; exit 1
 fi
 cat > "$cdir6f/consumer.vibe" <<EOF
-require @vibe/core 0.1.0 = $core_pin
+require @vibe/core 0.2.0 = $core_pin
 
 import @vibe/core {
   sha1, encode_uleb128, read_uleb128, list_of3, list_sum, from_array, contains

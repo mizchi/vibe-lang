@@ -390,7 +390,7 @@ let arr2 = {
   ArrayBuilder::freeze(b)     // -> Array[Int]
 }
 
-// 汎用コンテナは @vibex/collections — HashMap/HashSet (open addressing) と
+// 汎用コンテナは @vibe/core — HashMap/HashSet (open addressing) と
 // SortedMap/SortedSet (AVL、keys/to_array 昇順、range(lo, hi) 両端 inclusive)。
 // 比較/ハッシュは関数を渡す explicit-dict 方式 + Int/String key 特化
 // (HashMap::new_int() / SortedSet::new_string() 等)。
