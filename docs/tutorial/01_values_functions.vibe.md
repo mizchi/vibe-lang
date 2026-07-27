@@ -21,7 +21,7 @@ let _start: () -> Unit with { Stdout } = () -> {
   let c = 'A'              // char リテラルは文字コード (Int)。'A' == 65
   stdout_write("x = \{x}\n")
   // NOTE: Double の \{expr} 補間 / to_string は現状 checker/codegen gap
-  // (別 issue で追跡)。Double::to_int で丸めて確認するのが安全な代替。
+  // (#1153 で追跡)。Double::to_int で丸めて確認するのが安全な代替。
   stdout_write("d*100 as int = \{Double::to_int(d * 100.0)}\n")
   stdout_write("b = \{b}\n")
   stdout_write("s = \{s}\n")
