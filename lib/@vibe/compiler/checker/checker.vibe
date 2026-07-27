@@ -3710,13 +3710,22 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
         // There is no general rank-2/`Region`-bound mechanism in this
         // checker (see docs/concurrency.md's dated 実装ノート) — this
         // qualified name is special-cased exactly like `resume`/`perform`/
-        // `Some` above. The scheme's `r` type parameter is instantiated to
-        // a fresh RIGID skolem (a `CtNamed` name no parsed source can ever
-        // spell — the lexer rejects `#` in identifiers) instead of an
-        // ordinary unifiable `CtVar`, so nothing outside this call can be
-        // coerced into it by accident; only a real escape reaches it, which
-        // the two checks below catch by scanning fully-zonked types for the
-        // skolem's name.
+        // `Some` above, matched by its LITERAL spelling. (Codex review, PR
+        // #1135, P1: an attempted fix that matched by the callee's
+        // structural shape instead — so a first-class alias like `let run
+        // = TaskGroup::run; run(...)` would also get this treatment — was
+        // tried and reverted: it false-matched unrelated single-argument
+        // calls elsewhere in the compiler's own source, regressing 20
+        // unit-test files with runtime traps. The alias/import-rename/
+        // higher-order-wrapper bypass this literal-name match cannot close
+        // is therefore a documented, accepted gap for this slice — see
+        // docs/concurrency.md's dated 実装ノート.) The scheme's `r` type
+        // parameter is instantiated to a fresh RIGID skolem (a `CtNamed`
+        // name no parsed source can ever spell — the lexer rejects `#` in
+        // identifiers) instead of an ordinary unifiable `CtVar`, so nothing
+        // outside this call can be coerced into it by accident; only a
+        // real escape reaches it, which the two checks below catch by
+        // scanning fully-zonked types for the skolem's name.
         match env_lookup(env, "TaskGroup::run") {
           Some(scheme) => {
             let (ti, c1, new_bounds) = instantiate(scheme, c)
@@ -3786,8 +3795,11 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
               _ => (tab_call_ty(tytab, call_off, CtUnknown), s0, c1)
             }
           },
+          // Reachable: the outer condition only matches the literal name
+          // `"TaskGroup::run"`, not that it actually resolves in `env`
+          // (e.g. the package isn't imported here at all).
           None => {
-            Array::push(errors, "unknown name: TaskGroup::run")
+            Array::push(errors, String::concat("unknown name: ", name))
             (tab_call_ty(tytab, call_off, CtUnknown), s, c)
           }
         }
