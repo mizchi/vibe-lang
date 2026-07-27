@@ -99,4 +99,26 @@ theorem Subset.antisymm {left right : Normalized}
   fun operation => ⟨fun membership => leftRight operation membership,
                      fun membership => rightLeft operation membership⟩
 
+/-
+`Subset` and `Equivalent` were each closed as their own relations (preorder,
+equivalence) by the lemmas above, but nothing connected them: substituting
+an equivalent row on either side of a `Subset` fact was not yet provable.
+This is exactly the operation a future row-subsumption proof needs when it
+normalizes/simplifies one side of a `Subset` obligation (e.g. via
+`ClosedRow.normalize_extensional` in `NormalizeCorrect.lean`) and must
+carry an existing `Subset` fact across that rewrite.
+-/
+
+/-- `Subset`'s left (required) side can be replaced by an equivalent row. -/
+theorem Subset.congr_left {left left' declared : Normalized}
+    (equiv : Equivalent left left') (subset : Subset left declared) :
+    Subset left' declared :=
+  fun operation membership => subset operation ((equiv operation).mpr membership)
+
+/-- `Subset`'s right (declared) side can be replaced by an equivalent row. -/
+theorem Subset.congr_right {required declared declared' : Normalized}
+    (equiv : Equivalent declared declared') (subset : Subset required declared) :
+    Subset required declared' :=
+  fun operation membership => (equiv operation).mp (subset operation membership)
+
 end VibeFormal.EffectRow
