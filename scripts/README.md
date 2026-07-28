@@ -14,8 +14,15 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `vibe_run.sh` — compile+run a `.vibe` (seed → runner). `vibe_run_smoke.sh`
 - `vibe_test.sh` — run `test {}` blocks. `vibe_test_smoke.sh`
 - `vibe_fmt.sh` / `vibe_normalize.sh` (+ `*_smoke.sh`) — format / normalize
-  a single file (`--check`/`--stdout`/write). `vibe_fmt_apply.sh` (`pkf run
-  fmt`) is the tree-wide write-mode wrapper over `vibe_fmt.sh`.
+  a single file (`--check`/`--stdout`/write); `ensure_vibe_fmt_entry.sh`
+  compiles its wasm entry (`lib/@vibe/cli/fmt_entry.vibe`). `vibe_fmt_apply.sh`
+  (`pkf run fmt`) is the tree-wide write-mode counterpart, and
+  `check_vibe_fmt.sh` the read-only one -- both run through
+  `run_vibe_fmt_batch.sh` + `ensure_vibe_fmt_batch.sh`, which drive the
+  batched/sharded CLI entry `lib/@vibe/cli/fmt.vibe` (one wasm process for
+  the whole file list, sharded across cores via `Process::sh_capture`
+  background+wait) instead of spawning one process per file -- see that
+  file's header comment for why.
 - `vibe_cli.sh` (+ smoke) — drive the selfhost CLI wasm
 - `vibe_pkg.sh` — package publish/install/add/yank/update (hash-verified,
   transparency-log backed #805; `vibe pkg` delegates here). `vibe_core_install.sh`

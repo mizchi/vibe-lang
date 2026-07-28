@@ -1,0 +1,285 @@
+//# `vibe fmt` batch entry: format many files in one process, optionally
+//# sharded across a handful of parallel subprocesses.
+//#
+//# Rationale (see lib/@vibe/compiler/fmt_bench.vibe / docs/perf notes): the
+//# per-file FIXED cost of scripts/vibe_fmt.sh -- node startup + wasm
+//# instantiate + host-runner protocol, one full process per file -- is
+//# ~200-250ms regardless of file size, while format_script() itself takes
+//# low single-digit ms for a typical file (scales ~linearly with source
+//# size). Looping over ~760 files by spawning one process each therefore
+//# spends >95% of wall time on fixed overhead, not formatting. This entry
+//# amortizes that cost by reading a whole file-list manifest and formatting
+//# every file in ONE wasm instantiation; `jobs > 1` additionally shards the
+//# manifest across a few backgrounded re-invocations of this SAME wasm
+//# module (via the Process effect's `sh_capture`, #865) to use more than
+//# one core -- vibe/wasm has no in-language thread/worker primitive, so
+//# OS-level subprocess fan-out is the only real parallelism available.
+//#
+//# Separately, the linear-memory backend's bump allocator never reclaims
+//# WITHIN a process, so cumulative allocation across many format_script()
+//# calls in one instance only grows -- confirmed by crashing (heap
+//# overflow past ~3GB linear memory) on a few hundred files in a single
+//# process. `main` therefore ALWAYS shards once the manifest exceeds a
+//# safety cap, regardless of `jobs`: `jobs` only controls how much of that
+//# sharding runs concurrently, it never disables the safety cap itself, so
+//# `jobs=1` on a huge manifest is slower but still correct, not a crash.
+//#
+//# argv[0] = mode ("check" | "write")
+//# argv[1] = manifest path: a file with one source path per line
+//# argv[2] = report path: written with one "STATUS\tpath" line per input
+//#           file (STATUS: OK = already a fixpoint / write no-op, DIFF =
+//#           check found drift / write rewrote it, ERROR = formatter or a
+//#           shard subprocess failed on this file -- message after a 2nd
+//#           tab). Order matches the manifest.
+//# argv[3] = jobs (optional; string int, default "1" = minimum
+//#           parallelism -- the safety cap above may still force sharding)
+//#
+//# Driven by scripts/vibe_fmt_apply.sh / scripts/check_vibe_fmt.sh, which
+//# own the git-ls-files listing and the allowlist policy; this entry only
+//# knows how to format a manifest and write a report.
+
+import ../compiler/fmt {
+  format_script
+}
+
+import ../process {
+  sh_capture
+}
+
+//# String / manifest helpers
+
+fn empty_strings() -> Array[String] {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+
+fn split_lines(text: String) -> Array[String] {
+  let len = String::length(text)
+  let mut lines = empty_strings()
+  let mut start = 0
+  let mut idx = 0
+  while idx < len {
+    if String::char_code_at(text, idx) == '\n' {
+      Array::push(lines, text[start: idx])
+      start = idx + 1
+    }
+    idx = idx + 1
+  }
+  if start < len {
+    Array::push(lines, text[start: len])
+  }
+  lines
+}
+
+fn join_lines(lines: Array[String]) -> String {
+  let n = Array::length(lines)
+  let mut acc = ""
+  let mut i = 0
+  while i < n {
+    let line = Array::get(lines, i)
+    acc = if i == 0 {
+      line
+    } else {
+      "\{acc}\n\{line}"
+    }
+    i = i + 1
+  }
+  acc
+}
+
+fn read_manifest(path: String) -> Array[String] with { Fs } {
+  let raw = split_lines(Fs::read_file(path))
+  let n = Array::length(raw)
+  let mut out = empty_strings()
+  let mut i = 0
+  while i < n {
+    let line = Array::get(raw, i)
+    if String::length(line) > 0 {
+      Array::push(out, line)
+    }
+    i = i + 1
+  }
+  out
+}
+
+//# Sequential formatting (always the actual work -- shards just call this
+//# recursively on a slice of the manifest).
+
+fn format_one_line(mode: String, rel_path: String) -> String with { Fs } {
+  let source = Fs::read_file(rel_path)
+  let formatted = format_script(source)
+  let is_fixpoint = formatted == source
+  if mode == "write" && !is_fixpoint {
+    Fs::write_file(rel_path, formatted)
+  }
+  let status = if is_fixpoint {
+    "OK"
+  } else {
+    "DIFF"
+  }
+  "\{status}\t\{rel_path}"
+}
+
+fn format_sequential(mode: String, files: Array[String]) -> Array[String] with { Fs } {
+  let n = Array::length(files)
+  let mut report = empty_strings()
+  let mut i = 0
+  while i < n {
+    Array::push(report, format_one_line(mode, Array::get(files, i)))
+    i = i + 1
+  }
+  report
+}
+
+//# Sharded formatting: write one manifest per shard (round-robin over the
+//# file list, so shard sizes are balanced even though real file sizes vary
+//# a lot), background-and-wait a re-invocation of this module per shard,
+//# then stitch the shard reports back together in manifest order.
+
+fn shard_dir() -> String {
+  "_build/vibe_fmt_batch"
+}
+
+fn shard_manifest_path(shard: Int) -> String {
+  "\{shard_dir()}/shard_\{Int::to_string(shard)}.manifest.txt"
+}
+
+fn shard_report_path(shard: Int) -> String {
+  "\{shard_dir()}/shard_\{Int::to_string(shard)}.report.txt"
+}
+
+fn shard_files(files: Array[String], jobs: Int, shard: Int) -> Array[String] {
+  let n = Array::length(files)
+  let mut out = empty_strings()
+  let mut i = 0
+  while i < n {
+    if i % jobs == shard {
+      Array::push(out, Array::get(files, i))
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn write_shard_manifests(files: Array[String], jobs: Int) -> Unit with { Fs } {
+  let mut shard = 0
+  while shard < jobs {
+    Fs::write_file(shard_manifest_path(shard), join_lines(shard_files(files, jobs, shard)))
+    shard = shard + 1
+  }
+}
+
+fn shard_command(mode: String, shard: Int) -> String {
+  "bash scripts/run_wasm_vibe_host_runner.sh --invoke main _build/vibe_fmt/fmt_batch.wasm \{mode} \{shard_manifest_path(shard)} \{shard_report_path(shard)} 1"
+}
+
+fn build_background_command(mode: String, jobs: Int) -> String {
+  let mut cmd = ""
+  let mut shard = 0
+  while shard < jobs {
+    let piece = "\{shard_command(mode, shard)} &"
+    cmd = if shard == 0 {
+      piece
+    } else {
+      "\{cmd} \{piece}"
+    }
+    shard = shard + 1
+  }
+  "\{cmd} wait"
+}
+
+// A crashed shard leaves its report short (or missing entirely) -- surface
+// every file it was responsible for as ERROR rather than silently dropping
+// lines from the final report (a truncated report file must never read as
+// "these files are fine").
+fn read_shard_report(mode: String, shard: Int, expected: Array[String]) -> Array[String] with { Fs } {
+  let expected_n = Array::length(expected)
+  if !Fs::exists(shard_report_path(shard)) {
+    fallback_error_report(expected, "shard \{Int::to_string(shard)} produced no report (crashed before writing output)")
+  } else {
+    let lines = split_lines(Fs::read_file(shard_report_path(shard)))
+    let filtered_n = Array::length(lines)
+    if filtered_n != expected_n {
+      fallback_error_report(expected, "shard \{Int::to_string(shard)} report has \{Int::to_string(filtered_n)} line(s), expected \{Int::to_string(expected_n)} (crashed partway through)")
+    } else {
+      lines
+    }
+  }
+}
+
+fn fallback_error_report(files: Array[String], message: String) -> Array[String] {
+  let n = Array::length(files)
+  let mut out = empty_strings()
+  let mut i = 0
+  while i < n {
+    Array::push(out, "ERROR\t\{Array::get(files, i)}\t\{message}")
+    i = i + 1
+  }
+  out
+}
+
+fn format_sharded(mode: String, files: Array[String], jobs: Int) -> Array[String] with { Fs, Process } {
+  write_shard_manifests(files, jobs)
+  let _ = sh_capture(build_background_command(mode, jobs))
+  let mut report = empty_strings()
+  let mut shard = 0
+  while shard < jobs {
+    let expected = shard_files(files, jobs, shard)
+    let shard_report = read_shard_report(mode, shard, expected)
+    let m = Array::length(shard_report)
+    let mut i = 0
+    while i < m {
+      Array::push(report, Array::get(shard_report, i))
+      i = i + 1
+    }
+    shard = shard + 1
+  }
+  report
+}
+
+export fn main() -> Int with { Fs, Env, Process } {
+  let mode = Env::args_get(0)
+  let manifest_path = Env::args_get(1)
+  let report_path = Env::args_get(2)
+  let jobs_arg = if Env::args_len() > 3 {
+    Env::args_get(3)
+  } else {
+    "1"
+  }
+  let requested_jobs = match Int::parse(jobs_arg) {
+    Some(n) => if n < 1 {
+      1
+    } else {
+      n
+    },
+    None => 1
+  }
+  let files = read_manifest(manifest_path)
+  let n = Array::length(files)
+  // The linear-memory backend's bump allocator never reclaims within a
+  // process, so cumulative allocation across many format_script() calls in
+  // one wasm instance only grows -- confirmed by crashing (heap pointer
+  // overflow past ~3GB linear memory) on ~300+ files in a single process,
+  // including this repo's largest generated file
+  // (lib/@vibe/compiler/cli_adapter_bundle.vibe, ~12MB source). A safety
+  // chunk cap, independent of the requested `jobs` (parallelism width),
+  // keeps every single wasm instance's workload bounded regardless of how
+  // few jobs were requested (VIBE_FMT_JOBS=1 must still be CORRECT, just
+  // slower) -- min_shards below forces sharding even at jobs=1 once the
+  // manifest is large enough that a single process would be unsafe.
+  let safety_chunk_cap = 60
+  let min_shards = (n + safety_chunk_cap - 1) / safety_chunk_cap
+  let jobs = if requested_jobs > min_shards {
+    requested_jobs
+  } else {
+    min_shards
+  }
+  let report = if jobs <= 1 || n <= safety_chunk_cap {
+    format_sequential(mode, files)
+  } else {
+    format_sharded(mode, files, jobs)
+  }
+  Fs::write_file(report_path, join_lines(report))
+  0
+}
