@@ -563,13 +563,77 @@ installed toolchain's own runner is the Rust `vibewt`, so it is scoped to a
 dev checkout of this repo — see the "Shared-everything migration note" below
 and #1143 for the broader runtime-portability question this leaves open.
 Discovery still pays one `vibe` subprocess launch per file
-(`VIBE_LIST_DEPS`), unmeasured against a project the size of the compiler's
-own manifest; worker-count tuning against peak RSS is still open; and the
-persistent-cache write itself is still a direct `Fs::write_file`; `--jobs`
-does not add a temp-file+rename step, so two concurrent `vibe build --jobs`
-invocations racing on the same fingerprint is the same pre-existing hazard
-the Cache publication section above already flags for the serial path, not
-a new one introduced here.
+(`VIBE_LIST_DEPS`); the persistent-cache write itself is still a direct
+`Fs::write_file`; `--jobs` does not add a temp-file+rename step, so two
+concurrent `vibe build --jobs` invocations racing on the same fingerprint is
+the same pre-existing hazard the Cache publication section above already
+flags for the serial path, not a new one introduced here.
+
+**Measured against the compiler's own manifest (2026-07-28, #906): `--jobs`
+is currently a net regression, not a speedup, at this scale.** Running
+`scripts/jobs_kpi.sh` with `lib/@vibe/compiler/cli_support.vibe` (the real
+`stage2`-self-compile entry, ~209 transitively-discovered modules) as input,
+on a 4-core sandbox:
+
+| jobs | mode | wall_ms | heap_ptr_bytes |
+| --- | --- | --- | --- |
+| 1 (serial, pre-warm skipped) | cold | 5167 | 1,096,576,476 |
+| 1 (serial, pre-warm skipped) | warm | 2998 | 575,388,476 |
+| 2 | cold | 21072 | 854,972,716 |
+| 2 | warm | 18004 | 575,476,308 |
+| 4 | cold | 21601 | 854,972,716 |
+| 4 | warm | 18634 | 575,476,308 |
+
+(Correction, Codex review on PR #1169: the first pass of this table was
+measured before fixing a real bug in `scripts/jobs_kpi.sh` itself — the
+pre-warm driver invocation didn't set `VIBE_BUILD_CACHE_DIR`, so
+`publishCheckedOutcomes` wrote every checked module's environment to the
+*ambient default* persistent-cache path instead of the isolated `$CACHE_DIR`
+the measured compile actually reads from, silently discarding 100% of the
+pre-warm's cache benefit rather than just the `diagnosed` share. Fixed by
+passing the same `VIBE_BUILD_CACHE_DIR="$CACHE_DIR"` to both the driver and
+the final compile step. The table above is the corrected, re-measured
+result.)
+
+`--jobs 2` and `--jobs 4` both still cost ~4x the plain serial baseline in
+wall time, and going from 2 to 4 workers buys nothing (21601ms vs 21072ms
+cold) — the extra time does not scale with worker count, which rules out
+per-worker check cost as the driver and points at a fixed,
+worker-count-independent cost instead. Root cause, confirmed by timing
+`scripts/parallel_frontend_warm.mjs` in isolation: `discoverProject` walks
+the import DAG with a **strictly serial** `while (queue.length > 0) { ...
+await listDeps(...) }` BFS loop — one `vibe` subprocess spawn (bash + node +
+wasmtime startup) per file, fully sequential, before any parallel checking
+starts at all. At ~209 files and ~80ms/spawn this alone accounts for the
+observed ~13-17s of overhead over the serial baseline, regardless of `jobs`
+N — discovery is not parallelized today even though the checking phase that
+follows it is.
+
+With the cache-dir bug fixed, the pre-warm's benefit now *is* visible in
+`heap_ptr_bytes`: the final compile's own bump-allocator high-water drops
+~22% (1,096,576,476 → 854,972,716 bytes) at `jobs=2/4` versus `jobs=1`,
+confirming published environments really do reach and get reused by the
+measured compile now. It just isn't enough to close a ~13-17s
+discovery-loop tax that dwarfs the heap/redundant-work savings at this
+project size. (The same run's summary line —
+`{"modules":209,"checked":34,"diagnosed":175,"warmed":34}` — still shows
+175/209 modules, ~84%, come back `diagnosed` rather than `checked` when
+checked standalone in a job-dir sandbox outside the full serial walk's
+context, so there is further headroom beyond the 22% already realized once
+that rate improves.) Both the serial discovery loop and the high
+`diagnosed` rate are pre-existing gaps in the Phase 2 driver, not
+regressions from this measurement; they were flagged as open ("unmeasured
+against a project the size of the compiler's own manifest") since Phase 2
+landed and are now measured.
+
+**Decision (per the Completion gates governance below): the default worker
+count is NOT raised.** `--jobs N > 1` remains strictly opt-in. Raising it
+would require first (a) parallelizing or batching the discovery loop itself
+(the dominant cost, and currently `jobs`-independent), and (b) understanding
+why most of the compiler's own modules come back `diagnosed` rather than
+`checked` under the job-dir sandbox, so the parallel checking work actually
+warms the cache instead of being discarded — both out of scope for this
+measurement pass and tracked as a follow-up rather than attempted here.
 
 ### Phase 3: immutable whole-program plan
 
@@ -595,7 +659,11 @@ a new one introduced here.
   raising the default worker count (`pkf run jobs-kpi` /
   `scripts/jobs_kpi.sh`, added #906 -- this reports the numbers, it does not
   itself decide the default worker count should change; that's still a
-  separate, deliberate decision once the numbers exist);
+  separate, deliberate decision once the numbers exist). **Measured
+  2026-07-28 against the compiler's own ~209-module manifest: `--jobs 2/4`
+  cost ~4x the serial baseline, dominated by a serial per-file discovery
+  loop — see the measured table in Phase 2 above. Decision: default worker
+  count stays at 1 until discovery is parallelized/batched.**;
 - `cd formal && lake build --wfail` remains green without `sorry`.
 
 ## Shared-everything migration note (2026-07-27)
