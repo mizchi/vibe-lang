@@ -4,7 +4,7 @@
 # https://webassembly.org/features/ is a rendered view of a JSON data file
 # maintained in the WebAssembly/website repo (not the HTML page itself) —
 # fetch that master data directly so docs/wasm/feature-levels.md and
-# scripts/wasm_feature_levels.py work from the real source, not a scrape.
+# scripts/wasm_feature_levels.vibex work from the real source, not a scrape.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -28,7 +28,7 @@ vibe には wasm proposal への依存が 2 系統ある:
 で、エンジンごとの対応バージョン/flag要否がここに構造化されている。
 
 - 取得: `bash scripts/wasm_feature_matrix_fetch.sh` → `docs/wasm/feature-matrix.json` を上書き取得
-- 分類/検証: `python3 scripts/wasm_feature_levels.py`
+- 分類/検証: `bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex`
 
 vendored snapshot (`docs/wasm/feature-matrix.json`) を repo にコミットして
 おき、fetch は明示的に実行したときだけ更新する（gate をネットワーク依存に
@@ -36,7 +36,7 @@ vendored snapshot (`docs/wasm/feature-matrix.json`) を repo にコミットし�
 
 ## Build level の定義
 
-`scripts/wasm_feature_levels.py` の `ENGINE_SETS`:
+`scripts/wasm_feature_levels.vibex` の `engine_sets()`:
 
 | level | engines | 意図 |
 |---|---|---|
@@ -53,7 +53,7 @@ compiler-host 水準は engine set を使わず、`Wasmtime` 単独行を単に�
 
 ## 現状: vibe codegen が実際に使っている proposal
 
-`scripts/wasm_feature_levels.py` の `USED_BY_CODEGEN` に手動でキュレーション
+`scripts/wasm_feature_levels.vibex` の `used_by_codegen()` に手動でキュレーション
 （コード grep による証拠ベース、**wasm バイナリの opcode 走査による検証では
 ない** — 下記「未実装のスコープ」参照）:
 
@@ -64,7 +64,7 @@ compiler-host 水準は engine set を使わず、`Wasmtime` 単独行を単に�
 | `simd` | linear + gc backend: v128 opcode (`codegen/wasm_emit/simd.vibe`) | `simd_skip_ws` 等、特定 builtin 経由でのみ |
 
 2026-07-27 時点のスナップショットでは、この3つはいずれも `v8` /
-`web-baseline` 両水準で **safe**（`python3 scripts/wasm_feature_levels.py`
+`web-baseline` 両水準で **safe**（`bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex`
 の出力参照）。tail-call proposal (`return_call`) は compiler-host 側
 (vibewt) のみが有効化しており、**codegen は self-tail-call を wasm
 `return_call` opcode ではなく AST レベルの while-loop 書き換えで実装して
@@ -75,18 +75,18 @@ tail-call proposal 依存は現状ゼロ。
 
 ```bash
 # 人間向けレポート
-python3 scripts/wasm_feature_levels.py
+bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex
 
 # 機械可読
-python3 scripts/wasm_feature_levels.py --json
+bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex -- --json
 
 # docs/wasm/feature-levels.expected.json との diff をチェック (nonzero exit = drift)
-python3 scripts/wasm_feature_levels.py --check
+bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex -- --check
 
 # マスターデータ更新後、意図した変更なら snapshot を更新
 bash scripts/wasm_feature_matrix_fetch.sh
-python3 scripts/wasm_feature_levels.py --check   # 差分を確認してから
-python3 scripts/wasm_feature_levels.py --update-expected
+bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex -- --check   # 差分を確認してから
+bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex -- --update-expected
 ```
 
 `--check` は現時点で release gate (`pkf run release-check` /
