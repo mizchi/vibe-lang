@@ -124,10 +124,10 @@ fn pctx_new() -> PCtx {
   }
 }
 
-// Perf: this snapshot runs in every branch/match arm of the perceus plan --
-// the push-per-element version was the single largest __rt_arr_push caller in
-// a full-closure compile profile (253ms of 439ms). Array::slice is one
-// allocation + one memory.copy and yields an equally independent buffer.
+/// Perf: this snapshot runs in every branch/match arm of the perceus plan --
+/// the push-per-element version was the single largest __rt_arr_push caller in
+/// a full-closure compile profile (253ms of 439ms). Array::slice is one
+/// allocation + one memory.copy and yields an equally independent buffer.
 fn copy_ints(src: Array[Int]) -> Array[Int] {
   Array::slice(src, 0, Array::length(src))
 }
@@ -259,76 +259,78 @@ fn array_contains_str_pctx(arr: Array[String], s: String) -> Bool {
   found
 }
 
-// #707: marker prefix (control char, cannot appear in a vibe identifier) used
-// to smuggle the borrow-returning-function-name set through PCtx.pctx_names
-// (a write-only "declared binding names" log that nothing else reads --
-// see build_perceus_plan_with_params). A genuine dedicated PCtx field for
-// this was tried and hit an unexplained "memory access out of bounds" reading
-// it back specifically when the whole compiler self-compiles under RC
-// (reproduces with the field's content/position/construction all varied;
-// substituting pctx_names for the same read in the same call chain does NOT
-// crash) -- see #707 for the investigation. Piggybacking on the
-// known-safe field sidesteps it.
+/// #707: marker prefix (control char, cannot appear in a vibe identifier) used
+/// to smuggle the borrow-returning-function-name set through PCtx.pctx_names
+/// (a write-only "declared binding names" log that nothing else reads --
+/// see build_perceus_plan_with_params). A genuine dedicated PCtx field for
+/// this was tried and hit an unexplained "memory access out of bounds" reading
+/// it back specifically when the whole compiler self-compiles under RC
+/// (reproduces with the field's content/position/construction all varied;
+/// substituting pctx_names for the same read in the same call chain does NOT
+/// crash) -- see #707 for the investigation. Piggybacking on the
+/// known-safe field sidesteps it.
 let borrow_ret_marker = "BR:"
 
-// #707: is `fname` a call whose return value is a BORROWED VIEW sharing a
-// call argument's refcount, rather than a fresh owned reference -- either one
-// of the 3 builtins that read an element in place, or a user function whose
-// own body is (transitively) nothing but a tail-call to one of those (see
-// compute_borrow_returning_names). Bindings holding such a value must never
-// be dup/drop'd themselves: the compiler-self-hosted-under-RC crash (#707)
-// was exactly this -- `let peek = (toks, pos) -> Array::get(toks, pos)` was
-// NOT recognized as borrow-returning (only a literal `Array::get` callee
-// was), so `let __m_scrut = peek(toks, pos) in match __m_scrut { ... }`
-// (the match-scrutinee-lift's desugaring, see normalize/index.vibe
-// lift_match_scrutinees) planned a drop for `__m_scrut` as if it independently
-// owned a reference -- double-freeing the array element peek merely borrowed.
+/// #707: is `fname` a call whose return value is a BORROWED VIEW sharing a
+/// call argument's refcount, rather than a fresh owned reference -- either one
+/// of the 3 builtins that read an element in place, or a user function whose
+/// own body is (transitively) nothing but a tail-call to one of those (see
+/// compute_borrow_returning_names). Bindings holding such a value must never
+/// be dup/drop'd themselves: the compiler-self-hosted-under-RC crash (#707)
+/// was exactly this -- `let peek = (toks, pos) -> Array::get(toks, pos)` was
+/// NOT recognized as borrow-returning (only a literal `Array::get` callee
+/// was), so `let __m_scrut = peek(toks, pos) in match __m_scrut { ... }`
+/// (the match-scrutinee-lift's desugaring, see normalize/index.vibe
+/// lift_match_scrutinees) planned a drop for `__m_scrut` as if it independently
+/// owned a reference -- double-freeing the array element peek merely borrowed.
 fn is_borrow_ret_fname(ctx: PCtx, fname: String) -> Bool {
   fname == "Array::get" || fname == "Map::get" || fname == "__index" || fname == "__rec_field" || array_contains_str_pctx(ctx.pctx_names, String::concat(borrow_ret_marker, fname))
 }
 
-// #707: fixed-point closure over top-level function definitions, starting
-// from the 3 borrow-returning builtins: a function whose entire body is
-// (after stripping let/seq/assign wrappers) a single tail-call to an
-// already-known borrow-returning name is itself borrow-returning. Handles
-// arbitrarily deep wrapper chains (`peek` -> `Array::get`,
-// `peek2` -> `peek` -> `Array::get`, ...). Computed once over the whole
-// merged program (see linked_compile.vibe) and threaded into every
-// function's Perceus plan via build_perceus_plan_with_params.
-// #707: does every value `e` can tail-produce come from a known
-// borrow-returning name, or a "safe to never drop" fallback? Recurses through
-// let/seq/assign wrappers and BOTH sides of if/match (a bare tail call alone
-// missed `peek`'s actual shape: `if pos < len { Array::get(tokens, pos) }
-// else TEof` -- a bounds-check guard around the real access, with a bare
-// nullary-ctor-ish identifier as the out-of-range fallback). A bare EIdent
-// tail (e.g. a sentinel like TEof) is accepted as safe even though it isn't
-// proven borrow-returning: marking its binding "never dup/drop" can at worst
-// leak that one value (the existing runtime dup/drop guards already no-op on
-// non-heap-tagged values), never corrupt -- the failure mode this whole fix
-// targets is a double-free from treating a genuinely-borrowed value as owned,
-// not a leak from treating a small/rare owned value as borrowed.
-// Iterative (NOT self-recursive) worklist walk over child expressions, rather
-// than a `let rec` recursive-descent function. Also: the `ECall` case matches
-// its callee via a NESTED constructor pattern one step at a time (`ECall(e,
-// _, _)` then a separate `match e { EIdent(callee, _) => ... }`), never
-// `ECall(EIdent(callee, _), _, _)` in one pattern. Both of these are
-// load-bearing workarounds, not style: a `let rec` self-recursive version of
-// this walk, AND a single-arm version using the nested `ECall(EIdent(...),
-// _, _)` pattern, each independently reproduce a "memory access out of
-// bounds" trap (reproducible under bump too -- not RC-specific) that is only
-// exposed when this function runs over a derive(Ord)-generated `T::compare`
-// body (a chain of `EIf(cmp, EInt(-1/1), ...)` with no further wrapper/call
-// -- e.g. `struct P { x: Int; y: Int } derive(Ord)`). An equivalent shape
-// recursing into an `Array::get` call / `EIdent` sentinel branch (`peek`'s
-// actual body) does not crash either broken variant, and the crash persists
-// even when the offending match arm is never reached at runtime for the
-// crashing input -- so this is a codegen bug in this compiler triggered by
-// those two source *shapes*, not a logic bug in this function's checks.
-// True root cause not isolated; swap either workaround for the "more natural"
-// form only after confirming compute_borrow_returning_names_test.vibe (or an
-// equivalent derive(Ord) regression) still passes.
+/// #707: fixed-point closure over top-level function definitions, starting
+/// from the 3 borrow-returning builtins: a function whose entire body is
+/// (after stripping let/seq/assign wrappers) a single tail-call to an
+/// already-known borrow-returning name is itself borrow-returning. Handles
+/// arbitrarily deep wrapper chains (`peek` -> `Array::get`,
+/// `peek2` -> `peek` -> `Array::get`, ...). Computed once over the whole
+/// merged program (see linked_compile.vibe) and threaded into every
+/// function's Perceus plan via build_perceus_plan_with_params.
+/// #707: does every value `e` can tail-produce come from a known
+/// borrow-returning name, or a "safe to never drop" fallback? Recurses through
+/// let/seq/assign wrappers and BOTH sides of if/match (a bare tail call alone
+/// missed `peek`'s actual shape: `if pos < len { Array::get(tokens, pos) }
+/// else TEof` -- a bounds-check guard around the real access, with a bare
+/// nullary-ctor-ish identifier as the out-of-range fallback). A bare EIdent
+/// tail (e.g. a sentinel like TEof) is accepted as safe even though it isn't
+/// proven borrow-returning: marking its binding "never dup/drop" can at worst
+/// leak that one value (the existing runtime dup/drop guards already no-op on
+/// non-heap-tagged values), never corrupt -- the failure mode this whole fix
+/// targets is a double-free from treating a genuinely-borrowed value as owned,
+/// not a leak from treating a small/rare owned value as borrowed.
+/// Iterative (NOT self-recursive) worklist walk over child expressions, rather
+/// than a `let rec` recursive-descent function. Also: the `ECall` case matches
+/// its callee via a NESTED constructor pattern one step at a time (`ECall(e,
+/// _, _)` then a separate `match e { EIdent(callee, _) => ... }`), never
+/// `ECall(EIdent(callee, _), _, _)` in one pattern. Both of these are
+/// load-bearing workarounds, not style: a `let rec` self-recursive version of
+/// this walk, AND a single-arm version using the nested `ECall(EIdent(...),
+/// _, _)` pattern, each independently reproduce a "memory access out of
+/// bounds" trap (reproducible under bump too -- not RC-specific) that is only
+/// exposed when this function runs over a derive(Ord)-generated `T::compare`
+/// body (a chain of `EIf(cmp, EInt(-1/1), ...)` with no further wrapper/call
+/// -- e.g. `struct P { x: Int; y: Int } derive(Ord)`). An equivalent shape
+/// recursing into an `Array::get` call / `EIdent` sentinel branch (`peek`'s
+/// actual body) does not crash either broken variant, and the crash persists
+/// even when the offending match arm is never reached at runtime for the
+/// crashing input -- so this is a codegen bug in this compiler triggered by
+/// those two source *shapes*, not a logic bug in this function's checks.
+/// True root cause not isolated; swap either workaround for the "more natural"
+/// form only after confirming compute_borrow_returning_names_test.vibe (or an
+/// equivalent derive(Ord) regression) still passes.
 fn tail_is_borrow_ret_safe(known: Array[String], e0: Expr) -> Bool {
-  let worklist = [e0]
+  let worklist = [
+    e0
+  ]
   let mut all_safe = true
   let mut i = 0
   while i < Array::length(worklist) {
@@ -415,8 +417,8 @@ fn tail_is_borrow_ret_safe(known: Array[String], e0: Expr) -> Bool {
   all_safe
 }
 
-// Strip let/seq/assign wrappers, same as tail_is_borrow_ret_safe, to find the
-// expression whose SHAPE decides eligibility at the top level.
+/// Strip let/seq/assign wrappers, same as tail_is_borrow_ret_safe, to find the
+/// expression whose SHAPE decides eligibility at the top level.
 fn strip_wrappers_for_borrow_ret(e: Expr) -> Expr {
   match e {
     ELet(_, _, b, _) => strip_wrappers_for_borrow_ret(b),
@@ -431,7 +433,10 @@ fn strip_wrappers_for_borrow_ret(e: Expr) -> Expr {
 
 export fn compute_borrow_returning_names(stmts: Array[Stmt]) -> Array[String] {
   let known: Array[String] = [
-    "Array::get", "Map::get", "__index", "__rec_field"
+    "Array::get",
+    "Map::get",
+    "__index",
+    "__rec_field"
   ]
   let mut changed = true
   while changed {
@@ -479,8 +484,8 @@ export fn compute_borrow_returning_names(stmts: Array[Stmt]) -> Array[String] {
   known
 }
 
-// A top-level function's declared return type, from its `let f: (T1,...) ->
-// R = ...` signature -- `None` when untyped (no signature to consult).
+/// A top-level function's declared return type, from its `let f: (T1,...) ->
+/// R = ...` signature -- `None` when untyped (no signature to consult).
 fn fn_sig_return_type(ty: Option[TypeExpr]) -> Option[TypeExpr] {
   match ty {
     Some(t) =>
@@ -492,37 +497,37 @@ fn fn_sig_return_type(ty: Option[TypeExpr]) -> Option[TypeExpr] {
   }
 }
 
-// #710 out-param crash: `let n = f(...)` for a user function `f` whose body
-// is not one of the 3 hardcoded borrow-returning builtins falls through to
-// `heap_binding_names`'s default -- "any non-borrow-ret call result is heap"
-// (compile_expr_tail.vibe's ELet ECall branch; see that struct field's own
-// doc comment, which already promises "we never touch a non-heap (e.g.
-// Int-returning call) binding"). When `f` actually returns a scalar (Int/
-// Bool/Unit) -- e.g. `build_import_plan(...) -> Int` -- the binding is a
-// plain integer, not a tagged heap pointer. If that binding is later
-// ALIASED more than once (`let a = n; let b = n`), the Perceus plan schedules
-// a PaAliasDup for the 2nd+ alias, and compile_expr_tail.vibe's `is_eident`
-// branch used to call the unguarded `emit_rc_dup_local` on it: untag (AND -2)
-// then read/write 4 bytes before the "pointer". For a small scalar like 0
-// that computes a near-null address -- `RuntimeError: memory access out of
-// bounds`, not a leak (component_codegen_test.vibe's "component async: sync
-// lift" hit this via `import_func_count` aliased into run_core_func_idx/
-// run_type_idx/run_func_idx). That call site now uses the runtime-tag-checked
-// `emit_rc_dup_guarded` instead (a misclassified scalar is a silent no-op
-// there rather than a wild write) -- this was the one remaining unguarded RC
-// increment anywhere in codegen, so it is now fixed on general principle even
-// though it was empirically NOT the cause of the *other* still-open #709
-// self-hosting crash (a free-list node with corrupted size/next fields,
-// surfacing later inside `fn_type_param_types`'s `vibe_rc_alloc`; confirmed via a
-// differential rebuild that the crash persists byte-for-byte unchanged with
-// this fix in place). Names collected here still matter for perf/precision
-// (avoiding unnecessary heap_binding_names churn) and let the ELet ECall
-// branch skip `heap_binding_names` for a call whose declared return type is
-// provably scalar, matching the exemption the field's own doc comment already
-// describes. Untyped functions are conservatively left out (stay in the
-// existing heap over-approximation) since there is no signature to consult --
-// no longer a correctness cliff-edge now that the alias-dup site is guarded,
-// only a missed optimization.
+/// #710 out-param crash: `let n = f(...)` for a user function `f` whose body
+/// is not one of the 3 hardcoded borrow-returning builtins falls through to
+/// `heap_binding_names`'s default -- "any non-borrow-ret call result is heap"
+/// (compile_expr_tail.vibe's ELet ECall branch; see that struct field's own
+/// doc comment, which already promises "we never touch a non-heap (e.g.
+/// Int-returning call) binding"). When `f` actually returns a scalar (Int/
+/// Bool/Unit) -- e.g. `build_import_plan(...) -> Int` -- the binding is a
+/// plain integer, not a tagged heap pointer. If that binding is later
+/// ALIASED more than once (`let a = n; let b = n`), the Perceus plan schedules
+/// a PaAliasDup for the 2nd+ alias, and compile_expr_tail.vibe's `is_eident`
+/// branch used to call the unguarded `emit_rc_dup_local` on it: untag (AND -2)
+/// then read/write 4 bytes before the "pointer". For a small scalar like 0
+/// that computes a near-null address -- `RuntimeError: memory access out of
+/// bounds`, not a leak (component_codegen_test.vibe's "component async: sync
+/// lift" hit this via `import_func_count` aliased into run_core_func_idx/
+/// run_type_idx/run_func_idx). That call site now uses the runtime-tag-checked
+/// `emit_rc_dup_guarded` instead (a misclassified scalar is a silent no-op
+/// there rather than a wild write) -- this was the one remaining unguarded RC
+/// increment anywhere in codegen, so it is now fixed on general principle even
+/// though it was empirically NOT the cause of the *other* still-open #709
+/// self-hosting crash (a free-list node with corrupted size/next fields,
+/// surfacing later inside `fn_type_param_types`'s `vibe_rc_alloc`; confirmed via a
+/// differential rebuild that the crash persists byte-for-byte unchanged with
+/// this fix in place). Names collected here still matter for perf/precision
+/// (avoiding unnecessary heap_binding_names churn) and let the ELet ECall
+/// branch skip `heap_binding_names` for a call whose declared return type is
+/// provably scalar, matching the exemption the field's own doc comment already
+/// describes. Untyped functions are conservatively left out (stay in the
+/// existing heap over-approximation) since there is no signature to consult --
+/// no longer a correctness cliff-edge now that the alias-dup site is guarded,
+/// only a missed optimization.
 export fn compute_scalar_returning_names(stmts: Array[Stmt]) -> Array[String] {
   let out: Array[String] = [
   ]
@@ -649,206 +654,206 @@ fn analyze_calls(name: String, e_in: Expr, env_in: Map[String, Bool], calls: Arr
   while looping {
     looping = false
     match e {
-    EIdent(n, _) => {
-      if n == name {
-        Array::set(esc, 0, true)
-      } else {
-        ()
-      }
-      0
-    },
-    ECall(callee, args, _) => {
-      let is_self = match callee {
-        EIdent(cn, _) => cn == name,
-        _ => false
-      }
-      if is_self {
-        let cls: Array[Bool] = [
-        ]
-        let mut k = 0
-        while k < Array::length(args) {
-          Array::push(cls, arg_class(Array::get(args, k), env, hctx))
-          k = k + 1
+      EIdent(n, _) => {
+        if n == name {
+          Array::set(esc, 0, true)
+        } else {
+          ()
         }
-        Array::push(calls, cls)
-      } else {
-        let _ = analyze_calls(name, callee, env, calls, esc, hctx)
-        ()
-      }
-      let mut i = 0
-      while i < Array::length(args) {
-        analyze_calls(name, Array::get(args, i), env, calls, esc, hctx)
-        i = i + 1
-      }
-      0
-    },
-    EDot(obj, _, _, _) => analyze_calls(name, obj, env, calls, esc, hctx),
-    ELet(n, v, b, _) => {
-      analyze_calls(name, v, env, calls, esc, hctx)
-      env = Map::set(env, n, is_heap_value(v, env, hctx))
-      e = b
-      looping = true
-    },
-    ELetRec(n, v, b) => {
-      env = Map::set(env, n, false)
-      analyze_calls(name, v, env, calls, esc, hctx)
-      e = b
-      looping = true
-    },
-    ELetMut(n, v, b, _) => {
-      analyze_calls(name, v, env, calls, esc, hctx)
-      env = Map::set(env, n, false)
-      e = b
-      looping = true
-    },
-    EAssign(_, v, c) => {
-      analyze_calls(name, v, env, calls, esc, hctx)
-      e = c
-      looping = true
-    },
-    EAssignOp(_, _, v, c) => {
-      analyze_calls(name, v, env, calls, esc, hctx)
-      e = c
-      looping = true
-    },
-    ESeq(a, b) => {
-      analyze_calls(name, a, env, calls, esc, hctx)
-      e = b
-      looping = true
-    },
-    EIf(c, t, el) => {
-      analyze_calls(name, c, env, calls, esc, hctx)
-      analyze_calls(name, t, env, calls, esc, hctx)
-      analyze_calls(name, el, env, calls, esc, hctx)
-      0
-    },
-    EWhile(c, b) => {
-      analyze_calls(name, c, env, calls, esc, hctx)
-      analyze_calls(name, b, env, calls, esc, hctx)
-      0
-    },
-    EForIn(v0, ix, it, b) => {
-      analyze_calls(name, it, env, calls, esc, hctx)
-      let env1 = Map::set(env, v0, false)
-      let env2 = match ix {
-        Some(ixn) => Map::set(env1, ixn, false),
-        None => env1
-      }
-      analyze_calls(name, b, env2, calls, esc, hctx)
-      0
-    },
-    EBinOp(_, l, r) => {
-      analyze_calls(name, l, env, calls, esc, hctx)
-      analyze_calls(name, r, env, calls, esc, hctx)
-      0
-    },
-    EUnaryOp(_, o) => analyze_calls(name, o, env, calls, esc, hctx),
-    EFn(_, _, params, _, _, b) => {
-      let mut env2 = env
-      let mut pi = 0
-      while pi < Array::length(params) {
-        let (pn, _) = Array::get(params, pi)
-        env2 = Map::set(env2, pn, false)
-        pi = pi + 1
-      }
-      analyze_calls(name, b, env2, calls, esc, hctx)
-      0
-    },
-    ETuple(xs) => {
-      let mut i = 0
-      while i < Array::length(xs) {
-        analyze_calls(name, Array::get(xs, i), env, calls, esc, hctx)
-        i = i + 1
-      }
-      0
-    },
-    EArray(xs) => {
-      let mut i = 0
-      while i < Array::length(xs) {
-        analyze_calls(name, Array::get(xs, i), env, calls, esc, hctx)
-        i = i + 1
-      }
-      0
-    },
-    EMatch(s, arms) => {
-      analyze_calls(name, s, env, calls, esc, hctx)
-      let mut i = 0
-      while i < Array::length(arms) {
-        let (pat, ab) = Array::get(arms, i)
-        analyze_calls(name, ab, pat_shadow_env(pat, env), calls, esc, hctx)
-        i = i + 1
-      }
-      0
-    },
-    EHandle(b, arms) => {
-      analyze_calls(name, b, env, calls, esc, hctx)
-      let mut i = 0
-      while i < Array::length(arms) {
-        let (pat, ab) = Array::get(arms, i)
-        analyze_calls(name, ab, pat_shadow_env(pat, env), calls, esc, hctx)
-        i = i + 1
-      }
-      0
-    },
-    ELoop(ps, b) => {
-      let mut env2 = env
-      let mut i = 0
-      while i < Array::length(ps) {
-        let (pn, iv) = Array::get(ps, i)
-        analyze_calls(name, iv, env2, calls, esc, hctx)
-        env2 = Map::set(env2, pn, false)
-        i = i + 1
-      }
-      analyze_calls(name, b, env2, calls, esc, hctx)
-      0
-    },
-    ERecord(_, fs, _) => {
-      let mut i = 0
-      while i < Array::length(fs) {
-        let (_, fv) = Array::get(fs, i)
-        analyze_calls(name, fv, env, calls, esc, hctx)
-        i = i + 1
-      }
-      0
-    },
-    EMap(fs) => {
-      let mut i = 0
-      while i < Array::length(fs) {
-        let (_, fv) = Array::get(fs, i)
-        analyze_calls(name, fv, env, calls, esc, hctx)
-        i = i + 1
-      }
-      0
-    },
-    ELabeledArg(_, _, x) => analyze_calls(name, x, env, calls, esc, hctx),
-    EReturn(x) => analyze_calls(name, x, env, calls, esc, hctx),
-    ESpread(x) => analyze_calls(name, x, env, calls, esc, hctx),
-    EBreak(o) =>
-    match o {
-      Some(x) => analyze_calls(name, x, env, calls, esc, hctx),
-      None => 0
-    },
-    EContinue(xs) => {
-      let mut i = 0
-      while i < Array::length(xs) {
-        analyze_calls(name, Array::get(xs, i), env, calls, esc, hctx)
-        i = i + 1
-      }
-      0
-    },
-    EInt(_) => 0,
-    EFloat(_) => 0,
-    EString(_) => 0,
-    EBool(_) => 0,
-    EStringInterp(_) => 0,
-    EUnit => 0
-  }
+        0
+      },
+      ECall(callee, args, _) => {
+        let is_self = match callee {
+          EIdent(cn, _) => cn == name,
+          _ => false
+        }
+        if is_self {
+          let cls: Array[Bool] = [
+          ]
+          let mut k = 0
+          while k < Array::length(args) {
+            Array::push(cls, arg_class(Array::get(args, k), env, hctx))
+            k = k + 1
+          }
+          Array::push(calls, cls)
+        } else {
+          let _ = analyze_calls(name, callee, env, calls, esc, hctx)
+          ()
+        }
+        let mut i = 0
+        while i < Array::length(args) {
+          analyze_calls(name, Array::get(args, i), env, calls, esc, hctx)
+          i = i + 1
+        }
+        0
+      },
+      EDot(obj, _, _, _) => analyze_calls(name, obj, env, calls, esc, hctx),
+      ELet(n, v, b, _) => {
+        analyze_calls(name, v, env, calls, esc, hctx)
+        env = Map::set(env, n, is_heap_value(v, env, hctx))
+        e = b
+        looping = true
+      },
+      ELetRec(n, v, b) => {
+        env = Map::set(env, n, false)
+        analyze_calls(name, v, env, calls, esc, hctx)
+        e = b
+        looping = true
+      },
+      ELetMut(n, v, b, _) => {
+        analyze_calls(name, v, env, calls, esc, hctx)
+        env = Map::set(env, n, false)
+        e = b
+        looping = true
+      },
+      EAssign(_, v, c) => {
+        analyze_calls(name, v, env, calls, esc, hctx)
+        e = c
+        looping = true
+      },
+      EAssignOp(_, _, v, c) => {
+        analyze_calls(name, v, env, calls, esc, hctx)
+        e = c
+        looping = true
+      },
+      ESeq(a, b) => {
+        analyze_calls(name, a, env, calls, esc, hctx)
+        e = b
+        looping = true
+      },
+      EIf(c, t, el) => {
+        analyze_calls(name, c, env, calls, esc, hctx)
+        analyze_calls(name, t, env, calls, esc, hctx)
+        analyze_calls(name, el, env, calls, esc, hctx)
+        0
+      },
+      EWhile(c, b) => {
+        analyze_calls(name, c, env, calls, esc, hctx)
+        analyze_calls(name, b, env, calls, esc, hctx)
+        0
+      },
+      EForIn(v0, ix, it, b) => {
+        analyze_calls(name, it, env, calls, esc, hctx)
+        let env1 = Map::set(env, v0, false)
+        let env2 = match ix {
+          Some(ixn) => Map::set(env1, ixn, false),
+          None => env1
+        }
+        analyze_calls(name, b, env2, calls, esc, hctx)
+        0
+      },
+      EBinOp(_, l, r) => {
+        analyze_calls(name, l, env, calls, esc, hctx)
+        analyze_calls(name, r, env, calls, esc, hctx)
+        0
+      },
+      EUnaryOp(_, o) => analyze_calls(name, o, env, calls, esc, hctx),
+      EFn(_, _, params, _, _, b) => {
+        let mut env2 = env
+        let mut pi = 0
+        while pi < Array::length(params) {
+          let (pn, _) = Array::get(params, pi)
+          env2 = Map::set(env2, pn, false)
+          pi = pi + 1
+        }
+        analyze_calls(name, b, env2, calls, esc, hctx)
+        0
+      },
+      ETuple(xs) => {
+        let mut i = 0
+        while i < Array::length(xs) {
+          analyze_calls(name, Array::get(xs, i), env, calls, esc, hctx)
+          i = i + 1
+        }
+        0
+      },
+      EArray(xs) => {
+        let mut i = 0
+        while i < Array::length(xs) {
+          analyze_calls(name, Array::get(xs, i), env, calls, esc, hctx)
+          i = i + 1
+        }
+        0
+      },
+      EMatch(s, arms) => {
+        analyze_calls(name, s, env, calls, esc, hctx)
+        let mut i = 0
+        while i < Array::length(arms) {
+          let (pat, ab) = Array::get(arms, i)
+          analyze_calls(name, ab, pat_shadow_env(pat, env), calls, esc, hctx)
+          i = i + 1
+        }
+        0
+      },
+      EHandle(b, arms) => {
+        analyze_calls(name, b, env, calls, esc, hctx)
+        let mut i = 0
+        while i < Array::length(arms) {
+          let (pat, ab) = Array::get(arms, i)
+          analyze_calls(name, ab, pat_shadow_env(pat, env), calls, esc, hctx)
+          i = i + 1
+        }
+        0
+      },
+      ELoop(ps, b) => {
+        let mut env2 = env
+        let mut i = 0
+        while i < Array::length(ps) {
+          let (pn, iv) = Array::get(ps, i)
+          analyze_calls(name, iv, env2, calls, esc, hctx)
+          env2 = Map::set(env2, pn, false)
+          i = i + 1
+        }
+        analyze_calls(name, b, env2, calls, esc, hctx)
+        0
+      },
+      ERecord(_, fs, _) => {
+        let mut i = 0
+        while i < Array::length(fs) {
+          let (_, fv) = Array::get(fs, i)
+          analyze_calls(name, fv, env, calls, esc, hctx)
+          i = i + 1
+        }
+        0
+      },
+      EMap(fs) => {
+        let mut i = 0
+        while i < Array::length(fs) {
+          let (_, fv) = Array::get(fs, i)
+          analyze_calls(name, fv, env, calls, esc, hctx)
+          i = i + 1
+        }
+        0
+      },
+      ELabeledArg(_, _, x) => analyze_calls(name, x, env, calls, esc, hctx),
+      EReturn(x) => analyze_calls(name, x, env, calls, esc, hctx),
+      ESpread(x) => analyze_calls(name, x, env, calls, esc, hctx),
+      EBreak(o) =>
+      match o {
+        Some(x) => analyze_calls(name, x, env, calls, esc, hctx),
+        None => 0
+      },
+      EContinue(xs) => {
+        let mut i = 0
+        while i < Array::length(xs) {
+          analyze_calls(name, Array::get(xs, i), env, calls, esc, hctx)
+          i = i + 1
+        }
+        0
+      },
+      EInt(_) => 0,
+      EFloat(_) => 0,
+      EString(_) => 0,
+      EBool(_) => 0,
+      EStringInterp(_) => 0,
+      EUnit => 0
+    }
   }
   0
 }
 
-// An alias-attributed dup: `let a = t` where `t` is multiply-used and owned.
-// Keyed by the alias name.
+/// An alias-attributed dup: `let a = t` where `t` is multiply-used and owned.
+/// Keyed by the alias name.
 export fn pa_is_alias_dup(a: PerceusAction) -> Bool {
   match a.kind {
     PaAliasDup => true,
@@ -967,18 +972,18 @@ export fn type_expr_is_heap(ot: Option[TypeExpr]) -> Bool {
   }
 }
 
-// #791: program-wide (name of every top-level function whose DECLARED return
-// type is heap), mirroring compute_agg_returning's scan but reading
-// type_expr_is_heap instead of agg_info_of_type_expr. This is the "read the
-// declared signature" alternative to threading checker-inferred types
-// through codegen: `let mut s = Set::new()` can be classified correctly by
-// looking up `Set::new`'s OWN `-> Set[T]` annotation (already sitting on the
-// AST, no unification/inference needed) instead of guessing from the RHS
-// expression's shape. Only covers named, annotated top-level functions --
-// classify_let_value_heap (compile_expr_tail.vibe) falls back to its
-// existing "any ECall is heap by default" over-approximation when a callee
-// isn't found here (unannotated function, local closure, shadowed name),
-// so this is a precision refinement, not a completeness requirement.
+/// #791: program-wide (name of every top-level function whose DECLARED return
+/// type is heap), mirroring compute_agg_returning's scan but reading
+/// type_expr_is_heap instead of agg_info_of_type_expr. This is the "read the
+/// declared signature" alternative to threading checker-inferred types
+/// through codegen: `let mut s = Set::new()` can be classified correctly by
+/// looking up `Set::new`'s OWN `-> Set[T]` annotation (already sitting on the
+/// AST, no unification/inference needed) instead of guessing from the RHS
+/// expression's shape. Only covers named, annotated top-level functions --
+/// classify_let_value_heap (compile_expr_tail.vibe) falls back to its
+/// existing "any ECall is heap by default" over-approximation when a callee
+/// isn't found here (unannotated function, local closure, shadowed name),
+/// so this is a precision refinement, not a completeness requirement.
 export fn compute_heap_returning(stmts: Array[Stmt]) -> Array[String] {
   let out: Array[String] = [
   ]
@@ -1869,35 +1874,35 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
   }
 }
 
-// #706 follow-up (borrow-after-move): a binding with any BORROW occurrence
-// (ctx.borrows[id] > 0 — computed branch-aware, max-across-if/match-arms,
-// alongside ctx.uses above) must stay alive through that borrow, regardless of
-// whether the borrow comes BEFORE or AFTER the binding's owning (consuming)
-// occurrences. `pc_emit`/`pe_use` only track OWNING occurrences (ctx.uses) when
-// deciding dup vs. free-transfer — borrows are invisible to that decision. If a
-// binding's textually LAST owning occurrence is treated as "the final, free
-// consume" (no dup; ownership transfers to the callee) and a borrow occurs
-// AFTER that point, the borrow reads through a reference the callee may already
-// have dropped — a silent use-after-free. This was masked in practice by other
-// RC leaks (loop-consume before #706's core fix; the loop-consume LEAK before
-// its own follow-up fix) that happened to keep the value alive by accident; see
-// #706 for the wat_exports/parse_module_sections repro that exposed it once
-// those leaks were tightened.
-//
-// Fix: bump the binding's counted `uses` by exactly one whenever it has ANY
-// borrow occurrence. This is a pure post-processing step over the FINAL,
-// branch-merge-complete `uses`/`borrows` arrays (called after `pc_count`
-// finishes, before the emission pass begins), so it does not interact with the
-// max-across-branches counting logic itself — it only adjusts the total input
-// the REST of the system (pe_declare's `remaining` init, pc_emit's sequential
-// dup decisions, pe_scope_end's drop decision) already handles correctly for "K
-// owning occurrences": with K bumped to K+1, the occurrence that used to be a
-// free-transfer gets a dup like any other, and the binding's normal scope-end
-// drop (already emitted whenever `remaining` ends > 0 — e.g. the existing
-// borrow-only / K=0 baseline) picks up the now-nonzero leftover. No new
-// PerceusAction kind, no change to pc_emit or the codegen dup/drop realization.
-// For a binding with ZERO owning occurrences (pure borrow — the already-correct
-// baseline), this is a no-op: pe_declare already treats uses==0 like uses==1.
+/// #706 follow-up (borrow-after-move): a binding with any BORROW occurrence
+/// (ctx.borrows[id] > 0 — computed branch-aware, max-across-if/match-arms,
+/// alongside ctx.uses above) must stay alive through that borrow, regardless of
+/// whether the borrow comes BEFORE or AFTER the binding's owning (consuming)
+/// occurrences. `pc_emit`/`pe_use` only track OWNING occurrences (ctx.uses) when
+/// deciding dup vs. free-transfer — borrows are invisible to that decision. If a
+/// binding's textually LAST owning occurrence is treated as "the final, free
+/// consume" (no dup; ownership transfers to the callee) and a borrow occurs
+/// AFTER that point, the borrow reads through a reference the callee may already
+/// have dropped — a silent use-after-free. This was masked in practice by other
+/// RC leaks (loop-consume before #706's core fix; the loop-consume LEAK before
+/// its own follow-up fix) that happened to keep the value alive by accident; see
+/// #706 for the wat_exports/parse_module_sections repro that exposed it once
+/// those leaks were tightened.
+///
+/// Fix: bump the binding's counted `uses` by exactly one whenever it has ANY
+/// borrow occurrence. This is a pure post-processing step over the FINAL,
+/// branch-merge-complete `uses`/`borrows` arrays (called after `pc_count`
+/// finishes, before the emission pass begins), so it does not interact with the
+/// max-across-branches counting logic itself — it only adjusts the total input
+/// the REST of the system (pe_declare's `remaining` init, pc_emit's sequential
+/// dup decisions, pe_scope_end's drop decision) already handles correctly for "K
+/// owning occurrences": with K bumped to K+1, the occurrence that used to be a
+/// free-transfer gets a dup like any other, and the binding's normal scope-end
+/// drop (already emitted whenever `remaining` ends > 0 — e.g. the existing
+/// borrow-only / K=0 baseline) picks up the now-nonzero leftover. No new
+/// PerceusAction kind, no change to pc_emit or the codegen dup/drop realization.
+/// For a binding with ZERO owning occurrences (pure borrow — the already-correct
+/// baseline), this is a no-op: pe_declare already treats uses==0 like uses==1.
 fn pctx_apply_borrow_retention(ctx: PCtx) -> Int {
   let mut bid = 0
   while bid < ctx.next_id {
@@ -1911,7 +1916,7 @@ fn pctx_apply_borrow_retention(ctx: PCtx) -> Int {
   0
 }
 
-// Build the dup/drop plan for a function body expression.
+/// Build the dup/drop plan for a function body expression.
 export fn build_perceus_plan(body: Expr) -> Array[PerceusAction] {
   let ctx = pctx_new()
   let empty: Map[String, Int] = Map::new()
@@ -2149,10 +2154,10 @@ fn expr_projects_or_matches(name: String, e: Expr) -> Bool {
   }
 }
 
-// Heap-ness decision for an owned parameter: the type annotation says heap, or
-// (when unannotated) the body proves it via projection/match. Used by the
-// Perceus plan and codegen so an unannotated nested-closure param that is
-// projected no longer leaks its owned argument (ADR-0055 Stage 4).
+/// Heap-ness decision for an owned parameter: the type annotation says heap, or
+/// (when unannotated) the body proves it via projection/match. Used by the
+/// Perceus plan and codegen so an unannotated nested-closure param that is
+/// projected no longer leaks its owned argument (ADR-0055 Stage 4).
 export fn param_is_heap_in_body(name: String, otype: Option[TypeExpr], body: Expr) -> Bool {
   if type_expr_is_heap(otype) {
     true
@@ -2164,11 +2169,11 @@ export fn param_is_heap_in_body(name: String, otype: Option[TypeExpr], body: Exp
   }
 }
 
-// Build the plan for a function whose parameters are owned heap values. Params
-// are declared as bindings (in count + emit lockstep, same ids) so the existing
-// machinery emits a PaDrop for a borrowed-only/unused heap param and a PaDup for
-// one used in multiple owning positions. Heap-ness comes from the param's type
-// annotation (scalar params get scalar=true so they are never dropped).
+/// Build the plan for a function whose parameters are owned heap values. Params
+/// are declared as bindings (in count + emit lockstep, same ids) so the existing
+/// machinery emits a PaDrop for a borrowed-only/unused heap param and a PaDup for
+/// one used in multiple owning positions. Heap-ness comes from the param's type
+/// annotation (scalar params get scalar=true so they are never dropped).
 export fn build_perceus_plan_with_params(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String]) -> Array[PerceusAction] {
   let ctx = pctx_new()
   // #707: seed the borrow-returning-function-name set (see is_borrow_ret_fname)

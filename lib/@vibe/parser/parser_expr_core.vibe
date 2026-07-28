@@ -68,22 +68,30 @@ fn binop_prec(tok: Token) -> Int {
   }
 }
 
-// Extract the source char offset of a callee expression so that the ECall
-// node can carry the call-site offset (callee start). Mirrors how EIdent
-// threads `offset_at(starts, pos)`. Falls back to -1 for callees that do
-// not carry an offset (synthetic / nested forms).
+/// Extract the source char offset of a callee expression so that the ECall
+/// node can carry the call-site offset (callee start). Mirrors how EIdent
+/// threads `offset_at(starts, pos)`. Falls back to -1 for callees that do
+/// not carry an offset (synthetic / nested forms).
 fn callee_offset(callee: Expr) -> Int {
   match callee {
     EIdent(_, off) => off,
-    EDot(inner, _, off, _) => if off >= 0 { off } else { callee_offset(inner) },
-    ECall(inner, _, off) => if off >= 0 { off } else { callee_offset(inner) },
+    EDot(inner, _, off, _) => if off >= 0 {
+      off
+    } else {
+      callee_offset(inner)
+    },
+    ECall(inner, _, off) => if off >= 0 {
+      off
+    } else {
+      callee_offset(inner)
+    },
     _ => -1
   }
 }
 
-// Source char offset of the token at `p` (#645: the field-name token of an
-// EDot). Mirrors parser_expr_primary's offset_at; -1 when `starts` has no
-// entry (offset-less parse entry points).
+/// Source char offset of the token at `p` (#645: the field-name token of an
+/// EDot). Mirrors parser_expr_primary's offset_at; -1 when `starts` has no
+/// entry (offset-less parse entry points).
 fn field_offset_at(starts: Array[Int], p: Int) -> Int {
   if p >= 0 && p < Array::length(starts) {
     Array::get(starts, p)
@@ -99,12 +107,12 @@ fn index_expr(cur_expr: Expr, idx: Expr) -> Expr {
   ECall(EIdent("__index", -1), args, -1)
 }
 
-// `x |> f(a, _)` substitutes the piped value at each bare `_` placeholder
-// (`f(a, x)`) instead of prepending. With no `_`, the piped value is
-// prepended as the first argument (`x |> f(a)` => `f(x, a)`). Bare `_`
-// call arguments are preserved as `EIdent("_")` holes by
-// `desugar_placeholder_args`; compound placeholders like `_ * 2` are already
-// lowered to section lambdas before they reach here.
+/// `x |> f(a, _)` substitutes the piped value at each bare `_` placeholder
+/// (`f(a, x)`) instead of prepending. With no `_`, the piped value is
+/// prepended as the first argument (`x |> f(a)` => `f(x, a)`). Bare `_`
+/// call arguments are preserved as `EIdent("_")` holes by
+/// `desugar_placeholder_args`; compound placeholders like `_ * 2` are already
+/// lowered to section lambdas before they reach here.
 fn pipe_arg_is_hole(arg: Expr) -> Bool {
   match arg {
     EIdent(n, _) => n == "_",
@@ -195,9 +203,9 @@ fn parse_call_arg(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recu
   }
 }
 
-// Recurses into nested EBinOp trees so placeholders buried below the
-// top-level operator (e.g. `_ % 2 == 0`, where `_` sits inside the `%`
-// sub-expression of the outer `==`) are still detected.
+/// Recurses into nested EBinOp trees so placeholders buried below the
+/// top-level operator (e.g. `_ % 2 == 0`, where `_` sits inside the `%`
+/// sub-expression of the outer `==`) are still detected.
 fn has_placeholder_arg(arg: Expr) -> Bool {
   match arg {
     EIdent(n, _) => n == "_",
@@ -362,21 +370,21 @@ fn desugar_placeholder_args(args: Array[Expr]) -> Array[Expr] {
   out
 }
 
-// #960: `Map::new()` / `Map::from_pairs([("k", v), ...])` are the ONLY
-// spellings for building a string-keyed map (Stage 2 removed the
-// `map { ... }` literal; the printer emits these spellings for EMap). They
-// are desugared HERE, at the parse-postfix call-build site — the same layer
-// as the `throw(x)` -> `perform Error::Throw(x)` desugar (#640 Stage 2) —
-// into the exact `EMap` node the literal used to produce, so every
-// downstream stage (checker, normalize, both codegen backends) sees ONE
-// form and needs ZERO changes. Parse-level
-// placement also keeps the two names from ever reaching the checker's
-// generic `Map::` builtin lookup (a residual non-call mention, e.g.
-// `x |> Map::from_pairs`, is rejected there as `unknown name` — an error,
-// never a silent miscompile). Only an array LITERAL of (string-literal,
-// value) tuple LITERALS is accepted for now; anything else throws a located
-// parse error. `pos` is the token index of the call's `(`, the "at #N"
-// located-diagnostic anchor (#816).
+/// #960: `Map::new()` / `Map::from_pairs([("k", v), ...])` are the ONLY
+/// spellings for building a string-keyed map (Stage 2 removed the
+/// `map { ... }` literal; the printer emits these spellings for EMap). They
+/// are desugared HERE, at the parse-postfix call-build site — the same layer
+/// as the `throw(x)` -> `perform Error::Throw(x)` desugar (#640 Stage 2) —
+/// into the exact `EMap` node the literal used to produce, so every
+/// downstream stage (checker, normalize, both codegen backends) sees ONE
+/// form and needs ZERO changes. Parse-level
+/// placement also keeps the two names from ever reaching the checker's
+/// generic `Map::` builtin lookup (a residual non-call mention, e.g.
+/// `x |> Map::from_pairs`, is rejected there as `unknown name` — an error,
+/// never a silent miscompile). Only an array LITERAL of (string-literal,
+/// value) tuple LITERALS is accepted for now; anything else throws a located
+/// parse error. `pos` is the token index of the call's `(`, the "at #N"
+/// located-diagnostic anchor (#816).
 fn empty_map_fields() -> Array[(String, Expr)] {
   Array::slice([
     ("", EUnit)
@@ -554,13 +562,13 @@ fn parse_prefix(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur:
   }
 }
 
-// #760(5): a loop-form expression (while / loop / for-in) evaluates to Unit,
-// so it can never be a meaningful left operand of an infix operator. When one
-// appears at statement position followed by a new line beginning with `-`/`+`
-// (e.g. a bare `-1` after a `while` loop, or `return -1` mis-split), the
-// greedy infix ladder used to fold it into `loop_result - 1`, which then failed
-// as `Unit - Int`. Treat such a left as a completed statement and stop the
-// ladder, so the `-1` parses as the next statement's unary-minus literal.
+/// #760(5): a loop-form expression (while / loop / for-in) evaluates to Unit,
+/// so it can never be a meaningful left operand of an infix operator. When one
+/// appears at statement position followed by a new line beginning with `-`/`+`
+/// (e.g. a bare `-1` after a `while` loop, or `return -1` mis-split), the
+/// greedy infix ladder used to fold it into `loop_result - 1`, which then failed
+/// as `Unit - Int`. Treat such a left as a completed statement and stop the
+/// ladder, so the `-1` parses as the next statement's unary-minus literal.
 fn left_is_stmt_form(e: Expr) -> Bool {
   match e {
     EWhile(_, _) => true,
@@ -570,15 +578,15 @@ fn left_is_stmt_form(e: Expr) -> Bool {
   }
 }
 
-// #979: `is` used to be checked ONLY once, after the whole infix ladder
-// (including `&&`/`||`) had already folded -- so `a && b is None` parsed as
-// `(a && b) is None` instead of the natural `a && (b is None)`. `is` now
-// binds at the same tier as the comparison operators (tier 3: `==`, `<`,
-// ...), i.e. strictly tighter than `&&`/`||`/`|>` (tiers 0-2) and no
-// tighter than arithmetic/bitwise (tiers 4-9) -- matching how a normal
-// comparison composes with the rest of the ladder. `is_is_token` recognizes
-// both the dedicated `TIs` keyword token and (defensively, matching the
-// pre-existing fallback below) a soft-keyword `TIdent("is")`.
+/// #979: `is` used to be checked ONLY once, after the whole infix ladder
+/// (including `&&`/`||`) had already folded -- so `a && b is None` parsed as
+/// `(a && b) is None` instead of the natural `a && (b is None)`. `is` now
+/// binds at the same tier as the comparison operators (tier 3: `==`, `<`,
+/// ...), i.e. strictly tighter than `&&`/`||`/`|>` (tiers 0-2) and no
+/// tighter than arithmetic/bitwise (tiers 4-9) -- matching how a normal
+/// comparison composes with the rest of the ladder. `is_is_token` recognizes
+/// both the dedicated `TIs` keyword token and (defensively, matching the
+/// pre-existing fallback below) a soft-keyword `TIdent("is")`.
 fn is_is_token(tok: Token) -> Bool {
   match tok {
     TIs => true,
@@ -666,38 +674,38 @@ fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: 
   }
 }
 
-// #979 P2 follow-up (Codex): `parse_infix_no_is` used to disable `is`
-// consumption at EVERY tier, so a nested `is` inside a `&&`/`||` (e.g.
-// `if ready && value is None { ... }`) never folded at comparison
-// tightness either -- the whole `ready && value` folded first (since `is`
-// wasn't recognized as an operator anywhere in this ladder), and the
-// trailing `is None` then bound against that whole (Bool) expression,
-// reproducing exactly the bug this issue's main fix already closed for
-// plain (non-if) expressions. Fixed by reusing the SAME tier-3 `is` fold
-// as `parse_infix` (`consume_is = true`, so `value is None` folds onto
-// `value` before combining with `&&`), gated by `is_top_atom = true`: a
-// trailing `is pattern` is left UNCONSUMED here only when it appears
-// directly on the unfolded top atom (nothing combined yet, e.g. bare
-// `x is Some(v)`) -- exactly the shape `parse_impl_dispatch` mode_if's
-// caller (below) still special-cases into the `if EXPR is PAT { bind }`
-// binding form. Once anything (`&&`/`||`/a comparison/...) has already
-// folded onto `left`, `is_top_atom` flips to `false` (see
-// `parse_infix_loop` above) and a subsequent `is` folds as a normal
-// tier-3 Bool test with no binding -- so `if ready && value is None { }`
-// now parses as `if (ready && (value is None)) { }`, matching the
-// documented precedence, while `if x is Some(v) { use(v) }` still binds
-// `v` in the then-branch exactly as before.
+/// #979 P2 follow-up (Codex): `parse_infix_no_is` used to disable `is`
+/// consumption at EVERY tier, so a nested `is` inside a `&&`/`||` (e.g.
+/// `if ready && value is None { ... }`) never folded at comparison
+/// tightness either -- the whole `ready && value` folded first (since `is`
+/// wasn't recognized as an operator anywhere in this ladder), and the
+/// trailing `is None` then bound against that whole (Bool) expression,
+/// reproducing exactly the bug this issue's main fix already closed for
+/// plain (non-if) expressions. Fixed by reusing the SAME tier-3 `is` fold
+/// as `parse_infix` (`consume_is = true`, so `value is None` folds onto
+/// `value` before combining with `&&`), gated by `is_top_atom = true`: a
+/// trailing `is pattern` is left UNCONSUMED here only when it appears
+/// directly on the unfolded top atom (nothing combined yet, e.g. bare
+/// `x is Some(v)`) -- exactly the shape `parse_impl_dispatch` mode_if's
+/// caller (below) still special-cases into the `if EXPR is PAT { bind }`
+/// binding form. Once anything (`&&`/`||`/a comparison/...) has already
+/// folded onto `left`, `is_top_atom` flips to `false` (see
+/// `parse_infix_loop` above) and a subsequent `is` folds as a normal
+/// tier-3 Bool test with no binding -- so `if ready && value is None { }`
+/// now parses as `if (ready && (value is None)) { }`, matching the
+/// documented precedence, while `if x is Some(v) { use(v) }` still binds
+/// `v` in the then-branch exactly as before.
 export fn parse_infix_no_is(tokens: Array[Token], starts: Array[Int], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
   let (left0, next0) = parse_prefix(tokens, starts, pos, parse_recur)
   parse_infix_loop(tokens, starts, left0, next0, min_prec, expr_start, false, true, true, parse_recur)
 }
 
-// #979: `is` is folded directly into the precedence ladder (tier 3, same as
-// `==`/`<`/...) instead of being checked only once at the very end, so
-// `a && b is None` now parses as `a && (b is None)` rather than
-// `(a && b) is None`. `is_top_atom = false` unconditionally here -- outside
-// an if-condition there is no special pattern-binding form, so even a bare
-// `x is Some(v)` folds straight to a Bool `EMatch` with no binding.
+/// #979: `is` is folded directly into the precedence ladder (tier 3, same as
+/// `==`/`<`/...) instead of being checked only once at the very end, so
+/// `a && b is None` now parses as `a && (b is None)` rather than
+/// `(a && b) is None`. `is_top_atom = false` unconditionally here -- outside
+/// an if-condition there is no special pattern-binding form, so even a bare
+/// `x is Some(v)` folds straight to a Bool `EMatch` with no binding.
 export fn parse_infix(tokens: Array[Token], starts: Array[Int], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
   let (left0, next0) = parse_prefix(tokens, starts, pos, parse_recur)
   parse_infix_loop(tokens, starts, left0, next0, min_prec, expr_start, false, true, false, parse_recur)

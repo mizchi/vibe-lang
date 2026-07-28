@@ -1,13 +1,10 @@
 //# Imports
 
 import @vibe/compiler/core {
+  ExportRenamePlan,
   Stmt,
   Type,
   TypeEnv,
-  env_bind,
-  env_flat_bindings,
-  env_lookup_flat,
-  ExportRenamePlan,
   append_import_alias_rewritten_non_import_stmts_with_renames,
   append_non_import_stmts_without_alias_rewrite,
   apply_export_renames_stmts,
@@ -15,15 +12,18 @@ import @vibe/compiler/core {
   collect_import_alias_collision_locals,
   collect_import_alias_collision_refs,
   collect_import_value_renames,
+  dir_of_path,
+  env_bind,
+  env_flat_bindings,
+  env_lookup_flat,
   export_plan_fingerprint_text,
   export_plan_renames_for,
   import_value_rename_locals,
   namespace_private_value_stmts,
-  rewrite_imported_value_stmt_to_local,
-  stmts_have_import_deep,
-  dir_of_path,
   resolve_import_path,
-  resolve_import_path_candidates
+  resolve_import_path_candidates,
+  rewrite_imported_value_stmt_to_local,
+  stmts_have_import_deep
 }
 
 import @vibe/core {
@@ -42,16 +42,14 @@ import ./typecheck_fs.vibe {
   ensure_fingerprint_fs_impl,
   load_persistent_dep_list,
   load_persistent_leaf_fingerprint,
+  load_persistent_type_env,
   persistent_dep_list_text,
   persistent_leaf_fingerprint_text,
-  persistent_type_env_cache_text,
-  load_persistent_type_env
+  persistent_type_env_cache_text
 }
 
 import @vibe/compiler/syntax {
-  lex,
-  parse_program,
-  print_program
+  lex, parse_program, print_program
 }
 
 import @vibe/compiler/loader {
@@ -59,25 +57,17 @@ import @vibe/compiler/loader {
 }
 
 import @vibe/compiler/cache {
-  persistent_dep_list_cache_path, persistent_leaf_fingerprint_cache_path,
-  persistent_type_env_cache_path
+  persistent_dep_list_cache_path, persistent_leaf_fingerprint_cache_path, persistent_type_env_cache_path
 }
 
 import @vibe/graph {
-  RippleDb,
-  ripple_eval_count,
-  ripple_get_deps,
-  ripple_get_fingerprint,
-  ripple_get_source,
-  ripple_new,
-  ripple_record_eval,
-  ripple_set_source
+  RippleDb, ripple_eval_count, ripple_get_deps, ripple_get_fingerprint, ripple_get_source, ripple_new, ripple_record_eval, ripple_set_source
 }
 
 // #847 Phase C: facade re-exports so external callers reach this directory
 // only through runtime/index.vibe, not its internal files directly.
 export ./module_source.vibe {
-  build_module_source_from_source, build_funcmap_from_source
+  build_funcmap_from_source, build_module_source_from_source
 }
 
 export ./type_at.vibe {
@@ -112,18 +102,7 @@ enum StringTriple {
 }
 
 enum TypeDbState {
-  TypeDbState(
-    RippleDb,
-    Array[(String, TypeEnv)],
-    Array[(String, String)],
-    Array[StringTriple],
-    Array[StringTriple],
-    Array[StringTriple],
-    Int,
-    Int,
-    Int,
-    Int
-  )
+  TypeDbState(RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Array[StringTriple], Array[StringTriple], Array[StringTriple], Int, Int, Int, Int)
 }
 
 export enum TypeDb {
@@ -191,20 +170,7 @@ fn empty_stmt_array() -> Array[Stmt] {
 }
 
 export fn db_new() -> TypeDb {
-  wrap_db(
-    TypeDbState(
-      ripple_new(),
-      empty_env_cache(),
-      empty_string_pairs(),
-      empty_string_triples(),
-      empty_string_triples(),
-      empty_string_triples(),
-      0,
-      0,
-      0,
-      0
-    )
-  )
+  wrap_db(TypeDbState(ripple_new(), empty_env_cache(), empty_string_pairs(), empty_string_triples(), empty_string_triples(), empty_string_triples(), 0, 0, 0, 0))
 }
 
 fn lookup_string_pair(pairs: Array[(String, String)], key: String) -> Option[String] {
@@ -252,11 +218,11 @@ fn lookup_source_cache(cache: Array[StringTriple], path: String, fingerprint: St
     } else {
       match Array::get(cache, i) {
         StringTriple(p, fp, source) =>
-          if p == path && fp == fingerprint {
-            Some(source)
-          } else {
-            go(i + 1)
-          }
+        if p == path && fp == fingerprint {
+          Some(source)
+        } else {
+          go(i + 1)
+        }
       }
     }
   }
@@ -273,11 +239,11 @@ fn upsert_source_cache(cache: Array[StringTriple], path: String, fingerprint: St
   while i < len {
     match Array::get(cache, i) {
       StringTriple(p, fp, existing) =>
-        if p == path && fp == fingerprint {
-          ()
-        } else {
-          Array::push(out, StringTriple(p, fp, existing))
-        }
+      if p == path && fp == fingerprint {
+        ()
+      } else {
+        Array::push(out, StringTriple(p, fp, existing))
+      }
     }
     i = i + 1
   }
@@ -307,20 +273,7 @@ fn append_source_cache_entries(cache: Array[StringTriple], entries: Array[String
 export fn db_set_source(db: TypeDb, path: String, source: String) -> TypeDb {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) =>
-      wrap_db(
-        TypeDbState(
-          ripple_set_source(rdb, path, source),
-          env_cache,
-          dep_source_cache,
-          merged_cache,
-          module_source_cache,
-          artifact_cache,
-          parse_count,
-          merge_count,
-          module_source_count,
-          codegen_count
-        )
-      )
+    wrap_db(TypeDbState(ripple_set_source(rdb, path, source), env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count))
   }
 }
 
@@ -493,17 +446,11 @@ fn compact_string_fingerprint(source: String) -> String {
     h2 = (h2 * step2 + c + i + 1) % mod2
     i = i + 1
   }
-  String::concat(
-    __to_string(len),
-    String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2))))
-  )
+  String::concat(__to_string(len), String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2)))))
 }
 
 fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> Unit with { Error, Fs } {
-  Fs::write_file(
-    persistent_type_env_cache_path(fingerprint),
-    persistent_type_env_cache_text(env)
-  )
+  Fs::write_file(persistent_type_env_cache_path(fingerprint), persistent_type_env_cache_text(env))
 }
 
 fn build_fingerprint(source: String, dep_fps: Array[(String, String)]) -> String {
@@ -513,10 +460,7 @@ fn build_fingerprint(source: String, dep_fps: Array[(String, String)]) -> String
     let dep_pair = Array::get(dep_fps, i)
     let dep_path = dep_pair.0
     let dep_fp = dep_pair.1
-    let next = String::concat(
-      acc,
-      String::concat("|", String::concat(dep_path, String::concat("=", dep_fp)))
-    )
+    let next = String::concat(acc, String::concat("|", String::concat(dep_path, String::concat("=", dep_fp))))
     acc = compact_string_fingerprint(next)
     i = i + 1
   }
@@ -573,54 +517,34 @@ fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String) -> Array
 fn resolve_deps_for_source(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with { Error } {
   match lookup_string_pair(dep_source_cache, path) {
     Some(cached_source) =>
-      if cached_source == source {
-        match ripple_get_deps(rdb, path) {
-          Some(deps) => (deps, dep_source_cache, parse_count),
-          None => {
-            let stmts = parse_program_with_path(path, source)
-            let deps = collect_import_deps_from_stmts(stmts, dir_of_path(path))
-            (
-              deps,
-              upsert_string_pair(dep_source_cache, path, source),
-              parse_count + 1
-            )
-          }
+    if cached_source == source {
+      match ripple_get_deps(rdb, path) {
+        Some(deps) => (deps, dep_source_cache, parse_count),
+        None => {
+          let stmts = parse_program_with_path(path, source)
+          let deps = collect_import_deps_from_stmts(stmts, dir_of_path(path))
+          (deps, upsert_string_pair(dep_source_cache, path, source), parse_count + 1)
         }
-      } else {
-        let stmts = parse_program_with_path(path, source)
-        let deps = collect_import_deps_from_stmts(stmts, dir_of_path(path))
-        (
-          deps,
-          upsert_string_pair(dep_source_cache, path, source),
-          parse_count + 1
-        )
-      },
+      }
+    } else {
+      let stmts = parse_program_with_path(path, source)
+      let deps = collect_import_deps_from_stmts(stmts, dir_of_path(path))
+      (deps, upsert_string_pair(dep_source_cache, path, source), parse_count + 1)
+    },
     None => {
       let stmts = parse_program_with_path(path, source)
       let deps = collect_import_deps_from_stmts(stmts, dir_of_path(path))
-      (
-        deps,
-        upsert_string_pair(dep_source_cache, path, source),
-        parse_count + 1
-      )
+      (deps, upsert_string_pair(dep_source_cache, path, source), parse_count + 1)
     }
   }
 }
 
 fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with { Error, Fs } {
   match load_persistent_dep_list(path, source) {
-    Some(deps) => (
-      deps,
-      upsert_string_pair(dep_source_cache, path, source),
-      parse_count
-    ),
+    Some(deps) => (deps, upsert_string_pair(dep_source_cache, path, source), parse_count),
     None => {
       let (deps, _, next_parse_count) = load_or_parse_module_header_fs(path, source, parse_count)
-      (
-        deps,
-        upsert_string_pair(dep_source_cache, path, source),
-        next_parse_count
-      )
+      (deps, upsert_string_pair(dep_source_cache, path, source), next_parse_count)
     }
   }
 }
@@ -628,14 +552,14 @@ fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], p
 fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with { Error, Fs } {
   match lookup_string_pair(dep_source_cache, path) {
     Some(cached_source) =>
-      if cached_source == source {
-        match ripple_get_deps(rdb, path) {
-          Some(deps) => (deps, dep_source_cache, parse_count),
-          None => load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
-        }
-      } else {
-        load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
-      },
+    if cached_source == source {
+      match ripple_get_deps(rdb, path) {
+        Some(deps) => (deps, dep_source_cache, parse_count),
+        None => load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
+      }
+    } else {
+      load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
+    },
     None => load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
   }
 }
@@ -647,13 +571,7 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
     match ripple_get_source(rdb, path) {
       None => (String::concat("missing:", path), rdb, env_cache, dep_source_cache, parse_count),
       Some(source) => {
-        let (deps, next_dep_source_cache, initial_parse_count) = resolve_deps_for_source(
-          rdb,
-          dep_source_cache,
-          path,
-          source,
-          parse_count
-        )
+        let (deps, next_dep_source_cache, initial_parse_count) = resolve_deps_for_source(rdb, dep_source_cache, path, source, parse_count)
         let dlen = Array::length(deps)
         // Cycle-detection stack: push self before recursing, truncate back after.
         // O(1) per frame vs. previous Array::concat(stack, [path]) which was O(depth) per frame.
@@ -670,39 +588,12 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
             (dep_acc, dep_db, dep_env_cache, dep_source_cache2, dep_parse_count)
           } else {
             let dep_path = Array::get(deps, i)
-            let (
-              dep_fp,
-              next_db,
-              next_env_cache,
-              next_dep_source_cache2,
-              next_parse_count
-            ) = ensure_fingerprint(
-              dep_db,
-              dep_env_cache,
-              dep_source_cache2,
-              dep_parse_count,
-              dep_path,
-              stack
-            )
+            let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint(dep_db, dep_env_cache, dep_source_cache2, dep_parse_count, dep_path, stack)
             Array::push(dep_acc, (dep_path, dep_fp))
-            resolve_nested(
-              i + 1,
-              dep_acc,
-              next_db,
-              next_env_cache,
-              next_dep_source_cache2,
-              next_parse_count
-            )
+            resolve_nested(i + 1, dep_acc, next_db, next_env_cache, next_dep_source_cache2, next_parse_count)
           }
         }
-        let resolved_nested = resolve_nested(
-          0,
-          empty_dep_fps(),
-          rdb,
-          env_cache,
-          next_dep_source_cache,
-          initial_parse_count
-        )
+        let resolved_nested = resolve_nested(0, empty_dep_fps(), rdb, env_cache, next_dep_source_cache, initial_parse_count)
         Array::truncate(stack, saved_stack_len)
         let dep_fps = resolved_nested.0
         let db_after_deps = resolved_nested.1
@@ -712,29 +603,17 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
         let fingerprint = build_fingerprint(source, dep_fps)
         match ripple_get_fingerprint(db_after_deps, path) {
           Some(cached_fp) =>
-            if cached_fp == fingerprint {
-              (
-                fingerprint,
-                db_after_deps,
-                env_cache_after_deps,
-                dep_source_cache_after_deps,
-                parse_count_after_deps
-              )
-            } else {
-              let stmts = parse_program_with_path(path, source)
-              let final_parse_count = parse_count_after_deps + 1
-              let import_env = build_import_env(stmts, dir_of_path(path), env_cache_after_deps)
-              let checked_env = check_program_with_env(stmts, import_env)
-              let next_env_cache = upsert_env_cache(env_cache_after_deps, path, checked_env)
-              let next_db = ripple_record_eval(db_after_deps, path, fingerprint, deps)
-              (
-                fingerprint,
-                next_db,
-                next_env_cache,
-                dep_source_cache_after_deps,
-                final_parse_count
-              )
-            },
+          if cached_fp == fingerprint {
+            (fingerprint, db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps)
+          } else {
+            let stmts = parse_program_with_path(path, source)
+            let final_parse_count = parse_count_after_deps + 1
+            let import_env = build_import_env(stmts, dir_of_path(path), env_cache_after_deps)
+            let checked_env = check_program_with_env(stmts, import_env)
+            let next_env_cache = upsert_env_cache(env_cache_after_deps, path, checked_env)
+            let next_db = ripple_record_eval(db_after_deps, path, fingerprint, deps)
+            (fingerprint, next_db, next_env_cache, dep_source_cache_after_deps, final_parse_count)
+          },
           None => {
             let stmts = parse_program_with_path(path, source)
             let final_parse_count = parse_count_after_deps + 1
@@ -742,13 +621,7 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
             let checked_env = check_program_with_env(stmts, import_env)
             let next_env_cache = upsert_env_cache(env_cache_after_deps, path, checked_env)
             let next_db = ripple_record_eval(db_after_deps, path, fingerprint, deps)
-            (
-              fingerprint,
-              next_db,
-              next_env_cache,
-              dep_source_cache_after_deps,
-              final_parse_count
-            )
+            (fingerprint, next_db, next_env_cache, dep_source_cache_after_deps, final_parse_count)
           }
         }
       }
@@ -759,34 +632,8 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
 export fn db_typecheck(db: TypeDb, path: String) -> TypeDb with { Error } {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
-      let (
-        _,
-        next_rdb,
-        next_env_cache,
-        next_dep_source_cache,
-        next_parse_count
-      ) = ensure_fingerprint(
-        rdb,
-        env_cache,
-        dep_source_cache,
-        parse_count,
-        path,
-        empty_strings()
-      )
-      wrap_db(
-        TypeDbState(
-          next_rdb,
-          next_env_cache,
-          next_dep_source_cache,
-          merged_cache,
-          module_source_cache,
-          artifact_cache,
-          next_parse_count,
-          merge_count,
-          module_source_count,
-          codegen_count
-        )
-      )
+      let (_, next_rdb, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint(rdb, env_cache, dep_source_cache, parse_count, path, empty_strings())
+      wrap_db(TypeDbState(next_rdb, next_env_cache, next_dep_source_cache, merged_cache, module_source_cache, artifact_cache, next_parse_count, merge_count, module_source_count, codegen_count))
     }
   }
 }
@@ -794,34 +641,8 @@ export fn db_typecheck(db: TypeDb, path: String) -> TypeDb with { Error } {
 export fn db_typecheck_fs(db: TypeDb, path: String) -> TypeDb with { Error, Fs } {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
-      let (
-        _,
-        next_rdb,
-        next_env_cache,
-        next_dep_source_cache,
-        next_parse_count
-      ) = ensure_fingerprint_fs_impl(
-        rdb,
-        env_cache,
-        dep_source_cache,
-        parse_count,
-        path,
-        empty_strings()
-      )
-      wrap_db(
-        TypeDbState(
-          next_rdb,
-          next_env_cache,
-          next_dep_source_cache,
-          merged_cache,
-          module_source_cache,
-          artifact_cache,
-          next_parse_count,
-          merge_count,
-          module_source_count,
-          codegen_count
-        )
-      )
+      let (_, next_rdb, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, empty_strings())
+      wrap_db(TypeDbState(next_rdb, next_env_cache, next_dep_source_cache, merged_cache, module_source_cache, artifact_cache, next_parse_count, merge_count, module_source_count, codegen_count))
     }
   }
 }
@@ -830,14 +651,14 @@ export fn db_program_source(db: TypeDb, path: String) -> (String, String, TypeDb
   let checked = db_typecheck(db, path)
   match unwrap_db(checked) {
     TypeDbState(rdb, _, _, _, _, _, _, _, _, _) =>
-      match ripple_get_source(rdb, path) {
-        None => throw(String::concat("missing:", path)),
-        Some(source) =>
-          match ripple_get_fingerprint(rdb, path) {
-            Some(fingerprint) => (source, fingerprint, checked),
-            None => (source, source, checked)
-          }
+    match ripple_get_source(rdb, path) {
+      None => throw(String::concat("missing:", path)),
+      Some(source) =>
+      match ripple_get_fingerprint(rdb, path) {
+        Some(fingerprint) => (source, fingerprint, checked),
+        None => (source, source, checked)
       }
+    }
   }
 }
 
@@ -846,10 +667,7 @@ fn build_merge_fingerprint(sources: Array[(String, String)]) -> String {
   let mut i = 0
   while i < Array::length(sources) {
     let (_, source) = Array::get(sources, i)
-    let next = String::concat(
-      acc,
-      String::concat("|", compact_string_fingerprint(source))
-    )
+    let next = String::concat(acc, String::concat("|", compact_string_fingerprint(source)))
     acc = compact_string_fingerprint(next)
     i = i + 1
   }
@@ -871,9 +689,9 @@ fn lookup_source_by_path(sources: Array[(String, String)], target_path: String) 
   found
 }
 
-// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
-// are the locals the export-rename plan already rewrites; the inline copy gets
-// the target file's export renames applied first.
+/// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
+/// are the locals the export-rename plan already rewrites; the inline copy gets
+/// the target file's export renames applied first.
 fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Unit with { Error } {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = array_empty()
@@ -885,13 +703,7 @@ fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_
       let resolved = resolve_import_path(base_dir, raw_path)
       match lookup_source_by_path(sources, resolved) {
         Some(source) => {
-          let source_stmts = namespace_private_value_stmts(
-            resolved,
-            apply_export_renames_stmts(
-              parse_program_with_path(resolved, source),
-              export_plan_renames_for(plan, resolved)
-            )
-          )
+          let source_stmts = namespace_private_value_stmts(resolved, apply_export_renames_stmts(parse_program_with_path(resolved, source), export_plan_renames_for(plan, resolved)))
           let mut j = 0
           let mut done = false
           while j < Array::length(source_stmts) && !done {
@@ -913,8 +725,8 @@ fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_
   }
 }
 
-// #716: parse every source once and expose (paths, stmts) for the export-
-// rename plan; the merge itself reuses the parsed statements.
+/// #716: parse every source once and expose (paths, stmts) for the export-
+/// rename plan; the merge itself reuses the parsed statements.
 fn parse_merge_sources(sources: Array[(String, String)]) -> (Array[String], Array[Array[Stmt]]) with { Error } {
   let file_paths = array_empty()
   let file_stmts = array_empty()
@@ -928,9 +740,9 @@ fn parse_merge_sources(sources: Array[(String, String)]) -> (Array[String], Arra
   (file_paths, file_stmts)
 }
 
-// One (sub)list of sources merged under a whole-program rename plan.
-// `collision_sources` spans the whole program so a collision-def import that
-// crosses a group boundary still resolves.
+/// One (sub)list of sources merged under a whole-program rename plan.
+/// `collision_sources` spans the whole program so a collision-def import that
+/// crosses a group boundary still resolves.
 fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, String)], file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, collision_sources: Array[(String, String)]) -> String with { Error } {
   let merged = empty_stmt_array()
   let source_count = Array::length(sources)
@@ -1007,30 +819,8 @@ export fn db_merged_source(db: TypeDb, _entry_path: String, sources: Array[(Stri
         Some(merged_source) => (merged_source, merge_fingerprint, db),
         None => {
           let merged_source = build_merged_source(_entry_path, sources)
-          let next_merged_cache = upsert_source_cache(
-            merged_cache,
-            merge_cache_key,
-            merge_fingerprint,
-            merged_source
-          )
-          (
-            merged_source,
-            merge_fingerprint,
-            wrap_db(
-              TypeDbState(
-                rdb,
-                env_cache,
-                dep_source_cache,
-                next_merged_cache,
-                module_source_cache,
-                artifact_cache,
-                parse_count,
-                merge_count + 1,
-                module_source_count,
-                codegen_count
-              )
-            )
-          )
+          let next_merged_cache = upsert_source_cache(merged_cache, merge_cache_key, merge_fingerprint, merged_source)
+          (merged_source, merge_fingerprint, wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, next_merged_cache, module_source_cache, artifact_cache, parse_count, merge_count + 1, module_source_count, codegen_count)))
         }
       }
     }
@@ -1077,13 +867,8 @@ export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(Str
         let (group_name, sources) = Array::get(groups, i)
         let group_start = flat_idx
         flat_idx = flat_idx + Array::length(sources)
-        let fingerprint = compact_string_fingerprint(
-          String::concat(build_merge_fingerprint(sources), String::concat("#", plan_fp))
-        )
-        let grouped_next = String::concat(
-          grouped_fingerprint,
-          String::concat("|", String::concat(group_name, String::concat("=", fingerprint)))
-        )
+        let fingerprint = compact_string_fingerprint(String::concat(build_merge_fingerprint(sources), String::concat("#", plan_fp)))
+        let grouped_next = String::concat(grouped_fingerprint, String::concat("|", String::concat(group_name, String::concat("=", fingerprint))))
         grouped_fingerprint = compact_string_fingerprint(grouped_next)
         let cache_key = String::concat("merged-group|", group_name)
         match lookup_source_cache(merged_cache, cache_key, fingerprint) {
@@ -1091,25 +876,25 @@ export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(Str
             Array::push(group_sources, source)
           },
           None =>
-            match lookup_source_cache(new_group_cache_entries, cache_key, fingerprint) {
-              Some(source) => {
-                Array::push(group_sources, source)
-              },
-              None => {
-                let group_paths = Array::slice(flat_paths, group_start, group_start + Array::length(sources))
-                let group_stmts = Array::slice(flat_stmts, group_start, group_start + Array::length(sources))
-                // #740: pass the WHOLE-merge plan entry, not "" — the empty
-                // entry made build_merged_source_with_plan treat the last
-                // file of EVERY GROUP as the entry (exports unrenamed), so
-                // group tails (ripple.vibe, desugar_trait_dict.vibe, ...)
-                // were missing their `_exp_` defs while callers referenced
-                // them.
-                let source = build_merged_source_with_plan(plan_entry, sources, group_paths, group_stmts, plan, flat_sources)
-                Array::push(new_group_cache_entries, StringTriple(cache_key, fingerprint, source))
-                merge_count_acc = merge_count_acc + 1
-                Array::push(group_sources, source)
-              }
+          match lookup_source_cache(new_group_cache_entries, cache_key, fingerprint) {
+            Some(source) => {
+              Array::push(group_sources, source)
+            },
+            None => {
+              let group_paths = Array::slice(flat_paths, group_start, group_start + Array::length(sources))
+              let group_stmts = Array::slice(flat_stmts, group_start, group_start + Array::length(sources))
+              // #740: pass the WHOLE-merge plan entry, not "" — the empty
+              // entry made build_merged_source_with_plan treat the last
+              // file of EVERY GROUP as the entry (exports unrenamed), so
+              // group tails (ripple.vibe, desugar_trait_dict.vibe, ...)
+              // were missing their `_exp_` defs while callers referenced
+              // them.
+              let source = build_merged_source_with_plan(plan_entry, sources, group_paths, group_stmts, plan, flat_sources)
+              Array::push(new_group_cache_entries, StringTriple(cache_key, fingerprint, source))
+              merge_count_acc = merge_count_acc + 1
+              Array::push(group_sources, source)
             }
+          }
         }
         i = i + 1
       }
@@ -1118,50 +903,11 @@ export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(Str
       let grouped_cache_key = "merged-groups"
       match lookup_source_cache(next_merged_cache, grouped_cache_key, grouped_fingerprint) {
         Some(source) =>
-          (
-            source,
-            grouped_fingerprint,
-            wrap_db(
-              TypeDbState(
-                rdb,
-                env_cache,
-                dep_source_cache,
-                next_merged_cache,
-                module_source_cache,
-                artifact_cache,
-                parse_count,
-                next_merge_count,
-                module_source_count,
-                codegen_count
-              )
-            )
-          ),
+        (source, grouped_fingerprint, wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, next_merged_cache, module_source_cache, artifact_cache, parse_count, next_merge_count, module_source_count, codegen_count))),
         None => {
           let source = join_group_sources(group_sources)
-          let final_merged_cache = upsert_source_cache(
-            next_merged_cache,
-            grouped_cache_key,
-            grouped_fingerprint,
-            source
-          )
-          (
-            source,
-            grouped_fingerprint,
-            wrap_db(
-              TypeDbState(
-                rdb,
-                env_cache,
-                dep_source_cache,
-                final_merged_cache,
-                module_source_cache,
-                artifact_cache,
-                parse_count,
-                next_merge_count + 1,
-                module_source_count,
-                codegen_count
-              )
-            )
-          )
+          let final_merged_cache = upsert_source_cache(next_merged_cache, grouped_cache_key, grouped_fingerprint, source)
+          (source, grouped_fingerprint, wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, final_merged_cache, module_source_cache, artifact_cache, parse_count, next_merge_count + 1, module_source_count, codegen_count)))
         }
       }
     }
@@ -1199,29 +945,8 @@ export fn db_module_source(db: TypeDb, fingerprint: String, source: String) -> (
         Some(module_source) => (module_source, db),
         None => {
           let module_source = build_module_source(source)
-          let next_module_source_cache = upsert_source_cache(
-            module_source_cache,
-            module_cache_key,
-            fingerprint,
-            module_source
-          )
-          (
-            module_source,
-            wrap_db(
-              TypeDbState(
-                rdb,
-                env_cache,
-                dep_source_cache,
-                merged_cache,
-                next_module_source_cache,
-                artifact_cache,
-                parse_count,
-                merge_count,
-                module_source_count + 1,
-                codegen_count
-              )
-            )
-          )
+          let next_module_source_cache = upsert_source_cache(module_source_cache, module_cache_key, fingerprint, module_source)
+          (module_source, wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, next_module_source_cache, artifact_cache, parse_count, merge_count, module_source_count + 1, codegen_count)))
         }
       }
     }
@@ -1300,34 +1025,16 @@ fn hex_to_bytes(hex: String) -> Bytes with { Error } {
 export fn db_load_artifact(db: TypeDb, _path: String, kind: String, entry_name: String, fingerprint: String) -> Option[Bytes] with { Error } {
   match unwrap_db(db) {
     TypeDbState(_, _, _, _, _, artifact_cache, _, _, _, _) =>
-      match lookup_source_cache(artifact_cache, artifact_cache_key(kind, entry_name), fingerprint) {
-        Some(hex) => Some(hex_to_bytes(hex)),
-        None => None
-      }
+    match lookup_source_cache(artifact_cache, artifact_cache_key(kind, entry_name), fingerprint) {
+      Some(hex) => Some(hex_to_bytes(hex)),
+      None => None
+    }
   }
 }
 
 export fn db_store_artifact(db: TypeDb, _path: String, kind: String, entry_name: String, fingerprint: String, bytes: Bytes) -> TypeDb {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) =>
-      wrap_db(
-        TypeDbState(
-          rdb,
-          env_cache,
-          dep_source_cache,
-          merged_cache,
-          module_source_cache,
-          upsert_source_cache(
-            artifact_cache,
-            artifact_cache_key(kind, entry_name),
-            fingerprint,
-            bytes_to_hex(bytes)
-          ),
-          parse_count,
-          merge_count,
-          module_source_count,
-          codegen_count + 1
-        )
-      )
+    wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, upsert_source_cache(artifact_cache, artifact_cache_key(kind, entry_name), fingerprint, bytes_to_hex(bytes)), parse_count, merge_count, module_source_count, codegen_count + 1))
   }
 }

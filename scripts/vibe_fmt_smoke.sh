@@ -134,4 +134,133 @@ if ! cmp -s "$WORK/not_import.expected.vibe" "$WORK/not_import.got.vibe"; then
   exit 1
 fi
 
-echo "[vibe-fmt-smoke] ok (canonical + idempotent + --check + paths #628 + import sort/wrap)"
+# `export enum Re { A; B; C }` / `export struct Foo { field: Map[K, V] }`
+# bodies must NOT be misdetected as an import list either: walking backward
+# from `{` through `Re`/`Foo` then hitting the `enum`/`struct` keyword must
+# stop the scan (two name/keyword segments in a row with no `.`/`/`/`::`
+# separator is never valid import-path syntax), not skip through it to reach
+# `export` further back and wrongly sort/reflow the body as an import list.
+cat > "$WORK/enum_not_import.in.vibe" <<'EOF'
+export enum Re {
+  RChar(Int)
+  RDot
+  RSeq(Array[Re])
+}
+export struct Foo {
+  entries: Map[String, Bool]
+}
+EOF
+cat > "$WORK/enum_not_import.expected.vibe" <<'EOF'
+export enum Re {
+  RChar(Int)
+  RDot
+  RSeq(Array[Re])
+}
+export struct Foo {
+  entries: Map[String, Bool]
+}
+EOF
+bash "$ROOT_DIR/scripts/vibe_fmt.sh" --stdout "$WORK/enum_not_import.in.vibe" > "$WORK/enum_not_import.got.vibe" 2>/dev/null
+if ! cmp -s "$WORK/enum_not_import.expected.vibe" "$WORK/enum_not_import.got.vibe"; then
+  echo "[vibe-fmt-smoke] FAIL: export enum/struct body misdetected as import list" >&2
+  diff "$WORK/enum_not_import.expected.vibe" "$WORK/enum_not_import.got.vibe" >&2 || true
+  exit 1
+fi
+
+# A brace BLOCK (one statement per source line) nested inside an enclosing
+# call's parens -- e.g. a multi-statement closure passed as a call argument,
+# `run(() -> { .. })` -- must keep each statement on its own line. The raw
+# newline-preservation pass used to swallow every newline once ANY enclosing
+# paren was open (absolute paren_depth > 0), collapsing the whole closure
+# body onto one line; it must only swallow newlines from parens opened
+# *after* the innermost currently-open block.
+cat > "$WORK/nested_call_block.in.vibe" <<'EOF'
+fn foo() -> Int {
+  let r = run(() -> {
+    let t = 5
+    let a = t
+    let b = t
+    a
+  })
+  1
+}
+EOF
+bash "$ROOT_DIR/scripts/vibe_fmt.sh" --stdout "$WORK/nested_call_block.in.vibe" > "$WORK/nested_call_block.got.vibe" 2>/dev/null
+if ! cmp -s "$WORK/nested_call_block.in.vibe" "$WORK/nested_call_block.got.vibe"; then
+  echo "[vibe-fmt-smoke] FAIL: statement newlines collapsed inside a call-argument closure body" >&2
+  diff "$WORK/nested_call_block.in.vibe" "$WORK/nested_call_block.got.vibe" >&2 || true
+  exit 1
+fi
+
+# `from` is not a keyword in the real grammar (lib/@vibe/parser has no
+# k_from/"from" handling) -- it's a perfectly valid bare identifier, e.g. a
+# parameter name. The formatter's own lexer still tags it k_from (vestigial),
+# so a brace directly preceded by a bare `from` (not part of any real import
+# statement) must NOT be misdetected as an import list: `if name == from {
+# ELetRec(name, v, b) }` corrupted into `ELetRec(name, b), v` when
+# reorder_import_lists's nesting-blind comma split ran over the misdetected
+# brace's contents, splitting and re-sorting a nested call's own arguments.
+cat > "$WORK/from_ident.in.vibe" <<'EOF'
+fn dlh_subst(expr: Expr, from: String, to: String) -> Expr {
+  if name == from {
+    ELetRec(name, v, b)
+  }
+  1
+}
+EOF
+bash "$ROOT_DIR/scripts/vibe_fmt.sh" --stdout "$WORK/from_ident.in.vibe" > "$WORK/from_ident.got.vibe" 2>/dev/null
+if ! cmp -s "$WORK/from_ident.in.vibe" "$WORK/from_ident.got.vibe"; then
+  echo "[vibe-fmt-smoke] FAIL: bare 'from' identifier before '{' misdetected as import list" >&2
+  diff "$WORK/from_ident.in.vibe" "$WORK/from_ident.got.vibe" >&2 || true
+  exit 1
+fi
+
+# `x is CtUnknown {` (a bare-variant pattern check via `is`) must NOT get a
+# struct-literal `::` inserted before the `{` -- that `{` opens the enclosing
+# `if`'s body, unrelated to the `is` check. Confirmed real corruption:
+# checker.vibe's `if hres_now is CtUnknown {` became `if hres_now is
+# CtUnknown::{`, which parses the block body as bogus struct-literal fields
+# and cascades into an unrelated "unexpected token" error much later in the
+# file (the merge-flatten compile step of scripts/generate_bundle.sh).
+cat > "$WORK/is_ctor.in.vibe" <<'EOF'
+fn foo(x: Type) -> Int {
+  if x is CtUnknown {
+    1
+  } else {
+    2
+  }
+}
+EOF
+bash "$ROOT_DIR/scripts/vibe_fmt.sh" --stdout "$WORK/is_ctor.in.vibe" > "$WORK/is_ctor.got.vibe" 2>/dev/null
+if ! cmp -s "$WORK/is_ctor.in.vibe" "$WORK/is_ctor.got.vibe"; then
+  echo "[vibe-fmt-smoke] FAIL: 'x is CapitalizedVariant {' got a spurious struct-literal '::' inserted" >&2
+  diff "$WORK/is_ctor.in.vibe" "$WORK/is_ctor.got.vibe" >&2 || true
+  exit 1
+fi
+
+# `k_handle` and `k_return` were missing from is_keyword_kind entirely, so
+# needs_space's is_keyword_kind(prev)/is_keyword_kind(curr) checks both fell
+# through to false for the specific pair `return` immediately followed by
+# `handle` -- no other rule in needs_space covers two adjacent bare keywords
+# with no operator/punctuation between them. Confirmed real corruption:
+# cli_adapter.vibe's `return handle { .. } with Error { .. }` had the space
+# dropped, gluing them into a single `returnhandle` token, which cascaded
+# into an unrelated far-later "unexpected token: with" parse error (the
+# merge-flatten compile step of scripts/generate_bundle.sh).
+cat > "$WORK/return_handle.in.vibe" <<'EOF'
+fn foo() -> Int with { Error } {
+  return handle {
+    1
+  } with Error {
+    Throw(msg) => 0
+  }
+}
+EOF
+bash "$ROOT_DIR/scripts/vibe_fmt.sh" --stdout "$WORK/return_handle.in.vibe" > "$WORK/return_handle.got.vibe" 2>/dev/null
+if ! cmp -s "$WORK/return_handle.in.vibe" "$WORK/return_handle.got.vibe"; then
+  echo "[vibe-fmt-smoke] FAIL: 'return handle {' lost its space and glued into 'returnhandle'" >&2
+  diff "$WORK/return_handle.in.vibe" "$WORK/return_handle.got.vibe" >&2 || true
+  exit 1
+fi
+
+echo "[vibe-fmt-smoke] ok (canonical + idempotent + --check + paths #628 + import sort/wrap + enum/struct guard + nested-call block newlines + from-identifier guard + is-ctor guard + return-handle guard)"

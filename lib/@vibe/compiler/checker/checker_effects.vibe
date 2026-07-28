@@ -1,11 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr,
-  Pat,
-  Stmt,
-  TypeExpr,
-  Type, TypeEnv, env_lookup
+  Expr, Pat, Stmt, Type, TypeEnv, TypeExpr, env_lookup
 }
 
 import @vibe/core {
@@ -121,9 +117,9 @@ fn effect_opt_is_async(eff: Option[String]) -> Bool {
   }
 }
 
-// True only for async-effect BUILTIN primitives (await/sleep/Stream::next/...).
-// A name bound in `env` (a user/prelude function) is intentionally NOT treated
-// as a primitive even if its type is `with { Async }`.
+/// True only for async-effect BUILTIN primitives (await/sleep/Stream::next/...).
+/// A name bound in `env` (a user/prelude function) is intentionally NOT treated
+/// as a primitive even if its type is `with { Async }`.
 fn is_async_primitive(name: String, env: TypeEnv) -> Bool {
   match env_lookup(env, name) {
     Some(_) => false,
@@ -284,8 +280,8 @@ export fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> 
   }
 }
 
-// A function body runs in an `{Async}` context if EITHER the lambda's inline
-// effect OR the binding's declared signature type carries `Async`.
+/// A function body runs in an `{Async}` context if EITHER the lambda's inline
+/// effect OR the binding's declared signature type carries `Async`.
 fn sig_type_is_async(topt: Option[TypeExpr]) -> Bool {
   match topt {
     Some(TyFn(_, _, eff)) => effect_opt_is_async(eff),
@@ -337,7 +333,7 @@ export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[E
 // declines to flag the (rarer) perform-of-a-different-effect-inside-a-handle
 // case, which full row tracking (#626 criteria 2/4) will cover.
 
-// Split a `with { A, B }` annotation into trimmed, deduped effect labels.
+/// Split a `with { A, B }` annotation into trimmed, deduped effect labels.
 fn effect_decl_labels(eff: Option[String]) -> Array[String] {
   let out = array_empty()
   match eff {
@@ -367,9 +363,9 @@ fn effect_decl_labels(eff: Option[String]) -> Array[String] {
   }
 }
 
-// A single lowercase letter is an effect VARIABLE (polymorphic row tail in the
-// current representation): a function declaring `with { e }` may perform any
-// effect, so treat such a declaration as authorizing everything.
+/// A single lowercase letter is an effect VARIABLE (polymorphic row tail in the
+/// current representation): a function declaring `with { e }` may perform any
+/// effect, so treat such a declaration as authorizing everything.
 fn label_is_effect_var(name: String) -> Bool {
   String::length(name) == 1 && String::char_code_at(name, 0) >= 97 && String::char_code_at(name, 0) <= 122
 }
@@ -389,34 +385,34 @@ fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
   ok
 }
 
-// A DIRECT `perform EffName::Op` is authorized if the declared row names
-// either the whole effect (`EffName`) or, per ADR-0071's operation-level row
-// items, the exact operation (`EffName::Op`) itself -- e.g. `with { Ask::Get
-// }` must authorize a bare `perform Ask::Get` in the same function, exactly
-// as it already authorizes a transitive call to a callee declaring `{
-// Ask::Get }` (that check compares the full qualified label directly,
-// without stripping to the base effect name).
+/// A DIRECT `perform EffName::Op` is authorized if the declared row names
+/// either the whole effect (`EffName`) or, per ADR-0071's operation-level row
+/// items, the exact operation (`EffName::Op`) itself -- e.g. `with { Ask::Get
+/// }` must authorize a bare `perform Ask::Get` in the same function, exactly
+/// as it already authorizes a transitive call to a callee declaring `{
+/// Ask::Get }` (that check compares the full qualified label directly,
+/// without stripping to the base effect name).
 fn decl_authorizes_op(labels: Array[String], op_name: String) -> Bool {
   decl_authorizes_effect(labels, effect_name_of_op(op_name)) || decl_authorizes_effect(labels, op_name)
 }
 
-// `perform EffName::Op` — the op identifier is `EffName::Op`; the effect is the
-// segment before `::`.
+/// `perform EffName::Op` — the op identifier is `EffName::Op`; the effect is the
+/// segment before `::`.
 fn effect_name_of_op(op_name: String) -> String {
   let idx = String::index_of(op_name, "::")
   if idx > 0 {
-    op_name[0:idx]
+    op_name[0: idx]
   } else {
     op_name
   }
 }
 
-// #626 criterion 3 (call-site propagation, builtin slice): calling an effectful
-// BUILTIN (e.g. `Fs::read_file`, `Env::args_len`) requires the enclosing
-// function to declare that effect, exactly like `perform`. Returns the required
-// effect, or None for pure builtins / non-builtins. `Error` (the 441-site throw
-// discipline) and `Async` (composition-allowed; handled by the async pass) are
-// deliberately excluded from this slice.
+/// #626 criterion 3 (call-site propagation, builtin slice): calling an effectful
+/// BUILTIN (e.g. `Fs::read_file`, `Env::args_len`) requires the enclosing
+/// function to declare that effect, exactly like `perform`. Returns the required
+/// effect, or None for pure builtins / non-builtins. `Error` (the 441-site throw
+/// discipline) and `Async` (composition-allowed; handled by the async pass) are
+/// deliberately excluded from this slice.
 fn builtin_call_effect(name: String) -> Option[String] {
   // `sh`/`sh_lines` and the checker_visible `vibe_*_raw` dunder builtins
   // (Codex review, PR #909) are the only UNQUALIFIED effectful builtins:
@@ -487,10 +483,10 @@ fn labels_union(a: Array[String], b: Array[String]) -> Array[String] {
   out
 }
 
-// #639: deterministic label ordering for effect-row diagnostics. Char-by-char
-// lexicographic compare, shorter-prefix-first on a tie — written out by hand
-// (see CLAUDE.md's length-first `String <` gotcha) so `{ Env, Fs }` always
-// renders in the same order.
+/// #639: deterministic label ordering for effect-row diagnostics. Char-by-char
+/// lexicographic compare, shorter-prefix-first on a tie — written out by hand
+/// (see CLAUDE.md's length-first `String <` gotcha) so `{ Env, Fs }` always
+/// renders in the same order.
 fn label_lt(a: String, b: String) -> Bool {
   let la = String::length(a)
   let lb = String::length(b)
@@ -522,7 +518,7 @@ fn label_lt(a: String, b: String) -> Bool {
   }
 }
 
-// Copying insertion sort (rows are tiny — a handful of labels at most).
+/// Copying insertion sort (rows are tiny — a handful of labels at most).
 fn sort_labels(xs: Array[String]) -> Array[String] {
   let out = Array::slice(xs, 0, Array::length(xs))
   let mut i = 1
@@ -553,39 +549,39 @@ fn join_labels(xs: Array[String]) -> String {
   out
 }
 
-// #639: build the effect-row mismatch diagnostic for a perform/call whose
-// required effects are absent from the enclosing declaration's row. `missing`
-// is the set difference (callee requires minus caller declares), rendered
-// sorted; `required` is the sorted union the fix-it hint suggests declaring.
+/// #639: build the effect-row mismatch diagnostic for a perform/call whose
+/// required effects are absent from the enclosing declaration's row. `missing`
+/// is the set difference (callee requires minus caller declares), rendered
+/// sorted; `required` is the sorted union the fix-it hint suggests declaring.
 fn make_row_mismatch(fn_name: String, declared: Array[String], missing: Array[String]) -> EffectError {
   let missing_sorted = sort_labels(labels_union(no_str_labels(), missing))
   let required = sort_labels(labels_union(declared, missing))
   EEEffectRowMismatch(fn_name, join_labels(missing_sorted), join_labels(declared), join_labels(required))
 }
 
-// #626 criterion 2: a `handle ... with E` DISCHARGES E for its body — after
-// handling E the body need not declare it. The parser qualifies each handler
-// arm pattern as `E::Op`, so the discharged effect names are recoverable as the
-// `::`-prefixes of the arm constructor patterns. Returns the distinct effects a
-// handle discharges (empty if none could be determined — then the body stays
-// conservatively permissive, never over-strict).
-//
-// ADR-0071 (#755) step 4: ALSO push each arm's own fully-qualified operation
-// name (`Ask::Get`, not just the bare `Ask` prefix). `handle ... with Ask
-// {...}` is exhaustive over every operation of Ask (ADR-0050 -- a handler
-// can't discharge only some operations), so discharging the bare effect
-// name is semantically equivalent to discharging every one of its qualified
-// operation names. But the DOWNSTREAM containment check
-// (decl_authorizes_effect) does exact string-label matching: a handled
-// body that transitively calls a function declaring `with { Ask::Get }`
-// (operation-level, not the bare effect) previously reported that specific
-// requirement as still missing even though the handle plainly covers it --
-// "Ask" != "Ask::Get" as strings, and the discharge list only ever
-// contained the bare form. Pushing the qualified name too is a pure
-// widening (nothing that was authorized before stops being authorized; the
-// bare-effect-name discharge and its blanket effect_name_of_op-based
-// authorization inside the body are both untouched), so it only fixes this
-// gap without changing any other observable behavior.
+/// #626 criterion 2: a `handle ... with E` DISCHARGES E for its body — after
+/// handling E the body need not declare it. The parser qualifies each handler
+/// arm pattern as `E::Op`, so the discharged effect names are recoverable as the
+/// `::`-prefixes of the arm constructor patterns. Returns the distinct effects a
+/// handle discharges (empty if none could be determined — then the body stays
+/// conservatively permissive, never over-strict).
+///
+/// ADR-0071 (#755) step 4: ALSO push each arm's own fully-qualified operation
+/// name (`Ask::Get`, not just the bare `Ask` prefix). `handle ... with Ask
+/// {...}` is exhaustive over every operation of Ask (ADR-0050 -- a handler
+/// can't discharge only some operations), so discharging the bare effect
+/// name is semantically equivalent to discharging every one of its qualified
+/// operation names. But the DOWNSTREAM containment check
+/// (decl_authorizes_effect) does exact string-label matching: a handled
+/// body that transitively calls a function declaring `with { Ask::Get }`
+/// (operation-level, not the bare effect) previously reported that specific
+/// requirement as still missing even though the handle plainly covers it --
+/// "Ask" != "Ask::Get" as strings, and the discharge list only ever
+/// contained the bare form. Pushing the qualified name too is a pure
+/// widening (nothing that was authorized before stops being authorized; the
+/// bare-effect-name discharge and its blanket effect_name_of_op-based
+/// authorization inside the body are both untouched), so it only fixes this
+/// gap without changing any other observable behavior.
 fn collect_handle_effects(arms: Array[(Pat, Expr)]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
@@ -595,7 +591,7 @@ fn collect_handle_effects(arms: Array[(Pat, Expr)]) -> Array[String] {
       PCtor(name, _) => {
         let idx = String::index_of(name, "::")
         if idx > 0 {
-          let eff = name[0:idx]
+          let eff = name[0: idx]
           let mut seen = false
           let mut j = 0
           while j < Array::length(out) {
@@ -627,17 +623,17 @@ fn collect_handle_effects(arms: Array[(Pat, Expr)]) -> Array[String] {
   out
 }
 
-// Walk an expression's effect discipline with an EXPLICIT WORK STACK instead of
-// recursion, so the pass never exhausts the wasm call stack however deeply the
-// compiler's own source nests (long `let`/`seq` spines AND nested
-// if/match/call forms). Each stack item carries its (expr, declared, in_handle)
-// context: `EFn` resets `declared` to its own effect row, `EHandle` augments it
-// with the discharged effects (criterion 2). Order of traversal differs from a
-// recursive pre-order walk, but the SET of effect errors found is identical, so
-// the accept/reject decision is unchanged.
-// The declared effect row of a top-level binding: the signature's `with { ... }`
-// unioned with an EFn body's own effect annotation (`let f = (x) -> { .. } with
-// { E }`). Used to build the call-graph effect map for transitive enforcement.
+/// Walk an expression's effect discipline with an EXPLICIT WORK STACK instead of
+/// recursion, so the pass never exhausts the wasm call stack however deeply the
+/// compiler's own source nests (long `let`/`seq` spines AND nested
+/// if/match/call forms). Each stack item carries its (expr, declared, in_handle)
+/// context: `EFn` resets `declared` to its own effect row, `EHandle` augments it
+/// with the discharged effects (criterion 2). Order of traversal differs from a
+/// recursive pre-order walk, but the SET of effect errors found is identical, so
+/// the accept/reject decision is unchanged.
+/// The declared effect row of a top-level binding: the signature's `with { ... }`
+/// unioned with an EFn body's own effect annotation (`let f = (x) -> { .. } with
+/// { E }`). Used to build the call-graph effect map for transitive enforcement.
 fn fn_binding_effects(ty: Option[TypeExpr], body: Expr) -> Array[String] {
   let sig = sig_type_effect_labels(ty)
   match body {
@@ -646,10 +642,10 @@ fn fn_binding_effects(ty: Option[TypeExpr], body: Expr) -> Array[String] {
   }
 }
 
-// Look up a called function's declared effect row by linear scan over PARALLEL
-// arrays (names[i] <-> effs[i]). A `Map` here allocates per lookup and, across
-// the compiler's tens of thousands of call sites, exhausts the GC-less bump heap
-// (#626 OOM); the linear scan allocates nothing.
+/// Look up a called function's declared effect row by linear scan over PARALLEL
+/// arrays (names[i] <-> effs[i]). A `Map` here allocates per lookup and, across
+/// the compiler's tens of thousands of call sites, exhausts the GC-less bump heap
+/// (#626 OOM); the linear scan allocates nothing.
 fn lookup_fn_effs(names: Array[String], effs: Array[Array[String]], name: String) -> Option[Array[String]] {
   let mut i = 0
   let mut found = None
@@ -667,17 +663,17 @@ fn lookup_fn_effs(names: Array[String], effs: Array[Array[String]], name: String
   found
 }
 
-// #885 review (Codex): a `let`/`let rec`/`let mut` binding can reuse the NAME
-// of an in-scope callback-parameter overlay entry (e.g. rebinding `f` to an
-// unrelated local pure closure). Without this, `lookup_fn_effs`'s first-match
-// scan would still find the SHADOWED outer entry and reject a call to the
-// new, unrelated binding as if it were the original effectful callback --
-// a false positive on valid shadowing. Removes every overlay entry matching
-// `name` before the shadowing binding's scope is pushed onto the stack.
-// #885 review (Codex): shadow the overlay by EVERY name in `params`, in one
-// pass — used at an EFn boundary where all of the lambda's own parameter
-// names (not just the ones that become new overlay entries) must block a
-// same-named inherited entry.
+/// #885 review (Codex): a `let`/`let rec`/`let mut` binding can reuse the NAME
+/// of an in-scope callback-parameter overlay entry (e.g. rebinding `f` to an
+/// unrelated local pure closure). Without this, `lookup_fn_effs`'s first-match
+/// scan would still find the SHADOWED outer entry and reject a call to the
+/// new, unrelated binding as if it were the original effectful callback --
+/// a false positive on valid shadowing. Removes every overlay entry matching
+/// `name` before the shadowing binding's scope is pushed onto the stack.
+/// #885 review (Codex): shadow the overlay by EVERY name in `params`, in one
+/// pass — used at an EFn boundary where all of the lambda's own parameter
+/// names (not just the ones that become new overlay entries) must block a
+/// same-named inherited entry.
 fn shadow_overlay_names(names: Array[String], effs: Array[Array[String]], params: Array[(String, Option[TypeExpr])]) -> (Array[String], Array[Array[String]]) {
   let mut cur_names = names
   let mut cur_effs = effs
@@ -708,33 +704,33 @@ fn shadow_overlay(names: Array[String], effs: Array[Array[String]], name: String
   (out_names, out_effs)
 }
 
-// #885 (split off from #838, originally scoped out at #626): a function-typed
-// PARAMETER (a callback, e.g. `f: (T) -> T with { e }`) is a call-graph leaf
-// exactly like a named top-level function, but `fn_names`/`fn_effs` above is
-// built ONLY from top-level `SLet`/`SLetMut` bindings, so invoking a callback
-// PARAMETER directly (`f(x)` inside the wrapper that owns `f`) was invisible to
-// the transitive check — no lookup ever matched `f`'s name, so nothing was
-// required. This is a SEPARATE parallel-array "overlay" (ov_names/ov_effs),
-// scoped to the function body currently being walked (extended when the walk
-// descends into an `EFn`, carried unchanged through every other node), that
-// records each in-scope function-typed parameter's declared effect labels.
-//
-// Deliberately narrower than the general transitive check: callback-parameter
-// labels are checked via `decl_authorizes_effect` WITHOUT the
-// `label_is_effect_var` exemption used below for calls to NAMED top-level
-// functions. That exemption exists to prevent a real unsoundness of its own —
-// naively requiring the LITERAL row-variable token (e.g. `"e"`) to appear in
-// the CALLER's declared row at a call site like `apply(inc, 41)` — since the
-// caller has no way to know the row variable resolves to nothing without
-// call-site effect-row UNIFICATION (matching the argument actually passed
-// against the callee's parameter type), which this pass does not perform. This
-// is exactly the naive fix rejected during #885's investigation: dropping the
-// exemption globally broke `generic_effect_matrix_ok_passthrough_pure.vibe`.
-// The callback-parameter case is different in kind: the row variable and the
-// declared effect being compared live in the SAME function signature (the
-// parameter's `with { e }` and the enclosing function's own `with { e }` are
-// the identical token by construction — no cross-call-site instantiation is
-// involved), so a literal-name check here is sound, not a naive shortcut.
+/// #885 (split off from #838, originally scoped out at #626): a function-typed
+/// PARAMETER (a callback, e.g. `f: (T) -> T with { e }`) is a call-graph leaf
+/// exactly like a named top-level function, but `fn_names`/`fn_effs` above is
+/// built ONLY from top-level `SLet`/`SLetMut` bindings, so invoking a callback
+/// PARAMETER directly (`f(x)` inside the wrapper that owns `f`) was invisible to
+/// the transitive check — no lookup ever matched `f`'s name, so nothing was
+/// required. This is a SEPARATE parallel-array "overlay" (ov_names/ov_effs),
+/// scoped to the function body currently being walked (extended when the walk
+/// descends into an `EFn`, carried unchanged through every other node), that
+/// records each in-scope function-typed parameter's declared effect labels.
+///
+/// Deliberately narrower than the general transitive check: callback-parameter
+/// labels are checked via `decl_authorizes_effect` WITHOUT the
+/// `label_is_effect_var` exemption used below for calls to NAMED top-level
+/// functions. That exemption exists to prevent a real unsoundness of its own —
+/// naively requiring the LITERAL row-variable token (e.g. `"e"`) to appear in
+/// the CALLER's declared row at a call site like `apply(inc, 41)` — since the
+/// caller has no way to know the row variable resolves to nothing without
+/// call-site effect-row UNIFICATION (matching the argument actually passed
+/// against the callee's parameter type), which this pass does not perform. This
+/// is exactly the naive fix rejected during #885's investigation: dropping the
+/// exemption globally broke `generic_effect_matrix_ok_passthrough_pure.vibe`.
+/// The callback-parameter case is different in kind: the row variable and the
+/// declared effect being compared live in the SAME function signature (the
+/// parameter's `with { e }` and the enclosing function's own `with { e }` are
+/// the identical token by construction — no cross-call-site instantiation is
+/// involved), so a literal-name check here is sound, not a naive shortcut.
 fn build_param_overlay(params: Array[(String, Option[TypeExpr])]) -> (Array[String], Array[Array[String]]) {
   let names = array_empty()
   let effs = array_empty()
@@ -758,17 +754,17 @@ fn build_param_overlay(params: Array[(String, Option[TypeExpr])]) -> (Array[Stri
   (names, effs)
 }
 
-// A `let apply: [T](f: (T) -> T with { e }, x: T) -> T = (f, x) -> { f(x) }`
-// binding (separate top-level type annotation + untyped lambda) parses to an
-// `EFn` whose OWN `params` carry no per-parameter `TypeExpr` at all (the types
-// live only on the `SLet`'s `ty` field). `build_param_overlay` needs real
-// per-parameter types to find a callback parameter's declared effect, so this
-// fills in each untyped `EFn` parameter from `ty`'s `TyFn` parameter list at
-// the SAME position — the two lists describe the same signature, so positional
-// pairing is exact. An `EFn` parameter that already carries its own inline
-// type (the `[T](f: (T) -> T with { e }, ...)` generic-literal spelling used
-// elsewhere in this file) is left untouched; `ty` is consulted only to fill
-// gaps, never to override.
+/// A `let apply: [T](f: (T) -> T with { e }, x: T) -> T = (f, x) -> { f(x) }`
+/// binding (separate top-level type annotation + untyped lambda) parses to an
+/// `EFn` whose OWN `params` carry no per-parameter `TypeExpr` at all (the types
+/// live only on the `SLet`'s `ty` field). `build_param_overlay` needs real
+/// per-parameter types to find a callback parameter's declared effect, so this
+/// fills in each untyped `EFn` parameter from `ty`'s `TyFn` parameter list at
+/// the SAME position — the two lists describe the same signature, so positional
+/// pairing is exact. An `EFn` parameter that already carries its own inline
+/// type (the `[T](f: (T) -> T with { e }, ...)` generic-literal spelling used
+/// elsewhere in this file) is left untouched; `ty` is consulted only to fill
+/// gaps, never to override.
 fn merge_param_types_with_sig(ty: Option[TypeExpr], params: Array[(String, Option[TypeExpr])]) -> Array[(String, Option[TypeExpr])] {
   match ty {
     Some(TyFn(sig_params, _, _)) => {
@@ -793,27 +789,27 @@ fn merge_param_types_with_sig(ty: Option[TypeExpr], params: Array[(String, Optio
   }
 }
 
-// Transitive effect enforcement (#626): a call to a user function `G` that
-// declares `with { E }` leaks E into the caller unless the caller declares E or
-// the call is under a `handle ... with E`. Combined with the DIRECT discipline
-// (every function that itself performs/invokes an effectful builtin must declare
-// it — already enforced), this propagates effect requirements up the call graph
-// level by level: every effectful leaf is annotated, so a one-level check at
-// each call site is complete. `fn_names`/`fn_effs` is the call-graph map (empty
-// => transitive check disabled, preserving the direct-only behavior).
-//
-// `ov_names`/`ov_effs` (#885) is the SEPARATE callback-parameter overlay
-// described above, scoped to the function body currently in view (empty at the
-// program's top level and at any call site with no enclosing function-typed
-// parameters in scope).
+/// Transitive effect enforcement (#626): a call to a user function `G` that
+/// declares `with { E }` leaks E into the caller unless the caller declares E or
+/// the call is under a `handle ... with E`. Combined with the DIRECT discipline
+/// (every function that itself performs/invokes an effectful builtin must declare
+/// it — already enforced), this propagates effect requirements up the call graph
+/// level by level: every effectful leaf is annotated, so a one-level check at
+/// each call site is complete. `fn_names`/`fn_effs` is the call-graph map (empty
+/// => transitive check disabled, preserving the direct-only behavior).
+///
+/// `ov_names`/`ov_effs` (#885) is the SEPARATE callback-parameter overlay
+/// described above, scoped to the function body currently in view (empty at the
+/// program's top level and at any call site with no enclosing function-typed
+/// parameters in scope).
 export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]]) -> Array[EffectError] {
   check_perform_effects_expr_tx_in("", root, root_declared, root_in_handle, fn_names, fn_effs, root_ov_names, root_ov_effs)
 }
 
-// #639: the same walk with the enclosing top-level binding's NAME threaded in
-// so row-mismatch diagnostics can blame the caller's declaration in the fix-it
-// hint. The name is constant per walk (lambdas are anonymous), so it rides as
-// a plain parameter, not on the work stack.
+/// #639: the same walk with the enclosing top-level binding's NAME threaded in
+/// so row-mismatch diagnostics can blame the caller's declaration in the fix-it
+/// hint. The name is constant per walk (lambdas are anonymous), so it rides as
+/// a plain parameter, not on the work stack.
 fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]]) -> Array[EffectError] {
   let errors = array_empty()
   let stack = Array::slice([
@@ -1153,8 +1149,8 @@ fn no_ov_effs() -> Array[Array[String]] {
   array_empty()
 }
 
-// Public 3-arg entry: the direct-only check (no call-graph map), preserving the
-// pre-transitive behavior for unit tests and any non-stmts caller.
+/// Public 3-arg entry: the direct-only check (no call-graph map), preserving the
+/// pre-transitive behavior for unit tests and any non-stmts caller.
 export fn check_perform_effects_expr(root: Expr, root_declared: Array[String], root_in_handle: Bool) -> Array[EffectError] {
   check_perform_effects_expr_tx(root, root_declared, root_in_handle, no_str_labels(), no_ov_effs(), no_str_labels(), no_ov_effs())
 }
@@ -1175,37 +1171,37 @@ fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body:
   }
 }
 
-// #761: a `test {}` / `bench {}` block is a program entry point — it runs under
-// the runtime host, which is the ambient handler for the HOST resource effects
-// (Fs/Env/Stdin/Stdout/Process/Profiler). So a test may invoke a host-effectful
-// function (directly, transitively, or as an unqualified builtin) without a
-// `handle`, exactly as `main` does. This grant was already de-facto true for
-// IMPORTED effectful functions (they are absent from the transitive fn_effs map,
-// so calling them never flagged), but LOCALLY-defined ones (in fn_effs) and
-// direct builtin/perform host effects were wrongly rejected — an asymmetry.
-// Seeding the test/bench declared row with the host set removes it. NON-host
-// (user-defined) effects still require a handler: performing one at runtime with
-// no host handler would trap, so leaving it flagged is correct. Purity/caching
-// is judged separately by file_tests_cacheable (empty declared row), so a test
-// that reaches a host effect still correctly counts as impure/non-cacheable.
-// #944 (ADR-0073 implementation bridge): checked-Error mode. The accepted
-// owner decision makes `Error::Throw` a fully checked semantic operation
-// (direct throw and `with { Error }` callees propagate to the caller's
-// row; discharge via `handle ... with Error`). Stage A landed this
-// opt-in (`VIBE_CHECK_ERROR_ROW=1`, default off, preserving the old
-// exemption byte-for-byte) while the tree still carried hundreds of
-// row-less throw sites (#640 measured ~970); stage B annotated those and
-// flipped the DEFAULT to checked, leaving `VIBE_CHECK_ERROR_ROW=0` as a
-// temporary opt-OUT escape hatch (wired in cli_adapter.vibe) for any
-// downstream code that hasn't annotated yet. The switch rides in a
-// module-level memo cell (fixtures/module_let_memo_test.vibe pattern)
-// because the effect discipline has no configuration threading and the
-// checker itself is pure (no Env row).
-//
-// Scope note: builtin_call_effect's own Error carve-out (a BUILTIN whose
-// declared row is Error) is deliberately NOT flipped by this switch --
-// which builtins should carry a semantic Error row is a separate
-// sub-decision tracked on #944.
+/// #761: a `test {}` / `bench {}` block is a program entry point — it runs under
+/// the runtime host, which is the ambient handler for the HOST resource effects
+/// (Fs/Env/Stdin/Stdout/Process/Profiler). So a test may invoke a host-effectful
+/// function (directly, transitively, or as an unqualified builtin) without a
+/// `handle`, exactly as `main` does. This grant was already de-facto true for
+/// IMPORTED effectful functions (they are absent from the transitive fn_effs map,
+/// so calling them never flagged), but LOCALLY-defined ones (in fn_effs) and
+/// direct builtin/perform host effects were wrongly rejected — an asymmetry.
+/// Seeding the test/bench declared row with the host set removes it. NON-host
+/// (user-defined) effects still require a handler: performing one at runtime with
+/// no host handler would trap, so leaving it flagged is correct. Purity/caching
+/// is judged separately by file_tests_cacheable (empty declared row), so a test
+/// that reaches a host effect still correctly counts as impure/non-cacheable.
+/// #944 (ADR-0073 implementation bridge): checked-Error mode. The accepted
+/// owner decision makes `Error::Throw` a fully checked semantic operation
+/// (direct throw and `with { Error }` callees propagate to the caller's
+/// row; discharge via `handle ... with Error`). Stage A landed this
+/// opt-in (`VIBE_CHECK_ERROR_ROW=1`, default off, preserving the old
+/// exemption byte-for-byte) while the tree still carried hundreds of
+/// row-less throw sites (#640 measured ~970); stage B annotated those and
+/// flipped the DEFAULT to checked, leaving `VIBE_CHECK_ERROR_ROW=0` as a
+/// temporary opt-OUT escape hatch (wired in cli_adapter.vibe) for any
+/// downstream code that hasn't annotated yet. The switch rides in a
+/// module-level memo cell (fixtures/module_let_memo_test.vibe pattern)
+/// because the effect discipline has no configuration threading and the
+/// checker itself is pure (no Env row).
+///
+/// Scope note: builtin_call_effect's own Error carve-out (a BUILTIN whose
+/// declared row is Error) is deliberately NOT flipped by this switch --
+/// which builtins should carry a semantic Error row is a separate
+/// sub-decision tracked on #944.
 let error_row_mode_cell = array_empty()
 
 export fn set_error_row_checked(on: Bool) -> Unit {
@@ -1234,7 +1230,14 @@ fn test_bench_ambient_effects() -> Array[String] {
     // boundary, exactly ADR-0073's entry-boundary-A shape). Requiring
     // every test block to spell `with { Error }` would annotate the
     // mechanism the runner already owns.
-    "Fs", "Env", "Stdin", "Stdout", "Stderr", "Process", "Profiler", "Error"
+    "Fs",
+    "Env",
+    "Stdin",
+    "Stdout",
+    "Stderr",
+    "Process",
+    "Profiler",
+    "Error"
   ]
 }
 
@@ -1249,20 +1252,20 @@ fn check_perform_effects_stmt_tx(stmt: Stmt, fn_names: Array[String], fn_effs: A
   }
 }
 
-// Public 1-arg entry: direct-only (empty map). Kept for unit tests.
+/// Public 1-arg entry: direct-only (empty map). Kept for unit tests.
 export fn check_perform_effects_stmt(stmt: Stmt) -> Array[EffectError] {
   check_perform_effects_stmt_tx(stmt, no_str_labels(), no_ov_effs())
 }
 
-// #812: seed the transitive call-graph map with the checker ENV's bindings.
-// fn_names/fn_effs was built from the CURRENT module's top-level statements
-// only, so a caller could invoke an IMPORTED `with { Fs }` function without
-// declaring Fs and reach the filesystem at runtime — while the identical
-// shape with a local callee was rejected. An imported binding's CtFn carries
-// its declared effect row in the env; add every effect-bearing env binding
-// AFTER the local rows (lookup_fn_effs is first-match, so a same-name local
-// row still shadows the env row). Effect-free bindings are skipped — an
-// absent row and an empty row enforce the same (nothing).
+/// #812: seed the transitive call-graph map with the checker ENV's bindings.
+/// fn_names/fn_effs was built from the CURRENT module's top-level statements
+/// only, so a caller could invoke an IMPORTED `with { Fs }` function without
+/// declaring Fs and reach the filesystem at runtime — while the identical
+/// shape with a local callee was rejected. An imported binding's CtFn carries
+/// its declared effect row in the env; add every effect-bearing env binding
+/// AFTER the local rows (lookup_fn_effs is first-match, so a same-name local
+/// row still shadows the env row). Effect-free bindings are skipped — an
+/// absent row and an empty row enforce the same (nothing).
 fn push_env_fn_eff(name: String, ty: Type, fn_names: Array[String], fn_effs: Array[Array[String]]) -> Unit {
   let fnty = match ty {
     CtForAll(_, _, body) => body,
@@ -1360,26 +1363,26 @@ export fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv) -> A
   errors
 }
 
-// #634 (ADR-0026): pure-test result cache verdict. A `test {}` block's result
-// is safe to cache/skip only when running it depends on nothing external — no
-// I/O, no non-determinism — so it is a deterministic function of source + deps +
-// compiler version. file_tests_cacheable is true iff the file has at least one
-// `test {}` block and EVERY test block is transitively effect-free.
-//
-// Reuses the transitive effect walk: a test body checked with an EMPTY declared
-// row reports an error for ANY effect it reaches that a `handle` does not
-// discharge — Fs/Http/Env/custom effects and `perform`, propagated through the
-// call-graph effect map (fn_names/fn_effs). `Error` (assert/throw) and `Async`
-// are excluded by that pass, so they stay cacheable; a `handle` that fully
-// discharges its effects (e.g. a fixed-seed Rng handler) also stays cacheable.
-// Zero errors => cacheable.
-//
-// A direct `sh`/`sh_lines` call IS surfaced: builtin_call_effect special-cases
-// these two unqualified builtins to `Process` (they lower to real host imports),
-// so a test that shells out is correctly treated as impure/non-cacheable, the
-// same as `sh` reached through a user function declaring `with { Process }`.
-// Conservative otherwise: an effect the type system does not surface here stays
-// invisible, but it never marks a genuinely-impure test cacheable.
+/// #634 (ADR-0026): pure-test result cache verdict. A `test {}` block's result
+/// is safe to cache/skip only when running it depends on nothing external — no
+/// I/O, no non-determinism — so it is a deterministic function of source + deps +
+/// compiler version. file_tests_cacheable is true iff the file has at least one
+/// `test {}` block and EVERY test block is transitively effect-free.
+///
+/// Reuses the transitive effect walk: a test body checked with an EMPTY declared
+/// row reports an error for ANY effect it reaches that a `handle` does not
+/// discharge — Fs/Http/Env/custom effects and `perform`, propagated through the
+/// call-graph effect map (fn_names/fn_effs). `Error` (assert/throw) and `Async`
+/// are excluded by that pass, so they stay cacheable; a `handle` that fully
+/// discharges its effects (e.g. a fixed-seed Rng handler) also stays cacheable.
+/// Zero errors => cacheable.
+///
+/// A direct `sh`/`sh_lines` call IS surfaced: builtin_call_effect special-cases
+/// these two unqualified builtins to `Process` (they lower to real host imports),
+/// so a test that shells out is correctly treated as impure/non-cacheable, the
+/// same as `sh` reached through a user function declaring `with { Process }`.
+/// Conservative otherwise: an effect the type system does not surface here stays
+/// invisible, but it never marks a genuinely-impure test cacheable.
 export fn file_tests_cacheable(stmts: Array[Stmt]) -> Bool {
   let fn_names = array_empty()
   let fn_effs = array_empty()
@@ -1679,11 +1682,11 @@ export fn check_mutability_expr(expr: Expr, mutable: Array[String]) -> Array[Eff
   }
 }
 
-// #770: `outer` carries the top-level `let mut` names already in scope from
-// earlier sibling statements (see check_mutability_stmts below) so a later
-// top-level statement's assignment to an earlier top-level `mut` binding
-// (directly, or via a closure capturing it) is recognized as mutable instead
-// of being misreported as `cannot assign to immutable binding`.
+/// #770: `outer` carries the top-level `let mut` names already in scope from
+/// earlier sibling statements (see check_mutability_stmts below) so a later
+/// top-level statement's assignment to an earlier top-level `mut` binding
+/// (directly, or via a closure capturing it) is recognized as mutable instead
+/// of being misreported as `cannot assign to immutable binding`.
 fn check_mutability_binding(body: Expr, outer: Array[String]) -> Array[EffectError] {
   match body {
     EFn(_, _, params, _, _, fbody) => check_mutability_expr(fbody, mut_with_params(outer, params)),
@@ -1691,16 +1694,16 @@ fn check_mutability_binding(body: Expr, outer: Array[String]) -> Array[EffectErr
   }
 }
 
-// #770: top-level program statements are a flat `Array[Stmt]` sequence (not
-// nested `ELetMut` continuations like a function/test body), so a top-level
-// `let mut x = ...` must thread `x` forward into the mutability check of
-// every later sibling statement by accumulating `mutable` across the loop —
-// mirroring how `check_stmts` threads `env` across the same array. Before
-// this fix each statement was checked in isolation starting from an empty
-// mutable set, so any top-level `let mut` followed by an assignment in a
-// later top-level statement (e.g. a top-level `while` loop mutating a
-// counter) was rejected with a bogus `cannot assign to immutable binding`
-// error even though the program is valid.
+/// #770: top-level program statements are a flat `Array[Stmt]` sequence (not
+/// nested `ELetMut` continuations like a function/test body), so a top-level
+/// `let mut x = ...` must thread `x` forward into the mutability check of
+/// every later sibling statement by accumulating `mutable` across the loop —
+/// mirroring how `check_stmts` threads `env` across the same array. Before
+/// this fix each statement was checked in isolation starting from an empty
+/// mutable set, so any top-level `let mut` followed by an assignment in a
+/// later top-level statement (e.g. a top-level `while` loop mutating a
+/// counter) was rejected with a bogus `cannot assign to immutable binding`
+/// error even though the program is valid.
 export fn check_mutability_stmts(stmts: Array[Stmt]) -> Array[EffectError] {
   let errors = array_empty()
   let mut mutable = array_empty()

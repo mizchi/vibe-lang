@@ -17,8 +17,9 @@ import @vibe/compiler/syntax {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt,
   ExportRenamePlan,
+  Expr,
+  Stmt,
   append_import_alias_rewritten_non_import_stmts_with_renames,
   append_non_import_stmts_without_alias_rewrite,
   apply_export_renames_stmts,
@@ -26,12 +27,17 @@ import @vibe/compiler/core {
   collect_import_alias_collision_locals,
   collect_import_alias_collision_refs,
   collect_import_value_renames,
+  dir_of_path,
   export_plan_renames_for,
   import_value_rename_locals,
   namespace_private_value_stmts,
+  path_set_add,
+  path_set_contains,
+  path_set_new,
+  resolve_import_path,
+  resolve_import_path_candidates,
   rewrite_imported_value_stmt_to_local,
-  stmts_have_import_deep,
-  dir_of_path, path_set_add, path_set_contains, path_set_new, resolve_import_path, resolve_import_path_candidates
+  stmts_have_import_deep
 }
 
 import ./path_utils.vibe {
@@ -61,11 +67,11 @@ fn string_array_contains_local(items: Array[String], target: String) -> Bool {
   found
 }
 
-// #726: directory-style imports (`import ../core { .. }` -> core/index.vibe)
-// need the CANDIDATE list + existence probe; the single-candidate
-// resolve_import_path returns `core.vibe`, which does not exist. Falls back
-// to the first candidate so a genuinely missing import still reports its
-// plain-file path.
+/// #726: directory-style imports (`import ../core { .. }` -> core/index.vibe)
+/// need the CANDIDATE list + existence probe; the single-candidate
+/// resolve_import_path returns `core.vibe`, which does not exist. Falls back
+/// to the first candidate so a genuinely missing import still reports its
+/// plain-file path.
 fn resolve_existing_import_path(base_dir: String, raw_path: String, self_path: String) -> String with { Fs } {
   let candidates = resolve_import_path_candidates(base_dir, raw_path)
   let mut i = 0
@@ -101,11 +107,11 @@ fn resolve_existing_import_path(base_dir: String, raw_path: String, self_path: S
   }
 }
 
-// #716: collision-def fallback. `excluded_locals` are the import locals the
-// export-rename plan already rewrites — emitting an inline copy for those too
-// would double-bind the local. The copy gets the target file's export renames
-// applied first, so its body's references to renamed sibling exports stay
-// consistent with the merged program.
+/// #716: collision-def fallback. `excluded_locals` are the import locals the
+/// export-rename plan already rewrites — emitting an inline copy for those too
+/// would double-bind the local. The copy gets the target file's export renames
+/// applied first, so its body's references to renamed sibling exports stay
+/// consistent with the merged program.
 fn append_fs_import_alias_collision_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Unit with { Error, Fs } {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = array_empty()
@@ -118,13 +124,7 @@ fn append_fs_import_alias_collision_defs(merged: Array[Stmt], current_path: Stri
       // Builtin read + ingest, same as collect_parsed_sources_recursive
       // (flatten-lane wiring constraint / #741).
       let source = ingest_source_text_fs(resolved, Fs::read_file(resolved))
-      let source_stmts = namespace_private_value_stmts(
-        resolved,
-        apply_export_renames_stmts(
-          parse_program(lex(source)),
-          export_plan_renames_for(plan, resolved)
-        )
-      )
+      let source_stmts = namespace_private_value_stmts(resolved, apply_export_renames_stmts(parse_program(lex(source)), export_plan_renames_for(plan, resolved)))
       let mut j = 0
       let mut done = false
       while j < Array::length(source_stmts) && !done {
@@ -143,16 +143,16 @@ fn append_fs_import_alias_collision_defs(merged: Array[Stmt], current_path: Stri
   }
 }
 
-// `visited` is a `path_set` (#533): this recursion runs once per import
-// EDGE, so a linear `contains_path` scan against a visited list that
-// grows to every module of the program was O(edges × modules). The set
-// is membership-only here — file order comes from the recursion itself
-// (dependencies first), so no ordering constraint is lost.
-//
-// #716: the recursion only PARSES and orders the files; appending happens in
-// a second pass once the whole program is known, because the export-rename
-// plan (ambiguous exported names + re-export facades) needs every file's
-// export surface before any file can be rewritten.
+/// `visited` is a `path_set` (#533): this recursion runs once per import
+/// EDGE, so a linear `contains_path` scan against a visited list that
+/// grows to every module of the program was O(edges × modules). The set
+/// is membership-only here — file order comes from the recursion itself
+/// (dependencies first), so no ordering constraint is lost.
+///
+/// #716: the recursion only PARSES and orders the files; appending happens in
+/// a second pass once the whole program is known, because the export-rename
+/// plan (ambiguous exported names + re-export facades) needs every file's
+/// export surface before any file can be rewritten.
 fn collect_parsed_sources_recursive(path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], visited: Array[Array[String]]) -> Unit with { Error, Fs } {
   if path_set_contains(visited, path) {
     ()
@@ -224,16 +224,16 @@ fn collect_merged_stmts_recursive(entry_path: String, merged: Array[Stmt], visit
   }
 }
 
-// #726: the merged whole program AS SOURCE TEXT. Resolves imports from the
-// FS, runs the full merge machinery (export-rename plan, private
-// namespacing, import-alias rewriting — the same pipeline the FS compile
-// uses), and prints the merged statements. This replaces the Python
-// flattener that used to live in scripts/generate_bundle.sh: the old flattener
-// stripped import/export lines and concatenated files verbatim, leaving
-// duplicate top-level defs resolved by fn-table first-match roulette; the
-// merge machinery renames them so the flat source has ZERO duplicates and
-// carries the #716 visibility guarantees. Comments are dropped (printer
-// output) — acceptable for a generated bundle artifact.
+/// #726: the merged whole program AS SOURCE TEXT. Resolves imports from the
+/// FS, runs the full merge machinery (export-rename plan, private
+/// namespacing, import-alias rewriting — the same pipeline the FS compile
+/// uses), and prints the merged statements. This replaces the Python
+/// flattener that used to live in scripts/generate_bundle.sh: the old flattener
+/// stripped import/export lines and concatenated files verbatim, leaving
+/// duplicate top-level defs resolved by fn-table first-match roulette; the
+/// merge machinery renames them so the flat source has ZERO duplicates and
+/// carries the #716 visibility guarantees. Comments are dropped (printer
+/// output) — acceptable for a generated bundle artifact.
 export fn merged_program_source_fs(entry_path: String) -> String with { Error, Fs } {
   let stmts = empty_stmt_array()
   let visited = path_set_new()
@@ -263,5 +263,5 @@ export {
 }
 
 export {
-  compile_file_wasi_only, collect_merged_stmts_recursive
+  collect_merged_stmts_recursive, compile_file_wasi_only
 }

@@ -5,7 +5,17 @@ import @vibe/ast {
 }
 
 import ./parser_base.vibe {
-  _no_tb, _no_tp, collect_effect_names, empty_exprs, empty_type_exprs, expect_tk, is_lambda_start, parse_param_list, parse_type_impl, peek, tk_name
+  _no_tb,
+  _no_tp,
+  collect_effect_names,
+  empty_exprs,
+  empty_type_exprs,
+  expect_tk,
+  is_lambda_start,
+  parse_param_list,
+  parse_type_impl,
+  peek,
+  tk_name
 }
 
 import ./token.vibe {
@@ -18,14 +28,14 @@ import ./lexer.vibe {
 
 //# Functions
 
-// #947: rewrite every LOCATED offset in an interpolation fragment's parsed
-// Expr tree (EIdent, ECall, ELet/ELetMut, EDot, ...) through `f`, so hover /
-// go-to-def / rename on an identifier referenced inside `\{...}` resolves to
-// its real file position (see `remap_frag_off` below for the mapping used).
-// Every Expr variant is enumerated so a new variant is a compile error here,
-// keeping this walker in sync with the AST. Non-located constructs
-// (string/int/bool literals, bare structural nodes) pass through unchanged;
-// -1 (synthetic/non-located) offsets stay -1 and never reach `f`.
+/// #947: rewrite every LOCATED offset in an interpolation fragment's parsed
+/// Expr tree (EIdent, ECall, ELet/ELetMut, EDot, ...) through `f`, so hover /
+/// go-to-def / rename on an identifier referenced inside `\{...}` resolves to
+/// its real file position (see `remap_frag_off` below for the mapping used).
+/// Every Expr variant is enumerated so a new variant is a compile error here,
+/// keeping this walker in sync with the AST. Non-located constructs
+/// (string/int/bool literals, bare structural nodes) pass through unchanged;
+/// -1 (synthetic/non-located) offsets stay -1 and never reach `f`.
 fn map_located_off(off: Int, f: (Int) -> Int) -> Int {
   if off < 0 {
     off
@@ -104,16 +114,16 @@ fn map_loop_param_exprs(params: Array[(String, Expr)], f: (Int) -> Int) -> Array
   }
 }
 
-// Invert `offset_at(outer_starts, p)`: parse_recur (a closure over the
-// OUTER file's token-starts table) anchors every located node in a
-// fragment parse at `outer_starts[p]` where p is a FRAGMENT token index —
-// meaningless as a file position (Codex P2 on #975; only the
-// single-token-at-fragment-start case lined up by accident). outer_starts
-// is nondecreasing, so binary-search the smallest p with
-// outer_starts[p] == off, then re-anchor at the fragment's OWN start for
-// that token (frag_starts[p], from lex_with_offsets on the fragment text)
-// plus the fragment's absolute base. Anything unrecoverable becomes -1
-// (unlocated) rather than pointing at the wrong character.
+/// Invert `offset_at(outer_starts, p)`: parse_recur (a closure over the
+/// OUTER file's token-starts table) anchors every located node in a
+/// fragment parse at `outer_starts[p]` where p is a FRAGMENT token index —
+/// meaningless as a file position (Codex P2 on #975; only the
+/// single-token-at-fragment-start case lined up by accident). outer_starts
+/// is nondecreasing, so binary-search the smallest p with
+/// outer_starts[p] == off, then re-anchor at the fragment's OWN start for
+/// that token (frag_starts[p], from lex_with_offsets on the fragment text)
+/// plus the fragment's absolute base. Anything unrecoverable becomes -1
+/// (unlocated) rather than pointing at the wrong character.
 fn remap_frag_off(off: Int, outer_starts: Array[Int], frag_starts: Array[Int], frag_base: Int) -> Int {
   let n = Array::length(outer_starts)
   let mut lo = 0
@@ -140,25 +150,25 @@ fn remap_frag_off(off: Int, outer_starts: Array[Int], frag_starts: Array[Int], f
   }
 }
 
-// Desugar a string-interpolation token's parts into a `String::concat` chain.
-// Parts alternate literal/expression by index (even = literal chunk, odd =
-// embedded expression SOURCE). The embedded expression is lexed and parsed as a
-// full expression (not treated as a bare identifier), so `"\{1 + 1}"`,
-// `"\{f(x)}"`, `"\{p.field}"` etc. all work — matching the documented behavior.
-// Each interpolated value is rendered via `__to_string`. Bare-identifier parts
-// parse to the same `EIdent` the previous (ident-only) path produced, so
-// existing interpolations are unchanged.
-//
-// `offsets` (#947) carries, in lockstep with `parts`, the absolute source
-// offset of each part's start (-1 for literal/even parts, which don't need
-// one). Each fragment is lexed in isolation with its OWN token-starts table
-// (lex_with_offsets), parsed via `parse_recur` — which anchors located nodes
-// using the OUTER file's starts table it closed over, i.e. at
-// outer_starts[fragment-token-index] — and then remapped node-by-node via
-// `remap_frag_off` (invert outer_starts, re-anchor at frag_starts[p] +
-// fragment base), so identifiers referenced inside `\{...}` carry their real
-// file position for any fragment shape (leading spaces, multi-token
-// expressions), not just a single token at the fragment start.
+/// Desugar a string-interpolation token's parts into a `String::concat` chain.
+/// Parts alternate literal/expression by index (even = literal chunk, odd =
+/// embedded expression SOURCE). The embedded expression is lexed and parsed as a
+/// full expression (not treated as a bare identifier), so `"\{1 + 1}"`,
+/// `"\{f(x)}"`, `"\{p.field}"` etc. all work — matching the documented behavior.
+/// Each interpolated value is rendered via `__to_string`. Bare-identifier parts
+/// parse to the same `EIdent` the previous (ident-only) path produced, so
+/// existing interpolations are unchanged.
+///
+/// `offsets` (#947) carries, in lockstep with `parts`, the absolute source
+/// offset of each part's start (-1 for literal/even parts, which don't need
+/// one). Each fragment is lexed in isolation with its OWN token-starts table
+/// (lex_with_offsets), parsed via `parse_recur` — which anchors located nodes
+/// using the OUTER file's starts table it closed over, i.e. at
+/// outer_starts[fragment-token-index] — and then remapped node-by-node via
+/// `remap_frag_off` (invert outer_starts, re-anchor at frag_starts[p] +
+/// fragment base), so identifiers referenced inside `\{...}` carry their real
+/// file position for any fragment shape (leading spaces, multi-token
+/// expressions), not just a single token at the fragment start.
 fn build_interp_expr(parts: Array[String], offsets: Array[Int], outer_starts: Array[Int], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> Expr with { Error } {
   let concat_expr: (Expr, Expr) -> Expr = (a, b) -> {
     ECall(EIdent("String::concat", -1), [
@@ -187,7 +197,11 @@ fn build_interp_expr(parts: Array[String], offsets: Array[Int], outer_starts: Ar
     } else {
       let (ftoks, fstarts, _fends) = lex_with_offsets(part)
       let (pe0, _) = parse_recur(ftoks, 0, 0)
-      let frag_off = if i < Array::length(offsets) { Array::get(offsets, i) } else { -1 }
+      let frag_off = if i < Array::length(offsets) {
+        Array::get(offsets, i)
+      } else {
+        -1
+      }
       let pe = if frag_off >= 0 {
         map_expr_offsets(pe0, (o) -> remap_frag_off(o, outer_starts, fstarts, frag_off))
       } else {
@@ -208,9 +222,9 @@ fn build_interp_expr(parts: Array[String], offsets: Array[Int], outer_starts: Ar
   result
 }
 
-// Transform break(val) and continue(args) inside a loop body for desugaring.
-// break(val) → { __loop_result = val; break }
-// continue(a, b) → { let __lt0 = a; let __lt1 = b; p0 = __lt0; p1 = __lt1; continue }
+/// Transform break(val) and continue(args) inside a loop body for desugaring.
+/// break(val) → { __loop_result = val; break }
+/// continue(a, b) → { let __lt0 = a; let __lt1 = b; p0 = __lt0; p1 = __lt1; continue }
 fn desugar_loop_body(expr: Expr, param_names: Array[String]) -> Expr {
   match expr {
     EBreak(opt) => match opt {
@@ -227,18 +241,20 @@ fn desugar_loop_body(expr: Expr, param_names: Array[String]) -> Expr {
           // Guard: more args than params → use only param count to avoid OOB
           EContinue(args)
         } else {
-        let mut result = EContinue(Array::slice([EUnit], 0, 0))
-        let mut ci = nargs - 1
-        while ci >= 0 {
-          result = EAssign(Array::get(param_names, ci), EIdent(String::concat("__lt", __to_string(ci)), -1), result)
-          ci = ci - 1
-        }
-        let mut ci2 = nargs - 1
-        while ci2 >= 0 {
-          result = ELet(String::concat("__lt", __to_string(ci2)), desugar_loop_body(Array::get(args, ci2), param_names), result, -1)
-          ci2 = ci2 - 1
-        }
-        result
+          let mut result = EContinue(Array::slice([
+            EUnit
+          ], 0, 0))
+          let mut ci = nargs - 1
+          while ci >= 0 {
+            result = EAssign(Array::get(param_names, ci), EIdent(String::concat("__lt", __to_string(ci)), -1), result)
+            ci = ci - 1
+          }
+          let mut ci2 = nargs - 1
+          while ci2 >= 0 {
+            result = ELet(String::concat("__lt", __to_string(ci2)), desugar_loop_body(Array::get(args, ci2), param_names), result, -1)
+            ci2 = ci2 - 1
+          }
+          result
         }
       }
     },
@@ -274,7 +290,6 @@ fn desugar_loop_body(expr: Expr, param_names: Array[String]) -> Expr {
     _ => expr
   }
 }
-
 
 fn parse_loop_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
   match peek(tokens, pos + 1) {
@@ -315,8 +330,7 @@ fn parse_loop_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_
       let pinits = ArrayBuilder::freeze(param_inits_b)
       let transformed_body = desugar_loop_body(body, pnames)
       let while_expr = EWhile(EBool(true), transformed_body)
-      let result = ELetMut("__loop_result", EInt(0),
-        ESeq(while_expr, EIdent("__loop_result", -1)), -1)
+      let result = ELetMut("__loop_result", EInt(0), ESeq(while_expr, EIdent("__loop_result", -1)), -1)
       let mut wrapped = result
       let mut wi = Array::length(pnames) - 1
       while wi >= 0 {
@@ -345,17 +359,17 @@ fn parse_break_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse
   }
 }
 
-// #640 Stage 2: `throw(x)` is sugar for `perform Error::Throw(x)` — the
-// parser desugars it to the exact AST shape parse_perform_primary produces
-// for the explicit spelling (ECall(EIdent("perform"), [ECall(
-// EIdent("Error::Throw"), [x])])), so every downstream stage (checker,
-// normalize, both codegen backends) sees ONE form. The printer re-sugars
-// this shape back to `throw(x)` (printer.vibe), keeping print round-trips
-// and the regenerated flat module source spelling-stable (no seed bump
-// needed). The `EThrow` AST node this desugar replaced was fully retired
-// in #640 Stage 4 (ctor removed from @vibe/ast); this parse shape is now
-// the only form of `throw`. All synthesized nodes carry the `throw`
-// token's offset so located diagnostics keep pointing at the keyword.
+/// #640 Stage 2: `throw(x)` is sugar for `perform Error::Throw(x)` — the
+/// parser desugars it to the exact AST shape parse_perform_primary produces
+/// for the explicit spelling (ECall(EIdent("perform"), [ECall(
+/// EIdent("Error::Throw"), [x])])), so every downstream stage (checker,
+/// normalize, both codegen backends) sees ONE form. The printer re-sugars
+/// this shape back to `throw(x)` (printer.vibe), keeping print round-trips
+/// and the regenerated flat module source spelling-stable (no seed bump
+/// needed). The `EThrow` AST node this desugar replaced was fully retired
+/// in #640 Stage 4 (ctor removed from @vibe/ast); this parse shape is now
+/// the only form of `throw`. All synthesized nodes carry the `throw`
+/// token's offset so located diagnostics keep pointing at the keyword.
 fn parse_throw_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
   let open_pos = expect_tk(tokens, pos + 1, "(")
   let (expr, next_pos) = parse_recur(tokens, open_pos, 0)
@@ -516,12 +530,12 @@ fn parse_control_primary(tokens: Array[Token], starts: Array[Int], pos: Int, par
   }
 }
 
-// #836: named struct constructor literals (`Name::{ ... }`) accept the same
-// field-shorthand as anonymous record literals (`record { ... }`, see
-// `parse_record_literal_fields` below) — `Name::{ left, right }` desugars to
-// `Name::{ left: left, right: right }` by matching a bare identifier field to
-// an in-scope binding of the same name. Mirrors `parse_record_literal_fields`
-// exactly so both literal forms stay in sync.
+/// #836: named struct constructor literals (`Name::{ ... }`) accept the same
+/// field-shorthand as anonymous record literals (`record { ... }`, see
+/// `parse_record_literal_fields` below) — `Name::{ left, right }` desugars to
+/// `Name::{ left: left, right: right }` by matching a bare identifier field to
+/// an in-scope binding of the same name. Mirrors `parse_record_literal_fields`
+/// exactly so both literal forms stay in sync.
 fn parse_ctor_record_fields(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[(String, Expr)], parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[(String, Expr)], Int) with { Error } {
   match peek(tokens, pos) {
     TRBrace => (ArrayBuilder::freeze(b), pos + 1),
@@ -645,7 +659,6 @@ fn parse_paren_tuple_primary(tokens: Array[Token], starts: Array[Int], pos: Int,
   }
 }
 
-
 fn parse_paren_lambda_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
   let (params, after_params) = parse_param_list(tokens, pos + 1)
   match peek(tokens, after_params) {
@@ -763,10 +776,10 @@ fn parse_record_literal_fields(tokens: Array[Token], starts: Array[Int], pos: In
   }
 }
 
-// Look up the source char offset of the token at position `p` in the
-// parallel `starts` array produced by the offset-tracking lexer. Returns
-// -1 when `starts` has no entry for `p` (e.g. the empty-array entry points
-// `parse`/`parse_expr` that do not thread real offsets).
+/// Look up the source char offset of the token at position `p` in the
+/// parallel `starts` array produced by the offset-tracking lexer. Returns
+/// -1 when `starts` has no entry for `p` (e.g. the empty-array entry points
+/// `parse`/`parse_expr` that do not thread real offsets).
 fn offset_at(starts: Array[Int], p: Int) -> Int {
   if p >= 0 && p < Array::length(starts) {
     Array::get(starts, p)
@@ -775,13 +788,13 @@ fn offset_at(starts: Array[Int], p: Int) -> Int {
   }
 }
 
-// #836/#886: detect `Name[...]::{` (explicit struct type arguments on a named
-// struct constructor literal, e.g. `Pair[Int]::{ left: 1, right: 2 }`).
-// `pos` is the TLBracket immediately after the constructor name. Skips the
-// balanced `[...]` span (mirrors `is_generic_fn_start`'s bracket-depth scan)
-// and checks whether it is immediately followed by `::{`. Disambiguates the
-// explicit-type-args constructor form from postfix indexing (`arr[i]`) before
-// `parse_ident_primary` commits to parsing the type-argument list (#886).
+/// #836/#886: detect `Name[...]::{` (explicit struct type arguments on a named
+/// struct constructor literal, e.g. `Pair[Int]::{ left: 1, right: 2 }`).
+/// `pos` is the TLBracket immediately after the constructor name. Skips the
+/// balanced `[...]` span (mirrors `is_generic_fn_start`'s bracket-depth scan)
+/// and checks whether it is immediately followed by `::{`. Disambiguates the
+/// explicit-type-args constructor form from postfix indexing (`arr[i]`) before
+/// `parse_ident_primary` commits to parsing the type-argument list (#886).
 fn is_struct_targs_ctor_start(tokens: Array[Token], pos: Int) -> Bool {
   let mut p = pos + 1
   let mut depth = 1
@@ -809,11 +822,11 @@ fn is_struct_targs_ctor_start(tokens: Array[Token], pos: Int) -> Bool {
   }
 }
 
-// #886: parse the comma-separated type-argument list of an explicit struct
-// constructor literal `Name[T1, T2, ...]::{ ... }`. `pos` is the token just
-// after the opening `[`. Returns the parsed arguments and the position just
-// after the closing `]`. Full type grammar (nested generics, tuples, fn
-// types) via `parse_type_impl`, same as annotation positions.
+/// #886: parse the comma-separated type-argument list of an explicit struct
+/// constructor literal `Name[T1, T2, ...]::{ ... }`. `pos` is the token just
+/// after the opening `[`. Returns the parsed arguments and the position just
+/// after the closing `]`. Full type grammar (nested generics, tuples, fn
+/// types) via `parse_type_impl`, same as annotation positions.
 fn parse_struct_ctor_targs(tokens: Array[Token], pos: Int, name: String) -> (Array[TypeExpr], Int) with { Error } {
   match peek(tokens, pos) {
     TRBracket => throw("expected at least one type argument in `\{name}[...]::{ ... }` at #\{pos}: write `\{name}::{ ... }` to infer the type arguments from the field values"),

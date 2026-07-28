@@ -15,17 +15,17 @@
 // no definition for the aliased names ("undefined variable (local):
 // cache_persistent_artifact_cache_path @call"). See cache_underlying.vibe.
 import ./cache_underlying.vibe {
-  cache_persistent_artifact_cache_path,
-  cache_store_persistent_artifact,
   cache_load_persistent_artifact,
+  cache_persistent_artifact_cache_path,
   cache_persistent_dep_list_cache_path,
-  cache_persistent_type_env_cache_path,
-  cache_persistent_source_list_cache_path,
-  cache_persistent_source_group_cache_path,
-  cache_persistent_module_header_cache_path,
-  cache_persistent_manifest_header_cache_path,
   cache_persistent_leaf_fingerprint_cache_path,
-  cache_stable_text_cache_path
+  cache_persistent_manifest_header_cache_path,
+  cache_persistent_module_header_cache_path,
+  cache_persistent_source_group_cache_path,
+  cache_persistent_source_list_cache_path,
+  cache_persistent_type_env_cache_path,
+  cache_stable_text_cache_path,
+  cache_store_persistent_artifact
 }
 
 import ./codegen_fingerprint.vibe {
@@ -33,9 +33,7 @@ import ./codegen_fingerprint.vibe {
 }
 
 import @vibe/compiler/core {
-  is_contract_ext,
-  resolution_env_seed,
-  resolve_import_path_candidates
+  is_contract_ext, resolution_env_seed, resolve_import_path_candidates
 }
 
 //# Misc
@@ -68,17 +66,17 @@ export ../../../../lib/@vibe/cache {
 
 //# Functions
 
-// Cache key version tag. TWO independent reasons to bump it (#630):
-//  - cache FORMAT change (how `.hex` / `.tsv` entries are serialized): bump `vNN`.
-//  - CODEGEN / wasm-ABI change (the SAME source now compiles to DIFFERENT wasm):
-//    bump `cgNN`. The artifact cache is keyed by the source fingerprint only, so
-//    without a codegen segment a codegen change returns a STALE compiled wasm for
-//    unchanged source. Bump `cg` on any change to emitted wasm / runtime ABI.
-//    The `cg` segment is `codegen_fingerprint()` — a build-time hash of
-//    all compiler source files (compiler_sources_manifest.tsv), regenerated with
-//    the bundle. So any codegen-source change automatically changes the key and
-//    invalidates stale artifacts; no manual bump needed (#630). `vNN` is still a
-//    manual knob for pure cache-FORMAT changes that don't change the source hash.
+/// Cache key version tag. TWO independent reasons to bump it (#630):
+///  - cache FORMAT change (how `.hex` / `.tsv` entries are serialized): bump `vNN`.
+///  - CODEGEN / wasm-ABI change (the SAME source now compiles to DIFFERENT wasm):
+///    bump `cgNN`. The artifact cache is keyed by the source fingerprint only, so
+///    without a codegen segment a codegen change returns a STALE compiled wasm for
+///    unchanged source. Bump `cg` on any change to emitted wasm / runtime ABI.
+///    The `cg` segment is `codegen_fingerprint()` — a build-time hash of
+///    all compiler source files (compiler_sources_manifest.tsv), regenerated with
+///    the bundle. So any codegen-source change automatically changes the key and
+///    invalidates stale artifacts; no manual bump needed (#630). `vNN` is still a
+///    manual knob for pure cache-FORMAT changes that don't change the source hash.
 fn persistent_cache_version_tag() -> String {
   // v12 (#801): source list/group cache text gained a mandatory `resctx` row
   // (resolution-context fingerprint) and its version row moved to 3 — a cache
@@ -137,34 +135,34 @@ export fn persistent_leaf_fingerprint_cache_path(path: String, source_fingerprin
   cache_persistent_leaf_fingerprint_cache_path(persistent_cache_version_tag(), path, source_fingerprint)
 }
 
-// #1100 (selfcompile-heap): the loader's two contract-parse memo classes.
-// Both are pure functions of file CONTENT (fingerprints in the seed) plus
-// the resolution env (resolve_path_fs winners move with VIBE_LIB etc., same
-// reason the module-header key carries the seed).
-//
-// vpkg shared-import prefix: keyed by the vpkg contract's own content —
-// the prefix text derives from nothing else.
+/// #1100 (selfcompile-heap): the loader's two contract-parse memo classes.
+/// Both are pure functions of file CONTENT (fingerprints in the seed) plus
+/// the resolution env (resolve_path_fs winners move with VIBE_LIB etc., same
+/// reason the module-header key carries the seed).
+///
+/// vpkg shared-import prefix: keyed by the vpkg contract's own content —
+/// the prefix text derives from nothing else.
 export fn persistent_vpkg_prefix_cache_path(path: String, source_fingerprint: String) -> String {
   cache_stable_text_cache_path(persistent_cache_version_tag(), "selfhost_vpkg_prefix", String::concat(path, String::concat("|", String::concat(source_fingerprint, resolution_env_seed()))))
 }
 
-// contract facade: keyed by a CLOSURE fingerprint (the contract's original
-// on-disk text + every resolved member's path and content fingerprint) —
-// a member edit must invalidate the facade and its conformance verdict.
+/// contract facade: keyed by a CLOSURE fingerprint (the contract's original
+/// on-disk text + every resolved member's path and content fingerprint) —
+/// a member edit must invalidate the facade and its conformance verdict.
 export fn persistent_contract_facade_cache_path(path: String, closure_fingerprint: String) -> String {
   cache_stable_text_cache_path(persistent_cache_version_tag(), "selfhost_contract_facade", String::concat(path, String::concat("|", String::concat(closure_fingerprint, resolution_env_seed()))))
 }
 
-// #801 follow-up: the module-header and dep-list caches store RESOLVED dep
-// paths, and a `@scope/name` import resolves to a DIFFERENT package root
-// (.vibe/store wins over lib/ wins over external roots) depending on what
-// exists at resolve time. A header cached while a store copy existed lists
-// the store index.vibei as a dep; replayed after the store copy is gone (or
-// vice versa) it aims the walk at the wrong root. Unlike the source-group
-// cache (#801's resctx row), the poison here is VISIBLE in the cached rows —
-// the importing file's dep always names the winning package index — so no
-// context enumeration is needed: re-derive the `@scope/name` ref from each
-// package-index dep and check it still wins today.
+/// #801 follow-up: the module-header and dep-list caches store RESOLVED dep
+/// paths, and a `@scope/name` import resolves to a DIFFERENT package root
+/// (.vibe/store wins over lib/ wins over external roots) depending on what
+/// exists at resolve time. A header cached while a store copy existed lists
+/// the store index.vibei as a dep; replayed after the store copy is gone (or
+/// vice versa) it aims the walk at the wrong root. Unlike the source-group
+/// cache (#801's resctx row), the poison here is VISIBLE in the cached rows —
+/// the importing file's dep always names the winning package index — so no
+/// context enumeration is needed: re-derive the `@scope/name` ref from each
+/// package-index dep and check it still wins today.
 fn package_ref_of_index_dep(dep: String) -> Option[String] {
   // #897: a resolved package-index dep only ever ends in `.vibei` or (once a
   // directory has migrated) `.vpkg` — no other on-disk file uses either

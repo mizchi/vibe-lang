@@ -45,9 +45,9 @@ import @vibe/compiler/codegen {
 
 //# Functions
 
-// Checker-time path: `check_program` (which runs `desugar_railway_binds`)
-// then plain wasi codegen — mirrors `compile_source_wasi_only`/
-// `compile_file_wasi_only`.
+/// Checker-time path: `check_program` (which runs `desugar_railway_binds`)
+/// then plain wasi codegen — mirrors `compile_source_wasi_only`/
+/// `compile_file_wasi_only`.
 fn compiles_via_check_program(src: String, entry: String) -> Bool {
   handle {
     let stmts = parse_program(lex(src))
@@ -59,13 +59,13 @@ fn compiles_via_check_program(src: String, entry: String) -> Bool {
   }
 }
 
-// RC/FS-compile path: skip `check_program` entirely and run ONLY
-// `desugar_trait_dicts` before codegen — mirrors what
-// `compile_wasi_module_linked_impl` does internally (and therefore what
-// `compile_file_fs_mode_rc`, the default codegen entry `vibe run`/`vibe test`
-// use, does). A regression here is exactly the #839 bug: `desugar_trait_dicts`
-// alone used to fail every one of these while `compiles_via_check_program`
-// (wrongly) looked sufficient.
+/// RC/FS-compile path: skip `check_program` entirely and run ONLY
+/// `desugar_trait_dicts` before codegen — mirrors what
+/// `compile_wasi_module_linked_impl` does internally (and therefore what
+/// `compile_file_fs_mode_rc`, the default codegen entry `vibe run`/`vibe test`
+/// use, does). A regression here is exactly the #839 bug: `desugar_trait_dicts`
+/// alone used to fail every one of these while `compiles_via_check_program`
+/// (wrongly) looked sufficient.
 fn compiles_via_desugar_trait_dicts(src: String, entry: String) -> Bool {
   handle {
     let stmts = parse_program(lex(src))
@@ -81,42 +81,42 @@ fn compiles_both_ways(src: String, entry: String) -> Bool {
   compiles_via_check_program(src, entry) && compiles_via_desugar_trait_dicts(src, entry)
 }
 
-// Position 1: a top-level `let` initializer referencing an anon-record binding
-// declared in an EARLIER top-level statement (the original #839 repro).
+/// Position 1: a top-level `let` initializer referencing an anon-record binding
+/// declared in an EARLIER top-level statement (the original #839 repro).
 test "839: top-level let initializer reads an earlier top-level anon record" {
   let src = "let r = record { name: \"vibe\", ver: 1 }\nlet rn = r.name\nexport fn main() -> Int {\n  if rn == \"vibe\" { 0 } else { 1 }\n}\n"
   assert_eq(compiles_both_ways(src, "main"), true)
 }
 
-// Position 2: a function body closing over a TOP-LEVEL anon record binding
-// (not a local one) — the other half of the original #839 repro.
+/// Position 2: a function body closing over a TOP-LEVEL anon record binding
+/// (not a local one) — the other half of the original #839 repro.
 test "839: function body closes over a top-level anon record binding" {
   let src = "let r = record { name: \"vibe\", ver: 1 }\nexport fn main() -> Int {\n  let rn = r.name\n  if rn == \"vibe\" { 0 } else { 1 }\n}\n"
   assert_eq(compiles_both_ways(src, "main"), true)
 }
 
-// Position 3: function body return position, with the record LOCAL to the
-// function (already worked pre-fix; guards against regressing it).
+/// Position 3: function body return position, with the record LOCAL to the
+/// function (already worked pre-fix; guards against regressing it).
 test "839: function body return position (local anon record)" {
   let src = "export fn main() -> Int {\n  let r = record { name: \"vibe\", ver: 1 }\n  let rn = r.name\n  if rn == \"vibe\" { 0 } else { 1 }\n}\n"
   assert_eq(compiles_both_ways(src, "main"), true)
 }
 
-// Position 4: nested call argument.
+/// Position 4: nested call argument.
 test "839: anon record dot access as a nested call argument" {
   let src = "fn is_vibe(s: String) -> Bool {\n  s == \"vibe\"\n}\nexport fn main() -> Int {\n  let r = record { name: \"vibe\", ver: 1 }\n  if is_vibe(r.name) { 0 } else { 1 }\n}\n"
   assert_eq(compiles_both_ways(src, "main"), true)
 }
 
-// Position 5: inside a `test { }` block.
+/// Position 5: inside a `test { }` block.
 test "839: anon record dot access inside a test block" {
   let src = "test \"inner\" {\n  let r = record { name: \"vibe\", ver: 1 }\n  let rn = r.name\n  assert_eq(rn, \"vibe\")\n}\n"
   assert_eq(compiles_both_ways(src, "__test_inner"), true)
 }
 
-// Regression guard: a field that genuinely does not exist on ANY declared
-// struct or anon-record binding must still be rejected (not silently
-// resolved to some other slot) — the fix must not blur real errors.
+/// Regression guard: a field that genuinely does not exist on ANY declared
+/// struct or anon-record binding must still be rejected (not silently
+/// resolved to some other slot) — the fix must not blur real errors.
 test "839: nonexistent field on an anon record is still rejected" {
   let src = "let r = record { name: \"vibe\", ver: 1 }\nlet bad = r.nonexistent\nexport fn main() -> Int {\n  0\n}\n"
   assert_eq(compiles_via_check_program(src, "main"), false)

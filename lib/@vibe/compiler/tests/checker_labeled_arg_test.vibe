@@ -10,135 +10,135 @@
 // top-level let-bound functions.
 
 import ./checker_parity_test_support.vibe {
-  check_source_ok, check_source_err
+  check_source_err, check_source_ok
 }
 
 //# Misc
 
-// Issue #986 repro: both argument types reversed — must be rejected.
+/// Issue #986 repro: both argument types reversed — must be rejected.
 test "labeled args: fully reversed types rejected" {
   assert(check_source_err("fn f(x: Int, y: String) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(x=\"hello\", y=5)\n}"))
 }
 
-// Only one of the labeled args has the wrong type — must be rejected.
+/// Only one of the labeled args has the wrong type — must be rejected.
 test "labeled args: single wrong type rejected" {
   assert(check_source_err("fn f(x: Int, y: String) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(x=1, y=5)\n}"))
 }
 
-// Correct labeled call (declared labeled params, declared order) — accepted.
+/// Correct labeled call (declared labeled params, declared order) — accepted.
 test "labeled args: correct labeled call accepted" {
   assert(check_source_ok("let add: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }\nfn main() -> Int {\n  add(x=1, y=2)\n}"))
 }
 
-// Correct labeled call against a plain `fn` declaration — accepted.
+/// Correct labeled call against a plain `fn` declaration — accepted.
 test "labeled args: labeled call on plain fn accepted" {
   assert(check_source_ok("fn f(x: Int, y: String) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(x=1, y=\"ok\")\n}"))
 }
 
-// Positional calls are unaffected: correct one accepted...
+/// Positional calls are unaffected: correct one accepted...
 test "labeled args: positional call unaffected ok" {
   assert(check_source_ok("fn f(x: Int, y: String) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(1, \"ok\")\n}"))
 }
 
-// ...and a positional type mismatch still rejected.
+/// ...and a positional type mismatch still rejected.
 test "labeled args: positional mismatch still rejected" {
   assert(check_source_err("fn f(x: Int, y: String) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(\"hello\", 5)\n}"))
 }
 
-// Nonexistent label names — rejected even when the value types line up.
+/// Nonexistent label names — rejected even when the value types line up.
 test "labeled args: unknown label names rejected" {
   assert(check_source_err("fn f(x: Int, y: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(nosuch=1, alsono=2)\n}"))
 }
 
-// Fully-labeled out-of-order call to a LABELED fn is reordered by
-// desugar_labeled_args (name-based binding) — accepted.
+/// Fully-labeled out-of-order call to a LABELED fn is reordered by
+/// desugar_labeled_args (name-based binding) — accepted.
 test "labeled args: reordered labeled call accepted" {
   assert(check_source_ok("let add: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }\nfn main() -> Int {\n  add(y=2, x=1)\n}"))
 }
 
-// The reorder is name-based, so a type error must follow the LABEL, not the
-// call position: y=\"s\" against y~: Int is rejected even written first.
+/// The reorder is name-based, so a type error must follow the LABEL, not the
+/// call position: y=\"s\" against y~: Int is rejected even written first.
 test "labeled args: reordered labeled call type mismatch rejected" {
   assert(check_source_err("let add: (x~: Int, y~: String) -> Int = (x~, y~) -> { x }\nfn main() -> Int {\n  add(y=1, x=2)\n}"))
 }
 
-// #986 follow-up: a fully-labeled out-of-order call to a PLAIN fn (no `~` in
-// the declaration) is also reordered by name — `fn` decls lower to
-// `SLet` + `EFn` before the pass, so the parameter names are known.
+/// #986 follow-up: a fully-labeled out-of-order call to a PLAIN fn (no `~` in
+/// the declaration) is also reordered by name — `fn` decls lower to
+/// `SLet` + `EFn` before the pass, so the parameter names are known.
 test "labeled args: reordered labels on plain fn accepted" {
   assert(check_source_ok("fn f(x: Int, y: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(y=1, x=2)\n}"))
 }
 
-// The name-based reorder means types follow the LABEL on plain fns too:
-// f(y=\"s\", x=1) against (x: Int, y: String) is fine...
+/// The name-based reorder means types follow the LABEL on plain fns too:
+/// f(y=\"s\", x=1) against (x: Int, y: String) is fine...
 test "labeled args: reordered labels on plain fn follow label types" {
   assert(check_source_ok("fn f(x: Int, y: String) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(y=\"s\", x=1)\n}"))
 }
 
-// ...and f(y=5, x=\"hello\") is rejected (both labels name the wrong type).
+/// ...and f(y=5, x=\"hello\") is rejected (both labels name the wrong type).
 test "labeled args: reordered labels on plain fn type mismatch rejected" {
   assert(check_source_err("fn f(x: Int, y: String) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(y=5, x=\"hello\")\n}"))
 }
 
-// A PARTIALLY labeled call is never reordered (positional binding), so an
-// out-of-position label would silently swap — rejected.
+/// A PARTIALLY labeled call is never reordered (positional binding), so an
+/// out-of-position label would silently swap — rejected.
 test "labeled args: partial out-of-order label rejected" {
   assert(check_source_err("fn f(x: Int, y: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  f(y=1, 2)\n}"))
 }
 
-// Codex P2-2 on #993: a LOCAL binding shadowing a top-level fn name must
-// suppress the top-level label table — `f(y=1)` here calls the local closure
-// whose param IS `y`, so the top-level `f(x: Int)` labels don't apply.
+/// Codex P2-2 on #993: a LOCAL binding shadowing a top-level fn name must
+/// suppress the top-level label table — `f(y=1)` here calls the local closure
+/// whose param IS `y`, so the top-level `f(x: Int)` labels don't apply.
 test "labeled args: local shadow of top-level fn accepted" {
   assert(check_source_ok("fn f(x: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  let f = (y: Int) -> Int { y + 41 }\n  f(y=1)\n}"))
 }
 
-// Codex P2-1 on #993 (same mechanism, in-file shape): a labeled call whose
-// callee's parameter NAMES are not visible in this module's top-level table
-// (here: a fn-typed parameter; the cross-file `import { f }` case is
-// identical) must be tolerated, not positionally unified — the labels may be
-// declared in a different order than the call writes them.
+/// Codex P2-1 on #993 (same mechanism, in-file shape): a labeled call whose
+/// callee's parameter NAMES are not visible in this module's top-level table
+/// (here: a fn-typed parameter; the cross-file `import { f }` case is
+/// identical) must be tolerated, not positionally unified — the labels may be
+/// declared in a different order than the call writes them.
 test "labeled args: callee without label info tolerated" {
   assert(check_source_ok("fn call_it(g: (Int, String) -> Int) -> Int {\n  g(y=\"ok\", x=1)\n}\n\nfn main() -> Int {\n  call_it((x: Int, y: String) -> Int { x })\n}"))
 }
 
-// #1001 repro: mixing a labeled and a positional argument in the SAME call is
-// rejected UNCONDITIONALLY (the Oracle's `resolveArguments` rule), even
-// though the label (`x=1`) happens to already sit at its own declared
-// position — `desugar_labeled_args`'s `strip_in_position_labels` used to
-// silently unwrap exactly that label (treating it as a harmless "decorative"
-// label on an otherwise-positional call), turning this into the ordinary
-// positional `f(1, "ok")` before the checker or any post-desugar validation
-// pass ever saw the mix. `check_mixed_argument_modes` (checker_stmt.vibe) now
-// runs BEFORE that stripping, on the call's original argument list.
+/// #1001 repro: mixing a labeled and a positional argument in the SAME call is
+/// rejected UNCONDITIONALLY (the Oracle's `resolveArguments` rule), even
+/// though the label (`x=1`) happens to already sit at its own declared
+/// position — `desugar_labeled_args`'s `strip_in_position_labels` used to
+/// silently unwrap exactly that label (treating it as a harmless "decorative"
+/// label on an otherwise-positional call), turning this into the ordinary
+/// positional `f(1, "ok")` before the checker or any post-desugar validation
+/// pass ever saw the mix. `check_mixed_argument_modes` (checker_stmt.vibe) now
+/// runs BEFORE that stripping, on the call's original argument list.
 test "1001 repro: mixed positional/labeled arguments rejected even when the label is in position" {
   assert(check_source_err("let f: (x~: Int, y~: String) -> Int = (x~, y~) -> { x }\nfn main() -> Int { f(x=1, \"ok\") }"))
 }
 
-// Same shape, but the SECOND argument carries the label instead — still a
-// mix, still rejected regardless of which position the label sits at.
+/// Same shape, but the SECOND argument carries the label instead — still a
+/// mix, still rejected regardless of which position the label sits at.
 test "1001: mixed positional/labeled arguments rejected (label on the second argument)" {
   assert(check_source_err("let f: (x~: Int, y~: String) -> Int = (x~, y~) -> { x }\nfn main() -> Int { f(1, y=\"ok\") }"))
 }
 
-// A fully-labeled call in a DIFFERENT declared order is not a mix — it must
-// keep being accepted (regression guard for the #1001 fix: the mixed-mode
-// check must not fire on a genuinely all-labeled call).
+/// A fully-labeled call in a DIFFERENT declared order is not a mix — it must
+/// keep being accepted (regression guard for the #1001 fix: the mixed-mode
+/// check must not fire on a genuinely all-labeled call).
 test "1001: fully-labeled out-of-order call is not a mix, stays accepted" {
   assert(check_source_ok("let f: (x~: Int, y~: String) -> Int = (x~, y~) -> { x }\nfn main() -> Int { f(y=\"ok\", x=1) }"))
 }
 
-// A fully-positional call is not a mix either — stays accepted.
+/// A fully-positional call is not a mix either — stays accepted.
 test "1001: fully-positional call is not a mix, stays accepted" {
   assert(check_source_ok("let f: (x~: Int, y~: String) -> Int = (x~, y~) -> { x }\nfn main() -> Int { f(1, \"ok\") }"))
 }
 
-// #1001 Codex review (PR #1008): a call to a LOCAL closure (never a
-// top-level `let`-bound fn, so it was never in `collect_labeled_check_fns`'s
-// table) must be checked for mixed argument modes too — gating the check on
-// tbl-membership + not-shadowed (the same lookup the position/unknown-label
-// checks need) let this bypass entirely, since `labeled_walk_shadowed`
-// returns true for ANY local binding, table-colliding or not.
+/// #1001 Codex review (PR #1008): a call to a LOCAL closure (never a
+/// top-level `let`-bound fn, so it was never in `collect_labeled_check_fns`'s
+/// table) must be checked for mixed argument modes too — gating the check on
+/// tbl-membership + not-shadowed (the same lookup the position/unknown-label
+/// checks need) let this bypass entirely, since `labeled_walk_shadowed`
+/// returns true for ANY local binding, table-colliding or not.
 test "1001: mixed positional/labeled arguments on a LOCAL closure rejected" {
   assert(check_source_err("fn main() -> Int {\n  let f = (x~: Int, y~: String) -> Int { x }\n  f(x=1, \"ok\")\n}"))
 }

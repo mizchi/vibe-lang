@@ -1,11 +1,11 @@
 //# Imports
 
 import ./checker_parity_test_support.vibe {
-  check_source_ok, check_source_err
+  check_source_err, check_source_ok
 }
 
 import @vibe/prelude {
-  Eq, Ord, Add, ord_clamp, ord_min, ord_max, ord_between, num_add
+  Add, Eq, Ord, num_add, ord_between, ord_clamp, ord_max, ord_min
 }
 
 //# Functions
@@ -76,22 +76,22 @@ test "952: ord_clamp-shaped [T: Ord] fn accepts String AND Int call sites in one
   assert(check_source_ok("fn clamp3[T: Ord](x: T, lo: T, hi: T) -> T { if x < lo { lo } else if x > hi { hi } else x }\nlet _e = () -> { let s = clamp3(\"m\", \"a\", \"z\")\nlet n = clamp3(5, 0, 10)\nn }"))
 }
 
-// Codex P2 on #974: when only ONE operand carries the bound
-// (`fn bad[T: Ord, U](a: T, b: U) -> Bool { a < b }`), the operand-vs-operand
-// unify may bind T := U and the surviving var had NO recorded Ord bound --
-// generalize then exported an unbounded (U, U) -> Bool, so `bad(true, false)`
-// slipped past the call-site bound check. The bounds of BOTH operands' vars
-// are now re-recorded on the survivor.
+/// Codex P2 on #974: when only ONE operand carries the bound
+/// (`fn bad[T: Ord, U](a: T, b: U) -> Bool { a < b }`), the operand-vs-operand
+/// unify may bind T := U and the surviving var had NO recorded Ord bound --
+/// generalize then exported an unbounded (U, U) -> Bool, so `bad(true, false)`
+/// slipped past the call-site bound check. The bounds of BOTH operands' vars
+/// are now re-recorded on the survivor.
 test "952 review: one-sided [T: Ord, U] keeps the Ord bound on the unified var" {
   assert(check_source_err("fn bad[T: Ord, U](a: T, b: U) -> Bool { a < b }\nlet _e = () -> { bad(true, false) }"))
   assert(check_source_ok("fn bad[T: Ord, U](a: T, b: U) -> Bool { a < b }\nlet _e = () -> { bad(1, 2) }"))
   assert(check_source_ok("fn bad[T: Ord, U](a: T, b: U) -> Bool { a < b }\nlet _e = () -> { bad(\"a\", \"b\") }"))
 }
 
-// Concrete survivor: unifying the bounded var against a concrete operand
-// inside the body must keep the implements check (String has Ord, Bool
-// does not) -- mirroring what infer_named_trait_binop enforced before the
-// rigid pre-step existed.
+/// Concrete survivor: unifying the bounded var against a concrete operand
+/// inside the body must keep the implements check (String has Ord, Bool
+/// does not) -- mirroring what infer_named_trait_binop enforced before the
+/// rigid pre-step existed.
 test "952 review: bounded var unified with a concrete operand keeps the implements check" {
   assert(check_source_ok("fn f[T: Ord](a: T) -> Bool { a < \"x\" }\nlet _e = () -> { f(\"a\") }"))
   assert(check_source_err("fn g[T: Ord](a: T) -> Bool { a < true }\nlet _e = () -> { g(true) }"))
@@ -124,11 +124,11 @@ test "952: concrete top-level operators unaffected (regression)" {
   assert("foo" + "bar" == "foobar")
 }
 
-// #973: the repro from the issue. `ord_clamp("m", "a", "z")` type-checked
-// after #952 but returned "a" (raw i64 pointer compare on the packed String
-// value) instead of "m" (content compare). Fixed by desugar_trait_dict.vibe
-// routing `<`/`>` through gen_generic_rel_diff_body's runtime tag-check when
-// the operand's static type is the bare erased type parameter.
+/// #973: the repro from the issue. `ord_clamp("m", "a", "z")` type-checked
+/// after #952 but returned "a" (raw i64 pointer compare on the packed String
+/// value) instead of "m" (content compare). Fixed by desugar_trait_dict.vibe
+/// routing `<`/`>` through gen_generic_rel_diff_body's runtime tag-check when
+/// the operand's static type is the bare erased type parameter.
 test "973: [T: Ord] `<`/`>` on String now content-compares at runtime (was: pointer compare)" {
   assert(my_lt_int("a", "b"))
   assert(not(my_lt_int("b", "a")))
@@ -176,14 +176,14 @@ test "973: [T: Add] `+` on Int through the same erased generic is unaffected (re
   assert(eq(num_add(3, 4), 7))
 }
 
-// #973 P1 (Codex review on PR #1005): `(ptr=0, len=0)` -- the packed
-// representation of plain integer `0` -- used to also satisfy
-// `emit_looks_like_string_strict`'s `len == 0` disjunct even though
-// `ptr >= 64` was false, so `num_add(0, 0)` matched as "both operands look
-// like strings" and called `str_concat`, returning a garbage heap pointer
-// instead of `0`. Fixed by requiring `ptr >= 64` unconditionally (a real
-// String's data-section/heap address in this codegen, empty or not, is
-// always >= 64 -- see `emit_looks_like_string_strict`'s doc comment).
+/// #973 P1 (Codex review on PR #1005): `(ptr=0, len=0)` -- the packed
+/// representation of plain integer `0` -- used to also satisfy
+/// `emit_looks_like_string_strict`'s `len == 0` disjunct even though
+/// `ptr >= 64` was false, so `num_add(0, 0)` matched as "both operands look
+/// like strings" and called `str_concat`, returning a garbage heap pointer
+/// instead of `0`. Fixed by requiring `ptr >= 64` unconditionally (a real
+/// String's data-section/heap address in this codegen, empty or not, is
+/// always >= 64 -- see `emit_looks_like_string_strict`'s doc comment).
 test "973 P1: [T: Add] `+` on zero Int through an erased generic (was: garbage string pointer)" {
   assert(eq(num_add(0, 0), 0))
   assert(eq(my_add_gen(0, 0), 0))

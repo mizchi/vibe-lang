@@ -17,8 +17,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/entry/compiler/file_compile {
-  check_file_fs_mode, compile_file_fs_mode, compile_file_fs_mode_cached, compile_file_fs_mode_cached_profiled,
-  compile_file_fs_mode_profiled
+  check_file_fs_mode, compile_file_fs_mode, compile_file_fs_mode_cached, compile_file_fs_mode_cached_profiled, compile_file_fs_mode_profiled
 }
 
 // #897: package-form import (wasi_only/ is now an index.vpkg boundary) --
@@ -32,9 +31,7 @@ import @vibe/compiler/entry/compiler/file_compile {
 // its own name, so the two call sites that used `empty_stmt_array()` now
 // call `array_empty()` directly instead.
 import @vibe/compiler/entry/source_compile/wasi_only {
-  collect_linked_compile_inputs, collect_linked_dep_inputs_for_stmts,
-  expand_interp_stmts,
-  compile_file_wasi_library
+  collect_linked_compile_inputs, collect_linked_dep_inputs_for_stmts, compile_file_wasi_library, expand_interp_stmts
 }
 
 import ./type_db.vibe {
@@ -164,11 +161,11 @@ export fn build_linked_debug_entry(input_path: String, entry_name: String) -> (B
   (bytes, linked_dep_specs)
 }
 
-// Gate v2 (#492): parse + typecheck only, with imports linked. The checker
-// knows builtin signatures, so this surfaces REAL language/checker
-// expressiveness gaps (parse errors, type errors, genuine unknown names)
-// WITHOUT the codegen builtin-body-linking confounder that makes the `debug`
-// mode emit spurious `undefined variable: Ns::method`. No wasm is produced.
+/// Gate v2 (#492): parse + typecheck only, with imports linked. The checker
+/// knows builtin signatures, so this surfaces REAL language/checker
+/// expressiveness gaps (parse errors, type errors, genuine unknown names)
+/// WITHOUT the codegen builtin-body-linking confounder that makes the `debug`
+/// mode emit spurious `undefined variable: Ns::method`. No wasm is produced.
 export fn check_linked_file(input_path: String) -> Int with { Error, Fs } {
   // #946(3): parse the entry file OURSELVES first (located + recovering —
   // see the import comment above) so a parse error is reported with an exact
@@ -224,17 +221,17 @@ export fn check_linked_file(input_path: String) -> Int with { Error, Fs } {
 
 //# Release wasm stripping (#1100 size)
 
-// Read one unsigned LEB128 at `i`; returns (value, next_index) or (-1, end)
-// when malformed/truncated so callers can bail out to the untouched input.
+/// Read one unsigned LEB128 at `i`; returns (value, next_index) or (-1, end)
+/// when malformed/truncated so callers can bail out to the untouched input.
 fn strip_read_uleb(wasm: Bytes, start: Int, end: Int) -> (Int, Int) {
   let mut i = start
   let mut v = 0
   let mut shift = 0
   while i < end && shift < 35 {
     let b = Bytes::get(wasm, i)
-    v = v | ((b & 127) << shift)
+    v = v|((b&127)<<shift)
     i = i + 1
-    if (b & 128) == 0 {
+    if (b&128) == 0 {
       return (v, i)
     } else {
       shift = shift + 7
@@ -281,30 +278,30 @@ fn strip_push_uleb(out: Bytes, value: Int) -> Unit {
   let mut v = value
   let mut more = true
   while more {
-    let b = v & 127
-    v = v >> 7
+    let b = v&127
+    v = v>>7
     if v == 0 {
       Bytes::push(out, b)
       more = false
     } else {
-      Bytes::push(out, b | 128)
+      Bytes::push(out, b|128)
     }
   }
 }
 
-// Executable-output post-pass: drop the `name` custom section (debug info)
-// and/or filter the export section down to the entries an executable's
-// runners actually address by name — the entry function, `_start`,
-// `cli_main`, per-block `__bench_*`/`__test_*` exports, and every non-function
-// export (memory / `__heap_ptr` global / `error` tag). Everything else is a
-// module-linking artifact (`*_exp_lib__*` mangled names from the flat module
-// source) that nothing external can reasonably call. Section-level surgery
-// only: removing a custom section or export ENTRIES never renumbers any
-// index, so the code/table/elem sections are byte-identical. Any parse
-// anomaly returns the input untouched. Component/library/test paths must NOT
-// come through here — components lift core exports by name and `vibe test`
-// tooling reads `__test_*` frames from the name section (callers gate on
-// entry_name/env, see strip_executable_wasm_env).
+/// Executable-output post-pass: drop the `name` custom section (debug info)
+/// and/or filter the export section down to the entries an executable's
+/// runners actually address by name — the entry function, `_start`,
+/// `cli_main`, per-block `__bench_*`/`__test_*` exports, and every non-function
+/// export (memory / `__heap_ptr` global / `error` tag). Everything else is a
+/// module-linking artifact (`*_exp_lib__*` mangled names from the flat module
+/// source) that nothing external can reasonably call. Section-level surgery
+/// only: removing a custom section or export ENTRIES never renumbers any
+/// index, so the code/table/elem sections are byte-identical. Any parse
+/// anomaly returns the input untouched. Component/library/test paths must NOT
+/// come through here — components lift core exports by name and `vibe test`
+/// tooling reads `__test_*` frames from the name section (callers gate on
+/// entry_name/env, see strip_executable_wasm_env).
 export fn strip_executable_wasm(wasm: Bytes, entry_name: String, strip_names: Bool, filter_exports: Bool) -> Bytes {
   if !strip_names && !filter_exports {
     return wasm
@@ -407,23 +404,18 @@ export fn strip_executable_wasm(wasm: Bytes, entry_name: String, strip_names: Bo
   }
 }
 
-// Env-gated policy wrapper shared by the CLI adapter (env-mode interface) and
-// the command dispatch layer: executables (a real entry name) are stripped by
-// default; `__no_entry__` builds (test/bench/serve cores) are left untouched
-// because their tooling reads `__test_*` name-section frames, greps the
-// binary for `__test_`, enumerates `__bench_*` exports, or lifts component
-// exports by name. VIBE_WASM_NAMES=1 keeps the name section (profiling /
-// trap-backtrace workflows); VIBE_WASM_KEEP_EXPORTS=1 keeps every export.
+/// Env-gated policy wrapper shared by the CLI adapter (env-mode interface) and
+/// the command dispatch layer: executables (a real entry name) are stripped by
+/// default; `__no_entry__` builds (test/bench/serve cores) are left untouched
+/// because their tooling reads `__test_*` name-section frames, greps the
+/// binary for `__test_`, enumerates `__bench_*` exports, or lifts component
+/// exports by name. VIBE_WASM_NAMES=1 keeps the name section (profiling /
+/// trap-backtrace workflows); VIBE_WASM_KEEP_EXPORTS=1 keeps every export.
 export fn strip_executable_wasm_env(wasm: Bytes, entry_name: String) -> Bytes with { Env } {
   if entry_name == "__no_entry__" {
     wasm
   } else {
-    strip_executable_wasm(
-      wasm,
-      entry_name,
-      Env::get("VIBE_WASM_NAMES") != "1",
-      Env::get("VIBE_WASM_KEEP_EXPORTS") != "1"
-    )
+    strip_executable_wasm(wasm, entry_name, Env::get("VIBE_WASM_NAMES") != "1", Env::get("VIBE_WASM_KEEP_EXPORTS") != "1")
   }
 }
 

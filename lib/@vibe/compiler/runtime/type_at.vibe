@@ -16,7 +16,7 @@
 // __to_string.
 
 import @vibe/compiler/core {
-  Stmt, Expr, Pat, Type, TypeEnv, Subst, env_lookup, subst_apply, type_to_string
+  Expr, Pat, Stmt, Subst, Type, TypeEnv, env_lookup, subst_apply, type_to_string
 }
 
 import @vibe/core {
@@ -28,29 +28,29 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/syntax {
-  lex_with_offsets, parse_program_located, parse_program_spans, offset_to_line_col
+  lex_with_offsets, offset_to_line_col, parse_program_located, parse_program_spans
 }
 
 //# Functions
 
-// 1-based (line, col) -> 0-based char offset, the inverse of offset_to_line_col.
-// `col` is the position WITHIN a line (col 1 = first char of the line, col
-// length+1 = just past the last char — a valid cursor position). We count
-// newlines: the offset of the start of line L is just past the (L-1)th
-// newline, then add (col - 1).
-//
-// Returns -1 (invalid / no position) for anything out of range, rather than
-// silently clamping (#947):
-//   - `line < 1` or `col < 1`: never valid (1-based).
-//   - `line` beyond the last line in `source`.
-//   - `col` past the END of that line's content — previously this fell
-//     through to `linestart + col - 1` unclamped, which for a large enough
-//     `col` landed on/inside the NEXT line (a col-past-EOL query silently
-//     resolved to an unrelated identifier a line down).
-// CRLF (#947): a line's addressable content excludes a trailing '\r' before
-// the '\n' — otherwise every query position (and reported span) on a CRLF
-// file drifts by one byte per preceding CRLF line, since the line's `\r` was
-// being counted as ordinary content here but not consistently elsewhere.
+/// 1-based (line, col) -> 0-based char offset, the inverse of offset_to_line_col.
+/// `col` is the position WITHIN a line (col 1 = first char of the line, col
+/// length+1 = just past the last char — a valid cursor position). We count
+/// newlines: the offset of the start of line L is just past the (L-1)th
+/// newline, then add (col - 1).
+///
+/// Returns -1 (invalid / no position) for anything out of range, rather than
+/// silently clamping (#947):
+///   - `line < 1` or `col < 1`: never valid (1-based).
+///   - `line` beyond the last line in `source`.
+///   - `col` past the END of that line's content — previously this fell
+///     through to `linestart + col - 1` unclamped, which for a large enough
+///     `col` landed on/inside the NEXT line (a col-past-EOL query silently
+///     resolved to an unrelated identifier a line down).
+/// CRLF (#947): a line's addressable content excludes a trailing '\r' before
+/// the '\n' — otherwise every query position (and reported span) on a CRLF
+/// file drifts by one byte per preceding CRLF line, since the line's `\r` was
+/// being counted as ordinary content here but not consistently elsewhere.
 fn line_col_to_offset(source: String, line: Int, col: Int) -> Int {
   if line < 1 || col < 1 {
     -1
@@ -93,8 +93,8 @@ fn line_col_to_offset(source: String, line: Int, col: Int) -> Int {
   }
 }
 
-// A located EIdent hit: name + source span [off, off + length(name)). `off` is
-// -1 for synthetic / non-located idents (those are ignored by the search).
+/// A located EIdent hit: name + source span [off, off + length(name)). `off` is
+/// -1 for synthetic / non-located idents (those are ignored by the search).
 enum IdentHit {
   IdentHit(String, Int)
 }
@@ -103,10 +103,10 @@ fn empty_hits() -> Array[IdentHit] {
   array_empty()
 }
 
-// Read-only walker over the Expr structure (templated on normalize/index.vibe's
-// `fold_expr`, but it only COLLECTS located EIdent nodes — it never rebuilds the
-// tree). Every variant is enumerated so a new Expr arm is a compile error here,
-// keeping the collector in sync with the AST.
+/// Read-only walker over the Expr structure (templated on normalize/index.vibe's
+/// `fold_expr`, but it only COLLECTS located EIdent nodes — it never rebuilds the
+/// tree). Every variant is enumerated so a new Expr arm is a compile error here,
+/// keeping the collector in sync with the AST.
 fn collect_expr(expr: Expr, acc: Array[IdentHit]) -> Unit {
   match expr {
     EInt(_) => (),
@@ -262,8 +262,8 @@ fn collect_stmts(stmts: Array[Stmt], acc: Array[IdentHit]) -> Unit {
   }
 }
 
-// True when `source[off]` is NOT an identifier char (or off is out of range) —
-// i.e. a valid word boundary. Used to match a binding name as a whole word.
+/// True when `source[off]` is NOT an identifier char (or off is out of range) —
+/// i.e. a valid word boundary. Used to match a binding name as a whole word.
 fn is_boundary_at(source: String, off: Int) -> Bool {
   if off < 0 || off >= String::length(source) {
     true
@@ -274,19 +274,27 @@ fn is_boundary_at(source: String, off: Int) -> Bool {
   }
 }
 
-// Find the first whole-word occurrence of `name` in `source[start..end)` and, if
-// found, push a located IdentHit for it. This recovers a source offset for a
-// let-binding NAME, which the parser stores only as a String on the Stmt (it is
-// not an EIdent and so carries no offset). Binding names are exactly the
-// env-visible top-level names, so making their definition site hoverable is the
-// useful case for this MVP.
+/// Find the first whole-word occurrence of `name` in `source[start..end)` and, if
+/// found, push a located IdentHit for it. This recovers a source offset for a
+/// let-binding NAME, which the parser stores only as a String on the Stmt (it is
+/// not an EIdent and so carries no offset). Binding names are exactly the
+/// env-visible top-level names, so making their definition site hoverable is the
+/// useful case for this MVP.
 fn push_binding_name_hit(source: String, start: Int, end: Int, name: String, acc: Array[IdentHit]) -> Unit {
   let nlen = String::length(name)
   if nlen == 0 {
     ()
   } else {
-    let limit = if end > String::length(source) { String::length(source) } else { end }
-    let mut i = if start < 0 { 0 } else { start }
+    let limit = if end > String::length(source) {
+      String::length(source)
+    } else {
+      end
+    }
+    let mut i = if start < 0 {
+      0
+    } else {
+      start
+    }
     let mut found = false
     while !found && i + nlen <= limit {
       if String::substring(source, i, i + nlen) == name && is_boundary_at(source, i - 1) && is_boundary_at(source, i + nlen) {
@@ -299,14 +307,22 @@ fn push_binding_name_hit(source: String, start: Int, end: Int, name: String, acc
   }
 }
 
-// Add located hits for the NAMES of top-level (and module-body) value bindings,
-// using each statement's source span (from parse_program_spans) to scope the
-// whole-word search. Only SLet/SLetMut names are env-visible value bindings.
+/// Add located hits for the NAMES of top-level (and module-body) value bindings,
+/// using each statement's source span (from parse_program_spans) to scope the
+/// whole-word search. Only SLet/SLetMut names are env-visible value bindings.
 fn collect_binding_name_hits(stmts: Array[Stmt], span_start: Array[Int], span_end: Array[Int], source: String, acc: Array[IdentHit]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    let start = if i < Array::length(span_start) { Array::get(span_start, i) } else { 0 }
-    let end = if i < Array::length(span_end) { Array::get(span_end, i) } else { String::length(source) }
+    let start = if i < Array::length(span_start) {
+      Array::get(span_start, i)
+    } else {
+      0
+    }
+    let end = if i < Array::length(span_end) {
+      Array::get(span_end, i)
+    } else {
+      String::length(source)
+    }
     match Array::get(stmts, i) {
       SLet(_, _, name, _, _) => push_binding_name_hit(source, start, end, name, acc),
       SLetMut(name, _, _) => push_binding_name_hit(source, start, end, name, acc),
@@ -316,9 +332,9 @@ fn collect_binding_name_hits(stmts: Array[Stmt], span_start: Array[Int], span_en
   }
 }
 
-// Among all collected idents whose span [off, off+len(name)) contains `tgt`,
-// pick the one with the largest `off` (innermost / closest start). Returns ""
-// when no ident covers the position.
+/// Among all collected idents whose span [off, off+len(name)) contains `tgt`,
+/// pick the one with the largest `off` (innermost / closest start). Returns ""
+/// when no ident covers the position.
 fn pick_ident_at(hits: Array[IdentHit], tgt: Int) -> String {
   let mut best_name = ""
   let mut best_off = -1
@@ -340,9 +356,9 @@ fn pick_ident_at(hits: Array[IdentHit], tgt: Int) -> String {
   best_name
 }
 
-// Same selection as pick_ident_at, but returns the chosen ident's source
-// `off` (the innermost / largest-off hit covering `tgt`), or -1 when none.
-// Used to query the per-node type table by the hovered EIdent's offset.
+/// Same selection as pick_ident_at, but returns the chosen ident's source
+/// `off` (the innermost / largest-off hit covering `tgt`), or -1 when none.
+/// Used to query the per-node type table by the hovered EIdent's offset.
 fn pick_ident_off(hits: Array[IdentHit], tgt: Int) -> Int {
   let mut best_off = -1
   let mut i = 0
@@ -362,10 +378,10 @@ fn pick_ident_off(hits: Array[IdentHit], tgt: Int) -> Int {
   best_off
 }
 
-// Look up the recorded type for source offset `off` in the per-node type table
-// produced by check_program_type_table. Returns None when no node recorded that
-// exact offset. When multiple entries share an offset (re-checked node), the
-// last recorded one wins (closest to the final inference state).
+/// Look up the recorded type for source offset `off` in the per-node type table
+/// produced by check_program_type_table. Returns None when no node recorded that
+/// exact offset. When multiple entries share an offset (re-checked node), the
+/// last recorded one wins (closest to the final inference state).
 fn tytab_lookup(table: Array[(Int, Type)], off: Int) -> Option[Type] {
   let mut found = None
   let mut i = 0
@@ -381,14 +397,14 @@ fn tytab_lookup(table: Array[(Int, Type)], off: Int) -> Option[Type] {
   found
 }
 
-// Locate the identifier at (line, col), typecheck the program, and return its
-// inferred type as a string. Resolution order:
-//   1. per-node type table (covers LOCALS and PARAMETERS — names that live in
-//      nested inference scopes and are gone from the returned TypeEnv);
-//   2. fall back to the top-level TypeEnv lookup (top-level / imported names,
-//      and let-binding definition sites whose offset is not an EIdent node).
-// Returns "" when the position is not over a located identifier, or the name
-// resolves nowhere. Any failure is swallowed and yields "".
+/// Locate the identifier at (line, col), typecheck the program, and return its
+/// inferred type as a string. Resolution order:
+///   1. per-node type table (covers LOCALS and PARAMETERS — names that live in
+///      nested inference scopes and are gone from the returned TypeEnv);
+///   2. fall back to the top-level TypeEnv lookup (top-level / imported names,
+///      and let-binding definition sites whose offset is not an EIdent node).
+/// Returns "" when the position is not over a located identifier, or the name
+/// resolves nowhere. Any failure is swallowed and yields "".
 export fn type_at_source(source: String, line: Int, col: Int) -> String {
   handle {
     let tgt = line_col_to_offset(source, line, col)
@@ -399,39 +415,39 @@ export fn type_at_source(source: String, line: Int, col: Int) -> String {
       // identifier" empty-result convention below.
       ""
     } else {
-    let (tokens, starts, ends) = lex_with_offsets(source)
-    let stmts = parse_program_located(tokens, starts, source)
-    let hits = empty_hits()
-    // Identifier USES carry real offsets on their EIdent nodes.
-    collect_stmts(stmts, hits)
-    // Identifier DEFINITIONS (let-binding names) carry none, so recover their
-    // source offset from each statement's span and the source text.
-    let (span_stmts, span_start, span_end) = parse_program_spans(tokens, starts, ends)
-    collect_binding_name_hits(span_stmts, span_start, span_end, source, hits)
-    let name = pick_ident_at(hits, tgt)
-    if name == "" {
-      ""
-    } else {
-      let chosen_off = pick_ident_off(hits, tgt)
-      // 1. per-node type table (locals + parameters).
-      let (table, final_s) = check_program_type_table(stmts)
-      let table_hit = if chosen_off >= 0 {
-        tytab_lookup(table, chosen_off)
+      let (tokens, starts, ends) = lex_with_offsets(source)
+      let stmts = parse_program_located(tokens, starts, source)
+      let hits = empty_hits()
+      // Identifier USES carry real offsets on their EIdent nodes.
+      collect_stmts(stmts, hits)
+      // Identifier DEFINITIONS (let-binding names) carry none, so recover their
+      // source offset from each statement's span and the source text.
+      let (span_stmts, span_start, span_end) = parse_program_spans(tokens, starts, ends)
+      collect_binding_name_hits(span_stmts, span_start, span_end, source, hits)
+      let name = pick_ident_at(hits, tgt)
+      if name == "" {
+        ""
       } else {
-        None
-      }
-      match table_hit {
-        Some(rec_ty) => type_to_string(subst_apply(final_s, rec_ty)),
-        None => {
-          // 2. fall back to the top-level env (top-level / imported names).
-          let env = check_program(stmts)
-          match env_lookup(env, name) {
-            Some(t) => type_to_string(t),
-            None => ""
+        let chosen_off = pick_ident_off(hits, tgt)
+        // 1. per-node type table (locals + parameters).
+        let (table, final_s) = check_program_type_table(stmts)
+        let table_hit = if chosen_off >= 0 {
+          tytab_lookup(table, chosen_off)
+        } else {
+          None
+        }
+        match table_hit {
+          Some(rec_ty) => type_to_string(subst_apply(final_s, rec_ty)),
+          None => {
+            // 2. fall back to the top-level env (top-level / imported names).
+            let env = check_program(stmts)
+            match env_lookup(env, name) {
+              Some(t) => type_to_string(t),
+              None => ""
+            }
           }
         }
       }
-    }
     }
   } with Error {
     Throw(_) => ""

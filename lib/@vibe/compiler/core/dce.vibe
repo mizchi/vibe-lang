@@ -323,103 +323,103 @@ export fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stm
   if Array::length(stmts) == 0 {
     Array::slice(stmts, 0, 0)
   } else {
-  let empty_bound = array_empty()
-  let def_names = array_empty()
-  let def_refs = array_empty()
-  let mut i = 0
-  while i < Array::length(stmts) {
-    let stmt = Array::get(stmts, i)
-    match stmt_name(stmt) {
-      Some(name) => {
-        Array::push(def_names, name)
-        let refs = match stmt {
-          SLet(_, _, _, _, expr) => collect_refs(expr, empty_bound),
-          // Preserved fn decl (ADR-0064 #727): body refs plus contract-
-          // condition refs (requires/ensures execute inside the function
-          // after lowering, so helpers they call must stay live).
-          SFnDecl(_, _, fn_value, reqs, enss) => {
-            let out = collect_refs(fn_value, empty_bound)
-            let mut cri = 0
-            while cri < Array::length(reqs) {
-              let _ = collect_refs_into(Array::get(reqs, cri), empty_bound, out)
-              cri = cri + 1
-            }
-            let mut cei = 0
-            while cei < Array::length(enss) {
-              let _ = collect_refs_into(Array::get(enss, cei), empty_bound, out)
-              cei = cei + 1
-            }
-            out
-          },
-          SLetMut(_, _, expr) => collect_refs(expr, empty_bound),
-          _ => array_empty()
-        }
-        Array::push(def_refs, refs)
-        0
-      },
-      None => 0
-    }
-    i = i + 1
-  }
-  let reachable = array_empty()
-  let queue = array_empty()
-  let mut j = 0
-  while j < Array::length(entry_names) {
-    let name = Array::get(entry_names, j)
-    enqueue_reachable(reachable, queue, name)
-    j = j + 1
-  }
-  let mut sj = 0
-  while sj < Array::length(stmts) {
-    collect_structural_refs_into_queue(Array::get(stmts, sj), empty_bound, reachable, queue)
-    sj = sj + 1
-  }
-  let mut qi = 0
-  while qi < Array::length(queue) {
-    let current = Array::get(queue, qi)
-    qi = qi + 1
-    let mut k = 0
-    while k < Array::length(def_names) {
-      if Array::get(def_names, k) == current {
-        let refs = Array::get(def_refs, k)
-        let mut r = 0
-        while r < Array::length(refs) {
-          let dep = Array::get(refs, r)
-          if not(dce_array_contains_str(reachable, dep)) {
-            Array::push(reachable, dep)
-            Array::push(queue, dep)
-          }
-          r = r + 1
-        }
-      }
-      k = k + 1
-    }
-  }
-  let result = array_empty()
-  let mut m = 0
-  while m < Array::length(stmts) {
-    let stmt = Array::get(stmts, m)
-    if is_type_or_structural(stmt) {
-      Array::push(result, stmt)
-    } else {
+    let empty_bound = array_empty()
+    let def_names = array_empty()
+    let def_refs = array_empty()
+    let mut i = 0
+    while i < Array::length(stmts) {
+      let stmt = Array::get(stmts, i)
       match stmt_name(stmt) {
-        Some(name) => if dce_array_contains_str(reachable, name) {
-          Array::push(result, stmt)
+        Some(name) => {
+          Array::push(def_names, name)
+          let refs = match stmt {
+            SLet(_, _, _, _, expr) => collect_refs(expr, empty_bound),
+            // Preserved fn decl (ADR-0064 #727): body refs plus contract-
+            // condition refs (requires/ensures execute inside the function
+            // after lowering, so helpers they call must stay live).
+            SFnDecl(_, _, fn_value, reqs, enss) => {
+              let out = collect_refs(fn_value, empty_bound)
+              let mut cri = 0
+              while cri < Array::length(reqs) {
+                let _ = collect_refs_into(Array::get(reqs, cri), empty_bound, out)
+                cri = cri + 1
+              }
+              let mut cei = 0
+              while cei < Array::length(enss) {
+                let _ = collect_refs_into(Array::get(enss, cei), empty_bound, out)
+                cei = cei + 1
+              }
+              out
+            },
+            SLetMut(_, _, expr) => collect_refs(expr, empty_bound),
+            _ => array_empty()
+          }
+          Array::push(def_refs, refs)
+          0
         },
-        None => Array::push(result, stmt)
+        None => 0
+      }
+      i = i + 1
+    }
+    let reachable = array_empty()
+    let queue = array_empty()
+    let mut j = 0
+    while j < Array::length(entry_names) {
+      let name = Array::get(entry_names, j)
+      enqueue_reachable(reachable, queue, name)
+      j = j + 1
+    }
+    let mut sj = 0
+    while sj < Array::length(stmts) {
+      collect_structural_refs_into_queue(Array::get(stmts, sj), empty_bound, reachable, queue)
+      sj = sj + 1
+    }
+    let mut qi = 0
+    while qi < Array::length(queue) {
+      let current = Array::get(queue, qi)
+      qi = qi + 1
+      let mut k = 0
+      while k < Array::length(def_names) {
+        if Array::get(def_names, k) == current {
+          let refs = Array::get(def_refs, k)
+          let mut r = 0
+          while r < Array::length(refs) {
+            let dep = Array::get(refs, r)
+            if not(dce_array_contains_str(reachable, dep)) {
+              Array::push(reachable, dep)
+              Array::push(queue, dep)
+            }
+            r = r + 1
+          }
+        }
+        k = k + 1
       }
     }
-    m = m + 1
-  }
-  result
+    let result = array_empty()
+    let mut m = 0
+    while m < Array::length(stmts) {
+      let stmt = Array::get(stmts, m)
+      if is_type_or_structural(stmt) {
+        Array::push(result, stmt)
+      } else {
+        match stmt_name(stmt) {
+          Some(name) => if dce_array_contains_str(reachable, name) {
+            Array::push(result, stmt)
+          },
+          None => Array::push(result, stmt)
+        }
+      }
+      m = m + 1
+    }
+    result
   }
 }
 
-// Compute the set of reachable top-level names from `entry_names`, following
-// value-definition refs and structural (type/test/expr) refs to a fixpoint.
-// Mirrors the reachability computation inside `dce_stmts`; kept as a separate
-// (currently unwired) function so module-source emission can reuse it without
-// changing `dce_stmts` (a bootstrap-reachable hot path).
+/// Compute the set of reachable top-level names from `entry_names`, following
+/// value-definition refs and structural (type/test/expr) refs to a fixpoint.
+/// Mirrors the reachability computation inside `dce_stmts`; kept as a separate
+/// (currently unwired) function so module-source emission can reuse it without
+/// changing `dce_stmts` (a bootstrap-reachable hot path).
 fn dce_reachable_names(stmts: Array[Stmt], entry_names: Array[String]) -> Array[String] {
   let empty_bound = array_empty()
   let def_names = array_empty()
@@ -496,9 +496,9 @@ fn dce_reachable_names(stmts: Array[Stmt], entry_names: Array[String]) -> Array[
   reachable
 }
 
-// Whether DCE keeps `stmt` given the reachable name set: type/structural
-// statements are always kept; named value defs are kept iff reachable; unnamed
-// statements are kept. (Same per-statement rule `dce_stmts` applies.)
+/// Whether DCE keeps `stmt` given the reachable name set: type/structural
+/// statements are always kept; named value defs are kept iff reachable; unnamed
+/// statements are kept. (Same per-statement rule `dce_stmts` applies.)
 fn dce_keep_stmt(stmt: Stmt, reachable: Array[String]) -> Bool {
   if is_type_or_structural(stmt) {
     true
@@ -510,10 +510,10 @@ fn dce_keep_stmt(stmt: Stmt, reachable: Array[String]) -> Bool {
   }
 }
 
-// Per-original-index keep flags from DCE, parallel to `stmts`. Lets callers
-// (e.g. module-source emission) map surviving statements back to their source
-// spans without relying on statement identity/equality. Result length equals
-// `Array::length(stmts)`.
+/// Per-original-index keep flags from DCE, parallel to `stmts`. Lets callers
+/// (e.g. module-source emission) map surviving statements back to their source
+/// spans without relying on statement identity/equality. Result length equals
+/// `Array::length(stmts)`.
 export fn dce_keep_flags(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Bool] {
   let flags = array_empty()
   if Array::length(stmts) == 0 {

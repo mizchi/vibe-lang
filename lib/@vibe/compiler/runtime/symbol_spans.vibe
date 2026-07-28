@@ -25,7 +25,7 @@
 // interpolation): both mis-codegen to NUL here.
 
 import @vibe/compiler/core {
-  Stmt, Expr
+  Expr, Stmt
 }
 
 import @vibe/core {
@@ -38,8 +38,8 @@ import @vibe/compiler/syntax {
 
 //# Functions
 
-// True when `source[off]` is NOT an identifier char (or off out of range) — a
-// word boundary. Used to match a declaration name as a whole word.
+/// True when `source[off]` is NOT an identifier char (or off out of range) — a
+/// word boundary. Used to match a declaration name as a whole word.
 fn sym_is_boundary_at(source: String, off: Int) -> Bool {
   if off < 0 || off >= String::length(source) {
     true
@@ -50,8 +50,8 @@ fn sym_is_boundary_at(source: String, off: Int) -> Bool {
   }
 }
 
-// A fresh single-cell mutable Int array holding `v` (a poor-man's mutable box),
-// built via slice+push so the cell is a heap array supporting Array::set.
+/// A fresh single-cell mutable Int array holding `v` (a poor-man's mutable box),
+/// built via slice+push so the cell is a heap array supporting Array::set.
 fn sym_box_int(v: Int) -> Array[Int] {
   let arr = array_empty()
   Array::push(arr, v)
@@ -62,16 +62,20 @@ fn sym_empty_items() -> Array[(String, Int, Int, Int)] {
   array_empty()
 }
 
-// Find the first whole-word occurrence of `name` in `source[from..hi)` and, when
-// found, push `(name, kind, off, off+len)` and advance `floor` past it (so a
-// later sibling declaration in the same window keeps scanning forward). No-op
-// when the name cannot be located in the window.
+/// Find the first whole-word occurrence of `name` in `source[from..hi)` and, when
+/// found, push `(name, kind, off, off+len)` and advance `floor` past it (so a
+/// later sibling declaration in the same window keeps scanning forward). No-op
+/// when the name cannot be located in the window.
 fn sym_emit(out: Array[(String, Int, Int, Int)], source: String, name: String, kind: Int, floor: Array[Int], hi: Int) -> Unit {
   let nlen = String::length(name)
   if nlen == 0 {
     ()
   } else {
-    let limit = if hi > String::length(source) { String::length(source) } else { hi }
+    let limit = if hi > String::length(source) {
+      String::length(source)
+    } else {
+      hi
+    }
     let mut i = Array::get(floor, 0)
     if i < 0 {
       i = 0
@@ -91,8 +95,8 @@ fn sym_emit(out: Array[(String, Int, Int, Int)], source: String, name: String, k
   }
 }
 
-// LSP SymbolKind for a top-level value binding: Function (12) when its body is a
-// lambda, else Variable (13).
+/// LSP SymbolKind for a top-level value binding: Function (12) when its body is a
+/// lambda, else Variable (13).
 fn sym_let_kind(body: Expr) -> Int {
   match body {
     EFn(_, _, _, _, _, _) => 12,
@@ -100,9 +104,9 @@ fn sym_let_kind(body: Expr) -> Int {
   }
 }
 
-// Emit the symbol for one statement within the window [floor, hi). SModule emits
-// the module name (kind 2 = Module) then recurses into its body, threading the
-// SAME advancing floor so nested declarations are located in source order.
+/// Emit the symbol for one statement within the window [floor, hi). SModule emits
+/// the module name (kind 2 = Module) then recurses into its body, threading the
+/// SAME advancing floor so nested declarations are located in source order.
 fn sym_walk_stmt(out: Array[(String, Int, Int, Int)], source: String, stmt: Stmt, floor: Array[Int], hi: Int) -> Unit {
   match stmt {
     SLet(_, _, name, _, body) => sym_emit(out, source, name, sym_let_kind(body), floor, hi),
@@ -125,11 +129,11 @@ fn sym_walk_stmt(out: Array[(String, Int, Int, Int)], source: String, stmt: Stmt
   }
 }
 
-// Collect declaration symbols. Steps:
-//   1. lex + parse with per-statement spans (parse_program_spans).
-//   2. for each top-level statement, scan its own [start, end) span for the
-//      declaration name and emit (name, kind, start, end); SModule recurses.
-// AST-accurate (see file header).
+/// Collect declaration symbols. Steps:
+///   1. lex + parse with per-statement spans (parse_program_spans).
+///   2. for each top-level statement, scan its own [start, end) span for the
+///      declaration name and emit (name, kind, start, end); SModule recurses.
+/// AST-accurate (see file header).
 fn symbol_spans_impl(source: String) -> Array[(String, Int, Int, Int)] with { Error } {
   {
     let (tokens, starts, ends) = lex_with_offsets(source)
@@ -137,8 +141,16 @@ fn symbol_spans_impl(source: String) -> Array[(String, Int, Int, Int)] with { Er
     let out = sym_empty_items()
     let mut i = 0
     while i < Array::length(span_stmts) {
-      let lo = if i < Array::length(span_start) { Array::get(span_start, i) } else { 0 }
-      let hi = if i < Array::length(span_end) { Array::get(span_end, i) } else { String::length(source) }
+      let lo = if i < Array::length(span_start) {
+        Array::get(span_start, i)
+      } else {
+        0
+      }
+      let hi = if i < Array::length(span_end) {
+        Array::get(span_end, i)
+      } else {
+        String::length(source)
+      }
       let floor = sym_box_int(lo)
       sym_walk_stmt(out, source, Array::get(span_stmts, i), floor, hi)
       i = i + 1
@@ -147,12 +159,12 @@ fn symbol_spans_impl(source: String) -> Array[(String, Int, Int, Int)] with { Er
   }
 }
 
-// #946: this used to swallow every failure (lex error, parse error) into a
-// bare empty list, making a genuine failure indistinguishable from "the file
-// legitimately declares no symbols" — the CLI adapter's `.diag` sidecar
-// convention (VIBE_SYMBOLS in cli_adapter.vibe) can only report the
-// difference if the Error actually reaches it. Propagate instead of
-// catching; the sole caller now routes it to that sidecar.
+/// #946: this used to swallow every failure (lex error, parse error) into a
+/// bare empty list, making a genuine failure indistinguishable from "the file
+/// legitimately declares no symbols" — the CLI adapter's `.diag` sidecar
+/// convention (VIBE_SYMBOLS in cli_adapter.vibe) can only report the
+/// difference if the Error actually reaches it. Propagate instead of
+/// catching; the sole caller now routes it to that sidecar.
 export fn symbol_spans(source: String) -> Array[(String, Int, Int, Int)] with { Error } {
   symbol_spans_impl(source)
 }

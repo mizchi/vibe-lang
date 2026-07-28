@@ -3,17 +3,15 @@
 # the selfhost CST-token formatter (scripts/vibe_fmt.sh --check), UNLESS it's
 # listed in the allowlist below.
 #
-# `pkf run fmt` itself is still a no-op placeholder (Taskfile.pkl's `fmt`
-# task, cmd = "true") -- the formatter isn't wired to auto-apply across the
-# tree yet, and CLAUDE.md notes the existing codebase isn't a proven
-# fixpoint (some files fail --check). Rather than block on a repo-wide
-# reformat, this gate uses the same allowlist-ratchet idiom as
-# lint_architecture_debt.sh: known-unformatted files are grandfathered in
-# scripts/vibe_fmt_allowlist.txt, so this gate only fails on NEW drift (a
-# file not in the allowlist that isn't formatted) -- which is exactly the
-# "vibe fmt isn't enforced" gap this closes. Paying down entries in the
-# allowlist (running `bash scripts/vibe_fmt.sh <file>` and removing its
-# line) shrinks the ratchet over time; it must never grow without a reason.
+# `pkf run fmt` (scripts/vibe_fmt_apply.sh) applies the formatter across the
+# whole tree in write mode; the codebase was bulk-reformatted with it on
+# 2026-07-28 and is now a fixpoint. What remains in
+# scripts/vibe_fmt_allowlist.txt is a small PERMANENT exception list for
+# committed auto-generated bundle artifacts (scripts/generate_bundle.sh's
+# compact/minified output), not a ratchet of live debt -- if a new entry
+# shows up there for any other reason, treat it as debt: run
+# `bash scripts/vibe_fmt.sh <file>`, review the diff, and remove the line
+# rather than letting the list grow.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

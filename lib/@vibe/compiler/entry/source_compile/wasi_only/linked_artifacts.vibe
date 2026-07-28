@@ -17,8 +17,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt,
-  contains_name, dir_of_path, path_to_module_name, resolve_import_path
+  Expr, Stmt, contains_name, dir_of_path, path_to_module_name, resolve_import_path
 }
 
 import @vibe/compiler/syntax {
@@ -45,17 +44,17 @@ fn efn_param_count(expr: Expr) -> Int {
   }
 }
 
-// #778: use the direct-call builtin form, not `perform Fs::ReadFile`. The
-// perform/effect-op path for host effects (Fs) computes a handler-stack
-// region via `effect_name_to_tag`/`ctx.effect_names` that is only reliably
-// sized when the compiled unit declares other real user effects; a small
-// compiled unit whose only effect surface is the magic `Fs` name (no handler
-// installed, few/no other declared effects) can get a bogus tag/offset and
-// crash with an uncaught wasm exception before ever reaching the "no
-// handler -> call the builtin directly" fallback. `check_linked_file` (used
-// standalone by `vibe check`, without the rest of the compiler's effect
-// surface pulled in) hit exactly this. Direct calls skip that machinery
-// entirely and go straight through the safe compile_call builtin dispatch.
+/// #778: use the direct-call builtin form, not `perform Fs::ReadFile`. The
+/// perform/effect-op path for host effects (Fs) computes a handler-stack
+/// region via `effect_name_to_tag`/`ctx.effect_names` that is only reliably
+/// sized when the compiled unit declares other real user effects; a small
+/// compiled unit whose only effect surface is the magic `Fs` name (no handler
+/// installed, few/no other declared effects) can get a bogus tag/offset and
+/// crash with an uncaught wasm exception before ever reaching the "no
+/// handler -> call the builtin directly" fallback. `check_linked_file` (used
+/// standalone by `vibe check`, without the rest of the compiler's effect
+/// surface pulled in) hit exactly this. Direct calls skip that machinery
+/// entirely and go straight through the safe compile_call builtin dispatch.
 fn read_program(path: String) -> Array[Stmt] with { Error, Fs } {
   let source = Fs::read_file(path)
   parse_program(lex(source))
@@ -69,22 +68,22 @@ fn append_stmt_array(dst: Array[Stmt], src: Array[Stmt]) -> Unit {
   }
 }
 
-// Dedup is via a linear scan (`dep_path_names_for` below). The
-// dedup MUST preserve first-occurrence order: `dep_paths` order flows
-// into `linked_imports` and then into wasm import-section indices, so a
-// sort/reorder here would change the emitted binary. D (a single entry's
-// unique imports) is small, so the O(D^2) scan is bounded (#533, #366).
-//
-// #711: also returns, per unique dep path (same order/index as `dep_paths`),
-// the union of names the entry file actually imports/re-exports from that
-// path (`dep_wanted_names[i]`). Without this, `collect_linked_dep_artifacts`
-// registered EVERY exported top-level function of a linked file into
-// `linked_imports` -- not just the ones this entry file references -- so an
-// unrelated same-named function anywhere in the dependency graph (`eq`,
-// `add`, `not`, ...) polluted the flat `func_table.names` this entry's
-// codegen scans, making `prefer_bound_call` a global-namespace check instead
-// of a caller-scoped one (false-positive shadowing, e.g. leb128's bare
-// scalar `eq` mistakenly routed to a bound-call fallback).
+/// Dedup is via a linear scan (`dep_path_names_for` below). The
+/// dedup MUST preserve first-occurrence order: `dep_paths` order flows
+/// into `linked_imports` and then into wasm import-section indices, so a
+/// sort/reorder here would change the emitted binary. D (a single entry's
+/// unique imports) is small, so the O(D^2) scan is bounded (#533, #366).
+///
+/// #711: also returns, per unique dep path (same order/index as `dep_paths`),
+/// the union of names the entry file actually imports/re-exports from that
+/// path (`dep_wanted_names[i]`). Without this, `collect_linked_dep_artifacts`
+/// registered EVERY exported top-level function of a linked file into
+/// `linked_imports` -- not just the ones this entry file references -- so an
+/// unrelated same-named function anywhere in the dependency graph (`eq`,
+/// `add`, `not`, ...) polluted the flat `func_table.names` this entry's
+/// codegen scans, making `prefer_bound_call` a global-namespace check instead
+/// of a caller-scoped one (false-positive shadowing, e.g. leb128's bare
+/// scalar `eq` mistakenly routed to a bound-call fallback).
 fn collect_direct_dep_paths(entry_stmts: Array[Stmt], entry_dir: String) -> (Array[String], Array[Array[String]]) {
   let dep_paths = array_empty()
   let dep_wanted_names = array_empty()
@@ -139,13 +138,13 @@ fn collect_direct_dep_paths(entry_stmts: Array[Stmt], entry_dir: String) -> (Arr
   (dep_paths, dep_wanted_names)
 }
 
-// #711: `wanted_names[i]` (parallel to `dep_paths[i]`) restricts which of
-// `dep_paths[i]`'s own exported top-level names get registered into
-// `linked_imports` -- only the names the ENTRY file actually imports/
-// re-exports from that path, not every export the file happens to have.
-// A `SReExport` found INSIDE a dep file (that file itself re-exporting a
-// third file) is filtered the same way before recursing, so a transitive
-// re-export chain cannot re-introduce an unwanted name either.
+/// #711: `wanted_names[i]` (parallel to `dep_paths[i]`) restricts which of
+/// `dep_paths[i]`'s own exported top-level names get registered into
+/// `linked_imports` -- only the names the ENTRY file actually imports/
+/// re-exports from that path, not every export the file happens to have.
+/// A `SReExport` found INSIDE a dep file (that file itself re-exporting a
+/// third file) is filtered the same way before recursing, so a transitive
+/// re-export chain cannot re-introduce an unwanted name either.
 fn collect_linked_dep_artifacts(dep_paths: Array[String], wanted_names: Array[Array[String]]) -> (Array[Stmt], Array[(String, String, Int, Int)], Array[(String, String)]) with { Error, Fs } {
   let linked_imports = array_empty()
   let linked_dep_specs = array_empty()
@@ -209,11 +208,11 @@ fn collect_linked_dep_artifacts(dep_paths: Array[String], wanted_names: Array[Ar
   (resolved_type_stmts, linked_imports, linked_dep_specs)
 }
 
-// #946(3): dep-collection half of collect_linked_compile_inputs, factored out
-// so a caller that already has its OWN entry_stmts (e.g. cli_support.vibe's
-// check_linked_file, which needs a LOCATED parse for diagnostics — see its
-// doc comment) can reuse the dep-resolution logic without re-parsing the
-// entry file via this module's plain (unlocated, non-recovering) read_program.
+/// #946(3): dep-collection half of collect_linked_compile_inputs, factored out
+/// so a caller that already has its OWN entry_stmts (e.g. cli_support.vibe's
+/// check_linked_file, which needs a LOCATED parse for diagnostics — see its
+/// doc comment) can reuse the dep-resolution logic without re-parsing the
+/// entry file via this module's plain (unlocated, non-recovering) read_program.
 export fn collect_linked_dep_inputs_for_stmts(entry_path: String, entry_stmts: Array[Stmt]) -> (Array[Stmt], Array[(String, String, Int, Int)], Array[(String, String)]) with { Error, Fs } {
   let (dep_paths, dep_wanted_names) = collect_direct_dep_paths(entry_stmts, dir_of_path(entry_path))
   collect_linked_dep_artifacts(dep_paths, dep_wanted_names)

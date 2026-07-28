@@ -4,15 +4,15 @@ import @vibe/core {
 
 //# Functions
 
-// #897 (ADR-0070 Phase 1): `index.vpkg` is the target spelling `index.vibei`
-// is being renamed to (76 directories, migrated in later phases). Every site
-// that currently recognizes a `.vibei` contract file by extension must also
-// recognize `.vpkg` during the migration, so a directory may use EITHER
-// spelling. This is the ONE shared boolean test — string-comparison sites
-// that only need a yes/no "is this a contract-grammar file" answer should
-// call this instead of duplicating the `String::ends_with` pair. Sites that
-// need to build a candidate path (e.g. `dir + "/index.vpkg"`) still spell the
-// literal suffix themselves.
+/// #897 (ADR-0070 Phase 1): `index.vpkg` is the target spelling `index.vibei`
+/// is being renamed to (76 directories, migrated in later phases). Every site
+/// that currently recognizes a `.vibei` contract file by extension must also
+/// recognize `.vpkg` during the migration, so a directory may use EITHER
+/// spelling. This is the ONE shared boolean test — string-comparison sites
+/// that only need a yes/no "is this a contract-grammar file" answer should
+/// call this instead of duplicating the `String::ends_with` pair. Sites that
+/// need to build a candidate path (e.g. `dir + "/index.vpkg"`) still spell the
+/// literal suffix themselves.
 export fn is_contract_ext(path: String) -> Bool {
   String::ends_with(path, ".vibei") || String::ends_with(path, ".vpkg")
 }
@@ -28,7 +28,7 @@ export fn dir_of_path(file_path: String) -> String {
   }
 }
 
-// Module/package sources must be regular filesystem entries.
+/// Module/package sources must be regular filesystem entries.
 export fn ensure_regular_source_fs(path: String) -> Unit with { Error, Fs } {
   // The Fs::stat_token host ABI reserves -1 for a symbolic link. This keeps
   // symlink rejection bootstrap-compatible without adding a new builtin that
@@ -54,9 +54,9 @@ export fn vpkg_path_in_dir(dir: String) -> String {
   path_in_dir(dir, "index.vpkg")
 }
 
-// The nearest enclosing index.vpkg is the package owner. Returning the
-// contract path (rather than the directory) also distinguishes a root package
-// from "no owner", where both directory strings would otherwise be empty.
+/// The nearest enclosing index.vpkg is the package owner. Returning the
+/// contract path (rather than the directory) also distinguishes a root package
+/// from "no owner", where both directory strings would otherwise be empty.
 export fn nearest_vpkg_path_fs(path: String) -> String with { Error, Fs } {
   let mut current = dir_of_path(path)
   let mut found = ""
@@ -79,15 +79,15 @@ export fn nearest_vpkg_path_fs(path: String) -> String with { Error, Fs } {
   found
 }
 
-// Linear membership scan used by `resolve_reexport_chain` to filter
-// re-exported names. Bounded per-module, not whole-program: `items`
-// (`wanted_names`) is a single re-export selection (typically 1-5 names)
-// and it is scanned once per pub statement of one source file. The
-// original O(N^2)-accumulator survey (#366) classified this as "small N,
-// refactor pointless" and #533 re-confirms it. A `Map[String, Bool]`
-// would NOT help: the runtime emits `Map::has_key` as a linear
-// search (#395, closed not-planned). See
-// bench/perf/README.md ("String-keyed lookup" postmortem).
+/// Linear membership scan used by `resolve_reexport_chain` to filter
+/// re-exported names. Bounded per-module, not whole-program: `items`
+/// (`wanted_names`) is a single re-export selection (typically 1-5 names)
+/// and it is scanned once per pub statement of one source file. The
+/// original O(N^2)-accumulator survey (#366) classified this as "small N,
+/// refactor pointless" and #533 re-confirms it. A `Map[String, Bool]`
+/// would NOT help: the runtime emits `Map::has_key` as a linear
+/// search (#395, closed not-planned). See
+/// bench/perf/README.md ("String-keyed lookup" postmortem).
 export fn contains_name(items: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -101,22 +101,22 @@ export fn contains_name(items: Array[String], name: String) -> Bool {
   found
 }
 
-// Linear membership scan used by `collect_direct_dep_paths` to dedup the
-// direct dependency paths of one entry file. Bounded by that file's
-// unique imports (≈5-30), so the dedup is O(D^2) with small D (≤ ~900
-// ops, per #366's survey). NOTE: the whole-graph visited/scheduled sets
-// that used to route through this helper (merge recursion, FS collect,
-// manifest worklists) moved to the bucketed `path_set` below (#533);
-// only genuinely small, per-module dedups should keep using this. Kept
-// linear deliberately for those (#533):
-//   - `Map[String, Bool]` is a no-op — the runtime emits
-//     `Map::has_key`/`Map::get` as linear searches (#395 not-planned).
-//   - A sort+merge dedup is UNSAFE: the resulting `dep_paths` order is
-//     preserved into `linked_imports`, which the linked codegen turns
-//     into wasm import-section indices (see
-//     lib/@vibe/compiler/codegen/wasi/linked_compile.vibe). Reordering would
-//     change the emitted binary, breaking reproducibility/parity.
-// First-occurrence insertion order must therefore be preserved.
+/// Linear membership scan used by `collect_direct_dep_paths` to dedup the
+/// direct dependency paths of one entry file. Bounded by that file's
+/// unique imports (≈5-30), so the dedup is O(D^2) with small D (≤ ~900
+/// ops, per #366's survey). NOTE: the whole-graph visited/scheduled sets
+/// that used to route through this helper (merge recursion, FS collect,
+/// manifest worklists) moved to the bucketed `path_set` below (#533);
+/// only genuinely small, per-module dedups should keep using this. Kept
+/// linear deliberately for those (#533):
+///   - `Map[String, Bool]` is a no-op — the runtime emits
+///     `Map::has_key`/`Map::get` as linear searches (#395 not-planned).
+///   - A sort+merge dedup is UNSAFE: the resulting `dep_paths` order is
+///     preserved into `linked_imports`, which the linked codegen turns
+///     into wasm import-section indices (see
+///     lib/@vibe/compiler/codegen/wasi/linked_compile.vibe). Reordering would
+///     change the emitted binary, breaking reproducibility/parity.
+/// First-occurrence insertion order must therefore be preserved.
 export fn contains_path(visited: Array[String], path: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -130,23 +130,23 @@ export fn contains_path(visited: Array[String], path: String) -> Bool {
   found
 }
 
-// #533: mutable bucketed string set for whole-graph membership tests.
-//
-// The per-module `contains_name` / `contains_path` scans above are fine
-// (small bounded N — see the notes on each), but the graph-traversal
-// dedup sites (`collect_sources_rec`, `collect_merged_stmts_recursive`,
-// the manifest worklist loops) test membership against a set that grows
-// to ALL modules, once per import edge — O(edges × modules) string
-// compares, plus O(modules²) entry copying where the set was a
-// `Map[String, Bool]` (the runtime `Map::set` copies the whole map per
-// insert; `Map::has_key` is a linear scan — #395, closed not-planned).
-//
-// This set is plain `Array[Array[String]]` buckets + `Array::push`, so
-// it relies on nothing but O(1)-amortized array ops: membership and
-// insert are O(len(path)) hash + a short bucket scan, independent of
-// module count. Insert-only; iteration order is NOT meaningful — callers
-// that need ordered output must keep their own insertion-ordered array
-// (see the reorder hazard on `contains_path` above).
+/// #533: mutable bucketed string set for whole-graph membership tests.
+///
+/// The per-module `contains_name` / `contains_path` scans above are fine
+/// (small bounded N — see the notes on each), but the graph-traversal
+/// dedup sites (`collect_sources_rec`, `collect_merged_stmts_recursive`,
+/// the manifest worklist loops) test membership against a set that grows
+/// to ALL modules, once per import edge — O(edges × modules) string
+/// compares, plus O(modules²) entry copying where the set was a
+/// `Map[String, Bool]` (the runtime `Map::set` copies the whole map per
+/// insert; `Map::has_key` is a linear scan — #395, closed not-planned).
+///
+/// This set is plain `Array[Array[String]]` buckets + `Array::push`, so
+/// it relies on nothing but O(1)-amortized array ops: membership and
+/// insert are O(len(path)) hash + a short bucket scan, independent of
+/// module count. Insert-only; iteration order is NOT meaningful — callers
+/// that need ordered output must keep their own insertion-ordered array
+/// (see the reorder hazard on `contains_path` above).
 let path_set_bucket_count = 64
 
 fn path_set_hash(s: String) -> Int {
@@ -156,7 +156,7 @@ fn path_set_hash(s: String) -> Int {
   while i < len {
     // djb2-xor, masked to 30 bits so `h * 33` stays far below the 61-bit
     // tagged-int range.
-    h = ((h * 33) ^ String::char_code_at(s, i)) & 0x3FFFFFFF
+    h = ((h * 33)^String::char_code_at(s, i))&0x3FFFFFFF
     i = i + 1
   }
   h
@@ -173,7 +173,7 @@ export fn path_set_new() -> Array[Array[String]] {
 }
 
 export fn path_set_contains(set: Array[Array[String]], path: String) -> Bool {
-  let bucket = Array::get(set, path_set_hash(path) & (path_set_bucket_count - 1))
+  let bucket = Array::get(set, path_set_hash(path)&(path_set_bucket_count - 1))
   let mut i = 0
   let mut found = false
   while i < Array::length(bucket) && !found {
@@ -186,11 +186,11 @@ export fn path_set_contains(set: Array[Array[String]], path: String) -> Bool {
   found
 }
 
-// No membership check: callers gate on `path_set_contains` first (every
-// site below is check-then-add), so adding unconditionally here avoids a
-// second hash walk.
+/// No membership check: callers gate on `path_set_contains` first (every
+/// site below is check-then-add), so adding unconditionally here avoids a
+/// second hash walk.
 export fn path_set_add(set: Array[Array[String]], path: String) -> Unit {
-  Array::push(Array::get(set, path_set_hash(path) & (path_set_bucket_count - 1)), path)
+  Array::push(Array::get(set, path_set_hash(path)&(path_set_bucket_count - 1)), path)
 }
 
 export fn normalize_path(path: String) -> String {
@@ -332,13 +332,13 @@ export fn resolve_import_path(base_dir: String, raw_path: String) -> String {
   }
 }
 
-// #751 (ADR-0065): the private Env effect + checker-only discharge below
-// let this module read VIBE_LIB / VIBE_HOME / HOME without carrying an
-// `Env` row on every resolver in the loader chain: builtin `Env::get`
-// compiles to the env-get host import DIRECTLY, so the handler arm is never
-// invoked at runtime (same mechanism as the Fs handles in
-// fixtures/fs_readdir_test.vibe). The effect declaration is private —
-// nothing outside this module sees it.
+/// #751 (ADR-0065): the private Env effect + checker-only discharge below
+/// let this module read VIBE_LIB / VIBE_HOME / HOME without carrying an
+/// `Env` row on every resolver in the loader chain: builtin `Env::get`
+/// compiles to the env-get host import DIRECTLY, so the handler arm is never
+/// invoked at runtime (same mechanism as the Fs handles in
+/// fixtures/fs_readdir_test.vibe). The effect declaration is private —
+/// nothing outside this module sees it.
 effect Env {
   Get(String) -> String
 }
@@ -364,11 +364,11 @@ fn strip_trailing_slash(p: String) -> String {
   }
 }
 
-// #751 (ADR-0065): external library roots, PATH-style. Pure so it is
-// testable: VIBE_LIB (":"-separated, empty segments dropped) wins;
-// otherwise the default single root is $VIBE_HOME/lib, falling back to
-// $HOME/.vibe/lib. No environment at all -> no external roots
-// (workspace-only resolution).
+/// #751 (ADR-0065): external library roots, PATH-style. Pure so it is
+/// testable: VIBE_LIB (":"-separated, empty segments dropped) wins;
+/// otherwise the default single root is $VIBE_HOME/lib, falling back to
+/// $HOME/.vibe/lib. No environment at all -> no external roots
+/// (workspace-only resolution).
 export fn parse_vibe_lib_roots(vibe_lib: String, vibe_home: String, home: String) -> Array[String] {
   let roots = array_empty()
   if String::length(vibe_lib) > 0 {
@@ -397,21 +397,21 @@ export fn external_lib_roots() -> Array[String] {
   parse_vibe_lib_roots(read_env_discharged("VIBE_LIB"), read_env_discharged("VIBE_HOME"), read_env_discharged("HOME"))
 }
 
-// #751: "is the environment flag set to 1" — the loader's freeze switch
-// (VIBE_REQUIRE_PINS) reads through the same checker-only discharge so its
-// signature stays effect-free.
+/// #751: "is the environment flag set to 1" — the loader's freeze switch
+/// (VIBE_REQUIRE_PINS) reads through the same checker-only discharge so its
+/// signature stays effect-free.
 export fn vibe_env_flag(name: String) -> Bool {
   read_env_discharged(name) == "1"
 }
 
-// #758 review (P1): the RESOLUTION ENVIRONMENT as a cache-key seed. The
-// persistent header/dep-list/source-list caches store RESOLVED graphs, and
-// resolution depends on the external lib roots (#751) and the freeze switch
-// — a graph cached without pins under one VIBE_LIB must not be replayed
-// under VIBE_REQUIRE_PINS=1 or a different root list (the freeze gate and
-// the pin verification only run on the cold walk). Folding this seed into
-// the cache paths makes each environment its own cache universe instead of
-// re-verifying cached graphs on load.
+/// #758 review (P1): the RESOLUTION ENVIRONMENT as a cache-key seed. The
+/// persistent header/dep-list/source-list caches store RESOLVED graphs, and
+/// resolution depends on the external lib roots (#751) and the freeze switch
+/// — a graph cached without pins under one VIBE_LIB must not be replayed
+/// under VIBE_REQUIRE_PINS=1 or a different root list (the freeze gate and
+/// the pin verification only run on the cold walk). Folding this seed into
+/// the cache paths makes each environment its own cache universe instead of
+/// re-verifying cached graphs on load.
 export fn resolution_env_seed() -> String {
   let roots = external_lib_roots()
   let pins = if vibe_env_flag("VIBE_REQUIRE_PINS") {

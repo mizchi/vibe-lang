@@ -1,27 +1,23 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Stmt,
-  Expr,
-  dce_keep_flags
+  Expr, Stmt, dce_keep_flags
 }
 
 import @vibe/compiler/syntax {
-  lex_with_offsets,
-  parse_program_spans,
-  offset_to_line_col
+  lex_with_offsets, offset_to_line_col, parse_program_spans
 }
 
 //# Module source emission (port of host `emit-module-source`)
 
-// Reconstruct a flat module source containing only the top-level statements
-// reachable from `entry_name` (via DCE), emitted as their original source text.
-//
-// Mirrors the MoonBit host `emit-module-source`
-// (`src/cmd/vibe/cli_module_source.mbt`) but recovers statement source spans
-// from the lexer (`lex_with_offsets`) + parser (`parse_program_spans`)
-// instead of AST node spans, since the AST does not carry offsets.
-// Pure: no filesystem or host calls.
+/// Reconstruct a flat module source containing only the top-level statements
+/// reachable from `entry_name` (via DCE), emitted as their original source text.
+///
+/// Mirrors the MoonBit host `emit-module-source`
+/// (`src/cmd/vibe/cli_module_source.mbt`) but recovers statement source spans
+/// from the lexer (`lex_with_offsets`) + parser (`parse_program_spans`)
+/// instead of AST node spans, since the AST does not carry offsets.
+/// Pure: no filesystem or host calls.
 export let build_module_source_from_source: (String, String) -> String with { Error } = (source, entry_name) -> {
   let lexed = lex_with_offsets(source)
   let tokens = lexed.0
@@ -31,7 +27,9 @@ export let build_module_source_from_source: (String, String) -> String with { Er
   let stmts = parsed.0
   let span_start = parsed.1
   let span_end = parsed.2
-  let keep = dce_keep_flags(stmts, [entry_name])
+  let keep = dce_keep_flags(stmts, [
+    entry_name
+  ])
   let buf = StringBuilder::new()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -52,21 +50,21 @@ export let build_module_source_from_source: (String, String) -> String with { Er
   StringBuilder::freeze(buf)
 }
 
-// debugger テーマ3 / M2: build a `.funcmap` sidecar text mapping each ENTRY-file
-// top-level function definition to its 1-based source line, one `name<TAB>line\n`
-// per function. The launcher (`runtime/vibe`) reads this to annotate runtime trap
-// backtrace frames (which name user functions via the wasm "name" section) with
-// `(file:line)`.
-//
-// MVP scope: ENTRY-file top-level functions only. Imported-module functions are
-// not yet covered (future work) — they are flattened into the program at compile
-// time but their original source lines are not recovered here.
-//
-// Reuses the lexer offsets + parse_program_spans span table (same as
-// build_module_source_from_source) so it needs no checker. A top-level `SLet`
-// whose bound expr is a function (`EFn`) maps `name` -> line of the statement's
-// start offset. All strings via String::concat + __to_string only (never `+`,
-// never "\{}" interpolation): both mis-codegen to NUL here.
+/// debugger テーマ3 / M2: build a `.funcmap` sidecar text mapping each ENTRY-file
+/// top-level function definition to its 1-based source line, one `name<TAB>line\n`
+/// per function. The launcher (`runtime/vibe`) reads this to annotate runtime trap
+/// backtrace frames (which name user functions via the wasm "name" section) with
+/// `(file:line)`.
+///
+/// MVP scope: ENTRY-file top-level functions only. Imported-module functions are
+/// not yet covered (future work) — they are flattened into the program at compile
+/// time but their original source lines are not recovered here.
+///
+/// Reuses the lexer offsets + parse_program_spans span table (same as
+/// build_module_source_from_source) so it needs no checker. A top-level `SLet`
+/// whose bound expr is a function (`EFn`) maps `name` -> line of the statement's
+/// start offset. All strings via String::concat + __to_string only (never `+`,
+/// never "\{}" interpolation): both mis-codegen to NUL here.
 export let build_funcmap_from_source: (String) -> String with { Error } = (source) -> {
   let lexed = lex_with_offsets(source)
   let tokens = lexed.0

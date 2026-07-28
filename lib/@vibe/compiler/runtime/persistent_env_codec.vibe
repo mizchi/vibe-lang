@@ -1,7 +1,12 @@
 //# Imports
 
 import @vibe/compiler/cache {
-  compact_string_fingerprint, normalize_persistent_cache_text, package_index_deps_are_current, persistent_dep_list_cache_path, persistent_leaf_fingerprint_cache_path, persistent_type_env_cache_path
+  compact_string_fingerprint,
+  normalize_persistent_cache_text,
+  package_index_deps_are_current,
+  persistent_dep_list_cache_path,
+  persistent_leaf_fingerprint_cache_path,
+  persistent_type_env_cache_path
 }
 
 import @vibe/core {
@@ -20,22 +25,34 @@ fn parse_int_unwrap(raw: String, fallback: Int) -> Int {
   let mut i = 0
   let mut neg = false
   let mut valid = true
-  if len == 0 { valid = false }
+  if len == 0 {
+    valid = false
+  }
   if valid {
-    if String::char_code_at(raw, 0) == 45 { neg = true; i = 1 }
+    if String::char_code_at(raw, 0) == 45 {
+      neg = true; i = 1
+    }
   }
   while valid {
-    if i >= len { break }
+    if i >= len {
+      break
+    }
     let c = String::char_code_at(raw, i)
-    if c < 48 { valid = false }
-    else if c > 57 { valid = false }
+    if c < 48 {
+      valid = false
+    }
+    else if c > 57 {
+      valid = false
+    }
     else {
       result = result * 10 + (c - 48)
       i = i + 1
     }
   }
   if valid {
-    if neg { 0 - result } else result
+    if neg {
+      0 - result
+    } else result
   } else fallback
 }
 
@@ -203,7 +220,11 @@ fn parse_cached_type(source: String, pos: Int) -> (Type, Int) with { Error } {
         let (params, next_pos2) = parse_type_array(source, next_pos1)
         let (ret, next_pos3) = parse_cached_type(source, next_pos2)
         let eff_raw = decode_effect_name(raw_effect)
-        let eff_name = if String::length(eff_raw) > 0 { Some(eff_raw) } else { None }
+        let eff_name = if String::length(eff_raw) > 0 {
+          Some(eff_raw)
+        } else {
+          None
+        }
         (CtFn(params, ret, eff_name), next_pos3)
       },
       78 => {
@@ -222,11 +243,11 @@ fn parse_cached_type(source: String, pos: Int) -> (Type, Int) with { Error } {
   }
 }
 
-// All `serialize_*_array` helpers below used a `String::concat(out, ...)`
-// accumulator that was O(N²) over the array length. Cache-serialisation
-// runs them on every TypeEnv save, and large modules hit thousands of
-// bindings — the cumulative cost shows up in `vibe check` cold runs.
-// StringBuilder collapses each one to O(N).
+/// All `serialize_*_array` helpers below used a `String::concat(out, ...)`
+/// accumulator that was O(N²) over the array length. Cache-serialisation
+/// runs them on every TypeEnv save, and large modules hit thousands of
+/// bindings — the cumulative cost shows up in `vibe check` cold runs.
+/// StringBuilder collapses each one to O(N).
 fn serialize_int_array(items: Array[Int]) -> String {
   let buf = StringBuilder::new()
   StringBuilder::push(buf, __to_string(Array::length(items)))
@@ -301,7 +322,11 @@ fn serialize_type(ty: Type) -> String {
     CtOption(elem) => String::concat("O", serialize_type(elem)),
     CtTuple(elems) => String::concat("T", serialize_type_array(elems)),
     CtFn(params, ret, effect_name) => {
-      let eff_str = if effect_name is Some(n) { n } else { "" }
+      let eff_str = if effect_name is Some(n) {
+        n
+      } else {
+        ""
+      }
       String::concat("F", String::concat(serialize_segment(eff_str), String::concat(serialize_type_array(params), serialize_type(ret))))
     },
     CtNamed(name, args) =>
@@ -357,8 +382,12 @@ export fn load_persistent_dep_list(path: String, source: String) -> Option[Array
         if String::length(dep) == 0 {
           Some(array_empty())
         } else {
-          if package_index_deps_are_current([dep]) {
-            Some([dep])
+          if package_index_deps_are_current([
+            dep
+          ]) {
+            Some([
+              dep
+            ])
           } else {
             None
           }
@@ -374,16 +403,16 @@ fn rebuild_persistent_type_env(bindings: Array[(String, Type)]) -> TypeEnv {
   EnvFlat(bindings)
 }
 
-// #906 Phase 2: the decode half of the type-env cache, split out of
-// load_persistent_type_env so a value can be reconstituted from TEXT rather
-// than only from a file at a fingerprint-derived path.
-//
-// A worker checking a module with imports has to be handed its
-// dependencies' public environments. It cannot go find them: the cache key
-// is derived from the whole transitive source snapshot, which is exactly
-// what a worker is not allowed to see. So the driver serializes each
-// dependency env with persistent_type_env_cache_text and the worker decodes
-// it here -- the same bytes the on-disk cache holds, moved as a value.
+/// #906 Phase 2: the decode half of the type-env cache, split out of
+/// load_persistent_type_env so a value can be reconstituted from TEXT rather
+/// than only from a file at a fingerprint-derived path.
+///
+/// A worker checking a module with imports has to be handed its
+/// dependencies' public environments. It cannot go find them: the cache key
+/// is derived from the whole transitive source snapshot, which is exactly
+/// what a worker is not allowed to see. So the driver serializes each
+/// dependency env with persistent_type_env_cache_text and the worker decodes
+/// it here -- the same bytes the on-disk cache holds, moved as a value.
 export fn parse_persistent_type_env(text: String) -> Option[TypeEnv] with { Error } {
   let lines = String::split(normalize_persistent_cache_text(text), "\n")
   let len = Array::length(lines)

@@ -23,10 +23,14 @@
 //# Constants ===
 
 export let AST_BINARY_VERSION: Int = 1
-export let AST_BINARY_MAGIC_V: Int = 118  // 'v'
-export let AST_BINARY_MAGIC_A: Int = 65   // 'A'
-export let AST_BINARY_MAGIC_S: Int = 83   // 'S'
-export let AST_BINARY_MAGIC_T: Int = 84   // 'T'
+export let AST_BINARY_MAGIC_V: Int = 118
+// 'v'
+export let AST_BINARY_MAGIC_A: Int = 65
+// 'A'
+export let AST_BINARY_MAGIC_S: Int = 83
+// 'S'
+export let AST_BINARY_MAGIC_T: Int = 84
+// 'T'
 
 //# Encoder primitives ===
 
@@ -40,13 +44,13 @@ export fn ast_binary_write_varint(buf: Bytes, v: Int) -> Unit {
   let mut x = v
   let mut more = true
   while more {
-    let byte = x & 127
-    x = (x >> 7) & ((1 << 57) - 1)
+    let byte = x&127
+    x = (x>>7)&((1<<57) - 1)
     if x == 0 {
       Bytes::push(buf, byte)
       more = false
     } else {
-      Bytes::push(buf, byte | 128)
+      Bytes::push(buf, byte|128)
     }
   }
 }
@@ -59,17 +63,17 @@ export fn ast_binary_write_svarint(buf: Bytes, v: Int) -> Unit {
   let mut value = v
   let mut more = true
   while more {
-    let byte = value & 127
-    value = value >> 7
-    let sign_bit_set = (byte & 64) != 0
+    let byte = value&127
+    value = value>>7
+    let sign_bit_set = (byte&64) != 0
     let terminate =
-      (value == 0 && (sign_bit_set == false)) ||
-      (value == (0 - 1) && sign_bit_set)
+    (value == 0 && (sign_bit_set == false)) ||
+    (value == (0 - 1) && sign_bit_set)
     if terminate {
       Bytes::push(buf, byte)
       more = false
     } else {
-      Bytes::push(buf, byte | 128)
+      Bytes::push(buf, byte|128)
     }
   }
 }
@@ -102,7 +106,7 @@ export fn ast_binary_write_string(buf: Bytes, s: String) -> Unit {
       let low = String::char_code_at(s, i + 1)
       let is_low = low >= 56320 && low < 57344
       if is_low {
-        code_point = ((unit - 55296) << 10) + (low - 56320) + 65536
+        code_point = ((unit - 55296)<<10) + (low - 56320) + 65536
         i = i + 1
       }
     }
@@ -110,18 +114,18 @@ export fn ast_binary_write_string(buf: Bytes, s: String) -> Unit {
       Bytes::push(scratch, code_point)
     } else {
       if code_point < 2048 {
-        Bytes::push(scratch, 192 | (code_point >> 6))
-        Bytes::push(scratch, 128 | (code_point & 63))
+        Bytes::push(scratch, 192|(code_point>>6))
+        Bytes::push(scratch, 128|(code_point&63))
       } else {
         if code_point < 65536 {
-          Bytes::push(scratch, 224 | (code_point >> 12))
-          Bytes::push(scratch, 128 | ((code_point >> 6) & 63))
-          Bytes::push(scratch, 128 | (code_point & 63))
+          Bytes::push(scratch, 224|(code_point>>12))
+          Bytes::push(scratch, 128|((code_point>>6)&63))
+          Bytes::push(scratch, 128|(code_point&63))
         } else {
-          Bytes::push(scratch, 240 | (code_point >> 18))
-          Bytes::push(scratch, 128 | ((code_point >> 12) & 63))
-          Bytes::push(scratch, 128 | ((code_point >> 6) & 63))
-          Bytes::push(scratch, 128 | (code_point & 63))
+          Bytes::push(scratch, 240|(code_point>>18))
+          Bytes::push(scratch, 128|((code_point>>12)&63))
+          Bytes::push(scratch, 128|((code_point>>6)&63))
+          Bytes::push(scratch, 128|(code_point&63))
         }
       }
     }
@@ -168,7 +172,9 @@ export struct AstBinaryReader {
 }
 
 export fn ast_binary_reader_new(bytes: Bytes) -> AstBinaryReader {
-  AstBinaryReader::{ bytes: bytes, pos: 0 }
+  AstBinaryReader::{
+    bytes: bytes, pos: 0
+  }
 }
 
 export fn ast_binary_reader_remaining(r: AstBinaryReader) -> Int {
@@ -194,8 +200,8 @@ export fn ast_binary_read_varint(r: AstBinaryReader) -> Int {
   let mut more = true
   while more {
     let b = ast_binary_read_byte(r)
-    result = result | ((b & 127) << shift)
-    if (b & 128) == 0 {
+    result = result|((b&127)<<shift)
+    if (b&128) == 0 {
       more = false
     } else {
       shift = shift + 7
@@ -213,14 +219,14 @@ export fn ast_binary_read_svarint(r: AstBinaryReader) -> Int {
   while more {
     let b = ast_binary_read_byte(r)
     last_byte = b
-    result = result | ((b & 127) << shift)
+    result = result|((b&127)<<shift)
     shift = shift + 7
-    if (b & 128) == 0 {
+    if (b&128) == 0 {
       more = false
     }
   }
-  if shift < 64 && (last_byte & 64) != 0 {
-    result | ((0 - 1) << shift)
+  if shift < 64 && (last_byte&64) != 0 {
+    result|((0 - 1)<<shift)
   } else {
     result
   }
@@ -247,26 +253,26 @@ export fn ast_binary_read_string(r: AstBinaryReader) -> String {
     if b0 < 128 {
       code_point = b0
     } else {
-      if (b0 & 224) == 192 {
+      if (b0&224) == 192 {
         let b1 = ast_binary_read_byte(r)
-        code_point = ((b0 & 31) << 6) | (b1 & 63)
+        code_point = ((b0&31)<<6)|(b1&63)
       } else {
-        if (b0 & 240) == 224 {
+        if (b0&240) == 224 {
           let b1 = ast_binary_read_byte(r)
           let b2 = ast_binary_read_byte(r)
-          code_point = ((b0 & 15) << 12) | ((b1 & 63) << 6) | (b2 & 63)
+          code_point = ((b0&15)<<12)|((b1&63)<<6)|(b2&63)
         } else {
           let b1 = ast_binary_read_byte(r)
           let b2 = ast_binary_read_byte(r)
           let b3 = ast_binary_read_byte(r)
-          code_point = ((b0 & 7) << 18) | ((b1 & 63) << 12) | ((b2 & 63) << 6) | (b3 & 63)
+          code_point = ((b0&7)<<18)|((b1&63)<<12)|((b2&63)<<6)|(b3&63)
         }
       }
     }
     // Re-encode as UTF-16 surrogate pair if needed, then build a 1-char string.
     if code_point >= 65536 {
-      let high = 55296 + ((code_point - 65536) >> 10)
-      let low = 56320 + ((code_point - 65536) & 1023)
+      let high = 55296 + ((code_point - 65536)>>10)
+      let low = 56320 + ((code_point - 65536)&1023)
       // vibe doesn't expose a primitive char-from-code-point that handles
       // surrogates; we round-trip through Bytes which is UTF-16-aware in
       // the runtime. This branch is unused by the prelude (ASCII-only)
