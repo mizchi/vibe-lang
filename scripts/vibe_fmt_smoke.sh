@@ -75,13 +75,17 @@ if ! cmp -s "$WORK/paths.expected.vibe" "$WORK/paths.got.vibe"; then
 fi
 
 # Import-list items are sorted alphabetically (byte/codepoint order, so
-# uppercase sorts before lowercase).
+# uppercase sorts before lowercase) -- EXCEPT `type X` items, which sort as
+# their own group ahead of everything else regardless of their name's case
+# (not just cosmetic: lib/@vibex/concurrent/suspend_test.vibe hit a real
+# type-checker regression from a same-named type+namespace import pair
+# getting reordered relative to each other by a plain alphabetical sort).
 cat > "$WORK/sort.in.vibe" <<'EOF'
 import @vibe/prelude { zeta_fn, alpha_fn, Middle::Thing, gamma_fn as g, type Beta }
 EOF
 cat > "$WORK/sort.expected.vibe" <<'EOF'
 import @vibe/prelude {
-  Middle::Thing, alpha_fn, gamma_fn as g, type Beta, zeta_fn
+  type Beta, Middle::Thing, alpha_fn, gamma_fn as g, zeta_fn
 }
 EOF
 bash "$ROOT_DIR/scripts/vibe_fmt.sh" --stdout "$WORK/sort.in.vibe" > "$WORK/sort.got.vibe" 2>/dev/null
@@ -263,4 +267,33 @@ if ! cmp -s "$WORK/return_handle.in.vibe" "$WORK/return_handle.got.vibe"; then
   exit 1
 fi
 
-echo "[vibe-fmt-smoke] ok (canonical + idempotent + --check + paths #628 + import sort/wrap + enum/struct guard + nested-call block newlines + from-identifier guard + is-ctor guard + return-handle guard)"
+# `import <path> as <alias> only { .. }` (#897): the qualified-import suffix
+# `as <alias> only` puts two bare-name tokens (`<alias>` then `only`, an
+# ordinary k_name to this lexer, not a reserved word) back to back with no
+# `.`/`/`/`::` separator between them. Confirmed real regression (Codex
+# review on #1193): brace_starts_import_list's adjacent-name-collision guard
+# aborted the backward scan at `only`/`<alias>` before ever reaching
+# `import`, so this form silently stopped getting sorted/wrapped.
+cat > "$WORK/as_only.in.vibe" <<'EOF'
+import @vibe/some/pkg as ns only { alpha_symbol_one, beta_symbol_two, gamma_symbol_three, delta_symbol_four, epsilon_symbol_five, zeta_symbol_six, eta_symbol_seven, theta_symbol_eight }
+EOF
+cat > "$WORK/as_only.expected.vibe" <<'EOF'
+import @vibe/some/pkg as ns only {
+  alpha_symbol_one,
+  beta_symbol_two,
+  delta_symbol_four,
+  epsilon_symbol_five,
+  eta_symbol_seven,
+  gamma_symbol_three,
+  theta_symbol_eight,
+  zeta_symbol_six
+}
+EOF
+bash "$ROOT_DIR/scripts/vibe_fmt.sh" --stdout "$WORK/as_only.in.vibe" > "$WORK/as_only.got.vibe" 2>/dev/null
+if ! cmp -s "$WORK/as_only.expected.vibe" "$WORK/as_only.got.vibe"; then
+  echo "[vibe-fmt-smoke] FAIL: 'import <path> as <alias> only { .. }' not sorted/wrapped" >&2
+  diff "$WORK/as_only.expected.vibe" "$WORK/as_only.got.vibe" >&2 || true
+  exit 1
+fi
+
+echo "[vibe-fmt-smoke] ok (canonical + idempotent + --check + paths #628 + import sort/wrap + enum/struct guard + nested-call block newlines + from-identifier guard + is-ctor guard + return-handle guard + as-only guard)"

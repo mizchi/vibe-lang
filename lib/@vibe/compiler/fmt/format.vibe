@@ -1274,6 +1274,19 @@ fn brace_starts_import_list(toks: Array[LTok], open_idx: Int) -> Bool {
     } else if k == k_dot || k == k_slash || k == k_double_colon {
       last_was_name = false
       i = i - 1
+    } else if k == k_as || (k == k_name && Array::get(toks, i).text == "only") {
+      // `import <path> as <alias> only { .. }` (#897): `as` and the
+      // contextual word `only` (an ordinary k_name to this lexer, not a
+      // reserved word) are structural markers of the qualified-import
+      // suffix, not path/name segments -- reset last_was_name so the
+      // adjacent real names on either side (`<alias>` before `only`, the
+      // path segment before `as`) don't collide with them. Without this,
+      // walking backward from `{` hits `only`(name) then `<alias>`(name)
+      // with no separator between, aborts before ever reaching `import`,
+      // and both the sort and the >140-col wrap silently stop applying to
+      // this form (Codex review on #1193).
+      last_was_name = false
+      i = i - 1
     } else if k == k_name || is_keyword_kind(k) {
       if last_was_name {
         going = false
@@ -2121,17 +2134,32 @@ fn span_has_comment(toks: Array[LTok], start: Int, close_idx: Int) -> Bool {
 /// `Foo::Bar`, `Foo as Bar`) -- doesn't need to match the final rendered
 /// spacing exactly, only to be a deterministic function of the item's own
 /// tokens so re-sorting an already-sorted list is a no-op (fixpoint).
+///
+/// `type X` items get a `"0 "` prefix (everything else `"1 "`) so type
+/// imports always sort as a group before value imports, instead of a plain
+/// alphabetical sort scattering them wherever lowercase `type` (ASCII 't',
+/// 116) falls relative to the uppercase-leading value/ctor names this
+/// codebase's import lists otherwise consist of (after 'T'/'S'/'R'/'C', 84
+/// through 67) -- i.e. after everything, not grouped with the other
+/// `TaskGroup`/`TaskHandle` names it's conceptually next to. Confirmed real
+/// regression, not just cosmetic: lib/@vibex/concurrent/suspend_test.vibe
+/// sorted `type Channel` after `Channel::bounded` et al., and the loader
+/// resolves an import list's type/value bindings order-sensitively for
+/// same-named type+namespace pairs -- the reordering alone (no content
+/// change) flipped a passing test to a real type-checker error far away
+/// from the import list itself.
 fn item_key_text(item: Array[LTok]) -> String {
   let n = Array::length(item)
-  let mut key = ""
+  let is_type_item = n > 0 && Array::get(item, 0).kind == k_type
+  let mut key = if is_type_item {
+    "0 "
+  } else {
+    "1 "
+  }
   let mut i = 0
   while i < n {
     let t = Array::get(item, i).text
-    key = if i == 0 {
-      t
-    } else {
-      "\{key} \{t}"
-    }
+    key = "\{key} \{t}"
     i = i + 1
   }
   key
