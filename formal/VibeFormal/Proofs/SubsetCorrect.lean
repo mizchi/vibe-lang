@@ -121,4 +121,47 @@ theorem Subset.congr_right {required declared declared' : Normalized}
     Subset required declared' :=
   fun operation membership => (equiv operation).mp (subset operation membership)
 
+/-
+`Subset.union_left_iff` above already shows `++` decomposes a `Subset`
+obligation; `Equivalent` had no matching congruence for `++` at all --
+substituting an equivalent row into EITHER side of a union wasn't
+provable. This is exactly what's needed to combine two independently-
+normalized/simplified rows via union (the `declared = declared ∪ missing`
+shape `Subset.union_left_iff`'s own docstring ties to the live checker's
+`make_row_mismatch`): if each half is shown equivalent to some simplified
+form, the whole union is equivalent to the union of the simplified forms.
+-/
+
+/-- `Equivalent` is a congruence for `++` on the left. -/
+theorem Equivalent.union_left_congr {left left' right : Normalized}
+    (equiv : Equivalent left left') : Equivalent (left ++ right) (left' ++ right) := by
+  intro operation
+  simp only [List.mem_append]
+  constructor
+  · rintro (membership | membership)
+    · exact Or.inl ((equiv operation).mp membership)
+    · exact Or.inr membership
+  · rintro (membership | membership)
+    · exact Or.inl ((equiv operation).mpr membership)
+    · exact Or.inr membership
+
+/-- `Equivalent` is a congruence for `++` on the right. -/
+theorem Equivalent.union_right_congr {left right right' : Normalized}
+    (equiv : Equivalent right right') : Equivalent (left ++ right) (left ++ right') := by
+  intro operation
+  simp only [List.mem_append]
+  constructor
+  · rintro (membership | membership)
+    · exact Or.inl membership
+    · exact Or.inr ((equiv operation).mp membership)
+  · rintro (membership | membership)
+    · exact Or.inl membership
+    · exact Or.inr ((equiv operation).mpr membership)
+
+/-- `Equivalent` is a congruence for `++` on both sides simultaneously. -/
+theorem Equivalent.union_congr {left left' right right' : Normalized}
+    (equivLeft : Equivalent left left') (equivRight : Equivalent right right') :
+    Equivalent (left ++ right) (left' ++ right') :=
+  Equivalent.trans (Equivalent.union_left_congr equivLeft) (Equivalent.union_right_congr equivRight)
+
 end VibeFormal.EffectRow
