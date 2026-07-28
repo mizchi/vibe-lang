@@ -488,11 +488,28 @@ receiver の型を復元できたが、`recv.method(...)` は復元できなか�
 resolve) では解消されない。**ディスク上のソーステキストが dot 形のまま
 残る限り、型検査を回さない読み手 (grep・diff・部分抜粋・AI) には効かない**。
 
-決定 (ADR-0081, docs/adr.md): dot 形は入力として許可したまま、`vibe fmt`
-がこのファイルの `infer_arg_type_name` / `var_types` と同じ **best-effort
-構文的推論** (フル型検査ではない) を再利用して、復元可能な範囲でソースを
-`Type::method(recv, args)` / pipe 形へ書き戻す方向に倒す。復元できない
-receiver は dot 形のまま残す。**未実装 (#1194 で追跡)** —
-`desugar_trait_dict.vibe` 側の resolve ロジックはそのまま (このファイルが
-記述する内部 desugar に変更は無い)。実装が要るのは
-`lib/@vibe/compiler/fmt/format.vibe` 側のみ。
+決定 (ADR-0081, docs/adr.md): dot 形は入力として許可したまま、復元可能な
+範囲でソースを `Type::method(recv, args)` へ書き戻す方向に倒す。**実装場所は
+`vibe fmt` ではなく `vibe normalize`** — `lib/@vibe/compiler/fmt/format.vibe`
+は AST を一切持たないトークン列レベルの整形機 (空白/改行のみ決める) で、
+構造変換ができないと着手時に判明したため訂正した。`vibe normalize`
+(`lib/@vibe/compiler/normalize/normalize.vibe`) は実際に AST へパースして
+再印字する経路で、ADR-0074 の `map {..}` → `Map::from_pairs([..])` 正規化と
+同じ「糖衣構文を canonical spelling で再印字する」前例がある。
+
+**実装済み (2026-07-28, #1194)**: `normalize_dot_calls`
+(`lib/@vibe/compiler/normalize/normalize.vibe`、`normalize_stmts` パイプラインに
+組み込み済み、`normalize/index.vpkg` で export)。このファイルの
+`infer_arg_type_name` / `var_types` / `collect_struct_field_sets` /
+`collect_fn_returns` / `struct_set_member` の**縮小版を独立実装として
+移植**した (フル型検査ではなく構文的推論のみ)。`desugar_trait_dict.vibe`
+から直接 import しなかった理由はパッケージ層順の制約: codegen が
+normalize の `lift_match_scrutinees` / `uniquify_shadowed_bindings` を
+呼ぶ既存依存が既にあり (このファイルの通り)、逆方向の import
+(normalize → codegen/common_base) は import cycle になる。このファイル側の
+resolve ロジック自体に変更は無い — ロジックを変更する際は
+`normalize_dot_calls` 側の対応する縮小版も見直すこと。**既知の制約**:
+`vibe normalize` はファイル単体スコープなので、receiver の型が別ファイルで
+宣言されインポートされているだけの場合は書き換えない (実務上の大半の
+ケースがこれに該当する — 安全側の制約であり bug ではない)。テスト:
+`lib/@vibe/compiler/tests/normalize_dot_calls_test.vibe`。

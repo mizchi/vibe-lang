@@ -1,0 +1,69 @@
+//# Imports
+
+// #1194 (ADR-0081): `recv.method(args)` normalizes to `Type::method(recv,
+// args)` in `vibe normalize` output wherever the receiver's type and the
+// method's existence are recoverable from the same file. See
+// lib/@vibe/compiler/normalize/normalize.vibe's `normalize_dot_calls`
+// section comment for exactly what's covered (and the documented
+// single-file-scope limitation: a receiver whose type is declared in a
+// DIFFERENT file is left untouched).
+
+import @vibe/compiler/normalize {
+  normalize_source
+}
+
+//# Functions
+
+fn run_normalize(src: String) -> String {
+  handle {
+    normalize_source(src)
+  } with Error {
+    Throw(msg) => String::concat("ERROR: ", msg)
+  }
+}
+
+//# Misc
+
+test "dot-call on a same-file struct normalizes to a qualified call" {
+  let src = "struct Cart { items: Int }\n\nexport fn Cart::push(c: Cart, item: Int) -> Cart {\n  Cart::{ items: c.items + item }\n}\n\nexport fn add_one(cart: Cart) -> Cart {\n  cart.push(1)\n}\n"
+  let out = run_normalize(src)
+  assert(String::contains(out, "Cart::push(cart, 1)"))
+  assert(not(String::contains(out, "cart.push(1)")))
+}
+
+test "chained dot-calls on distinct same-file types both normalize" {
+  let src = "struct Cart { items: Int }\nstruct Crate { items: Int }\n\nexport fn Cart::size(c: Cart) -> Int {\n  c.items\n}\n\nexport fn Crate::push(c: Crate, item: Int) -> Int {\n  item\n}\n\nexport fn process(cart: Cart, overflow: Crate, item: Int) -> Int {\n  if cart.size() >= 10 {\n    overflow.push(item)\n  } else {\n    0\n  }\n}\n"
+  let out = run_normalize(src)
+  assert(String::contains(out, "Cart::size(cart)"))
+  assert(String::contains(out, "Crate::push(overflow, item)"))
+}
+
+test "plain field access is never rewritten" {
+  let src = "struct Cart { items: Int }\n\nexport fn total(cart: Cart) -> Int {\n  cart.items\n}\n"
+  let out = run_normalize(src)
+  assert(String::contains(out, "cart.items"))
+}
+
+test "a same-named struct field wins over a method (field-stored call kept as dot)" {
+  let src = "struct Box { compute: Int }\n\nexport fn Box::compute(b: Box, x: Int) -> Int {\n  b.compute + x\n}\n\nexport fn use_box(b: Box, x: Int) -> Int {\n  b.compute(x)\n}\n"
+  let out = run_normalize(src)
+  assert(String::contains(out, "b.compute(x)"))
+  assert(not(String::contains(out, "Box::compute(b, x)")))
+}
+
+test "a receiver typed by an imported (not locally declared) type is left as dot form" {
+  // Single-file scope (documented limitation, ADR-0081): normalize never
+  // sees Cart's declaration through the import, so it cannot confirm
+  // Cart::size exists or that `size` isn't a Cart field -- it must leave the
+  // call untouched rather than guess.
+  let src = "import ./cart_def.vibe {\n  Cart\n}\n\nexport fn describe(c: Cart) -> Int {\n  c.size()\n}\n"
+  let out = run_normalize(src)
+  assert(String::contains(out, "c.size()"))
+}
+
+test "normalizing an already-normalized dot-call rewrite is idempotent" {
+  let src = "struct Cart { items: Int }\n\nexport fn Cart::push(c: Cart, item: Int) -> Cart {\n  Cart::{ items: c.items + item }\n}\n\nexport fn add_one(cart: Cart) -> Cart {\n  cart.push(1)\n}\n"
+  let once = run_normalize(src)
+  let twice = run_normalize(once)
+  assert(once == twice)
+}

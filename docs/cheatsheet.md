@@ -202,25 +202,32 @@ name wins over a method (field-stored function call). Builtin receivers
 (`Array`/`String`/...) keep their builtin `Type::method` forms — no
 bare-method sugar for them.
 
-**Canonical on-disk form (#1189, ADR-0081 — decided 2026-07-28, not yet
-implemented):** `recv.method(args)` is legal to *write*, but `Type::method(recv,
-args)` / `recv |> Type::method(args)` is the spelling `vibe fmt` is planned to
-normalize it to in the committed source, whenever the receiver's type is
-recoverable through the same lightweight, per-function syntactic heuristic
-`desugar_trait_dict.vibe`'s `infer_arg_type_name`/`var_types` already use for
-witness synthesis (param annotations, `let x: T = ...`, an immediately
-preceding `T::new()`/`T::{ ... }` literal) — deliberately *not* a full
-type-check pass, so fmt keeps working on files that don't type-check yet.
-When the receiver type isn't recoverable that way, fmt leaves the dot form
-untouched rather than guessing. Rationale:
+**Canonical on-disk form (#1189, ADR-0081 — implemented 2026-07-28, #1194):**
+`recv.method(args)` is legal to *write*, but `Type::method(recv, args)` is the
+spelling `vibe normalize` rewrites it to in the committed source (NOT `vibe
+fmt`, which is a token-stream-only formatter with no AST and can't do
+structural rewrites), whenever the receiver's type is recoverable through a
+lightweight, per-function syntactic heuristic mirroring (a subset of)
+`desugar_trait_dict.vibe`'s `infer_arg_type_name`/`var_types` (param
+annotations, `let x: T = ...`, an immediately preceding `T::ctor(..)` call
+whose return type is declared in the SAME file) — deliberately *not* a full
+type-check pass, so normalize keeps working on files that don't type-check
+yet. When the receiver type isn't recoverable that way, normalize leaves the
+dot form untouched rather than guessing — in particular, **a receiver whose
+type is declared in a different file (only imported here) is always left as
+dot form**, since `vibe normalize` is single-file and never sees that
+declaration; this is a known scope limit, not a bug. Rationale:
 [`eval/call-style/findings/2026-07-28-r1.md`](../eval/call-style/findings/2026-07-28-r1.md)
 found a reader given only a text excerpt (no compiler, no LSP) can recover
-the callee's type from the qualified/pipe spellings but not from bare
+the callee's type from the qualified spelling but not from bare
 `recv.method(...)` when annotations are sparse — so the qualified spelling
 is what should land in git history/diffs/greps, while the terser dot
 spelling stays legal to type. This does **not** help positional-argument-order
 ambiguity between same-typed parameters — that's a separate problem no call
-notation solves (`eval/call-style/scenarios/02_arg_order`).
+notation solves (`eval/call-style/scenarios/02_arg_order`). Implementation:
+`normalize_dot_calls` in
+[`lib/@vibe/compiler/normalize/normalize.vibe`](../lib/@vibe/compiler/normalize/normalize.vibe);
+tests in `lib/@vibe/compiler/tests/normalize_dot_calls_test.vibe`.
 
 ### Function combinators (point-free)
 
