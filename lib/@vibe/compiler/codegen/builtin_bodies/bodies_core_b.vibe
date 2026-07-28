@@ -13,7 +13,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/common_extractors {
-  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_earray_elems, get_eassign_body, get_eassign_name, get_eassign_val, get_eassignop_body, get_eassignop_name, get_eassignop_op, get_eassignop_val, get_ebinop_lhs, get_ebinop_rhs, get_ebool_value, get_ecall_args, get_ecall_callee, get_efloat_value, get_efn_params, get_eforin_body, get_eforin_iter, get_eforin_name, get_eident_name, get_eint_value, get_eletmut_body, get_eletmut_name, get_eletmut_val, get_eletrec_body, get_eletrec_name, get_eletrec_val, get_eseq_first, get_eseq_second, get_estring_value, get_etuple_elems, get_eunaryop_expr, get_eunaryop_op, get_ewhile_body, get_ewhile_cond, get_match_arms, get_match_scrutinee, get_pbind_name, get_pbool_value, get_pctor_args, get_pctor_name, get_pint_value, get_pstring_value, get_ptuple_pats, get_slet_export, str_table_lookup
+  array_contains_str, emit_assignop_op, emit_memory_copy, emit_memory_fill, find_catchall_idx, get_earray_elems, get_eassign_body, get_eassign_name, get_eassign_val, get_eassignop_body, get_eassignop_name, get_eassignop_op, get_eassignop_val, get_ebinop_lhs, get_ebinop_rhs, get_ebool_value, get_ecall_args, get_ecall_callee, get_efloat_value, get_efn_params, get_eforin_body, get_eforin_iter, get_eforin_name, get_eident_name, get_eint_value, get_eletmut_body, get_eletmut_name, get_eletmut_val, get_eletrec_body, get_eletrec_name, get_eletrec_val, get_eseq_first, get_eseq_second, get_estring_value, get_etuple_elems, get_eunaryop_expr, get_eunaryop_op, get_ewhile_body, get_ewhile_cond, get_match_arms, get_match_scrutinee, get_pbind_name, get_pbool_value, get_pctor_args, get_pctor_name, get_pint_value, get_pstring_value, get_ptuple_pats, get_slet_export, str_table_lookup
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -2597,4 +2597,531 @@ let static_fs_write_bytes_stub_body_bytes = Bytes::new()
 
 export fn static_fs_write_bytes_stub_body() -> Bytes {
   static_fs_write_bytes_stub_body_bytes
+}
+
+//# Map hash index (O(1)-average Map::get/has_key)
+//
+// Map[K,V] keys are always String (checker/builtins_map.vibe hardcodes
+// CtString for every Map:: op's key param). The existing Map runtime layout
+// ([count:i32 @0][{key:i64,value:i64} entries @8...], insertion order) is
+// unchanged -- Map::keys/values must keep insertion order (json_stringify.vibe
+// depends on it for stable key order). This adds a side hash index, built
+// fresh whenever the entries array is finalized (Map::set/delete,
+// MapBuilder::freeze already do an O(n) copy for persistence, so building an
+// index alongside costs no new asymptotic complexity on writes) and consulted
+// by Map::get/has_key for O(1)-average lookups instead of the O(n) scan.
+// Open addressing + Robin Hood displacement, modeled directly on
+// moonbitlang/core's hashmap.mbt (the user's own reference: PSL-tracked
+// entries, early-exit on `probe_distance > entry.psl`, grow-free here since
+// capacity is sized upfront from the final count). Index slots are 8 bytes:
+// [psl:i32 @0][entry_idx:i32 @4], entry_idx==-1 = empty. Stored at the Map's
+// header offset+4 (confirmed always-zero padding on every existing Map --
+// nothing reads/writes it today), so index_ptr==0 unambiguously means "no
+// index" and callers fall back to the untouched linear scan.
+//
+// Hash: an xxHash32-style accumulator, same algorithm as moonbitlang/core's
+// builtin/hasher.mbt (GPRIME1..5, consume4/consume1, avalanche finalize) --
+// vibe strings are raw bytes (gen_str_char_code_at_body loads i32.load8_u),
+// so this processes the string's bytes directly (moonbit's `combine_bytes`
+// shape) rather than per-codepoint. The accumulator is kept masked to 32
+// bits (always non-negative as an i64), so `i64.shr_s` is safe to use in
+// place of a native unsigned shift throughout.
+
+// acc := (acc + val*prime) & 0xFFFFFFFF, stored back into local `acc_l`.
+fn mh_add_mul(b: Bytes, acc_l: Int, val_l: Int, prime: Int) -> Unit {
+  emit_local_get(b, acc_l)
+  emit_local_get(b, val_l)
+  emit_i64_const(b, prime)
+  emit_i64_mul(b)
+  emit_i64_add(b)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_local_set(b, acc_l)
+}
+
+// acc := rotl32(acc, r) & 0xFFFFFFFF, stored back into local `acc_l`.
+fn mh_rotl(b: Bytes, acc_l: Int, r: Int) -> Unit {
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, r)
+  emit_i64_shl(b)
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, 32 - r)
+  emit_i64_shr_s(b)
+  emit_i64_or(b)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_local_set(b, acc_l)
+}
+
+// acc := (acc * prime) & 0xFFFFFFFF, stored back into local `acc_l`.
+fn mh_mul_prime(b: Bytes, acc_l: Int, prime: Int) -> Unit {
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, prime)
+  emit_i64_mul(b)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_local_set(b, acc_l)
+}
+
+// acc := (acc ^ (acc >>> r)) & 0xFFFFFFFF, stored back into local `acc_l`.
+fn mh_xor_shr(b: Bytes, acc_l: Int, r: Int) -> Unit {
+  emit_local_get(b, acc_l)
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, r)
+  emit_i64_shr_s(b)
+  emit_i64_xor(b)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_local_set(b, acc_l)
+}
+
+// __rt_map_hash(s: String) -> Int  [type 3: (i64) -> i64]
+// local0 = s (param). Extra i32: local1=base_ptr, local2=len, local3=cur.
+// Extra i64: local4=acc, local5=chunk/byte scratch. meta=(3,2).
+export fn gen_map_hash_body() -> Bytes {
+  let b = bytebuf_new()
+  let base_l = 1
+  let len_l = 2
+  let cur_l = 3
+  let acc_l = 4
+  let val_l = 5
+  // base_ptr = high32(s), len = low32(s) -- same unpack as gen_str_len_body /
+  // gen_str_char_code_at_body.
+  emit_local_get(b, 0)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, base_l)
+  emit_local_get(b, 0)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, len_l)
+  emit_i32_const(b, 0)
+  emit_local_set(b, cur_l)
+  emit_i64_const(b, 0x165667B1)
+  emit_local_set(b, acc_l)
+  // 4-byte chunk loop: while cur+4 <= len
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, cur_l)
+  emit_i32_const(b, 4)
+  emit_i32_add(b)
+  emit_local_get(b, len_l)
+  emit_i32_gt_u(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, base_l)
+  emit_local_get(b, cur_l)
+  emit_i32_add(b)
+  emit_i32_load(b, 0, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, val_l)
+  mh_add_mul(b, acc_l, val_l, 0xC2B2AE3D)
+  mh_rotl(b, acc_l, 17)
+  mh_mul_prime(b, acc_l, 0x27D4EB2F)
+  emit_local_get(b, cur_l)
+  emit_i32_const(b, 4)
+  emit_i32_add(b)
+  emit_local_set(b, cur_l)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  // remainder loop: while cur < len (one byte at a time)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, cur_l)
+  emit_local_get(b, len_l)
+  emit_i32_ge_u(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, base_l)
+  emit_local_get(b, cur_l)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, val_l)
+  mh_add_mul(b, acc_l, val_l, 0x165667B1)
+  mh_rotl(b, acc_l, 11)
+  mh_mul_prime(b, acc_l, 0x9E3779B1)
+  emit_local_get(b, cur_l)
+  emit_i32_const(b, 1)
+  emit_i32_add(b)
+  emit_local_set(b, cur_l)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  // avalanche finalize
+  mh_xor_shr(b, acc_l, 15)
+  mh_mul_prime(b, acc_l, 0x85EBCA77)
+  mh_xor_shr(b, acc_l, 13)
+  mh_mul_prime(b, acc_l, 0xC2B2AE3D)
+  emit_local_get(b, acc_l)
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, 16)
+  emit_i64_shr_s(b)
+  emit_i64_xor(b)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  b
+}
+
+// __rt_map_cap_for(count: Int) -> Int  [type 3: (i64) -> i64]
+// capacity = next_pow2(max(8, count*2)) -- keeps the index table at <=50%
+// load factor (same policy as moonbitlang/core's default_init_capacity=8 /
+// grow-at-half). local0 = count (param). Extra i64: local1 = working n.
+export fn gen_map_cap_body() -> Bytes {
+  let b = bytebuf_new()
+  let n_l = 1
+  emit_local_get(b, 0)
+  emit_i64_const(b, 2)
+  emit_i64_mul(b)
+  emit_local_set(b, n_l)
+  emit_local_get(b, n_l)
+  emit_i64_const(b, 8)
+  emit_i64_lt_s(b)
+  emit_if_i64(b)
+  emit_i64_const(b, 8)
+  emit_else(b)
+  emit_local_get(b, n_l)
+  emit_end(b)
+  emit_local_set(b, n_l)
+  emit_local_get(b, n_l)
+  emit_i64_const(b, 1)
+  emit_i64_sub(b)
+  emit_local_set(b, n_l)
+  emit_local_get(b, n_l)
+  emit_local_get(b, n_l)
+  emit_i64_const(b, 1)
+  emit_i64_shr_s(b)
+  emit_i64_or(b)
+  emit_local_set(b, n_l)
+  emit_local_get(b, n_l)
+  emit_local_get(b, n_l)
+  emit_i64_const(b, 2)
+  emit_i64_shr_s(b)
+  emit_i64_or(b)
+  emit_local_set(b, n_l)
+  emit_local_get(b, n_l)
+  emit_local_get(b, n_l)
+  emit_i64_const(b, 4)
+  emit_i64_shr_s(b)
+  emit_i64_or(b)
+  emit_local_set(b, n_l)
+  emit_local_get(b, n_l)
+  emit_local_get(b, n_l)
+  emit_i64_const(b, 8)
+  emit_i64_shr_s(b)
+  emit_i64_or(b)
+  emit_local_set(b, n_l)
+  emit_local_get(b, n_l)
+  emit_local_get(b, n_l)
+  emit_i64_const(b, 16)
+  emit_i64_shr_s(b)
+  emit_i64_or(b)
+  emit_local_set(b, n_l)
+  emit_local_get(b, n_l)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  b
+}
+
+// __rt_map_index_insert(index_ptr, initial_slot, entry_idx) -> Unit
+// [type 7: (i64,i64,i64) -> ()]
+// Index table layout: [mask:i64 @+0][slots: {psl:i32,entry_idx:i32} @+8...]
+// -- the mask lives in an 8-byte header so this (and probe, below) can take
+// one fewer param and reuse an existing type shape instead of needing a new
+// one. Robin Hood insertion of ONE (entry_idx, psl=0) pair, starting the
+// probe at `initial_slot`. Displaces (and continues inserting) whichever
+// existing entry has a smaller psl, exactly mirroring moonbitlang/core's
+// HashMap::push_away. Always terminates via `return` (the caller sizes the
+// table so an empty slot is always reachable within `mask+1` probes).
+// local0=index_ptr, local1=slot, local2=entry_idx (params). Extra i32:
+// local3=slot_addr. Extra i64: local4=mask, local5=psl, local6=cur_psl,
+// local7=cur_entry_idx. meta=(1,4).
+export fn gen_map_index_insert_body() -> Bytes {
+  let b = bytebuf_new()
+  let idxptr_l = 0
+  let slot_l = 1
+  let entry_l = 2
+  let addr_l = 3
+  let mask_l = 4
+  let psl_l = 5
+  let cur_psl_l = 6
+  let cur_entry_l = 7
+  emit_local_get(b, idxptr_l)
+  emit_i32_wrap_i64(b)
+  emit_i64_load(b, 3, 0)
+  emit_local_set(b, mask_l)
+  emit_i64_const(b, 0)
+  emit_local_set(b, psl_l)
+  emit_loop_void(b)
+  emit_local_get(b, idxptr_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 8)
+  emit_i32_add(b)
+  emit_local_get(b, slot_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 8)
+  emit_i32_mul(b)
+  emit_i32_add(b)
+  emit_local_set(b, addr_l)
+  emit_local_get(b, addr_l)
+  emit_i32_load(b, 2, 4)
+  emit_i64_extend_i32_s(b)
+  emit_local_set(b, cur_entry_l)
+  emit_local_get(b, cur_entry_l)
+  emit_i64_const(b, -1)
+  emit_i64_eq(b)
+  emit_if_void(b)
+  emit_local_get(b, addr_l)
+  emit_local_get(b, psl_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_store(b, 2, 0)
+  emit_local_get(b, addr_l)
+  emit_local_get(b, entry_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_store(b, 2, 4)
+  emit_return(b)
+  emit_end(b)
+  emit_local_get(b, addr_l)
+  emit_i32_load(b, 2, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, cur_psl_l)
+  emit_local_get(b, psl_l)
+  emit_local_get(b, cur_psl_l)
+  emit_i64_gt_s(b)
+  emit_if_void(b)
+  emit_local_get(b, addr_l)
+  emit_local_get(b, psl_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_store(b, 2, 0)
+  emit_local_get(b, addr_l)
+  emit_local_get(b, entry_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_store(b, 2, 4)
+  emit_local_get(b, cur_psl_l)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_set(b, psl_l)
+  emit_local_get(b, cur_entry_l)
+  emit_local_set(b, entry_l)
+  emit_else(b)
+  emit_local_get(b, psl_l)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_set(b, psl_l)
+  emit_end(b)
+  emit_local_get(b, slot_l)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_get(b, mask_l)
+  emit_i64_and(b)
+  emit_local_set(b, slot_l)
+  emit_br(b, 0)
+  emit_end(b)
+  b
+}
+
+// __rt_map_build_index(base, count) -> Int  [type 4: (i64,i64) -> i64]
+// Bump-allocates a fresh (capacity*8 + 8)-byte index table: an 8-byte
+// [mask:i64] header (see gen_map_index_insert_body's layout comment)
+// followed by capacity 0xFF-filled slots (every slot's entry_idx reads as
+// -1/empty). Inserts every existing entry (base+8..) into it via
+// __rt_map_index_insert. Called after Map::set/Map::delete/
+// MapBuilder::freeze finalize the (insertion-order) entries array -- the
+// O(n) work here is no worse than the copy those callers already do.
+// Returns the index table pointer (pointing at the mask header, i.e. the
+// same pointer __rt_map_index_insert/__rt_map_probe_index expect).
+// local0=base, local1=count (params). Extra i64: local2=capacity,
+// local3=bytes_needed (slots only, excludes the 8-byte header),
+// local4=idx_ptr, local5=i, local6=key, local7=h, local8=mask. meta=(0,7).
+export fn gen_map_build_index_body(hash_fn_idx: Int, cap_fn_idx: Int, insert_fn_idx: Int, heap_grow_check_idx: Int) -> Bytes {
+  let b = bytebuf_new()
+  let base_l = 0
+  let count_l = 1
+  let cap_l = 2
+  let bytes_l = 3
+  let idxptr_l = 4
+  let i_l = 5
+  let key_l = 6
+  let h_l = 7
+  let mask_l = 8
+  emit_local_get(b, count_l)
+  emit_call(b, cap_fn_idx)
+  emit_local_set(b, cap_l)
+  emit_local_get(b, cap_l)
+  emit_i64_const(b, 8)
+  emit_i64_mul(b)
+  emit_local_set(b, bytes_l)
+  emit_global_get(b, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, idxptr_l)
+  emit_global_get(b, 0)
+  emit_local_get(b, bytes_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 8)
+  emit_i32_add(b)
+  emit_i32_add(b)
+  emit_global_set(b, 0)
+  emit_call(b, heap_grow_check_idx)
+  emit_local_get(b, idxptr_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 8)
+  emit_i32_add(b)
+  emit_i32_const(b, 255)
+  emit_local_get(b, bytes_l)
+  emit_i32_wrap_i64(b)
+  emit_memory_fill(b)
+  emit_local_get(b, cap_l)
+  emit_i64_const(b, 1)
+  emit_i64_sub(b)
+  emit_local_set(b, mask_l)
+  emit_local_get(b, idxptr_l)
+  emit_i32_wrap_i64(b)
+  emit_local_get(b, mask_l)
+  emit_i64_store(b, 3, 0)
+  emit_i64_const(b, 0)
+  emit_local_set(b, i_l)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, i_l)
+  emit_local_get(b, count_l)
+  emit_i64_ge_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, base_l)
+  emit_i32_wrap_i64(b)
+  emit_local_get(b, i_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 16)
+  emit_i32_mul(b)
+  emit_i32_add(b)
+  emit_i64_load(b, 3, 8)
+  emit_local_set(b, key_l)
+  emit_local_get(b, key_l)
+  emit_call(b, hash_fn_idx)
+  emit_local_set(b, h_l)
+  emit_local_get(b, idxptr_l)
+  emit_local_get(b, h_l)
+  emit_local_get(b, mask_l)
+  emit_i64_and(b)
+  emit_local_get(b, i_l)
+  emit_call(b, insert_fn_idx)
+  emit_local_get(b, i_l)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_set(b, i_l)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(b, idxptr_l)
+  b
+}
+
+// __rt_map_probe_index(base, count, key) -> Int  [type 8: (i64,i64,i64) -> i64]
+// Robin Hood lookup: returns the matching entry's index (0..count-1), or -1
+// if absent. Assumes the caller already confirmed index_ptr (at base+4) is
+// nonzero -- callers without an index (small maps, see the count>=8
+// threshold at the Map::get/has_key call sites) use the untouched linear
+// scan instead. Reads mask straight from the index table's header (see
+// gen_map_index_insert_body's layout comment) instead of recomputing
+// capacity, so this needs no cap_fn dependency. local0=base, local1=count
+// (unused, kept for a uniform call signature with the linear-scan
+// fallback's arg list), local2=key (params). Extra i32: local3=slot_addr.
+// Extra i64: local4=mask, local5=index_ptr, local6=h, local7=slot,
+// local8=i (probe count, bounded by mask+1), local9=cur_entry_idx,
+// local10=cur_psl, local11=cand_key. meta=(1,8).
+export fn gen_map_probe_index_body(hash_fn_idx: Int, eq_fn_idx: Int) -> Bytes {
+  let b = bytebuf_new()
+  let base_l = 0
+  let key_l = 2
+  let addr_l = 3
+  let mask_l = 4
+  let idxptr_l = 5
+  let h_l = 6
+  let slot_l = 7
+  let i_l = 8
+  let cur_entry_l = 9
+  let cur_psl_l = 10
+  let cand_key_l = 11
+  emit_local_get(b, base_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 4)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, idxptr_l)
+  emit_local_get(b, idxptr_l)
+  emit_i32_wrap_i64(b)
+  emit_i64_load(b, 3, 0)
+  emit_local_set(b, mask_l)
+  emit_local_get(b, key_l)
+  emit_call(b, hash_fn_idx)
+  emit_local_set(b, h_l)
+  emit_local_get(b, h_l)
+  emit_local_get(b, mask_l)
+  emit_i64_and(b)
+  emit_local_set(b, slot_l)
+  emit_i64_const(b, 0)
+  emit_local_set(b, i_l)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, i_l)
+  emit_local_get(b, mask_l)
+  emit_i64_gt_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, idxptr_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 8)
+  emit_i32_add(b)
+  emit_local_get(b, slot_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 8)
+  emit_i32_mul(b)
+  emit_i32_add(b)
+  emit_local_set(b, addr_l)
+  emit_local_get(b, addr_l)
+  emit_i32_load(b, 2, 4)
+  emit_i64_extend_i32_s(b)
+  emit_local_set(b, cur_entry_l)
+  emit_local_get(b, cur_entry_l)
+  emit_i64_const(b, -1)
+  emit_i64_eq(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, addr_l)
+  emit_i32_load(b, 2, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, cur_psl_l)
+  emit_local_get(b, i_l)
+  emit_local_get(b, cur_psl_l)
+  emit_i64_gt_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, base_l)
+  emit_i32_wrap_i64(b)
+  emit_local_get(b, cur_entry_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 16)
+  emit_i32_mul(b)
+  emit_i32_add(b)
+  emit_i64_load(b, 3, 8)
+  emit_local_set(b, cand_key_l)
+  emit_local_get(b, cand_key_l)
+  emit_local_get(b, key_l)
+  emit_call(b, eq_fn_idx)
+  emit_i32_wrap_i64(b)
+  emit_if_void(b)
+  emit_local_get(b, cur_entry_l)
+  emit_return(b)
+  emit_end(b)
+  emit_local_get(b, i_l)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_set(b, i_l)
+  emit_local_get(b, slot_l)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_get(b, mask_l)
+  emit_i64_and(b)
+  emit_local_set(b, slot_l)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_i64_const(b, -1)
+  b
 }
