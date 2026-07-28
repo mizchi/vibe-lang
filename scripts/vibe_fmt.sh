@@ -33,22 +33,7 @@ case "$src" in
 esac
 [ -f "$ROOT_DIR/$src_rel" ] || { echo "vibe_fmt.sh: not found: $src_rel" >&2; exit 2; }
 
-bash "$ROOT_DIR/scripts/ensure_seed.sh"
-seed="$ROOT_DIR/bootstrap/seed/compiler.wasm"
-entry_src="lib/@vibe/cli/fmt_entry.vibe"
-work="$ROOT_DIR/_build/vibe_fmt"
-mkdir -p "$work"
-entry_wasm_rel="_build/vibe_fmt/fmt_entry.wasm"
-
-# Compile the formatter entry once (it FS-resolves the format module import).
-if [ ! -s "$ROOT_DIR/$entry_wasm_rel" ] || [ "$entry_src" -nt "$ROOT_DIR/$entry_wasm_rel" ] \
-   || [ "lib/@vibe/compiler/fmt/format.vibe" -nt "$ROOT_DIR/$entry_wasm_rel" ] \
-   || [ "lib/@vibe/compiler/fmt/index.vpkg" -nt "$ROOT_DIR/$entry_wasm_rel" ]; then
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-    bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
-    --invoke cli_main "$seed" "$entry_src" "$entry_wasm_rel" main >/dev/null
-  [ -s "$ROOT_DIR/$entry_wasm_rel" ] || { echo "vibe_fmt.sh: failed to compile formatter" >&2; exit 1; }
-fi
+entry_wasm_rel="$(bash "$ROOT_DIR/scripts/ensure_vibe_fmt_entry.sh")"
 
 out_rel="_build/vibe_fmt/out.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" \
