@@ -513,9 +513,13 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // `let v = peek(...)` binding (including the match-scrutinee-lift's
   // `let __m_scrut = peek(...)`, see normalize/index.vibe) is recognized the
   // same as a direct `let v = Array::get(...)` one.
-  let lc_borrow_ret_names = compute_borrow_returning_names(stmts)
+  // Sorted immediately (membership-only from here on: cc_is_borrow_ret_call /
+  // classify_let_value_heap query it once per call site across the whole
+  // program) so those lookups are bsearch_leftmost instead of a linear scan
+  // -- same rationale as ctor_table.names_sorted above.
+  let lc_borrow_ret_names = sorted_names_of(compute_borrow_returning_names(stmts))
   // #710: see CompileCtx.scalar_ret_names' doc comment (common_base/common_base.vibe).
-  let lc_scalar_ret_names = compute_scalar_returning_names(stmts)
+  let lc_scalar_ret_names = sorted_names_of(compute_scalar_returning_names(stmts))
   let fn_names_list = lc_fresh_string_array()
   let fn_param_counts = lc_fresh_int_array()
   let fn_needs_env_list = lc_fresh_bool_array()
@@ -723,7 +727,9 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // `let`/`let mut` bindings whose value is a call by the CALLEE's own
   // declared signature, instead of always over-approximating every call as
   // heap.
-  let lc_heap_ret_names = compute_heap_returning(stmts)
+  // Sorted for bsearch_leftmost membership at the classify_let_value_heap call
+  // site (compile_expr_tail.vibe) -- same rationale as lc_borrow_ret_names above.
+  let lc_heap_ret_names = sorted_names_of(compute_heap_returning(stmts))
   let num_user_funcs = Array::length(fn_names_list)
   if num_user_funcs == 0 {
     throw("no functions found to compile")
@@ -2101,6 +2107,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     cib_j = cib_j + 1
   }
   let capture_name_index_shared = sorted_names_of(capture_index_names)
+  // Codex review on #1186: this was computed inside the `bi < num_user_funcs`
+  // loop below, re-sorting the same thunk_names_list once per function
+  // instead of once per compile -- hoist it out, same fix shape as
+  // capture_name_index_shared above.
+  let thunk_names_sorted_shared = sorted_names_of(thunk_names_list)
   let mut bi = 0
   while bi < num_user_funcs {
     let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
@@ -2364,7 +2375,12 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, names_sorted: lc_ctor_names_sorted, names_sorted_pos: lc_ctor_names_sorted_pos
       },
       ctor_float_fields: ctor_float_fields_list,
-      thunk_names: thunk_names_list,
+      // Sorted copy for compile_expr.vibe's per-identifier membership check
+      // (bsearch_leftmost) -- keep `thunk_names_list` itself unsorted, its
+      // POSITION is load-bearing for the per-thunk global-slot index lookup
+      // a few hundred lines below (tg_k / tg_value_g). Computed once above
+      // (thunk_names_sorted_shared), not per-function.
+      thunk_names: thunk_names_sorted_shared,
       const_int_names: const_int_names_list,
       const_int_values: const_int_values_list,
       enable_rc: enable_rc,
