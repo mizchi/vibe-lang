@@ -1,8 +1,13 @@
 # Compiler host runtime contract (#1143)
 
-> **Status (2026-07-28):** first pass. Documents what exists today; does not
-> change any runner implementation. `docs/wit/vibe-compiler-host.wit` is the
-> reference world.
+> **Status (2026-07-28):** three passes, two rounds of Codex review. Round 1
+> documented the contract (over-broadly). Round 2 audited every op for real
+> `cli_main` reachability and narrowed it, but got two details wrong. Round 3
+> (Codex review again) fixed those: dropped `Fs::remove` (its only call site
+> is an orphaned entry point, not reachable from `cli_main`) and corrected a
+> false claim about which ops `runtime/vibewt` does/doesn't implement. No
+> pass changed any runner implementation. `docs/wit/vibe-compiler-host.wit`
+> is the reference world.
 
 ## Why this exists
 
@@ -28,7 +33,7 @@ throw is a component trap, not a host capability), matching the rule
 `wit_gen.vibe` already applies to user programs. The other four map to
 `docs/wit/vibe-compiler-host.wit`'s four `import` interfaces.
 
-**Correction (Codex review, PR #1178 round 1):** the first version of this
+**Round 1 correction (Codex review, PR #1178):** the first version of this
 doc derived the `fs` interface from `effect Fs { ReadFile, WriteFile,
 Exists, Mkdir }` (`lib/@vibe/fs/fs_effect.vibe`) — that's wrong. That block
 is only a 4-op convenience subset for user-program `import Fs` usage. The
@@ -36,23 +41,43 @@ actual boundary the checker enforces is a per-builtin string tag
 (`Some("Fs")` on each entry in
 `lib/@vibe/compiler/codegen/common_base/builtin_registry.vibe`, plus
 `Fs::readdir` in `checker/builtins_fs.vibe`), and `cli_main`'s `with {
-Fs }` row admits any builtin carrying that tag — 17 of them, not 4.
-`cli_adapter.vibe` itself directly calls `Fs::write_bytes` (14x),
-`Fs::write_file` (14x), and `Fs::read_file` (12x) — `write_bytes` is how it
-writes essentially all CLI output (compiled artifacts, funcmap, wit,
-component, normalize/doc-at/binding-at/symbols/diagnostics text), not
-`write_file`. The other 14 ops (`exists`, `stat-token`, `is-dir`,
-`is-file`, `remove`, `mkdir`, `mkdir-p`, `chdir`, `getcwd`, `copy`,
-`append`, `rename`, `read-bytes`, `readdir`) come from files `cli_main`
-transitively calls into (cache/persistent_cache.vibe, loader.vibe,
-coverage_suite_lib.vibe, ...) rather than `cli_adapter.vibe` itself —
-included in the `.wit` file since they carry the same "Fs" row tag and are
-used pervasively across `lib/@vibe/compiler` (1500+ combined call sites),
-but per-op reachability from `cli_main`'s specific dynamic call graph
-(vs. just being present somewhere in the compiler's source tree) was not
-individually traced for each of the 14. `env`/`stdin`/`stdout` were already
-tag-consistent with their builtin-table signatures (`lookup_io_a`/
-`lookup_io_b`, `checker/builtins_system.vibe`) and needed no correction.
+Fs }` row admits any builtin carrying that tag. Round 1 added all 17
+tagged ops on that basis.
+
+**Round 2 correction (self-review, following up on round 1's own open
+question):** admitting an op via the row tag and `cli_main` actually
+*calling* it are different things — round 1 conflated them. Audited every
+`Fs::<op>(` call site across `lib/@vibe/compiler`, excluding tests, the
+checker/codegen registration tables themselves, and the auto-generated
+`*_bundle.vibe` flatten artifacts (which just duplicate other files' text).
+
+**Round 3 correction (Codex review, PR #1180):** round 2's audit checked
+for *any* real call site but didn't check whether the *file containing*
+that call site is itself reachable from `cli_main`'s import graph — missing
+that `Fs::remove`'s only call site is under `entry/cli_cache/`, an
+alternate entry point `cli_adapter.vibe` never imports and nothing else in
+the compiler calls into. Dropped. Round 2 also mischaracterized which of
+the ten removed ops are actually missing from `runtime/vibewt` — corrected
+below. The final six ops, verified reachable from `cli_main`'s own import
+graph (`cli_adapter.vibe` directly imports the `runtime` and `loader`
+packages):
+
+| op | found in |
+|---|---|
+| `read-file`, `write-file`, `write-bytes` | `cli_adapter.vibe` directly (its primary output path — compiled artifacts, funcmap, wit, component, normalize/doc-at/binding-at/symbols/diagnostics text — is `write_bytes`, never `write_file`) |
+| `exists` | `runtime/typecheck_fs.vibe`, `cache/persistent_cache.vibe` (under the imported `runtime` package) |
+| `stat-token` | `loader/loader.vibe`, `core/module_graph_path.vibe` (under the imported `loader` package) |
+| `readdir` | `loader/loader.vibe`, `loader/header_cache.vibe` (same package) |
+
+The other eleven round-1 ops — `read-bytes`, `is-dir`, `is-file`, `remove`,
+`mkdir`, `mkdir-p`, `chdir`, `getcwd`, `copy`, `append`, `rename` — either
+have zero real call sites anywhere in the compiler's own source, or (in
+`remove`'s case) a real call site that isn't reachable from `cli_main`.
+They're recognized builtin names (the checker accepts them when a *user*
+program calls them via `import Fs`/`lib/@vibe/fs`), but `cli_main` never
+invokes any of them itself. `env`/`stdin`/`stdout` were untouched by any
+round (already tag-consistent with their builtin-table signatures,
+`lookup_io_a`/`lookup_io_b` in `checker/builtins_system.vibe`).
 
 Types follow `wit_type_text`'s existing mapping (`Int` → `s64`, `Bool` →
 `bool`, `String` → `string`, `Bytes` → `list<u8>`, `Unit` → omitted return
@@ -60,17 +85,18 @@ type). Parameters are positional (`arg0`, `arg1`, ...) — vibe effect
 operation declarations don't carry parameter names, the same reason
 `wit_gen.vibe`'s own output uses `arg0`/`arg1`.
 
-**Open question this correction surfaced, not resolved here:**
-`runtime/vibewt/src/main.rs`'s `register_vibe_imports` has no
-`fs_mkdir`/`fs_mkdir_p`/`fs_chdir`/`fs_getcwd`/`fs_copy`/`fs_append`/
-`fs_rename` registrations at all (confirmed by direct grep), while
-`scripts/wasm_vibe_host_runner.js`'s Node runner implements all of them.
-Whether this means `vibe` built through `vibewt` would fail to instantiate
-or trap if a code path using one of these ops is actually reached (vs.
-those calls being confined to source that's part of the compiler's tree but
-not reachable from `cli_main`'s own compiled binary) was not determined in
-this pass — worth a dedicated follow-up rather than asserted as a live bug
-here.
+**Round 1's open question, resolved by round 2, corrected by round 3:**
+round 2 claimed `runtime/vibewt/src/main.rs`'s `register_vibe_imports` has
+no registrations at all for the ten then-removed ops. Wrong — Codex caught
+that vibewt actually registers three of them (`fs_is_dir`, `fs_is_file`,
+`fs_read_bytes`, confirmed at lines ~1791-1835), it just doesn't register
+the other seven (`fs_mkdir`/`fs_mkdir_p`/`fs_chdir`/`fs_getcwd`/`fs_copy`/
+`fs_append`/`fs_rename`). Whichever runner implements how many of them is
+moot for this contract either way: `cli_main` reaches none of the eleven
+excluded ops, so neither vibewt's partial coverage nor the Node runner's
+full coverage of them matters — that surface serves *user-program*
+`lib/@vibe/fs` usage (via the general-purpose `--wit` path), not something
+`cli_main` itself needs.
 
 ## What's NOT part of this contract
 
@@ -90,30 +116,31 @@ branches that only ever call `fs.read-file`/`fs.write-file` — treating
 job-dir/env-cache mode. No new host imports; same four interfaces, different
 env var and path-shape convention.
 
-## A drift this pass already found
+## A drift found, and resolved as benign
 
-The two existing runners do **not** implement the same surface today.
-`runtime/vibewt`'s `register_vibe_imports` implements `read-file`/
-`write-file`/`write-bytes`/`read-bytes`/`exists`/`stat-token`/`is-dir`/
-`is-file`/`remove`/`readdir`, `env`/`stdin`/`stdout` in full, plus
-`Process`/`sh` and a debugger-only surface `cli_main` doesn't use — but
-**not** `mkdir`/`mkdir-p`/`chdir`/`getcwd`/`copy`/`append`/`rename` (see
-the open question above — these may or may not be reachable from
-`cli_main`'s own compiled binary). `scripts/wasm_vibe_host_runner.js`'s
-Node `vibeModule` implements the full `fs` interface above INCLUDING those
-seven, plus an entire `http_*`/`json_*` surface that belongs to library
-effects (`lib/@vibe/http`) used by **compiled user programs**, generated
-per-program by the existing `--wit` path, not by this fixed compiler-host
-contract — that part of the Node superset is confirmed out of scope here.
-The `mkdir`/`chdir`/`getcwd`/`copy`/`append`/`rename` gap is recorded as
-exactly the kind of informal drift #1143 was raised to prevent; whether
-it's a live bug or genuinely dead code from `cli_main`'s perspective is the
-open question above, not resolved in this pass.
+`runtime/vibewt`'s `register_vibe_imports` implements exactly this
+contract's six `fs` ops (`read-file`/`write-file`/`write-bytes`/`exists`/
+`stat-token`/`readdir`), `env`/`stdin`/`stdout` in full, plus `Process`/`sh`
+and a debugger-only surface `cli_main` doesn't use. It also happens to
+implement three of the eleven excluded ops (`fs_is_dir`/`fs_is_file`/
+`fs_read_bytes`) but not the other eight (`Fs::remove` and the seven
+`mkdir`/`mkdir-p`/`chdir`/`getcwd`/`copy`/`append`/`rename` ops) —
+`scripts/wasm_vibe_host_runner.js`'s Node `vibeModule` implements all
+eleven, plus an entire `http_*`/`json_*` surface neither this contract nor
+`vibewt` has. All of that extra Node surface belongs to library effects
+(`lib/@vibe/fs`'s full surface, `lib/@vibe/http`) used by **compiled user
+programs**, generated per-program by the existing `--wit` path — not by
+this fixed compiler-host contract. `cli_main` itself never reaches any of
+it, regardless of which runner happens to implement how much of it. This
+was exactly the kind of informal drift #1143 was raised to prevent; the
+round 2/3 reachability audit above resolves it: not a live bug, just two
+runners that happen to serve different total surfaces (compiler-only vs.
+compiler-plus-most-of-every-user-library-effect) while agreeing completely
+on what `cli_main` itself needs.
 
 ## Non-goals of this pass
 
 - No runner was changed to conform to or validate against this `.wit` file.
 - No third (non-Wasmtime) runtime implementation was written or attempted.
-- The Node/vibewt surface mismatch above is recorded, not resolved.
 - Whether/how to keep this file mechanically in sync with the two runners
   going forward (a differential check, a generator, ...) is unscoped follow-up.
