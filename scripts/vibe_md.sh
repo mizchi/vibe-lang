@@ -62,15 +62,22 @@ mkdir -p "$workdir"
 tool="$workdir/vibe_md.wasm"
 build_log="$workdir/vibe_md.build.log"
 
+# Remove any wasm left over from a prior successful build first: otherwise a
+# compile failure that leaves the old artifact untouched would silently pass
+# the `-s "$tool"` check below and run stale, already-superseded behavior
+# instead of surfacing that the committed vibe_md.vibex is unbuildable.
+rm -f "$tool" "$tool.diag" "$tool.funcmap"
+
+build_status=0
 env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
-  "$compiler" scripts/vibe_md.vibex "$tool" main >"$build_log" 2>&1 || true
+  "$compiler" scripts/vibe_md.vibex "$tool" main >"$build_log" 2>&1 || build_status=$?
 
-if [ ! -s "$tool" ]; then
-  echo "vibe_md.sh: failed to build scripts/vibe_md.vibex (compiler: $compiler)" >&2
+if [ "$build_status" -ne 0 ] || [ ! -s "$tool" ]; then
+  echo "vibe_md.sh: failed to build scripts/vibe_md.vibex (compiler: $compiler, exit: $build_status)" >&2
   [ -s "$tool.diag" ] && cat "$tool.diag" >&2
   cat "$build_log" >&2
-  rm -f "$tool.diag"
+  rm -f "$tool" "$tool.diag"
   exit 2
 fi
 rm -f "$tool.diag" "$tool.funcmap"

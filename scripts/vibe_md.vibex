@@ -353,15 +353,37 @@ fn shq(s: String) -> String {
   String::concat("'", String::concat(s, "'"))
 }
 
-fn resolve_stage2() -> String with { Process, Env } {
+// Newest-first candidate scan, skipping any generation directory whose
+// stage2.wasm is missing or empty (an interrupted/still-running selfhost
+// build) rather than picking the newest DIRECTORY unconditionally -- matches
+// scripts/vibe_md.py's resolve_stage2, which filtered candidates the same
+// way before sorting by mtime.
+fn resolve_stage2() -> String with { Process, Env, Fs } {
   let env_val = Env::get("VIBE_MD_STAGE2")
   if String::length(env_val) > 0 {
     env_val
   } else {
-    let r = sh_capture("ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1")
-    let dir = String::trim(r.stdout)
-    if String::length(dir) > 0 {
-      String::concat(dir, "stage2.wasm")
+    let r = sh_capture("ls -dt _build/selfhost/generations/*/ 2>/dev/null")
+    let dirs = splitlines_like(r.stdout)
+    let n = Array::length(dirs)
+    let mut i = 0
+    let mut found = ""
+    while i < n && found == "" {
+      let dir = String::trim(Array::get(dirs, i))
+      if dir != "" {
+        let candidate = String::concat(dir, "stage2.wasm")
+        if file_nonempty(candidate) {
+          found = candidate
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if found != "" {
+      found
     } else {
       "bootstrap/seed/compiler.wasm"
     }
@@ -399,7 +421,20 @@ struct BlockResult {
   reason: String
 }
 
-fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String, scratch_name: String, blk: Block, mode: String) -> BlockResult with { Fs, Process } {
+// Per-block compile/run subprocess deadline, seconds (matches
+// scripts/vibe_md.py's VIBE_MD_TIMEOUT, default 120): without it a hung or
+// infinite-looping tutorial block ties up sh_capture (and therefore the CI
+// job running it) with no per-block failure ever produced.
+fn md_timeout_secs() -> String with { Env } {
+  let v = String::trim(Env::get("VIBE_MD_TIMEOUT"))
+  if String::length(v) > 0 {
+    v
+  } else {
+    "120"
+  }
+}
+
+fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String, scratch_name: String, blk: Block, mode: String) -> BlockResult with { Fs, Process, Env } {
   let label = "\{md_path}:\{blk.start_line}"
   if blk.mode == "skip" {
     BlockResult::{ label: label, status: "SKIP", reason: "" }
@@ -413,11 +448,14 @@ fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String,
     } else {
       "__no_entry__"
     }
-    let compile_cmd = "VIBE_PREOPEN_DIR=\{shq(cwd)} VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \{shq(compiler)} \{shq(src)} \{shq(out)} \{shq(entry)}"
+    let timeout_secs = md_timeout_secs()
+    let compile_cmd = "timeout \{timeout_secs} env VIBE_PREOPEN_DIR=\{shq(cwd)} VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \{shq(compiler)} \{shq(src)} \{shq(out)} \{shq(entry)}"
     let cr = sh_capture(compile_cmd)
-    let compiled = file_nonempty(out)
+    let compiled = cr.exit_code == 0 && file_nonempty(out)
     if !compiled {
-      let reason = if Fs::exists(diag) {
+      let reason = if cr.exit_code == 124 {
+        "timeout after \{timeout_secs}s"
+      } else if Fs::exists(diag) {
         first_nonblank_line(Fs::read_file(diag))
       } else {
         let combined = String::concat(cr.stdout, cr.stderr)
@@ -434,11 +472,15 @@ fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String,
       cleanup_one(src, out, diag)
       BlockResult::{ label: label, status: "PASS", reason: "" }
     } else {
-      let run_cmd = "VIBE_PREOPEN_DIR=\{shq(cwd)} bash scripts/run_wasm_vibe_host_runner.sh --invoke _start \{shq(out)}"
+      let run_cmd = "timeout \{timeout_secs} env VIBE_PREOPEN_DIR=\{shq(cwd)} bash scripts/run_wasm_vibe_host_runner.sh --invoke _start \{shq(out)}"
       let rr = sh_capture(run_cmd)
       cleanup_one(src, out, diag)
       if rr.exit_code != 0 {
-        let reason = first_nonblank_line(rr.stderr)
+        let reason = if rr.exit_code == 124 {
+          "timeout after \{timeout_secs}s"
+        } else {
+          first_nonblank_line(rr.stderr)
+        }
         let shown = if reason == "" {
           "runtime failure"
         } else {
@@ -539,7 +581,7 @@ fn basename_no_ext(path: String) -> String {
   }
 }
 
-fn process_file(md_path: String, cwd: String, compiler: String, mode: String) -> FileOutcome with { Fs, Process, Error } {
+fn process_file(md_path: String, cwd: String, compiler: String, mode: String) -> FileOutcome with { Fs, Process, Error, Env } {
   let text = Fs::read_file(md_path)
   let tokens = parse_blocks(text)
   link_run_output_pairs(tokens)
