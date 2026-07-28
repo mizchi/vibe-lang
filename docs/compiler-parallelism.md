@@ -562,8 +562,21 @@ It requires Node (the coordinator uses `worker_threads`) even when the
 installed toolchain's own runner is the Rust `vibewt`, so it is scoped to a
 dev checkout of this repo — see the "Shared-everything migration note" below
 and #1143 for the broader runtime-portability question this leaves open.
-Discovery still pays one `vibe` subprocess launch per file
-(`VIBE_LIST_DEPS`); the persistent-cache write itself is still a direct
+Discovery still pays one `vibe` subprocess launch per file (`VIBE_LIST_DEPS`),
+but as of #1168 that discovery walk itself runs with up to `jobs` files in
+flight at once (`mapWithConcurrency` in `scripts/parallel_frontend_warm.mjs`,
+one BFS level/frontier at a time) rather than fully serially. Measured
+against the compiler's own manifest (~209 modules, 4-core sandbox,
+2026-07-28): parallelizing discovery alone cuts `--jobs 4` cold wall time
+from 21601ms to 10977ms (-49%), and `--jobs 2` from 21072ms to 15627ms
+(-26%); crucially, wall time now actually scales down as `jobs` increases
+(10977ms at 4 workers vs 15627ms at 2), which the fully-serial discovery
+loop never did (it cost the same regardless of `jobs`). It is still slower
+than the plain serial baseline (~5.5s) at this project size — discovery-loop
+parallelism narrows the gap, it does not close it — so this alone does not
+change the "default worker count stays at 1" decision; see the KPI note
+below for the fuller picture including the persistent-cache benefit. The
+persistent-cache write itself is still a direct
 `Fs::write_file`; `--jobs` does not add a temp-file+rename step, so two
 concurrent `vibe build --jobs` invocations racing on the same fingerprint is
 the same pre-existing hazard the Cache publication section above already
