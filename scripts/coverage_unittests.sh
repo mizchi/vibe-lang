@@ -41,26 +41,10 @@ for f in lib/@vibe/compiler/*_test.vibe; do
   fi
 done
 echo "[ut] $ok test files ran, $fail skipped (DCE'd fns / no tests)" >&2
-python3 - "$ACC" "$OUT/runs.txt" <<'PY'
-import json, sys, os
-from collections import defaultdict
-acc=json.load(open(sys.argv[1])); fnC,owC,brC=acc['fn_names'],acc['br_owners'],acc['br']
-localC=defaultdict(list)
-for gid,o in enumerate(owC):
-    nm=fnC[o] if 0<=o<len(fnC) else None
-    if nm is not None: localC[nm].append(gid)
-base=sum(brC)
-for rp in [l.strip() for l in open(sys.argv[2]) if l.strip()]:
-    try: raw=json.load(open(rp))['raw']
-    except: continue
-    nT,owT,bmT=raw['fn_names'],raw['branch_owners'],raw['branch_bitmap']
-    seen=defaultdict(int)
-    for i,o in enumerate(owT):
-        nm=nT[o] if 0<=o<len(nT) else None
-        li=seen[nm]; seen[nm]+=1
-        if nm is None or not bmT[i]: continue
-        ids=localC.get(nm)
-        if ids and li<len(ids): brC[ids[li]]=1
-tmp=sys.argv[1]+'.tmp'; json.dump(acc, open(tmp,'w')); os.replace(tmp, sys.argv[1])
-print(f"[ut] unit-test merge: {base} -> {sum(brC)}/{len(brC)} ({sum(brC)/len(brC)*100:.2f}%) (+{sum(brC)-base})")
-PY
+# (fn_name, local_branch_index) union of every run in runs.txt into acc.json
+# -- scripts/coverage_local_merge.vibex's `merge-list` subcommand (native
+# vibe port; see that file's header comment for the algorithm).
+read -r base now tot < <(bash scripts/coverage_local_merge_run.sh merge-list "$ACC" "$OUT/runs.txt")
+scaled=$(( (now * 10000 + tot / 2) / tot ))
+pct="$((scaled / 100)).$(printf '%02d' $((scaled % 100)))"
+echo "[ut] unit-test merge: $base -> $now/$tot ($pct%) (+$((now-base)))"

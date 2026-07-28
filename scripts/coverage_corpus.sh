@@ -28,7 +28,7 @@ MAX="${VIBE_COV_MAX:-100000}"
 
 [ -s "$SEED" ] || { echo "corpus: seed not found" >&2; exit 1; }
 rm -rf "$OUT_DIR"; mkdir -p "$OUT_DIR"; : > "$FAILS"
-rel() { python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2]))' "$1" "$ROOT_DIR"; }
+rel() { realpath --relative-to="$ROOT_DIR" "$1"; }
 FLAT="$(rel "$FLAT_ABS")"
 
 echo "[corpus] building instrumented compiler ..." >&2
@@ -36,44 +36,13 @@ VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash "$RUNNER" --invoke cli_main "$SEED" "$FLAT" "$(rel "$COMPILER_COV")" cli_main
 [ -s "$COMPILER_COV" ] || { echo "corpus: instrumented compiler not produced" >&2; exit 1; }
 
-# acc_merge.py: OR RUN_JSON's raw bitmap into ACC (creating ACC on first call).
-cat > "$OUT_DIR/acc_merge.py" <<'PY'
-import json, os, sys
-acc_path, run_path = sys.argv[1], sys.argv[2]
-try:
-    run = json.load(open(run_path))
-except Exception:
-    sys.exit(0)
-raw = run.get("raw")
-if not raw:
-    sys.exit(0)
-fb, bb = raw["fn_bitmap"], raw.get("branch_bitmap", [])
-acc = None
-if os.path.exists(acc_path):
-    try:
-        acc = json.load(open(acc_path))          # tolerate a corrupt/partial acc
-    except Exception:
-        acc = None
-if acc is not None:
-    fn, br = acc["fn"], acc["br"]
-    for i, v in enumerate(fb):
-        if v: fn[i] = 1
-    for i, v in enumerate(bb):
-        if v: br[i] = 1
-else:
-    acc = {"fn_names": raw["fn_names"], "br_owners": raw.get("branch_owners", []),
-           "fn": [1 if v else 0 for v in fb], "br": [1 if v else 0 for v in bb]}
-tmp = acc_path + ".tmp"                            # atomic write: never leave a partial acc
-with open(tmp, "w") as fh:
-    json.dump(acc, fh)
-os.replace(tmp, acc_path)
-PY
-
-# accumulate one workload run (env... -- runner args)
+# accumulate one workload run (env... -- runner args); merge via
+# scripts/coverage_acc_tool.vibex (OR RUN_JSON's raw bitmap into ACC,
+# creating ACC on first call -- see that file's header comment).
 acc_run() {
   rm -f "$RUN_JSON"
   VIBE_COV_OUT="$RUN_JSON" VIBE_COV_RAW=1 VIBE_PREOPEN_DIR="$ROOT_DIR" "$@" >/dev/null 2>&1 || true
-  [ -s "$RUN_JSON" ] && python3 "$OUT_DIR/acc_merge.py" "$ACC" "$RUN_JSON" || return 1
+  [ -s "$RUN_JSON" ] && bash scripts/coverage_acc_tool_run.sh merge "$ACC" "$RUN_JSON" || return 1
 }
 
 # Base: self-compile (compile) + flat self-compile under RC are heavy; include
