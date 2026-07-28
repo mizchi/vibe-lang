@@ -54,8 +54,18 @@ async function readIfPresent(path) {
   }
 }
 
-async function listDeps(runnerPath, compilerWasm, cacheDir, projectRoot, filePath) {
-  const outAbs = join(cacheDir, `${filePath.replace(/[^a-zA-Z0-9]/g, "_")}.deps.out`);
+// `uniqueId` disambiguates the on-disk .deps.out/.diag path: the sanitized
+// filePath alone can collide (e.g. this repo's own checker_builtins.vibe
+// vs checker/builtins.vibe both sanitize to checker_builtins_vibe) --
+// harmless when listDeps calls were strictly sequential, but with
+// discoverProject now running several concurrently (#1168), two colliding
+// in-flight calls would race on the same temp file and let one module
+// silently consume another's dependency list or diagnostic (Codex review,
+// PR #1170). The caller passes a per-call monotonic counter so every
+// listDeps invocation in a given cacheDir gets a distinct path regardless
+// of filename collisions.
+async function listDeps(runnerPath, compilerWasm, cacheDir, projectRoot, filePath, uniqueId) {
+  const outAbs = join(cacheDir, `${uniqueId}_${filePath.replace(/[^a-zA-Z0-9]/g, "_")}.deps.out`);
   await rm(outAbs, { force: true });
   await rm(`${outAbs}.diag`, { force: true });
   const exitCode = await runVibe(
@@ -78,6 +88,17 @@ async function listDeps(runnerPath, compilerWasm, cacheDir, projectRoot, filePat
 // once, preserving no particular completion order (callers only need the
 // full result set, not ordering). A plain worker-pool loop rather than a
 // library dependency, since this script has none today.
+//
+// Uses allSettled, not Promise.all: a worker whose `fn` throws stops
+// pulling new items, but other workers keep draining the shared queue via
+// `next`, and every already-spawned subprocess (runVibe's child_process)
+// is awaited to completion inside its own worker's loop either way. If we
+// instead let one rejection short-circuit via Promise.all, main()'s catch
+// would call process.exit(1) while other workers' in-flight `runVibe`
+// subprocesses are still running -- Node does not kill spawned children on
+// process.exit, so they'd become orphans still writing into a cacheDir the
+// caller is about to rm -rf (Codex review, PR #1170). Waiting for every
+// worker to settle first means no subprocess is ever abandoned mid-flight.
 async function mapWithConcurrency(items, concurrency, fn) {
   const results = new Array(items.length);
   let next = 0;
@@ -88,9 +109,11 @@ async function mapWithConcurrency(items, concurrency, fn) {
       results[i] = await fn(items[i], i);
     }
   }
-  await Promise.all(
+  const settled = await Promise.allSettled(
     Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, worker),
   );
+  const failure = settled.find((r) => r.status === "rejected");
+  if (failure) throw failure.reason;
   return results;
 }
 
@@ -113,10 +136,12 @@ async function discoverProject(runnerPath, compilerWasm, projectRoot, entryPaths
   const modules = new Map();
   const seen = new Set(entryPaths);
   let frontier = [...entryPaths];
+  let nextUniqueId = 0;
   while (frontier.length > 0) {
     const discovered = await mapWithConcurrency(frontier, concurrency, async (path) => {
+      const uniqueId = nextUniqueId++;
       const [deps, source] = await Promise.all([
-        listDeps(runnerPath, compilerWasm, cacheDir, projectRoot, path),
+        listDeps(runnerPath, compilerWasm, cacheDir, projectRoot, path, uniqueId),
         readFile(path, "utf8"),
       ]);
       return { path, deps, source };
