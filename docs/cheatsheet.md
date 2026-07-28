@@ -202,6 +202,26 @@ name wins over a method (field-stored function call). Builtin receivers
 (`Array`/`String`/...) keep their builtin `Type::method` forms — no
 bare-method sugar for them.
 
+**Canonical on-disk form (#1189, ADR-0081 — decided 2026-07-28, not yet
+implemented):** `recv.method(args)` is legal to *write*, but `Type::method(recv,
+args)` / `recv |> Type::method(args)` is the spelling `vibe fmt` is planned to
+normalize it to in the committed source, whenever the receiver's type is
+recoverable through the same lightweight, per-function syntactic heuristic
+`desugar_trait_dict.vibe`'s `infer_arg_type_name`/`var_types` already use for
+witness synthesis (param annotations, `let x: T = ...`, an immediately
+preceding `T::new()`/`T::{ ... }` literal) — deliberately *not* a full
+type-check pass, so fmt keeps working on files that don't type-check yet.
+When the receiver type isn't recoverable that way, fmt leaves the dot form
+untouched rather than guessing. Rationale:
+[`eval/call-style/findings/2026-07-28-r1.md`](../eval/call-style/findings/2026-07-28-r1.md)
+found a reader given only a text excerpt (no compiler, no LSP) can recover
+the callee's type from the qualified/pipe spellings but not from bare
+`recv.method(...)` when annotations are sparse — so the qualified spelling
+is what should land in git history/diffs/greps, while the terser dot
+spelling stays legal to type. This does **not** help positional-argument-order
+ambiguity between same-typed parameters — that's a separate problem no call
+notation solves (`eval/call-style/scenarios/02_arg_order`).
+
 ### Function combinators (point-free)
 
 `compose` / `identity` / `flip` live in the prelude (`lib/@vibe/prelude/func.vibe`);

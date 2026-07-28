@@ -472,3 +472,27 @@ lands.
   vibe/collection/map.vibe の `values` を keys+get で再実装。
   collection の index_import_test / map_test / maps_facade_test が PASS →
   allowlist 追加(collection のテストが selfhost gate で回るのは初)。
+
+## #1189 — dot 呼び出しの採否とソース正規形 (2026-07-28, ADR-0081)
+
+上の「同日フォローアップ (2026-07-04)」で着地した `xs.length()` / `l.total()`
+method-style resolve が、#1189 (「UFCS を入れるか、`Array::push(arr,x)` を
+`arr.push(x)` と書けるようにするか」) の実質的な前提を変えていた —
+**dot 呼び出しは既に一部着地済み**で、#1189 は「導入するか」ではなく
+「どこまで表記として推奨するか」の問題だった。`eval/call-style/` に読解
+ベースの評価ハーネスを作りサブエージェントに読ませたところ (findings:
+`eval/call-style/findings/2026-07-28-r1.md`)、型注釈が薄い抜粋では
+`Type::method(recv, ...)` / `recv |> Type::method(...)` は呼び出し箇所から
+receiver の型を復元できたが、`recv.method(...)` は復元できなかった —
+この非対称性は checker 通過後の内部 desugar (このファイル上の EDot
+resolve) では解消されない。**ディスク上のソーステキストが dot 形のまま
+残る限り、型検査を回さない読み手 (grep・diff・部分抜粋・AI) には効かない**。
+
+決定 (ADR-0081, docs/adr.md): dot 形は入力として許可したまま、`vibe fmt`
+がこのファイルの `infer_arg_type_name` / `var_types` と同じ **best-effort
+構文的推論** (フル型検査ではない) を再利用して、復元可能な範囲でソースを
+`Type::method(recv, args)` / pipe 形へ書き戻す方向に倒す。復元できない
+receiver は dot 形のまま残す。**未実装 (#1194 で追跡)** —
+`desugar_trait_dict.vibe` 側の resolve ロジックはそのまま (このファイルが
+記述する内部 desugar に変更は無い)。実装が要るのは
+`lib/@vibe/compiler/fmt/format.vibe` 側のみ。
