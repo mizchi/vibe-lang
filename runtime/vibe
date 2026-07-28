@@ -1152,15 +1152,26 @@ case "$cmd" in
     set -- $files
     [ "$#" -ge 1 ] || die "usage: vibe test [--no-cache] [--jobs N] <file_test.vibe> [more_test.vibe...]"
     tcache="${VIBE_TEST_CACHE:-$VIBE_HOME/cache/test}"
-    failed=0
-    for src in "$@"; do
-      [ -f "$src" ] || die "not found: $src"
+
+    # Runs one test file's compile+run+cache-check, printing its own ok/FAIL
+    # line(s) exactly as the old fully-serial loop did. Returns pass/fail via
+    # exit code (0/1) instead of mutating a shared `failed` var, so the
+    # parallel driver below can run it inside a background subshell -- a
+    # write to a parent-scope var from a background subshell would not be
+    # visible to the parent anyway.
+    _test_run_one() {
+      src="$1"
+      warm_jobs="$2"
+      [ -f "$src" ] || { echo "vibe: not found: $src" >&2; return 1; }
       # #906 Phase 2 (real-test wiring): same best-effort pre-warm `build`/
       # `check` get -- each test file is its own compile entry with its own
       # import graph, so warm it before this file's own compile_to below
       # (never changes output, only ever helps or no-ops; see
-      # maybe_warm_frontend_cache's own doc comment above).
-      maybe_warm_frontend_cache "$jobs" "$src"
+      # maybe_warm_frontend_cache's own doc comment above). `warm_jobs` is
+      # forced to 1 (a no-op) from the parallel file-level driver -- see its
+      # own comment for why nesting an inner pre-warm pool under outer
+      # file-level parallelism would only add overhead, not speed.
+      maybe_warm_frontend_cache "$warm_jobs" "$src"
       out="$(mktemp -t vibe-test-XXXXXX.wasm)"
       meta="$out.testmeta"
       rm -f "$meta"
@@ -1174,7 +1185,7 @@ case "$cmd" in
       fi
       if ! compile_to "$src" "$out" "__no_entry__"; then
         unset VIBE_TESTMETA_OUT
-        echo "FAIL (compile): $src"; failed=1; rm -f "$out" "$meta"; continue
+        echo "FAIL (compile): $src"; rm -f "$out" "$meta"; return 1
       fi
       unset VIBE_TESTMETA_OUT
       # #948: flag files with zero lowered `__test_` functions (a typo'd block
@@ -1191,7 +1202,7 @@ case "$cmd" in
         key="$(_sha256_file "$out")"
         if [ -n "$key" ] && [ -f "$tcache/$key.pass" ]; then
           echo "ok (cached): $src$note"
-          rm -f "$out" "$meta"; continue
+          rm -f "$out" "$meta"; return 0
         fi
       fi
       # #948: capture the runner's stderr. On success replay it verbatim (tests
@@ -1199,6 +1210,7 @@ case "$cmd" in
       # the failing test name + trap reason + funcmap-annotated frames instead
       # of 20+ lines of raw Rust/wasmtime backtrace burying the `__test_` line.
       terr="$(mktemp -t vibe-testerr-XXXXXX)"
+      rc=0
       if "$RUNNER" "$out" 2>"$terr"; then
         [ -s "$terr" ] && cat "$terr" >&2
         echo "ok:   $src$note"
@@ -1206,11 +1218,67 @@ case "$cmd" in
           mkdir -p "$tcache" && : > "$tcache/$key.pass"
         fi
       else
-        echo "FAIL: $src"; failed=1
+        rc=1
+        echo "FAIL: $src"
         condense_test_trap "$terr" "$out.funcmap" "$(basename "$src")" >&2
       fi
       rm -f "$out" "$out.funcmap" "$meta" "$terr"
-    done
+      return "$rc"
+    }
+
+    failed=0
+    if [ "$jobs" -le 1 ] || [ "$#" -le 1 ]; then
+      # Serial path -- unchanged behavior (including the per-file frontend
+      # pre-warm, itself a no-op for jobs<=1 per maybe_warm_frontend_cache's
+      # own gate).
+      for src in "$@"; do
+        _test_run_one "$src" "$jobs" || failed=1
+      done
+    else
+      # #906/#1168 follow-up: `--jobs N` previously only pre-warmed each
+      # file's OWN frontend typecheck cache (maybe_warm_frontend_cache) --
+      # the compile+run step below it stayed fully serial regardless of N,
+      # so --jobs never sped up the part of `vibe test` that actually
+      # dominates wall time (compiling AND running each file's test blocks).
+      # This runs up to `jobs` files' compile+run concurrently instead, in
+      # same-sized batches (level-order, same shape as #1170's discovery-loop
+      # fix) -- each batch's output is buffered per-file and printed in the
+      # ORIGINAL file order after the whole batch finishes, not
+      # launch-completion order, so `vibe test a b c --jobs 4` prints
+      # identically to the serial path regardless of which file's wasmtime
+      # process happens to finish first.
+      #
+      # Per-file frontend pre-warm is intentionally skipped (warm_jobs=1, a
+      # no-op) rather than nested under this outer pool: with N files already
+      # running as N separate host processes, an inner N-way Node worker pool
+      # per file would oversubscribe the machine for no benefit -- #1169's
+      # own KPI measurement found the pre-warm's discovery loop is a net
+      # wall-time loss even un-nested; stacking it under file-level
+      # parallelism here would only make that worse. Running compiles/runs
+      # concurrently at all is safe only because #1173 made the persistent
+      # cache's write path (both runners) atomic (temp+rename), closing the
+      # exact partial-write race this concurrency would otherwise expose.
+      while [ "$#" -gt 0 ]; do
+        batch_pids=()
+        batch_logs=()
+        n=0
+        while [ "$#" -gt 0 ] && [ "$n" -lt "$jobs" ]; do
+          src="$1"; shift
+          log="$(mktemp -t vibe-test-batch-XXXXXX.log)"
+          ( _test_run_one "$src" 1 > "$log" 2>&1 ) &
+          batch_pids+=("$!")
+          batch_logs+=("$log")
+          n=$((n + 1))
+        done
+        for pid in "${batch_pids[@]}"; do
+          wait "$pid" || failed=1
+        done
+        for log in "${batch_logs[@]}"; do
+          cat "$log"
+          rm -f "$log"
+        done
+      done
+    fi
     exit "$failed"
     ;;
   bench)

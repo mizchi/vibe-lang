@@ -554,10 +554,30 @@ project, in addition to the diagnostic-equality check above.
 
 What that is still NOT: this only speeds up (or no-ops) the frontend
 check — parse/typecheck — never codegen or linking. It is now wired into
-`vibe build`/`compile`, `check`, and `test` (each call site just parses its
-own `--jobs N` and calls the same `maybe_warm_frontend_cache` before its
+`vibe build`/`compile` and `check` (each call site just parses its own
+`--jobs N` and calls the same `maybe_warm_frontend_cache` before its
 existing compile/check loop, unchanged) but not `diagnostics` (not wired
 there yet, though the same helper would apply unchanged there too).
+
+**`vibe test --jobs N` goes further than a pre-warm** (added alongside
+#1173): unlike `build`/`compile`/`check`, `vibe test <files...>` runs
+MULTIPLE independent compile-then-run cycles per invocation — one per test
+file — and until now that per-file loop stayed fully serial regardless of
+`--jobs` (only each file's own frontend cache got pre-warmed, the same as
+the other verbs). `--jobs N > 1` now runs up to `N` files' compile+run
+concurrently, in same-sized batches (`runtime/vibe`'s `test)` case), with
+each batch's output buffered per-file and printed in original file order
+so results stay byte-identical to the serial path regardless of which
+file's `wasmtime` process finishes first. Per-file frontend pre-warm is
+intentionally NOT nested under this outer pool (an inner N-way Node
+worker pool per file, under N files already running as N host processes,
+would oversubscribe the machine for no benefit — see the discovery-loop
+KPI finding above). Running compiles/runs concurrently here is safe only
+because #1173 made the persistent cache's write path atomic in both
+runners, closing the exact partial-write race this exposes. Measured on
+20 of the compiler's own `*_test.vibe` files, 4-core sandbox
+(2026-07-28): `--jobs 1` (serial) 87.7s, `--jobs 2` 68.2s (-22%),
+`--jobs 4` 51.4s (-41%) wall time, byte-identical output at every level.
 It requires Node (the coordinator uses `worker_threads`) even when the
 installed toolchain's own runner is the Rust `vibewt`, so it is scoped to a
 dev checkout of this repo — see the "Shared-everything migration note" below
