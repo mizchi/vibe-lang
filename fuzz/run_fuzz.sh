@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
 # Differential fuzzing harness for the selfhost vibe compiler.
 #
-#   bash fuzz/run_fuzz.sh [--seeds A..B] [--cli path/to/stage2.wasm]
+#   bash fuzz/run_fuzz.sh [--seeds A..B] [--cli path/to/stage2.wasm] [--jobs N]
 #   bash fuzz/run_fuzz.sh --mutate [--seeds A..B]   # parser-robustness mode
+#
+# Seeds run with up to --jobs concurrent OS processes (default: nproc, capped
+# at 8) via a bash job-slot pool -- real parallelism (each seed is its own
+# subshell/process tree), not vibe's own cooperative TaskGroup, which never
+# runs two task bodies at once (see docs/compiler-parallelism.md's
+# "Shared-everything migration note"). Safe because every seed already had
+# its own work dir ($WORK/s$seed) and finding dir ($FIND/seed_<n>_<class>);
+# the only genuinely shared file, failing_seeds.txt, is appended to via
+# `echo ... >>`, whose writes are atomic for lines under PIPE_BUF so
+# concurrent seeds interleave lines but never corrupt them. --jobs 1
+# reproduces the original strictly-sequential ordering exactly.
 #
 # Generative mode (default), per seed:
 #   1. fuzz/gen_program.py emits a well-typed, trap-free-by-construction
@@ -29,6 +40,7 @@ SEEDS="1..50"
 CLI=""
 MODE="gen"
 GENMODE=""   # "" = liveness-aware generation (default); "--classic" = opt out
+JOBS="${FUZZ_JOBS:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --seeds) SEEDS="$2"; shift 2 ;;
@@ -36,10 +48,19 @@ while [ $# -gt 0 ]; do
     --mutate) MODE="mutate"; shift ;;
     --classic) GENMODE="--classic"; shift ;;
     --liveness-bias) GENMODE="--liveness-bias=$2"; shift 2 ;;
+    --jobs) JOBS="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 A="${SEEDS%%..*}"; B="${SEEDS##*..}"
+if [ -z "$JOBS" ]; then
+  JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+  [ "$JOBS" -le 8 ] || JOBS=8
+fi
+case "$JOBS" in
+  ''|*[!0-9]*) echo "[fuzz] --jobs must be a positive integer, got: $JOBS" >&2; exit 2 ;;
+esac
+[ "$JOBS" -ge 1 ] || { echo "[fuzz] --jobs must be a positive integer, got: $JOBS" >&2; exit 2; }
 
 if [ -z "$CLI" ]; then
   CLI="$(ls -t _build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1)"
@@ -48,7 +69,7 @@ if [ -z "$CLI" ] || [ ! -f "$CLI" ]; then
   echo "[fuzz] no stage2 CLI found; build one first (scripts/generations.sh build)" >&2
   exit 2
 fi
-echo "[fuzz] mode=$MODE gen=${GENMODE:-liveness} seeds=$A..$B cli=$CLI"
+echo "[fuzz] mode=$MODE gen=${GENMODE:-liveness} seeds=$A..$B cli=$CLI jobs=$JOBS"
 
 WORK=_build/fuzz/work
 FIND=_build/fuzz/findings
@@ -76,11 +97,9 @@ record() { # seed class dir note
   echo "[fuzz] seed $seed: $class ($note)"
 }
 
-fail=0
-total=0
-for seed in $(seq "$A" "$B"); do
-  total=$((total + 1))
-  dir="$WORK/s$seed"
+run_seed() { # seed -- runs entirely in its own background subshell/process
+  local seed="$1"
+  local dir="$WORK/s$seed"
   rm -rf "$dir"; mkdir -p "$dir"
   python3 fuzz/gen_program.py "$seed" "$dir" $GENMODE
 
@@ -103,9 +122,9 @@ EOF
     st=$(compile "$dir/mut.vibe" "$dir/mut.wasm" VIBE_RC=0)
     case "$st" in
       OK|COMPILE_DIAG) : ;;
-      *) record "$seed" "MUT_$st" "$dir" "mutated input: $st"; fail=$((fail+1)) ;;
+      *) record "$seed" "MUT_$st" "$dir" "mutated input: $st" ;;
     esac
-    continue
+    return
   fi
 
   # --- generative differential mode ---
@@ -114,10 +133,26 @@ EOF
   detail="${result#* }"
   if [ "$cls" != "OK" ]; then
     record "$seed" "$cls" "$dir" "$detail"
-    fail=$((fail + 1))
-    continue
+  fi
+}
+
+# Bounded job-slot pool: launch each seed as its own background process,
+# never more than $JOBS in flight at once. `fail`/`total` are NOT mutated
+# inside run_seed (background subshells can't write back to this shell's
+# variables) -- total is computed directly from the seed range, and fail is
+# the line count of failing_seeds.txt after every job has been waited on.
+total=$((B - A + 1))
+running=0
+for seed in $(seq "$A" "$B"); do
+  run_seed "$seed" &
+  running=$((running + 1))
+  if [ "$running" -ge "$JOBS" ]; then
+    wait -n
+    running=$((running - 1))
   fi
 done
+wait
 
+fail=$(wc -l < _build/fuzz/failing_seeds.txt | tr -d '[:space:]')
 echo "[fuzz] done: $total seeds, $fail findings"
 [ "$fail" -eq 0 ]
