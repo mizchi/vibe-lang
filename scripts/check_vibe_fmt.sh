@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # vibe-fmt lint gate: every lib/**/*.vibe file must be a fixpoint of
-# the selfhost CST-token formatter (scripts/vibe_fmt.sh --check), UNLESS it's
-# listed in the allowlist below.
+# the selfhost CST-token formatter, UNLESS it's listed in the allowlist
+# below. Runs through scripts/run_vibe_fmt_batch.sh (one batched wasm
+# process for the whole file list, sharded across VIBE_FMT_JOBS
+# subprocesses) instead of one scripts/vibe_fmt.sh process per file --
+# see lib/@vibe/cli/fmt.vibe's header comment for why that matters at
+# ~750+ tracked files.
 #
 # `pkf run fmt` (scripts/vibe_fmt_apply.sh) applies the formatter across the
 # whole tree in write mode; the codebase was bulk-reformatted with it on
@@ -18,6 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="${VIBE_FMT_LINT_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
 SCAN_ROOT="${VIBE_FMT_LINT_ROOT:-lib}"
 ALLOWLIST_FILE="${VIBE_FMT_LINT_ALLOWLIST:-$PROJECT_ROOT/scripts/vibe_fmt_allowlist.txt}"
+JOBS="${VIBE_FMT_JOBS:-$(nproc 2>/dev/null || echo 1)}"
 cd "$PROJECT_ROOT"
 
 if [ ! -d "$SCAN_ROOT" ]; then
@@ -44,24 +49,33 @@ fi
 
 new_violations=()
 stale_allowlist=()
+errors=()
 checked=0
 known_debt=0
 
-for rel_path in "${files[@]}"; do
+while IFS=$'\t' read -r status rel_path message; do
+  [ -n "$status" ] || continue
   checked=$((checked + 1))
-  if bash scripts/vibe_fmt.sh --check "$rel_path" >/dev/null 2>"/tmp/vibe_fmt_lint_err.$$"; then
+  if [ "$status" = "OK" ]; then
     if is_allowed "$rel_path"; then
       stale_allowlist+=("$rel_path")
     fi
-  else
-    if is_allowed "$rel_path"; then
-      known_debt=$((known_debt + 1))
-    else
-      new_violations+=("$rel_path")
-    fi
+    continue
   fi
-  rm -f "/tmp/vibe_fmt_lint_err.$$"
-done
+  if [ "$status" = "ERROR" ]; then
+    errors+=("$rel_path: $message")
+  fi
+  if is_allowed "$rel_path"; then
+    known_debt=$((known_debt + 1))
+  else
+    new_violations+=("$rel_path")
+  fi
+done < <(printf '%s\n' "${files[@]}" | bash scripts/run_vibe_fmt_batch.sh check "$JOBS")
+
+if [ "${#errors[@]}" -gt 0 ]; then
+  echo "vibe-fmt lint: ${#errors[@]} file(s) errored while checking (not merely unformatted):" >&2
+  printf '  %s\n' "${errors[@]}" >&2
+fi
 
 status=0
 
