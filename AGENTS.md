@@ -86,14 +86,18 @@ CI shard では:
 
 ## Coding Convention
 
-- `///|` は MoonBit (`.mbt`) 時代の block separator 記法で、selfhost 移行後の
-  `.vibe` ソースでは使われていない (#854)。**vibe の doc comment は `///`**
-  (Rust 風、宣言の直前に置くとその宣言の doc として `vibe symbols`/hover/
-  `vibe doc-at` から拾われる。実装は `lib/@vibe/parser/lexer.vibe`
-  `collect_doc_comments`)。既存の `//#` (モジュール冒頭説明・セクション
-  見出しに広く使われている非公式記法) は `///` と意味が異なる (`//#` は
-  複数宣言にまたがる説明やセクション区切りにも使われており、`///` の
-  「直後の1宣言に対応する doc」という意味論とは食い違う) ため、
+- `///|` は MoonBit (`.mbt`) 時代の block separator 記法。新規コードでは
+  使わないこと — ただし移植時の残骸が `lib/@vibe/compiler/core/types.vibe`
+  ほか数ファイルにまだ残っている(2026-07-28 時点で4ファイル)。見つけたら
+  削除して構わないが、一括削除はこの PR ではやっていない。**vibe の doc
+  comment は `///`** (Rust 風、宣言の直前に置くとその宣言の doc として
+  hover/`vibe doc-at` から拾われる。実装は `lib/@vibe/parser/lexer.vibe`
+  `collect_doc_comments`)。**`vibe symbols` はまだ doc comment を返さない**
+  (`runtime/symbol_spans.vibe` は `(name, kind, start, end)` のみ) —
+  拾えるのは hover と `doc-at` だけ。既存の `//#` (モジュール冒頭説明・
+  セクション見出しに広く使われている非公式記法) は `///` と意味が異なる
+  (`//#` は複数宣言にまたがる説明やセクション区切りにも使われており、
+  `///` の「直後の1宣言に対応する doc」という意味論とは食い違う) ため、
   一括置換はしていない — 使い分けは書く場所ごとに判断すること。
 - variables/functions は snake_case (lowercase only)
 
