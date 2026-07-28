@@ -12,9 +12,16 @@
 //   VIBE_BIN=<vibe> node scripts/bench_regression.mjs           # check
 //   VIBE_BIN=<vibe> node scripts/bench_regression.mjs --update   # rewrite baseline
 //
+// Fixtures run concurrently (real OS-process parallelism via child_process,
+// not vibe's own cooperative TaskGroup -- see docs/compiler-parallelism.md's
+// "Shared-everything migration note" for why the latter can't help here
+// today). Safe because each fixture is its own file with its own
+// content-addressed compile-cache key and its own mktemp'd output files --
+// no shared mutable state between concurrent `vibe bench` invocations.
+//
 // baseline.json shape: { "<file.vibe>": { "bytes_per_op": <int>, "ns_p50": <int> } }
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -29,16 +36,23 @@ const update = process.argv.includes("--update");
 const FIXTURES = ["pure_bench.vibe", "alloc_bench.vibe"];
 
 function runBench(file) {
-  const r = spawnSync(VIBE, ["bench", join(DIR, file), "--iters", ITERS], { encoding: "utf8", timeout: 120000 });
-  const out = `${r.stdout || ""}\n${r.stderr || ""}`;
-  const m = /vibe::bench .*?bytes_per_op=(\d+)/.exec(out);
-  const t = /vibe::bench .*?ns_p50=(\d+)/.exec(out);
-  if (!m) throw new Error(`bench ${file} produced no parseable result:\n${out}`);
-  return { bytes_per_op: +m[1], ns_p50: t ? +t[1] : null };
+  return new Promise((resolve, reject) => {
+    const child = spawn(VIBE, ["bench", join(DIR, file), "--iters", ITERS], { timeout: 120000 });
+    let out = "";
+    child.stdout.on("data", (d) => { out += d; });
+    child.stderr.on("data", (d) => { out += d; });
+    child.on("error", reject);
+    child.on("close", () => {
+      const m = /vibe::bench .*?bytes_per_op=(\d+)/.exec(out);
+      const t = /vibe::bench .*?ns_p50=(\d+)/.exec(out);
+      if (!m) { reject(new Error(`bench ${file} produced no parseable result:\n${out}`)); return; }
+      resolve({ bytes_per_op: +m[1], ns_p50: t ? +t[1] : null });
+    });
+  });
 }
 
-const results = {};
-for (const f of FIXTURES) results[f] = runBench(f);
+const resultList = await Promise.all(FIXTURES.map(runBench));
+const results = Object.fromEntries(FIXTURES.map((f, i) => [f, resultList[i]]));
 
 if (update) {
   writeFileSync(BASELINE, JSON.stringify(results, null, 2) + "\n");
