@@ -12,10 +12,10 @@ curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/scripts/insta
 
 # リポジトリを clone して検証・再生成
 git clone https://github.com/mizchi/vibe-lang && cd vibe-lang
-python3 scripts/vibe_md.py check docs/tutorial/01_values_functions.vibe.md
-python3 scripts/vibe_md.py check docs/tutorial/*.vibe.md   # 全章を一括検証
-python3 scripts/vibe_md.py write docs/tutorial/*.vibe.md   # 実行して ```output を書き直す
-pkf run vibe-md-tutorial                                   # check を task 化したもの
+bash scripts/vibe_md.sh check docs/tutorial/01_values_functions.vibe.md
+bash scripts/vibe_md.sh check docs/tutorial/*.vibe.md   # 全章を一括検証
+bash scripts/vibe_md.sh write docs/tutorial/*.vibe.md   # 実行して ```output を書き直す
+pkf run vibe-md-tutorial                                # check を task 化したもの
 ```
 
 | 章 | テーマ |
@@ -29,7 +29,7 @@ pkf run vibe-md-tutorial                                   # check を task 化�
 | [07 モジュールとパッケージ](07_modules_packages.vibe.md) | import / export / @scope パッケージ / 契約 / pin |
 
 各 `*.vibe.md` の ` ```vibe run ` ブロックはコンパイラが変わるたびに
-`python3 scripts/vibe_md.py check` (`pkf run vibe-md-tutorial`) で実際に
+`bash scripts/vibe_md.sh check` (`pkf run vibe-md-tutorial`) で実際に
 コンパイル・実行され、埋め込み済みの ` ```output ` と突き合わせられる —
 つまりここの例文と実行結果は**腐らない** (ズレたら FAIL する)。
 

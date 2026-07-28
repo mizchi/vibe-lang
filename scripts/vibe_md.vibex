@@ -1,0 +1,772 @@
+// scripts/vibe_md.vibex — native vibe port of scripts/vibe_md.py (#1142/#1137).
+//
+// Extracts ```vibe fenced code blocks from a *.vibe.md file, compiles+runs
+// each one with the selfhost stage2 compiler, and for ```vibe run blocks
+// embeds the captured stdout into an adjacent ```output block -- so a
+// *.vibe.md file's prose, code and shown results cannot drift apart.
+//
+// Usage (run from the repo root):
+//   bash scripts/vibe_md.sh check <file.vibe.md> [more...]
+//   bash scripts/vibe_md.sh write <file.vibe.md> [more...]
+//
+// NOT run through scripts/vibe_run.sh (the usual .vibex launcher): its
+// `--invoke main` path double-executes `main` for any entry other than
+// `_start` (wasm_vibe_host_runner.js's pre-invoke step runs `_start` for
+// initialization, and a normal `entry=main` program's own `_start` already
+// calls `main` per the WASI convention, so `--invoke main` runs it again on
+// top of that -- reproduces with any .vibex tool run through vibe_run.sh,
+// e.g. scripts/cache_clean.vibex, so it's a launcher/runner-level issue, not
+// specific to this file). scripts/vibe_md.sh instead builds this file to a
+// cached wasm and invokes `_start` directly, which runs the program exactly
+// once.
+//
+// Block classification (info string on the opening ```vibe fence), same
+// convention as scripts/vibe_md.py / scripts/doctest_extract_run.sh:
+//   ```vibe        compile-check only (entry __no_entry__)         [default]
+//   ```vibe run    compile (entry main) + execute; stdout captured
+//   ```vibe skip   excluded from verification
+//
+// Design differences from scripts/vibe_md.py, forced by vibe's actual
+// capabilities rather than an exact translation:
+//   * vibe has NO symlink-creation builtin. The Python version placed
+//     extracted block sources in a throwaway scratch dir and symlinked
+//     `lib` + the doc's own siblings into it so relative imports would
+//     resolve. Checked the real tutorial content instead of assuming: every
+//     import in docs/tutorial/*.vibe.md is either package-style (`@vibe/...`,
+//     which `resolve_import_path_candidates` resolves against the WASI
+//     preopen ROOT independent of the importing file's own directory -- no
+//     symlink involved at all) or a literal sibling-relative path
+//     (`./support/mathx.vibe`, `./subdir`) that already exists on disk next
+//     to the .md file. So this version extracts each block's scratch source
+//     DIRECTLY INTO THE SAME DIRECTORY as the .md file (basename+block-
+//     index+line-qualified name, cleaned up after) instead of a separate
+//     workdir -- siblings
+//     resolve natively, package imports resolve via the preopen root as
+//     always, and no symlink is ever needed. A literal `./lib/...`-style
+//     import (not used by any current tutorial content) would not resolve
+//     under this scheme; that is a known, accepted gap, not an oversight.
+//   * no in-process wasm execution or Fs::mtime/stat capability exists in
+//     vibe's stdlib yet, so both "run the compiled wasm and capture stdout"
+//     and "find the newest stage2 generation by mtime" still shell out via
+//     `@vibe/process`'s `sh_capture` (`{ Process }` effect) -- same
+//     mechanism scripts/run_wasm_vibe_host_runner.sh itself needs, and the
+//     exact `ls -dt ... | head -1` idiom already used by this repo's own
+//     gate scripts for the identical "newest generation" lookup.
+//   * TaskGroup (#1081/ADR-0068) was deliberately NOT used for concurrent
+//     block processing: `TaskGroup::spawn`'s closure parameter is fixed to
+//     `with { Error }` (not row-polymorphic like `TaskGroup::run`'s own
+//     body), so a spawned task cannot itself perform `Process`/`Fs` --
+//     confirmed against the real lib/@vibex/concurrent/index.vpkg contract
+//     before writing this file, not assumed. Parallelizing block processing
+//     is tracked as separate follow-up work once that constraint is lifted.
+//   * no diff library exists in the vibe stdlib -- a stale ```output
+//     mismatch prints the expected and actual blocks in full rather than a
+//     unified diff (scripts/vibe_md.py used Python's `difflib`).
+
+import @vibe/process { Process, sh_capture }
+
+// ---------- fence scanning primitives ----------
+
+fn is_space_or_tab(c: Int) -> Bool {
+  c == 32 || c == 9
+}
+
+fn count_leading_backticks(line: String) -> Int {
+  let len = String::length(line)
+  let mut i = 0
+  while i < len && String::char_code_at(line, i) == 96 {
+    i = i + 1
+  }
+  i
+}
+
+// #1142's #1161-equivalent CommonMark rule: a closing fence needs AT LEAST
+// as many backticks as the opening one (a longer run still closes it), not
+// an exact-length match, and nothing but trailing whitespace may follow.
+fn is_closing_fence(line: String, min_backticks: Int) -> Bool {
+  let n = count_leading_backticks(line)
+  if n < min_backticks {
+    false
+  } else {
+    let len = String::length(line)
+    let mut i = n
+    let mut ok = true
+    while i < len {
+      if !is_space_or_tab(String::char_code_at(line, i)) {
+        ok = false
+      }
+      i = i + 1
+    }
+    ok
+  }
+}
+
+fn skip_ws(s: String, from: Int) -> Int {
+  let len = String::length(s)
+  let mut i = from
+  while i < len && is_space_or_tab(String::char_code_at(s, i)) {
+    i = i + 1
+  }
+  i
+}
+
+fn read_token_end(s: String, from: Int) -> Int {
+  let len = String::length(s)
+  let mut i = from
+  while i < len && !is_space_or_tab(String::char_code_at(s, i)) {
+    i = i + 1
+  }
+  i
+}
+
+// Splits the text after an opening fence's backticks into (lang, arg),
+// mirroring scripts/vibe_md.py's `^(`{3,})\s*(\S*)\s*(.*)$`.
+fn parse_fence_info(rest: String) -> (String, String) {
+  let start = skip_ws(rest, 0)
+  let lang_end = read_token_end(rest, start)
+  let lang = String::substring(rest, start, lang_end)
+  let arg_start = skip_ws(rest, lang_end)
+  let arg = String::trim(String::substring(rest, arg_start, String::length(rest)))
+  (lang, arg)
+}
+
+// ---------- block / token model ----------
+
+struct Block {
+  lang: String;
+  mut mode: String; // "check" | "run" | "skip" | "output" | "other"
+  start_line: Int;
+  mut code_lines: Array[String];
+  open_line: String;
+  close_line: String;
+  mut has_actual_stdout: Bool;
+  mut actual_stdout: String;
+  mut paired_output: Int; // token index of paired ```output block, or -1
+  mut has_replacement: Bool;
+  mut replacement_lines: Array[String]
+}
+
+fn new_block(lang: String, arg: String, start_line: Int, code_lines: Array[String], open_line: String, close_line: String) -> Block {
+  let mode = if lang == "vibe" {
+    if String::starts_with(arg, "run") {
+      "run"
+    } else if String::starts_with(arg, "skip") {
+      "skip"
+    } else {
+      "check"
+    }
+  } else if lang == "output" {
+    "output"
+  } else {
+    "other"
+  }
+  Block::{
+    lang: lang,
+    mode: mode,
+    start_line: start_line,
+    code_lines: code_lines,
+    open_line: open_line,
+    close_line: close_line,
+    has_actual_stdout: false,
+    actual_stdout: "",
+    paired_output: -1,
+    has_replacement: false,
+    replacement_lines: array_empty(),
+  }
+}
+
+enum Token {
+  TText(String);
+  TBlock(Block)
+}
+
+fn array_empty[T]() -> Array[T] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+// ---------- markdown -> tokens ----------
+
+// An unterminated fence uses the built-in `Error` effect (`throw`) rather
+// than a custom effect -- distinct from a block that compiled/ran and
+// failed verification, but no new effect vocabulary is needed for it.
+fn parse_blocks(text: String) -> Array[Token] with { Error } {
+  let lines = splitlines_like(text)
+  let n = Array::length(lines)
+  let tokens = ArrayBuilder::new()
+  let mut i = 0
+  while i < n {
+    let line = Array::get(lines, i)
+    let backticks = count_leading_backticks(line)
+    if backticks < 3 {
+      ArrayBuilder::push(tokens, TText(line))
+      i = i + 1
+    } else {
+      let rest = String::substring(line, backticks, String::length(line))
+      let (lang, arg) = parse_fence_info(rest)
+      let start_line = i + 2 // 1-based line number of the first code line
+      let body = ArrayBuilder::new()
+      let mut j = i + 1
+      let mut closed = false
+      while j < n && !closed {
+        if is_closing_fence(Array::get(lines, j), backticks) {
+          closed = true
+        } else {
+          ArrayBuilder::push(body, Array::get(lines, j))
+          j = j + 1
+        }
+      }
+      if !closed {
+        // An unterminated fence silently dropped to plain text would let an
+        // editing mistake (deleted closing ```) remove a ```vibe run block
+        // from verification instead of failing loudly.
+        throw("unterminated ``` fence starting at line \{i + 1} (lang=\{lang}): no matching closing fence found")
+      } else {
+        ()
+      }
+      let close_line = Array::get(lines, j)
+      let blk = new_block(lang, arg, start_line, ArrayBuilder::freeze(body), line, close_line)
+      ArrayBuilder::push(tokens, TBlock(blk))
+      i = j + 1
+    }
+  }
+  ArrayBuilder::freeze(tokens)
+}
+
+fn is_blank(s: String) -> Bool {
+  String::trim(s) == ""
+}
+
+// Forward scan: pair each run-mode block with an immediately following
+// (blank text lines only in between) unconsumed ```output block, recording
+// the OUTPUT TOKEN'S INDEX on the run block's `paired_output` field.
+fn link_run_output_pairs(tokens: Array[Token]) -> Unit {
+  let n = Array::length(tokens)
+  let consumed = ArrayBuilder::new()
+  let mut consumed_arr = array_empty()
+  let mut idx = 0
+  while idx < n {
+    match Array::get(tokens, idx) {
+      TBlock(blk) => {
+        if blk.mode == "run" {
+          let mut j = idx + 1
+          let mut scanning = true
+          while j < n && scanning {
+            match Array::get(tokens, j) {
+              TText(t) => {
+                if is_blank(t) {
+                  j = j + 1
+                } else {
+                  scanning = false
+                }
+              },
+              TBlock(_) => { scanning = false }
+            }
+          }
+          if j < n {
+            match Array::get(tokens, j) {
+              TBlock(ob) => {
+                if ob.mode == "output" && !array_contains_int(consumed_arr, j) {
+                  blk.paired_output = j
+                  ArrayBuilder::push(consumed, j)
+                  consumed_arr = ArrayBuilder::freeze(consumed)
+                } else {
+                  ()
+                }
+              },
+              TText(_) => ()
+            }
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      },
+      TText(_) => ()
+    }
+    idx = idx + 1
+  }
+}
+
+fn array_contains_int(arr: Array[Int], v: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == v {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn join_lines(lines: Array[String]) -> String {
+  let n = Array::length(lines)
+  if n == 0 {
+    ""
+  } else {
+    String::concat(String::join(lines, "\n"), "\n")
+  }
+}
+
+// A ```output block is line-based markdown text: reading it back can never
+// distinguish "last line ends with \n" from "last line doesn't" --
+// reconstruction always adds a trailing \n. Normalize actual stdout the
+// same way (append one if missing, unless empty) so a program whose last
+// stdout_write omits the trailing newline still round-trips write -> check
+// as a stable PASS.
+fn normalize_trailing_newline(s: String) -> String {
+  let len = String::length(s)
+  if len == 0 {
+    s
+  } else if String::char_code_at(s, len - 1) == 10 {
+    s
+  } else {
+    String::concat(s, "\n")
+  }
+}
+
+// Matches Python's `str.splitlines()`: unlike a plain split on "\n", a
+// trailing newline does not produce a trailing empty-string element (so
+// "a\n" -> ["a"], not ["a", ""]). Used to turn captured stdout back into
+// markdown lines for a rewritten ```output block without introducing a
+// spurious blank line before the closing fence.
+fn splitlines_like(s: String) -> Array[String] {
+  if s == "" {
+    array_empty()
+  } else {
+    let parts = String::split(s, "\n")
+    let n = Array::length(parts)
+    if n > 0 && Array::get(parts, n - 1) == "" {
+      Array::slice(parts, 0, n - 1)
+    } else {
+      parts
+    }
+  }
+}
+
+// ---------- process execution ----------
+
+fn shq(s: String) -> String {
+  // single-quote for a POSIX shell word; repo paths never contain a literal
+  // single quote, so no escaping beyond wrapping is needed here.
+  String::concat("'", String::concat(s, "'"))
+}
+
+fn resolve_stage2() -> String with { Process, Env } {
+  let env_val = Env::get("VIBE_MD_STAGE2")
+  if String::length(env_val) > 0 {
+    env_val
+  } else {
+    let r = sh_capture("ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1")
+    let dir = String::trim(r.stdout)
+    if String::length(dir) > 0 {
+      String::concat(dir, "stage2.wasm")
+    } else {
+      "bootstrap/seed/compiler.wasm"
+    }
+  }
+}
+
+fn file_nonempty(path: String) -> Bool with { Fs } {
+  if Fs::exists(path) {
+    Bytes::length(Fs::read_bytes(path)) > 0
+  } else {
+    false
+  }
+}
+
+fn first_nonblank_line(s: String) -> String {
+  let lines = String::split(s, "\n")
+  let n = Array::length(lines)
+  let mut i = 0
+  let mut out = ""
+  while i < n && out == "" {
+    let l = String::trim(Array::get(lines, i))
+    if l != "" {
+      out = l
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Result of processing one code block: appended in document order for the
+// final report and exit-code decision.
+struct BlockResult {
+  label: String;
+  status: String; // "PASS" | "FAIL" | "SKIP" | "WROTE"
+  reason: String
+}
+
+fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String, scratch_name: String, blk: Block, mode: String) -> BlockResult with { Fs, Process } {
+  let label = "\{md_path}:\{blk.start_line}"
+  if blk.mode == "skip" {
+    BlockResult::{ label: label, status: "SKIP", reason: "" }
+  } else {
+    let src = "\{md_dir}/\{scratch_name}.vibe"
+    let out = "\{md_dir}/\{scratch_name}.wasm"
+    let diag = "\{out}.diag"
+    Fs::write_file(src, join_lines(blk.code_lines))
+    let entry = if blk.mode == "run" {
+      "main"
+    } else {
+      "__no_entry__"
+    }
+    let compile_cmd = "VIBE_PREOPEN_DIR=\{shq(cwd)} VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \{shq(compiler)} \{shq(src)} \{shq(out)} \{shq(entry)}"
+    let cr = sh_capture(compile_cmd)
+    let compiled = file_nonempty(out)
+    if !compiled {
+      let reason = if Fs::exists(diag) {
+        first_nonblank_line(Fs::read_file(diag))
+      } else {
+        let combined = String::concat(cr.stdout, cr.stderr)
+        first_nonblank_line(combined)
+      }
+      let shown = if reason == "" {
+        "compile failure"
+      } else {
+        reason
+      }
+      cleanup_one(src, out, diag)
+      BlockResult::{ label: label, status: "FAIL", reason: "[compile] \{shown}" }
+    } else if blk.mode == "check" {
+      cleanup_one(src, out, diag)
+      BlockResult::{ label: label, status: "PASS", reason: "" }
+    } else {
+      let run_cmd = "VIBE_PREOPEN_DIR=\{shq(cwd)} bash scripts/run_wasm_vibe_host_runner.sh --invoke _start \{shq(out)}"
+      let rr = sh_capture(run_cmd)
+      cleanup_one(src, out, diag)
+      if rr.exit_code != 0 {
+        let reason = first_nonblank_line(rr.stderr)
+        let shown = if reason == "" {
+          "runtime failure"
+        } else {
+          reason
+        }
+        BlockResult::{ label: label, status: "FAIL", reason: "[run] \{shown}" }
+      } else {
+        let actual = normalize_trailing_newline(rr.stdout)
+        blk.has_actual_stdout = true
+        blk.actual_stdout = actual
+        if mode == "write" {
+          BlockResult::{ label: label, status: "WROTE", reason: "" }
+        } else {
+          BlockResult::{ label: label, status: "PENDING_OUTPUT_CHECK", reason: "" }
+        }
+      }
+    }
+  }
+}
+
+fn cleanup_one(src: String, out: String, diag: String) -> Unit with { Fs } {
+  let funcmap = "\{out}.funcmap"
+  if Fs::exists(src) {
+    Fs::remove(src)
+  } else {
+    ()
+  }
+  if Fs::exists(out) {
+    Fs::remove(out)
+  } else {
+    ()
+  }
+  if Fs::exists(diag) {
+    Fs::remove(diag)
+  } else {
+    ()
+  }
+  if Fs::exists(funcmap) {
+    Fs::remove(funcmap)
+  } else {
+    ()
+  }
+}
+
+fn sanitize_base(name: String) -> String {
+  let len = String::length(name)
+  let mut i = 0
+  let sb = StringBuilder::new()
+  while i < len {
+    let c = String::char_code_at(name, i)
+    let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+    if ok {
+      StringBuilder::push(sb, String::from_char_code(c))
+    } else {
+      StringBuilder::push(sb, "_")
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+fn pad2(n: Int) -> String {
+  if n < 10 {
+    "0\{n}"
+  } else {
+    "\{n}"
+  }
+}
+
+// ---------- top-level per-file processing ----------
+
+struct FileOutcome {
+  tokens: Array[Token];
+  results: Array[BlockResult]
+}
+
+fn dirname(path: String) -> String {
+  let idx = String::last_index_of(path, "/")
+  if idx < 0 {
+    "."
+  } else {
+    String::substring(path, 0, idx)
+  }
+}
+
+fn basename_no_ext(path: String) -> String {
+  let slash = String::last_index_of(path, "/")
+  let name = if slash < 0 {
+    path
+  } else {
+    String::substring(path, slash + 1, String::length(path))
+  }
+  let dot = String::last_index_of(name, ".")
+  if dot < 0 {
+    name
+  } else {
+    String::substring(name, 0, dot)
+  }
+}
+
+fn process_file(md_path: String, cwd: String, compiler: String, mode: String) -> FileOutcome with { Fs, Process, Error } {
+  let text = Fs::read_file(md_path)
+  let tokens = parse_blocks(text)
+  link_run_output_pairs(tokens)
+  let md_dir = dirname(md_path)
+  let base = sanitize_base(basename_no_ext(md_path))
+  let results = ArrayBuilder::new()
+  let n = Array::length(tokens)
+  let mut i = 0
+  let mut block_no = 0
+  while i < n {
+    match Array::get(tokens, i) {
+      TBlock(blk) => {
+        if blk.mode == "check" || blk.mode == "run" || blk.mode == "skip" {
+          block_no = block_no + 1
+          let scratch_name = ".vibe_md_scratch_\{base}_b\{pad2(block_no)}_L\{blk.start_line}"
+          let r = run_one_block(cwd, compiler, md_path, md_dir, scratch_name, blk, mode)
+          if r.status == "PENDING_OUTPUT_CHECK" {
+            let expected_opt = if blk.paired_output >= 0 {
+              match Array::get(tokens, blk.paired_output) {
+                TBlock(ob) => Some(join_lines(ob.code_lines)),
+                TText(_) => None
+              }
+            } else {
+              None
+            }
+            match expected_opt {
+              None => ArrayBuilder::push(results, BlockResult::{ label: r.label, status: "FAIL", reason: "[output] missing ```output block after ```vibe run (run `write` mode to generate it)" }),
+              Some(expected) => {
+                if expected == blk.actual_stdout {
+                  ArrayBuilder::push(results, BlockResult::{ label: r.label, status: "PASS", reason: "" })
+                } else {
+                  ArrayBuilder::push(results, BlockResult::{ label: r.label, status: "FAIL", reason: "[output] embedded output is stale\n--- expected (```output) ---\n\{expected}--- actual (stdout) ---\n\{blk.actual_stdout}" })
+                }
+              }
+            }
+          } else {
+            ArrayBuilder::push(results, r)
+          }
+        } else {
+          ()
+        }
+      },
+      TText(_) => ()
+    }
+    i = i + 1
+  }
+  FileOutcome::{ tokens: tokens, results: ArrayBuilder::freeze(results) }
+}
+
+// A ```output block paired to a run block gets its content replaced IN
+// PLACE at its own token position (rather than re-emitted inline from the
+// run block's branch) -- reordering would separate it from the blank line
+// that used to precede it. The run block (always earlier in document
+// order) stashes the new content on its paired output block's
+// `replacement_lines` mut field; by the time this loop reaches that output
+// token, the replacement is already there (mirrors scripts/vibe_md.py's
+// `_replacement` attribute trick).
+fn stage_replacements(tokens: Array[Token]) -> Unit {
+  let n = Array::length(tokens)
+  let mut i = 0
+  while i < n {
+    match Array::get(tokens, i) {
+      TBlock(blk) => {
+        if blk.mode == "run" && blk.has_actual_stdout {
+          if blk.paired_output >= 0 {
+            match Array::get(tokens, blk.paired_output) {
+              TBlock(ob) => {
+                ob.has_replacement = true
+                ob.replacement_lines = splitlines_like(blk.actual_stdout)
+              },
+              TText(_) => ()
+            }
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      },
+      TText(_) => ()
+    }
+    i = i + 1
+  }
+}
+
+fn rewrite_text(tokens: Array[Token]) -> String {
+  stage_replacements(tokens)
+  let out = ArrayBuilder::new()
+  let n = Array::length(tokens)
+  let mut i = 0
+  while i < n {
+    match Array::get(tokens, i) {
+      TText(l) => ArrayBuilder::push(out, l),
+      TBlock(blk) => {
+        if blk.mode == "output" && blk.has_replacement {
+          ArrayBuilder::push(out, blk.open_line)
+          push_all(out, blk.replacement_lines)
+          ArrayBuilder::push(out, blk.close_line)
+        } else {
+          ArrayBuilder::push(out, blk.open_line)
+          push_all(out, blk.code_lines)
+          ArrayBuilder::push(out, blk.close_line)
+          if blk.mode == "run" && blk.has_actual_stdout && blk.paired_output < 0 {
+            ArrayBuilder::push(out, "")
+            ArrayBuilder::push(out, "```output")
+            push_all(out, splitlines_like(blk.actual_stdout))
+            ArrayBuilder::push(out, "```")
+          } else {
+            ()
+          }
+        }
+      }
+    }
+    i = i + 1
+  }
+  String::concat(String::join(ArrayBuilder::freeze(out), "\n"), "\n")
+}
+
+fn push_all[T](b: ArrayBuilder[T], items: Array[T]) -> Unit {
+  let n = Array::length(items)
+  let mut i = 0
+  while i < n {
+    ArrayBuilder::push(b, Array::get(items, i))
+    i = i + 1
+  }
+}
+
+// ---------- entry ----------
+
+fn report(results: Array[BlockResult], mode: String) -> Int with { Stdout } {
+  let n = Array::length(results)
+  let mut i = 0
+  let mut fail = 0
+  let mut skip = 0
+  while i < n {
+    let r = Array::get(results, i)
+    if r.status == "SKIP" {
+      skip = skip + 1
+      Stdout::write_stream("SKIP  \{r.label}\n")
+    } else if r.status == "FAIL" {
+      fail = fail + 1
+      Stdout::write_stream("FAIL  \{r.label} \{r.reason}\n")
+    } else if r.status == "WROTE" {
+      Stdout::write_stream("WROTE \{r.label}\n")
+    } else {
+      Stdout::write_stream("PASS  \{r.label}\n")
+    }
+    i = i + 1
+  }
+  Stdout::write_stream("\nvibe_md: \{n} blocks -- \{n - fail - skip} pass, \{fail} fail, \{skip} skip\n")
+  fail
+}
+
+fn run_mode(mode: String, files: Array[String]) -> Int with { Fs, Env, Process, Stdout, Stderr } {
+  let cwd = Fs::getcwd()
+  let compiler = resolve_stage2()
+  if !file_nonempty(compiler) {
+    Stderr::write_stream("vibe_md: compiler wasm not found: \{compiler}\n")
+    2
+  } else {
+    Stdout::write_stream("vibe_md: mode=\{mode} compiler=\{compiler}\n")
+    let all_results = ArrayBuilder::new()
+    let mut i = 0
+    let mut hard_fail = -1
+    while i < Array::length(files) && hard_fail < 0 {
+      let md_path = Array::get(files, i)
+      if !Fs::exists(md_path) {
+        Stderr::write_stream("vibe_md: no such file: \{md_path}\n")
+        hard_fail = 2
+      } else {
+        handle {
+          let outcome = process_file(md_path, cwd, compiler, mode)
+          if mode == "write" {
+            Fs::write_file(md_path, rewrite_text(outcome.tokens))
+          } else {
+            ()
+          }
+          push_all(all_results, outcome.results)
+        } with Error {
+          Throw(msg) => {
+            Stderr::write_stream("vibe_md: \{md_path}: \{msg}\n")
+            hard_fail = 2
+          }
+        }
+      }
+      i = i + 1
+    }
+    if hard_fail >= 0 {
+      hard_fail
+    } else {
+      let fail_count = report(ArrayBuilder::freeze(all_results), mode)
+      if fail_count > 0 {
+        1
+      } else {
+        0
+      }
+    }
+  }
+}
+
+fn usage() -> String {
+  "usage: vibe run scripts/vibe_md.vibex -- (check|write) <file.vibe.md>...\n"
+}
+
+fn main with { Fs, Env, Process, Stdout, Stderr } {
+  let argc = Env::args_len()
+  let code = if argc < 2 {
+    Stderr::write_stream(usage())
+    2
+  } else {
+    let mode = Env::args_get(0)
+    if mode != "check" && mode != "write" {
+      Stderr::write_stream(usage())
+      2
+    } else {
+      let files = ArrayBuilder::new()
+      let mut i = 1
+      while i < argc {
+        ArrayBuilder::push(files, Env::args_get(i))
+        i = i + 1
+      }
+      run_mode(mode, ArrayBuilder::freeze(files))
+    }
+  }
+  if code != 0 {
+    vibe_process_exit_raw(code)
+  } else {
+    ()
+  }
+}
