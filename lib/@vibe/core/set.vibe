@@ -1,16 +1,35 @@
-//# @vibe/core/set — string set. The contract (index.vibei) re-exports
-//# StringSet as an opaque `type StringSet` declaration, so this file is free
-//# to choose its own internal representation. Backed by the compiler-builtin
-//# `Map[String, Bool]` (#841 item E2: the prior recursive linked-list
-//# enum made every operation O(n); the builtin map gives O(1)-ish
-//# contains/add). `remove` still rebuilds via Map::keys since there is no
-//# `Map::delete` builtin -- no worse than the old implementation, which was
-//# already O(n) there too.
+//# @vibe/core/set — string set + generic Set[T] (#1140, ADR-0082). Both are
+//# backed by the compiler-builtin persistent `Map` (#841 item E2: the prior
+//# recursive linked-list enum made every operation O(n); the builtin map's
+//# hash index gives O(1)-avg contains/add). `StringSet` predates `Set[T]`
+//# and is kept as-is for backward compatibility -- `Set[String]` is
+//# representationally equivalent (String's `Hash::hash_key` is the
+//# identity, so `map_key_to_string` adds no conversion) but is the
+//# moonbitlang/core-style generic spelling going forward. The contract
+//# (index.vpkg) re-exports both as opaque `type` declarations, so this file
+//# is free to choose its own internal representation.
+
+//# Imports
+
+import ./map.vibe {
+  Hash, map_key_to_string
+}
 
 //# Types
 
 export struct StringSet {
   entries: Map[String, Bool]
+}
+
+/// Generic persistent set, `T: Hash` (moonbitlang/core `immut/sorted_set`
+/// is the reference design: purely applicative, every op returns a new
+/// value). Backed by `Map[String, T]` -- keyed by `T::hash_key`, valued by
+/// the ORIGINAL element -- rather than `Map[String, Bool]` like `StringSet`,
+/// specifically so `to_array`/`from_array` round-trip losslessly for any
+/// `T` (a `Bool`-valued map can't reconstruct `T` from its hash string
+/// alone once `T != String`).
+export struct Set[T] {
+  entries: Map[String, T]
 }
 
 //# Functions
@@ -192,4 +211,134 @@ export fn StringSet::remove_by[T](s: StringSet, value: T) -> StringSet {
 
 export fn StringSet::contains_by[T](s: StringSet, value: T) -> Bool {
   contains_by(s, value)
+}
+
+// Generic Set[T] (#1140, ADR-0082) -- see the file header for the
+// StringSet-vs-Set[T] relationship.
+
+export fn Set::new[T]() -> Set[T] {
+  Set::{
+    entries: Map::new()
+  }
+}
+
+export fn Set::size[T](s: Set[T]) -> Int {
+  Array::length(Map::keys(s.entries))
+}
+
+export fn Set::is_empty[T](s: Set[T]) -> Bool {
+  eq(Set::size(s), 0)
+}
+
+export fn Set::contains[T: Hash](s: Set[T], value: T) -> Bool {
+  Map::has_key(s.entries, map_key_to_string(value))
+}
+
+export fn Set::add[T: Hash](s: Set[T], value: T) -> Set[T] {
+  Set::{
+    entries: Map::set(s.entries, map_key_to_string(value), value)
+  }
+}
+
+export fn Set::remove[T: Hash](s: Set[T], value: T) -> Set[T] {
+  Set::{
+    entries: Map::delete(s.entries, map_key_to_string(value))
+  }
+}
+
+export fn Set::to_array[T](s: Set[T]) -> Array[T] {
+  // `Map::values` is a dead builtin declaration (no codegen, same gap
+  // Set[T] itself had before this file) -- collect via keys + get, which
+  // are real, same technique as map_get.vibe's `values`.
+  let keys = Map::keys(s.entries)
+  let len = Array::length(keys)
+  let out = ArrayBuilder::new()
+  let rec go = (i: Int) -> Unit {
+    if i >= len {
+      ()
+    } else {
+      ArrayBuilder::push(out, Map::get(s.entries, Array::get(keys, i)))
+      go(i + 1)
+    }
+  }
+  go(0)
+  ArrayBuilder::freeze(out)
+}
+
+export fn Set::from_array[T](values: Array[T]) -> Set[T] {
+  // #1140 compiler limitation (tracked separately, minimal repro filed):
+  // calling a `[K: Hash]`-bounded generic function on a value obtained from
+  // `Array::get`/`values[i]` over a generic `Array[T]` parameter breaks wasm
+  // codegen ("type mismatch: expected i64 but nothing on stack") -- a
+  // pre-existing trait-dictionary-passing gap, reproducible with no Set/Map
+  // involved at all. `__to_string` (type-erased, no dictionary) sidesteps
+  // it and is IDENTICAL to `Hash::hash_key` for every type currently
+  // `impl Hash` (Int/Float/Double/Bool/Char/String all just call
+  // `__to_string` themselves, or are the identity for String) -- same
+  // trade-off StringSet::from_array_by/add_by already made for the same
+  // reason (`set_value_to_string`, this file).
+  let len = Array::length(values)
+  let rec go = (i: Int, acc: Map[String, T]) -> Map[String, T] {
+    if i >= len {
+      acc
+    } else {
+      let v = Array::get(values, i)
+      go(i + 1, Map::set(acc, __to_string(v), v))
+    }
+  }
+  Set::{
+    entries: go(0, Map::new())
+  }
+}
+
+export fn Set::union[T](a: Set[T], b: Set[T]) -> Set[T] {
+  let keys = Map::keys(b.entries)
+  let len = Array::length(keys)
+  let rec go = (i: Int, acc: Map[String, T]) -> Map[String, T] {
+    if i >= len {
+      acc
+    } else {
+      let k = Array::get(keys, i)
+      go(i + 1, Map::set(acc, k, Map::get(b.entries, k)))
+    }
+  }
+  Set::{
+    entries: go(0, a.entries)
+  }
+}
+
+export fn Set::intersect[T](a: Set[T], b: Set[T]) -> Set[T] {
+  let keys = Map::keys(a.entries)
+  let len = Array::length(keys)
+  let rec go = (i: Int, acc: Map[String, T]) -> Map[String, T] {
+    if i >= len {
+      acc
+    } else {
+      let k = Array::get(keys, i)
+      if Map::has_key(b.entries, k) {
+        go(i + 1, Map::set(acc, k, Map::get(a.entries, k)))
+      } else go(i + 1, acc)
+    }
+  }
+  Set::{
+    entries: go(0, Map::new())
+  }
+}
+
+export fn Set::difference[T](a: Set[T], b: Set[T]) -> Set[T] {
+  let keys = Map::keys(a.entries)
+  let len = Array::length(keys)
+  let rec go = (i: Int, acc: Map[String, T]) -> Map[String, T] {
+    if i >= len {
+      acc
+    } else {
+      let k = Array::get(keys, i)
+      if Map::has_key(b.entries, k) {
+        go(i + 1, acc)
+      } else go(i + 1, Map::set(acc, k, Map::get(a.entries, k)))
+    }
+  }
+  Set::{
+    entries: go(0, Map::new())
+  }
 }
