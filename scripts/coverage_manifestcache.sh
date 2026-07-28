@@ -44,9 +44,9 @@ acc_run() {
   rm -f "$RUN_JSON"
   VIBE_COV_OUT="$RUN_JSON" VIBE_COV_RAW=1 VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     VIBE_PREOPEN_DIR="$ROOT" bash "$RUNNER" --invoke cli_main "$COMP" "$P/main.vibe" "$P/out.wasm" main >/dev/null 2>&1 || true
-  [ -s "$RUN_JSON" ] && python3 "$OUT/acc_merge.py" "$ACC" "$RUN_JSON" || true
+  [ -s "$RUN_JSON" ] && bash scripts/coverage_acc_tool_run.sh merge "$ACC" "$RUN_JSON" || true
 }
-base=$(python3 -c "import json;a=json.load(open('$ACC'));print(sum(a['br']))")
+base=$(bash scripts/coverage_acc_tool_run.sh stat "$ACC" | cut -d' ' -f1)
 
 rm -f _build/vibe_selfhost_* 2>/dev/null || true
 acc_run                                                        # 1. cold: writes all caches
@@ -73,6 +73,7 @@ rm -f _build/vibe_selfhost_type_env_* _build/vibe_selfhost_source_groups_* 2>/de
 acc_run
 rm -f _build/vibe_selfhost_* 2>/dev/null || true
 
-now=$(python3 -c "import json;a=json.load(open('$ACC'));print(sum(a['br']))")
-tot=$(python3 -c "import json;a=json.load(open('$ACC'));print(len(a['br']))")
-echo "[manifestcache] corpus branches: $base -> $now/$tot ($(python3 -c "print(f'{$now/$tot*100:.2f}')")%)  (+$((now-base)))"
+read -r now tot < <(bash scripts/coverage_acc_tool_run.sh stat "$ACC")
+scaled=$(( (now * 10000 + tot / 2) / tot ))
+pct="$((scaled / 100)).$(printf '%02d' $((scaled % 100)))"
+echo "[manifestcache] corpus branches: $base -> $now/$tot ($pct%)  (+$((now-base)))"

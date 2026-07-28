@@ -21,7 +21,7 @@ RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"
 OUT_DIR="$ROOT_DIR/_build/coverage/selfhost-testexec"
 CORPUS_ACC="$ROOT_DIR/_build/coverage/selfhost-corpus/acc.json"
 rm -rf "$OUT_DIR"; mkdir -p "$OUT_DIR/bins"
-rel() { python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2]))' "$1" "$ROOT_DIR"; }
+rel() { realpath --relative-to="$ROOT_DIR" "$1"; }
 
 [ -s "$CORPUS_ACC" ] || { echo "testexec: corpus acc not found; run coverage_corpus.sh first" >&2; exit 1; }
 

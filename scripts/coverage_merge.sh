@@ -31,7 +31,7 @@ RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"
 [ -s "$FLAT_ABS" ] || { echo "coverage_selfhost_merge: flat compiler source not found" >&2; exit 1; }
 mkdir -p "$OUT_DIR"
 
-rel() { python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2]))' "$1" "$ROOT_DIR"; }
+rel() { realpath --relative-to="$ROOT_DIR" "$1"; }
 FLAT="$(rel "$FLAT_ABS")"
 COMPILER_COV_REL="$(rel "$COMPILER_COV")"
 

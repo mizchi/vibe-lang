@@ -35,8 +35,8 @@ mkdir -p "$OUT_DIR"
 echo "[coverage_selfhost_fn] building instrumented compiler ..." >&2
 VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash "$RUNNER" --invoke cli_main "$SEED" \
-  "$(python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2]))' "$FLAT" "$ROOT_DIR")" \
-  "$(python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2]))' "$COMPILER_COV" "$ROOT_DIR")" \
+  "$(realpath --relative-to="$ROOT_DIR" "$FLAT")" \
+  "$(realpath --relative-to="$ROOT_DIR" "$COMPILER_COV")" \
   cli_main
 [ -s "$COMPILER_COV" ] || { echo "coverage_selfhost_fn: instrumented compiler not produced (seed lacks VIBE_COVERAGE?)" >&2; exit 1; }
 
@@ -48,14 +48,14 @@ if [ -z "$workload" ]; then
   echo "[coverage_selfhost_fn] workload: self-compile the compiler source" >&2
   VIBE_COV_OUT="$REPORT" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash "$RUNNER" --invoke cli_main "$COMPILER_COV" \
-    "$(python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2]))' "$FLAT" "$ROOT_DIR")" \
-    "$(python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2]))' "$sample_out" "$ROOT_DIR")" \
+    "$(realpath --relative-to="$ROOT_DIR" "$FLAT")" \
+    "$(realpath --relative-to="$ROOT_DIR" "$sample_out")" \
     cli_main
 else
   echo "[coverage_selfhost_fn] workload: compile $workload (FS mode)" >&2
   VIBE_COV_OUT="$REPORT" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash "$RUNNER" --invoke cli_main "$COMPILER_COV" \
-    "$workload" "$(python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2]))' "$sample_out" "$ROOT_DIR")" \
+    "$workload" "$(realpath --relative-to="$ROOT_DIR" "$sample_out")" \
     _start
 fi
 [ -s "$REPORT" ] || { echo "coverage_selfhost_fn: no report produced" >&2; exit 1; }
