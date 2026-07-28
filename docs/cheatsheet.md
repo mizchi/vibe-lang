@@ -91,6 +91,32 @@ Anti-patterns:
   in-place); prefer `ArrayBuilder` for any non-trivial accumulation
 - `Ref[T]` — historically abandoned (ADR-0017), use the table above
 
+### Collection naming convention (#1140, ADR-0082)
+
+The bare name / prefix a collection type carries tells you its mutability
+contract — this is a naming *rule*, not a per-type coincidence:
+
+| Spelling | Contract | Examples |
+|---|---|---|
+| bare name | persistent/functional — every "mutating" op returns a NEW value, the receiver is untouched | `Map[K, V]`, `StringSet` (conceptually `Set[String]`) |
+| `Hash-` / `Sorted-` prefix | a deliberate MUTABLE variant with the same conceptual API — ops return `Unit` and mutate in place | `HashMap`, `HashSet`, `SortedMap`, `SortedSet` |
+| `XBuilder` suffix | a mutable, growable builder; not meant to be held onto — call `::freeze` to get the persistent value | `ArrayBuilder`, `MapBuilder`, `StringBuilder` |
+| `Frozen-` prefix | immutable AND `Send`-eligible (structurally, when its element type is `Send`) — a narrower, stronger claim than plain persistence, tied to the structured-concurrency model (ADR-0068, #906) | `FrozenArray[T]` |
+
+**"Frozen" and "persistent" are not synonyms.** `Map`/`StringSet` are
+persistent (functional-update) but are *not* `Send`-eligible under the
+current allowlist (see `docs/concurrency.md` "Send と capture safety") —
+only scalars, `mut`-field-free structs/enums, `Option`/`Result` of those,
+same-nursery `Sender`, and `FrozenArray[T]` are. Reach for `FrozenArray`
+specifically when a value needs to cross a `spawn`/task boundary; reach for
+a bare-named persistent type for ordinary functional-update code.
+
+`Array`/`Bytes` themselves are NOT renamed under this convention — they
+predate it and a rename would be too disruptive. They remain low-level,
+backend-divergent mutable primitives (see the anti-pattern note above);
+route through `ArrayBuilder` (mutable accumulation) or `FrozenArray`
+(persistent + `Send`) instead of mutating a plain `Array` directly.
+
 ## Functions
 
 ```vibe
