@@ -80,7 +80,7 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 
 ## Generators / codegen data
 - `generate_runtime_fixture_tests.mjs`, `gen_wasm_intrinsics_table.mjs`,
-  `emit_async_lift_fixture.sh`, `rename_builtins.py`
+  `emit_async_lift_fixture.sh`
 
 ## Misc infra
 - `cache_clean.sh`, `flaker_run.sh` (+ `_test`), `measure_heap.mjs`
