@@ -25,23 +25,42 @@ package vibe:compiler-host;
 // IMPORTANT (Codex review, PR #1178 round 1): the `fs` interface below is
 // NOT derived from `effect Fs { ReadFile, WriteFile, Exists, Mkdir }`
 // (lib/@vibe/fs/fs_effect.vibe) -- that block is only a 4-op convenience
-// subset for user-program `import Fs` usage. The actual enforced boundary
-// is a per-BUILTIN string tag (`Some("Fs")` on each entry in
-// lib/@vibe/compiler/codegen/common_base/builtin_registry.vibe, plus
+// subset for user-program `import Fs` usage. The actual boundary the
+// checker enforces is a per-BUILTIN string tag (`Some("Fs")` on each entry
+// in lib/@vibe/compiler/codegen/common_base/builtin_registry.vibe, plus
 // `Fs::readdir` in checker/builtins_fs.vibe), and `cli_main`'s declared
-// `with { ..., Fs, ... }` row admits ANY builtin carrying that tag, not
-// just the four in fs_effect.vibe's declaration. Cross-checked against
-// real usage across lib/@vibe/compiler (excluding tests): `write_bytes`
-// alone is used 382 times (more than `write_file`'s 244) -- e.g.
-// cli_adapter.vibe writes compiled output, funcmap, wit, component,
-// normalize, doc-at, binding-at, symbols and diagnostics output ALL via
-// `Fs::write_bytes`, never `Fs::write_file`. `env`/`stdin`/`stdout` were
-// already tag-consistent with their builtin-table signatures (single op
-// set each) and needed no correction. `Stderr::write_char`/`write_stream`
-// exist as real builtins with the same "Fs"-style tag mechanism but are
-// confirmed NOT part of `cli_main`'s row (zero occurrences in
-// cli_adapter.vibe; the checker would reject any reachable Stderr call
-// without "Stderr" in the row) -- deliberately excluded, not an oversight.
+// `with { ..., Fs, ... }` row admits any builtin carrying that tag -- but
+// admitting an op and cli_main actually CALLING it are different things
+// (round 1 conflated them and included all 17 tagged ops). `env`/`stdin`/
+// `stdout` were already tag-consistent with their builtin-table
+// signatures (single op set each) and needed no correction.
+// `Stderr::write_char`/`write_stream` exist as real builtins with the same
+// tag mechanism but are confirmed NOT part of `cli_main`'s row (zero
+// occurrences in cli_adapter.vibe; the checker would reject any reachable
+// Stderr call without "Stderr" in the row) -- deliberately excluded.
+//
+// PER-OP REACHABILITY AUDIT (round 2, following up on round 1's own
+// recorded open question): grepped every `Fs::<op>(` call site across
+// lib/@vibe/compiler, excluding tests, the checker/codegen registration
+// tables themselves, and the auto-generated `*_bundle.vibe`/
+// `_cli_adapter_module_source.vibe` flatten artifacts (which just
+// duplicate other files' text, not new call sites). Seven ops have real,
+// non-test call sites in load-bearing compiler files (`read-file`/
+// `write-file`/`write-bytes` directly in cli_adapter.vibe; `exists` in
+// runtime/typecheck_fs.vibe and cache/persistent_cache.vibe; `stat-token`
+// in loader/loader.vibe and core/module_graph_path.vibe; `remove` in
+// entry/cli_cache/cli_cache.vibe; `readdir` in loader/loader.vibe and
+// loader/header_cache.vibe). The other ten -- `read-bytes`, `is-dir`,
+// `is-file`, `mkdir`, `mkdir-p`, `chdir`, `getcwd`, `copy`, `append`,
+// `rename` -- have ZERO real call sites anywhere in the compiler's own
+// source; they're recognized builtin names (so the checker accepts them
+// when a USER program calls them via `import Fs`/`lib/@vibe/fs`) but
+// `cli_main` never invokes them itself. Round 1 included them because
+// "tagged Fs" and "actually called by cli_main" were conflated; round 2
+// removes them. This also resolves round 1's open question about
+// `runtime/vibewt` lacking `fs_mkdir`/`fs_mkdir_p`/`fs_chdir`/`fs_getcwd`/
+// `fs_copy`/`fs_append`/`fs_rename`: confirmed NOT a live gap -- `cli_main`
+// never reaches any of them, so vibewt omitting them is correct, not a bug.
 //
 // This is the PORTABLE contract only: preopen-dir sandboxing, store/linker
 // setup, fuel/memory limits, and other per-runner configuration are NOT
@@ -66,19 +85,9 @@ world vibe-compiler-host {
     read-file: func(arg0: string) -> string;
     write-file: func(arg0: string, arg1: string);
     write-bytes: func(arg0: string, arg1: list<u8>);
-    read-bytes: func(arg0: string) -> list<u8>;
     exists: func(arg0: string) -> bool;
     stat-token: func(arg0: string) -> s64;
-    is-dir: func(arg0: string) -> bool;
-    is-file: func(arg0: string) -> bool;
     remove: func(arg0: string);
-    mkdir: func(arg0: string);
-    mkdir-p: func(arg0: string);
-    chdir: func(arg0: string);
-    getcwd: func() -> string;
-    copy: func(arg0: string, arg1: string);
-    append: func(arg0: string, arg1: string);
-    rename: func(arg0: string, arg1: string);
     readdir: func(arg0: string) -> list<string>;
   }
 
