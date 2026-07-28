@@ -1,0 +1,181 @@
+//# `vibe`-adjacent coverage-corpus accumulator tool: native-vibe port of the
+//# acc_merge.py heredoc scripts/coverage_corpus.sh used to write to
+//# _build/coverage/selfhost-corpus/acc_merge.py, plus the `python3 -c
+//# "import json;...sum/len..."` one-liners scripts/coverage_{features,
+//# manifestcache,multimodule,drivers}.sh each repeated around it. Lives here
+//# (not scripts/) because the merge/stat algorithm itself has nothing
+//# repo-specific about it beyond the acc.json shape -- any vibe project
+//# instrumenting its own selfhost coverage could reuse it, so it's
+//# consolidated into lib/@vibe/cli alongside fmt_entry.vibe rather than
+//# duplicated as a scripts/-private tool. Driven by
+//# scripts/coverage_acc_tool_run.sh, mirroring how scripts/vibe_fmt.sh drives
+//# fmt_entry.vibe.
+//#
+//# acc.json shape: {"fn_names": [...], "br_owners": [...], "fn": [0/1 ...],
+//# "br": [0/1 ...]} -- a GLOBAL-branch-id coverage accumulator (as opposed to
+//# the per-function LOCAL-branch-index merge lib/@vibe/cli/coverage_local_merge.vibe
+//# does; that's a separate algorithm for runs compiled from a different
+//# source than acc's own). A run json (VIBE_COV_OUT dump) shape:
+//# {"raw": {"fn_bitmap": [...], "branch_bitmap": [...], "fn_names": [...],
+//# "branch_owners": [...]}}.
+//#
+//# Usage: argv[0] = subcommand, rest = args.
+//#   merge <acc_path> <run_path>
+//#     OR-merge run_path's raw bitmap into acc_path (creating acc_path on
+//#     first call, matching acc_merge.py). Silent; always exits 0 -- every
+//#     real call site ignores this tool's exit status (`|| true` / guarded by
+//#     `[ -s "$RUN_JSON" ] &&`), so a missing/corrupt run or acc file is
+//#     treated as a no-op rather than replicating acc_merge.py's unhandled
+//#     KeyError crash on a genuinely malformed run file.
+//#   stat <acc_path>
+//#     Prints "<sum> <len>" (space-separated ints) for acc_path's "br" array
+//#     -- callers compute the displayed percentage themselves with plain bash
+//#     integer arithmetic (no third subprocess needed for one division).
+//#
+//# Design differences from the Python heredocs, forced by vibe's actual
+//# capabilities rather than an exact translation:
+//#   * atomic write (write to "<path>.tmp" then Fs::rename over the real
+//#     path, matching acc_merge.py's os.replace) uses the raw Fs::rename
+//#     builtin (declared in builtins/declarations.vibe, no import needed).
+//#   * bitmap truthiness (`if v`) is reimplemented as is_truthy below since a
+//#     parsed JSON bitmap entry could be JBool OR JNum depending on how the
+//#     dumping side serialized it; Python's `if v` covers both uniformly.
+//#   * mutating an existing acc's "fn"/"br" arrays in place uses
+//#     @vibe/json's json_as_arr (Result-returning) to reach the underlying
+//#     Array[Json], then Array::set per index -- Json::field/Json::index
+//#     alone only ever hand back read-only-looking values, not a mutable
+//#     handle.
+//#   * deliberately does NOT `import @vibe/fs { Fs }`: that facade reroutes
+//#     Fs::read_file/write_file/exists through mockable perform-based
+//#     wrappers with no real-filesystem handler installed in a plain entry,
+//#     and traps immediately -- using the raw `Fs::`-qualified builtins
+//#     directly (declared in the effect row, no import needed) works.
+
+import @vibe/prelude { stdout_write }
+import @vibe/json { Json, json_as_arr }
+
+//# Functions
+
+fn is_truthy(j: Json) -> Bool {
+  let ty = Json::type_of(j)
+  if ty == "boolean" {
+    Json::bool(j)
+  } else if ty == "number" {
+    let n = Json::number(j)
+    n > 0.0000001 || n < (0.0 - 0.0000001)
+  } else {
+    false
+  }
+}
+
+fn or_empty_array(j: Json) -> Json {
+  if Json::is_null(j) {
+    JArr([])
+  } else {
+    j
+  }
+}
+
+// [1 if v else 0 for v in bits] -- used only when acc doesn't exist yet.
+fn bitmap_to_zero_one_array(bits: Json) -> Json {
+  let n = Json::length(bits)
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < n {
+    ArrayBuilder::push(b, if is_truthy(Json::index(bits, i)) { JNum(1.0) } else { JNum(0.0) })
+    i = i + 1
+  }
+  JArr(ArrayBuilder::freeze(b))
+}
+
+// OR bits into arr in place (arr is acc's mutable "fn"/"br" Array[Json]).
+fn or_bitmap_into(arr: Array[Json], bits: Json) -> Unit {
+  let n = Json::length(bits)
+  let cap = Array::length(arr)
+  let lim = if n < cap { n } else { cap }
+  let mut i = 0
+  while i < lim {
+    if is_truthy(Json::index(bits, i)) {
+      Array::set(arr, i, JNum(1.0))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+fn write_json_atomic(path: String, j: Json) -> Unit with { Fs } {
+  let tmp = path + ".tmp"
+  Fs::write_file(tmp, Json::stringify(j))
+  Fs::rename(tmp, path)
+}
+
+fn cmd_merge(acc_path: String, run_path: String) -> Unit with { Fs } {
+  if !Fs::exists(run_path) {
+    ()
+  } else {
+    let run = Json::parse(Fs::read_file(run_path))
+    let raw = Json::field(run, "raw")
+    if Json::is_null(raw) {
+      ()
+    } else {
+      let fb = Json::field(raw, "fn_bitmap")
+      let bb = or_empty_array(Json::field(raw, "branch_bitmap"))
+      let acc = if Fs::exists(acc_path) { Json::parse(Fs::read_file(acc_path)) } else { JNull }
+      if Json::type_of(acc) == "object" {
+        match json_as_arr(Json::field(acc, "fn")) {
+          Result::Ok(fn_arr) => or_bitmap_into(fn_arr, fb),
+          Result::Err(_) => ()
+        }
+        match json_as_arr(Json::field(acc, "br")) {
+          Result::Ok(br_arr) => or_bitmap_into(br_arr, bb),
+          Result::Err(_) => ()
+        }
+        write_json_atomic(acc_path, acc)
+      } else {
+        let acc_new = JObj(Map::from_pairs([
+          ("fn_names", Json::field(raw, "fn_names")),
+          ("br_owners", or_empty_array(Json::field(raw, "branch_owners"))),
+          ("fn", bitmap_to_zero_one_array(fb)),
+          ("br", bitmap_to_zero_one_array(bb))
+        ]))
+        write_json_atomic(acc_path, acc_new)
+      }
+    }
+  }
+}
+
+fn cmd_stat(acc_path: String) -> Unit with { Fs, Stdout } {
+  let acc = Json::parse(Fs::read_file(acc_path))
+  let br = Json::field(acc, "br")
+  let n = Json::length(br)
+  let mut i = 0
+  let mut sum = 0
+  while i < n {
+    if is_truthy(Json::index(br, i)) {
+      sum = sum + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  stdout_write(Int::to_string(sum) + " " + Int::to_string(n) + "\n")
+}
+
+fn main with { Fs, Env, Stdout, Stderr, Process } {
+  let argc = Env::args_len()
+  if argc < 1 {
+    Stderr::write_stream("usage: coverage_acc_tool merge <acc> <run> | stat <acc>\n")
+    vibe_process_exit_raw(2)
+  } else {
+    let sub = Env::args_get(0)
+    if sub == "merge" && argc >= 3 {
+      cmd_merge(Env::args_get(1), Env::args_get(2))
+    } else if sub == "stat" && argc >= 2 {
+      cmd_stat(Env::args_get(1))
+    } else {
+      Stderr::write_stream("usage: coverage_acc_tool merge <acc> <run> | stat <acc>\n")
+      vibe_process_exit_raw(2)
+    }
+  }
+}

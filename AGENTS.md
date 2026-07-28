@@ -37,9 +37,13 @@ pkf run run -- args       # run main with args
 # scripts/vibe_fmt.sh, #854/#1138) は実装済みで `bash scripts/vibe_fmt.sh
 # [--check|--stdout] <file.vibe>` で直接使える。ただし `pkf run fmt` タスク
 # 自体はまだこれを呼ばない no-op placeholder のまま (Taskfile.pkl の
-# `fmt` task, cmd = "true") — 既存コードベースがこの formatter の
-# fixpoint になっている保証もまだない (サンプルで --check が落ちる
-# ファイルを確認済み)。全体への一括適用 + pkf 配線は別途スコープする。
+# `fmt` task, cmd = "true") — 全体への一括適用 + pkf 配線は別途スコープする。
+# 一方で **CI では `vibe-fmt-check` job (scripts/check_vibe_fmt.sh, required)
+# が `lib/**/*.vibe` 全体を --check で lint しており enforce されている** —
+# 既存コードベースが fixpoint になっていない分 (2026-07-28 時点で761件中233件)
+# は scripts/vibe_fmt_allowlist.txt に一度だけ grandfather 済みで、そこに
+# 載っていない未フォーマットの新規/変更ファイルだけがゲートを落とす
+# (lint-architecture-debt と同じ allowlist ラチェット方式)。
 # moon 依存の `check`/`info`/`test-update` や per-package `test:*` は
 # dead-task cleanup で Taskfile から削除済み。
 ```
@@ -171,11 +175,17 @@ completion / signature help を提供する。詳細は
 - 単一ファイルの型検査 / 診断は `vibe diagnostics <file.vibe>`（空出力 = clean）。
 - selfhost の CST-token formatter は実装済み (`lib/@vibe/compiler/fmt/format.vibe`,
   #854/#1138) — `bash scripts/vibe_fmt.sh [--check|--stdout] <file.vibe>` で
-  直接使える。ただし `pkf run fmt` タスク自体はまだこれを呼ばない no-op
-  のまま (Taskfile.pkl の `fmt` task, `cmd = "true"`)、既存コードベースが
-  fixpoint になっている保証もまだ無い (`--check` が落ちるファイルを確認
-  済み) — 全体への一括適用 + `pkf run fmt` 配線は別途大きめのタスクとして
-  スコープする。
+  直接使える。`pkf run fmt` タスク自体はまだこれを呼ばない no-op のまま
+  (Taskfile.pkl の `fmt` task, `cmd = "true"`) — 全体への一括適用 +
+  `pkf run fmt` 配線は別途大きめのタスクとしてスコープする。
+- **CI では `vibe-fmt-check` job (`scripts/check_vibe_fmt.sh`, required) が
+  `lib/**/*.vibe` 全体を `--check` で lint し、enforce している** —
+  `pkf run check-vibe-fmt` / `pkf run release-check` からも呼べる。既存
+  コードベースが fixpoint になっていない分 (2026-07-28 時点で761件中233件)
+  は `scripts/vibe_fmt_allowlist.txt` に一度だけ grandfather 済みで、
+  そこに載っていない未フォーマットの新規/変更ファイルだけがゲートを
+  落とす (`lint_architecture_debt.sh` と同じ allowlist ラチェット方式 —
+  ratchet を縮める手順もそのファイルのヘッダコメントに書いてある)。
 
 ### `vibe test` / `vibe bench` backend 切り替え
 

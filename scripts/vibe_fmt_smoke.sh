@@ -74,4 +74,64 @@ if ! cmp -s "$WORK/paths.expected.vibe" "$WORK/paths.got.vibe"; then
   exit 1
 fi
 
-echo "[vibe-fmt-smoke] ok (canonical + idempotent + --check + paths #628)"
+# Import-list items are sorted alphabetically (byte/codepoint order, so
+# uppercase sorts before lowercase).
+cat > "$WORK/sort.in.vibe" <<'EOF'
+import @vibe/prelude { zeta_fn, alpha_fn, Middle::Thing, gamma_fn as g, type Beta }
+EOF
+cat > "$WORK/sort.expected.vibe" <<'EOF'
+import @vibe/prelude {
+  Middle::Thing, alpha_fn, gamma_fn as g, type Beta, zeta_fn
+}
+EOF
+bash "$ROOT_DIR/scripts/vibe_fmt.sh" --stdout "$WORK/sort.in.vibe" > "$WORK/sort.got.vibe" 2>/dev/null
+if ! cmp -s "$WORK/sort.expected.vibe" "$WORK/sort.got.vibe"; then
+  echo "[vibe-fmt-smoke] FAIL: import-list items not sorted alphabetically" >&2
+  diff "$WORK/sort.expected.vibe" "$WORK/sort.got.vibe" >&2 || true
+  exit 1
+fi
+
+# An import-list line that would exceed 140 columns joined on one line wraps
+# to one item per line instead.
+cat > "$WORK/wrap.in.vibe" <<'EOF'
+import @vibe/some/very/long/module/path/that/is/quite/deep { alpha_symbol_one, beta_symbol_two, gamma_symbol_three, delta_symbol_four, epsilon_symbol_five, zeta_symbol_six, eta_symbol_seven, theta_symbol_eight }
+EOF
+cat > "$WORK/wrap.expected.vibe" <<'EOF'
+import @vibe/some/very/long/module/path/that/is/quite/deep {
+  alpha_symbol_one,
+  beta_symbol_two,
+  delta_symbol_four,
+  epsilon_symbol_five,
+  eta_symbol_seven,
+  gamma_symbol_three,
+  theta_symbol_eight,
+  zeta_symbol_six
+}
+EOF
+bash "$ROOT_DIR/scripts/vibe_fmt.sh" --stdout "$WORK/wrap.in.vibe" > "$WORK/wrap.got.vibe" 2>/dev/null
+if ! cmp -s "$WORK/wrap.expected.vibe" "$WORK/wrap.got.vibe"; then
+  echo "[vibe-fmt-smoke] FAIL: long import-list did not wrap to one item per line" >&2
+  diff "$WORK/wrap.expected.vibe" "$WORK/wrap.got.vibe" >&2 || true
+  exit 1
+fi
+
+# A struct literal immediately after `export let x = ... -> Name { .. }` must
+# NOT be mistaken for an import-list brace just because it follows a NAME
+# token in a statement whose head keyword was `export` -- must stay a plain
+# one-field-per-line block (c_brace_block), not the import-list wrap layout.
+cat > "$WORK/not_import.in.vibe" <<'EOF'
+export let make: () -> Foo = () -> Foo { field: 1 }
+EOF
+cat > "$WORK/not_import.expected.vibe" <<'EOF'
+export let make: () -> Foo = () -> Foo {
+  field: 1
+}
+EOF
+bash "$ROOT_DIR/scripts/vibe_fmt.sh" --stdout "$WORK/not_import.in.vibe" > "$WORK/not_import.got.vibe" 2>/dev/null
+if ! cmp -s "$WORK/not_import.expected.vibe" "$WORK/not_import.got.vibe"; then
+  echo "[vibe-fmt-smoke] FAIL: struct literal after 'export let ... -> Name' misdetected as import list" >&2
+  diff "$WORK/not_import.expected.vibe" "$WORK/not_import.got.vibe" >&2 || true
+  exit 1
+fi
+
+echo "[vibe-fmt-smoke] ok (canonical + idempotent + --check + paths #628 + import sort/wrap)"
