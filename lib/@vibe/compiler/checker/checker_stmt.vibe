@@ -13,11 +13,36 @@ import ./checker_effects.vibe {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, Subst, Type, TypeDef, TypeEnv, collect_subst_bounds_pairs, env_bind, env_cache, env_flat_bindings, env_lookup_flat, generalize, resolve_builtin, subst_apply, trait_defined, type_implements_trait, type_to_string
+  Expr,
+  Pat,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  collect_subst_bounds_pairs,
+  env_bind,
+  env_cache,
+  env_flat_bindings,
+  env_lookup_flat,
+  generalize,
+  resolve_builtin,
+  subst_apply,
+  trait_defined,
+  type_implements_trait,
+  type_to_string
 }
 
 import ./checker.vibe {
-  check_assignable, check_expr, fn_return_env_name, is_array_builder_ty, is_region_tagged_ty, pat_binds_resume, preserve_generic_instantiation, reject_resume_outside_handler
+  check_assignable,
+  check_expr,
+  fn_return_env_name,
+  is_array_builder_ty,
+  is_region_tagged_ty,
+  pat_binds_resume,
+  preserve_generic_instantiation,
+  reject_resume_outside_handler
 }
 
 import ./checker_spawnable.vibe {
@@ -34,12 +59,12 @@ import @vibe/compiler/codegen {
 
 //# Functions
 
-// ADR-0069 Phase 1: locate a top-level statement for the reject diagnostics
-// below — first available source char-offset of the statement's value
-// expression (same walk as codegen's first_offset; duplicated locally to keep
-// checker → codegen imports out). -1 when no offset-carrying node exists; the
-// `[@off=N]` marker convention (see checker.vibe off_marker) then simply
-// stays off the message.
+/// ADR-0069 Phase 1: locate a top-level statement for the reject diagnostics
+/// below — first available source char-offset of the statement's value
+/// expression (same walk as codegen's first_offset; duplicated locally to keep
+/// checker → codegen imports out). -1 when no offset-carrying node exists; the
+/// `[@off=N]` marker convention (see checker.vibe off_marker) then simply
+/// stays off the message.
 fn top_stmt_expr_off(e: Expr) -> Int {
   match e {
     EIdent(_, off) => off,
@@ -99,7 +124,7 @@ fn es_string_array_contains(arr: Array[String], v: String) -> Bool {
   es_index_of(arr, v) >= 0
 }
 
-// "Effect::Name" -> (Some("Effect"), "Name"); unqualified -> (None, name).
+/// "Effect::Name" -> (Some("Effect"), "Name"); unqualified -> (None, name).
 fn es_split_qualified(name: String) -> (Option[String], String) {
   let idx = String::index_of(name, "::")
   if idx > 0 {
@@ -123,13 +148,13 @@ fn es_join_arrow(names: Array[String]) -> String {
   result
 }
 
-// DFS over effectset member references. `path` is the chain of effectset
-// names visited in the CURRENT recursion (not a global visited set) so two
-// independent effectsets sharing a common, acyclic member is fine -- only
-// re-visiting a name already on the current path is a genuine cycle.
-// Members that are not themselves a known effectset name (an ordinary
-// effect name or a qualified operation) are leaves -- es_index_of returns
-// -1 for them, ending that branch.
+/// DFS over effectset member references. `path` is the chain of effectset
+/// names visited in the CURRENT recursion (not a global visited set) so two
+/// independent effectsets sharing a common, acyclic member is fine -- only
+/// re-visiting a name already on the current path is a genuine cycle.
+/// Members that are not themselves a known effectset name (an ordinary
+/// effect name or a qualified operation) are leaves -- es_index_of returns
+/// -1 for them, ending that branch.
 fn es_detect_cycle(es_names: Array[String], es_members_list: Array[Array[String]], name: String, path: Array[String]) -> Option[String] {
   if es_string_array_contains(path, name) {
     Some(String::concat("effectset cycle: ", String::concat(es_join_arrow(path), String::concat(" -> ", name))))
@@ -157,10 +182,10 @@ fn es_detect_cycle(es_names: Array[String], es_members_list: Array[Array[String]
   }
 }
 
-// `Env::Read` collides with `Env` if `Env` separately declares an operation
-// named `Read` -- the ADR's Decision section calls this out explicitly:
-// operation and effectset names share the effect-row member namespace, so a
-// reference to `Env::Read` would be ambiguous between the two.
+/// `Env::Read` collides with `Env` if `Env` separately declares an operation
+/// named `Read` -- the ADR's Decision section calls this out explicitly:
+/// operation and effectset names share the effect-row member namespace, so a
+/// reference to `Env::Read` would be ambiguous between the two.
 fn es_qualified_collision(ed_names: Array[String], ed_ops_list: Array[Array[String]], qualified_name: String) -> Bool {
   let (eff_opt, member_name) = es_split_qualified(qualified_name)
   match eff_opt {
@@ -176,11 +201,11 @@ fn es_qualified_collision(ed_names: Array[String], ed_ops_list: Array[Array[Stri
   }
 }
 
-// Collect every effectset (name -> raw member list) and effect (name ->
-// operation names) declared at or after `from_idx` in `stmts`, in one pass.
-// Shared by check_stmts' own pre-pass (order-independent cycle/collision
-// checking) and collect_async_effect_errors' row-expansion pass below (step
-// 3) so both walks agree on exactly the same tables.
+/// Collect every effectset (name -> raw member list) and effect (name ->
+/// operation names) declared at or after `from_idx` in `stmts`, in one pass.
+/// Shared by check_stmts' own pre-pass (order-independent cycle/collision
+/// checking) and collect_async_effect_errors' row-expansion pass below (step
+/// 3) so both walks agree on exactly the same tables.
 fn es_collect_tables(stmts: Array[Stmt], from_idx: Int) -> (Array[String], Array[Array[String]], Array[String], Array[Array[String]]) {
   let es_names = array_empty()
   let es_members_list = array_empty()
@@ -208,15 +233,15 @@ fn es_collect_tables(stmts: Array[Stmt], from_idx: Int) -> (Array[String], Array
   (es_names, es_members_list, ed_names, ed_ops_list)
 }
 
-// ADR-0071 step 3 (#755) row expansion: recursively expand `name` into leaf
-// labels (ordinary effect/operation names -- not further-expandable
-// effectset names) via es_names/es_members_list, appending each freshly
-// seen leaf into `out` (deduped). `path` guards against cycles the SAME way
-// es_detect_cycle does (a name already on the current recursion path is
-// skipped, not re-expanded) so a cyclic definition -- already flagged as an
-// error by es_detect_cycle elsewhere in the SAME check_stmts pass -- cannot
-// hang this walk even though this function does not itself re-validate
-// acyclicity.
+/// ADR-0071 step 3 (#755) row expansion: recursively expand `name` into leaf
+/// labels (ordinary effect/operation names -- not further-expandable
+/// effectset names) via es_names/es_members_list, appending each freshly
+/// seen leaf into `out` (deduped). `path` guards against cycles the SAME way
+/// es_detect_cycle does (a name already on the current recursion path is
+/// skipped, not re-expanded) so a cyclic definition -- already flagged as an
+/// error by es_detect_cycle elsewhere in the SAME check_stmts pass -- cannot
+/// hang this walk even though this function does not itself re-validate
+/// acyclicity.
 fn es_expand_into(es_names: Array[String], es_members_list: Array[Array[String]], name: String, path: Array[String], out: Array[String]) -> Unit {
   if es_string_array_contains(path, name) {
     ()
@@ -261,15 +286,15 @@ fn es_join_comma(names: Array[String]) -> String {
   result
 }
 
-// Expand every effectset-name token in a raw comma-joined effect row
-// (TyFn/EFn's `Option[String]` field) into its flat leaf-label expansion,
-// leaving ordinary effect/operation labels and row variables untouched
-// (es_expand_label is a no-op passthrough for any name that isn't a known
-// effectset). `with { AskAll, Fs }` where `effectset AskAll = { Ask }`
-// becomes `"Ask, Fs"` -- from that point on, the EXISTING string-label-based
-// containment machinery (decl_authorizes_effect et al., unmodified) sees
-// only base labels, so `AskAll` now genuinely authorizes what it expands to
-// instead of needing to be literally re-declared verbatim by every caller.
+/// Expand every effectset-name token in a raw comma-joined effect row
+/// (TyFn/EFn's `Option[String]` field) into its flat leaf-label expansion,
+/// leaving ordinary effect/operation labels and row variables untouched
+/// (es_expand_label is a no-op passthrough for any name that isn't a known
+/// effectset). `with { AskAll, Fs }` where `effectset AskAll = { Ask }`
+/// becomes `"Ask, Fs"` -- from that point on, the EXISTING string-label-based
+/// containment machinery (decl_authorizes_effect et al., unmodified) sees
+/// only base labels, so `AskAll` now genuinely authorizes what it expands to
+/// instead of needing to be literally re-declared verbatim by every caller.
 fn es_expand_row_string(row: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
   if Array::length(es_names) == 0 {
     row
@@ -316,11 +341,11 @@ fn es_expand_opt_texpr(ty: Option[TypeExpr], es_names: Array[String], es_members
   }
 }
 
-// Also expands a PARAMETER's own function-typed annotation (the #885
-// callback-overlay case, e.g. `run(f: () -> Int with { AskAll }) -> Int`) --
-// es_expand_opt_texpr already handles any TypeExpr generically (it only
-// touches TyFn's effect slot, passing every other shape through unchanged),
-// so reusing it here for each param needs no new logic.
+/// Also expands a PARAMETER's own function-typed annotation (the #885
+/// callback-overlay case, e.g. `run(f: () -> Int with { AskAll }) -> Int`) --
+/// es_expand_opt_texpr already handles any TypeExpr generically (it only
+/// touches TyFn's effect slot, passing every other shape through unchanged),
+/// so reusing it here for each param needs no new logic.
 fn es_expand_top_value(e: Expr, es_names: Array[String], es_members_list: Array[Array[String]]) -> Expr {
   match e {
     EFn(tps, tbs, params, ret, eff, body) => {
@@ -334,13 +359,13 @@ fn es_expand_top_value(e: Expr, es_names: Array[String], es_members_list: Array[
   }
 }
 
-// Rewrite a top-level binding's OWN declared effect row(s) -- the `ty`
-// annotation (`let f: () -> T with { Es } = ...`), the EFn value's own
-// inline row (`let f = () -> T with { Es } { ... }`), and every
-// PARAMETER's own function-typed row -- expanding any effectset-name token
-// before check_perform_effects_stmts_env (unmodified) sees it. A parameter
-// nested more than one level deep (a function-typed field inside a struct
-// parameter, for instance) is not covered -- a further, smaller follow-up.
+/// Rewrite a top-level binding's OWN declared effect row(s) -- the `ty`
+/// annotation (`let f: () -> T with { Es } = ...`), the EFn value's own
+/// inline row (`let f = () -> T with { Es } { ... }`), and every
+/// PARAMETER's own function-typed row -- expanding any effectset-name token
+/// before check_perform_effects_stmts_env (unmodified) sees it. A parameter
+/// nested more than one level deep (a function-typed field inside a struct
+/// parameter, for instance) is not covered -- a further, smaller follow-up.
 fn es_expand_stmt_effect_rows(stmt: Stmt, es_names: Array[String], es_members_list: Array[Array[String]]) -> Stmt {
   match stmt {
     SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, name, es_expand_opt_texpr(ty, es_names, es_members_list), es_expand_top_value(body, es_names, es_members_list)),
@@ -359,8 +384,8 @@ fn es_expand_stmts_effect_rows(stmts: Array[Stmt], es_names: Array[String], es_m
   }
 }
 
-// String::concat only (never `+` / interpolation — NUL-miscodegen hazard
-// here, same rule as checker.vibe off_marker).
+/// String::concat only (never `+` / interpolation — NUL-miscodegen hazard
+/// here, same rule as checker.vibe off_marker).
 fn top_level_reject_msg(what: String, e: Expr) -> String {
   let base = String::concat(what, " (ADR-0069)")
   let off = top_stmt_expr_off(e)
@@ -475,19 +500,19 @@ fn struct_derives_has(derives: Array[String], name: String) -> Bool {
   found
 }
 
-// The derivable traits the structural `derive(...)` desugar understands. Any
-// other name in a `derive(...)` clause is rejected with `unknown trait: <name>`
-// (#638) so a typo / unsupported trait fails the compile instead of silently
-// generating nothing.
+/// The derivable traits the structural `derive(...)` desugar understands. Any
+/// other name in a `derive(...)` clause is rejected with `unknown trait: <name>`
+/// (#638) so a typo / unsupported trait fails the compile instead of silently
+/// generating nothing.
 fn derive_name_is_known(name: String) -> Bool {
   name == "Eq" || name == "Ord" || name == "Show" || name == "Hash" || name == "Default"
 }
 
-// #1078: the name of a DIFFERENT enum (already registered in `defs`) that
-// declares a variant named `vname`, or None. Used to reject bare-name
-// constructor collisions at declaration time -- see the SEnum arm's
-// comment for why last-registered-wins shadowing makes these silently
-// wrong rather than merely ambiguous.
+/// #1078: the name of a DIFFERENT enum (already registered in `defs`) that
+/// declares a variant named `vname`, or None. Used to reject bare-name
+/// constructor collisions at declaration time -- see the SEnum arm's
+/// comment for why last-registered-wins shadowing makes these silently
+/// wrong rather than merely ambiguous.
 fn find_other_enum_declaring_variant(defs: Array[TypeDef], enum_name: String, vname: String) -> Option[String] {
   let mut i = 0
   let mut found = None
@@ -537,18 +562,18 @@ fn stmt_is_type_decl(stmt: Stmt) -> Bool {
   }
 }
 
-// #613: process type declarations (enum / struct / type-alias / suberror) before
-// value definitions so a `let` may construct or reference a type or constructor
-// declared LATER in the same statement list (a forward reference). check_stmts
-// records each type into `defs` and binds its constructors into `env` only when
-// the declaration statement is reached, so without this a value defined before
-// its enum saw neither the type nor its constructors and aborted the compile
-// with an opaque trap (e.g. an imported module whose function constructs an enum
-// value lands before the enum in the merged statement list). Codegen is already
-// order-independent (the ctor table scans every statement up front), so this
-// check-side reorder is sufficient. The partition is STABLE, so already-ordered
-// (type-before-value) code is processed exactly as before, and relative order
-// within each group is preserved.
+/// #613: process type declarations (enum / struct / type-alias / suberror) before
+/// value definitions so a `let` may construct or reference a type or constructor
+/// declared LATER in the same statement list (a forward reference). check_stmts
+/// records each type into `defs` and binds its constructors into `env` only when
+/// the declaration statement is reached, so without this a value defined before
+/// its enum saw neither the type nor its constructors and aborted the compile
+/// with an opaque trap (e.g. an imported module whose function constructs an enum
+/// value lands before the enum in the merged statement list). Codegen is already
+/// order-independent (the ctor table scans every statement up front), so this
+/// check-side reorder is sufficient. The partition is STABLE, so already-ordered
+/// (type-before-value) code is processed exactly as before, and relative order
+/// within each group is preserved.
 fn reorder_type_decls_first(stmts: Array[Stmt], start: Int) -> Array[Stmt] {
   let out = Array::slice(stmts, 0, start)
   let n = Array::length(stmts)
@@ -1221,24 +1246,24 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
   (cur_env, cur_s, cur_c)
 }
 
-// #641 PR-2: enforce trait bounds. After inference, every bounded type variable
-// recorded in the final substitution that resolved to a CONCRETE type must
-// satisfy its bounds. Unresolved (still-polymorphic) vars are inherited by the
-// caller, not violated, so they are skipped. One `no impl `Trait` for `Type``
-// error per unsatisfied bound (matches fixtures/err_type_trait_*bound* messages).
+/// #641 PR-2: enforce trait bounds. After inference, every bounded type variable
+/// recorded in the final substitution that resolved to a CONCRETE type must
+/// satisfy its bounds. Unresolved (still-polymorphic) vars are inherited by the
+/// caller, not violated, so they are skipped. One `no impl `Trait` for `Type``
+/// error per unsatisfied bound (matches fixtures/err_type_trait_*bound* messages).
 fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Array[String]) -> Unit {
   check_program_bounds_impl(env, s, defs, errors, false)
 }
 
-// send_only: the FS/import path (check_program_with_env) checks ONLY the
-// compiler-judged `Send` bound. User-trait bounds cannot be enforced there
-// yet: imported files' `impl` declarations are not propagated into the
-// entry file's TypeEnv, so a cross-module `impl Hash for String` would be
-// invisible and every such bound would false-positive (found empirically:
-// builtin_traits_test / iterator_test / to_string_bool_param_test).
-// `Send` needs no user impls — its structural judgment plus the seeded
-// primitive impls are complete in any env — so it is safe to enforce
-// everywhere.
+/// send_only: the FS/import path (check_program_with_env) checks ONLY the
+/// compiler-judged `Send` bound. User-trait bounds cannot be enforced there
+/// yet: imported files' `impl` declarations are not propagated into the
+/// entry file's TypeEnv, so a cross-module `impl Hash for String` would be
+/// invisible and every such bound would false-positive (found empirically:
+/// builtin_traits_test / iterator_test / to_string_bool_param_test).
+/// `Send` needs no user impls — its structural judgment plus the seeded
+/// primitive impls are complete in any env — so it is safe to enforce
+/// everywhere.
 fn check_program_bounds_impl(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Array[String], send_only: Bool) -> Unit {
   let pairs = collect_subst_bounds_pairs(s)
   let n = Array::length(pairs)
@@ -1276,9 +1301,9 @@ fn check_program_bounds_impl(env: TypeEnv, s: Subst, defs: Array[TypeDef], error
   }
 }
 
-// Append `Async`-escape diagnostics (an async primitive used outside an
-// `{Async}` context) to the type-error list, but only when type checking is
-// otherwise clean so we surface the real error first.
+/// Append `Async`-escape diagnostics (an async primitive used outside an
+/// `{Async}` context) to the type-error list, but only when type checking is
+/// otherwise clean so we surface the real error first.
 fn collect_async_effect_errors(stmts: Array[Stmt], env: TypeEnv, frozen_errors: Array[String]) -> Unit {
   if Array::length(frozen_errors) == 0 {
     let eff_errs = check_async_effects_stmts(stmts, env)
@@ -1317,18 +1342,18 @@ fn collect_async_effect_errors(stmts: Array[Stmt], env: TypeEnv, frozen_errors: 
   }
 }
 
-// #986: labeled-argument NAME validation. Codegen binds call arguments
-// positionally after desugar_labeled_args has reordered fully-labeled calls
-// into declared parameter order, so any labeled argument that survives to a
-// position whose parameter has a DIFFERENT base name would silently bind the
-// wrong parameter (or, for a label naming no parameter at all, is a typo the
-// user meant to be caught). This walk runs AFTER desugar_labeled_args (see
-// check_program) and rejects both shapes with a located error. Resolution
-// scope deliberately mirrors collect_fn_param_labels / relabel_expr in
-// desugar_trait_dict.vibe: only calls whose callee is an EIdent naming a
-// top-level `let`-bound function are validated — builtins with decorative
-// flag labels (`sh_lines("ls", a = true)`), local closures, and method calls
-// are left untouched, exactly like the reorder pass leaves them untouched.
+/// #986: labeled-argument NAME validation. Codegen binds call arguments
+/// positionally after desugar_labeled_args has reordered fully-labeled calls
+/// into declared parameter order, so any labeled argument that survives to a
+/// position whose parameter has a DIFFERENT base name would silently bind the
+/// wrong parameter (or, for a label naming no parameter at all, is a typo the
+/// user meant to be caught). This walk runs AFTER desugar_labeled_args (see
+/// check_program) and rejects both shapes with a located error. Resolution
+/// scope deliberately mirrors collect_fn_param_labels / relabel_expr in
+/// desugar_trait_dict.vibe: only calls whose callee is an EIdent naming a
+/// top-level `let`-bound function are validated — builtins with decorative
+/// flag labels (`sh_lines("ls", a = true)`), local closures, and method calls
+/// are left untouched, exactly like the reorder pass leaves them untouched.
 fn labeled_name_marker(off: Int, len: Int) -> String {
   if off >= 0 && len > 0 {
     String::concat(" [@off=", String::concat(__to_string(off), String::concat(":", String::concat(__to_string(off + len), "]"))))
@@ -1339,8 +1364,8 @@ fn labeled_name_marker(off: Int, len: Int) -> String {
   }
 }
 
-// Strip a trailing `~` (labeled) / `?` (optional) marker off a raw parameter
-// name — same convention as the EFn arm in checker.vibe.
+/// Strip a trailing `~` (labeled) / `?` (optional) marker off a raw parameter
+/// name — same convention as the EFn arm in checker.vibe.
 fn labeled_param_base_name(n: String) -> String {
   let ln = String::length(n)
   if ln > 0 {
@@ -1355,9 +1380,9 @@ fn labeled_param_base_name(n: String) -> String {
   }
 }
 
-// fname -> ordered parameter base names for EVERY top-level `let f = (..) -> ..`
-// (labeled or not — a labeled call against an unlabeled fn still binds
-// positionally, so its labels must line up too).
+/// fname -> ordered parameter base names for EVERY top-level `let f = (..) -> ..`
+/// (labeled or not — a labeled call against an unlabeled fn still binds
+/// positionally, so its labels must line up too).
 fn collect_labeled_check_fns(stmts: Array[Stmt]) -> Array[(String, Array[String])] {
   let out = array_empty()
   let mut i = 0
@@ -1398,21 +1423,21 @@ fn lookup_labeled_check_fn(tbl: Array[(String, Array[String])], fname: String) -
   found
 }
 
-// #1001: the Oracle (formal/VibeFormal/Typing/Call.lean's `resolveArguments`)
-// rejects a call whose arguments mix `ELabeledArg` (`x=1`) and plain
-// positional (`"ok"`) forms UNCONDITIONALLY -- a call must be either
-// uniformly positional or uniformly labeled, regardless of whether a label
-// happens to already sit at its own declared parameter position. This check
-// MUST run on the ORIGINAL, pre-desugar argument list (see the `pre_desugar`
-// branch in `labeled_name_check_expr` above): `desugar_labeled_args`'s
-// `strip_in_position_labels` (desugar_trait_dict.vibe) silently unwraps any
-// label that already matches its own position, on the theory that it is a
-// harmless "decorative" label on an otherwise-fully-positional call -- so
-// `f(x=1, "ok")` desugars to the ordinary positional `f(1, "ok")`,
-// indistinguishable by the time codegen or a post-desugar checker pass would
-// see it from a call that was never labeled at all. Checking here, before
-// that stripping runs, is the only point where the genuine mix is still
-// observable.
+/// #1001: the Oracle (formal/VibeFormal/Typing/Call.lean's `resolveArguments`)
+/// rejects a call whose arguments mix `ELabeledArg` (`x=1`) and plain
+/// positional (`"ok"`) forms UNCONDITIONALLY -- a call must be either
+/// uniformly positional or uniformly labeled, regardless of whether a label
+/// happens to already sit at its own declared parameter position. This check
+/// MUST run on the ORIGINAL, pre-desugar argument list (see the `pre_desugar`
+/// branch in `labeled_name_check_expr` above): `desugar_labeled_args`'s
+/// `strip_in_position_labels` (desugar_trait_dict.vibe) silently unwraps any
+/// label that already matches its own position, on the theory that it is a
+/// harmless "decorative" label on an otherwise-fully-positional call -- so
+/// `f(x=1, "ok")` desugars to the ordinary positional `f(1, "ok")`,
+/// indistinguishable by the time codegen or a post-desugar checker pass would
+/// see it from a call that was never labeled at all. Checking here, before
+/// that stripping runs, is the only point where the genuine mix is still
+/// observable.
 fn check_mixed_argument_modes(fname: String, fname_off: Int, args: Array[Expr], errors: Array[String]) -> Unit {
   let mut has_labeled = false
   let mut has_plain = false
@@ -1473,11 +1498,11 @@ fn labeled_name_check_call(fname: String, fname_off: Int, args: Array[Expr], pna
   }
 }
 
-// #986 (Codex P2-2 on #993): the walk tracks lexical shadowing — a local
-// binding (`let f = ..`, fn param, pattern bind, loop var) of a table name
-// suppresses validation for calls in its scope, since those calls resolve to
-// the local value whose parameter names the top-level table does not describe.
-// Same discipline as relabel_expr's `shadows` stack in desugar_trait_dict.vibe.
+/// #986 (Codex P2-2 on #993): the walk tracks lexical shadowing — a local
+/// binding (`let f = ..`, fn param, pattern bind, loop var) of a table name
+/// suppresses validation for calls in its scope, since those calls resolve to
+/// the local value whose parameter names the top-level table does not describe.
+/// Same discipline as relabel_expr's `shadows` stack in desugar_trait_dict.vibe.
 fn labeled_walk_shadowed(shadows: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -1769,14 +1794,14 @@ fn labeled_name_check_stmt(stmt: Stmt, tbl: Array[(String, Array[String])], erro
   }
 }
 
-// #1001: `pre_desugar` selects which of the two labeled-call checks runs (see
-// `labeled_name_check_expr`'s `pre_desugar` branch): `true` for the mixed-
-// argument-modes check, called BEFORE `desugar_labeled_args` in
-// `check_program`/`check_program_with_env` so it still sees each call's
-// original argument list; `false` (the pre-existing behavior) for the
-// unknown/out-of-order label checks, which must run AFTER desugar so a
-// validly-reordered fully-labeled call is not misjudged against its
-// original call-site order.
+/// #1001: `pre_desugar` selects which of the two labeled-call checks runs (see
+/// `labeled_name_check_expr`'s `pre_desugar` branch): `true` for the mixed-
+/// argument-modes check, called BEFORE `desugar_labeled_args` in
+/// `check_program`/`check_program_with_env` so it still sees each call's
+/// original argument list; `false` (the pre-existing behavior) for the
+/// unknown/out-of-order label checks, which must run AFTER desugar so a
+/// validly-reordered fully-labeled call is not misjudged against its
+/// original call-site order.
 fn check_labeled_arg_names_stmts(stmts: Array[Stmt], errors: Array[String], pre_desugar: Bool) -> Unit {
   let tbl = collect_labeled_check_fns(stmts)
   if Array::length(tbl) == 0 {
@@ -1867,13 +1892,13 @@ export fn check_program(stmts: Array[Stmt]) -> TypeEnv with { Error } {
   env
 }
 
-// Collecting variant of check_program for typed hover (vibe type-at): runs the
-// same inference but RETURNS the recorded (offset, Type) table plus the FINAL
-// substitution (check_stmts' 2nd value), instead of the TypeEnv. It degrades
-// gracefully: any type error is swallowed and whatever table was collected so
-// far is returned, so hovering inside a partially-bad file still resolves the
-// names that were checked before the error. The table holds RAW (pre-final
-// subst) types; callers resolve via subst_apply(finalSubst, ty).
+/// Collecting variant of check_program for typed hover (vibe type-at): runs the
+/// same inference but RETURNS the recorded (offset, Type) table plus the FINAL
+/// substitution (check_stmts' 2nd value), instead of the TypeEnv. It degrades
+/// gracefully: any type error is swallowed and whatever table was collected so
+/// far is returned, so hovering inside a partially-bad file still resolves the
+/// names that were checked before the error. The table holds RAW (pre-final
+/// subst) types; callers resolve via subst_apply(finalSubst, ty).
 export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], Subst) with { Error } {
   let empty_defs = array_empty()
   let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {

@@ -14,8 +14,12 @@ import @vibe/compiler/cache {
 
 import @vibe/compiler/core {
   Stmt,
-  dir_of_path, ensure_regular_source_fs, is_contract_ext, nearest_vpkg_path_fs,
-  path_has_relative_prefix, resolve_import_path_candidates
+  dir_of_path,
+  ensure_regular_source_fs,
+  is_contract_ext,
+  nearest_vpkg_path_fs,
+  path_has_relative_prefix,
+  resolve_import_path_candidates
 }
 
 import @vibe/compiler/runtime/eval_loader {
@@ -97,20 +101,20 @@ fn special_bundle_header(path: String) -> Option[(Array[String], Array[String])]
   }
 }
 
-// #831: a plain relative/workspace-absolute import (`import ./x.vibe { .. }`,
-// `export ./x.vibe { .. }`) whose resolved candidate does not exist on disk
-// used to reach `Fs::read_file` unguarded further down the pipeline
-// (`collect_sources_rec`), which is a raw host primitive -- a missing file
-// there is a JS-level throw from the host runner, NOT a guest `Error` effect,
-// so it crosses the wasm/JS boundary uncaught and prints a "[crash debug]"
-// dump instead of a located diagnostic. Catch it HERE, at the import
-// resolution call site, where the raw import spelling and the importing
-// module's source text (for a line:col lookup) are still both in scope.
-// `@scope/name` package refs are exempt: their resolution has its own,
-// more specific existence + pin checks downstream (`verify_store_package_fs`,
-// `verify_lib_package_fs` in loader/index.vibe), which report a better
-// message (pin/store-install guidance) than a generic "cannot resolve
-// import" would.
+/// #831: a plain relative/workspace-absolute import (`import ./x.vibe { .. }`,
+/// `export ./x.vibe { .. }`) whose resolved candidate does not exist on disk
+/// used to reach `Fs::read_file` unguarded further down the pipeline
+/// (`collect_sources_rec`), which is a raw host primitive -- a missing file
+/// there is a JS-level throw from the host runner, NOT a guest `Error` effect,
+/// so it crosses the wasm/JS boundary uncaught and prints a "[crash debug]"
+/// dump instead of a located diagnostic. Catch it HERE, at the import
+/// resolution call site, where the raw import spelling and the importing
+/// module's source text (for a line:col lookup) are still both in scope.
+/// `@scope/name` package refs are exempt: their resolution has its own,
+/// more specific existence + pin checks downstream (`verify_store_package_fs`,
+/// `verify_lib_package_fs` in loader/index.vibe), which report a better
+/// message (pin/store-install guidance) than a generic "cannot resolve
+/// import" would.
 fn located_missing_import_error(source: String, keyword: String, raw_path: String, resolved: String) -> String {
   let base_msg = String::concat("cannot resolve import '", String::concat(raw_path, String::concat("' (resolved to ", String::concat(resolved, ")"))))
   let needle = String::concat(keyword, String::concat(" ", raw_path))
@@ -128,14 +132,14 @@ fn located_missing_import_error(source: String, keyword: String, raw_path: Strin
   }
 }
 
-// The `@scope/name...` spelling a relative-import-boundary error should
-// suggest instead, derived from the resolved package owner's contract path
-// (`lib/@vibe/compiler/core/index.vpkg` -> `@vibe/compiler/core`,
-// `.vibe/store/@vibe/json/index.vpkg` -> `@vibe/json`). Unlike
-// `import_display_name` above (a short display label, truncated to the
-// first two `@scope/name` segments), this must reproduce the FULL lib/-
-// relative path so a compiler-internal nested package (no separate `@`
-// identity of its own) still gets a spelling that actually resolves.
+/// The `@scope/name...` spelling a relative-import-boundary error should
+/// suggest instead, derived from the resolved package owner's contract path
+/// (`lib/@vibe/compiler/core/index.vpkg` -> `@vibe/compiler/core`,
+/// `.vibe/store/@vibe/json/index.vpkg` -> `@vibe/json`). Unlike
+/// `import_display_name` above (a short display label, truncated to the
+/// first two `@scope/name` segments), this must reproduce the FULL lib/-
+/// relative path so a compiler-internal nested package (no separate `@`
+/// identity of its own) still gets a spelling that actually resolves.
 fn qualified_package_name_from_owner(owner: String) -> String {
   let without_suffix = if String::ends_with(owner, "/index.vpkg") {
     owner[0: String::length(owner) - String::length("/index.vpkg")]
@@ -153,12 +157,12 @@ fn qualified_package_name_from_owner(owner: String) -> String {
   }
 }
 
-// The message must contain the literal phrase "package boundary" and the
-// target owner's path: `enforce_incoming_boundary_fs`'s established
-// "cannot import ... across a package boundary" wording (loader.vibe,
-// #729) is what tests/fixtures across this tree assert on
-// (contract_vpkg_test.vibe's "nested package cannot import parent
-// internals" / "parent package cannot import nested package internals").
+/// The message must contain the literal phrase "package boundary" and the
+/// target owner's path: `enforce_incoming_boundary_fs`'s established
+/// "cannot import ... across a package boundary" wording (loader.vibe,
+/// #729) is what tests/fixtures across this tree assert on
+/// (contract_vpkg_test.vibe's "nested package cannot import parent
+/// internals" / "parent package cannot import nested package internals").
 fn located_package_boundary_error(source: String, keyword: String, raw_path: String, suggestion: String) -> String {
   let base_msg = String::concat("relative ", String::concat(keyword, String::concat(" '", String::concat(raw_path, String::concat("' crosses a package boundary; use `", String::concat(keyword, String::concat(" ", String::concat(suggestion, "` instead"))))))))
   let needle = String::concat(keyword, String::concat(" ", raw_path))
@@ -176,19 +180,19 @@ fn located_package_boundary_error(source: String, keyword: String, raw_path: Str
   }
 }
 
-// A relative (`./`, `../`) import must stay within the importing file's own
-// nearest `index.vpkg`-owned package -- reaching a DIFFERENT package,
-// including the neighbor's own facade, is only allowed via a qualified
-// `@scope/name` (or compiler-internal `@scope/name/...`) import. This closes
-// the loophole `enforce_incoming_boundary_fs` (loader.vibe) deliberately
-// leaves open for `@`-qualified imports of a neighbor's facade: that
-// exception is for the CORRECT spelling, not the relative one.
-//
-// `export` (re-export, SReExport) is exempt: the parser's export-statement
-// grammar has no `@scope/name` production at all (only `.`/`..`-prefixed
-// paths), so a boundary-crossing re-export has no alternative spelling to
-// migrate to yet -- enforcing this on `export` would just break working
-// facades with no fix available.
+/// A relative (`./`, `../`) import must stay within the importing file's own
+/// nearest `index.vpkg`-owned package -- reaching a DIFFERENT package,
+/// including the neighbor's own facade, is only allowed via a qualified
+/// `@scope/name` (or compiler-internal `@scope/name/...`) import. This closes
+/// the loophole `enforce_incoming_boundary_fs` (loader.vibe) deliberately
+/// leaves open for `@`-qualified imports of a neighbor's facade: that
+/// exception is for the CORRECT spelling, not the relative one.
+///
+/// `export` (re-export, SReExport) is exempt: the parser's export-statement
+/// grammar has no `@scope/name` production at all (only `.`/`..`-prefixed
+/// paths), so a boundary-crossing re-export has no alternative spelling to
+/// migrate to yet -- enforcing this on `export` would just break working
+/// facades with no fix available.
 fn enforce_relative_import_package_boundary_fs(raw_path: String, self_path: String, resolved: String, source: String, keyword: String) -> Unit with { Error, Fs } {
   if keyword == "import" && path_has_relative_prefix(raw_path, String::length(raw_path)) {
     let importer_owner = nearest_vpkg_path_fs(self_path)
@@ -211,53 +215,53 @@ fn resolve_checked_path_fs(base_dir: String, raw_path: String, self_path: String
   }
 }
 
-// #943: `import <pkg> { a, b }` / `export <pkg> { a, b }` names used to bind
-// blindly against whatever the resolved module's CHECKED env happened to
-// contain (runtime/index.vibe's `bind_import_names_from_cache` does a flat,
-// export-UNAWARE lookup): a nonexistent name silently became `CtUnknown` (no
-// error unless later used somewhere that needed a real type), and a
-// genuinely PRIVATE name silently bound its REAL type (every top-level def
-// is present in a checked module's env, exported or not) and only failed
-// much later, UNLOCATED, deep inside the codegen merge's export-aware
-// private-namespacing pass ("undefined variable (local): <name>", no
-// file/line, no mention of the import). Catch it HERE instead, at the same
-// call site that already resolves the raw import path and has the
-// importing module's own source text in scope for a line:col lookup
-// (mirrors `located_missing_import_error` above).
-//
-// Scope (deliberately conservative -- see #943 discussion): only checked
-// when the import target is a CONTRACT package boundary (`.../index.vpkg`
-// or `.../index.vibei` -- ADR-0063/ADR-0070's declared-surface packages,
-// the same shape #729/#847's boundary-enforcement machinery treats as the
-// sole authoritative entry point), and only for plain lowercase-leading
-// value names (see `is_lowercase_leading_plain_ident`). Shapes left
-// UNVALIDATED on purpose:
-//   - plain `index.vibe` facade directories: their effective surface is
-//     historically LEAKIER than the facade's own re-export list --
-//     fixtures/import_visibility_float_eq_test.vibe (#716) deliberately
-//     imports `eq` through prelude/index.vibe even though the facade only
-//     lists `Float::eq` (the merge-level export of float.vibe's `export
-//     let eq` is what actually binds). A facade's collect_exports list is
-//     therefore not a positive proof of absence.
-//   - direct-file imports (`import ../checker_effects.vibe { ... }`, the
-//     common compiler-internal shape): same-package edges are not a
-//     package-contract question at all.
-//   - a package whose store/lib copy is not materialized (unresolved
-//     `@scope/name` pin) -- the `Fs::exists` guard below.
+/// #943: `import <pkg> { a, b }` / `export <pkg> { a, b }` names used to bind
+/// blindly against whatever the resolved module's CHECKED env happened to
+/// contain (runtime/index.vibe's `bind_import_names_from_cache` does a flat,
+/// export-UNAWARE lookup): a nonexistent name silently became `CtUnknown` (no
+/// error unless later used somewhere that needed a real type), and a
+/// genuinely PRIVATE name silently bound its REAL type (every top-level def
+/// is present in a checked module's env, exported or not) and only failed
+/// much later, UNLOCATED, deep inside the codegen merge's export-aware
+/// private-namespacing pass ("undefined variable (local): <name>", no
+/// file/line, no mention of the import). Catch it HERE instead, at the same
+/// call site that already resolves the raw import path and has the
+/// importing module's own source text in scope for a line:col lookup
+/// (mirrors `located_missing_import_error` above).
+///
+/// Scope (deliberately conservative -- see #943 discussion): only checked
+/// when the import target is a CONTRACT package boundary (`.../index.vpkg`
+/// or `.../index.vibei` -- ADR-0063/ADR-0070's declared-surface packages,
+/// the same shape #729/#847's boundary-enforcement machinery treats as the
+/// sole authoritative entry point), and only for plain lowercase-leading
+/// value names (see `is_lowercase_leading_plain_ident`). Shapes left
+/// UNVALIDATED on purpose:
+///   - plain `index.vibe` facade directories: their effective surface is
+///     historically LEAKIER than the facade's own re-export list --
+///     fixtures/import_visibility_float_eq_test.vibe (#716) deliberately
+///     imports `eq` through prelude/index.vibe even though the facade only
+///     lists `Float::eq` (the merge-level export of float.vibe's `export
+///     let eq` is what actually binds). A facade's collect_exports list is
+///     therefore not a positive proof of absence.
+///   - direct-file imports (`import ../checker_effects.vibe { ... }`, the
+///     common compiler-internal shape): same-package edges are not a
+///     package-contract question at all.
+///   - a package whose store/lib copy is not materialized (unresolved
+///     `@scope/name` pin) -- the `Fs::exists` guard below.
 fn is_contract_boundary_path(path: String) -> Bool {
   String::ends_with(path, "/index.vibei") || String::ends_with(path, "/index.vpkg")
 }
 
-// Type names, enum-variant constructors, and `Type::member` qualified items
-// (`import ../ast { type Json, Type::method }`) are excluded on purpose:
-// `collect_exports` (reused below for the VALUE namespace) enumerates enum
-// VARIANT constructors but never the enum/struct/alias/trait NAME itself, so
-// a routine, entirely legitimate `import ../core { Stmt, Expr,
-// TypeEnv, ... }` (used all over this compiler) would false-positive as "not
-// exported" if type-shaped names were checked against the same list. The
-// vibe convention is snake_case values / UpperCamelCase types (CLAUDE.md),
-// so a lowercase first letter reliably selects the VALUE namespace this
-// check can actually speak to.
+/// Type names, enum-variant constructors, and `Type::member` qualified items
+/// (`import ../ast { type Json, Type::method }`) are excluded on purpose:
+/// `collect_exports` (reused below for the VALUE namespace) enumerates enum
+/// VARIANT constructors but never the enum/struct/alias/trait NAME itself, so
+/// a routine, entirely legitimate `import ../core { Stmt, Expr,
+/// TypeEnv, ... }` (used all over this compiler) would false-positive as "not
+/// exported" if type-shaped names were checked against the same list. The
+/// vibe convention is snake_case values / UpperCamelCase types (CLAUDE.md),
+/// so a lowercase first letter reliably selects the VALUE namespace this
+/// check can actually speak to.
 fn is_lowercase_leading_plain_ident(name: String) -> Bool {
   if String::length(name) == 0 {
     false
@@ -282,15 +286,15 @@ fn string_array_contains_hc(items: Array[String], target: String) -> Bool {
   found
 }
 
-// The target's OWN export surface only -- deliberately NOT recursive (never
-// walks the target's own imports/deps). Reusing
-// `load_or_parse_module_header_fs_impl(resolved, ..)` here would recurse
-// into this same validation for the target's own import list, which
-// recurses again for ITS deps, and so on -- effectively re-validating the
-// whole transitive import graph from every single edge. This reads +
-// (contract-)parses `resolved` exactly once instead, mirroring the same
-// decls/opaques/collect_exports combination the contract-header branch above
-// already uses for its own `exports` result.
+/// The target's OWN export surface only -- deliberately NOT recursive (never
+/// walks the target's own imports/deps). Reusing
+/// `load_or_parse_module_header_fs_impl(resolved, ..)` here would recurse
+/// into this same validation for the target's own import list, which
+/// recurses again for ITS deps, and so on -- effectively re-validating the
+/// whole transitive import graph from every single edge. This reads +
+/// (contract-)parses `resolved` exactly once instead, mirroring the same
+/// decls/opaques/collect_exports combination the contract-header branch above
+/// already uses for its own `exports` result.
 fn resolved_export_names_fs(resolved: String) -> Array[String] with { Error, Fs } {
   let source = Fs::read_file(resolved)
   if is_contract_ext(resolved) && !String::starts_with(source, contract_facade_marker) {
@@ -341,9 +345,9 @@ fn located_import_name_error(source: String, keyword: String, raw_path: String, 
   }
 }
 
-// A friendly `@scope/name` label for the error message when derivable from
-// the resolved on-disk path (`.../lib/@vibe/json/index.vpkg` -> `@vibe/json`);
-// falls back to the raw import spelling otherwise.
+/// A friendly `@scope/name` label for the error message when derivable from
+/// the resolved on-disk path (`.../lib/@vibe/json/index.vpkg` -> `@vibe/json`);
+/// falls back to the raw import spelling otherwise.
 fn import_display_name(raw_path: String, resolved: String) -> String {
   if String::starts_with(raw_path, "@") {
     raw_path
@@ -414,11 +418,11 @@ fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String, self_pat
   deps
 }
 
-// Direct production siblings of a contract package, as raw import spellings
-// (`./<name>`). Subdirectories are never scanned implicitly: their sources
-// enter the graph only through an explicit relative import from a direct root.
-// Fs::readdir is byte-sorted, so facade, hash, and dependency order remain
-// deterministic.
+/// Direct production siblings of a contract package, as raw import spellings
+/// (`./<name>`). Subdirectories are never scanned implicitly: their sources
+/// enter the graph only through an explicit relative import from a direct root.
+/// Fs::readdir is byte-sorted, so facade, hash, and dependency order remain
+/// deterministic.
 fn directory_entry_path(dir: String, name: String) -> String {
   if dir == "" {
     name
@@ -431,7 +435,11 @@ fn directory_entry_path(dir: String, name: String) -> String {
 
 export fn contract_sibling_impl_raws(dir: String) -> Array[String] with { Error, Fs } {
   let out = array_empty()
-  let scan_dir = if dir == "" { "." } else { dir }
+  let scan_dir = if dir == "" {
+    "."
+  } else {
+    dir
+  }
   let names = Fs::readdir(scan_dir)
   let mut i = 0
   while i < Array::length(names) {
@@ -448,13 +456,13 @@ export fn contract_sibling_impl_raws(dir: String) -> Array[String] with { Error,
   out
 }
 
-// #897/#855 (ADR-0070 Phase 1): a .vpkg contract gets implicit membership
-// unconditionally (unlike .vibei's legacy all-or-nothing gate) -- explicit
-// `import ./x.vibe {}` declarations are merged with auto-discovered
-// siblings rather than suppressing discovery. `explicit` wins ordering (its
-// declared spelling is part of the package hash); newly-discovered names
-// are appended after, de-duplicated, preserving contract_sibling_impl_raws'
-// deterministic byte-sorted discovery order for anything not already listed.
+/// #897/#855 (ADR-0070 Phase 1): a .vpkg contract gets implicit membership
+/// unconditionally (unlike .vibei's legacy all-or-nothing gate) -- explicit
+/// `import ./x.vibe {}` declarations are merged with auto-discovered
+/// siblings rather than suppressing discovery. `explicit` wins ordering (its
+/// declared spelling is part of the package hash); newly-discovered names
+/// are appended after, de-duplicated, preserving contract_sibling_impl_raws'
+/// deterministic byte-sorted discovery order for anything not already listed.
 export fn merge_impl_raws_dedupe(explicit: Array[String], discovered: Array[String]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
@@ -628,12 +636,12 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
   }
 }
 
-// Snapshot each contract-boundary dep's content fingerprint for the v2
-// header entry (#943 review). A dep that is not a contract boundary — or
-// whose file is not materialized — records nothing: the warm gate only
-// compares what was recorded, and a contract that APPEARS later changes
-// resolution winners, which the #801 package_index_deps_are_current gate
-// already catches.
+/// Snapshot each contract-boundary dep's content fingerprint for the v2
+/// header entry (#943 review). A dep that is not a contract boundary — or
+/// whose file is not materialized — records nothing: the warm gate only
+/// compares what was recorded, and a contract that APPEARS later changes
+/// resolution winners, which the #801 package_index_deps_are_current gate
+/// already catches.
 fn contract_dep_fingerprints_now(deps: Array[String]) -> Array[(String, String)] with { Fs } {
   let out = array_empty()
   let mut i = 0
@@ -649,9 +657,9 @@ fn contract_dep_fingerprints_now(deps: Array[String]) -> Array[(String, String)]
   out
 }
 
-// Warm-gate check: every recorded contract fingerprint must still match the
-// on-disk contract text. A vanished or edited contract fails the gate and
-// forces a cold re-parse + re-validation of the importer's names.
+/// Warm-gate check: every recorded contract fingerprint must still match the
+/// on-disk contract text. A vanished or edited contract fails the gate and
+/// forces a cold re-parse + re-validation of the importer's names.
 fn contract_dep_fingerprints_current(cdeps: Array[(String, String)]) -> Bool with { Fs } {
   let mut i = 0
   let mut ok = true

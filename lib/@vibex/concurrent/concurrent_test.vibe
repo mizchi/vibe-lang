@@ -1,27 +1,42 @@
 //# Imports
 
 import ./concurrent.vibe {
-  type TaskGroup, type TaskHandle, type TaskError, type SendError,
-  type ChannelConfigError, type Sender, type Receiver, type Channel,
+  type Channel,
+  type ChannelConfigError,
   type Parallel,
-  TaskGroup::run, TaskGroup::spawn, TaskHandle::join, TaskHandle::cancel,
-  Channel::bounded, Sender::send, Sender::clone, Sender::release,
-  Receiver::recv, Parallel::map
+  type Receiver,
+  type SendError,
+  type Sender,
+  type TaskError,
+  type TaskGroup,
+  type TaskHandle,
+  Channel::bounded,
+  Parallel::map,
+  Receiver::recv,
+  Sender::clone,
+  Sender::release,
+  Sender::send,
+  TaskGroup::run,
+  TaskGroup::spawn,
+  TaskHandle::cancel,
+  TaskHandle::join
 }
 
 //# Lifecycle conformance locks (docs/concurrency.md)
 
-// The eager prototype ran the thunk inside spawn; the ADR-0068 scheduler
-// must not. That absence-of-eager-execution property is now pinned by
-// "cancel before dispatch resolves Cancelled without running the body"
-// below (cancelling instead of joining resolves the task WITHOUT ever
-// running its closure -- an eagerly-run closure could not be cancelled
-// away) -- #1081 step 3 Phase B's `Spawnable[r]` capture check rejects the
-// outer-Array capture this test used to observe "not yet run" directly, so
-// this test now just locks the join-driven return value.
+/// The eager prototype ran the thunk inside spawn; the ADR-0068 scheduler
+/// must not. That absence-of-eager-execution property is now pinned by
+/// "cancel before dispatch resolves Cancelled without running the body"
+/// below (cancelling instead of joining resolves the task WITHOUT ever
+/// running its closure -- an eagerly-run closure could not be cancelled
+/// away) -- #1081 step 3 Phase B's `Spawnable[r]` capture check rejects the
+/// outer-Array capture this test used to observe "not yet run" directly, so
+/// this test now just locks the join-driven return value.
 test "spawn is deferred: child does not run before join" {
   let r = TaskGroup::run((n) -> {
-    let t = TaskGroup::spawn(n, () -> { 42 })
+    let t = TaskGroup::spawn(n, () -> {
+      42
+    })
     TaskHandle::join(t)
   })
   match r {
@@ -32,7 +47,9 @@ test "spawn is deferred: child does not run before join" {
 
 test "join is idempotent: repeated joins observe the same outcome" {
   let r = TaskGroup::run((n) -> {
-    let t = TaskGroup::spawn(n, () -> { 7 })
+    let t = TaskGroup::spawn(n, () -> {
+      7
+    })
     let a = TaskHandle::join(t)
     let b = TaskHandle::join(t)
     (a, b)
@@ -46,21 +63,28 @@ test "join is idempotent: repeated joins observe the same outcome" {
   }
 }
 
-// #1081 step 3 Phase B: a plain outer ArrayBuilder can no longer be
-// captured into a spawn closure to log interleaving order (not Send). A
-// same-region Sender IS Spawnable-legal (docs/concurrency.md), so each
-// task reports its own tag through a cloned Sender instead; the channel's
-// per-sender FIFO ordering pins the exact same dispatch-order guarantee.
+/// #1081 step 3 Phase B: a plain outer ArrayBuilder can no longer be
+/// captured into a spawn closure to log interleaving order (not Send). A
+/// same-region Sender IS Spawnable-legal (docs/concurrency.md), so each
+/// task reports its own tag through a cloned Sender instead; the channel's
+/// per-sender FIFO ordering pins the exact same dispatch-order guarantee.
 test "dispatch order is deterministic FIFO in spawn order" {
   let r = TaskGroup::run((n) -> {
     match Channel::bounded(n, 3) {
-      Err(_) => [],
+      Err(_) => [
+      ],
       Ok((s, rx)) => {
         let s1 = Sender::clone(s)
         let s2 = Sender::clone(s)
-        let t1 = TaskGroup::spawn(n, () -> { let _ = Sender::send(s1, 1); Sender::release(s1); 0 })
-        let t2 = TaskGroup::spawn(n, () -> { let _ = Sender::send(s2, 2); Sender::release(s2); 0 })
-        let t3 = TaskGroup::spawn(n, () -> { let _ = Sender::send(s, 3); Sender::release(s); 0 })
+        let t1 = TaskGroup::spawn(n, () -> {
+          let _ = Sender::send(s1, 1); Sender::release(s1); 0
+        })
+        let t2 = TaskGroup::spawn(n, () -> {
+          let _ = Sender::send(s2, 2); Sender::release(s2); 0
+        })
+        let t3 = TaskGroup::spawn(n, () -> {
+          let _ = Sender::send(s, 3); Sender::release(s); 0
+        })
         // Joining the LAST task drives the queue; earlier spawns run first.
         let _ = TaskHandle::join(t3)
         let _ = TaskHandle::join(t1)
@@ -70,7 +94,9 @@ test "dispatch order is deterministic FIFO in spawn order" {
         while going {
           match Receiver::recv(rx) {
             Some(v) => ArrayBuilder::push(log, v),
-            None => { going = false }
+            None => {
+              going = false
+            }
           }
         }
         ArrayBuilder::freeze(log)
@@ -88,19 +114,21 @@ test "dispatch order is deterministic FIFO in spawn order" {
   }
 }
 
-// #1081 step 3 Phase B note: this used to observe the never-joined child's
-// side effect through an outer captured Array AFTER `run` returned, which
-// specifically proved the CLOSE-time drain (not the body) dispatched it.
-// The `Spawnable[r]` capture check now rejects that Array capture, and any
-// Spawnable-legal replacement (join/channel-recv on the same handle from
-// inside the body) would itself force dispatch, no longer isolating
-// "close drove it" from "the body drove it" -- same class of gap as the
-// region-escape note above. What remains checkable, and is checked here,
-// is that the group still closes Ok with a spawned-but-never-joined live
-// child (does not hang or trap).
+/// #1081 step 3 Phase B note: this used to observe the never-joined child's
+/// side effect through an outer captured Array AFTER `run` returned, which
+/// specifically proved the CLOSE-time drain (not the body) dispatched it.
+/// The `Spawnable[r]` capture check now rejects that Array capture, and any
+/// Spawnable-legal replacement (join/channel-recv on the same handle from
+/// inside the body) would itself force dispatch, no longer isolating
+/// "close drove it" from "the body drove it" -- same class of gap as the
+/// region-escape note above. What remains checkable, and is checked here,
+/// is that the group still closes Ok with a spawned-but-never-joined live
+/// child (does not hang or trap).
 test "task-group close joins children the body never joined" {
   let r = TaskGroup::run((n) -> {
-    let _t = TaskGroup::spawn(n, () -> { 1 })
+    let _t = TaskGroup::spawn(n, () -> {
+      1
+    })
     // body returns without joining; normal close must run the child
     99
   })
@@ -109,7 +137,9 @@ test "task-group close joins children the body never joined" {
 
 test "cancel before dispatch resolves Cancelled without running the body" {
   let r = TaskGroup::run((n) -> {
-    let t = TaskGroup::spawn(n, () -> { 1 })
+    let t = TaskGroup::spawn(n, () -> {
+      1
+    })
     TaskHandle::cancel(t)
     // cancel is idempotent
     TaskHandle::cancel(t)
@@ -124,7 +154,9 @@ test "cancel before dispatch resolves Cancelled without running the body" {
 
 test "cancel after terminal is a no-op" {
   let r = TaskGroup::run((n) -> {
-    let t = TaskGroup::spawn(n, () -> { 5 })
+    let t = TaskGroup::spawn(n, () -> {
+      5
+    })
     let first = TaskHandle::join(t)
     TaskHandle::cancel(t)
     let second = TaskHandle::join(t)
@@ -141,7 +173,9 @@ test "cancel after terminal is a no-op" {
 
 test "explicitly cancelled child does not fail the task group" {
   let r = TaskGroup::run((n) -> {
-    let t = TaskGroup::spawn(n, () -> { 1 })
+    let t = TaskGroup::spawn(n, () -> {
+      1
+    })
     TaskHandle::cancel(t)
     123
   })
@@ -171,19 +205,21 @@ test "unhandled child throw becomes Failed(msg) and fails the task group" {
   }
 }
 
-// #1081 step 3 Phase B: the good sibling's outer-Array "did it run" check
-// is no longer Spawnable-legal. Joining `good` directly instead is BOTH
-// legal and more precise: it forces the same FIFO dispatch (`_bad` is
-// earlier in spawn order and runs first, setting `n.failing`) and then
-// observes the fail-fast cancellation on `good` itself via the type-safe
-// join result, rather than an out-of-band side effect.
+/// #1081 step 3 Phase B: the good sibling's outer-Array "did it run" check
+/// is no longer Spawnable-legal. Joining `good` directly instead is BOTH
+/// legal and more precise: it forces the same FIFO dispatch (`_bad` is
+/// earlier in spawn order and runs first, setting `n.failing`) and then
+/// observes the fail-fast cancellation on `good` itself via the type-safe
+/// join result, rather than an out-of-band side effect.
 test "fail-fast: sibling still Ready when a child fails is cancelled" {
   let r: Result[Int, TaskError] = TaskGroup::run((n) -> {
     let _bad = TaskGroup::spawn(n, () -> {
       throw("first-failure")
       0
     })
-    let good = TaskGroup::spawn(n, () -> { 1 })
+    let good = TaskGroup::spawn(n, () -> {
+      1
+    })
     assert(TaskHandle::join(good) is Err(TaskError::Cancelled))
     0
   })
@@ -344,11 +380,11 @@ test "rendezvous (capacity 0): recv drives the producer and pairs up" {
   assert(r is Ok(0))
 }
 
-// #1081 step 3 Phase B: the consumer used to write its received value into
-// a captured outer Array (not Spawnable-legal); it returns the value
-// instead, observed through the type-safe `TaskHandle::join` result. Send
-// already drives the consumer to completion (rendezvous, capacity 0), so
-// the join below reads an already-terminal cell -- same timing as before.
+/// #1081 step 3 Phase B: the consumer used to write its received value into
+/// a captured outer Array (not Spawnable-legal); it returns the value
+/// instead, observed through the type-safe `TaskHandle::join` result. Send
+/// already drives the consumer to completion (rendezvous, capacity 0), so
+/// the join below reads an already-terminal cell -- same timing as before.
 test "rendezvous (capacity 0): sender blocks until a consumer task runs" {
   let r = TaskGroup::run((n) -> {
     match Channel::bounded(n, 0) {
@@ -373,9 +409,9 @@ test "rendezvous (capacity 0): sender blocks until a consumer task runs" {
   assert(r is Ok(0))
 }
 
-// #1081 step 3 Phase B: same replacement as the rendezvous test above --
-// the consumer returns its drained value instead of writing an outer
-// captured Array.
+/// #1081 step 3 Phase B: same replacement as the rendezvous test above --
+/// the consumer returns its drained value instead of writing an outer
+/// captured Array.
 test "full buffer send blocks and is promoted when a consumer drains" {
   let r = TaskGroup::run((n) -> {
     match Channel::bounded(n, 1) {
@@ -443,8 +479,12 @@ test "pipeline: body consumes a spawned producer past capacity" {
         let mut going = true
         while going {
           match Receiver::recv(rx) {
-            Some(v) => { sum = sum + v },
-            None => { going = false }
+            Some(v) => {
+              sum = sum + v
+            },
+            None => {
+              going = false
+            }
           }
         }
         Ok(sum)
@@ -459,7 +499,15 @@ test "pipeline: body consumes a spawned producer past capacity" {
 
 test "Parallel::map returns results in input index order" {
   let r = TaskGroup::run((n) -> {
-    Parallel::map(n, [1, 2, 3, 4, 5], (x) -> { x * x })
+    Parallel::map(n, [
+      1,
+      2,
+      3,
+      4,
+      5
+    ], (x) -> {
+      x * x
+    })
   })
   match r {
     Ok(mapped) => match mapped {
@@ -479,8 +527,14 @@ test "Parallel::map returns results in input index order" {
 
 test "Parallel::map surfaces the first failure" {
   let r: Result[Result[Array[Int], TaskError], TaskError] = TaskGroup::run((n) -> {
-    Parallel::map(n, [1, 2, 3], (x) -> {
-      if x == 2 { throw("map-boom") }
+    Parallel::map(n, [
+      1,
+      2,
+      3
+    ], (x) -> {
+      if x == 2 {
+        throw("map-boom")
+      }
       x
     })
   })
@@ -494,8 +548,11 @@ test "Parallel::map surfaces the first failure" {
 
 test "Parallel::map on an empty input is Ok([])" {
   let r = TaskGroup::run((n) -> {
-    let empty: Array[Int] = []
-    Parallel::map(n, empty, (x) -> { x })
+    let empty: Array[Int] = [
+    ]
+    Parallel::map(n, empty, (x) -> {
+      x
+    })
   })
   match r {
     Ok(mapped) => match mapped {
@@ -525,8 +582,12 @@ test "pipeline: spawned producer and consumer within capacity" {
           let mut going = true
           while going {
             match Receiver::recv(rx) {
-              Some(v) => { sum = sum + v },
-              None => { going = false }
+              Some(v) => {
+                sum = sum + v
+              },
+              None => {
+                going = false
+              }
             }
           }
           sum

@@ -26,13 +26,13 @@ fn is_alnum(c: Int) -> Bool {
   is_alpha(c) || is_digit(c)
 }
 
-// #946: byte-length of the UTF-8 sequence LED by byte `c` (a raw 0..255 byte,
-// as returned by String::char_code_at -- this lexer is byte-indexed, not
-// codepoint-indexed). 2/3/4 for a valid 2/3/4-byte lead byte, else 1 (ASCII,
-// a bare continuation byte 0x80..0xBF, or an invalid/overlong lead 0xF8..0xFF
-// all fall back to single-byte granularity -- there is nothing more sensible
-// to do with a malformed sequence, and 1 keeps the "advance at least one
-// byte" progress guarantee the recovering lexer relies on).
+/// #946: byte-length of the UTF-8 sequence LED by byte `c` (a raw 0..255 byte,
+/// as returned by String::char_code_at -- this lexer is byte-indexed, not
+/// codepoint-indexed). 2/3/4 for a valid 2/3/4-byte lead byte, else 1 (ASCII,
+/// a bare continuation byte 0x80..0xBF, or an invalid/overlong lead 0xF8..0xFF
+/// all fall back to single-byte granularity -- there is nothing more sensible
+/// to do with a malformed sequence, and 1 keeps the "advance at least one
+/// byte" progress guarantee the recovering lexer relies on).
 fn utf8_seq_len(c: Int) -> Int {
   if c >= 0xF0 && c <= 0xF7 {
     4
@@ -45,13 +45,13 @@ fn utf8_seq_len(c: Int) -> Int {
   }
 }
 
-// #946: byte-length of a leading UTF-8 BOM (EF BB BF, U+FEFF), else 0. Common
-// editors/Windows tools prepend this to "UTF-8" text files; treating it as
-// just another unlexable character produced a located-but-pointless lex
-// error on line 1 col 1 of an otherwise perfectly ordinary file. Every other
-// mainstream tokenizer silently skips a leading BOM, so this lexer does too
-// -- ONLY at absolute position 0 (a BOM anywhere else in the file is not
-// special and still lexes -- i.e. fails -- as ordinary bytes).
+/// #946: byte-length of a leading UTF-8 BOM (EF BB BF, U+FEFF), else 0. Common
+/// editors/Windows tools prepend this to "UTF-8" text files; treating it as
+/// just another unlexable character produced a located-but-pointless lex
+/// error on line 1 col 1 of an otherwise perfectly ordinary file. Every other
+/// mainstream tokenizer silently skips a leading BOM, so this lexer does too
+/// -- ONLY at absolute position 0 (a BOM anywhere else in the file is not
+/// special and still lexes -- i.e. fails -- as ordinary bytes).
 fn skip_bom(source: String, len: Int) -> Int {
   if len >= 3 && String::char_code_at(source, 0) == 0xEF && String::char_code_at(source, 1) == 0xBB && String::char_code_at(source, 2) == 0xBF {
     3
@@ -60,18 +60,22 @@ fn skip_bom(source: String, len: Int) -> Int {
   }
 }
 
-// #946: the ORIGINAL bytes of the (possibly multi-byte UTF-8) character at
-// `pos`, clamped to `len` -- used to build a display-safe "unexpected
-// character: <text>" message. Slicing the source's own bytes (rather than
-// reconstructing them from the decoded codepoint) sidesteps
-// String::from_char_code entirely: that builtin only ever stores ONE raw
-// byte (see gen_str_from_char_code_body), so calling it on a lone
-// continuation byte produced mojibake (an invalid lone byte, not the
-// original multi-byte character) instead of the real character.
+/// #946: the ORIGINAL bytes of the (possibly multi-byte UTF-8) character at
+/// `pos`, clamped to `len` -- used to build a display-safe "unexpected
+/// character: <text>" message. Slicing the source's own bytes (rather than
+/// reconstructing them from the decoded codepoint) sidesteps
+/// String::from_char_code entirely: that builtin only ever stores ONE raw
+/// byte (see gen_str_from_char_code_body), so calling it on a lone
+/// continuation byte produced mojibake (an invalid lone byte, not the
+/// original multi-byte character) instead of the real character.
 fn utf8_char_text(source: String, len: Int, pos: Int) -> String {
   let c = String::char_code_at(source, pos)
   let seq_len = utf8_seq_len(c)
-  let clamp_end = if pos + seq_len <= len { pos + seq_len } else { len }
+  let clamp_end = if pos + seq_len <= len {
+    pos + seq_len
+  } else {
+    len
+  }
   String::substring(source, pos, clamp_end)
 }
 
@@ -373,16 +377,16 @@ fn scan_interp_end(s: String, len: Int, idx: Int, depth: Int) -> Int with { Erro
   }
 }
 
-// #997: 1-based "line L:C: " prefix for a 0-based char offset, matching the
-// located-diagnostic convention used elsewhere in this lexer (see the
-// `\(expr)`-removal message below). The generic offset-based diagnostic
-// collector (`lex_with_offsets_recovering`) always records the START offset
-// of the enclosing `lex_one_token` call as the error location, so a throw
-// raised partway through a multi-char token (e.g. at the `e`/`E` of a long
-// numeric literal, not at its first digit) would otherwise be misattributed
-// to the token's start. Embedding the precise location directly in the
-// message — the same workaround already used for the `\(expr)` message —
-// keeps the report pointing at the actual offending character.
+/// #997: 1-based "line L:C: " prefix for a 0-based char offset, matching the
+/// located-diagnostic convention used elsewhere in this lexer (see the
+/// `\(expr)`-removal message below). The generic offset-based diagnostic
+/// collector (`lex_with_offsets_recovering`) always records the START offset
+/// of the enclosing `lex_one_token` call as the error location, so a throw
+/// raised partway through a multi-char token (e.g. at the `e`/`E` of a long
+/// numeric literal, not at its first digit) would otherwise be misattributed
+/// to the token's start. Embedding the precise location directly in the
+/// message — the same workaround already used for the `\(expr)` message —
+/// keeps the report pointing at the actual offending character.
 fn located_prefix(s: String, pos: Int) -> String {
   let mut eline = 1
   let mut ecol = 1
@@ -399,21 +403,21 @@ fn located_prefix(s: String, pos: Int) -> String {
   String::concat("line ", String::concat(__to_string(eline), String::concat(":", String::concat(__to_string(ecol), ": "))))
 }
 
-// #956/#997: numeric literal followed directly by `e`/`E` + digits (or +/-
-// digits) looks like scientific notation, which vibe does not support — it
-// used to lex as `<number>` + identifier and surface as a confusing
-// downstream `unknown name: e20`. Reject it at the lexer with an
-// explanatory error, precisely located at the `e`/`E` (not the start of the
-// number — #997: the generic offset-based collector would otherwise blame
-// the wrong column for anything but a single-digit literal).
-//
-// #997: `e`/`E` immediately followed by a bare `+`/`-` with no digit after
-// it (`1e+`, `2e-`) is unambiguously a botched exponent, unlike a plain
-// identifier continuation (`1even` still lexes as `1` + `even`, #956's
-// `e_prefixed_identifier_after_number_still_lexes`) — a sign can never
-// legally continue an identifier, so there's no ambiguity to preserve for
-// that shape, and it used to silently fall through to the same confusing
-// `unknown name: e` diagnostic.
+/// #956/#997: numeric literal followed directly by `e`/`E` + digits (or +/-
+/// digits) looks like scientific notation, which vibe does not support — it
+/// used to lex as `<number>` + identifier and surface as a confusing
+/// downstream `unknown name: e20`. Reject it at the lexer with an
+/// explanatory error, precisely located at the `e`/`E` (not the start of the
+/// number — #997: the generic offset-based collector would otherwise blame
+/// the wrong column for anything but a single-digit literal).
+///
+/// #997: `e`/`E` immediately followed by a bare `+`/`-` with no digit after
+/// it (`1e+`, `2e-`) is unambiguously a botched exponent, unlike a plain
+/// identifier continuation (`1even` still lexes as `1` + `even`, #956's
+/// `e_prefixed_identifier_after_number_still_lexes`) — a sign can never
+/// legally continue an identifier, so there's no ambiguity to preserve for
+/// that shape, and it used to silently fall through to the same confusing
+/// `unknown name: e` diagnostic.
 fn check_no_scientific_suffix(s: String, len: Int, pos: Int) -> Unit with { Error } {
   if pos < len {
     let c = String::char_code_at(s, pos)
@@ -446,7 +450,7 @@ fn empty_string_array() -> Array[String] {
   ], 0, 0)
 }
 
-// 0-based column (char offset from the start of its line) of `pos`.
+/// 0-based column (char offset from the start of its line) of `pos`.
 fn column_of(source: String, pos: Int) -> Int {
   let mut i = pos
   let mut col = 0
@@ -457,18 +461,18 @@ fn column_of(source: String, pos: Int) -> Int {
   col
 }
 
-// `#|` multi-line raw string literal (MoonBit-style). `source[pos] == '#'`
-// and `source[pos + 1] == '|'` on entry. Each participating physical line's
-// `#` must sit at the SAME column as the block's first `#` — a later line
-// starting with `#|` at a DIFFERENT column is a located lex error, never a
-// silently different/shorter block. A following line that does not start
-// with `#|` at all (whatever its indentation) simply ends the block — that
-// is not an error, just where the literal stops. Content is the raw text
-// after `#|` up to end of line, verbatim (no escape processing, no
-// interpolation); participating lines are joined with "\n". Produces an
-// ordinary TString so the parser/checker/codegen need no changes to accept
-// one — `#|` is purely an alternate spelling for a (possibly multi-line)
-// string literal.
+/// `#|` multi-line raw string literal (MoonBit-style). `source[pos] == '#'`
+/// and `source[pos + 1] == '|'` on entry. Each participating physical line's
+/// `#` must sit at the SAME column as the block's first `#` — a later line
+/// starting with `#|` at a DIFFERENT column is a located lex error, never a
+/// silently different/shorter block. A following line that does not start
+/// with `#|` at all (whatever its indentation) simply ends the block — that
+/// is not an error, just where the literal stops. Content is the raw text
+/// after `#|` up to end of line, verbatim (no escape processing, no
+/// interpolation); participating lines are joined with "\n". Produces an
+/// ordinary TString so the parser/checker/codegen need no changes to accept
+/// one — `#|` is purely an alternate spelling for a (possibly multi-line)
+/// string literal.
 fn lex_multiline_string(source: String, len: Int, pos: Int) -> (Token, Int) with { Error } {
   let col = column_of(source, pos)
   let buf = StringBuilder::new()
@@ -519,17 +523,17 @@ fn lex_multiline_string(source: String, len: Int, pos: Int) -> (Token, Int) with
   (TString(StringBuilder::freeze(buf)), final_next)
 }
 
-// Rust-style outer doc comments: consecutive `///` lines (not `////...` —
-// four or more slashes is an ordinary comment, matching rustc) are
-// concatenated (joined by "\n", one leading space after `///` stripped when
-// present) and associated with the 1-based line number of the next
-// non-blank, non-`///` line — the declaration the block documents. A blank
-// line (or EOF) immediately after the block breaks attachment: nothing is
-// emitted for it, same as a doc comment with no following item in Rust.
-// This is a plain text scan over `source`, independent of tokenization —
-// `///` lines are still ordinary `//` comments to the tokenizer (silently
-// skipped by skip_ws_with_newline exactly as before); this function is the
-// only place that gives them meaning, for hover/`vibe doc-at` consumers.
+/// Rust-style outer doc comments: consecutive `///` lines (not `////...` —
+/// four or more slashes is an ordinary comment, matching rustc) are
+/// concatenated (joined by "\n", one leading space after `///` stripped when
+/// present) and associated with the 1-based line number of the next
+/// non-blank, non-`///` line — the declaration the block documents. A blank
+/// line (or EOF) immediately after the block breaks attachment: nothing is
+/// emitted for it, same as a doc comment with no following item in Rust.
+/// This is a plain text scan over `source`, independent of tokenization —
+/// `///` lines are still ordinary `//` comments to the tokenizer (silently
+/// skipped by skip_ws_with_newline exactly as before); this function is the
+/// only place that gives them meaning, for hover/`vibe doc-at` consumers.
 export fn collect_doc_comments(source: String) -> Array[(Int, String)] {
   let len = String::length(source)
   let out = ArrayBuilder::new()
@@ -575,7 +579,11 @@ export fn collect_doc_comments(source: String) -> Array[(Int, String)] {
         ()
       }
     }
-    i = if k < len { k + 1 } else { k }
+    i = if k < len {
+      k + 1
+    } else {
+      k
+    }
     line = line + 1
   }
   ArrayBuilder::freeze(out)
@@ -874,9 +882,9 @@ fn lex_number(s: String, len: Int, i: Int) -> (Token, Int) with { Error } {
   } else lex_decimal(s, len, i)
 }
 
-// Can this token end a complete (primary) expression? After such a token, a
-// newline followed by `[` starts a NEW statement (an array literal), not a
-// postfix subscript — the lexer inserts a synthetic `;` to disambiguate.
+/// Can this token end a complete (primary) expression? After such a token, a
+/// newline followed by `[` starts a NEW statement (an array literal), not a
+/// postfix subscript — the lexer inserts a synthetic `;` to disambiguate.
 fn is_expr_ending_tok(t: Token) -> Bool {
   match t {
     TRParen => true,
@@ -890,10 +898,10 @@ fn is_expr_ending_tok(t: Token) -> Bool {
   }
 }
 
-// Classify and consume a single token starting at byte `pos`, returning the
-// token and the byte offset just past it. Shared by `lex` and
-// `lex_with_offsets` so the large classification logic (and its codegen) exists
-// only once.
+/// Classify and consume a single token starting at byte `pos`, returning the
+/// token and the byte offset just past it. Shared by `lex` and
+/// `lex_with_offsets` so the large classification logic (and its codegen) exists
+/// only once.
 fn lex_one_token(source: String, len: Int, pos: Int) -> (Token, Int) with { Error } {
   let c = String::char_code_at(source, pos)
   if is_alpha(c) {
@@ -1030,11 +1038,11 @@ fn lex_one_token(source: String, len: Int, pos: Int) -> (Token, Int) with { Erro
   }
 }
 
-// Position-tracking lexer: identical token production to `lex`, but also returns
-// per emitted token its start and end byte offset in `source` (three parallel
-// arrays — one entry per token, including any synthetic `;` separators and the
-// trailing `TEof`). Used by module-source emission to recover top-level
-// statement source spans.
+/// Position-tracking lexer: identical token production to `lex`, but also returns
+/// per emitted token its start and end byte offset in `source` (three parallel
+/// arrays — one entry per token, including any synthetic `;` separators and the
+/// trailing `TEof`). Used by module-source emission to recover top-level
+/// statement source spans.
 export fn lex_with_offsets(source: String) -> (Array[Token], Array[Int], Array[Int]) with { Error } {
   let len = String::length(source)
   {
@@ -1070,14 +1078,14 @@ export fn lex_with_offsets(source: String) -> (Array[Token], Array[Int], Array[I
   }
 }
 
-// #946: recovering variant of `lex_with_offsets` — NEVER throws. On a lex
-// error (unexpected character, bad escape, unterminated string, ...) it
-// records the 0-based char offset of the offending position plus the raw
-// error message into two parallel diagnostic arrays, skips ONE char (progress
-// guarantee), and keeps lexing. Returns (tokens, starts, ends, err_offsets,
-// err_msgs); err arrays empty = clean lex, identical token stream to
-// `lex_with_offsets`. Foundation for `vibe diagnostics` reporting lexer
-// errors as located diagnostics instead of an empty ("clean") report.
+/// #946: recovering variant of `lex_with_offsets` — NEVER throws. On a lex
+/// error (unexpected character, bad escape, unterminated string, ...) it
+/// records the 0-based char offset of the offending position plus the raw
+/// error message into two parallel diagnostic arrays, skips ONE char (progress
+/// guarantee), and keeps lexing. Returns (tokens, starts, ends, err_offsets,
+/// err_msgs); err arrays empty = clean lex, identical token stream to
+/// `lex_with_offsets`. Foundation for `vibe diagnostics` reporting lexer
+/// errors as located diagnostics instead of an empty ("clean") report.
 export fn lex_with_offsets_recovering(source: String) -> (Array[Token], Array[Int], Array[Int], Array[Int], Array[String]) {
   let len = String::length(source)
   let b = ArrayBuilder::new()
@@ -1176,11 +1184,15 @@ export fn lex_with_offsets_recovering(source: String) -> (Array[Token], Array[In
   (ArrayBuilder::freeze(b), ArrayBuilder::freeze(starts), ArrayBuilder::freeze(ends), ArrayBuilder::freeze(err_offsets), ArrayBuilder::freeze(err_msgs))
 }
 
-// Convert a 0-based char offset (from lex_with_offsets) to 1-based (line, col).
-// Source-span foundation: lets diagnostics report a real `line:col`.
+/// Convert a 0-based char offset (from lex_with_offsets) to 1-based (line, col).
+/// Source-span foundation: lets diagnostics report a real `line:col`.
 export fn offset_to_line_col(source: String, offset: Int) -> (Int, Int) {
   let len = String::length(source)
-  let bound = if offset < len { offset } else { len }
+  let bound = if offset < len {
+    offset
+  } else {
+    len
+  }
   let mut i = 0
   let mut line = 1
   let mut col = 1

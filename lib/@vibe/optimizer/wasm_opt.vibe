@@ -23,29 +23,29 @@ fn is_i32_binop(op: Int) -> Bool {
   (op == 0x6A) || (op == 0x6B) || (op == 0x6C) || (op == 0x71) || (op == 0x72) || (op == 0x73)
 }
 
-// i32.shl / i32.shr_s / i32.shr_u. Kept separate from is_i32_binop so callers
-// can ask for "binop" vs "shift" specifically; apply_i32_fold handles both
-// (with wasm's 32-bit shift-amount masking and wraparound).
+/// i32.shl / i32.shr_s / i32.shr_u. Kept separate from is_i32_binop so callers
+/// can ask for "binop" vs "shift" specifically; apply_i32_fold handles both
+/// (with wasm's 32-bit shift-amount masking and wraparound).
 fn is_i32_shift(op: Int) -> Bool {
   (op == 0x74) || (op == 0x75) || (op == 0x76)
 }
 
-// Opcodes whose `i32.const a; i32.const b; OP` triple can be constant-folded.
-// div/rem are excluded: folding `x / 0` would silently drop a wasm trap.
+/// Opcodes whose `i32.const a; i32.const b; OP` triple can be constant-folded.
+/// div/rem are excluded: folding `x / 0` would silently drop a wasm trap.
 fn is_i32_foldable(op: Int) -> Bool {
   is_i32_binop(op) || is_i32_shift(op)
 }
 
-// i32 relational ops (eq/ne and signed/unsigned lt/gt/le/ge), 0x46..0x4F.
-// Folding `i32.const a; i32.const b; CMP` yields `i32.const 0|1`.
+/// i32 relational ops (eq/ne and signed/unsigned lt/gt/le/ge), 0x46..0x4F.
+/// Folding `i32.const a; i32.const b; CMP` yields `i32.const 0|1`.
 fn is_i32_cmp(op: Int) -> Bool {
   (op >= 0x46) && (op <= 0x4F)
 }
 
-// i64 identity: `x OP <i64.const k>` collapses to `x` when (OP, k) is an
-// identity. Mirrors is_identity_op for the i64 opcodes: add/sub/or/xor/shl/
-// shr_s/shr_u with k == 0, and mul with k == 1. `and` is intentionally absent
-// (x & 0 == 0, not x). Pure elimination, no arithmetic computed.
+/// i64 identity: `x OP <i64.const k>` collapses to `x` when (OP, k) is an
+/// identity. Mirrors is_identity_op for the i64 opcodes: add/sub/or/xor/shl/
+/// shr_s/shr_u with k == 0, and mul with k == 1. `and` is intentionally absent
+/// (x & 0 == 0, not x). Pure elimination, no arithmetic computed.
 fn is_i64_identity_op(op: Int, imm: Int) -> Bool {
   if (op == 0x7C) || (op == 0x7D) || (op == 0x84) || (op == 0x85) || (op == 0x86) || (op == 0x87) || (op == 0x88) {
     imm == 0
@@ -467,12 +467,12 @@ fn is_identity_op(op: Int, imm: Int) -> Bool {
   }
 }
 
-// Normalize a 62-bit Int result to a signed wasm i32 (two's complement,
-// -2^31 .. 2^31-1) so constant folding matches wasm's wraparound semantics
-// instead of leaking out-of-range values into the rewritten i32.const.
+/// Normalize a 62-bit Int result to a signed wasm i32 (two's complement,
+/// -2^31 .. 2^31-1) so constant folding matches wasm's wraparound semantics
+/// instead of leaking out-of-range values into the rewritten i32.const.
 fn wrap_i32(v: Int) -> Int {
-  let m = v & 0xFFFFFFFF
-  if (m & 0x80000000) != 0 {
+  let m = v&0xFFFFFFFF
+  if (m&0x80000000) != 0 {
     m - 4294967296
   }
   else {
@@ -491,65 +491,105 @@ fn apply_i32_fold(op: Int, a: Int, b: Int) -> Int {
     wrap_i32(a * b)
   }
   else if op == 0x71 {
-    wrap_i32(a & b)
+    wrap_i32(a&b)
   }
   else if op == 0x72 {
-    wrap_i32(a | b)
+    wrap_i32(a|b)
   }
   else if op == 0x73 {
-    wrap_i32(a ^ b)
+    wrap_i32(a^b)
   }
   else if op == 0x74 {
-    wrap_i32(a << (b & 31))
+    wrap_i32(a<<(b&31))
   }
   else if op == 0x75 {
     // shr_s: arithmetic shift of the signed 32-bit value (vibe >> sign-extends)
-    wrap_i32(wrap_i32(a) >> (b & 31))
+    wrap_i32(wrap_i32(a)>>(b&31))
   }
   else {
     // shr_u (0x76): logical shift of the unsigned 32-bit value
-    let ua = a & 0xFFFFFFFF
-    wrap_i32(ua >> (b & 31))
+    let ua = a&0xFFFFFFFF
+    wrap_i32(ua>>(b&31))
   }
 }
 
-// Evaluate an i32 relational op on two constants, returning 0 or 1. Signed
-// ops compare the sign-extended i32 values; unsigned ops compare the low
-// 32 bits as non-negative magnitudes.
+/// Evaluate an i32 relational op on two constants, returning 0 or 1. Signed
+/// ops compare the sign-extended i32 values; unsigned ops compare the low
+/// 32 bits as non-negative magnitudes.
 fn apply_i32_cmp(op: Int, a: Int, b: Int) -> Int {
   let sa = wrap_i32(a)
   let sb = wrap_i32(b)
-  let ua = a & 0xFFFFFFFF
-  let ub = b & 0xFFFFFFFF
+  let ua = a&0xFFFFFFFF
+  let ub = b&0xFFFFFFFF
   if op == 0x46 {
-    if sa == sb { 1 } else { 0 }
+    if sa == sb {
+      1
+    } else {
+      0
+    }
   }
   else if op == 0x47 {
-    if sa != sb { 1 } else { 0 }
+    if sa != sb {
+      1
+    } else {
+      0
+    }
   }
   else if op == 0x48 {
-    if sa < sb { 1 } else { 0 }
+    if sa < sb {
+      1
+    } else {
+      0
+    }
   }
   else if op == 0x49 {
-    if ua < ub { 1 } else { 0 }
+    if ua < ub {
+      1
+    } else {
+      0
+    }
   }
   else if op == 0x4A {
-    if sa > sb { 1 } else { 0 }
+    if sa > sb {
+      1
+    } else {
+      0
+    }
   }
   else if op == 0x4B {
-    if ua > ub { 1 } else { 0 }
+    if ua > ub {
+      1
+    } else {
+      0
+    }
   }
   else if op == 0x4C {
-    if sa <= sb { 1 } else { 0 }
+    if sa <= sb {
+      1
+    } else {
+      0
+    }
   }
   else if op == 0x4D {
-    if ua <= ub { 1 } else { 0 }
+    if ua <= ub {
+      1
+    } else {
+      0
+    }
   }
   else if op == 0x4E {
-    if sa >= sb { 1 } else { 0 }
+    if sa >= sb {
+      1
+    } else {
+      0
+    }
   }
   else {
-    if ua >= ub { 1 } else { 0 }
+    if ua >= ub {
+      1
+    } else {
+      0
+    }
   }
 }
 
@@ -1184,7 +1224,11 @@ fn peephole_try2(out: Bytes, body: Bytes, spans: Array[(Int, Int, Int)], i: Int,
           // i32.const c; i32.eqz  ->  i32.const (c == 0 ? 1 : 0)
           let c = span_read_sleb_imm(body, s_i)
           Bytes::push(out, 0x41)
-          write_sleb128(out, if wrap_i32(c) == 0 { 1 } else { 0 })
+          write_sleb128(out, if wrap_i32(c) == 0 {
+            1
+          } else {
+            0
+          })
           true
         }
         else if (op_i == 0x45) && (op_next == 0x45) {
@@ -2010,9 +2054,9 @@ export fn dce(bytes: Bytes) -> Bytes {
   }
 }
 
-// Roots for true DCE: exported functions, any function named by a start
-// section, and any function placed in a table by an element segment (it may be
-// reached via call_indirect we cannot trace, so it must be kept).
+/// Roots for true DCE: exported functions, any function named by a start
+/// section, and any function placed in a table by an element segment (it may be
+/// reached via call_indirect we cannot trace, so it must be kept).
 fn collect_func_roots(bytes: Bytes) -> Array[Int] {
   let roots = Array::slice([
     (0)
@@ -2064,7 +2108,7 @@ fn collect_func_roots(bytes: Bytes) -> Array[Int] {
   roots
 }
 
-// BFS over the call graph from an explicit root set (generalizes find_reachable).
+/// BFS over the call graph from an explicit root set (generalizes find_reachable).
 fn reachable_from(bytes: Bytes, roots: Array[Int]) -> Array[Int] {
   let graph = build_call_graph(bytes)
   let import_count = count_import_funcs(bytes)
@@ -2147,8 +2191,8 @@ fn reachable_from(bytes: Bytes, roots: Array[Int]) -> Array[Int] {
   reachable
 }
 
-// Reserialize an export section, remapping function-export indices (kind 0)
-// through idx_map (old global func index -> new index).
+/// Reserialize an export section, remapping function-export indices (kind 0)
+/// through idx_map (old global func index -> new index).
 fn remap_export_section(bytes: Bytes, offset: Int, size: Int, idx_map: Array[Int]) -> Bytes {
   let end_pos = offset + size
   let (cnt, pos0) = read_uleb128(bytes, offset)
@@ -2175,16 +2219,20 @@ fn remap_export_section(bytes: Bytes, offset: Int, size: Int, idx_map: Array[Int
     } else {
       index
     }
-    write_uleb128(out, if new_index >= 0 { new_index } else { index })
+    write_uleb128(out, if new_index >= 0 {
+      new_index
+    } else {
+      index
+    })
     i = i + 1
   }
   out
 }
 
-// Reserialize an active element section, remapping the function indices it
-// places in the table through idx_map. Handles segment flag 0 (table 0, i32
-// const offset) and flag 2 (explicit table, elemkind). Returns (out, true) on
-// success; on any unsupported shape returns (_, false) so dce_remove bails.
+/// Reserialize an active element section, remapping the function indices it
+/// places in the table through idx_map. Handles segment flag 0 (table 0, i32
+/// const offset) and flag 2 (explicit table, elemkind). Returns (out, true) on
+/// success; on any unsupported shape returns (_, false) so dce_remove bails.
 fn remap_element_section(bytes: Bytes, offset: Int, size: Int, idx_map: Array[Int]) -> (Bytes, Bool) {
   let end_pos = offset + size
   let (seg_count, pos0) = read_uleb128(bytes, offset)
@@ -2247,11 +2295,11 @@ fn remap_element_section(bytes: Bytes, offset: Int, size: Int, idx_map: Array[In
   (out, ok)
 }
 
-// True dead-function elimination: physically remove unreachable defined
-// functions and renumber every surviving function reference (calls, exports,
-// start, element segments), unlike `dce` which only stubs dead bodies. Bails
-// (returns input unchanged) only when an element section uses a shape
-// remap_element_section cannot reserialize; callers fall back to `dce` then.
+/// True dead-function elimination: physically remove unreachable defined
+/// functions and renumber every surviving function reference (calls, exports,
+/// start, element segments), unlike `dce` which only stubs dead bodies. Bails
+/// (returns input unchanged) only when an element section uses a shape
+/// remap_element_section cannot reserialize; callers fall back to `dce` then.
 export fn dce_remove(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
@@ -2989,14 +3037,14 @@ fn collect_used_type_indices(bytes: Bytes) -> Array[Int] {
   used
 }
 
-// Code bodies reference type indices too: `call_indirect`'s typeidx immediate
-// and any block/loop/if/try_table blocktype encoded as a NON-NEGATIVE sleb (a
-// func-type index; value-type shorthands encode negative). remove_unused_types
-// used to collect/remap only func+import section refs, so a call_indirect's
-// type was renumbered out from under the code section — caught by
-// scripts/minify_gate.sh on bench/binary_size/closure_indirect.vibe as
-// "type index out of bounds" (#1107 Phase 2). These two helpers close that
-// gap: collect marks code-referenced types as used, rewrite renumbers them.
+/// Code bodies reference type indices too: `call_indirect`'s typeidx immediate
+/// and any block/loop/if/try_table blocktype encoded as a NON-NEGATIVE sleb (a
+/// func-type index; value-type shorthands encode negative). remove_unused_types
+/// used to collect/remap only func+import section refs, so a call_indirect's
+/// type was renumbered out from under the code section — caught by
+/// scripts/minify_gate.sh on bench/binary_size/closure_indirect.vibe as
+/// "type index out of bounds" (#1107 Phase 2). These two helpers close that
+/// gap: collect marks code-referenced types as used, rewrite renumbers them.
 fn collect_body_type_refs(body: Bytes, used: Array[Int]) -> Unit {
   let body_len = Bytes::length(body)
   if body_len < 2 {
@@ -3257,20 +3305,20 @@ export fn optimize_code_section(bytes: Bytes) -> Bytes {
   }
 }
 
-// Unwrap `block` (0x02) scopes whose label no branch uses. vibe codegen
-// (especially around inlined call bodies) wraps regions in `block` scopes that
-// no `br` jumps to; binaryen's remove-unused-brs strips them. We remove a block
-// only when it is the fully safe case: no br/br_if/br_table (or try_table catch)
-// targets it AND no inner branch escapes it. Then dropping its header+end needs
-// no label renumbering, so removal cannot change any branch's meaning.
-// loop/if/try_table scopes are never removed.
-//
-// try_table catch clauses carry branch labels resolved in the scope *enclosing*
-// the try_table (its own label is not counted), so the catch target sits at
-// sp - 2 - label; a catch that targets or escapes a block marks it just like a
-// `br`. Getting this wrong would corrupt effectful programs (vibe effects
-// compile to wasm exception handling). A single forward pass suffices: every
-// branch inside a block is seen before the block's `end`.
+/// Unwrap `block` (0x02) scopes whose label no branch uses. vibe codegen
+/// (especially around inlined call bodies) wraps regions in `block` scopes that
+/// no `br` jumps to; binaryen's remove-unused-brs strips them. We remove a block
+/// only when it is the fully safe case: no br/br_if/br_table (or try_table catch)
+/// targets it AND no inner branch escapes it. Then dropping its header+end needs
+/// no label renumbering, so removal cannot change any branch's meaning.
+/// loop/if/try_table scopes are never removed.
+///
+/// try_table catch clauses carry branch labels resolved in the scope *enclosing*
+/// the try_table (its own label is not counted), so the catch target sits at
+/// sp - 2 - label; a catch that targets or escapes a block marks it just like a
+/// `br`. Getting this wrong would corrupt effectful programs (vibe effects
+/// compile to wasm exception handling). A single forward pass suffices: every
+/// branch inside a block is seen before the block's `end`.
 fn remove_dead_blocks_body(body: Bytes) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
@@ -3473,7 +3521,7 @@ export fn remove_dead_blocks(bytes: Bytes) -> Bytes {
   }
 }
 
-// Result-arity of a function type (mirror of get_type_param_count).
+/// Result-arity of a function type (mirror of get_type_param_count).
 fn get_type_result_count(bytes: Bytes, type_sec_off: Int, type_sec_sz: Int, type_idx: Int) -> Int {
   let end_pos = type_sec_off + type_sec_sz
   let (type_count, pos0) = read_uleb128(bytes, type_sec_off)
@@ -3497,7 +3545,7 @@ fn get_type_result_count(bytes: Bytes, type_sec_off: Int, type_sec_sz: Int, type
   result
 }
 
-// A function body with no instructions other than the terminating `end`.
+/// A function body with no instructions other than the terminating `end`.
 fn is_body_empty(body: Bytes) -> Bool {
   let body_len = Bytes::length(body)
   if body_len < 2 {
@@ -3516,9 +3564,9 @@ fn is_body_empty(body: Bytes) -> Bool {
   }
 }
 
-// Drop `call F` instructions whose target F is an empty () -> () function:
-// such a call has no stack effect and no side effect, so removing it is a
-// semantics-preserving no-op. Leaves func indices untouched (DCE renumbers).
+/// Drop `call F` instructions whose target F is an empty () -> () function:
+/// such a call has no stack effect and no side effect, so removing it is a
+/// semantics-preserving no-op. Leaves func indices untouched (DCE renumbers).
 fn remove_noop_calls_body(body: Bytes, noop: Array[Int], max_func: Int) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
@@ -3567,8 +3615,8 @@ fn remove_noop_calls_body(body: Bytes, noop: Array[Int], max_func: Int) -> Bytes
   }
 }
 
-// Inline (delete) calls to empty () -> () functions; the now-uncalled empty
-// functions are removed by the following DCE pass.
+/// Inline (delete) calls to empty () -> () functions; the now-uncalled empty
+/// functions are removed by the following DCE pass.
 export fn inline_empty_calls(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
@@ -3651,7 +3699,7 @@ export fn inline_empty_calls(bytes: Bytes) -> Bytes {
   }
 }
 
-// Parse instruction spans of a whole function body (locals header skipped).
+/// Parse instruction spans of a whole function body (locals header skipped).
 fn parse_full_body_spans(body: Bytes) -> Array[(Int, Int, Int)] {
   let body_len = Bytes::length(body)
   if body_len < 2 {
@@ -3672,7 +3720,7 @@ fn parse_full_body_spans(body: Bytes) -> Array[(Int, Int, Int)] {
   }
 }
 
-// Minimum size of each *defined* table (index space after imported tables).
+/// Minimum size of each *defined* table (index space after imported tables).
 fn parse_table_mins(bytes: Bytes) -> Array[Int] {
   let result = Array::slice([
     (0)
@@ -3705,8 +3753,8 @@ fn parse_table_mins(bytes: Bytes) -> Array[Int] {
   result
 }
 
-// True if any body uses a table opcode: call_indirect, table.get/set, or any
-// 0xFC table.* (init/drop/copy/grow/size/fill). Used to decide table removal.
+/// True if any body uses a table opcode: call_indirect, table.get/set, or any
+/// 0xFC table.* (init/drop/copy/grow/size/fill). Used to decide table removal.
 fn code_uses_any_table_op(bytes: Bytes) -> Bool {
   let sections = list_sections(bytes)
   let mut found = false
@@ -3741,7 +3789,7 @@ fn code_uses_any_table_op(bytes: Bytes) -> Bool {
   found
 }
 
-// Replace `table.size t` with `i32.const <min size of table t>` in one body.
+/// Replace `table.size t` with `i32.const <min size of table t>` in one body.
 fn fold_table_size_body(body: Bytes, table_mins: Array[Int]) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
@@ -3795,13 +3843,13 @@ fn fold_table_size_body(body: Bytes, table_mins: Array[Int]) -> Bytes {
   }
 }
 
-// table.size -> i32.const folding. Only when every table is locally defined
-// (no imported tables shift the index space) and no table.grow exists (so the
-// current size equals the declared minimum). The resulting `i32.const; drop`
-// is cleaned by peephole, often emptying the body.
-// True if the module exports any table (kind 1). An exported table can be
-// grown by the embedder between calls, so its `table.size` is not statically
-// the declared minimum.
+/// table.size -> i32.const folding. Only when every table is locally defined
+/// (no imported tables shift the index space) and no table.grow exists (so the
+/// current size equals the declared minimum). The resulting `i32.const; drop`
+/// is cleaned by peephole, often emptying the body.
+/// True if the module exports any table (kind 1). An exported table can be
+/// grown by the embedder between calls, so its `table.size` is not statically
+/// the declared minimum.
 fn any_table_exported(bytes: Bytes) -> Bool {
   let sections = list_sections(bytes)
   let mut found = false
@@ -3911,9 +3959,9 @@ export fn fold_table_size(bytes: Bytes) -> Bytes {
   }
 }
 
-// Drop the table and element sections when no table opcode references any table
-// and no table is exported or imported. The functions that were only kept alive
-// by element segments then become dead and are removed by the following DCE.
+/// Drop the table and element sections when no table opcode references any table
+/// and no table is exported or imported. The functions that were only kept alive
+/// by element segments then become dead and are removed by the following DCE.
 export fn drop_unused_tables(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
@@ -3977,11 +4025,11 @@ export fn drop_unused_tables(bytes: Bytes) -> Bytes {
   }
 }
 
-// Replace `local.set N` with `drop` when local N is never read anywhere in the
-// function (no local.get/local.tee references it). Since "never read" is a
-// whole-function property it is independent of control flow, so this is always
-// safe; the resulting `<pure expr>; drop` is then cleaned by peephole and the
-// now-unused local declaration by coalesce_locals.
+/// Replace `local.set N` with `drop` when local N is never read anywhere in the
+/// function (no local.get/local.tee references it). Since "never read" is a
+/// whole-function property it is independent of control flow, so this is always
+/// safe; the resulting `<pure expr>; drop` is then cleaned by peephole and the
+/// now-unused local declaration by coalesce_locals.
 fn eliminate_dead_stores_body(body: Bytes) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
@@ -4076,8 +4124,8 @@ export fn eliminate_dead_stores(bytes: Bytes) -> Bytes {
   }
 }
 
-// Read the parameter value types of type index `type_idx` from the type
-// section, as an array of value-type bytes (used to append callee param locals).
+/// Read the parameter value types of type index `type_idx` from the type
+/// section, as an array of value-type bytes (used to append callee param locals).
 fn read_param_types(bytes: Bytes, type_off: Int, type_sz: Int, type_idx: Int) -> Array[Int] {
   let end_pos = type_off + type_sz
   let (type_count, pos0) = read_uleb128(bytes, type_off)
@@ -4105,9 +4153,9 @@ fn read_param_types(bytes: Bytes, type_off: Int, type_sz: Int, type_idx: Int) ->
   result
 }
 
-// Read the single result blocktype byte of type index `type_idx`: 0x40 for no
-// result, the value-type byte for one result, or -1 for multi-value (which the
-// inliner does not handle).
+/// Read the single result blocktype byte of type index `type_idx`: 0x40 for no
+/// result, the value-type byte for one result, or -1 for multi-value (which the
+/// inliner does not handle).
 fn read_result_bt(bytes: Bytes, type_off: Int, type_sz: Int, type_idx: Int) -> Int {
   let end_pos = type_off + type_sz
   let (type_count, pos0) = read_uleb128(bytes, type_off)
@@ -4135,8 +4183,8 @@ fn read_result_bt(bytes: Bytes, type_off: Int, type_sz: Int, type_idx: Int) -> I
   result
 }
 
-// Parse a code body's local declaration groups: returns the (count, type) pairs
-// and the offset of the first instruction (after the local header).
+/// Parse a code body's local declaration groups: returns the (count, type) pairs
+/// and the offset of the first instruction (after the local header).
 fn read_local_groups(body: Bytes) -> (Array[(Int, Int)], Int) {
   let (decl_count, p0) = read_uleb128(body, 0)
   let mut pos = p0
@@ -4164,11 +4212,11 @@ fn local_groups_total(groups: Array[(Int, Int)]) -> Int {
   t
 }
 
-// True if the callee body contains a control-flow op whose branch target would
-// shift when the body is wrapped in the inliner's block: br/br_if/br_table
-// (0x0C/0x0D/0x0E) may target the function-implicit scope, and try_table (0x1F)
-// catch labels / throw (0x08) interact with exception scopes. We rewrite only
-// `return` (0x0F) safely, so bail on any of these to keep inlining correct.
+/// True if the callee body contains a control-flow op whose branch target would
+/// shift when the body is wrapped in the inliner's block: br/br_if/br_table
+/// (0x0C/0x0D/0x0E) may target the function-implicit scope, and try_table (0x1F)
+/// catch labels / throw (0x08) interact with exception scopes. We rewrite only
+/// `return` (0x0F) safely, so bail on any of these to keep inlining correct.
 fn body_has_unrelocatable_op(body: Bytes) -> Bool {
   let spans = parse_full_body_spans(body)
   let mut found = false
@@ -4183,10 +4231,10 @@ fn body_has_unrelocatable_op(body: Bytes) -> Bool {
   found
 }
 
-// Emit the callee body inlined at a call site: store args into the appended
-// param locals, wrap the body in a block of the callee's result type, remap
-// the callee's locals by +base, and rewrite `return` to `br <depth>` so it
-// exits the wrapper instead of the (now different) enclosing function.
+/// Emit the callee body inlined at a call site: store args into the appended
+/// param locals, wrap the body in a block of the callee's result type, remap
+/// the callee's locals by +base, and rewrite `return` to `br <depth>` so it
+/// exits the wrapper instead of the (now different) enclosing function.
 fn emit_inlined_body(out: Bytes, f_body: Bytes, n_params: Int, base: Int, result_bt: Int) -> Unit {
   let mut k = n_params - 1
   while k >= 0 {
@@ -4226,9 +4274,9 @@ fn emit_inlined_body(out: Bytes, f_body: Bytes, n_params: Int, base: Int, result
   Bytes::push(out, 0x0B)
 }
 
-// Inline a single call to a non-root function that is called exactly once
-// (general function inlining beyond inline_empty_calls). The now-uncalled
-// callee is removed by the following DCE. One inline per pass; converge repeats.
+/// Inline a single call to a non-root function that is called exactly once
+/// (general function inlining beyond inline_empty_calls). The now-uncalled
+/// callee is removed by the following DCE. One inline per pass; converge repeats.
 export fn inline_calls(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
@@ -4389,9 +4437,9 @@ export fn inline_calls(bytes: Bytes) -> Bytes {
   }
 }
 
-// Count imported entries of a given external kind (0=func,1=table,2=mem,
-// 3=global,4=tag). Used to decide whether the corresponding index space starts
-// above 0 (we bail on imports for tag/global DCE to keep renumbering simple).
+/// Count imported entries of a given external kind (0=func,1=table,2=mem,
+/// 3=global,4=tag). Used to decide whether the corresponding index space starts
+/// above 0 (we bail on imports for tag/global DCE to keep renumbering simple).
 fn count_import_kind(bytes: Bytes, want_kind: Int) -> Int {
   let sections = list_sections(bytes)
   let mut n = 0
@@ -4443,8 +4491,8 @@ fn count_import_kind(bytes: Bytes, want_kind: Int) -> Int {
   n
 }
 
-// Reserialize an export section, remapping the index of exports whose kind
-// matches want_kind through idx_map (old index -> new index, -1 = removed).
+/// Reserialize an export section, remapping the index of exports whose kind
+/// matches want_kind through idx_map (old index -> new index, -1 = removed).
 fn remap_export_kind(bytes: Bytes, offset: Int, size: Int, want_kind: Int, idx_map: Array[Int]) -> Bytes {
   let end_pos = offset + size
   let (cnt, pos0) = read_uleb128(bytes, offset)
@@ -4477,8 +4525,8 @@ fn remap_export_kind(bytes: Bytes, offset: Int, size: Int, want_kind: Int, idx_m
   out
 }
 
-// Rewrite a code body remapping tag indices in throw (0x08) and try_table
-// (0x1F) catch clauses through tmap.
+/// Rewrite a code body remapping tag indices in throw (0x08) and try_table
+/// (0x1F) catch clauses through tmap.
 fn rewrite_body_tags(body: Bytes, tmap: Array[Int]) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
@@ -4561,10 +4609,10 @@ fn rewrite_body_tags(body: Bytes, tmap: Array[Int]) -> Bytes {
   }
 }
 
-// Remove tags that are never referenced by code (throw / try_table catch) and
-// never exported. Renumbers throw/try_table/export tag indices. Bails on
-// imported tags. This is the unused-tag cleanup that function inlining unlocks
-// (an inlined effect helper can leave its tag unreferenced).
+/// Remove tags that are never referenced by code (throw / try_table catch) and
+/// never exported. Renumbers throw/try_table/export tag indices. Bails on
+/// imported tags. This is the unused-tag cleanup that function inlining unlocks
+/// (an inlined effect helper can leave its tag unreferenced).
 export fn drop_unused_tags(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
@@ -4744,8 +4792,8 @@ export fn drop_unused_tags(bytes: Bytes) -> Bytes {
   }
 }
 
-// Rewrite a code body remapping global indices in global.get (0x23) and
-// global.set (0x24) through gmap.
+/// Rewrite a code body remapping global indices in global.get (0x23) and
+/// global.set (0x24) through gmap.
 fn rewrite_body_globals(body: Bytes, gmap: Array[Int]) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
@@ -4795,9 +4843,9 @@ fn rewrite_body_globals(body: Bytes, gmap: Array[Int]) -> Bytes {
   }
 }
 
-// True if any global init expr contains a global.get (0x23). Defined-global
-// inits may reference imported globals; we bail in that case to avoid having to
-// renumber inside init exprs.
+/// True if any global init expr contains a global.get (0x23). Defined-global
+/// inits may reference imported globals; we bail in that case to avoid having to
+/// renumber inside init exprs.
 fn global_init_refs_global(bytes: Bytes, gbl_off: Int, gbl_sz: Int) -> Bool {
   let end_pos = gbl_off + gbl_sz
   let mut pos = gbl_off
@@ -4811,10 +4859,10 @@ fn global_init_refs_global(bytes: Bytes, gbl_off: Int, gbl_sz: Int) -> Bool {
   found
 }
 
-// Remove globals that are never referenced by code (global.get/set) and never
-// exported. Renumbers global.get/set and export global indices. Bails on
-// imported globals or any global.get inside init/offset exprs. This is the
-// unused-global cleanup that function inlining unlocks.
+/// Remove globals that are never referenced by code (global.get/set) and never
+/// exported. Renumbers global.get/set and export global indices. Bails on
+/// imported globals or any global.get inside init/offset exprs. This is the
+/// unused-global cleanup that function inlining unlocks.
 export fn drop_unused_globals(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
@@ -4985,10 +5033,10 @@ export fn drop_unused_globals(bytes: Bytes) -> Bytes {
   }
 }
 
-// Per-body rewrite for propagate_local_copies: drop the `local.get; local.set`
-// pair at span indices (set_b_span - 1, set_b_span) and, when b_idx >= 0,
-// rewrite the single later `local.get $b_idx` to `local.get $a_idx`. Mirrors
-// the other rewrite_body_* helpers.
+/// Per-body rewrite for propagate_local_copies: drop the `local.get; local.set`
+/// pair at span indices (set_b_span - 1, set_b_span) and, when b_idx >= 0,
+/// rewrite the single later `local.get $b_idx` to `local.get $a_idx`. Mirrors
+/// the other rewrite_body_* helpers.
 fn rewrite_body_locals(body: Bytes, set_b_span: Int, a_idx: Int, b_idx: Int) -> Bytes {
   let (_, code_start) = read_local_groups(body)
   let code_end = Bytes::length(body) - 1
@@ -5017,16 +5065,16 @@ fn rewrite_body_locals(body: Bytes, set_b_span: Int, a_idx: Int, b_idx: Int) -> 
   nb
 }
 
-// Local copy-propagation (a conservative slice of wasm-opt's simplify-locals).
-// Handles two adjacent-pair shapes, one rewrite per call (converge repeats):
-//   (A) `local.get $x; local.set $x` — a pure no-op pair (push then pop into
-//       the same slot); both are deleted unconditionally.
-//   (B) `local.get $a; local.set $b` (a != b) where $b is written only here and
-//       read exactly once, that read comes after the set, and $a is not
-//       rewritten between the copy and the read. The pair is stack-neutral so
-//       both are deleted and the later `local.get $b` becomes `local.get $a`
-//       (value-equivalent since $a is unchanged). $b is then dead for
-//       coalesce/DCE.
+/// Local copy-propagation (a conservative slice of wasm-opt's simplify-locals).
+/// Handles two adjacent-pair shapes, one rewrite per call (converge repeats):
+///   (A) `local.get $x; local.set $x` — a pure no-op pair (push then pop into
+///       the same slot); both are deleted unconditionally.
+///   (B) `local.get $a; local.set $b` (a != b) where $b is written only here and
+///       read exactly once, that read comes after the set, and $a is not
+///       rewritten between the copy and the read. The pair is stack-neutral so
+///       both are deleted and the later `local.get $b` becomes `local.get $a`
+///       (value-equivalent since $a is unchanged). $b is then dead for
+///       coalesce/DCE.
 export fn propagate_local_copies(bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
@@ -5106,7 +5154,7 @@ export fn propagate_local_copies(bytes: Bytes) -> Bytes {
                 b_idx = -1
                 set_b_span = p + 1
               } else if (a != b) && (a >= 0) && (a <= maxidx) && (b >= 0) && (b <= maxidx)
-                && (FixedArray::get(reads, b) == 1) && (FixedArray::get(writes, b) == 1) {
+              && (FixedArray::get(reads, b) == 1) && (FixedArray::get(writes, b) == 1) {
                 let gb = FixedArray::get(read_pos, b)
                 // Safe iff $b's single read comes after the set, $a is not
                 // rewritten between the copy and that read (so $a still holds
@@ -5239,12 +5287,12 @@ export fn optimize(bytes: Bytes) -> Bytes {
   step3
 }
 
-// Run `minify` repeatedly until it stops shrinking the binary (wite's
-// `--converge`). Passes feed each other across rounds: `directize` exposes
-// dead functions for `dce`, `dce` exposes unused types for `remove_unused_types`,
-// and deep constant-fold chains finish past `peephole_body`'s internal cap.
-// Monotonic: a round is kept only if it is strictly smaller, so the result is
-// never larger than a single `minify`. `max_rounds` bounds the work.
+/// Run `minify` repeatedly until it stops shrinking the binary (wite's
+/// `--converge`). Passes feed each other across rounds: `directize` exposes
+/// dead functions for `dce`, `dce` exposes unused types for `remove_unused_types`,
+/// and deep constant-fold chains finish past `peephole_body`'s internal cap.
+/// Monotonic: a round is kept only if it is strictly smaller, so the result is
+/// never larger than a single `minify`. `max_rounds` bounds the work.
 fn minify_converge_n(bytes: Bytes, max_rounds: Int) -> Bytes {
   let mut cur = minify(bytes)
   let mut rounds = 0

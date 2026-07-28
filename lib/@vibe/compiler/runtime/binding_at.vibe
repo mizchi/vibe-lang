@@ -39,7 +39,7 @@
 // interpolation): both mis-codegen to NUL here.
 
 import @vibe/compiler/core {
-  Stmt, Expr, Pat
+  Expr, Pat, Stmt
 }
 
 import @vibe/core {
@@ -52,14 +52,14 @@ import @vibe/compiler/syntax {
 
 //# Functions
 
-// 1-based (line, col) -> 0-based char offset. Mirror of type_at.vibe's
-// line_col_to_offset (kept in sync — see its comment for the full rationale):
-// count newlines to reach the target line, add (col - 1). Returns -1
-// (invalid / no position) rather than clamping (#947) for `line`/`col` < 1,
-// `line` beyond EOF, or `col` past the end of that line's content (previously
-// unclamped, so a large `col` silently resolved into the NEXT line's
-// identifier). CRLF: a line's addressable content excludes a trailing '\r'
-// before the '\n', so query positions on CRLF files don't drift.
+/// 1-based (line, col) -> 0-based char offset. Mirror of type_at.vibe's
+/// line_col_to_offset (kept in sync — see its comment for the full rationale):
+/// count newlines to reach the target line, add (col - 1). Returns -1
+/// (invalid / no position) rather than clamping (#947) for `line`/`col` < 1,
+/// `line` beyond EOF, or `col` past the end of that line's content (previously
+/// unclamped, so a large `col` silently resolved into the NEXT line's
+/// identifier). CRLF: a line's addressable content excludes a trailing '\r'
+/// before the '\n', so query positions on CRLF files don't drift.
 fn bind_line_col_to_offset(source: String, line: Int, col: Int) -> Int {
   if line < 1 || col < 1 {
     -1
@@ -97,12 +97,12 @@ fn bind_line_col_to_offset(source: String, line: Int, col: Int) -> Int {
   }
 }
 
-// A located occurrence resolved to a binding:
-//   BindHit(name, off, key)
-// where `off` is the start source offset (its span is [off, off+length(name)))
-// and `key` is the canonical binding id this occurrence resolves to. key 0 means
-// "module-level / free name, grouped file-wide by name". `off` is -1 for
-// synthetic / non-located nodes, which the search ignores.
+/// A located occurrence resolved to a binding:
+///   BindHit(name, off, key)
+/// where `off` is the start source offset (its span is [off, off+length(name)))
+/// and `key` is the canonical binding id this occurrence resolves to. key 0 means
+/// "module-level / free name, grouped file-wide by name". `off` is -1 for
+/// synthetic / non-located nodes, which the search ignores.
 enum BindHit {
   BindHit(String, Int, Int)
 }
@@ -111,8 +111,8 @@ fn bind_empty_hits() -> Array[BindHit] {
   array_empty()
 }
 
-// True when `source[off]` is NOT an identifier char (or off out of range) — a
-// word boundary. Used to match a binding name as a whole word.
+/// True when `source[off]` is NOT an identifier char (or off out of range) — a
+/// word boundary. Used to match a binding name as a whole word.
 fn bind_is_boundary_at(source: String, off: Int) -> Bool {
   if off < 0 || off >= String::length(source) {
     true
@@ -123,16 +123,20 @@ fn bind_is_boundary_at(source: String, off: Int) -> Bool {
   }
 }
 
-// Find the start offset of the first whole-word occurrence of `name` in
-// `source` at or after `from`. Returns -1 when not found. Recovers a source
-// offset for a binder NAME, which the parser stores only as a String.
+/// Find the start offset of the first whole-word occurrence of `name` in
+/// `source` at or after `from`. Returns -1 when not found. Recovers a source
+/// offset for a binder NAME, which the parser stores only as a String.
 fn bind_find_word(source: String, name: String, from: Int) -> Int {
   let nlen = String::length(name)
   if nlen == 0 {
     -1
   } else {
     let limit = String::length(source)
-    let mut i = if from < 0 { 0 } else { from }
+    let mut i = if from < 0 {
+      0
+    } else {
+      from
+    }
     let mut found = -1
     while found < 0 && i + nlen <= limit {
       if String::substring(source, i, i + nlen) == name && bind_is_boundary_at(source, i - 1) && bind_is_boundary_at(source, i + nlen) {
@@ -145,16 +149,16 @@ fn bind_find_word(source: String, name: String, from: Int) -> Int {
   }
 }
 
-// Mutable walk state threaded through the AST traversal:
-//   hits        — collected occurrences (references + recovered binders)
-//   scope_names — scope-stack of in-scope binder names (parallel to scope_ids)
-//   scope_ids   — scope-stack of binder ids (parallel to scope_names)
-//   floor       — boxed monotonically-advancing scan floor for binder recovery
-//   source      — the program text
-//
-// Binding ids are NOT a separate counter: each binder's canonical id is its
-// recovered source offset + 1 (unique per binder, and >= 1 so it never collides
-// with the module/free key 0). This avoids a separate mutable id-counter field.
+/// Mutable walk state threaded through the AST traversal:
+///   hits        — collected occurrences (references + recovered binders)
+///   scope_names — scope-stack of in-scope binder names (parallel to scope_ids)
+///   scope_ids   — scope-stack of binder ids (parallel to scope_names)
+///   floor       — boxed monotonically-advancing scan floor for binder recovery
+///   source      — the program text
+///
+/// Binding ids are NOT a separate counter: each binder's canonical id is its
+/// recovered source offset + 1 (unique per binder, and >= 1 so it never collides
+/// with the module/free key 0). This avoids a separate mutable id-counter field.
 struct BindState {
   hits: Array[BindHit];
   scope_names: Array[String];
@@ -163,9 +167,9 @@ struct BindState {
   source: String
 }
 
-// A fresh single-cell mutable Int array holding `v` (a poor-man's mutable box).
-// Built via the slice+push idiom so the cell is a heap array supporting
-// Array::set, not a static read-only literal.
+/// A fresh single-cell mutable Int array holding `v` (a poor-man's mutable box).
+/// Built via the slice+push idiom so the cell is a heap array supporting
+/// Array::set, not a static read-only literal.
 fn bind_box_int(v: Int) -> Array[Int] {
   let arr = array_empty()
   Array::push(arr, v)
@@ -182,9 +186,9 @@ fn bind_new_state(source: String) -> BindState {
   }
 }
 
-// Resolve `name` to the nearest enclosing scope id, scanning the scope stack from
-// the top (end) down. Returns 0 (module-level / free, grouped file-wide) when no
-// local introduction is in scope.
+/// Resolve `name` to the nearest enclosing scope id, scanning the scope stack from
+/// the top (end) down. Returns 0 (module-level / free, grouped file-wide) when no
+/// local introduction is in scope.
 fn bind_resolve(st: BindState, name: String) -> Int {
   let n = Array::length(st.scope_names)
   let mut i = n - 1
@@ -200,22 +204,26 @@ fn bind_resolve(st: BindState, name: String) -> Int {
   found
 }
 
-// Pop the scope stack back down to `mark` entries.
+/// Pop the scope stack back down to `mark` entries.
 fn bind_pop_scope(st: BindState, mark: Int) -> Unit {
   Array::truncate(st.scope_names, mark)
   Array::truncate(st.scope_ids, mark)
 }
 
-// Recover a binder's source offset (from the scan floor forward), record it as an
-// occurrence, advance the floor past it, and return its unique binding id (off+1,
-// always >= 1; or 0 when the offset cannot be recovered — see file header
-// FALLBACK note). Does NOT push to scope — callers control when the binder enters
-// scope (e.g. a non-recursive `let x = v` must recover x's offset textually
-// before v, yet not have x in scope while walking v).
+/// Recover a binder's source offset (from the scan floor forward), record it as an
+/// occurrence, advance the floor past it, and return its unique binding id (off+1,
+/// always >= 1; or 0 when the offset cannot be recovered — see file header
+/// FALLBACK note). Does NOT push to scope — callers control when the binder enters
+/// scope (e.g. a non-recursive `let x = v` must recover x's offset textually
+/// before v, yet not have x in scope while walking v).
 fn bind_recover_binder(st: BindState, name: String) -> Int {
   let from = Array::get(st.floor, 0)
   let off = bind_find_word(st.source, name, from)
-  let id = if off >= 0 { off + 1 } else { 0 }
+  let id = if off >= 0 {
+    off + 1
+  } else {
+    0
+  }
   if off >= 0 {
     Array::push(st.hits, BindHit(name, off, id))
     Array::set(st.floor, 0, off + String::length(name))
@@ -225,23 +233,23 @@ fn bind_recover_binder(st: BindState, name: String) -> Int {
   id
 }
 
-// Push a binder (name, id) onto the current scope.
+/// Push a binder (name, id) onto the current scope.
 fn bind_push_binder(st: BindState, name: String, id: Int) -> Unit {
   Array::push(st.scope_names, name)
   Array::push(st.scope_ids, id)
 }
 
-// Introduce a binder: recover its offset/id then immediately push it into scope.
-// Used where the binder's scope begins right at the binder site (params, for /
-// loop binders, match-pattern binders).
+/// Introduce a binder: recover its offset/id then immediately push it into scope.
+/// Used where the binder's scope begins right at the binder site (params, for /
+/// loop binders, match-pattern binders).
 fn bind_introduce(st: BindState, name: String) -> Unit {
   let id = bind_recover_binder(st, name)
   bind_push_binder(st, name, id)
 }
 
-// Record a reference `EIdent(name, off)`: resolve it to the nearest enclosing
-// binding (or 0 = module-level/free) and store its located span. Advance the
-// floor past it so later binder recovery does not re-find an earlier position.
+/// Record a reference `EIdent(name, off)`: resolve it to the nearest enclosing
+/// binding (or 0 = module-level/free) and store its located span. Advance the
+/// floor past it so later binder recovery does not re-find an earlier position.
 fn bind_record_ref(st: BindState, name: String, off: Int) -> Unit {
   if off >= 0 {
     let key = bind_resolve(st, name)
@@ -256,9 +264,9 @@ fn bind_record_ref(st: BindState, name: String, off: Int) -> Unit {
   }
 }
 
-// Record an assignment target `name = ...` / `name op= ...`. Resolve to the
-// enclosing binding and recover the name's source offset from the floor (the
-// target name has no stored offset).
+/// Record an assignment target `name = ...` / `name op= ...`. Resolve to the
+/// enclosing binding and recover the name's source offset from the floor (the
+/// target name has no stored offset).
 fn bind_record_assign_target(st: BindState, name: String) -> Unit {
   let key = bind_resolve(st, name)
   let from = Array::get(st.floor, 0)
@@ -271,9 +279,9 @@ fn bind_record_assign_target(st: BindState, name: String) -> Unit {
   }
 }
 
-// Introduce the names bound by a pattern (PBind directly; nested binders in
-// ctor / tuple / struct / or patterns recursively). Each is introduced into the
-// current scope.
+/// Introduce the names bound by a pattern (PBind directly; nested binders in
+/// ctor / tuple / struct / or patterns recursively). Each is introduced into the
+/// current scope.
 fn bind_introduce_pat(st: BindState, pat: Pat) -> Unit {
   match pat {
     PWild => (),
@@ -307,9 +315,9 @@ fn bind_introduce_pats(st: BindState, sub: Array[Pat]) -> Unit {
   }
 }
 
-// Scope-aware walker. `st.hits` accumulates references (resolved to a binding id)
-// and recovered binders. Every Expr arm is enumerated so a new variant is a
-// compile error here, keeping the collector in sync with the AST.
+/// Scope-aware walker. `st.hits` accumulates references (resolved to a binding id)
+/// and recovered binders. Every Expr arm is enumerated so a new variant is a
+/// compile error here, keeping the collector in sync with the AST.
 fn bind_walk_expr(st: BindState, expr: Expr) -> Unit {
   match expr {
     EInt(_) => (),
@@ -458,7 +466,7 @@ fn bind_walk_field_exprs(st: BindState, fields: Array[(String, Expr)]) -> Unit {
   }
 }
 
-// A match/handle arm: the pattern binders are scoped to the arm body only.
+/// A match/handle arm: the pattern binders are scoped to the arm body only.
 fn bind_walk_arms(st: BindState, arms: Array[(Pat, Expr)]) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
@@ -471,9 +479,9 @@ fn bind_walk_arms(st: BindState, arms: Array[(Pat, Expr)]) -> Unit {
   }
 }
 
-// Record a top-level / module-level binder NAME. These group file-wide (key 0),
-// so all references to the same module name resolve together. We recover the
-// binder's offset from the floor.
+/// Record a top-level / module-level binder NAME. These group file-wide (key 0),
+/// so all references to the same module name resolve together. We recover the
+/// binder's offset from the floor.
 fn bind_record_module_binder(st: BindState, name: String) -> Unit {
   let from = Array::get(st.floor, 0)
   let off = bind_find_word(st.source, name, from)
@@ -485,9 +493,9 @@ fn bind_record_module_binder(st: BindState, name: String) -> Unit {
   }
 }
 
-// Walk a statement. Top-level value bindings (SLet/SLetMut) introduce a
-// module-level name (key 0 => grouped file-wide); we record the binder's located
-// NAME and walk the body. SModule recurses.
+/// Walk a statement. Top-level value bindings (SLet/SLetMut) introduce a
+/// module-level name (key 0 => grouped file-wide); we record the binder's located
+/// NAME and walk the body. SModule recurses.
 fn bind_walk_stmt(st: BindState, stmt: Stmt) -> Unit {
   match stmt {
     SLet(_, _, name, _, body) => {
@@ -515,9 +523,9 @@ fn bind_walk_stmts(st: BindState, stmts: Array[Stmt]) -> Unit {
   }
 }
 
-// Among all hits whose span [off, off+len(name)) contains `tgt`, pick the one
-// with the largest `off` (innermost / closest start). Returns the (name, key) of
-// that hit, or ("", 0) when none.
+/// Among all hits whose span [off, off+len(name)) contains `tgt`, pick the one
+/// with the largest `off` (innermost / closest start). Returns the (name, key) of
+/// that hit, or ("", 0) when none.
 fn bind_pick_at(hits: Array[BindHit], tgt: Int) -> (String, Int) {
   let mut best_name = ""
   let mut best_key = 0
@@ -541,9 +549,9 @@ fn bind_pick_at(hits: Array[BindHit], tgt: Int) -> (String, Int) {
   (best_name, best_key)
 }
 
-// Insert (start, end) into `out` keeping it sorted by start ascending and
-// de-duplicated (skip when an identical start is already present — equal starts
-// imply equal spans because the name length is fixed).
+/// Insert (start, end) into `out` keeping it sorted by start ascending and
+/// de-duplicated (skip when an identical start is already present — equal starts
+/// imply equal spans because the name length is fixed).
 fn bind_insert_sorted_unique(out: Array[(Int, Int)], start: Int, end: Int) -> Unit {
   let n = Array::length(out)
   let mut dup = false
@@ -578,15 +586,15 @@ fn bind_insert_sorted_unique(out: Array[(Int, Int)], start: Int, end: Int) -> Un
   }
 }
 
-// Collect the (start, end) source spans of every occurrence that resolves to the
-// SAME binding as the identifier under the cursor at 1-based (line, col). Steps:
-//   1. lex + parse located; scope-aware walk collecting located references
-//      (resolved to a binding id) plus recovered binders.
-//   2. find the (name, key) covering the cursor offset; "" -> no occurrences.
-//   3. emit a span for every hit with the same name AND key (key 0 = module /
-//      free name grouped file-wide), de-duplicated and sorted by start.
-// AST-accurate and scope-aware (see file header). Any failure is swallowed and
-// yields an empty list.
+/// Collect the (start, end) source spans of every occurrence that resolves to the
+/// SAME binding as the identifier under the cursor at 1-based (line, col). Steps:
+///   1. lex + parse located; scope-aware walk collecting located references
+///      (resolved to a binding id) plus recovered binders.
+///   2. find the (name, key) covering the cursor offset; "" -> no occurrences.
+///   3. emit a span for every hit with the same name AND key (key 0 = module /
+///      free name grouped file-wide), de-duplicated and sorted by start.
+/// AST-accurate and scope-aware (see file header). Any failure is swallowed and
+/// yields an empty list.
 fn binding_occurrences_impl(source: String, line: Int, col: Int) -> Array[(Int, Int)] with { Error } {
   {
     let tgt = bind_line_col_to_offset(source, line, col)
@@ -596,31 +604,31 @@ fn binding_occurrences_impl(source: String, line: Int, col: Int) -> Array[(Int, 
       // position to resolve, so no occurrences.
       empty_out
     } else {
-    let (tokens, starts, _ends) = lex_with_offsets(source)
-    let stmts = parse_program_located(tokens, starts, source)
-    let st = bind_new_state(source)
-    bind_walk_stmts(st, stmts)
-    let hits = st.hits
-    let (name, key) = bind_pick_at(hits, tgt)
-    let out = array_empty()
-    if name == "" {
-      out
-    } else {
-      let mut i = 0
-      while i < Array::length(hits) {
-        match Array::get(hits, i) {
-          BindHit(hname, hoff, hkey) => {
-            if hname == name && hkey == key && hoff >= 0 {
-              bind_insert_sorted_unique(out, hoff, hoff + String::length(hname))
-            } else {
-              ()
+      let (tokens, starts, _ends) = lex_with_offsets(source)
+      let stmts = parse_program_located(tokens, starts, source)
+      let st = bind_new_state(source)
+      bind_walk_stmts(st, stmts)
+      let hits = st.hits
+      let (name, key) = bind_pick_at(hits, tgt)
+      let out = array_empty()
+      if name == "" {
+        out
+      } else {
+        let mut i = 0
+        while i < Array::length(hits) {
+          match Array::get(hits, i) {
+            BindHit(hname, hoff, hkey) => {
+              if hname == name && hkey == key && hoff >= 0 {
+                bind_insert_sorted_unique(out, hoff, hoff + String::length(hname))
+              } else {
+                ()
+              }
             }
           }
+          i = i + 1
         }
-        i = i + 1
+        out
       }
-      out
-    }
     }
   }
 }

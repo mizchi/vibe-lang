@@ -1,11 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr,
-  Pat,
-  Stmt,
-  TypeExpr,
-  __to_string
+  Expr, Pat, Stmt, TypeExpr, __to_string
 }
 
 import @vibe/core {
@@ -14,54 +10,54 @@ import @vibe/core {
 
 //# Functions
 
-// Self-tail-call optimization (#tco): a top-level `let f = (p0, p1, ...) ->
-// T { ... f(a0, a1, ...) ... }` whose ONLY self-references are calls to
-// itself in TAIL position compiles today to an ordinary wasm `call` at every
-// recursive step — confirmed by disassembly to overflow the native/wasm call
-// stack at a recursion depth in the low tens of thousands. `loop (i = 0, ..)
-// { ... continue(...) }` already compiles to genuine wasm `block`/`loop`/`br`
-// with zero stack growth (parser_expr_primary.vibe's parse_loop_primary +
-// desugar_loop_body). This pass rewrites a self-tail-recursive function body
-// into the SAME shape the parser already produces for an explicit `loop`, so
-// it inherits that already-proven-safe lowering: each function parameter is
-// shadowed by a fresh mutable local seeded from the parameter, the body is
-// wrapped in `while (true) { ... }`, a tail self-call becomes an assignment
-// to those mutable locals followed by a bare `continue`, and every other
-// tail expression becomes `__stc_result = <expr>; break`.
-//
-// Deliberately conservative (bail out to leave the original recursive `call`
-// untouched) whenever the shape is not obviously safe to rewrite:
-//   - the function's own name is shadowed anywhere in its body (a nested
-//     `let`/`let mut`/`let rec`/closure param/match-or-handle-pattern binding
-//     the same name) — a shadowed reference is NOT a self-call, and proving
-//     that precisely everywhere would need full scope tracking this pass
-//     does not do (see checker_capture.vibe's `bound` threading for what
-//     that would take);
-//   - a parameter, or anything bound anywhere in the body, is named
-//     `__stc_result` or starts with `__stc` (the reserved prefix this pass
-//     itself generates fresh names under) — this pass runs automatically,
-//     with no opt-in syntax the way `loop` has, so a user binding that
-//     happens to collide with a synthesized name must not be silently
-//     shadowed;
-//   - the body contains `EHandle` (effect handler) or `EReturn` (early
-//     return) anywhere — both interact with control flow in ways this local,
-//     structural rewrite does not attempt to reason about;
-//   - the body contains a nested `EFn` (closure literal) anywhere — turning
-//     a parameter into a shared mutable loop-carried cell (below) changes
-//     capture semantics for any closure that captures it: codegen boxes a
-//     captured mutable binding by reference, so a closure built in a
-//     non-final iteration and later invoked would observe a LATER
-//     iteration's value instead of a snapshot of its own invocation's value.
-//     Rejecting any nested closure is coarser than necessary (a closure
-//     that captures nothing of this function's parameters would actually be
-//     fine) but avoids needing real capture analysis here;
-//   - no tail-position call to the function's own name with matching arity
-//     is found at all (nothing to rewrite).
-//
-// Runs once over the whole merged program, called from both codegen
-// backends' convergence points (mirrors desugar_trait_dicts /
-// rewrite_top_level_fn_alias_refs — see their call sites in
-// codegen/wasi/linked_compile.vibe and codegen/gc/backend_body.vibe).
+/// Self-tail-call optimization (#tco): a top-level `let f = (p0, p1, ...) ->
+/// T { ... f(a0, a1, ...) ... }` whose ONLY self-references are calls to
+/// itself in TAIL position compiles today to an ordinary wasm `call` at every
+/// recursive step — confirmed by disassembly to overflow the native/wasm call
+/// stack at a recursion depth in the low tens of thousands. `loop (i = 0, ..)
+/// { ... continue(...) }` already compiles to genuine wasm `block`/`loop`/`br`
+/// with zero stack growth (parser_expr_primary.vibe's parse_loop_primary +
+/// desugar_loop_body). This pass rewrites a self-tail-recursive function body
+/// into the SAME shape the parser already produces for an explicit `loop`, so
+/// it inherits that already-proven-safe lowering: each function parameter is
+/// shadowed by a fresh mutable local seeded from the parameter, the body is
+/// wrapped in `while (true) { ... }`, a tail self-call becomes an assignment
+/// to those mutable locals followed by a bare `continue`, and every other
+/// tail expression becomes `__stc_result = <expr>; break`.
+///
+/// Deliberately conservative (bail out to leave the original recursive `call`
+/// untouched) whenever the shape is not obviously safe to rewrite:
+///   - the function's own name is shadowed anywhere in its body (a nested
+///     `let`/`let mut`/`let rec`/closure param/match-or-handle-pattern binding
+///     the same name) — a shadowed reference is NOT a self-call, and proving
+///     that precisely everywhere would need full scope tracking this pass
+///     does not do (see checker_capture.vibe's `bound` threading for what
+///     that would take);
+///   - a parameter, or anything bound anywhere in the body, is named
+///     `__stc_result` or starts with `__stc` (the reserved prefix this pass
+///     itself generates fresh names under) — this pass runs automatically,
+///     with no opt-in syntax the way `loop` has, so a user binding that
+///     happens to collide with a synthesized name must not be silently
+///     shadowed;
+///   - the body contains `EHandle` (effect handler) or `EReturn` (early
+///     return) anywhere — both interact with control flow in ways this local,
+///     structural rewrite does not attempt to reason about;
+///   - the body contains a nested `EFn` (closure literal) anywhere — turning
+///     a parameter into a shared mutable loop-carried cell (below) changes
+///     capture semantics for any closure that captures it: codegen boxes a
+///     captured mutable binding by reference, so a closure built in a
+///     non-final iteration and later invoked would observe a LATER
+///     iteration's value instead of a snapshot of its own invocation's value.
+///     Rejecting any nested closure is coarser than necessary (a closure
+///     that captures nothing of this function's parameters would actually be
+///     fine) but avoids needing real capture analysis here;
+///   - no tail-position call to the function's own name with matching arity
+///     is found at all (nothing to rewrite).
+///
+/// Runs once over the whole merged program, called from both codegen
+/// backends' convergence points (mirrors desugar_trait_dicts /
+/// rewrite_top_level_fn_alias_refs — see their call sites in
+/// codegen/wasi/linked_compile.vibe and codegen/gc/backend_body.vibe).
 export fn rewrite_self_tail_calls(stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
@@ -92,16 +88,16 @@ fn stc_param_names(params: Array[(String, Option[TypeExpr])]) -> Array[String] {
   }
 }
 
-// Order matters for compile-time cost, not just correctness: `params_all_
-// scalar` and `tail_has_self_call` are cheap (the latter only walks tail
-// SLOTS, not the whole tree) and reject the overwhelming majority of
-// functions immediately, so the two whole-body scans below only run for the
-// rare function that's an actual self-tail-recursion candidate. Checking
-// them first (as an earlier version of this pass did) made
-// `rewrite_self_tail_calls` walk the FULL body of every scalar-only-param
-// function in the compiled program twice, regardless of whether it
-// self-recurses at all -- measurable overhead across thousands of functions
-// in a large program, caught by CI's self-compile heap-usage KPI gate.
+/// Order matters for compile-time cost, not just correctness: `params_all_
+/// scalar` and `tail_has_self_call` are cheap (the latter only walks tail
+/// SLOTS, not the whole tree) and reject the overwhelming majority of
+/// functions immediately, so the two whole-body scans below only run for the
+/// rare function that's an actual self-tail-recursion candidate. Checking
+/// them first (as an earlier version of this pass did) made
+/// `rewrite_self_tail_calls` walk the FULL body of every scalar-only-param
+/// function in the compiled program twice, regardless of whether it
+/// self-recurses at all -- measurable overhead across thousands of functions
+/// in a large program, caught by CI's self-compile heap-usage KPI gate.
 fn stc_eligible(name: String, params: Array[(String, Option[TypeExpr])], param_names: Array[String], arity: Int, body: Expr) -> Bool {
   if !stc_params_all_scalar(params) {
     false
@@ -116,18 +112,18 @@ fn stc_eligible(name: String, params: Array[(String, Option[TypeExpr])], param_n
   }
 }
 
-// Conservative safety valve: only rewrite when every parameter is an
-// unboxed scalar (Int/Bool/Float/Double/Unit, by declared type annotation).
-// The rewrite reassigns EVERY parameter's mutable local on every loop
-// iteration (mirroring how `loop (...)  { continue(...) }` already treats
-// its params — see the module doc comment), including parameters whose
-// value never actually changes across recursive calls. For a heap-managed
-// value (Array/String/struct/...) that redundant per-iteration reassignment
-// needs the same retain/release bookkeeping the RC (perceus) pass plans for
-// an ordinary `let mut`, and this pass runs too late in the pipeline to
-// replan that -- restricting to declared-scalar parameters sidesteps the
-// whole question. An unannotated parameter (`None`) is treated as NOT
-// scalar (conservative default: we cannot tell).
+/// Conservative safety valve: only rewrite when every parameter is an
+/// unboxed scalar (Int/Bool/Float/Double/Unit, by declared type annotation).
+/// The rewrite reassigns EVERY parameter's mutable local on every loop
+/// iteration (mirroring how `loop (...)  { continue(...) }` already treats
+/// its params — see the module doc comment), including parameters whose
+/// value never actually changes across recursive calls. For a heap-managed
+/// value (Array/String/struct/...) that redundant per-iteration reassignment
+/// needs the same retain/release bookkeeping the RC (perceus) pass plans for
+/// an ordinary `let mut`, and this pass runs too late in the pipeline to
+/// replan that -- restricting to declared-scalar parameters sidesteps the
+/// whole question. An unannotated parameter (`None`) is treated as NOT
+/// scalar (conservative default: we cannot tell).
 fn stc_params_all_scalar(params: Array[(String, Option[TypeExpr])]) -> Bool {
   let mut i = 0
   let mut all_scalar = true
@@ -469,8 +465,7 @@ fn stc_tail_arms_have_self_call(arms: Array[(Pat, Expr)], name: String, arity: I
 fn stc_build_loop_body(name: String, param_names: Array[String], arity: Int, body: Expr) -> Expr {
   let transformed = stc_rewrite_tail(body, name, param_names, arity, 0)
   let while_expr = EWhile(EBool(true), transformed)
-  let looped = ELetMut("__stc_result", EInt(0),
-    ESeq(while_expr, EIdent("__stc_result", -1)), -1)
+  let looped = ELetMut("__stc_result", EInt(0), ESeq(while_expr, EIdent("__stc_result", -1)), -1)
   let mut wrapped = looped
   let mut wi = arity - 1
   while wi >= 0 {
@@ -481,11 +476,11 @@ fn stc_build_loop_body(name: String, param_names: Array[String], arity: Int, bod
   wrapped
 }
 
-// Recurses into tail slots exactly like stc_tail_has_self_call above; a self-
-// call in tail position becomes an assign-then-continue, every other tail
-// leaf becomes an assign-to-`__stc_result`-then-break. `seq` seeds the temp
-// names (`__stc<seq>_<argIdx>`) so nested self-calls under different tail
-// branches of the same function never collide with each other's temporaries.
+/// Recurses into tail slots exactly like stc_tail_has_self_call above; a self-
+/// call in tail position becomes an assign-then-continue, every other tail
+/// leaf becomes an assign-to-`__stc_result`-then-break. `seq` seeds the temp
+/// names (`__stc<seq>_<argIdx>`) so nested self-calls under different tail
+/// branches of the same function never collide with each other's temporaries.
 fn stc_rewrite_tail(expr: Expr, name: String, param_names: Array[String], arity: Int, seq: Int) -> Expr {
   match expr {
     EIf(c, t, e) => EIf(c, stc_rewrite_tail(t, name, param_names, arity, seq * 2 + 1), stc_rewrite_tail(e, name, param_names, arity, seq * 2 + 2)),
@@ -515,12 +510,12 @@ fn stc_rewrite_tail_arms(arms: Array[(Pat, Expr)], name: String, param_names: Ar
   out
 }
 
-// `f(a0, a1, ...)` in tail position -> bind each arg to a fresh temp (so
-// argument evaluation cannot observe partially-updated loop-carried
-// parameters, exactly like desugar_loop_body's `continue(args)` handling),
-// assign the temps into the parameters' mutable locals, then a bare
-// `continue` (codegen drops any EContinue payload — see the parser's
-// desugar_loop_body doc comment — so the payload here is only ever empty).
+/// `f(a0, a1, ...)` in tail position -> bind each arg to a fresh temp (so
+/// argument evaluation cannot observe partially-updated loop-carried
+/// parameters, exactly like desugar_loop_body's `continue(args)` handling),
+/// assign the temps into the parameters' mutable locals, then a bare
+/// `continue` (codegen drops any EContinue payload — see the parser's
+/// desugar_loop_body doc comment — so the payload here is only ever empty).
 fn stc_build_continue(call_expr: Expr, param_names: Array[String], arity: Int, seq: Int) -> Expr {
   match call_expr {
     ECall(_, args, _) => {

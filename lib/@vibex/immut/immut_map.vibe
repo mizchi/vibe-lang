@@ -15,9 +15,9 @@
 
 //# Types
 
-// The map IS its root node. Exported so package-internal tests can assert
-// structural properties (collision path, branch collapse); external users
-// go through the index.vibei contract, which only exposes the bodyless type.
+/// The map IS its root node. Exported so package-internal tests can assert
+/// structural properties (collision path, branch collapse); external users
+/// go through the index.vibei contract, which only exposes the bodyless type.
 export enum ImmutMap[V] {
   MEmpty;
   MLeaf(Int, String, V);
@@ -30,13 +30,13 @@ export enum ImmutMap[V] {
 
 //# Internal helpers
 
-// 32-bit SWAR popcount (bit trick; no builtin popcount). Input is a 32-bit
-// non-negative bitmap, so every intermediate stays far below 2^61.
+/// 32-bit SWAR popcount (bit trick; no builtin popcount). Input is a 32-bit
+/// non-negative bitmap, so every intermediate stays far below 2^61.
 fn popcount32(x: Int) -> Int {
-  let a = x - ((x >> 1) & 0x55555555)
-  let b = (a & 0x33333333) + ((a >> 2) & 0x33333333)
-  let c = (b + (b >> 4)) & 0x0F0F0F0F
-  ((c * 0x01010101) >> 24) & 0x3F
+  let a = x - ((x>>1)&0x55555555)
+  let b = (a&0x33333333) + ((a>>2)&0x33333333)
+  let c = (b + (b>>4))&0x0F0F0F0F
+  ((c * 0x01010101)>>24)&0x3F
 }
 
 fn arr1[T](a: T) -> Array[T] {
@@ -52,7 +52,7 @@ fn arr2[T](a: T, b2: T) -> Array[T] {
   ArrayBuilder::freeze(b)
 }
 
-// Copy with slot idx replaced (old array untouched).
+/// Copy with slot idx replaced (old array untouched).
 fn arr_set_at[T](xs: Array[T], idx: Int, v: T) -> Array[T] {
   let n = Array::length(xs)
   let b = ArrayBuilder::new()
@@ -68,7 +68,7 @@ fn arr_set_at[T](xs: Array[T], idx: Int, v: T) -> Array[T] {
   ArrayBuilder::freeze(b)
 }
 
-// Copy with v inserted before slot idx (old array untouched).
+/// Copy with v inserted before slot idx (old array untouched).
 fn arr_insert_at[T](xs: Array[T], idx: Int, v: T) -> Array[T] {
   let n = Array::length(xs)
   let b = ArrayBuilder::new()
@@ -86,7 +86,7 @@ fn arr_insert_at[T](xs: Array[T], idx: Int, v: T) -> Array[T] {
   ArrayBuilder::freeze(b)
 }
 
-// Copy with slot idx removed (old array untouched).
+/// Copy with slot idx removed (old array untouched).
 fn arr_remove_at[T](xs: Array[T], idx: Int) -> Array[T] {
   let n = Array::length(xs)
   let b = ArrayBuilder::new()
@@ -100,7 +100,7 @@ fn arr_remove_at[T](xs: Array[T], idx: Int) -> Array[T] {
   ArrayBuilder::freeze(b)
 }
 
-// Copy with v appended (old array untouched).
+/// Copy with v appended (old array untouched).
 fn arr_append_one[T](xs: Array[T], v: T) -> Array[T] {
   let n = Array::length(xs)
   let b = ArrayBuilder::new()
@@ -126,19 +126,19 @@ fn collision_index(ks: Array[String], key: String) -> Int {
   found
 }
 
-// Combine two nodes whose full hashes DIFFER into branch structure at
-// `shift`, descending one level per 5-bit collision until the hashes split.
+/// Combine two nodes whose full hashes DIFFER into branch structure at
+/// `shift`, descending one level per 5-bit collision until the hashes split.
 fn merge_nodes[V](shift: Int, h1: Int, n1: ImmutMap[V], h2: Int, n2: ImmutMap[V]) -> ImmutMap[V] {
-  let i1 = (h1 >> shift) & 0x1F
-  let i2 = (h2 >> shift) & 0x1F
+  let i1 = (h1>>shift)&0x1F
+  let i2 = (h2>>shift)&0x1F
   if i1 == i2 {
-    MBranch(1 << i1, arr1(merge_nodes(shift + 5, h1, n1, h2, n2)))
+    MBranch(1<<i1, arr1(merge_nodes(shift + 5, h1, n1, h2, n2)))
   }
   else if i1 < i2 {
-    MBranch((1 << i1) | (1 << i2), arr2(n1, n2))
+    MBranch((1<<i1)|(1<<i2), arr2(n1, n2))
   }
   else {
-    MBranch((1 << i1) | (1 << i2), arr2(n2, n1))
+    MBranch((1<<i1)|(1<<i2), arr2(n2, n1))
   }
 }
 
@@ -152,11 +152,11 @@ fn map_get_at[V](node: ImmutMap[V], h: Int, key: String, shift: Int) -> Option[V
       None
     },
     MBranch(bitmap, kids) => {
-      let bit = 1 << ((h >> shift) & 0x1F)
-      if (bitmap & bit) == 0 {
+      let bit = 1<<((h>>shift)&0x1F)
+      if (bitmap&bit) == 0 {
         None
       } else {
-        map_get_at(Array::get(kids, popcount32(bitmap & (bit - 1))), h, key, shift + 5)
+        map_get_at(Array::get(kids, popcount32(bitmap&(bit - 1))), h, key, shift + 5)
       }
     },
     MCollision(ch, ks, vs) => {
@@ -189,10 +189,10 @@ fn map_set_at[V](node: ImmutMap[V], h: Int, key: String, value: V, shift: Int) -
       }
     },
     MBranch(bitmap, kids) => {
-      let bit = 1 << ((h >> shift) & 0x1F)
-      let pos = popcount32(bitmap & (bit - 1))
-      if (bitmap & bit) == 0 {
-        MBranch(bitmap | bit, arr_insert_at(kids, pos, MLeaf(h, key, value)))
+      let bit = 1<<((h>>shift)&0x1F)
+      let pos = popcount32(bitmap&(bit - 1))
+      if (bitmap&bit) == 0 {
+        MBranch(bitmap|bit, arr_insert_at(kids, pos, MLeaf(h, key, value)))
       } else {
         let child = Array::get(kids, pos)
         MBranch(bitmap, arr_set_at(kids, pos, map_set_at(child, h, key, value, shift + 5)))
@@ -223,17 +223,17 @@ fn map_delete_at[V](node: ImmutMap[V], h: Int, key: String, shift: Int) -> Immut
       MLeaf(lh, lk, lv)
     },
     MBranch(bitmap, kids) => {
-      let bit = 1 << ((h >> shift) & 0x1F)
-      if (bitmap & bit) == 0 {
+      let bit = 1<<((h>>shift)&0x1F)
+      if (bitmap&bit) == 0 {
         MBranch(bitmap, kids)
       } else {
-        let pos = popcount32(bitmap & (bit - 1))
+        let pos = popcount32(bitmap&(bit - 1))
         let child2 = map_delete_at(Array::get(kids, pos), h, key, shift + 5)
         match child2 {
           MEmpty => {
             // child vanished: clear its bit (`^` — no `~` in vibe) and
             // compact; collapse a single surviving non-branch child upward.
-            let bm2 = bitmap ^ bit
+            let bm2 = bitmap^bit
             if bm2 == 0 {
               MEmpty
             } else {
@@ -323,14 +323,14 @@ fn map_keys_acc[V](node: ImmutMap[V], acc: Array[String]) -> Array[String] {
 
 //# Public API
 
-// FNV-1a hash of a key, masked to 31 bits at every step. Exported so tests
-// (and users constructing adversarial inputs) can predict collisions.
+/// FNV-1a hash of a key, masked to 31 bits at every step. Exported so tests
+/// (and users constructing adversarial inputs) can predict collisions.
 export fn ImmutMap::hash_key(key: String) -> Int {
   let len = String::length(key)
-  let mut h = 2166136261 & 0x7FFFFFFF
+  let mut h = 2166136261&0x7FFFFFFF
   let mut i = 0
   while i < len {
-    h = ((h ^ String::char_code_at(key, i)) * 16777619) & 0x7FFFFFFF
+    h = ((h^String::char_code_at(key, i)) * 16777619)&0x7FFFFFFF
     i = i + 1
   }
   h
@@ -340,7 +340,7 @@ export fn ImmutMap::empty[V]() -> ImmutMap[V] {
   MEmpty
 }
 
-// Returns a NEW map with key set to value; the receiver is unchanged.
+/// Returns a NEW map with key set to value; the receiver is unchanged.
 export fn ImmutMap::set[V](m: ImmutMap[V], key: String, value: V) -> ImmutMap[V] {
   map_set_at(m, ImmutMap::hash_key(key), key, value, 0)
 }
@@ -356,7 +356,7 @@ export fn ImmutMap::has_key[V](m: ImmutMap[V], key: String) -> Bool {
   }
 }
 
-// Returns a NEW map without key; the receiver is unchanged.
+/// Returns a NEW map without key; the receiver is unchanged.
 export fn ImmutMap::delete[V](m: ImmutMap[V], key: String) -> ImmutMap[V] {
   map_delete_at(m, ImmutMap::hash_key(key), key, 0)
 }
@@ -365,7 +365,7 @@ export fn ImmutMap::size[V](m: ImmutMap[V]) -> Int {
   map_size(m)
 }
 
-// All keys, hash-trie order (unordered from the caller's viewpoint).
+/// All keys, hash-trie order (unordered from the caller's viewpoint).
 export fn ImmutMap::keys[V](m: ImmutMap[V]) -> Array[String] {
   map_keys_acc(m, ArrayBuilder::freeze(ArrayBuilder::new()))
 }

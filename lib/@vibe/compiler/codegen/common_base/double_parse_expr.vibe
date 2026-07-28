@@ -6,46 +6,46 @@ import @vibe/compiler/core {
 
 //# Functions
 
-// #841 (item E1): Double::parse(s) -> Option[Double], synthesized as ordinary
-// AST (same technique as int_parse_expr/double_to_string_expr) and lowered
-// via each backend's `ce`. Previously "Double::parse" had a declared builtin
-// signature (builtins/declarations.vibe) and a dead, never-consulted
-// checker-side type lookup (builtins_extended.vibe's lookup_numeric), but no
-// entry in the checker's real lookup_misc chain and no codegen dispatch at
-// all -- calling it anywhere traps at check time with "unknown name". Fixed
-// by registering it alongside Int::parse in checker/builtins_misc.vibe
-// (lookup_int_parse) and adding the dispatch branch + this synthesis.
-//
-// Accepts an optional leading '-'/'+', digits, and at most one '.' with
-// trailing fractional digits (e.g. "3.14", "-0.5", "+2", "5."). Any other
-// character, or a string with no digits at all, yields None. Scientific
-// notation ("1e10") is NOT supported -- deliberately narrow first version,
-// same spirit as Int::parse not supporting hex/octal; can be extended later
-// if a real caller needs it (lib/@vibex/wasm/wat_encoder/wat_encoder.vibe's
-// own hand-rolled parse_decimal_double already covers that case locally).
-//
-// The digit accumulator (`mantissa`) is a Double, not an Int: accumulating
-// as Int would silently overflow/wrap the 62-bit tagged representation for
-// any valid Double string with a long digit sequence (e.g.
-// "0.9999999999999999999" or "2305843009213693952", both far more digits
-// than Int::max_value's ~19), producing a wrong value instead of either the
-// (precision-losing but correct-shaped) parsed Double or an explicit
-// rejection. Accumulating in Double from the start matches ordinary
-// IEEE-754 decimal-to-double parsing: long digit sequences lose precision
-// gracefully instead of wrapping (Codex review finding on the Int-accumulator
-// version of this PR).
-//
-// Separately, a genuinely pre-existing compiler bug (independent of this
-// file -- reproduces with an ordinary `let mut x = 0.0; x = <huge literal>`,
-// no parsing involved) corrupts a mutable Double local once its magnitude
-// passes roughly 2^62; filed as #1050. Rather than risk that bug silently
-// producing a wrong Some(d) here, the accumulator is guarded the same way
-// Int::parse guards its own Int accumulator: a PRE-check before each digit
-// multiply-add rejects (None) once the mantissa would exceed Int::max_value
-// (2305843009213693951.0) -- comfortably below the ~2^62 corruption
-// threshold, and already far beyond a Double's real ~15-17 significant
-// decimal digits of precision, so no legitimate value loses anything by
-// this bound.
+/// #841 (item E1): Double::parse(s) -> Option[Double], synthesized as ordinary
+/// AST (same technique as int_parse_expr/double_to_string_expr) and lowered
+/// via each backend's `ce`. Previously "Double::parse" had a declared builtin
+/// signature (builtins/declarations.vibe) and a dead, never-consulted
+/// checker-side type lookup (builtins_extended.vibe's lookup_numeric), but no
+/// entry in the checker's real lookup_misc chain and no codegen dispatch at
+/// all -- calling it anywhere traps at check time with "unknown name". Fixed
+/// by registering it alongside Int::parse in checker/builtins_misc.vibe
+/// (lookup_int_parse) and adding the dispatch branch + this synthesis.
+///
+/// Accepts an optional leading '-'/'+', digits, and at most one '.' with
+/// trailing fractional digits (e.g. "3.14", "-0.5", "+2", "5."). Any other
+/// character, or a string with no digits at all, yields None. Scientific
+/// notation ("1e10") is NOT supported -- deliberately narrow first version,
+/// same spirit as Int::parse not supporting hex/octal; can be extended later
+/// if a real caller needs it (lib/@vibex/wasm/wat_encoder/wat_encoder.vibe's
+/// own hand-rolled parse_decimal_double already covers that case locally).
+///
+/// The digit accumulator (`mantissa`) is a Double, not an Int: accumulating
+/// as Int would silently overflow/wrap the 62-bit tagged representation for
+/// any valid Double string with a long digit sequence (e.g.
+/// "0.9999999999999999999" or "2305843009213693952", both far more digits
+/// than Int::max_value's ~19), producing a wrong value instead of either the
+/// (precision-losing but correct-shaped) parsed Double or an explicit
+/// rejection. Accumulating in Double from the start matches ordinary
+/// IEEE-754 decimal-to-double parsing: long digit sequences lose precision
+/// gracefully instead of wrapping (Codex review finding on the Int-accumulator
+/// version of this PR).
+///
+/// Separately, a genuinely pre-existing compiler bug (independent of this
+/// file -- reproduces with an ordinary `let mut x = 0.0; x = <huge literal>`,
+/// no parsing involved) corrupts a mutable Double local once its magnitude
+/// passes roughly 2^62; filed as #1050. Rather than risk that bug silently
+/// producing a wrong Some(d) here, the accumulator is guarded the same way
+/// Int::parse guards its own Int accumulator: a PRE-check before each digit
+/// multiply-add rejects (None) once the mantissa would exceed Int::max_value
+/// (2305843009213693951.0) -- comfortably below the ~2^62 corruption
+/// threshold, and already far beyond a Double's real ~15-17 significant
+/// decimal digits of precision, so no legitimate value loses anything by
+/// this bound.
 export fn double_parse_expr(arg: Expr) -> Expr {
   let c1: (String, Expr) -> Expr = (f, a0) -> {
     ECall(EIdent(f, -1), [
@@ -76,25 +76,13 @@ export fn double_parse_expr(arg: Expr) -> Expr {
   let scaled = EIdent("__dp_scaled", -1)
   let is_digit_ch = EBinOp("&&", EBinOp(">=", ch, EInt(48)), EBinOp("<=", ch, EInt(57)))
   let is_dot_ch = EBinOp("&&", EBinOp("==", ch, EInt(46)), EBinOp("==", seen_dot, EBool(false)))
-  let digit_accum = ESeq(
-    EAssign("__dp_mantissa", EBinOp("+", EBinOp("*", mantissa, EFloat(10.0)), digit), EUnit),
-    ESeq(
-      EIf(seen_dot, EAssign("__dp_frac_digits", EBinOp("+", frac_digits, EInt(1)), EUnit), EUnit),
-      EAssign("__dp_seen_digit", EBool(true), EUnit)
-    )
-  )
+  let digit_accum = ESeq(EAssign("__dp_mantissa", EBinOp("+", EBinOp("*", mantissa, EFloat(10.0)), digit), EUnit), ESeq(EIf(seen_dot, EAssign("__dp_frac_digits", EBinOp("+", frac_digits, EInt(1)), EUnit), EUnit), EAssign("__dp_seen_digit", EBool(true), EUnit)))
   let would_overflow = EBinOp(">", mantissa, EBinOp("/", EBinOp("-", EFloat(2305843009213693951.0), digit), EFloat(10.0)))
   let digit_step = ELet("__dp_digit", c1("Int::to_double", EBinOp("-", ch, EInt(48))), EIf(would_overflow, EAssign("__dp_ok", EBool(false), EUnit), digit_accum), -1)
   let scan_step = EIf(is_digit_ch, digit_step, EIf(is_dot_ch, EAssign("__dp_seen_dot", EBool(true), EUnit), EAssign("__dp_ok", EBool(false), EUnit)))
-  let loop_body = ELet("__dp_ch", c2("String::char_code_at", s, i), ESeq(
-    scan_step,
-    EAssign("__dp_i", EBinOp("+", i, EInt(1)), EUnit)
-  ), -1)
+  let loop_body = ELet("__dp_ch", c2("String::char_code_at", s, i), ESeq(scan_step, EAssign("__dp_i", EBinOp("+", i, EInt(1)), EUnit)), -1)
   let while_loop = EWhile(EBinOp("<", i, len), loop_body)
-  let pow_loop_body = ESeq(
-    EAssign("__dp_pow_val", EBinOp("*", pow_val, EFloat(10.0)), EUnit),
-    EAssign("__dp_pow_k", EBinOp("+", pow_k, EInt(1)), EUnit)
-  )
+  let pow_loop_body = ESeq(EAssign("__dp_pow_val", EBinOp("*", pow_val, EFloat(10.0)), EUnit), EAssign("__dp_pow_k", EBinOp("+", pow_k, EInt(1)), EUnit))
   let pow_while = EWhile(EBinOp("<", pow_k, frac_digits), pow_loop_body)
   let signed = EIf(neg, EBinOp("-", EFloat(0.0), scaled), scaled)
   let success_case = ELetMut("__dp_pow_val", EFloat(1.0), ELetMut("__dp_pow_k", EInt(0), ESeq(pow_while, ELet("__dp_scaled", EBinOp("/", mantissa, pow_val), c1("Some", signed), -1)), -1), -1)

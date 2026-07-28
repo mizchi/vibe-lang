@@ -48,26 +48,20 @@ test "cli support compiles enum constructors imported through index module" {
   let index_path = String::concat(core_dir, "/index.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(core_dir)
-  Fs::write_bytes(
-    ast_path,
-    string_to_bytes("export enum TypeExpr { TyName(String); TyTuple(Array[TypeExpr]) }")
-  )
+  Fs::write_bytes(ast_path, string_to_bytes("export enum TypeExpr { TyName(String); TyTuple(Array[TypeExpr]) }"))
   Fs::write_bytes(index_path, string_to_bytes("export ./ast.vibe { TypeExpr }"))
-  Fs::write_bytes(
-    main_path,
-    string_to_bytes("import ./core { TypeExpr }\nlet answer: () -> Int = () -> { let ann: TypeExpr = TyTuple([TyName(\"Int\")]); match ann { TyTuple(items) => Array::length(items), _ => 0 } }\n")
-  )
+  Fs::write_bytes(main_path, string_to_bytes("import ./core { TypeExpr }\nlet answer: () -> Int = () -> { let ann: TypeExpr = TyTuple([TyName(\"Int\")]); match ann { TyTuple(items) => Array::length(items), _ => 0 } }\n"))
   let bytes = compile_release_file_mode(main_path, "answer", "no-dce")
   assert_wasm_magic(bytes)
 }
 
-// #946(3): check_linked_file (Gate v2 #492, `vibe check`'s real implementation
-// as of #946) must succeed on a file with genuinely nothing to check (empty /
-// comments-only) — it stops before codegen, so it has no "no functions found
-// to compile" / "missing entry" notion (those are BUILD-only concerns). Before
-// #946(3) this was reached only by test-only/probe callers; the real `vibe
-// check` CLI verb reused the full compile path instead, which DID throw here,
-// contradicting `vibe diagnostics` (clean) on the identical input.
+/// #946(3): check_linked_file (Gate v2 #492, `vibe check`'s real implementation
+/// as of #946) must succeed on a file with genuinely nothing to check (empty /
+/// comments-only) — it stops before codegen, so it has no "no functions found
+/// to compile" / "missing entry" notion (those are BUILD-only concerns). Before
+/// #946(3) this was reached only by test-only/probe callers; the real `vibe
+/// check` CLI verb reused the full compile path instead, which DID throw here,
+/// contradicting `vibe diagnostics` (clean) on the identical input.
 test "check_linked_file: comment-only file has nothing to check -- succeeds" {
   let empty_path = "/tmp/vibe_cli_support_check_empty.vibe"
   Fs::write_bytes(empty_path, string_to_bytes("// just a comment\n"))
@@ -75,18 +69,15 @@ test "check_linked_file: comment-only file has nothing to check -- succeeds" {
   assert(rc == 0)
 }
 
-// #946(4): check_linked_file also runs the SAME inline-wasm codegen
-// validation `vibe diagnostics` runs (check_inline_wasm_fns) — a bad SIMD
-// lane index used to compile-fail with a located error while never being
-// caught by a codegen-free check. Confirms `vibe check` didn't regress to
-// "silently ok" for this class of bug when its codegen dependency was
-// dropped to fix the empty-file case above.
+/// #946(4): check_linked_file also runs the SAME inline-wasm codegen
+/// validation `vibe diagnostics` runs (check_inline_wasm_fns) — a bad SIMD
+/// lane index used to compile-fail with a located error while never being
+/// caught by a codegen-free check. Confirms `vibe check` didn't regress to
+/// "silently ok" for this class of bug when its codegen dependency was
+/// dropped to fix the empty-file case above.
 test "check_linked_file: bad inline-wasm lane index throws a located error" {
   let bad_lane_path = "/tmp/vibe_cli_support_check_badlane.vibe"
-  Fs::write_bytes(
-    bad_lane_path,
-    string_to_bytes("fn bad_lane(a: Int) -> Int = wasm \"(i8x16.extract_lane_s 16 (local.get $a))\"\n\nexport fn main() -> Int {\n  bad_lane(1)\n}\n")
-  )
+  Fs::write_bytes(bad_lane_path, string_to_bytes("fn bad_lane(a: Int) -> Int = wasm \"(i8x16.extract_lane_s 16 (local.get $a))\"\n\nexport fn main() -> Int {\n  bad_lane(1)\n}\n"))
   let msg = handle {
     let _ = check_linked_file(bad_lane_path)
     ""
@@ -97,8 +88,8 @@ test "check_linked_file: bad inline-wasm lane index throws a located error" {
   assert(String::contains(msg, "line 1:"))
 }
 
-// Sanity guard: a genuine type error must still fail check_linked_file (the
-// empty-file relaxation above must not turn into "check never fails").
+/// Sanity guard: a genuine type error must still fail check_linked_file (the
+/// empty-file relaxation above must not turn into "check never fails").
 test "check_linked_file: a genuine type error still throws, located" {
   let bad_name_path = "/tmp/vibe_cli_support_check_badname.vibe"
   Fs::write_bytes(bad_name_path, string_to_bytes("export let main = () -> Int { zzz }\n"))
@@ -112,25 +103,22 @@ test "check_linked_file: a genuine type error still throws, located" {
   assert(String::contains(msg, "line 1:"))
 }
 
-// #946 P1 (Codex, PR #1006): check_linked_file's dep-collection
-// (collect_linked_dep_inputs_for_stmts) exists to feed the wasm import-
-// linking codegen boundary -- it copies a dependency's SEnum/struct decls
-// into the checked stmts but never a `let rec fn` signature, so a wrong-typed
-// call against an IMPORTED function used to typecheck cleanly (confirmed via
-// a live repro: `vibe check` reported "ok" for exactly this shape while
-// `vibe compile` correctly rejected it). check_linked_file now type-checks
-// via check_file_fs_mode (the same fs-mode pipeline compile_file_fs_mode
-// relies on), so this must throw.
+/// #946 P1 (Codex, PR #1006): check_linked_file's dep-collection
+/// (collect_linked_dep_inputs_for_stmts) exists to feed the wasm import-
+/// linking codegen boundary -- it copies a dependency's SEnum/struct decls
+/// into the checked stmts but never a `let rec fn` signature, so a wrong-typed
+/// call against an IMPORTED function used to typecheck cleanly (confirmed via
+/// a live repro: `vibe check` reported "ok" for exactly this shape while
+/// `vibe compile` correctly rejected it). check_linked_file now type-checks
+/// via check_file_fs_mode (the same fs-mode pipeline compile_file_fs_mode
+/// relies on), so this must throw.
 test "check_linked_file: wrong-typed call to an imported function throws (#946 P1)" {
   let base_dir = "/tmp/vibe_cli_support_check_cross_file_p1"
   let dep_path = String::concat(base_dir, "/dep.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(dep_path, string_to_bytes("export fn f(x: Int) -> Int { x + 1 }\n"))
-  Fs::write_bytes(
-    main_path,
-    string_to_bytes("import ./dep.vibe { f }\nexport fn main() -> Int { f(\"x\") }\n")
-  )
+  Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { f }\nexport fn main() -> Int { f(\"x\") }\n"))
   let msg = handle {
     let _ = check_linked_file(main_path)
     ""

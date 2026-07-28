@@ -14,22 +14,22 @@
 // contract package now; a literal-filename import resolves exactly one
 // candidate and breaks when the file is replaced.
 import @vibe/json {
-  Json::parse, Json::stringify, Json::keys, Json::field, Json::type_of, Json::length, Json::index, Json::number, Json::string
+  Json::field, Json::index, Json::keys, Json::length, Json::number, Json::parse, Json::string, Json::stringify, Json::type_of
 }
 
 //# Functions
 
-// #777: `String::count`/`String::replace_all` (`../prelude/string.vibe`) are
-// real prelude functions, not checker builtins — normally that just means
-// "needs an explicit import" (same class of host-era rot as #742). But
-// importing EITHER of them into this file, together with `dirname`'s dynamic
-// string slice below, trips a real selfhost codegen bug: the imported
-// function's `let rec` + dynamic-slice body corrupts a WASM function
-// elsewhere in this compile unit ("not enough arguments on the stack for
-// call" at runtime instantiation, in a function that never even calls the
-// import). Reimplementing the two helpers locally (iteratively, no `let
-// rec`) sidesteps the bug without touching codegen. Tracked for a real fix;
-// do not reintroduce the prelude import here without re-testing.
+/// #777: `String::count`/`String::replace_all` (`../prelude/string.vibe`) are
+/// real prelude functions, not checker builtins — normally that just means
+/// "needs an explicit import" (same class of host-era rot as #742). But
+/// importing EITHER of them into this file, together with `dirname`'s dynamic
+/// string slice below, trips a real selfhost codegen bug: the imported
+/// function's `let rec` + dynamic-slice body corrupts a WASM function
+/// elsewhere in this compile unit ("not enough arguments on the stack for
+/// call" at runtime instantiation, in a function that never even calls the
+/// import). Reimplementing the two helpers locally (iteratively, no `let
+/// rec`) sidesteps the bug without touching codegen. Tracked for a real fix;
+/// do not reintroduce the prelude import here without re-testing.
 fn pipeline_count(s: String, sub: String) -> Int {
   let s_len = String::length(s)
   let sub_len = String::length(sub)
@@ -319,15 +319,15 @@ export fn lines(text: String) -> Array[String] {
   String::split(text, "\n")
 }
 
-// #777: `String::to_lower`/`String::to_upper` are declared as checker
-// builtins (checker/builtins_string2.vibe) but have NO codegen backing
-// anywhere (linear or wasm-gc) — calling them fails at codegen with
-// "undefined variable (local)" once the checker's builtin stub falls
-// through. `../prelude/string.vibe`'s own `String::to_lower`/`to_upper`
-// wrappers are self-recursive (call themselves) for the same reason, so
-// importing them would not help either. ASCII-only case conversion done
-// manually here via `char_code_at`/`from_char_code`, both of which ARE
-// implemented.
+/// #777: `String::to_lower`/`String::to_upper` are declared as checker
+/// builtins (checker/builtins_string2.vibe) but have NO codegen backing
+/// anywhere (linear or wasm-gc) — calling them fails at codegen with
+/// "undefined variable (local)" once the checker's builtin stub falls
+/// through. `../prelude/string.vibe`'s own `String::to_lower`/`to_upper`
+/// wrappers are self-recursive (call themselves) for the same reason, so
+/// importing them would not help either. ASCII-only case conversion done
+/// manually here via `char_code_at`/`from_char_code`, both of which ARE
+/// implemented.
 fn pipeline_to_lower(s: String) -> String {
   let len = String::length(s)
   let sb = StringBuilder::new()
@@ -531,16 +531,18 @@ export fn seq_step(first: Int, incr: Int, last: Int) -> Array[String] {
   }
 }
 
-// #768: explicit lexicographic compare (true iff a < b, char-by-char with
-// length tie-break). A bare `a < b` here relied on the #746 String-relational
-// rewrite (desugar_trait_dict), but that rewrite needs an operand whose type
-// is syntactically inferable -- `Array::get(arr, i)` is not, so the raw binop
-// survived to codegen and compared the (ptr<<32)|len string values NUMERICALLY
-// (pointer order): sort_str returned its input unsorted.
+/// #768: explicit lexicographic compare (true iff a < b, char-by-char with
+/// length tie-break). A bare `a < b` here relied on the #746 String-relational
+/// rewrite (desugar_trait_dict), but that rewrite needs an operand whose type
+/// is syntactically inferable -- `Array::get(arr, i)` is not, so the raw binop
+/// survived to codegen and compared the (ptr<<32)|len string values NUMERICALLY
+/// (pointer order): sort_str returned its input unsorted.
 fn str_lex_lt(a: String, b: String) -> Bool {
   let la = String::length(a)
   let lb = String::length(b)
-  let n = if la < lb { la } else lb
+  let n = if la < lb {
+    la
+  } else lb
   let mut i = 0
   let mut decided = 0
   while i < n {

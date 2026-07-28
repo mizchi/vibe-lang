@@ -71,8 +71,7 @@
 //# Imports
 
 import @vibe/compiler/runtime {
-  type_at_source, binding_occurrences, symbol_spans, collect_all_diagnostics,
-  doc_at_source
+  binding_occurrences, collect_all_diagnostics, doc_at_source, symbol_spans, type_at_source
 }
 
 import @vibe/parser {
@@ -168,15 +167,19 @@ fn lsp_parse_uint_or(s: String, default: Int) -> Int {
         ok = false
       }
     }
-    if ok { acc } else { default }
+    if ok {
+      acc
+    } else {
+      default
+    }
   }
 }
 
-// Reads headers up to the blank line, returns the declared Content-Length
-// (-1 if the stream closed before any bytes arrived at all -- the "no more
-// messages" signal the main loop stops on; -1 with headers seen but no
-// Content-Length line is also treated as fatal for this message, since LSP
-// framing requires it).
+/// Reads headers up to the blank line, returns the declared Content-Length
+/// (-1 if the stream closed before any bytes arrived at all -- the "no more
+/// messages" signal the main loop stops on; -1 with headers seen but no
+/// Content-Length line is also treated as fatal for this message, since LSP
+/// framing requires it).
 fn lsp_read_content_length() -> Int with { Stdin } {
   let mut content_length = -1
   let mut done = false
@@ -218,9 +221,9 @@ fn lsp_read_body(n: Int) -> String with { Stdin } {
   StringBuilder::freeze(sb)
 }
 
-// One full LSP message body, or None once the client closes stdin (normal
-// shutdown path when a client exits without sending `exit`, or after we
-// stop reading post-`exit`).
+/// One full LSP message body, or None once the client closes stdin (normal
+/// shutdown path when a client exits without sending `exit`, or after we
+/// stop reading post-`exit`).
 fn lsp_read_message() -> Option[String] with { Stdin } {
   let content_length = lsp_read_content_length()
   if content_length < 0 {
@@ -271,7 +274,7 @@ fn jlocation(uri: String, r: Json) -> Json {
   ]))
 }
 
-// Extracts `params.textDocument.uri`; "" if absent/malformed.
+/// Extracts `params.textDocument.uri`; "" if absent/malformed.
 fn jparam_uri(params: Json) -> String {
   Json::string(Json::field(Json::field(params, "textDocument"), "uri"))
 }
@@ -308,37 +311,37 @@ fn lsp_utf8_seq_len(b0: Int) -> Int {
   }
 }
 
-// Decodes the Unicode scalar value of the (already-length-known) UTF-8
-// sequence starting at byte `pos`. A malformed/truncated sequence (should
-// not occur in valid document text, but LSP clients are untrusted input)
-// just decodes to whatever the available continuation bytes give --
-// `lsp_utf8_seq_len` already falls back to single-byte granularity for any
-// non-lead byte, so this never reads past what the caller determined.
+/// Decodes the Unicode scalar value of the (already-length-known) UTF-8
+/// sequence starting at byte `pos`. A malformed/truncated sequence (should
+/// not occur in valid document text, but LSP clients are untrusted input)
+/// just decodes to whatever the available continuation bytes give --
+/// `lsp_utf8_seq_len` already falls back to single-byte granularity for any
+/// non-lead byte, so this never reads past what the caller determined.
 fn lsp_utf8_decode(source: String, pos: Int, seq_len: Int) -> Int {
   if seq_len == 1 {
     String::char_code_at(source, pos)
   } else if seq_len == 2 {
-    let b0 = String::char_code_at(source, pos) & 0x1F
-    let b1 = String::char_code_at(source, pos + 1) & 0x3F
-    (b0 << 6) | b1
+    let b0 = String::char_code_at(source, pos)&0x1F
+    let b1 = String::char_code_at(source, pos + 1)&0x3F
+    (b0<<6)|b1
   } else if seq_len == 3 {
-    let b0 = String::char_code_at(source, pos) & 0x0F
-    let b1 = String::char_code_at(source, pos + 1) & 0x3F
-    let b2 = String::char_code_at(source, pos + 2) & 0x3F
-    (b0 << 12) | (b1 << 6) | b2
+    let b0 = String::char_code_at(source, pos)&0x0F
+    let b1 = String::char_code_at(source, pos + 1)&0x3F
+    let b2 = String::char_code_at(source, pos + 2)&0x3F
+    (b0<<12)|(b1<<6)|b2
   } else {
-    let b0 = String::char_code_at(source, pos) & 0x07
-    let b1 = String::char_code_at(source, pos + 1) & 0x3F
-    let b2 = String::char_code_at(source, pos + 2) & 0x3F
-    let b3 = String::char_code_at(source, pos + 3) & 0x3F
-    (b0 << 18) | (b1 << 12) | (b2 << 6) | b3
+    let b0 = String::char_code_at(source, pos)&0x07
+    let b1 = String::char_code_at(source, pos + 1)&0x3F
+    let b2 = String::char_code_at(source, pos + 2)&0x3F
+    let b3 = String::char_code_at(source, pos + 3)&0x3F
+    (b0<<18)|(b1<<12)|(b2<<6)|b3
   }
 }
 
-// Byte offset where 0-based line `line0` starts in `source` (0 for line0
-// <= 0, else the byte right after that line's '\n'). A single linear scan
-// from the start; LSP requests are per-edit and this file has no
-// persistent line-offset index to consult instead.
+/// Byte offset where 0-based line `line0` starts in `source` (0 for line0
+/// <= 0, else the byte right after that line's '\n'). A single linear scan
+/// from the start; LSP requests are per-edit and this file has no
+/// persistent line-offset index to consult instead.
 fn lsp_line_start_offset(source: String, line0: Int) -> Int {
   if line0 <= 0 {
     0
@@ -364,8 +367,8 @@ fn lsp_line_start_offset(source: String, line0: Int) -> Int {
   }
 }
 
-// Byte offset of the end of the line starting at `line_start` (exclusive of
-// its trailing '\n', if any; end of string otherwise).
+/// Byte offset of the end of the line starting at `line_start` (exclusive of
+/// its trailing '\n', if any; end of string otherwise).
 fn lsp_line_end_offset(source: String, line_start: Int) -> Int {
   let len = String::length(source)
   let mut pos = line_start
@@ -375,10 +378,10 @@ fn lsp_line_end_offset(source: String, line_start: Int) -> Int {
   pos
 }
 
-// LSP `character` (0-based UTF-16 code units into the line starting at
-// `line_start`, ending before `line_end`) -> 0-based BYTE offset from
-// `line_start`. A surrogate pair (astral codepoint, > U+FFFF) counts as 2
-// UTF-16 units but decodes from one 4-byte UTF-8 sequence.
+/// LSP `character` (0-based UTF-16 code units into the line starting at
+/// `line_start`, ending before `line_end`) -> 0-based BYTE offset from
+/// `line_start`. A surrogate pair (astral codepoint, > U+FFFF) counts as 2
+/// UTF-16 units but decodes from one 4-byte UTF-8 sequence.
 fn lsp_utf16_to_byte_col(source: String, line_start: Int, line_end: Int, utf16_target: Int) -> Int {
   let mut pos = line_start
   let mut units = 0
@@ -397,8 +400,8 @@ fn lsp_utf16_to_byte_col(source: String, line_start: Int, line_end: Int, utf16_t
   pos - line_start
 }
 
-// Reverse of lsp_utf16_to_byte_col: 0-based BYTE offset from `line_start`
-// -> 0-based UTF-16 code-unit count.
+/// Reverse of lsp_utf16_to_byte_col: 0-based BYTE offset from `line_start`
+/// -> 0-based UTF-16 code-unit count.
 fn lsp_byte_col_to_utf16(source: String, line_start: Int, byte_col: Int) -> Int {
   let mut pos = line_start
   let target = line_start + byte_col
@@ -418,18 +421,18 @@ fn lsp_byte_col_to_utf16(source: String, line_start: Int, byte_col: Int) -> Int 
   units
 }
 
-// LSP 0-based (line, UTF-16 character) -> 0-based (line, BYTE column),
-// matching what type_at_source/binding_occurrences expect.
+/// LSP 0-based (line, UTF-16 character) -> 0-based (line, BYTE column),
+/// matching what type_at_source/binding_occurrences expect.
 fn lsp_pos_to_byte_col(source: String, line0: Int, utf16_char0: Int) -> Int {
   let line_start = lsp_line_start_offset(source, line0)
   let line_end = lsp_line_end_offset(source, line_start)
   lsp_utf16_to_byte_col(source, line_start, line_end, utf16_char0)
 }
 
-// Char-offset (as returned by symbol_spans/binding_occurrences) -> LSP
-// 0-based (line, UTF-16 character), via the parser's own offset_to_line_col
-// (which returns 1-based (line, BYTE column), matching the compiler's
-// diagnostic convention) followed by the byte->UTF-16 bridge above.
+/// Char-offset (as returned by symbol_spans/binding_occurrences) -> LSP
+/// 0-based (line, UTF-16 character), via the parser's own offset_to_line_col
+/// (which returns 1-based (line, BYTE column), matching the compiler's
+/// diagnostic convention) followed by the byte->UTF-16 bridge above.
 fn lsp_offset_to_pos(source: String, offset: Int) -> (Int, Int) {
   let (line1, col1) = offset_to_line_col(source, offset)
   let line0 = line1 - 1
@@ -440,18 +443,18 @@ fn lsp_offset_to_pos(source: String, offset: Int) -> (Int, Int) {
 
 //# Diagnostics: parsing "line L:C: message" into an LSP Diagnostic
 
-// #820 sub-item 2 (structured fix-it, minimal slice): recover the
-// effect-row-mismatch's structured fields (target function name, the
-// exact operations to add, the resulting required row) from the message
-// text `effect_error_to_string` (checker_effects.vibe) already built them
-// into -- NOT re-deriving anything the checker didn't already compute,
-// and deliberately NOT attempting to locate a source position for
-// `target`. Resolving a function name to its declaration span is `vibe
-// symbols`'s job (already-shipped, AST-accurate); duplicating that as an
-// approximate offset here would be exactly the kind of half-working
-// fix-it this sub-item was previously deferred to avoid shipping. `note`
-// spells out that hand-off explicitly so a consumer doesn't assume a
-// span is present.
+/// #820 sub-item 2 (structured fix-it, minimal slice): recover the
+/// effect-row-mismatch's structured fields (target function name, the
+/// exact operations to add, the resulting required row) from the message
+/// text `effect_error_to_string` (checker_effects.vibe) already built them
+/// into -- NOT re-deriving anything the checker didn't already compute,
+/// and deliberately NOT attempting to locate a source position for
+/// `target`. Resolving a function name to its declaration span is `vibe
+/// symbols`'s job (already-shipped, AST-accurate); duplicating that as an
+/// approximate offset here would be exactly the kind of half-working
+/// fix-it this sub-item was previously deferred to avoid shipping. `note`
+/// spells out that hand-off explicitly so a consumer doesn't assume a
+/// span is present.
 fn lsp_split_labels(s: String) -> Array[String] {
   if String::length(s) == 0 {
     array_empty()
@@ -465,7 +468,7 @@ fn lsp_split_labels(s: String) -> Array[String] {
         Array::push(out, rest)
         go = false
       } else {
-        Array::push(out, rest[0:idx])
+        Array::push(out, rest[0: idx])
         rest = rest[idx + 2: String::length(rest)]
       }
     }
@@ -483,7 +486,7 @@ fn lsp_effect_row_mismatch_fix(text: String) -> Json {
     if close_quote < 0 {
       JNull
     } else {
-      let fname = after_prefix[0:close_quote]
+      let fname = after_prefix[0: close_quote]
       let missing_marker = ": missing { "
       let rest = after_prefix[close_quote: String::length(after_prefix)]
       let mi = String::index_of(rest, missing_marker)
@@ -495,7 +498,7 @@ fn lsp_effect_row_mismatch_fix(text: String) -> Json {
         if mend < 0 {
           JNull
         } else {
-          let missing_str = after_missing[0:mend]
+          let missing_str = after_missing[0: mend]
           let req_marker = "requires { "
           let ri = String::index_of(after_missing, req_marker)
           if ri < 0 {
@@ -506,12 +509,16 @@ fn lsp_effect_row_mismatch_fix(text: String) -> Json {
             if rend < 0 {
               JNull
             } else {
-              let required_str = after_req[0:rend]
+              let required_str = after_req[0: rend]
               JObj(Map::from_pairs([
                 ("kind", JStr("add_with_clause")),
                 ("target", JStr(fname)),
-                ("add", JArr(for x in lsp_split_labels(missing_str) { JStr(x) })),
-                ("with", JArr(for x in lsp_split_labels(required_str) { JStr(x) })),
+                ("add", JArr(for x in lsp_split_labels(missing_str) {
+                  JStr(x)
+                })),
+                ("with", JArr(for x in lsp_split_labels(required_str) {
+                  JStr(x)
+                })),
                 ("note", JStr("no position included -- resolve `target`'s declaration via `vibe symbols <file>`"))
               ]))
             }
@@ -539,8 +546,16 @@ fn lsp_parse_diag_line(msg: String) -> Json {
         let text = String::trim(rest1[colon2 + 1: String::length(rest1)])
         let line1 = lsp_parse_uint_or(line_str, 1)
         let col1 = lsp_parse_uint_or(col_str, 1)
-        let line0 = if line1 > 0 { line1 - 1 } else { 0 }
-        let col0 = if col1 > 0 { col1 - 1 } else { 0 }
+        let line0 = if line1 > 0 {
+          line1 - 1
+        } else {
+          0
+        }
+        let col0 = if col1 > 0 {
+          col1 - 1
+        } else {
+          0
+        }
         // #820 sub-item 2: `data` follows the LSP Diagnostic.data convention
         // (present, JNull when there's no structured fix -- e.g. every
         // diagnostic that isn't an effect-row mismatch).
@@ -666,20 +681,21 @@ fn lsp_handle_diagnostics(source: String) -> Json with { Error } {
   })
 }
 
-// `document_symbol`/`diagnostics` declare `with { Error }` (symbol_spans/
-// collect_all_diagnostics can throw on a genuine internal failure, not just
-// "no symbols" -- see cli_adapter.vibe's own VIBE_SYMBOLS branch, which
-// routes a caught Throw to a `.diag` sidecar rather than treating it the
-// same as an empty result). Swallow to an empty array here: an LSP response
-// must always be well-formed JSON, and "no symbols/diagnostics found" and
-// "the query itself failed" both degrade to the same safe empty response --
-// there is no sidecar channel to report the latter differently over
-// JSON-RPC.
+/// `document_symbol`/`diagnostics` declare `with { Error }` (symbol_spans/
+/// collect_all_diagnostics can throw on a genuine internal failure, not just
+/// "no symbols" -- see cli_adapter.vibe's own VIBE_SYMBOLS branch, which
+/// routes a caught Throw to a `.diag` sidecar rather than treating it the
+/// same as an empty result). Swallow to an empty array here: an LSP response
+/// must always be well-formed JSON, and "no symbols/diagnostics found" and
+/// "the query itself failed" both degrade to the same safe empty response --
+/// there is no sidecar channel to report the latter differently over
+/// JSON-RPC.
 fn lsp_document_symbol_safe(source: String) -> Json {
   handle {
     lsp_handle_document_symbol(source)
   } with Error {
-    Throw(_) => JArr([])
+    Throw(_) => JArr([
+    ])
   }
 }
 
@@ -687,17 +703,18 @@ export fn lsp_diagnostics_safe(source: String) -> Json {
   handle {
     lsp_handle_diagnostics(source)
   } with Error {
-    Throw(_) => JArr([])
+    Throw(_) => JArr([
+    ])
   }
 }
 
-// #820 sub-item 1: `vibe diagnostics --json` reuses this SAME LSP diagnostic
-// shape (range/severity/source/message) rather than inventing a parallel
-// structured format -- one machine-readable diagnostic representation for
-// both the editor protocol and the CLI, built by parsing the same
-// `collect_all_diagnostics` "line L:C: message" strings every other
-// diagnostics consumer (plain-text `vibe diagnostics`, this LSP handler)
-// already produces. Output-layer-only: no checker/lexer/parser changes.
+/// #820 sub-item 1: `vibe diagnostics --json` reuses this SAME LSP diagnostic
+/// shape (range/severity/source/message) rather than inventing a parallel
+/// structured format -- one machine-readable diagnostic representation for
+/// both the editor protocol and the CLI, built by parsing the same
+/// `collect_all_diagnostics` "line L:C: message" strings every other
+/// diagnostics consumer (plain-text `vibe diagnostics`, this LSP handler)
+/// already produces. Output-layer-only: no checker/lexer/parser changes.
 export fn lsp_diagnostics_json_string(source: String) -> String {
   Json::stringify(lsp_diagnostics_safe(source))
 }
@@ -712,7 +729,7 @@ export fn lsp_diagnostics_json_string(source: String) -> String {
 //# document (the docs store) rather than scanning the filesystem -- the
 //# server's entry row stays { Stdin, Stdout }, no Fs capability needed.
 
-// SymbolKind (what symbol_spans emits) -> CompletionItemKind.
+/// SymbolKind (what symbol_spans emits) -> CompletionItemKind.
 fn lsp_completion_item_kind(sym_kind: Int) -> Int {
   if sym_kind == 12 {
     3
@@ -735,10 +752,36 @@ fn lsp_completion_item_kind(sym_kind: Int) -> Int {
 
 fn lsp_keyword_completions() -> Array[String] {
   [
-    "let", "mut", "fn", "enum", "struct", "trait", "impl", "effect",
-    "effectset", "handle", "with", "perform", "resume", "match", "if",
-    "else", "while", "for", "in", "return", "break", "continue", "import",
-    "export", "test", "bench", "throw", "true", "false", "type"
+    "let",
+    "mut",
+    "fn",
+    "enum",
+    "struct",
+    "trait",
+    "impl",
+    "effect",
+    "effectset",
+    "handle",
+    "with",
+    "perform",
+    "resume",
+    "match",
+    "if",
+    "else",
+    "while",
+    "for",
+    "in",
+    "return",
+    "break",
+    "continue",
+    "import",
+    "export",
+    "test",
+    "bench",
+    "throw",
+    "true",
+    "false",
+    "type"
   ]
 }
 
@@ -763,9 +806,9 @@ fn lsp_handle_completion(source: String) -> Json with { Error } {
   JArr(Array::concat(sym_items, lsp_keyword_items()))
 }
 
-// On a parse failure (mid-edit documents are routinely unparseable) degrade
-// to keywords-only rather than an empty list -- same "always well-formed
-// JSON" reasoning as lsp_document_symbol_safe above.
+/// On a parse failure (mid-edit documents are routinely unparseable) degrade
+/// to keywords-only rather than an empty list -- same "always well-formed
+/// JSON" reasoning as lsp_document_symbol_safe above.
 fn lsp_completion_safe(source: String) -> Json {
   handle {
     lsp_handle_completion(source)
@@ -774,19 +817,19 @@ fn lsp_completion_safe(source: String) -> Json {
   }
 }
 
-// Identifier byte for the backward callee scan: [A-Za-z0-9_] plus ':' so a
-// qualified callee (String::concat) scans as one token.
+/// Identifier byte for the backward callee scan: [A-Za-z0-9_] plus ':' so a
+/// qualified callee (String::concat) scans as one token.
 fn lsp_is_ident_byte(b: Int) -> Bool {
   (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95 || b == 58
 }
 
-// Backward scan from `cursor` for the innermost UNCLOSED '(' -- the call
-// whose argument list the cursor sits in. Returns (open_paren_offset,
-// top_level_commas_passed); open is -1 when the cursor is not inside an
-// argument list (including when the scan walks out of the enclosing block
-// through an unmatched '{'/'['). Purely lexical: does not skip string
-// literals or comments (acceptable for a v1 signature-help heuristic; the
-// worst case is no signature shown).
+/// Backward scan from `cursor` for the innermost UNCLOSED '(' -- the call
+/// whose argument list the cursor sits in. Returns (open_paren_offset,
+/// top_level_commas_passed); open is -1 when the cursor is not inside an
+/// argument list (including when the scan walks out of the enclosing block
+/// through an unmatched '{'/'['). Purely lexical: does not skip string
+/// literals or comments (acceptable for a v1 signature-help heuristic; the
+/// worst case is no signature shown).
 fn lsp_call_open_paren(source: String, cursor: Int) -> (Int, Int) {
   let mut pos = cursor - 1
   let mut depth = 0
@@ -823,8 +866,8 @@ fn lsp_call_open_paren(source: String, cursor: Int) -> (Int, Int) {
   (open_off, commas)
 }
 
-// The checker renders function types as "(A, B) -> R"; collect the
-// top-level comma-separated parameter labels of the FIRST paren group.
+/// The checker renders function types as "(A, B) -> R"; collect the
+/// top-level comma-separated parameter labels of the FIRST paren group.
 fn lsp_signature_param_labels(ty: String) -> Array[String] {
   let out = array_empty()
   let len = String::length(ty)
@@ -931,13 +974,13 @@ fn lsp_symbols_for_doc_safe(source: String) -> Array[(String, Int, Int, Int)] {
   }
 }
 
-// Local ASCII fold instead of String::to_lower: to_lower is a PRELUDE
-// function, and while it resolves fine in ordinary user programs (and in
-// the FS-compiled `vibe lsp` binary), the compiler's own MERGED unit
-// (compiler_sources_bundle -- what the s5_entry/s5_wasm tests compile
-// through the library API) does not include the prelude, so a bare call
-// dies there with "undefined variable (local): String::to_lower @call".
-// Symbol names are ASCII identifiers, so an ASCII fold is also correct.
+/// Local ASCII fold instead of String::to_lower: to_lower is a PRELUDE
+/// function, and while it resolves fine in ordinary user programs (and in
+/// the FS-compiled `vibe lsp` binary), the compiler's own MERGED unit
+/// (compiler_sources_bundle -- what the s5_entry/s5_wasm tests compile
+/// through the library API) does not include the prelude, so a bare call
+/// dies there with "undefined variable (local): String::to_lower @call".
+/// Symbol names are ASCII identifiers, so an ASCII fold is also correct.
 fn lsp_ascii_lower(s: String) -> String {
   let len = String::length(s)
   let sb = StringBuilder::new()
@@ -989,52 +1032,70 @@ fn lsp_handle_workspace_symbol(query: String, docs: Map[String, String]) -> Json
   JArr(out)
 }
 
-// Which `Lsp` operation a given dispatch should perform -- see
-// lsp_run_with_handler's own doc comment for why this is a plain Int tag
-// rather than a closure value.
-fn lsp_op_hover() -> Int { 0 }
-fn lsp_op_definition() -> Int { 1 }
-fn lsp_op_references() -> Int { 2 }
-fn lsp_op_rename() -> Int { 3 }
-fn lsp_op_document_symbol() -> Int { 4 }
-fn lsp_op_diagnostics() -> Int { 5 }
-fn lsp_op_completion() -> Int { 6 }
-fn lsp_op_signature_help() -> Int { 7 }
-fn lsp_op_workspace_symbol() -> Int { 8 }
+/// Which `Lsp` operation a given dispatch should perform -- see
+/// lsp_run_with_handler's own doc comment for why this is a plain Int tag
+/// rather than a closure value.
+fn lsp_op_hover() -> Int {
+  0
+}
+fn lsp_op_definition() -> Int {
+  1
+}
+fn lsp_op_references() -> Int {
+  2
+}
+fn lsp_op_rename() -> Int {
+  3
+}
+fn lsp_op_document_symbol() -> Int {
+  4
+}
+fn lsp_op_diagnostics() -> Int {
+  5
+}
+fn lsp_op_completion() -> Int {
+  6
+}
+fn lsp_op_signature_help() -> Int {
+  7
+}
+fn lsp_op_workspace_symbol() -> Int {
+  8
+}
 
-// The one place all six `Lsp` operations are actually implemented, and the
-// only place any of them is `perform`ed. `docs` is threaded in by
-// reference (an ordinary mutable-variable capture from the caller's scope,
-// per this file's own doc comment: document state is plain mutable state,
-// not itself effect-modeled -- the `Lsp` effect models the COMPILER-QUERY
-// capability, not the document store).
-//
-// Earlier revision dispatched via a `body: () -> Json with { Lsp }`
-// closure PARAMETER (`lsp_dispatch_request` built a one-line closure
-// literal per call site and passed it in here to be perform'd) -- this
-// compiled but trapped ("indirect call type mismatch") at runtime the
-// moment it actually ran under real wasmtime (via vibewt; confirmed
-// empirically, not caught by the Node dev-runner's own separate test
-// harness). Root cause: an effectful closure captured BY VALUE and invoked
-// through an opaque higher-order-function parameter is exactly the still-
-// open GENERAL case issue #1070 documents (distinct from, and not covered
-// by, this session's earlier #1070 fix for a NEEDING function calling its
-// own closure-typed parameter -- lsp_run_with_handler isn't itself
-// "needing" anything, since it fully discharges `Lsp` right here; nothing
-// downstream of it needs an evidence dict at all). Restructured so
-// `perform` and `handle` are always textually co-located in the SAME
-// function body (an `if`/`else` chain choosing which bare `perform`
-// executes, driven by `op` -- an ordinary Int, never a closure) --
-// precisely the "handle site sees the perform directly, no function-call
-// boundary in between" case ADR-0076 (docs/effect-evidence-passing.md)
-// documents as never needing an evidence dict or any closure-value
-// machinery at all, and the only shape actually exercised (transitively,
-// via #1069/#1070/#1074's whole regression corpus) under real wasmtime so
-// far. Each `if` branch's body is EXACTLY one bare perform -- replay-safe
-// by the same reasoning as every other handle in this file (see the
-// header comment): re-executing the branch on `resume` re-evaluates the
-// same deterministic `op` comparison and re-reaches the same (memoized)
-// perform, nothing else.
+/// The one place all six `Lsp` operations are actually implemented, and the
+/// only place any of them is `perform`ed. `docs` is threaded in by
+/// reference (an ordinary mutable-variable capture from the caller's scope,
+/// per this file's own doc comment: document state is plain mutable state,
+/// not itself effect-modeled -- the `Lsp` effect models the COMPILER-QUERY
+/// capability, not the document store).
+///
+/// Earlier revision dispatched via a `body: () -> Json with { Lsp }`
+/// closure PARAMETER (`lsp_dispatch_request` built a one-line closure
+/// literal per call site and passed it in here to be perform'd) -- this
+/// compiled but trapped ("indirect call type mismatch") at runtime the
+/// moment it actually ran under real wasmtime (via vibewt; confirmed
+/// empirically, not caught by the Node dev-runner's own separate test
+/// harness). Root cause: an effectful closure captured BY VALUE and invoked
+/// through an opaque higher-order-function parameter is exactly the still-
+/// open GENERAL case issue #1070 documents (distinct from, and not covered
+/// by, this session's earlier #1070 fix for a NEEDING function calling its
+/// own closure-typed parameter -- lsp_run_with_handler isn't itself
+/// "needing" anything, since it fully discharges `Lsp` right here; nothing
+/// downstream of it needs an evidence dict at all). Restructured so
+/// `perform` and `handle` are always textually co-located in the SAME
+/// function body (an `if`/`else` chain choosing which bare `perform`
+/// executes, driven by `op` -- an ordinary Int, never a closure) --
+/// precisely the "handle site sees the perform directly, no function-call
+/// boundary in between" case ADR-0076 (docs/effect-evidence-passing.md)
+/// documents as never needing an evidence dict or any closure-value
+/// machinery at all, and the only shape actually exercised (transitively,
+/// via #1069/#1070/#1074's whole regression corpus) under real wasmtime so
+/// far. Each `if` branch's body is EXACTLY one bare perform -- replay-safe
+/// by the same reasoning as every other handle in this file (see the
+/// header comment): re-executing the branch on `resume` re-evaluates the
+/// same deterministic `op` comparison and re-reaches the same (memoized)
+/// perform, nothing else.
 fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, docs: Map[String, String]) -> Json {
   handle {
     if op == lsp_op_hover() {
@@ -1104,12 +1165,14 @@ fn lsp_capabilities() -> Json {
     ("documentSymbolProvider", JBool(true)),
     ("completionProvider", JObj(Map::from_pairs([
       ("triggerCharacters", JArr([
-        JStr("."), JStr(":")
+        JStr("."),
+        JStr(":")
       ]))
     ]))),
     ("signatureHelpProvider", JObj(Map::from_pairs([
       ("triggerCharacters", JArr([
-        JStr("("), JStr(",")
+        JStr("("),
+        JStr(",")
       ]))
     ]))),
     ("workspaceSymbolProvider", JBool(true))
@@ -1126,10 +1189,10 @@ fn lsp_initialize_result() -> Json {
   ]))
 }
 
-// Handles one Request (has an `id`, needs a response) or Notification (no
-// response). Returns Some(result_json) for a request, None for a
-// notification or an unrecognized method the caller already replied `null`
-// to.
+/// Handles one Request (has an `id`, needs a response) or Notification (no
+/// response). Returns Some(result_json) for a request, None for a
+/// notification or an unrecognized method the caller already replied `null`
+/// to.
 fn lsp_dispatch_request(method: String, params: Json, docs: Map[String, String]) -> Json {
   if method == "initialize" {
     lsp_initialize_result()
@@ -1213,9 +1276,9 @@ fn lsp_apply_did_close(docs: Map[String, String], params: Json) -> Map[String, S
 //# file's import comment for why @vibe/json/jsonrpc.vibe's own RpcMessage/
 //# RpcId codec is deliberately not used here)
 
-// JNull on malformed JSON (Json::parse's own contract) -- lsp_env_method
-// below then reads as "" for such a message, which lsp_step's dispatch
-// already treats as a no-op.
+/// JNull on malformed JSON (Json::parse's own contract) -- lsp_env_method
+/// below then reads as "" for such a message, which lsp_step's dispatch
+/// already treats as a no-op.
 fn lsp_parse_envelope(body: String) -> Json {
   Json::parse(body)
 }
@@ -1228,17 +1291,17 @@ fn lsp_env_params(j: Json) -> Json {
   Json::field(j, "params")
 }
 
-// The raw `id` value (JNum/JStr), passed straight back into the response
-// envelope -- LSP/JSON-RPC ids round-trip opaquely, no need to model RpcId.
+/// The raw `id` value (JNum/JStr), passed straight back into the response
+/// envelope -- LSP/JSON-RPC ids round-trip opaquely, no need to model RpcId.
 fn lsp_env_id(j: Json) -> Json {
   Json::field(j, "id")
 }
 
-// A message with a non-null `id` is a request (expects a response); one
-// with no/null `id` is a notification. (JSON-RPC technically allows a null
-// `id` ON a request too, an edge case no real LSP client sends -- treating
-// it as a notification here just means we silently skip replying to a
-// message that, practically, never occurs.)
+/// A message with a non-null `id` is a request (expects a response); one
+/// with no/null `id` is a notification. (JSON-RPC technically allows a null
+/// `id` ON a request too, an edge case no real LSP client sends -- treating
+/// it as a notification here just means we silently skip replying to a
+/// message that, practically, never occurs.)
 fn lsp_env_is_request(j: Json) -> Bool {
   String::length(lsp_env_method(j)) > 0 && !Json::is_null(lsp_env_id(j))
 }
@@ -1277,8 +1340,8 @@ fn lsp_send_diagnostics_notification(uri: String, diags: Json) -> Unit with { St
   lsp_write_message(lsp_stringify_notification("textDocument/publishDiagnostics", params))
 }
 
-// One iteration: read a message, act on it, write a response if needed.
-// Returns (new_docs, should_exit).
+/// One iteration: read a message, act on it, write a response if needed.
+/// Returns (new_docs, should_exit).
 fn lsp_step(docs: Map[String, String]) -> (Map[String, String], Bool) with { Stdin, Stdout } {
   match lsp_read_message() {
     None => (docs, true),
@@ -1321,7 +1384,8 @@ fn lsp_step(docs: Map[String, String]) -> (Map[String, String], Bool) with { Std
         } else if method == "textDocument/didClose" {
           let new_docs = lsp_apply_did_close(docs, params)
           let uri = jparam_uri(params)
-          lsp_send_diagnostics_notification(uri, JArr([]))
+          lsp_send_diagnostics_notification(uri, JArr([
+          ]))
           (new_docs, false)
         } else {
           (docs, false)

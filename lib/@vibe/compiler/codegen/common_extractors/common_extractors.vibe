@@ -1,8 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr,
-  bytebuf_push, leb128_encode_u32
+  Expr, Pat, Stmt, TypeExpr, bytebuf_push, leb128_encode_u32
 }
 
 import @vibe/core {
@@ -17,17 +16,25 @@ let op_prefix = 252
 
 //# Functions
 
-// Interior-line breakpoints (span-arc step5): return the first available source
-// char-offset for `e`, walking into the most-representative child until an
-// offset-carrying node is found, or -1 if none. EIdent/ECall/EDot carry real
-// char-offsets; for ECall/EDot prefer the node's own offset, else recurse into
-// the callee/base. A statement's offset is thus derived from its VALUE
-// subexpression. Flat single match, tail-recursive into one child per arm.
+/// Interior-line breakpoints (span-arc step5): return the first available source
+/// char-offset for `e`, walking into the most-representative child until an
+/// offset-carrying node is found, or -1 if none. EIdent/ECall/EDot carry real
+/// char-offsets; for ECall/EDot prefer the node's own offset, else recurse into
+/// the callee/base. A statement's offset is thus derived from its VALUE
+/// subexpression. Flat single match, tail-recursive into one child per arm.
 export fn first_offset(e: Expr) -> Int {
   match e {
     EIdent(_, off) => off,
-    ECall(callee, _, off) => if off >= 0 { off } else { first_offset(callee) },
-    EDot(base, _, off, _) => if off >= 0 { off } else { first_offset(base) },
+    ECall(callee, _, off) => if off >= 0 {
+      off
+    } else {
+      first_offset(callee)
+    },
+    EDot(base, _, off, _) => if off >= 0 {
+      off
+    } else {
+      first_offset(base)
+    },
     EBinOp(_, lhs, _) => first_offset(lhs),
     EUnaryOp(_, inner) => first_offset(inner),
     ELet(_, val, _, _) => first_offset(val),
@@ -43,9 +50,9 @@ export fn first_offset(e: Expr) -> Int {
   }
 }
 
-// Interior-line breakpoints: convert a 0-based source char-offset to a 1-based
-// line number using a sorted array of newline char-offsets: line = 1 + (count of
-// newline offsets strictly less than `off`). Linear scan (programs are small).
+/// Interior-line breakpoints: convert a 0-based source char-offset to a 1-based
+/// line number using a sorted array of newline char-offsets: line = 1 + (count of
+/// newline offsets strictly less than `off`). Linear scan (programs are small).
 export fn offset_to_line(nl: Array[Int], off: Int) -> Int {
   let n = Array::length(nl)
   let mut i = 0
@@ -61,8 +68,8 @@ export fn offset_to_line(nl: Array[Int], off: Int) -> Int {
   count + 1
 }
 
-// Interior-line breakpoints: build a sorted array of the char-offsets of each
-// '\n' in `src`. Empty when `src` is empty.
+/// Interior-line breakpoints: build a sorted array of the char-offsets of each
+/// '\n' in `src`. Empty when `src` is empty.
 export fn build_newline_offsets(src: String) -> Array[Int] {
   let arr = array_empty()
   let n = String::length(src)
@@ -120,7 +127,7 @@ export fn get_eseq_first(expr: Expr) -> Expr with { Error } {
   }
 }
 
-// Extract arms from EMatch (non-recursive to avoid stale binding bug in let rec)
+/// Extract arms from EMatch (non-recursive to avoid stale binding bug in let rec)
 export fn get_match_arms(expr: Expr) -> Array[(Pat, Expr)] with { Error } {
   match expr {
     EMatch(_, arms) => arms,
@@ -128,7 +135,7 @@ export fn get_match_arms(expr: Expr) -> Array[(Pat, Expr)] with { Error } {
   }
 }
 
-// Extract name from PBind
+/// Extract name from PBind
 export fn get_pbind_name(p: Pat) -> String with { Error } {
   match p {
     PBind(name) => name,
@@ -143,7 +150,7 @@ export fn get_pctor_args(p: Pat) -> Array[Pat] with { Error } {
   }
 }
 
-// Extract PCtor name and args
+/// Extract PCtor name and args
 export fn get_pctor_name(p: Pat) -> String with { Error } {
   match p {
     PCtor(name, _) => name,
@@ -151,7 +158,7 @@ export fn get_pctor_name(p: Pat) -> String with { Error } {
   }
 }
 
-// Extract PInt value
+/// Extract PInt value
 export fn get_pint_value(p: Pat) -> Int with { Error } {
   match p {
     PInt(n) => n,
@@ -264,7 +271,7 @@ export fn get_ewhile_cond(expr: Expr) -> Expr with { Error } {
   }
 }
 
-// Extract PBool value
+/// Extract PBool value
 export fn get_pbool_value(p: Pat) -> Bool with { Error } {
   match p {
     PBool(v) => v,
@@ -272,7 +279,7 @@ export fn get_pbool_value(p: Pat) -> Bool with { Error } {
   }
 }
 
-// Extract sub-patterns from PTuple
+/// Extract sub-patterns from PTuple
 export fn get_ptuple_pats(p: Pat) -> Array[Pat] with { Error } {
   match p {
     PTuple(pats) => pats,
@@ -287,7 +294,7 @@ export fn get_slet_export(stmt: Stmt) -> Bool with { Error } {
   }
 }
 
-// Check if a pattern is unconditionally matching (catch-all)
+/// Check if a pattern is unconditionally matching (catch-all)
 export fn is_catchall_pat(p: Pat) -> Bool {
   match p {
     PWild => true,
@@ -324,7 +331,7 @@ export fn is_catchall_pat(p: Pat) -> Bool {
   }
 }
 
-// Emit WASM instruction for an assign operator (+=, -=, etc.)
+/// Emit WASM instruction for an assign operator (+=, -=, etc.)
 export fn emit_assignop_op(buf: Bytes, op: String) -> Unit with { Error } {
   if op == "+" {
     emit_i64_add(buf)
@@ -353,10 +360,10 @@ export fn emit_memory_copy(buf: Bytes) -> Unit {
   bytebuf_push(buf, 0)
 }
 
-// memory.fill: stack operands (dest, value, size) -> fills `size` bytes at
-// `dest` with the low byte of `value`. Bulk-memory op 11 (same 0xFC prefix
-// family as memory.copy above). Used to zero-init (or 0xFF-sentinel-init) a
-// fresh hash-index table in one instruction instead of a store loop.
+/// memory.fill: stack operands (dest, value, size) -> fills `size` bytes at
+/// `dest` with the low byte of `value`. Bulk-memory op 11 (same 0xFC prefix
+/// family as memory.copy above). Used to zero-init (or 0xFF-sentinel-init) a
+/// fresh hash-index table in one instruction instead of a store loop.
 export fn emit_memory_fill(buf: Bytes) -> Unit {
   bytebuf_push(buf, op_prefix)
   leb128_encode_u32(buf, 11)
@@ -433,7 +440,7 @@ export fn get_eletrec_name(expr: Expr) -> String with { Error } {
   }
 }
 
-// Extract elements from ETuple
+/// Extract elements from ETuple
 export fn get_etuple_elems(expr: Expr) -> Array[Expr] with { Error } {
   match expr {
     ETuple(elems) => elems,
@@ -459,8 +466,8 @@ export fn str_table_lookup(strs: Array[String], s: String) -> Int with { Error }
   found
 }
 
-// Find the index of the first catch-all pattern in match arms
-// Returns num_arms if no catch-all found
+/// Find the index of the first catch-all pattern in match arms
+/// Returns num_arms if no catch-all found
 export fn find_catchall_idx(arms: Array[(Pat, Expr)]) -> Int {
   let num = Array::length(arms)
   let mut idx = 0
@@ -498,7 +505,7 @@ export fn get_eunaryop_expr(expr: Expr) -> Expr with { Error } {
   }
 }
 
-// Extract PString value
+/// Extract PString value
 export fn get_pstring_value(p: Pat) -> String with { Error } {
   match p {
     PString(s) => s,
@@ -521,11 +528,11 @@ export fn array_contains_str(arr: Array[String], s: String) -> Bool {
   found
 }
 
-// #1015: Int twin of array_contains_str, for slot-indexed tracking arrays
-// (CompileCtxGc.gc_bool_locals and its local_names-derived lookups in
-// codegen/gc/backend_expr.vibe and codegen/gc/backend_call.vibe). Plain
-// membership, no encoding -- see gc_bool_locals' doc comment on
-// CompileCtxGc for why no encoding is needed.
+/// #1015: Int twin of array_contains_str, for slot-indexed tracking arrays
+/// (CompileCtxGc.gc_bool_locals and its local_names-derived lookups in
+/// codegen/gc/backend_expr.vibe and codegen/gc/backend_call.vibe). Plain
+/// membership, no encoding -- see gc_bool_locals' doc comment on
+/// CompileCtxGc for why no encoding is needed.
 export fn array_contains_int(arr: Array[Int], v: Int) -> Bool {
   let len = Array::length(arr)
   let mut i = 0
@@ -555,7 +562,7 @@ export fn get_eassignop_name(expr: Expr) -> String with { Error } {
   }
 }
 
-// Extract scrutinee from EMatch (non-recursive to avoid stale binding bug in let rec)
+/// Extract scrutinee from EMatch (non-recursive to avoid stale binding bug in let rec)
 export fn get_match_scrutinee(expr: Expr) -> Expr with { Error } {
   match expr {
     EMatch(scrutinee, _) => scrutinee,

@@ -14,6 +14,8 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `vibe_run.sh` — compile+run a `.vibe` (seed → runner). `vibe_run_smoke.sh`
 - `vibe_test.sh` — run `test {}` blocks. `vibe_test_smoke.sh`
 - `vibe_fmt.sh` / `vibe_normalize.sh` (+ `*_smoke.sh`) — format / normalize
+  a single file (`--check`/`--stdout`/write). `vibe_fmt_apply.sh` (`pkf run
+  fmt`) is the tree-wide write-mode wrapper over `vibe_fmt.sh`.
 - `vibe_cli.sh` (+ smoke) — drive the selfhost CLI wasm
 - `vibe_pkg.sh` — package publish/install/add/yank/update (hash-verified,
   transparency-log backed #805; `vibe pkg` delegates here). `vibe_core_install.sh`
@@ -79,10 +81,11 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `check_lock_clean.sh`, `check_{bundle_sync,module_source_sync,portable_boundary}.sh`
 - `check_vibe_fmt.sh` (+ `vibe_fmt_allowlist.txt`) — CI-enforced `vibe fmt`
   gate (`vibe-fmt-check` job, required): every `lib/**/*.vibe` file must be a
-  `vibe_fmt.sh --check` fixpoint unless grandfathered in the allowlist
-  (ratchet, same idiom as `lint_architecture_debt.sh`'s allowlist below).
-  `pkf run fmt` itself is still the no-op placeholder (Taskfile.pkl) — this
-  only lints, it doesn't auto-apply across the tree.
+  `vibe_fmt.sh --check` fixpoint unless listed in the allowlist, which now
+  holds only the permanent auto-generated bundle exceptions (everything else
+  was paid down in the 2026-07-28 bulk reformat). `vibe_fmt_apply.sh` (`pkf
+  run fmt`) is the write-mode counterpart that applies the formatter across
+  the tree; this script only lints.
 - `lint_architecture_debt.sh` (+ `architecture_debt_{rules.tsv,allowlist.txt}`),
   `lint_tracked_experiment_names.sh`
 - `verify_rc.sh`, `rc_corpus_parity.sh`, `rc_cutover_readiness.sh`

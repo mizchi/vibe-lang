@@ -128,39 +128,53 @@ fn decode_hex_payload(hex: String) -> String with { Error } {
   }
 }
 
-// Pre-allocate the 16 hex-digit strings in an Array once, outside the hot
-// loop, so the StringBuilder::push calls only forward cached string refs and
-// do not allocate anything fresh between pushes. See issue #268:
-//
-// `StringBuilder::push`'s full-realloc grow path (triggered when interleaved
-// heap allocations move the heap tip away from the builder between pushes)
-// updates only the callee's local pointer, not the caller's variable
-// binding, so every realloc silently drops subsequent pushes. The original
-// implementation called `hex_digit(...)` inside the push argument, which
-// allocates a fresh String via `String::from_char_code` and bumps the heap
-// tip — after the first 256 pushes (the StringBuilder's initial capacity),
-// grow_check takes the full-realloc path on every push and the caller's
-// `out` binding keeps seeing the stale, pre-realloc buffer. For a 1024-byte
-// chunk this truncated the hex encoding at 256 chars (128 bytes) regardless
-// of input size, corrupting every subsequent self-compile output.
-//
-// Caching the hex digits in a local Array keeps the StringBuilder at the
-// heap tip throughout the loop, so only the cheap in-place extension path
-// runs and all 2 * count pushes land in the same buffer. A proper fix
-// belongs in the wasm codegen for StringBuilder::push: the realloc path
-// needs to either keep the old header as a forwarding pointer, or update
-// the caller's binding. Tracked in #268.
+/// Pre-allocate the 16 hex-digit strings in an Array once, outside the hot
+/// loop, so the StringBuilder::push calls only forward cached string refs and
+/// do not allocate anything fresh between pushes. See issue #268:
+///
+/// `StringBuilder::push`'s full-realloc grow path (triggered when interleaved
+/// heap allocations move the heap tip away from the builder between pushes)
+/// updates only the callee's local pointer, not the caller's variable
+/// binding, so every realloc silently drops subsequent pushes. The original
+/// implementation called `hex_digit(...)` inside the push argument, which
+/// allocates a fresh String via `String::from_char_code` and bumps the heap
+/// tip — after the first 256 pushes (the StringBuilder's initial capacity),
+/// grow_check takes the full-realloc path on every push and the caller's
+/// `out` binding keeps seeing the stale, pre-realloc buffer. For a 1024-byte
+/// chunk this truncated the hex encoding at 256 chars (128 bytes) regardless
+/// of input size, corrupting every subsequent self-compile output.
+///
+/// Caching the hex digits in a local Array keeps the StringBuilder at the
+/// heap tip throughout the loop, so only the cheap in-place extension path
+/// runs and all 2 * count pushes land in the same buffer. A proper fix
+/// belongs in the wasm codegen for StringBuilder::push: the realloc path
+/// needs to either keep the old header as a forwarding pointer, or update
+/// the caller's binding. Tracked in #268.
 fn encode_cached_hex_chunk(start: Int, count: Int) -> String {
   let hex_table = Array::slice([
-    "0", "1", "2", "3", "4", "5", "6", "7",
-    "8", "9", "a", "b", "c", "d", "e", "f"
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f"
   ], 0, 16)
   let out = StringBuilder::new()
   let mut i = 0
   while i < count {
     let byte = Bytes::get(cached_compile_bytes, start + i)
-    StringBuilder::push(out, Array::get(hex_table, (byte >> 4) & 15))
-    StringBuilder::push(out, Array::get(hex_table, byte & 15))
+    StringBuilder::push(out, Array::get(hex_table, (byte>>4)&15))
+    StringBuilder::push(out, Array::get(hex_table, byte&15))
     i = i + 1
   }
   StringBuilder::freeze(out)
@@ -279,21 +293,19 @@ export fn compile_cli_request(source: String, request: String) -> String {
   }
 }
 
-// The vfs's `stat-token` import is a stable per-path content token (see
-// docs/vibec-component.md). compile_cli_request's cache key is naturally
-// content-addressed (the source text IS part of the key), but this file
-// variant's content lives on the host, so folding stat_token(input_path)
-// into the key here means a long-lived hosted component that recompiles the
-// same path after the host edits it (the common browser-IDE case) gets a
-// fresh compile instead of a stale cached result from before the edit.
-// This covers edits to the entry file itself; edits to files it imports are
-// not tracked (would need the module resolver to report every path it
-// touched, which this entry point does not do).
+/// The vfs's `stat-token` import is a stable per-path content token (see
+/// docs/vibec-component.md). compile_cli_request's cache key is naturally
+/// content-addressed (the source text IS part of the key), but this file
+/// variant's content lives on the host, so folding stat_token(input_path)
+/// into the key here means a long-lived hosted component that recompiles the
+/// same path after the host edits it (the common browser-IDE case) gets a
+/// fresh compile instead of a stale cached result from before the edit.
+/// This covers edits to the entry file itself; edits to files it imports are
+/// not tracked (would need the module resolver to report every path it
+/// touched, which this entry point does not do).
 fn ensure_compiled_file(input_path: String, entry_name: String, mode: String) -> Int with { Error, Fs } {
   let content_token = Fs::stat_token(input_path)
-  let cache_key = cache_key_for(
-    String::concat("file:", String::concat(__to_string(content_token), String::concat(":", input_path))),
-    entry_name, mode)
+  let cache_key = cache_key_for(String::concat("file:", String::concat(__to_string(content_token), String::concat(":", input_path))), entry_name, mode)
   if cache_key_matches(cache_key) {
     Array::get(cached_compile_len, 0)
   } else {
@@ -302,13 +314,13 @@ fn ensure_compiled_file(input_path: String, entry_name: String, mode: String) ->
   }
 }
 
-// #1109-2 (vibec-hosted, the vfs face of #857): same request protocol as
-// compile_cli_request, but the first argument is a real PATH whose reads go
-// through the Fs host imports — which the vfs componentizer
-// (comp_emit_component_wasm_string_handler_vfs) lifts to the component's
-// imported `vfs` interface, so the HOST decides what a path means (real
-// filesystem under wasmtime, an in-memory map in a browser). Errors are
-// discharged to "" exactly like compile_cli_request.
+/// #1109-2 (vibec-hosted, the vfs face of #857): same request protocol as
+/// compile_cli_request, but the first argument is a real PATH whose reads go
+/// through the Fs host imports — which the vfs componentizer
+/// (comp_emit_component_wasm_string_handler_vfs) lifts to the component's
+/// imported `vfs` interface, so the HOST decides what a path means (real
+/// filesystem under wasmtime, an in-memory map in a browser). Errors are
+/// discharged to "" exactly like compile_cli_request.
 export fn compile_file_request(input_path: String, request: String) -> String with { Fs } {
   handle {
     let request_len = String::length(request)

@@ -13,12 +13,11 @@ import @vibe/compiler/cache {
 }
 
 import @vibe/compiler/core {
-  contains_path, dir_of_path, is_contract_ext, normalize_path, path_set_add, path_set_contains,
-  path_set_new, resolve_import_path_candidates
+  contains_path, dir_of_path, is_contract_ext, normalize_path, path_set_add, path_set_contains, path_set_new, resolve_import_path_candidates
 }
 
 import @vibe/compiler/syntax {
-  lex, Token, collect_import_path, peek, skip_semi
+  Token, collect_import_path, lex, peek, skip_semi
 }
 
 import @vibe/compiler/contract {
@@ -27,14 +26,14 @@ import @vibe/compiler/contract {
 
 //# Path helpers
 
-// #740: NORMALIZED join. Manifest rows may point outside the compiler dir
-// ("../../lib/@vibe/core/..."); the joined spelling must match what import
-// resolution produces (resolve_import_path normalizes), or the merge plan
-// keys the file under one spelling while importers resolve the other and
-// every cross-reference silently misses (bare `sha1 @call` in the merge).
-// #769: exported for loader_hotspot_probe's linear baseline -- it must build
-// row paths with the SAME `../` normalization the real builders apply, or the
-// manifest's `../../../lib/@vibe/...` rows never match the collected sources.
+/// #740: NORMALIZED join. Manifest rows may point outside the compiler dir
+/// ("../../lib/@vibe/core/..."); the joined spelling must match what import
+/// resolution produces (resolve_import_path normalizes), or the merge plan
+/// keys the file under one spelling while importers resolve the other and
+/// every cross-reference silently misses (bare `sha1 @call` in the merge).
+/// #769: exported for loader_hotspot_probe's linear baseline -- it must build
+/// row paths with the SAME `../` normalization the real builders apply, or the
+/// manifest's `../../../lib/@vibe/...` rows never match the collected sources.
 export fn join_path(base_dir: String, rel_path: String) -> String {
   if base_dir == "" {
     normalize_path(rel_path)
@@ -94,27 +93,27 @@ fn resolve_manifest_dep_path(base_dir: String, raw_path: String, manifest_path_i
   }
 }
 
-// #1027: an `export <path> { names }` re-export's path can start with either
-// `./` (TDot, same-dir) or `../` (TDotDot, parent-dir) -- `../` lexes as a
-// SINGLE TDotDot token (see @vibe/parser's lexer.vibe / token.vibe / CLAUDE.md
-// "62-bit tagged" section notwithstanding, this is a lexer-level fact:
-// `collect_import_path` in @vibe/parser/parser_base.vibe treats TDot and
-// TDotDot as two distinct path-continuation tokens), NOT a repeated TDot.
-// Checking only TDot here silently treated any `export ../../foo { .. }`
-// statement in a manifest-tracked file (this is the fast hand-rolled scanner
-// used for files listed in compiler_sources_manifest.tsv, NOT the full
-// AST-based collect_import_deps_from_stmts in header_cache.vibe, which
-// already matches SReExport structurally and was unaffected) as a BARE
-// re-export of previously-imported names (no path, no dependency edge) --
-// every `../`-rooted export dependency was silently dropped from the
-// header-based transitive walk (collect_needed_paths_and_manifest_headers /
-// try_collect_manifest_sources_fs / collect_all_sources_fs). Every existing
-// facade in this tree happened to reexport via `./` only, so the gap was
-// latent until lib/@vibe/compiler/syntax/*.vibe (#897 batch 5) became the
-// first manifest-tracked files whose ENTIRE content is a single
-// `export ../../../../lib/@vibe/parser { .. }` statement -- collect_all_sources_fs
-// then silently dropped lib/@vibe/parser/index.vpkg (and everything only
-// reachable through it) from the compiler's own source closure.
+/// #1027: an `export <path> { names }` re-export's path can start with either
+/// `./` (TDot, same-dir) or `../` (TDotDot, parent-dir) -- `../` lexes as a
+/// SINGLE TDotDot token (see @vibe/parser's lexer.vibe / token.vibe / CLAUDE.md
+/// "62-bit tagged" section notwithstanding, this is a lexer-level fact:
+/// `collect_import_path` in @vibe/parser/parser_base.vibe treats TDot and
+/// TDotDot as two distinct path-continuation tokens), NOT a repeated TDot.
+/// Checking only TDot here silently treated any `export ../../foo { .. }`
+/// statement in a manifest-tracked file (this is the fast hand-rolled scanner
+/// used for files listed in compiler_sources_manifest.tsv, NOT the full
+/// AST-based collect_import_deps_from_stmts in header_cache.vibe, which
+/// already matches SReExport structurally and was unaffected) as a BARE
+/// re-export of previously-imported names (no path, no dependency edge) --
+/// every `../`-rooted export dependency was silently dropped from the
+/// header-based transitive walk (collect_needed_paths_and_manifest_headers /
+/// try_collect_manifest_sources_fs / collect_all_sources_fs). Every existing
+/// facade in this tree happened to reexport via `./` only, so the gap was
+/// latent until lib/@vibe/compiler/syntax/*.vibe (#897 batch 5) became the
+/// first manifest-tracked files whose ENTIRE content is a single
+/// `export ../../../../lib/@vibe/parser { .. }` statement -- collect_all_sources_fs
+/// then silently dropped lib/@vibe/parser/index.vpkg (and everything only
+/// reachable through it) from the compiler's own source closure.
 fn starts_with_reexport_path_token(tok: Token) -> Bool {
   match tok {
     TDot => true,
@@ -125,9 +124,9 @@ fn starts_with_reexport_path_token(tok: Token) -> Bool {
 
 fn is_ident_char(c: Int) -> Bool {
   (c >= 'a' && c <= 'z') ||
-    (c >= 'A' && c <= 'Z') ||
-    (c >= '0' && c <= '9') ||
-    c == '_'
+  (c >= 'A' && c <= 'Z') ||
+  (c >= '0' && c <= '9') ||
+  c == '_'
 }
 
 fn slice_eq_text(s: String, start: Int, text: String) -> Bool {
@@ -254,20 +253,20 @@ fn skip_brace_list(tokens: Array[Token], pos: Int) -> Int with { Error } {
 fn scan_header_import_dep(tokens: Array[Token], pos: Int, base_dir: String, manifest_path_index: Map[String, Bool]) -> (String, Int) with { Error, Fs } {
   let (raw_path, next_pos) = match peek(tokens, pos) {
     TIdent(name) =>
-      if String::length(name) > 1 && String::char_code_at(name, 0) == 64 {
-        (name, pos + 1)
-      } else {
-        collect_import_path(tokens, pos, "")
-      },
+    if String::length(name) > 1 && String::char_code_at(name, 0) == 64 {
+      (name, pos + 1)
+    } else {
+      collect_import_path(tokens, pos, "")
+    },
     _ => collect_import_path(tokens, pos, "")
   }
   let after_path = match peek(tokens, next_pos) {
     TIdent(alias_name) =>
-      if String::length(alias_name) > 1 && String::char_code_at(alias_name, 0) == 64 {
-        next_pos + 1
-      } else {
-        next_pos
-      },
+    if String::length(alias_name) > 1 && String::char_code_at(alias_name, 0) == 64 {
+      next_pos + 1
+    } else {
+      next_pos
+    },
     _ => next_pos
   }
   let end_pos = match peek(tokens, after_path) {
@@ -277,25 +276,25 @@ fn scan_header_import_dep(tokens: Array[Token], pos: Int, base_dir: String, mani
   (resolve_manifest_dep_path(base_dir, raw_path, manifest_path_index), end_pos)
 }
 
-// #1027: this scanner's main loop stops at the first top-level statement
-// that isn't `import`/`export` (a deliberate fast-path exploiting the
-// codebase convention that every file's imports come first -- see the
-// `done = true` fallthrough below). A `.vpkg` contract's grammar puts a
-// `version x.y.z` directive (and optional `require ...` pin lines) BEFORE
-// its `import ./x.vibe {}` lines, so scanning a contract file's RAW text
-// hit that fallthrough on line 1 and returned zero deps for EVERY
-// vpkg-ified directory (external package boundaries AND #897 compiler-
-// internal ones alike) -- this is the root cause of #1027's own title
-// ("collect_all_sources_fs undercounts vpkg-ified internal directories"):
-// the walk correctly resolves an import/export edge down to the target
-// `.vpkg` row (that part was always fine), but then found NO further
-// dependencies when it visited that row itself, so a directory's own impl
-// files never got scheduled. `extract_require_pins` (contract/contract.vibe)
-// already knows how to blank exactly this leading directive region (line-
-// based, tolerates comments/blank lines, stops at the first ordinary
-// statement) -- reuse it here instead of re-deriving the same rule, so the
-// import/export scan below sees the blanked (all-whitespace) directive
-// lines and continues straight through to the real import statements.
+/// #1027: this scanner's main loop stops at the first top-level statement
+/// that isn't `import`/`export` (a deliberate fast-path exploiting the
+/// codebase convention that every file's imports come first -- see the
+/// `done = true` fallthrough below). A `.vpkg` contract's grammar puts a
+/// `version x.y.z` directive (and optional `require ...` pin lines) BEFORE
+/// its `import ./x.vibe {}` lines, so scanning a contract file's RAW text
+/// hit that fallthrough on line 1 and returned zero deps for EVERY
+/// vpkg-ified directory (external package boundaries AND #897 compiler-
+/// internal ones alike) -- this is the root cause of #1027's own title
+/// ("collect_all_sources_fs undercounts vpkg-ified internal directories"):
+/// the walk correctly resolves an import/export edge down to the target
+/// `.vpkg` row (that part was always fine), but then found NO further
+/// dependencies when it visited that row itself, so a directory's own impl
+/// files never got scheduled. `extract_require_pins` (contract/contract.vibe)
+/// already knows how to blank exactly this leading directive region (line-
+/// based, tolerates comments/blank lines, stops at the first ordinary
+/// statement) -- reuse it here instead of re-deriving the same rule, so the
+/// import/export scan below sees the blanked (all-whitespace) directive
+/// lines and continues straight through to the real import statements.
 fn manifest_header_scan_source(path: String, source: String) -> String with { Error } {
   if is_contract_ext(path) {
     let (_, blanked) = extract_require_pins(source)
@@ -323,27 +322,17 @@ fn collect_manifest_header_deps_from_source(path: String, raw_source: String, ma
         done = true
       } else {
         let stmt_end = scan_header_stmt_end(source, len, pos)
-        let stmt_source = source[pos:stmt_end]
+        let stmt_source = source[pos: stmt_end]
         let tokens = lex(stmt_source)
         let stmt_pos = skip_semi(tokens, 0)
         match peek(tokens, stmt_pos) {
           TImport => {
-            let (dep_path, _) = scan_header_import_dep(
-              tokens,
-              stmt_pos + 1,
-              base_dir,
-              manifest_path_index
-            )
+            let (dep_path, _) = scan_header_import_dep(tokens, stmt_pos + 1, base_dir, manifest_path_index)
             Array::push(deps, dep_path)
           },
           TExport => {
             if starts_with_reexport_path_token(peek(tokens, stmt_pos + 1)) {
-              let (dep_path, _) = scan_header_import_dep(
-                tokens,
-                stmt_pos + 1,
-                base_dir,
-                manifest_path_index
-              )
+              let (dep_path, _) = scan_header_import_dep(tokens, stmt_pos + 1, base_dir, manifest_path_index)
               Array::push(deps, dep_path)
             }
           },
@@ -480,7 +469,7 @@ fn strip_trailing_cr(line: String) -> String {
   let len = String::length(line)
   if len > 0 {
     if String::char_code_at(line, len - 1) == 13 {
-      line[0:len - 1]
+      line[0: len - 1]
     } else {
       line
     }
@@ -516,7 +505,7 @@ fn split_tsv_fields(line: String) -> Array[String] {
       String::char_code_at(line, i) == 9
     }
     if at_field_end {
-      Array::push(fields, line[start:i])
+      Array::push(fields, line[start: i])
       start = i + 1
     }
     i = i + 1
@@ -556,7 +545,7 @@ fn split_header_values(text: String) -> Array[String] {
         String::char_code_at(text, i) == sep
       }
       if at_value_end {
-        Array::push(values, text[start:i])
+        Array::push(values, text[start: i])
         start = i + 1
       }
       i = i + 1
@@ -573,22 +562,22 @@ fn empty_grouped_sources() -> Array[(String, Array[(String, String)])] {
   array_empty()
 }
 
-// #801 (系統2 follow-up): a bucket that does not exist yet MUST have its first
-// element pushed BEFORE the (group_name, bucket) tuple is embedded into
-// `groups` -- never the other way around. Pushing an EMPTY bucket into
-// `groups` first and mutating the returned handle afterward (the previous
-// shape of this function) let a `groups`-array growth event land between the
-// two pushes; the bucket handle the caller went on to push the first real
-// element into was then observed to diverge from the copy embedded in
-// `groups`, leaving a corrupted `path="0"` row behind (reproduced
-// deterministically for entry "lib/@vibe/compiler/loader/index.vibe": the
-// 11th distinct group, "vibe_core", landed exactly on this hazard while
-// every other group -- multi-row groups whose bucket is already "live" by
-// the time any subsequent `groups` growth happens, and single-row groups
-// created before the hazard's growth boundary -- did not). The already-safe
-// sibling `push_grouped_source` (loader/index.vibe) avoids this by always
-// populating a brand-new bucket with its first item BEFORE pushing the tuple
-// into the outer array; this seeded variant applies the same ordering here.
+/// #801 (系統2 follow-up): a bucket that does not exist yet MUST have its first
+/// element pushed BEFORE the (group_name, bucket) tuple is embedded into
+/// `groups` -- never the other way around. Pushing an EMPTY bucket into
+/// `groups` first and mutating the returned handle afterward (the previous
+/// shape of this function) let a `groups`-array growth event land between the
+/// two pushes; the bucket handle the caller went on to push the first real
+/// element into was then observed to diverge from the copy embedded in
+/// `groups`, leaving a corrupted `path="0"` row behind (reproduced
+/// deterministically for entry "lib/@vibe/compiler/loader/index.vibe": the
+/// 11th distinct group, "vibe_core", landed exactly on this hazard while
+/// every other group -- multi-row groups whose bucket is already "live" by
+/// the time any subsequent `groups` growth happens, and single-row groups
+/// created before the hazard's growth boundary -- did not). The already-safe
+/// sibling `push_grouped_source` (loader/index.vibe) avoids this by always
+/// populating a brand-new bucket with its first item BEFORE pushing the tuple
+/// into the outer array; this seeded variant applies the same ordering here.
 fn ensure_grouped_source_bucket_seeded(groups: Array[(String, Array[(String, String)])], group_name: String, path: String, value: String) -> Array[(String, String)] {
   let mut i = 0
   let mut found = None
@@ -656,7 +645,7 @@ fn parse_source_manifest_rows(manifest_source: String) -> Array[(String, String)
       String::char_code_at(manifest_source, i) == 10
     }
     if at_line_end {
-      let raw_line = strip_trailing_cr(manifest_source[line_start:i])
+      let raw_line = strip_trailing_cr(manifest_source[line_start: i])
       let line_len = String::length(raw_line)
       let has_content = line_len > 0
       let is_comment = if has_content {
@@ -677,8 +666,8 @@ fn parse_source_manifest_rows(manifest_source: String) -> Array[(String, String)
           if invalid_row {
             throw(String::concat("invalid source manifest row: ", raw_line))
           }
-          let group = raw_line[0:tab_idx]
-          let path = raw_line[tab_idx + 1:line_len]
+          let group = raw_line[0: tab_idx]
+          let path = raw_line[tab_idx + 1: line_len]
           Array::push(rows, (group, path))
         }
       }
@@ -765,13 +754,9 @@ fn load_manifest_source_groups_by_path_index(base_dir: String, rows: Array[(Stri
 }
 
 export fn build_grouped_sources_from_manifest_row_source_index(base_dir: String, rows: Array[(String, String)], source_index: Map[String, String]) -> Array[(String, Array[(String, String)])] {
-  build_grouped_sources_from_manifest_rows_with_lookup(
-    base_dir,
-    rows,
-    (path: String) -> Option[String] {
-      source_lookup_in_index(source_index, path)
-    }
-  )
+  build_grouped_sources_from_manifest_rows_with_lookup(base_dir, rows, (path: String) -> Option[String] {
+    source_lookup_in_index(source_index, path)
+  })
 }
 
 export fn build_grouped_sources_from_manifest_rows(base_dir: String, rows: Array[(String, String)], sources: Array[(String, String)]) -> Array[(String, Array[(String, String)])] {
@@ -840,7 +825,7 @@ fn parse_persistent_manifest_header_cache(raw: String) -> (Int, Option[(String, 
       String::char_code_at(raw, i) == 10
     }
     if at_line_end {
-      let line = strip_trailing_cr(raw[line_start:i])
+      let line = strip_trailing_cr(raw[line_start: i])
       if String::length(line) > 0 {
         let fields = split_tsv_fields(line)
         let tag = Array::get(fields, 0)
@@ -866,28 +851,12 @@ fn parse_persistent_manifest_header_cache(raw: String) -> (Int, Option[(String, 
             if Array::length(fields) != 6 {
               throw("invalid persistent manifest header cache header row")
             }
-            Array::push(
-              rows,
-              (
-                Array::get(fields, 1),
-                Array::get(fields, 2),
-                Array::get(fields, 3),
-                Array::get(fields, 4)
-              )
-            )
+            Array::push(rows, (Array::get(fields, 1), Array::get(fields, 2), Array::get(fields, 3), Array::get(fields, 4)))
           } else {
             if Array::length(fields) != 5 {
               throw("invalid persistent manifest header cache header row")
             }
-            Array::push(
-              rows,
-              (
-                Array::get(fields, 1),
-                Array::get(fields, 2),
-                Array::get(fields, 3),
-                Array::get(fields, 4)
-              )
-            )
+            Array::push(rows, (Array::get(fields, 1), Array::get(fields, 2), Array::get(fields, 3), Array::get(fields, 4)))
           }
         } else {
           throw(String::concat("invalid persistent manifest header cache row: ", line))
@@ -926,13 +895,11 @@ fn load_persistent_manifest_header_cache_if_valid(entry_path: String, manifest_p
   if !(Fs::exists(cache_path)) {
     None
   } else {
-    let (_, manifest, rows) = parse_persistent_manifest_header_cache(
-      normalize_persistent_cache_text(Fs::read_file(cache_path))
-    )
+    let (_, manifest, rows) = parse_persistent_manifest_header_cache(normalize_persistent_cache_text(Fs::read_file(cache_path)))
     let manifest_ok = match manifest {
       Some((cached_path, stat_token_text, source_fingerprint)) =>
-        cached_path == manifest_path &&
-          matches_cached_file_spec(manifest_path, stat_token_text, source_fingerprint),
+      cached_path == manifest_path &&
+      matches_cached_file_spec(manifest_path, stat_token_text, source_fingerprint),
       None => false
     }
     if !manifest_ok {
@@ -962,57 +929,18 @@ fn load_persistent_manifest_header_cache_if_valid(entry_path: String, manifest_p
 
 fn build_persistent_manifest_header_cache_text(manifest_path: String, rows: Array[(String, String, String, String)]) -> String with { Error, Fs } {
   let mut out = "version\t2\n"
-  out = String::concat(
-    out,
-    String::concat(
-      "manifest\t",
-      String::concat(
-        manifest_path,
-        String::concat(
-          "\t",
-          String::concat(
-            __to_string(Fs::stat_token(manifest_path)),
-            String::concat("\t", String::concat(compact_string_fingerprint(Fs::read_file(manifest_path)), "\n"))
-          )
-        )
-      )
-    )
-  )
+  out = String::concat(out, String::concat("manifest\t", String::concat(manifest_path, String::concat("\t", String::concat(__to_string(Fs::stat_token(manifest_path)), String::concat("\t", String::concat(compact_string_fingerprint(Fs::read_file(manifest_path)), "\n")))))))
   let mut i = 0
   while i < Array::length(rows) {
     let (path, stat_token_text, source_fingerprint, deps_text) = Array::get(rows, i)
-    out = String::concat(
-      out,
-      String::concat(
-        "header\t",
-        String::concat(
-          path,
-          String::concat(
-            "\t",
-            String::concat(
-              stat_token_text,
-              String::concat(
-                "\t",
-                String::concat(
-                  source_fingerprint,
-                  String::concat("\t", String::concat(deps_text, "\n"))
-                )
-              )
-            )
-          )
-        )
-      )
-    )
+    out = String::concat(out, String::concat("header\t", String::concat(path, String::concat("\t", String::concat(stat_token_text, String::concat("\t", String::concat(source_fingerprint, String::concat("\t", String::concat(deps_text, "\n")))))))))
     i = i + 1
   }
   out
 }
 
 fn store_persistent_manifest_header_cache(entry_path: String, manifest_path: String, rows: Array[(String, String, String, String)]) -> Unit with { Error, Fs } {
-  Fs::write_file(
-    persistent_manifest_header_cache_path(entry_path),
-    build_persistent_manifest_header_cache_text(manifest_path, rows)
-  )
+  Fs::write_file(persistent_manifest_header_cache_path(entry_path), build_persistent_manifest_header_cache_text(manifest_path, rows))
 }
 
 fn manifest_header_deps_lookup(rows: Array[(String, String, String, String)], path: String) -> Option[Array[String]] {
@@ -1030,15 +958,15 @@ fn manifest_header_deps_lookup(rows: Array[(String, String, String, String)], pa
   found
 }
 
-// #533: schedule-time dedup via a mutable `path_set`. The previous
-// `Map[String, Bool]` scheduled-set copied the whole map on every
-// `Map::set` (O(N) per insert → O(N²) total) and linearly scanned it per
-// `Map::has_key`; the pop-time `contains_path(visited, current)` guard
-// was another O(edges × modules) scan that could never fire, because
-// every worklist push is gated on the scheduled set, making worklist
-// entries unique by construction. `visited` stays an insertion-ordered
-// array — it is the returned needed-paths list. (Same pattern in the two
-// sibling collectors below.)
+/// #533: schedule-time dedup via a mutable `path_set`. The previous
+/// `Map[String, Bool]` scheduled-set copied the whole map on every
+/// `Map::set` (O(N) per insert → O(N²) total) and linearly scanned it per
+/// `Map::has_key`; the pop-time `contains_path(visited, current)` guard
+/// was another O(edges × modules) scan that could never fire, because
+/// every worklist push is gated on the scheduled set, making worklist
+/// entries unique by construction. `visited` stays an insertion-ordered
+/// array — it is the returned needed-paths list. (Same pattern in the two
+/// sibling collectors below.)
 fn collect_needed_paths_from_manifest_headers(path: String, manifest_path_index: Map[String, Bool], rows: Array[(String, String, String, String)]) -> Array[String] with { Error, Fs } {
   let visited = array_empty()
   let worklist = array_empty()
@@ -1058,11 +986,7 @@ fn collect_needed_paths_from_manifest_headers(path: String, manifest_path_index:
       None => {
         let source = Fs::read_file(current)
         if Map::has_key(manifest_path_index, current) {
-          collect_manifest_header_deps_from_source_with_context(
-            current,
-            source,
-            manifest_path_index
-          )
+          collect_manifest_header_deps_from_source_with_context(current, source, manifest_path_index)
         } else {
           load_or_parse_module_header_deps_with_context(current, source)
         }
@@ -1072,7 +996,7 @@ fn collect_needed_paths_from_manifest_headers(path: String, manifest_path_index:
     while dep_i < Array::length(deps) {
       let dep_path = Array::get(deps, dep_i)
       if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
-        !(path_set_contains(scheduled, dep_path)) {
+      !(path_set_contains(scheduled, dep_path)) {
         Array::push(worklist, dep_path)
         path_set_add(scheduled, dep_path)
         work_len = work_len + 1
@@ -1104,23 +1028,11 @@ fn collect_needed_paths_and_manifest_headers(path: String, manifest_path_index: 
       Some(found) => found,
       None => {
         let parsed_deps = if Map::has_key(manifest_path_index, current) {
-          collect_manifest_header_deps_from_source_with_context(
-            current,
-            source,
-            manifest_path_index
-          )
+          collect_manifest_header_deps_from_source_with_context(current, source, manifest_path_index)
         } else {
           load_or_parse_module_header_deps_with_context(current, source)
         }
-        Array::push(
-          rows,
-          (
-            current,
-            __to_string(Fs::stat_token(current)),
-            compact_string_fingerprint(source),
-            join_header_values(parsed_deps)
-          )
-        )
+        Array::push(rows, (current, __to_string(Fs::stat_token(current)), compact_string_fingerprint(source), join_header_values(parsed_deps)))
         parsed_deps
       }
     }
@@ -1128,7 +1040,7 @@ fn collect_needed_paths_and_manifest_headers(path: String, manifest_path_index: 
     while dep_i < Array::length(deps) {
       let dep_path = Array::get(deps, dep_i)
       if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
-        !(path_set_contains(scheduled, dep_path)) {
+      !(path_set_contains(scheduled, dep_path)) {
         Array::push(worklist, dep_path)
         path_set_add(scheduled, dep_path)
         work_len = work_len + 1
@@ -1156,11 +1068,7 @@ fn collect_needed_paths_from_manifest_scan(path: String, manifest_path_index: Ma
     Array::push(visited, current)
     let source = Fs::read_file(current)
     let deps = if Map::has_key(manifest_path_index, current) {
-      collect_manifest_header_deps_from_source_with_context(
-        current,
-        source,
-        manifest_path_index
-      )
+      collect_manifest_header_deps_from_source_with_context(current, source, manifest_path_index)
     } else {
       load_or_parse_module_header_deps_with_context(current, source)
     }
@@ -1168,7 +1076,7 @@ fn collect_needed_paths_from_manifest_scan(path: String, manifest_path_index: Ma
     while dep_i < Array::length(deps) {
       let dep_path = Array::get(deps, dep_i)
       if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
-        !(path_set_contains(scheduled, dep_path)) {
+      !(path_set_contains(scheduled, dep_path)) {
         Array::push(worklist, dep_path)
         path_set_add(scheduled, dep_path)
         work_len = work_len + 1
@@ -1181,17 +1089,10 @@ fn collect_needed_paths_from_manifest_scan(path: String, manifest_path_index: Ma
 }
 
 fn load_or_collect_manifest_header_rows(entry_path: String, manifest_path: String, manifest_path_index: Map[String, Bool]) -> Array[(String, String, String, String)] with { Error, Fs } {
-  match load_persistent_manifest_header_cache_if_valid(
-    entry_path,
-    manifest_path,
-    manifest_path_index
-  ) {
+  match load_persistent_manifest_header_cache_if_valid(entry_path, manifest_path, manifest_path_index) {
     Some(cached_rows) => cached_rows,
     None => {
-      let (built_rows, _) = collect_needed_paths_and_manifest_headers(
-        entry_path,
-        manifest_path_index
-      )
+      let (built_rows, _) = collect_needed_paths_and_manifest_headers(entry_path, manifest_path_index)
       store_persistent_manifest_header_cache(entry_path, manifest_path, built_rows)
       built_rows
     }
@@ -1203,11 +1104,7 @@ export fn probe_manifest_header_rows_count(entry_path: String) -> Int with { Err
     Some((base_dir, rows)) => {
       let manifest_path = join_path(base_dir, "compiler_sources_manifest.tsv")
       let manifest_path_index = build_manifest_path_index_from_rows(base_dir, rows)
-      let header_rows = load_or_collect_manifest_header_rows(
-        entry_path,
-        manifest_path,
-        manifest_path_index
-      )
+      let header_rows = load_or_collect_manifest_header_rows(entry_path, manifest_path, manifest_path_index)
       Array::length(header_rows)
     },
     None => throw("manifest rows unavailable")
@@ -1218,10 +1115,7 @@ export fn probe_manifest_header_rows_uncached_count(entry_path: String) -> Int w
   match try_load_manifest_rows(entry_path) {
     Some((base_dir, rows)) => {
       let manifest_path_index = build_manifest_path_index_from_rows(base_dir, rows)
-      let (header_rows, _) = collect_needed_paths_and_manifest_headers(
-        entry_path,
-        manifest_path_index
-      )
+      let (header_rows, _) = collect_needed_paths_and_manifest_headers(entry_path, manifest_path_index)
       Array::length(header_rows)
     },
     None => throw("manifest rows unavailable")
@@ -1233,16 +1127,8 @@ export fn probe_manifest_needed_paths_count(entry_path: String) -> Int with { Er
     Some((base_dir, rows)) => {
       let manifest_path = join_path(base_dir, "compiler_sources_manifest.tsv")
       let manifest_path_index = build_manifest_path_index_from_rows(base_dir, rows)
-      let header_rows = load_or_collect_manifest_header_rows(
-        entry_path,
-        manifest_path,
-        manifest_path_index
-      )
-      let needed_paths = collect_needed_paths_from_manifest_headers(
-        entry_path,
-        manifest_path_index,
-        header_rows
-      )
+      let header_rows = load_or_collect_manifest_header_rows(entry_path, manifest_path, manifest_path_index)
+      let needed_paths = collect_needed_paths_from_manifest_headers(entry_path, manifest_path_index, header_rows)
       Array::length(needed_paths)
     },
     None => throw("manifest rows unavailable")
@@ -1253,10 +1139,7 @@ export fn probe_manifest_scan_paths_count(entry_path: String) -> Int with { Erro
   match try_load_manifest_rows(entry_path) {
     Some((base_dir, rows)) => {
       let manifest_path_index = build_manifest_path_index_from_rows(base_dir, rows)
-      let needed_paths = collect_needed_paths_from_manifest_scan(
-        entry_path,
-        manifest_path_index
-      )
+      let needed_paths = collect_needed_paths_from_manifest_scan(entry_path, manifest_path_index)
       Array::length(needed_paths)
     },
     None => throw("manifest rows unavailable")
@@ -1270,16 +1153,8 @@ export fn try_collect_manifest_sources_fs(entry_path: String) -> Option[(String,
     Some((base_dir, rows)) => {
       let manifest_path = join_path(base_dir, "compiler_sources_manifest.tsv")
       let manifest_path_index = build_manifest_path_index_from_rows(base_dir, rows)
-      let header_rows = load_or_collect_manifest_header_rows(
-        entry_path,
-        manifest_path,
-        manifest_path_index
-      )
-      let needed_paths = collect_needed_paths_from_manifest_headers(
-        entry_path,
-        manifest_path_index,
-        header_rows
-      )
+      let header_rows = load_or_collect_manifest_header_rows(entry_path, manifest_path, manifest_path_index)
+      let needed_paths = collect_needed_paths_from_manifest_headers(entry_path, manifest_path_index, header_rows)
       let needed_path_index = build_manifest_path_index(needed_paths)
       let sources = load_manifest_sources_by_path_index(base_dir, rows, needed_path_index)
       Some((manifest_path, sources))
@@ -1293,16 +1168,8 @@ export fn try_collect_manifest_source_groups_fs(entry_path: String) -> Option[(S
     Some((base_dir, rows)) => {
       let manifest_path = join_path(base_dir, "compiler_sources_manifest.tsv")
       let manifest_path_index = build_manifest_path_index_from_rows(base_dir, rows)
-      let header_rows = load_or_collect_manifest_header_rows(
-        entry_path,
-        manifest_path,
-        manifest_path_index
-      )
-      let needed_paths = collect_needed_paths_from_manifest_headers(
-        entry_path,
-        manifest_path_index,
-        header_rows
-      )
+      let header_rows = load_or_collect_manifest_header_rows(entry_path, manifest_path, manifest_path_index)
+      let needed_paths = collect_needed_paths_from_manifest_headers(entry_path, manifest_path_index, header_rows)
       let needed_path_index = build_manifest_path_index(needed_paths)
       let groups = load_manifest_source_groups_by_path_index(base_dir, rows, needed_path_index)
       Some((manifest_path, groups))

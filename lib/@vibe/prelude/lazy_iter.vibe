@@ -17,9 +17,9 @@ export trait Iterator[T] {
   next(Self) -> Option[(T, Self)]
 }
 
-// `pull(state) -> Option[(element, next_state)]`; the state is erased to Int
-// (the uniform tagged representation makes the encoding general over element
-// and state types).
+/// `pull(state) -> Option[(element, next_state)]`; the state is erased to Int
+/// (the uniform tagged representation makes the encoding general over element
+/// and state types).
 export struct LazyIter[T] {
   pull: (Int) -> Option[(T, Int)];
   state: Int
@@ -32,67 +32,75 @@ impl Iterator for LazyIter {
     match (self.pull)(self.state) {
       Some(p) => {
         let (v, ns) = p
-        Some((v, LazyIter::{ pull: self.pull, state: ns }))
+        Some((v, LazyIter::{
+          pull: self.pull, state: ns
+        }))
       },
       None => None
     }
   }
 }
 
-// Build a lazy iterator over an Array, threading the cursor as the state.
+/// Build a lazy iterator over an Array, threading the cursor as the state.
 export fn lazy_iter_arr[T](xs: Array[T]) -> LazyIter[T] {
-  LazyIter::{ pull: (i) -> Option[(T, Int)] {
-    if i < Array::length(xs) {
-      Some((Array::get(xs, i), i + 1))
-    } else {
-      None
-    }
-  }, state: 0 }
+  LazyIter::{
+    pull: (i) -> Option[(T, Int)] {
+      if i < Array::length(xs) {
+        Some((Array::get(xs, i), i + 1))
+      } else {
+        None
+      }
+    }, state: 0
+  }
 }
 
-// Lazy `map`: composes a transform onto the iterator without consuming it.
-// Element-type may change (`T -> U`).
+/// Lazy `map`: composes a transform onto the iterator without consuming it.
+/// Element-type may change (`T -> U`).
 export fn lazy_iter_map[T, U](src: LazyIter[T], f: (x: T) -> U) -> LazyIter[U] {
-  LazyIter::{ pull: (st) -> Option[(U, Int)] {
-    match (src.pull)(st) {
-      Some(p) => {
-        let (v, ns) = p
-        Some((f(v), ns))
-      },
-      None => None
-    }
-  }, state: src.state }
-}
-
-// Lazy `filter`: drops elements for which `pred` returns false. The source can
-// advance several times per consumer pull, so the inner loop walks until a kept
-// element is found or the source is exhausted.
-export fn lazy_iter_filter[T](src: LazyIter[T], pred: (x: T) -> Bool) -> LazyIter[T] {
-  LazyIter::{ pull: (st) -> Option[(T, Int)] {
-    let mut cur = st
-    let mut result = None
-    let mut go = true
-    while go {
-      match (src.pull)(cur) {
+  LazyIter::{
+    pull: (st) -> Option[(U, Int)] {
+      match (src.pull)(st) {
         Some(p) => {
           let (v, ns) = p
-          if pred(v) {
-            result = Some((v, ns))
-            go = false
-          } else {
-            cur = ns
-          }
+          Some((f(v), ns))
         },
-        None => {
-          go = false
-        }
+        None => None
       }
-    }
-    result
-  }, state: src.state }
+    }, state: src.state
+  }
 }
 
-// Eager terminator: drains the iterator into an Array, driven by `for`.
+/// Lazy `filter`: drops elements for which `pred` returns false. The source can
+/// advance several times per consumer pull, so the inner loop walks until a kept
+/// element is found or the source is exhausted.
+export fn lazy_iter_filter[T](src: LazyIter[T], pred: (x: T) -> Bool) -> LazyIter[T] {
+  LazyIter::{
+    pull: (st) -> Option[(T, Int)] {
+      let mut cur = st
+      let mut result = None
+      let mut go = true
+      while go {
+        match (src.pull)(cur) {
+          Some(p) => {
+            let (v, ns) = p
+            if pred(v) {
+              result = Some((v, ns))
+              go = false
+            } else {
+              cur = ns
+            }
+          },
+          None => {
+            go = false
+          }
+        }
+      }
+      result
+    }, state: src.state
+  }
+}
+
+/// Eager terminator: drains the iterator into an Array, driven by `for`.
 export fn lazy_iter_collect[T](src: LazyIter[T]) -> Array[T] {
   let b = ArrayBuilder::new()
   for x in src {
@@ -101,7 +109,7 @@ export fn lazy_iter_collect[T](src: LazyIter[T]) -> Array[T] {
   ArrayBuilder::freeze(b)
 }
 
-// Eager terminator: classic left-fold.
+/// Eager terminator: classic left-fold.
 export fn lazy_iter_fold[T, U](src: LazyIter[T], init: U, f: (acc: U, x: T) -> U) -> U {
   let mut acc = init
   for x in src {
@@ -110,7 +118,7 @@ export fn lazy_iter_fold[T, U](src: LazyIter[T], init: U, f: (acc: U, x: T) -> U
   acc
 }
 
-// Eager terminator: counts how many elements the iterator yields.
+/// Eager terminator: counts how many elements the iterator yields.
 export fn lazy_iter_count[T](src: LazyIter[T]) -> Int {
   let mut n = 0
   for x in src {
@@ -119,9 +127,9 @@ export fn lazy_iter_count[T](src: LazyIter[T]) -> Int {
   n
 }
 
-// Eager terminator: the first element satisfying `pred`, or `None`. Drives the
-// source `pull` directly (not `for`) so it short-circuits — it stops at the
-// first match instead of draining the whole source.
+/// Eager terminator: the first element satisfying `pred`, or `None`. Drives the
+/// source `pull` directly (not `for`) so it short-circuits — it stops at the
+/// first match instead of draining the whole source.
 export fn lazy_iter_find[T](src: LazyIter[T], pred: (x: T) -> Bool) -> Option[T] {
   let mut st = src.state
   let mut result = None
@@ -145,8 +153,8 @@ export fn lazy_iter_find[T](src: LazyIter[T], pred: (x: T) -> Bool) -> Option[T]
   result
 }
 
-// Eager terminator: `true` if any element satisfies `pred` (short-circuits on
-// the first match).
+/// Eager terminator: `true` if any element satisfies `pred` (short-circuits on
+/// the first match).
 export fn lazy_iter_any[T](src: LazyIter[T], pred: (x: T) -> Bool) -> Bool {
   match lazy_iter_find(src, pred) {
     Some(_) => true,
@@ -154,10 +162,10 @@ export fn lazy_iter_any[T](src: LazyIter[T], pred: (x: T) -> Bool) -> Bool {
   }
 }
 
-// Eager terminator: `true` if every element satisfies `pred` (short-circuits on
-// the first counter-example). Vacuously `true` for an empty source. Driven
-// directly (rather than `lazy_iter_find` with a negated predicate) so it does
-// not allocate a wrapper closure over `pred`.
+/// Eager terminator: `true` if every element satisfies `pred` (short-circuits on
+/// the first counter-example). Vacuously `true` for an empty source. Driven
+/// directly (rather than `lazy_iter_find` with a negated predicate) so it does
+/// not allocate a wrapper closure over `pred`.
 export fn lazy_iter_all[T](src: LazyIter[T], pred: (x: T) -> Bool) -> Bool {
   let mut st = src.state
   let mut ok = true
@@ -181,159 +189,180 @@ export fn lazy_iter_all[T](src: LazyIter[T], pred: (x: T) -> Bool) -> Bool {
   ok
 }
 
-// Lazy `take_while`: yields elements while `pred` holds and stops (yields
-// `None`) at the first element for which it fails. Pure / re-iterable — it
-// threads only the source state and keeps no counter, so it composes like
-// `map` / `filter`.
+/// Lazy `take_while`: yields elements while `pred` holds and stops (yields
+/// `None`) at the first element for which it fails. Pure / re-iterable — it
+/// threads only the source state and keeps no counter, so it composes like
+/// `map` / `filter`.
 export fn lazy_iter_take_while[T](src: LazyIter[T], pred: (x: T) -> Bool) -> LazyIter[T] {
-  LazyIter::{ pull: (st) -> Option[(T, Int)] {
-    match (src.pull)(st) {
-      Some(p) => {
-        let (v, ns) = p
-        if pred(v) {
-          Some((v, ns))
-        } else {
-          None
-        }
-      },
-      None => None
-    }
-  }, state: src.state }
-}
-
-// Lazy `take`: yields at most the first `n` elements. SINGLE-PASS: the running
-// count lives in a heap cell (`[remaining]`) captured by the `pull` closure —
-// a value-typed `let mut` capture would be snapshotted when `next` copies the
-// closure into the successor `LazyIter` (`pull: self.pull`), but an Array is a
-// reference, so the decrement survives the copy. Each combinator carries its own
-// cell, so `take`s nest and compose freely (unlike packing the count into the
-// single `Int` state). Iterating the result more than once is exhausted after
-// the first pass.
-export fn lazy_iter_take[T](src: LazyIter[T], n: Int) -> LazyIter[T] {
-  let remaining = [n]
-  LazyIter::{ pull: (st) -> Option[(T, Int)] {
-    if Array::get(remaining, 0) <= 0 {
-      None
-    } else {
+  LazyIter::{
+    pull: (st) -> Option[(T, Int)] {
       match (src.pull)(st) {
         Some(p) => {
           let (v, ns) = p
-          Array::set(remaining, 0, Array::get(remaining, 0) - 1)
-          Some((v, ns))
+          if pred(v) {
+            Some((v, ns))
+          } else {
+            None
+          }
         },
         None => None
       }
-    }
-  }, state: src.state }
+    }, state: src.state
+  }
 }
 
-// Lazy `drop`: skips the first `n` elements, then yields the rest. SINGLE-PASS
-// (heap-cell counter, see `lazy_iter_take`). The skip drains the source `n`
-// times inside the first `pull`, advancing the threaded source state past the
-// dropped prefix.
-export fn lazy_iter_drop[T](src: LazyIter[T], n: Int) -> LazyIter[T] {
-  let to_drop = [n]
-  LazyIter::{ pull: (st) -> Option[(T, Int)] {
-    let mut cur = st
-    let mut result = None
-    let mut go = true
-    while go {
-      match (src.pull)(cur) {
-        Some(p) => {
-          let (v, ns) = p
-          if Array::get(to_drop, 0) > 0 {
-            Array::set(to_drop, 0, Array::get(to_drop, 0) - 1)
-            cur = ns
-          } else {
-            result = Some((v, ns))
-            go = false
-          }
-        },
-        None => {
-          go = false
-        }
-      }
-    }
-    result
-  }, state: src.state }
-}
-
-// Lazy `enumerate`: pairs each element with its 0-based position, yielding
-// `(index, element)`. SINGLE-PASS (heap-cell index counter, see
-// `lazy_iter_take`).
-export fn lazy_iter_enumerate[T](src: LazyIter[T]) -> LazyIter[(Int, T)] {
-  let idx = [0]
-  LazyIter::{ pull: (st) -> Option[((Int, T), Int)] {
-    match (src.pull)(st) {
-      Some(p) => {
-        let (v, ns) = p
-        let i = Array::get(idx, 0)
-        Array::set(idx, 0, i + 1)
-        Some(((i, v), ns))
-      },
-      None => None
-    }
-  }, state: src.state }
-}
-
-// Lazy `zip`: pairs elements of `a` and `b` positionally, yielding `(a, b)` and
-// stopping when EITHER source is exhausted. SINGLE-PASS: `a`'s cursor is the
-// threaded `Int` state; `b`'s cursor lives in a heap cell (only one state slot
-// is available, see `lazy_iter_take`).
-export fn lazy_iter_zip[T, U](a: LazyIter[T], b: LazyIter[U]) -> LazyIter[(T, U)] {
-  let b_state = [b.state]
-  LazyIter::{ pull: (st) -> Option[((T, U), Int)] {
-    match (a.pull)(st) {
-      Some(pa) => {
-        let (va, na) = pa
-        match (b.pull)(Array::get(b_state, 0)) {
-          Some(pb) => {
-            let (vb, nb) = pb
-            Array::set(b_state, 0, nb)
-            Some(((va, vb), na))
+/// Lazy `take`: yields at most the first `n` elements. SINGLE-PASS: the running
+/// count lives in a heap cell (`[remaining]`) captured by the `pull` closure —
+/// a value-typed `let mut` capture would be snapshotted when `next` copies the
+/// closure into the successor `LazyIter` (`pull: self.pull`), but an Array is a
+/// reference, so the decrement survives the copy. Each combinator carries its own
+/// cell, so `take`s nest and compose freely (unlike packing the count into the
+/// single `Int` state). Iterating the result more than once is exhausted after
+/// the first pass.
+export fn lazy_iter_take[T](src: LazyIter[T], n: Int) -> LazyIter[T] {
+  let remaining = [n]
+  LazyIter::{
+    pull: (st) -> Option[(T, Int)] {
+      if Array::get(remaining, 0) <= 0 {
+        None
+      } else {
+        match (src.pull)(st) {
+          Some(p) => {
+            let (v, ns) = p
+            Array::set(remaining, 0, Array::get(remaining, 0) - 1)
+            Some((v, ns))
           },
           None => None
         }
-      },
-      None => None
-    }
-  }, state: a.state }
+      }
+    }, state: src.state
+  }
 }
 
-// Lazy `flat_map`: maps each source element to an `Array[U]` and concatenates
-// the results lazily, pulling a new source element only when the current
-// sub-array is drained (empty sub-arrays are skipped). SINGLE-PASS: the current
-// sub-array and its cursor live in heap cells; the source cursor is the threaded
-// `Int` state (unchanged while a sub-array is still being yielded).
-export fn lazy_iter_flat_map[T, U](src: LazyIter[T], f: (x: T) -> Array[U]) -> LazyIter[U] {
-  let empty : Array[U] = []
-  let cur_arr = [empty]
-  let cur_pos = [0]
-  LazyIter::{ pull: (st) -> Option[(U, Int)] {
-    let mut cur = st
-    let mut result = None
-    let mut go = true
-    while go {
-      let arr = Array::get(cur_arr, 0)
-      let pos = Array::get(cur_pos, 0)
-      if pos < Array::length(arr) {
-        Array::set(cur_pos, 0, pos + 1)
-        result = Some((Array::get(arr, pos), cur))
-        go = false
-      } else {
+/// Lazy `drop`: skips the first `n` elements, then yields the rest. SINGLE-PASS
+/// (heap-cell counter, see `lazy_iter_take`). The skip drains the source `n`
+/// times inside the first `pull`, advancing the threaded source state past the
+/// dropped prefix.
+export fn lazy_iter_drop[T](src: LazyIter[T], n: Int) -> LazyIter[T] {
+  let to_drop = [n]
+  LazyIter::{
+    pull: (st) -> Option[(T, Int)] {
+      let mut cur = st
+      let mut result = None
+      let mut go = true
+      while go {
         match (src.pull)(cur) {
           Some(p) => {
             let (v, ns) = p
-            cur = ns
-            Array::set(cur_arr, 0, f(v))
-            Array::set(cur_pos, 0, 0)
+            if Array::get(to_drop, 0) > 0 {
+              Array::set(to_drop, 0, Array::get(to_drop, 0) - 1)
+              cur = ns
+            } else {
+              result = Some((v, ns))
+              go = false
+            }
           },
           None => {
             go = false
           }
         }
       }
-    }
-    result
-  }, state: src.state }
+      result
+    }, state: src.state
+  }
+}
+
+/// Lazy `enumerate`: pairs each element with its 0-based position, yielding
+/// `(index, element)`. SINGLE-PASS (heap-cell index counter, see
+/// `lazy_iter_take`).
+export fn lazy_iter_enumerate[T](src: LazyIter[T]) -> LazyIter[(Int, T)] {
+  let idx = [
+    0
+  ]
+  LazyIter::{
+    pull: (st) -> Option[((Int, T), Int)] {
+      match (src.pull)(st) {
+        Some(p) => {
+          let (v, ns) = p
+          let i = Array::get(idx, 0)
+          Array::set(idx, 0, i + 1)
+          Some(((i, v), ns))
+        },
+        None => None
+      }
+    }, state: src.state
+  }
+}
+
+/// Lazy `zip`: pairs elements of `a` and `b` positionally, yielding `(a, b)` and
+/// stopping when EITHER source is exhausted. SINGLE-PASS: `a`'s cursor is the
+/// threaded `Int` state; `b`'s cursor lives in a heap cell (only one state slot
+/// is available, see `lazy_iter_take`).
+export fn lazy_iter_zip[T, U](a: LazyIter[T], b: LazyIter[U]) -> LazyIter[(T, U)] {
+  let b_state = [
+    b.state
+  ]
+  LazyIter::{
+    pull: (st) -> Option[((T, U), Int)] {
+      match (a.pull)(st) {
+        Some(pa) => {
+          let (va, na) = pa
+          match (b.pull)(Array::get(b_state, 0)) {
+            Some(pb) => {
+              let (vb, nb) = pb
+              Array::set(b_state, 0, nb)
+              Some(((va, vb), na))
+            },
+            None => None
+          }
+        },
+        None => None
+      }
+    }, state: a.state
+  }
+}
+
+/// Lazy `flat_map`: maps each source element to an `Array[U]` and concatenates
+/// the results lazily, pulling a new source element only when the current
+/// sub-array is drained (empty sub-arrays are skipped). SINGLE-PASS: the current
+/// sub-array and its cursor live in heap cells; the source cursor is the threaded
+/// `Int` state (unchanged while a sub-array is still being yielded).
+export fn lazy_iter_flat_map[T, U](src: LazyIter[T], f: (x: T) -> Array[U]) -> LazyIter[U] {
+  let empty: Array[U] = [
+  ]
+  let cur_arr = [
+    empty
+  ]
+  let cur_pos = [
+    0
+  ]
+  LazyIter::{
+    pull: (st) -> Option[(U, Int)] {
+      let mut cur = st
+      let mut result = None
+      let mut go = true
+      while go {
+        let arr = Array::get(cur_arr, 0)
+        let pos = Array::get(cur_pos, 0)
+        if pos < Array::length(arr) {
+          Array::set(cur_pos, 0, pos + 1)
+          result = Some((Array::get(arr, pos), cur))
+          go = false
+        } else {
+          match (src.pull)(cur) {
+            Some(p) => {
+              let (v, ns) = p
+              cur = ns
+              Array::set(cur_arr, 0, f(v))
+              Array::set(cur_pos, 0, 0)
+            },
+            None => {
+              go = false
+            }
+          }
+        }
+      }
+      result
+    }, state: src.state
+  }
 }

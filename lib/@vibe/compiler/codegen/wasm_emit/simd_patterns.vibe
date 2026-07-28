@@ -11,18 +11,21 @@ import @vibe/compiler/core {
 }
 
 import ./simd.vibe {
-  emit_v128_load, emit_i8x16_splat, emit_i8x16_eq,
-  emit_i8x16_all_true, emit_i8x16_bitmask,
-  emit_v128_and, emit_v128_or, emit_v128_not
+  emit_i8x16_all_true, emit_i8x16_bitmask, emit_i8x16_eq, emit_i8x16_splat, emit_v128_and, emit_v128_load, emit_v128_not, emit_v128_or
 }
 
 import ./instructions.vibe {
-  emit_local_get, emit_local_set,
-  emit_i32_wrap_i64, emit_i64_extend_i32_s, emit_i64_const,
-  emit_i64_add, emit_i64_eq,
+  emit_else,
   emit_i32_load8_u,
-  emit_return,
-  emit_if_i64, emit_else
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_const,
+  emit_i64_eq,
+  emit_i64_extend_i32_s,
+  emit_if_i64,
+  emit_local_get,
+  emit_local_set,
+  emit_return
 }
 
 import ./code_helpers.vibe {
@@ -44,11 +47,9 @@ export fn emit_simd_memcmp_16(buf: Bytes) -> Unit {
   emit_local_get(buf, 0)
   emit_i32_wrap_i64(buf)
   emit_v128_load(buf, 0, 0)
-
   emit_local_get(buf, 1)
   emit_i32_wrap_i64(buf)
   emit_v128_load(buf, 0, 0)
-
   emit_i8x16_eq(buf)
   emit_i8x16_all_true(buf)
   emit_i64_extend_i32_s(buf)
@@ -69,11 +70,9 @@ export fn emit_simd_find_byte_16(buf: Bytes) -> Unit {
   emit_local_get(buf, 0)
   emit_i32_wrap_i64(buf)
   emit_v128_load(buf, 0, 0)
-
   emit_local_get(buf, 1)
   emit_i32_wrap_i64(buf)
   emit_i8x16_splat(buf)
-
   emit_i8x16_eq(buf)
   emit_i8x16_bitmask(buf)
   emit_i64_extend_i32_s(buf)
@@ -100,8 +99,8 @@ export fn emit_simd_skip_whitespace_16(buf: Bytes) -> Unit {
   emit_local_get(buf, 0)
   emit_i32_wrap_i64(buf)
   emit_v128_load(buf, 0, 0)
-  emit_local_set(buf, 2)  // local2 = chunk
-
+  emit_local_set(buf, 2)
+  // local2 = chunk
   // is_space = i8x16.eq(chunk, splat(0x20))
   emit_local_get(buf, 2)
   emit_i64_const(buf, 0x20)
@@ -109,7 +108,6 @@ export fn emit_simd_skip_whitespace_16(buf: Bytes) -> Unit {
   emit_i8x16_splat(buf)
   emit_i8x16_eq(buf)
   // stack: is_space
-
   // is_tab = i8x16.eq(chunk, splat(0x09))
   emit_local_get(buf, 2)
   emit_i64_const(buf, 0x09)
@@ -117,10 +115,8 @@ export fn emit_simd_skip_whitespace_16(buf: Bytes) -> Unit {
   emit_i8x16_splat(buf)
   emit_i8x16_eq(buf)
   // stack: is_space, is_tab
-
   emit_v128_or(buf)
   // stack: is_space|is_tab
-
   // is_nl = i8x16.eq(chunk, splat(0x0A))
   emit_local_get(buf, 2)
   emit_i64_const(buf, 0x0A)
@@ -128,10 +124,8 @@ export fn emit_simd_skip_whitespace_16(buf: Bytes) -> Unit {
   emit_i8x16_splat(buf)
   emit_i8x16_eq(buf)
   // stack: (is_space|is_tab), is_nl
-
   emit_v128_or(buf)
   // stack: is_space|is_tab|is_nl
-
   // is_cr = i8x16.eq(chunk, splat(0x0D))
   emit_local_get(buf, 2)
   emit_i64_const(buf, 0x0D)
@@ -139,10 +133,8 @@ export fn emit_simd_skip_whitespace_16(buf: Bytes) -> Unit {
   emit_i8x16_splat(buf)
   emit_i8x16_eq(buf)
   // stack: (is_space|is_tab|is_nl), is_cr
-
   emit_v128_or(buf)
   // stack: is_ws (all whitespace positions)
-
   // NOT → non-whitespace, then bitmask
   emit_v128_not(buf)
   emit_i8x16_bitmask(buf)
@@ -169,8 +161,8 @@ export fn emit_simd_is_identifier_char_16(buf: Bytes) -> Unit {
   emit_local_get(buf, 0)
   emit_i32_wrap_i64(buf)
   emit_v128_load(buf, 0, 0)
-  emit_local_set(buf, 1)  // local1 = chunk
-
+  emit_local_set(buf, 1)
+  // local1 = chunk
   // Check '_' (0x5F)
   emit_local_get(buf, 1)
   emit_i64_const(buf, 0x5F)
@@ -178,11 +170,9 @@ export fn emit_simd_is_identifier_char_16(buf: Bytes) -> Unit {
   emit_i8x16_splat(buf)
   emit_i8x16_eq(buf)
   // stack: is_underscore
-
   // For [a-z], [A-Z], [0-9] we'd need le_u.
   // Emit the underscore check as a starting point; full range check
   // requires adding emit_i8x16_le_u to simd.vibe (opcode 0xFD 0x26).
-
   // For now, bitmask the underscore-only result as a prototype
   emit_i8x16_bitmask(buf)
   emit_i64_extend_i32_s(buf)
@@ -190,7 +180,7 @@ export fn emit_simd_is_identifier_char_16(buf: Bytes) -> Unit {
 
 //# Scalar baselines (for code size comparison)
 
-// i64.load instruction (opcode 0x29 = 41, followed by memarg)
+/// i64.load instruction (opcode 0x29 = 41, followed by memarg)
 fn emit_i64_load(buf: Bytes, align: Int, offset: Int) -> Unit {
   bytebuf_push(buf, 41)
   leb128_encode_u32(buf, align)
@@ -211,26 +201,22 @@ export fn emit_scalar_memcmp_16_unrolled(buf: Bytes) -> Unit {
   emit_local_get(buf, 0)
   emit_i32_wrap_i64(buf)
   emit_i64_load(buf, 0, 0)
-
   emit_local_get(buf, 1)
   emit_i32_wrap_i64(buf)
   emit_i64_load(buf, 0, 0)
-
   emit_i64_eq(buf)
   // if first 8 bytes equal, check second 8 bytes
   emit_if_i64(buf)
-    emit_local_get(buf, 0)
-    emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 0, 8)
-
-    emit_local_get(buf, 1)
-    emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 0, 8)
-
-    emit_i64_eq(buf)
-    emit_i64_extend_i32_s(buf)
+  emit_local_get(buf, 0)
+  emit_i32_wrap_i64(buf)
+  emit_i64_load(buf, 0, 8)
+  emit_local_get(buf, 1)
+  emit_i32_wrap_i64(buf)
+  emit_i64_load(buf, 0, 8)
+  emit_i64_eq(buf)
+  emit_i64_extend_i32_s(buf)
   emit_else(buf)
-    emit_i64_const(buf, 0)
+  emit_i64_const(buf, 0)
   emit_end(buf)
 }
 
@@ -252,45 +238,45 @@ export fn emit_scalar_find_byte_16_unrolled(buf: Bytes) -> Unit {
   emit_local_get(buf, 1)
   emit_i64_eq(buf)
   emit_if_i64(buf)
-    emit_i64_const(buf, 1)
-    emit_return(buf)
+  emit_i64_const(buf, 1)
+  emit_return(buf)
   emit_else(buf)
-    // Byte 1
-    emit_local_get(buf, 0)
-    emit_i32_wrap_i64(buf)
-    emit_i32_load8_u(buf, 0, 1)
-    emit_i64_extend_i32_s(buf)
-    emit_local_get(buf, 1)
-    emit_i64_eq(buf)
-    emit_if_i64(buf)
-      emit_i64_const(buf, 2)
-      emit_return(buf)
-    emit_else(buf)
-      // Byte 2
-      emit_local_get(buf, 0)
-      emit_i32_wrap_i64(buf)
-      emit_i32_load8_u(buf, 0, 2)
-      emit_i64_extend_i32_s(buf)
-      emit_local_get(buf, 1)
-      emit_i64_eq(buf)
-      emit_if_i64(buf)
-        emit_i64_const(buf, 4)
-        emit_return(buf)
-      emit_else(buf)
-        // Byte 3
-        emit_local_get(buf, 0)
-        emit_i32_wrap_i64(buf)
-        emit_i32_load8_u(buf, 0, 3)
-        emit_i64_extend_i32_s(buf)
-        emit_local_get(buf, 1)
-        emit_i64_eq(buf)
-        emit_if_i64(buf)
-          emit_i64_const(buf, 8)
-          emit_return(buf)
-        emit_else(buf)
-          emit_i64_const(buf, 0)
-        emit_end(buf)
-      emit_end(buf)
-    emit_end(buf)
+  // Byte 1
+  emit_local_get(buf, 0)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load8_u(buf, 0, 1)
+  emit_i64_extend_i32_s(buf)
+  emit_local_get(buf, 1)
+  emit_i64_eq(buf)
+  emit_if_i64(buf)
+  emit_i64_const(buf, 2)
+  emit_return(buf)
+  emit_else(buf)
+  // Byte 2
+  emit_local_get(buf, 0)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load8_u(buf, 0, 2)
+  emit_i64_extend_i32_s(buf)
+  emit_local_get(buf, 1)
+  emit_i64_eq(buf)
+  emit_if_i64(buf)
+  emit_i64_const(buf, 4)
+  emit_return(buf)
+  emit_else(buf)
+  // Byte 3
+  emit_local_get(buf, 0)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load8_u(buf, 0, 3)
+  emit_i64_extend_i32_s(buf)
+  emit_local_get(buf, 1)
+  emit_i64_eq(buf)
+  emit_if_i64(buf)
+  emit_i64_const(buf, 8)
+  emit_return(buf)
+  emit_else(buf)
+  emit_i64_const(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+  emit_end(buf)
   emit_end(buf)
 }

@@ -1,9 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr,
-  bytebuf_push,
-  bsearch_leftmost, sorted_names_of
+  Expr, Pat, Stmt, TypeExpr, bsearch_leftmost, bytebuf_push, sorted_names_of
 }
 
 import @vibe/core {
@@ -15,7 +13,20 @@ import @vibe/compiler/codegen/common_extractors {
 }
 
 import @vibe/compiler/codegen/wasm_emit {
-  emit_call_indirect, emit_else, emit_end, emit_i32_load, emit_i32_wrap_i64, emit_i64_and, emit_i64_const, emit_i64_eq, emit_i64_or, emit_i64_shl, emit_i64_shr_s, emit_if_void, emit_local_get, emit_local_set
+  emit_call_indirect,
+  emit_else,
+  emit_end,
+  emit_i32_load,
+  emit_i32_wrap_i64,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_eq,
+  emit_i64_or,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_if_void,
+  emit_local_get,
+  emit_local_set
 }
 
 let op_i64_extend_i32_u = 173
@@ -26,10 +37,10 @@ fn common_analysis_fresh_string_array() -> Array[String] {
   ArrayBuilder::freeze(ArrayBuilder::new())
 }
 
-// Collect string literals appearing anywhere in a pattern, including inside
-// constructor / tuple / or / struct sub-patterns. #603: codegen now tests a
-// `PString` sub-pattern of a `PCtor`, so its literal must be registered in the
-// string table (previously only top-level `PString` arms were collected).
+/// Collect string literals appearing anywhere in a pattern, including inside
+/// constructor / tuple / or / struct sub-patterns. #603: codegen now tests a
+/// `PString` sub-pattern of a `PCtor`, so its literal must be registered in the
+/// string table (previously only top-level `PString` arms were collected).
 fn collect_strings_pat(pat: Pat, out: Array[String]) -> Int {
   match pat {
     PString(s) => {
@@ -202,10 +213,14 @@ export fn collect_strings_expr(expr: Expr, out: Array[String]) -> Int {
             let mut found = false
             let mut fi2 = 0
             while fi2 < Array::length(out) {
-              if Array::get(out, fi2) == part { found = true }
+              if Array::get(out, fi2) == part {
+                found = true
+              }
               fi2 = fi2 + 1
             }
-            if !found { Array::push(out, part) }
+            if !found {
+              Array::push(out, part)
+            }
           }
         }
         si_p = si_p + 1
@@ -229,10 +244,14 @@ export fn collect_strings_expr(expr: Expr, out: Array[String]) -> Int {
         let mut kf = false
         let mut ki = 0
         while ki < Array::length(out) {
-          if Array::get(out, ki) == key { kf = true }
+          if Array::get(out, ki) == key {
+            kf = true
+          }
           ki = ki + 1
         }
-        if !kf { Array::push(out, key) }
+        if !kf {
+          Array::push(out, key)
+        }
         collect_strings_expr(val, out)
         mi = mi + 1
       }
@@ -253,7 +272,7 @@ export fn collect_strings_expr(expr: Expr, out: Array[String]) -> Int {
   }
 }
 
-// Extract function param names from SLet(_, _, _, _, EFn(_, _, params, _, _, _))
+/// Extract function param names from SLet(_, _, _, _, EFn(_, _, params, _, _, _))
 export fn get_func_param_names(stmt: Stmt) -> Array[String] with { Error } {
   match stmt {
     SLet(_, _, _, _, expr) => match expr {
@@ -267,7 +286,7 @@ export fn get_func_param_names(stmt: Stmt) -> Array[String] with { Error } {
           let clean_name = if plen2 > 0 {
             let last_char = String::char_code_at(pname, plen2 - 1)
             if last_char == '~' || last_char == '?' {
-              pname[0:plen2 - 1]
+              pname[0: plen2 - 1]
             } else pname
           } else pname
           Array::push(names, clean_name)
@@ -281,14 +300,14 @@ export fn get_func_param_names(stmt: Stmt) -> Array[String] with { Error } {
   }
 }
 
-// #721: does the program reference the exception machinery anywhere? EThrow
-// compiles to `throw 2`, EHandle to try_table over tags 0-3, and effect op
-// performs to `throw <eff_tag>` (guarded separately by the effect declaration
-// list). When NONE of these appear, the tag section and the "error" tag
-// export can be omitted entirely -- V8 runs exnref-bearing modules on a
-// slower path, costing pure-compute code ~35% (fib(38): 0.32s with tags vs
-// 0.20s without; wasmtime shows parity, so it is engine behavior, not
-// codegen). Conservative: any EThrow/EHandle at ANY nesting depth counts.
+/// #721: does the program reference the exception machinery anywhere? EThrow
+/// compiles to `throw 2`, EHandle to try_table over tags 0-3, and effect op
+/// performs to `throw <eff_tag>` (guarded separately by the effect declaration
+/// list). When NONE of these appear, the tag section and the "error" tag
+/// export can be omitted entirely -- V8 runs exnref-bearing modules on a
+/// slower path, costing pure-compute code ~35% (fib(38): 0.32s with tags vs
+/// 0.20s without; wasmtime shows parity, so it is engine behavior, not
+/// codegen). Conservative: any EThrow/EHandle at ANY nesting depth counts.
 export fn expr_contains_exceptions(expr: Expr) -> Bool {
   match expr {
     EHandle(_, _) => true,
@@ -517,8 +536,8 @@ export fn emit_i64_extend_i32_u(buf: Bytes) -> Unit {
   bytebuf_push(buf, op_i64_extend_i32_u)
 }
 
-// Resolve closure/fn value tag and fill slot_local/env_local
-// After this: slot_local = table slot index, env_local = env pointer (0 for bare fn)
+/// Resolve closure/fn value tag and fill slot_local/env_local
+/// After this: slot_local = table slot index, env_local = env pointer (0 for bare fn)
 export fn emit_closure_resolve(buf: Bytes, fn_val_local: Int, slot_local: Int, env_local: Int) -> Unit {
   emit_local_get(buf, fn_val_local)
   emit_i64_const(buf, 3)
@@ -547,7 +566,7 @@ export fn emit_closure_resolve(buf: Bytes, fn_val_local: Int, slot_local: Int, e
   emit_end(buf)
 }
 
-// Emit the tail of an indirect closure call (push env, push slot, call_indirect)
+/// Emit the tail of an indirect closure call (push env, push slot, call_indirect)
 export fn emit_closure_call_tail(buf: Bytes, env_local: Int, slot_local: Int, closure_type_base: Int, num_args: Int) -> Unit {
   emit_local_get(buf, env_local)
   emit_local_get(buf, slot_local)
@@ -592,60 +611,60 @@ fn collect_pattern_bindings(pat: Pat, bindings: Array[String]) -> Int {
   }
 }
 
-// Inlined async builtins (docs/spec/wasi-p3-async.md) are lowered directly by
-// compile_call rather than living in the func table, so — like operators — they
-// must never be treated as free variables when they appear inside a nested
-// lambda body. Otherwise a thunk such as `() -> { Task::join(t) }` would capture
-// `Task::join` as a closure value and mis-lower the call as an indirect apply.
+/// Inlined async builtins (docs/spec/wasi-p3-async.md) are lowered directly by
+/// compile_call rather than living in the func table, so — like operators — they
+/// must never be treated as free variables when they appear inside a nested
+/// lambda body. Otherwise a thunk such as `() -> { Task::join(t) }` would capture
+/// `Task::join` as a closure value and mis-lower the call as an indirect apply.
 fn is_inlined_async_builtin(name: String) -> Bool {
   name == "await" || name == "Future::ready" || name == "Task::spawn" || name == "Task::join" || name == "Task::cancel" || name == "Task::race" || name == "Task::timeout" || name == "Stream::empty" || name == "Stream::once" || name == "Stream::map" || name == "Stream::filter" || name == "Stream::fold" || name == "Stream::next" || name == "String::to_bytes" || name == "Stream::to_string"
 }
 
-// #773: the scalar arithmetic/logic intrinsics ("not"/"add"/"sub"/"mul"/"lt")
-// are, like the async builtins above, lowered INLINE by compile_call.vibe
-// (`!prefer_bound_call && fname == "not"` etc.) rather than living in the func
-// table -- UNLESS a user top-level function of the same bare name shadows them,
-// in which case they're already present in `fn_names` (ctx.func_table.names)
-// and excluded by the check above. ("eq"/"Array::length"/"Bytes::length"/
-// "String::length" are unconditionally registered in the func table for every
-// compile, so they never reach this fallback and need no entry here.)
-//
-// Before this fix, a closure/lambda literal that referenced one of these bare
-// names as a call callee (e.g. `(b: Bool) -> Bool { not(b) }`) — and did NOT
-// shadow it with a same-named top-level function — fell through to the `else`
-// branch below and was wrongly recorded as a FREE VARIABLE to capture from the
-// enclosing scope. compile_lambda.vibe then allocated a captured-env slot named
-// "not" and, back in compile_call.vibe, `local_idx_hint` found "not" among the
-// closure's own `local_names` (the just-added capture), forcing
-// `prefer_bound_call = true` -- i.e. treating the wrongly captured (and
-// nonexistent-in-the-enclosing-scope) "not" value as a closure to invoke via
-// `call_indirect`. That corrupted the closure's environment and crashed with
-// "unreachable" / "null function or function signature mismatch" at runtime
-// (reported against @vibex/quickcheck's check_int/check_bool + is_ok, whose
-// property closures call `not(...)`).
-//
-// #1095: "assert" has the identical `!prefer_bound_call && fname == "assert"`
-// inline-lowering gate in compile_call.vibe, and hit the same bug: a closure
-// body calling bare `assert(...)` got it wrongly captured as a free variable,
-// so `assert(false)` inside a lambda crashed with "null function or function
-// signature mismatch" instead of the expected "unreachable" trap that the
-// same code produces at top level.
+/// #773: the scalar arithmetic/logic intrinsics ("not"/"add"/"sub"/"mul"/"lt")
+/// are, like the async builtins above, lowered INLINE by compile_call.vibe
+/// (`!prefer_bound_call && fname == "not"` etc.) rather than living in the func
+/// table -- UNLESS a user top-level function of the same bare name shadows them,
+/// in which case they're already present in `fn_names` (ctx.func_table.names)
+/// and excluded by the check above. ("eq"/"Array::length"/"Bytes::length"/
+/// "String::length" are unconditionally registered in the func table for every
+/// compile, so they never reach this fallback and need no entry here.)
+///
+/// Before this fix, a closure/lambda literal that referenced one of these bare
+/// names as a call callee (e.g. `(b: Bool) -> Bool { not(b) }`) — and did NOT
+/// shadow it with a same-named top-level function — fell through to the `else`
+/// branch below and was wrongly recorded as a FREE VARIABLE to capture from the
+/// enclosing scope. compile_lambda.vibe then allocated a captured-env slot named
+/// "not" and, back in compile_call.vibe, `local_idx_hint` found "not" among the
+/// closure's own `local_names` (the just-added capture), forcing
+/// `prefer_bound_call = true` -- i.e. treating the wrongly captured (and
+/// nonexistent-in-the-enclosing-scope) "not" value as a closure to invoke via
+/// `call_indirect`. That corrupted the closure's environment and crashed with
+/// "unreachable" / "null function or function signature mismatch" at runtime
+/// (reported against @vibex/quickcheck's check_int/check_bool + is_ok, whose
+/// property closures call `not(...)`).
+///
+/// #1095: "assert" has the identical `!prefer_bound_call && fname == "assert"`
+/// inline-lowering gate in compile_call.vibe, and hit the same bug: a closure
+/// body calling bare `assert(...)` got it wrongly captured as a free variable,
+/// so `assert(false)` inside a lambda crashed with "null function or function
+/// signature mismatch" instead of the expected "unreachable" trap that the
+/// same code produces at top level.
 fn is_inlined_scalar_builtin(name: String) -> Bool {
   name == "not" || name == "add" || name == "sub" || name == "mul" || name == "lt" || name == "assert"
 }
 
-// Stack-based free variable analysis: uses in-place push/truncate on bound array
-// to avoid O(n) array copies at every scope boundary. This dramatically reduces
-// heap allocation during meta-circular self-compilation.
-// #799 perf: `fn_names` is a MEMBERSHIP INDEX (Map), not an array. The flat
-// fn+ctor name table is thousands of entries in a compiler-closure compile,
-// and this walker consulted it linearly PER IDENT -- ~70% of a full compile's
-// profile was string-equality scans under this function. Callers with a hot
-// loop pass a prebuilt index (ctx.capture_name_index); the Array-taking
-// wrapper below builds one per call for small/cold callers.
-// #640 Stage 2: recognize the parse-time desugar of `throw(x)` —
-// `ECall(EIdent("perform"), [ECall(EIdent("Error::Throw"), payload_args)])`
-// — and return its payload args. None for every other perform (or shape).
+/// Stack-based free variable analysis: uses in-place push/truncate on bound array
+/// to avoid O(n) array copies at every scope boundary. This dramatically reduces
+/// heap allocation during meta-circular self-compilation.
+/// #799 perf: `fn_names` is a MEMBERSHIP INDEX (Map), not an array. The flat
+/// fn+ctor name table is thousands of entries in a compiler-closure compile,
+/// and this walker consulted it linearly PER IDENT -- ~70% of a full compile's
+/// profile was string-equality scans under this function. Callers with a hot
+/// loop pass a prebuilt index (ctx.capture_name_index); the Array-taking
+/// wrapper below builds one per call for small/cold callers.
+/// #640 Stage 2: recognize the parse-time desugar of `throw(x)` —
+/// `ECall(EIdent("perform"), [ECall(EIdent("Error::Throw"), payload_args)])`
+/// — and return its payload args. None for every other perform (or shape).
 fn ca_perform_error_throw_op_args(args: Array[Expr]) -> Option[Array[Expr]] {
   if Array::length(args) == 1 {
     match Array::get(args, 0) {
@@ -664,17 +683,17 @@ fn ca_perform_error_throw_op_args(args: Array[Expr]) -> Option[Array[Expr]] {
   }
 }
 
-// #1114: the inlined-builtin skip below must also yield to a LOCAL binding
-// in an ENCLOSING scope. `bound` only ever holds the innermost lambda's own
-// binders (it is re-seeded per lambda from that lambda's parameters -- see
-// collect_free_vars_indexed), and `fn_names` only holds TOP-LEVEL names, so
-// neither can see that e.g. `fn outer(not: (Bool) -> Bool)` binds `not` for
-// a nested `() -> { not(true) }`. Without `encl` the skip fired, `not` was
-// never captured, and the call silently lowered to the BUILTIN logical-not
-// instead of invoking the parameter -- a wrong VALUE, not a crash.
-// `encl` is the enclosing compile scope's local names, threaded from
-// compile_lambda; the public wrapper passes an empty array, which reproduces
-// the previous behavior exactly for every other caller.
+/// #1114: the inlined-builtin skip below must also yield to a LOCAL binding
+/// in an ENCLOSING scope. `bound` only ever holds the innermost lambda's own
+/// binders (it is re-seeded per lambda from that lambda's parameters -- see
+/// collect_free_vars_indexed), and `fn_names` only holds TOP-LEVEL names, so
+/// neither can see that e.g. `fn outer(not: (Bool) -> Bool)` binds `not` for
+/// a nested `() -> { not(true) }`. Without `encl` the skip fired, `not` was
+/// never captured, and the call silently lowered to the BUILTIN logical-not
+/// instead of invoking the parameter -- a wrong VALUE, not a crash.
+/// `encl` is the enclosing compile scope's local names, threaded from
+/// compile_lambda; the public wrapper passes an empty array, which reproduces
+/// the previous behavior exactly for every other caller.
 export fn collect_free_vars_expr(expr: Expr, bound: Array[String], fn_names: Array[String], out: Array[String]) -> Int {
   collect_free_vars_expr_sc(expr, bound, fn_names, common_analysis_fresh_string_array(), out)
 }
@@ -871,7 +890,9 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
         let pnl = String::length(pname_raw)
         let pname = if pnl > 0 {
           let plc = String::char_code_at(pname_raw, pnl - 1)
-          if plc == '~' || plc == '?' { pname_raw[0:pnl - 1] } else pname_raw
+          if plc == '~' || plc == '?' {
+            pname_raw[0: pnl - 1]
+          } else pname_raw
         } else pname_raw
         Array::push(bound, pname)
         pi = pi + 1
@@ -908,22 +929,22 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
   }
 }
 
-// Array-taking compatibility entry: builds the membership index per call.
-// Fine for small fn_names (tests, perceus probes); HOT loops over the full
-// fn+ctor table must use collect_free_vars_indexed with a prebuilt index.
+/// Array-taking compatibility entry: builds the membership index per call.
+/// Fine for small fn_names (tests, perceus probes); HOT loops over the full
+/// fn+ctor table must use collect_free_vars_indexed with a prebuilt index.
 export fn collect_free_vars(body: Expr, param_names: Array[String], fn_names: Array[String]) -> Array[String] {
   collect_free_vars_indexed(body, param_names, sorted_names_of(fn_names))
 }
 
-// #799 perf: index-taking entry -- the index is built ONCE per compile
-// (linked_compile) and reused for every lambda.
+/// #799 perf: index-taking entry -- the index is built ONCE per compile
+/// (linked_compile) and reused for every lambda.
 export fn collect_free_vars_indexed(body: Expr, param_names: Array[String], fn_name_index: Array[String]) -> Array[String] {
   collect_free_vars_indexed_sc(body, param_names, fn_name_index, common_analysis_fresh_string_array())
 }
 
-// #1114: same, plus the ENCLOSING compile scope's local names -- a bare
-// inlined-builtin call callee that one of those shadows must be captured,
-// not inline-lowered. See collect_free_vars_expr's doc comment.
+/// #1114: same, plus the ENCLOSING compile scope's local names -- a bare
+/// inlined-builtin call callee that one of those shadows must be captured,
+/// not inline-lowered. See collect_free_vars_expr's doc comment.
 fn collect_free_vars_indexed_sc(body: Expr, param_names: Array[String], fn_name_index: Array[String], encl: Array[String]) -> Array[String] {
   let out = common_analysis_fresh_string_array()
   // Make a mutable copy of param_names for stack-based push/truncate
@@ -932,42 +953,42 @@ fn collect_free_vars_indexed_sc(body: Expr, param_names: Array[String], fn_name_
   out
 }
 
-// #875 fix 2: like collect_free_vars_indexed, but forces `self_name` (the
-// closure's OWN `let rec NAME = (...) -> { ... }` binding name, or "" for
-// "no self-reference to force") into the result when `body` genuinely
-// references it as a free (lexically unshadowed) identifier -- even if
-// `self_name` ALSO happens to collide, by bare string equality, with an
-// unrelated entry already present in `fn_name_index` (ctx.capture_name_index,
-// a shared whole-program name index used to skip capturing bona fide global
-// func/ctor references).
-//
-// Why this is needed: collect_free_vars_expr's EIdent case treats ANY name
-// found in fn_name_index as "resolves globally, no capture needed" --
-// correct when the name really is only reachable as a global, but wrong when
-// it is ALSO the closure's own let-rec name. A `let rec check = (i) -> Bool
-// { ... check(i + 1) ... }` closure normally captures "check" as a free
-// variable precisely BECAUSE "check" is otherwise unknown to fn_name_index;
-// the failure mode only appears once some unrelated top-level function
-// (reachable via a widened whole-program-merge import graph, e.g. the
-// compile entry file's own unqualified top-level names) happens to share the
-// bare name "check". When that happens, compile_lambda's capture list
-// silently omits the self-reference, self_cap_idx (compile_expr_tail.vibe)
-// never fires, and the closure's own recursive call site falls through to
-// compile_call's func-table direct-call path -- calling the unrelated global
-// instead of itself (#875).
-//
-// Implementation: re-run the SAME free-var walk with an EMPTY fn_name_index
-// (so nothing is excluded as "a global") whenever the normal result doesn't
-// already contain self_name -- this reuses collect_free_vars_expr's existing,
-// well-tested lexical-shadowing logic (bound push/truncate per scope) exactly
-// as-is, so a self_name that IS legitimately shadowed by an inner binding of
-// the same name (e.g. a nested lambda parameter also named "check") is still
-// correctly excluded, matching normal shadowing semantics. Only runs the
-// second walk in the (rare) collision case, so the common case -- no
-// collision, self_name already present -- costs one array-membership check.
-// `encl` (#1114): the enclosing compile scope's local names, so a bare
-// inlined-builtin call callee shadowed by one of them is captured instead
-// of inline-lowered. Pass an empty array for "no enclosing locals".
+/// #875 fix 2: like collect_free_vars_indexed, but forces `self_name` (the
+/// closure's OWN `let rec NAME = (...) -> { ... }` binding name, or "" for
+/// "no self-reference to force") into the result when `body` genuinely
+/// references it as a free (lexically unshadowed) identifier -- even if
+/// `self_name` ALSO happens to collide, by bare string equality, with an
+/// unrelated entry already present in `fn_name_index` (ctx.capture_name_index,
+/// a shared whole-program name index used to skip capturing bona fide global
+/// func/ctor references).
+///
+/// Why this is needed: collect_free_vars_expr's EIdent case treats ANY name
+/// found in fn_name_index as "resolves globally, no capture needed" --
+/// correct when the name really is only reachable as a global, but wrong when
+/// it is ALSO the closure's own let-rec name. A `let rec check = (i) -> Bool
+/// { ... check(i + 1) ... }` closure normally captures "check" as a free
+/// variable precisely BECAUSE "check" is otherwise unknown to fn_name_index;
+/// the failure mode only appears once some unrelated top-level function
+/// (reachable via a widened whole-program-merge import graph, e.g. the
+/// compile entry file's own unqualified top-level names) happens to share the
+/// bare name "check". When that happens, compile_lambda's capture list
+/// silently omits the self-reference, self_cap_idx (compile_expr_tail.vibe)
+/// never fires, and the closure's own recursive call site falls through to
+/// compile_call's func-table direct-call path -- calling the unrelated global
+/// instead of itself (#875).
+///
+/// Implementation: re-run the SAME free-var walk with an EMPTY fn_name_index
+/// (so nothing is excluded as "a global") whenever the normal result doesn't
+/// already contain self_name -- this reuses collect_free_vars_expr's existing,
+/// well-tested lexical-shadowing logic (bound push/truncate per scope) exactly
+/// as-is, so a self_name that IS legitimately shadowed by an inner binding of
+/// the same name (e.g. a nested lambda parameter also named "check") is still
+/// correctly excluded, matching normal shadowing semantics. Only runs the
+/// second walk in the (rare) collision case, so the common case -- no
+/// collision, self_name already present -- costs one array-membership check.
+/// `encl` (#1114): the enclosing compile scope's local names, so a bare
+/// inlined-builtin call callee shadowed by one of them is captured instead
+/// of inline-lowered. Pass an empty array for "no enclosing locals".
 export fn collect_free_vars_indexed_self(body: Expr, param_names: Array[String], fn_name_index: Array[String], self_name: String, encl: Array[String]) -> Array[String] {
   let captures = collect_free_vars_indexed_sc(body, param_names, fn_name_index, encl)
   if self_name == "" || array_contains_str(captures, self_name) {
@@ -984,9 +1005,9 @@ export fn collect_free_vars_indexed_self(body: Expr, param_names: Array[String],
   }
 }
 
-// The root identifier of a projection chain (EDot(...EDot(EIdent(root))...)), or
-// "" if `e` is not a projection. (ADR-0055 Stage 4: shared with compile_expr_tail
-// so function-tail param drops can detect an escaping projection of a param.)
+/// The root identifier of a projection chain (EDot(...EDot(EIdent(root))...)), or
+/// "" if `e` is not a projection. (ADR-0055 Stage 4: shared with compile_expr_tail
+/// so function-tail param drops can detect an escaping projection of a param.)
 export fn proj_root_ident(e: Expr) -> String {
   match e {
     EDot(obj, _, _, _) => proj_root_ident(obj),
@@ -995,8 +1016,8 @@ export fn proj_root_ident(e: Expr) -> String {
   }
 }
 
-// If the *tail* (result) expression of a scope is a projection chain, return its
-// root identifier; otherwise "". Follows let/seq/assign wrappers to the tail.
+/// If the *tail* (result) expression of a scope is a projection chain, return its
+/// root identifier; otherwise "". Follows let/seq/assign wrappers to the tail.
 export fn scope_tail_proj_root(e: Expr) -> String {
   match e {
     ELet(_, _, b, _) => scope_tail_proj_root(b),
@@ -1010,7 +1031,7 @@ export fn scope_tail_proj_root(e: Expr) -> String {
   }
 }
 
-// Check if a mutable variable is captured by any nested EFn in the given expression
+/// Check if a mutable variable is captured by any nested EFn in the given expression
 export fn is_mut_captured_in(expr: Expr, name: String) -> Bool {
   match expr {
     EIdent(_, _) => false,
@@ -1198,46 +1219,50 @@ export fn is_mut_captured_in(expr: Expr, name: String) -> Bool {
   }
 }
 
-// Region-lifetime decision for a `let mut name` cell (#629 region inference).
-// Returns true when the cell must be heap-boxed because its region lifetime can
-// extend beyond the binding block (a capturing closure may escape); false keeps
-// it a plain stack-local (region = lexical block). Both backends gate boxing on
-// this single predicate (linear compile_expr_tail / wasm-gc backend_expr).
-//
-// Step 1 baseline: a mut captured by ANY nested closure is conservatively
-// treated as escaping — identical to the prior `is_mut_captured_in` gate, so
-// behavior is unchanged. Later steps refine this into a real escape analysis
-// (a capture whose closure provably cannot escape its binding scope stays
-// stack-local). The predicate stays conservative: when escape cannot be ruled
-// out it returns true (box), which is always sound.
+/// Region-lifetime decision for a `let mut name` cell (#629 region inference).
+/// Returns true when the cell must be heap-boxed because its region lifetime can
+/// extend beyond the binding block (a capturing closure may escape); false keeps
+/// it a plain stack-local (region = lexical block). Both backends gate boxing on
+/// this single predicate (linear compile_expr_tail / wasm-gc backend_expr).
+///
+/// Step 1 baseline: a mut captured by ANY nested closure is conservatively
+/// treated as escaping — identical to the prior `is_mut_captured_in` gate, so
+/// behavior is unchanged. Later steps refine this into a real escape analysis
+/// (a capture whose closure provably cannot escape its binding scope stays
+/// stack-local). The predicate stays conservative: when escape cannot be ruled
+/// out it returns true (box), which is always sound.
 export fn mut_needs_ref_cell(body: Expr, name: String) -> Bool {
   is_mut_captured_in(body, name)
 }
 
-// Builtins whose arg0 is BORROWED (read in place, not consumed/dropped). Kept
-// in sync with is_borrow_arg0_call in perceus/index.vibe.
+/// Builtins whose arg0 is BORROWED (read in place, not consumed/dropped). Kept
+/// in sync with is_borrow_arg0_call in perceus/index.vibe.
 export fn md_is_borrow_arg0_call(f: String) -> Bool {
   f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "__rec_field"
 }
 
 fn md_max(a: Int, b: Int) -> Int {
-  if a > b { a } else { b }
+  if a > b {
+    a
+  } else {
+    b
+  }
 }
 
-// How many times is `name` consumed (owning position) along the LONGEST control
-// path of `e`? Used to balance the rc of a value that is referenced but NOT
-// owned at its definition site — a matched ctor field (a borrowed view sharing
-// the scrutinee's refcount; compile_match) or a captured free variable (a
-// borrowed view of the defining scope's binding; compile_lambda). Each owning
-// consume of such a value decrements a refcount it does not own, so the value
-// must be dup'd once PER consume or it is freed more times than dup'd -> double
-// free. Sequential children SUM; alternative children (if-branches, match/handle
-// arms) take the MAX, so the count is an upper bound on the consumes of any
-// executed path (>= actual everywhere -> never under-dup -> no double free;
-// tight on straight-line code -> no over-dup leak). MUST enumerate every Expr
-// variant (modeled on fold_expr): skipping recursion into a child could miss a
-// real consume and wrongly suppress the dup. A bare `EIdent(name)` passed as
-// arg0 of a borrow-arg0 builtin does not consume (it is read in place).
+/// How many times is `name` consumed (owning position) along the LONGEST control
+/// path of `e`? Used to balance the rc of a value that is referenced but NOT
+/// owned at its definition site — a matched ctor field (a borrowed view sharing
+/// the scrutinee's refcount; compile_match) or a captured free variable (a
+/// borrowed view of the defining scope's binding; compile_lambda). Each owning
+/// consume of such a value decrements a refcount it does not own, so the value
+/// must be dup'd once PER consume or it is freed more times than dup'd -> double
+/// free. Sequential children SUM; alternative children (if-branches, match/handle
+/// arms) take the MAX, so the count is an upper bound on the consumes of any
+/// executed path (>= actual everywhere -> never under-dup -> no double free;
+/// tight on straight-line code -> no over-dup leak). MUST enumerate every Expr
+/// variant (modeled on fold_expr): skipping recursion into a child could miss a
+/// real consume and wrongly suppress the dup. A bare `EIdent(name)` passed as
+/// arg0 of a borrow-arg0 builtin does not consume (it is read in place).
 export fn md_consume_count(e: Expr, name: String) -> Int {
   match e {
     EInt(_) => 0,
@@ -1246,7 +1271,11 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
     EBool(_) => 0,
     EUnit => 0,
     EStringInterp(_) => 0,
-    EIdent(n, _) => if n == name { 1 } else { 0 },
+    EIdent(n, _) => if n == name {
+      1
+    } else {
+      0
+    },
     ETuple(items) => {
       let mut acc = 0
       let mut i = 0

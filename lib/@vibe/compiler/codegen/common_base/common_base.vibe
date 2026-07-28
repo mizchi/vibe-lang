@@ -1,8 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, __to_string, bytebuf_push, leb128_encode_u32,
-  apply_perm_strings, bsearch_leftmost, sort_perm_by_names
+  Expr, Pat, Stmt, TypeExpr, __to_string, apply_perm_strings, bsearch_leftmost, bytebuf_push, leb128_encode_u32, sort_perm_by_names
 }
 
 import @vibe/core {
@@ -10,7 +9,40 @@ import @vibe/core {
 }
 
 import @vibe/compiler/codegen/wasm_emit {
-  emit_call, emit_call_indirect, emit_else, emit_end, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_store, emit_i64_sub, emit_i64_xor, emit_if_void, emit_local_get, emit_local_set
+  emit_call,
+  emit_call_indirect,
+  emit_else,
+  emit_end,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_div_s,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_extend_i32_s,
+  emit_i64_ge_s,
+  emit_i64_gt_s,
+  emit_i64_le_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_ne,
+  emit_i64_or,
+  emit_i64_rem_s,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_i64_store,
+  emit_i64_sub,
+  emit_i64_xor,
+  emit_if_void,
+  emit_local_get,
+  emit_local_set
 }
 
 //# Types
@@ -54,15 +86,15 @@ export struct CtorTable {
   names_sorted_pos: Array[Int]
 }
 
-// #cov branch coverage state, threaded via CompileCtx. Linear-backend only;
-// active only when `enabled` (VIBE_COVERAGE=1 build). `base`/`cap` bound a fixed
-// reserved memory region (1 byte per branch id). `next` is a 1-element mutable
-// counter cell assigning sequential branch ids in codegen-traversal order;
-// `cur_fn` is a 1-element cell holding the index of the function currently being
-// compiled (set before each top-level body). `owners` accumulates, per branch
-// id in id order, the owning function index so the report attributes branches to
-// functions (reusing the `vibe_cov` function-name table). When disabled all of
-// this is inert and codegen output is byte-identical to a normal build.
+/// #cov branch coverage state, threaded via CompileCtx. Linear-backend only;
+/// active only when `enabled` (VIBE_COVERAGE=1 build). `base`/`cap` bound a fixed
+/// reserved memory region (1 byte per branch id). `next` is a 1-element mutable
+/// counter cell assigning sequential branch ids in codegen-traversal order;
+/// `cur_fn` is a 1-element cell holding the index of the function currently being
+/// compiled (set before each top-level body). `owners` accumulates, per branch
+/// id in id order, the owning function index so the report attributes branches to
+/// functions (reusing the `vibe_cov` function-name table). When disabled all of
+/// this is inert and codegen output is byte-identical to a normal build.
 export struct CovState {
   enabled: Bool;
   base: Int;
@@ -72,8 +104,8 @@ export struct CovState {
   owners: Array[Int]
 }
 
-// A disabled CovState (coverage off): inert, used by the normal compile path and
-// the non-WASI module entry. Fresh 1-element cells keep Array::get safe.
+/// A disabled CovState (coverage off): inert, used by the normal compile path and
+/// the non-WASI module entry. Fresh 1-element cells keep Array::get safe.
 export fn cov_disabled() -> CovState {
   CovState::{
     enabled: false,
@@ -89,11 +121,11 @@ export fn cov_disabled() -> CovState {
   }
 }
 
-// #cov: emit a stack-neutral hit store for one branch target and assign it the
-// next sequential branch id, recording the owning function index. No-op when
-// coverage is off or the fixed-cap region is full. Called at the start of each
-// branch arm's instruction sequence (if/else, match arm), so the store runs
-// only when that branch is actually taken at run time.
+/// #cov: emit a stack-neutral hit store for one branch target and assign it the
+/// next sequential branch id, recording the owning function index. No-op when
+/// coverage is off or the fixed-cap region is full. Called at the start of each
+/// branch arm's instruction sequence (if/else, match arm), so the store runs
+/// only when that branch is actually taken at run time.
 export fn cov_emit_branch(buf: Bytes, cov: CovState) -> Unit {
   if cov.enabled {
     let id = Array::get(cov.next, 0)
@@ -374,11 +406,11 @@ export struct CompileCtx {
   table_slots_used: Array[Int]
 }
 
-// Interior-line breakpoints (span-arc step5, multi-file): per-file provenance the
-// break codegen needs to emit `vibe::dbg_line(<file_id>, <line>)` and a
-// `vibe.dbgfiles` section. `files[k]` is the basename of source file id k;
-// `file_nls[k]` its newline char-offsets; `stmt_file_id[s]` the file id of merged
-// top-level statement s. Empty (via empty_dbg_prov) on non-break builds.
+/// Interior-line breakpoints (span-arc step5, multi-file): per-file provenance the
+/// break codegen needs to emit `vibe::dbg_line(<file_id>, <line>)` and a
+/// `vibe.dbgfiles` section. `files[k]` is the basename of source file id k;
+/// `file_nls[k]` its newline char-offsets; `stmt_file_id[s]` the file id of merged
+/// top-level statement s. Empty (via empty_dbg_prov) on non-break builds.
 export struct DbgProv {
   files: Array[String];
   file_nls: Array[Array[Int]];
@@ -500,18 +532,18 @@ export struct CompileCtxGc {
 
 //# Functions
 
-// #678: prune the integer-slot log so it carries NO entry for any slot index
-// >= `floor`. Called right after `local_names` is truncated to `floor` at a
-// branch / match-arm / for-in boundary, where those high slots are about to be
-// reused by the sibling scope. A `let`/`let mut` reusing a slot re-logs its own
-// int-ness, but a NON-`let` binder (match-arm / catch-all / for-in pattern var)
-// logs nothing — so without this prune its slot would still read the previous
-// sibling's stale `int=1` and a string bound there would wrongly take the
-// `i64.eq` path. Compacts the array IN PLACE (entries are unordered, so a plain
-// truncate-by-count will not do): keep entries for slots < floor, then truncate.
-// No temporary allocation — this runs at every branch / arm boundary while
-// compiling, and a fresh array per call piles up on the bump/RC heap during one
-// big function and can trip a heap-marginal compile.
+/// #678: prune the integer-slot log so it carries NO entry for any slot index
+/// >= `floor`. Called right after `local_names` is truncated to `floor` at a
+/// branch / match-arm / for-in boundary, where those high slots are about to be
+/// reused by the sibling scope. A `let`/`let mut` reusing a slot re-logs its own
+/// int-ness, but a NON-`let` binder (match-arm / catch-all / for-in pattern var)
+/// logs nothing — so without this prune its slot would still read the previous
+/// sibling's stale `int=1` and a string bound there would wrongly take the
+/// `i64.eq` path. Compacts the array IN PLACE (entries are unordered, so a plain
+/// truncate-by-count will not do): keep entries for slots < floor, then truncate.
+/// No temporary allocation — this runs at every branch / arm boundary while
+/// compiling, and a fresh array per call piles up on the bump/RC heap during one
+/// big function and can trip a heap-marginal compile.
 export fn int_log_reset_above(ctx: CompileCtx, floor: Int) -> Unit {
   let arr = ctx.int_local_slots
   let n = Array::length(arr)
@@ -531,23 +563,23 @@ export fn int_log_reset_above(ctx: CompileCtx, floor: Int) -> Unit {
   Array::truncate(arr, w)
 }
 
-// #1062 follow-up: the float-log twin of `int_log_reset_above`, for exactly
-// the same reason. `bind_match_pat` now logs a pattern-bound constructor
-// field into `float_local_slots` when its declared type is Double/Float (see
-// CompileCtx.ctor_float_fields), but a NON-float field bound at the SAME
-// local slot by a SIBLING match arm (arms share slot numbers -- `local_names`
-// is truncated back to `names_len_at_match` before every arm, see the call
-// sites in compile_match.vibe) never logs anything to override a stale
-// float=1 entry a PRIOR arm left at that slot. Left unpruned, that stale
-// entry survives via float_local_slots' normal "most recent entry per slot
-// wins" lookup (slot_is_floatish) and makes the later arm's plain Int/String
-// field take the f64 reinterpret-bits arithmetic path -- silently corrupting
-// ordinary integer arithmetic (discovered when re-enabling the ctor-float
-// check caused ~37 unrelated selfhost unit-test regressions: the compiler's
-// own AST enums, e.g. Expr/Pat/Token, mix a Double-carrying variant
-// (EFloat/PFloat/TFloat) with many non-float siblings matched in the same
-// `match`, at the same rotating slot numbers). Same compaction discipline as
-// int_log_reset_above: keep entries for slots < floor, truncate the rest.
+/// #1062 follow-up: the float-log twin of `int_log_reset_above`, for exactly
+/// the same reason. `bind_match_pat` now logs a pattern-bound constructor
+/// field into `float_local_slots` when its declared type is Double/Float (see
+/// CompileCtx.ctor_float_fields), but a NON-float field bound at the SAME
+/// local slot by a SIBLING match arm (arms share slot numbers -- `local_names`
+/// is truncated back to `names_len_at_match` before every arm, see the call
+/// sites in compile_match.vibe) never logs anything to override a stale
+/// float=1 entry a PRIOR arm left at that slot. Left unpruned, that stale
+/// entry survives via float_local_slots' normal "most recent entry per slot
+/// wins" lookup (slot_is_floatish) and makes the later arm's plain Int/String
+/// field take the f64 reinterpret-bits arithmetic path -- silently corrupting
+/// ordinary integer arithmetic (discovered when re-enabling the ctor-float
+/// check caused ~37 unrelated selfhost unit-test regressions: the compiler's
+/// own AST enums, e.g. Expr/Pat/Token, mix a Double-carrying variant
+/// (EFloat/PFloat/TFloat) with many non-float siblings matched in the same
+/// `match`, at the same rotating slot numbers). Same compaction discipline as
+/// int_log_reset_above: keep entries for slots < floor, truncate the rest.
 export fn float_log_reset_above(ctx: CompileCtx, floor: Int) -> Unit {
   let arr = ctx.float_local_slots
   let n = Array::length(arr)
@@ -567,10 +599,10 @@ export fn float_log_reset_above(ctx: CompileCtx, floor: Int) -> Unit {
   Array::truncate(arr, w)
 }
 
-// #724: prune the aggregate-shape log (see CompileCtx.agg_local_slots) at the
-// same branch/arm boundaries as int_log_reset_above — a slot reused by a
-// non-`let` binder must not be read as a stale tuple/ctor, or the structural
-// comparator would walk a non-aggregate value.
+/// #724: prune the aggregate-shape log (see CompileCtx.agg_local_slots) at the
+/// same branch/arm boundaries as int_log_reset_above — a slot reused by a
+/// non-`let` binder must not be read as a stale tuple/ctor, or the structural
+/// comparator would walk a non-aggregate value.
 export fn agg_log_reset_above(arr: Array[Int], floor: Int) -> Unit {
   let n = Array::length(arr)
   let mut w = 0
@@ -588,14 +620,14 @@ export fn agg_log_reset_above(arr: Array[Int], floor: Int) -> Unit {
   Array::truncate(arr, w)
 }
 
-// #1015: gc-lane twin of int_log_reset_above, for a PLAIN slot-indexed array
-// (no packed kind -- e.g. CompileCtxGc.gc_bool_locals, which unlike
-// CompileCtx.int_local_slots tracks exactly one thing, so entries are raw
-// slot ints rather than slot*4+kind). Same discipline: called right after
-// `local_names` is truncated to `floor` at a branch/match-arm/for-in
-// boundary, so a stale entry for a slot about to be reused by a sibling
-// scope does not leak into that sibling's classification of an unrelated
-// binding landing on the same freed slot.
+/// #1015: gc-lane twin of int_log_reset_above, for a PLAIN slot-indexed array
+/// (no packed kind -- e.g. CompileCtxGc.gc_bool_locals, which unlike
+/// CompileCtx.int_local_slots tracks exactly one thing, so entries are raw
+/// slot ints rather than slot*4+kind). Same discipline: called right after
+/// `local_names` is truncated to `floor` at a branch/match-arm/for-in
+/// boundary, so a stale entry for a slot about to be reused by a sibling
+/// scope does not leak into that sibling's classification of an unrelated
+/// binding landing on the same freed slot.
 export fn gc_slot_log_reset_above(arr: Array[Int], floor: Int) -> Unit {
   let n = Array::length(arr)
   let mut w = 0
@@ -613,11 +645,11 @@ export fn gc_slot_log_reset_above(arr: Array[Int], floor: Int) -> Unit {
   Array::truncate(arr, w)
 }
 
-// #672 (post-#724): dual-array twin of agg_log_reset_above — prunes
-// agg_local_slots AND its parallel agg_local_exprs in lockstep (same
-// keep/drop decision, driven by the slots array, applied to both), so the
-// two arrays stay the same length / index-aligned after a branch/arm
-// boundary prunes stale entries. See CompileCtx.agg_local_exprs.
+/// #672 (post-#724): dual-array twin of agg_log_reset_above — prunes
+/// agg_local_slots AND its parallel agg_local_exprs in lockstep (same
+/// keep/drop decision, driven by the slots array, applied to both), so the
+/// two arrays stay the same length / index-aligned after a branch/arm
+/// boundary prunes stale entries. See CompileCtx.agg_local_exprs.
 export fn agg_log_reset_above2(arr: Array[Int], exprs: Array[Expr], floor: Int) -> Unit {
   let n = Array::length(arr)
   let mut w = 0
@@ -637,9 +669,9 @@ export fn agg_log_reset_above2(arr: Array[Int], exprs: Array[Expr], floor: Int) 
   Array::truncate(exprs, w)
 }
 
-// #724: most-recent aggregate-shape entry for `slot` — `kind*64 + n`
-// (kind 1 = tuple/arity, 2 = ctor/field count), or -1 when untracked /
-// overridden by a non-aggregate rebind.
+/// #724: most-recent aggregate-shape entry for `slot` — `kind*64 + n`
+/// (kind 1 = tuple/arity, 2 = ctor/field count), or -1 when untracked /
+/// overridden by a non-aggregate rebind.
 export fn agg_slot_lookup(arr: Array[Int], slot: Int) -> Int {
   let mut i = Array::length(arr) - 1
   let mut out = 0 - 1
@@ -659,12 +691,12 @@ export fn agg_slot_lookup(arr: Array[Int], slot: Int) -> Int {
   }
 }
 
-// #672 (post-#724): companion to agg_slot_lookup — the shape-literal Expr
-// paired with the most-recent tracked entry for `slot` (same rightmost-match
-// scan), or EInt(0) when the slot has no entry at all. Callers only read the
-// result after agg_slot_lookup has confirmed a kind 1 (tuple) or kind 2
-// (ctor/record) entry exists for the slot, so the EInt(0) fallback is never
-// actually consulted as a shape in practice — it just keeps this total.
+/// #672 (post-#724): companion to agg_slot_lookup — the shape-literal Expr
+/// paired with the most-recent tracked entry for `slot` (same rightmost-match
+/// scan), or EInt(0) when the slot has no entry at all. Callers only read the
+/// result after agg_slot_lookup has confirmed a kind 1 (tuple) or kind 2
+/// (ctor/record) entry exists for the slot, so the EInt(0) fallback is never
+/// actually consulted as a shape in practice — it just keeps this total.
 export fn agg_expr_lookup(arr: Array[Int], exprs: Array[Expr], slot: Int) -> Expr {
   let mut i = Array::length(arr) - 1
   let mut out = EInt(0)
@@ -680,13 +712,13 @@ export fn agg_expr_lookup(arr: Array[Int], exprs: Array[Expr], slot: Int) -> Exp
   out
 }
 
-// #724 round 2: aggregate-shape classification from a DECLARED TypeExpr —
-// the static dual of the shape log below, used for function RETURN types
-// (`let a = mk_pt(...)` — the value shape is invisible at the ELet, but the
-// callee's signature names it) and annotated params. Same `kind*64 + n`
-// encoding; n = 63 is the "dynamic field count" sentinel: enum-typed values
-// have a variant-dependent argc, so the comparator reads argc@4 from the
-// value at runtime instead of unrolling a static count.
+/// #724 round 2: aggregate-shape classification from a DECLARED TypeExpr —
+/// the static dual of the shape log below, used for function RETURN types
+/// (`let a = mk_pt(...)` — the value shape is invisible at the ELet, but the
+/// callee's signature names it) and annotated params. Same `kind*64 + n`
+/// encoding; n = 63 is the "dynamic field count" sentinel: enum-typed values
+/// have a variant-dependent argc, so the comparator reads argc@4 from the
+/// value at runtime instead of unrolling a static count.
 export fn agg_info_of_type_name(ct: CtorTable, tname: String) -> Int {
   let mut si = 0
   let mut out = 0
@@ -728,12 +760,12 @@ export fn agg_info_of_type_expr(ct: CtorTable, te: TypeExpr) -> Int {
   }
 }
 
-// #724 round 2: program-wide (fn name -> aggregate return shape) table,
-// filled from each top-level `let f: (..) -> R = (..) -> {..}`'s declared
-// return type (the SLet annotation's TyFn ret, falling back to the EFn's
-// own return annotation). The `==` codegen consults it for `let a = f(..)`
-// bindings. Structural, all-lane-safe knowledge — unannotated returns stay
-// untracked (generic-eq fallback), preserving backend parity.
+/// #724 round 2: program-wide (fn name -> aggregate return shape) table,
+/// filled from each top-level `let f: (..) -> R = (..) -> {..}`'s declared
+/// return type (the SLet annotation's TyFn ret, falling back to the EFn's
+/// own return annotation). The `==` codegen consults it for `let a = f(..)`
+/// bindings. Structural, all-lane-safe knowledge — unannotated returns stay
+/// untracked (generic-eq fallback), preserving backend parity.
 export fn compute_agg_returning(stmts: Array[Stmt], ct: CtorTable, out_names: Array[String], out_infos: Array[Int]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
@@ -782,9 +814,9 @@ export fn agg_ret_lookup(names: Array[String], infos: Array[Int], fname: String)
   out
 }
 
-// #724: non-throwing last-match local lookup (resolve_local throws on a
-// missing name, which is wrong for OPTIONAL classification — a bare ident
-// can name a global function or ctor instead of a local).
+/// #724: non-throwing last-match local lookup (resolve_local throws on a
+/// missing name, which is wrong for OPTIONAL classification — a bare ident
+/// can name a global function or ctor instead of a local).
 export fn find_local_slot(names: Array[String], name: String) -> Int {
   let mut i = Array::length(names) - 1
   let mut result = 0 - 1
@@ -799,9 +831,9 @@ export fn find_local_slot(names: Array[String], name: String) -> Int {
   result
 }
 
-// #724: aggregate-shape info for a bare-ident operand of `==`/`!=`:
-// resolves the ident's CURRENT slot and returns its latest log entry
-// (`kind*64 + n`), or -1 for non-idents / untracked slots.
+/// #724: aggregate-shape info for a bare-ident operand of `==`/`!=`:
+/// resolves the ident's CURRENT slot and returns its latest log entry
+/// (`kind*64 + n`), or -1 for non-idents / untracked slots.
 export fn agg_info_of_ident(arr: Array[Int], e: Expr, local_names: Array[String]) -> Int {
   match e {
     EIdent(nm, _) => {
@@ -816,10 +848,10 @@ export fn agg_info_of_ident(arr: Array[Int], e: Expr, local_names: Array[String]
   }
 }
 
-// #672 (post-#724): companion to agg_info_of_ident — the tracked shape-
-// literal Expr for a bare-ident operand (same ident -> slot resolution), or
-// EInt(0) when the ident is not a tracked slot. Callers gate on
-// agg_info_of_ident's kind first, same discipline as agg_expr_lookup.
+/// #672 (post-#724): companion to agg_info_of_ident — the tracked shape-
+/// literal Expr for a bare-ident operand (same ident -> slot resolution), or
+/// EInt(0) when the ident is not a tracked slot. Callers gate on
+/// agg_info_of_ident's kind first, same discipline as agg_expr_lookup.
 export fn agg_expr_of_ident(arr: Array[Int], exprs: Array[Expr], e: Expr, local_names: Array[String]) -> Expr {
   match e {
     EIdent(nm, _) => {
@@ -997,17 +1029,17 @@ export fn lookup_ctor(ctor_names: Array[String], name: String, i: Int) -> Int {
   else lookup_ctor(ctor_names, name, i + 1)
 }
 
-// Build CtorTable.names_sorted / names_sorted_pos from the name list: a
-// stable sort permutation, so equal names keep insertion order and the
-// leftmost binary-search hit maps to the same index the linear scan found.
+/// Build CtorTable.names_sorted / names_sorted_pos from the name list: a
+/// stable sort permutation, so equal names keep insertion order and the
+/// leftmost binary-search hit maps to the same index the linear scan found.
 export fn ctor_sorted_index(names: Array[String]) -> (Array[String], Array[Int]) {
   let perm = sort_perm_by_names(names)
   (apply_perm_strings(names, perm), perm)
 }
 
-// O(log N) replacement for `lookup_ctor(ct.names, name, 0)` at CtorTable
-// call sites. Falls back to the linear scan when the sorted view is absent
-// (defensive: a table built without ctor_sorted_index stays correct).
+/// O(log N) replacement for `lookup_ctor(ct.names, name, 0)` at CtorTable
+/// call sites. Falls back to the linear scan when the sorted view is absent
+/// (defensive: a table built without ctor_sorted_index stays correct).
 export fn ctor_table_index_of(ct: CtorTable, name: String) -> Int {
   if Array::length(ct.names_sorted) != Array::length(ct.names) {
     lookup_ctor(ct.names, name, 0)
@@ -1021,8 +1053,8 @@ export fn ctor_table_index_of(ct: CtorTable, name: String) -> Int {
   }
 }
 
-// #1062: is constructor `ctor_idx`'s positional field `field_idx` declared
-// Double/Float? See CompileCtx.ctor_float_fields for the encoding.
+/// #1062: is constructor `ctor_idx`'s positional field `field_idx` declared
+/// Double/Float? See CompileCtx.ctor_float_fields for the encoding.
 export fn ctor_field_is_float(ctx: CompileCtx, ctor_idx: Int, field_idx: Int) -> Bool {
   let arr = ctx.ctor_float_fields
   let mut i = 0
@@ -1039,17 +1071,17 @@ export fn ctor_field_is_float(ctx: CompileCtx, ctor_idx: Int, field_idx: Int) ->
   found
 }
 
-// #722: candidates for a NAME-based struct field access. Returns
-// (ctor_tag, field_idx) for every struct whose field list contains `field`,
-// in struct-declaration order. Field resolution used to take the FIRST
-// struct containing the name (type-blind), so a same-named field living at
-// a DIFFERENT slot in a later struct silently read the wrong slot — which
-// program shapes hit this depended on the declaration set/order, i.e. the
-// flat-bundle vs FS-linked lane divergence observed in #722. Callers keep
-// the first candidate as the static fast path when every candidate agrees
-// on the slot, and otherwise dispatch at runtime on the value's ctor tag
-// (struct construction — both the `S::{...}` ctor path and the set-matched
-// bare-record path — stamps the struct's unique tag at value+0).
+/// #722: candidates for a NAME-based struct field access. Returns
+/// (ctor_tag, field_idx) for every struct whose field list contains `field`,
+/// in struct-declaration order. Field resolution used to take the FIRST
+/// struct containing the name (type-blind), so a same-named field living at
+/// a DIFFERENT slot in a later struct silently read the wrong slot — which
+/// program shapes hit this depended on the declaration set/order, i.e. the
+/// flat-bundle vs FS-linked lane divergence observed in #722. Callers keep
+/// the first candidate as the static fast path when every candidate agrees
+/// on the slot, and otherwise dispatch at runtime on the value's ctor tag
+/// (struct construction — both the `S::{...}` ctor path and the set-matched
+/// bare-record path — stamps the struct's unique tag at value+0).
 export fn struct_field_candidates(ct: CtorTable, field: String) -> Array[(Int, Int)] {
   let out = array_empty()
   let mut si = 0
@@ -1075,11 +1107,11 @@ export fn struct_field_candidates(ct: CtorTable, field: String) -> Array[(Int, I
   out
 }
 
-// #722: the subset of `candidates` (beyond the first) whose slot index
-// DISAGREES with the first candidate's — exactly the cases the static
-// first-match resolution used to miscompile. Empty result = the static
-// fast path is sound; non-empty = the caller must emit a runtime tag
-// dispatch over these, with candidate 0 as the untagged/legacy fallback.
+/// #722: the subset of `candidates` (beyond the first) whose slot index
+/// DISAGREES with the first candidate's — exactly the cases the static
+/// first-match resolution used to miscompile. Empty result = the static
+/// fast path is sound; non-empty = the caller must emit a runtime tag
+/// dispatch over these, with candidate 0 as the untagged/legacy fallback.
 export fn struct_field_dispatch_cases(cands: Array[(Int, Int)]) -> Array[(Int, Int)] {
   let (_, idx0) = Array::get(cands, 0)
   let out = array_empty()
@@ -1096,13 +1128,13 @@ export fn struct_field_dispatch_cases(cands: Array[(Int, Int)]) -> Array[(Int, I
   out
 }
 
-// #722: resolve a bare record literal to a struct by exact field-name-set
-// match (the same rule the checker uses — `S::{...}` drops the name at
-// parse time in some construction paths, and hand-built ASTs build ERecord
-// directly). Returns the struct index or -1. Callers use it to lay the
-// record out in the struct's DECLARED field order and stamp the struct's
-// ctor tag, making bare records byte-compatible with `S::{...}` ctor-path
-// construction (which already reorders to declared order).
+/// #722: resolve a bare record literal to a struct by exact field-name-set
+/// match (the same rule the checker uses — `S::{...}` drops the name at
+/// parse time in some construction paths, and hand-built ASTs build ERecord
+/// directly). Returns the struct index or -1. Callers use it to lay the
+/// record out in the struct's DECLARED field order and stamp the struct's
+/// ctor tag, making bare records byte-compatible with `S::{...}` ctor-path
+/// construction (which already reorders to declared order).
 export fn struct_index_by_field_set(ct: CtorTable, lit_names: Array[String]) -> Int {
   let mut si = 0
   let mut found = -1
@@ -1143,8 +1175,8 @@ export fn struct_index_by_field_set(ct: CtorTable, lit_names: Array[String]) -> 
   found
 }
 
-// #722: ctor tag for struct index `si`, or 0 (the legacy anonymous-record
-// type id) when the struct is not in the ctor table.
+/// #722: ctor tag for struct index `si`, or 0 (the legacy anonymous-record
+/// type id) when the struct is not in the ctor table.
 export fn struct_tag_by_index(ct: CtorTable, si: Int) -> Int {
   let ci = ctor_table_index_of(ct, Array::get(ct.struct_names, si))
   if ci >= 0 {
@@ -1338,9 +1370,9 @@ export fn get_elet_body(expr: Expr) -> Expr with { Error } {
   }
 }
 
-// #644: the let-statement's source offset (the `let` keyword token), -1 for
-// synthesized lets. Break-mode codegen uses it as the dbg_line fallback when
-// the bound value is a bare literal that carries no offset of its own.
+/// #644: the let-statement's source offset (the `let` keyword token), -1 for
+/// synthesized lets. Break-mode codegen uses it as the dbg_line fallback when
+/// the bound value is a bare literal that carries no offset of its own.
 export fn get_elet_off(expr: Expr) -> Int with { Error } {
   match expr {
     ELet(_, _, _, soff) => soff,
@@ -1470,13 +1502,13 @@ export fn emit_unbox_float(buf: Bytes) -> Unit {
   emit_i64_load(buf, 3, 0)
 }
 
-// Push the i64 increment that advances an array INDEX counter by ONE LOGICAL
-// element. Under RC a scalar Int is tagged `n << 1`, and the inline array loops
-// compare their counter against `Array::length` (which returns a tagged length)
-// and feed it to `Array::get` (which untags the index). So the counter must
-// live in tagged space too — stepping by raw 2 (= logical 1). Without RC the
-// counter is a raw index and steps by 1. Using a raw 1 under RC makes the loop
-// run twice per element (each read/processed twice; #704).
+/// Push the i64 increment that advances an array INDEX counter by ONE LOGICAL
+/// element. Under RC a scalar Int is tagged `n << 1`, and the inline array loops
+/// compare their counter against `Array::length` (which returns a tagged length)
+/// and feed it to `Array::get` (which untags the index). So the counter must
+/// live in tagged space too — stepping by raw 2 (= logical 1). Without RC the
+/// counter is a raw index and steps by 1. Using a raw 1 under RC makes the loop
+/// run twice per element (each read/processed twice; #704).
 export fn emit_index_one(buf: Bytes, ctx: CompileCtx) -> Unit {
   if ctx.enable_rc {
     emit_i64_const(buf, 2)
@@ -1485,15 +1517,15 @@ export fn emit_index_one(buf: Bytes, ctx: CompileCtx) -> Unit {
   }
 }
 
-// Guarded rc_dup of the heap value in `local_idx` (no-op for scalars/strings):
-// if it is odd (a heap pointer) with a zero high word (not a string fat
-// pointer), increment its rc_count at block-4. The single canonical copy — the
-// codegen files (compile_expr_tail / _tail4 / _tail6 / compile_match /
-// compile_lambda / compile_call / linked_compile) call this instead of keeping
-// per-file duplicates.
-// #715 recurrence guard: base address of the shadow-liveness byte table
-// (1 byte per heap address at base+vptr) and the reservation pad that keeps
-// it inside linear memory. Only referenced when compiling with rc_shadow.
+/// Guarded rc_dup of the heap value in `local_idx` (no-op for scalars/strings):
+/// if it is odd (a heap pointer) with a zero high word (not a string fat
+/// pointer), increment its rc_count at block-4. The single canonical copy — the
+/// codegen files (compile_expr_tail / _tail4 / _tail6 / compile_match /
+/// compile_lambda / compile_call / linked_compile) call this instead of keeping
+/// per-file duplicates.
+/// #715 recurrence guard: base address of the shadow-liveness byte table
+/// (1 byte per heap address at base+vptr) and the reservation pad that keeps
+/// it inside linear memory. Only referenced when compiling with rc_shadow.
 export fn rc_shadow_base() -> Int {
   268435456
 }
@@ -1502,17 +1534,17 @@ export fn rc_shadow_reserve() -> Int {
   536870912
 }
 
-// #720: the rc field is the LOW 24 BITS of the rc word (the class id lives in
-// the high byte of the same word at vptr-1). A raw `store(load(addr)+1)` at
-// rc == 0xFFFFFF carries into the class byte and wraps rc to 0 -- a couple of
-// rc ops later the block frees itself with millions of references still
-// outstanding. Hot shared structures (func/ctor tables, analysis accumulator
-// arrays) cross 2^24 refs only on large compiles (the entry-dup budgets leak
-// by design), which made the corruption look layout- and size-dependent.
-// Saturate instead: once rc hits 0xFFFFFF the block is immortal (never
-// incremented, never decremented, never freed -- see gen_rc_drop_body's
-// matching skip). `push_addr` emits the i32 address of the rc word; it is
-// invoked up to three times, so it must be a pure push.
+/// #720: the rc field is the LOW 24 BITS of the rc word (the class id lives in
+/// the high byte of the same word at vptr-1). A raw `store(load(addr)+1)` at
+/// rc == 0xFFFFFF carries into the class byte and wraps rc to 0 -- a couple of
+/// rc ops later the block frees itself with millions of references still
+/// outstanding. Hot shared structures (func/ctor tables, analysis accumulator
+/// arrays) cross 2^24 refs only on large compiles (the entry-dup budgets leak
+/// by design), which made the corruption look layout- and size-dependent.
+/// Saturate instead: once rc hits 0xFFFFFF the block is immortal (never
+/// incremented, never decremented, never freed -- see gen_rc_drop_body's
+/// matching skip). `push_addr` emits the i32 address of the rc word; it is
+/// invoked up to three times, so it must be a pure push.
 export fn emit_rc_word_inc_saturating(buf: Bytes, push_addr: () -> Unit) -> Unit {
   push_addr()
   emit_i32_load(buf, 2, 0)
@@ -1639,8 +1671,8 @@ export fn effect_op_declared_arity(keys: Array[String], arities: Array[Int], ful
   result
 }
 
-// #665: index of a qualified op key (`Eff::Op`) in the global effect_op_keys
-// table — the operation discriminant for multi-operation handler dispatch.
+/// #665: index of a qualified op key (`Eff::Op`) in the global effect_op_keys
+/// table — the operation discriminant for multi-operation handler dispatch.
 export fn effect_op_index(keys: Array[String], full: String) -> Int {
   let n = Array::length(keys)
   let mut result = 0 - 1

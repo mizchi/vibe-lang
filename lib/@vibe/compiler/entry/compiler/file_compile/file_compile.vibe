@@ -27,17 +27,24 @@ import @vibe/compiler/core {
   collect_import_alias_collision_locals,
   collect_import_alias_collision_refs,
   collect_import_value_renames,
+  dce_stmts,
+  dir_of_path,
   export_plan_renames_for,
   import_value_rename_locals,
   namespace_private_value_stmts,
+  resolve_import_path,
   rewrite_imported_value_stmt_to_local,
-  stmts_have_import_deep,
-  dce_stmts,
-  dir_of_path, resolve_import_path
+  stmts_have_import_deep
 }
 
 import @vibe/compiler/codegen {
-  compile_module, compile_wasi_module, compile_wasi_module_rc, compile_wasi_module_rc_shadow, compile_wasi_module_coverage, compile_wasi_module_trace, compile_wasi_module_break
+  compile_module,
+  compile_wasi_module,
+  compile_wasi_module_break,
+  compile_wasi_module_coverage,
+  compile_wasi_module_rc,
+  compile_wasi_module_rc_shadow,
+  compile_wasi_module_trace
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -57,15 +64,23 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/runtime {
-  TypeDb, db_new, db_set_source, db_typecheck, db_grouped_merged_source,
-  db_typecheck_fs, db_module_source, db_load_artifact, db_store_artifact, parse_program_with_path
+  TypeDb,
+  db_grouped_merged_source,
+  db_load_artifact,
+  db_module_source,
+  db_new,
+  db_set_source,
+  db_store_artifact,
+  db_typecheck,
+  db_typecheck_fs,
+  parse_program_with_path
 }
 
 import @vibe/compiler/cache {
-  build_file_compile_module_artifact_fingerprint_from_group_fingerprint,
-  build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint,
   build_file_compile_module_artifact_fingerprint,
+  build_file_compile_module_artifact_fingerprint_from_group_fingerprint,
   build_file_compile_wasi_artifact_fingerprint,
+  build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint,
   build_source_groups_fingerprint,
   load_persistent_artifact,
   store_persistent_artifact
@@ -79,9 +94,9 @@ export effect Profiler {
 
 //# Functions
 
-// Direct builtin call (ADR-0076 追記31 Vertical C) — see
-// lib/@vibe/cli/dispatch.vibe::profiler_now_us for why the perform form
-// was retired (replay re-execution + memoized resume(0) zeros).
+/// Direct builtin call (ADR-0076 追記31 Vertical C) — see
+/// lib/@vibe/cli/dispatch.vibe::profiler_now_us for why the perform form
+/// was retired (replay re-execution + memoized resume(0) zeros).
 fn profiler_now_us() -> Int with { Profiler } {
   Profiler::now_us()
 }
@@ -110,10 +125,7 @@ fn artifact_fingerprint_from_source(source: String) -> String {
     h2 = (h2 * step2 + c + i + 1) % mod2
     i = i + 1
   }
-  String::concat(
-    __to_string(len),
-    String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2))))
-  )
+  String::concat(__to_string(len), String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2)))))
 }
 
 fn seed_type_db_from_source_groups(db: TypeDb, source_groups: Array[(String, Array[(String, String)])]) -> TypeDb {
@@ -183,20 +195,20 @@ fn lookup_source_by_path(sources: Array[(String, String)], target_path: String) 
   found
 }
 
-// #1100: was a byte-for-byte duplicate of runtime's parse_program_with_path
-// (same located lex+parse, same `<path>: <msg>` wrapping), so a cold compile
-// parsed every source twice -- once for the typecheck walk and once here for
-// the merge. Route both through the memoized one; it hands back a fresh
-// top-level array each call, which is what the in-place desugars downstream
-// require. Interior-line breakpoints (span-arc step5) still get their real
-// EIdent char-offsets: the memoized parse is the same located one.
+/// #1100: was a byte-for-byte duplicate of runtime's parse_program_with_path
+/// (same located lex+parse, same `<path>: <msg>` wrapping), so a cold compile
+/// parsed every source twice -- once for the typecheck walk and once here for
+/// the merge. Route both through the memoized one; it hands back a fresh
+/// top-level array each call, which is what the in-place desugars downstream
+/// require. Interior-line breakpoints (span-arc step5) still get their real
+/// EIdent char-offsets: the memoized parse is the same located one.
 fn parse_program_for_path(path: String, source: String) -> Array[Stmt] with { Error } {
   parse_program_with_path(path, source)
 }
 
-// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
-// are the locals the export-rename plan already rewrites; the inline copy gets
-// the target file's export renames applied first.
+/// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
+/// are the locals the export-rename plan already rewrites; the inline copy gets
+/// the target file's export renames applied first.
 fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Unit with { Error } {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = array_empty()
@@ -208,13 +220,7 @@ fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_
       let resolved = resolve_import_path(base_dir, raw_path)
       match lookup_source_by_path(sources, resolved) {
         Some(source) => {
-          let source_stmts = namespace_private_value_stmts(
-            resolved,
-            apply_export_renames_stmts(
-              parse_program_for_path(resolved, source),
-              export_plan_renames_for(plan, resolved)
-            )
-          )
+          let source_stmts = namespace_private_value_stmts(resolved, apply_export_renames_stmts(parse_program_for_path(resolved, source), export_plan_renames_for(plan, resolved)))
           let mut j = 0
           let mut done = false
           while j < Array::length(source_stmts) && !done {
@@ -236,10 +242,10 @@ fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_
   }
 }
 
-// #716: parse every source once and build the export-rename plan for the whole
-// program (the merge output of one file depends on the export surfaces of ALL
-// files: ambiguous exported names are renamed at their defs and at importing
-// files' references).
+/// #716: parse every source once and build the export-rename plan for the whole
+/// program (the merge output of one file depends on the export surfaces of ALL
+/// files: ambiguous exported names are renamed at their defs and at importing
+/// files' references).
 fn parse_sources_for_merge(sources: Array[(String, String)]) -> (Array[String], Array[Array[Stmt]]) with { Error } {
   let file_paths = array_empty()
   let file_stmts = array_empty()
@@ -253,10 +259,10 @@ fn parse_sources_for_merge(sources: Array[(String, String)]) -> (Array[String], 
   (file_paths, file_stmts)
 }
 
-// One file's contribution to the merged program. `stmts` are the file's parsed
-// statements, `is_entry_source` mirrors the pre-#716 per-group entry rule
-// (entry keeps its private names), and `plan`/`sources` drive the export-name
-// rewriting and the collision-def fallback.
+/// One file's contribution to the merged program. `stmts` are the file's parsed
+/// statements, `is_entry_source` mirrors the pre-#716 per-group entry rule
+/// (entry keeps its private names), and `plan`/`sources` drive the export-name
+/// rewriting and the collision-def fallback.
 fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[Stmt], is_entry_source: Bool, plan: ExportRenamePlan, sources: Array[(String, String)]) -> Unit with { Error } {
   let export_renamed = if is_entry_source {
     stmts
@@ -343,9 +349,9 @@ fn build_grouped_merged_stmts(source_groups: Array[(String, Array[(String, Strin
   merged
 }
 
-// Interior-line breakpoints (span-arc step5): the basename of a file path (text
-// after the last '/'). Used as the `vibe.dbgfiles` key the runner matches a
-// `--break <file>:<line>` spec against. String::concat-free (substring only).
+/// Interior-line breakpoints (span-arc step5): the basename of a file path (text
+/// after the last '/'). Used as the `vibe.dbgfiles` key the runner matches a
+/// `--break <file>:<line>` spec against. String::concat-free (substring only).
 fn path_basename(p: String) -> String {
   let n = String::length(p)
   let mut last = 0 - 1
@@ -361,8 +367,8 @@ fn path_basename(p: String) -> String {
   String::substring(p, last + 1, n)
 }
 
-// Interior-line breakpoints: sorted char-offsets of each '\n' in `src` (local
-// copy of the codegen helper, to avoid an entry->codegen import).
+/// Interior-line breakpoints: sorted char-offsets of each '\n' in `src` (local
+/// copy of the codegen helper, to avoid an entry->codegen import).
 fn file_newline_offsets(src: String) -> Array[Int] {
   let arr = array_empty()
   let n = String::length(src)
@@ -378,17 +384,17 @@ fn file_newline_offsets(src: String) -> Array[Int] {
   arr
 }
 
-// Interior-line breakpoints (span-arc step5, multi-file): like
-// build_grouped_merged_stmts but ALSO records, per merged top-level statement,
-// which SOURCE FILE it came from — so codegen can map each statement's char
-// offset to a line IN ITS OWN FILE (offsets from different files collide after
-// the merge). Returns (merged, file_basenames, file_newlines, stmt_file_id):
-//   file_basenames[k] / file_newlines[k]  — the k-th distinct source file
-//   stmt_file_id[s]                        — file id of merged top-level stmt s
-// Provenance is captured by measuring the merged-array length delta around each
-// source's append, so it stays aligned no matter how many statements a source
-// contributes; the append calls themselves mirror build_merged_stmts_from_sources
-// exactly, so `merged` is identical to the normal path.
+/// Interior-line breakpoints (span-arc step5, multi-file): like
+/// build_grouped_merged_stmts but ALSO records, per merged top-level statement,
+/// which SOURCE FILE it came from — so codegen can map each statement's char
+/// offset to a line IN ITS OWN FILE (offsets from different files collide after
+/// the merge). Returns (merged, file_basenames, file_newlines, stmt_file_id):
+///   file_basenames[k] / file_newlines[k]  — the k-th distinct source file
+///   stmt_file_id[s]                        — file id of merged top-level stmt s
+/// Provenance is captured by measuring the merged-array length delta around each
+/// source's append, so it stays aligned no matter how many statements a source
+/// contributes; the append calls themselves mirror build_merged_stmts_from_sources
+/// exactly, so `merged` is identical to the normal path.
 fn build_grouped_merged_stmts_prov(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[Array[Int]], Array[Int]) with { Error } {
   let merged = array_empty()
   let files = array_empty()
@@ -448,16 +454,16 @@ export fn prepare_file_fs_cached(db: TypeDb, entry_path: String) -> TypeDb with 
   prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
 }
 
-// #946 P1 (Codex, PR #1006): `vibe check`'s "linked" dep collection
-// (collect_linked_dep_inputs_for_stmts, in linked_artifacts.vibe) exists to
-// feed the wasm import-linking codegen boundary -- it copies a dependency's
-// SEnum/struct declarations into the checked stmts but never a `let rec fn`
-// signature, so check_program never learned an imported function's real
-// type and a wrong-typed call site (e.g. `f("x")` against `fn f(x: Int)`)
-// typechecked cleanly no matter what was passed. Reuse prepare_file_fs_cached's
-// fs-mode source-group + db_typecheck_fs pipeline instead -- the same one
-// compile_file_fs_mode already relies on for a real compile's (working)
-// typecheck pass -- and stop before build_grouped_merged_stmts/codegen.
+/// #946 P1 (Codex, PR #1006): `vibe check`'s "linked" dep collection
+/// (collect_linked_dep_inputs_for_stmts, in linked_artifacts.vibe) exists to
+/// feed the wasm import-linking codegen boundary -- it copies a dependency's
+/// SEnum/struct declarations into the checked stmts but never a `let rec fn`
+/// signature, so check_program never learned an imported function's real
+/// type and a wrong-typed call site (e.g. `f("x")` against `fn f(x: Int)`)
+/// typechecked cleanly no matter what was passed. Reuse prepare_file_fs_cached's
+/// fs-mode source-group + db_typecheck_fs pipeline instead -- the same one
+/// compile_file_fs_mode already relies on for a real compile's (working)
+/// typecheck pass -- and stop before build_grouped_merged_stmts/codegen.
 export fn check_file_fs_mode(entry_path: String) -> Int with { Error, Fs } {
   let _ = prepare_file_fs_cached(db_new(), entry_path)
   0
@@ -469,7 +475,9 @@ export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: Str
   let _ = next_db
   let merged_stmts = build_grouped_merged_stmts(source_groups)
   if mode == "mvp" {
-    let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
+    let pruned_stmts = dce_stmts(merged_stmts, [
+      entry_name
+    ])
     compile_wasi_module_impl(pruned_stmts, entry_name)
   } else if mode == "no-dce" {
     compile_wasi_module(merged_stmts, entry_name)
@@ -478,10 +486,10 @@ export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: Str
   }
 }
 
-// #701 RC variant: same load/merge as compile_file_fs_mode "no-dce" but routes
-// through the Perceus RC codegen (compile_wasi_module_rc_impl, enable_rc) so an
-// import-resolving / `vibe run` program actually honors VIBE_RC. Without this
-// the FS-compile path silently used the bump allocator regardless of VIBE_RC.
+/// #701 RC variant: same load/merge as compile_file_fs_mode "no-dce" but routes
+/// through the Perceus RC codegen (compile_wasi_module_rc_impl, enable_rc) so an
+/// import-resolving / `vibe run` program actually honors VIBE_RC. Without this
+/// the FS-compile path silently used the bump allocator regardless of VIBE_RC.
 export fn compile_file_fs_mode_rc(entry_path: String, entry_name: String) -> Bytes with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
@@ -490,10 +498,10 @@ export fn compile_file_fs_mode_rc(entry_path: String, entry_name: String) -> Byt
   compile_wasi_module_rc(merged_stmts, entry_name)
 }
 
-// #715/#768 debug variant (VIBE_RC=shadow): same load/merge as
-// compile_file_fs_mode_rc but with shadow-liveness double-free traps, so an
-// import-resolving test build's "moving target" free-list corruption becomes a
-// deterministic trap at the first bad dup/drop.
+/// #715/#768 debug variant (VIBE_RC=shadow): same load/merge as
+/// compile_file_fs_mode_rc but with shadow-liveness double-free traps, so an
+/// import-resolving test build's "moving target" free-list corruption becomes a
+/// deterministic trap at the first bad dup/drop.
 export fn compile_file_fs_mode_rc_shadow(entry_path: String, entry_name: String) -> Bytes with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
@@ -502,13 +510,13 @@ export fn compile_file_fs_mode_rc_shadow(entry_path: String, entry_name: String)
   compile_wasi_module_rc_shadow(merged_stmts, entry_name)
 }
 
-// #634 (ADR-0026): same as compile_file_fs_mode, but ALSO writes the pure-test
-// cache verdict to `meta_out` (when non-empty) before codegen — computed on the
-// MERGED stmts, so transitive imported-function effect rows are visible. "1" =
-// every test block is transitively effect-free → `vibe test` may cache/skip it.
-// Reached only on a successful compile (the program type-checks), so reading the
-// declared effect rows is sound. Env is read by the caller (the CLI adapter),
-// keeping this layer free of the Env effect.
+/// #634 (ADR-0026): same as compile_file_fs_mode, but ALSO writes the pure-test
+/// cache verdict to `meta_out` (when non-empty) before codegen — computed on the
+/// MERGED stmts, so transitive imported-function effect rows are visible. "1" =
+/// every test block is transitively effect-free → `vibe test` may cache/skip it.
+/// Reached only on a successful compile (the program type-checks), so reading the
+/// declared effect rows is sound. Env is read by the caller (the CLI adapter),
+/// keeping this layer free of the Env effect.
 export fn compile_file_fs_mode_testmeta(entry_path: String, entry_name: String, mode: String, meta_out: String) -> Bytes with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
@@ -523,7 +531,9 @@ export fn compile_file_fs_mode_testmeta(entry_path: String, entry_name: String, 
     false
   }
   let bytes = if mode == "mvp" {
-    let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
+    let pruned_stmts = dce_stmts(merged_stmts, [
+      entry_name
+    ])
     compile_wasi_module_impl(pruned_stmts, entry_name)
   } else if mode == "no-dce" {
     compile_wasi_module(merged_stmts, entry_name)
@@ -542,10 +552,10 @@ export fn compile_file_fs_mode_testmeta(entry_path: String, entry_name: String, 
   bytes
 }
 
-// Coverage (#cov): FS-mode compile with function-level hit instrumentation.
-// Same load/merge as compile_file_fs_mode "no-dce" but routes through the
-// coverage codegen so the output wasm carries the hit bitmap + `vibe_cov`
-// section. Used by `cli_main` under VIBE_COVERAGE=1.
+/// Coverage (#cov): FS-mode compile with function-level hit instrumentation.
+/// Same load/merge as compile_file_fs_mode "no-dce" but routes through the
+/// coverage codegen so the output wasm carries the hit bitmap + `vibe_cov`
+/// section. Used by `cli_main` under VIBE_COVERAGE=1.
 export fn compile_file_fs_mode_coverage(entry_path: String, entry_name: String) -> Bytes with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
@@ -554,11 +564,11 @@ export fn compile_file_fs_mode_coverage(entry_path: String, entry_name: String) 
   compile_wasi_module_coverage(merged_stmts, entry_name)
 }
 
-// Trace (debugger / DAP P1 groundwork): FS-mode compile with function-call
-// execution-trace instrumentation. Same load/merge as compile_file_fs_mode
-// "no-dce" but routes through the trace codegen so the output wasm carries the
-// in-memory trace log + `vibe.trace` custom section. Used by `cli_main` under
-// VIBE_DEBUG=1.
+/// Trace (debugger / DAP P1 groundwork): FS-mode compile with function-call
+/// execution-trace instrumentation. Same load/merge as compile_file_fs_mode
+/// "no-dce" but routes through the trace codegen so the output wasm carries the
+/// in-memory trace log + `vibe.trace` custom section. Used by `cli_main` under
+/// VIBE_DEBUG=1.
 export fn compile_file_fs_mode_trace(entry_path: String, entry_name: String) -> Bytes with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
@@ -567,11 +577,11 @@ export fn compile_file_fs_mode_trace(entry_path: String, entry_name: String) -> 
   compile_wasi_module_trace(merged_stmts, entry_name)
 }
 
-// Break (debugger / DAP P1): FS-mode compile with `vibe::dbg_break` host-hook
-// instrumentation at each user function entry. Same load/merge as
-// compile_file_fs_mode "no-dce" but routes through the break codegen so the
-// output wasm imports + calls `vibe::dbg_break`. Used by `cli_main` under
-// VIBE_DEBUG_BREAK=1.
+/// Break (debugger / DAP P1): FS-mode compile with `vibe::dbg_break` host-hook
+/// instrumentation at each user function entry. Same load/merge as
+/// compile_file_fs_mode "no-dce" but routes through the break codegen so the
+/// output wasm imports + calls `vibe::dbg_break`. Used by `cli_main` under
+/// VIBE_DEBUG_BREAK=1.
 export fn compile_file_fs_mode_break(entry_path: String, entry_name: String) -> Bytes with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
@@ -606,7 +616,9 @@ export fn compile_file_fs_mode_profiled(entry_path: String, entry_name: String, 
   let parse_us = elapsed_us_since(parse_start)
   let compile_start = profiler_now_us()
   let bytes = if mode == "mvp" {
-    let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
+    let pruned_stmts = dce_stmts(merged_stmts, [
+      entry_name
+    ])
     compile_wasi_module_impl(pruned_stmts, entry_name)
   } else if mode == "no-dce" {
     compile_wasi_module(merged_stmts, entry_name)
@@ -620,16 +632,8 @@ export fn compile_file_fs_mode_profiled(entry_path: String, entry_name: String, 
 fn compile_file_fs_mode_cached_slow_profiled(db: TypeDb, entry_path: String, entry_name: String, mode: String, persistent_artifact_kind: String) -> (Bytes, TypeDb, Int, Int, Int, Int, Int) with { Error, Fs, Profiler } {
   let load_start = profiler_now_us()
   let source_groups = collect_source_groups_fs(entry_path)
-  let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint(
-    source_groups,
-    entry_name,
-    mode
-  )
-  match load_persistent_artifact(
-    persistent_artifact_kind,
-    entry_name,
-    persistent_artifact_fingerprint
-  ) {
+  let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint(source_groups, entry_name, mode)
+  match load_persistent_artifact(persistent_artifact_kind, entry_name, persistent_artifact_fingerprint) {
     Some(bytes) => (bytes, db, elapsed_us_since(load_start), 0, 0, 0, 0),
     None => {
       let load_us = elapsed_us_since(load_start)
@@ -655,17 +659,14 @@ fn compile_file_fs_mode_cached_slow_profiled(db: TypeDb, entry_path: String, ent
           let parse_us = elapsed_us_since(parse_start)
           let compile_start = profiler_now_us()
           let bytes = if mode == "mvp" {
-            let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
+            let pruned_stmts = dce_stmts(merged_stmts, [
+              entry_name
+            ])
             compile_wasi_module_impl(pruned_stmts, entry_name)
           } else {
             compile_wasi_module(merged_stmts, entry_name)
           }
-          store_persistent_artifact(
-            persistent_artifact_kind,
-            entry_name,
-            persistent_artifact_fingerprint,
-            bytes
-          )
+          store_persistent_artifact(persistent_artifact_kind, entry_name, persistent_artifact_fingerprint, bytes)
           let compile_us = elapsed_us_since(compile_start)
           (bytes, db_store_artifact(next_db, entry_path, artifact_kind, entry_name, artifact_fingerprint, bytes), load_us, type_us, bundle_us, parse_us, compile_us)
         }
@@ -676,16 +677,8 @@ fn compile_file_fs_mode_cached_slow_profiled(db: TypeDb, entry_path: String, ent
 
 fn compile_file_fs_mode_cached_slow(db: TypeDb, entry_path: String, entry_name: String, mode: String, persistent_artifact_kind: String) -> (Bytes, TypeDb) with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
-  let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint(
-    source_groups,
-    entry_name,
-    mode
-  )
-  match load_persistent_artifact(
-    persistent_artifact_kind,
-    entry_name,
-    persistent_artifact_fingerprint
-  ) {
+  let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint(source_groups, entry_name, mode)
+  match load_persistent_artifact(persistent_artifact_kind, entry_name, persistent_artifact_fingerprint) {
     Some(bytes) => (bytes, db),
     None => {
       let next_db = prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
@@ -703,17 +696,14 @@ fn compile_file_fs_mode_cached_slow(db: TypeDb, entry_path: String, entry_name: 
         None => {
           let merged_stmts = build_grouped_merged_stmts(source_groups)
           let bytes = if mode == "mvp" {
-            let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
+            let pruned_stmts = dce_stmts(merged_stmts, [
+              entry_name
+            ])
             compile_wasi_module_impl(pruned_stmts, entry_name)
           } else {
             compile_wasi_module(merged_stmts, entry_name)
           }
-          store_persistent_artifact(
-            persistent_artifact_kind,
-            entry_name,
-            persistent_artifact_fingerprint,
-            bytes
-          )
+          store_persistent_artifact(persistent_artifact_kind, entry_name, persistent_artifact_fingerprint, bytes)
           (bytes, db_store_artifact(next_db, entry_path, artifact_kind, entry_name, artifact_fingerprint, bytes))
         }
       }
@@ -731,18 +721,10 @@ export fn compile_file_fs_mode_cached(db: TypeDb, entry_path: String, entry_name
   }
   match load_persistent_source_group_fingerprint_if_valid(entry_path) {
     Some(source_groups_fingerprint) =>
-      match load_persistent_artifact(
-        persistent_artifact_kind,
-        entry_name,
-        build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint(
-          source_groups_fingerprint,
-          entry_name,
-          mode
-        )
-      ) {
-        Some(bytes) => (bytes, db),
-        None => compile_file_fs_mode_cached_slow(db, entry_path, entry_name, mode, persistent_artifact_kind)
-      },
+    match load_persistent_artifact(persistent_artifact_kind, entry_name, build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint(source_groups_fingerprint, entry_name, mode)) {
+      Some(bytes) => (bytes, db),
+      None => compile_file_fs_mode_cached_slow(db, entry_path, entry_name, mode, persistent_artifact_kind)
+    },
     None => compile_file_fs_mode_cached_slow(db, entry_path, entry_name, mode, persistent_artifact_kind)
   }
 }
@@ -768,22 +750,14 @@ export fn compile_file_fs_mode_cached_profiled(db: TypeDb, entry_path: String, e
   let load_start = profiler_now_us()
   match load_persistent_source_group_fingerprint_if_valid(entry_path) {
     Some(source_groups_fingerprint) =>
-      match load_persistent_artifact(
-        persistent_artifact_kind,
-        entry_name,
-        build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint(
-          source_groups_fingerprint,
-          entry_name,
-          mode
-        )
-      ) {
-        Some(bytes) => (bytes, db, elapsed_us_since(load_start), 0, 0, 0, 0, elapsed_us_since(total_start)),
-        None => {
-          let prefix_load_us = elapsed_us_since(load_start)
-          let (bytes, next_db, load_us, type_us, bundle_us, parse_us, compile_us) = compile_file_fs_mode_cached_slow_profiled(db, entry_path, entry_name, mode, persistent_artifact_kind)
-          (bytes, next_db, prefix_load_us + load_us, type_us, bundle_us, parse_us, compile_us, elapsed_us_since(total_start))
-        }
-      },
+    match load_persistent_artifact(persistent_artifact_kind, entry_name, build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint(source_groups_fingerprint, entry_name, mode)) {
+      Some(bytes) => (bytes, db, elapsed_us_since(load_start), 0, 0, 0, 0, elapsed_us_since(total_start)),
+      None => {
+        let prefix_load_us = elapsed_us_since(load_start)
+        let (bytes, next_db, load_us, type_us, bundle_us, parse_us, compile_us) = compile_file_fs_mode_cached_slow_profiled(db, entry_path, entry_name, mode, persistent_artifact_kind)
+        (bytes, next_db, prefix_load_us + load_us, type_us, bundle_us, parse_us, compile_us, elapsed_us_since(total_start))
+      }
+    },
     None => {
       let prefix_load_us = elapsed_us_since(load_start)
       let (bytes, next_db, load_us, type_us, bundle_us, parse_us, compile_us) = compile_file_fs_mode_cached_slow_profiled(db, entry_path, entry_name, mode, persistent_artifact_kind)
@@ -794,14 +768,8 @@ export fn compile_file_fs_mode_cached_profiled(db: TypeDb, entry_path: String, e
 
 fn compile_file_fs_module_cached_slow(db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with { Error, Fs } {
   let source_groups = collect_source_groups_fs(entry_path)
-  let persistent_artifact_fingerprint = build_file_compile_module_artifact_fingerprint(
-    source_groups
-  )
-  match load_persistent_artifact(
-    "file-compile-module",
-    "",
-    persistent_artifact_fingerprint
-  ) {
+  let persistent_artifact_fingerprint = build_file_compile_module_artifact_fingerprint(source_groups)
+  match load_persistent_artifact("file-compile-module", "", persistent_artifact_fingerprint) {
     Some(bytes) => (bytes, db),
     None => {
       let next_db = prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
@@ -813,12 +781,7 @@ fn compile_file_fs_module_cached_slow(db: TypeDb, entry_path: String) -> (Bytes,
         None => {
           let merged_stmts = parse_program(lex(module_source))
           let bytes = compile_module(merged_stmts)
-          store_persistent_artifact(
-            "file-compile-module",
-            "",
-            persistent_artifact_fingerprint,
-            bytes
-          )
+          store_persistent_artifact("file-compile-module", "", persistent_artifact_fingerprint, bytes)
           (bytes, db_store_artifact(codegen_db, entry_path, "module", "", artifact_fingerprint, bytes))
         }
       }
@@ -829,16 +792,10 @@ fn compile_file_fs_module_cached_slow(db: TypeDb, entry_path: String) -> (Bytes,
 export fn compile_file_fs_module_cached(db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with { Error, Fs } {
   match load_persistent_source_group_fingerprint_if_valid(entry_path) {
     Some(source_groups_fingerprint) =>
-      match load_persistent_artifact(
-        "file-compile-module",
-        "",
-        build_file_compile_module_artifact_fingerprint_from_group_fingerprint(
-          source_groups_fingerprint
-        )
-      ) {
-        Some(bytes) => (bytes, db),
-        None => compile_file_fs_module_cached_slow(db, entry_path)
-      },
+    match load_persistent_artifact("file-compile-module", "", build_file_compile_module_artifact_fingerprint_from_group_fingerprint(source_groups_fingerprint)) {
+      Some(bytes) => (bytes, db),
+      None => compile_file_fs_module_cached_slow(db, entry_path)
+    },
     None => compile_file_fs_module_cached_slow(db, entry_path)
   }
 }

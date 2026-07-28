@@ -2,13 +2,13 @@ import ./json_types.vibe {
   Json
 }
 
-// Iterative on purpose (StringBuilder + while, not a local `let rec`): a
-// local `let rec` closure self-calls through the function table
-// (call_indirect), which the self-tail-call pass (rewrite_self_tail_calls)
-// does NOT turn into a loop -- it only covers TOP-LEVEL self-recursion. One
-// frame per scanned character overflowed the real wasm call stack on long
-// strings (see lib/@vibe/prelude/string.vibe's string_index_of_from comment
-// for the same bug class; filed/fixed here as #1188's escape_string half).
+/// Iterative on purpose (StringBuilder + while, not a local `let rec`): a
+/// local `let rec` closure self-calls through the function table
+/// (call_indirect), which the self-tail-call pass (rewrite_self_tail_calls)
+/// does NOT turn into a loop -- it only covers TOP-LEVEL self-recursion. One
+/// frame per scanned character overflowed the real wasm call stack on long
+/// strings (see lib/@vibe/prelude/string.vibe's string_index_of_from comment
+/// for the same bug class; filed/fixed here as #1188's escape_string half).
 fn escape_string(s: String) -> String {
   let len = String::length(s)
   let b = StringBuilder::new()
@@ -35,11 +35,11 @@ fn escape_string(s: String) -> String {
   StringBuilder::freeze(b)
 }
 
-// #742/#744: the selfhost linear backend has no Double→String path —
-// `__to_string` on a Double stringifies the raw f64 bit pattern as an integer
-// (42.0 became "4631107791820423168"). Format in library code: integer part exactly, then
-// 15 significant fractional digits with trailing zeros trimmed (round-trips
-// human-scale JSON values like 3.14 / 0.0125).
+/// #742/#744: the selfhost linear backend has no Double→String path —
+/// `__to_string` on a Double stringifies the raw f64 bit pattern as an integer
+/// (42.0 became "4631107791820423168"). Format in library code: integer part exactly, then
+/// 15 significant fractional digits with trailing zeros trimmed (round-trips
+/// human-scale JSON values like 3.14 / 0.0125).
 fn pad_to_15(s: String) -> String {
   let rec go = (acc: String) -> String {
     if String::length(acc) < 15 {
@@ -51,18 +51,26 @@ fn pad_to_15(s: String) -> String {
 
 fn format_number(n: Double) -> String {
   let neg = n < 0.0
-  let a = if neg { 0.0 - n } else n
+  let a = if neg {
+    0.0 - n
+  } else n
   if a >= 900000000000000.0 {
     // Fractional digits are meaningless out here; integer part only.
     let big = __to_string(Double::to_int(a))
-    if neg { String::concat("-", big) } else big
+    if neg {
+      String::concat("-", big)
+    } else big
   } else {
     let ip = Double::to_int(a)
     let frac = a - Int::to_double(ip)
     let scaled_raw = Double::to_int(frac * 1000000000000000.0 + 0.5)
     let carried = scaled_raw >= 1000000000000000
-    let ip2 = if carried { ip + 1 } else ip
-    let scaled = if carried { 0 } else scaled_raw
+    let ip2 = if carried {
+      ip + 1
+    } else ip
+    let scaled = if carried {
+      0
+    } else scaled_raw
     let int_str = __to_string(ip2)
     // Nested ifs: `neg && ...` trips codegen's float-binop classifier because
     // `neg` comes from a Double comparison (#744).
@@ -85,18 +93,20 @@ fn format_number(n: Double) -> String {
   }
 }
 
-// JArr/JObj build their output with StringBuilder + while, not the local
-// `let rec` closure the two branches used before #1188: that closure
-// self-calls through the function table once per array element / object
-// key, and rewrite_self_tail_calls only turns TOP-LEVEL self-recursion into
-// a loop (see lib/@vibe/prelude/string.vibe's string_index_of_from comment
-// for the same bug class) -- confirmed empirically to overflow the real wasm
-// call stack around a few thousand elements, well within range for
-// realistic data (e.g. a compiler coverage report's branch-hit array).
+/// JArr/JObj build their output with StringBuilder + while, not the local
+/// `let rec` closure the two branches used before #1188: that closure
+/// self-calls through the function table once per array element / object
+/// key, and rewrite_self_tail_calls only turns TOP-LEVEL self-recursion into
+/// a loop (see lib/@vibe/prelude/string.vibe's string_index_of_from comment
+/// for the same bug class) -- confirmed empirically to overflow the real wasm
+/// call stack around a few thousand elements, well within range for
+/// realistic data (e.g. a compiler coverage report's branch-hit array).
 fn stringify_impl(j: Json) -> String {
   match j {
     JNull => "null",
-    JBool(b) => if b { "true" } else "false",
+    JBool(b) => if b {
+      "true"
+    } else "false",
     JNum(n) => format_number(n),
     JStr(s) => escape_string(s),
     JArr(a) => {

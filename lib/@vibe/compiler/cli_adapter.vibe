@@ -4,9 +4,12 @@
 // these used to be two separate leaf imports (preprocess.vibe,
 // merge_sources.vibe), now merged into one.
 import @vibe/compiler/entry/source_compile/wasi_only {
-  compile_source_wasi_only, compile_source_wasi_only_coverage, compile_source_wasi_only_rc, compile_source_wasi_only_rc_shadow,
-  merged_program_source_fs,
-  comp_emit_component_wasm_string_handler
+  comp_emit_component_wasm_string_handler,
+  compile_source_wasi_only,
+  compile_source_wasi_only_coverage,
+  compile_source_wasi_only_rc,
+  compile_source_wasi_only_rc_shadow,
+  merged_program_source_fs
 }
 
 import @vibe/compiler/entry/source_compile/gc_only {
@@ -14,17 +17,37 @@ import @vibe/compiler/entry/source_compile/gc_only {
 }
 
 import @vibe/compiler/runtime {
-  build_module_source_from_source, build_funcmap_from_source,
-  type_at_source, binding_occurrences, symbol_spans, collect_all_diagnostics,
-  set_dep_order_seed, run_module_job_dir, run_publish_env_cache_dir, doc_at_source
+  binding_occurrences,
+  build_funcmap_from_source,
+  build_module_source_from_source,
+  collect_all_diagnostics,
+  doc_at_source,
+  run_module_job_dir,
+  run_publish_env_cache_dir,
+  set_dep_order_seed,
+  symbol_spans,
+  type_at_source
 }
 
 import @vibe/compiler/loader {
-  contract_package_hashes_fs, fill_require_pins_fs_mode, find_deps_missing, find_missing_vpkg_dirs, ingest_source_text_fs, load_or_parse_module_header_fs, publish_check_fs, write_generated_hash_fs
+  contract_package_hashes_fs,
+  fill_require_pins_fs_mode,
+  find_deps_missing,
+  find_missing_vpkg_dirs,
+  ingest_source_text_fs,
+  load_or_parse_module_header_fs,
+  publish_check_fs,
+  write_generated_hash_fs
 }
 
 import @vibe/compiler/entry/compiler/file_compile {
-  compile_file_fs_mode, compile_file_fs_mode_rc, compile_file_fs_mode_rc_shadow, compile_file_fs_mode_coverage, compile_file_fs_mode_trace, compile_file_fs_mode_break, compile_file_fs_mode_testmeta
+  compile_file_fs_mode,
+  compile_file_fs_mode_break,
+  compile_file_fs_mode_coverage,
+  compile_file_fs_mode_rc,
+  compile_file_fs_mode_rc_shadow,
+  compile_file_fs_mode_testmeta,
+  compile_file_fs_mode_trace
 }
 
 import @vibe/compiler/normalize {
@@ -44,8 +67,7 @@ import ./cli_support.vibe {
 }
 
 import ./lsp_server.vibe {
-  lsp_main,
-  lsp_diagnostics_json_string
+  lsp_diagnostics_json_string, lsp_main
 }
 
 import @vibe/compiler/checker {
@@ -54,8 +76,8 @@ import @vibe/compiler/checker {
 
 //# Functions
 
-// Basename of a path without its `.vibe` suffix — the default WIT world name
-// for #537 (`foo/bar_server.vibe` -> `bar_server`, kebab-cased by wit_gen).
+/// Basename of a path without its `.vibe` suffix — the default WIT world name
+/// for #537 (`foo/bar_server.vibe` -> `bar_server`, kebab-cased by wit_gen).
 fn adapter_basename_no_vibe(path: String) -> String {
   let len = String::length(path)
   let mut last_slash = 0 - 1
@@ -75,8 +97,8 @@ fn adapter_basename_no_vibe(path: String) -> String {
   }
 }
 
-// Join `items` with "\n" using String::concat only (no `+`/interpolation, which
-// can miscodegen NUL here). Empty array -> "".
+/// Join `items` with "\n" using String::concat only (no `+`/interpolation, which
+/// can miscodegen NUL here). Empty array -> "".
 fn join_lines(items: Array[String]) -> String {
   let n = Array::length(items)
   if n == 0 {
@@ -95,11 +117,11 @@ fn join_lines(items: Array[String]) -> String {
   }
 }
 
-// Render `vibe symbols` records as one `NAME KIND START END` line per declared
-// symbol (space-separated; KIND/START/END are ints), joined by "\n". Records
-// with an empty name (unrecoverable offset placeholder) are skipped.
-// String::concat + __to_string only (never `+`/interpolation -> NUL miscodegen).
-// Empty -> "".
+/// Render `vibe symbols` records as one `NAME KIND START END` line per declared
+/// symbol (space-separated; KIND/START/END are ints), joined by "\n". Records
+/// with an empty name (unrecoverable offset placeholder) are skipped.
+/// String::concat + __to_string only (never `+`/interpolation -> NUL miscodegen).
+/// Empty -> "".
 fn join_symbol_spans(syms: Array[(String, Int, Int, Int)]) -> String {
   let n = Array::length(syms)
   // O(N) join via StringBuilder; per-record String::concat was O(N²) (issue #366).
@@ -125,9 +147,9 @@ fn join_symbol_spans(syms: Array[(String, Int, Int, Int)]) -> String {
   StringBuilder::freeze(acc)
 }
 
-// Render `vibe binding-at` occurrences as one `START END` line per span (two
-// space-separated ints), joined by "\n". String::concat + __to_string only
-// (never `+`/interpolation, which miscodegen NUL here). Empty -> "".
+/// Render `vibe binding-at` occurrences as one `START END` line per span (two
+/// space-separated ints), joined by "\n". String::concat + __to_string only
+/// (never `+`/interpolation, which miscodegen NUL here). Empty -> "".
 fn join_binding_occurrences(occ: Array[(Int, Int)]) -> String {
   let n = Array::length(occ)
   if n == 0 {
@@ -149,9 +171,9 @@ fn join_binding_occurrences(occ: Array[(Int, Int)]) -> String {
   }
 }
 
-// Parse a non-negative decimal int from `s`; on any non-digit (or empty) return
-// `default`. String::concat-safe (no `+`/interpolation): folds digits via
-// `acc * 10 + (c - '0')`.
+/// Parse a non-negative decimal int from `s`; on any non-digit (or empty) return
+/// `default`. String::concat-safe (no `+`/interpolation): folds digits via
+/// `acc * 10 + (c - '0')`.
 fn parse_int_or(s: String, default: Int) -> Int {
   let len = String::length(s)
   if len == 0 {
@@ -212,11 +234,11 @@ fn profile_memory_mark(enabled: Bool) -> Unit with { Env } {
   }
 }
 
-// #cfg activation: VIBE_CFG=flag1,flag2 appends `#cfg_enable(flag)` directive
-// lines to the source (appending at the END keeps every original byte offset,
-// so diagnostics/spans are unaffected). parse_program pre-scans for these and
-// keeps the matching `#cfg(flag)` statements; with VIBE_CFG unset, every
-// #cfg-guarded statement is parsed-and-dropped -- zero bytes in the output.
+/// #cfg activation: VIBE_CFG=flag1,flag2 appends `#cfg_enable(flag)` directive
+/// lines to the source (appending at the END keeps every original byte offset,
+/// so diagnostics/spans are unaffected). parse_program pre-scans for these and
+/// keeps the matching `#cfg(flag)` statements; with VIBE_CFG unset, every
+/// #cfg-guarded statement is parsed-and-dropped -- zero bytes in the output.
 fn apply_cfg_env(source: String, cfg_csv: String) -> String {
   if cfg_csv == "" {
     source
@@ -252,27 +274,27 @@ fn compile_source_for_rc_flag(source: String, entry_name: String, rc_flag: Strin
   }
 }
 
-// On a parse/type/codegen error the checker throws a formatted diagnostic
-// String. Surface it to tooling by writing it to an `<output>.diag` sidecar so
-// the `vibe` launcher can print a real message instead of an opaque wasm trap.
-// Returns a non-zero exit code. (#594 usability / docs/release-roadmap.md.)
+/// On a parse/type/codegen error the checker throws a formatted diagnostic
+/// String. Surface it to tooling by writing it to an `<output>.diag` sidecar so
+/// the `vibe` launcher can print a real message instead of an opaque wasm trap.
+/// Returns a non-zero exit code. (#594 usability / docs/release-roadmap.md.)
 fn emit_compile_diag(output_path: String, msg: String) -> Int with { Fs } {
   Fs::write_file(String::concat(output_path, ".diag"), msg)
   1
 }
 
-// debugger テーマ3 / M2: best-effort `.funcmap` sidecar beside the compiled wasm.
-// Maps each ENTRY-file top-level function to its 1-based source line so the
-// `vibe run` launcher can annotate trap backtrace frames with (file:line). The
-// wasm "name" section (debugger P0) already names the frames; this adds lines.
-//
-// Best-effort: a failure to build/write the funcmap must NOT fail the compile —
-// the wasm write already returned 0. So we wrap the work in its own handler and
-// swallow any Error::Throw. Entry-file functions only (imported modules: future
-// work).
-// Returns 0 (the value is consumed at the call site so the call is never DCE'd:
-// it is a discarded `Unit` side-effect otherwise, which aggressive DCE in the
-// seed compiler may drop).
+/// debugger テーマ3 / M2: best-effort `.funcmap` sidecar beside the compiled wasm.
+/// Maps each ENTRY-file top-level function to its 1-based source line so the
+/// `vibe run` launcher can annotate trap backtrace frames with (file:line). The
+/// wasm "name" section (debugger P0) already names the frames; this adds lines.
+///
+/// Best-effort: a failure to build/write the funcmap must NOT fail the compile —
+/// the wasm write already returned 0. So we wrap the work in its own handler and
+/// swallow any Error::Throw. Entry-file functions only (imported modules: future
+/// work).
+/// Returns 0 (the value is consumed at the call site so the call is never DCE'd:
+/// it is a discarded `Unit` side-effect otherwise, which aggressive DCE in the
+/// seed compiler may drop).
 fn write_funcmap_sidecar(input_path: String, output_path: String) -> Int with { Fs, Error } {
   let src = Fs::read_file(input_path)
   let text = build_funcmap_from_source(src)
@@ -280,14 +302,14 @@ fn write_funcmap_sidecar(input_path: String, output_path: String) -> Int with { 
   0
 }
 
-// #537 `vibe compile --wit`: emit the WIT world for the file's effect surface
-// (exported functions -> world exports; their `with { E }` rows -> world
-// imports). Imports resolved from FS. Contract: docs/effect-wit-mapping.md.
-// The Error handle is this function's tail (the proven adapter shape) rather
-// than a `return handle` inside cli_main's dispatch chain.
-// Entry-file-only surface scan (v1): exports and effect declarations are read
-// from the entry file itself; effects declared only in imported modules render
-// as host-capability comments (documented in docs/effect-wit-mapping.md).
+/// #537 `vibe compile --wit`: emit the WIT world for the file's effect surface
+/// (exported functions -> world exports; their `with { E }` rows -> world
+/// imports). Imports resolved from FS. Contract: docs/effect-wit-mapping.md.
+/// The Error handle is this function's tail (the proven adapter shape) rather
+/// than a `return handle` inside cli_main's dispatch chain.
+/// Entry-file-only surface scan (v1): exports and effect declarations are read
+/// from the entry file itself; effects declared only in imported modules render
+/// as host-capability comments (documented in docs/effect-wit-mapping.md).
 fn adapter_emit_wit(input_path: String, output_path: String) -> Int with { Fs, Env } {
   handle {
     let entry_stmts = parse_program(lex(Fs::read_file(input_path)))
@@ -299,13 +321,13 @@ fn adapter_emit_wit(input_path: String, output_path: String) -> Int with { Fs, E
   }
 }
 
-// #537 `vibe serve` artifact step: validate the wasi-http P3 handler contract,
-// compile the file, and wrap it into a component exporting
-//   handler: func(method, url, headers, body: string) -> string
-// The runner layer (runtime/vibe serve) composes the result with the P3 HTTP
-// adapter and launches `wasmtime serve` — artifact generation stays in the
-// compiler, serving stays in the runner. VIBE_SERVE_WIT_OUT optionally writes
-// the WIT world sidecar.
+/// #537 `vibe serve` artifact step: validate the wasi-http P3 handler contract,
+/// compile the file, and wrap it into a component exporting
+///   handler: func(method, url, headers, body: string) -> string
+/// The runner layer (runtime/vibe serve) composes the result with the P3 HTTP
+/// adapter and launches `wasmtime serve` — artifact generation stays in the
+/// compiler, serving stays in the runner. VIBE_SERVE_WIT_OUT optionally writes
+/// the WIT world sidecar.
 fn adapter_serve_component(input_path: String, output_path: String) -> Int with { Fs, Env } {
   handle {
     let entry_stmts = parse_program(lex(Fs::read_file(input_path)))
@@ -451,12 +473,7 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
   // release. Writes "ok" on an honest bump; a dishonest claim is a diag.
   if Env::get("VIBE_PUBLISH_CHECK") == "1" {
     return handle {
-      let perrors = publish_check_fs(
-        Env::get("VIBE_PUBLISH_PREV"),
-        input_path,
-        Env::get("VIBE_PUBLISH_PREV_VERSION"),
-        Env::get("VIBE_PUBLISH_VERSION")
-      )
+      let perrors = publish_check_fs(Env::get("VIBE_PUBLISH_PREV"), input_path, Env::get("VIBE_PUBLISH_PREV_VERSION"), Env::get("VIBE_PUBLISH_VERSION"))
       if Array::length(perrors) > 0 {
         throw(String::join(perrors, "; "))
       } else ()

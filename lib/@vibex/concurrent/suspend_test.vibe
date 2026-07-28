@@ -1,36 +1,57 @@
 //# Imports
 
 import ./concurrent.vibe {
-  type TaskGroup, type TaskHandle, type TaskError, type TaskStep,
-  type Channel, type Sender, type Receiver, type SendError, type ChannelConfigError,
-  TaskGroup::run, TaskGroup::adopt, TaskGroup::pump, TaskGroup::pump_all,
-  TaskGroup::spawn, TaskGroup::spawn_suspend,
-  TaskHandle::settle, TaskHandle::park, TaskHandle::park_poll, TaskHandle::wake,
-  TaskHandle::join, TaskHandle::cancel,
-  Channel::bounded, Sender::send, Sender::send_wait, Sender::clone, Sender::release,
-  Receiver::recv, Receiver::recv_wait
+  type Channel,
+  type ChannelConfigError,
+  type Receiver,
+  type SendError,
+  type Sender,
+  type TaskError,
+  type TaskGroup,
+  type TaskHandle,
+  type TaskStep,
+  Channel::bounded,
+  Receiver::recv,
+  Receiver::recv_wait,
+  Sender::clone,
+  Sender::release,
+  Sender::send,
+  Sender::send_wait,
+  TaskGroup::adopt,
+  TaskGroup::pump,
+  TaskGroup::pump_all,
+  TaskGroup::run,
+  TaskGroup::spawn,
+  TaskGroup::spawn_suspend,
+  TaskHandle::cancel,
+  TaskHandle::join,
+  TaskHandle::park,
+  TaskHandle::park_poll,
+  TaskHandle::settle,
+  TaskHandle::wake
 }
 
 //# Types
 
-// Transparent effect declaration (#752): matches the package contract's
-// Async by definition — the declaration IS the contract.
+/// Transparent effect declaration (#752): matches the package contract's
+/// Async by definition — the declaration IS the contract.
 effect Async {
   Suspend(Int) -> Int
 }
 
 //# Misc
 
-// THE capability run-to-completion could not express (concurrent.vibe's
-// old header note): two tasks blocking mid-body against each other.
-// Both bodies suspend twice; pump_all round-robins the stored
-// continuations, so the log interleaves 1..6 in strict alternation.
-// `log` is deliberately a LOCAL of the test: suspend continuations
-// capturing a function-local alongside a second suspend site is exactly
-// the #1097 use-after-free shape — keeping it local makes this test the
-// library-level regression lock for that fix.
+/// THE capability run-to-completion could not express (concurrent.vibe's
+/// old header note): two tasks blocking mid-body against each other.
+/// Both bodies suspend twice; pump_all round-robins the stored
+/// continuations, so the log interleaves 1..6 in strict alternation.
+/// `log` is deliberately a LOCAL of the test: suspend continuations
+/// capturing a function-local alongside a second suspend site is exactly
+/// the #1097 use-after-free shape — keeping it local makes this test the
+/// library-level regression lock for that fix.
 test "adopted tasks interleave mid-body via Async::Suspend" {
-  let log: Array[Int] = []
+  let log: Array[Int] = [
+  ]
   let out = TaskGroup::run((g) -> {
     let ha = TaskGroup::adopt(g)
     TaskHandle::settle(ha, handle {
@@ -147,27 +168,28 @@ test "cancel on a parked task resolves Cancelled and drops the continuation" {
   })
 }
 
-// closure-CPS (ADR-0076 追記31 Vertical B): the handle site lives inside
-// spawn_suspend (the library) — the task bodies here are PLAIN closures
-// with an Async row, no user-side handle boilerplate at all. The suspend
-// lowering step-compiles the two literals at this call site and
-// spawn_suspend's internal handle bubbles the steps through its `f()`
-// closure-param call. Pins the same strict 1..6 alternation as the
-// adoption-site test above.
-//
-// #1081 step 3 Phase B: unlike the adoption-site test above (which drives
-// its closures through a local `handle` expression, not a `TaskGroup::
-// spawn_suspend` CALL, so the `Spawnable[r]` check does not apply to it),
-// these ARE spawn_suspend calls -- an outer captured plain `Array` is no
-// longer a legal capture. A same-region `Sender` IS Spawnable-legal
-// (docs/concurrency.md), so each task reports through a cloned Sender
-// instead of a shared Array; `Sender::send` is a plain row-free function
-// (no `Async`), so calling it between `perform Async::Suspend` points is
-// unaffected by the suspend lowering's eligibility rules.
+/// closure-CPS (ADR-0076 追記31 Vertical B): the handle site lives inside
+/// spawn_suspend (the library) — the task bodies here are PLAIN closures
+/// with an Async row, no user-side handle boilerplate at all. The suspend
+/// lowering step-compiles the two literals at this call site and
+/// spawn_suspend's internal handle bubbles the steps through its `f()`
+/// closure-param call. Pins the same strict 1..6 alternation as the
+/// adoption-site test above.
+///
+/// #1081 step 3 Phase B: unlike the adoption-site test above (which drives
+/// its closures through a local `handle` expression, not a `TaskGroup::
+/// spawn_suspend` CALL, so the `Spawnable[r]` check does not apply to it),
+/// these ARE spawn_suspend calls -- an outer captured plain `Array` is no
+/// longer a legal capture. A same-region `Sender` IS Spawnable-legal
+/// (docs/concurrency.md), so each task reports through a cloned Sender
+/// instead of a shared Array; `Sender::send` is a plain row-free function
+/// (no `Async`), so calling it between `perform Async::Suspend` points is
+/// unaffected by the suspend lowering's eligibility rules.
 test "spawn_suspend interleaves two plain closure bodies" {
   let out = TaskGroup::run((g) -> {
     match Channel::bounded(g, 6) {
-      Err(_) => [],
+      Err(_) => [
+      ],
       Ok((tx, rx)) => {
         let tx2 = Sender::clone(tx)
         let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
@@ -202,7 +224,9 @@ test "spawn_suspend interleaves two plain closure bodies" {
         while going {
           match Receiver::recv(rx) {
             Some(v) => ArrayBuilder::push(log, v),
-            None => { going = false }
+            None => {
+              going = false
+            }
           }
         }
         ArrayBuilder::push(log, ra + rb)
@@ -225,9 +249,9 @@ test "spawn_suspend interleaves two plain closure bodies" {
   }
 }
 
-// A pure body (no perform at all) passed to spawn_suspend still settles:
-// the arg-position rule Done-wraps the literal so it matches the step
-// convention spawn_suspend's transformed body expects.
+/// A pure body (no perform at all) passed to spawn_suspend still settles:
+/// the arg-position rule Done-wraps the literal so it matches the step
+/// convention spawn_suspend's transformed body expects.
 test "spawn_suspend with a pure body settles synchronously" {
   let out = TaskGroup::run((g) -> {
     let h = TaskGroup::spawn_suspend(g, () -> 6 * 7)
@@ -242,12 +266,12 @@ test "spawn_suspend with a pure body settles synchronously" {
   })
 }
 
-// Codex review (#1111): the ADOPTION-lane canonical arm must propagate
-// the suspend reason (park_poll(h, resume, r == 1)); a channel wait
-// parked through it is poller-classified, so a deliverable message
-// resumes it and an undeliverable one would TRAP (not livelock). Here:
-// an adopted consumer blocks in recv_wait, the run body then supplies
-// the message through the stack-driving send, and pump_all delivers.
+/// Codex review (#1111): the ADOPTION-lane canonical arm must propagate
+/// the suspend reason (park_poll(h, resume, r == 1)); a channel wait
+/// parked through it is poller-classified, so a deliverable message
+/// resumes it and an undeliverable one would TRAP (not livelock). Here:
+/// an adopted consumer blocks in recv_wait, the run body then supplies
+/// the message through the stack-driving send, and pump_all delivers.
 test "adoption-lane recv_wait parks as a poller and resumes on delivery" {
   let out = TaskGroup::run((g) -> {
     match Channel::bounded(g, 1) {
@@ -284,11 +308,11 @@ test "adoption-lane recv_wait parks as a poller and resumes on delivery" {
   })
 }
 
-// Codex review regression (#1110): a LONE task that yields (Suspend(0))
-// three or more times must complete normally — cooperative yields carry
-// no progress bump, and the first deadlock-detector counted them as
-// stalls (traps at the 3rd consecutive yield of a single task). Yields
-// are never deadlock evidence; only pollers (Suspend(1)) are.
+/// Codex review regression (#1110): a LONE task that yields (Suspend(0))
+/// three or more times must complete normally — cooperative yields carry
+/// no progress bump, and the first deadlock-detector counted them as
+/// stalls (traps at the 3rd consecutive yield of a single task). Yields
+/// are never deadlock evidence; only pollers (Suspend(1)) are.
 test "a lone spawn_suspend task may yield three times without tripping the deadlock trap" {
   let out = TaskGroup::run((g) -> {
     let h = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
@@ -309,11 +333,11 @@ test "a lone spawn_suspend task may yield three times without tripping the deadl
   })
 }
 
-// Fail-fast × suspendable (ADR-0068 次スライス): a spawn_suspend body
-// whose Error::Throw escapes converts to Failed, records the group's
-// first observed failure, and AUTO-CANCELS parked siblings (their stored
-// continuations are dropped). Case 1: the throw happens on the settle
-// leg (before any suspend) — the sibling parked first and never wakes.
+/// Fail-fast × suspendable (ADR-0068 次スライス): a spawn_suspend body
+/// whose Error::Throw escapes converts to Failed, records the group's
+/// first observed failure, and AUTO-CANCELS parked siblings (their stored
+/// continuations are dropped). Case 1: the throw happens on the settle
+/// leg (before any suspend) — the sibling parked first and never wakes.
 test "spawn_suspend Error on the settle leg fails fast and cancels the parked sibling" {
   let out = TaskGroup::run((g) -> {
     let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
@@ -353,9 +377,9 @@ test "spawn_suspend Error on the settle leg fails fast and cancels the parked si
   })
 }
 
-// Case 2: the throw happens on a RESUMED leg (after a suspend) — it runs
-// on the pump's stack, caught by the park wrapper's per-leg Error
-// boundary. The parked sibling is cancelled by the fail-fast sweep.
+/// Case 2: the throw happens on a RESUMED leg (after a suspend) — it runs
+/// on the pump's stack, caught by the park wrapper's per-leg Error
+/// boundary. The parked sibling is cancelled by the fail-fast sweep.
 test "spawn_suspend Error after a resume fails fast from the pump stack" {
   let out = TaskGroup::run((g) -> {
     let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
@@ -397,11 +421,11 @@ test "spawn_suspend Error after a resume fails fast from the pump stack" {
   })
 }
 
-// #1115 Codex review: BOTH failure lanes must run the fail-fast sweep.
-// A run-to-completion spawn child throwing (dispatched by run's close
-// drive) cancels the parked suspendable sibling — without the shared
-// sweep the close-time terminal check would TRAP on the still-parked
-// cell instead of returning Err(Failed(...)).
+/// #1115 Codex review: BOTH failure lanes must run the fail-fast sweep.
+/// A run-to-completion spawn child throwing (dispatched by run's close
+/// drive) cancels the parked suspendable sibling — without the shared
+/// sweep the close-time terminal check would TRAP on the still-parked
+/// cell instead of returning Err(Failed(...)).
 test "a spawn-lane failure cancels a parked spawn_suspend sibling" {
   let out = TaskGroup::run((g) -> {
     let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
@@ -422,22 +446,22 @@ test "a spawn-lane failure cancels a parked spawn_suspend sibling" {
   })
 }
 
-// Channel blocking (ADR-0076 追記31 の続きスライス): the shape the module
-// header called out as impossible under run-to-completion — a producer
-// overflowing a capacity-1 channel while the consumer drains — now works
-// with BOTH sides as plain spawn_suspend closures. send_wait deposits and
-// suspends when the buffer is full; recv_wait suspends while empty;
-// pump_all round-robins them. The log pins the exact deterministic
-// interleaving (producer logs 1..3 after each send, consumer logs 100+v
-// after each recv).
-//
-// #1081 step 3 Phase B: an outer captured Array is no longer Spawnable-
-// legal for the same reason as the interleave test above. `tx`/`rx` are
-// already the channel under test (capacity 1, deliberately overflowed), so
-// a SECOND same-region channel (capacity 6, comfortably ahead of demand —
-// never itself blocks) carries the log entries instead; each side gets its
-// own cloned Sender. `Sender::send` (unlike `send_wait`) never suspends, so
-// it does not change the mid-body suspend points send_wait/recv_wait pin.
+/// Channel blocking (ADR-0076 追記31 の続きスライス): the shape the module
+/// header called out as impossible under run-to-completion — a producer
+/// overflowing a capacity-1 channel while the consumer drains — now works
+/// with BOTH sides as plain spawn_suspend closures. send_wait deposits and
+/// suspends when the buffer is full; recv_wait suspends while empty;
+/// pump_all round-robins them. The log pins the exact deterministic
+/// interleaving (producer logs 1..3 after each send, consumer logs 100+v
+/// after each recv).
+///
+/// #1081 step 3 Phase B: an outer captured Array is no longer Spawnable-
+/// legal for the same reason as the interleave test above. `tx`/`rx` are
+/// already the channel under test (capacity 1, deliberately overflowed), so
+/// a SECOND same-region channel (capacity 6, comfortably ahead of demand —
+/// never itself blocks) carries the log entries instead; each side gets its
+/// own cloned Sender. `Sender::send` (unlike `send_wait`) never suspends, so
+/// it does not change the mid-body suspend points send_wait/recv_wait pin.
 test "spawn_suspend producer/consumer block mid-body through a capacity-1 channel" {
   let out = TaskGroup::run((g) -> {
     match Channel::bounded(g, 1) {
@@ -494,15 +518,19 @@ test "spawn_suspend producer/consumer block mid-body through a capacity-1 channe
             while going {
               match Receiver::recv(logrx) {
                 Some(v) => ArrayBuilder::push(log, v),
-                None => { going = false }
+                None => {
+                  going = false
+                }
               }
             }
             (rp * 10000 + rc, ArrayBuilder::freeze(log))
           },
-          Err(_) => (0 - 998, [])
+          Err(_) => (0 - 998, [
+          ])
         }
       },
-      Err(_) => (0 - 999, [])
+      Err(_) => (0 - 999, [
+      ])
     }
   })
   match out {
@@ -520,8 +548,8 @@ test "spawn_suspend producer/consumer block mid-body through a capacity-1 channe
   }
 }
 
-// Rendezvous (capacity 0): the suspended sender deposits first (the
-// linearization point), parks, and is woken after the receiver consumes.
+/// Rendezvous (capacity 0): the suspended sender deposits first (the
+/// linearization point), parks, and is woken after the receiver consumes.
 test "spawn_suspend rendezvous send_wait/recv_wait on a capacity-0 channel" {
   let out = TaskGroup::run((g) -> {
     match Channel::bounded(g, 0) {
