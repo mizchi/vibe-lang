@@ -1151,6 +1151,17 @@ case "$cmd" in
     # shellcheck disable=SC2086
     set -- $files
     [ "$#" -ge 1 ] || die "usage: vibe test [--no-cache] [--jobs N] <file_test.vibe> [more_test.vibe...]"
+    # Codex review, PR #1175: validate every path up front and abort before
+    # running anything, rather than discovering a missing file mid-run. The
+    # original serial loop's own `[ -f "$src" ] || die ...` only fail-fast
+    # aborted from the missing file onward -- files earlier in the argument
+    # list had already compiled and run (potentially executing effectful
+    # tests) by the time a later typo'd path was discovered. Checking all
+    # paths first is strictly fail-faster than that, and gives the serial
+    # and parallel drivers below identical semantics for a bad invocation.
+    for src in "$@"; do
+      [ -f "$src" ] || die "not found: $src"
+    done
     tcache="${VIBE_TEST_CACHE:-$VIBE_HOME/cache/test}"
 
     # Runs one test file's compile+run+cache-check, printing its own ok/FAIL
@@ -1260,22 +1271,32 @@ case "$cmd" in
       # exact partial-write race this concurrency would otherwise expose.
       while [ "$#" -gt 0 ]; do
         batch_pids=()
-        batch_logs=()
+        batch_out_logs=()
+        batch_err_logs=()
         n=0
         while [ "$#" -gt 0 ] && [ "$n" -lt "$jobs" ]; do
           src="$1"; shift
-          log="$(mktemp -t vibe-test-batch-XXXXXX.log)"
-          ( _test_run_one "$src" 1 > "$log" 2>&1 ) &
+          out_log="$(mktemp -t vibe-test-batch-out-XXXXXX.log)"
+          err_log="$(mktemp -t vibe-test-batch-err-XXXXXX.log)"
+          # Codex review, PR #1175: buffer stdout/stderr separately (not a
+          # merged 2>&1 log) so a caller that captures or parses the two
+          # streams independently (e.g. `vibe test --jobs 4 ... 2>/dev/null`
+          # expecting only ok/FAIL on stdout) sees the same split it would
+          # from the serial path -- compiler diagnostics and condensed traps
+          # stay on stderr instead of leaking onto stdout here.
+          ( _test_run_one "$src" 1 > "$out_log" 2> "$err_log" ) &
           batch_pids+=("$!")
-          batch_logs+=("$log")
+          batch_out_logs+=("$out_log")
+          batch_err_logs+=("$err_log")
           n=$((n + 1))
         done
         for pid in "${batch_pids[@]}"; do
           wait "$pid" || failed=1
         done
-        for log in "${batch_logs[@]}"; do
-          cat "$log"
-          rm -f "$log"
+        for i in "${!batch_out_logs[@]}"; do
+          cat "${batch_out_logs[$i]}"
+          cat "${batch_err_logs[$i]}" >&2
+          rm -f "${batch_out_logs[$i]}" "${batch_err_logs[$i]}"
         done
       done
     fi
