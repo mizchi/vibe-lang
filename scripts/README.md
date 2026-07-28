@@ -77,6 +77,12 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 
 ## Check / lint / gate / repro
 - `check_lock_clean.sh`, `check_{bundle_sync,module_source_sync,portable_boundary}.sh`
+- `check_vibe_fmt.sh` (+ `vibe_fmt_allowlist.txt`) — CI-enforced `vibe fmt`
+  gate (`vibe-fmt-check` job, required): every `lib/**/*.vibe` file must be a
+  `vibe_fmt.sh --check` fixpoint unless grandfathered in the allowlist
+  (ratchet, same idiom as `lint_architecture_debt.sh`'s allowlist below).
+  `pkf run fmt` itself is still the no-op placeholder (Taskfile.pkl) — this
+  only lints, it doesn't auto-apply across the tree.
 - `lint_architecture_debt.sh` (+ `architecture_debt_{rules.tsv,allowlist.txt}`),
   `lint_tracked_experiment_names.sh`
 - `verify_rc.sh`, `rc_corpus_parity.sh`, `rc_cutover_readiness.sh`

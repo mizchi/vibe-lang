@@ -113,6 +113,30 @@ jobs:
           path: _build/ci-artifacts/stage2.wasm
           if-no-files-found: error
 
+  # vibe-fmt lint (scripts/check_vibe_fmt.sh): every lib/**/*.vibe file
+  # must be a fixpoint of the selfhost formatter unless grandfathered in
+  # scripts/vibe_fmt_allowlist.txt (ratchet, mirrors lint-architecture-debt).
+  # Needs only node (vibe_fmt.sh drives the committed seed through the node
+  # host runner, no wasmtime), so this runs standalone and overlaps
+  # compiler-gate/unit-tests instead of serializing behind them.
+  vibe-fmt-check:
+    name: vibe-fmt-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cache seed artifact
+        uses: actions/cache@v4
+        with:
+          path: bootstrap/seed/compiler.wasm
+          key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
+      - name: Ensure seed artifact
+        run: bash scripts/ensure_seed.sh
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: vibe-fmt lint
+        run: bash scripts/check_vibe_fmt.sh
+
   # The 467-file selfhost unit-test battery (#531/#535), weight-balanced into
   # parallel shards (scripts/unit_test_weights.tsv drives the LPT partition
   # inside unit_test_runner.sh). Each shard builds its own stage2 from the
@@ -309,7 +333,7 @@ jobs:
   # Aggregate required check (branch protection requires "ci-required").
   ci-required:
     name: ci-required
-    needs: [compiler-gate, unit-tests]
+    needs: [compiler-gate, unit-tests, vibe-fmt-check]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -321,6 +345,10 @@ jobs:
           fi
           if [ "${{ needs.unit-tests.result }}" != "success" ]; then
             echo "::error::unit-tests did not succeed (${{ needs.unit-tests.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.vibe-fmt-check.result }}" != "success" ]; then
+            echo "::error::vibe-fmt-check did not succeed (${{ needs.vibe-fmt-check.result }})"
             exit 1
           fi
           echo "all required jobs passed"
