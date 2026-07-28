@@ -3629,6 +3629,69 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
           // branch here checking all of its arguments).
           let (_, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
           (tab_call_ty(tytab, call_off, CtInt), s1, c1)
+        } else if name == "FixedArray::make" && Array::length(args) == 2 {
+          // #1140: FixedArray[T] is a checker-only phantom-type distinction
+          // over Array[T]'s exact same runtime layout, same technique as
+          // FrozenArray above (codegen already treats FixedArray::make/get/
+          // set/length as their own opcodes -- see codegen/gc/backend_call.vibe
+          // and codegen/expr/compile_call.vibe -- only the checker-level type
+          // tracking was missing, degrading every FixedArray value to
+          // CtArray(CtUnknown)/CtUnknown). Capture the init value's type into
+          // CtNamed("FixedArray", [elem]) so get/set/length recover a real
+          // element type.
+          let (_, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+          let (init_ty, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+          let elem = subst_apply(s2, init_ty)
+          (tab_call_ty(tytab, call_off, CtNamed("FixedArray", Array::slice([
+            elem
+          ], 0, 1))), s2, c2)
+        } else if name == "FixedArray::get" && Array::length(args) == 2 {
+          // #1140: same element-type extraction as FrozenArray::get, over a
+          // tracked FixedArray receiver.
+          let (fa_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+          let (_, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+          let result = match subst_apply(s2, fa_ty) {
+            CtNamed(fan, faargs) => if fan == "FixedArray" && Array::length(faargs) == 1 {
+              subst_apply(s2, Array::get(faargs, 0))
+            } else {
+              CtUnknown
+            },
+            _ => CtUnknown
+          }
+          (tab_call_ty(tytab, call_off, result), s2, c2)
+        } else if (name == "FixedArray::set" || name == "FixedArray::unsafe_set") && Array::length(args) == 3 {
+          // #1140: writing a value not assignable to the tracked element type
+          // is now a located type error instead of silently compiling through
+          // CtUnknown (same discipline as Map::set below). `unsafe_set` only
+          // skips the runtime bounds check (codegen concern) -- the static
+          // element-type contract is identical to `set`.
+          let (fa_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+          let (_, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+          let (v_ty, s3, c3) = check_expr(Array::get(args, 2), env, defs, s2, c2, errors, tytab)
+          let s4 = match subst_apply(s3, fa_ty) {
+            CtNamed(fan2, faargs2) => if fan2 == "FixedArray" && Array::length(faargs2) == 1 {
+              check_assignable(subst_apply(s3, Array::get(faargs2, 0)), subst_apply(s3, v_ty), s3, errors, String::concat("value type mismatch for ", name), call_off)
+            } else {
+              s3
+            },
+            _ => s3
+          }
+          (tab_call_ty(tytab, call_off, CtUnit), s4, c3)
+        } else if name == "FixedArray::length" && Array::length(args) == 1 {
+          // #1140: same as FrozenArray::length -- always Int, receiver still checked.
+          let (_, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+          (tab_call_ty(tytab, call_off, CtInt), s1, c1)
+        } else if name == "FixedArray::blit" && Array::length(args) == 5 {
+          // #1140: dst/dst_off/src/src_off/len. No cross-checking that dst's
+          // and src's tracked element types match (kept tolerant, same spirit
+          // as the loose pre-existing fallback signature) -- just make sure
+          // every argument is itself checked.
+          let (_, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+          let (_, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+          let (_, s3, c3) = check_expr(Array::get(args, 2), env, defs, s2, c2, errors, tytab)
+          let (_, s4, c4) = check_expr(Array::get(args, 3), env, defs, s3, c3, errors, tytab)
+          let (_, s5, c5) = check_expr(Array::get(args, 4), env, defs, s4, c4, errors, tytab)
+          (tab_call_ty(tytab, call_off, CtUnit), s5, c5)
         } else if name == "Map::set" && Array::length(args) == 3 {
           // #983: every Map API's VALUE position was `CtUnknown` (the static
           // builtin table cannot mint per-call vars), so
