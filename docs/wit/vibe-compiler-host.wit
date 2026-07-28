@@ -40,39 +40,61 @@ package vibe:compiler-host;
 // Stderr call without "Stderr" in the row) -- deliberately excluded.
 //
 // PER-OP REACHABILITY AUDIT (round 2, following up on round 1's own
-// recorded open question): grepped every `Fs::<op>(` call site across
-// lib/@vibe/compiler, excluding tests, the checker/codegen registration
-// tables themselves, and the auto-generated `*_bundle.vibe`/
-// `_cli_adapter_module_source.vibe` flatten artifacts (which just
-// duplicate other files' text, not new call sites). Seven ops have real,
-// non-test call sites in load-bearing compiler files (`read-file`/
-// `write-file`/`write-bytes` directly in cli_adapter.vibe; `exists` in
-// runtime/typecheck_fs.vibe and cache/persistent_cache.vibe; `stat-token`
-// in loader/loader.vibe and core/module_graph_path.vibe; `remove` in
-// entry/cli_cache/cli_cache.vibe; `readdir` in loader/loader.vibe and
-// loader/header_cache.vibe). The other ten -- `read-bytes`, `is-dir`,
-// `is-file`, `mkdir`, `mkdir-p`, `chdir`, `getcwd`, `copy`, `append`,
-// `rename` -- have ZERO real call sites anywhere in the compiler's own
-// source; they're recognized builtin names (so the checker accepts them
-// when a USER program calls them via `import Fs`/`lib/@vibe/fs`) but
-// `cli_main` never invokes them itself. Round 1 included them because
-// "tagged Fs" and "actually called by cli_main" were conflated; round 2
-// removes them. This also resolves round 1's open question about
-// `runtime/vibewt` lacking `fs_mkdir`/`fs_mkdir_p`/`fs_chdir`/`fs_getcwd`/
-// `fs_copy`/`fs_append`/`fs_rename`: confirmed NOT a live gap -- `cli_main`
-// never reaches any of them, so vibewt omitting them is correct, not a bug.
+// recorded open question; round 3 tightened it further, Codex review PR
+// #1180): grepped every `Fs::<op>(` call site across lib/@vibe/compiler,
+// excluding tests, the checker/codegen registration tables themselves, and
+// the auto-generated `*_bundle.vibe`/`_cli_adapter_module_source.vibe`
+// flatten artifacts (which just duplicate other files' text, not new call
+// sites). Six ops have real, non-test call sites REACHABLE FROM
+// `cli_main`'s own import graph (`read-file`/`write-file`/`write-bytes`
+// directly in cli_adapter.vibe, which also directly imports the `runtime`
+// and `loader` packages; `exists` in runtime/typecheck_fs.vibe and
+// cache/persistent_cache.vibe, both under the imported `runtime` package;
+// `stat-token` in loader/loader.vibe and core/module_graph_path.vibe,
+// under the imported `loader` package; `readdir` in loader/loader.vibe and
+// loader/header_cache.vibe, same package).
+//
+// `Fs::remove` was included through round 2 but removed in round 3: its
+// only call site, entry/cli_cache/cli_cache.vibe's
+// `clear_prepare_probe_caches`, is under a separate `entry/cli_cache/`
+// directory that `cli_adapter.vibe` never imports and nothing else in the
+// compiler calls into either -- an orphaned/alternate entry point, not
+// part of `cli_main`'s reachable graph (Codex review, PR #1180).
+//
+// The remaining eleven ops from round 1's original 17 (`remove` plus ten
+// others) -- `read-bytes`, `is-dir`, `is-file`, `remove`, `mkdir`,
+// `mkdir-p`, `chdir`, `getcwd`, `copy`, `append`, `rename` -- either have
+// ZERO real call sites anywhere in the compiler's own source, or (in
+// `remove`'s case) a real call site that isn't reachable from `cli_main`.
+// They're recognized builtin names (the checker accepts them when a USER
+// program calls them via `import Fs`/`lib/@vibe/fs`) but `cli_main` never
+// invokes any of them itself.
+//
+// This resolves round 1's open question about `runtime/vibewt`, but NOT
+// as cleanly as round 2 first claimed (Codex review, PR #1180 caught a
+// second error here): of those eleven unused ops, `runtime/vibewt/src/main.rs`
+// actually registers THREE of them anyway (`fs_is_dir`, `fs_is_file`,
+// `fs_read_bytes`, confirmed at lines ~1791-1835) -- those three are
+// present in BOTH runners, `cli_main` just doesn't happen to need them.
+// Only the remaining eight (`Fs::remove` and `mkdir`/`mkdir-p`/`chdir`/
+// `getcwd`/`copy`/`append`/`rename`) are genuinely absent from `vibewt`
+// while present in the Node runner. Either way the conclusion is the same
+// -- `cli_main` reaches none of the eleven, so neither runner's exact
+// coverage of them matters to this contract -- but the earlier "vibewt is
+// missing all of them" framing was wrong and is corrected here.
 //
 // This is the PORTABLE contract only: preopen-dir sandboxing, store/linker
 // setup, fuel/memory limits, and other per-runner configuration are NOT
 // part of it -- they're how a given runtime chooses to implement these
-// imports, not what the imports are. Confirmed against both existing
-// runners (runtime/vibewt's Rust `register_vibe_imports`,
-// scripts/wasm_vibe_host_runner.js's Node `vibeModule`): both implement
-// this exact surface, though the Node runner ALSO implements a much larger
-// surface (http, json) that `cli_main` itself never calls -- that extended
-// surface belongs to LIBRARY effects used by compiled USER programs
-// (lib/@vibe/http), generated per-program by the existing --wit path, not
-// to this fixed compiler-host contract.
+// imports, not what the imports are. `runtime/vibewt`'s Rust
+// `register_vibe_imports` implements exactly this six-op `fs` surface (plus
+// three of the excluded eleven, which cli_main just doesn't call).
+// `scripts/wasm_vibe_host_runner.js`'s Node `vibeModule` implements this
+// surface plus all eleven excluded ops plus an entire http/json surface --
+// none of which `cli_main` itself ever calls. That extended surface
+// belongs to LIBRARY effects used by compiled USER programs (the full
+// lib/@vibe/fs surface, lib/@vibe/http), generated per-program by the
+// existing --wit path, not to this fixed compiler-host contract.
 //
 // The #906 worker-transport adapter modes (VIBE_MODULE_JOB_DIR,
 // VIBE_LIST_DEPS, VIBE_PUBLISH_ENV_CACHE) need NO additional imports beyond
@@ -87,7 +109,6 @@ world vibe-compiler-host {
     write-bytes: func(arg0: string, arg1: list<u8>);
     exists: func(arg0: string) -> bool;
     stat-token: func(arg0: string) -> s64;
-    remove: func(arg0: string);
     readdir: func(arg0: string) -> list<string>;
   }
 

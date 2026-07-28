@@ -1,11 +1,13 @@
 # Compiler host runtime contract (#1143)
 
-> **Status (2026-07-28):** two passes. Round 1 documented the contract
-> (over-broadly, per Codex review). Round 2 audited every op for real
-> `cli_main` reachability and narrowed it to what's actually called,
-> resolving round 1's open question about `runtime/vibewt`'s missing
-> registrations along the way. Neither pass changed any runner
-> implementation. `docs/wit/vibe-compiler-host.wit` is the reference world.
+> **Status (2026-07-28):** three passes, two rounds of Codex review. Round 1
+> documented the contract (over-broadly). Round 2 audited every op for real
+> `cli_main` reachability and narrowed it, but got two details wrong. Round 3
+> (Codex review again) fixed those: dropped `Fs::remove` (its only call site
+> is an orphaned entry point, not reachable from `cli_main`) and corrected a
+> false claim about which ops `runtime/vibewt` does/doesn't implement. No
+> pass changed any runner implementation. `docs/wit/vibe-compiler-host.wit`
+> is the reference world.
 
 ## Why this exists
 
@@ -48,23 +50,33 @@ question):** admitting an op via the row tag and `cli_main` actually
 `Fs::<op>(` call site across `lib/@vibe/compiler`, excluding tests, the
 checker/codegen registration tables themselves, and the auto-generated
 `*_bundle.vibe` flatten artifacts (which just duplicate other files' text).
-Seven ops have real, non-test call sites in load-bearing compiler files:
+
+**Round 3 correction (Codex review, PR #1180):** round 2's audit checked
+for *any* real call site but didn't check whether the *file containing*
+that call site is itself reachable from `cli_main`'s import graph — missing
+that `Fs::remove`'s only call site is under `entry/cli_cache/`, an
+alternate entry point `cli_adapter.vibe` never imports and nothing else in
+the compiler calls into. Dropped. Round 2 also mischaracterized which of
+the ten removed ops are actually missing from `runtime/vibewt` — corrected
+below. The final six ops, verified reachable from `cli_main`'s own import
+graph (`cli_adapter.vibe` directly imports the `runtime` and `loader`
+packages):
 
 | op | found in |
 |---|---|
 | `read-file`, `write-file`, `write-bytes` | `cli_adapter.vibe` directly (its primary output path — compiled artifacts, funcmap, wit, component, normalize/doc-at/binding-at/symbols/diagnostics text — is `write_bytes`, never `write_file`) |
-| `exists` | `runtime/typecheck_fs.vibe`, `cache/persistent_cache.vibe` |
-| `stat-token` | `loader/loader.vibe`, `core/module_graph_path.vibe` |
-| `remove` | `entry/cli_cache/cli_cache.vibe` |
-| `readdir` | `loader/loader.vibe`, `loader/header_cache.vibe` |
+| `exists` | `runtime/typecheck_fs.vibe`, `cache/persistent_cache.vibe` (under the imported `runtime` package) |
+| `stat-token` | `loader/loader.vibe`, `core/module_graph_path.vibe` (under the imported `loader` package) |
+| `readdir` | `loader/loader.vibe`, `loader/header_cache.vibe` (same package) |
 
-The other ten round-1 ops — `read-bytes`, `is-dir`, `is-file`, `mkdir`,
-`mkdir-p`, `chdir`, `getcwd`, `copy`, `append`, `rename` — have **zero**
-real call sites anywhere in the compiler's own source. They're recognized
-builtin names (the checker accepts them when a *user* program calls them
-via `import Fs`/`lib/@vibe/fs`), but `cli_main` never invokes them itself.
-Removed from the `.wit` file; `env`/`stdin`/`stdout` were untouched by
-either round (already tag-consistent with their builtin-table signatures,
+The other eleven round-1 ops — `read-bytes`, `is-dir`, `is-file`, `remove`,
+`mkdir`, `mkdir-p`, `chdir`, `getcwd`, `copy`, `append`, `rename` — either
+have zero real call sites anywhere in the compiler's own source, or (in
+`remove`'s case) a real call site that isn't reachable from `cli_main`.
+They're recognized builtin names (the checker accepts them when a *user*
+program calls them via `import Fs`/`lib/@vibe/fs`), but `cli_main` never
+invokes any of them itself. `env`/`stdin`/`stdout` were untouched by any
+round (already tag-consistent with their builtin-table signatures,
 `lookup_io_a`/`lookup_io_b` in `checker/builtins_system.vibe`).
 
 Types follow `wit_type_text`'s existing mapping (`Int` → `s64`, `Bool` →
@@ -73,15 +85,18 @@ type). Parameters are positional (`arg0`, `arg1`, ...) — vibe effect
 operation declarations don't carry parameter names, the same reason
 `wit_gen.vibe`'s own output uses `arg0`/`arg1`.
 
-**Round 1's open question, resolved by round 2:** `runtime/vibewt/src/main.rs`'s
-`register_vibe_imports` has no `fs_mkdir`/`fs_mkdir_p`/`fs_chdir`/
-`fs_getcwd`/`fs_copy`/`fs_append`/`fs_rename` registrations at all
-(confirmed by direct grep), while `scripts/wasm_vibe_host_runner.js`'s Node
-runner implements all of them. The round-2 reachability audit confirms
-this is **not** a live gap: `cli_main` never reaches any of those seven
-ops, so `vibewt` correctly omits them — the Node runner's superset there is
-serving *user-program* `lib/@vibe/fs` usage (via the general-purpose `--wit`
-path), not something `cli_main` itself needs.
+**Round 1's open question, resolved by round 2, corrected by round 3:**
+round 2 claimed `runtime/vibewt/src/main.rs`'s `register_vibe_imports` has
+no registrations at all for the ten then-removed ops. Wrong — Codex caught
+that vibewt actually registers three of them (`fs_is_dir`, `fs_is_file`,
+`fs_read_bytes`, confirmed at lines ~1791-1835), it just doesn't register
+the other seven (`fs_mkdir`/`fs_mkdir_p`/`fs_chdir`/`fs_getcwd`/`fs_copy`/
+`fs_append`/`fs_rename`). Whichever runner implements how many of them is
+moot for this contract either way: `cli_main` reaches none of the eleven
+excluded ops, so neither vibewt's partial coverage nor the Node runner's
+full coverage of them matters — that surface serves *user-program*
+`lib/@vibe/fs` usage (via the general-purpose `--wit` path), not something
+`cli_main` itself needs.
 
 ## What's NOT part of this contract
 
@@ -104,21 +119,24 @@ env var and path-shape convention.
 ## A drift found, and resolved as benign
 
 `runtime/vibewt`'s `register_vibe_imports` implements exactly this
-contract's seven `fs` ops, plus `env`/`stdin`/`stdout` in full, plus
-`Process`/`sh` and a debugger-only surface `cli_main` doesn't use.
-`scripts/wasm_vibe_host_runner.js`'s Node `vibeModule` implements a
-superset: this contract's seven ops, PLUS the ten round-1-then-removed
-ops (`read-bytes`/`is-dir`/`is-file`/`mkdir`/`mkdir-p`/`chdir`/`getcwd`/
-`copy`/`append`/`rename`), PLUS an entire `http_*`/`json_*` surface. Both
-extra pieces of the Node superset belong to library effects
+contract's six `fs` ops (`read-file`/`write-file`/`write-bytes`/`exists`/
+`stat-token`/`readdir`), `env`/`stdin`/`stdout` in full, plus `Process`/`sh`
+and a debugger-only surface `cli_main` doesn't use. It also happens to
+implement three of the eleven excluded ops (`fs_is_dir`/`fs_is_file`/
+`fs_read_bytes`) but not the other eight (`Fs::remove` and the seven
+`mkdir`/`mkdir-p`/`chdir`/`getcwd`/`copy`/`append`/`rename` ops) —
+`scripts/wasm_vibe_host_runner.js`'s Node `vibeModule` implements all
+eleven, plus an entire `http_*`/`json_*` surface neither this contract nor
+`vibewt` has. All of that extra Node surface belongs to library effects
 (`lib/@vibe/fs`'s full surface, `lib/@vibe/http`) used by **compiled user
 programs**, generated per-program by the existing `--wit` path — not by
 this fixed compiler-host contract. `cli_main` itself never reaches any of
-it. This was exactly the kind of informal drift #1143 was raised to
-prevent, and the round-2 reachability audit above resolves it: not a live
-bug, just two runners that happen to serve different total surfaces
-(compiler-only vs. compiler-plus-every-user-library-effect) while agreeing
-completely on what `cli_main` itself needs.
+it, regardless of which runner happens to implement how much of it. This
+was exactly the kind of informal drift #1143 was raised to prevent; the
+round 2/3 reachability audit above resolves it: not a live bug, just two
+runners that happen to serve different total surfaces (compiler-only vs.
+compiler-plus-most-of-every-user-library-effect) while agreeing completely
+on what `cli_main` itself needs.
 
 ## Non-goals of this pass
 
