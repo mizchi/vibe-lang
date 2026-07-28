@@ -1,80 +1,76 @@
-// scripts/coverage_local_merge.vibex — native vibe port of TWO near-identical
-// Python heredocs that both do a LOCAL (per-function, occurrence-order)
-// branch-coverage merge, as opposed to scripts/coverage_acc_tool.vibex's
-// GLOBAL-branch-id merge:
-//   * scripts/coverage_drivers.sh's own $WORK/merge.py (lines ~102-121):
-//     merges ONE driver run's raw coverage dump into acc.json.
-//   * scripts/coverage_unittests.sh's embedded heredoc (lines ~44-66): merges
-//     a whole LIST of unit-test run dumps (one path per line of a runs.txt)
-//     into acc.json in one pass.
-//
-// WHY local, not global: coverage_acc_tool.vibex's merge assumes the run and
-// acc were compiled from the SAME source (so a branch's global id lines up
-// directly between the two dumps). Here the run was compiled from a
-// DIFFERENT source (a driver/test file concatenated onto a merged base, not
-// acc's own flat compiler source), so global ids do NOT line up -- but a
-// given function's branches still appear in the SAME RELATIVE ORDER within
-// that function's body regardless of which file surrounds it. So: group
-// acc's branches by (owning function NAME, 0-based occurrence index among
-// that function's own branches), do the same grouping for the run's
-// branches, and OR by matching (name, occurrence index) pairs instead of by
-// global id.
-//
-// Usage (invoked via the cached-build wrapper, not vibe_run.sh -- #1182,
-// see scripts/coverage_unittests_run.sh's own header for why):
-//   bash scripts/coverage_local_merge_run.sh merge <acc_path> <run_path>
-//     Single-run local merge (coverage_drivers.sh's merge.py). Prints
-//     "<base> <now> <tot>" (ints) -- callers format their own human report
-//     line (mirrors coverage_acc_tool.vibex's `stat` subcommand design: the
-//     tool computes, the caller formats, since the two real call sites want
-//     slightly different report-line text).
-//   bash scripts/coverage_local_merge_run.sh merge-list <acc_path> <list_path>
-//     Multi-run local merge (coverage_unittests.sh): list_path is a text
-//     file with one run-json path per line (blank lines ignored, matching
-//     Python's `if l.strip()`); every run is merged into ONE in-memory acc
-//     before a single write, matching the original's single json.dump at the
-//     end of its loop. Also prints "<base> <now> <tot>".
-//
-// Design differences from the Python heredocs, forced by vibe's actual
-// capabilities rather than an exact translation:
-//   * the Python originals group by function NAME (a string) via a
-//     `defaultdict(list)`, appending as they scan -- vibe's MapBuilder has
-//     no mid-build `get` (index.vpkg only declares new/set/freeze), so
-//     incrementally growing a per-name list through repeated
-//     read-modify-write isn't directly available, and Map::set was
-//     confirmed empirically NOT to mutate in place (`Map::set(m1, ...)`
-//     leaves `m1` itself unchanged -- functional update, not a mutator).
-//     Repeatedly freezing/re-querying a Map across ~20000 acc branches would
-//     also cost far more than this needs. Instead: build_index below groups
-//     by acc's own INTEGER function-id (fn_names' array index) using plain
-//     `Array[Int]` counting + a single flat `gid_for` lookup array (sized
-//     `len(fn_names) * max_occurrences`, one linear pass to size it, one
-//     more to fill it) -- O(N) instead of a hashmap-of-lists, with exactly
-//     one MapBuilder::set per DISTINCT function name (building the
-//     name->id lookup itself, not the per-name group). This is only
-//     behaviorally identical to the Python originals' string-keyed grouping
-//     if every entry in `fn_names` is unique -- confirmed empirically on a
-//     real coverage dump (2800/2800 distinct) and expected structurally
-//     (fn_names entries are the compiler's own fully-qualified function
-//     names, emitted once per user function by the coverage instrumentation
-//     pass) but not mechanically guaranteed; a hypothetical future duplicate
-//     name would silently let the later index win the name->id slot instead
-//     of merging both functions' occurrence sequences together the way the
-//     Python originals' `defaultdict(list)` does.
-//   * atomic write / Fs::rename / deliberately-no-`@vibe/fs`-import: see
-//     scripts/coverage_acc_tool.vibex's header comment (same reasoning).
-//   * does NOT use `Json::stringify` on the acc object as a whole: see
-//     scripts/coverage_acc_tool.vibex's header comment for the #1188
-//     stack-overflow-on-large-arrays bug this works around (stringify_prim /
-//     stringify_arr_iter / stringify_acc_shallow below are duplicated from
-//     that file rather than shared, since these are two independent
-//     single-file .vibex entry points with no shared-module wiring between
-//     scripts/ tools yet).
+//# `vibe`-adjacent coverage-corpus accumulator tool: native-vibe port of two
+//# near-identical Python heredocs that both did a LOCAL (per-function,
+//# occurrence-order) branch-coverage merge, as opposed to
+//# lib/@vibe/cli/coverage_acc_tool.vibe's GLOBAL-branch-id merge:
+//#   * scripts/coverage_drivers.sh's own merge.py: merges ONE driver run's
+//#     raw coverage dump into acc.json.
+//#   * scripts/coverage_unittests.sh's embedded heredoc: merges a whole LIST
+//#     of unit-test run dumps (one path per line of a runs.txt) into acc.json
+//#     in one pass.
+//# Consolidated here (not scripts/) for the same reason as
+//# coverage_acc_tool.vibe: the merge algorithm itself is generic beyond this
+//# repo, so it's a reusable lib/@vibe/cli tool rather than a scripts/-private
+//# one. Driven by scripts/coverage_local_merge_run.sh.
+//#
+//# WHY local, not global: coverage_acc_tool.vibe's merge assumes the run and
+//# acc were compiled from the SAME source (so a branch's global id lines up
+//# directly between the two dumps). Here the run was compiled from a
+//# DIFFERENT source (a driver/test file concatenated onto a merged base, not
+//# acc's own flat compiler source), so global ids do NOT line up -- but a
+//# given function's branches still appear in the SAME RELATIVE ORDER within
+//# that function's body regardless of which file surrounds it. So: group
+//# acc's branches by (owning function NAME, 0-based occurrence index among
+//# that function's own branches), do the same grouping for the run's
+//# branches, and OR by matching (name, occurrence index) pairs instead of by
+//# global id.
+//#
+//# Usage: argv[0] = subcommand, rest = args.
+//#   merge <acc_path> <run_path>
+//#     Single-run local merge (coverage_drivers.sh's use case). Prints
+//#     "<base> <now> <tot>" (ints) -- callers format their own human report
+//#     line (mirrors coverage_acc_tool.vibe's `stat` subcommand design: the
+//#     tool computes, the caller formats, since the two real call sites want
+//#     slightly different report-line text).
+//#   merge-list <acc_path> <list_path>
+//#     Multi-run local merge (coverage_unittests.sh's use case): list_path is
+//#     a text file with one run-json path per line (blank lines ignored,
+//#     matching Python's `if l.strip()`); every run is merged into ONE
+//#     in-memory acc before a single write, matching the original's single
+//#     json.dump at the end of its loop. Also prints "<base> <now> <tot>".
+//#
+//# Design differences from the Python heredocs, forced by vibe's actual
+//# capabilities rather than an exact translation:
+//#   * the Python originals group by function NAME (a string) via a
+//#     `defaultdict(list)`, appending as they scan -- vibe's MapBuilder has
+//#     no mid-build `get` (index.vpkg only declares new/set/freeze), so
+//#     incrementally growing a per-name list through repeated
+//#     read-modify-write isn't directly available, and Map::set was
+//#     confirmed empirically NOT to mutate in place (`Map::set(m1, ...)`
+//#     leaves `m1` itself unchanged -- functional update, not a mutator).
+//#     Repeatedly freezing/re-querying a Map across ~20000 acc branches would
+//#     also cost far more than this needs. Instead: build_index below groups
+//#     by acc's own INTEGER function-id (fn_names' array index) using plain
+//#     `Array[Int]` counting + a single flat `gid_for` lookup array (sized
+//#     `len(fn_names) * max_occurrences`, one linear pass to size it, one
+//#     more to fill it) -- O(N) instead of a hashmap-of-lists, with exactly
+//#     one MapBuilder::set per DISTINCT function name (building the
+//#     name->id lookup itself, not the per-name group). This is only
+//#     behaviorally identical to the Python originals' string-keyed grouping
+//#     if every entry in `fn_names` is unique -- confirmed empirically on a
+//#     real coverage dump (2800/2800 distinct) and expected structurally
+//#     (fn_names entries are the compiler's own fully-qualified function
+//#     names, emitted once per user function by the coverage instrumentation
+//#     pass) but not mechanically guaranteed; a hypothetical future duplicate
+//#     name would silently let the later index win the name->id slot instead
+//#     of merging both functions' occurrence sequences together the way the
+//#     Python originals' `defaultdict(list)` does.
+//#   * atomic write / Fs::rename / deliberately-no-`@vibe/fs`-import: see
+//#     coverage_acc_tool.vibe's header comment (same reasoning).
 
-import @vibe/prelude { stdout_write, Result }
+import @vibe/prelude { stdout_write }
 import @vibe/json { Json, json_as_arr }
 
-// ---------- generic helpers ----------
+//# Functions
 
 fn is_truthy(j: Json) -> Bool {
   let ty = Json::type_of(j)
@@ -144,67 +140,11 @@ fn sum_br(arr: Array[Json]) -> Int {
   s
 }
 
-// ---------- #1188 workaround: iterative stringify (see header comment) ----------
-
-fn stringify_prim(j: Json) -> String {
-  Json::stringify(j)
-}
-
-fn stringify_arr_iter(arr: Array[Json]) -> String {
-  let n = Array::length(arr)
-  let b = StringBuilder::new()
-  StringBuilder::push(b, "[")
-  let mut i = 0
-  while i < n {
-    if i > 0 {
-      StringBuilder::push(b, ",")
-    } else {
-      ()
-    }
-    StringBuilder::push(b, stringify_prim(Array::get(arr, i)))
-    i = i + 1
-  }
-  StringBuilder::push(b, "]")
-  StringBuilder::freeze(b)
-}
-
-fn stringify_acc_shallow(j: Json) -> String {
-  let keys = Json::keys(j)
-  let n = Array::length(keys)
-  let b = StringBuilder::new()
-  StringBuilder::push(b, "{")
-  let mut i = 0
-  while i < n {
-    let k = Array::get(keys, i)
-    if i > 0 {
-      StringBuilder::push(b, ",")
-    } else {
-      ()
-    }
-    StringBuilder::push(b, stringify_prim(JStr(k)))
-    StringBuilder::push(b, ":")
-    let v = Json::field(j, k)
-    if Json::type_of(v) == "array" {
-      match json_as_arr(v) {
-        Result::Ok(arr) => StringBuilder::push(b, stringify_arr_iter(arr)),
-        Result::Err(_) => StringBuilder::push(b, "[]")
-      }
-    } else {
-      StringBuilder::push(b, stringify_prim(v))
-    }
-    i = i + 1
-  }
-  StringBuilder::push(b, "}")
-  StringBuilder::freeze(b)
-}
-
 fn write_json_atomic(path: String, j: Json) -> Unit with { Fs } {
   let tmp = path + ".tmp"
-  Fs::write_file(tmp, stringify_acc_shallow(j))
+  Fs::write_file(tmp, Json::stringify(j))
   Fs::rename(tmp, path)
 }
-
-// ---------- local (name, occurrence-index) correlation index ----------
 
 // name_to_fid: acc function name -> its index into fn_names.
 // gid_for: flat lookup, size len(fn_names)*occ_stride; gid_for[fid*occ_stride
@@ -309,8 +249,6 @@ fn apply_run(br_arr: Array[Json], name_to_fid: Map[String, Int], gid_for: Array[
   }
 }
 
-// ---------- commands ----------
-
 // Loads acc + its br array + the correlation index once; returns them for
 // the caller to apply one or more runs against before a single write.
 fn load_acc(acc_path: String) -> (Json, Array[Json], Map[String, Int], Array[Int], Int) with { Fs } {
@@ -373,12 +311,10 @@ fn cmd_merge_list(acc_path: String, list_path: String) -> Unit with { Fs, Stdout
   stdout_write(Int::to_string(base) + " " + Int::to_string(now) + " " + Int::to_string(tot) + "\n")
 }
 
-// ---------- main ----------
-
 fn main with { Fs, Env, Stdout, Stderr, Process } {
   let argc = Env::args_len()
   if argc < 1 {
-    Stderr::write_stream("usage: coverage_local_merge.vibex merge <acc> <run> | merge-list <acc> <list>\n")
+    Stderr::write_stream("usage: coverage_local_merge merge <acc> <run> | merge-list <acc> <list>\n")
     vibe_process_exit_raw(2)
   } else {
     let sub = Env::args_get(0)
@@ -387,7 +323,7 @@ fn main with { Fs, Env, Stdout, Stderr, Process } {
     } else if sub == "merge-list" && argc >= 3 {
       cmd_merge_list(Env::args_get(1), Env::args_get(2))
     } else {
-      Stderr::write_stream("usage: coverage_local_merge.vibex merge <acc> <run> | merge-list <acc> <list>\n")
+      Stderr::write_stream("usage: coverage_local_merge merge <acc> <run> | merge-list <acc> <list>\n")
       vibe_process_exit_raw(2)
     }
   }

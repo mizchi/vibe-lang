@@ -59,15 +59,15 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `coverage_{corpus,driver,drivers,features,fn,manifestcache,merge,multimodule,suite,testexec,unittests}.*`
   — the selfhost-suite coverage lane. `coverage_wasm_{source,std}.mjs`,
   `coverage_{eval,scratch}_sidecar.sh`, `coverage_gen_errcorpus.sh`
-- `coverage_acc_tool.vibex` (+ `coverage_acc_tool_run.sh` cached-build wrapper)
-  — native-vibe `acc.json` global-branch-id merge + sum/len stat, shared by
-  `coverage_corpus.sh` / `coverage_features.sh` / `coverage_manifestcache.sh`
-  / `coverage_multimodule.sh` / `coverage_drivers.sh`
-- `coverage_local_merge.vibex` (+ `coverage_local_merge_run.sh` cached-build
-  wrapper) — native-vibe `acc.json` LOCAL (function-name +
-  occurrence-index) branch-coverage merge, for runs compiled from a
-  different source than acc's own (so global branch ids don't line up);
-  shared by `coverage_drivers.sh` / `coverage_unittests.sh`
+- `coverage_acc_tool_run.sh` / `coverage_local_merge_run.sh` — cached-build
+  wrappers for `lib/@vibe/cli/coverage_acc_tool.vibe` (global-branch-id
+  `acc.json` merge + sum/len stat) and `lib/@vibe/cli/coverage_local_merge.vibe`
+  (LOCAL function-name + occurrence-index merge, for runs compiled from a
+  different source than acc's own so global branch ids don't line up) — the
+  tools themselves live under `lib/@vibe/cli/` (not here) since the merge
+  algorithms are generic beyond this repo; shared by `coverage_corpus.sh` /
+  `coverage_features.sh` / `coverage_manifestcache.sh` /
+  `coverage_multimodule.sh` / `coverage_drivers.sh` / `coverage_unittests.sh`
 - `scripts/coverage/` — supporting coverage assets (subdir)
 
 ## Bench
