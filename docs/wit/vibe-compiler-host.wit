@@ -1,0 +1,102 @@
+package vibe:compiler-host;
+
+// The vibe compiler's OWN host execution contract (#1143): every host
+// function `cli_main` needs a runner to provide for the compiler to run at
+// all, expressed the same way `vibe compile --wit` already expresses a
+// COMPILED PROGRAM's effect surface (lib/@vibe/compiler/wit_gen.vibe,
+// docs/effect-wit-mapping.md). That generator explicitly renders a
+// host-capability effect (Fs, Env, Stdin, Stdout, ...) as a
+// `// host capability effect '...' (provided by the vibe runtime; no WIT
+// mapping yet)` comment rather than a real WIT import -- this file is a
+// hand-authored answer to that gap for the compiler's own entry point,
+// `export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout }`
+// (lib/@vibe/compiler/cli_adapter.vibe). `Error` never crosses the host
+// boundary (vibe-internal control flow; an escaping throw is a component
+// trap, not a capability), matching the same rule the generator applies to
+// user programs.
+//
+// Types follow wit_type_text's existing Int -> s64 / Bool -> bool /
+// String -> string / Bytes -> list<u8> / Unit -> omitted-return-type
+// mapping (lib/@vibe/compiler/wit_gen.vibe). Operation parameters are
+// positional (arg0, arg1, ...): vibe effect operation declarations do not
+// carry parameter names, exactly as documented for user-program WIT
+// generation.
+//
+// IMPORTANT (Codex review, PR #1178 round 1): the `fs` interface below is
+// NOT derived from `effect Fs { ReadFile, WriteFile, Exists, Mkdir }`
+// (lib/@vibe/fs/fs_effect.vibe) -- that block is only a 4-op convenience
+// subset for user-program `import Fs` usage. The actual enforced boundary
+// is a per-BUILTIN string tag (`Some("Fs")` on each entry in
+// lib/@vibe/compiler/codegen/common_base/builtin_registry.vibe, plus
+// `Fs::readdir` in checker/builtins_fs.vibe), and `cli_main`'s declared
+// `with { ..., Fs, ... }` row admits ANY builtin carrying that tag, not
+// just the four in fs_effect.vibe's declaration. Cross-checked against
+// real usage across lib/@vibe/compiler (excluding tests): `write_bytes`
+// alone is used 382 times (more than `write_file`'s 244) -- e.g.
+// cli_adapter.vibe writes compiled output, funcmap, wit, component,
+// normalize, doc-at, binding-at, symbols and diagnostics output ALL via
+// `Fs::write_bytes`, never `Fs::write_file`. `env`/`stdin`/`stdout` were
+// already tag-consistent with their builtin-table signatures (single op
+// set each) and needed no correction. `Stderr::write_char`/`write_stream`
+// exist as real builtins with the same "Fs"-style tag mechanism but are
+// confirmed NOT part of `cli_main`'s row (zero occurrences in
+// cli_adapter.vibe; the checker would reject any reachable Stderr call
+// without "Stderr" in the row) -- deliberately excluded, not an oversight.
+//
+// This is the PORTABLE contract only: preopen-dir sandboxing, store/linker
+// setup, fuel/memory limits, and other per-runner configuration are NOT
+// part of it -- they're how a given runtime chooses to implement these
+// imports, not what the imports are. Confirmed against both existing
+// runners (runtime/vibewt's Rust `register_vibe_imports`,
+// scripts/wasm_vibe_host_runner.js's Node `vibeModule`): both implement
+// this exact surface, though the Node runner ALSO implements a much larger
+// surface (http, json) that `cli_main` itself never calls -- that extended
+// surface belongs to LIBRARY effects used by compiled USER programs
+// (lib/@vibe/http), generated per-program by the existing --wit path, not
+// to this fixed compiler-host contract.
+//
+// The #906 worker-transport adapter modes (VIBE_MODULE_JOB_DIR,
+// VIBE_LIST_DEPS, VIBE_PUBLISH_ENV_CACHE) need NO additional imports beyond
+// this world -- they're plain Env::get-gated branches in cli_adapter.vibe
+// that only ever call fs.read-file/fs.write-bytes, treating `input_path` as
+// a directory rather than a single file in job-dir/env-cache mode.
+
+world vibe-compiler-host {
+  import fs: interface {
+    read-file: func(arg0: string) -> string;
+    write-file: func(arg0: string, arg1: string);
+    write-bytes: func(arg0: string, arg1: list<u8>);
+    read-bytes: func(arg0: string) -> list<u8>;
+    exists: func(arg0: string) -> bool;
+    stat-token: func(arg0: string) -> s64;
+    is-dir: func(arg0: string) -> bool;
+    is-file: func(arg0: string) -> bool;
+    remove: func(arg0: string);
+    mkdir: func(arg0: string);
+    mkdir-p: func(arg0: string);
+    chdir: func(arg0: string);
+    getcwd: func() -> string;
+    copy: func(arg0: string, arg1: string);
+    append: func(arg0: string, arg1: string);
+    rename: func(arg0: string, arg1: string);
+    readdir: func(arg0: string) -> list<string>;
+  }
+
+  import env: interface {
+    get: func(arg0: string) -> string;
+    args-get: func(arg0: s64) -> string;
+    args-len: func() -> s64;
+  }
+
+  import stdin: interface {
+    read-char: func() -> s64;
+    read-stream: func(arg0: s64) -> string;
+  }
+
+  import stdout: interface {
+    write-char: func(arg0: s64);
+    write-stream: func(arg0: string);
+  }
+
+  export cli-main: func() -> s64;
+}
