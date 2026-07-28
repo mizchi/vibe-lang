@@ -166,7 +166,8 @@ track_peak_rss() {
 run_sequence() {
   if [ "$JOBS" -gt 1 ]; then
     local driver_status=0
-    node "$DRIVER" "$STAGE2" "$INPUT" "$JOBS" "$ROOT_DIR" "$NODE_RUNNER" >/dev/null || driver_status=$?
+    VIBE_BUILD_CACHE_DIR="$CACHE_DIR" \
+      node "$DRIVER" "$STAGE2" "$INPUT" "$JOBS" "$ROOT_DIR" "$NODE_RUNNER" >/dev/null || driver_status=$?
     if [ "$driver_status" -ne 0 ]; then
       echo "[jobs-kpi] pre-warm driver failed (exit $driver_status)" >&2
       return 1

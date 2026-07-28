@@ -575,34 +575,53 @@ is currently a net regression, not a speedup, at this scale.** Running
 `stage2`-self-compile entry, ~209 transitively-discovered modules) as input,
 on a 4-core sandbox:
 
-| jobs | mode | wall_ms |
-| --- | --- | --- |
-| 1 (serial, pre-warm skipped) | cold | 5297 |
-| 1 (serial, pre-warm skipped) | warm | 3247 |
-| 2 | cold | 21536 |
-| 2 | warm | 18932 |
-| 4 | cold | 21483 |
-| 4 | warm | 19933 |
+| jobs | mode | wall_ms | heap_ptr_bytes |
+| --- | --- | --- | --- |
+| 1 (serial, pre-warm skipped) | cold | 5167 | 1,096,576,476 |
+| 1 (serial, pre-warm skipped) | warm | 2998 | 575,388,476 |
+| 2 | cold | 21072 | 854,972,716 |
+| 2 | warm | 18004 | 575,476,308 |
+| 4 | cold | 21601 | 854,972,716 |
+| 4 | warm | 18634 | 575,476,308 |
 
-`--jobs 2` and `--jobs 4` both cost ~4x the plain serial baseline, and going
-from 2 to 4 workers buys nothing (21483ms vs 21536ms cold) — the extra time
-does not scale with worker count, which rules out per-worker check cost as
-the driver and points at a fixed, worker-count-independent cost instead.
-Root cause, confirmed by timing `scripts/parallel_frontend_warm.mjs` in
-isolation: `discoverProject` (`scripts/parallel_frontend_warm.mjs`) walks
+(Correction, Codex review on PR #1169: the first pass of this table was
+measured before fixing a real bug in `scripts/jobs_kpi.sh` itself — the
+pre-warm driver invocation didn't set `VIBE_BUILD_CACHE_DIR`, so
+`publishCheckedOutcomes` wrote every checked module's environment to the
+*ambient default* persistent-cache path instead of the isolated `$CACHE_DIR`
+the measured compile actually reads from, silently discarding 100% of the
+pre-warm's cache benefit rather than just the `diagnosed` share. Fixed by
+passing the same `VIBE_BUILD_CACHE_DIR="$CACHE_DIR"` to both the driver and
+the final compile step. The table above is the corrected, re-measured
+result.)
+
+`--jobs 2` and `--jobs 4` both still cost ~4x the plain serial baseline in
+wall time, and going from 2 to 4 workers buys nothing (21601ms vs 21072ms
+cold) — the extra time does not scale with worker count, which rules out
+per-worker check cost as the driver and points at a fixed,
+worker-count-independent cost instead. Root cause, confirmed by timing
+`scripts/parallel_frontend_warm.mjs` in isolation: `discoverProject` walks
 the import DAG with a **strictly serial** `while (queue.length > 0) { ...
 await listDeps(...) }` BFS loop — one `vibe` subprocess spawn (bash + node +
 wasmtime startup) per file, fully sequential, before any parallel checking
 starts at all. At ~209 files and ~80ms/spawn this alone accounts for the
 observed ~13-17s of overhead over the serial baseline, regardless of `jobs`
 N — discovery is not parallelized today even though the checking phase that
-follows it is. Separately, the same run's summary line
-(`{"modules":209,"checked":34,"diagnosed":175,"warmed":34}`) shows 175/209
-modules (~84%) come back `diagnosed` rather than `checked` when checked
-standalone in a job-dir sandbox outside the full serial walk's context, so
-even the parallel work that does happen warms very little of the real
-cache — most of it is thrown away and redone by the serial walk regardless
-of `jobs` N. Both are pre-existing gaps in the Phase 2 driver, not
+follows it is.
+
+With the cache-dir bug fixed, the pre-warm's benefit now *is* visible in
+`heap_ptr_bytes`: the final compile's own bump-allocator high-water drops
+~22% (1,096,576,476 → 854,972,716 bytes) at `jobs=2/4` versus `jobs=1`,
+confirming published environments really do reach and get reused by the
+measured compile now. It just isn't enough to close a ~13-17s
+discovery-loop tax that dwarfs the heap/redundant-work savings at this
+project size. (The same run's summary line —
+`{"modules":209,"checked":34,"diagnosed":175,"warmed":34}` — still shows
+175/209 modules, ~84%, come back `diagnosed` rather than `checked` when
+checked standalone in a job-dir sandbox outside the full serial walk's
+context, so there is further headroom beyond the 22% already realized once
+that rate improves.) Both the serial discovery loop and the high
+`diagnosed` rate are pre-existing gaps in the Phase 2 driver, not
 regressions from this measurement; they were flagged as open ("unmeasured
 against a project the size of the compiler's own manifest") since Phase 2
 landed and are now measured.
