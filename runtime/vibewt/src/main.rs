@@ -1506,6 +1506,37 @@ fn vibe_ensure_parent_dir(path: &str) {
     }
 }
 
+// Guest Fs::write_file / Fs::write_bytes land here. Write via a same-dir temp
+// file + rename so a concurrent reader never sees a truncated file -- mirrors
+// scripts/wasm_vibe_host_runner.js's atomicWriteFileSync (same rationale: the
+// persistent caches under _build/vibe_* are content-keyed and shared across
+// concurrent compiler invocations -- parallel unit-test runs and #906's
+// --jobs pre-warm publish path both write these hot keys from more than one
+// process/worker -- and a plain fs::write opens with O_TRUNC, exposing a
+// partial-file window a racing reader can observe as a corrupt cache row).
+// rename() is atomic on POSIX; same-content racers simply last-write-win as
+// complete files, which is safe because a cache path already encodes its
+// content's own fingerprint (#906 acceptance criteria: partial cache writes
+// must never be published).
+static VIBE_TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn vibe_atomic_write(path: &str, data: &[u8]) -> Result<()> {
+    vibe_ensure_parent_dir(path);
+    let counter = VIBE_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = format!("{path}.tmp-{}-{counter}", std::process::id());
+    let write_result = fs::write(&tmp, data);
+    match write_result {
+        Ok(()) => fs::rename(&tmp, path).map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            format_err!("vibe atomic write rename '{tmp}' -> '{path}': {e}")
+        }),
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            Err(format_err!("vibe atomic write '{tmp}': {e}"))
+        }
+    }
+}
+
 // Read the `__heap_ptr` bump-allocator pointer (an i32/i64 mut global) as bytes,
 // or None when the module doesn't export it. Used by the `--mem` memory report.
 fn read_heap_ptr(instance: &wasmtime::Instance, store: &mut Store<HostState>) -> Option<u64> {
@@ -1779,10 +1810,7 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
         |mut caller: Caller<'_, HostState>, path: i64, content: i64| -> Result<()> {
             let path = vibe_read_packed_str(&mut caller, path)?;
             let content = vibe_read_packed_str(&mut caller, content)?;
-            vibe_ensure_parent_dir(&path);
-            fs::write(&path, content.as_bytes())
-                .map_err(|e| format_err!("vibe fs_write_file '{path}': {e}"))?;
-            Ok(())
+            vibe_atomic_write(&path, content.as_bytes())
         },
     )?;
     linker.func_wrap(
@@ -1791,10 +1819,7 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
         |mut caller: Caller<'_, HostState>, path: i64, bytes: i64| -> Result<()> {
             let path = vibe_read_packed_str(&mut caller, path)?;
             let data = vibe_read_packed_bytes(&mut caller, bytes)?;
-            vibe_ensure_parent_dir(&path);
-            fs::write(&path, &data)
-                .map_err(|e| format_err!("vibe fs_write_bytes '{path}': {e}"))?;
-            Ok(())
+            vibe_atomic_write(&path, &data)
         },
     )?;
     // #632: fs_read_bytes — binary-exact file read into a guest Bytes value (the
