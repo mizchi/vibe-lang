@@ -54,8 +54,18 @@ async function readIfPresent(path) {
   }
 }
 
-async function listDeps(runnerPath, compilerWasm, cacheDir, projectRoot, filePath) {
-  const outAbs = join(cacheDir, `${filePath.replace(/[^a-zA-Z0-9]/g, "_")}.deps.out`);
+// `uniqueId` disambiguates the on-disk .deps.out/.diag path: the sanitized
+// filePath alone can collide (e.g. this repo's own checker_builtins.vibe
+// vs checker/builtins.vibe both sanitize to checker_builtins_vibe) --
+// harmless when listDeps calls were strictly sequential, but with
+// discoverProject now running several concurrently (#1168), two colliding
+// in-flight calls would race on the same temp file and let one module
+// silently consume another's dependency list or diagnostic (Codex review,
+// PR #1170). The caller passes a per-call monotonic counter so every
+// listDeps invocation in a given cacheDir gets a distinct path regardless
+// of filename collisions.
+async function listDeps(runnerPath, compilerWasm, cacheDir, projectRoot, filePath, uniqueId) {
+  const outAbs = join(cacheDir, `${uniqueId}_${filePath.replace(/[^a-zA-Z0-9]/g, "_")}.deps.out`);
   await rm(outAbs, { force: true });
   await rm(`${outAbs}.diag`, { force: true });
   const exitCode = await runVibe(
@@ -74,32 +84,84 @@ async function listDeps(runnerPath, compilerWasm, cacheDir, projectRoot, filePat
   return text.split("\n").map((line) => line.trim()).filter(Boolean);
 }
 
-// BFS from a single entry file, deduping by resolved path across the whole
-// walk (a diamond dependency must not be scheduled twice) -- mirrors
-// parallel_project_driver.mjs's discoverProject, parameterized by
-// projectRoot/runnerPath instead of this repo's own fixed layout.
-async function discoverProject(runnerPath, compilerWasm, projectRoot, entryPaths, cacheDir) {
+// Run `fn` over every item in `items`, at most `concurrency` in flight at
+// once, preserving no particular completion order (callers only need the
+// full result set, not ordering). A plain worker-pool loop rather than a
+// library dependency, since this script has none today.
+//
+// Uses allSettled, not Promise.all: a worker whose `fn` throws stops
+// pulling new items, but other workers keep draining the shared queue via
+// `next`, and every already-spawned subprocess (runVibe's child_process)
+// is awaited to completion inside its own worker's loop either way. If we
+// instead let one rejection short-circuit via Promise.all, main()'s catch
+// would call process.exit(1) while other workers' in-flight `runVibe`
+// subprocesses are still running -- Node does not kill spawned children on
+// process.exit, so they'd become orphans still writing into a cacheDir the
+// caller is about to rm -rf (Codex review, PR #1170). Waiting for every
+// worker to settle first means no subprocess is ever abandoned mid-flight.
+async function mapWithConcurrency(items, concurrency, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  const settled = await Promise.allSettled(
+    Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, worker),
+  );
+  const failure = settled.find((r) => r.status === "rejected");
+  if (failure) throw failure.reason;
+  return results;
+}
+
+// Level-order BFS from a single entry file, deduping by resolved path
+// across the whole walk (a diamond dependency must not be scheduled twice)
+// -- mirrors parallel_project_driver.mjs's discoverProject, parameterized
+// by projectRoot/runnerPath instead of this repo's own fixed layout.
+//
+// Each BFS level (frontier) is discovered with up to `concurrency` files
+// in flight at once, instead of one `vibe --invoke cli_main` subprocess
+// spawn awaited fully before the next starts. On a project the size of
+// the compiler's own manifest (~209 modules) the fully-serial version
+// measured ~4x the plain serial-compile wall time, dominated entirely by
+// this discovery loop and independent of the later parallel-check phase's
+// own `jobs` count (#1168). Concurrency here reuses that same `jobs`
+// value: at `jobs=1` this reduces to the original one-at-a-time walk
+// (`Math.max(1, ...)` above), so a `jobs=1` run's discovery cost is
+// unchanged.
+async function discoverProject(runnerPath, compilerWasm, projectRoot, entryPaths, cacheDir, concurrency) {
   const modules = new Map();
   const seen = new Set(entryPaths);
-  const queue = [...entryPaths];
-  while (queue.length > 0) {
-    const path = queue.shift();
-    const [deps, source] = await Promise.all([
-      listDeps(runnerPath, compilerWasm, cacheDir, projectRoot, path),
-      readFile(path, "utf8"),
-    ]);
-    modules.set(path, {
-      id: path,
-      dependencies: [...new Set(deps)],
-      dependencyOccurrences: deps,
-      source,
+  let frontier = [...entryPaths];
+  let nextUniqueId = 0;
+  while (frontier.length > 0) {
+    const discovered = await mapWithConcurrency(frontier, concurrency, async (path) => {
+      const uniqueId = nextUniqueId++;
+      const [deps, source] = await Promise.all([
+        listDeps(runnerPath, compilerWasm, cacheDir, projectRoot, path, uniqueId),
+        readFile(path, "utf8"),
+      ]);
+      return { path, deps, source };
     });
-    for (const dep of deps) {
-      if (!seen.has(dep)) {
-        seen.add(dep);
-        queue.push(dep);
+    const nextFrontier = [];
+    for (const { path, deps, source } of discovered) {
+      modules.set(path, {
+        id: path,
+        dependencies: [...new Set(deps)],
+        dependencyOccurrences: deps,
+        source,
+      });
+      for (const dep of deps) {
+        if (!seen.has(dep)) {
+          seen.add(dep);
+          nextFrontier.push(dep);
+        }
       }
     }
+    frontier = nextFrontier;
   }
   return [...modules.values()];
 }
@@ -156,7 +218,7 @@ async function main() {
   const cacheDir = await mkdtemp(join(tmpdir(), "vibe-list-deps-"));
   let modules;
   try {
-    modules = await discoverProject(runnerPath, compilerWasm, projectRoot, [entryFile], cacheDir);
+    modules = await discoverProject(runnerPath, compilerWasm, projectRoot, [entryFile], cacheDir, jobs);
   } finally {
     await rm(cacheDir, { recursive: true, force: true });
   }
