@@ -47,9 +47,9 @@ vibe hash lib/@vibe/core
 ` ```output ` は本物の実行結果。手元で検証・再生成するには:
 
 ```bash
-python3 scripts/vibe_md.py check docs/tutorial/*.vibe.md   # 検証 (embedded output が古ければ FAIL)
-python3 scripts/vibe_md.py write docs/tutorial/*.vibe.md   # 実行して output を書き直す
-pkf run vibe-md-tutorial                                   # check のタスク化
+bash scripts/vibe_md.sh check docs/tutorial/*.vibe.md   # 検証 (embedded output が古ければ FAIL)
+bash scripts/vibe_md.sh write docs/tutorial/*.vibe.md   # 実行して output を書き直す
+pkf run vibe-md-tutorial                                # check のタスク化
 ```
 
 次章: [07 モジュールとパッケージ](07_modules_packages.vibe.md)
