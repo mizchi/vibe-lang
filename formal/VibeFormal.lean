@@ -15,3 +15,4 @@ import VibeFormal.Proofs.ParallelExamples
 import VibeFormal.Proofs.CapabilityContractExamples
 import VibeFormal.Proofs.CallTypingCorrect
 import VibeFormal.Proofs.CallTypingExamples
+import VibeFormal.Typing.FunctionSubsumption
