@@ -1,0 +1,134 @@
+//# Map[K,V] O(1)-average hash index (Robin Hood, side index alongside the
+//# insertion-ordered entries array -- see gen_map_hash_body's doc comment
+//# in codegen/builtin_bodies/bodies_core_b.vibe). Covers the count>=8
+//# index-build threshold from both sides, get/has_key/set/delete/
+//# MapBuilder::freeze, insertion-order preservation for Map::keys, and a
+//# larger stress case exercising Robin Hood displacement under collisions.
+
+fn mk_key(i: Int) -> String {
+  String::concat("key", Int::to_string(i))
+}
+
+test "small_map_below_threshold" {
+  // count < 8: stays on the linear-scan path (no index built).
+  let mut m: Map[String, Int] = Map::new()
+  let mut i = 0
+  while i < 5 {
+    m = Map::set(m, mk_key(i), i * 10)
+    i = i + 1
+  }
+  assert(Map::has_key(m, "key0"))
+  assert(not(Map::has_key(m, "key99")))
+  assert(Map::get(m, "key3") == 30)
+  let ks = Map::keys(m)
+  assert(Array::length(ks) == 5)
+  assert(Array::get(ks, 0) == "key0")
+  assert(Array::get(ks, 4) == "key4")
+}
+
+test "large_map_crosses_threshold" {
+  // count >= 8: the hash index is built and consulted.
+  let mut m: Map[String, Int] = Map::new()
+  let mut i = 0
+  while i < 40 {
+    m = Map::set(m, mk_key(i), i * 10)
+    i = i + 1
+  }
+  let mut j = 0
+  while j < 40 {
+    assert(Map::has_key(m, mk_key(j)))
+    assert(Map::get(m, mk_key(j)) == j * 10)
+    j = j + 1
+  }
+  assert(not(Map::has_key(m, "nope")))
+  // insertion order preserved for keys() (json_stringify.vibe and others
+  // depend on this).
+  let ks = Map::keys(m)
+  assert(Array::length(ks) == 40)
+  let mut k = 0
+  while k < 40 {
+    assert(Array::get(ks, k) == mk_key(k))
+    k = k + 1
+  }
+}
+
+test "overwrite_existing_key_in_large_map" {
+  let mut m: Map[String, Int] = Map::new()
+  let mut i = 0
+  while i < 30 {
+    m = Map::set(m, mk_key(i), i)
+    i = i + 1
+  }
+  m = Map::set(m, mk_key(10), 9999)
+  assert(Map::get(m, mk_key(10)) == 9999)
+  assert(Array::length(Map::keys(m)) == 30)
+}
+
+test "delete_from_large_map" {
+  let mut m: Map[String, Int] = Map::new()
+  let mut i = 0
+  while i < 30 {
+    m = Map::set(m, mk_key(i), i)
+    i = i + 1
+  }
+  m = Map::delete(m, mk_key(15))
+  assert(not(Map::has_key(m, mk_key(15))))
+  assert(Array::length(Map::keys(m)) == 29)
+  let mut j = 0
+  while j < 30 {
+    if j != 15 {
+      assert(Map::has_key(m, mk_key(j)))
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+}
+
+test "map_builder_freeze_large" {
+  let b = MapBuilder::new()
+  let mut i = 0
+  while i < 25 {
+    MapBuilder::set(b, mk_key(i), i * 2)
+    i = i + 1
+  }
+  let m = MapBuilder::freeze(b)
+  assert(Array::length(Map::keys(m)) == 25)
+  let mut j = 0
+  while j < 25 {
+    assert(Map::has_key(m, mk_key(j)))
+    assert(Map::get(m, mk_key(j)) == j * 2)
+    j = j + 1
+  }
+}
+
+test "boundary_at_exactly_8" {
+  let mut m: Map[String, Int] = Map::new()
+  let mut i = 0
+  while i < 8 {
+    m = Map::set(m, mk_key(i), i)
+    i = i + 1
+  }
+  assert(Array::length(Map::keys(m)) == 8)
+  let mut j = 0
+  while j < 8 {
+    assert(Map::has_key(m, mk_key(j)))
+    j = j + 1
+  }
+  assert(not(Map::has_key(m, "nope")))
+}
+
+test "hash_collisions_still_resolve" {
+  let mut m: Map[String, Int] = Map::new()
+  let mut i = 0
+  while i < 100 {
+    m = Map::set(m, mk_key(i), i)
+    i = i + 1
+  }
+  let mut j = 0
+  while j < 100 {
+    assert(Map::get(m, mk_key(j)) == j)
+    j = j + 1
+  }
+  assert(Array::length(Map::keys(m)) == 100)
+}

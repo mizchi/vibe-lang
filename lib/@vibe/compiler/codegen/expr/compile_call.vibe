@@ -35,6 +35,97 @@ import ./compile_match.vibe {
 
 //# Functions
 
+// Map::has_key's original O(n) linear scan, factored out for the same reason
+// as cc_map_get_linear_scan above. Leaves a raw untagged 0/1 i64 -- callers
+// apply the RC bool-tag shift uniformly after picking either this or the
+// probe-index path.
+fn cc_map_has_linear_scan(buf: Bytes, map_local: Int, key_local: Int, count_local: Int, idx_local: Int, eq_idx: Int) -> Unit {
+  emit_i64_const(buf, 0)
+  emit_local_set(buf, idx_local)
+  emit_block_i64(buf)
+  emit_block_void(buf)
+  emit_loop_void(buf)
+  emit_local_get(buf, idx_local)
+  emit_local_get(buf, count_local)
+  emit_i64_ge_s(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, map_local)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, idx_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf, 3, 8)
+  emit_local_get(buf, key_local)
+  emit_call(buf, eq_idx)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_i64_const(buf, 1)
+  emit_br(buf, 3)
+  emit_end(buf)
+  emit_local_get(buf, idx_local)
+  emit_i64_const(buf, 1)
+  emit_i64_add(buf)
+  emit_local_set(buf, idx_local)
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+  emit_i64_const(buf, 0)
+  emit_end(buf)
+}
+
+// Map::get's original O(n) linear scan, factored out so the O(1)-average
+// hash-index path (see ctx.map_probe_func_idx) can fall back to it verbatim
+// for maps below the index-build threshold (index_ptr==0 at runtime) without
+// duplicating the bytecode. `map_local` must already be untagged (map & -2)
+// and `count_local` already loaded. Leaves the found value (or 0) as the
+// single i64 result -- callers needing this as a sub-expression (e.g. inside
+// another `if_i64`'s branch) can emit it directly; callers needing it as
+// their own function's tail value can emit it as the last instruction.
+fn cc_map_get_linear_scan(buf: Bytes, map_local: Int, key_local: Int, count_local: Int, idx_local: Int, eq_idx: Int) -> Unit {
+  emit_i64_const(buf, 0)
+  emit_local_set(buf, idx_local)
+  emit_block_i64(buf)
+  emit_block_void(buf)
+  emit_loop_void(buf)
+  emit_local_get(buf, idx_local)
+  emit_local_get(buf, count_local)
+  emit_i64_ge_s(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, map_local)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, idx_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf, 3, 8)
+  emit_local_get(buf, key_local)
+  emit_call(buf, eq_idx)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, map_local)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, idx_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf, 3, 16)
+  emit_br(buf, 3)
+  emit_end(buf)
+  emit_local_get(buf, idx_local)
+  emit_i64_const(buf, 1)
+  emit_i64_add(buf)
+  emit_local_set(buf, idx_local)
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+  emit_i64_const(buf, 0)
+  emit_end(buf)
+}
+
 // A field projection `a.f` (EDot) passed as an argument to an owning user
 // function (which drops its parameters) is a borrow of the source aggregate.
 // Without a retain the callee's param-drop frees it while the source still
@@ -3203,74 +3294,87 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_i32_load(buf, 2, 0)
       emit_i64_extend_i32_u(buf)
       emit_local_set(buf, count_local)
-      emit_i64_const(buf, 0)
-      emit_local_set(buf, idx_local)
-      emit_block_i64(buf)
-      emit_block_void(buf)
-      emit_loop_void(buf)
-      emit_local_get(buf, idx_local)
-      emit_local_get(buf, count_local)
-      emit_i64_ge_s(buf)
-      emit_br_if(buf, 1)
-      emit_local_get(buf, map_local)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, idx_local)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_i64_load(buf, 3, 8)
-      emit_local_get(buf, key_local)
-      emit_call(buf, map_get_eq_idx)
-      emit_i32_wrap_i64(buf)
-      emit_if_void(buf)
-      emit_local_get(buf, map_local)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, idx_local)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_i64_load(buf, 3, 16)
-      emit_br(buf, 3)
-      emit_end(buf)
-      emit_local_get(buf, idx_local)
-      emit_i64_const(buf, 1)
-      emit_i64_add(buf)
-      emit_local_set(buf, idx_local)
-      emit_br(buf, 0)
-      emit_end(buf)
-      emit_end(buf)
-      emit_i64_const(buf, 0)
-      emit_end(buf)
-      nl + 4
+      if ctx.map_probe_func_idx >= 0 {
+        let idxptr_local = nl + 4
+        Array::push(local_names, "__map_idxptr")
+        emit_local_get(buf, map_local)
+        emit_i32_wrap_i64(buf)
+        emit_i32_load(buf, 2, 4)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, idxptr_local)
+        emit_local_get(buf, idxptr_local)
+        emit_i64_eqz(buf)
+        emit_if_i64(buf)
+        cc_map_get_linear_scan(buf, map_local, key_local, count_local, idx_local, map_get_eq_idx)
+        emit_else(buf)
+        emit_local_get(buf, map_local)
+        emit_local_get(buf, count_local)
+        emit_local_get(buf, key_local)
+        emit_call(buf, ctx.map_probe_func_idx)
+        emit_local_set(buf, idx_local)
+        emit_local_get(buf, idx_local)
+        emit_i64_const(buf, 0)
+        emit_i64_lt_s(buf)
+        emit_if_i64(buf)
+        emit_i64_const(buf, 0)
+        emit_else(buf)
+        emit_local_get(buf, map_local)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, idx_local)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 16)
+        emit_end(buf)
+        emit_end(buf)
+        nl + 5
+      } else {
+        cc_map_get_linear_scan(buf, map_local, key_local, count_local, idx_local, map_get_eq_idx)
+        nl + 4
+      }
     }
     else if fname == "Map::has_key" || fname == "Map::has" {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       let (eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
       let map_l = nl; let key_l = nl + 1; let cnt_l = nl + 2; let i_l = nl + 3
+      // idxptr_l is only READ when ctx.map_probe_func_idx >= 0, but reserved
+      // unconditionally so this arm always returns the same local count.
+      let idxptr_l = nl + 4
       Array::push(local_names, "__hk_map"); Array::push(local_names, "__hk_key")
       Array::push(local_names, "__hk_cnt"); Array::push(local_names, "__hk_i")
+      Array::push(local_names, "__hk_idxptr")
       emit_local_set(buf, key_l); emit_local_set(buf, map_l)
       emit_local_get(buf, map_l); emit_i64_const(buf, -2); emit_i64_and(buf); emit_local_set(buf, map_l)
       emit_local_get(buf, map_l); emit_i32_wrap_i64(buf)
       emit_i32_load(buf, 2, 0); emit_i64_extend_i32_u(buf); emit_local_set(buf, cnt_l)
-      emit_i64_const(buf, 0); emit_local_set(buf, i_l)
-      emit_block_i64(buf); emit_block_void(buf); emit_loop_void(buf)
-      emit_local_get(buf, i_l); emit_local_get(buf, cnt_l)
-      emit_i64_ge_s(buf); emit_br_if(buf, 1)
-      emit_local_get(buf, map_l); emit_i32_wrap_i64(buf)
-      emit_local_get(buf, i_l); emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16); emit_i32_mul(buf); emit_i32_add(buf)
-      emit_i64_load(buf, 3, 8)
-      emit_local_get(buf, key_l); emit_call(buf, eq_fi)
-      emit_i32_wrap_i64(buf); emit_if_void(buf)
-      emit_i64_const(buf, 1); emit_br(buf, 3); emit_end(buf)
-      emit_local_get(buf, i_l); emit_i64_const(buf, 1); emit_i64_add(buf)
-      emit_local_set(buf, i_l); emit_br(buf, 0)
-      emit_end(buf); emit_end(buf)
-      emit_i64_const(buf, 0); emit_end(buf)
+      if ctx.map_probe_func_idx >= 0 {
+        emit_local_get(buf, map_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_load(buf, 2, 4)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, idxptr_l)
+        emit_local_get(buf, idxptr_l)
+        emit_i64_eqz(buf)
+        emit_if_i64(buf)
+        cc_map_has_linear_scan(buf, map_l, key_l, cnt_l, i_l, eq_fi)
+        emit_else(buf)
+        emit_local_get(buf, map_l)
+        emit_local_get(buf, cnt_l)
+        emit_local_get(buf, key_l)
+        emit_call(buf, ctx.map_probe_func_idx)
+        emit_i64_const(buf, 0)
+        emit_i64_ge_s(buf)
+        emit_if_i64(buf)
+        emit_i64_const(buf, 1)
+        emit_else(buf)
+        emit_i64_const(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+      } else {
+        cc_map_has_linear_scan(buf, map_l, key_l, cnt_l, i_l, eq_fi)
+      }
       // Under RC a Bool is a TAGGED scalar (n << 1); the block yields a raw 0/1,
       // so tag it to match tagged Bool literals (see Array::any). Latent
       // `Map::has_key(..) == true` mismatch under VIBE_RC=1.
@@ -3280,7 +3384,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       } else {
         ()
       }
-      nl + 4
+      nl + 5
     }
     else if fname == "Map::remove" {
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
@@ -3443,6 +3547,34 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_i32_wrap_i64(buf)
       emit_i32_store(buf, 2, 0)
       emit_end(buf)
+      // #Map-hash-index: (re-loading the just-written final count from new_l
+      // rather than re-deriving it from found_l/cnt_l) build + attach the
+      // O(1)-average side index when it's worth it (count>=8). idx_l/found_l
+      // are dead after the copy loop above -- reused here as scratch (final
+      // count, then the built index pointer) so this needs no new locals.
+      if ctx.map_build_index_func_idx >= 0 {
+        emit_local_get(buf, new_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_load(buf, 2, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, idx_l)
+        emit_local_get(buf, idx_l)
+        emit_i64_const(buf, 8)
+        emit_i64_ge_s(buf)
+        emit_if_void(buf)
+        emit_local_get(buf, new_l)
+        emit_local_get(buf, idx_l)
+        emit_call(buf, ctx.map_build_index_func_idx)
+        emit_local_set(buf, found_l)
+        emit_local_get(buf, new_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, found_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_store(buf, 2, 4)
+        emit_end(buf)
+      } else {
+        ()
+      }
       emit_local_get(buf, new_l)
       nl + 7
     }
@@ -3564,6 +3696,27 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_local_get(buf, out_l)
       emit_i32_wrap_i64(buf)
       emit_i32_store(buf, 2, 0)
+      // See the matching comment in Map::set above. idx_l is dead after the
+      // copy loop; out_l already holds the final count (just stored above),
+      // no need to re-load it.
+      if ctx.map_build_index_func_idx >= 0 {
+        emit_local_get(buf, out_l)
+        emit_i64_const(buf, 8)
+        emit_i64_ge_s(buf)
+        emit_if_void(buf)
+        emit_local_get(buf, new_l)
+        emit_local_get(buf, out_l)
+        emit_call(buf, ctx.map_build_index_func_idx)
+        emit_local_set(buf, idx_l)
+        emit_local_get(buf, new_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, idx_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_store(buf, 2, 4)
+        emit_end(buf)
+      } else {
+        ()
+      }
       emit_local_get(buf, new_l)
       nl + 6
     }
@@ -3827,6 +3980,27 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_i32_const(buf, 16)
       emit_i32_mul(buf)
       emit_memory_copy(buf)
+      // See the matching comment in Map::set above. fb_l (the builder handle)
+      // is dead after the memory_copy -- reused here as scratch for the
+      // built index pointer.
+      if ctx.map_build_index_func_idx >= 0 {
+        emit_local_get(buf, fc_l)
+        emit_i64_const(buf, 8)
+        emit_i64_ge_s(buf)
+        emit_if_void(buf)
+        emit_local_get(buf, fm_l)
+        emit_local_get(buf, fc_l)
+        emit_call(buf, ctx.map_build_index_func_idx)
+        emit_local_set(buf, fb_l)
+        emit_local_get(buf, fm_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, fb_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_store(buf, 2, 4)
+        emit_end(buf)
+      } else {
+        ()
+      }
       emit_local_get(buf, fm_l)
       nl + 3
     }
