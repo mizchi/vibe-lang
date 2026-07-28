@@ -1,0 +1,73 @@
+package vibe:compiler-host;
+
+// The vibe compiler's OWN host execution contract (#1143): every host
+// function `cli_main` needs a runner to provide for the compiler to run at
+// all, expressed the same way `vibe compile --wit` already expresses a
+// COMPILED PROGRAM's effect surface (lib/@vibe/compiler/wit_gen.vibe,
+// docs/effect-wit-mapping.md). That generator explicitly renders a
+// host-capability effect (Fs, Env, Stdin, Stdout, ...) as a
+// `// host capability effect '...' (provided by the vibe runtime; no WIT
+// mapping yet)` comment rather than a real WIT import -- this file is a
+// hand-authored answer to that gap for the compiler's own entry point,
+// `export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout }`
+// (lib/@vibe/compiler/cli_adapter.vibe). `Error` never crosses the host
+// boundary (vibe-internal control flow; an escaping throw is a component
+// trap, not a capability), matching the same rule the generator applies to
+// user programs.
+//
+// Types follow wit_type_text's existing Int -> s64 / Bool -> bool /
+// String -> string / Unit -> omitted-return-type mapping
+// (lib/@vibe/compiler/wit_gen.vibe). Operation parameters are positional
+// (arg0, arg1, ...): vibe effect operation declarations do not carry
+// parameter names, exactly as documented for user-program WIT generation.
+//
+// Signatures are taken verbatim from the two places that declare them on
+// the guest side: `effect Fs { ... }` (lib/@vibe/fs/fs_effect.vibe) and the
+// Stdin/Stdout/Env builtin lookup tables (lib/@vibe/compiler/checker/
+// builtins_system.vibe, `lookup_io_a`/`lookup_io_b`).
+//
+// This is the PORTABLE contract only: preopen-dir sandboxing, store/linker
+// setup, fuel/memory limits, and other per-runner configuration are NOT
+// part of it -- they're how a given runtime chooses to implement these
+// imports, not what the imports are. Confirmed against both existing
+// runners (runtime/vibewt's Rust `register_vibe_imports`,
+// scripts/wasm_vibe_host_runner.js's Node `vibeModule`): both implement
+// this exact surface, though the Node runner ALSO implements a much larger
+// surface (http, json, extended Fs ops like mkdir/chdir/rename) that
+// `cli_main` itself never calls -- that extended surface belongs to
+// LIBRARY effects used by compiled USER programs (lib/@vibe/http,
+// lib/@vibe/fs), generated per-program by the existing --wit path, not to
+// this fixed compiler-host contract.
+//
+// The #906 worker-transport adapter modes (VIBE_MODULE_JOB_DIR,
+// VIBE_LIST_DEPS, VIBE_PUBLISH_ENV_CACHE) need NO additional imports beyond
+// this world -- they're plain Env::get-gated branches in cli_adapter.vibe
+// that only ever call fs.read-file/fs.write-file, treating `input_path` as
+// a directory rather than a single file in job-dir/env-cache mode.
+
+world vibe-compiler-host {
+  import fs: interface {
+    read-file: func(arg0: string) -> string;
+    write-file: func(arg0: string, arg1: string);
+    exists: func(arg0: string) -> bool;
+    mkdir: func(arg0: string);
+  }
+
+  import env: interface {
+    get: func(arg0: string) -> string;
+    args-get: func(arg0: s64) -> string;
+    args-len: func() -> s64;
+  }
+
+  import stdin: interface {
+    read-char: func() -> s64;
+    read-stream: func(arg0: s64) -> string;
+  }
+
+  import stdout: interface {
+    write-char: func(arg0: s64);
+    write-stream: func(arg0: string);
+  }
+
+  export cli-main: func() -> s64;
+}
