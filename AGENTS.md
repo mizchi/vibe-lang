@@ -33,9 +33,15 @@ pkf run test-local        # affected tests only (fast inner loop)
 pkf run full-gate         # complete operation gate
 pkf run run -- args       # run main with args
 # 単一ファイルの型検査 / 診断: vibe diagnostics <file.vibe>
-# `fmt` は現状 no-op placeholder (未移植)。moon 依存の
-# `check`/`info`/`test-update` や per-package `test:*` は dead-task
-# cleanup で Taskfile から削除済み。
+# selfhost の CST-token formatter (lib/@vibe/compiler/fmt/format.vibe,
+# scripts/vibe_fmt.sh, #854/#1138) は実装済みで `bash scripts/vibe_fmt.sh
+# [--check|--stdout] <file.vibe>` で直接使える。ただし `pkf run fmt` タスク
+# 自体はまだこれを呼ばない no-op placeholder のまま (Taskfile.pkl の
+# `fmt` task, cmd = "true") — 既存コードベースがこの formatter の
+# fixpoint になっている保証もまだない (サンプルで --check が落ちる
+# ファイルを確認済み)。全体への一括適用 + pkf 配線は別途スコープする。
+# moon 依存の `check`/`info`/`test-update` や per-package `test:*` は
+# dead-task cleanup で Taskfile から削除済み。
 ```
 
 ## Project Structure
@@ -80,8 +86,20 @@ CI shard では:
 
 ## Coding Convention
 
-- Each block is separated by `///|`
-- MoonBit code uses snake_case for variables/functions (lowercase only)
+- `///|` は MoonBit (`.mbt`) 時代の block separator 記法。新規コードでは
+  使わないこと — ただし移植時の残骸が `lib/@vibe/compiler/core/types.vibe`
+  ほか数ファイルにまだ残っている(2026-07-28 時点で4ファイル)。見つけたら
+  削除して構わないが、一括削除はこの PR ではやっていない。**vibe の doc
+  comment は `///`** (Rust 風、宣言の直前に置くとその宣言の doc として
+  hover/`vibe doc-at` から拾われる。実装は `lib/@vibe/parser/lexer.vibe`
+  `collect_doc_comments`)。**`vibe symbols` はまだ doc comment を返さない**
+  (`runtime/symbol_spans.vibe` は `(name, kind, start, end)` のみ) —
+  拾えるのは hover と `doc-at` だけ。既存の `//#` (モジュール冒頭説明・
+  セクション見出しに広く使われている非公式記法) は `///` と意味が異なる
+  (`//#` は複数宣言にまたがる説明やセクション区切りにも使われており、
+  `///` の「直後の1宣言に対応する doc」という意味論とは食い違う) ため、
+  一括置換はしていない — 使い分けは書く場所ごとに判断すること。
+- variables/functions は snake_case (lowercase only)
 
 ## Code Navigation (IMPORTANT)
 
@@ -151,7 +169,13 @@ completion / signature help を提供する。詳細は
 - `pkf run release-check` — full gate (fmt + info + check + test + operation gates)。
 - `pkf run test-local` — 変更影響範囲のテストのみ (fast inner loop、flaker 経由)。
 - 単一ファイルの型検査 / 診断は `vibe diagnostics <file.vibe>`（空出力 = clean）。
-- `pkf run fmt` は現状 no-op placeholder（未移植、#594）。
+- selfhost の CST-token formatter は実装済み (`lib/@vibe/compiler/fmt/format.vibe`,
+  #854/#1138) — `bash scripts/vibe_fmt.sh [--check|--stdout] <file.vibe>` で
+  直接使える。ただし `pkf run fmt` タスク自体はまだこれを呼ばない no-op
+  のまま (Taskfile.pkl の `fmt` task, `cmd = "true"`)、既存コードベースが
+  fixpoint になっている保証もまだ無い (`--check` が落ちるファイルを確認
+  済み) — 全体への一括適用 + `pkf run fmt` 配線は別途大きめのタスクとして
+  スコープする。
 
 ### `vibe test` / `vibe bench` backend 切り替え
 
