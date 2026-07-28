@@ -2448,17 +2448,25 @@ async function main() {
       invoke.startsWith("probe_") ||
       invoke.startsWith("selfbuild_") ||
       process.env.VIBE_PREFER_ZERO_ENV_FIRST === "1";
-    // #799 perf: `cli_main` is the selfhost CLI's exported main; on those
-    // artifacts the WASI-convention `_start` ALSO runs main. The pre-invoke
-    // `_start()` below (module init for test/bench modules) therefore ran the
-    // ENTIRE compile once, findClosureEnv then scanned the ~360MB post-compile
-    // heap for an env cli_main does not have, and the explicit cli_main call
-    // compiled AGAIN -- every harness compile did the work twice. Outputs are
-    // byte-identical either way (verified); skip the pre-start for cli_main.
-    // VIBE_FORCE_RUN_INIT=1 restores the old behavior for debugging.
+    // #799/#1182 perf+correctness: `cli_main` is the selfhost CLI's exported
+    // main, and `main` is the ADR-0075 entry every ordinary `.vibex` program
+    // uses -- on those artifacts the WASI-convention `_start` ALSO calls the
+    // entry directly (see linked_compile.vibe's `_start` synthesis: when a
+    // named entry is found it emits exactly `call entry_func_idx` once, no
+    // loop). The pre-invoke `_start()` below (module init for test/bench
+    // modules, where `_start` instead loops over every `test_*`/`bench_*`
+    // export and does NOT call the single target being invoked) therefore
+    // duplicated `cli_main`'s work (findClosureEnv then scanned the ~360MB
+    // post-compile heap for an env cli_main does not have, and the explicit
+    // cli_main call ran AGAIN) and, more seriously, for `main` it double-runs
+    // every side effect the program performs (confirmed: a `.vibex` program
+    // that writes one line to stdout via `vibe_run.sh` printed it twice).
+    // Outputs are byte-identical for cli_main either way (verified); skip the
+    // pre-start for both known single-entry names. VIBE_FORCE_RUN_INIT=1
+    // restores the old (double-invoking) behavior for debugging.
     const skipRunInit =
       process.env.VIBE_SKIP_RUN_INIT === "1" ||
-      (invoke === "cli_main" && process.env.VIBE_FORCE_RUN_INIT !== "1");
+      ((invoke === "cli_main" || invoke === "main") && process.env.VIBE_FORCE_RUN_INIT !== "1");
     let resolvedEnv = 0;
     if (!skipRunInit && invoke !== "_start" && typeof instance.exports._start === "function") {
       if (!didInitStart) {

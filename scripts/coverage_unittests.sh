@@ -19,12 +19,13 @@ ACC="_build/coverage/selfhost-corpus/acc.json"
 OUT="_build/coverage/selfhost-ut"; rm -rf "$OUT"; mkdir -p "$OUT"
 
 ok=0; fail=0; : > "$OUT/runs.txt"
+DRIVER="$OUT/ut_driver.vibe"
 for f in lib/@vibe/compiler/*_test.vibe; do
   base="$(basename "$f")"
   SUPPORTS="$(grep -oE "\./[a-z_]+_support\.vibe" "$f" 2>/dev/null | sed "s|\./||" | sort -u | paste -sd, -)"
-  python3 scripts/coverage_unittests.py "$SUPPORTS" "$base" >/dev/null 2>&1 || { fail=$((fail+1)); continue; }
-  grep -q "cov_ut_1:" /tmp/ut_driver.vibe 2>/dev/null || { continue; }  # no tests
-  cat "$FLAT" /tmp/ut_driver.vibe > "$OUT/src.vibe"
+  bash scripts/coverage_unittests_run.sh "$SUPPORTS" "$base" "$DRIVER" >/dev/null 2>&1 || { fail=$((fail+1)); continue; }
+  grep -q "cov_ut_1:" "$DRIVER" 2>/dev/null || { continue; }  # no tests
+  cat "$FLAT" "$DRIVER" > "$OUT/src.vibe"
   built=0
   for t in 1 2 3; do
     rm -f "$OUT/ut.wasm"

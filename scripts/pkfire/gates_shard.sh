@@ -46,6 +46,7 @@ case "$shard" in
     bash scripts/test_cli_preview2_package.sh
     bash scripts/test_cli_command_component.sh
     bash scripts/test_cli_direct_component.sh
+    bash scripts/test_vibe_run_single_invoke.sh
     bash scripts/test_rc_bootstrap.sh
     bash scripts/test_async_component_gate.sh
     bash scripts/test_wasi_http_p3_full_gate.sh

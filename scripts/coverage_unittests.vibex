@@ -1,0 +1,449 @@
+// scripts/coverage_unittests.vibex — native vibe port of
+// scripts/coverage_unittests.py.
+//
+// Run the compiler's own *_test.vibe unit tests against the FLAT module
+// source (which has no cyclic re-export), bypassing the cyclic-import
+// blocker that stops them from FS-compiling. Strips imports from the
+// *_support.vibe helpers (their deps are all top-level in the flat source)
+// and appends them + every test block's body + assert helpers, then writes
+// a driver source ready to compile+run under coverage.
+//
+// Usage (invoked via the cached-build wrapper, not vibe_run.sh -- see
+// scripts/coverage_unittests_run.sh's own header for why):
+//   bash scripts/coverage_unittests_run.sh <support_csv> <test_file_base> <driver_out_path>
+//
+// `support_csv` is a comma-separated list of *_support.vibe basenames (may
+// be empty), `test_file_base` is a single *_test.vibe basename; both are
+// resolved relative to lib/@vibe/compiler/ (matching the Python original's
+// `os.path.join(ROOT, 'lib/@vibe/compiler', ...)`). Writes the assembled
+// driver source to `driver_out_path` and prints "<n> tests, <m> supports".
+//
+// Design differences from scripts/coverage_unittests.py, forced by vibe's
+// actual capabilities rather than an exact translation:
+//   * Two helpers from the Python original were dead code and are NOT
+//     ported: `extract_tests` (defined, never called -- the main loop
+//     duplicates its own inline span-finding instead) and the `seen_names`
+//     set built while processing support files (computed, never read
+//     afterward). Neither has any observable effect on the Python script's
+//     behavior; omitting them changes nothing.
+//   * `strip_module`'s five regex substitutions (strip `import { .. }` /
+//     `export <path> { .. }` / bare `export { .. }` blocks, drop `//#`
+//     comment lines, rewrite `export let` -> `let`) are reimplemented as a
+//     single character-scanning pass (find_flat_brace_end / match_*_block
+//     below) instead of vibe's experimental @vibex/regexp module: none of
+//     the five patterns need backreferences/lookaround, so a hand-written
+//     scanner is no less capable and avoids depending on an ADR-0065
+//     "experimental scope" library for a script meant to replace a stable
+//     tool.
+//   * The test/bench-block brace matcher (find_matching_close) is, like the
+//     Python original, a NAIVE character-level counter with no string-
+//     literal awareness -- a `{`/`}` char inside a quoted string inside a
+//     test body is counted the same as a real structural brace. This is
+//     harmless only because such strings happen to contain balanced brace
+//     counts in every test file this tool currently processes (confirmed:
+//     pctor2_test.vibe's fixture-source string literal has 2 `{` / 2 `}`)
+//     -- faithfully inherited from the Python original rather than fixed,
+//     since fixing it would be a behavior change beyond a straight port.
+//   * `/tmp/ut_driver.vibe` (the Python original's hardcoded output path)
+//     is not writable from a `.vibex` program's WASI preopen (scoped to the
+//     repo root only) -- the output path is now an explicit third CLI arg,
+//     and scripts/coverage_unittests.sh passes a repo-relative path.
+
+// ---------- char classification ----------
+
+fn is_ident_char(c: Int) -> Bool {
+  (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c == 95
+}
+
+fn is_ws(c: Int) -> Bool {
+  c == 32 || c == 9 || c == 10 || c == 13 || c == 12 || c == 11
+}
+
+fn starts_with_at(s: String, pos: Int, word: String) -> Bool {
+  let wl = String::length(word)
+  let sl = String::length(s)
+  if pos < 0 || pos + wl > sl {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while ok && i < wl {
+      if String::char_code_at(s, pos + i) != String::char_code_at(word, i) {
+        ok = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    ok
+  }
+}
+
+fn is_word_boundary_before(s: String, pos: Int) -> Bool {
+  pos == 0 || !is_ident_char(String::char_code_at(s, pos - 1))
+}
+
+// ---------- strip_module: import/export block stripping ----------
+
+// Mirrors the shared tail of regexes 1-3 (`...\{[^{}]*\}`): from `from`,
+// consume non-newline non-`{` chars (regex `[^\n{]*`), require `{`, then
+// consume non-`{`/`}` chars (regex `[^{}]*`), require `}`. Returns the
+// index right after the closing `}`, or -1 if the shape doesn't match
+// (mirrors the regex simply failing to match at this position).
+fn find_flat_brace_end(src: String, len: Int, from: Int) -> Int {
+  let mut j = from
+  let mut failed = false
+  while !failed && j < len && String::char_code_at(src, j) != 123 {
+    if String::char_code_at(src, j) == 10 {
+      failed = true
+    } else {
+      j = j + 1
+    }
+  }
+  if failed || j >= len || String::char_code_at(src, j) != 123 {
+    -1
+  } else {
+    let mut k = j + 1
+    let mut failed2 = false
+    while !failed2 && k < len && String::char_code_at(src, k) != 125 {
+      if String::char_code_at(src, k) == 123 {
+        failed2 = true
+      } else {
+        k = k + 1
+      }
+    }
+    if failed2 || k >= len || String::char_code_at(src, k) != 125 {
+      -1
+    } else {
+      k + 1
+    }
+  }
+}
+
+// `\bimport\s+[^\n{]*\{[^{}]*\}`
+fn match_import_block(src: String, len: Int, i: Int) -> Int {
+  if !starts_with_at(src, i, "import") {
+    -1
+  } else {
+    let after_kw = i + 6
+    if after_kw >= len || !is_ws(String::char_code_at(src, after_kw)) {
+      -1
+    } else {
+      let mut j = after_kw
+      while j < len && is_ws(String::char_code_at(src, j)) {
+        j = j + 1
+      }
+      find_flat_brace_end(src, len, j)
+    }
+  }
+}
+
+// `\bexport\s+[./@~][^\n{]*\{[^{}]*\}`
+fn match_export_path_block(src: String, len: Int, i: Int) -> Int {
+  if !starts_with_at(src, i, "export") {
+    -1
+  } else {
+    let after_kw = i + 6
+    if after_kw >= len || !is_ws(String::char_code_at(src, after_kw)) {
+      -1
+    } else {
+      let mut j = after_kw
+      while j < len && is_ws(String::char_code_at(src, j)) {
+        j = j + 1
+      }
+      if j >= len {
+        -1
+      } else {
+        let c = String::char_code_at(src, j)
+        if c == 46 || c == 47 || c == 64 || c == 126 {
+          find_flat_brace_end(src, len, j)
+        } else {
+          -1
+        }
+      }
+    }
+  }
+}
+
+// `\bexport\s*\{[^{}]*\}`
+fn match_export_bare_block(src: String, len: Int, i: Int) -> Int {
+  if !starts_with_at(src, i, "export") {
+    -1
+  } else {
+    let after_kw = i + 6
+    let mut j = after_kw
+    while j < len && is_ws(String::char_code_at(src, j)) {
+      j = j + 1
+    }
+    find_flat_brace_end(src, len, j)
+  }
+}
+
+fn strip_import_export_blocks(src: String) -> String {
+  let len = String::length(src)
+  let out = StringBuilder::new()
+  let mut i = 0
+  let mut last_copy = 0
+  while i < len {
+    let boundary = is_word_boundary_before(src, i)
+    let mut matched_end = -1
+    if boundary {
+      let m1 = match_import_block(src, len, i)
+      if m1 > 0 {
+        matched_end = m1
+      } else {
+        let m2 = match_export_path_block(src, len, i)
+        if m2 > 0 {
+          matched_end = m2
+        } else {
+          let m3 = match_export_bare_block(src, len, i)
+          if m3 > 0 {
+            matched_end = m3
+          } else {
+            ()
+          }
+        }
+      }
+    } else {
+      ()
+    }
+    if matched_end > 0 {
+      StringBuilder::push(out, String::substring(src, last_copy, i))
+      last_copy = matched_end
+      i = matched_end
+    } else {
+      i = i + 1
+    }
+  }
+  StringBuilder::push(out, String::substring(src, last_copy, len))
+  StringBuilder::freeze(out)
+}
+
+// `^//#.*$` -> "" and `^export let` -> `let`, both per-line (regex `re.M`).
+fn strip_hash_lines_and_export_let(src: String) -> String {
+  let lines = String::split(src, "\n")
+  let n = Array::length(lines)
+  let out = ArrayBuilder::new()
+  let mut i = 0
+  while i < n {
+    let line = Array::get(lines, i)
+    if String::starts_with(line, "//#") {
+      ArrayBuilder::push(out, "")
+    } else if String::starts_with(line, "export let") {
+      ArrayBuilder::push(out, String::substring(line, 7, String::length(line)))
+    } else {
+      ArrayBuilder::push(out, line)
+    }
+    i = i + 1
+  }
+  join_lines(ArrayBuilder::freeze(out))
+}
+
+fn join_lines(lines: Array[String]) -> String {
+  let n = Array::length(lines)
+  let mut i = 0
+  let mut acc = ""
+  while i < n {
+    if i > 0 {
+      acc = acc + "\n"
+    } else {
+      ()
+    }
+    acc = acc + Array::get(lines, i)
+    i = i + 1
+  }
+  acc
+}
+
+fn strip_module(src: String) -> String {
+  strip_hash_lines_and_export_let(strip_import_export_blocks(src))
+}
+
+// ---------- test/bench block extraction ----------
+
+// `(?:test|bench)\s+"([^"]*)"\s*\{` -- the captured name is unused by the
+// Python original (kept only for readability there), so this returns just
+// (match_start, body_start) rather than the name text too.
+fn find_test_or_bench_start(src: String, len: Int, from: Int) -> (Int, Int) {
+  let mut i = from
+  let mut result_start = -1
+  let mut result_body_start = -1
+  while result_start < 0 && i < len {
+    let is_test = starts_with_at(src, i, "test")
+    let is_bench = !is_test && starts_with_at(src, i, "bench")
+    if (is_test || is_bench) && is_word_boundary_before(src, i) {
+      let kwlen = if is_test { 4 } else { 5 }
+      let after_kw = i + kwlen
+      if after_kw < len && is_ws(String::char_code_at(src, after_kw)) {
+        let mut j = after_kw
+        while j < len && is_ws(String::char_code_at(src, j)) {
+          j = j + 1
+        }
+        if j < len && String::char_code_at(src, j) == 34 {
+          let mut k = j + 1
+          while k < len && String::char_code_at(src, k) != 34 {
+            k = k + 1
+          }
+          if k < len {
+            let mut m = k + 1
+            while m < len && is_ws(String::char_code_at(src, m)) {
+              m = m + 1
+            }
+            if m < len && String::char_code_at(src, m) == 123 {
+              result_start = i
+              result_body_start = m + 1
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    if result_start < 0 {
+      i = i + 1
+    } else {
+      ()
+    }
+  }
+  (result_start, result_body_start)
+}
+
+// Naive (non-string-aware) brace-depth counter -- see header comment.
+fn find_matching_close(src: String, len: Int, body_start: Int) -> Int {
+  let mut depth = 1
+  let mut j = body_start
+  while depth > 0 && j < len {
+    let c = String::char_code_at(src, j)
+    if c == 123 {
+      depth = depth + 1
+    } else if c == 125 {
+      depth = depth - 1
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  j
+}
+
+// Replaces every `test "name" { .. }` / `bench "name" { .. }` block in
+// body_src with a `cov_ut_<n>` driver function (numbered starting at
+// start_n + 1), returning (transformed_source, per-test `handle` call
+// statements, final n).
+fn extract_and_replace_tests(body_src: String, start_n: Int) -> (String, Array[String], Int) {
+  let len = String::length(body_src)
+  let out = StringBuilder::new()
+  let calls = ArrayBuilder::new()
+  let mut last = 0
+  let mut i = 0
+  let mut n = start_n
+  let mut done = false
+  while !done {
+    let pos = find_test_or_bench_start(body_src, len, i)
+    let (st, bstart) = pos
+    if st < 0 {
+      done = true
+    } else {
+      let close_end = find_matching_close(body_src, len, bstart)
+      let tbody = String::substring(body_src, bstart, close_end - 1)
+      StringBuilder::push(out, String::substring(body_src, last, st))
+      n = n + 1
+      StringBuilder::push(
+        out,
+        "let cov_ut_" + Int::to_string(n) + ": () -> Int with { Error } = () -> {\n" + tbody + "\n  0\n}\n"
+      )
+      ArrayBuilder::push(
+        calls,
+        "  let _ = handle { cov_ut_" + Int::to_string(n) + "() } with Error { Throw(_) => 0 }"
+      )
+      last = close_end
+      i = close_end
+    }
+  }
+  StringBuilder::push(out, String::substring(body_src, last, len))
+  (StringBuilder::freeze(out), ArrayBuilder::freeze(calls), n)
+}
+
+// ---------- main ----------
+
+fn compiler_dir() -> String { "lib/@vibe/compiler/" }
+
+fn assert_helpers() -> String {
+  "\nlet assert: (Bool) -> Int with { Error } = (b) -> { if b { 1 } else { throw(\"assert failed\") } }\n" +
+  "let assert_eq: [T: Eq](T, T) -> Int with { Error } = (a, b) -> { if eq(a, b) { 1 } else { throw(\"assert_eq failed\") } }\n" +
+  "let assert_neq: [T: Eq](T, T) -> Int with { Error } = (a, b) -> { if eq(a, b) { throw(\"assert_neq failed\") } else { 1 } }\n"
+}
+
+fn split_csv(s: String) -> Array[String] {
+  if s == "" {
+    []
+  } else {
+    String::split(s, ",")
+  }
+}
+
+// Mirrors Python's `'\n'.join(list_of_maybe_zero_strings)`: '\n' BETWEEN
+// elements only, never a trailing one after the last (or any at all for an
+// empty/single-element list). helpers/fns/calls in Python are each such a
+// list (0 or 1 entries in every real invocation, since
+// scripts/coverage_unittests.sh always passes exactly one test file -- but
+// the CLI accepts a comma-separated support list of any length).
+fn main with { Fs, Env, Stdout, Process } {
+  let argc = Env::args_len()
+  if argc < 3 {
+    Stdout::write_stream("usage: coverage_unittests.vibex <support_csv> <test_file_base> <driver_out_path>\n")
+    vibe_process_exit_raw(2)
+  } else {
+    let support_files = split_csv(Env::args_get(0))
+    let test_file = Env::args_get(1)
+    let out_path = Env::args_get(2)
+
+    let helpers_b = ArrayBuilder::new()
+    let mut si = 0
+    while si < Array::length(support_files) {
+      let sf = Array::get(support_files, si)
+      let p = compiler_dir() + sf
+      if Fs::exists(p) {
+        ArrayBuilder::push(helpers_b, strip_module(Fs::read_file(p)))
+      } else {
+        ()
+      }
+      si = si + 1
+    }
+    let helpers_joined = join_lines(ArrayBuilder::freeze(helpers_b))
+
+    let pth = compiler_dir() + test_file
+    let fns_b = ArrayBuilder::new()
+    let calls_b = ArrayBuilder::new()
+    let mut n = 0
+    if Fs::exists(pth) {
+      let body_src = strip_module(Fs::read_file(pth))
+      let extracted = extract_and_replace_tests(body_src, 0)
+      let (fn_src, calls, extracted_n) = extracted
+      ArrayBuilder::push(fns_b, fn_src)
+      let mut ci = 0
+      while ci < Array::length(calls) {
+        ArrayBuilder::push(calls_b, Array::get(calls, ci))
+        ci = ci + 1
+      }
+      n = extracted_n
+    } else {
+      ()
+    }
+    let fns_joined = join_lines(ArrayBuilder::freeze(fns_b))
+    let calls_joined = join_lines(ArrayBuilder::freeze(calls_b))
+    let main_fn = "let cov_driver_main: () -> Int = () -> {\n" + calls_joined + "\n  0\n}\n"
+    let out = helpers_joined + assert_helpers() + fns_joined + "\n" + main_fn
+    Fs::write_file(out_path, out)
+
+    Stdout::write_stream(Int::to_string(n) + " tests, " + Int::to_string(Array::length(support_files)) + " supports\n")
+  }
+}

@@ -1,0 +1,604 @@
+// scripts/wasm_feature_levels.vibex — native vibe port of
+// scripts/wasm_feature_levels.py.
+//
+// Classify WebAssembly proposals into vibe's two build levels using the
+// vendored WebAssembly/website support matrix (docs/wasm/feature-matrix.json,
+// refreshed by scripts/wasm_feature_matrix_fetch.sh -- the master data behind
+// https://webassembly.org/features/, not a scrape of that HTML page).
+//
+// vibe draws a line between two levels (see docs/wasm/feature-levels.md):
+//
+//   compiler-host   -- what runs the compiler itself (runtime/vibewt, a
+//                       wasmtime embedding). Experimental proposals + explicit
+//                       `-W ...=y` / Config flags are fine here; nothing here
+//                       is shipped to a vibe program's audience.
+//   codegen-<name>  -- what a *compiled vibe program* can rely on, keyed by a
+//                       named target engine set (see ENGINE_SETS below). No
+//                       flags: every engine in the set must support the
+//                       proposal unflagged, in a released (non-nightly) build.
+//
+// A proposal is "level-safe" for an engine set iff every engine in that set
+// reports a plain supported status (boolean true or a version string) for it
+// -- null/false/["flag", ...] all disqualify it.
+//
+// Usage (run from the repo root):
+//   bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex                    # human report
+//   bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex -- --json          # machine report
+//   bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex -- --check         # diff vs. the
+//                                                                                   # checked-in
+//                                                                                   # expected
+//                                                                                   # snapshot;
+//                                                                                   # nonzero exit
+//                                                                                   # on drift
+//   bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex -- --update-expected # write the
+//                                                                                     # snapshot
+//
+// Design differences from scripts/wasm_feature_levels.py, forced by vibe's
+// actual capabilities rather than an exact translation:
+//   * `--check`'s comparison against docs/wasm/feature-levels.expected.json is
+//     a recursive structural deep-equality (json_deep_eq below), not a
+//     sort_keys=True string comparison like the Python original. Both are
+//     order-independent by construction (Python re-serializes both sides
+//     with sort_keys=True before comparing textually; this compares the
+//     parsed trees directly) so the observable behavior is identical, and
+//     deep-equality sidesteps needing to replicate Python's exact key-sort
+//     order at every level while classifying.
+//   * `--update-expected`'s JSON output has object keys inserted in
+//     already-sorted order at construction time (Map key iteration in vibe's
+//     Map builtin follows *insertion* order, confirmed empirically — there is
+//     no sort_keys-at-serialize-time flag) so the written file's key order
+//     still matches what Python's `json.dump(..., sort_keys=True)` produced,
+//     without needing a custom sorting serializer.
+//   * `Array::sort` is declared to the checker but has no codegen
+//     implementation yet (fails at runtime with "undefined variable (local):
+//     Array::sort @call", confirmed empirically) — sort_strings below is a
+//     hand-rolled insertion sort instead.
+//   * `String::char_code_at`-based `str_lt`, not `<`/`>`, is used to compare
+//     strings pulled out of an `Array[String]` (feature/engine names read
+//     from the parsed JSON matrix): `<`/`>` on such values falls back to a
+//     length-based (not lexicographic) comparison — confirmed empirically and
+//     filed as #1184; `str_lt` bypasses it.
+//   * `double_eq` (arithmetic-difference, not `==`) compares the `Double`
+//     values `json_deep_eq` pulls out of parsed JSON via `Json::number`:
+//     `Double == Double` is wrong specifically when both operands come from
+//     separate explicitly-`: Double`-annotated bindings (which is exactly
+//     what `Json::number`'s own implementation returns) — confirmed
+//     empirically and filed as #1185.
+//   * no argparse-equivalent exists, so flags are matched by literal string
+//     equality against Env::args_get in a small manual loop, mirroring
+//     scripts/vibe_md.vibex's own arg handling.
+//   * deliberately does NOT `import @vibe/fs { Fs }`: that facade reroutes
+//     the direct `Fs::read_file`/`Fs::write_file`/`Fs::exists` builtins
+//     through its mockable perform-based wrappers (see the package's own
+//     index.vpkg header comment), which have no real-filesystem handler
+//     installed in a plain `.vibex` entry and trap immediately on the first
+//     call — confirmed empirically (crashes before printing anything, even
+//     reading a 5-byte file). Using the raw `Fs::`-qualified builtins
+//     directly (no import needed, just declare `Fs` in main's row) works;
+//     this matches scripts/vibe_md.vibex's own Fs usage, which never imports
+//     @vibe/fs either.
+
+import @vibe/prelude { stdout_write }
+import @vibe/json { Json }
+
+// ---------- small string/number utilities (workarounds for #1184/#1185 / missing Array::sort) ----------
+
+// #1185: `Double == Double` is wrong specifically when BOTH operands come
+// from separate `let` bindings carrying an explicit `: Double` annotation
+// (confirmed: `Json::number(...)` -- used by json_deep_eq below -- returns
+// values through this same buggy path) -- confirmed empirically, subtraction
+// does not hit the same bug.
+fn double_eq(a: Double, b: Double) -> Bool {
+  let d = a - b
+  d < 0.0000001 && d > (0.0 - 0.0000001)
+}
+
+fn str_lt(a: String, b: String) -> Bool {
+  let la = String::length(a)
+  let lb = String::length(b)
+  let n = if la < lb { la } else { lb }
+  let mut i = 0
+  let mut result = -1
+  while result < 0 && i < n {
+    let ca = String::char_code_at(a, i)
+    let cb = String::char_code_at(b, i)
+    if ca < cb {
+      result = 1
+    } else if ca > cb {
+      result = 2
+    } else {
+      i = i + 1
+    }
+  }
+  if result == 1 {
+    true
+  } else if result == 2 {
+    false
+  } else {
+    la < lb
+  }
+}
+
+fn sort_strings(a: Array[String]) -> Array[String] {
+  let n = Array::length(a)
+  let out = Array::slice(a, 0, n)
+  let mut i = 1
+  while i < n {
+    let key = Array::get(out, i)
+    let mut j = i - 1
+    let mut placed = false
+    while !placed && j >= 0 {
+      if str_lt(key, Array::get(out, j)) {
+        Array::set(out, j + 1, Array::get(out, j))
+        j = j - 1
+      } else {
+        placed = true
+      }
+    }
+    Array::set(out, j + 1, key)
+    i = i + 1
+  }
+  out
+}
+
+fn join_strings(a: Array[String], sep: String) -> String {
+  let n = Array::length(a)
+  let mut i = 0
+  let mut acc = ""
+  while i < n {
+    if i > 0 {
+      acc = acc + sep
+    }
+    acc = acc + Array::get(a, i)
+    i = i + 1
+  }
+  acc
+}
+
+fn repeat_str(s: String, n: Int) -> String {
+  let mut acc = ""
+  let mut i = 0
+  while i < n {
+    acc = acc + s
+    i = i + 1
+  }
+  acc
+}
+
+// 2-space-indented pretty printer matching Python's `json.dump(..., indent=2,
+// sort_keys=True)` layout closely enough to keep the checked-in
+// docs/wasm/feature-levels.expected.json snapshot git-diffable across future
+// `--update-expected` runs (Json::stringify alone only produces compact,
+// single-line JSON). Object key order follows Json::keys' *insertion* order
+// (no sort_keys-at-serialize-time flag exists), so this relies on every
+// object this tool itself constructs having its keys inserted already
+// sorted (see the header comment) -- it does not re-sort on its own.
+fn json_pretty(j: Json, indent: Int) -> String {
+  let ty = Json::type_of(j)
+  if ty == "null" || ty == "boolean" || ty == "number" || ty == "string" {
+    Json::stringify(j)
+  } else if ty == "array" {
+    let n = Json::length(j)
+    if n == 0 {
+      "[]"
+    } else {
+      let pad = repeat_str("  ", indent)
+      let pad_in = repeat_str("  ", indent + 1)
+      let mut i = 0
+      let mut body = ""
+      while i < n {
+        if i > 0 {
+          body = body + ",\n"
+        } else {
+          ()
+        }
+        body = body + pad_in + json_pretty(Json::index(j, i), indent + 1)
+        i = i + 1
+      }
+      "[\n" + body + "\n" + pad + "]"
+    }
+  } else {
+    let keys = Json::keys(j)
+    let n = Array::length(keys)
+    if n == 0 {
+      "{}"
+    } else {
+      let pad = repeat_str("  ", indent)
+      let pad_in = repeat_str("  ", indent + 1)
+      let mut i = 0
+      let mut body = ""
+      while i < n {
+        let k = Array::get(keys, i)
+        if i > 0 {
+          body = body + ",\n"
+        } else {
+          ()
+        }
+        body = body + pad_in + Json::stringify(JStr(k)) + ": " + json_pretty(Json::field(j, k), indent + 1)
+        i = i + 1
+      }
+      "{\n" + body + "\n" + pad + "}"
+    }
+  }
+}
+
+// ---------- config (mirrors ENGINE_SETS / HOST_ENGINE / USED_BY_CODEGEN) ----------
+
+// Named codegen target engine sets. "v8" is the literal reading of "chrome,
+// v8, deno, node" (Chrome/Node.js/Deno all embed V8, but ship it on
+// different cadences, so listing them separately still catches lag).
+// "web-baseline" additionally requires Firefox + Safari for engines that
+// want portability beyond V8-family runtimes. Order here is the DISPLAY
+// order for the human report's per-level engine list (matches the Python
+// original's tuple order); JSON `engines` sub-object keys are sorted
+// separately via sort_strings when building that Json value.
+fn engine_sets() -> Array[(String, Array[String])] {
+  [
+    ("v8", ["Chrome", "Node.js", "Deno"]),
+    ("web-baseline", ["Chrome", "Firefox", "Safari", "Node.js", "Deno"])
+  ]
+}
+
+let host_engine = "Wasmtime"
+
+// Proposals vibe's own codegen backends are currently known (via source
+// grep, not binary inspection -- see docs/wasm/feature-levels.md) to emit.
+// Keyed by feature-matrix.json key. This is intentionally a manually
+// curated list, not derived from scanning emitted .wasm binaries; opcode-
+// level verification is tracked as follow-up (see the doc).
+// Alphabetical order (not the Python original's insertion order): classify_used_by_codegen
+// inserts these directly into a MapBuilder, and Map key iteration follows
+// insertion order (see json_pretty's header comment), so this list's order
+// IS the --json/--update-expected key order. print_human sorts separately,
+// so it is unaffected by this ordering choice.
+fn used_by_codegen() -> Array[(String, String)] {
+  [
+    ("exceptionsFinal", "linear + gc backends: try_table/tag section, emitted only when a module uses effects/throw (codegen/wasi/linked_compile.vibe, codegen/gc/backend_expr.vibe)"),
+    ("gc", "gc backend: struct.new/struct.get/struct.set (codegen/gc/backend_body.vibe)"),
+    ("simd", "linear + gc backends: v128 opcodes behind specific builtins e.g. simd_skip_ws (codegen/wasm_emit/simd.vibe, codegen/expr/compile_call.vibe)")
+  ]
+}
+
+// ---------- classification ----------
+
+// Returns (status, note). status is one of "missing-engine" / "unsupported" /
+// "supported" / "flagged" / "unknown".
+fn engine_status(matrix: Json, engine: String, feature_key: String) -> (String, String) {
+  let browsers = Json::field(matrix, "browsers")
+  let engine_entry = Json::field(browsers, engine)
+  if Json::is_null(engine_entry) {
+    ("missing-engine", "")
+  } else {
+    let features = Json::field(engine_entry, "features")
+    let raw = Json::field(features, feature_key)
+    let ty = Json::type_of(raw)
+    if ty == "null" {
+      ("unsupported", "")
+    } else if ty == "boolean" {
+      if Json::bool(raw) {
+        ("supported", "")
+      } else {
+        ("unsupported", "")
+      }
+    } else if ty == "string" {
+      ("supported", Json::string(raw))
+    } else if ty == "array" {
+      let status = Json::string(Json::index(raw, 0))
+      let note = if Json::length(raw) > 1 { Json::string(Json::index(raw, 1)) } else { "" }
+      if status == "flag" {
+        ("flagged", note)
+      } else {
+        ("supported", status)
+      }
+    } else {
+      ("unknown", "")
+    }
+  }
+}
+
+fn json_status_entry(status: String, note: String) -> Json {
+  JObj(Map::from_pairs([("note", if note == "" { JNull } else { JStr(note) }), ("status", JStr(status))]))
+}
+
+// One level ("v8" / "web-baseline"): { <feature_key>: {description, engines, phase, safe} }.
+//
+// Map::from_pairs only accepts a compile-time array LITERAL of (string
+// literal, value) pairs (#960) -- every map keyed by a runtime-computed set
+// of keys (feature keys / engine names / level names, all read from the
+// parsed JSON matrix or looped over dynamically) is built with MapBuilder
+// (new/set/freeze) instead, mirroring ArrayBuilder. Map::from_pairs is still
+// used for the small number of maps below whose keys are fixed, hand-written
+// strings.
+fn classify_level(matrix: Json, features: Json, feature_keys: Array[String], engines: Array[String]) -> Json {
+  let n = Array::length(feature_keys)
+  let mut i = 0
+  let mb = MapBuilder::new()
+  while i < n {
+    let key = Array::get(feature_keys, i)
+    let meta = Json::field(features, key)
+    let sorted_engines = sort_strings(engines)
+    let ne = Array::length(sorted_engines)
+    let mut ei = 0
+    let engines_mb = MapBuilder::new()
+    let mut all_safe = true
+    while ei < ne {
+      let e = Array::get(sorted_engines, ei)
+      let status_note = engine_status(matrix, e, key)
+      let (status, note) = status_note
+      if status != "supported" {
+        all_safe = false
+      } else {
+        ()
+      }
+      MapBuilder::set(engines_mb, e, json_status_entry(status, note))
+      ei = ei + 1
+    }
+    let entry = JObj(Map::from_pairs([
+      ("description", Json::field(meta, "description")),
+      ("engines", JObj(MapBuilder::freeze(engines_mb))),
+      ("phase", Json::field(meta, "phase")),
+      ("safe", JBool(all_safe))
+    ]))
+    MapBuilder::set(mb, key, entry)
+    i = i + 1
+  }
+  JObj(MapBuilder::freeze(mb))
+}
+
+fn classify_host(matrix: Json, features: Json, feature_keys: Array[String]) -> Json {
+  let n = Array::length(feature_keys)
+  let mut i = 0
+  let mb = MapBuilder::new()
+  while i < n {
+    let key = Array::get(feature_keys, i)
+    let meta = Json::field(features, key)
+    let status_note = engine_status(matrix, host_engine, key)
+    let (status, note) = status_note
+    let entry = JObj(Map::from_pairs([
+      ("description", Json::field(meta, "description")),
+      ("note", if note == "" { JNull } else { JStr(note) }),
+      ("status", JStr(status))
+    ]))
+    MapBuilder::set(mb, key, entry)
+    i = i + 1
+  }
+  JObj(MapBuilder::freeze(mb))
+}
+
+fn level_safe(engine_sets_json: Json, level_name: String, key: String) -> Bool {
+  let level = Json::field(engine_sets_json, level_name)
+  let entry = Json::field(level, key)
+  Json::bool(Json::field(entry, "safe"))
+}
+
+fn classify_used_by_codegen(engine_sets_json: Json, host_json: Json) -> Json {
+  let ubc = used_by_codegen()
+  let n = Array::length(ubc)
+  let mut i = 0
+  let mb = MapBuilder::new()
+  while i < n {
+    let (key, evidence) = Array::get(ubc, i)
+    let es = engine_sets()
+    let nes = Array::length(es)
+    let mut ei = 0
+    let level_mb = MapBuilder::new()
+    while ei < nes {
+      let (level_name, _) = Array::get(es, ei)
+      MapBuilder::set(level_mb, level_name, JBool(level_safe(engine_sets_json, level_name, key)))
+      ei = ei + 1
+    }
+    let host_entry = Json::field(host_json, key)
+    let host_status = Json::field(host_entry, "status")
+    let entry = JObj(Map::from_pairs([
+      ("engineSets", JObj(MapBuilder::freeze(level_mb))),
+      ("evidence", JStr(evidence)),
+      ("hostStatus", host_status)
+    ]))
+    MapBuilder::set(mb, key, entry)
+    i = i + 1
+  }
+  JObj(MapBuilder::freeze(mb))
+}
+
+fn classify(matrix: Json) -> Json {
+  let features = Json::field(matrix, "features")
+  let feature_keys = sort_strings(Json::keys(features))
+  let es = engine_sets()
+  let nes = Array::length(es)
+  let mut i = 0
+  let level_mb = MapBuilder::new()
+  while i < nes {
+    let (level_name, engines) = Array::get(es, i)
+    MapBuilder::set(level_mb, level_name, classify_level(matrix, features, feature_keys, engines))
+    i = i + 1
+  }
+  let engine_sets_json = JObj(MapBuilder::freeze(level_mb))
+  let host_json = classify_host(matrix, features, feature_keys)
+  let used_by_codegen_json = classify_used_by_codegen(engine_sets_json, host_json)
+  JObj(Map::from_pairs([
+    ("engineSets", engine_sets_json),
+    ("host", host_json),
+    ("usedByCodegen", used_by_codegen_json)
+  ]))
+}
+
+// ---------- deep equality (order-independent; see header comment) ----------
+
+fn json_deep_eq(a: Json, b: Json) -> Bool {
+  let ta = Json::type_of(a)
+  let tb = Json::type_of(b)
+  if ta != tb {
+    false
+  } else if ta == "null" {
+    true
+  } else if ta == "boolean" {
+    Json::bool(a) == Json::bool(b)
+  } else if ta == "number" {
+    double_eq(Json::number(a), Json::number(b))
+  } else if ta == "string" {
+    Json::string(a) == Json::string(b)
+  } else if ta == "array" {
+    let la = Json::length(a)
+    let lb = Json::length(b)
+    if la != lb {
+      false
+    } else {
+      let mut i = 0
+      let mut ok = true
+      while ok && i < la {
+        if !json_deep_eq(Json::index(a, i), Json::index(b, i)) {
+          ok = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      ok
+    }
+  } else {
+    let ka = sort_strings(Json::keys(a))
+    let kb = sort_strings(Json::keys(b))
+    if Array::length(ka) != Array::length(kb) {
+      false
+    } else {
+      let mut i = 0
+      let mut ok = true
+      while ok && i < Array::length(ka) {
+        let k1 = Array::get(ka, i)
+        let k2 = Array::get(kb, i)
+        if k1 != k2 || !json_deep_eq(Json::field(a, k1), Json::field(b, k1)) {
+          ok = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      ok
+    }
+  }
+}
+
+// ---------- human report ----------
+
+fn print_human(report: Json) -> Unit with { Stdout } {
+  stdout_write("== vibe wasm build levels (source: docs/wasm/feature-matrix.json) ==\n\n")
+  stdout_write("-- proposals vibe codegen is known to emit --\n")
+  let used_by_codegen_json = Json::field(report, "usedByCodegen")
+  let keys = sort_strings(Json::keys(used_by_codegen_json))
+  let mut i = 0
+  while i < Array::length(keys) {
+    let key = Array::get(keys, i)
+    let entry = Json::field(used_by_codegen_json, key)
+    let es = engine_sets()
+    let nes = Array::length(es)
+    let mut ei = 0
+    let parts = ArrayBuilder::new()
+    while ei < nes {
+      let (level_name, _) = Array::get(es, ei)
+      let safe = Json::bool(Json::field(Json::field(entry, "engineSets"), level_name))
+      ArrayBuilder::push(parts, level_name + "=" + (if safe { "OK" } else { "NOT SAFE" }))
+      ei = ei + 1
+    }
+    let host_status = Json::field(entry, "hostStatus")
+    let host_str = if Json::is_null(host_status) { "null" } else { Json::string(host_status) }
+    stdout_write("  " + key + ": host=" + host_str + "  " + join_strings(ArrayBuilder::freeze(parts), ", ") + "\n")
+    stdout_write("    " + Json::string(Json::field(entry, "evidence")) + "\n")
+    i = i + 1
+  }
+  stdout_write("\n")
+  let es = engine_sets()
+  let nes = Array::length(es)
+  let mut li = 0
+  while li < nes {
+    let (level_name, engines) = Array::get(es, li)
+    let level = Json::field(Json::field(report, "engineSets"), level_name)
+    let all_keys = Json::keys(level)
+    let n = Array::length(all_keys)
+    let mut ki = 0
+    let safe_b = ArrayBuilder::new()
+    let unsafe_b = ArrayBuilder::new()
+    while ki < n {
+      let k = Array::get(all_keys, ki)
+      if Json::bool(Json::field(Json::field(level, k), "safe")) {
+        ArrayBuilder::push(safe_b, k)
+      } else {
+        ArrayBuilder::push(unsafe_b, k)
+      }
+      ki = ki + 1
+    }
+    let safe = sort_strings(ArrayBuilder::freeze(safe_b))
+    let unsafe_keys = sort_strings(ArrayBuilder::freeze(unsafe_b))
+    stdout_write("-- " + level_name + " (" + join_strings(engines, ", ") + ") --\n")
+    stdout_write("  safe (" + Int::to_string(Array::length(safe)) + "): " + join_strings(safe, ", ") + "\n")
+    stdout_write("  not safe (" + Int::to_string(Array::length(unsafe_keys)) + "): " + join_strings(unsafe_keys, ", ") + "\n")
+    stdout_write("\n")
+    li = li + 1
+  }
+}
+
+// ---------- main ----------
+
+fn matrix_path() -> String { "docs/wasm/feature-matrix.json" }
+fn expected_path() -> String { "docs/wasm/feature-levels.expected.json" }
+
+fn load_matrix() -> Json with { Fs } {
+  Json::parse(Fs::read_file(matrix_path()))
+}
+
+fn has_flag(argc: Int, name: String) -> Bool with { Env } {
+  let mut i = 0
+  let mut found = false
+  while i < argc {
+    if Env::args_get(i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn main with { Fs, Env, Stdout, Stderr, Process } {
+  let matrix = load_matrix()
+  let report = classify(matrix)
+  let argc = Env::args_len()
+
+  let code = if has_flag(argc, "--update-expected") {
+    Fs::write_file(expected_path(), json_pretty(report, 0) + "\n")
+    stdout_write("[wasm-feature-levels] wrote " + expected_path() + "\n")
+    0
+  } else if has_flag(argc, "--check") {
+    if !Fs::exists(expected_path()) {
+      Stderr::write_stream("FAIL: " + expected_path() + " does not exist; run --update-expected\n")
+      1
+    } else {
+      let expected = Json::parse(Fs::read_file(expected_path()))
+      if json_deep_eq(report, expected) {
+        stdout_write("[wasm-feature-levels] ok: matches " + expected_path() + "\n")
+        0
+      } else {
+        Stderr::write_stream(
+          "FAIL: classification drifted from docs/wasm/feature-levels.expected.json.\n" +
+          "Either the vendored matrix was refreshed and upstream engine support changed,\n" +
+          "or USED_BY_CODEGEN needs updating. Review the diff, update " +
+          "docs/wasm/feature-levels.md if the change is real, then re-run with " +
+          "--update-expected.\n"
+        )
+        1
+      }
+    }
+  } else if has_flag(argc, "--json") {
+    stdout_write(Json::stringify(report) + "\n")
+    0
+  } else {
+    print_human(report)
+    0
+  }
+
+  if code != 0 {
+    vibe_process_exit_raw(code)
+  } else {
+    ()
+  }
+}
