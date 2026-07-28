@@ -6,6 +6,9 @@
 //#   parse -> flatten modules (`module m { let f }` => `let m::f`)
 //#         -> dead-code elimination from exported roots
 //#         -> drop redundant aggregate `export { .. }` statements
+//#         -> constant-fold, then normalize `recv.method(args)` to
+//#            `Type::method(recv, args)` where locally recoverable (#1194,
+//#            ADR-0081; see the section comment near normalize_dot_calls)
 //#         -> categorize into Imports / Types / Functions / Tests sections
 //#         -> render via the AST printer with section headers + blank lines
 //#
@@ -1031,6 +1034,428 @@ fn annotate_literal_lets(stmts: Array[Stmt]) -> Array[Stmt] {
   out
 }
 
+//# #1194 (ADR-0081): dot-call -> qualified-call normalization
+//#
+//# `recv.method(args)` normalizes to `Type::method(recv, args)` in the
+//# rendered output when the receiver's type is recoverable from THIS FILE
+//# alone (param annotations, `let x: T = ...`, or an immediate `T::ctor(..)`
+//# call whose return type is declared here) and `Type::method` is declared
+//# as a top-level fn in this file. Anything else -- including a receiver
+//# whose type comes from an IMPORTED module rather than a local declaration
+//# -- is left as dot form untouched; this pass never guesses (a false
+//# rewrite would change runtime semantics, not just style). Mirrors (a
+//# conservative subset of) the real dot-call resolution rule in
+//# codegen/common_base/desugar_trait_dict.vibe's `ECall(EDot(...))` arm, kept
+//# as an independent copy rather than a shared import: that pass runs on the
+//# whole merged, post-import compile deep in the codegen pipeline (so it
+//# sees cross-file declarations), while normalize is single-file and sits
+//# BELOW codegen in the package layering (codegen calls INTO normalize for
+//# lift_match_scrutinees/uniquify_shadowed_bindings, so the reverse import
+//# would cycle). KNOWN LIMITATION: because of the single-file scope, a
+//# receiver whose type is declared in a DIFFERENT file (the common case for
+//# real library code) is never rewritten here -- this only covers a
+//# struct/enum and its methods declared in the same file being normalized.
+//# If desugar_trait_dict.vibe's resolution rule changes, check here too.
+
+fn ndc_struct_field_sets(stmts: Array[Stmt]) -> Array[(String, Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, sname, fields, _, _, _) => {
+        let names = empty_strs()
+        let mut j = 0
+        while j < Array::length(fields) {
+          let (fname, _) = Array::get(fields, j)
+          Array::push(names, fname)
+          j = j + 1
+        }
+        Array::push(out, (sname, names))
+      },
+      SEnum(_, ename, _, _, _) => Array::push(out, (ename, empty_strs())),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn ndc_struct_set_member(struct_sets: Array[(String, Array[String])], name: String, member: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(struct_sets) {
+    let (sname, members) = Array::get(struct_sets, i)
+    if sname == name {
+      found = str_array_has(members, member)
+      i = Array::length(struct_sets)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn ndc_ret_name(ret: Option[TypeExpr]) -> String {
+  match ret {
+    Some(te) => match te {
+      TyName(n) => n,
+      TyApp(n, _) => n,
+      _ => ""
+    },
+    None => ""
+  }
+}
+
+/// Top-level fn name -> return-type head name, so a call to a locally
+/// declared `T::ctor(..) -> T` seeds the caller's inferred receiver type.
+/// Also maps each enum variant ctor to its enum name. Single-file scope
+/// (see the section comment above).
+fn ndc_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, fname, _, body) => match body {
+        EFn(_, _, _, ret, _, _) => Array::push(out, (fname, ndc_ret_name(ret))),
+        _ => ()
+      },
+      SFnDecl(_, fname, body, _, _) => match body {
+        EFn(_, _, _, ret, _, _) => Array::push(out, (fname, ndc_ret_name(ret))),
+        _ => ()
+      },
+      SEnum(_, ename, _, variants, _) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, _) = Array::get(variants, vi)
+          Array::push(out, (vname, ename))
+          vi = vi + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn ndc_fn_exists(fn_returns: Array[(String, String)], fname: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(fn_returns) {
+    let (n, _) = Array::get(fn_returns, i)
+    if n == fname {
+      found = true
+      i = Array::length(fn_returns)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn ndc_fn_return_type(fn_returns: Array[(String, String)], fname: String) -> Option[String] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(fn_returns) {
+    let (n, rt) = Array::get(fn_returns, i)
+    if n == fname {
+      result = if String::length(rt) == 0 {
+        None
+      } else {
+        Some(rt)
+      }
+      i = Array::length(fn_returns)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+fn ndc_lookup_var_type(var_types: Array[(String, String)], name: String) -> Option[String] {
+  // Last match wins (a shadowing rebind appends a second entry for the same
+  // name) -- same rule as desugar_trait_dict.vibe's lookup_var_type.
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(var_types) {
+    let (vn, vt) = Array::get(var_types, i)
+    if vn == name {
+      result = Some(vt)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  result
+}
+
+fn ndc_extend_var_types(var_types: Array[(String, String)], name: String, inferred: Option[String]) -> Array[(String, String)] {
+  match inferred {
+    Some(tname) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(var_types) {
+        Array::push(out, Array::get(var_types, i))
+        i = i + 1
+      }
+      Array::push(out, (name, tname))
+      out
+    },
+    None => var_types
+  }
+}
+
+fn ndc_seed_var_types(params: Array[(String, Option[TypeExpr])], base: Array[(String, String)]) -> Array[(String, String)] {
+  let out = array_empty()
+  let mut b = 0
+  while b < Array::length(base) {
+    Array::push(out, Array::get(base, b))
+    b = b + 1
+  }
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, ann) = Array::get(params, i)
+    match ann {
+      Some(TyName(tn)) => Array::push(out, (pname, tn)),
+      Some(TyApp(tn, _)) => Array::push(out, (pname, tn)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn ndc_field_sets_match(a: Array[String], b: Array[String]) -> Bool {
+  if Array::length(a) != Array::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while i < Array::length(a) {
+      if str_array_has(b, Array::get(a, i)) {
+        i = i + 1
+      } else {
+        ok = false
+        i = Array::length(a)
+      }
+    }
+    ok
+  }
+}
+
+/// Pared-down, conservative twin of desugar_trait_dict.vibe's
+/// infer_arg_type_name -- covers literals, a var's recorded type, the bare
+/// nullary `None` ctor (-> "Option"), a call whose callee is a known
+/// top-level fn (`T::new()` -> its declared return type) or an ascribe-wrap
+/// (a single-param lambda application -- the parse-time desugar of a local
+/// `let x: T = e` annotation), and a record literal matched to a struct's
+/// field set. Deliberately omits infer_arg_type_name's string-concat and
+/// chained-`.method()`-result-type cases: skipping them only leaves MORE
+/// dot-calls unrewritten, never produces a wrong rewrite.
+fn ndc_infer_type_name(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match e {
+    EInt(_) => Some("Int"),
+    EBool(_) => Some("Bool"),
+    EString(_) => Some("String"),
+    EFloat(_) => Some("Double"),
+    EArray(_) => Some("Array"),
+    EMap(_) => Some("Map"),
+    EIdent(name, _) => if name == "None" {
+      Some("Option")
+    } else {
+      match ndc_lookup_var_type(var_types, name) {
+        Some(t) => Some(t),
+        None => ndc_fn_return_type(fn_returns, name)
+      }
+    },
+    ECall(callee, _, _) => match callee {
+      EIdent("Some", _) => Some("Option"),
+      EIdent("Ok", _) => Some("Result"),
+      EIdent("Err", _) => Some("Result"),
+      EIdent(fname, _) => ndc_fn_return_type(fn_returns, fname),
+      EFn(_, _, params, _, _, _) => if Array::length(params) == 1 {
+        let (_, ann) = Array::get(params, 0)
+        match ann {
+          Some(TyName(n)) => Some(n),
+          Some(TyApp(n, _)) => Some(n),
+          _ => None
+        }
+      } else {
+        None
+      },
+      _ => None
+    },
+    ERecord(_, fields, _) => {
+      let names = empty_strs()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, _) = Array::get(fields, i)
+        Array::push(names, fname)
+        i = i + 1
+      }
+      let mut j = 0
+      let mut result = None
+      while j < Array::length(struct_sets) {
+        let (sname, sfields) = Array::get(struct_sets, j)
+        if ndc_field_sets_match(names, sfields) {
+          result = Some(sname)
+          j = Array::length(struct_sets)
+        } else {
+          j = j + 1
+        }
+      }
+      result
+    },
+    _ => None
+  }
+}
+
+fn ndc_prepend(head: Expr, rest: Array[Expr]) -> Array[Expr] {
+  let out = array_empty()
+  Array::push(out, head)
+  let mut i = 0
+  while i < Array::length(rest) {
+    Array::push(out, Array::get(rest, i))
+    i = i + 1
+  }
+  out
+}
+
+/// `Some("Type::method")` when the receiver's type is inferable, isn't a
+/// same-named struct field on that type (a field-stored closure call keeps
+/// dot form -- the field is the closer binding, mirrors
+/// desugar_trait_dict.vibe's rule), and `Type::method` is declared as a
+/// top-level fn in this file.
+fn ndc_qualified_call(robj: Expr, method: String, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match ndc_infer_type_name(robj, struct_sets, var_types, fn_returns) {
+    Some(tn) => {
+      let qual = String::concat(tn, String::concat("::", method))
+      let is_field = ndc_struct_set_member(struct_sets, tn, method)
+      if !is_field && ndc_fn_exists(fn_returns, qual) {
+        Some(qual)
+      } else {
+        None
+      }
+    },
+    None => None
+  }
+}
+
+fn normalize_dot_calls_expr(expr: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr {
+  match expr {
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_) => expr,
+    EBool(_) => expr,
+    EIdent(_, _) => expr,
+    EUnit => expr,
+    EStringInterp(_) => expr,
+    ETuple(items) => ETuple(for it in items {
+      normalize_dot_calls_expr(it, struct_sets, var_types, fn_returns)
+    }),
+    EArray(items) => EArray(for it in items {
+      normalize_dot_calls_expr(it, struct_sets, var_types, fn_returns)
+    }),
+    ERecord(rn, fields, targs) => ERecord(rn, for f in fields {
+      let (n, v) = f
+      (n, normalize_dot_calls_expr(v, struct_sets, var_types, fn_returns))
+    }, targs),
+    EIf(c, t, el) => EIf(normalize_dot_calls_expr(c, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(t, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(el, struct_sets, var_types, fn_returns)),
+    ELet(n, v, b, soff) => {
+      let v2 = normalize_dot_calls_expr(v, struct_sets, var_types, fn_returns)
+      let inferred = ndc_infer_type_name(v2, struct_sets, var_types, fn_returns)
+      let var_types2 = ndc_extend_var_types(var_types, n, inferred)
+      ELet(n, v2, normalize_dot_calls_expr(b, struct_sets, var_types2, fn_returns), soff)
+    },
+    ELetRec(n, v, b) => {
+      let v2 = normalize_dot_calls_expr(v, struct_sets, var_types, fn_returns)
+      let inferred = ndc_infer_type_name(v2, struct_sets, var_types, fn_returns)
+      let var_types2 = ndc_extend_var_types(var_types, n, inferred)
+      ELetRec(n, v2, normalize_dot_calls_expr(b, struct_sets, var_types2, fn_returns))
+    },
+    ELetMut(n, v, b, soff) => ELetMut(n, normalize_dot_calls_expr(v, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(b, struct_sets, var_types, fn_returns), soff),
+    EAssign(n, v, b) => EAssign(n, normalize_dot_calls_expr(v, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(b, struct_sets, var_types, fn_returns)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, normalize_dot_calls_expr(v, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(b, struct_sets, var_types, fn_returns)),
+    ESeq(a, b) => ESeq(normalize_dot_calls_expr(a, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(b, struct_sets, var_types, fn_returns)),
+    EMatch(s, arms) => EMatch(normalize_dot_calls_expr(s, struct_sets, var_types, fn_returns), for a in arms {
+      let (p, e2) = a
+      (p, normalize_dot_calls_expr(e2, struct_sets, var_types, fn_returns))
+    }),
+    EHandle(s, arms) => EHandle(normalize_dot_calls_expr(s, struct_sets, var_types, fn_returns), for a in arms {
+      let (p, e2) = a
+      (p, normalize_dot_calls_expr(e2, struct_sets, var_types, fn_returns))
+    }),
+    EWhile(c, b) => EWhile(normalize_dot_calls_expr(c, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(b, struct_sets, var_types, fn_returns)),
+    ELoop(params, b) => ELoop(for p in params {
+      let (pn, init) = p
+      (pn, normalize_dot_calls_expr(init, struct_sets, var_types, fn_returns))
+    }, normalize_dot_calls_expr(b, struct_sets, var_types, fn_returns)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, normalize_dot_calls_expr(it, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(b, struct_sets, var_types, fn_returns)),
+    ECall(callee, args, off) => {
+      let rargs = for a in args {
+        normalize_dot_calls_expr(a, struct_sets, var_types, fn_returns)
+      }
+      match callee {
+        EDot(obj, m, doff, fdoff) => {
+          let robj = normalize_dot_calls_expr(obj, struct_sets, var_types, fn_returns)
+          match ndc_qualified_call(robj, m, struct_sets, var_types, fn_returns) {
+            Some(qual) => ECall(EIdent(qual, doff), ndc_prepend(robj, rargs), off),
+            None => ECall(EDot(robj, m, doff, fdoff), rargs, off)
+          }
+        },
+        _ => ECall(normalize_dot_calls_expr(callee, struct_sets, var_types, fn_returns), rargs, off)
+      }
+    },
+    EBinOp(op, l, r) => EBinOp(op, normalize_dot_calls_expr(l, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(r, struct_sets, var_types, fn_returns)),
+    EUnaryOp(op, e2) => EUnaryOp(op, normalize_dot_calls_expr(e2, struct_sets, var_types, fn_returns)),
+    EFn(tp, bounds, params, ret, eff, body) => {
+      let var_types2 = ndc_seed_var_types(params, var_types)
+      EFn(tp, bounds, params, ret, eff, normalize_dot_calls_expr(body, struct_sets, var_types2, fn_returns))
+    },
+    EDot(e2, field, off, fdoff) => EDot(normalize_dot_calls_expr(e2, struct_sets, var_types, fn_returns), field, off, fdoff),
+    ELabeledArg(label, modifier, v) => ELabeledArg(label, modifier, normalize_dot_calls_expr(v, struct_sets, var_types, fn_returns)),
+    EReturn(e2) => EReturn(normalize_dot_calls_expr(e2, struct_sets, var_types, fn_returns)),
+    EBreak(opt) => match opt {
+      Some(v) => EBreak(Some(normalize_dot_calls_expr(v, struct_sets, var_types, fn_returns))),
+      None => EBreak(None)
+    },
+    EContinue(args) => EContinue(for a in args {
+      normalize_dot_calls_expr(a, struct_sets, var_types, fn_returns)
+    }),
+    EMap(fields) => EMap(for f in fields {
+      let (k, v) = f
+      (k, normalize_dot_calls_expr(v, struct_sets, var_types, fn_returns))
+    }),
+    ESpread(e2) => ESpread(normalize_dot_calls_expr(e2, struct_sets, var_types, fn_returns))
+  }
+}
+
+fn normalize_dot_calls_stmt(stmt: Stmt, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Stmt {
+  match stmt {
+    SLet(exp, is_rec, name, ty, body) => SLet(exp, is_rec, name, ty, normalize_dot_calls_expr(body, struct_sets, array_empty(), fn_returns)),
+    SFnDecl(exp, name, fn_value, reqs, enss) => SFnDecl(exp, name, normalize_dot_calls_expr(fn_value, struct_sets, array_empty(), fn_returns), reqs, enss),
+    SLetMut(name, ty, body) => SLetMut(name, ty, normalize_dot_calls_expr(body, struct_sets, array_empty(), fn_returns)),
+    STest(n, body) => STest(n, normalize_dot_calls_expr(body, struct_sets, array_empty(), fn_returns)),
+    SBench(n, body) => SBench(n, normalize_dot_calls_expr(body, struct_sets, array_empty(), fn_returns)),
+    SExpr(e) => SExpr(normalize_dot_calls_expr(e, struct_sets, array_empty(), fn_returns)),
+    SLetPat(p, body) => SLetPat(p, normalize_dot_calls_expr(body, struct_sets, array_empty(), fn_returns)),
+    _ => stmt
+  }
+}
+
+/// #1194 (ADR-0081) entry point: rewrite `recv.method(args)` to
+/// `Type::method(recv, args)` wherever this file's own declarations make the
+/// receiver's type and the method's existence recoverable. See the section
+/// comment above for exactly what's covered and what's deliberately left
+/// alone.
+export fn normalize_dot_calls(stmts: Array[Stmt]) -> Array[Stmt] {
+  let struct_sets = ndc_struct_field_sets(stmts)
+  let fn_returns = ndc_fn_returns(stmts)
+  for s in stmts {
+    normalize_dot_calls_stmt(s, struct_sets, fn_returns)
+  }
+}
+
 /// DCE is name-based, so it must run while module members still carry their
 /// short names (a body says `helper()`, not `math::helper()`). We therefore DCE
 /// each scope before flattening renames its bindings:
@@ -1064,7 +1489,7 @@ export fn normalize_stmts(stmts: Array[Stmt]) -> Array[Stmt] {
     m = m + 1
   }
   let promoted = promote_aggregate_exports(result, aggregate_export_names(stmts))
-  hoist_lambda_lets(annotate_literal_lets(fold_stmts(drop_unused_type_aliases(promoted))))
+  hoist_lambda_lets(annotate_literal_lets(normalize_dot_calls(fold_stmts(drop_unused_type_aliases(promoted)))))
 }
 
 export fn normalize_source(src: String) -> String with { Error } {

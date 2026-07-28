@@ -472,3 +472,44 @@ lands.
   vibe/collection/map.vibe の `values` を keys+get で再実装。
   collection の index_import_test / map_test / maps_facade_test が PASS →
   allowlist 追加(collection のテストが selfhost gate で回るのは初)。
+
+## #1189 — dot 呼び出しの採否とソース正規形 (2026-07-28, ADR-0081)
+
+上の「同日フォローアップ (2026-07-04)」で着地した `xs.length()` / `l.total()`
+method-style resolve が、#1189 (「UFCS を入れるか、`Array::push(arr,x)` を
+`arr.push(x)` と書けるようにするか」) の実質的な前提を変えていた —
+**dot 呼び出しは既に一部着地済み**で、#1189 は「導入するか」ではなく
+「どこまで表記として推奨するか」の問題だった。`eval/call-style/` に読解
+ベースの評価ハーネスを作りサブエージェントに読ませたところ (findings:
+`eval/call-style/findings/2026-07-28-r1.md`)、型注釈が薄い抜粋では
+`Type::method(recv, ...)` / `recv |> Type::method(...)` は呼び出し箇所から
+receiver の型を復元できたが、`recv.method(...)` は復元できなかった —
+この非対称性は checker 通過後の内部 desugar (このファイル上の EDot
+resolve) では解消されない。**ディスク上のソーステキストが dot 形のまま
+残る限り、型検査を回さない読み手 (grep・diff・部分抜粋・AI) には効かない**。
+
+決定 (ADR-0081, docs/adr.md): dot 形は入力として許可したまま、復元可能な
+範囲でソースを `Type::method(recv, args)` へ書き戻す方向に倒す。**実装場所は
+`vibe fmt` ではなく `vibe normalize`** — `lib/@vibe/compiler/fmt/format.vibe`
+は AST を一切持たないトークン列レベルの整形機 (空白/改行のみ決める) で、
+構造変換ができないと着手時に判明したため訂正した。`vibe normalize`
+(`lib/@vibe/compiler/normalize/normalize.vibe`) は実際に AST へパースして
+再印字する経路で、ADR-0074 の `map {..}` → `Map::from_pairs([..])` 正規化と
+同じ「糖衣構文を canonical spelling で再印字する」前例がある。
+
+**実装済み (2026-07-28, #1194)**: `normalize_dot_calls`
+(`lib/@vibe/compiler/normalize/normalize.vibe`、`normalize_stmts` パイプラインに
+組み込み済み、`normalize/index.vpkg` で export)。このファイルの
+`infer_arg_type_name` / `var_types` / `collect_struct_field_sets` /
+`collect_fn_returns` / `struct_set_member` の**縮小版を独立実装として
+移植**した (フル型検査ではなく構文的推論のみ)。`desugar_trait_dict.vibe`
+から直接 import しなかった理由はパッケージ層順の制約: codegen が
+normalize の `lift_match_scrutinees` / `uniquify_shadowed_bindings` を
+呼ぶ既存依存が既にあり (このファイルの通り)、逆方向の import
+(normalize → codegen/common_base) は import cycle になる。このファイル側の
+resolve ロジック自体に変更は無い — ロジックを変更する際は
+`normalize_dot_calls` 側の対応する縮小版も見直すこと。**既知の制約**:
+`vibe normalize` はファイル単体スコープなので、receiver の型が別ファイルで
+宣言されインポートされているだけの場合は書き換えない (実務上の大半の
+ケースがこれに該当する — 安全側の制約であり bug ではない)。テスト:
+`lib/@vibe/compiler/tests/normalize_dot_calls_test.vibe`。
