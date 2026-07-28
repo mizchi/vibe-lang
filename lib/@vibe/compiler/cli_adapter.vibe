@@ -20,7 +20,7 @@ import @vibe/compiler/runtime {
 }
 
 import @vibe/compiler/loader {
-  contract_package_hashes_fs, fill_require_pins_fs_mode, find_deps_missing, find_missing_vpkg_dirs, load_or_parse_module_header_fs, publish_check_fs, write_generated_hash_fs
+  contract_package_hashes_fs, fill_require_pins_fs_mode, find_deps_missing, find_missing_vpkg_dirs, ingest_source_text_fs, load_or_parse_module_header_fs, publish_check_fs, write_generated_hash_fs
 }
 
 import @vibe/compiler/entry/compiler/file_compile {
@@ -531,6 +531,18 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
       let source = Fs::read_file(input_path)
       let (deps, _exports, _parse_count) = load_or_parse_module_header_fs(input_path, source, 0)
       Fs::write_file(output_path, String::concat(String::join(deps, "\n"), "\n"))
+      // #1168: also hand back this file's INGESTED source (contract files
+      // desugared to their facade via ingest_source_text_fs, exactly like
+      // ensure_fingerprint_fs_go's recursion does before ever calling
+      // check_module -- see loader.vibe's ingest_source_text_fs). A host
+      // driver building a ModuleJob for the parallel job-dir worker must
+      // use THIS text, not the raw file bytes: check_module parses source
+      // with the ordinary module grammar, which a raw .vpkg contract (with
+      // its own bodyless-decl/`export` grammar) is never valid input for.
+      // Piggybacking on the existing VIBE_LIST_DEPS spawn (rather than a
+      // second subprocess call per file) keeps #1170's discovery-loop
+      // parallelization win intact.
+      Fs::write_file(String::concat(output_path, ".src"), ingest_source_text_fs(input_path, source))
       0
     } with Error {
       Throw(msg) => emit_compile_diag(output_path, msg)

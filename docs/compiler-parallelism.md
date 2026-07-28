@@ -639,14 +639,46 @@ regressions from this measurement; they were flagged as open ("unmeasured
 against a project the size of the compiler's own manifest") since Phase 2
 landed and are now measured.
 
+**Update (2026-07-28, #1168): both (a) and (b) are now fixed.** (a)
+`discoverProject`'s discovery loop is parallelized (#1170). (b) the
+`diagnosed` cascade's root cause was a missing contract-desugar step:
+`run_module_job_dir` handed a raw `.vpkg` contract file's on-disk bytes
+straight to `check_module`, which parses source with the ordinary module
+grammar — a `.vpkg` file (bodyless decls, top-level `export`) is never
+valid input for that grammar, so every foundational package-index contract
+failed to parse, and `parallel_scheduler_worker.mjs`'s dependency
+short-circuit cascaded that failure to ~82% of the whole manifest. Fixed
+by piggybacking the already-public `ingest_source_text_fs` (the exact
+function `ensure_fingerprint_fs_go`'s serial recursion already runs before
+ever calling `check_module`) onto the existing `VIBE_LIST_DEPS` subprocess
+call — a new `.src` companion output alongside the plain deps list, so no
+extra spawn is added per file. Re-measured against the same ~218-module
+manifest: `checked=218 diagnosed=0` (was `checked=34 diagnosed=184`).
+
+| jobs | mode | wall_ms | heap_ptr_bytes |
+| --- | --- | --- | --- |
+| 1 (serial) | cold | 5714 | 1,096,577,420 |
+| 1 (serial) | warm | 3926 | 575,390,804 |
+| 2 | cold | 17147 | 586,440,412 |
+| 2 | warm | 15184 | 575,478,356 |
+| 4 | cold | 13136 | 586,440,412 |
+| 4 | warm | 12233 | 575,478,356 |
+
+`heap_ptr_bytes` now drops ~47% at `jobs=2/4` (1,096,577,420 →
+586,440,412), up from the ~22% the cache-dir fix alone gave — the near-full
+`checked` rate means almost the whole manifest's cache is now genuinely
+warmed and reused by the final compile, not just a third of it.
+
 **Decision (per the Completion gates governance below): the default worker
-count is NOT raised.** `--jobs N > 1` remains strictly opt-in. Raising it
-would require first (a) parallelizing or batching the discovery loop itself
-(the dominant cost, and currently `jobs`-independent), and (b) understanding
-why most of the compiler's own modules come back `diagnosed` rather than
-`checked` under the job-dir sandbox, so the parallel checking work actually
-warms the cache instead of being discarded — both out of scope for this
-measurement pass and tracked as a follow-up rather than attempted here.
+count is still NOT raised.** Wall time at `jobs=2/4` is still ~2.3-3x the
+serial baseline (13.1-17.1s vs 5.7s) — the per-file `vibe` subprocess-spawn
+cost in the (now-parallel, but still real) discovery loop remains a fixed
+tax that the cache/heap savings don't offset at this project size.
+`--jobs N > 1` remains strictly opt-in; raising the default would need
+either a cheaper discovery mechanism (batching multiple files into one
+subprocess call, or a persistent discovery daemon) or a project large
+enough that the now-substantial cache savings outweigh the spawn tax —
+neither attempted here.
 
 ### Phase 3: immutable whole-program plan
 

@@ -64,10 +64,22 @@ async function readIfPresent(path) {
 // PR #1170). The caller passes a per-call monotonic counter so every
 // listDeps invocation in a given cacheDir gets a distinct path regardless
 // of filename collisions.
+// Returns { deps, source }. `source` is the file's INGESTED text (contract
+// files desugared to their facade via ingest_source_text_fs, written by the
+// compiler to the `.src` companion file alongside the plain deps list --
+// #1168), not the raw file bytes. check_module (used by both the serial
+// walk and the parallel job-dir worker) parses `source` with the ordinary
+// module grammar, which a raw .vpkg contract is never valid input for --
+// ensure_fingerprint_fs_go's serial recursion never hands it raw bytes
+// either, always routing through this same ingest step first. Piggybacking
+// the ingest onto the existing VIBE_LIST_DEPS spawn (rather than reading
+// the file directly, or a second subprocess call per file) keeps #1170's
+// discovery-loop parallelization win intact.
 async function listDeps(runnerPath, compilerWasm, cacheDir, projectRoot, filePath, uniqueId) {
   const outAbs = join(cacheDir, `${uniqueId}_${filePath.replace(/[^a-zA-Z0-9]/g, "_")}.deps.out`);
   await rm(outAbs, { force: true });
   await rm(`${outAbs}.diag`, { force: true });
+  await rm(`${outAbs}.src`, { force: true });
   const exitCode = await runVibe(
     runnerPath, compilerWasm, [filePath, outAbs, "__no_entry__"],
     { VIBE_LIST_DEPS: "1", VIBE_IMPORT_ABI: "raw" },
@@ -81,7 +93,11 @@ async function listDeps(runnerPath, compilerWasm, cacheDir, projectRoot, filePat
   if (text === null) {
     throw new Error(`VIBE_LIST_DEPS produced no output for ${filePath} (exit ${exitCode})`);
   }
-  return text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const source = await readIfPresent(`${outAbs}.src`);
+  if (source === null) {
+    throw new Error(`VIBE_LIST_DEPS produced no ingested source for ${filePath} (exit ${exitCode})`);
+  }
+  return { deps: text.split("\n").map((line) => line.trim()).filter(Boolean), source };
 }
 
 // Run `fn` over every item in `items`, at most `concurrency` in flight at
@@ -140,10 +156,7 @@ async function discoverProject(runnerPath, compilerWasm, projectRoot, entryPaths
   while (frontier.length > 0) {
     const discovered = await mapWithConcurrency(frontier, concurrency, async (path) => {
       const uniqueId = nextUniqueId++;
-      const [deps, source] = await Promise.all([
-        listDeps(runnerPath, compilerWasm, cacheDir, projectRoot, path, uniqueId),
-        readFile(path, "utf8"),
-      ]);
+      const { deps, source } = await listDeps(runnerPath, compilerWasm, cacheDir, projectRoot, path, uniqueId);
       return { path, deps, source };
     });
     const nextFrontier = [];
