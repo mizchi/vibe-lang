@@ -535,6 +535,101 @@ fn locate_by_marker(source: String, msg: String, marker: String) -> String {
   }
 }
 
+/// The exact text between `marker` and the NEXT `'` in `msg` -- unlike
+/// `locate_by_marker`'s `typecheck_ident_run` (which only captures plain
+/// identifier chars), this captures the quoted substring verbatim, so a
+/// symbol like `@shell` (not a bare identifier) comes out whole. Returns ""
+/// if `marker` or the closing quote isn't found.
+fn extract_quoted_after(msg: String, marker: String) -> String {
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    ""
+  } else {
+    let rest = String::substring(msg, mi + String::length(marker), String::length(msg))
+    let rel_end = String::index_of(rest, "'")
+    if rel_end < 0 {
+      ""
+    } else {
+      String::substring(rest, 0, rel_end)
+    }
+  }
+}
+
+/// First occurrence of `sym` in `source` at or after char offset `from`
+/// (clamped into range), or -1.
+fn index_of_after(source: String, sym: String, from: Int) -> Int {
+  if String::length(sym) == 0 {
+    0 - 1
+  } else {
+    let start = if from < 0 {
+      0
+    } else if from > String::length(source) {
+      String::length(source)
+    } else {
+      from
+    }
+    let rel = String::index_of(String::substring(source, start, String::length(source)), sym)
+    if rel < 0 {
+      0 - 1
+    } else {
+      start + rel
+    }
+  }
+}
+
+/// #1205 Codex review: a plain first-occurrence search for the bare
+/// name/alias (the #1204 approach) can land on an EARLIER, unrelated
+/// occurrence of the same spelling -- a comment or string mentioning the
+/// name before the import statement itself, or another import of the same
+/// name from a different path. `detect_unused_imports`' own message embeds
+/// the import's PATH too (`imported name 'X' from 'PATH' ..` / `import alias
+/// '@A' for 'PATH' ..`) -- a path is far less likely to collide with
+/// unrelated text than a short bare identifier, so anchor on the path's OWN
+/// first occurrence and search for the name/alias only from there forward:
+/// the import statement's own occurrence of its item names always comes
+/// shortly after its own path in the source. Degrades to an unanchored
+/// search (starting from offset 0) if the path itself can't be found, which
+/// is no worse than the #1204 behavior this replaces.
+fn locate_unused_import_msg(source: String, msg: String) -> String {
+  let name_marker = "imported name '"
+  let alias_marker = "import alias '"
+  let is_alias = String::index_of(msg, alias_marker) >= 0
+  if not(is_alias) && String::index_of(msg, name_marker) < 0 {
+    msg
+  } else {
+    let sym = if is_alias {
+      extract_quoted_after(msg, alias_marker)
+    } else {
+      extract_quoted_after(msg, name_marker)
+    }
+    let path = if is_alias {
+      extract_quoted_after(msg, "' for '")
+    } else {
+      extract_quoted_after(msg, "' from '")
+    }
+    if sym == "" {
+      msg
+    } else {
+      let anchor = if path == "" {
+        0
+      } else {
+        let p = String::index_of(source, path)
+        if p < 0 {
+          0
+        } else {
+          p
+        }
+      }
+      let off = index_of_after(source, sym, anchor)
+      if off < 0 {
+        msg
+      } else {
+        String::concat(offset_line_col_prefix(source, off), msg)
+      }
+    }
+  }
+}
+
 /// First-occurrence heuristic locator (the original behavior). Kept separate so
 /// the offset-marker path can fall through to it on the marker-stripped message.
 fn locate_type_error_heuristic(source: String, msg: String) -> String {
@@ -558,11 +653,20 @@ fn locate_type_error_heuristic(source: String, msg: String) -> String {
           if with_ctor != msg {
             with_ctor
           } else {
-            // #946(4): inline-wasm codegen errors ("inline wasm (fn <name>): ...")
-            // carry no [@off=] marker (the offset they DO carry is a WAT-text
-            // offset, not a source char offset) — locate by the enclosing fn's
-            // name instead, same first-occurrence heuristic as the other markers.
-            locate_by_marker(source, msg, "inline wasm (fn ")
+            // #1204/#1205: detect_unused_imports' two message shapes (named
+            // import / package alias), path-anchored -- see
+            // locate_unused_import_msg's own doc comment.
+            let with_import = locate_unused_import_msg(source, msg)
+            if with_import != msg {
+              with_import
+            } else {
+              // #946(4): inline-wasm codegen errors ("inline wasm (fn
+              // <name>): ...") carry no [@off=] marker (the offset they DO
+              // carry is a WAT-text offset, not a source char offset) --
+              // locate by the enclosing fn's name instead, same
+              // first-occurrence heuristic as the other markers.
+              locate_by_marker(source, msg, "inline wasm (fn ")
+            }
           }
         }
       }
@@ -1440,7 +1544,7 @@ export fn collect_all_diagnostics(source: String) -> Array[String] with { Error 
             let mut wi = 0
             while wi < Array::length(import_warns) {
               let (_, _, wmsg) = Array::get(import_warns, wi)
-              Array::push(extra, String::concat("warning: ", wmsg))
+              Array::push(extra, locate_type_error(source, String::concat("warning: ", wmsg)))
               wi = wi + 1
             }
             let (warn_tytab, warn_subst) = check_program_type_table(stmts)

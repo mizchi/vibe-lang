@@ -12,6 +12,10 @@ import @vibe/compiler/checker {
   detect_unbound_nonunit_returns, detect_unused_imports
 }
 
+import @vibe/compiler/runtime {
+  locate_type_error
+}
+
 //# Functions
 
 fn no_ty() -> Option[TypeExpr] {
@@ -82,6 +86,64 @@ test "detect_unused_imports ignores a package alias used via a qualified call" {
   assert(eq(Array::length(warnings), 0))
 }
 
+// #1204 Codex review follow-up: a local binder (function param here) with
+// the SAME name as an imported value must not shadow-suppress the import's
+// own unused warning -- the read inside the function body refers to the
+// PARAMETER, never the import.
+test "detect_unused_imports still flags an import shadowed by a fn param" {
+  let stmts = [
+    SImport("./map.vibe", [
+      ("map_key_to_string", None)
+    ]),
+    SLet(false, false, "main", no_ty(), EFn([
+    ], [
+    ], [
+      ("map_key_to_string", no_ty())
+    ], no_ty(), None, EIdent("map_key_to_string", -1)))
+  ]
+  let warnings = detect_unused_imports(stmts)
+  assert(eq(Array::length(warnings), 1))
+  let (kind, name, _) = Array::get(warnings, 0)
+  assert(kind == "unused_import")
+  assert(name == "map_key_to_string")
+}
+
+// #1205 Codex review follow-up: `for x, i in items { .. }` binds BOTH the
+// item name and the optional index name as loop locals -- an import shadowed
+// only by the index must still be flagged.
+test "detect_unused_imports still flags an import shadowed by a for-loop index" {
+  let stmts = [
+    SImport("./map.vibe", [
+      ("map_key_to_string", None)
+    ]),
+    SLet(false, false, "main", no_ty(), EForIn("x", Some("map_key_to_string"), EArray([
+      EInt(1)
+    ]), EIdent("map_key_to_string", -1)))
+  ]
+  let warnings = detect_unused_imports(stmts)
+  assert(eq(Array::length(warnings), 1))
+  let (kind, name, _) = Array::get(warnings, 0)
+  assert(kind == "unused_import")
+  assert(name == "map_key_to_string")
+}
+
+// #1204 Codex review follow-up: `Type::{ .. }` struct-literal construction
+// is a real reference to `Type` (ERecord's own name field), not just its
+// field values / explicit type args.
+test "detect_unused_imports counts an ERecord's own name as a reference" {
+  let stmts = [
+    SImport("./model.vibe", [
+      ("User", None)
+    ]),
+    SLet(false, false, "main", no_ty(), ERecord("User", [
+      ("id", EInt(1))
+    ], [
+    ]))
+  ]
+  let warnings = detect_unused_imports(stmts)
+  assert(eq(Array::length(warnings), 0))
+}
+
 test "detect_unbound_nonunit_returns flags a discarded non-Unit call" {
   // `foo(); 1` -- ESeq(ECall("foo", [], 5), EInt(1)); tytab records foo()'s
   // call offset (5) as CtInt (mirroring checker.vibe's tab_call_ty).
@@ -120,6 +182,36 @@ test "detect_unbound_nonunit_returns ignores a let-bound (non-discarded) call" {
   ]
   let warnings = detect_unbound_nonunit_returns(stmts, tytab, SubstEmpty)
   assert(eq(Array::length(warnings), 0))
+}
+
+// #1204 Codex review follow-up: unused-import warnings previously carried no
+// `line L:C:` prefix at all, so the LSP rendered every one at 1:1
+// (lsp_server.vibe's lsp_diag_fallback). Since an unused name/alias by
+// definition has no OTHER occurrence in the file, a first-occurrence text
+// search unambiguously finds the import statement itself.
+test "locate_type_error attaches a line:col to an unused named-import warning" {
+  let source = "import ./m.vibe {\n  unused_fn\n}\n"
+  let msg = "warning: imported name 'unused_fn' from './m.vibe' is never used in this file"
+  let located = locate_type_error(source, msg)
+  assert(String::starts_with(located, "line 2:"))
+}
+
+test "locate_type_error attaches a line:col to an unused import-alias warning" {
+  let source = "import @vibe/shell @shell\n"
+  let msg = "warning: import alias '@shell' for '@vibe/shell' is never used in this file"
+  let located = locate_type_error(source, msg)
+  assert(String::starts_with(located, "line 1:"))
+}
+
+// #1205 Codex review follow-up: a plain first-occurrence search for the bare
+// name would land on THIS comment (line 1) instead of the import itself
+// (line 3) -- locate_unused_import_msg anchors on the import's own path
+// first (line 2) and searches for the name only from there forward.
+test "locate_type_error skips an earlier same-name comment, anchors on the import path" {
+  let source = "// unused_fn is intentionally kept around\nimport ./m.vibe {\n  unused_fn\n}\n"
+  let msg = "warning: imported name 'unused_fn' from './m.vibe' is never used in this file"
+  let located = locate_type_error(source, msg)
+  assert(String::starts_with(located, "line 3:"))
 }
 
 test "detect_unbound_nonunit_returns ignores a discarded if (no tytab entry)" {
