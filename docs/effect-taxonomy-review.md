@@ -312,6 +312,12 @@ fn load_config() -> Config with { ConfigErrors } {
 禁止している閉じた世界志向と一貫させるため、Option A をデフォルトにする
 ことを推奨する。
 
+この提案は [ADR-0085](exception-effect.md) として切り出した。Wasm EH との
+関係も同 ADR で検証済みであり、source-level の checked `Exception[E]` と
+Wasm の typed tag/`throw`/`try_table` は同一層ではない。Wasm EH は
+non-resumable transfer の lowering 候補で、effect row identity・effectset union・
+enum exhaustiveness は vibe checker が保持する。
+
 ### Async: ADR-0068 と ADR-0075 の矛盾を分解して解消する
 
 - ADR-0068: `Async` は意図的に non-transitive(sync→async 合成のための
@@ -488,8 +494,8 @@ singleton(`Fs[Process::Root]::...`)へ展開する sugar が必要になる
 
 ## 未解決のまま残る論点
 
-- **例外階層の実装優先度**: `Exception[E]` の設計方向は固まったが、
-  実際に `docs/adr.md` へ ADR として切り出すタイミングは未定。
+- **例外階層の実装優先度**: `Exception[E]` は ADR-0085 として切り出し済み。
+  generic effect instantiation を row の実表現へ導入する Phase 1 は未着手。
 - **`main` の row 規則を破壊的変更として導入するタイミング**: Phase 1
   の retrofit が完了していれば既存 `.vibex` は無風のはずだが、実際の
   fixture コーパスで検証が必要。

@@ -29,10 +29,10 @@ effect operation を、次の三分類で扱う。
 2. **algebraic effect** は resource kind parameter を持たない通常の effect
    である。これは in-process の handler/DI 用であり、`.vibex` の `main` に
    到達する前に `handle` で discharge しなければならない。
-3. **core ambient effect** は言語予約の少数の effect である。現時点では
-   checked `Error` が該当する。これは entry boundary の runtime handler が
-   diagnosed failure へ変換するため、`main` の row に残ることを許可する。
-   `Error` → `Exception[E]` の改名・階層化は別 ADR で決める。
+3. **core ambient effect** は言語予約の少数の effect である。ADR-0085 の
+   typed `Exception[E]`（移行中は checked `Error`）が該当する。これは entry
+   boundary の runtime handler が diagnosed failure へ変換するため、`main` の
+   row に残ることを許可する。
 
 `.vibex` の `main` の残余 row は capability effect と core ambient effect
 だけを含めてよい。row に algebraic effect が残るプログラムは、WIT 生成や
@@ -60,8 +60,8 @@ Phase 2 以降の追加であり、この ADR では構文を決めない。
 - resource kind parameter の表面構文・kind bound の構文を決めない。
 - `resource` の plan/apply/bind lifecycle、optional capability、WIT ABI を
   実装しない。これらは ADR-0075 の後続 phase である。
-- `Error` を `Exception[E]` へ改名しない。Wasm exception-handling proposal
-  との対応は、その ADR の検証事項として残す。
+- `Error` を `Exception[E]` へ改名しない。改名・typed identity・Wasm EH との
+  関係は [ADR-0085](exception-effect.md) が定める。
 - `TaskGroup::spawn` の row-polymorphic 化や fork-safe evidence 転送を
   実装しない。これは ADR-0068 / ADR-0075 の個別実装として扱う。
 

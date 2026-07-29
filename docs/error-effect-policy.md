@@ -6,6 +6,10 @@ Date: 2026-07-17
 
 Related: ADR-0003, ADR-0016, ADR-0050, ADR-0071, #626, #939, #944, #955
 
+Follow-up: ADR-0085 は、この checked/non-resumable/entry-boundary 契約を保った
+まま `Error` を typed `Exception[E]` へ移行する案を定める。compatibility alias
+の移行が完了するまでは、本 ADR が現行 `Error` semantics の正本である。
+
 ## Context
 
 capability effect (`Fs`, `Env`, `Stdin`, `Stdout` など) は、直接の operation と
