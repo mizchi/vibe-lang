@@ -6,7 +6,9 @@ scheduling, and module system. Their sources of truth are
 [ADR-0071](../docs/effectset.md) and
 [ADR-0073](../docs/error-effect-policy.md),
 [ADR-0068](../docs/concurrency.md),
-[ADR-0075](../docs/vibex-runtime-contract.md), plus
+[ADR-0075](../docs/vibex-runtime-contract.md),
+[ADR-0084](../docs/effect-taxonomy-entry-policy.md),
+[ADR-0085](../docs/exception-effect.md), plus
 [ADR-0070](../docs/module-system-oracle.md). The current string-based effect
 checker and synchronous eager `Task` implementation are not sources of truth.
 The module model is additionally locked to selfhost loader refinement tests.
@@ -49,6 +51,32 @@ ADR-0073 decides that explicit `with { Error }` is a semantic row element, but
 the higher-order typing and subtyping proofs remain coupled to #939. The model
 also abstracts from payload types, divergence, traps, stack unwinding,
 finalizers, and backend exception representation.
+
+## Verified effect-taxonomy and entry-authority properties
+
+The taxonomy model treats capability requirements, ordinary algebraic
+operations, and language-reserved typed exceptions as a disjoint sum. It proves
+that:
+
+- executable entry, host, row-subset, well-formedness, and spawn checks agree
+  with their relational definitions;
+- a runnable `.vibex` entry contains no undischarged algebraic operation;
+- every runnable capability has an exact host provider and retains its logical
+  resource identity as an `OperationRef` argument;
+- an operation carrying a resource argument cannot be reclassified as
+  algebraic;
+- algebraic handlers preserve capability/core requirements, while typed
+  exception handlers remove only the exact normalized exception kind;
+- child authority is a subset of parent authority, capabilities require
+  fork-safe host evidence, and algebraic handler evidence is task-local by
+  default.
+
+Executable examples distinguish `SourceRoot` from `CacheRoot`, reject an
+undischarged `Logger`, and retain a deliberately broken capability-only
+projection that incorrectly accepts `Logger`. This is a taxonomy-level contract
+for ADR-0084, not yet a correspondence proof for builtin metadata, the selfhost
+checker, WIT projection, provider lowering, or runtime evidence transfer. Those
+bridges remain implementation and differential-test obligations.
 
 ## Verified call-typing properties
 

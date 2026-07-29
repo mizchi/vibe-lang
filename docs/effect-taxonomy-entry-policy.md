@@ -76,6 +76,31 @@ Phase 2 以降の追加であり、この ADR では構文を決めない。
    fixture を reject、capability/core ambient の fixture を accept する。
 4. その残余 row のみを WIT / `Entry.requires` / host preflight に渡す。
 
+## Formal contract
+
+実装に先行する taxonomy-level contract を
+[`Effect/Taxonomy.lean`](../formal/VibeFormal/Effect/Taxonomy.lean) に定義し、
+[`EffectTaxonomyCorrect.lean`](../formal/VibeFormal/Proofs/EffectTaxonomyCorrect.lean)
+で executable checker と命題の一致を証明する。モデルは次を固定する。
+
+- capability / algebraic / typed Exception を disjoint な requirement として扱う。
+- entry row は capability/core ambient のみを許し、capability は
+  `OperationRef` に exact logical resource marker を保持する。
+- host は exact capability identity を provide できるが、algebraic effect を
+  解決できない。
+- handler は同じ algebraic effect、または exact Exception kind だけを
+  discharge し、別カテゴリ・別 kind を保存する。
+- spawn child row は parent row の subset で、capability には fork-safe host
+  evidence が必要であり、algebraic handler evidence は既定で継承しない。
+
+[`EffectTaxonomyExamples.lean`](../formal/VibeFormal/Proofs/EffectTaxonomyExamples.lean)
+は accept/reject 例に加え、capability だけを row から射影する壊れた
+preflight が未処理 `Logger` を誤って accept する反例を保持する。
+
+これは ADR の意味論に対する machine-checked model であり、現行の文字列
+checker、builtin metadata、WIT 生成との correspondence proof ではない。
+Implementation sequence 1–4 と compiler fixture は引き続き必要である。
+
 ## Reconciliation ledger
 
 | 項目 | 根拠 / 観測 | 結論 |
@@ -84,7 +109,7 @@ Phase 2 以降の追加であり、この ADR では構文を決めない。
 | 実装観測 | `loader/loader.vibe` は `.vibex` の形と explicit row を検証するが、exact operation-row equality は後続 phase と明記している | 本 ADR は直ちに checker を変更しない |
 | 実装観測 | `checker_effects.vibe` は effect を文字列ラベルで追跡し、`Error` / `Async` を特別扱いしている | effect class/resource kind metadata が先行条件である |
 | 回帰ガード候補 | `main with { Logger }` は reject、`main with { Fs }` と `main with { Error }` は accept | Phase 3 の fixture と compiler gate に固定する |
+| 形式モデル | taxonomy-level requirement、entry/host/spawn 判定、handler discharge を Lean で定義した | ADR の意味論は machine-checked。checker 対応は未証明 |
 
-この段階では、machine-checked な判定対象がまだ metadata を持たないため、新しい
-proof/model は追加しない。Phase 3 で上記3 fixture を導入し、checker の許可述語
-を回帰ガードにする。
+Phase 3 では上記3 fixture を導入し、checker の許可述語と Lean contract の
+対応を回帰ガードにする。

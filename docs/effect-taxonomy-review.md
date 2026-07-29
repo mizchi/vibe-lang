@@ -521,6 +521,14 @@ singleton(`Fs[Process::Root]::...`)へ展開する sugar が必要になる
 
 ## 検証方針(実装フェーズに進む場合)
 
+- ADR-0084 の taxonomy-level contract は
+  [`Effect/Taxonomy.lean`](../formal/VibeFormal/Effect/Taxonomy.lean)、
+  executable checker との一致・保存則は
+  [`EffectTaxonomyCorrect.lean`](../formal/VibeFormal/Proofs/EffectTaxonomyCorrect.lean)、
+  正負の witness は
+  [`EffectTaxonomyExamples.lean`](../formal/VibeFormal/Proofs/EffectTaxonomyExamples.lean)
+  で machine-check する。これは現行 selfhost checker との correspondence
+  proof ではない。
 - 新規/改訂 ADR を `docs/adr.md` に追加し、Related ADR として
   0071/0075/0060/0068/0073 を明記する。
 - 各提案ごとに `fixtures/*.vibe` で最小再現を先に書き、seed compiler が
