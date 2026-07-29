@@ -46,11 +46,18 @@
 // cache key for the EXECUTE step, exactly mirroring the pure-test cache
 // `vibe test` already ships (ADR-0026, runtime/vibe's $tcache/<hash>.pass:
 // same "hash the deterministic output, not the inputs" trick, there gating
-// re-running an assertion, here gating re-capturing stdout). A hit skips
-// the `_start` subprocess entirely and reuses the previously-captured
-// stdout. Cache dir: $VIBE_MD_CACHE (default _build/doctest_cache); set
-// VIBE_MD_NO_CACHE=1 to bypass. ```vibe (check-mode) blocks have no
-// execute step to skip and are unaffected.
+// re-running an assertion, here gating re-capturing stdout) -- PROVIDED the
+// block is actually pure. Byte-identical compiled wasm does NOT imply
+// byte-identical stdout when the entry performs Fs/Env/Http/Process/etc:
+// same wasm, different host state, different output (Codex review, PR
+// #1214). So the compiler is asked (VIBE_ENTRY_TESTMETA_OUT, backed by
+// checker/checker_effects.vibe's file_entry_cacheable) whether `main`'s
+// only reachable effects are Stdout/Error/Async, and the cache is only
+// read/written when it says yes -- everything else always re-executes,
+// same as an uncached run. A hit skips the `_start` subprocess entirely and
+// reuses the previously-captured stdout. Cache dir: $VIBE_MD_CACHE (default
+// _build/doctest_cache); set VIBE_MD_NO_CACHE=1 to bypass. ```vibe
+// (check-mode) blocks have no execute step to skip and are unaffected.
 //
 // Design differences from scripts/vibe_md.py, forced by vibe's actual
 // capabilities rather than an exact translation:
@@ -502,14 +509,24 @@ fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String,
     let src = "\{md_dir}/\{scratch_name}.vibe"
     let out = "\{md_dir}/\{scratch_name}.wasm"
     let diag = "\{out}.diag"
+    let entry_meta = "\{out}.entrymeta"
     Fs::write_file(src, join_lines(blk.code_lines))
     let entry = if blk.mode == "run" {
       "main"
     } else {
       "__no_entry__"
     }
+    // #819 (Codex review, PR #1214): only requested for `run` blocks -- ask
+    // the compiler whether `main`'s only reachable effects are Stdout/Error/
+    // Async (see run_one_block's use of entry_meta below for why this is
+    // required, not just the compiled wasm's own hash).
+    let meta_env = if blk.mode == "run" {
+      "VIBE_ENTRY_TESTMETA_OUT=\{shq(entry_meta)} "
+    } else {
+      ""
+    }
     let timeout_secs = md_timeout_secs()
-    let compile_cmd = "timeout \{timeout_secs} env VIBE_PREOPEN_DIR=\{shq(cwd)} VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \{shq(compiler)} \{shq(src)} \{shq(out)} \{shq(entry)}"
+    let compile_cmd = "timeout \{timeout_secs} env VIBE_PREOPEN_DIR=\{shq(cwd)} VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \{meta_env}bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \{shq(compiler)} \{shq(src)} \{shq(out)} \{shq(entry)}"
     let cr = sh_capture(compile_cmd)
     let compiled = cr.exit_code == 0 && file_nonempty(out)
     if !compiled {
@@ -532,10 +549,21 @@ fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String,
       cleanup_one(src, out, diag)
       BlockResult::{ label: label, status: "PASS", reason: "" }
     } else {
-      // #819: sha256 of the just-compiled wasm is a sound cache key for the
-      // EXECUTE step (see the file header comment) -- computed here, before
-      // cleanup_one below removes `out`.
-      let use_cache = !doctest_no_cache()
+      // #819 (Codex review, PR #1214): the compiled wasm's bytes alone are
+      // NOT a sound cache-eligibility signal -- a block that performs Fs/
+      // Env/Http/Process effects compiles to the SAME wasm every time (its
+      // literal source is unchanged) but can legitimately produce DIFFERENT
+      // stdout across runs, so blindly trusting sha256(compiled wasm) would
+      // let `check` silently accept stale output and `write` freeze a
+      // snapshot of impure output forever. entry_meta (written by the
+      // compiler above via VIBE_ENTRY_TESTMETA_OUT, entry_cacheable_for_fs /
+      // file_entry_cacheable) reports whether `main`'s only reachable
+      // effects are Stdout/Error/Async -- only THEN is sha256(compiled wasm)
+      // sound (see the file header comment for why the hash itself, once
+      // purity is established, is a sound key). Read before cleanup_one
+      // below removes `out`/`entry_meta`.
+      let entry_cacheable = Fs::exists(entry_meta) && String::trim(Fs::read_file(entry_meta)) == "1"
+      let use_cache = !doctest_no_cache() && entry_cacheable
       let key = if use_cache {
         sha256_file(out)
       } else {
@@ -646,6 +674,7 @@ fn run_fmt_block(md_path: String, md_dir: String, scratch_name: String, blk: Blo
 
 fn cleanup_one(src: String, out: String, diag: String) -> Unit with { Fs } {
   let funcmap = "\{out}.funcmap"
+  let entry_meta = "\{out}.entrymeta"
   if Fs::exists(src) {
     Fs::remove(src)
   } else {
@@ -658,6 +687,11 @@ fn cleanup_one(src: String, out: String, diag: String) -> Unit with { Fs } {
   }
   if Fs::exists(diag) {
     Fs::remove(diag)
+  } else {
+    ()
+  }
+  if Fs::exists(entry_meta) {
+    Fs::remove(entry_meta)
   } else {
     ()
   }
