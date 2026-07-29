@@ -60,7 +60,7 @@ import @vibe/compiler/loader {
 }
 
 import @vibe/compiler/checker {
-  file_tests_cacheable
+  file_entry_cacheable, file_tests_cacheable
 }
 
 import @vibe/compiler/runtime {
@@ -550,6 +550,22 @@ export fn compile_file_fs_mode_testmeta(entry_path: String, entry_name: String, 
     ()
   }
   bytes
+}
+
+/// #819 (Codex review, PR #1214): standalone cacheability query for an
+/// ENTRY-function compile (e.g. `fn main`), used by scripts/vibe_md.vibex's
+/// ```vibe run block execute-cache. Deliberately its OWN parse/merge pass
+/// rather than threading a value through cli_adapter.vibe's existing
+/// backend-selection branch (coverage/break/trace/rc/rc-shadow/bump) --
+/// this can never affect which bytes an actual compile emits, at the cost
+/// of a redundant frontend pass (negligible next to the child-process
+/// compile/execute round trips vibe_md.vibex already pays per block).
+export fn entry_cacheable_for_fs(entry_path: String, entry_name: String) -> Bool with { Error, Fs } {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let _ = next_db
+  let merged_stmts = build_grouped_merged_stmts(source_groups)
+  file_entry_cacheable(merged_stmts, entry_name)
 }
 
 /// Coverage (#cov): FS-mode compile with function-level hit instrumentation.
