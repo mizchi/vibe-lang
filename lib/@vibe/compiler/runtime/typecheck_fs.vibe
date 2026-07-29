@@ -475,14 +475,28 @@ export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] w
   }
 }
 
+/// #906 (compiler-parallelism.md "Cache publication"): a reader must never
+/// observe a torn write -- write the full content to a `.tmp` sibling first,
+/// then rename onto the real path so any interruption leaves only the `.tmp`
+/// file behind, never a partial final one. Cache keys here are content
+/// fingerprints, so two writers racing on the very same key would write
+/// identical bytes; a distinct temp name per concurrent writer (needed once
+/// real multi-worker dispatch lands) is deliberately not added yet -- nothing
+/// calls these from more than one thread of control today.
+fn write_persistent_cache_file_atomic(path: String, content: String) -> Unit with { Fs } {
+  let tmp = String::concat(path, ".tmp")
+  Fs::write_file(tmp, content)
+  Fs::rename(tmp, path)
+}
+
 fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> Unit with { Error, Fs } {
-  Fs::write_file(persistent_type_env_cache_path(fingerprint), persistent_type_env_cache_text(env))
+  write_persistent_cache_file_atomic(persistent_type_env_cache_path(fingerprint), persistent_type_env_cache_text(env))
 }
 
 fn write_persistent_dep_list_if_missing(path: String, source: String, deps: Array[String]) -> Unit with { Fs } {
   let dep_cache_path = persistent_dep_list_cache_path(path, compact_string_fingerprint(source))
   if !(Fs::exists(dep_cache_path)) {
-    Fs::write_file(dep_cache_path, persistent_dep_list_text(deps))
+    write_persistent_cache_file_atomic(dep_cache_path, persistent_dep_list_text(deps))
   } else {
     ()
   }
@@ -843,7 +857,7 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
     Checked(path, fingerprint, checked_env) => {
       store_persistent_type_env(fingerprint, checked_env)
       if Array::length(job.deps) == 0 {
-        Fs::write_file(persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(job.source)), persistent_leaf_fingerprint_text(fingerprint))
+        write_persistent_cache_file_atomic(persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(job.source)), persistent_leaf_fingerprint_text(fingerprint))
       } else {
         ()
       }
@@ -1068,7 +1082,7 @@ export fn run_publish_env_cache_dir(dir: String) -> Unit with { Error, Fs } {
   while i < len {
     let (fingerprint, env_file) = Array::get(rows, i)
     let env_text = Fs::read_file(job_dir_path(dir, env_file))
-    Fs::write_file(persistent_type_env_cache_path(fingerprint), env_text)
+    write_persistent_cache_file_atomic(persistent_type_env_cache_path(fingerprint), env_text)
     i = i + 1
   }
 }
