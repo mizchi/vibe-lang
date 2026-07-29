@@ -535,6 +535,40 @@ fn locate_by_marker(source: String, msg: String, marker: String) -> String {
   }
 }
 
+/// Like `locate_by_marker`, but for a symbol written with a leading `@` in
+/// the SOURCE (a package alias, e.g. `@shell`) -- `typecheck_ident_run`
+/// doesn't include `@` as an identifier char, so a plain `locate_by_marker`
+/// call would extract an empty run right at the `@` and give up. `marker`
+/// must end right where the `@` begins in `msg` (e.g. `"import alias '"`,
+/// not `"import alias '@"`) so the extracted `sym` includes the `@` and an
+/// exact match against the source's own `@alias` spelling.
+fn locate_by_at_marker(source: String, msg: String, marker: String) -> String {
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    msg
+  } else {
+    let sstart = mi + String::length(marker)
+    if sstart >= String::length(msg) || String::char_code_at(msg, sstart) != '@' {
+      msg
+    } else {
+      let send = typecheck_ident_run(msg, sstart + 1)
+      if send <= sstart + 1 {
+        msg
+      } else {
+        let sym = String::substring(msg, sstart, send)
+        let off = String::index_of(source, sym)
+        if off < 0 {
+          msg
+        } else {
+          let (line, col) = offset_to_line_col(source, off)
+          let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+          String::concat(loc, msg)
+        }
+      }
+    }
+  }
+}
+
 /// First-occurrence heuristic locator (the original behavior). Kept separate so
 /// the offset-marker path can fall through to it on the marker-stripped message.
 fn locate_type_error_heuristic(source: String, msg: String) -> String {
@@ -558,11 +592,27 @@ fn locate_type_error_heuristic(source: String, msg: String) -> String {
           if with_ctor != msg {
             with_ctor
           } else {
-            // #946(4): inline-wasm codegen errors ("inline wasm (fn <name>): ...")
-            // carry no [@off=] marker (the offset they DO carry is a WAT-text
-            // offset, not a source char offset) — locate by the enclosing fn's
-            // name instead, same first-occurrence heuristic as the other markers.
-            locate_by_marker(source, msg, "inline wasm (fn ")
+            let with_import = locate_by_marker(source, msg, "imported name '")
+            if with_import != msg {
+              with_import
+            } else {
+              // #1204 Codex review: `detect_unused_imports`' two message
+              // shapes -- a plain named import (a bare identifier, located
+              // like any other quoted-name marker above) and a package
+              // alias (written `@alias` in the source, needs the `@`-aware
+              // locator above).
+              let with_alias = locate_by_at_marker(source, msg, "import alias '")
+              if with_alias != msg {
+                with_alias
+              } else {
+                // #946(4): inline-wasm codegen errors ("inline wasm (fn
+                // <name>): ...") carry no [@off=] marker (the offset they DO
+                // carry is a WAT-text offset, not a source char offset) --
+                // locate by the enclosing fn's name instead, same
+                // first-occurrence heuristic as the other markers.
+                locate_by_marker(source, msg, "inline wasm (fn ")
+              }
+            }
           }
         }
       }
@@ -1440,7 +1490,7 @@ export fn collect_all_diagnostics(source: String) -> Array[String] with { Error 
             let mut wi = 0
             while wi < Array::length(import_warns) {
               let (_, _, wmsg) = Array::get(import_warns, wi)
-              Array::push(extra, String::concat("warning: ", wmsg))
+              Array::push(extra, locate_type_error(source, String::concat("warning: ", wmsg)))
               wi = wi + 1
             }
             let (warn_tytab, warn_subst) = check_program_type_table(stmts)

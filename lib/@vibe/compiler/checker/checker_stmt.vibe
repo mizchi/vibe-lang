@@ -2049,48 +2049,65 @@ fn collect_opt_texpr_ref_names(ty: Option[TypeExpr], out: Array[String]) -> Unit
 /// including qualified `Type::method` spellings -- the parser already folds
 /// those into a single `EIdent("Type::method", off)`, see
 /// parser_expr_primary.vibe), PLUS every type name reachable through an
-/// `EFn`'s own parameter/return annotations and an `ERecord`'s explicit
-/// type-argument list -- both otherwise invisible to a value-only walk.
-fn collect_referenced_names_expr(expr: Expr, out: Array[String]) -> Unit {
+/// `EFn`'s own parameter/return annotations, an `ERecord`'s own type name
+/// and explicit type-argument list -- both otherwise invisible to a
+/// value-only walk. `bound` is the stack of names currently shadowed by an
+/// enclosing binder (function param, `let`/`let rec`/`let mut`, `for`/`loop`
+/// var, or match/handle pattern bind) -- an `EIdent` matching one of these is
+/// a reference to the LOCAL binding, never the import, so it must not count
+/// (Codex review on #1204: a param named the same as an imported value used
+/// to suppress that import's own unused warning). Each scope-introducing
+/// case pushes its bound name(s) before recursing into the scope they cover
+/// and truncates back to the saved length afterward, so a name is only
+/// shadowed for the span of code it actually covers.
+fn collect_referenced_names_expr(expr: Expr, bound: Array[String], out: Array[String]) -> Unit {
   match expr {
-    EIdent(name, _) => push_ref_name(out, name),
+    EIdent(name, _) => if labeled_walk_shadowed(bound, name) {
+      ()
+    } else {
+      push_ref_name(out, name)
+    },
     EInt(_) => (),
     EFloat(_) => (),
     EString(_) => (),
     EBool(_) => (),
     EUnit => (),
     EBreak(opt) => match opt {
-      Some(e) => collect_referenced_names_expr(e, out),
+      Some(e) => collect_referenced_names_expr(e, bound, out),
       None => ()
     },
     EContinue(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        collect_referenced_names_expr(Array::get(items, i), out)
+        collect_referenced_names_expr(Array::get(items, i), bound, out)
         i = i + 1
       }
     },
-    EReturn(e) => collect_referenced_names_expr(e, out),
-    EUnaryOp(_, e) => collect_referenced_names_expr(e, out),
+    EReturn(e) => collect_referenced_names_expr(e, bound, out),
+    EUnaryOp(_, e) => collect_referenced_names_expr(e, bound, out),
     ETuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        collect_referenced_names_expr(Array::get(items, i), out)
+        collect_referenced_names_expr(Array::get(items, i), bound, out)
         i = i + 1
       }
     },
     EArray(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        collect_referenced_names_expr(Array::get(items, i), out)
+        collect_referenced_names_expr(Array::get(items, i), bound, out)
         i = i + 1
       }
     },
-    ERecord(_, fields, targs) => {
+    ERecord(name, fields, targs) => {
+      // #1204 Codex review: the record's OWN name (`Type::{ .. }`) is a real
+      // reference to `Type` -- struct/enum names are top-level-only (never
+      // locally bound), so no `bound` check applies here.
+      push_ref_name(out, name)
       let mut i = 0
       while i < Array::length(fields) {
         let (_, val) = Array::get(fields, i)
-        collect_referenced_names_expr(val, out)
+        collect_referenced_names_expr(val, bound, out)
         i = i + 1
       }
       let mut ti = 0
@@ -2100,104 +2117,142 @@ fn collect_referenced_names_expr(expr: Expr, out: Array[String]) -> Unit {
       }
     },
     EBinOp(_, l, r) => {
-      collect_referenced_names_expr(l, out)
-      collect_referenced_names_expr(r, out)
+      collect_referenced_names_expr(l, bound, out)
+      collect_referenced_names_expr(r, bound, out)
     },
     ECall(callee, args, _) => {
-      collect_referenced_names_expr(callee, out)
+      collect_referenced_names_expr(callee, bound, out)
       let mut i = 0
       while i < Array::length(args) {
-        collect_referenced_names_expr(Array::get(args, i), out)
+        collect_referenced_names_expr(Array::get(args, i), bound, out)
         i = i + 1
       }
     },
     EIf(cond, then_e, else_e) => {
-      collect_referenced_names_expr(cond, out)
-      collect_referenced_names_expr(then_e, out)
-      collect_referenced_names_expr(else_e, out)
+      collect_referenced_names_expr(cond, bound, out)
+      collect_referenced_names_expr(then_e, bound, out)
+      collect_referenced_names_expr(else_e, bound, out)
     },
-    ELet(_, val, body, _) => {
-      collect_referenced_names_expr(val, out)
-      collect_referenced_names_expr(body, out)
+    ELet(name, val, body, _) => {
+      // `val` is evaluated BEFORE `name` is bound (not visible to itself).
+      collect_referenced_names_expr(val, bound, out)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      collect_referenced_names_expr(body, bound, out)
+      Array::truncate(bound, mark)
     },
-    ELetRec(_, val, body) => {
-      collect_referenced_names_expr(val, out)
-      collect_referenced_names_expr(body, out)
+    ELetRec(name, val, body) => {
+      // Recursive: `name` is visible in its OWN value too.
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      collect_referenced_names_expr(val, bound, out)
+      collect_referenced_names_expr(body, bound, out)
+      Array::truncate(bound, mark)
     },
-    ELetMut(_, val, body, _) => {
-      collect_referenced_names_expr(val, out)
-      collect_referenced_names_expr(body, out)
+    ELetMut(name, val, body, _) => {
+      collect_referenced_names_expr(val, bound, out)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      collect_referenced_names_expr(body, bound, out)
+      Array::truncate(bound, mark)
     },
     EAssign(_, val, body) => {
-      collect_referenced_names_expr(val, out)
-      collect_referenced_names_expr(body, out)
+      collect_referenced_names_expr(val, bound, out)
+      collect_referenced_names_expr(body, bound, out)
     },
     EAssignOp(_, _, val, body) => {
-      collect_referenced_names_expr(val, out)
-      collect_referenced_names_expr(body, out)
+      collect_referenced_names_expr(val, bound, out)
+      collect_referenced_names_expr(body, bound, out)
     },
     ESeq(l, r) => {
-      collect_referenced_names_expr(l, out)
-      collect_referenced_names_expr(r, out)
+      collect_referenced_names_expr(l, bound, out)
+      collect_referenced_names_expr(r, bound, out)
     },
     EMatch(scr, arms) => {
-      collect_referenced_names_expr(scr, out)
+      collect_referenced_names_expr(scr, bound, out)
       let mut i = 0
       while i < Array::length(arms) {
-        let (_, body) = Array::get(arms, i)
-        collect_referenced_names_expr(body, out)
+        let (pat, body) = Array::get(arms, i)
+        let mark = Array::length(bound)
+        labeled_walk_pat_binds(pat, bound)
+        collect_referenced_names_expr(body, bound, out)
+        Array::truncate(bound, mark)
         i = i + 1
       }
     },
     EHandle(body_expr, arms) => {
-      collect_referenced_names_expr(body_expr, out)
+      collect_referenced_names_expr(body_expr, bound, out)
       let mut i = 0
       while i < Array::length(arms) {
-        let (_, arm_body) = Array::get(arms, i)
-        collect_referenced_names_expr(arm_body, out)
+        let (pat, arm_body) = Array::get(arms, i)
+        let mark = Array::length(bound)
+        labeled_walk_pat_binds(pat, bound)
+        collect_referenced_names_expr(arm_body, bound, out)
+        Array::truncate(bound, mark)
         i = i + 1
       }
     },
     EWhile(cond, body) => {
-      collect_referenced_names_expr(cond, out)
-      collect_referenced_names_expr(body, out)
+      collect_referenced_names_expr(cond, bound, out)
+      collect_referenced_names_expr(body, bound, out)
     },
     ELoop(params, body) => {
+      // Every init is evaluated against the OUTER scope (no loop var is
+      // visible to any init, including its own), then all loop vars come
+      // into scope together for `body`.
+      let mark = Array::length(bound)
       let mut i = 0
       while i < Array::length(params) {
         let (_, init) = Array::get(params, i)
-        collect_referenced_names_expr(init, out)
+        collect_referenced_names_expr(init, bound, out)
         i = i + 1
       }
-      collect_referenced_names_expr(body, out)
+      let mut j = 0
+      while j < Array::length(params) {
+        let (pname, _) = Array::get(params, j)
+        Array::push(bound, pname)
+        j = j + 1
+      }
+      collect_referenced_names_expr(body, bound, out)
+      Array::truncate(bound, mark)
     },
-    EForIn(_, _, iter, body) => {
-      collect_referenced_names_expr(iter, out)
-      collect_referenced_names_expr(body, out)
+    EForIn(name, _, iter, body) => {
+      collect_referenced_names_expr(iter, bound, out)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      collect_referenced_names_expr(body, bound, out)
+      Array::truncate(bound, mark)
     },
     EFn(_, _, params, ret, _, body) => {
+      let mark = Array::length(bound)
       let mut i = 0
       while i < Array::length(params) {
-        let (_, pty) = Array::get(params, i)
+        let (pname, pty) = Array::get(params, i)
         collect_opt_texpr_ref_names(pty, out)
+        Array::push(bound, labeled_param_base_name(pname))
         i = i + 1
       }
       collect_opt_texpr_ref_names(ret, out)
-      collect_referenced_names_expr(body, out)
+      collect_referenced_names_expr(body, bound, out)
+      Array::truncate(bound, mark)
     },
-    EDot(obj, _, _, _) => collect_referenced_names_expr(obj, out),
-    ELabeledArg(_, _, e) => collect_referenced_names_expr(e, out),
+    EDot(obj, _, _, _) => collect_referenced_names_expr(obj, bound, out),
+    ELabeledArg(_, _, e) => collect_referenced_names_expr(e, bound, out),
     EMap(fields) => {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, val) = Array::get(fields, i)
-        collect_referenced_names_expr(val, out)
+        collect_referenced_names_expr(val, bound, out)
         i = i + 1
       }
     },
-    ESpread(e) => collect_referenced_names_expr(e, out),
+    ESpread(e) => collect_referenced_names_expr(e, bound, out),
     EStringInterp(_) => ()
   }
+}
+
+fn collect_referenced_names_expr_top(expr: Expr, out: Array[String]) -> Unit {
+  collect_referenced_names_expr(expr, array_empty(), out)
 }
 
 /// Broader than check_stmts' own local hoist walks: every place a name from
@@ -2212,13 +2267,13 @@ fn collect_referenced_names_stmts(stmts: Array[Stmt], out: Array[String]) -> Uni
     match Array::get(stmts, i) {
       SLet(_, _, _, ann, val) => {
         collect_opt_texpr_ref_names(ann, out)
-        collect_referenced_names_expr(val, out)
+        collect_referenced_names_expr_top(val, out)
       },
       SLetMut(_, ann, val) => {
         collect_opt_texpr_ref_names(ann, out)
-        collect_referenced_names_expr(val, out)
+        collect_referenced_names_expr_top(val, out)
       },
-      SLetPat(_, val) => collect_referenced_names_expr(val, out),
+      SLetPat(_, val) => collect_referenced_names_expr_top(val, out),
       SEnum(_, _, _, variants, _) => {
         let mut vi = 0
         while vi < Array::length(variants) {
@@ -2279,9 +2334,9 @@ fn collect_referenced_names_stmts(stmts: Array[Stmt], out: Array[String]) -> Uni
           oi = oi + 1
         }
       },
-      STest(_, val) => collect_referenced_names_expr(val, out),
-      SBench(_, val) => collect_referenced_names_expr(val, out),
-      SExpr(val) => collect_referenced_names_expr(val, out),
+      STest(_, val) => collect_referenced_names_expr_top(val, out),
+      SBench(_, val) => collect_referenced_names_expr_top(val, out),
+      SExpr(val) => collect_referenced_names_expr_top(val, out),
       SModule(_, _, body) => collect_referenced_names_stmts(body, out),
       _ => ()
     }
