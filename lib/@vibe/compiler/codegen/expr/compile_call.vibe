@@ -58,6 +58,7 @@ import @vibe/compiler/codegen/common_base {
   emit_unbox_float,
   expr_tag,
   find_local_slot,
+  func_table_index_of,
   get_arm_body,
   get_arm_pat,
   get_ebinop_op,
@@ -353,17 +354,7 @@ fn cc_map_get_linear_scan(buf: Bytes, map_local: Int, key_local: Int, count_loca
 /// SOURCE-provided definition (@vibe/io's println, or a user shadow) whenever
 /// one is merged into the program.
 fn cc_ft_has(ft: FuncTable, name: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(ft.names) {
-    if Array::get(ft.names, i) == name {
-      found = true
-      i = Array::length(ft.names)
-    } else {
-      i = i + 1
-    }
-  }
-  found
+  func_table_index_of(ft, name) >= 0
 }
 
 /// Perceus emits no action for bare projections, so this guarded dup is the only
@@ -560,6 +551,43 @@ fn cc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> 
       } else {
         false
       }
+    } else if is_efn(callee) && Array::length(get_ecall_args(e)) == 1 {
+      // #1153/#1185 (+ #1207 Codex review P2): mirror of expr_is_floatish's
+      // identical ascribe_wrap case (compile_expr_tail.vibe) for this
+      // file's local copy -- see that fix's comment for the full mechanism
+      // and for why the match requires the COMPLETE synthetic identity-
+      // lambda shape (no type params, no declared return type, no effect
+      // row, body exactly `EIdent(<the param's own name>, _)`), not just
+      // the param's own name/type.
+      match callee {
+        EFn(tparams, _, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(params) == 1 && (match ret_ty {
+          None => true,
+          Some(_) => false
+        }) && (match effect {
+          None => true,
+          Some(_) => false
+        }) {
+          let (asc_name, asc_ty) = Array::get(params, 0)
+          if asc_name == "__asc" || (String::starts_with(asc_name, "__shadow_") && String::ends_with(asc_name, "___asc")) {
+            match body {
+              EIdent(bname, _) => if bname == asc_name {
+                match asc_ty {
+                  Some(TyName(tn)) => tn == "Double" || tn == "Float",
+                  _ => false
+                }
+              } else {
+                false
+              },
+              _ => false
+            }
+          } else {
+            false
+          }
+        } else {
+          false
+        },
+        _ => false
+      }
     } else {
       false
     }
@@ -572,18 +600,7 @@ fn cc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> 
 /// Mirrors resolve_func's scan (first match wins) without throwing, so a
 /// classifier can ask "which entry would actually serve this call?".
 fn cc_ft_first_idx(ft: FuncTable, name: String) -> Int {
-  let len = Array::length(ft.names)
-  let mut i = 0
-  let mut found = -1
-  while i < len {
-    if Array::get(ft.names, i) == name {
-      found = i
-      i = len
-    } else {
-      i = i + 1
-    }
-  }
-  found
+  func_table_index_of(ft, name)
 }
 
 /// #950: declared return kind of a call whose callee resolves to a BUILTIN —
@@ -1012,17 +1029,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
     } else {
       fname0
     }
-    let fn_len2 = Array::length(ctx.func_table.names)
-    let mut fn_idx_in_list = -1
-    let mut __tr_j = 0
-    while __tr_j < fn_len2 {
-      if Array::get(ctx.func_table.names, __tr_j) == fname {
-        fn_idx_in_list = __tr_j
-        __tr_j = fn_len2
-      } else {
-        __tr_j = __tr_j + 1
-      }
-    }
+    let fn_idx_in_list = func_table_index_of(ctx.func_table, fname)
     let mut local_idx_hint = -1
     let mut li = Array::length(local_names) - 1
     while li >= 0 {
@@ -2093,17 +2100,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
         let mut nl = next_local
         let eff_tag = effect_name_to_tag(ctx.effect_names, op_head)
         let op_canon = canonical_builtin_name(op_head)
-        let __ft_len = Array::length(ctx.func_table.names)
-        let mut op_is_builtin = false
-        let mut __op_i = 0
-        while __op_i < __ft_len {
-          if Array::get(ctx.func_table.names, __op_i) == op_canon {
-            op_is_builtin = true
-            __op_i = __ft_len
-          } else {
-            __op_i = __op_i + 1
-          }
-        }
+        let op_is_builtin = func_table_index_of(ctx.func_table, op_canon) >= 0
         if op_is_builtin {
           nl = ce(buf, op_expr, local_names, nl, ctx, ld)
         } else if expr_tag(op_expr) == 8 {
