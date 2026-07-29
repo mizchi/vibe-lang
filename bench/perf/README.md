@@ -112,7 +112,17 @@ own freshly built stage2. The seed only changes on a deliberate bootstrap
 bump (`docs/bootstrap.md`), so this reading is comparable across almost
 every historical snapshot and isolates "how fast is this runner right now"
 from anything about the PR's own codegen. The result is stored as a
-`calibration: { label, ns_p50, seed_sha256 }` field in the snapshot JSON.
+`calibration: { label, ns_p50, seed_sha256, runner_sha256, bench_sha256 }`
+field in the snapshot JSON.
+
+All three hashes are recorded and compared, not just the seed: the vibewt
+runner binary and the calibration bench source are both read from the
+*current checkout*, so a PR that changes `runtime/vibewt` or
+`bench/regression/alloc_bench.vibe` would otherwise have that real change
+misread as pure host-speed drift and divided out of every advisory delta.
+`bench_report.mjs` only applies the runner factor when all three hashes
+are present and equal on both snapshots; otherwise it falls back to raw,
+unnormalized deltas with a note explaining why.
 
 The calibration source must be a bench the seed can *always* compile.
 `lib/@vibe/compiler/*.vibe` bench files (e.g. `parser_bench.vibe`) are out —

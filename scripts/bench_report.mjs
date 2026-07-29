@@ -29,15 +29,31 @@ const fmt = (n) => n == null ? "–" : n.toLocaleString("en-US");
 // COMMITTED SEED wasm; the ratio of those two readings estimates how much
 // faster/slower THIS runner is right now vs. when the baseline was taken,
 // so advisory deltas can be corrected for it instead of read at face value.
+//
+// The calibration reading is only pure "runner speed" if every input that
+// feeds it is unchanged: the seed wasm, the vibewt runner binary (built
+// from the current checkout), AND the calibration bench source itself
+// (also read from the current checkout). A PR that changes runtime/vibewt
+// or bench/regression/alloc_bench.vibe would otherwise have that real
+// change misread as host-speed drift and divided out of every advisory
+// delta (found in review, #1209) — so all three hashes must be present
+// and equal on both snapshots before normalizing.
 let runnerFactor = null;
 let calibNote = "no calibration data (older baseline snapshot, or runner/seed unavailable) — deltas below are raw, uncorrected for runner speed";
-if (cur.calibration?.ns_p50 != null && base?.calibration?.ns_p50 != null) {
-  if (cur.calibration.seed_sha256 && base.calibration.seed_sha256 &&
-      cur.calibration.seed_sha256 !== base.calibration.seed_sha256) {
-    calibNote = "seed changed (bootstrap bump) between baseline and current — calibration not comparable, deltas below are raw";
-  } else if (base.calibration.ns_p50 > 0) {
-    runnerFactor = cur.calibration.ns_p50 / base.calibration.ns_p50;
-    calibNote = `runner factor ${runnerFactor.toFixed(3)}× (${cur.calibration.label || "calibration"}: current ${fmt(cur.calibration.ns_p50)}ns vs baseline ${fmt(base.calibration.ns_p50)}ns p50) — advisory deltas below are normalized to correct for it`;
+{
+  const c = cur.calibration, b = base?.calibration;
+  if (c?.ns_p50 != null && b?.ns_p50 != null) {
+    const hashFields = ["seed_sha256", "runner_sha256", "bench_sha256"];
+    const missing = hashFields.filter((k) => !c[k] || !b[k]);
+    const mismatched = hashFields.filter((k) => c[k] && b[k] && c[k] !== b[k]);
+    if (missing.length) {
+      calibNote = `calibration inputs not recorded on both snapshots (missing: ${missing.join(", ")}) — not comparable, deltas below are raw`;
+    } else if (mismatched.length) {
+      calibNote = `calibration inputs changed between baseline and current (${mismatched.join(", ")}) — not comparable (bootstrap bump, or a change to runtime/vibewt or the calibration bench), deltas below are raw`;
+    } else if (b.ns_p50 > 0) {
+      runnerFactor = c.ns_p50 / b.ns_p50;
+      calibNote = `runner factor ${runnerFactor.toFixed(3)}× (${c.label || "calibration"}: current ${fmt(c.ns_p50)}ns vs baseline ${fmt(b.ns_p50)}ns p50) — advisory deltas below are normalized to correct for it`;
+    }
   }
 }
 
