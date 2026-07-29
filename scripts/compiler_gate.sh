@@ -7158,4 +7158,56 @@ fi
 rm -rf "$c1203dir"
 echo "[compiler-gate] closure param shadowing a same-named top-level fn ok (8)"
 
+# 69/69. #1212 Codex review (P1): the #1203 fix above only covered `f`/`g`
+#        used as a plain identifier / bare call callee. An enclosing `let
+#        mut f` reassigned ONLY via `f = ...` / `f += ...` inside a returned
+#        closure (never read as a plain EIdent) goes through
+#        collect_free_vars_expr_sc's EAssign/EAssignOp cases instead, which
+#        had the identical fn_names-before-encl precedence bug, checked
+#        separately from the EIdent case -- so it needed its own fix and its
+#        own end-to-end regression coverage, not just a unit-level check.
+echo "[compiler-gate] 69/69 closure write-only capture of a let-mut shadowing a same-named top-level fn (#1203 follow-up, #1212 review)"
+c1203bdir="_build/_gate_closure_assign_target_shadows_toplevel"
+rm -rf "$c1203bdir"; mkdir -p "$c1203bdir/pkg"
+cat > "$c1203bdir/pkg/lib.vibe" <<'VEOF'
+export fn make_ticker() -> () -> Unit {
+  let mut f = 0
+  () -> {
+    f += 1
+  }
+}
+VEOF
+cat > "$c1203bdir/main.vibe" <<'VEOF'
+import ./pkg/lib.vibe { make_ticker }
+
+// Unrelated top-level fn sharing a bare name with the enclosing `let mut f`
+// that the returned closure ONLY writes to (never reads as a plain
+// identifier) -- never called, its mere presence in the linked program's
+// name table is the trigger.
+fn f() -> Int { 1 }
+
+export let main = () -> Int {
+  let t = make_ticker()
+  t()
+  t()
+  0
+}
+VEOF
+rm -f "$c1203bdir/out.wasm" "$c1203bdir/out.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$c1203bdir/main.vibe" "$c1203bdir/out.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$c1203bdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: write-only closure capture / top-level-name collision program did not compile (#1203 follow-up) -- #1212 review regressed" >&2
+  cat "$c1203bdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+c1203b_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$c1203bdir/out.wasm" 2>&1 | tail -1)"
+if [ "$c1203b_out" != "0" ]; then
+  echo "[compiler-gate] FAIL: write-only closure capture / top-level-name collision program got '$c1203b_out' (want 0) -- #1212 review regressed" >&2
+  exit 1
+fi
+rm -rf "$c1203bdir"
+echo "[compiler-gate] closure write-only capture shadowing a same-named top-level fn ok"
+
 echo "[compiler-gate] ok"
