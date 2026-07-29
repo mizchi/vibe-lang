@@ -529,6 +529,19 @@ fn lsp_effect_row_mismatch_fix(text: String) -> Json {
   }
 }
 
+/// #1129 batch: `collect_all_diagnostics` now emits soft warnings (unused
+/// imports, unbound non-Unit discards) prefixed `"warning: "` (see
+/// typecheck_fs.vibe's collect_all_diagnostics) -- render those as LSP
+/// DiagnosticSeverity.Warning (2) rather than Error (1) so an editor doesn't
+/// red-squiggle a hint that never blocks `vibe diagnostics`'s own exit code.
+fn lsp_diag_severity(text: String) -> Int {
+  if String::starts_with(text, "warning: ") {
+    2
+  } else {
+    1
+  }
+}
+
 fn lsp_parse_diag_line(msg: String) -> Json {
   if String::starts_with(msg, "line ") {
     let after = msg[5: String::length(msg)]
@@ -561,7 +574,7 @@ fn lsp_parse_diag_line(msg: String) -> Json {
         // diagnostic that isn't an effect-row mismatch).
         JObj(Map::from_pairs([
           ("range", jrange(line0, col0, line0, col0 + 1)),
-          ("severity", jnum_int(1)),
+          ("severity", jnum_int(lsp_diag_severity(text))),
           ("source", JStr("vibe")),
           ("message", JStr(text)),
           ("data", lsp_effect_row_mismatch_fix(text))
@@ -576,7 +589,7 @@ fn lsp_parse_diag_line(msg: String) -> Json {
 fn lsp_diag_fallback(msg: String) -> Json {
   JObj(Map::from_pairs([
     ("range", jrange(0, 0, 0, 1)),
-    ("severity", jnum_int(1)),
+    ("severity", jnum_int(lsp_diag_severity(msg))),
     ("source", JStr("vibe")),
     ("message", JStr(msg)),
     ("data", lsp_effect_row_mismatch_fix(msg))

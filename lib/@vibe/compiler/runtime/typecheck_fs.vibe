@@ -13,7 +13,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/checker {
-  check_program, check_program_with_env
+  check_program, check_program_type_table, check_program_with_env, detect_unbound_nonunit_returns, detect_unused_imports
 }
 
 import @vibe/compiler/core {
@@ -1429,7 +1429,29 @@ export fn collect_all_diagnostics(source: String) -> Array[String] with { Error 
           Some(msg) => [
             locate_type_error(source, msg)
           ],
-          None => array_empty()
+          None => {
+            // #1129 + companion "unbound non-Unit return value" request:
+            // both are warning-level (never affect exit status -- `vibe
+            // diagnostics` "is a report, not a failure", see cli_adapter.vibe),
+            // only surfaced once the program is already known to type-check
+            // and codegen-validate cleanly.
+            let extra = array_empty()
+            let import_warns = detect_unused_imports(stmts)
+            let mut wi = 0
+            while wi < Array::length(import_warns) {
+              let (_, _, wmsg) = Array::get(import_warns, wi)
+              Array::push(extra, String::concat("warning: ", wmsg))
+              wi = wi + 1
+            }
+            let (warn_tytab, warn_subst) = check_program_type_table(stmts)
+            let return_warns = detect_unbound_nonunit_returns(stmts, warn_tytab, warn_subst)
+            let mut ri = 0
+            while ri < Array::length(return_warns) {
+              Array::push(extra, locate_type_error(source, String::concat("warning: ", Array::get(return_warns, ri))))
+              ri = ri + 1
+            }
+            extra
+          }
         }
       } with Error {
         Throw(msg) => [

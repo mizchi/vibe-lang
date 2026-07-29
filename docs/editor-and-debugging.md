@@ -68,6 +68,17 @@ vibe diagnostics --json <file.vibe>       # same diagnostics as a JSON array of 
   `--json` reuses the same `[@off=N]`-derived offsets `vibe lsp`'s
   `publishDiagnostics` uses, wrapped as `{range, severity, source, message}`
   objects — no separate structured-diagnostic format to keep in sync.
+- Once a file type-checks and codegen-validates cleanly, `diagnostics` also
+  runs two soft, warning-only passes (#1129) that never affect the exit
+  code or fail a compile: **unused imports** (a named `import ./f.vibe { a }`
+  item, or an `import @pkg @alias` alias, never referenced in the file —
+  a whole-program-merge-only alias may still legitimately trip this, since
+  a single-file check cannot see cross-file usage) and **unbound non-Unit
+  return values** (a bare call statement mid-block, e.g. `foo();`, whose
+  return type isn't `Unit` and isn't bound — write `let _ = foo()` to mark
+  the discard as intentional). Both are prefixed `"warning: "` in plain
+  mode and reported as LSP `DiagnosticSeverity.Warning` (2) in `--json`
+  mode, distinguishing them from every other (`Error`, 1) diagnostic here.
 - Each `--json` entry also carries a `data` field (#820 sub-item 2): `null`
   for most diagnostics, or a structured fix-it for an effect-row mismatch —
   `{kind: "add_with_clause", target: <function name>, add: [<missing

@@ -1968,3 +1968,612 @@ export fn check_program_with_env(stmts: Array[Stmt], initial_env: TypeEnv) -> Ty
     }
   }
 }
+
+//# Import-usage / discarded-value diagnostics (#1129, and the companion
+// "unbound non-Unit return value" request from the same batch). Both are
+// syntactic-plus-type-table post-passes over an already-parsed/checked
+// program, kept in THIS file (not checker_warning.vibe, which lives in the
+// top-level @vibe/compiler package) so `collect_all_diagnostics`
+// (runtime/typecheck_fs.vibe, already a `@vibe/compiler/checker` consumer
+// via check_program/check_program_type_table) can reach them without
+// introducing a cross-package import back from a subpackage into the
+// top-level package (the direction checker_trait.vibe's relocation into
+// this package, noted above, was moved to avoid).
+
+fn warning_names_contains(arr: Array[String], s: String) -> Bool {
+  let len = Array::length(arr)
+  let mut i = 0
+  let mut found = false
+  while i < len {
+    if Array::get(arr, i) == s {
+      found = true
+      i = len
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn push_ref_name(out: Array[String], name: String) -> Unit {
+  if warning_names_contains(out, name) {
+    ()
+  } else {
+    Array::push(out, name)
+  }
+}
+
+/// Every name referenced in `te`'s type positions (`TyName`/`TyApp`'s own
+/// name, plus recursively into `TyApp` args, `TyFn` params/return, and
+/// `TyTuple` members) -- so an imported `type X` counted "used" only via a
+/// type ANNOTATION (e.g. `fn f(x: X) -> Unit`) is not misreported as unused
+/// just because it never appears as a value-position `EIdent`.
+fn collect_texpr_ref_names(te: TypeExpr, out: Array[String]) -> Unit {
+  match te {
+    TyName(name) => push_ref_name(out, name),
+    TyApp(name, args) => {
+      push_ref_name(out, name)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_texpr_ref_names(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    TyFn(params, ret, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        collect_texpr_ref_names(Array::get(params, i), out)
+        i = i + 1
+      }
+      collect_texpr_ref_names(ret, out)
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_texpr_ref_names(Array::get(items, i), out)
+        i = i + 1
+      }
+    },
+    TyUnit => ()
+  }
+}
+
+fn collect_opt_texpr_ref_names(ty: Option[TypeExpr], out: Array[String]) -> Unit {
+  match ty {
+    Some(te) => collect_texpr_ref_names(te, out),
+    None => ()
+  }
+}
+
+/// Every `EIdent` name reachable from `expr` (value-position references,
+/// including qualified `Type::method` spellings -- the parser already folds
+/// those into a single `EIdent("Type::method", off)`, see
+/// parser_expr_primary.vibe), PLUS every type name reachable through an
+/// `EFn`'s own parameter/return annotations and an `ERecord`'s explicit
+/// type-argument list -- both otherwise invisible to a value-only walk.
+fn collect_referenced_names_expr(expr: Expr, out: Array[String]) -> Unit {
+  match expr {
+    EIdent(name, _) => push_ref_name(out, name),
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_) => (),
+    EBool(_) => (),
+    EUnit => (),
+    EBreak(opt) => match opt {
+      Some(e) => collect_referenced_names_expr(e, out),
+      None => ()
+    },
+    EContinue(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_referenced_names_expr(Array::get(items, i), out)
+        i = i + 1
+      }
+    },
+    EReturn(e) => collect_referenced_names_expr(e, out),
+    EUnaryOp(_, e) => collect_referenced_names_expr(e, out),
+    ETuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_referenced_names_expr(Array::get(items, i), out)
+        i = i + 1
+      }
+    },
+    EArray(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_referenced_names_expr(Array::get(items, i), out)
+        i = i + 1
+      }
+    },
+    ERecord(_, fields, targs) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, val) = Array::get(fields, i)
+        collect_referenced_names_expr(val, out)
+        i = i + 1
+      }
+      let mut ti = 0
+      while ti < Array::length(targs) {
+        collect_texpr_ref_names(Array::get(targs, ti), out)
+        ti = ti + 1
+      }
+    },
+    EBinOp(_, l, r) => {
+      collect_referenced_names_expr(l, out)
+      collect_referenced_names_expr(r, out)
+    },
+    ECall(callee, args, _) => {
+      collect_referenced_names_expr(callee, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_referenced_names_expr(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    EIf(cond, then_e, else_e) => {
+      collect_referenced_names_expr(cond, out)
+      collect_referenced_names_expr(then_e, out)
+      collect_referenced_names_expr(else_e, out)
+    },
+    ELet(_, val, body, _) => {
+      collect_referenced_names_expr(val, out)
+      collect_referenced_names_expr(body, out)
+    },
+    ELetRec(_, val, body) => {
+      collect_referenced_names_expr(val, out)
+      collect_referenced_names_expr(body, out)
+    },
+    ELetMut(_, val, body, _) => {
+      collect_referenced_names_expr(val, out)
+      collect_referenced_names_expr(body, out)
+    },
+    EAssign(_, val, body) => {
+      collect_referenced_names_expr(val, out)
+      collect_referenced_names_expr(body, out)
+    },
+    EAssignOp(_, _, val, body) => {
+      collect_referenced_names_expr(val, out)
+      collect_referenced_names_expr(body, out)
+    },
+    ESeq(l, r) => {
+      collect_referenced_names_expr(l, out)
+      collect_referenced_names_expr(r, out)
+    },
+    EMatch(scr, arms) => {
+      collect_referenced_names_expr(scr, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, body) = Array::get(arms, i)
+        collect_referenced_names_expr(body, out)
+        i = i + 1
+      }
+    },
+    EHandle(body_expr, arms) => {
+      collect_referenced_names_expr(body_expr, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, i)
+        collect_referenced_names_expr(arm_body, out)
+        i = i + 1
+      }
+    },
+    EWhile(cond, body) => {
+      collect_referenced_names_expr(cond, out)
+      collect_referenced_names_expr(body, out)
+    },
+    ELoop(params, body) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        collect_referenced_names_expr(init, out)
+        i = i + 1
+      }
+      collect_referenced_names_expr(body, out)
+    },
+    EForIn(_, _, iter, body) => {
+      collect_referenced_names_expr(iter, out)
+      collect_referenced_names_expr(body, out)
+    },
+    EFn(_, _, params, ret, _, body) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, pty) = Array::get(params, i)
+        collect_opt_texpr_ref_names(pty, out)
+        i = i + 1
+      }
+      collect_opt_texpr_ref_names(ret, out)
+      collect_referenced_names_expr(body, out)
+    },
+    EDot(obj, _, _, _) => collect_referenced_names_expr(obj, out),
+    ELabeledArg(_, _, e) => collect_referenced_names_expr(e, out),
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, val) = Array::get(fields, i)
+        collect_referenced_names_expr(val, out)
+        i = i + 1
+      }
+    },
+    ESpread(e) => collect_referenced_names_expr(e, out),
+    EStringInterp(_) => ()
+  }
+}
+
+/// Broader than check_stmts' own local hoist walks: every place a name from
+/// an `import`/`import @pkg @alias` could legitimately be referenced --
+/// value positions in every statement kind that carries an `Expr`, PLUS type
+/// positions in struct/enum/suberror field types, a type alias's own
+/// target, trait method signatures, extern-let/effect-op types, and
+/// (recursively) nested `SModule` bodies.
+fn collect_referenced_names_stmts(stmts: Array[Stmt], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, ann, val) => {
+        collect_opt_texpr_ref_names(ann, out)
+        collect_referenced_names_expr(val, out)
+      },
+      SLetMut(_, ann, val) => {
+        collect_opt_texpr_ref_names(ann, out)
+        collect_referenced_names_expr(val, out)
+      },
+      SLetPat(_, val) => collect_referenced_names_expr(val, out),
+      SEnum(_, _, _, variants, _) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (_, vtypes) = Array::get(variants, vi)
+          let mut ti = 0
+          while ti < Array::length(vtypes) {
+            collect_texpr_ref_names(Array::get(vtypes, ti), out)
+            ti = ti + 1
+          }
+          vi = vi + 1
+        }
+      },
+      SSuberror(_, _, variants) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (_, vtypes) = Array::get(variants, vi)
+          let mut ti = 0
+          while ti < Array::length(vtypes) {
+            collect_texpr_ref_names(Array::get(vtypes, ti), out)
+            ti = ti + 1
+          }
+          vi = vi + 1
+        }
+      },
+      SStruct(_, _, fields, _, _, _) => {
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (_, fty) = Array::get(fields, fi)
+          collect_texpr_ref_names(fty, out)
+          fi = fi + 1
+        }
+      },
+      STypeAlias(_, _, _, te) => collect_texpr_ref_names(te, out),
+      STrait(_, _, _, methods, _) => {
+        let mut mi = 0
+        while mi < Array::length(methods) {
+          let (_, ptypes, rty) = Array::get(methods, mi)
+          let mut pi = 0
+          while pi < Array::length(ptypes) {
+            collect_texpr_ref_names(Array::get(ptypes, pi), out)
+            pi = pi + 1
+          }
+          collect_texpr_ref_names(rty, out)
+          mi = mi + 1
+        }
+      },
+      SExternLet(_, te) => collect_texpr_ref_names(te, out),
+      SEffectDef(_, _, _, ops) => {
+        let mut oi = 0
+        while oi < Array::length(ops) {
+          let (_, ptypes, rty) = Array::get(ops, oi)
+          let mut pi = 0
+          while pi < Array::length(ptypes) {
+            collect_texpr_ref_names(Array::get(ptypes, pi), out)
+            pi = pi + 1
+          }
+          collect_texpr_ref_names(rty, out)
+          oi = oi + 1
+        }
+      },
+      STest(_, val) => collect_referenced_names_expr(val, out),
+      SBench(_, val) => collect_referenced_names_expr(val, out),
+      SExpr(val) => collect_referenced_names_expr(val, out),
+      SModule(_, _, body) => collect_referenced_names_stmts(body, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn unused_alias_referenced(used: Array[String], bare: String, qualified_prefix: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(used) {
+    let name = Array::get(used, i)
+    if name == bare || String::starts_with(name, qualified_prefix) {
+      found = true
+      i = Array::length(used)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #1129: an `import ./f.vibe { a, b }` name (its local alias, or the
+/// original if unaliased) that is never referenced anywhere else in the
+/// SAME file, or an `import @pkg @alias` whose alias is never referenced
+/// (as `@alias`, or qualified `@alias::member`). Both are WARNING-level (not
+/// hard errors -- see the issue's own caution about the "merge a package's
+/// exports whole-program with no local call site" pattern): this only flags
+/// what is invisible to THIS file, and a caller relying on the
+/// whole-program merge lane is expected to judge each hit, not have the
+/// compile fail. Only reached after a clean type-check
+/// (collect_all_diagnostics only calls this on the success path), so the
+/// AST it sees already has #1001/#986's labeled-arg desugars and #760's
+/// Result-prelude injection applied -- neither touches import/alias
+/// statements, so this is inert either way.
+export fn detect_unused_imports(stmts: Array[Stmt]) -> Array[(String, String, String)] {
+  let used = array_empty()
+  collect_referenced_names_stmts(stmts, used)
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(path, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let (orig, alias) = Array::get(items, j)
+          let local = match alias {
+            Some(a) => a,
+            None => orig
+          }
+          if warning_names_contains(used, local) {
+            ()
+          } else {
+            let msg = String::concat("imported name '", String::concat(local, String::concat("' from '", String::concat(path, "' is never used in this file"))))
+            Array::push(out, ("unused_import", local, msg))
+          }
+          j = j + 1
+        }
+      },
+      SAliasDecl(alias, path) => {
+        let qualified_prefix = String::concat("@", String::concat(alias, "::"))
+        let bare = String::concat("@", alias)
+        if unused_alias_referenced(used, bare, qualified_prefix) {
+          ()
+        } else {
+          let msg = String::concat("import alias '", String::concat(bare, String::concat("' for '", String::concat(path, "' is never used in this file (referenced elsewhere in a whole-program merge? consider a named import instead)"))))
+          Array::push(out, ("unused_import", alias, msg))
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The offset of every `ESeq(left, _)` where `left` is itself an `ECall` --
+/// a bare call statement in the middle of a block whose result is thrown
+/// away. Recurses into every other expression shape so a discard nested
+/// inside an `if`/`match`/`while`/closure body etc. is still found; the
+/// match only special-cases `ESeq` because that is the ONLY shape where a
+/// value is silently dropped (a `let`/`let mut`/assignment BINDS its value
+/// by construction, so is never a discard site).
+fn collect_discard_call_offsets_expr(expr: Expr, out: Array[Int]) -> Unit {
+  match expr {
+    ESeq(left, right) => {
+      match left {
+        ECall(_, _, call_off) => if call_off >= 0 {
+          Array::push(out, call_off)
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      collect_discard_call_offsets_expr(left, out)
+      collect_discard_call_offsets_expr(right, out)
+    },
+    EIf(cond, then_e, else_e) => {
+      collect_discard_call_offsets_expr(cond, out)
+      collect_discard_call_offsets_expr(then_e, out)
+      collect_discard_call_offsets_expr(else_e, out)
+    },
+    ELet(_, val, body, _) => {
+      collect_discard_call_offsets_expr(val, out)
+      collect_discard_call_offsets_expr(body, out)
+    },
+    ELetRec(_, val, body) => {
+      collect_discard_call_offsets_expr(val, out)
+      collect_discard_call_offsets_expr(body, out)
+    },
+    ELetMut(_, val, body, _) => {
+      collect_discard_call_offsets_expr(val, out)
+      collect_discard_call_offsets_expr(body, out)
+    },
+    EAssign(_, val, body) => {
+      collect_discard_call_offsets_expr(val, out)
+      collect_discard_call_offsets_expr(body, out)
+    },
+    EAssignOp(_, _, val, body) => {
+      collect_discard_call_offsets_expr(val, out)
+      collect_discard_call_offsets_expr(body, out)
+    },
+    EMatch(scr, arms) => {
+      collect_discard_call_offsets_expr(scr, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, body) = Array::get(arms, i)
+        collect_discard_call_offsets_expr(body, out)
+        i = i + 1
+      }
+    },
+    EHandle(body_expr, arms) => {
+      collect_discard_call_offsets_expr(body_expr, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, i)
+        collect_discard_call_offsets_expr(arm_body, out)
+        i = i + 1
+      }
+    },
+    EWhile(cond, body) => {
+      collect_discard_call_offsets_expr(cond, out)
+      collect_discard_call_offsets_expr(body, out)
+    },
+    ELoop(params, body) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        collect_discard_call_offsets_expr(init, out)
+        i = i + 1
+      }
+      collect_discard_call_offsets_expr(body, out)
+    },
+    EForIn(_, _, iter, body) => {
+      collect_discard_call_offsets_expr(iter, out)
+      collect_discard_call_offsets_expr(body, out)
+    },
+    ECall(callee, args, _) => {
+      collect_discard_call_offsets_expr(callee, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_discard_call_offsets_expr(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    EBinOp(_, l, r) => {
+      collect_discard_call_offsets_expr(l, out)
+      collect_discard_call_offsets_expr(r, out)
+    },
+    EUnaryOp(_, e) => collect_discard_call_offsets_expr(e, out),
+    ETuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_discard_call_offsets_expr(Array::get(items, i), out)
+        i = i + 1
+      }
+    },
+    EArray(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_discard_call_offsets_expr(Array::get(items, i), out)
+        i = i + 1
+      }
+    },
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, val) = Array::get(fields, i)
+        collect_discard_call_offsets_expr(val, out)
+        i = i + 1
+      }
+    },
+    EFn(_, _, _, _, _, body) => collect_discard_call_offsets_expr(body, out),
+    EDot(obj, _, _, _) => collect_discard_call_offsets_expr(obj, out),
+    ELabeledArg(_, _, e) => collect_discard_call_offsets_expr(e, out),
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, val) = Array::get(fields, i)
+        collect_discard_call_offsets_expr(val, out)
+        i = i + 1
+      }
+    },
+    ESpread(e) => collect_discard_call_offsets_expr(e, out),
+    EReturn(e) => collect_discard_call_offsets_expr(e, out),
+    EBreak(opt) => match opt {
+      Some(e) => collect_discard_call_offsets_expr(e, out),
+      None => ()
+    },
+    EContinue(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_discard_call_offsets_expr(Array::get(items, i), out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn collect_discard_call_offsets_stmts(stmts: Array[Stmt], out: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, val) => collect_discard_call_offsets_expr(val, out),
+      SLetMut(_, _, val) => collect_discard_call_offsets_expr(val, out),
+      SLetPat(_, val) => collect_discard_call_offsets_expr(val, out),
+      STest(_, val) => collect_discard_call_offsets_expr(val, out),
+      SBench(_, val) => collect_discard_call_offsets_expr(val, out),
+      SExpr(val) => collect_discard_call_offsets_expr(val, out),
+      SModule(_, _, body) => collect_discard_call_offsets_stmts(body, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn lookup_tytab_offset(tytab: Array[(Int, Type)], off: Int) -> Option[Type] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(tytab) {
+    let (o, t) = Array::get(tytab, i)
+    if o == off {
+      found = Some(t)
+      i = Array::length(tytab)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn discard_type_worth_warning(ty: Type) -> Bool {
+  match ty {
+    CtUnit => false,
+    CtUnknown => false,
+    CtVar(_) => false,
+    _ => true
+  }
+}
+
+/// The companion "unbound non-Unit return value" request: a bare call
+/// statement (`foo();` mid-block, not bound via `let`/`let _`) whose
+/// resolved return type is neither `Unit` nor still-polymorphic/unresolved.
+/// Scoped to CALL expressions specifically (not `if`/`match`/`while` used as
+/// a statement) because only `ECall` nodes get a `tytab` entry keyed by
+/// their own offset (checker.vibe's `tab_call_ty`) -- an `if`/`match` used
+/// for its side effects has no such entry to look up, so it is silently
+/// skipped rather than false-positiving. `let _ = foo()` is already how
+/// this codebase spells "discard intentionally" (see e.g.
+/// `annotation_return_type` above) and is unaffected: it is an `ELet`
+/// binding, never the left side of an `ESeq`, so it is never a candidate.
+export fn detect_unbound_nonunit_returns(stmts: Array[Stmt], tytab: Array[(Int, Type)], final_s: Subst) -> Array[String] {
+  let offsets = array_empty()
+  collect_discard_call_offsets_stmts(stmts, offsets)
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(offsets) {
+    let off = Array::get(offsets, i)
+    match lookup_tytab_offset(tytab, off) {
+      Some(ty) => {
+        let resolved = subst_apply(final_s, ty)
+        if discard_type_worth_warning(resolved) {
+          let marker = labeled_name_marker(off, 0)
+          Array::push(out, String::concat("expression result of type `", String::concat(type_to_string(resolved), String::concat("` is unused -- bind it (e.g. `let _ = ...`) if this is intentional", marker))))
+        } else {
+          ()
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}
