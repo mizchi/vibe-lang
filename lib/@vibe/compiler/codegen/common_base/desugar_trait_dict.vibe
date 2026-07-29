@@ -1894,10 +1894,48 @@ fn array_elem_key(pname: String) -> String {
 }
 
 /// #1199 bug 1: look up the element type recorded for an Array-typed variable
-/// by `seed_var_types` (function parameters only -- see that function's doc
-/// comment for why the scope stops there).
+/// by `seed_var_types` (function parameters) or `array_elem_bind` (let-bound
+/// array literals).
 fn array_elem_type_of(var_types: Array[(String, String)], name: String) -> Option[String] {
   lookup_var_type(var_types, array_elem_key(name))
+}
+
+/// #1199 follow-up (Codex review on the original fix): the let-bound sibling
+/// of `seed_var_types`' Array[T]-parameter element tracking. Without this,
+/// `let xs = [1, 2]; Set::from_array(xs)` left `xs`'s element type
+/// unrecoverable at the call site -- `extend_var_types` only records the
+/// coarse "Array" head (via `infer_arg_type_name`'s `EArray(_) => Some
+/// ("Array")` case), so `infer_arg_elem_type_name`'s `EIdent` arm had nothing
+/// to look up, `synth_dicts` failed, and the call was emitted without its
+/// Hash dict argument(s) -- invalid wasm, the same failure shape bug 1's
+/// `Array::get` case had. Only a bare (unannotated) array literal RHS with a
+/// syntactically inferable first-element type is handled here, matching the
+/// rest of this file's syntax-directed (not full type-inference) approach;
+/// an empty literal (`let xs = []`) or an already-Array-typed variable RHS
+/// stays untracked -- recovering those needs the RHS's *expected* type
+/// flowing in from an enclosing annotation, which this bottom-up pass does
+/// not thread.
+fn array_elem_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  match val {
+    EArray(elems) => if Array::length(elems) > 0 {
+      match infer_arg_type_name(Array::get(elems, 0), struct_sets, var_types, fn_returns) {
+        Some(elemty) => {
+          let out = array_empty()
+          let mut i = 0
+          while i < Array::length(var_types) {
+            Array::push(out, Array::get(var_types, i))
+            i = i + 1
+          }
+          Array::push(out, (array_elem_key(name), elemty))
+          out
+        },
+        None => var_types
+      }
+    } else {
+      var_types
+    },
+    _ => var_types
+  }
 }
 
 /// Seed a var-type environment from a function's parameters whose annotation is
@@ -2990,13 +3028,15 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
     EIf(c, t, e) => EIf(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(t, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELet(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let body_vars0 = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let body_vars = array_elem_bind(body_vars0, name, val, struct_sets, fn_returns)
       ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELetMut(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let body_vars0 = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let body_vars = array_elem_bind(body_vars0, name, val, struct_sets, fn_returns)
       ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     EAssign(name, val, cont) => EAssign(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
