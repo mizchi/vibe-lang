@@ -107,9 +107,18 @@ export struct TaskCell {
 /// forces non-groundedness for ANY `r`, including the skolem `TaskGroup::run`
 /// mints, without needing an unsafe/opaque-value primitive to conjure a
 /// literal value of the (otherwise uninhabited) abstract type `r`.
-export struct TaskGroup[rg] {
+// #1181: `e` is the effect row that spawned run-to-completion thunks may
+// perform, in addition to Error (discharged by the runner wrapper in
+// TaskGroup::spawn before storage). Threading it as a type parameter
+// (rather than a fixed closed set) keeps a nursery that spawns no
+// effectful closures free of any capability requirement -- a fixed set
+// baked into `runners`' element type was tried first and reverted: it
+// forced every caller of TaskGroup::run (even ones spawning nothing
+// beyond `{ Error }`) to declare Fs/Env/Process/Stdout, regressing the
+// plain-nursery fixture (fixtures/region_ok_basic.vibe).
+export struct TaskGroup[rg, e] {
   mut tasks: Array[TaskCell];
-  mut runners: Array[() -> Unit];
+  mut runners: Array[() -> Unit with { e }];
   mut count: Int;
   mut next: Int;
   mut phase: Int;
@@ -130,8 +139,8 @@ export struct ResCell[T] {
   mut value: Option[T]
 }
 
-export struct TaskHandle[rg, T] {
-  group: TaskGroup[rg];
+export struct TaskHandle[rg, e, T] {
+  group: TaskGroup[rg, e];
   cell: TaskCell;
   result: ResCell[T]
 }
@@ -162,8 +171,8 @@ export struct Ring[T] {
 /// receiver that is currently blocked below us on the stack.
 /// `pend_seq` / `pend_consumed` are monotone counters that let a blocked
 /// sender detect that its own message was taken (FIFO order).
-export struct Channel[rg, T] {
-  group: TaskGroup[rg];
+export struct Channel[rg, e, T] {
+  group: TaskGroup[rg, e];
   capacity: Int;
   mut senders: Int;
   mut closed: Bool;
@@ -174,12 +183,12 @@ export struct Channel[rg, T] {
   mut pend_consumed: Int
 }
 
-export struct Sender[rg, T] {
-  ch: Channel[rg, T]
+export struct Sender[rg, e, T] {
+  ch: Channel[rg, e, T]
 }
 
-export struct Receiver[rg, T] {
-  ch: Channel[rg, T]
+export struct Receiver[rg, e, T] {
+  ch: Channel[rg, e, T]
 }
 
 //# Internal helpers
@@ -195,7 +204,7 @@ fn conc_require(ok: Bool) -> Unit where {
 /// Bump the group's progress counter (channel push/take, task settle).
 /// Kept row-free and trivially eligible so suspend-lowered clone bodies
 /// may call it (ADR-0076 追記31: concrete Async-free row callees are safe).
-fn conc_progress[rg](n: TaskGroup[rg]) -> Unit {
+fn conc_progress[rg, e](n: TaskGroup[rg, e]) -> Unit {
   n.progress = n.progress + 1
 }
 
@@ -208,7 +217,7 @@ fn conc_progress[rg](n: TaskGroup[rg]) -> Unit {
 /// run-to-completion siblings are covered by the existing dispatch-time
 /// cancel point (drive_one checks n.failing). Counts as progress (a
 /// terminal transition).
-fn conc_fail_cell[rg](n: TaskGroup[rg], cell: TaskCell, msg: String) -> Unit {
+fn conc_fail_cell[rg, e](n: TaskGroup[rg, e], cell: TaskCell, msg: String) -> Unit {
   cell.status = 3
   cell.fail_msg = msg
   cell.cont = None
@@ -229,7 +238,7 @@ fn conc_fail_cell[rg](n: TaskGroup[rg], cell: TaskCell, msg: String) -> Unit {
 /// otherwise the parked sibling either keeps running under a later
 /// pump_all or leaves run's terminal-state check to TRAP instead of
 /// returning Err(Failed(...)).
-fn conc_cancel_parked[rg](n: TaskGroup[rg]) -> Unit {
+fn conc_cancel_parked[rg, e](n: TaskGroup[rg, e]) -> Unit {
   let mut i = 0
   while i < Array::length(n.adopted) {
     let c = Array::get(n.adopted, i)
@@ -248,7 +257,7 @@ fn empty_cells() -> Array[TaskCell] {
   ArrayBuilder::freeze(ArrayBuilder::new())
 }
 
-fn empty_runners() -> Array[() -> Unit] {
+fn empty_runners[e]() -> Array[() -> Unit with { e }] {
   ArrayBuilder::freeze(ArrayBuilder::new())
 }
 
@@ -308,7 +317,7 @@ fn ring_take[T](r: Ring[T]) -> T {
 /// Dispatch the next Ready task in spawn (FIFO) order. Returns false when
 /// no Ready task exists. This is THE scheduler: deterministic, and safe to
 /// call reentrantly (a dispatched task's blocking op may call it again).
-fn drive_one[rg](n: TaskGroup[rg]) -> Bool {
+fn drive_one[rg, e](n: TaskGroup[rg, e]) -> Bool with { e } {
   let idx = loop (i = n.next) {
     if i >= n.count {
       break -1
@@ -348,7 +357,7 @@ fn drive_one[rg](n: TaskGroup[rg]) -> Bool {
 /// Ok(body result). NOTE (MVP): a `throw` escaping the body itself is
 /// not yet converted to a group failure — it propagates as a normal
 /// Error effect of `e`.
-export fn TaskGroup::run[T, rg](body: (TaskGroup[rg]) -> T with { e }) -> Result[T, TaskError] with { e } {
+export fn TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with { e }) -> Result[T, TaskError] with { e } {
   // Explicit type argument (#886 `TaskGroup[rg]::{ .. }` syntax) is required
   // here, not just cosmetic: the `_region_witness` field's value is a
   // freely-inferred closure literal `(x) => x` with nothing else tying its
@@ -356,7 +365,7 @@ export fn TaskGroup::run[T, rg](body: (TaskGroup[rg]) -> T with { e }) -> Result
   // field values (the ordinary #829 path) would give it an unconstrained
   // fresh var instead, silently decoupling the constructed value's region
   // from the `r` the checker's escape check keys off of.
-  let n = TaskGroup[rg]::{
+  let n = TaskGroup[rg, e]::{
     tasks: empty_cells(),
     runners: empty_runners(),
     count: 0,
@@ -398,7 +407,16 @@ export fn TaskGroup::run[T, rg](body: (TaskGroup[rg]) -> T with { e }) -> Result
 /// an Error::Throw reaching the child boundary becomes Failed(msg) and
 /// triggers fail-fast. Spawning into a task group that is no longer Open
 /// (closing/closed, or cancelling after a sibling failure) traps.
-export fn TaskGroup::spawn[rg, T: Send](n: TaskGroup[rg], f: () -> T with { Error }) -> TaskHandle[rg, T] {
+///
+/// #1181: `f`'s row also allows the enclosing TaskGroup's own `e` capability
+/// row alongside Error, so spawned tasks can shell out to subprocesses or
+/// touch the filesystem — the motivating case (concurrently compiling+
+/// running doctest blocks, scripts/vibe_md.vibex) was previously blocked
+/// by the `{ Error }`-only row. `e` is threaded through TaskGroup[rg, e]
+/// (see its field comment) rather than fixed, so a nursery that spawns
+/// nothing beyond `{ Error }` still requires no extra capability from its
+/// caller.
+export fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with { Error, e }) -> TaskHandle[rg, e, T] {
   conc_require(n.phase == 0)
   let rc = ResCell::{
     value: None
@@ -406,7 +424,7 @@ export fn TaskGroup::spawn[rg, T: Send](n: TaskGroup[rg], f: () -> T with { Erro
   let cell = TaskCell::{
     status: 0, cancel_requested: false, fail_msg: "", cont: None, wait_poll: false
   }
-  let runner: () -> Unit = () -> {
+  let runner: () -> Unit with { e } = () -> {
     handle {
       let v = f()
       rc.value = Some(v)
@@ -484,7 +502,7 @@ export fn TaskGroup::spawn[rg, T: Send](n: TaskGroup[rg], f: () -> T with { Erro
 /// returns the same value. Joining a task that is currently Running
 /// (i.e. the join forms a cycle through the dispatch stack) is a
 /// deadlock and traps.
-export fn TaskHandle::join[rg, T](h: TaskHandle[rg, T]) -> Result[T, TaskError] {
+export fn TaskHandle::join[rg, e, T](h: TaskHandle[rg, e, T]) -> Result[T, TaskError] with { e } {
   loop (d = 0) {
     let s = h.cell.status
     if s == 2 {
@@ -513,7 +531,7 @@ export fn TaskHandle::join[rg, T](h: TaskHandle[rg, T]) -> Result[T, TaskError] 
 /// resolves it Cancelled immediately and DROPS its stored continuation
 /// (the RC drop frees everything the continuation captured — the
 /// ADR-0076 "Cont は RC drop で解放" guarantee).
-export fn TaskHandle::cancel[rg, T](h: TaskHandle[rg, T]) -> Unit {
+export fn TaskHandle::cancel[rg, e, T](h: TaskHandle[rg, e, T]) -> Unit {
   let c = h.cell
   c.cancel_requested = true
   if c.status == 5 {
@@ -526,7 +544,7 @@ export fn TaskHandle::cancel[rg, T](h: TaskHandle[rg, T]) -> Unit {
 
 //# Channel
 
-fn chan_closed[rg, T](c: Channel[rg, T]) -> Bool {
+fn chan_closed[rg, e, T](c: Channel[rg, e, T]) -> Bool {
   // Closed by last-sender release, or by the owning task group leaving its
   // Open/Cancelling phases (normal close closes remaining endpoints).
   c.closed || c.group.phase >= 2
@@ -534,7 +552,7 @@ fn chan_closed[rg, T](c: Channel[rg, T]) -> Bool {
 
 /// Bounded MPMC channel. Capacity 0 is a rendezvous channel; negative
 /// capacity is a configuration error.
-export fn Channel::bounded[rg, T: Send](n: TaskGroup[rg], capacity: Int) -> Result[(Sender[rg, T], Receiver[rg, T]), ChannelConfigError] {
+export fn Channel::bounded[rg, e, T: Send](n: TaskGroup[rg, e], capacity: Int) -> Result[(Sender[rg, e, T], Receiver[rg, e, T]), ChannelConfigError] {
   if capacity < 0 {
     Err(NegativeCapacity)
   } else {
@@ -560,7 +578,7 @@ export fn Channel::bounded[rg, T: Send](n: TaskGroup[rg], capacity: Int) -> Resu
 /// Send: Ok when the message is linearized (buffered, deposited for a
 /// committed receiver, or consumed by a receiver we drove). Err(Closed)
 /// on a closed channel. Blocking with no runnable task traps (deadlock).
-export fn Sender::send[rg, T](s: Sender[rg, T], v: T) -> Result[Unit, SendError] {
+export fn Sender::send[rg, e, T](s: Sender[rg, e, T], v: T) -> Result[Unit, SendError] with { e } {
   let c = s.ch
   if chan_closed(c) {
     return Err(Closed)
@@ -597,7 +615,7 @@ export fn Sender::send[rg, T](s: Sender[rg, T], v: T) -> Result[Unit, SendError]
 
 /// Clone a sender endpoint (MPMC). Each clone must eventually be
 /// released; the channel closes when the live sender count reaches zero.
-export fn Sender::clone[rg, T](s: Sender[rg, T]) -> Sender[rg, T] {
+export fn Sender::clone[rg, e, T](s: Sender[rg, e, T]) -> Sender[rg, e, T] {
   let c = s.ch
   c.senders = c.senders + 1
   Sender::{
@@ -608,7 +626,7 @@ export fn Sender::clone[rg, T](s: Sender[rg, T]) -> Sender[rg, T] {
 /// Release a sender handle (models the affine drop until affine handles
 /// land). The last release closes the channel: buffered messages remain
 /// receivable, then recv returns None.
-export fn Sender::release[rg, T](s: Sender[rg, T]) -> Unit {
+export fn Sender::release[rg, e, T](s: Sender[rg, e, T]) -> Unit {
   let c = s.ch
   if c.senders > 0 {
     c.senders = c.senders - 1
@@ -629,17 +647,18 @@ export struct Parallel {
   tag: Int
 }
 
-export fn Parallel::map[rg, T: Send, U: Send](n: TaskGroup[rg], xs: Array[T], f: (T) -> U with { Error }) -> Result[Array[U], TaskError] {
+export fn Parallel::map[rg, e, T: Send, U: Send](n: TaskGroup[rg, e], xs: Array[T], f: (T) -> U with { Error, e }) -> Result[Array[U], TaskError] with { e } {
   let len = Array::length(xs)
   let hb = ArrayBuilder::new()
   let mut i = 0
   while i < len {
     let x = Array::get(xs, i)
     // #944 checked-Error row discipline: annotate the thunk's row so the
-    // latent { Error } stays on the closure value instead of being
-    // attributed to Parallel::map's own row (map never performs — child
-    // failures surface as join results).
-    let thunk: () -> U with { Error } = () -> {
+    // latent { Error, e } stays on the closure value instead of being
+    // attributed to Parallel::map's own perform set (map's own row comes
+    // from driving the scheduler, not from performing these itself — see
+    // TaskGroup::spawn's #1181 comment).
+    let thunk: () -> U with { Error, e } = () -> {
       f(x)
     }
     let t = TaskGroup::spawn(n, thunk)
@@ -665,7 +684,7 @@ export fn Parallel::map[rg, T: Send, U: Send](n: TaskGroup[rg], xs: Array[T], f:
 /// Receive: Some(message) in linearization order, or None once the
 /// channel is closed and drained. Blocks by driving ready tasks;
 /// blocking with no runnable task traps (deadlock).
-export fn Receiver::recv[rg, T](rh: Receiver[rg, T]) -> Option[T] {
+export fn Receiver::recv[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] with { e } {
   let c = rh.ch
   c.waiting_recv = c.waiting_recv + 1
   let out = loop (d = 0) {
@@ -757,7 +776,7 @@ effect Async {
 /// (the literal is CPS-split for Async) and this body bubbles the steps
 /// it returns, so `f()` below is a needing call through a closure value —
 /// the exact shape 3c could not express lexically.
-export fn TaskGroup::spawn_suspend[rg, T: Send](n: TaskGroup[rg], f: () -> T with { Async, Error }) -> TaskHandle[rg, T] {
+export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with { Async, Error }) -> TaskHandle[rg, e, T] {
   let h = TaskGroup::adopt(n)
   let step = handle {
     handle {
@@ -785,7 +804,7 @@ export fn TaskGroup::spawn_suspend[rg, T: Send](n: TaskGroup[rg], f: () -> T wit
 /// Register a suspendable task with the group. The body runs (to its
 /// first suspend) at the adoption site immediately after, so the cell
 /// starts Running rather than Ready; it never enters the drive_one queue.
-export fn TaskGroup::adopt[rg, T: Send](n: TaskGroup[rg]) -> TaskHandle[rg, T] {
+export fn TaskGroup::adopt[rg, e, T: Send](n: TaskGroup[rg, e]) -> TaskHandle[rg, e, T] {
   conc_require(n.phase == 0)
   let rc = ResCell::{
     value: None
@@ -803,7 +822,7 @@ export fn TaskGroup::adopt[rg, T: Send](n: TaskGroup[rg]) -> TaskHandle[rg, T] {
 /// task (the body finished without suspending, or this is the value of a
 /// later resume leg via the park wrapper); SParked means the arm already
 /// parked the continuation.
-export fn TaskHandle::settle[rg, T](h: TaskHandle[rg, T], step: TaskStep[T]) -> Unit {
+export fn TaskHandle::settle[rg, e, T](h: TaskHandle[rg, e, T], step: TaskStep[T]) -> Unit {
   match step {
     SDone(v) => {
       h.result.value = Some(v)
@@ -823,7 +842,7 @@ export fn TaskHandle::settle[rg, T](h: TaskHandle[rg, T], step: TaskStep[T]) -> 
 /// Compatibility form: records a cooperative YIELD (wait_poll = false).
 /// Use park_poll with the arm's suspend payload when the body may block
 /// on a channel, or the deadlock trap cannot see the wait.
-export fn TaskHandle::park[rg, T](h: TaskHandle[rg, T], k: (Int) -> TaskStep[T]) -> Unit {
+export fn TaskHandle::park[rg, e, T](h: TaskHandle[rg, e, T], k: (Int) -> TaskStep[T]) -> Unit {
   TaskHandle::park_poll(h, k, false)
 }
 
@@ -831,7 +850,7 @@ export fn TaskHandle::park[rg, T](h: TaskHandle[rg, T], k: (Int) -> TaskStep[T])
 /// waiting on an external condition (deadlock-trap eligible, see
 /// TaskCell.wait_poll). spawn_suspend derives it from the Suspend payload
 /// (1 = poll wait — the convention the blocking channel ops use).
-export fn TaskHandle::park_poll[rg, T](h: TaskHandle[rg, T], k: (Int) -> TaskStep[T], poll: Bool) -> Unit {
+export fn TaskHandle::park_poll[rg, e, T](h: TaskHandle[rg, e, T], k: (Int) -> TaskStep[T], poll: Bool) -> Unit {
   let cell = h.cell
   let rc = h.result
   let grp = h.group
@@ -867,7 +886,7 @@ export fn TaskHandle::park_poll[rg, T](h: TaskHandle[rg, T], k: (Int) -> TaskSte
 /// caller's stack. False when the task is not currently parked (running,
 /// terminal, or already woken -- the continuation slot is one-shot at the
 /// cell level too, on top of the lowering's own one-shot trap).
-export fn TaskHandle::wake[rg, T](h: TaskHandle[rg, T], v: Int) -> Bool {
+export fn TaskHandle::wake[rg, e, T](h: TaskHandle[rg, e, T], v: Int) -> Bool {
   let c = h.cell
   if c.status == 5 {
     match c.cont {
@@ -886,7 +905,7 @@ export fn TaskHandle::wake[rg, T](h: TaskHandle[rg, T], v: Int) -> Bool {
 /// Resume ONE parked adopted task with wake value 0 (cooperative yield),
 /// round-robin from just after the last pumped slot so two tasks that
 /// re-park immediately keep alternating. False when nothing is parked.
-export fn TaskGroup::pump[rg](n: TaskGroup[rg]) -> Bool {
+export fn TaskGroup::pump[rg, e](n: TaskGroup[rg, e]) -> Bool {
   let total = Array::length(n.adopted)
   loop (step = 0) {
     if step >= total {
@@ -914,7 +933,7 @@ export fn TaskGroup::pump[rg](n: TaskGroup[rg]) -> Bool {
 
 /// Pump until no adopted task is parked. Tasks that yield in a cycle
 /// against each other interleave deterministically (round-robin).
-export fn TaskGroup::pump_all[rg](n: TaskGroup[rg]) -> Unit {
+export fn TaskGroup::pump_all[rg, e](n: TaskGroup[rg, e]) -> Unit {
   let mut go = true
   let mut stall = 0
   while go {
@@ -945,7 +964,7 @@ export fn TaskGroup::pump_all[rg](n: TaskGroup[rg]) -> Unit {
 
 /// Every currently-parked adopted task is a poller (wait_poll). False when
 /// nothing is parked (vacuous sweeps must not accumulate stall).
-fn conc_all_parked_polling[rg](n: TaskGroup[rg]) -> Bool {
+fn conc_all_parked_polling[rg, e](n: TaskGroup[rg, e]) -> Bool {
   let mut any = false
   let mut all = true
   let mut i = 0
@@ -982,7 +1001,7 @@ fn conc_all_parked_polling[rg](n: TaskGroup[rg]) -> Bool {
 /// is DEPOSITED into `pend` first (the linearization point — rendezvous
 /// receivers and buffer promotion consume from there) and the task
 /// suspends until its own seq is consumed (FIFO).
-export fn Sender::send_wait[rg, T](s: Sender[rg, T], v: T) -> Result[Unit, SendError] with { Async } {
+export fn Sender::send_wait[rg, e, T](s: Sender[rg, e, T], v: T) -> Result[Unit, SendError] with { Async } {
   let c = s.ch
   if chan_closed(c) {
     Err(Closed)
@@ -1001,7 +1020,7 @@ export fn Sender::send_wait[rg, T](s: Sender[rg, T], v: T) -> Result[Unit, SendE
 /// Suspend until the deposited message (seq `myseq`) is consumed. A close
 /// while parked surfaces as Err(Closed), matching Sender::send's blocked
 /// branch.
-fn conc_send_wait_consumed[rg, T](c: Channel[rg, T], myseq: Int) -> Result[Unit, SendError] with { Async } {
+fn conc_send_wait_consumed[rg, e, T](c: Channel[rg, e, T], myseq: Int) -> Result[Unit, SendError] with { Async } {
   if c.pend_consumed > myseq {
     Ok(())
   } else if chan_closed(c) {
@@ -1018,7 +1037,7 @@ fn conc_send_wait_consumed[rg, T](c: Channel[rg, T], myseq: Int) -> Result[Unit,
 /// `waiting_recv` — that flag belongs to the stack-driving rendezvous
 /// protocol (a suspended receiver is not "committed below the sender on
 /// the stack"; deposits still reach it through `pend`).
-export fn Receiver::recv_wait[rg, T](rh: Receiver[rg, T]) -> Option[T] with { Async } {
+export fn Receiver::recv_wait[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] with { Async } {
   let c = rh.ch
   if c.buf.len > 0 {
     let v = ring_take(c.buf)
