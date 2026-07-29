@@ -7,9 +7,10 @@
 #   VIBE_CLI_BIN_OVERRIDE="$PWD/scripts/vibe_cli.sh" \
 #     bash scripts/run_cached_vibe.sh compile --wasm foo.vibe -o foo.wasm
 #
-# Scope: only the commands the selfhost CLI (lib/@vibe/cli/entry.vibe)
-# implements — compile / build / check / compile-lite / bundle. Other commands
-# (run, test, fmt, normalize, bench, ...) are not yet ported (see
+# Scope: only the commands the selfhost CLI (lib/@vibe/cli/entry.vibe, run via
+# the lib/@vibe/cli/main.vibex ADR-0075 entry -- #1137 stage 1) implements —
+# compile / build / check / compile-lite / bundle. Other commands (run, test,
+# fmt, normalize, bench, ...) are not yet ported (see
 # docs/moonbit-retirement.md, Stage 4.5) and must still go through the host CLI;
 # this shim does not handle them.
 #
@@ -39,4 +40,4 @@ done
 
 exec env VIBE_PREOPEN_DIR="$ROOT_DIR" \
   bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
-  --invoke cli_main "$CLI_WASM" "${args[@]}"
+  --invoke _start "$CLI_WASM" "${args[@]}"
