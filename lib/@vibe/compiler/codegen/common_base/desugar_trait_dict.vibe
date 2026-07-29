@@ -2746,7 +2746,33 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
               match as_tparam_dict {
                 Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), m, -1, -1), prepend_expr(robj, rwargs), off),
                 None => match as_recv_method {
-                  Some(qual) => ECall(EIdent(qual, doff), prepend_expr(robj, rwargs), off),
+                  // #1199: `qual` (e.g. "Set::add") may itself be a
+                  // trait-bounded generic (`Set::add[T: Hash](s, value)`) that
+                  // `thread_dict_params` rewrote to take an EXTRA leading
+                  // dictionary parameter -- exactly like the qualified
+                  // `T::method(args)` spelling handled in the EIdent arm above
+                  // (`lookup_gen`/`synth_dicts`). This EDot-derived call used
+                  // to skip that step entirely and emit a call with the
+                  // SAME arity as the un-rewritten source (`Set::add(s0, 1)`
+                  // instead of `Set::add(<dict>, s0, 1)`), silently
+                  // undershooting the rewritten function's real parameter
+                  // count -- invalid wasm (stack-shape mismatch) at load
+                  // time, reproducible with `s0.add(1)` vs. the
+                  // (correct) explicit `Set::add(s0, 1)` spelling. Mirror
+                  // the EIdent arm: look up `qual` in `gens` and synthesize
+                  // its dict(s) from the ORIGINAL (unrewritten) receiver +
+                  // args, in the same [obj, ...args] order a literal
+                  // `qual(obj, ...args)` call would have used.
+                  Some(qual) => {
+                    let call_args = prepend_expr(robj, rwargs)
+                    match lookup_gen(gens, qual) {
+                      Some(threaded) => match synth_dicts(threaded, prepend_expr(obj, args), traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                        Some(dicts) => ECall(EIdent(qual, doff), concat_expr_arrays(dicts, call_args), off),
+                        None => ECall(EIdent(qual, doff), call_args, off)
+                      },
+                      None => ECall(EIdent(qual, doff), call_args, off)
+                    }
+                  },
                   None => ECall(EDot(robj, m, doff, fdoff), rwargs, off)
                 }
               }

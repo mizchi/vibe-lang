@@ -4,16 +4,17 @@
 // -style spelling alongside the pre-existing StringSet (see set.vibe's
 // header comment for the relationship between the two).
 //
-// NOTE: this file deliberately calls the Hash-bounded methods
+// NOTE: most tests below call the Hash-bounded methods
 // (add/contains/remove/from_array) via their explicit `Set::method(...)`
-// form rather than dot-call sugar (`s.add(...)`). Dot-call resolution
-// (#641/#736) rewrites `s.add(x)` to `Set::add(s, x)` at a pass ordering
-// that breaks trait-dictionary-passing witness synthesis for `[T: Hash]`
-// generics specifically -- reproducible with no Set/Map involved at all
-// (minimal repro filed separately). The non-generic (no `Hash` bound)
-// methods (size/is_empty/to_array/union/intersect/difference) are NOT
-// affected and are exercised via dot-call below to keep some coverage on
-// that path.
+// form rather than dot-call sugar (`s.add(...)`) -- left as-is from when
+// #1199 bug 2 made dot-call sugar on a `[T: Hash]`-bounded method produce
+// invalid wasm (desugar_trait_dict.vibe's EDot-derived qualified-call
+// rewrite skipped the same dict-synthesis step the literal `Type::method(..)`
+// spelling went through, undershooting the rewritten function's real
+// parameter count). Fixed in desugar_trait_dict.vibe's `as_recv_method`
+// arm (routes through `lookup_gen`/`synth_dicts` like the EIdent arm does).
+// `set_generic_dot_call_hash_bound` below exercises the now-fixed dot-call
+// path directly as a regression test.
 import ./set.vibe {
   Set
 }
@@ -122,4 +123,19 @@ test "set_generic_string_instantiation" {
   assert(eq(Array::length(arr), 2))
   assert(arr_has_str(arr, "a"))
   assert(arr_has_str(arr, "b"))
+}
+
+test "set_generic_dot_call_hash_bound" {
+  // Regression test for #1199 bug 2: dot-call sugar on a [T: Hash]-bounded
+  // method (add/contains/remove) used to produce invalid wasm. Chained
+  // dot-calls exercise the EDot-derived qualified-call rewrite repeatedly.
+  let s0: Set[Int] = Set::new()
+  let s1 = s0.add(1).add(2).add(2)
+  assert(eq(s1.size(), 2))
+  assert(s1.contains(1))
+  assert(s1.contains(2))
+  assert(not(s1.contains(3)))
+  let s2 = s1.remove(1)
+  assert(not(s2.contains(1)))
+  assert(s2.contains(2))
 }

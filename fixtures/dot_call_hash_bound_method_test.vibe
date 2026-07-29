@@ -1,0 +1,89 @@
+// #1199 bug 2 regression: dot-call sugar (`recv.method(args)`, #641/#736) on
+// a CONCRETE struct method that is ITSELF a `[T: Trait]`-bounded generic
+// function used to produce invalid wasm. `desugar_trait_dict.vibe`'s
+// EDot-derived qualified-call rewrite (the `as_recv_method` arm) emitted
+// `Type::method(recv, args)` directly without threading the witness
+// dictionary that `Type::method`'s OWN `[T: Trait]` bound requires at every
+// call site -- the same dict-synthesis step the literal `Type::method(...)`
+// spelling (the EIdent arm, just above it) already went through via
+// `lookup_gen`/`synth_dicts`. The rewritten call ended up one argument short
+// of what the (separately) dict-parameter-threaded function definition
+// expects, corrupting the wasm stack shape at load time. Minimal repro
+// traced to `Array::get`-independent: a single dot-called `Box::stamp(1)`
+// reproduced it with no Array/Map/Set involved at all.
+//
+// Mirrors fixtures/trait_method_dict_passing_test.vibe's `T::method(x)`
+// dict-passing coverage, but for the DOT-CALL spelling on a struct method
+// (not the qualified generic-function spelling that test already covers).
+
+//# Types
+
+trait Hash {
+  hash_key(Self) -> String
+}
+
+impl Hash for Int {
+  hash_key(self) -> String {
+    __to_string(self)
+  }
+}
+
+impl Hash for String {
+  hash_key(self) -> String {
+    self
+  }
+}
+
+struct Box[T] {
+  tag: String
+}
+
+//# Functions
+
+fn key_of[K: Hash](k: K) -> String {
+  K::hash_key(k)
+}
+
+// The method under test: a CONCRETE fn on Box[T] (not itself generic over a
+// receiver type parameter the way `T::method` is) that is bounded by a trait
+// on its OWN value parameter -- the shape `Set::add[T: Hash](s, value)` has.
+fn Box::stamp[T: Hash](b: Box[T], value: T) -> Box[T] {
+  Box::{
+    tag: String::concat(b.tag, key_of(value))
+  }
+}
+
+//# Tests
+
+test "dot-call on a Hash-bounded struct method (Int)" {
+  let b = Box::{
+    tag: ""
+  }
+  let b1 = b.stamp(1)
+  assert_eq(b1.tag, "1")
+}
+
+test "chained dot-calls on a Hash-bounded struct method (Int)" {
+  let b = Box::{
+    tag: ""
+  }
+  let b2 = b.stamp(1).stamp(2)
+  assert_eq(b2.tag, "12")
+}
+
+test "dot-call on a Hash-bounded struct method (String)" {
+  let b = Box::{
+    tag: ""
+  }
+  let b1 = b.stamp("a")
+  assert_eq(b1.tag, "a")
+}
+
+test "explicit qualified call still matches dot-call result" {
+  let b = Box::{
+    tag: ""
+  }
+  let via_dot = b.stamp(7)
+  let via_qualified = Box::stamp(b, 7)
+  assert_eq(via_dot.tag, via_qualified.tag)
+}
