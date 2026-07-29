@@ -1099,10 +1099,19 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
     // (`Sh::Circle(5)`): its type is the head of the callee's return type. The
     // builtin `Some`/`Ok`/`Err` constructors resolve to "Option"/"Result" so a
     // bare `==` on them dispatches structurally (#695).
-    ECall(callee, _, _) => match callee {
+    ECall(callee, cargs, _) => match callee {
       EIdent("Some", _) => Some("Option"),
       EIdent("Ok", _) => Some("Result"),
       EIdent("Err", _) => Some("Result"),
+      // #1184: `Array::get(arr, i)` / `arr[i]` (parsed as `__index(arr, i)`)
+      // read an ARRAY ELEMENT, not an Array — resolve it to the receiver's
+      // tracked element type (see elem_type_key/array_get_elem_type) so a
+      // String pulled out of an `Array[String]` is recognized as String by
+      // the `<`/`>`/`+` rewrites below, instead of silently falling through
+      // to a raw pointer compare (#1184's repro: comparing two
+      // `Array::get(...)` results ordered by heap offset, not content).
+      EIdent("Array::get", _) => array_get_elem_type(cargs, struct_sets, var_types, fn_returns),
+      EIdent("__index", _) => array_get_elem_type(cargs, struct_sets, var_types, fn_returns),
       // String-returning builtins (not in fn_returns): lets a
       // `String::concat(a, b) + c` / `__to_string(n) + s` operand type as
       // String for the concat rewrite.
@@ -1237,6 +1246,86 @@ fn is_erased_generic_operand(l: Expr, r: Expr, struct_sets: Array[(String, Array
     None => false
   }
   lg || rg
+}
+
+/// #1184: synthetic `var_types` key recording a `let`-bound array variable's
+/// ELEMENT type (when homogeneous and statically determinable), so
+/// `Array::get(arr, i)` can resolve to that element type. `var_types` is
+/// already threaded through every rewrite call site, so this reuses it
+/// rather than adding a new parameter everywhere — `$` can't appear in a
+/// real source identifier (see lexer's `is_alpha`), so `elem_type_key(name)`
+/// can never collide with a genuine variable's own entry, and every OTHER
+/// consumer of `var_types` keeps seeing exactly the entries it saw before
+/// (this key is only ever looked up by `infer_arg_type_name`'s
+/// `Array::get`/`arr[i]` case below).
+fn elem_type_key(name: String) -> String {
+  String::concat("$elem$", name)
+}
+
+/// #1184: best-effort static element type of an array-VALUED expression —
+/// used only to seed `elem_type_key`'s synthetic `var_types` entry at a
+/// `let` binding, NOT reused by `infer_arg_type_name`'s own `EArray =>
+/// Some("Array")` arm (that constructor name is load-bearing for generic
+/// impl witness dispatch and must stay type-erased there). Returns `Some(t)`
+/// only when EVERY element's own inferred type agrees on `t`; a mixed or
+/// partially-undeterminable literal yields `None` (no entry recorded, same
+/// as today).
+fn infer_array_literal_elem_type(elems: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  if Array::length(elems) == 0 {
+    None
+  } else {
+    match infer_arg_type_name(Array::get(elems, 0), struct_sets, var_types, fn_returns) {
+      None => None,
+      Some(t0) => {
+        let mut i = 1
+        let mut mismatch = false
+        while i < Array::length(elems) {
+          match infer_arg_type_name(Array::get(elems, i), struct_sets, var_types, fn_returns) {
+            Some(ti) => if ti != t0 {
+              mismatch = true
+            },
+            None => {
+              mismatch = true
+            }
+          }
+          i = i + 1
+        }
+        if mismatch {
+          None
+        } else {
+          Some(t0)
+        }
+      }
+    }
+  }
+}
+
+/// #1184: element type of a `let`-bound VALUE expression, recorded under
+/// `elem_type_key(name)` for that binding. Handles a direct array literal
+/// (`let arr = ["a", "b"]`) and a plain alias of an already-tracked array
+/// variable (`let arr2 = arr`, so the tracking survives a re-bind, same as
+/// the issue's "even re-binding to a `let` doesn't fix it" observation for
+/// the SCALAR case — this is the array-typed analog). Anything else (a call,
+/// a conditional, ...) stays untracked, same as today.
+fn elem_type_of_value(val: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match val {
+    EArray(elems) => infer_array_literal_elem_type(elems, struct_sets, var_types, fn_returns),
+    EIdent(name, _) => lookup_var_type(var_types, elem_type_key(name)),
+    _ => None
+  }
+}
+
+/// #1184: element type of the receiver of `Array::get(recv, idx)` / the
+/// desugared `recv[idx]` (`__index(recv, idx)`) — a literal array or a
+/// tracked array variable (see elem_type_of_value/elem_type_key). Any other
+/// receiver shape, or an arg count other than the expected 2, stays
+/// untracked (`None`), same as before this case existed.
+fn array_get_elem_type(args: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  if Array::length(args) == 2 {
+    elem_type_of_value(Array::get(args, 0), struct_sets, var_types, fn_returns)
+  } else {
+    None
+  }
 }
 
 /// #760(3): `m[k]` parses to `__index(m, k)`, whose codegen array-indexes the
@@ -2792,13 +2881,18 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
     EIf(c, t, e) => EIf(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(t, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELet(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let named_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      // #1184: also record `name`'s element type (if determinable) under the
+      // synthetic elem_type_key, so Array::get(name, i)/name[i] resolves it.
+      let body_vars = extend_var_types(named_vars, elem_type_key(name), elem_type_of_value(val, struct_sets, var_types, fn_returns))
       ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELetMut(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let named_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      // #1184: same element-type tracking as ELet above.
+      let body_vars = extend_var_types(named_vars, elem_type_key(name), elem_type_of_value(val, struct_sets, var_types, fn_returns))
       ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     EAssign(name, val, cont) => EAssign(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),

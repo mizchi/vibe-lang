@@ -194,3 +194,39 @@ test "973 P1: [T: Ord] `<` on empty String through an erased generic (regression
   assert(eq(my_lt_int("", ""), false))
   assert(eq(my_lt_int("a", ""), false))
 }
+
+/// #1184: `String </>` used to fall back to a raw signed i64 compare on the
+/// packed `(ptr<<32)|len` representation -- ordering by heap offset, not
+/// content -- whenever an operand's value came from `Array::get` (or any
+/// other expression `infer_arg_type_name` can't classify), because that
+/// heuristic-based inferencer has no element-type tracking for containers
+/// and returns `None` for `Array::get(arr, i)` regardless of `arr`'s element
+/// type. Fixed by routing the "type genuinely undeterminable" case through
+/// the same `__generic_rel_diff` runtime dispatch #973 already uses for
+/// erased generic type parameters (see rel_operand_type_undeterminable in
+/// desugar_trait_dict.vibe). Repro is the exact one from the issue: "zz" is
+/// allocated at a LOWER heap offset than "aaa" in this array literal, so the
+/// old raw pointer compare said `"zz" < "aaa"`; lexicographically `"zz" >
+/// "aaa"` ('z' > 'a' at the first differing char) is correct.
+test "1184: String `<`/`>` on an Array::get result now content-compares at runtime (was: pointer compare)" {
+  let arr = ["zz", "aaa"]
+  assert(Array::get(arr, 0) > Array::get(arr, 1))
+  assert(not(Array::get(arr, 0) < Array::get(arr, 1)))
+  let a0 = Array::get(arr, 0)
+  let a1 = Array::get(arr, 1)
+  assert(a0 > a1)
+  assert(not(a0 < a1))
+}
+
+test "1184: String `<`/`>` on an Array::get result: same-length operands (regression, worked before the fix too)" {
+  let arr = ["zz", "aa"]
+  assert(Array::get(arr, 0) > Array::get(arr, 1))
+  assert(not(Array::get(arr, 0) < Array::get(arr, 1)))
+}
+
+test "1184: Int from Array::get is unaffected by the runtime-dispatch fallback (regression)" {
+  let arr = [5, 1, 10]
+  assert(Array::get(arr, 0) > Array::get(arr, 1))
+  assert(Array::get(arr, 1) < Array::get(arr, 2))
+  assert(not(Array::get(arr, 2) < Array::get(arr, 0)))
+}
