@@ -4,16 +4,13 @@
 // -style spelling alongside the pre-existing StringSet (see set.vibe's
 // header comment for the relationship between the two).
 //
-// NOTE: this file deliberately calls the Hash-bounded methods
-// (add/contains/remove/from_array) via their explicit `Set::method(...)`
-// form rather than dot-call sugar (`s.add(...)`). Dot-call resolution
-// (#641/#736) rewrites `s.add(x)` to `Set::add(s, x)` at a pass ordering
-// that breaks trait-dictionary-passing witness synthesis for `[T: Hash]`
-// generics specifically -- reproducible with no Set/Map involved at all
-// (minimal repro filed separately). The non-generic (no `Hash` bound)
-// methods (size/is_empty/to_array/union/intersect/difference) are NOT
-// affected and are exercised via dot-call below to keep some coverage on
-// that path.
+// The Hash-bounded methods (add/contains/remove) are exercised via
+// dot-call sugar (`s.add(x)`) below, same as the non-generic methods --
+// #1199 fixed the trait-dictionary-passing gap that used to break dot-call
+// specifically for `[T: Hash]` generics (desugar_trait_dict.vibe's EDot
+// rewrite never synthesized the witness dictionary the qualified spelling
+// got). `from_array` stays `Set::from_array(...)`: it has no receiver value
+// to dot-call on, same shape as `Json::parse`.
 import ./set.vibe {
   Set
 }
@@ -50,17 +47,17 @@ test "set_generic_int_basic" {
   let s0: Set[Int] = Set::new()
   assert(s0.is_empty())
   assert(eq(s0.size(), 0))
-  let s1 = Set::add(s0, 1)
-  assert(Set::contains(s1, 1))
-  assert(not(Set::contains(s1, 2)))
+  let s1: Set[Int] = s0.add(1)
+  assert(s1.contains(1))
+  assert(not(s1.contains(2)))
   assert(eq(s1.size(), 1))
-  let s2 = Set::add(s1, 1)
+  let s2: Set[Int] = s1.add(1)
   assert(eq(s2.size(), 1))
-  let s3 = Set::add(s2, 2)
+  let s3: Set[Int] = s2.add(2)
   assert(eq(s3.size(), 2))
-  let s4 = Set::remove(s3, 1)
-  assert(not(Set::contains(s4, 1)))
-  assert(Set::contains(s4, 2))
+  let s4: Set[Int] = s3.remove(1)
+  assert(not(s4.contains(1)))
+  assert(s4.contains(2))
   assert(eq(s4.size(), 1))
 }
 
@@ -83,41 +80,60 @@ test "set_generic_to_array_from_array_round_trip" {
   assert(arr_has_int(arr, 3))
 }
 
+test "set_generic_from_array_let_bound" {
+  // #1199 Codex follow-up: Set::from_array's receiver was only inferable
+  // when the argument was a function parameter (seed_var_types) or an
+  // inline array literal (infer_arg_elem_type_name's EArray case) --
+  // a plain let-bound local array had no recorded element type, so the
+  // Hash dict synthesis silently failed and the call was emitted without
+  // its dict argument (invalid wasm). array_elem_bind closes this gap.
+  let xs = [
+    5,
+    6,
+    5
+  ]
+  let s = Set::from_array(xs)
+  assert(eq(s.size(), 2))
+  assert(s.contains(5))
+  assert(s.contains(6))
+}
+
 test "set_generic_union_intersect_difference" {
-  let a = Set::from_array([
+  let a: Set[Int] = Set::from_array([
     1,
     2,
     3
   ])
-  let b = Set::from_array([
+  let b: Set[Int] = Set::from_array([
     2,
     3,
     4
   ])
-  let u = a.union(b)
+  let u: Set[Int] = a.union(b)
   assert(eq(u.size(), 4))
-  assert(Set::contains(u, 1))
-  assert(Set::contains(u, 4))
-  let i = a.intersect(b)
+  assert(u.contains(1))
+  assert(u.contains(4))
+  let i: Set[Int] = a.intersect(b)
   assert(eq(i.size(), 2))
-  assert(Set::contains(i, 2))
-  assert(Set::contains(i, 3))
-  assert(not(Set::contains(i, 1)))
-  let d = a.difference(b)
+  assert(i.contains(2))
+  assert(i.contains(3))
+  assert(not(i.contains(1)))
+  let d: Set[Int] = a.difference(b)
   assert(eq(d.size(), 1))
-  assert(Set::contains(d, 1))
-  assert(not(Set::contains(d, 2)))
+  assert(d.contains(1))
+  assert(not(d.contains(2)))
 }
 
 test "set_generic_string_instantiation" {
   // The specific case the naming issue (#1140) asked for: Set[String] as
   // the generic spelling of what StringSet already provides.
   let s: Set[String] = Set::new()
-  let s1 = Set::add(Set::add(s, "a"), "b")
-  let s2 = Set::add(s1, "a")
+  let s0: Set[String] = s.add("a")
+  let s1: Set[String] = s0.add("b")
+  let s2: Set[String] = s1.add("a")
   assert(eq(s2.size(), 2))
-  assert(Set::contains(s2, "a"))
-  assert(Set::contains(s2, "b"))
+  assert(s2.contains("a"))
+  assert(s2.contains("b"))
   let arr = s2.to_array()
   assert(eq(Array::length(arr), 2))
   assert(arr_has_str(arr, "a"))

@@ -1099,10 +1099,36 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
     // (`Sh::Circle(5)`): its type is the head of the callee's return type. The
     // builtin `Some`/`Ok`/`Err` constructors resolve to "Option"/"Result" so a
     // bare `==` on them dispatches structurally (#695).
-    ECall(callee, _, _) => match callee {
+    ECall(callee, cargs, _) => match callee {
       EIdent("Some", _) => Some("Option"),
       EIdent("Ok", _) => Some("Result"),
       EIdent("Err", _) => Some("Result"),
+      // #1199 bug 1: `Array::get(arr, i)` / `arr[i]` (parses to `__index(arr,
+      // i)`, #760(3)) on an Array-typed PARAMETER whose element type
+      // seed_var_types recorded (array_elem_key) resolves to that element
+      // type -- so `let v = Array::get(values, 0); some_hash_bounded_call(v)`
+      // can find v's type the same way a direct `f[T: Hash](v: T)` parameter
+      // already could. Without this, infer_arg_type_name fell through to the
+      // generic EIdent(fname,_) => ctor_enum_of_name arm below, which knows
+      // nothing about "Array::get"/"__index" and returns None -- silently
+      // failing synth_dicts and emitting a call short its dictionary
+      // argument(s) (invalid wasm) instead of a resolved or forwarded dict.
+      EIdent("Array::get", _) => if Array::length(cargs) == 2 {
+        match Array::get(cargs, 0) {
+          EIdent(arrname, _) => array_elem_type_of(var_types, arrname),
+          _ => None
+        }
+      } else {
+        None
+      },
+      EIdent("__index", _) => if Array::length(cargs) == 2 {
+        match Array::get(cargs, 0) {
+          EIdent(arrname, _) => array_elem_type_of(var_types, arrname),
+          _ => None
+        }
+      } else {
+        None
+      },
       // String-returning builtins (not in fn_returns): lets a
       // `String::concat(a, b) + c` / `__to_string(n) + s` operand type as
       // String for the concat rewrite.
@@ -1442,6 +1468,63 @@ fn find_recv_index(params: Array[(String, Option[TypeExpr])], tp: String) -> Int
   idx
 }
 
+/// #1199 bug 1: index of the first parameter whose annotation is `Array[tp]`
+/// (`x: Array[T]`) -- the sibling of find_recv_index for a type param that
+/// appears as an Array's element rather than directly. -1 when `T` doesn't
+/// appear that way either. build_gens tries this ONLY after find_recv_index
+/// fails, so a function with BOTH a direct `x: T` param and an `xs: Array[T]`
+/// param keeps preferring the direct (cheaper, unambiguous) receiver.
+fn find_array_elem_recv_index(params: Array[(String, Option[TypeExpr])], tp: String) -> Int {
+  let mut i = 0
+  let mut idx = -1
+  while i < Array::length(params) {
+    let (_, ann) = Array::get(params, i)
+    match ann {
+      Some(TyApp("Array", targs)) => if Array::length(targs) == 1 {
+        match Array::get(targs, 0) {
+          TyName(n) => if n == tp {
+            idx = i
+            i = Array::length(params)
+          } else {
+            i = i + 1
+          },
+          _ => {
+            i = i + 1
+          }
+        }
+      } else {
+        i = i + 1
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  idx
+}
+
+/// #1199 bug 1: `threaded`'s recv_idx field packs TWO distinct receiver kinds
+/// into one Int rather than widening the tuple everywhere it's threaded
+/// (9 call sites across this file): `idx >= 0` is a DIRECT receiver
+/// (`x: T`, unchanged, existing behavior) and `idx <= -2` is an
+/// ARRAY-ELEMENT receiver (`xs: Array[T]`) with the real param index encoded
+/// as `-idx - 2` (index 0 -> -2, 1 -> -3, ...) -- -1 stays reserved for the
+/// pre-existing "no inferable receiver, dict supplied via a generic-impl
+/// witness" sentinel (build_gens' gimpl_types branch). Only synth_dicts
+/// (the sole recv_idx consumer that reads more than the trait name) needs
+/// to decode this.
+fn encode_array_elem_recv_index(idx: Int) -> Int {
+  0 - idx - 2
+}
+
+fn is_array_elem_recv_index(idx: Int) -> Bool {
+  idx <= (0 - 2)
+}
+
+fn decode_array_elem_recv_index(idx: Int) -> Int {
+  0 - idx - 2
+}
+
 /// Build the registry of top-level generics that need dictionary threading:
 /// each is a (function name, threaded-bounds) pair. A bound is threaded only
 /// when its trait is method-bearing and the type parameter appears directly as
@@ -1523,7 +1606,23 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
                     // dict is supplied when C's witness is built. Thread with -1.
                     Array::push(threaded, (tp, tr, 0 - 1))
                   } else {
-                    ()
+                    // #1199 bug 1: T may still appear, just wrapped one level
+                    // in an `Array[T]` param (`fn f[T: Hash](xs: Array[T])`)
+                    // rather than bare `x: T` -- find_recv_index alone missed
+                    // this, so f was silently left un-threaded: no dict param
+                    // on its own signature, `no_binds` for its body (see
+                    // rewrite_stmt's `lookup_gen` miss), and any Hash-bounded
+                    // call inside f on a value pulled out of `xs` had no dict
+                    // to forward, however it was written -- synth_dicts fails
+                    // and the call site was emitted short its dict arg
+                    // (invalid wasm), not merely "less generic than it could
+                    // be" as the direct-receiver miss would read.
+                    let widx = find_array_elem_recv_index(params, tp)
+                    if widx >= 0 {
+                      Array::push(threaded, (tp, tr, encode_array_elem_recv_index(widx)))
+                    } else {
+                      ()
+                    }
                   }
                 },
                 None => ()
@@ -1693,6 +1792,27 @@ fn build_concrete_dict(cname: String, trait_name: String, traits: Array[(String,
 }
 
 /// Synthesize the witness dictionaries for a call to a transformed generic, or
+/// #1199 bug 1: the call-site counterpart of array_elem_type_of, for an
+/// ARRAY-ELEMENT receiver (see encode_array_elem_recv_index) whose call-site
+/// argument expression is the array itself, not a plain identifier already
+/// carrying a recorded element type. Handles the two shapes that actually
+/// occur at a call site: a variable naming an Array-typed parameter
+/// (array_elem_type_of's existing sentinel lookup), or an inline array
+/// literal (infer the element type from its own first element — an empty
+/// literal has nothing to infer FROM and is left unresolved, same
+/// conservative stance as every other best-effort case in this file).
+fn infer_arg_elem_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match arg {
+    EIdent(name, _) => array_elem_type_of(var_types, name),
+    EArray(elems) => if Array::length(elems) > 0 {
+      infer_arg_type_name(Array::get(elems, 0), struct_sets, var_types, fn_returns)
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
 /// None when any receiver's witness cannot be determined (the call is then left
 /// unrewritten). Each bound is satisfied either by a concrete dict literal (the
 /// receiver type is syntactically known) or by forwarding the caller's own dict
@@ -1703,10 +1823,25 @@ fn synth_dicts(threaded: Array[(String, String, Int)], orig_args: Array[Expr], t
   let mut ok = true
   let mut bi = 0
   while bi < Array::length(threaded) {
-    let (_, trait_name, recv_idx) = Array::get(threaded, bi)
+    let (_, trait_name, recv_idx_raw) = Array::get(threaded, bi)
+    // #1199 bug 1: decode the packed receiver kind (see
+    // encode_array_elem_recv_index's doc comment) once, up front, so the rest
+    // of this loop body works from a plain non-negative index + the right
+    // inference function either way.
+    let is_elem_recv = is_array_elem_recv_index(recv_idx_raw)
+    let recv_idx = if is_elem_recv {
+      decode_array_elem_recv_index(recv_idx_raw)
+    } else {
+      recv_idx_raw
+    }
     if ok && recv_idx >= 0 && recv_idx < Array::length(orig_args) {
       let recv_arg = Array::get(orig_args, recv_idx)
-      match infer_arg_type_name(recv_arg, struct_sets, var_types, fn_returns) {
+      let inferred = if is_elem_recv {
+        infer_arg_elem_type_name(recv_arg, struct_sets, var_types, fn_returns)
+      } else {
+        infer_arg_type_name(recv_arg, struct_sets, var_types, fn_returns)
+      }
+      match inferred {
         Some(nm) => match find_dict_for_trait(dict_binds, nm, trait_name) {
           Some(dict_pname) => Array::push(dicts, EIdent(dict_pname, -1)),
           None => match build_concrete_dict(nm, trait_name, traits, gens, struct_sets, var_types, fn_returns, recv_arg) {
@@ -1747,6 +1882,62 @@ fn concat_expr_arrays(a: Array[Expr], b: Array[Expr]) -> Array[Expr] {
   out
 }
 
+/// #1199 bug 1: sentinel key prefix recording a parameter's ARRAY ELEMENT type,
+/// keyed off the parameter name so `array_elem_type_of` below can recover it
+/// without a second table threaded through every caller. Reuses the existing
+/// `var_types: Array[(String, String)]` association list -- same trick as the
+/// anonymous-record `__anonrec:` sentinel (anon_record_prefix above): a
+/// synthetic KEY (not value) that no real source identifier can collide with,
+/// since `$` isn't a valid identifier character.
+fn array_elem_key(pname: String) -> String {
+  String::concat("__arrelem$", pname)
+}
+
+/// #1199 bug 1: look up the element type recorded for an Array-typed variable
+/// by `seed_var_types` (function parameters) or `array_elem_bind` (let-bound
+/// array literals).
+fn array_elem_type_of(var_types: Array[(String, String)], name: String) -> Option[String] {
+  lookup_var_type(var_types, array_elem_key(name))
+}
+
+/// #1199 follow-up (Codex review on the original fix): the let-bound sibling
+/// of `seed_var_types`' Array[T]-parameter element tracking. Without this,
+/// `let xs = [1, 2]; Set::from_array(xs)` left `xs`'s element type
+/// unrecoverable at the call site -- `extend_var_types` only records the
+/// coarse "Array" head (via `infer_arg_type_name`'s `EArray(_) => Some
+/// ("Array")` case), so `infer_arg_elem_type_name`'s `EIdent` arm had nothing
+/// to look up, `synth_dicts` failed, and the call was emitted without its
+/// Hash dict argument(s) -- invalid wasm, the same failure shape bug 1's
+/// `Array::get` case had. Only a bare (unannotated) array literal RHS with a
+/// syntactically inferable first-element type is handled here, matching the
+/// rest of this file's syntax-directed (not full type-inference) approach;
+/// an empty literal (`let xs = []`) or an already-Array-typed variable RHS
+/// stays untracked -- recovering those needs the RHS's *expected* type
+/// flowing in from an enclosing annotation, which this bottom-up pass does
+/// not thread.
+fn array_elem_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  match val {
+    EArray(elems) => if Array::length(elems) > 0 {
+      match infer_arg_type_name(Array::get(elems, 0), struct_sets, var_types, fn_returns) {
+        Some(elemty) => {
+          let out = array_empty()
+          let mut i = 0
+          while i < Array::length(var_types) {
+            Array::push(out, Array::get(var_types, i))
+            i = i + 1
+          }
+          Array::push(out, (array_elem_key(name), elemty))
+          out
+        },
+        None => var_types
+      }
+    } else {
+      var_types
+    },
+    _ => var_types
+  }
+}
+
 /// Seed a var-type environment from a function's parameters whose annotation is
 /// a bare type name `T` — concrete (`Point`) for call-site dict synthesis, or a
 /// type parameter (`T`) for generic->generic dict forwarding. The distinction is
@@ -1767,7 +1958,26 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
       Some(TyName(tn)) => Array::push(out, (pname, tn)),
       // A generic struct annotation `x: LazyIter[T]` -> track the head name so
       // `for x in <param>` over a generic iterator type resolves (#636).
-      Some(TyApp(tn, _)) => Array::push(out, (pname, tn)),
+      // #1199 bug 1: for `x: Array[T]` specifically, ALSO record T under the
+      // array_elem_key sentinel -- without it, `Array::get(x, i)` /
+      // `x[i]` has no recorded type (infer_arg_type_name has nothing to look
+      // up), so a downstream `[K: Hash]`-bounded call fed that value can't
+      // resolve or forward a witness dictionary and synth_dicts fails,
+      // silently emitting a call short the dict argument(s) -- invalid wasm
+      // ("not enough arguments on the stack"), not a compile error. Only the
+      // single-bare-type-arg shape is handled (matches every other bare-name
+      // inference in this file); nested/nested-generic element types are
+      // left untracked, same conservative scope as the rest of
+      // infer_arg_type_name.
+      Some(TyApp(tn, targs)) => {
+        Array::push(out, (pname, tn))
+        if tn == "Array" && Array::length(targs) == 1 {
+          match Array::get(targs, 0) {
+            TyName(elem) => Array::push(out, (array_elem_key(pname), elem)),
+            _ => ()
+          }
+        }
+      },
       _ => ()
     }
     i = i + 1
@@ -2746,7 +2956,33 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
               match as_tparam_dict {
                 Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), m, -1, -1), prepend_expr(robj, rwargs), off),
                 None => match as_recv_method {
-                  Some(qual) => ECall(EIdent(qual, doff), prepend_expr(robj, rwargs), off),
+                  // #1199 bug 2: `qual` (e.g. "Box::describe") can be a
+                  // THREADED generic itself (`Box::describe[T: Hash](b:
+                  // Box[T], value: T)`) exactly like a directly-written
+                  // `Box::describe(b, value)` call reaching the EIdent arm
+                  // above -- but until this fix, this EDot rewrite only ever
+                  // built `ECall(EIdent(qual), [receiver, ...args])`,
+                  // NEVER consulting lookup_gen/synth_dicts the way the
+                  // EIdent arm does. So the qualified spelling of a call
+                  // correctly prepended its witness dictionary argument(s)
+                  // while the identical call written as dot-call sugar
+                  // silently dropped them -- the callee's (already
+                  // dict-threaded) signature and the dot-call's rewritten
+                  // arg count then disagreed, and codegen emitted a call
+                  // short its dict argument(s) (invalid wasm), not two
+                  // notations of the same, both-valid call. Mirror the
+                  // EIdent arm exactly: synth_dicts against the ORIGINAL
+                  // (pre-rewrite) receiver + args, prepending the resolved
+                  // dicts ahead of the rewritten receiver + args on success,
+                  // falling back to the un-dicted call (same as the EIdent
+                  // arm's own fallback) when synth_dicts can't resolve one.
+                  Some(qual) => match lookup_gen(gens, qual) {
+                    Some(threaded) => match synth_dicts(threaded, prepend_expr(obj, args), traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                      Some(dicts) => ECall(EIdent(qual, doff), concat_expr_arrays(dicts, prepend_expr(robj, rwargs)), off),
+                      None => ECall(EIdent(qual, doff), prepend_expr(robj, rwargs), off)
+                    },
+                    None => ECall(EIdent(qual, doff), prepend_expr(robj, rwargs), off)
+                  },
                   None => ECall(EDot(robj, m, doff, fdoff), rwargs, off)
                 }
               }
@@ -2792,13 +3028,15 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
     EIf(c, t, e) => EIf(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(t, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELet(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let body_vars0 = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let body_vars = array_elem_bind(body_vars0, name, val, struct_sets, fn_returns)
       ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELetMut(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let body_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let body_vars0 = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let body_vars = array_elem_bind(body_vars0, name, val, struct_sets, fn_returns)
       ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     EAssign(name, val, cont) => EAssign(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
