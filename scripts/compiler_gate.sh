@@ -6037,7 +6037,7 @@ fi
 rm -rf "$c1062dir"
 echo "[compiler-gate] ctor Double-field match binding under RC (#1062) ok"
 
-# 47/47. Self-hosted `vibe lsp` (lib/@vibe/compiler/lsp_server.vibe,
+# 47/47. Self-hosted `vibe lsp` (lib/@vibe/lsp/lsp_server.vibe,
 #        #lsp-selfhost): a full JSON-RPC 2.0 / Content-Length-framed
 #        initialize -> didOpen -> hover -> shutdown -> exit round trip,
 #        driven via scripts/wasm_vibe_host_runner.js's VIBE_STDIN_BYTES
