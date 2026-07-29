@@ -265,25 +265,20 @@ export fn Set::to_array[T](s: Set[T]) -> Array[T] {
   ArrayBuilder::freeze(out)
 }
 
-export fn Set::from_array[T](values: Array[T]) -> Set[T] {
-  // #1140 compiler limitation (tracked separately, minimal repro filed):
-  // calling a `[K: Hash]`-bounded generic function on a value obtained from
-  // `Array::get`/`values[i]` over a generic `Array[T]` parameter breaks wasm
-  // codegen ("type mismatch: expected i64 but nothing on stack") -- a
-  // pre-existing trait-dictionary-passing gap, reproducible with no Set/Map
-  // involved at all. `__to_string` (type-erased, no dictionary) sidesteps
-  // it and is IDENTICAL to `Hash::hash_key` for every type currently
-  // `impl Hash` (Int/Float/Double/Bool/Char/String all just call
-  // `__to_string` themselves, or are the identity for String) -- same
-  // trade-off StringSet::from_array_by/add_by already made for the same
-  // reason (`set_value_to_string`, this file).
+export fn Set::from_array[T: Hash](values: Array[T]) -> Set[T] {
+  // Was previously worked around with type-erased `__to_string(v)` instead
+  // of `map_key_to_string(v)` (#1199 bug 1: calling a `[K: Hash]`-bounded
+  // generic on a value obtained from `Array::get`/`values[i]` over a
+  // generic `Array[T]` parameter broke wasm codegen). Fixed upstream in
+  // desugar_trait_dict.vibe (array-element receiver dict threading); this
+  // is back to the straightforward Hash-bounded implementation.
   let len = Array::length(values)
   let rec go = (i: Int, acc: Map[String, T]) -> Map[String, T] {
     if i >= len {
       acc
     } else {
       let v = Array::get(values, i)
-      go(i + 1, Map::set(acc, __to_string(v), v))
+      go(i + 1, Map::set(acc, map_key_to_string(v), v))
     }
   }
   Set::{
