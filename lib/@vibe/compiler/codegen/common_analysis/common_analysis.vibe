@@ -700,8 +700,27 @@ export fn collect_free_vars_expr(expr: Expr, bound: Array[String], fn_names: Arr
 
 fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[String], encl: Array[String], out: Array[String]) -> Int {
   match expr {
+    // #1203: `encl` (the enclosing scope's own locals, e.g. an outer
+    // function's parameters) must be checked BEFORE `fn_names` (top-level
+    // globals). Checking `fn_names` first meant a plain identifier reference
+    // that is actually shadowed by an enclosing-scope local (e.g.
+    // `compose(f, g) = (z) -> g(f(z))`, where `f`/`g` are compose's OWN
+    // parameters) was wrongly treated as "already global, no capture needed"
+    // whenever the merged program happened to also define a top-level
+    // function of the same bare name (`fn f() { .. }` anywhere in the
+    // linked program) -- silently dropping a real capture and corrupting
+    // the closure's environment layout (wrong field count / call arity)
+    // rather than raising any diagnostic.
     EIdent(name, _) => if array_contains_str(bound, name) {
       0
+    }
+    else if array_contains_str(encl, name) {
+      if array_contains_str(out, name) {
+        0
+      } else {
+        Array::push(out, name)
+        0
+      }
     }
     else if bsearch_leftmost(fn_names, name) >= 0 {
       0
