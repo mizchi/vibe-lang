@@ -3629,6 +3629,86 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
           // branch here checking all of its arguments).
           let (_, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
           (tab_call_ty(tytab, call_off, CtInt), s1, c1)
+        } else if name == "FixedArray::make" && Array::length(args) == 2 {
+          // #1140: FixedArray[T] is a checker-only phantom-type distinction
+          // over Array[T]'s exact same runtime layout, same technique as
+          // FrozenArray above (codegen already treats FixedArray::make/get/
+          // set/length as their own opcodes -- see codegen/gc/backend_call.vibe
+          // and codegen/expr/compile_call.vibe -- only the checker-level type
+          // tracking was missing, degrading every FixedArray value to
+          // CtArray(CtUnknown)/CtUnknown). Capture the init value's type into
+          // CtNamed("FixedArray", [elem]) so get/set/length recover a real
+          // element type. The length (arg 0) must still be checked against
+          // Int here -- #985's builtin_first_arg_head table already enforced
+          // this via the fallback path, and this ECall branch pre-empts that
+          // fallback, so skipping the check here would silently regress
+          // `FixedArray::make("4", 0)` back to compiling clean (caught by
+          // checker_builtin_arg_head_test.vibe's #985 review case).
+          let (len_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+          let s1b = check_assignable(CtInt, subst_apply(s1, len_ty), s1, errors, "FixedArray::make length must be Int", call_off)
+          let (init_ty, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1b, c1, errors, tytab)
+          let elem = subst_apply(s2, init_ty)
+          (tab_call_ty(tytab, call_off, CtNamed("FixedArray", Array::slice([
+            elem
+          ], 0, 1))), s2, c2)
+        } else if name == "FixedArray::get" && Array::length(args) == 2 {
+          // #1140: same element-type extraction as FrozenArray::get, over a
+          // tracked FixedArray receiver. Index (arg 1) checked against Int,
+          // same discipline #985's builtin_first_arg_head table enforced for
+          // Int64Array::get before this ECall branch pre-empted the fallback.
+          let (fa_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+          let (idx_ty, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+          let s2b = check_assignable(CtInt, subst_apply(s2, idx_ty), s2, errors, "FixedArray::get index must be Int", call_off)
+          let result = match subst_apply(s2b, fa_ty) {
+            CtNamed(fan, faargs) => if fan == "FixedArray" && Array::length(faargs) == 1 {
+              subst_apply(s2b, Array::get(faargs, 0))
+            } else {
+              CtUnknown
+            },
+            _ => CtUnknown
+          }
+          (tab_call_ty(tytab, call_off, result), s2b, c2)
+        } else if (name == "FixedArray::set" || name == "FixedArray::unsafe_set") && Array::length(args) == 3 {
+          // #1140: writing a value not assignable to the tracked element type
+          // is now a located type error instead of silently compiling through
+          // CtUnknown (same discipline as Map::set below). `unsafe_set` only
+          // skips the runtime bounds check (codegen concern) -- the static
+          // element-type contract is identical to `set`. Index (arg 1)
+          // checked against Int, same #985 discipline as FixedArray::get above.
+          let (fa_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+          let (idx_ty2, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+          let s2b = check_assignable(CtInt, subst_apply(s2, idx_ty2), s2, errors, String::concat("index must be Int for ", name), call_off)
+          let (v_ty, s3, c3) = check_expr(Array::get(args, 2), env, defs, s2b, c2, errors, tytab)
+          let s4 = match subst_apply(s3, fa_ty) {
+            CtNamed(fan2, faargs2) => if fan2 == "FixedArray" && Array::length(faargs2) == 1 {
+              check_assignable(subst_apply(s3, Array::get(faargs2, 0)), subst_apply(s3, v_ty), s3, errors, String::concat("value type mismatch for ", name), call_off)
+            } else {
+              s3
+            },
+            _ => s3
+          }
+          (tab_call_ty(tytab, call_off, CtUnit), s4, c3)
+        } else if name == "FixedArray::length" && Array::length(args) == 1 {
+          // #1140: same as FrozenArray::length -- always Int, receiver still checked.
+          let (_, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+          (tab_call_ty(tytab, call_off, CtInt), s1, c1)
+        } else if name == "FixedArray::blit" && Array::length(args) == 5 {
+          // #1140: dst/dst_off/src/src_off/len -- dst_off/src_off/len (1, 3, 4)
+          // checked against Int, matching the Int positions the pre-existing
+          // fallback signature (fixed_array_five_params(.., CtInt, .., CtInt,
+          // CtInt)) enforced before this ECall branch pre-empted it. No
+          // cross-checking that dst's and src's tracked element types match
+          // (kept tolerant, same spirit as that same fallback signature's
+          // CtArray(CtUnknown) receiver positions).
+          let (_, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+          let (dst_off_ty, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+          let s2b = check_assignable(CtInt, subst_apply(s2, dst_off_ty), s2, errors, "FixedArray::blit dst_off must be Int", call_off)
+          let (_, s3, c3) = check_expr(Array::get(args, 2), env, defs, s2b, c2, errors, tytab)
+          let (src_off_ty, s4, c4) = check_expr(Array::get(args, 3), env, defs, s3, c3, errors, tytab)
+          let s4b = check_assignable(CtInt, subst_apply(s4, src_off_ty), s4, errors, "FixedArray::blit src_off must be Int", call_off)
+          let (len_ty2, s5, c5) = check_expr(Array::get(args, 4), env, defs, s4b, c4, errors, tytab)
+          let s5b = check_assignable(CtInt, subst_apply(s5, len_ty2), s5, errors, "FixedArray::blit len must be Int", call_off)
+          (tab_call_ty(tytab, call_off, CtUnit), s5b, c5)
         } else if name == "Map::set" && Array::length(args) == 3 {
           // #983: every Map API's VALUE position was `CtUnknown` (the static
           // builtin table cannot mint per-call vars), so
