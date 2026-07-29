@@ -1442,23 +1442,28 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
   let fn_names = array_empty()
   let fn_effs = array_empty()
   let mut entry_body = None
+  let mut entry_declared = None
   let mut m = 0
   while m < Array::length(stmts) {
     match Array::get(stmts, m) {
       SLet(_, _, name, ty, body) => {
+        let effs = fn_binding_effects(ty, body)
         Array::push(fn_names, name)
-        Array::push(fn_effs, fn_binding_effects(ty, body))
+        Array::push(fn_effs, effs)
         if name == entry_name {
           entry_body = Some(body)
+          entry_declared = Some(effs)
         } else {
           ()
         }
       },
       SLetMut(name, ty, body) => {
+        let effs = fn_binding_effects(ty, body)
         Array::push(fn_names, name)
-        Array::push(fn_effs, fn_binding_effects(ty, body))
+        Array::push(fn_effs, effs)
         if name == entry_name {
           entry_body = Some(body)
+          entry_declared = Some(effs)
         } else {
           ()
         }
@@ -1470,26 +1475,85 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
   match entry_body {
     None => false,
     Some(body) => {
-      // `body` (from SLet/SLetMut) is the closure VALUE bound to entry_name,
-      // e.g. `EFn(type_params, bounds, params, ret_ty, effect, fn_body)` for
-      // `fn main with { ... } { ... }` -- checking the EFn NODE itself would
-      // trivially find zero reachable effects (defining a closure performs
-      // nothing; only CALLING it would), silently marking every entry
-      // cacheable regardless of what it does. The walk needs `fn_body`, the
-      // 6th field, not the literal.
-      let exec_body = match body {
-        EFn(_, _, _, _, _, fn_body) => fn_body,
-        _ => body
-      }
       let cache_safe_row = [
         "Stdout",
         "Error",
         "Async"
       ]
-      let errs = check_perform_effects_expr_tx(exec_body, cache_safe_row, false, fn_names, fn_effs, no_str_labels(), no_ov_effs())
-      Array::length(errs) == 0
+      // Codex review, PR #1215: belt-and-suspenders on top of the
+      // reachable-effects walk below. That walk shares check_perform_
+      // effects_expr_tx's own limitation (also present, unchanged, in the
+      // established `vibe test` cache via file_tests_cacheable above): a
+      // LOCAL closure defined inside the body is checked under its OWN
+      // declared row (so an inner `with { Env }` satisfies itself and never
+      // surfaces as an error at this call site), and a row-POLYMORPHIC
+      // callee's effect-VARIABLE labels are deliberately treated as "leaks
+      // nothing" here (real call-site row-variable instantiation tracking
+      // is #885, not implemented by this pass -- see the "Effect-variable
+      // rows (polymorphic) impose nothing HERE" comment near
+      // check_perform_effects_expr_tx_in's transitive-leak check above).
+      // Neither gap is new to this PR. Closing it outright would need #885-
+      // class compiler work, out of proportion for a doctest-cache
+      // hardening -- instead, conservatively reject up front whenever the
+      // entry's OWN declared row names anything outside the safe set. A
+      // real top-level `main` is never itself row-polymorphic, so this is a
+      // cheap, purely-additive net that catches the common/direct case
+      // (`fn main with { Stdout, Env } { ... }`) even in scenarios the
+      // deeper walk alone would miss.
+      let declared_ok = match entry_declared {
+        None => true,
+        Some(row) => array_is_subset_of_str(row, cache_safe_row)
+      }
+      if !declared_ok {
+        false
+      } else {
+        // `body` (from SLet/SLetMut) is the closure VALUE bound to
+        // entry_name, e.g. `EFn(type_params, bounds, params, ret_ty,
+        // effect, fn_body)` for `fn main with { ... } { ... }` -- checking
+        // the EFn NODE itself would trivially find zero reachable effects
+        // (defining a closure performs nothing; only CALLING it would),
+        // silently marking every entry cacheable regardless of what it
+        // does. The walk needs `fn_body`, the 6th field, not the literal.
+        let exec_body = match body {
+          EFn(_, _, _, _, _, fn_body) => fn_body,
+          _ => body
+        }
+        let errs = check_perform_effects_expr_tx(exec_body, cache_safe_row, false, fn_names, fn_effs, no_str_labels(), no_ov_effs())
+        Array::length(errs) == 0
+      }
     }
   }
+}
+
+/// Every label in `row` must appear in `safe` -- unlike decl_authorizes_
+/// effect above (used the OPPOSITE direction: "does this declared row
+/// authorize performing effect X", where an effect-VARIABLE label
+/// conservatively authorizes anything), this is used to conservatively
+/// REJECT: an unrecognized label (including a row-variable letter, which a
+/// real top-level `main` should never carry) is NOT treated as safe.
+fn array_is_subset_of_str(row: Array[String], safe: Array[String]) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(row) {
+    let eff = Array::get(row, i)
+    let mut j = 0
+    let mut found = false
+    while j < Array::length(safe) {
+      if Array::get(safe, j) == eff {
+        found = true
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    if !found {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
 }
 
 //# Mutability discipline: reassignment requires a `let mut` binding.
