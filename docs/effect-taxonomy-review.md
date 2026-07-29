@@ -529,6 +529,13 @@ singleton(`Fs[Process::Root]::...`)へ展開する sugar が必要になる
   [`EffectTaxonomyExamples.lean`](../formal/VibeFormal/Proofs/EffectTaxonomyExamples.lean)
   で machine-check する。これは現行 selfhost checker との correspondence
   proof ではない。
+- resolved operation と effect metadata の分類境界は
+  [`Effect/TaxonomyClassifier.lean`](../formal/VibeFormal/Effect/TaxonomyClassifier.lean)
+  で定義し、
+  [`TaxonomyClassifierCorrect.lean`](../formal/VibeFormal/Proofs/TaxonomyClassifierCorrect.lean)
+  で executable/declarative semantics の一致と fail-closed row conversion を
+  検証する。現行の文字列 checker に metadata を追加する際は、この classifier
+  との differential fixture を correspondence guard にする。
 - taxonomy から ADR-0075 capability contract への一方向 refinement は
   [`Capability/TaxonomyBridge.lean`](../formal/VibeFormal/Capability/TaxonomyBridge.lean)
   と

@@ -8,6 +8,8 @@ import VibeFormal.Proofs.ErrorPolicyExamples
 import VibeFormal.Proofs.ExceptionPolicyCorrect
 import VibeFormal.Proofs.EffectTaxonomyCorrect
 import VibeFormal.Proofs.EffectTaxonomyExamples
+import VibeFormal.Proofs.TaxonomyClassifierCorrect
+import VibeFormal.Proofs.TaxonomyClassifierExamples
 import VibeFormal.Proofs.TaxonomyBridgeCorrect
 import VibeFormal.Proofs.TaxonomyBridgeExamples
 import VibeFormal.Proofs.SchedulerCorrect

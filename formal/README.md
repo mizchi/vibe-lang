@@ -78,6 +78,16 @@ for ADR-0084, not yet a correspondence proof for builtin metadata, the selfhost
 checker, WIT projection, provider lowering, or runtime evidence transfer. Those
 bridges remain implementation and differential-test obligations.
 
+The metadata classifier closes the gap between resolved `OperationRef` values
+and the disjoint taxonomy row. Unique declaration metadata is required;
+capabilities carry exactly one resource id, algebraic operations carry none,
+and core exceptions carry exactly one normalized type id. The executable
+classifier is proved equivalent to its declarative relation, and successful
+row classification preserves both well-formedness and row length. Unknown,
+duplicate, and malformed metadata fail the complete row. Negative witnesses
+show why argument shape must not override declaration class and why `filterMap`
+must not silently discard classification failures.
+
 The taxonomy-to-capability bridge connects this model to the existing ADR-0075
 contract rather than defining another unrelated preflight. It projects exact
 capabilities to operation authority plus resource claims, and provider evidence

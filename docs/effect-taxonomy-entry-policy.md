@@ -97,6 +97,22 @@ Phase 2 以降の追加であり、この ADR では構文を決めない。
 は accept/reject 例に加え、capability だけを row から射影する壊れた
 preflight が未処理 `Logger` を誤って accept する反例を保持する。
 
+resolved `OperationRef` と declaration metadata から三分類を構築する境界は
+[`Effect/TaxonomyClassifier.lean`](../formal/VibeFormal/Effect/TaxonomyClassifier.lean)
+で定義する。catalog lookup は同じ `EffectDefId` の metadata が exactly one
+の場合だけ成功する。capability は logical resource id をちょうど1個、
+algebraic effect は resource argument を0個、core Exception は normalized
+type argument をちょうど1個持たなければならない。未知 ID、重複 metadata、
+malformed arguments は complete row 全体を reject し、要素を黙って落とさない。
+
+[`TaxonomyClassifierCorrect.lean`](../formal/VibeFormal/Proofs/TaxonomyClassifierCorrect.lean)
+は executable classifier と declarative `Classifies` 関係の一致、および
+row classification 成功時の well-formedness と input/output length 保存を
+証明する。
+[`TaxonomyClassifierExamples.lean`](../formal/VibeFormal/Proofs/TaxonomyClassifierExamples.lean)
+は argument shape だけで class を推測する壊れた classifier と、失敗要素を
+`filterMap` で捨てる壊れた row conversion の反例を保持する。
+
 taxonomy check 後の ADR-0075 contract への接続は
 [`Capability/TaxonomyBridge.lean`](../formal/VibeFormal/Capability/TaxonomyBridge.lean)
 で定義し、
@@ -125,6 +141,7 @@ Implementation sequence 1–4 と compiler fixture は引き続き必要であ�
 | 実装観測 | `checker_effects.vibe` は effect を文字列ラベルで追跡し、`Error` / `Async` を特別扱いしている | effect class/resource kind metadata が先行条件である |
 | 回帰ガード候補 | `main with { Logger }` は reject、`main with { Fs }` と `main with { Error }` は accept | Phase 3 の fixture と compiler gate に固定する |
 | 形式モデル | taxonomy-level requirement、entry/host/spawn 判定、handler discharge を Lean で定義した | ADR の意味論は machine-checked。checker 対応は未証明 |
+| metadata classifier | exactly-one metadata lookup と argument shape から complete row を分類し、unknown/duplicate/malformed を fail-closed にした | 実装 metadata はこの contract に対応させる |
 | contract refinement | exact capability を operation/claim/binding に投影し、taxonomy admission から ADR-0075 preflight への含意を Lean で証明した | taxonomy check は WIT/host projection より前に必須 |
 
 Phase 3 では上記3 fixture を導入し、checker の許可述語と Lean contract の
