@@ -560,6 +560,43 @@ fn cc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> 
       } else {
         false
       }
+    } else if is_efn(callee) && Array::length(get_ecall_args(e)) == 1 {
+      // #1153/#1185 (+ #1207 Codex review P2): mirror of expr_is_floatish's
+      // identical ascribe_wrap case (compile_expr_tail.vibe) for this
+      // file's local copy -- see that fix's comment for the full mechanism
+      // and for why the match requires the COMPLETE synthetic identity-
+      // lambda shape (no type params, no declared return type, no effect
+      // row, body exactly `EIdent(<the param's own name>, _)`), not just
+      // the param's own name/type.
+      match callee {
+        EFn(tparams, _, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(params) == 1 && (match ret_ty {
+          None => true,
+          Some(_) => false
+        }) && (match effect {
+          None => true,
+          Some(_) => false
+        }) {
+          let (asc_name, asc_ty) = Array::get(params, 0)
+          if asc_name == "__asc" || (String::starts_with(asc_name, "__shadow_") && String::ends_with(asc_name, "___asc")) {
+            match body {
+              EIdent(bname, _) => if bname == asc_name {
+                match asc_ty {
+                  Some(TyName(tn)) => tn == "Double" || tn == "Float",
+                  _ => false
+                }
+              } else {
+                false
+              },
+              _ => false
+            }
+          } else {
+            false
+          }
+        } else {
+          false
+        },
+        _ => false
+      }
     } else {
       false
     }

@@ -54,3 +54,50 @@ test "negative fraction and carry" {
   let z = 0.1 + 0.2
   assert("\{z}" == "0.3")
 }
+
+// #1153/#1185: an explicitly `: Double`/`: Float`-ANNOTATED local `let` was
+// the one shape missing from the "dispatch is SHAPE-based" list above.
+// `let x: Double = e` parses to the ascription marker
+// `((__asc: Double) -> __asc)(e)` (parser_expr_dispatch's ascribe_wrap) --
+// expr_is_floatish's ECall case never recognized this wrapper (it already
+// did for `Bool`, #815, just never extended to Double/Float), so an
+// annotated Double local's slot was invisible to float_local_slots. Under
+// RC a float is a BOXED heap value (#704): `__to_string`/interpolation
+// read the boxed pointer as a plain Int (garbage output, #1153), and `==`
+// between two such misclassified slots fell through to the generic `eq`
+// fallback, which compares the two distinct boxes by pointer rather than
+// unboxing and comparing values (silently `false` for equal doubles,
+// #1185). A SINGLE annotated operand paired with a literal/unannotated one
+// was unaffected (the literal/unannotated side's own correct
+// classification was enough for the `||` dispatch to still route
+// correctly) -- only two independently-annotated operands together
+// triggered #1185.
+test "to_string of an annotated Double local" {
+  let d: Double = 3.14
+  assert(__to_string(d) == "3.14")
+  assert("d = \{d}" == "d = 3.14")
+}
+
+test "== between two independently-annotated Double locals" {
+  let a: Double = 1.0
+  let b: Double = 1.0
+  assert(a == b)
+  let c: Double = 1.0
+  assert(c == 1.0)
+  let e = 1.0
+  assert(a == e)
+}
+
+// #1207 Codex review (P2): the ascription-marker match above requires the
+// COMPLETE synthetic identity-lambda shape (no type params, no declared
+// return type, no effect row, body exactly `EIdent(<param's own name>,
+// _)`) -- not just a Double-typed param literally named `__asc`. A
+// hand-written IIFE that reuses that internal marker name but has a
+// DIFFERENT body (here: a non-identity String-returning body) must not be
+// misread as the ascription wrapper and misclassified as floatish.
+test "a non-identity __asc-named lambda is not treated as ascription" {
+  let result = ((__asc: Double) -> String {
+    "hello"
+  })(1.0)
+  assert(result == "hello")
+}
