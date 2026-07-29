@@ -9,6 +9,7 @@ import VibeFormal.Proofs.ExceptionPolicyCorrect
 import VibeFormal.Proofs.EffectTaxonomyCorrect
 import VibeFormal.Proofs.EffectTaxonomyExamples
 import VibeFormal.Proofs.TaxonomyClassifierCorrect
+import VibeFormal.Effect.TaxonomyOracle
 import VibeFormal.Proofs.TaxonomyClassifierExamples
 import VibeFormal.Proofs.TaxonomyBridgeCorrect
 import VibeFormal.Proofs.TaxonomyBridgeExamples

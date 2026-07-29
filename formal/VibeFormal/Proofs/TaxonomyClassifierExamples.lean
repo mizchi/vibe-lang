@@ -1,8 +1,12 @@
 import VibeFormal.Proofs.TaxonomyClassifierCorrect
+import VibeFormal.Effect.TaxonomyOracle
 
 set_option autoImplicit false
 
 namespace VibeFormal.EffectTaxonomy.Classifier.Examples
+
+example : Oracle.allCasesPass = true := by
+  decide
 
 private def fsEffect : EffectDefId :=
   ⟨"vibe/std", "fs", 0⟩

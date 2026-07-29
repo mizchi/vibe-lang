@@ -534,8 +534,12 @@ singleton(`Fs[Process::Root]::...`)へ展開する sugar が必要になる
   で定義し、
   [`TaxonomyClassifierCorrect.lean`](../formal/VibeFormal/Proofs/TaxonomyClassifierCorrect.lean)
   で executable/declarative semantics の一致と fail-closed row conversion を
-  検証する。現行の文字列 checker に metadata を追加する際は、この classifier
-  との differential fixture を correspondence guard にする。
+  検証する。正負15ケースは
+  [`effect-taxonomy.tsv`](../formal/oracle/effect-taxonomy.tsv) に
+  machine-readable Oracle として固定し、Lean からの再生成結果との差分を
+  `formal-check` で検査する。現行の文字列 checker に metadata を追加する
+  際は、この corpus との differential fixture を correspondence guard に
+  する。
 - taxonomy から ADR-0075 capability contract への一方向 refinement は
   [`Capability/TaxonomyBridge.lean`](../formal/VibeFormal/Capability/TaxonomyBridge.lean)
   と

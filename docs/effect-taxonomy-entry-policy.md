@@ -113,6 +113,15 @@ row classification 成功時の well-formedness と input/output length 保存�
 は argument shape だけで class を推測する壊れた classifier と、失敗要素を
 `filterMap` で捨てる壊れた row conversion の反例を保持する。
 
+この分類境界の正負15ケースは
+[`effect-taxonomy.tsv`](../formal/oracle/effect-taxonomy.tsv) に機械可読な
+Oracle として固定する。catalog metadata、resolved operation row、
+accept/reject と正規化後 requirement row を
+[`TaxonomyOracleMain.lean`](../formal/TaxonomyOracleMain.lean) が Lean model
+から生成し、`formal-check` が stale snapshot を拒否する。現時点では
+contract-level Oracle であり、selfhost checker が declaration metadata を
+公開した後に同じ corpus を differential fixture として接続する。
+
 taxonomy check 後の ADR-0075 contract への接続は
 [`Capability/TaxonomyBridge.lean`](../formal/VibeFormal/Capability/TaxonomyBridge.lean)
 で定義し、
@@ -142,6 +151,7 @@ Implementation sequence 1–4 と compiler fixture は引き続き必要であ�
 | 回帰ガード候補 | `main with { Logger }` は reject、`main with { Fs }` と `main with { Error }` は accept | Phase 3 の fixture と compiler gate に固定する |
 | 形式モデル | taxonomy-level requirement、entry/host/spawn 判定、handler discharge を Lean で定義した | ADR の意味論は machine-checked。checker 対応は未証明 |
 | metadata classifier | exactly-one metadata lookup と argument shape から complete row を分類し、unknown/duplicate/malformed を fail-closed にした | 実装 metadata はこの contract に対応させる |
+| Oracle corpus | 正負15ケースを Lean から TSV に生成し、stale snapshot を `formal-check` で拒否する | contract の回帰ガードは自動化済み。selfhost differential は metadata API 待ち |
 | contract refinement | exact capability を operation/claim/binding に投影し、taxonomy admission から ADR-0075 preflight への含意を Lean で証明した | taxonomy check は WIT/host projection より前に必須 |
 
 Phase 3 では上記3 fixture を導入し、checker の許可述語と Lean contract の

@@ -88,6 +88,14 @@ duplicate, and malformed metadata fail the complete row. Negative witnesses
 show why argument shape must not override declaration class and why `filterMap`
 must not silently discard classification failures.
 
+The 15-case executable taxonomy corpus in
+`formal/oracle/effect-taxonomy.tsv` records normalized declaration catalogs,
+resolved operation rows, and their accepted requirement rows or fail-closed
+rejection. `TaxonomyOracleMain.lean` renders the corpus from the Lean model, and
+`formal-check` rejects a stale committed snapshot. This is currently a
+contract-level Oracle: a selfhost differential bridge remains unavailable until
+the compiler exposes the declaration metadata required by the classifier.
+
 The taxonomy-to-capability bridge connects this model to the existing ADR-0075
 contract rather than defining another unrelated preflight. It projects exact
 capabilities to operation authority plus resource claims, and provider evidence
@@ -305,17 +313,19 @@ From the repository root, the equivalent project task is:
 pkf run formal-check
 ```
 
-This command also executes `OracleMain.lean` and rejects a stale committed
-`formal/oracle/call-typing.tsv`. It also tests the bridge's report, strict, and
-checker-error behavior against a deterministic fake checker. To inspect the
-generated corpus directly:
+This command also executes `OracleMain.lean` and `TaxonomyOracleMain.lean`, and
+rejects stale committed `formal/oracle/call-typing.tsv` and
+`formal/oracle/effect-taxonomy.tsv` snapshots. It also tests the call-typing
+bridge's report, strict, and checker-error behavior against a deterministic fake
+checker. To inspect the generated corpora directly:
 
 ```sh
 cd formal
 lake env lean --run OracleMain.lean
+lake env lean --run TaxonomyOracleMain.lean
 ```
 
-To compare the committed Oracle with the current selfhost checker:
+To compare the committed call-typing Oracle with the current selfhost checker:
 
 ```sh
 pkf run formal-selfhost-oracle
