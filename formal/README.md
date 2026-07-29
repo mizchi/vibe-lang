@@ -78,6 +78,15 @@ for ADR-0084, not yet a correspondence proof for builtin metadata, the selfhost
 checker, WIT projection, provider lowering, or runtime evidence transfer. Those
 bridges remain implementation and differential-test obligations.
 
+The taxonomy-to-capability bridge connects this model to the existing ADR-0075
+contract rather than defining another unrelated preflight. It projects exact
+capabilities to operation authority plus resource claims, and provider evidence
+to host authority plus bindings. The refinement theorem proves that successful
+full-row entry/spawn admission implies successful projected ADR-0075 preflight.
+The implication is intentionally one-way: examples show that skipping taxonomy
+admission drops `Logger`, while dropping resource claims admits a provider with
+the right operation/resource id but the wrong nominal resource kind.
+
 ## Verified call-typing properties
 
 The typed-core slice for #990 starts from resolved function signatures and

@@ -97,6 +97,21 @@ Phase 2 以降の追加であり、この ADR では構文を決めない。
 は accept/reject 例に加え、capability だけを row から射影する壊れた
 preflight が未処理 `Logger` を誤って accept する反例を保持する。
 
+taxonomy check 後の ADR-0075 contract への接続は
+[`Capability/TaxonomyBridge.lean`](../formal/VibeFormal/Capability/TaxonomyBridge.lean)
+で定義し、
+[`TaxonomyBridgeCorrect.lean`](../formal/VibeFormal/Proofs/TaxonomyBridgeCorrect.lean)
+で一方向 refinement を証明する。exact `CapabilityRef` は semantic
+`OperationRef` と `ResourceClaim` に、host provider は authority と
+`ResourceBinding` に投影される。完全 row の entry/spawn 判定が通れば、
+投影後の既存 ADR-0075 preflight も通る。
+
+この含意の逆向きは成立しない。投影前の taxonomy check を省くと algebraic
+effect が capability-only contract から消え、resource claim を省くと同じ
+operation/resource identity を持つ別 resource kind を誤受理する。
+[`TaxonomyBridgeExamples.lean`](../formal/VibeFormal/Proofs/TaxonomyBridgeExamples.lean)
+は両方の負例を固定する。
+
 これは ADR の意味論に対する machine-checked model であり、現行の文字列
 checker、builtin metadata、WIT 生成との correspondence proof ではない。
 Implementation sequence 1–4 と compiler fixture は引き続き必要である。
@@ -110,6 +125,7 @@ Implementation sequence 1–4 と compiler fixture は引き続き必要であ�
 | 実装観測 | `checker_effects.vibe` は effect を文字列ラベルで追跡し、`Error` / `Async` を特別扱いしている | effect class/resource kind metadata が先行条件である |
 | 回帰ガード候補 | `main with { Logger }` は reject、`main with { Fs }` と `main with { Error }` は accept | Phase 3 の fixture と compiler gate に固定する |
 | 形式モデル | taxonomy-level requirement、entry/host/spawn 判定、handler discharge を Lean で定義した | ADR の意味論は machine-checked。checker 対応は未証明 |
+| contract refinement | exact capability を operation/claim/binding に投影し、taxonomy admission から ADR-0075 preflight への含意を Lean で証明した | taxonomy check は WIT/host projection より前に必須 |
 
 Phase 3 では上記3 fixture を導入し、checker の許可述語と Lean contract の
 対応を回帰ガードにする。

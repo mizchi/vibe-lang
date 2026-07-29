@@ -529,6 +529,12 @@ singleton(`Fs[Process::Root]::...`)へ展開する sugar が必要になる
   [`EffectTaxonomyExamples.lean`](../formal/VibeFormal/Proofs/EffectTaxonomyExamples.lean)
   で machine-check する。これは現行 selfhost checker との correspondence
   proof ではない。
+- taxonomy から ADR-0075 capability contract への一方向 refinement は
+  [`Capability/TaxonomyBridge.lean`](../formal/VibeFormal/Capability/TaxonomyBridge.lean)
+  と
+  [`TaxonomyBridgeCorrect.lean`](../formal/VibeFormal/Proofs/TaxonomyBridgeCorrect.lean)
+  で検証する。投影だけでは algebraic effect を観測できないため、完全 row の
+  taxonomy check を必ず WIT/host projection より先に行う。
 - 新規/改訂 ADR を `docs/adr.md` に追加し、Related ADR として
   0071/0075/0060/0068/0073 を明記する。
 - 各提案ごとに `fixtures/*.vibe` で最小再現を先に書き、seed compiler が
