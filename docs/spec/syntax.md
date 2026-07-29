@@ -362,12 +362,16 @@ Rules:
   (see `docs/tutorial/02_control_flow.vibe.md`'s loop section for a runnable
   example of this asymmetry).
 - Parameterized `loop (...)` is tail-recursive state threading.
-- Avoid naming a top-level function `f` or `g`: those identifiers collide
-  with `@vibe/prelude/func.vibe`'s `compose`/`flip` combinator parameter
-  names and can produce invalid wasm at codegen time (checker passes,
-  `vibe run` fails to instantiate) -- tracked in #1203. Not a general
-  language ambiguity, just a known name-collision gap in the current
-  codegen; use any other identifier.
+- Avoid naming a top-level function `f` or `g` when `@vibe/prelude` is linked:
+  either exact identifier can produce invalid linear-backend wasm at codegen
+  time (the checker passes, but `vibe run` fails to instantiate) -- tracked in
+  #1203. Renaming `compose`/`flip`'s parameters does **not** remove the failure,
+  and it still reproduces in debug builds where generated-builtin DCE is
+  disabled, so neither the initially suspected parameter collision nor the
+  builtin-pruning pass is the cause. The corruption is sensitive to the merged
+  program shape; the responsible codegen lookup/pass has not yet been isolated.
+  This is not a language ambiguity; until #1203 is fixed, use any other
+  top-level identifier.
 
 ### Calls, Fields, Indexing
 
