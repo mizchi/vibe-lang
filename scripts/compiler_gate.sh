@@ -7097,4 +7097,65 @@ fi
 rm -rf "$ctxpackdir"
 echo "[compiler-gate] vibe context-pack generator ok"
 
+# 68/68. #1203: a linked (multi-file) program's top-level function can share
+#        a bare name with an UNRELATED closure's own parameter declared in an
+#        imported file (here, `compose`'s own `f`/`g` params) without the
+#        closure silently losing that parameter from its capture list.
+#        `collect_free_vars_expr_sc`'s plain EIdent case checked `fn_names`
+#        (the whole linked program's top-level names, via a shared
+#        capture-name index) BEFORE `encl` (the enclosing scope's own
+#        locals) -- so `compose`'s own `f` parameter, referenced inside its
+#        returned closure `(z) -> g(f(z))`, was wrongly treated as "already
+#        global, no capture needed" whenever the merged program ALSO defined
+#        an unrelated top-level `fn f()` anywhere (main.vibe below). The
+#        returned closure's captured-environment struct then allocated one
+#        field too few and silently dropped the store/load for `f`,
+#        corrupting the wasm (invalid at instantiation) or, if it happened
+#        to validate, producing a wrong runtime result instead of any
+#        diagnostic. Single-file compiles never exercised this: only the
+#        LINKED merge pipeline builds one shared name index across every
+#        file, so this fixture must use a real cross-file import (matching
+#        the smallest repro from the #1203 investigation trail), not the
+#        `__DATA__` single-file fixture harness other closure-capture gates
+#        above use.
+echo "[compiler-gate] 68/68 closure param shadowing a same-named top-level fn in another linked file (#1203)"
+c1203dir="_build/_gate_closure_param_shadows_toplevel"
+rm -rf "$c1203dir"; mkdir -p "$c1203dir/pkg"
+cat > "$c1203dir/pkg/lib.vibe" <<'VEOF'
+export fn compose(f: (x: Int) -> Int, g: (y: Int) -> Int) -> (z: Int) -> Int {
+  (z) -> g(f(z))
+}
+export fn addone(x: Int) -> Int { x + 1 }
+export fn double(x: Int) -> Int { x * 2 }
+VEOF
+cat > "$c1203dir/main.vibe" <<'VEOF'
+import ./pkg/lib.vibe { compose, addone, double }
+
+// Unrelated top-level fn sharing a bare name with compose's own closure
+// parameter (declared in the OTHER, imported file) -- never called, its
+// mere presence in the linked program's name table is the trigger.
+fn f() -> Int { 1 }
+
+export let main = () -> Int {
+  let c = compose(addone, double)
+  c(3)
+}
+VEOF
+rm -f "$c1203dir/out.wasm" "$c1203dir/out.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$c1203dir/main.vibe" "$c1203dir/out.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$c1203dir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: closure-param/top-level-name collision program did not compile (#1203)" >&2
+  cat "$c1203dir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+c1203_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$c1203dir/out.wasm" 2>&1 | tail -1)"
+if [ "$c1203_out" != "8" ]; then
+  echo "[compiler-gate] FAIL: closure-param/top-level-name collision program got '$c1203_out' (want 8 = double(addone(3))) -- #1203 regressed (compose's own 'f'/'g' params silently dropped from its returned closure's captures)" >&2
+  exit 1
+fi
+rm -rf "$c1203dir"
+echo "[compiler-gate] closure param shadowing a same-named top-level fn ok (8)"
+
 echo "[compiler-gate] ok"
