@@ -14,13 +14,18 @@
 # the same machinery scripts/build_cli_wasm.sh uses for dist/cli/vibe-cli.wasm)
 # to compile the entry file instead.
 #
-# ENTRY_PATH defaults to lib/@vibe/cli/entry.vibe -- the split CLI's
-# subcommand dispatcher (compile / build / check / compile-lite / serve, plus
-# a low_level_cli_main positional fallback for callers that pass
+# ENTRY_PATH defaults to lib/@vibe/cli/main.vibex (#1137 stage 1) -- the
+# ordinary ADR-0075 `.vibex` entry that wraps the split CLI's subcommand
+# dispatcher (compile / build / check / compile-lite / serve, plus a
+# low_level_cli_main positional fallback for callers that pass
 # `<input> <output> <entry_name> [mode]` directly; see
-# lib/@vibe/cli/dispatch.vibe::selfhost_cli_dispatch_args). Compiling it needs
-# import resolution from the filesystem, which the base compiler's cli_main
-# only does under VIBE_FS_COMPILE=1 (lib/@vibe/compiler/cli_adapter.vibe).
+# lib/@vibe/cli/dispatch.vibe::selfhost_cli_dispatch_args) in a real `fn main`
+# and turns its Int result into a process exit code. Compiled with
+# entry_name=main, the output wasm exports the WASI `_start` convention gives
+# every `.vibex` program, run via `--invoke _start` (scripts/vibe_cli.sh) --
+# not the raw `--invoke cli_main` ABI this script used before #1137. Compiling
+# it needs import resolution from the filesystem, which the base compiler's
+# cli_main only does under VIBE_FS_COMPILE=1 (lib/@vibe/compiler/cli_adapter.vibe).
 #
 # Prints the resulting wasm path to stdout on success (mirrors the deleted
 # script's contract -- callers capture it via command substitution).
@@ -30,7 +35,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 OUT_DIR="${VIBE_CLI_CORE_OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_cli_core}"
-ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/lib/@vibe/cli/entry.vibe}"
+ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/lib/@vibe/cli/main.vibex}"
 STAGE1_CORE_WASM="${STAGE1_CORE_WASM:-$OUT_DIR/index_stage1.wasm}"
 HOST_MODE="${VIBE_CLI_CORE_HOST_MODE:-debug}"
 REBUILD_MODE="${VIBE_CLI_CORE_REBUILD:-auto}"
@@ -101,7 +106,7 @@ run_with_timeout() {
 source_changed_since() {
   local artifact="$1"
   [ -f "$artifact" ] || return 0
-  find "$PROJECT_ROOT/lib" -type f -name '*.vibe' -newer "$artifact" -print -quit 2>/dev/null | grep -q . ||
+  find "$PROJECT_ROOT/lib" -type f \( -name '*.vibe' -o -name '*.vibex' \) -newer "$artifact" -print -quit 2>/dev/null | grep -q . ||
     find "$PROJECT_ROOT/scripts" -maxdepth 1 -type f \( -name 'build_cli_core.sh' -o -name 'build_cli_wasm.sh' -o -name 'generations.sh' \) -newer "$artifact" -print -quit 2>/dev/null | grep -q . ||
     find "$PROJECT_ROOT/bootstrap" -maxdepth 2 -type f -name 'seed.json' -newer "$artifact" -print -quit 2>/dev/null | grep -q .
 }
@@ -171,7 +176,7 @@ VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 \
   "$BASE_COMPILER" \
   "$(rel_path "$ENTRY_PATH")" \
   "$(rel_path "$STAGE1_CORE_WASM")" \
-  cli_main >&2
+  main >&2
 status=$?
 set -e
 if [ "$status" -eq 124 ]; then

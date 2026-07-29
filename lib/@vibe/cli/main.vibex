@@ -1,0 +1,41 @@
+// #1137 (stage 1): run `@vibe/cli` via the ordinary ADR-0075 `.vibex`
+// convention (`fn main with { ... }`, compiled to a wasm exporting `_start`)
+// instead of the raw `--invoke cli_main` ABI `scripts/build_cli_core.sh` /
+// `scripts/vibe_cli.sh` used until now.
+//
+// `entry.vibe`'s own `cli_main` export stays put (untouched, still usable
+// via `--invoke cli_main` as the low-level escape hatch ADR-0069 already
+// documents for `cli_main`/`selfbuild_entry`/gate internal ABI) -- this file
+// just adds the standard entry point alongside it, wired up the same way
+// `scripts/vibe_md.vibex` already is (see that file's own header comment).
+// `run_cli_main_with_args` already discharges the compile pipeline's
+// `Profiler`/`Error` effects into a plain `Int`; the only thing missing for
+// a real `.vibex` program is turning that `Int` into an actual OS exit code
+// (returning it from `main` would only be PRINTED by the host `_start`, per
+// `Process::exit`'s own doc comment / ADR-0069's `entry_returns_unit`).
+//
+// Does NOT touch `dist/cli/vibe-cli.wasm`, `scripts/build_cli_wasm.sh`, or
+// `scripts/generations.sh`'s seed pipeline -- those build the COMPILER's own
+// entry (`lib/@vibe/compiler/cli_adapter.vibe`'s unrelated, same-named
+// `cli_main`), not this package.
+
+import ./entry.vibe {
+  run_cli_main_with_args
+}
+
+import ./dispatch.vibe {
+  collect_cli_args
+}
+
+import @vibe/process {
+  Process
+}
+
+fn main with { Fs, Env, Process } {
+  let code = run_cli_main_with_args(collect_cli_args())
+  if code != 0 {
+    vibe_process_exit_raw(code)
+  } else {
+    ()
+  }
+}

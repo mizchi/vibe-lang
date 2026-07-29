@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUT_DIR="$PROJECT_ROOT/_build/bench/selfhost_cli_core"
-ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/lib/@vibe/cli/entry.vibe}"
+ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/lib/@vibe/cli/main.vibex}"
 STAGE_TIMEOUT_SEC="${VIBE_CLI_CORE_STAGE_TIMEOUT_SEC:-300}"
 STAGE1_CORE_WASM="$OUT_DIR/index_stage1.wasm"
 INPUT_SOURCE="$OUT_DIR/core_env_input.vibe"
@@ -138,7 +138,7 @@ export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
 
 run_stage "stage1 core artifact -> sample wasm compile" \
   bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
-    --invoke cli_main \
+    --invoke _start \
     "$STAGE1_CORE_WASM" \
     "${INPUT_SOURCE#$PROJECT_ROOT/}" \
     "${OUTPUT_WASM#$PROJECT_ROOT/}" \
@@ -180,7 +180,7 @@ export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
 
 run_stage "stage1 core artifact -> command-style compile-lite wasm compile" \
   bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
-    --invoke cli_main \
+    --invoke _start \
     "$STAGE1_CORE_WASM" \
     compile-lite \
     --wasm \
@@ -238,7 +238,7 @@ export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
 
 run_stage "stage1 core artifact -> command-style compile wasm compile" \
   bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
-    --invoke cli_main \
+    --invoke _start \
     "$STAGE1_CORE_WASM" \
     compile \
     --wasm \
@@ -277,7 +277,7 @@ export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
 
 run_stage "stage1 core artifact -> command-style build release wasm compile" \
   bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
-    --invoke cli_main \
+    --invoke _start \
     "$STAGE1_CORE_WASM" \
     build \
     --release \
@@ -316,7 +316,7 @@ export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
 
 run_stage "stage1 core artifact -> command-style check" \
   bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
-    --invoke cli_main \
+    --invoke _start \
     "$STAGE1_CORE_WASM" \
     check \
     --profile-tsv "${CHECK_COMMAND_PROFILE_TSV#$PROJECT_ROOT/}" \
@@ -345,7 +345,7 @@ EOF
 
 run_stage "stage1 core artifact -> linked debug wasm compile" \
   bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
-  --invoke cli_main \
+  --invoke _start \
   "$STAGE1_CORE_WASM" \
   "${DEBUG_MAIN_SOURCE#$PROJECT_ROOT/}" \
   "${DEBUG_OUTPUT_WASM#$PROJECT_ROOT/}" \
@@ -392,7 +392,7 @@ EOF
 
 run_stage "stage1 core artifact -> linked debug string wasm compile" \
   bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
-  --invoke cli_main \
+  --invoke _start \
   "$STAGE1_CORE_WASM" \
   "${DEBUG_STRING_MAIN_SOURCE#$PROJECT_ROOT/}" \
   "${DEBUG_STRING_OUTPUT_WASM#$PROJECT_ROOT/}" \
