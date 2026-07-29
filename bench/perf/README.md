@@ -91,6 +91,59 @@ it, and note old -> new (and why) in the PR.
     | node -e 'process.stdin.on("data",()=>{}); ...'   # or jq
   ```
 
+### Runner normalization (calibration)
+
+Shared CI runners vary in raw speed from run to run — a PR's own diff has
+nothing to do with it. The #1207 investigation caught this directly: its
+perf report showed every single advisory metric slower by +20-64%, and an
+unrelated docs-only PR (#1206) landed immediately before it showed the
+*opposite* uniform swing (-15% to -27%). Both are the signature of
+runner-to-runner variance, not a real regression — confirmed by rebuilding
+both commits on the same machine back-to-back, which showed only
+normal-range noise.
+
+To make that visible automatically instead of requiring a manual
+same-machine re-run every time a report looks off, `bench_metrics.sh` also
+benches one fixed, already-tracked series (`alloc_bench.vibe`'s
+`build_100`, ~10us/op — large enough to avoid the sub-100ns measurement
+noise a tiny bench like `pure_bench.vibe`'s `fib30` shows) compiled against
+the **committed seed** (`bootstrap/seed/compiler.wasm`) instead of the PR's
+own freshly built stage2. The seed only changes on a deliberate bootstrap
+bump (`docs/bootstrap.md`), so this reading is comparable across almost
+every historical snapshot and isolates "how fast is this runner right now"
+from anything about the PR's own codegen. The result is stored as a
+`calibration: { label, ns_p50, seed_sha256, runner_sha256, bench_sha256 }`
+field in the snapshot JSON.
+
+All three hashes are recorded and compared, not just the seed: the vibewt
+runner binary and the calibration bench source are both read from the
+*current checkout*, so a PR that changes `runtime/vibewt` or
+`bench/regression/alloc_bench.vibe` would otherwise have that real change
+misread as pure host-speed drift and divided out of every advisory delta.
+`bench_report.mjs` only applies the runner factor when all three hashes
+are present and equal on both snapshots; otherwise it falls back to raw,
+unnormalized deltas with a note explaining why.
+
+The calibration source must be a bench the seed can *always* compile.
+`lib/@vibe/compiler/*.vibe` bench files (e.g. `parser_bench.vibe`) are out —
+they evolve with the compiler and routinely use syntax an older seed
+doesn't understand yet (confirmed by hand: an older seed fails outright to
+compile the current `parser_bench.vibe`). `bench/regression/*.vibe` files
+are plain, syntax-stable programs with no such risk, which is why
+`alloc_bench.vibe` was picked over a `lib/@vibe/compiler/` bench.
+
+`bench_report.mjs` divides the current snapshot's calibration `ns_p50` by
+the baseline's to get a `runnerFactor`, and divides every advisory
+(wall-time) reading by that factor before computing its Δ — so a runner
+that's uniformly N% slower today no longer shows up as an N% regression on
+every single benchmark. Deterministic metrics (heap, sizes, bytes/op) are
+never normalized; they don't depend on runner speed to begin with.
+Normalization is skipped, falling back to raw deltas with a note in the
+report, when either snapshot lacks calibration data (e.g. an older
+snapshot predating this feature) or `seed_sha256` differs between them (a
+bootstrap bump landed between the two commits, making the calibration
+readings themselves not comparable).
+
 To track a new micro bench, add its file to `tracked_benches.txt` (keep the
 whole list fast — it runs on every PR). To track a new size sample, drop a
 standalone `main`-entry program into `bench/binary_size/`. Run locally:
