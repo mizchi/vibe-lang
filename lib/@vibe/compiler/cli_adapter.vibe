@@ -47,7 +47,8 @@ import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode_rc,
   compile_file_fs_mode_rc_shadow,
   compile_file_fs_mode_testmeta,
-  compile_file_fs_mode_trace
+  compile_file_fs_mode_trace,
+  entry_cacheable_for_fs
 }
 
 import @vibe/compiler/normalize {
@@ -653,6 +654,28 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
         write_funcmap_sidecar(input_path, output_path)
       } with Error {
         Throw(_) => 0
+      }
+      // #819 (Codex review, PR #1214): entry-function cacheability sidecar
+      // for scripts/vibe_md.vibex's doctest execute-cache -- same
+      // best-effort shape as the funcmap sidecar just above (a failure here
+      // must not fail an otherwise-successful compile). Written only when
+      // requested, so unrelated compiles (vibe test/run/build without this
+      // env var) pay no extra parse.
+      let entry_testmeta_out = Env::get("VIBE_ENTRY_TESTMETA_OUT")
+      let _entry_meta_rc = if entry_testmeta_out != "" {
+        handle {
+          let cacheable = entry_cacheable_for_fs(input_path, entry_name)
+          Fs::write_file(entry_testmeta_out, if cacheable {
+            "1"
+          } else {
+            "0"
+          })
+          0
+        } with Error {
+          Throw(_) => 0
+        }
+      } else {
+        0
       }
       0
     } with Error {
