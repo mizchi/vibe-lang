@@ -22,6 +22,8 @@
 # Usage:
 #   bash scripts/vibe_md.sh check <file.vibe.md> [more...]
 #   bash scripts/vibe_md.sh write <file.vibe.md> [more...]
+#   bash scripts/vibe_md.sh fmt <file.vibe.md> [more...]
+#   bash scripts/vibe_md.sh fmt-check <file.vibe.md> [more...]
 #
 # Environment:
 #   VIBE_MD_COMPILER   compiler wasm to build the tool with. Default: newest
@@ -35,8 +37,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT_DIR"
 
-if [ $# -lt 2 ] || { [ "$1" != "check" ] && [ "$1" != "write" ]; }; then
-  echo "usage: bash scripts/vibe_md.sh <check|write> <file.vibe.md> [more...]" >&2
+case "${1:-}" in
+  check | write | fmt | fmt-check) ;;
+  *)
+    echo "usage: bash scripts/vibe_md.sh <check|write|fmt|fmt-check> <file.vibe.md> [more...]" >&2
+    exit 2
+    ;;
+esac
+if [ $# -lt 2 ]; then
+  echo "usage: bash scripts/vibe_md.sh <check|write|fmt|fmt-check> <file.vibe.md> [more...]" >&2
   exit 2
 fi
 

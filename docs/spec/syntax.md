@@ -356,8 +356,17 @@ Rules:
 - `while` is statement-like and returns `Unit`.
 - `for-in` collects body results into an array.
 - `break Expr` returns a value from `loop` / `while`. `break(acc)` is parsed as
-  `break` followed by a parenthesized expression.
+  `break` followed by a parenthesized expression -- NOT the same shape as
+  `continue(a, b)`'s call-like next-state argument list. `break(a, b)` builds
+  the tuple `(a, b)`, it does not break with two separate loop-result values
+  (see `docs/tutorial/02_control_flow.vibe.md`'s loop section for a runnable
+  example of this asymmetry).
 - Parameterized `loop (...)` is tail-recursive state threading.
+- A non-`Unit`-typed expression used as a non-final statement in a block
+  (i.e. its value is silently discarded) currently produces invalid wasm at
+  codegen time rather than a checker error or an explicit drop -- tracked in
+  #1203. Bind it with `let _ = expr` (or otherwise consume it) instead of
+  leaving it bare.
 
 ### Calls, Fields, Indexing
 

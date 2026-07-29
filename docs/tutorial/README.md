@@ -36,3 +36,32 @@ pkf run vibe-md-tutorial                                # check を task 化し�
 より網羅的なリファレンスは [docs/cheatsheet.md](../cheatsheet.md) と
 [docs/language-tour/](../language-tour/)。ただし一部の記述は実装より
 先行している (差分に気づいたら本チュートリアルの実行結果が正)。
+
+## 曖昧な構文・既知の落とし穴
+
+本チュートリアルを見直す過程で確認・整理したもの。それぞれ本文中に
+runnable な例がある箇所は実行結果 (`vibe run`/`output`) 付きで検証済み:
+
+- **`break(a, b)` は `continue(a, b)` と非対称**: `continue(a, b)` は
+  ループの次状態 (call のような多引数構文) だが、`break(a, b)` の丸括弧は
+  ただの式の括弧で、`break` に渡るのは**タプル 1 個** `(a, b)`。
+  [02 制御フロー](02_control_flow.vibe.md#loop--パラメータ付き末尾再帰)。
+- **関数本体の途中に non-Unit な式を裸で置くと壊れた wasm を生成する
+  既知バグ** ([#1203](https://github.com/mizchi/vibe-lang/issues/1203))。
+  型検査 (`vibe check`) は通過し、`vibe run` で初めて失敗する。
+  途中の式は `let _ = expr` で明示的に捨てること。
+  [02 制御フロー](02_control_flow.vibe.md#while-と早期-return)。
+- **`Double` の `\{expr}` 文字列補間 / `to_string` は checker/codegen の
+  既知ギャップ** ([#1153](https://github.com/mizchi/vibe-lang/issues/1153))。
+  `Double::to_int` で丸めるのが安全な代替。
+  [01 値と関数](01_values_functions.vibe.md#値と基本型)。
+- **無名 record のドットアクセス (`r.name`) は「どこかの struct が同名
+  field を宣言しているとき」しか解決しない**。ad-hoc な record は分配束縛
+  (`let record { name: n, ... } = ...`) を使う。
+  [03 データ](03_data.vibe.md#tuple--array--record)。
+- **`Array::push` を生 `Array` に使うのはアンチパターン** (backend 依存の
+  未定義動作)。蓄積は必ず `ArrayBuilder` を使う。
+  [03 データ](03_data.vibe.md#蓄積は-arraybuilder)。
+- **`let*`/`?` は組み込みの `Option` はどこでも使えるが、`Result` は
+  standalone ファイルでは文脈依存の制限がある** (コンビネータは workspace
+  の prelude 提供)。[04 Option と railway](04_option_result.vibe.md#result-について)。

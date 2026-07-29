@@ -8,6 +8,18 @@
 // Usage (run from the repo root):
 //   bash scripts/vibe_md.sh check <file.vibe.md> [more...]
 //   bash scripts/vibe_md.sh write <file.vibe.md> [more...]
+//   bash scripts/vibe_md.sh fmt <file.vibe.md> [more...]
+//   bash scripts/vibe_md.sh fmt-check <file.vibe.md> [more...]
+//
+// `fmt`/`fmt-check` run each ```vibe code block (check/run/skip -- anything
+// that is actual vibe source, not a ```output block) through the selfhost
+// CST-token formatter (scripts/vibe_fmt.sh --stdout, i.e. the SAME formatter
+// `pkf run fmt` applies to lib/**/*.vibe) and either rewrite the block in
+// place (`fmt`) or fail if it isn't already a fixpoint (`fmt-check`, mirrors
+// scripts/check_vibe_fmt.sh's contract but for markdown-embedded code).
+// Unlike `check`/`write`, `fmt`/`fmt-check` never compile or execute a
+// block's code, so they need no compiler wasm -- scripts/vibe_fmt.sh always
+// builds its formatter entry from the committed seed.
 //
 // NOT run through scripts/vibe_run.sh (the usual .vibex launcher): its
 // `--invoke main` path double-executes `main` for any entry other than
@@ -143,7 +155,9 @@ struct Block {
   mut actual_stdout: String;
   mut paired_output: Int; // token index of paired ```output block, or -1
   mut has_replacement: Bool;
-  mut replacement_lines: Array[String]
+  mut replacement_lines: Array[String];
+  mut has_fmt_replacement: Bool;
+  mut fmt_lines: Array[String]
 }
 
 fn new_block(lang: String, arg: String, start_line: Int, code_lines: Array[String], open_line: String, close_line: String) -> Block {
@@ -172,6 +186,8 @@ fn new_block(lang: String, arg: String, start_line: Int, code_lines: Array[Strin
     paired_output: -1,
     has_replacement: false,
     replacement_lines: array_empty(),
+    has_fmt_replacement: false,
+    fmt_lines: array_empty(),
   }
 }
 
@@ -501,6 +517,51 @@ fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String,
   }
 }
 
+// Formats one code block's source through scripts/vibe_fmt.sh --stdout (the
+// same selfhost CST-token formatter `pkf run fmt` applies to lib/**/*.vibe)
+// and either stages the replacement (`mode == "fmt"`, consumed by
+// rewrite_text via blk.fmt_lines) or reports a FAIL (`mode == "fmt-check"`)
+// when the block isn't already a fixpoint. Unlike run_one_block, this never
+// compiles or executes the block, so it needs no compiler wasm argument.
+fn run_fmt_block(md_path: String, md_dir: String, scratch_name: String, blk: Block, mode: String) -> BlockResult with { Fs, Process, Env } {
+  let label = "\{md_path}:\{blk.start_line}"
+  let src = "\{md_dir}/\{scratch_name}.vibe"
+  let original = join_lines(blk.code_lines)
+  Fs::write_file(src, original)
+  let timeout_secs = md_timeout_secs()
+  let fmt_cmd = "timeout \{timeout_secs} bash scripts/vibe_fmt.sh --stdout \{shq(src)}"
+  let r = sh_capture(fmt_cmd)
+  if Fs::exists(src) {
+    Fs::remove(src)
+  } else {
+    ()
+  }
+  if r.exit_code != 0 {
+    let reason = if r.exit_code == 124 {
+      "timeout after \{timeout_secs}s"
+    } else {
+      first_nonblank_line(String::concat(r.stdout, r.stderr))
+    }
+    let shown = if reason == "" {
+      "fmt failure"
+    } else {
+      reason
+    }
+    BlockResult::{ label: label, status: "FAIL", reason: "[fmt] \{shown}" }
+  } else {
+    let formatted = r.stdout
+    if formatted == original {
+      BlockResult::{ label: label, status: "PASS", reason: "" }
+    } else if mode == "fmt" {
+      blk.has_fmt_replacement = true
+      blk.fmt_lines = splitlines_like(formatted)
+      BlockResult::{ label: label, status: "WROTE", reason: "" }
+    } else {
+      BlockResult::{ label: label, status: "FAIL", reason: "[fmt] not formatted (run `bash scripts/vibe_md.sh fmt` to fix)" }
+    }
+  }
+}
+
 fn cleanup_one(src: String, out: String, diag: String) -> Unit with { Fs } {
   let funcmap = "\{out}.funcmap"
   if Fs::exists(src) {
@@ -631,6 +692,37 @@ fn process_file(md_path: String, cwd: String, compiler: String, mode: String) ->
   FileOutcome::{ tokens: tokens, results: ArrayBuilder::freeze(results) }
 }
 
+// fmt/fmt-check counterpart of process_file: no compiler wasm, no
+// execution, no ```output pairing -- just every vibe-source block
+// (check/run/skip) through run_fmt_block.
+fn process_file_fmt(md_path: String, mode: String) -> FileOutcome with { Fs, Process, Error, Env } {
+  let text = Fs::read_file(md_path)
+  let tokens = parse_blocks(text)
+  let md_dir = dirname(md_path)
+  let base = sanitize_base(basename_no_ext(md_path))
+  let results = ArrayBuilder::new()
+  let n = Array::length(tokens)
+  let mut i = 0
+  let mut block_no = 0
+  while i < n {
+    match Array::get(tokens, i) {
+      TBlock(blk) => {
+        if blk.mode == "check" || blk.mode == "run" || blk.mode == "skip" {
+          block_no = block_no + 1
+          let scratch_name = ".vibe_md_scratch_\{base}_b\{pad2(block_no)}_L\{blk.start_line}"
+          let r = run_fmt_block(md_path, md_dir, scratch_name, blk, mode)
+          ArrayBuilder::push(results, r)
+        } else {
+          ()
+        }
+      },
+      TText(_) => ()
+    }
+    i = i + 1
+  }
+  FileOutcome::{ tokens: tokens, results: ArrayBuilder::freeze(results) }
+}
+
 // A ```output block paired to a run block gets its content replaced IN
 // PLACE at its own token position (rather than re-emitted inline from the
 // run block's branch) -- reordering would separate it from the blank line
@@ -681,8 +773,13 @@ fn rewrite_text(tokens: Array[Token]) -> String {
           push_all(out, blk.replacement_lines)
           ArrayBuilder::push(out, blk.close_line)
         } else {
+          let code_out = if blk.has_fmt_replacement {
+            blk.fmt_lines
+          } else {
+            blk.code_lines
+          }
           ArrayBuilder::push(out, blk.open_line)
-          push_all(out, blk.code_lines)
+          push_all(out, code_out)
           ArrayBuilder::push(out, blk.close_line)
           if blk.mode == "run" && blk.has_actual_stdout && blk.paired_output < 0 {
             ArrayBuilder::push(out, "")
@@ -735,6 +832,50 @@ fn report(results: Array[BlockResult], mode: String) -> Int with { Stdout } {
   fail
 }
 
+// fmt/fmt-check need no compiler wasm at all (scripts/vibe_fmt.sh always
+// builds its formatter entry from the committed seed) -- kept as a separate
+// entry point from run_mode rather than threading an unused `compiler`
+// resolution through the check/write path.
+fn run_mode_fmt(mode: String, files: Array[String]) -> Int with { Fs, Env, Process, Stdout, Stderr } {
+  Stdout::write_stream("vibe_md: mode=\{mode}\n")
+  let all_results = ArrayBuilder::new()
+  let mut i = 0
+  let mut hard_fail = -1
+  while i < Array::length(files) && hard_fail < 0 {
+    let md_path = Array::get(files, i)
+    if !Fs::exists(md_path) {
+      Stderr::write_stream("vibe_md: no such file: \{md_path}\n")
+      hard_fail = 2
+    } else {
+      handle {
+        let outcome = process_file_fmt(md_path, mode)
+        if mode == "fmt" {
+          Fs::write_file(md_path, rewrite_text(outcome.tokens))
+        } else {
+          ()
+        }
+        push_all(all_results, outcome.results)
+      } with Error {
+        Throw(msg) => {
+          Stderr::write_stream("vibe_md: \{md_path}: \{msg}\n")
+          hard_fail = 2
+        }
+      }
+    }
+    i = i + 1
+  }
+  if hard_fail >= 0 {
+    hard_fail
+  } else {
+    let fail_count = report(ArrayBuilder::freeze(all_results), mode)
+    if fail_count > 0 {
+      1
+    } else {
+      0
+    }
+  }
+}
+
 fn run_mode(mode: String, files: Array[String]) -> Int with { Fs, Env, Process, Stdout, Stderr } {
   let cwd = Fs::getcwd()
   let compiler = resolve_stage2()
@@ -783,7 +924,11 @@ fn run_mode(mode: String, files: Array[String]) -> Int with { Fs, Env, Process, 
 }
 
 fn usage() -> String {
-  "usage: vibe run scripts/vibe_md.vibex -- (check|write) <file.vibe.md>...\n"
+  "usage: vibe run scripts/vibe_md.vibex -- (check|write|fmt|fmt-check) <file.vibe.md>...\n"
+}
+
+fn is_known_mode(mode: String) -> Bool {
+  mode == "check" || mode == "write" || mode == "fmt" || mode == "fmt-check"
 }
 
 fn main with { Fs, Env, Process, Stdout, Stderr } {
@@ -793,7 +938,7 @@ fn main with { Fs, Env, Process, Stdout, Stderr } {
     2
   } else {
     let mode = Env::args_get(0)
-    if mode != "check" && mode != "write" {
+    if !is_known_mode(mode) {
       Stderr::write_stream(usage())
       2
     } else {
@@ -803,7 +948,11 @@ fn main with { Fs, Env, Process, Stdout, Stderr } {
         ArrayBuilder::push(files, Env::args_get(i))
         i = i + 1
       }
-      run_mode(mode, ArrayBuilder::freeze(files))
+      if mode == "fmt" || mode == "fmt-check" {
+        run_mode_fmt(mode, ArrayBuilder::freeze(files))
+      } else {
+        run_mode(mode, ArrayBuilder::freeze(files))
+      }
     }
   }
   if code != 0 {
