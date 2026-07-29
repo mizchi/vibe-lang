@@ -8,7 +8,20 @@ import @vibe/prelude {
 // canonical post-#897 form; `Json` is `opaque type` in index.vpkg, its
 // definition re-exported from json_types.vibe).
 import .{
-  Json, Json::get, json_as_arr, json_as_bool, json_as_num, json_as_obj, json_as_str, parse, stringify
+  Json,
+  Json::as_arr,
+  Json::as_bool,
+  Json::as_num,
+  Json::as_obj,
+  Json::as_str,
+  Json::get,
+  json_as_arr,
+  json_as_bool,
+  json_as_num,
+  json_as_obj,
+  json_as_str,
+  parse,
+  stringify
 }
 
 //# Functions
@@ -243,5 +256,55 @@ test "json_as_obj" {
       Result::Err(_) => assert(false)
     },
     Result::Err(_) => assert(false)
+  }
+}
+
+// #1189 naming consistency (wave 2): the Json::as_* companions resolve via
+// method-style dot calls (desugar_trait_dict.vibe) and agree with the bare
+// json_as_* forms -- same shape as set_method_style_parity in
+// lib/@vibe/core/set_test.vibe. Dot-call desugar only tracks types recorded
+// in `var_types` (param annotations / `let x: T = ...`), NOT match-pattern
+// bindings, so every dot-called receiver below is rebound through an
+// explicit `let x: Json = ...` first (same constraint `vibe normalize`
+// documents for #1194).
+test "json_method_style_parity" {
+  let obj: Json = match parse("{\"a\":[1,2],\"b\":true,\"c\":\"x\"}") {
+    Result::Ok((j, _)) => j,
+    Result::Err(_) => JNull
+  }
+  let dot_obj = obj.as_obj()
+  let bare_obj = json_as_obj(obj)
+  match (dot_obj, bare_obj) {
+    (Result::Ok(dot), Result::Ok(bare)) => assert(Map::has_key(dot, "a") == Map::has_key(bare, "a")),
+    _ => assert(false)
+  }
+  let arr: Json = match Json::get(obj, "a") {
+    Result::Ok(v) => v,
+    Result::Err(_) => JNull
+  }
+  match (arr.as_arr(), json_as_arr(arr)) {
+    (Result::Ok(a), Result::Ok(b)) => assert(eq(Array::length(a), Array::length(b))),
+    _ => assert(false)
+  }
+  let bv: Json = match Json::get(obj, "b") {
+    Result::Ok(v) => v,
+    Result::Err(_) => JNull
+  }
+  match (bv.as_bool(), json_as_bool(bv)) {
+    (Result::Ok(a), Result::Ok(b)) => assert(a == b),
+    _ => assert(false)
+  }
+  let cv: Json = match Json::get(obj, "c") {
+    Result::Ok(v) => v,
+    Result::Err(_) => JNull
+  }
+  match (cv.as_str(), json_as_str(cv)) {
+    (Result::Ok(a), Result::Ok(b)) => assert(a == b),
+    _ => assert(false)
+  }
+  let nv: Json = JNum(1.0)
+  match (nv.as_num(), json_as_num(nv)) {
+    (Result::Ok(a), Result::Ok(b)) => assert(eq(a, b)),
+    _ => assert(false)
   }
 }
