@@ -46,11 +46,12 @@ runnable な例がある箇所は実行結果 (`vibe run`/`output`) 付きで検
   ループの次状態 (call のような多引数構文) だが、`break(a, b)` の丸括弧は
   ただの式の括弧で、`break` に渡るのは**タプル 1 個** `(a, b)`。
   [02 制御フロー](02_control_flow.vibe.md#loop--パラメータ付き末尾再帰)。
-- **関数本体の途中に non-Unit な式を裸で置くと壊れた wasm を生成する
+- **トップレベル関数を `f` / `g` という名前にすると壊れた wasm を生成する
   既知バグ** ([#1203](https://github.com/mizchi/vibe-lang/issues/1203))。
-  型検査 (`vibe check`) は通過し、`vibe run` で初めて失敗する。
-  途中の式は `let _ = expr` で明示的に捨てること。
-  [02 制御フロー](02_control_flow.vibe.md#while-と早期-return)。
+  `@vibe/prelude/func.vibe` の `compose`/`flip` がクロージャ引数名として
+  `f`/`g` を使っており、ユーザ側のトップレベル関数が同名だと衝突する。
+  型検査 (`vibe check`) は通過し、`vibe run` で初めて失敗する。回避策は
+  単純に別の名前を使うこと。
 - **`Double` の `\{expr}` 文字列補間 / `to_string` は checker/codegen の
   既知ギャップ** ([#1153](https://github.com/mizchi/vibe-lang/issues/1153))。
   `Double::to_int` で丸めるのが安全な代替。

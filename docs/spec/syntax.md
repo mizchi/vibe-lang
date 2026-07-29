@@ -362,11 +362,12 @@ Rules:
   (see `docs/tutorial/02_control_flow.vibe.md`'s loop section for a runnable
   example of this asymmetry).
 - Parameterized `loop (...)` is tail-recursive state threading.
-- A non-`Unit`-typed expression used as a non-final statement in a block
-  (i.e. its value is silently discarded) currently produces invalid wasm at
-  codegen time rather than a checker error or an explicit drop -- tracked in
-  #1203. Bind it with `let _ = expr` (or otherwise consume it) instead of
-  leaving it bare.
+- Avoid naming a top-level function `f` or `g`: those identifiers collide
+  with `@vibe/prelude/func.vibe`'s `compose`/`flip` combinator parameter
+  names and can produce invalid wasm at codegen time (checker passes,
+  `vibe run` fails to instantiate) -- tracked in #1203. Not a general
+  language ambiguity, just a known name-collision gap in the current
+  codegen; use any other identifier.
 
 ### Calls, Fields, Indexing
 
