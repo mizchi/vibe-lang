@@ -137,6 +137,14 @@ operation/resource identity を持つ別 resource kind を誤受理する。
 [`TaxonomyBridgeExamples.lean`](../formal/VibeFormal/Proofs/TaxonomyBridgeExamples.lean)
 は両方の負例を固定する。
 
+resource-qualified capability の path scope は ADR-0075 の
+[`Capability/PathScope.lean`](../formal/VibeFormal/Capability/PathScope.lean)
+で別層として定義する。同一 logical/physical scope domain で交差しうる
+glob は同一 authority の場合だけ許可し、異なる authority の重複を
+scope-aware preflight が reject する。
+[`PathScopeCorrect.lean`](../formal/VibeFormal/Proofs/PathScopeCorrect.lean)
+は同じ path に一致する grant の authority 一意性を証明する。
+
 これは ADR の意味論に対する machine-checked model であり、現行の文字列
 checker、builtin metadata、WIT 生成との correspondence proof ではない。
 Implementation sequence 1–4 と compiler fixture は引き続き必要である。
@@ -153,6 +161,7 @@ Implementation sequence 1–4 と compiler fixture は引き続き必要であ�
 | metadata classifier | exactly-one metadata lookup と argument shape から complete row を分類し、unknown/duplicate/malformed を fail-closed にした | 実装 metadata はこの contract に対応させる |
 | Oracle corpus | 正負15ケースを Lean から TSV に生成し、stale snapshot を `formal-check` で拒否する | contract の回帰ガードは自動化済み。selfhost differential は metadata API 待ち |
 | contract refinement | exact capability を operation/claim/binding に投影し、taxonomy admission から ADR-0075 preflight への含意を Lean で証明した | taxonomy check は WIT/host projection より前に必須 |
+| path-scope policy | restricted glob の overlap を検査し、valid policy では同一 domain/path の authority が一意になることを証明した | logical resource と resolved physical root の二段階で異権限の重複を reject する |
 
 Phase 3 では上記3 fixture を導入し、checker の許可述語と Lean contract の
 対応を回帰ガードにする。

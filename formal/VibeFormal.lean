@@ -21,6 +21,7 @@ import VibeFormal.Proofs.NurseryCorrect
 import VibeFormal.Proofs.AsyncExamples
 import VibeFormal.Proofs.ParallelExamples
 import VibeFormal.Proofs.CapabilityContractExamples
+import VibeFormal.Proofs.PathScopeExamples
 import VibeFormal.Proofs.CallTypingCorrect
 import VibeFormal.Proofs.CallTypingExamples
 import VibeFormal.Typing.FunctionSubsumption

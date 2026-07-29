@@ -266,10 +266,27 @@ Executable examples cover an S3-read contract, missing provider, wrong bucket
 binding, S3-to-Http lowering, read-to-write escalation rejection, and migration
 of one task between two physical workers.
 
+The path-scope extension models normalized glob segments as literals, `*`, and
+a trailing `**`. Its executable overlap checker has no false negatives: if two
+patterns match one normalized path, they are reported as potentially
+overlapping. A valid policy permits an overlap within one scope domain only
+when both grants carry extensionally equivalent operation authority.
+Consequently, every grant matching one domain/path has equivalent authority,
+independent of source order or operation-list order.
+
+`ScopedEntryContract` composes this invariant with the existing ADR-0075
+preflight. Examples reject `read src/**` plus `write src/generated/**`, accept
+same-authority overlap and disjoint `src/**`/`cache/**` grants, and retain a
+broken first-match evaluator whose result changes when rule order is reversed.
+The domain is generic so planning can validate logical resource ids and apply
+can validate resolved physical-root ids with the same contract.
+
 The current model does not prove provider implementation semantics, policy
 generation, provider-chain termination/ambiguity, manifest/WIT serialization,
-evidence-vector correspondence, or concrete Wasm worker isolation. Those are
-explicit compiler/runtime/provider refinement obligations in ADR-0075.
+concrete path normalization and symlink/case-folding semantics, BindingLock
+projection, evidence-vector correspondence, or concrete Wasm worker isolation.
+Those are explicit compiler/runtime/provider refinement obligations in
+ADR-0075.
 
 ## Verified module-system properties
 

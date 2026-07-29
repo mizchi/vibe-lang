@@ -151,6 +151,19 @@ prefix/glob 検査は provider が実行時に path containment を保証する�
 という二段構え(静的にはリソース単位、動的には provider が保証)になる
 見込み。
 
+glob が複数一致した場合の authority は優先順位で決めない。ADR-0075 の
+path-scope contract に従い、同一 scope domain で交差しうる pattern は
+同一 authority の場合だけ許可し、異なる authority なら plan/apply を
+fail-closed にする。例えば `read src/**` と
+`write src/generated/**` は reject する。source order、
+`most-specific wins`、deny-overrides は採用しない。
+
+compile/plan では logical resource ごと、apply では resolved physical root
+ごとに再検査する。後者により、別々の logical resource が同じ物理 directory
+へ bind される alias も検出する。形式契約は
+[`Capability/PathScope.lean`](../formal/VibeFormal/Capability/PathScope.lean)
+に置き、同一 path に一致する grant の authority 一意性を証明する。
+
 この検証は、vibe のランタイムが既に使っている wasmtime の **WASI
 preopen** 機構にそのまま乗せられる可能性が高い。WASI preopen は「ある
 ディレクトリ fd を guest に渡し、そこからの相対パス以外は `path_open`
@@ -546,6 +559,12 @@ singleton(`Fs[Process::Root]::...`)へ展開する sugar が必要になる
   [`TaxonomyBridgeCorrect.lean`](../formal/VibeFormal/Proofs/TaxonomyBridgeCorrect.lean)
   で検証する。投影だけでは algebraic effect を観測できないため、完全 row の
   taxonomy check を必ず WIT/host projection より先に行う。
+- path-scoped authority は
+  [`Capability/PathScope.lean`](../formal/VibeFormal/Capability/PathScope.lean)
+  と
+  [`PathScopeCorrect.lean`](../formal/VibeFormal/Proofs/PathScopeCorrect.lean)
+  で検証する。異なる authority の重複を reject し、valid policy では同一
+  domain/path に一致する grant の authority が一意になることを証明する。
 - 新規/改訂 ADR を `docs/adr.md` に追加し、Related ADR として
   0071/0075/0060/0068/0073 を明記する。
 - 各提案ごとに `fixtures/*.vibe` で最小再現を先に書き、seed compiler が
