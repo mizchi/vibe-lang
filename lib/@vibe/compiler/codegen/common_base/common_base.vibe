@@ -52,7 +52,14 @@ export struct FuncTable {
   indices: Array[Int];
   params: Array[Int];
   returns: Array[Int];
-  needs_env: Array[Bool]
+  needs_env: Array[Bool];
+  // #1100: sorted-name index (see ctor_sorted_index/ctor_table_index_of,
+  // this file) for func_table_index_of's O(log N) bsearch_leftmost lookup --
+  // built ONCE per compile from `names` via ctor_sorted_index, same as
+  // CtorTable.names_sorted/names_sorted_pos. `names` itself stays in its
+  // original (declaration) order; only this sorted VIEW is new.
+  names_sorted: Array[String];
+  names_sorted_pos: Array[Int]
 }
 
 export struct StrTable {
@@ -1264,18 +1271,45 @@ export fn is_ctor_call(value: Expr, ct: CtorTable) -> Bool {
 
 let op_i64_store = 55
 
-export fn resolve_func(ft: FuncTable, name: String) -> (Int, Int, Int) with { Error } {
-  let len = Array::length(ft.names)
-  let mut i = 0
-  let mut found = -1
-  while i < len {
-    if Array::get(ft.names, i) == name {
-      found = i
-      i = len
+/// #1100: O(log N) replacement for the linear scan over `ft.names` this and
+/// several other call sites (compile_call.vibe's cc_ft_has/cc_ft_first_idx/
+/// fn_idx_in_list/op_is_builtin, compile_expr.vibe's ident-not-local fallback)
+/// used to each do independently -- func_table.names commonly holds several
+/// hundred entries (every builtin plus every user/linked function) and these
+/// scans run once per identifier/call resolved during codegen, the single
+/// largest attributed self-time bucket in a full-closure compile's
+/// --cpu-prof (see .claude/skills/compiler-perf-profiling). Mirrors
+/// ctor_table_index_of exactly, including its defensive linear-scan fallback
+/// for a table built without the sorted view. FIRST-match semantics are
+/// preserved exactly: bsearch_leftmost returns the leftmost slot of an equal
+/// run in the STABLE sort, which is the same entry a forward linear scan
+/// would stop at first (see sorted_index.vibe's stability contract).
+export fn func_table_index_of(ft: FuncTable, name: String) -> Int {
+  if Array::length(ft.names_sorted) != Array::length(ft.names) {
+    let len = Array::length(ft.names)
+    let mut i = 0
+    let mut found = -1
+    while i < len {
+      if Array::get(ft.names, i) == name {
+        found = i
+        i = len
+      } else {
+        i = i + 1
+      }
+    }
+    found
+  } else {
+    let slot = bsearch_leftmost(ft.names_sorted, name)
+    if slot < 0 {
+      -1
     } else {
-      i = i + 1
+      Array::get(ft.names_sorted_pos, slot)
     }
   }
+}
+
+export fn resolve_func(ft: FuncTable, name: String) -> (Int, Int, Int) with { Error } {
+  let found = func_table_index_of(ft, name)
   if found < 0 {
     throw(String::concat("undefined function: ", name))
   };
