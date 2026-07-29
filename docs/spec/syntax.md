@@ -356,8 +356,18 @@ Rules:
 - `while` is statement-like and returns `Unit`.
 - `for-in` collects body results into an array.
 - `break Expr` returns a value from `loop` / `while`. `break(acc)` is parsed as
-  `break` followed by a parenthesized expression.
+  `break` followed by a parenthesized expression -- NOT the same shape as
+  `continue(a, b)`'s call-like next-state argument list. `break(a, b)` builds
+  the tuple `(a, b)`, it does not break with two separate loop-result values
+  (see `docs/tutorial/02_control_flow.vibe.md`'s loop section for a runnable
+  example of this asymmetry).
 - Parameterized `loop (...)` is tail-recursive state threading.
+- Avoid naming a top-level function `f` or `g`: those identifiers collide
+  with `@vibe/prelude/func.vibe`'s `compose`/`flip` combinator parameter
+  names and can produce invalid wasm at codegen time (checker passes,
+  `vibe run` fails to instantiate) -- tracked in #1203. Not a general
+  language ambiguity, just a known name-collision gap in the current
+  codegen; use any other identifier.
 
 ### Calls, Fields, Indexing
 

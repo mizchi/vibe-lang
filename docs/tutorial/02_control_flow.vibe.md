@@ -30,8 +30,10 @@ fn find_first_neg(arr: Array[Int]) -> Int {
     if Array::get(arr, i) < 0 { return i }
     i = i + 1
   }
-  // 落とし穴: ブロックの直後に裸の `-1` を置くと二項マイナスに読まれる。
-  // 末尾の負値は `return -1` と書く。
+  // 早期 return (`return i`) と関数末尾の暗黙の戻り値は同じ「関数の結果」
+  // なので、ここも揃えて `return -1` と明示している (裸の `-1` を関数
+  // 本体の最後の式として置くのも動作は同じ -- while ブロックは Unit の
+  // 文として閉じるので `-1` は独立した最終式になる)。
   return -1
 }
 
@@ -65,6 +67,28 @@ fn main with { Stdout } {
 
 ```output
 sum = 45
+```
+
+`continue(...)` と `break ...` は見た目が似ているが対称ではない。
+`continue(a, b)` はループの次の状態 (`i`, `acc`, ... それぞれ 1 つずつ)
+への関数呼び出しのような構文だが、`break(a, b)` の丸括弧はただの式の括弧
+— `break` に `(a, b)` という**タプル 1 個**を渡しているだけ (`break a, b`
+のような「2 値の loop 結果」にはならない)。
+
+```vibe run
+import @vibe/prelude { stdout_write }
+
+fn main with { Stdout } {
+  let r = loop (i = 0, acc = 0) {
+    if i >= 3 { break(acc, i) }        // break(acc, i) は tuple (acc, i)
+    continue(i + 1, acc + i)
+  }
+  stdout_write("r = (\{r.0}, \{r.1})\n")   // r: (Int, Int) -- break acc, i ではない
+}
+```
+
+```output
+r = (3, 3)
 ```
 
 ## for-in は Array を返す
