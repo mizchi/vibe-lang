@@ -19,14 +19,38 @@ const cur = JSON.parse(readFileSync(curPath, "utf8"));
 const base = basePath && existsSync(basePath) ? JSON.parse(readFileSync(basePath, "utf8")) : null;
 
 const fmt = (n) => n == null ? "–" : n.toLocaleString("en-US");
-function delta(curV, baseV, loosePct) {
+
+// Runner normalization (see scripts/bench_metrics.sh header for rationale):
+// shared CI runners vary in raw speed run to run, which shows up as every
+// single advisory metric moving together by a similar magnitude — the
+// #1207 investigation caught two unrelated PRs each showing a uniform
+// swing in opposite directions, neither caused by the PR's own code. Both
+// snapshots also bench a fixed already-tracked series against the
+// COMMITTED SEED wasm; the ratio of those two readings estimates how much
+// faster/slower THIS runner is right now vs. when the baseline was taken,
+// so advisory deltas can be corrected for it instead of read at face value.
+let runnerFactor = null;
+let calibNote = "no calibration data (older baseline snapshot, or runner/seed unavailable) — deltas below are raw, uncorrected for runner speed";
+if (cur.calibration?.ns_p50 != null && base?.calibration?.ns_p50 != null) {
+  if (cur.calibration.seed_sha256 && base.calibration.seed_sha256 &&
+      cur.calibration.seed_sha256 !== base.calibration.seed_sha256) {
+    calibNote = "seed changed (bootstrap bump) between baseline and current — calibration not comparable, deltas below are raw";
+  } else if (base.calibration.ns_p50 > 0) {
+    runnerFactor = cur.calibration.ns_p50 / base.calibration.ns_p50;
+    calibNote = `runner factor ${runnerFactor.toFixed(3)}× (${cur.calibration.label || "calibration"}: current ${fmt(cur.calibration.ns_p50)}ns vs baseline ${fmt(base.calibration.ns_p50)}ns p50) — advisory deltas below are normalized to correct for it`;
+  }
+}
+
+function delta(curV, baseV, loosePct, normalize) {
   if (baseV == null || curV == null) return " | –";
-  if (baseV === curV) return " | ±0";
-  const pct = baseV === 0 ? 100 : ((curV - baseV) / baseV) * 100;
+  const adjCurV = normalize && runnerFactor ? curV / runnerFactor : curV;
+  if (baseV === adjCurV) return " | ±0";
+  const pct = baseV === 0 ? 100 : ((adjCurV - baseV) / baseV) * 100;
   const sign = pct > 0 ? "+" : "";
   const flagAt = loosePct ? 15 : 2;
   const flag = Math.abs(pct) >= flagAt ? (pct > 0 ? " ⚠️" : " 🎉") : "";
-  return ` | ${sign}${pct.toFixed(2)}%${flag}`;
+  const tag = normalize && runnerFactor ? " (norm)" : "";
+  return ` | ${sign}${pct.toFixed(2)}%${flag}${tag}`;
 }
 
 const lines = [];
@@ -61,12 +85,16 @@ lines.push("");
 
 lines.push("#### Advisory (wall time — CI noise ±10-15% is normal)");
 lines.push("");
+if (base) {
+  lines.push(`> ${calibNote}`);
+  lines.push("");
+}
 lines.push("| metric | current | baseline | Δ |");
 lines.push("|---|---:|---:|---|");
-lines.push(`| selfcompile wall_ms (median) | ${fmt(cur.selfcompile?.wall_ms_median)} | ${fmt(base?.selfcompile?.wall_ms_median)}${delta(cur.selfcompile?.wall_ms_median, base?.selfcompile?.wall_ms_median, true)} |`);
+lines.push(`| selfcompile wall_ms (median) | ${fmt(cur.selfcompile?.wall_ms_median)} | ${fmt(base?.selfcompile?.wall_ms_median)}${delta(cur.selfcompile?.wall_ms_median, base?.selfcompile?.wall_ms_median, true, true)} |`);
 for (const [label, v] of Object.entries(cur.benches || {})) {
   const b = base?.benches?.[label]?.ns_p50;
-  lines.push(`| ns/op p50: ${label} | ${fmt(v.ns_p50)} | ${fmt(b)}${delta(v.ns_p50, b, true)} |`);
+  lines.push(`| ns/op p50: ${label} | ${fmt(v.ns_p50)} | ${fmt(b)}${delta(v.ns_p50, b, true, true)} |`);
 }
 lines.push("");
 if (cur.micro_status && cur.micro_status !== "ok") {
