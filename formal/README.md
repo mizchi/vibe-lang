@@ -274,6 +274,11 @@ when both grants carry extensionally equivalent operation authority.
 Consequently, every grant matching one domain/path has equivalent authority,
 independent of source order or operation-list order.
 
+`overlapWitness` materializes a canonical diagnostic path. A returned
+`some path` is proved to match both patterns, while `none` is equivalent to an
+empty semantic intersection. Examples pin `src/*` plus `src/generated` to the
+witness `src/generated` and disjoint `src/**`/`cache/**` to `none`.
+
 `ScopedEntryContract` composes this invariant with the existing ADR-0075
 preflight. Examples reject `read src/**` plus `write src/generated/**`, accept
 same-authority overlap and disjoint `src/**`/`cache/**` grants, and retain a

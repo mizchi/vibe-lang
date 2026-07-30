@@ -97,6 +97,14 @@ example : PathGlob.overlaps sourceChild generatedDirectory = true := by
   decide
 
 example :
+    PathGlob.overlapWitness sourceChild generatedDirectory =
+      some ["src", "generated"] := by
+  decide
+
+example : PathGlob.overlapWitness sourceTree cacheTree = none := by
+  decide
+
+example :
     ∃ path,
       sourceChild.Matches path ∧ generatedDirectory.Matches path :=
   (PathGlob.overlaps_iff_common_match

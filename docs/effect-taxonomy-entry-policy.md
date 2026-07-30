@@ -144,7 +144,8 @@ glob は同一 authority の場合だけ許可し、異なる authority の重�
 scope-aware preflight が reject する。
 [`PathScopeCorrect.lean`](../formal/VibeFormal/Proofs/PathScopeCorrect.lean)
 は overlap 判定と共通 path の存在の同値、および同じ path に一致する grant
-の authority 一意性を証明する。
+の authority 一意性を証明する。executable checker は canonical な共通 path
+witness を返し、`none` と semantic intersection の空性も同値である。
 
 これは ADR の意味論に対する machine-checked model であり、現行の文字列
 checker、builtin metadata、WIT 生成との correspondence proof ではない。
@@ -162,7 +163,7 @@ Implementation sequence 1–4 と compiler fixture は引き続き必要であ�
 | metadata classifier | exactly-one metadata lookup と argument shape から complete row を分類し、unknown/duplicate/malformed を fail-closed にした | 実装 metadata はこの contract に対応させる |
 | Oracle corpus | 正負15ケースを Lean から TSV に生成し、stale snapshot を `formal-check` で拒否する | contract の回帰ガードは自動化済み。selfhost differential は metadata API 待ち |
 | contract refinement | exact capability を operation/claim/binding に投影し、taxonomy admission から ADR-0075 preflight への含意を Lean で証明した | taxonomy check は WIT/host projection より前に必須 |
-| path-scope policy | restricted glob の overlap と共通 path の存在が同値で、valid policy では同一 domain/path の authority が一意になることを証明した | logical resource と resolved physical root の二段階で異権限の重複を exact に reject する |
+| path-scope policy | restricted glob の overlap と共通 path の存在が同値で、diagnostic witness の健全性と authority 一意性を証明した | logical/physical の二段階で異権限の重複を exact に reject し、共通 path を報告する |
 
 Phase 3 では上記3 fixture を導入し、checker の許可述語と Lean contract の
 対応を回帰ガードにする。

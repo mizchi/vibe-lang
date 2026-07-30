@@ -26,34 +26,19 @@ theorem SegmentPattern.common_match_implies_compatible
   cases left <;> cases right <;>
     simp_all [SegmentPattern.Matches, SegmentPattern.Compatible]
 
-private def SegmentPattern.sample : SegmentPattern → String
-  | .literal value => value
-  | .any => "_"
-
 private theorem SegmentPattern.sample_matches
     (pattern : SegmentPattern) :
     pattern.Matches pattern.sample := by
   cases pattern <;> simp [SegmentPattern.sample, SegmentPattern.Matches]
 
-private theorem SegmentPattern.compatible_has_common_match
+private theorem SegmentPattern.merge_matches
     {left right : SegmentPattern}
     (compatible : left.Compatible right) :
-    ∃ segment, left.Matches segment ∧ right.Matches segment := by
-  cases left with
-  | literal left =>
-      cases right with
-      | literal right =>
-          simp only [SegmentPattern.Compatible] at compatible
-          subst right
-          exact ⟨left, by simp [SegmentPattern.Matches]⟩
-      | any =>
-          exact ⟨left, by simp [SegmentPattern.Matches]⟩
-  | any =>
-      cases right with
-      | literal right =>
-          exact ⟨right, by simp [SegmentPattern.Matches]⟩
-      | any =>
-          exact ⟨"_", by simp [SegmentPattern.Matches]⟩
+    left.Matches (left.merge right) ∧
+      right.Matches (left.merge right) := by
+  cases left <;> cases right <;>
+    simp_all [SegmentPattern.Compatible, SegmentPattern.merge,
+      SegmentPattern.Matches]
 
 theorem PathGlob.prefixMatches_correct
     (patterns : List SegmentPattern)
@@ -191,41 +176,38 @@ private theorem sampled_prefix_matches
       simp [PathGlob.PrefixMatches,
         SegmentPattern.sample_matches, induction]
 
-private theorem compatible_prefix_has_common_match
+private theorem merged_prefix_matches
     {left right : List SegmentPattern}
     (compatible : PathGlob.PrefixCompatible left right) :
-    ∃ path,
-      PathGlob.PrefixMatches left path ∧
-        PathGlob.PrefixMatches right path ∧
-        path.length = Nat.max left.length right.length := by
+    PathGlob.PrefixMatches left (PathGlob.mergePrefixes left right) ∧
+      PathGlob.PrefixMatches right (PathGlob.mergePrefixes left right) ∧
+      (PathGlob.mergePrefixes left right).length =
+        Nat.max left.length right.length := by
   induction left generalizing right with
   | nil =>
-      refine ⟨right.map SegmentPattern.sample, ?_, ?_, ?_⟩
-      · simp [PathGlob.PrefixMatches]
-      · exact sampled_prefix_matches right
-      · simp
+      exact ⟨
+        by simp [PathGlob.PrefixMatches],
+        sampled_prefix_matches right,
+        by simp [PathGlob.mergePrefixes]
+      ⟩
   | cons pattern patterns induction =>
       cases right with
       | nil =>
-          refine ⟨
-            (pattern :: patterns).map SegmentPattern.sample,
+          exact ⟨
             sampled_prefix_matches (pattern :: patterns),
-            ?_,
-            ?_
+            by simp [PathGlob.PrefixMatches],
+            by simp [PathGlob.mergePrefixes]
           ⟩
-          · simp [PathGlob.PrefixMatches]
-          · simp
       | cons other others =>
           simp only [PathGlob.PrefixCompatible] at compatible
-          obtain ⟨segment, patternMatches, otherMatches⟩ :=
-            SegmentPattern.compatible_has_common_match compatible.1
-          obtain ⟨path, patternsMatch, othersMatch, pathLength⟩ :=
-            induction compatible.2
-          refine ⟨segment :: path, ?_, ?_, ?_⟩
-          · exact ⟨patternMatches, patternsMatch⟩
-          · exact ⟨otherMatches, othersMatch⟩
-          · simp only [List.length_cons]
-            rw [pathLength]
+          have mergedSegment :=
+            SegmentPattern.merge_matches compatible.1
+          have mergedTail := induction compatible.2
+          refine ⟨?_, ?_, ?_⟩
+          · exact ⟨mergedSegment.1, mergedTail.1⟩
+          · exact ⟨mergedSegment.2, mergedTail.2.1⟩
+          · simp only [PathGlob.mergePrefixes, List.length_cons]
+            rw [mergedTail.2.2]
             exact (Nat.succ_max_succ
               patterns.length others.length).symm
 
@@ -245,18 +227,27 @@ private theorem compatible_lengths_allow_max
 For the restricted glob grammar, structural overlap is not an over-approximation:
 it always has a concrete normalized path witness.
 -/
+private theorem merged_path_matches
+    {left right : PathGlob}
+    (overlap : left.MayOverlap right) :
+    left.Matches
+        (PathGlob.mergePrefixes left.segments right.segments) ∧
+      right.Matches
+        (PathGlob.mergePrefixes left.segments right.segments) := by
+  have prefixes := merged_prefix_matches overlap.1
+  have lengths := compatible_lengths_allow_max overlap.2
+  refine ⟨⟨prefixes.1, ?_⟩, ⟨prefixes.2.1, ?_⟩⟩
+  · rw [prefixes.2.2]
+    exact lengths.1
+  · rw [prefixes.2.2]
+    exact lengths.2
+
 theorem PathGlob.mayOverlap_has_common_match
     {left right : PathGlob}
     (overlap : left.MayOverlap right) :
-    ∃ path, left.Matches path ∧ right.Matches path := by
-  obtain ⟨path, leftPrefix, rightPrefix, pathLength⟩ :=
-    compatible_prefix_has_common_match overlap.1
-  have lengths := compatible_lengths_allow_max overlap.2
-  refine ⟨path, ⟨leftPrefix, ?_⟩, ⟨rightPrefix, ?_⟩⟩
-  · rw [pathLength]
-    exact lengths.1
-  · rw [pathLength]
-    exact lengths.2
+    ∃ path, left.Matches path ∧ right.Matches path :=
+  ⟨PathGlob.mergePrefixes left.segments right.segments,
+    merged_path_matches overlap⟩
 
 theorem PathGlob.mayOverlap_iff_common_match
     (left right : PathGlob) :
@@ -275,6 +266,48 @@ theorem PathGlob.overlaps_iff_common_match
       ∃ path, left.Matches path ∧ right.Matches path := by
   exact (PathGlob.overlaps_correct left right).trans
     (PathGlob.mayOverlap_iff_common_match left right)
+
+/-- Every emitted diagnostic witness belongs to both glob languages. -/
+theorem PathGlob.overlapWitness_sound
+    {left right : PathGlob}
+    {path : NormalizedPath}
+    (witness : left.overlapWitness right = some path) :
+    left.Matches path ∧ right.Matches path := by
+  cases overlap : left.overlaps right with
+  | false =>
+      simp [PathGlob.overlapWitness, overlap] at witness
+  | true =>
+      simp [PathGlob.overlapWitness, overlap] at witness
+      subst path
+      exact merged_path_matches
+        ((PathGlob.overlaps_correct left right).1 overlap)
+
+/-- A witness is present exactly when the Bool overlap checker accepts. -/
+theorem PathGlob.overlapWitness_isSome
+    (left right : PathGlob) :
+    (left.overlapWitness right).isSome = left.overlaps right := by
+  cases overlap : left.overlaps right <;>
+    simp [PathGlob.overlapWitness, overlap]
+
+/-- `none` is a proof-relevant diagnostic for semantic disjointness. -/
+theorem PathGlob.overlapWitness_eq_none_iff
+    (left right : PathGlob) :
+    left.overlapWitness right = none ↔
+      ¬∃ path, left.Matches path ∧ right.Matches path := by
+  cases overlap : left.overlaps right with
+  | false =>
+      simp only [PathGlob.overlapWitness, overlap, Bool.false_eq_true,
+        ↓reduceIte, true_iff]
+      intro common
+      have accepted :=
+        (PathGlob.overlaps_iff_common_match left right).2 common
+      rw [overlap] at accepted
+      contradiction
+  | true =>
+      simp only [PathGlob.overlapWitness, overlap, ↓reduceIte,
+        Option.some_ne_none, false_iff]
+      exact fun noCommon =>
+        noCommon ((PathGlob.overlaps_iff_common_match left right).1 overlap)
 
 theorem Grant.permissionsEquivalentB_correct
     {Domain : Type}

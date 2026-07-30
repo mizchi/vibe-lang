@@ -192,6 +192,11 @@ reject する。`most-specific wins`、source order、deny-overrides の優先�
 `src/generated/output.wasm` に同時に一致するため invalid であり、並び順を
 変えて read/write のどちらかを選ばせない。
 
+overlap checker は Bool だけでなく canonical な共通 path witness を返す。
+reject 診断には scope domain、両 pattern、両 authority と witness path を含める。
+restricted glob で overlap するなら witness は必ず存在し、`none` は semantic
+intersection が空であることを意味する。
+
 検査は二段階で行う。
 
 1. compile/plan では logical `ResourceId` を scope domain として、同じ logical
@@ -402,7 +407,7 @@ WasmFX tag の意味論に押し込めない。
 - `formal/VibeFormal/Proofs/CapabilityContractCorrect.lean`: executable predicates と relational
   contract の一致、no-start、delegation transitivity、provider lowering、worker authority
 - `formal/VibeFormal/Proofs/PathScopeCorrect.lean`: overlap と semantic path
-  intersection の完全一致、matching authority の一意性、
+  intersection の完全一致、diagnostic witness の健全性、matching authority の一意性、
   scope-aware preflight
 - `formal/VibeFormal/Proofs/CapabilityContractExamples.lean`: S3/Http、bucket identity、read/write、
   worker migration の正例・反例
@@ -422,6 +427,8 @@ WasmFX tag の意味論に押し込めない。
   host authority に含まれる。worker migration は authority を変更しない。
 - restricted glob checker の判定と、両 pattern に一致する normalized path の存在は
   同値であり、重複の見逃しも過剰拒否もない。
+- overlap witness が `some path` なら両 pattern が path に一致し、`none` なら
+  semantic intersection は空である。
 - valid scope policy では、同一 domain/path に一致する全 grant の authority が等しい。
 - base capability preflight が成功しても scope policy が曖昧なら `main` は開始しない。
 
@@ -536,6 +543,7 @@ Red:
 - S3 mock providerでS3が消え、provider requirementだけがresidualに残る。
 - `read src/**` と `write src/generated/**` を reject し、同一 authority の重複と
   `read src/**` / `write cache/**` は accept。
+- overlap 診断が両 pattern に一致する canonical path witness を含む。
 - 異なる logical resource が同じ physical root へ bind された場合にも重複を再検出。
 
 Green:

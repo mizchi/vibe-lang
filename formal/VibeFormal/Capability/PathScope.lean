@@ -44,6 +44,21 @@ def compatible (left right : SegmentPattern) : Bool :=
   | .literal left, .literal right => decide (left = right)
   | _, _ => true
 
+/-- Canonical concrete segment used to materialize wildcard diagnostics. -/
+def sample : SegmentPattern → String
+  | .literal value => value
+  | .any => "_"
+
+/--
+Canonical segment satisfying both inputs when they are compatible. For two
+incompatible literals the value is irrelevant because `overlapWitness` first
+checks structural overlap.
+-/
+def merge : SegmentPattern → SegmentPattern → String
+  | .literal left, _ => left
+  | .any, .literal right => right
+  | .any, .any => "_"
+
 end SegmentPattern
 
 /--
@@ -136,6 +151,24 @@ def MayOverlap (left right : PathGlob) : Prop :=
 def overlaps (left right : PathGlob) : Bool :=
   prefixCompatible left.segments right.segments &&
     lengthCompatible left right
+
+/-- Materialize a canonical path for two structurally compatible prefixes. -/
+def mergePrefixes :
+    List SegmentPattern → List SegmentPattern → NormalizedPath
+  | [], right => right.map SegmentPattern.sample
+  | left, [] => left.map SegmentPattern.sample
+  | left :: lefts, right :: rights =>
+      left.merge right :: mergePrefixes lefts rights
+
+/--
+Return a concrete path demonstrating overlap, or `none` for disjoint globs.
+Correctness is proved against `PathGlob.Matches`.
+-/
+def overlapWitness (left right : PathGlob) : Option NormalizedPath :=
+  if left.overlaps right then
+    some (mergePrefixes left.segments right.segments)
+  else
+    none
 
 end PathGlob
 
