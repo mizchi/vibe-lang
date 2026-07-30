@@ -105,12 +105,19 @@ fn pe_use(ctx: PCtx, scope: Map[String, Int], name: String) -> Int {
   0
 }
 
-fn pctx_new() -> PCtx {
+/// `borrow_ret_names` is the whole-program borrow-returning-function-name set
+/// (see is_borrow_ret_fname), computed ONCE per compile and identical across
+/// every function's plan build. COPIED (not aliased) so PCtx solely owns
+/// `pctx_names`: the caller's array reaches here through a borrowed struct
+/// field read (CompileCtx.borrow_ret_names, see compile_lambda.vibe), so
+/// storing it directly would let PCtx's structural drop decrement a refcount
+/// this plan never owned -- the #707/#715 double-free shape. One
+/// Array::slice is a single allocation + memory.copy of the name pointers.
+fn pctx_new(borrow_ret_names: Array[String]) -> PCtx {
   PCtx::{
     next_id: 0,
     seq_id: 0,
-    pctx_names: [
-    ],
+    pctx_names: Array::slice(borrow_ret_names, 0, Array::length(borrow_ret_names)),
     uses: [
     ],
     borrows: [
@@ -183,9 +190,8 @@ export fn pa_is_drop(a: PerceusAction) -> Bool {
   }
 }
 
-fn pc_declare(ctx: PCtx, name: String, scalar: Bool) -> Int {
+fn pc_declare(ctx: PCtx, _name: String, scalar: Bool) -> Int {
   let id = ctx.next_id
-  Array::push(ctx.pctx_names, name)
   Array::push(ctx.uses, 0)
   Array::push(ctx.borrows, 0)
   Array::push(ctx.scalar, scalar)
@@ -259,18 +265,6 @@ fn array_contains_str_pctx(arr: Array[String], s: String) -> Bool {
   found
 }
 
-/// #707: marker prefix (control char, cannot appear in a vibe identifier) used
-/// to smuggle the borrow-returning-function-name set through PCtx.pctx_names
-/// (a write-only "declared binding names" log that nothing else reads --
-/// see build_perceus_plan_with_params). A genuine dedicated PCtx field for
-/// this was tried and hit an unexplained "memory access out of bounds" reading
-/// it back specifically when the whole compiler self-compiles under RC
-/// (reproduces with the field's content/position/construction all varied;
-/// substituting pctx_names for the same read in the same call chain does NOT
-/// crash) -- see #707 for the investigation. Piggybacking on the
-/// known-safe field sidesteps it.
-let borrow_ret_marker = "BR:"
-
 /// #707: is `fname` a call whose return value is a BORROWED VIEW sharing a
 /// call argument's refcount, rather than a fresh owned reference -- either one
 /// of the 3 builtins that read an element in place, or a user function whose
@@ -283,8 +277,21 @@ let borrow_ret_marker = "BR:"
 /// (the match-scrutinee-lift's desugaring, see normalize/index.vibe
 /// lift_match_scrutinees) planned a drop for `__m_scrut` as if it independently
 /// owned a reference -- double-freeing the array element peek merely borrowed.
+///
+/// #1237 perf: `ctx.pctx_names` holds exactly the whole-program
+/// borrow-returning-name set (see pctx_new). A genuine dedicated PCtx field
+/// for that set was tried once and hit an unexplained "memory access out of
+/// bounds" reading it back specifically when the whole compiler self-compiles
+/// under RC (see #707), so pctx_names remains the known-safe field to read it
+/// from. What changed is that pc_declare used to ALSO append every declared
+/// binding name to this same array, so the set had to be stored with a
+/// control-char prefix to stay distinguishable -- making each lookup here pay
+/// a String::concat and, on a miss (the common case), rescan every binding
+/// declared so far in the current function. pc_declare no longer touches
+/// pctx_names, so the names sit here unprefixed and a miss costs only the
+/// fixed set.
 fn is_borrow_ret_fname(ctx: PCtx, fname: String) -> Bool {
-  fname == "Array::get" || fname == "Map::get" || fname == "__index" || fname == "__rec_field" || array_contains_str_pctx(ctx.pctx_names, String::concat(borrow_ret_marker, fname))
+  fname == "Array::get" || fname == "Map::get" || fname == "__index" || fname == "__rec_field" || array_contains_str_pctx(ctx.pctx_names, fname)
 }
 
 /// #707: fixed-point closure over top-level function definitions, starting
@@ -1918,7 +1925,8 @@ fn pctx_apply_borrow_retention(ctx: PCtx) -> Int {
 
 /// Build the dup/drop plan for a function body expression.
 export fn build_perceus_plan(body: Expr) -> Array[PerceusAction] {
-  let ctx = pctx_new()
+  let ctx = pctx_new([
+  ])
   let empty: Map[String, Int] = Map::new()
   pc_count(ctx, empty, body)
   pctx_apply_borrow_retention(ctx)
@@ -2175,16 +2183,7 @@ export fn param_is_heap_in_body(name: String, otype: Option[TypeExpr], body: Exp
 /// one used in multiple owning positions. Heap-ness comes from the param's type
 /// annotation (scalar params get scalar=true so they are never dropped).
 export fn build_perceus_plan_with_params(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String]) -> Array[PerceusAction] {
-  let ctx = pctx_new()
-  // #707: seed the borrow-returning-function-name set (see is_borrow_ret_fname)
-  // directly into pctx_names, bypassing pc_declare -- these markers are never
-  // looked up by id, only linearly searched by content, so being out of step
-  // with ctx.next_id / uses / scalar / etc. is harmless.
-  let mut bri = 0
-  while bri < Array::length(borrow_ret_names) {
-    Array::push(ctx.pctx_names, String::concat(borrow_ret_marker, Array::get(borrow_ret_names, bri)))
-    bri = bri + 1
-  }
+  let ctx = pctx_new(borrow_ret_names)
   let mut scope: Map[String, Int] = Map::new()
   let mut pi = 0
   while pi < Array::length(params) {
