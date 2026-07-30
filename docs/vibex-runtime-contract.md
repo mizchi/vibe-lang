@@ -43,6 +43,9 @@ preflight、task/process への authority 委譲に関する source of truth と
    provider を探索・download・自動昇格することはない。
 10. WasmFX は handler / continuation の lowering 候補であり、resource lifecycle、
     IAM、binding contract の意味論にはしない。
+11. path-scoped authority は正規化 glob の順序ではなく集合として扱う。同一
+    scope domain で交差しうる pattern は同一 authority の場合だけ許し、
+    異なる authority の重複は plan/apply 時に reject する。
 
 ## 用語と関係
 
@@ -166,6 +169,46 @@ resource kind の定義、logical id、physical name、secret/credential は別�
 operation interface または forge 不能な resource handle を渡し、credential は host
 adapter/provider が保持する。
 
+## Path-scoped authority
+
+filesystem 等の resource 内を path で絞る authority は、順序付き ACL として
+扱わない。Phase 1 の正規化 glob は path segment の literal、1 segment に一致する
+`*`、末尾で0個以上の segment に一致する `**` だけを許す。absolute path、空 segment、
+`.`、`..`、platform-dependent case folding、symlink resolution は glob 文法に含めず、
+provider が正規化・confinement 境界で処理する。
+
+同一 scope domain の grant `g1`、`g2` には次を要求する。
+
+```text
+MayOverlap(g1.pattern, g2.pattern)
+  implies g1.authority = g2.authority
+```
+
+同じ authority の pattern 重複は意味が同じなので許可し、plan artifact では
+canonicalize できる。authority の同一性は operation list の順序ではなく
+ADR-0071 の extensional row equality で判定する。異なる authority の重複は
+reject する。`most-specific wins`、source order、deny-overrides の優先規則は
+導入しない。例えば `read src/**` と `write src/generated/**` は
+`src/generated/output.wasm` に同時に一致するため invalid であり、並び順を
+変えて read/write のどちらかを選ばせない。
+
+overlap checker は Bool だけでなく canonical な共通 path witness を返す。
+reject 診断には scope domain、両 pattern、両 authority と witness path を含める。
+restricted glob で overlap するなら witness は必ず存在し、`none` は semantic
+intersection が空であることを意味する。
+
+検査は二段階で行う。
+
+1. compile/plan では logical `ResourceId` を scope domain として、同じ logical
+   resource 内の pattern 交差を検査する。
+2. apply では BindingLock の physical root identity を scope domain として再検査する。
+   異なる logical resource が同一または alias する物理 root に bind された場合も、
+   異なる authority の交差を reject する。
+
+instantiate/run preflight は両方の検査済み digest を BindingLock hash へ含め、
+scope policy が invalid または digest 不一致なら `main` を開始しない。実際の path
+open は、検査と同じ正規化規則および WASI preopen/provider confinement の内側で行う。
+
 ## Contract artifacts
 
 compile 後も source semantic contract と residual host contract を両方保持する。
@@ -176,6 +219,7 @@ SemanticContract {
   requires: Set OperationRef
   fork_requires: Set OperationRef
   resources: Set (ResourceId, ResourceKind)
+  path_scopes: Set (ResourceId, Authority, NormalizedGlob)
   source_contract_hash
 }
 
@@ -190,6 +234,7 @@ ResolvedContract {
 BindingLock {
   resolved_contract_hash
   logical_to_physical_bindings
+  resolved_path_scopes
   generated_policy_digest
   host_profile
   binding_hash
@@ -242,6 +287,7 @@ IAM action 等への写像は provider-specific metadata とする。たとえ�
 
 - parse、resolve、type/effect check を行う。
 - `main` の exact closed row と resource claim を抽出する。
+- logical resource ごとの正規化 path scope を抽出する。
 - semantic contract と未解決の component/WIT surface を生成する。
 - network、cloud API、credential discovery、resource mutationを行わない。
 
@@ -249,13 +295,16 @@ IAM action 等への写像は provider-specific metadata とする。たとえ�
 
 - target host profile と provider set を選ぶ。
 - provider lowering、resource graph、policy、WIT residual imports を計算する。
-- provider ambiguity、cycle、fork-safety、ABI/hash mismatch を検査する。
+- provider ambiguity、cycle、fork-safety、ABI/hash mismatch、および同一 logical
+  resource 内の path-scope ambiguity を検査する。
 - plan は pure data として review できるようにする。
 
 ### Apply / deploy
 
 - resource provider が lifecycle operation を実行する。
 - capability adapter、physical binding、最小権限 policy を構築する。
+- physical root identity へ scope を投影し、logical resource 間の alias を含めて
+  path-scope ambiguity を再検査する。
 - resolved contract と一致する binding lock を生成する。
 
 ### Instantiate / run
@@ -266,6 +315,7 @@ IAM action 等への写像は provider-specific metadata とする。たとえ�
 Entry.requires       ⊆ ComposedHost.provides
 Entry.fork_requires  ⊆ ComposedHost.forkable
 Entry.resources      satisfied-by BindingLock.bindings
+Entry.path_scopes    valid for logical and resolved physical domains
 contract / ABI / WIT / binding hashes match
 all residual imports linked
 ```
@@ -352,10 +402,17 @@ WasmFX tag の意味論に押し込めない。
 - `formal/VibeFormal/Capability/Contract.lean`: entry、resource claim/binding、host profile、
   provider lowering、spawn delegation
 - `formal/VibeFormal/Capability/Thread.lean`: physical worker が task authority だけを借りる関係
+- `formal/VibeFormal/Capability/PathScope.lean`: restricted glob、scope policy、
+  path-aware entry preflight
 - `formal/VibeFormal/Proofs/CapabilityContractCorrect.lean`: executable predicates と relational
   contract の一致、no-start、delegation transitivity、provider lowering、worker authority
+- `formal/VibeFormal/Proofs/PathScopeCorrect.lean`: overlap と semantic path
+  intersection の完全一致、diagnostic witness の健全性、matching authority の一意性、
+  scope-aware preflight
 - `formal/VibeFormal/Proofs/CapabilityContractExamples.lean`: S3/Http、bucket identity、read/write、
   worker migration の正例・反例
+- `formal/VibeFormal/Proofs/PathScopeExamples.lean`: overlapping/disjoint glob と
+  order-sensitive first-match の反例
 
 現モデルは次を証明する。
 
@@ -368,6 +425,12 @@ WasmFX tag の意味論に押し込めない。
   requirement のどちらかである。
 - physical worker が行う operation は、そのworkerが所有するtask authorityを通じて
   host authority に含まれる。worker migration は authority を変更しない。
+- restricted glob checker の判定と、両 pattern に一致する normalized path の存在は
+  同値であり、重複の見逃しも過剰拒否もない。
+- overlap witness が `some path` なら両 pattern が path に一致し、`none` なら
+  semantic intersection は空である。
+- valid scope policy では、同一 domain/path に一致する全 grant の authority が等しい。
+- base capability preflight が成功しても scope policy が曖昧なら `main` は開始しない。
 
 Lean がまだ証明していないもの:
 
@@ -377,6 +440,8 @@ Lean がまだ証明していないもの:
 - manifest/WIT/compiler/runtime の concrete serialization correspondence
 - runtime evidence vector が contract どおりであること
 - actual Wasm thread/Worker/allocator の isolation
+- concrete path parser/normalizer、symlink/case-folding semantics、WASI/provider enforcement
+- logical resource から physical root identity への BindingLock projection correspondence
 - dynamic process supervision、revocation、distributed authority
 
 これらは resolver oracle、generated JSON corpus、runtime differential trace、provider
@@ -476,11 +541,16 @@ Red:
 - missing operation、wrong resource kind/id、non-fork-safe provider、ABI mismatchでmain未実行。
 - read-only parentからwrite childをreject。
 - S3 mock providerでS3が消え、provider requirementだけがresidualに残る。
+- `read src/**` と `write src/generated/**` を reject し、同一 authority の重複と
+  `read src/**` / `write cache/**` は accept。
+- overlap 診断が両 pattern に一致する canonical path witness を含む。
+- 異なる logical resource が同じ physical root へ bind された場合にも重複を再検出。
 
 Green:
 
 - deterministic provider selectionとbinding lock readerを実装する。
 - mock/in-memory providerでcompile→plan→runの縦串を通す。
+- normalized glob intersection と logical/physical scope policy gate を実装する。
 - LeanのcaseをJSON corpus化し、selfhost resolver/runtime preflightとdifferential testする。
 
 ### Phase 4: WIT / Component boundary

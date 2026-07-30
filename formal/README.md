@@ -6,7 +6,9 @@ scheduling, and module system. Their sources of truth are
 [ADR-0071](../docs/effectset.md) and
 [ADR-0073](../docs/error-effect-policy.md),
 [ADR-0068](../docs/concurrency.md),
-[ADR-0075](../docs/vibex-runtime-contract.md), plus
+[ADR-0075](../docs/vibex-runtime-contract.md),
+[ADR-0084](../docs/effect-taxonomy-entry-policy.md),
+[ADR-0085](../docs/exception-effect.md), plus
 [ADR-0070](../docs/module-system-oracle.md). The current string-based effect
 checker and synchronous eager `Task` implementation are not sources of truth.
 The module model is additionally locked to selfhost loader refinement tests.
@@ -49,6 +51,59 @@ ADR-0073 decides that explicit `with { Error }` is a semantic row element, but
 the higher-order typing and subtyping proofs remain coupled to #939. The model
 also abstracts from payload types, divergence, traps, stack unwinding,
 finalizers, and backend exception representation.
+
+## Verified effect-taxonomy and entry-authority properties
+
+The taxonomy model treats capability requirements, ordinary algebraic
+operations, and language-reserved typed exceptions as a disjoint sum. It proves
+that:
+
+- executable entry, host, row-subset, well-formedness, and spawn checks agree
+  with their relational definitions;
+- a runnable `.vibex` entry contains no undischarged algebraic operation;
+- every runnable capability has an exact host provider and retains its logical
+  resource identity as an `OperationRef` argument;
+- an operation carrying a resource argument cannot be reclassified as
+  algebraic;
+- algebraic handlers preserve capability/core requirements, while typed
+  exception handlers remove only the exact normalized exception kind;
+- child authority is a subset of parent authority, capabilities require
+  fork-safe host evidence, and algebraic handler evidence is task-local by
+  default.
+
+Executable examples distinguish `SourceRoot` from `CacheRoot`, reject an
+undischarged `Logger`, and retain a deliberately broken capability-only
+projection that incorrectly accepts `Logger`. This is a taxonomy-level contract
+for ADR-0084, not yet a correspondence proof for builtin metadata, the selfhost
+checker, WIT projection, provider lowering, or runtime evidence transfer. Those
+bridges remain implementation and differential-test obligations.
+
+The metadata classifier closes the gap between resolved `OperationRef` values
+and the disjoint taxonomy row. Unique declaration metadata is required;
+capabilities carry exactly one resource id, algebraic operations carry none,
+and core exceptions carry exactly one normalized type id. The executable
+classifier is proved equivalent to its declarative relation, and successful
+row classification preserves both well-formedness and row length. Unknown,
+duplicate, and malformed metadata fail the complete row. Negative witnesses
+show why argument shape must not override declaration class and why `filterMap`
+must not silently discard classification failures.
+
+The 15-case executable taxonomy corpus in
+`formal/oracle/effect-taxonomy.tsv` records normalized declaration catalogs,
+resolved operation rows, and their accepted requirement rows or fail-closed
+rejection. `TaxonomyOracleMain.lean` renders the corpus from the Lean model, and
+`formal-check` rejects a stale committed snapshot. This is currently a
+contract-level Oracle: a selfhost differential bridge remains unavailable until
+the compiler exposes the declaration metadata required by the classifier.
+
+The taxonomy-to-capability bridge connects this model to the existing ADR-0075
+contract rather than defining another unrelated preflight. It projects exact
+capabilities to operation authority plus resource claims, and provider evidence
+to host authority plus bindings. The refinement theorem proves that successful
+full-row entry/spawn admission implies successful projected ADR-0075 preflight.
+The implication is intentionally one-way: examples show that skipping taxonomy
+admission drops `Logger`, while dropping resource claims admits a provider with
+the right operation/resource id but the wrong nominal resource kind.
 
 ## Verified call-typing properties
 
@@ -211,10 +266,32 @@ Executable examples cover an S3-read contract, missing provider, wrong bucket
 binding, S3-to-Http lowering, read-to-write escalation rejection, and migration
 of one task between two physical workers.
 
+The path-scope extension models normalized glob segments as literals, `*`, and
+a trailing `**`. Its executable overlap checker is exact for this restricted
+grammar: it returns true if and only if a normalized path exists that matches
+both patterns. A valid policy permits an overlap within one scope domain only
+when both grants carry extensionally equivalent operation authority.
+Consequently, every grant matching one domain/path has equivalent authority,
+independent of source order or operation-list order.
+
+`overlapWitness` materializes a canonical diagnostic path. A returned
+`some path` is proved to match both patterns, while `none` is equivalent to an
+empty semantic intersection. Examples pin `src/*` plus `src/generated` to the
+witness `src/generated` and disjoint `src/**`/`cache/**` to `none`.
+
+`ScopedEntryContract` composes this invariant with the existing ADR-0075
+preflight. Examples reject `read src/**` plus `write src/generated/**`, accept
+same-authority overlap and disjoint `src/**`/`cache/**` grants, and retain a
+broken first-match evaluator whose result changes when rule order is reversed.
+The domain is generic so planning can validate logical resource ids and apply
+can validate resolved physical-root ids with the same contract.
+
 The current model does not prove provider implementation semantics, policy
 generation, provider-chain termination/ambiguity, manifest/WIT serialization,
-evidence-vector correspondence, or concrete Wasm worker isolation. Those are
-explicit compiler/runtime/provider refinement obligations in ADR-0075.
+concrete path normalization and symlink/case-folding semantics, BindingLock
+projection, evidence-vector correspondence, or concrete Wasm worker isolation.
+Those are explicit compiler/runtime/provider refinement obligations in
+ADR-0075.
 
 ## Verified module-system properties
 
@@ -258,17 +335,19 @@ From the repository root, the equivalent project task is:
 pkf run formal-check
 ```
 
-This command also executes `OracleMain.lean` and rejects a stale committed
-`formal/oracle/call-typing.tsv`. It also tests the bridge's report, strict, and
-checker-error behavior against a deterministic fake checker. To inspect the
-generated corpus directly:
+This command also executes `OracleMain.lean` and `TaxonomyOracleMain.lean`, and
+rejects stale committed `formal/oracle/call-typing.tsv` and
+`formal/oracle/effect-taxonomy.tsv` snapshots. It also tests the call-typing
+bridge's report, strict, and checker-error behavior against a deterministic fake
+checker. To inspect the generated corpora directly:
 
 ```sh
 cd formal
 lake env lean --run OracleMain.lean
+lake env lean --run TaxonomyOracleMain.lean
 ```
 
-To compare the committed Oracle with the current selfhost checker:
+To compare the committed call-typing Oracle with the current selfhost checker:
 
 ```sh
 pkf run formal-selfhost-oracle

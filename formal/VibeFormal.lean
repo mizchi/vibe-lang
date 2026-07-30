@@ -5,6 +5,14 @@ import VibeFormal.Proofs.AliasEquivalent
 import VibeFormal.Proofs.Examples
 import VibeFormal.Proofs.ErrorPolicyCorrect
 import VibeFormal.Proofs.ErrorPolicyExamples
+import VibeFormal.Proofs.ExceptionPolicyCorrect
+import VibeFormal.Proofs.EffectTaxonomyCorrect
+import VibeFormal.Proofs.EffectTaxonomyExamples
+import VibeFormal.Proofs.TaxonomyClassifierCorrect
+import VibeFormal.Effect.TaxonomyOracle
+import VibeFormal.Proofs.TaxonomyClassifierExamples
+import VibeFormal.Proofs.TaxonomyBridgeCorrect
+import VibeFormal.Proofs.TaxonomyBridgeExamples
 import VibeFormal.Proofs.SchedulerCorrect
 import VibeFormal.Proofs.SchedulerExamples
 import VibeFormal.Proofs.ModuleExamples
@@ -13,6 +21,7 @@ import VibeFormal.Proofs.NurseryCorrect
 import VibeFormal.Proofs.AsyncExamples
 import VibeFormal.Proofs.ParallelExamples
 import VibeFormal.Proofs.CapabilityContractExamples
+import VibeFormal.Proofs.PathScopeExamples
 import VibeFormal.Proofs.CallTypingCorrect
 import VibeFormal.Proofs.CallTypingExamples
 import VibeFormal.Typing.FunctionSubsumption
