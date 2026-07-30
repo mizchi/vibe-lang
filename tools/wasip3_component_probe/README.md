@@ -55,6 +55,14 @@ yet built here; `get-async`'s implicit wait already exercises the
 `waitable-set.new`/`.poll`/`waitable.join` loop, which is the part
 `compile_call.vibe`'s `await` lowering actually needs to emit.
 
+## Update: stackful blocking-wait mechanics now proven (`stackful/`)
+
+The open question below ("does callback-less stackful async-lift handle a
+*genuinely* blocking wait?") is now **resolved: yes**, via a fully
+hand-authored Component Model probe in `stackful/` — see that section below
+for the two real bugs found (and fixed) along the way. Read on for the
+original (still-accurate) background on how the ABI names were recovered.
+
 ## Open question this does NOT resolve: stackful vs. callback
 
 `wit-bindgen`'s default Rust codegen (confirmed above: both `[async-lift]run`
@@ -113,3 +121,123 @@ wasm-tools print guest/target/wasm32-unknown-unknown/release/probe_guest.wasm \
 
 To regenerate `wit/` bindings by hand (not required to build, `wit_bindgen::generate!`
 does this at compile time): `wit-bindgen rust wit/ --async all --out-dir src_gen`.
+
+## `stackful/`: hand-authored blocking-wait probe (M1b-3c mechanics proof)
+
+`stackful/component.wat` is a **fully hand-written** Component Model binary
+(no `wit-bindgen`, no `wasm-tools component embed`/`component new`) that
+implements the exact shape `component_codegen.vibe` needs to emit for a real
+blocking `await`: a callback-less "stackful" async-lift export whose guest
+code performs the canonical-ABI `future.read`-equivalent retry loop directly
+— `waitable-set.new` → `waitable.join` (subtask, set) →
+loop { `waitable-set.wait` → check `STATUS_RETURNED` } → `subtask.drop` →
+`task.return`. It imports one async host function (`get-async: async func()
+-> u32`) so the whole thing can be driven by a real async host implementation
+(`stackful/host/`, a Rust binary using `wasmtime-47`) that suspends for
+300ms via `tokio::time::sleep` before resolving — i.e. a *genuinely*
+non-ready wait, not the trivially-ready case the existing
+`scripts/test_async_component_gate.sh` gate covers.
+
+Building/running it end-to-end (see "Reproducing" below) now prints:
+
+```
+[host] get-async: suspending for 300ms
+[host] get-async: resolved with 42
+[host] run() = 42 (elapsed 302.7ms)
+```
+
+confirming: the guest's wasm fiber genuinely suspends (no thread blocking on
+the host side — real async `tokio::time::sleep`), resumes correctly once the
+host resolves, and the `waitable-set.wait` retry loop observes the right
+status transition and returns the right value. This is the core mechanical
+proof needed before writing the real `future.read`/`waitable-set` codegen
+in `component_codegen.vibe` (M1b-3c-1b, tracked in #1230).
+
+### Two real bugs found and fixed while building this
+
+Both were silent-wrong-behavior bugs (no error from `wasm-tools validate` or
+from wasmtime at instantiation time), so worth documenting for whoever
+writes the actual codegen:
+
+1. **Host driving API: `call_async` is the wrong entry point for a component
+   that imports host functions via `func_wrap_concurrent`.** Calling the
+   exported `run` function with the "plain" `TypedFunc::call_async(&mut
+   store, ()).await` pattern (correct for host functions defined via
+   `func_wrap`/`func_wrap_async`) produced a genuine host-side suspend/resume
+   (the 300ms delay really elapsed) but then trapped with `wasm trap:
+   deadlock detected: event loop cannot make further progress` right after
+   the host resolved. The fix is to drive the call through
+   `Store::run_concurrent` + `TypedFunc::call_concurrent`, which properly
+   integrates with wasmtime's own concurrent task scheduler:
+   ```rust
+   let (result,) = store
+       .run_concurrent(async move |accessor| run.call_concurrent(accessor, ()).await)
+       .await??;
+   ```
+   `run_concurrent`'s own doc comment example shows this exact pattern (see
+   `wasmtime::component::concurrent::run_concurrent` in `wasmtime-47.0.2`).
+   Every reference in the crate docs describing plain `call_async` assumes
+   `func_wrap`/`func_wrap_async` host functions, not `func_wrap_concurrent`
+   ones — this distinction isn't called out anywhere obviously, so it's easy
+   to miss. (Using the wrong API didn't just perform worse — it deadlocked.)
+
+2. **`waitable-set.wait`'s payload MUST be written into the same memory the
+   guest reads from — `canon lower ... async`'s `memory` option and
+   `canon waitable-set.wait`'s `memory` option must agree with the guest's
+   own memory, not just with each other.** The natural way to avoid the
+   well-known "memory cycle" (the guest's own exported memory isn't
+   available yet while building the `canon lower` functions that must be
+   supplied as *imports* to that same guest's instantiation — see the older
+   parts of this README's history in git blame / session notes) is to
+   instantiate a small standalone module (`$memhost`) purely to have *a*
+   memory to point every `(memory ...)` canonical option at before the guest
+   exists. That does solve the circular-import problem for
+   *instantiation*, but if the guest module still separately **declares and
+   exports its own memory** (`(memory (export "memory") 1)`), the guest's
+   `i32.load`/`i32.store` instructions operate on *that* memory — a
+   different Wasm memory instance than the one the host actually wrote the
+   `waitable-set.wait` payload into. Every host-side write (the subtask
+   status code, the eventual `u32` result) silently lands in memory the
+   guest never reads. There's no trap, no validation error — the guest just
+   always observes zeroed payload bytes (`code = 0`, i.e. `STARTING`,
+   forever), which is indistinguishable from "the host hasn't produced an
+   event yet" and causes the exact same trap #1 that was originally
+   attributed purely to the driving-API bug — both bugs were compounding
+   until this one was isolated with a debug instrumented build
+   (`debug_component.wat`-style: loop capped at N iterations, stash the raw
+   `(iter, event0, code)` tuple to a fixed memory address, `task.return`
+   that instead of the real result) that showed `code` never leaving `0`
+   even though the host-side trace (`RUST_LOG=wasmtime=trace`) clearly
+   logged `deliver event Subtask { status: Returned }`.
+
+   **Fix**: the guest module must **import** its memory from the same
+   standalone module used for the canonical options, not declare its own:
+   ```wat
+   (core module $guest
+     ...
+     (import "env" "memory" (memory 1))   ;; NOT (memory (export "memory") 1)
+     ...)
+   ...
+   (core instance $guest-inst (instantiate $guest
+     (with "$root" (instance ...))
+     (with "[export]$root" (instance ...))
+     (with "env" (instance (export "memory" (memory $mem-inst "memory"))))))
+   ```
+   This generalizes directly to `component_codegen.vibe`: whatever memory
+   the guest module's own compiled code uses for its heap/locals-spill area
+   must be the *exact same* memory instance referenced by every `(memory
+   ...)` canonical option on every async-related canon built-in the guest
+   imports (`canon lower ... async`, `canon waitable-set.wait`,
+   `canon waitable-set.poll`, and any future `canon future.read`/
+   `canon stream.read` uses) — not a separate bootstrap-only memory.
+
+### Reproducing
+
+```bash
+cd stackful
+wasm-tools parse component.wat -o component.wasm
+wasm-tools validate --features all component.wasm
+cd host && cargo build --release && cd ..
+./host/target/release/p3host component.wasm
+# expect: "[host] run() = 42 (elapsed ~300ms)", exit 0
+```
