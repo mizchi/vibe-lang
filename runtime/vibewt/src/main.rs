@@ -1813,6 +1813,22 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             vibe_atomic_write(&path, content.as_bytes())
         },
     )?;
+    // #1220: Fs::rename -- declared as a compiler builtin and emitted by
+    // codegen (`vibe.fs_rename (i64, i64) -> ()`, linked_compile.vibe:3800)
+    // but never wired up here, so any program calling it crashed at
+    // instantiation under the production runner. Mirrors fs_write_file's
+    // two-packed-string-arg shape and the Node runner's `fs.renameSync`.
+    linker.func_wrap(
+        "vibe",
+        "fs_rename",
+        |mut caller: Caller<'_, HostState>, src: i64, dst: i64| -> Result<()> {
+            let src = vibe_read_packed_str(&mut caller, src)?;
+            let dst = vibe_read_packed_str(&mut caller, dst)?;
+            fs::rename(&src, &dst)
+                .map_err(|e| format_err!("vibe fs_rename '{src}' -> '{dst}': {e}"))?;
+            Ok(())
+        },
+    )?;
     linker.func_wrap(
         "vibe",
         "fs_write_bytes",
