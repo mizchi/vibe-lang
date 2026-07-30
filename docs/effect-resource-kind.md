@@ -198,7 +198,12 @@ ADR のスコープ外とする(下記 `Rejected / deferred alternatives`)。
 - **#1143 の WIT contract 本体の解消**: resource-kind retrofit は
   #1143 の実装債務(ambient builtin effect の WIT 特別扱い)を構造的に
   解消するが、#1143 本来の要求(Wasmtime 非依存の host contract WIT
-  ファイル)はこの ADR の範囲を超える別の作業として残る。
+  ファイル)はこの ADR の範囲を超える別の作業として残る。**2026-07-30
+  追記**: #1143 本来の要求は ADR-0086 として決着した
+  ([host-runtime-contract.md](host-runtime-contract.md))。本 ADR の
+  Phase 4(WIT 生成 retrofit)との関係(hand-authored `.wit` を
+  Phase 4 完了後も残すか、自動生成へ置き換えるか)は ADR-0086 側の
+  未解決事項として残る。
 - **Deno 風の interactive permission request**(`Deno.permissions
   .request()` 相当): 実行中に人間へインタラクティブに prompt する方式は、
   ADR-0075 の「authority は run 中不変、instantiate 前に一括検査」という

@@ -1,4 +1,22 @@
-# Compiler host runtime contract (#1143)
+# ADR-0086: Compiler host runtime contract (#1143)
+
+Status: accepted
+
+Date: 2026-07-28
+
+Related: ADR-0010(WASM Component Model / WIT 統合 — 本 ADR が定める host
+import 契約はこの WIT 化方針の compiler-host 版)、ADR-0079(wasm proposal
+依存を compiler-host / codegen-target の2水準に分離 — `runtime/vibewt` を
+実験的機能に依存してよい実行基盤として扱う既存の前例)、ADR-0050(wasmtime
+AOT は selfhost bench の host-side accelerator であり、canonical selfhost
+artifact は WASI wasm standalone として実行可能であり続けるべき、という
+「Wasmtime を必須にしない」という本 ADR と同じ動機の既存決定)、ADR-0056(
+`runtime/vibewt` / cwasm cache を execution substrate として canonical
+artifact と切り分ける cutover ADR)、ADR-0084(resource kind パラメータ —
+「#1143 の WIT contract 本体の解消は本 ADR のスコープ外」と明記した側、
+本 ADR がその follow-up)、[docs/effect-wit-mapping.md](effect-wit-mapping.md)
+(`vibe compile --wit` によるユーザープログラム側の effect-surface WIT 化 —
+本 ADR が扱う compiler 自身の host boundary とは対象が異なる姉妹機構)
 
 > **Status (2026-07-28):** three passes, two rounds of Codex review. Round 1
 > documented the contract (over-broadly). Round 2 audited every op for real
