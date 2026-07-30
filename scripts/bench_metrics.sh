@@ -14,9 +14,9 @@
 #     - selfcompile wall_ms (median of VIBE_BENCH_KPI_RUNS, default 3)
 #     - ns_p50 of every tracked bench block
 #
-# Micro benches need the vibewt runtime; they are skipped (with a note in the
-# JSON) unless VIBE_RUNNER points at a vibewt binary or
-# runtime/vibewt/target/release/vibewt exists.
+# Micro benches need the viberun runtime; they are skipped (with a note in the
+# JSON) unless VIBE_RUNNER points at a viberun binary or
+# runtime/viberun/target/release/viberun exists.
 #
 # RUNNER NORMALIZATION (calibration): advisory wall-time numbers are only
 # comparable across CI runs if the underlying runner's raw speed didn't
@@ -92,8 +92,8 @@ done
 
 # --- micro benches (bytes_per_op deterministic, ns_p50 advisory) --------------
 bench_tsv="$work/bench.tsv"; : > "$bench_tsv"
-micro_status="skipped (no vibewt runtime)"
-RUNNER_BIN="${VIBE_RUNNER:-$ROOT_DIR/runtime/vibewt/target/release/vibewt}"
+micro_status="skipped (no viberun runtime)"
+RUNNER_BIN="${VIBE_RUNNER:-$ROOT_DIR/runtime/viberun/target/release/viberun}"
 if [ -x "$RUNNER_BIN" ] && [ -f "$TRACKED" ]; then
   micro_status="ok"
   while IFS= read -r bf; do
@@ -134,9 +134,9 @@ fi
 # pure_bench's fib30 (~70ns/op, dominated by measurement overhead).
 #
 # All THREE calibration inputs must be pinned and compared, not just the
-# seed: $RUNNER_BIN (vibewt) is built from the CURRENT checkout, and
+# seed: $RUNNER_BIN (viberun) is built from the CURRENT checkout, and
 # $CALIB_BENCH is read from the CURRENT checkout too -- a PR that changes
-# runtime/vibewt or bench/regression/alloc_bench.vibe would otherwise have
+# runtime/viberun or bench/regression/alloc_bench.vibe would otherwise have
 # that real change misread as pure host-speed drift and divided out of
 # every advisory delta (found in review, #1209).
 CALIB_BENCH="${VIBE_CALIBRATION_BENCH:-bench/regression/alloc_bench.vibe}"
@@ -197,7 +197,7 @@ const doc = {
   // unavailable) -- consumers must treat that as "normalization unavailable",
   // not as a zero. All three hashes (seed/runner/bench source) must match
   // between two snapshots before their calibration readings are comparable
-  // -- a PR that changes runtime/vibewt or the calibration bench itself
+  // -- a PR that changes runtime/viberun or the calibration bench itself
   // must not have that show up as pure runner-speed drift (#1209 review).
   calibration: {
     label: process.env.BM_CALIB_LABEL || null,

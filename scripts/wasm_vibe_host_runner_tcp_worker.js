@@ -2,7 +2,7 @@
 "use strict";
 
 // Worker-thread half of the Node dev runner's Socket::tcp_* support (mirrors
-// runtime/vibewt's blocking std::net::TcpStream host imports). Node has no
+// runtime/viberun's blocking std::net::TcpStream host imports). Node has no
 // synchronous TCP client, but the guest's `vibe.tcp_*` imports are called
 // through wasmtime/wasm's synchronous func_wrap ABI and must return before
 // the guest instruction stream continues -- so the main thread blocks on
@@ -76,7 +76,7 @@ port.on("message", (msg) => {
     // already buffered immediately, or wait for exactly the next one.
     // `.read(n)` demands AT LEAST n bytes be buffered (returns null until
     // then, even if some data already arrived) -- real socket reads (and
-    // runtime/vibewt's std::net::TcpStream::read) return as soon as ANY data
+    // runtime/viberun's std::net::TcpStream::read) return as soon as ANY data
     // is available, up to the requested cap, so read only what's already
     // buffered (capped at maxBytes) instead of demanding the full amount.
     const tryRead = () => {

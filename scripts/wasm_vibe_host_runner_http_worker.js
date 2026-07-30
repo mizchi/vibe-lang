@@ -2,7 +2,7 @@
 "use strict";
 
 // Worker-thread half of the Node dev runner's Http::request/response_*/close
-// support (mirrors runtime/vibewt's blocking ureq-based host imports, #1226).
+// support (mirrors runtime/viberun's blocking ureq-based host imports, #1226).
 // Node has no synchronous HTTP client, but the guest's `vibe.http_*` imports
 // are called through wasmtime/wasm's synchronous func_wrap ABI and must
 // return before the guest instruction stream continues -- so the main thread

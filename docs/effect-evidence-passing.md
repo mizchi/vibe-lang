@@ -1746,7 +1746,7 @@ A/B で確認した重要な事実: **`a` (と `b`) を個別に何度参照さ�
 combinator フォールバックに落ちることにある。
 
 もう一点: この repro は Node dev-runner (`scripts/wasm_vibe_host_runner.js`)
-と実 wasmtime (`runtime/vibewt`) の **両方**で同一に `null function or
+と実 wasmtime (`runtime/viberun`) の **両方**で同一に `null function or
 function signature mismatch` / `indirect call type mismatch` として
 crash する (元の `lsp_run_with_handler` 実例は wasmtime でのみ trap し
 Node では偶然通っていた — dev-runner 側の call_indirect 実装が

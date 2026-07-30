@@ -1,28 +1,28 @@
-//! Small CLI exercising the `vibewt_client` library.
+//! Small CLI exercising the `viberun_client` library.
 //!
 //! Usage:
-//!   vibewt_client <wasm-or-cwasm> <case> [<case>...]
-//!   vibewt_client --runs N <wasm-or-cwasm> <case>
+//!   viberun_client <wasm-or-cwasm> <case> [<case>...]
+//!   viberun_client --runs N <wasm-or-cwasm> <case>
 //!
 //! Spawns one daemon, sends each case as a `--check <case>` request,
 //! prints `req_id\telapsed_us\texit_code` per response. Demonstrates
 //! the cold/warm gap (first response includes the ~179ms
 //! ensure_builtin_modules cost, subsequent ones don't).
 
-use vibewt_client::Client;
+use viberun_client::Client;
 use std::process::ExitCode;
 
 fn print_help() {
     eprintln!(
-        "vibewt_client — daemon protocol exerciser\n\
+        "viberun_client — daemon protocol exerciser\n\
          \n\
          USAGE:\n\
-           vibewt_client <wasm|cwasm> <case> [<case>...]\n\
-           vibewt_client --runs N <wasm|cwasm> <case>\n\
+           viberun_client <wasm|cwasm> <case> [<case>...]\n\
+           viberun_client --runs N <wasm|cwasm> <case>\n\
          \n\
          ENV:\n\
-           MOONRUN_WT_BIN   path to vibewt (default: \n\
-                            runtime/vibewt/target/release/vibewt)\n"
+           MOONRUN_WT_BIN   path to viberun (default: \n\
+                            runtime/viberun/target/release/viberun)\n"
     );
 }
 
@@ -69,7 +69,7 @@ fn main() -> ExitCode {
     let mut client = match Client::spawn(wasm) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("vibewt_client: {e}");
+            eprintln!("viberun_client: {e}");
             return ExitCode::from(1);
         }
     };
@@ -90,7 +90,7 @@ fn main() -> ExitCode {
                 }
             }
             Err(e) => {
-                eprintln!("vibewt_client: request failed: {e}");
+                eprintln!("viberun_client: request failed: {e}");
                 return ExitCode::from(1);
             }
         }
@@ -104,7 +104,7 @@ fn main() -> ExitCode {
             }
         }
         Err(e) => {
-            eprintln!("vibewt_client: daemon wait: {e}");
+            eprintln!("viberun_client: daemon wait: {e}");
             return ExitCode::from(1);
         }
     }

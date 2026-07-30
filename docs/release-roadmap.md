@@ -136,7 +136,7 @@
 >   linked_compile.vibe が code section 組み立て時に各関数の locals ヘッダ長を
 >   足し込み（wasmtime `FrameInfo::func_offset()` の計測基点と実測で一致確認済み
 >   — 手製 wat + `WasmBacktrace` で検証）、`vibe.linemap`（16-byte LE レコード×N）
->   を発行。runner (`vibewt`) が起動時にパースし、`--dump-linemap` で単体検査可能。
+>   を発行。runner (`viberun`) が起動時にパースし、`--dump-linemap` で単体検査可能。
 >   実利用: `--break` build が **未捕捉 trap** で停止したとき、各バックトレース
 >   フレームを `frame: <fn> (<file>:<line>)` で **実際のトラップ行**に注釈（従来は
 >   関数宣言行のみ）。ラベルは意図的に `  at ` ではなく `frame: ` — launcher
@@ -160,7 +160,7 @@
 
 完了・検証済み（compiler gate green、`scripts/test_vibe_cli_install.sh` 34/34）:
 
-- **テーマ1 (install) ほぼ完了** — `vibewt` に compiler CLI 用 raw-ABI host
+- **テーマ1 (install) ほぼ完了** — `viberun` に compiler CLI 用 raw-ABI host
   import を実装、`vibe` launcher（run/compile/build/check/test/fetch/version/
   self-update/help）、`scripts/install.sh`（install 時 `.cwasm` AOT）、
   `scripts/build_cli_wasm.sh`、`docs/install.md`、CI（`cli-install.yml`）。
@@ -379,7 +379,7 @@
   - `vibe-compiler-<tag>.wasm`（stage0 seed compiler、stock wasmtime で実行可）
   - `vibe-compiler-module-source-<tag>.vibe` / `-seed-<tag>.json` / `SHA256SUMS.txt`
   - `v*` tag push で `.github/workflows/release.yml` が公開。
-- 実行基盤は `runtime/vibewt`（Rust, `vibewt`）。compiler は
+- 実行基盤は `runtime/viberun`（Rust, `viberun`）。compiler は
   compiler wasm + wasmtime runner で動く（ADR-0056 cutover）。
 
 ### ギャップ（未確定）
@@ -400,7 +400,7 @@
 **canonical = 独自ビルドの wasmtime runner + vibe コンパイラ wasm の分離配布。
 インストール時に各環境で `.cwasm`（AOT precompile）をビルドする。**
 
-- 実行基盤は `runtime/vibewt`（`vibewt`）を「独自ビルドの wasmtime
+- 実行基盤は `runtime/viberun`（`viberun`）を「独自ビルドの wasmtime
   runner」として配布する。runner は portable wasm を受け取り、インストール時に
   ホスト固有の `.cwasm` へ AOT コンパイルしてキャッシュする
   （既存の `.cwasm` cache 機構 / ADR-0050・ADR-0056 を install フローに昇格）。
@@ -415,12 +415,12 @@
 
 ### マイルストーン
 
-- [x] **1-1 runner/compiler 分離の確定** — `vibewt` に compiler CLI が使う
+- [x] **1-1 runner/compiler 分離の確定** — `viberun` に compiler CLI が使う
       raw-ABI host import (`vibe::env-get`/`args-get`/`fs_*`) を実装し、runner が
       compiler wasm を実行基盤として動かせるようにした。compiler wasm は
-      差し替え可能 artifact として分離（`runtime/vibewt/src/main.rs`）。
+      差し替え可能 artifact として分離（`runtime/viberun/src/main.rs`）。
 - [x] **1-2 install-time `.cwasm` ビルド** — `scripts/install.sh` が runner 取得後に
-      `vibewt --precompile` で compiler wasm を host 固有 `.cwasm` へ AOT。
+      `viberun --precompile` で compiler wasm を host 固有 `.cwasm` へ AOT。
       launcher は runner より古い `.cwasm` を検出すると portable wasm に fallback。
 - [x] **1-3 マルチプラットフォーム CI** — `.github/workflows/cli-install.yml` が
       ubuntu/macos で runner build + `scripts/test_vibe_cli_install.sh` smoke test。
@@ -638,7 +638,7 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
 >    なので「停止」には使えない。新たに「文ごとに host import `vibe::dbg_line(line, fp)`
 >    を call する」debug 計装モードを足す（coverage の span 発見ロジックを再利用して
 >    行番号を得る）。`VIBE_DEBUG=1` 系の codegen variant。
-> 2. **runner: pause loop** — `vibewt` に `vibe::dbg_line` host import を実装し、
+> 2. **runner: pause loop** — `viberun` に `vibe::dbg_line` host import を実装し、
 >    breakpoint 集合と照合 → hit なら停止して DAP セッション（stdio JSON）を駆動。
 >    変数検査は host ABI 経由で linear memory / locals を読み tagged 値を decode。
 > 3. **DAP プロトコルサーバ** — `clients/js/`（LSP と同様の transport 抽象を再利用）

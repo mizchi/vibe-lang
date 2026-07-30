@@ -1,4 +1,4 @@
-// vibewt: wasmtime-backed runner for wasm modules produced by the selfhost
+// viberun: wasmtime-backed runner for wasm modules produced by the selfhost
 // vibe compiler (lib/@vibe/compiler).
 //
 // The host import surface (stdout via spectest::print_char or
@@ -10,12 +10,12 @@
 // interpretation overhead.
 //
 // CLI matches moonrun's positional shape:
-//   vibewt <wasm|cwasm> [args...]              run, forward args
-//   vibewt --precompile <wasm> [-o out.cwasm]  AOT compile only
-//   vibewt --dump-imports <wasm>               list import surface (drift guard)
-//   vibewt --dump-linemap <wasm>               dump `vibe.linemap` (#644)
-//   vibewt --daemon <wasm|cwasm>               long-running mode (#400)
-//   vibewt --help
+//   viberun <wasm|cwasm> [args...]              run, forward args
+//   viberun --precompile <wasm> [-o out.cwasm]  AOT compile only
+//   viberun --dump-imports <wasm>               list import surface (drift guard)
+//   viberun --dump-linemap <wasm>               dump `vibe.linemap` (#644)
+//   viberun --daemon <wasm|cwasm>               long-running mode (#400)
+//   viberun --help
 
 use std::any::Any;
 use std::fs;
@@ -398,15 +398,15 @@ fn elapsed_profile_us(start: Instant) -> i64 {
 
 fn print_help() {
     eprintln!(
-        "vibewt — wasmtime-backed runner for wasm modules produced by the selfhost vibe compiler\n\
+        "viberun — wasmtime-backed runner for wasm modules produced by the selfhost vibe compiler\n\
          \n\
          USAGE:\n\
-           vibewt <wasm|cwasm> [args...]\n\
-           vibewt --precompile <input.wasm> [-o <output.cwasm>]\n\
-           vibewt --dump-imports <input.wasm>\n\
-           vibewt --dump-linemap <input.wasm>\n\
-           vibewt --daemon <wasm|cwasm>\n\
-           vibewt --help\n\
+           viberun <wasm|cwasm> [args...]\n\
+           viberun --precompile <input.wasm> [-o <output.cwasm>]\n\
+           viberun --dump-imports <input.wasm>\n\
+           viberun --dump-linemap <input.wasm>\n\
+           viberun --daemon <wasm|cwasm>\n\
+           viberun --help\n\
          \n\
          ENV:\n\
            MOONRUN_WT_MEMORY_MB    soft cap on linear memory (default 8192)\n\
@@ -469,7 +469,7 @@ fn precompile(input: &str, output: Option<&str>) -> Result<()> {
     };
     fs::write(&out_path, &bytes).map_err(|e| format_err!("write {}: {e}", out_path.display()))?;
     eprintln!(
-        "vibewt: precompiled {} → {} ({} bytes)",
+        "viberun: precompiled {} → {} ({} bytes)",
         input,
         out_path.display(),
         bytes.len()
@@ -571,7 +571,7 @@ fn dump_linemap(input: &str) -> Result<()> {
 
 fn load_module(engine: &Engine, path: &str) -> Result<Module> {
     if path.ends_with(".cwasm") {
-        // SAFETY: cwasm produced by `vibewt --precompile` uses the same
+        // SAFETY: cwasm produced by `viberun --precompile` uses the same
         // engine config above, so deserializing here is sound. Loading a
         // cwasm built with a different wasmtime version / config is UB —
         // don't share cwasm files across toolchain versions.
@@ -588,7 +588,7 @@ fn run(args: Vec<String>) -> Result<i32> {
         bail!("missing wasm/cwasm argument");
     }
     let wasm_path = &args[0];
-    let prog_args: Vec<String> = std::iter::once("vibewt".to_string())
+    let prog_args: Vec<String> = std::iter::once("viberun".to_string())
         .chain(args.iter().skip(1).cloned())
         .collect();
 
@@ -603,7 +603,7 @@ fn run(args: Vec<String>) -> Result<i32> {
     // on epoch_interruption here would make deserialization fail (the config must
     // match), and the AOT image has no epoch checkpoints to sample at anyway.
     // Disable sampling for `.cwasm` (the `vibe run` path always passes a fresh
-    // `.wasm`, so this only guards direct `vibewt <module.cwasm>` use).
+    // `.wasm`, so this only guards direct `viberun <module.cwasm>` use).
     let sample_ms = if sample_ms.is_some() && wasm_path.ends_with(".cwasm") {
         eprintln!("vibe: --mem-sample needs a fresh .wasm (a precompiled .cwasm has no epoch checkpoints); sampling disabled");
         None
@@ -815,7 +815,7 @@ fn run(args: Vec<String>) -> Result<i32> {
             }
             // `vibe::dbg_break` user abort (`q` at an interactive breakpoint).
             if e.downcast_ref::<BreakAbort>().is_some() {
-                eprintln!("vibewt: run aborted at breakpoint");
+                eprintln!("viberun: run aborted at breakpoint");
                 return Ok(130);
             }
             // #946(4): a pathologically deep expression (e.g. thousands of
@@ -853,7 +853,7 @@ fn run(args: Vec<String>) -> Result<i32> {
                         "expression too deeply nested (stack overflow while type-checking)\n",
                     );
                 }
-                eprintln!("vibewt: stack overflow: expression too deeply nested");
+                eprintln!("viberun: stack overflow: expression too deeply nested");
                 return Ok(1);
             }
             // A guest trap (e.g. an uncaught vibe `throw`/type error surfacing as
@@ -863,9 +863,9 @@ fn run(args: Vec<String>) -> Result<i32> {
             if std::env::var_os("VIBE_RUNNER_BACKTRACE").is_some()
                 || std::env::var_os("RUST_BACKTRACE").is_some()
             {
-                eprintln!("vibewt: {e:?}");
+                eprintln!("viberun: {e:?}");
             } else {
-                eprintln!("vibewt: {e}");
+                eprintln!("viberun: {e}");
                 // #644: a debug-break build (non-empty `linemap`) that traps
                 // mid-run -- not via an explicit `--break` pause -- still
                 // deserves a precise per-frame source line, not just the bare
@@ -947,7 +947,7 @@ fn fmt_ops(ops: f64) -> String {
 // together). Reports ns/op (min/p50/p95/mean), ops/sec, and bytes/op
 // (bump-heap delta / iters — the average allocation per iteration).
 //
-//   vibewt --bench <wasm|cwasm>
+//   viberun --bench <wasm|cwasm>
 // Env: VIBE_BENCH_ITERS (default 1000), VIBE_BENCH_WARMUP (default 50),
 //      VIBE_BENCH_LABEL (report label; default the wasm path).
 fn bench(args: Vec<String>) -> Result<i32> {
@@ -985,7 +985,7 @@ fn bench(args: Vec<String>) -> Result<i32> {
         let limits = StoreLimitsBuilder::new()
             .memory_size(memory_mb * 1024 * 1024)
             .build();
-        let mut state = HostState::new(vec!["vibewt".to_string()], MemLimiter::new(limits));
+        let mut state = HostState::new(vec!["viberun".to_string()], MemLimiter::new(limits));
         state.capture_stdout = true; // suppress per-iteration program output
         let mut store = Store::new(&engine, state);
         store.limiter(|s| &mut s.mem);
@@ -1139,7 +1139,7 @@ fn bench(args: Vec<String>) -> Result<i32> {
 //
 // Wasm stdout is captured (HostState.capture_stdout) so it doesn't
 // interleave with the protocol on stdout. Diagnostic / panic messages
-// from vibewt itself still go to stderr.
+// from viberun itself still go to stderr.
 fn daemon(args: Vec<String>) -> Result<i32> {
     if args.is_empty() {
         bail!("--daemon: missing <wasm|cwasm> argument");
@@ -1161,7 +1161,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
     // Empty initial args; daemon will populate per-request before each
     // `_start` call. capture_stdout is set true so per-request output
     // accumulates in HostState.captured_stdout for the JSON envelope.
-    let mut state = HostState::new(vec!["vibewt".to_string()], MemLimiter::new(limits));
+    let mut state = HostState::new(vec!["viberun".to_string()], MemLimiter::new(limits));
     state.capture_stdout = true;
     let mut store = Store::new(&engine, state);
     store.limiter(|s| &mut s.mem);
@@ -1172,7 +1172,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
     let instance = linker.instantiate(&mut store, &module)?;
     let start: TypedFunc<(), ()> = instance.get_typed_func(&mut store, "_start")?;
 
-    eprintln!("vibewt: daemon ready ({} loaded)", wasm_path);
+    eprintln!("viberun: daemon ready ({} loaded)", wasm_path);
 
     use std::io::BufRead;
     let stdin = std::io::stdin();
@@ -1183,7 +1183,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
         let line = match line_res {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("vibewt: daemon stdin read failed: {e}");
+                eprintln!("viberun: daemon stdin read failed: {e}");
                 break;
             }
         };
@@ -1246,7 +1246,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
         {
             let host = store.data_mut();
             host.args = Arc::new(
-                std::iter::once("vibewt".to_string())
+                std::iter::once("viberun".to_string())
                     .chain(req_args.into_iter())
                     .collect(),
             );
@@ -1301,7 +1301,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
                     let mut h = stdout.lock();
                     writeln!(h, "{}", resp).ok();
                     h.flush().ok();
-                    eprintln!("vibewt: daemon aborting after wasm trap: {e:?}");
+                    eprintln!("viberun: daemon aborting after wasm trap: {e:?}");
                     return Ok(1);
                 }
             }
@@ -1323,7 +1323,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
         h.flush().ok();
     }
 
-    eprintln!("vibewt: daemon shutting down (stdin EOF, handled {req_id} requests)");
+    eprintln!("viberun: daemon shutting down (stdin EOF, handled {req_id} requests)");
     Ok(0)
 }
 
@@ -1924,7 +1924,7 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
     // #1220 follow-up: the rest of the JS runner's fs surface
     // (scripts/wasm_vibe_host_runner.js) that was never ported here either --
     // same unknown-import crash under the real `vibe run` as fs_rename above,
-    // just not yet hit by a call site that runs through vibewt. Declared
+    // just not yet hit by a call site that runs through viberun. Declared
     // builtins with real call sites in lib/@vibex/shell/commands.vibe (a
     // general-purpose library any user program can import) and
     // scripts/vibe_md.vibex.
@@ -3703,7 +3703,7 @@ fn main() {
     // raise its own graceful trap.
     let stack = wasm_stack_bytes() + 8 * 1024 * 1024;
     let handle = std::thread::Builder::new()
-        .name("vibewt".to_string())
+        .name("viberun".to_string())
         .stack_size(stack)
         .spawn(real_main)
         .expect("spawn main thread");
@@ -3732,7 +3732,7 @@ fn real_main() {
             std::process::exit(2);
         }
         if let Err(e) = dump_imports(&input) {
-            eprintln!("vibewt: dump-imports failed: {e:?}");
+            eprintln!("viberun: dump-imports failed: {e:?}");
             std::process::exit(1);
         }
         return;
@@ -3755,7 +3755,7 @@ fn real_main() {
             std::process::exit(2);
         }
         if let Err(e) = dump_linemap(&input) {
-            eprintln!("vibewt: dump-linemap failed: {e:?}");
+            eprintln!("viberun: dump-linemap failed: {e:?}");
             std::process::exit(1);
         }
         return;
@@ -3765,7 +3765,7 @@ fn real_main() {
         match daemon(daemon_args) {
             Ok(code) => std::process::exit(code),
             Err(e) => {
-                eprintln!("vibewt: daemon failed: {e:?}");
+                eprintln!("viberun: daemon failed: {e:?}");
                 std::process::exit(1);
             }
         }
@@ -3775,7 +3775,7 @@ fn real_main() {
         match bench(bench_args) {
             Ok(code) => std::process::exit(code),
             Err(e) => {
-                eprintln!("vibewt: {e}");
+                eprintln!("viberun: {e}");
                 std::process::exit(1);
             }
         }
@@ -3806,7 +3806,7 @@ fn real_main() {
             }
         }
         if let Err(e) = precompile(&input, output.as_deref()) {
-            eprintln!("vibewt: precompile failed: {e:?}");
+            eprintln!("viberun: precompile failed: {e:?}");
             std::process::exit(1);
         }
         return;
@@ -3814,7 +3814,7 @@ fn real_main() {
     match run(args) {
         Ok(code) => std::process::exit(code),
         Err(e) => {
-            eprintln!("vibewt: {e:?}");
+            eprintln!("viberun: {e:?}");
             std::process::exit(1);
         }
     }

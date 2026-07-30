@@ -4,7 +4,7 @@
 # existing interior-line `dbg_line` probes in debug-break builds. Unlike the
 # LIVE dbg_line hook (statement-boundary pauses, exercised by
 # test_vibe_break_interior.sh), this table is consumed WITHOUT running the
-# program: `vibewt --dump-linemap` reads it directly out of the compiled
+# program: `viberun --dump-linemap` reads it directly out of the compiled
 # wasm, and the runner also uses it to annotate an uncaught TRAP's backtrace
 # with the trapping statement's actual line (not just the function's
 # declaration line).
@@ -45,9 +45,9 @@ fi
 
 tc="$(cat "$VIBE_HOME/toolchain")"
 TC_DIR="$VIBE_HOME/toolchains/$tc"
-VIBEWT="$TC_DIR/bin/vibewt"
+VIBERUN="$TC_DIR/bin/viberun"
 CLI_WASM="$TC_DIR/lib/vibe-cli.wasm"
-[ -x "$VIBEWT" ] || { echo "FAIL: vibewt runner not installed" >&2; exit 1; }
+[ -x "$VIBERUN" ] || { echo "FAIL: viberun runner not installed" >&2; exit 1; }
 [ -s "$CLI_WASM" ] || { echo "FAIL: toolchain cli wasm not installed" >&2; exit 1; }
 
 # A single-file program whose body has interior statements on known lines,
@@ -57,14 +57,14 @@ P="$WORK/p.vibex"
 printf 'fn main with { Stdout } {\n  let a = 1\n  let b = a + 2\n  let c = b + 3\n  Stdout::write_stream("\\{c}\\n")\n}\n' > "$P"
 OUT="$WORK/p.wasm"
 env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_DEBUG_BREAK=1 VIBE_WASM_NAMES=1 \
-  "$VIBEWT" "$CLI_WASM" "$P" "$OUT" main >"$WORK/compile.log" 2>&1
+  "$VIBERUN" "$CLI_WASM" "$P" "$OUT" main >"$WORK/compile.log" 2>&1
 if [ -s "$OUT" ]; then
   ok "break-mode compile produced a wasm module"
 else
   bad "break-mode compile failed: $(cat "$WORK/compile.log")"
 fi
 
-linemap_out="$("$VIBEWT" --dump-linemap "$OUT" 2>"$WORK/dump.log" || true)"
+linemap_out="$("$VIBERUN" --dump-linemap "$OUT" 2>"$WORK/dump.log" || true)"
 nrecords="$(printf '%s\n' "$linemap_out" | grep -c . || true)"
 if [ "$nrecords" -ge 3 ]; then
   ok "dump-linemap emits at least one record per interior statement ($nrecords records)"
@@ -100,8 +100,8 @@ fi
 # default; byte-identical normal builds).
 OUT_PLAIN="$WORK/plain.wasm"
 env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  "$VIBEWT" "$CLI_WASM" "$P" "$OUT_PLAIN" main >/dev/null 2>&1
-plain_dump="$("$VIBEWT" --dump-linemap "$OUT_PLAIN" 2>/dev/null || true)"
+  "$VIBERUN" "$CLI_WASM" "$P" "$OUT_PLAIN" main >/dev/null 2>&1
+plain_dump="$("$VIBERUN" --dump-linemap "$OUT_PLAIN" 2>/dev/null || true)"
 if [ -z "$plain_dump" ]; then
   ok "a non-break build carries no vibe.linemap section"
 else

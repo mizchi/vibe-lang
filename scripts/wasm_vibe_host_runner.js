@@ -928,7 +928,7 @@ function buildFsMetadataHashParts(filePath) {
   // invalidation assert caught this once compiles got fast enough to fit in
   // one tick). Every atomicWriteFileSync allocates a fresh inode, so mixing
   // it in makes rename-based rewrites always change the token. Must mirror
-  // vibewt's vibe_stat_token exactly (shared cache/cwasm keys).
+  // viberun's vibe_stat_token exactly (shared cache/cwasm keys).
   const ino = typeof stat.ino === "bigint" ? stat.ino : BigInt(stat.ino || 0);
   const lower = BigInt.asUintN(
     64,
@@ -1941,7 +1941,7 @@ async function main() {
       // (read_char -> -1, read_stream -> ""), matching the empty-stdin tests.
       // write_stream/write_char echo to process stdout and return 0 (Unit).
       // Socket::tcp_connect/tcp_read/tcp_write/tcp_close -- mirrors
-      // runtime/vibewt's blocking std::net::TcpStream host imports (that
+      // runtime/viberun's blocking std::net::TcpStream host imports (that
       // file's comment explains the "declared, zero codegen wiring" gap
       // this closes). Node has no synchronous TCP client, so the actual
       // net.Socket work runs on a worker thread
@@ -1977,7 +1977,7 @@ async function main() {
         return 0n;
       },
       // Http::request/response_status/response_header/response_body/close
-      // (#1226) -- mirrors runtime/vibewt's ureq-based host imports. Same
+      // (#1226) -- mirrors runtime/viberun's ureq-based host imports. Same
       // worker-thread + Atomics.wait bridge as tcp_* above (Node has no
       // synchronous HTTP client either), via
       // wasm_vibe_host_runner_http_worker.js.
@@ -2011,7 +2011,7 @@ async function main() {
         httpWorkerCall("close", { handle });
         return 0n;
       },
-      // `sleep(Int) -> Unit with { Async }` -- mirrors runtime/vibewt's
+      // `sleep(Int) -> Unit with { Async }` -- mirrors runtime/viberun's
       // `vibe.sleep` host import (see that impl's comment for why this is a
       // plain blocking sleep, not a true async/wasip3 one). Atomics.wait on
       // a throwaway SharedArrayBuffer blocks this thread synchronously,

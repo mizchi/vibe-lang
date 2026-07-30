@@ -11,7 +11,7 @@ features failed — only in CI, never locally.
 (`scripts/install.sh` → `build_cli_wasm.sh` → `generations.sh`) runs
 the committed seed through the **standalone `wasmtime` CLI**
 (`scripts/wasmtime_bin.sh`) to produce stage1/stage2. The CI workflow only built
-the `vibewt` runner and never installed the `wasmtime` CLI, so the fresh
+the `viberun` runner and never installed the `wasmtime` CLI, so the fresh
 build failed and `install.sh` silently **fell back to the committed seed
 compiler**, which predates the diagnostics/type-at/error-handling features.
 Local dev worked only because the dev environment already had `wasmtime` on PATH.

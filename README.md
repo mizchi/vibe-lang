@@ -8,7 +8,7 @@ original MoonBit host was retired in #594).
 
 ## Install
 
-vibe ships as a small wasmtime runner (`vibewt`) plus a portable compiler
+vibe ships as a small wasmtime runner (`viberun`) plus a portable compiler
 wasm; the installer AOT-compiles the compiler for your machine at install time.
 Building the runner from source needs `git`, `bash`, and `cargo`; pass
 `--runner PATH` to use a prebuilt one instead. See

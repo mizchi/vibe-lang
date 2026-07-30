@@ -5,7 +5,7 @@
 # rather than silently no-op'ing.
 #
 # This intentionally does NOT go through runtime/vibe (which needs the
-# vibewt Rust runner built) -- it drives the exact same VIBE_FS_COMPILE=1
+# viberun Rust runner built) -- it drives the exact same VIBE_FS_COMPILE=1
 # invocation compile_to() uses, directly against the Node runner, mirroring
 # how every other scripts/test_*.sh in this repo exercises the compiler.
 #

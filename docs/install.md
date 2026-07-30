@@ -1,6 +1,6 @@
 # Installing vibe
 
-vibe is distributed as a small **wasmtime runner** (`vibewt`) plus a
+vibe is distributed as a small **wasmtime runner** (`viberun`) plus a
 **portable compiler wasm** (`vibe-cli.wasm`). At install time the compiler wasm
 is AOT-compiled to a host-specific `vibe-cli.cwasm` so the compiler is not
 re-JITed on every command. See `docs/release-roadmap.md` (テーマ1) for the
@@ -26,7 +26,7 @@ bash scripts/install.sh
 
 This will:
 
-1. build (or reuse) the `vibewt` runner from `runtime/vibewt`,
+1. build (or reuse) the `viberun` runner from `runtime/viberun`,
 2. build a fresh compiler wasm from the current source (`scripts/build_cli_wasm.sh`,
    seed → stage1 → stage2), falling back to the committed seed if the build
    toolchain is unavailable,
@@ -55,7 +55,7 @@ $VIBE_HOME/                 (default: ~/.vibe)
 ├── toolchains/<name>/
 │   ├── bin/
 │   │   ├── vibe            # launcher (subcommand dispatch + orchestration)
-│   │   └── vibewt          # wasmtime runner
+│   │   └── viberun          # wasmtime runner
 │   └── lib/
 │       ├── vibe-cli.wasm   # portable compiler artifact
 │       ├── vibe-cli.cwasm  # host-specific AOT build (`vibe self update`)
@@ -84,7 +84,7 @@ dir is opt-in via `--bin-dir` / `VIBE_BIN_DIR` (used by the test harness).
 
 ```
 bash scripts/install.sh [--prefix DIR]      # VIBE_HOME (default ~/.vibe)
-                        [--runner PATH]      # use a prebuilt vibewt
+                        [--runner PATH]      # use a prebuilt viberun
                         [--cli-wasm PATH]    # use a specific compiler wasm
                         [--toolchain NAME]   # toolchain name (default: main)
                         [--set-default]      # make this the default toolchain
@@ -212,7 +212,7 @@ This copies the new compiler wasm into place and rebuilds the host-specific
 
 ## Notes
 
-- A `vibe-cli.cwasm` is only valid for the exact `vibewt`/wasmtime build
+- A `vibe-cli.cwasm` is only valid for the exact `viberun`/wasmtime build
   that produced it. The launcher falls back to the portable `vibe-cli.wasm` if
   the `.cwasm` looks older than the runner, and `vibe self update` regenerates
   it. Do not copy a `.cwasm` between machines or toolchain versions.

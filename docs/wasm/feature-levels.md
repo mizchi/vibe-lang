@@ -6,17 +6,17 @@
 
 vibe には wasm proposal への依存が 2 系統ある:
 
-1. **compiler 自身の実行基盤** (`runtime/vibewt`, wasmtime embedding)。
+1. **compiler 自身の実行基盤** (`runtime/viberun`, wasmtime embedding)。
    `Config::wasm_function_references(true)` / `wasm_gc(true)` /
    `wasm_exceptions(true)` / `wasm_simd(true)` / `wasm_relaxed_simd(true)` /
-   `wasm_tail_call(true)` を明示的に有効化しており (`runtime/vibewt/src/main.rs`)、
+   `wasm_tail_call(true)` を明示的に有効化しており (`runtime/viberun/src/main.rs`)、
    experimental proposal + flag に依存してよい。ここは vibe を動かす側の
    環境なので、利用者の実行環境の広さとは無関係。
 2. **compiler が生成する wasm** (`vibe build` の出力)。これは利用者が
    Chrome / Node.js / Deno / Firefox / Safari 等、任意の wasm 実行環境で
    動かす前提であり、flag なしで動く proposal だけに依存すべき。
 
-この2つを混同すると、「vibewt では動くが生成コードとしては尚早な proposal」
+この2つを混同すると、「viberun では動くが生成コードとしては尚早な proposal」
 を無自覚に codegen へ持ち込むリスクがある。本ドキュメントはこの2水準を
 分離し、実際にどの proposal を使っているかを追跡可能にする。
 
@@ -48,7 +48,7 @@ engine が **flag なしで** サポートしている場合のみ (`null`/`fals
 `["flag", ...]` はどれも失格)。
 
 compiler-host 水準は engine set を使わず、`Wasmtime` 単独行を単に記録する
-だけ（許可判定はしない — vibewt は明示的に選んで experimental flag を
+だけ（許可判定はしない — viberun は明示的に選んで experimental flag を
 有効化しているので、ここで縛る意味がない）。
 
 ## 現状: vibe codegen が実際に使っている proposal
@@ -66,7 +66,7 @@ compiler-host 水準は engine set を使わず、`Wasmtime` 単独行を単に�
 2026-07-27 時点のスナップショットでは、この3つはいずれも `v8` /
 `web-baseline` 両水準で **safe**（`bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex`
 の出力参照）。tail-call proposal (`return_call`) は compiler-host 側
-(vibewt) のみが有効化しており、**codegen は self-tail-call を wasm
+(viberun) のみが有効化しており、**codegen は self-tail-call を wasm
 `return_call` opcode ではなく AST レベルの while-loop 書き換えで実装して
 いる** (`codegen/common_base/self_tail_call.vibe`) ため、生成 wasm 側の
 tail-call proposal 依存は現状ゼロ。

@@ -6042,8 +6042,8 @@ echo "[compiler-gate] ctor Double-field match binding under RC (#1062) ok"
 #        initialize -> didOpen -> hover -> shutdown -> exit round trip,
 #        driven via scripts/wasm_vibe_host_runner.js's VIBE_STDIN_BYTES
 #        batch-feed (the same "vibe.*" linear-backend stdin host imports a
-#        real editor's live pipe exercises under vibewt -- this gate proves
-#        the wasm-level protocol/dispatch logic; it doesn't need vibewt
+#        real editor's live pipe exercises under viberun -- this gate proves
+#        the wasm-level protocol/dispatch logic; it doesn't need viberun
 #        itself, which compiler_gate.sh has no other dependency on and
 #        this sandbox doesn't have installed). Checks the hover response
 #        contains the correct inferred type for a simple two-arg function --

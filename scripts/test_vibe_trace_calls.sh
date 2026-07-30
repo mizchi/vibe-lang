@@ -22,11 +22,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-RT="$ROOT_DIR/runtime/vibewt/target/release/vibewt"
+RT="$ROOT_DIR/runtime/viberun/target/release/viberun"
 # Rebuild the runner if it is missing OR older than any runner source (a stale
 # local binary would lack newly added host imports like vibe::dbg_break).
-if [ ! -x "$RT" ] || [ -n "$(find runtime/vibewt/src -name "*.rs" -newer "$RT" 2>/dev/null | head -1)" ]; then
-  cargo build --release --manifest-path runtime/vibewt/Cargo.toml >/dev/null
+if [ ! -x "$RT" ] || [ -n "$(find runtime/viberun/src -name "*.rs" -newer "$RT" 2>/dev/null | head -1)" ]; then
+  cargo build --release --manifest-path runtime/viberun/Cargo.toml >/dev/null
 fi
 
 cli="$(bash scripts/build_cli_wasm.sh)"
