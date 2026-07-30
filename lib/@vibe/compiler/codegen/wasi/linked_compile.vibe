@@ -1372,6 +1372,17 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let need_fs_is_dir_builtin = Map::has_key(used_builtin_names, "Fs::is_dir")
   let need_fs_is_file_builtin = Map::has_key(used_builtin_names, "Fs::is_file")
   let need_fs_getcwd_builtin = Map::has_key(used_builtin_names, "Fs::getcwd")
+  // Socket::tcp_connect/tcp_read/tcp_write/tcp_close -- same "checker-legal
+  // (builtins/declarations.vibe + builtin_registry.vibe), zero codegen
+  // wiring" gap as the Fs::* additions above: the checker accepts these
+  // calls (lib/@vibe/socket/tcp.vibe's low-level layer), but linked_compile
+  // never emitted the host imports, so any real caller hit "undefined
+  // variable (local): Socket::tcp_connect @call". Gated on use so non-users
+  // reserve no import (fixpoint-safe).
+  let need_tcp_connect_builtin = Map::has_key(used_builtin_names, "Socket::tcp_connect")
+  let need_tcp_read_builtin = Map::has_key(used_builtin_names, "Socket::tcp_read")
+  let need_tcp_write_builtin = Map::has_key(used_builtin_names, "Socket::tcp_write")
+  let need_tcp_close_builtin = Map::has_key(used_builtin_names, "Socket::tcp_close")
   // #794: HTTP client host imports. lib/@vibe/http's client functions call
   // the `__http_*_raw` builtins (dunder names so units bundling the package's
   // index.vibe -- which exports alias functions literally named
@@ -1606,6 +1617,36 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     -1
   }
   let fs_getcwd_import_idx = if need_fs_getcwd_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // Socket imports -- reserved after fs_getcwd (before HTTP), in the same
+  // order as their emission below.
+  let tcp_connect_import_idx = if need_tcp_connect_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let tcp_read_import_idx = if need_tcp_read_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let tcp_write_import_idx = if need_tcp_write_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let tcp_close_import_idx = if need_tcp_close_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -2013,6 +2054,29 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   } else {
     env_args_len_idx
   }
+  // Socket: never-called placeholders when unused, like the Fs fallbacks
+  // above -- tcp_connect/tcp_read return a value (Int handle / String),
+  // tcp_write/tcp_close are void (Unit).
+  let tcp_connect_idx = if tcp_connect_import_idx >= 0 {
+    tcp_connect_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let tcp_read_idx = if tcp_read_import_idx >= 0 {
+    tcp_read_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let tcp_write_idx = if tcp_write_import_idx >= 0 {
+    tcp_write_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let tcp_close_idx = if tcp_close_import_idx >= 0 {
+    tcp_close_import_idx
+  } else {
+    env_args_len_idx
+  }
   // #794: never-called placeholders when unused, like the Fs fallbacks above.
   let http_request_idx = if http_request_import_idx >= 0 {
     http_request_import_idx
@@ -2150,6 +2214,10 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         "Fs::is_dir" => fs_is_dir_idx,
         "Fs::is_file" => fs_is_file_idx,
         "Fs::getcwd" => fs_getcwd_idx,
+        "Socket::tcp_connect" => tcp_connect_idx,
+        "Socket::tcp_read" => tcp_read_idx,
+        "Socket::tcp_write" => tcp_write_idx,
+        "Socket::tcp_close" => tcp_close_idx,
         // #794: HTTP client host ops (raw dunder surface names, see checker/builtins_net.vibe).
         "vibe_http_request_raw" => http_request_idx,
         "vibe_http_response_status_raw" => http_response_status_idx,
@@ -3878,6 +3946,42 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     emit_name(import_content, "fs_getcwd")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 5)
+  } else {
+    ()
+  }
+  // `vibe.tcp_connect (i64,i64) -> i64` (type 4, like http_response_header).
+  if tcp_connect_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "tcp_connect")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 4)
+  } else {
+    ()
+  }
+  // `vibe.tcp_read (i64,i64) -> i64` (type 4, like http_response_header).
+  if tcp_read_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "tcp_read")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 4)
+  } else {
+    ()
+  }
+  // `vibe.tcp_write (i64,i64) -> ()` (type 6, like fs_write_file).
+  if tcp_write_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "tcp_write")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 6)
+  } else {
+    ()
+  }
+  // `vibe.tcp_close (i64) -> ()` (type 1, like fs_remove).
+  if tcp_close_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "tcp_close")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
   } else {
     ()
   }

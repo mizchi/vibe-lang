@@ -179,7 +179,7 @@ fi
 
 # #946(4): a pathologically deep expression recurses the checker (itself
 # compiled to wasm) past the native call stack -- a host-level crash
-# (wasmtime's graceful `Trap::StackOverflow` in runtime/vibewt,
+# (wasmtime's graceful `Trap::StackOverflow` in runtime/viberun,
 # where this test's freshly `install.sh`-built toolchain actually runs; a JS
 # RangeError under the node-based scripts/wasm_vibe_host_runner.js) that no
 # `handle {...} with Error {...}` inside the compiled program can intercept.

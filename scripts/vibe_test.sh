@@ -190,7 +190,7 @@ vt_fail_detail() {
       reason = $0
       sub(/^[[:space:]]+/, "", reason)
       sub(/^[0-9]+: /, "", reason)
-      sub(/^vibewt: /, "", reason)
+      sub(/^viberun: /, "", reason)
     }
     # Wasm backtrace frames (node: `at <fn> (wasm://...)`, wasmtime:
     # `N: 0x.. - <unknown>!<fn>`), capped, annotated via the funcmap.

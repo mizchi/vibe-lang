@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# vibewt one-shot vs --daemon output parity gate.
+# viberun one-shot vs --daemon output parity gate.
 #
 # Validates that running the same check command via the new daemon
-# protocol produces byte-identical output to launching vibewt
+# protocol produces byte-identical output to launching viberun
 # fresh each invocation. This is the safety net for #400's daemon
 # mode (warm-instance reuse): if daemon-mode `_start` calls don't
 # behave identically to fresh-process ones, this catches it before
@@ -19,13 +19,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-WT_BIN="${MOONRUN_WT_BIN:-$PROJECT_ROOT/runtime/vibewt/target/release/vibewt}"
+WT_BIN="${MOONRUN_WT_BIN:-$PROJECT_ROOT/runtime/viberun/target/release/viberun}"
 if [ ! -x "$WT_BIN" ]; then
-  echo "[daemon-parity] building vibewt..."
-  (cd "$PROJECT_ROOT/runtime/vibewt" && cargo build --release >&2)
+  echo "[daemon-parity] building viberun..."
+  (cd "$PROJECT_ROOT/runtime/viberun" && cargo build --release >&2)
 fi
 if [ ! -x "$WT_BIN" ]; then
-  echo "test-moonrun-wt-daemon-parity: vibewt build did not produce $WT_BIN" >&2
+  echo "test-moonrun-wt-daemon-parity: viberun build did not produce $WT_BIN" >&2
   exit 1
 fi
 
@@ -91,7 +91,7 @@ if [ "${#cases[@]}" -eq 0 ]; then
   exit 1
 fi
 
-TMP_DIR="$(mktemp -d /tmp/vibewt_daemon_parity.XXXXXX)"
+TMP_DIR="$(mktemp -d /tmp/viberun_daemon_parity.XXXXXX)"
 cleanup() {
   [ -n "${VIBE_PARITY_KEEP_TMP:-}" ] || rm -rf "$TMP_DIR"
 }
@@ -116,7 +116,7 @@ for case_rel in "${cases[@]}"; do
   fi
 done
 
-# --- daemon pass: feed all cases through one vibewt process ---
+# --- daemon pass: feed all cases through one viberun process ---
 echo "[daemon-parity] running daemon..."
 REQ_FILE="$TMP_DIR/requests.jsonl"
 : > "$REQ_FILE"

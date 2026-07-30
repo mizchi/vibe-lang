@@ -4,6 +4,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const cp = require("node:child_process");
+const { Worker, MessageChannel, receiveMessageOnPort } = require("node:worker_threads");
 
 // Guest Fs::write_file / Fs::write_bytes land here. Write via a same-dir temp
 // file + rename so a concurrent READER never sees a truncated file -- the
@@ -27,6 +28,42 @@ function atomicWriteFileSync(filePath, data, encoding) {
   }
 }
 const readline = require("node:readline");
+
+// Backs the tcp_connect/tcp_read/tcp_write/tcp_close and
+// http_request/response_status/response_header/response_body/close host
+// imports below: Node has no synchronous TCP or HTTP client, so the real
+// async work (net.Socket / http.request) runs on a worker thread while this
+// thread blocks on Atomics.wait() until the worker signals completion, then
+// drains the worker's response with receiveMessageOnPort() -- the standard
+// Node pattern for making an inherently-async operation look synchronous to
+// a caller (here, a wasm guest's synchronous host-import call) that cannot
+// itself await. Each bridge starts its worker lazily on first use so a
+// program that never touches a socket or HTTP never pays for the extra
+// thread.
+function makeWorkerBridge(workerScript) {
+  let workerPort = null;
+  return function call(op, extra) {
+    if (!workerPort) {
+      const { port1, port2 } = new MessageChannel();
+      const worker = new Worker(path.join(__dirname, workerScript), {
+        workerData: { port: port2 },
+        transferList: [port2],
+      });
+      worker.unref();
+      workerPort = port1;
+    }
+    const signal = new Int32Array(new SharedArrayBuffer(4));
+    workerPort.postMessage(Object.assign({ id: 0, signal, op }, extra));
+    Atomics.wait(signal, 0, 0);
+    const { message } = receiveMessageOnPort(workerPort);
+    if (message.error) {
+      throw new Error(message.error);
+    }
+    return message.result;
+  };
+}
+const tcpWorkerCall = makeWorkerBridge("wasm_vibe_host_runner_tcp_worker.js");
+const httpWorkerCall = makeWorkerBridge("wasm_vibe_host_runner_http_worker.js");
 
 const TAG_MASK = 3n;
 const TAG_INT = 0n;
@@ -891,7 +928,7 @@ function buildFsMetadataHashParts(filePath) {
   // invalidation assert caught this once compiles got fast enough to fit in
   // one tick). Every atomicWriteFileSync allocates a fresh inode, so mixing
   // it in makes rename-based rewrites always change the token. Must mirror
-  // vibewt's vibe_stat_token exactly (shared cache/cwasm keys).
+  // viberun's vibe_stat_token exactly (shared cache/cwasm keys).
   const ino = typeof stat.ino === "bigint" ? stat.ino : BigInt(stat.ino || 0);
   const lower = BigInt.asUintN(
     64,
@@ -1903,6 +1940,90 @@ async function main() {
       // hardcoded EOF. With no VIBE_STDIN_BYTES the feed is null => immediate EOF
       // (read_char -> -1, read_stream -> ""), matching the empty-stdin tests.
       // write_stream/write_char echo to process stdout and return 0 (Unit).
+      // Socket::tcp_connect/tcp_read/tcp_write/tcp_close -- mirrors
+      // runtime/viberun's blocking std::net::TcpStream host imports (that
+      // file's comment explains the "declared, zero codegen wiring" gap
+      // this closes). Node has no synchronous TCP client, so the actual
+      // net.Socket work runs on a worker thread
+      // (wasm_vibe_host_runner_tcp_worker.js) and this thread blocks on
+      // Atomics.wait() -- same blocking-bridge trick as `sleep` below, but
+      // handing off to a worker instead of just parking this thread, since
+      // an actual socket op needs Node's event loop running somewhere to
+      // ever complete.
+      tcp_connect(hostTagged, portTagged) {
+        const host = decodeStringArg(instanceRef, hostTagged);
+        const tcpPort = Number(decodeHostInt(portTagged));
+        const handle = tcpWorkerCall("connect", { host, tcpPort });
+        return encodeHostInt(handle);
+      },
+      tcp_read(handleTagged, maxBytesTagged) {
+        const handle = Number(decodeHostInt(handleTagged));
+        const maxBytes = Number(decodeHostInt(maxBytesTagged));
+        const chunk = tcpWorkerCall("read", { handle, maxBytes });
+        return encodeHostString(instanceRef, chunk);
+      },
+      tcp_write(handleTagged, dataTagged) {
+        const handle = Number(decodeHostInt(handleTagged));
+        const data = decodeStringArg(instanceRef, dataTagged);
+        tcpWorkerCall("write", { handle, data });
+        return 0n;
+      },
+      // Tolerates unknown handles, like fs_remove above -- a double-close
+      // must not kill the guest (the worker's "close" handler no-ops on a
+      // missing handle, same convention).
+      tcp_close(handleTagged) {
+        const handle = Number(decodeHostInt(handleTagged));
+        tcpWorkerCall("close", { handle });
+        return 0n;
+      },
+      // Http::request/response_status/response_header/response_body/close
+      // (#1226) -- mirrors runtime/viberun's ureq-based host imports. Same
+      // worker-thread + Atomics.wait bridge as tcp_* above (Node has no
+      // synchronous HTTP client either), via
+      // wasm_vibe_host_runner_http_worker.js.
+      http_request(methodTagged, urlTagged, headersTagged, bodyTagged) {
+        const method = decodeStringArg(instanceRef, methodTagged);
+        const url = decodeStringArg(instanceRef, urlTagged);
+        const headers = decodeStringArg(instanceRef, headersTagged);
+        const body = decodeStringArg(instanceRef, bodyTagged);
+        const handle = httpWorkerCall("request", { method, url, headers, body });
+        return encodeHostInt(handle);
+      },
+      http_response_status(handleTagged) {
+        const handle = Number(decodeHostInt(handleTagged));
+        const status = httpWorkerCall("status", { handle });
+        return encodeHostInt(status);
+      },
+      http_response_header(handleTagged, nameTagged) {
+        const handle = Number(decodeHostInt(handleTagged));
+        const name = decodeStringArg(instanceRef, nameTagged);
+        const value = httpWorkerCall("header", { handle, name });
+        return encodeHostString(instanceRef, value);
+      },
+      http_response_body(handleTagged) {
+        const handle = Number(decodeHostInt(handleTagged));
+        const body = httpWorkerCall("body", { handle });
+        return encodeHostString(instanceRef, body);
+      },
+      // Tolerates unknown handles, like tcp_close above.
+      http_close(handleTagged) {
+        const handle = Number(decodeHostInt(handleTagged));
+        httpWorkerCall("close", { handle });
+        return 0n;
+      },
+      // `sleep(Int) -> Unit with { Async }` -- mirrors runtime/viberun's
+      // `vibe.sleep` host import (see that impl's comment for why this is a
+      // plain blocking sleep, not a true async/wasip3 one). Atomics.wait on
+      // a throwaway SharedArrayBuffer blocks this thread synchronously,
+      // same trick used for synchronous sleeps elsewhere in Node CLIs --
+      // there's no way to `await` inside a synchronous WebAssembly import.
+      sleep(msTagged) {
+        const ms = Number(decodeHostInt(msTagged));
+        if (ms > 0) {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+        }
+        return 0n;
+      },
       stdin_read_char() {
         if (vibeStdinFeed && vibeStdinCursor < vibeStdinFeed.length) {
           const b = vibeStdinFeed[vibeStdinCursor];

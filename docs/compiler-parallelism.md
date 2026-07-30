@@ -579,7 +579,7 @@ runners, closing the exact partial-write race this exposes. Measured on
 (2026-07-28): `--jobs 1` (serial) 87.7s, `--jobs 2` 68.2s (-22%),
 `--jobs 4` 51.4s (-41%) wall time, byte-identical output at every level.
 It requires Node (the coordinator uses `worker_threads`) even when the
-installed toolchain's own runner is the Rust `vibewt`, so it is scoped to a
+installed toolchain's own runner is the Rust `viberun`, so it is scoped to a
 dev checkout of this repo — see the "Shared-everything migration note" below
 and #1143 for the broader runtime-portability question this leaves open.
 Discovery still pays one `vibe` subprocess launch per file (`VIBE_LIST_DEPS`),
@@ -756,7 +756,7 @@ What would have to change, by layer:
 - **Wasm runtime/build.** Workers would need to import one shared `Memory`
   instead of each owning an independent one — `wasmtime::SharedMemory`
   configured once and given to every `Instance`, or (once implemented)
-  guest-side `thread.spawn_ref`. `runtime/vibewt` and
+  guest-side `thread.spawn_ref`. `runtime/viberun` and
   `scripts/wasm_vibe_host_runner.js` both gain a second instantiation mode.
 - **Allocator and GC.** The current bump/free-list allocator assumes
   exclusive ownership of its heap; a shared heap needs an atomic-CAS-safe
