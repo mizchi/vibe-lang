@@ -4,7 +4,7 @@ vibe の計測基盤の設計と現状。メモリプロファイラはアロケ
 
 ## メモリモデル（前提）
 
-- **linear backend（既定 / `vibe build --release` / `vibewt`）**: **bump allocator**。
+- **linear backend（既定 / `vibe build --release` / `viberun`）**: **bump allocator**。
   `__heap_ptr`（export 済みの i32 mut global）が単調増加のヒープ先端。**free がない（arena）**。
   → 1 回の実行内では **peak == total allocated**。プロファイル＝*アロケーション*プロファイル
   （総量・レート・サイト別）であって live-set ではない。
@@ -131,7 +131,7 @@ test: `scripts/test_vibe_alloc_site.sh`。
 ## `vibe bench`（実装済み）
 
 `bench "name" { }` 構文と `vibe::profile-now-us` はあったが計測ハーネスが無かった。`vibe bench`
-を追加した。実装は runner 側（`vibewt --bench`）で、**codegen 変更なし**:
+を追加した。実装は runner 側（`viberun --bench`）で、**codegen 変更なし**:
 
 - 再実行可能な test entry（`__no_entry__` が `bench{}`/`test{}` body を走らせる `_start`）を、
   **同一の warm インスタンス上で N 回呼ぶ**。warmup → 計測。

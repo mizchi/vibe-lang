@@ -182,7 +182,7 @@ a static table mapping each user function's wasm code offset to a source
 `(file, line)`, built from the same interior-line probe sites as the live
 `--break` hook above (#644). Unlike `dbg_line`, this table needs no
 cooperation from the running program — it can be read straight out of the
-compiled `.wasm`, e.g. with `vibewt --dump-linemap <file.wasm>` (one
+compiled `.wasm`, e.g. with `viberun --dump-linemap <file.wasm>` (one
 `func_index<TAB>offset<TAB>file<TAB>line` row per probe), and the runner
 consults it whenever `wasmtime::WasmBacktrace` hands it a real
 `(func_index, func_offset)` pair.
@@ -194,7 +194,7 @@ line — not just that function's declaration line, which is all the default
 wasm-name-section-based backtrace can show for a non-topmost frame:
 
 ```
-vibewt: error while executing at wasm backtrace:
+viberun: error while executing at wasm backtrace:
     0:   0x1c33 - <unknown>!main (t.vibex:1)
     1:   0x1d39 - <unknown>!_start
 
@@ -248,7 +248,7 @@ exits.
 
 ## Keeping the compiler up to date
 
-The runner (`vibewt`) and the compiler wasm are distributed and updated
+The runner (`viberun`) and the compiler wasm are distributed and updated
 independently (ADR-0056 / テーマ1). To swap in a newer compiler artifact
 without rebuilding the runner:
 

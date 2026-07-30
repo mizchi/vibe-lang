@@ -1,4 +1,4 @@
-// vibewt: wasmtime-backed runner for wasm modules produced by the selfhost
+// viberun: wasmtime-backed runner for wasm modules produced by the selfhost
 // vibe compiler (lib/@vibe/compiler).
 //
 // The host import surface (stdout via spectest::print_char or
@@ -10,12 +10,12 @@
 // interpretation overhead.
 //
 // CLI matches moonrun's positional shape:
-//   vibewt <wasm|cwasm> [args...]              run, forward args
-//   vibewt --precompile <wasm> [-o out.cwasm]  AOT compile only
-//   vibewt --dump-imports <wasm>               list import surface (drift guard)
-//   vibewt --dump-linemap <wasm>               dump `vibe.linemap` (#644)
-//   vibewt --daemon <wasm|cwasm>               long-running mode (#400)
-//   vibewt --help
+//   viberun <wasm|cwasm> [args...]              run, forward args
+//   viberun --precompile <wasm> [-o out.cwasm]  AOT compile only
+//   viberun --dump-imports <wasm>               list import surface (drift guard)
+//   viberun --dump-linemap <wasm>               dump `vibe.linemap` (#644)
+//   viberun --daemon <wasm|cwasm>               long-running mode (#400)
+//   viberun --help
 
 use std::any::Any;
 use std::fs;
@@ -237,6 +237,17 @@ struct HostState {
     // are cheap map reads, not re-execs of the command.
     sh_capture_results: std::collections::HashMap<i64, ShCaptureResult>,
     next_sh_capture_handle: i64,
+    // Socket::tcp_connect/tcp_read/tcp_write/tcp_close -- same handle-map
+    // shape as sh_capture_results above (the handle IS the Int the guest
+    // holds; TcpStream itself can't cross the wasm ABI).
+    tcp_connections: std::collections::HashMap<i64, std::net::TcpStream>,
+    next_tcp_handle: i64,
+    // #1226: Http::request/response_status/response_header/response_body/close
+    // -- same handle-map shape as sh_capture_results/tcp_connections above.
+    // `request` runs the call ONCE and parks the full response, so the 3
+    // accessor imports are cheap map reads (mirrors sh_capture's shape).
+    http_responses: std::collections::HashMap<i64, HttpResponseData>,
+    next_http_handle: i64,
     // #lsp-selfhost review follow-up: bytes read by `stdin_read_stream` that
     // don't yet form a complete UTF-8 sequence (a pipe read can return a
     // chunk boundary in the middle of a multi-byte character), held back
@@ -252,6 +263,15 @@ struct ShCaptureResult {
     exit_code: i32,
     stdout: String,
     stderr: String,
+}
+
+// #1226: a completed HTTP response parked behind a handle by `http_request`.
+// `headers` keeps lowercased names (HTTP header names are case-insensitive)
+// so `http_response_header` can do a simple linear-scan lookup.
+struct HttpResponseData {
+    status: i64,
+    headers: Vec<(String, String)>,
+    body: String,
 }
 
 // DAP P3 step modes. Continue: only pause at explicit break_set hits. StepInto:
@@ -339,6 +359,10 @@ impl HostState {
             alloc_sites: std::collections::HashMap::new(),
             sh_capture_results: std::collections::HashMap::new(),
             next_sh_capture_handle: 1,
+            tcp_connections: std::collections::HashMap::new(),
+            next_tcp_handle: 1,
+            http_responses: std::collections::HashMap::new(),
+            next_http_handle: 1,
             stdin_pending: Vec::new(),
         }
     }
@@ -374,15 +398,15 @@ fn elapsed_profile_us(start: Instant) -> i64 {
 
 fn print_help() {
     eprintln!(
-        "vibewt — wasmtime-backed runner for wasm modules produced by the selfhost vibe compiler\n\
+        "viberun — wasmtime-backed runner for wasm modules produced by the selfhost vibe compiler\n\
          \n\
          USAGE:\n\
-           vibewt <wasm|cwasm> [args...]\n\
-           vibewt --precompile <input.wasm> [-o <output.cwasm>]\n\
-           vibewt --dump-imports <input.wasm>\n\
-           vibewt --dump-linemap <input.wasm>\n\
-           vibewt --daemon <wasm|cwasm>\n\
-           vibewt --help\n\
+           viberun <wasm|cwasm> [args...]\n\
+           viberun --precompile <input.wasm> [-o <output.cwasm>]\n\
+           viberun --dump-imports <input.wasm>\n\
+           viberun --dump-linemap <input.wasm>\n\
+           viberun --daemon <wasm|cwasm>\n\
+           viberun --help\n\
          \n\
          ENV:\n\
            MOONRUN_WT_MEMORY_MB    soft cap on linear memory (default 8192)\n\
@@ -445,7 +469,7 @@ fn precompile(input: &str, output: Option<&str>) -> Result<()> {
     };
     fs::write(&out_path, &bytes).map_err(|e| format_err!("write {}: {e}", out_path.display()))?;
     eprintln!(
-        "vibewt: precompiled {} → {} ({} bytes)",
+        "viberun: precompiled {} → {} ({} bytes)",
         input,
         out_path.display(),
         bytes.len()
@@ -547,7 +571,7 @@ fn dump_linemap(input: &str) -> Result<()> {
 
 fn load_module(engine: &Engine, path: &str) -> Result<Module> {
     if path.ends_with(".cwasm") {
-        // SAFETY: cwasm produced by `vibewt --precompile` uses the same
+        // SAFETY: cwasm produced by `viberun --precompile` uses the same
         // engine config above, so deserializing here is sound. Loading a
         // cwasm built with a different wasmtime version / config is UB —
         // don't share cwasm files across toolchain versions.
@@ -564,7 +588,7 @@ fn run(args: Vec<String>) -> Result<i32> {
         bail!("missing wasm/cwasm argument");
     }
     let wasm_path = &args[0];
-    let prog_args: Vec<String> = std::iter::once("vibewt".to_string())
+    let prog_args: Vec<String> = std::iter::once("viberun".to_string())
         .chain(args.iter().skip(1).cloned())
         .collect();
 
@@ -579,7 +603,7 @@ fn run(args: Vec<String>) -> Result<i32> {
     // on epoch_interruption here would make deserialization fail (the config must
     // match), and the AOT image has no epoch checkpoints to sample at anyway.
     // Disable sampling for `.cwasm` (the `vibe run` path always passes a fresh
-    // `.wasm`, so this only guards direct `vibewt <module.cwasm>` use).
+    // `.wasm`, so this only guards direct `viberun <module.cwasm>` use).
     let sample_ms = if sample_ms.is_some() && wasm_path.ends_with(".cwasm") {
         eprintln!("vibe: --mem-sample needs a fresh .wasm (a precompiled .cwasm has no epoch checkpoints); sampling disabled");
         None
@@ -791,7 +815,7 @@ fn run(args: Vec<String>) -> Result<i32> {
             }
             // `vibe::dbg_break` user abort (`q` at an interactive breakpoint).
             if e.downcast_ref::<BreakAbort>().is_some() {
-                eprintln!("vibewt: run aborted at breakpoint");
+                eprintln!("viberun: run aborted at breakpoint");
                 return Ok(130);
             }
             // #946(4): a pathologically deep expression (e.g. thousands of
@@ -829,7 +853,7 @@ fn run(args: Vec<String>) -> Result<i32> {
                         "expression too deeply nested (stack overflow while type-checking)\n",
                     );
                 }
-                eprintln!("vibewt: stack overflow: expression too deeply nested");
+                eprintln!("viberun: stack overflow: expression too deeply nested");
                 return Ok(1);
             }
             // A guest trap (e.g. an uncaught vibe `throw`/type error surfacing as
@@ -839,9 +863,9 @@ fn run(args: Vec<String>) -> Result<i32> {
             if std::env::var_os("VIBE_RUNNER_BACKTRACE").is_some()
                 || std::env::var_os("RUST_BACKTRACE").is_some()
             {
-                eprintln!("vibewt: {e:?}");
+                eprintln!("viberun: {e:?}");
             } else {
-                eprintln!("vibewt: {e}");
+                eprintln!("viberun: {e}");
                 // #644: a debug-break build (non-empty `linemap`) that traps
                 // mid-run -- not via an explicit `--break` pause -- still
                 // deserves a precise per-frame source line, not just the bare
@@ -923,7 +947,7 @@ fn fmt_ops(ops: f64) -> String {
 // together). Reports ns/op (min/p50/p95/mean), ops/sec, and bytes/op
 // (bump-heap delta / iters — the average allocation per iteration).
 //
-//   vibewt --bench <wasm|cwasm>
+//   viberun --bench <wasm|cwasm>
 // Env: VIBE_BENCH_ITERS (default 1000), VIBE_BENCH_WARMUP (default 50),
 //      VIBE_BENCH_LABEL (report label; default the wasm path).
 fn bench(args: Vec<String>) -> Result<i32> {
@@ -961,7 +985,7 @@ fn bench(args: Vec<String>) -> Result<i32> {
         let limits = StoreLimitsBuilder::new()
             .memory_size(memory_mb * 1024 * 1024)
             .build();
-        let mut state = HostState::new(vec!["vibewt".to_string()], MemLimiter::new(limits));
+        let mut state = HostState::new(vec!["viberun".to_string()], MemLimiter::new(limits));
         state.capture_stdout = true; // suppress per-iteration program output
         let mut store = Store::new(&engine, state);
         store.limiter(|s| &mut s.mem);
@@ -1115,7 +1139,7 @@ fn bench(args: Vec<String>) -> Result<i32> {
 //
 // Wasm stdout is captured (HostState.capture_stdout) so it doesn't
 // interleave with the protocol on stdout. Diagnostic / panic messages
-// from vibewt itself still go to stderr.
+// from viberun itself still go to stderr.
 fn daemon(args: Vec<String>) -> Result<i32> {
     if args.is_empty() {
         bail!("--daemon: missing <wasm|cwasm> argument");
@@ -1137,7 +1161,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
     // Empty initial args; daemon will populate per-request before each
     // `_start` call. capture_stdout is set true so per-request output
     // accumulates in HostState.captured_stdout for the JSON envelope.
-    let mut state = HostState::new(vec!["vibewt".to_string()], MemLimiter::new(limits));
+    let mut state = HostState::new(vec!["viberun".to_string()], MemLimiter::new(limits));
     state.capture_stdout = true;
     let mut store = Store::new(&engine, state);
     store.limiter(|s| &mut s.mem);
@@ -1148,7 +1172,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
     let instance = linker.instantiate(&mut store, &module)?;
     let start: TypedFunc<(), ()> = instance.get_typed_func(&mut store, "_start")?;
 
-    eprintln!("vibewt: daemon ready ({} loaded)", wasm_path);
+    eprintln!("viberun: daemon ready ({} loaded)", wasm_path);
 
     use std::io::BufRead;
     let stdin = std::io::stdin();
@@ -1159,7 +1183,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
         let line = match line_res {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("vibewt: daemon stdin read failed: {e}");
+                eprintln!("viberun: daemon stdin read failed: {e}");
                 break;
             }
         };
@@ -1222,7 +1246,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
         {
             let host = store.data_mut();
             host.args = Arc::new(
-                std::iter::once("vibewt".to_string())
+                std::iter::once("viberun".to_string())
                     .chain(req_args.into_iter())
                     .collect(),
             );
@@ -1277,7 +1301,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
                     let mut h = stdout.lock();
                     writeln!(h, "{}", resp).ok();
                     h.flush().ok();
-                    eprintln!("vibewt: daemon aborting after wasm trap: {e:?}");
+                    eprintln!("viberun: daemon aborting after wasm trap: {e:?}");
                     return Ok(1);
                 }
             }
@@ -1299,7 +1323,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
         h.flush().ok();
     }
 
-    eprintln!("vibewt: daemon shutting down (stdin EOF, handled {req_id} requests)");
+    eprintln!("viberun: daemon shutting down (stdin EOF, handled {req_id} requests)");
     Ok(0)
 }
 
@@ -1880,6 +1904,92 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             Ok(())
         },
     )?;
+    // #1220: Fs::rename -- declared builtin with real call sites
+    // (lib/@vibe/cli/coverage_local_merge.vibe, coverage_acc_tool.vibe's
+    // tmp-write + rename atomic-write pattern) but, like fs_remove above,
+    // present in the JS runner (scripts/wasm_vibe_host_runner.js's
+    // fs.renameSync) and never ported here -- any compiled program calling
+    // Fs::rename crashed the real `vibe run` with an unknown-import trap.
+    linker.func_wrap(
+        "vibe",
+        "fs_rename",
+        |mut caller: Caller<'_, HostState>, src: i64, dst: i64| -> Result<()> {
+            let src = vibe_read_packed_str(&mut caller, src)?;
+            let dst = vibe_read_packed_str(&mut caller, dst)?;
+            fs::rename(&src, &dst)
+                .map_err(|e| format_err!("vibe fs_rename '{src}' -> '{dst}': {e}"))?;
+            Ok(())
+        },
+    )?;
+    // #1220 follow-up: the rest of the JS runner's fs surface
+    // (scripts/wasm_vibe_host_runner.js) that was never ported here either --
+    // same unknown-import crash under the real `vibe run` as fs_rename above,
+    // just not yet hit by a call site that runs through viberun. Declared
+    // builtins with real call sites in lib/@vibex/shell/commands.vibe (a
+    // general-purpose library any user program can import) and
+    // scripts/vibe_md.vibex.
+    linker.func_wrap(
+        "vibe",
+        "fs_mkdir",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<()> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            fs::create_dir(&path).map_err(|e| format_err!("vibe fs_mkdir '{path}': {e}"))?;
+            Ok(())
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_mkdir_p",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<()> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            fs::create_dir_all(&path).map_err(|e| format_err!("vibe fs_mkdir_p '{path}': {e}"))?;
+            Ok(())
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_getcwd",
+        |mut caller: Caller<'_, HostState>| -> Result<i64> {
+            let cwd = std::env::current_dir().map_err(|e| format_err!("vibe fs_getcwd: {e}"))?;
+            vibe_alloc_packed_str(&mut caller, &cwd.to_string_lossy())
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_chdir",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<()> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            std::env::set_current_dir(&path)
+                .map_err(|e| format_err!("vibe fs_chdir '{path}': {e}"))?;
+            Ok(())
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_copy",
+        |mut caller: Caller<'_, HostState>, src: i64, dst: i64| -> Result<()> {
+            let src = vibe_read_packed_str(&mut caller, src)?;
+            let dst = vibe_read_packed_str(&mut caller, dst)?;
+            fs::copy(&src, &dst).map_err(|e| format_err!("vibe fs_copy '{src}' -> '{dst}': {e}"))?;
+            Ok(())
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_append",
+        |mut caller: Caller<'_, HostState>, path: i64, content: i64| -> Result<()> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            let content = vibe_read_packed_str(&mut caller, content)?;
+            let mut f = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|e| format_err!("vibe fs_append '{path}': {e}"))?;
+            f.write_all(content.as_bytes())
+                .map_err(|e| format_err!("vibe fs_append '{path}': {e}"))?;
+            Ok(())
+        },
+    )?;
     linker.func_wrap(
         "vibe",
         "fs_is_dir",
@@ -2074,6 +2184,32 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
         }
     }
 
+    // `sleep(Int) -> Unit with { Async }` -- codegen (linked_compile.vibe)
+    // emits `vibe.sleep (i64) -> ()` whenever a program calls the builtin,
+    // but neither this runner nor the Node dev runner ever registered it,
+    // so any real caller (e.g. lib/@vibe/time's public `sleep_ms`,
+    // lib/@vibex/shell's `sleep`) crashed the real `vibe run` at
+    // instantiation with an unknown-import trap -- never reached `sleep`
+    // actually running, let alone sleeping the wrong amount. A plain
+    // blocking `thread::sleep` (matching tools/async_host/src/main.rs's own
+    // reference impl) fixes the crash and is correct for the common case of
+    // a single sequential caller; it does NOT give concurrently-`spawn`ed
+    // tasks true interleaved sleep (each `sleep` blocks the whole wasm
+    // instance) -- that needs wasmtime's async-fiber support
+    // (tools/async_host/src/concurrency.rs's `func_wrap_async`, a much
+    // larger change to how this store/linker are configured) and no known
+    // caller needs it today.
+    linker.func_wrap(
+        "vibe",
+        "sleep",
+        |_caller: Caller<'_, HostState>, ms: i64| -> Result<()> {
+            if ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(ms as u64));
+            }
+            Ok(())
+        },
+    )?;
+
     linker.func_wrap(
         "vibe",
         "stdin_read_char",
@@ -2259,6 +2395,206 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
         "sh_capture_close",
         |mut caller: Caller<'_, HostState>, handle: i64| -> Result<()> {
             caller.data_mut().sh_capture_results.remove(&handle);
+            Ok(())
+        },
+    )?;
+    // Socket::tcp_connect/tcp_read/tcp_write/tcp_close -- declared builtins
+    // (checker/builtin_registry.vibe) with a real call site
+    // (lib/@vibe/socket/tcp.vibe's low-level layer) but, like fs_rename
+    // before #1220, never wired to a host import here, so any real caller
+    // crashed `vibe run` with an unknown-import trap. Blocking `std::net`
+    // calls, same synchronous-ABI convention as every other host import in
+    // this file (see this file's `sleep` import for the same tradeoff
+    // spelled out) -- handles are parked in `tcp_connections`, same
+    // handle-map shape as `sh_capture_results` above (a TcpStream itself
+    // can't cross the wasm ABI).
+    linker.func_wrap(
+        "vibe",
+        "tcp_connect",
+        |mut caller: Caller<'_, HostState>, host: i64, port: i64| -> Result<i64> {
+            let host = vibe_read_packed_str(&mut caller, host)?;
+            let port = u16::try_from(port)
+                .map_err(|_| format_err!("vibe tcp_connect: invalid port {port}"))?;
+            let stream = std::net::TcpStream::connect((host.as_str(), port))
+                .map_err(|e| format_err!("vibe tcp_connect '{host}:{port}': {e}"))?;
+            let host_state = caller.data_mut();
+            let handle = host_state.next_tcp_handle;
+            host_state.next_tcp_handle += 1;
+            host_state.tcp_connections.insert(handle, stream);
+            Ok(handle)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "tcp_read",
+        |mut caller: Caller<'_, HostState>, handle: i64, max_bytes: i64| -> Result<i64> {
+            let max_bytes = usize::try_from(max_bytes.max(0))
+                .map_err(|_| format_err!("vibe tcp_read: invalid max_bytes {max_bytes}"))?;
+            let mut buf = vec![0u8; max_bytes];
+            let read = {
+                let stream = caller
+                    .data_mut()
+                    .tcp_connections
+                    .get_mut(&handle)
+                    .ok_or_else(|| format_err!("vibe tcp_read: unknown handle"))?;
+                stream
+                    .read(&mut buf)
+                    .map_err(|e| format_err!("vibe tcp_read: {e}"))?
+            };
+            buf.truncate(read);
+            let s = String::from_utf8_lossy(&buf).into_owned();
+            vibe_alloc_packed_str(&mut caller, &s)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "tcp_write",
+        |mut caller: Caller<'_, HostState>, handle: i64, data: i64| -> Result<()> {
+            let data = vibe_read_packed_str(&mut caller, data)?;
+            let stream = caller
+                .data_mut()
+                .tcp_connections
+                .get_mut(&handle)
+                .ok_or_else(|| format_err!("vibe tcp_write: unknown handle"))?;
+            stream
+                .write_all(data.as_bytes())
+                .map_err(|e| format_err!("vibe tcp_write: {e}"))?;
+            Ok(())
+        },
+    )?;
+    // Tolerates unknown handles, like sh_capture_close above -- a
+    // double-close must not kill the guest.
+    linker.func_wrap(
+        "vibe",
+        "tcp_close",
+        |mut caller: Caller<'_, HostState>, handle: i64| -> Result<()> {
+            caller.data_mut().tcp_connections.remove(&handle);
+            Ok(())
+        },
+    )?;
+    // #1226: Http::request/response_status/response_header/response_body/close
+    // -- declared builtins (checker/builtin_registry.vibe) with real call
+    // sites (lib/@vibe/http/http.vibe's client-side raw dunder calls, #794)
+    // but no host-import registration anywhere, so any real caller crashed
+    // `vibe run` with an unknown-import trap. `headers` is a "name:
+    // value\n"-joined string (lib/@vibe/http/high_level.vibe's
+    // `headers_to_wire`), matching what a caller building on the low-level
+    // `request()` already produces.
+    linker.func_wrap(
+        "vibe",
+        "http_request",
+        |mut caller: Caller<'_, HostState>, method: i64, url: i64, headers: i64, body: i64| -> Result<i64> {
+            let method = vibe_read_packed_str(&mut caller, method)?;
+            let url = vibe_read_packed_str(&mut caller, url)?;
+            let headers = vibe_read_packed_str(&mut caller, headers)?;
+            let body = vibe_read_packed_str(&mut caller, body)?;
+            let mut req = ureq::request(&method, &url);
+            for line in headers.split('\n') {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    req = req.set(name.trim(), value.trim());
+                }
+            }
+            let result = if body.is_empty() {
+                req.call()
+            } else {
+                req.send_string(&body)
+            };
+            let response = match result {
+                Ok(resp) => resp,
+                // ureq treats a 4xx/5xx response as Err by default -- it's
+                // still a real, well-formed response (do_404 in
+                // http_e2e_test.vibe expects to read a 404 status, not a
+                // trap), so unwrap it the same way as the Ok case. Only a
+                // genuine transport failure (DNS, connect refused, TLS)
+                // falls through to the trap below.
+                Err(ureq::Error::Status(_, resp)) => resp,
+                Err(e) => return Err(format_err!("vibe http_request '{method} {url}': {e}")),
+            };
+            let status = response.status() as i64;
+            let resp_headers: Vec<(String, String)> = response
+                .headers_names()
+                .into_iter()
+                .filter_map(|name| {
+                    let value = response.header(&name)?.to_string();
+                    Some((name.to_lowercase(), value))
+                })
+                .collect();
+            let resp_body = response
+                .into_string()
+                .map_err(|e| format_err!("vibe http_request '{method} {url}': reading body: {e}"))?;
+            let host_state = caller.data_mut();
+            let handle = host_state.next_http_handle;
+            host_state.next_http_handle += 1;
+            host_state.http_responses.insert(
+                handle,
+                HttpResponseData {
+                    status,
+                    headers: resp_headers,
+                    body: resp_body,
+                },
+            );
+            Ok(handle)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "http_response_status",
+        |caller: Caller<'_, HostState>, handle: i64| -> Result<i64> {
+            let entry = caller
+                .data()
+                .http_responses
+                .get(&handle)
+                .ok_or_else(|| format_err!("vibe http_response_status: unknown handle"))?;
+            Ok(entry.status)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "http_response_header",
+        |mut caller: Caller<'_, HostState>, handle: i64, name: i64| -> Result<i64> {
+            let name = vibe_read_packed_str(&mut caller, name)?;
+            let name_lower = name.to_lowercase();
+            let value = {
+                let entry = caller
+                    .data()
+                    .http_responses
+                    .get(&handle)
+                    .ok_or_else(|| format_err!("vibe http_response_header: unknown handle"))?;
+                entry
+                    .headers
+                    .iter()
+                    .find(|(hn, _)| *hn == name_lower)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default()
+            };
+            vibe_alloc_packed_str(&mut caller, &value)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "http_response_body",
+        |mut caller: Caller<'_, HostState>, handle: i64| -> Result<i64> {
+            let body = caller
+                .data()
+                .http_responses
+                .get(&handle)
+                .ok_or_else(|| format_err!("vibe http_response_body: unknown handle"))?
+                .body
+                .clone();
+            vibe_alloc_packed_str(&mut caller, &body)
+        },
+    )?;
+    // Tolerates unknown handles, like sh_capture_close/tcp_close above -- a
+    // double-close must not kill the guest.
+    linker.func_wrap(
+        "vibe",
+        "http_close",
+        |mut caller: Caller<'_, HostState>, handle: i64| -> Result<()> {
+            caller.data_mut().http_responses.remove(&handle);
             Ok(())
         },
     )?;
@@ -3367,7 +3703,7 @@ fn main() {
     // raise its own graceful trap.
     let stack = wasm_stack_bytes() + 8 * 1024 * 1024;
     let handle = std::thread::Builder::new()
-        .name("vibewt".to_string())
+        .name("viberun".to_string())
         .stack_size(stack)
         .spawn(real_main)
         .expect("spawn main thread");
@@ -3396,7 +3732,7 @@ fn real_main() {
             std::process::exit(2);
         }
         if let Err(e) = dump_imports(&input) {
-            eprintln!("vibewt: dump-imports failed: {e:?}");
+            eprintln!("viberun: dump-imports failed: {e:?}");
             std::process::exit(1);
         }
         return;
@@ -3419,7 +3755,7 @@ fn real_main() {
             std::process::exit(2);
         }
         if let Err(e) = dump_linemap(&input) {
-            eprintln!("vibewt: dump-linemap failed: {e:?}");
+            eprintln!("viberun: dump-linemap failed: {e:?}");
             std::process::exit(1);
         }
         return;
@@ -3429,7 +3765,7 @@ fn real_main() {
         match daemon(daemon_args) {
             Ok(code) => std::process::exit(code),
             Err(e) => {
-                eprintln!("vibewt: daemon failed: {e:?}");
+                eprintln!("viberun: daemon failed: {e:?}");
                 std::process::exit(1);
             }
         }
@@ -3439,7 +3775,7 @@ fn real_main() {
         match bench(bench_args) {
             Ok(code) => std::process::exit(code),
             Err(e) => {
-                eprintln!("vibewt: {e}");
+                eprintln!("viberun: {e}");
                 std::process::exit(1);
             }
         }
@@ -3470,7 +3806,7 @@ fn real_main() {
             }
         }
         if let Err(e) = precompile(&input, output.as_deref()) {
-            eprintln!("vibewt: precompile failed: {e:?}");
+            eprintln!("viberun: precompile failed: {e:?}");
             std::process::exit(1);
         }
         return;
@@ -3478,7 +3814,7 @@ fn real_main() {
     match run(args) {
         Ok(code) => std::process::exit(code),
         Err(e) => {
-            eprintln!("vibewt: {e:?}");
+            eprintln!("viberun: {e:?}");
             std::process::exit(1);
         }
     }

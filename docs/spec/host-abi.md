@@ -10,7 +10,7 @@
   **`wasi_snapshot_preview1::fd_write`（常時）＋ プログラムが使ったエフェクトに対応する `vibe::*`**。
 - **pure / compute なプログラムは、任意の WASI Preview1 ホスト（＋exceptions）で動く** —
   実測: 素の `wasmtime run -W exceptions=y pure.wasm` が `5` を出力。
-- **エフェクトを使う生成物は `vibe::*` host ABI を実装したホストが必要**（現状は `vibewt`）。
+- **エフェクトを使う生成物は `vibe::*` host ABI を実装したホストが必要**（現状は `viberun`）。
   標準 WASI だけのホストでは `unknown import: vibe::fs_read_file` で instantiate に失敗する（実測）。
 - したがって **「IO は wasip3 前提」はデフォルトの linear path には当てはまらない**。
   デフォルトは *Preview1 fd_write ＋ 独自 `vibe::*`*。wasip3 は別系統（component path）の到達目標。
@@ -67,7 +67,7 @@
 
 ## 4. wasip3 との関係（前提の整理）
 
-- **デフォルト linear path**（`vibe build` / `vibewt`）: Preview1 `fd_write` ＋ 独自 `vibe::*`。
+- **デフォルト linear path**（`vibe build` / `viberun`）: Preview1 `fd_write` ＋ 独自 `vibe::*`。
   **wasip3 ではない**。
 - **component path**（`lib/@vibe/compiler/component_codegen.vibe`）: canonical ABI（`cabi_realloc`）＋
   preview1 adapter で WASI component 化。標準 I/O を `wasi:io`（preview2）→ p3 async に寄せるのが
@@ -86,7 +86,7 @@
    値は tagged-i64 ＋ export された `memory` から packed string/bytes を読む。
 4. `_start` を呼ぶ（または `main` を直接 invoke）。
 
-この 4 点が「契約」。これを満たすホストは vibewt と等価に生成物を実行できる。
+この 4 点が「契約」。これを満たすホストは viberun と等価に生成物を実行できる。
 
 ## CI enforcement
 

@@ -31,9 +31,9 @@ const fmt = (n) => n == null ? "–" : n.toLocaleString("en-US");
 // so advisory deltas can be corrected for it instead of read at face value.
 //
 // The calibration reading is only pure "runner speed" if every input that
-// feeds it is unchanged: the seed wasm, the vibewt runner binary (built
+// feeds it is unchanged: the seed wasm, the viberun runner binary (built
 // from the current checkout), AND the calibration bench source itself
-// (also read from the current checkout). A PR that changes runtime/vibewt
+// (also read from the current checkout). A PR that changes runtime/viberun
 // or bench/regression/alloc_bench.vibe would otherwise have that real
 // change misread as host-speed drift and divided out of every advisory
 // delta (found in review, #1209) — so all three hashes must be present
@@ -49,7 +49,7 @@ let calibNote = "no calibration data (older baseline snapshot, or runner/seed un
     if (missing.length) {
       calibNote = `calibration inputs not recorded on both snapshots (missing: ${missing.join(", ")}) — not comparable, deltas below are raw`;
     } else if (mismatched.length) {
-      calibNote = `calibration inputs changed between baseline and current (${mismatched.join(", ")}) — not comparable (bootstrap bump, or a change to runtime/vibewt or the calibration bench), deltas below are raw`;
+      calibNote = `calibration inputs changed between baseline and current (${mismatched.join(", ")}) — not comparable (bootstrap bump, or a change to runtime/viberun or the calibration bench), deltas below are raw`;
     } else if (b.ns_p50 > 0) {
       runnerFactor = c.ns_p50 / b.ns_p50;
       calibNote = `runner factor ${runnerFactor.toFixed(3)}× (${c.label || "calibration"}: current ${fmt(c.ns_p50)}ns vs baseline ${fmt(b.ns_p50)}ns p50) — advisory deltas below are normalized to correct for it`;

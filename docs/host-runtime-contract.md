@@ -6,12 +6,12 @@ Date: 2026-07-28
 
 Related: ADR-0010(WASM Component Model / WIT 統合 — 本 ADR が定める host
 import 契約はこの WIT 化方針の compiler-host 版)、ADR-0079(wasm proposal
-依存を compiler-host / codegen-target の2水準に分離 — `runtime/vibewt` を
+依存を compiler-host / codegen-target の2水準に分離 — `runtime/viberun` を
 実験的機能に依存してよい実行基盤として扱う既存の前例)、ADR-0050(wasmtime
 AOT は selfhost bench の host-side accelerator であり、canonical selfhost
 artifact は WASI wasm standalone として実行可能であり続けるべき、という
 「Wasmtime を必須にしない」という本 ADR と同じ動機の既存決定)、ADR-0056(
-`runtime/vibewt` / cwasm cache を execution substrate として canonical
+`runtime/viberun` / cwasm cache を execution substrate として canonical
 artifact と切り分ける cutover ADR)、ADR-0084(capability/algebraic effect
 の分類と `.vibex` entry row の許可規則 — resource kind retrofit 後の
 builtin effect の WIT 生成は同 ADR の射程、本 ADR は compiler 自身の
@@ -25,7 +25,7 @@ host boundary という別の対象を扱う姉妹 ADR)、
 > `cli_main` reachability and narrowed it, but got two details wrong. Round 3
 > (Codex review again) fixed those: dropped `Fs::remove` (its only call site
 > is an orphaned entry point, not reachable from `cli_main`) and corrected a
-> false claim about which ops `runtime/vibewt` does/doesn't implement. No
+> false claim about which ops `runtime/viberun` does/doesn't implement. No
 > pass changed any runner implementation. `docs/wit/vibe-compiler-host.wit`
 > is the reference world.
 
@@ -33,7 +33,7 @@ host boundary という別の対象を扱う姉妹 ADR)、
 
 The compiler's own host boundary — what a wasm runner must provide for
 `cli_main` to work at all — was previously only implicit in two concrete
-runner implementations: `runtime/vibewt` (Rust/Wasmtime) and
+runner implementations: `runtime/viberun` (Rust/Wasmtime) and
 `scripts/wasm_vibe_host_runner.js` (Node, also Wasmtime-backed). Nothing
 described the contract itself, independent of either implementation. This is
 distinct from `vibe compile --wit` (`docs/effect-wit-mapping.md`), which
@@ -77,7 +77,7 @@ that call site is itself reachable from `cli_main`'s import graph — missing
 that `Fs::remove`'s only call site is under `entry/cli_cache/`, an
 alternate entry point `cli_adapter.vibe` never imports and nothing else in
 the compiler calls into. Dropped. Round 2 also mischaracterized which of
-the ten removed ops are actually missing from `runtime/vibewt` — corrected
+the ten removed ops are actually missing from `runtime/viberun` — corrected
 below. The final six ops, verified reachable from `cli_main`'s own import
 graph (`cli_adapter.vibe` directly imports the `runtime` and `loader`
 packages):
@@ -106,14 +106,14 @@ operation declarations don't carry parameter names, the same reason
 `wit_gen.vibe`'s own output uses `arg0`/`arg1`.
 
 **Round 1's open question, resolved by round 2, corrected by round 3:**
-round 2 claimed `runtime/vibewt/src/main.rs`'s `register_vibe_imports` has
+round 2 claimed `runtime/viberun/src/main.rs`'s `register_vibe_imports` has
 no registrations at all for the ten then-removed ops. Wrong — Codex caught
-that vibewt actually registers three of them (`fs_is_dir`, `fs_is_file`,
+that viberun actually registers three of them (`fs_is_dir`, `fs_is_file`,
 `fs_read_bytes`, confirmed at lines ~1791-1835), it just doesn't register
 the other seven (`fs_mkdir`/`fs_mkdir_p`/`fs_chdir`/`fs_getcwd`/`fs_copy`/
 `fs_append`/`fs_rename`). Whichever runner implements how many of them is
 moot for this contract either way: `cli_main` reaches none of the eleven
-excluded ops, so neither vibewt's partial coverage nor the Node runner's
+excluded ops, so neither viberun's partial coverage nor the Node runner's
 full coverage of them matters — that surface serves *user-program*
 `lib/@vibe/fs` usage (via the general-purpose `--wit` path), not something
 `cli_main` itself needs.
@@ -121,7 +121,7 @@ full coverage of them matters — that surface serves *user-program*
 ## What's NOT part of this contract
 
 Preopen-dir sandboxing, store/linker setup, fuel/memory limits, and other
-per-runner configuration (`runtime/vibewt/src/main.rs`'s `linker.instantiate`
+per-runner configuration (`runtime/viberun/src/main.rs`'s `linker.instantiate`
 call sites) are how a given runtime chooses to implement these imports, not
 part of what the imports are. A conformant third runner is free to sandbox
 differently as long as it exposes the same four interfaces.
@@ -138,25 +138,31 @@ env var and path-shape convention.
 
 ## A drift found, and resolved as benign
 
-`runtime/vibewt`'s `register_vibe_imports` implements exactly this
+`runtime/viberun`'s `register_vibe_imports` implements exactly this
 contract's six `fs` ops (`read-file`/`write-file`/`write-bytes`/`exists`/
 `stat-token`/`readdir`), `env`/`stdin`/`stdout` in full, plus `Process`/`sh`
 and a debugger-only surface `cli_main` doesn't use. It also happens to
-implement three of the eleven excluded ops (`fs_is_dir`/`fs_is_file`/
-`fs_read_bytes`) but not the other eight (`Fs::remove` and the seven
-`mkdir`/`mkdir-p`/`chdir`/`getcwd`/`copy`/`append`/`rename` ops) —
-`scripts/wasm_vibe_host_runner.js`'s Node `vibeModule` implements all
-eleven, plus an entire `http_*`/`json_*` surface neither this contract nor
-`vibewt` has. All of that extra Node surface belongs to library effects
-(`lib/@vibe/fs`'s full surface, `lib/@vibe/http`) used by **compiled user
-programs**, generated per-program by the existing `--wit` path — not by
-this fixed compiler-host contract. `cli_main` itself never reaches any of
-it, regardless of which runner happens to implement how much of it. This
-was exactly the kind of informal drift #1143 was raised to prevent; the
-round 2/3 reachability audit above resolves it: not a live bug, just two
-runners that happen to serve different total surfaces (compiler-only vs.
-compiler-plus-most-of-every-user-library-effect) while agreeing completely
-on what `cli_main` itself needs.
+implement all eleven of the excluded-from-this-contract-but-still-a-real-builtin
+ops (`is_dir`/`is_file`/`read_bytes`/`mkdir`/`mkdir_p`/`chdir`/`getcwd`/
+`copy`/`append`/`rename`/`remove`) — full parity with
+`scripts/wasm_vibe_host_runner.js`'s Node `vibeModule` on the `Fs` surface
+as of #1220 (originally `remove`/`is_dir`/`is_file` from #901, `read_bytes`
+from #632, and `rename`/`mkdir`/`mkdir_p`/`chdir`/`getcwd`/`copy`/`append`
+from #1220 — the last seven had been recognized builtins with real call
+sites, e.g. `lib/@vibex/shell/commands.vibe`, `coverage_local_merge.vibe`'s
+atomic-write pattern, but crashed any program calling them under the real
+`vibe run` with an unknown-import trap until #1220 ported them). The Node
+runner still has an entire `http_*`/`json_*` surface neither this contract
+nor `viberun` has — that extra surface belongs to library effects
+(`lib/@vibe/http`) used by **compiled user programs**, generated
+per-program by the existing `--wit` path — not by this fixed compiler-host
+contract. `cli_main` itself never reaches any of it, regardless of which
+runner happens to implement how much of it. This was exactly the kind of
+informal drift #1143 was raised to prevent; the round 2/3 reachability
+audit above resolves what `cli_main` itself needs, and #1220 independently
+closed the remaining `fs` gap for programs that reach beyond `cli_main`
+(i.e. every other compiled `.vibex`/`.vibe` program a user runs through the
+same production runner).
 
 ## Non-goals of this pass
 

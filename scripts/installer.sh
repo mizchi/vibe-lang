@@ -25,7 +25,7 @@
 #   VIBE_BIN_DIR        symlink dir  (default ~/.local/bin)
 #
 # Everything after `--` is passed through to install.sh
-# (e.g. `bash installer.sh -- --runner /path/to/vibewt`).
+# (e.g. `bash installer.sh -- --runner /path/to/viberun`).
 #
 # Requirements: git, bash; cargo (to build the wasmtime runner from source)
 # unless a prebuilt runner is passed through; node is optional (used to

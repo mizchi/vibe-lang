@@ -12,7 +12,7 @@
 #
 # Deliberately does NOT go through runtime/vibe's own `build` command (same
 # reason scripts/test_parallel_frontend_warm.sh's own header comment gives):
-# (a) its default RUNNER is the Rust `vibewt` binary, not guaranteed built in
+# (a) its default RUNNER is the Rust `viberun` binary, not guaranteed built in
 # a dev checkout or CI; (b) more importantly, `compile_to()` in runtime/vibe
 # captures the underlying runner's stderr into a local temp file and only
 # ever prints it on a FAILED compile -- on success it is silently discarded,

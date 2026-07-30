@@ -1,4 +1,4 @@
-//! Rust client for `vibewt --daemon`'s line-delimited JSON protocol.
+//! Rust client for `viberun --daemon`'s line-delimited JSON protocol.
 //!
 //! The daemon (added in #405) keeps a wasm Store + instance warm across
 //! requests so moonbit module-level state survives, eliminating the
@@ -19,14 +19,14 @@
 //! # Example
 //!
 //! ```no_run
-//! use vibewt_client::Client;
+//! use viberun_client::Client;
 //!
 //! let mut client = Client::spawn("/path/to/vibe_check_wasi.cwasm")?;
 //! let resp = client.send(&["--check", "src/main.vibe"])?;
 //! assert_eq!(resp.exit_code, 0);
 //! println!("checker stdout ({} us): {}", resp.elapsed_us, resp.stdout);
 //! // client is shut down when dropped — daemon receives EOF on its stdin.
-//! # Ok::<(), vibewt_client::ClientError>(())
+//! # Ok::<(), viberun_client::ClientError>(())
 //! ```
 
 use std::io::{BufRead, BufReader, Write};
@@ -35,7 +35,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 #[derive(Debug)]
 pub enum ClientError {
-    /// `vibewt --daemon` failed to spawn (binary missing,
+    /// `viberun --daemon` failed to spawn (binary missing,
     /// non-executable, etc.).
     Spawn(std::io::Error),
     /// IO failure while talking to the daemon — usually means it
@@ -60,7 +60,7 @@ pub enum ClientError {
 impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ClientError::Spawn(e) => write!(f, "spawn vibewt --daemon: {e}"),
+            ClientError::Spawn(e) => write!(f, "spawn viberun --daemon: {e}"),
             ClientError::Io(e) => write!(f, "daemon io: {e}"),
             ClientError::BadResponse { raw, err } => {
                 write!(f, "daemon returned unparseable response: {err} (raw: {raw:?})")
@@ -110,7 +110,7 @@ pub struct CheckResponse {
     pub error: Option<String>,
 }
 
-/// Long-lived client for a `vibewt --daemon` process.
+/// Long-lived client for a `viberun --daemon` process.
 ///
 /// Owns the child process and its stdin/stdout pipes. Dropping the
 /// client closes the daemon's stdin (EOF), which makes the daemon
@@ -124,19 +124,19 @@ pub struct Client {
 }
 
 impl Client {
-    /// Spawn `vibewt --daemon <wasm_path>` from the binary at
+    /// Spawn `viberun --daemon <wasm_path>` from the binary at
     /// `MOONRUN_WT_BIN` env var, falling back to a relative path
     /// for the repo layout.
     pub fn spawn(wasm_path: impl AsRef<Path>) -> Result<Self, ClientError> {
         let bin = std::env::var_os("MOONRUN_WT_BIN")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                PathBuf::from("runtime/vibewt/target/release/vibewt")
+                PathBuf::from("runtime/viberun/target/release/viberun")
             });
         Self::spawn_with(bin, wasm_path)
     }
 
-    /// Spawn an explicit `vibewt` binary against the given wasm.
+    /// Spawn an explicit `viberun` binary against the given wasm.
     /// Use this when the caller already knows where the binary lives
     /// (e.g. a build script that just produced it).
     pub fn spawn_with(
@@ -168,7 +168,7 @@ impl Client {
 
     /// Send one request to the daemon and block until the response
     /// arrives. `args` is the argv the wasm `_start` will see (the
-    /// daemon prepends `vibewt` as argv[0] on its side).
+    /// daemon prepends `viberun` as argv[0] on its side).
     pub fn send(&mut self, args: &[&str]) -> Result<CheckResponse, ClientError> {
         let stdin = self.stdin.as_mut().ok_or(ClientError::DaemonClosed)?;
         let stdout = self.stdout.as_mut().ok_or(ClientError::DaemonClosed)?;
@@ -288,7 +288,7 @@ impl Drop for Client {
 
 #[cfg(test)]
 mod tests {
-    // Integration-style smoke test: spawns the actual vibewt
+    // Integration-style smoke test: spawns the actual viberun
     // binary and checks an actual wasm. Gated on env vars so the
     // crate's bare `cargo test` doesn't require the whole repo
     // build chain.

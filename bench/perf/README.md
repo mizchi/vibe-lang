@@ -115,9 +115,9 @@ from anything about the PR's own codegen. The result is stored as a
 `calibration: { label, ns_p50, seed_sha256, runner_sha256, bench_sha256 }`
 field in the snapshot JSON.
 
-All three hashes are recorded and compared, not just the seed: the vibewt
+All three hashes are recorded and compared, not just the seed: the viberun
 runner binary and the calibration bench source are both read from the
-*current checkout*, so a PR that changes `runtime/vibewt` or
+*current checkout*, so a PR that changes `runtime/viberun` or
 `bench/regression/alloc_bench.vibe` would otherwise have that real change
 misread as pure host-speed drift and divided out of every advisory delta.
 `bench_report.mjs` only applies the runner factor when all three hashes
@@ -150,7 +150,7 @@ standalone `main`-entry program into `bench/binary_size/`. Run locally:
 
 ```bash
 bash scripts/generations.sh build --out-dir /tmp/gen
-cargo build --release --manifest-path runtime/vibewt/Cargo.toml  # micro benches
+cargo build --release --manifest-path runtime/viberun/Cargo.toml  # micro benches
 bash scripts/bench_metrics.sh /tmp/gen/stage2.wasm /tmp/m.json
 node scripts/bench_report.mjs /tmp/m.json            # vs no baseline
 ```
