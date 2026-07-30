@@ -47,13 +47,34 @@ function parseHeaders(wire) {
   return headers;
 }
 
-// Redirect statuses that carry a `Location` header worth following. 301/302
-// legacy-downgrade a non-GET/HEAD method+body to a bodiless GET (matching
-// curl/fetch/ureq's default behavior); 303 always downgrades to GET; 307/308
-// preserve the original method and body. MAX_REDIRECTS mirrors common HTTP
-// client defaults (fetch, ureq) -- a bound exists purely to avoid hanging on
-// a redirect loop, not to match any single library's exact count.
+// Redirect statuses that carry a `Location` header worth following. 301/302/303
+// preserve GET and HEAD unchanged and legacy-downgrade any other method+body
+// to a bodiless GET (fetch-compatible: matching curl/fetch/ureq's default
+// behavior); 307/308 preserve the original method and body. MAX_REDIRECTS
+// mirrors common HTTP client defaults (fetch, ureq) -- a bound exists purely
+// to avoid hanging on a redirect loop, not to match any single library's
+// exact count.
 const MAX_REDIRECTS = 10;
+
+// #1236 review: headers that must never cross an origin change on redirect
+// (leaking auth/session credentials to whatever host `Location` points at),
+// plus an explicit `Host` header that would otherwise be stale for the new
+// origin. Matched case-insensitively since header names arrive as whatever
+// case the caller used.
+const CROSS_ORIGIN_STRIP_HEADERS = new Set(["authorization", "cookie", "proxy-authorization", "host"]);
+
+function sameOrigin(a, b) {
+  return a.protocol === b.protocol && a.hostname === b.hostname && a.port === b.port;
+}
+
+function stripHeadersForRedirect(headers, crossOrigin) {
+  const next = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (crossOrigin && CROSS_ORIGIN_STRIP_HEADERS.has(name.toLowerCase())) continue;
+    next[name] = value;
+  }
+  return next;
+}
 
 function performRequest(method, url, headers, body, redirectsLeft, onDone, onError) {
   const client = url.protocol === "https:" ? https : http;
@@ -69,10 +90,18 @@ function performRequest(method, url, headers, body, redirectsLeft, onDone, onErr
         onError(e);
         return;
       }
-      const downgrade = status === 303 || ((status === 301 || status === 302) && method !== "GET" && method !== "HEAD");
+      // #1236 review: `client.request` throws synchronously (not via
+      // req.on("error")) on an unsupported protocol like `ftp:`/`file:`,
+      // which would escape this callback uncaught and leave the main
+      // thread's Atomics.wait() blocked forever. Reject before recursing.
+      if (nextUrl.protocol !== "http:" && nextUrl.protocol !== "https:") {
+        onError(new Error(`vibe http_request: redirect to unsupported protocol '${nextUrl.protocol}'`));
+        return;
+      }
+      const downgrade = (status === 301 || status === 302 || status === 303) && method !== "GET" && method !== "HEAD";
       const nextMethod = downgrade ? "GET" : method;
       const nextBody = downgrade ? undefined : body;
-      const nextHeaders = { ...headers };
+      const nextHeaders = stripHeadersForRedirect(headers, !sameOrigin(url, nextUrl));
       if (downgrade) {
         delete nextHeaders["content-length"];
         delete nextHeaders["Content-Length"];
