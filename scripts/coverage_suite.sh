@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # #535: selfhost mainline coverage gate.
 #
-# Runs the selfhost unit-test allowlist (scripts/unit_test_allowlist.txt,
-# plus VIBE_SUITE_EXTRA_ENTRIES=a.vibe,b.vibe) under
+# Runs the selfhost unit-test battery (scripts/unit_test_runner.sh --list --
+# every discovered *_test.vibe minus that script's small EXCLUDE_PATTERNS
+# list; #1231 removed the hand-maintained allowlist file this used to read
+# directly, plus VIBE_SUITE_EXTRA_ENTRIES=a.vibe,b.vibe) under
 # `vibe test --coverage` (function/branch hit instrumentation, linear backend),
 # aggregates per-entry coverage, writes the suite report consumed by
 # scripts/coverage_suite_next_branches.mjs, and enforces ratcheting
@@ -92,7 +94,9 @@ MIN_BRANCH="${VIBE_SUITE_MIN_BRANCH_RATE:-6}"
 MIN_FN_HIT="${VIBE_SUITE_MIN_FN_HIT:-42000}"
 MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-113000}"
 
-ALLOWLIST="scripts/unit_test_allowlist.txt"
+ALLOWLIST="$(mktemp -t vibe-coverage-entries-XXXXXX)"
+trap 'rm -f "$ALLOWLIST"' EXIT
+bash scripts/unit_test_runner.sh --list > "$ALLOWLIST"
 OUT_DIR="_build/coverage/selfhost-suite"
 REPORT="$OUT_DIR/selfhost_suite.report.json"
 COV_DIR="_build/vibe_test/coverage"
@@ -132,7 +136,7 @@ start_http_echo_server_if_needed() {
   [ -f "$ROOT/tests/http_echo_server.py" ] || return 0
   python3 "$ROOT/tests/http_echo_server.py" "$http_echo_port" >/dev/null 2>&1 &
   http_echo_pid=$!
-  trap 'if [ -n "$http_echo_pid" ]; then kill "$http_echo_pid" 2>/dev/null || true; fi' EXIT
+  trap 'rm -f "$ALLOWLIST"; if [ -n "$http_echo_pid" ]; then kill "$http_echo_pid" 2>/dev/null || true; fi' EXIT
   sleep 1
   if ! kill -0 "$http_echo_pid" 2>/dev/null; then
     echo "[coverage-suite] WARN: http echo server failed to start on 127.0.0.1:$http_echo_port" >&2
