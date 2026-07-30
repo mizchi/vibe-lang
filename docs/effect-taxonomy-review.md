@@ -289,6 +289,11 @@ spawn に引き継がれない(ADR-0075: 「user-defined handler/evidence は
 
 ### `Error` を `Exception` に改名する案
 
+> **carved out**: 本サブセクション(`Exception[E]` の型階層設計を含む)
+> は ADR-0085 として切り出した。詳細は
+> [effect-exception.md](effect-exception.md)。以下は検討過程の記録として
+> 残す。
+
 `Exception`(現 `Error`)は resource kind を持たないが、`main` の row を
 素通りしてよい(ADR-0073/0075: 「未処理 checked Error は outer handler
 が diagnosed failure へ変換する」)。これは capability でも通常の
