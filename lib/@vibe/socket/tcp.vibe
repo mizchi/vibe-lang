@@ -1,21 +1,43 @@
 //# Functions
 
+// #1220/#1232 review: these call the `vibe_tcp_*_raw` checker builtins
+// DIRECTLY (builtin_registry.vibe / linked_compile.vibe / compile_call.vibe
+// already wire codegen and RC tag/untag shims onto these exact literal
+// names) -- NOT `perform Socket::Connect(...)`, and not the qualified name
+// `Socket::tcp_connect` either. Two independent reasons, same shape as
+// lib/@vibe/http/http.vibe's client-side request/close:
+//  - `perform` reaching codegen with no live handle unconditionally lowers
+//    to an unhandled-perform trap (compile_call.vibe's op_is_builtin branch
+//    only recognizes a perform whose operation name is ALREADY registered
+//    in the func table under its own literal spelling, and nothing
+//    rewrites the PascalCase operation name `Socket::Connect` into a
+//    snake_case builtin name before that check runs).
+//  - the qualified name `Socket::tcp_connect` collides with this package's
+//    OWN `effect TcpSocket { Connect(...); Read(...); Write(...);
+//    Close(...) }` (index.vpkg, for in-package mock-handler tests): its
+//    operations are structurally identical in signature to these builtins,
+//    and the checker's effect-row resolution matched BOTH the builtin's
+//    row and TcpSocket's for a `Socket::`-qualified call, unioning a
+//    spurious `{ TcpSocket }` requirement onto every caller. Raw dunder
+//    names sidestep the collision entirely (same reasoning http.vibe's own
+//    comment documents for `vibe_http_*_raw`).
+
 /// tcp_read: (Int, Int) -> String with { Socket }
 export fn tcp_read(fd: Int, max_bytes: Int) -> String with { Socket } {
-  perform Socket::Read(fd, max_bytes)
+  vibe_tcp_read_raw(fd, max_bytes)
 }
 
 /// tcp_close: (Int) -> Unit with { Socket }
 export fn tcp_close(fd: Int) -> Unit with { Socket } {
-  perform Socket::Close(fd)
+  vibe_tcp_close_raw(fd)
 }
 
 /// tcp_write: (Int, String) -> Unit with { Socket }
 export fn tcp_write(fd: Int, data: String) -> Unit with { Socket } {
-  perform Socket::Write(fd, data)
+  vibe_tcp_write_raw(fd, data)
 }
 
 /// tcp_connect: (String, Int) -> Int with { Socket }
 export fn tcp_connect(host: String, port: Int) -> Int with { Socket } {
-  perform Socket::Connect(host, port)
+  vibe_tcp_connect_raw(host, port)
 }

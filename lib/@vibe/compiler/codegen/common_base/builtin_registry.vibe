@@ -141,17 +141,28 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
   ("Fs::getcwd", CtFn(reg_p0(), CtString, Some("Fs")), true, false, true),
   // Socket client host imports (vibe.tcp_*) -- same "checker-legal (see
   // builtins/declarations.vibe), zero codegen wiring" gap the Fs::* rows
-  // above closed. checker_visible=true: plain qualified names (no bare-name
-  // collision risk), so ordinary vibe source (lib/@vibe/socket/tcp.vibe's
-  // low-level layer) calls them directly, same convention as Fs::* -- no
+  // above closed. #1232 review: raw dunder names, NOT `Socket::tcp_connect`
+  // -- lib/@vibe/socket's package index.vpkg ALSO declares `effect
+  // TcpSocket { Connect(String,Int)->Int; Read(Int,Int)->String;
+  // Write(Int,String)->Unit; Close(Int)->Unit }` for its in-package
+  // mock-handler tests, and that effect's operations are STRUCTURALLY
+  // IDENTICAL in signature to these builtins -- a qualified call under the
+  // `Socket::` name let the checker's effect-row resolution match BOTH the
+  // builtin's own row and TcpSocket's, unioning a spurious `{ TcpSocket }`
+  // requirement onto every caller. Same collision class Http's client-side
+  // functions (lib/@vibe/http/http.vibe) already document and avoid via
+  // `vibe_http_*_raw` naming -- follow that precedent here too.
+  // checker_visible=true: no bare-name collision risk, so ordinary vibe
+  // source (lib/@vibe/socket/tcp.vibe's low-level layer) calls them
+  // directly, same convention as Fs::*/Http's client raw calls -- no
   // compile_call.vibe special-casing needed. Supersedes the now-dead
   // Socket::tcp_* arms in checker/builtins_net.vibe (lookup_registry_builtin
   // runs first; this file's file-header comment: per-namespace checker
   // lookup files "must not re-add" arms for registry names).
-  ("Socket::tcp_connect", CtFn(reg_p2(CtString, CtInt), CtInt, Some("TcpSocket")), true, false, true),
-  ("Socket::tcp_read", CtFn(reg_p2(CtInt, CtInt), CtString, Some("TcpSocket")), true, false, true),
-  ("Socket::tcp_write", CtFn(reg_p2(CtInt, CtString), CtUnit, Some("TcpSocket")), true, false, true),
-  ("Socket::tcp_close", CtFn(reg_p1(CtInt), CtUnit, Some("TcpSocket")), true, false, true),
+  ("vibe_tcp_connect_raw", CtFn(reg_p2(CtString, CtInt), CtInt, Some("Socket")), true, false, true),
+  ("vibe_tcp_read_raw", CtFn(reg_p2(CtInt, CtInt), CtString, Some("Socket")), true, false, true),
+  ("vibe_tcp_write_raw", CtFn(reg_p2(CtInt, CtString), CtUnit, Some("Socket")), true, false, true),
+  ("vibe_tcp_close_raw", CtFn(reg_p1(CtInt), CtUnit, Some("Socket")), true, false, true),
   // #794: HTTP client host imports (vibe.http_*) -- host builtins are
   // linear-only by design (the gc lane is the pure-test lane).
   ("vibe_http_request_raw", CtFn(reg_p4(CtString, CtString, CtString, CtString), CtInt, Some("Http")), true, false, true),
