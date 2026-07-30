@@ -241,3 +241,90 @@ cd host && cargo build --release && cd ..
 ./host/target/release/p3host component.wasm
 # expect: "[host] run() = 42 (elapsed ~300ms)", exit 0
 ```
+
+## `spawned_future/`: self-contained future via a spawned writer subtask (#1230 M1b-3c-1b)
+
+The `stackful/` probe above only proves "await a host async import directly"
+(`run` calls `get_async().await` inline). #1230's next milestone
+(M1b-3c-1b) asked for the harder-sounding "self-contained future produced
+by a spawned writer subtask" case instead -- `docs/spec/wasi-p3-async.md`
+§3.7 describes this as heavier ("wit-bindgen が futures-rs executor 一式を
+取り込む") and the single largest remaining chunk of the whole async
+effort. This probe determines exactly what that costs at the
+canonical-ABI level, in two phases.
+
+### Phase A: recover the ABI shape via wit-bindgen (`spawned_future/guest/`)
+
+A `wit-bindgen` 0.60 (`async: true`, `async-spawn` feature) guest whose
+`run` export does NOT call `get-async()` directly -- it spawns a writer
+task via `wit_bindgen::spawn_local` that awaits the host import and
+forwards the result through a `futures::channel::oneshot`, and `run` only
+awaits that channel. Building it and dumping imports/exports
+(`wasm-tools print ... | grep -E '\(import|\(export'`, captured in
+`spawned_future/canon-imports-exports.wit-abi.txt`) shows:
+
+**Zero `future.*` canon built-ins appear.** `spawn_local` is a purely
+guest-internal cooperative executor (`futures::stream::FuturesUnordered`,
+see `wit-bindgen-0.60.0/src/rt/async_support/spawn.rs`) -- it never
+constructs a canonical-ABI `future<T>` value, and the `oneshot::channel()`
+used to hand the writer's result back to `run` is an ordinary
+guest-memory Rust future with no ABI representation at all. This matches
+spec §3.7's own wording literally: the self-contained-future case is
+realized by pulling in a futures-rs-style executor, not by using
+canonical-ABI `future.*` primitives.
+
+The only *extra* imports/exports versus the plain `stackful/` case are
+`[context-get-0]`/`[context-set-0]`, `[waitable-set-poll]` (instead of/
+alongside `-wait`), and an extra `[callback][async-lift]run` export --
+and these are NOT inherent to "spawning a writer". They're artifacts of
+`wit-bindgen`'s own runtime architecture, which defaults to the
+**callback** form of async-lift (an explicit state machine re-entered via
+the `[callback]` export on every wake event) and uses `context.get/set`
+as general-purpose thread-local-like storage so its generic multi-task
+executor can find "the currently running task" from arbitrary nested Rust
+call sites -- both `async_support.rs` and `subtask.rs` call
+`context_get`/`context_set` unconditionally as part of ordinary
+task/subtask bookkeeping, regardless of whether `spawn_local` is used at
+all.
+
+vibe's own codegen strategy (spec §3.1) deliberately chose the
+**stackful, callback-less** form instead, precisely because it lets the
+backend emit straight-line/loop code with no explicit state machine.
+Under that model the whole call stack for `run` (or vibe's compiled
+equivalent) survives suspension as a real host fiber, so a "currently
+running task" pointer can simply live in an ordinary local variable / the
+call stack itself -- no `context.get/set` needed, even when "the writer"
+is split into its own internal wasm function.
+
+### Phase B: hand-authored proof (`spawned_future/component.wat` + `host/`)
+
+A direct structural refactor of `stackful/component.wat`: the retry-loop
+body that previously lived inline in `run` is extracted into its own
+internal wasm function `$writer` (the "spawned writer subtask" -- an
+*ordinary wasm function call*, not a second Component-Model subtask),
+and `$run` just calls it and forwards the result to `task.return`. Same
+canon built-in set as `stackful/` (`task.return`,
+`[async-lower]get-async`, `waitable-set.new/.wait/.drop`,
+`waitable.join`, `subtask.drop`) -- no `future.*`, no `context.get/set`,
+no `waitable-set.poll`. `host/` is a copy of `stackful/host/` (same
+wasmtime config, same `run_concurrent`/`call_concurrent` driving API, same
+300ms host-side suspend to prove a genuinely non-ready wait).
+
+```bash
+cd spawned_future
+wasm-tools parse component.wat -o component.wasm
+wasm-tools validate --features all component.wasm
+cd host && cargo build --release && cd ..
+./host/target/release/p3spawnedfuturehost component.wasm
+# expect: "[host] run() = 42 (elapsed ~300ms) [spawned-writer-subtask fixture]", exit 0
+```
+
+**Conclusion for `component_codegen.vibe`**: no new `emit_canon_future_*`
+emitters are needed for M1b-3c-1b. "Self-contained future via spawned
+writer subtask", under vibe's stackful codegen strategy, reduces to the
+exact same canon built-in set `stackful/` already requires, structured as
+two internal wasm functions (writer + reader) in one core module instead
+of one function. `Task::spawn(|| await(host_call()))` followed by
+`await(that_task)` can be compiled by simply emitting the spawned
+closure's body as a callee function invoked from the await site -- the
+"spawn" has no canonical-ABI representation of its own.

@@ -11,6 +11,7 @@ import @vibe/core {
 import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm,
   comp_emit_component_wasm_async,
+  comp_emit_component_wasm_async_spawned_future,
   comp_emit_component_wasm_async_trampolined,
   comp_emit_component_wasm_async_trampolined_p1,
   comp_emit_component_wasm_string_handler,
@@ -719,4 +720,108 @@ test "component #1107: stubbed string handler hosts vibe.* imports" {
   assert(component_bytes_contains(comp, "fs_read_file") == 1)
   assert(component_bytes_contains(comp, "fd_write") == 1)
   assert(component_bytes_contains(comp, "handler") == 1)
+}
+
+// #1230 M1b-3c-1b: "self-contained future via a spawned writer subtask".
+// The byte shapes asserted below were recovered empirically via
+// `wasm-tools dump` against tools/wasip3_component_probe/spawned_future/
+// component.wat's compiled output (see that probe's README.md and
+// canon-imports-exports.wit-abi.txt), not hand-derived from the spec --
+// this test pins the SAME shapes this composer's doc comments describe.
+// A stronger, execution-based check (this exact composer's output run
+// through the probe's Rust host driver against a genuinely-blocking host
+// import, confirming a real ~300ms suspend and a correct result of 42) was
+// performed manually during development -- see the probe's README.md
+// "spawned_future/" section; `vibe test` itself has no Fs/subprocess access
+// to drive that host binary, so it isn't repeated here.
+test "component async spawned-future: self-contained future via a writer subtask, no future.* canon" {
+  let comp = comp_emit_component_wasm_async_spawned_future("run", 121)
+  assert(Bytes::get(comp, 0) == 0)
+  assert(Bytes::get(comp, 4) == 13)
+  // task.return canon (u32=121): 08 05 01 09 00 79 00
+  assert(bytes_contains_seq(comp, [
+    8,
+    5,
+    1,
+    9,
+    0,
+    121,
+    0
+  ]) == 1)
+  // async functype () -> u32: 07 05 01 43 00 00 79
+  assert(bytes_contains_seq(comp, [
+    7,
+    5,
+    1,
+    67,
+    0,
+    0,
+    121
+  ]) == 1)
+  // canon lower(get-async) async (memory 0): 08 08 01 01 00 00 02 06 03 00
+  assert(bytes_contains_seq(comp, [
+    8,
+    8,
+    1,
+    1,
+    0,
+    0,
+    2,
+    6,
+    3,
+    0
+  ]) == 1)
+  // canon waitable-set.new: 08 02 01 1f
+  assert(bytes_contains_seq(comp, [
+    8,
+    2,
+    1,
+    31
+  ]) == 1)
+  // canon waitable.join: 08 02 01 23
+  assert(bytes_contains_seq(comp, [
+    8,
+    2,
+    1,
+    35
+  ]) == 1)
+  // canon waitable-set.wait (memory 0): 08 04 01 20 00 00
+  assert(bytes_contains_seq(comp, [
+    8,
+    4,
+    1,
+    32,
+    0,
+    0
+  ]) == 1)
+  // canon waitable-set.drop: 08 02 01 22
+  assert(bytes_contains_seq(comp, [
+    8,
+    2,
+    1,
+    34
+  ]) == 1)
+  // canon subtask.drop: 08 02 01 0d
+  assert(bytes_contains_seq(comp, [
+    8,
+    2,
+    1,
+    13
+  ]) == 1)
+  assert(component_bytes_contains(comp, "get-async") == 1)
+  assert(component_bytes_contains(comp, "[async-lower]get-async") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-new]") == 1)
+  assert(component_bytes_contains(comp, "[waitable-join]") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-wait]") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-drop]") == 1)
+  assert(component_bytes_contains(comp, "[subtask-drop]") == 1)
+  assert(component_bytes_contains(comp, "[task-return]run") == 1)
+  // No future.* canon anywhere: "spawn a writer" needs no canonical-ABI
+  // future value under vibe's stackful codegen strategy (see composer's
+  // doc comment). "future" would only ever appear inside a "[async-lower]"/
+  // "[async-lift]" wire name here, never as its own bracketed canon name.
+  assert(component_bytes_contains(comp, "[future") == 0)
+  assert(component_bytes_contains(comp, "context-get") == 0)
+  assert(component_bytes_contains(comp, "context-set") == 0)
+  assert(component_bytes_contains(comp, "waitable-set-poll") == 0)
 }

@@ -1,0 +1,84 @@
+M1b-3c-1b probe (Phase A) -- captured via:
+  cd guest && cargo build --release --target wasm32-unknown-unknown
+  wasm-tools print target/wasm32-unknown-unknown/release/spawned_future_probe_guest.wasm | grep -E '\(import|\(export'
+
+guest/src/lib.rs: `run` does NOT call `get_async()` directly. It spawns a
+writer task via `wit_bindgen::spawn_local` that awaits the async host
+import and forwards the result through a `futures::channel::oneshot`;
+`run` itself only awaits that channel -- the "self-contained future
+produced by a spawned writer subtask" shape docs/spec/wasi-p3-async.md
+§3.7 describes.
+
+Captured imports/exports:
+
+  (import "$root" "[context-get-0]" ...)
+  (import "$root" "[context-set-0]" ...)
+  (import "[export]$root" "[task-return]run" ...)
+  (import "[export]$root" "[task-cancel]" ...)
+  (import "$root" "[subtask-drop]" ...)
+  (import "$root" "[subtask-cancel]" ...)
+  (import "$root" "[async-lower]get-async" ...)
+  (import "$root" "[waitable-set-poll]" ...)
+  (import "$root" "[waitable-set-new]" ...)
+  (import "$root" "[waitable-join]" ...)
+  (import "$root" "[waitable-set-drop]" ...)
+  (export "memory" (memory 0))
+  (export "[async-lift]run" ...)
+  (export "[callback][async-lift]run" ...)
+
+FINDING (the key result of Phase A): this list contains ZERO `future.*`
+canon built-ins (`future.new`/`future.read`/`future.write`/
+`future.drop-*`/`future.cancel-*`) -- "spawn a writer subtask and await
+a self-contained future it fulfills" is entirely invisible at the
+canonical-ABI level. `wit_bindgen::spawn_local` is a purely
+guest-internal cooperative executor (`futures::stream::FuturesUnordered`,
+see wit-bindgen-0.60.0/src/rt/async_support/spawn.rs) -- it never
+constructs a canonical-ABI `future<T>` value. The `oneshot::channel()`
+used to signal the writer's result back to `run` is an ordinary
+guest-memory Rust future with no ABI representation at all. This matches
+docs/spec/wasi-p3-async.md §3.7's own characterization ("wit-bindgen が
+futures-rs executor 一式を取り込む") literally: the self-contained-future
+case is realized by pulling in a futures-rs-style executor, not by using
+canonical-ABI future.* primitives.
+
+Compared to the plain `stackful/` probe (bare `await(get_async())`, no
+spawn), the ONLY extra imports here are `[context-get-0]`/
+`[context-set-0]` and `[waitable-set-poll]` (instead of/alongside
+`-wait`), and the extra `[callback][async-lift]run` export. These are
+NOT inherent to "spawning a writer" -- they are artifacts of
+wit-bindgen's own runtime architecture, which defaults to the CALLBACK
+form of async-lift (an explicit state machine re-entered via the
+`[callback]` export on every wake event) and uses `context.get/set` as
+general-purpose thread-local-like storage so its generic multi-task
+executor can find "the currently running task" from arbitrary nested
+Rust call sites, regardless of whether spawn is used at all -- see
+wit-bindgen-0.60.0/src/rt/async_support.rs and subtask.rs, both of which
+call context_get/context_set unconditionally as part of ordinary
+task/subtask bookkeeping, not specifically because of `spawn_local`.
+
+vibe's own codegen strategy (docs/spec/wasi-p3-async.md §3.1) explicitly
+chose the STACKFUL, callback-less form (matching `stackful/`'s probe and
+`component_codegen.vibe`'s existing `emit_canon_lift_async_section`,
+which never emits a callback option) specifically because it lets the
+backend emit straight-line/loop code with no explicit state machine --
+under that model, the whole Rust/wasm call stack for `run` (or vibe's
+compiled equivalent) survives suspension as a real host fiber, so a
+"currently running task" pointer can simply live in an ordinary local
+variable / the call stack itself, with no need for `context.get/set`
+at all. A hand-written stackful implementation therefore does not need
+`context.get/set` or `waitable-set.poll` (blocking `.wait` suffices, as
+`stackful/` already proves) even when structurally splitting "the writer"
+into its own internal wasm function called by "the reader" -- see
+Phase B (component.wat in this directory), which proves exactly this
+refactor compiles and runs correctly with only the canon built-ins
+`stackful/` already uses (`task.return`, `[async-lower]get-async`,
+`waitable-set.new/.wait/.drop`, `waitable.join`, `subtask.drop`) -- no
+`future.*` canon, no `context.get/set`, no `waitable-set.poll`.
+
+CONCLUSION FOR M1b-3c-1b's component_codegen.vibe scope: no new
+`emit_canon_future_*` emitters are needed. The "self-contained future via
+spawned writer subtask" fixture, under vibe's stackful codegen strategy,
+reduces to the SAME canon built-in set `stackful/`'s probe already
+requires, structured as two internal wasm functions (writer + reader)
+within one core module instead of one. See Phase B below and the updated
+implementation plan.
