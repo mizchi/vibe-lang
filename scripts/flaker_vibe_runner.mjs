@@ -10,13 +10,17 @@
 //
 // Subcommands (see flaker's CustomRunner / CustomAdapter contracts):
 //   list     print the test inventory as JSON [{suite, testName}] — one entry
-//            per allowlisted *_test.vibe file (per-file granularity: the
+//            per active *_test.vibe file (per-file granularity: the
 //            selfhost battery compiles+runs whole files, so a file is the
-//            selection unit).
+//            selection unit). Sourced from `unit_test_runner.sh --list`
+//            (#1233 removed the hand-maintained allowlist file this used to
+//            read directly; --list now computes the same active set via
+//            discover() + that script's small EXCLUDE_PATTERNS).
 //   execute  read {tests, opts} JSON on stdin, run the selected files through
-//            unit_test_runner.sh (via a temp VIBE_UNIT_TEST_ALLOWLIST), print
-//            an ExecuteResult JSON {exitCode, results, durationMs, stdout,
-//            stderr} on stdout.
+//            unit_test_runner.sh (via a temp VIBE_UNIT_TEST_ALLOWLIST, which
+//            #1233 repurposed into an explicit-subset override rather than
+//            the corpus definition), print an ExecuteResult JSON {exitCode,
+//            results, durationMs, stdout, stderr} on stdout.
 //   parse    read unit_test_runner.sh output on stdin, print TestCaseResult[]
 //            JSON (flaker `import` / CI-artifact ingestion path).
 //
@@ -31,19 +35,32 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const ALLOWLIST =
-  process.env.VIBE_UNIT_TEST_ALLOWLIST ??
-  join(ROOT, "scripts", "unit_test_allowlist.txt");
+const RUNNER_SH = join(ROOT, "scripts", "unit_test_runner.sh");
 
 // A file is one test: suite = repo-relative path (what the path-based
 // affected resolver matches against), testName = fixed marker.
 const TEST_NAME = "file";
 
-function readAllowlist() {
-  return readFileSync(ALLOWLIST, "utf-8")
+// #1233: the active-file inventory is computed by unit_test_runner.sh's
+// discover() + EXCLUDE_PATTERNS, not read from a committed allowlist file
+// anymore. `--list` is pure and fast (no stage2 build, no compiling) --
+// asking the runner script keeps this bridge from re-deriving discovery
+// rules that could drift from the actual runner's.
+function listActiveFiles() {
+  const proc = spawnSync("bash", [RUNNER_SH, "--list"], {
+    cwd: ROOT,
+    encoding: "utf-8",
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (proc.status !== 0) {
+    throw new Error(
+      `unit_test_runner.sh --list failed (exit ${proc.status}): ${proc.stderr ?? ""}`,
+    );
+  }
+  return (proc.stdout ?? "")
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => l !== "" && !l.startsWith("#"));
+    .filter((l) => l !== "");
 }
 
 function readStdin() {
@@ -89,7 +106,7 @@ function parseRunnerOutput(text) {
 }
 
 function cmdList() {
-  const tests = readAllowlist().map((suite) => ({ suite, testName: TEST_NAME }));
+  const tests = listActiveFiles().map((suite) => ({ suite, testName: TEST_NAME }));
   process.stdout.write(JSON.stringify(tests));
 }
 
