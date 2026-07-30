@@ -7210,4 +7210,45 @@ fi
 rm -rf "$c1203bdir"
 echo "[compiler-gate] closure write-only capture shadowing a same-named top-level fn ok"
 
+# 70/70. inspect() snapshot auto-update tool regression lock (#1061 follow-up,
+#        docs/adr.md #0087): scripts/vibe_inspect_update.sh reads a failing
+#        `inspect(value, content)` run's "actual/expected" diagnostic and
+#        rewrites the stale `content` literal in place. Lock both the
+#        multi-call convergence loop (two wrong snapshots in one file, fixed
+#        across two compile/run/patch iterations) and that a clean file is
+#        left untouched (exits 0, reports "already up to date", no rewrite).
+echo "[compiler-gate] 70/70 inspect() snapshot auto-update tool (#1061 follow-up)"
+inspupddir="_build/_gate_inspect_update"
+rm -rf "$inspupddir"; mkdir -p "$inspupddir"
+cat > "$inspupddir/demo_test.vibe" <<'VEOF'
+import ../../lib/@vibe/core { inspect }
+
+test "demo one" {
+  inspect(1 + 1, "9")
+}
+
+test "demo two" {
+  inspect(String::concat("a", "b"), "9")
+}
+VEOF
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_inspect_update.sh "$inspupddir/demo_test.vibe" >"$inspupddir/update.log" 2>&1
+if ! grep -q "updated 2 snapshot(s)" "$inspupddir/update.log"; then
+  echo "[compiler-gate] FAIL: vibe_inspect_update.sh did not converge on 2 wrong snapshots as expected" >&2
+  cat "$inspupddir/update.log" >&2
+  exit 1
+fi
+if ! grep -q 'inspect(1 + 1, "2")' "$inspupddir/demo_test.vibe" || ! grep -q 'inspect(String::concat("a", "b"), "ab")' "$inspupddir/demo_test.vibe"; then
+  echo "[compiler-gate] FAIL: vibe_inspect_update.sh patched to unexpected content" >&2
+  cat "$inspupddir/demo_test.vibe" >&2
+  exit 1
+fi
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_inspect_update.sh "$inspupddir/demo_test.vibe" >"$inspupddir/update2.log" 2>&1
+if ! grep -q "already up to date" "$inspupddir/update2.log"; then
+  echo "[compiler-gate] FAIL: vibe_inspect_update.sh rewrote an already-correct file" >&2
+  cat "$inspupddir/update2.log" >&2
+  exit 1
+fi
+rm -rf "$inspupddir"
+echo "[compiler-gate] inspect() snapshot auto-update tool ok"
+
 echo "[compiler-gate] ok"
