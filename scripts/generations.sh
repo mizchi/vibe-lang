@@ -687,6 +687,13 @@ command_build() {
   fi
   select_generation_entry "$out_dir" "$requested_entry"
   entry="$GENERATION_ENTRY"
+  # Codex review on #1225: run_selfbuild_compile has no entry_name parameter
+  # (selfbuild_entry is a single fixed export) and would otherwise silently
+  # ignore --entry-name, succeeding with an artifact that doesn't use the
+  # requested entry. Reject rather than mis-build.
+  if [ -n "$entry_name" ] && [ "$GENERATION_INVOKE_MODE" != "cli" ]; then
+    die "--entry-name is only supported in cli invoke mode (got: $GENERATION_INVOKE_MODE)"
+  fi
   local stage0="$out_dir/stage0_seed.wasm"
   local stage1="$out_dir/stage1.wasm"
   local stage2="$out_dir/stage2.wasm"
