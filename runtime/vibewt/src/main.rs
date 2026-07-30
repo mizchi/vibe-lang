@@ -237,6 +237,11 @@ struct HostState {
     // are cheap map reads, not re-execs of the command.
     sh_capture_results: std::collections::HashMap<i64, ShCaptureResult>,
     next_sh_capture_handle: i64,
+    // Socket::tcp_connect/tcp_read/tcp_write/tcp_close -- same handle-map
+    // shape as sh_capture_results above (the handle IS the Int the guest
+    // holds; TcpStream itself can't cross the wasm ABI).
+    tcp_connections: std::collections::HashMap<i64, std::net::TcpStream>,
+    next_tcp_handle: i64,
     // #lsp-selfhost review follow-up: bytes read by `stdin_read_stream` that
     // don't yet form a complete UTF-8 sequence (a pipe read can return a
     // chunk boundary in the middle of a multi-byte character), held back
@@ -339,6 +344,8 @@ impl HostState {
             alloc_sites: std::collections::HashMap::new(),
             sh_capture_results: std::collections::HashMap::new(),
             next_sh_capture_handle: 1,
+            tcp_connections: std::collections::HashMap::new(),
+            next_tcp_handle: 1,
             stdin_pending: Vec::new(),
         }
     }
@@ -2160,6 +2167,32 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
         }
     }
 
+    // `sleep(Int) -> Unit with { Async }` -- codegen (linked_compile.vibe)
+    // emits `vibe.sleep (i64) -> ()` whenever a program calls the builtin,
+    // but neither this runner nor the Node dev runner ever registered it,
+    // so any real caller (e.g. lib/@vibe/time's public `sleep_ms`,
+    // lib/@vibex/shell's `sleep`) crashed the real `vibe run` at
+    // instantiation with an unknown-import trap -- never reached `sleep`
+    // actually running, let alone sleeping the wrong amount. A plain
+    // blocking `thread::sleep` (matching tools/async_host/src/main.rs's own
+    // reference impl) fixes the crash and is correct for the common case of
+    // a single sequential caller; it does NOT give concurrently-`spawn`ed
+    // tasks true interleaved sleep (each `sleep` blocks the whole wasm
+    // instance) -- that needs wasmtime's async-fiber support
+    // (tools/async_host/src/concurrency.rs's `func_wrap_async`, a much
+    // larger change to how this store/linker are configured) and no known
+    // caller needs it today.
+    linker.func_wrap(
+        "vibe",
+        "sleep",
+        |_caller: Caller<'_, HostState>, ms: i64| -> Result<()> {
+            if ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(ms as u64));
+            }
+            Ok(())
+        },
+    )?;
+
     linker.func_wrap(
         "vibe",
         "stdin_read_char",
@@ -2345,6 +2378,80 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
         "sh_capture_close",
         |mut caller: Caller<'_, HostState>, handle: i64| -> Result<()> {
             caller.data_mut().sh_capture_results.remove(&handle);
+            Ok(())
+        },
+    )?;
+    // Socket::tcp_connect/tcp_read/tcp_write/tcp_close -- declared builtins
+    // (checker/builtin_registry.vibe) with a real call site
+    // (lib/@vibe/socket/tcp.vibe's low-level layer) but, like fs_rename
+    // before #1220, never wired to a host import here, so any real caller
+    // crashed `vibe run` with an unknown-import trap. Blocking `std::net`
+    // calls, same synchronous-ABI convention as every other host import in
+    // this file (see this file's `sleep` import for the same tradeoff
+    // spelled out) -- handles are parked in `tcp_connections`, same
+    // handle-map shape as `sh_capture_results` above (a TcpStream itself
+    // can't cross the wasm ABI).
+    linker.func_wrap(
+        "vibe",
+        "tcp_connect",
+        |mut caller: Caller<'_, HostState>, host: i64, port: i64| -> Result<i64> {
+            let host = vibe_read_packed_str(&mut caller, host)?;
+            let port = u16::try_from(port)
+                .map_err(|_| format_err!("vibe tcp_connect: invalid port {port}"))?;
+            let stream = std::net::TcpStream::connect((host.as_str(), port))
+                .map_err(|e| format_err!("vibe tcp_connect '{host}:{port}': {e}"))?;
+            let host_state = caller.data_mut();
+            let handle = host_state.next_tcp_handle;
+            host_state.next_tcp_handle += 1;
+            host_state.tcp_connections.insert(handle, stream);
+            Ok(handle)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "tcp_read",
+        |mut caller: Caller<'_, HostState>, handle: i64, max_bytes: i64| -> Result<i64> {
+            let max_bytes = usize::try_from(max_bytes.max(0))
+                .map_err(|_| format_err!("vibe tcp_read: invalid max_bytes {max_bytes}"))?;
+            let mut buf = vec![0u8; max_bytes];
+            let read = {
+                let stream = caller
+                    .data_mut()
+                    .tcp_connections
+                    .get_mut(&handle)
+                    .ok_or_else(|| format_err!("vibe tcp_read: unknown handle"))?;
+                stream
+                    .read(&mut buf)
+                    .map_err(|e| format_err!("vibe tcp_read: {e}"))?
+            };
+            buf.truncate(read);
+            let s = String::from_utf8_lossy(&buf).into_owned();
+            vibe_alloc_packed_str(&mut caller, &s)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "tcp_write",
+        |mut caller: Caller<'_, HostState>, handle: i64, data: i64| -> Result<()> {
+            let data = vibe_read_packed_str(&mut caller, data)?;
+            let stream = caller
+                .data_mut()
+                .tcp_connections
+                .get_mut(&handle)
+                .ok_or_else(|| format_err!("vibe tcp_write: unknown handle"))?;
+            stream
+                .write_all(data.as_bytes())
+                .map_err(|e| format_err!("vibe tcp_write: {e}"))?;
+            Ok(())
+        },
+    )?;
+    // Tolerates unknown handles, like sh_capture_close above -- a
+    // double-close must not kill the guest.
+    linker.func_wrap(
+        "vibe",
+        "tcp_close",
+        |mut caller: Caller<'_, HostState>, handle: i64| -> Result<()> {
+            caller.data_mut().tcp_connections.remove(&handle);
             Ok(())
         },
     )?;

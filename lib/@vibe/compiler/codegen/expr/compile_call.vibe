@@ -4350,7 +4350,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       }
       nl
     }
-    else if ctx.enable_rc && (fname == "Stdout::write_char" || fname == "Stderr::write_char" || fname == "Stdin::read_stream") {
+    else if ctx.enable_rc && (fname == "Stdout::write_char" || fname == "Stderr::write_char" || fname == "Stdin::read_stream" || fname == "sleep") {
       // #930: same raw-ABI shim shape as the #705 Fs::exists family and the
       // #865 vibe_process_exit_raw case above -- these three were registered
       // straight into the func table (linked_compile's name->import map) with
@@ -4358,7 +4358,11 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       // (write_char(65) wrote byte 130 -- "42" printed as "hd" -- and
       // read_stream(n) read 2n bytes). Untag the int param; write_char's
       // void import pushes Unit 0, read_stream's packed-string result passes
-      // through unchanged (same in both modes).
+      // through unchanged (same in both modes). `sleep` has the exact same
+      // gap -- #705's own comment flagged it ("still lacks this shim") --
+      // and slept for 2x the requested duration under RC (`sleep_ms(500)`
+      // took ~1000ms wall time) until folded into this group; same void
+      // shape as write_char.
       let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       emit_i64_const(buf, 1)
@@ -4369,6 +4373,60 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       } else {
         emit_i64_const(buf, 0)
       }
+      nl
+    }
+    else if ctx.enable_rc && fname == "Socket::tcp_connect" {
+      // Same raw-ABI shim shape as the #705/#930 families above -- registered
+      // straight into the func table (linked_compile's name->import map) with
+      // no shim, so under RC the generic call path handed the host a
+      // guest-TAGGED port (tcp_connect("127.0.0.1", 7) dialed port 14). Host
+      // arg passes through (packed string); the tagged Int port must be
+      // untagged; the raw Int handle result must be tagged (same #768
+      // odd-raw-value RC-pointer-misread hazard the other handle-returning
+      // shims above guard against).
+      let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_i64_const(buf, 1)
+      emit_i64_shr_s(buf)
+      emit_call(buf, hi_idx)
+      emit_i64_const(buf, 1)
+      emit_i64_shl(buf)
+      nl
+    }
+    else if ctx.enable_rc && fname == "Socket::tcp_read" {
+      // Both params are guest-tagged Ints (handle, max_bytes) -- untag each;
+      // the packed-string result passes through unchanged (same in both modes).
+      let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_i64_const(buf, 1)
+      emit_i64_shr_s(buf)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_i64_const(buf, 1)
+      emit_i64_shr_s(buf)
+      emit_call(buf, hi_idx)
+      nl
+    }
+    else if ctx.enable_rc && fname == "Socket::tcp_write" {
+      // handle: Int -> untag; data: String -> pass; void import, push Unit 0.
+      let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_i64_const(buf, 1)
+      emit_i64_shr_s(buf)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_call(buf, hi_idx)
+      emit_i64_const(buf, 0)
+      nl
+    }
+    else if ctx.enable_rc && fname == "Socket::tcp_close" {
+      // handle: Int -> untag; void import, push Unit 0. Tolerates unknown
+      // handles host-side (a double-close must not kill the guest).
+      let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_i64_const(buf, 1)
+      emit_i64_shr_s(buf)
+      emit_call(buf, hi_idx)
+      emit_i64_const(buf, 0)
       nl
     }
     else if (fname == "println" || fname == "print") && !cc_ft_has(ctx.func_table, fname) {
