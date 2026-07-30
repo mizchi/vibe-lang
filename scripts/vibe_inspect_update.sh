@@ -16,12 +16,14 @@
 # shows up that isn't a recognizable inspect() mismatch.
 #
 # Known v1 limitations (no CST/span tracking exists yet for EString --
-# see docs/adr.md #0087): the patch is a textual first-occurrence
-# replacement, not a source-position patch, so two inspect() calls in one
-# file with byte-identical `content` can only be told apart by which one
-# a given run's trap happens to surface next; an actual value containing
-# the literal substring "\n  expected: " defeats the diagnostic parser.
-# Both cases are reported as a manual-fixup failure instead of guessing.
+# see docs/adr.md #0087): the patch (vibe_inspect_update_patch.py) locates
+# the content argument of an actual inspect(...) call rather than any
+# string literal in the file, but two DISTINCT inspect() calls with
+# byte-identical `content` still can't be told apart by text alone -- only
+# the first (in file order) is patched, and this loop's next iteration's
+# trap surfaces the next distinct mismatch; an actual value containing the
+# literal substring "\n  expected: " defeats the diagnostic parser. Both
+# cases are reported as a manual-fixup failure instead of guessing.
 #
 # Independent of, and not a replacement for, the fixtures/ `__DATA__`
 # suffix format (lib/@vibe/compiler/tests/fixture_test_support.vibe) --
@@ -75,13 +77,18 @@ update_one() {
       return 1
     fi
 
-    local out rc
+    # #1235 review (P2): capture to a FILE, not a `$(...)` shell variable --
+    # command substitution unconditionally strips trailing newlines, which
+    # would truncate an <EXPECTED> snapshot ending in "\n" (it sits at the
+    # very end of the captured stream) before the patch helper ever sees it.
+    local run_out="$outdir/$flat.stdout" rc
     set +e
-    out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke _start "$out_rel" 2>/dev/null)"
+    VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke _start "$out_rel" >"$run_out" 2>/dev/null
     rc=$?
     set -e
 
     if [ "$rc" -eq 0 ]; then
+      rm -f "$run_out"
       if [ "$patches" -eq 0 ]; then
         echo "[inspect-update] ok (already up to date): $src_rel"
       else
@@ -91,7 +98,8 @@ update_one() {
     fi
 
     local verdict
-    verdict="$(printf '%s' "$out" | python3 "$ROOT_DIR/scripts/vibe_inspect_update_patch.py" "$ROOT_DIR/$src_rel")"
+    verdict="$(python3 "$ROOT_DIR/scripts/vibe_inspect_update_patch.py" "$ROOT_DIR/$src_rel" < "$run_out")"
+    rm -f "$run_out"
     if [ "$verdict" != "patched" ]; then
       echo "[inspect-update] FAIL: $src_rel failed without a recognizable inspect() mismatch -- fix manually" >&2
       return 1
