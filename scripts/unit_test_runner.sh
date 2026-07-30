@@ -1,24 +1,29 @@
 #!/usr/bin/env bash
 # Selfhost unit-test runner (#531 / #535).
 #
-# Compiles + runs every allowlisted `*_test.vibe` through the selfhost
-# compiler. A file PASSES when it compiles (the compiler emits a `_start` that
-# runs the file's `test {}` blocks, selected via the `__no_entry__` entry) AND
-# that `_start` runs to completion (a failing `assert` traps the module).
+# Compiles + runs every discovered `*_test.vibe` under examples/, lib/, and
+# fixtures/ through the selfhost compiler. A file PASSES when it compiles
+# (the compiler emits a `_start` that runs the file's `test {}` blocks,
+# selected via the `__no_entry__` entry) AND that `_start` runs to completion
+# (a failing `assert` traps the module).
 #
 # This is the regression net for language/stdlib features the compiler itself
-# does not exercise during self-build. The retired MoonBit-host suite ran the
-# full corpus; the selfhost compiler's prelude/parser is a subset, so we gate
-# the allowlisted subset that passes today and ratchet it upward over time
-# (#531). New failures in any allowlisted file fail the run (and CI).
+# does not exercise during self-build. There is no curated allowlist file:
+# `discover()` below IS the corpus, minus the small EXCLUDE_PATTERNS list
+# (each entry documents a real, specific reason it can't run through this
+# generic harness -- not "known flaky", not a ratchet gap). New failures in
+# any non-excluded file fail the run (and CI). This replaced a 466-entry
+# hand-maintained scripts/unit_test_allowlist.txt (removed) that required a
+# manual --update-allowlist step whenever a new test started passing --
+# see git history if you need the old ratchet-based design.
 #
 # Modes:
-#   (default)            run the allowlist; exit non-zero if any file fails
-#   --list               print the allowlist and exit
-#   --scan               compile+run EVERY discovered *_test.vibe, print a full
-#                        pass/fail report + any allowlist drift, then exit 0
-#   --update-allowlist   rescan all *_test.vibe and overwrite the allowlist with
-#                        the passing set (run after intentionally widening it)
+#   (default)   run every non-excluded discovered file; exit non-zero if any fails
+#   --list      print the active (non-excluded) file list and exit
+#   --scan      compile+run EVERY discovered *_test.vibe INCLUDING excluded
+#               ones, print a full pass/fail report, exit 0 always -- use
+#               this to check whether an excluded file has started passing
+#               (if so, drop its EXCLUDE_PATTERNS entry)
 #
 # Stage2 selection: reuse $VIBE_STAGE2_WASM when set and non-empty
 # (CI reuses the gate's freshly-built stage2 to avoid a second selfbuild);
@@ -29,20 +34,53 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT_DIR"
 
-ALLOWLIST="${VIBE_UNIT_TEST_ALLOWLIST:-$ROOT_DIR/scripts/unit_test_allowlist.txt}"
 RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"
+
+# Files discover() finds that cannot run through this generic (compile with
+# __no_entry__, run _start, VIBE_FS_COMPILE=1) harness. Each entry needs a
+# concrete, current reason -- not "todo" or "flaky, skip for now". Check with
+# --scan periodically: a passing excluded file should have its entry removed.
+EXCLUDE_PATTERNS=(
+  # __DATA__-suffixed gate-only fixtures: the text after `__DATA__` is a JSON
+  # expected-output blob, not vibe source -- compiling the whole file as-is
+  # is a parse error ("unexpected token: :" at the JSON blob). These are
+  # already exercised correctly by compiler_gate.sh (#49/#51), which strips
+  # `_start()`/`__DATA__...` via sed before compiling and diffs the real
+  # program's stdout against the JSON's "last" field.
+  '^fixtures/rc_branch_loop_mixed_consume_test\.vibe$'
+  '^fixtures/rc_match_payload_closure_capture_test\.vibe$'
+  # wasm-gc backend only (VIBE_TEST_BACKEND=gc): traps even under the
+  # correct backend invocation (verified directly, 2026-07-30) -- a real,
+  # separate gc-backend codegen gap, not a harness mismatch. The gc backend
+  # is documented best-effort elsewhere (not all tests pass under it); this
+  # is that same category, not something this generic linear-backend runner
+  # can be made to pass.
+  '^fixtures/to_string_bool_gc_test\.vibe$'
+  # wasi p3 http client: currently failing, under active work on a separate
+  # branch. Remove once that lands.
+  '^fixtures/runtime/http_p3_client_test\.vibe$'
+)
+
+is_excluded() {
+  local f="$1" pat
+  for pat in "${EXCLUDE_PATTERNS[@]}"; do
+    [[ "$f" =~ $pat ]] && return 0
+  done
+  return 1
+}
+
+discover() { find examples lib fixtures -name '*_test.vibe' 2>/dev/null | sed "s@^$ROOT_DIR/@@" | sed 's@^\./@@' | sort; }
 
 mode="run"
 case "${1:-}" in
   --list) mode="list" ;;
   --scan) mode="scan" ;;
-  --update-allowlist) mode="update" ;;
   "") mode="run" ;;
-  *) echo "unknown argument: $1 (expected --list|--scan|--update-allowlist)" >&2; exit 2 ;;
+  *) echo "unknown argument: $1 (expected --list|--scan)" >&2; exit 2 ;;
 esac
 
 if [ "$mode" = "list" ]; then
-  cat "$ALLOWLIST"
+  discover | while IFS= read -r f; do is_excluded "$f" || printf '%s\n' "$f"; done
   exit 0
 fi
 
@@ -134,49 +172,30 @@ run_one() {
   return 1
 }
 
-discover() { find examples lib -name '*_test.vibe' 2>/dev/null | sed "s@^$ROOT_DIR/@@" | sed 's@^\./@@' | sort; }
-
-# --- --scan / --update-allowlist: rescan everything ---------------------------
-if [ "$mode" = "scan" ] || [ "$mode" = "update" ]; then
+# --- --scan: rescan everything, including excluded files ----------------------
+if [ "$mode" = "scan" ]; then
   discovered="$(mktemp)"; discover > "$discovered"
   start_http_echo_server_if_needed "$discovered"
   rm -f "$discovered"
-  passing="$(mktemp)"; : > "$passing"
-  npass=0; nfail=0
+  npass=0; nfail=0; nexcl_pass=0
   while IFS= read -r f; do
     [ -z "$f" ] && continue
     if run_one "$f"; then
-      echo "$f" >> "$passing"; npass=$((npass+1))
+      npass=$((npass+1))
+      if is_excluded "$f"; then
+        nexcl_pass=$((nexcl_pass+1))
+        echo "  now passing (excluded, consider dropping its EXCLUDE_PATTERNS entry): $f"
+      fi
     else
       nfail=$((nfail+1))
-      [ "$mode" = "scan" ] && echo "  fail: $f -- ${LAST_DIAG:-}"
+      echo "  fail: $f -- ${LAST_DIAG:-}"
     fi
   done < <(discover)
-  echo "[unit-test-runner] scan: PASS=$npass FAIL=$nfail"
-  if [ "$mode" = "update" ]; then
-    {
-      echo "# Selfhost unit-test runner allowlist (#531 / #535)."
-      echo "# Every *_test.vibe here compiles + runs clean through the selfhost"
-      echo "# compiler. Regenerate after widening: scripts/unit_test_runner.sh --update-allowlist"
-      echo "# Ratchet target: the full *_test.vibe corpus as the selfhost prelude/parser grows."
-      cat "$passing"
-    } > "$ALLOWLIST"
-    echo "[unit-test-runner] wrote $(wc -l < "$passing") entries to $ALLOWLIST"
-  else
-    # Report drift vs the committed allowlist (informational; --scan never fails).
-    comm -13 <(grep -vE '^\s*#' "$ALLOWLIST" | sed '/^$/d' | sort) <(sort "$passing") > "$ROOT_DIR/_build/.unit_newpass" || true
-    if [ -s "$ROOT_DIR/_build/.unit_newpass" ]; then
-      echo "[unit-test-runner] newly-passing (not yet in allowlist — consider --update-allowlist):"
-      sed 's/^/  + /' "$ROOT_DIR/_build/.unit_newpass"
-    fi
-    rm -f "$ROOT_DIR/_build/.unit_newpass"
-  fi
-  rm -f "$passing"
+  echo "[unit-test-runner] scan: PASS=$npass FAIL=$nfail (of which $nexcl_pass excluded-but-now-passing)"
   exit 0
 fi
 
-# --- default: run the allowlist, fail on any regression -----------------------
-[ -f "$ALLOWLIST" ] || { echo "[unit-test-runner] FAIL: allowlist not found: $ALLOWLIST" >&2; exit 1; }
+# --- default: run every non-excluded discovered file, fail on any regression --
 
 # --- shard selection (CI wall-time, 2026-07) -----------------------------------
 # VIBE_UNIT_TEST_SHARD="i/N" (0-based) runs only the i-th of N weight-balanced
@@ -188,11 +207,12 @@ fi
 # (total ms per file; regenerate procedure in that file's header). Files
 # missing from the weights table get a median-ish default so new tests don't
 # unbalance anything. The assignment is deterministic for a fixed
-# (allowlist, weights, N): the union of all N shards is exactly the full
-# battery and shards are disjoint.
+# (active file set, weights, N): the union of all N shards is exactly the
+# full battery and shards are disjoint.
 WEIGHTS="${VIBE_UNIT_TEST_WEIGHTS:-$ROOT_DIR/scripts/unit_test_weights.tsv}"
 effective_entries="$(mktemp -t vibe-unit-entries-XXXXXX)"
-grep -vE '^[[:space:]]*#' "$ALLOWLIST" | sed '/^[[:space:]]*$/d' > "$effective_entries"
+discover | while IFS= read -r f; do is_excluded "$f" || printf '%s\n' "$f"; done > "$effective_entries"
+[ -s "$effective_entries" ] || { echo "[unit-test-runner] FAIL: discover() found no test files" >&2; exit 1; }
 if [ -n "${VIBE_UNIT_TEST_SHARD:-}" ]; then
   case "$VIBE_UNIT_TEST_SHARD" in
     */*) : ;;
@@ -203,6 +223,7 @@ if [ -n "${VIBE_UNIT_TEST_SHARD:-}" ]; then
   if ! [ "$shard_i" -ge 0 ] 2>/dev/null || ! [ "$shard_n" -ge 1 ] 2>/dev/null || [ "$shard_i" -ge "$shard_n" ]; then
     echo "[unit-test-runner] FAIL: bad shard spec: $VIBE_UNIT_TEST_SHARD" >&2; exit 2
   fi
+  total_active="$(wc -l < "$effective_entries")"
   sharded="$(mktemp -t vibe-unit-shard-XXXXXX)"
   awk -F'\t' -v i="$shard_i" -v n="$shard_n" -v weights="$WEIGHTS" '
     BEGIN {
@@ -229,11 +250,11 @@ if [ -n "${VIBE_UNIT_TEST_SHARD:-}" ]; then
       }
     }' "$effective_entries" > "$sharded"
   mv "$sharded" "$effective_entries"
-  echo "[unit-test-runner] shard $VIBE_UNIT_TEST_SHARD: $(wc -l < "$effective_entries") of $(grep -cvE '^[[:space:]]*(#|$)' "$ALLOWLIST") allowlisted files"
+  echo "[unit-test-runner] shard $VIBE_UNIT_TEST_SHARD: $(wc -l < "$effective_entries") of $total_active active files"
 fi
 
 start_http_echo_server_if_needed "$effective_entries"
-# #769: some allowlisted tests shell out to the standalone `wasmtime` CLI
+# #769: some active tests shell out to the standalone `wasmtime` CLI
 # (wasm_emit_test / codegen_heap_e2e_test run their compiled samples through
 # it). CI installs wasmtime (ci.yml), so they are covered there; sandboxes
 # without it (Claude/Copilot runners, minimal dev boxes) skip them instead of
@@ -249,7 +270,7 @@ total=0; fails=0; skips=0
 # because the host runner writes them atomically via temp+rename). Default
 # min(4, nproc) -- the heavy compiler tests peak at a few GB of wasm memory
 # each, so unbounded -P would OOM small runners. VIBE_UNIT_TEST_JOBS=1 keeps
-# the exact sequential behavior (allowlist-ordered output).
+# the exact sequential behavior (discovery-ordered output).
 hw_jobs="$(nproc 2>/dev/null || echo 1)"
 [ "$hw_jobs" -gt 4 ] && hw_jobs=4
 JOBS="${VIBE_UNIT_TEST_JOBS:-$hw_jobs}"
@@ -258,7 +279,7 @@ if [ "$JOBS" -le 1 ]; then
     case "$f" in ''|\#*) continue ;; esac
     total=$((total+1))
     if [ ! -f "$f" ]; then
-      echo "[unit-test-runner] FAIL: allowlisted file missing on disk: $f" >&2; fails=$((fails+1)); continue
+      echo "[unit-test-runner] FAIL: active file missing on disk: $f" >&2; fails=$((fails+1)); continue
     fi
     if [ "$have_wasmtime" -eq 0 ] && grep -q '"wasmtime run' "$f"; then
       echo "skip: $f (needs the wasmtime CLI; not installed)"
@@ -278,7 +299,7 @@ else
     local f="$1"
     local key; key="$(printf '%s' "$f" | tr '/' '_')"
     if [ ! -f "$f" ]; then
-      echo "[unit-test-runner] FAIL: allowlisted file missing on disk: $f" >&2
+      echo "[unit-test-runner] FAIL: active file missing on disk: $f" >&2
       printf '%s\n' "$f (missing on disk)" > "$results_dir/$key.fail"
       return 0
     fi
@@ -360,13 +381,13 @@ else
 fi
 
 rm -f "$effective_entries"
-summary="[unit-test-runner] $((total-fails))/$total allowlisted unit-test files passed"
+summary="[unit-test-runner] $((total-fails))/$total active unit-test files passed"
 if [ "$skips" -ne 0 ]; then
   summary="$summary ($skips skipped: wasmtime not installed)"
 fi
 echo "$summary"
 if [ "$fails" -ne 0 ]; then
-  echo "[unit-test-runner] FAIL: $fails allowlisted unit-test file(s) regressed" >&2
+  echo "[unit-test-runner] FAIL: $fails active unit-test file(s) regressed" >&2
   exit 1
 fi
 echo "[unit-test-runner] ok"

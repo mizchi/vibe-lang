@@ -43,10 +43,13 @@ dev-mode の便宜で、pin があれば置き場所によらず hash 照合さ�
    照合する (#729)
 3. **テスト**: `<pkg>/foo_test.vibe` を書く。`vibe test` は production
    default (RC) でコンパイルされることに注意 — float / 所有権の RC 特有
-   経路も踏まれる (#745 はこれで発見された)
-4. **allowlist**: `scripts/unit_test_allowlist.txt` にテストを追加
-   (アルファベット順)。これがラチェット — 以後 battery が回帰を検出する
-5. **compiler から消費する場合のみ**: `lib/@vibe/compiler/compiler_sources_manifest.tsv`
+   経路も踏まれる (#745 はこれで発見された)。`scripts/unit_test_runner.sh`
+   は `examples/`・`lib/`・`fixtures/` 配下の `*_test.vibe` を discover()
+   で無条件に全部拾って battery を回す — allowlist ファイルは無い(#1231
+   で撤廃)ので、追加の登録手順は不要。generic harness で回せない特殊な
+   ファイル(gate 専用の `__DATA__` フィクスチャ、gc-only fixture 等)だけ
+   `scripts/unit_test_runner.sh` の `EXCLUDE_PATTERNS` に理由付きで載せる
+4. **compiler から消費する場合のみ**: `lib/@vibe/compiler/compiler_sources_manifest.tsv`
    に `vibe_core` group で `../../../lib/@vibe/<pkg>/...` の行を足す。bundle
    への inline / codegen fingerprint への波及は generate_bundle.sh
    が面倒を見る (#741, #766)

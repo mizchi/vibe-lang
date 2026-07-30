@@ -58,8 +58,11 @@ pkf run demo-tui-stream
 ## Test Fixtures
 
 Regression-test fixtures (`*_test.vibe` files exercised via the selfhost
-unit-test allowlist) used to live in this directory. They moved to
+unit-test battery) used to live in this directory. They moved to
 [`fixtures/`](../fixtures/) (#880) so `examples/` only contains material
-worth reading as a tutorial. See `scripts/unit_test_allowlist.txt` for the
-gated corpus and `CONTRIBUTION.md`'s "Fixtures" section for the fixture
-layout convention.
+worth reading as a tutorial. `scripts/unit_test_runner.sh` discovers every
+`*_test.vibe` under `examples/`, `lib/`, and `fixtures/` unconditionally
+(no allowlist file, #1231) -- run `scripts/unit_test_runner.sh --list` to
+see the corpus, or check that script's `EXCLUDE_PATTERNS` for the handful
+of deliberately-excluded exceptions. See `CONTRIBUTION.md`'s "Fixtures"
+section for the fixture layout convention.
