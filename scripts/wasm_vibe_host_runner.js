@@ -29,35 +29,41 @@ function atomicWriteFileSync(filePath, data, encoding) {
 }
 const readline = require("node:readline");
 
-// Backs the tcp_connect/tcp_read/tcp_write/tcp_close host imports below:
-// Node has no synchronous TCP client, so the real net.Socket work runs on a
-// worker thread (wasm_vibe_host_runner_tcp_worker.js) while this thread
-// blocks on Atomics.wait() until the worker signals completion, then drains
-// the worker's response with receiveMessageOnPort() -- the standard
+// Backs the tcp_connect/tcp_read/tcp_write/tcp_close and
+// http_request/response_status/response_header/response_body/close host
+// imports below: Node has no synchronous TCP or HTTP client, so the real
+// async work (net.Socket / http.request) runs on a worker thread while this
+// thread blocks on Atomics.wait() until the worker signals completion, then
+// drains the worker's response with receiveMessageOnPort() -- the standard
 // Node pattern for making an inherently-async operation look synchronous to
 // a caller (here, a wasm guest's synchronous host-import call) that cannot
-// itself await. Lazily started on first use so programs that never touch a
-// socket never pay for the extra thread.
-let tcpWorkerPort = null;
-function tcpWorkerCall(op, extra) {
-  if (!tcpWorkerPort) {
-    const { port1, port2 } = new MessageChannel();
-    const worker = new Worker(path.join(__dirname, "wasm_vibe_host_runner_tcp_worker.js"), {
-      workerData: { port: port2 },
-      transferList: [port2],
-    });
-    worker.unref();
-    tcpWorkerPort = port1;
-  }
-  const signal = new Int32Array(new SharedArrayBuffer(4));
-  tcpWorkerPort.postMessage(Object.assign({ id: 0, signal, op }, extra));
-  Atomics.wait(signal, 0, 0);
-  const { message } = receiveMessageOnPort(tcpWorkerPort);
-  if (message.error) {
-    throw new Error(message.error);
-  }
-  return message.result;
+// itself await. Each bridge starts its worker lazily on first use so a
+// program that never touches a socket or HTTP never pays for the extra
+// thread.
+function makeWorkerBridge(workerScript) {
+  let workerPort = null;
+  return function call(op, extra) {
+    if (!workerPort) {
+      const { port1, port2 } = new MessageChannel();
+      const worker = new Worker(path.join(__dirname, workerScript), {
+        workerData: { port: port2 },
+        transferList: [port2],
+      });
+      worker.unref();
+      workerPort = port1;
+    }
+    const signal = new Int32Array(new SharedArrayBuffer(4));
+    workerPort.postMessage(Object.assign({ id: 0, signal, op }, extra));
+    Atomics.wait(signal, 0, 0);
+    const { message } = receiveMessageOnPort(workerPort);
+    if (message.error) {
+      throw new Error(message.error);
+    }
+    return message.result;
+  };
 }
+const tcpWorkerCall = makeWorkerBridge("wasm_vibe_host_runner_tcp_worker.js");
+const httpWorkerCall = makeWorkerBridge("wasm_vibe_host_runner_http_worker.js");
 
 const TAG_MASK = 3n;
 const TAG_INT = 0n;
@@ -1968,6 +1974,41 @@ async function main() {
       tcp_close(handleTagged) {
         const handle = Number(decodeHostInt(handleTagged));
         tcpWorkerCall("close", { handle });
+        return 0n;
+      },
+      // Http::request/response_status/response_header/response_body/close
+      // (#1226) -- mirrors runtime/vibewt's ureq-based host imports. Same
+      // worker-thread + Atomics.wait bridge as tcp_* above (Node has no
+      // synchronous HTTP client either), via
+      // wasm_vibe_host_runner_http_worker.js.
+      http_request(methodTagged, urlTagged, headersTagged, bodyTagged) {
+        const method = decodeStringArg(instanceRef, methodTagged);
+        const url = decodeStringArg(instanceRef, urlTagged);
+        const headers = decodeStringArg(instanceRef, headersTagged);
+        const body = decodeStringArg(instanceRef, bodyTagged);
+        const handle = httpWorkerCall("request", { method, url, headers, body });
+        return encodeHostInt(handle);
+      },
+      http_response_status(handleTagged) {
+        const handle = Number(decodeHostInt(handleTagged));
+        const status = httpWorkerCall("status", { handle });
+        return encodeHostInt(status);
+      },
+      http_response_header(handleTagged, nameTagged) {
+        const handle = Number(decodeHostInt(handleTagged));
+        const name = decodeStringArg(instanceRef, nameTagged);
+        const value = httpWorkerCall("header", { handle, name });
+        return encodeHostString(instanceRef, value);
+      },
+      http_response_body(handleTagged) {
+        const handle = Number(decodeHostInt(handleTagged));
+        const body = httpWorkerCall("body", { handle });
+        return encodeHostString(instanceRef, body);
+      },
+      // Tolerates unknown handles, like tcp_close above.
+      http_close(handleTagged) {
+        const handle = Number(decodeHostInt(handleTagged));
+        httpWorkerCall("close", { handle });
         return 0n;
       },
       // `sleep(Int) -> Unit with { Async }` -- mirrors runtime/vibewt's

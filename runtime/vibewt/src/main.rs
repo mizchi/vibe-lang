@@ -242,6 +242,12 @@ struct HostState {
     // holds; TcpStream itself can't cross the wasm ABI).
     tcp_connections: std::collections::HashMap<i64, std::net::TcpStream>,
     next_tcp_handle: i64,
+    // #1226: Http::request/response_status/response_header/response_body/close
+    // -- same handle-map shape as sh_capture_results/tcp_connections above.
+    // `request` runs the call ONCE and parks the full response, so the 3
+    // accessor imports are cheap map reads (mirrors sh_capture's shape).
+    http_responses: std::collections::HashMap<i64, HttpResponseData>,
+    next_http_handle: i64,
     // #lsp-selfhost review follow-up: bytes read by `stdin_read_stream` that
     // don't yet form a complete UTF-8 sequence (a pipe read can return a
     // chunk boundary in the middle of a multi-byte character), held back
@@ -257,6 +263,15 @@ struct ShCaptureResult {
     exit_code: i32,
     stdout: String,
     stderr: String,
+}
+
+// #1226: a completed HTTP response parked behind a handle by `http_request`.
+// `headers` keeps lowercased names (HTTP header names are case-insensitive)
+// so `http_response_header` can do a simple linear-scan lookup.
+struct HttpResponseData {
+    status: i64,
+    headers: Vec<(String, String)>,
+    body: String,
 }
 
 // DAP P3 step modes. Continue: only pause at explicit break_set hits. StepInto:
@@ -346,6 +361,8 @@ impl HostState {
             next_sh_capture_handle: 1,
             tcp_connections: std::collections::HashMap::new(),
             next_tcp_handle: 1,
+            http_responses: std::collections::HashMap::new(),
+            next_http_handle: 1,
             stdin_pending: Vec::new(),
         }
     }
@@ -2452,6 +2469,132 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
         "tcp_close",
         |mut caller: Caller<'_, HostState>, handle: i64| -> Result<()> {
             caller.data_mut().tcp_connections.remove(&handle);
+            Ok(())
+        },
+    )?;
+    // #1226: Http::request/response_status/response_header/response_body/close
+    // -- declared builtins (checker/builtin_registry.vibe) with real call
+    // sites (lib/@vibe/http/http.vibe's client-side raw dunder calls, #794)
+    // but no host-import registration anywhere, so any real caller crashed
+    // `vibe run` with an unknown-import trap. `headers` is a "name:
+    // value\n"-joined string (lib/@vibe/http/high_level.vibe's
+    // `headers_to_wire`), matching what a caller building on the low-level
+    // `request()` already produces.
+    linker.func_wrap(
+        "vibe",
+        "http_request",
+        |mut caller: Caller<'_, HostState>, method: i64, url: i64, headers: i64, body: i64| -> Result<i64> {
+            let method = vibe_read_packed_str(&mut caller, method)?;
+            let url = vibe_read_packed_str(&mut caller, url)?;
+            let headers = vibe_read_packed_str(&mut caller, headers)?;
+            let body = vibe_read_packed_str(&mut caller, body)?;
+            let mut req = ureq::request(&method, &url);
+            for line in headers.split('\n') {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    req = req.set(name.trim(), value.trim());
+                }
+            }
+            let result = if body.is_empty() {
+                req.call()
+            } else {
+                req.send_string(&body)
+            };
+            let response = match result {
+                Ok(resp) => resp,
+                // ureq treats a 4xx/5xx response as Err by default -- it's
+                // still a real, well-formed response (do_404 in
+                // http_e2e_test.vibe expects to read a 404 status, not a
+                // trap), so unwrap it the same way as the Ok case. Only a
+                // genuine transport failure (DNS, connect refused, TLS)
+                // falls through to the trap below.
+                Err(ureq::Error::Status(_, resp)) => resp,
+                Err(e) => return Err(format_err!("vibe http_request '{method} {url}': {e}")),
+            };
+            let status = response.status() as i64;
+            let resp_headers: Vec<(String, String)> = response
+                .headers_names()
+                .into_iter()
+                .filter_map(|name| {
+                    let value = response.header(&name)?.to_string();
+                    Some((name.to_lowercase(), value))
+                })
+                .collect();
+            let resp_body = response
+                .into_string()
+                .map_err(|e| format_err!("vibe http_request '{method} {url}': reading body: {e}"))?;
+            let host_state = caller.data_mut();
+            let handle = host_state.next_http_handle;
+            host_state.next_http_handle += 1;
+            host_state.http_responses.insert(
+                handle,
+                HttpResponseData {
+                    status,
+                    headers: resp_headers,
+                    body: resp_body,
+                },
+            );
+            Ok(handle)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "http_response_status",
+        |caller: Caller<'_, HostState>, handle: i64| -> Result<i64> {
+            let entry = caller
+                .data()
+                .http_responses
+                .get(&handle)
+                .ok_or_else(|| format_err!("vibe http_response_status: unknown handle"))?;
+            Ok(entry.status)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "http_response_header",
+        |mut caller: Caller<'_, HostState>, handle: i64, name: i64| -> Result<i64> {
+            let name = vibe_read_packed_str(&mut caller, name)?;
+            let name_lower = name.to_lowercase();
+            let value = {
+                let entry = caller
+                    .data()
+                    .http_responses
+                    .get(&handle)
+                    .ok_or_else(|| format_err!("vibe http_response_header: unknown handle"))?;
+                entry
+                    .headers
+                    .iter()
+                    .find(|(hn, _)| *hn == name_lower)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default()
+            };
+            vibe_alloc_packed_str(&mut caller, &value)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "http_response_body",
+        |mut caller: Caller<'_, HostState>, handle: i64| -> Result<i64> {
+            let body = caller
+                .data()
+                .http_responses
+                .get(&handle)
+                .ok_or_else(|| format_err!("vibe http_response_body: unknown handle"))?
+                .body
+                .clone();
+            vibe_alloc_packed_str(&mut caller, &body)
+        },
+    )?;
+    // Tolerates unknown handles, like sh_capture_close/tcp_close above -- a
+    // double-close must not kill the guest.
+    linker.func_wrap(
+        "vibe",
+        "http_close",
+        |mut caller: Caller<'_, HostState>, handle: i64| -> Result<()> {
+            caller.data_mut().http_responses.remove(&handle);
             Ok(())
         },
     )?;
