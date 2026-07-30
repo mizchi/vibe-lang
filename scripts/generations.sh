@@ -30,7 +30,7 @@ usage() {
 usage:
   scripts/generations.sh seed-info [--manifest PATH]
   scripts/generations.sh status [--manifest PATH] [--out-dir DIR]
-  scripts/generations.sh build [--manifest PATH] [--out-dir DIR] [--entry PATH] [--stage3]
+  scripts/generations.sh build [--manifest PATH] [--out-dir DIR] [--entry PATH] [--entry-name NAME] [--stage3]
   scripts/generations.sh adopt --artifact PATH [--manifest PATH] [--name NAME] [--tag TAG] [--source-commit COMMIT]
 
 The build command implements the Rust-style compiler generation policy:
@@ -410,8 +410,9 @@ run_generation_compile() {
   local compiler="$2"
   local entry="$3"
   local out="$4"
+  local compile_entry_name="${5:-}"
   case "$GENERATION_INVOKE_MODE" in
-    cli) run_cli_compile "$label" "$compiler" "$entry" "$out" ;;
+    cli) run_cli_compile "$label" "$compiler" "$entry" "$out" "$compile_entry_name" ;;
     selfbuild) run_selfbuild_compile "$label" "$compiler" "$out" ;;
     *) die "unknown generation invoke mode: $GENERATION_INVOKE_MODE" ;;
   esac
@@ -648,12 +649,22 @@ command_build() {
   local manifest="$DEFAULT_MANIFEST"
   local out_dir=""
   local entry=""
+  local entry_name=""
   local build_stage3=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --manifest) manifest="$(abs_path "$2")"; shift 2 ;;
       --out-dir) out_dir="$(abs_path "$2")"; shift 2 ;;
       --entry) entry="$(abs_path "$2")"; shift 2 ;;
+      # Override the compiled artifact's exported entry_name (default:
+      # seed.entry_name, "cli_main") for every stage compile in THIS
+      # invocation only -- the persisted seed manifest is untouched, and
+      # `--invoke cli_main` (the self-hosting bootstrap's own build-tool
+      # ABI) still targets each stage's compiler by that fixed name
+      # regardless, since strip_executable_wasm (cli_support.vibe)
+      # unconditionally preserves a "cli_main" export no matter what
+      # entry_name a build asked for (#1137).
+      --entry-name) entry_name="$2"; shift 2 ;;
       --stage3) build_stage3=1; shift ;;
       --skip-run-validation) VALIDATE_RUN=0; shift ;;
       -h|--help) usage; exit 0 ;;
@@ -682,9 +693,9 @@ command_build() {
   local stage3="$out_dir/stage3.wasm"
   cp "$SEED_ARTIFACT_PATH" "$stage0"
   validate_wasm_if_available stage0 "$stage0"
-  run_generation_compile "stage0(seed) -> stage1" "$stage0" "$entry" "$stage1"
+  run_generation_compile "stage0(seed) -> stage1" "$stage0" "$entry" "$stage1" "$entry_name"
   validate_wasm_if_available stage1 "$stage1"
-  run_generation_compile "stage1 -> stage2" "$stage1" "$entry" "$stage2"
+  run_generation_compile "stage1 -> stage2" "$stage1" "$entry" "$stage2" "$entry_name"
   validate_wasm_if_available stage2 "$stage2"
   if [ "$GENERATION_INVOKE_MODE" = "cli" ]; then
     validate_compiler_artifact_if_enabled stage1 "$stage1" "$out_dir"
@@ -694,7 +705,7 @@ command_build() {
     run_start_if_enabled stage2 "$stage2" "$out_dir/stage2_run.out"
   fi
   if [ "$build_stage3" -eq 1 ]; then
-    run_generation_compile "stage2 -> stage3" "$stage2" "$entry" "$stage3"
+    run_generation_compile "stage2 -> stage3" "$stage2" "$entry" "$stage3" "$entry_name"
     validate_wasm_if_available stage3 "$stage3"
     if [ "$GENERATION_INVOKE_MODE" = "cli" ]; then
       validate_compiler_artifact_if_enabled stage3 "$stage3" "$out_dir"

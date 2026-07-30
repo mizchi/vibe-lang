@@ -858,3 +858,38 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
     }
   }
 }
+
+/// #1137: run the production CLI via a real `fn main -> Unit` (ADR-0075's
+/// convention every other tool uses) instead of the raw `cli_main` ABI, so
+/// `runtime/vibe`'s default `_start` invocation gets a genuine process exit
+/// code -- `cli_main`'s own `Int` return would only be PRINTED by the
+/// auto-synthesized `_start` (ADR-0069), same gap `lib/@vibe/cli/main.vibex`
+/// (PR #1217) closed for the OTHER, unrelated same-named `cli_main`.
+///
+/// Deliberately declared HERE, alongside `cli_main` in this same file
+/// (cli_adapter.vibe is the merge/flatten tool's designated entry, #726's
+/// `VIBE_EMIT_MERGED_SOURCE` mode keeps only the entry file's OWN top-level
+/// exports publicly named -- everything else gets private-namespace-mangled
+/// into `*_exp_lib__*` names). A separate file that imports `cli_main` would
+/// make `cli_adapter.vibe` a mere dependency of whatever new file became the
+/// entry instead, and `cli_main` -- the self-hosting bootstrap's own
+/// `--invoke cli_main` build-tool ABI (ADR-0069) -- would be silently
+/// renamed out of existence in the flattened source. Keeping both exports in
+/// the entry file itself avoids the whole reachability-root problem: no
+/// bundle-manifest changes, no bootstrap bump, no seed-entry change needed.
+///
+/// Ordinary `export fn` form, NOT the `fn main { ... }` parser sugar:
+/// compiler source itself must stay compilable by the currently-pinned
+/// seed, and ADR-0069 notes `fn main` sugar in compiler source needs a seed
+/// bump first. `_start` synthesis (linked_compile.vibe) detects a
+/// Unit-returning entry from the plain declared return type -- sugar
+/// agnostic -- so this gets the same no-print / real-exit-code `_start`
+/// without needing the sugar or a seed bump.
+export fn main() -> Unit with { Error, Fs, Env, Stdin, Stdout, Process } {
+  let code = cli_main()
+  if code != 0 {
+    vibe_process_exit_raw(code)
+  } else {
+    ()
+  }
+}

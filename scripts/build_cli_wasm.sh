@@ -60,7 +60,15 @@ else
 fi
 
 echo "[build-cli-wasm] building selfhost compiler (seed -> stage1 -> stage2)…" >&2
-bash scripts/generations.sh build >/dev/null
+# #1137: compile with entry_name=main so the shipped artifact's `_start`
+# wraps a real `fn main -> Unit` (cli_adapter.vibe) with a genuine process
+# exit code, instead of `_start` synthesized for `cli_main` (which only
+# PRINTS its Int return, per ADR-0069). `cli_main` itself is unaffected --
+# strip_executable_wasm always preserves it, and this override only affects
+# this invocation, not the persisted seed manifest, so every other
+# `generations.sh build` caller (gate, `pkf run generation`, ...) keeps
+# building with entry_name=cli_main exactly as before.
+bash scripts/generations.sh build --entry-name main >/dev/null
 
 gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1 || true)"
 [ -n "$gen" ] && [ -s "${gen}stage2.wasm" ] || {
