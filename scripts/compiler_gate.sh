@@ -7217,38 +7217,59 @@ echo "[compiler-gate] closure write-only capture shadowing a same-named top-leve
 #        multi-call convergence loop (two wrong snapshots in one file, fixed
 #        across two compile/run/patch iterations) and that a clean file is
 #        left untouched (exits 0, reports "already up to date", no rewrite).
-echo "[compiler-gate] 70/70 inspect() snapshot auto-update tool (#1061 follow-up)"
+echo "[compiler-gate] 70/70 inspect() snapshot auto-update mode (#1061 follow-up, vibe test --update)"
+# VIBE_INSPECT_UPDATE=1 is cli_adapter.vibe::cli_main's low-level mode behind
+# `vibe test --update` (runtime/vibe's `test)` case) -- same (input_path,
+# output_path) + extra-env-var-for-a-second-path convention as
+# VIBE_NORMALIZE/VIBE_TYPE_AT right above it in that file. Exercised here the
+# same way those are: directly against the stage2 wasm via
+# run_wasm_vibe_host_runner.sh, without needing an installed viberun/vibe-cli
+# toolchain layout. Locks both the call-scoped patch (an unrelated earlier
+# literal with the same text is left untouched -- #1235 review P1) and that
+# an already-correct file's inspect() calls round-trip unchanged (P2's
+# trailing-newline handling: a snapshot ending in "\n" survives one patch
+# pass byte-identical to the true actual value).
 inspupddir="_build/_gate_inspect_update"
 rm -rf "$inspupddir"; mkdir -p "$inspupddir"
-cat > "$inspupddir/demo_test.vibe" <<'VEOF'
+cat > "$inspupddir/demo.vibe" <<'VEOF'
 import ../../lib/@vibe/core { inspect }
 
-test "demo one" {
-  inspect(1 + 1, "9")
-}
+let label = "old"
 
-test "demo two" {
-  inspect(String::concat("a", "b"), "9")
+test "demo" {
+  inspect(String::concat("line1", "\n"), "old")
+  assert(label == "old")
 }
 VEOF
-VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_inspect_update.sh "$inspupddir/demo_test.vibe" >"$inspupddir/update.log" 2>&1
-if ! grep -q "updated 2 snapshot(s)" "$inspupddir/update.log"; then
-  echo "[compiler-gate] FAIL: vibe_inspect_update.sh did not converge on 2 wrong snapshots as expected" >&2
-  cat "$inspupddir/update.log" >&2
+cat > "$inspupddir/captured.txt" <<'VEOF'
+inspect mismatch:
+  actual:   line1
+
+  expected: old
+VEOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_INSPECT_UPDATE=1 VIBE_INSPECT_UPDATE_STDOUT="$inspupddir/captured.txt" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$inspupddir/demo.vibe" "$inspupddir/patched.vibe" >/dev/null 2>&1 || true
+if [ ! -s "$inspupddir/patched.vibe" ]; then
+  echo "[compiler-gate] FAIL: VIBE_INSPECT_UPDATE mode produced no output" >&2
   exit 1
 fi
-if ! grep -q 'inspect(1 + 1, "2")' "$inspupddir/demo_test.vibe" || ! grep -q 'inspect(String::concat("a", "b"), "ab")' "$inspupddir/demo_test.vibe"; then
-  echo "[compiler-gate] FAIL: vibe_inspect_update.sh patched to unexpected content" >&2
-  cat "$inspupddir/demo_test.vibe" >&2
+if ! grep -q 'inspect(String::concat("line1", "\\n"), "line1\\n")' "$inspupddir/patched.vibe" || ! grep -q 'let label = "old"' "$inspupddir/patched.vibe"; then
+  echo "[compiler-gate] FAIL: VIBE_INSPECT_UPDATE patched to unexpected content (unrelated literal touched, or trailing-newline snapshot mishandled)" >&2
+  cat "$inspupddir/patched.vibe" >&2
   exit 1
 fi
-VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_inspect_update.sh "$inspupddir/demo_test.vibe" >"$inspupddir/update2.log" 2>&1
-if ! grep -q "already up to date" "$inspupddir/update2.log"; then
-  echo "[compiler-gate] FAIL: vibe_inspect_update.sh rewrote an already-correct file" >&2
-  cat "$inspupddir/update2.log" >&2
+# A run whose captured output has no recognizable mismatch leaves the source
+# byte-identical (echoed back via output_path, not an error).
+printf 'unrelated crash output\nRuntimeError: unreachable\n' > "$inspupddir/nomatch.txt"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_INSPECT_UPDATE=1 VIBE_INSPECT_UPDATE_STDOUT="$inspupddir/nomatch.txt" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$inspupddir/demo.vibe" "$inspupddir/unchanged.vibe" >/dev/null 2>&1 || true
+if ! cmp -s "$inspupddir/demo.vibe" "$inspupddir/unchanged.vibe"; then
+  echo "[compiler-gate] FAIL: VIBE_INSPECT_UPDATE rewrote a file despite no recognizable mismatch" >&2
   exit 1
 fi
 rm -rf "$inspupddir"
-echo "[compiler-gate] inspect() snapshot auto-update tool ok"
+echo "[compiler-gate] inspect() snapshot auto-update mode ok"
 
 echo "[compiler-gate] ok"

@@ -55,6 +55,10 @@ import @vibe/compiler/normalize {
   normalize_source
 }
 
+import ./inspect_update.vibe {
+  compute_updated_source
+}
+
 import ./wit_gen.vibe {
   serve_handler_param_names, validate_serve_handler, wit_from_program
 }
@@ -687,6 +691,26 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
   if Env::get("VIBE_NORMALIZE") == "1" {
     let normalized = normalize_source(Fs::read_file(input_path))
     Fs::write_bytes(output_path, adapter_string_to_bytes(normalized))
+    return 0
+  }
+  // `vibe test --update` (#1061 follow-up, #1235 review): patch a failing
+  // inspect() call's stale `content` literal to the actual value diagnosed
+  // by a prior run of the SAME test file. VIBE_INSPECT_UPDATE_STDOUT names
+  // the file holding that prior run's captured stdout (println's mismatch
+  // diagnostic, "inspect mismatch:\n  actual: ...\n  expected: ..."). Writes
+  // the ORIGINAL source back unchanged when no recognizable mismatch
+  // matches an actual inspect(...) call's content argument -- the caller
+  // (runtime/vibe's `test --update` loop) detects "nothing to do" by
+  // comparing output_path against input_path, same as VIBE_NORMALIZE's
+  // --check above.
+  if Env::get("VIBE_INSPECT_UPDATE") == "1" {
+    let src = Fs::read_file(input_path)
+    let captured = Fs::read_file(Env::get("VIBE_INSPECT_UPDATE_STDOUT"))
+    let patched = match compute_updated_source(src, captured) {
+      Some(new_src) => new_src,
+      None => src
+    }
+    Fs::write_bytes(output_path, adapter_string_to_bytes(patched))
     return 0
   }
   // `vibe type-at`: typed hover (first LSP consumer of real EIdent offsets).
