@@ -12,9 +12,11 @@ AOT は selfhost bench の host-side accelerator であり、canonical selfhost
 artifact は WASI wasm standalone として実行可能であり続けるべき、という
 「Wasmtime を必須にしない」という本 ADR と同じ動機の既存決定)、ADR-0056(
 `runtime/vibewt` / cwasm cache を execution substrate として canonical
-artifact と切り分ける cutover ADR)、ADR-0084(resource kind パラメータ —
-「#1143 の WIT contract 本体の解消は本 ADR のスコープ外」と明記した側、
-本 ADR がその follow-up)、[docs/effect-wit-mapping.md](effect-wit-mapping.md)
+artifact と切り分ける cutover ADR)、ADR-0084(capability/algebraic effect
+の分類と `.vibex` entry row の許可規則 — resource kind retrofit 後の
+builtin effect の WIT 生成は同 ADR の射程、本 ADR は compiler 自身の
+host boundary という別の対象を扱う姉妹 ADR)、
+[docs/effect-wit-mapping.md](effect-wit-mapping.md)
 (`vibe compile --wit` によるユーザープログラム側の effect-surface WIT 化 —
 本 ADR が扱う compiler 自身の host boundary とは対象が異なる姉妹機構)
 

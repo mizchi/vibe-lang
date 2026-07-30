@@ -75,12 +75,6 @@ effect は `main` の row を素通りできるが、algebraic effect は必ず
 
 ## 中心となる提案: resource kind パラメータによる型レベル区別
 
-> **carved out**: 本セクション以下(「`.vibex` の `fn main` に対する
-> closed row 規則」「singleton resource kind」「既存 builtin の
-> resource-kind 形への移行計画」を含む)は ADR-0084 として切り出した。
-> 詳細は [effect-resource-kind.md](effect-resource-kind.md)。以下は
-> 検討過程の記録として残す。
-
 新しいキーワードを増やさず、**effect operation が resource kind パラメータ
 を持つかどうか**を capability / algebraic effect の区別のマーカーにする。
 
@@ -288,11 +282,6 @@ spawn に引き継がれない(ADR-0075: 「user-defined handler/evidence は
 ## Async / Exception の特殊扱い
 
 ### `Error` を `Exception` に改名する案
-
-> **carved out**: 本サブセクション(`Exception[E]` の型階層設計を含む)
-> は ADR-0085 として切り出した。詳細は
-> [effect-exception.md](effect-exception.md)。以下は検討過程の記録として
-> 残す。
 
 `Exception`(現 `Error`)は resource kind を持たないが、`main` の row を
 素通りしてよい(ADR-0073/0075: 「未処理 checked Error は outer handler
