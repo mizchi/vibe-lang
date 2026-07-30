@@ -697,8 +697,17 @@ suspendable task の第一スライスを実装した:
   suspend_test.vibe で conformance lock 済み。`TaskGroup.progress`
   カウンタ + `pump_all` の全周無進捗検出で、詰まった channel 待ちは
   livelock ではなく deadlock trap になる (drive_one の規則と同型)。
-  stack-driving の `Sender::send` / `Receiver::recv` は無変更で、両者は
-  同じ linearization (buf/pend/pend_seq/pend_consumed) を共有する。
+  stack-driving の `Sender::send` / `Receiver::recv` は `send_wait`/
+  `recv_wait` と同じ linearization (buf/pend/pend_seq/pend_consumed) を
+  共有する。**#1181 追記**: `TaskGroup`/`Channel`/`Sender`/`Receiver` が
+  `e` について row-polymorphic 化されたことに伴い、`Sender::send`/
+  `Receiver::recv`/`TaskHandle::join` の宣言 row は row-free から
+  `with { e }`(row 変数)へ変わった。ADR-0076 の suspend/CPS lowering
+  (`inline_direct_perform.vibe` の `scps_calls_ok`/`scps_row_has_var`) は
+  row 変数を持つ callee を常に保守的に拒否するため、`Async` を持つ
+  `spawn_suspend` closure literal の**内側**から呼ぶ場合は引き続き
+  row-free ではなく具体的な `with { Async }` row を持つ `send_wait`/
+  `recv_wait` を使う必要がある(この2関数の呼び出し側は変わっていない)。
   **Suspend payload 規約**: `0` = cooperative yield / `1` = poll wait。
   adoption-site の arm は理由を伝播する
   `TaskHandle::park_poll(h, resume, r == 1)` を canonical とする —

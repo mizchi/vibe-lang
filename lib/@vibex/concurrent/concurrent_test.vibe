@@ -601,3 +601,26 @@ test "pipeline: spawned producer and consumer within capacity" {
     Err(_) => assert(false)
   }
 }
+
+// #1181: TaskGroup::spawn's closure row used to be fixed to { Error },
+// blocking any spawned task from touching the filesystem or shelling out
+// to a subprocess. Locks the fix: a spawned closure performing both Fs
+// and Process alongside Error. (Uses sh_lines, not sh, to capture the
+// subprocess's output -- sh() itself does not capture stdout into its
+// return value, a separate pre-existing bug unrelated to this fix.)
+test "spawned task may perform Fs and Process alongside Error" {
+  let path = "/tmp/vibe_concurrent_test_spawn_fs_process.txt"
+  let r = TaskGroup::run((n) -> {
+    let t = TaskGroup::spawn(n, () -> {
+      Fs::write_file(path, "hello from a spawned task")
+      let sh_lines_out = sh_lines("echo from-subprocess")
+      let file_contents = Fs::read_file(path)
+      "\{Array::get(sh_lines_out, 0)}|\{file_contents}"
+    })
+    TaskHandle::join(t)
+  })
+  match r {
+    Ok(joined) => assert(joined is Ok("from-subprocess|hello from a spawned task")),
+    Err(_) => assert(false)
+  }
+}

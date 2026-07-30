@@ -182,9 +182,17 @@ test "cancel on a parked task resolves Cancelled and drops the continuation" {
 /// these ARE spawn_suspend calls -- an outer captured plain `Array` is no
 /// longer a legal capture. A same-region `Sender` IS Spawnable-legal
 /// (docs/concurrency.md), so each task reports through a cloned Sender
-/// instead of a shared Array; `Sender::send` is a plain row-free function
-/// (no `Async`), so calling it between `perform Async::Suspend` points is
-/// unaffected by the suspend lowering's eligibility rules.
+/// instead of a shared Array. `Sender::send` used to be a plain row-free
+/// function, but #1181 made `TaskGroup`/`Channel`/`Sender` row-polymorphic
+/// in `e` to let spawned tasks use effects beyond `Error`, so `Sender::send`
+/// now declares `with { e }` -- a row VARIABLE, which the suspend lowering's
+/// eligibility check (`scps_calls_ok`/`scps_row_has_var`,
+/// `inline_direct_perform.vibe`) always conservatively rejects as a callee
+/// from inside an `Async`-carrying closure (it cannot see that `e` resolves
+/// to `{}` here). `Sender::send_wait` has a concrete `with { Async }` row
+/// instead and is eligible; its buffered fast path is identical to
+/// `Sender::send`'s, and capacity (6) never drops below the 6 total sends
+/// here, so the fast path is always taken and behavior is unchanged.
 test "spawn_suspend interleaves two plain closure bodies" {
   let out = TaskGroup::run((g) -> {
     match Channel::bounded(g, 6) {
@@ -193,20 +201,20 @@ test "spawn_suspend interleaves two plain closure bodies" {
       Ok((tx, rx)) => {
         let tx2 = Sender::clone(tx)
         let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
-          let _s1 = Sender::send(tx, 1)
+          let _s1 = Sender::send_wait(tx, 1)
           let _a = perform Async::Suspend(0)
-          let _s3 = Sender::send(tx, 3)
+          let _s3 = Sender::send_wait(tx, 3)
           let _b = perform Async::Suspend(0)
-          let _s5 = Sender::send(tx, 5)
+          let _s5 = Sender::send_wait(tx, 5)
           Sender::release(tx)
           100
         })
         let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
-          let _s2 = Sender::send(tx2, 2)
+          let _s2 = Sender::send_wait(tx2, 2)
           let _a = perform Async::Suspend(0)
-          let _s4 = Sender::send(tx2, 4)
+          let _s4 = Sender::send_wait(tx2, 4)
           let _b = perform Async::Suspend(0)
-          let _s6 = Sender::send(tx2, 6)
+          let _s6 = Sender::send_wait(tx2, 6)
           Sender::release(tx2)
           200
         })
@@ -460,8 +468,16 @@ test "a spawn-lane failure cancels a parked spawn_suspend sibling" {
 /// already the channel under test (capacity 1, deliberately overflowed), so
 /// a SECOND same-region channel (capacity 6, comfortably ahead of demand —
 /// never itself blocks) carries the log entries instead; each side gets its
-/// own cloned Sender. `Sender::send` (unlike `send_wait`) never suspends, so
-/// it does not change the mid-body suspend points send_wait/recv_wait pin.
+/// own cloned Sender. The log channel uses `Sender::send_wait`, not the
+/// stack-driving `Sender::send`: #1181 made `Sender::send` row-polymorphic
+/// (`with { e }`), which the suspend lowering's eligibility check
+/// (`scps_calls_ok`/`scps_row_has_var`) always conservatively rejects as an
+/// ineligible callee inside an `Async`-carrying closure (it cannot see that
+/// `e` resolves to `{}` here). `send_wait`'s concrete `with { Async }` row
+/// is eligible, and its buffered fast path is identical to `send`'s -- the
+/// log channel (capacity 6, only 3 sends per side) never overflows it, so
+/// it never actually suspends and the mid-body suspend points send_wait/
+/// recv_wait pin on `tx`/`rx` are unaffected.
 test "spawn_suspend producer/consumer block mid-body through a capacity-1 channel" {
   let out = TaskGroup::run((g) -> {
     match Channel::bounded(g, 1) {
@@ -473,11 +489,11 @@ test "spawn_suspend producer/consumer block mid-body through a capacity-1 channe
             let logtx2 = Sender::clone(logtx)
             let hp = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
               let _a = Sender::send_wait(tx, 10)
-              let _l1 = Sender::send(logtx, 1)
+              let _l1 = Sender::send_wait(logtx, 1)
               let _b = Sender::send_wait(tx, 20)
-              let _l2 = Sender::send(logtx, 2)
+              let _l2 = Sender::send_wait(logtx, 2)
               let _c = Sender::send_wait(tx, 30)
-              let _l3 = Sender::send(logtx, 3)
+              let _l3 = Sender::send_wait(logtx, 3)
               Sender::release(tx)
               Sender::release(logtx)
               0
@@ -488,19 +504,19 @@ test "spawn_suspend producer/consumer block mid-body through a capacity-1 channe
                 Some(v) => v,
                 None => 0 - 1
               }
-              let _l4 = Sender::send(logtx2, 100 + a)
+              let _l4 = Sender::send_wait(logtx2, 100 + a)
               let r2 = Receiver::recv_wait(rx)
               let b = match r2 {
                 Some(v) => v,
                 None => 0 - 1
               }
-              let _l5 = Sender::send(logtx2, 100 + b)
+              let _l5 = Sender::send_wait(logtx2, 100 + b)
               let r3 = Receiver::recv_wait(rx)
               let c = match r3 {
                 Some(v) => v,
                 None => 0 - 1
               }
-              let _l6 = Sender::send(logtx2, 100 + c)
+              let _l6 = Sender::send_wait(logtx2, 100 + c)
               Sender::release(logtx2)
               a * 100 + b * 10 + c
             })

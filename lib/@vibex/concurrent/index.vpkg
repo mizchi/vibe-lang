@@ -43,14 +43,14 @@ generated_hash =
 // — immutable 値を送ること)、Task::yield。task handle の綴りは builtin
 // `Task::*` (退役予定の eager prototype) との衝突回避で `TaskHandle`。
 
-type TaskGroup[rg]
-type TaskHandle[rg, T]
+type TaskGroup[rg, e]
+type TaskHandle[rg, e, T]
 type TaskError
 type SendError
 type ChannelConfigError
-type Channel[rg, T]
-type Sender[rg, T]
-type Receiver[rg, T]
+type Channel[rg, e, T]
+type Sender[rg, e, T]
+type Receiver[rg, e, T]
 
 // internal representation types (exported for same-package tests only;
 // opaque with type params is not yet supported, #729)
@@ -58,19 +58,24 @@ opaque type TaskCell
 type ResCell[T]
 type Ring[T]
 
-fn TaskGroup::run[T, rg](body: (TaskGroup[rg]) -> T with { e }) -> Result[T, TaskError] with { e }
-fn TaskGroup::spawn[rg, T: Send](n: TaskGroup[rg], f: () -> T with { Error }) -> TaskHandle[rg, T]
-fn TaskHandle::join[rg, T](h: TaskHandle[rg, T]) -> Result[T, TaskError]
-fn TaskHandle::cancel[rg, T](h: TaskHandle[rg, T]) -> Unit
-fn Channel::bounded[rg, T: Send](n: TaskGroup[rg], capacity: Int) -> Result[(Sender[rg, T], Receiver[rg, T]), ChannelConfigError]
-fn Sender::send[rg, T](s: Sender[rg, T], v: T) -> Result[Unit, SendError]
-fn Sender::clone[rg, T](s: Sender[rg, T]) -> Sender[rg, T]
-fn Sender::release[rg, T](s: Sender[rg, T]) -> Unit
-fn Receiver::recv[rg, T](rh: Receiver[rg, T]) -> Option[T]
+fn TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with { e }) -> Result[T, TaskError] with { e }
+// #1181: spawned thunks may perform the enclosing TaskGroup's own `e`
+// capability row alongside Error. `e` is threaded through TaskGroup[rg, e]
+// (see concurrent.vibe's TaskGroup.runners field comment) rather than
+// fixed, so a nursery that spawns nothing beyond `{ Error }` still
+// requires no extra capability from its caller.
+fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with { Error, e }) -> TaskHandle[rg, e, T]
+fn TaskHandle::join[rg, e, T](h: TaskHandle[rg, e, T]) -> Result[T, TaskError] with { e }
+fn TaskHandle::cancel[rg, e, T](h: TaskHandle[rg, e, T]) -> Unit
+fn Channel::bounded[rg, e, T: Send](n: TaskGroup[rg, e], capacity: Int) -> Result[(Sender[rg, e, T], Receiver[rg, e, T]), ChannelConfigError]
+fn Sender::send[rg, e, T](s: Sender[rg, e, T], v: T) -> Result[Unit, SendError] with { e }
+fn Sender::clone[rg, e, T](s: Sender[rg, e, T]) -> Sender[rg, e, T]
+fn Sender::release[rg, e, T](s: Sender[rg, e, T]) -> Unit
+fn Receiver::recv[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] with { e }
 
 // combinators (index-ordered results; completion order not observable)
 type Parallel
-fn Parallel::map[rg, T: Send, U: Send](n: TaskGroup[rg], xs: Array[T], f: (T) -> U with { Error }) -> Result[Array[U], TaskError]
+fn Parallel::map[rg, e, T: Send, U: Send](n: TaskGroup[rg, e], xs: Array[T], f: (T) -> U with { Error, e }) -> Result[Array[U], TaskError] with { e }
 
 // --- suspendable tasks (ADR-0068 実装ノート 3c; ADR-0076 Phase 3a/3b の
 // first-class resume が前提)。task body は adoption site の
@@ -83,21 +88,21 @@ effect Async {
 
 type TaskStep[T]
 
-fn TaskGroup::adopt[rg, T: Send](n: TaskGroup[rg]) -> TaskHandle[rg, T]
+fn TaskGroup::adopt[rg, e, T: Send](n: TaskGroup[rg, e]) -> TaskHandle[rg, e, T]
 // closure-CPS (ADR-0076 追記31 Vertical B): handle site は library 内部。
 // caller は plain な closure body を渡すだけ。escaping Error::Throw は
 // Failed へ変換され fail-fast (parked sibling の自動 cancel) を起こす。
-fn TaskGroup::spawn_suspend[rg, T: Send](n: TaskGroup[rg], f: () -> T with { Async, Error }) -> TaskHandle[rg, T]
-fn TaskGroup::pump[rg](n: TaskGroup[rg]) -> Bool
-fn TaskGroup::pump_all[rg](n: TaskGroup[rg]) -> Unit
+fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with { Async, Error }) -> TaskHandle[rg, e, T]
+fn TaskGroup::pump[rg, e](n: TaskGroup[rg, e]) -> Bool
+fn TaskGroup::pump_all[rg, e](n: TaskGroup[rg, e]) -> Unit
 // blocking channel ops for suspendable tasks (suspend+retry; the
 // stack-driving Sender::send / Receiver::recv stay unchanged)
-fn Sender::send_wait[rg, T](s: Sender[rg, T], v: T) -> Result[Unit, SendError] with { Async }
-fn Receiver::recv_wait[rg, T](rh: Receiver[rg, T]) -> Option[T] with { Async }
-fn TaskHandle::settle[rg, T](h: TaskHandle[rg, T], step: TaskStep[T]) -> Unit
-fn TaskHandle::park[rg, T](h: TaskHandle[rg, T], k: (Int) -> TaskStep[T]) -> Unit
+fn Sender::send_wait[rg, e, T](s: Sender[rg, e, T], v: T) -> Result[Unit, SendError] with { Async }
+fn Receiver::recv_wait[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] with { Async }
+fn TaskHandle::settle[rg, e, T](h: TaskHandle[rg, e, T], step: TaskStep[T]) -> Unit
+fn TaskHandle::park[rg, e, T](h: TaskHandle[rg, e, T], k: (Int) -> TaskStep[T]) -> Unit
 // park with an explicit wait kind: poll=true marks an external-condition
 // wait (deadlock-trap eligible). Suspend payload convention: 0 = yield,
 // 1 = poll wait (the blocking channel ops use 1).
-fn TaskHandle::park_poll[rg, T](h: TaskHandle[rg, T], k: (Int) -> TaskStep[T], poll: Bool) -> Unit
-fn TaskHandle::wake[rg, T](h: TaskHandle[rg, T], v: Int) -> Bool
+fn TaskHandle::park_poll[rg, e, T](h: TaskHandle[rg, e, T], k: (Int) -> TaskStep[T], poll: Bool) -> Unit
+fn TaskHandle::wake[rg, e, T](h: TaskHandle[rg, e, T], v: Int) -> Bool
