@@ -196,6 +196,14 @@ if [ "$mode" = "scan" ]; then
 fi
 
 # --- default: run every non-excluded discovered file, fail on any regression --
+# VIBE_UNIT_TEST_ALLOWLIST, despite the name (kept for backward compat with
+# scripts/flaker_vibe_runner.mjs, #988), is no longer "the corpus definition"
+# -- it's an explicit-subset override: when set to a file, run EXACTLY the
+# paths listed there (one per line) instead of the discover()-minus-excludes
+# active set. The flaker bridge already gets its inventory from `--list` (so
+# every path it selects is already a valid, non-excluded file); this lets it
+# hand back a specific subset (the "affected tests only" fast inner loop, #906
+# Phase 2's flaker profile) for a single unit_test_runner.sh invocation.
 
 # --- shard selection (CI wall-time, 2026-07) -----------------------------------
 # VIBE_UNIT_TEST_SHARD="i/N" (0-based) runs only the i-th of N weight-balanced
@@ -211,8 +219,12 @@ fi
 # full battery and shards are disjoint.
 WEIGHTS="${VIBE_UNIT_TEST_WEIGHTS:-$ROOT_DIR/scripts/unit_test_weights.tsv}"
 effective_entries="$(mktemp -t vibe-unit-entries-XXXXXX)"
-discover | while IFS= read -r f; do is_excluded "$f" || printf '%s\n' "$f"; done > "$effective_entries"
-[ -s "$effective_entries" ] || { echo "[unit-test-runner] FAIL: discover() found no test files" >&2; exit 1; }
+if [ -n "${VIBE_UNIT_TEST_ALLOWLIST:-}" ] && [ -s "${VIBE_UNIT_TEST_ALLOWLIST}" ]; then
+  grep -vE '^[[:space:]]*(#|$)' "$VIBE_UNIT_TEST_ALLOWLIST" > "$effective_entries"
+else
+  discover | while IFS= read -r f; do is_excluded "$f" || printf '%s\n' "$f"; done > "$effective_entries"
+fi
+[ -s "$effective_entries" ] || { echo "[unit-test-runner] FAIL: no test files selected" >&2; exit 1; }
 if [ -n "${VIBE_UNIT_TEST_SHARD:-}" ]; then
   case "$VIBE_UNIT_TEST_SHARD" in
     */*) : ;;
