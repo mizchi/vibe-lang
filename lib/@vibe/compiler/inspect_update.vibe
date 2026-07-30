@@ -1,0 +1,262 @@
+//# `vibe test --update` snapshot patcher (#1061 follow-up, #1235 review).
+//#
+//# lib/@vibe/core/assert.vibe's `inspect(value, content)` prints
+//#   inspect mismatch:
+//#     actual:   <ACTUAL>
+//#     expected: <EXPECTED>
+//# and traps on a mismatch. This module is the pure string-processing core
+//# of the auto-update workflow: given a test file's source and a failing
+//# run's captured stdout, compute the source with the stale `content`
+//# literal rewritten to the actual value -- or None if nothing recognizable
+//# was found. inspect() itself is unchanged.
+//#
+//# Lives in lib/@vibe/compiler/ (not lib/@vibe/cli/) and is wired into
+//# cli_adapter.vibe's `cli_main` as a VIBE_INSPECT_UPDATE=1 low-level mode,
+//# the same (input_path, output_path) + extra-env-var-for-a-second-path
+//# convention as VIBE_NORMALIZE/VIBE_TYPE_AT/etc right above it in that
+//# file. This keeps `vibe test --update` install-safe: cli_adapter.vibe's
+//# `cli_main` IS the production `vibe-cli.wasm` runtime/vibe already ships
+//# and invokes for every other subcommand, unlike a separate small entry
+//# file (lib/@vibe/cli/fmt_entry.vibe's approach) which only works from a
+//# full dev-repo checkout that can compile that extra source file on
+//# demand -- `vibe fmt` is dev-only for exactly that reason, but `vibe
+//# test` is a real end-user command (runtime/vibe's `test)` case, smoke-
+//# tested in CI) and must work from an installed vibe-cli.wasm alone.
+//#
+//# File I/O for this mode is the CLASSIC Fs effect (Fs::read_file via
+//# cli_adapter.vibe's existing input_path/output_path plumbing), not
+//# wasi-p3: @vibe/wasi/p3 (lib/@vibe/wasi/p3/) only implements the HTTP
+//# world today (handler.vibe/http_effect.vibe) -- its world.wit imports no
+//# filesystem interface at all, so there is nothing p3-side to call yet.
+//# Wiring a real p3 fs effect (new host imports on every runner, WIT world
+//# surface, effect-row plumbing) is a separate, much larger feature than
+//# this tool needs; the classic Fs effect is what every other cli_adapter
+//# mode already uses for exactly this kind of read-a-file/write-a-file work.
+//#
+//# The patch is scoped to actual `inspect(...)` call sites (not any string
+//# literal in the file): find_content_arg_span below walks the source
+//# looking for `inspect(` calls, and for each one determines whether the
+//# LAST argument (content) is exactly the stale literal, using a small
+//# string-literal-aware paren scanner rather than real AST/CST span
+//# tracking (EString carries no byte offset today). Two DISTINCT inspect()
+//# calls with byte-identical `content` still can't be told apart by text
+//# alone -- the first one (in file order) is patched; the caller
+//# (runtime/vibe's `test --update` loop) re-converges across iterations
+//# since each run's trap surfaces the next distinct mismatch. An <ACTUAL>
+//# value containing the literal substring "\n  expected: " defeats
+//# parse_inspect_mismatch below.
+
+//# Escaping (mirrors lib/@vibe/compiler/fmt/format.vibe's write_escaped_char
+//# / quote_string_literal -- private to that package, so duplicated here at
+//# this tool's small scope rather than exporting a formatter-internal).
+
+fn escape_inspect_char(c: Int) -> String {
+  if c == '\n' {
+    "\\n"
+  } else if c == '\t' {
+    "\\t"
+  } else if c == '\r' {
+    "\\r"
+  } else if c == '\\' {
+    "\\\\"
+  } else if c == '"' {
+    "\\\""
+  } else {
+    String::from_char_code(c)
+  }
+}
+
+fn quote_inspect_literal(text: String) -> String {
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, "\"")
+  let n = String::length(text)
+  let mut i = 0
+  while i < n {
+    StringBuilder::push(sb, escape_inspect_char(String::char_code_at(text, i)))
+    i = i + 1
+  }
+  StringBuilder::push(sb, "\"")
+  StringBuilder::freeze(sb)
+}
+
+//# Mismatch diagnostic parsing
+
+fn strip_one_trailing_newline(s: String) -> String {
+  let n = String::length(s)
+  if n > 0 && s[n - 1: n] == "\n" {
+    s[0: n - 1]
+  } else {
+    s
+  }
+}
+
+/// Returns (actual, expected) from the FIRST "inspect mismatch:\n  actual:
+/// ...\n  expected: ..." block in `captured_in`, or None. println() appends
+/// exactly one trailing "\n" terminator after the whole diagnostic (#1235
+/// review, P2) -- strip only that one so a snapshot value that itself
+/// legitimately ends in "\n" isn't truncated; `expected` runs to the true
+/// end of the (trimmed) captured text.
+fn parse_inspect_mismatch(captured_in: String) -> Option[(String, String)] {
+  let captured = strip_one_trailing_newline(captured_in)
+  let marker = "inspect mismatch:\n  actual:   "
+  let start = String::index_of(captured, marker)
+  if start < 0 {
+    None
+  } else {
+    let after_marker = start + String::length(marker)
+    let sep = "\n  expected: "
+    let tail = captured[after_marker: String::length(captured)]
+    let sep_idx = String::index_of(tail, sep)
+    if sep_idx < 0 {
+      None
+    } else {
+      let actual_end = after_marker + sep_idx
+      let actual = captured[after_marker: actual_end]
+      let expected_start = actual_end + String::length(sep)
+      let expected = captured[expected_start: String::length(captured)]
+      Some((actual, expected))
+    }
+  }
+}
+
+//# inspect(...) call-scoped literal search
+
+fn is_ident_char(c: Int) -> Bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+/// Given the index of an `inspect(`'s opening `(`, return the index just
+/// past its matching `)`, skipping over paren/quote characters that appear
+/// inside nested string literals (backslash-escaped quotes included). -1 if
+/// unbalanced (unterminated call/string -- caller treats it as no-match).
+fn find_matching_close_paren(src: String, open_idx: Int) -> Int {
+  let n = String::length(src)
+  let mut i = open_idx
+  let mut depth = 0
+  let mut result = -1
+  while result < 0 && i < n {
+    let c = String::char_code_at(src, i)
+    if c == '"' {
+      i = i + 1
+      let mut in_str = true
+      while in_str && i < n {
+        let sc = String::char_code_at(src, i)
+        if sc == '\\' {
+          i = i + 2
+        } else if sc == '"' {
+          i = i + 1
+          in_str = false
+        } else {
+          i = i + 1
+        }
+      }
+    } else if c == '(' {
+      depth = depth + 1
+      i = i + 1
+    } else if c == ')' {
+      depth = depth - 1
+      if depth == 0 {
+        result = i + 1
+      } else {
+        i = i + 1
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+/// True iff `s` is zero or more whitespace characters followed by exactly
+/// one ")" as its last character -- i.e. `old_lit` sits immediately before
+/// the call's closing paren (mod trailing whitespace/newlines), meaning it
+/// really is the LAST (content) argument, not a substring of an earlier one.
+fn is_whitespace_then_close_paren(s: String) -> Bool {
+  let n = String::length(s)
+  if n == 0 {
+    false
+  } else if s[n - 1: n] != ")" {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while ok && i < n - 1 {
+      let c = String::char_code_at(s, i)
+      if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    ok
+  }
+}
+
+/// Scan `src` for the FIRST `inspect(...)` call (in file order, word-boundary
+/// checked so "reinspect(" doesn't false-match) whose content argument is
+/// exactly `old_lit` (already quoted/escaped). Returns the absolute
+/// (start, end) byte span of that literal within `src`, or None.
+fn find_content_arg_span(src: String, old_lit: String) -> Option[(Int, Int)] {
+  let n = String::length(src)
+  let needle = "inspect("
+  let needle_len = String::length(needle)
+  let old_len = String::length(old_lit)
+  let mut from = 0
+  let mut result: Option[(Int, Int)] = None
+  let mut done = false
+  while !done {
+    if from > n - needle_len {
+      done = true
+    } else {
+      let rel = String::index_of(src[from: n], needle)
+      if rel < 0 {
+        done = true
+      } else {
+        let m_start = from + rel
+        let boundary_ok = m_start == 0 || !is_ident_char(String::char_code_at(src, m_start - 1))
+        if !boundary_ok {
+          from = m_start + 1
+        } else {
+          let open_idx = m_start + needle_len - 1
+          let call_end = find_matching_close_paren(src, open_idx)
+          if call_end < 0 {
+            from = m_start + 1
+          } else {
+            let call_text = src[open_idx: call_end]
+            let pos = String::last_index_of(call_text, old_lit)
+            if pos >= 0 && is_whitespace_then_close_paren(call_text[pos + old_len: String::length(call_text)]) {
+              let abs_start = open_idx + pos
+              result = Some((abs_start, abs_start + old_len))
+              done = true
+            } else {
+              from = m_start + 1
+            }
+          }
+        }
+      }
+    }
+  }
+  result
+}
+
+//# Orchestration
+
+/// Compute the patched source for one convergence step, or None if the
+/// captured output has no recognizable inspect() mismatch, or no
+/// inspect(...) call's content argument matches the diagnosed expected
+/// text verbatim.
+export fn compute_updated_source(src: String, captured: String) -> Option[String] {
+  match parse_inspect_mismatch(captured) {
+    None => None,
+    Some((actual, expected)) => {
+      let old_lit = quote_inspect_literal(expected)
+      match find_content_arg_span(src, old_lit) {
+        None => None,
+        Some((start, end)) => {
+          let new_lit = quote_inspect_literal(actual)
+          Some(String::concat(src[0: start], String::concat(new_lit, src[end: String::length(src)])))
+        }
+      }
+    }
+  }
+}

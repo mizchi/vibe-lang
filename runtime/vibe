@@ -52,6 +52,11 @@
 #                                         (--check: exit 1 if not normalized;
 #                                          --stdout: print, don't write)
 #   vibe test    <file_test.vibe>...      compile + run test {} blocks
+#   vibe test --update <file_test.vibe>... auto-patch stale inspect(value,
+#                                         content) snapshots to the actual
+#                                         value on a failing run, then
+#                                         recompile+rerun (MoonBit
+#                                         inspect/--update-style, #1061)
 #   vibe bench   <file.vibe> [--iters N] [--warmup N]
 #                                         run bench {} blocks; report ns/op
 #                                         (min/p50/p95/mean), ops/sec, bytes/op
@@ -1125,7 +1130,7 @@ case "$cmd" in
     esac
     ;;
   test)
-    # `vibe test [--no-cache] <file_test.vibe>...`
+    # `vibe test [--no-cache] [--update] <file_test.vibe>...`
     #
     # Pure-test result cache (#634, ADR-0026): a file whose `test {}` blocks are
     # all transitively effect-free is a deterministic function of its source +
@@ -1134,12 +1139,25 @@ case "$cmd" in
     # VIBE_TESTMETA_OUT; the key is sha256 of the compiled wasm (deterministic
     # compilation already folds source+deps+compiler into those bytes). Only PASS
     # is cached — a fail always re-runs. `--no-cache` bypasses the cache entirely.
+    #
+    # --update (#1061 follow-up, #1235 review): MoonBit `inspect`/`--update`
+    # style inline-snapshot auto-update for lib/@vibe/core/assert.vibe's
+    # `inspect(value, content)`. On a failing run, patch the stale `content`
+    # literal to the diagnosed actual value (VIBE_INSPECT_UPDATE=1 mode on the
+    # SAME cli_adapter.vibe::cli_main every other subcommand here already
+    # uses — see that file's comment for why this isn't a separate compiled
+    # entry file) and recompile+rerun, looping per file until it passes or a
+    # run fails without a recognizable inspect() mismatch to patch. Implies
+    # --no-cache (a file whose source is being rewritten under us must not
+    # read or write the pass cache keyed by its old compiled bytes).
     no_cache=0
+    update=0
     jobs=1
     files=""
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --no-cache) no_cache=1; shift ;;
+        --update) update=1; no_cache=1; shift ;;
         --jobs) [ "$#" -ge 2 ] || die "--jobs requires a value"; jobs="$2"; shift 2 ;;
         *) files="$files $1"; shift ;;
       esac
@@ -1150,7 +1168,7 @@ case "$cmd" in
     [ "$jobs" -ge 1 ] || die "--jobs must be a positive integer, got: $jobs"
     # shellcheck disable=SC2086
     set -- $files
-    [ "$#" -ge 1 ] || die "usage: vibe test [--no-cache] [--jobs N] <file_test.vibe> [more_test.vibe...]"
+    [ "$#" -ge 1 ] || die "usage: vibe test [--no-cache] [--update] [--jobs N] <file_test.vibe> [more_test.vibe...]"
     # Codex review, PR #1175: validate every path up front and abort before
     # running anything, rather than discovering a missing file mid-run. The
     # original serial loop's own `[ -f "$src" ] || die ...` only fail-fast
@@ -1170,6 +1188,29 @@ case "$cmd" in
     # parallel driver below can run it inside a background subshell -- a
     # write to a parent-scope var from a background subshell would not be
     # visible to the parent anyway.
+    # `--update`'s per-file patch loop: run the compiled test wasm, and on a
+    # failing run try to patch the stale inspect() snapshot via cli_adapter's
+    # VIBE_INSPECT_UPDATE mode, then signal the caller (_test_run_one) to
+    # recompile+retry. Returns 0 on patch applied (caller should loop), 1 on
+    # "give up, report FAIL as-is" (no recognizable mismatch, or the patch
+    # step made no change -- e.g. the same content literal already patched
+    # by an earlier iteration and something else in the file still fails).
+    # $1 = src, $2 = captured stdout file from the failing run just now.
+    _test_try_update_patch() {
+      local usrc="$1" ucaptured="$2"
+      local ucli="$CLI_WASM"; [ -f "$ucli" ] || ucli="$(pick_cli)"
+      local upatched; upatched="$(mktemp -t vibe-test-patched-XXXXXX.vibe)"
+      if env VIBE_INSPECT_UPDATE=1 VIBE_INSPECT_UPDATE_STDOUT="$ucaptured" VIBE_IMPORT_ABI=raw \
+          "$RUNNER" "$ucli" "$usrc" "$upatched" >/dev/null 2>/dev/null \
+          && [ -s "$upatched" ] && ! cmp -s "$usrc" "$upatched"; then
+        cp "$upatched" "$usrc"
+        rm -f "$upatched"
+        return 0
+      fi
+      rm -f "$upatched"
+      return 1
+    }
+
     _test_run_one() {
       src="$1"
       warm_jobs="$2"
@@ -1183,58 +1224,93 @@ case "$cmd" in
       # own comment for why nesting an inner pre-warm pool under outer
       # file-level parallelism would only add overhead, not speed.
       maybe_warm_frontend_cache "$warm_jobs" "$src"
-      out="$(mktemp -t vibe-test-XXXXXX.wasm)"
-      meta="$out.testmeta"
-      rm -f "$meta"
-      # `__no_entry__` makes the compiler emit a `_start` that runs every
-      # `test {}` block in the file; a failing assert traps the module. Ask the
-      # compiler for the cache verdict in the same pass (unless --no-cache).
-      if [ "$no_cache" = "0" ]; then
-        export VIBE_TESTMETA_OUT="$meta"
-      else
-        unset VIBE_TESTMETA_OUT
-      fi
-      if ! compile_to "$src" "$out" "__no_entry__"; then
-        unset VIBE_TESTMETA_OUT
-        echo "FAIL (compile): $src"; rm -f "$out" "$meta"; return 1
-      fi
-      unset VIBE_TESTMETA_OUT
-      # #948: flag files with zero lowered `__test_` functions (a typo'd block
-      # otherwise passes silently via an empty `_start`). Zero tests stays ok
-      # (annotated, exit 0) so suites with helper-only files keep working.
-      n_tests="$({ grep -ao '__test_' "$out" 2>/dev/null || true; } | wc -l | tr -d '[:space:]')"
-      case "$n_tests" in ''|*[!0-9]*) n_tests=0 ;; esac
-      note=""
-      [ "$n_tests" = "0" ] && note=" (no tests found)"
-      cacheable=0
-      [ -s "$meta" ] && [ "$(cat "$meta" 2>/dev/null)" = "1" ] && cacheable=1
-      key=""
-      if [ "$no_cache" = "0" ] && [ "$cacheable" = "1" ]; then
-        key="$(_sha256_file "$out")"
-        if [ -n "$key" ] && [ -f "$tcache/$key.pass" ]; then
-          echo "ok (cached): $src$note"
-          rm -f "$out" "$meta"; return 0
+      # --update: bounded convergence loop (mirrors the read-only path below
+      # for iter 1; a file whose inspect() calls all already match runs this
+      # loop body exactly once). Plain (non-update) runs fall straight
+      # through via the `update_max=1` bound.
+      update_patches=0
+      update_max=1
+      [ "$update" = "1" ] && update_max=50
+      update_iter=0
+      while :; do
+        update_iter=$((update_iter + 1))
+        out="$(mktemp -t vibe-test-XXXXXX.wasm)"
+        meta="$out.testmeta"
+        rm -f "$meta"
+        # `__no_entry__` makes the compiler emit a `_start` that runs every
+        # `test {}` block in the file; a failing assert traps the module. Ask
+        # the compiler for the cache verdict in the same pass (unless
+        # --no-cache, which --update implies).
+        if [ "$no_cache" = "0" ]; then
+          export VIBE_TESTMETA_OUT="$meta"
+        else
+          unset VIBE_TESTMETA_OUT
         fi
-      fi
-      # #948: capture the runner's stderr. On success replay it verbatim (tests
-      # may legitimately write to stderr); on failure condense the trap dump to
-      # the failing test name + trap reason + funcmap-annotated frames instead
-      # of 20+ lines of raw Rust/wasmtime backtrace burying the `__test_` line.
-      terr="$(mktemp -t vibe-testerr-XXXXXX)"
-      rc=0
-      if "$RUNNER" "$out" 2>"$terr"; then
-        [ -s "$terr" ] && cat "$terr" >&2
-        echo "ok:   $src$note"
-        if [ -n "$key" ]; then
-          mkdir -p "$tcache" && : > "$tcache/$key.pass"
+        if ! compile_to "$src" "$out" "__no_entry__"; then
+          unset VIBE_TESTMETA_OUT
+          echo "FAIL (compile): $src"; rm -f "$out" "$meta"; return 1
         fi
-      else
-        rc=1
+        unset VIBE_TESTMETA_OUT
+        # #948: flag files with zero lowered `__test_` functions (a typo'd
+        # block otherwise passes silently via an empty `_start`). Zero tests
+        # stays ok (annotated, exit 0) so helper-only-file suites keep working.
+        n_tests="$({ grep -ao '__test_' "$out" 2>/dev/null || true; } | wc -l | tr -d '[:space:]')"
+        case "$n_tests" in ''|*[!0-9]*) n_tests=0 ;; esac
+        note=""
+        [ "$n_tests" = "0" ] && note=" (no tests found)"
+        cacheable=0
+        [ -s "$meta" ] && [ "$(cat "$meta" 2>/dev/null)" = "1" ] && cacheable=1
+        key=""
+        if [ "$no_cache" = "0" ] && [ "$cacheable" = "1" ]; then
+          key="$(_sha256_file "$out")"
+          if [ -n "$key" ] && [ -f "$tcache/$key.pass" ]; then
+            echo "ok (cached): $src$note"
+            rm -f "$out" "$meta"; return 0
+          fi
+        fi
+        # #948: capture the runner's stderr. On success replay it verbatim
+        # (tests may legitimately write to stderr); on failure condense the
+        # trap dump to the failing test name + trap reason + funcmap-
+        # annotated frames instead of 20+ lines of raw backtrace. --update
+        # additionally captures stdout (discarded otherwise) since that's
+        # where inspect()'s actual/expected mismatch diagnostic prints.
+        terr="$(mktemp -t vibe-testerr-XXXXXX)"
+        tout=""
+        rc=0
+        if [ "$update" = "1" ]; then
+          tout="$(mktemp -t vibe-testout-XXXXXX)"
+          "$RUNNER" "$out" >"$tout" 2>"$terr" || rc=1
+        else
+          "$RUNNER" "$out" 2>"$terr" || rc=1
+        fi
+        if [ "$rc" = "0" ]; then
+          [ -s "$terr" ] && cat "$terr" >&2
+          if [ "$update_patches" -gt 0 ]; then
+            echo "ok:   $src$note (updated $update_patches snapshot(s))"
+          else
+            echo "ok:   $src$note"
+          fi
+          if [ -n "$key" ]; then
+            mkdir -p "$tcache" && : > "$tcache/$key.pass"
+          fi
+          rm -f "$out" "$out.funcmap" "$meta" "$terr" "$tout"
+          return 0
+        fi
+        # Failed. --update: try to patch the stale snapshot and loop; a
+        # patch found and applied recompiles+reruns from the top instead of
+        # reporting FAIL. Bounded by update_max so a file whose inspect()
+        # calls can never all agree (or two calls with identical content
+        # ping-ponging) fails loudly instead of looping forever.
+        if [ "$update" = "1" ] && [ "$update_iter" -lt "$update_max" ] && _test_try_update_patch "$src" "$tout"; then
+          update_patches=$((update_patches + 1))
+          rm -f "$out" "$out.funcmap" "$meta" "$terr" "$tout"
+          continue
+        fi
         echo "FAIL: $src"
         condense_test_trap "$terr" "$out.funcmap" "$(basename "$src")" >&2
-      fi
-      rm -f "$out" "$out.funcmap" "$meta" "$terr"
-      return "$rc"
+        rm -f "$out" "$out.funcmap" "$meta" "$terr" "$tout"
+        return 1
+      done
     }
 
     failed=0
