@@ -26,8 +26,17 @@
 //     capture checking, mid-run cancel observation, deep-copy message
 //     snapshots (single-heap: callers must send immutable values),
 //     Task::yield. (Async rows on the blocking API landed for the
-//     suspendable lane: Sender::send_wait / Receiver::recv_wait; the
-//     stack-driving send/recv keep their row-free signatures.)
+//     suspendable lane: Sender::send_wait / Receiver::recv_wait, with a
+//     concrete `with { Async }` row. #1181 made TaskGroup/Channel/Sender/
+//     Receiver row-polymorphic in `e` so spawned tasks can use effects
+//     beyond Error, which widened the stack-driving Sender::send /
+//     Receiver::recv / TaskHandle::join from row-free to `with { e }` -- a
+//     row VARIABLE. Callers inside an Async-carrying spawn_suspend closure
+//     literal must use the `_wait` primitives instead: the ADR-0076
+//     suspend/CPS lowering pass (inline_direct_perform.vibe,
+//     scps_calls_ok/scps_row_has_var) always conservatively rejects a
+//     row-variable callee there, since it cannot see what `e` resolves to
+//     at that call site.)
 //   Message/result types ARE `Send`-bounded: spawn results, channel
 //     elements, and Parallel::map inputs/outputs carry `[T: Send]`
 //     (compiler-judged structural marker, checker/checker_trait.vibe).
@@ -578,6 +587,9 @@ export fn Channel::bounded[rg, e, T: Send](n: TaskGroup[rg, e], capacity: Int) -
 /// Send: Ok when the message is linearized (buffered, deposited for a
 /// committed receiver, or consumed by a receiver we drove). Err(Closed)
 /// on a closed channel. Blocking with no runnable task traps (deadlock).
+/// Row-polymorphic (`with { e }`, #1181) -- ineligible as a callee inside
+/// an `Async`-carrying `spawn_suspend` closure literal (ADR-0076 suspend
+/// lowering rejects row-variable callees); use `Sender::send_wait` there.
 export fn Sender::send[rg, e, T](s: Sender[rg, e, T], v: T) -> Result[Unit, SendError] with { e } {
   let c = s.ch
   if chan_closed(c) {
@@ -684,6 +696,9 @@ export fn Parallel::map[rg, e, T: Send, U: Send](n: TaskGroup[rg, e], xs: Array[
 /// Receive: Some(message) in linearization order, or None once the
 /// channel is closed and drained. Blocks by driving ready tasks;
 /// blocking with no runnable task traps (deadlock).
+/// Row-polymorphic (`with { e }`, #1181) -- ineligible as a callee inside
+/// an `Async`-carrying `spawn_suspend` closure literal (ADR-0076 suspend
+/// lowering rejects row-variable callees); use `Receiver::recv_wait` there.
 export fn Receiver::recv[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] with { e } {
   let c = rh.ch
   c.waiting_recv = c.waiting_recv + 1
