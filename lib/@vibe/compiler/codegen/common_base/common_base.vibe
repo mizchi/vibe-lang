@@ -410,7 +410,22 @@ export struct CompileCtx {
   // Slot NUMBERING and the declared table size are unchanged. Shared BY
   // REFERENCE into per-lambda derived ctxs (like the other append-only logs
   // above) so nested-lambda recordings land in the module-level array.
-  table_slots_used: Array[Int]
+  table_slots_used: Array[Int];
+  // #644: static (wasm code offset -> source file/line) recorder for the
+  // `vibe.linemap` custom section. Shared by reference across every
+  // TOP-LEVEL function's CompileCtx (like `cov` above); `linemap.cur_fn`
+  // holds the user-function index (`bi`) currently being compiled, set by
+  // linked_compile.vibe's main function loop before each body. Every
+  // emit_dbg_line_stmt call (compile_expr_tail.vibe) appends the body-buffer-
+  // relative byte offset of its probe alongside `linemap.cur_fn`'s current
+  // value, the file id and the line. Disabled (linemap_disabled()) outside
+  // debug-break builds, and ALSO forced disabled on every lambda-derived
+  // ctx (compile_lambda.vibe) -- a lambda compiles into its OWN separate
+  // wasm function body buffer, so an offset recorded against `cur_fn`'s
+  // enclosing top-level index would point at the wrong function entirely.
+  // That is a known, documented gap (like the funcmap's entry-file-only
+  // scope): lambda-body statements are simply absent from the linemap.
+  linemap: LineMapState
 }
 
 /// Interior-line breakpoints (span-arc step5, multi-file): per-file provenance the
@@ -429,6 +444,48 @@ export fn empty_dbg_prov() -> DbgProv {
     files: array_empty(),
     file_nls: array_empty(),
     stmt_file_id: array_empty()
+  }
+}
+
+/// #644: static line-map recorder threaded via CompileCtx.linemap. Mirrors
+/// CovState's cur_fn/append-only-log shape: `cur_fn` is a 1-element mutable
+/// cell holding the top-level user-function index (`bi`) currently being
+/// compiled (set once per function by linked_compile.vibe's main loop,
+/// BEFORE that function's body_buf is compiled); `funcs`/`offsets`/
+/// `file_ids`/`lines` are parallel append-only logs, one entry per
+/// emit_dbg_line_stmt probe, recording (that probe's owning `bi`, the
+/// probe's body_buf-relative byte offset, the file id, the 1-based line).
+/// `offsets` are relative to the START of the function's own instruction
+/// buffer (body_buf) -- NOT yet shifted by that function's locals-
+/// declaration header length, since body_buf is compiled before the
+/// final per-function locals header is known. linked_compile.vibe adds
+/// each function's header length (computed while assembling the code
+/// section) before emitting the final `vibe.linemap` custom section, so
+/// the section's offsets land exactly where wasmtime's own
+/// `FrameInfo::func_offset()` measures from (the first byte of the code
+/// entry, i.e. including the locals declaration -- verified empirically
+/// against wasmtime 45's WasmBacktrace).
+export struct LineMapState {
+  enabled: Bool;
+  cur_fn: Array[Int];
+  funcs: Array[Int];
+  offsets: Array[Int];
+  file_ids: Array[Int];
+  lines: Array[Int]
+}
+
+/// A disabled LineMapState (non-debug-break builds, and every lambda-derived
+/// CompileCtx): `record` is a no-op, so codegen output is byte-identical.
+export fn linemap_disabled() -> LineMapState {
+  LineMapState::{
+    enabled: false,
+    cur_fn: [
+      0
+    ],
+    funcs: array_empty(),
+    offsets: array_empty(),
+    file_ids: array_empty(),
+    lines: array_empty()
   }
 }
 

@@ -13,6 +13,7 @@
 //   vibewt <wasm|cwasm> [args...]              run, forward args
 //   vibewt --precompile <wasm> [-o out.cwasm]  AOT compile only
 //   vibewt --dump-imports <wasm>               list import surface (drift guard)
+//   vibewt --dump-linemap <wasm>               dump `vibe.linemap` (#644)
 //   vibewt --daemon <wasm|cwasm>               long-running mode (#400)
 //   vibewt --help
 
@@ -201,6 +202,15 @@ struct HostState {
     // file id; we index this to recover the basename and match a `--break
     // <file>:<line>` spec's file against it. Empty => bare-line specs still match.
     dbgfiles: Arc<Vec<String>>,
+    // #644: static (wasm func index -> sorted (code offset, file id, line))
+    // table parsed from the module's `vibe.linemap` custom section (break
+    // builds with dbg_line only, same gating as `dbgfiles`). Lets a captured
+    // `wasmtime::WasmBacktrace` frame's (func_index, func_offset) resolve to
+    // an exact source line without needing that frame to have called
+    // `vibe::dbg_line` itself -- e.g. a frame paused/trapped mid-statement,
+    // or any CALLER frame in a pause's stack dump. Empty => no section =>
+    // resolve_linemap always returns None (existing behavior unaffected).
+    linemap: Arc<std::collections::HashMap<u32, Vec<(u32, u32, u32)>>>,
     // debugger step execution (DAP P3): at a pause the runner reads a command and
     // sets a step mode, consulted at every function-entry dbg_break hook to decide
     // WHEN to pause next. pause_depth records the call depth (backtrace frame
@@ -320,6 +330,7 @@ impl HostState {
             dbgargs_tag_mode: 0,
             dbgnames: Arc::new(std::collections::HashMap::new()),
             dbgfiles: Arc::new(Vec::new()),
+            linemap: Arc::new(std::collections::HashMap::new()),
             step_mode: StepMode::Continue,
             pause_depth: 0,
             alloc_site,
@@ -369,6 +380,7 @@ fn print_help() {
            vibewt <wasm|cwasm> [args...]\n\
            vibewt --precompile <input.wasm> [-o <output.cwasm>]\n\
            vibewt --dump-imports <input.wasm>\n\
+           vibewt --dump-linemap <input.wasm>\n\
            vibewt --daemon <wasm|cwasm>\n\
            vibewt --help\n\
          \n\
@@ -501,6 +513,38 @@ fn dump_imports(input: &str) -> Result<()> {
     Ok(())
 }
 
+// #644: dump the `vibe.linemap` custom section (if any) as
+// `<func_index>\t<code_offset>\t<file>\t<line>` lines, sorted by
+// (func_index, offset). `<file>` is the basename from `vibe.dbgfiles` when
+// present, else the raw file id. Missing/empty section => no output (exit 0,
+// like `vibe diagnostics` on a clean file) rather than an error, since most
+// modules (non-debug-break builds) simply don't carry one.
+fn dump_linemap(input: &str) -> Result<()> {
+    let wasm = fs::read(input).map_err(|e| format_err!("read {input}: {e}"))?;
+    let dbgfiles = find_custom_section(&wasm, "vibe.dbgfiles")
+        .map(|s| parse_dbgfiles(&s))
+        .unwrap_or_default();
+    let section = match find_custom_section(&wasm, "vibe.linemap") {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+    let by_func = parse_linemap(&section);
+    let mut func_idxs: Vec<u32> = by_func.keys().copied().collect();
+    func_idxs.sort_unstable();
+    let stdout = std::io::stdout();
+    let mut h = stdout.lock();
+    for func_idx in func_idxs {
+        for (offset, file_id, line) in &by_func[&func_idx] {
+            let file = dbgfiles
+                .get(*file_id as usize)
+                .cloned()
+                .unwrap_or_else(|| file_id.to_string());
+            writeln!(h, "{func_idx}\t{offset}\t{file}\t{line}").ok();
+        }
+    }
+    Ok(())
+}
+
 fn load_module(engine: &Engine, path: &str) -> Result<Module> {
     if path.ends_with(".cwasm") {
         // SAFETY: cwasm produced by `vibewt --precompile` uses the same
@@ -588,6 +632,12 @@ fn run(args: Vec<String>) -> Result<i32> {
         // `vibe::dbg_line(file_id, line)` -> basename resolution.
         if let Some(section) = find_custom_section(&wasm, "vibe.dbgfiles") {
             store.data_mut().dbgfiles = Arc::new(parse_dbgfiles(&section));
+        }
+        // #644: static instruction-offset -> line table, groundwork for
+        // resolving arbitrary (func_index, func_offset) pairs from a captured
+        // backtrace (see resolve_linemap).
+        if let Some(section) = find_custom_section(&wasm, "vibe.linemap") {
+            store.data_mut().linemap = Arc::new(parse_linemap(&section));
         }
     }
 
@@ -792,6 +842,48 @@ fn run(args: Vec<String>) -> Result<i32> {
                 eprintln!("vibewt: {e:?}");
             } else {
                 eprintln!("vibewt: {e}");
+                // #644: a debug-break build (non-empty `linemap`) that traps
+                // mid-run -- not via an explicit `--break` pause -- still
+                // deserves a precise per-frame source line, not just the bare
+                // function name wasmtime's default Display already shows via
+                // the name section. A genuine wasm trap/uncaught exception
+                // carries a WasmBacktrace in the same error chain (verified
+                // against wasmtime 45); resolve each frame's
+                // (func_index, func_offset) through the same linemap
+                // vibe::dbg_break/dbg_line already rely on.
+                //
+                // Deliberately labelled "frame:", NOT "  at " -- runtime/vibe's
+                // stderr annotator (annotate_run_stream) pattern-matches any
+                // "  at <name>" line and appends a SECOND, declaration-line
+                // annotation from the `.funcmap` sidecar. Since ALL of this
+                // runner's stderr is piped through that annotator (see the
+                // `run` case's FIFO), reusing "  at " here would double-
+                // annotate ("helper (prog.vibex:1) (prog.vibex:1)", the two
+                // numbers disagreeing whenever the trap isn't on helper's
+                // first line). Best-effort: silent when the module carries no
+                // linemap (the overwhelmingly common case) or nothing resolves.
+                if !store.data().linemap.is_empty() {
+                    if let Some(bt) = e.downcast_ref::<wasmtime::WasmBacktrace>() {
+                        let dbgfiles = Arc::clone(&store.data().dbgfiles);
+                        let linemap = Arc::clone(&store.data().linemap);
+                        for frame in bt.frames() {
+                            let name = frame.func_name().unwrap_or("<unknown>");
+                            match frame
+                                .func_offset()
+                                .and_then(|off| resolve_linemap(&linemap, frame.func_index(), off as u32))
+                            {
+                                Some((file_id, line)) => {
+                                    let file = dbgfiles
+                                        .get(file_id as usize)
+                                        .map(|s| s.as_str())
+                                        .unwrap_or("?");
+                                    eprintln!("  frame: {name} ({file}:{line})");
+                                }
+                                None => eprintln!("  frame: {name}"),
+                            }
+                        }
+                    }
+                }
             }
             Ok(1)
         }
@@ -3128,6 +3220,55 @@ fn parse_dbgfiles(section: &[u8]) -> Vec<String> {
         .collect()
 }
 
+// #644: parse the `vibe.linemap` custom section into a (wasm func index ->
+// sorted (code offset, file id, line) list) map. The section is a flat run of
+// 16-byte little-endian records (func_index, offset, file_id, line); a
+// trailing partial record (a corrupt/truncated section) is ignored rather
+// than panicking. Entries are grouped by func_index and sorted by offset so
+// `resolve_linemap` below can binary-search each function's list. Absent
+// section / non-debug-break build => empty map => resolution always misses,
+// callers fall back to their existing (coarser) behavior.
+fn parse_linemap(section: &[u8]) -> std::collections::HashMap<u32, Vec<(u32, u32, u32)>> {
+    let mut by_func: std::collections::HashMap<u32, Vec<(u32, u32, u32)>> =
+        std::collections::HashMap::new();
+    let mut pos = 0usize;
+    while pos + 16 <= section.len() {
+        let func_idx = read_u32_le(section, pos).unwrap_or(0);
+        let offset = read_u32_le(section, pos + 4).unwrap_or(0);
+        let file_id = read_u32_le(section, pos + 8).unwrap_or(0);
+        let line = read_u32_le(section, pos + 12).unwrap_or(0);
+        by_func.entry(func_idx).or_default().push((offset, file_id, line));
+        pos += 16;
+    }
+    for entries in by_func.values_mut() {
+        entries.sort_by_key(|e| e.0);
+    }
+    by_func
+}
+
+// #644: resolve a live (func_index, code_offset) pair -- as reported by
+// wasmtime's `FrameInfo::func_index()`/`func_offset()` on a captured
+// WasmBacktrace frame -- to the nearest known (file_id, line) at or before
+// that offset. A line-table entry covers every offset from itself up to (but
+// not including) the next entry for the same function, so this is a
+// last-entry-with-offset-<=-target binary search (partition_point), not an
+// exact match. None when the function has no linemap entries at all, or the
+// offset falls before its first recorded entry (e.g. still in the locals
+// header / function prologue).
+fn resolve_linemap(
+    linemap: &std::collections::HashMap<u32, Vec<(u32, u32, u32)>>,
+    func_idx: u32,
+    offset: u32,
+) -> Option<(u32, u32)> {
+    let entries = linemap.get(&func_idx)?;
+    let idx = entries.partition_point(|e| e.0 <= offset);
+    if idx == 0 {
+        return None;
+    }
+    let (_, file_id, line) = entries[idx - 1];
+    Some((file_id, line))
+}
+
 fn parse_dbgnames(section: &[u8]) -> std::collections::HashMap<String, Vec<String>> {
     let mut map = std::collections::HashMap::new();
     let text = String::from_utf8_lossy(section);
@@ -3256,6 +3397,29 @@ fn real_main() {
         }
         if let Err(e) = dump_imports(&input) {
             eprintln!("vibewt: dump-imports failed: {e:?}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    // #644: introspection for the `vibe.linemap` custom section -- lets
+    // scripts/tests verify the static (func index, code offset) -> (file,
+    // line) table a debug-break build carries, without spinning up a full
+    // interactive `--break` session. Not part of the run/annotate pipeline,
+    // so it cannot interact with runtime/vibe's stderr annotator.
+    if args.first().map(|s| s.as_str()) == Some("--dump-linemap") {
+        let input = match args.get(1) {
+            Some(s) => s.clone(),
+            None => {
+                eprintln!("--dump-linemap: missing <input.wasm>");
+                std::process::exit(2);
+            }
+        };
+        if args.len() > 2 {
+            eprintln!("--dump-linemap: unexpected extra args");
+            std::process::exit(2);
+        }
+        if let Err(e) = dump_linemap(&input) {
+            eprintln!("vibewt: dump-linemap failed: {e:?}");
             std::process::exit(1);
         }
         return;

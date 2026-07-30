@@ -144,9 +144,9 @@ Interior-line breakpoints work across **multiple files**: `--break helper.vibe:3
 pauses inside an imported module while `--break main.vibex:3` pauses in the entry
 file, even though both are "line 3" — the compiler records each statement's source
 file (a `vibe.dbgfiles` table) so the runner matches the breakpoint's `<file>`
-against the right one. One scope note: a statement whose value is a bare literal
-(e.g. `let a = 1`) carries no source offset, so it is not individually breakable —
-put the breakpoint on a neighbouring line that references a name.
+against the right one. A statement whose value is a bare literal (e.g. `let a = 1`)
+is breakable too (#644): the `let`/`let mut` keyword's own offset anchors the probe
+when the value itself carries none.
 
 Execution pauses at the entry of each named function and prints, to stderr:
 
@@ -174,6 +174,50 @@ At each pause the debugger reads **one** command from stdin:
 A step pause prints `stopped at: <fn>` instead of `breakpoint hit:`. stdout and
 the program's exit status pass through unchanged, so a broken run still
 produces its normal result when continued.
+
+#### Static line map (`vibe.linemap`) and more precise trap frames
+
+A `--break`-instrumented module also carries a `vibe.linemap` custom section:
+a static table mapping each user function's wasm code offset to a source
+`(file, line)`, built from the same interior-line probe sites as the live
+`--break` hook above (#644). Unlike `dbg_line`, this table needs no
+cooperation from the running program — it can be read straight out of the
+compiled `.wasm`, e.g. with `vibewt --dump-linemap <file.wasm>` (one
+`func_index<TAB>offset<TAB>file<TAB>line` row per probe), and the runner
+consults it whenever `wasmtime::WasmBacktrace` hands it a real
+`(func_index, func_offset)` pair.
+
+The concrete payoff: when a `--break` run hits an **uncaught trap** (not an
+explicit breakpoint), every frame of the backtrace gets annotated with a
+`frame: <fn> (<file>:<line>)` line using the *trapping* statement's actual
+line — not just that function's declaration line, which is all the default
+wasm-name-section-based backtrace can show for a non-topmost frame:
+
+```
+vibewt: error while executing at wasm backtrace:
+    0:   0x1c33 - <unknown>!main (t.vibex:1)
+    1:   0x1d39 - <unknown>!_start
+
+Caused by:
+    wasm trap: integer divide by zero
+  frame: main (t.vibex:4)
+  frame: _start
+```
+
+Here `main` is declared on line 1, but the division that actually trapped is
+on line 4 — the `frame:` line (not `  at `, to avoid colliding with the
+launcher's separate declaration-line annotator) gives the precise location.
+This only fires for debug-break builds with a non-empty linemap; a plain
+`vibe run` trap is unaffected.
+
+**Known scope limit**: linemap entries are recorded only for TOP-LEVEL
+function bodies — a probe compiled inside a lambda/closure body is absent
+from the static table (its LIVE `--break`/`dbg_line` pause still works
+normally; only the *static*, no-execution-needed lookup has this gap).
+Genuine **instruction-offset breakpoints** (pausing mid-statement, at an
+arbitrary sub-expression) remain future work: it needs every `Expr` node to
+carry its own source span, not just statements, which the linemap alone
+doesn't provide (docs/release-roadmap.md テーマ3, 3-P0's "残").
 
 ---
 
