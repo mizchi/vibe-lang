@@ -75,6 +75,12 @@ effect は `main` の row を素通りできるが、algebraic effect は必ず
 
 ## 中心となる提案: resource kind パラメータによる型レベル区別
 
+> **carved out**: 本セクション以下(「`.vibex` の `fn main` に対する
+> closed row 規則」「singleton resource kind」「既存 builtin の
+> resource-kind 形への移行計画」を含む)は ADR-0084 として切り出した。
+> 詳細は [effect-resource-kind.md](effect-resource-kind.md)。以下は
+> 検討過程の記録として残す。
+
 新しいキーワードを増やさず、**effect operation が resource kind パラメータ
 を持つかどうか**を capability / algebraic effect の区別のマーカーにする。
 
