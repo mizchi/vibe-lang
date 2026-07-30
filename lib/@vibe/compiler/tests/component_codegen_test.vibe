@@ -722,7 +722,7 @@ test "component #1107: stubbed string handler hosts vibe.* imports" {
   assert(component_bytes_contains(comp, "handler") == 1)
 }
 
-// #1230 M1b-3c-1b: "self-contained future via a spawned writer subtask".
+// #1230 M1b-3c-1b: blocking await with the wait loop in its own function.
 // The byte shapes asserted below were recovered empirically via
 // `wasm-tools dump` against tools/wasip3_component_probe/spawned_future/
 // component.wat's compiled output (see that probe's README.md and
@@ -730,11 +730,13 @@ test "component #1107: stubbed string handler hosts vibe.* imports" {
 // this test pins the SAME shapes this composer's doc comments describe.
 // A stronger, execution-based check (this exact composer's output run
 // through the probe's Rust host driver against a genuinely-blocking host
-// import, confirming a real ~300ms suspend and a correct result of 42) was
-// performed manually during development -- see the probe's README.md
-// "spawned_future/" section; `vibe test` itself has no Fs/subprocess access
-// to drive that host binary, so it isn't repeated here.
-test "component async spawned-future: self-contained future via a writer subtask, no future.* canon" {
+// import, confirming a real ~300ms suspend and a correct result of 42)
+// lives in scripts/test_spawned_future_component_gate.sh; `vibe test`
+// itself has no Fs/subprocess access to drive that host binary.
+//
+// Note this emitter models "spawn" only in the degenerate case (nothing
+// observable between spawn and join) -- see the composer's doc comment.
+test "component async spawned-future: blocking await via a callee wait loop, no future.* canon" {
   let comp = comp_emit_component_wasm_async_spawned_future("run", 121)
   assert(Bytes::get(comp, 0) == 0)
   assert(Bytes::get(comp, 4) == 13)
@@ -816,12 +818,27 @@ test "component async spawned-future: self-contained future via a writer subtask
   assert(component_bytes_contains(comp, "[waitable-set-drop]") == 1)
   assert(component_bytes_contains(comp, "[subtask-drop]") == 1)
   assert(component_bytes_contains(comp, "[task-return]run") == 1)
-  // No future.* canon anywhere: "spawn a writer" needs no canonical-ABI
-  // future value under vibe's stackful codegen strategy (see composer's
-  // doc comment). "future" would only ever appear inside a "[async-lower]"/
-  // "[async-lift]" wire name here, never as its own bracketed canon name.
+  // No future.* canon anywhere: the emitted shape needs no canonical-ABI
+  // future value (see composer's doc comment). "future" would only ever
+  // appear inside a "[async-lower]"/"[async-lift]" wire name here, never
+  // as its own bracketed canon name.
   assert(component_bytes_contains(comp, "[future") == 0)
   assert(component_bytes_contains(comp, "context-get") == 0)
   assert(component_bytes_contains(comp, "context-set") == 0)
   assert(component_bytes_contains(comp, "waitable-set-poll") == 0)
+}
+
+// #1240 review: the guest core module is hard-coded to an i32-shaped result,
+// so any other requested lowering (notably the project's ordinary s64 `Int`)
+// would emit a task.return canon disagreeing with the guest's own
+// [task-return] import type and fail component validation. The emitter must
+// reject it up front rather than produce an invalid component.
+test "component async spawned-future: rejects a non-u32 result valtype" {
+  let rejected = handle {
+    let _ = comp_emit_component_wasm_async_spawned_future("run", 120)
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(rejected)
 }

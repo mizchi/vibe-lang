@@ -1,22 +1,28 @@
-;; M1b-3c-1b probe (Phase B): "self-contained future via a spawned writer
-;; subtask", hand-authored to the ABI shape Phase A empirically determined
-;; is sufficient (see canon-imports-exports.wit-abi.txt in this directory):
-;; under vibe's stackful (callback-less) codegen strategy, "spawn a writer,
-;; then await it" needs NO canon built-ins beyond what stackful/component.wat
-;; already proves (task.return, [async-lower]get-async, waitable-set.new/
-;; .wait/.drop, waitable.join, subtask.drop) -- no future.*, no
-;; context.get/set, no waitable-set.poll. The "spawn" is realized as an
-;; ordinary internal wasm function call ($writer, invoked by $run) within the
-;; SAME core module and the SAME stackful fiber -- not a second
-;; Component-Model subtask.
+;; M1b-3c-1b probe (Phase B): blocking await with the wait loop factored
+;; into its own function, hand-authored to the ABI shape Phase A recovered
+;; (see canon-imports-exports.wit-abi.txt in this directory). This shape
+;; needs NO canon built-ins beyond what stackful/component.wat already
+;; proves (task.return, [async-lower]get-async, waitable-set.new/.wait/
+;; .drop, waitable.join, subtask.drop) -- no future.*, no context.get/set,
+;; no waitable-set.poll.
 ;;
-;; This is a deliberate structural refactor of stackful/component.wat (same
+;; It is a deliberate structural refactor of stackful/component.wat (same
 ;; canon set, same host import, same retry-loop shape) split into two wasm
-;; functions to concretely prove the refactor vibe's compiler needs --
-;; compiling `Task::spawn(|| await(host_call()))` followed by
-;; `await(that_task)` as a writer function called from the reader's body --
-;; compiles and runs correctly with a genuinely non-ready wait (the host
-;; driver suspends for 300ms, same as stackful/'s host).
+;; functions, to prove that the refactor vibe's compiler needs -- compiling
+;; `Task::spawn(|| await(host_call()))` followed by `await(that_task)` as a
+;; callee function invoked from the awaiting code -- compiles and runs
+;; correctly against a genuinely non-ready wait (the host driver suspends
+;; for 300ms, same as stackful/'s host).
+;;
+;; SCOPE (#1240 review): $writer is an ordinary internal wasm function that
+;; $run calls SYNCHRONOUSLY -- not a second Component-Model task. Nothing
+;; here runs concurrently with anything else, so this models `spawn f;
+;; await t` ONLY in the degenerate case where no observable parent work
+;; happens between the spawn and the join (there, the spawn is semantically
+;; a no-op and compiles away to a direct call). It does NOT establish that
+;; a real interleaving spawn needs no executor machinery -- Phase A's
+;; evidence suggests it does. See canon-imports-exports.wit-abi.txt's
+;; "IMPORTANT LIMIT ON THAT CONCLUSION" for the full argument.
 (component
   (type $get-async-type (func async (result u32)))
   (import "get-async" (func $host-get-async (type $get-async-type)))
@@ -42,6 +48,13 @@
       (local $subtask i32)
       (local $ws i32)
       (local $event0 i32)
+      ;; #1240 review: records whether the BLOCKED path allocated a waitable
+      ;; set, so the epilogue can drop it. Without this, every blocking call
+      ;; leaks one canonical waitable-set handle. Note the drop must come
+      ;; AFTER subtask.drop -- the subtask is waitable.join'ed into the set,
+      ;; and dropping a set that still has children traps with
+      ;; "resource has children" (observed live on wasmtime 47).
+      (local $has_ws i32)
 
       (local.set $packed (call $get_async (i32.const 0)))
       (local.set $code (i32.and (local.get $packed) (i32.const 0xf)))
@@ -51,6 +64,7 @@
         (br_if $done (i32.eq (local.get $code) (i32.const 2)))
 
         (local.set $ws (call $ws_new))
+        (local.set $has_ws (i32.const 1))
         (call $waitable_join (local.get $subtask) (local.get $ws))
 
         (loop $retry
@@ -69,6 +83,9 @@
       )
 
       (call $subtask_drop (local.get $subtask))
+      (if (local.get $has_ws)
+        (then (call $ws_drop (local.get $ws)))
+      )
       (i32.load (i32.const 0))
     )
 

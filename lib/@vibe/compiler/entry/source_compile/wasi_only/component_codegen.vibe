@@ -1599,22 +1599,39 @@ fn comp_generate_memhost_module() -> Bytes {
   bytebuf_to_bytes(out)
 }
 
-/// #1230 M1b-3c-1b: "self-contained future via a spawned writer subtask"
-/// guest core module -- a direct translation of
+/// #1230 M1b-3c-1b: blocking-await guest core module with the wait loop
+/// factored into its own function -- a direct translation of
 /// tools/wasip3_component_probe/spawned_future/component.wat's `$guest`
-/// module. See that probe (README.md's "spawned_future/" section,
-/// canon-imports-exports.wit-abi.txt) for the empirical finding this is
-/// based on: under vibe's stackful codegen strategy, "spawn a writer
-/// subtask" needs no future.*/context.*/waitable-set.poll canon built-ins
-/// at all -- `$writer` is an ORDINARY internal wasm function called by
-/// `$run`, not a second Component-Model subtask, so this needs exactly the
-/// same canon built-in set as the simpler stackful/ probe (task.return,
-/// async-lowered host import, waitable-set.new/.wait/.drop, waitable.join,
-/// subtask.drop).
+/// module. `$writer` performs the async-lowered host call + waitable-set
+/// retry loop; `$run` calls it and forwards the result to task.return.
 ///
-/// Local func indices: 7 = $writer (type1: () -> i32; the "writer subtask",
-/// performs the async-lowered host call + waitable-set retry loop and
-/// returns the resolved value like an ordinary helper function), 8 = $run
+/// SCOPE / WHAT THIS DOES AND DOES NOT PROVE (#1240 review). `$writer` is
+/// an ORDINARY internal wasm function that `$run` calls synchronously --
+/// NOT a second Component-Model task. So this shape only models
+/// `spawn(f); await(t)` in the degenerate case where nothing observable
+/// happens in the parent between the spawn and the join: the "spawn" is
+/// then semantically a no-op and compiles away to a direct call, and the
+/// canon set needed is exactly the simpler stackful/ probe's
+/// (task.return, async-lowered host import, waitable-set.new/.wait/.drop,
+/// waitable.join, subtask.drop) -- which the probe verifies end-to-end
+/// against a genuinely blocking host import.
+///
+/// It does NOT establish that a REAL spawn -- a second guest computation
+/// that interleaves with parent work before the join -- needs no extra
+/// machinery. It cannot: one stackful fiber runs one call chain, so
+/// concurrent guest work requires either another task or a guest-side
+/// poll executor. The Phase A probe's evidence points the other way: a
+/// genuine `wit_bindgen::spawn_local` pulls in a FuturesUnordered
+/// executor plus `context.get/set` and `waitable-set.poll`. Any
+/// parent/child handshake, or observable work between spawn and join,
+/// would therefore reorder or deadlock under this lowering -- the same
+/// limitation the linear backend's eager `Task::spawn` already carries
+/// (docs/spec/wasi-p3-async.md §2.5). Real interleaving spawn stays open
+/// (M-conc-2 / the M1b-3c-2 follow-up).
+///
+/// Local func indices: 7 = $writer (type1: () -> i32; performs the
+/// async-lowered host call + waitable-set retry loop and returns the
+/// resolved value like an ordinary helper function), 8 = $run
 /// (type5: () -> (); exported "run"; calls $writer and forwards its result
 /// to task.return). Import func indices 0-6 occupy the func index space
 /// before them (0=[async-lower]get-async, 1=[waitable-set-new],
@@ -1703,10 +1720,17 @@ fn comp_generate_spawned_future_guest_core_module() -> Bytes {
   let code_sec = bytebuf_new()
   leb128_encode_u32(code_sec, 2)
   // $writer (func idx 7). locals: 0=packed, 1=code, 2=subtask, 3=ws,
-  // 4=event0 (all i32). Direct translation of component.wat's $writer body.
+  // 4=event0, 5=has_ws (all i32). Direct translation of component.wat's
+  // $writer body. `has_ws` (zero-initialized like every wasm local) records
+  // whether the BLOCKED path actually allocated a waitable set, so the
+  // epilogue can drop it -- #1240 review: without it every blocking call
+  // leaks one canonical waitable-set handle, eventually exhausting the
+  // instance's handle space. (The stackful/ probe has the same latent leak;
+  // it imports [waitable-set-drop] and never calls it. Harmless there --
+  // one-shot probe -- but not in emitted code.)
   let writer_body = bytebuf_new()
   leb128_encode_u32(writer_body, 1)
-  leb128_encode_u32(writer_body, 5)
+  leb128_encode_u32(writer_body, 6)
   bytebuf_push(writer_body, 127)
   emit_i32_const(writer_body, 0)
   emit_call(writer_body, 0)
@@ -1726,6 +1750,8 @@ fn comp_generate_spawned_future_guest_core_module() -> Bytes {
   emit_br_if(writer_body, 0)
   emit_call(writer_body, 1)
   emit_local_set(writer_body, 3)
+  emit_i32_const(writer_body, 1)
+  emit_local_set(writer_body, 5)
   emit_local_get(writer_body, 2)
   emit_local_get(writer_body, 3)
   emit_call(writer_body, 2)
@@ -1749,8 +1775,18 @@ fn comp_generate_spawned_future_guest_core_module() -> Bytes {
   emit_br(writer_body, 0)
   emit_end(writer_body)
   emit_end(writer_body)
+  // epilogue: drop the subtask FIRST, then the waitable set (only allocated
+  // on the BLOCKED path), then load the host's result from the results area.
+  // Order matters: the subtask was `waitable.join`ed into the set, so
+  // dropping the set while it still holds the subtask traps with "resource
+  // has children" (observed live via the gate's host driver, wasmtime 47).
   emit_local_get(writer_body, 2)
   emit_call(writer_body, 5)
+  emit_local_get(writer_body, 5)
+  emit_if_void(writer_body)
+  emit_local_get(writer_body, 3)
+  emit_call(writer_body, 4)
+  emit_end(writer_body)
   emit_i32_const(writer_body, 0)
   emit_i32_load(writer_body, 2, 0)
   bytebuf_push(writer_body, 11)
@@ -1768,19 +1804,20 @@ fn comp_generate_spawned_future_guest_core_module() -> Bytes {
   bytebuf_to_bytes(out)
 }
 
-/// #1230 M1b-3c-1b: wrap the fixed-shape "self-contained future via spawned
-/// writer subtask" guest module (above) into a fully self-contained async
-/// component -- a byte-exact port of
-/// tools/wasip3_component_probe/spawned_future/component.wat, verified via
-/// `wasm-tools dump`/`wasm-tools validate` and the probe's Rust host driver
-/// (genuinely non-ready wait, resolves to the host import's value). Unlike
-/// comp_emit_component_wasm_async_trampolined_p1 this does not wrap an
-/// arbitrary compiled `.vibe` core module -- it is the M1b-1-shaped half of
-/// this milestone (emitter, byte-exact verified), not the M1b-2c-shaped
+/// #1230 M1b-3c-1b: wrap the fixed-shape blocking-await guest module
+/// (above) into a fully self-contained async component -- a byte-exact port
+/// of tools/wasip3_component_probe/spawned_future/component.wat, verified
+/// via `wasm-tools dump`/`wasm-tools validate` and the probe's Rust host
+/// driver (genuinely non-ready wait, resolves to the host import's value).
+/// Unlike comp_emit_component_wasm_async_trampolined_p1 this does not wrap
+/// an arbitrary compiled `.vibe` core module -- it is the M1b-1-shaped half
+/// of this milestone (emitter, byte-exact verified), not the M1b-2c-shaped
 /// half (wiring into real `.vibe` source), which is left to a follow-up
-/// once vibe-source-level spawn/future syntax exists. `comp_result_valtype`
-/// is the component valtype the "get-async" host import resolves to and
-/// `run` returns (comp_valtype_u32 for the probe-verified shape).
+/// once vibe-source-level spawn/future syntax exists. See the guest
+/// module's own doc comment for what the "spawn" framing does and does NOT
+/// cover -- notably, real interleaving spawn is still open.
+/// `comp_result_valtype` must be comp_valtype_u32 (the probe-verified
+/// shape); anything else throws, see the guard in the body.
 ///
 /// Core instance indices (in emission order): 0=memhost, 1=root ($root
 /// bindings), 2=export-root ([export]$root binding), 3=env (memory
@@ -1791,7 +1828,22 @@ fn comp_generate_spawned_future_guest_core_module() -> Bytes {
 /// canon (memory ...) option and for the "env" instantiation arg). Component
 /// func indices: 0=the "get-async" import, 1=the lifted "run" export.
 /// Component type indices: 0=the import's async functype, 1=the export's.
-export fn comp_emit_component_wasm_async_spawned_future(export_name: String, comp_result_valtype: Int) -> Bytes {
+export fn comp_emit_component_wasm_async_spawned_future(export_name: String, comp_result_valtype: Int) -> Bytes with { Error } {
+  // #1240 review: the guest core module below is hard-coded to an i32-shaped
+  // result (an `(i32) -> ()` [task-return] import, an i32-returning $writer,
+  // and `i32.load` of the results area), so a caller asking for any other
+  // lowering -- notably the project's ordinary `Int` = s64 -- would get a
+  // component whose task.return canon disagrees with the guest's own import
+  // type and fail validation. Reject that up front rather than emit an
+  // invalid component. Parameterizing the guest core types off
+  // comp_result_valtype is possible but unverified, so it waits for a real
+  // caller (the M1b-2c-shaped follow-up) to pin it against a probe.
+  if comp_result_valtype != comp_valtype_u32 {
+    throw("component(spawned-future): only comp_valtype_u32 (\{comp_valtype_u32}) is supported, got \{comp_result_valtype} -- the guest core module is hard-coded to an i32-shaped result")
+  }
+  else {
+    ()
+  }
   let buf = bytebuf_new()
   emit_component_header(buf)
   emit_comp_async_functype_section(buf, comp_result_valtype)
