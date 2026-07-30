@@ -771,7 +771,15 @@ PY
   local module_source_path
   mkdir -p "$PROJECT_ROOT/_build"
   module_source_path="$(mktemp "$PROJECT_ROOT/_build/cli_adapter_module_source.XXXXXX")"
-  run_host_vibe_cmd emit-module-source "$merged_source_file" "$module_source_path" "cli_main" >/dev/null
+  # #1137: DCE-root at "main" (cli_adapter.vibe), not "cli_main" -- `main`'s
+  # own body calls `cli_main()` directly, so the existing (unmodified,
+  # seed-compatible) reachability walk in core/dce.vibe follows that
+  # reference and keeps `cli_main` alive too (a strict superset of what
+  # "cli_main" alone would keep). Rooting at "cli_main" instead would DCE
+  # `main` away entirely, since cli_main never references it back. This
+  # relies on no new emit-module-source behavior, so it works against the
+  # currently-pinned seed with no bootstrap bump.
+  run_host_vibe_cmd emit-module-source "$merged_source_file" "$module_source_path" "main" >/dev/null
   printf '%s\n' "$module_source_path"
 }
 
