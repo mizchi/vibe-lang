@@ -124,7 +124,28 @@
 > - 残（リリース運用、2026-07-10 時点で保留・0.2.0 を優先 — 上記「方針転換」参照）:
 >   1.0 GA タグ / version bump → **#647**
 > - 残（post-GA, debugger）: `vibe.linemap` 命令オフセット粒度化 + 裸リテラル文の
->   break 対応 → **#644**
+>   break 対応 → **#644**（裸リテラル文の break 対応は着地済み — ELet/ELetMut に
+>   文の source offset を追加し、値式が offset を持たない場合のフォールバックに
+>   使用。`vibe.linemap` custom section も着地（後述の 2026-07-30 メモ）:
+>   引き続き残るのは真の命令オフセット粒度 pause/step — 全 Expr への span 付与が
+>   前提で未着手）
+> - ✅（post-GA, debugger, 2026-07-30）: `vibe.linemap` custom section 着地 → **#644**
+>   の前半。CompileCtx に `LineMapState`（cov_state と同型の cur_fn セル + 4本の
+>   append-only ログ）を追加し、既存の `emit_dbg_line_stmt` probe サイトごとに
+>   （所有 top-level 関数 index, body_buf 相対 offset, file id, line）を記録。
+>   linked_compile.vibe が code section 組み立て時に各関数の locals ヘッダ長を
+>   足し込み（wasmtime `FrameInfo::func_offset()` の計測基点と実測で一致確認済み
+>   — 手製 wat + `WasmBacktrace` で検証）、`vibe.linemap`（16-byte LE レコード×N）
+>   を発行。runner (`vibewt`) が起動時にパースし、`--dump-linemap` で単体検査可能。
+>   実利用: `--break` build が **未捕捉 trap** で停止したとき、各バックトレース
+>   フレームを `frame: <fn> (<file>:<line>)` で **実際のトラップ行**に注釈（従来は
+>   関数宣言行のみ）。ラベルは意図的に `  at ` ではなく `frame: ` — launcher
+>   (`runtime/vibe`) の funcmap ベース stderr 注釈フィルタが `  at <name>` 行を
+>   二重注釈してしまうのを回避。lambda/closure 本体の probe は linemap 対象外
+>   （既知のスコープ外 — ライブな `--break`/`dbg_line` 自体は影響なし）。
+>   `scripts/test_vibe_linemap.sh` 9/9、既存 break/step/trace/alloc-site 全 green、
+>   compiler gate green、fixpoint 確認済み。**残**: 真の命令オフセット粒度
+>   pause/step は全 Expr への span 付与が前提でここでは未着手。
 > - ✅（post-GA, LSP）: field-access 診断 end offset を compiler 由来に（EDot field
 >   offset）→ **#645**（2026-07-12 着地: `EDot(Expr, String, Int, Int)` の第4引数に
 >   field token offset、checker が `[@off=N:M]` で厳密 range 発行、LSP の dot-hop
@@ -311,7 +332,11 @@
      break 不可。`test_vibe_break_interior.sh` 8/8（単一/multi-file の行 hit・
      行 step・file 区別・既定不変・非マッチ）、既存 break/break_line/step/dap 全
      green、compiler gate green。
-   **残（post-GA）**: `vibe.linemap` 命令オフセット粒度化（現状は文境界粒度）。
+   **残（post-GA）**: 真の命令オフセット粒度 pause/step（現状は文境界粒度）。
+   `vibe.linemap` custom section 自体は #644 で着地済み（2026-07-30 メモ参照）—
+   静的な (func index, code offset) → (file, line) 解決と、`--break` build の
+   未捕捉 trap バックトレースへの実行行注釈に使われている。文境界を超えた
+   pause/step には全 Expr への span 付与が前提でこちらは未着手。
 
 - **codegen の関数 index↔name 対応** — ✅ wasm name section（土台B / debugger P0）
   は実装済み（`func_offset + i` で user 関数を正確に命名）。
@@ -555,8 +580,11 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
       `(file:line)` を付与する。trap が `<unknown>!boom (prog.vibex:1)` と表示される。
       codegen/runner 変更不要。検証済み（`scripts/test_vibe_trace.sh`、
       `test_name_section.sh`、cli-install 34/0、compiler gate fixpoint green）。
-      残: imported-module 関数の行（現状エントリファイルのみ）、命令オフセット粒度の
-      行マップ（DAP step 実行用、source span の全 Expr 化が前提）。
+      残: imported-module 関数の行（現状エントリファイルのみ）。命令オフセットの
+      静的行マップ自体（`vibe.linemap` custom section）は #644 で着地（2026-07-30
+      メモ）— `--break` build の未捕捉 trap バックトレースを実行行で注釈するのに
+      使われている。DAP step 実行で任意の命令オフセットに pause する用途には
+      source span の全 Expr 化が前提でこちらは未着手。
 - [x] **3-P1 breakpoint DAP**（M3）— **live breakpoint 着地**: `vibe run --break <fn>[,<fn>]`
       が指定関数の入口で停止し、**コールスタック**（各フレーム `(file:line)` 注釈）を
       表示して継続（TTY は stdin 待ち、非対話は auto-continue、`q` で中断）。opt-in の

@@ -123,6 +123,7 @@ import @vibe/compiler/codegen/common_base {
   DbgProv,
   FuncTable,
   LambdaTable,
+  LineMapState,
   StrTable,
   agg_info_of_type_expr,
   builtin_registry,
@@ -354,6 +355,32 @@ fn lc_fresh_expr_array() -> Array[Expr] {
 
 fn lc_fresh_type_expr_array() -> Array[TypeExpr] {
   ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+/// #644: an Int array of exactly `n` entries, all initialized to `fill`, so
+/// callers can index-assign (`Array::set`) into it before the real value at
+/// each index is known (linemap_hdrlen_by_bi below: one entry per user
+/// function, filled in `ci` order as each function's locals header is
+/// assembled).
+fn lc_fresh_int_array_of_len(n: Int, fill: Int) -> Array[Int] {
+  let arr = lc_fresh_int_array()
+  let mut i = 0
+  while i < n {
+    Array::push(arr, fill)
+    i = i + 1
+  }
+  arr
+}
+
+/// #644: append a little-endian 4-byte encoding of `v` to `buf`. Used by the
+/// `vibe.linemap` custom section (see below), one of a family of ad hoc
+/// raw-int encodings this file already uses for debug sections (compare
+/// `vibe.dbgargs`'s address fields a few hundred lines up).
+fn bytebuf_push_i32le(buf: Bytes, v: Int) -> Unit {
+  bytebuf_push(buf, v&255)
+  bytebuf_push(buf, (v>>8)&255)
+  bytebuf_push(buf, (v>>16)&255)
+  bytebuf_push(buf, (v>>24)&255)
 }
 
 /// #1085: builtins whose arg0 is BORROWED (kept in sync with
@@ -1722,6 +1749,21 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     li_i = li_i + 1
   }
   let num_imported_funcs = next_import_idx
+  // #644: static (wasm code offset -> file/line) recorder for the
+  // `vibe.linemap` custom section, shared by reference across every
+  // top-level function's CompileCtx (mirrors cov_state above). Enabled
+  // exactly when interior-line probes are (dbg_line_on): the linemap
+  // records the SAME probe sites the live `--break`/dbg_line hook uses.
+  let linemap_state = LineMapState::{
+    enabled: dbg_line_on,
+    cur_fn: [
+      0
+    ],
+    funcs: lc_fresh_int_array(),
+    offsets: lc_fresh_int_array(),
+    file_ids: lc_fresh_int_array(),
+    lines: lc_fresh_int_array()
+  }
   let print_int_idx = num_imported_funcs
   let print_str_idx = print_int_idx + 1
   let str_len_idx = print_str_idx + 1
@@ -2442,6 +2484,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       get_slet_expr(__bi_stmt)
     }
     let body_buf = bytebuf_new()
+    // #644: tell the linemap recorder which user function `body_buf`'s
+    // offsets belong to (mirrors cov_state.cur_fn below). Set unconditionally
+    // -- linemap_record itself is a no-op unless dbg_line_on, so this costs
+    // nothing on a normal build.
+    Array::set(linemap_state.cur_fn, 0, bi)
     // #cov: mark this user function as executed (store 1 at cov_base + bi).
     // Stack-neutral and local-free, so prepending it to the body is safe.
     if coverage {
@@ -2731,7 +2778,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       borrow_ret_names: lc_borrow_ret_names,
       scalar_ret_names: lc_scalar_ret_names,
       pending_letrec_self_name: lc_fresh_string_array(),
-      table_slots_used: table_slots_used
+      table_slots_used: table_slots_used,
+      linemap: linemap_state
     }
     if is_efn(__bi_expr) {
       // #715: `lc_norm_params` (built above from `get_efn_params(__bi_expr)`)
@@ -4304,6 +4352,20 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   }
   let code_content = bytebuf_new()
   bytebuf_push_vec_header(code_content, Array::length(bodies))
+  // #644: per-user-function locals-declaration header length, in `bodies`
+  // ci-order (`bi = ci - num_generated`, the same relationship `func_offset`
+  // encodes for the final wasm function index). Captured below as each
+  // func_buf's locals header is assembled, BEFORE `body` (the raw
+  // instruction stream body_buf compiled with linemap_state) is appended --
+  // this is exactly the byte count linked_compile needs to add to a
+  // body_buf-relative linemap offset to match wasmtime's
+  // `FrameInfo::func_offset()`, which measures from the first byte of the
+  // code entry (the locals header), not the first instruction.
+  let linemap_hdrlen_by_bi = if linemap_state.enabled {
+    lc_fresh_int_array_of_len(num_user_funcs, 0)
+  } else {
+    lc_fresh_int_array()
+  }
   let mut ci = 0
   while ci < Array::length(bodies) {
     let body = Array::get(bodies, ci)
@@ -4331,6 +4393,16 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         bytebuf_push(func_buf, 126)
       }
     }
+    if linemap_state.enabled {
+      let lm_bi = ci - num_generated
+      if lm_bi >= 0 && lm_bi < num_user_funcs {
+        Array::set(linemap_hdrlen_by_bi, lm_bi, bytebuf_length(func_buf))
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
     bytebuf_push_buf(func_buf, body)
     bytebuf_push(func_buf, 11)
     leb128_encode_u32(code_content, bytebuf_length(func_buf))
@@ -4338,6 +4410,42 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     ci = ci + 1
   }
   bytebuf_push_section(out, 10, code_content)
+  // #644: `vibe.linemap` custom section -- one 16-byte little-endian record
+  // per recorded probe: `<wasm func index i32> <code offset i32>
+  // <file id i32> <line i32>`, back-to-back (record count = content length /
+  // 16). Binary rather than text so the runner never needs to parse decimal
+  // ASCII for what can be thousands of entries (same rationale as
+  // `vibe.dbgargs`'s raw-int encoding above). The offset is shifted by that
+  // function's locals-header length (linemap_hdrlen_by_bi) so it lands
+  // exactly where wasmtime's FrameInfo::func_offset() measures from. Emitted
+  // only when linemap_state is enabled (debug-break builds with interior-
+  // line probes); off => no section, byte-identical output.
+  if linemap_state.enabled {
+    let lm_content = bytebuf_new()
+    let lm_name = "vibe.linemap"
+    leb128_encode_u32(lm_content, String::length(lm_name))
+    let mut lmni = 0
+    while lmni < String::length(lm_name) {
+      bytebuf_push(lm_content, String::char_code_at(lm_name, lmni))
+      lmni = lmni + 1
+    }
+    let mut lm_k = 0
+    while lm_k < Array::length(linemap_state.offsets) {
+      let lm_bi = Array::get(linemap_state.funcs, lm_k)
+      let lm_func_idx = func_offset + lm_bi
+      let lm_off = Array::get(linemap_state.offsets, lm_k) + Array::get(linemap_hdrlen_by_bi, lm_bi)
+      let lm_file_id = Array::get(linemap_state.file_ids, lm_k)
+      let lm_line = Array::get(linemap_state.lines, lm_k)
+      bytebuf_push_i32le(lm_content, lm_func_idx)
+      bytebuf_push_i32le(lm_content, lm_off)
+      bytebuf_push_i32le(lm_content, lm_file_id)
+      bytebuf_push_i32le(lm_content, lm_line)
+      lm_k = lm_k + 1
+    }
+    bytebuf_push_section(out, 0, lm_content)
+  } else {
+    ()
+  }
   if num_strings > 0 {
     let data_offsets = lc_fresh_int_array()
     let data_bufs = lc_fresh_bytes_array()

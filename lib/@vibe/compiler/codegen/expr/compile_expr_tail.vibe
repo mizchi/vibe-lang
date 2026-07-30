@@ -38,6 +38,7 @@ import @vibe/compiler/codegen/common_base {
   CtorTable,
   FuncTable,
   LambdaTable,
+  LineMapState,
   StrTable,
   agg_expr_lookup,
   agg_ret_lookup,
@@ -271,6 +272,24 @@ fn emit_dbg_line_for(buf: Bytes, value: Expr, ctx: CompileCtx) -> Unit {
   emit_dbg_line_stmt(buf, value, -1, ctx)
 }
 
+/// #644: append one (owning function, body-relative byte offset, file id,
+/// line) entry to `lm` for the `vibe.linemap` custom section -- called right
+/// before emit_dbg_line_stmt writes the runtime dbg_line probe, so the
+/// recorded offset is exactly where that probe's instructions begin (the
+/// static table and the live `--break` hook agree on where each source line
+/// starts). No-op when `lm` is disabled (non-debug-break builds, and every
+/// lambda-derived ctx -- see LineMapState's doc comment).
+fn linemap_record(lm: LineMapState, buf: Bytes, file_id: Int, line: Int) -> Unit {
+  if lm.enabled {
+    Array::push(lm.funcs, Array::get(lm.cur_fn, 0))
+    Array::push(lm.offsets, bytebuf_length(buf))
+    Array::push(lm.file_ids, file_id)
+    Array::push(lm.lines, line)
+  } else {
+    ()
+  }
+}
+
 /// #644: like emit_dbg_line_for, but with the STATEMENT's own source offset as
 /// the fallback anchor. `let a = 1` binds a bare literal whose subexpression
 /// carries no offset (first_offset = -1) -- the ELet/ELetMut node's stmt offset
@@ -286,6 +305,7 @@ fn emit_dbg_line_stmt(buf: Bytes, value: Expr, stmt_off: Int, ctx: CompileCtx) -
     }
     if off >= 0 {
       let line = offset_to_line(ctx.dbg_line_nl, off)
+      linemap_record(ctx.linemap, buf, ctx.dbg_line_file_id, line)
       emit_i32_const(buf, ctx.dbg_line_file_id)
       emit_i32_const(buf, line)
       emit_call(buf, ctx.dbg_line_idx)
