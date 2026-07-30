@@ -26,6 +26,35 @@ theorem SegmentPattern.common_match_implies_compatible
   cases left <;> cases right <;>
     simp_all [SegmentPattern.Matches, SegmentPattern.Compatible]
 
+private def SegmentPattern.sample : SegmentPattern → String
+  | .literal value => value
+  | .any => "_"
+
+private theorem SegmentPattern.sample_matches
+    (pattern : SegmentPattern) :
+    pattern.Matches pattern.sample := by
+  cases pattern <;> simp [SegmentPattern.sample, SegmentPattern.Matches]
+
+private theorem SegmentPattern.compatible_has_common_match
+    {left right : SegmentPattern}
+    (compatible : left.Compatible right) :
+    ∃ segment, left.Matches segment ∧ right.Matches segment := by
+  cases left with
+  | literal left =>
+      cases right with
+      | literal right =>
+          simp only [SegmentPattern.Compatible] at compatible
+          subst right
+          exact ⟨left, by simp [SegmentPattern.Matches]⟩
+      | any =>
+          exact ⟨left, by simp [SegmentPattern.Matches]⟩
+  | any =>
+      cases right with
+      | literal right =>
+          exact ⟨right, by simp [SegmentPattern.Matches]⟩
+      | any =>
+          exact ⟨"_", by simp [SegmentPattern.Matches]⟩
+
 theorem PathGlob.prefixMatches_correct
     (patterns : List SegmentPattern)
     (path : NormalizedPath) :
@@ -135,8 +164,7 @@ private theorem common_length_implies_compatible
     simp_all [PathGlob.LengthAllowed, PathGlob.LengthCompatible]
 
 /--
-The overlap checker cannot miss an ambiguous path. It may be used
-conservatively even before a witness-producing completeness proof is added.
+The overlap checker cannot miss an ambiguous path.
 -/
 theorem PathGlob.common_match_implies_mayOverlap
     {left right : PathGlob}
@@ -150,6 +178,103 @@ theorem PathGlob.common_match_implies_mayOverlap
     common_length_implies_compatible
       leftMatches.2 rightMatches.2
   ⟩
+
+private theorem sampled_prefix_matches
+    (patterns : List SegmentPattern) :
+    PathGlob.PrefixMatches
+      patterns
+      (patterns.map SegmentPattern.sample) := by
+  induction patterns with
+  | nil =>
+      simp [PathGlob.PrefixMatches]
+  | cons pattern patterns induction =>
+      simp [PathGlob.PrefixMatches,
+        SegmentPattern.sample_matches, induction]
+
+private theorem compatible_prefix_has_common_match
+    {left right : List SegmentPattern}
+    (compatible : PathGlob.PrefixCompatible left right) :
+    ∃ path,
+      PathGlob.PrefixMatches left path ∧
+        PathGlob.PrefixMatches right path ∧
+        path.length = Nat.max left.length right.length := by
+  induction left generalizing right with
+  | nil =>
+      refine ⟨right.map SegmentPattern.sample, ?_, ?_, ?_⟩
+      · simp [PathGlob.PrefixMatches]
+      · exact sampled_prefix_matches right
+      · simp
+  | cons pattern patterns induction =>
+      cases right with
+      | nil =>
+          refine ⟨
+            (pattern :: patterns).map SegmentPattern.sample,
+            sampled_prefix_matches (pattern :: patterns),
+            ?_,
+            ?_
+          ⟩
+          · simp [PathGlob.PrefixMatches]
+          · simp
+      | cons other others =>
+          simp only [PathGlob.PrefixCompatible] at compatible
+          obtain ⟨segment, patternMatches, otherMatches⟩ :=
+            SegmentPattern.compatible_has_common_match compatible.1
+          obtain ⟨path, patternsMatch, othersMatch, pathLength⟩ :=
+            induction compatible.2
+          refine ⟨segment :: path, ?_, ?_, ?_⟩
+          · exact ⟨patternMatches, patternsMatch⟩
+          · exact ⟨otherMatches, othersMatch⟩
+          · simp only [List.length_cons]
+            rw [pathLength]
+            exact (Nat.succ_max_succ
+              patterns.length others.length).symm
+
+private theorem compatible_lengths_allow_max
+    {left right : PathGlob}
+    (compatible : left.LengthCompatible right) :
+    left.LengthAllowed
+        (Nat.max left.segments.length right.segments.length) ∧
+      right.LengthAllowed
+        (Nat.max left.segments.length right.segments.length) := by
+  cases leftRecursive : left.recursive <;>
+    cases rightRecursive : right.recursive <;>
+    simp_all [PathGlob.LengthCompatible, PathGlob.LengthAllowed,
+      Nat.le_max_left, Nat.le_max_right]
+
+/--
+For the restricted glob grammar, structural overlap is not an over-approximation:
+it always has a concrete normalized path witness.
+-/
+theorem PathGlob.mayOverlap_has_common_match
+    {left right : PathGlob}
+    (overlap : left.MayOverlap right) :
+    ∃ path, left.Matches path ∧ right.Matches path := by
+  obtain ⟨path, leftPrefix, rightPrefix, pathLength⟩ :=
+    compatible_prefix_has_common_match overlap.1
+  have lengths := compatible_lengths_allow_max overlap.2
+  refine ⟨path, ⟨leftPrefix, ?_⟩, ⟨rightPrefix, ?_⟩⟩
+  · rw [pathLength]
+    exact lengths.1
+  · rw [pathLength]
+    exact lengths.2
+
+theorem PathGlob.mayOverlap_iff_common_match
+    (left right : PathGlob) :
+    left.MayOverlap right ↔
+      ∃ path, left.Matches path ∧ right.Matches path := by
+  exact ⟨
+    PathGlob.mayOverlap_has_common_match,
+    fun ⟨_path, leftMatches, rightMatches⟩ =>
+      PathGlob.common_match_implies_mayOverlap leftMatches rightMatches
+  ⟩
+
+/-- The executable checker decides semantic glob-language intersection. -/
+theorem PathGlob.overlaps_iff_common_match
+    (left right : PathGlob) :
+    left.overlaps right = true ↔
+      ∃ path, left.Matches path ∧ right.Matches path := by
+  exact (PathGlob.overlaps_correct left right).trans
+    (PathGlob.mayOverlap_iff_common_match left right)
 
 theorem Grant.permissionsEquivalentB_correct
     {Domain : Type}

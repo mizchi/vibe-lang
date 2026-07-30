@@ -125,9 +125,9 @@ def lengthCompatible (left right : PathGlob) : Bool :=
   | true, true => true
 
 /--
-The conservative overlap relation used by policy validation. The correctness
-proof establishes that two patterns matching one path always satisfy this
-relation, so the checker has no false-negative ambiguity.
+The structural overlap relation used by policy validation. The correctness
+proof establishes exact correspondence with the existence of a normalized path
+matched by both restricted globs.
 -/
 def MayOverlap (left right : PathGlob) : Prop :=
   PrefixCompatible left.segments right.segments ∧

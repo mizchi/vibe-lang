@@ -162,7 +162,8 @@ compile/plan では logical resource ごと、apply では resolved physical roo
 ごとに再検査する。後者により、別々の logical resource が同じ物理 directory
 へ bind される alias も検出する。形式契約は
 [`Capability/PathScope.lean`](../formal/VibeFormal/Capability/PathScope.lean)
-に置き、同一 path に一致する grant の authority 一意性を証明する。
+に置き、overlap 判定と共通 path の存在の同値、および同一 path に一致する
+grant の authority 一意性を証明する。
 
 この検証は、vibe のランタイムが既に使っている wasmtime の **WASI
 preopen** 機構にそのまま乗せられる可能性が高い。WASI preopen は「ある
@@ -563,7 +564,8 @@ singleton(`Fs[Process::Root]::...`)へ展開する sugar が必要になる
   [`Capability/PathScope.lean`](../formal/VibeFormal/Capability/PathScope.lean)
   と
   [`PathScopeCorrect.lean`](../formal/VibeFormal/Proofs/PathScopeCorrect.lean)
-  で検証する。異なる authority の重複を reject し、valid policy では同一
+  で検証する。restricted glob の overlap 判定が共通 path の存在と同値で
+  あること、異なる authority の重複を reject し、valid policy では同一
   domain/path に一致する grant の authority が一意になることを証明する。
 - 新規/改訂 ADR を `docs/adr.md` に追加し、Related ADR として
   0071/0075/0060/0068/0073 を明記する。

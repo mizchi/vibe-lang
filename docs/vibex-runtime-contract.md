@@ -401,8 +401,9 @@ WasmFX tag の意味論に押し込めない。
   path-aware entry preflight
 - `formal/VibeFormal/Proofs/CapabilityContractCorrect.lean`: executable predicates と relational
   contract の一致、no-start、delegation transitivity、provider lowering、worker authority
-- `formal/VibeFormal/Proofs/PathScopeCorrect.lean`: overlap の no-false-negative、
-  matching authority の一意性、scope-aware preflight
+- `formal/VibeFormal/Proofs/PathScopeCorrect.lean`: overlap と semantic path
+  intersection の完全一致、matching authority の一意性、
+  scope-aware preflight
 - `formal/VibeFormal/Proofs/CapabilityContractExamples.lean`: S3/Http、bucket identity、read/write、
   worker migration の正例・反例
 - `formal/VibeFormal/Proofs/PathScopeExamples.lean`: overlapping/disjoint glob と
@@ -419,7 +420,8 @@ WasmFX tag の意味論に押し込めない。
   requirement のどちらかである。
 - physical worker が行う operation は、そのworkerが所有するtask authorityを通じて
   host authority に含まれる。worker migration は authority を変更しない。
-- restricted glob checker は、同じ path に一致する pattern の重複を見逃さない。
+- restricted glob checker の判定と、両 pattern に一致する normalized path の存在は
+  同値であり、重複の見逃しも過剰拒否もない。
 - valid scope policy では、同一 domain/path に一致する全 grant の authority が等しい。
 - base capability preflight が成功しても scope policy が曖昧なら `main` は開始しない。
 

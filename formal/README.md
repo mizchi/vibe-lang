@@ -267,9 +267,9 @@ binding, S3-to-Http lowering, read-to-write escalation rejection, and migration
 of one task between two physical workers.
 
 The path-scope extension models normalized glob segments as literals, `*`, and
-a trailing `**`. Its executable overlap checker has no false negatives: if two
-patterns match one normalized path, they are reported as potentially
-overlapping. A valid policy permits an overlap within one scope domain only
+a trailing `**`. Its executable overlap checker is exact for this restricted
+grammar: it returns true if and only if a normalized path exists that matches
+both patterns. A valid policy permits an overlap within one scope domain only
 when both grants carry extensionally equivalent operation authority.
 Consequently, every grant matching one domain/path has equivalent authority,
 independent of source order or operation-list order.

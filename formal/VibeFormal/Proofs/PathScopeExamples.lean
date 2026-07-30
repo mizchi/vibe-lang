@@ -96,6 +96,12 @@ example : Policy.valid [readSource, writeOtherDomain] = true := by
 example : PathGlob.overlaps sourceChild generatedDirectory = true := by
   decide
 
+example :
+    ∃ path,
+      sourceChild.Matches path ∧ generatedDirectory.Matches path :=
+  (PathGlob.overlaps_iff_common_match
+    sourceChild generatedDirectory).1 (by decide)
+
 example : emptyEntry.runnable emptyHost = true := by
   decide
 
