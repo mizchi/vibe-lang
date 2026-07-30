@@ -1880,6 +1880,23 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             Ok(())
         },
     )?;
+    // #1220: Fs::rename -- declared builtin with real call sites
+    // (lib/@vibe/cli/coverage_local_merge.vibe, coverage_acc_tool.vibe's
+    // tmp-write + rename atomic-write pattern) but, like fs_remove above,
+    // present in the JS runner (scripts/wasm_vibe_host_runner.js's
+    // fs.renameSync) and never ported here -- any compiled program calling
+    // Fs::rename crashed the real `vibe run` with an unknown-import trap.
+    linker.func_wrap(
+        "vibe",
+        "fs_rename",
+        |mut caller: Caller<'_, HostState>, src: i64, dst: i64| -> Result<()> {
+            let src = vibe_read_packed_str(&mut caller, src)?;
+            let dst = vibe_read_packed_str(&mut caller, dst)?;
+            fs::rename(&src, &dst)
+                .map_err(|e| format_err!("vibe fs_rename '{src}' -> '{dst}': {e}"))?;
+            Ok(())
+        },
+    )?;
     linker.func_wrap(
         "vibe",
         "fs_is_dir",
