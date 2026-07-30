@@ -1897,6 +1897,75 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             Ok(())
         },
     )?;
+    // #1220 follow-up: the rest of the JS runner's fs surface
+    // (scripts/wasm_vibe_host_runner.js) that was never ported here either --
+    // same unknown-import crash under the real `vibe run` as fs_rename above,
+    // just not yet hit by a call site that runs through vibewt. Declared
+    // builtins with real call sites in lib/@vibex/shell/commands.vibe (a
+    // general-purpose library any user program can import) and
+    // scripts/vibe_md.vibex.
+    linker.func_wrap(
+        "vibe",
+        "fs_mkdir",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<()> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            fs::create_dir(&path).map_err(|e| format_err!("vibe fs_mkdir '{path}': {e}"))?;
+            Ok(())
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_mkdir_p",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<()> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            fs::create_dir_all(&path).map_err(|e| format_err!("vibe fs_mkdir_p '{path}': {e}"))?;
+            Ok(())
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_getcwd",
+        |mut caller: Caller<'_, HostState>| -> Result<i64> {
+            let cwd = std::env::current_dir().map_err(|e| format_err!("vibe fs_getcwd: {e}"))?;
+            vibe_alloc_packed_str(&mut caller, &cwd.to_string_lossy())
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_chdir",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<()> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            std::env::set_current_dir(&path)
+                .map_err(|e| format_err!("vibe fs_chdir '{path}': {e}"))?;
+            Ok(())
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_copy",
+        |mut caller: Caller<'_, HostState>, src: i64, dst: i64| -> Result<()> {
+            let src = vibe_read_packed_str(&mut caller, src)?;
+            let dst = vibe_read_packed_str(&mut caller, dst)?;
+            fs::copy(&src, &dst).map_err(|e| format_err!("vibe fs_copy '{src}' -> '{dst}': {e}"))?;
+            Ok(())
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_append",
+        |mut caller: Caller<'_, HostState>, path: i64, content: i64| -> Result<()> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            let content = vibe_read_packed_str(&mut caller, content)?;
+            let mut f = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|e| format_err!("vibe fs_append '{path}': {e}"))?;
+            f.write_all(content.as_bytes())
+                .map_err(|e| format_err!("vibe fs_append '{path}': {e}"))?;
+            Ok(())
+        },
+    )?;
     linker.func_wrap(
         "vibe",
         "fs_is_dir",

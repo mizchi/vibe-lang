@@ -142,21 +142,27 @@ env var and path-shape convention.
 contract's six `fs` ops (`read-file`/`write-file`/`write-bytes`/`exists`/
 `stat-token`/`readdir`), `env`/`stdin`/`stdout` in full, plus `Process`/`sh`
 and a debugger-only surface `cli_main` doesn't use. It also happens to
-implement three of the eleven excluded ops (`fs_is_dir`/`fs_is_file`/
-`fs_read_bytes`) but not the other eight (`Fs::remove` and the seven
-`mkdir`/`mkdir-p`/`chdir`/`getcwd`/`copy`/`append`/`rename` ops) —
-`scripts/wasm_vibe_host_runner.js`'s Node `vibeModule` implements all
-eleven, plus an entire `http_*`/`json_*` surface neither this contract nor
-`vibewt` has. All of that extra Node surface belongs to library effects
-(`lib/@vibe/fs`'s full surface, `lib/@vibe/http`) used by **compiled user
-programs**, generated per-program by the existing `--wit` path — not by
-this fixed compiler-host contract. `cli_main` itself never reaches any of
-it, regardless of which runner happens to implement how much of it. This
-was exactly the kind of informal drift #1143 was raised to prevent; the
-round 2/3 reachability audit above resolves it: not a live bug, just two
-runners that happen to serve different total surfaces (compiler-only vs.
-compiler-plus-most-of-every-user-library-effect) while agreeing completely
-on what `cli_main` itself needs.
+implement all eleven of the excluded-from-this-contract-but-still-a-real-builtin
+ops (`is_dir`/`is_file`/`read_bytes`/`mkdir`/`mkdir_p`/`chdir`/`getcwd`/
+`copy`/`append`/`rename`/`remove`) — full parity with
+`scripts/wasm_vibe_host_runner.js`'s Node `vibeModule` on the `Fs` surface
+as of #1220 (originally `remove`/`is_dir`/`is_file` from #901, `read_bytes`
+from #632, and `rename`/`mkdir`/`mkdir_p`/`chdir`/`getcwd`/`copy`/`append`
+from #1220 — the last seven had been recognized builtins with real call
+sites, e.g. `lib/@vibex/shell/commands.vibe`, `coverage_local_merge.vibe`'s
+atomic-write pattern, but crashed any program calling them under the real
+`vibe run` with an unknown-import trap until #1220 ported them). The Node
+runner still has an entire `http_*`/`json_*` surface neither this contract
+nor `vibewt` has — that extra surface belongs to library effects
+(`lib/@vibe/http`) used by **compiled user programs**, generated
+per-program by the existing `--wit` path — not by this fixed compiler-host
+contract. `cli_main` itself never reaches any of it, regardless of which
+runner happens to implement how much of it. This was exactly the kind of
+informal drift #1143 was raised to prevent; the round 2/3 reachability
+audit above resolves what `cli_main` itself needs, and #1220 independently
+closed the remaining `fs` gap for programs that reach beyond `cli_main`
+(i.e. every other compiled `.vibex`/`.vibe` program a user runs through the
+same production runner).
 
 ## Non-goals of this pass
 
