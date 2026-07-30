@@ -570,6 +570,56 @@ import・memory buffer・上記待機ループ（+ self-contained なら最小 e
 spawn）を emit する大型 feature。mechanics と canon は確定済みなので実装は
 blueprint→byte で進められるが、async 全体で最大の塊。
 
+### 3.8 M1b-3c-1b landed — self-contained future は `future.*` canon 不要と判明（#1230）
+
+上記§3.7の「self-contained future は subtask spawn ＝最小 async executor
+（context.get/set + waitable-set 管理）が必要でより重い」という記述は
+`wit-bindgen` の**デフォルト実装詳細**に基づく推測だったが、実機実証
+（`tools/wasip3_component_probe/spawned_future/`、wit-bindgen 0.60 の
+`spawn_local` を使った probe を新規構築し `wasm-tools dump` でバイト単位に
+検証）の結果、**誤りだと判明した**:
+
+- `wit_bindgen::spawn_local`（guest が「writer subtask を spawn する」ために
+  使う API）は canonical-ABI レベルでは**何も残さない**——`futures::stream::
+  FuturesUnordered` による純粋な guest 内部の cooperative executor であり、
+  `future.new`/`.read`/`.write` を一切呼ばない。writer の結果を `run` に渡す
+  `oneshot::channel()` も guest メモリ内だけで完結する ordinary Rust future。
+- 実測で唯一増える import/export（`context-get/set`、`waitable-set-poll`、
+  `[callback][async-lift]run`）は spawn 自体の要件ではなく、wit-bindgen が
+  デフォルトで使う **callback 方式**（`[callback]` export 経由で毎 wake
+  event に再入する明示的 state machine）固有の実装詳細。vibe が採用する
+  **stackful (callback-less) 方式**（§3.1、`component_codegen.vibe` の
+  `emit_canon_lift_async_section` が一貫して選んでいる）では、call stack
+  自体が suspend を跨いで生存する real host fiber なので、`context.get/set`
+  で状態を退避する必要が無い。
+- 手書き WAT（`spawned_future/component.wat`）で「writer の処理を `$writer`
+  という**ただの内部 wasm 関数**に分離し、`$run` がそれを呼んで
+  `task.return` する」という構造に書き換えても、`stackful/component.wat`
+  と全く同じ canon 集合（`task.return`、`[async-lower]<host-import>`、
+  `waitable-set.new/.wait/.drop`、`waitable.join`、`subtask.drop`）だけで
+  正しく動作する（300ms の genuine suspend を経て 42 を返す、wasmtime 47
+  実機確認済み）。
+
+つまり、vibe のコンパイル戦略（single-threaded、stackful fiber ベース）の
+下では「spawned-writer-subtask による self-contained future」と「host
+async import を直接 await する」は canonical-ABI 上**同一の shape**に
+帰着する——"spawn" は vibe ソースレベルの語彙であって、コンパイル後の
+wasm には対応する canon built-in が存在しない（spawn されたクロージャの
+本体は、await 呼び出し元から呼ばれる別関数として emit すればよい）。
+
+この発見に基づき、`component_codegen.vibe` に
+`comp_emit_component_wasm_async_spawned_future`（固定シェイプの
+self-contained コンポーネントを合成する emitter。`future.*` 系 canon
+emitter は追加していない——不要と判明したため）と対応する canon
+built-in emitter群（`waitable-set.new/.wait/.drop`、`waitable.join`、
+`subtask.drop`、`canon lower ... async`）を実装し、
+`scripts/test_spawned_future_component_gate.sh`（probe の Rust host
+driver を再利用し、genuine blocking wait を経て 42 を返すことを実行時
+確認）で検証した。vibe ソース構文レベルの spawn/future プリミティブの
+追加と実 `.vibe` エントリへの配線（`await(x)` を任意のユーザーコードから
+このコーデックに繋ぐこと）は別チケット（M1b-3c-2 相当）に委ねる——本節は
+M1b-1 と同じ「emitter・byte-exact 検証のみ」フェーズ。
+
 ## 4. WASI 0.3 境界マッピング
 
 | vibe | WASI 0.3 |
@@ -692,6 +742,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | **M1b-3a** | `await` codegen spike: wit-bindgen reference から `future.new/read/write` + waitable-set 等 canon built-in の signature/option を抽出（§3.6） | done |
 | **M1b-3b** | `await`/`Future::ready` の codegen（ready-future identity lowering）: `await(x)`/`Future::ready(x)` を引数の値へ lower。**await を使う async プログラムが初めてコンパイル&実行可能**。gate を `await(Future::ready(42))` body に更新し E2E で 42 | done |
 | **M1b-3c** | 真の blocking await: `future.read` + waitable-set 待機ループ（async source = host async import / subtask spawn が前提）。core codegen に future canon built-in の import + buffer + ループを emit | spike done（§3.7、mechanics 実機確認）/ codegen 未着手 |
+| **M1b-3c-1b** | self-contained future via spawned-writer-subtask の component_codegen.vibe emitter（byte-exact 検証のみ、実 `.vibe` ソースへの配線は対象外）。実機実証の結果 `future.*` canon は不要と判明（§3.8） | done（#1230、`comp_emit_component_wasm_async_spawned_future` + `scripts/test_spawned_future_component_gate.sh`） |
 | **M-conc-1** | `Task[T]` codegen（synchronous eager model）: `spawn`（thunk を即時実行・closure type 9 で `call_indirect`）/`join`（identity）/`cancel`（drop→Unit）/`race`（先行値）を `compile_call` で lower。inlined async builtin の free-var capture バグ（nested lambda 内で `Task::join` 等を closure として捕捉）を `collect_free_vars_expr` で修正。gate に Task entry 追加（spawn/join/cancel/race → 42、wasmtime 45） | done |
 | **M-conc-2** | 真の subtask spawn（waitable-set / `future.cancel-*`）+ `Task::timeout`（Option 構築） | 未着手 |
 | **M2a** | `Stream[T]` codegen（eager Array-backed model）: `map`/`fold` を inline `Array::map`/`Array::fold` へ remap、`empty`=`array_new`、`once`=`array_new`+`push`、`filter` を inline loop で emit。gate に Stream entry 追加（empty/once/map/filter/fold → 42、wasmtime 45） | done |
