@@ -3008,6 +3008,28 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           iw_scan = iw_scan + 1
         }
       }
+      // ADR-0092 Phase 1 widening: a function whose body is EXACTLY
+      // `match p { ... }` over one of its own heap params (the dominant
+      // shape of the compiler's AST-rebuild loops) stages the same reuse
+      // fusion the ELet form gets in compile_expr_tail — flag local first,
+      // (name, flag) pushed for compile_match, and the param's #725
+      // epilogue drop below guarded on the flag.
+      let pfuse_name = if enable_rc && rc_drop_idx >= 0 && iw_found < 0 && expr_tag(body) == 16 && is_eident(get_match_scrutinee(body)) {
+        get_eident_name(get_match_scrutinee(body))
+      } else {
+        ""
+      }
+      let pfuse = pfuse_name != "" && array_contains_str(rc_drops, pfuse_name) && array_contains_str(lc_heap_params, pfuse_name)
+      let pfuse_flag = if pfuse {
+        Array::push(local_names, "__reuse_flag")
+        emit_i64_const(body_buf, 0)
+        emit_local_set(body_buf, param_count)
+        Array::push(compile_ctx.reuse_scrutinee_names, pfuse_name)
+        Array::push(compile_ctx.reuse_flag_locals, param_count)
+        param_count
+      } else {
+        0 - 1
+      }
       let final_nl = if iw_found >= 0 {
         let iw_param_names = lc_fresh_string_array()
         let mut iw_pi = 0
@@ -3019,7 +3041,17 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         bytebuf_push_buf(body_buf, compile_inline_wat(fn_name_dbg, Array::get(iw_wats, iw_found), iw_param_names))
         param_count
       } else {
-        compile_expr(body_buf, body, local_names, param_count, compile_ctx, -1)
+        compile_expr(body_buf, body, local_names, if pfuse {
+          param_count + 1
+        } else {
+          param_count
+        }, compile_ctx, -1)
+      }
+      if pfuse {
+        Array::truncate(compile_ctx.reuse_scrutinee_names, Array::length(compile_ctx.reuse_scrutinee_names) - 1)
+        Array::truncate(compile_ctx.reuse_flag_locals, Array::length(compile_ctx.reuse_flag_locals) - 1)
+      } else {
+        ()
       }
       let mut tail_nl = final_nl
       if enable_rc && rc_drop_idx >= 0 {
@@ -3105,8 +3137,19 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
             // (fixtures/rc_branch_loop_mixed_consume_test.vibe).
             let tdn_loop_drop = tdn_loop_count > 0 && !lc_has_nonloop_consume(body, tdn)
             if array_contains_str(rc_drops, tdn) || tdn_loop_drop {
-              emit_local_get(body_buf, tdj)
-              emit_call(body_buf, rc_drop_idx)
+              if pfuse_flag >= 0 && tdn == pfuse_name {
+                // ADR-0092: a reuse arm consumed this param's reference —
+                // drop only on the paths that did not (flag still 0).
+                emit_local_get(body_buf, pfuse_flag)
+                emit_i64_eqz(body_buf)
+                emit_if_void(body_buf)
+                emit_local_get(body_buf, tdj)
+                emit_call(body_buf, rc_drop_idx)
+                emit_end(body_buf)
+              } else {
+                emit_local_get(body_buf, tdj)
+                emit_call(body_buf, rc_drop_idx)
+              }
             } else {
               ()
             }
