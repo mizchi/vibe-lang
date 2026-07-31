@@ -331,6 +331,41 @@ test "db_typecheck_fs: collected diagnostics are canonically ordered (#1259)" {
   assert(!String::contains(err_identity, "/main.vibe"))
 }
 
+/// #1259 (Codex review of PR #1264): a SYNTAX error is raised while the plan
+/// resolves a module's imports -- parsing its header -- which happens before
+/// the walk's per-step handler exists. Left alone that made parse errors
+/// fail-fast even while collecting: two malformed leaves reported one
+/// diagnostic, because planning aborted on the first.
+///
+/// Scope: this is the walk's own layer. `vibe build`/`check` still report one
+/// parse error, because collect_source_groups_fs parses every reachable file
+/// before db_typecheck_fs is ever called -- a separate, earlier fail-fast
+/// point in the loader that this does not change.
+test "db_typecheck_fs: syntax errors in independent leaves are both collected (#1259)" {
+  let dir = "/tmp/vibe_compiler_diag_collect_parse"
+  let alpha_path = String::concat(dir, "/alpha.vibe")
+  let beta_path = String::concat(dir, "/beta.vibe")
+  let main_path = String::concat(dir, "/main.vibe")
+  let alpha_src = "export let a: Int = ((("
+  let beta_src = "export let b: Int = )))"
+  let main_src = "import ./alpha.vibe { a }\nimport ./beta.vibe { b }\nexport let m = a + b"
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(alpha_path, string_to_bytes(alpha_src))
+  Fs::write_bytes(beta_path, string_to_bytes(beta_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  remove_typecheck_fs_cache(alpha_path, alpha_src, build_test_fingerprint(alpha_src, array_empty()))
+  remove_typecheck_fs_cache(beta_path, beta_src, build_test_fingerprint(beta_src, array_empty()))
+  set_collect_module_diagnostics(true)
+  let err = typecheck_fs_error(dir)
+  set_collect_module_diagnostics(false)
+  assert(eq(count_lines(err), 2))
+  let lines = String::split(err, "\n")
+  assert(String::starts_with(Array::get(lines, 0), String::concat(alpha_path, ": ")))
+  assert(String::starts_with(Array::get(lines, 1), String::concat(beta_path, ": ")))
+  // Blocked, not broken: main imports both, so it adds no cascade of its own.
+  assert(!String::contains(err, "/main.vibe"))
+}
+
 test "cross-module delta recomputation" {
   let db0 = db_new()
   let db1 = db_set_source(db_set_source(db_set_source(db0, "a.vibe", "import ./b.vibe { y }\nlet x = y"), "b.vibe", "export let y = 1"), "c.vibe", "let z = 99")

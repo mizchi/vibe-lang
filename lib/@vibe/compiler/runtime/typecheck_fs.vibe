@@ -1278,8 +1278,10 @@ fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, St
 /// A module left OUT of `edges` -- missing, or short-circuited -- is a leaf
 /// to plan_module_order (mo_deps_of), which is what makes those arms terminal
 /// for scheduling as well as for the walk.
-fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String) -> (Array[(String, String)], Array[(String, Array[String])], Int) with { Error, Fs } {
+fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String) -> (Array[(String, String)], Array[(String, Array[String])], Int, Array[(String, String)]) with { Error, Fs } {
   let leaf_fps = empty_dep_fps()
+  let plan_diags: Array[(String, String)] = [
+  ]
   let edges: Array[(String, Array[String])] = [
   ]
   let seen = empty_stack()
@@ -1312,10 +1314,44 @@ fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)]
           match load_persistent_leaf_fingerprint(path, source) {
             Some(leaf_fingerprint) => Array::push(leaf_fps, (path, leaf_fingerprint)),
             None => {
-              let (deps_raw, _, next_pc) = resolve_deps_for_source_fs(rdb, scratch_cache, path, source, pc)
+              // Codex review P2: resolving a module's imports PARSES it, so a
+              // syntax error raises here -- during planning, before the walk's
+              // per-step handler exists. Left alone that made parse errors
+              // fail-fast even while collecting: two malformed leaves reported
+              // one diagnostic, because planning aborted on the first.
+              //
+              // Collected the same way a step's diagnostic is, and with the
+              // same two exclusions (fail-fast mode, and `type_db:` internal
+              // invariants). A module that fails to plan gets no edge entry and
+              // no dependencies explored -- it is a leaf to the schedule, and
+              // the caller seeds it into `failed` so its importers are blocked
+              // rather than cascading.
+              let plan_raised = empty_stack()
+              let (deps_raw, _, next_pc) = handle {
+                resolve_deps_for_source_fs(rdb, scratch_cache, path, source, pc)
+              } with Error {
+                Throw(msg) => {
+                  Array::push(plan_raised, msg)
+                  (empty_stack(), scratch_cache, pc)
+                }
+              }
+              if Array::length(plan_raised) > 0 {
+                let msg = Array::get(plan_raised, 0)
+                if !collect_module_diagnostics() || String::starts_with(msg, "type_db: ") {
+                  throw(msg)
+                } else {
+                  Array::push(plan_diags, (path, msg))
+                }
+              } else {
+                ()
+              }
               let deps = copy_string_array(deps_raw)
               pc = next_pc
-              Array::push(edges, (path, deps))
+              if Array::length(plan_raised) > 0 {
+                ()
+              } else {
+                Array::push(edges, (path, deps))
+              }
               let dlen = Array::length(deps)
               let mut i = 0
               while i < dlen {
@@ -1334,7 +1370,7 @@ fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)]
       }
     }
   }
-  (leaf_fps, edges, pc)
+  (leaf_fps, edges, pc, plan_diags)
 }
 
 /// The dep list `plan_import_graph_fs` recorded for `path`, or None when it
@@ -1743,7 +1779,7 @@ fn join_module_diagnostics(diags: Array[(String, String)]) -> String {
 /// differently from run to run, and scripts/dep_order_oracle.sh asserts the
 /// compiled output is byte-identical across seeds regardless.
 export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
-  let (plan_leaf_fps, plan_edges, planned_parse_count) = plan_import_graph_fs(rdb, dep_source_cache, parse_count, path)
+  let (plan_leaf_fps, plan_edges, planned_parse_count, plan_diags) = plan_import_graph_fs(rdb, dep_source_cache, parse_count, path)
   // #1239 step 4(A): an import cycle is rejected HERE -- before a single
   // module is checked, committed, or written to the persistent cache --
   // instead of incidentally, partway through the walk, on whichever module a
@@ -1760,6 +1796,19 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
   let failed = empty_stack()
   let diags: Array[(String, String)] = [
   ]
+  // A module that failed to PLAN (a syntax error in its own source -- see
+  // plan_import_graph_fs) is already terminal: it has no dependency list, so
+  // it is a leaf to the schedule and nothing about it can be checked. Seed it
+  // as failed before the loop so the wave skips it and module_is_blocked
+  // catches its importers. Always empty when collection is off, since planning
+  // rethrows in that mode.
+  let mut pdi = 0
+  while pdi < Array::length(plan_diags) {
+    let entry = Array::get(plan_diags, pdi)
+    Array::push(failed, entry.0)
+    Array::push(diags, entry)
+    pdi = pdi + 1
+  }
   // #1259 (#1239 step 8): the scheduler trace. Off unless
   // VIBE_SCHEDULER_TRACE named a file.
   let trace_path = scheduler_trace_path()
@@ -1784,7 +1833,10 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
     let mut k = 0
     while k < wave {
       let m = Array::get(order, i + Array::get(visit, k))
-      if module_is_blocked(plan_edges, failed, m) {
+      // `contains_str(failed, m)` first: a module that failed to plan is
+      // already in `failed` and has no edge entry, so module_is_blocked alone
+      // would let it through to a step that cannot succeed.
+      if contains_str(failed, m) || module_is_blocked(plan_edges, failed, m) {
         Array::push(failed, m)
       } else {
         // Snapshots of the accumulators as of ENTRY to this module's step.
@@ -1832,11 +1884,33 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
           // point `BuildState.finish` sits at in the model. Recording it
           // before the step would let a trace claim a module completed that
           // then raised.
+          //
+          // Codex review P1: the fingerprint alone is NOT the JobResult. It is
+          // build_fingerprint(source, dep_fps) -- a pure function of the source
+          // graph, computed before the module is even checked -- so comparing
+          // fingerprints across schedules compares content-addressed cache KEYS
+          // that are schedule-independent by construction, and StoreCorrect
+          // would have held even if two schedules produced different TypeEnvs.
+          // The env hash is what makes that comparison mean anything: it is the
+          // checked environment the module actually published, serialized the
+          // same way commit_module_outcome writes it to the persistent cache.
+          //
+          // "-" is for the arms that publish no environment (a reusable cached
+          // fingerprint, or a persistent leaf-fingerprint hit). Both are cache
+          // hits, so on the cold cache dir the oracle uses they should be rare
+          // -- scheduler_trace_oracle.sh fails if too many steps carry "-",
+          // since a trace of all-"-" would be back to comparing keys.
           if tracing {
+            let env_hash = match lookup_env_cache(next_envc, m) {
+              Some(env) => compact_string_fingerprint(persistent_type_env_cache_text(env)),
+              None => "-"
+            }
             StringBuilder::push(trace, "step\t")
             StringBuilder::push(trace, m)
             StringBuilder::push(trace, "\t")
             StringBuilder::push(trace, fp)
+            StringBuilder::push(trace, "\t")
+            StringBuilder::push(trace, env_hash)
             StringBuilder::push(trace, "\n")
           } else {
             ()

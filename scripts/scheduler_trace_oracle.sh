@@ -14,8 +14,8 @@
 # record what it planned and what it actually did:
 #
 #   project<TAB><path><TAB><rank>[<TAB><dep>...]   Project.dependencies / .rank
-#   step<TAB><path><TAB><fingerprint>              the Step.run sequence, in
-#                                                  execution order
+#   step<TAB><path><TAB><fingerprint><TAB><envhash>  the Step.run sequence, in
+#                                                    execution order
 #
 # and each Lean definition becomes a check over those rows:
 #
@@ -28,6 +28,15 @@
 #                             does (appears strictly earlier)
 #   Complete                  every planned module has a terminal result
 #   StoreCorrect / JobCorrect every published result equals the canonical one.
+#                             The result compared is the ENV HASH, not the
+#                             fingerprint: build_fingerprint(source, dep_fps) is
+#                             a pure function of the source graph computed
+#                             before the module is checked, so comparing
+#                             fingerprints across schedules compares cache KEYS
+#                             that agree by construction and would hold even if
+#                             two schedules produced different TypeEnvs (Codex
+#                             review of PR #1264). The env hash is the checked
+#                             environment the module actually published.
 #                             `expected` is the store a serial run produces;
 #                             the model says any `Runs` from `empty` reaches
 #                             it, so re-running under a different interleaving
@@ -145,8 +154,20 @@ echo "[scheduler-oracle] Project/Ready/Complete hold: $NPLANNED planned, $NSTEPS
 # Compared as a SET of (module, fingerprint) pairs, deliberately not as a
 # sequence: the step ORDER is supposed to differ between seeds -- that is the
 # nondeterminism being probed -- while the store the run reaches must not.
-store_of() { sort < "$1" | awk -F'\t' '$1 == "step" { print $2 "\t" $3 }'; }
+store_of() { sort < "$1" | awk -F'\t' '$1 == "step" { print $2 "\t" $3 "\t" $4 }'; }
 store_of "$OUT/trace.serial" > "$OUT/store.serial"
+
+# The env hash is "-" for steps that publish no environment (a reusable cached
+# fingerprint, or a persistent leaf-fingerprint hit). Each run uses a cold
+# cache dir so those should be rare; if most steps carried "-" the comparison
+# would be back to comparing content-addressed keys, which agree by
+# construction. Require a clear majority to carry a real hash.
+REAL_ENVS="$(awk -F'\t' '$1 == "step" && $4 != "-" && $4 != "" { n++ } END { print n + 0 }' "$OUT/trace.serial")"
+if [ "$REAL_ENVS" -lt $(( NSTEPS / 2 )) ]; then
+  echo "[scheduler-oracle] FAIL: only $REAL_ENVS of $NSTEPS steps published a checked environment -- StoreCorrect would be comparing cache keys, which agree by construction" >&2
+  exit 1
+fi
+echo "[scheduler-oracle] $REAL_ENVS of $NSTEPS steps carry a real published environment"
 
 reordered=0
 for seed in $SEEDS; do
