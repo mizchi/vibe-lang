@@ -7640,7 +7640,7 @@ fi
 rm -rf "$r90dir"
 echo "[compiler-gate] ADR-0090 region + MutList vertical slice ok"
 
-# 75/75. ADR-0091 Phase 1 (#1262): `@zero_alloc` attribute. The attribute
+# 76/76. ADR-0091 Phase 1 (#1262): `@zero_alloc` attribute. The attribute
 # lexes as a single ident token, parses as a top-level SExpr the checker
 # skips (checker_stmt.vibe) and the linear backend drops; enforcement is
 # common_analysis.vibe's zero_alloc_check, run at the top of
@@ -7651,7 +7651,7 @@ echo "[compiler-gate] ADR-0090 region + MutList vertical slice ok"
 # calls). Positive: a pure-arithmetic @zero_alloc fn compiles and returns
 # 42 (zero_alloc_ok.vibe). Negative: a @zero_alloc fn constructing an enum
 # value is a STATIC error naming the site (err_zero_alloc_ctor.vibe).
-echo "[compiler-gate] 75/75 ADR-0091 @zero_alloc allocation check (#1262)"
+echo "[compiler-gate] 76/76 ADR-0091 @zero_alloc allocation check (#1262)"
 za91dir="_build/_gate_zero_alloc91"
 rm -rf "$za91dir"; mkdir -p "$za91dir"
 sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/zero_alloc_ok.vibe > "$za91dir/pos.vibe"
