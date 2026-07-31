@@ -47,11 +47,30 @@ if [ "${#files[@]}" -eq 0 ]; then
   exit 1
 fi
 
+# Skip allowlisted files BEFORE batching instead of filtering their report
+# lines afterwards. The allowlist holds generate_bundle.sh's committed
+# artifacts (compact/minified multi-MB flattened sources); running those
+# through the formatter is pointless work, and the largest one
+# (_cli_adapter_module_source.vibe, ~4MB) overflows the fmt wasm's bump
+# allocator past the 2GB i32 boundary and takes its whole SHARD down --
+# every co-sharded file then reports "shard produced no report".
+# Tradeoff: a stale allowlist entry (one that would now pass --check) is
+# no longer detected; entries are few and reviewed by hand.
+checked_files=()
+known_debt=0
+for f in "${files[@]}"; do
+  if is_allowed "$f"; then
+    known_debt=$((known_debt + 1))
+  else
+    checked_files+=("$f")
+  fi
+done
+files=("${checked_files[@]}")
+
 new_violations=()
 stale_allowlist=()
 errors=()
 checked=0
-known_debt=0
 
 while IFS=$'\t' read -r status rel_path message; do
   [ -n "$status" ] || continue
