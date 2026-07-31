@@ -271,3 +271,240 @@ export fn ripple_record_eval(db: RippleDb, path: String, fingerprint: String, de
     }
   }
 }
+
+//# Module order planning (#1239 step 4A / #906 step 4)
+
+/// Lexicographic (char-by-char) string ordering. Deliberately NOT a builtin
+/// `<`: canonical ordering must be true lexicographic, and a length-first
+/// comparison would make the plan's "canonical" order depend on path length
+/// (CLAUDE.md documents that exact footgun). Mirrors
+/// compiler/core/sorted_index.vibe's str_lt, duplicated rather than imported
+/// because @vibe/graph must not depend on the compiler package.
+fn mo_str_lt(a: String, b: String) -> Bool {
+  let la = String::length(a)
+  let lb = String::length(b)
+  let lim = if la < lb {
+    la
+  } else {
+    lb
+  }
+  let mut i = 0
+  let mut res = la < lb
+  let mut done = false
+  while i < lim && !done {
+    let ca = String::char_code_at(a, i)
+    let cb = String::char_code_at(b, i)
+    if ca < cb {
+      res = true
+      done = true
+    } else if ca > cb {
+      res = false
+      done = true
+    } else {
+      i = i + 1
+    }
+  }
+  res
+}
+
+/// Index of `p` in `names`, or -1. Linear: this pass runs once per compile
+/// over the module count (hundreds), not per AST node, so the O(N^2) worst
+/// case is not on any hot path -- unlike the maps above, which are indexed
+/// precisely because they ARE.
+fn mo_index_of(names: Array[String], p: String) -> Int {
+  let n = Array::length(names)
+  let mut i = 0
+  let mut found = -1
+  while found < 0 && i < n {
+    if Array::get(names, i) == p {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Declared dependencies of `p`. A module with no entry in `edges` is a leaf
+/// (rank 0) -- this is how unresolvable/missing imports stay terminal instead
+/// of aborting the plan, matching ensure_fingerprint_fs_go's `missing:` arm.
+fn mo_deps_of(edges: Array[(String, Array[String])], p: String) -> Array[String] {
+  let n = Array::length(edges)
+  let mut i = 0
+  let out: Array[String] = [
+  ]
+  let mut done = false
+  while !done && i < n {
+    let e = Array::get(edges, i)
+    if e.0 == p {
+      let deps = e.1
+      let dn = Array::length(deps)
+      let mut j = 0
+      while j < dn {
+        Array::push(out, Array::get(deps, j))
+        j = j + 1
+      }
+      done = true
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+/// Intern `p` into the node table, returning its id.
+fn mo_intern(names: Array[String], color: Array[Int], rank: Array[Int], p: String) -> Int {
+  let existing = mo_index_of(names, p)
+  if existing >= 0 {
+    existing
+  } else {
+    Array::push(names, p)
+    Array::push(color, 0)
+    Array::push(rank, 0)
+    Array::length(names) - 1
+  }
+}
+
+/// #1239 step 4A (docs/compiler-parallelism.md "Scheduling and commit" 1-2):
+/// the coordinator-side upfront pass over the import DAG. Given the resolved
+/// import edges and a root, it rejects import cycles and assigns every
+/// reachable module a RANK -- `rank(m) = 1 + max(rank of m's dependencies)`,
+/// 0 for a leaf -- then returns the modules in CANONICAL order (rank
+/// ascending, then module path ascending) alongside their ranks.
+///
+/// Why this is the extraction #906 step 4 asked for: today
+/// ensure_fingerprint_fs_go (compiler/runtime/typecheck_fs.vibe) discovers
+/// cycles incidentally, mid-recursion, via the "currently visiting" stack --
+/// so the cycle check, the incremental-cache short-circuits and the single
+/// commit_module_outcome call site are all tangled into one sequential walk.
+/// A coordinator cannot schedule from that: it needs the order BEFORE it
+/// dispatches anything. This function is that "before".
+///
+/// Two properties make the result usable as a parallel schedule:
+///
+///  - **rank is a wave number**: every module of rank k depends only on
+///    modules of rank < k, so an entire rank can be dispatched concurrently
+///    and ranks are joined in ascending order. (It is the longest path to a
+///    leaf, not the shortest -- taking the max is what makes the guarantee
+///    hold transitively.)
+///  - **the order is visit-order independent**: ranks come from the DAG
+///    itself and the final sort breaks ties by path, so permuting dependency
+///    traversal order (compiler/runtime/typecheck_fs.vibe's dep_visit_order
+///    seed, the existing #906 Phase 0 nondeterminism probe) cannot change
+///    this output. That is exactly the determinism the Acceptance Criteria
+///    ask of `--jobs=1/2/4`, established here without needing parallelism to
+///    exist yet.
+///
+/// Pure by construction (`Error` only, for the cycle rejection): dependency
+/// RESOLUTION needs `Fs`, ordering does not. Keeping the split means the
+/// ordering rule can be tested -- and modelled against
+/// formal/VibeFormal/Compiler/Scheduler.lean's acyclicity and `Ready`
+/// premises (#906 step 8) -- without a filesystem in the loop.
+///
+/// NOT yet wired into ensure_fingerprint_fs_go: that recursion still does its
+/// own inline cycle check, and switching the main path over is #906 step 4(D),
+/// which is blocked on a Wasmtime multi-instance host (docs/compiler-
+/// parallelism.md "Runtime backend decision") -- there is no coordinator to
+/// consume this order until real workers exist.
+export fn plan_module_order(edges: Array[(String, Array[String])], root: String) -> (Array[String], Array[Int]) with { Error } {
+  let names: Array[String] = [
+  ]
+  // 0 = unvisited, 1 = on the current DFS path, 2 = finished (rank final)
+  let color: Array[Int] = [
+  ]
+  let rank: Array[Int] = [
+  ]
+  // Explicit stacks instead of recursion: the import DAG is as deep as the
+  // deepest import chain, and this compiler has already hit wasm stack
+  // exhaustion from a recursive whole-program walk (see analyze_calls's #556
+  // note in compiler/perceus/perceus.vibe).
+  let st_node: Array[Int] = [
+  ]
+  let st_cursor: Array[Int] = [
+  ]
+  let root_id = mo_intern(names, color, rank, root)
+  Array::set(color, root_id, 1)
+  Array::push(st_node, root_id)
+  Array::push(st_cursor, 0)
+  while Array::length(st_node) > 0 {
+    let top = Array::length(st_node) - 1
+    let nid = Array::get(st_node, top)
+    let cursor = Array::get(st_cursor, top)
+    let deps = mo_deps_of(edges, Array::get(names, nid))
+    if cursor < Array::length(deps) {
+      Array::set(st_cursor, top, cursor + 1)
+      let dep = Array::get(deps, cursor)
+      let did = mo_intern(names, color, rank, dep)
+      let dcolor = Array::get(color, did)
+      if dcolor == 1 {
+        // Same wording as ensure_fingerprint_fs_go's inline check, so moving
+        // the rejection upfront does not change the user-visible diagnostic.
+        throw(String::concat("type_db: import cycle detected at ", dep))
+      } else if dcolor == 0 {
+        Array::set(color, did, 1)
+        Array::push(st_node, did)
+        Array::push(st_cursor, 0)
+      } else {
+        ()
+      }
+    } else {
+      let mut r = 0
+      let mut i = 0
+      while i < Array::length(deps) {
+        let did = mo_index_of(names, Array::get(deps, i))
+        if did >= 0 {
+          let dr = Array::get(rank, did) + 1
+          if dr > r {
+            r = dr
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      Array::set(rank, nid, r)
+      Array::set(color, nid, 2)
+      Array::truncate(st_node, top)
+      Array::truncate(st_cursor, top)
+    }
+  }
+  // Canonical order: rank ascending, then path ascending. Insertion sort --
+  // the module count is small and this keeps the ordering rule obvious enough
+  // to check by eye against the doc's "canonical module-path/topological
+  // order" wording.
+  let out_paths: Array[String] = [
+  ]
+  let out_ranks: Array[Int] = [
+  ]
+  let total = Array::length(names)
+  let mut k = 0
+  while k < total {
+    let nm = Array::get(names, k)
+    let rk = Array::get(rank, k)
+    let placed = Array::length(out_paths)
+    let mut pos = 0
+    let mut settled = false
+    while !settled && pos < placed {
+      let ork = Array::get(out_ranks, pos)
+      if rk < ork || (rk == ork && mo_str_lt(nm, Array::get(out_paths, pos))) {
+        settled = true
+      } else {
+        pos = pos + 1
+      }
+    }
+    Array::push(out_paths, "")
+    Array::push(out_ranks, 0)
+    let mut shift = Array::length(out_paths) - 1
+    while shift > pos {
+      Array::set(out_paths, shift, Array::get(out_paths, shift - 1))
+      Array::set(out_ranks, shift, Array::get(out_ranks, shift - 1))
+      shift = shift - 1
+    }
+    Array::set(out_paths, pos, nm)
+    Array::set(out_ranks, pos, rk)
+    k = k + 1
+  }
+  (out_paths, out_ranks)
+}
