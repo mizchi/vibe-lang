@@ -277,12 +277,18 @@ fn mr_reuse_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) -> In
       let callee = get_ecall_callee(body)
       if arity >= 1 && is_eident(callee) {
         let ci = ctor_table_index_of(ctx.ctor_table, get_eident_name(callee))
-        if ci >= 0 && Array::get(ctx.ctor_table.field_counts, ci) == arity && Array::length(get_ecall_args(body)) == arity {
+        let src_ci = ctor_table_index_of(ctx.ctor_table, get_pctor_name(p))
+        if ci >= 0 && src_ci >= 0 && Array::get(ctx.ctor_table.field_counts, ci) == arity && Array::length(get_ecall_args(body)) == arity {
           let mut shape_ok = true
           let mut fj = 0
           while fj < arity {
             let pa = Array::get(pargs, fj)
-            if ctor_field_is_float(ctx, ci, fj) {
+            // Neither side may have a boxed-float field: the target's store
+            // path differs, and a SOURCE float payload would bypass
+            // bind_match_pat's float_local_slots registration (the raw-load
+            // bind below doesn't know field types), so e.g. `-x` on the
+            // binding would negate the box pointer (Codex review P1).
+            if ctor_field_is_float(ctx, ci, fj) || ctor_field_is_float(ctx, src_ci, fj) {
               shape_ok = false
             } else if is_pbind(pa) {
               if md_consume_count(body, get_pbind_name(pa)) != 1 {
