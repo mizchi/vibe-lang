@@ -89,6 +89,23 @@ fn lookup_io_b(name: String) -> Option[Type] {
     Some(CtFn([
       CtInt
     ], CtUnit, Some("Async")))
+  } else if name == "sleep_blocking" {
+    // #1227: the same host suspend as `sleep`, but WITHOUT the nominal
+    // `Async` row, for the one caller that must block while holding a
+    // row-free signature: @vibex/concurrent's pump settling sleep debts.
+    //
+    // The row on `sleep` cannot be discharged locally (a handler cannot
+    // discharge a builtin's nominal row -- it is not a `perform`), and
+    // propagating it makes the pump a "needing" function that the ADR-0076
+    // suspend pass must CPS-clone, which its `while`/`let mut` shape makes
+    // ineligible. Both were measured, see #1227.
+    //
+    // This is NOT a general-purpose blocking sleep: it is only sound where
+    // the caller knows nothing else is runnable. `sleep` remains the right
+    // spelling everywhere else, and `sleep_wait` the one inside a task.
+    Some(CtFn([
+      CtInt
+    ], CtUnit, None))
   } else if name == "Path::resolve" {
     Some(CtFn([
       CtString
