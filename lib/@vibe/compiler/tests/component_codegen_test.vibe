@@ -11,6 +11,7 @@ import @vibe/core {
 import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm,
   comp_emit_component_wasm_async,
+  comp_emit_component_wasm_async_concurrent_awaits,
   comp_emit_component_wasm_async_spawned_future,
   comp_emit_component_wasm_async_trampolined,
   comp_emit_component_wasm_async_trampolined_p1,
@@ -836,6 +837,77 @@ test "component async spawned-future: blocking await via a callee wait loop, no 
 test "component async spawned-future: rejects a non-u32 result valtype" {
   let rejected = handle {
     let _ = comp_emit_component_wasm_async_spawned_future("run", 120)
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(rejected)
+}
+
+// #1230 M1b-3c-3: the concurrent-awaits component -- two host operations
+// genuinely in flight at once. It shares the composer (and therefore every
+// canon section, import and export) with the spawned-future component; the
+// entire difference is inside the guest core module, where both
+// async-lowered calls are issued BEFORE either is waited on.
+//
+// So the interesting properties to pin here are (a) the shared composer
+// still wires the same canon set through the new entry point, and (b) the
+// two emitters do NOT produce identical bytes -- if the guest-module
+// argument were ever mixed up, every canon assertion below would still
+// pass while the component silently reverted to the serial shape. The
+// runtime proof (84 in ~300ms rather than ~600ms for two 300ms host calls)
+// lives in scripts/test_concurrent_awaits_component_gate.sh; `vibe test`
+// cannot drive a component.
+test "component async concurrent-awaits: same canon set as spawned-future, different guest" {
+  let comp = comp_emit_component_wasm_async_concurrent_awaits("run", 121)
+  assert(Bytes::get(comp, 0) == 0)
+  assert(Bytes::get(comp, 4) == 13)
+  // task.return canon (u32=121)
+  assert(bytes_contains_seq(comp, [
+    8,
+    5,
+    1,
+    9,
+    0,
+    121,
+    0
+  ]) == 1)
+  // canon lower(get-async) async (memory 0)
+  assert(bytes_contains_seq(comp, [
+    8,
+    8,
+    1,
+    1,
+    0,
+    0,
+    2,
+    6,
+    3,
+    0
+  ]) == 1)
+  assert(component_bytes_contains(comp, "get-async") == 1)
+  assert(component_bytes_contains(comp, "[async-lower]get-async") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-new]") == 1)
+  assert(component_bytes_contains(comp, "[waitable-join]") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-wait]") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-drop]") == 1)
+  assert(component_bytes_contains(comp, "[subtask-drop]") == 1)
+  assert(component_bytes_contains(comp, "[task-return]run") == 1)
+  // Still no future.*/context.*/poll -- concurrency needs none of them.
+  assert(component_bytes_contains(comp, "[future") == 0)
+  assert(component_bytes_contains(comp, "context-get") == 0)
+  assert(component_bytes_contains(comp, "context-set") == 0)
+  assert(component_bytes_contains(comp, "waitable-set-poll") == 0)
+  // ...but it is NOT the spawned-future component.
+  let serial = comp_emit_component_wasm_async_spawned_future("run", 121)
+  assert(Bytes::length(comp) != Bytes::length(serial))
+}
+
+// Same u32-only guard as the spawned-future emitter: both share the
+// composer, so the rejection must fire through the new entry point too.
+test "component async concurrent-awaits: rejects a non-u32 result valtype" {
+  let rejected = handle {
+    let _ = comp_emit_component_wasm_async_concurrent_awaits("run", 120)
     false
   } with Error {
     Throw(_) => true

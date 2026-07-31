@@ -697,6 +697,54 @@ blocked パスしか通らず、永久に露見しなかった。
 **blocked パス（300ms 実測で suspend/resume を確認）と eager パス（delay 0）の
 両方**を検証するようになった。
 
+### 3.10 M1b-3c-3 landed — 本物の並行 await（host 操作が同時に in-flight、#1230）
+
+§3.8 の「実証範囲の限界」で未解決として残した並行性のうち、**片方は既存の
+canon 集合だけで到達できる**ことが分かった。まず2つの問いを分離する:
+
+| | 何が並行するか | 必要なもの |
+|---|---|---|
+| **M1b-3c-1c** | **guest の計算が2本** interleave する | 第2の CM task か guest 側 poll executor。**未解決** |
+| **M1b-3c-3（本節）** | guest の計算は1本、待っている **host 操作が複数同時に in-flight** | **何も追加不要** — waitable set に複数 subtask を join する設計そのもの |
+
+後者は `Promise.all` / `join!` の形であり、stackful fiber が1本の call chain
+しか走らせないという制約と矛盾しない（guest は1本のまま、待っている相手が
+複数になるだけ）。
+
+probe（`tools/wasip3_component_probe/concurrent_awaits/component.wat`）で
+実機確認したうえで、`comp_emit_component_wasm_async_concurrent_awaits` として
+emitter 化した。**canon 集合は M1b-3c-1b から一切増えていない**
+（`task.return`、`[async-lower]get-async`、`waitable-set.new/.wait/.drop`、
+`waitable.join`、`subtask.drop`）。並行性を生むのは **操作の順序だけ**——
+どちらの async-lowered call も、**どちらかを待ち始める前に発行する**。
+「A を発行→A を待つ→B を発行→B を待つ」は同じ命令列・同じ戻り値でありながら
+2倍の時間がかかる。
+
+検証は2つ独立に立てた（片方だけでは弱いため）:
+
+- **値**: `run` は 84（= 42 + 42）を返す。各 call が自分専用の結果スロットに
+  書くので、片方しか完了しなかった／同じスロットを2回読んだ実装は 42 になり
+  落ちる。
+- **時間**: host が1呼び出しあたり 300ms suspend する条件で、並行なら ~300ms、
+  直列なら ~600ms。両側で挟む（`>= 0.8×` で「本当に suspend した」、
+  `< 1.6×` で「直列ではない」）。**並行性を実際に検査しているのはこちら**——
+  値チェックは直列実装でも同じように通ってしまう。
+
+実測（`runtime/viberun` 経由、M1b-3c-2 で駆動可能になったもの）:
+
+| delay | 1 call（spawned-future） | 2 calls（concurrent-awaits） |
+|---|---|---|
+| 300ms | 42 / 310ms | **84 / 312ms** |
+| 1000ms | 42 / 1028ms | **84 / 1015ms** |
+
+2本の 1000ms 呼び出しが1本と同じ 1015ms で終わる——スケールは 1× であって
+2× ではない。gate は `scripts/test_concurrent_awaits_component_gate.sh`
+（`pkf run test-concurrent-awaits-component`）。JIT の cold start（実測 ~200ms）
+が並行/直列の判別幅を食うため、計測前に warmup 実行を1回挟んでいる。
+
+**残る未解決は M1b-3c-1c のまま**: 親の処理と interleave する第2の *guest*
+計算は、本節の機構では作れない。
+
 ## 4. WASI 0.3 境界マッピング
 
 | vibe | WASI 0.3 |
@@ -821,6 +869,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | **M1b-3c** | 真の blocking await: `future.read` + waitable-set 待機ループ（async source = host async import / subtask spawn が前提）。core codegen に future canon built-in の import + buffer + ループを emit | spike done（§3.7、mechanics 実機確認）/ codegen 未着手 |
 | **M1b-3c-1b** | blocking await（host async import）の component_codegen.vibe emitter。待機ループを別関数に括り出した形で、`future.*` canon 無しに動くことを実機検証（§3.8）。byte-exact 検証のみで実 `.vibe` ソースへの配線は対象外。**spawn 相当は「spawn と join の間に観測可能な処理が無い」退化ケースのみ**——真の interleaving spawn は未達（§3.8「実証範囲の限界」） | done（#1230、`comp_emit_component_wasm_async_spawned_future` + `scripts/test_spawned_future_component_gate.sh`） |
 | **M1b-3c-1c** | 真の interleaving spawn: 親の処理と並行して走る第2の guest 計算（guest 側 poll executor か別 task が要る）。M-conc-2 と実質同一の機構 | 未着手（#1240 review で M1b-3c-1b の範囲外と確定） |
+| **M1b-3c-3** | **本物の並行 await**（§3.10）: guest の計算は1本のまま、**複数の host 操作を同時に in-flight** にして待つ。canon 集合は M1b-3c-1b から不変——並行性を生むのは「どちらも待ち始める前に両方発行する」という操作順序だけ。`comp_emit_component_wasm_async_concurrent_awaits` + probe + gate（値 84 と **両側の wall-clock** で検証、2×1000ms が 1015ms = 1× スケール）。M1b-3c-1c（guest の計算が2本 interleave）とは別問題で、そちらは未解決のまま | done（#1230） |
 | **M1b-3c-2** | async component を **production runtime が駆動**できるようにする（§3.9）: `runtime/viberun` の wasmtime を 45→47.0.2 bump（同期パスはソース無改修）、component ヘッダ判別 + `instantiate_async`/`run_concurrent`/`call_concurrent`、`get-async` を `func_wrap_concurrent` + 実 suspend する tokio timer で実装。gate が probe 専用 Rust host バイナリ依存を脱却。**副産物**: eager-completion 時に subtask が生成されないのに `subtask.drop` していた実バグを発見・修正（emitter + probe WAT 両方）、gate が blocked/eager 両パスを検証 | done（#1230） |
 | **M-conc-1** | `Task[T]` codegen（synchronous eager model）: `spawn`（thunk を即時実行・closure type 9 で `call_indirect`）/`join`（identity）/`cancel`（drop→Unit）/`race`（先行値）を `compile_call` で lower。inlined async builtin の free-var capture バグ（nested lambda 内で `Task::join` 等を closure として捕捉）を `collect_free_vars_expr` で修正。gate に Task entry 追加（spawn/join/cancel/race → 42、wasmtime 45） | done |
 | **M-conc-2** | 真の subtask spawn（waitable-set / `future.cancel-*`）+ `Task::timeout`（Option 構築） | 未着手 |

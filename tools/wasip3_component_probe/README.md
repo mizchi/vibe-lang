@@ -384,3 +384,45 @@ never-suspended run cannot pass) and eager.
 Generalizable lesson, same family as the two bugs above: **a probe host
 that only ever exercises one path proves only that path.** Anything the
 emitter emits for a fast path needs a host that actually takes it.
+
+## `concurrent_awaits/`: two host operations in flight at once (#1230 M1b-3c-3)
+
+The "spawn" limit recorded above splits into two questions, and only one of
+them is actually hard:
+
+| | what runs concurrently | what it needs |
+|---|---|---|
+| interleaving spawn (M1b-3c-1c) | **two guest computations** | a second Component-Model task, or a guest-side poll executor. Still open. |
+| **this probe** (M1b-3c-3) | one guest computation, **several host operations** | nothing new — a waitable set with several joined subtasks is exactly this |
+
+The second is the `Promise.all` / `join!` shape, and it does not contradict
+the stackful constraint: the guest still runs one call chain; it just has
+more than one outstanding thing to wait for.
+
+`component.wat` here is the `spawned_future/` guest with its single call
+split into "start both, then wait for both". **The canon set is unchanged** —
+`task.return`, `[async-lower]get-async`, `waitable-set.new/.wait/.drop`,
+`waitable.join`, `subtask.drop`. What produces the concurrency is purely the
+ORDER: both async-lowered calls are issued before either is waited on. A
+"start A, wait A, start B, wait B" body emits the same instructions, returns
+the same value, and takes twice as long.
+
+Two things differ mechanically from the single-call probes:
+
+- each call gets its **own result slot** (addr 0 and addr 4), which is what
+  makes the returned sum (84 = 42 + 42) prove both calls really completed;
+- `waitable-set.wait`'s **payload[0]** — which waitable fired — becomes
+  load-bearing. The single-subtask probes could ignore it; here one loop
+  retires both subtasks in whatever order the host resolves them.
+
+Measured through `runtime/viberun` (which can drive these since M1b-3c-2):
+
+| host delay per call | 1 call (`spawned_future/`) | 2 calls (this probe) |
+|---|---|---|
+| 300ms | 42 in 310ms | **84 in 312ms** |
+| 1000ms | 42 in 1028ms | **84 in 1015ms** |
+
+Two 1000ms calls finish in the time of one. That 1x-not-2x scaling is the
+actual proof; the value check alone would pass on a serial implementation
+too. Ported to `comp_emit_component_wasm_async_concurrent_awaits` and gated
+by `scripts/test_concurrent_awaits_component_gate.sh`.
