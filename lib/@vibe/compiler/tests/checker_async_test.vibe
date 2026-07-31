@@ -132,45 +132,38 @@ test "Stream::next inside async context is OK" {
   assert(eq(Array::length(errors), 0))
 }
 
-// --- Task[T] (structured concurrency + cancellation) ---
+// --- Task[T] retirement (#1227) ---
+//
+// The eager M-conc-1 prototype (`Task::spawn`/`join`/`cancel`/`race`/
+// `timeout`) is GONE. It compiled `spawn` to an immediate `call_indirect` of
+// the thunk, so `spawn(f); spawn(g)` always ran `f` to completion first --
+// concurrency that silently serialized. These tests used to assert the
+// builtins were registered; they now pin that they are NOT, so the surface
+// cannot come back without this failing.
+//
+// The working surface is `@vibex/concurrent`: `TaskGroup::spawn_suspend`,
+// `TaskHandle::join`, and `sleep_wait` (#1253).
 
-test "Task::spawn / join / cancel are registered effectful builtins (Async)" {
+test "the eager Task::* prototype is retired -- no longer registered builtins" {
   match lookup_builtin("Task::spawn") {
-    Some(ty) => match ty {
-      CtFn(_, _, Some(_)) => assert(true),
-      _ => assert(false)
-    },
-    None => assert(false)
+    Some(_) => assert(false),
+    None => assert(true)
   }
   match lookup_builtin("Task::join") {
-    Some(ty) => match ty {
-      CtFn(_, _, Some(_)) => assert(true),
-      _ => assert(false)
-    },
-    None => assert(false)
+    Some(_) => assert(false),
+    None => assert(true)
   }
   match lookup_builtin("Task::cancel") {
-    Some(ty) => match ty {
-      CtFn(_, _, Some(_)) => assert(true),
-      _ => assert(false)
-    },
-    None => assert(false)
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match lookup_builtin("Task::race") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match lookup_builtin("Task::timeout") {
+    Some(_) => assert(false),
+    None => assert(true)
   }
 }
 
-test "Task::spawn outside async context reports effectful-call error" {
-  let call_expr = ECall(EIdent("Task::spawn", -1), [
-    EInt(0)
-  ], -1)
-  let errors = check_async_effects_expr(call_expr, EnvEmpty, false)
-  assert(Array::length(errors) > 0)
-  assert(is_call_err(Array::get(errors, 0)))
-}
-
-test "Task::join inside async context is OK" {
-  let call_expr = ECall(EIdent("Task::join", -1), [
-    EInt(0)
-  ], -1)
-  let errors = check_async_effects_expr(call_expr, EnvEmpty, true)
-  assert(eq(Array::length(errors), 0))
-}

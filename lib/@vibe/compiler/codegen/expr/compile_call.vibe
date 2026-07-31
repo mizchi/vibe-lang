@@ -1346,45 +1346,6 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       // already-resolved value.
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     }
-    else if !prefer_bound_call && fname == "Task::spawn" {
-      // Structured concurrency, synchronous model (docs/spec/wasi-p3-async.md
-      // §2.5): on the single-threaded linear backend a spawned task runs its
-      // thunk eagerly, so the Task[T] value *is* the resolved result. `join`
-      // is then identity and `cancel` a no-op. Real subtask spawn over
-      // waitable-set / future.cancel is documented future work.
-      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      let fn_l = nl
-      let slot_l = nl + 1
-      let env_l = nl + 2
-      Array::push(local_names, "__spawn_fn")
-      Array::push(local_names, "__spawn_slot")
-      Array::push(local_names, "__spawn_env")
-      emit_local_set(buf, fn_l)
-      emit_closure_resolve(buf, fn_l, slot_l, env_l)
-      emit_closure_call_tail(buf, env_l, slot_l, 9, 0)
-      nl + 3
-    }
-    else if !prefer_bound_call && fname == "Task::join" {
-      // The task already holds its resolved value (eager spawn) — join is the
-      // identity projection onto that value.
-      ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-    }
-    else if !prefer_bound_call && fname == "Task::cancel" {
-      // The eager task has already completed; cancel evaluates the handle for
-      // its effects, drops it, and yields Unit.
-      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      emit_drop(buf)
-      emit_i64_const(buf, 0)
-      nl
-    }
-    else if !prefer_bound_call && fname == "Task::race" {
-      // Both tasks are already resolved under the eager model; race resolves to
-      // the first task's value. (b is evaluated for its effects, then dropped.)
-      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
-      emit_drop(buf)
-      nl
-    }
     else if !prefer_bound_call && fname == "Stream::empty" {
       // Empty stream = empty backing array.
       let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
@@ -1490,19 +1451,6 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
           EInt(0)
         ], -1)
       ], -1), ECall(EIdent("None", -1), array_empty(), -1)), -1)
-      ce(buf, synth, local_names, next_local, ctx, ld)
-    }
-    else if !prefer_bound_call && fname == "Task::timeout" {
-      // Task::timeout(ms, thunk) : Option[T] (docs/spec §2.5). Synchronous eager
-      // model: the thunk always completes, so the result is Some(thunk()); the
-      // deadline is evaluated for its effects then ignored. Synthesized and
-      // lowered via `ce` so the Some ctor + 0-arg closure call reuse existing
-      // lowering.
-      let ms_expr = Array::get(args, 0)
-      let thunk_expr = Array::get(args, 1)
-      let synth = ELet("__to_fn", thunk_expr, ELet("__to_ms", ms_expr, ECall(EIdent("Some", -1), [
-        ECall(EIdent("__to_fn", -1), array_empty(), -1)
-      ], -1), -1), -1)
       ce(buf, synth, local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "String::to_bytes" {
