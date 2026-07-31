@@ -14,9 +14,16 @@ Related: ADR-0012, ADR-0050, ADR-0060, ADR-0068, ADR-0071, ADR-0075, ADR-0076,
 shared-everything-threads の実験を扱う。両者が本書と衝突する場合、公開 API と
 観測可能な挙動は本書を優先する。
 
-現行の `Task[T]` codegen は `spawn` が thunk を即時実行する synchronous eager
-prototype であり、本仕様を実装したものではない。撤去済みの `Threads::*` probe
-と Int channel id API も公開契約ではない。
+`Task[T]` の eager prototype（`Task::spawn`/`join`/`cancel`/`race`/`timeout`）は
+**#1227 で撤去した**。`spawn` が thunk を即時実行するため `spawn(f); spawn(g)` が
+常に `f` 完了後に `g` を始める——並行に見えて黙って直列化する——という理由による。
+現在これらの名前は `unknown name` でコンパイルエラーになる。撤去済みの
+`Threads::*` probe と Int channel id API も同様に公開契約ではない。
+
+**現行の動く並行 surface は `lib/@vibex/concurrent`** である:
+`TaskGroup::spawn_suspend` が suspend 可能なタスクを生成し、`TaskHandle::join`
+が結果を回収し、`sleep_wait`（#1253）は並行 sleep を直列化させず重ねる。本書が
+記述する `Task[r,T]` / nursery / typed channel はその上に載る v0.4.0 の目標形。
 
 本書のコードは提案中の surface を示す疑似 vibe であり、まだコンパイルできない。
 「必須」は v0.4.0 の適合実装が満たす条件、「将来」は互換性を約束しない拡張を表す。
@@ -95,6 +102,9 @@ enum ChannelConfigError {
 }
 
 // nursery { n => body } introduces a fresh r and handles Spawn[r].
+// NOTE: 以下は v0.4.0 の提案 surface（region-bound `Task[r, T]` + `Spawn[r]`）で
+// あり、#1227 で撤去した eager prototype の `Task::spawn` とは別物。名前は同じ
+// だが型も意味論も異なる——現時点でコンパイルできる API ではない。
 Task::spawn: [T: Send] (() -> T with { e })
   -> Task[r, T] with { Spawn[r]::spawn }
 Task::join: (Task[r, T])
@@ -125,7 +135,7 @@ recover 可能な failure を `Result[U, E]` で返す場合は `U` と `E` も 
 `Send` でなければならない。
 
 `race` と `timeout` は上記 primitive から構成できる library combinator とする。
-現在の eager `Task::race` / `Task::timeout` の挙動は契約に含めない。task handle の
+#1227 で撤去した eager `Task::race` / `Task::timeout` の挙動は契約に含めない。task handle の
 affine consumption が定義されるまでは、loser を暗黙に所有・cancel する primitive
 `race(Task, Task)` を core に置かない。
 

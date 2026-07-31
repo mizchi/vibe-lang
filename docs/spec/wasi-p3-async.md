@@ -118,17 +118,22 @@ WASI 0.3 の `stream<T>` を、vibe の `Iterator`（ADR-0044）と**同じコ�
 > `waitable-set` / `future.cancel-*` はその backend lowering として使い、
 > language surface を host primitive に固定しない。
 
-現行 front-end に着地している prototype surface は次のとおり:
+> **RETIRED (#1227)**: 以下の5操作は front-end から**撤去済み**。現在
+> `Task::spawn` 等を書くと `unknown name` でコンパイルが落ちる。撤去理由は
+> `spawn` が thunk を即時実行するため `spawn(f); spawn(g)` が常に `f` 完了後に
+> `g` を始めること——並行に見えて黙って直列化し、警告も失敗もしなかった。
+> 動く並行 surface は `lib/@vibex/concurrent`（`TaskGroup::spawn_suspend` /
+> `TaskHandle::join` / `sleep_wait`）。以下は撤去された surface の記録。
 
-- `Task::spawn : (() -> T with { Async }) -> Task[T] with { Async }` — 子タスク生成
-- `Task::join : (Task[T]) -> T with { Async }` — 結果を待つ
-- `Task::cancel : (Task[T]) -> Unit with { Async }` — キャンセル要求
-- `Task::race : (Task[T], Task[T]) -> T with { Async }` — 先着、敗者は cancel
-- `Task::timeout : (Int, () -> T with { Async }) -> Option[T] with { Async }`
+- ~~`Task::spawn : (() -> T with { Async }) -> Task[T] with { Async }`~~ — 子タスク生成
+- ~~`Task::join : (Task[T]) -> T with { Async }`~~ — 結果を待つ
+- ~~`Task::cancel : (Task[T]) -> Unit with { Async }`~~ — キャンセル要求
+- ~~`Task::race : (Task[T], Task[T]) -> T with { Async }`~~ — 先着、敗者は cancel
+- ~~`Task::timeout : (Int, () -> T with { Async }) -> Option[T] with { Async }`~~
   — 期限切れで `None`（内側 task を cancel）
 
-この surface の `spawn` はまだ child lifetime を型に持たず、`race` の loser
-ownership も定義していない。v0.4.0 では generative `nursery` が `Spawn[r]` handler
+この surface の `spawn` は child lifetime を型に持たず、`race` の loser
+ownership も定義していなかった。v0.4.0 では generative `nursery` が `Spawn[r]` handler
 を設置し、blocking `join` / channel operation が `Async::suspend` を要求する。
 cancel point、failure propagation、handler task-affinity は ADR-0068 に従う。
 
@@ -144,16 +149,21 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
   effect を帯び、effect-escape チェックがそのまま機能する。
 - 検証: `checker_async_test.vibe` 13/13、`checker_effects_test.vibe` 19/19
   （無回帰）。
-- **`Task[T]` codegen（synchronous eager model, landed）**: 単一スレッドの
+- **`Task[T]` codegen（synchronous eager model, RETIRED in #1227）**: 単一スレッドの
   linear backend では「spawn = thunk を即時実行し、Task 値 = 解決済み結果」
   「join = identity」「cancel = drop して Unit」「race = 先行 task の値」という
   同期セマンティクスへ lower（`compile_call.vibe`）。`Task::spawn` は 0 引数
   closure（thunk）を `call_indirect`（closure type 9）で呼ぶ。`await` /
   `Future::ready` と同じ系列で、async component（`with { Async }`）に包まれ
-  wasmtime 45 上で実行可能。回帰 gate `test_async_component_gate.sh`
-  に Task entry を追加（spawn/join/cancel/race → 42）。
-  - **free-var capture 修正**: inlined async builtin（`await`/`Future::ready`/
-    `Task::spawn|join|cancel|race`）は func table に居ないため、nested lambda
+  wasmtime 45 上で実行可能だった。**#1227 でこの lowering ごと撤去し**、
+  `test_async_component_gate.sh` の Task entry も外した（`option` entry の
+  `Task::timeout` は `Stream::next(Stream::once(1))` に差し替え、合計 42 を維持）。
+  `checker_async_test.vibe` は「登録されている」ことを assert する4テストを、
+  「登録されていない」ことを pin する1テストに置き換えてある——この surface が
+  戻ってくればそこで落ちる。
+  - **free-var capture 修正**（撤去前の記録）: inlined async builtin
+    （`await`/`Future::ready`/`Task::spawn|join|cancel|race`）は func table に
+    居ないため、nested lambda
     body 内で free 変数として捕捉され誤った indirect-apply に lower される
     バグがあった（`() -> { Task::join(t) }` が `Task::join` を closure 値として
     capture）。`collect_free_vars_expr` でこれら名前を演算子同様に除外して修正。
@@ -165,14 +175,16 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
   `Stream::filter` は述語が truthy な要素のみ push する loop を inline emit。
   gate に Stream entry を追加（empty/once/map/filter/fold → 42、wasmtime 45）。
   inline builtin の free-var capture 除外に Stream 名も追加。
-- **`Stream::next` / `Task::timeout` codegen（Option 構築, landed）**: いずれも
+- **`Stream::next` codegen（Option 構築, landed）/ `Task::timeout`（RETIRED in
+  #1227）**: いずれも
   実 `Option` ctor（`Some`/`None` は linear backend で常に tag 0/1 登録済み）を
   生成する。`compile_call` で **Option 式を AST 合成して `ce` に委譲**し、既存の
   ctor lowering と `Array::length`/`get`・0 引数 closure 呼び出しを再利用:
   - `Stream::next(s)` → `let s = …; if 0 < length(s) { Some(s[0]) } else { None }`
     （eager model では head を peek。`await` が ready future を unwrap）。
-  - `Task::timeout(ms, thunk)` → `Some(thunk())`（同期 model では必ず完了、
-    deadline は評価して捨てる）。
+  - ~~`Task::timeout(ms, thunk)` → `Some(thunk())`~~（同期 model では必ず完了、
+    deadline は評価して捨てた）。**#1227 で撤去**。gate の `option` entry は
+    `Stream::next(Stream::once(1))` に差し替えて Some 経路の網羅を維持している。
   合成式経由なので `match { Some(x) => … None => … }` が正しく動く（gate の
   Option entry が Some/None 両経路 + timeout を網羅 → 42）。
 - **`String::to_bytes` codegen（ByteStream consume, landed）**: HTTP body を
@@ -638,8 +650,8 @@ fiber は1本の call chain しか走らせないので、並行な guest 計算
 
 つまり現在の lowering の下では、**spawn と join の間に親子間の
 handshake や観測可能な処理があると順序が変わるか deadlock する**——
-これは linear backend の eager `Task::spawn`（§2.5、破棄予定の prototype）
-が既に抱えている制限と同じもので、今回それを超えてはいない。真の
+これは linear backend の eager `Task::spawn`（§2.5。**#1227 で撤去済み**）
+が抱えていた制限と同じもので、今回それを超えてはいない。真の
 interleaving spawn は **M-conc-2 / M1b-3c-2 の未解決事項として残る**。
 
 > **追記（§3.11 で訂正）**: 上段の「並行な guest 計算には別 task か guest 側
@@ -933,10 +945,10 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | **M1b-3c-1c** | 真の interleaving spawn: 親の処理と並行して走る第2の guest 計算。**§3.11 で ABI 側の問いは解決**——`waitable-set.wait` の完了順ディスパッチだけで interleave し、別 task も poll executor も `context.get/set` も不要（§3.8 の予測を実機反証、負の対照付き gate で固定）。残るのは **await をまたぐ task 状態の表現＝ADR-0076 の CPS/suspend lowering** のみで、codegen 側に局所化された | mechanics done（#1230、`tools/wasip3_component_probe/interleaved_tasks/` + `scripts/test_interleaved_tasks_probe_gate.sh`）/ emitter・実ソース配線は未着手 |
 | **M1b-3c-3** | **本物の並行 await**（§3.10）: guest の計算は1本のまま、**複数の host 操作を同時に in-flight** にして待つ。canon 集合は M1b-3c-1b から不変——並行性を生むのは「どちらも待ち始める前に両方発行する」という操作順序だけ。`comp_emit_component_wasm_async_concurrent_awaits` + probe + gate（値 84 と **両側の wall-clock** で検証、2×1000ms が 1015ms = 1× スケール）。M1b-3c-1c（guest の計算が2本 interleave）とは別問題で、そちらは未解決のまま | done（#1230） |
 | **M1b-3c-2** | async component を **production runtime が駆動**できるようにする（§3.9）: `runtime/viberun` の wasmtime を 45→47.0.2 bump（同期パスはソース無改修）、component ヘッダ判別 + `instantiate_async`/`run_concurrent`/`call_concurrent`、`get-async` を `func_wrap_concurrent` + 実 suspend する tokio timer で実装。gate が probe 専用 Rust host バイナリ依存を脱却。**副産物**: eager-completion 時に subtask が生成されないのに `subtask.drop` していた実バグを発見・修正（emitter + probe WAT 両方）、gate が blocked/eager 両パスを検証 | done（#1230） |
-| **M-conc-1** | `Task[T]` codegen（synchronous eager model）: `spawn`（thunk を即時実行・closure type 9 で `call_indirect`）/`join`（identity）/`cancel`（drop→Unit）/`race`（先行値）を `compile_call` で lower。inlined async builtin の free-var capture バグ（nested lambda 内で `Task::join` 等を closure として捕捉）を `collect_free_vars_expr` で修正。gate に Task entry 追加（spawn/join/cancel/race → 42、wasmtime 45） | done |
-| **M-conc-2** | 真の subtask spawn（waitable-set / `future.cancel-*`）+ `Task::timeout`（Option 構築） | 未着手 |
+| **M-conc-1** | ~~`Task[T]` codegen（synchronous eager model）: `spawn`（thunk を即時実行・closure type 9 で `call_indirect`）/`join`（identity）/`cancel`（drop→Unit）/`race`（先行値）を `compile_call` で lower。inlined async builtin の free-var capture バグ（nested lambda 内で `Task::join` 等を closure として捕捉）を `collect_free_vars_expr` で修正。gate に Task entry 追加（spawn/join/cancel/race → 42、wasmtime 45）~~ | **retired (#1227)** — 黙って直列化するため撤去。動く surface は `lib/@vibex/concurrent` |
+| **M-conc-2** | 真の subtask spawn（waitable-set / `future.cancel-*`）。M-conc-1 の surface は #1227 で撤去したので、置き換えではなく新規に載せる | 未着手 |
 | **M2a** | `Stream[T]` codegen（eager Array-backed model）: `map`/`fold` を inline `Array::map`/`Array::fold` へ remap、`empty`=`array_new`、`once`=`array_new`+`push`、`filter` を inline loop で emit。gate に Stream entry 追加（empty/once/map/filter/fold → 42、wasmtime 45） | done |
-| **M2b** | `Stream::next`（`Future[Option[T]]`、Option 構築 codegen）+ `Task::timeout`: 実 `Some`/`None` ctor を AST 合成して `ce` に委譲。gate の Option entry が Some/None 両経路 + timeout を網羅（→ 42、wasmtime 45） | done |
+| **M2b** | `Stream::next`（`Future[Option[T]]`、Option 構築 codegen）: 実 `Some`/`None` ctor を AST 合成して `ce` に委譲。gate の Option entry が Some/None 両経路を網羅（→ 42、wasmtime 45）。併載していた `Task::timeout` 分は #1227 の撤去で `Stream::next(Stream::once(1))` に差し替え | done |
 | **M2c-1** | HTTP body を ByteStream 化（consume）: `String::to_bytes(s) : Stream[Int]`（`ByteStream`）。handler が request body を Stream combinator で消費可能。AST 合成 loop を `ce` に委譲（RC tagging 安全、byte 単位）。gate に body entry 追加（→ 42、wasmtime 45） | done |
 | **M2c-2** | response body 生成 `Stream::to_string`（`Stream[Int] -> String`）: AST 合成 loop を `ce` に委譲。`linked_compile` が `""` を常に str_table へ seed（`StringBuilder::freeze` の脆弱性も解消）。gate に round-trip entry 追加（body → map → to_string → to_bytes → fold → 42）。**handler の request/response body 両方向が ByteStream で扱える** | done |
 | **M2c-3 (surface)** | `for await x in s { ... }` サーフェス構文。**言語仕様: `for await` は pull-only** — iterable は pull closure `() -> Option[T]` を要求し、`None` まで駆動する。eager iteration（Array/`Stream[T]`）は plain `for` を使う（#582）。**selfhost compiler は `await` マーカー自体を pull シグナルとして扱い**、`for await x in s` を parser で `let __pull_next = s; let mut cont = true; while cont { match __pull_next() { Some(x) => body, None => cont = false } }` へ desugar（`build_pull_for_in`、codegen に型情報不要）。マーカー無し `for x in arr` は eager `EForIn`。**host compiler は現状 iterable の型で eager/pull を出し分ける permissive 実装**（`await` マーカーを無視し eager `for await` も許容する）だが、spec 適合プログラム（pull closure のみ `for await`）は host/selfhost で同一挙動。host 側の hard enforcement は ROI 低のため見送り（#582）。gate の for-await entry は pull closure（bytes("ABC") を yield）で → 42 | done |
