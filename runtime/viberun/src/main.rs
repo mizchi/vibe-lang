@@ -677,6 +677,28 @@ fn run_async_component(path: &str) -> Result<i32> {
             },
         )
         .map_err(|e| format_err!("link get-async: {e}"))?;
+    // #1230 M1b-3c-1c: same thing with a caller-chosen delay, returned as the
+    // value. `get-async`'s single fixed delay makes every in-flight call
+    // resolve at the same moment, which is enough to show that calls OVERLAP
+    // (M1b-3c-3) but cannot show anything about the ORDER continuations run
+    // in -- completion order and start order coincide. A per-call delay makes
+    // them differ observably, which is what the interleaving probe needs.
+    // Echoing `ms` back also lets the guest identify a completion by value,
+    // independently of the waitable handle.
+    linker
+        .root()
+        .func_wrap_concurrent(
+            "get-after",
+            move |_acc: &Accessor<StoreLimits>, (ms,): (u32,)| {
+                Box::pin(async move {
+                    if ms > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await;
+                    }
+                    Ok((ms,))
+                })
+            },
+        )
+        .map_err(|e| format_err!("link get-after: {e}"))?;
 
     // A current-thread runtime is enough (and keeps this off the thread pool):
     // the only await points are this timer and wasmtime's own event loop.
