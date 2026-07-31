@@ -1,0 +1,303 @@
+//# Imports
+
+import ./graph.vibe {
+  plan_module_order
+}
+
+//# Misc
+
+/// Rotate `edges` and each dependency list by `shift`. Stands in for
+/// compiler/runtime/typecheck_fs.vibe's `dep_visit_order` seed (the #906
+/// Phase 0 nondeterminism probe) without pulling the compiler package in:
+/// what both perturb is the order dependencies are *traversed* in, which a
+/// coordinator dispatching a rank concurrently would also perturb. The plan
+/// must not notice.
+fn rotate_edges(edges: Array[(String, Array[String])], shift: Int) -> Array[(String, Array[String])] {
+  let n = Array::length(edges)
+  let out: Array[(String, Array[String])] = [
+  ]
+  let mut i = 0
+  while i < n {
+    let e = Array::get(edges, (i + shift) % n)
+    let deps = e.1
+    let dn = Array::length(deps)
+    let rotated: Array[String] = [
+    ]
+    let mut j = 0
+    while j < dn {
+      Array::push(rotated, Array::get(deps, (j + shift) % dn))
+      j = j + 1
+    }
+    Array::push(out, (e.0, rotated))
+    i = i + 1
+  }
+  out
+}
+
+fn join_paths(paths: Array[String]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(paths) {
+    if i > 0 {
+      out = String::concat(out, ",")
+    } else {
+      ()
+    }
+    out = String::concat(out, Array::get(paths, i))
+    i = i + 1
+  }
+  out
+}
+
+fn join_ranks(ranks: Array[Int]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(ranks) {
+    if i > 0 {
+      out = String::concat(out, ",")
+    } else {
+      ()
+    }
+    out = String::concat(out, Int::to_string(Array::get(ranks, i)))
+    i = i + 1
+  }
+  out
+}
+
+/// A diamond: app depends on both left and right, which share base.
+/// base is rank 0, left/right rank 1, app rank 2 -- and the canonical order
+/// breaks the left/right tie by path.
+fn diamond() -> Array[(String, Array[String])] {
+  [
+    ("app", [
+      "left",
+      "right"
+    ]),
+    ("left", [
+      "base"
+    ]),
+    ("right", [
+      "base"
+    ]),
+    ("base", [
+    ]),
+  ]
+}
+
+test "plan_module_order ranks a diamond and orders it canonically" {
+  let (paths, ranks) = plan_module_order(diamond(), "app")
+  assert(join_paths(paths) == "base,left,right,app")
+  assert(join_ranks(ranks) == "0,1,1,2")
+}
+
+/// The rank of a module must exceed EVERY dependency's rank, not just the
+/// first one found -- i.e. it is the longest path to a leaf. `top` reaches
+/// `base` both directly (which alone would suggest rank 1) and through the
+/// 3-deep chain, so only taking the max keeps "every dependency sits in a
+/// strictly lower wave" true.
+test "plan_module_order takes the longest path, not the shortest" {
+  let edges: Array[(String, Array[String])] = [
+    ("top", [
+      "base",
+      "mid2"
+    ]),
+    ("mid2", [
+      "mid1"
+    ]),
+    ("mid1", [
+      "base"
+    ]),
+    ("base", [
+    ]),
+  ]
+  let (paths, ranks) = plan_module_order(edges, "top")
+  assert(join_paths(paths) == "base,mid1,mid2,top")
+  assert(join_ranks(ranks) == "0,1,2,3")
+}
+
+/// The scheduling guarantee itself, checked structurally rather than by
+/// eyeballing one expected string: for every edge m -> d, rank(d) < rank(m).
+/// This is what lets a coordinator dispatch a whole rank concurrently.
+test "plan_module_order puts every dependency in a strictly lower rank" {
+  let edges = diamond()
+  let (paths, ranks) = plan_module_order(edges, "app")
+  let mut ei = 0
+  let mut ok = true
+  while ei < Array::length(edges) {
+    let e = Array::get(edges, ei)
+    let mut mi = 0
+    let mut mrank = -1
+    while mi < Array::length(paths) {
+      if Array::get(paths, mi) == e.0 {
+        mrank = Array::get(ranks, mi)
+      } else {
+        ()
+      }
+      mi = mi + 1
+    }
+    let deps = e.1
+    let mut di = 0
+    while di < Array::length(deps) {
+      let mut pi = 0
+      while pi < Array::length(paths) {
+        if Array::get(paths, pi) == Array::get(deps, di) {
+          if Array::get(ranks, pi) >= mrank {
+            ok = false
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        pi = pi + 1
+      }
+      di = di + 1
+    }
+    ei = ei + 1
+  }
+  assert(ok)
+}
+
+/// The determinism the Acceptance Criteria ask of `--jobs=1/2/4`, established
+/// before any parallelism exists: permuting traversal order cannot move a
+/// module or change a rank.
+test "plan_module_order is invariant under dependency visit order" {
+  let (base_paths, base_ranks) = plan_module_order(diamond(), "app")
+  let expect_paths = join_paths(base_paths)
+  let expect_ranks = join_ranks(base_ranks)
+  let mut shift = 1
+  let mut stable = true
+  while shift < 4 {
+    let (paths, ranks) = plan_module_order(rotate_edges(diamond(), shift), "app")
+    if join_paths(paths) != expect_paths || join_ranks(ranks) != expect_ranks {
+      stable = false
+    } else {
+      ()
+    }
+    shift = shift + 1
+  }
+  assert(stable)
+  assert(expect_paths == "base,left,right,app")
+}
+
+/// A module with no entry in `edges` is a terminal leaf, not a hard error --
+/// mirroring ensure_fingerprint_fs_go's `missing:` arm, which returns a
+/// fingerprint for an unresolvable path instead of aborting the walk.
+test "plan_module_order treats an unknown import as a rank-0 leaf" {
+  let edges: Array[(String, Array[String])] = [
+    ("app", [
+      "ghost"
+    ]),
+  ]
+  let (paths, ranks) = plan_module_order(edges, "app")
+  assert(join_paths(paths) == "ghost,app")
+  assert(join_ranks(ranks) == "0,1")
+}
+
+test "plan_module_order handles a root with no dependencies" {
+  let edges: Array[(String, Array[String])] = [
+    ("solo", [
+    ]),
+  ]
+  let (paths, ranks) = plan_module_order(edges, "solo")
+  assert(join_paths(paths) == "solo")
+  assert(join_ranks(ranks) == "0")
+}
+
+/// Only what the root reaches is planned: an unrelated module in `edges` is
+/// not scheduled, matching the driver walking the DAG from an entry point.
+test "plan_module_order only plans modules reachable from the root" {
+  let edges: Array[(String, Array[String])] = [
+    ("app", [
+      "base"
+    ]),
+    ("base", [
+    ]),
+    ("orphan", [
+      "base"
+    ]),
+  ]
+  let (paths, _ranks) = plan_module_order(edges, "app")
+  assert(join_paths(paths) == "base,app")
+}
+
+test "plan_module_order rejects a direct import cycle" {
+  let edges: Array[(String, Array[String])] = [
+    ("a", [
+      "b"
+    ]),
+    ("b", [
+      "a"
+    ]),
+  ]
+  let caught = handle {
+    let (paths, _r) = plan_module_order(edges, "a")
+    join_paths(paths)
+  } with Error {
+    Throw(msg) => msg
+  }
+  assert(caught == "type_db: import cycle detected at a")
+}
+
+test "plan_module_order rejects a self import" {
+  let edges: Array[(String, Array[String])] = [
+    ("solo", [
+      "solo"
+    ]),
+  ]
+  let caught = handle {
+    let (paths, _r) = plan_module_order(edges, "solo")
+    join_paths(paths)
+  } with Error {
+    Throw(msg) => msg
+  }
+  assert(caught == "type_db: import cycle detected at solo")
+}
+
+/// A cycle buried under a legitimate shared dependency: `base` is revisited
+/// (already finished, must NOT look like a cycle) while `x -> y -> x` is one.
+/// Guards the finished-vs-on-path colour distinction.
+test "plan_module_order distinguishes a revisited node from a cycle" {
+  let edges: Array[(String, Array[String])] = [
+    ("app", [
+      "base",
+      "x"
+    ]),
+    ("x", [
+      "base",
+      "y"
+    ]),
+    ("y", [
+      "x"
+    ]),
+    ("base", [
+    ]),
+  ]
+  let caught = handle {
+    let (paths, _r) = plan_module_order(edges, "app")
+    join_paths(paths)
+  } with Error {
+    Throw(msg) => msg
+  }
+  assert(caught == "type_db: import cycle detected at x")
+}
+
+/// The same shared dependency WITHOUT a cycle must plan cleanly -- the
+/// negative control for the test above, so a "detects cycles" implementation
+/// that simply rejects every revisit cannot pass both.
+test "plan_module_order accepts a repeatedly shared dependency" {
+  let edges: Array[(String, Array[String])] = [
+    ("app", [
+      "base",
+      "x"
+    ]),
+    ("x", [
+      "base"
+    ]),
+    ("base", [
+    ]),
+  ]
+  let (paths, ranks) = plan_module_order(edges, "app")
+  assert(join_paths(paths) == "base,x,app")
+  assert(join_ranks(ranks) == "0,1,2")
+}
