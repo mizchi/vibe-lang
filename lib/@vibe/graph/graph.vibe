@@ -401,11 +401,19 @@ fn mo_intern(names: Array[String], color: Array[Int], rank: Array[Int], p: Strin
 /// formal/VibeFormal/Compiler/Scheduler.lean's acyclicity and `Ready`
 /// premises (#906 step 8) -- without a filesystem in the loop.
 ///
-/// NOT yet wired into ensure_fingerprint_fs_go: that recursion still does its
-/// own inline cycle check, and switching the main path over is #906 step 4(D),
-/// which is blocked on a Wasmtime multi-instance host (docs/compiler-
-/// parallelism.md "Runtime backend decision") -- there is no coordinator to
-/// consume this order until real workers exist.
+/// Consumed out-of-process, via cli_adapter.vibe's `VIBE_PLAN_MODULE_ORDER`
+/// mode: the job-dir worker takes each dependency's environment as a value
+/// (`dep<i>.env`), so a coordinator must know the waves before it dispatches
+/// anything. `ensure_fingerprint_fs_go`'s own recursion still does its inline
+/// cycle check and is unchanged -- it stays the sequential path.
+///
+/// The earlier note here said this was blocked on a Wasmtime multi-instance
+/// host, because such a host "shares one Engine and compiled Module". That
+/// premise was wrong and #1248 measured it: `viberun --precompile` already
+/// pays for that sharing (AOT `.cwasm` ~8ms/job vs ~485ms JIT), so an
+/// ordinary PROCESS pool over the existing image scales -- 3.37x on 4 cores,
+/// with byte-identical results at -P 1/2/4/8
+/// (scripts/bench_module_job_pool.sh).
 export fn plan_module_order(edges: Array[(String, Array[String])], root: String) -> (Array[String], Array[Int]) with { Error } {
   let names: Array[String] = [
   ]

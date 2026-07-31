@@ -71,6 +71,10 @@ import ./cli_support.vibe {
   check_linked_file, strip_executable_wasm_env
 }
 
+import @vibe/graph {
+  plan_module_order
+}
+
 import @vibe/lsp {
   lsp_diagnostics_json_string, lsp_main
 }
@@ -577,6 +581,86 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
       // than a second subprocess call per file) keeps #1170's discovery-loop
       // parallelization win intact.
       Fs::write_file(String::concat(output_path, ".src"), ingested)
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  } else ()
+  // #1239 step 4(D): hand plan_module_order's wave numbers to an
+  // out-of-process coordinator.
+  //
+  // The job-dir worker contract takes each dependency's environment as a
+  // VALUE (dep<i>.env), so a coordinator can only dispatch a module once
+  // every dependency of it has already produced one -- it needs the schedule
+  // BEFORE it dispatches anything, which is precisely what this ordering is
+  // for. Computing it here rather than re-deriving a topological sort in the
+  // coordinator keeps ONE canonical ordering implementation: the rule stays
+  // the tested one (lib/@vibe/graph/module_order_test.vibe) and the one
+  // modelled in formal/VibeFormal/Compiler/Scheduler.lean, instead of a
+  // lookalike in shell that could drift from it silently.
+  //
+  //   input_path   one module per line, TAB-separated: its path, then its
+  //                already-resolved dependency paths. The FIRST line's path
+  //                is the root. Blank lines are ignored.
+  //   output_path  one module per line, "<rank>\t<path>", in canonical order
+  //                (rank ascending, then path ascending). Every module of
+  //                rank k depends only on modules of rank < k, so a
+  //                coordinator dispatches one whole rank at a time.
+  //
+  // Resolution is the caller's job (VIBE_LIST_DEPS already does it); this
+  // mode is pure ordering and needs no filesystem walk of its own. An import
+  // cycle throws and lands in <output_path>.diag like every other mode here,
+  // with the same wording the serial walk produces.
+  if Env::get("VIBE_PLAN_MODULE_ORDER") == "1" {
+    return handle {
+      let text = Fs::read_file(input_path)
+      let lines = String::split(text, "\n")
+      let edges: Array[(String, Array[String])] = [
+      ]
+      let mut root = ""
+      let mut li = 0
+      while li < Array::length(lines) {
+        let fields = String::split(Array::get(lines, li), "\t")
+        let name = Array::get(fields, 0)
+        if name == "" {
+          ()
+        } else {
+          let deps: Array[String] = [
+          ]
+          let mut fi = 1
+          while fi < Array::length(fields) {
+            let d = Array::get(fields, fi)
+            if d == "" {
+              ()
+            } else {
+              Array::push(deps, d)
+            }
+            fi = fi + 1
+          }
+          if root == "" {
+            root = name
+          } else {
+            ()
+          }
+          Array::push(edges, (name, deps))
+        }
+        li = li + 1
+      }
+      // An empty graph is not an error -- it is what a coordinator sees when
+      // discovery found nothing to schedule. Writing the empty plan lets it
+      // take the ordinary "no work" path instead of a diagnostic path.
+      if root == "" {
+        Fs::write_file(output_path, "")
+      } else {
+        let (paths, ranks) = plan_module_order(edges, root)
+        let mut out = ""
+        let mut oi = 0
+        while oi < Array::length(paths) {
+          out = String::concat(out, String::concat(Int::to_string(Array::get(ranks, oi)), String::concat("\t", String::concat(Array::get(paths, oi), "\n"))))
+          oi = oi + 1
+        }
+        Fs::write_file(output_path, out)
+      }
       0
     } with Error {
       Throw(msg) => emit_compile_diag(output_path, msg)
