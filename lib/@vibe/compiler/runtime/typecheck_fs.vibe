@@ -17,7 +17,17 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, Type, TypeEnv, dir_of_path, env_bind, env_flat_bindings, env_lookup_flat, resolve_import_path, resolve_import_path_candidates
+  Expr,
+  Stmt,
+  Type,
+  TypeEnv,
+  dir_of_path,
+  env_bind,
+  env_flat_bindings,
+  env_lookup_flat,
+  resolve_import_path,
+  resolve_import_path_candidates,
+  str_lt
 }
 
 // #946(4): inline-wasm codegen validation (lane/align/etc. errors) runs as
@@ -370,6 +380,43 @@ fn dep_order_seed() -> Int {
     Array::get(dep_order_seed_cell, 0)
   } else {
     0
+  }
+}
+
+/// --- #1259: cross-module diagnostic collection ---------------------------
+///
+/// Whether the import-DAG walk COLLECTS a diagnostic per failing module
+/// instead of failing fast on the first one. This is #1239 step 5's missing
+/// prerequisite: step 5 asks for diagnostics sorted into a canonical order and
+/// compared across `--jobs=1/2/4`, and until now there was never more than one
+/// diagnostic to sort -- commit_module_outcome threw on the first.
+///
+/// OFF by default, and off is byte-for-byte the pre-#1259 walk: the same
+/// message, raised for the same module, with the same partial cache state
+/// behind it. `VIBE_DIAGNOSTICS_ALL=1` (read in cli_adapter.vibe alongside the
+/// other mode switches, so every lane agrees) turns it on.
+///
+/// Default-off is a deliberate compatibility choice, not indecision. Turning
+/// collection on changes two observable things at once -- the error text grows
+/// from one diagnostic to N, and modules that a fail-fast walk never reached
+/// now get checked and their environments committed to the persistent cache --
+/// and flipping the default is a separate decision from having the mechanism
+/// and its determinism gate.
+///
+/// The switch rides in a module-level cell for the same reason
+/// dep_order_seed_cell above does.
+let collect_diagnostics_cell = array_empty()
+
+export fn set_collect_module_diagnostics(on: Bool) -> Unit {
+  Array::truncate(collect_diagnostics_cell, 0)
+  Array::push(collect_diagnostics_cell, on)
+}
+
+fn collect_module_diagnostics() -> Bool {
+  if Array::length(collect_diagnostics_cell) > 0 {
+    Array::get(collect_diagnostics_cell, 0)
+  } else {
+    false
   }
 }
 
@@ -1489,6 +1536,108 @@ export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String])
   (StringBuilder::freeze(buf), ordered_sources)
 }
 
+/// True when one of `path`'s planned dependencies is in `failed` -- i.e. was
+/// itself diagnosed, or was blocked by this same rule.
+///
+/// A blocked module cannot be checked at all: its dependency has no
+/// fingerprint to fold into its cache key and no environment to import. It
+/// therefore contributes NO diagnostic of its own. Reporting one would be a
+/// cascade -- "unknown binding x", once per importer -- which is precisely the
+/// noise a canonical diagnostic set exists to be free of.
+///
+/// Transitivity comes from the wave order: blocked modules are pushed onto
+/// `failed` too, and every dependency of a module was stepped in a strictly
+/// earlier wave, so `failed` is already complete for `path` when this runs.
+fn module_is_blocked(plan_edges: Array[(String, Array[String])], failed: Array[String], path: String) -> Bool {
+  if Array::length(failed) == 0 {
+    false
+  } else {
+    match plan_deps_of(plan_edges, path) {
+      // No edge entry means the plan short-circuited this module (missing
+      // source, reusable fingerprint, persistent leaf cache) -- it has no
+      // dependencies to be blocked by.
+      None => false,
+      Some(deps) => {
+        let n = Array::length(deps)
+        let mut i = 0
+        let mut blocked = false
+        while i < n && !blocked {
+          if contains_str(failed, Array::get(deps, i)) {
+            blocked = true
+          } else {
+            i = i + 1
+          }
+        }
+        blocked
+      }
+    }
+  }
+}
+
+/// Canonical order for two collected diagnostics: normalized module path
+/// first, then the message.
+///
+/// #1239 step 5 specifies path -> source start/end -> diagnostic code ->
+/// message. Only the first and last of those exist today: check_module emits
+/// AT MOST ONE diagnostic per module (its Diagnosed arm builds a one-element
+/// array), so within a path there is nothing to break ties between, and there
+/// are no diagnostic codes yet. The message tiebreak is here anyway to keep
+/// the order TOTAL, so the day a worker returns several diagnostics for one
+/// module they sort deterministically instead of silently inheriting
+/// collection order.
+///
+/// str_lt, not `<`: canonical ordering must be true lexicographic. The builtin
+/// compares length first, which would make the order depend on path length
+/// (CLAUDE.md documents that footgun; @vibe/graph's plan_module_order avoids
+/// it the same way).
+fn module_diag_lt(a: (String, String), b: (String, String)) -> Bool {
+  if a.0 == b.0 {
+    str_lt(a.1, b.1)
+  } else {
+    str_lt(a.0, b.0)
+  }
+}
+
+/// Insertion sort into canonical order. One diagnostic per failing module, and
+/// a build with enough failing modules for O(N^2) to matter has bigger
+/// problems than the sort.
+fn sort_module_diagnostics(diags: Array[(String, String)]) -> Array[(String, String)] {
+  let out: Array[(String, String)] = [
+  ]
+  let n = Array::length(diags)
+  let mut i = 0
+  while i < n {
+    let entry = Array::get(diags, i)
+    Array::push(out, entry)
+    let mut j = Array::length(out) - 1
+    while j > 0 && module_diag_lt(entry, Array::get(out, j - 1)) {
+      Array::set(out, j, Array::get(out, j - 1))
+      Array::set(out, j - 1, entry)
+      j = j - 1
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The collected set as one error string: canonical order, exact duplicates
+/// dropped, one diagnostic per line. A single collected diagnostic is
+/// therefore byte-identical to what the fail-fast walk would have thrown --
+/// which is what makes collection mode a superset of the default rather than
+/// a different output format.
+fn join_module_diagnostics(diags: Array[(String, String)]) -> String {
+  let sorted = sort_module_diagnostics(diags)
+  let msgs = array_empty()
+  let n = Array::length(sorted)
+  let mut i = 0
+  while i < n {
+    let entry = Array::get(sorted, i)
+    Array::push(msgs, entry.1)
+    i = i + 1
+  }
+  String::join(dedupe_diagnostics(msgs), "\n")
+}
+
 /// The import-DAG walk, as the wave loop a coordinator dispatches from
 /// (#1239 step 4(D)).
 ///
@@ -1504,6 +1653,14 @@ export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String])
 /// analyze_calls's #556 note in perceus/perceus.vibe): the remaining step
 /// 4(D) blocker is gone. Dispatching a wave out-of-process is now a change to
 /// the inner loop, not a restructuring of the walk.
+///
+/// #1259: the wave loop is also where diagnostics are COLLECTED rather than
+/// fired off one at a time. A wave's modules are independent by construction,
+/// so one of them being diagnosed says nothing about its siblings -- they
+/// still have every input they need. Collection therefore falls out of the
+/// wave structure: diagnose, mark the module failed, keep stepping the rest of
+/// the wave, and skip only the modules that actually depend on a failure. See
+/// collect_module_diagnostics (off by default).
 ///
 /// dep_visit_order (the #906 Phase 0 nondeterminism probe, seeded by
 /// VIBE_DEP_ORDER_SEED) now permutes the order WITHIN a wave rather than a
@@ -1523,6 +1680,12 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
   let mut envc = env_cache
   let mut dsc = dep_source_cache
   let mut pc = planned_parse_count
+  // #1259: empty unless collection is on, in which case `failed` holds every
+  // module that was diagnosed OR blocked by one, and `diags` the (path,
+  // message) pairs to sort at the end.
+  let failed = empty_stack()
+  let diags: Array[(String, String)] = [
+  ]
   let n = Array::length(order)
   let mut i = 0
   while i < n {
@@ -1537,15 +1700,64 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
     let mut k = 0
     while k < wave {
       let m = Array::get(order, i + Array::get(visit, k))
-      let (fp, next_db, next_envc, next_dsc, next_pc) = step_module_fs(plan_leaf_fps, plan_edges, fps, db, envc, dsc, pc, m)
-      db = next_db
-      envc = next_envc
-      dsc = next_dsc
-      pc = next_pc
-      Array::push(fps, (m, fp))
+      if module_is_blocked(plan_edges, failed, m) {
+        Array::push(failed, m)
+      } else {
+        // Snapshots of the accumulators as of ENTRY to this module's step.
+        // The handler needs values it can close over, and they are also the
+        // right state to carry forward when the step raises: a module that
+        // does not check commits nothing.
+        let cur_db = db
+        let cur_envc = envc
+        let cur_dsc = dsc
+        let cur_pc = pc
+        let raised = empty_stack()
+        let (fp, next_db, next_envc, next_dsc, next_pc) = handle {
+          step_module_fs(plan_leaf_fps, plan_edges, fps, cur_db, cur_envc, cur_dsc, cur_pc, m)
+        } with Error {
+          Throw(msg) => {
+            Array::push(raised, msg)
+            (String::concat("diagnosed:", m), cur_db, cur_envc, cur_dsc, cur_pc)
+          }
+        }
+        if Array::length(raised) > 0 {
+          let msg = Array::get(raised, 0)
+          // Re-raised OUTSIDE the handler, so this is ordinary propagation
+          // and not a throw from within a handler body. Two cases never
+          // become collected diagnostics:
+          //
+          //   - fail-fast mode, the default: identical message, identical
+          //     partial state, raised one frame later than before
+          //   - an internal invariant violation (the `type_db:` prefix, the
+          //     two unreachable arms in step_module_fs / commit_with_deps_fs)
+          //     -- infrastructure failure, not something the user's program
+          //     said, so it must stay fatal even while collecting
+          if !collect_module_diagnostics() || String::starts_with(msg, "type_db: ") {
+            throw(msg)
+          } else {
+            Array::push(failed, m)
+            Array::push(diags, (m, msg))
+          }
+        } else {
+          db = next_db
+          envc = next_envc
+          dsc = next_dsc
+          pc = next_pc
+          Array::push(fps, (m, fp))
+        }
+      }
       k = k + 1
     }
     i = j
+  }
+  // Before the root lookup: with the root itself diagnosed or blocked there is
+  // no fingerprint and no environment for it, and reporting "missing:" for a
+  // module whose real problem is a type error two levels down would bury the
+  // diagnostics this whole pass exists to produce.
+  if Array::length(diags) > 0 {
+    throw(join_module_diagnostics(diags))
+  } else {
+    ()
   }
   let root_fingerprint = match lookup_string_pair(fps, path) {
     Some(f) => f,

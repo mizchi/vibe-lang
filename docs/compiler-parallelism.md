@@ -151,6 +151,27 @@ and fails the entire compilation.
 Diagnostics are ordered by normalized module path, source start/end, diagnostic
 code, then message. They are never ordered by task id or completion time.
 
+**Status (#1259):** collection and the path-level ordering exist on the real fs
+walk, behind `VIBE_DIAGNOSTICS_ALL=1`
+(`set_collect_module_diagnostics`, `runtime/typecheck_fs.vibe`). The wave loop
+diagnoses a module, marks it failed, and keeps stepping its wave siblings —
+they are independent by construction, so one failure removes none of their
+inputs — then skips only the modules that actually depend on a failure, so a
+blocked importer contributes no cascade. The collected set is sorted by module
+path and asserted byte-identical across `VIBE_DEP_ORDER_SEED` values, which is
+the within-wave permutation a parallel coordinator varies between runs
+(`compiler_gate.sh` section 74).
+
+Two parts of the ordering above are not reachable yet: `check_module` emits at
+most one diagnostic per module, so source start/end never breaks a tie, and
+there are no diagnostic codes. The comparator is total anyway, so a
+multi-diagnostic worker sorts deterministically the day it lands.
+
+The default stays fail-fast. Collection changes two observable things at once —
+the error text grows from one diagnostic to N, and modules a fail-fast walk
+never reached get checked and committed to the persistent cache — so flipping
+the default is a separate decision from having the mechanism.
+
 ## Codegen split
 
 Function codegen is enabled only after a serial `WholeProgramPlan` freezes:
