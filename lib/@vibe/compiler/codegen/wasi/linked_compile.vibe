@@ -114,7 +114,8 @@ import @vibe/compiler/codegen/common_analysis {
   emit_i64_extend_i32_u,
   is_mut_captured_in,
   scope_tail_proj_root,
-  stmts_contain_exceptions
+  stmts_contain_exceptions,
+  zero_alloc_check
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -744,6 +745,14 @@ fn lc_wrap_entry_error_boundary(stmts: Array[Stmt], entry_name: String) -> Unit 
 }
 
 export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, prov: DbgProv) -> Bytes with { Error } {
+  // ADR-0091 Phase 1: enforce `@zero_alloc` markers before any lowering
+  // rewrites the marked bodies. No-op when no marker is present.
+  let za_msg = zero_alloc_check(stmts)
+  if za_msg != "" {
+    throw(za_msg)
+  } else {
+    ()
+  }
   // Method-bearing-trait dictionary passing (#641 PR-3). Universal codegen
   // convergence point — runs here on the fully merged program before generic
   // type params are stripped (just below). No-op unless a method-bearing trait

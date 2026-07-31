@@ -109,6 +109,35 @@ RC default のまま `@zero_alloc` は成立する。
    ADR-0090 region との合流(既定で arena 確保を許容)。
 5. `bytes_per_op == 0` bench の tracked series 追加。
 
+## Phase 1 implementation notes (2026-07-31, #1262)
+
+最初の縦串が landed した。設計との差分・既知ギャップ:
+
+- **構文**: `@zero_alloc` は lexer の `@` package-ref 経路で単一の
+  `TIdent("@zero_alloc")` に lex され、top-level の `SExpr` 文として parse
+  される — parser 変更ゼロ。checker(`checker_stmt.vibe` の SExpr branch)が
+  この marker だけ ADR-0069 reject と名前解決を skip し、linear backend は
+  top-level SExpr を従来どおり drop する。marker は直後の `fn` 宣言
+  (lowered: `SLet(_, _, name, _, EFn(..))`)に付く。`(strict)` / `(assume)`
+  修飾は未実装。
+- **検査**(`common_analysis.vibe::zero_alloc_check`、
+  `compile_wasi_module_linked_impl` 冒頭で実行): AST レベルの保守的走査。
+  確保扱い = ctor(enum variant / suberror / struct 名、呼び出しと裸 ident
+  両方)、tuple/array/record/map literal、string interpolation、closure
+  literal、float literal(linear backend の heap-box)、effect handler、
+  safe-builtin allowlist(read / in-place write 系のみ)外の builtin 呼び、
+  間接呼び出し。top-level fn 呼びは推移的に走査(visited set で再帰安全)。
+  診断は `zero_alloc: fn 'X' may allocate: <site>`(経由呼び出しは
+  `call to 'Y' which may allocate: ...` で連鎖)。
+- **既知ギャップ(Phase 1 で許容)**: 二項演算子は type-blind — String/
+  Double 型の**変数**への `+` 等(確保する concat / boxing に落ちる)は
+  検出できない(literal operand のみ検出)。per-fn サマリの codegen 計装
+  (ADR 本文 step 1 の「確保サイト計装」)は未着手 — 検査は AST 走査で
+  先行。module body 内の fn、wasm-gc backend、`bytes_per_op == 0` bench
+  series、ADR-0092 reuse / ADR-0090 arena との合流(step 4-5)も未着手。
+- **gate**: `compiler_gate.sh` §75(positive `zero_alloc_ok.vibe` = 42 /
+  negative `err_zero_alloc_ctor.vibe` needle "zero_alloc")。
+
 ## Reconciliation ledger
 
 | 項目 | 根拠 / 観測 | 結論 |

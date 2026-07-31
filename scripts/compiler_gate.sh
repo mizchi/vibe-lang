@@ -7640,4 +7640,48 @@ fi
 rm -rf "$r90dir"
 echo "[compiler-gate] ADR-0090 region + MutList vertical slice ok"
 
+# 75/75. ADR-0091 Phase 1 (#1262): `@zero_alloc` attribute. The attribute
+# lexes as a single ident token, parses as a top-level SExpr the checker
+# skips (checker_stmt.vibe) and the linear backend drops; enforcement is
+# common_analysis.vibe's zero_alloc_check, run at the top of
+# compile_wasi_module_linked_impl -- a conservative AST walk (constructors,
+# container/closure/string-building literals, float literals, effect
+# handlers, and any call not on the safe-builtin list or resolvable to a
+# proven-clean top-level fn are rejected; transitive through top-level fn
+# calls). Positive: a pure-arithmetic @zero_alloc fn compiles and returns
+# 42 (zero_alloc_ok.vibe). Negative: a @zero_alloc fn constructing an enum
+# value is a STATIC error naming the site (err_zero_alloc_ctor.vibe).
+echo "[compiler-gate] 75/75 ADR-0091 @zero_alloc allocation check (#1262)"
+za91dir="_build/_gate_zero_alloc91"
+rm -rf "$za91dir"; mkdir -p "$za91dir"
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/zero_alloc_ok.vibe > "$za91dir/pos.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$za91dir/pos.vibe" "$za91dir/pos.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$za91dir/pos.wasm" ]; then
+  echo "[compiler-gate] FAIL: zero_alloc_ok.vibe did not compile -- ADR-0091 @zero_alloc slice regressed" >&2
+  cat "$za91dir/pos.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+za91_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$za91dir/pos.wasm" 2>/dev/null | tail -1)"
+if [ "$za91_pos_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: zero_alloc_ok.vibe got '$za91_pos_out' (want 42)" >&2
+  exit 1
+fi
+cp fixtures/err_zero_alloc_ctor.vibe "$za91dir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$za91dir/neg.vibe" "$za91dir/neg.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$za91dir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_zero_alloc_ctor.vibe compiled successfully -- must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF 'zero_alloc' "$za91dir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_zero_alloc_ctor.vibe did not produce the expected diagnostic" >&2
+  cat "$za91dir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$za91dir"
+echo "[compiler-gate] ADR-0091 @zero_alloc allocation check ok"
+
 echo "[compiler-gate] ok"

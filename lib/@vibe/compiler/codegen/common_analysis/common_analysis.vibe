@@ -1660,3 +1660,262 @@ fn count_lambda_sites_arms(arms: Array[(Pat, Expr)]) -> Int {
   }
   total
 }
+
+//# ADR-0091 zero_alloc (Phase 1)
+
+/// Builtins allowed inside a `@zero_alloc` fn: reads and in-place writes
+/// that never touch the allocator. Everything else callable is treated as
+/// potentially allocating (conservative Phase 1 default).
+fn za_safe_builtin(f: String) -> Bool {
+  f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Bytes::get" || f == "Bytes::set" || f == "Bytes::length" || f == "String::length" || f == "String::char_code_at" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "assert" || f == "not"
+}
+
+fn za_first(a: String, b: String) -> String {
+  if a != "" {
+    a
+  } else {
+    b
+  }
+}
+
+/// Walk an expression under `@zero_alloc` and return "" when it is proven
+/// allocation-free, else a description of the first allocation site found.
+/// Conservative Phase 1 (ADR-0091): constructors, container/closure/string
+/// literals, float literals (heap-boxed on the linear backend), effect
+/// handlers, and any call not on the safe-builtin list or resolvable to a
+/// proven-clean top-level fn are all rejected. Known accepted gap: binary
+/// operators are type-blind here, so `+` on String/Double-typed VARIABLES
+/// (which lowers to an allocating concat / a boxing op) is not caught --
+/// only literal operands are.
+fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Array[Expr], visited: Array[String]) -> String {
+  match e {
+    EInt(_) => "",
+    EFloat(_) => "float literal (heap-boxed on the linear backend)",
+    EString(_) => "",
+    EBool(_) => "",
+    EIdent(id, _) => if array_contains_str(ctors, id) {
+      String::concat("constructor '", String::concat(id, "'"))
+    } else {
+      ""
+    },
+    ETuple(items) => {
+      let _ = items
+      "tuple literal"
+    },
+    EArray(_) => "array literal",
+    ERecord(_, _, _) => "record/struct literal",
+    EMap(_) => "map literal",
+    EStringInterp(_) => "string interpolation",
+    EFn(_, _, _, _, _, _) => "closure literal (allocates its environment)",
+    EIf(zc, zt, zf) => za_first(za_walk(zc, ctors, fn_names, fn_bodies, visited), za_first(za_walk(zt, ctors, fn_names, fn_bodies, visited), za_walk(zf, ctors, fn_names, fn_bodies, visited))),
+    ELet(_, zv, zb, _) => za_first(za_walk(zv, ctors, fn_names, fn_bodies, visited), za_walk(zb, ctors, fn_names, fn_bodies, visited)),
+    ELetRec(_, zv, zb) => za_first(za_walk(zv, ctors, fn_names, fn_bodies, visited), za_walk(zb, ctors, fn_names, fn_bodies, visited)),
+    ELetMut(_, zv, zb, _) => za_first(za_walk(zv, ctors, fn_names, fn_bodies, visited), za_walk(zb, ctors, fn_names, fn_bodies, visited)),
+    EAssign(_, zv, zb) => za_first(za_walk(zv, ctors, fn_names, fn_bodies, visited), za_walk(zb, ctors, fn_names, fn_bodies, visited)),
+    EAssignOp(_, _, zv, zb) => za_first(za_walk(zv, ctors, fn_names, fn_bodies, visited), za_walk(zb, ctors, fn_names, fn_bodies, visited)),
+    ESeq(za, zb) => za_first(za_walk(za, ctors, fn_names, fn_bodies, visited), za_walk(zb, ctors, fn_names, fn_bodies, visited)),
+    EMatch(scr, arms) => {
+      let mut r = za_walk(scr, ctors, fn_names, fn_bodies, visited)
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, ai)
+        if r == "" {
+          r = za_walk(arm_body, ctors, fn_names, fn_bodies, visited)
+        } else {
+          ()
+        }
+        ai = ai + 1
+      }
+      r
+    },
+    EHandle(_, _) => "effect handler (allocates evidence)",
+    EWhile(zc, zb) => za_first(za_walk(zc, ctors, fn_names, fn_bodies, visited), za_walk(zb, ctors, fn_names, fn_bodies, visited)),
+    ELoop(inits, zb) => {
+      let mut r = ""
+      let mut li = 0
+      while li < Array::length(inits) {
+        let (_, init_e) = Array::get(inits, li)
+        if r == "" {
+          r = za_walk(init_e, ctors, fn_names, fn_bodies, visited)
+        } else {
+          ()
+        }
+        li = li + 1
+      }
+      za_first(r, za_walk(zb, ctors, fn_names, fn_bodies, visited))
+    },
+    EForIn(_, _, zsrc, zb) => za_first(za_walk(zsrc, ctors, fn_names, fn_bodies, visited), za_walk(zb, ctors, fn_names, fn_bodies, visited)),
+    ECall(callee, cargs, _) => {
+      let mut r = ""
+      let mut ci = 0
+      while ci < Array::length(cargs) {
+        if r == "" {
+          r = za_walk(Array::get(cargs, ci), ctors, fn_names, fn_bodies, visited)
+        } else {
+          ()
+        }
+        ci = ci + 1
+      }
+      if r != "" {
+        r
+      } else {
+        match callee {
+          EIdent(cname, _) => if array_contains_str(ctors, cname) {
+            String::concat("constructor '", String::concat(cname, "'"))
+          } else if za_safe_builtin(cname) {
+            ""
+          } else {
+            let mut fi = 0
+            let mut fidx = 0 - 1
+            while fi < Array::length(fn_names) {
+              if Array::get(fn_names, fi) == cname {
+                fidx = fi
+                fi = Array::length(fn_names)
+              } else {
+                fi = fi + 1
+              }
+            }
+            if fidx >= 0 {
+              if array_contains_str(visited, cname) {
+                ""
+              } else {
+                Array::push(visited, cname)
+                let inner = za_walk(Array::get(fn_bodies, fidx), ctors, fn_names, fn_bodies, visited)
+                if inner == "" {
+                  ""
+                } else {
+                  String::concat("call to '", String::concat(cname, String::concat("' which may allocate: ", inner)))
+                }
+              }
+            } else {
+              String::concat("call to '", String::concat(cname, "' (not proven allocation-free)"))
+            }
+          },
+          _ => "indirect call (not proven allocation-free)"
+        }
+      }
+    },
+    EBinOp(_, za, zb) => za_first(za_walk(za, ctors, fn_names, fn_bodies, visited), za_walk(zb, ctors, fn_names, fn_bodies, visited)),
+    EUnaryOp(_, za) => za_walk(za, ctors, fn_names, fn_bodies, visited),
+    EDot(zobj, _, _, _) => za_walk(zobj, ctors, fn_names, fn_bodies, visited),
+    ELabeledArg(_, _, zv) => za_walk(zv, ctors, fn_names, fn_bodies, visited),
+    EReturn(zv) => za_walk(zv, ctors, fn_names, fn_bodies, visited),
+    EBreak(zo) => match zo {
+      Some(zv) => za_walk(zv, ctors, fn_names, fn_bodies, visited),
+      None => ""
+    },
+    EContinue(zvs) => {
+      let mut r = ""
+      let mut vi = 0
+      while vi < Array::length(zvs) {
+        if r == "" {
+          r = za_walk(Array::get(zvs, vi), ctors, fn_names, fn_bodies, visited)
+        } else {
+          ()
+        }
+        vi = vi + 1
+      }
+      r
+    },
+    ESpread(zv) => za_walk(zv, ctors, fn_names, fn_bodies, visited),
+    EUnit => ""
+  }
+}
+
+/// ADR-0091 Phase 1: enforce `@zero_alloc` markers. The attribute lexes as
+/// the single ident token `@zero_alloc`, parses as a top-level `SExpr`
+/// statement (which the linear backend drops), and must IMMEDIATELY precede
+/// the `fn` declaration it marks (lowered form: `SLet(_, _, name, _,
+/// EFn(..))`). Returns "" when every marked fn is proven allocation-free,
+/// else a `zero_alloc:`-prefixed diagnostic. Top-level fns only (module
+/// bodies are out of scope for this slice); linear backend only.
+export fn zero_alloc_check(stmts: Array[Stmt]) -> String {
+  let fn_names = array_empty()
+  let fn_bodies = array_empty()
+  let ctors = array_empty()
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SLet(_, _, lname, _, lval) => match lval {
+        EFn(_, _, _, _, _, fb) => {
+          Array::push(fn_names, lname)
+          Array::push(fn_bodies, fb)
+        },
+        _ => ()
+      },
+      SEnum(_, _, _, variants, _) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, _) = Array::get(variants, vi)
+          Array::push(ctors, vname)
+          vi = vi + 1
+        }
+      },
+      SSuberror(_, _, sub_variants) => {
+        let mut vi2 = 0
+        while vi2 < Array::length(sub_variants) {
+          let (vname2, _) = Array::get(sub_variants, vi2)
+          Array::push(ctors, vname2)
+          vi2 = vi2 + 1
+        }
+      },
+      SStruct(_, sname, _, _, _, _) => Array::push(ctors, sname),
+      _ => ()
+    }
+    si = si + 1
+  }
+  let mut msg = ""
+  let mut mi = 0
+  while mi < Array::length(stmts) {
+    let is_marker = match Array::get(stmts, mi) {
+      SExpr(me) => match me {
+        EIdent(mname, _) => mname == "@zero_alloc",
+        _ => false
+      },
+      _ => false
+    }
+    if is_marker && msg == "" {
+      let target_name = if mi + 1 < Array::length(stmts) {
+        match Array::get(stmts, mi + 1) {
+          SLet(_, _, tname, _, tval) => match tval {
+            EFn(_, _, _, _, _, _) => tname,
+            _ => ""
+          },
+          _ => ""
+        }
+      } else {
+        ""
+      }
+      if target_name == "" {
+        msg = "zero_alloc: '@zero_alloc' must immediately precede a fn declaration"
+      } else {
+        let mut fi2 = 0
+        let mut fidx2 = 0 - 1
+        while fi2 < Array::length(fn_names) {
+          if Array::get(fn_names, fi2) == target_name {
+            fidx2 = fi2
+            fi2 = Array::length(fn_names)
+          } else {
+            fi2 = fi2 + 1
+          }
+        }
+        if fidx2 >= 0 {
+          let visited = array_empty()
+          Array::push(visited, target_name)
+          let r = za_walk(Array::get(fn_bodies, fidx2), ctors, fn_names, fn_bodies, visited)
+          if r != "" {
+            msg = String::concat("zero_alloc: fn '", String::concat(target_name, String::concat("' may allocate: ", r)))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      }
+    } else {
+      ()
+    }
+    mi = mi + 1
+  }
+  msg
+}
