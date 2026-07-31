@@ -1132,6 +1132,33 @@ export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int
     (ECall(EIdent("TaskGroup::run", off), [
       lam
     ], off), close)
+  } else if mode == 27 {
+    // ADR-0090 Phase 1: `region r { body }` lowers to
+    // `__region_run((r) -> { body })`. `__region_run` is reserved internal
+    // ABI (only this syntax emits the name -- __no_entry__/__set_field
+    // convention), so the checker's literal-name special case cannot be
+    // bypassed by aliasing: the hole ADR-0090 records for TaskGroup::run
+    // does not exist here by construction.
+    let off = Array::get(starts, pos)
+    let (rname, rn) = match peek(tokens, pos) {
+      TIdent(name) => (name, pos + 1),
+      _ => throw("expected a region binder name after 'region'")
+    }
+    let br = expect_tk(tokens, rn, "{")
+    let (body, bn) = parse_recur(tokens, br, 0)
+    let close = expect_tk(tokens, bn, "}")
+    let tparams = Array::slice([
+      ""
+    ], 0, 0)
+    let tbounds = Array::slice([
+      ("", tparams)
+    ], 0, 0)
+    let lam = EFn(tparams, tbounds, [
+      (rname, None)
+    ], None, None, body)
+    (ECall(EIdent("__region_run", off), [
+      lam
+    ], off), close)
   } else {
     let actual = tk_name(peek(tokens, pos))
     throw("internal parser error: unknown parse mode \{mode} at #\{pos} token=\{actual}")
