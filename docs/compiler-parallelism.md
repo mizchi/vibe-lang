@@ -704,10 +704,16 @@ flags for the serial path, not a new one introduced here.
 > so on a 48-rank-deep graph it ran ~48 mostly-single-module frontiers rather
 > than 166 jobs flat. The end-to-end delta (~3.4s) is the real saving.
 >
-> `VIBE_PLAN_MODULE_ORDER` now has no production consumer — only
-> `test_parallel_warm_pool_gate.sh`, which still drives it directly for the
-> diamond/cycle/empty-graph cases. Whether to keep it as a standalone
-> ordering primitive or fold it into `VIBE_MODULE_PLAN` is left open.
+> **`VIBE_PLAN_MODULE_ORDER` was removed in #1259.** Once discovery moved into
+> the compiler it had no production consumer left — only
+> `test_parallel_warm_pool_gate.sh`, which drove it for the
+> diamond/cycle/empty-graph cases. Those are properties of the ordering rule,
+> not of the process boundary, and `lib/@vibe/graph/module_order_test.vibe`
+> pins all of them in-process across 11 cases; the mode added a supported
+> env-var surface and a TSV parser that nothing called. Folding rather than
+> keeping: a coordinator that wants ranks wants discovery too, which is what
+> `VIBE_MODULE_PLAN` returns, and a caller that already holds resolved edges
+> would still have to agree with the compiler on how they were resolved.
 
 **Measured against the compiler's own manifest (2026-07-28, #906): `--jobs`
 is currently a net regression, not a speedup, at this scale.** Running
@@ -837,6 +843,44 @@ neither attempted here.
   loop — see the measured table in Phase 2 above. Decision: default worker
   count stays at 1 until discovery is parallelized/batched.**;
 - `cd formal && lake build --wfail` remains green without `sorry`.
+
+### Cancellation and backpressure, as actually shipped (#1259)
+
+Two of the gates above — "unexpected task failure cancels the nursery" and
+bounded parallelism with backpressure — were written for a dispatcher that is
+the source of truth. What shipped is not one. `scripts/parallel_warm_pool.sh`
+is an **advisory pre-warm**: `runtime/vibe` runs its serial compile afterward
+no matter what happens in the pool, a module that fails to check is simply
+absent from the publish manifest, and the serial walk rechecks it and produces
+the identical diagnostic. So there is nothing to cancel — no failure in the
+pool is user-visible, and stopping early on one would only forfeit warming the
+siblings that were going to succeed. `build_and_run_job`'s `|| true` is the
+correct behaviour for that contract, and would be a bug in a dispatcher whose
+output a build depended on.
+
+Bounded parallelism and backpressure *are* both real, and are now measured
+rather than argued. `xargs -P N` is both: it will not read the next module
+path until a worker slot frees, so the queue never grows past N in flight plus
+one rank of pending paths, and it reaps every child before the rank returns.
+`test_parallel_warm_pool_gate.sh` pins this on a fan-out fixture — eight
+independent leaves under one root, so rank 0 has eight dispatchable modules —
+via `VIBE_WARM_POOL_TRACE`, which makes each job append `+` on entry and `-`
+on exit so the running sum is the number of workers in flight:
+
+| run | peak workers in flight |
+|---|---|
+| `-P 1` | exactly 1 |
+| `-P 4` | ≥ 2 and ≤ 4 |
+
+Both halves matter. `-P 1 == 1` is the vacuity guard: without it "peak ≤ N"
+would also pass on an empty trace. `-P 4 >= 2` is the other one: without it
+"≤ 4" would pass on a pool that had silently gone serial. The gate also
+asserts no runner process outlives the coordinator, which is the "no task
+leak" criterion in the form this architecture can have one.
+
+If the dispatcher ever becomes the source of truth — which is what parallel
+codegen would make it, since its output bytes *are* the artifact — the
+cancellation criterion comes back and needs a real answer, not this one.
 
 ## Shared-everything migration note (2026-07-27)
 
