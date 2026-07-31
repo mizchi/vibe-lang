@@ -837,22 +837,25 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // program-wide (read-only first param, never valued/aliased -- see
   // compute_borrow_arg0_user_fns). The entry fn and the conventional entry
   // names are excluded: the host invokes them without consulting the set.
-  // ADR-0092 borrow-inference slice 1 -- ON since the per-use pairing fix
-  // in the planner (perceus.vibe: PCtx.owned_uses/view_call_let +
-  // pe_scope_end suppression). The original over-release (isolated by set
-  // bisection + emission byte-diff on codegen_heap_e2e_test, 2026-07-31):
-  // flipping a call site's arg0 use to a borrow removed a binding's entry
-  // dup while the retention-driven scope-end drop stayed, so a let-binding
-  // holding an UNOWNED interior view (value = call to a borrow-arg0 fn,
-  // all uses borrowed) released a reference it never acquired
-  // (over-release -> recycled live block -> downstream corruption; trapped
-  // as an OOB guard inside parse_type_impl after ~90 compiles of churn).
-  // The planner now suppresses the scope-end drop for exactly that class
-  // (view-call let-binding with zero owned uses and >0 borrows); a
-  // fresh-owned value from a borrow-arg0 callee then leaks (bounded, safe
-  // direction) until the full PaReuseToken/PaReuseAlloc planner-vocabulary
-  // phase pairs every dup with its consume.
-  let lc_borrow_arg0_enabled = true
+  // ADR-0092 borrow-inference slice 1 -- DEFAULT OFF. Two failure modes
+  // must be fixed together before this can ship: (1) over-release -- a
+  // let-binding holding an UNOWNED interior view (value = call to a fn
+  // like agg_expr_lookup that returns a borrow-ret builtin result raw,
+  // with no dup on its return path) whose uses all flip to borrows loses
+  // its entry dup while the retention-driven scope-end drop stays, so it
+  // releases a reference it never acquired (recycled live block ->
+  // corruption; trapped as an OOB guard in parse_type_impl after ~90
+  // compiles of codegen_heap_e2e_test churn); (2) leak -- suppressing that
+  // scope-end drop for EVERY borrow-arg0 callee's result also drops the
+  // release of FRESH values (callees like a plain ctor wrapper whose arg0
+  // is merely scalar), which the compiler-gate RC reclamation guard
+  // rejects (heap_used 3.5MB on the loop fixture). The planner's
+  // per-use-pairing fields (PCtx.owned_uses/view_call_let, inert while
+  // this is false) fix (1); shipping additionally needs a
+  // may-return-view analysis so the drop suppression applies only to
+  // callees whose return path can yield an unowned view. Measured
+  // potential while enabled: RC selfcompile ratio 1.951 -> 1.742.
+  let lc_borrow_arg0_enabled = false
   let lc_borrow_arg0_user_all = if lc_borrow_arg0_enabled {
     compute_borrow_arg0_user_fns(stmts)
   } else {
