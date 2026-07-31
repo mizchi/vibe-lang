@@ -196,6 +196,49 @@ index assignment, and section emission remain serial barriers initially.
 They can be parallelized later only by refining the immutable plan, without
 changing observable output.
 
+### Status (#1259): worth doing, and blocked on one specific thing
+
+**The headroom is real.** Measured on `codegen_lexer_test.vibe` (166 modules,
+cold cache, stage2 on the node runner), frontend-only against a full build:
+
+| phase | wall |
+|---|---|
+| `VIBE_CHECK_ONLY=1` (parse + typecheck) | 2253 / 2206 ms |
+| full build (adds merge, codegen, link, emit) | 4425 / 4782 ms |
+
+So everything from merge onward is **~52%** of a cold compile. Amdahl is not
+what stands in the way. (The 52% is merge + codegen + link + emit together —
+this measurement does not separate function-body codegen from the serial
+barriers around it, and the split matters for how much of the 52% is
+actually addressable.)
+
+**What blocks the freeze is not diffuse, it is one line.**
+`compile_lambda.vibe:530`:
+
+```vibe
+let lambda_idx = Array::length(ctx.lambda_table.bodies)
+...
+let table_slot = ctx.num_user_funcs + lambda_idx
+emit_i64_const(buf, (table_slot << 2) | 2)
+```
+
+A lambda's function index *is* the current length of a shared, growing array,
+and that index is emitted into the body as an immediate. So a function's
+output bytes depend on how many lambdas every function compiled before it
+happened to produce. Two workers would each allocate from their own view and
+emit different constants — this is exactly the "may not append to a shared
+`LambdaTable`, allocate global ids" prohibition above, and today the compiler
+violates it by construction. `ctx.table_slots_used` (`compile_expr.vibe:923`,
+`compile_lambda.vibe:542`) is shared the same way, though only as a set, so
+it is order-insensitive and merges cleanly.
+
+The freeze therefore needs a **pre-pass that counts lambdas per function in
+canonical function order and hands each function a preassigned index range**,
+before any body is emitted. That is the prerequisite for step 7 and is not a
+refinement of it: without it there is nothing meaningful to hand a worker.
+Not attempted yet — it is a real refactor of `linked_compile.vibe`'s body
+loop with byte-exact output requirements, and it wants its own change.
+
 ## Cache publication
 
 Cache keys and fingerprints remain content-derived and schedule-independent.
