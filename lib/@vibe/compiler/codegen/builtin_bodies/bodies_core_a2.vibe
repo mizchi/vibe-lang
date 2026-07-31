@@ -160,6 +160,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_header,
   emit_heap_memory_grow_check,
   emit_i32_add,
+  emit_i32_and,
   emit_i32_const,
   emit_i32_load,
   emit_i32_load8_u,
@@ -1471,43 +1472,110 @@ export fn gen_arr_push_all_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: B
   b
 }
 
-export fn gen_bytes_append_body(enable_rc: Bool, bytes_len_idx: Int, bytes_get_idx: Int, bytes_push_idx: Int) -> Bytes {
+/// `Bytes::append(dst, src)` as one bounds-checked grow plus two
+/// `memory.copy`s, instead of a byte-at-a-time `bytes_get` / `bytes_push`
+/// loop.
+///
+/// The loop version cost two calls per byte, and every one of those
+/// `bytes_push` calls re-read the header and re-tested the capacity. It was
+/// the single largest allocation-proxy site in a real compile: 246ms, 36% of
+/// all `__rt_bytes_*`/`__rt_str_*`/`__rt_arr_*` time attributed to its
+/// callers (`node --cpu-prof` over codegen_lexer_test.vibe). That matters
+/// beyond wall time because this is how every wasm section is assembled --
+/// `bytebuf_push_section` appends whole section bodies (core/bytebuf.vibe).
+///
+/// Reads the header directly, which is what makes it one copy: a `Bytes` is
+/// `[-capacity@0][length@4][data@8]` in LINEAR memory on both backends (the
+/// gc backend shares gen_bytes_push_body, so it shares the representation),
+/// so no tagging is involved and `enable_rc` no longer changes anything here.
+///
+/// Growth mirrors the Array append above -- `2 * (dst_len + src_len)`, so
+/// repeated appends stay amortized O(1) per byte, same as before.
+///
+/// `dst` aliasing `src` is safe in both paths: `memory.copy` is memmove-like,
+/// so the no-grow overlapping case is defined, and the grow path copies out
+/// of the OLD buffer, which the bump allocator never reclaims.
+export fn gen_bytes_append_body() -> Bytes {
   let b = bytebuf_new()
-  emit_local_get(b, 1)
-  emit_call(b, bytes_len_idx)
-  // ADR-0055 Stage 1: bytes_len now returns a tagged count; untag for the bound.
-  if enable_rc {
-    emit_i64_const(b, 1)
-    emit_i64_shr_s(b)
-  }
+  emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
   emit_local_set(b, 2)
-  emit_i32_const(b, 0)
-  emit_local_set(b, 3)
-  emit_block_void(b)
-  emit_loop_void(b)
-  emit_local_get(b, 3)
-  emit_local_get(b, 2)
-  emit_i32_ge_u(b)
-  emit_br_if(b, 1)
-  emit_local_get(b, 0)
   emit_local_get(b, 1)
-  emit_local_get(b, 3)
-  emit_i64_extend_i32_u(b)
-  // ADR-0055 Stage 1: tag the index passed to the value-world bytes_get.
-  if enable_rc {
-    emit_i64_const(b, 1)
-    emit_i64_shl(b)
-  }
-  emit_call(b, bytes_get_idx)
-  emit_call(b, bytes_push_idx)
-  emit_local_get(b, 3)
-  emit_i32_const(b, 1)
-  emit_i32_add(b)
+  emit_i32_wrap_i64(b)
   emit_local_set(b, 3)
-  emit_br(b, 0)
+  emit_local_get(b, 2)
+  emit_i32_load(b, 2, 4)
+  emit_local_set(b, 4)
+  emit_local_get(b, 2)
+  emit_i32_load(b, 2, 8)
+  emit_local_set(b, 5)
+  emit_local_get(b, 3)
+  emit_i32_load(b, 2, 4)
+  emit_local_set(b, 6)
+  emit_local_get(b, 3)
+  emit_i32_load(b, 2, 8)
+  emit_local_set(b, 7)
+  // (dst_len + src_len) > capacity, where capacity is stored NEGATED at
+  // offset 0 (gen_bytes_new_body). `>` and not `>=`: the bytes written land
+  // in [dst_len, dst_len + src_len), so filling the buffer exactly is fine.
+  emit_local_get(b, 4)
+  emit_local_get(b, 6)
+  emit_i32_add(b)
+  emit_i32_const(b, 0)
+  emit_local_get(b, 2)
+  emit_i32_load(b, 2, 0)
+  emit_i32_sub(b)
+  emit_i32_gt_u(b)
+  emit_if_void(b)
+  emit_local_get(b, 4)
+  emit_local_get(b, 6)
+  emit_i32_add(b)
+  emit_i32_const(b, 2)
+  emit_i32_mul(b)
+  // Round the reservation up to a multiple of 8. The bump allocator has no
+  // alignment step of its own, so every allocator that bumps global 0 has to
+  // preserve whatever alignment the next one needs. gen_bytes_push_body only
+  // ever bumps by cap*2 starting from bytes_new's 64, so it can only ever
+  // hand out 4-aligned addresses; `2 * (dst_len + src_len)` is merely EVEN,
+  // and an odd total would leave global 0 at 2 mod 4 for every allocation
+  // that follows.
+  emit_i32_const(b, 7)
+  emit_i32_add(b)
+  emit_i32_const(b, 0 - 8)
+  emit_i32_and(b)
+  emit_local_set(b, 8)
+  emit_global_get(b, 0)
+  emit_local_tee(b, 9)
+  emit_local_get(b, 8)
+  emit_i32_add(b)
+  emit_global_set(b, 0)
+  emit_heap_memory_grow_check(b)
+  emit_local_get(b, 9)
+  emit_local_get(b, 5)
+  emit_local_get(b, 4)
+  emit_memory_copy(b)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 0)
+  emit_local_get(b, 8)
+  emit_i32_sub(b)
+  emit_i32_store(b, 2, 0)
+  emit_local_get(b, 2)
+  emit_local_get(b, 9)
+  emit_i32_store(b, 2, 8)
+  emit_local_get(b, 9)
+  emit_local_set(b, 5)
   emit_end(b)
-  emit_end(b)
+  emit_local_get(b, 5)
+  emit_local_get(b, 4)
+  emit_i32_add(b)
+  emit_local_get(b, 7)
+  emit_local_get(b, 6)
+  emit_memory_copy(b)
+  emit_local_get(b, 2)
+  emit_local_get(b, 4)
+  emit_local_get(b, 6)
+  emit_i32_add(b)
+  emit_i32_store(b, 2, 4)
   b
 }
 

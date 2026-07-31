@@ -1,0 +1,51 @@
+// wasm-gc lane runtime check for Bytes::append's two hard paths.
+//
+// Bytes::append is one capacity grow plus a memory.copy
+// (gen_bytes_append_body, codegen/builtin_bodies/bodies_core_a2.vibe), and
+// BOTH backends share that generator -- a `Bytes` lives in linear memory on
+// the gc lane too. codegen_bytes_test.vibe's gc cases only assert the module
+// validates, so without this nothing RUNS an append on the gc backend.
+//
+// Two paths that the small appends elsewhere never reach:
+//   - crossing the initial capacity of 64 (gen_bytes_new_body), so the grow
+//     branch runs: allocate, copy the existing bytes, rewrite the header
+//   - appending a buffer to ITSELF, where source and destination alias --
+//     without a grow the ranges overlap, with one the copy reads out of the
+//     buffer the header no longer points at
+//
+// The checksum is position-weighted so a copy landing at the wrong offset,
+// or with the wrong length, changes it -- a plain sum would not.
+let main: () -> Int = () -> {
+  let dst = Bytes::new()
+  let mut i = 0
+  while i < 50 {
+    Bytes::push(dst, i)
+    i = i + 1
+  }
+  let src = Bytes::new()
+  let mut j = 0
+  while j < 200 {
+    Bytes::push(src, j)
+    j = j + 1
+  }
+  Bytes::append(dst, src)
+  let alias = Bytes::new()
+  let mut a = 0
+  while a < 40 {
+    Bytes::push(alias, a)
+    a = a + 1
+  }
+  Bytes::append(alias, alias)
+  let mut sum = 0
+  let mut k = 0
+  while k < Bytes::length(dst) {
+    sum = sum + Bytes::get(dst, k) * (k + 1)
+    k = k + 1
+  }
+  let mut m = 0
+  while m < Bytes::length(alias) {
+    sum = sum + Bytes::get(alias, m) * (m + 1)
+    m = m + 1
+  }
+  sum + Bytes::length(dst) * 1000 + Bytes::length(alias)
+}

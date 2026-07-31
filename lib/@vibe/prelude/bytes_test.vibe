@@ -158,6 +158,115 @@ test "bytes_append_empty" {
   assert(eq(Bytes::get(dst2, 0), 10))
 }
 
+/// Bytes::new starts at capacity 64 (gen_bytes_new_body), and Bytes::append
+/// is one grow plus a memory.copy rather than a per-byte push loop, so the
+/// grow path is only exercised by an append that crosses that boundary --
+/// the small appends above never reach it.
+test "bytes_append grows past the initial capacity" {
+  let dst = Bytes::new()
+  let mut i = 0
+  while i < 50 {
+    Bytes::push(dst, i)
+    i = i + 1
+  }
+  let src = Bytes::new()
+  let mut j = 0
+  while j < 200 {
+    Bytes::push(src, (j + 100)&255)
+    j = j + 1
+  }
+  Bytes::append(dst, src)
+  assert(eq(Bytes::length(dst), 250))
+  // Every byte, not just the seams: a grow that copied the wrong length or
+  // to the wrong offset would still land the endpoints correctly for some
+  // off-by-one values.
+  let mut k = 0
+  let mut ok = true
+  while k < 250 {
+    let want = if k < 50 {
+      k
+    } else {
+      (k - 50 + 100)&255
+    }
+    if Bytes::get(dst, k) != want {
+      ok = false
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  assert(ok)
+  // Still appendable afterwards -- the grow must have rewritten the header's
+  // capacity and data pointer, not just moved the bytes.
+  Bytes::push(dst, 7)
+  assert(eq(Bytes::length(dst), 251))
+  assert(eq(Bytes::get(dst, 250), 7))
+}
+
+/// Appending a buffer to ITSELF. Without a grow the source and destination
+/// ranges overlap (memory.copy is memmove-like, so this is defined); with one
+/// the copy reads out of the buffer the header no longer points at. Both are
+/// load-bearing for the memory.copy implementation and neither is reachable
+/// from the small-append tests above.
+test "bytes_append onto itself, with and without a grow" {
+  let small = Bytes::from_array([
+    1,
+    2,
+    3
+  ])
+  Bytes::append(small, small)
+  assert(eq(Bytes::length(small), 6))
+  assert(eq(Bytes::get(small, 0), 1))
+  assert(eq(Bytes::get(small, 2), 3))
+  assert(eq(Bytes::get(small, 3), 1))
+  assert(eq(Bytes::get(small, 5), 3))
+  // 40 bytes doubled is 80, past the initial capacity of 64.
+  let big = Bytes::new()
+  let mut i = 0
+  while i < 40 {
+    Bytes::push(big, i)
+    i = i + 1
+  }
+  Bytes::append(big, big)
+  assert(eq(Bytes::length(big), 80))
+  let mut k = 0
+  let mut ok = true
+  while k < 80 {
+    let want = if k < 40 {
+      k
+    } else {
+      k - 40
+    }
+    if Bytes::get(big, k) != want {
+      ok = false
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  assert(ok)
+}
+
+/// Filling the buffer to EXACTLY its capacity must not grow and must not
+/// overrun: the length check is `need > capacity`, not `>=`.
+test "bytes_append filling exactly to capacity" {
+  let dst = Bytes::new()
+  let src = Bytes::new()
+  let mut i = 0
+  while i < 64 {
+    Bytes::push(src, (i + 1)&255)
+    i = i + 1
+  }
+  Bytes::append(dst, src)
+  assert(eq(Bytes::length(dst), 64))
+  assert(eq(Bytes::get(dst, 0), 1))
+  assert(eq(Bytes::get(dst, 63), 64))
+  Bytes::push(dst, 200)
+  assert(eq(Bytes::length(dst), 65))
+  assert(eq(Bytes::get(dst, 64), 200))
+  assert(eq(Bytes::get(dst, 63), 64))
+}
+
 test "bytes_blit" {
   let dst = Bytes::from_array([
     1,
