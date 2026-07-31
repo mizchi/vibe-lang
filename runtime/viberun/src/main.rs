@@ -434,6 +434,19 @@ fn wasm_stack_bytes() -> usize {
     mb.max(1) * 1024 * 1024
 }
 
+// The `MOONRUN_WT_MEMORY_MB` soft cap, in the shape every store here wants.
+// Factored out for #1242 review: the component path was constructing a
+// limiter-less `Store`, silently ignoring the cap that `--help` documents.
+fn store_mem_limits() -> StoreLimits {
+    let memory_mb: usize = std::env::var("MOONRUN_WT_MEMORY_MB")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8192);
+    StoreLimitsBuilder::new()
+        .memory_size(memory_mb * 1024 * 1024)
+        .build()
+}
+
 fn engine_config() -> Config {
     let mut cfg = Config::new();
     cfg.strategy(Strategy::Cranelift);
@@ -606,10 +619,22 @@ const ASYNC_COMPONENT_GET_VALUE: u32 = 42;
 ///     `func_wrap`/`func_wrap_async` -- traps with "deadlock detected: event
 ///     loop cannot make further progress" the moment the concurrent import
 ///     resolves.
-///  2. **A separate Engine.** `async_support(true)` is required here, but the
-///     synchronous core-module path in `run()` uses sync `Store`/`instantiate`
-///     and would be rejected under it. So this builds its own Config rather
-///     than reusing `engine_config()`.
+///  2. **Its own Engine, but derived from `engine_config()`.** The
+///     component/concurrency options below are additive on top of the shared
+///     config, so this path keeps `max_wasm_stack`
+///     (`MOONRUN_WT_WASM_STACK_MB`, 64 MiB by default) and the rest of the
+///     wasm feature set. #1242 review: starting from a bare `Config::new()`
+///     silently reverted to wasmtime's small default wasm stack, which is
+///     exactly what `engine_config()` exists to raise -- deeply recursive
+///     guest code would have traped with call-stack exhaustion here while
+///     working fine on the core-module path.
+///
+/// The store carries the same `MOONRUN_WT_MEMORY_MB` limiter every other
+/// store here does (#1242 review: it previously had none, so a component
+/// with an embedded core memory could grow unbounded despite `--help`
+/// documenting the cap). `MemLimiter`'s growth-event recording is a
+/// core-module profiling feature (`VIBE_MEM`) with no component-path
+/// equivalent, so it stays off; only the size cap matters.
 ///
 /// Scope: `get-async` is the async host-import surface the emitter currently
 /// produces -- a probe-shaped placeholder, not yet a real WASI interface. It
@@ -626,29 +651,31 @@ fn run_async_component(path: &str) -> Result<i32> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(ASYNC_COMPONENT_GET_DELAY_MS);
 
-    let mut cfg = Config::new();
+    let mut cfg = engine_config();
     cfg.wasm_component_model(true);
     cfg.wasm_component_model_async(true);
     cfg.wasm_component_model_async_stackful(true);
     cfg.concurrency_support(true);
-    cfg.wasm_exceptions(true);
     let engine = Engine::new(&cfg)?;
 
     let bytes = fs::read(path).map_err(|e| format_err!("read {path}: {e}"))?;
     let component = Component::from_binary(&engine, &bytes)
         .map_err(|e| format_err!("component from_binary {path}: {e}"))?;
 
-    let mut linker: ComponentLinker<()> = ComponentLinker::new(&engine);
+    let mut linker: ComponentLinker<StoreLimits> = ComponentLinker::new(&engine);
     linker
         .root()
-        .func_wrap_concurrent("get-async", move |_acc: &Accessor<()>, _params: ()| {
-            Box::pin(async move {
-                if delay_ms > 0 {
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                }
-                Ok((ASYNC_COMPONENT_GET_VALUE,))
-            })
-        })
+        .func_wrap_concurrent(
+            "get-async",
+            move |_acc: &Accessor<StoreLimits>, _params: ()| {
+                Box::pin(async move {
+                    if delay_ms > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    }
+                    Ok((ASYNC_COMPONENT_GET_VALUE,))
+                })
+            },
+        )
         .map_err(|e| format_err!("link get-async: {e}"))?;
 
     // A current-thread runtime is enough (and keeps this off the thread pool):
@@ -659,7 +686,8 @@ fn run_async_component(path: &str) -> Result<i32> {
         .map_err(|e| format_err!("tokio runtime: {e}"))?;
 
     let result: u32 = rt.block_on(async {
-        let mut store = Store::new(&engine, ());
+        let mut store = Store::new(&engine, store_mem_limits());
+        store.limiter(|s| s);
         let instance = linker.instantiate_async(&mut store, &component).await?;
         let run = instance.get_typed_func::<(), (u32,)>(&mut store, "run")?;
         let (value,) = store
@@ -747,13 +775,7 @@ fn run(args: Vec<String>) -> Result<i32> {
     let engine = Engine::new(&cfg)?;
     let module = load_module(&engine, wasm_path)?;
 
-    let memory_mb: usize = std::env::var("MOONRUN_WT_MEMORY_MB")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8192);
-    let limits = StoreLimitsBuilder::new()
-        .memory_size(memory_mb * 1024 * 1024)
-        .build();
+    let limits = store_mem_limits();
 
     let mut store = Store::new(&engine, HostState::new(prog_args, MemLimiter::new(limits)));
     store.limiter(|s| &mut s.mem);
@@ -1099,10 +1121,6 @@ fn bench(args: Vec<String>) -> Result<i32> {
     let cfg = engine_config();
     let engine = Engine::new(&cfg)?;
     let module = load_module(&engine, wasm_path)?;
-    let memory_mb: usize = std::env::var("MOONRUN_WT_MEMORY_MB")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8192);
     let mut linker = Linker::new(&engine);
     register_imports(&mut linker)?;
 
@@ -1112,10 +1130,7 @@ fn bench(args: Vec<String>) -> Result<i32> {
     // after it 8-10×. A fresh instance gives every block the same pristine
     // heap; per-block warmup below still pays lazy module init before timing.
     let make_instance = |linker: &Linker<HostState>| -> Result<(Store<HostState>, Instance)> {
-        let limits = StoreLimitsBuilder::new()
-            .memory_size(memory_mb * 1024 * 1024)
-            .build();
-        let mut state = HostState::new(vec!["viberun".to_string()], MemLimiter::new(limits));
+        let mut state = HostState::new(vec!["viberun".to_string()], MemLimiter::new(store_mem_limits()));
         state.capture_stdout = true; // suppress per-iteration program output
         let mut store = Store::new(&engine, state);
         store.limiter(|s| &mut s.mem);
@@ -1280,13 +1295,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
     let engine = Engine::new(&cfg)?;
     let module = load_module(&engine, wasm_path)?;
 
-    let memory_mb: usize = std::env::var("MOONRUN_WT_MEMORY_MB")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8192);
-    let limits = StoreLimitsBuilder::new()
-        .memory_size(memory_mb * 1024 * 1024)
-        .build();
+    let limits = store_mem_limits();
 
     // Empty initial args; daemon will populate per-request before each
     // `_start` call. capture_stdout is set true so per-request output
