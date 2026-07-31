@@ -1,0 +1,35 @@
+// ADR-0092 drop-guided reuse: a rebuild chain whose every step is the
+// fn-param direct-match fusion shape. Under reuse the chain performs zero
+// allocator work per step (in-place tag+field rewrite); without it each
+// step is alloc + free-list round trip. bytes_per_op alone cannot
+// distinguish reuse from free-list recycling in this steady-state shape
+// (see fixtures/rc_reuse_match_ctor_test.vibe's header note), so this
+// bench's tracked signal is ns/op. Not yet in tracked_benches.txt: add it
+// together with a baseline entry once a main build carries the fusion.
+enum RPair {
+  RA(Int, Int);
+  RB(Int, Int)
+}
+
+fn rswap(p: RPair) -> RPair {
+  match p {
+    RA(x, y) => RB(y, x)
+    RB(x, y) => RA(y, x)
+  }
+}
+
+fn chain(p: RPair, n: Int) -> RPair {
+  if n <= 0 {
+    p
+  } else {
+    chain(rswap(p), n - 1)
+  }
+}
+
+bench "reuse_swap_chain_1000" {
+  let r = chain(RA(1, 2), 1000)
+  match r {
+    RA(a, _) => a
+    RB(a, _) => a
+  }
+}

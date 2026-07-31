@@ -367,6 +367,18 @@ fn mr_compile_reuse_arm(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag
     }
     bi = bi + 1
   }
+  // ADR-0062 shadow lane: route the scrutinee through a guarded dup+drop
+  // pair before consuming it. Net-zero on the refcount, but both halves
+  // check the shadow liveness byte, so reusing (or releasing) a block the
+  // shadow ledger already considers freed traps deterministically here
+  // instead of corrupting the free list downstream.
+  if ctx.rc_shadow {
+    emit_rc_dup_guarded(buf, scrut_local, true)
+    emit_local_get(buf, scrut_local)
+    emit_call(buf, ctx.rc_drop_func_idx)
+  } else {
+    ()
+  }
   // 2. consume the reference; tk = block base or 0.
   let tk = Array::length(local_names)
   Array::push(local_names, "__reuse_tk")
