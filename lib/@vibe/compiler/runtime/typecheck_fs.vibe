@@ -1173,25 +1173,13 @@ fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, St
   }
 }
 
-/// The per-recursion "currently visiting" DFS check. Since #1239 step 4(A)
-/// this is no longer how a cycle is REPORTED -- plan_module_order rejects one
-/// upfront, before any module is committed, and the walk only ever descends
-/// into edges that plan already proved acyclic. It is kept as the guard for
-/// ensure_fingerprint_from_deps_fs's unplanned fallback arm, which resolves
-/// deps itself and so has no such proof; that arm is unreachable today (see
-/// its comment), which is exactly why the guard costs a `contains_str` over a
-/// stack as deep as the import chain and nothing more.
-fn import_cycle_at(stack: Array[String], path: String) -> Bool {
-  contains_str(stack, path)
-}
-
 /// #1239 step 4(A), on the real fs path: the coordinator-side upfront pass.
 ///
 /// Walks the import graph from `root` ONCE and records, per reachable module,
 /// either the persistent leaf fingerprint it found or the module's resolved
 /// dependency list. The walk that follows looks both up here instead of
 /// paying for them a second time, so this is a REPLACEMENT for work
-/// ensure_fingerprint_fs_go used to do inline, not an extra pass.
+/// the walk used to do inline, not an extra pass.
 ///
 /// The three short-circuits are the same three the walk applies, in the same
 /// order -- no source in the db (the `missing:` arm), a reusable cached
@@ -1291,91 +1279,36 @@ fn commit_leaf_fingerprint_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)]
   (leaf_fingerprint, next_db, env_cache, next_dep_source_cache, parse_count)
 }
 
-/// The tail shared by ensure_fingerprint_fs_go's "no reusable cached
-/// fingerprint" arms, once `deps` is known: recurse into each dep, fold the
-/// dependency fingerprints in DECLARATION order, and either reuse the cached
-/// fingerprint or check and commit the module.
-fn ensure_fingerprint_with_deps_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
+/// One module's step, once its dependency list is known and every dependency
+/// already has a fingerprint. Folds the dependency fingerprints in
+/// DECLARATION order (build_fingerprint folds them as a sequence, not a set),
+/// then either reuses the cached fingerprint or checks and commits.
+fn commit_with_deps_fs(fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
   write_persistent_dep_list_if_missing(path, source, deps)
   let dlen = Array::length(deps)
-  let saved_stack_len = Array::length(stack)
-  Array::push(stack, path)
+  let dep_fps = empty_dep_fps()
   let mut i = 0
-  let mut db_after_deps = rdb
-  let mut env_cache_after_deps = env_cache
-  let mut dep_source_cache_after_deps = dep_source_cache
-  let mut parse_count_after_deps = parse_count
-  // #906 Phase 0: VISIT order is permutable (dep_visit_order -- identity
-  // unless a seed is set), but the RECORDED order must stay declaration
-  // order: build_fingerprint below folds dep_fps in sequence, so permuting
-  // the record would change every fingerprint and defeat the very invariance
-  // this is meant to test. Fingerprints therefore land in per-index slots and
-  // are collected in declaration order afterwards.
-  let visit = dep_visit_order(dlen)
-  let dep_fp_slots = empty_stack()
-  let mut sfill = 0
-  while sfill < dlen {
-    Array::push(dep_fp_slots, "")
-    sfill = sfill + 1
-  }
   while i < dlen {
-    let di = Array::get(visit, i)
-    let dep_path = Array::get(deps, di)
-    let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint_fs_go(plan_leaf_fps, plan_edges, db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, dep_path, stack)
-    db_after_deps = next_db
-    env_cache_after_deps = next_env_cache
-    dep_source_cache_after_deps = next_dep_source_cache2
-    parse_count_after_deps = next_parse_count
-    Array::set(dep_fp_slots, di, dep_fp)
+    let dep_path = Array::get(deps, i)
+    match lookup_string_pair(fps, dep_path) {
+      Some(dep_fp) => Array::push(dep_fps, (dep_path, dep_fp)),
+      // Unreachable: rank order guarantees every dependency was stepped
+      // before its importer. Loud rather than folding a placeholder into the
+      // fingerprint, which would key the persistent cache on a lie.
+      None => throw(String::concat("type_db: dependency stepped out of rank order: ", dep_path))
+    }
     i = i + 1
   }
-  let dep_fps = empty_dep_fps()
-  let mut fpi = 0
-  while fpi < dlen {
-    Array::push(dep_fps, (Array::get(deps, fpi), Array::get(dep_fp_slots, fpi)))
-    fpi = fpi + 1
-  }
-  Array::truncate(stack, saved_stack_len)
   let fingerprint = build_fingerprint(source, dep_fps)
-  match ripple_get_fingerprint(db_after_deps, path) {
+  match ripple_get_fingerprint(rdb, path) {
     Some(cached_fp) =>
     if cached_fp == fingerprint {
-      (fingerprint, db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps)
+      (fingerprint, rdb, env_cache, dep_source_cache, parse_count)
     } else {
-      finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, dep_fps, fingerprint)
+      finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, deps, dep_fps, fingerprint)
     },
     None =>
-    finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, dep_fps, fingerprint)
-  }
-}
-
-/// Take the leaf fingerprint / dep list from the upfront plan when it has one
-/// for `path`, and only resolve them here when it does not.
-///
-/// The third arm is the pre-#1239-step-4(A) code, kept as a fallback. It is
-/// unreachable as long as the plan is built from the same db and dep cache the
-/// walk starts from: every path that reaches here was enqueued by the plan
-/// (root, or a dep of a planned module), and the plan's own three
-/// short-circuits are the walk's -- a module the plan skipped as `missing:` or
-/// as fingerprint-reusable makes the walk return before it gets this far.
-fn ensure_fingerprint_from_deps_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
-  match lookup_string_pair(plan_leaf_fps, path) {
-    Some(leaf_fingerprint) =>
-    commit_leaf_fingerprint_fs(rdb, env_cache, dep_source_cache, parse_count, path, source, leaf_fingerprint),
-    None =>
-    match plan_deps_of(plan_edges, path) {
-      Some(planned_deps) =>
-      ensure_fingerprint_with_deps_fs(plan_leaf_fps, plan_edges, rdb, env_cache, upsert_string_pair(dep_source_cache, path, source), parse_count, path, source, planned_deps, stack),
-      None =>
-      match load_persistent_leaf_fingerprint(path, source) {
-        Some(leaf_fingerprint) =>
-        commit_leaf_fingerprint_fs(rdb, env_cache, dep_source_cache, parse_count, path, source, leaf_fingerprint),
-        None => {
-          let (deps_raw, next_dep_source_cache, next_parse_count) = resolve_deps_for_source_fs(rdb, dep_source_cache, path, source, parse_count)
-          ensure_fingerprint_with_deps_fs(plan_leaf_fps, plan_edges, rdb, env_cache, next_dep_source_cache, next_parse_count, path, source, copy_string_array(deps_raw), stack)
-        }
-      }
-    }
+    finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, deps, dep_fps, fingerprint)
   }
 }
 
@@ -1390,24 +1323,48 @@ fn dep_source_cache_is_current(dep_source_cache: Array[(String, String)], path: 
   }
 }
 
-fn ensure_fingerprint_fs_go(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
-  if import_cycle_at(stack, path) {
-    throw(String::concat("type_db: import cycle detected at ", path))
-  } else {
-    match ripple_get_source(rdb, path) {
-      None => (String::concat("missing:", path), rdb, env_cache, dep_source_cache, parse_count),
-      Some(source) =>
-      if dep_source_cache_is_current(dep_source_cache, path, source) {
-        match ripple_get_fingerprint(rdb, path) {
-          // The fingerprint is enough for dependency fingerprint folding.
-          // Loading the env here caused shared leaf modules to re-read their
-          // persistent leaf cache every time they were reached before a
-          // parent needed their bindings.
-          Some(cached_fingerprint) => (cached_fingerprint, rdb, env_cache, dep_source_cache, parse_count),
-          None => ensure_fingerprint_from_deps_fs(plan_leaf_fps, plan_edges, rdb, env_cache, dep_source_cache, parse_count, path, source, stack)
-        }
+/// One module of the schedule. The same three short-circuits the plan applied
+/// (no source in the db, a reusable cached fingerprint, a persistent leaf
+/// fingerprint), in the same order, then the dep fold.
+///
+/// This is where the walk stopped being a recursion. It reads state and hands
+/// back the next state; it never reaches into another module's step. That is
+/// the property step 4(D) needs: the old DFS threaded four state values
+/// through dependencies IN SEQUENCE (dep[1] received dep[0]'s output
+/// RippleDb), so siblings could not be dispatched independently no matter
+/// what the host could do.
+fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
+  match ripple_get_source(rdb, path) {
+    None => (String::concat("missing:", path), rdb, env_cache, dep_source_cache, parse_count),
+    Some(source) => {
+      let reusable = if dep_source_cache_is_current(dep_source_cache, path, source) {
+        ripple_get_fingerprint(rdb, path)
       } else {
-        ensure_fingerprint_from_deps_fs(plan_leaf_fps, plan_edges, rdb, env_cache, dep_source_cache, parse_count, path, source, stack)
+        None
+      }
+      match reusable {
+        // The fingerprint is enough for dependency fingerprint folding.
+        // Loading the env here caused shared leaf modules to re-read their
+        // persistent leaf cache every time they were reached before a parent
+        // needed their bindings.
+        Some(cached_fingerprint) => (cached_fingerprint, rdb, env_cache, dep_source_cache, parse_count),
+        None =>
+        match lookup_string_pair(plan_leaf_fps, path) {
+          Some(leaf_fingerprint) =>
+          commit_leaf_fingerprint_fs(rdb, env_cache, dep_source_cache, parse_count, path, source, leaf_fingerprint),
+          None =>
+          match plan_deps_of(plan_edges, path) {
+            Some(planned_deps) =>
+            commit_with_deps_fs(fps, rdb, env_cache, upsert_string_pair(dep_source_cache, path, source), parse_count, path, source, planned_deps),
+            // Unreachable: every path in the schedule was either given an
+            // edge entry by the plan or interned as some planned module's
+            // dependency, and the three short-circuits above are the plan's
+            // own. A module that reaches here has no dependency fingerprints
+            // to fold, so there is nothing to fall back TO now that the walk
+            // does not recurse -- say so instead of inventing one.
+            None => throw(String::concat("type_db: module missing from the import plan: ", path))
+          }
+        }
       }
     }
   }
@@ -1532,18 +1489,72 @@ export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String])
   (StringBuilder::freeze(buf), ordered_sources)
 }
 
-export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
+/// The import-DAG walk, as the wave loop a coordinator dispatches from
+/// (#1239 step 4(D)).
+///
+/// plan_import_graph_fs resolves the graph and plan_module_order ranks it
+/// (step 4(A), both already in place); this consumes that order instead of
+/// re-deriving one by recursive descent. Every module of rank k depends only
+/// on modules of rank < k, so a rank is a WAVE: its modules are independent
+/// of each other by construction, and each one's dependency fingerprints are
+/// already recorded by the time the wave runs.
+///
+/// What that buys, beyond the recursion going away (this compiler has
+/// exhausted the wasm stack on a recursive whole-program walk before -- see
+/// analyze_calls's #556 note in perceus/perceus.vibe): the remaining step
+/// 4(D) blocker is gone. Dispatching a wave out-of-process is now a change to
+/// the inner loop, not a restructuring of the walk.
+///
+/// dep_visit_order (the #906 Phase 0 nondeterminism probe, seeded by
+/// VIBE_DEP_ORDER_SEED) now permutes the order WITHIN a wave rather than a
+/// node's dependency visit order. That is the stronger property and the one
+/// that matters: it is exactly the choice a parallel coordinator makes
+/// differently from run to run, and scripts/dep_order_oracle.sh asserts the
+/// compiled output is byte-identical across seeds regardless.
+export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
   let (plan_leaf_fps, plan_edges, planned_parse_count) = plan_import_graph_fs(rdb, dep_source_cache, parse_count, path)
-  // #1239 step 4(A): an import cycle is now rejected HERE -- before a single
+  // #1239 step 4(A): an import cycle is rejected HERE -- before a single
   // module is checked, committed, or written to the persistent cache --
-  // instead of incidentally, partway through the walk, on whichever module
-  // the DFS happened to re-enter first. plan_module_order also assigns the
-  // ranks a coordinator dispatches from; nothing consumes those yet, because
-  // the walk below is still sequential (step 4(D)).
-  let _plan_order = plan_module_order(plan_edges, path)
-  let (fingerprint, next_db, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint_fs_go(plan_leaf_fps, plan_edges, rdb, env_cache, dep_source_cache, planned_parse_count, path, stack)
-  let final_env_cache = ensure_env_cache_for_path(next_db, next_env_cache, path)
-  (fingerprint, next_db, final_env_cache, next_dep_source_cache, next_parse_count)
+  // instead of incidentally, partway through the walk, on whichever module a
+  // DFS happened to re-enter first.
+  let (order, ranks) = plan_module_order(plan_edges, path)
+  let fps = empty_dep_fps()
+  let mut db = rdb
+  let mut envc = env_cache
+  let mut dsc = dep_source_cache
+  let mut pc = planned_parse_count
+  let n = Array::length(order)
+  let mut i = 0
+  while i < n {
+    // `order` is sorted by rank, so one wave is a contiguous run.
+    let r = Array::get(ranks, i)
+    let mut j = i
+    while j < n && Array::get(ranks, j) == r {
+      j = j + 1
+    }
+    let wave = j - i
+    let visit = dep_visit_order(wave)
+    let mut k = 0
+    while k < wave {
+      let m = Array::get(order, i + Array::get(visit, k))
+      let (fp, next_db, next_envc, next_dsc, next_pc) = step_module_fs(plan_leaf_fps, plan_edges, fps, db, envc, dsc, pc, m)
+      db = next_db
+      envc = next_envc
+      dsc = next_dsc
+      pc = next_pc
+      Array::push(fps, (m, fp))
+      k = k + 1
+    }
+    i = j
+  }
+  let root_fingerprint = match lookup_string_pair(fps, path) {
+    Some(f) => f,
+    // The root is always interned by plan_module_order, so it is always
+    // stepped; this is the empty-graph shape rather than a miss.
+    None => String::concat("missing:", path)
+  }
+  let final_env_cache = ensure_env_cache_for_path(db, envc, path)
+  (root_fingerprint, db, final_env_cache, dsc, pc)
 }
 
 /// #946: drop exact duplicates from a diagnostics list, preserving first-seen
