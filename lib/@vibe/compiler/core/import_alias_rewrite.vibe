@@ -220,22 +220,78 @@ fn pat_binds_name(pat: Pat, name: String) -> Bool {
   }
 }
 
-/// #897/Codex P2: same dotted-namespace-prefix shadowing as alias_is_shadowed
-/// -- extracts the "ns" of a "ns.field" alias key (None for a plain alias).
-fn alias_namespace_prefix(alias: String) -> Option[String] {
-  let dot = String::index_of(alias, ".")
-  if dot < 0 {
-    None
-  } else {
-    Some(String::substring(alias, 0, dot))
+/// Does `pat` bind any name that shadows `alias` (exactly, or as its dotted
+/// namespace prefix)? Structurally identical to pat_binds_name's walk, but
+/// the leaf test is `alias_is_shadowed` so both shadowing forms are decided
+/// in ONE traversal with no prefix extraction -- see pat_shadows_alias.
+fn pat_binds_shadowing_name(pat: Pat, alias: String) -> Bool {
+  match pat {
+    PBind(bound) => alias_is_shadowed(alias, bound),
+    PCtor(_, pats) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(pats) && !found {
+        if pat_binds_shadowing_name(Array::get(pats, i), alias) {
+          found = true
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    },
+    PTuple(pats) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(pats) && !found {
+        if pat_binds_shadowing_name(Array::get(pats, i), alias) {
+          found = true
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    },
+    POr(left, right) =>
+    pat_binds_shadowing_name(left, alias) || pat_binds_shadowing_name(right, alias),
+    PStruct(_, fields) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(fields) && !found {
+        let (_, field_pat) = Array::get(fields, i)
+        if pat_binds_shadowing_name(field_pat, alias) {
+          found = true
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    },
+    _ => false
   }
 }
 
+/// Does any name bound by `pat` shadow `alias`?
+///
+/// Perf (#1237 follow-up): this used to be `pat_binds_name(pat, alias) ||
+/// pat_binds_name(pat, <alias's namespace prefix>)`, which per (binder,
+/// alias) pair walked the pattern TWICE and paid a `String::index_of` plus a
+/// `String::substring` ALLOCATION to cut the namespace prefix out -- for a
+/// prefix that is a pure function of the alias and never changes. Since
+/// alias_map_without_pat runs this at every binder against every alias, a
+/// full-closure compile profile attributed 17.2% of the whole merge/rename
+/// phase to `alias_namespace_prefix` and the `String::index_of` underneath
+/// it. Testing `alias_is_shadowed` at each bound name instead is one walk
+/// with no allocation.
+///
+/// Equivalent because a pattern binder is an identifier and so never
+/// contains a dot: `alias_is_shadowed(alias, bound)` is then true exactly
+/// when `bound == alias` or `bound` is alias's FIRST dotted segment, which
+/// is precisely the old pair of checks. This is the same identifier-has-no-
+/// dot argument the `without_*` family already relies on -- alias_is_shadowed
+/// is the predicate it uses, so the two now agree by construction instead of
+/// by two separately-maintained spellings.
 fn pat_shadows_alias(pat: Pat, alias: String) -> Bool {
-  pat_binds_name(pat, alias) || match alias_namespace_prefix(alias) {
-    Some(ns) => pat_binds_name(pat, ns),
-    None => false
-  }
+  pat_binds_shadowing_name(pat, alias)
 }
 
 fn alias_map_without_pat(aliases: Array[(String, String)], pat: Pat) -> Array[(String, String)] {
@@ -279,11 +335,20 @@ fn param_binds_name(params: Array[(String, Option[TypeExpr])], name: String) -> 
   found
 }
 
+/// Parameter-list counterpart of pat_shadows_alias -- same rewrite, same
+/// reasoning (see that function's note).
 fn params_shadow_alias(params: Array[(String, Option[TypeExpr])], alias: String) -> Bool {
-  param_binds_name(params, alias) || match alias_namespace_prefix(alias) {
-    Some(ns) => param_binds_name(params, ns),
-    None => false
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(params) && !found {
+    let (param_name, _) = Array::get(params, i)
+    if alias_is_shadowed(alias, param_name) {
+      found = true
+    } else {
+      i = i + 1
+    }
   }
+  found
 }
 
 fn alias_map_without_params(aliases: Array[(String, String)], params: Array[(String, Option[TypeExpr])]) -> Array[(String, String)] {
