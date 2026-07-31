@@ -69,20 +69,29 @@ DEFAULT_RUNNER="$PROJECT_ROOT/runtime/viberun/target/release/viberun"
 RUNNER="${VIBE_SPAWNED_FUTURE_GATE_RUNNER:-$DEFAULT_RUNNER}"
 # An explicit override is trusted as-is (it may be an installed toolchain
 # binary with no source tree next to it). The default in-tree binary is
-# rebuilt when it is missing OR older than any viberun source -- #1242
+# rebuilt when it is missing OR older than any viberun build input -- #1242
 # review: a checkout that predates the component path leaves a stale
 # executable behind, and merely checking `-x` would accept it and then fail
 # the gate with a confusing "component from_binary" error rather than
 # rebuilding. Same staleness convention as scripts/ensure_vibe_fmt_batch.sh
 # and coverage_*_run.sh.
+#
+# Cargo.lock counts as a build input (#1243 review): a lock-only dependency
+# bump leaves src/ and Cargo.toml untouched, so without it a binary built
+# from the OLD dependency graph still looks fresh. That matters more here
+# than for most gates -- wasmtime and tokio ARE the async behavior this gate
+# exists to validate, so a stale binary produces a false pass, not a
+# crash.
 if [ "$RUNNER" = "$DEFAULT_RUNNER" ]; then
   needs_build=0
   if [ ! -x "$RUNNER" ]; then
     needs_build=1
-  elif find "$PROJECT_ROOT/runtime/viberun/src" "$PROJECT_ROOT/runtime/viberun/Cargo.toml" \
+  elif find "$PROJECT_ROOT/runtime/viberun/src" \
+        "$PROJECT_ROOT/runtime/viberun/Cargo.toml" \
+        "$PROJECT_ROOT/runtime/viberun/Cargo.lock" \
         -newer "$RUNNER" -print -quit 2>/dev/null | grep -q .; then
     needs_build=1
-    echo "[spawned-future-component-gate] viberun is older than its sources; rebuilding..."
+    echo "[spawned-future-component-gate] viberun is older than its build inputs; rebuilding..."
   fi
   if [ "$needs_build" = "1" ]; then
     command -v cargo >/dev/null 2>&1 || require_or_skip "viberun needs a (re)build and cargo is not installed"
