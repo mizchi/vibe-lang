@@ -451,6 +451,9 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     // empty too rather than aliasing ctx's now-cleared array).
     pending_letrec_self_name: array_empty(),
     table_slots_used: ctx.table_slots_used,
+    // Shared BY REFERENCE, like table_slots_used above: a nested lambda
+    // advances the same counter its enclosing function does.
+    lambda_plan_next: ctx.lambda_plan_next,
     // #644: lambda bodies compile into their OWN wasm function + body_buf,
     // not the enclosing top-level function's -- a linemap entry recorded
     // here would carry the WRONG owning function index and an offset into
@@ -530,6 +533,32 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     ()
   }
   let lambda_idx = Array::length(ctx.lambda_table.bodies)
+  // #1259 step 7 groundwork. `lambda_idx` above is the live length of a
+  // SHARED, growing table, and it goes into the body as a table_slot
+  // immediate a few lines down -- so this function's output bytes depend on
+  // how many lambdas every function compiled before it produced. That is the
+  // one thing standing between the current codegen and a frozen
+  // WholeProgramPlan a worker could compile a body against.
+  //
+  // The plan (count_lambda_sites_expr, seeded per user function in
+  // linked_compile.vibe) predicts exactly this number without compiling the
+  // predecessors. It is CHECKED here, not used: while the two agree, swapping
+  // `lambda_idx` for the planned value is a no-op on the emitted bytes, which
+  // is what makes that swap safe to make. Disagreement means the count and
+  // the walk disagree about which EFn nodes get compiled, and keying a body's
+  // constants to a slot nothing installs is exactly the silent corruption
+  // this whole plan exists to avoid -- so it is fatal, not a warning.
+  if Array::length(ctx.lambda_plan_next) > 0 {
+    let planned = Array::get(ctx.lambda_plan_next, 0)
+    if planned != lambda_idx {
+      throw(String::concat("lambda plan mismatch: planned index ", String::concat(__to_string(planned), String::concat(", walk allocated ", __to_string(lambda_idx)))))
+    } else {
+      ()
+    }
+    Array::set(ctx.lambda_plan_next, 0, planned + 1)
+  } else {
+    ()
+  }
   Array::push(ctx.lambda_table.bodies, lam_buf)
   Array::push(ctx.lambda_table.param_counts, user_params + 1)
   Array::push(ctx.lambda_table.captures, captures)

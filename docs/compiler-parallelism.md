@@ -199,18 +199,37 @@ changing observable output.
 ### Status (#1259): worth doing, and blocked on one specific thing
 
 **The headroom is real.** Measured on `codegen_lexer_test.vibe` (166 modules,
-cold cache, stage2 on the node runner), frontend-only against a full build:
+cold cache, stage2 on the node runner). The four phases of
+`compile_file_fs_mode_rc`, timed in-process with `Profiler::now_us` around
+each call:
 
-| phase | wall |
-|---|---|
-| `VIBE_CHECK_ONLY=1` (parse + typecheck) | 2253 / 2206 ms |
-| full build (adds merge, codegen, link, emit) | 4425 / 4782 ms |
+| phase | wall | share |
+|---|---|---|
+| collect (read + parse every reachable file) | 948 ms | 24% |
+| typecheck (the `db_typecheck_fs` walk) | 900 ms | 23% |
+| merge (`build_grouped_merged_stmts`) | 375 ms | 9% |
+| **codegen + link + emit** | **1727 ms** | **44%** |
 
-So everything from merge onward is **~52%** of a cold compile. Amdahl is not
-what stands in the way. (The 52% is merge + codegen + link + emit together —
-this measurement does not separate function-body codegen from the serial
-barriers around it, and the split matters for how much of the 52% is
-actually addressable.)
+So the phase step 7 targets is **44%** of a cold compile, and merge — which
+step 7 does not touch — is only 9%. Amdahl is not what stands in the way.
+
+Two things this corrected. An earlier estimate here differenced
+`VIBE_CHECK_ONLY` against a full build and put "merge onward" at ~52%; the
+direct measurement says 53% (merge + codegen), so that part held. But a
+companion estimate that differenced `VIBE_EMIT_MERGED_SOURCE` to get typecheck
+≈ 474 ms was **wrong** — the real number is 900 ms. That mode uses a different
+collect path and also serializes 3 MB of source via `print_program`, so it was
+never comparable. Differencing CLI modes is not a substitute for timing the
+phases.
+
+What is still not split: the 1727 ms is function-body codegen *plus* the
+serial barriers around it (DCE, whole-program table construction, section
+emission, linking). Only the body part is parallelizable. Getting that split
+needs instrumentation inside `compile_wasi_module_linked_impl`, which drags
+`Fs`/`Profiler` through a chain of codegen signatures and their contracts —
+not worth carrying for a measurement, and it does not change the verdict:
+even if bodies were only half of the 1727 ms, four-way body codegen would
+still be worth roughly 650 ms of a ~3950 ms compile.
 
 **What blocks the freeze is not diffuse, it is one line.**
 `compile_lambda.vibe:530`:

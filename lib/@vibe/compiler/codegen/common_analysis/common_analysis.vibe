@@ -1560,3 +1560,103 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
   }
 }
 
+//# #1259 step 7 groundwork: lambda-site counting
+
+/// How many lambda table entries compiling `expr` will allocate.
+///
+/// compile_lambda takes a lambda's function index from the LIVE length of the
+/// shared LambdaTable and emits it into the body as a `table_slot` immediate,
+/// so a function's output bytes depend on how many lambdas every function
+/// compiled before it produced. That is what stops a worker from compiling a
+/// body on its own, and removing it is what a frozen WholeProgramPlan means
+/// (docs/compiler-parallelism.md).
+///
+/// Counting is exact rather than an estimate: compile_expr dispatches EFn
+/// (tag 24) to compile_lambda unconditionally (compile_expr_tail3.vibe), and
+/// compile_lambda's push is unconditional, so one table entry per EFn node
+/// reachable in the body -- nested lambdas included, since compile_lambda
+/// compiles its own body through the same dispatch.
+///
+/// The traversal mirrors dce.vibe's collect_refs_into arm for arm. Binding
+/// structure is irrelevant here (a count, not a scope analysis), so the arms
+/// that clone a bound set there simply recurse.
+///
+/// It is a PREDICTION of what the sequential walk does, and it is checked
+/// against the live length at every allocation rather than trusted -- see
+/// CompileCtx.lambda_plan_next. A silent mismatch would key a body's emitted
+/// constants to a table slot nothing installs.
+export fn count_lambda_sites_expr(expr: Expr) -> Int {
+  match expr {
+    EIdent(_, _) => 0,
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EStringInterp(_) => 0,
+    EBreak(_) => 0,
+    EContinue(_) => 0,
+    EReturn(e) => count_lambda_sites_expr(e),
+    EUnaryOp(_, e) => count_lambda_sites_expr(e),
+    ESpread(e) => count_lambda_sites_expr(e),
+    EDot(obj, _, _, _) => count_lambda_sites_expr(obj),
+    ELabeledArg(_, _, e) => count_lambda_sites_expr(e),
+    ETuple(items) => count_lambda_sites_exprs(items),
+    EArray(items) => count_lambda_sites_exprs(items),
+    ERecord(_, fields, _) => count_lambda_sites_fields(fields),
+    EMap(fields) => count_lambda_sites_fields(fields),
+    EBinOp(_, l, r) => count_lambda_sites_expr(l) + count_lambda_sites_expr(r),
+    ESeq(l, r) => count_lambda_sites_expr(l) + count_lambda_sites_expr(r),
+    ECall(callee, args, _) => count_lambda_sites_expr(callee) + count_lambda_sites_exprs(args),
+    EIf(cond, then_e, else_e) =>
+    count_lambda_sites_expr(cond) + count_lambda_sites_expr(then_e) + count_lambda_sites_expr(else_e),
+    ELet(_, val, body, _) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
+    ELetRec(_, val, body) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
+    ELetMut(_, val, body, _) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
+    EAssign(_, val, body) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
+    EAssignOp(_, _, val, body) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
+    EWhile(cond, body) => count_lambda_sites_expr(cond) + count_lambda_sites_expr(body),
+    EForIn(_, _, iter, body) => count_lambda_sites_expr(iter) + count_lambda_sites_expr(body),
+    ELoop(params, body) => count_lambda_sites_fields(params) + count_lambda_sites_expr(body),
+    EMatch(scr, arms) => count_lambda_sites_expr(scr) + count_lambda_sites_arms(arms),
+    EHandle(body_expr, arms) => count_lambda_sites_expr(body_expr) + count_lambda_sites_arms(arms),
+    // The one arm that counts: this node IS a table entry, and its body may
+    // hold more.
+    EFn(_, _, _, _, _, body) => 1 + count_lambda_sites_expr(body)
+  }
+}
+
+fn count_lambda_sites_exprs(items: Array[Expr]) -> Int {
+  let n = Array::length(items)
+  let mut i = 0
+  let mut total = 0
+  while i < n {
+    total = total + count_lambda_sites_expr(Array::get(items, i))
+    i = i + 1
+  }
+  total
+}
+
+fn count_lambda_sites_fields(fields: Array[(String, Expr)]) -> Int {
+  let n = Array::length(fields)
+  let mut i = 0
+  let mut total = 0
+  while i < n {
+    let (_, val) = Array::get(fields, i)
+    total = total + count_lambda_sites_expr(val)
+    i = i + 1
+  }
+  total
+}
+
+fn count_lambda_sites_arms(arms: Array[(Pat, Expr)]) -> Int {
+  let n = Array::length(arms)
+  let mut i = 0
+  let mut total = 0
+  while i < n {
+    let (_, body) = Array::get(arms, i)
+    total = total + count_lambda_sites_expr(body)
+    i = i + 1
+  }
+  total
+}
