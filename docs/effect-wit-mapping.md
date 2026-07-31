@@ -6,6 +6,13 @@
 > composes providers, and generates WIT from the residual host row. Until that
 > migration lands, host-capability comments and Error-as-trap below are known
 > implementation/spec correspondence debt, not the target executable contract.
+>
+> **Async / future / stream (2026-07-31):** the `Async` comment-marker fallback
+> below is likewise debt, not policy. The target mapping is decided by
+> [ADR-0089](wasip3-effect-alignment.md) Decision 5: `Future[T]` →
+> `future<T'>`, an export `with { Async }` → `async func`, and `stream<T'>`
+> only for nominal host-owned boundary-stream handles (`ByteStream` etc.) —
+> a guest-produced AsyncIter in a component signature stays a hard error.
 
 `vibe compile --wit` (launcher) / `VIBE_EMIT_WIT=1` (compiler wasm) render a
 vibe file's **effect surface** as a WIT world. `vibe serve` writes the same

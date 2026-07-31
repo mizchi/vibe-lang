@@ -8,6 +8,12 @@ async モデルへ寄せていくための設計判断と段階プランを定�
 **`async`/`await` + `Future[T]` + `Stream[T]`**、stream の抽象哲学は
 **既存 `Iterator` に寄せた pull ベース**。
 
+> **言語表面との整合 (2026-07-31)**: `Async` ラベル二重定義の統一、phantom
+> `Future[T]` の実体化、eager `Stream[T]` の退役と AsyncIter への一本化、
+> `Coroutine`↔`stream` の二層対応、wit_gen の `future<T>`/`stream<T>`/
+> `async func` マッピングは [ADR-0089](../wasip3-effect-alignment.md) が
+> 決定した。本ドキュメントは lowering / ABI 側の source of truth のまま。
+
 旧 [docs/archive/report/support-wasip3.md](../archive/report/support-wasip3.md)（2026-05-22、
 同期 effect ベースの Model 1）の async 部分は本ドキュメントが supersede する。
 同期 effect capability（`HttpRequest`/`HttpResponse`/`HttpClient` を `perform`

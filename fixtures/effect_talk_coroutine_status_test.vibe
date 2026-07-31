@@ -1,0 +1,63 @@
+// #1218 verification (algebraic-effects talk, 関数型まつり 2026, p69-75): the
+// Coroutine effect in the talk's exact shape -- the handler arm returns
+// `Yielded(x, resume)`, i.e. the one-shot first-class continuation travels
+// as an ADT payload (not just an Array slot as in
+// effect_resume_store_scheduler.vibe / gate 50), and a driver loop pattern-
+// matches Done/Yielded and re-enters the continuation until completion.
+//
+// Caveats verified elsewhere and NOT changed by this fixture:
+//   * the continuation is one-shot (second call traps -- gate 50);
+//   * resuming under a NEW `handle ... with Yield { ... }` does NOT switch
+//     handlers: the original driver is baked into the stored closure, the
+//     wrapping handle is silently vacuous (talk p76 "handler switch" /
+//     non-scoped resumption is unsupported -- verified 2026-07-31, the second
+//     Yield still dispatched to the ORIGINAL arm);
+//   * the effect must stay non-generic (`Coroutine[A,B]` would skip checking).
+
+//# Effects
+
+effect Yield {
+  Yield(Int) -> Unit
+}
+
+//# Status ADT carrying the continuation (talk p75)
+
+enum CoStatus {
+  Done(Int);
+  Yielded(Int, (Unit) -> CoStatus)
+}
+
+fn drive(status: CoStatus, acc: Int) -> Int {
+  match status {
+    Done(r) => acc * 100 + r
+    Yielded(x, k) => drive(k(()), acc + x)
+  }
+}
+
+//# Tests
+
+test "talk p69-75: Yielded(x, resume) ADT payload, driven to Done" {
+  let status1 = handle {
+    let _ = perform Yield::Yield(1)
+    let _ = perform Yield::Yield(2)
+    let _ = perform Yield::Yield(3)
+    Done(99)
+  } with Yield {
+    Yield(x) => Yielded(x, resume)
+  }
+  // yields 1+2+3 accumulate, then the body's own Done(99) surfaces
+  assert(drive(status1, 0) == 699)
+}
+
+test "talk p74: no more yields left means Done on first entry" {
+  let status = handle {
+    Done(7)
+  } with Yield {
+    Yield(x) => Yielded(x, resume)
+  }
+  let r = match status {
+    Done(v) => v
+    Yielded(_, _) => 0 - 1
+  }
+  assert(r == 7)
+}

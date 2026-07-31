@@ -1,0 +1,59 @@
+// #1218 verification (algebraic-effects talk, 関数型まつり 2026, p23-32): the
+// exception effect. In the talk, `Exc::throw -> !` makes `resume` untypeable,
+// so the handler arm discards the continuation = global escape. vibe's
+// counterpart is the built-in checked `Error` (ADR-0073): `resume` in an
+// Error arm is REJECTED by the checker (#640), the arm's value becomes the
+// handle result, and the rest of the body provably never runs.
+//
+// The second test pins the CONTRAST the talk glosses over and that vibe users
+// must know (#1087, fixtures/effect_handle_drop_continuation.vibe): for a
+// USER-DEFINED tail-resumptive effect, an arm that omits `resume` is NOT an
+// abort -- it is an implicit `resume(<arm value>)`. True discard-continuation
+// semantics exist only for `Error` (this file) and for suspend-class arms
+// that store `resume` and return (effect_resume_store_scheduler.vibe).
+// Exception[E] with typed payloads (talk p26-27, ADR-0085) additionally
+// needs generic effects, which today parse but skip all signature checking.
+
+//# Effects
+
+effect Abort {
+  Stop() -> Int
+}
+
+//# Tests
+
+fn safe_copy(exists: Bool) -> Int with { Error } {
+  if exists { throw("FileAlreadyExists") }
+  42
+}
+
+test "talk p23-32: Error handler discards the continuation (global escape)" {
+  let log: Array[Int] = []
+  let r = handle {
+    Array::push(log, 1)
+    let v = safe_copy(true)
+    Array::push(log, 2)
+    v
+  } with Error {
+    Throw(_) => 0 - 1
+  }
+  assert(r == 0 - 1)
+  // the code after the throw never ran
+  assert(Array::length(log) == 1)
+}
+
+test "talk p24: no throw means the handler arm never fires" {
+  let r = handle { safe_copy(false) } with Error { Throw(_) => 0 - 1 }
+  assert(r == 42)
+}
+
+test "contrast: user-effect arm without resume is an implicit resume, not an abort" {
+  let r = handle {
+    let x = perform Abort::Stop()
+    x + 100
+  } with Abort {
+    Stop() => 0 - 1
+  }
+  // NOT -1: the arm value -1 flows back INTO the body as x, so 99.
+  assert(r == 99)
+}
