@@ -1,0 +1,52 @@
+// #1272: a function that returns an ELEMENT of a container it owns LOCALLY.
+//
+// `Array::get` hands back an interior reference, not a fresh value, so the
+// local `f` must not be dropped before the returned element is retained --
+// the caller would otherwise hold a pointer into freed memory. Nothing fails
+// on the first call (the block is still intact); the corruption only shows
+// once a later allocation reuses the freed cell, which is why this fixture
+// calls each shape TWICE and sums the results.
+//
+// scope_tail_proj_root (codegen/common_analysis) used to recognize only
+// `.field` projections, so both shapes below dropped `f` without the dup and
+// returned garbage (the pair used to sum to 12 and 207 instead of 45 and 300).
+//
+// `mk` is the direct form (the borrowing read IS the tail); `mk2` binds it to
+// a local first and returns that binding, which is the same escape spelled
+// with one more `let`. 45 + 300 = 345.
+fn mk(v: Int) -> Array[Int] {
+  let f = [
+    [
+      7
+    ],
+    [
+      v
+    ]
+  ]
+  Array::get(f, 1)
+}
+
+fn mk2(v: Int) -> Array[Int] {
+  let f = [
+    [
+      7
+    ],
+    [
+      v
+    ]
+  ]
+  let r = Array::get(f, 1)
+  r
+}
+
+let _start = () -> Int {
+  let a = mk(40)
+  let b = mk(5)
+  let c = mk2(100)
+  let d = mk2(200)
+  Array::get(a, 0) + Array::get(b, 0) + Array::get(c, 0) + Array::get(d, 0)
+}
+_start()
+
+__DATA__
+{"last":"345"}

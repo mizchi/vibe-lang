@@ -977,6 +977,31 @@ fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool wi
 /// from the original source. Build it char-by-char via `String::from_char_code`
 /// + `String::concat` instead, exactly like double_to_string_expr's `ch_minus`
 /// / `ch_dot` pieces. `s` must be non-empty (callers only pass " -<label>").
+/// #1230 (docs/spec/wasi-p3-async.md M1b-3b→M1b-3c): the runtime shape of
+/// `Future[T]` — the two-element array `[state, payload]`.
+///
+/// Slot 0 is the state, slot 1 the value. Only `ready` (0) exists today: every
+/// in-tree future source (`Future::ready`, `Stream::next`, `Stream::fold`, and
+/// user code that returns `Future[T]` by calling `Future::ready`) resolves
+/// eagerly, so `await` reads slot 1 unconditionally. Carrying the state slot
+/// now is what lets a PENDING source be added without a second representation
+/// change: `await` grows a branch on slot 0 instead of a new memory layout.
+///
+/// The previous encoding was the payload itself (`await` and `Future::ready`
+/// both compiled to the identity), which left no room to distinguish the two.
+fn future_state_ready() -> Int {
+  0
+}
+
+/// A ready `Future[T]` carrying `payload` — synthesized as ordinary source so
+/// the array follows the same (RC) value conventions as any other literal.
+fn future_ready_expr(payload: Expr) -> Expr {
+  EArray([
+    EInt(future_state_ready()),
+    payload
+  ])
+}
+
 fn uninterned_string_expr(s: String, i: Int) -> Expr {
   let ch = ECall(EIdent("String::from_char_code", -1), [
     EInt(String::char_code_at(s, i))
@@ -1022,10 +1047,11 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
     // machinery on the linear backend: map/fold reuse the existing inline
     // Array::map / Array::fold lowering verbatim (same arg order, same value
     // representation). empty/once/filter are handled explicitly below.
+    // Stream::fold is NOT aliased here: it returns `Future[A]`, so it needs its
+    // own branch below to wrap the fold's result (a bare alias would hand back
+    // the accumulator where a future is expected).
     let fname = if fname0 == "Stream::map" {
       "Array::map"
-    } else if fname0 == "Stream::fold" {
-      "Array::fold"
     } else {
       fname0
     }
@@ -1336,15 +1362,21 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       nl
     }
     else if !prefer_bound_call && fname == "await" {
-      // M1b-3b (docs/spec/wasi-p3-async.md): awaiting a ready future yields the
-      // value directly (ready-future fast path). Real blocking future.read for
-      // async sources (host async imports / spawned subtasks) is M1b-3c.
-      ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      // M1b-3b (docs/spec/wasi-p3-async.md): a `Future[T]` is the two-element
+      // array `[state, payload]` (future_state_ready() = 0), so awaiting a
+      // ready future reads slot 1. The state slot exists so a PENDING future
+      // (a suspending source: host async import, spawned subtask) can be told
+      // apart here without changing the representation again -- lowering that
+      // arm to a suspend is M1b-3c.
+      ce(buf, ECall(EIdent("Array::get", -1), [
+        Array::get(args, 0),
+        EInt(1)
+      ], -1), local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "Future::ready" {
-      // Future::ready(x) carries x directly — no canon future is created for an
-      // already-resolved value.
-      ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      // Future::ready(x) is the already-resolved future carrying x. See the
+      // `await` branch above for the representation.
+      ce(buf, future_ready_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "Stream::empty" {
       // Empty stream = empty backing array.
@@ -1451,7 +1483,15 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
           EInt(0)
         ], -1)
       ], -1), ECall(EIdent("None", -1), array_empty(), -1)), -1)
-      ce(buf, synth, local_names, next_local, ctx, ld)
+      ce(buf, future_ready_expr(synth), local_names, next_local, ctx, ld)
+    }
+    else if !prefer_bound_call && fname == "Stream::fold" {
+      // Stream::fold(s, init, f) : Future[A] (docs/spec §2.4). The fold itself
+      // is the existing inline Array::fold lowering verbatim -- same arg order,
+      // same value representation -- so synthesize that call and wrap its
+      // result in a ready future. (Stream::map/filter return Streams, not
+      // futures, so they stay plain name aliases of the Array combinators.)
+      ce(buf, future_ready_expr(ECall(EIdent("Array::fold", -1), args, -1)), local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "String::to_bytes" {
       // String::to_bytes(s) : Stream[Int]  (ByteStream, docs/spec §2.4/§4.1).

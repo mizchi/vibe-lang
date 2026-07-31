@@ -553,10 +553,22 @@ fiber を suspend するので明示的状態機械は不要だが、**read→(b
 
 **M1b-3b（landed、ready-future fast path）**: `await(Future::ready(x))` のような
 **ready future の await は値 `x` と等価**なので、`compile_call.vibe` の builtin
-dispatch に identity lowering を追加した（`await`/`Future::ready` を引数の値へ
-lower）。これにより **await を使う async プログラムが初めてコンパイル&実行可能**に
-なった（従来は codegen 無しで不可）。gate を `await(Future::ready(42))` body へ
-更新し、selfhost → async component → wasmtime 45 で **42** を実測。
+dispatch に lowering を追加した。これにより **await を使う async プログラムが
+初めてコンパイル&実行可能**になった（従来は codegen 無しで不可）。gate を
+`await(Future::ready(42))` body へ更新し、selfhost → async component →
+wasmtime 45 で **42** を実測。
+
+当初は `await`/`Future::ready` を**引数の値そのもの**へ lower する identity
+だったが、`Future[T]` を **2要素配列 `[state, payload]`**（`state = 0` が ready、
+`future_ready_expr` / `future_state_ready`）に変えた（#1230）。ready しか無い今も
+挙動は同じ（`await` は slot 1 を読むだけ）だが、**pending future を後から足すのに
+表現を作り直さなくて済む** — M1b-3c は `await` に slot 0 の分岐を生やすだけになる。
+future を作る側は `Future::ready` / `Stream::next` / `Stream::fold` の3つで、
+`Future[T]` を返す user-level コード（`lib/@vibe/prelude/async_iter.vibe` の
+`AsyncIterator::next`）は元から `Future::ready(..)` 経由なので影響しない。
+`Stream::fold` はこの変更まで `Array::fold` への名前 alias だったが、戻り値が
+`Future[A]` なので専用ブランチに分離した（`Stream::map`/`filter` は `Stream` を
+返すので alias のまま）。
 
 **M1b-3c（todo、真の blocking await）**: 実 async ソース（host async import /
 subtask spawn）から得た future を待つ場合は §3.6 のとおり `future.read` +
@@ -954,7 +966,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | **M1b-2d** | 真の run: fd_write stub module を component に同梱し main の instantiation に供給、entry の `(param i64)->i64` 規約に合わせ trampoline が dummy i64 引数で呼ぶよう修正、wasmtime に exceptions flag。**縦串完成: selfhost が `.vibe` async entry → async component → wasmtime 45 で 42 を返す** | **done** |
 | **M1b-2e** | 回帰保護 gate（`test-async-component`）＋ CI 配線 | done |
 | **M1b-3a** | `await` codegen spike: wit-bindgen reference から `future.new/read/write` + waitable-set 等 canon built-in の signature/option を抽出（§3.6） | done |
-| **M1b-3b** | `await`/`Future::ready` の codegen（ready-future identity lowering）: `await(x)`/`Future::ready(x)` を引数の値へ lower。**await を使う async プログラムが初めてコンパイル&実行可能**。gate を `await(Future::ready(42))` body に更新し E2E で 42 | done |
+| **M1b-3b** | `await`/`Future::ready` の codegen（ready-future lowering）。**await を使う async プログラムが初めてコンパイル&実行可能**。gate を `await(Future::ready(42))` body に更新し E2E で 42。当初の identity lowering は #1230 で `Future[T] = [state, payload]`（`state = 0` が ready）へ差し替え済み — pending を足すときに表現を作り直さないため（§3.6 参照） | done |
 | **M1b-3c** | 真の blocking await: `future.read` + waitable-set 待機ループ（async source = host async import / subtask spawn が前提）。core codegen に future canon built-in の import + buffer + ループを emit | spike done（§3.7、mechanics 実機確認）/ codegen 未着手 |
 | **M1b-3c-1b** | blocking await（host async import）の component_codegen.vibe emitter。待機ループを別関数に括り出した形で、`future.*` canon 無しに動くことを実機検証（§3.8）。byte-exact 検証のみで実 `.vibe` ソースへの配線は対象外。**spawn 相当は「spawn と join の間に観測可能な処理が無い」退化ケースのみ**——真の interleaving spawn は未達（§3.8「実証範囲の限界」） | done（#1230、`comp_emit_component_wasm_async_spawned_future` + `scripts/test_spawned_future_component_gate.sh`） |
 | **M1b-3c-1c** | 真の interleaving spawn: 親の処理と並行して走る第2の guest 計算。**§3.11 で ABI 側の問いは解決**——`waitable-set.wait` の完了順ディスパッチだけで interleave し、別 task も poll executor も `context.get/set` も不要（§3.8 の予測を実機反証、負の対照付き gate で固定）。残るのは **await をまたぐ task 状態の表現＝ADR-0076 の CPS/suspend lowering** のみで、codegen 側に局所化された | mechanics done（#1230、`tools/wasip3_component_probe/interleaved_tasks/` + `scripts/test_interleaved_tasks_probe_gate.sh`）/ emitter・実ソース配線は未着手 |
