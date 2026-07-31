@@ -1,0 +1,61 @@
+// #1218 verification (algebraic-effects talk, 関数型まつり 2026, p63): the
+// State-effect pattern in its practical shape -- an in-memory AppDB handler
+// whose internal state lives in a captured mutable cell, with tail-resumptive
+// arms. This is exactly the "primitive State" lowering the talk itself
+// recommends (p132: state -> mutable reference cell), and the shape vibe's
+// inline-direct-perform path compiles today.
+//
+// The talk's *classic* state-passing encoding (`Get(), resume => (s) =>
+// resume(s)(s)`) is NOT expressible: vibe's `handle` has no return/value
+// clause, so an arm returning a lambda trips "handler arm value type mismatch
+// with the handle body's type: expected Int, got (Int) -> Int" (verified
+// 2026-07-31). The mut-cell form below is the supported equivalent.
+//
+// NOTE: the effect must stay NON-generic. `effect AppDb[S]` would compile but
+// is silently unregistered by the checker (checker_stmt.vibe: only
+// zero-param effects become TDEffect), losing perform arity/type checking.
+
+//# Effects
+
+effect AppDb {
+  GetCountUsers() -> Int
+  RegisterUser(Int) -> Unit
+}
+
+//# Tests
+
+fn register_users(users: Array[Int]) -> Unit with { AppDb } {
+  let n = Array::length(users)
+  let mut i = 0
+  while i < n {
+    let _ = perform AppDb::RegisterUser(Array::get(users, i))
+    i = i + 1
+  }
+}
+
+test "talk p63: in-memory AppDB handler over a captured mut store" {
+  let store: Array[Int] = []
+  let count = handle {
+    register_users([101, 102, 103])
+    perform AppDb::GetCountUsers()
+  } with AppDb {
+    GetCountUsers() => resume(Array::length(store));
+    RegisterUser(user) => { Array::push(store, user); resume(()) }
+  }
+  assert(count == 3)
+  assert(Array::get(store, 0) == 101)
+  assert(Array::get(store, 2) == 103)
+}
+
+test "talk p62: counter via Get/Put on a mut cell" {
+  let mut cell = 10
+  let r = handle {
+    let a = perform AppDb::GetCountUsers()
+    let _ = perform AppDb::RegisterUser(a + 1)
+    perform AppDb::GetCountUsers()
+  } with AppDb {
+    GetCountUsers() => resume(cell);
+    RegisterUser(n) => { cell = n; resume(()) }
+  }
+  assert(r == 11)
+}

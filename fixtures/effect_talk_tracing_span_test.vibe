@@ -1,0 +1,48 @@
+// #1218 verification (algebraic-effects talk, 関数型まつり 2026, p84-89): the
+// higher-order Tracing effect -- an operation whose ARGUMENT is a code block
+// (`Span(info, block)`). The talk says plain algebraic effects cannot type
+// this (the block's effect row cannot be tied to the perform site's row).
+//
+// What vibe supports TODAY (this fixture pins the working boundary):
+//   * an effect operation MAY take a function-typed parameter, and a handler
+//     arm may invoke it -- as long as the block is PURE (row-free). The
+//     nesting/timing structure of spans is therefore expressible.
+//
+// What fails (verified 2026-07-31, clean diagnostic, no invalid module):
+//   * a block that itself performs an effect handled OUTSIDE the Tracing
+//     handle (`Span(String, () -> Int with { Log })`, outer `handle .. with
+//     Log`) is rejected by the ADR-0076 evidence migration:
+//       "handle of effect 'Log' cannot be compiled: the site is not eligible
+//        for evidence-passing migration (ADR-0076) and the replay engine was
+//        removed (追記34 V2) ..."
+//     because the arm-invoked closure is not statically visible to the
+//     migration. This is exactly the talk's "higher-order effect" extension
+//     (p87) plus Provider (p89) -- unimplemented; needs its own design.
+
+//# Effects
+
+effect Tracing {
+  Span(String, () -> Int) -> Int
+}
+
+//# Tests
+
+test "talk p85: span nesting with pure blocks, depth recorded by the handler" {
+  let events: Array[String] = []
+  let r = handle {
+    perform Tracing::Span("outer", () -> Int { 40 })
+  } with Tracing {
+    Span(info, block) => {
+      Array::push(events, info)
+      let inner = block()
+      Array::push(events, info)
+      resume(inner + 2)
+    }
+  }
+  assert(r == 42)
+  // start/end pair recorded around the block, RAII-style (talk p86's
+  // startSpan/endSpan misuse is impossible: pairing lives in the arm)
+  assert(Array::length(events) == 2)
+  assert(Array::get(events, 0) == "outer")
+  assert(Array::get(events, 1) == "outer")
+}
