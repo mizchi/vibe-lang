@@ -355,6 +355,17 @@ enum exhaustiveness は vibe checker が保持する。
 現れない ABI 詳細とし、(2) は前述の `Spawn[r]` capability effect に
 統合する。これにより両 ADR の主張が矛盾なく両立する。
 
+> **superseded (2026-07-31, ADR-0089)**: 上記のうち「(1) suspend を row から
+> 外す」は [ADR-0089](wasip3-effect-alignment.md) Decision 1 で**不採用**に
+> なった。`Async::Suspend` は ADR-0075 / ADR-0068(concurrency.md は既に
+> `with { Async::suspend }` を全編で row 追跡している)に従い **row に現れる
+> 通常の operation** とし、`with { Async }` export → `async func` の WIT
+> 射影(同 Decision 5)の前提にする。row に現れないのは backend 選択
+> (in-guest pump / `waitable-set.wait` / JSPI)という lowering 詳細であり、
+> ADR-0068 の「色付け回避」はこの backend 非伝播として維持する。
+> 「(2) spawn/task coordination は `Spawn[r]` capability」の分解は
+> そのまま有効。
+
 ## 動的フォールバック許可(Deno 風の permission request との違い)
 
 > **carved out**: 本節の Optional capability(`Fs::Read[X]?`)・`perform?`・

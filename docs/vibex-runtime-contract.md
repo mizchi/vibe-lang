@@ -244,6 +244,13 @@ BindingLock {
 `fork_requires ⊆ requires` を必須 invariant とする。resource identity、operation
 identity、provider ABI/version、target world version は contract hash に入れる。
 
+> **拡張 (2026-07-31, ADR-0088)**: Optional capability(`allows { Fs::Read[X]? }`)
+> の導入に伴い、`BindingLock` には `optional_resolution: Map[OperationRef,
+> Granted | NotGranted]` が加わる(apply 時に一回だけ確定する参照テーブル。
+> `perform?` は実行中これを引くだけの純粋参照)。`Entry.requires` の起動判定は
+> Required エントリのみで行う。詳細は
+> [capability-authorization-surface.md](capability-authorization-surface.md)。
+
 WIT world は residual contract の ABI projection である。WIT は resource policy、
 logical/physical mapping、provider 選択を十分に表せないため、WITだけを executable
 contract の正本にしない。
@@ -323,6 +330,14 @@ all residual imports linked
 不足時は `main` を一命令も実行せず、logical resource、operation、候補 provider、残余
 requirement を含む構造化診断を返す。Wasm engine の generic missing-import error だけに
 任せない。
+
+> **拡張 (2026-07-31, ADR-0088)**: この preflight の直前に、TTY であれば
+> **認可専用の一括 prompt** を挟める — 対象は「composed host が provide
+> できるが未許可」の operation(認可待ち Required の grant-or-abort と
+> 未確定 Optional)のみ。provider/binding が `ComposedHost.provides` に無い
+> Required は prompt では解決できず、本節の非対話 abort のままである。
+> prompt の結果は per-run ephemeral で、run 開始後の authority 不変は
+> 本 ADR のまま変わらない。
 
 ここでの satisfaction は「型の合う adapter/binding と宣言済み policy が存在する」ことを
 意味する。network outage、credential expiry、cloud organization policy、対象 object の
