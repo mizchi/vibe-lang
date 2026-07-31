@@ -27,7 +27,7 @@ import @vibe/compiler/codegen {
 }
 
 import @vibe/compiler/loader {
-  load_or_parse_module_header_fs
+  ingest_source_text_fs, load_or_parse_module_header_fs
 }
 
 import @vibe/graph {
@@ -1411,6 +1411,125 @@ fn ensure_fingerprint_fs_go(plan_leaf_fps: Array[(String, String)], plan_edges: 
       }
     }
   }
+}
+
+/// Index of `p` in `items`, or -1. Plain linear scan: the caller runs it once
+/// per module over a list of the same length, and a project the size of this
+/// compiler's own manifest is ~209 modules.
+fn module_plan_index_of(items: Array[String], p: String) -> Int {
+  let n = Array::length(items)
+  let mut i = 0
+  let mut found = 0 - 1
+  while found < 0 && i < n {
+    if Array::get(items, i) == p {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #1239 step 4(D) groundwork: discover a project's WHOLE import graph, and
+/// its canonical schedule, inside one compiler process.
+///
+/// VIBE_LIST_DEPS answers "what does this ONE file import", so a host driver
+/// building the parallel pre-warm's DAG has to spawn it once per module --
+/// and on a project the size of this compiler's own manifest that discovery
+/// loop is what dominates the whole parallel path's wall time, independent of
+/// how many jobs the later check phase gets (#1168, see discoverProject in
+/// scripts/parallel_frontend_warm.mjs). This does the same BFS in-process.
+///
+/// The order comes from @vibe/graph's plan_module_order -- the same function
+/// the serial walk's own upfront plan uses since #1239 step 4(A)
+/// (runtime/typecheck_fs.vibe) -- so the host dispatches the schedule the
+/// compiler itself planned instead of one it re-derived, and an import cycle
+/// is rejected here with the identical diagnostic rather than surfacing later
+/// as a driver that never makes progress.
+///
+/// Returns the manifest text plus, positionally, each module's INGESTED
+/// source: `ingest_source_text_fs` can prepend a directory-shared import a
+/// raw .vibe file never had, or rewrite a contract into its facade entirely,
+/// and check_module parses that text -- never the raw bytes. Deriving deps
+/// from one and handing back the other is #1168's exact bug, so both come
+/// off the same `ingested` string here.
+export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String]) with { Error, Fs } {
+  // `paths` doubles as the BFS queue: discovery pushes to it, `qi` walks it.
+  let paths: Array[String] = [
+  ]
+  let deps_of: Array[Array[String]] = [
+  ]
+  let sources: Array[String] = [
+  ]
+  Array::push(paths, entry_path)
+  let mut qi = 0
+  while qi < Array::length(paths) {
+    let p = Array::get(paths, qi)
+    qi = qi + 1
+    if !Fs::exists(p) {
+      throw(String::concat("module plan: cannot read module: ", p))
+    } else {
+      ()
+    }
+    let ingested = ingest_source_text_fs(p, Fs::read_file(p))
+    let (deps, _exports, _parse_count) = load_or_parse_module_header_fs(p, ingested, 0)
+    Array::push(sources, ingested)
+    Array::push(deps_of, deps)
+    let dlen = Array::length(deps)
+    let mut i = 0
+    while i < dlen {
+      let d = Array::get(deps, i)
+      if module_plan_index_of(paths, d) >= 0 {
+        ()
+      } else {
+        Array::push(paths, d)
+      }
+      i = i + 1
+    }
+  }
+  let edges: Array[(String, Array[String])] = [
+  ]
+  let mut e = 0
+  while e < Array::length(paths) {
+    Array::push(edges, (Array::get(paths, e), Array::get(deps_of, e)))
+    e = e + 1
+  }
+  let (order, ranks) = plan_module_order(edges, entry_path)
+  let buf = StringBuilder::new()
+  StringBuilder::push(buf, "version\t1\n")
+  let ordered_sources: Array[String] = [
+  ]
+  let n = Array::length(order)
+  let mut k = 0
+  while k < n {
+    let p = Array::get(order, k)
+    let src_index = module_plan_index_of(paths, p)
+    let index_text = __to_string(k)
+    StringBuilder::push(buf, "module\t")
+    StringBuilder::push(buf, index_text)
+    StringBuilder::push(buf, "\t")
+    StringBuilder::push(buf, __to_string(Array::get(ranks, k)))
+    StringBuilder::push(buf, "\t")
+    StringBuilder::push(buf, p)
+    StringBuilder::push(buf, "\n")
+    Array::push(ordered_sources, Array::get(sources, src_index))
+    // Declaration order, duplicates KEPT: the driver derives both its
+    // deduped dependency set and its dependencyOccurrences list from this,
+    // exactly as it does from VIBE_LIST_DEPS's output today.
+    let deps = Array::get(deps_of, src_index)
+    let dlen = Array::length(deps)
+    let mut i = 0
+    while i < dlen {
+      StringBuilder::push(buf, "dep\t")
+      StringBuilder::push(buf, index_text)
+      StringBuilder::push(buf, "\t")
+      StringBuilder::push(buf, Array::get(deps, i))
+      StringBuilder::push(buf, "\n")
+      i = i + 1
+    }
+    k = k + 1
+  }
+  (StringBuilder::freeze(buf), ordered_sources)
 }
 
 export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {

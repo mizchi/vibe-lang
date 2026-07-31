@@ -7322,4 +7322,91 @@ fi
 rm -rf "$cycdir"
 echo "[compiler-gate] import cycle rejected before any commit ok (cyclic 0 dep lists, acyclic $acyc_deps)"
 
+# 72/72. #1239 step 4(D): VIBE_MODULE_PLAN must describe the SAME graph the
+#        per-file VIBE_LIST_DEPS loop it replaces described.
+#
+#        The host-side parallel pre-warm (scripts/parallel_frontend_warm.mjs)
+#        used to spawn one compiler per module to discover the import DAG;
+#        it now takes the whole graph, already in canonical rank order, from
+#        one VIBE_MODULE_PLAN call. That is only safe while the two agree,
+#        and disagreement would not fail loudly -- it would silently warm a
+#        cache for the wrong graph. So the old per-file mode is kept as the
+#        oracle here and diffed against the new one.
+#
+#        Two checks, split by cost. On the fixture (the leaf/mid/main
+#        diamond, where main imports leaf both directly and through mid) the
+#        agreement is EXACT: same dep rows in declaration order, duplicates
+#        included, and byte-identical ingested source. On this repo's own
+#        compiler graph the oracle would need ~200 process spawns, so that
+#        one is checked structurally instead, from the plan alone: every
+#        dependency must itself be a planned module with a strictly smaller
+#        rank. That is the property a wave-at-a-time dispatcher relies on.
+echo "[compiler-gate] 72/72 VIBE_MODULE_PLAN agrees with the per-file VIBE_LIST_DEPS graph (#1239 step 4D)"
+plandir="_build/_gate_module_plan"
+rm -rf "$plandir"; mkdir -p "$plandir/src"
+cp scripts/fixtures/parallel_project_sample/leaf.vibe \
+   scripts/fixtures/parallel_project_sample/mid.vibe \
+   scripts/fixtures/parallel_project_sample/main.vibe "$plandir/src/"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_MODULE_PLAN=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$plandir/src/main.vibe" "$plandir/plan.txt" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$plandir/plan.txt" ]; then
+  echo "[compiler-gate] FAIL: VIBE_MODULE_PLAN produced no manifest$([ -s "$plandir/plan.txt.diag" ] && echo ": $(cat "$plandir/plan.txt.diag")")" >&2
+  exit 1
+fi
+plan_mods="$(awk -F'\t' '$1=="module"{print $2"\t"$4}' "$plandir/plan.txt")"
+if [ "$(echo "$plan_mods" | grep -c .)" != "3" ]; then
+  echo "[compiler-gate] FAIL: expected 3 planned modules for the leaf/mid/main fixture, got:" >&2
+  cat "$plandir/plan.txt" >&2
+  exit 1
+fi
+while IFS="$(printf '\t')" read -r idx modpath; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_LIST_DEPS=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$modpath" "$plandir/ld$idx.out" __no_entry__ >/dev/null 2>&1
+  awk -F'\t' -v i="$idx" '$1=="dep" && $2==i{print $3}' "$plandir/plan.txt" > "$plandir/plan$idx.deps"
+  grep -v '^[[:space:]]*$' "$plandir/ld$idx.out" > "$plandir/ld$idx.deps" || true
+  if ! cmp -s "$plandir/plan$idx.deps" "$plandir/ld$idx.deps"; then
+    echo "[compiler-gate] FAIL: VIBE_MODULE_PLAN and VIBE_LIST_DEPS disagree on $modpath's dependencies" >&2
+    diff "$plandir/ld$idx.deps" "$plandir/plan$idx.deps" >&2 || true
+    exit 1
+  fi
+  if ! cmp -s "$plandir/ld$idx.out.src" "$plandir/plan.txt.$idx.src"; then
+    echo "[compiler-gate] FAIL: VIBE_MODULE_PLAN and VIBE_LIST_DEPS disagree on $modpath's INGESTED source -- a driver would check different text than the serial walk" >&2
+    exit 1
+  fi
+done <<PLANMODS
+$plan_mods
+PLANMODS
+echo "[compiler-gate] module plan matches per-file discovery on the fixture (3 modules)"
+# Structural check on a real graph: one spawn, no oracle needed.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_MODULE_PLAN=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  lib/@vibe/compiler/tests/codegen_lexer_test.vibe "$plandir/big.txt" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$plandir/big.txt" ]; then
+  echo "[compiler-gate] FAIL: VIBE_MODULE_PLAN produced no manifest for the compiler's own graph$([ -s "$plandir/big.txt.diag" ] && echo ": $(cat "$plandir/big.txt.diag")")" >&2
+  exit 1
+fi
+plan_check="$(awk -F'\t' '
+  $1=="module"{ rank[$4]=$3; idxpath[$2]=$4; n++ }
+  $1=="dep"{ dep[++d]=$2 "\t" $3 }
+  END{
+    bad=0
+    for (k=1; k<=d; k++) {
+      split(dep[k], parts, "\t")
+      importer=idxpath[parts[1]]; target=parts[2]
+      if (!(target in rank)) { print "unplanned dependency: " importer " -> " target; bad++ }
+      else if (rank[target]+0 >= rank[importer]+0) { print "rank not strictly decreasing: " importer " (" rank[importer] ") -> " target " (" rank[target] ")"; bad++ }
+    }
+    if (bad==0) print "ok " n
+  }' "$plandir/big.txt")"
+case "$plan_check" in
+  ok\ *) echo "[compiler-gate] module plan rank invariant holds ($(echo "$plan_check" | cut -d' ' -f2) modules)" ;;
+  *) echo "[compiler-gate] FAIL: module plan rank invariant violated -- a wave-at-a-time dispatcher would run a module before its dependency:" >&2
+     echo "$plan_check" | head -5 >&2
+     exit 1 ;;
+esac
+rm -rf "$plandir"
+echo "[compiler-gate] VIBE_MODULE_PLAN agrees with per-file discovery ok"
+
 echo "[compiler-gate] ok"

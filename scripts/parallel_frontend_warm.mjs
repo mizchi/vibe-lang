@@ -54,129 +54,87 @@ async function readIfPresent(path) {
   }
 }
 
-// `uniqueId` disambiguates the on-disk .deps.out/.diag path: the sanitized
-// filePath alone can collide (e.g. this repo's own checker_builtins.vibe
-// vs checker/builtins.vibe both sanitize to checker_builtins_vibe) --
-// harmless when listDeps calls were strictly sequential, but with
-// discoverProject now running several concurrently (#1168), two colliding
-// in-flight calls would race on the same temp file and let one module
-// silently consume another's dependency list or diagnostic (Codex review,
-// PR #1170). The caller passes a per-call monotonic counter so every
-// listDeps invocation in a given cacheDir gets a distinct path regardless
-// of filename collisions.
-// Returns { deps, source }. `source` is the file's INGESTED text (contract
-// files desugared to their facade via ingest_source_text_fs, written by the
-// compiler to the `.src` companion file alongside the plain deps list --
-// #1168), not the raw file bytes. check_module (used by both the serial
-// walk and the parallel job-dir worker) parses `source` with the ordinary
-// module grammar, which a raw .vpkg contract is never valid input for --
-// ensure_fingerprint_fs_go's serial recursion never hands it raw bytes
-// either, always routing through this same ingest step first. Piggybacking
-// the ingest onto the existing VIBE_LIST_DEPS spawn (rather than reading
-// the file directly, or a second subprocess call per file) keeps #1170's
-// discovery-loop parallelization win intact.
-async function listDeps(runnerPath, compilerWasm, cacheDir, projectRoot, filePath, uniqueId) {
-  const outAbs = join(cacheDir, `${uniqueId}_${filePath.replace(/[^a-zA-Z0-9]/g, "_")}.deps.out`);
-  await rm(outAbs, { force: true });
-  await rm(`${outAbs}.diag`, { force: true });
-  await rm(`${outAbs}.src`, { force: true });
+// Discover the whole import DAG in ONE compiler invocation (#1239 step
+// 4(D)): VIBE_MODULE_PLAN writes a manifest of every reachable module in
+// the compiler's own canonical rank order, plus each module's dependency
+// list and ingested source.
+//
+// This replaces a per-file VIBE_LIST_DEPS spawn, which is what used to
+// dominate this whole path's wall time: on this repo's own
+// codegen_lexer_test.vibe graph (166 modules) the per-file loop measured
+// 17.4s serially and 5.1s at 4-way concurrency, against 0.8s for the single
+// plan call. The old loop also needed a per-call unique id to keep two
+// concurrent listDeps invocations from racing on a sanitized-path temp file
+// (#1170); here the compiler names each source file by its index in the
+// manifest, so there is nothing to sanitize and nothing to collide.
+//
+// `source` is the module's INGESTED text, not the raw file bytes.
+// ingest_source_text_fs can prepend a directory-shared import a raw .vibe
+// file never had, or rewrite a contract into its facade entirely, and
+// check_module parses that text -- deriving deps from one and handing back
+// the other is #1168's exact bug. The compiler produces both from the same
+// string (see module_plan_manifest in lib/@vibe/compiler/cli_adapter.vibe).
+//
+// Modules come back in rank order (rank ascending, then path), so every
+// module's dependencies precede it -- runParallelProject does not require
+// that, but it makes the input to a wave-at-a-time dispatcher deterministic
+// regardless of how the graph was traversed.
+async function discoverProjectViaPlan(runnerPath, compilerWasm, projectRoot, entryFile, cacheDir) {
+  const planPath = join(cacheDir, "plan.txt");
+  await rm(planPath, { force: true });
+  await rm(`${planPath}.diag`, { force: true });
   const exitCode = await runVibe(
-    runnerPath, compilerWasm, [filePath, outAbs, "__no_entry__"],
-    { VIBE_LIST_DEPS: "1", VIBE_IMPORT_ABI: "raw" },
+    runnerPath, compilerWasm, [entryFile, planPath, "__no_entry__"],
+    { VIBE_MODULE_PLAN: "1", VIBE_IMPORT_ABI: "raw" },
     projectRoot,
   );
-  const diag = await readIfPresent(`${outAbs}.diag`);
+  const diag = await readIfPresent(`${planPath}.diag`);
   if (diag !== null) {
-    throw new Error(`VIBE_LIST_DEPS failed for ${filePath}: ${diag.trim()}`);
+    throw new Error(`VIBE_MODULE_PLAN failed for ${entryFile}: ${diag.trim()}`);
   }
-  const text = await readIfPresent(outAbs);
-  if (text === null) {
-    throw new Error(`VIBE_LIST_DEPS produced no output for ${filePath} (exit ${exitCode})`);
+  const manifest = await readIfPresent(planPath);
+  if (manifest === null) {
+    throw new Error(`VIBE_MODULE_PLAN produced no manifest for ${entryFile} (exit ${exitCode})`);
   }
-  const source = await readIfPresent(`${outAbs}.src`);
-  if (source === null) {
-    throw new Error(`VIBE_LIST_DEPS produced no ingested source for ${filePath} (exit ${exitCode})`);
+  const rows = manifest.split("\n").filter(Boolean);
+  if (rows[0] !== "version\t1") {
+    throw new Error(`unsupported module plan version row: ${JSON.stringify(rows[0] ?? null)}`);
   }
-  return { deps: text.split("\n").map((line) => line.trim()).filter(Boolean), source };
-}
-
-// Run `fn` over every item in `items`, at most `concurrency` in flight at
-// once, preserving no particular completion order (callers only need the
-// full result set, not ordering). A plain worker-pool loop rather than a
-// library dependency, since this script has none today.
-//
-// Uses allSettled, not Promise.all: a worker whose `fn` throws stops
-// pulling new items, but other workers keep draining the shared queue via
-// `next`, and every already-spawned subprocess (runVibe's child_process)
-// is awaited to completion inside its own worker's loop either way. If we
-// instead let one rejection short-circuit via Promise.all, main()'s catch
-// would call process.exit(1) while other workers' in-flight `runVibe`
-// subprocesses are still running -- Node does not kill spawned children on
-// process.exit, so they'd become orphans still writing into a cacheDir the
-// caller is about to rm -rf (Codex review, PR #1170). Waiting for every
-// worker to settle first means no subprocess is ever abandoned mid-flight.
-async function mapWithConcurrency(items, concurrency, fn) {
-  const results = new Array(items.length);
-  let next = 0;
-  async function worker() {
-    while (true) {
-      const i = next++;
-      if (i >= items.length) return;
-      results[i] = await fn(items[i], i);
+  const paths = new Map();
+  const occurrences = new Map();
+  for (const row of rows.slice(1)) {
+    const parts = row.split("\t");
+    if (parts[0] === "module" && parts.length === 4) {
+      const index = Number(parts[1]);
+      paths.set(index, parts[3]);
+      occurrences.set(index, []);
+    } else if (parts[0] === "dep" && parts.length === 3) {
+      const index = Number(parts[1]);
+      const deps = occurrences.get(index);
+      // A dep row for an index with no module row would silently drop that
+      // dependency from the graph -- the same class of quiet wrong-graph
+      // failure the ingested-source note above guards against.
+      if (deps === undefined) throw new Error(`module plan dep row for unknown module index: ${row}`);
+      deps.push(parts[2]);
+    } else {
+      throw new Error(`unknown module plan row: ${row}`);
     }
   }
-  const settled = await Promise.allSettled(
-    Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, worker),
-  );
-  const failure = settled.find((r) => r.status === "rejected");
-  if (failure) throw failure.reason;
-  return results;
-}
-
-// Level-order BFS from a single entry file, deduping by resolved path
-// across the whole walk (a diamond dependency must not be scheduled twice)
-// -- mirrors parallel_project_driver.mjs's discoverProject, parameterized
-// by projectRoot/runnerPath instead of this repo's own fixed layout.
-//
-// Each BFS level (frontier) is discovered with up to `concurrency` files
-// in flight at once, instead of one `vibe --invoke cli_main` subprocess
-// spawn awaited fully before the next starts. On a project the size of
-// the compiler's own manifest (~209 modules) the fully-serial version
-// measured ~4x the plain serial-compile wall time, dominated entirely by
-// this discovery loop and independent of the later parallel-check phase's
-// own `jobs` count (#1168). Concurrency here reuses that same `jobs`
-// value: at `jobs=1` this reduces to the original one-at-a-time walk
-// (`Math.max(1, ...)` above), so a `jobs=1` run's discovery cost is
-// unchanged.
-async function discoverProject(runnerPath, compilerWasm, projectRoot, entryPaths, cacheDir, concurrency) {
-  const modules = new Map();
-  const seen = new Set(entryPaths);
-  let frontier = [...entryPaths];
-  let nextUniqueId = 0;
-  while (frontier.length > 0) {
-    const discovered = await mapWithConcurrency(frontier, concurrency, async (path) => {
-      const uniqueId = nextUniqueId++;
-      const { deps, source } = await listDeps(runnerPath, compilerWasm, cacheDir, projectRoot, path, uniqueId);
-      return { path, deps, source };
+  const modules = [];
+  for (const index of [...paths.keys()].sort((a, b) => a - b)) {
+    const source = await readIfPresent(`${planPath}.${index}.src`);
+    if (source === null) {
+      throw new Error(`module plan named no source for module ${index} (${paths.get(index)})`);
+    }
+    const dependencyOccurrences = occurrences.get(index);
+    modules.push({
+      id: paths.get(index),
+      dependencies: [...new Set(dependencyOccurrences)],
+      dependencyOccurrences,
+      source,
     });
-    const nextFrontier = [];
-    for (const { path, deps, source } of discovered) {
-      modules.set(path, {
-        id: path,
-        dependencies: [...new Set(deps)],
-        dependencyOccurrences: deps,
-        source,
-      });
-      for (const dep of deps) {
-        if (!seen.has(dep)) {
-          seen.add(dep);
-          nextFrontier.push(dep);
-        }
-      }
-    }
-    frontier = nextFrontier;
   }
-  return [...modules.values()];
+  return modules;
 }
 
 // Publish every Checked outcome's env to the REAL persistent cache in one
@@ -228,10 +186,10 @@ async function main() {
     throw new Error(`invalid jobs value: ${jobsArg}`);
   }
 
-  const cacheDir = await mkdtemp(join(tmpdir(), "vibe-list-deps-"));
+  const cacheDir = await mkdtemp(join(tmpdir(), "vibe-module-plan-"));
   let modules;
   try {
-    modules = await discoverProject(runnerPath, compilerWasm, projectRoot, [entryFile], cacheDir, jobs);
+    modules = await discoverProjectViaPlan(runnerPath, compilerWasm, projectRoot, entryFile, cacheDir);
   } finally {
     await rm(cacheDir, { recursive: true, force: true });
   }
