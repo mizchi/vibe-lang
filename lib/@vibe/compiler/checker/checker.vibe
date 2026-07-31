@@ -3629,6 +3629,56 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
           // branch here checking all of its arguments).
           let (_, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
           (tab_call_ty(tytab, call_off, CtInt), s1, c1)
+        } else if name == "MutList::empty" && Array::length(args) == 1 {
+          // ADR-0090 Phase 1: MutList[T, r] is a checker-only phantom over
+          // Array[T]'s runtime layout (same technique as FrozenArray above).
+          // The region argument's type -- inside `region r { .. }` a type
+          // variable that `__region_run` later pins to its rigid skolem --
+          // is captured as the SECOND type argument, so the escape scan in
+          // the `__region_run` branch below can see region-tainted values in
+          // fully-zonked types. The element type stays tolerant (CtUnknown),
+          // matching FrozenArray's rows.
+          let (r_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+          (tab_call_ty(tytab, call_off, CtNamed("MutList", Array::slice([
+            CtUnknown,
+            subst_apply(s1, r_ty)
+          ], 0, 2))), s1, c1)
+        } else if name == "MutList::push" && Array::length(args) == 2 {
+          // ADR-0090 Phase 1: borrows the list (arg0), consumes the element.
+          // The tolerant CtUnknown element type means no per-push element
+          // unification yet -- the checker slice keeps FrozenArray's
+          // tolerance until MutList grows real element inference.
+          let (_, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+          let (_, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+          (tab_call_ty(tytab, call_off, CtUnit), s2, c2)
+        } else if name == "MutList::freeze" && Array::length(args) == 1 {
+          // ADR-0090 Phase 1: the sanctioned region exit -- drops the region
+          // type argument, so the frozen result passes the `__region_run`
+          // escape scan (runtime identity cast, like ArrayBuilder::freeze).
+          let (ml_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+          let elem = match subst_apply(s1, ml_ty) {
+            CtNamed(ml_name, ml_args) => if ml_name == "MutList" && Array::length(ml_args) == 2 {
+              subst_apply(s1, Array::get(ml_args, 0))
+            } else {
+              CtUnknown
+            },
+            _ => CtUnknown
+          }
+          (tab_call_ty(tytab, call_off, CtNamed("FrozenArray", Array::slice([
+            elem
+          ], 0, 1))), s1, c1)
+        } else if name == "MutList::to_array" && Array::length(args) == 1 {
+          // ADR-0090 Phase 1: like freeze but exits to a plain Array[T].
+          let (ml_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+          let elem = match subst_apply(s1, ml_ty) {
+            CtNamed(ml_name, ml_args) => if ml_name == "MutList" && Array::length(ml_args) == 2 {
+              subst_apply(s1, Array::get(ml_args, 0))
+            } else {
+              CtUnknown
+            },
+            _ => CtUnknown
+          }
+          (tab_call_ty(tytab, call_off, CtArray(elem)), s1, c1)
         } else if name == "FixedArray::make" && Array::length(args) == 2 {
           // #1140: FixedArray[T] is a checker-only phantom-type distinction
           // over Array[T]'s exact same runtime layout, same technique as
@@ -4068,6 +4118,61 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
               Array::push(errors, String::concat("unknown name: ", name))
               (tab_call_ty(tytab, call_off, CtUnknown), s, c)
             }
+          }
+        } else if name == "__region_run" && Array::length(args) == 1 {
+          // ADR-0090 Phase 1: `region r { body }` -- parser-lowered to
+          // `__region_run((r) -> { body })` -- mints a fresh generative
+          // region, cloned from the TaskGroup::run branch above. Two
+          // differences: `__region_run` is a reserved internal ABI name that
+          // only the `region` syntax emits (a direct call spelled by hand
+          // gets the same semantics, so the TaskGroup::run alias-bypass hole
+          // does not exist here -- there is no scheme to alias), and there
+          // is no env scheme to instantiate, so the checked lambda type is
+          // destructured directly and its binder parameter is unified with
+          // the rigid skolem (a CtNamed name no parsed source can spell --
+          // `#` is rejected in identifiers).
+          let skolem_name = String::concat("#region_", __to_string(c))
+          let (bt, s_body, c_body) = check_expr(Array::get(args, 0), env, defs, s, c + 1, errors, tytab)
+          match subst_apply(s_body, bt) {
+            CtFn(body_params, body_ret, _) => if Array::length(body_params) == 1 {
+              match unify(Array::get(body_params, 0), CtNamed(skolem_name, [
+              ]), s_body) {
+                Some(s_unified) => {
+                  let zonked_ret = subst_apply(s_unified, body_ret)
+                  if type_mentions_named(zonked_ret, skolem_name) {
+                    Array::push(errors, String::concat("region escapes its scope: the value returned from this region body still depends on the region's own token", off_marker_len(callee_off, String::length(name))))
+                  } else {
+                    ()
+                  }
+                  let outer_bindings = array_empty()
+                  collect_env_bindings(env, outer_bindings)
+                  let mut oi = 0
+                  let mut leaked = false
+                  while oi < Array::length(outer_bindings) {
+                    let (_, oty) = Array::get(outer_bindings, oi)
+                    if !leaked && type_mentions_named(subst_apply(s_unified, oty), skolem_name) {
+                      leaked = true
+                    } else {
+                      ()
+                    }
+                    oi = oi + 1
+                  }
+                  if leaked {
+                    Array::push(errors, String::concat("region escapes its scope: an outer binding now depends on this region's own token", off_marker_len(callee_off, String::length(name))))
+                  } else {
+                    ()
+                  }
+                  (tab_call_ty(tytab, call_off, zonked_ret), s_unified, c_body)
+                },
+                None => {
+                  Array::push(errors, String::concat("region body parameter type mismatch for __region_run", off_marker_len(callee_off, String::length(name))))
+                  (tab_call_ty(tytab, call_off, CtUnknown), s_body, c_body)
+                }
+              }
+            } else {
+              (tab_call_ty(tytab, call_off, CtUnknown), s_body, c_body)
+            },
+            _ => (tab_call_ty(tytab, call_off, CtUnknown), s_body, c_body)
           }
         } else if (name == "TaskGroup::spawn" || name == "TaskGroup::spawn_suspend") && Array::length(args) == 2 {
           // #1081 step 3 Phase B: `Spawnable[r]` capture check. Like

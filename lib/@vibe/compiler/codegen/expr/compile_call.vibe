@@ -908,7 +908,7 @@ export fn cc_is_loop_borrowed_ident(e: Expr, ctx: CompileCtx) -> Bool {
 /// arg0 to one of these must NOT be rc_dup'd at the call site (the callee never
 /// drops it, so the dup would leak; #704). Other argument positions are owning.
 fn cc_is_borrow_arg0_call(f: String) -> Bool {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "__rec_field"
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "__rec_field"
 }
 
 /// #745: retain a borrowed argument that a STORING inline builtin (Map::set /
@@ -1040,7 +1040,30 @@ fn sh_lines_flag_cmd(acc: Expr, args: Array[Expr], i: Int) -> Expr {
   }
 }
 
+/// ADR-0090 Phase 1 arity rewrites, applied before the main dispatch:
+/// - `__region_run(lam)` (the reserved lowering of `region r { body }`)
+///   runs the body closure immediately with a dummy region token (0). The
+///   token only exists for the checker's skolem escape scan; it has no
+///   runtime representation yet (arena lowering is a later slice).
+/// - `MutList::empty(r)` allocates a fresh growable array, ignoring the
+///   region token argument. The token is not evaluated: by construction it
+///   is the pure region binder ident the parser emitted.
 export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } {
+  if is_eident(callee) && get_eident_name(callee) == "__region_run" && Array::length(args) == 1 {
+    ce(buf, ECall(Array::get(args, 0), [
+      EInt(0)
+    ], -1), local_names, next_local, ctx, ld)
+  } else if is_eident(callee) && get_eident_name(callee) == "MutList::empty" && Array::length(args) == 1 {
+    let no_args = Array::slice([
+      EInt(0)
+    ], 0, 0)
+    ce(buf, ECall(EIdent("ArrayBuilder::new", -1), no_args, -1), local_names, next_local, ctx, ld)
+  } else {
+    compile_call_core(buf, callee, args, local_names, next_local, ctx, ld, ce)
+  }
+}
+
+fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } {
   if is_eident(callee) {
     let fname0 = canonical_builtin_name(get_eident_name(callee))
     // Stream[T] (docs/spec/wasi-p3-async.md §2.4) is backed by the eager Array
@@ -1050,8 +1073,20 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
     // Stream::fold is NOT aliased here: it returns `Future[A]`, so it needs its
     // own branch below to wrap the fold's result (a bare alias would hand back
     // the accumulator where a future is expected).
+    //
+    // ADR-0090 Phase 1: MutList[T, r] is a checker-only phantom over the
+    // same growable-array runtime layout ArrayBuilder uses, so push aliases
+    // ArrayBuilder::push and freeze/to_array alias the identity cast
+    // (ArrayBuilder::freeze). MutList::empty and __region_run need arity
+    // rewrites and are handled in compile_call before dispatching here.
     let fname = if fname0 == "Stream::map" {
       "Array::map"
+    } else if fname0 == "MutList::push" {
+      "ArrayBuilder::push"
+    } else if fname0 == "MutList::freeze" {
+      "ArrayBuilder::freeze"
+    } else if fname0 == "MutList::to_array" {
+      "ArrayBuilder::freeze"
     } else {
       fname0
     }
