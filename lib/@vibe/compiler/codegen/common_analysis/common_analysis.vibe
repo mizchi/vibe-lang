@@ -1058,17 +1058,108 @@ export fn proj_root_ident(e: Expr) -> String {
   }
 }
 
+/// #1272: the borrow-returning builtins -- each hands back an INTERIOR
+/// reference into its first argument rather than a fresh value, so a scope
+/// whose tail is one of these is escaping a pointer into the container, just
+/// like `.field` does. Kept in sync with classify_let_value_heap's own
+/// hardcoded list (codegen/expr/compile_expr_tail.vibe).
+fn borrow_ret_builtin_name(nm: String) -> Bool {
+  nm == "Array::get" || nm == "__index" || nm == "Map::get" || nm == "__rec_field"
+}
+
+/// The container a borrow-returning tail reads from: an identifier, a
+/// projection chain rooted at one, or a nested borrow-returning read (an
+/// element of an element is still interior to the same root).
+fn borrow_tail_root(e: Expr) -> String {
+  match e {
+    EIdent(nm, _) => nm,
+    EDot(obj, _, _, _) => borrow_tail_root(obj),
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if Array::length(args) >= 1 && borrow_ret_builtin_name(nm) {
+        borrow_tail_root(Array::get(args, 0))
+      } else {
+        ""
+      },
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
+/// #1272: the bare identifier a scope's tail evaluates to, or "". Lets
+/// scope_tail_proj_root see through a borrow that was bound to a local name
+/// and then returned (`let r = Array::get(f, 1); r`) -- the same escape as
+/// returning the read directly, just spelled with one more binding.
+fn scope_tail_ident(e: Expr) -> String {
+  match e {
+    ELet(_, _, b, _) => scope_tail_ident(b),
+    ELetMut(_, _, b, _) => scope_tail_ident(b),
+    ELetRec(_, _, b) => scope_tail_ident(b),
+    ESeq(_, b) => scope_tail_ident(b),
+    EAssign(_, _, b) => scope_tail_ident(b),
+    EAssignOp(_, _, _, b) => scope_tail_ident(b),
+    EIdent(nm, _) => nm,
+    _ => ""
+  }
+}
+
+/// The container root of a borrow-returning CALL, and only a call: an alias is
+/// interior to a container exactly when the value it was bound to is a
+/// borrowing read.
+fn borrow_call_root(e: Expr) -> String {
+  match e {
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if Array::length(args) >= 1 && borrow_ret_builtin_name(nm) {
+        borrow_tail_root(Array::get(args, 0))
+      } else {
+        ""
+      },
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
 /// If the *tail* (result) expression of a scope is a projection chain, return its
 /// root identifier; otherwise "". Follows let/seq/assign wrappers to the tail.
+///
+/// #1272: an element read through a borrow-returning builtin counts as a
+/// projection too. Only `EDot` used to, so a scope whose tail read an element
+/// out of a container it OWNS -- `let f = [..]; Array::get(f, 1)`, or the same
+/// shape at a function tail over a heap parameter -- dropped that container
+/// without first retaining the value it was handing back. The caller received
+/// a pointer into freed memory; nothing failed until a later allocation reused
+/// the cell, so a single call looked correct and two calls returned garbage.
+/// Callers use this exclusively to decide "dup the result before dropping the
+/// owner", where over-reporting costs a retain (a leak at worst) and
+/// under-reporting is the use-after-free above.
 export fn scope_tail_proj_root(e: Expr) -> String {
   match e {
-    ELet(_, _, b, _) => scope_tail_proj_root(b),
+    // #1272: `let r = <borrowing read>; .. ; r` escapes the same interior
+    // pointer as returning the read itself, so resolve the alias when the
+    // scope's tail is exactly this binding and nothing nearer matched.
+    ELet(n, v, b, _) => {
+      let inner = scope_tail_proj_root(b)
+      if inner == "" && scope_tail_ident(b) == n {
+        borrow_call_root(v)
+      } else {
+        inner
+      }
+    },
     ELetMut(_, _, b, _) => scope_tail_proj_root(b),
     ELetRec(_, _, b) => scope_tail_proj_root(b),
     ESeq(_, b) => scope_tail_proj_root(b),
     EAssign(_, _, b) => scope_tail_proj_root(b),
     EAssignOp(_, _, _, b) => scope_tail_proj_root(b),
     EDot(obj, _, _, _) => proj_root_ident(obj),
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if Array::length(args) >= 1 && borrow_ret_builtin_name(nm) {
+        borrow_tail_root(Array::get(args, 0))
+      } else {
+        ""
+      },
+      _ => ""
+    },
     _ => ""
   }
 }

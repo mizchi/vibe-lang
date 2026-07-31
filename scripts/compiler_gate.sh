@@ -6380,6 +6380,31 @@ fi
 rm -rf "$rc1097dir"
 echo "[compiler-gate] RC match-payload closure capture (#1097) ok"
 
+# #1272: a function returning an ELEMENT of a container it owns LOCALLY --
+#        `Array::get` hands back an interior reference, so the local must be
+#        retained-then-dropped, not dropped outright. Only `.field` used to
+#        count as an escaping projection, so both shapes in the fixture
+#        returned pointers into freed memory (silent until a later allocation
+#        reused the cell: the two shapes summed to 12 and 207, not 45 and 300).
+rc1272dir="_build/_gate_rc_local_elem_escape"
+rm -rf "$rc1272dir"; mkdir -p "$rc1272dir"
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/rc_local_container_element_escape.vibe > "$rc1272dir/src.vibe"
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$rc1272dir/src.vibe" "$rc1272dir/src.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$rc1272dir/src.wasm" ]; then
+  echo "[compiler-gate] FAIL: rc_local_container_element_escape fixture did not compile" >&2
+  cat "$rc1272dir/src.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rc1272_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$rc1272dir/src.wasm" 2>/dev/null | tail -1)"
+if [ "$rc1272_out" != "345" ]; then
+  echo "[compiler-gate] FAIL: rc_local_container_element_escape got '$rc1272_out' (want 345) -- #1272 regressed" >&2
+  exit 1
+fi
+rm -rf "$rc1272dir"
+echo "[compiler-gate] RC local-container element escape (#1272) ok"
+
 # 52/52. owned-captures ABI (ADR-0076 追記31 Vertical A): a closure env OWNS
 #        its heap captures — creation-site dup + class-7 recursive drop.
 #        The fixture generalizes #1097 beyond match payloads: a borrowed
