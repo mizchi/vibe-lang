@@ -6255,10 +6255,14 @@ echo "[compiler-gate] RC branch+loop mixed-consume over-drop (#1085) ok"
 #        second call of the same continuation writes the one-shot message
 #        to stderr and traps. Phase 3b (yield bubbling): a suspend body
 #        may call concrete-row functions carrying the effect -- CPS
-#        clones + per-effect bubble combinator (want 3131365). Negative:
-#        a non-tail DIRECT resume(...) call stays rejected (#942
-#        unchanged); a row-variable callee and a perform inside a loop
-#        are HARD compile errors, never a silent replay fallback.
+#        clones + per-effect bubble combinator (want 3131365). #1230: a
+#        plain `while` + `let mut` spine is eligible too -- the loop
+#        becomes a recursive step-returning closure and each `let mut` a
+#        1-element cell, so state survives every suspend (want 101020383).
+#        Negative: a non-tail DIRECT resume(...) call stays rejected (#942
+#        unchanged); a row-variable callee and a loop carrying
+#        break/continue/return are HARD compile errors, never a silent
+#        replay fallback.
 echo "[compiler-gate] 50/50 ADR-0076 Phase 3a first-class resume (suspend CPS)"
 scpsdir="_build/_gate_scps"
 rm -rf "$scpsdir"; mkdir -p "$scpsdir"
@@ -6290,6 +6294,18 @@ scps_run_expect "effect_resume_call_bubbling.vibe" "3131365" "bubble"
 # (#786 hoist + trivial-wrapper inlining) into a plain needing call the
 # clone/bubble machinery handles (want -95).
 scps_run_expect "effect_resume_rowvar_wrapper_normalized.vibe" "-95" "norm"
+# #1230 loop widening: `while` + `let mut` on the spine. 101020383 decodes
+# as r0=100/r1=101/r2=102/r3=183 -- the 183 is the pin that both `acc` and
+# `i` survived every suspend/resume round trip through their cells.
+scps_run_expect "effect_resume_store_loop.vibe" "101020383" "loop"
+# #1263 Codex P1: a non-suspending loop AHEAD of a suspending one must stay
+# iterative. The 200000-iteration prefix would blow the wasm call stack if it
+# were converted to the recursive lp() shape (rewrite_self_tail_calls runs
+# before suspend_cps_pass, so nothing flattens it back).
+scps_run_expect "effect_resume_store_loop_prefix.vibe" "20000112" "loopprefix"
+# #1263 Codex P2: a nested closure is a control-flow boundary -- its `return`
+# targets the closure, not the loop being converted, so it must not reject.
+scps_run_expect "effect_resume_store_loop_nested_return.vibe" "112" "loopnestedret"
 # one-shot violation: must NOT produce a value; the failure output carries
 # the one-shot stderr diagnostic before the assert trap.
 sed '/^_start()$/d' fixtures/effect_resume_one_shot_trap.vibe > "$scpsdir/once.vibe"
@@ -6325,7 +6341,13 @@ scps_check_reject() {
 }
 scps_check_reject "err_resume_non_tail.vibe" "must be the last expression of the handler arm" "nontail"
 scps_check_reject "err_effect_resume_store_ineligible.vibe" "cannot see through" "inelig"
-scps_check_reject "err_effect_resume_store_loop.vibe" "let/seq/tail/branch-tail spine" "loop"
+scps_check_reject "err_effect_resume_store_loop.vibe" "let/seq/tail/branch-tail spine" "loopbreak"
+# #1261: an unannotated performing closure is row-backfilled by
+# dlh_hoist_expr and so gets the evidence dict prepended; handing that value
+# to a row-FREE fn-typed slot used to compile clean and trap at runtime with
+# a wasm signature mismatch. Reject it, and keep the annotated form working.
+scps_check_reject "err_effect_needing_value_escape.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valesc"
+scps_run_expect "effect_needing_value_annotated.vibe" "42" "valann"
 rm -rf "$scpsdir"
 echo "[compiler-gate] ADR-0076 Phase 3a first-class resume ok"
 

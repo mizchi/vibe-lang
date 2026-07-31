@@ -1,0 +1,51 @@
+// #1263 Codex P2: a suspending `while` whose body declares a nested closure
+// containing `return`. The loop-to-recursion conversion rejects
+// `break`/`continue`/`return` because they have no target once the loop body
+// becomes a function -- but a nested closure is a control-flow boundary: that
+// `return` targets `pick`, not the loop, and stays correct however the loop
+// is compiled. scps_has_loop_ctl used to scan through `EFn` and reject the
+// whole handle for it.
+//
+// acc = 5 + 6 = 11, i = 2, so the last resume yields 11 * 10 + 2 = 112.
+effect Async {
+  Suspend(Int) -> Int
+}
+
+let sink: Array[(Int) -> Int] = []
+
+let conts: Array[(Int) -> Int] = []
+
+let _start = () -> Int {
+  handle {
+    let mut i = 0
+    let mut acc = 0
+    while i < 2 {
+      let pick = (n: Int) -> Int {
+        if n > 0 {
+          return n
+        } else {
+          ()
+        }
+        0
+      }
+      Array::push(sink, pick)
+      let v = perform Async::Suspend(i)
+      acc = acc + v
+      i = i + 1
+    }
+    acc * 10 + i
+  } with Async {
+    Suspend(t) => {
+      Array::push(conts, resume)
+      100 + t
+    }
+  }
+  let k0 = Array::get(conts, 0)
+  let r1 = k0(5)
+  let k1 = Array::get(conts, 1)
+  k1(6)
+}
+_start()
+
+__DATA__
+{"last":"112"}
