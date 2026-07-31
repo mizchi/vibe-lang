@@ -664,13 +664,29 @@ flags for the serial path, not a new one introduced here.
 > graph, and a disagreement would not fail loudly — it would quietly warm a
 > cache for the wrong one.
 >
-> **Scope.** Only the node driver (`parallel_frontend_warm.mjs`) takes this
-> route so far. `scripts/parallel_warm_pool.sh`, the bash process-pool
-> coordinator #1250 added for shipped toolchains, still runs the per-file
-> `VIBE_LIST_DEPS` BFS and then `VIBE_PLAN_MODULE_ORDER` over the resulting
-> edges — i.e. it pays exactly the 17.4s/5.1s discovery cost measured above.
-> `VIBE_MODULE_PLAN` does both of its steps in one call, so pointing it there
-> is the obvious follow-up; it is not done here.
+> **Both coordinators take this route.** `scripts/parallel_warm_pool.sh`, the
+> bash process pool #1250 added for shipped toolchains, used to run the
+> per-file `VIBE_LIST_DEPS` BFS and then `VIBE_PLAN_MODULE_ORDER` over the
+> resulting edges; `VIBE_MODULE_PLAN` collapses both steps into the one call.
+> Measured in the configuration that path actually uses — an AOT `.cwasm`
+> loaded by `viberun`, the same 166-module graph:
+>
+> | discovery | wall |
+> |---|---|
+> | `VIBE_LIST_DEPS` ×166, `-P 1` | 2854ms |
+> | `VIBE_LIST_DEPS` ×166, `-P 4` | 742ms |
+> | `VIBE_MODULE_PLAN` ×1 | **222ms** |
+>
+> End to end the pool goes from **12.9s to 9.5s** (-26%) at `-P 4`, warming
+> the same 166/166 modules across the same 48 ranks. Note the 742ms row is a
+> LOWER bound on what the old script actually paid: its BFS is level-order,
+> so on a 48-rank-deep graph it ran ~48 mostly-single-module frontiers rather
+> than 166 jobs flat. The end-to-end delta (~3.4s) is the real saving.
+>
+> `VIBE_PLAN_MODULE_ORDER` now has no production consumer — only
+> `test_parallel_warm_pool_gate.sh`, which still drives it directly for the
+> diamond/cycle/empty-graph cases. Whether to keep it as a standalone
+> ordering primitive or fold it into `VIBE_MODULE_PLAN` is left open.
 
 **Measured against the compiler's own manifest (2026-07-28, #906): `--jobs`
 is currently a net regression, not a speedup, at this scale.** Running
