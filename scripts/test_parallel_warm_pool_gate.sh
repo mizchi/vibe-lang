@@ -131,7 +131,11 @@ done
 { printf '%s\n' "$wide_imports"; printf 'export let _start = () -> Int { %s }\n' "$wide_sum"; } > "$WIDE/root.vibe"
 
 peak_at() {  # peak_at <jobs> -> echoes the max concurrent worker count
-  local p="$1" trace="$OUT_DIR/trace.$p" cache="$OUT_DIR/wcache.$p"
+  # Separate `local` statements on purpose: bash expands every word of a
+  # `local` before assigning any of them, so `local p="$1" trace="...$p"`
+  # would expand $p while it is still unset -- fatal under `set -u`.
+  local p="$1"
+  local trace="$OUT_DIR/trace.$p" cache="$OUT_DIR/wcache.$p"
   rm -rf "$cache"; mkdir -p "$cache"
   : > "$trace"
   ( cd "$WIDE" && VIBE_BUILD_CACHE_DIR="$cache" VIBE_WARM_POOL_TRACE="$trace" timeout 900 \
@@ -158,7 +162,10 @@ fi
 # No leak: xargs reaps each rank's children before the next rank starts, and
 # the run is fully joined by the time the script returns. Nothing of the
 # runner may outlive it.
-LEAKED="$(pgrep -f "$RUNNER" 2>/dev/null | wc -l | tr -d ' ')"
+# `|| true` on the pgrep, not just 2>/dev/null: pgrep exits 1 when nothing
+# matches, which under `set -o pipefail` would abort the script on exactly the
+# outcome this is checking for.
+LEAKED="$( { pgrep -f "$RUNNER" 2>/dev/null || true; } | wc -l | tr -d ' ')"
 if [ "$LEAKED" != "0" ]; then
   die "$LEAKED runner process(es) outlived the coordinator -- workers are leaking"
 else
