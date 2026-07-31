@@ -1775,15 +1775,29 @@ fn comp_generate_spawned_future_guest_core_module() -> Bytes {
   emit_br(writer_body, 0)
   emit_end(writer_body)
   emit_end(writer_body)
-  // epilogue: drop the subtask FIRST, then the waitable set (only allocated
-  // on the BLOCKED path), then load the host's result from the results area.
-  // Order matters: the subtask was `waitable.join`ed into the set, so
-  // dropping the set while it still holds the subtask traps with "resource
-  // has children" (observed live via the gate's host driver, wasmtime 47).
-  emit_local_get(writer_body, 2)
-  emit_call(writer_body, 5)
+  // epilogue: on the BLOCKED path only, drop the subtask FIRST and then the
+  // waitable set; then load the host's result from the results area.
+  //
+  // Both drops are guarded by the same flag (local 5) because both resources
+  // come into existence together, in the same straight-line blocked-path
+  // sequence: an async-lowered call that completes EAGERLY (status RETURNED
+  // straight out of the call, the `br_if $done` above) creates NO subtask --
+  // the handle bits of the packed result are 0 -- and allocates no waitable
+  // set. #1230 M1b-3c-2: dropping unconditionally therefore traps with
+  // "unknown handle index 0" the moment a host import resolves without
+  // suspending, which is an entirely ordinary thing for a real host to do
+  // (a cached value, a zero timeout, a socket read whose data already
+  // arrived). Found live by driving this component through runtime/viberun
+  // with a zero-delay host import; the probe's own host always slept 300ms,
+  // so it only ever exercised the blocked path.
+  //
+  // Order matters within the guard: the subtask was `waitable.join`ed into
+  // the set, so dropping the set while it still holds the subtask traps with
+  // "resource has children" (observed live on wasmtime 47).
   emit_local_get(writer_body, 5)
   emit_if_void(writer_body)
+  emit_local_get(writer_body, 2)
+  emit_call(writer_body, 5)
   emit_local_get(writer_body, 3)
   emit_call(writer_body, 4)
   emit_end(writer_body)

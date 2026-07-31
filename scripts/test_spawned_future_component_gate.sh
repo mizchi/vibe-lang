@@ -14,12 +14,25 @@
 # it covers), a component that imports a func_wrap_concurrent host function
 # needs to be driven via wasmtime's Store::run_concurrent +
 # TypedFunc::call_concurrent APIs -- `wasmtime --invoke` deadlock-traps on
-# it (tools/wasip3_component_probe/stackful/README.md bug #1). Neither
-# runtime/viberun (no component-model/async wasmtime features at all) nor
-# the CLI can drive this, so this gate reuses the probe's own dedicated
-# Rust host binary (tools/wasip3_component_probe/spawned_future/host/) as
-# its driver -- built on demand, requires a Rust toolchain + network access
-# to crates.io (wasmtime 47, tokio) the first time.
+# it (tools/wasip3_component_probe/stackful/README.md bug #1).
+#
+# #1230 M1b-3c-2: that driver now lives in runtime/viberun itself
+# (run_async_component), so this gate no longer shells out to the probe's
+# dedicated Rust host binary and no longer needs a crates.io fetch at gate
+# time -- it just needs viberun built, the same binary `vibe run` already
+# uses. viberun sniffs the component header and routes to the async path
+# automatically, so the invocation is a plain `viberun <component.wasm>`.
+#
+# Both host-side outcomes are covered, because they take DIFFERENT paths
+# through the emitted guest code and only one of them was ever exercised
+# before:
+#   blocked  host import genuinely suspends (300ms) -> waitable-set.new /
+#            waitable.join / wait-loop / subtask.drop
+#   eager    host import resolves without suspending -> none of the above;
+#            the packed result carries status RETURNED and NO subtask handle.
+#            Dropping unconditionally here trapped with "unknown handle
+#            index 0" until #1230 M1b-3c-2 guarded it -- a bug the probe's
+#            own host could never surface, since it always slept.
 #
 # Env:
 #   VIBE_SPAWNED_FUTURE_GATE_COMPILER  compiler wasm override (default:
@@ -29,8 +42,9 @@
 #                                      the committed seed as of #1230, so a
 #                                      fresh generation build is required
 #                                      until the next bootstrap bump)
-#   VIBE_P3_GATE_REQUIRE_TOOLS=1       missing cargo/wasm-tools = FAIL
-#                                      instead of skip
+#   VIBE_SPAWNED_FUTURE_GATE_RUNNER    viberun binary override
+#   VIBE_P3_GATE_REQUIRE_TOOLS=1       missing cargo/wasm-tools/viberun =
+#                                      FAIL instead of skip
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -38,9 +52,6 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_spawned_future_component}"
 mkdir -p "$OUT_DIR"
-
-PROBE_DIR="$PROJECT_ROOT/tools/wasip3_component_probe/spawned_future"
-HOST_BIN="$PROBE_DIR/host/target/release/p3spawnedfuturehost"
 
 require_or_skip() {
   local what="$1"
@@ -52,16 +63,17 @@ require_or_skip() {
   exit 0
 }
 
-command -v cargo >/dev/null 2>&1 || require_or_skip "cargo not installed"
 command -v wasm-tools >/dev/null 2>&1 || require_or_skip "wasm-tools not installed"
 
-if [ ! -x "$HOST_BIN" ]; then
-  echo "[spawned-future-component-gate] building probe host driver (first run only)..."
-  if ! (cd "$PROBE_DIR/host" && cargo build --release >/dev/null 2>&1); then
-    require_or_skip "failed to build $PROBE_DIR/host (network access to crates.io required)"
+RUNNER="${VIBE_SPAWNED_FUTURE_GATE_RUNNER:-$PROJECT_ROOT/runtime/viberun/target/release/viberun}"
+if [ ! -x "$RUNNER" ]; then
+  command -v cargo >/dev/null 2>&1 || require_or_skip "viberun not built and cargo not installed"
+  echo "[spawned-future-component-gate] building viberun (first run only)..."
+  if ! (cd "$PROJECT_ROOT/runtime/viberun" && cargo build --release >/dev/null 2>&1); then
+    require_or_skip "failed to build runtime/viberun"
   fi
 fi
-[ -x "$HOST_BIN" ] || require_or_skip "probe host driver did not build: $HOST_BIN"
+[ -x "$RUNNER" ] || require_or_skip "viberun did not build: $RUNNER"
 
 COMPILER="${VIBE_SPAWNED_FUTURE_GATE_COMPILER:-}"
 if [ -z "$COMPILER" ]; then
@@ -69,7 +81,7 @@ if [ -z "$COMPILER" ]; then
   [ -f "$COMPILER" ] || COMPILER="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
 fi
 echo "[spawned-future-component-gate] compiler: $COMPILER"
-echo "[spawned-future-component-gate] host driver: $HOST_BIN"
+echo "[spawned-future-component-gate] runner: $RUNNER"
 
 # Harness: calls the composer directly and dumps the resulting bytes --
 # comp_emit_component_wasm_async_spawned_future takes no core-module input
@@ -106,24 +118,51 @@ VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
 wasm-tools validate --features all "$COMPONENT" \
   || { echo "selfhost spawned-future component gate FAILED: generated component failed validation" >&2; exit 1; }
 
-RESULT_LOG="$OUT_DIR/run.log"
-if ! timeout 30 "$HOST_BIN" "$COMPONENT" >"$RESULT_LOG" 2>&1; then
-  echo "selfhost spawned-future component gate FAILED: host driver did not exit 0" >&2
+# --- blocked path: the host import genuinely suspends ------------------------
+# Asserting the elapsed wall-clock (not just the value) is the whole point:
+# a trivially-ready import would return 42 too, while proving nothing about
+# waitable-set.wait actually suspending and resuming the guest fiber.
+RESULT_LOG="$OUT_DIR/run.blocked.log"
+BLOCKED_DELAY_MS=300
+START_NS=$(date +%s%N)
+if ! VIBE_ASYNC_GET_DELAY_MS="$BLOCKED_DELAY_MS" timeout 60 "$RUNNER" "$COMPONENT" >"$RESULT_LOG" 2>&1; then
+  echo "selfhost spawned-future component gate FAILED: viberun did not exit 0 (blocked path)" >&2
+  cat "$RESULT_LOG" >&2
+  exit 1
+fi
+ELAPSED_MS=$(( ( $(date +%s%N) - START_NS ) / 1000000 ))
+
+if [ "$(cat "$RESULT_LOG")" != "42" ]; then
+  echo "selfhost spawned-future component gate FAILED: expected result 42 (blocked path), got:" >&2
   cat "$RESULT_LOG" >&2
   exit 1
 fi
 
-if ! grep -q 'suspending for 300ms' "$RESULT_LOG"; then
-  echo "selfhost spawned-future component gate FAILED: no evidence of a genuine (non-instant) suspend" >&2
-  cat "$RESULT_LOG" >&2
+# Allow a little slack under the nominal delay for timer granularity; the
+# point is to exclude an instantaneous (never-suspended) resolution, which
+# lands one to two orders of magnitude below this.
+MIN_MS=$(( BLOCKED_DELAY_MS * 8 / 10 ))
+if [ "$ELAPSED_MS" -lt "$MIN_MS" ]; then
+  echo "selfhost spawned-future component gate FAILED: returned in ${ELAPSED_MS}ms with a ${BLOCKED_DELAY_MS}ms host delay -- the guest cannot have genuinely suspended" >&2
   exit 1
 fi
+echo "[spawned-future-component-gate] blocked path: 42 in ${ELAPSED_MS}ms (genuine suspend/resume confirmed)"
 
-if ! grep -q 'run() = 42 ' "$RESULT_LOG"; then
-  echo "selfhost spawned-future component gate FAILED: expected result 42, got:" >&2
-  cat "$RESULT_LOG" >&2
+# --- eager path: the host import resolves without suspending ------------------
+# Regression guard for the #1230 M1b-3c-2 fix. Before it, this trapped with
+# "unknown handle index 0": the epilogue dropped a subtask that a
+# status-RETURNED-on-call result never creates.
+EAGER_LOG="$OUT_DIR/run.eager.log"
+if ! VIBE_ASYNC_GET_DELAY_MS=0 timeout 60 "$RUNNER" "$COMPONENT" >"$EAGER_LOG" 2>&1; then
+  echo "selfhost spawned-future component gate FAILED: viberun did not exit 0 with a non-suspending host import (eager path -- the emitted epilogue must not drop a subtask that was never created)" >&2
+  cat "$EAGER_LOG" >&2
   exit 1
 fi
+if [ "$(cat "$EAGER_LOG")" != "42" ]; then
+  echo "selfhost spawned-future component gate FAILED: expected result 42 (eager path), got:" >&2
+  cat "$EAGER_LOG" >&2
+  exit 1
+fi
+echo "[spawned-future-component-gate] eager path: 42 (no subtask/waitable-set drop attempted)"
 
-echo "[spawned-future-component-gate] generated component: 42 ok (genuine blocking wait confirmed)"
 echo "selfhost spawned-future component gate passed"

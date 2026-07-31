@@ -642,6 +642,55 @@ handshake や観測可能な処理があると順序が変わるか deadlock す
 が既に抱えている制限と同じもので、今回それを超えてはいない。真の
 interleaving spawn は **M-conc-2 / M1b-3c-2 の未解決事項として残る**。
 
+### 3.9 M1b-3c-2 landed — async component を production runtime が駆動できるようになった（#1230）
+
+§3.8 までの async component は、**プロジェクト内のどのツールでも動かせなかった**。
+`func_wrap_concurrent` な host import を持つ component は素の
+`wasmtime --invoke` では deadlock trap する（§3.7 bug #1）ため、
+`scripts/test_spawned_future_component_gate.sh` は
+`tools/wasip3_component_probe/spawned_future/host/` の**専用 Rust host バイナリ**
+を gate 実行時に cargo build して駆動していた（crates.io アクセスが必要）。
+
+M1b-3c-2 でこの driver を production runtime 側に取り込んだ:
+
+- **`runtime/viberun` の wasmtime を 45 → 47.0.2 に bump**し、
+  `component-model` / `component-model-async` / `async` feature を有効化した。
+  既存の同期 core-module パスは**ソース無改修**で移行できた（API 破壊なし）。
+- **component / core module をヘッダで判別**する（`\0asm` の後ろ 4 byte が
+  `0d 00 01 00` なら component、`01 00 00 00` なら core module）。component なら
+  新設の `run_async_component` に振り分ける。
+- `run_async_component` は §3.7 の2つの罠をそのまま踏まえた形:
+  `instantiate_async` + `Store::run_concurrent` + `TypedFunc::call_concurrent`
+  の組で駆動し（`call_async` では deadlock trap する）、`async_support(true)` が
+  同期パスと両立しないので**専用の Config/Engine** を建てる。
+- host import `get-async` は**本物に suspend する timer**（`tokio::time::sleep`、
+  `wasi:clocks` backing がやるのと同じこと）で実装した。ブロッキングな
+  `std::thread::sleep` では await の意味が消えるため使わない
+  （core-module 側の `vibe.sleep` import が抱えている制限そのもの）。
+
+gate はこれで probe 専用バイナリへの依存が消え、`viberun <component.wasm>` を
+呼ぶだけになった。
+
+#### 副産物: eager-completion パスの実バグを発見・修正
+
+実 host を繋いだことで、**probe の host では原理的に踏めなかったバグ**が出た。
+`$writer` の epilogue が `subtask.drop` を**無条件に**呼んでいたが、
+async-lowered call が**即座に完了した場合**（status RETURNED が call から直接
+返る = §3.8 の `br_if $done` 経路）は **subtask が生成されない**——packed 結果の
+handle bit は 0 である。そのため host import が suspend せずに解決した瞬間に
+`unknown handle index 0` で trap した。
+
+これは実 host では**ごく普通に起きる**（キャッシュ済みの値、timeout 0、
+既にデータが届いている socket read など）。probe の host は常に 300ms 寝るので
+blocked パスしか通らず、永久に露見しなかった。
+
+修正は #1240 review の waitable-set leak 修正と同じ形——両 drop を同一の
+「blocked パスを通った」フラグでガードする（両リソースは blocked パスの同一
+直線コード上で同時に生まれるため、フラグ1つで正しい）。emitter
+(`component_codegen.vibe`) と probe WAT の両方に適用済み。gate は
+**blocked パス（300ms 実測で suspend/resume を確認）と eager パス（delay 0）の
+両方**を検証するようになった。
+
 ## 4. WASI 0.3 境界マッピング
 
 | vibe | WASI 0.3 |
@@ -766,6 +815,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | **M1b-3c** | 真の blocking await: `future.read` + waitable-set 待機ループ（async source = host async import / subtask spawn が前提）。core codegen に future canon built-in の import + buffer + ループを emit | spike done（§3.7、mechanics 実機確認）/ codegen 未着手 |
 | **M1b-3c-1b** | blocking await（host async import）の component_codegen.vibe emitter。待機ループを別関数に括り出した形で、`future.*` canon 無しに動くことを実機検証（§3.8）。byte-exact 検証のみで実 `.vibe` ソースへの配線は対象外。**spawn 相当は「spawn と join の間に観測可能な処理が無い」退化ケースのみ**——真の interleaving spawn は未達（§3.8「実証範囲の限界」） | done（#1230、`comp_emit_component_wasm_async_spawned_future` + `scripts/test_spawned_future_component_gate.sh`） |
 | **M1b-3c-1c** | 真の interleaving spawn: 親の処理と並行して走る第2の guest 計算（guest 側 poll executor か別 task が要る）。M-conc-2 と実質同一の機構 | 未着手（#1240 review で M1b-3c-1b の範囲外と確定） |
+| **M1b-3c-2** | async component を **production runtime が駆動**できるようにする（§3.9）: `runtime/viberun` の wasmtime を 45→47.0.2 bump（同期パスはソース無改修）、component ヘッダ判別 + `instantiate_async`/`run_concurrent`/`call_concurrent`、`get-async` を `func_wrap_concurrent` + 実 suspend する tokio timer で実装。gate が probe 専用 Rust host バイナリ依存を脱却。**副産物**: eager-completion 時に subtask が生成されないのに `subtask.drop` していた実バグを発見・修正（emitter + probe WAT 両方）、gate が blocked/eager 両パスを検証 | done（#1230） |
 | **M-conc-1** | `Task[T]` codegen（synchronous eager model）: `spawn`（thunk を即時実行・closure type 9 で `call_indirect`）/`join`（identity）/`cancel`（drop→Unit）/`race`（先行値）を `compile_call` で lower。inlined async builtin の free-var capture バグ（nested lambda 内で `Task::join` 等を closure として捕捉）を `collect_free_vars_expr` で修正。gate に Task entry 追加（spawn/join/cancel/race → 42、wasmtime 45） | done |
 | **M-conc-2** | 真の subtask spawn（waitable-set / `future.cancel-*`）+ `Task::timeout`（Option 構築） | 未着手 |
 | **M2a** | `Stream[T]` codegen（eager Array-backed model）: `map`/`fold` を inline `Array::map`/`Array::fold` へ remap、`empty`=`array_new`、`once`=`array_new`+`push`、`filter` を inline loop で emit。gate に Stream entry 追加（empty/once/map/filter/fold → 42、wasmtime 45） | done |
