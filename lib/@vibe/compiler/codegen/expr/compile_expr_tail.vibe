@@ -53,6 +53,7 @@ import @vibe/compiler/codegen/common_base {
   emit_i32_sub,
   emit_i64_load,
   emit_i64_store,
+  emit_rc_drop_fast,
   emit_rc_dup_guarded,
   emit_str_ref,
   expr_tag,
@@ -1368,21 +1369,36 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         emit_local_get(buf, reuse_flag_l)
         emit_i64_eqz(buf)
         emit_if_void(buf)
-        emit_local_get(buf, local_idx)
-        emit_call(buf, ctx.rc_drop_func_idx)
+        if ctx.rc_shadow {
+          emit_local_get(buf, local_idx)
+          emit_call(buf, ctx.rc_drop_func_idx)
+        } else {
+          emit_rc_drop_fast(buf, local_idx, ctx.rc_drop_func_idx)
+        }
         emit_end(buf)
         nl2
       } else if ctx.rc_drop_func_idx >= 0 && scope_tail_proj_root(body) == name {
         emit_local_set(buf, nl2)
         emit_rc_dup_guarded(buf, nl2, ctx.rc_shadow)
-        emit_local_get(buf, local_idx)
-        emit_call(buf, ctx.rc_drop_func_idx)
+        if ctx.rc_shadow {
+          emit_local_get(buf, local_idx)
+          emit_call(buf, ctx.rc_drop_func_idx)
+        } else {
+          emit_rc_drop_fast(buf, local_idx, ctx.rc_drop_func_idx)
+        }
         emit_local_get(buf, nl2)
         nl2 + 1
       } else {
         if ctx.rc_drop_func_idx >= 0 {
-          emit_local_get(buf, local_idx)
-          emit_call(buf, ctx.rc_drop_func_idx)
+          // ADR-0092 drop specialization: scope-end let-binding drops take
+          // the inline shared-decrement fast path (shadow lane keeps the
+          // plain call so the freed-block check sees every drop).
+          if ctx.rc_shadow {
+            emit_local_get(buf, local_idx)
+            emit_call(buf, ctx.rc_drop_func_idx)
+          } else {
+            emit_rc_drop_fast(buf, local_idx, ctx.rc_drop_func_idx)
+          }
         } else if rc_kind == 1 {
           emit_rc_drop_local(buf, local_idx, false)
         } else {

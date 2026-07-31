@@ -1726,6 +1726,68 @@ export fn emit_rc_dup_guarded(buf: Bytes, local_idx: Int, rc_shadow: Bool) -> Un
   emit_end(buf)
 }
 
+/// Push the i32 address of `local_idx`'s rc word ((v & -2) - 4). Pure push;
+/// safe to emit repeatedly.
+fn emit_rc_word_addr(buf: Bytes, local_idx: Int) -> Unit {
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+}
+
+/// ADR-0092 drop specialization Phase 1: inline drop fast path for the hot
+/// scope-end / epilogue drop sites. A shared block's drop (rc in
+/// [2, 0xFFFFFE]) is a bare in-place decrement -- no call, skipping the
+/// runtime rc_drop's whole prologue (tag tests, saturation test, class
+/// dispatch). A unique block (rc == 1, needs the recursive field walk +
+/// free-list push) and a saturated/immortal block (0xFFFFFF, must not be
+/// decremented -- the runtime returns without touching it) both fall
+/// through to the runtime call. Scalars (even) and string/bytes fat
+/// pointers (high 32 bits non-zero) are skipped entirely, same tests as
+/// emit_rc_dup_guarded. The single unsigned range test folds the two
+/// boundary cases into one branch: (low - 2) <u 0xFFFFFD iff 2 <= low <=
+/// 0xFFFFFE. Callers must NOT use this under VIBE_RC=shadow -- the shadow
+/// freed-block check lives in the runtime rc_drop's entry, and the inline
+/// decrement would bypass it.
+export fn emit_rc_drop_fast(buf: Bytes, local_idx: Int, drop_func_idx: Int) -> Unit {
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 1)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 32)
+  emit_i64_shr_s(buf)
+  emit_i64_eqz(buf)
+  emit_if_void(buf)
+  // (load(wptr) & 0xFFFFFF) - 2 <u 0xFFFFFD → shared: decrement in place
+  emit_rc_word_addr(buf, local_idx)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 16777215)
+  // i32.and (0x71) -- no emit_i32_and helper exists
+  bytebuf_push(buf, 113)
+  emit_i32_const(buf, 2)
+  emit_i32_sub(buf)
+  emit_i32_const(buf, 16777213)
+  // i32.lt_u (0x49) -- no emit_i32_lt_u helper exists
+  bytebuf_push(buf, 73)
+  emit_if_void(buf)
+  emit_rc_word_addr(buf, local_idx)
+  emit_rc_word_addr(buf, local_idx)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_sub(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_else(buf)
+  emit_local_get(buf, local_idx)
+  emit_call(buf, drop_func_idx)
+  emit_end(buf)
+  emit_end(buf)
+  emit_end(buf)
+}
+
 export fn fn_type_param_types(ty: Option[TypeExpr]) -> Option[Array[TypeExpr]] {
   match ty {
     Some(t) =>

@@ -112,6 +112,30 @@ Koka FP² の `fip`(fully in-place)注釈と同じ意味論であり、reuse が
 - wasm-gc backend(RC 自体が linear 専用)。
 - fip/fbip の独立注釈(Decision 4 のとおり `@zero_alloc` に一本化)。
 
+## Implementation notes (2026-07-31, #1262)
+
+- **Phase 1 reuse 縦串** (PR #1265 + follow-up): let+match fusion、
+  fn-param 直 match fusion、arm-body let-spine 拡大まで landed
+  (`compile_match.vibe` の mr_* 系 + `compile_expr_tail.vibe` /
+  `linked_compile.vibe` の staging)。fn-param fusion は selfcompile KPI に
+  有意な改善なし(適格 arm が compiler 実コードにほぼ無い)— #1262 の
+  正直な再評価コメント参照。
+- **Drop specialization Phase 1** (`common_base.vibe::emit_rc_drop_fast`):
+  scope-end let drop(reuse-fusion guarded / borrow-ret dance / plain の
+  3経路)と fn epilogue param drop に、inline shared-decrement fast path を
+  適用。shared block (rc ∈ [2, 0xFFFFFE]、単一の unsigned range test で
+  判定) の drop は call なしの in-place decrement。unique (rc==1、再帰
+  field walk + free が必要) と saturated/immortal (0xFFFFFF) は従来どおり
+  runtime `vibe_rc_drop` へ。scalar / fat-pointer は dup と同じ tag test で
+  inline skip。**VIBE_RC=shadow では fast path を出さない**(freed-block
+  検査が runtime drop の入口にあるため、inline decrement はそれを迂回する)。
+  トレードオフ: drop site あたり ~5B → ~70B のコードサイズ増(適用は
+  hot 2 系統のみに限定)。dup 側 (`emit_rc_dup_guarded`) は元から inline。
+- 未着手: プランナ語彙 PaReuseToken/PaReuseAlloc(分岐越え一般化)、
+  borrow 推論拡張(dup/drop ペア削減 — KPI 2.6-3.8x の主犯)、
+  drop specialization の残り site 系統(match 内 drop 等)、KPI 再計測は
+  各段で #1262 に記録。
+
 ## Reconciliation ledger
 
 | 項目 | 根拠 / 観測 | 結論 |
