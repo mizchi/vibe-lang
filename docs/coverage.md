@@ -214,8 +214,9 @@ corpus acc.json に (fn_name, local_branch_index) キーで union する。分�
   `analyze_purity` 等）を import するため分母外で無意味。
 - **direct-call drivers** (`coverage_drivers.sh`): seed の under-tested
   関数を crafted 入力で直接叩く。**黒箱 compile では構造的に踏めない category**:
-  - `cov_async.vibe`: inlined async/stream builtin (`Task::spawn`/`Stream::map`/
-    `await`/…) — examples に async プログラムが無い (+32)。
+  - `cov_async.vibe`: inlined async/stream builtin (`Stream::map`/`await`/…)
+    — examples に async プログラムが無い (+32)。`Task::*` を叩いていた分は
+    #1227 の eager prototype 撤去で外した。
   - `cov_lookup.vibe`: builtin name→Type dispatch chain
     (`lookup_array_group_b`/`lookup_io_b`) を全 builtin 名で呼ぶ (+25)。
   - `cov_cachetext.vibe`: persistent-cache フォーマット parser の version/arity/

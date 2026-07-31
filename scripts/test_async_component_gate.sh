@@ -10,9 +10,8 @@
 #
 # Entries covered (spec milestone table M1b-3b / M-conc-1 / M2a / M2b / M2c):
 #   await      await(Future::ready(42))
-#   task       Task spawn / join / cancel / race
 #   stream     Stream once / map / filter / fold (fold is async -> await)
-#   option     Stream::next Some/None + Task::timeout
+#   option     Stream::next Some/None
 #   body       ByteStream consume: String::to_bytes fold
 #   roundtrip  Stream::to_string(String::to_bytes(...))
 #   control    non-async entry stays a core module (magic layer 0x01)
@@ -67,16 +66,6 @@ let run: () -> Int with { Async } = () -> {
   await(Future::ready(42))
 }
 EOF
-  cat >"$OUT_DIR/task.vibe" <<'EOF'
-let run: () -> Int with { Async } = () -> {
-  let t = Task::spawn(() -> { 40 })
-  let a = Task::join(t)
-  let r = Task::race(Task::spawn(() -> { 1 }), Task::spawn(() -> { 99 }))
-  let c = Task::spawn(() -> { 7 })
-  Task::cancel(c)
-  a + r + 1
-}
-EOF
   cat >"$OUT_DIR/stream.vibe" <<'EOF'
 let run: () -> Int with { Async } = () -> {
   let s = Stream::once(20)
@@ -95,7 +84,7 @@ let run: () -> Int with { Async } = () -> {
     Some(v) => v,
     None => 1
   }
-  let c = match Task::timeout(10, () -> { 1 }) {
+  let c = match await(Stream::next(Stream::once(1))) {
     Some(v) => v,
     None => 0
   }
@@ -169,7 +158,7 @@ run_component_42() {
 
 write_fixtures
 
-ENTRIES="await task stream option body roundtrip forawait"
+ENTRIES="await stream option body roundtrip forawait"
 for name in $ENTRIES; do
   run_component_42 "$name"
 done

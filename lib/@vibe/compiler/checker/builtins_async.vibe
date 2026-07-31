@@ -108,51 +108,20 @@ fn lookup_stream(name: String) -> Option[Type] {
   }
 }
 
-/// Task[T] — structured concurrency + cancellation (WASI 0.3 task / waitable-set
-/// / future.cancel-*). spawn creates a child task bound to the enclosing async
-/// scope; join awaits it; cancel requests cancellation; race/timeout combine.
+/// `Task[T]` (the M-conc-1 eager prototype: `Task::spawn`/`join`/`cancel`/
+/// `race`/`timeout`) was RETIRED in #1227. It compiled `spawn` to an immediate
+/// `call_indirect` of the thunk, so `spawn(f); spawn(g)` always finished `f`
+/// before starting `g` -- concurrency that silently serialized, with `join` as
+/// identity and `cancel` a no-op. Its only callers in this repo were two
+/// coverage probes; nothing used it to actually run work concurrently.
+///
+/// The working surface is `@vibex/concurrent`: `TaskGroup::spawn_suspend` for a
+/// suspendable task, `TaskHandle::join`, and `sleep_wait` (#1253) for a sleep
+/// that overlaps instead of blocking. Real subtask spawn over waitable-set /
+/// `future.cancel-*` remains M-conc-2 (ADR-0068, spec §2.5).
 fn lookup_concurrency(name: String) -> Option[Type] {
-  if name == "Task::spawn" {
-    // Task::spawn: (() -> T with { Async }) -> Task[T] with { Async }
-    Some(CtFn([
-      CtUnknown
-    ], CtNamed("Task", [
-      CtUnknown
-    ]), Some("Async")))
-  } else if name == "Task::join" {
-    // Task::join: (Task[T]) -> T with { Async }
-    Some(CtFn([
-      CtNamed("Task", [
-        CtUnknown
-      ])
-    ], CtUnknown, Some("Async")))
-  } else if name == "Task::cancel" {
-    // Task::cancel: (Task[T]) -> Unit with { Async }
-    Some(CtFn([
-      CtNamed("Task", [
-        CtUnknown
-      ])
-    ], CtUnit, Some("Async")))
-  } else if name == "Task::race" {
-    // Task::race: (Task[T], Task[T]) -> T with { Async }  (loser is cancelled)
-    Some(CtFn([
-      CtNamed("Task", [
-        CtUnknown
-      ]),
-      CtNamed("Task", [
-        CtUnknown
-      ])
-    ], CtUnknown, Some("Async")))
-  } else if name == "Task::timeout" {
-    // Task::timeout: (Int, () -> T with { Async }) -> Option[T] with { Async }
-    // None on deadline (the inner task is cancelled).
-    Some(CtFn([
-      CtInt,
-      CtUnknown
-    ], CtOption(CtUnknown), Some("Async")))
-  } else {
-    None
-  }
+  let _ = name
+  None
 }
 
 /// ByteStream = Stream[Int] — WASI 0.3 stream<u8> / HTTP body bridge (M2c).
