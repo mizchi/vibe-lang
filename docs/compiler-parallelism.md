@@ -257,6 +257,42 @@ change the Lean model or observable compiler result. Wasmtime thread ids,
 stores, instances, and feature flags remain backend details rather than Vibe
 language values.
 
+> **Measured correction (2026-07-31, #1239 step 4(D)).** The motivation above
+> for a *thread* pool — "the host shares one `Engine` and compiled `Module`" —
+> is already paid for by AOT. `viberun --precompile` emits a `.cwasm`, and
+> `runtime/vibe` already selects it with staleness guards. Per module job, in
+> a **fresh process**:
+>
+> | compiler image | per-job cost |
+> |---|---|
+> | `.wasm` (Cranelift JIT every start) | ~485ms |
+> | `.cwasm` (AOT image deserialize) | **~8ms** |
+>
+> 8ms amortizes away against real job work, so an ordinary **process** pool
+> over the existing `.cwasm` already scales. Measured on 32 module jobs built
+> from real compiler sources, 4 cores:
+>
+> | parallelism | elapsed | speedup |
+> |---|---|---|
+> | sequential | 290ms | — |
+> | `-P 2` | 155ms | 1.87x |
+> | `-P 4` | 86ms | **3.37x** |
+> | `-P 8` | 85ms | 3.41x (saturated) |
+>
+> — with `outcome`, `fingerprint`, and `env` bytes **identical at every
+> parallelism level**, which is this document's own acceptance criterion.
+> Pinned by `scripts/bench_module_job_pool.sh`.
+>
+> Separate processes also satisfy the shared-nothing contract more strictly
+> than threads do, and a warm per-thread instance would not help anyway: the
+> compiler's bump allocator never frees, which is why even the bench path
+> builds a fresh `Store`/`Instance` per unit of work.
+>
+> A Wasmtime multi-instance host may still be worth building for other
+> reasons (in-process dispatch without job directories, finer cancellation),
+> but it is **not** the prerequisite for wall-clock parallel typecheck that
+> this section and #1239 previously described it as.
+
 ## Host multi-worker prototype
 
 The first executable bridge lives in:
