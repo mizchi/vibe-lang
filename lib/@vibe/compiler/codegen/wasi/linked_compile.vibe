@@ -130,6 +130,7 @@ import @vibe/compiler/codegen/common_base {
   LineMapState,
   StrTable,
   agg_info_of_type_expr,
+  await_poll_pass,
   builtin_registry,
   compile_inline_wat,
   compute_agg_returning,
@@ -775,6 +776,14 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // growth per recursive step instead of an unbounded `call`. No-op unless a
   // function is directly self-tail-recursive; runs before the borrow/scalar-
   // return analyses below so they see the rewritten (loop-shaped) body.
+  // #1230 (docs/spec/wasi-p3-async.md M1b-3c): expand `await(f)` into the
+  // suspend-and-retry loop a PENDING future needs. Runs right after
+  // desugar_trait_dicts (which is what produces the `await(..)` call of a
+  // `for await` loop) and BEFORE every effect pass below, so the
+  // `perform Async::Suspend(1)` it synthesizes is seen by them exactly like a
+  // hand-written one -- lowering `await` inside compile_call, where it used to
+  // live, is past the point where a perform can still be handled.
+  await_poll_pass(stmts)
   rewrite_self_tail_calls(stmts)
   // #944 (ADR-0073 stage C): entry-boundary Error handler -- see
   // lc_wrap_entry_error_boundary's doc comment. Runs BEFORE the effect

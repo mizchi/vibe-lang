@@ -6405,6 +6405,32 @@ fi
 rm -rf "$rc1272dir"
 echo "[compiler-gate] RC local-container element escape (#1272) ok"
 
+# #1230: `await` hoisted onto the AST spine (await_poll_pass) so a PENDING
+#        future can raise a perform the effect passes still see. The fixture
+#        puts awaits in let-value, match-scrutinee and nested-operand
+#        positions, more than one of each -- splicing the expansion in place
+#        instead of hoisting put an `ELet` in a `let` VALUE, which no source
+#        program can write and which sent the compiler itself into unbounded
+#        recursion once two appeared in one function.
+awmdir="_build/_gate_await_multi"
+rm -rf "$awmdir"; mkdir -p "$awmdir"
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/async_await_multi.vibe > "$awmdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$awmdir/src.vibe" "$awmdir/src.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$awmdir/src.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_await_multi fixture did not compile" >&2
+  cat "$awmdir/src.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+awm_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$awmdir/src.wasm" 2>/dev/null | tail -1)"
+if [ "$awm_out" != "50" ]; then
+  echo "[compiler-gate] FAIL: async_await_multi got '$awm_out' (want 50) -- #1230 await hoist regressed" >&2
+  exit 1
+fi
+rm -rf "$awmdir"
+echo "[compiler-gate] multi-position await hoist (#1230) ok"
+
 # 52/52. owned-captures ABI (ADR-0076 追記31 Vertical A): a closure env OWNS
 #        its heap captures — creation-site dup + class-7 recursive drop.
 #        The fixture generalizes #1097 beyond match payloads: a borrowed

@@ -1,0 +1,45 @@
+// #1230: `await` in every position that matters, several times in one
+// function, over the two-slot `Future[T]` (`[state, payload]`,
+// docs/spec/wasi-p3-async.md M1b-3b).
+//
+// `await` is no longer lowered in compile_call -- that runs after the effect
+// passes, far too late to raise the `perform Async::Suspend(1)` a PENDING
+// future needs. await_poll_pass hoists it onto the AST spine instead, before
+// every effect pass:
+//
+//   let __aw_f_N = <future>
+//   while 0 < Array::get(__aw_f_N, 0) { let __aw_w = perform Async::Suspend(1); () }
+//   let __aw_v_N = Array::get(__aw_f_N, 1)
+//   <the expression that used to contain the await>
+//
+// Hoisting rather than splicing in place is the whole point: vibe has no block
+// expression, so an in-place expansion put `ELet(a, ELet(f, .., ESeq(EWhile,
+// ..)), ..)` in a `let` VALUE -- a shape no source program can write, and one
+// that sent the compiler itself into unbounded recursion once two of them
+// appeared in one function. The first version of this fixture missed that
+// entirely because every await sat in a match scrutinee or a tail; the
+// let-bound pair below is the shape that actually broke.
+//
+// Every future here is created ready, so the loop never runs -- what this pins
+// is that the hoist is correct wherever an await appears, and more than once.
+// 40 + 1 + 2 + 3 + 4 = 50.
+let _start = () -> Int with { Async } {
+  let a = await(Future::ready(40))
+  let b = await(Stream::fold(Stream::once(1), 0, (acc, x) -> {
+    acc + x
+  }))
+  let c = await(Stream::fold(Stream::once(2), 0, (acc, x) -> {
+    acc + x
+  }))
+  let d = match await(Stream::next(Stream::once(3))) {
+    Some(v) => v,
+    None => 0
+  }
+  a + b + c + d + await(Stream::fold(Stream::once(4), 0, (acc, x) -> {
+    acc + x
+  }))
+}
+_start()
+
+__DATA__
+{"last":"50"}
