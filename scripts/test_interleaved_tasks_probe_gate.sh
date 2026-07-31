@@ -28,6 +28,13 @@
 # -- otherwise the assertions above are not discriminating and this gate is
 # decorative.
 #
+# The probe's delays are baked into the committed WAT (they are part of the
+# artifact), so viberun exposes VIBE_ASYNC_DELAY_SCALE_PCT to scale every
+# host suspend by a percentage. Ratios are preserved, so completion order --
+# the thing being asserted -- is unaffected. Used below to make the warmups
+# nearly free; raise it above 100 if a loaded machine ever narrows the
+# margin between the two measurements.
+#
 # Env:
 #   VIBE_INTERLEAVED_GATE_RUNNER    viberun binary override
 #   VIBE_P3_GATE_REQUIRE_TOOLS=1    missing tools = FAIL instead of skip
@@ -88,9 +95,14 @@ run_probe() {
     || { echo "interleaved-tasks probe gate FAILED: $name did not assemble" >&2; exit 1; }
   wasm-tools validate --features all "$wasm" \
     || { echo "interleaved-tasks probe gate FAILED: $name did not validate" >&2; exit 1; }
-  # warmup: first execution pays wasmtime JIT (~200ms observed), which would
-  # blur the ~100ms gap between the interleaved and serial timings.
-  timeout 60 "$RUNNER" "$wasm" >/dev/null 2>&1 \
+  # Warmup: first execution pays wasmtime JIT (~200ms observed), which would
+  # blur the ~100ms gap between the interleaved and serial timings. Run it at
+  # 2% of the probe's delays -- the JIT work is identical, but the warmup
+  # stops costing as much as the measurement it exists to protect (it ran the
+  # full ~1.3s of sleeps before). Ratios are preserved, so the guest still
+  # takes exactly the same path; and the floor keeps every call blocking,
+  # which the probe's own `unreachable` guards require.
+  VIBE_ASYNC_DELAY_SCALE_PCT=2 timeout 60 "$RUNNER" "$wasm" >/dev/null 2>&1 \
     || { echo "interleaved-tasks probe gate FAILED: $name warmup did not exit 0" >&2; exit 1; }
   local log="$OUT_DIR/$name.log" start_ns elapsed
   start_ns=$(date +%s%N)

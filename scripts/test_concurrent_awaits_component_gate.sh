@@ -136,6 +136,8 @@ wasm-tools validate --features all "$COMPONENT" \
   || { echo "selfhost concurrent-awaits component gate FAILED: generated component failed validation" >&2; exit 1; }
 
 # --- warmup (unmeasured): pay JIT compilation before the timed run ----------
+# Delay 0 keeps this cheap, and here it is also the eager path, which this
+# component must handle anyway (asserted for real further down).
 VIBE_ASYNC_GET_DELAY_MS=0 timeout 60 "$RUNNER" "$COMPONENT" >/dev/null 2>&1 \
   || { echo "selfhost concurrent-awaits component gate FAILED: warmup run did not exit 0" >&2; exit 1; }
 

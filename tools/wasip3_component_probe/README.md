@@ -481,3 +481,19 @@ table.
 Needs viberun's `get-after` host import (a per-call delay); `get-async`'s
 single fixed delay makes completion order and start order coincide, which
 is enough to show calls overlap but says nothing about dispatch order.
+
+Because these delays are baked into the committed WAT (they are part of the
+artifact), viberun also exposes `VIBE_ASYNC_DELAY_SCALE_PCT` to scale every
+host suspend by a percentage. Ratios are preserved, so completion order --
+the thing the probe asserts -- is unaffected; only the clock moves:
+
+| scale | interleaved | serial | saving |
+|---|---|---|---|
+| 2% | 21 in 23ms | 12 in 25ms | 2ms |
+| 100% | 21 in 612ms | 12 in 713ms | 101ms |
+| 200% | 21 in 1212ms | 12 in 1412ms | 200ms |
+
+The gate uses 2% for its warmups -- which otherwise ran the probe's full
+~1.3s of sleeps purely to warm the JIT, costing as much as the measurement
+they exist to protect -- and 100% for the measured runs, so the margin is
+untouched. Raise it above 100 if a loaded machine ever narrows that margin.
