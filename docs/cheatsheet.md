@@ -1,6 +1,10 @@
 # vibe Language Cheat Sheet
 
-WASM-targeting, pure-by-default language with algebraic effects. Compiled via MoonBit toolchain.
+WASM-targeting, pure-by-default language with algebraic effects. The compiler
+is self-hosted: it is built from the committed seed (`bootstrap/seed/`) plus
+the selfhost sources (`lib/@vibe/compiler/`, `lib/@vibe/cli/`) via the wasm
+runner — no MoonBit toolchain is required (the MoonBit host implementation was
+retired in #594; see `docs/archive/moonbit-retirement.md`).
 
 ## Quick Start
 
@@ -459,7 +463,7 @@ let arr2 = {
 // Bytes — growable byte buffer
 let bytes_len = {
   let e = Bytes::new()        // empty (length 0), grows via push/append
-  let z = Bytes::new(4)       // length 4, zero-filled (MoonBit semantics)
+  let z = Bytes::new(4)       // length 4, zero-filled
   Bytes::set(z, 0, 65)        // in-bounds write (OOB index traps, #811)
   Bytes::push(z, 9)           // append -> length 5
   let b0 = Bytes::get(z, 0)   // => 65

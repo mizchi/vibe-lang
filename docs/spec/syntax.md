@@ -9,9 +9,9 @@ semantics live in `docs/vibe.md`; tutorial material lives in
 
 Implementation sources:
 
-- `lib/@vibe/compiler/syntax/lexer.vibe`
-- `lib/@vibe/compiler/syntax/parser*.vibe`
-- `src/parser/*.mbt` for the MoonBit compiler path
+- `lib/@vibe/parser/lexer.vibe` and `lib/@vibe/parser/parser*.vibe` — the
+  lexer/parser contract package (`lib/@vibe/compiler/syntax/` re-exports it
+  for the compiler's internal import spellings)
 - `fixtures/*.vibe` and `examples/*_test.vibe` for executable syntax coverage
 
 When changing grammar, update this file, parser tests/fixtures, formatter
