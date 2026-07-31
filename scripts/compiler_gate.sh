@@ -6298,6 +6298,14 @@ scps_run_expect "effect_resume_rowvar_wrapper_normalized.vibe" "-95" "norm"
 # as r0=100/r1=101/r2=102/r3=183 -- the 183 is the pin that both `acc` and
 # `i` survived every suspend/resume round trip through their cells.
 scps_run_expect "effect_resume_store_loop.vibe" "101020383" "loop"
+# #1263 Codex P1: a non-suspending loop AHEAD of a suspending one must stay
+# iterative. The 200000-iteration prefix would blow the wasm call stack if it
+# were converted to the recursive lp() shape (rewrite_self_tail_calls runs
+# before suspend_cps_pass, so nothing flattens it back).
+scps_run_expect "effect_resume_store_loop_prefix.vibe" "20000112" "loopprefix"
+# #1263 Codex P2: a nested closure is a control-flow boundary -- its `return`
+# targets the closure, not the loop being converted, so it must not reject.
+scps_run_expect "effect_resume_store_loop_nested_return.vibe" "112" "loopnestedret"
 # one-shot violation: must NOT produce a value; the failure output carries
 # the one-shot stderr diagnostic before the assert trap.
 sed '/^_start()$/d' fixtures/effect_resume_one_shot_trap.vibe > "$scpsdir/once.vibe"

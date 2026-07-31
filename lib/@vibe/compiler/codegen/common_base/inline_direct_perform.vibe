@@ -8165,8 +8165,19 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
         },
         ESeq(a, b) => match a {
           // #1230: a loop in statement position takes `b` as its exit
-          // continuation -- see scps_split_while.
-          EWhile(wc, wb) => scps_split_while(wc, wb, b, sctx, ctx, st),
+          // continuation -- see scps_split_while. Only when the loop
+          // ITSELF suspends: a loop that merely PRECEDES a suspension
+          // stays an ordinary `while` (Codex P1 on #1263). Converting one
+          // that never suspends would trade a constant-space loop for
+          // recursion the tail-call rewrite can no longer flatten (it runs
+          // before this pass), so a long ordinary loop would exhaust the
+          // wasm call stack on its way to a suspension further down.
+          EWhile(wc, wb) => if scps_contains_susp(a, sctx) {
+            scps_split_while(wc, wb, b, sctx, ctx, st)
+          } else {
+            let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+            (bok, ESeq(a, bexpr))
+          },
           _ => {
             let ap = scps_as_target_perform(a, ops)
             let an = scps_as_needing_call(a, sctx)
@@ -8321,7 +8332,11 @@ fn scps_has_loop_ctl(e: Expr) -> Bool {
     EIf(c, t, el) => scps_has_loop_ctl(c) || scps_has_loop_ctl(t) || scps_has_loop_ctl(el),
     EMatch(s, arms) => scps_has_loop_ctl(s) || scps_arms_have_loop_ctl(arms),
     EHandle(b, arms) => scps_has_loop_ctl(b) || scps_arms_have_loop_ctl(arms),
-    EFn(_, _, _, _, _, b) => scps_has_loop_ctl(b),
+    // A nested closure is a control-flow boundary: its `return` targets the
+    // closure, and its `break`/`continue` target a loop inside it. None of
+    // them can reach the loop being converted, so scanning through would be
+    // a false rejection (Codex P2 on #1263).
+    EFn(_, _, _, _, _, _) => false,
     EWhile(c, b) => scps_has_loop_ctl(c) || scps_has_loop_ctl(b),
     EForIn(_, _, it, b) => scps_has_loop_ctl(it) || scps_has_loop_ctl(b),
     ELoop(pairs, b) => scps_pairs_have_loop_ctl(pairs) || scps_has_loop_ctl(b),
