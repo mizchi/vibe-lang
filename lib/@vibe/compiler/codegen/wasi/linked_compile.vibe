@@ -2821,10 +2821,21 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       let mut di = 0
       while di < Array::length(plan) {
         let pa = Array::get(plan, di)
-        if pa.name == bfn_p0 && bfn_p0 != "" {
-          ()
-        } else if pa_is_drop(pa) {
-          Array::push(rc_drops, pa.name)
+        if pa_is_drop(pa) {
+          // Skip ONLY the drop for the borrowed param -- the plan is
+          // name-keyed, so a shadowing local sharing param0's name can
+          // carry dup/alias-dup actions of its own, and filtering those
+          // out under-counts references (use-after-free that only
+          // surfaces under allocation churn -- codegen_heap_e2e_test
+          // caught it after ~90 compiles). A same-named shadow's own
+          // scope-end drop is also skipped here (a bounded leak, safe
+          // direction); eligibility makes that rare since a bare read of
+          // the shadow disqualifies the fn.
+          if pa.name == bfn_p0 && bfn_p0 != "" {
+            ()
+          } else {
+            Array::push(rc_drops, pa.name)
+          }
         } else if pa_is_alias_dup(pa) {
           Array::push(rc_alias_dups, pa.name)
         } else if pa_is_dup(pa) {
