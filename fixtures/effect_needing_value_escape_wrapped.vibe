@@ -1,0 +1,40 @@
+// #1261: a closure literal that performs an effect but is written WITHOUT a
+// row annotation is still classified as row-carrying by codegen --
+// dlh_hoist_expr backfills the row from the body before hoisting (追記20),
+// so the hoisted function lands in evidence_dict_pass's `needing` set and
+// gets the evidence-dict parameter prepended.
+//
+// Handing that value to a row-FREE function-typed parameter used to compile
+// the callee at one arity and call it at another: `apply1`'s `f(1)` emitted
+// a two-argument `call_indirect` against a three-argument funcref, which
+// trapped at runtime with wasm's own `null function or function signature
+// mismatch`.
+//
+// edp_etawrap_stmts now eta-expands the escaping value instead
+// (`(__edpw_0) -> susp(__edpw_0)`), and the ordinary body rewrite prepends
+// the dict to the call INSIDE that wrapper. What reaches `apply1` is a
+// plain one-argument closure that has captured the evidence, so both sides
+// agree on the arity without the program having to say anything about rows.
+// This is the same program as effect_needing_value_annotated.vibe with the
+// annotations left off.
+effect Async {
+  Suspend(Int) -> Int
+}
+
+fn apply1(f: (x: Int) -> Int) -> Int {
+  f(1)
+}
+
+let _start = () -> Int {
+  handle {
+    apply1((x: Int) -> Int {
+      perform Async::Suspend(x)
+    })
+  } with Async {
+    Suspend(t) => resume(t + 41)
+  }
+}
+_start()
+
+__DATA__
+{"last":"42"}

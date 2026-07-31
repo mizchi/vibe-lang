@@ -6348,6 +6348,7 @@ scps_check_reject "err_effect_resume_store_loop.vibe" "let/seq/tail/branch-tail 
 # a wasm signature mismatch. Reject it, and keep the annotated form working.
 scps_check_reject "err_effect_needing_value_escape.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valesc"
 scps_run_expect "effect_needing_value_annotated.vibe" "42" "valann"
+scps_run_expect "effect_needing_value_escape_wrapped.vibe" "42" "valwrap"
 rm -rf "$scpsdir"
 echo "[compiler-gate] ADR-0076 Phase 3a first-class resume ok"
 

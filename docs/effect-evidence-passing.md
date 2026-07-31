@@ -2528,6 +2528,65 @@ fixtures: `effect_resume_store_loop.vibe` (positive、want 101020383 —
 gate 50 更新。検証: stage2==stage3 fixpoint、compiler gate 73/73、
 unit battery 473/473。
 
+### 追記37 (2026-07-31): needing 値の escape を eta 展開で通す (#1261)
+
+追記34 V2 の「型主導・全域」は **param の型が row を持つ ⇒ その param 経由の
+呼び出しに dict を前置する** (`edp_row_typed_param_names`) を前提にしている。
+row-E の関数値が **row を持たない関数型 param** に流れ込むとこの前提が破れ、
+定義側だけ dict param を前置された状態で呼び出し側は旧 arity のまま
+`call_indirect` する → wasm 自身の `null function or function signature
+mismatch`。#1261 の原型:
+
+```vibe
+fn apply1(f: (x: Int) -> Int) -> Int { f(1) }
+handle { apply1((x) -> { perform Async::Suspend(x) }) } with Async { .. }
+```
+
+checker はこれを弾かない。closure リテラル内の `perform` は **リテラルが
+置かれた関数の row** に字句的に計上される (リテラル自身の型は row 無し) 一方、
+`dlh_hoist_expr` は hoist 前に body から row を **backfill する** (追記20)。
+同じリテラルを checker は row 無し、codegen は row 有りと分類する食い違いが
+入口。
+
+**修正: escape する値を eta 展開する** (`edp_etawrap_stmts`)。
+`apply1(susp)` を `apply1((__edpw_0) -> susp(__edpw_0))` に書き換えてから
+通常の body 書き換えに渡すと、ラッパ **内側** の呼び出しに dict が前置され、
+外に出るのは「evidence を閉じ込めた row-free arity の closure」になる。
+両側の arity が一致し、受け側は何も知らなくていい。手で
+`f: (x: Int) -> Int with { Async }` と書いたときに起きることと同じ結果を、
+注釈なしで得る。
+
+捕まえる evidence が **escape 地点でスコープにあるもの** で正しいのは、
+checker がリテラルの `perform` を enclosing 関数に計上する以上、それを
+discharge する handler は構成上その escape を囲んでいるものだから。
+
+**適用範囲を「実際に書き換えられる領域」に限る** (`in_scope`)。needing 関数の
+body の中と、`ename` の `handle` の **body** の中だけ。そこ以外では
+ラッパの内側にも dict が前置されず、arity 不一致を場所を変えて再現するだけに
+なる。したがって次の2形は引き続き hard error (追記34 V2 の方針どおり):
+
+- row も handle も持たない関数から値を渡す (`fn outer() { apply1(susp) }`) —
+  `outer` は dict を受け取らないので、そもそも渡せる evidence が無い
+- row を宣言していても **自分では perform しない** 関数から渡す —
+  `edp_append_perform_free_row_fns` が needing から外すので同じく dict 無し
+
+ラベル付き param を持つ関数も、ラッパの位置渡しでは届かないので非対象
+(escape として reject される)。ラッパの param は `__edpw_N` の固定新名で、
+`edp_alpha_rename_shadowed` 後に needing 名を shadow する binder を
+持ち込まない。
+
+fixtures: `effect_needing_value_escape_wrapped.vibe` (#1261 原型、want 42)、
+`err_effect_needing_value_escape.vibe` (rescue 不能な形へ差し替え)、
+`effect_needing_value_annotated.vibe` (注釈済みの等価形、据え置き)。
+gate 50 更新。検証: stage2==stage3 fixpoint、compiler gate 73/73、
+unit battery 477/477。
+
+**残す論点**: checker 側で「関数型引数の row subsumption を検査する」案
+(#939 / #955 の FnType row subsumption を実引数チェックへ繋ぐ) は入れて
+いない。今回の eta 展開で silent trap もコンパイルエラーも消えたので入口の
+検査は必須ではなくなったが、リテラルの row 分類を checker と codegen で
+揃えること自体は別途の設計判断として残る。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し

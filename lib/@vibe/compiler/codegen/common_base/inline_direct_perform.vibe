@@ -2715,13 +2715,23 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       }
       pfi = pfi + 1
     }
-    // #1261: refuse before planning when a needing function's VALUE reaches
-    // a slot the migration cannot follow -- migrating it would prepend the
-    // dict parameter at the definition while the call through that slot
-    // stays at the old arity (a wasm signature-mismatch trap, not a
-    // diagnosable failure). Only relevant while handle sites for E remain:
+    // #1261: a needing function's VALUE reaching a slot the migration cannot
+    // follow would prepend the dict parameter at the definition while the
+    // call through that slot stays at the old arity (a wasm signature-
+    // mismatch trap, not a diagnosable failure). Eta-expand those values
+    // first (edp_etawrap_stmts): the wrapper closes over the evidence and
+    // presents the arity the receiving slot expects, which is exactly what
+    // writing the rows out by hand achieves. Whatever the wrapping cannot
+    // reach is then still an escape, and stays a hard error per ADR-0076
+    // 追記34 V2. Both are only relevant while handle sites for E remain:
     // with none, nothing gets migrated in the first place.
-    let escaped = if Array::length(needing_full) > 0 && Array::length(edp_collect_handle_sites(stmts, ename)) > 0 {
+    let live_sites = Array::length(needing_full) > 0 && Array::length(edp_collect_handle_sites(stmts, ename)) > 0
+    if live_sites {
+      edp_etawrap_stmts(stmts, needing_full, ename, fn_defs, es_names, es_members_list)
+    } else {
+      ()
+    }
+    let escaped = if live_sites {
       edp_needing_escape_stmts(stmts, needing_full, ename, fn_defs, es_names, es_members_list)
     } else {
       ""
@@ -5260,6 +5270,206 @@ fn edp_needing_escape_stmts(stmts: Array[Stmt], needing: Array[String], ename: S
     i = i + 1
   }
   hit
+}
+
+/// #1261: the eta-expansion `(__edpw_0, ..) -> nm(__edpw_0, ..)` of needing
+/// function `nm`, or None when `nm` has no copyable parameter list.
+///
+/// This is what lets a needing function's VALUE reach a slot the evidence
+/// migration cannot follow. The wrapper is an ordinary closure literal, so
+/// the migration's own body rewrites (edp_rewrite_needing_body /
+/// edp_rewrite_handle_body, both of which recurse into closure literals)
+/// prepend the dict to the call INSIDE it exactly as they would to any other
+/// direct call to `nm`. The value that escapes is therefore a plain
+/// row-free-arity function that closes over the evidence, and the receiving
+/// row-free parameter calls it at the arity it was compiled with.
+///
+/// The evidence captured is the one in scope where the value escapes, which
+/// is the correct one: the checker charges a closure literal's `perform` to
+/// the ENCLOSING function, so the handler that discharges it is by
+/// construction the one enclosing the escape site.
+///
+/// Fresh `__edpw_N` parameter names (never the callee's own) keep the
+/// wrapper from introducing a binder that shadows a needing function name --
+/// edp_alpha_rename_shadowed has already run by the time this synthesizes
+/// anything.
+fn edp_etawrap_value(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], nm: String) -> Option[Expr] {
+  match edp_params_of_fn(stmts, fn_defs, nm) {
+    Some(params) => {
+      // A labeled parameter cannot be reached by the wrapper's positional
+      // forwarding, so those shapes stay un-wrapped (and are reported by
+      // edp_needing_escape instead of silently miscompiled).
+      let mut plain = true
+      let mut ci = 0
+      while ci < Array::length(params) {
+        let (pn, _) = Array::get(params, ci)
+        if String::starts_with(pn, "~") || String::starts_with(pn, "?") {
+          plain = false
+        } else {
+          ()
+        }
+        ci = ci + 1
+      }
+      if plain {
+        let wparams = array_empty()
+        let cargs = array_empty()
+        let mut i = 0
+        while i < Array::length(params) {
+          let wn = String::concat("__edpw_", Int::to_string(i))
+          Array::push(wparams, (wn, None))
+          Array::push(cargs, EIdent(wn, -1))
+          i = i + 1
+        }
+        Some(EFn(empty_str_array(), array_empty(), wparams, None, None, ECall(EIdent(nm, -1), cargs, -1)))
+      } else {
+        None
+      }
+    },
+    None => None
+  }
+}
+
+/// #1261: replace every needing-function VALUE that is about to escape into
+/// a slot the migration cannot follow with its eta-expansion
+/// (edp_etawrap_value), in place.
+///
+/// `in_scope` tracks whether this position is one the migration will
+/// actually rewrite -- inside a needing function's body, or inside the body
+/// of a `handle` for `ename`. Only there does the wrapper's inner call get
+/// the dict prepended; wrapping anywhere else would swap one arity mismatch
+/// for another, so those positions are left alone for edp_needing_escape to
+/// reject. The scope rules mirror the rewrites exactly: both recurse into
+/// closure literals, a nested handle for a DIFFERENT effect keeps the
+/// current scope for body and arms alike, and a handle for `ename` itself
+/// puts only its BODY in scope (its arms are never rewritten by either).
+fn edp_etawrap_stmts(stmts: Array[Stmt], needing: Array[String], ename: String, fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> Unit {
+  let wc = (stmts, fn_defs, es_names, es_members_list)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(ex, isrec, nm, ty, expr) => {
+        let scope = edp_str_array_contains(needing, nm)
+        Array::set(stmts, i, SLet(ex, isrec, nm, ty, edp_etawrap_expr(expr, scope, needing, ename, wc)))
+      },
+      SLetMut(nm, ty, expr) => {
+        Array::set(stmts, i, SLetMut(nm, ty, edp_etawrap_expr(expr, false, needing, ename, wc)))
+      },
+      SExpr(expr) => {
+        Array::set(stmts, i, SExpr(edp_etawrap_expr(expr, false, needing, ename, wc)))
+      },
+      STest(nm, expr) => {
+        Array::set(stmts, i, STest(nm, edp_etawrap_expr(expr, false, needing, ename, wc)))
+      },
+      SBench(nm, expr) => {
+        Array::set(stmts, i, SBench(nm, edp_etawrap_expr(expr, false, needing, ename, wc)))
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn edp_etawrap_expr(e: Expr, in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]])) -> Expr {
+  match e {
+    ECall(callee, args, off) => {
+      let (wstmts, wfn_defs, wes_names, wes_members) = wc
+      let callee_nm = match callee {
+        EIdent(cn, _) => cn,
+        _ => ""
+      }
+      let new_callee = if callee_nm == "" {
+        edp_etawrap_expr(callee, in_scope, needing, ename, wc)
+      } else {
+        callee
+      }
+      let new_args = array_empty()
+      let mut i = 0
+      while i < Array::length(args) {
+        let a = Array::get(args, i)
+        let bare = match a {
+          EIdent(an, _) => if edp_str_array_contains(needing, an) {
+            an
+          } else {
+            ""
+          },
+          _ => ""
+        }
+        let wrapped = if bare != "" && in_scope && callee_nm != "" && !edp_arg_slot_accepts_needing(wstmts, wfn_defs, callee_nm, i, ename, wes_names, wes_members) {
+          edp_etawrap_value(wstmts, wfn_defs, bare)
+        } else {
+          None
+        }
+        match wrapped {
+          Some(w) => Array::push(new_args, w),
+          None => Array::push(new_args, edp_etawrap_expr(a, in_scope, needing, ename, wc))
+        }
+        i = i + 1
+      }
+      ECall(new_callee, new_args, off)
+    },
+    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, edp_etawrap_expr(b, in_scope, needing, ename, wc)),
+    EHandle(b, arms) => {
+      let matches = edp_handle_matches_effect(arms, ename)
+      let body_scope = if matches {
+        true
+      } else {
+        in_scope
+      }
+      let arm_scope = if matches {
+        false
+      } else {
+        in_scope
+      }
+      EHandle(edp_etawrap_expr(b, body_scope, needing, ename, wc), edp_etawrap_arms(arms, arm_scope, needing, ename, wc))
+    },
+    EIf(c, t, el) => EIf(edp_etawrap_expr(c, in_scope, needing, ename, wc), edp_etawrap_expr(t, in_scope, needing, ename, wc), edp_etawrap_expr(el, in_scope, needing, ename, wc)),
+    EMatch(s, arms) => EMatch(edp_etawrap_expr(s, in_scope, needing, ename, wc), edp_etawrap_arms(arms, in_scope, needing, ename, wc)),
+    EWhile(c, b) => EWhile(edp_etawrap_expr(c, in_scope, needing, ename, wc), edp_etawrap_expr(b, in_scope, needing, ename, wc)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, edp_etawrap_expr(it, in_scope, needing, ename, wc), edp_etawrap_expr(b, in_scope, needing, ename, wc)),
+    ELoop(pairs, b) => ELoop(edp_etawrap_pairs(pairs, in_scope, needing, ename, wc), edp_etawrap_expr(b, in_scope, needing, ename, wc)),
+    ELet(n, v, b, off) => ELet(n, edp_etawrap_expr(v, in_scope, needing, ename, wc), edp_etawrap_expr(b, in_scope, needing, ename, wc), off),
+    ELetMut(n, v, b, off) => ELetMut(n, edp_etawrap_expr(v, in_scope, needing, ename, wc), edp_etawrap_expr(b, in_scope, needing, ename, wc), off),
+    ELetRec(n, v, b) => ELetRec(n, edp_etawrap_expr(v, in_scope, needing, ename, wc), edp_etawrap_expr(b, in_scope, needing, ename, wc)),
+    ESeq(a, b) => ESeq(edp_etawrap_expr(a, in_scope, needing, ename, wc), edp_etawrap_expr(b, in_scope, needing, ename, wc)),
+    EBinOp(op, l, r) => EBinOp(op, edp_etawrap_expr(l, in_scope, needing, ename, wc), edp_etawrap_expr(r, in_scope, needing, ename, wc)),
+    EUnaryOp(op, x) => EUnaryOp(op, edp_etawrap_expr(x, in_scope, needing, ename, wc)),
+    EAssign(n, v, c) => EAssign(n, edp_etawrap_expr(v, in_scope, needing, ename, wc), edp_etawrap_expr(c, in_scope, needing, ename, wc)),
+    EAssignOp(op, n, v, c) => EAssignOp(op, n, edp_etawrap_expr(v, in_scope, needing, ename, wc), edp_etawrap_expr(c, in_scope, needing, ename, wc)),
+    EDot(o, f, o1, o2) => EDot(edp_etawrap_expr(o, in_scope, needing, ename, wc), f, o1, o2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_etawrap_expr(v, in_scope, needing, ename, wc)),
+    EReturn(x) => EReturn(edp_etawrap_expr(x, in_scope, needing, ename, wc)),
+    EBreak(opt) => EBreak(match opt {
+      Some(x) => Some(edp_etawrap_expr(x, in_scope, needing, ename, wc)),
+      None => None
+    }),
+    EContinue(args) => EContinue(edp_etawrap_exprs(args, in_scope, needing, ename, wc)),
+    ETuple(items) => ETuple(edp_etawrap_exprs(items, in_scope, needing, ename, wc)),
+    EArray(items) => EArray(edp_etawrap_exprs(items, in_scope, needing, ename, wc)),
+    ERecord(n, fields, tas) => ERecord(n, edp_etawrap_pairs(fields, in_scope, needing, ename, wc), tas),
+    EMap(fields) => EMap(edp_etawrap_pairs(fields, in_scope, needing, ename, wc)),
+    ESpread(x) => ESpread(edp_etawrap_expr(x, in_scope, needing, ename, wc)),
+    _ => e
+  }
+}
+
+fn edp_etawrap_exprs(es: Array[Expr], in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]])) -> Array[Expr] {
+  for x in es {
+    edp_etawrap_expr(x, in_scope, needing, ename, wc)
+  }
+}
+
+fn edp_etawrap_pairs(pairs: Array[(String, Expr)], in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]])) -> Array[(String, Expr)] {
+  for p in pairs {
+    let (n, v) = p
+    (n, edp_etawrap_expr(v, in_scope, needing, ename, wc))
+  }
+}
+
+fn edp_etawrap_arms(arms: Array[(Pat, Expr)], in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]])) -> Array[(Pat, Expr)] {
+  for a in arms {
+    let (p, ex) = a
+    (p, edp_etawrap_expr(ex, in_scope, needing, ename, wc))
+  }
 }
 
 fn edp_count_ident_uses(expr: Expr, name: String) -> Int {
