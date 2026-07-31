@@ -105,7 +105,9 @@ fi
 
 COMPILER="${VIBE_SPAWNED_FUTURE_GATE_COMPILER:-}"
 if [ -z "$COMPILER" ]; then
-  COMPILER="$(ls -td "$PROJECT_ROOT"/_build/selfhost/generations/*/ 2>/dev/null | head -1)stage2.wasm"
+  # `|| true`: no generations dir => ls exits nonzero => pipefail would abort
+  # before the seed fallback below could run.
+  COMPILER="$(ls -td "$PROJECT_ROOT"/_build/selfhost/generations/*/ 2>/dev/null | head -1 || true)stage2.wasm"
   [ -f "$COMPILER" ] || COMPILER="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
 fi
 echo "[spawned-future-component-gate] compiler: $COMPILER"
