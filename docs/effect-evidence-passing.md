@@ -2461,6 +2461,24 @@ reject needle "replay engine was removed"、40ao = shadowed 47 の evidence
 fs mock は正しい意味論で不変、http_e2e は ambient Http + 直接呼び出しに
 書き換え)。
 
+### 追記35 (2026-07-31): 外部資料による4パターン検証と wasip3 整合 (ADR-0089)
+
+発表資料「代数的エフェクトの高速化技法と発展的な機能」(関数型まつり 2026)
+の代表パターンを本 ADR の実装上で実測検証した。結果と、そこから導いた
+wasip3 `future<T>`/`stream<T>` との言語表面整合の決定は
+[ADR-0089 (wasip3-effect-alignment.md)](wasip3-effect-alignment.md) 参照。
+要点のみ: (a) `Yielded(x, resume)` を ADT payload に入れて handle の外で
+drive する資料 p69-75 の Coroutine 形がそのまま通ることを
+`fixtures/effect_talk_coroutine_status_test.vibe` で新規に pin、(b) 高階
+エフェクト (effectful block を op 引数に取る形) は evidence migration が
+closure を追えず needle "replay engine was removed" の診断で reject
+(純粋 block なら通る — `effect_talk_tracing_span_test.vibe`)、(c) 格納した
+継続を別の `handle` で包んでも元 driver に配送され続ける (handler switch は
+silent no-op — 診断追加の検討課題)、(d) generic effect は TDEffect 未登録の
+まま両 handler class ともコンパイル・実行できてしまい検査が全て素通りする
+(arity 誤りも通る) ことを実測確認 — ADR-0071 正規化実装までの warning 追加を
+ADR-0089 が提案。
+
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)
   (ICFP 2021) — 本 ADR の中核アルゴリズム。tail-resumptive の直接呼び出し
