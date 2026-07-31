@@ -837,19 +837,28 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // program-wide (read-only first param, never valued/aliased -- see
   // compute_borrow_arg0_user_fns). The entry fn and the conventional entry
   // names are excluded: the host invokes them without consulting the set.
-  let lc_borrow_arg0_user_all = Array::slice(compute_borrow_arg0_user_fns(stmts), 0, 495)
-  // TEMP bisect instrumentation: name the boundary entries of a LARGE
-  // program's set (the heap_e2e test binary) via a diagnostic throw.
-  if Array::length(compute_borrow_arg0_user_fns(stmts)) > 490 && Array::length(compute_borrow_arg0_user_fns(stmts)) < 850 {
-    let dbg_names = ArrayBuilder::new()
-    let mut dbg_i = 490
-    while dbg_i < 498 {
-      ArrayBuilder::push(dbg_names, String::concat(__to_string(dbg_i), String::concat("=", Array::get(compute_borrow_arg0_user_fns(stmts), dbg_i))))
-      dbg_i = dbg_i + 1
-    }
-    throw(String::concat(String::concat("SETLEN=", __to_string(Array::length(compute_borrow_arg0_user_fns(stmts)))), String::concat(" ", String::join(ArrayBuilder::freeze(dbg_names), " | "))))
+  // ADR-0092 borrow-inference slice 1 -- DEFAULT OFF pending per-use-paired
+  // planner accounting. The whole-program analysis, PCtx/CompileCtx
+  // threading, callee-side drop filtering, and fixture all remain wired;
+  // flip lc_borrow_arg0_enabled to experiment. Root cause of the disable
+  // (isolated by set bisection + emission byte-diff on
+  // codegen_heap_e2e_test, 2026-07-31): the planner's dup budget is
+  // computed from HOLISTIC use totals per binding, so flipping one call
+  // site's arg0 use to a borrow can eliminate an ENTRY DUP that was also
+  // covering a remaining OWNED consume elsewhere in the same body -- the
+  // callee-side epilogue then releases a reference the caller never had
+  // (over-release -> recycled live block -> downstream corruption; trapped
+  // as an OOB guard inside parse_type_impl after ~90 compiles of churn).
+  // The sound fix is per-use-paired accounting -- explicit planner
+  // vocabulary (PaBorrowUse et al.) pairing each dup with the specific
+  // consume it feeds, which is the planned ADR-0092 planner-vocabulary
+  // phase. Measured potential while enabled: RC selfcompile ratio
+  // 2.05 -> 1.68-1.82.
+  let lc_borrow_arg0_enabled = false
+  let lc_borrow_arg0_user_all = if lc_borrow_arg0_enabled {
+    compute_borrow_arg0_user_fns(stmts)
   } else {
-    ()
+    lc_fresh_string_array()
   }
   let lc_borrow_arg0_user = lc_fresh_string_array()
   let mut lba_i = 0
