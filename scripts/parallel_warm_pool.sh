@@ -107,7 +107,8 @@ export RUNNER COMPILER
 # returns every reachable module -- dependency list, ingested source, and rank
 # -- already in plan_module_order's canonical order. It replaces both the
 # per-file VIBE_LIST_DEPS BFS this script used to run and the separate
-# VIBE_PLAN_MODULE_ORDER call after it. On this repo's codegen_lexer_test.vibe
+# ordering-only call after it (a `VIBE_PLAN_MODULE_ORDER` mode, deleted in
+# #1259 once this was its only would-be caller). On this repo's codegen_lexer_test.vibe
 # graph (166 modules) the BFS measured 17.4s serially and 5.1s at 4-way
 # concurrency, against 0.8s for the single call.
 #
@@ -165,7 +166,26 @@ MODULE_COUNT="$(awk -F'\t' '$1=="module"' "$plan" | wc -l | tr -d ' ')"
 # Within a rank the modules are independent by construction, so the whole rank
 # goes out at once; ranks are joined in ascending order because rank k's job
 # dirs need rank <k's env.out and fingerprint.out as inputs.
+# #1259: optional concurrency trace. When VIBE_WARM_POOL_TRACE names a file,
+# each job appends "+" as it starts and "-" as it finishes; the running sum is
+# the number of workers in flight, and its maximum is the real peak
+# parallelism. Two-byte O_APPEND writes are atomic on Linux, so concurrent
+# workers cannot interleave within a marker.
+#
+# This exists because "bounded parallelism and backpressure" was an acceptance
+# criterion with no evidence behind it: `xargs -P N` is the bound, but nothing
+# checked that it IS the bound in practice. test_parallel_warm_pool_gate.sh
+# now measures it. Unset in every production path -- runtime/vibe never sets
+# it -- so the pool pays one `[ -z ... ]` per job for it.
 build_and_run_job() {  # build_and_run_job <path>
+  local rc=0
+  [ -z "${VIBE_WARM_POOL_TRACE:-}" ] || printf '+\n' >> "$VIBE_WARM_POOL_TRACE"
+  build_and_run_job_body "$@" || rc=$?
+  [ -z "${VIBE_WARM_POOL_TRACE:-}" ] || printf -- '-\n' >> "$VIBE_WARM_POOL_TRACE"
+  return "$rc"
+}
+
+build_and_run_job_body() {  # build_and_run_job_body <path>
   local path="$1" key jobdir i=0 dep dkey
   key="$(printf '%s' "$path" | tr -c 'a-zA-Z0-9' '_')"
   jobdir="$JOBS_DIR/$key"
@@ -199,7 +219,7 @@ build_and_run_job() {  # build_and_run_job <path>
     >/dev/null 2>&1 || true
   [ "$(cat "$jobdir/outcome.txt" 2>/dev/null || true)" = "ok" ] || rm -f "$jobdir/env.out"
 }
-export -f build_and_run_job
+export -f build_and_run_job build_and_run_job_body
 JOBS_DIR="$WORK/jobs"; export JOBS_DIR
 
 r=0

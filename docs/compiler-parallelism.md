@@ -151,6 +151,27 @@ and fails the entire compilation.
 Diagnostics are ordered by normalized module path, source start/end, diagnostic
 code, then message. They are never ordered by task id or completion time.
 
+**Status (#1259):** collection and the path-level ordering exist on the real fs
+walk, behind `VIBE_DIAGNOSTICS_ALL=1`
+(`set_collect_module_diagnostics`, `runtime/typecheck_fs.vibe`). The wave loop
+diagnoses a module, marks it failed, and keeps stepping its wave siblings —
+they are independent by construction, so one failure removes none of their
+inputs — then skips only the modules that actually depend on a failure, so a
+blocked importer contributes no cascade. The collected set is sorted by module
+path and asserted byte-identical across `VIBE_DEP_ORDER_SEED` values, which is
+the within-wave permutation a parallel coordinator varies between runs
+(`compiler_gate.sh` section 74).
+
+Two parts of the ordering above are not reachable yet: `check_module` emits at
+most one diagnostic per module, so source start/end never breaks a tie, and
+there are no diagnostic codes. The comparator is total anyway, so a
+multi-diagnostic worker sorts deterministically the day it lands.
+
+The default stays fail-fast. Collection changes two observable things at once —
+the error text grows from one diagnostic to N, and modules a fail-fast walk
+never reached get checked and committed to the persistent cache — so flipping
+the default is a separate decision from having the mechanism.
+
 ## Codegen split
 
 Function codegen is enabled only after a serial `WholeProgramPlan` freezes:
@@ -174,6 +195,49 @@ Whole-program trait-dictionary rewriting, export renaming, DCE roots, global
 index assignment, and section emission remain serial barriers initially.
 They can be parallelized later only by refining the immutable plan, without
 changing observable output.
+
+### Status (#1259): worth doing, and blocked on one specific thing
+
+**The headroom is real.** Measured on `codegen_lexer_test.vibe` (166 modules,
+cold cache, stage2 on the node runner), frontend-only against a full build:
+
+| phase | wall |
+|---|---|
+| `VIBE_CHECK_ONLY=1` (parse + typecheck) | 2253 / 2206 ms |
+| full build (adds merge, codegen, link, emit) | 4425 / 4782 ms |
+
+So everything from merge onward is **~52%** of a cold compile. Amdahl is not
+what stands in the way. (The 52% is merge + codegen + link + emit together —
+this measurement does not separate function-body codegen from the serial
+barriers around it, and the split matters for how much of the 52% is
+actually addressable.)
+
+**What blocks the freeze is not diffuse, it is one line.**
+`compile_lambda.vibe:530`:
+
+```vibe
+let lambda_idx = Array::length(ctx.lambda_table.bodies)
+...
+let table_slot = ctx.num_user_funcs + lambda_idx
+emit_i64_const(buf, (table_slot << 2) | 2)
+```
+
+A lambda's function index *is* the current length of a shared, growing array,
+and that index is emitted into the body as an immediate. So a function's
+output bytes depend on how many lambdas every function compiled before it
+happened to produce. Two workers would each allocate from their own view and
+emit different constants — this is exactly the "may not append to a shared
+`LambdaTable`, allocate global ids" prohibition above, and today the compiler
+violates it by construction. `ctx.table_slots_used` (`compile_expr.vibe:923`,
+`compile_lambda.vibe:542`) is shared the same way, though only as a set, so
+it is order-insensitive and merges cleanly.
+
+The freeze therefore needs a **pre-pass that counts lambdas per function in
+canonical function order and hands each function a preassigned index range**,
+before any body is emitted. That is the prerequisite for step 7 and is not a
+refinement of it: without it there is nothing meaningful to hand a worker.
+Not attempted yet — it is a real refactor of `linked_compile.vibe`'s body
+loop with byte-exact output requirements, and it wants its own change.
 
 ## Cache publication
 
@@ -292,6 +356,50 @@ language values.
 > reasons (in-process dispatch without job directories, finer cancellation),
 > but it is **not** the prerequisite for wall-clock parallel typecheck that
 > this section and #1239 previously described it as.
+
+## The real compile path, against the Lean model (#1259)
+
+`Scheduler.lean` proves the model's results are schedule-independent given a
+worker that satisfies `JobCorrect`. Everything checked against it until #1259
+was the **synthetic** worker in `scripts/parallel_selfhost_checker.mjs`, which
+can show the model is self-consistent and nothing more — never that this
+compiler is an instance of it.
+
+`VIBE_SCHEDULER_TRACE` closes that gap from the compiler side.
+`ensure_fingerprint_fs_impl` records what it planned and what it actually did:
+
+```text
+project<TAB><path><TAB><rank>[<TAB><dep>...]   Project.dependencies / .rank
+step<TAB><path><TAB><fingerprint>              the Step.run sequence, in
+                                               execution order
+```
+
+`scripts/scheduler_trace_oracle.sh` (`pkf run test-scheduler-oracle`) turns
+each Lean definition into a check over those rows:
+
+| Lean | check on the trace |
+|---|---|
+| `Project.dependencyRankLt` | every dep of a module has a strictly smaller rank |
+| `Ready` (a) | each module appears exactly once — `state.results m = none` held at its `Step.run` |
+| `Ready` (b) | every dep of a stepped module appears strictly earlier |
+| `Complete` | every planned module was stepped |
+| `StoreCorrect` / `JobCorrect` | permuting the schedule reaches the same store |
+
+The step row is emitted where the result is *published*, the point
+`BuildState.finish` occupies in the model — recording it before the step would
+let a trace claim a module completed that then raised.
+
+Measured on `codegen_lexer_test.vibe` (166 modules): `Project`/`Ready`/
+`Complete` hold with 166 planned and 166 steps, and the store is identical
+across `VIBE_DEP_ORDER_SEED` 1/7/23 — **all three of which really did reorder
+the schedule**, which the oracle asserts rather than assumes. Two vacuity
+guards make the rest non-trivial: a trace with fewer than two steps is a
+failure, and a seed set where no seed changed the step order is a failure.
+
+What this does **not** establish: the Lean proofs still assume `JobCorrect`
+of the worker rather than deriving it, and fairness and termination are
+unproven. This is evidence that the compiler satisfies the model's premises on
+real input, not a machine-checked link between the two artifacts.
 
 ## Host multi-worker prototype
 
@@ -683,10 +791,16 @@ flags for the serial path, not a new one introduced here.
 > so on a 48-rank-deep graph it ran ~48 mostly-single-module frontiers rather
 > than 166 jobs flat. The end-to-end delta (~3.4s) is the real saving.
 >
-> `VIBE_PLAN_MODULE_ORDER` now has no production consumer — only
-> `test_parallel_warm_pool_gate.sh`, which still drives it directly for the
-> diamond/cycle/empty-graph cases. Whether to keep it as a standalone
-> ordering primitive or fold it into `VIBE_MODULE_PLAN` is left open.
+> **`VIBE_PLAN_MODULE_ORDER` was removed in #1259.** Once discovery moved into
+> the compiler it had no production consumer left — only
+> `test_parallel_warm_pool_gate.sh`, which drove it for the
+> diamond/cycle/empty-graph cases. Those are properties of the ordering rule,
+> not of the process boundary, and `lib/@vibe/graph/module_order_test.vibe`
+> pins all of them in-process across 11 cases; the mode added a supported
+> env-var surface and a TSV parser that nothing called. Folding rather than
+> keeping: a coordinator that wants ranks wants discovery too, which is what
+> `VIBE_MODULE_PLAN` returns, and a caller that already holds resolved edges
+> would still have to agree with the compiler on how they were resolved.
 
 **Measured against the compiler's own manifest (2026-07-28, #906): `--jobs`
 is currently a net regression, not a speedup, at this scale.** Running
@@ -816,6 +930,44 @@ neither attempted here.
   loop — see the measured table in Phase 2 above. Decision: default worker
   count stays at 1 until discovery is parallelized/batched.**;
 - `cd formal && lake build --wfail` remains green without `sorry`.
+
+### Cancellation and backpressure, as actually shipped (#1259)
+
+Two of the gates above — "unexpected task failure cancels the nursery" and
+bounded parallelism with backpressure — were written for a dispatcher that is
+the source of truth. What shipped is not one. `scripts/parallel_warm_pool.sh`
+is an **advisory pre-warm**: `runtime/vibe` runs its serial compile afterward
+no matter what happens in the pool, a module that fails to check is simply
+absent from the publish manifest, and the serial walk rechecks it and produces
+the identical diagnostic. So there is nothing to cancel — no failure in the
+pool is user-visible, and stopping early on one would only forfeit warming the
+siblings that were going to succeed. `build_and_run_job`'s `|| true` is the
+correct behaviour for that contract, and would be a bug in a dispatcher whose
+output a build depended on.
+
+Bounded parallelism and backpressure *are* both real, and are now measured
+rather than argued. `xargs -P N` is both: it will not read the next module
+path until a worker slot frees, so the queue never grows past N in flight plus
+one rank of pending paths, and it reaps every child before the rank returns.
+`test_parallel_warm_pool_gate.sh` pins this on a fan-out fixture — eight
+independent leaves under one root, so rank 0 has eight dispatchable modules —
+via `VIBE_WARM_POOL_TRACE`, which makes each job append `+` on entry and `-`
+on exit so the running sum is the number of workers in flight:
+
+| run | peak workers in flight |
+|---|---|
+| `-P 1` | exactly 1 |
+| `-P 4` | ≥ 2 and ≤ 4 |
+
+Both halves matter. `-P 1 == 1` is the vacuity guard: without it "peak ≤ N"
+would also pass on an empty trace. `-P 4 >= 2` is the other one: without it
+"≤ 4" would pass on a pool that had silently gone serial. The gate also
+asserts no runner process outlives the coordinator, which is the "no task
+leak" criterion in the form this architecture can have one.
+
+If the dispatcher ever becomes the source of truth — which is what parallel
+codegen would make it, since its output bytes *are* the artifact — the
+cancellation criterion comes back and needs a real answer, not this one.
 
 ## Shared-everything migration note (2026-07-27)
 

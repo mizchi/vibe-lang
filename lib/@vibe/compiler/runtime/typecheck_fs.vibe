@@ -17,7 +17,17 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, Type, TypeEnv, dir_of_path, env_bind, env_flat_bindings, env_lookup_flat, resolve_import_path, resolve_import_path_candidates
+  Expr,
+  Stmt,
+  Type,
+  TypeEnv,
+  dir_of_path,
+  env_bind,
+  env_flat_bindings,
+  env_lookup_flat,
+  resolve_import_path,
+  resolve_import_path_candidates,
+  str_lt
 }
 
 // #946(4): inline-wasm codegen validation (lane/align/etc. errors) runs as
@@ -370,6 +380,82 @@ fn dep_order_seed() -> Int {
     Array::get(dep_order_seed_cell, 0)
   } else {
     0
+  }
+}
+
+/// --- #1259: scheduler trace, for the real-path differential oracle -------
+///
+/// #1239 step 8 asks that the REAL compile path's execution trace be matched
+/// against formal/VibeFormal/Compiler/Scheduler.lean. Until now only a
+/// synthetic worker was (scripts/parallel_selfhost_checker.mjs), which can
+/// only show the model is self-consistent -- never that the compiler is an
+/// instance of it.
+///
+/// When VIBE_SCHEDULER_TRACE names a file, the walk records what the Lean
+/// model needs and nothing else. Two row kinds:
+///
+///   project<TAB><path><TAB><rank>[<TAB><dep>...]   the planned graph
+///   step<TAB><path><TAB><fingerprint>              in EXECUTION order
+///
+/// `project` rows are `Project.dependencies` and `Project.rank`; `step` rows
+/// are the `Step.run` sequence, and their order is the interleaving a
+/// scheduler chose (VIBE_DEP_ORDER_SEED permutes it within a wave). The
+/// fingerprint is the published `JobResult`. scripts/scheduler_trace_oracle.sh
+/// checks the four properties that model states -- see it for which row
+/// proves which.
+///
+/// Accumulated in memory and written once, not appended per module: the row
+/// order IS the execution order, so a partial file from an aborted run would
+/// read as a legitimate shorter schedule rather than as a truncated one.
+let scheduler_trace_cell = array_empty()
+
+export fn set_scheduler_trace_path(path: String) -> Unit {
+  Array::truncate(scheduler_trace_cell, 0)
+  Array::push(scheduler_trace_cell, path)
+}
+
+fn scheduler_trace_path() -> String {
+  if Array::length(scheduler_trace_cell) > 0 {
+    Array::get(scheduler_trace_cell, 0)
+  } else {
+    ""
+  }
+}
+
+/// --- #1259: cross-module diagnostic collection ---------------------------
+///
+/// Whether the import-DAG walk COLLECTS a diagnostic per failing module
+/// instead of failing fast on the first one. This is #1239 step 5's missing
+/// prerequisite: step 5 asks for diagnostics sorted into a canonical order and
+/// compared across `--jobs=1/2/4`, and until now there was never more than one
+/// diagnostic to sort -- commit_module_outcome threw on the first.
+///
+/// OFF by default, and off is byte-for-byte the pre-#1259 walk: the same
+/// message, raised for the same module, with the same partial cache state
+/// behind it. `VIBE_DIAGNOSTICS_ALL=1` (read in cli_adapter.vibe alongside the
+/// other mode switches, so every lane agrees) turns it on.
+///
+/// Default-off is a deliberate compatibility choice, not indecision. Turning
+/// collection on changes two observable things at once -- the error text grows
+/// from one diagnostic to N, and modules that a fail-fast walk never reached
+/// now get checked and their environments committed to the persistent cache --
+/// and flipping the default is a separate decision from having the mechanism
+/// and its determinism gate.
+///
+/// The switch rides in a module-level cell for the same reason
+/// dep_order_seed_cell above does.
+let collect_diagnostics_cell = array_empty()
+
+export fn set_collect_module_diagnostics(on: Bool) -> Unit {
+  Array::truncate(collect_diagnostics_cell, 0)
+  Array::push(collect_diagnostics_cell, on)
+}
+
+fn collect_module_diagnostics() -> Bool {
+  if Array::length(collect_diagnostics_cell) > 0 {
+    Array::get(collect_diagnostics_cell, 0)
+  } else {
+    false
   }
 }
 
@@ -1192,8 +1278,10 @@ fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, St
 /// A module left OUT of `edges` -- missing, or short-circuited -- is a leaf
 /// to plan_module_order (mo_deps_of), which is what makes those arms terminal
 /// for scheduling as well as for the walk.
-fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String) -> (Array[(String, String)], Array[(String, Array[String])], Int) with { Error, Fs } {
+fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String) -> (Array[(String, String)], Array[(String, Array[String])], Int, Array[(String, String)]) with { Error, Fs } {
   let leaf_fps = empty_dep_fps()
+  let plan_diags: Array[(String, String)] = [
+  ]
   let edges: Array[(String, Array[String])] = [
   ]
   let seen = empty_stack()
@@ -1226,10 +1314,44 @@ fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)]
           match load_persistent_leaf_fingerprint(path, source) {
             Some(leaf_fingerprint) => Array::push(leaf_fps, (path, leaf_fingerprint)),
             None => {
-              let (deps_raw, _, next_pc) = resolve_deps_for_source_fs(rdb, scratch_cache, path, source, pc)
+              // Codex review P2: resolving a module's imports PARSES it, so a
+              // syntax error raises here -- during planning, before the walk's
+              // per-step handler exists. Left alone that made parse errors
+              // fail-fast even while collecting: two malformed leaves reported
+              // one diagnostic, because planning aborted on the first.
+              //
+              // Collected the same way a step's diagnostic is, and with the
+              // same two exclusions (fail-fast mode, and `type_db:` internal
+              // invariants). A module that fails to plan gets no edge entry and
+              // no dependencies explored -- it is a leaf to the schedule, and
+              // the caller seeds it into `failed` so its importers are blocked
+              // rather than cascading.
+              let plan_raised = empty_stack()
+              let (deps_raw, _, next_pc) = handle {
+                resolve_deps_for_source_fs(rdb, scratch_cache, path, source, pc)
+              } with Error {
+                Throw(msg) => {
+                  Array::push(plan_raised, msg)
+                  (empty_stack(), scratch_cache, pc)
+                }
+              }
+              if Array::length(plan_raised) > 0 {
+                let msg = Array::get(plan_raised, 0)
+                if !collect_module_diagnostics() || String::starts_with(msg, "type_db: ") {
+                  throw(msg)
+                } else {
+                  Array::push(plan_diags, (path, msg))
+                }
+              } else {
+                ()
+              }
               let deps = copy_string_array(deps_raw)
               pc = next_pc
-              Array::push(edges, (path, deps))
+              if Array::length(plan_raised) > 0 {
+                ()
+              } else {
+                Array::push(edges, (path, deps))
+              }
               let dlen = Array::length(deps)
               let mut i = 0
               while i < dlen {
@@ -1248,7 +1370,7 @@ fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)]
       }
     }
   }
-  (leaf_fps, edges, pc)
+  (leaf_fps, edges, pc, plan_diags)
 }
 
 /// The dep list `plan_import_graph_fs` recorded for `path`, or None when it
@@ -1489,6 +1611,143 @@ export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String])
   (StringBuilder::freeze(buf), ordered_sources)
 }
 
+/// True when one of `path`'s planned dependencies is in `failed` -- i.e. was
+/// itself diagnosed, or was blocked by this same rule.
+///
+/// A blocked module cannot be checked at all: its dependency has no
+/// fingerprint to fold into its cache key and no environment to import. It
+/// therefore contributes NO diagnostic of its own. Reporting one would be a
+/// cascade -- "unknown binding x", once per importer -- which is precisely the
+/// noise a canonical diagnostic set exists to be free of.
+///
+/// Transitivity comes from the wave order: blocked modules are pushed onto
+/// `failed` too, and every dependency of a module was stepped in a strictly
+/// earlier wave, so `failed` is already complete for `path` when this runs.
+fn module_is_blocked(plan_edges: Array[(String, Array[String])], failed: Array[String], path: String) -> Bool {
+  if Array::length(failed) == 0 {
+    false
+  } else {
+    match plan_deps_of(plan_edges, path) {
+      // No edge entry means the plan short-circuited this module (missing
+      // source, reusable fingerprint, persistent leaf cache) -- it has no
+      // dependencies to be blocked by.
+      None => false,
+      Some(deps) => {
+        let n = Array::length(deps)
+        let mut i = 0
+        let mut blocked = false
+        while i < n && !blocked {
+          if contains_str(failed, Array::get(deps, i)) {
+            blocked = true
+          } else {
+            i = i + 1
+          }
+        }
+        blocked
+      }
+    }
+  }
+}
+
+/// Canonical order for two collected diagnostics: normalized module path
+/// first, then the message.
+///
+/// #1239 step 5 specifies path -> source start/end -> diagnostic code ->
+/// message. Only the first and last of those exist today: check_module emits
+/// AT MOST ONE diagnostic per module (its Diagnosed arm builds a one-element
+/// array), so within a path there is nothing to break ties between, and there
+/// are no diagnostic codes yet. The message tiebreak is here anyway to keep
+/// the order TOTAL, so the day a worker returns several diagnostics for one
+/// module they sort deterministically instead of silently inheriting
+/// collection order.
+///
+/// str_lt, not `<`: canonical ordering must be true lexicographic. The builtin
+/// compares length first, which would make the order depend on path length
+/// (CLAUDE.md documents that footgun; @vibe/graph's plan_module_order avoids
+/// it the same way).
+fn module_diag_lt(a: (String, String), b: (String, String)) -> Bool {
+  if a.0 == b.0 {
+    str_lt(a.1, b.1)
+  } else {
+    str_lt(a.0, b.0)
+  }
+}
+
+/// Insertion sort into canonical order. One diagnostic per failing module, and
+/// a build with enough failing modules for O(N^2) to matter has bigger
+/// problems than the sort.
+fn sort_module_diagnostics(diags: Array[(String, String)]) -> Array[(String, String)] {
+  let out: Array[(String, String)] = [
+  ]
+  let n = Array::length(diags)
+  let mut i = 0
+  while i < n {
+    let entry = Array::get(diags, i)
+    Array::push(out, entry)
+    let mut j = Array::length(out) - 1
+    while j > 0 && module_diag_lt(entry, Array::get(out, j - 1)) {
+      Array::set(out, j, Array::get(out, j - 1))
+      Array::set(out, j - 1, entry)
+      j = j - 1
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The collected set as one error string: canonical order, exact duplicates
+/// dropped, one diagnostic per line. A single collected diagnostic is
+/// therefore byte-identical to what the fail-fast walk would have thrown --
+/// which is what makes collection mode a superset of the default rather than
+/// a different output format.
+/// The `project` half of a scheduler trace: one row per planned module, with
+/// its rank and its dependency list. This IS Scheduler.lean's `Project` --
+/// `dependencies` and `rank` -- serialized, so the oracle can check
+/// `dependencyRankLt` against the same graph the walk actually stepped rather
+/// than against one it re-derived.
+fn scheduler_trace_project(buf: StringBuilder, order: Array[String], ranks: Array[Int], plan_edges: Array[(String, Array[String])]) -> Unit {
+  let n = Array::length(order)
+  let mut i = 0
+  while i < n {
+    let p = Array::get(order, i)
+    StringBuilder::push(buf, "project\t")
+    StringBuilder::push(buf, p)
+    StringBuilder::push(buf, "\t")
+    StringBuilder::push(buf, __to_string(Array::get(ranks, i)))
+    // A module the plan short-circuited (missing source, reusable
+    // fingerprint, persistent leaf cache) has no edge entry and so no
+    // dependencies -- which is exactly what it is to the scheduler: a leaf
+    // that is Ready from the start.
+    match plan_deps_of(plan_edges, p) {
+      None => (),
+      Some(deps) => {
+        let dlen = Array::length(deps)
+        let mut d = 0
+        while d < dlen {
+          StringBuilder::push(buf, "\t")
+          StringBuilder::push(buf, Array::get(deps, d))
+          d = d + 1
+        }
+      }
+    }
+    StringBuilder::push(buf, "\n")
+    i = i + 1
+  }
+}
+
+fn join_module_diagnostics(diags: Array[(String, String)]) -> String {
+  let sorted = sort_module_diagnostics(diags)
+  let msgs = array_empty()
+  let n = Array::length(sorted)
+  let mut i = 0
+  while i < n {
+    let entry = Array::get(sorted, i)
+    Array::push(msgs, entry.1)
+    i = i + 1
+  }
+  String::join(dedupe_diagnostics(msgs), "\n")
+}
+
 /// The import-DAG walk, as the wave loop a coordinator dispatches from
 /// (#1239 step 4(D)).
 ///
@@ -1505,6 +1764,14 @@ export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String])
 /// 4(D) blocker is gone. Dispatching a wave out-of-process is now a change to
 /// the inner loop, not a restructuring of the walk.
 ///
+/// #1259: the wave loop is also where diagnostics are COLLECTED rather than
+/// fired off one at a time. A wave's modules are independent by construction,
+/// so one of them being diagnosed says nothing about its siblings -- they
+/// still have every input they need. Collection therefore falls out of the
+/// wave structure: diagnose, mark the module failed, keep stepping the rest of
+/// the wave, and skip only the modules that actually depend on a failure. See
+/// collect_module_diagnostics (off by default).
+///
 /// dep_visit_order (the #906 Phase 0 nondeterminism probe, seeded by
 /// VIBE_DEP_ORDER_SEED) now permutes the order WITHIN a wave rather than a
 /// node's dependency visit order. That is the stronger property and the one
@@ -1512,7 +1779,7 @@ export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String])
 /// differently from run to run, and scripts/dep_order_oracle.sh asserts the
 /// compiled output is byte-identical across seeds regardless.
 export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
-  let (plan_leaf_fps, plan_edges, planned_parse_count) = plan_import_graph_fs(rdb, dep_source_cache, parse_count, path)
+  let (plan_leaf_fps, plan_edges, planned_parse_count, plan_diags) = plan_import_graph_fs(rdb, dep_source_cache, parse_count, path)
   // #1239 step 4(A): an import cycle is rejected HERE -- before a single
   // module is checked, committed, or written to the persistent cache --
   // instead of incidentally, partway through the walk, on whichever module a
@@ -1523,6 +1790,35 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
   let mut envc = env_cache
   let mut dsc = dep_source_cache
   let mut pc = planned_parse_count
+  // #1259: empty unless collection is on, in which case `failed` holds every
+  // module that was diagnosed OR blocked by one, and `diags` the (path,
+  // message) pairs to sort at the end.
+  let failed = empty_stack()
+  let diags: Array[(String, String)] = [
+  ]
+  // A module that failed to PLAN (a syntax error in its own source -- see
+  // plan_import_graph_fs) is already terminal: it has no dependency list, so
+  // it is a leaf to the schedule and nothing about it can be checked. Seed it
+  // as failed before the loop so the wave skips it and module_is_blocked
+  // catches its importers. Always empty when collection is off, since planning
+  // rethrows in that mode.
+  let mut pdi = 0
+  while pdi < Array::length(plan_diags) {
+    let entry = Array::get(plan_diags, pdi)
+    Array::push(failed, entry.0)
+    Array::push(diags, entry)
+    pdi = pdi + 1
+  }
+  // #1259 (#1239 step 8): the scheduler trace. Off unless
+  // VIBE_SCHEDULER_TRACE named a file.
+  let trace_path = scheduler_trace_path()
+  let tracing = String::length(trace_path) > 0
+  let trace = StringBuilder::new()
+  if tracing {
+    scheduler_trace_project(trace, order, ranks, plan_edges)
+  } else {
+    ()
+  }
   let n = Array::length(order)
   let mut i = 0
   while i < n {
@@ -1537,15 +1833,107 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
     let mut k = 0
     while k < wave {
       let m = Array::get(order, i + Array::get(visit, k))
-      let (fp, next_db, next_envc, next_dsc, next_pc) = step_module_fs(plan_leaf_fps, plan_edges, fps, db, envc, dsc, pc, m)
-      db = next_db
-      envc = next_envc
-      dsc = next_dsc
-      pc = next_pc
-      Array::push(fps, (m, fp))
+      // `contains_str(failed, m)` first: a module that failed to plan is
+      // already in `failed` and has no edge entry, so module_is_blocked alone
+      // would let it through to a step that cannot succeed.
+      if contains_str(failed, m) || module_is_blocked(plan_edges, failed, m) {
+        Array::push(failed, m)
+      } else {
+        // Snapshots of the accumulators as of ENTRY to this module's step.
+        // The handler needs values it can close over, and they are also the
+        // right state to carry forward when the step raises: a module that
+        // does not check commits nothing.
+        let cur_db = db
+        let cur_envc = envc
+        let cur_dsc = dsc
+        let cur_pc = pc
+        let raised = empty_stack()
+        let (fp, next_db, next_envc, next_dsc, next_pc) = handle {
+          step_module_fs(plan_leaf_fps, plan_edges, fps, cur_db, cur_envc, cur_dsc, cur_pc, m)
+        } with Error {
+          Throw(msg) => {
+            Array::push(raised, msg)
+            (String::concat("diagnosed:", m), cur_db, cur_envc, cur_dsc, cur_pc)
+          }
+        }
+        if Array::length(raised) > 0 {
+          let msg = Array::get(raised, 0)
+          // Re-raised OUTSIDE the handler, so this is ordinary propagation
+          // and not a throw from within a handler body. Two cases never
+          // become collected diagnostics:
+          //
+          //   - fail-fast mode, the default: identical message, identical
+          //     partial state, raised one frame later than before
+          //   - an internal invariant violation (the `type_db:` prefix, the
+          //     two unreachable arms in step_module_fs / commit_with_deps_fs)
+          //     -- infrastructure failure, not something the user's program
+          //     said, so it must stay fatal even while collecting
+          if !collect_module_diagnostics() || String::starts_with(msg, "type_db: ") {
+            throw(msg)
+          } else {
+            Array::push(failed, m)
+            Array::push(diags, (m, msg))
+          }
+        } else {
+          db = next_db
+          envc = next_envc
+          dsc = next_dsc
+          pc = next_pc
+          Array::push(fps, (m, fp))
+          // One Step.run, recorded where the result is PUBLISHED -- the same
+          // point `BuildState.finish` sits at in the model. Recording it
+          // before the step would let a trace claim a module completed that
+          // then raised.
+          //
+          // Codex review P1: the fingerprint alone is NOT the JobResult. It is
+          // build_fingerprint(source, dep_fps) -- a pure function of the source
+          // graph, computed before the module is even checked -- so comparing
+          // fingerprints across schedules compares content-addressed cache KEYS
+          // that are schedule-independent by construction, and StoreCorrect
+          // would have held even if two schedules produced different TypeEnvs.
+          // The env hash is what makes that comparison mean anything: it is the
+          // checked environment the module actually published, serialized the
+          // same way commit_module_outcome writes it to the persistent cache.
+          //
+          // "-" is for the arms that publish no environment (a reusable cached
+          // fingerprint, or a persistent leaf-fingerprint hit). Both are cache
+          // hits, so on the cold cache dir the oracle uses they should be rare
+          // -- scheduler_trace_oracle.sh fails if too many steps carry "-",
+          // since a trace of all-"-" would be back to comparing keys.
+          if tracing {
+            let env_hash = match lookup_env_cache(next_envc, m) {
+              Some(env) => compact_string_fingerprint(persistent_type_env_cache_text(env)),
+              None => "-"
+            }
+            StringBuilder::push(trace, "step\t")
+            StringBuilder::push(trace, m)
+            StringBuilder::push(trace, "\t")
+            StringBuilder::push(trace, fp)
+            StringBuilder::push(trace, "\t")
+            StringBuilder::push(trace, env_hash)
+            StringBuilder::push(trace, "\n")
+          } else {
+            ()
+          }
+        }
+      }
       k = k + 1
     }
     i = j
+  }
+  if tracing {
+    Fs::write_file(trace_path, StringBuilder::freeze(trace))
+  } else {
+    ()
+  }
+  // Before the root lookup: with the root itself diagnosed or blocked there is
+  // no fingerprint and no environment for it, and reporting "missing:" for a
+  // module whose real problem is a type error two levels down would bury the
+  // diagnostics this whole pass exists to produce.
+  if Array::length(diags) > 0 {
+    throw(join_module_diagnostics(diags))
+  } else {
+    ()
   }
   let root_fingerprint = match lookup_string_pair(fps, path) {
     Some(f) => f,

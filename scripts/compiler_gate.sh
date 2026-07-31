@@ -7468,4 +7468,106 @@ done
 rm -rf "$bagdir"
 echo "[compiler-gate] Bytes::append runs correctly on both backends ok (4027170)"
 
+# 74/74. #1259 (#1239 step 5's prerequisite): cross-module diagnostic
+#        collection, and its canonical order.
+#
+#        The fs walk used to throw on the FIRST module diagnostic, so step 5's
+#        "sort diagnostics into a canonical order and compare across jobs"
+#        had nothing to sort. VIBE_DIAGNOSTICS_ALL=1 collects one diagnostic
+#        per failing module instead; off (the default) is unchanged.
+#
+#        The fixture is two INDEPENDENT bad leaves plus a main that imports
+#        both. Independent matters: they land in the same wave, so neither
+#        failure removes any input the other needs, and both must be reported.
+#        main must NOT be -- it is blocked, and a "no binding a" cascade on
+#        top of the real error is exactly the noise a canonical set excludes.
+#
+#        Order is checked against VIBE_DEP_ORDER_SEED, the #906 Phase 0
+#        within-wave permutation. That is the one knob that reproduces what a
+#        parallel coordinator varies between runs, so byte-identical output
+#        across seeds is the property step 5 actually wants; without the sort,
+#        collection order leaks through and the seeds disagree.
+echo "[compiler-gate] 74/74 cross-module diagnostics collected in canonical order (#1259)"
+dcolldir="_build/_gate_diag_collect"
+rm -rf "$dcolldir"; mkdir -p "$dcolldir/src" "$dcolldir/cache"
+printf 'export let a: Int = "alpha is not an Int"\n' > "$dcolldir/src/alpha.vibe"
+printf 'export let b: Int = "beta is not an Int"\n' > "$dcolldir/src/beta.vibe"
+printf 'import ./alpha.vibe { a }\nimport ./beta.vibe { b }\nexport let _start = () -> Int { a + b }\n' > "$dcolldir/src/main.vibe"
+# Each run gets a pristine cache dir: a persistent type env published by an
+# earlier run would let the next one skip a module and report fewer
+# diagnostics, which would make the comparisons below vacuous.
+run_diag_collect() {
+  # $1 = output tag, $2.. = extra env assignments
+  local tag="$1"; shift
+  rm -rf "$dcolldir/cache_$tag"; mkdir -p "$dcolldir/cache_$tag"
+  env "$@" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    VIBE_BUILD_CACHE_DIR="$ROOT_DIR/$dcolldir/cache_$tag" \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$dcolldir/src/main.vibe" "$dcolldir/$tag.wasm" _start >/dev/null 2>&1 || true
+  grep -c . "$dcolldir/$tag.wasm.diag" 2>/dev/null || echo 0
+}
+diag_default_lines="$(run_diag_collect default)"
+if [ "$diag_default_lines" != "1" ]; then
+  echo "[compiler-gate] FAIL: the default walk reported $diag_default_lines diagnostic lines (want 1) -- fail-fast is supposed to be unchanged without VIBE_DIAGNOSTICS_ALL" >&2
+  cat "$dcolldir/default.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+diag_all_lines="$(run_diag_collect all VIBE_DIAGNOSTICS_ALL=1)"
+if [ "$diag_all_lines" != "2" ]; then
+  echo "[compiler-gate] FAIL: VIBE_DIAGNOSTICS_ALL=1 reported $diag_all_lines diagnostic lines (want 2: one per independent bad leaf, none for the blocked importer)" >&2
+  cat "$dcolldir/all.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if [ "$(sed -n 1p "$dcolldir/all.wasm.diag" | grep -c 'alpha\.vibe')" != "1" ] || \
+   [ "$(sed -n 2p "$dcolldir/all.wasm.diag" | grep -c 'beta\.vibe')" != "1" ]; then
+  echo "[compiler-gate] FAIL: collected diagnostics are not in canonical (module path) order -- want alpha.vibe then beta.vibe:" >&2
+  cat "$dcolldir/all.wasm.diag" >&2
+  exit 1
+fi
+if grep -q 'main\.vibe' "$dcolldir/all.wasm.diag"; then
+  echo "[compiler-gate] FAIL: the blocked importer produced a cascade diagnostic -- only the two real failures belong in the set:" >&2
+  cat "$dcolldir/all.wasm.diag" >&2
+  exit 1
+fi
+for diag_seed in 1 7 23; do
+  run_diag_collect "seed$diag_seed" VIBE_DIAGNOSTICS_ALL=1 VIBE_DEP_ORDER_SEED="$diag_seed" >/dev/null
+  if ! cmp -s "$dcolldir/all.wasm.diag" "$dcolldir/seed$diag_seed.wasm.diag"; then
+    echo "[compiler-gate] FAIL: collected diagnostics changed under VIBE_DEP_ORDER_SEED=$diag_seed -- the within-wave visit order is leaking through the canonical sort" >&2
+    diff "$dcolldir/all.wasm.diag" "$dcolldir/seed$diag_seed.wasm.diag" >&2 || true
+    exit 1
+  fi
+done
+# Vacuity guard for the loop above: prove seed 7 actually REORDERS this wave,
+# so "identical across seeds" means the sort held rather than the seed being
+# inert. Fail-fast reports whichever module the wave visited first, so at
+# seed 7 it must report beta -- the opposite of the unseeded run's alpha.
+run_diag_collect ffseed VIBE_DEP_ORDER_SEED=7 >/dev/null
+if ! grep -q 'beta\.vibe' "$dcolldir/ffseed.wasm.diag"; then
+  echo "[compiler-gate] FAIL: VIBE_DEP_ORDER_SEED=7 did not reorder the two-module wave (fail-fast still reported alpha first) -- the seed-invariance check above proves nothing" >&2
+  cat "$dcolldir/ffseed.wasm.diag" >&2
+  exit 1
+fi
+# The control: with collection on and NOTHING wrong, the same shape still
+# compiles. Without this, every assertion above would also pass if
+# VIBE_DIAGNOSTICS_ALL had simply broken the compiler.
+printf 'export let a: Int = 1\n' > "$dcolldir/src/alpha.vibe"
+printf 'export let b: Int = 2\n' > "$dcolldir/src/beta.vibe"
+rm -rf "$dcolldir/cache_ok"; mkdir -p "$dcolldir/cache_ok"
+VIBE_DIAGNOSTICS_ALL=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  VIBE_BUILD_CACHE_DIR="$ROOT_DIR/$dcolldir/cache_ok" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dcolldir/src/main.vibe" "$dcolldir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$dcolldir/ok.wasm" ]; then
+  echo "[compiler-gate] FAIL: a clean project failed to compile with VIBE_DIAGNOSTICS_ALL=1" >&2
+  cat "$dcolldir/ok.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+diag_ok_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$dcolldir/ok.wasm" 2>&1 | tail -1)"
+if [ "$diag_ok_out" != "3" ]; then
+  echo "[compiler-gate] FAIL: the clean control got '$diag_ok_out' (want 3) with VIBE_DIAGNOSTICS_ALL=1" >&2
+  exit 1
+fi
+rm -rf "$dcolldir"
+echo "[compiler-gate] cross-module diagnostic collection ok (1 fail-fast, 2 collected, seed-invariant)"
+
 echo "[compiler-gate] ok"
