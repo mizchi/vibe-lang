@@ -354,3 +354,33 @@ follow-up). Under the lowering this milestone ships, any parent/child
 handshake or observable work between spawn and join would reorder or
 deadlock — the same limitation the linear backend's eager `Task::spawn`
 already carries (`docs/spec/wasi-p3-async.md` §2.5).
+
+## Update: eager-completion bug this probe's host could not surface (#1230 M1b-3c-2)
+
+`spawned_future/component.wat`'s `$writer` dropped its subtask
+**unconditionally** in the epilogue. That is wrong: an async-lowered call
+that completes **eagerly** — status `RETURNED` straight out of the call
+itself, the `br_if $done` fast path, no suspend — creates **no subtask**;
+the handle bits of the packed result are `0`. Dropping it traps with
+`unknown handle index 0`.
+
+This probe's own host could never surface it: `get-async` always slept
+300ms, so only the blocked path ever ran. The trap appeared the moment the
+same component was driven through `runtime/viberun`'s new async-component
+path (M1b-3c-2, `docs/spec/wasi-p3-async.md` §3.9) with a zero-delay host
+import — and a host import resolving without suspending is entirely
+ordinary in production (a cached value, a zero timeout, a socket read whose
+data already arrived).
+
+The fix is the same shape as the `$has_ws` waitable-set-leak fix from the
+#1240 review: guard **both** drops on the one "we took the blocked path"
+flag, since the subtask and the waitable set come into existence together
+on that path. Applied here and in the emitter
+(`component_codegen.vibe`'s `comp_generate_spawned_future_guest_core_module`).
+`scripts/test_spawned_future_component_gate.sh` now exercises **both**
+paths — blocked (asserting the elapsed wall-clock, so a
+never-suspended run cannot pass) and eager.
+
+Generalizable lesson, same family as the two bugs above: **a probe host
+that only ever exercises one path proves only that path.** Anything the
+emitter emits for a fast path needs a host that actually takes it.

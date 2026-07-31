@@ -408,8 +408,14 @@ fn print_help() {
            viberun --daemon <wasm|cwasm>\n\
            viberun --help\n\
          \n\
+         A Component Model binary is detected from its header and run through\n\
+         the async component path instead (#1230 M1b-3c-2): its `run` export is\n\
+         driven to completion and the returned value printed.\n\
+         \n\
          ENV:\n\
-           MOONRUN_WT_MEMORY_MB    soft cap on linear memory (default 8192)\n\
+           MOONRUN_WT_MEMORY_MB      soft cap on linear memory (default 8192)\n\
+           VIBE_ASYNC_GET_DELAY_MS   async component path: suspend applied by the\n\
+                                     `get-async` host import (default 300)\n\
          "
     );
 }
@@ -569,6 +575,103 @@ fn dump_linemap(input: &str) -> Result<()> {
     Ok(())
 }
 
+// #1230 M1b-3c-2: default suspend for the placeholder `get-async` import
+// below. Matches tools/wasip3_component_probe/'s 300ms so the gate can assert
+// that the guest genuinely suspended and resumed (a trivially-ready import
+// would pass a value check while proving nothing about the wait machinery).
+const ASYNC_COMPONENT_GET_DELAY_MS: u64 = 300;
+const ASYNC_COMPONENT_GET_VALUE: u32 = 42;
+
+/// #1230 M1b-3c-2: run an async Component Model binary of the shape
+/// `component_codegen.vibe`'s `comp_emit_component_wasm_async_spawned_future`
+/// emits -- imports `get-async: async func() -> u32`, exports
+/// `run: async func() -> u32` -- and print the returned value (matching what
+/// `wasmtime --invoke run` prints, which is what the async component gates
+/// already assert against).
+///
+/// Before this, nothing in the project could drive such a component: bare
+/// `wasmtime --invoke` deadlock-traps on a component importing a
+/// `func_wrap_concurrent` host function, so
+/// scripts/test_spawned_future_component_gate.sh had to shell out to a
+/// dedicated Rust host binary under tools/wasip3_component_probe/ (needing a
+/// Rust toolchain and crates.io access at gate time). This is that driver,
+/// moved into the real runtime.
+///
+/// Two non-obvious constraints, both found the hard way by the probe and
+/// documented in tools/wasip3_component_probe/stackful/README.md:
+///
+///  1. **Driving API pairing.** A `func_wrap_concurrent` import must be driven
+///     via `Store::run_concurrent` + `TypedFunc::call_concurrent`. The
+///     "plain" `TypedFunc::call_async(&mut store, ...)` pattern -- correct for
+///     `func_wrap`/`func_wrap_async` -- traps with "deadlock detected: event
+///     loop cannot make further progress" the moment the concurrent import
+///     resolves.
+///  2. **A separate Engine.** `async_support(true)` is required here, but the
+///     synchronous core-module path in `run()` uses sync `Store`/`instantiate`
+///     and would be rejected under it. So this builds its own Config rather
+///     than reusing `engine_config()`.
+///
+/// Scope: `get-async` is the async host-import surface the emitter currently
+/// produces -- a probe-shaped placeholder, not yet a real WASI interface. It
+/// is implemented here with a genuinely-suspending timer (a `tokio::time`
+/// sleep, i.e. the same thing a `wasi:clocks` backing would do), NOT a
+/// blocking `std::thread::sleep`, which would defeat the point. As the
+/// emitter grows real `wasi:clocks`/`wasi:http` imports, this linker grows
+/// with it; the driving machinery above does not change.
+fn run_async_component(path: &str) -> Result<i32> {
+    use wasmtime::component::{Accessor, Component, Linker as ComponentLinker};
+
+    let delay_ms: u64 = std::env::var("VIBE_ASYNC_GET_DELAY_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(ASYNC_COMPONENT_GET_DELAY_MS);
+
+    let mut cfg = Config::new();
+    cfg.wasm_component_model(true);
+    cfg.wasm_component_model_async(true);
+    cfg.wasm_component_model_async_stackful(true);
+    cfg.concurrency_support(true);
+    cfg.wasm_exceptions(true);
+    let engine = Engine::new(&cfg)?;
+
+    let bytes = fs::read(path).map_err(|e| format_err!("read {path}: {e}"))?;
+    let component = Component::from_binary(&engine, &bytes)
+        .map_err(|e| format_err!("component from_binary {path}: {e}"))?;
+
+    let mut linker: ComponentLinker<()> = ComponentLinker::new(&engine);
+    linker
+        .root()
+        .func_wrap_concurrent("get-async", move |_acc: &Accessor<()>, _params: ()| {
+            Box::pin(async move {
+                if delay_ms > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                }
+                Ok((ASYNC_COMPONENT_GET_VALUE,))
+            })
+        })
+        .map_err(|e| format_err!("link get-async: {e}"))?;
+
+    // A current-thread runtime is enough (and keeps this off the thread pool):
+    // the only await points are this timer and wasmtime's own event loop.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .map_err(|e| format_err!("tokio runtime: {e}"))?;
+
+    let result: u32 = rt.block_on(async {
+        let mut store = Store::new(&engine, ());
+        let instance = linker.instantiate_async(&mut store, &component).await?;
+        let run = instance.get_typed_func::<(), (u32,)>(&mut store, "run")?;
+        let (value,) = store
+            .run_concurrent(async move |accessor| run.call_concurrent(accessor, ()).await)
+            .await??;
+        Ok::<u32, wasmtime::Error>(value)
+    })?;
+
+    println!("{result}");
+    Ok(0)
+}
+
 fn load_module(engine: &Engine, path: &str) -> Result<Module> {
     if path.ends_with(".cwasm") {
         // SAFETY: cwasm produced by `viberun --precompile` uses the same
@@ -582,12 +685,39 @@ fn load_module(engine: &Engine, path: &str) -> Result<Module> {
     }
 }
 
+// #1230 M1b-3c-2: a Component Model binary and a core module share the
+// `\0asm` magic and differ only in the 4 bytes after it -- core modules carry
+// version 1 / layer 0 (`01 00 00 00`), components carry version 13 / layer 1
+// (`0d 00 01 00`). Everything this runtime did before M1b-3c-2 assumed the
+// core-module shape, so a component reached `Module::from_file` and died with
+// an opaque parse error. Sniff the header instead and route components to the
+// async path. Deliberately byte-level rather than via wasmparser: this is the
+// only place the distinction matters and the header is fixed-width.
+fn is_component_file(path: &str) -> bool {
+    // A precompiled .cwasm is always a core module (--precompile only accepts
+    // one), and reading it here would just be wasted IO.
+    if path.ends_with(".cwasm") {
+        return false;
+    }
+    let mut buf = [0u8; 8];
+    let Ok(mut f) = fs::File::open(path) else {
+        return false;
+    };
+    if f.read_exact(&mut buf).is_err() {
+        return false;
+    }
+    buf == [0x00, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00]
+}
+
 fn run(args: Vec<String>) -> Result<i32> {
     if args.is_empty() {
         print_help();
         bail!("missing wasm/cwasm argument");
     }
     let wasm_path = &args[0];
+    if is_component_file(wasm_path) {
+        return run_async_component(wasm_path);
+    }
     let prog_args: Vec<String> = std::iter::once("viberun".to_string())
         .chain(args.iter().skip(1).cloned())
         .collect();

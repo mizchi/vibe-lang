@@ -12,11 +12,25 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0"
 serde_json = "1.0"
-wasmtime = { version = "45.0.0", features = ["gc-drc"] }
+# #1230 M1b-3c-2: bumped 45 -> 47 and given the component-model/async feature
+# set so this runtime can drive the async components component_codegen.vibe
+# emits (see run_async_component). The existing synchronous core-module path
+# needed NO source changes across the bump. `async` + `component-model-async`
+# are what provide Linker::func_wrap_concurrent / instantiate_async /
+# Store::run_concurrent, the API pairing a func_wrap_concurrent import
+# requires (tools/wasip3_component_probe/stackful/README.md bug #1).
+wasmtime = { version = "47.0.2", features = ["gc-drc", "component-model", "component-model-async", "async"] }
 # #1226: Http::request/response_*/close host imports. Blocking client (matches
 # this runtime's synchronous func_wrap ABI, same convention as every other
 # host import here), pure-Rust TLS (rustls) to avoid an OpenSSL system dep.
 ureq = { version = "2", default-features = false, features = ["tls"] }
+# #1230 M1b-3c-2: async component path only. The host import backing a
+# genuinely-suspending `await` must return a real pending future (a blocking
+# std::thread::sleep would defeat the entire point -- see the `vibe.sleep`
+# core-module import's own comment), so the component path drives wasmtime's
+# concurrent APIs on a tokio current-thread runtime. Not used by, and not
+# reachable from, the synchronous core-module path.
+tokio = { version = "1", features = ["rt", "time", "macros"] }
 
 [profile.release]
 opt-level = 3

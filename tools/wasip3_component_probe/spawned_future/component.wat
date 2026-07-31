@@ -82,9 +82,20 @@
         )
       )
 
-      (call $subtask_drop (local.get $subtask))
+      ;; #1230 M1b-3c-2: BOTH drops are guarded by $has_ws, because both
+      ;; resources come into existence together on the blocked path. An
+      ;; async-lowered call that completes EAGERLY (the `br_if $done` above,
+      ;; status RETURNED straight out of the call) creates NO subtask -- the
+      ;; handle bits of $packed are 0 -- and allocates no waitable set, so
+      ;; dropping unconditionally traps with "unknown handle index 0". This
+      ;; probe's own host always sleeps 300ms, so it only ever exercised the
+      ;; blocked path; the trap showed up as soon as the same component was
+      ;; driven through runtime/viberun with a zero-delay host import.
       (if (local.get $has_ws)
-        (then (call $ws_drop (local.get $ws)))
+        (then
+          (call $subtask_drop (local.get $subtask))
+          (call $ws_drop (local.get $ws))
+        )
       )
       (i32.load (i32.const 0))
     )
