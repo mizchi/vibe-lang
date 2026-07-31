@@ -99,7 +99,9 @@ export struct TaskCell {
   // only fires when EVERY parked task is a poller: resuming a yielder
   // always advances its body, so yielders are never deadlock evidence
   // (Codex review on #1110 — a lone task yielding 3+ times must not trap).
-  mut wait_poll: Bool
+  mut wait_poll: Bool;
+  // Milliseconds still owed to a `sleep_wait` (#1227). 0 = not sleeping.
+  mut sleep_left: Int
 }
 
 /// Task-group phase codes: 0 open, 1 cancelling (fail-fast in progress),
@@ -431,7 +433,7 @@ export fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with 
     value: None
   }
   let cell = TaskCell::{
-    status: 0, cancel_requested: false, fail_msg: "", cont: None, wait_poll: false
+    status: 0, cancel_requested: false, fail_msg: "", cont: None, wait_poll: false, sleep_left: 0
   }
   let runner: () -> Unit with { e } = () -> {
     handle {
@@ -799,7 +801,13 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () ->
       SDone(v)
     } with Async {
       Suspend(r) => {
-        TaskHandle::park_poll(h, resume, r == 1)
+        // 0 = yield, 1 = poll wait (both unchanged), NEGATIVE = a sleep
+        // debt of -r ms (#1227), so no existing caller changes behavior.
+        if r < 0 {
+          TaskHandle::park_kind(h, resume, true, 0 - r)
+        } else {
+          TaskHandle::park_kind(h, resume, r == 1, 0)
+        }
         SParked
       }
     }
@@ -825,7 +833,7 @@ export fn TaskGroup::adopt[rg, e, T: Send](n: TaskGroup[rg, e]) -> TaskHandle[rg
     value: None
   }
   let cell = TaskCell::{
-    status: 1, cancel_requested: false, fail_msg: "", cont: None, wait_poll: false
+    status: 1, cancel_requested: false, fail_msg: "", cont: None, wait_poll: false, sleep_left: 0
   }
   Array::push(n.adopted, cell)
   TaskHandle::{
@@ -866,11 +874,18 @@ export fn TaskHandle::park[rg, e, T](h: TaskHandle[rg, e, T], k: (Int) -> TaskSt
 /// TaskCell.wait_poll). spawn_suspend derives it from the Suspend payload
 /// (1 = poll wait — the convention the blocking channel ops use).
 export fn TaskHandle::park_poll[rg, e, T](h: TaskHandle[rg, e, T], k: (Int) -> TaskStep[T], poll: Bool) -> Unit {
+  TaskHandle::park_kind(h, k, poll, 0)
+}
+
+/// Park with a sleep debt (#1227): `sleep_ms > 0` means the task owes that
+/// much time before it may run again; the pump settles it.
+export fn TaskHandle::park_kind[rg, e, T](h: TaskHandle[rg, e, T], k: (Int) -> TaskStep[T], poll: Bool, sleep_ms: Int) -> Unit {
   let cell = h.cell
   let rc = h.result
   let grp = h.group
   cell.status = 5
   cell.wait_poll = poll
+  cell.sleep_left = sleep_ms
   cell.cont = Some((rv: Int) -> {
     cell.status = 1
     // Each resumed leg gets its own Error boundary: a throw AFTER a
@@ -920,15 +935,85 @@ export fn TaskHandle::wake[rg, e, T](h: TaskHandle[rg, e, T], v: Int) -> Bool {
 /// Resume ONE parked adopted task with wake value 0 (cooperative yield),
 /// round-robin from just after the last pumped slot so two tasks that
 /// re-park immediately keep alternating. False when nothing is parked.
+/// Advance the virtual clock (#1227), and ONLY when every parked task owes
+/// sleep time -- anything merely yielding or polling resumes for free and
+/// must go first.
+///
+/// The point is that concurrent sleeps overlap. The smallest debt is spent
+/// ONCE on the host and then debited from every sleeper, so three tasks
+/// owing 300ms each cost 300ms of wall time rather than 900. No wall clock
+/// is read, so the arithmetic cannot drift.
+///
+/// `sleep_blocking` rather than `sleep` because this function must stay
+/// row-free: an `Async` row here propagates to pump/pump_all, which makes
+/// them "needing" functions that the ADR-0076 suspend pass has to CPS-clone
+/// -- and their `while`/`let mut` shape is ineligible for that (#1227 has
+/// the measurement). Blocking is sound at this exact point precisely
+/// because nothing else is runnable: there is no task to starve.
+fn conc_settle_sleep_debt[rg, e](n: TaskGroup[rg, e]) -> Unit {
+  let total = Array::length(n.adopted)
+  let mut sleepers = 0
+  let mut other_parked = 0
+  let mut min_left = 0
+  let mut i = 0
+  while i < total {
+    let c = Array::get(n.adopted, i)
+    if c.status == 5 {
+      if c.sleep_left > 0 {
+        sleepers = sleepers + 1
+        if min_left == 0 || c.sleep_left < min_left {
+          min_left = c.sleep_left
+        } else {
+          ()
+        }
+      } else {
+        other_parked = other_parked + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if sleepers > 0 && other_parked == 0 {
+    sleep_blocking(min_left)
+    let mut j = 0
+    while j < total {
+      let c = Array::get(n.adopted, j)
+      if c.status == 5 && c.sleep_left > 0 {
+        c.sleep_left = c.sleep_left - min_left
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+  } else {
+    ()
+  }
+}
+
+/// Sleep without blocking the group (#1227). Inside a `spawn_suspend` body
+/// this parks the task so its siblings run, and the group's pump settles
+/// the debt -- so concurrent sleeps overlap instead of serializing. The
+/// `sleep` builtin stays correct for straight-line sequential code.
+export fn sleep_wait(ms: Int) -> Unit with { Async } {
+  if ms > 0 {
+    let _ = perform Async::Suspend(0 - ms)
+    ()
+  } else {
+    ()
+  }
+}
+
 export fn TaskGroup::pump[rg, e](n: TaskGroup[rg, e]) -> Bool {
   let total = Array::length(n.adopted)
+  conc_settle_sleep_debt(n)
   loop (step = 0) {
     if step >= total {
       break false
     }
     let i = (n.pump_next + step) % total
     let c = Array::get(n.adopted, i)
-    if c.status == 5 {
+    if c.status == 5 && c.sleep_left == 0 {
       n.pump_next = (i + 1) % total
       match c.cont {
         Some(k) => {
