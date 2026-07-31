@@ -1251,6 +1251,21 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   } else {
     0
   }
+  // ADR-0092 (#1262) KPI follow-up 2: size-segregated free-list bins for
+  // small RC blocks. 32 bin heads (4 bytes each, sizes 16..264 step 8) live
+  // just below the bump base; the bump base moves up by the 128-byte table
+  // (rounded to 256 for alignment headroom). Linear memory is zero-page
+  // initialized and the data segments end below heap_start, so the bins
+  // start empty without an explicit memset. gen_rc_drop_body pushes
+  // small freed blocks onto their exact-size bin (O(1) exact fit on the
+  // alloc side); everything else stays on the legacy global-2 list with
+  // the bounded walk.
+  let rc_bins_base = heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve
+  let rc_bins_reserve = if enable_rc {
+    256
+  } else {
+    0
+  }
   let cov_state = CovState::{
     enabled: coverage,
     base: cov_branch_base,
@@ -2489,8 +2504,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   push_builtin(gen_bytes_from_array_body(enable_rc, arr_len_idx, arr_get_idx, bytes_new_idx, bytes_push_idx), 2, 1, 3)
   push_builtin(gen_bytes_to_array_body(enable_rc, arr_new_idx, arr_push_idx, bytes_len_idx, bytes_get_idx), 2, 1, 3)
   if enable_rc {
-    push_builtin(gen_rc_drop_body(rc_drop_idx, rc_shadow), 5, 1, 1)
-    push_builtin(gen_rc_alloc_body(rc_shadow), 5, 0, 3)
+    push_builtin(gen_rc_drop_body(rc_drop_idx, rc_shadow, rc_bins_base), 5, 1, 1)
+    push_builtin(gen_rc_alloc_body(rc_shadow, rc_bins_base), 5, 0, 3)
   } else {
     ()
   }
@@ -4283,7 +4298,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   if total_table_entries > 0 {
     emit_table_section_funcref(out, total_table_entries)
   }
-  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + (if rc_shadow {
+  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + rc_bins_reserve + (if rc_shadow {
     rc_shadow_reserve()
   } else {
     0
@@ -4320,7 +4335,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   }
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
-  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve)
+  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + rc_bins_reserve)
   emit_end(global_content)
   bytebuf_push(global_content, 126)
   bytebuf_push(global_content, 1)
