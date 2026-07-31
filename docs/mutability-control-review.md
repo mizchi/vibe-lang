@@ -260,18 +260,25 @@ fn input_unsafe(...) -> Int { ... }                  // 検査境界 (FFI/host)
 | Capture Checking | **大**(全型に第二注釈次元、TypeEnv 改修、本家 experimental) | ゼロ(純静的) | 中立(borrow 事実の供給源としてのみ有用) | ほぼ無し(consume/borrow の部品のみ接続可) |
 | `[@zero_alloc]` | 小(codegen 側の per-fn summary + 推移閉包) | ゼロ(検証のみ。副次的に確保回避を誘導) | 相乗(reuse/FBIP で検証通過域が拡大、NaN-boxing の動機付け) | 決定的 B/op gate、alloc-site 計装要求、builtin registry |
 
-**推奨順序**(すべて設計→ADR 切り出しの候補、実装は含まない):
+**推奨順序**(2026-07-31 更新: FBIP/reuse の優先度を引き上げ、3件を
+ADR 化済み — 実装順は **ADR-0092 → ADR-0090 → ADR-0091**):
 
-1. **`region r { ... }` + region 付き可変コレクション**を ADR 化
-   (ADR-0060 の後継。taxonomy review の「opt-in 追加」を Flix の表面で
-   具体化)。前提として TaskGroup region 検査の穴 (a)(b) の解消方針を含める。
-2. **`@zero_alloc`** を ADR 化(確保サイト計装と同時。region/stack 許容の
-   既定 + strict 変種、assume、builtin registry のフラグ)。
-3. Capture Checking は**不採用を記録**し、borrow 推論(Perceus dup/drop
+1. **FBIP/drop-guided reuse** — [ADR-0092](perceus-reuse.md)。当初は
+   zero_alloc の後続としていたが**先頭へ引き上げた**: 表面構文なし・
+   bootstrap 不要で今日始められ、RC default の wall ~1.6–2.1× に全コードで
+   即効し、reuse 後に zero_alloc を導入する方が検証通過域が最初から広い
+   (逆順は annotation churn を生む)。出口条件は selfcompile の RC/bump
+   wall 比 ≤1.2× と `VIBE_RC=0` pin の解除。
+2. **`region r { ... }` + region 付き可変コレクション** —
+   [ADR-0090](region-mutable-state.md)(ADR-0060 を supersede)。TaskGroup
+   region 検査の穴は「構文化」(literal-name 穴の非発生)と「region 型の
+   generalize 禁止」で塞ぐ。
+3. **`@zero_alloc`** — [ADR-0091](zero-alloc-check.md)。検査は Perceus
+   プラン(reuse 決定)後の codegen 段。既定は region/stack 許容 +
+   `(strict)` 変種、`(assume)`、builtin registry の確保フラグ。
+4. Capture Checking は**不採用を記録**し、borrow 推論(Perceus dup/drop
    省略)・`consume` パラメータ属性・read-only effectset overlay の3部品を
    個別 backlog に。
-4. FBIP/drop-guided reuse(pl-survey Medium #7)は zero_alloc の検証通過域を
-   広げる後続として接続。
 
 「可変状態を Effect で制御する」という当初の問いへの答えはこうなる:
 **cross-scope の可変性は region 効果(`with { r }`)として row に現れ、
