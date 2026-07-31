@@ -30,3 +30,4 @@ import VibeFormal.Effect.ResumeDiscipline
 import VibeFormal.Typing.OrPatternBinders
 import VibeFormal.Typing.MatchExhaustive
 import VibeFormal.Typing.TraitCoherence
+import VibeFormal.Parallel.SpawnCapture
