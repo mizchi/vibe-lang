@@ -401,11 +401,23 @@ fn mo_intern(names: Array[String], color: Array[Int], rank: Array[Int], p: Strin
 /// formal/VibeFormal/Compiler/Scheduler.lean's acyclicity and `Ready`
 /// premises (#906 step 8) -- without a filesystem in the loop.
 ///
-/// Consumed out-of-process, via cli_adapter.vibe's `VIBE_PLAN_MODULE_ORDER`
-/// mode: the job-dir worker takes each dependency's environment as a value
+/// Consumed on BOTH sides of the compile now.
+///
+/// Out-of-process, via cli_adapter.vibe's `VIBE_PLAN_MODULE_ORDER` mode: the
+/// job-dir worker takes each dependency's environment as a value
 /// (`dep<i>.env`), so a coordinator must know the waves before it dispatches
-/// anything. `ensure_fingerprint_fs_go`'s own recursion still does its inline
-/// cycle check and is unchanged -- it stays the sequential path.
+/// anything.
+///
+/// In-process, via compiler/runtime/typecheck_fs.vibe's
+/// ensure_fingerprint_fs_impl, which builds the edges upfront
+/// (plan_import_graph_fs) and calls this before the walk -- so a cyclic
+/// import graph is rejected before any module is checked, committed, or
+/// written to the persistent cache, rather than partway through the walk on
+/// whichever module the DFS happened to re-enter first. What that path does
+/// NOT consume yet is the ORDER: the walk itself is still sequential, and its
+/// recursion threads four state values through each dependency in sequence,
+/// so siblings cannot be dispatched from inside it regardless of what the
+/// host can do.
 ///
 /// The earlier note here said this was blocked on a Wasmtime multi-instance
 /// host, because such a host "shares one Engine and compiled Module". That

@@ -7272,4 +7272,54 @@ fi
 rm -rf "$inspupddir"
 echo "[compiler-gate] inspect() snapshot auto-update mode ok"
 
+# 71/71. #1239 step 4(A): an import cycle is rejected by the coordinator-side
+#        upfront plan -- @vibe/graph's plan_module_order, wired into
+#        runtime/typecheck_fs.vibe's ensure_fingerprint_fs_impl -- BEFORE any
+#        module is committed, rather than incidentally partway through the
+#        walk on whichever module the DFS happened to re-enter first.
+#
+#        What makes that observable is the persistent cache. The old inline
+#        "currently visiting" stack check could only fire after
+#        ensure_fingerprint_fs_go had already written each module's dep list
+#        on the way down, so a cyclic pair left dep-list entries behind; the
+#        upfront pass resolves the whole graph without committing anything,
+#        so a cyclic pair now leaves none. Measured on this exact fixture at
+#        cb16be5 (before the wiring) vs after: 2 dep-list files -> 0.
+#
+#        The acyclic control is what gives the 0 its meaning: same file
+#        shape, same isolated cache dir, and it DOES write dep lists. Without
+#        it, "0 files" would also pass if dep lists simply stopped being
+#        written at all.
+echo "[compiler-gate] 71/71 import cycle rejected before any module is committed (#1239 step 4A)"
+cycdir="_build/_gate_import_cycle"
+rm -rf "$cycdir"; mkdir -p "$cycdir/cyclic" "$cycdir/acyclic" "$cycdir/cache_cyclic" "$cycdir/cache_acyclic"
+printf 'import ./b.vibe { bee }\nexport let _start = () -> Int { bee() }\n' > "$cycdir/cyclic/a.vibe"
+printf 'import ./a.vibe { _start }\nexport let bee = () -> Int { 42 }\n' > "$cycdir/cyclic/b.vibe"
+printf 'import ./b.vibe { bee }\nexport let _start = () -> Int { bee() }\n' > "$cycdir/acyclic/a.vibe"
+printf 'export let bee = () -> Int { 42 }\n' > "$cycdir/acyclic/b.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  VIBE_BUILD_CACHE_DIR="$ROOT_DIR/$cycdir/cache_cyclic" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cycdir/cyclic/a.vibe" "$cycdir/cyclic/a.wasm" _start >/dev/null 2>&1 && cyc_rc=0 || cyc_rc=$?
+if [ "$cyc_rc" = "0" ]; then
+  echo "[compiler-gate] FAIL: a cyclic import pair compiled successfully -- the cycle rejection is gone" >&2
+  exit 1
+fi
+cyc_deps="$(find "$cycdir/cache_cyclic" -name 'vibe_selfhost_dep_list_*' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$cyc_deps" != "0" ]; then
+  echo "[compiler-gate] FAIL: rejecting a cyclic import pair left $cyc_deps dep-list cache entries behind (want 0) -- modules are being committed before the upfront plan rejects the cycle" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  VIBE_BUILD_CACHE_DIR="$ROOT_DIR/$cycdir/cache_acyclic" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cycdir/acyclic/a.vibe" "$cycdir/acyclic/a.wasm" _start >/dev/null 2>&1
+acyc_deps="$(find "$cycdir/cache_acyclic" -name 'vibe_selfhost_dep_list_*' 2>/dev/null | wc -l | tr -d ' ')"
+if [ ! -s "$cycdir/acyclic/a.wasm" ] || [ "$acyc_deps" = "0" ]; then
+  echo "[compiler-gate] FAIL: the acyclic control did not compile (wasm present: $([ -s "$cycdir/acyclic/a.wasm" ] && echo yes || echo no)) or wrote no dep lists ($acyc_deps) -- the cyclic assertion above proves nothing" >&2
+  exit 1
+fi
+rm -rf "$cycdir"
+echo "[compiler-gate] import cycle rejected before any commit ok (cyclic 0 dep lists, acyclic $acyc_deps)"
+
 echo "[compiler-gate] ok"
