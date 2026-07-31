@@ -201,6 +201,13 @@ vibe run    # BindingLock を読み、main の宣言 row が host.provides に�
 
 ## ADR-0060 への提案: region は「retrofit」ではなく「opt-in 追加」
 
+> 本節の方向性は
+> [mutability-control-review.md](mutability-control-review.md)(2026-07-31)で
+> Flix region / Scala Capture Checking / OxCaml `[@zero_alloc]` との比較として
+> 具体化した — Flix 型の `region r { }` + region 付き可変コレクションを採用
+> 推奨、Perceus との補完関係(region 値の dup/drop 除去・arena 一括解放・
+> 循環回収)と実行トレードオフは同文書参照。
+
 Effekt の `region r { var x in r = 1; ... }` は vibe の `let mut`(常に
 heap-boxed、無条件 escape 可)とは別物である。region 指定なしの通常の
 `var` は heap/GC 管理で escape 自由、`region { var x in r }` は GC を
