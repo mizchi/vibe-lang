@@ -1,0 +1,49 @@
+// #1230 (ADR-0076 Phase 3a/3b, #817): a `while` loop with `let mut` state
+// ON the handle body's spine. The suspend lowering converts the loop into a
+// recursive step-returning closure and boxes each `let mut` into a
+// 1-element cell, so the state written between two suspends is the same
+// state the resumed continuation sees. Before #1230 this exact shape was a
+// hard compile error ("not directly on the ... spine").
+//
+// The arm stores `resume` and returns `100 + t`, so each suspend hands the
+// handle a value and parks the rest of the loop:
+//   r0 = 100  (i=0)                  -- the handle's own result
+//   r1 = 101  (acc=5,  i=1)          -- resuming v=5
+//   r2 = 102  (acc=11, i=2)          -- resuming v=6
+//   r3 = 183  (acc=18, i=3, exits)   -- resuming v=7, `acc * 10 + i`
+// r3 is the pin that matters: it can only be 183 if BOTH `acc` and `i`
+// survived every suspend/resume round trip.
+effect Async {
+  Suspend(Int) -> Int
+}
+
+let conts: Array[(Int) -> Int] = []
+
+let _start = () -> Int {
+  let r0 = handle {
+    let mut i = 0
+    let mut acc = 0
+    while i < 3 {
+      let v = perform Async::Suspend(i)
+      acc = acc + v
+      i = i + 1
+    }
+    acc * 10 + i
+  } with Async {
+    Suspend(t) => {
+      Array::push(conts, resume)
+      100 + t
+    }
+  }
+  let k0 = Array::get(conts, 0)
+  let r1 = k0(5)
+  let k1 = Array::get(conts, 1)
+  let r2 = k1(6)
+  let k2 = Array::get(conts, 2)
+  let r3 = k2(7)
+  r0 * 1000000 + r1 * 10000 + r2 * 100 + r3
+}
+_start()
+
+__DATA__
+{"last":"101020383"}

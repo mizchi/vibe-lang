@@ -1,8 +1,13 @@
 // ADR-0076 Phase 3a/3b (#817): performs of the handled effect must sit
 // directly on the handle body's let/seq/tail/branch-tail spine when an
-// arm captures `resume` as a value -- a perform inside a LOOP has no
-// single continuation split point at depth 0 (loop-to-recursion
-// conversion is future work), so this is a hard compile error.
+// arm captures `resume` as a value.
+//
+// #1230 made a PLAIN `while` + `let mut` spine eligible (the loop becomes a
+// recursive step-returning closure -- see effect_resume_store_loop.vibe),
+// but `break`/`continue`/`return` inside such a loop still are not: once
+// the loop body is a function, they have no target, and rewriting them
+// needs an escape continuation the lowering does not build. This is the
+// guardrail that the widening did not quietly swallow them.
 effect Async {
   Suspend(Int) -> Int
 }
@@ -13,7 +18,12 @@ let _start = () -> Int {
   handle {
     let mut i = 0
     while i < 3 {
-      let _ = perform Async::Suspend(i)
+      let v = perform Async::Suspend(i)
+      if v > 100 {
+        break
+      } else {
+        ()
+      }
       i = i + 1
     }
     i
