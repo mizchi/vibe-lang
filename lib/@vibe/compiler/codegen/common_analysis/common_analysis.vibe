@@ -1560,107 +1560,6 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
   }
 }
 
-//# #1259 step 7 groundwork: lambda-site counting
-
-/// How many lambda table entries compiling `expr` will allocate.
-///
-/// compile_lambda takes a lambda's function index from the LIVE length of the
-/// shared LambdaTable and emits it into the body as a `table_slot` immediate,
-/// so a function's output bytes depend on how many lambdas every function
-/// compiled before it produced. That is what stops a worker from compiling a
-/// body on its own, and removing it is what a frozen WholeProgramPlan means
-/// (docs/compiler-parallelism.md).
-///
-/// Counting is exact rather than an estimate: compile_expr dispatches EFn
-/// (tag 24) to compile_lambda unconditionally (compile_expr_tail3.vibe), and
-/// compile_lambda's push is unconditional, so one table entry per EFn node
-/// reachable in the body -- nested lambdas included, since compile_lambda
-/// compiles its own body through the same dispatch.
-///
-/// The traversal mirrors dce.vibe's collect_refs_into arm for arm. Binding
-/// structure is irrelevant here (a count, not a scope analysis), so the arms
-/// that clone a bound set there simply recurse.
-///
-/// It is a PREDICTION of what the sequential walk does, and it is checked
-/// against the live length at every allocation rather than trusted -- see
-/// CompileCtx.lambda_plan_next. A silent mismatch would key a body's emitted
-/// constants to a table slot nothing installs.
-export fn count_lambda_sites_expr(expr: Expr) -> Int {
-  match expr {
-    EIdent(_, _) => 0,
-    EInt(_) => 0,
-    EFloat(_) => 0,
-    EString(_) => 0,
-    EBool(_) => 0,
-    EUnit => 0,
-    EStringInterp(_) => 0,
-    EBreak(_) => 0,
-    EContinue(_) => 0,
-    EReturn(e) => count_lambda_sites_expr(e),
-    EUnaryOp(_, e) => count_lambda_sites_expr(e),
-    ESpread(e) => count_lambda_sites_expr(e),
-    EDot(obj, _, _, _) => count_lambda_sites_expr(obj),
-    ELabeledArg(_, _, e) => count_lambda_sites_expr(e),
-    ETuple(items) => count_lambda_sites_exprs(items),
-    EArray(items) => count_lambda_sites_exprs(items),
-    ERecord(_, fields, _) => count_lambda_sites_fields(fields),
-    EMap(fields) => count_lambda_sites_fields(fields),
-    EBinOp(_, l, r) => count_lambda_sites_expr(l) + count_lambda_sites_expr(r),
-    ESeq(l, r) => count_lambda_sites_expr(l) + count_lambda_sites_expr(r),
-    ECall(callee, args, _) => count_lambda_sites_expr(callee) + count_lambda_sites_exprs(args),
-    EIf(cond, then_e, else_e) =>
-    count_lambda_sites_expr(cond) + count_lambda_sites_expr(then_e) + count_lambda_sites_expr(else_e),
-    ELet(_, val, body, _) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
-    ELetRec(_, val, body) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
-    ELetMut(_, val, body, _) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
-    EAssign(_, val, body) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
-    EAssignOp(_, _, val, body) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
-    EWhile(cond, body) => count_lambda_sites_expr(cond) + count_lambda_sites_expr(body),
-    EForIn(_, _, iter, body) => count_lambda_sites_expr(iter) + count_lambda_sites_expr(body),
-    ELoop(params, body) => count_lambda_sites_fields(params) + count_lambda_sites_expr(body),
-    EMatch(scr, arms) => count_lambda_sites_expr(scr) + count_lambda_sites_arms(arms),
-    EHandle(body_expr, arms) => count_lambda_sites_expr(body_expr) + count_lambda_sites_arms(arms),
-    // The one arm that counts: this node IS a table entry, and its body may
-    // hold more.
-    EFn(_, _, _, _, _, body) => 1 + count_lambda_sites_expr(body)
-  }
-}
-
-fn count_lambda_sites_exprs(items: Array[Expr]) -> Int {
-  let n = Array::length(items)
-  let mut i = 0
-  let mut total = 0
-  while i < n {
-    total = total + count_lambda_sites_expr(Array::get(items, i))
-    i = i + 1
-  }
-  total
-}
-
-fn count_lambda_sites_fields(fields: Array[(String, Expr)]) -> Int {
-  let n = Array::length(fields)
-  let mut i = 0
-  let mut total = 0
-  while i < n {
-    let (_, val) = Array::get(fields, i)
-    total = total + count_lambda_sites_expr(val)
-    i = i + 1
-  }
-  total
-}
-
-fn count_lambda_sites_arms(arms: Array[(Pat, Expr)]) -> Int {
-  let n = Array::length(arms)
-  let mut i = 0
-  let mut total = 0
-  while i < n {
-    let (_, body) = Array::get(arms, i)
-    total = total + count_lambda_sites_expr(body)
-    i = i + 1
-  }
-  total
-}
-
 //# ADR-0091 zero_alloc (Phase 1)
 
 /// Builtins allowed inside a `@zero_alloc` fn: reads and in-place writes
@@ -2167,6 +2066,196 @@ fn ca_walk_stmts_valued(stmts: Array[Stmt], out: Array[String]) -> Int {
   0
 }
 
+/// Callee names that somewhere receive a NON-IDENT first argument. A
+/// borrow-arg0 callee never drops its param0 (the epilogue drop is
+/// filtered program-wide in linked_compile), and the call-emission borrow
+/// check is shape-independent, so a fresh temporary passed directly at
+/// arg0 -- `ignore_children(Node(Leaf(i), Leaf(j)))` in the RC
+/// reclamation gate fixture -- would be released by NOBODY: the caller
+/// has no binding to scope-drop and the callee's drop is gone (one leak
+/// per call; compiler-gate 40d catches it at N=20000). Such fns must
+/// keep the owned ABI, so collect every callee name with a non-ident
+/// arg0 anywhere and disqualify it.
+fn ca_collect_nonident_arg0(e: Expr, out: Array[String]) -> Int {
+  match e {
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EStringInterp(_) => 0,
+    EIdent(_, _) => 0,
+    ECall(callee, cargs, _) => {
+      match callee {
+        EIdent(cf, _) => if Array::length(cargs) >= 1 {
+          match Array::get(cargs, 0) {
+            EIdent(_, _) => (),
+            _ => Array::push(out, cf)
+          }
+        } else {
+          ()
+        },
+        _ => {
+          let _ = ca_collect_nonident_arg0(callee, out)
+          ()
+        }
+      }
+      let mut ci = 0
+      while ci < Array::length(cargs) {
+        let _ = ca_collect_nonident_arg0(Array::get(cargs, ci), out)
+        ci = ci + 1
+      }
+      0
+    },
+    ETuple(items) => ca_collect_nonident_arg0_list(items, out),
+    EArray(items) => ca_collect_nonident_arg0_list(items, out),
+    ERecord(_, rfields, _) => {
+      let mut ri = 0
+      while ri < Array::length(rfields) {
+        let (_, rv) = Array::get(rfields, ri)
+        let _ = ca_collect_nonident_arg0(rv, out)
+        ri = ri + 1
+      }
+      0
+    },
+    EMap(mfields) => {
+      let mut mi = 0
+      while mi < Array::length(mfields) {
+        let (_, mv) = Array::get(mfields, mi)
+        let _ = ca_collect_nonident_arg0(mv, out)
+        mi = mi + 1
+      }
+      0
+    },
+    EIf(c0, t0, f0) => {
+      let _ = ca_collect_nonident_arg0(c0, out)
+      let _ = ca_collect_nonident_arg0(t0, out)
+      ca_collect_nonident_arg0(f0, out)
+    },
+    ELet(_, v0, b0, _) => {
+      let _ = ca_collect_nonident_arg0(v0, out)
+      ca_collect_nonident_arg0(b0, out)
+    },
+    ELetRec(_, v0, b0) => {
+      let _ = ca_collect_nonident_arg0(v0, out)
+      ca_collect_nonident_arg0(b0, out)
+    },
+    ELetMut(_, v0, b0, _) => {
+      let _ = ca_collect_nonident_arg0(v0, out)
+      ca_collect_nonident_arg0(b0, out)
+    },
+    EAssign(_, v0, b0) => {
+      let _ = ca_collect_nonident_arg0(v0, out)
+      ca_collect_nonident_arg0(b0, out)
+    },
+    EAssignOp(_, _, v0, b0) => {
+      let _ = ca_collect_nonident_arg0(v0, out)
+      ca_collect_nonident_arg0(b0, out)
+    },
+    ESeq(a0, b0) => {
+      let _ = ca_collect_nonident_arg0(a0, out)
+      ca_collect_nonident_arg0(b0, out)
+    },
+    EMatch(scr, arms) => {
+      let _ = ca_collect_nonident_arg0(scr, out)
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, ab) = Array::get(arms, ai)
+        let _ = ca_collect_nonident_arg0(ab, out)
+        ai = ai + 1
+      }
+      0
+    },
+    EHandle(hb, harms) => {
+      let _ = ca_collect_nonident_arg0(hb, out)
+      let mut hi = 0
+      while hi < Array::length(harms) {
+        let (_, hab) = Array::get(harms, hi)
+        let _ = ca_collect_nonident_arg0(hab, out)
+        hi = hi + 1
+      }
+      0
+    },
+    EWhile(c0, b0) => {
+      let _ = ca_collect_nonident_arg0(c0, out)
+      ca_collect_nonident_arg0(b0, out)
+    },
+    ELoop(inits, b0) => {
+      let mut li = 0
+      while li < Array::length(inits) {
+        let (_, iv) = Array::get(inits, li)
+        let _ = ca_collect_nonident_arg0(iv, out)
+        li = li + 1
+      }
+      ca_collect_nonident_arg0(b0, out)
+    },
+    EForIn(_, _, s0, b0) => {
+      let _ = ca_collect_nonident_arg0(s0, out)
+      ca_collect_nonident_arg0(b0, out)
+    },
+    EBinOp(_, a0, b0) => {
+      let _ = ca_collect_nonident_arg0(a0, out)
+      ca_collect_nonident_arg0(b0, out)
+    },
+    EUnaryOp(_, a0) => ca_collect_nonident_arg0(a0, out),
+    EFn(_, _, _, _, _, fb) => ca_collect_nonident_arg0(fb, out),
+    EDot(o0, _, _, _) => ca_collect_nonident_arg0(o0, out),
+    ELabeledArg(_, _, v0) => ca_collect_nonident_arg0(v0, out),
+    EReturn(v0) => ca_collect_nonident_arg0(v0, out),
+    EBreak(bo) => match bo {
+      Some(bv) => ca_collect_nonident_arg0(bv, out),
+      None => 0
+    },
+    EContinue(cvs) => ca_collect_nonident_arg0_list(cvs, out),
+    ESpread(sv) => ca_collect_nonident_arg0(sv, out)
+  }
+}
+
+fn ca_collect_nonident_arg0_list(items: Array[Expr], out: Array[String]) -> Int {
+  let mut i = 0
+  while i < Array::length(items) {
+    let _ = ca_collect_nonident_arg0(Array::get(items, i), out)
+    i = i + 1
+  }
+  0
+}
+
+fn ca_walk_stmts_nonident_arg0(stmts: Array[Stmt], out: Array[String]) -> Int {
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SLet(_, _, _, _, lv) => {
+        let _ = ca_collect_nonident_arg0(lv, out)
+        0
+      },
+      SLetMut(_, _, lv) => {
+        let _ = ca_collect_nonident_arg0(lv, out)
+        0
+      },
+      SLetPat(_, lv) => {
+        let _ = ca_collect_nonident_arg0(lv, out)
+        0
+      },
+      SExpr(se) => {
+        let _ = ca_collect_nonident_arg0(se, out)
+        0
+      },
+      STest(_, tb) => {
+        let _ = ca_collect_nonident_arg0(tb, out)
+        0
+      },
+      SBench(_, bb) => {
+        let _ = ca_collect_nonident_arg0(bb, out)
+        0
+      },
+      SModule(_, _, mb) => ca_walk_stmts_nonident_arg0(mb, out),
+      _ => 0
+    }
+    si = si + 1
+  }
+  0
+}
+
 /// ADR-0092 borrow-inference slice 1: top-level fns whose FIRST param is
 /// only ever read. For such a fn the arg0 ABI flips to borrowed, program-
 /// wide and in lockstep: the caller's plan counts an ident arg0 as a free
@@ -2182,11 +2271,16 @@ fn ca_walk_stmts_valued(stmts: Array[Stmt], out: Array[String]) -> Int {
 ///     count as a consume and disqualify the fn
 ///   - the fn name is never used as a value anywhere in the program
 ///     (indirect call sites cannot consult this set)
+///   - the fn is never called with a NON-IDENT first argument anywhere
+///     (ca_collect_nonident_arg0 -- a fresh temp at a borrowed arg0 has
+///     no owner left to release it)
 /// The caller must additionally exclude the program entry (invoked by the
 /// host, which cannot consult the set either).
 export fn compute_borrow_arg0_user_fns(stmts: Array[Stmt]) -> Array[String] {
   let valued = array_empty()
   let _ = ca_walk_stmts_valued(stmts, valued)
+  let nonident0 = array_empty()
+  let _ = ca_walk_stmts_nonident_arg0(stmts, nonident0)
   let out = array_empty()
   let mut si = 0
   while si < Array::length(stmts) {
@@ -2205,7 +2299,7 @@ export fn compute_borrow_arg0_user_fns(stmts: Array[Stmt]) -> Array[String] {
           } else {
             p0_raw
           }
-          if p0 != "" && md_consume_count(fbody, p0) == 0 && !is_mut_captured_in(fbody, p0) && !array_contains_str(valued, fname) {
+          if p0 != "" && md_consume_count(fbody, p0) == 0 && !is_mut_captured_in(fbody, p0) && !array_contains_str(valued, fname) && !array_contains_str(nonident0, fname) {
             Array::push(out, fname)
           } else {
             ()
@@ -2220,4 +2314,435 @@ export fn compute_borrow_arg0_user_fns(stmts: Array[Stmt]) -> Array[String] {
     si = si + 1
   }
   out
+}
+
+//# ADR-0092 borrow-inference: may-return-view analysis
+
+/// True when `name` is provably bound to a FRESH (owned) value: it was
+/// classified fresh at its binding and no assignment tainted it since.
+fn mrv_is_fresh_name(fresh_names: Array[String], tainted: Array[String], name: String) -> Bool {
+  array_contains_str(fresh_names, name) && !array_contains_str(tainted, name)
+}
+
+/// Value classification for compute_may_return_view_fns: does `e` evaluate
+/// to a provably FRESH/owned value (true), or might it be an unowned
+/// interior view (false)? Conservative toward view: only literals, ctor
+/// calls, container/closure literals, operators, and calls to
+/// known-fresh-returning functions classify fresh; identifiers resolve
+/// fresh only through let-chains of fresh values (params, globals, match
+/// payload bindings, and borrow-returning builtin results never do).
+///
+/// The walk doubles as the taint collector, so it MUST recurse into every
+/// child (modeled on md_consume_count's completeness): let/letmut bindings
+/// record their freshness in `fresh_names`, mut assignments with a
+/// non-fresh RHS push the target onto `tainted`, every binder (params are
+/// pushed by the caller) lands in `bound` so a call through a local
+/// closure is never mistaken for a fresh builtin call, and `EReturn` of a
+/// non-fresh value sets `ret_view[0]` (an early return is a tail).
+/// Bindings are recorded flat (no scope popping): a name REBOUND to a
+/// non-fresh value taints itself, so collisions only ever push toward
+/// view -- the safe direction.
+fn mrv_fresh(e: Expr, fresh_names: Array[String], tainted: Array[String], bound: Array[String], user_fns: Array[String], view_set: Array[String], ret_view: Array[Int]) -> Bool {
+  match e {
+    EInt(_) => true,
+    EFloat(_) => true,
+    EString(_) => true,
+    EBool(_) => true,
+    EUnit => true,
+    EStringInterp(_) => true,
+    EIdent(n, _) => mrv_is_fresh_name(fresh_names, tainted, n),
+    ETuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        let _ = mrv_fresh(Array::get(items, i), fresh_names, tainted, bound, user_fns, view_set, ret_view)
+        i = i + 1
+      }
+      true
+    },
+    EArray(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        let _ = mrv_fresh(Array::get(items, i), fresh_names, tainted, bound, user_fns, view_set, ret_view)
+        i = i + 1
+      }
+      true
+    },
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        let _ = mrv_fresh(v, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+        i = i + 1
+      }
+      true
+    },
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        let _ = mrv_fresh(v, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+        i = i + 1
+      }
+      true
+    },
+    EIf(c, t, el) => {
+      let _ = mrv_fresh(c, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      let tf = mrv_fresh(t, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      let ef = mrv_fresh(el, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      tf && ef
+    },
+    ELet(n, v, b, _) => {
+      let vf = mrv_fresh(v, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      Array::push(bound, n)
+      if vf {
+        Array::push(fresh_names, n)
+      } else {
+        Array::push(tainted, n)
+      }
+      mrv_fresh(b, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+    },
+    ELetMut(n, v, b, _) => {
+      let vf = mrv_fresh(v, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      Array::push(bound, n)
+      if vf {
+        Array::push(fresh_names, n)
+      } else {
+        Array::push(tainted, n)
+      }
+      mrv_fresh(b, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+    },
+    ELetRec(n, v, b) => {
+      let _ = mrv_fresh(v, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      Array::push(bound, n)
+      Array::push(fresh_names, n)
+      mrv_fresh(b, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+    },
+    EAssign(n, v, b) => {
+      let vf = mrv_fresh(v, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      if vf {
+        ()
+      } else {
+        Array::push(tainted, n)
+      }
+      mrv_fresh(b, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+    },
+    EAssignOp(_, _, v, b) => {
+      let _ = mrv_fresh(v, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      mrv_fresh(b, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+    },
+    ESeq(a, b) => {
+      let _ = mrv_fresh(a, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      mrv_fresh(b, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+    },
+    EMatch(s, arms) => {
+      let _ = mrv_fresh(s, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      let mut all = true
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, v) = Array::get(arms, i)
+        // Pattern payloads are interior views of the scrutinee: bound but
+        // never fresh.
+        let _ = collect_pattern_bindings(p, bound)
+        if mrv_fresh(v, fresh_names, tainted, bound, user_fns, view_set, ret_view) {
+          ()
+        } else {
+          all = false
+        }
+        i = i + 1
+      }
+      all
+    },
+    EHandle(s, arms) => {
+      let _ = mrv_fresh(s, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      let mut all = true
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, v) = Array::get(arms, i)
+        let _ = collect_pattern_bindings(p, bound)
+        if mrv_fresh(v, fresh_names, tainted, bound, user_fns, view_set, ret_view) {
+          ()
+        } else {
+          all = false
+        }
+        i = i + 1
+      }
+      all
+    },
+    EWhile(c, b) => {
+      let _ = mrv_fresh(c, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      let _ = mrv_fresh(b, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      true
+    },
+    ELoop(params, b) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, pv) = Array::get(params, i)
+        let _ = mrv_fresh(pv, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+        Array::push(bound, pn)
+        i = i + 1
+      }
+      let _ = mrv_fresh(b, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      // A loop's value flows out of `break v` sites we do not track: view.
+      false
+    },
+    EForIn(n1, n2, it, b) => {
+      let _ = mrv_fresh(it, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      Array::push(bound, n1)
+      match n2 {
+        Some(n2s) => Array::push(bound, n2s),
+        None => ()
+      }
+      let _ = mrv_fresh(b, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      true
+    },
+    ECall(callee, args, _) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        let _ = mrv_fresh(Array::get(args, i), fresh_names, tainted, bound, user_fns, view_set, ret_view)
+        i = i + 1
+      }
+      match callee {
+        EIdent(f, _) => if array_contains_str(bound, f) {
+          // A locally-bound closure: its return is untrackable.
+          false
+        } else if array_contains_str(user_fns, f) {
+          !array_contains_str(view_set, f)
+        } else if borrow_ret_builtin_name(f) {
+          false
+        } else {
+          // Ctor application or a fresh-returning builtin. (A ctor name is
+          // uppercase, but a non-view builtin returns fresh too, so the
+          // distinction does not matter here.)
+          true
+        },
+        _ => {
+          let _ = mrv_fresh(callee, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+          false
+        }
+      }
+    },
+    EBinOp(_, l, r) => {
+      let _ = mrv_fresh(l, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      let _ = mrv_fresh(r, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      true
+    },
+    EUnaryOp(_, x) => {
+      let _ = mrv_fresh(x, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      true
+    },
+    EFn(_, _, fps, _, _, body) => {
+      // A closure literal is a fresh value; its body can still taint
+      // captured muts, so walk it -- but ITS early returns are not the
+      // enclosing function's (dummy ret cell).
+      let mut i = 0
+      while i < Array::length(fps) {
+        let (pn, _) = Array::get(fps, i)
+        Array::push(bound, pn)
+        i = i + 1
+      }
+      let dummy_ret = [
+        0
+      ]
+      let _ = mrv_fresh(body, fresh_names, tainted, bound, user_fns, view_set, dummy_ret)
+      true
+    },
+    EDot(x, _, _, _) => {
+      let _ = mrv_fresh(x, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+      false
+    },
+    ELabeledArg(_, _, v) => mrv_fresh(v, fresh_names, tainted, bound, user_fns, view_set, ret_view),
+    EReturn(x) => {
+      if mrv_fresh(x, fresh_names, tainted, bound, user_fns, view_set, ret_view) {
+        ()
+      } else {
+        Array::set(ret_view, 0, 1)
+      }
+      true
+    },
+    EBreak(opt) => {
+      let _ = match opt {
+        Some(v) => mrv_fresh(v, fresh_names, tainted, bound, user_fns, view_set, ret_view),
+        None => true
+      }
+      true
+    },
+    EContinue(args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        let _ = mrv_fresh(Array::get(args, i), fresh_names, tainted, bound, user_fns, view_set, ret_view)
+        i = i + 1
+      }
+      true
+    },
+    ESpread(x) => mrv_fresh(x, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+  }
+}
+
+/// ADR-0092 borrow-inference: top-level functions whose RETURN VALUE may be
+/// an unowned interior view (a borrow-returning builtin result, a match
+/// payload, a global, a parameter, or anything reaching a return position
+/// that mrv_fresh cannot prove fresh -- e.g. `let mut out = EInt(0); ...
+/// out = Array::get(exprs, i) ...; out`). The planner suppresses the
+/// retention-driven scope-end drop ONLY for let-bindings calling functions
+/// in this set (intersected with the borrow-arg0 set): suppressing for a
+/// fresh-returning callee instead leaks its result (caught by the
+/// compiler-gate RC reclamation guard), and NOT suppressing for a
+/// view-returning one releases a reference the binding never acquired
+/// (the codegen_heap_e2e_test over-release). Iterated to a fixpoint so a
+/// view propagates through wrapper functions whose tail is a call.
+export fn compute_may_return_view_fns(stmts: Array[Stmt]) -> Array[String] {
+  let user_fns = array_empty()
+  let mut ci = 0
+  while ci < Array::length(stmts) {
+    match Array::get(stmts, ci) {
+      SLet(_, _, fname, _, fval) => match fval {
+        EFn(_, _, _, _, _, _) => Array::push(user_fns, fname),
+        _ => ()
+      },
+      _ => ()
+    }
+    ci = ci + 1
+  }
+  let view_set = array_empty()
+  let mut changed = true
+  let mut rounds = 0
+  while changed && rounds < 10 {
+    changed = false
+    let mut si = 0
+    while si < Array::length(stmts) {
+      match Array::get(stmts, si) {
+        SLet(_, _, fname, _, fval) => match fval {
+          EFn(_, _, fps, _, _, fbody) => if array_contains_str(view_set, fname) {
+            ()
+          } else {
+            let fresh_names = array_empty()
+            let tainted = array_empty()
+            let bound = array_empty()
+            let mut pi = 0
+            while pi < Array::length(fps) {
+              let (pn, _) = Array::get(fps, pi)
+              Array::push(bound, pn)
+              pi = pi + 1
+            }
+            let ret_view = [
+              0
+            ]
+            let tail_fresh = mrv_fresh(fbody, fresh_names, tainted, bound, user_fns, view_set, ret_view)
+            if !tail_fresh || Array::get(ret_view, 0) == 1 {
+              Array::push(view_set, fname)
+              changed = true
+            } else {
+              ()
+            }
+          },
+          _ => ()
+        },
+        _ => ()
+      }
+      si = si + 1
+    }
+    rounds = rounds + 1
+  }
+  view_set
+}
+
+//# #1259 step 7 groundwork: lambda-site counting
+
+/// How many lambda table entries compiling `expr` will allocate.
+///
+/// compile_lambda takes a lambda's function index from the LIVE length of the
+/// shared LambdaTable and emits it into the body as a `table_slot` immediate,
+/// so a function's output bytes depend on how many lambdas every function
+/// compiled before it produced. That is what stops a worker from compiling a
+/// body on its own, and removing it is what a frozen WholeProgramPlan means
+/// (docs/compiler-parallelism.md).
+///
+/// Counting is exact rather than an estimate: compile_expr dispatches EFn
+/// (tag 24) to compile_lambda unconditionally (compile_expr_tail3.vibe), and
+/// compile_lambda's push is unconditional, so one table entry per EFn node
+/// reachable in the body -- nested lambdas included, since compile_lambda
+/// compiles its own body through the same dispatch.
+///
+/// The traversal mirrors dce.vibe's collect_refs_into arm for arm. Binding
+/// structure is irrelevant here (a count, not a scope analysis), so the arms
+/// that clone a bound set there simply recurse.
+///
+/// It is a PREDICTION of what the sequential walk does, and it is checked
+/// against the live length at every allocation rather than trusted -- see
+/// CompileCtx.lambda_plan_next. A silent mismatch would key a body's emitted
+/// constants to a table slot nothing installs.
+export fn count_lambda_sites_expr(expr: Expr) -> Int {
+  match expr {
+    EIdent(_, _) => 0,
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EStringInterp(_) => 0,
+    EBreak(_) => 0,
+    EContinue(_) => 0,
+    EReturn(e) => count_lambda_sites_expr(e),
+    EUnaryOp(_, e) => count_lambda_sites_expr(e),
+    ESpread(e) => count_lambda_sites_expr(e),
+    EDot(obj, _, _, _) => count_lambda_sites_expr(obj),
+    ELabeledArg(_, _, e) => count_lambda_sites_expr(e),
+    ETuple(items) => count_lambda_sites_exprs(items),
+    EArray(items) => count_lambda_sites_exprs(items),
+    ERecord(_, fields, _) => count_lambda_sites_fields(fields),
+    EMap(fields) => count_lambda_sites_fields(fields),
+    EBinOp(_, l, r) => count_lambda_sites_expr(l) + count_lambda_sites_expr(r),
+    ESeq(l, r) => count_lambda_sites_expr(l) + count_lambda_sites_expr(r),
+    ECall(callee, args, _) => count_lambda_sites_expr(callee) + count_lambda_sites_exprs(args),
+    EIf(cond, then_e, else_e) =>
+    count_lambda_sites_expr(cond) + count_lambda_sites_expr(then_e) + count_lambda_sites_expr(else_e),
+    ELet(_, val, body, _) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
+    ELetRec(_, val, body) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
+    ELetMut(_, val, body, _) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
+    EAssign(_, val, body) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
+    EAssignOp(_, _, val, body) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
+    EWhile(cond, body) => count_lambda_sites_expr(cond) + count_lambda_sites_expr(body),
+    EForIn(_, _, iter, body) => count_lambda_sites_expr(iter) + count_lambda_sites_expr(body),
+    ELoop(params, body) => count_lambda_sites_fields(params) + count_lambda_sites_expr(body),
+    EMatch(scr, arms) => count_lambda_sites_expr(scr) + count_lambda_sites_arms(arms),
+    EHandle(body_expr, arms) => count_lambda_sites_expr(body_expr) + count_lambda_sites_arms(arms),
+    // The one arm that counts: this node IS a table entry, and its body may
+    // hold more.
+    EFn(_, _, _, _, _, body) => 1 + count_lambda_sites_expr(body)
+  }
+}
+
+fn count_lambda_sites_exprs(items: Array[Expr]) -> Int {
+  let n = Array::length(items)
+  let mut i = 0
+  let mut total = 0
+  while i < n {
+    total = total + count_lambda_sites_expr(Array::get(items, i))
+    i = i + 1
+  }
+  total
+}
+
+fn count_lambda_sites_fields(fields: Array[(String, Expr)]) -> Int {
+  let n = Array::length(fields)
+  let mut i = 0
+  let mut total = 0
+  while i < n {
+    let (_, val) = Array::get(fields, i)
+    total = total + count_lambda_sites_expr(val)
+    i = i + 1
+  }
+  total
+}
+
+fn count_lambda_sites_arms(arms: Array[(Pat, Expr)]) -> Int {
+  let n = Array::length(arms)
+  let mut i = 0
+  let mut total = 0
+  while i < n {
+    let (_, body) = Array::get(arms, i)
+    total = total + count_lambda_sites_expr(body)
+    i = i + 1
+  }
+  total
 }

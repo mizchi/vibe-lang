@@ -109,6 +109,7 @@ import @vibe/compiler/codegen/common_analysis {
   collect_free_vars,
   collect_strings_stmts,
   compute_borrow_arg0_user_fns,
+  compute_may_return_view_fns,
   count_lambda_sites_expr,
   emit_closure_call_tail,
   emit_closure_resolve,
@@ -837,24 +838,32 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // program-wide (read-only first param, never valued/aliased -- see
   // compute_borrow_arg0_user_fns). The entry fn and the conventional entry
   // names are excluded: the host invokes them without consulting the set.
-  // ADR-0092 borrow-inference slice 1 -- DEFAULT OFF. Two failure modes
-  // must be fixed together before this can ship: (1) over-release -- a
-  // let-binding holding an UNOWNED interior view (value = call to a fn
-  // like agg_expr_lookup that returns a borrow-ret builtin result raw,
-  // with no dup on its return path) whose uses all flip to borrows loses
-  // its entry dup while the retention-driven scope-end drop stays, so it
-  // releases a reference it never acquired (recycled live block ->
-  // corruption; trapped as an OOB guard in parse_type_impl after ~90
-  // compiles of codegen_heap_e2e_test churn); (2) leak -- suppressing that
-  // scope-end drop for EVERY borrow-arg0 callee's result also drops the
-  // release of FRESH values (callees like a plain ctor wrapper whose arg0
-  // is merely scalar), which the compiler-gate RC reclamation guard
-  // rejects (heap_used 3.5MB on the loop fixture). The planner's
-  // per-use-pairing fields (PCtx.owned_uses/view_call_let, inert while
-  // this is false) fix (1); shipping additionally needs a
-  // may-return-view analysis so the drop suppression applies only to
-  // callees whose return path can yield an unowned view. Measured
-  // potential while enabled: RC selfcompile ratio 1.951 -> 1.742.
+  // ADR-0092 borrow-inference slice 1 -- DEFAULT OFF pending the
+  // per-use-paired planner vocabulary. Four failure classes have been
+  // isolated so far, each with its mechanism landed (all provably inert
+  // while this is false, since the borrow set is then empty):
+  // (1) over-release: a let-binding holding an UNOWNED interior view
+  // (value = call to a fn like agg_expr_lookup that returns a borrow-ret
+  // builtin result raw) whose uses all flip to borrows loses its entry
+  // dup while the retention-driven scope-end drop stays -- fixed by the
+  // planner's view-call drop suppression (PCtx.owned_uses/view_call_let).
+  // (2) fresh-result leak: suppressing that drop for EVERY borrow-arg0
+  // callee also cancels the release of FRESH results -- fixed by
+  // restricting the marking to callees that MAY RETURN a view
+  // (compute_may_return_view_fns, intersected into lc_borrow_view_ret).
+  // (3) temp-arg0 leak: a fresh temporary passed directly at a borrowed
+  // arg0 has no owner left to release it (the callee's epilogue drop is
+  // filtered program-wide) -- fixed by disqualifying fns ever called
+  // with a non-ident arg0 (ca_collect_nonident_arg0).
+  // (4) UNRESOLVED: with (1)-(3) combined, codegen_heap_e2e_test traps
+  // again and the RC reclamation guard still leaks 1.9MB -- changing the
+  // set's membership shuffles which latent per-binding imbalances are
+  // exercised (same fragility the original N=494/495 set bisection
+  // showed), so point-wise repairs do not converge. The sound endpoint
+  // is explicit per-use pairing in the plan (each dup tied to the
+  // consume it funds -- the ADR-0092 PaReuseToken/PaReuseAlloc planner
+  // vocabulary phase). Measured potential while enabled: RC selfcompile
+  // ratio 1.951 -> 1.71-1.80.
   let lc_borrow_arg0_enabled = false
   let lc_borrow_arg0_user_all = if lc_borrow_arg0_enabled {
     compute_borrow_arg0_user_fns(stmts)
@@ -871,6 +880,26 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       ()
     }
     lba_i = lba_i + 1
+  }
+  // The borrow-arg0 fns whose RETURN may be an unowned interior view: only
+  // these mark view_call_let in the planner (see PCtx.view_ret_user and the
+  // gate comment above). Intersection keeps the planner's marking check to
+  // one membership test.
+  let lc_borrow_view_all = if lc_borrow_arg0_enabled {
+    compute_may_return_view_fns(stmts)
+  } else {
+    lc_fresh_string_array()
+  }
+  let lc_borrow_view_ret = lc_fresh_string_array()
+  let mut lbv_i = 0
+  while lbv_i < Array::length(lc_borrow_view_all) {
+    let lbv_n = Array::get(lc_borrow_view_all, lbv_i)
+    if array_contains_str(lc_borrow_arg0_user, lbv_n) {
+      Array::push(lc_borrow_view_ret, lbv_n)
+    } else {
+      ()
+    }
+    lbv_i = lbv_i + 1
   }
   // #710: see CompileCtx.scalar_ret_names' doc comment (common_base/common_base.vibe).
   let lc_scalar_ret_names = sorted_names_of(compute_scalar_returning_names(stmts))
@@ -2821,7 +2850,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       __bi_expr
     }
     if enable_rc {
-      let plan = build_perceus_plan_with_params(lc_norm_params, __bi_body, lc_borrow_ret_names, lc_borrow_arg0_user)
+      let plan = build_perceus_plan_with_params(lc_norm_params, __bi_body, lc_borrow_ret_names, lc_borrow_arg0_user, lc_borrow_view_ret)
       let mut lhpi = 0
       while lhpi < Array::length(lc_norm_params) {
         let (lhpn, lhpt) = Array::get(lc_norm_params, lhpi)
@@ -2967,6 +2996,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       reuse_flag_locals: lc_fresh_int_array(),
       borrow_ret_names: lc_borrow_ret_names,
       borrow_arg0_user: lc_borrow_arg0_user,
+      borrow_view_ret: lc_borrow_view_ret,
       scalar_ret_names: lc_scalar_ret_names,
       pending_letrec_self_name: lc_fresh_string_array(),
       table_slots_used: table_slots_used,
