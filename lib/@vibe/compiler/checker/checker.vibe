@@ -3639,9 +3639,27 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
           // fully-zonked types. The element type stays tolerant (CtUnknown),
           // matching FrozenArray's rows.
           let (r_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+          let zoned_r = subst_apply(s1, r_ty)
+          // #1274 Codex P1: the token must be the unforgeable `#region_N`
+          // skolem the `region` binder carries. Any other argument type
+          // (e.g. `MutList::empty(0)`) would install a skolem-free phantom
+          // that the `__region_run` escape scan can never see, making the
+          // region-bound collection freely constructible and escapable.
+          // Second-class by design: the token cannot pass through function
+          // parameters in this slice (a param's type is a fresh var, not
+          // the skolem), matching the ADR's escape rules.
+          let is_region_token = match zoned_r {
+            CtNamed(zr_name, _) => String::length(zr_name) >= 8 && String::substring(zr_name, 0, 8) == "#region_",
+            _ => false
+          }
+          if is_region_token {
+            ()
+          } else {
+            Array::push(errors, String::concat("MutList::empty requires the region token bound by `region r { ... }` (the token is second-class and cannot be forged or passed through function parameters)", off_marker_len(callee_off, String::length(name))))
+          }
           (tab_call_ty(tytab, call_off, CtNamed("MutList", Array::slice([
             CtUnknown,
-            subst_apply(s1, r_ty)
+            zoned_r
           ], 0, 2))), s1, c1)
         } else if name == "MutList::push" && Array::length(args) == 2 {
           // ADR-0090 Phase 1: borrows the list (arg0), consumes the element.

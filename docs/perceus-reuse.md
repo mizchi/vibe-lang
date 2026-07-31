@@ -120,17 +120,25 @@ Koka FP² の `fip`(fully in-place)注釈と同じ意味論であり、reuse が
   `linked_compile.vibe` の staging)。fn-param fusion は selfcompile KPI に
   有意な改善なし(適格 arm が compiler 実コードにほぼ無い)— #1262 の
   正直な再評価コメント参照。
-- **Drop specialization Phase 1** (`common_base.vibe::emit_rc_drop_fast`):
-  scope-end let drop(reuse-fusion guarded / borrow-ret dance / plain の
-  3経路)と fn epilogue param drop に、inline shared-decrement fast path を
-  適用。shared block (rc ∈ [2, 0xFFFFFE]、単一の unsigned range test で
-  判定) の drop は call なしの in-place decrement。unique (rc==1、再帰
-  field walk + free が必要) と saturated/immortal (0xFFFFFF) は従来どおり
-  runtime `vibe_rc_drop` へ。scalar / fat-pointer は dup と同じ tag test で
-  inline skip。**VIBE_RC=shadow では fast path を出さない**(freed-block
-  検査が runtime drop の入口にあるため、inline decrement はそれを迂回する)。
-  トレードオフ: drop site あたり ~5B → ~70B のコードサイズ増(適用は
-  hot 2 系統のみに限定)。dup 側 (`emit_rc_dup_guarded`) は元から inline。
+- **Drop specialization Phase 1 — 試行して revert (PR #1274)**: inline
+  shared-decrement fast path (rc ∈ [2, 0xFFFFFE] は call なし decrement) を
+  scope-end let drop + fn epilogue param drop に適用して計測した。結果:
+  selfcompile KPI は **flat (ratio 3.858、baseline と同値)** — RC lane の
+  支配コストは drop の call overhead ではなく **allocator だった**
+  (profiling で `vibe_rc_alloc` が全 CPU の 44.2%: unbounded exact-fit
+  free-list walk が O(list)/alloc)。一方でコードサイズは drop site あたり
+  ~5B → ~70B に増え、output-size ratchet (+2% 上限) を
+  closure_indirect +14% / variant_float +5.8% で fail した。**利得ゼロ +
+  サイズ回帰なので call site を plain runtime call に戻した**(経緯コメント
+  は compile_expr_tail.vibe の ELet drop 経路に残置)。
+- **Allocator 側の実測改善(こちらが本命、output サイズ中立)**:
+  1. `gen_rc_alloc_body` の free-list walk を 16 nodes に bound —
+     ratio **3.858 → 1.968** (rc wall 14970→7931ms)。コスト: 深い exact
+     fit の放棄で heap_ptr 347MB→710MB。
+  2. size-segregated bins (32 bins、sizes 16..264 step 8、bump base 直下の
+     256B 領域): `gen_rc_drop_body` の2 free site が small block を bin へ
+     push、`gen_rc_alloc_body` は bin pop 優先 → bounded walk → bump。
+  dup 側 (`emit_rc_dup_guarded`) は元から inline。
 - 未着手: プランナ語彙 PaReuseToken/PaReuseAlloc(分岐越え一般化)、
   borrow 推論拡張(dup/drop ペア削減 — KPI 2.6-3.8x の主犯)、
   drop specialization の残り site 系統(match 内 drop 等)、KPI 再計測は

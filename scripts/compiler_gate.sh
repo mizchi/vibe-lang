@@ -7637,6 +7637,21 @@ if ! grep -qF 'region escapes its scope' "$r90dir/neg.wasm.diag" 2>/dev/null; th
   cat "$r90dir/neg.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# #1274 Codex P1: the token is unforgeable -- MutList::empty with a
+# non-skolem argument must be rejected.
+cp fixtures/err_region_token_forged.vibe "$r90dir/forged.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$r90dir/forged.vibe" "$r90dir/forged.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$r90dir/forged.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_region_token_forged.vibe compiled successfully -- the region token must be unforgeable" >&2
+  exit 1
+fi
+if ! grep -qF 'region token' "$r90dir/forged.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_region_token_forged.vibe did not produce the expected diagnostic" >&2
+  cat "$r90dir/forged.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
 rm -rf "$r90dir"
 echo "[compiler-gate] ADR-0090 region + MutList vertical slice ok"
 
@@ -7679,6 +7694,21 @@ fi
 if ! grep -qF 'zero_alloc' "$za91dir/neg.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: err_zero_alloc_ctor.vibe did not produce the expected diagnostic" >&2
   cat "$za91dir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# #1274 Codex P1: a param shadowing a clean top-level fn is an indirect
+# callee and must be rejected.
+cp fixtures/err_zero_alloc_shadowed_call.vibe "$za91dir/shadowed.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$za91dir/shadowed.vibe" "$za91dir/shadowed.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$za91dir/shadowed.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_zero_alloc_shadowed_call.vibe compiled successfully -- shadowed callees must be treated as indirect" >&2
+  exit 1
+fi
+if ! grep -qF 'zero_alloc' "$za91dir/shadowed.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_zero_alloc_shadowed_call.vibe did not produce the expected diagnostic" >&2
+  cat "$za91dir/shadowed.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
 rm -rf "$za91dir"
