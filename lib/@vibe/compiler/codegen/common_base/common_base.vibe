@@ -422,6 +422,27 @@ export struct CompileCtx {
   // REFERENCE into per-lambda derived ctxs (like the other append-only logs
   // above) so nested-lambda recordings land in the module-level array.
   table_slots_used: Array[Int];
+  // #1259 step 7 groundwork: the lambda index this function's NEXT lambda
+  // must receive, preassigned before any body is emitted.
+  //
+  // compile_lambda takes a lambda's function index from the live length of
+  // the shared LambdaTable, and emits it into the body as a table_slot
+  // immediate -- so a function's output bytes depend on how many lambdas
+  // every function compiled before it produced. That is what stops a worker
+  // from ever compiling a body on its own, and it is the thing a frozen
+  // WholeProgramPlan has to remove (docs/compiler-parallelism.md).
+  //
+  // A one-element mutable cell, shared BY REFERENCE into per-lambda derived
+  // ctxs exactly like table_slots_used above, so a nested lambda advances the
+  // same counter its enclosing function does. Seeded per user function from
+  // the counting pass (plan_lambda_bases) and checked against the live length
+  // at every allocation: while the two agree, the plan is a faithful
+  // prediction of what the sequential walk does, which is what makes flipping
+  // compile_lambda over to it a no-op on the emitted bytes.
+  //
+  // Empty disables the check entirely (the gc lane and any ctx built outside
+  // the planned body loop).
+  lambda_plan_next: Array[Int];
   // #644: static (wasm code offset -> source file/line) recorder for the
   // `vibe.linemap` custom section. Shared by reference across every
   // TOP-LEVEL function's CompileCtx (like `cov` above); `linemap.cur_fn`

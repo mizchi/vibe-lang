@@ -108,6 +108,7 @@ import @vibe/compiler/codegen/builtin_bodies {
 import @vibe/compiler/codegen/common_analysis {
   collect_free_vars,
   collect_strings_stmts,
+  count_lambda_sites_expr,
   emit_closure_call_tail,
   emit_closure_resolve,
   emit_i64_extend_i32_u,
@@ -2529,6 +2530,21 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // instead of once per compile -- hoist it out, same fix shape as
   // capture_name_index_shared above.
   let thunk_names_sorted_shared = sorted_names_of(thunk_names_list)
+  // #1259 step 7 groundwork: the lambda index plan.
+  //
+  // count_lambda_sites_expr predicts how many table entries a function's body
+  // will allocate WITHOUT compiling the functions before it -- which is the
+  // whole point, since compile_lambda currently takes that index from the live
+  // length of a shared growing table and emits it into the body. The running
+  // total below is that prediction's prefix sum: function bi's range starts
+  // where bi-1's ended.
+  //
+  // Seeded into the ctx and checked at every allocation (compile_lambda), not
+  // used: while plan and walk agree, swapping compile_lambda over to the
+  // planned value cannot change a byte. This is the evidence for that swap.
+  let lambda_plan_cell = lc_fresh_int_array()
+  Array::push(lambda_plan_cell, 0)
+  let mut lambda_planned_total = 0
   let mut bi = 0
   while bi < num_user_funcs {
     let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
@@ -2779,6 +2795,22 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     } else {
       lc_fresh_int_array()
     }
+    // #1259: this function's preassigned range.
+    //
+    // `__bi_expr` is the body codegen actually walks (post scrutinee-lift /
+    // alpha-rename), so the count comes off it rather than the raw stmt. But
+    // for a function DEFINITION it is itself an EFn, and that outer EFn is the
+    // function -- codegen takes its params and compiles its body, it never
+    // routes it through compile_lambda. Counting it would reserve a table slot
+    // per user function that nothing ever fills; the over-count check below
+    // caught exactly that on the first function with a lambda in it.
+    let lambda_planned_here = if is_efn(__bi_expr) {
+      count_lambda_sites_expr(get_efn_body(__bi_expr))
+    } else {
+      count_lambda_sites_expr(__bi_expr)
+    }
+    Array::set(lambda_plan_cell, 0, lambda_planned_total)
+    lambda_planned_total = lambda_planned_total + lambda_planned_here
     let compile_ctx = CompileCtx::{
       func_table: FuncTable::{
         names: all_fn_names_list,
@@ -2851,6 +2883,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       scalar_ret_names: lc_scalar_ret_names,
       pending_letrec_self_name: lc_fresh_string_array(),
       table_slots_used: table_slots_used,
+      lambda_plan_next: lambda_plan_cell,
       linemap: linemap_state
     }
     if is_efn(__bi_expr) {
@@ -3095,6 +3128,15 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         emit_i64_shr_s(body_buf)
       }
       Array::push(bodies, body_buf)
+      // #1259: the walk allocated exactly as many lambdas as the plan said.
+      // The per-allocation check in compile_lambda catches an UNDER-count (the
+      // walk runs past the planned range); this catches an OVER-count, where
+      // the plan reserved slots for EFn nodes codegen never reached.
+      if Array::get(lambda_plan_cell, 0) != lambda_planned_total {
+        throw(String::concat("lambda plan over-count: planned through ", String::concat(__to_string(lambda_planned_total), String::concat(", walk stopped at ", __to_string(Array::get(lambda_plan_cell, 0))))))
+      } else {
+        ()
+      }
       let extra = if tail_nl > param_count {
         tail_nl - param_count
       } else {
@@ -3162,6 +3204,15 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         emit_i64_shr_s(body_buf)
       }
       Array::push(bodies, body_buf)
+      // #1259: the walk allocated exactly as many lambdas as the plan said.
+      // The per-allocation check in compile_lambda catches an UNDER-count (the
+      // walk runs past the planned range); this catches an OVER-count, where
+      // the plan reserved slots for EFn nodes codegen never reached.
+      if Array::get(lambda_plan_cell, 0) != lambda_planned_total {
+        throw(String::concat("lambda plan over-count: planned through ", String::concat(__to_string(lambda_planned_total), String::concat(", walk stopped at ", __to_string(Array::get(lambda_plan_cell, 0))))))
+      } else {
+        ()
+      }
       let extra = if final_nl > param_count {
         final_nl - param_count
       } else {
