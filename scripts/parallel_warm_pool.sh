@@ -39,8 +39,9 @@
 # produced an env -- the coordinator must know the waves BEFORE it dispatches
 # anything. That is exactly plan_module_order's rank: every module of rank k
 # depends only on ranks < k, so a whole rank goes out at once. We ask the
-# compiler for it (VIBE_PLAN_MODULE_ORDER) rather than re-deriving a
-# topological sort here, so the canonical order stays the one that is tested
+# compiler for it (VIBE_MODULE_PLAN, which also does the import resolution --
+# see phase 1) rather than re-deriving a topological sort here, so the
+# canonical order stays the one that is tested
 # (lib/@vibe/graph/module_order_test.vibe) and modelled
 # (formal/VibeFormal/Compiler/Scheduler.lean) instead of a lookalike in shell
 # that could drift from it silently.
@@ -100,93 +101,64 @@ run_cli() {  # run_cli <input> <output> [env assignments...]
 export -f run_cli
 export RUNNER COMPILER
 
-# --- 1. discover the import DAG ---------------------------------------------
+# --- 1. discover the import DAG AND its wave schedule, in one run -----------
 #
-# BFS by frontier, each frontier discovered with up to $JOBS concurrent
-# VIBE_LIST_DEPS runs. That mode also hands back the INGESTED source (.src) --
-# imports a raw .vibe file never had can be prepended by a directory-shared
-# index.vpkg, and a contract file is rewritten into its facade entirely, so the
-# worker must check the same text the serial walk would (#1168).
+# VIBE_MODULE_PLAN walks the whole graph inside one compiler process and
+# returns every reachable module -- dependency list, ingested source, and rank
+# -- already in plan_module_order's canonical order. It replaces both the
+# per-file VIBE_LIST_DEPS BFS this script used to run and the separate
+# VIBE_PLAN_MODULE_ORDER call after it. On this repo's codegen_lexer_test.vibe
+# graph (166 modules) the BFS measured 17.4s serially and 5.1s at 4-way
+# concurrency, against 0.8s for the single call.
+#
+# The ordering rule is unchanged: the plan mode calls plan_module_order
+# itself, so the canonical order is still the one that is tested
+# (lib/@vibe/graph/module_order_test.vibe) and modelled
+# (formal/VibeFormal/Compiler/Scheduler.lean).
+#
+# The INGESTED source still matters for the same reason (#1168) -- a
+# directory-shared index.vpkg can prepend imports a raw .vibe file never had,
+# and a contract file is rewritten into its facade entirely, so the worker
+# must check the same text the serial walk would. The plan hands it back per
+# module, derived from the same ingest step as that module's dep list.
+#
+# ONE BEHAVIOUR CHANGE. A module that does not resolve AT ALL used to be
+# dropped from the graph, leaving the rest of the project still warmable; the
+# plan mode fails the whole run instead. That stays inside the advisory
+# contract -- the caller swallows a nonzero exit and compiles serially, which
+# reports the real error anyway -- and it is what the node driver
+# (parallel_frontend_warm.mjs) has always done. A module that resolves but
+# fails to CHECK is unaffected: that is decided in the job phase below, which
+# still drops it and warms everything else.
 sanitize() { printf '%s' "$1" | tr -c 'a-zA-Z0-9' '_'; }
 
-discover_one() {  # discover_one <path> ; writes <disc>/<key>.deps and .src
-  local path="$1" key
-  key="$(printf '%s' "$path" | tr -c 'a-zA-Z0-9' '_')"
-  local out="$DISC_DIR/$key.out"
-  rm -f "$out" "$out.diag" "$out.src"
-  env VIBE_LIST_DEPS=1 VIBE_IMPORT_ABI=raw timeout 600 \
-    "$RUNNER" "$COMPILER" "$path" "$out" __no_entry__ >/dev/null 2>&1 || true
-  # A .diag means this module does not even resolve. That is not an error for
-  # the warm: the serial walk will report it identically. Drop the module.
-  if [ -f "$out.diag" ] || [ ! -f "$out" ] || [ ! -f "$out.src" ]; then
-    rm -f "$out" "$out.src"
-    return 0
-  fi
-  printf '%s\n' "$path" > "$out.path"
-}
-export -f discover_one
-DISC_DIR="$WORK/disc"; export DISC_DIR
-
-frontier="$ENTRY"
-seen_file="$WORK/seen.txt"
-: > "$seen_file"
-while [ -n "$frontier" ]; do
-  printf '%s\n' "$frontier" | xargs -r -P "$JOBS" -I{} bash -c 'discover_one "$@"' _ {}
-  printf '%s\n' "$frontier" >> "$seen_file"
-  next=""
-  while IFS= read -r p; do
-    [ -n "$p" ] || continue
-    key="$(sanitize "$p")"
-    [ -f "$WORK/disc/$key.out" ] || continue
-    while IFS= read -r d; do
-      [ -n "$d" ] || continue
-      grep -Fxq "$d" "$seen_file" && continue
-      case "$next" in
-        "$d"|"$d"$'\n'*|*$'\n'"$d"|*$'\n'"$d"$'\n'*) continue ;;
-      esac
-      next="${next:+$next$'\n'}$d"
-    done < "$WORK/disc/$key.out"
-  done <<< "$frontier"
-  frontier="$next"
-done
-
-# Modules that resolved, in discovery order (the entry first -- the plan mode
-# takes the first line's path as the root).
-edges="$WORK/edges.tsv"
-: > "$edges"
-while IFS= read -r p; do
-  [ -n "$p" ] || continue
-  key="$(sanitize "$p")"
-  [ -f "$WORK/disc/$key.out" ] || continue
-  { printf '%s' "$p"
-    while IFS= read -r d; do
-      [ -n "$d" ] || continue
-      # Only edges to modules that themselves resolved; plan_module_order
-      # would otherwise rank a node we have no source for.
-      dkey="$(sanitize "$d")"
-      [ -f "$WORK/disc/$dkey.out" ] && printf '\t%s' "$d"
-    done < "$WORK/disc/$key.out"
-    printf '\n'
-  } >> "$edges"
-done < "$seen_file"
-
-if [ ! -s "$edges" ]; then
-  echo "warm-pool: nothing to warm (entry did not resolve)" >&2
-  exit 1
-fi
-
-# --- 2. ask the compiler for the wave schedule ------------------------------
-plan="$WORK/plan.tsv"
-rm -f "$plan" "$plan.diag"
-run_cli "$edges" "$plan" VIBE_PLAN_MODULE_ORDER=1
+plan="$WORK/plan.txt"
+rm -f "$plan" "$plan".*
+run_cli "$ENTRY" "$plan" VIBE_MODULE_PLAN=1 VIBE_IMPORT_ABI=raw
 if [ -f "$plan.diag" ]; then
-  echo "warm-pool: module ordering failed: $(head -1 "$plan.diag")" >&2
+  echo "warm-pool: module discovery failed: $(head -1 "$plan.diag")" >&2
   exit 1
 fi
-[ -f "$plan" ] || { echo "warm-pool: module ordering produced no plan" >&2; exit 1; }
+[ -s "$plan" ] || { echo "warm-pool: nothing to warm (entry did not resolve)" >&2; exit 1; }
 
-MAX_RANK="$(awk -F'\t' 'NF>=2 && $1+0>m {m=$1+0} END {print m+0}' "$plan")"
-MODULE_COUNT="$(awk -F'\t' 'NF>=2' "$plan" | wc -l | tr -d ' ')"
+# Materialize the two per-module files the dispatch phase reads, under the
+# same sanitized key it names job dirs with. The plan already indexes every
+# module, so these could be keyed by index instead -- which would also close
+# the latent collision the sanitizer has always had (`a/b.vibe` and
+# `a_b.vibe` sanitize alike; the node driver needed a unique id for exactly
+# that, #1170). No two modules in this repo's own graph collide today, so
+# that is left as a separate change rather than folded into this one.
+DISC_DIR="$WORK/disc"; export DISC_DIR
+while IFS="$(printf '\t')" read -r idx modpath; do
+  key="$(sanitize "$modpath")"
+  # Declaration order, duplicates kept -- build_fingerprint folds dep rows as
+  # a sequence, so the job phase must see them exactly as declared.
+  awk -F'\t' -v i="$idx" '$1=="dep" && $2==i {print $3}' "$plan" > "$DISC_DIR/$key.out"
+  cp "$plan.$idx.src" "$DISC_DIR/$key.out.src"
+done < <(awk -F'\t' '$1=="module" {print $2"\t"$4}' "$plan")
+
+MAX_RANK="$(awk -F'\t' '$1=="module" && $3+0>m {m=$3+0} END {print m+0}' "$plan")"
+MODULE_COUNT="$(awk -F'\t' '$1=="module"' "$plan" | wc -l | tr -d ' ')"
 
 # --- 3. dispatch rank by rank -----------------------------------------------
 #
@@ -232,7 +204,7 @@ JOBS_DIR="$WORK/jobs"; export JOBS_DIR
 
 r=0
 while [ "$r" -le "$MAX_RANK" ]; do
-  awk -F'\t' -v want="$r" 'NF>=2 && $1+0==want {print $2}' "$plan" \
+  awk -F'\t' -v want="$r" '$1=="module" && $3+0==want {print $4}' "$plan" \
     | xargs -r -P "$JOBS" -I{} bash -c 'build_and_run_job "$@"' _ {}
   r=$((r + 1))
 done
@@ -250,7 +222,7 @@ while IFS= read -r path; do
   cp "$JOBS_DIR/$key/env.out" "$pub/$key.env"
   printf '%s\t%s.env\n' "$(cat "$JOBS_DIR/$key/fingerprint.out")" "$key" >> "$pub/manifest.txt"
   warmed=$((warmed + 1))
-done < <(awk -F'\t' 'NF>=2 {print $2}' "$plan")
+done < <(awk -F'\t' '$1=="module" {print $4}' "$plan")
 
 if [ "$warmed" -eq 0 ]; then
   echo "warm-pool: no module checked cleanly; nothing published" >&2

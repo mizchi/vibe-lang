@@ -22,6 +22,7 @@ import @vibe/compiler/runtime {
   build_module_source_from_source,
   collect_all_diagnostics,
   doc_at_source,
+  module_plan_manifest_fs,
   run_module_job_dir,
   run_publish_env_cache_dir,
   set_dep_order_seed,
@@ -661,6 +662,47 @@ export fn cli_main() -> Int with { Error, Fs, Env, Stdin, Stdout } {
         }
         Fs::write_file(output_path, out)
       }
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  } else ()
+  // #1239 step 4(D): VIBE_LIST_DEPS and VIBE_PLAN_MODULE_ORDER in ONE call.
+  //
+  // Those two split the work a coordinator needs -- resolve each module's
+  // imports, then rank the resulting graph -- across one spawn per module
+  // plus one for the ordering. That per-module spawn is what dominates the
+  // whole path: on this repo's codegen_lexer_test.vibe graph (166 modules)
+  // the discovery loop measures 17.4s serially and 5.1s at 4-way
+  // concurrency, against 0.8s for this mode. Same graph, same canonical
+  // order -- the ordering still comes from plan_module_order, so there is
+  // still exactly one implementation of the rule.
+  //
+  // The whole-graph counterpart to VIBE_LIST_DEPS above --
+  // one call instead of one per module, and already in the canonical rank
+  // order a coordinator dispatches from. See module_plan_manifest_fs
+  // (compiler/runtime/typecheck_fs.vibe) for why the order comes from the
+  // compiler rather than the driver.
+  //
+  //   <output_path>            version / module / dep rows (manifest)
+  //   <output_path>.<i>.src    module i's ingested source
+  //
+  // `i` is the module's index in the manifest's canonical order, so a driver
+  // that reads the manifest already knows every source file's name without
+  // sanitizing paths -- which is what VIBE_LIST_DEPS's per-file `.src`
+  // companion needs a collision-proof unique id for (#1170).
+  if Env::get("VIBE_MODULE_PLAN") == "1" {
+    return handle {
+      let (manifest, sources) = module_plan_manifest_fs(input_path)
+      let mut i = 0
+      while i < Array::length(sources) {
+        Fs::write_file(String::concat(output_path, String::concat(".", String::concat(__to_string(i), ".src"))), Array::get(sources, i))
+        i = i + 1
+      }
+      // The manifest is written LAST, same commit-marker discipline as the
+      // job dir's outcome.txt: a driver that sees it knows every .src it
+      // names is already complete.
+      Fs::write_file(output_path, manifest)
       0
     } with Error {
       Throw(msg) => emit_compile_diag(output_path, msg)

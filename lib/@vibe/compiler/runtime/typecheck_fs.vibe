@@ -27,11 +27,11 @@ import @vibe/compiler/codegen {
 }
 
 import @vibe/compiler/loader {
-  load_or_parse_module_header_fs
+  ingest_source_text_fs, load_or_parse_module_header_fs
 }
 
 import @vibe/graph {
-  RippleDb, ripple_get_deps, ripple_get_fingerprint, ripple_get_source, ripple_record_eval
+  RippleDb, plan_module_order, ripple_get_deps, ripple_get_fingerprint, ripple_get_source, ripple_record_eval
 }
 
 import @vibe/compiler/syntax {
@@ -272,6 +272,27 @@ fn copy_string_array(items: Array[String]) -> Array[String] {
   let len = Array::length(items)
   while i < len {
     Array::push(out, Array::get(items, i))
+    i = i + 1
+  }
+  out
+}
+
+/// Shallow copy of a (path, source) cache.
+///
+/// plan_import_graph_fs has to resolve dependencies against its OWN copy:
+/// upsert_string_pair below MUTATES the array it is handed and returns that
+/// same array, and resolve_deps_for_source_fs upserts on every miss. Planning
+/// against the caller's cache therefore marked every module's current source
+/// as already-seen before the walk even started -- and the walk reads exactly
+/// that to decide whether a module's cached fingerprint is still valid, so an
+/// edited source reused its stale type env (caught by
+/// type_db_cross_module_test's "source update bypasses current-run cache").
+fn copy_string_pairs(pairs: Array[(String, String)]) -> Array[(String, String)] {
+  let out = empty_dep_fps()
+  let mut i = 0
+  let len = Array::length(pairs)
+  while i < len {
+    Array::push(out, Array::get(pairs, i))
     i = i + 1
   }
   out
@@ -1152,224 +1173,375 @@ fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, St
   }
 }
 
-/// #906 step 4 decomposition: names the per-recursion "currently visiting"
-/// DFS check that docs/compiler-parallelism.md reframes as a coordinator-
-/// side upfront rank/topological-order assignment once real parallel
-/// dispatch replaces this recursion. Giving it its own name is a
-/// behavior-preserving step toward that extraction (still called inline,
-/// once per recursive call, exactly as before) -- not the extraction
-/// itself, which needs an actual coordinator to consume a precomputed
-/// order and is left for when that exists.
+/// The per-recursion "currently visiting" DFS check. Since #1239 step 4(A)
+/// this is no longer how a cycle is REPORTED -- plan_module_order rejects one
+/// upfront, before any module is committed, and the walk only ever descends
+/// into edges that plan already proved acyclic. It is kept as the guard for
+/// ensure_fingerprint_from_deps_fs's unplanned fallback arm, which resolves
+/// deps itself and so has no such proof; that arm is unreachable today (see
+/// its comment), which is exactly why the guard costs a `contains_str` over a
+/// stack as deep as the import chain and nothing more.
 fn import_cycle_at(stack: Array[String], path: String) -> Bool {
   contains_str(stack, path)
 }
 
-fn ensure_fingerprint_fs_go(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
-  if import_cycle_at(stack, path) {
-    throw(String::concat("type_db: import cycle detected at ", path))
-  } else {
+/// #1239 step 4(A), on the real fs path: the coordinator-side upfront pass.
+///
+/// Walks the import graph from `root` ONCE and records, per reachable module,
+/// either the persistent leaf fingerprint it found or the module's resolved
+/// dependency list. The walk that follows looks both up here instead of
+/// paying for them a second time, so this is a REPLACEMENT for work
+/// ensure_fingerprint_fs_go used to do inline, not an extra pass.
+///
+/// The three short-circuits are the same three the walk applies, in the same
+/// order -- no source in the db (the `missing:` arm), a reusable cached
+/// fingerprint, a persistent leaf fingerprint -- and evaluating them here
+/// gives the same answers the walk gets: nothing mutates module M's db or
+/// dep-cache entries before M's own first visit, and the walk resolves each
+/// module's deps exactly once too (a module reached a second time returns on
+/// its now-cached fingerprint). The queue dedupes by path for the same reason.
+///
+/// A module left OUT of `edges` -- missing, or short-circuited -- is a leaf
+/// to plan_module_order (mo_deps_of), which is what makes those arms terminal
+/// for scheduling as well as for the walk.
+fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String) -> (Array[(String, String)], Array[(String, Array[String])], Int) with { Error, Fs } {
+  let leaf_fps = empty_dep_fps()
+  let edges: Array[(String, Array[String])] = [
+  ]
+  let seen = empty_stack()
+  let queue = empty_stack()
+  // Private copy -- see copy_string_pairs. The predicates below still read
+  // the caller's cache, because what they must reproduce is the state the
+  // walk sees on a module's FIRST visit; only the resolver gets the copy.
+  let scratch_cache = copy_string_pairs(dep_source_cache)
+  let mut pc = parse_count
+  Array::push(seen, root)
+  Array::push(queue, root)
+  let mut qi = 0
+  while qi < Array::length(queue) {
+    let path = Array::get(queue, qi)
+    qi = qi + 1
     match ripple_get_source(rdb, path) {
-      None => (String::concat("missing:", path), rdb, env_cache, dep_source_cache, parse_count),
-      Some(source) => match lookup_string_pair(dep_source_cache, path) {
-        Some(cached_source) => if cached_source == source {
+      None => (),
+      Some(source) => {
+        let reusable = if dep_source_cache_is_current(dep_source_cache, path, source) {
           match ripple_get_fingerprint(rdb, path) {
-            Some(cached_fingerprint) =>
-            // The fingerprint is enough for dependency fingerprint folding.
-            // Loading the env here caused shared leaf modules to re-read their
-            // persistent leaf cache every time they were reached before a
-            // parent needed their bindings.
-            (cached_fingerprint, rdb, env_cache, dep_source_cache, parse_count),
-            None => match load_persistent_leaf_fingerprint(path, source) {
-              Some(leaf_fingerprint) => {
-                write_persistent_dep_list_if_missing(path, source, empty_stack())
-                let next_dep_source_cache = upsert_string_pair(dep_source_cache, path, source)
-                let next_db = ripple_record_eval(rdb, path, leaf_fingerprint, empty_stack())
-                (leaf_fingerprint, next_db, env_cache, next_dep_source_cache, parse_count)
-              },
-              None => {
-                let (deps_raw, next_dep_source_cache, initial_parse_count) = resolve_deps_for_source_fs(rdb, dep_source_cache, path, source, parse_count)
-                let deps = copy_string_array(deps_raw)
-                write_persistent_dep_list_if_missing(path, source, deps)
-                let dlen = Array::length(deps)
-                let saved_stack_len = Array::length(stack)
-                Array::push(stack, path)
-                let mut i = 0
-                let mut db_after_deps = rdb
-                let mut env_cache_after_deps = env_cache
-                let mut dep_source_cache_after_deps = next_dep_source_cache
-                let mut parse_count_after_deps = initial_parse_count
-                // #906 Phase 0: VISIT order is permutable (dep_visit_order --
-                // identity unless a seed is set), but the RECORDED order must
-                // stay declaration order: build_fingerprint below folds
-                // dep_fps in sequence, so permuting the record would change
-                // every fingerprint and defeat the very invariance this is
-                // meant to test. Fingerprints therefore land in per-index
-                // slots and are collected in declaration order afterwards.
-                let visit = dep_visit_order(dlen)
-                let dep_fp_slots = empty_stack()
-                let mut sfill = 0
-                while sfill < dlen {
-                  Array::push(dep_fp_slots, "")
-                  sfill = sfill + 1
-                }
-                while i < dlen {
-                  let di = Array::get(visit, i)
-                  let dep_path = Array::get(deps, di)
-                  let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint_fs_go(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, dep_path, stack)
-                  db_after_deps = next_db
-                  env_cache_after_deps = next_env_cache
-                  dep_source_cache_after_deps = next_dep_source_cache2
-                  parse_count_after_deps = next_parse_count
-                  Array::set(dep_fp_slots, di, dep_fp)
-                  i = i + 1
-                }
-                let dep_fps = empty_dep_fps()
-                let mut fpi = 0
-                while fpi < dlen {
-                  Array::push(dep_fps, (Array::get(deps, fpi), Array::get(dep_fp_slots, fpi)))
-                  fpi = fpi + 1
-                }
-                Array::truncate(stack, saved_stack_len)
-                let fingerprint = build_fingerprint(source, dep_fps)
-                match ripple_get_fingerprint(db_after_deps, path) {
-                  Some(cached_fp) =>
-                  if cached_fp == fingerprint {
-                    (fingerprint, db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps)
-                  } else {
-                    finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, dep_fps, fingerprint)
-                  },
-                  None =>
-                  finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, dep_fps, fingerprint)
-                }
-              }
-            }
+            Some(_) => true,
+            None => false
           }
         } else {
+          false
+        }
+        if reusable {
+          ()
+        } else {
           match load_persistent_leaf_fingerprint(path, source) {
-            Some(leaf_fingerprint) => {
-              write_persistent_dep_list_if_missing(path, source, empty_stack())
-              let next_dep_source_cache = upsert_string_pair(dep_source_cache, path, source)
-              let next_db = ripple_record_eval(rdb, path, leaf_fingerprint, empty_stack())
-              (leaf_fingerprint, next_db, env_cache, next_dep_source_cache, parse_count)
-            },
+            Some(leaf_fingerprint) => Array::push(leaf_fps, (path, leaf_fingerprint)),
             None => {
-              let (deps_raw, next_dep_source_cache, initial_parse_count) = resolve_deps_for_source_fs(rdb, dep_source_cache, path, source, parse_count)
+              let (deps_raw, _, next_pc) = resolve_deps_for_source_fs(rdb, scratch_cache, path, source, pc)
               let deps = copy_string_array(deps_raw)
-              write_persistent_dep_list_if_missing(path, source, deps)
+              pc = next_pc
+              Array::push(edges, (path, deps))
               let dlen = Array::length(deps)
-              let saved_stack_len = Array::length(stack)
-              Array::push(stack, path)
               let mut i = 0
-              let mut db_after_deps = rdb
-              let mut env_cache_after_deps = env_cache
-              let mut dep_source_cache_after_deps = next_dep_source_cache
-              let mut parse_count_after_deps = initial_parse_count
-              // #906 Phase 0: see the slot comment in the first dep loop above.
-              let visit = dep_visit_order(dlen)
-              let dep_fp_slots = empty_stack()
-              let mut sfill = 0
-              while sfill < dlen {
-                Array::push(dep_fp_slots, "")
-                sfill = sfill + 1
-              }
               while i < dlen {
-                let di = Array::get(visit, i)
-                let dep_path = Array::get(deps, di)
-                let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint_fs_go(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, dep_path, stack)
-                db_after_deps = next_db
-                env_cache_after_deps = next_env_cache
-                dep_source_cache_after_deps = next_dep_source_cache2
-                parse_count_after_deps = next_parse_count
-                Array::set(dep_fp_slots, di, dep_fp)
+                let dep = Array::get(deps, i)
+                if contains_str(seen, dep) {
+                  ()
+                } else {
+                  Array::push(seen, dep)
+                  Array::push(queue, dep)
+                }
                 i = i + 1
               }
-              let dep_fps = empty_dep_fps()
-              let mut fpi = 0
-              while fpi < dlen {
-                Array::push(dep_fps, (Array::get(deps, fpi), Array::get(dep_fp_slots, fpi)))
-                fpi = fpi + 1
-              }
-              Array::truncate(stack, saved_stack_len)
-              let fingerprint = build_fingerprint(source, dep_fps)
-              match ripple_get_fingerprint(db_after_deps, path) {
-                Some(cached_fp) =>
-                if cached_fp == fingerprint {
-                  (fingerprint, db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps)
-                } else {
-                  finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, dep_fps, fingerprint)
-                },
-                None =>
-                finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, dep_fps, fingerprint)
-              }
-            }
-          }
-        },
-        None =>
-        match load_persistent_leaf_fingerprint(path, source) {
-          Some(leaf_fingerprint) => {
-            write_persistent_dep_list_if_missing(path, source, empty_stack())
-            let next_dep_source_cache = upsert_string_pair(dep_source_cache, path, source)
-            let next_db = ripple_record_eval(rdb, path, leaf_fingerprint, empty_stack())
-            (leaf_fingerprint, next_db, env_cache, next_dep_source_cache, parse_count)
-          },
-          None => {
-            let (deps_raw, next_dep_source_cache, initial_parse_count) = resolve_deps_for_source_fs(rdb, dep_source_cache, path, source, parse_count)
-            let deps = copy_string_array(deps_raw)
-            write_persistent_dep_list_if_missing(path, source, deps)
-            let dlen = Array::length(deps)
-            let saved_stack_len = Array::length(stack)
-            Array::push(stack, path)
-            let mut i = 0
-            let mut db_after_deps = rdb
-            let mut env_cache_after_deps = env_cache
-            let mut dep_source_cache_after_deps = next_dep_source_cache
-            let mut parse_count_after_deps = initial_parse_count
-            // #906 Phase 0: see the slot comment in the first dep loop above.
-            let visit = dep_visit_order(dlen)
-            let dep_fp_slots = empty_stack()
-            let mut sfill = 0
-            while sfill < dlen {
-              Array::push(dep_fp_slots, "")
-              sfill = sfill + 1
-            }
-            while i < dlen {
-              let di = Array::get(visit, i)
-              let dep_path = Array::get(deps, di)
-              let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint_fs_go(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, dep_path, stack)
-              db_after_deps = next_db
-              env_cache_after_deps = next_env_cache
-              dep_source_cache_after_deps = next_dep_source_cache2
-              parse_count_after_deps = next_parse_count
-              Array::set(dep_fp_slots, di, dep_fp)
-              i = i + 1
-            }
-            let dep_fps = empty_dep_fps()
-            let mut fpi = 0
-            while fpi < dlen {
-              Array::push(dep_fps, (Array::get(deps, fpi), Array::get(dep_fp_slots, fpi)))
-              fpi = fpi + 1
-            }
-            Array::truncate(stack, saved_stack_len)
-            let fingerprint = build_fingerprint(source, dep_fps)
-            match ripple_get_fingerprint(db_after_deps, path) {
-              Some(cached_fp) =>
-              if cached_fp == fingerprint {
-                (fingerprint, db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps)
-              } else {
-                finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, dep_fps, fingerprint)
-              },
-              None =>
-              finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, dep_fps, fingerprint)
             }
           }
         }
       }
     }
   }
+  (leaf_fps, edges, pc)
+}
+
+/// The dep list `plan_import_graph_fs` recorded for `path`, or None when it
+/// recorded none. Returns a copy for the same reason graph.vibe's mo_deps_of
+/// does: the caller takes ownership of the list it folds fingerprints over.
+fn plan_deps_of(plan_edges: Array[(String, Array[String])], path: String) -> Option[Array[String]] {
+  let n = Array::length(plan_edges)
+  let mut i = 0
+  let mut found: Option[Array[String]] = None
+  while i < n {
+    let e = Array::get(plan_edges, i)
+    if e.0 == path {
+      found = Some(copy_string_array(e.1))
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// The leaf-fingerprint arm: a module whose persistent leaf cache is valid is
+/// recorded with no deps at all and needs no checking.
+fn commit_leaf_fingerprint_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, leaf_fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
+  write_persistent_dep_list_if_missing(path, source, empty_stack())
+  let next_dep_source_cache = upsert_string_pair(dep_source_cache, path, source)
+  let next_db = ripple_record_eval(rdb, path, leaf_fingerprint, empty_stack())
+  (leaf_fingerprint, next_db, env_cache, next_dep_source_cache, parse_count)
+}
+
+/// The tail shared by ensure_fingerprint_fs_go's "no reusable cached
+/// fingerprint" arms, once `deps` is known: recurse into each dep, fold the
+/// dependency fingerprints in DECLARATION order, and either reuse the cached
+/// fingerprint or check and commit the module.
+fn ensure_fingerprint_with_deps_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
+  write_persistent_dep_list_if_missing(path, source, deps)
+  let dlen = Array::length(deps)
+  let saved_stack_len = Array::length(stack)
+  Array::push(stack, path)
+  let mut i = 0
+  let mut db_after_deps = rdb
+  let mut env_cache_after_deps = env_cache
+  let mut dep_source_cache_after_deps = dep_source_cache
+  let mut parse_count_after_deps = parse_count
+  // #906 Phase 0: VISIT order is permutable (dep_visit_order -- identity
+  // unless a seed is set), but the RECORDED order must stay declaration
+  // order: build_fingerprint below folds dep_fps in sequence, so permuting
+  // the record would change every fingerprint and defeat the very invariance
+  // this is meant to test. Fingerprints therefore land in per-index slots and
+  // are collected in declaration order afterwards.
+  let visit = dep_visit_order(dlen)
+  let dep_fp_slots = empty_stack()
+  let mut sfill = 0
+  while sfill < dlen {
+    Array::push(dep_fp_slots, "")
+    sfill = sfill + 1
+  }
+  while i < dlen {
+    let di = Array::get(visit, i)
+    let dep_path = Array::get(deps, di)
+    let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint_fs_go(plan_leaf_fps, plan_edges, db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, dep_path, stack)
+    db_after_deps = next_db
+    env_cache_after_deps = next_env_cache
+    dep_source_cache_after_deps = next_dep_source_cache2
+    parse_count_after_deps = next_parse_count
+    Array::set(dep_fp_slots, di, dep_fp)
+    i = i + 1
+  }
+  let dep_fps = empty_dep_fps()
+  let mut fpi = 0
+  while fpi < dlen {
+    Array::push(dep_fps, (Array::get(deps, fpi), Array::get(dep_fp_slots, fpi)))
+    fpi = fpi + 1
+  }
+  Array::truncate(stack, saved_stack_len)
+  let fingerprint = build_fingerprint(source, dep_fps)
+  match ripple_get_fingerprint(db_after_deps, path) {
+    Some(cached_fp) =>
+    if cached_fp == fingerprint {
+      (fingerprint, db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps)
+    } else {
+      finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, dep_fps, fingerprint)
+    },
+    None =>
+    finish_typecheck_fs_impl(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, path, source, deps, dep_fps, fingerprint)
+  }
+}
+
+/// Take the leaf fingerprint / dep list from the upfront plan when it has one
+/// for `path`, and only resolve them here when it does not.
+///
+/// The third arm is the pre-#1239-step-4(A) code, kept as a fallback. It is
+/// unreachable as long as the plan is built from the same db and dep cache the
+/// walk starts from: every path that reaches here was enqueued by the plan
+/// (root, or a dep of a planned module), and the plan's own three
+/// short-circuits are the walk's -- a module the plan skipped as `missing:` or
+/// as fingerprint-reusable makes the walk return before it gets this far.
+fn ensure_fingerprint_from_deps_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
+  match lookup_string_pair(plan_leaf_fps, path) {
+    Some(leaf_fingerprint) =>
+    commit_leaf_fingerprint_fs(rdb, env_cache, dep_source_cache, parse_count, path, source, leaf_fingerprint),
+    None =>
+    match plan_deps_of(plan_edges, path) {
+      Some(planned_deps) =>
+      ensure_fingerprint_with_deps_fs(plan_leaf_fps, plan_edges, rdb, env_cache, upsert_string_pair(dep_source_cache, path, source), parse_count, path, source, planned_deps, stack),
+      None =>
+      match load_persistent_leaf_fingerprint(path, source) {
+        Some(leaf_fingerprint) =>
+        commit_leaf_fingerprint_fs(rdb, env_cache, dep_source_cache, parse_count, path, source, leaf_fingerprint),
+        None => {
+          let (deps_raw, next_dep_source_cache, next_parse_count) = resolve_deps_for_source_fs(rdb, dep_source_cache, path, source, parse_count)
+          ensure_fingerprint_with_deps_fs(plan_leaf_fps, plan_edges, rdb, env_cache, next_dep_source_cache, next_parse_count, path, source, copy_string_array(deps_raw), stack)
+        }
+      }
+    }
+  }
+}
+
+/// True when `path`'s entry in the ripple db can be reused as-is: the source
+/// the dep cache was built from still matches the source in the db. The three
+/// arms of the old nested match collapsed to this one predicate because two
+/// of them (source changed / never seen) did exactly the same thing.
+fn dep_source_cache_is_current(dep_source_cache: Array[(String, String)], path: String, source: String) -> Bool {
+  match lookup_string_pair(dep_source_cache, path) {
+    Some(cached_source) => cached_source == source,
+    None => false
+  }
+}
+
+fn ensure_fingerprint_fs_go(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
+  if import_cycle_at(stack, path) {
+    throw(String::concat("type_db: import cycle detected at ", path))
+  } else {
+    match ripple_get_source(rdb, path) {
+      None => (String::concat("missing:", path), rdb, env_cache, dep_source_cache, parse_count),
+      Some(source) =>
+      if dep_source_cache_is_current(dep_source_cache, path, source) {
+        match ripple_get_fingerprint(rdb, path) {
+          // The fingerprint is enough for dependency fingerprint folding.
+          // Loading the env here caused shared leaf modules to re-read their
+          // persistent leaf cache every time they were reached before a
+          // parent needed their bindings.
+          Some(cached_fingerprint) => (cached_fingerprint, rdb, env_cache, dep_source_cache, parse_count),
+          None => ensure_fingerprint_from_deps_fs(plan_leaf_fps, plan_edges, rdb, env_cache, dep_source_cache, parse_count, path, source, stack)
+        }
+      } else {
+        ensure_fingerprint_from_deps_fs(plan_leaf_fps, plan_edges, rdb, env_cache, dep_source_cache, parse_count, path, source, stack)
+      }
+    }
+  }
+}
+
+/// Index of `p` in `items`, or -1. Plain linear scan: the caller runs it once
+/// per module over a list of the same length, and a project the size of this
+/// compiler's own manifest is ~209 modules.
+fn module_plan_index_of(items: Array[String], p: String) -> Int {
+  let n = Array::length(items)
+  let mut i = 0
+  let mut found = 0 - 1
+  while found < 0 && i < n {
+    if Array::get(items, i) == p {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #1239 step 4(D) groundwork: discover a project's WHOLE import graph, and
+/// its canonical schedule, inside one compiler process.
+///
+/// VIBE_LIST_DEPS answers "what does this ONE file import", so a host driver
+/// building the parallel pre-warm's DAG has to spawn it once per module --
+/// and on a project the size of this compiler's own manifest that discovery
+/// loop is what dominates the whole parallel path's wall time, independent of
+/// how many jobs the later check phase gets (#1168, see discoverProject in
+/// scripts/parallel_frontend_warm.mjs). This does the same BFS in-process.
+///
+/// The order comes from @vibe/graph's plan_module_order -- the same function
+/// the serial walk's own upfront plan uses since #1239 step 4(A)
+/// (runtime/typecheck_fs.vibe) -- so the host dispatches the schedule the
+/// compiler itself planned instead of one it re-derived, and an import cycle
+/// is rejected here with the identical diagnostic rather than surfacing later
+/// as a driver that never makes progress.
+///
+/// Returns the manifest text plus, positionally, each module's INGESTED
+/// source: `ingest_source_text_fs` can prepend a directory-shared import a
+/// raw .vibe file never had, or rewrite a contract into its facade entirely,
+/// and check_module parses that text -- never the raw bytes. Deriving deps
+/// from one and handing back the other is #1168's exact bug, so both come
+/// off the same `ingested` string here.
+export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String]) with { Error, Fs } {
+  // `paths` doubles as the BFS queue: discovery pushes to it, `qi` walks it.
+  let paths: Array[String] = [
+  ]
+  let deps_of: Array[Array[String]] = [
+  ]
+  let sources: Array[String] = [
+  ]
+  Array::push(paths, entry_path)
+  let mut qi = 0
+  while qi < Array::length(paths) {
+    let p = Array::get(paths, qi)
+    qi = qi + 1
+    if !Fs::exists(p) {
+      throw(String::concat("module plan: cannot read module: ", p))
+    } else {
+      ()
+    }
+    let ingested = ingest_source_text_fs(p, Fs::read_file(p))
+    let (deps, _exports, _parse_count) = load_or_parse_module_header_fs(p, ingested, 0)
+    Array::push(sources, ingested)
+    Array::push(deps_of, deps)
+    let dlen = Array::length(deps)
+    let mut i = 0
+    while i < dlen {
+      let d = Array::get(deps, i)
+      if module_plan_index_of(paths, d) >= 0 {
+        ()
+      } else {
+        Array::push(paths, d)
+      }
+      i = i + 1
+    }
+  }
+  let edges: Array[(String, Array[String])] = [
+  ]
+  let mut e = 0
+  while e < Array::length(paths) {
+    Array::push(edges, (Array::get(paths, e), Array::get(deps_of, e)))
+    e = e + 1
+  }
+  let (order, ranks) = plan_module_order(edges, entry_path)
+  let buf = StringBuilder::new()
+  StringBuilder::push(buf, "version\t1\n")
+  let ordered_sources: Array[String] = [
+  ]
+  let n = Array::length(order)
+  let mut k = 0
+  while k < n {
+    let p = Array::get(order, k)
+    let src_index = module_plan_index_of(paths, p)
+    let index_text = __to_string(k)
+    StringBuilder::push(buf, "module\t")
+    StringBuilder::push(buf, index_text)
+    StringBuilder::push(buf, "\t")
+    StringBuilder::push(buf, __to_string(Array::get(ranks, k)))
+    StringBuilder::push(buf, "\t")
+    StringBuilder::push(buf, p)
+    StringBuilder::push(buf, "\n")
+    Array::push(ordered_sources, Array::get(sources, src_index))
+    // Declaration order, duplicates KEPT: the driver derives both its
+    // deduped dependency set and its dependencyOccurrences list from this,
+    // exactly as it does from VIBE_LIST_DEPS's output today.
+    let deps = Array::get(deps_of, src_index)
+    let dlen = Array::length(deps)
+    let mut i = 0
+    while i < dlen {
+      StringBuilder::push(buf, "dep\t")
+      StringBuilder::push(buf, index_text)
+      StringBuilder::push(buf, "\t")
+      StringBuilder::push(buf, Array::get(deps, i))
+      StringBuilder::push(buf, "\n")
+      i = i + 1
+    }
+    k = k + 1
+  }
+  (StringBuilder::freeze(buf), ordered_sources)
 }
 
 export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } {
-  let (fingerprint, next_db, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint_fs_go(rdb, env_cache, dep_source_cache, parse_count, path, stack)
+  let (plan_leaf_fps, plan_edges, planned_parse_count) = plan_import_graph_fs(rdb, dep_source_cache, parse_count, path)
+  // #1239 step 4(A): an import cycle is now rejected HERE -- before a single
+  // module is checked, committed, or written to the persistent cache --
+  // instead of incidentally, partway through the walk, on whichever module
+  // the DFS happened to re-enter first. plan_module_order also assigns the
+  // ranks a coordinator dispatches from; nothing consumes those yet, because
+  // the walk below is still sequential (step 4(D)).
+  let _plan_order = plan_module_order(plan_edges, path)
+  let (fingerprint, next_db, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint_fs_go(plan_leaf_fps, plan_edges, rdb, env_cache, dep_source_cache, planned_parse_count, path, stack)
   let final_env_cache = ensure_env_cache_for_path(next_db, next_env_cache, path)
   (fingerprint, next_db, final_env_cache, next_dep_source_cache, next_parse_count)
 }

@@ -638,6 +638,56 @@ concurrent `vibe build --jobs` invocations racing on the same fingerprint is
 the same pre-existing hazard the Cache publication section above already
 flags for the serial path, not a new one introduced here.
 
+> **Update (2026-07-31, #1239 step 4(D)).** Discovery no longer spawns one
+> `vibe` per file at all. `VIBE_MODULE_PLAN=1` (`module_plan_manifest_fs`,
+> `compiler/runtime/typecheck_fs.vibe`) walks the whole import graph inside
+> ONE compiler process and returns every reachable module — with its
+> dependency list, its ingested source, and its rank — already in the
+> canonical order `plan_module_order` assigns, which is the same ordering
+> rule the serial walk's own upfront plan uses since step 4(A). Measured on
+> this repo's `codegen_lexer_test.vibe` graph (166 modules, 4-core sandbox):
+> the per-file `VIBE_LIST_DEPS` loop takes 17.4s serially and 5.1s at 4-way
+> concurrency, against **0.8s** for the single plan call. End to end,
+> `parallel_frontend_warm.mjs` at `--jobs 4` over the 201-module graph goes
+> from **10.6s to 3.6s** wall (-66%) and 23.5s to 2.3s of host CPU, with
+> identical results (201 modules, 201 checked, 0 diagnosed, 201 warmed).
+>
+> So the "discovery-loop tax" this section and the KPI note below both treat
+> as a fixed cost is gone, and the numbers above that were dominated by it
+> (the 21601ms/10977ms `--jobs 4` figures, the "slower than the plain serial
+> baseline" conclusion) should be re-measured before being cited again. The
+> `--jobs` default is still 1; that decision has not been revisited on the
+> new numbers.
+>
+> `VIBE_LIST_DEPS` stays, as the per-file oracle the new mode is diffed
+> against (`compiler_gate.sh` section 72): the two must describe the same
+> graph, and a disagreement would not fail loudly — it would quietly warm a
+> cache for the wrong one.
+>
+> **Both coordinators take this route.** `scripts/parallel_warm_pool.sh`, the
+> bash process pool #1250 added for shipped toolchains, used to run the
+> per-file `VIBE_LIST_DEPS` BFS and then `VIBE_PLAN_MODULE_ORDER` over the
+> resulting edges; `VIBE_MODULE_PLAN` collapses both steps into the one call.
+> Measured in the configuration that path actually uses — an AOT `.cwasm`
+> loaded by `viberun`, the same 166-module graph:
+>
+> | discovery | wall |
+> |---|---|
+> | `VIBE_LIST_DEPS` ×166, `-P 1` | 2854ms |
+> | `VIBE_LIST_DEPS` ×166, `-P 4` | 742ms |
+> | `VIBE_MODULE_PLAN` ×1 | **222ms** |
+>
+> End to end the pool goes from **12.9s to 9.5s** (-26%) at `-P 4`, warming
+> the same 166/166 modules across the same 48 ranks. Note the 742ms row is a
+> LOWER bound on what the old script actually paid: its BFS is level-order,
+> so on a 48-rank-deep graph it ran ~48 mostly-single-module frontiers rather
+> than 166 jobs flat. The end-to-end delta (~3.4s) is the real saving.
+>
+> `VIBE_PLAN_MODULE_ORDER` now has no production consumer — only
+> `test_parallel_warm_pool_gate.sh`, which still drives it directly for the
+> diamond/cycle/empty-graph cases. Whether to keep it as a standalone
+> ordering primitive or fold it into `VIBE_MODULE_PLAN` is left open.
+
 **Measured against the compiler's own manifest (2026-07-28, #906): `--jobs`
 is currently a net regression, not a speedup, at this scale.** Running
 `scripts/jobs_kpi.sh` with `lib/@vibe/compiler/cli_support.vibe` (the real
