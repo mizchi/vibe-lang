@@ -267,10 +267,19 @@ fn write_two_bad_leaves(tag: String) -> String with { Error, Fs } {
 
 /// The error `db_typecheck_fs` raises for `<dir>/main.vibe`, or "" if it
 /// somehow succeeded.
+///
+/// All three sources go into the db, not just the root's: the walk skips any
+/// module `ripple_get_source` does not know (plan_import_graph_fs's `None`
+/// arm), so seeding only main would leave alpha and beta unchecked and the
+/// single diagnostic would be main's own unresolved import -- the opposite of
+/// what these tests are about.
 fn typecheck_fs_error(dir: String) -> String with { Fs } {
+  let alpha_path = String::concat(dir, "/alpha.vibe")
+  let beta_path = String::concat(dir, "/beta.vibe")
   let main_path = String::concat(dir, "/main.vibe")
   handle {
-    let _db = db_typecheck_fs(db_set_source(db_new(), main_path, Fs::read_file(main_path)), main_path)
+    let db0 = db_set_source(db_set_source(db_set_source(db_new(), alpha_path, Fs::read_file(alpha_path)), beta_path, Fs::read_file(beta_path)), main_path, Fs::read_file(main_path))
+    let _db = db_typecheck_fs(db0, main_path)
     ""
   } with Error {
     Throw(msg) => msg
@@ -287,7 +296,7 @@ test "db_typecheck_fs: fail-fast is still the default (#1259)" {
   // ONE diagnostic, for one of the two bad leaves -- unchanged from before
   // collection existed. The walk stops there; `main` is never reached.
   assert(eq(count_lines(err), 1))
-  assert(String::contains(err, "not an Int"))
+  assert(String::contains(err, "/alpha.vibe: ") || String::contains(err, "/beta.vibe: "))
 }
 
 test "db_typecheck_fs: collected diagnostics are canonically ordered (#1259)" {
