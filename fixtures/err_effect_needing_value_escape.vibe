@@ -1,0 +1,38 @@
+// #1261: a closure literal that performs an effect but is written WITHOUT a
+// row annotation is still classified as row-carrying by codegen --
+// dlh_hoist_expr backfills the row from the body before hoisting (追記20),
+// so the hoisted function lands in evidence_dict_pass's `needing` set and
+// gets the evidence-dict parameter prepended.
+//
+// Handing that value to a row-FREE function-typed parameter then compiles
+// the callee at one arity and calls it at another: `apply1`'s `f(1)` emits
+// a two-argument `call_indirect` against a three-argument funcref. That used
+// to compile clean and trap at runtime with wasm's own
+// `null function or function signature mismatch`.
+//
+// Per ADR-0076 追記34 V2 (an un-migratable shape is a hard error, never a
+// silent fallback) this is now rejected at compile time, with the fix in the
+// message: annotate `apply1`'s parameter `with { Async }` (see
+// effect_needing_value_annotated.vibe for the working, annotated form).
+effect Async {
+  Suspend(Int) -> Int
+}
+
+fn apply1(f: (x: Int) -> Int) -> Int {
+  f(1)
+}
+
+let _start = () -> Int {
+  handle {
+    let g = (x: Int) -> Int {
+      perform Async::Suspend(x)
+    }
+    apply1(g)
+  } with Async {
+    Suspend(t) => resume(t + 41)
+  }
+}
+_start()
+
+__DATA__
+{"error_contains":"passed as a VALUE into a slot whose type does not carry that row"}
