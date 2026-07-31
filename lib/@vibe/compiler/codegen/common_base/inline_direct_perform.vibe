@@ -2715,8 +2715,28 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       }
       pfi = pfi + 1
     }
+    // #1261: refuse before planning when a needing function's VALUE reaches
+    // a slot the migration cannot follow -- migrating it would prepend the
+    // dict parameter at the definition while the call through that slot
+    // stays at the old arity (a wasm signature-mismatch trap, not a
+    // diagnosable failure). Only relevant while handle sites for E remain:
+    // with none, nothing gets migrated in the first place.
+    let escaped = if Array::length(needing_full) > 0 && Array::length(edp_collect_handle_sites(stmts, ename)) > 0 {
+      edp_needing_escape_stmts(stmts, needing_full, ename, fn_defs, es_names, es_members_list)
+    } else {
+      ""
+    }
+    if escaped != "" {
+      Array::push(errs, String::concat(String::concat(String::concat("function `", escaped), String::concat("` carries effect ", ename)), String::concat(String::concat(" and is passed as a VALUE into a slot whose type does not carry that row, so evidence-passing (ADR-0076) cannot reach the call through it (#1261) -- annotate the receiving parameter (and any binding it flows through) with `with { ", ename), " }`, or call the function directly instead of passing it")))
+    } else {
+      ()
+    }
     match edp_try_plan_for_effect(stmts, ename, ops, needing_full, fn_defs) {
-      Some(plan) => Array::push(plans, plan),
+      Some(plan) => if escaped == "" {
+        Array::push(plans, plan)
+      } else {
+        ()
+      },
       None => {
         // Fall back to dropping provably-DEAD needing functions and retry
         // ONLY if the full set was ineligible -- trying the full set FIRST
@@ -5046,6 +5066,200 @@ fn edp_count_ident_uses_stmts(stmts: Array[Stmt], name: String) -> Int {
     i = i + 1
   }
   total
+}
+
+/// #1261: the parameter list of the top-level function named `nm`, or None
+/// when `nm` is not a plain top-level `SLet name = EFn(..)`.
+fn edp_params_of_fn(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], nm: String) -> Option[Array[(String, Option[TypeExpr])]] {
+  let mut out: Option[Array[(String, Option[TypeExpr])]] = None
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (idx, _, _, name, _, _) = Array::get(fn_defs, i)
+    if name == nm {
+      match Array::get(stmts, idx) {
+        SLet(_, _, _, _, EFn(_, _, params, _, _, _)) => {
+          out = Some(params)
+        },
+        _ => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #1261: is `nm`'s value legal to hand to parameter `pos` of `callee_nm`?
+/// The evidence migration prepends a dict parameter to every needing
+/// function, and a call THROUGH a parameter only gets the dict prepended
+/// when that parameter's declared type carries the row
+/// (edp_row_typed_param_names). So a needing function reaching a row-FREE
+/// function-typed slot is compiled at one arity and called at another --
+/// wasm's own `null function or function signature mismatch`.
+fn edp_arg_slot_accepts_needing(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], callee_nm: String, pos: Int, ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Bool {
+  // Deliberately accept unless the slot is PROVEN row-free-and-function-
+  // typed: an unknown callee (a local binding aliasing a needing function
+  // -- fixtures/effect_local_closure_wrapper_referenced_as_value.vibe), an
+  // unannotated parameter, or a non-function annotation all stay legal, so
+  // this guard only fires on the shape that demonstrably traps.
+  match edp_params_of_fn(stmts, fn_defs, callee_nm) {
+    Some(params) => if pos < Array::length(params) {
+      let (_, pty) = Array::get(params, pos)
+      match pty {
+        Some(TyFn(_, _, _)) => edp_type_is_fn_row_exactly(pty, ename, es_names, es_members_list),
+        _ => true
+      }
+    } else {
+      true
+    },
+    None => true
+  }
+}
+
+/// #1261: the first needing-function name that ESCAPES as a value into a
+/// slot the migration cannot reach (see edp_arg_slot_accepts_needing), or
+/// "" when every use is a direct call or a row-carrying parameter slot.
+///
+/// This is the codegen-side backstop for the fact that the checker and this
+/// pass classify the SAME closure literal differently: the checker charges a
+/// literal's `perform` to the ENCLOSING function and leaves the literal
+/// itself row-free, while dlh_hoist_expr backfills the row from the body
+/// (追記20) so the hoisted function lands in `needing` here. Nothing on the
+/// checker side then rejects handing that value to a row-free `(x) -> y`
+/// parameter. Per 追記34 V2, an un-migratable shape is a hard error, never a
+/// silent fallback -- the alternative is a runtime trap.
+fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+  match e {
+    ECall(callee, args, _) => {
+      let callee_nm = match callee {
+        EIdent(cn, _) => cn,
+        _ => ""
+      }
+      let mut hit = if callee_nm == "" {
+        edp_needing_escape(callee, needing, ename, stmts, fn_defs, es_names, es_members_list)
+      } else {
+        ""
+      }
+      let mut i = 0
+      while i < Array::length(args) && hit == "" {
+        let a = Array::get(args, i)
+        let bare = match a {
+          EIdent(an, _) => if edp_str_array_contains(needing, an) {
+            an
+          } else {
+            ""
+          },
+          _ => ""
+        }
+        if bare == "" {
+          hit = edp_needing_escape(a, needing, ename, stmts, fn_defs, es_names, es_members_list)
+        } else if callee_nm != "" && edp_arg_slot_accepts_needing(stmts, fn_defs, callee_nm, i, ename, es_names, es_members_list) {
+          ()
+        } else {
+          hit = bare
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EFn(_, _, _, _, _, b) => edp_needing_escape(b, needing, ename, stmts, fn_defs, es_names, es_members_list),
+    EHandle(b, arms) => edp_needing_escape_or(edp_needing_escape(b, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape_arms(arms, needing, ename, stmts, fn_defs, es_names, es_members_list)),
+    EIf(c, t, el) => edp_needing_escape_or(edp_needing_escape(c, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape_or(edp_needing_escape(t, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(el, needing, ename, stmts, fn_defs, es_names, es_members_list))),
+    EMatch(s, arms) => edp_needing_escape_or(edp_needing_escape(s, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape_arms(arms, needing, ename, stmts, fn_defs, es_names, es_members_list)),
+    EWhile(c, b) => edp_needing_escape_or(edp_needing_escape(c, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(b, needing, ename, stmts, fn_defs, es_names, es_members_list)),
+    EForIn(_, _, it, b) => edp_needing_escape_or(edp_needing_escape(it, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(b, needing, ename, stmts, fn_defs, es_names, es_members_list)),
+    ELoop(pairs, b) => edp_needing_escape_or(edp_needing_escape_pairs(pairs, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(b, needing, ename, stmts, fn_defs, es_names, es_members_list)),
+    ELet(_, v, b, _) => edp_needing_escape_or(edp_needing_escape(v, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(b, needing, ename, stmts, fn_defs, es_names, es_members_list)),
+    ELetMut(_, v, b, _) => edp_needing_escape_or(edp_needing_escape(v, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(b, needing, ename, stmts, fn_defs, es_names, es_members_list)),
+    ELetRec(_, v, b) => edp_needing_escape_or(edp_needing_escape(v, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(b, needing, ename, stmts, fn_defs, es_names, es_members_list)),
+    ESeq(a, b) => edp_needing_escape_or(edp_needing_escape(a, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(b, needing, ename, stmts, fn_defs, es_names, es_members_list)),
+    EBinOp(_, l, r) => edp_needing_escape_or(edp_needing_escape(l, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(r, needing, ename, stmts, fn_defs, es_names, es_members_list)),
+    EUnaryOp(_, x) => edp_needing_escape(x, needing, ename, stmts, fn_defs, es_names, es_members_list),
+    EAssign(_, v, c) => edp_needing_escape_or(edp_needing_escape(v, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(c, needing, ename, stmts, fn_defs, es_names, es_members_list)),
+    EAssignOp(_, _, v, c) => edp_needing_escape_or(edp_needing_escape(v, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(c, needing, ename, stmts, fn_defs, es_names, es_members_list)),
+    EDot(o, _, _, _) => edp_needing_escape(o, needing, ename, stmts, fn_defs, es_names, es_members_list),
+    ELabeledArg(_, _, v) => edp_needing_escape(v, needing, ename, stmts, fn_defs, es_names, es_members_list),
+    EReturn(x) => edp_needing_escape(x, needing, ename, stmts, fn_defs, es_names, es_members_list),
+    EBreak(opt) => match opt {
+      Some(x) => edp_needing_escape(x, needing, ename, stmts, fn_defs, es_names, es_members_list),
+      None => ""
+    },
+    EContinue(args) => edp_needing_escape_exprs(args, needing, ename, stmts, fn_defs, es_names, es_members_list),
+    ETuple(items) => edp_needing_escape_exprs(items, needing, ename, stmts, fn_defs, es_names, es_members_list),
+    EArray(items) => edp_needing_escape_exprs(items, needing, ename, stmts, fn_defs, es_names, es_members_list),
+    ERecord(_, fields, _) => edp_needing_escape_pairs(fields, needing, ename, stmts, fn_defs, es_names, es_members_list),
+    EMap(fields) => edp_needing_escape_pairs(fields, needing, ename, stmts, fn_defs, es_names, es_members_list),
+    ESpread(x) => edp_needing_escape(x, needing, ename, stmts, fn_defs, es_names, es_members_list),
+    _ => ""
+  }
+}
+
+fn edp_needing_escape_or(a: String, b: String) -> String {
+  if a == "" {
+    b
+  } else {
+    a
+  }
+}
+
+fn edp_needing_escape_exprs(es: Array[Expr], needing: Array[String], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+  let mut hit = ""
+  let mut i = 0
+  while i < Array::length(es) && hit == "" {
+    hit = edp_needing_escape(Array::get(es, i), needing, ename, stmts, fn_defs, es_names, es_members_list)
+    i = i + 1
+  }
+  hit
+}
+
+fn edp_needing_escape_pairs(pairs: Array[(String, Expr)], needing: Array[String], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+  let mut hit = ""
+  let mut i = 0
+  while i < Array::length(pairs) && hit == "" {
+    let (_, v) = Array::get(pairs, i)
+    hit = edp_needing_escape(v, needing, ename, stmts, fn_defs, es_names, es_members_list)
+    i = i + 1
+  }
+  hit
+}
+
+fn edp_needing_escape_arms(arms: Array[(Pat, Expr)], needing: Array[String], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+  let mut hit = ""
+  let mut i = 0
+  while i < Array::length(arms) && hit == "" {
+    let (_, ex) = Array::get(arms, i)
+    hit = edp_needing_escape(ex, needing, ename, stmts, fn_defs, es_names, es_members_list)
+    i = i + 1
+  }
+  hit
+}
+
+fn edp_needing_escape_stmts(stmts: Array[Stmt], needing: Array[String], ename: String, fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+  let mut hit = ""
+  let mut i = 0
+  while i < Array::length(stmts) && hit == "" {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => {
+        hit = edp_needing_escape(expr, needing, ename, stmts, fn_defs, es_names, es_members_list)
+      },
+      SLetMut(_, _, expr) => {
+        hit = edp_needing_escape(expr, needing, ename, stmts, fn_defs, es_names, es_members_list)
+      },
+      SExpr(expr) => {
+        hit = edp_needing_escape(expr, needing, ename, stmts, fn_defs, es_names, es_members_list)
+      },
+      STest(_, expr) => {
+        hit = edp_needing_escape(expr, needing, ename, stmts, fn_defs, es_names, es_members_list)
+      },
+      SBench(_, expr) => {
+        hit = edp_needing_escape(expr, needing, ename, stmts, fn_defs, es_names, es_members_list)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  hit
 }
 
 fn edp_count_ident_uses(expr: Expr, name: String) -> Int {

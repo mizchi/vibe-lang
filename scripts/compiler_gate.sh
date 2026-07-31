@@ -6334,6 +6334,12 @@ scps_check_reject() {
 scps_check_reject "err_resume_non_tail.vibe" "must be the last expression of the handler arm" "nontail"
 scps_check_reject "err_effect_resume_store_ineligible.vibe" "cannot see through" "inelig"
 scps_check_reject "err_effect_resume_store_loop.vibe" "let/seq/tail/branch-tail spine" "loopbreak"
+# #1261: an unannotated performing closure is row-backfilled by
+# dlh_hoist_expr and so gets the evidence dict prepended; handing that value
+# to a row-FREE fn-typed slot used to compile clean and trap at runtime with
+# a wasm signature mismatch. Reject it, and keep the annotated form working.
+scps_check_reject "err_effect_needing_value_escape.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valesc"
+scps_run_expect "effect_needing_value_annotated.vibe" "42" "valann"
 rm -rf "$scpsdir"
 echo "[compiler-gate] ADR-0076 Phase 3a first-class resume ok"
 
