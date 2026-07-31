@@ -659,10 +659,16 @@ M1b-3c-2 でこの driver を production runtime 側に取り込んだ:
 - **component / core module をヘッダで判別**する（`\0asm` の後ろ 4 byte が
   `0d 00 01 00` なら component、`01 00 00 00` なら core module）。component なら
   新設の `run_async_component` に振り分ける。
-- `run_async_component` は §3.7 の2つの罠をそのまま踏まえた形:
+- `run_async_component` は §3.7 の罠を踏まえ、
   `instantiate_async` + `Store::run_concurrent` + `TypedFunc::call_concurrent`
-  の組で駆動し（`call_async` では deadlock trap する）、`async_support(true)` が
-  同期パスと両立しないので**専用の Config/Engine** を建てる。
+  の組で駆動する（`call_async` では deadlock trap する）。Engine は同期パスと
+  別に建てるが、Config は**共有の `engine_config()` から派生**させ、component/
+  concurrency オプションを追加するだけにする——`Config::new()` から作ると
+  `max_wasm_stack`（`MOONRUN_WT_WASM_STACK_MB`、既定 64 MiB）が失われ、深い
+  再帰を含む guest が core-module パスでは動くのに component パスでだけ
+  call-stack exhaustion する（#1242 review）。Store には他の全 store と同じ
+  `MOONRUN_WT_MEMORY_MB` limiter を付ける（同 review、当初は付け忘れており
+  `--help` が謳う上限が component パスだけ無視されていた）。
 - host import `get-async` は**本物に suspend する timer**（`tokio::time::sleep`、
   `wasi:clocks` backing がやるのと同じこと）で実装した。ブロッキングな
   `std::thread::sleep` では await の意味が消えるため使わない
