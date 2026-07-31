@@ -746,24 +746,43 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool) -> Bytes {
 /// helper instead WALKS the list for an exact-fit block and unlinks it, falling
 /// back to a bump only when none exists. Exact-fit only (no splitting), so it is
 /// drop-in compatible with the recursive rc_drop free path.
-/// Locals: 0=size(i64 param) 1=cur 2=prev 3=sz(i32) 4=result.
+///
+/// ADR-0092 (#1262) KPI follow-up: the walk is BOUNDED to the first 16
+/// nodes. The unbounded walk made every miss O(free-list length) -- on the
+/// selfcompile workload the list grows to thousands of mixed-size nodes and
+/// vibe_rc_alloc alone measured 44% of the whole compile's CPU (profile of
+/// the RC-built stage2, 2026-07-31). A LIFO head keeps the most recent
+/// frees first, so same-size churn (the common alloc/free loop pattern)
+/// still hits within a few nodes; a deeper exact fit is abandoned in favor
+/// of a bump, trading bounded fragmentation for O(1) allocation.
+/// Locals: 0=size(i64 param) 1=cur 2=prev 3=sz(i32) 4=result 5=budget.
 export fn gen_rc_alloc_body(rc_shadow: Bool) -> Bytes {
   let b = bytebuf_new()
   // sz = (i32) size
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
   emit_local_set(b, 3)
-  // cur = free-list head (global 2); prev = 0
+  // cur = free-list head (global 2); prev = 0; budget = 16
   emit_global_get(b, 2)
   emit_local_set(b, 1)
   emit_i32_const(b, 0)
   emit_local_set(b, 2)
+  emit_i32_const(b, 16)
+  emit_local_set(b, 5)
   emit_block_void(b)
   emit_loop_void(b)
   // cur == 0 → not found, break to the bump path
   emit_local_get(b, 1)
   emit_i32_eqz(b)
   emit_br_if(b, 1)
+  // budget == 0 → give up the walk, break to the bump path
+  emit_local_get(b, 5)
+  emit_i32_eqz(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 5)
+  emit_i32_const(b, 1)
+  emit_i32_sub(b)
+  emit_local_set(b, 5)
   // load(cur-8) == sz → exact-fit block found
   emit_local_get(b, 1)
   emit_i32_const(b, 8)
