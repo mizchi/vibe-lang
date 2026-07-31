@@ -314,6 +314,50 @@ language values.
 > but it is **not** the prerequisite for wall-clock parallel typecheck that
 > this section and #1239 previously described it as.
 
+## The real compile path, against the Lean model (#1259)
+
+`Scheduler.lean` proves the model's results are schedule-independent given a
+worker that satisfies `JobCorrect`. Everything checked against it until #1259
+was the **synthetic** worker in `scripts/parallel_selfhost_checker.mjs`, which
+can show the model is self-consistent and nothing more — never that this
+compiler is an instance of it.
+
+`VIBE_SCHEDULER_TRACE` closes that gap from the compiler side.
+`ensure_fingerprint_fs_impl` records what it planned and what it actually did:
+
+```text
+project<TAB><path><TAB><rank>[<TAB><dep>...]   Project.dependencies / .rank
+step<TAB><path><TAB><fingerprint>              the Step.run sequence, in
+                                               execution order
+```
+
+`scripts/scheduler_trace_oracle.sh` (`pkf run test-scheduler-oracle`) turns
+each Lean definition into a check over those rows:
+
+| Lean | check on the trace |
+|---|---|
+| `Project.dependencyRankLt` | every dep of a module has a strictly smaller rank |
+| `Ready` (a) | each module appears exactly once — `state.results m = none` held at its `Step.run` |
+| `Ready` (b) | every dep of a stepped module appears strictly earlier |
+| `Complete` | every planned module was stepped |
+| `StoreCorrect` / `JobCorrect` | permuting the schedule reaches the same store |
+
+The step row is emitted where the result is *published*, the point
+`BuildState.finish` occupies in the model — recording it before the step would
+let a trace claim a module completed that then raised.
+
+Measured on `codegen_lexer_test.vibe` (166 modules): `Project`/`Ready`/
+`Complete` hold with 166 planned and 166 steps, and the store is identical
+across `VIBE_DEP_ORDER_SEED` 1/7/23 — **all three of which really did reorder
+the schedule**, which the oracle asserts rather than assumes. Two vacuity
+guards make the rest non-trivial: a trace with fewer than two steps is a
+failure, and a seed set where no seed changed the step order is a failure.
+
+What this does **not** establish: the Lean proofs still assume `JobCorrect`
+of the worker rather than deriving it, and fairness and termination are
+unproven. This is evidence that the compiler satisfies the model's premises on
+real input, not a machine-checked link between the two artifacts.
+
 ## Host multi-worker prototype
 
 The first executable bridge lives in:

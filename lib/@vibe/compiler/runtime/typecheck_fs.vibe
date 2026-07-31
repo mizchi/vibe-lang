@@ -383,6 +383,45 @@ fn dep_order_seed() -> Int {
   }
 }
 
+/// --- #1259: scheduler trace, for the real-path differential oracle -------
+///
+/// #1239 step 8 asks that the REAL compile path's execution trace be matched
+/// against formal/VibeFormal/Compiler/Scheduler.lean. Until now only a
+/// synthetic worker was (scripts/parallel_selfhost_checker.mjs), which can
+/// only show the model is self-consistent -- never that the compiler is an
+/// instance of it.
+///
+/// When VIBE_SCHEDULER_TRACE names a file, the walk records what the Lean
+/// model needs and nothing else. Two row kinds:
+///
+///   project<TAB><path><TAB><rank>[<TAB><dep>...]   the planned graph
+///   step<TAB><path><TAB><fingerprint>              in EXECUTION order
+///
+/// `project` rows are `Project.dependencies` and `Project.rank`; `step` rows
+/// are the `Step.run` sequence, and their order is the interleaving a
+/// scheduler chose (VIBE_DEP_ORDER_SEED permutes it within a wave). The
+/// fingerprint is the published `JobResult`. scripts/scheduler_trace_oracle.sh
+/// checks the four properties that model states -- see it for which row
+/// proves which.
+///
+/// Accumulated in memory and written once, not appended per module: the row
+/// order IS the execution order, so a partial file from an aborted run would
+/// read as a legitimate shorter schedule rather than as a truncated one.
+let scheduler_trace_cell = array_empty()
+
+export fn set_scheduler_trace_path(path: String) -> Unit {
+  Array::truncate(scheduler_trace_cell, 0)
+  Array::push(scheduler_trace_cell, path)
+}
+
+fn scheduler_trace_path() -> String {
+  if Array::length(scheduler_trace_cell) > 0 {
+    Array::get(scheduler_trace_cell, 0)
+  } else {
+    ""
+  }
+}
+
 /// --- #1259: cross-module diagnostic collection ---------------------------
 ///
 /// Whether the import-DAG walk COLLECTS a diagnostic per failing module
@@ -1625,6 +1664,41 @@ fn sort_module_diagnostics(diags: Array[(String, String)]) -> Array[(String, Str
 /// therefore byte-identical to what the fail-fast walk would have thrown --
 /// which is what makes collection mode a superset of the default rather than
 /// a different output format.
+/// The `project` half of a scheduler trace: one row per planned module, with
+/// its rank and its dependency list. This IS Scheduler.lean's `Project` --
+/// `dependencies` and `rank` -- serialized, so the oracle can check
+/// `dependencyRankLt` against the same graph the walk actually stepped rather
+/// than against one it re-derived.
+fn scheduler_trace_project(buf: StringBuilder, order: Array[String], ranks: Array[Int], plan_edges: Array[(String, Array[String])]) -> Unit {
+  let n = Array::length(order)
+  let mut i = 0
+  while i < n {
+    let p = Array::get(order, i)
+    StringBuilder::push(buf, "project\t")
+    StringBuilder::push(buf, p)
+    StringBuilder::push(buf, "\t")
+    StringBuilder::push(buf, __to_string(Array::get(ranks, i)))
+    // A module the plan short-circuited (missing source, reusable
+    // fingerprint, persistent leaf cache) has no edge entry and so no
+    // dependencies -- which is exactly what it is to the scheduler: a leaf
+    // that is Ready from the start.
+    match plan_deps_of(plan_edges, p) {
+      None => (),
+      Some(deps) => {
+        let dlen = Array::length(deps)
+        let mut d = 0
+        while d < dlen {
+          StringBuilder::push(buf, "\t")
+          StringBuilder::push(buf, Array::get(deps, d))
+          d = d + 1
+        }
+      }
+    }
+    StringBuilder::push(buf, "\n")
+    i = i + 1
+  }
+}
+
 fn join_module_diagnostics(diags: Array[(String, String)]) -> String {
   let sorted = sort_module_diagnostics(diags)
   let msgs = array_empty()
@@ -1686,6 +1760,16 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
   let failed = empty_stack()
   let diags: Array[(String, String)] = [
   ]
+  // #1259 (#1239 step 8): the scheduler trace. Off unless
+  // VIBE_SCHEDULER_TRACE named a file.
+  let trace_path = scheduler_trace_path()
+  let tracing = String::length(trace_path) > 0
+  let trace = StringBuilder::new()
+  if tracing {
+    scheduler_trace_project(trace, order, ranks, plan_edges)
+  } else {
+    ()
+  }
   let n = Array::length(order)
   let mut i = 0
   while i < n {
@@ -1744,11 +1828,29 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
           dsc = next_dsc
           pc = next_pc
           Array::push(fps, (m, fp))
+          // One Step.run, recorded where the result is PUBLISHED -- the same
+          // point `BuildState.finish` sits at in the model. Recording it
+          // before the step would let a trace claim a module completed that
+          // then raised.
+          if tracing {
+            StringBuilder::push(trace, "step\t")
+            StringBuilder::push(trace, m)
+            StringBuilder::push(trace, "\t")
+            StringBuilder::push(trace, fp)
+            StringBuilder::push(trace, "\n")
+          } else {
+            ()
+          }
         }
       }
       k = k + 1
     }
     i = j
+  }
+  if tracing {
+    Fs::write_file(trace_path, StringBuilder::freeze(trace))
+  } else {
+    ()
   }
   // Before the root lookup: with the root itself diagnosed or blocked there is
   // no fingerprint and no environment for it, and reporting "missing:" for a
