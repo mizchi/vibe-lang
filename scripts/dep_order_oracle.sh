@@ -59,6 +59,17 @@ if ! grep -qa "VIBE_DEP_ORDER_SEED" "$STAGE2"; then
   exit 2
 fi
 
+# Second vacuity question, and the reason it is worth asking again: since
+# #1239 step 4(D) the seed permutes the order WITHIN A RANK of the schedule,
+# not a node's dependency visit order -- the walk no longer descends, it steps
+# a wave at a time (ensure_fingerprint_fs_impl, runtime/typecheck_fs.vibe).
+# A permutation of a one-element wave is the identity, so on a graph that
+# happened to be a single chain this oracle would again pass for the boring
+# reason. It is not: on this repo's own codegen_lexer_test.vibe graph, 150 of
+# 166 modules (90%) sit in a rank with at least one sibling, and the largest
+# rank holds 19. The seed therefore reorders most of the schedule, which is
+# precisely the choice a parallel coordinator makes differently run to run.
+
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
