@@ -130,6 +130,11 @@ say "launcher -> $TC_DIR/bin/vibe"
 # `vibe pkg` delegates to vibe_pkg.sh (#805); ship it with the toolchain so
 # the package/registry lane works standalone (no checkout needed).
 install -m 0644 "$ROOT_DIR/scripts/vibe_pkg.sh" "$TC_DIR/lib/vibe_pkg.sh"
+# #1239 step 4(D): the `--jobs=N` process-pool pre-warm. Shipping it is what
+# makes `--jobs` more than a no-op in an installed toolchain -- the older node
+# driver lives in the dev-repo scripts/ tree only, so `vibe` there printed a
+# note and compiled serially. Needs nothing but bash and the installed runner.
+install -m 0644 "$ROOT_DIR/scripts/parallel_warm_pool.sh" "$TC_DIR/lib/parallel_warm_pool.sh"
 say "pkg tool -> $TC_DIR/lib/vibe_pkg.sh"
 if [ -f "$ROOT_DIR/clients/js/lsp_server.js" ]; then
   install -m 0644 "$ROOT_DIR/clients/js/lsp_server.js" "$TC_DIR/lib/lsp_server.js"
