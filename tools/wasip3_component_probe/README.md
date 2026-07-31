@@ -426,3 +426,74 @@ Two 1000ms calls finish in the time of one. That 1x-not-2x scaling is the
 actual proof; the value check alone would pass on a serial implementation
 too. Ported to `comp_emit_component_wasm_async_concurrent_awaits` and gated
 by `scripts/test_concurrent_awaits_component_gate.sh`.
+
+## `interleaved_tasks/`: the M1b-3c-1c question, answered against the prediction (#1230)
+
+The "real interleaving spawn remains open" note above ended with a
+prediction: that concurrent guest work "requires either another task or a
+guest-side poll executor," citing Phase A's `spawn_local` dragging in a
+`FuturesUnordered` executor plus `context.get/set` and `waitable-set.poll`.
+
+**That prediction was wrong**, and this probe disproves it on real hardware.
+
+What Phase A was actually measuring is wit-bindgen's **callback** form —
+the explicit state machine that re-enters through a `[callback]` export on
+every wake event. Under the stackful form vibe emits, `waitable-set.wait`
+already reports **which** waitable fired (payload[0]), and completion-order
+dispatch is all interleaving needs.
+
+The probe is built so it cannot pass by accident:
+
+```
+  task A   await get-after(300) -> await get-after(300) -> log 1
+  task B   await get-after(100)                         -> log 2
+```
+
+both started before either is waited on; the result is `log[0]*10 + log[1]`.
+
+| | result | elapsed | reading |
+|---|---|---|---|
+| `component.wat` | **21** | **613ms** | B's continuation ran while A was still mid-sequence, and the total is A's *own* two awaits — B cost nothing |
+| `serial_control.wat` | **12** | **713ms** | A awaited to completion first: 300 + 300 + 100 |
+
+`serial_control.wat` is the same component — same canon set, same host
+import, same delays, same log encoding — with only the ordering changed. It
+is checked by the gate too, and must produce the **opposite** answer on
+both the value and the clock. Without it, "returns 21" would be an
+assertion with no evidence that it discriminates.
+
+Timeline: at t=0 both A's first await and B are issued; **at t=100 B
+resolves and B's continuation runs** while A is still waiting; at t=300 A
+advances its state machine and issues its second await; at t=600 A's
+continuation runs.
+
+**Established:** two logical guest computations interleave at their await
+points on ONE stackful fiber. No second stack, no `context.get/set`, no
+`waitable-set.poll`; the canon set is unchanged from `spawned_future/`.
+
+**Still open:** A's state across its two awaits is a hand-placed memory
+slot here — a hand-rolled state machine. Performing that transformation for
+arbitrary vibe source *is* ADR-0076's CPS/suspend lowering. So the
+remaining M1b-3c-1c work is localized to codegen, and is smaller than the
+old estimate now that "needs another task or a poll executor" is off the
+table.
+
+Needs viberun's `get-after` host import (a per-call delay); `get-async`'s
+single fixed delay makes completion order and start order coincide, which
+is enough to show calls overlap but says nothing about dispatch order.
+
+Because these delays are baked into the committed WAT (they are part of the
+artifact), viberun also exposes `VIBE_ASYNC_DELAY_SCALE_PCT` to scale every
+host suspend by a percentage. Ratios are preserved, so completion order --
+the thing the probe asserts -- is unaffected; only the clock moves:
+
+| scale | interleaved | serial | saving |
+|---|---|---|---|
+| 2% | 21 in 23ms | 12 in 25ms | 2ms |
+| 100% | 21 in 612ms | 12 in 713ms | 101ms |
+| 200% | 21 in 1212ms | 12 in 1412ms | 200ms |
+
+The gate uses 2% for its warmups -- which otherwise ran the probe's full
+~1.3s of sleeps purely to warm the JIT, costing as much as the measurement
+they exist to protect -- and 100% for the measured runs, so the margin is
+untouched. Raise it above 100 if a loaded machine ever narrows that margin.

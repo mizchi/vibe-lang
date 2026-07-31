@@ -650,6 +650,29 @@ fn run_async_component(path: &str) -> Result<i32> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(ASYNC_COMPONENT_GET_DELAY_MS);
+    // Percentage applied to every suspend below. `get-after`'s delays come
+    // from the GUEST (baked into the probe components), so unlike
+    // VIBE_ASYNC_GET_DELAY_MS there is otherwise no way to scale them from
+    // outside -- and a gate that only needs to warm the JIT would sit through
+    // the probe's full timings for nothing. Scaling here keeps every ratio
+    // intact, so completion ORDER, and therefore what the probes assert, is
+    // unchanged. Raise it above 100 on a loaded machine to widen the margins.
+    let delay_scale_pct: u64 = std::env::var("VIBE_ASYNC_DELAY_SCALE_PCT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(100);
+    // A nonzero request must stay nonzero: an async-lowered call that
+    // completes eagerly takes a different path through the guest (no subtask
+    // is created), which several probes deliberately reject with an
+    // `unreachable`. Scaling must not silently turn a blocking call into an
+    // eager one.
+    let scale = move |ms: u64| -> u64 {
+        if ms == 0 {
+            0
+        } else {
+            std::cmp::max(1, ms.saturating_mul(delay_scale_pct) / 100)
+        }
+    };
 
     let mut cfg = engine_config();
     cfg.wasm_component_model(true);
@@ -669,14 +692,41 @@ fn run_async_component(path: &str) -> Result<i32> {
             "get-async",
             move |_acc: &Accessor<StoreLimits>, _params: ()| {
                 Box::pin(async move {
-                    if delay_ms > 0 {
-                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    let ms = scale(delay_ms);
+                    if ms > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
                     }
                     Ok((ASYNC_COMPONENT_GET_VALUE,))
                 })
             },
         )
         .map_err(|e| format_err!("link get-async: {e}"))?;
+    // #1230 M1b-3c-1c: same thing with a caller-chosen delay, returned as the
+    // value. `get-async`'s single fixed delay makes every in-flight call
+    // resolve at the same moment, which is enough to show that calls OVERLAP
+    // (M1b-3c-3) but cannot show anything about the ORDER continuations run
+    // in -- completion order and start order coincide. A per-call delay makes
+    // them differ observably, which is what the interleaving probe needs.
+    // Echoing `ms` back also lets the guest identify a completion by value,
+    // independently of the waitable handle.
+    linker
+        .root()
+        .func_wrap_concurrent(
+            "get-after",
+            move |_acc: &Accessor<StoreLimits>, (ms,): (u32,)| {
+                Box::pin(async move {
+                    // The value echoed back is the guest's ORIGINAL request,
+                    // not the scaled sleep -- probes identify a completion by
+                    // it, so scaling must stay invisible to the guest.
+                    let slept = scale(ms as u64);
+                    if slept > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(slept)).await;
+                    }
+                    Ok((ms,))
+                })
+            },
+        )
+        .map_err(|e| format_err!("link get-after: {e}"))?;
 
     // A current-thread runtime is enough (and keeps this off the thread pool):
     // the only await points are this timer and wasmtime's own event loop.

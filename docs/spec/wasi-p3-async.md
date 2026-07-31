@@ -642,6 +642,14 @@ handshake や観測可能な処理があると順序が変わるか deadlock す
 が既に抱えている制限と同じもので、今回それを超えてはいない。真の
 interleaving spawn は **M-conc-2 / M1b-3c-2 の未解決事項として残る**。
 
+> **追記（§3.11 で訂正）**: 上段の「並行な guest 計算には別 task か guest 側
+> poll executor のどちらかが要る」という推論は **誤りだった**。stackful 方式では
+> `waitable-set.wait` の payload[0](どの waitable が発火したか)による完了順
+> ディスパッチだけで interleaving が成立する——第2のスタックも
+> `context.get/set` も `waitable-set.poll` も要らない。Phase A が見ていた
+> `FuturesUnordered` + `context.get/set` は wit-bindgen の **callback 方式**の
+> 都合であって interleaving の要件ではなかった。実機反証は §3.11。
+
 ### 3.9 M1b-3c-2 landed — async component を production runtime が駆動できるようになった（#1230）
 
 §3.8 までの async component は、**プロジェクト内のどのツールでも動かせなかった**。
@@ -744,6 +752,60 @@ emitter 化した。**canon 集合は M1b-3c-1b から一切増えていない**
 
 **残る未解決は M1b-3c-1c のまま**: 親の処理と interleave する第2の *guest*
 計算は、本節の機構では作れない。
+
+### 3.11 M1b-3c-1c — interleaving は ABI 側の追加機構を要さなかった（§3.8 の予測を訂正、#1230）
+
+§3.8 は「真の interleaving spawn には**別 task か guest 側 poll executor の
+どちらかが要る**」と書き、根拠として Phase A の実測（`wit_bindgen::spawn_local`
+が `FuturesUnordered` executor 一式 + `context.get/set` + `waitable-set.poll`
+を引き込む）を挙げていた。**これは誤りだった** ——
+`tools/wasip3_component_probe/interleaved_tasks/` で実機反証した。
+
+Phase A が見ていたものは wit-bindgen の **callback 方式**（`[callback]` export
+経由で毎 wake event に再入する明示的 state machine）の都合であって、
+interleaving 自体の要件ではない。stackful 方式では
+`waitable-set.wait` が **payload[0] で「どの waitable が発火したか」を返す**
+——完了順ディスパッチに必要なものはそれだけである。
+
+#### probe の設計（偽装できない形にした）
+
+```
+  task A   await get-after(300) -> await get-after(300) -> log 1
+  task B   await get-after(100)                         -> log 2
+```
+
+どちらも「片方を待ち始める前に」発行する。結果は `log[0]*10 + log[1]`。
+
+| | 結果 | 実測時間 | 意味 |
+|---|---|---|---|
+| `component.wat` | **21** | **613ms** | B の継続が A の途中で走った。合計は **A 自身の 2×300ms** ——B は完全に重なった |
+| `serial_control.wat` | **12** | **713ms** | A を最後まで待ってから B。300+300+100 |
+
+タイムライン: t=0 で A の1st と B を発行 → **t=100 で B が解決し B の継続が走る**
+（A はまだ1st await 中）→ t=300 で A が state machine を1つ進めて 2nd await を発行
+→ t=600 で A の継続。
+
+負の対照（`serial_control.wat`）は同一の canon 集合・同一の値・同一の log
+エンコードで順序だけを変えたもので、**値と wall-clock の両方で反対の答えを出す**
+ことを gate が確認する（`scripts/test_interleaved_tasks_probe_gate.sh`）——
+これが無いと「21 を返す」という assertion が判別的である保証が無い。
+
+#### 確立したこと / 残ること
+
+**確立**: 2つの論理的な guest 計算が、**1本の stackful fiber 上で** await 点で
+interleave する。**第2のスタックも `context.get/set` も `waitable-set.poll` も
+不要**で、canon 集合は M1b-3c-1b から不変。
+
+**残る**: A が2つの await をまたいで持ち越す状態を、この probe は**メモリ上の
+スロットに手で置いた state machine** として書いた。任意の vibe ソースに対して
+この変換を行うのが **ADR-0076 の CPS/suspend lowering** そのものである。
+つまり M1b-3c-1c の残作業は **ABI 側ではなく codegen 側に局所化された**——
+「別 task か poll executor が要る」という §3.8 の前提が消えたぶん、当初の
+見積もりより小さい。
+
+emitter（固定シェイプの component 合成）は本節では作っていない——M1b-3c-1a と
+同じ「mechanics 実証のみ」フェーズ。実 `.vibe` ソースからこの形へ落とすには
+上記の state 表現が先に要る。
 
 ## 4. WASI 0.3 境界マッピング
 
@@ -868,7 +930,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | **M1b-3b** | `await`/`Future::ready` の codegen（ready-future identity lowering）: `await(x)`/`Future::ready(x)` を引数の値へ lower。**await を使う async プログラムが初めてコンパイル&実行可能**。gate を `await(Future::ready(42))` body に更新し E2E で 42 | done |
 | **M1b-3c** | 真の blocking await: `future.read` + waitable-set 待機ループ（async source = host async import / subtask spawn が前提）。core codegen に future canon built-in の import + buffer + ループを emit | spike done（§3.7、mechanics 実機確認）/ codegen 未着手 |
 | **M1b-3c-1b** | blocking await（host async import）の component_codegen.vibe emitter。待機ループを別関数に括り出した形で、`future.*` canon 無しに動くことを実機検証（§3.8）。byte-exact 検証のみで実 `.vibe` ソースへの配線は対象外。**spawn 相当は「spawn と join の間に観測可能な処理が無い」退化ケースのみ**——真の interleaving spawn は未達（§3.8「実証範囲の限界」） | done（#1230、`comp_emit_component_wasm_async_spawned_future` + `scripts/test_spawned_future_component_gate.sh`） |
-| **M1b-3c-1c** | 真の interleaving spawn: 親の処理と並行して走る第2の guest 計算（guest 側 poll executor か別 task が要る）。M-conc-2 と実質同一の機構 | 未着手（#1240 review で M1b-3c-1b の範囲外と確定） |
+| **M1b-3c-1c** | 真の interleaving spawn: 親の処理と並行して走る第2の guest 計算。**§3.11 で ABI 側の問いは解決**——`waitable-set.wait` の完了順ディスパッチだけで interleave し、別 task も poll executor も `context.get/set` も不要（§3.8 の予測を実機反証、負の対照付き gate で固定）。残るのは **await をまたぐ task 状態の表現＝ADR-0076 の CPS/suspend lowering** のみで、codegen 側に局所化された | mechanics done（#1230、`tools/wasip3_component_probe/interleaved_tasks/` + `scripts/test_interleaved_tasks_probe_gate.sh`）/ emitter・実ソース配線は未着手 |
 | **M1b-3c-3** | **本物の並行 await**（§3.10）: guest の計算は1本のまま、**複数の host 操作を同時に in-flight** にして待つ。canon 集合は M1b-3c-1b から不変——並行性を生むのは「どちらも待ち始める前に両方発行する」という操作順序だけ。`comp_emit_component_wasm_async_concurrent_awaits` + probe + gate（値 84 と **両側の wall-clock** で検証、2×1000ms が 1015ms = 1× スケール）。M1b-3c-1c（guest の計算が2本 interleave）とは別問題で、そちらは未解決のまま | done（#1230） |
 | **M1b-3c-2** | async component を **production runtime が駆動**できるようにする（§3.9）: `runtime/viberun` の wasmtime を 45→47.0.2 bump（同期パスはソース無改修）、component ヘッダ判別 + `instantiate_async`/`run_concurrent`/`call_concurrent`、`get-async` を `func_wrap_concurrent` + 実 suspend する tokio timer で実装。gate が probe 専用 Rust host バイナリ依存を脱却。**副産物**: eager-completion 時に subtask が生成されないのに `subtask.drop` していた実バグを発見・修正（emitter + probe WAT 両方）、gate が blocked/eager 両パスを検証 | done（#1230） |
 | **M-conc-1** | `Task[T]` codegen（synchronous eager model）: `spawn`（thunk を即時実行・closure type 9 で `call_indirect`）/`join`（identity）/`cancel`（drop→Unit）/`race`（先行値）を `compile_call` で lower。inlined async builtin の free-var capture バグ（nested lambda 内で `Task::join` 等を closure として捕捉）を `collect_free_vars_expr` で修正。gate に Task entry 追加（spawn/join/cancel/race → 42、wasmtime 45） | done |
