@@ -32,9 +32,13 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i32_and,
   emit_i32_const,
   emit_i32_eq,
+  emit_i32_eqz,
+  emit_i32_gt_u,
   emit_i32_load,
+  emit_i32_ne,
   emit_i32_shr_u,
   emit_i32_store,
+  emit_i32_sub,
   emit_i64_const,
   emit_if_void,
   emit_local_get,
@@ -1818,6 +1822,240 @@ fn comp_generate_spawned_future_guest_core_module() -> Bytes {
   bytebuf_to_bytes(out)
 }
 
+/// #1230 M1b-3c-3: guest core module for "two host operations genuinely in
+/// flight at the same time" -- a byte-level port of
+/// tools/wasip3_component_probe/concurrent_awaits/component.wat.
+///
+/// Same imports, same types, same canon set as the spawned-future module
+/// above; only $both's body differs. That is the finding this milestone
+/// records: real concurrency needs NO canon built-in beyond the ones
+/// M1b-3c-1b already proved. What produces it is purely the ORDER of
+/// operations -- issue both async-lowered calls BEFORE waiting on either.
+/// A "start A, wait A, start B, wait B" body emits the identical
+/// instructions and returns the identical value, and takes twice as long.
+///
+/// Note this is NOT M1b-3c-1c ("interleaving spawn"). Here one guest
+/// computation waits on several host operations, which a waitable set with
+/// several joined subtasks expresses directly. Two concurrent GUEST
+/// computations still need a second task or a guest-side poll executor and
+/// remain open.
+///
+/// Memory layout (the shared memhost page):
+///    0  result slot for call A       16  waitable-set.wait payload[0]
+///    4  result slot for call B            = which waitable fired
+///                                    20  payload[1] = its status code
+///
+/// $both's locals (all i32): 0=packed_a 1=packed_b 2=code_a 3=code_b
+/// 4=sub_a 5=sub_b 6=ws 7=pending 8=event0 9=handle 10=status 11=has_ws.
+fn comp_generate_concurrent_awaits_guest_core_module() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 6)
+  emit_func_type_raw(tc, [
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, array_empty(), [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127,
+    127
+  ], array_empty())
+  emit_func_type_raw(tc, [
+    127,
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127
+  ], array_empty())
+  emit_func_type_raw(tc, array_empty(), array_empty())
+  bytebuf_push_section(out, 1, tc)
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, 8)
+  emit_name(ic, "$root")
+  emit_name(ic, "[async-lower]get-async")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 0)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-new]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-join]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-wait]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 3)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-drop]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 4)
+  emit_name(ic, "$root")
+  emit_name(ic, "[subtask-drop]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 4)
+  emit_name(ic, "[export]$root")
+  emit_name(ic, "[task-return]run")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 4)
+  emit_name(ic, "env")
+  emit_name(ic, "memory")
+  bytebuf_push(ic, 2)
+  bytebuf_push(ic, 0)
+  leb128_encode_u32(ic, 1)
+  bytebuf_push_section(out, 2, ic)
+  emit_function_section(out, [
+    1,
+    5
+  ])
+  emit_export_section(out, "run", 8)
+  let code_sec = bytebuf_new()
+  leb128_encode_u32(code_sec, 2)
+  let b = bytebuf_new()
+  leb128_encode_u32(b, 1)
+  leb128_encode_u32(b, 12)
+  bytebuf_push(b, 127)
+  // --- start BOTH calls before waiting on either ---------------------------
+  emit_i32_const(b, 0)
+  emit_call(b, 0)
+  emit_local_set(b, 0)
+  emit_local_get(b, 0)
+  emit_i32_const(b, 15)
+  emit_i32_and(b)
+  emit_local_set(b, 2)
+  emit_local_get(b, 0)
+  emit_i32_const(b, 4)
+  emit_i32_shr_u(b)
+  emit_local_set(b, 4)
+  emit_i32_const(b, 4)
+  emit_call(b, 0)
+  emit_local_set(b, 1)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 15)
+  emit_i32_and(b)
+  emit_local_set(b, 3)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 4)
+  emit_i32_shr_u(b)
+  emit_local_set(b, 5)
+  // --- count how many actually blocked -------------------------------------
+  // A call that completed eagerly (status RETURNED, code 2) created no
+  // subtask, so it is neither joined nor dropped -- the eager path the
+  // spawned-future shape got wrong before M1b-3c-2.
+  emit_i32_const(b, 0)
+  emit_local_set(b, 7)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 2)
+  emit_i32_ne(b)
+  emit_if_void(b)
+  emit_local_get(b, 7)
+  emit_i32_const(b, 1)
+  emit_i32_add(b)
+  emit_local_set(b, 7)
+  emit_end(b)
+  emit_local_get(b, 3)
+  emit_i32_const(b, 2)
+  emit_i32_ne(b)
+  emit_if_void(b)
+  emit_local_get(b, 7)
+  emit_i32_const(b, 1)
+  emit_i32_add(b)
+  emit_local_set(b, 7)
+  emit_end(b)
+  // --- join the pending ones into one set and drain it ---------------------
+  emit_local_get(b, 7)
+  emit_i32_const(b, 0)
+  emit_i32_gt_u(b)
+  emit_if_void(b)
+  emit_call(b, 1)
+  emit_local_set(b, 6)
+  emit_i32_const(b, 1)
+  emit_local_set(b, 11)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 2)
+  emit_i32_ne(b)
+  emit_if_void(b)
+  emit_local_get(b, 4)
+  emit_local_get(b, 6)
+  emit_call(b, 2)
+  emit_end(b)
+  emit_local_get(b, 3)
+  emit_i32_const(b, 2)
+  emit_i32_ne(b)
+  emit_if_void(b)
+  emit_local_get(b, 5)
+  emit_local_get(b, 6)
+  emit_call(b, 2)
+  emit_end(b)
+  // One wait loop retires BOTH subtasks. payload[0] (addr 16) names the
+  // waitable that fired, so either completion order works.
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 6)
+  emit_i32_const(b, 16)
+  emit_call(b, 3)
+  emit_local_set(b, 8)
+  emit_local_get(b, 8)
+  emit_i32_const(b, 1)
+  emit_i32_eq(b)
+  emit_if_void(b)
+  emit_i32_const(b, 16)
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, 9)
+  emit_i32_const(b, 20)
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, 10)
+  emit_local_get(b, 10)
+  emit_i32_const(b, 2)
+  emit_i32_eq(b)
+  emit_if_void(b)
+  emit_local_get(b, 9)
+  emit_call(b, 5)
+  emit_local_get(b, 7)
+  emit_i32_const(b, 1)
+  emit_i32_sub(b)
+  emit_local_set(b, 7)
+  emit_local_get(b, 7)
+  emit_i32_eqz(b)
+  // depth 3 = the enclosing `block`: 0 = this if(status==2),
+  // 1 = if(event0==1), 2 = loop, 3 = block. (The spawned-future module's
+  // equivalent branch is depth 2 because it has one fewer nested if.)
+  emit_br_if(b, 3)
+  emit_end(b)
+  emit_end(b)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(b, 6)
+  emit_call(b, 4)
+  emit_end(b)
+  // --- both results are in memory now; return their sum --------------------
+  emit_i32_const(b, 0)
+  emit_i32_load(b, 2, 0)
+  emit_i32_const(b, 4)
+  emit_i32_load(b, 2, 0)
+  emit_i32_add(b)
+  bytebuf_push(b, 11)
+  leb128_encode_u32(code_sec, Bytes::length(b))
+  bytebuf_push_buf(code_sec, b)
+  let run_body = bytebuf_new()
+  leb128_encode_u32(run_body, 0)
+  emit_call(run_body, 7)
+  emit_call(run_body, 6)
+  bytebuf_push(run_body, 11)
+  leb128_encode_u32(code_sec, Bytes::length(run_body))
+  bytebuf_push_buf(code_sec, run_body)
+  bytebuf_push_section(out, 10, code_sec)
+  bytebuf_to_bytes(out)
+}
+
 /// #1230 M1b-3c-1b: wrap the fixed-shape blocking-await guest module
 /// (above) into a fully self-contained async component -- a byte-exact port
 /// of tools/wasip3_component_probe/spawned_future/component.wat, verified
@@ -1842,9 +2080,15 @@ fn comp_generate_spawned_future_guest_core_module() -> Bytes {
 /// canon (memory ...) option and for the "env" instantiation arg). Component
 /// func indices: 0=the "get-async" import, 1=the lifted "run" export.
 /// Component type indices: 0=the import's async functype, 1=the export's.
-export fn comp_emit_component_wasm_async_spawned_future(export_name: String, comp_result_valtype: Int) -> Bytes with { Error } {
-  // #1240 review: the guest core module below is hard-coded to an i32-shaped
-  // result (an `(i32) -> ()` [task-return] import, an i32-returning $writer,
+/// #1230 M1b-3c-3: the composition shared by the two fixed-shape
+/// self-contained async components (spawned-future and concurrent-awaits).
+/// They differ ONLY in the guest core module -- same imports, same canon
+/// set, same instance/index layout -- so the wrapper lives here once and
+/// each public emitter supplies its own guest bytes plus a `shape` label
+/// for the diagnostic.
+fn comp_emit_self_contained_async_component(export_name: String, comp_result_valtype: Int, guest_module: Bytes, shape: String) -> Bytes with { Error } {
+  // #1240 review: the guest core modules are hard-coded to an i32-shaped
+  // result (an `(i32) -> ()` [task-return] import, an i32-returning body,
   // and `i32.load` of the results area), so a caller asking for any other
   // lowering -- notably the project's ordinary `Int` = s64 -- would get a
   // component whose task.return canon disagrees with the guest's own import
@@ -1853,7 +2097,7 @@ export fn comp_emit_component_wasm_async_spawned_future(export_name: String, com
   // comp_result_valtype is possible but unverified, so it waits for a real
   // caller (the M1b-2c-shaped follow-up) to pin it against a probe.
   if comp_result_valtype != comp_valtype_u32 {
-    throw("component(spawned-future): only comp_valtype_u32 (\{comp_valtype_u32}) is supported, got \{comp_result_valtype} -- the guest core module is hard-coded to an i32-shaped result")
+    throw("component(\{shape}): only comp_valtype_u32 (\{comp_valtype_u32}) is supported, got \{comp_result_valtype} -- the guest core module is hard-coded to an i32-shaped result")
   }
   else {
     ()
@@ -1864,7 +2108,7 @@ export fn comp_emit_component_wasm_async_spawned_future(export_name: String, com
   emit_comp_import_section(buf, [
     "get-async"
   ], 1)
-  emit_core_module_section(buf, comp_generate_spawned_future_guest_core_module())
+  emit_core_module_section(buf, guest_module)
   emit_core_module_section(buf, comp_generate_memhost_module())
   let memhost_inst = 0
   emit_core_instance_instantiate_section(buf, 1, array_empty())
@@ -1935,6 +2179,28 @@ export fn comp_emit_component_wasm_async_spawned_future(export_name: String, com
   emit_canon_lift_async_section(buf, run_func_alias_idx, 1)
   emit_comp_export_section(buf, export_name, 1)
   bytebuf_to_bytes(buf)
+}
+
+export fn comp_emit_component_wasm_async_spawned_future(export_name: String, comp_result_valtype: Int) -> Bytes with { Error } {
+  comp_emit_self_contained_async_component(export_name, comp_result_valtype, comp_generate_spawned_future_guest_core_module(), "spawned-future")
+}
+
+/// #1230 M1b-3c-3: the same self-contained component shape, but with the
+/// guest that starts BOTH host calls before waiting on either -- so the two
+/// host operations are genuinely in flight at the same time.
+///
+/// The emitted component imports and exports exactly what the
+/// spawned-future one does; the entire difference is the order of
+/// operations inside the guest. Verified against
+/// tools/wasip3_component_probe/concurrent_awaits/component.wat and, at
+/// runtime, by scripts/test_concurrent_awaits_component_gate.sh: with a
+/// host that suspends 300ms per call, `run` returns 84 (= 42 + 42, so both
+/// calls really completed and each result slot was really written) in
+/// ~300ms rather than ~600ms.
+///
+/// `comp_result_valtype` must be comp_valtype_u32; anything else throws.
+export fn comp_emit_component_wasm_async_concurrent_awaits(export_name: String, comp_result_valtype: Int) -> Bytes with { Error } {
+  comp_emit_self_contained_async_component(export_name, comp_result_valtype, comp_generate_concurrent_awaits_guest_core_module(), "concurrent-awaits")
 }
 
 /// #537: core:sort for globals (func=0, table=1, mem=2, global=3).
