@@ -140,15 +140,25 @@ cancel point、failure propagation、handler task-affinity は ADR-0068 に従�
 #### 2.4/2.5 front-end（landed）
 
 M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
-- `Stream[T]` / `Task[T]` は `CtNamed("Stream"/"Task", _)` で構造表現（要素型は
-  gradual な `CtUnknown`）。`Future[Option[T]]` は `CtNamed("Future",
+
+**Stream 側（landed、現行）**
+- `Stream[T]` は `CtNamed("Stream", _)` で構造表現（要素型は gradual な
+  `CtUnknown`）。`Future[Option[T]]` は `CtNamed("Future",
   [CtOption(CtUnknown)])`。
-- builtin は `lib/@vibe/compiler/checker/builtins_async.vibe`（`lookup_stream` /
-  `lookup_concurrency`、`lookup_builtin` 経由）に登録。suspend / runtime 接触
-  操作（`*::next`/`fold`/`spawn`/`join`/`cancel`/`race`/`timeout`）は `Async`
-  effect を帯び、effect-escape チェックがそのまま機能する。
-- 検証: `checker_async_test.vibe` 13/13、`checker_effects_test.vibe` 19/19
-  （無回帰）。
+- builtin は `lib/@vibe/compiler/checker/builtins_async.vibe` の `lookup_stream`
+  （`lookup_builtin` 経由）に登録。suspend / runtime 接触操作
+  （`*::next`/`fold`）は `Async` effect を帯び、effect-escape チェックが
+  そのまま機能する。
+
+**Task 側（RETIRED in #1227、以下は当時の記録）**
+- ~~`Task[T]` は `CtNamed("Task", _)` で構造表現。~~
+- ~~builtin は同ファイルの `lookup_concurrency` に登録。`spawn`/`join`/`cancel`/
+  `race`/`timeout` は `Async` effect を帯びる。~~ 現在
+  `lookup_concurrency` は**無条件に `None` を返す**——これらの名前は
+  `unknown name` になる。
+- 検証: `checker_async_test.vibe` は「登録されている」ことを assert する4
+  テストを、「登録されていない」ことを pin する1テストに置き換えてある
+  （#1227）。`checker_effects_test.vibe` 19/19（無回帰）。
 - **`Task[T]` codegen（synchronous eager model, RETIRED in #1227）**: 単一スレッドの
   linear backend では「spawn = thunk を即時実行し、Task 値 = 解決済み結果」
   「join = identity」「cancel = drop して Unit」「race = 先行 task の値」という
@@ -158,9 +168,7 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
   wasmtime 45 上で実行可能だった。**#1227 でこの lowering ごと撤去し**、
   `test_async_component_gate.sh` の Task entry も外した（`option` entry の
   `Task::timeout` は `Stream::next(Stream::once(1))` に差し替え、合計 42 を維持）。
-  `checker_async_test.vibe` は「登録されている」ことを assert する4テストを、
-  「登録されていない」ことを pin する1テストに置き換えてある——この surface が
-  戻ってくればそこで落ちる。
+  checker 側の pin は上の「Task 側（RETIRED）」を参照。
   - **free-var capture 修正**（撤去前の記録）: inlined async builtin
     （`await`/`Future::ready`/`Task::spawn|join|cancel|race`）は func table に
     居ないため、nested lambda
@@ -186,7 +194,8 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
     deadline は評価して捨てた）。**#1227 で撤去**。gate の `option` entry は
     `Stream::next(Stream::once(1))` に差し替えて Some 経路の網羅を維持している。
   合成式経由なので `match { Some(x) => … None => … }` が正しく動く（gate の
-  Option entry が Some/None 両経路 + timeout を網羅 → 42）。
+  Option entry が `Stream::next` の Some/None 両経路を網羅 → 42。timeout 分は
+  #1227 の撤去で外した）。
 - **`String::to_bytes` codegen（ByteStream consume, landed）**: HTTP body を
   Stream 化する第一歩。`String::to_bytes(s) : Stream[Int]`（= `ByteStream`、
   WASI 0.3 `stream<u8>`）が文字列のバイト列を eager に Array へ展開し、handler
