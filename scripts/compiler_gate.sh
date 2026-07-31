@@ -7409,4 +7409,41 @@ esac
 rm -rf "$plandir"
 echo "[compiler-gate] VIBE_MODULE_PLAN agrees with per-file discovery ok"
 
+# 73/73. Bytes::append on the wasm-gc lane, actually RUN.
+#
+#        Both backends share gen_bytes_append_body (a `Bytes` lives in linear
+#        memory on the gc lane too -- gen_bytes_push_body is shared as well),
+#        but codegen_bytes_test.vibe's gc cases only assert the module
+#        VALIDATES. Nothing executed an append on the gc backend, so a change
+#        to that shared generator could pass every gc test while producing a
+#        module that computes the wrong bytes.
+#
+#        The fixture exercises the two paths the small appends elsewhere never
+#        reach: crossing the initial capacity of 64 (so the grow branch runs)
+#        and appending a buffer to ITSELF (source and destination alias). Its
+#        checksum is position-weighted, so a copy landing at the wrong offset
+#        or with the wrong length changes it -- a plain sum would not.
+echo "[compiler-gate] 73/73 wasm-gc backend runs Bytes::append (grow + self-alias)"
+bagdir="_build/_gate_bytes_append_gc"
+rm -rf "$bagdir"; mkdir -p "$bagdir"
+for bag_be in gc linear; do
+  bag_env=""
+  [ "$bag_be" = "gc" ] && bag_env="VIBE_BACKEND=gc"
+  env $bag_env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_bytes_append_grow.vibe" "$bagdir/$bag_be.wasm" main >/dev/null 2>&1
+  if [ ! -s "$bagdir/$bag_be.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc_bytes_append_grow.vibe did not compile on the $bag_be backend" >&2
+    cat "$bagdir/$bag_be.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  bag_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$bagdir/$bag_be.wasm" 2>&1 | tail -1)"
+  if [ "$bag_out" != "4027170" ]; then
+    echo "[compiler-gate] FAIL: Bytes::append on the $bag_be backend got '$bag_out' (want 4027170) -- a grow or an aliased append copied the wrong bytes" >&2
+    exit 1
+  fi
+done
+rm -rf "$bagdir"
+echo "[compiler-gate] Bytes::append runs correctly on both backends ok (4027170)"
+
 echo "[compiler-gate] ok"
