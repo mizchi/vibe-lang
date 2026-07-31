@@ -43,6 +43,15 @@ struct PCtx {
   borrows: Array[Int];
   scalar: Array[Bool];
   remaining: Array[Int];
+  // ADR-0092 per-use pairing (the borrowed-arg0 over-release fix): uses as
+  // counted BEFORE pctx_apply_borrow_retention's +1 (i.e. owned consumes
+  // only), snapshotted by that pass in id order.
+  owned_uses: Array[Int];
+  // True for a let-binding whose VALUE is a call to a borrow-arg0 fn (user
+  // set or builtin list) -- the class whose result may be an unowned
+  // interior view. With the borrow set empty this is never set, so the fix
+  // is inert while lc_borrow_arg0_enabled is off.
+  view_call_let: Array[Bool];
   actions: Array[PerceusAction]
 }
 
@@ -131,6 +140,10 @@ fn pctx_new(borrow_ret_names: Array[String], borrow_arg0_fns: Array[String]) -> 
     ],
     remaining: [
     ],
+    owned_uses: [
+    ],
+    view_call_let: [
+    ],
     actions: [
     ],
   }
@@ -200,8 +213,26 @@ fn pc_declare(ctx: PCtx, _name: String, scalar: Bool) -> Int {
   Array::push(ctx.uses, 0)
   Array::push(ctx.borrows, 0)
   Array::push(ctx.scalar, scalar)
+  Array::push(ctx.view_call_let, false)
   ctx.next_id = id + 1
   id
+}
+
+/// ADR-0092 per-use pairing: mark `id` as a view-call let-binding when its
+/// value is a call to a borrow-arg0 fn (see PCtx.view_call_let).
+fn pctx_mark_view_call(ctx: PCtx, id: Int, value: Expr) -> Int {
+  match value {
+    ECall(vc, _, _) => match vc {
+      EIdent(vf, _) => if is_borrow_arg0_call(vf) || array_contains_str_pctx(ctx.borrow_arg0_user, vf) {
+        Array::set(ctx.view_call_let, id, true)
+      } else {
+        ()
+      },
+      _ => ()
+    },
+    _ => ()
+  }
+  0
 }
 
 fn pe_declare(ctx: PCtx, _name: String) -> Int {
@@ -227,7 +258,19 @@ fn pc_count_use(ctx: PCtx, scope: Map[String, Int], name: String) -> Int {
 
 fn pe_scope_end(ctx: PCtx, id: Int, name: String) -> Int {
   if Array::get(ctx.remaining, id) > 0 && !Array::get(ctx.scalar, id) {
-    pe_push(ctx, PaDrop, name)
+    // ADR-0092 per-use pairing: a view-call let-binding whose uses are ALL
+    // borrows acquired no ownership -- its plan has no dup and its value
+    // may be an unowned interior view, so the retention-driven scope-end
+    // drop would release a reference it never held (the over-release that
+    // trapped codegen_heap_e2e_test under the borrowed-arg0 ABI). Suppress
+    // the drop for exactly that class; a fresh-owned value from a
+    // borrow-arg0 callee then leaks (bounded, safe direction). Params are
+    // never in the class (view_call_let is set only from ELet values).
+    if Array::get(ctx.view_call_let, id) && Array::get(ctx.owned_uses, id) == 0 && Array::get(ctx.borrows, id) > 0 {
+      ()
+    } else {
+      pe_push(ctx, PaDrop, name)
+    }
     Array::set(ctx.remaining, id, 0)
   }
   0
@@ -1629,11 +1672,13 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     ELet(name, value, body, _) => {
       pc_count(ctx, scope, value)
       let id = pc_declare(ctx, name, is_scalar_expr(ctx, value))
+      let _ = pctx_mark_view_call(ctx, id, value)
       pc_count(ctx, Map::set(scope, name, id), body)
     },
     ELetMut(name, value, body, _) => {
       pc_count(ctx, scope, value)
       let id = pc_declare(ctx, name, is_scalar_expr(ctx, value))
+      let _ = pctx_mark_view_call(ctx, id, value)
       pc_count(ctx, Map::set(scope, name, id), body)
     },
     ELetRec(name, value, body) => {
@@ -1918,6 +1963,7 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
 fn pctx_apply_borrow_retention(ctx: PCtx) -> Int {
   let mut bid = 0
   while bid < ctx.next_id {
+    Array::push(ctx.owned_uses, Array::get(ctx.uses, bid))
     if Array::get(ctx.borrows, bid) > 0 {
       Array::set(ctx.uses, bid, Array::get(ctx.uses, bid) + 1)
     } else {

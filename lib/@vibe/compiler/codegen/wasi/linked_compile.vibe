@@ -837,24 +837,22 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // program-wide (read-only first param, never valued/aliased -- see
   // compute_borrow_arg0_user_fns). The entry fn and the conventional entry
   // names are excluded: the host invokes them without consulting the set.
-  // ADR-0092 borrow-inference slice 1 -- DEFAULT OFF pending per-use-paired
-  // planner accounting. The whole-program analysis, PCtx/CompileCtx
-  // threading, callee-side drop filtering, and fixture all remain wired;
-  // flip lc_borrow_arg0_enabled to experiment. Root cause of the disable
-  // (isolated by set bisection + emission byte-diff on
-  // codegen_heap_e2e_test, 2026-07-31): the planner's dup budget is
-  // computed from HOLISTIC use totals per binding, so flipping one call
-  // site's arg0 use to a borrow can eliminate an ENTRY DUP that was also
-  // covering a remaining OWNED consume elsewhere in the same body -- the
-  // callee-side epilogue then releases a reference the caller never had
+  // ADR-0092 borrow-inference slice 1 -- ON since the per-use pairing fix
+  // in the planner (perceus.vibe: PCtx.owned_uses/view_call_let +
+  // pe_scope_end suppression). The original over-release (isolated by set
+  // bisection + emission byte-diff on codegen_heap_e2e_test, 2026-07-31):
+  // flipping a call site's arg0 use to a borrow removed a binding's entry
+  // dup while the retention-driven scope-end drop stayed, so a let-binding
+  // holding an UNOWNED interior view (value = call to a borrow-arg0 fn,
+  // all uses borrowed) released a reference it never acquired
   // (over-release -> recycled live block -> downstream corruption; trapped
   // as an OOB guard inside parse_type_impl after ~90 compiles of churn).
-  // The sound fix is per-use-paired accounting -- explicit planner
-  // vocabulary (PaBorrowUse et al.) pairing each dup with the specific
-  // consume it feeds, which is the planned ADR-0092 planner-vocabulary
-  // phase. Measured potential while enabled: RC selfcompile ratio
-  // 2.05 -> 1.68-1.82.
-  let lc_borrow_arg0_enabled = false
+  // The planner now suppresses the scope-end drop for exactly that class
+  // (view-call let-binding with zero owned uses and >0 borrows); a
+  // fresh-owned value from a borrow-arg0 callee then leaks (bounded, safe
+  // direction) until the full PaReuseToken/PaReuseAlloc planner-vocabulary
+  // phase pairs every dup with its consume.
+  let lc_borrow_arg0_enabled = true
   let lc_borrow_arg0_user_all = if lc_borrow_arg0_enabled {
     compute_borrow_arg0_user_fns(stmts)
   } else {
