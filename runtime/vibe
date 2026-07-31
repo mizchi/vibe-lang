@@ -333,6 +333,42 @@ compile_to() {
 maybe_warm_frontend_cache() {
   local jobs="$1" src="$2"
   [ "$jobs" -gt 1 ] || return 0
+  # Preferred path (#1239 step 4(D)): the process-pool coordinator. It needs
+  # only bash and the runner this launcher already uses, so unlike the node
+  # driver below it works in an installed toolchain -- install.sh puts it in
+  # lib/ next to vibe_pkg.sh, and a dev checkout finds it under scripts/.
+  #
+  # It also gets to use pick_cli's choice, which the node driver cannot: a
+  # .cwasm is a wasmtime AOT image that only viberun can load, and that is the
+  # difference between ~8ms and ~485ms of startup per module job (#1248). Every
+  # worker here is a fresh process, so that cost is paid once per job.
+  local pool=""
+  local cand
+  for cand in "$TOOLCHAIN_DIR/lib/parallel_warm_pool.sh" \
+              "$TOOLCHAIN_DIR/scripts/parallel_warm_pool.sh"; do
+    [ -f "$cand" ] && { pool="$cand"; break; }
+  done
+  if [ -n "$pool" ]; then
+    local pool_log; pool_log="$(mktemp -t vibe-jobs-pool-XXXXXX)"
+    local pool_status=0
+    # `$src` verbatim, and the same guarded-timeout dispatch as below.
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 600 bash "$pool" "$(pick_cli)" "$src" "$jobs" "$RUNNER" >"$pool_log" 2>&1 || pool_status=$?
+    elif command -v gtimeout >/dev/null 2>&1; then
+      gtimeout 600 bash "$pool" "$(pick_cli)" "$src" "$jobs" "$RUNNER" >"$pool_log" 2>&1 || pool_status=$?
+    else
+      bash "$pool" "$(pick_cli)" "$src" "$jobs" "$RUNNER" >"$pool_log" 2>&1 || pool_status=$?
+    fi
+    if [ "$pool_status" -eq 0 ]; then
+      rm -f "$pool_log"
+      return 0
+    fi
+    # Same advisory contract as the node driver: report and fall through. The
+    # node path below is tried next, and failing that the serial compile that
+    # runs after every call site produces the identical result anyway.
+    echo "vibe: --jobs=$jobs process-pool pre-warm failed, trying the node driver: $(tail -1 "$pool_log")" >&2
+    rm -f "$pool_log"
+  fi
   local driver="$TOOLCHAIN_DIR/scripts/parallel_frontend_warm.mjs"
   local node_runner="$TOOLCHAIN_DIR/scripts/run_wasm_vibe_host_runner.sh"
   if [ ! -f "$driver" ] || [ ! -f "$node_runner" ]; then
