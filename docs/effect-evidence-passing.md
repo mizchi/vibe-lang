@@ -1982,7 +1982,8 @@ double compilation を per-effect enum で実装:
    E か row 変数を強制する — だから concrete E-free row は E を perform
    できない)。row 変数 (`with { e }`) を持つ non-needing callee は
    closure 引数経由で E を注入されうるので hard error のまま (これが
-   3b の残 TODO マーカー)。loop / let mut spine 上の suspend も未対応。
+   3b の残 TODO マーカー)。loop / let mut spine 上の suspend も未対応
+   (→ #1230 / 追記36 で対応済み)。
 
 **上流正規化との相互作用 (実測)**: trivial な row-var wrapper
 (`apply(f) = f()`) + capture-free closure の組は、本 pass の前に
@@ -1998,7 +1999,8 @@ fixtures: `effect_resume_call_bubbling.vibe` (helper 途中 suspend +
 `effect_resume_rowvar_wrapper_normalized.vibe` (上記正規化の positive
 pin、want -95)、`err_effect_resume_store_ineligible.vibe` (non-trivial
 row-var callee reject)、`err_effect_resume_store_loop.vibe` (loop spine
-reject)。gate 50 更新。
+reject — #1230 / 追記36 で break を含むループの reject へ差し替え)。
+gate 50 更新。
 
 ### 追記30 (2026-07-25): 3c — @vibex/concurrent への接続と
 safe-mut builtin list
@@ -2478,6 +2480,53 @@ silent no-op — 診断追加の検討課題)、(d) generic effect は TDEffect 
 まま両 handler class ともコンパイル・実行できてしまい検査が全て素通りする
 (arity 誤りも通る) ことを実測確認 — ADR-0071 正規化実装までの warning 追加を
 ADR-0089 が提案。
+
+### 追記36 (2026-07-31): loop / let mut spine の suspend 対応 (#1230)
+
+追記27〜29 が「未対応」と書いていた **loop / `let mut` spine 上の
+suspend** を実装した。`scps_split_tail` に 2 つのアームが増えただけで、
+step enum の形も継続の表現 (プレーンな closure) も ABI も変えていない。
+
+- **`let mut x = v` → `let x = [v]` (1 要素セル)**。読みは
+  `Array::get(x, 0)`、書きは `Array::set(x, 0, ..)` (`scps_cellify`)。
+  分割後の「残りの計算」は closure になるので、素の可変ローカルのままだと
+  継続がコピーを掴んでしまい resume 後の書き込みが見えない。セルは
+  ヒープ値なので spine 上のすべての継続が同じ 1 個を共有する。driver が
+  既に one-shot フラグに `[false]` を使っているのと同じ手口。
+- **`while c { body }` → 再帰する step 返し closure** (`scps_split_while`)。
+  `let rec lp = () -> { if c { <body; lp() の分割> } else { <その後の分割> } }; lp()`。
+  ループの継続が `lp` への末尾呼び出しになるので、closure-CPS 経路
+  (`scps_as_cps_local_call`) がそのまま bubbling してくれる。`lp` を
+  cps-local に登録するのはそのため。
+- `body` に `lp()` を足すのは `ESeq(body, lp())` **ではなく** body の
+  TAIL スロットへの押し込み (`scps_seq_append`) である必要がある —
+  splitter が sequence の HEAD に suspendable を認識するのは、その head が
+  perform / needing call そのものであるときだけだから。分岐は各アームに
+  `lp()` が複製されるが、`lp()` は 0 引数の自己呼び出しなので実害はない。
+
+**合成先はトップレベル関数である必要はなかった** (#1230 の途中で一度
+そう記録したが、誤り)。「local closure は see-through できない」という
+`scps_calls_ok` の規則は *pass が書いていないコード* に対する eligibility
+判定であって、pass 自身が型検査後に生成するコードには適用されない。
+`rewrite_self_tail_calls` は `suspend_cps_pass` より **前** に走るので、
+トップレベル関数に合成しても TCO は掛からず、スタック挙動の点でも差は
+ない。perform するイテレーションは step を driver に返して抜けるので、
+ネイティブスタックが伸びるのは「連続して perform しないイテレーション」
+の分だけ。
+
+**据え置き**: ループ内の `break` / `continue` / `return` は引き続き
+hard error (`scps_has_loop_ctl`)。ループ本体が関数になった時点で飛び先が
+無く、書き換えにはこのスライスが用意していない escape continuation が
+要る。`for` / `loop` 形も未対応。sequence の HEAD が「perform を内側に
+抱えた複合式」(`while c { if p { perform .. } else { () }; rest }` の
+`if`) であるケースも従来どおり reject — これは今回のループ対応とは独立の
+splitter の既存制限。
+
+fixtures: `effect_resume_store_loop.vibe` (positive、want 101020383 —
+`183` の桁が `acc`/`i` 両方が全 suspend/resume 往復を生き延びた pin)、
+`err_effect_resume_store_loop.vibe` (break を含むループの reject へ差し替え)。
+gate 50 更新。検証: stage2==stage3 fixpoint、compiler gate 73/73、
+unit battery 473/473。
 
 - N. Xie, D. Leijen, [Generalized Evidence Passing for Effect
   Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)

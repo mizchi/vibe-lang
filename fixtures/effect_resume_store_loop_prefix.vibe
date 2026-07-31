@@ -1,0 +1,47 @@
+// #1263 Codex P1: a `while` loop that does NOT itself suspend, sitting on a
+// handle body's spine AHEAD of one that does. #1230's loop widening must
+// leave this one an ordinary iterative loop -- rewriting it into the
+// recursive `lp()` shape would cost one wasm frame per iteration, and
+// rewrite_self_tail_calls (which could have flattened that) runs BEFORE
+// suspend_cps_pass, so it never gets a chance to.
+//
+// The 200000-iteration prefix loop is the pin: if it were converted to
+// recursion it would exhaust the call stack long before reaching the
+// suspending loop below. `warm` ends at 200000, `acc` at 5+6 = 11 and `i`
+// at 2, so the handle's own result is 100 (the first suspend's arm value)
+// and the last resume yields 200000 * 100 + 11 * 10 + 2 = 20000112.
+effect Async {
+  Suspend(Int) -> Int
+}
+
+let conts: Array[(Int) -> Int] = []
+
+let _start = () -> Int {
+  handle {
+    let mut warm = 0
+    while warm < 200000 {
+      warm = warm + 1
+    }
+    let mut i = 0
+    let mut acc = 0
+    while i < 2 {
+      let v = perform Async::Suspend(i)
+      acc = acc + v
+      i = i + 1
+    }
+    warm * 100 + acc * 10 + i
+  } with Async {
+    Suspend(t) => {
+      Array::push(conts, resume)
+      100 + t
+    }
+  }
+  let k0 = Array::get(conts, 0)
+  let r1 = k0(5)
+  let k1 = Array::get(conts, 1)
+  k1(6)
+}
+_start()
+
+__DATA__
+{"last":"20000112"}
