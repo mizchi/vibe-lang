@@ -4127,52 +4127,87 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
           // only the `region` syntax emits (a direct call spelled by hand
           // gets the same semantics, so the TaskGroup::run alias-bypass hole
           // does not exist here -- there is no scheme to alias), and there
-          // is no env scheme to instantiate, so the checked lambda type is
-          // destructured directly and its binder parameter is unified with
-          // the rigid skolem (a CtNamed name no parsed source can spell --
-          // `#` is rejected in identifiers).
+          // is no env scheme to instantiate: the argument is by construction
+          // a literal lambda, so its binder is bound DIRECTLY to the rigid
+          // skolem (a CtNamed name no parsed source can spell -- `#` is
+          // rejected in identifiers) before the body is checked. Binding
+          // before checking matters: region-tainted `let` bindings then
+          // carry the concrete skolem in their types, so this checker's
+          // let-generalization cannot quantify the taint away (the
+          // check-first-unify-later order would leave a free var at `let`
+          // time and reopen exactly the generalize hole the ADR-0068
+          // section documents). Known Phase 1 gap: the body is checked as a
+          // plain expression here, but the separate effect-row pass still
+          // sees the lambda wrapper, so effects performed inside a region
+          // body are not attributed to the enclosing fn by that pass.
           let skolem_name = String::concat("#region_", __to_string(c))
-          let (bt, s_body, c_body) = check_expr(Array::get(args, 0), env, defs, s, c + 1, errors, tytab)
-          match subst_apply(s_body, bt) {
-            CtFn(body_params, body_ret, _) => if Array::length(body_params) == 1 {
-              match unify(Array::get(body_params, 0), CtNamed(skolem_name, [
-              ]), s_body) {
-                Some(s_unified) => {
-                  let zonked_ret = subst_apply(s_unified, body_ret)
-                  if type_mentions_named(zonked_ret, skolem_name) {
-                    Array::push(errors, String::concat("region escapes its scope: the value returned from this region body still depends on the region's own token", off_marker_len(callee_off, String::length(name))))
-                  } else {
-                    ()
-                  }
-                  let outer_bindings = array_empty()
-                  collect_env_bindings(env, outer_bindings)
-                  let mut oi = 0
-                  let mut leaked = false
-                  while oi < Array::length(outer_bindings) {
-                    let (_, oty) = Array::get(outer_bindings, oi)
-                    if !leaked && type_mentions_named(subst_apply(s_unified, oty), skolem_name) {
-                      leaked = true
-                    } else {
-                      ()
-                    }
-                    oi = oi + 1
-                  }
-                  if leaked {
-                    Array::push(errors, String::concat("region escapes its scope: an outer binding now depends on this region's own token", off_marker_len(callee_off, String::length(name))))
-                  } else {
-                    ()
-                  }
-                  (tab_call_ty(tytab, call_off, zonked_ret), s_unified, c_body)
-                },
-                None => {
-                  Array::push(errors, String::concat("region body parameter type mismatch for __region_run", off_marker_len(callee_off, String::length(name))))
-                  (tab_call_ty(tytab, call_off, CtUnknown), s_body, c_body)
-                }
+          match Array::get(args, 0) {
+            EFn(_, _, fn_params, _, _, fn_body) => if Array::length(fn_params) == 1 {
+              let (binder_name, _) = Array::get(fn_params, 0)
+              let env_body = env_bind(env, binder_name, CtNamed(skolem_name, [
+              ]))
+              let (body_ty, s1, c1) = check_expr(fn_body, env_body, defs, s, c + 1, errors, tytab)
+              let zonked_ret = subst_apply(s1, body_ty)
+              if type_mentions_named(zonked_ret, skolem_name) {
+                Array::push(errors, String::concat("region escapes its scope: the value returned from this region body still depends on the region's own token", off_marker_len(callee_off, String::length(name))))
+              } else {
+                ()
               }
+              let outer_bindings = array_empty()
+              collect_env_bindings(env, outer_bindings)
+              let mut oi = 0
+              let mut leaked = false
+              while oi < Array::length(outer_bindings) {
+                let (_, oty) = Array::get(outer_bindings, oi)
+                if !leaked && type_mentions_named(subst_apply(s1, oty), skolem_name) {
+                  leaked = true
+                } else {
+                  ()
+                }
+                oi = oi + 1
+              }
+              if leaked {
+                Array::push(errors, String::concat("region escapes its scope: an outer binding now depends on this region's own token", off_marker_len(callee_off, String::length(name))))
+              } else {
+                ()
+              }
+              (tab_call_ty(tytab, call_off, zonked_ret), s1, c1)
             } else {
-              (tab_call_ty(tytab, call_off, CtUnknown), s_body, c_body)
+              (tab_call_ty(tytab, call_off, CtUnknown), s, c + 1)
             },
-            _ => (tab_call_ty(tytab, call_off, CtUnknown), s_body, c_body)
+            // A hand-written `__region_run(f)` with a non-literal callee:
+            // check it as an ordinary 1-arg closure call and pin its
+            // parameter to the skolem afterwards. Direct return-position
+            // escapes are still caught through the final zonk; taint that
+            // detoured through a generalized `let` inside `f` is not (the
+            // documented generalize gap -- only the literal-lambda form the
+            // parser emits gets the stronger bind-first treatment above).
+            _ => {
+              let (bt, s_body, c_body) = check_expr(Array::get(args, 0), env, defs, s, c + 1, errors, tytab)
+              match subst_apply(s_body, bt) {
+                CtFn(body_params, body_ret, _) => if Array::length(body_params) == 1 {
+                  match unify(Array::get(body_params, 0), CtNamed(skolem_name, [
+                  ]), s_body) {
+                    Some(s_unified) => {
+                      let zonked_ret = subst_apply(s_unified, body_ret)
+                      if type_mentions_named(zonked_ret, skolem_name) {
+                        Array::push(errors, String::concat("region escapes its scope: the value returned from this region body still depends on the region's own token", off_marker_len(callee_off, String::length(name))))
+                      } else {
+                        ()
+                      }
+                      (tab_call_ty(tytab, call_off, zonked_ret), s_unified, c_body)
+                    },
+                    None => {
+                      Array::push(errors, String::concat("region body parameter type mismatch for __region_run", off_marker_len(callee_off, String::length(name))))
+                      (tab_call_ty(tytab, call_off, CtUnknown), s_body, c_body)
+                    }
+                  }
+                } else {
+                  (tab_call_ty(tytab, call_off, CtUnknown), s_body, c_body)
+                },
+                _ => (tab_call_ty(tytab, call_off, CtUnknown), s_body, c_body)
+              }
+            }
           }
         } else if (name == "TaskGroup::spawn" || name == "TaskGroup::spawn_suspend") && Array::length(args) == 2 {
           // #1081 step 3 Phase B: `Spawnable[r]` capture check. Like

@@ -7595,5 +7595,49 @@ if [ "$diag_ok_out" != "3" ]; then
 fi
 rm -rf "$dcolldir"
 echo "[compiler-gate] cross-module diagnostic collection ok (1 fail-fast, 2 collected, seed-invariant)"
+# 75/75. ADR-0090 Phase 1 (#1262): `region r { body }` + MutList[T, r]
+# vertical slice. The parser lowers the syntax to the reserved
+# `__region_run((r) -> { body })`; the checker mints a rigid `#region_N`
+# skolem for the binder and scans fully-zonked return/outer-binding types
+# for escapes; MutList is a checker-only phantom over the ArrayBuilder
+# runtime layout (freeze/to_array are the sanctioned exits). Positive:
+# build a MutList inside the region, freeze, read it outside -- compiles
+# and returns 42 (region_arena_ok.vibe). Negative: returning the
+# region-tainted MutList itself out of the region body is a STATIC error
+# (err_region_escape_return_value.vibe). Same known generalize-gap caveat
+# as the ADR-0068 section above: the return-position escape is the hard
+# guarantee in this slice.
+echo "[compiler-gate] 75/75 ADR-0090 region + MutList vertical slice (#1262)"
+r90dir="_build/_gate_region90"
+rm -rf "$r90dir"; mkdir -p "$r90dir"
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/region_arena_ok.vibe > "$r90dir/pos.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$r90dir/pos.vibe" "$r90dir/pos.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/pos.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_arena_ok.vibe did not compile -- ADR-0090 region/MutList slice regressed" >&2
+  cat "$r90dir/pos.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+r90_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/pos.wasm" 2>/dev/null | tail -1)"
+if [ "$r90_pos_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: region_arena_ok.vibe got '$r90_pos_out' (want 42)" >&2
+  exit 1
+fi
+cp fixtures/err_region_escape_return_value.vibe "$r90dir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$r90dir/neg.vibe" "$r90dir/neg.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$r90dir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_region_escape_return_value.vibe compiled successfully -- must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF 'region escapes its scope' "$r90dir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_region_escape_return_value.vibe did not produce the expected diagnostic" >&2
+  cat "$r90dir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$r90dir"
+echo "[compiler-gate] ADR-0090 region + MutList vertical slice ok"
 
 echo "[compiler-gate] ok"
