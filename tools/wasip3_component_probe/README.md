@@ -320,11 +320,37 @@ cd host && cargo build --release && cd ..
 ```
 
 **Conclusion for `component_codegen.vibe`**: no new `emit_canon_future_*`
-emitters are needed for M1b-3c-1b. "Self-contained future via spawned
-writer subtask", under vibe's stackful codegen strategy, reduces to the
-exact same canon built-in set `stackful/` already requires, structured as
-two internal wasm functions (writer + reader) in one core module instead
-of one function. `Task::spawn(|| await(host_call()))` followed by
-`await(that_task)` can be compiled by simply emitting the spawned
-closure's body as a callee function invoked from the await site -- the
-"spawn" has no canonical-ABI representation of its own.
+emitters are needed for the shape M1b-3c-1b actually emits. Structuring
+the wait loop as two internal wasm functions (writer + reader) in one core
+module needs the exact same canon built-in set `stackful/` already
+requires. `Task::spawn(|| await(host_call()))` immediately followed by
+`await(that_task)` can be compiled by emitting the spawned closure's body
+as a callee function invoked from the await site.
+
+### Important limit on that conclusion (#1240 review)
+
+Phase B's `$writer` is an ordinary internal wasm function called
+**synchronously** by `$run` — not a second Component-Model task. Nothing
+in Phase B runs concurrently with anything else. So Phase B demonstrates
+only that `spawn f; await t` compiles correctly **when no observable
+parent work happens between the spawn and the join** — in that degenerate
+case the spawn is semantically a no-op and compiles away to a direct call.
+
+It does **not** show that a real spawn — a second guest computation that
+interleaves with parent work before the join — needs no extra machinery,
+and it cannot: a stackful fiber runs one call chain, so concurrent guest
+work requires either another task or a guest-side poll executor. Phase A's
+evidence points the other way: a genuine `wit_bindgen::spawn_local` pulls
+in a `FuturesUnordered` executor plus `context.get/set` and
+`waitable-set.poll`. The Phase A section above attributes those purely to
+wit-bindgen's callback-form architecture; that is plausible for
+`context.get/set` specifically (both `async_support.rs` and `subtask.rs`
+call them unconditionally, spawn or not), but it is **not established**
+that a stackful implementation could support interleaving spawn without an
+equivalent executor.
+
+Net: **real interleaving spawn remains open** (M-conc-2 / the M1b-3c-2
+follow-up). Under the lowering this milestone ships, any parent/child
+handshake or observable work between spawn and join would reorder or
+deadlock — the same limitation the linear backend's eager `Task::spawn`
+already carries (`docs/spec/wasi-p3-async.md` §2.5).
