@@ -357,6 +357,15 @@ enum exhaustiveness は vibe checker が保持する。
 
 ## 動的フォールバック許可(Deno 風の permission request との違い)
 
+> **carved out**: 本節の Optional capability(`Fs::Read[X]?`)・`perform?`・
+> `Attempt` 案は、表面構文(`with {A} allows {C}` 糖衣)とあわせて
+> [ADR-0088](capability-authorization-surface.md) として決着した。ADR-0088 は
+> 本節の「mid-run prompt 不採用」を維持したうえで、**instantiate 直前の
+> preflight TUI prompt**(main の1命令目より前に不足 Required を grant-or-abort、
+> 未確定 Optional を一括質問し、以後 run 中不変)を解決ラダーの最終段として
+> 追加している。「対話的」なのは確定の手段であってタイミングではない、という
+> 整理で ADR-0075 の原則と両立する。以下は検討の記録として残す。
+
 Deno の `Deno.permissions.request()` は実行中に人間へインタラクティブに
 prompt できるが、これは ADR-0075 の「authority は run 中不変、
 instantiate 前に一括検査」という原則と衝突するため**採用しない**。
@@ -424,9 +433,11 @@ flowchart LR
     end
 
     subgraph Run["run (instantiate)"]
+        R0["preflight prompt (ADR-0088)\nTTY: 不足 Required を grant-or-abort、\n未確定 Optional を一括質問\n非 TTY: Optional→NotGranted, Required→abort"]
         R1{"Required エントリ ⊆\nComposedHost.provides ?"}
         R2["main 開始拒否\n(1命令も実行しない)"]
         R3["main 開始\nOptional entry は\nperform? で参照するだけ"]
+        R0 --> R1
         R1 -->|No| R2
         R1 -->|Yes| R3
     end
@@ -441,6 +452,11 @@ Optional な capability(`Fs::Read[CacheDir]?` 等)は `apply` の時点で
 `Granted`/`NotGranted` のどちらかに一度だけ確定し、`run` 中は不変の
 参照テーブルとして扱われる。`main` の起動可否を左右するのは Required
 エントリだけであり、Optional エントリの有無は起動をブロックしない。
+
+ADR-0088 はこの確定タイミングを「build(`--allow-*` flag → const-fold +
+DCE)→ apply(BindingLock)→ instantiate(preflight prompt)の最も早い
+フェーズで一回だけ」という解決ラダーへ一般化した。apply を経ない
+ローカル実行(`vibe run`)では L3 の preflight prompt が確定点になる。
 
 ## 既存 builtin の resource-kind 形への移行計画
 
@@ -462,7 +478,11 @@ Optional な capability(`Fs::Read[CacheDir]?` 等)は `apply` の時点で
   み)を有効化する。Phase 1 で `Fs` が既に暗黙 resource を持つため既存
   `.vibex` は無風。
 - **Phase 4**: WIT 生成の retrofit(#1143 解消、後述)。
-- **Phase 5**: ADR-0043(`--allow`/`--deny`)との統合。
+- **Phase 5**: ADR-0043(`--allow`/`--deny`)との統合。統合の形は
+  [ADR-0088](capability-authorization-surface.md) Decision 4 で確定済み —
+  flag は解決ラダー L1(build)の入力になり、確定 grant は `perform?` 分岐の
+  const-fold + DCE として実装する(独立機能としての ADR-0043 は消滅)。
+  あわせて capability を含む `main` の `allows` 分割形をこの段で必須化する。
 
 selfhost 上の留意点として、Phase 1〜3 は表面構文を変えないため、compiler
 自身のソース(`lib/@vibe/compiler/` 内の `Fs`/`Env` 呼び出し)は無変更の
@@ -525,6 +545,10 @@ singleton(`Fs[Process::Root]::...`)へ展開する sugar が必要になる
 - **resource kind の型パラメータ構文の詳細**: `effect Fs[R: Fs::Root]`
   という記法は本文書内の便宜的な表記であり、既存の generic effect
   (`State[T]`)の型パラメータ構文とどう統一するかは未検討。
+  なお表面構文のうち **row の分割(`with {A} allows {C}` 糖衣)・Optional
+  grade(`?`)・`perform?`/`Attempt`・解決ラダー(build/apply/instantiate
+  preflight)は [ADR-0088](capability-authorization-surface.md) で決着済み**
+  であり、未決として残るのはこの resource kind パラメータの宣言側構文のみ。
 
 ## 参照した実装箇所
 
