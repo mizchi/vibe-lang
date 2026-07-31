@@ -1,0 +1,155 @@
+// ADR-0092 Phase 1 (drop-guided reuse): the ELet + match fusion. A binding
+// whose planned scope-end drop feeds a body that is EXACTLY `match name`
+// stages a reuse; an arm that is a bare same-arity constructor rebuild
+// consumes the reference up front -- unique block: rebuilt in place (the
+// PBind payloads take over the children, PWild children are dropped);
+// shared block: payloads are dup'd, the reference is released, and the
+// constructor falls back to a fresh allocation. Both paths must be
+// observationally identical to the pre-reuse compiler; these tests pin that.
+//
+// NOTE on what is NOT asserted here: allocation-count savings. The exact-fit
+// free list already recycles drop-then-alloc loops, so `Profiler::heap_bytes`
+// deltas cannot distinguish in-place reuse from free-list recycling in a
+// steady-state loop. Effectiveness is tracked by the bench series instead
+// (ADR-0092 成功指標).
+
+enum Pair {
+  MkA(Int, Int);
+  MkB(Int, Int)
+}
+
+enum IntList {
+  Nil;
+  Cons(Int, IntList)
+}
+
+fn swap_once(seed: Int) -> Pair {
+  let a = MkA(seed, seed + 1)
+  match a {
+    MkA(x, y) => MkB(y, x)
+    MkB(x, y) => MkA(y, x)
+  }
+}
+
+fn list_sum(l: IntList) -> Int {
+  match l {
+    Nil => 0
+    Cons(x, rest) => x + list_sum(rest)
+  }
+}
+
+fn double_all(l0: IntList) -> IntList {
+  let l = l0
+  match l {
+    Nil => Nil
+    Cons(x, rest) => Cons(x * 2, double_all(rest))
+  }
+}
+
+test "reuse: unique block rebuilt with swapped fields (cross-tag)" {
+  let r = swap_once(5)
+  let got = match r {
+    MkA(u, v) => u * 1000 + v
+    MkB(u, v) => u * 100 + v
+  }
+  // MkB(6, 5) -> 605: tag rewrite AND field order both took effect
+  assert(got == 605)
+}
+
+test "reuse: loop of rebuilds stays correct" {
+  let mut i = 0
+  let mut acc = 0
+  while i < 1000 {
+    let r = swap_once(i)
+    acc = acc + match r {
+      MkA(_, _) => 0 - 1
+      MkB(u, v) => u - v
+    }
+    i = i + 1
+  }
+  // each MkB(i+1, i) contributes exactly 1
+  assert(acc == 1000)
+}
+
+fn id_pair(p: Pair) -> Pair {
+  p
+}
+
+fn reshape(p0: Pair) -> Pair {
+  let a = id_pair(p0)
+  match a {
+    MkA(x, y) => MkB(y, x)
+    MkB(x, y) => MkA(y, x)
+  }
+}
+
+test "reuse: shared block falls back to fresh alloc (original intact)" {
+  let keep: Array[Pair] = []
+  let p = MkA(1, 2)
+  Array::push(keep, p)
+  // the block reaching reshape's fused match is shared with `keep`:
+  // the rebuild must NOT mutate the stored copy.
+  let r = reshape(p)
+  let got = match r {
+    MkB(u, v) => u * 10 + v
+    MkA(_, _) => 0 - 1
+  }
+  assert(got == 21)
+  let stored = match Array::get(keep, 0) {
+    MkA(u, v) => u * 10 + v
+    MkB(_, _) => 0 - 1
+  }
+  assert(stored == 12)
+}
+
+test "no-fusion control: match not directly under the let stays intact" {
+  let keep: Array[IntList] = []
+  let one = Cons(7, Nil)
+  Array::push(keep, one)
+  let rebuilt = match one {
+    Cons(x, rest) => Cons(x + 100, rest)
+    Nil => Nil
+  }
+  assert(list_sum(rebuilt) == 107)
+  assert(list_sum(Array::get(keep, 0)) == 7)
+}
+
+test "reuse: recursive rebuild through an alias binding" {
+  let l = Cons(1, Cons(2, Cons(3, Nil)))
+  let d = double_all(l)
+  assert(list_sum(d) == 12)
+}
+
+test "reuse: wildcard payload child is released, not leaked into the rebuild" {
+  let p = MkA(3, 4)
+  let r = match p {
+    MkA(x, _) => MkB(x, x)
+    MkB(_, _) => MkA(0, 0)
+  }
+  let got = match r {
+    MkB(u, v) => u * 10 + v
+    MkA(_, _) => 0 - 1
+  }
+  assert(got == 33)
+}
+
+enum FloatOrInt {
+  Fv(Double);
+  Iv(Int)
+}
+
+test "float source payload is ineligible: normal path, correct value" {
+  // Fv's payload is a boxed float: the fusion must NOT bypass
+  // bind_match_pat's float_local_slots registration (Codex P1) -- this
+  // arm compiles through the normal borrow-bind path and stays correct.
+  let a = Fv(1.5)
+  let r = match a {
+    Fv(x) => Iv(Double::to_int(x * 2.0))
+    Iv(n) => Iv(n)
+  }
+  let got = match r {
+    Iv(n) => n
+    Fv(_) => 0 - 1
+  }
+  assert(got == 3)
+}

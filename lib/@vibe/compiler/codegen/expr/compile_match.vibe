@@ -5,6 +5,7 @@ import @vibe/compiler/core {
   Pat,
   Stmt,
   TypeExpr,
+  bsearch_leftmost,
   bytebuf_length,
   bytebuf_new,
   bytebuf_push,
@@ -225,6 +226,309 @@ import @vibe/compiler/codegen/wasm_emit {
 // conditional match arms whose top pattern is a bare tuple with literal
 // siblings (`(false, n) => ..`), where the binding pass previously emitted
 // nothing and any use of `n` trapped codegen with "undefined variable".
+
+//# ADR-0092 Phase 1: drop-guided reuse (narrow fusion; see
+//# CompileCtx.reuse_scrutinee_names). Local mirrors of compile_call's
+//# cc_is_* arg classifiers (same-file rule for the bundle flatten tool).
+
+fn mr_is_projection(e: Expr) -> Bool {
+  match e {
+    EDot(_, _, _, _) => true,
+    _ => false
+  }
+}
+
+fn mr_is_borrow_ret_call(e: Expr, ctx: CompileCtx) -> Bool {
+  match e {
+    ECall(callee, _, _) =>
+    match callee {
+      EIdent(f, _) => f == "Array::get" || f == "Map::get" || f == "__index" || f == "__rec_field" || bsearch_leftmost(ctx.borrow_ret_names, f) >= 0,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+fn mr_is_loop_borrowed_ident(e: Expr, ctx: CompileCtx) -> Bool {
+  match e {
+    EIdent(name, _) => array_contains_str(ctx.loop_borrowed_names, name) && !array_contains_str(ctx.ref_cell_names, name),
+    _ => false
+  }
+}
+
+/// Eligibility for the reuse fusion on ONE conditional arm: the staged
+/// scrutinee (top of ctx.reuse_scrutinee_names) is this match's own bare-ident
+/// scrutinee, the arm pattern is `PCtor` whose args are all PBind/PWild with
+/// every PBind consumed EXACTLY once in the arm body (ownership then moves
+/// cleanly: no bind-time dup, no binding-scope drop -- this is what lets
+/// uniqueness cascade through a recursive rebuild instead of dying at depth
+/// 1), the arm body is EXACTLY a constructor call with the SAME field count
+/// (same block size, 16 + 8n, by ctor layout), the target ctor has no
+/// boxed-float fields (their store path differs), and the scrutinee name is
+/// not referenced anywhere in the arm body (the arm consumes the reference up
+/// front). Returns the target ctor_table index, or -1 when the arm must
+/// compile through the normal borrow-bind path (scope-end drop covers it).
+fn mr_reuse_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) -> Int with { Error } {
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && ctx.rc_alloc_func_idx >= 0 && Array::length(ctx.reuse_scrutinee_names) > 0 && is_pctor(p) && is_eident(scrutinee) && expr_tag(body) == 8 {
+    let sname = Array::get(ctx.reuse_scrutinee_names, Array::length(ctx.reuse_scrutinee_names) - 1)
+    if get_eident_name(scrutinee) == sname {
+      let pargs = get_pctor_args(p)
+      let arity = Array::length(pargs)
+      let callee = get_ecall_callee(body)
+      if arity >= 1 && is_eident(callee) {
+        let ci = ctor_table_index_of(ctx.ctor_table, get_eident_name(callee))
+        let src_ci = ctor_table_index_of(ctx.ctor_table, get_pctor_name(p))
+        if ci >= 0 && src_ci >= 0 && Array::get(ctx.ctor_table.field_counts, ci) == arity && Array::length(get_ecall_args(body)) == arity {
+          let mut shape_ok = true
+          let mut fj = 0
+          while fj < arity {
+            let pa = Array::get(pargs, fj)
+            // Neither side may have a boxed-float field: the target's store
+            // path differs, and a SOURCE float payload would bypass
+            // bind_match_pat's float_local_slots registration (the raw-load
+            // bind below doesn't know field types), so e.g. `-x` on the
+            // binding would negate the box pointer (Codex review P1).
+            if ctor_field_is_float(ctx, ci, fj) || ctor_field_is_float(ctx, src_ci, fj) {
+              shape_ok = false
+            } else if is_pbind(pa) {
+              if md_consume_count(body, get_pbind_name(pa)) != 1 {
+                shape_ok = false
+              } else {
+                ()
+              }
+            } else if is_pwild(pa) {
+              ()
+            } else {
+              shape_ok = false
+            }
+            fj = fj + 1
+          }
+          let __no_params: Array[String] = [
+          ]
+          let __no_fns: Array[String] = [
+          ]
+          if shape_ok && !array_contains_str(collect_free_vars(body, __no_params, __no_fns), sname) {
+            ci
+          } else {
+            0 - 1
+          }
+        } else {
+          0 - 1
+        }
+      } else {
+        0 - 1
+      }
+    } else {
+      0 - 1
+    }
+  } else {
+    0 - 1
+  }
+}
+
+/// Compile an eligible arm with in-place block reuse, Perceus-shaped:
+/// consume the scrutinee reference FIRST, then run one shared continuation.
+///   1. bind payloads as raw loads (no bind-time dup -- eligibility proved
+///      each PBind is consumed exactly once, so ownership transfers).
+///   2. test the block's rc word: exactly `1 | (class 1 << 24)` means ours is
+///      the only reference -- keep the block as a reuse token (children now
+///      owned by the payload bindings; PWild children are dropped here, they
+///      are ours and unused). Otherwise dup each PBind payload (the bindings
+///      become owners), release our reference with a guarded drop (never
+///      frees: rc > 1 on this path; immortal-saturated words also land here
+///      and their drop is a no-op), and zero the token.
+///   3. either way the ELet's staged reference is consumed: set the flag so
+///      the scope-end drop is skipped on this arm's path.
+///   4. compute the constructor's field values (payloads referenced exactly
+///      once move through; non-payload borrowed-view args get the same
+///      owning-position retain compile_call's ctor path applies).
+///   5. token != 0 -> rewrite tag + fields in place (size/rc/class/field
+///      count already correct); token == 0 -> fresh __rc_alloc identical to
+///      compile_call's ctor path.
+fn mr_compile_reuse_arm(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag_local: Int, arity: Int, ctor_idx: Int, local_names: Array[String], ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } {
+  let args = get_ecall_args(body)
+  let pargs = get_pctor_args(pat)
+  let tag = Array::get(ctx.ctor_table.tags, ctor_idx)
+  // 1. raw payload binds: field j lives at (scrut & ~1) + 8 + 8j.
+  let mut bi = 0
+  while bi < arity {
+    let pa = Array::get(pargs, bi)
+    if is_pbind(pa) {
+      let bl = Array::length(local_names)
+      emit_local_get(buf, scrut_local)
+      emit_i64_const(buf, 0 - 2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 8 + bi * 8)
+      emit_local_set(buf, bl)
+      Array::push(local_names, get_pbind_name(pa))
+    } else {
+      ()
+    }
+    bi = bi + 1
+  }
+  // 2. consume the reference; tk = block base or 0.
+  let tk = Array::length(local_names)
+  Array::push(local_names, "__reuse_tk")
+  emit_local_get(buf, scrut_local)
+  emit_i64_const(buf, 0 - 2)
+  emit_i64_and(buf)
+  emit_i64_const(buf, 8)
+  emit_i64_sub(buf)
+  emit_local_set(buf, tk)
+  emit_local_get(buf, tk)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 4)
+  emit_i32_const(buf, 16777217)
+  emit_i32_eq(buf)
+  emit_if_void(buf)
+  let mut wj = 0
+  while wj < arity {
+    if is_pwild(Array::get(pargs, wj)) {
+      emit_local_get(buf, tk)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 16 + wj * 8)
+      emit_call(buf, ctx.rc_drop_func_idx)
+    } else {
+      ()
+    }
+    wj = wj + 1
+  }
+  emit_else(buf)
+  let mut dj = 0
+  let mut bl2 = 0
+  while dj < arity {
+    if is_pbind(Array::get(pargs, dj)) {
+      // payload locals sit just below tk, in pattern order
+      let nbinds_before = mr_binds_before(pargs, dj)
+      emit_rc_dup_guarded(buf, tk - mr_bind_count(pargs) + nbinds_before, ctx.rc_shadow)
+      bl2 = bl2 + 1
+    } else {
+      ()
+    }
+    dj = dj + 1
+  }
+  emit_local_get(buf, scrut_local)
+  emit_call(buf, ctx.rc_drop_func_idx)
+  emit_i64_const(buf, 0)
+  emit_local_set(buf, tk)
+  emit_end(buf)
+  emit_i64_const(buf, 1)
+  emit_local_set(buf, flag_local)
+  // 4. field values.
+  let vals: Array[Int] = [
+  ]
+  let mut nl = Array::length(local_names)
+  let mut i = 0
+  while i < arity {
+    let a = Array::get(args, i)
+    nl = ce(buf, a, local_names, nl, ctx, ld)
+    let vl = nl
+    Array::push(local_names, "__reuse_val")
+    emit_local_set(buf, vl)
+    if mr_is_loop_borrowed_ident(a, ctx) {
+      Array::push(ctx.loop_consumed_names, get_eident_name(a))
+      emit_rc_dup_guarded(buf, vl, ctx.rc_shadow)
+    } else if mr_is_projection(a) || mr_is_borrow_ret_call(a, ctx) {
+      emit_rc_dup_guarded(buf, vl, ctx.rc_shadow)
+    } else {
+      ()
+    }
+    Array::push(vals, vl)
+    nl = nl + 1
+    i = i + 1
+  }
+  // 5. reuse or fresh-alloc; both branches yield the tagged value.
+  emit_local_get(buf, tk)
+  emit_i64_eqz(buf)
+  emit_i32_eqz(buf)
+  emit_if_i64(buf)
+  emit_local_get(buf, tk)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, tag)
+  emit_i32_store(buf, 2, 8)
+  let mut sj = 0
+  while sj < arity {
+    emit_local_get(buf, tk)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, Array::get(vals, sj))
+    emit_i64_store(buf, 3, 16 + sj * 8)
+    sj = sj + 1
+  }
+  emit_local_get(buf, tk)
+  emit_i64_const(buf, 8)
+  emit_i64_add(buf)
+  emit_i64_const(buf, 1)
+  emit_i64_or(buf)
+  emit_else(buf)
+  let total = 16 + arity * 8
+  emit_i64_const(buf, total)
+  emit_call(buf, ctx.rc_alloc_func_idx)
+  emit_local_set(buf, tk)
+  emit_local_get(buf, tk)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, total)
+  emit_i32_store(buf, 2, 0)
+  emit_local_get(buf, tk)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 1)
+  emit_i32_store(buf, 2, 4)
+  emit_local_get(buf, tk)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 1)
+  emit_i32_store8(buf, 0, 7)
+  emit_local_get(buf, tk)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, tag)
+  emit_i32_store(buf, 2, 8)
+  emit_local_get(buf, tk)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, arity)
+  emit_i32_store(buf, 2, 12)
+  let mut fj2 = 0
+  while fj2 < arity {
+    emit_local_get(buf, tk)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, Array::get(vals, fj2))
+    emit_i64_store(buf, 3, 16 + fj2 * 8)
+    fj2 = fj2 + 1
+  }
+  emit_local_get(buf, tk)
+  emit_i64_const(buf, 8)
+  emit_i64_add(buf)
+  emit_i64_const(buf, 1)
+  emit_i64_or(buf)
+  emit_end(buf)
+  nl
+}
+
+fn mr_bind_count(pargs: Array[Pat]) -> Int {
+  let mut n = 0
+  let mut i = 0
+  while i < Array::length(pargs) {
+    if is_pbind(Array::get(pargs, i)) {
+      n = n + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  n
+}
+
+fn mr_binds_before(pargs: Array[Pat], idx: Int) -> Int {
+  let mut n = 0
+  let mut i = 0
+  while i < idx {
+    if is_pbind(Array::get(pargs, i)) {
+      n = n + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  n
+}
 
 /// Emit `n` guarded rc_dups of `local_idx` (one per owning consume of a matched
 /// field; see md_consume_count). n<=0 emits nothing.
@@ -979,8 +1283,19 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
       // depth — the previous inline loop stopped at depth 2, so the `v` in
       // `Some(Some(Some(v)))` was never emitted and its use trapped codegen
       // (resolve_local fails). Discrimination already recurses (#603/#608).
-      bind_match_pat(buf, scrut_local, __cond_p, true, local_names, ctx, __arm_body)
-      ce(buf, __arm_body, local_names, Array::length(local_names), ctx, ld_arm)
+      // ADR-0092 Phase 1: an eligible rebuild arm consumes the staged
+      // scrutinee reference up front (unique -> in-place reuse token,
+      // shared -> dup payloads + guarded release) and skips the normal
+      // borrow-bind path entirely. Every other arm compiles exactly as
+      // before, including its bind-time payload dups.
+      let __mr_ci = mr_reuse_eligible(__cond_p, __arm_body, __match_scrutinee, ctx)
+      if __mr_ci >= 0 {
+        let __mr_flag = Array::get(ctx.reuse_flag_locals, Array::length(ctx.reuse_flag_locals) - 1)
+        mr_compile_reuse_arm(buf, __arm_body, __cond_p, scrut_local, __mr_flag, Array::length(get_pctor_args(__cond_p)), __mr_ci, local_names, ctx, ld_arm, ce)
+      } else {
+        bind_match_pat(buf, scrut_local, __cond_p, true, local_names, ctx, __arm_body)
+        ce(buf, __arm_body, local_names, Array::length(local_names), ctx, ld_arm)
+      }
     } else if is_ptuple(__cond_p) {
       // A bare tuple arm pattern with literal siblings (`(false, n) => ..`):
       // discrimination already tested the literals above, but the binding pass

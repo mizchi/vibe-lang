@@ -1319,7 +1319,37 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     } else {
       ()
     }
-    let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
+    // ADR-0092 Phase 1 (drop-guided reuse): when this binding's planned
+    // scope-end drop can move to last use inside a body that is EXACTLY
+    // `match name { ... }`, stage the fusion — allocate a flag local
+    // (0 = not reused on the taken path) and expose (name, flag) to
+    // compile_match via the ctx stacks (push/truncate, loop_borrowed_names
+    // discipline). An arm that consumes the unique block in place sets the
+    // flag; the scope-end drop below is then guarded on it, so every path
+    // still consumes exactly one reference.
+    let reuse_fusion = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.rc_drop_names, name) && expr_tag(body) == 16 && is_eident(get_match_scrutinee(body)) && get_eident_name(get_match_scrutinee(body)) == name
+    let reuse_flag_l = if reuse_fusion {
+      Array::push(local_names, "__reuse_flag")
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, nl)
+      Array::push(ctx.reuse_scrutinee_names, name)
+      Array::push(ctx.reuse_flag_locals, nl)
+      nl
+    } else {
+      0 - 1
+    }
+    let nl_body = if reuse_fusion {
+      nl + 1
+    } else {
+      nl
+    }
+    let nl2 = compile_expr(buf, body, local_names, nl_body, ctx, ld)
+    if reuse_fusion {
+      Array::truncate(ctx.reuse_scrutinee_names, Array::length(ctx.reuse_scrutinee_names) - 1)
+      Array::truncate(ctx.reuse_flag_locals, Array::length(ctx.reuse_flag_locals) - 1)
+    } else {
+      ()
+    }
     if ctx.enable_rc && (is_borrow_ret_ext || value_borrow_like) {
       Array::truncate(ctx.loop_borrowed_names, lb_mark)
     } else {
@@ -1333,7 +1363,16 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       lb_restore_i = lb_restore_i + 1
     }
     if ctx.enable_rc && rc_kind > 0 && array_contains_str(ctx.rc_drop_names, name) {
-      if ctx.rc_drop_func_idx >= 0 && scope_tail_proj_root(body) == name {
+      if reuse_fusion {
+        // ADR-0092: drop only when no arm consumed the block via reuse.
+        emit_local_get(buf, reuse_flag_l)
+        emit_i64_eqz(buf)
+        emit_if_void(buf)
+        emit_local_get(buf, local_idx)
+        emit_call(buf, ctx.rc_drop_func_idx)
+        emit_end(buf)
+        nl2
+      } else if ctx.rc_drop_func_idx >= 0 && scope_tail_proj_root(body) == name {
         emit_local_set(buf, nl2)
         emit_rc_dup_guarded(buf, nl2, ctx.rc_shadow)
         emit_local_get(buf, local_idx)
