@@ -33,7 +33,9 @@ fi
 
 # End-to-end for a real VIBE program: the selfhost compiles `sleep` to a
 # `vibe.sleep` host import; the async host suspends/resumes the guest fiber.
-STAGE2="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1)stage2.wasm"
+# `|| true`: no generations dir => ls exits nonzero => pipefail would abort the
+# gate outright instead of taking the "no stage2, skip this section" branch.
+STAGE2="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1 || true)stage2.wasm"
 if [ -s "$STAGE2" ]; then
   echo "[real-async-host] vibe end-to-end: compiling examples/wasm/sleep_async.vibe"
   vdir="_build/_realasync_vibe"; mkdir -p "$vdir"

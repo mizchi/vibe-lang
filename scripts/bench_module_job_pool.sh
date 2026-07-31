@@ -68,7 +68,10 @@ fi
 
 COMPILER="${VIBE_JOBPOOL_BENCH_COMPILER:-}"
 if [ -z "$COMPILER" ]; then
-  COMPILER="$(ls -td "$PROJECT_ROOT"/_build/selfhost/generations/*/ 2>/dev/null | head -1)stage2.wasm"
+  # `|| true`: with no generations dir the glob does not expand, ls exits
+  # nonzero, and pipefail would abort the script here -- making the seed
+  # fallback on the next line unreachable in a fresh checkout.
+  COMPILER="$(ls -td "$PROJECT_ROOT"/_build/selfhost/generations/*/ 2>/dev/null | head -1 || true)stage2.wasm"
   [ -f "$COMPILER" ] || COMPILER="$PROJECT_ROOT/bootstrap/seed/compiler.wasm"
 fi
 [ -f "$COMPILER" ] || require_or_skip "no compiler wasm found"
