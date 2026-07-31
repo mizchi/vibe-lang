@@ -35,6 +35,10 @@ struct PCtx {
   mut next_id: Int;
   mut seq_id: Int;
   pctx_names: Array[String];
+  // ADR-0092 borrow-inference slice 1: whole-program set of user fns with a
+  // borrowed arg0 ABI (compute_borrow_arg0_user_fns, common_analysis.vibe).
+  // Same COPY discipline as pctx_names -- see pctx_new's doc comment.
+  borrow_arg0_user: Array[String];
   uses: Array[Int];
   borrows: Array[Int];
   scalar: Array[Bool];
@@ -113,11 +117,12 @@ fn pe_use(ctx: PCtx, scope: Map[String, Int], name: String) -> Int {
 /// storing it directly would let PCtx's structural drop decrement a refcount
 /// this plan never owned -- the #707/#715 double-free shape. One
 /// Array::slice is a single allocation + memory.copy of the name pointers.
-fn pctx_new(borrow_ret_names: Array[String]) -> PCtx {
+fn pctx_new(borrow_ret_names: Array[String], borrow_arg0_fns: Array[String]) -> PCtx {
   PCtx::{
     next_id: 0,
     seq_id: 0,
     pctx_names: Array::slice(borrow_ret_names, 0, Array::length(borrow_ret_names)),
+    borrow_arg0_user: Array::slice(borrow_arg0_fns, 0, Array::length(borrow_arg0_fns)),
     uses: [
     ],
     borrows: [
@@ -1233,7 +1238,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     EIdent(x, _) => pe_use(ctx, scope, x),
     ECall(callee, args, _) => {
       let is_index = match callee {
-        EIdent(f, _) => is_borrow_arg0_call(f),
+        EIdent(f, _) => is_borrow_arg0_call(f) || array_contains_str_pctx(ctx.borrow_arg0_user, f),
         _ => false
       }
       match callee {
@@ -1589,7 +1594,7 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     EIdent(x, _) => pc_count_use(ctx, scope, x),
     ECall(callee, args, _) => {
       match callee {
-        EIdent(f, _) => if is_borrow_arg0_call(f) {
+        EIdent(f, _) => if is_borrow_arg0_call(f) || array_contains_str_pctx(ctx.borrow_arg0_user, f) {
           0
         } else {
           pc_count_borrow(ctx, scope, f)
@@ -1598,7 +1603,7 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         _ => pc_count(ctx, scope, callee)
       }
       let is_index = match callee {
-        EIdent(f, _) => is_borrow_arg0_call(f),
+        EIdent(f, _) => is_borrow_arg0_call(f) || array_contains_str_pctx(ctx.borrow_arg0_user, f),
         _ => false
       }
       let mut i = 0
@@ -1926,6 +1931,7 @@ fn pctx_apply_borrow_retention(ctx: PCtx) -> Int {
 /// Build the dup/drop plan for a function body expression.
 export fn build_perceus_plan(body: Expr) -> Array[PerceusAction] {
   let ctx = pctx_new([
+  ], [
   ])
   let empty: Map[String, Int] = Map::new()
   pc_count(ctx, empty, body)
@@ -2182,8 +2188,8 @@ export fn param_is_heap_in_body(name: String, otype: Option[TypeExpr], body: Exp
 /// machinery emits a PaDrop for a borrowed-only/unused heap param and a PaDup for
 /// one used in multiple owning positions. Heap-ness comes from the param's type
 /// annotation (scalar params get scalar=true so they are never dropped).
-export fn build_perceus_plan_with_params(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String]) -> Array[PerceusAction] {
-  let ctx = pctx_new(borrow_ret_names)
+export fn build_perceus_plan_with_params(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_arg0_fns: Array[String]) -> Array[PerceusAction] {
+  let ctx = pctx_new(borrow_ret_names, borrow_arg0_fns)
   let mut scope: Map[String, Int] = Map::new()
   let mut pi = 0
   while pi < Array::length(params) {

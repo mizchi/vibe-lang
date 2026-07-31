@@ -108,6 +108,7 @@ import @vibe/compiler/codegen/builtin_bodies {
 import @vibe/compiler/codegen/common_analysis {
   collect_free_vars,
   collect_strings_stmts,
+  compute_borrow_arg0_user_fns,
   count_lambda_sites_expr,
   emit_closure_call_tail,
   emit_closure_resolve,
@@ -832,6 +833,22 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // program) so those lookups are bsearch_leftmost instead of a linear scan
   // -- same rationale as ctor_table.names_sorted above.
   let lc_borrow_ret_names = sorted_names_of(compute_borrow_returning_names(stmts))
+  // ADR-0092 borrow-inference slice 1: user fns whose arg0 ABI is borrowed
+  // program-wide (read-only first param, never valued/aliased -- see
+  // compute_borrow_arg0_user_fns). The entry fn and the conventional entry
+  // names are excluded: the host invokes them without consulting the set.
+  let lc_borrow_arg0_user_all = compute_borrow_arg0_user_fns(stmts)
+  let lc_borrow_arg0_user = lc_fresh_string_array()
+  let mut lba_i = 0
+  while lba_i < Array::length(lc_borrow_arg0_user_all) {
+    let lba_n = Array::get(lc_borrow_arg0_user_all, lba_i)
+    if lba_n != entry_name && lba_n != "main" && lba_n != "_start" && lba_n != "cli_main" {
+      Array::push(lc_borrow_arg0_user, lba_n)
+    } else {
+      ()
+    }
+    lba_i = lba_i + 1
+  }
   // #710: see CompileCtx.scalar_ret_names' doc comment (common_base/common_base.vibe).
   let lc_scalar_ret_names = sorted_names_of(compute_scalar_returning_names(stmts))
   let fn_names_list = lc_fresh_string_array()
@@ -2781,7 +2798,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       __bi_expr
     }
     if enable_rc {
-      let plan = build_perceus_plan_with_params(lc_norm_params, __bi_body, lc_borrow_ret_names)
+      let plan = build_perceus_plan_with_params(lc_norm_params, __bi_body, lc_borrow_ret_names, lc_borrow_arg0_user)
       let mut lhpi = 0
       while lhpi < Array::length(lc_norm_params) {
         let (lhpn, lhpt) = Array::get(lc_norm_params, lhpi)
@@ -2792,10 +2809,21 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         }
         lhpi = lhpi + 1
       }
+      // ADR-0092 borrow-inference slice 1: when THIS fn's arg0 ABI is
+      // borrowed, the caller keeps ownership -- the plan's scope-end drop
+      // (and any entry dup) for param0 must not be emitted here.
+      let bfn_p0 = if array_contains_str(lc_borrow_arg0_user, fn_name_dbg) && Array::length(lc_norm_params) >= 1 {
+        let (bfn_p0n, _) = Array::get(lc_norm_params, 0)
+        bfn_p0n
+      } else {
+        ""
+      }
       let mut di = 0
       while di < Array::length(plan) {
         let pa = Array::get(plan, di)
-        if pa_is_drop(pa) {
+        if pa.name == bfn_p0 && bfn_p0 != "" {
+          ()
+        } else if pa_is_drop(pa) {
           Array::push(rc_drops, pa.name)
         } else if pa_is_alias_dup(pa) {
           Array::push(rc_alias_dups, pa.name)
@@ -2904,6 +2932,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       reuse_scrutinee_names: lc_fresh_string_array(),
       reuse_flag_locals: lc_fresh_int_array(),
       borrow_ret_names: lc_borrow_ret_names,
+      borrow_arg0_user: lc_borrow_arg0_user,
       scalar_ret_names: lc_scalar_ret_names,
       pending_letrec_self_name: lc_fresh_string_array(),
       table_slots_used: table_slots_used,

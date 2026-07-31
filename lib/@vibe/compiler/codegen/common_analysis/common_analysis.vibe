@@ -1986,3 +1986,238 @@ export fn zero_alloc_check(stmts: Array[Stmt]) -> String {
   }
   msg
 }
+
+//# ADR-0092 borrow-inference slice 1: per-fn borrowed arg0
+
+/// Collect every top-level-fn name used as a VALUE (a bare ident in any
+/// non-callee position) anywhere under `e`. A fn that only ever appears as
+/// the direct callee of a call can safely change its arg0 ABI; one that is
+/// aliased, passed, stored, captured, or returned cannot (indirect call
+/// sites cannot consult the borrow set).
+fn ca_collect_valued_idents(e: Expr, out: Array[String]) -> Int {
+  match e {
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EStringInterp(_) => 0,
+    EIdent(vn, _) => {
+      Array::push(out, vn)
+      0
+    },
+    ECall(callee, cargs, _) => {
+      match callee {
+        EIdent(_, _) => 0,
+        _ => ca_collect_valued_idents(callee, out)
+      }
+      let mut ci = 0
+      while ci < Array::length(cargs) {
+        let _ = ca_collect_valued_idents(Array::get(cargs, ci), out)
+        ci = ci + 1
+      }
+      0
+    },
+    ETuple(items) => ca_collect_valued_list(items, out),
+    EArray(items) => ca_collect_valued_list(items, out),
+    ERecord(_, rfields, _) => {
+      let mut ri = 0
+      while ri < Array::length(rfields) {
+        let (_, rv) = Array::get(rfields, ri)
+        let _ = ca_collect_valued_idents(rv, out)
+        ri = ri + 1
+      }
+      0
+    },
+    EMap(mfields) => {
+      let mut mi = 0
+      while mi < Array::length(mfields) {
+        let (_, mv) = Array::get(mfields, mi)
+        let _ = ca_collect_valued_idents(mv, out)
+        mi = mi + 1
+      }
+      0
+    },
+    EIf(c0, t0, f0) => {
+      let _ = ca_collect_valued_idents(c0, out)
+      let _ = ca_collect_valued_idents(t0, out)
+      ca_collect_valued_idents(f0, out)
+    },
+    ELet(_, v0, b0, _) => {
+      let _ = ca_collect_valued_idents(v0, out)
+      ca_collect_valued_idents(b0, out)
+    },
+    ELetRec(_, v0, b0) => {
+      let _ = ca_collect_valued_idents(v0, out)
+      ca_collect_valued_idents(b0, out)
+    },
+    ELetMut(_, v0, b0, _) => {
+      let _ = ca_collect_valued_idents(v0, out)
+      ca_collect_valued_idents(b0, out)
+    },
+    EAssign(_, v0, b0) => {
+      let _ = ca_collect_valued_idents(v0, out)
+      ca_collect_valued_idents(b0, out)
+    },
+    EAssignOp(_, _, v0, b0) => {
+      let _ = ca_collect_valued_idents(v0, out)
+      ca_collect_valued_idents(b0, out)
+    },
+    ESeq(a0, b0) => {
+      let _ = ca_collect_valued_idents(a0, out)
+      ca_collect_valued_idents(b0, out)
+    },
+    EMatch(scr, arms) => {
+      let _ = ca_collect_valued_idents(scr, out)
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, ab) = Array::get(arms, ai)
+        let _ = ca_collect_valued_idents(ab, out)
+        ai = ai + 1
+      }
+      0
+    },
+    EHandle(hb, harms) => {
+      let _ = ca_collect_valued_idents(hb, out)
+      let mut hi = 0
+      while hi < Array::length(harms) {
+        let (_, hab) = Array::get(harms, hi)
+        let _ = ca_collect_valued_idents(hab, out)
+        hi = hi + 1
+      }
+      0
+    },
+    EWhile(c0, b0) => {
+      let _ = ca_collect_valued_idents(c0, out)
+      ca_collect_valued_idents(b0, out)
+    },
+    ELoop(inits, b0) => {
+      let mut li = 0
+      while li < Array::length(inits) {
+        let (_, iv) = Array::get(inits, li)
+        let _ = ca_collect_valued_idents(iv, out)
+        li = li + 1
+      }
+      ca_collect_valued_idents(b0, out)
+    },
+    EForIn(_, _, s0, b0) => {
+      let _ = ca_collect_valued_idents(s0, out)
+      ca_collect_valued_idents(b0, out)
+    },
+    EBinOp(_, a0, b0) => {
+      let _ = ca_collect_valued_idents(a0, out)
+      ca_collect_valued_idents(b0, out)
+    },
+    EUnaryOp(_, a0) => ca_collect_valued_idents(a0, out),
+    EFn(_, _, _, _, _, fb) => ca_collect_valued_idents(fb, out),
+    EDot(o0, _, _, _) => ca_collect_valued_idents(o0, out),
+    ELabeledArg(_, _, v0) => ca_collect_valued_idents(v0, out),
+    EReturn(v0) => ca_collect_valued_idents(v0, out),
+    EBreak(bo) => match bo {
+      Some(bv) => ca_collect_valued_idents(bv, out),
+      None => 0
+    },
+    EContinue(cvs) => ca_collect_valued_list(cvs, out),
+    ESpread(sv) => ca_collect_valued_idents(sv, out)
+  }
+}
+
+fn ca_collect_valued_list(items: Array[Expr], out: Array[String]) -> Int {
+  let mut i = 0
+  while i < Array::length(items) {
+    let _ = ca_collect_valued_idents(Array::get(items, i), out)
+    i = i + 1
+  }
+  0
+}
+
+fn ca_walk_stmts_valued(stmts: Array[Stmt], out: Array[String]) -> Int {
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SLet(_, _, _, _, lv) => {
+        let _ = ca_collect_valued_idents(lv, out)
+        0
+      },
+      SLetMut(_, _, lv) => {
+        let _ = ca_collect_valued_idents(lv, out)
+        0
+      },
+      SLetPat(_, lv) => {
+        let _ = ca_collect_valued_idents(lv, out)
+        0
+      },
+      SExpr(se) => {
+        let _ = ca_collect_valued_idents(se, out)
+        0
+      },
+      STest(_, tb) => {
+        let _ = ca_collect_valued_idents(tb, out)
+        0
+      },
+      SBench(_, bb) => {
+        let _ = ca_collect_valued_idents(bb, out)
+        0
+      },
+      SModule(_, _, mb) => ca_walk_stmts_valued(mb, out),
+      _ => 0
+    }
+    si = si + 1
+  }
+  0
+}
+
+/// ADR-0092 borrow-inference slice 1: top-level fns whose FIRST param is
+/// only ever read. For such a fn the arg0 ABI flips to borrowed, program-
+/// wide and in lockstep: the caller's plan counts an ident arg0 as a free
+/// borrow (no transfer dup) and the callee's plan-site drop for that param
+/// is skipped (linked_compile). Eligibility, all conservative:
+///   - the fn is a top-level `SLet` + `EFn` with >= 1 param
+///   - param0's consume count in the body is 0 (only borrow-position uses:
+///     projections, borrow-arg0 builtin calls -- md_consume_count)
+///   - param0 is not mut-captured by an inner closure
+///   - the fn body does not shadow param0 (a rebinding would make the
+///     consume count unreliable) -- approximated by md_consume_count only,
+///     which counts ANY bare mention; a shadowed rebind's value read would
+///     count as a consume and disqualify the fn
+///   - the fn name is never used as a value anywhere in the program
+///     (indirect call sites cannot consult this set)
+/// The caller must additionally exclude the program entry (invoked by the
+/// host, which cannot consult the set either).
+export fn compute_borrow_arg0_user_fns(stmts: Array[Stmt]) -> Array[String] {
+  let valued = array_empty()
+  let _ = ca_walk_stmts_valued(stmts, valued)
+  let out = array_empty()
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SLet(_, _, fname, _, fval) => match fval {
+        EFn(_, _, fps, _, _, fbody) => if Array::length(fps) >= 1 {
+          let (p0_raw, _) = Array::get(fps, 0)
+          let p0l = String::length(p0_raw)
+          let p0 = if p0l > 0 {
+            let p0c = String::char_code_at(p0_raw, p0l - 1)
+            if p0c == '~' || p0c == '?' {
+              p0_raw[0: p0l - 1]
+            } else {
+              p0_raw
+            }
+          } else {
+            p0_raw
+          }
+          if p0 != "" && md_consume_count(fbody, p0) == 0 && !is_mut_captured_in(fbody, p0) && !array_contains_str(valued, fname) {
+            Array::push(out, fname)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  out
+}
