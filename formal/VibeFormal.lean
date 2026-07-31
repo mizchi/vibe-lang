@@ -28,3 +28,4 @@ import VibeFormal.Typing.FunctionSubsumption
 import VibeFormal.Typing.FunctionVariance
 import VibeFormal.Effect.ResumeDiscipline
 import VibeFormal.Typing.OrPatternBinders
+import VibeFormal.Typing.MatchExhaustive
