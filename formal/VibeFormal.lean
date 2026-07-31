@@ -26,3 +26,4 @@ import VibeFormal.Proofs.CallTypingCorrect
 import VibeFormal.Proofs.CallTypingExamples
 import VibeFormal.Typing.FunctionSubsumption
 import VibeFormal.Typing.FunctionVariance
+import VibeFormal.Effect.ResumeDiscipline
