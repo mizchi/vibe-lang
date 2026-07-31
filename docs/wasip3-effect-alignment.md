@@ -79,8 +79,17 @@ builtin nominal `Async`(`await`/`sleep` 等の文字列 row)と
 `sleep_blocking` 分裂を解消する。backend は3つ:
 in-guest pump(現行 `TaskGroup::pump`)/ p3 `waitable-set.wait`
 (spec §3.11: completion-order dispatch で追加 ABI 不要と実証済み)/
-JSPI(ブラウザ)。どれで動くかは codegen/host の選択であり、source の row は
-変わらない。
+JSPI(ブラウザ)。
+
+row 上の位置づけを明確にする: **`Async::Suspend` は ADR-0075 に従い source
+semantic row に現れる通常の operation である**(だからこそ Decision 5 の
+「`with { Async }` を持つ export → `async func`」という WIT 射影が定義できる)。
+**row に現れないのは backend の選択**(pump / waitable-set / JSPI)という
+lowering 詳細であり、backend を替えても source の row は変わらない。
+ADR-0068 の「Async は non-transitive(色付け回避)」は backend 選択の
+非伝播として維持し、operation 自体の追跡は ADR-0075 の executable contract
+に従う。effect-taxonomy-review.md の「suspend 機構と spawn/task coordination
+の分解」とも両立する: spawn 側は従来どおり `Spawn[r]` capability が担う。
 
 ### 2. `Future[T]` の実体化 — phantom から handle へ
 
@@ -116,9 +125,16 @@ dead end(spec §3.3: `cannot enter component instance`、producer は host 側)
 
 ### 5. WIT 生成のマッピング
 
-`wit_gen.vibe` に `Future[T] → future<T'>`、AsyncIter 面 → `stream<T'>`、
-`with { Async }` を持つ export → `async func` の3マッピングを追加する
-(現状 `Async` はコメント fallback)。これにより `vibe serve` の 4-string
+`wit_gen.vibe` に3マッピングを追加する(現状 `Async` はコメント fallback):
+`Future[T] → future<T'>`、`with { Async }` を持つ export → `async func`、
+そして stream は **Decision 4 の境界規則と整合させるため、`stream<T'>` へ
+写像するのは nominal な boundary-stream handle(`ByteStream` 等、host が
+producer 端を所有する型)に限る**。一般の guest 産 AsyncIter 値が component
+signature に現れた場合は、wit_gen の既存方針(unmapped 型は hard error)の
+まま reject する — guest 内 coroutine を producer とする AsyncIter を
+`stream<T>` として広告すると、lowering が実装できない ABI を生成してしまう
+(spec §3.3 の intra-component producer dead end)。AsyncIter は guest 内
+protocol にとどめ、境界では host 所有 stream との接続を adapter が行う。これにより `vibe serve` の 4-string
 trampoline を将来 `wasi:http/service` の
 `handle: async func(request) -> result<response, error-code>` 直接 export に
 置換する道が開く(spec §4.1 の「文字列 encode は trampoline の単一値返却
@@ -147,8 +163,10 @@ trampoline を将来 `wasi:http/service` の
 - generic effect の実装(ADR-0071 正規化の実装項目として別途。ここでは
   ブロッカーであることの記録のみ)。
 - p3 の実 provider(outbound async HTTP client = spec M3 等)の実装。
-- ADR-0088 の認可モデルの変更(直交。`Async` 統一後も suspend は row に
-  現れない実装機構 / `Spawn[r]` capability という ADR-0068/0075 の整理を維持)。
+- ADR-0088 の認可モデルの変更(直交。`Async::Suspend` は row に現れる
+  operation、row に現れないのは backend 選択という Decision 1 の整理、
+  および spawn/task coordination は `Spawn[r]` capability という
+  ADR-0068/0075 の整理を維持)。
 
 ## Risks / 検討課題
 

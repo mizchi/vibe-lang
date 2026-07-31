@@ -361,9 +361,10 @@ enum exhaustiveness は vibe checker が保持する。
 > `Attempt` 案は、表面構文(`with {A} allows {C}` 糖衣)とあわせて
 > [ADR-0088](capability-authorization-surface.md) として決着した。ADR-0088 は
 > 本節の「mid-run prompt 不採用」を維持したうえで、**instantiate 直前の
-> preflight TUI prompt**(main の1命令目より前に不足 Required を grant-or-abort、
-> 未確定 Optional を一括質問し、以後 run 中不変)を解決ラダーの最終段として
-> 追加している。「対話的」なのは確定の手段であってタイミングではない、という
+> preflight TUI prompt**(main の1命令目より前に、host が provide 可能で
+> 認可待ちの Required を grant-or-abort、未確定 Optional を一括質問し、以後
+> run 中不変。provider/binding 不在の Required は prompt 対象外で従来どおり
+> 非対話 abort)を解決ラダーの最終段として追加している。「対話的」なのは確定の手段であってタイミングではない、という
 > 整理で ADR-0075 の原則と両立する。以下は検討の記録として残す。
 
 Deno の `Deno.permissions.request()` は実行中に人間へインタラクティブに
@@ -433,7 +434,7 @@ flowchart LR
     end
 
     subgraph Run["run (instantiate)"]
-        R0["preflight prompt (ADR-0088)\nTTY: 不足 Required を grant-or-abort、\n未確定 Optional を一括質問\n非 TTY: Optional→NotGranted, Required→abort"]
+        R0["preflight prompt (ADR-0088)\nTTY: 認可待ち Required を grant-or-abort、\n未確定 Optional を一括質問\n(provider 不在は対話不可 → 即 abort)\n非 TTY: Optional→NotGranted, Required→abort"]
         R1{"Required エントリ ⊆\nComposedHost.provides ?"}
         R2["main 開始拒否\n(1命令も実行しない)"]
         R3["main 開始\nOptional entry は\nperform? で参照するだけ"]

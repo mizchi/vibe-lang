@@ -140,12 +140,18 @@ Optional capability の Granted/NotGranted は、**利用可能な最も早い�
   `optional_resolution: Map[OperationRef, Granted | NotGranted]` として apply 時に
   一回だけ確定する(review 文書の提案を採用)。`perform?` は実行中この固定
   テーブルを引くだけの純粋参照である。
-- **L3 instantiate — preflight TUI prompt**: BindingLock にも無い未確定 Optional と、
-  `ComposedHost.provides` に不足する Required を、**`main` の1命令目より前に**
-  一括で対話的に質問する。Required は grant-or-abort、Optional は
-  Granted/NotGranted。非 TTY のデフォルトは Optional → NotGranted、Required →
-  abort(不足 grant の一覧と、それを許可する `--allow-*` flag の正確な綴りを
-  構造化診断に含める)。
+- **L3 instantiate — preflight TUI prompt**: **`main` の1命令目より前に**、
+  未解決の grant を一括で対話的に質問する。ただし prompt が扱えるのは
+  **「認可」だけ**であり、対象は「composed host が provide できる(型の合う
+  adapter/binding が存在する)が、まだ許可されていない」operation に限る —
+  未確定の Optional は Granted/NotGranted、認可待ちの Required は
+  grant-or-abort。**provider/binding 自体が `ComposedHost.provides` に無い
+  Required は prompt の対象にしない**: instantiate 時点では provider 選択・
+  residual import・binding・hash が確定済み(ADR-0075)であり、「grant」と
+  答えても operation を呼べるようにはならないため、これは従来どおり
+  非対話の preflight 失敗(構造化診断)として abort する。非 TTY の
+  デフォルトは Optional → NotGranted、認可待ち Required → abort(不足 grant
+  の一覧と、それを許可する `--allow-*` flag の正確な綴りを診断に含める)。
 - prompt の結果は **per-run ephemeral** とする(どこにも永続化しない)。スクリプト
   用途は L1 の flag、環境固定は L2 の BindingLock が担う。grant 記録ファイルは
   将来の別 ADR とする — 導入するなら BindingLock 隣接のレビュー可能 artifact で
