@@ -600,11 +600,17 @@ let __aw_v_N = Array::get(__aw_f_N, 1)
 **無条件に評価される位置**だけで、分岐・ループ本体・closure 本体は自分の spine で
 処理する。
 
-今日の future はすべて ready 生成なのでループには入らない。得られたのは
-**`await` が pending future に対して既に正しい**という状態で、残りは producer を
-足すだけになった（表現も await も後から作り直さない）。fixture は
-`fixtures/async_await_multi.vibe`（let-value / match scrutinee / 被演算子の各位置に
-await、want 50）。
+fixture は `fixtures/async_await_multi.vibe`（let-value / match scrutinee /
+被演算子の各位置に await、want 50）。
+
+**producer**: `Future::pending() -> Future[T]` が state 1（未解決）の future を
+作り、`Future::resolve(f, v)` がその場で完了させる（payload を書いてから state を
+クリアする ―― 逆順だと awaiter が「ready なのに値がまだ」を観測しうる）。
+これで `Future[T]` は ready / pending の両方を作れる。まだ未解決の future を
+await する側には continuation を park する driver が要る（in-tree では
+`@vibex/concurrent` の `spawn_suspend` の `handle .. with Async`）。fixture
+`fixtures/async_future_pending.vibe` は await 前に resolve する形で、表現と
+builtin 2本を pin している（スケジューリングは pin していない）。
 
 **M1b-3c（todo、真の blocking await）**: 実 async ソース（host async import /
 subtask spawn）から得た future を待つ場合は §3.6 のとおり `future.read` +

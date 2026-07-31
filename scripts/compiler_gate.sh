@@ -6431,6 +6431,29 @@ fi
 rm -rf "$awmdir"
 echo "[compiler-gate] multi-position await hoist (#1230) ok"
 
+# #1230: the producer half -- Future::pending() / Future::resolve(f, v). Both
+#        futures are resolved before they are awaited, so this pins the
+#        representation and the two builtins rather than the scheduling (a
+#        still-pending await needs a driver parking the continuation).
+fpdir="_build/_gate_future_pending"
+rm -rf "$fpdir"; mkdir -p "$fpdir"
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/async_future_pending.vibe > "$fpdir/src.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fpdir/src.vibe" "$fpdir/src.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$fpdir/src.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_future_pending fixture did not compile" >&2
+  cat "$fpdir/src.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+fp_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$fpdir/src.wasm" 2>/dev/null | tail -1)"
+if [ "$fp_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_future_pending got '$fp_out' (want 42) -- #1230 pending producer regressed" >&2
+  exit 1
+fi
+rm -rf "$fpdir"
+echo "[compiler-gate] pending future producer (#1230) ok"
+
 # 52/52. owned-captures ABI (ADR-0076 追記31 Vertical A): a closure env OWNS
 #        its heap captures — creation-site dup + class-7 recursive drop.
 #        The fixture generalizes #1097 beyond match payloads: a borrowed
