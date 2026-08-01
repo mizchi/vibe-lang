@@ -32,6 +32,58 @@ net 値も併記する。3 つの bench file は同一の 1KiB/8KiB + baseline �
 | 8 KiB (net) | ~1593 µs / ~142 KiB | ~891 µs / ~145 KiB | ~76 µs / ~0.1 KiB |
 | throughput (8 KiB net) | ~5.1 MB/s | ~9.2 MB/s | ~107 MB/s |
 
+## 追記 (同日): scratch 再利用リファクタ後の再計測
+
+compress の作業配列 (state/message words) を呼び出し 1 回分の `Scratch` に
+まとめ全 block/chunk で使い回す + String→Bytes 変換を pre-size する改修
+(`blake3.vibe`) 後の net 値:
+
+| case | blake3 (初版) | blake3 (scratch 再利用) |
+|---|---:|---:|
+| 1 KiB net | ~101 µs / ~18.2 KiB | ~92 µs / **~4.3 KiB** |
+| 8 KiB net | ~891 µs / ~145 KiB | ~751 µs / **~22.5 KiB** |
+
+アロケーションは約 1/6 (残りはほぼ入力 Bytes 変換 + chunk/parent ごとの
+CV・deferred block)、時間も ~16% 改善。sha1 比は **2.1 倍**に拡大。
+
+## 追記 (同日): SIMD の天井値 (wasmtime, ネイティブ品質 codegen)
+
+「SIMD で速いアルゴリズム」の上限を見るため、Rust の blake3 crate
+(公式 SIMD 実装) と sha1 crate を wasm32-wasip1 へコンパイルし、同じ
+wasmtime で実測した (input = i % 251 pattern):
+
+| case | sha1 (scalar) | blake3 (scalar) | blake3 (+simd128, wasm32_simd) |
+|---|---:|---:|---:|
+| 1 KiB | 2.68 µs (382 MB/s) | 1.90 µs (539 MB/s) | 1.38 µs (740 MB/s) |
+| 8 KiB | 20.5 µs (400 MB/s) | 16.2 µs (506 MB/s) | **6.86 µs (1195 MB/s)** |
+| 64 KiB | 161 µs (408 MB/s) | 129 µs (509 MB/s) | **56.7 µs (1157 MB/s)** |
+
+- BLAKE3 は simd128 で **scalar 比 2.3〜2.4 倍**、SHA-1 は SIMD の恩恵なし
+  (構造的に vectorize しない)。
+- pure-vibe blake3 (~11 MB/s) とネイティブ品質 scalar (506 MB/s) の差 ~46 倍は
+  codegen 品質 (bounds check / boxing / 関数呼び出しコスト)。SIMD 化の前に
+  codegen 側の伸び代が支配的。
+
+### inline wasm (`= wasm`, ADR-0072) での SIMD compress は現状不可能
+
+現行の inline wasm 制約 (v0.3 slice) を `fixtures/inline_wasm_test.vibe` と
+突き合わせた結論:
+
+1. **v128 locals が無い** — locals は fn の i64 params のみ。BLAKE3 の
+   compress は 4 本の v128 row を 7 round 横断で保持する必要があり、
+   locals なしの folded expression では row の再利用 (fan-out) が書けない。
+2. **ポインタが取れない** — `Bytes`/`Int64Array` の線形メモリ上の
+   アドレスを得る手段がなく、`v128.load` で message words を読めない。
+   params 経由だと 16 words + cv 8 + counter/blen/flags で 27 個の
+   i64 param に手展開することになり、SIMD lane への詰め直しで利益が消える。
+3. `call` 不可のため G function を関数分割することもできない。
+
+→ vibe 内 SIMD 化には compiler 拡張 (v128 locals / buffer address intrinsic /
+`call` 許可のいずれか) が必要。それまでの現実的な高速化は
+(a) codegen 品質改善 (bounds-check 除去等) か、(b) viberun への host builtin
+(native blake3) 追加 — ただし (b) は pure/component target に host import を
+強いるため契約ハッシュ用途 (compiler 内で完結) に限定するのが筋。
+
 ## 読み方
 
 1. **blake3 は sha1 の 1.8〜2.2 倍高速** (同一条件の pure-vibe 実装同士)。
