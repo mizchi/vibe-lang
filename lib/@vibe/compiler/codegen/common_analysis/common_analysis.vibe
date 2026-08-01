@@ -2615,46 +2615,6 @@ fn mrv_is_fresh_name(fresh_names: HashMap[String, Int], tainted: HashMap[String,
   mrv_gen_has(fresh_names, gen, name) && !mrv_gen_has(tainted, gen, name)
 }
 
-/// collect_pattern_bindings, but into the epoch-keyed table (mrv_fresh's
-/// `bound` is membership-only and hot enough that the flat-array scan
-/// showed up at ~10% of a selfcompile profile -- #1259).
-fn collect_pattern_bindings_gen(pat: Pat, bindings: HashMap[String, Int], gen: Int) -> Int {
-  match pat {
-    PBind(name) => {
-      HashMap::set(bindings, name, gen); 0
-    },
-    PTuple(pats) => {
-      let mut i = 0
-      while i < Array::length(pats) {
-        collect_pattern_bindings_gen(Array::get(pats, i), bindings, gen)
-        i = i + 1
-      }
-      0
-    },
-    PCtor(_, args) => {
-      let mut i = 0
-      while i < Array::length(args) {
-        collect_pattern_bindings_gen(Array::get(args, i), bindings, gen)
-        i = i + 1
-      }
-      0
-    },
-    POr(l, r) => {
-      collect_pattern_bindings_gen(l, bindings, gen); collect_pattern_bindings_gen(r, bindings, gen)
-    },
-    PStruct(_, fields) => {
-      let mut i = 0
-      while i < Array::length(fields) {
-        let (_, fpat) = Array::get(fields, i)
-        collect_pattern_bindings_gen(fpat, bindings, gen)
-        i = i + 1
-      }
-      0
-    },
-    _ => 0
-  }
-}
-
 /// Value classification for compute_may_return_view_fns: does `e` evaluate
 /// to a provably FRESH/owned value (true), or might it be an unowned
 /// interior view (false)? Conservative toward view: only literals, ctor
@@ -2673,7 +2633,7 @@ fn collect_pattern_bindings_gen(pat: Pat, bindings: HashMap[String, Int], gen: I
 /// Bindings are recorded flat (no scope popping): a name REBOUND to a
 /// non-fresh value taints itself, so collisions only ever push toward
 /// view -- the safe direction.
-fn mrv_fresh(e: Expr, fresh_names: HashMap[String, Int], tainted: HashMap[String, Int], bound: HashMap[String, Int], gen: Int, user_fns_srt: Array[String], view_set: HashSet[String], ret_view: Array[Int]) -> Bool {
+fn mrv_fresh(e: Expr, fresh_names: HashMap[String, Int], tainted: HashMap[String, Int], bound: Array[String], gen: Int, user_fns_srt: Array[String], view_set: HashSet[String], ret_view: Array[Int]) -> Bool {
   match e {
     EInt(_) => true,
     EFloat(_) => true,
@@ -2724,7 +2684,7 @@ fn mrv_fresh(e: Expr, fresh_names: HashMap[String, Int], tainted: HashMap[String
     },
     ELet(n, v, b, _) => {
       let vf = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
-      HashMap::set(bound, n, gen)
+      Array::push(bound, n)
       if vf {
         HashMap::set(fresh_names, n, gen)
       } else {
@@ -2734,7 +2694,7 @@ fn mrv_fresh(e: Expr, fresh_names: HashMap[String, Int], tainted: HashMap[String
     },
     ELetMut(n, v, b, _) => {
       let vf = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
-      HashMap::set(bound, n, gen)
+      Array::push(bound, n)
       if vf {
         HashMap::set(fresh_names, n, gen)
       } else {
@@ -2744,7 +2704,7 @@ fn mrv_fresh(e: Expr, fresh_names: HashMap[String, Int], tainted: HashMap[String
     },
     ELetRec(n, v, b) => {
       let _ = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
-      HashMap::set(bound, n, gen)
+      Array::push(bound, n)
       HashMap::set(fresh_names, n, gen)
       mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
     },
@@ -2773,7 +2733,7 @@ fn mrv_fresh(e: Expr, fresh_names: HashMap[String, Int], tainted: HashMap[String
         let (p, v) = Array::get(arms, i)
         // Pattern payloads are interior views of the scrutinee: bound but
         // never fresh.
-        let _ = collect_pattern_bindings_gen(p, bound, gen)
+        let _ = collect_pattern_bindings(p, bound)
         if mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view) {
           ()
         } else {
@@ -2789,7 +2749,7 @@ fn mrv_fresh(e: Expr, fresh_names: HashMap[String, Int], tainted: HashMap[String
       let mut i = 0
       while i < Array::length(arms) {
         let (p, v) = Array::get(arms, i)
-        let _ = collect_pattern_bindings_gen(p, bound, gen)
+        let _ = collect_pattern_bindings(p, bound)
         if mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view) {
           ()
         } else {
@@ -2809,7 +2769,7 @@ fn mrv_fresh(e: Expr, fresh_names: HashMap[String, Int], tainted: HashMap[String
       while i < Array::length(params) {
         let (pn, pv) = Array::get(params, i)
         let _ = mrv_fresh(pv, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
-        HashMap::set(bound, pn, gen)
+        Array::push(bound, pn)
         i = i + 1
       }
       let _ = mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
@@ -2818,9 +2778,9 @@ fn mrv_fresh(e: Expr, fresh_names: HashMap[String, Int], tainted: HashMap[String
     },
     EForIn(n1, n2, it, b) => {
       let _ = mrv_fresh(it, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
-      HashMap::set(bound, n1, gen)
+      Array::push(bound, n1)
       match n2 {
-        Some(n2s) => HashMap::set(bound, n2s, gen),
+        Some(n2s) => Array::push(bound, n2s),
         None => ()
       }
       let _ = mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
@@ -2833,7 +2793,7 @@ fn mrv_fresh(e: Expr, fresh_names: HashMap[String, Int], tainted: HashMap[String
         i = i + 1
       }
       match callee {
-        EIdent(f, _) => if mrv_gen_has(bound, gen, f) {
+        EIdent(f, _) => if array_contains_str(bound, f) {
           // A locally-bound closure: its return is untrackable.
           false
         } else if bsearch_leftmost(user_fns_srt, f) >= 0 {
@@ -2868,7 +2828,7 @@ fn mrv_fresh(e: Expr, fresh_names: HashMap[String, Int], tainted: HashMap[String
       let mut i = 0
       while i < Array::length(fps) {
         let (pn, _) = Array::get(fps, i)
-        HashMap::set(bound, pn, gen)
+        Array::push(bound, pn)
         i = i + 1
       }
       let dummy_ret = [
@@ -2949,7 +2909,12 @@ export fn compute_may_return_view_fns(stmts: Array[Stmt]) -> Array[String] {
   let view_seen = HashSet::new_string()
   let fresh_names: HashMap[String, Int] = HashMap::new_string()
   let tainted: HashMap[String, Int] = HashMap::new_string()
-  let bound: HashMap[String, Int] = HashMap::new_string()
+  // `bound` is a shared flat array reset per walk via truncate (the
+  // collect_free_vars push/truncate pattern): membership is only checked for
+  // call heads and stays function-local-small, while a per-walk table costs
+  // an allocation per binder insert -- the selfcompile heap KPI gate is
+  // tighter than that CPU win (#1259 follow-up).
+  let bound = array_empty()
   let mut gen = 0
   let mut changed = true
   let mut rounds = 0
@@ -2966,7 +2931,7 @@ export fn compute_may_return_view_fns(stmts: Array[Stmt]) -> Array[String] {
             let mut pi = 0
             while pi < Array::length(fps) {
               let (pn, _) = Array::get(fps, pi)
-              HashMap::set(bound, pn, gen)
+              Array::push(bound, pn)
               pi = pi + 1
             }
             let ret_view = [
