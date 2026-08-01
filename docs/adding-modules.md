@@ -1,7 +1,9 @@
 # 新しいモジュールを足す・直す — メンテナンスの手引き
 
-> Status: 2026-07-04, #741/#742/#745 の作業で確立した運用の成文化。
-> 設計背景は [module-system-v2.md](module-system-v2.md) (ADR-0063/0064)。
+> Status: 2026-07-04, #741/#742/#745 の作業で確立した運用の成文化
+> (境界の綴りを `index.vpkg` に更新: 2026-08-01, #1269)。
+> 境界・可視性・pin の規則は [module-system-oracle.md の「現行モデル」節](module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)
+> が正本。設計の経緯は [module-system-v2.md](module-system-v2.md) (ADR-0063/0064)。
 > selfhost-only 前提 ([archive/moonbit-retirement.md](archive/moonbit-retirement.md))。
 
 このリポジトリのライブラリは「テストが allowlist に載っていて、battery が
@@ -14,14 +16,14 @@ allowlist をセットで足す。**
 
 | 置き場所 | 用途 | 例 |
 | --- | --- | --- |
-| `lib/@vibe/<pkg>/` | 契約パッケージ。`index.vibei` が公開 API。**境界強制 (#729)**: `index.vibei` を持つディレクトリの内部ファイルは外部から直接 import できず、契約 (ディレクトリ import) 経由のみ。compiler 本体からも `import ../../../lib/@vibe/<pkg> { ... }` で消費できる (#741, #766) | `lib/@vibe/core` (sha1 / leb128 / list / set / maps, #766), `lib/@vibe/ast` (AST 透明型), `lib/@vibe/parser` (lexer/parser/printer, #753) |
-| `lib/@vibe/<domain>/` | 標準ライブラリ層。directory import (`import ../json { ... }`) は `index.vibe(i)` 経由 | `lib/@vibe/json`, `lib/@vibe/module` |
+| `lib/@vibe/<pkg>/` | 契約パッケージ。`index.vpkg` が境界かつ公開 API (legacy `index.vibei` は境界ではない、ADR-0070)。**境界強制 (#729)**: `index.vpkg` を持つディレクトリの内部ファイルは外部の owner から直接 import できず、契約 (ディレクトリ import) 経由のみ。compiler 本体からも `import ../../../lib/@vibe/<pkg> { ... }` で消費できる (#741, #766) | `lib/@vibe/core` (sha1 / leb128 / list / set / maps, #766), `lib/@vibe/ast` (AST 透明型), `lib/@vibe/parser` (lexer/parser/printer, #753) |
+| `lib/@vibe/<domain>/` | 標準ライブラリ層。directory import (`import ../json { ... }`) は `index.vpkg` 契約経由 | `lib/@vibe/json`, `lib/@vibe/module` |
 | `lib/@vibex/<pkg>/` | 実験・拡張層 (ADR-0065: @vibex = 仮想実験ユーザー scope)。安定したら `lib/@vibe/` へ昇格 | `lib/@vibex/fmt`, `lib/@vibex/regexp` |
 | `lib/@<user>/<pkg>/` | コンパイラ非関連の実ユーザー scope パッケージ (in-repo に置けるのは repo owner が支配する scope のみ) | `lib/@mizchi/markdown` |
 | `lib/@vibe/compiler/` | compiler 本体のみ。ライブラリを置かない (共有したいものは `lib/@vibe/` に切り出して契約 import する) | — |
 
 新規の再利用可能なデータ構造・アルゴリズムは **`lib/@vibe/core` への追加を
-第一候補**にする (moonbitlang/core 方式のドメイン別ファイル + index.vibei
+第一候補**にする (moonbitlang/core 方式のドメイン別ファイル + index.vpkg
 契約)。
 
 `@scope/name` import の解決順 (ADR-0065, #751): `.vibe/store/` (pin 検証済み)
@@ -38,7 +40,7 @@ dev-mode の便宜で、pin があれば置き場所によらず hash 照合さ�
      + char literal (`'x'`) で書く (#742 の base64/fmt rot の教訓)
    - `r#` raw identifier は printer で再エスケープされるが (#741)、keyword
      名 binding は避けるのが無難
-2. **契約 (lib/@vibe の場合)**: `index.vibei` の先頭に `import ./foo.vibe {}`
+2. **契約 (lib/@vibe の場合)**: `index.vpkg` の先頭に `import ./foo.vibe {}`
    を足し、公開 fn を bodyless 宣言で列挙する。conformance は checker が
    照合する (#729)
 3. **テスト**: `<pkg>/foo_test.vibe` を書く。`vibe test` は production

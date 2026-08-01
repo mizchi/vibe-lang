@@ -34,8 +34,9 @@ pkf run vibe-md-tutorial                                # check を task 化し�
 ` ```vibe skip ` ブロックは目標設計の非実行例であり、コンパイル済みとは主張しない。
 目標の言語形式を示す skip block は
 [#1279 Exception](https://github.com/mizchi/vibe-lang/issues/1279)、
-[#1280 reserved fn](https://github.com/mizchi/vibe-lang/issues/1280)、
-[#1281 top-level patterns](https://github.com/mizchi/vibe-lang/issues/1281) で追跡する。
+[#1280 reserved fn](https://github.com/mizchi/vibe-lang/issues/1280) で追跡する
+([#1281 top-level patterns](https://github.com/mizchi/vibe-lang/issues/1281) は
+実装済みで、03 の該当ブロックは runnable になった)。
 
 より網羅的なリファレンスは [docs/cheatsheet.md](../cheatsheet.md) と
 [docs/language-tour/](../language-tour/)。ただし一部の記述は実装より
@@ -51,17 +52,17 @@ runnable な例がある箇所は実行結果 (`vibe run`/`output`) 付きで検
   ただの式の括弧で、`break` に渡るのは**タプル 1 個** `(a, b)`。
   構文方針は [#1284](https://github.com/mizchi/vibe-lang/issues/1284) で追跡する。
   [02 制御フロー](02_control_flow.vibe.md#loop--パラメータ付き末尾再帰)。
-- **トップレベル関数を `f` / `g` という名前にすると壊れた wasm を生成する
-  既知バグ** ([#1203](https://github.com/mizchi/vibe-lang/issues/1203))。
-  `@vibe/prelude/func.vibe` の `compose`/`flip` がクロージャ引数名として
-  `f`/`g` を使っており、ユーザ側のトップレベル関数が同名だと衝突する。
-  型検査 (`vibe check`) は通過し、`vibe run` で初めて失敗する。回避策は
-  単純に別の名前を使うこと。
-- **`Double` の `\{expr}` 文字列補間 / `to_string` は checker/codegen の
-  既知ギャップ** ([#1153](https://github.com/mizchi/vibe-lang/issues/1153))。
-  `Double::to_int` で丸めるのが安全な代替。
-  [01 値と関数](01_values_functions.vibe.md#値と基本型)。
-- **`Array::push` を生 `Array` に使わない**: 現行では backend 依存の挙動を
-  避けるため、蓄積には `ArrayBuilder` を使う。安全な API 契約は
-  [#1285](https://github.com/mizchi/vibe-lang/issues/1285) で追跡する。
+
+以前ここに載っていた次の3件は、現在のコンパイラでは再現しないことを
+runnable な例で確認したので落とした (#1270):
+
+- トップレベル関数を `f` / `g` と名付けると壊れた wasm になる
+  ([#1203](https://github.com/mizchi/vibe-lang/issues/1203)) — `compose`/`flip`
+  と同居しても正しく動く。
+- `Double` の `\{expr}` 補間 / `Double::to_string` が使えない
+  ([#1153](https://github.com/mizchi/vibe-lang/issues/1153)) — どちらも出力
+  できる。[01 値と関数](01_values_functions.vibe.md#値と基本型) で実行している。
+- `Array::push` を生 `Array` に使うと backend 依存になる
+  ([#1285](https://github.com/mizchi/vibe-lang/issues/1285)) — linear / RC /
+  wasm-gc で同一の in-place 追加であることを compiler test に固定した。
   [03 データ](03_data.vibe.md#蓄積は-arraybuilder)。

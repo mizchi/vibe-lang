@@ -338,6 +338,12 @@ Rules:
 - `export <module-ref> { ... }` re-exports selected items from another module.
 - Legacy `use <module-ref> { ... }` is not part of the current surface syntax.
 
+Which module refs a given file is *allowed* to import — package boundaries,
+owner visibility, implicit build roots, and the dependency pin/update
+workflow — is not syntax and is specified once, in
+[docs/module-system-oracle.md の「現行モデル」節](../module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)
+(#1269).
+
 ## Expressions
 
 ### Blocks

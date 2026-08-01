@@ -123,8 +123,16 @@ internal compiler/test-harness ABI only.
 
 ## Dependencies (git/URL, MVP)
 
-Remote dependencies are vendored into the project (git/URL 分散 model). Declare
-them in `vibe.deps` (one `<name> <url>` per line; `#` comments allowed):
+Remote dependencies are vendored into the project (git/URL 分散 model). This is
+a **separate layer** from the in-repo package model — `vibe.lock` records
+vendored remote deps only; `lib/@scope/pkg` packages are bounded by
+`index.vpkg` and pinned through its `deps`/`generated_hash` header instead.
+The boundary/visibility/pinning rules live in one place:
+[docs/module-system-oracle.md の「現行モデル」節](module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)
+(#1269).
+
+Declare remote deps in `vibe.deps` (one `<name> <url>` per line; `#` comments
+allowed):
 
 ```
 # vibe.deps

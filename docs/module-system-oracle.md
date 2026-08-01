@@ -1,10 +1,65 @@
 # Module system Oracle
 
-Status: ADR-0070 の実行可能な正本。2026-07-16。
+Status: ADR-0070 の実行可能な正本。2026-07-16 (現行モデル要約 2026-08-01, #1269)。
 
 vibe の package/module policy は `formal/VibeFormal/Module/` の Lean model を
 正とし、compiler の loader はその判定を filesystem 上で refinement する。
 旧 ADR-0063/0070 の incoming-only boundary と再帰 discovery は supersede する。
+
+## 現行モデル (canonical — ここが唯一の現行記述)
+
+パッケージ境界・可視性・pin/update の**現行の**規則はこの節が正本である
+(#1269)。他のドキュメント (spec / cheatsheet / tutorial / install /
+module-system*.md) はここへリンクし、独自の説明を持たない。異なる世代の
+記述に出会ったら、この節と `formal/VibeFormal/Module/` が勝つ。
+
+**1. 境界は `index.vpkg` だけ。** source の owner は最寄りの祖先
+`index.vpkg`。nested な `index.vpkg` は別 package を開始する。`index.vibe` /
+legacy `index.vibei` は **境界ではない** — 互換のために読めるだけの
+ファイルであり、新しいパッケージは必ず `index.vpkg` を持つ。同じ directory
+に複数の index spelling があれば hard error。
+
+**2. 可視性は owner 単位。** owner を持たない source は公開 compatibility
+space で、誰からでも import できる。owner を持つ implementation は同じ owner
+からしか import できず、他 owner からは相手の `index.vpkg` facade だけを
+import できる (親→子・子→親の両方向、ownerless からの bypass も不可)。
+
+**3. 暗黙 build root は直下だけ。** `index.vpkg` と同じ directory の通常
+`*.vibe` のみが暗黙 root。subdirectory は再帰走査せず、direct root からの
+relative import/export edge で graph に入れる。`*_test.vibe` /
+`*_bench.vibe` は通常 build と package hash から除外され import target に
+できない (明示実行時のみ、最寄り owner の private production と `index.vpkg`
+の shared import を継承する)。`_*.vibe` / `*.draft.vibe` は自動 root/hash から
+外れるが、同一 owner からの明示 relative import で到達すれば graph と hash
+closure に入る。symlink は module source / contract / import target のいずれ
+にも使えない。
+
+**4. 契約とヘッダー。** `index.vpkg` は bodyless 宣言による公開契約 +
+`name` / `version` / `description` / `deps` / `main` / `generated_hash` の
+key=value ヘッダー (ADR-0080)。`deps = { @scope/pkg : x.y.z }` が依存の版数を
+宣言する唯一の場所で、`import @scope/pkg { .. }` は名前解決専用 (版数を
+運ばない)。旧 `version x.y.z` (`=` なし) は互換で受理される。
+
+**5. pin と update のワークフロー。** 2つのレイヤがあり、用途が違う:
+
+| やること | コマンド | 記録先 |
+|---|---|---|
+| 依存の宣言漏れ検査 | `vibe check --deps-missing <root>` | — (CI: compiler_gate 60) |
+| package hash の計算・書き戻し | `vibe hash --write <pkg_dir\|index.vpkg>` | `generated_hash` (idempotent) |
+| リモート依存の取得と固定 | `vibe fetch` (`vibe.deps` を読む) | `deps/` に vendor + `vibe.lock` |
+
+`@scope/name` の解決順は `.vibe/store/` (pin 検証済み) → workspace `lib/` →
+`VIBE_LIB` の各 root (`:` 区切り、既定 `$VIBE_HOME/lib`)。lib/VIBE_LIB 解決は
+dev-mode の便宜であり、`VIBE_REQUIRE_PINS=1` では pin なし解決はエラーになる。
+`vibe fetch` / `vibe.lock` は **リモート vendoring MVP** (単一ファイル URL と
+git repo を `deps/` に取り込む経路、docs/install.md) であって、上の
+package 境界モデルとは別レイヤ — in-repo の `lib/@scope/pkg` は
+`vibe.lock` を使わない。
+
+**歴史的記述の扱い:** [module-system.md](module-system.md) (v1 の現行仕様書)
+と [module-system-v2.md](module-system-v2.md) (v2 の設計書) は設計の経緯
+としてのみ読むこと。`index.lock` や `module {}` ブロック、`index.vibei` を
+境界とする記述はいずれも現行ではない。
 
 ## 規則
 
