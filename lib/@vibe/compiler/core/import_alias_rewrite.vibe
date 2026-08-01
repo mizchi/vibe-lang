@@ -5,6 +5,15 @@ import ./ast.vibe {
 }
 
 import @vibe/core {
+  type HashMap,
+  type HashSet,
+  HashMap::get,
+  HashMap::has,
+  HashMap::new_string,
+  HashMap::set,
+  HashSet::add,
+  HashSet::has,
+  HashSet::new_string,
   array_empty
 }
 
@@ -378,76 +387,248 @@ fn alias_map_without_params(aliases: Array[(String, String)], params: Array[(Str
   }
 }
 
+/// #1259: indexed view of one alias map. `entries` stays the canonical
+/// first-match array -- the filtered copies the without_* family produces
+/// run through the SAME filter functions, so every lookup result is
+/// identical to the linear scans it replaces. `idx` maps alias -> original
+/// with first-push-wins, and `shadow_keys` holds every name whose binding
+/// would shadow at least one alias (each alias itself plus each of its
+/// dotted prefixes, per alias_is_shadowed), turning the at-every-binder
+/// "does this binder shadow anything" pre-scan from O(aliases) into O(1).
+/// A full-closure compile profile put the lookup_alias / alias_map_has_name
+/// scans at ~8% of total CPU before this index.
+struct AliasIdx {
+  entries: Array[(String, String)];
+  idx: HashMap[String, String];
+  shadow_keys: HashSet[String]
+}
+
+fn aliasidx_build(entries: Array[(String, String)]) -> AliasIdx {
+  let idx: HashMap[String, String] = HashMap::new_string()
+  let shadow_keys = HashSet::new_string()
+  let mut i = 0
+  while i < Array::length(entries) {
+    let (alias, original) = Array::get(entries, i)
+    if !HashMap::has(idx, alias) {
+      HashMap::set(idx, alias, original)
+    } else {
+      ()
+    }
+    HashSet::add(shadow_keys, alias)
+    let mut ci = 0
+    while ci < String::length(alias) {
+      if String::char_code_at(alias, ci) == '.' {
+        HashSet::add(shadow_keys, alias[0: ci])
+      } else {
+        ()
+      }
+      ci = ci + 1
+    }
+    i = i + 1
+  }
+  AliasIdx::{
+    entries: entries,
+    idx: idx,
+    shadow_keys: shadow_keys
+  }
+}
+
+/// alias_map_has_name, O(1): does binding `name` shadow any alias?
+fn aliasidx_shadows(am: AliasIdx, name: String) -> Bool {
+  HashSet::has(am.shadow_keys, name)
+}
+
+fn aliasidx_without_name(am: AliasIdx, name: String) -> AliasIdx {
+  if aliasidx_shadows(am, name) {
+    aliasidx_build(alias_map_without_name(am.entries, name))
+  } else {
+    am
+  }
+}
+
+fn aliasidx_without_names(am: AliasIdx, names: Array[String]) -> AliasIdx {
+  let mut any = false
+  let mut i = 0
+  while i < Array::length(names) && !any {
+    if aliasidx_shadows(am, Array::get(names, i)) {
+      any = true
+    } else {
+      i = i + 1
+    }
+  }
+  if any {
+    aliasidx_build(alias_map_without_names(am.entries, names))
+  } else {
+    am
+  }
+}
+
+/// Bound names of a pattern (binders are plain identifiers), for the O(1)
+/// shadow pre-check in aliasidx_without_pat. Same walk as pat_binds_name.
+fn pat_collect_bound_names(pat: Pat, out: Array[String]) -> Int {
+  match pat {
+    PBind(bound) => {
+      Array::push(out, bound); 0
+    },
+    PCtor(_, pats) => {
+      let mut i = 0
+      while i < Array::length(pats) {
+        pat_collect_bound_names(Array::get(pats, i), out)
+        i = i + 1
+      }
+      0
+    },
+    PTuple(pats) => {
+      let mut i = 0
+      while i < Array::length(pats) {
+        pat_collect_bound_names(Array::get(pats, i), out)
+        i = i + 1
+      }
+      0
+    },
+    POr(left, right) => {
+      pat_collect_bound_names(left, out); pat_collect_bound_names(right, out)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, field_pat) = Array::get(fields, i)
+        pat_collect_bound_names(field_pat, out)
+        i = i + 1
+      }
+      0
+    },
+    _ => 0
+  }
+}
+
+fn aliasidx_without_pat(am: AliasIdx, pat: Pat) -> AliasIdx {
+  let bound = empty_strings()
+  let _ = pat_collect_bound_names(pat, bound)
+  let mut any = false
+  let mut i = 0
+  while i < Array::length(bound) && !any {
+    if aliasidx_shadows(am, Array::get(bound, i)) {
+      any = true
+    } else {
+      i = i + 1
+    }
+  }
+  if any {
+    aliasidx_build(alias_map_without_pat(am.entries, pat))
+  } else {
+    am
+  }
+}
+
+fn aliasidx_without_params(am: AliasIdx, params: Array[(String, Option[TypeExpr])]) -> AliasIdx {
+  let mut any = false
+  let mut i = 0
+  while i < Array::length(params) && !any {
+    let (param_name, _) = Array::get(params, i)
+    if aliasidx_shadows(am, param_name) {
+      any = true
+    } else {
+      i = i + 1
+    }
+  }
+  if any {
+    aliasidx_build(alias_map_without_params(am.entries, params))
+  } else {
+    am
+  }
+}
+
 export fn rewrite_import_alias_expr(expr: Expr, aliases: Array[(String, String)]) -> Expr {
+  if Array::length(aliases) == 0 {
+    expr
+  } else {
+    rewrite_alias_expr_ix(expr, aliasidx_build(aliases))
+  }
+}
+
+/// #1259: prebuilt-index variant for callers that rewrite MANY expressions
+/// against the same alias map. rewrite_import_alias_expr builds the index
+/// per call, which is fine for one-shot use but was the dominant share of
+/// bump-heap growth (and ~300ms of rehash churn) when normalize's module
+/// flattening called it once per binding.
+export fn make_import_alias_rewriter(aliases: Array[(String, String)]) -> (Expr) -> Expr {
+  let am = aliasidx_build(aliases)
+  (e) -> {
+    rewrite_alias_expr_ix(e, am)
+  }
+}
+
+fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
   // Perf: with no aliases the rewrite is the identity, but the match below
   // still rebuilt EVERY node of the tree. Alias maps only shrink on the way
   // down (without_*), so an empty map stays empty for the whole subtree --
   // return the shared node instead of an allocated copy (AST nodes are
   // immutable; `None => expr` below already shares subtrees).
-  if Array::length(aliases) == 0 {
+  if Array::length(am.entries) == 0 {
     expr
   } else {
     match expr {
-      EIdent(name, _) => match lookup_alias(aliases, name) {
+      EIdent(name, _) => match HashMap::get(am.idx, name) {
         Some(original) => EIdent(original, -1),
         None => expr
       },
       ETuple(items) => ETuple(for item in items {
-        rewrite_import_alias_expr(item, aliases)
+        rewrite_alias_expr_ix(item, am)
       }),
       EArray(items) => EArray(for item in items {
-        rewrite_import_alias_expr(item, aliases)
+        rewrite_alias_expr_ix(item, am)
       }),
       ERecord(rn, fields, targs) => ERecord(rn, for field in fields {
         let (name, value) = field
-        (name, rewrite_import_alias_expr(value, aliases))
+        (name, rewrite_alias_expr_ix(value, am))
       }, targs),
-      EIf(cond, then_expr, else_expr) => EIf(rewrite_import_alias_expr(cond, aliases), rewrite_import_alias_expr(then_expr, aliases), rewrite_import_alias_expr(else_expr, aliases)),
-      ELet(name, value, body, soff) => ELet(name, rewrite_import_alias_expr(value, aliases), rewrite_import_alias_expr(body, alias_map_without_name(aliases, name)), soff),
+      EIf(cond, then_expr, else_expr) => EIf(rewrite_alias_expr_ix(cond, am), rewrite_alias_expr_ix(then_expr, am), rewrite_alias_expr_ix(else_expr, am)),
+      ELet(name, value, body, soff) => ELet(name, rewrite_alias_expr_ix(value, am), rewrite_alias_expr_ix(body, aliasidx_without_name(am, name)), soff),
       ELetRec(name, value, body) => {
-        let body_aliases = alias_map_without_name(aliases, name)
-        ELetRec(name, rewrite_import_alias_expr(value, body_aliases), rewrite_import_alias_expr(body, body_aliases))
+        let body_aliases = aliasidx_without_name(am, name)
+        ELetRec(name, rewrite_alias_expr_ix(value, body_aliases), rewrite_alias_expr_ix(body, body_aliases))
       },
-      ELetMut(name, value, body, soff) => ELetMut(name, rewrite_import_alias_expr(value, aliases), rewrite_import_alias_expr(body, alias_map_without_name(aliases, name)), soff),
-      EAssign(name, value, body) => EAssign(name, rewrite_import_alias_expr(value, aliases), rewrite_import_alias_expr(body, aliases)),
-      EAssignOp(name, op, value, body) => EAssignOp(name, op, rewrite_import_alias_expr(value, aliases), rewrite_import_alias_expr(body, aliases)),
-      ESeq(left, right) => ESeq(rewrite_import_alias_expr(left, aliases), rewrite_import_alias_expr(right, aliases)),
-      EMatch(scrutinee, arms) => EMatch(rewrite_import_alias_expr(scrutinee, aliases), for arm in arms {
+      ELetMut(name, value, body, soff) => ELetMut(name, rewrite_alias_expr_ix(value, am), rewrite_alias_expr_ix(body, aliasidx_without_name(am, name)), soff),
+      EAssign(name, value, body) => EAssign(name, rewrite_alias_expr_ix(value, am), rewrite_alias_expr_ix(body, am)),
+      EAssignOp(name, op, value, body) => EAssignOp(name, op, rewrite_alias_expr_ix(value, am), rewrite_alias_expr_ix(body, am)),
+      ESeq(left, right) => ESeq(rewrite_alias_expr_ix(left, am), rewrite_alias_expr_ix(right, am)),
+      EMatch(scrutinee, arms) => EMatch(rewrite_alias_expr_ix(scrutinee, am), for arm in arms {
         let (pat, body) = arm
-        (pat, rewrite_import_alias_expr(body, alias_map_without_pat(aliases, pat)))
+        (pat, rewrite_alias_expr_ix(body, aliasidx_without_pat(am, pat)))
       }),
-      EHandle(body, arms) => EHandle(rewrite_import_alias_expr(body, aliases), for arm in arms {
+      EHandle(body, arms) => EHandle(rewrite_alias_expr_ix(body, am), for arm in arms {
         let (pat, arm_body) = arm
-        (pat, rewrite_import_alias_expr(arm_body, alias_map_without_pat(aliases, pat)))
+        (pat, rewrite_alias_expr_ix(arm_body, aliasidx_without_pat(am, pat)))
       }),
-      EWhile(cond, body) => EWhile(rewrite_import_alias_expr(cond, aliases), rewrite_import_alias_expr(body, aliases)),
+      EWhile(cond, body) => EWhile(rewrite_alias_expr_ix(cond, am), rewrite_alias_expr_ix(body, am)),
       ELoop(params, body) => {
         let out_params = for param in params {
           let (name, init) = param
-          (name, rewrite_import_alias_expr(init, aliases))
+          (name, rewrite_alias_expr_ix(init, am))
         }
-        let mut body_aliases = aliases
+        let mut body_aliases = am
         let mut i = 0
         while i < Array::length(params) {
           let (name, _) = Array::get(params, i)
-          body_aliases = alias_map_without_name(body_aliases, name)
+          body_aliases = aliasidx_without_name(body_aliases, name)
           i = i + 1
         }
-        ELoop(out_params, rewrite_import_alias_expr(body, body_aliases))
+        ELoop(out_params, rewrite_alias_expr_ix(body, body_aliases))
       },
       EForIn(name, index_name, iter, body) => {
         let body_aliases = match index_name {
-          Some(index_name) => alias_map_without_name(alias_map_without_name(aliases, name), index_name),
-          None => alias_map_without_name(aliases, name)
+          Some(index_name) => aliasidx_without_name(aliasidx_without_name(am, name), index_name),
+          None => aliasidx_without_name(am, name)
         }
-        EForIn(name, index_name, rewrite_import_alias_expr(iter, aliases), rewrite_import_alias_expr(body, body_aliases))
+        EForIn(name, index_name, rewrite_alias_expr_ix(iter, am), rewrite_alias_expr_ix(body, body_aliases))
       },
-      ECall(callee, args, off) => ECall(rewrite_import_alias_expr(callee, aliases), for arg in args {
-        rewrite_import_alias_expr(arg, aliases)
+      ECall(callee, args, off) => ECall(rewrite_alias_expr_ix(callee, am), for arg in args {
+        rewrite_alias_expr_ix(arg, am)
       }, off),
-      EBinOp(op, left, right) => EBinOp(op, rewrite_import_alias_expr(left, aliases), rewrite_import_alias_expr(right, aliases)),
-      EUnaryOp(op, value) => EUnaryOp(op, rewrite_import_alias_expr(value, aliases)),
-      EFn(type_params, bounds, params, ret_ty, effect, body) => EFn(type_params, bounds, params, ret_ty, effect, rewrite_import_alias_expr(body, alias_map_without_params(aliases, params))),
+      EBinOp(op, left, right) => EBinOp(op, rewrite_alias_expr_ix(left, am), rewrite_alias_expr_ix(right, am)),
+      EUnaryOp(op, value) => EUnaryOp(op, rewrite_alias_expr_ix(value, am)),
+      EFn(type_params, bounds, params, ret_ty, effect, body) => EFn(type_params, bounds, params, ret_ty, effect, rewrite_alias_expr_ix(body, aliasidx_without_params(am, params))),
       // #897: `mod.x` written against a qualified-import namespace (`import
       // ... as mod only { x }`) is encoded as the alias key "mod.x" -- see
       // qualify_import_items in lib/@vibe/parser/parser.vibe. A real
@@ -455,26 +636,26 @@ export fn rewrite_import_alias_expr(expr: Expr, aliases: Array[(String, String)]
       // that desugaring; anything else falls through to the ordinary EDot
       // rewrite (ordinary struct/record field access).
       EDot(obj, field, off, fdoff) => match obj {
-        EIdent(ns, _) => match lookup_alias(aliases, String::concat(ns, String::concat(".", field))) {
+        EIdent(ns, _) => match HashMap::get(am.idx, String::concat(ns, String::concat(".", field))) {
           Some(original) => EIdent(original, -1),
-          None => EDot(rewrite_import_alias_expr(obj, aliases), field, off, fdoff)
+          None => EDot(rewrite_alias_expr_ix(obj, am), field, off, fdoff)
         },
-        _ => EDot(rewrite_import_alias_expr(obj, aliases), field, off, fdoff)
+        _ => EDot(rewrite_alias_expr_ix(obj, am), field, off, fdoff)
       },
-      ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_import_alias_expr(body, aliases)),
-      EReturn(value) => EReturn(rewrite_import_alias_expr(value, aliases)),
+      ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_alias_expr_ix(body, am)),
+      EReturn(value) => EReturn(rewrite_alias_expr_ix(value, am)),
       EBreak(value) => match value {
-        Some(value) => EBreak(Some(rewrite_import_alias_expr(value, aliases))),
+        Some(value) => EBreak(Some(rewrite_alias_expr_ix(value, am))),
         None => expr
       },
       EContinue(values) => EContinue(for value in values {
-        rewrite_import_alias_expr(value, aliases)
+        rewrite_alias_expr_ix(value, am)
       }),
       EMap(fields) => EMap(for field in fields {
         let (name, value) = field
-        (name, rewrite_import_alias_expr(value, aliases))
+        (name, rewrite_alias_expr_ix(value, am))
       }),
-      ESpread(value) => ESpread(rewrite_import_alias_expr(value, aliases)),
+      ESpread(value) => ESpread(rewrite_alias_expr_ix(value, am)),
       _ => expr
     }
   }
@@ -558,17 +739,21 @@ export fn collect_import_alias_collision_locals(stmts: Array[Stmt]) -> Array[Str
 }
 
 export fn rewrite_import_alias_stmt(stmt: Stmt, aliases: Array[(String, String)]) -> Stmt {
+  rewrite_alias_stmt_ix(stmt, aliasidx_build(aliases))
+}
+
+fn rewrite_alias_stmt_ix(stmt: Stmt, am: AliasIdx) -> Stmt {
   match stmt {
-    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, name, ty, rewrite_import_alias_expr(body, alias_map_without_name(aliases, name))),
-    SLetMut(name, ty, body) => SLetMut(name, ty, rewrite_import_alias_expr(body, alias_map_without_name(aliases, name))),
-    STest(name, body) => STest(name, rewrite_import_alias_expr(body, aliases)),
-    SBench(name, body) => SBench(name, rewrite_import_alias_expr(body, aliases)),
-    SExpr(body) => SExpr(rewrite_import_alias_expr(body, aliases)),
-    SLetPat(pat, body) => SLetPat(pat, rewrite_import_alias_expr(body, aliases)),
+    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, name, ty, rewrite_alias_expr_ix(body, aliasidx_without_name(am, name))),
+    SLetMut(name, ty, body) => SLetMut(name, ty, rewrite_alias_expr_ix(body, aliasidx_without_name(am, name))),
+    STest(name, body) => STest(name, rewrite_alias_expr_ix(body, am)),
+    SBench(name, body) => SBench(name, rewrite_alias_expr_ix(body, am)),
+    SExpr(body) => SExpr(rewrite_alias_expr_ix(body, am)),
+    SLetPat(pat, body) => SLetPat(pat, rewrite_alias_expr_ix(body, am)),
     SModule(exported, name, stmts) => {
-      let module_aliases = collect_import_aliases(stmts)
+      let module_am = aliasidx_build(collect_import_aliases(stmts))
       SModule(exported, name, for inner_stmt in stmts {
-        rewrite_import_alias_stmt(inner_stmt, module_aliases)
+        rewrite_alias_stmt_ix(inner_stmt, module_am)
       })
     },
     _ => stmt
@@ -612,6 +797,7 @@ export fn append_non_import_stmts_without_alias_rewrite(merged: Array[Stmt], stm
 export fn append_import_alias_rewritten_non_import_stmts_skipping(merged: Array[Stmt], stmts: Array[Stmt], skipped_locals: Array[String]) -> Unit {
   let aliases = alias_map_without_names(collect_import_aliases(stmts), skipped_locals)
   let should_rewrite = Array::length(aliases) > 0
+  let am = aliasidx_build(aliases)
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
@@ -619,9 +805,9 @@ export fn append_import_alias_rewritten_non_import_stmts_skipping(merged: Array[
       SImport(_, _) => (),
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
-      SModule(_, _, _) => Array::push(merged, rewrite_import_alias_stmt(stmt, aliases)),
+      SModule(_, _, _) => Array::push(merged, rewrite_alias_stmt_ix(stmt, am)),
       _ => if should_rewrite {
-        Array::push(merged, rewrite_import_alias_stmt(stmt, aliases))
+        Array::push(merged, rewrite_alias_stmt_ix(stmt, am))
       } else {
         Array::push(merged, stmt)
       }
@@ -1132,26 +1318,26 @@ export fn namespace_private_value_stmts(path: String, stmts: Array[Stmt]) -> Arr
       _ => stmt
     }
   }
-  let namespace_private_stmt_local: (Stmt, Array[(String, String)]) -> Stmt = (stmt, renames) -> {
+  let namespace_private_stmt_local: (Stmt, AliasIdx) -> Stmt = (stmt, ram) -> {
     match stmt {
       SLet(exported, is_rec, name, ty, body) => {
-        let next_name = match lookup_alias(renames, name) {
+        let next_name = match HashMap::get(ram.idx, name) {
           Some(renamed) => renamed,
           None => name
         }
-        SLet(exported, is_rec, next_name, ty, rewrite_import_alias_expr(body, renames))
+        SLet(exported, is_rec, next_name, ty, rewrite_alias_expr_ix(body, ram))
       },
       SLetMut(name, ty, body) => {
-        let next_name = match lookup_alias(renames, name) {
+        let next_name = match HashMap::get(ram.idx, name) {
           Some(renamed) => renamed,
           None => name
         }
-        SLetMut(next_name, ty, rewrite_import_alias_expr(body, renames))
+        SLetMut(next_name, ty, rewrite_alias_expr_ix(body, ram))
       },
-      STest(name, body) => STest(name, rewrite_import_alias_expr(body, renames)),
-      SBench(name, body) => SBench(name, rewrite_import_alias_expr(body, renames)),
-      SExpr(body) => SExpr(rewrite_import_alias_expr(body, renames)),
-      SLetPat(pat, body) => SLetPat(pat, rewrite_import_alias_expr(body, renames)),
+      STest(name, body) => STest(name, rewrite_alias_expr_ix(body, ram)),
+      SBench(name, body) => SBench(name, rewrite_alias_expr_ix(body, ram)),
+      SExpr(body) => SExpr(rewrite_alias_expr_ix(body, ram)),
+      SLetPat(pat, body) => SLetPat(pat, rewrite_alias_expr_ix(body, ram)),
       SModule(exported, name, body_stmts) => SModule(exported, name, namespace_private_value_stmts(name, body_stmts)),
       _ => stmt
     }
@@ -1164,8 +1350,9 @@ export fn namespace_private_value_stmts(path: String, stmts: Array[Stmt]) -> Arr
   let value_renamed = if Array::length(renames) == 0 {
     stmts
   } else {
+    let ram = aliasidx_build(renames)
     for stmt in stmts {
-      namespace_private_stmt_local(stmt, renames)
+      namespace_private_stmt_local(stmt, ram)
     }
   }
   let type_renames = collect_private_type_renames(path, value_renamed, namespace_suffix_box, exported)
@@ -1282,26 +1469,26 @@ fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, Str
   }
 }
 
-fn namespace_private_stmt(stmt: Stmt, renames: Array[(String, String)]) -> Stmt {
+fn namespace_private_stmt(stmt: Stmt, ram: AliasIdx) -> Stmt {
   match stmt {
     SLet(exported, is_rec, name, ty, body) => {
-      let next_name = match lookup_alias(renames, name) {
+      let next_name = match HashMap::get(ram.idx, name) {
         Some(renamed) => renamed,
         None => name
       }
-      SLet(exported, is_rec, next_name, ty, rewrite_import_alias_expr(body, renames))
+      SLet(exported, is_rec, next_name, ty, rewrite_alias_expr_ix(body, ram))
     },
     SLetMut(name, ty, body) => {
-      let next_name = match lookup_alias(renames, name) {
+      let next_name = match HashMap::get(ram.idx, name) {
         Some(renamed) => renamed,
         None => name
       }
-      SLetMut(next_name, ty, rewrite_import_alias_expr(body, renames))
+      SLetMut(next_name, ty, rewrite_alias_expr_ix(body, ram))
     },
-    STest(name, body) => STest(name, rewrite_import_alias_expr(body, renames)),
-    SBench(name, body) => SBench(name, rewrite_import_alias_expr(body, renames)),
-    SExpr(body) => SExpr(rewrite_import_alias_expr(body, renames)),
-    SLetPat(pat, body) => SLetPat(pat, rewrite_import_alias_expr(body, renames)),
+    STest(name, body) => STest(name, rewrite_alias_expr_ix(body, ram)),
+    SBench(name, body) => SBench(name, rewrite_alias_expr_ix(body, ram)),
+    SExpr(body) => SExpr(rewrite_alias_expr_ix(body, ram)),
+    SLetPat(pat, body) => SLetPat(pat, rewrite_alias_expr_ix(body, ram)),
     SModule(exported, name, stmts) => SModule(exported, name, namespace_private_value_stmts(name, stmts)),
     _ => stmt
   }
@@ -1316,8 +1503,9 @@ fn namespace_private_value_stmts_legacy_ordered(path: String, stmts: Array[Stmt]
   let value_renamed = if Array::length(renames) == 0 {
     stmts
   } else {
+    let ram = aliasidx_build(renames)
     for stmt in stmts {
-      namespace_private_stmt(stmt, renames)
+      namespace_private_stmt(stmt, ram)
     }
   }
   let type_renames = collect_private_type_renames(path, value_renamed, namespace_suffix_box, exported)
@@ -1412,7 +1600,18 @@ export struct ExportRenamePlan {
   plan_paths: Array[String];
   rename_paths: Array[String];
   rename_names: Array[String];
-  rename_mangled: Array[String]
+  rename_mangled: Array[String];
+  // #1259: (path, name) -> mangled index over the three parallel arrays
+  // above (plan_rename_key encoding). Built once in build_export_rename_plan
+  // -- which needs it for its own facade-closure fixpoint -- and reused by
+  // collect_import_value_renames' per-import-item lookups.
+  rename_idx: HashMap[String, String]
+}
+
+/// Composite key for rename_idx. '\n' can appear in neither a module path
+/// nor a value name, so the encoding is collision-free.
+fn plan_rename_key(path: String, name: String) -> String {
+  String::concat(path, String::concat("\n", name))
 }
 
 /// Resolve a raw import path against the set of files in this merge; a
@@ -1610,6 +1809,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let rename_paths = empty_strings()
   let rename_names = empty_strings()
   let rename_mangled = empty_strings()
+  let rename_idx: HashMap[String, String] = HashMap::new_string()
   let mut ri = 0
   while ri < file_count {
     let path = Array::get(paths, ri)
@@ -1627,9 +1827,16 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
         if excluded {
           ()
         } else {
+          let mangled = namespace_exported_name(path, name)
           Array::push(rename_paths, path)
           Array::push(rename_names, name)
-          Array::push(rename_mangled, namespace_exported_name(path, name))
+          Array::push(rename_mangled, mangled)
+          let key = plan_rename_key(path, name)
+          if !HashMap::has(rename_idx, key) {
+            HashMap::set(rename_idx, key, mangled)
+          } else {
+            ()
+          }
         }
         ni = ni + 1
       }
@@ -1649,16 +1856,17 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
       if from == entry_path {
         ()
       } else {
-        match plan_triple_lookup(rename_paths, rename_names, rename_mangled, Array::get(edge_tpath, ci), Array::get(edge_tname, ci)) {
+        match HashMap::get(rename_idx, plan_rename_key(Array::get(edge_tpath, ci), Array::get(edge_tname, ci))) {
           Some(mangled) => {
-            match plan_triple_lookup(rename_paths, rename_names, rename_mangled, from, pub_name) {
-              Some(_) => (),
-              None => {
-                Array::push(rename_paths, from)
-                Array::push(rename_names, pub_name)
-                Array::push(rename_mangled, mangled)
-                changed = true
-              }
+            let from_key = plan_rename_key(from, pub_name)
+            if HashMap::has(rename_idx, from_key) {
+              ()
+            } else {
+              Array::push(rename_paths, from)
+              Array::push(rename_names, pub_name)
+              Array::push(rename_mangled, mangled)
+              HashMap::set(rename_idx, from_key, mangled)
+              changed = true
             }
           },
           None => ()
@@ -1671,7 +1879,8 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
     plan_paths: paths,
     rename_paths: rename_paths,
     rename_names: rename_names,
-    rename_mangled: rename_mangled
+    rename_mangled: rename_mangled,
+    rename_idx: rename_idx
   }
 }
 
@@ -1743,7 +1952,7 @@ export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stm
               None => original
             }
             if String::index_of(original, "::") < 0 && !string_array_contains(locals_seen, local) {
-              match plan_triple_lookup(rename_paths, rename_names, rename_mangled, target, original) {
+              match HashMap::get(plan.rename_idx, plan_rename_key(target, original)) {
                 Some(mangled) => {
                   Array::push(out, (local, mangled))
                   Array::push(locals_seen, local)
@@ -1782,26 +1991,27 @@ export fn apply_export_renames_stmts(stmts: Array[Stmt], renames: Array[(String,
   if Array::length(renames) == 0 {
     stmts
   } else {
+    let am = aliasidx_build(renames)
     for stmt in stmts {
       match stmt {
         SLet(exported, is_rec, name, ty, body) => {
-          let next_name = match lookup_alias(renames, name) {
+          let next_name = match HashMap::get(am.idx, name) {
             Some(renamed) => renamed,
             None => name
           }
-          SLet(exported, is_rec, next_name, ty, rewrite_import_alias_expr(body, renames))
+          SLet(exported, is_rec, next_name, ty, rewrite_alias_expr_ix(body, am))
         },
-        SLetMut(name, ty, body) => SLetMut(name, ty, rewrite_import_alias_expr(body, renames)),
+        SLetMut(name, ty, body) => SLetMut(name, ty, rewrite_alias_expr_ix(body, am)),
         SExport(items) => SExport(for item in items {
-          match lookup_alias(renames, item) {
+          match HashMap::get(am.idx, item) {
             Some(renamed) => renamed,
             None => item
           }
         }),
-        STest(name, body) => STest(name, rewrite_import_alias_expr(body, renames)),
-        SBench(name, body) => SBench(name, rewrite_import_alias_expr(body, renames)),
-        SExpr(body) => SExpr(rewrite_import_alias_expr(body, renames)),
-        SLetPat(pat, body) => SLetPat(pat, rewrite_import_alias_expr(body, renames)),
+        STest(name, body) => STest(name, rewrite_alias_expr_ix(body, am)),
+        SBench(name, body) => SBench(name, rewrite_alias_expr_ix(body, am)),
+        SExpr(body) => SExpr(rewrite_alias_expr_ix(body, am)),
+        SLetPat(pat, body) => SLetPat(pat, rewrite_alias_expr_ix(body, am)),
         _ => stmt
       }
     }
@@ -1877,15 +2087,16 @@ export fn rewrite_top_level_fn_alias_refs(stmts: Array[Stmt]) -> Unit {
     if Array::length(renames) == 0 {
       ()
     } else {
+      let ram = aliasidx_build(renames)
       let mut si = 0
       while si < Array::length(stmts) {
         match Array::get(stmts, si) {
-          SLet(exported, is_rec, name, ty, body) => Array::set(stmts, si, SLet(exported, is_rec, name, ty, rewrite_import_alias_expr(body, renames))),
-          SLetMut(name, ty, body) => Array::set(stmts, si, SLetMut(name, ty, rewrite_import_alias_expr(body, renames))),
-          STest(name, body) => Array::set(stmts, si, STest(name, rewrite_import_alias_expr(body, renames))),
-          SBench(name, body) => Array::set(stmts, si, SBench(name, rewrite_import_alias_expr(body, renames))),
-          SExpr(body) => Array::set(stmts, si, SExpr(rewrite_import_alias_expr(body, renames))),
-          SLetPat(pat, body) => Array::set(stmts, si, SLetPat(pat, rewrite_import_alias_expr(body, renames))),
+          SLet(exported, is_rec, name, ty, body) => Array::set(stmts, si, SLet(exported, is_rec, name, ty, rewrite_alias_expr_ix(body, ram))),
+          SLetMut(name, ty, body) => Array::set(stmts, si, SLetMut(name, ty, rewrite_alias_expr_ix(body, ram))),
+          STest(name, body) => Array::set(stmts, si, STest(name, rewrite_alias_expr_ix(body, ram))),
+          SBench(name, body) => Array::set(stmts, si, SBench(name, rewrite_alias_expr_ix(body, ram))),
+          SExpr(body) => Array::set(stmts, si, SExpr(rewrite_alias_expr_ix(body, ram))),
+          SLetPat(pat, body) => Array::set(stmts, si, SLetPat(pat, rewrite_alias_expr_ix(body, ram))),
           _ => ()
         }
         si = si + 1
@@ -1912,6 +2123,7 @@ export fn append_import_alias_rewritten_non_import_stmts_with_renames(merged: Ar
     xi = xi + 1
   }
   let should_rewrite = Array::length(combined) > 0
+  let am = aliasidx_build(combined)
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
@@ -1919,9 +2131,9 @@ export fn append_import_alias_rewritten_non_import_stmts_with_renames(merged: Ar
       SImport(_, _) => (),
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
-      SModule(_, _, _) => Array::push(merged, rewrite_import_alias_stmt(stmt, combined)),
+      SModule(_, _, _) => Array::push(merged, rewrite_alias_stmt_ix(stmt, am)),
       _ => if should_rewrite {
-        Array::push(merged, rewrite_import_alias_stmt(stmt, combined))
+        Array::push(merged, rewrite_alias_stmt_ix(stmt, am))
       } else {
         Array::push(merged, stmt)
       }

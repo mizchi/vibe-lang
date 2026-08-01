@@ -31,7 +31,7 @@ import @vibe/compiler/syntax {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, dce_stmts, rewrite_import_alias_expr
+  Expr, Pat, Stmt, TypeExpr, dce_stmts, make_import_alias_rewriter
 }
 
 //# Module flattening
@@ -87,16 +87,16 @@ fn module_value_aliases(body: Array[Stmt], prefix: String, out: Array[(String, S
 /// `prefix::name` AND qualify intra-module value references in its body, so the
 /// flattened source typechecks without the enclosing module scope (a sibling call
 /// `helper()` becomes `m::helper()`, matching the renamed `let m::helper`).
-fn flatten_module_body(body: Array[Stmt], prefix: String, aliases: Array[(String, String)], out: Array[Stmt]) -> Int {
+fn flatten_module_body(body: Array[Stmt], prefix: String, rewrite_aliases: (Expr) -> Expr, out: Array[Stmt]) -> Int {
   let mut i = 0
   while i < Array::length(body) {
     match Array::get(body, i) {
       SLet(exp, is_rec, name, ty, b) => {
-        Array::push(out, SLet(exp, is_rec, join_module_name(prefix, name), ty, rewrite_import_alias_expr(b, aliases)))
+        Array::push(out, SLet(exp, is_rec, join_module_name(prefix, name), ty, rewrite_aliases(b)))
         0
       },
       SLetMut(name, ty, b) => {
-        Array::push(out, SLetMut(join_module_name(prefix, name), ty, rewrite_import_alias_expr(b, aliases)))
+        Array::push(out, SLetMut(join_module_name(prefix, name), ty, rewrite_aliases(b)))
         0
       },
       SExternLet(name, ty) => {
@@ -104,7 +104,7 @@ fn flatten_module_body(body: Array[Stmt], prefix: String, aliases: Array[(String
         0
       },
       SModule(_, inner, inner_body) => {
-        let _ = flatten_module_body(inner_body, join_module_name(prefix, inner), aliases, out)
+        let _ = flatten_module_body(inner_body, join_module_name(prefix, inner), rewrite_aliases, out)
         0
       },
       other => {
@@ -1481,7 +1481,7 @@ export fn normalize_stmts(stmts: Array[Stmt]) -> Array[Stmt] {
         let live_body = dce_stmts(body, exported_value_names(body))
         let aliases = array_empty()
         let _ = module_value_aliases(live_body, name, aliases)
-        let _ = flatten_module_body(live_body, name, aliases, result)
+        let _ = flatten_module_body(live_body, name, make_import_alias_rewriter(aliases), result)
         0
       },
       _ => 0

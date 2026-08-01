@@ -5,7 +5,7 @@ import ./ast.vibe {
 }
 
 import @vibe/core {
-  array_empty
+  type HashMap, type HashSet, HashMap::get, HashMap::new_string, HashMap::set, HashSet::add, HashSet::has, HashSet::new_string, array_empty
 }
 
 //# Functions
@@ -39,9 +39,14 @@ fn dce_array_contains_str(arr: Array[String], s: String) -> Bool {
   search(0)
 }
 
-fn add_ref(out: Array[String], bound: Array[String], name: String) -> Int {
+// #1259: `out` is deduped through the parallel `out_seen` set instead of a
+// linear rescan per identifier; `bound` stays a plain array -- it is cloned
+// per scope and stays shallow, so the scan is cheap and the clone semantics
+// (scope popping by discarding the clone) would not fit a mutable set.
+fn add_ref(out: Array[String], out_seen: HashSet[String], bound: Array[String], name: String) -> Int {
   if not(dce_array_contains_str(bound, name)) {
-    if not(dce_array_contains_str(out, name)) {
+    if not(HashSet::has(out_seen, name)) {
+      HashSet::add(out_seen, name)
       Array::push(out, name)
     }
   }
@@ -84,9 +89,9 @@ fn collect_pat_bindings(pat: Pat, bound: Array[String]) -> Int {
   }
 }
 
-fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> Int {
+fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String], out_seen: HashSet[String]) -> Int {
   match expr {
-    EIdent(name, _) => add_ref(out, bound, name),
+    EIdent(name, _) => add_ref(out, out_seen, bound, name),
     EInt(_) => 0,
     EFloat(_) => 0,
     EString(_) => 0,
@@ -94,12 +99,12 @@ fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> In
     EUnit => 0,
     EBreak(_) => 0,
     EContinue(_) => 0,
-    EReturn(e) => collect_refs_into(e, bound, out),
-    EUnaryOp(_, e) => collect_refs_into(e, bound, out),
+    EReturn(e) => collect_refs_into(e, bound, out, out_seen),
+    EUnaryOp(_, e) => collect_refs_into(e, bound, out, out_seen),
     ETuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        collect_refs_into(Array::get(items, i), bound, out)
+        collect_refs_into(Array::get(items, i), bound, out, out_seen)
         i = i + 1
       }
       0
@@ -107,7 +112,7 @@ fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> In
     EArray(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        collect_refs_into(Array::get(items, i), bound, out)
+        collect_refs_into(Array::get(items, i), bound, out, out_seen)
         i = i + 1
       }
       0
@@ -116,94 +121,94 @@ fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> In
       let mut i = 0
       while i < Array::length(fields) {
         let (_, val) = Array::get(fields, i)
-        collect_refs_into(val, bound, out)
+        collect_refs_into(val, bound, out, out_seen)
         i = i + 1
       }
       0
     },
     EBinOp(_, l, r) => {
-      collect_refs_into(l, bound, out)
-      collect_refs_into(r, bound, out)
+      collect_refs_into(l, bound, out, out_seen)
+      collect_refs_into(r, bound, out, out_seen)
       0
     },
     ECall(callee, args, _) => {
-      collect_refs_into(callee, bound, out)
+      collect_refs_into(callee, bound, out, out_seen)
       let mut i = 0
       while i < Array::length(args) {
-        collect_refs_into(Array::get(args, i), bound, out)
+        collect_refs_into(Array::get(args, i), bound, out, out_seen)
         i = i + 1
       }
       0
     },
     EIf(cond, then_e, else_e) => {
-      collect_refs_into(cond, bound, out)
-      collect_refs_into(then_e, bound, out)
-      collect_refs_into(else_e, bound, out)
+      collect_refs_into(cond, bound, out, out_seen)
+      collect_refs_into(then_e, bound, out, out_seen)
+      collect_refs_into(else_e, bound, out, out_seen)
       0
     },
     ELet(name, val, body, _) => {
-      collect_refs_into(val, bound, out)
+      collect_refs_into(val, bound, out, out_seen)
       let bound2 = clone_arr(bound)
       Array::push(bound2, name)
-      collect_refs_into(body, bound2, out)
+      collect_refs_into(body, bound2, out, out_seen)
       0
     },
     ELetRec(name, val, body) => {
       let bound2 = clone_arr(bound)
       Array::push(bound2, name)
-      collect_refs_into(val, bound2, out)
-      collect_refs_into(body, bound2, out)
+      collect_refs_into(val, bound2, out, out_seen)
+      collect_refs_into(body, bound2, out, out_seen)
       0
     },
     ELetMut(name, val, body, _) => {
-      collect_refs_into(val, bound, out)
+      collect_refs_into(val, bound, out, out_seen)
       let bound2 = clone_arr(bound)
       Array::push(bound2, name)
-      collect_refs_into(body, bound2, out)
+      collect_refs_into(body, bound2, out, out_seen)
       0
     },
     EAssign(_, val, body) => {
-      collect_refs_into(val, bound, out)
-      collect_refs_into(body, bound, out)
+      collect_refs_into(val, bound, out, out_seen)
+      collect_refs_into(body, bound, out, out_seen)
       0
     },
     EAssignOp(_, _, val, body) => {
-      collect_refs_into(val, bound, out)
-      collect_refs_into(body, bound, out)
+      collect_refs_into(val, bound, out, out_seen)
+      collect_refs_into(body, bound, out, out_seen)
       0
     },
     ESeq(l, r) => {
-      collect_refs_into(l, bound, out)
-      collect_refs_into(r, bound, out)
+      collect_refs_into(l, bound, out, out_seen)
+      collect_refs_into(r, bound, out, out_seen)
       0
     },
     EMatch(scr, arms) => {
-      collect_refs_into(scr, bound, out)
+      collect_refs_into(scr, bound, out, out_seen)
       let mut i = 0
       while i < Array::length(arms) {
         let (pat, body) = Array::get(arms, i)
         let bound2 = clone_arr(bound)
         collect_pat_bindings(pat, bound2)
-        collect_refs_into(body, bound2, out)
+        collect_refs_into(body, bound2, out, out_seen)
         i = i + 1
       }
       0
     },
     EHandle(body_expr, arms) => {
-      collect_refs_into(body_expr, bound, out)
+      collect_refs_into(body_expr, bound, out, out_seen)
       let mut i = 0
       while i < Array::length(arms) {
         let (pat, arm_body) = Array::get(arms, i)
         let bound2 = clone_arr(bound)
         collect_pat_bindings(pat, bound2)
-        collect_refs_into(arm_body, bound2, out)
+        collect_refs_into(arm_body, bound2, out, out_seen)
         i = i + 1
       }
       0
     },
     EWhile(cond, body) => {
-      collect_refs_into(cond, bound, out)
-      collect_refs_into(body, bound, out)
+      collect_refs_into(cond, bound, out, out_seen)
+      collect_refs_into(body, bound, out, out_seen)
       0
     },
     ELoop(params, body) => {
@@ -211,22 +216,22 @@ fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> In
       let mut i = 0
       while i < Array::length(params) {
         let (name, init) = Array::get(params, i)
-        collect_refs_into(init, bound2, out)
+        collect_refs_into(init, bound2, out, out_seen)
         Array::push(bound2, name)
         i = i + 1
       }
-      collect_refs_into(body, bound2, out)
+      collect_refs_into(body, bound2, out, out_seen)
       0
     },
     EForIn(name, index_name, iter, body) => {
-      collect_refs_into(iter, bound, out)
+      collect_refs_into(iter, bound, out, out_seen)
       let bound2 = clone_arr(bound)
       Array::push(bound2, name)
       match index_name {
         Some(index_name) => Array::push(bound2, index_name),
         None => ()
       }
-      collect_refs_into(body, bound2, out)
+      collect_refs_into(body, bound2, out, out_seen)
       0
     },
     EFn(_, _, params, _, _, body) => {
@@ -237,28 +242,28 @@ fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> In
         Array::push(bound2, pname)
         i = i + 1
       }
-      collect_refs_into(body, bound2, out)
+      collect_refs_into(body, bound2, out, out_seen)
       0
     },
     EDot(obj, _, _, _) => {
-      collect_refs_into(obj, bound, out)
+      collect_refs_into(obj, bound, out, out_seen)
       0
     },
     ELabeledArg(_, _, e) => {
-      collect_refs_into(e, bound, out)
+      collect_refs_into(e, bound, out, out_seen)
       0
     },
     EMap(fields) => {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, val) = Array::get(fields, i)
-        collect_refs_into(val, bound, out)
+        collect_refs_into(val, bound, out, out_seen)
         i = i + 1
       }
       0
     },
     ESpread(e) => {
-      collect_refs_into(e, bound, out)
+      collect_refs_into(e, bound, out, out_seen)
       0
     },
     EStringInterp(_) => 0
@@ -267,18 +272,20 @@ fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> In
 
 fn collect_refs(expr: Expr, bound: Array[String]) -> Array[String] {
   let out = array_empty()
-  collect_refs_into(expr, bound, out)
+  let out_seen = HashSet::new_string()
+  collect_refs_into(expr, bound, out, out_seen)
   out
 }
 
-fn enqueue_reachable(reachable: Array[String], queue: Array[String], name: String) -> Unit {
-  if not(dce_array_contains_str(reachable, name)) {
+fn enqueue_reachable(reachable: Array[String], reachable_seen: HashSet[String], queue: Array[String], name: String) -> Unit {
+  if not(HashSet::has(reachable_seen, name)) {
+    HashSet::add(reachable_seen, name)
     Array::push(reachable, name)
     Array::push(queue, name)
   }
 }
 
-fn collect_structural_refs_into_queue(stmt: Stmt, bound: Array[String], reachable: Array[String], queue: Array[String]) -> Unit {
+fn collect_structural_refs_into_queue(stmt: Stmt, bound: Array[String], reachable: Array[String], reachable_seen: HashSet[String], queue: Array[String]) -> Unit {
   let refs = match stmt {
     STest(_, expr) => collect_refs(expr, bound),
     SBench(_, expr) => collect_refs(expr, bound),
@@ -287,7 +294,7 @@ fn collect_structural_refs_into_queue(stmt: Stmt, bound: Array[String], reachabl
   }
   let mut i = 0
   while i < Array::length(refs) {
-    enqueue_reachable(reachable, queue, Array::get(refs, i))
+    enqueue_reachable(reachable, reachable_seen, queue, Array::get(refs, i))
     i = i + 1
   }
 }
@@ -326,27 +333,37 @@ export fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stm
     let empty_bound = array_empty()
     let def_names = array_empty()
     let def_refs = array_empty()
+    let def_idx: HashMap[String, Array[Int]] = HashMap::new_string()
     let mut i = 0
     while i < Array::length(stmts) {
       let stmt = Array::get(stmts, i)
       match stmt_name(stmt) {
         Some(name) => {
+          let di = Array::length(def_names)
           Array::push(def_names, name)
+          match HashMap::get(def_idx, name) {
+            Some(idxs) => Array::push(idxs, di),
+            None => HashMap::set(def_idx, name, Array::slice([
+              di
+            ], 0, 1))
+          }
           let refs = match stmt {
             SLet(_, _, _, _, expr) => collect_refs(expr, empty_bound),
             // Preserved fn decl (ADR-0064 #727): body refs plus contract-
             // condition refs (requires/ensures execute inside the function
             // after lowering, so helpers they call must stay live).
             SFnDecl(_, _, fn_value, reqs, enss) => {
-              let out = collect_refs(fn_value, empty_bound)
+              let out = array_empty()
+              let out_seen = HashSet::new_string()
+              let _ = collect_refs_into(fn_value, empty_bound, out, out_seen)
               let mut cri = 0
               while cri < Array::length(reqs) {
-                let _ = collect_refs_into(Array::get(reqs, cri), empty_bound, out)
+                let _ = collect_refs_into(Array::get(reqs, cri), empty_bound, out, out_seen)
                 cri = cri + 1
               }
               let mut cei = 0
               while cei < Array::length(enss) {
-                let _ = collect_refs_into(Array::get(enss, cei), empty_bound, out)
+                let _ = collect_refs_into(Array::get(enss, cei), empty_bound, out, out_seen)
                 cei = cei + 1
               }
               out
@@ -362,37 +379,42 @@ export fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stm
       i = i + 1
     }
     let reachable = array_empty()
+    let reachable_seen = HashSet::new_string()
     let queue = array_empty()
     let mut j = 0
     while j < Array::length(entry_names) {
       let name = Array::get(entry_names, j)
-      enqueue_reachable(reachable, queue, name)
+      enqueue_reachable(reachable, reachable_seen, queue, name)
       j = j + 1
     }
     let mut sj = 0
     while sj < Array::length(stmts) {
-      collect_structural_refs_into_queue(Array::get(stmts, sj), empty_bound, reachable, queue)
+      collect_structural_refs_into_queue(Array::get(stmts, sj), empty_bound, reachable, reachable_seen, queue)
       sj = sj + 1
     }
     let mut qi = 0
     while qi < Array::length(queue) {
       let current = Array::get(queue, qi)
       qi = qi + 1
-      let mut k = 0
-      while k < Array::length(def_names) {
-        if Array::get(def_names, k) == current {
-          let refs = Array::get(def_refs, k)
-          let mut r = 0
-          while r < Array::length(refs) {
-            let dep = Array::get(refs, r)
-            if not(dce_array_contains_str(reachable, dep)) {
-              Array::push(reachable, dep)
-              Array::push(queue, dep)
+      match HashMap::get(def_idx, current) {
+        Some(idxs) => {
+          let mut ki = 0
+          while ki < Array::length(idxs) {
+            let refs = Array::get(def_refs, Array::get(idxs, ki))
+            let mut r = 0
+            while r < Array::length(refs) {
+              let dep = Array::get(refs, r)
+              if not(HashSet::has(reachable_seen, dep)) {
+                HashSet::add(reachable_seen, dep)
+                Array::push(reachable, dep)
+                Array::push(queue, dep)
+              }
+              r = r + 1
             }
-            r = r + 1
+            ki = ki + 1
           }
-        }
-        k = k + 1
+        },
+        None => ()
       }
     }
     let result = array_empty()
@@ -403,7 +425,7 @@ export fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stm
         Array::push(result, stmt)
       } else {
         match stmt_name(stmt) {
-          Some(name) => if dce_array_contains_str(reachable, name) {
+          Some(name) => if HashSet::has(reachable_seen, name) {
             Array::push(result, stmt)
           },
           None => Array::push(result, stmt)
@@ -424,27 +446,37 @@ fn dce_reachable_names(stmts: Array[Stmt], entry_names: Array[String]) -> Array[
   let empty_bound = array_empty()
   let def_names = array_empty()
   let def_refs = array_empty()
+  let def_idx: HashMap[String, Array[Int]] = HashMap::new_string()
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
     match stmt_name(stmt) {
       Some(name) => {
+        let di = Array::length(def_names)
         Array::push(def_names, name)
+        match HashMap::get(def_idx, name) {
+          Some(idxs) => Array::push(idxs, di),
+          None => HashMap::set(def_idx, name, Array::slice([
+            di
+          ], 0, 1))
+        }
         let refs = match stmt {
           SLet(_, _, _, _, expr) => collect_refs(expr, empty_bound),
           // Preserved fn decl (ADR-0064 #727): body refs plus contract-
           // condition refs (requires/ensures execute inside the function
           // after lowering, so helpers they call must stay live).
           SFnDecl(_, _, fn_value, reqs, enss) => {
-            let out = collect_refs(fn_value, empty_bound)
+            let out = array_empty()
+            let out_seen = HashSet::new_string()
+            let _ = collect_refs_into(fn_value, empty_bound, out, out_seen)
             let mut cri = 0
             while cri < Array::length(reqs) {
-              let _ = collect_refs_into(Array::get(reqs, cri), empty_bound, out)
+              let _ = collect_refs_into(Array::get(reqs, cri), empty_bound, out, out_seen)
               cri = cri + 1
             }
             let mut cei = 0
             while cei < Array::length(enss) {
-              let _ = collect_refs_into(Array::get(enss, cei), empty_bound, out)
+              let _ = collect_refs_into(Array::get(enss, cei), empty_bound, out, out_seen)
               cei = cei + 1
             }
             out
@@ -460,37 +492,42 @@ fn dce_reachable_names(stmts: Array[Stmt], entry_names: Array[String]) -> Array[
     i = i + 1
   }
   let reachable = array_empty()
+  let reachable_seen = HashSet::new_string()
   let queue = array_empty()
   let mut j = 0
   while j < Array::length(entry_names) {
     let name = Array::get(entry_names, j)
-    enqueue_reachable(reachable, queue, name)
+    enqueue_reachable(reachable, reachable_seen, queue, name)
     j = j + 1
   }
   let mut sj = 0
   while sj < Array::length(stmts) {
-    collect_structural_refs_into_queue(Array::get(stmts, sj), empty_bound, reachable, queue)
+    collect_structural_refs_into_queue(Array::get(stmts, sj), empty_bound, reachable, reachable_seen, queue)
     sj = sj + 1
   }
   let mut qi = 0
   while qi < Array::length(queue) {
     let current = Array::get(queue, qi)
     qi = qi + 1
-    let mut k = 0
-    while k < Array::length(def_names) {
-      if Array::get(def_names, k) == current {
-        let refs = Array::get(def_refs, k)
-        let mut r = 0
-        while r < Array::length(refs) {
-          let dep = Array::get(refs, r)
-          if not(dce_array_contains_str(reachable, dep)) {
-            Array::push(reachable, dep)
-            Array::push(queue, dep)
+    match HashMap::get(def_idx, current) {
+      Some(idxs) => {
+        let mut ki = 0
+        while ki < Array::length(idxs) {
+          let refs = Array::get(def_refs, Array::get(idxs, ki))
+          let mut r = 0
+          while r < Array::length(refs) {
+            let dep = Array::get(refs, r)
+            if not(HashSet::has(reachable_seen, dep)) {
+              HashSet::add(reachable_seen, dep)
+              Array::push(reachable, dep)
+              Array::push(queue, dep)
+            }
+            r = r + 1
           }
-          r = r + 1
+          ki = ki + 1
         }
-      }
-      k = k + 1
+      },
+      None => ()
     }
   }
   reachable
@@ -499,12 +536,12 @@ fn dce_reachable_names(stmts: Array[Stmt], entry_names: Array[String]) -> Array[
 /// Whether DCE keeps `stmt` given the reachable name set: type/structural
 /// statements are always kept; named value defs are kept iff reachable; unnamed
 /// statements are kept. (Same per-statement rule `dce_stmts` applies.)
-fn dce_keep_stmt(stmt: Stmt, reachable: Array[String]) -> Bool {
+fn dce_keep_stmt(stmt: Stmt, reachable_seen: HashSet[String]) -> Bool {
   if is_type_or_structural(stmt) {
     true
   } else {
     match stmt_name(stmt) {
-      Some(name) => dce_array_contains_str(reachable, name),
+      Some(name) => HashSet::has(reachable_seen, name),
       None => true
     }
   }
@@ -520,9 +557,15 @@ export fn dce_keep_flags(stmts: Array[Stmt], entry_names: Array[String]) -> Arra
     flags
   } else {
     let reachable = dce_reachable_names(stmts, entry_names)
+    let reachable_seen = HashSet::new_string()
+    let mut rsi = 0
+    while rsi < Array::length(reachable) {
+      HashSet::add(reachable_seen, Array::get(reachable, rsi))
+      rsi = rsi + 1
+    }
     let mut m = 0
     while m < Array::length(stmts) {
-      Array::push(flags, dce_keep_stmt(Array::get(stmts, m), reachable))
+      Array::push(flags, dce_keep_stmt(Array::get(stmts, m), reachable_seen))
       m = m + 1
     }
     flags
