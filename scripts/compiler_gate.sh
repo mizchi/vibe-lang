@@ -7865,6 +7865,23 @@ if [ "$asb89_aw_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_await_handler_discharge_test.vibe got '$asb89_aw_out' (want 42 -- the handler must receive the poll and its resolution must unblock the await)" >&2
   exit 1
 fi
+# Codex P1 on #1312: scoped retargeting. A handler receives its own
+# lexical sleeps while an Async-row top-level fn called from row-free code
+# keeps the blocking builtin (no stranded perform). 40 + 1 + 1 = 42.
+cp fixtures/async_sleep_mixed_scope_test.vibe "$asb89dir/mx.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asb89dir/mx.vibe" "$asb89dir/mx.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$asb89dir/mx.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_sleep_mixed_scope_test.vibe did not compile -- scoped retargeting must not strand performs (Codex P1 on #1312)" >&2
+  cat "$asb89dir/mx.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+asb89_mx_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/mx.wasm" 2>/dev/null | tail -1)"
+if [ "$asb89_mx_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_sleep_mixed_scope_test.vibe got '$asb89_mx_out' (want 42)" >&2
+  exit 1
+fi
 rm -rf "$asb89dir"
 echo "[compiler-gate] ADR-0089 D1 async sleep boundary ok"
 

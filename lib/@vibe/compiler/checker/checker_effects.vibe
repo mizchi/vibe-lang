@@ -143,6 +143,25 @@ fn is_async_primitive(name: String, env: TypeEnv) -> Bool {
   }
 }
 
+/// True when a handle arm targets an Async operation.
+fn handle_arms_handle_async(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) {
+    let (pat, _) = Array::get(arms, i)
+    match pat {
+      PCtor(name, _) => if String::starts_with(name, "Async::") {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn append_eff_errs(dst: Array[EffectError], src: Array[EffectError]) -> Unit {
   let mut i = 0
   while i < Array::length(src) {
@@ -168,6 +187,16 @@ export fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> 
     // context. All other expression forms retain the context unchanged.
     EFn(_, _, _, _, effect, body) => {
       append_eff_errs(errors, check_async_effects_expr(body, env, effect_opt_is_async(effect)))
+    },
+    EHandle(body, arms) => {
+      let discharges_async = handle_arms_handle_async(arms)
+      append_eff_errs(errors, check_async_effects_expr(body, env, in_async || discharges_async))
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, ai)
+        append_eff_errs(errors, check_async_effects_expr(arm_body, env, in_async))
+        ai = ai + 1
+      }
     },
     _ => {
       let children = expr_children(expr)
