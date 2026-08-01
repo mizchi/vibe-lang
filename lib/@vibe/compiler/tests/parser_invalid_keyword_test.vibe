@@ -5,7 +5,18 @@ import @vibe/compiler/syntax {
 }
 
 import ../parser.vibe {
-  parse_ok
+  parse_ok, parse_program
+}
+
+/// Program-level parse probe (parse_ok is expression-level; `fn` declarations
+/// only exist at statement level).
+fn program_ok(source: String) -> Bool {
+  handle {
+    let _ = parse_program(lex(source))
+    true
+  } with Error {
+    Throw(_) => false
+  }
 }
 
 //# Misc
@@ -39,4 +50,41 @@ test "parse yield error" {
 test "parse declare error" {
   let ok = parse_ok(lex("declare let x: Int"))
   assert(ok == false)
+}
+
+//# #1280: `fn` is a reserved word. The `fn name(...)` declaration form stays;
+//# every identifier position (binding, parameter, type, member) rejects it,
+//# and `r#fn` is NOT a raw-identifier escape.
+
+test "parse fn decl still ok" {
+  assert(program_ok("fn f(x: Int) -> Int { x }"))
+  assert(program_ok("export fn g() -> Int { 1 }"))
+}
+
+test "parse fn as let binding error" {
+  assert(program_ok("let fn = 1") == false)
+}
+
+test "parse fn as parameter error" {
+  assert(program_ok("fn f(fn: Int) -> Int { 1 }") == false)
+}
+
+test "parse fn as type name error" {
+  assert(program_ok("let x: fn = 1") == false)
+  assert(program_ok("type fn = Int") == false)
+}
+
+test "parse fn as member error" {
+  assert(program_ok("struct S { fn: Int }") == false)
+  assert(program_ok("let y = s.fn") == false)
+}
+
+test "parse fn as expression identifier error" {
+  assert(parse_ok(lex("fn")) == false)
+  assert(parse_ok(lex("f(fn)")) == false)
+  assert(program_ok("let y = fn") == false)
+}
+
+test "parse r#fn is not an escape" {
+  assert(program_ok("let r#fn = 1") == false)
 }

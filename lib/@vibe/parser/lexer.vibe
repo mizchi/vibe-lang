@@ -150,7 +150,8 @@ fn keyword_lookup(source: String, start: Int, end: Int) -> Option[Token] {
     let c0 = String::char_code_at(source, start)
     if c0 == 'f' {
       if slice_eq(source, start, end, "fn") {
-        Some(TIdent("fn"))
+        // #1280: `fn` is a reserved word (TFn), not a soft-keyword ident.
+        Some(TFn)
       } else None
     } else if c0 == 'i' {
       if slice_eq(source, start, end, "if") {
@@ -325,7 +326,13 @@ fn lex_ident(s: String, len: Int, i: Int) -> (Token, Int) {
   if end == i + 1 && String::char_code_at(s, i) == 'r' && end < len && String::char_code_at(s, end) == '#' {
     let ri_start = end + 1
     let ri_end = scan_ident_end(s, len, ri_start)
-    (TIdent(s[ri_start: ri_end]), ri_end)
+    // #1280: no raw-identifier escape for `fn` — `r#fn` lexes as the keyword,
+    // so a binding named fn cannot be smuggled back in through r#.
+    if ri_end == ri_start + 2 && slice_eq(s, ri_start, ri_end, "fn") {
+      (TFn, ri_end)
+    } else {
+      (TIdent(s[ri_start: ri_end]), ri_end)
+    }
   }
   else if end == i + 1 && String::char_code_at(s, i) == 'r' && end < len && String::char_code_at(s, end) == '"' {
     let mut ri = end + 1
