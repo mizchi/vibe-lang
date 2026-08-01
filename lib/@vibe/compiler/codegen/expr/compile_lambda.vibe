@@ -532,32 +532,41 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   } else {
     ()
   }
-  let lambda_idx = Array::length(ctx.lambda_table.bodies)
-  // #1259 step 7 groundwork. `lambda_idx` above is the live length of a
-  // SHARED, growing table, and it goes into the body as a table_slot
-  // immediate a few lines down -- so this function's output bytes depend on
-  // how many lambdas every function compiled before it produced. That is the
-  // one thing standing between the current codegen and a frozen
-  // WholeProgramPlan a worker could compile a body against.
+  // #1259 step 7. The function index this lambda gets -- and, a few lines
+  // down, the `table_slot` immediate baked into the emitted body.
   //
-  // The plan (count_lambda_sites_expr, seeded per user function in
-  // linked_compile.vibe) predicts exactly this number without compiling the
-  // predecessors. It is CHECKED here, not used: while the two agree, swapping
-  // `lambda_idx` for the planned value is a no-op on the emitted bytes, which
-  // is what makes that swap safe to make. Disagreement means the count and
-  // the walk disagree about which EFn nodes get compiled, and keying a body's
-  // constants to a slot nothing installs is exactly the silent corruption
-  // this whole plan exists to avoid -- so it is fatal, not a warning.
-  if Array::length(ctx.lambda_plan_next) > 0 {
+  // It USED to be `Array::length(ctx.lambda_table.bodies)`: the live length of
+  // a shared, growing table. That made a function's output bytes depend on how
+  // many lambdas every function compiled before it produced, which is the one
+  // thing that stopped a worker from ever compiling a body on its own, and
+  // exactly what docs/compiler-parallelism.md forbids ("may not append to a
+  // shared LambdaTable, allocate global ids").
+  //
+  // It now comes from the PLAN: count_lambda_sites_expr counts the EFn nodes
+  // in each user function's body and linked_compile prefix-sums those into a
+  // per-function base, all without compiling anything. The live length is
+  // still computed and still compared, as an invariant rather than as the
+  // source of truth -- the two agreeing everywhere is what made this swap a
+  // no-op on the emitted bytes, and a future divergence would mean the count
+  // and the walk disagree about which EFn nodes get compiled. Keying a body's
+  // constants to a table slot nothing installs is precisely the silent
+  // corruption the plan exists to prevent, so it stays fatal.
+  //
+  // No plan (an empty cell) means this ctx was built outside the planned body
+  // loop; the live length is then the only answer available and still the
+  // right one, since nothing else is allocating into the table concurrently.
+  let live_idx = Array::length(ctx.lambda_table.bodies)
+  let lambda_idx = if Array::length(ctx.lambda_plan_next) > 0 {
     let planned = Array::get(ctx.lambda_plan_next, 0)
-    if planned != lambda_idx {
-      throw(String::concat("lambda plan mismatch: planned index ", String::concat(__to_string(planned), String::concat(", walk allocated ", __to_string(lambda_idx)))))
+    if planned != live_idx {
+      throw(String::concat("lambda plan mismatch: planned index ", String::concat(__to_string(planned), String::concat(", walk allocated ", __to_string(live_idx)))))
     } else {
       ()
     }
     Array::set(ctx.lambda_plan_next, 0, planned + 1)
+    planned
   } else {
-    ()
+    live_idx
   }
   Array::push(ctx.lambda_table.bodies, lam_buf)
   Array::push(ctx.lambda_table.param_counts, user_params + 1)
