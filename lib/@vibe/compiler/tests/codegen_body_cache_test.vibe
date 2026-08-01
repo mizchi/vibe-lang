@@ -12,6 +12,12 @@
 //# call_indirect (whose slots land in the module-level table_slots_used log,
 //# which is read only AFTER the loop -- the case that a first cut got wrong).
 //#
+//# The `slice:` cases add the #1259 step 8 property: the same byte equality,
+//# but with the bodies harvested in two disjoint slices and merged. Both are
+//# mutation-checked against a compiler that drops the lambda-table padding a
+//# skipped function owes -- both fail, so they do pin that padding rather than
+//# merely exercising the slice path.
+//#
 //# Mutation-checked against a compiler whose replay deliberately drops the
 //# recorded table slots (i.e. the state before that fix): cases 2, 3 and 4 fail,
 //# cases 1 and 5 still pass. That is the right shape rather than a coverage
@@ -22,7 +28,7 @@
 //# Imports
 
 import @vibe/compiler/codegen {
-  compile_wasi_module, compile_wasi_module_replayed
+  compile_wasi_module, compile_wasi_module_replayed, compile_wasi_module_sliced
 }
 
 import @vibe/compiler/syntax {
@@ -69,6 +75,22 @@ fn assert_replay_identical(source: String) -> Unit with { Error } {
   assert(bytes_eq(direct, replayed))
 }
 
+/// #1259 step 8: the same equality, but with the bodies harvested in two
+/// disjoint slices and the harvests merged before replay -- the property a
+/// `--jobs N` build rests on, reduced to one process. A body compiled while its
+/// neighbours were NOT compiled must be the same bytes as one compiled with all
+/// of them.
+fn assert_slice_identical(source: String) -> Unit with { Error } {
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  let direct = compile_wasi_module(stmts, "main")
+  let tokens2 = lex(source)
+  let stmts2 = parse_program(tokens2)
+  let sliced = compile_wasi_module_sliced(stmts2, "main")
+  assert(Bytes::length(direct) > 8)
+  assert(bytes_eq(direct, sliced))
+}
+
 test "replay: a program with no lambdas at all" {
   assert_replay_identical("fn add(a: Int, b: Int) -> Int {\n  a + b\n}\n\nfn main {\n  println(Int::to_string(add(2, 3)))\n}\n",)
 }
@@ -96,4 +118,15 @@ test "replay: nested lambdas, where an inner one advances the enclosing counter"
 
 test "replay: module-level thunks, which take the non-EFn body path" {
   assert_replay_identical("let table: Array[Int] = [\n  1,\n  2,\n  3,\n  4\n]\n\nfn total() -> Int {\n  let mut s = 0\n  let mut i = 0\n  while i < Array::length(table) {\n    s = s + Array::get(table, i)\n    i = i + 1\n  }\n  s\n}\n\nfn main {\n  println(Int::to_string(total()))\n}\n",)
+}
+
+test "slice: lambdas spread across functions, harvested in two halves" {
+  // The split lands inside the function list, so the second slice starts at a
+  // nonzero planned lambda base -- the case where a worker's live lambda table
+  // and the plan would disagree if the skipped functions did not pad it.
+  assert_slice_identical("fn twice(f: (Int) -> Int, x: Int) -> Int {\n  f(f(x))\n}\n\nfn bump(n: Int) -> Int {\n  twice((v) -> {\n    v + n\n  }, n)\n}\n\nfn scale(n: Int) -> Int {\n  twice((v) -> {\n    v * 2\n  }, n)\n}\n\nfn shift(n: Int) -> Int {\n  twice((v) -> {\n    v - 1\n  }, n)\n}\n\nfn main {\n  println(Int::to_string(bump(3) + scale(4) + shift(5)))\n}\n",)
+}
+
+test "slice: closures reaching call_indirect, so slots merge across slices" {
+  assert_slice_identical("fn apply_all(fs: Array[(Int) -> Int], x: Int) -> Int {\n  let mut acc = x\n  let mut i = 0\n  while i < Array::length(fs) {\n    let f = Array::get(fs, i)\n    acc = f(acc)\n    i = i + 1\n  }\n  acc\n}\n\nfn first_set() -> Array[(Int) -> Int] {\n  [\n    (v) -> {\n      v + 1\n    },\n    (v) -> {\n      v * 3\n    }\n  ]\n}\n\nfn second_set() -> Array[(Int) -> Int] {\n  [\n    (v) -> {\n      v - 2\n    },\n    (v) -> {\n      v * 5\n    }\n  ]\n}\n\nfn main {\n  println(Int::to_string(apply_all(first_set(), 5) + apply_all(second_set(), 7)))\n}\n",)
 }
