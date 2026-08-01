@@ -106,7 +106,16 @@ export struct CodegenBodyCache {
   lam_param_counts: Array[Int];
   lam_captures: Array[Array[String]];
   lam_meta_i32: Array[Int];
-  lam_meta_i64: Array[Int]
+  lam_meta_i64: Array[Int];
+  /// The `table_slots_used` entries this function's compile appended, keyed by
+  /// owning function index. Not part of the function's own bytes -- the log is
+  /// read only after the body loop, to decide which table slots the element
+  /// section registers -- but a replayed function never runs the pushes, so
+  /// without carrying them a fully replayed build would emit a SMALLER element
+  /// section than a compiled one. The consumer builds a flag set, so order and
+  /// duplicates do not matter, which is what lets slices merge freely.
+  slot_owner: Array[Int];
+  slot_values: Array[Int]
 }
 
 /// An empty cache. Threading one of these in means "compile everything, cache
@@ -123,7 +132,9 @@ export fn codegen_body_cache_new() -> CodegenBodyCache {
     lam_param_counts: array_empty(),
     lam_captures: array_empty(),
     lam_meta_i32: array_empty(),
-    lam_meta_i64: array_empty()
+    lam_meta_i64: array_empty(),
+    slot_owner: array_empty(),
+    slot_values: array_empty()
   }
 }
 
@@ -148,7 +159,7 @@ export fn codegen_body_cache_find(cache: CodegenBodyCache, fn_index: Int) -> Int
 /// Reads the LAST entry of `bodies` / `meta_i32` / `meta_i64` -- the loop has
 /// just pushed them -- and the lambda table slice `[lam_lo, lam_hi)`, which is
 /// exactly the range the plan assigned this function.
-export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], lt: LambdaTable, lam_lo: Int, lam_hi: Int) -> Unit {
+export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], lt: LambdaTable, lam_lo: Int, lam_hi: Int, slots: Array[Int], slot_lo: Int, slot_hi: Int) -> Unit {
   let n = Array::length(bodies)
   if n == 0 {
     ()
@@ -168,6 +179,12 @@ export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, bodi
       Array::push(cache.lam_meta_i64, Array::get(lt.meta_i64, li))
       li = li + 1
     }
+    let mut si = slot_lo
+    while si < slot_hi {
+      Array::push(cache.slot_owner, fn_index)
+      Array::push(cache.slot_values, Array::get(slots, si))
+      si = si + 1
+    }
   }
 }
 
@@ -179,7 +196,7 @@ export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, bodi
 /// planned: `lt.bodies` is `lam_lo` long when this runs. That is the same
 /// invariant the compile path relies on, so a replayed function and a compiled
 /// one leave the table identical.
-export fn codegen_body_cache_replay(cache: CodegenBodyCache, at: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], lt: LambdaTable) -> Unit {
+export fn codegen_body_cache_replay(cache: CodegenBodyCache, at: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], lt: LambdaTable, slots: Array[Int]) -> Unit {
   let owner = Array::get(cache.fn_indices, at)
   Array::push(bodies, Array::get(cache.fn_bodies, at))
   Array::push(meta_i32, Array::get(cache.fn_meta_i32, at))
@@ -197,6 +214,16 @@ export fn codegen_body_cache_replay(cache: CodegenBodyCache, at: Int, bodies: Ar
       ()
     }
     i = i + 1
+  }
+  let sn = Array::length(cache.slot_owner)
+  let mut si = 0
+  while si < sn {
+    if Array::get(cache.slot_owner, si) == owner {
+      Array::push(slots, Array::get(cache.slot_values, si))
+    } else {
+      ()
+    }
+    si = si + 1
   }
 }
 
