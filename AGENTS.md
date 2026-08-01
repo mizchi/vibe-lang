@@ -258,6 +258,23 @@ pkf run test-local -- --profile scheduled
 pkf run release-check  # fmt + info + check + test + vibe-normalize + bundle-size + operation gates
 ```
 
+## 生成物のマージコンフリクト
+
+`lib/@vibe/compiler/` の5つの生成物 (`compiler_sources_bundle.vibe`,
+`cli_adapter_bundle.vibe`, `selfbuild_runtime_entry_bundle.vibe`,
+`_cli_adapter_module_source.vibe`, `cache/codegen_fingerprint.vibe`) は
+compiler source の決定的な関数なので、compiler source に触る PR 同士は
+**必ず** この5ファイル全部で衝突する。どちらの側も正しくない —
+merge 後の source から regenerate したものだけが正しい。
+
+```bash
+bash scripts/resolve_generated_conflicts.sh   # 生成物だけ捨てて regenerate + stage
+git rebase --continue                          # または git commit
+```
+
+手書きファイルの衝突が残っている間はスクリプトは何もせず失敗する。
+詳細は [docs/bootstrap.md](docs/bootstrap.md).
+
 ## pkfire / pkspec
 
 タスク runner は `Taskfile.pkl` (~100 tasks、dead-task cleanup 後)、テスト宣言は `pkspec/{VibeSpec,VibeTest}.pkl`。
