@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/ast {
-  Expr, Stmt, TypeExpr
+  Expr, Pat, Stmt, TypeExpr
 }
 
 import ./parser_base.vibe {
@@ -22,6 +22,7 @@ import ./parser_base.vibe {
   parse_impl_stmt_dispatch,
   parse_import_item,
   parse_param_list,
+  parse_pattern,
   parse_struct_field,
   parse_suberror_stmt,
   parse_trait_stmt,
@@ -299,6 +300,171 @@ fn parse_value_bracket_header(tokens: Array[Token], pos: Int) -> (Array[String],
   }
 }
 
+/// #1281: is this pattern irrefutable — i.e. can it fail to match? A top-level
+/// binding has nowhere to fail to, so only shapes that always match are
+/// allowed: bindings, `_`, tuples and struct/record patterns of those. Enum
+/// variants (`Some(x)`), literals and `|` alternatives are refutable.
+fn is_irrefutable_top_level_pat(p: Pat) -> Bool {
+  match p {
+    PBind(_) => true,
+    PWild => true,
+    PTuple(elems) => {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(elems) {
+        if !is_irrefutable_top_level_pat(Array::get(elems, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    PStruct(_, fields) => {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_fname, fpat) = Array::get(fields, i)
+        if !is_irrefutable_top_level_pat(fpat) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    _ => false
+  }
+}
+
+fn refutable_top_level_pat_error() -> Unit with { Error } {
+  throw("top-level 'let <pattern> = <expr>' requires an irrefutable pattern -- tuple / struct / record of bindings (#1281). Enum-variant, literal and '|' patterns can fail to match; destructure them with 'match' inside a function instead")
+}
+
+fn require_irrefutable_top_level_pat(p: Pat) -> Unit with { Error } {
+  if is_irrefutable_top_level_pat(p) {
+    ()
+  } else {
+    refutable_top_level_pat_error()
+  }
+}
+
+/// A top-level pattern `let` takes no type annotation: there is no single
+/// binding to hang it on. Reject the `let (a, b): T = e` spelling explicitly
+/// rather than letting `expect_tk` report a bare "expected = but got :".
+fn reject_pattern_let_annotation(tokens: Array[Token], pos: Int) -> Int with { Error } {
+  match peek(tokens, pos) {
+    TColon => throw("a top-level 'let <pattern> = <expr>' takes no type annotation (#1281); annotate the value expression's own binding instead"),
+    _ => pos
+  }
+}
+
+/// Tag an anonymous-record destructure so `expand_top_level_pattern_lets` can
+/// tell it from a real tuple pattern (both arrive as `PTuple`). Field names
+/// are not recovered by `parse_pattern` — the record path is positional, the
+/// same convention the block-level `__rec_field` desugar uses — so the marker
+/// carries empty names and the expansion reads by index.
+fn record_destr_marker(p: Pat) -> Pat {
+  match p {
+    PTuple(elems) => {
+      let fields = ArrayBuilder::new()
+      let mut i = 0
+      while i < Array::length(elems) {
+        ArrayBuilder::push(fields, ("", Array::get(elems, i)))
+        i = i + 1
+      }
+      PStruct("record", ArrayBuilder::freeze(fields))
+    },
+    _ => p
+  }
+}
+
+/// `SLetPat` carries no `exported` flag, so an exported pattern `let` has
+/// nowhere to record that; point at the two-statement spelling instead of
+/// silently dropping the export.
+fn top_level_pattern_let(exported: Bool, pat: Pat, val: Expr) -> Stmt with { Error } {
+  if exported {
+    throw("top-level 'export let <pattern> = <expr>' is not supported (#1281); write 'let <pattern> = <expr>' and export the names with a separate 'export { a, b }'")
+  } else {
+    SLetPat(pat, val)
+  }
+}
+
+/// #1281: expand top-level `SLetPat` into plain top-level bindings.
+///
+///   let (a, b) = e     ==>   let __dst0 = e
+///                            let a = __dst0.0
+///                            let b = __dst0.1
+///
+/// The value expression moves into ONE hidden binding, so it is evaluated
+/// exactly once no matter how many names the pattern binds, and every
+/// projection is an ordinary top-level `SLet` — codegen still needs no
+/// `SLetPat` case (#859). Nested patterns get their own hidden binding per
+/// level. Struct fields project by name (`<tmp>.field`); anonymous-record
+/// fields project positionally through `__rec_field`, the same read the
+/// block-level destructure emits.
+export fn expand_top_level_pattern_lets(stmts: Array[Stmt]) -> Array[Stmt] {
+  let out = ArrayBuilder::new()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLetPat(pat, val) => {
+        let tmp = String::concat("__dst", __to_string(i))
+        ArrayBuilder::push(out, SLet(false, false, tmp, None, val))
+        emit_top_level_pat_bindings(out, pat, tmp)
+      },
+      _ => ArrayBuilder::push(out, Array::get(stmts, i))
+    }
+    i = i + 1
+  }
+  ArrayBuilder::freeze(out)
+}
+
+/// Bind every name in `pat` from the already-bound `src` binding.
+fn emit_top_level_pat_bindings(out: ArrayBuilder[Stmt], pat: Pat, src: String) -> Unit {
+  match pat {
+    PBind(name) => ArrayBuilder::push(out, SLet(false, false, name, None, EIdent(src, 0 - 1))),
+    PWild => (),
+    PTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        emit_top_level_pat_projection(out, Array::get(elems, i), EDot(EIdent(src, 0 - 1), __to_string(i), 0 - 1, 0 - 1), src, i)
+        i = i + 1
+      }
+    },
+    PStruct(sname, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, fpat) = Array::get(fields, i)
+        let read = if sname == "record" {
+          ECall(EIdent("__rec_field", 0 - 1), [
+            EIdent(src, 0 - 1),
+            EInt(i)
+          ], 0 - 1)
+        } else {
+          EDot(EIdent(src, 0 - 1), fname, 0 - 1, 0 - 1)
+        }
+        emit_top_level_pat_projection(out, fpat, read, src, i)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// One field of a destructured value: bind it directly when the sub-pattern is
+/// a name, drop it when it is `_`, otherwise park it in a hidden binding and
+/// keep destructuring from there.
+fn emit_top_level_pat_projection(out: ArrayBuilder[Stmt], sub: Pat, read: Expr, src: String, index: Int) -> Unit {
+  match sub {
+    PBind(name) => ArrayBuilder::push(out, SLet(false, false, name, None, read)),
+    PWild => (),
+    _ => {
+      let nested = String::concat(src, String::concat("_", __to_string(index)))
+      ArrayBuilder::push(out, SLet(false, false, nested, None, read))
+      emit_top_level_pat_bindings(out, sub, nested)
+    }
+  }
+}
+
 fn parse_let_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool) -> (Stmt, Int) with { Error } {
   match peek(tokens, pos) {
     TRec => {
@@ -335,55 +501,35 @@ fn parse_let_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: 
       },
       _ => throw("expected name after 'let mut'")
     },
-    // #859: top-level pattern `let` (tuple destructure `let (a, b) = pair`,
-    // and the `Name::{ .. }` struct-destructure case below) parses fine and
-    // type-checks fine (`checker_stmt.vibe`'s `SLetPat` arm happily binds the
-    // pattern names into the type environment) but codegen has no case for
-    // a top-level `SLetPat` at all -- ANY pattern shape, including a bare
-    // `let (x) = 5` that degenerates to a single `PBind`, crashes with a raw
-    // "undefined variable (ident): x" at compile time instead of either
-    // working or producing a proper diagnostic. Root cause (full writeup on
-    // #859): pattern-`let` lowering only exists as a block-level mechanism
-    // (`parser_expr_dispatch.vibe`'s `apply_struct_destr`/`apply_record_destr`,
-    // which wrap the REST of an enclosing expression continuation in nested
-    // `ELet`s) -- top-level statements have no such enclosing continuation
-    // (each top-level `let` is its own independent global binding), so
-    // properly supporting this needs a real multi-statement lowering
-    // plumbed through every `parse_program*` variant plus the checker/
-    // codegen pipeline, not a local parser change. Until that lands (#859),
-    // reject with a clear, LOCATED error instead of the misleading internal
-    // crash -- same treatment #830 already gave the `record { .. }` form.
+    // #1281 (was #859): top-level irrefutable pattern `let` — the tuple form
+    // `let (a, b) = pair` here, plus the `record { .. }` / `Name::{ .. }`
+    // forms below. Codegen still has no top-level `SLetPat` case, so the
+    // statement produced here is expanded by `expand_top_level_pattern_lets`
+    // (below) into a hidden binding holding the value plus one projection
+    // binding per name: the value is evaluated exactly ONCE and codegen only
+    // ever sees plain top-level `SLet`s. Refutable shapes (enum variants,
+    // literals, `|`) are rejected here — they can fail, and a top-level
+    // binding has nowhere to fail to.
     TLParen => {
-      throw("top-level 'let (..) = <expr>' tuple destructuring is not supported (#859); move it into a function body (e.g. 'fn main() { let (a, b) = <expr>; .. }')")
+      let (pat, after_pat) = parse_pattern(tokens, pos)
+      require_irrefutable_top_level_pat(pat)
+      let ep = expect_tk(tokens, reject_pattern_let_annotation(tokens, after_pat), "=")
+      let val_pair = parse_impl(tokens, starts, ep, 0)
+      (top_level_pattern_let(exported, pat, val_pair.0), val_pair.1)
     },
     TIdent(_name0) => {
-      // #830: `let record { a, b } = r` (record-pattern destructuring, #760)
-      // parses fine as a *local* `let` (parser_expr_dispatch's block-step
-      // parser special-cases `TIdent("record") + TLBrace` into
-      // StepRecordDestr, desugared via positional `__rec_field` reads) but
-      // this top-level `let` parser had no matching case: `record` fell
-      // through to the plain-binding-name path below, which expects `=`
-      // right after the name and instead hit `{` -- a confusing raw
-      // "expected = but got {" error that gives no hint the syntax itself
-      // is the problem.
-      //
-      // Top-level statements don't go through the block-step machinery (no
-      // single enclosing `ELet`/`EMatch` continuation to desugar into: each
-      // top-level `let` becomes its own independent global binding), so
-      // accepting the pattern here would need a real multi-statement
-      // expansion (one destructured field per top-level binding) plumbed
-      // through every `parse_program*` variant plus the checker/codegen
-      // pipeline -- not a local change (top-level tuple/struct-name pattern
-      // `let`s already silently miscompile the same way, #830 investigation).
-      // Until that lands, fail fast with a clear, LOCATED error instead of
-      // the misleading parse error (see docs/doctest-report-2026-07-12.md
-      // §2 class E / #830).
+      // #1281 (was #830): `let record { a, b } = r` — the anonymous-record
+      // form of the top-level pattern `let`. `parse_pattern` returns the
+      // field patterns POSITIONALLY (a `PTuple`, exactly like the block-level
+      // StepRecordDestr path, which reads them back with positional
+      // `__rec_field`), so the expansion below needs to tell this apart from a
+      // real tuple pattern: it is re-wrapped as `PStruct("record", ..)`. A
+      // lowercase name can never be a real struct pattern (`parse_pattern`
+      // only takes the `PStruct` branch for an uppercase head), so the marker
+      // is unambiguous.
       let is_top_level_record_destr = match peek(tokens, pos + 1) {
         TLBrace => _name0 == "record",
         _ => false
-      }
-      if is_top_level_record_destr {
-        throw("top-level 'let record { .. } = <expr>' destructuring is not supported (#830); move it into a function body (e.g. 'fn main() { let record { .. } = <expr>; .. }')")
       }
       let is_struct_destructure = match peek(tokens, pos + 1) {
         TDoubleColon => match peek(tokens, pos + 2) {
@@ -392,13 +538,36 @@ fn parse_let_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: 
         },
         _ => false
       }
-      if is_struct_destructure {
-        // #859: same root cause as the tuple-destructure case above -- a
-        // named-struct pattern let (`let Name::{ x, y } = v`) parses and
-        // type-checks fine at top level but codegen has no `SLetPat` case,
-        // crashing with a raw "undefined variable" instead of working.
-        throw("top-level 'let Name::{ .. } = <expr>' struct destructuring is not supported (#859); move it into a function body (e.g. 'fn main() { let Name::{ x, y } = <expr>; .. }')")
+      // #1281 (was #859): `let Name::{ x, y } = v` — the named-struct form.
+      // `parse_pattern` returns `PStruct(name, [(field, PBind field), ..])`,
+      // which the expansion turns into one `<tmp>.field` projection each.
+      if is_top_level_record_destr || is_struct_destructure {
+        let (ppat, after_ppat) = parse_pattern(tokens, pos)
+        require_irrefutable_top_level_pat(ppat)
+        let pep = expect_tk(tokens, reject_pattern_let_annotation(tokens, after_ppat), "=")
+        let pval_pair = parse_impl(tokens, starts, pep, 0)
+        let marked = if is_top_level_record_destr {
+          record_destr_marker(ppat)
+        } else {
+          ppat
+        }
+        (top_level_pattern_let(exported, marked, pval_pair.0), pval_pair.1)
       } else {
+        // `let Some(x) = e` and friends: a variant pattern reads as a binding
+        // name followed by `(`, which used to surface as a bare
+        // "expected = but got (". Name the real problem (#1281).
+        let refutable_ctor_head = match peek(tokens, pos + 1) {
+          TLParen => {
+            let head_code = String::char_code_at(_name0, 0)
+            head_code >= 65 && head_code <= 90
+          },
+          _ => false
+        }
+        if refutable_ctor_head {
+          refutable_top_level_pat_error()
+        } else {
+          ()
+        }
         let (name, name_next) = parse_binding_name(tokens, pos)
         let (type_params, type_bounds, ty_opt, eq_pos) = match peek(tokens, name_next) {
           TColon => {
@@ -714,6 +883,7 @@ export {
   collect_import_path,
   empty_fields,
   empty_import_items,
+  expand_top_level_pattern_lets,
   expect_tk,
   is_tk,
   lower_fn_decl_stmt,
@@ -741,6 +911,7 @@ export {
   collect_import_path,
   empty_fields,
   empty_import_items,
+  expand_top_level_pattern_lets,
   expect_tk,
   is_tk,
   lower_fn_decl_stmt,

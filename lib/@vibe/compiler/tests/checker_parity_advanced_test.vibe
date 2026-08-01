@@ -118,8 +118,44 @@ test "parity: let destructure tuple" {
   assert(check_source_ok("let _adr69 = () -> { let (a, b, c) = (1, 2, 3)\na + b + c }"))
 }
 
-test "parity err: top-level let destructure tuple rejected (#859)" {
-  assert(check_source_err("let (a, b, c) = (1, 2, 3)\nlet _adr69 = () -> { a + b + c }"))
+/// #1281 (was #859): a top-level irrefutable pattern `let` is accepted now —
+/// the parser expands it into a hidden binding for the value plus one
+/// projection per name.
+test "parity: top-level let destructure tuple (#1281)" {
+  assert(check_source_ok("let (a, b, c) = (1, 2, 3)\nlet _adr69 = () -> { a + b + c }"))
+}
+
+/// ... but a refutable one still is not: it can fail, and a top-level binding
+/// has nowhere to fail to.
+test "parity err: top-level let destructure with a variant pattern rejected (#1281)" {
+  assert(check_source_err("let Some(a) = Some(1)\nlet _adr69 = () -> { a }"))
+}
+
+test "parity: top-level let destructure named struct (#1281)" {
+  assert(check_source_ok("struct P { x: Int; y: Int }\nlet P::{ x, y } = P::{ x: 3, y: 4 }\nlet _adr69 = () -> { x + y }"))
+}
+
+test "parity: top-level let destructure anonymous record (#1281)" {
+  assert(check_source_ok("let record { a, b } = record { a: 1, b: 2 }\nlet _adr69 = () -> { a + b }"))
+}
+
+test "parity: top-level let destructure nested tuple (#1281)" {
+  assert(check_source_ok("let (a, (b, c)) = (1, (2, 3))\nlet _adr69 = () -> { a + b + c }"))
+}
+
+test "parity: top-level let destructure with a wildcard element (#1281)" {
+  assert(check_source_ok("let (a, _) = (1, 2)\nlet _adr69 = () -> { a }"))
+}
+
+/// `SLetPat` has no `exported` flag to carry, so the export spelling is
+/// rejected with a message pointing at `export { a, b }` instead.
+test "parity err: exported top-level pattern let rejected (#1281)" {
+  assert(check_source_err("export let (a, b) = (1, 2)\nlet _adr69 = () -> { a + b }"))
+}
+
+/// There is no single binding for a pattern-let annotation to describe.
+test "parity err: top-level pattern let with a type annotation rejected (#1281)" {
+  assert(check_source_err("let (a, b): (Int, Int) = (1, 2)\nlet _adr69 = () -> { a + b }"))
 }
 
 test "parity: double arithmetic" {

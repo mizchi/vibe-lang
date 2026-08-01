@@ -83,6 +83,21 @@ fn assert_string_interp_parts(source: String, expected: Array[String]) -> Bool {
   }
 }
 
+/// `token_to_string` of the `i`-th token, or "" when the source does not lex
+/// or is shorter than that.
+fn nth_token_name(source: String, i: Int) -> String {
+  handle {
+    let tokens = lex(source)
+    if i < Array::length(tokens) {
+      token_to_string(Array::get(tokens, i))
+    } else {
+      ""
+    }
+  } with Error {
+    Throw(_) => ""
+  }
+}
+
 //# Misc
 
 test "lex_simple_arithmetic" {
@@ -253,6 +268,25 @@ test "lex_comment_newline_before_bracket_inserts_semicolon" {
     TRBracket,
     TEof
   ]))
+}
+
+/// #1318/#1319: an interpolated string ends an expression exactly like a plain
+/// one, so `"a\{b}c" <newline> (d)` is two statements. Without the synthetic
+/// `;` the `(d)` line was absorbed as a call argument list of the string.
+test "lex_newline_paren_after_string_interp_inserts_semicolon" {
+  assert(eq(nth_token_name("\"a\\{b}c\"\n(d)", 1), "TSemicolon"))
+}
+
+/// The plain-string neighbour of the case above, pinning that both string
+/// token kinds behave identically here.
+test "lex_newline_paren_after_plain_string_inserts_semicolon" {
+  assert(eq(nth_token_name("\"ac\"\n(d)", 1), "TSemicolon"))
+}
+
+/// Same-line `(` after an interpolated string stays a call suffix (no
+/// synthetic `;`) — the fix must not split expressions that are one line.
+test "lex_same_line_paren_after_string_interp_is_call" {
+  assert(eq(nth_token_name("\"a\\{b}c\"(d)", 1), "TLParen"))
 }
 
 test "lex_same_line_bracket_is_subscript" {
