@@ -11,6 +11,7 @@ import @vibe/compiler/core {
   bytebuf_push_section,
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
+  expr_children,
   is_exception_throw_handler_name,
   leb128_encode_s64,
   leb128_encode_u32
@@ -62,6 +63,8 @@ import @vibe/compiler/codegen/common_extractors {
 }
 
 import @vibe/compiler/codegen/wasm_emit {
+  emit_array_new_default,
+  emit_array_set,
   emit_block_i64,
   emit_block_void,
   emit_br,
@@ -484,6 +487,145 @@ fn emit_gc_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String]
   }
 }
 
+/// Conservative escape gate for the first user-visible native GC value. The
+/// reference stays in one typed local and may only be the receiver of direct
+/// Array::length/get/set calls; all control forms that can capture, return, or
+/// ambiguously bind it are rejected until typed-reference handling grows.
+fn gc_native_array_body_is_safe(expr: Expr, name: String) -> Bool {
+  match expr {
+    EIdent(n, _) => n != name,
+    ECall(EIdent(fname, _), args, _) => {
+      let expected = if fname == "Array::length" {
+        1
+      } else if fname == "Array::get" {
+        2
+      } else if fname == "Array::set" {
+        3
+      } else {
+        -1
+      }
+      if expected > 0 && Array::length(args) == expected {
+        match Array::get(args, 0) {
+          EIdent(n, _) => if n == name {
+            let mut i = 1
+            let mut ok = true
+            while i < Array::length(args) {
+              if !gc_native_array_body_is_safe(Array::get(args, i), name) {
+                ok = false
+              }
+              i = i + 1
+            }
+            ok
+          } else {
+            gc_native_array_children_are_safe(expr, name)
+          },
+          _ => gc_native_array_children_are_safe(expr, name)
+        }
+      } else {
+        gc_native_array_children_are_safe(expr, name)
+      }
+    },
+    // Same-name nesting makes the simple syntactic ownership proof ambiguous.
+    ELet(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name),
+    ELetMut(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name),
+    ELetRec(n, _, _) => n != name && gc_native_array_children_are_safe(expr, name),
+    EAssign(n, _, _) => n != name && gc_native_array_children_are_safe(expr, name),
+    EAssignOp(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name),
+    EFn(_, _, _, _, _, _) => false,
+    EMatch(_, _) => false,
+    EHandle(_, _) => false,
+    EForIn(_, _, _, _) => false,
+    ELoop(_, _) => false,
+    // A scalar result may be returned; returning the reference itself is
+    // still rejected by the recursive EIdent check.
+    EReturn(_) => gc_native_array_children_are_safe(expr, name),
+    EBreak(_) => false,
+    EContinue(_) => false,
+    _ => gc_native_array_children_are_safe(expr, name)
+  }
+}
+
+fn gc_native_array_children_are_safe(expr: Expr, name: String) -> Bool {
+  let children = expr_children(expr)
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(children) {
+    if !gc_native_array_body_is_safe(Array::get(children, i), name) {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// i64 fallback for an ELet after its name has already been pushed into
+/// `local_names`. Keeping it separate makes the native-literal branch above
+/// unable to accidentally feed a reference to the legacy local.set path.
+fn gc_compile_let_i64(buf: Bytes, value: Expr, body: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with { Error }) -> Int with { Error } {
+  let local_idx = next_local
+  if gc_expr_is_floatish(value, local_names, ctx) {
+    Array::push(ctx.gc_float_locals, local_idx)
+  } else if gc_expr_is_boolish(value, local_names, ctx) {
+    Array::push(ctx.gc_bool_locals, local_idx)
+  } else {
+    ()
+  }
+  let agg_entry = match value {
+    ETuple(tels) => 64 + Array::length(tels),
+    ERecord(_, rfields, _) => 128 + Array::length(rfields),
+    _ => if gc_is_ctor_expr(value, ctx) {
+      match value {
+        ECall(_, cargs, _) => {
+          let fcnt = if Array::length(cargs) == 1 {
+            match Array::get(cargs, 0) {
+              ERecord(_, crf, _) => Array::length(crf),
+              _ => Array::length(cargs)
+            }
+          } else {
+            Array::length(cargs)
+          }
+          128 + fcnt
+        },
+        _ => 128
+      }
+    } else {
+      match value {
+        EIdent(src_nm, _) => {
+          let src_slot = find_local_slot(local_names, src_nm)
+          if src_slot >= 0 {
+            let src_info = agg_slot_lookup(ctx.gc_agg_local_slots, src_slot)
+            if src_info > 0 {
+              src_info
+            } else {
+              0
+            }
+          } else {
+            0
+          }
+        },
+        ECall(vcal, _, _) => match vcal {
+          EIdent(cfn, _) => if find_local_slot(local_names, cfn) < 0 {
+            let rinfo = agg_ret_lookup(ctx.gc_agg_ret_names, ctx.gc_agg_ret_infos, cfn)
+            if rinfo > 0 {
+              rinfo
+            } else {
+              0
+            }
+          } else {
+            0
+          },
+          _ => 0
+        },
+        _ => 0
+      }
+    }
+  }
+  Array::push(ctx.gc_agg_local_slots, local_idx * 256 + agg_entry)
+  let nl = ce(buf, value, local_names, next_local + 1, ld)
+  emit_local_set(buf, local_idx)
+  ce(buf, body, local_names, nl, ld)
+}
+
 fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int) -> Int with { Error } {
   let ce: (Bytes, Expr, Array[String], Int, Int) -> Int with { Error } = (b, e, ln, nl, d) -> {
     compile_expr_gc(b, e, ln, nl, ctx, d)
@@ -800,17 +942,24 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       agg_log_reset_above(ctx.gc_agg_local_slots, names_len_before)
       gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_before)
       gc_slot_log_reset_above(ctx.gc_float_locals, names_len_before)
-      let nl_else = ce(buf, else_e, local_names, nl1, ld_inner)
+      gc_slot_log_reset_above(ctx.gc_native_array_locals, names_len_before)
+      // A native local is a typed `(ref null $native_i64_array)`, unlike the
+      // normal i64 local lane. Never reuse a branch's slots for its sibling:
+      // the sibling can legally bind an ordinary i64 at the same lexical
+      // depth. Start it after every slot allocated by the then branch so the
+      // function-local declaration remains monotonic and type-correct.
+      while Array::length(local_names) < nl_then {
+        Array::push(local_names, "")
+      }
+      let nl_else = ce(buf, else_e, local_names, nl_then, ld_inner)
       emit_end(buf)
       Array::truncate(local_names, names_len_before)
       agg_log_reset_above(ctx.gc_agg_local_slots, names_len_before)
       gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_before)
       gc_slot_log_reset_above(ctx.gc_float_locals, names_len_before)
-      let max_nl = if nl_then > nl_else {
-        nl_then
-      } else {
-        nl_else
-      }
+      gc_slot_log_reset_above(ctx.gc_native_array_locals, names_len_before)
+      // `nl_else` starts at `nl_then`, so it is already the high-water mark.
+      let max_nl = nl_else
       while Array::length(local_names) < max_nl {
         Array::push(local_names, "")
       }
@@ -820,79 +969,30 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
     ELet(name, value, body, _) => {
       let local_idx = next_local
       Array::push(local_names, name)
-      if gc_expr_is_floatish(value, local_names, ctx) {
-        // #1032: logged by SLOT (local_idx), not name -- see
-        // gc_float_locals' doc comment on CompileCtxGc.
-        Array::push(ctx.gc_float_locals, local_idx)
-      } else if gc_expr_is_boolish(value, local_names, ctx) {
-        // #1015: mirrors the float branch above (and the linear ELet's
-        // kind-3 boolish log in compile_expr_tail.vibe) -- a `let`-bound
-        // boolish value lets a later `to_string(b)` / `"\{b}"` on the bare
-        // ident take the "true"/"false" formatter. Logged by SLOT (local_idx),
-        // not name -- see gc_bool_locals' doc comment on CompileCtxGc.
-        Array::push(ctx.gc_bool_locals, local_idx)
-      } else {
-        ()
-      }
-      // #724: log this binding's aggregate shape for the structural `==`
-      // comparators — mirrors the linear ELet (compile_expr_tail.vibe).
-      let agg_entry = match value {
-        ETuple(tels) => 64 + Array::length(tels),
-        ERecord(_, rfields, _) => 128 + Array::length(rfields),
-        _ => if gc_is_ctor_expr(value, ctx) {
-          match value {
-            ECall(_, cargs, _) => {
-              let fcnt = if Array::length(cargs) == 1 {
-                match Array::get(cargs, 0) {
-                  ERecord(_, crf, _) => Array::length(crf),
-                  _ => Array::length(cargs)
-                }
-              } else {
-                Array::length(cargs)
-              }
-              128 + fcnt
-            },
-            _ => 128
+      match value {
+        EArray(native_elems) => if ctx.gc_native_array_type_idx >= 0 && gc_native_array_body_is_safe(body, name) {
+          // This local is a `(ref null $native_i64_array)`, never an i64.
+          // Only the direct native Array call paths below may read it.
+          Array::push(ctx.gc_native_array_locals, local_idx)
+          Array::push(ctx.gc_native_array_local_types, local_idx)
+          emit_i32_const(buf, Array::length(native_elems))
+          emit_array_new_default(buf, ctx.gc_native_array_type_idx)
+          emit_local_set(buf, local_idx)
+          let mut native_nl = next_local + 1
+          let mut ni = 0
+          while ni < Array::length(native_elems) {
+            emit_local_get(buf, local_idx)
+            emit_i32_const(buf, ni)
+            native_nl = ce(buf, Array::get(native_elems, ni), local_names, native_nl, ld)
+            emit_array_set(buf, ctx.gc_native_array_type_idx)
+            ni = ni + 1
           }
+          ce(buf, body, local_names, native_nl, ld)
         } else {
-          match value {
-            EIdent(src_nm, _) => {
-              let src_slot = find_local_slot(local_names, src_nm)
-              if src_slot >= 0 {
-                let src_info = agg_slot_lookup(ctx.gc_agg_local_slots, src_slot)
-                if src_info > 0 {
-                  src_info
-                } else {
-                  0
-                }
-              } else {
-                0
-              }
-            },
-            ECall(vcal, _, _) => match vcal {
-              // #724 round 2: `let a = f(..)` — classify by f's DECLARED
-              // return type. Only for a global fn name (a local shadowing
-              // `f` makes this a closure call of unknown type).
-              EIdent(cfn, _) => if find_local_slot(local_names, cfn) < 0 {
-                let rinfo = agg_ret_lookup(ctx.gc_agg_ret_names, ctx.gc_agg_ret_infos, cfn)
-                if rinfo > 0 {
-                  rinfo
-                } else {
-                  0
-                }
-              } else {
-                0
-              },
-              _ => 0
-            },
-            _ => 0
-          }
-        }
+          gc_compile_let_i64(buf, value, body, local_names, next_local, ctx, ld, ce)
+        },
+        _ => gc_compile_let_i64(buf, value, body, local_names, next_local, ctx, ld, ce)
       }
-      Array::push(ctx.gc_agg_local_slots, local_idx * 256 + agg_entry)
-      let nl = ce(buf, value, local_names, next_local + 1, ld)
-      emit_local_set(buf, local_idx)
-      ce(buf, body, local_names, nl, ld)
     },
     ELetRec(name, value, body) => {
       let local_idx = next_local
