@@ -1149,6 +1149,26 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Uni
           ()
         }
       },
+      SLetMut(_, _, mv) => if lc_expr_has_async_handle(mv) {
+        has_async_handle = true
+      } else {
+        ()
+      },
+      SExpr(se) => if lc_expr_has_async_handle(se) {
+        has_async_handle = true
+      } else {
+        ()
+      },
+      STest(_, te) => if lc_expr_has_async_handle(te) {
+        has_async_handle = true
+      } else {
+        ()
+      },
+      SBench(_, be) => if lc_expr_has_async_handle(be) {
+        has_async_handle = true
+      } else {
+        ()
+      },
       SEffectDef(_, ename, _, _) => if ename == "Async" {
         has_async_decl = true
       } else {
@@ -1201,6 +1221,18 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Uni
         },
         SLetMut(mname, mty, mexpr) => {
           Array::set(stmts, r, SLetMut(mname, mty, lc_rename_sleep_calls(mexpr, true)))
+        },
+        STest(tname, texpr) => {
+          // The unit-test lane (__no_entry__) compiles STest bodies as
+          // entries of their own; a sleep inside one must retarget exactly
+          // like fn-body sleeps or it stays an opaque builtin call that the
+          // suspend lowering rejects (found live: the spawn_suspend +
+          // plain-sleep test failed Vertical-B eligibility until this arm
+          // existed). Same stmt coverage as await_poll_pass.
+          Array::set(stmts, r, STest(tname, lc_rename_sleep_calls(texpr, true)))
+        },
+        SBench(bname, bexpr) => {
+          Array::set(stmts, r, SBench(bname, lc_rename_sleep_calls(bexpr, true)))
         },
         SExpr(sexpr) => {
           Array::set(stmts, r, SExpr(lc_rename_sleep_calls(sexpr, true)))
