@@ -1135,12 +1135,26 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
         (env, ns, nc)
       },
       SExpr(expr) => {
-        // ADR-0069 Phase 1: top level is declarations only. A top-level
-        // expression statement was silently DROPPED by the linear backend;
-        // reject it (still type-check the expression for error recovery).
-        Array::push(errors, top_level_reject_msg("top-level expressions are not allowed; move it into fn main", expr))
-        let (_, ns, nc) = check_expr(expr, env, defs, s, c, errors, tytab)
-        (env, ns, nc)
+        // ADR-0091 Phase 1: `@zero_alloc` lexes as a single ident token and
+        // lands here as a top-level expression statement. It is an attribute
+        // marker for the following fn declaration, consumed by the
+        // codegen-stage allocation check (common_analysis.vibe's
+        // zero_alloc_check) -- skip both the ADR-0069 reject below and name
+        // resolution (the `@`-spelled ident resolves nowhere).
+        let is_zero_alloc_marker = match expr {
+          EIdent(id_name, _) => id_name == "@zero_alloc",
+          _ => false
+        }
+        if is_zero_alloc_marker {
+          (env, s, c)
+        } else {
+          // ADR-0069 Phase 1: top level is declarations only. A top-level
+          // expression statement was silently DROPPED by the linear backend;
+          // reject it (still type-check the expression for error recovery).
+          Array::push(errors, top_level_reject_msg("top-level expressions are not allowed; move it into fn main", expr))
+          let (_, ns, nc) = check_expr(expr, env, defs, s, c, errors, tytab)
+          (env, ns, nc)
+        }
       },
       SModule(_, _, body) => {
         let _ = check_stmts(body, 0, env, defs, s, c, errors, tytab)

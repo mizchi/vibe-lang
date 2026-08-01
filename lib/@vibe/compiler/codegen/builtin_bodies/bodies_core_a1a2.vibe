@@ -381,6 +381,83 @@ export fn gen_arr_set_body(enable_rc: Bool) -> Bytes {
   b
 }
 
+/// Push the bin-head address for `ptr_local`'s block size:
+/// bins_base + (((size - 16) >> 3) << 2). Pure push.
+fn emit_rc_bin_addr(b: Bytes, ptr_local: Int, bins_base: Int) -> Unit {
+  emit_local_get(b, ptr_local)
+  emit_i32_const(b, 8)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_i32_const(b, 16)
+  emit_i32_sub(b)
+  emit_i32_const(b, 3)
+  // i32.shr_u (0x76)
+  bytebuf_push(b, 118)
+  emit_i32_const(b, 2)
+  // i32.shl (0x74)
+  bytebuf_push(b, 116)
+  emit_i32_const(b, bins_base)
+  emit_i32_add(b)
+}
+
+/// Legacy LIFO free push onto global 2, linking through the rc word.
+fn emit_rc_legacy_free_push(b: Bytes, ptr_local: Int) -> Unit {
+  emit_local_get(b, ptr_local)
+  emit_i32_const(b, 4)
+  emit_i32_sub(b)
+  emit_global_get(b, 2)
+  emit_i32_store(b, 2, 0)
+  emit_local_get(b, ptr_local)
+  emit_global_set(b, 2)
+}
+
+/// ADR-0092 (#1262) size-segregated free-list bins: push the freed block in
+/// `ptr_local` (a value pointer; header at ptr-8) onto its exact-size bin
+/// when the block is small (size 16..264, 8-aligned -- 32 bins of 4 bytes
+/// at `bins_base`, bin index (size-16)>>3), else onto the legacy global-2
+/// list. The bin link reuses the rc word at ptr-4, same as the legacy list.
+/// Pure emission; recomputes size/bin address instead of taking a scratch
+/// local so callers' local layouts stay untouched.
+fn emit_rc_free_push(b: Bytes, ptr_local: Int, bins_base: Int) -> Unit {
+  // (size & 7) == 0 ?
+  emit_local_get(b, ptr_local)
+  emit_i32_const(b, 8)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_i32_const(b, 7)
+  // i32.and (0x71)
+  bytebuf_push(b, 113)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  // (size - 16) <u 249 ?  [i.e. 16 <= size <= 264]
+  emit_local_get(b, ptr_local)
+  emit_i32_const(b, 8)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_i32_const(b, 16)
+  emit_i32_sub(b)
+  emit_i32_const(b, 249)
+  // i32.lt_u (0x49)
+  bytebuf_push(b, 73)
+  emit_if_void(b)
+  // store(ptr-4, load(binaddr)); store(binaddr, ptr)
+  emit_local_get(b, ptr_local)
+  emit_i32_const(b, 4)
+  emit_i32_sub(b)
+  emit_rc_bin_addr(b, ptr_local, bins_base)
+  emit_i32_load(b, 2, 0)
+  emit_i32_store(b, 2, 0)
+  emit_rc_bin_addr(b, ptr_local, bins_base)
+  emit_local_get(b, ptr_local)
+  emit_i32_store(b, 2, 0)
+  emit_else(b)
+  emit_rc_legacy_free_push(b, ptr_local)
+  emit_end(b)
+  emit_else(b)
+  emit_rc_legacy_free_push(b, ptr_local)
+  emit_end(b)
+}
+
 /// ADR-0055 Stage 3: the generic recursive rc_drop helper (linear RC backend).
 /// Signature (i64 value) -> (): decrement the value's reference count and, at
 /// zero, recursively drop its heap fields before pushing the block onto the
@@ -399,7 +476,7 @@ export fn gen_arr_set_body(enable_rc: Bool) -> Bytes {
 ///
 /// Locals: 0 = i64 v (param); 1 vptr, 2 class, 3 cnt, 4 idx, 5 dptr (i32);
 /// 6 = i64 field value.
-export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool) -> Bytes {
+export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int) -> Bytes {
   let b = bytebuf_new()
   // not a heap pointer (even) → nothing to do
   emit_local_get(b, 0)
@@ -593,13 +670,7 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool) -> Bytes {
   } else {
     ()
   }
-  emit_local_get(b, 5)
-  emit_i32_const(b, 4)
-  emit_i32_sub(b)
-  emit_global_get(b, 2)
-  emit_i32_store(b, 2, 0)
-  emit_local_get(b, 5)
-  emit_global_set(b, 2)
+  emit_rc_free_push(b, 5, bins_base)
   emit_end(b)
   emit_end(b)
   // map (class 6): count@value+0, then `count` entries of (key@+8, val@+16) on a
@@ -723,15 +794,9 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool) -> Bytes {
   } else {
     ()
   }
-  // free: push block onto the free-list head (global 2), reusing the rc slot
-  // (vptr-4) as the next pointer — matching the inline allocator/drop.
-  emit_local_get(b, 1)
-  emit_i32_const(b, 4)
-  emit_i32_sub(b)
-  emit_global_get(b, 2)
-  emit_i32_store(b, 2, 0)
-  emit_local_get(b, 1)
-  emit_global_set(b, 2)
+  // free: push the block onto its size bin (small) or the legacy global-2
+  // list, reusing the rc slot (vptr-4) as the next pointer.
+  emit_rc_free_push(b, 1, bins_base)
   b
 }
 
@@ -743,27 +808,110 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool) -> Bytes {
 /// allocating sizes A,B,A,B... while freeing them recursively (which reverses the
 /// order on the LIFO) bump-allocates every other block even though a perfectly
 /// sized free block exists deeper in the list (a fragmentation "leak"). This
+/// Push the bin-head address for the requested size in local 3:
+/// bins_base + (((sz - 16) >> 3) << 2). Pure push (alloc-side sibling of
+/// emit_rc_bin_addr, which reads the size from a block header instead).
+fn emit_rc_alloc_bin_addr(b: Bytes, bins_base: Int) -> Unit {
+  emit_local_get(b, 3)
+  emit_i32_const(b, 16)
+  emit_i32_sub(b)
+  emit_i32_const(b, 3)
+  // i32.shr_u (0x76)
+  bytebuf_push(b, 118)
+  emit_i32_const(b, 2)
+  // i32.shl (0x74)
+  bytebuf_push(b, 116)
+  emit_i32_const(b, bins_base)
+  emit_i32_add(b)
+}
+
 /// helper instead WALKS the list for an exact-fit block and unlinks it, falling
 /// back to a bump only when none exists. Exact-fit only (no splitting), so it is
 /// drop-in compatible with the recursive rc_drop free path.
-/// Locals: 0=size(i64 param) 1=cur 2=prev 3=sz(i32) 4=result.
-export fn gen_rc_alloc_body(rc_shadow: Bool) -> Bytes {
+///
+/// ADR-0092 (#1262) KPI follow-up: the walk is BOUNDED to the first 16
+/// nodes. The unbounded walk made every miss O(free-list length) -- on the
+/// selfcompile workload the list grows to thousands of mixed-size nodes and
+/// vibe_rc_alloc alone measured 44% of the whole compile's CPU (profile of
+/// the RC-built stage2, 2026-07-31). A LIFO head keeps the most recent
+/// frees first, so same-size churn (the common alloc/free loop pattern)
+/// still hits within a few nodes; a deeper exact fit is abandoned in favor
+/// of a bump, trading bounded fragmentation for O(1) allocation.
+/// Locals: 0=size(i64 param) 1=cur 2=prev 3=sz(i32) 4=result 5=budget.
+export fn gen_rc_alloc_body(rc_shadow: Bool, bins_base: Int) -> Bytes {
   let b = bytebuf_new()
   // sz = (i32) size
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
   emit_local_set(b, 3)
-  // cur = free-list head (global 2); prev = 0
+  // ADR-0092 (#1262) size-segregated bins: a small aligned size (16..264,
+  // 8-aligned) checks its exact-size bin first -- O(1) exact fit for the
+  // dominant ctor-block traffic (matching gen_rc_drop_body's bin push).
+  // Bin miss falls through to the bounded legacy walk below (which still
+  // recycles blocks freed by the array/bytes grow paths onto global 2).
+  emit_local_get(b, 3)
+  emit_i32_const(b, 7)
+  // i32.and (0x71)
+  bytebuf_push(b, 113)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_local_get(b, 3)
+  emit_i32_const(b, 16)
+  emit_i32_sub(b)
+  emit_i32_const(b, 249)
+  // i32.lt_u (0x49)
+  bytebuf_push(b, 73)
+  emit_if_void(b)
+  // result(4) = load(binaddr); if nonzero: unlink + return result-8
+  emit_rc_alloc_bin_addr(b, bins_base)
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, 4)
+  emit_local_get(b, 4)
+  emit_if_void(b)
+  emit_rc_alloc_bin_addr(b, bins_base)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 4)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_i32_store(b, 2, 0)
+  if rc_shadow {
+    emit_local_get(b, 4)
+    emit_i32_const(b, rc_shadow_base())
+    emit_i32_add(b)
+    emit_i32_const(b, 0)
+    emit_i32_store8(b, 0, 0)
+  } else {
+    ()
+  }
+  emit_local_get(b, 4)
+  emit_i32_const(b, 8)
+  emit_i32_sub(b)
+  emit_i64_extend_i32_u(b)
+  emit_return(b)
+  emit_end(b)
+  emit_end(b)
+  emit_end(b)
+  // cur = free-list head (global 2); prev = 0; budget = 16
   emit_global_get(b, 2)
   emit_local_set(b, 1)
   emit_i32_const(b, 0)
   emit_local_set(b, 2)
+  emit_i32_const(b, 16)
+  emit_local_set(b, 5)
   emit_block_void(b)
   emit_loop_void(b)
   // cur == 0 → not found, break to the bump path
   emit_local_get(b, 1)
   emit_i32_eqz(b)
   emit_br_if(b, 1)
+  // budget == 0 → give up the walk, break to the bump path
+  emit_local_get(b, 5)
+  emit_i32_eqz(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 5)
+  emit_i32_const(b, 1)
+  emit_i32_sub(b)
+  emit_local_set(b, 5)
   // load(cur-8) == sz → exact-fit block found
   emit_local_get(b, 1)
   emit_i32_const(b, 8)

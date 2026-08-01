@@ -7595,5 +7595,123 @@ if [ "$diag_ok_out" != "3" ]; then
 fi
 rm -rf "$dcolldir"
 echo "[compiler-gate] cross-module diagnostic collection ok (1 fail-fast, 2 collected, seed-invariant)"
+# 75/75. ADR-0090 Phase 1 (#1262): `region r { body }` + MutList[T, r]
+# vertical slice. The parser lowers the syntax to the reserved
+# `__region_run((r) -> { body })`; the checker mints a rigid `#region_N`
+# skolem for the binder and scans fully-zonked return/outer-binding types
+# for escapes; MutList is a checker-only phantom over the ArrayBuilder
+# runtime layout (freeze/to_array are the sanctioned exits). Positive:
+# build a MutList inside the region, freeze, read it outside -- compiles
+# and returns 42 (region_arena_ok.vibe). Negative: returning the
+# region-tainted MutList itself out of the region body is a STATIC error
+# (err_region_escape_return_value.vibe). Same known generalize-gap caveat
+# as the ADR-0068 section above: the return-position escape is the hard
+# guarantee in this slice.
+echo "[compiler-gate] 75/75 ADR-0090 region + MutList vertical slice (#1262)"
+r90dir="_build/_gate_region90"
+rm -rf "$r90dir"; mkdir -p "$r90dir"
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/region_arena_ok.vibe > "$r90dir/pos.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$r90dir/pos.vibe" "$r90dir/pos.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$r90dir/pos.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_arena_ok.vibe did not compile -- ADR-0090 region/MutList slice regressed" >&2
+  cat "$r90dir/pos.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+r90_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/pos.wasm" 2>/dev/null | tail -1)"
+if [ "$r90_pos_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: region_arena_ok.vibe got '$r90_pos_out' (want 42)" >&2
+  exit 1
+fi
+cp fixtures/err_region_escape_return_value.vibe "$r90dir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$r90dir/neg.vibe" "$r90dir/neg.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$r90dir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_region_escape_return_value.vibe compiled successfully -- must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF 'region escapes its scope' "$r90dir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_region_escape_return_value.vibe did not produce the expected diagnostic" >&2
+  cat "$r90dir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# #1274 Codex P1: the token is unforgeable -- MutList::empty with a
+# non-skolem argument must be rejected.
+cp fixtures/err_region_token_forged.vibe "$r90dir/forged.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$r90dir/forged.vibe" "$r90dir/forged.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$r90dir/forged.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_region_token_forged.vibe compiled successfully -- the region token must be unforgeable" >&2
+  exit 1
+fi
+if ! grep -qF 'region token' "$r90dir/forged.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_region_token_forged.vibe did not produce the expected diagnostic" >&2
+  cat "$r90dir/forged.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$r90dir"
+echo "[compiler-gate] ADR-0090 region + MutList vertical slice ok"
+
+# 76/76. ADR-0091 Phase 1 (#1262): `@zero_alloc` attribute. The attribute
+# lexes as a single ident token, parses as a top-level SExpr the checker
+# skips (checker_stmt.vibe) and the linear backend drops; enforcement is
+# common_analysis.vibe's zero_alloc_check, run at the top of
+# compile_wasi_module_linked_impl -- a conservative AST walk (constructors,
+# container/closure/string-building literals, float literals, effect
+# handlers, and any call not on the safe-builtin list or resolvable to a
+# proven-clean top-level fn are rejected; transitive through top-level fn
+# calls). Positive: a pure-arithmetic @zero_alloc fn compiles and returns
+# 42 (zero_alloc_ok.vibe). Negative: a @zero_alloc fn constructing an enum
+# value is a STATIC error naming the site (err_zero_alloc_ctor.vibe).
+echo "[compiler-gate] 76/76 ADR-0091 @zero_alloc allocation check (#1262)"
+za91dir="_build/_gate_zero_alloc91"
+rm -rf "$za91dir"; mkdir -p "$za91dir"
+sed '/^_start()$/d; /^__DATA__$/,$d' fixtures/zero_alloc_ok.vibe > "$za91dir/pos.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$za91dir/pos.vibe" "$za91dir/pos.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$za91dir/pos.wasm" ]; then
+  echo "[compiler-gate] FAIL: zero_alloc_ok.vibe did not compile -- ADR-0091 @zero_alloc slice regressed" >&2
+  cat "$za91dir/pos.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+za91_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$za91dir/pos.wasm" 2>/dev/null | tail -1)"
+if [ "$za91_pos_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: zero_alloc_ok.vibe got '$za91_pos_out' (want 42)" >&2
+  exit 1
+fi
+cp fixtures/err_zero_alloc_ctor.vibe "$za91dir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$za91dir/neg.vibe" "$za91dir/neg.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$za91dir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_zero_alloc_ctor.vibe compiled successfully -- must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF 'zero_alloc' "$za91dir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_zero_alloc_ctor.vibe did not produce the expected diagnostic" >&2
+  cat "$za91dir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# #1274 Codex P1: a param shadowing a clean top-level fn is an indirect
+# callee and must be rejected.
+cp fixtures/err_zero_alloc_shadowed_call.vibe "$za91dir/shadowed.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$za91dir/shadowed.vibe" "$za91dir/shadowed.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$za91dir/shadowed.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_zero_alloc_shadowed_call.vibe compiled successfully -- shadowed callees must be treated as indirect" >&2
+  exit 1
+fi
+if ! grep -qF 'zero_alloc' "$za91dir/shadowed.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_zero_alloc_shadowed_call.vibe did not produce the expected diagnostic" >&2
+  cat "$za91dir/shadowed.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$za91dir"
+echo "[compiler-gate] ADR-0091 @zero_alloc allocation check ok"
 
 echo "[compiler-gate] ok"

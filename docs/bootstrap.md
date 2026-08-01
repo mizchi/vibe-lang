@@ -169,18 +169,18 @@ merge し、`seed-release` workflow が使えるようになってから最初�
 ```bash
 # release から pull + sha256 検証し、prebuilt module source の env を出す
 eval "$(pkf run fetch-compiler -- <tag> --print-env)"
-# MoonBit host build を一切せず stage0 -> stage1 -> stage2 を回す
+# flat source の regeneration を skip して stage0 -> stage1 -> stage2 を回す
 bash scripts/generations.sh build
 ```
 
 `scripts/generations.sh` の `prepare_flat_cli_source` は
 `VIBE_PREBUILT_MODULE_SOURCE`(+ optional `..._SHA256`)が指定されると
-regeneration を skip して pull 済み flat source を使う。未指定時の挙動
-(host `vibe.exe` で regenerate) は不変。
+regeneration を skip して pull 済み flat source を使う。未指定時は
+`scripts/generate_bundle.sh` (seed compiler ベース) で regenerate する。
 
 freshness 契約: prebuilt flat source は **対応する source commit / tag 専用**。
 HEAD 開発で compiler source を変えた場合は stale になるため、その場合は
-従来どおり host `vibe.exe` で regenerate する。stale な artifact を使うと
+`scripts/generate_bundle.sh` で regenerate する。stale な artifact を使うと
 flat source が現在の source と食い違い、stage1/stage2 parity 失敗として
 顕在化する (fetch 側は manifest の `source_commit` を、`--adopt-seed` 時は
 `seed.json` の sha256 を突き合わせて誤用を弾く)。
@@ -255,23 +255,32 @@ cutover 後も runner と compiler artifact は分ける。
 runner layer は性能・実行基盤の都合で差し替えてよいが、canonical compiler は
 portable な compiler wasm として再構築できることを gate に残す。
 
-## Compiler wasm artifact 層の contract (#529)
+## Compiler wasm artifact 層の contract
 
-compiler wasm を作る入口は 2 つある。両者は **同じ compiler source** を入力に
-するが、**builder が異なる**ため成果物の byte は一致しない。これは設計上の前提
-であり、等価性は byte 統一ではなく contract + parity gate で保証する。
+compiler wasm を作る canonical な入口は 1 つ:
 
 | artifact | builder | 出力先 | 役割 |
 |---|---|---|---|
-| dist | `scripts/build_selfhost_dist.sh` | `_build/dist/selfhost_compiler.wasm` (+ `_raw`) | MoonBit host-compiled の shipping artifact。配布・実行用。wasm-opt `-O3` を通す。 |
-| stage2 | `scripts/generations.sh build` | `_build/selfhost/generations/<ts>/stage2.wasm` | pinned seed から self-reproduce した candidate。bootstrap bump 判断用。 |
+| stage2 | `scripts/generations.sh build` | `_build/selfhost/generations/<ts>/stage2.wasm` | pinned seed から self-reproduce した candidate。bootstrap bump / release の元。 |
 
-- dist は host (`src/`) MoonBit codegen の出力、stage2 は compiler 自身の wasm
-  codegen の出力なので、**compiler binary 同士の byte 比較は意味がない**。生成入口を
-  一本化せず役割で分けるのが canonical な扱い。
-- `scripts/generations.sh status` で seed pin / source commit / 直近
-  generation manifest (stage0..stage3 の sha, stage3==stage2) を rebuild 無しで
-  確認できる。stage0 → stage1 → stage2 → bump の追跡入口。
+配布物 (release asset の `vibe-compiler-<tag>.wasm`) は adopt された seed
+(= 過去の stage2) そのもので、`scripts/build_release_assets.sh` /
+`scripts/build_seed_release_assets.sh` が publish する。
+
+`scripts/generations.sh status` で seed pin / source commit / 直近
+generation manifest (stage0..stage3 の sha, stage3==stage2) を rebuild 無しで
+確認できる。stage0 → stage1 → stage2 → bump の追跡入口。
+
+> **Historical (#529, MoonBit host 時代):** かつては MoonBit host-compiled の
+> `dist` artifact (`scripts/build_selfhost_dist.sh` →
+> `_build/dist/selfhost_compiler.wasm`) が第2の入口として存在し、dist / stage2
+> の等価性を `scripts/test_dist_stage2_parity.sh`
+> (`pkf run test-dist-stage2-parity`) の parity gate (ABI 一致 + behavioural
+> parity + byte 一致) で保証していた。MoonBit host 退役 (#594) で dist builder は
+> 撤去され、この parity gate は gate 本流から外れた (スクリプトは残っているが
+> dist 側の builder が無いため `--self-test` — pinned seed に対する `vibe.abi`
+> 抽出 smoke — のみ動作する)。経緯は
+> [docs/archive/moonbit-retirement.md](archive/moonbit-retirement.md)。
 
 ### `vibe.abi` custom section contract
 
@@ -288,44 +297,22 @@ section id 0 (custom), name "vibe.abi", payload:
 - `version` は section レイアウトの版。
 - `host_import_abi` は runner 層 (`VIBE_IMPORT_ABI`) の host import 選択に
   対応する (現状 `raw`)。runner はこの値で import の解決方法を切り替える。
-- host (`src/`) codegen はこの section を emit しない。したがって host-compiled な
-  dist binary 自体には載らないが、**dist / stage2 のどちらで compile しても、出力
+- どの世代の compiler (seed / stage1 / stage2) で compile しても、**出力
   program wasm の `vibe.abi` は一致しなければならない** (= ABI contract)。
+  世代間の挙動一致は stage parity (stage3 == stage2) が保証する。
 
-### parity gate
+## MoonBit `src/` の退役 (完了 — historical)
 
-`scripts/test_dist_stage2_parity.sh`
-(`pkf run test-dist-stage2-parity`) が contract を検証する。dist / stage2
-両 compiler で同一 sample を compile し、
+**退役は #594 (2026-06-23) で完了した。** MoonBit host 実装 (`src/`,
+`moon.mod`) は全撤去済みで、compiler は committed seed
+(`bootstrap/seed/`) + selfhost source (`lib/@vibe/compiler/`,
+`lib/@vibe/cli/`) だけからビルド・検証・実行される。MoonBit toolchain
+(`moon`) は不要。
 
-1. 出力 program wasm の `vibe.abi` 一致、
-2. 両方 42 を返す behavioural parity、
-3. 既定で出力 wasm の byte 一致 (`VIBE_DIST_PARITY_REQUIRE_HASH=0` で behavioural +
-   ABI のみに緩和)
+- 移行記録: [docs/archive/moonbit-retirement.md](archive/moonbit-retirement.md)
+- recovery point (最後の MoonBit-host 状態): tag
+  `moonbit-host-final-2026-06-23` (`59ef040`)
 
-を assert する。`--self-test` は build 無しで pinned seed wasm に対し `vibe.abi`
-抽出ロジックだけを検証する (CI/build 不要の smoke)。
-
-gate は `release-gates` に組み込まれ、`pkf run full-gate`
-(`trial_gate.sh`) の本流で走る。generation gate は本 gate の直前に
-`generations.sh build --stage3` で stage2/stage3 を生成するため、
-gate は既定 (`VIBE_DIST_PARITY_REUSE_STAGE2=1`) でその stage2 を再利用し、
-dist のみ fresh に build して比較する。stage2 再生成が前提なので、初回 green は
-seed が build 環境にある状態で確認する。
-
-## MoonBit `src/` の退役
-
-`src/` は selfhost cutover 後、legacy bootstrap/fallback 層へ縮退する。
-新機能、bugfix、CLI 挙動変更、builtin 追加は `src/` に入れず、
-`lib/@vibe/compiler/` / `lib/@vibe/cli/` 側で実装する。削除は一度に行わず、次の順に進める。
-
-1. seed tag と manifest を固定する。2026-06-12 cutover seed は完了済み。
-2. default CLI build/run/check/test を compiler wasm 経路へ向ける。新規 CLI 実装は
-   `lib/@vibe/cli/` と `lib/@vibe/compiler/` 側で行う。
-3. CI で seed -> stage1 -> stage2 と corpus/perf/RSS gate を継続 green にする。
-4. MoonBit `src/` を runner/fallback に必要な最小限へ縮小する。
-5. fallback が不要になった時点で archive または削除する。
-
-break-glass として `src/` を変更する場合は、通常 feature commit とは分け、
-bootstrap 復旧または退役作業であることを commit message / PR description に
-明記する。
+bootstrap 復旧で MoonBit host が必要になった場合は、この tag を checkout して
+当時の手順 (上記移行記録に記載) に従う。HEAD 上に `src/` を復活させる変更は
+行わない。
