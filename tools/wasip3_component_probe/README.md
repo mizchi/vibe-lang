@@ -86,6 +86,24 @@ pack `(amount << 4) | code`). Also 42 on wasmtime 47 under the same
 flags; emitter port `comp_emit_component_wasm_stream_value`, gate
 `scripts/test_stream_value_component_gate.sh`.
 
+`host_future_value/component.wat` (ADR-0089 Decision 2 / step 4, #1218) is
+the HOST-owned-writer counterpart the future_value probe deferred: the
+component genuinely imports `get-future` and the write end lives in
+runtime/viberun (a wasmtime `FutureReader::new` producer that resolves
+only after a tokio timer — wasmtime 47 has no `FutureWriter` type; the
+producer form is pull-based but observably identical). The guest's
+async-lowered import call completes eagerly with the readable handle,
+`future.read` comes back BLOCKED, and the task parks in
+`waitable-set.wait` until the host completion arrives as a FUTURE_READ
+event — measured 42 in ~311ms against a 300ms producer delay (the wall
+clock proving genuine suspend/wake), and it pinned one new encoding: the
+component-level import type must be `func async` (the `async` canon-lower
+option rejects a sync function type at validation). Driven by
+`viberun <component.wasm>` (a func_wrap_concurrent import cannot be driven
+by bare `wasmtime --invoke`); emitter port
+`comp_emit_component_wasm_host_future_value`, gate
+`scripts/test_host_future_value_component_gate.sh`.
+
 ## Update: stackful blocking-wait mechanics now proven (`stackful/`)
 
 The open question below ("does callback-less stackful async-lift handle a

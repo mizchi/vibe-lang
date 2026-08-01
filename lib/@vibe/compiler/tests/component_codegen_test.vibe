@@ -16,6 +16,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm_async_trampolined,
   comp_emit_component_wasm_async_trampolined_p1,
   comp_emit_component_wasm_future_value,
+  comp_emit_component_wasm_host_future_value,
   comp_emit_component_wasm_stream_value,
   comp_emit_component_wasm_string_handler,
   comp_emit_component_wasm_string_handler_stubbed,
@@ -1013,6 +1014,106 @@ test "component future-value: future.* canon set, no host import, no subtask" {
   assert(component_bytes_contains(comp, "[subtask-drop]") == 0)
   assert(component_bytes_contains(comp, "context-get") == 0)
   assert(component_bytes_contains(comp, "waitable-set-poll") == 0)
+}
+
+// ADR-0089 Decision 2 / step 4 (#1218): the HOST-future-value component --
+// imports `get-future` and parks the read on waitable-set.wait until the
+// host's producer resolves. Byte shapes recovered via `wasm-tools dump`
+// against tools/wasip3_component_probe/host_future_value/component.wat's
+// compiled output (42 in ~300ms under runtime/viberun's FutureReader
+// import -- the wall clock proving a genuine suspend). Runtime proof lives
+// in scripts/test_host_future_value_component_gate.sh.
+test "component host-future-value: get-future import + waitable park, no write end" {
+  let comp = comp_emit_component_wasm_host_future_value("run", 121)
+  assert(Bytes::get(comp, 0) == 0)
+  assert(Bytes::get(comp, 4) == 13)
+  // component type (future u32): 07 04 01 65 01 79
+  assert(bytes_contains_seq(comp, [
+    7,
+    4,
+    1,
+    101,
+    1,
+    121
+  ]) == 1)
+  // import functype `async () -> (type 0)`: 07 05 01 43 00 00 00
+  assert(bytes_contains_seq(comp, [
+    7,
+    5,
+    1,
+    67,
+    0,
+    0,
+    0
+  ]) == 1)
+  // component import of get-future with functype index 1:
+  // 0a 0f 01 00 0a "get-future" 01 01
+  assert(bytes_contains_seq(comp, [
+    10,
+    15,
+    1,
+    0,
+    10
+  ]) == 1)
+  assert(component_bytes_contains(comp, "get-future") == 1)
+  // canon lower async (memory 0) of the import: 08 08 01 01 00 00 02 06 03 00
+  assert(bytes_contains_seq(comp, [
+    8,
+    8,
+    1,
+    1,
+    0,
+    0,
+    2,
+    6,
+    3,
+    0
+  ]) == 1)
+  // canon future.read ty=0 async (memory 0): 08 07 01 16 00 02 06 03 00
+  assert(bytes_contains_seq(comp, [
+    8,
+    7,
+    1,
+    22,
+    0,
+    2,
+    6,
+    3,
+    0
+  ]) == 1)
+  // canon future.drop-readable ty=0: 08 03 01 1a 00
+  assert(bytes_contains_seq(comp, [
+    8,
+    3,
+    1,
+    26,
+    0
+  ]) == 1)
+  assert(component_bytes_contains(comp, "[async-lower]get-future") == 1)
+  assert(component_bytes_contains(comp, "[async-lower][future-read-0]get-future") == 1)
+  assert(component_bytes_contains(comp, "[future-drop-readable-0]get-future") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-new]") == 1)
+  assert(component_bytes_contains(comp, "[waitable-join]") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-wait]") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-drop]") == 1)
+  assert(component_bytes_contains(comp, "[task-return]run") == 1)
+  // The host owns the write end: no future.new, no write, no
+  // drop-writable anywhere in the shape -- and no subtask machinery
+  // (the get-future call itself must complete eagerly).
+  assert(component_bytes_contains(comp, "future-new") == 0)
+  assert(component_bytes_contains(comp, "future-write") == 0)
+  assert(component_bytes_contains(comp, "future-drop-writable") == 0)
+  assert(component_bytes_contains(comp, "[subtask-drop]") == 0)
+}
+
+test "component host-future-value: rejects a non-u32 result valtype" {
+  let rejected = handle {
+    let _ = comp_emit_component_wasm_host_future_value("run", 120)
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(rejected)
 }
 
 // The future payload valtype and the task.return result valtype are the

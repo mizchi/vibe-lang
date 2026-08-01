@@ -377,6 +377,20 @@ fn sp_spawnable_ok(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, r_her
         sp_same_region(Array::get(targs, 0), r_here)
       } else if (n == "TaskHandle" || n == "Sender" || n == "Receiver") && Array::length(targs) == 3 {
         sp_same_region(Array::get(targs, 0), r_here)
+      } else if n == "Future" && Array::length(targs) == 1 {
+        // ADR-0089 D2 (#1218): a `Future[T]` cell is a communication
+        // endpoint like Sender/Receiver -- one task awaits it, a sibling
+        // resolves it -- but the builtin phantom carries NO region
+        // parameter, so the same-nursery comparison the other endpoints
+        // get is not expressible for it. Allowing the capture is sound
+        // under the current poll model: the cell is plain shared memory
+        // with zero scheduler coupling (awaiting re-reads the state slot
+        // through `__aw_poll`; resolving is two stores), and the guest is
+        // single-threaded, so no cross-nursery hazard exists that Send
+        // would prevent. When the cell gains a scheduler-visible waiter
+        // list (the waitable/completion-order slice), `Future` should
+        // grow a region tag and join the sp_same_region branch above.
+        true
       } else {
         false
       },

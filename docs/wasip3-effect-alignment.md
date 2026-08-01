@@ -207,7 +207,45 @@ trampoline を将来 `wasi:http/service` の
    追加。arm 自身の body は async context ではない (handled computation の
    外で走る) ことも checker test で pin
 4. `Future[T]` 実体化(Decision 2)→ AsyncIter/ByteStream の p3 接続
-   (Decision 3)→ wit_gen(Decision 5)→ serve handler の async func 化
+   (Decision 3)→ wit_gen(Decision 5)→ serve handler の async func 化。
+   **Decision 2 の意味論確定 + 最初の increment 群 landed (#1218)**:
+   統合の形は「`Async` が唯一の suspension effect(制御、Int payload)、
+   `Future[T]` は handler 側継続状態の第一級化(データ、typed 値は heap の
+   cell 経由)」— typed operation (`perform Async::Await(f) : T`) への
+   完全一体化だけが ADR-0071 generic-instantiation 待ちで、Int 制御 +
+   heap データの分業は evidence passing として恒久設計。実装済み:
+   (a) `Future::pending/ready/resolve` を idp/edp_pure_builtin_names に
+   追加(evidence 移行に対して inert — 以前は boundary 付き entry で
+   pending future を触るだけで全 body が ineligible)、(b) entry boundary
+   の poll-wait deadlock trap(tail-resumptive boundary は Suspend(1) を
+   充足できない — resume では同じ未解決 cell を再 poll する livelock に
+   なるため `assert(req < 1)` = `unreachable` trap。gate §77 に
+   compile-and-trap fixture)、(c) **pump_all の forced sleep settle**
+   (`conc_force_settle_sleep_debt`): resumable poller が全員 no-progress の
+   sweep 後、sleeper が居れば仮想時間を進めて retry — 「future を await する
+   poller + あとで resolve する sleeper」「sleeping producer を recv_wait
+   する consumer」が偽陽性 deadlock trap にならない(sleeper ゼロの stall
+   だけが真の deadlock として trap)、(d) `TaskHandle::result_wait`
+   (suspendable-lane join: terminal status を poll、非 terminal は
+   Suspend(1) で park — task handle IS a future の library 形)、
+   (e) checker: `Future[T]` capture を Spawnable-legal に(cell は現行
+   poll モデルでは scheduler 非結合の共有メモリ。waiter list が付く
+   waitable slice で region tag を得て sp_same_region 側へ移行する)。
+   **waitable 第3 park 種 + `waitable-set.wait` backend も landed
+   (spec §3.13)**: host 供給 `future<u32>` の e2e — viberun に
+   `get-future` import(wasmtime 47 は FutureWriter 型を持たないため
+   `FutureReader::new` の producer 形、tokio timer で resolve)、probe
+   `host_future_value/component.wat` + byte-exact 移植
+   `comp_emit_component_wasm_host_future_value`(async-lowered import →
+   future.read BLOCKED → waitable.join → `waitable-set.wait` で task が
+   本当に suspend → FUTURE_READ completion event で wake)。300ms delay で
+   42 を ~311ms(wall clock が genuine park/wake の証明)、gate =
+   `test_host_future_value_component_gate.sh`。in-guest scheduler 側は
+   Suspend payload >= 2 を waitable handle 用に予約し poller 扱いに
+   (完了源が無い in-guest では deadlock trap に縮退 — silent livelock
+   ではなく)。残り: 実 `.vibe` ソースの await をこの component 経路へ
+   配線する step 4 本体(suspend lowering との接続)、resolve→直接 wake
+   の waiter list(poll モデルの O(rounds×awaiters) 最適化、意味論不変)。
 
 ## Non-goals
 
