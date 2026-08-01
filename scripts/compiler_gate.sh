@@ -4045,6 +4045,27 @@ fi
 rm -rf "$gcdir"
 echo "[compiler-gate] wasm-gc backend smoke ok (101557)"
 
+# #1295: String is a packed fat pointer, so the gc EForIn lowering must
+# normalize it to character codes before its shared Array iteration loop.
+echo "[compiler-gate] wasm-gc String for-in"
+gcstrdir="_build/_gate_gc_string_forin"
+rm -rf "$gcstrdir"; mkdir -p "$gcstrdir"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/gc_for_in_string_test.vibe" "$gcstrdir/out.wasm" main >/dev/null 2>&1
+if [ ! -s "$gcstrdir/out.wasm" ]; then
+  echo "[compiler-gate] FAIL: gc String for-in fixture did not compile" >&2
+  cat "$gcstrdir/out.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+gcstr_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcstrdir/out.wasm" 2>&1 | tail -1)"
+if [ "$gcstr_out" != "1666" ]; then
+  echo "[compiler-gate] FAIL: gc String for-in got '$gcstr_out' (want 1666)" >&2
+  exit 1
+fi
+rm -rf "$gcstrdir"
+echo "[compiler-gate] wasm-gc String for-in ok (1666)"
+
 # 40h2. ADR-0076 (#817) step 6: wasm-gc backend now also supports
 #       evidence-dict-eligible USER-DEFINED effects (not just
 #       `with Error { Throw(..) => .. }`), via the same evidence_dict_pass/

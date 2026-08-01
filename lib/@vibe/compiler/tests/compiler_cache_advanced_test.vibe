@@ -4,6 +4,14 @@ import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_module_cached
 }
 
+import @vibe/compiler/cache {
+  build_file_compile_module_artifact_fingerprint_for_entry_path, persistent_artifact_cache_path
+}
+
+import @vibe/compiler/loader {
+  collect_source_groups_fs
+}
+
 import @vibe/core {
   array_empty
 }
@@ -43,6 +51,16 @@ fn string_to_bytes(s: String) -> Bytes {
     i = i + 1
   }
   Bytes::from_array(out)
+}
+
+fn clear_file_compile_module_cache(entry_path: String) -> Unit with { Error, Fs } {
+  let groups = collect_source_groups_fs(entry_path)
+  let cache_path = persistent_artifact_cache_path("file-compile-module", "", build_file_compile_module_artifact_fingerprint_for_entry_path(groups, entry_path))
+  if Fs::exists(cache_path) {
+    Fs::remove(cache_path)
+  } else {
+    ()
+  }
 }
 
 fn assert_wasm_magic(bytes: Bytes) -> Unit {
@@ -153,7 +171,7 @@ test "compile_with_source_groups_via_module_source_wasi_unchecked_cached: groupe
   assert(eq(db_codegen_count(db2), codegen_count1))
 }
 
-test "compile_with_modules_cached: same source reuses compiled artifact cache across paths" {
+test "compile_with_modules_cached: same output reuses compiled artifact after path-aware merge" {
   let main_source = "let main: () -> Int = () -> { 1 + 2 }"
   let sources = empty_sources()
   let (_, db1) = compile_with_modules_cached(db_new(), main_source, "main_a.vibe", sources)
@@ -162,13 +180,13 @@ test "compile_with_modules_cached: same source reuses compiled artifact cache ac
   assert(eq(db_codegen_count(db2), codegen_count1))
 }
 
-test "compile_with_modules_cached: same source reuses module source cache across paths" {
+test "compile_with_modules_cached: same source at different paths does not reuse module source cache" {
   let main_source = "let main: () -> Int = () -> { 1 + 2 }"
   let sources = empty_sources()
   let (_, db1) = compile_with_modules_cached(db_new(), main_source, "main_a.vibe", sources)
   let module_source_count1 = db_module_source_count(db1)
   let (_, db2) = compile_with_modules_cached(db1, main_source, "main_b.vibe", sources)
-  assert(eq(db_module_source_count(db2), module_source_count1))
+  assert(db_module_source_count(db2) > module_source_count1)
 }
 
 test "compile_file_fs_module_cached: warm compile reuses compiled fs artifact cache" {
@@ -182,26 +200,30 @@ test "compile_file_fs_module_cached: warm compile reuses compiled fs artifact ca
   assert(eq(db_codegen_count(db2), codegen_count1))
 }
 
-test "compile_file_fs_module_cached: same merged source reuses compiled artifact cache across entry paths" {
+test "compile_file_fs_module_cached: same output reuses compiled artifact after path-aware merge" {
   let main_path1 = "/tmp/vibe_compiler_codegen_cache_same_source_a.vibe"
   let main_path2 = "/tmp/vibe_compiler_codegen_cache_same_source_b.vibe"
   let source = "let run: () -> Int = () -> { 1 + 2 }"
   Fs::write_bytes(main_path1, string_to_bytes(source))
   Fs::write_bytes(main_path2, string_to_bytes(source))
+  clear_file_compile_module_cache(main_path1)
+  clear_file_compile_module_cache(main_path2)
   let (_, db1) = compile_file_fs_module_cached(db_new(), main_path1)
   let codegen_count1 = db_codegen_count(db1)
   let (_, db2) = compile_file_fs_module_cached(db1, main_path2)
   assert(eq(db_codegen_count(db2), codegen_count1))
 }
 
-test "compile_file_fs_module_cached: same merged source reuses module source cache across entry paths" {
+test "compile_file_fs_module_cached: same source at different entry paths does not reuse module source cache" {
   let main_path1 = "/tmp/vibe_compiler_module_source_cache_same_source_a.vibe"
   let main_path2 = "/tmp/vibe_compiler_module_source_cache_same_source_b.vibe"
   let source = "let run: () -> Int = () -> { 1 + 2 }"
   Fs::write_bytes(main_path1, string_to_bytes(source))
   Fs::write_bytes(main_path2, string_to_bytes(source))
+  clear_file_compile_module_cache(main_path1)
+  clear_file_compile_module_cache(main_path2)
   let (_, db1) = compile_file_fs_module_cached(db_new(), main_path1)
   let module_source_count1 = db_module_source_count(db1)
   let (_, db2) = compile_file_fs_module_cached(db1, main_path2)
-  assert(eq(db_module_source_count(db2), module_source_count1))
+  assert(db_module_source_count(db2) > module_source_count1)
 }

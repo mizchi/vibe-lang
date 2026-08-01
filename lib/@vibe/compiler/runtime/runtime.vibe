@@ -57,7 +57,7 @@ import @vibe/compiler/loader {
 }
 
 import @vibe/compiler/cache {
-  persistent_dep_list_cache_path, persistent_leaf_fingerprint_cache_path, persistent_type_env_cache_path
+  compilation_input_fingerprint, persistent_dep_list_cache_path, persistent_leaf_fingerprint_cache_path, persistent_type_env_cache_path
 }
 
 import @vibe/graph {
@@ -662,16 +662,8 @@ export fn db_program_source(db: TypeDb, path: String) -> (String, String, TypeDb
   }
 }
 
-fn build_merge_fingerprint(sources: Array[(String, String)]) -> String {
-  let mut acc = "merged"
-  let mut i = 0
-  while i < Array::length(sources) {
-    let (_, source) = Array::get(sources, i)
-    let next = String::concat(acc, String::concat("|", compact_string_fingerprint(source)))
-    acc = compact_string_fingerprint(next)
-    i = i + 1
-  }
-  acc
+fn build_merge_fingerprint(entry_path: String, sources: Array[(String, String)]) -> String {
+  compilation_input_fingerprint(sources, entry_path)
 }
 
 fn lookup_source_by_path(sources: Array[(String, String)], target_path: String) -> Option[String] {
@@ -813,7 +805,7 @@ fn join_group_sources(group_sources: Array[String]) -> String {
 export fn db_merged_source(db: TypeDb, _entry_path: String, sources: Array[(String, String)]) -> (String, String, TypeDb) with { Error } {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
-      let merge_fingerprint = build_merge_fingerprint(sources)
+      let merge_fingerprint = build_merge_fingerprint(_entry_path, sources)
       let merge_cache_key = "merged"
       match lookup_source_cache(merged_cache, merge_cache_key, merge_fingerprint) {
         Some(merged_source) => (merged_source, merge_fingerprint, db),
@@ -867,7 +859,7 @@ export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(Str
         let (group_name, sources) = Array::get(groups, i)
         let group_start = flat_idx
         flat_idx = flat_idx + Array::length(sources)
-        let fingerprint = compact_string_fingerprint(String::concat(build_merge_fingerprint(sources), String::concat("#", plan_fp)))
+        let fingerprint = compact_string_fingerprint(String::concat(build_merge_fingerprint(plan_entry, sources), String::concat("#", plan_fp)))
         let grouped_next = String::concat(grouped_fingerprint, String::concat("|", String::concat(group_name, String::concat("=", fingerprint))))
         grouped_fingerprint = compact_string_fingerprint(grouped_next)
         let cache_key = String::concat("merged-group|", group_name)
