@@ -38,7 +38,10 @@ Parser dispatch is explicit:
 
 Reserved leading keyword detection (`let`, `fn`, `type`, `effect`, `import`,
 `test`, `handle`, `throw`) exists as helper logic only and does not switch parser modes.
-`fn` is not a current declaration form.
+`fn` is the preferred top-level named-function declaration: it requires typed
+parameters and a return annotation, supports generics/effect rows, and lowers to
+the equivalent recursive `let` form before checking and code generation. See
+[Functions and Lambdas](spec/syntax.md#functions-and-lambdas).
 - `map` is not a reserved keyword and can be used as a normal identifier.
 
 ## Standard tutorial scope (v1 core)
@@ -745,10 +748,17 @@ x |> f(a, b)          // => f(x, a, b)
 
 Rules:
 - Postfix chains are parsed left-to-right.
-- `.` is limited to data member access (`struct`/`record`) and tuple index
+- `.` is used for data member access (`struct`/`record`) and tuple index
   access (`.0`, `.1`, ...).
-- `recv.method(...)` method-call sugar is not part of current syntax.
-- Function-value field calls must be written as `(obj.method)(...)`.
+- A declared user-type method may be called as `recv.method(args)`; its
+  canonical normalized spelling is `Type::method(recv, args)`. The single-file
+  normalizer applies that rewrite only when it can recover the receiver's type
+  from local declarations, annotations, or constructors; otherwise it leaves
+  the dot call unchanged rather than guessing.
+- Builtin APIs use qualified calls (for example `String::length(s)`) or pipe
+  style; builtin receiver dot-call sugar is not available.
+- A function stored in a field is not a method: invoke it as
+  `(obj.callback)(args)`.
 - `expr[index]` desugars to `__index(expr, index)`.
 - `|>` is object-lane call desugaring:
   - `x |> f` is shorthand of `x |> f()`
