@@ -162,7 +162,14 @@ fn collect_linked_dep_artifacts(dep_paths: Array[String], wanted_names: Array[Ar
       match Array::get(dep_stmts, dsi) {
         SLet(true, _, name, _, expr) => {
           let param_count = efn_param_count(expr)
-          if param_count >= 0 && contains_name(wanted, name) {
+          // ADR-0089 (#1218) direct-wake await hooks: a dep exporting
+          // `__aw_wait` / `__aw_notify_resolve` (@vibex/concurrent) is
+          // auto-linked -- the compiler's await/Future::resolve lowerings
+          // call these, so the user never imports the magic names by hand.
+          // Scoped to deps the entry ALREADY imports (this loop only sees
+          // those), so the dep instance always exists at link time.
+          let aw_hook = name == "__aw_wait" || name == "__aw_notify_resolve"
+          if param_count >= 0 && (contains_name(wanted, name) || aw_hook) {
             Array::push(linked_imports, (module_name, name, param_count, 1))
             has_linked = true
           }

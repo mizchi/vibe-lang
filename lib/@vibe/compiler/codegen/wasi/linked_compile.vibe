@@ -1311,6 +1311,54 @@ fn lc_stmts_call_host_future(stmts: Array[Stmt]) -> Bool {
   hit
 }
 
+/// ADR-0089 (#1218, resolve -> direct wake): can this program call the
+/// @vibex/concurrent direct-wake await hooks? Both names must be callable
+/// -- as linked imports (the auto-want in linked_artifacts registers them
+/// whenever the entry imports anything from a file exporting them) or as
+/// local top-level defs (single-file fixtures). Requiring the PAIR keeps
+/// the failure mode one-sided: a notify without registrations is a no-op,
+/// while a registration without any notify channel would lean on the
+/// pump's fallback valve every round.
+fn lc_waiter_hooks_available(stmts: Array[Stmt], linked_imports: Array[(String, String, Int, Int)]) -> Bool {
+  let mut has_wait = false
+  let mut has_notify = false
+  let mut li = 0
+  while li < Array::length(linked_imports) {
+    let (_, lname, _, _) = Array::get(linked_imports, li)
+    if lname == "__aw_wait" {
+      has_wait = true
+    } else {
+      ()
+    }
+    if lname == "__aw_notify_resolve" {
+      has_notify = true
+    } else {
+      ()
+    }
+    li = li + 1
+  }
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SLet(_, _, nm, _, _) => {
+        if nm == "__aw_wait" {
+          has_wait = true
+        } else {
+          ()
+        }
+        if nm == "__aw_notify_resolve" {
+          has_notify = true
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  has_wait && has_notify
+}
+
 /// Codex P1 on #1312: the SCOPED sleep retarget for programs whose entry
 /// row does NOT carry Async (so no boundary handler is installed). A
 /// program-wide rewrite there is unsound: a `handle ... with Async`
@@ -1884,7 +1932,10 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // `perform Async::Suspend(1)` it synthesizes is seen by them exactly like a
   // hand-written one -- lowering `await` inside compile_call, where it used to
   // live, is past the point where a perform can still be handled.
-  await_poll_pass(stmts, lc_stmts_call_host_future(stmts))
+  // waiter_hooks (ADR-0089 #1218): when @vibex/concurrent's direct-wake
+  // hooks are callable (linked imports or local defs), poll rounds route
+  // through __aw_wait so a Future::resolve can wake the awaiter directly.
+  await_poll_pass(stmts, lc_stmts_call_host_future(stmts), lc_waiter_hooks_available(stmts, linked_imports))
   rewrite_self_tail_calls(stmts)
   // #944 (ADR-0073 stage C): entry-boundary Error handler -- see
   // lc_wrap_entry_error_boundary's doc comment. Runs BEFORE the effect

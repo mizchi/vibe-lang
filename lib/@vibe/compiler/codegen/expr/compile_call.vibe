@@ -1448,16 +1448,34 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // the state. The write order is what makes the observation safe: an
       // awaiter only reads the payload once the state says ready, so it can
       // never see the state cleared ahead of the value it describes.
+      //
+      // ADR-0089 (#1218, resolve -> direct wake): when the program can call
+      // @vibex/concurrent's `__aw_notify_resolve` (func_table carries it --
+      // linked import or local def), append the notify AFTER the state
+      // clear so direct-parked awaiters (registered via __aw_wait) become
+      // resumable immediately. Purely additive: without the hook the old
+      // two-set lowering is emitted byte-identically, and a missed notify
+      // (hook absent in THIS unit but awaiters registered in another) is
+      // rescued by the scheduler's fallback valve.
       let fut = Array::get(args, 0)
-      ce(buf, ESeq(ECall(EIdent("Array::set", -1), [
+      let set_payload = ECall(EIdent("Array::set", -1), [
         fut,
         EInt(1),
         Array::get(args, 1)
-      ], -1), ECall(EIdent("Array::set", -1), [
+      ], -1)
+      let set_state = ECall(EIdent("Array::set", -1), [
         fut,
         EInt(0),
         EInt(0)
-      ], -1)), local_names, next_local, ctx, ld)
+      ], -1)
+      let resolved = if func_table_index_of(ctx.func_table, "__aw_notify_resolve") >= 0 {
+        ESeq(set_payload, ESeq(set_state, ECall(EIdent("__aw_notify_resolve", -1), [
+          fut
+        ], -1)))
+      } else {
+        ESeq(set_payload, set_state)
+      }
+      ce(buf, resolved, local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "Stream::empty" {
       // Empty stream = empty backing array.

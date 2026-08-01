@@ -838,3 +838,186 @@ test "result_wait observes a cancelled sibling" {
     Err(_) => false
   })
 }
+
+/// Direct wake (ADR-0089 #1218): several awaiters parked on ONE sibling
+/// all resume when it completes. Each awaiter registers on the target's
+/// waiter list and is SKIPPED by the pump until the completion notify
+/// clears its flag -- but the observable outcome is identical to the old
+/// per-round re-poll.
+test "direct wake resumes every result_wait awaiter of one sibling" {
+  let out = TaskGroup::run((g) -> {
+    let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let _w1 = perform Async::Suspend(0)
+      let _w2 = perform Async::Suspend(0)
+      40
+    })
+    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let got = TaskHandle::result_wait(ha)
+      match got {
+        Ok(v) => v + 1,
+        Err(_) => -1
+      }
+    })
+    let hc = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let got = TaskHandle::result_wait(ha)
+      match got {
+        Ok(v) => v + 2,
+        Err(_) => -2
+      }
+    })
+    let hd = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let got = TaskHandle::result_wait(ha)
+      match got {
+        Ok(v) => v + 3,
+        Err(_) => -3
+      }
+    })
+    TaskGroup::pump_all(g)
+    let rb = match TaskHandle::join(hb) {
+      Ok(v) => v,
+      Err(_) => -100
+    }
+    let rc = match TaskHandle::join(hc) {
+      Ok(v) => v,
+      Err(_) => -200
+    }
+    let rd = match TaskHandle::join(hd) {
+      Ok(v) => v,
+      Err(_) => -300
+    }
+    rb + rc + rd
+  })
+  assert(match out {
+    Ok(v) => v == 126,
+    Err(_) => false
+  })
+}
+
+/// A manual TaskHandle::wake on a direct-parked awaiter is a legal
+/// spurious wake: the resumed leg re-checks its condition, re-registers,
+/// and the eventual completion notify still delivers the value. Pins the
+/// wrapper's resume-time flag clearing (a stale direct_wait must never
+/// survive into an unrelated later park).
+test "manual wake of a direct-parked awaiter is a safe spurious poll" {
+  let out = TaskGroup::run((g) -> {
+    let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let _w1 = perform Async::Suspend(0)
+      40
+    })
+    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let got = TaskHandle::result_wait(ha)
+      // A cooperative yield AFTER the direct-parked wait: if the resume
+      // left a stale direct_wait flag, this yield would be skipped by the
+      // pump and strand the task behind the fallback valve. (Spine
+      // discipline: calls let-bound, match only in tail position.)
+      let _y = perform Async::Suspend(0)
+      match got {
+        Ok(v) => v + 2,
+        Err(_) => -1
+      }
+    })
+    // hb is now parked on ha (direct). Wake it manually: it must simply
+    // re-check, re-park, and still complete once ha does.
+    let woke = TaskHandle::wake(hb, 0)
+    assert(woke)
+    TaskGroup::pump_all(g)
+    match TaskHandle::join(hb) {
+      Ok(v) => v,
+      Err(_) => -100
+    }
+  })
+  assert(match out {
+    Ok(v) => v == 42,
+    Err(_) => false
+  })
+}
+
+/// A direct-parked consumer must not hold the virtual clock back: the
+/// producer sleeps between sends, and the sleep debt settles immediately
+/// (conc_settle_sleep_debt skips direct-parked waiters) instead of
+/// needing the pump_all stall counter to force it.
+test "direct-parked recv_wait does not block a sleeping producer's clock" {
+  let out = TaskGroup::run((g) -> {
+    match Channel::bounded(g, 1) {
+      Err(_) => -1,
+      Ok(ends) => {
+        let (tx, rx) = ends
+        let hp = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+          sleep(5)
+          let _s1 = Sender::send_wait(tx, 21)
+          sleep(5)
+          let _s2 = Sender::send_wait(tx, 21)
+          Sender::release(tx)
+          0
+        })
+        let hc = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+          // Spine discipline: needing calls let-bound, matches in tail.
+          let a0 = Receiver::recv_wait(rx)
+          let b0 = Receiver::recv_wait(rx)
+          match a0 {
+            Some(a) => match b0 {
+              Some(b) => a + b,
+              None => -20
+            },
+            None => -10
+          }
+        })
+        TaskGroup::pump_all(g)
+        let _p = TaskHandle::join(hp)
+        match TaskHandle::join(hc) {
+          Ok(v) => v,
+          Err(_) => -100
+        }
+      }
+    }
+  })
+  assert(match out {
+    Ok(v) => v == 42,
+    Err(_) => false
+  })
+}
+
+/// Direct wake for BUILTIN futures (ADR-0089 #1218): with the
+/// @vibex/concurrent hooks linked, `await(f)` polls through __aw_wait
+/// (registering the awaiter on the cell) and `Future::resolve` notifies —
+/// all three awaiters park direct-wake and the single resolve makes them
+/// resumable. Byte-for-byte the same observable results as the old
+/// per-round re-poll.
+test "resolve direct-wakes several awaiters of one pending future" {
+  let out = TaskGroup::run((g) -> {
+    let f = Future::pending()
+    let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      await(f) + 1
+    })
+    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      await(f) + 2
+    })
+    let hc = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      await(f) + 3
+    })
+    let hr = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let _y1 = perform Async::Suspend(0)
+      let _y2 = perform Async::Suspend(0)
+      Future::resolve(f, 10)
+      0
+    })
+    TaskGroup::pump_all(g)
+    let ra = match TaskHandle::join(ha) {
+      Ok(v) => v,
+      Err(_) => -100
+    }
+    let rb = match TaskHandle::join(hb) {
+      Ok(v) => v,
+      Err(_) => -200
+    }
+    let rc = match TaskHandle::join(hc) {
+      Ok(v) => v,
+      Err(_) => -300
+    }
+    ra + rb + rc
+  })
+  assert(match out {
+    Ok(v) => v == 36,
+    Err(_) => false
+  })
+}
