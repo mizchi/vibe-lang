@@ -23,7 +23,7 @@ import ../codegen_gc.vibe {
 }
 
 import @vibe/compiler/codegen {
-  compile_inline_wat
+  compile_inline_wat, compile_inline_wat_full
 }
 
 //# Functions
@@ -144,6 +144,63 @@ test "inline wasm assembler: lane and align immediates are validated (Codex P2 o
   assert(String::contains(e4, "align=16 exceeds the instruction's natural alignment (4)"))
   let e5 = wat_err("(i32.load align=0 (local.get $a))")
   assert(String::contains(e5, "align=0 is invalid"))
+}
+
+test "inline wasm assembler: (local ...) declarations resolve and count by type" {
+  // one i32 + two v128 locals, params $a (idx 0) + env (idx 1) -> extra_base 2:
+  // $p = 2, $u = 3, $v = 4. Body: local.get $v / local.set $p is a type error
+  // at validation, but the assembler only resolves indices — use consistent ops.
+  let (bytes, n32, n64, nv) = compile_inline_wat_full("probe", "(local $p i32) (local $u v128) (local $v v128) (local.set $p (i32.wrap_i64 (local.get $a))) (local.set $u (i64x2.splat (local.get $a))) (local.set $v (local.get $u)) (i64x2.extract_lane 0 (local.get $v))", [
+    "a"
+  ], 2)
+  assert(n32 == 1)
+  assert(n64 == 0)
+  assert(nv == 2)
+  // first three bytes: local.get $a = 0x20 0x00, then i32.wrap_i64 = 0xA7
+  assert(bytes[0] == 0x20)
+  assert(bytes[1] == 0x00)
+  assert(bytes[2] == 0xA7)
+  // then local.set $p -> 0x21 0x02 (extra_base 2)
+  assert(bytes[3] == 0x21)
+  assert(bytes[4] == 0x02)
+}
+
+test "inline wasm assembler: (local ...) misuse is a located error" {
+  // ungrouped types (v128 before i32)
+  let e1 = wat_err("(local $v v128) (local $p i32) (i64.const 0)")
+  assert(String::contains(e1, "grouped by type in the order i32, i64, v128"))
+  // unknown type
+  let e2 = wat_err("(local $x f32) (i64.const 0)")
+  assert(String::contains(e2, "type must be i32, i64 or v128"))
+  // duplicate name (params count too)
+  let e3 = wat_err("(local $a i64) (i64.const 0)")
+  assert(String::contains(e3, "duplicate local name '$a'"))
+  // declaration after an instruction
+  let e4 = wat_err("(i64.const 0) (local $t i64)")
+  assert(String::contains(e4, "START of the body"))
+  // declarations only, no instructions
+  let e5 = wat_err("(local $t i64)")
+  assert(String::contains(e5, "only local declarations"))
+}
+
+test "inline wasm assembler: i8x16.shuffle encodes 16 lane bytes" {
+  let bytes = compile_inline_wat("probe", "(i8x16.shuffle 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 (i64x2.splat (local.get $a)) (i64x2.splat (local.get $b)))", [
+    "a",
+    "b"
+  ])
+  // 2 * (local.get + splat) = 2 * 4 bytes, then 0xFD 13 + 16 lane bytes
+  assert(Bytes::length(bytes) == 8 + 2 + 16)
+  assert(bytes[8] == 0xFD)
+  assert(bytes[9] == 13)
+  assert(bytes[10] == 0)
+  assert(bytes[25] == 15)
+  let e = wat_err("(i8x16.shuffle 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 32 (i64x2.splat (local.get $a)) (i64x2.splat (local.get $b)))")
+  assert(String::contains(e, "shuffle lane byte 32 is out of range"))
+}
+
+test "inline wasm parse: Bytes params are accepted (raw object pointer)" {
+  let src = "fn blen(b: Bytes) -> Int = wasm \"(i64.shl (i64.extend_i32_u (i32.load offset=4 (i32.wrap_i64 (local.get $b)))) (i64.const 1))\"\nfn use_it(b: Bytes) -> Int { blen(b) }"
+  assert(compiles_linear(src))
 }
 
 test "inline wasm parse: v0.3 slice restrictions" {

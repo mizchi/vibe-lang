@@ -889,10 +889,18 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 - **Linear backend only** — the wasm-gc backend rejects it with a compile
   error. The declared signature is trusted (extern-let style).
 - **v0.3 slice restrictions**: monomorphic only (no `[T]`), empty effect row,
-  no `where` contracts, every param and the return type spelled literally
-  `Int`. Locals are the fn's own params (`$name` or index; use params as
-  scratch via `local.set` — no `(local ...)` declarations). No `call` /
-  `global.*` / `br_table` / `f32.const` / `f64.const`.
+  no `where` contracts, params typed literally `Int` or `Bytes`, return type
+  `Int`. A `Bytes` param passes the RAW untagged object pointer (linear heap
+  layout: length at `obj+4`, data pointer at `obj+8`) — the body can
+  `i32.load offset=8` the data pointer and feed `v128.load`/`v128.store`
+  (the pointer is only valid while the Bytes is alive and un-grown). No
+  `call` / `global.*` / `br_table` / `f32.const` / `f64.const`.
+- **Locals**: the fn's own params (`$name` or index), plus `(local $name
+  TYPE)` declarations at the START of the body — types `i32`/`i64`/`v128`,
+  grouped in that order (a located error enforces the grouping); declared
+  locals index past the params + closure-env slot. v128 locals are what let
+  a kernel keep vector state across instructions (e.g. the BLAKE3 compress
+  in `lib/@vibex/blake3/simd.vibe`).
 - **WAT text**: ordinary string literal(s) — the lexer has no raw/multiline
   strings; adjacent literals after `= wasm` are joined with newlines. `;;`
   line and `(; ;)` block comments work inside the text.
@@ -902,8 +910,9 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   `(block $l (result i64) ...)`, `(if (result i64) <cond> (then ...) (else ...))`,
   `br`/`br_if` with `$label` or relative depth.
 - SIMD (0xFD prefix) is supported: `v128.const i64x2 1 2`, splat /
-  extract_lane / replace_lane, lane arithmetic, bitwise, `all_true` /
-  `any_true` / `bitmask`, `v128.load` / `v128.store`.
+  extract_lane / replace_lane, `i8x16.shuffle` (16 lane-byte immediates
+  0..31), lane arithmetic, bitwise, `all_true` / `any_true` / `bitmask`,
+  `v128.load` / `v128.store`.
 - Memory instructions address the runtime's linear memory directly — the heap
   layout is NOT a stable interface; loads/stores are at-your-own-risk.
 - Not usable inside the compiler's own source until the seed compiler

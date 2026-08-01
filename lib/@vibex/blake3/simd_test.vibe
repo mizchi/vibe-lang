@@ -1,0 +1,51 @@
+//# Imports
+
+import ./blake3.vibe {
+  blake3_bytes
+}
+
+import ./simd.vibe {
+  blake3_bytes_simd, blake3_simd
+}
+
+//# Helpers
+
+/// Official BLAKE3 test-vector input: byte i = i % 251.
+fn pattern_bytes(n: Int) -> Bytes {
+  let b = Bytes::new()
+  let mut i = 0
+  while i < n {
+    Bytes::push(b, i % 251)
+    i = i + 1
+  }
+  b
+}
+
+//# Misc
+
+test "blake3 simd matches official vectors (small)" {
+  assert(blake3_simd("") == "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262")
+  assert(blake3_simd("abc") == "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85")
+  assert(blake3_simd("Hello, BLAKE3!") == "f9966311c780665a97b5be88682f05f2c9b7259087c5113900c2390b65b0b5ff")
+}
+
+test "blake3 simd matches official vectors (block/chunk boundaries)" {
+  assert(blake3_bytes_simd(pattern_bytes(63)) == "e9bc37a594daad83be9470df7f7b3798297c3d834ce80ba85d6e207627b7db7b")
+  assert(blake3_bytes_simd(pattern_bytes(64)) == "4eed7141ea4a5cd4b788606bd23f46e212af9cacebacdc7d1f4c6dc7f2511b98")
+  assert(blake3_bytes_simd(pattern_bytes(65)) == "de1e5fa0be70df6d2be8fffd0e99ceaa8eb6e8c93a63f2d8d1c30ecb6b263dee")
+  assert(blake3_bytes_simd(pattern_bytes(1023)) == "10108970eeda3eb932baac1428c7a2163b0e924c9a9e25b35bba72b28f70bd11")
+  assert(blake3_bytes_simd(pattern_bytes(1024)) == "42214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7")
+  assert(blake3_bytes_simd(pattern_bytes(1025)) == "d00278ae47eb27b34faecf67b4fe263f82d5412916c1ffd97c8cb7fb814b8444")
+  assert(blake3_bytes_simd(pattern_bytes(3072)) == "b98cb0ff3623be03326b373de6b9095218513e64f1ee2edd2525c7ad1e5cffd2")
+  assert(blake3_bytes_simd(pattern_bytes(4096)) == "015094013f57a5277b59d8475c0501042c0b642e531b0a1c8f58d2163229e969")
+}
+
+test "blake3 simd and scalar agree on odd sizes" {
+  let mut n = 0
+  while n < 300 {
+    let d = pattern_bytes(n)
+    assert(blake3_bytes_simd(d) == blake3_bytes(d))
+    n = n + 37
+  }
+  assert(blake3_bytes_simd(pattern_bytes(2049)) == blake3_bytes(pattern_bytes(2049)))
+}

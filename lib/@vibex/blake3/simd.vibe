@@ -1,0 +1,482 @@
+//# @vibex/blake3/simd — SIMD 版 BLAKE3 (inline wasm kernel; linear backend
+//# 専用 — wasm-gc backend は inline wasm を reject するため、この file を
+//# import できるのは linear 経路のみ。scalar 実装 ../blake3.vibe は両 backend
+//# で使える)。kernel は 1 block の full compression を v128 locals +
+//# i8x16.shuffle で行い、`io` (64-byte Bytes; 先頭 32 bytes が入力 CV) に
+//# 16-word 出力 state を little-endian で上書きする。命令列は
+//# 生成器 (シミュレータで公式 test vector 全一致を検証済み) の出力。
+//# メッセージスケジュールは各 round の 4 本の message vector を元の
+//# m0..m3 から 2 入力 byte shuffle の木で直接 gather する形 (round 間の
+//# permute 連鎖なし)。diagonalize は r1/r2/r3 の lane 回転規約。
+
+//# Constants
+
+let s_flag_chunk_start: Int = 1
+
+let s_flag_chunk_end: Int = 2
+
+let s_flag_parent: Int = 4
+
+let s_flag_root: Int = 8
+
+let s_chunk_len: Int = 1024
+
+//# Kernel
+
+/// One full 7-round BLAKE3 compression. `io` holds the input chaining value
+/// in its first 32 bytes and receives the full 64-byte output state; `msg`
+/// + `off` locate the 64-byte message block (byte offset into msg's data).
+/// counter/blen/flags are tagged Ints (untagged inside). Returns 0.
+fn b3_compress_kernel(io: Bytes, msg: Bytes, off: Int, counter: Int, blen: Int, flags: Int) -> Int = wasm
+"(local $p i32) (local $q i32) (local $r0 v128) (local $r1 v128)"
+"(local $r2 v128) (local $r3 v128) (local $m0 v128) (local $m1 v128)"
+"(local $m2 v128) (local $m3 v128) (local $x v128) (local $y v128)"
+"local.get $io i32.wrap_i64 i32.load offset=8 local.set $q"
+"local.get $msg i32.wrap_i64 i32.load offset=8 local.get $off i64.const 1 i64.shr_s i32.wrap_i64"
+"i32.add local.set $p"
+"local.get $q v128.load align=1 local.set $r0"
+"local.get $q v128.load offset=16 align=1 local.set $r1"
+"v128.const i32x4 1779033703 3144134277 1013904242 2773480762 local.set $r2"
+"local.get $counter i64.const 1 i64.shr_s i32.wrap_i64 i32x4.splat local.get $counter"
+"i64.const 33 i64.shr_s i32.wrap_i64 i32x4.replace_lane 1 local.get $blen i64.const 1"
+"i64.shr_s i32.wrap_i64 i32x4.replace_lane 2 local.get $flags i64.const 1 i64.shr_s i32.wrap_i64"
+"i32x4.replace_lane 3 local.set $r3"
+"local.get $p v128.load align=1 local.set $m0"
+"local.get $p v128.load offset=16 align=1 local.set $m1"
+"local.get $p v128.load offset=32 align=1 local.set $m2"
+"local.get $p v128.load offset=48 align=1 local.set $m3"
+"local.get $m0 local.get $m1 i8x16.shuffle 0 1 2 3 8 9 10 11 16 17 18 19 24 25 26 27 local.set $x"
+"local.get $m0 local.get $m1 i8x16.shuffle 4 5 6 7 12 13 14 15 20 21 22 23 28 29 30 31"
+"local.set $y"
+"local.get $r0 local.get $x i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 2 3 0 1 6 7 4 5 10 11 8 9 14 15 12 13 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 12 i32x4.shr_u local.get $r1 i32.const 20 i32x4.shl v128.or local.set $r1"
+"local.get $r0 local.get $y i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 1 2 3 0 5 6 7 4 9 10 11 8 13 14 15 12 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 7 i32x4.shr_u local.get $r1 i32.const 25 i32x4.shl v128.or local.set $r1"
+"local.get $r1 local.get $r1 i8x16.shuffle 4 5 6 7 8 9 10 11 12 13 14 15 0 1 2 3 local.set $r1"
+"local.get $r2 local.get $r2 i8x16.shuffle 8 9 10 11 12 13 14 15 0 1 2 3 4 5 6 7 local.set $r2"
+"local.get $r3 local.get $r3 i8x16.shuffle 12 13 14 15 0 1 2 3 4 5 6 7 8 9 10 11 local.set $r3"
+"local.get $m2 local.get $m3 i8x16.shuffle 0 1 2 3 8 9 10 11 16 17 18 19 24 25 26 27 local.set $x"
+"local.get $m2 local.get $m3 i8x16.shuffle 4 5 6 7 12 13 14 15 20 21 22 23 28 29 30 31"
+"local.set $y"
+"local.get $r0 local.get $x i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 2 3 0 1 6 7 4 5 10 11 8 9 14 15 12 13 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 12 i32x4.shr_u local.get $r1 i32.const 20 i32x4.shl v128.or local.set $r1"
+"local.get $r0 local.get $y i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 1 2 3 0 5 6 7 4 9 10 11 8 13 14 15 12 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 7 i32x4.shr_u local.get $r1 i32.const 25 i32x4.shl v128.or local.set $r1"
+"local.get $r1 local.get $r1 i8x16.shuffle 12 13 14 15 0 1 2 3 4 5 6 7 8 9 10 11 local.set $r1"
+"local.get $r2 local.get $r2 i8x16.shuffle 8 9 10 11 12 13 14 15 0 1 2 3 4 5 6 7 local.set $r2"
+"local.get $r3 local.get $r3 i8x16.shuffle 4 5 6 7 8 9 10 11 12 13 14 15 0 1 2 3 local.set $r3"
+"local.get $m0 local.get $m1 i8x16.shuffle 8 9 10 11 12 13 14 15 28 29 30 31 16 17 18 19"
+"local.set $x"
+"local.get $m0 local.get $m1 i8x16.shuffle 24 25 26 27 0 0 0 0 0 1 2 3 0 0 0 0 local.get $m2"
+"local.get $m3 i8x16.shuffle 0 0 0 0 8 9 10 11 0 0 0 0 20 21 22 23 i8x16.shuffle 0 1 2 3 20 21 22 23 8 9 10 11 28 29 30 31"
+"local.set $y"
+"local.get $r0 local.get $x i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 2 3 0 1 6 7 4 5 10 11 8 9 14 15 12 13 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 12 i32x4.shr_u local.get $r1 i32.const 20 i32x4.shl v128.or local.set $r1"
+"local.get $r0 local.get $y i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 1 2 3 0 5 6 7 4 9 10 11 8 13 14 15 12 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 7 i32x4.shr_u local.get $r1 i32.const 25 i32x4.shl v128.or local.set $r1"
+"local.get $r1 local.get $r1 i8x16.shuffle 4 5 6 7 8 9 10 11 12 13 14 15 0 1 2 3 local.set $r1"
+"local.get $r2 local.get $r2 i8x16.shuffle 8 9 10 11 12 13 14 15 0 1 2 3 4 5 6 7 local.set $r2"
+"local.get $r3 local.get $r3 i8x16.shuffle 12 13 14 15 0 1 2 3 4 5 6 7 8 9 10 11 local.set $r3"
+"local.get $m0 local.get $m1 i8x16.shuffle 4 5 6 7 0 0 0 0 0 0 0 0 0 0 0 0 local.get $m2"
+"local.get $m3 i8x16.shuffle 0 0 0 0 16 17 18 19 4 5 6 7 28 29 30 31 i8x16.shuffle 0 1 2 3 20 21 22 23 24 25 26 27 28 29 30 31"
+"local.set $x"
+"local.get $m0 local.get $m1 i8x16.shuffle 0 0 0 0 20 21 22 23 0 0 0 0 0 0 0 0 local.get $m2"
+"local.get $m3 i8x16.shuffle 12 13 14 15 0 0 0 0 24 25 26 27 0 1 2 3 i8x16.shuffle 16 17 18 19 4 5 6 7 24 25 26 27 28 29 30 31"
+"local.set $y"
+"local.get $r0 local.get $x i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 2 3 0 1 6 7 4 5 10 11 8 9 14 15 12 13 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 12 i32x4.shr_u local.get $r1 i32.const 20 i32x4.shl v128.or local.set $r1"
+"local.get $r0 local.get $y i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 1 2 3 0 5 6 7 4 9 10 11 8 13 14 15 12 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 7 i32x4.shr_u local.get $r1 i32.const 25 i32x4.shl v128.or local.set $r1"
+"local.get $r1 local.get $r1 i8x16.shuffle 12 13 14 15 0 1 2 3 4 5 6 7 8 9 10 11 local.set $r1"
+"local.get $r2 local.get $r2 i8x16.shuffle 8 9 10 11 12 13 14 15 0 1 2 3 4 5 6 7 local.set $r2"
+"local.get $r3 local.get $r3 i8x16.shuffle 4 5 6 7 8 9 10 11 12 13 14 15 0 1 2 3 local.set $r3"
+"local.get $m0 local.get $m1 i8x16.shuffle 12 13 14 15 0 0 0 0 0 0 0 0 28 29 30 31 local.get $m2"
+"local.get $m3 i8x16.shuffle 0 0 0 0 8 9 10 11 20 21 22 23 0 0 0 0 i8x16.shuffle 0 1 2 3 20 21 22 23 24 25 26 27 12 13 14 15"
+"local.set $x"
+"local.get $m0 local.get $m1 i8x16.shuffle 16 17 18 19 0 0 0 0 8 9 10 11 0 0 0 0 local.get $m2"
+"local.get $m3 i8x16.shuffle 0 0 0 0 16 17 18 19 0 0 0 0 24 25 26 27 i8x16.shuffle 0 1 2 3 20 21 22 23 8 9 10 11 28 29 30 31"
+"local.set $y"
+"local.get $r0 local.get $x i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 2 3 0 1 6 7 4 5 10 11 8 9 14 15 12 13 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 12 i32x4.shr_u local.get $r1 i32.const 20 i32x4.shl v128.or local.set $r1"
+"local.get $r0 local.get $y i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 1 2 3 0 5 6 7 4 9 10 11 8 13 14 15 12 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 7 i32x4.shr_u local.get $r1 i32.const 25 i32x4.shl v128.or local.set $r1"
+"local.get $r1 local.get $r1 i8x16.shuffle 4 5 6 7 8 9 10 11 12 13 14 15 0 1 2 3 local.set $r1"
+"local.get $r2 local.get $r2 i8x16.shuffle 8 9 10 11 12 13 14 15 0 1 2 3 4 5 6 7 local.set $r2"
+"local.get $r3 local.get $r3 i8x16.shuffle 12 13 14 15 0 1 2 3 4 5 6 7 8 9 10 11 local.set $r3"
+"local.get $m1 local.get $m2 i8x16.shuffle 8 9 10 11 20 21 22 23 28 29 30 31 16 17 18 19"
+"local.set $x"
+"local.get $m0 local.get $m1 i8x16.shuffle 20 21 22 23 0 1 2 3 0 0 0 0 4 5 6 7 local.get $m2"
+"local.get $m3 i8x16.shuffle 0 0 0 0 0 0 0 0 28 29 30 31 0 0 0 0 i8x16.shuffle 0 1 2 3 4 5 6 7 24 25 26 27 12 13 14 15"
+"local.set $y"
+"local.get $r0 local.get $x i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 2 3 0 1 6 7 4 5 10 11 8 9 14 15 12 13 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 12 i32x4.shr_u local.get $r1 i32.const 20 i32x4.shl v128.or local.set $r1"
+"local.get $r0 local.get $y i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 1 2 3 0 5 6 7 4 9 10 11 8 13 14 15 12 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 7 i32x4.shr_u local.get $r1 i32.const 25 i32x4.shl v128.or local.set $r1"
+"local.get $r1 local.get $r1 i8x16.shuffle 12 13 14 15 0 1 2 3 4 5 6 7 8 9 10 11 local.set $r1"
+"local.get $r2 local.get $r2 i8x16.shuffle 8 9 10 11 12 13 14 15 0 1 2 3 4 5 6 7 local.set $r2"
+"local.get $r3 local.get $r3 i8x16.shuffle 4 5 6 7 8 9 10 11 12 13 14 15 0 1 2 3 local.set $r3"
+"local.get $m2 local.get $m3 i8x16.shuffle 8 9 10 11 16 17 18 19 24 25 26 27 20 21 22 23"
+"local.set $x"
+"local.get $m0 local.get $m1 i8x16.shuffle 28 29 30 31 0 0 0 0 12 13 14 15 0 0 0 0 local.get $m2"
+"local.get $m3 i8x16.shuffle 0 0 0 0 4 5 6 7 0 0 0 0 28 29 30 31 i8x16.shuffle 0 1 2 3 20 21 22 23 8 9 10 11 28 29 30 31"
+"local.set $y"
+"local.get $r0 local.get $x i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 2 3 0 1 6 7 4 5 10 11 8 9 14 15 12 13 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 12 i32x4.shr_u local.get $r1 i32.const 20 i32x4.shl v128.or local.set $r1"
+"local.get $r0 local.get $y i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 1 2 3 0 5 6 7 4 9 10 11 8 13 14 15 12 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 7 i32x4.shr_u local.get $r1 i32.const 25 i32x4.shl v128.or local.set $r1"
+"local.get $r1 local.get $r1 i8x16.shuffle 4 5 6 7 8 9 10 11 12 13 14 15 0 1 2 3 local.set $r1"
+"local.get $r2 local.get $r2 i8x16.shuffle 8 9 10 11 12 13 14 15 0 1 2 3 4 5 6 7 local.set $r2"
+"local.get $r3 local.get $r3 i8x16.shuffle 12 13 14 15 0 1 2 3 4 5 6 7 8 9 10 11 local.set $r3"
+"local.get $m0 local.get $m1 i8x16.shuffle 16 17 18 19 0 0 0 0 20 21 22 23 4 5 6 7 local.get $m2"
+"local.get $m3 i8x16.shuffle 0 0 0 0 12 13 14 15 0 0 0 0 0 0 0 0 i8x16.shuffle 0 1 2 3 20 21 22 23 8 9 10 11 12 13 14 15"
+"local.set $x"
+"local.get $m0 local.get $m1 i8x16.shuffle 0 1 2 3 8 9 10 11 0 0 0 0 24 25 26 27 local.get $m2"
+"local.get $m3 i8x16.shuffle 0 0 0 0 0 0 0 0 0 1 2 3 0 0 0 0 i8x16.shuffle 0 1 2 3 4 5 6 7 24 25 26 27 12 13 14 15"
+"local.set $y"
+"local.get $r0 local.get $x i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 2 3 0 1 6 7 4 5 10 11 8 9 14 15 12 13 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 12 i32x4.shr_u local.get $r1 i32.const 20 i32x4.shl v128.or local.set $r1"
+"local.get $r0 local.get $y i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 1 2 3 0 5 6 7 4 9 10 11 8 13 14 15 12 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 7 i32x4.shr_u local.get $r1 i32.const 25 i32x4.shl v128.or local.set $r1"
+"local.get $r1 local.get $r1 i8x16.shuffle 12 13 14 15 0 1 2 3 4 5 6 7 8 9 10 11 local.set $r1"
+"local.get $r2 local.get $r2 i8x16.shuffle 8 9 10 11 12 13 14 15 0 1 2 3 4 5 6 7 local.set $r2"
+"local.get $r3 local.get $r3 i8x16.shuffle 4 5 6 7 8 9 10 11 12 13 14 15 0 1 2 3 local.set $r3"
+"local.get $m2 local.get $m3 i8x16.shuffle 16 17 18 19 4 5 6 7 28 29 30 31 24 25 26 27"
+"local.set $x"
+"local.get $m2 local.get $m3 i8x16.shuffle 20 21 22 23 12 13 14 15 8 9 10 11 0 1 2 3 local.set $y"
+"local.get $r0 local.get $x i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 2 3 0 1 6 7 4 5 10 11 8 9 14 15 12 13 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 12 i32x4.shr_u local.get $r1 i32.const 20 i32x4.shl v128.or local.set $r1"
+"local.get $r0 local.get $y i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 1 2 3 0 5 6 7 4 9 10 11 8 13 14 15 12 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 7 i32x4.shr_u local.get $r1 i32.const 25 i32x4.shl v128.or local.set $r1"
+"local.get $r1 local.get $r1 i8x16.shuffle 4 5 6 7 8 9 10 11 12 13 14 15 0 1 2 3 local.set $r1"
+"local.get $r2 local.get $r2 i8x16.shuffle 8 9 10 11 12 13 14 15 0 1 2 3 4 5 6 7 local.set $r2"
+"local.get $r3 local.get $r3 i8x16.shuffle 12 13 14 15 0 1 2 3 4 5 6 7 8 9 10 11 local.set $r3"
+"local.get $m0 local.get $m1 i8x16.shuffle 28 29 30 31 20 21 22 23 0 1 2 3 24 25 26 27"
+"local.set $x"
+"local.get $m0 local.get $m1 i8x16.shuffle 8 9 10 11 12 13 14 15 4 5 6 7 16 17 18 19 local.set $y"
+"local.get $r0 local.get $x i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 2 3 0 1 6 7 4 5 10 11 8 9 14 15 12 13 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 12 i32x4.shr_u local.get $r1 i32.const 20 i32x4.shl v128.or local.set $r1"
+"local.get $r0 local.get $y i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 1 2 3 0 5 6 7 4 9 10 11 8 13 14 15 12 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 7 i32x4.shr_u local.get $r1 i32.const 25 i32x4.shl v128.or local.set $r1"
+"local.get $r1 local.get $r1 i8x16.shuffle 12 13 14 15 0 1 2 3 4 5 6 7 8 9 10 11 local.set $r1"
+"local.get $r2 local.get $r2 i8x16.shuffle 8 9 10 11 12 13 14 15 0 1 2 3 4 5 6 7 local.set $r2"
+"local.get $r3 local.get $r3 i8x16.shuffle 4 5 6 7 8 9 10 11 12 13 14 15 0 1 2 3 local.set $r3"
+"local.get $m2 local.get $m3 i8x16.shuffle 4 5 6 7 12 13 14 15 0 1 2 3 28 29 30 31 local.set $x"
+"local.get $m0 local.get $m1 i8x16.shuffle 0 0 0 0 20 21 22 23 0 0 0 0 4 5 6 7 local.get $m2"
+"local.get $m3 i8x16.shuffle 24 25 26 27 0 0 0 0 16 17 18 19 0 0 0 0 i8x16.shuffle 16 17 18 19 4 5 6 7 24 25 26 27 12 13 14 15"
+"local.set $y"
+"local.get $r0 local.get $x i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 2 3 0 1 6 7 4 5 10 11 8 9 14 15 12 13 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 12 i32x4.shr_u local.get $r1 i32.const 20 i32x4.shl v128.or local.set $r1"
+"local.get $r0 local.get $y i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 1 2 3 0 5 6 7 4 9 10 11 8 13 14 15 12 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 7 i32x4.shr_u local.get $r1 i32.const 25 i32x4.shl v128.or local.set $r1"
+"local.get $r1 local.get $r1 i8x16.shuffle 4 5 6 7 8 9 10 11 12 13 14 15 0 1 2 3 local.set $r1"
+"local.get $r2 local.get $r2 i8x16.shuffle 8 9 10 11 12 13 14 15 0 1 2 3 4 5 6 7 local.set $r2"
+"local.get $r3 local.get $r3 i8x16.shuffle 12 13 14 15 0 1 2 3 4 5 6 7 8 9 10 11 local.set $r3"
+"local.get $m0 local.get $m1 i8x16.shuffle 0 0 0 0 0 1 2 3 8 9 10 11 16 17 18 19 local.get $m2"
+"local.get $m3 i8x16.shuffle 20 21 22 23 0 0 0 0 0 0 0 0 0 0 0 0 i8x16.shuffle 16 17 18 19 4 5 6 7 8 9 10 11 12 13 14 15"
+"local.set $x"
+"local.get $m0 local.get $m1 i8x16.shuffle 12 13 14 15 0 0 0 0 24 25 26 27 28 29 30 31"
+"local.get $m2 local.get $m3 i8x16.shuffle 0 0 0 0 8 9 10 11 0 0 0 0 0 0 0 0 i8x16.shuffle 0 1 2 3 20 21 22 23 8 9 10 11 12 13 14 15"
+"local.set $y"
+"local.get $r0 local.get $x i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 2 3 0 1 6 7 4 5 10 11 8 9 14 15 12 13 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 12 i32x4.shr_u local.get $r1 i32.const 20 i32x4.shl v128.or local.set $r1"
+"local.get $r0 local.get $y i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 1 2 3 0 5 6 7 4 9 10 11 8 13 14 15 12 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 7 i32x4.shr_u local.get $r1 i32.const 25 i32x4.shl v128.or local.set $r1"
+"local.get $r1 local.get $r1 i8x16.shuffle 12 13 14 15 0 1 2 3 4 5 6 7 8 9 10 11 local.set $r1"
+"local.get $r2 local.get $r2 i8x16.shuffle 8 9 10 11 12 13 14 15 0 1 2 3 4 5 6 7 local.set $r2"
+"local.get $r3 local.get $r3 i8x16.shuffle 4 5 6 7 8 9 10 11 12 13 14 15 0 1 2 3 local.set $r3"
+"local.get $m0 local.get $m1 i8x16.shuffle 0 0 0 0 20 21 22 23 4 5 6 7 0 0 0 0 local.get $m2"
+"local.get $m3 i8x16.shuffle 12 13 14 15 0 0 0 0 0 0 0 0 0 1 2 3 i8x16.shuffle 16 17 18 19 4 5 6 7 8 9 10 11 28 29 30 31"
+"local.set $x"
+"local.get $m0 local.get $m1 i8x16.shuffle 0 0 0 0 0 1 2 3 0 0 0 0 24 25 26 27 local.get $m2"
+"local.get $m3 i8x16.shuffle 28 29 30 31 0 0 0 0 4 5 6 7 0 0 0 0 i8x16.shuffle 16 17 18 19 4 5 6 7 24 25 26 27 12 13 14 15"
+"local.set $y"
+"local.get $r0 local.get $x i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 2 3 0 1 6 7 4 5 10 11 8 9 14 15 12 13 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 12 i32x4.shr_u local.get $r1 i32.const 20 i32x4.shl v128.or local.set $r1"
+"local.get $r0 local.get $y i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 1 2 3 0 5 6 7 4 9 10 11 8 13 14 15 12 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 7 i32x4.shr_u local.get $r1 i32.const 25 i32x4.shl v128.or local.set $r1"
+"local.get $r1 local.get $r1 i8x16.shuffle 4 5 6 7 8 9 10 11 12 13 14 15 0 1 2 3 local.set $r1"
+"local.get $r2 local.get $r2 i8x16.shuffle 8 9 10 11 12 13 14 15 0 1 2 3 4 5 6 7 local.set $r2"
+"local.get $r3 local.get $r3 i8x16.shuffle 12 13 14 15 0 1 2 3 4 5 6 7 8 9 10 11 local.set $r3"
+"local.get $m0 local.get $m1 i8x16.shuffle 0 0 0 0 8 9 10 11 12 13 14 15 28 29 30 31 local.get $m2"
+"local.get $m3 i8x16.shuffle 24 25 26 27 0 0 0 0 0 0 0 0 0 0 0 0 i8x16.shuffle 16 17 18 19 4 5 6 7 8 9 10 11 12 13 14 15"
+"local.set $x"
+"local.get $m0 local.get $m1 i8x16.shuffle 0 0 0 0 0 0 0 0 16 17 18 19 0 0 0 0 local.get $m2"
+"local.get $m3 i8x16.shuffle 8 9 10 11 16 17 18 19 0 0 0 0 20 21 22 23 i8x16.shuffle 16 17 18 19 20 21 22 23 8 9 10 11 28 29 30 31"
+"local.set $y"
+"local.get $r0 local.get $x i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 2 3 0 1 6 7 4 5 10 11 8 9 14 15 12 13 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 12 i32x4.shr_u local.get $r1 i32.const 20 i32x4.shl v128.or local.set $r1"
+"local.get $r0 local.get $y i32x4.add local.get $r1 i32x4.add local.set $r0"
+"local.get $r3 local.get $r0 v128.xor local.set $r3"
+"local.get $r3 local.get $r3 i8x16.shuffle 1 2 3 0 5 6 7 4 9 10 11 8 13 14 15 12 local.set $r3"
+"local.get $r2 local.get $r3 i32x4.add local.set $r2"
+"local.get $r1 local.get $r2 v128.xor local.set $r1"
+"local.get $r1 i32.const 7 i32x4.shr_u local.get $r1 i32.const 25 i32x4.shl v128.or local.set $r1"
+"local.get $r1 local.get $r1 i8x16.shuffle 12 13 14 15 0 1 2 3 4 5 6 7 8 9 10 11 local.set $r1"
+"local.get $r2 local.get $r2 i8x16.shuffle 8 9 10 11 12 13 14 15 0 1 2 3 4 5 6 7 local.set $r2"
+"local.get $r3 local.get $r3 i8x16.shuffle 4 5 6 7 8 9 10 11 12 13 14 15 0 1 2 3 local.set $r3"
+"local.get $r2 local.get $q v128.load align=1 v128.xor local.set $x"
+"local.get $r3 local.get $q v128.load offset=16 align=1 v128.xor local.set $y"
+"local.get $q local.get $r0 local.get $r2 v128.xor v128.store align=1"
+"local.get $q local.get $r1 local.get $r3 v128.xor v128.store offset=16 align=1"
+"local.get $q local.get $x v128.store offset=32 align=1"
+"local.get $q local.get $y v128.store offset=48 align=1"
+"i64.const 0"
+
+//# Driver — Bytes-based chunk/tree (mirrors ../blake3.vibe's scalar shape)
+
+fn make_iv32() -> Bytes {
+  let b = Bytes::new()
+  push_word_le(b, 0x6A09E667)
+  push_word_le(b, 0xBB67AE85)
+  push_word_le(b, 0x3C6EF372)
+  push_word_le(b, 0xA54FF53A)
+  push_word_le(b, 0x510E527F)
+  push_word_le(b, 0x9B05688C)
+  push_word_le(b, 0x1F83D9AB)
+  push_word_le(b, 0x5BE0CD19)
+  b
+}
+
+fn push_word_le(b: Bytes, w: Int) -> Unit {
+  Bytes::push(b, w&255)
+  Bytes::push(b, (w>>8)&255)
+  Bytes::push(b, (w>>16)&255)
+  Bytes::push(b, (w>>24)&255)
+}
+
+/// io buffer for one deferred compression: cv (32 bytes) + zero tail.
+fn new_io_with_cv(cv: Bytes) -> Bytes {
+  let io = Bytes::new()
+  Bytes::blit(io, cv, 0, 32)
+  Bytes::fill(io, 0, 32)
+  io
+}
+
+/// Deferred final compression, cv/block held as raw little-endian Bytes.
+struct SimdOutput {
+  cv: Bytes;
+  block: Bytes;
+  counter: Int;
+  blen: Int;
+  flags: Int
+}
+
+fn chunk_output_s(data: Bytes, start: Int, len: Int, counter: Int) -> SimdOutput {
+  let num_blocks = if len == 0 {
+    1
+  } else {
+    (len + 63) / 64
+  }
+  let io = new_io_with_cv(make_iv32())
+  let mut b = 0
+  while b < num_blocks - 1 {
+    let flags = if b == 0 {
+      s_flag_chunk_start
+    } else {
+      0
+    }
+    let _ = b3_compress_kernel(io, data, start + b * 64, counter, 64, flags)
+    b = b + 1
+  }
+  let cv = Bytes::new()
+  Bytes::blit(cv, io, 0, 32)
+  let last_start = start + (num_blocks - 1) * 64
+  let last_len = len - (num_blocks - 1) * 64
+  let block = Bytes::new()
+  // Bytes::blit takes (dst, src, src_start, src_END) -- a slice, not a count.
+  Bytes::blit(block, data, last_start, last_start + last_len)
+  Bytes::fill(block, 0, 64 - last_len)
+  let start_flag = if num_blocks == 1 {
+    s_flag_chunk_start
+  } else {
+    0
+  }
+  SimdOutput::{
+    cv: cv, block: block, counter: counter, blen: last_len, flags: start_flag|s_flag_chunk_end
+  }
+}
+
+fn chaining_value_s(o: SimdOutput) -> Bytes {
+  let io = new_io_with_cv(o.cv)
+  let _ = b3_compress_kernel(io, o.block, 0, o.counter, o.blen, o.flags)
+  let cv = Bytes::new()
+  Bytes::blit(cv, io, 0, 32)
+  cv
+}
+
+fn parent_output_s(left_cv: Bytes, right_cv: Bytes) -> SimdOutput {
+  let block = Bytes::new()
+  Bytes::blit(block, left_cv, 0, 32)
+  Bytes::blit(block, right_cv, 0, 32)
+  SimdOutput::{
+    cv: make_iv32(), block: block, counter: 0, blen: 64, flags: s_flag_parent
+  }
+}
+
+/// Same spec tree shape as the scalar implementation: the left subtree takes
+/// the largest power-of-two number of chunks strictly below the total.
+fn subtree_output_s(data: Bytes, start: Int, len: Int, chunk_counter: Int) -> SimdOutput {
+  if len <= s_chunk_len {
+    chunk_output_s(data, start, len, chunk_counter)
+  } else {
+    let full_chunks = (len - 1) / s_chunk_len
+    let mut left_chunks = 1
+    while left_chunks * 2 <= full_chunks {
+      left_chunks = left_chunks * 2
+    }
+    let left_len = left_chunks * s_chunk_len
+    let left_cv = chaining_value_s(subtree_output_s(data, start, left_len, chunk_counter))
+    let right_cv = chaining_value_s(subtree_output_s(data, start + left_len, len - left_len, chunk_counter + left_chunks))
+    parent_output_s(left_cv, right_cv)
+  }
+}
+
+fn s_hex_digit(d: Int) -> Int {
+  if d < 10 {
+    48 + d
+  } else {
+    87 + d
+  }
+}
+
+fn root_hex_s(o: SimdOutput) -> String {
+  let io = new_io_with_cv(o.cv)
+  let _ = b3_compress_kernel(io, o.block, 0, 0, o.blen, o.flags|s_flag_root)
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < 32 {
+    let b = Bytes::get(io, i)
+    StringBuilder::push(sb, String::from_char_code(s_hex_digit((b>>4)&15)))
+    StringBuilder::push(sb, String::from_char_code(s_hex_digit(b&15)))
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+//# Public API
+
+/// BLAKE3 digest (64 hex chars) of a byte buffer — SIMD kernel path.
+export fn blake3_bytes_simd(data: Bytes) -> String {
+  root_hex_s(subtree_output_s(data, 0, Bytes::length(data), 0))
+}
+
+/// BLAKE3 digest (64 hex chars) of a string — SIMD kernel path. Char codes
+/// are taken mod 256 (same byte convention as the scalar blake3).
+export fn blake3_simd(msg: String) -> String {
+  let len = String::length(msg)
+  let data = Bytes::new(len)
+  let mut i = 0
+  while i < len {
+    Bytes::set(data, i, String::char_code_at(msg, i)&255)
+    i = i + 1
+  }
+  blake3_bytes_simd(data)
+}

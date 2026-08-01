@@ -141,7 +141,7 @@ import @vibe/compiler/codegen/common_base {
   codegen_body_cache_new,
   codegen_body_cache_record,
   codegen_body_cache_replay,
-  compile_inline_wat,
+  compile_inline_wat_full,
   compute_agg_returning,
   ctor_sorted_index,
   desugar_trait_dicts,
@@ -648,6 +648,33 @@ fn lc_extract_inline_wasm(stmts: Array[Stmt], names: Array[String], wats: Array[
       _ => ()
     }
     i = i + 1
+  }
+}
+
+/// #805 SIMD locals: assemble an inline-wasm fn's body bytes into `body_buf`
+/// and write its extra-local counts (i32, i64, v128) into the 3-slot
+/// `iw_extra_cell` -- zeros when the function is not inline wasm (iw_found
+/// < 0). The counts travel through a pre-existing cell array (the
+/// `lambda_plan_cell` pattern) instead of a fresh binding at the call site:
+/// the seed compiler loses a NEW `let` binding introduced at that nesting
+/// depth of the flattened module source ("unknown name" on every later
+/// reference, tuple/mut/plain-Int alike), while reads through an
+/// already-in-scope array provably survive (meta_i32 itself is one).
+fn lc_compile_iw_body(body_buf: Bytes, fn_name_dbg: String, iw_wats: Array[String], iw_found: Int, iw_param_names: Array[String], param_count: Int, iw_extra_cell: Array[Int]) -> Unit with { Error } {
+  Array::set(iw_extra_cell, 0, 0)
+  Array::set(iw_extra_cell, 1, 0)
+  Array::set(iw_extra_cell, 2, 0)
+  if iw_found < 0 {
+    ()
+  } else {
+    // Declared `(local ...)` runs index from param_count (params + the
+    // closure-env slot), matching the i32/i64/v128 header runs the meta
+    // arrays receive at the code-section assembly.
+    let (iw_bytes, iw_n32, iw_n64, iw_nv) = compile_inline_wat_full(fn_name_dbg, Array::get(iw_wats, iw_found), iw_param_names, param_count)
+    bytebuf_push_buf(body_buf, iw_bytes)
+    Array::set(iw_extra_cell, 0, iw_n32)
+    Array::set(iw_extra_cell, 1, iw_n64)
+    Array::set(iw_extra_cell, 2, iw_nv)
   }
 }
 
@@ -3425,6 +3452,17 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let bodies = lc_fresh_bytes_array()
   let meta_i32 = lc_fresh_int_array()
   let meta_i64 = lc_fresh_int_array()
+  // #805 SIMD locals: v128 run length of each code entry's locals header.
+  // Non-zero only for inline-wasm fns declaring `(local $x v128)` -- every
+  // other push site pushes 0, keeping the three meta arrays aligned with
+  // `bodies` (asserted at the code-section assembly below).
+  let meta_v128 = lc_fresh_int_array()
+  // Scratch cell lc_compile_iw_body fills per function (see its doc comment
+  // for why this is a cell and not a return value).
+  let iw_extra_cell = lc_fresh_int_array()
+  Array::push(iw_extra_cell, 0)
+  Array::push(iw_extra_cell, 0)
+  Array::push(iw_extra_cell, 0)
   let builtin_type_idxs = lc_fresh_int_array()
   // #415 B-1: one call = one builtin body. The body bytes, its extra local
   // counts (meta_i32/meta_i64), and its function-section type index are
@@ -3436,6 +3474,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     Array::push(bodies, body)
     Array::push(meta_i32, m32)
     Array::push(meta_i64, m64)
+    Array::push(meta_v128, 0)
     Array::push(builtin_type_idxs, type_idx)
   }
   push_builtin(static_print_i64_body(), 3, 1, 1)
@@ -3653,6 +3692,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       Array::push(bodies, bytebuf_to_bytes(bytebuf_new()))
       Array::push(meta_i32, 0)
       Array::push(meta_i64, 0)
+      Array::push(meta_v128, 0)
       let __pad_hi = if bi + 1 < num_user_funcs {
         Array::get(lambda_bases, bi + 1)
       } else {
@@ -3681,7 +3721,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       // compile_expr -- is skipped, not merely discarded.
       let __cache_hit = codegen_body_cache_find(body_cache_in, bi)
       if __cache_hit >= 0 {
-        codegen_body_cache_replay(body_cache_in, __cache_hit, bodies, meta_i32, meta_i64, lt_w, table_slots_used)
+        codegen_body_cache_replay(body_cache_in, __cache_hit, bodies, meta_i32, meta_i64, meta_v128, lt_w, table_slots_used)
       } else {
         // #1259 step 7: where this function's table_slots_used entries start.
         // The log is module-level and append-only, so the function's own
@@ -4180,15 +4220,15 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           } else {
             0 - 1
           }
+          let iw_param_names = lc_fresh_string_array()
+          let mut iw_pi = 0
+          while iw_pi < Array::length(lc_norm_params) {
+            let (iw_pn, _) = Array::get(lc_norm_params, iw_pi)
+            Array::push(iw_param_names, iw_pn)
+            iw_pi = iw_pi + 1
+          }
+          lc_compile_iw_body(body_buf, fn_name_dbg, iw_wats, iw_found, iw_param_names, param_count, iw_extra_cell)
           let final_nl = if iw_found >= 0 {
-            let iw_param_names = lc_fresh_string_array()
-            let mut iw_pi = 0
-            while iw_pi < Array::length(lc_norm_params) {
-              let (iw_pn, _) = Array::get(lc_norm_params, iw_pi)
-              Array::push(iw_param_names, iw_pn)
-              iw_pi = iw_pi + 1
-            }
-            bytebuf_push_buf(body_buf, compile_inline_wat(fn_name_dbg, Array::get(iw_wats, iw_found), iw_param_names))
             param_count
           } else {
             compile_expr(body_buf, body, local_names, if pfuse {
@@ -4335,8 +4375,9 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           } else {
             0
           }
-          Array::push(meta_i32, 0)
-          Array::push(meta_i64, extra)
+          Array::push(meta_i32, Array::get(iw_extra_cell, 0))
+          Array::push(meta_i64, extra + Array::get(iw_extra_cell, 1))
+          Array::push(meta_v128, Array::get(iw_extra_cell, 2))
         } else {
           // Module-level non-function `let` (a THUNK): previously the initializer
           // re-ran on EVERY reference, so a 16-entry lookup table cost an O(size)
@@ -4413,6 +4454,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           }
           Array::push(meta_i32, 0)
           Array::push(meta_i64, extra)
+          Array::push(meta_v128, 0)
         }
         // #1259 step 7: harvest this function's codegen output as a VALUE.
         //
@@ -4427,7 +4469,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         // Harvest is unconditional and cheap (it copies references into parallel
         // arrays, it does not re-encode). The cache is only READ when a caller
         // supplies one.
-        codegen_body_cache_record(body_cache_out, bi, bodies, meta_i32, meta_i64, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used))
+        codegen_body_cache_record(body_cache_out, bi, bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used))
       }
     }
     bi = bi + 1
@@ -4507,6 +4549,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   Array::push(bodies, start_body)
   Array::push(meta_i32, 0)
   Array::push(meta_i64, 0)
+  Array::push(meta_v128, 0)
   let run_body = bytebuf_new()
   if entry_func_idx >= 0 {
     emit_i64_const(run_body, 0)
@@ -4535,11 +4578,13 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   Array::push(bodies, run_body)
   Array::push(meta_i32, 0)
   Array::push(meta_i64, 0)
+  Array::push(meta_v128, 0)
   let mut li = 0
   while li < num_lambdas {
     Array::push(bodies, Array::get(lt_w.bodies, li))
     Array::push(meta_i32, Array::get(lt_w.meta_i32, li))
     Array::push(meta_i64, Array::get(lt_w.meta_i64, li))
+    Array::push(meta_v128, 0)
     li = li + 1
   }
   let mut max_closure_arity = -1
@@ -5734,32 +5779,55 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   } else {
     lc_fresh_int_array()
   }
+  if Array::length(meta_v128) != Array::length(bodies) {
+    throw(String::concat("meta_v128/bodies misalignment: ", String::concat(__to_string(Array::length(meta_v128)), String::concat(" vs ", __to_string(Array::length(bodies))))))
+  } else {
+    ()
+  }
   let mut ci = 0
   while ci < Array::length(bodies) {
     let body = Array::get(bodies, ci)
     let func_buf = bytebuf_new()
     let ni32 = Array::get(meta_i32, ci)
     let ni64 = Array::get(meta_i64, ci)
-    if ni32 == 0 {
-      if ni64 == 0 {
-        leb128_encode_u32(func_buf, 0)
-      } else {
-        leb128_encode_u32(func_buf, 1)
-        leb128_encode_u32(func_buf, ni64)
-        bytebuf_push(func_buf, 126)
-      }
+    // #805 SIMD locals: a third v128 (0x7B) run after the i32/i64 runs.
+    // Zero for every function except inline-wasm fns declaring v128 locals,
+    // so the header bytes are unchanged wherever the feature is unused.
+    let nv128 = Array::get(meta_v128, ci)
+    let mut ngroups = 0
+    if ni32 > 0 {
+      ngroups = ngroups + 1
     } else {
-      if ni64 == 0 {
-        leb128_encode_u32(func_buf, 1)
-        leb128_encode_u32(func_buf, ni32)
-        bytebuf_push(func_buf, 127)
-      } else {
-        leb128_encode_u32(func_buf, 2)
-        leb128_encode_u32(func_buf, ni32)
-        bytebuf_push(func_buf, 127)
-        leb128_encode_u32(func_buf, ni64)
-        bytebuf_push(func_buf, 126)
-      }
+      ()
+    }
+    if ni64 > 0 {
+      ngroups = ngroups + 1
+    } else {
+      ()
+    }
+    if nv128 > 0 {
+      ngroups = ngroups + 1
+    } else {
+      ()
+    }
+    leb128_encode_u32(func_buf, ngroups)
+    if ni32 > 0 {
+      leb128_encode_u32(func_buf, ni32)
+      bytebuf_push(func_buf, 127)
+    } else {
+      ()
+    }
+    if ni64 > 0 {
+      leb128_encode_u32(func_buf, ni64)
+      bytebuf_push(func_buf, 126)
+    } else {
+      ()
+    }
+    if nv128 > 0 {
+      leb128_encode_u32(func_buf, nv128)
+      bytebuf_push(func_buf, 123)
+    } else {
+      ()
     }
     if linemap_state.enabled {
       let lm_bi = ci - num_generated

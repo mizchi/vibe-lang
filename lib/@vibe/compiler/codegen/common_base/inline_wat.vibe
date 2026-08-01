@@ -39,17 +39,23 @@ import @vibe/core {
 //     `(if (result T)? <cond> (then ...) (else ...)?)`, br / br_if with
 //     `$label` or numeric relative depth; return/unreachable/nop/drop/select
 //   - local.get / local.set / local.tee over the fn's own params
-//     (`$paramname` or numeric index); NO `(local ...)` declarations
+//     (`$paramname` or numeric index) AND `(local $name TYPE)` declarations
+//     at the START of the body (types i32/i64/v128, grouped in that order —
+//     the code-entry locals header encodes one run per type, so interleaved
+//     declarations would silently renumber; a located error enforces the
+//     grouping). Declared locals index from `extra_base` (the caller's
+//     param-slot count including the closure-env slot).
 //   - i32/i64 const (decimal / hex / `_` separators; vibe Int range only),
 //     full i32/i64 integer arithmetic / compare / shift / rotate /
 //     conversion set, f32/f64 arithmetic + compares (no f32/f64.const)
 //   - memory loads/stores with optional `offset=` / `align=` (align in
 //     bytes, spec-style), memory.size / memory.grow
 //   - SIMD (0xFD): v128.load/store, v128.const, splat / extract_lane /
-//     replace_lane, integer lane arithmetic + compares, bitwise, all_true /
-//     any_true / bitmask, swizzle, shifts
+//     replace_lane, i8x16.shuffle (16 lane-byte immediates 0..31), integer
+//     lane arithmetic + compares, bitwise, all_true / any_true / bitmask,
+//     swizzle, shifts
 //   - NOT supported (clear errors): call / call_indirect / br_table /
-//     global.get/set / f32.const / f64.const / (local ...) declarations
+//     global.get/set / f32.const / f64.const
 
 fn iw_err(fn_name: String, msg: String, off: Int) -> String {
   "inline wasm (fn \{fn_name}): \{msg} (WAT offset \{off})"
@@ -60,6 +66,10 @@ fn iw_fresh_ints() -> Array[Int] {
 }
 
 fn iw_fresh_strings() -> Array[String] {
+  array_empty()
+}
+
+fn iw_fresh_locals() -> Array[(String, Int)] {
   array_empty()
 }
 
@@ -592,26 +602,28 @@ fn iw_mem_lookup(name: String) -> (Int, Int) {
   (op, al)
 }
 
-/// Local resolution: `$name` against the fn's own params (locals 0..n-1),
-/// or a bare numeric index (locals >= param count are the codegen's own —
-/// index `param_count` is the closure env slot — so named access is the
-/// safe spelling).
-fn iw_local_idx(fn_name: String, params: Array[String], tok: String, off: Int) -> Int with { Error } {
+/// Local resolution: `$name` against the (name, wasm-local-index) map — the
+/// fn's own params (locals 0..n-1) plus any `(local $name TYPE)` declarations
+/// (indexed from the caller's extra_base past the closure-env slot) — or a
+/// bare numeric index (indices between the params and extra_base are the
+/// codegen's own, e.g. the env slot — named access is the safe spelling).
+fn iw_local_idx(fn_name: String, locals: Array[(String, Int)], tok: String, off: Int) -> Int with { Error } {
   if String::length(tok) > 0 && String::char_code_at(tok, 0) == '$' {
     let want = String::substring(tok, 1, String::length(tok))
-    let n = Array::length(params)
+    let n = Array::length(locals)
     let mut i = 0
     let mut found = 0 - 1
     while i < n {
-      if Array::get(params, i) == want {
-        found = i
+      let (ln, li) = Array::get(locals, i)
+      if ln == want {
+        found = li
         i = n
       } else {
         i = i + 1
       }
     }
     if found < 0 {
-      throw(iw_err(fn_name, "unknown local '\{tok}' — inline wasm locals are the fn's own params", off))
+      throw(iw_err(fn_name, "unknown local '\{tok}' — not a param or a declared (local ...)", off))
     } else {
       found
     }
@@ -760,7 +772,7 @@ fn iw_v128_const(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[St
 
 /// Emit ONE plain (non-control) instruction word at `pos` plus its immediates
 /// into `buf`. Returns the position after the instruction + immediates.
-fn iw_plain_op(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, params: Array[String], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with { Error } {
+fn iw_plain_op(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with { Error } {
   let name = Array::get(texts, pos)
   let off = Array::get(offs, pos)
   if name == "block" || name == "loop" || name == "if" || name == "else" || name == "end" || name == "then" {
@@ -774,7 +786,7 @@ fn iw_plain_op(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Stri
       0x22
     }
     let t = iw_want_word(fn_name, kinds, texts, offs, pos + 1, end, name)
-    let idx = iw_local_idx(fn_name, params, t, Array::get(offs, pos + 1))
+    let idx = iw_local_idx(fn_name, locals, t, Array::get(offs, pos + 1))
     bytebuf_push(buf, opc)
     leb128_encode_u32(buf, idx)
     pos + 2
@@ -835,7 +847,25 @@ fn iw_plain_op(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Stri
   } else if name == "br_table" {
     throw(iw_err(fn_name, "'br_table' is not supported in inline wasm (v0.3 slice)", off))
   } else if name == "local" {
-    throw(iw_err(fn_name, "'(local ...)' declarations are not supported in inline wasm (v0.3 slice); use the fn's params as scratch locals", off))
+    throw(iw_err(fn_name, "'(local ...)' declarations must sit at the START of the body, before any instruction", off))
+  } else if name == "i8x16.shuffle" {
+    // 0xFD 13 + 16 lane-byte immediates, each selecting from the two input
+    // vectors' 32 bytes (0..15 = first operand, 16..31 = second).
+    bytebuf_push(buf, 0xFD)
+    leb128_encode_u32(buf, 13)
+    let mut sp = pos + 1
+    let mut sl = 0
+    while sl < 16 {
+      let t = iw_want_word(fn_name, kinds, texts, offs, sp, end, name)
+      let v = iw_parse_int(fn_name, t, Array::get(offs, sp))
+      if v < 0 || v > 31 {
+        throw(iw_err(fn_name, "shuffle lane byte \{v} is out of range (0..31)", Array::get(offs, sp)))
+      }
+      bytebuf_push(buf, v)
+      sl = sl + 1
+      sp = sp + 1
+    }
+    sp
   } else {
     let core_opc = iw_lookup(iw_core_table(), name)
     if core_opc >= 0 {
@@ -883,10 +913,10 @@ fn iw_plain_op(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Stri
 
 /// One sequence item at `pos`: either a folded `(...)` expression or a plain
 /// instruction word. Returns the position after the item.
-fn iw_item(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, params: Array[String], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with { Error } {
+fn iw_item(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with { Error } {
   let k = Array::get(kinds, pos)
   if k == 3 {
-    iw_plain_op(out, fn_name, kinds, texts, offs, pos, end, params, lbl_names, lbl_depths, depth)
+    iw_plain_op(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth)
   } else if k == 1 {
     if pos + 1 >= end || Array::get(kinds, pos + 1) != 3 {
       throw(iw_err(fn_name, "expected an instruction name after '('", Array::get(offs, pos)))
@@ -895,13 +925,13 @@ fn iw_item(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String],
     }
     let head = Array::get(texts, pos + 1)
     if head == "block" || head == "loop" {
-      iw_folded_block(out, fn_name, kinds, texts, offs, pos, end, params, lbl_names, lbl_depths, depth)
+      iw_folded_block(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth)
     } else if head == "if" {
-      iw_folded_if(out, fn_name, kinds, texts, offs, pos, end, params, lbl_names, lbl_depths, depth)
+      iw_folded_if(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth)
     } else if head == "then" || head == "else" || head == "result" {
       throw(iw_err(fn_name, "misplaced '(\{head} ...)' clause", Array::get(offs, pos)))
     } else {
-      iw_folded_op(out, fn_name, kinds, texts, offs, pos, end, params, lbl_names, lbl_depths, depth)
+      iw_folded_op(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth)
     }
   } else {
     throw(iw_err(fn_name, "unexpected ')'", Array::get(offs, pos)))
@@ -909,7 +939,7 @@ fn iw_item(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String],
 }
 
 /// A sequence of items up to (not consuming) a closing ')' or the end.
-fn iw_seq(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, params: Array[String], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with { Error } {
+fn iw_seq(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with { Error } {
   let mut p = pos
   let mut done = false
   while !done {
@@ -918,7 +948,7 @@ fn iw_seq(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], 
     } else if Array::get(kinds, p) == 2 {
       done = true
     } else {
-      p = iw_item(out, fn_name, kinds, texts, offs, p, end, params, lbl_names, lbl_depths, depth)
+      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth)
     }
   }
   p
@@ -926,9 +956,9 @@ fn iw_seq(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], 
 
 /// Folded `(op <immediates> <operand exprs...>)`: real folded-form semantics —
 /// the operand expressions are emitted FIRST, then the op itself.
-fn iw_folded_op(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, params: Array[String], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with { Error } {
+fn iw_folded_op(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with { Error } {
   let opb = bytebuf_new()
-  let after_imm = iw_plain_op(opb, fn_name, kinds, texts, offs, pos + 1, end, params, lbl_names, lbl_depths, depth)
+  let after_imm = iw_plain_op(opb, fn_name, kinds, texts, offs, pos + 1, end, locals, lbl_names, lbl_depths, depth)
   let mut p = after_imm
   let mut done = false
   while !done {
@@ -937,7 +967,7 @@ fn iw_folded_op(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Str
     } else if Array::get(kinds, p) == 2 {
       done = true
     } else if Array::get(kinds, p) == 1 {
-      p = iw_item(out, fn_name, kinds, texts, offs, p, end, params, lbl_names, lbl_depths, depth)
+      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth)
     } else {
       throw(iw_err(fn_name, "unexpected '\{Array::get(texts, p)}' inside folded '\{Array::get(texts, pos + 1)}' — operands must be parenthesized", Array::get(offs, p)))
     }
@@ -947,7 +977,7 @@ fn iw_folded_op(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Str
 }
 
 /// Folded `(block $l? (result T)? ...)` / `(loop $l? (result T)? ...)`.
-fn iw_folded_block(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, params: Array[String], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with { Error } {
+fn iw_folded_block(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with { Error } {
   let head = Array::get(texts, pos + 1)
   bytebuf_push(out, if head == "loop" {
     0x03
@@ -965,7 +995,7 @@ fn iw_folded_block(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[
   }
   let (bt, after_bt) = iw_blocktype(fn_name, kinds, texts, offs, q, end)
   bytebuf_push(out, bt)
-  let bq = iw_seq(out, fn_name, kinds, texts, offs, after_bt, end, params, lbl_names, lbl_depths, depth + 1)
+  let bq = iw_seq(out, fn_name, kinds, texts, offs, after_bt, end, locals, lbl_names, lbl_depths, depth + 1)
   if bq >= end || Array::get(kinds, bq) != 2 {
     throw(iw_err(fn_name, "missing ')' closing '\{head}'", Array::get(offs, pos)))
   } else {
@@ -979,7 +1009,7 @@ fn iw_folded_block(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[
 
 /// Folded `(if $l? (result T)? <cond exprs...> (then ...) (else ...)?)`.
 /// The condition is emitted first, then 0x04 + blocktype, then the branches.
-fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, params: Array[String], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with { Error } {
+fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with { Error } {
   let lbl_mark = Array::length(lbl_names)
   let mut q = pos + 2
   if q < end && Array::get(kinds, q) == 3 && String::length(Array::get(texts, q)) > 0 && String::char_code_at(Array::get(texts, q), 0) == '$' {
@@ -999,7 +1029,7 @@ fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Str
     } else if Array::get(kinds, p) == 1 && p + 1 < end && Array::get(kinds, p + 1) == 3 && Array::get(texts, p + 1) == "then" {
       cond_done = true
     } else if Array::get(kinds, p) == 1 {
-      p = iw_item(out, fn_name, kinds, texts, offs, p, end, params, lbl_names, lbl_depths, depth)
+      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth)
     } else {
       throw(iw_err(fn_name, "unexpected token in folded 'if' condition (condition operands must be parenthesized)", Array::get(offs, p)))
     }
@@ -1007,7 +1037,7 @@ fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Str
   bytebuf_push(out, 0x04)
   bytebuf_push(out, bt)
   // then branch: p is at '(' of (then ...)
-  let tq = iw_seq(out, fn_name, kinds, texts, offs, p + 2, end, params, lbl_names, lbl_depths, depth + 1)
+  let tq = iw_seq(out, fn_name, kinds, texts, offs, p + 2, end, locals, lbl_names, lbl_depths, depth + 1)
   if tq >= end || Array::get(kinds, tq) != 2 {
     throw(iw_err(fn_name, "missing ')' closing '(then ...)'", Array::get(offs, p)))
   } else {
@@ -1016,7 +1046,7 @@ fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Str
   let mut r = tq + 1
   if r + 1 < end && Array::get(kinds, r) == 1 && Array::get(kinds, r + 1) == 3 && Array::get(texts, r + 1) == "else" {
     bytebuf_push(out, 0x05)
-    let eq = iw_seq(out, fn_name, kinds, texts, offs, r + 2, end, params, lbl_names, lbl_depths, depth + 1)
+    let eq = iw_seq(out, fn_name, kinds, texts, offs, r + 2, end, locals, lbl_names, lbl_depths, depth + 1)
     if eq >= end || Array::get(kinds, eq) != 2 {
       throw(iw_err(fn_name, "missing ')' closing '(else ...)'", Array::get(offs, r)))
     } else {
@@ -1037,11 +1067,79 @@ fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Str
   r + 1
 }
 
-/// Entry: compile one inline-wasm fn body's WAT text to raw instruction bytes.
+/// Parse the leading `(local $name TYPE)` declarations. Types are i32 / i64 /
+/// v128 and must be GROUPED in that order (the code-entry locals header
+/// encodes one run per type, so interleaved declarations would silently
+/// renumber). Each declared local joins `locals` at wasm index
+/// `extra_base + running position`. Returns (body_start, n_i32, n_i64, n_v128).
+fn iw_parse_local_decls(fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], end: Int, locals: Array[(String, Int)], extra_base: Int) -> (Int, Int, Int, Int) with { Error } {
+  let mut p = 0
+  let mut n32 = 0
+  let mut n64 = 0
+  let mut nv = 0
+  let mut last_rank = 0 - 1
+  let mut done = false
+  while !done {
+    if p + 4 < end && Array::get(kinds, p) == 1 && Array::get(kinds, p + 1) == 3 && Array::get(texts, p + 1) == "local" {
+      let decl_off = Array::get(offs, p)
+      let name_tok = Array::get(texts, p + 2)
+      if Array::get(kinds, p + 2) != 3 || String::length(name_tok) < 2 || String::char_code_at(name_tok, 0) != '$' {
+        throw(iw_err(fn_name, "(local ...) expects a $name followed by a type", decl_off))
+      }
+      if Array::get(kinds, p + 3) != 3 {
+        throw(iw_err(fn_name, "(local \{name_tok} ...) is missing its type", decl_off))
+      }
+      let ty_tok = Array::get(texts, p + 3)
+      let rank = match ty_tok {
+        "i32" => 0,
+        "i64" => 1,
+        "v128" => 2,
+        _ => throw(iw_err(fn_name, "(local ...) type must be i32, i64 or v128, got '\{ty_tok}'", Array::get(offs, p + 3)))
+      }
+      if Array::get(kinds, p + 4) != 2 {
+        throw(iw_err(fn_name, "(local \{name_tok} \{ty_tok}) takes exactly one name and one type", decl_off))
+      }
+      if rank < last_rank {
+        throw(iw_err(fn_name, "(local ...) declarations must be grouped by type in the order i32, i64, v128", decl_off))
+      }
+      let want = String::substring(name_tok, 1, String::length(name_tok))
+      let mut di = 0
+      while di < Array::length(locals) {
+        let (dn, _dx) = Array::get(locals, di)
+        if dn == want {
+          throw(iw_err(fn_name, "duplicate local name '\{name_tok}'", decl_off))
+        } else {
+          ()
+        }
+        di = di + 1
+      }
+      Array::push(locals, (want, extra_base + n32 + n64 + nv))
+      if rank == 0 {
+        n32 = n32 + 1
+      } else if rank == 1 {
+        n64 = n64 + 1
+      } else {
+        nv = nv + 1
+      }
+      last_rank = rank
+      p = p + 5
+    } else {
+      done = true
+    }
+  }
+  (p, n32, n64, nv)
+}
+
+/// Entry: compile one inline-wasm fn body's WAT text to raw instruction bytes
+/// plus its extra-local declaration counts (i32, i64, v128) — the caller
+/// appends matching runs to the function's code-entry locals header.
 /// `param_names` are the fn's declared params in order (wasm locals 0..n-1 on
 /// the linear backend; every param and the result are RAW 62-bit tagged i64
-/// values — ADR-0055/ADR-0072 — the WAT author untags/retags explicitly).
-export fn compile_inline_wat(fn_name: String, wat: String, param_names: Array[String]) -> Bytes with { Error } {
+/// values — ADR-0055/ADR-0072 — the WAT author untags/retags explicitly,
+/// except `Bytes` params which arrive as the raw untagged object pointer).
+/// `extra_base` is the wasm-local index the FIRST declared local lands on —
+/// the caller's total param-slot count including the closure-env slot.
+export fn compile_inline_wat_full(fn_name: String, wat: String, param_names: Array[String], extra_base: Int) -> (Bytes, Int, Int, Int) with { Error } {
   let (kinds, texts, offs) = iw_tokenize(fn_name, wat)
   let out = bytebuf_new()
   let lbl_names = iw_fresh_strings()
@@ -1052,17 +1150,36 @@ export fn compile_inline_wat(fn_name: String, wat: String, param_names: Array[St
   } else {
     ()
   }
-  let final_pos = iw_seq(out, fn_name, kinds, texts, offs, 0, end, param_names, lbl_names, lbl_depths, 0)
+  let locals = iw_fresh_locals()
+  let mut pi = 0
+  while pi < Array::length(param_names) {
+    Array::push(locals, (Array::get(param_names, pi), pi))
+    pi = pi + 1
+  }
+  let (body_start, n32, n64, nv) = iw_parse_local_decls(fn_name, kinds, texts, offs, end, locals, extra_base)
+  if body_start >= end {
+    throw(iw_err(fn_name, "empty inline wasm body (only local declarations)", 0))
+  } else {
+    ()
+  }
+  let final_pos = iw_seq(out, fn_name, kinds, texts, offs, body_start, end, locals, lbl_names, lbl_depths, 0)
   if final_pos != end {
     throw(iw_err(fn_name, "unbalanced ')'", Array::get(offs, final_pos)))
   } else {
     ()
   }
+  (out, n32, n64, nv)
+}
+
+/// Back-compat entry: body bytes only. Uses the linear backend's standard
+/// extra_base (params + 1 closure-env slot) for any declared locals.
+export fn compile_inline_wat(fn_name: String, wat: String, param_names: Array[String]) -> Bytes with { Error } {
+  let (out, _n32, _n64, _nv) = compile_inline_wat_full(fn_name, wat, param_names, Array::length(param_names) + 1)
   out
 }
 
 //# Misc
 
 export {
-  compile_inline_wat
+  compile_inline_wat, compile_inline_wat_full
 }
