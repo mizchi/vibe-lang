@@ -84,6 +84,14 @@ test "perform via EFn without the effect reports error" {
   assert(Array::length(errors) > 0)
 }
 
+test "explicitly empty lambda row does not inherit outer effects" {
+  let fn_expr = fn_with(Some(""), perform_op("Fs::ReadFile", EString("p")))
+  let errors = check_perform_effects_expr(fn_expr, [
+    "Fs"
+  ], false)
+  assert(Array::length(errors) > 0)
+}
+
 test "effect-variable declaration authorizes any perform" {
   // `with { e }` (a polymorphic effect variable) authorizes performing anything
   // under the current representation (row-tail unification is future work).
@@ -137,6 +145,26 @@ test "calling a pure builtin is never flagged" {
   ], -1)
   let errors = check_perform_effects_expr(call, no_labels(), false)
   assert(eq(Array::length(errors), 0))
+}
+
+test "effect checking visits non-call expression children" {
+  let fs_call = ECall(EIdent("Fs::read_file", -1), [
+    EString("p")
+  ], -1)
+  let map_expr = EMap([
+    ("value", fs_call)
+  ])
+  let labeled_expr = ELabeledArg("value", "v", fs_call)
+  let spread_expr = ESpread(fs_call)
+  let break_expr = EBreak(Some(fs_call))
+  let continue_expr = EContinue([
+    fs_call
+  ])
+  assert(Array::length(check_perform_effects_expr(map_expr, no_labels(), false)) > 0)
+  assert(Array::length(check_perform_effects_expr(labeled_expr, no_labels(), false)) > 0)
+  assert(Array::length(check_perform_effects_expr(spread_expr, no_labels(), false)) > 0)
+  assert(Array::length(check_perform_effects_expr(break_expr, no_labels(), false)) > 0)
+  assert(Array::length(check_perform_effects_expr(continue_expr, no_labels(), false)) > 0)
 }
 
 // #626 criterion 2: a `handle ... with E` discharges E (its arms are qualified

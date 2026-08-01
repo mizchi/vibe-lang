@@ -13,6 +13,7 @@ import ./parser_base.vibe {
   expect_tk,
   is_lambda_start,
   parse_param_list,
+  parse_type_params,
   parse_type_impl,
   peek,
   tk_name
@@ -282,7 +283,25 @@ fn desugar_loop_body(expr: Expr, param_names: Array[String]) -> Expr {
       (p, desugar_loop_body(ex, param_names))
     }),
     EBinOp(op, l, r) => EBinOp(op, desugar_loop_body(l, param_names), desugar_loop_body(r, param_names)),
-    ECall(_, _, _) => expr,
+    ECall(callee, args, off) => ECall(desugar_loop_body(callee, param_names), for arg in args {
+      desugar_loop_body(arg, param_names)
+    }, off),
+    ETuple(items) => ETuple(for item in items {
+      desugar_loop_body(item, param_names)
+    }),
+    EArray(items) => EArray(for item in items {
+      desugar_loop_body(item, param_names)
+    }),
+    ERecord(name, fields, targs) => ERecord(name, for field in fields {
+      let (field_name, value) = field
+      (field_name, desugar_loop_body(value, param_names))
+    }, targs),
+    EMap(fields) => EMap(for field in fields {
+      let (field_name, value) = field
+      (field_name, desugar_loop_body(value, param_names))
+    }),
+    ELabeledArg(label, name, value) => ELabeledArg(label, name, desugar_loop_body(value, param_names)),
+    ESpread(value) => ESpread(desugar_loop_body(value, param_names)),
     ELetRec(n, v, b) => ELetRec(n, desugar_loop_body(v, param_names), desugar_loop_body(b, param_names)),
     EUnaryOp(op, e) => EUnaryOp(op, desugar_loop_body(e, param_names)),
     EDot(obj, field, off, fdoff) => EDot(desugar_loop_body(obj, param_names), field, off, fdoff),
@@ -561,21 +580,9 @@ fn parse_ctor_record_fields(tokens: Array[Token], starts: Array[Int], pos: Int, 
 }
 
 fn parse_generic_fn_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
-  let mut skip_pos = pos + 1
-  let mut depth = 1
-  while depth > 0 {
-    match peek(tokens, skip_pos) {
-      TLBracket => {
-        depth = depth + 1
-      },
-      TRBracket => {
-        depth = depth - 1
-      },
-      _ => ()
-    }
-    skip_pos = skip_pos + 1
-  }
-  let (params, after_params) = parse_param_list(tokens, skip_pos)
+  let (type_params, type_bounds, after_header) = parse_type_params(tokens, pos + 1)
+  let params_pos = expect_tk(tokens, after_header, "(")
+  let (params, after_params) = parse_param_list(tokens, params_pos)
   match peek(tokens, after_params) {
     TThinArrow => {
       let (ret_ty, ret_pos) = parse_type_impl(tokens, after_params + 1, 0)
@@ -593,11 +600,11 @@ fn parse_generic_fn_primary(tokens: Array[Token], starts: Array[Int], pos: Int, 
       let effect_next = effect_pair.1
       let body_pos = expect_tk(tokens, effect_next, "{")
       let (body, end_pos) = parse_recur(tokens, body_pos, 20)
-      (EFn(_no_tp(), _no_tb(), params, Some(ret_ty), effect, body), end_pos)
+      (EFn(type_params, type_bounds, params, Some(ret_ty), effect, body), end_pos)
     },
     TLBrace => {
       let (body, end_pos) = parse_recur(tokens, after_params + 1, 20)
-      (EFn(_no_tp(), _no_tb(), params, None, None, body), end_pos)
+      (EFn(type_params, type_bounds, params, None, None, body), end_pos)
     },
     _ => throw("expected '->' or '{' after generic function params")
   }
