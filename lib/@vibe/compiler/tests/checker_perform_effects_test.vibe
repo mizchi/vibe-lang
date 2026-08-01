@@ -84,12 +84,21 @@ test "perform via EFn without the effect reports error" {
   assert(Array::length(errors) > 0)
 }
 
-test "explicitly empty lambda row does not inherit outer effects" {
-  let fn_expr = fn_with(Some(""), perform_op("Fs::ReadFile", EString("p")))
-  let errors = check_perform_effects_expr(fn_expr, [
-    "Fs"
-  ], false)
+test "explicitly pure callback lambda does not inherit outer effects" {
+  // This closure is passed through a pure callback slot while the enclosing
+  // lambda has Fs. Its explicit `with {}` must replace, not inherit, that row.
+  let callback = fn_with(Some(""), perform_op("Fs::ReadFile", EString("p")))
+  let outer = fn_with(Some("Fs"), ECall(EIdent("apply_pure", -1), [
+    callback
+  ], -1))
+  let errors = check_perform_effects_expr(outer, no_labels(), false)
   assert(Array::length(errors) > 0)
+}
+
+test "perform rows trim and dedupe exact labels" {
+  let fn_expr = fn_with(Some(" Fs, Fs "), perform_op("Fs::ReadFile", EString("p")))
+  let errors = check_perform_effects_expr(fn_expr, no_labels(), false)
+  assert(eq(Array::length(errors), 0))
 }
 
 test "effect-variable declaration authorizes any perform" {
