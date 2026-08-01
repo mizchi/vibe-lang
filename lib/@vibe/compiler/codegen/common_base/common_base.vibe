@@ -188,6 +188,57 @@ export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, bodi
   }
 }
 
+/// Concatenate two harvests. Used to reassemble the whole program from the
+/// per-slice caches a `--jobs N` run produces.
+///
+/// A plain append is enough because nothing in a cache entry is positional: a
+/// function is keyed by `fn_indices`, a lambda by its PLANNED index, and a
+/// table slot by its owning function. Replay looks each up by key and pushes
+/// in the body loop's order, so the order entries sit in here never reaches
+/// the output. Slices are expected to be disjoint; overlapping ones would give
+/// `codegen_body_cache_find` two candidates and it would take the first.
+export fn codegen_body_cache_merge(a: CodegenBodyCache, b: CodegenBodyCache) -> CodegenBodyCache {
+  let out = codegen_body_cache_new()
+  let mut si = 0
+  while si < 2 {
+    let src = if si == 0 {
+      a
+    } else {
+      b
+    }
+    let fn_n = Array::length(src.fn_indices)
+    let mut i = 0
+    while i < fn_n {
+      Array::push(out.fn_indices, Array::get(src.fn_indices, i))
+      Array::push(out.fn_bodies, Array::get(src.fn_bodies, i))
+      Array::push(out.fn_meta_i32, Array::get(src.fn_meta_i32, i))
+      Array::push(out.fn_meta_i64, Array::get(src.fn_meta_i64, i))
+      i = i + 1
+    }
+    let lam_n = Array::length(src.lam_owner)
+    let mut j = 0
+    while j < lam_n {
+      Array::push(out.lam_owner, Array::get(src.lam_owner, j))
+      Array::push(out.lam_indices, Array::get(src.lam_indices, j))
+      Array::push(out.lam_bodies, Array::get(src.lam_bodies, j))
+      Array::push(out.lam_param_counts, Array::get(src.lam_param_counts, j))
+      Array::push(out.lam_captures, Array::get(src.lam_captures, j))
+      Array::push(out.lam_meta_i32, Array::get(src.lam_meta_i32, j))
+      Array::push(out.lam_meta_i64, Array::get(src.lam_meta_i64, j))
+      j = j + 1
+    }
+    let slot_n = Array::length(src.slot_owner)
+    let mut k = 0
+    while k < slot_n {
+      Array::push(out.slot_owner, Array::get(src.slot_owner, k))
+      Array::push(out.slot_values, Array::get(src.slot_values, k))
+      k = k + 1
+    }
+    si = si + 1
+  }
+  out
+}
+
 /// Replay cache entry `at` into the whole-program accumulators, in place of
 /// compiling that function.
 ///
