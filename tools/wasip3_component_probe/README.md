@@ -59,6 +59,33 @@ on the same waitable-set machinery. `get-async`'s implicit wait already
 exercises the `waitable-set.new`/`.poll`/`waitable.join` loop, which is
 the part `compile_call.vibe`'s `await` lowering actually needs to emit.
 
+`future_value/component.wat` (ADR-0089 Part B step 2) then EXECUTES the
+`future.*` family from hand-authored WAT: a self-contained single-task
+component where the guest calls `future.new`, issues an async
+`future.read` (BLOCKED — no writer yet), joins the readable end into a
+waitable set, performs an async `future.write` of 42 (which completes
+eagerly against the pending read), waits (FUTURE_READ, event code 4),
+and returns the delivered value. Verified on wasmtime 47:
+`wasmtime run -W exceptions=y -W concurrency-support=y
+-W component-model-async=y -W component-model-async-stackful=y
+-W component-model-more-async-builtins=y --invoke 'run()'
+future_value/component.wat` → `42` (the `more-async-builtins` flag is
+required — the future.* canons are still 🚝-gated in 47). Encodings pinned
+by the run: `future.new` packs `(writable << 32) | readable` (readable end
+in the LOW bits), async `future.read`/`.write` return BLOCKED =
+`0xffffffff`, a write against a pending read returns COMPLETED from the
+call itself, and the completion event is delivered as FUTURE_READ = 4.
+`comp_emit_component_wasm_future_value`
+(`component_codegen.vibe`) is the byte-exact emitter port, gated by
+`scripts/test_future_value_component_gate.sh`.
+
+`stream_value/component.wat` applies the same rendezvous to `stream<u8>`
+(1 element moved; `stream.read`/`.write` take an extra element-count
+param, the completion event is STREAM_READ = 2, and completed statuses
+pack `(amount << 4) | code`). Also 42 on wasmtime 47 under the same
+flags; emitter port `comp_emit_component_wasm_stream_value`, gate
+`scripts/test_stream_value_component_gate.sh`.
+
 ## Update: stackful blocking-wait mechanics now proven (`stackful/`)
 
 The open question below ("does callback-less stackful async-lift handle a

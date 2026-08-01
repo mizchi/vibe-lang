@@ -35,17 +35,22 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i32_eqz,
   emit_i32_gt_u,
   emit_i32_load,
+  emit_i32_load8_u,
   emit_i32_ne,
   emit_i32_shr_u,
   emit_i32_store,
+  emit_i32_store8,
   emit_i32_sub,
+  emit_i32_wrap_i64,
   emit_i64_const,
+  emit_i64_shr_s,
   emit_if_void,
   emit_local_get,
   emit_local_set,
   emit_loop_void,
   emit_memory_section,
-  emit_name
+  emit_name,
+  emit_return
 }
 
 //# Functions
@@ -1587,6 +1592,186 @@ fn emit_canon_subtask_drop(buf: Bytes) -> Unit {
   emit_raw_content(buf, content)
 }
 
+/// ADR-0089 step 2 (#1218): component type section defining `(future <T>)`.
+/// Byte shape recovered via `wasm-tools dump` against
+/// tools/wasip3_component_probe/future_value/component.wat's compiled
+/// output: defvaltype future = 0x65 (101), then an option tag 0x01 + the
+/// payload's component valtype (an absent-payload `future` would carry
+/// 0x00 and no valtype). The type lands in the COMPONENT type index space
+/// (shared with the async functypes), and every future.* canon below
+/// references it by that index.
+fn emit_comp_future_type_section(buf: Bytes, elem_valtype: Int) -> Unit {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 101)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, elem_valtype)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon future.new <ty> -- opcode 0x15 (21) + the
+/// component type index of the `(future T)` type. Core signature
+/// `[] -> [i64]`, the i64 packing (writable << 32) | readable -- readable
+/// end in the LOW 32 bits (pinned by the probe: swapping them makes
+/// future.read trap with a wrong-handle-kind error).
+fn emit_canon_future_new(buf: Bytes, type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 21)
+  leb128_encode_u32(content, type_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon future.read <ty> async (memory M) -- opcode 0x16
+/// (22) + type index + 2 canonopts (async tag 6, memory tag 3 + core memory
+/// index), same canonopt encoding as emit_canon_lower_async_section. Core
+/// signature `[handle, buf_ptr] -> [status]`; with the async canonopt a
+/// read with no pending writer returns BLOCKED (0xffffffff) and parks the
+/// readable end as a waitable instead of parking the fiber.
+fn emit_canon_future_read(buf: Bytes, type_idx: Int, memory_core_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 22)
+  leb128_encode_u32(content, type_idx)
+  leb128_encode_u32(content, 2)
+  bytebuf_push(content, 6)
+  bytebuf_push(content, 3)
+  leb128_encode_u32(content, memory_core_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon future.write <ty> async (memory M) -- opcode 0x17
+/// (23), same shape as future.read. Core signature
+/// `[handle, buf_ptr] -> [status]`; a write against an already-pending read
+/// performs the copy immediately and returns COMPLETED (not BLOCKED) --
+/// the rendezvous the future-value guest module relies on.
+fn emit_canon_future_write(buf: Bytes, type_idx: Int, memory_core_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 23)
+  leb128_encode_u32(content, type_idx)
+  leb128_encode_u32(content, 2)
+  bytebuf_push(content, 6)
+  bytebuf_push(content, 3)
+  leb128_encode_u32(content, memory_core_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon future.drop-readable <ty> -- opcode 0x1a (26) +
+/// type index. Core signature `[handle] -> []`.
+fn emit_canon_future_drop_readable(buf: Bytes, type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 26)
+  leb128_encode_u32(content, type_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon future.drop-writable <ty> -- opcode 0x1b (27) +
+/// type index. Core signature `[handle] -> []`.
+fn emit_canon_future_drop_writable(buf: Bytes, type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 27)
+  leb128_encode_u32(content, type_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: component valtype u8 (0x7d) -- the element type of
+/// `ByteStream` = `stream<u8>` (docs/spec/wasi-p3-async.md §4).
+let comp_valtype_u8 = 125
+
+/// ADR-0089 step 2: component type section defining `(stream <T>)`.
+/// Byte shape from wasm-tools dump of stream_value/component.wat:
+/// defvaltype stream = 0x66 (102), then option tag 0x01 + the element's
+/// component valtype -- same layout as the future type, one opcode apart.
+fn emit_comp_stream_type_section(buf: Bytes, elem_valtype: Int) -> Unit {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 102)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, elem_valtype)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon stream.new <ty> -- opcode 0x0e (14) + the
+/// component type index of the `(stream T)` type. Core signature
+/// `[] -> [i64]`, packed exactly like future.new: readable end in the LOW
+/// 32 bits, writable in the high.
+fn emit_canon_stream_new(buf: Bytes, type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 14)
+  leb128_encode_u32(content, type_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon stream.read <ty> async (memory M) -- opcode 0x0f
+/// (15) + type index + 2 canonopts (async, memory). Core signature
+/// `[handle, buf_ptr, count] -> [status]` -- one param more than
+/// future.read (the element count). With the async canonopt a read with no
+/// pending writer returns BLOCKED (0xffffffff) and parks the readable end
+/// as a waitable; a completed copy packs `(amount << 4) | code`.
+fn emit_canon_stream_read(buf: Bytes, type_idx: Int, memory_core_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 15)
+  leb128_encode_u32(content, type_idx)
+  leb128_encode_u32(content, 2)
+  bytebuf_push(content, 6)
+  bytebuf_push(content, 3)
+  leb128_encode_u32(content, memory_core_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon stream.write <ty> async (memory M) -- opcode 0x10
+/// (16), same shape as stream.read. A write against an already-pending
+/// read copies min(counts) elements inside the call and returns the packed
+/// completed status, not BLOCKED.
+fn emit_canon_stream_write(buf: Bytes, type_idx: Int, memory_core_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 16)
+  leb128_encode_u32(content, type_idx)
+  leb128_encode_u32(content, 2)
+  bytebuf_push(content, 6)
+  bytebuf_push(content, 3)
+  leb128_encode_u32(content, memory_core_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon stream.drop-readable <ty> -- opcode 0x13 (19) +
+/// type index. Core signature `[handle] -> []`.
+fn emit_canon_stream_drop_readable(buf: Bytes, type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 19)
+  leb128_encode_u32(content, type_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon stream.drop-writable <ty> -- opcode 0x14 (20) +
+/// type index. Core signature `[handle] -> []`.
+fn emit_canon_stream_drop_writable(buf: Bytes, type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 20)
+  leb128_encode_u32(content, type_idx)
+  emit_raw_content(buf, content)
+}
+
 /// #1230 M1b-3c-1b: standalone memory-hosting core module (mirrors
 /// spawned_future/component.wat's `$memhost`) -- exists purely so a
 /// concrete memory instance is available to hand to every async canon
@@ -2201,6 +2386,653 @@ export fn comp_emit_component_wasm_async_spawned_future(export_name: String, com
 /// `comp_result_valtype` must be comp_valtype_u32; anything else throws.
 export fn comp_emit_component_wasm_async_concurrent_awaits(export_name: String, comp_result_valtype: Int) -> Bytes with { Error } {
   comp_emit_self_contained_async_component(export_name, comp_result_valtype, comp_generate_concurrent_awaits_guest_core_module(), "concurrent-awaits")
+}
+
+/// ADR-0089 step 2 (#1218): guest core module for the SELF-CONTAINED
+/// future<u32> value round-trip -- a byte-level port of
+/// tools/wasip3_component_probe/future_value/component.wat's $guest. One
+/// task, no host import, no subtask:
+///
+///   1. future.new -> packed i64, readable end in the low 32 bits
+///   2. async future.read on the readable end -> BLOCKED (no writer yet)
+///   3. waitable.join(readable, ws)
+///   4. async future.write of 42 -> completes EAGERLY (a read is pending,
+///      so the runtime performs the copy inside the write call)
+///   5. waitable-set.wait -> FUTURE_READ (event code 4) on the readable end
+///   6. load the value from the read buffer, drop both ends then the set,
+///      task.return it
+///
+/// This is the rendezvous the M2c-3 stream spike could not reach with
+/// BLOCKING reads (docs/spec/wasi-p3-async.md §3.3 "self round-trip
+/// deadlocks"): with the `async` canonopt on both copies, one side parks
+/// as a waitable instead of parking the fiber, so a single task completes
+/// the exchange with itself.
+///
+/// Memory layout (shared memhost page): 0 = read buffer (the u32 landing
+/// slot), 4 = write buffer (pre-loaded with 42), 16 = waitable-set.wait
+/// payload area. Unexpected statuses are reported through task.return
+/// rather than traps, with distinctive values -- 1000 + low result bits
+/// (read did not block), 2015 (write came back BLOCKED), 3000 + event
+/// code (wait delivered something other than FUTURE_READ).
+///
+/// Import func indices 0-9, local func 10 = `run` (exported):
+/// 0=[future-new-0]make, 1=[async-lower][future-read-0]make,
+/// 2=[async-lower][future-write-0]make, 3=[future-drop-readable-0]make,
+/// 4=[future-drop-writable-0]make, 5=[waitable-set-new],
+/// 6=[waitable-join], 7=[waitable-set-wait], 8=[waitable-set-drop],
+/// 9=[task-return]run. The future.* import names follow the wit-bindgen
+/// convention the future_value probe captured ([future-<op>-N]<func>) for
+/// documentation value only -- this emitter authors both sides of the
+/// instantiation, so the strings just have to agree with the composer's.
+fn comp_generate_future_value_guest_core_module() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  // types: 0 ()->(i64) future.new; 1 (i32,i32)->(i32) future.read/write &
+  // ws_wait; 2 (i32)->() drops & task_return; 3 ()->(i32) ws_new;
+  // 4 (i32,i32)->() waitable_join; 5 ()->() run.
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 6)
+  emit_func_type_raw(tc, array_empty(), [
+    126
+  ])
+  emit_func_type_raw(tc, [
+    127,
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127
+  ], array_empty())
+  emit_func_type_raw(tc, array_empty(), [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127,
+    127
+  ], array_empty())
+  emit_func_type_raw(tc, array_empty(), array_empty())
+  bytebuf_push_section(out, 1, tc)
+  // imports: 10 core funcs (indices 0-9) + the shared memhost memory
+  // (imported, not declared -- every async canon built-in's (memory ...)
+  // option must reference the same memory instance the guest reads/writes
+  // through; see comp_generate_spawned_future_guest_core_module).
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, 11)
+  emit_name(ic, "$root")
+  emit_name(ic, "[future-new-0]make")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 0)
+  emit_name(ic, "$root")
+  emit_name(ic, "[async-lower][future-read-0]make")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "$root")
+  emit_name(ic, "[async-lower][future-write-0]make")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "$root")
+  emit_name(ic, "[future-drop-readable-0]make")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "$root")
+  emit_name(ic, "[future-drop-writable-0]make")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-new]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 3)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-join]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 4)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-wait]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-drop]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "[export]$root")
+  emit_name(ic, "[task-return]run")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "env")
+  emit_name(ic, "memory")
+  bytebuf_push(ic, 2)
+  bytebuf_push(ic, 0)
+  leb128_encode_u32(ic, 1)
+  bytebuf_push_section(out, 2, ic)
+  emit_function_section(out, [
+    5
+  ])
+  emit_export_section(out, "run", 10)
+  // Code section built by hand (same convention as the spawned-future
+  // guest: the shared emit_code_section helpers cannot declare typed
+  // locals). run's locals: 0=packed (the only i64), 1=readable, 2=writable,
+  // 3=st, 4=ws, 5=ev.
+  let code_sec = bytebuf_new()
+  leb128_encode_u32(code_sec, 1)
+  let body = bytebuf_new()
+  leb128_encode_u32(body, 2)
+  leb128_encode_u32(body, 1)
+  bytebuf_push(body, 126)
+  leb128_encode_u32(body, 5)
+  bytebuf_push(body, 127)
+  // packed = future.new(); readable = low 32 bits, writable = high 32.
+  emit_call(body, 0)
+  emit_local_set(body, 0)
+  emit_local_get(body, 0)
+  emit_i32_wrap_i64(body)
+  emit_local_set(body, 1)
+  emit_local_get(body, 0)
+  emit_i64_const(body, 32)
+  emit_i64_shr_s(body)
+  emit_i32_wrap_i64(body)
+  emit_local_set(body, 2)
+  // stage the value to send: mem[4] = 42
+  emit_i32_const(body, 4)
+  emit_i32_const(body, 42)
+  emit_i32_store(body, 2, 0)
+  // st = future.read(readable, 0) -- must block (no writer yet)
+  emit_local_get(body, 1)
+  emit_i32_const(body, 0)
+  emit_call(body, 1)
+  emit_local_set(body, 3)
+  emit_local_get(body, 3)
+  emit_i32_const(body, -1)
+  emit_i32_ne(body)
+  emit_if_void(body)
+  emit_i32_const(body, 1000)
+  emit_local_get(body, 3)
+  emit_i32_const(body, 15)
+  emit_i32_and(body)
+  emit_i32_add(body)
+  emit_call(body, 9)
+  emit_return(body)
+  emit_end(body)
+  // register the pending read's waitable before writing
+  emit_call(body, 5)
+  emit_local_set(body, 4)
+  emit_local_get(body, 1)
+  emit_local_get(body, 4)
+  emit_call(body, 6)
+  // st = future.write(writable, 4) -- a read is pending, so the copy
+  // happens inside this call; anything except BLOCKED is acceptable
+  emit_local_get(body, 2)
+  emit_i32_const(body, 4)
+  emit_call(body, 2)
+  emit_local_set(body, 3)
+  emit_local_get(body, 3)
+  emit_i32_const(body, -1)
+  emit_i32_eq(body)
+  emit_if_void(body)
+  emit_i32_const(body, 2015)
+  emit_call(body, 9)
+  emit_return(body)
+  emit_end(body)
+  // collect the pending read's completion event (FUTURE_READ = 4)
+  emit_local_get(body, 4)
+  emit_i32_const(body, 16)
+  emit_call(body, 7)
+  emit_local_set(body, 5)
+  emit_local_get(body, 5)
+  emit_i32_const(body, 4)
+  emit_i32_ne(body)
+  emit_if_void(body)
+  emit_i32_const(body, 3000)
+  emit_local_get(body, 5)
+  emit_i32_add(body)
+  emit_call(body, 9)
+  emit_return(body)
+  emit_end(body)
+  // teardown: drop the ends BEFORE the set (the readable end is a member
+  // of the set; dropping a set that still has members traps with
+  // "resource has children" -- same ordering rule the spawned-future
+  // epilogue pinned for subtask.drop vs waitable-set.drop), then return
+  // the value that landed in the read buffer.
+  emit_local_get(body, 1)
+  emit_call(body, 3)
+  emit_local_get(body, 2)
+  emit_call(body, 4)
+  emit_local_get(body, 4)
+  emit_call(body, 8)
+  emit_i32_const(body, 0)
+  emit_i32_load(body, 2, 0)
+  emit_call(body, 9)
+  bytebuf_push(body, 11)
+  leb128_encode_u32(code_sec, Bytes::length(body))
+  bytebuf_push_buf(code_sec, body)
+  bytebuf_push_section(out, 10, code_sec)
+  bytebuf_to_bytes(out)
+}
+
+/// ADR-0089 step 2 (#1218): fixed-shape component exercising the literal
+/// `future.*` canonical built-ins end to end -- the canon family the
+/// future_value probe measured by name (step 1) and this milestone makes
+/// the compiler able to EMIT. Self-contained: no component import at all
+/// (unlike the spawned-future/concurrent-awaits shapes, whose canon lower
+/// needs a host async import), so it runs under plain
+/// `wasmtime --invoke run()` with
+/// `-W component-model-more-async-builtins=y` (still feature-gated in
+/// wasmtime 47; the other async flags alone reject the future.* canons).
+///
+/// Byte shapes verified via `wasm-tools dump` against the probe's
+/// compiled output; runtime behavior (returns 42 through a genuine
+/// BLOCKED read -> waitable-set wait -> FUTURE_READ event cycle) is gated
+/// by scripts/test_future_value_component_gate.sh.
+///
+/// Core module indices: 0=guest, 1=memhost. Core instance indices:
+/// 0=memhost, 1=root ($root bindings), 2=export-root, 3=env, 4=guest.
+/// Core func indices: 0=future.new, 1=future.read, 2=future.write,
+/// 3=future.drop-readable, 4=future.drop-writable, 5=task-return,
+/// 6=waitable-set.new, 7=waitable.join, 8=waitable-set.wait,
+/// 9=waitable-set.drop, 10=alias(guest-inst, "run"). Component type
+/// indices: 0=(future u32), 1=the export's async functype. Component func
+/// indices: 0=the lifted "run" (no imports precede it).
+///
+/// `comp_result_valtype` must be comp_valtype_u32: it is both the future's
+/// payload type and the task.return result type, and the guest core module
+/// is hard-coded to the i32 lowering of both (same guard rationale as
+/// comp_emit_self_contained_async_component).
+export fn comp_emit_component_wasm_future_value(export_name: String, comp_result_valtype: Int) -> Bytes with { Error } {
+  if comp_result_valtype != comp_valtype_u32 {
+    throw("component(future-value): only comp_valtype_u32 (\{comp_valtype_u32}) is supported, got \{comp_result_valtype} -- the guest core module is hard-coded to an i32-shaped future payload and result")
+  }
+  else {
+    ()
+  }
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  emit_core_module_section(buf, comp_generate_future_value_guest_core_module())
+  emit_core_module_section(buf, comp_generate_memhost_module())
+  let memhost_inst = 0
+  emit_core_instance_instantiate_section(buf, 1, array_empty())
+  let mem_alias_idx = 0
+  emit_alias_section(buf, memhost_inst, [
+    "memory"
+  ], [
+    core_sort_mem
+  ])
+  let future_type_idx = 0
+  emit_comp_future_type_section(buf, comp_result_valtype)
+  emit_canon_future_new(buf, future_type_idx)
+  emit_canon_future_read(buf, future_type_idx, mem_alias_idx)
+  emit_canon_future_write(buf, future_type_idx, mem_alias_idx)
+  emit_canon_future_drop_readable(buf, future_type_idx)
+  emit_canon_future_drop_writable(buf, future_type_idx)
+  emit_canon_task_return(buf, comp_result_valtype)
+  emit_canon_waitable_set_new(buf)
+  emit_canon_waitable_join(buf)
+  emit_canon_waitable_set_wait(buf, mem_alias_idx)
+  emit_canon_waitable_set_drop(buf)
+  let root_inst = 1
+  emit_core_instance_from_exports(buf, 1, [
+    9
+  ], [
+    "[future-new-0]make",
+    "[async-lower][future-read-0]make",
+    "[async-lower][future-write-0]make",
+    "[future-drop-readable-0]make",
+    "[future-drop-writable-0]make",
+    "[waitable-set-new]",
+    "[waitable-join]",
+    "[waitable-set-wait]",
+    "[waitable-set-drop]"
+  ], [
+    0,
+    1,
+    2,
+    3,
+    4,
+    6,
+    7,
+    8,
+    9
+  ])
+  let export_root_inst = 2
+  emit_core_instance_from_exports(buf, 1, [
+    1
+  ], [
+    "[task-return]run"
+  ], [
+    5
+  ])
+  emit_core_instance_from_exports_sorted(buf, [
+    "memory"
+  ], [
+    core_sort_mem
+  ], [
+    mem_alias_idx
+  ])
+  let env_inst = 3
+  let guest_inst = 4
+  emit_core_instance_instantiate_args(buf, 0, [
+    "$root",
+    "[export]$root",
+    "env"
+  ], [
+    root_inst,
+    export_root_inst,
+    env_inst
+  ])
+  emit_comp_async_functype_section(buf, comp_result_valtype)
+  let run_func_alias_idx = 10
+  emit_alias_section(buf, guest_inst, [
+    "run"
+  ], [
+    core_sort_func
+  ])
+  emit_canon_lift_async_section(buf, run_func_alias_idx, 1)
+  emit_comp_export_section(buf, export_name, 0)
+  bytebuf_to_bytes(buf)
+}
+
+/// ADR-0089 step 2 (#1218): guest core module for the SELF-CONTAINED
+/// stream<u8> round-trip -- a byte-level port of
+/// tools/wasip3_component_probe/stream_value/component.wat's $guest. Same
+/// single-task rendezvous as comp_generate_future_value_guest_core_module
+/// (async read BLOCKED -> join -> async write completes eagerly -> wait ->
+/// STREAM_READ), with the stream-specific differences: read/write carry an
+/// element COUNT (core sig (handle, ptr, n) -> status), the completion
+/// status packs (amount << 4) | code, and the expected event code is
+/// STREAM_READ = 2. This probe/emitter pair moves exactly 1 element (the
+/// byte 42).
+///
+/// Import func indices 0-9, local func 10 = `run` (exported):
+/// 0=[stream-new-0]pipe, 1=[async-lower][stream-read-0]pipe,
+/// 2=[async-lower][stream-write-0]pipe, 3=[stream-drop-readable-0]pipe,
+/// 4=[stream-drop-writable-0]pipe, 5=[waitable-set-new],
+/// 6=[waitable-join], 7=[waitable-set-wait], 8=[waitable-set-drop],
+/// 9=[task-return]run. Memory layout: 0 = 1-byte read landing slot,
+/// 4 = staged write byte, 16 = wait payload area. Diagnostics through
+/// task.return: 1000 + low bits (read did not block), 2015 (write
+/// blocked), 3000 + event code (not STREAM_READ).
+fn comp_generate_stream_value_guest_core_module() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  // types: 0 ()->(i64) stream.new; 1 (i32,i32,i32)->(i32)
+  // stream.read/write; 2 (i32)->() drops & task_return; 3 ()->(i32)
+  // ws_new; 4 (i32,i32)->() waitable_join; 5 ()->() run;
+  // 6 (i32,i32)->(i32) ws_wait.
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 7)
+  emit_func_type_raw(tc, array_empty(), [
+    126
+  ])
+  emit_func_type_raw(tc, [
+    127,
+    127,
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127
+  ], array_empty())
+  emit_func_type_raw(tc, array_empty(), [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127,
+    127
+  ], array_empty())
+  emit_func_type_raw(tc, array_empty(), array_empty())
+  emit_func_type_raw(tc, [
+    127,
+    127
+  ], [
+    127
+  ])
+  bytebuf_push_section(out, 1, tc)
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, 11)
+  emit_name(ic, "$root")
+  emit_name(ic, "[stream-new-0]pipe")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 0)
+  emit_name(ic, "$root")
+  emit_name(ic, "[async-lower][stream-read-0]pipe")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "$root")
+  emit_name(ic, "[async-lower][stream-write-0]pipe")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "$root")
+  emit_name(ic, "[stream-drop-readable-0]pipe")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "$root")
+  emit_name(ic, "[stream-drop-writable-0]pipe")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-new]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 3)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-join]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 4)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-wait]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 6)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-drop]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "[export]$root")
+  emit_name(ic, "[task-return]run")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "env")
+  emit_name(ic, "memory")
+  bytebuf_push(ic, 2)
+  bytebuf_push(ic, 0)
+  leb128_encode_u32(ic, 1)
+  bytebuf_push_section(out, 2, ic)
+  emit_function_section(out, [
+    5
+  ])
+  emit_export_section(out, "run", 10)
+  // run's locals: 0=packed (i64), 1=readable, 2=writable, 3=st, 4=ws, 5=ev.
+  let code_sec = bytebuf_new()
+  leb128_encode_u32(code_sec, 1)
+  let body = bytebuf_new()
+  leb128_encode_u32(body, 2)
+  leb128_encode_u32(body, 1)
+  bytebuf_push(body, 126)
+  leb128_encode_u32(body, 5)
+  bytebuf_push(body, 127)
+  // packed = stream.new(); readable = low 32 bits, writable = high 32.
+  emit_call(body, 0)
+  emit_local_set(body, 0)
+  emit_local_get(body, 0)
+  emit_i32_wrap_i64(body)
+  emit_local_set(body, 1)
+  emit_local_get(body, 0)
+  emit_i64_const(body, 32)
+  emit_i64_shr_s(body)
+  emit_i32_wrap_i64(body)
+  emit_local_set(body, 2)
+  // stage the byte to send: mem[4] = 42
+  emit_i32_const(body, 4)
+  emit_i32_const(body, 42)
+  emit_i32_store8(body, 0, 0)
+  // st = stream.read(readable, 0, 1) -- must block (no writer yet)
+  emit_local_get(body, 1)
+  emit_i32_const(body, 0)
+  emit_i32_const(body, 1)
+  emit_call(body, 1)
+  emit_local_set(body, 3)
+  emit_local_get(body, 3)
+  emit_i32_const(body, -1)
+  emit_i32_ne(body)
+  emit_if_void(body)
+  emit_i32_const(body, 1000)
+  emit_local_get(body, 3)
+  emit_i32_const(body, 15)
+  emit_i32_and(body)
+  emit_i32_add(body)
+  emit_call(body, 9)
+  emit_return(body)
+  emit_end(body)
+  // register the pending read's waitable before writing
+  emit_call(body, 5)
+  emit_local_set(body, 4)
+  emit_local_get(body, 1)
+  emit_local_get(body, 4)
+  emit_call(body, 6)
+  // st = stream.write(writable, 4, 1) -- copies against the pending read
+  emit_local_get(body, 2)
+  emit_i32_const(body, 4)
+  emit_i32_const(body, 1)
+  emit_call(body, 2)
+  emit_local_set(body, 3)
+  emit_local_get(body, 3)
+  emit_i32_const(body, -1)
+  emit_i32_eq(body)
+  emit_if_void(body)
+  emit_i32_const(body, 2015)
+  emit_call(body, 9)
+  emit_return(body)
+  emit_end(body)
+  // collect the pending read's completion event (STREAM_READ = 2)
+  emit_local_get(body, 4)
+  emit_i32_const(body, 16)
+  emit_call(body, 7)
+  emit_local_set(body, 5)
+  emit_local_get(body, 5)
+  emit_i32_const(body, 2)
+  emit_i32_ne(body)
+  emit_if_void(body)
+  emit_i32_const(body, 3000)
+  emit_local_get(body, 5)
+  emit_i32_add(body)
+  emit_call(body, 9)
+  emit_return(body)
+  emit_end(body)
+  // teardown (ends before the set), then return the delivered byte
+  emit_local_get(body, 1)
+  emit_call(body, 3)
+  emit_local_get(body, 2)
+  emit_call(body, 4)
+  emit_local_get(body, 4)
+  emit_call(body, 8)
+  emit_i32_const(body, 0)
+  emit_i32_load8_u(body, 0, 0)
+  emit_call(body, 9)
+  bytebuf_push(body, 11)
+  leb128_encode_u32(code_sec, Bytes::length(body))
+  bytebuf_push_buf(code_sec, body)
+  bytebuf_push_section(out, 10, code_sec)
+  bytebuf_to_bytes(out)
+}
+
+/// ADR-0089 step 2 (#1218): fixed-shape component exercising the literal
+/// `stream.*` canonical built-ins end to end -- the stream twin of
+/// comp_emit_component_wasm_future_value, byte-verified against
+/// tools/wasip3_component_probe/stream_value/component.wat (wasmtime 47,
+/// returns 42 with -W component-model-more-async-builtins=y). Identical
+/// composition and index layout; the differences are the (stream u8)
+/// component type (elem = comp_valtype_u8 -- the ByteStream element type,
+/// NOT the task.return result type, which stays u32) and the stream guest
+/// module. Gate: scripts/test_stream_value_component_gate.sh.
+export fn comp_emit_component_wasm_stream_value(export_name: String, comp_result_valtype: Int) -> Bytes with { Error } {
+  if comp_result_valtype != comp_valtype_u32 {
+    throw("component(stream-value): only comp_valtype_u32 (\{comp_valtype_u32}) is supported, got \{comp_result_valtype} -- the guest core module is hard-coded to a u8 element and an i32-shaped result")
+  }
+  else {
+    ()
+  }
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  emit_core_module_section(buf, comp_generate_stream_value_guest_core_module())
+  emit_core_module_section(buf, comp_generate_memhost_module())
+  let memhost_inst = 0
+  emit_core_instance_instantiate_section(buf, 1, array_empty())
+  let mem_alias_idx = 0
+  emit_alias_section(buf, memhost_inst, [
+    "memory"
+  ], [
+    core_sort_mem
+  ])
+  let stream_type_idx = 0
+  emit_comp_stream_type_section(buf, comp_valtype_u8)
+  emit_canon_stream_new(buf, stream_type_idx)
+  emit_canon_stream_read(buf, stream_type_idx, mem_alias_idx)
+  emit_canon_stream_write(buf, stream_type_idx, mem_alias_idx)
+  emit_canon_stream_drop_readable(buf, stream_type_idx)
+  emit_canon_stream_drop_writable(buf, stream_type_idx)
+  emit_canon_task_return(buf, comp_result_valtype)
+  emit_canon_waitable_set_new(buf)
+  emit_canon_waitable_join(buf)
+  emit_canon_waitable_set_wait(buf, mem_alias_idx)
+  emit_canon_waitable_set_drop(buf)
+  let root_inst = 1
+  emit_core_instance_from_exports(buf, 1, [
+    9
+  ], [
+    "[stream-new-0]pipe",
+    "[async-lower][stream-read-0]pipe",
+    "[async-lower][stream-write-0]pipe",
+    "[stream-drop-readable-0]pipe",
+    "[stream-drop-writable-0]pipe",
+    "[waitable-set-new]",
+    "[waitable-join]",
+    "[waitable-set-wait]",
+    "[waitable-set-drop]"
+  ], [
+    0,
+    1,
+    2,
+    3,
+    4,
+    6,
+    7,
+    8,
+    9
+  ])
+  let export_root_inst = 2
+  emit_core_instance_from_exports(buf, 1, [
+    1
+  ], [
+    "[task-return]run"
+  ], [
+    5
+  ])
+  emit_core_instance_from_exports_sorted(buf, [
+    "memory"
+  ], [
+    core_sort_mem
+  ], [
+    mem_alias_idx
+  ])
+  let env_inst = 3
+  let guest_inst = 4
+  emit_core_instance_instantiate_args(buf, 0, [
+    "$root",
+    "[export]$root",
+    "env"
+  ], [
+    root_inst,
+    export_root_inst,
+    env_inst
+  ])
+  emit_comp_async_functype_section(buf, comp_result_valtype)
+  let run_func_alias_idx = 10
+  emit_alias_section(buf, guest_inst, [
+    "run"
+  ], [
+    core_sort_func
+  ])
+  emit_canon_lift_async_section(buf, run_func_alias_idx, 1)
+  emit_comp_export_section(buf, export_name, 0)
+  bytebuf_to_bytes(buf)
 }
 
 /// #537: core:sort for globals (func=0, table=1, mem=2, global=3).

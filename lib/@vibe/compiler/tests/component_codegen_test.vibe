@@ -15,6 +15,8 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm_async_spawned_future,
   comp_emit_component_wasm_async_trampolined,
   comp_emit_component_wasm_async_trampolined_p1,
+  comp_emit_component_wasm_future_value,
+  comp_emit_component_wasm_stream_value,
   comp_emit_component_wasm_string_handler,
   comp_emit_component_wasm_string_handler_stubbed,
   comp_emit_component_wasm_with_lift,
@@ -908,6 +910,220 @@ test "component async concurrent-awaits: same canon set as spawned-future, diffe
 test "component async concurrent-awaits: rejects a non-u32 result valtype" {
   let rejected = handle {
     let _ = comp_emit_component_wasm_async_concurrent_awaits("run", 120)
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(rejected)
+}
+
+// ADR-0089 step 2 (#1218): the future-value component -- the first emitted
+// shape that uses the literal `future.*` canonical built-ins. Byte shapes
+// below were recovered via `wasm-tools dump` against
+// tools/wasip3_component_probe/future_value/component.wat's compiled
+// output (which returns 42 on wasmtime 47 with
+// -W component-model-more-async-builtins=y), not hand-derived from the
+// spec. Runtime proof (BLOCKED read -> eager write -> FUTURE_READ event ->
+// 42) lives in scripts/test_future_value_component_gate.sh; `vibe test`
+// cannot drive a component.
+test "component future-value: future.* canon set, no host import, no subtask" {
+  let comp = comp_emit_component_wasm_future_value("run", 121)
+  assert(Bytes::get(comp, 0) == 0)
+  assert(Bytes::get(comp, 4) == 13)
+  // component type (future u32): 07 04 01 65 01 79
+  assert(bytes_contains_seq(comp, [
+    7,
+    4,
+    1,
+    101,
+    1,
+    121
+  ]) == 1)
+  // canon future.new ty=0: 08 03 01 15 00
+  assert(bytes_contains_seq(comp, [
+    8,
+    3,
+    1,
+    21,
+    0
+  ]) == 1)
+  // canon future.read ty=0 async (memory 0): 08 07 01 16 00 02 06 03 00
+  assert(bytes_contains_seq(comp, [
+    8,
+    7,
+    1,
+    22,
+    0,
+    2,
+    6,
+    3,
+    0
+  ]) == 1)
+  // canon future.write ty=0 async (memory 0): 08 07 01 17 00 02 06 03 00
+  assert(bytes_contains_seq(comp, [
+    8,
+    7,
+    1,
+    23,
+    0,
+    2,
+    6,
+    3,
+    0
+  ]) == 1)
+  // canon future.drop-readable ty=0: 08 03 01 1a 00
+  assert(bytes_contains_seq(comp, [
+    8,
+    3,
+    1,
+    26,
+    0
+  ]) == 1)
+  // canon future.drop-writable ty=0: 08 03 01 1b 00
+  assert(bytes_contains_seq(comp, [
+    8,
+    3,
+    1,
+    27,
+    0
+  ]) == 1)
+  // task.return canon (u32=121) and the waitable-set machinery ride along
+  assert(bytes_contains_seq(comp, [
+    8,
+    5,
+    1,
+    9,
+    0,
+    121,
+    0
+  ]) == 1)
+  assert(component_bytes_contains(comp, "[future-new-0]make") == 1)
+  assert(component_bytes_contains(comp, "[async-lower][future-read-0]make") == 1)
+  assert(component_bytes_contains(comp, "[async-lower][future-write-0]make") == 1)
+  assert(component_bytes_contains(comp, "[future-drop-readable-0]make") == 1)
+  assert(component_bytes_contains(comp, "[future-drop-writable-0]make") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-new]") == 1)
+  assert(component_bytes_contains(comp, "[waitable-join]") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-wait]") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-drop]") == 1)
+  assert(component_bytes_contains(comp, "[task-return]run") == 1)
+  // Self-contained: no host async import, hence no canon lower and no
+  // subtask anywhere in the shape.
+  assert(component_bytes_contains(comp, "get-async") == 0)
+  assert(component_bytes_contains(comp, "[subtask-drop]") == 0)
+  assert(component_bytes_contains(comp, "context-get") == 0)
+  assert(component_bytes_contains(comp, "waitable-set-poll") == 0)
+}
+
+// The future payload valtype and the task.return result valtype are the
+// same hard-coded u32 in the guest module; any other request must throw,
+// same rationale as the other fixed-shape emitters.
+test "component future-value: rejects a non-u32 result valtype" {
+  let rejected = handle {
+    let _ = comp_emit_component_wasm_future_value("run", 120)
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(rejected)
+}
+
+// ADR-0089 step 2 (#1218): the stream-value component -- same rendezvous
+// composition as future-value with the stream.* canon family (opcodes one
+// block apart) and a u8 element type. Byte shapes recovered via
+// `wasm-tools dump` against tools/wasip3_component_probe/stream_value/
+// component.wat; runtime proof lives in
+// scripts/test_stream_value_component_gate.sh.
+test "component stream-value: stream.* canon set with a u8 element type" {
+  let comp = comp_emit_component_wasm_stream_value("run", 121)
+  assert(Bytes::get(comp, 0) == 0)
+  assert(Bytes::get(comp, 4) == 13)
+  // component type (stream u8): 07 04 01 66 01 7d
+  assert(bytes_contains_seq(comp, [
+    7,
+    4,
+    1,
+    102,
+    1,
+    125
+  ]) == 1)
+  // canon stream.new ty=0: 08 03 01 0e 00
+  assert(bytes_contains_seq(comp, [
+    8,
+    3,
+    1,
+    14,
+    0
+  ]) == 1)
+  // canon stream.read ty=0 async (memory 0): 08 07 01 0f 00 02 06 03 00
+  assert(bytes_contains_seq(comp, [
+    8,
+    7,
+    1,
+    15,
+    0,
+    2,
+    6,
+    3,
+    0
+  ]) == 1)
+  // canon stream.write ty=0 async (memory 0): 08 07 01 10 00 02 06 03 00
+  assert(bytes_contains_seq(comp, [
+    8,
+    7,
+    1,
+    16,
+    0,
+    2,
+    6,
+    3,
+    0
+  ]) == 1)
+  // canon stream.drop-readable ty=0: 08 03 01 13 00
+  assert(bytes_contains_seq(comp, [
+    8,
+    3,
+    1,
+    19,
+    0
+  ]) == 1)
+  // canon stream.drop-writable ty=0: 08 03 01 14 00
+  assert(bytes_contains_seq(comp, [
+    8,
+    3,
+    1,
+    20,
+    0
+  ]) == 1)
+  // task.return stays u32 (the element type is u8, the RESULT is not)
+  assert(bytes_contains_seq(comp, [
+    8,
+    5,
+    1,
+    9,
+    0,
+    121,
+    0
+  ]) == 1)
+  assert(component_bytes_contains(comp, "[stream-new-0]pipe") == 1)
+  assert(component_bytes_contains(comp, "[async-lower][stream-read-0]pipe") == 1)
+  assert(component_bytes_contains(comp, "[async-lower][stream-write-0]pipe") == 1)
+  assert(component_bytes_contains(comp, "[stream-drop-readable-0]pipe") == 1)
+  assert(component_bytes_contains(comp, "[stream-drop-writable-0]pipe") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-new]") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-wait]") == 1)
+  assert(component_bytes_contains(comp, "[task-return]run") == 1)
+  // Self-contained, and streams only: no host import, no subtask, no
+  // future.* canon anywhere.
+  assert(component_bytes_contains(comp, "get-async") == 0)
+  assert(component_bytes_contains(comp, "[subtask-drop]") == 0)
+  assert(component_bytes_contains(comp, "[future") == 0)
+}
+
+// Same u32-result guard as every fixed-shape async emitter.
+test "component stream-value: rejects a non-u32 result valtype" {
+  let rejected = handle {
+    let _ = comp_emit_component_wasm_stream_value("run", 120)
     false
   } with Error {
     Throw(_) => true
