@@ -5,18 +5,30 @@
 
 ## export と相対 import
 
-1 ファイル = 1 モジュール。公開したいものに `export`、使う側は選択 import。
+ここが beginner に必要な部分である。まず 1 ファイル = 1 モジュール、公開したいものに
+`export`、使う側は選択 import、という local two-file module を学ぶ。後半の package
+contract / pin / publish は advanced な配布手順なので、必要になるまで読み飛ばしてよい。
 
 ```vibe skip
 // skip: シンタックス一覧 (./lib.vibe と ./subdir はこのリポジトリに実在しない
 // 例示パス) — 動く例は次の run ブロック (support/mathx.vibe から triple を import)
 // support/mathx.vibe
-export fn triple(x: Int) -> Int { x * 3 }
+export fn triple(x: Int) -> Int {
+  x * 3
+}
 
 // 使う側
-import ./support/mathx.vibe { triple }
-import ./lib.vibe { f as renamed }        // rename
-import ./subdir { helper }                // ディレクトリ import -> index.vibe(i)
+import ./support/mathx.vibe {
+  triple
+}
+import ./lib.vibe {
+  f as renamed
+}
+// rename
+import ./subdir {
+  helper
+}
+// ディレクトリ import -> index.vibe(i)
 ```
 
 import パスはエントリファイルの root ディレクトリの外に出られない
@@ -26,8 +38,12 @@ import パスはエントリファイルの root ディレクトリの外に出�
 動かす:
 
 ```vibe run
-import @vibe/prelude { stdout_write }
-import ./support/mathx.vibe { triple }
+import @vibe/prelude {
+  stdout_write
+}
+import ./support/mathx.vibe {
+  triple
+}
 
 fn main with { Stdout } {
   stdout_write("triple(14) = \{triple(14)}\n")
@@ -45,8 +61,12 @@ triple(14) = 42
 (既定 `~/.vibe/lib` — curl インストーラが stdlib をここに置く)。
 
 ```vibe run
-import @vibe/prelude { stdout_write }
-import @vibe/core { sha1, hex_encode }
+import @vibe/prelude {
+  stdout_write
+}
+import @vibe/core {
+  hex_encode, sha1
+}
 
 fn main with { Stdout } {
   stdout_write("length(sha1(\"vibe\")) = \{String::length(sha1("vibe"))}\n")
@@ -59,7 +79,7 @@ length(sha1("vibe")) = 40
 hex_encode("hi") = 6869
 ```
 
-## 契約 (`index.vpkg`) と version
+## Advanced: 契約 (`index.vpkg`) と version
 
 パッケージの境界は `index.vpkg` — 公開 API を bodyless 宣言で列挙した
 **契約**で、実装との一致はコンパイラが照合する。#1128 以降は構造化ヘッダー
@@ -67,14 +87,16 @@ hex_encode("hi") = 6869
 
 ```vibe skip
 // skip: index.vpkg ヘッダー例 (docs/adding-modules.md 参照)
-name = @you/counter
+name = @you / counter
 version = 1.0.0
 description =
-  #|A tiny counter contract
-deps = {}
+"|A tiny counter contract"deps = {
+}
 
-type Counter                       // bodyless: 定義は impl 側
-fn add(x: Int, y: Int) -> Int      // 実装が一致しないとコンパイルエラー
+type Counter
+// bodyless: 定義は impl 側
+fn add(x: Int, y: Int) -> Int
+// 実装が一致しないとコンパイルエラー
 ```
 
 同じ directory の通常 `*.vibe` は暗黙 build root。subdirectory は再帰走査
@@ -84,22 +106,25 @@ fn add(x: Int, y: Int) -> Int      // 実装が一致しないとコンパイル
 `_*.vibe` / `*.draft.vibe` も暗黙 root にはならないが、明示 import された場合は
 同じ shared import を継承し、package hash に含まれる。
 
-## pin — content hash が唯一の真実
+## Advanced: pin — content hash が唯一の真実
 
 再現可能ビルドでは require 行で **内容 hash** を固定する。ビルドは毎回
 オフラインで hash を再検証するので、置き場所や取得経路は信頼しなくてよい。
 
 ```vibe skip
 // skip: require directive は import/export と独立に module header に置く例示
-require @vibe/core 0.2.0 = #pkg:sha1:<40hex>   // `vibe hash` で計算
+require @vibe / core0.2.0 = #pkg: sha1: < 40hex >
+// `vibe hash` で計算
 
-import @vibe/core { sha1 }
+import @vibe/core {
+  sha1
+}
 ```
 
 `VIBE_REQUIRE_PINS=1` (release/publish の freeze) では pin なしの
 dev-mode 解決はエラーになる。
 
-## 配布コマンド (`vibe pkg` / scripts/vibe_pkg.sh)
+## Advanced: 配布コマンド (`vibe pkg` / scripts/vibe_pkg.sh)
 
 インストール済みの toolchain では `vibe pkg <cmd>`、repo 内では
 `scripts/vibe_pkg.sh <cmd>` (同一実装)。publish/yank は transparency log

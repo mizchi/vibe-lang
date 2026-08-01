@@ -1,24 +1,70 @@
 # 05 — エフェクト (vibe の核)
 
-前章: [04 Option と railway](04_option_result.vibe.md)
+前章: [04 Option](04_option.vibe.md)
 
 vibe は**純粋がデフォルト**。副作用は型の `with { ... }` 行 (effect row) で
 宣言し、呼び出し側は `handle` で境界を引くまで伝播する。
 
-## Error 境界 — throw / handle
+## Exception 境界 — perform / handle
+
+**目標の設計**では `Exception` は言語組み込みの、型引数を持たない**非再開
+(abortive) エフェクト**である。`perform Exception::Throw(payload)` は継続を再開せず、
+任意の `T: ToString` を payload にできる。handler arm で `resume` は使えず、その arm の
+値が `handle` の結果になる。この構文は
+[#1279](https://github.com/mizchi/vibe-lang/issues/1279) で追跡中であり、現在の
+コンパイラでは実行しない。
+
+```vibe skip
+// target (#1279): Exception は unparameterized かつ abortive。
+fn risky[T: ToString](x: Int, reason: T) -> Int with { Exception } {
+  if x == 0 {
+    perform Exception::Throw(reason)
+  }
+  100 / x
+}
+
+fn main with { Stdout } {
+  let safe = handle {
+    risky(0, 404)
+  } with Exception {
+    Throw(payload) => {
+      stdout_write("exception: \{ToString::to_string(payload)}\n")
+      -1
+    }
+  }
+  stdout_write("safe = \{safe}\n")
+}
+```
+
+## 現行互換: Error 境界
+
+現在は `Error` と String payload の互換 API を使う。これは上の目標構文ではなく、
+現在のコンパイラで検証される例である。
 
 ```vibe run
-import @vibe/prelude { stdout_write }
+import @vibe/prelude {
+  stdout_write
+}
 
 fn risky(x: Int) -> Int with { Error } {
-  if x == 0 { throw("division by zero") }
+  if x == 0 {
+    throw("division by zero")
+  }
   100 / x
 }
 
 fn main with { Stdout } {
   // handle がエフェクトを捕まえて値に落とす
-  let safe = handle { risky(0) } with Error { Throw(_msg) => -1 }
-  let fine = handle { risky(4) } with Error { Throw(_msg) => -1 }
+  let safe = handle {
+    risky(0)
+  } with Error {
+    Throw(_msg) => -1
+  }
+  let fine = handle {
+    risky(4)
+  } with Error {
+    Throw(_msg) => -1
+  }
   stdout_write("safe = \{safe}\n")
   stdout_write("fine = \{fine}\n")
 }
@@ -29,15 +75,14 @@ safe = -1
 fine = 25
 ```
 
-エフェクト行を書かずに `throw` を呼ぶとコンパイルエラー — 「この関数は失敗
-しうる」が型で強制されるのが railway (`Option`) との違い。
-
 ## ユーザ定義エフェクト — perform / resume
 
 エフェクトは「操作の宣言」。実装 (handler) は呼び出し側が与える。
 
 ```vibe run
-import @vibe/prelude { stdout_write }
+import @vibe/prelude {
+  stdout_write
+}
 
 effect Ask {
   Value(String) -> Int
@@ -49,7 +94,9 @@ fn answer_of(q: String) -> Int with { Ask } {
 
 fn main with { Stdout } {
   // handler が resume(v) で perform 地点に値を返す (one-shot tail-resumptive)
-  let v = handle { answer_of("life") } with Ask {
+  let v = handle {
+    answer_of("life")
+  } with Ask {
     Value(_q) => resume(41)
   }
   stdout_write("v = \{v}\n")
@@ -60,8 +107,10 @@ fn main with { Stdout } {
 v = 42
 ```
 
-依存注入・モック・状態・ロガー — 「実装を外から差し替えたいもの」は全部
-この形で書ける。テストでは handler を差し替えるだけでよい。
+ユーザー定義 effect は、実装を呼び出し側から差し替える必要がある場合の advanced な
+手段である。これは resumptive かつ one-shot/tail-resumptive という制約を持つ。通常の
+失敗は `Exception`（実装後）を使い、局所的な状態はまず `let mut` を検討する。判断基準は
+[Effects vs let mut](../guide/when-to-use-effects.md) を参照。
 
 ## エフェクト多相
 
@@ -69,7 +118,9 @@ v = 42
 高階関数が書ける。
 
 ```vibe run
-import @vibe/prelude { stdout_write }
+import @vibe/prelude {
+  stdout_write
+}
 
 fn apply_twice(f~: (Int) -> Int with { e }, x~: Int) -> Int with { e } {
   f(f(x))
