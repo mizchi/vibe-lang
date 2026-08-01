@@ -131,6 +131,8 @@ import @vibe/compiler/codegen/common_base {
   StrTable,
   agg_info_of_type_expr,
   builtin_registry,
+  codegen_body_cache_new,
+  codegen_body_cache_record,
   compile_inline_wat,
   compute_agg_returning,
   ctor_sorted_index,
@@ -2635,6 +2637,10 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // Seeded into the ctx and checked at every allocation (compile_lambda), not
   // used: while plan and walk agree, swapping compile_lambda over to the
   // planned value cannot change a byte. This is the evidence for that swap.
+  // #1259 step 7: harvested per-function codegen output. Local for now --
+  // nothing reads it yet, and the harvest is what has to be proven
+  // output-neutral before an entry point hands it out or takes one back.
+  let body_cache_out = codegen_body_cache_new()
   let lambda_plan_cell = lc_fresh_int_array()
   Array::push(lambda_plan_cell, 0)
   // #1259 step 7: the frozen plan, built BEFORE any body is emitted.
@@ -3407,6 +3413,20 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       Array::push(meta_i32, 0)
       Array::push(meta_i64, extra)
     }
+    // #1259 step 7: harvest this function's codegen output as a VALUE.
+    //
+    // Everything the whole-program assembly needs from compiling function `bi`
+    // is now in hand: its encoded body, its two meta entries, and the lambdas
+    // it produced -- which sit at their PLANNED indices (#1275/#1277), so the
+    // table_slot immediates already baked into the body refer to the slots a
+    // full assembly will install them at. That is what makes a body compiled
+    // in isolation reusable, and it is why the lambda plan had to be frozen
+    // first.
+    //
+    // Harvest is unconditional and cheap (it copies references into parallel
+    // arrays, it does not re-encode). The cache is only READ when a caller
+    // supplies one.
+    codegen_body_cache_record(body_cache_out, bi, bodies, meta_i32, meta_i64, lt_w, Array::get(lambda_bases, bi), lambda_planned_end)
     bi = bi + 1
   }
   let num_lambdas = Array::length(lt_w.bodies)
