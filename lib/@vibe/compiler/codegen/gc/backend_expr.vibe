@@ -1092,8 +1092,71 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       }
       emit_call(buf, arr_new_idx)
       emit_local_set(buf, result_local)
-      let nl1 = ce(buf, iter_expr, local_names, next_local + 3, ld)
+      let nl1pre = ce(buf, iter_expr, local_names, next_local + 3, ld)
       emit_local_set(buf, arr_local)
+      // #1295: String is a packed `(offset << 32) | length` value, not an
+      // Array heap pointer. Detect nonempty packed strings and materialize
+      // their character codes before entering the existing Array loop.
+      // Array pointers have zero high bits, so they bypass this conversion.
+      let (str_len_idx, _, _) = resolve_func(ctx.func_table, "String::length")
+      let (str_ccat_idx, _, _) = resolve_func(ctx.func_table, "String::char_code_at")
+      let conv_local = nl1pre
+      let j_local = nl1pre + 1
+      Array::push(local_names, "__forin_string_chars")
+      Array::push(local_names, "__forin_string_i")
+      let nl1 = nl1pre + 2
+      emit_local_get(buf, arr_local)
+      emit_i64_const(buf, 32)
+      emit_i64_shr_s(buf)
+      emit_i64_eqz(buf)
+      emit_if_void(buf)
+      emit_else(buf)
+      if ctx.func_offset > 0 && arr_new_idx >= ctx.func_offset {
+        emit_i64_const(buf, 0)
+      } else {
+        ()
+      }
+      emit_call(buf, arr_new_idx)
+      emit_local_set(buf, conv_local)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, j_local)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, j_local)
+      emit_local_get(buf, arr_local)
+      if ctx.func_offset > 0 && str_len_idx >= ctx.func_offset {
+        emit_i64_const(buf, 0)
+      } else {
+        ()
+      }
+      emit_call(buf, str_len_idx)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, conv_local)
+      emit_local_get(buf, arr_local)
+      emit_local_get(buf, j_local)
+      if ctx.func_offset > 0 && str_ccat_idx >= ctx.func_offset {
+        emit_i64_const(buf, 0)
+      } else {
+        ()
+      }
+      emit_call(buf, str_ccat_idx)
+      if ctx.func_offset > 0 && arr_push_idx >= ctx.func_offset {
+        emit_i64_const(buf, 0)
+      } else {
+        ()
+      }
+      emit_call(buf, arr_push_idx)
+      emit_local_get(buf, j_local)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, j_local)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, conv_local)
+      emit_local_set(buf, arr_local)
+      emit_end(buf)
       emit_i64_const(buf, 0)
       emit_local_set(buf, i_local)
       emit_block_void(buf)
