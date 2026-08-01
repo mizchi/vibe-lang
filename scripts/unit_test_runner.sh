@@ -154,8 +154,13 @@ run_one() {
     if [ -s "$out" ]; then
       # timeout: a miscompiled test that loops forever must fail the FILE,
       # not hang the whole battery (a nested-loop break-depth bug once
-      # spun a single _start for an hour with no per-test bound).
-      if VIBE_PREOPEN_DIR="$ROOT_DIR" timeout 120 bash "$RUNNER" --invoke _start "$out" >/dev/null 2>&1; then
+      # spun a single _start for an hour with no per-test bound). 300s
+      # matches the compile-phase bound: the s5 self-compile tests run two
+      # full compiler self-compiles in one _start, ~19s unloaded but up to
+      # ~8x slower under the CI shard's 4-way fan-out of the heaviest files
+      # -- 120s tripped exactly that way on a 4-vCPU runner (#1321), and a
+      # run-phase timeout is reported as a trap and never retried.
+      if VIBE_PREOPEN_DIR="$ROOT_DIR" timeout 300 bash "$RUNNER" --invoke _start "$out" >/dev/null 2>&1; then
         rm -f "$out" "$out.diag"; return 0
       fi
       LAST_DIAG="(test assertion trapped at runtime)"
