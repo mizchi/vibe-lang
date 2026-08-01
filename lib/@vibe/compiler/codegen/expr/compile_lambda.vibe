@@ -32,7 +32,8 @@ import @vibe/compiler/codegen/common_analysis {
   emit_closure_resolve,
   emit_i64_extend_i32_u,
   is_mut_captured_in,
-  md_consume_count,
+  md_consume_count_pre,
+  md_shadow_filtered_bfns,
   scope_tail_proj_root
 }
 
@@ -277,6 +278,7 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   let lam_ref_cells = array_empty()
   let mut ci3 = 0
   let mut lam_nl = lam_nl_start
+  let cl_md_bfns = md_shadow_filtered_bfns(fn_body, ctx.borrow_arg0_user)
   while ci3 < num_captures {
     let cap_local = lam_nl
     let cap_name = Array::get(captures, ci3)
@@ -309,7 +311,7 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     // still drops it exactly once). Ref-cell captures (#699) own their cell via
     // the env store and are reclaimed by the closure's class-7 drop; skip them.
     if ctx.enable_rc && !array_contains_str(ctx.ref_cell_names, cap_name) {
-      let cap_consumes = md_consume_count(fn_body, cap_name)
+      let cap_consumes = md_consume_count_pre(fn_body, cap_name, cl_md_bfns)
       let mut cdup = 0
       while cdup < cap_consumes {
         emit_rc_dup_guarded(lam_buf, cap_local, ctx.rc_shadow)
