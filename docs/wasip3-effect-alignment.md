@@ -194,7 +194,18 @@ trampoline を将来 `wasi:http/service` の
    builtin と同名の top-level `fn sleep` は従来 compiler でも arity
    miscompile ("not enough arguments on the stack") — evidence pass が
    builtin nominal row で分類し codegen が bound fn に dispatch する齟齬。
-   合成 fn を別名にして回避、修正は別チケット対象
+   合成 fn を別名にして回避、修正は別チケット対象。
+   **increment 2 landed**: `handle ... with Async` が builtin row を
+   discharge できるようになった — checker
+   (`checker_effects.vibe` の EHandle arm が `Async::` arm を持つ handle の
+   body を `in_async` で検査) + codegen keying 拡張
+   (`lc_expr_has_async_handle`: handle-with-Async を含むプログラムでも
+   sleep→perform retarget が発火。boundary wrap は entry-row キーのまま)。
+   これで **sleep が仮想化可能**になった (handler が `Suspend(-ms)` を
+   受けて時間を偽装できる — テスト用仮想クロックの入口)。gate §77 に
+   discharge fixture (7 + 20 + 15 = 42、handler 実受信 + 非 blocking) を
+   追加。arm 自身の body は async context ではない (handled computation の
+   外で走る) ことも checker test で pin
 4. `Future[T]` 実体化(Decision 2)→ AsyncIter/ByteStream の p3 接続
    (Decision 3)→ wit_gen(Decision 5)→ serve handler の async func 化
 

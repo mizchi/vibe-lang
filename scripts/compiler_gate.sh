@@ -7827,6 +7827,25 @@ if ! grep -qF 'mixing the step convention' "$asb89dir/neg.wasm.diag" 2>/dev/null
   cat "$asb89dir/neg.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# Increment 2 (#1218): a `handle ... with Async` discharges the builtin
+# row (the enclosing fn needs no `with { Async }`) and the handler REALLY
+# receives the operations -- sleep(20)+sleep(15) reach the arm as
+# Suspend(-20)/Suspend(-15) (debt-payload convention), accumulate to 35,
+# and 7 + 35 = 42 (async_sleep_handler_discharge_test.vibe).
+cp fixtures/async_sleep_handler_discharge_test.vibe "$asb89dir/dis.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asb89dir/dis.vibe" "$asb89dir/dis.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$asb89dir/dis.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_sleep_handler_discharge_test.vibe did not compile -- handle-with-Async must discharge the builtin row (ADR-0089 D1 increment 2)" >&2
+  cat "$asb89dir/dis.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+asb89_dis_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/dis.wasm" 2>/dev/null | tail -1)"
+if [ "$asb89_dis_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_sleep_handler_discharge_test.vibe got '$asb89_dis_out' (want 42 -- the user handler must intercept the sleeps)" >&2
+  exit 1
+fi
 rm -rf "$asb89dir"
 echo "[compiler-gate] ADR-0089 D1 async sleep boundary ok"
 

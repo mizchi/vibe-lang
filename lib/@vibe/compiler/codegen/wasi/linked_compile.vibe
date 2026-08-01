@@ -1005,14 +1005,122 @@ fn lc_rename_sleep_calls(e: Expr, active: Bool) -> Expr {
   }
 }
 
+/// Deep scan: does `e` contain a `handle ... with Async` (an EHandle with a
+/// qualified `Async::<Op>` arm pattern)? Increment 2's codegen key: such a
+/// handle discharges the builtin `Async` row at check time
+/// (checker_effects.vibe's EHandle arm), so the sleep->perform retarget
+/// must fire for these programs too or the user's handler would never see
+/// the operations it demonstrably handles.
+fn lc_expr_has_async_handle(e: Expr) -> Bool {
+  match e {
+    EHandle(b, arms) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ab) = Array::get(arms, i)
+        match p {
+          PCtor(cname, _) => if String::starts_with(cname, "Async::") {
+            hit = true
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        if lc_expr_has_async_handle(ab) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit || lc_expr_has_async_handle(b)
+    },
+    ELet(_, v, b, _) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
+    ELetMut(_, v, b, _) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
+    ELetRec(_, v, b) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
+    ESeq(a, b) => lc_expr_has_async_handle(a) || lc_expr_has_async_handle(b),
+    EIf(c, t, el) => lc_expr_has_async_handle(c) || lc_expr_has_async_handle(t) || lc_expr_has_async_handle(el),
+    EMatch(s, arms) => {
+      let mut hit = lc_expr_has_async_handle(s)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ab) = Array::get(arms, i)
+        if lc_expr_has_async_handle(ab) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EFn(_, _, _, _, _, b) => lc_expr_has_async_handle(b),
+    EWhile(c, b) => lc_expr_has_async_handle(c) || lc_expr_has_async_handle(b),
+    EForIn(_, _, it, b) => lc_expr_has_async_handle(it) || lc_expr_has_async_handle(b),
+    ELoop(pairs, b) => {
+      let mut hit = lc_expr_has_async_handle(b)
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (_, pv) = Array::get(pairs, i)
+        if lc_expr_has_async_handle(pv) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    ECall(callee, args, _) => {
+      let mut hit = lc_expr_has_async_handle(callee)
+      let mut i = 0
+      while i < Array::length(args) {
+        if lc_expr_has_async_handle(Array::get(args, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EBinOp(_, l, r) => lc_expr_has_async_handle(l) || lc_expr_has_async_handle(r),
+    EUnaryOp(_, a) => lc_expr_has_async_handle(a),
+    EAssign(_, v, b) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
+    EAssignOp(_, _, v, b) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
+    EReturn(a) => lc_expr_has_async_handle(a),
+    EDot(o, _, _, _) => lc_expr_has_async_handle(o),
+    ELabeledArg(_, _, v) => lc_expr_has_async_handle(v),
+    ETuple(items) => lc_exprs_have_async_handle(items),
+    EArray(items) => lc_exprs_have_async_handle(items),
+    ESpread(a) => lc_expr_has_async_handle(a),
+    _ => false
+  }
+}
+
+fn lc_exprs_have_async_handle(es: Array[Expr]) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(es) {
+    if lc_expr_has_async_handle(Array::get(es, i)) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
 fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Unit {
   let mut entry_has_async = false
   let mut user_defines_sleep = false
   let mut has_async_decl = false
+  let mut has_async_handle = false
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, name, _, EFn(_, _, _, _, eff, _)) => {
+      SLet(_, _, name, _, EFn(_, _, _, _, eff, fbody)) => {
         if name == entry_name && lc_row_has_label(eff, "Async") {
           entry_has_async = true
         } else {
@@ -1023,11 +1131,23 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Uni
         } else {
           ()
         }
+        if lc_expr_has_async_handle(fbody) {
+          has_async_handle = true
+        } else {
+          ()
+        }
       },
-      SLet(_, _, name, _, _) => if name == "sleep" {
-        user_defines_sleep = true
-      } else {
-        ()
+      SLet(_, _, name, _, sv) => {
+        if name == "sleep" {
+          user_defines_sleep = true
+        } else {
+          ()
+        }
+        if lc_expr_has_async_handle(sv) {
+          has_async_handle = true
+        } else {
+          ()
+        }
       },
       SEffectDef(_, ename, _, _) => if ename == "Async" {
         has_async_decl = true
@@ -1038,7 +1158,13 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Uni
     }
     i = i + 1
   }
-  if !entry_has_async || user_defines_sleep {
+  // Increment 2 (#1218): a `handle ... with Async` anywhere in the program
+  // also keys the sleep->perform retarget (the checker now lets such a
+  // handle discharge the builtin row, so its body's sleeps MUST become
+  // performs the handler can receive). The entry-boundary wrap itself stays
+  // keyed on the entry row alone -- a fully-discharged program needs no
+  // default handler.
+  if (!entry_has_async && !has_async_handle) || user_defines_sleep {
     ()
   } else {
     if has_async_decl {
@@ -1083,29 +1209,33 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Uni
       }
       r = r + 1
     }
-    let req = EIdent("__entry_slp_req", -1)
-    let settle = EIf(EBinOp("<", req, EInt(0)), ECall(EIdent("sleep_blocking", -1), [
-      EBinOp("-", EInt(0), req)
-    ], -1), EUnit)
-    let arm = ESeq(settle, ECall(EIdent("resume", -1), [
-      EInt(0)
-    ], -1))
-    let mut j = 0
-    while j < Array::length(stmts) {
-      match Array::get(stmts, j) {
-        SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == entry_name {
-          let wrapped = EHandle(body, [
-            (PCtor("Async::Suspend", [
-              PBind("__entry_slp_req")
-            ]), arm)
-          ])
-          Array::set(stmts, j, SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, wrapped)))
-        } else {
-          ()
-        },
-        _ => ()
+    if entry_has_async {
+      let req = EIdent("__entry_slp_req", -1)
+      let settle = EIf(EBinOp("<", req, EInt(0)), ECall(EIdent("sleep_blocking", -1), [
+        EBinOp("-", EInt(0), req)
+      ], -1), EUnit)
+      let arm = ESeq(settle, ECall(EIdent("resume", -1), [
+        EInt(0)
+      ], -1))
+      let mut j = 0
+      while j < Array::length(stmts) {
+        match Array::get(stmts, j) {
+          SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == entry_name {
+            let wrapped = EHandle(body, [
+              (PCtor("Async::Suspend", [
+                PBind("__entry_slp_req")
+              ]), arm)
+            ])
+            Array::set(stmts, j, SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, wrapped)))
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        j = j + 1
       }
-      j = j + 1
+    } else {
+      ()
     }
   }
 }
