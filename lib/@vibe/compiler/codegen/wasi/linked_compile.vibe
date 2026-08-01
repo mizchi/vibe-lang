@@ -651,27 +651,29 @@ fn lc_extract_inline_wasm(stmts: Array[Stmt], names: Array[String], wats: Array[
 }
 
 /// #805 SIMD locals: assemble an inline-wasm fn's body bytes into `body_buf`
-/// and return its extra-local counts PACKED into one Int -- n_i32 | (n_i64
-/// << 8) | (n_v128 << 16), 0 when the function is not inline wasm (iw_found
-/// < 0). Packed rather than a tuple because the seed compiler mis-scopes a
-/// tuple destructure at this call site's nesting depth in the flattened
-/// module source ("unknown name" on the bound names) -- a plain Int `let`
-/// is the conservative shape that survives every lane.
-fn lc_compile_iw_body(body_buf: Bytes, fn_name_dbg: String, iw_wats: Array[String], iw_found: Int, iw_param_names: Array[String], param_count: Int) -> Int with { Error } {
+/// and write its extra-local counts (i32, i64, v128) into the 3-slot
+/// `iw_extra_cell` -- zeros when the function is not inline wasm (iw_found
+/// < 0). The counts travel through a pre-existing cell array (the
+/// `lambda_plan_cell` pattern) instead of a fresh binding at the call site:
+/// the seed compiler loses a NEW `let` binding introduced at that nesting
+/// depth of the flattened module source ("unknown name" on every later
+/// reference, tuple/mut/plain-Int alike), while reads through an
+/// already-in-scope array provably survive (meta_i32 itself is one).
+fn lc_compile_iw_body(body_buf: Bytes, fn_name_dbg: String, iw_wats: Array[String], iw_found: Int, iw_param_names: Array[String], param_count: Int, iw_extra_cell: Array[Int]) -> Unit with { Error } {
+  Array::set(iw_extra_cell, 0, 0)
+  Array::set(iw_extra_cell, 1, 0)
+  Array::set(iw_extra_cell, 2, 0)
   if iw_found < 0 {
-    0
+    ()
   } else {
     // Declared `(local ...)` runs index from param_count (params + the
     // closure-env slot), matching the i32/i64/v128 header runs the meta
     // arrays receive at the code-section assembly.
     let (iw_bytes, iw_n32, iw_n64, iw_nv) = compile_inline_wat_full(fn_name_dbg, Array::get(iw_wats, iw_found), iw_param_names, param_count)
-    if iw_n32 > 255 || iw_n64 > 255 || iw_nv > 255 {
-      throw("inline wasm (fn \{fn_name_dbg}): too many declared locals (over 255 of one type)")
-    } else {
-      ()
-    }
     bytebuf_push_buf(body_buf, iw_bytes)
-    (iw_n32|(iw_n64<<8))|(iw_nv<<16)
+    Array::set(iw_extra_cell, 0, iw_n32)
+    Array::set(iw_extra_cell, 1, iw_n64)
+    Array::set(iw_extra_cell, 2, iw_nv)
   }
 }
 
@@ -2520,6 +2522,12 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // other push site pushes 0, keeping the three meta arrays aligned with
   // `bodies` (asserted at the code-section assembly below).
   let meta_v128 = lc_fresh_int_array()
+  // Scratch cell lc_compile_iw_body fills per function (see its doc comment
+  // for why this is a cell and not a return value).
+  let iw_extra_cell = lc_fresh_int_array()
+  Array::push(iw_extra_cell, 0)
+  Array::push(iw_extra_cell, 0)
+  Array::push(iw_extra_cell, 0)
   let builtin_type_idxs = lc_fresh_int_array()
   // #415 B-1: one call = one builtin body. The body bytes, its extra local
   // counts (meta_i32/meta_i64), and its function-section type index are
@@ -3284,7 +3292,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
             Array::push(iw_param_names, iw_pn)
             iw_pi = iw_pi + 1
           }
-          let iw_extra_packed = lc_compile_iw_body(body_buf, fn_name_dbg, iw_wats, iw_found, iw_param_names, param_count)
+          lc_compile_iw_body(body_buf, fn_name_dbg, iw_wats, iw_found, iw_param_names, param_count, iw_extra_cell)
           let final_nl = if iw_found >= 0 {
             param_count
           } else {
@@ -3432,9 +3440,9 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           } else {
             0
           }
-          Array::push(meta_i32, 0)
-          Array::push(meta_i64, extra)
-          Array::push(meta_v128, 0)
+          Array::push(meta_i32, Array::get(iw_extra_cell, 0))
+          Array::push(meta_i64, extra + Array::get(iw_extra_cell, 1))
+          Array::push(meta_v128, Array::get(iw_extra_cell, 2))
         } else {
           // Module-level non-function `let` (a THUNK): previously the initializer
           // re-ran on EVERY reference, so a 16-entry lookup table cost an O(size)
@@ -3509,9 +3517,9 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           } else {
             0
           }
-          Array::push(meta_i32, iw_extra_packed&255)
-          Array::push(meta_i64, extra + ((iw_extra_packed>>8)&255))
-          Array::push(meta_v128, (iw_extra_packed>>16)&255)
+          Array::push(meta_i32, 0)
+          Array::push(meta_i64, extra)
+          Array::push(meta_v128, 0)
         }
         // #1259 step 7: harvest this function's codegen output as a VALUE.
         //
