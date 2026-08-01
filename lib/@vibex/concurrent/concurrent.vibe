@@ -991,6 +991,57 @@ fn conc_settle_sleep_debt[rg, e](n: TaskGroup[rg, e]) -> Unit {
   }
 }
 
+/// Force-settle the smallest sleep debt even while non-sleeping parked
+/// tasks exist (ADR-0089 D2, #1218). `conc_settle_sleep_debt` above only
+/// advances virtual time when EVERY parked task is a sleeper, because a
+/// resumable poller might still make progress for free. But a poller that
+/// depends on a SLEEPING sibling -- awaiting a future the sleeper will
+/// resolve, or recv_wait on a producer that sleeps between sends -- makes
+/// no progress until time advances, and under the old rule pump_all's
+/// stall counter mistook that for deadlock and trapped. pump_all reaches
+/// for this ONLY after a full no-progress sweep of the resumable pollers,
+/// which is exactly the evidence that free resumption is exhausted.
+/// Returns false when no parked task owes sleep time -- that genuinely is
+/// a deadlock, and the caller traps as before. Same no-wall-clock
+/// arithmetic as the plain settle: one host sleep of the minimum debt,
+/// debited from every sleeper.
+fn conc_force_settle_sleep_debt[rg, e](n: TaskGroup[rg, e]) -> Bool {
+  let total = Array::length(n.adopted)
+  let mut sleepers = 0
+  let mut min_left = 0
+  let mut i = 0
+  while i < total {
+    let c = Array::get(n.adopted, i)
+    if c.status == 5 && c.sleep_left > 0 {
+      sleepers = sleepers + 1
+      if min_left == 0 || c.sleep_left < min_left {
+        min_left = c.sleep_left
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if sleepers > 0 {
+    sleep_blocking(min_left)
+    let mut j = 0
+    while j < total {
+      let c = Array::get(n.adopted, j)
+      if c.status == 5 && c.sleep_left > 0 {
+        c.sleep_left = c.sleep_left - min_left
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    true
+  } else {
+    false
+  }
+}
+
 /// Sleep without blocking the group (#1227). Inside a `spawn_suspend` body
 /// this parks the task so its siblings run, and the group's pump settles
 /// the debt -- so concurrent sleeps overlap instead of serializing.
@@ -1065,7 +1116,21 @@ export fn TaskGroup::pump_all[rg, e](n: TaskGroup[rg, e]) -> Unit {
       // so a lone task yielding any number of times completes normally
       // (an infinitely-yielding body is an ordinary infinite loop, not a
       // deadlock).
-      conc_require(stall <= Array::length(n.adopted))
+      //
+      // ADR-0089 D2 (#1218): one exception — a sweep is NOT deadlock
+      // evidence while some parked task still owes sleep time. A sleeper
+      // counts as a poller here (park_kind stores wait_poll = true for
+      // sleep debts), but pump skips it until its debt clears, so a
+      // poller waiting ON the sleeper (awaiting a future the sleeper
+      // resolves after its nap, recv_wait on a sleeping producer) spins
+      // without progress exactly like a real deadlock. Advance virtual
+      // time and retry; only a stalled sweep with NO sleeper traps.
+      if stall > Array::length(n.adopted) {
+        conc_require(conc_force_settle_sleep_debt(n))
+        stall = 0
+      } else {
+        ()
+      }
     } else {
       ()
     }
@@ -1170,5 +1235,38 @@ export fn Receiver::recv_wait[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] wit
   } else {
     let _w = perform Async::Suspend(1)
     Receiver::recv_wait(rh)
+  }
+}
+
+/// Await a sibling task's outcome from INSIDE a suspendable task
+/// (ADR-0089 D2, #1218): polls the cell's terminal status, parking with
+/// the poll-wait reason otherwise (self-recursive retry, the
+/// conc_send_wait_consumed shape -- the suspend lowering has no loop
+/// spine). This is the suspendable-lane sibling of TaskHandle::join,
+/// which stack-drives ready tasks and therefore cannot run inside a
+/// parked task -- and the concrete library form of Decision 2's "a task
+/// handle IS a future": the (cell, result) pair is the reified pending
+/// value, `result_wait` is its await, and the scheduler completes it in
+/// completion order. Awaiting a sibling that only finishes after a sleep
+/// works because pump_all force-settles sleep debts once the resumable
+/// pollers stop progressing (conc_force_settle_sleep_debt). Terminal
+/// outcomes are stable, so awaiting again returns the same value; a
+/// cancelled sibling surfaces as Err(Cancelled). NOTE fail-fast: a
+/// sibling FAILURE usually cancels this parked awaiter before it can
+/// observe Err(Failed) -- the group result carries the failure instead.
+export fn TaskHandle::result_wait[rg, e, T](h: TaskHandle[rg, e, T]) -> Result[T, TaskError] with { Async } {
+  let s = h.cell.status
+  if s == 2 {
+    match h.result.value {
+      Some(v) => Ok(v),
+      None => Err(Failed("concurrent: missing result"))
+    }
+  } else if s == 3 {
+    Err(Failed(h.cell.fail_msg))
+  } else if s == 4 {
+    Err(Cancelled)
+  } else {
+    let _w = perform Async::Suspend(1)
+    TaskHandle::result_wait(h)
   }
 }

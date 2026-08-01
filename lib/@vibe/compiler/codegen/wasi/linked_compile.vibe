@@ -1680,9 +1680,21 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
       }
       if entry_has_async {
         let req = EIdent("__entry_slp_req", -1)
+        // ADR-0089 D2 (#1218): the boundary is tail-resumptive -- nothing
+        // else can run between the perform and the resume -- so a POLL-WAIT
+        // payload (req >= 1, __aw_poll's retry convention) can never be
+        // satisfied here: resuming it would re-poll the same unresolved
+        // future forever, a silent livelock. Trap deterministically instead
+        // (`assert` lowers to `unreachable` on false -- an unshadowable
+        // inline builtin, see compile_call.vibe's #1095 note), mirroring the
+        // scheduler's own deadlock-trap rule (conc_require in
+        // @vibex/concurrent). Sleep debts (req < 0) settle by blocking;
+        // cooperative yields (req == 0) resume for free.
         let settle = EIf(EBinOp("<", req, EInt(0)), ECall(EIdent("sleep_blocking", -1), [
           EBinOp("-", EInt(0), req)
-        ], -1), EUnit)
+        ], -1), ECall(EIdent("assert", -1), [
+          EBinOp("<", req, EInt(1))
+        ], -1))
         let arm = ESeq(settle, ECall(EIdent("resume", -1), [
           EInt(0)
         ], -1))
