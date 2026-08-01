@@ -145,3 +145,70 @@ test "validate_serve_handler: rejects a missing handler export" {
   }
   assert(rejected)
 }
+
+test "wit_type_text: Future projects to future, ByteStream to stream<u8> (ADR-0089 D5)" {
+  assert(wit_type_text(TyApp("Future", [
+    TyName("Int")
+  ])) == "future<s64>")
+  assert(wit_type_text(TyApp("Future", [
+    TyName("String")
+  ])) == "future<string>")
+  assert(wit_type_text(TyName("ByteStream")) == "stream<u8>")
+}
+
+test "wit_type_text: eager Stream stays unmapped (boundary rule, spec §3.3)" {
+  let r = handle {
+    let _t = wit_type_text(TyApp("Stream", [
+      TyName("Int")
+    ]))
+    ""
+  } with Error {
+    Throw(msg) => msg
+  }
+  assert(String::contains(r, "no WIT mapping"))
+}
+
+test "wit_from_program: Async export becomes async func, never an import" {
+  let run_ann = TyFn(array_empty(), TyName("Int"), Some("Async, Error"))
+  let stmts = [
+    SLet(true, false, "run", Some(run_ann), EFn(no_strings(), array_empty(), array_empty(), Some(TyName("Int")), Some("Async, Error"), EUnit))
+  ]
+  let wit = wit_from_program(stmts, stmts, "aw")
+  assert(String::contains(wit, "export run: async func() -> s64;"))
+  assert(!String::contains(wit, "host capability effect 'Async'"))
+  assert(!String::contains(wit, "import async"))
+}
+
+test "wit_from_program: transparent local Async declaration still lifts, not imports" {
+  // A program carrying the #752 transparent `effect Async { Suspend }`
+  // declaration (every @vibex/concurrent user) must not get an
+  // `import async: interface { suspend: ... }` -- Async is the suspension
+  // effect, realized by the async lift (ADR-0089 D1/D5).
+  let ops = [
+    ("Suspend", [
+      TyName("Int")
+    ], TyName("Int"))
+  ]
+  let run_ann = TyFn(array_empty(), TyName("Int"), Some("Async"))
+  let stmts = [
+    SEffectDef(false, "Async", no_strings(), ops),
+    SLet(true, false, "run", Some(run_ann), EFn(no_strings(), array_empty(), array_empty(), Some(TyName("Int")), Some("Async"), EUnit))
+  ]
+  let wit = wit_from_program(stmts, stmts, "aw2")
+  assert(String::contains(wit, "export run: async func() -> s64;"))
+  assert(!String::contains(wit, "import async"))
+  assert(!String::contains(wit, "suspend"))
+}
+
+test "wit_from_program: future-returning async export round-trips both D5 mappings" {
+  let fetch_ann = TyFn(array_empty(), TyApp("Future", [
+    TyName("Int")
+  ]), Some("Async"))
+  let stmts = [
+    SLet(true, false, "fetch_price", Some(fetch_ann), EFn(no_strings(), array_empty(), array_empty(), Some(TyApp("Future", [
+      TyName("Int")
+    ])), Some("Async"), EUnit))
+  ]
+  let wit = wit_from_program(stmts, stmts, "prices")
+  assert(String::contains(wit, "export fetch-price: async func() -> future<s64>;"))
+}
