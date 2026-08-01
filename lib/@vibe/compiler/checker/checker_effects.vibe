@@ -1,7 +1,17 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, Type, TypeEnv, TypeExpr, env_lookup, expr_children
+  Expr,
+  Pat,
+  Stmt,
+  Type,
+  TypeEnv,
+  TypeExpr,
+  canonical_exception_effect_name,
+  env_lookup,
+  exception_effect_labels_equal,
+  expr_children,
+  is_exception_effect_name
 }
 
 import @vibe/core {
@@ -237,7 +247,7 @@ fn effect_row_parse(eff: Option[String]) -> Option[Array[String]] {
       let raw = String::split(s, ",")
       let mut i = 0
       while i < Array::length(raw) {
-        let label = String::trim(Array::get(raw, i))
+        let label = canonical_exception_effect_name(String::trim(Array::get(raw, i)))
         if String::length(label) > 0 && !effect_row_has_label(Some(labels), label) {
           Array::push(labels, label)
         }
@@ -296,6 +306,16 @@ fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
   // exact-membership primitive rather than substring matching.
   if effect_row_has_label(Some(labels), eff_name) {
     true
+  } else if is_exception_effect_name(eff_name) {
+    let mut alias_found = false
+    let mut alias_i = 0
+    while alias_i < Array::length(labels) {
+      if is_exception_effect_name(Array::get(labels, alias_i)) {
+        alias_found = true
+      }
+      alias_i = alias_i + 1
+    }
+    alias_found
   } else {
     let mut i = 0
     let mut has_effect_var = false
@@ -317,7 +337,19 @@ fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
 /// Ask::Get }` (that check compares the full qualified label directly,
 /// without stripping to the base effect name).
 fn decl_authorizes_op(labels: Array[String], op_name: String) -> Bool {
-  decl_authorizes_effect(labels, effect_name_of_op(op_name)) || decl_authorizes_effect(labels, op_name)
+  if decl_authorizes_effect(labels, effect_name_of_op(op_name)) || decl_authorizes_effect(labels, op_name) {
+    true
+  } else {
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(labels) {
+      if exception_effect_labels_equal(Array::get(labels, i), op_name) {
+        found = true
+      }
+      i = i + 1
+    }
+    found
+  }
 }
 
 /// `perform EffName::Op` — the op identifier is `EffName::Op`; the effect is the
@@ -325,9 +357,9 @@ fn decl_authorizes_op(labels: Array[String], op_name: String) -> Bool {
 fn effect_name_of_op(op_name: String) -> String {
   let idx = String::index_of(op_name, "::")
   if idx > 0 {
-    op_name[0: idx]
+    canonical_exception_effect_name(op_name[0: idx])
   } else {
-    op_name
+    canonical_exception_effect_name(op_name)
   }
 }
 
@@ -367,7 +399,7 @@ fn builtin_call_effect(name: String) -> Option[String] {
     let normalized = canonical_builtin_name(name)
     match lookup_builtin(normalized) {
       Some(ty) => match ty {
-        CtFn(_, _, Some(eff)) => if eff == "Error" {
+        CtFn(_, _, Some(eff)) => if is_exception_effect_name(eff) {
           None
         } else if eff == "Async" {
           None
@@ -515,7 +547,7 @@ fn collect_handle_effects(arms: Array[(Pat, Expr)]) -> Array[String] {
       PCtor(name, _) => {
         let idx = String::index_of(name, "::")
         if idx > 0 {
-          let eff = name[0: idx]
+          let eff = canonical_exception_effect_name(name[0: idx])
           let mut seen = false
           let mut j = 0
           while j < Array::length(out) {
@@ -769,7 +801,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // sibling operation of the same effect is already
                     // authorized at operation granularity, e.g. `with {
                     // Ask::Other }` + a bare `perform Ask::Get`).
-                    if (eff != "Error" || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, op_name) {
+                    if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, op_name) {
                       Array::push(errors, make_row_mismatch(fn_name, declared, [
                         op_name
                       ]))
@@ -785,7 +817,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 // above, just without an args list to look past.
                 EIdent(op_name, _) => {
                   let eff = effect_name_of_op(op_name)
-                  if (eff != "Error" || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, op_name) {
+                  if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, op_name) {
                     Array::push(errors, make_row_mismatch(fn_name, declared, [
                       op_name
                     ]))
@@ -828,7 +860,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 let mut ti = 0
                 while ti < Array::length(callee_effs) {
                   let teff = Array::get(callee_effs, ti)
-                  if String::length(teff) > 0 && (teff != "Error" || error_row_checked()) && teff != "Async" && !label_is_effect_var(teff) && !in_handle && !decl_authorizes_effect(declared, teff) {
+                  if String::length(teff) > 0 && (!is_exception_effect_name(teff) || error_row_checked()) && teff != "Async" && !label_is_effect_var(teff) && !in_handle && !decl_authorizes_effect(declared, teff) {
                     Array::push(missing, teff)
                   } else {
                     ()
@@ -859,7 +891,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 let mut pi = 0
                 while pi < Array::length(param_effs) {
                   let peff = Array::get(param_effs, pi)
-                  if String::length(peff) > 0 && (peff != "Error" || error_row_checked()) && peff != "Async" && !in_handle && !decl_authorizes_effect(declared, peff) {
+                  if String::length(peff) > 0 && (!is_exception_effect_name(peff) || error_row_checked()) && peff != "Async" && !in_handle && !decl_authorizes_effect(declared, peff) {
                     Array::push(missing, peff)
                   } else {
                     ()
@@ -1425,6 +1457,7 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
       let cache_safe_row = [
         "Stdout",
         "Error",
+        "Exception",
         "Async"
       ]
       // Codex review, PR #1215: belt-and-suspenders on top of the

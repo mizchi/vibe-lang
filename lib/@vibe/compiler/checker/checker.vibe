@@ -14,6 +14,9 @@ import @vibe/compiler/core {
   fresh_var,
   generalize,
   instantiate,
+  is_exception_effect_name,
+  is_exception_throw_handler_name,
+  is_exception_throw_operation,
   resolve_builtin,
   subst_add_bound,
   subst_apply,
@@ -613,7 +616,7 @@ fn struct_fields_ground(dfields: Array[(String, Type)]) -> Bool {
 /// `$N` fresh vars — not decidable without call-site row unification, #885).
 fn effect_label_is_exempt(lbl: String) -> Bool {
   let len = String::length(lbl)
-  if lbl == "Error" || lbl == "Async" {
+  if is_exception_effect_name(lbl) || lbl == "Async" {
     true
   } else if len == 1 {
     String::char_code_at(lbl, 0) >= 97 && String::char_code_at(lbl, 0) <= 122
@@ -2730,8 +2733,7 @@ fn reject_resume_in_error_arm(e: Expr, errors: Array[String]) -> Unit {
 fn handler_arm_pat_is_error(p: Pat) -> Bool {
   match p {
     PCtor(q, _) => {
-      let ci = String::index_of(q, "::")
-      ci > 0 && String::substring(q, 0, ci) == "Error"
+      is_exception_throw_handler_name(q)
     },
     _ => false
   }
@@ -3387,7 +3389,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                 // existing throw payloads and yield a fresh var, changing
                 // pinned checker behavior.
                 let is_error_throw = match op_callee {
-                  EIdent(op_qname0, _) => op_qname0 == "Error::Throw",
+                  EIdent(op_qname0, _) => is_exception_throw_operation(op_qname0),
                   _ => false
                 }
                 if is_error_throw {
@@ -5267,7 +5269,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                 },
                 None => Array::push(errors, String::concat("handler arm `", String::concat(String::substring(hqname, hci + 2, String::length(hqname)), String::concat("` is not an operation of effect ", String::substring(hqname, 0, hci)))))
               }
-            } else if hci > 0 && String::substring(hqname, 0, hci) == "Error" {
+            } else if hci > 0 && is_exception_effect_name(String::substring(hqname, 0, hci)) {
               // #640 Stage 1: Error arms stay OUT of the #813 arm validation
               // above (payload/arity/exhaustiveness unchanged), but a
               // resume(...) inside one is rejected — Error is non-resumable

@@ -7,63 +7,37 @@ vibe は**純粋がデフォルト**。副作用は型の `with { ... }` 行 (ef
 
 ## Exception 境界 — perform / handle
 
-**目標の設計**では `Exception` は言語組み込みの、型引数を持たない**非再開
-(abortive) エフェクト**である。`perform Exception::Throw(payload)` は継続を再開せず、
-任意の `T: ToString` を payload にできる。handler arm で `resume` は使えず、その arm の
-値が `handle` の結果になる。この構文は
-[#1279](https://github.com/mizchi/vibe-lang/issues/1279) で追跡中であり、現在の
-コンパイラでは実行しない。
-
-```vibe skip
-// target (#1279): Exception は unparameterized かつ abortive。
-fn risky[T: ToString](x: Int, reason: T) -> Int with { Exception } {
-  if x == 0 {
-    perform Exception::Throw(reason)
-  }
-  100 / x
-}
-
-fn main with { Stdout } {
-  let safe = handle {
-    risky(0, 404)
-  } with Exception {
-    Throw(payload) => {
-      stdout_write("exception: \{ToString::to_string(payload)}\n")
-      -1
-    }
-  }
-  stdout_write("safe = \{safe}\n")
-}
-```
-
-## 現行互換: Error 境界
-
-現在は `Error` と String payload の互換 API を使う。これは上の目標構文ではなく、
-現在のコンパイラで検証される例である。
+`Exception` は現在、既存の `Error` と同じ Wasm tag を使う、型引数なしの
+**非再開 (abortive) エフェクト別名**である。`perform Exception::Throw` は継続を
+再開せず、handler arm で `resume` は使えない。その arm の値が `handle` の結果になる。
+この暫定 alias の payload は既存 `Error` と同じ互換的な String/opaque 扱いで、handler を
+またぐ型引数の保存はしない。[ADR-0085](../exception-effect.md) の typed `Exception[E]` ではない。
 
 ```vibe run
 import @vibe/prelude {
   stdout_write
 }
 
-fn risky(x: Int) -> Int with { Error } {
+fn risky(x: Int) -> Int with { Exception } {
   if x == 0 {
-    throw("division by zero")
+    perform Exception::Throw("division by zero")
   }
   100 / x
 }
 
 fn main with { Stdout } {
-  // handle がエフェクトを捕まえて値に落とす
   let safe = handle {
     risky(0)
-  } with Error {
-    Throw(_msg) => -1
+  } with Exception {
+    Throw(message) => {
+      stdout_write("exception: \{message}\n")
+      0 - 1
+    }
   }
   let fine = handle {
     risky(4)
-  } with Error {
-    Throw(_msg) => -1
+  } with Exception {
+    Throw(_) => 0 - 1
   }
   stdout_write("safe = \{safe}\n")
   stdout_write("fine = \{fine}\n")
@@ -71,9 +45,15 @@ fn main with { Stdout } {
 ```
 
 ```output
+exception: division by zero
 safe = -1
 fine = 25
 ```
+
+## Error との互換性
+
+既存の `Error` と `throw("message")` はこの期間も使える互換名である。`Error` と
+`Exception` のどちらの handler も、同じ abortive `Throw` を捕捉できる。
 
 ## ユーザ定義エフェクト — perform / resume
 
