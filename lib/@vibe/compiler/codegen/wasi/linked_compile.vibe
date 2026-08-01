@@ -13,6 +13,7 @@ import @vibe/compiler/core {
   bytebuf_push_section,
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
+  exception_effect_labels_equal,
   is_exception_effect_name,
   leb128_encode_s64,
   leb128_encode_u32,
@@ -692,7 +693,15 @@ fn lc_row_has_label(eff: Option[String], label: String) -> Bool {
           String::char_code_at(row, i) == 44
         }
         if at_sep {
-          if is_exception_effect_name(String::trim(String::substring(row, start, i))) {
+          // #1313 rebase fix: compare against the REQUESTED label, with
+          // alias-aware equality so `Error` still matches the `Exception`
+          // spelling. The rebase resolution had collapsed this to a bare
+          // is_exception_effect_name(token) -- ignoring `label` entirely --
+          // which made lc_row_has_label(eff, "Async") true only for
+          // Error-ish rows: the Async entry boundary was never injected,
+          // and gate 77's mixed-convention fixture compiled instead of
+          // being rejected (the exact compiler-gate failure on this PR).
+          if exception_effect_labels_equal(String::trim(String::substring(row, start, i)), label) {
             found = true
           } else {
             ()
