@@ -101,6 +101,7 @@ export ./manifest_sources.vibe {
 import @vibe/compiler/cache {
   build_source_groups_fingerprint_from_compact_fingerprints,
   compact_string_fingerprint,
+  fingerprint_file_fs,
   normalize_persistent_cache_text,
   persistent_contract_facade_cache_path,
   persistent_module_header_cache_path,
@@ -624,7 +625,7 @@ fn module_policy_context_fingerprint_fs(entry_path: String, paths: Array[String]
     StringBuilder::push(sb, "contract|")
     StringBuilder::push(sb, owner)
     StringBuilder::push(sb, "|")
-    StringBuilder::push(sb, compact_string_fingerprint(Fs::read_file(owner)))
+    StringBuilder::push(sb, fingerprint_file_fs(owner))
     StringBuilder::push(sb, "\n")
     let roots = contract_sibling_impl_raws(dir_of_path(owner))
     let mut ri = 0
@@ -809,12 +810,12 @@ fn matches_cached_file_spec(path: String, stat_token_text: String, source_finger
       if __to_string(Fs::stat_token(path)) == stat_token_text {
         true
       } else if String::length(source_fingerprint) > 0 {
-        compact_string_fingerprint(Fs::read_file(path)) == source_fingerprint
+        fingerprint_file_fs(path) == source_fingerprint
       } else {
         false
       }
     } else if String::length(source_fingerprint) > 0 {
-      compact_string_fingerprint(Fs::read_file(path)) == source_fingerprint
+      fingerprint_file_fs(path) == source_fingerprint
     } else {
       false
     }
@@ -959,8 +960,11 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with { Error, 
       // (path, content fingerprint): the first member pays one parse, every
       // other member (and every later cold compile of an unchanged vpkg)
       // reads the one-line cache file instead.
-      let vpkg_raw = Fs::read_file(vpkg_path)
-      let prefix_cache_path = persistent_vpkg_prefix_cache_path(vpkg_path, compact_string_fingerprint(vpkg_raw))
+      // #1308: key the cache probe off the memoized file fingerprint and
+      // defer the raw read to the miss branch — the hit path (every member
+      // after the first) previously re-read + re-hashed the whole contract
+      // just to compute the cache key.
+      let prefix_cache_path = persistent_vpkg_prefix_cache_path(vpkg_path, fingerprint_file_fs(vpkg_path))
       let cached_prefix = if Fs::exists(prefix_cache_path) {
         normalize_persistent_cache_text(Fs::read_file(prefix_cache_path))
       } else {
@@ -969,6 +973,7 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with { Error, 
       if String::starts_with(cached_prefix, "v1\n") {
         cached_prefix[3: String::length(cached_prefix)]
       } else {
+        let vpkg_raw = Fs::read_file(vpkg_path)
         let (_, vpkg_pin_blanked) = extract_require_pins(vpkg_raw)
         let (_, _, vpkg_extra) = parse_contract_program(lex(vpkg_pin_blanked))
         let prefix_text = contract_directory_shared_import_prefix_text(vpkg_extra)
@@ -1240,7 +1245,7 @@ fn build_persistent_sources_cache_text(entry_path: String, manifest_path: Option
       StringBuilder::push(sb, "\t")
       StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
       StringBuilder::push(sb, "\t")
-      StringBuilder::push(sb, compact_string_fingerprint(Fs::read_file(path)))
+      StringBuilder::push(sb, fingerprint_file_fs(path))
       StringBuilder::push(sb, "\n")
     },
     None => ()
@@ -1285,7 +1290,7 @@ fn build_persistent_source_groups_cache_text(entry_path: String, manifest_path: 
       StringBuilder::push(sb, "\t")
       StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
       StringBuilder::push(sb, "\t")
-      StringBuilder::push(sb, compact_string_fingerprint(Fs::read_file(path)))
+      StringBuilder::push(sb, fingerprint_file_fs(path))
       StringBuilder::push(sb, "\n")
     },
     None => ()
@@ -1644,9 +1649,10 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with { Err
   // first (reads + rolling hashes only, no parsing) and serve the finished
   // facade text from the persistent cache when nothing changed; a hit also
   // implies the cached conformance check passed for these exact inputs.
+  let contract_fp = fingerprint_file_fs(path)
   let closure_fp_sb = StringBuilder::new()
-  StringBuilder::push(closure_fp_sb, compact_string_fingerprint(Fs::read_file(path)))
-  let member_resolved = array_empty()
+  StringBuilder::push(closure_fp_sb, contract_fp)
+  let member_paths = array_empty()
   let member_raws = array_empty()
   let mut fpi = 0
   while fpi < Array::length(impl_raws) {
@@ -1658,12 +1664,14 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with { Err
     // exist, exactly like the same import spelled inside a .vibe impl file.
     let fp_resolved = resolve_path_fs(dir, fp_raw)
     ensure_regular_source_fs(fp_resolved)
-    let fp_content = Fs::read_file(fp_resolved)
+    // #1308: fingerprint via the stat-token memo and don't read the member
+    // body here — on a facade-cache hit (the common case) every member's
+    // content was read only to be thrown away with the hit's early return.
     StringBuilder::push(closure_fp_sb, "|")
     StringBuilder::push(closure_fp_sb, fp_resolved)
     StringBuilder::push(closure_fp_sb, ":")
-    StringBuilder::push(closure_fp_sb, compact_string_fingerprint(fp_content))
-    Array::push(member_resolved, (fp_resolved, fp_content))
+    StringBuilder::push(closure_fp_sb, fingerprint_file_fs(fp_resolved))
+    Array::push(member_paths, fp_resolved)
     Array::push(member_raws, fp_raw)
     fpi = fpi + 1
   }
@@ -1679,12 +1687,28 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with { Err
   } else {
     ()
   }
+  // #1308/Codex P2: the probe key above pairs member FINGERPRINTS taken
+  // before this point with member BODIES read below — a member rewritten in
+  // between would get its new body persisted under the old closure key, and
+  // a later revert of the file would then serve that mismatched facade with
+  // conformance skipped. Rebuild the closure fingerprint from the bodies
+  // actually read (same row format as the probe key) and publish the cache
+  // entry under THAT key: in the no-race case the two keys are equal, and
+  // under a mid-compile rewrite the entry lands under a key no stale probe
+  // can hit. Costs one extra rolling hash per member on cache MISSES only.
+  let fresh_fp_sb = StringBuilder::new()
+  StringBuilder::push(fresh_fp_sb, contract_fp)
   let impl_units = array_empty()
   let union_stmts = array_empty()
   let mut ri = 0
   while ri < Array::length(member_raws) {
     let raw = Array::get(member_raws, ri)
-    let (resolved, resolved_content) = Array::get(member_resolved, ri)
+    let resolved = Array::get(member_paths, ri)
+    let resolved_content = Fs::read_file(resolved)
+    StringBuilder::push(fresh_fp_sb, "|")
+    StringBuilder::push(fresh_fp_sb, resolved)
+    StringBuilder::push(fresh_fp_sb, ":")
+    StringBuilder::push(fresh_fp_sb, compact_string_fingerprint(resolved_content))
     // #842: an impl raw may itself resolve to ANOTHER package's contract
     // (a cross-package `import ../pkg { ... }`, not just this package's own
     // sibling impl files) — route it through the same ingestion transform
@@ -1734,7 +1758,12 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with { Err
   // or a later cold compile) skips the whole member-parse + conformance
   // pass. Only a PASSING conformance result ever reaches this line (the
   // throw above aborts first), so a hit can never mask a violation.
-  Fs::write_file(facade_cache_path, String::concat("v1\n", facade_final))
+  // #1308/Codex P2: publish under the fingerprint of the bodies actually
+  // used (equal to the probed closure_fp unless a member changed between
+  // the fingerprint pass and the reads above — see the comment at
+  // fresh_fp_sb's construction).
+  let fresh_closure_fp = compact_string_fingerprint(StringBuilder::freeze(fresh_fp_sb))
+  Fs::write_file(persistent_contract_facade_cache_path(path, fresh_closure_fp), String::concat("v1\n", facade_final))
   facade_final
 }
 

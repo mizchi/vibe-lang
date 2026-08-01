@@ -12,6 +12,7 @@
 // bodies call the @vibe/cache definitions by their own exported names, which
 // the merge resolves. Keep this file alias-free.
 import @vibe/cache {
+  compact_string_fingerprint,
   load_persistent_artifact,
   persistent_artifact_cache_path,
   persistent_dep_list_cache_path,
@@ -127,4 +128,53 @@ export fn cache_persistent_leaf_fingerprint_cache_path(version_tag: String, path
 /// keyspace.
 export fn cache_stable_text_cache_path(version_tag: String, prefix: String, seed: String) -> String {
   rebase_cache_path(stable_cache_path(version_tag, prefix, seed, ".txt"))
+}
+
+/// #1308: process-wide memo for on-disk file content fingerprints, keyed by
+/// path and validated by Fs::stat_token on every hit. A cold compile of the
+/// compiler's own tree re-read + re-hashed the same 18 index.vpkg contracts
+/// 1325 times (12 MB) and re-read validated sources another 148 times (3 MB)
+/// — every `compact_string_fingerprint(Fs::read_file(p))` site pays the full
+/// read + rolling hash each call. This turns a repeat into one stat_token
+/// probe. Stat-token validation (not blind path keying) keeps a long-lived
+/// process (vibe lsp) observationally equivalent to re-reading: the token is
+/// the same ns-mtime identity the persistent cache layer already trusts for
+/// source-row validity (build_persistent_sources_cache_text rows,
+/// package_index_deps_are_current). Missing files fail on the stat exactly
+/// like the read they replace. Parallel-array memo cells (module lets are
+/// initialized once — the checker_effects.vibe error_row_mode_cell pattern)
+/// because MapBuilder has no get/has_key surface yet (#1310).
+let fingerprint_file_memo_paths = [
+]
+
+let fingerprint_file_memo_tokens = [
+]
+
+let fingerprint_file_memo_fps = [
+]
+
+export fn cache_fingerprint_file_fs(path: String) -> String with { Fs } {
+  let token = Fs::stat_token(path)
+  let n = Array::length(fingerprint_file_memo_paths)
+  let mut i = 0
+  while i < n {
+    if Array::get(fingerprint_file_memo_paths, i) == path {
+      if Array::get(fingerprint_file_memo_tokens, i) == token {
+        return Array::get(fingerprint_file_memo_fps, i)
+      } else {
+        let fp = compact_string_fingerprint(Fs::read_file(path))
+        Array::set(fingerprint_file_memo_tokens, i, token)
+        Array::set(fingerprint_file_memo_fps, i, fp)
+        return fp
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let fp = compact_string_fingerprint(Fs::read_file(path))
+  Array::push(fingerprint_file_memo_paths, path)
+  Array::push(fingerprint_file_memo_tokens, token)
+  Array::push(fingerprint_file_memo_fps, fp)
+  fp
 }
