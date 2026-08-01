@@ -14,10 +14,9 @@ test "assert_eq for numbers, assert for booleans" {
 }
 ```
 
-目標では型にかかわらず `assert_eq(actual, expected)` を標準の等値 assertion とする。
-現行 compiler では String の `assert_eq` が束縛経路によって偽陰性になるため、
-[#1286](https://github.com/mizchi/vibe-lang/issues/1286) が直るまでは
-`assert(s == "expected")` を一時的な回避策として使う。
+型にかかわらず `assert_eq(actual, expected)` を標準の等値 assertion とする。
+String も内容で比較されるので、連結・関数の返り値・変数経由でも
+`assert_eq` をそのまま使える。
 
 ```bash
 vibe test file_test.vibe     # 1 ファイル

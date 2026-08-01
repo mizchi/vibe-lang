@@ -66,8 +66,10 @@ classify() {
   st_gc=$(compile "$dir/single.vibe" "$dir/gc.wasm" VIBE_RC=0 VIBE_BACKEND=gc)
   st_fs="OK"
   if [ -f "$dir/main.vibe" ]; then
-    rm -f _build/vibe_selfhost_source_list_* _build/vibe_selfhost_source_groups_*
-    st_fs=$(compile "$dir/main.vibe" "$dir/fs.wasm" VIBE_RC=0 VIBE_FS_COMPILE=1)
+    # FS compilation populates persistent source-list and source-group cache
+    # files. Isolate them per candidate: deleting repository-global files
+    # races when run_fuzz.sh runs multiple seeds concurrently.
+    st_fs=$(compile "$dir/main.vibe" "$dir/fs.wasm" VIBE_RC=0 VIBE_FS_COMPILE=1 VIBE_BUILD_CACHE_DIR="$dir/cache")
   fi
 
   local bad="" pair lane st

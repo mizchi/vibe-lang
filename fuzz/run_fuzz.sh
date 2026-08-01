@@ -82,7 +82,9 @@ RTIMEOUT=20
 
 # compile/run_linear/run_gc/classify are shared with fuzz/classify.sh (used
 # by fuzz/reduce.py) via fuzz/lib_oracle.sh -- see that file for the single
-# source of truth on what counts as a finding.
+# source of truth on what counts as a finding. The FS lane also receives a
+# per-seed VIBE_BUILD_CACHE_DIR from lib_oracle.sh, so its persistent compiler
+# cache is not shared between these concurrent workers.
 # shellcheck source=fuzz/lib_oracle.sh
 source "$ROOT/fuzz/lib_oracle.sh"
 

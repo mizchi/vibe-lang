@@ -47,6 +47,20 @@ per-file の JSON は `_build/vibe_test/coverage/<file>.json`
 （`compile_file_fs_mode_coverage`）するだけで、下記の self-compile 計測と同じ
 instrumentation を共有する。
 
+### selfhost test suite の集計指標
+
+`pkf run coverage` は全 `*_test.vibe` をそれぞれ別バイナリとして実行する。
+各 entry はその import closure を含むため、同じ compiler 関数が entry ごとに
+分母へ現れる。したがって report の `entry_weighted.function` と
+`entry_weighted.branch` は **entry-weighted** 指標であり、ユニークな source
+coverage として解釈してはいけない。これは既存 gate の安定した比較値として残す。
+
+`function_union` は per-entry の `hit_fns` / `missed_fns` を source-qualified
+function ID で union した primary 指標である。いずれかの entry で実行された
+関数を一度だけ数えるため、suite 全体が到達した compiler 関数の実態を表す。
+branch JSON は branch ID bitmap を公開していないため、正確な branch union は
+まだ算出できない。branch の report 値は常に entry-weighted と表示される。
+
 ### コンパイラ自身を計測
 
 ```bash
