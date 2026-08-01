@@ -27,6 +27,7 @@ import ./concurrent.vibe {
   TaskHandle::join,
   TaskHandle::park,
   TaskHandle::park_poll,
+  TaskHandle::result_wait,
   TaskHandle::settle,
   TaskHandle::wake
 }
@@ -694,4 +695,146 @@ test "plain sleep parks a spawn_suspend task instead of blocking it" {
     },
     Err(_) => assert(false)
   }
+}
+
+/// ADR-0089 Decision 2 (#1218): a Future cell is scheduler-visible data.
+/// Task A awaits a PENDING future (parking as a poller through __aw_poll's
+/// Suspend(1)); task B sleeps, then resolves the cell. Under the old
+/// pump_all rule this trapped as a false deadlock: A (resumable poller)
+/// kept the sleep-debt settle from ever firing, so B never woke to
+/// resolve. The force-settle path (conc_force_settle_sleep_debt) advances
+/// virtual time once the resumable pollers stop progressing. B sleeping
+/// FIRST pins that A really parks and is completed by B's resolve, not by
+/// eager settle order.
+test "await on a pending future parks until a sleeping sibling resolves it" {
+  let out = TaskGroup::run((g) -> {
+    let f = Future::pending()
+    let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      await(f) + 2
+    })
+    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      sleep(5)
+      Future::resolve(f, 40)
+      1
+    })
+    TaskGroup::pump_all(g)
+    let ra = match TaskHandle::join(ha) {
+      Ok(v) => v,
+      Err(_) => -1
+    }
+    let rb = match TaskHandle::join(hb) {
+      Ok(v) => v,
+      Err(_) => -100
+    }
+    ra + rb
+  })
+  assert(match out {
+    Ok(v) => v == 43,
+    Err(_) => false
+  })
+}
+
+/// Same scheduler hole, channel spelling: a consumer polling recv_wait on
+/// a producer that sleeps between sends must not trap as deadlock -- the
+/// forced settle wakes the producer.
+test "recv_wait on a sleeping producer advances virtual time instead of trapping" {
+  let out = TaskGroup::run((g) -> {
+    match Channel::bounded(g, 2) {
+      Err(_) => -1,
+      Ok((tx, rx)) => {
+        let hc = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+          // let-bound, not a match scrutinee: a suspending call is only
+          // eligible on the let/seq/tail spine (ADR-0076 追記31).
+          let got = Receiver::recv_wait(rx)
+          match got {
+            Some(v) => v + 2,
+            None => -1
+          }
+        })
+        let hp = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+          sleep(5)
+          let _s = Sender::send_wait(tx, 40)
+          Sender::release(tx)
+          0
+        })
+        TaskGroup::pump_all(g)
+        let rc = match TaskHandle::join(hc) {
+          Ok(v) => v,
+          Err(_) => -10
+        }
+        let rp = match TaskHandle::join(hp) {
+          Ok(v) => v,
+          Err(_) => -20
+        }
+        rc + rp
+      }
+    }
+  })
+  assert(match out {
+    Ok(v) => v == 42,
+    Err(_) => false
+  })
+}
+
+/// ADR-0089 Decision 2 (#1218): a task handle IS a future --
+/// TaskHandle::result_wait is the suspendable-lane join. B parks on A's
+/// completion; A finishes only after a sleep (exercising the forced
+/// settle), and B resumes with A's value.
+test "result_wait awaits a sibling task's result" {
+  let out = TaskGroup::run((g) -> {
+    let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      sleep(5)
+      40
+    })
+    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      // let-bound, not a match scrutinee (spine eligibility, ADR-0076).
+      let got = TaskHandle::result_wait(ha)
+      match got {
+        Ok(v) => v + 2,
+        Err(_) => -1
+      }
+    })
+    TaskGroup::pump_all(g)
+    match TaskHandle::join(hb) {
+      Ok(v) => v,
+      Err(_) => -100
+    }
+  })
+  assert(match out {
+    Ok(v) => v == 42,
+    Err(_) => false
+  })
+}
+
+/// result_wait on a CANCELLED sibling surfaces Err(Cancelled): cancel
+/// resolves the parked sibling immediately, the awaiter's next resume
+/// observes the terminal state. (A FAILED sibling is deliberately not
+/// pinned here -- fail-fast cancels the parked awaiter itself; the group
+/// result carries the failure.)
+test "result_wait observes a cancelled sibling" {
+  let out = TaskGroup::run((g) -> {
+    let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      let _w = perform Async::Suspend(0)
+      99
+    })
+    let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+      // let-bound, not a match scrutinee (spine eligibility, ADR-0076).
+      let got = TaskHandle::result_wait(ha)
+      match got {
+        Ok(_) => -1,
+        Err(Cancelled) => 42,
+        Err(_) => -2
+      }
+    })
+    TaskHandle::cancel(ha)
+    TaskGroup::pump_all(g)
+    match TaskHandle::join(hb) {
+      Ok(v) => v,
+      Err(_) => -100
+    }
+  })
+  assert(match out {
+    Ok(v) => v == 42,
+    Err(_) => false
+  })
 }

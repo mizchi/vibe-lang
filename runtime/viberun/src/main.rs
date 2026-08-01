@@ -727,6 +727,39 @@ fn run_async_component(path: &str) -> Result<i32> {
             },
         )
         .map_err(|e| format_err!("link get-after: {e}"))?;
+    // ADR-0089 D2 / step 4 (#1218): a host-supplied `future<u32>` VALUE --
+    // `get-future: func() -> future<u32>`. Unlike `get-async` (an async func
+    // whose wait folds into the [async-lower] call itself), this returns an
+    // explicit future handle the guest must `future.read` and park on: the
+    // read comes back BLOCKED, the guest joins it into a waitable set, and
+    // `waitable-set.wait` suspends the task until this producer's timer
+    // fires -- the completion-order wake path the host_future_value probe
+    // and comp_emit_component_wasm_host_future_value measure. Creating the
+    // pair is synchronous (the import call itself completes eagerly); only
+    // the PRODUCER suspends, on the same genuinely-async tokio timer as
+    // `get-async` (a `FutureReader::new` producer future is polled by
+    // wasmtime's event loop once a read is pending -- pull-based, but
+    // observably identical to a writer writing after a delay).
+    linker
+        .root()
+        .func_wrap_concurrent(
+            "get-future",
+            move |acc: &Accessor<StoreLimits>, _params: ()| {
+                Box::pin(async move {
+                    let ms = scale(delay_ms);
+                    let reader = acc.with(|mut access| {
+                        wasmtime::component::FutureReader::<u32>::new(&mut access, async move {
+                            if ms > 0 {
+                                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                            }
+                            Ok::<u32, wasmtime::Error>(ASYNC_COMPONENT_GET_VALUE)
+                        })
+                    })?;
+                    Ok((reader,))
+                })
+            },
+        )
+        .map_err(|e| format_err!("link get-future: {e}"))?;
 
     // A current-thread runtime is enough (and keeps this off the thread pool):
     // the only await points are this timer and wasmtime's own event loop.

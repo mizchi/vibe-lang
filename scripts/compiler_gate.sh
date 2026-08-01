@@ -7882,6 +7882,51 @@ if [ "$asb89_mx_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_sleep_mixed_scope_test.vibe got '$asb89_mx_out' (want 42)" >&2
   exit 1
 fi
+# ADR-0089 Decision 2 (#1218): the Future cell primitives
+# (Future::pending/ready/resolve) are inert callees for the evidence
+# migration -- a pending future created, resolved, and awaited under an
+# Async-row entry (boundary installed by the sleep) must compile and run
+# (async_future_boundary_resolved_test.vibe, 1 + 41 = 42). Before the
+# allowlist entries the opaque callee names sank the whole boundary-wrapped
+# entry body to ineligible.
+cp fixtures/async_future_boundary_resolved_test.vibe "$asb89dir/fr.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asb89dir/fr.vibe" "$asb89dir/fr.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$asb89dir/fr.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_future_boundary_resolved_test.vibe did not compile -- Future cell primitives must be evidence-inert (ADR-0089 D2)" >&2
+  cat "$asb89dir/fr.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+asb89_fr_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/fr.wasm" 2>/dev/null | tail -1)"
+if [ "$asb89_fr_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_future_boundary_resolved_test.vibe got '$asb89_fr_out' (want 42)" >&2
+  exit 1
+fi
+# ...and awaiting a pending future NOTHING can resolve under the
+# tail-resumptive boundary is a deadlock that must trap deterministically
+# (the boundary arm asserts req < 1 -> `unreachable`), not livelock:
+# compilation succeeds, execution fails fast with the unreachable trap
+# (async_future_boundary_deadlock_test.vibe).
+cp fixtures/async_future_boundary_deadlock_test.vibe "$asb89dir/fd.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asb89dir/fd.vibe" "$asb89dir/fd.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$asb89dir/fd.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_future_boundary_deadlock_test.vibe did not compile (ADR-0089 D2 -- the deadlock case must compile and trap at runtime)" >&2
+  cat "$asb89dir/fd.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+asb89_fd_out="$(timeout 30 bash -c "VIBE_PREOPEN_DIR='$ROOT_DIR' bash scripts/run_wasm_vibe_host_runner.sh --invoke main '$asb89dir/fd.wasm' 2>&1" || true)"
+if [ "$(printf '%s\n' "$asb89_fd_out" | tail -1)" = "42" ]; then
+  echo "[compiler-gate] FAIL: async_future_boundary_deadlock_test.vibe returned 42 -- an unresolvable await under the boundary must trap, not complete" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$asb89_fd_out" | grep -q "unreachable"; then
+  echo "[compiler-gate] FAIL: async_future_boundary_deadlock_test.vibe did not trap with 'unreachable' (livelock or wrong failure mode?)" >&2
+  printf '%s\n' "$asb89_fd_out" | tail -5 >&2
+  exit 1
+fi
 rm -rf "$asb89dir"
 echo "[compiler-gate] ADR-0089 D1 async sleep boundary ok"
 

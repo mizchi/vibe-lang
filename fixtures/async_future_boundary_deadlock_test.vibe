@@ -1,0 +1,18 @@
+/// ADR-0089 Decision 2 (#1218): awaiting a pending future that NOTHING can
+/// resolve under the entry boundary is a deadlock, and must trap
+/// deterministically instead of livelocking. The injected boundary handler
+/// is tail-resumptive -- no other code runs between the perform and the
+/// resume -- so a poll-wait payload (Suspend(1), `__aw_poll`'s retry
+/// convention) can never be satisfied there: resuming would re-poll the
+/// same unresolved cell forever. The boundary arm asserts `req < 1`
+/// (compiled to `unreachable` on failure), mirroring the scheduler's
+/// deadlock-trap rule (conc_require in @vibex/concurrent).
+///
+/// Driven by the gate as a RUNTIME-TRAP fixture: compilation must succeed,
+/// execution must fail fast (no output "42", non-zero wasmtime exit).
+fn main() -> Int with { Async } {
+  sleep(1)
+  let f = Future::pending()
+  let v = await(f)
+  v
+}

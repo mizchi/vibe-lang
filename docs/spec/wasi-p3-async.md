@@ -944,6 +944,65 @@ byte-exact で手元に揃った**。残る M1b-3c 系の未着手は「実 `.vi
 await をこの経路に配線する」（ADR-0076 の suspend lowering との接続、
 ADR-0089 step 3-4）と、host 供給 future を read する形の e2e（host 側
 FutureWriter driver が必要 — viberun に future を返す import を足す）。
+→ **後者は §3.13 で landed。**
+
+### 3.13 ADR-0089 D2 — host 供給 `future<u32>` の e2e（waitable-set.wait backend 実測、#1218）
+
+§3.12 末尾の残件「host 供給 future を read する e2e」が landed。これは
+ADR-0089 Decision 1 の 3-backend 分割のうち **`waitable-set.wait` backend の
+初の end-to-end 実測**であり、Decision 2 の「waitable を第3の wait 種として
+park する」形が component lowering レベルで実現した:
+
+- **host 側** (`runtime/viberun` `run_async_component`): root import
+  `get-future: func() -> future<u32>` を追加。wasmtime 47 に FutureWriter
+  型は無く、**producer ベース** — `FutureReader::<u32>::new(store, async {
+  tokio::time::sleep(delay); Ok(42) })` が pair を作って readable end を
+  即時返し、producer future は guest の read が pending になってから
+  event loop に poll される（pull 型だが「writer が delay 後に書く」と
+  観測上同一）。delay は `VIBE_ASYNC_GET_DELAY_MS` /
+  `VIBE_ASYNC_DELAY_SCALE_PCT` を `get-async` と共有。
+- **guest 側** (probe `tools/wasip3_component_probe/host_future_value/
+  component.wat` → byte-exact 移植
+  `comp_emit_component_wasm_host_future_value` +
+  `comp_generate_host_future_value_guest_core_module`):
+
+```
+[async-lower]get-future        ; eager RETURNED (code 2) — pair 生成は suspend しない
+  -> handle = results buffer から load
+  -> async future.read (BLOCKED — producer timer 未発火)
+  -> waitable.join(fut, ws) -> waitable-set.wait
+       ; ここで task が本当に SUSPEND する。host が timer を回し、
+       ; 完了は completion order で FUTURE_READ (4) event として届く
+  -> read buffer -> 42 -> drop-readable (writable 側は host 所有) -> ws.drop
+```
+
+- **実測**: delay 300ms で `42` を **311ms**（wall clock が genuine
+  suspend/wake の証明 — §3.10 と同じ論法）、delay 1ms/50ms でも 42。
+  gate = `scripts/test_host_future_value_component_gate.sh`
+  （pkf task `test-host-future-value-component`、viberun 駆動 +
+  wall-clock ≥ 0.8×delay assert + probe parity）。
+- **新しく pin した encodings**: component-level import 型は
+  **`func async` が必須**（sync `(func (result (future u32)))` に async
+  canonopt を付けると `wasm-tools validate` が "the async canonical option
+  requires an async function type" で reject — WIT 上の綴りは
+  `func() -> future<u32>` のままで、async は lowering 規約）。async
+  functype の result に **defined type index を置く形は `43 00 00 <s33
+  idx>`**（primitive valtype byte の位置に正の type index）。import
+  externdesc は `00 <name> 01 <functype idx>`
+  （`emit_comp_async_functype_section_result_type` /
+  `emit_comp_import_section_typed`）。
+- **diagnostic 帯域**（task.return 値、trap に頼らない）: 5000+code =
+  get-future が eager に完了しなかった / 1000+x = read が BLOCK しなかった /
+  3000+ev = wait が FUTURE_READ 以外を返した。
+
+**in-guest scheduler との関係**: `@vibex/concurrent` の pump は linear
+backend 上で動き host waitable を持たないため、Suspend payload の
+**>= 2 を waitable handle 用に予約**した上で in-guest では poller として
+park する（= 完了源が無いので deadlock trap に縮退。yield 扱いだと silent
+livelock になる — spawn_suspend arm の判定を `r == 1` から `r >= 1` に変更）。
+waitable park 種の実体は本節の component lowering 側にあり、実 `.vibe`
+ソースの await をこの経路へ配線する step 4 本体（suspend lowering との接続）
+が次の仕事。
 
 ## 4. WASI 0.3 境界マッピング
 
