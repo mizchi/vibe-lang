@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr
+  Expr, Pat, Stmt, TypeExpr, bsearch_leftmost
 }
 
 //# Types
@@ -233,7 +233,7 @@ fn pc_declare(ctx: PCtx, _name: String, scalar: Bool) -> Int {
 fn pctx_mark_view_call(ctx: PCtx, scope: Map[String, Int], id: Int, value: Expr) -> Int {
   match value {
     ECall(vc, _, _) => match vc {
-      EIdent(vf, _) => if !Map::has_key(scope, vf) && array_contains_str_pctx(ctx.view_ret_user, vf) {
+      EIdent(vf, _) => if !Map::has_key(scope, vf) && bsearch_leftmost(ctx.view_ret_user, vf) >= 0 {
         Array::set(ctx.view_call_let, id, true)
       } else {
         ()
@@ -352,7 +352,7 @@ fn array_contains_str_pctx(arr: Array[String], s: String) -> Bool {
 /// pctx_names, so the names sit here unprefixed and a miss costs only the
 /// fixed set.
 fn is_borrow_ret_fname(ctx: PCtx, fname: String) -> Bool {
-  fname == "Array::get" || fname == "Map::get" || fname == "__index" || fname == "__rec_field" || array_contains_str_pctx(ctx.pctx_names, fname)
+  fname == "Array::get" || fname == "Map::get" || fname == "__index" || fname == "__rec_field" || bsearch_leftmost(ctx.pctx_names, fname) >= 0
 }
 
 /// #707: fixed-point closure over top-level function definitions, starting
@@ -1295,7 +1295,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     ECall(callee, args, _) => {
       // Same lexical-shadow guard as pc_count (and compile_call #875).
       let is_index = match callee {
-        EIdent(f, _) => !Map::has_key(scope, f) && (is_borrow_arg0_call(f) || array_contains_str_pctx(ctx.borrow_arg0_user, f)),
+        EIdent(f, _) => !Map::has_key(scope, f) && (is_borrow_arg0_call(f) || bsearch_leftmost(ctx.borrow_arg0_user, f) >= 0),
         _ => false
       }
       match callee {
@@ -1668,7 +1668,7 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       // #875 local_idx_hint guard): a local binding that shadows a
       // borrow-arg0 name is an ordinary owned closure call.
       let is_index = match callee {
-        EIdent(f, _) => !Map::has_key(scope, f) && (is_borrow_arg0_call(f) || array_contains_str_pctx(ctx.borrow_arg0_user, f)),
+        EIdent(f, _) => !Map::has_key(scope, f) && (is_borrow_arg0_call(f) || bsearch_leftmost(ctx.borrow_arg0_user, f) >= 0),
         _ => false
       }
       let mut i = 0

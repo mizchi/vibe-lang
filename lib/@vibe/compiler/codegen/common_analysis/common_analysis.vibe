@@ -1579,19 +1579,18 @@ fn md_collect_shadow_names(e: Expr, out: Array[String]) -> Int {
   }
 }
 
-/// md_consume_count with the USER borrow-arg0 set threaded through the
-/// ECall borrow0 test. Lexical shadows are honored conservatively (Codex
-/// P1 on #1282): any bfns name that also appears as a LOCAL binder
-/// anywhere in `e` is dropped from the set for this body, so a call to a
-/// same-named local closure counts as an owning consume (compile_call and
-/// the planner give lexical bindings precedence, so the dup it forces is
-/// matched by the closure call's real consume; for the rare body that
-/// binds the name but still calls the top-level fn, the extra dup is a
-/// bounded leak -- never a missing one). Fast path: no shadowed member,
-/// no copy.
-export fn md_consume_count_b(e: Expr, name: String, bfns: Array[String]) -> Int {
+/// The shadow-honoring half of md_consume_count_b, split out so callers
+/// that count MANY names against the SAME body (compile_match's per-field
+/// bind loops, compile_lambda's capture loop) can run the binder prepass
+/// ONCE per body instead of once per name -- the per-name form showed up
+/// directly in selfcompile wall time. Returns `bfns` itself (no copy)
+/// when the body shadows no member; otherwise a filtered copy.
+/// PRECONDITION: `bfns` is sorted (linked_compile sorts the borrow set
+/// once; membership here is bsearch_leftmost). The filtered copy preserves
+/// order, so it stays bsearch-able.
+export fn md_shadow_filtered_bfns(e: Expr, bfns: Array[String]) -> Array[String] {
   if Array::length(bfns) == 0 {
-    md_cc_go(e, name, bfns)
+    bfns
   } else {
     let sh: Array[String] = [
     ]
@@ -1599,7 +1598,7 @@ export fn md_consume_count_b(e: Expr, name: String, bfns: Array[String]) -> Int 
     let mut any_hit = false
     let mut si = 0
     while si < Array::length(sh) {
-      if array_contains_str(bfns, Array::get(sh, si)) {
+      if bsearch_leftmost(bfns, Array::get(sh, si)) >= 0 {
         any_hit = true
       } else {
         ()
@@ -1607,7 +1606,7 @@ export fn md_consume_count_b(e: Expr, name: String, bfns: Array[String]) -> Int 
       si = si + 1
     }
     if !any_hit {
-      md_cc_go(e, name, bfns)
+      bfns
     } else {
       let bfns2: Array[String] = [
       ]
@@ -1621,9 +1620,30 @@ export fn md_consume_count_b(e: Expr, name: String, bfns: Array[String]) -> Int 
         }
         bi = bi + 1
       }
-      md_cc_go(e, name, bfns2)
+      bfns2
     }
   }
+}
+
+/// md_consume_count against a set ALREADY filtered by
+/// md_shadow_filtered_bfns for this same body. The hoisted form of
+/// md_consume_count_b -- pass the raw set here only if it is empty.
+export fn md_consume_count_pre(e: Expr, name: String, bfns_filtered: Array[String]) -> Int {
+  md_cc_go(e, name, bfns_filtered)
+}
+
+/// md_consume_count with the USER borrow-arg0 set threaded through the
+/// ECall borrow0 test. Lexical shadows are honored conservatively (Codex
+/// P1 on #1282): any bfns name that also appears as a LOCAL binder
+/// anywhere in `e` is dropped from the set for this body, so a call to a
+/// same-named local closure counts as an owning consume (compile_call and
+/// the planner give lexical bindings precedence, so the dup it forces is
+/// matched by the closure call's real consume; for the rare body that
+/// binds the name but still calls the top-level fn, the extra dup is a
+/// bounded leak -- never a missing one). One-shot form; loops over many
+/// names against one body should hoist md_shadow_filtered_bfns instead.
+export fn md_consume_count_b(e: Expr, name: String, bfns: Array[String]) -> Int {
+  md_cc_go(e, name, md_shadow_filtered_bfns(e, bfns))
 }
 
 fn md_cc_go(e: Expr, name: String, bfns: Array[String]) -> Int {
@@ -1733,7 +1753,7 @@ fn md_cc_go(e: Expr, name: String, bfns: Array[String]) -> Int {
     EForIn(_, _, it, b) => md_cc_go(it, name, bfns) + md_cc_go(b, name, bfns),
     ECall(callee, args, _) => {
       let borrow0 = match callee {
-        EIdent(f, _) => md_is_borrow_arg0_call(f) || array_contains_str(bfns, f),
+        EIdent(f, _) => md_is_borrow_arg0_call(f) || bsearch_leftmost(bfns, f) >= 0,
         _ => false
       }
       let start = if borrow0 && Array::length(args) >= 1 {
