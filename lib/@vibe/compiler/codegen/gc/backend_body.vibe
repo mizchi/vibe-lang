@@ -223,6 +223,16 @@ import @vibe/compiler/codegen/wasi {
 
 //# Functions
 
+/// Unit entry values have no observable result. Keep this in sync with the
+/// linear WASI entry policy so `fn main {}` does not print its tagged zero.
+fn gc_type_expr_is_unit(t: TypeExpr) -> Bool {
+  match t {
+    TyUnit => true,
+    TyName(name) => name == "Unit",
+    _ => false
+  }
+}
+
 /// #805 (ADR-0072): inline wasm (`fn f(..) -> Int = wasm "..."`, carried as
 /// the parser-internal `%wasm("<WAT>")` marker body) is LINEAR-BACKEND ONLY —
 /// the WAT text is written against the linear backend's raw 62-bit tagged i64
@@ -1089,9 +1099,37 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
       ginit = ginit + 1
     }
   }
+  // Match the linear backend: an entry annotated `-> Unit` (including the
+  // `fn main {}` desugaring) should discard its tagged Unit result, not pass
+  // it to the historical integer-print helper.
+  let mut entry_returns_unit = false
+  let mut eri = 0
+  while eri < Array::length(stmts) {
+    match Array::get(stmts, eri) {
+      SLet(_, _, name, annotation, value) => if name == entry_name {
+        let annotation_is_unit = match annotation {
+          Some(TyFn(_, ret, _)) => gc_type_expr_is_unit(ret),
+          _ => false
+        }
+        let lambda_is_unit = match value {
+          EFn(_, _, _, Some(ret), _, _) => gc_type_expr_is_unit(ret),
+          _ => false
+        }
+        if annotation_is_unit || lambda_is_unit {
+          entry_returns_unit = true
+        }
+      },
+      _ => ()
+    }
+    eri = eri + 1
+  }
   emit_i64_const(start_body, 0)
   emit_call(start_body, entry_func_idx)
-  emit_call(start_body, 1 + hbo)
+  if entry_returns_unit {
+    emit_drop(start_body)
+  } else {
+    emit_call(start_body, 1 + hbo)
+  }
   let num_lambdas = Array::length(lt_w.bodies)
   Array::push(bodies, start_body)
   Array::push(meta_i32, 0)

@@ -23,15 +23,19 @@ pkf run vibe-md-tutorial                                # check を task 化し�
 | [01 値と関数](01_values_functions.vibe.md) | let / mut / 基本型 / 文字列補間 / fn / ラムダ |
 | [02 制御フロー](02_control_flow.vibe.md) | if / while / loop / for-in / return / パイプ |
 | [03 データ](03_data.vibe.md) | tuple / array / record / struct / enum / パターンマッチ |
-| [04 Option と railway](04_option_result.vibe.md) | Option / `let*` / `?` |
-| [05 エフェクト](05_effects.vibe.md) | `with { ... }` / throw / handle / perform / resume |
+| [04 Option](04_option.vibe.md) | Option / `let*` / `?` |
+| [05 エフェクト](05_effects.vibe.md) | `with { ... }` / Exception / handle / perform / resume |
 | [06 テスト](06_tests.vibe.md) | test ブロック / assert / CLI ツーリング |
 | [07 モジュールとパッケージ](07_modules_packages.vibe.md) | import / export / @scope パッケージ / 契約 / pin |
 
-各 `*.vibe.md` の ` ```vibe run ` ブロックはコンパイラが変わるたびに
-`bash scripts/vibe_md.sh check` (`pkf run vibe-md-tutorial`) で実際に
-コンパイル・実行され、埋め込み済みの ` ```output ` と突き合わせられる —
-つまりここの例文と実行結果は**腐らない** (ズレたら FAIL する)。
+各 `*.vibe.md` の ` ```vibe run ` ブロックは、**現在の**ソースコードと出力だけを
+`bash scripts/vibe_md.sh check` (`pkf run vibe-md-tutorial`) でコンパイル・実行して
+突き合わせる。この検証は prose、API 選定、学習順序の正しさまでは保証しない。
+` ```vibe skip ` ブロックは目標設計の非実行例であり、コンパイル済みとは主張しない。
+目標の言語形式を示す skip block は
+[#1279 Exception](https://github.com/mizchi/vibe-lang/issues/1279)、
+[#1280 reserved fn](https://github.com/mizchi/vibe-lang/issues/1280)、
+[#1281 top-level patterns](https://github.com/mizchi/vibe-lang/issues/1281) で追跡する。
 
 より網羅的なリファレンスは [docs/cheatsheet.md](../cheatsheet.md) と
 [docs/language-tour/](../language-tour/)。ただし一部の記述は実装より
@@ -45,6 +49,7 @@ runnable な例がある箇所は実行結果 (`vibe run`/`output`) 付きで検
 - **`break(a, b)` は `continue(a, b)` と非対称**: `continue(a, b)` は
   ループの次状態 (call のような多引数構文) だが、`break(a, b)` の丸括弧は
   ただの式の括弧で、`break` に渡るのは**タプル 1 個** `(a, b)`。
+  構文方針は [#1284](https://github.com/mizchi/vibe-lang/issues/1284) で追跡する。
   [02 制御フロー](02_control_flow.vibe.md#loop--パラメータ付き末尾再帰)。
 - **トップレベル関数を `f` / `g` という名前にすると壊れた wasm を生成する
   既知バグ** ([#1203](https://github.com/mizchi/vibe-lang/issues/1203))。
@@ -56,13 +61,7 @@ runnable な例がある箇所は実行結果 (`vibe run`/`output`) 付きで検
   既知ギャップ** ([#1153](https://github.com/mizchi/vibe-lang/issues/1153))。
   `Double::to_int` で丸めるのが安全な代替。
   [01 値と関数](01_values_functions.vibe.md#値と基本型)。
-- **無名 record のドットアクセス (`r.name`) は「どこかの struct が同名
-  field を宣言しているとき」しか解決しない**。ad-hoc な record は分配束縛
-  (`let record { name: n, ... } = ...`) を使う。
-  [03 データ](03_data.vibe.md#tuple--array--record)。
-- **`Array::push` を生 `Array` に使うのはアンチパターン** (backend 依存の
-  未定義動作)。蓄積は必ず `ArrayBuilder` を使う。
+- **`Array::push` を生 `Array` に使わない**: 現行では backend 依存の挙動を
+  避けるため、蓄積には `ArrayBuilder` を使う。安全な API 契約は
+  [#1285](https://github.com/mizchi/vibe-lang/issues/1285) で追跡する。
   [03 データ](03_data.vibe.md#蓄積は-arraybuilder)。
-- **`let*`/`?` は組み込みの `Option` はどこでも使えるが、`Result` は
-  standalone ファイルでは文脈依存の制限がある** (コンビネータは workspace
-  の prelude 提供)。[04 Option と railway](04_option_result.vibe.md#result-について)。

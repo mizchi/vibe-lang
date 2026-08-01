@@ -1,16 +1,22 @@
-# 04 — Option と railway 演算子
+# 04 — Option
 
 前章: [03 データ](03_data.vibe.md)
 
 ## Option
 
-失敗しうる計算は `Option[T]` (`Some(v)` / `None`) を返す。
+値がない可能性は `Option[T]` (`Some(v)` / `None`) で表す。
 
 ```vibe run
-import @vibe/prelude { stdout_write }
+import @vibe/prelude {
+  stdout_write
+}
 
 fn half(n: Int) -> Option[Int] {
-  if n % 2 == 0 { Some(n / 2) } else { None }
+  if n % 2 == 0 {
+    Some(n / 2)
+  } else {
+    None
+  }
 }
 
 fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
@@ -34,13 +40,19 @@ half(3)  unwrap_or -1 = -1
 ## `let*` — 束縛して短絡
 
 `let* x = e` は `Some(x)` を剥がして束縛し、`None` ならブロック全体を `None` で
-短絡する。囲む関数の戻り値は同じ `Option` 型であること。
+短絡する。囲む関数全体は対応する `Option[...]` を返さなければならない。
 
 ```vibe run
-import @vibe/prelude { stdout_write }
+import @vibe/prelude {
+  stdout_write
+}
 
 fn half(n: Int) -> Option[Int] {
-  if n % 2 == 0 { Some(n / 2) } else { None }
+  if n % 2 == 0 {
+    Some(n / 2)
+  } else {
+    None
+  }
 }
 
 fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
@@ -51,7 +63,8 @@ fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
 }
 
 fn sum_halves(a: Int, b: Int) -> Option[Int] {
-  let* x = half(a)      // None ならここで終わり
+  let* x = half(a)
+  // None ならここで終わり
   let* y = half(b)
   Some(x + y)
 }
@@ -73,10 +86,16 @@ sum_halves(4, 3) unwrap_or -1 = -1
 する。
 
 ```vibe run
-import @vibe/prelude { stdout_write }
+import @vibe/prelude {
+  stdout_write
+}
 
 fn half(n: Int) -> Option[Int] {
-  if n % 2 == 0 { Some(n / 2) } else { None }
+  if n % 2 == 0 {
+    Some(n / 2)
+  } else {
+    None
+  }
 }
 
 fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
@@ -105,17 +124,23 @@ first_half(4, 3) unwrap_or -1 = -1
 
 ## `let-else` — 束縛するか脱出
 
-`let PAT = e else { ... }` は `Some(v)` を剥がして `v` を**その先ずっと**束縛し、
-マッチしなければ `else` に入る。`else` は脱出 (`return` / `throw`) する必要が
+`let PAT = e else { ... }` は `Some(v)` を剥がして `v` を**後続のスコープで**束縛し、
+マッチしなければ `else` に入る。現行では `else` は脱出 (`return` / `throw`) する必要が
 ある — `match e { PAT => <残り>, _ => else }` に脱糖され、両腕の型が合う必要が
-あるため。`match` のような右方向ネストなしで「剥がして続行」を書ける。
+あるため。`return` を維持するかは [#1283](https://github.com/mizchi/vibe-lang/issues/1283) で
+決める。`match` のような右方向ネストなしで「剥がして続行」を書ける。
 
 ```vibe run
-import @vibe/prelude { stdout_write }
+import @vibe/prelude {
+  stdout_write
+}
 
 fn double_or_zero(o: Option[Int]) -> Int {
-  let Some(v) = o else { return 0 }
-  v * 2                              // v はここで使える
+  let Some(v) = o else {
+    return 0
+  }
+  v * 2
+  // v はここで使える
 }
 
 fn main with { Stdout } {
@@ -132,15 +157,23 @@ double_or_zero(None) = 0
 ## クイックチェックは is 式
 
 ```vibe run
-import @vibe/prelude { stdout_write }
+import @vibe/prelude {
+  stdout_write
+}
 
 fn half(n: Int) -> Option[Int] {
-  if n % 2 == 0 { Some(n / 2) } else { None }
+  if n % 2 == 0 {
+    Some(n / 2)
+  } else {
+    None
+  }
 }
 
 fn main with { Stdout } {
-  stdout_write("half(10) is Some(_) = \{half(10) is Some(_)}\n")   // true
-  stdout_write("half(3) is None = \{half(3) is None}\n")           // true
+  stdout_write("half(10) is Some(_) = \{half(10) is Some(_)}\n")
+  // true
+  stdout_write("half(3) is None = \{half(3) is None}\n")
+  // true
 }
 ```
 
@@ -149,12 +182,7 @@ half(10) is Some(_) = true
 half(3) is None = true
 ```
 
-## Result について
-
-`let*` / `?` は組み込みの `Result` / `Option` を対象にするが、standalone
-ファイルで気軽に使えるのは現状 Option (組み込み Result のコンストラクタ解決には
-文脈依存の制限があり、コンビネータ群 `Result::and_then` などは workspace の
-prelude 提供)。エラーに **理由** を持たせたいときの実用解は次章のエフェクト
-(`throw` / `handle`) — vibe のエラーハンドリングの主役はそちら。
+理由を伴う中断は次章の [Exception 境界](05_effects.vibe.md#exception-境界--perform--handle)
+で扱う。
 
 次章: [05 エフェクト](05_effects.vibe.md)

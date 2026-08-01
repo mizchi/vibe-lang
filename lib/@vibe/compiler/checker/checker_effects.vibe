@@ -111,10 +111,16 @@ export fn effect_error_to_string(err: EffectError) -> String {
 // stay green while `for await` over an async stream becomes sound (#2+#3).
 
 fn effect_opt_is_async(eff: Option[String]) -> Bool {
-  match eff {
-    Some(s) => String::contains(s, "Async"),
-    None => false
+  let labels = effect_decl_labels(eff)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(labels) {
+    if Array::get(labels, i) == "Async" {
+      found = true
+    }
+    i = i + 1
   }
+  found
 }
 
 /// True only for async-effect BUILTIN primitives (await/sleep/Stream::next/...).
@@ -273,6 +279,27 @@ export fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> 
         let (_, fval) = Array::get(fields, fi)
         append_eff_errs(errors, check_async_effects_expr(fval, env, in_async))
         fi = fi + 1
+      }
+      errors
+    },
+    EMap(fields) => {
+      let mut fi = 0
+      while fi < Array::length(fields) {
+        let (_, fval) = Array::get(fields, fi)
+        append_eff_errs(errors, check_async_effects_expr(fval, env, in_async))
+        fi = fi + 1
+      }
+      errors
+    },
+    ELabeledArg(_, _, value) => check_async_effects_expr(value, env, in_async),
+    ESpread(value) => check_async_effects_expr(value, env, in_async),
+    EBreak(Some(value)) => check_async_effects_expr(value, env, in_async),
+    EBreak(None) => errors,
+    EContinue(args) => {
+      let mut ai = 0
+      while ai < Array::length(args) {
+        append_eff_errs(errors, check_async_effects_expr(Array::get(args, ai), env, in_async))
+        ai = ai + 1
       }
       errors
     },
@@ -972,10 +999,10 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // re-checked at the call/handle site). Conservative — like the
         // mutability pass, this can only miss errors, never invent them.
         let lam_labels = effect_decl_labels(effect)
-        let body_declared = if Array::length(lam_labels) == 0 {
-          declared
-        } else {
-          lam_labels
+        let body_declared = match effect {
+          // `with {}` is an explicitly pure row, unlike a missing annotation.
+          Some(_) => lam_labels,
+          None => declared
         }
         // #885: extend the callback-parameter overlay with THIS function's own
         // function-typed parameters (if any carry a declared effect), scoped to
@@ -1126,6 +1153,25 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
           let (_, fval) = Array::get(fields, fi)
           Array::push(stack, (fval, declared, in_handle, ov_names, ov_effs))
           fi = fi + 1
+        }
+      },
+      EMap(fields) => {
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (_, fval) = Array::get(fields, fi)
+          Array::push(stack, (fval, declared, in_handle, ov_names, ov_effs))
+          fi = fi + 1
+        }
+      },
+      ELabeledArg(_, _, value) => Array::push(stack, (value, declared, in_handle, ov_names, ov_effs)),
+      ESpread(value) => Array::push(stack, (value, declared, in_handle, ov_names, ov_effs)),
+      EBreak(Some(value)) => Array::push(stack, (value, declared, in_handle, ov_names, ov_effs)),
+      EBreak(None) => (),
+      EContinue(args) => {
+        let mut ai = 0
+        while ai < Array::length(args) {
+          Array::push(stack, (Array::get(args, ai), declared, in_handle, ov_names, ov_effs))
+          ai = ai + 1
         }
       },
       _ => ()
