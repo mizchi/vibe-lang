@@ -122,6 +122,7 @@ import @vibe/compiler/codegen/common_analysis {
 }
 
 import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache,
   CompileCtx,
   CovState,
   CtorTable,
@@ -133,6 +134,10 @@ import @vibe/compiler/codegen/common_base {
   agg_info_of_type_expr,
   await_poll_pass,
   builtin_registry,
+  codegen_body_cache_find,
+  codegen_body_cache_new,
+  codegen_body_cache_record,
+  codegen_body_cache_replay,
   compile_inline_wat,
   compute_agg_returning,
   ctor_sorted_index,
@@ -748,7 +753,7 @@ fn lc_wrap_entry_error_boundary(stmts: Array[Stmt], entry_name: String) -> Unit 
   }
 }
 
-export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, prov: DbgProv) -> Bytes with { Error } {
+export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache) -> Bytes with { Error } {
   // ADR-0091 Phase 1: enforce `@zero_alloc` markers before any lowering
   // rewrites the marked bodies. No-op when no marker is present.
   let za_msg = zero_alloc_check(stmts)
@@ -2641,6 +2646,10 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // Seeded into the ctx and checked at every allocation (compile_lambda), not
   // used: while plan and walk agree, swapping compile_lambda over to the
   // planned value cannot change a byte. This is the evidence for that swap.
+  // #1259 step 7: harvested per-function codegen output. Local for now --
+  // nothing reads it yet, and the harvest is what has to be proven
+  // output-neutral before an entry point hands it out or takes one back.
+  let body_cache_out = codegen_body_cache_new()
   let lambda_plan_cell = lc_fresh_int_array()
   Array::push(lambda_plan_cell, 0)
   // #1259 step 7: the frozen plan, built BEFORE any body is emitted.
@@ -2686,732 +2695,762 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   }
   let mut bi = 0
   while bi < num_user_funcs {
-    let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
-    // #703 follow-up: under RC, lift temporary match scrutinees into lets so the
-    // Perceus pass (which drops named bindings) reclaims them. Applied here, the
-    // SAME transformed body feeds both build_perceus_plan (below) and the body
-    // compilation, keeping the plan and codegen consistent. Non-RC is unchanged.
+    // #1259 step 7: replay instead of compile.
     //
-    // #712: before lifting scrutinees, alpha-rename any binding that shadows an
-    // enclosing one (within this same function) to a fresh unique name, so RC
-    // codegen's name-keyed bookkeeping (heap_binding_names, rc_drop_names,
-    // rc_alias_dup_names, rc_dup_names, loop_borrowed_names, and the Perceus
-    // plan itself) can never confuse two distinct bindings that happen to share
-    // a name. See uniquify_shadowed_bindings's doc comment (normalize/index.vibe).
-    // #1259 step 7: transformed once, up in the planning loop. Re-running the
-    // transform here would draw a second set of fresh names from the shared
-    // counters and diverge from what the plan counted.
-    let __bi_expr = Array::get(planned_bodies, bi)
-    let body_buf = bytebuf_new()
-    // #644: tell the linemap recorder which user function `body_buf`'s
-    // offsets belong to (mirrors cov_state.cur_fn below). Set unconditionally
-    // -- linemap_record itself is a no-op unless dbg_line_on, so this costs
-    // nothing on a normal build.
-    Array::set(linemap_state.cur_fn, 0, bi)
-    // #cov: mark this user function as executed (store 1 at cov_base + bi).
-    // Stack-neutral and local-free, so prepending it to the body is safe.
-    if coverage {
-      emit_i32_const(body_buf, cov_base + bi)
-      emit_i32_const(body_buf, 1)
-      emit_i32_store8(body_buf, 0, 0)
-      // #cov branch: tell branch instrumentation which function owns the branches
-      // emitted while compiling this body.
-      Array::set(cov_state.cur_fn, 0, bi)
+    // A cached entry means some other run already compiled this function --
+    // and, crucially, compiled it against the SAME frozen lambda plan, so the
+    // table_slot immediates in its body already name the slots this assembly
+    // will install its lambdas at. Replaying is therefore not an optimization
+    // that trades accuracy for speed; it produces the identical bytes.
+    //
+    // This is where a parallel body phase pays off: the whole per-function
+    // pipeline below -- Perceus plan, locals analysis, ctx construction,
+    // compile_expr -- is skipped, not merely discarded.
+    let __cache_hit = codegen_body_cache_find(body_cache_in, bi)
+    if __cache_hit >= 0 {
+      codegen_body_cache_replay(body_cache_in, __cache_hit, bodies, meta_i32, meta_i64, lt_w)
     } else {
-      ()
-    }
-    // debugger trace (DAP P1 groundwork): in debug mode, append this user
-    // function's index `bi` to the in-memory trace log when there is still room.
-    // Stack-neutral and local-free, so prepending it to the body is safe:
-    //   if load[counter_addr] < cap {
-    //     store[log_base + load[counter_addr]*4] = bi
-    //     store[counter_addr] = load[counter_addr] + 1
-    //   }
-    // `counter` is reloaded from memory each time (idempotent), avoiding locals.
-    if debug_trace {
-      emit_i32_const(body_buf, trace_counter_addr)
-      emit_i32_load(body_buf, 2, 0)
-      emit_i32_const(body_buf, trace_cap)
-      emit_i32_ge_u(body_buf)
-      emit_i32_eqz(body_buf)
-      emit_if_void(body_buf)
-      // store[log_base + counter*4] = bi
-      emit_i32_const(body_buf, trace_log_base)
-      emit_i32_const(body_buf, trace_counter_addr)
-      emit_i32_load(body_buf, 2, 0)
-      emit_i32_const(body_buf, 4)
-      emit_i32_mul(body_buf)
-      emit_i32_add(body_buf)
-      emit_i32_const(body_buf, bi)
-      emit_i32_store(body_buf, 2, 0)
-      // store[counter_addr] = counter + 1
-      emit_i32_const(body_buf, trace_counter_addr)
-      emit_i32_const(body_buf, trace_counter_addr)
-      emit_i32_load(body_buf, 2, 0)
-      emit_i32_const(body_buf, 1)
-      emit_i32_add(body_buf)
-      emit_i32_store(body_buf, 2, 0)
-      emit_end(body_buf)
-    } else {
-      ()
-    }
-    // #715: computed here, BEFORE the `debug_break` block below, and reused by
-    // it via `Array::length(lc_norm_params)` instead of a second independent
-    // `is_efn(__bi_expr)`/`get_efn_params(__bi_expr)` call. Both accessors
-    // unconditionally rc_drop their argument, so each call is a real "use" of
-    // `__bi_expr` for Perceus's purposes; having it called from BOTH branches
-    // of the (usually-false) `if debug_break` AND unconditionally right after
-    // made the `if debug_break {...} else {...}` construct's `then` branch
-    // statically "consume" 2 extra units of `__bi_expr`'s remaining-use budget
-    // that, in the overwhelmingly common `debug_break == false` case, never
-    // actually execute. perceus/index.vibe's `pc_emit` EIf handling takes the
-    // MIN of the two branches' resulting `remaining` and carries it forward
-    // (see the #705 comment there) to avoid double-freeing a value fully
-    // consumed on the taken branch -- but that also means the *lower* (more-
-    // consuming) branch's count wins even when it is the branch that is
-    // essentially never taken, permanently starving the dup budget needed by
-    // `__bi_expr`'s later, always-executed uses below (`lc_norm_params` itself
-    // was one of them) and eventually causing a use of an already-freed
-    // pointer (#715's free-list corruption during RC self-hosting). Hoisting
-    // this computation out from under `debug_break` removes the only
-    // asymmetric-branch use of `__bi_expr` in this function (the other
-    // `is_efn(__bi_expr)`-gated branches all have `is_efn(__bi_expr)` true on
-    // effectively every real program, so their MIN-selected branch already
-    // matches the branch actually taken).
-    // #715: `get_slet_type(__bi_stmt)` hoisted out of the `is_efn(__bi_expr)`
-    // `then` branch and computed here, unconditionally -- previously it was
-    // the ONLY use of `__bi_stmt` inside this specific `if`'s `then` branch
-    // (the `else` branch, `array_empty()`, never touches
-    // `__bi_stmt`), and `__bi_expr` is NOT an EFn for every `bi` iteration:
-    // `fn_names_list`/`fn_stmt_indices` also carry thunk entries (see the
-    // classification loop above), so the `else` path here is a real, common
-    // occurrence, not a rare edge case. Same leak mechanism as the
-    // `lc_norm_params`/`__bi_body`/`dn_expr`/classification-loop fixes above
-    // -- `pc_emit`'s EIf MIN-merge (#705) otherwise permanently assumes the
-    // `then`-branch's higher `__bi_stmt` consumption even on thunk (`else`)
-    // iterations, leaking `__bi_stmt` (a heap Stmt node) on each one.
-    let __sf_slet_type = get_slet_type(__bi_stmt)
-    let lc_norm_params = if is_efn(__bi_expr) {
-      let ps = get_efn_params(__bi_expr)
-      let sig_args_raw = fn_type_param_types(__sf_slet_type)
-      let single_tuple_param = match sig_args_raw {
-        Some(a) => Array::length(ps) == 1 && Array::length(a) > 1,
-        None => false
+      let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
+      // #703 follow-up: under RC, lift temporary match scrutinees into lets so the
+      // Perceus pass (which drops named bindings) reclaims them. Applied here, the
+      // SAME transformed body feeds both build_perceus_plan (below) and the body
+      // compilation, keeping the plan and codegen consistent. Non-RC is unchanged.
+      //
+      // #712: before lifting scrutinees, alpha-rename any binding that shadows an
+      // enclosing one (within this same function) to a fresh unique name, so RC
+      // codegen's name-keyed bookkeeping (heap_binding_names, rc_drop_names,
+      // rc_alias_dup_names, rc_dup_names, loop_borrowed_names, and the Perceus
+      // plan itself) can never confuse two distinct bindings that happen to share
+      // a name. See uniquify_shadowed_bindings's doc comment (normalize/index.vibe).
+      // #1259 step 7: transformed once, up in the planning loop. Re-running the
+      // transform here would draw a second set of fresh names from the shared
+      // counters and diverge from what the plan counted.
+      let __bi_expr = Array::get(planned_bodies, bi)
+      let body_buf = bytebuf_new()
+      // #644: tell the linemap recorder which user function `body_buf`'s
+      // offsets belong to (mirrors cov_state.cur_fn below). Set unconditionally
+      // -- linemap_record itself is a no-op unless dbg_line_on, so this costs
+      // nothing on a normal build.
+      Array::set(linemap_state.cur_fn, 0, bi)
+      // #cov: mark this user function as executed (store 1 at cov_base + bi).
+      // Stack-neutral and local-free, so prepending it to the body is safe.
+      if coverage {
+        emit_i32_const(body_buf, cov_base + bi)
+        emit_i32_const(body_buf, 1)
+        emit_i32_store8(body_buf, 0, 0)
+        // #cov branch: tell branch instrumentation which function owns the branches
+        // emitted while compiling this body.
+        Array::set(cov_state.cur_fn, 0, bi)
+      } else {
+        ()
       }
-      let np = Array::slice(ps, 0, 0)
-      let mut spi = 0
-      while spi < Array::length(ps) {
-        let (sraw, sty) = Array::get(ps, spi)
-        let slen = String::length(sraw)
-        let ssn = if slen > 0 {
-          let slc = String::char_code_at(sraw, slen - 1)
-          if slc == '~' || slc == '?' {
-            sraw[0: slen - 1]
+      // debugger trace (DAP P1 groundwork): in debug mode, append this user
+      // function's index `bi` to the in-memory trace log when there is still room.
+      // Stack-neutral and local-free, so prepending it to the body is safe:
+      //   if load[counter_addr] < cap {
+      //     store[log_base + load[counter_addr]*4] = bi
+      //     store[counter_addr] = load[counter_addr] + 1
+      //   }
+      // `counter` is reloaded from memory each time (idempotent), avoiding locals.
+      if debug_trace {
+        emit_i32_const(body_buf, trace_counter_addr)
+        emit_i32_load(body_buf, 2, 0)
+        emit_i32_const(body_buf, trace_cap)
+        emit_i32_ge_u(body_buf)
+        emit_i32_eqz(body_buf)
+        emit_if_void(body_buf)
+        // store[log_base + counter*4] = bi
+        emit_i32_const(body_buf, trace_log_base)
+        emit_i32_const(body_buf, trace_counter_addr)
+        emit_i32_load(body_buf, 2, 0)
+        emit_i32_const(body_buf, 4)
+        emit_i32_mul(body_buf)
+        emit_i32_add(body_buf)
+        emit_i32_const(body_buf, bi)
+        emit_i32_store(body_buf, 2, 0)
+        // store[counter_addr] = counter + 1
+        emit_i32_const(body_buf, trace_counter_addr)
+        emit_i32_const(body_buf, trace_counter_addr)
+        emit_i32_load(body_buf, 2, 0)
+        emit_i32_const(body_buf, 1)
+        emit_i32_add(body_buf)
+        emit_i32_store(body_buf, 2, 0)
+        emit_end(body_buf)
+      } else {
+        ()
+      }
+      // #715: computed here, BEFORE the `debug_break` block below, and reused by
+      // it via `Array::length(lc_norm_params)` instead of a second independent
+      // `is_efn(__bi_expr)`/`get_efn_params(__bi_expr)` call. Both accessors
+      // unconditionally rc_drop their argument, so each call is a real "use" of
+      // `__bi_expr` for Perceus's purposes; having it called from BOTH branches
+      // of the (usually-false) `if debug_break` AND unconditionally right after
+      // made the `if debug_break {...} else {...}` construct's `then` branch
+      // statically "consume" 2 extra units of `__bi_expr`'s remaining-use budget
+      // that, in the overwhelmingly common `debug_break == false` case, never
+      // actually execute. perceus/index.vibe's `pc_emit` EIf handling takes the
+      // MIN of the two branches' resulting `remaining` and carries it forward
+      // (see the #705 comment there) to avoid double-freeing a value fully
+      // consumed on the taken branch -- but that also means the *lower* (more-
+      // consuming) branch's count wins even when it is the branch that is
+      // essentially never taken, permanently starving the dup budget needed by
+      // `__bi_expr`'s later, always-executed uses below (`lc_norm_params` itself
+      // was one of them) and eventually causing a use of an already-freed
+      // pointer (#715's free-list corruption during RC self-hosting). Hoisting
+      // this computation out from under `debug_break` removes the only
+      // asymmetric-branch use of `__bi_expr` in this function (the other
+      // `is_efn(__bi_expr)`-gated branches all have `is_efn(__bi_expr)` true on
+      // effectively every real program, so their MIN-selected branch already
+      // matches the branch actually taken).
+      // #715: `get_slet_type(__bi_stmt)` hoisted out of the `is_efn(__bi_expr)`
+      // `then` branch and computed here, unconditionally -- previously it was
+      // the ONLY use of `__bi_stmt` inside this specific `if`'s `then` branch
+      // (the `else` branch, `array_empty()`, never touches
+      // `__bi_stmt`), and `__bi_expr` is NOT an EFn for every `bi` iteration:
+      // `fn_names_list`/`fn_stmt_indices` also carry thunk entries (see the
+      // classification loop above), so the `else` path here is a real, common
+      // occurrence, not a rare edge case. Same leak mechanism as the
+      // `lc_norm_params`/`__bi_body`/`dn_expr`/classification-loop fixes above
+      // -- `pc_emit`'s EIf MIN-merge (#705) otherwise permanently assumes the
+      // `then`-branch's higher `__bi_stmt` consumption even on thunk (`else`)
+      // iterations, leaking `__bi_stmt` (a heap Stmt node) on each one.
+      let __sf_slet_type = get_slet_type(__bi_stmt)
+      let lc_norm_params = if is_efn(__bi_expr) {
+        let ps = get_efn_params(__bi_expr)
+        let sig_args_raw = fn_type_param_types(__sf_slet_type)
+        let single_tuple_param = match sig_args_raw {
+          Some(a) => Array::length(ps) == 1 && Array::length(a) > 1,
+          None => false
+        }
+        let np = Array::slice(ps, 0, 0)
+        let mut spi = 0
+        while spi < Array::length(ps) {
+          let (sraw, sty) = Array::get(ps, spi)
+          let slen = String::length(sraw)
+          let ssn = if slen > 0 {
+            let slc = String::char_code_at(sraw, slen - 1)
+            if slc == '~' || slc == '?' {
+              sraw[0: slen - 1]
+            } else {
+              sraw
+            }
           } else {
             sraw
           }
-        } else {
-          sraw
-        }
-        let resolved_ty = match sty {
-          Some(_) => sty,
-          None =>
-          match sig_args_raw {
-            Some(args) =>
-            if single_tuple_param {
-              Some(TyTuple(args))
-            } else if Array::length(args) == Array::length(ps) {
-              Some(Array::get(args, spi))
-            } else {
-              None
-            },
-            None => None
-          }
-        }
-        Array::push(np, (ssn, resolved_ty))
-        spi = spi + 1
-      }
-      np
-    } else {
-      // #715: alias `__sf_slet_type` once here too, matching `then`'s single
-      // use (via `fn_type_param_types`) now that it is hoisted above -- see
-      // that binding's doc comment.
-      let __sf_lnp_ty = __sf_slet_type
-      array_empty()
-    }
-    // debugger breakpoint (DAP P1): in break mode, call the host hook
-    // `vibe::dbg_break` at this user function's entry. The hook inspects the
-    // wasm backtrace to name the entering function and pauses when it is in the
-    // breakpoint set. Stack-neutral (() -> ()), so prepending is safe.
-    if debug_break {
-      // DAP P2: spill this function's i64 parameters into the dbgargs region so
-      // the host hook can read and print them. All user-function wasm params are
-      // i64 (vibe value ABI); locals 0..nparams-1 hold the params at entry.
-      let dbg_nparams = Array::length(lc_norm_params)
-      let dbg_n = if dbg_nparams > dbgargs_cap {
-        dbgargs_cap
-      } else {
-        dbg_nparams
-      }
-      let mut dbg_pi = 0
-      while dbg_pi < dbg_n {
-        emit_i32_const(body_buf, dbgargs_base + dbg_pi * 8)
-        emit_local_get(body_buf, dbg_pi)
-        emit_i64_store(body_buf, 3, 0)
-        dbg_pi = dbg_pi + 1
-      }
-      emit_i32_const(body_buf, dbgargs_count_addr)
-      emit_i32_const(body_buf, dbg_n)
-      emit_i32_store(body_buf, 2, 0)
-      emit_call(body_buf, dbg_break_import_idx)
-    } else {
-      ()
-    }
-    let local_names = lc_fresh_string_array()
-    let fn_name_dbg = Array::get(fn_names_list, bi)
-    let rc_drops = array_empty()
-    let rc_alias_dups = array_empty()
-    let rc_dups = array_empty()
-    let lc_heap_params = lc_fresh_string_array()
-    // #715: computed once, unconditionally (regardless of `enable_rc`), and
-    // reused below both for the Perceus plan and for the actual codegen call
-    // to `compile_expr` -- instead of a separate `get_efn_body(__bi_expr)`
-    // call under `enable_rc` (as `fbody`) AND another one further down (as
-    // `body`, inside the `is_efn(__bi_expr)` block). Each independent
-    // `get_efn_body(__bi_expr)`/`get_efn_params(__bi_expr)` call is a real
-    // additional owning "use" of `__bi_expr` for Perceus's purposes (neither
-    // is registered in `is_borrow_arg0_call`), inflating the dup budget
-    // `__bi_expr` statically needs. See the `lc_norm_params` doc comment
-    // above (the same redundant-call pattern, already fixed once for
-    // `get_efn_params`) for the full double-free mechanism this avoids.
-    let __bi_body = if is_efn(__bi_expr) {
-      get_efn_body(__bi_expr)
-    } else {
-      __bi_expr
-    }
-    if enable_rc {
-      let plan = build_perceus_plan_with_params(lc_norm_params, __bi_body, lc_borrow_ret_names, lc_borrow_arg0_user_srt, lc_borrow_view_ret)
-      let mut lhpi = 0
-      while lhpi < Array::length(lc_norm_params) {
-        let (lhpn, lhpt) = Array::get(lc_norm_params, lhpi)
-        if param_is_heap_in_body(lhpn, lhpt, __bi_body) {
-          Array::push(lc_heap_params, lhpn)
-        } else {
-          ()
-        }
-        lhpi = lhpi + 1
-      }
-      // ADR-0092 borrow-inference slice 1: when THIS fn's arg0 ABI is
-      // borrowed, the caller keeps ownership -- the plan's scope-end drop
-      // (and any entry dup) for param0 must not be emitted here.
-      let bfn_p0 = if bsearch_leftmost(lc_borrow_arg0_user_srt, fn_name_dbg) >= 0 && Array::length(lc_norm_params) >= 1 {
-        let (bfn_p0n, _) = Array::get(lc_norm_params, 0)
-        bfn_p0n
-      } else {
-        ""
-      }
-      let mut di = 0
-      while di < Array::length(plan) {
-        let pa = Array::get(plan, di)
-        if pa_is_drop(pa) {
-          // Skip ONLY the drop for the borrowed param -- the plan is
-          // name-keyed, so a shadowing local sharing param0's name can
-          // carry dup/alias-dup actions of its own, and filtering those
-          // out under-counts references (use-after-free that only
-          // surfaces under allocation churn -- codegen_heap_e2e_test
-          // caught it after ~90 compiles). A same-named shadow's own
-          // scope-end drop is also skipped here (a bounded leak, safe
-          // direction); eligibility makes that rare since a bare read of
-          // the shadow disqualifies the fn.
-          if pa.name == bfn_p0 && bfn_p0 != "" {
-            ()
-          } else {
-            Array::push(rc_drops, pa.name)
-          }
-        } else if pa_is_alias_dup(pa) {
-          Array::push(rc_alias_dups, pa.name)
-        } else if pa_is_dup(pa) {
-          Array::push(rc_dups, pa.name)
-        } else {
-          ()
-        }
-        di = di + 1
-      }
-    }
-    // Interior-line breakpoints: this function's source file id + that file's
-    // newline index (for mapping its statement offsets to lines). Off => 0/empty.
-    let dbg_fid = if dbg_line_on {
-      Array::get(prov.stmt_file_id, Array::get(fn_stmt_indices, bi))
-    } else {
-      0
-    }
-    let dbg_nls = if dbg_line_on {
-      Array::get(prov.file_nls, dbg_fid)
-    } else {
-      lc_fresh_int_array()
-    }
-    // #1259 step 7: this function's preassigned range, straight out of the
-    // frozen plan -- no counting happens here any more.
-    Array::set(lambda_plan_cell, 0, Array::get(lambda_bases, bi))
-    let lambda_planned_end = if bi + 1 < num_user_funcs {
-      Array::get(lambda_bases, bi + 1)
-    } else {
-      lambda_base_acc
-    }
-    let compile_ctx = CompileCtx::{
-      func_table: FuncTable::{
-        names: all_fn_names_list,
-        indices: all_fn_indices_list,
-        params: all_fn_param_counts,
-        returns: all_fn_returns_list,
-        needs_env: all_fn_needs_env_list,
-        names_sorted: all_fn_names_sorted,
-        names_sorted_pos: all_fn_names_sorted_pos
-      },
-      str_table: StrTable::{
-        strs: str_strs, offsets: str_offsets, lengths: str_lengths
-      },
-      lambda_table: lt_w,
-      num_user_funcs: num_user_funcs, func_offset: func_offset,
-      ref_cell_names: lc_fresh_string_array(),
-      ctor_table: CtorTable::{
-        names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, names_sorted: lc_ctor_names_sorted, names_sorted_pos: lc_ctor_names_sorted_pos
-      },
-      ctor_float_fields: ctor_float_fields_list,
-      // Sorted copy for compile_expr.vibe's per-identifier membership check
-      // (bsearch_leftmost) -- keep `thunk_names_list` itself unsorted, its
-      // POSITION is load-bearing for the per-thunk global-slot index lookup
-      // a few hundred lines below (tg_k / tg_value_g). Computed once above
-      // (thunk_names_sorted_shared), not per-function.
-      thunk_names: thunk_names_sorted_shared,
-      const_int_names: const_int_names_list,
-      const_int_values: const_int_values_list,
-      enable_rc: enable_rc,
-      rc_shadow: rc_shadow,
-      rc_drop_names: rc_drops,
-      rc_alias_dup_names: rc_alias_dups,
-      heap_binding_names: lc_heap_params,
-      rc_drop_func_idx: if enable_rc {
-        rc_drop_idx
-      } else {
-        -1
-      },
-      rc_alloc_func_idx: if enable_rc {
-        rc_alloc_idx
-      } else {
-        -1
-      },
-      heap_grow_check_func_idx: heap_grow_check_idx,
-      map_hash_func_idx: map_hash_idx,
-      map_cap_func_idx: map_cap_idx,
-      map_build_index_func_idx: map_build_index_idx,
-      map_probe_func_idx: map_probe_index_idx,
-      rc_dup_names: rc_dups,
-      capture_name_index: capture_name_index_shared,
-      float_local_slots: lc_fresh_int_array(),
-      int_local_slots: lc_fresh_int_array(),
-      agg_local_slots: lc_fresh_int_array(),
-      agg_local_exprs: lc_fresh_expr_array(),
-      agg_ret_names: lc_agg_ret_names,
-      agg_ret_infos: lc_agg_ret_infos,
-      heap_ret_names: lc_heap_ret_names,
-      effect_names: effect_names_list,
-      effect_op_keys: effect_op_keys_list,
-      effect_op_arities: effect_op_arities_list,
-      cov: cov_state,
-      dbg_line_idx: dbg_line_import_idx,
-      dbg_line_nl: dbg_nls,
-      dbg_line_file_id: dbg_fid,
-      loop_borrowed_names: lc_fresh_string_array(),
-      loop_consumed_names: lc_fresh_string_array(),
-      reuse_scrutinee_names: lc_fresh_string_array(),
-      reuse_flag_locals: lc_fresh_int_array(),
-      borrow_ret_names: lc_borrow_ret_names,
-      borrow_arg0_user: lc_borrow_arg0_user_srt,
-      borrow_view_ret: lc_borrow_view_ret,
-      scalar_ret_names: lc_scalar_ret_names,
-      pending_letrec_self_name: lc_fresh_string_array(),
-      table_slots_used: table_slots_used,
-      lambda_plan_next: lambda_plan_cell,
-      linemap: linemap_state
-    }
-    if is_efn(__bi_expr) {
-      // #715: `lc_norm_params` (built above from `get_efn_params(__bi_expr)`)
-      // already carries each parameter's `~`/`?`-stripped name in `.0` --
-      // reuse it instead of a second `get_efn_params(__bi_expr)` call plus a
-      // duplicate stripping pass (see the `__bi_body` doc comment above).
-      let body = __bi_body
-      let mut pi = 0
-      while pi < Array::length(lc_norm_params) {
-        let (pname, _) = Array::get(lc_norm_params, pi)
-        Array::push(local_names, pname)
-        pi = pi + 1
-      }
-      // #724 round 2: seed the aggregate-shape log from ANNOTATED params
-      // (param slot i = local i), so `p == q` on tuple/struct/enum-typed
-      // params compares structurally.
-      let sig_ptypes = fn_type_param_types(__sf_slet_type)
-      let mut psi = 0
-      while psi < Array::length(lc_norm_params) {
-        // Prefer the SLet signature's param types (`let f: (P2) -> ..`);
-        // fall back to a per-param annotation (`(p: P2) -> ..`).
-        let pann = match sig_ptypes {
-          Some(pts) => if Array::length(pts) == Array::length(lc_norm_params) {
-            Some(Array::get(pts, psi))
-          } else {
-            let (_, pa) = Array::get(lc_norm_params, psi)
-            pa
-          },
-          None => {
-            let (_, pa) = Array::get(lc_norm_params, psi)
-            pa
-          }
-        }
-        match pann {
-          Some(pte) => {
-            let pinfo = agg_info_of_type_expr(compile_ctx.ctor_table, pte)
-            if pinfo > 0 {
-              Array::push(compile_ctx.agg_local_slots, psi * 256 + pinfo)
-              // #811: agg_local_exprs is the index-aligned PARALLEL of
-              // agg_local_slots (agg_log_reset_above2 prunes both in
-              // lockstep, reading exprs[i] for every slots[i]). This param
-              // seed pushed only to slots, leaving exprs one entry short —
-              // every later reset then read exprs out of bounds and
-              // compacted the garbage back in. Push the same "no shape
-              // expr" placeholder the let-binding site uses.
-              Array::push(compile_ctx.agg_local_exprs, EInt(0))
-            } else {
-              ()
-            }
-            // Float/Double-typed params feed expr_is_floatish the same way
-            // let-bound floats do; without this, `a == b` on annotated float
-            // params misses the f64 path and (under RC, where floats are
-            // boxed) compares heap pointers — `1.5 == 1.5` came out false.
-            //
-            // #1015: Bool-typed params feed expr_is_boolish the same way
-            // (int_local_slots kind 3, #769 encoding slot*4+kind) let-bound
-            // bools do -- without this a Bool-typed param `b` passed straight
-            // to `to_string(b)` (e.g. `fn render(b: Bool) -> String {
-            // to_string(b) }`) is just a bare EIdent with no tracked slot
-            // info, so neither the call-site fast path in
-            // codegen/expr/compile_call.vibe nor `"\{b}"` interpolation can
-            // recognize it as Bool -- both fall through to the generic
-            // runtime bit-pattern heuristic and mis-render `true` as `"1"`.
-            match pte {
-              TyName(ptn) => if ptn == "Float" || ptn == "Double" {
-                Array::push(compile_ctx.float_local_slots, psi * 2 + 1)
-              } else if ptn == "Bool" {
-                Array::push(compile_ctx.int_local_slots, psi * 4 + 3)
+          let resolved_ty = match sty {
+            Some(_) => sty,
+            None =>
+            match sig_args_raw {
+              Some(args) =>
+              if single_tuple_param {
+                Some(TyTuple(args))
+              } else if Array::length(args) == Array::length(ps) {
+                Some(Array::get(args, spi))
               } else {
-                ()
+                None
               },
-              _ => ()
+              None => None
             }
-          },
-          None => ()
-        }
-        psi = psi + 1
-      }
-      Array::push(local_names, "__env")
-      let param_count = Array::length(lc_norm_params) + 1
-      if enable_rc {
-        let mut edi = 0
-        while edi < Array::length(lc_norm_params) {
-          let (edn, _edt) = Array::get(lc_norm_params, edi)
-          if array_contains_str(lc_heap_params, edn) {
-            let mut edc = 0
-            let mut edj = 0
-            while edj < Array::length(rc_dups) {
-              if Array::get(rc_dups, edj) == edn {
-                edc = edc + 1
-              } else {
-                ()
-              }
-              edj = edj + 1
-            }
-            let mut ede = 0
-            while ede < edc {
-              emit_rc_dup_guarded(body_buf, edi, rc_shadow)
-              ede = ede + 1
-            }
-          } else {
-            ()
           }
-          edi = edi + 1
+          Array::push(np, (ssn, resolved_ty))
+          spi = spi + 1
         }
+        np
+      } else {
+        // #715: alias `__sf_slet_type` once here too, matching `then`'s single
+        // use (via `fn_type_param_types`) now that it is hoisted above -- see
+        // that binding's doc comment.
+        let __sf_lnp_ty = __sf_slet_type
+        array_empty()
+      }
+      // debugger breakpoint (DAP P1): in break mode, call the host hook
+      // `vibe::dbg_break` at this user function's entry. The hook inspects the
+      // wasm backtrace to name the entering function and pauses when it is in the
+      // breakpoint set. Stack-neutral (() -> ()), so prepending is safe.
+      if debug_break {
+        // DAP P2: spill this function's i64 parameters into the dbgargs region so
+        // the host hook can read and print them. All user-function wasm params are
+        // i64 (vibe value ABI); locals 0..nparams-1 hold the params at entry.
+        let dbg_nparams = Array::length(lc_norm_params)
+        let dbg_n = if dbg_nparams > dbgargs_cap {
+          dbgargs_cap
+        } else {
+          dbg_nparams
+        }
+        let mut dbg_pi = 0
+        while dbg_pi < dbg_n {
+          emit_i32_const(body_buf, dbgargs_base + dbg_pi * 8)
+          emit_local_get(body_buf, dbg_pi)
+          emit_i64_store(body_buf, 3, 0)
+          dbg_pi = dbg_pi + 1
+        }
+        emit_i32_const(body_buf, dbgargs_count_addr)
+        emit_i32_const(body_buf, dbg_n)
+        emit_i32_store(body_buf, 2, 0)
+        emit_call(body_buf, dbg_break_import_idx)
       } else {
         ()
       }
-      // #805: an inline-wasm fn's instruction bytes come from the WAT
-      // assembler, not compile_expr (its AST body is a neutral EInt(0) after
-      // lc_extract_inline_wasm). Params are Int-only (parser-enforced), so
-      // no RC/Perceus bookkeeping applies; no extra locals are introduced
-      // (final_nl == param_count => meta extra 0).
-      let mut iw_found = -1
-      let mut iw_scan = 0
-      while iw_scan < Array::length(iw_names) {
-        if Array::get(iw_names, iw_scan) == fn_name_dbg {
-          iw_found = iw_scan
-          iw_scan = Array::length(iw_names)
+      let local_names = lc_fresh_string_array()
+      let fn_name_dbg = Array::get(fn_names_list, bi)
+      let rc_drops = array_empty()
+      let rc_alias_dups = array_empty()
+      let rc_dups = array_empty()
+      let lc_heap_params = lc_fresh_string_array()
+      // #715: computed once, unconditionally (regardless of `enable_rc`), and
+      // reused below both for the Perceus plan and for the actual codegen call
+      // to `compile_expr` -- instead of a separate `get_efn_body(__bi_expr)`
+      // call under `enable_rc` (as `fbody`) AND another one further down (as
+      // `body`, inside the `is_efn(__bi_expr)` block). Each independent
+      // `get_efn_body(__bi_expr)`/`get_efn_params(__bi_expr)` call is a real
+      // additional owning "use" of `__bi_expr` for Perceus's purposes (neither
+      // is registered in `is_borrow_arg0_call`), inflating the dup budget
+      // `__bi_expr` statically needs. See the `lc_norm_params` doc comment
+      // above (the same redundant-call pattern, already fixed once for
+      // `get_efn_params`) for the full double-free mechanism this avoids.
+      let __bi_body = if is_efn(__bi_expr) {
+        get_efn_body(__bi_expr)
+      } else {
+        __bi_expr
+      }
+      if enable_rc {
+        let plan = build_perceus_plan_with_params(lc_norm_params, __bi_body, lc_borrow_ret_names, lc_borrow_arg0_user_srt, lc_borrow_view_ret)
+        let mut lhpi = 0
+        while lhpi < Array::length(lc_norm_params) {
+          let (lhpn, lhpt) = Array::get(lc_norm_params, lhpi)
+          if param_is_heap_in_body(lhpn, lhpt, __bi_body) {
+            Array::push(lc_heap_params, lhpn)
+          } else {
+            ()
+          }
+          lhpi = lhpi + 1
+        }
+        // ADR-0092 borrow-inference slice 1: when THIS fn's arg0 ABI is
+        // borrowed, the caller keeps ownership -- the plan's scope-end drop
+        // (and any entry dup) for param0 must not be emitted here.
+        let bfn_p0 = if bsearch_leftmost(lc_borrow_arg0_user_srt, fn_name_dbg) >= 0 && Array::length(lc_norm_params) >= 1 {
+          let (bfn_p0n, _) = Array::get(lc_norm_params, 0)
+          bfn_p0n
         } else {
-          iw_scan = iw_scan + 1
+          ""
+        }
+        let mut di = 0
+        while di < Array::length(plan) {
+          let pa = Array::get(plan, di)
+          if pa_is_drop(pa) {
+            // Skip ONLY the drop for the borrowed param -- the plan is
+            // name-keyed, so a shadowing local sharing param0's name can
+            // carry dup/alias-dup actions of its own, and filtering those
+            // out under-counts references (use-after-free that only
+            // surfaces under allocation churn -- codegen_heap_e2e_test
+            // caught it after ~90 compiles). A same-named shadow's own
+            // scope-end drop is also skipped here (a bounded leak, safe
+            // direction); eligibility makes that rare since a bare read of
+            // the shadow disqualifies the fn.
+            if pa.name == bfn_p0 && bfn_p0 != "" {
+              ()
+            } else {
+              Array::push(rc_drops, pa.name)
+            }
+          } else if pa_is_alias_dup(pa) {
+            Array::push(rc_alias_dups, pa.name)
+          } else if pa_is_dup(pa) {
+            Array::push(rc_dups, pa.name)
+          } else {
+            ()
+          }
+          di = di + 1
         }
       }
-      // ADR-0092 Phase 1 widening: a function whose body is EXACTLY
-      // `match p { ... }` over one of its own heap params (the dominant
-      // shape of the compiler's AST-rebuild loops) stages the same reuse
-      // fusion the ELet form gets in compile_expr_tail — flag local first,
-      // (name, flag) pushed for compile_match, and the param's #725
-      // epilogue drop below guarded on the flag.
-      let pfuse_name = if enable_rc && rc_drop_idx >= 0 && iw_found < 0 && expr_tag(body) == 16 && is_eident(get_match_scrutinee(body)) {
-        get_eident_name(get_match_scrutinee(body))
+      // Interior-line breakpoints: this function's source file id + that file's
+      // newline index (for mapping its statement offsets to lines). Off => 0/empty.
+      let dbg_fid = if dbg_line_on {
+        Array::get(prov.stmt_file_id, Array::get(fn_stmt_indices, bi))
       } else {
-        ""
+        0
       }
-      let pfuse = pfuse_name != "" && array_contains_str(rc_drops, pfuse_name) && array_contains_str(lc_heap_params, pfuse_name)
-      let pfuse_flag = if pfuse {
-        Array::push(local_names, "__reuse_flag")
-        emit_i64_const(body_buf, 0)
-        emit_local_set(body_buf, param_count)
-        Array::push(compile_ctx.reuse_scrutinee_names, pfuse_name)
-        Array::push(compile_ctx.reuse_flag_locals, param_count)
-        param_count
+      let dbg_nls = if dbg_line_on {
+        Array::get(prov.file_nls, dbg_fid)
       } else {
-        0 - 1
+        lc_fresh_int_array()
       }
-      let final_nl = if iw_found >= 0 {
-        let iw_param_names = lc_fresh_string_array()
-        let mut iw_pi = 0
-        while iw_pi < Array::length(lc_norm_params) {
-          let (iw_pn, _) = Array::get(lc_norm_params, iw_pi)
-          Array::push(iw_param_names, iw_pn)
-          iw_pi = iw_pi + 1
-        }
-        bytebuf_push_buf(body_buf, compile_inline_wat(fn_name_dbg, Array::get(iw_wats, iw_found), iw_param_names))
-        param_count
+      // #1259 step 7: this function's preassigned range, straight out of the
+      // frozen plan -- no counting happens here any more.
+      Array::set(lambda_plan_cell, 0, Array::get(lambda_bases, bi))
+      let lambda_planned_end = if bi + 1 < num_user_funcs {
+        Array::get(lambda_bases, bi + 1)
       } else {
-        compile_expr(body_buf, body, local_names, if pfuse {
-          param_count + 1
+        lambda_base_acc
+      }
+      let compile_ctx = CompileCtx::{
+        func_table: FuncTable::{
+          names: all_fn_names_list,
+          indices: all_fn_indices_list,
+          params: all_fn_param_counts,
+          returns: all_fn_returns_list,
+          needs_env: all_fn_needs_env_list,
+          names_sorted: all_fn_names_sorted,
+          names_sorted_pos: all_fn_names_sorted_pos
+        },
+        str_table: StrTable::{
+          strs: str_strs, offsets: str_offsets, lengths: str_lengths
+        },
+        lambda_table: lt_w,
+        num_user_funcs: num_user_funcs, func_offset: func_offset,
+        ref_cell_names: lc_fresh_string_array(),
+        ctor_table: CtorTable::{
+          names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names, names_sorted: lc_ctor_names_sorted, names_sorted_pos: lc_ctor_names_sorted_pos
+        },
+        ctor_float_fields: ctor_float_fields_list,
+        // Sorted copy for compile_expr.vibe's per-identifier membership check
+        // (bsearch_leftmost) -- keep `thunk_names_list` itself unsorted, its
+        // POSITION is load-bearing for the per-thunk global-slot index lookup
+        // a few hundred lines below (tg_k / tg_value_g). Computed once above
+        // (thunk_names_sorted_shared), not per-function.
+        thunk_names: thunk_names_sorted_shared,
+        const_int_names: const_int_names_list,
+        const_int_values: const_int_values_list,
+        enable_rc: enable_rc,
+        rc_shadow: rc_shadow,
+        rc_drop_names: rc_drops,
+        rc_alias_dup_names: rc_alias_dups,
+        heap_binding_names: lc_heap_params,
+        rc_drop_func_idx: if enable_rc {
+          rc_drop_idx
         } else {
+          -1
+        },
+        rc_alloc_func_idx: if enable_rc {
+          rc_alloc_idx
+        } else {
+          -1
+        },
+        heap_grow_check_func_idx: heap_grow_check_idx,
+        map_hash_func_idx: map_hash_idx,
+        map_cap_func_idx: map_cap_idx,
+        map_build_index_func_idx: map_build_index_idx,
+        map_probe_func_idx: map_probe_index_idx,
+        rc_dup_names: rc_dups,
+        capture_name_index: capture_name_index_shared,
+        float_local_slots: lc_fresh_int_array(),
+        int_local_slots: lc_fresh_int_array(),
+        agg_local_slots: lc_fresh_int_array(),
+        agg_local_exprs: lc_fresh_expr_array(),
+        agg_ret_names: lc_agg_ret_names,
+        agg_ret_infos: lc_agg_ret_infos,
+        heap_ret_names: lc_heap_ret_names,
+        effect_names: effect_names_list,
+        effect_op_keys: effect_op_keys_list,
+        effect_op_arities: effect_op_arities_list,
+        cov: cov_state,
+        dbg_line_idx: dbg_line_import_idx,
+        dbg_line_nl: dbg_nls,
+        dbg_line_file_id: dbg_fid,
+        loop_borrowed_names: lc_fresh_string_array(),
+        loop_consumed_names: lc_fresh_string_array(),
+        reuse_scrutinee_names: lc_fresh_string_array(),
+        reuse_flag_locals: lc_fresh_int_array(),
+        borrow_ret_names: lc_borrow_ret_names,
+        borrow_arg0_user: lc_borrow_arg0_user_srt,
+        borrow_view_ret: lc_borrow_view_ret,
+        scalar_ret_names: lc_scalar_ret_names,
+        pending_letrec_self_name: lc_fresh_string_array(),
+        table_slots_used: table_slots_used,
+        lambda_plan_next: lambda_plan_cell,
+        linemap: linemap_state
+      }
+      if is_efn(__bi_expr) {
+        // #715: `lc_norm_params` (built above from `get_efn_params(__bi_expr)`)
+        // already carries each parameter's `~`/`?`-stripped name in `.0` --
+        // reuse it instead of a second `get_efn_params(__bi_expr)` call plus a
+        // duplicate stripping pass (see the `__bi_body` doc comment above).
+        let body = __bi_body
+        let mut pi = 0
+        while pi < Array::length(lc_norm_params) {
+          let (pname, _) = Array::get(lc_norm_params, pi)
+          Array::push(local_names, pname)
+          pi = pi + 1
+        }
+        // #724 round 2: seed the aggregate-shape log from ANNOTATED params
+        // (param slot i = local i), so `p == q` on tuple/struct/enum-typed
+        // params compares structurally.
+        let sig_ptypes = fn_type_param_types(__sf_slet_type)
+        let mut psi = 0
+        while psi < Array::length(lc_norm_params) {
+          // Prefer the SLet signature's param types (`let f: (P2) -> ..`);
+          // fall back to a per-param annotation (`(p: P2) -> ..`).
+          let pann = match sig_ptypes {
+            Some(pts) => if Array::length(pts) == Array::length(lc_norm_params) {
+              Some(Array::get(pts, psi))
+            } else {
+              let (_, pa) = Array::get(lc_norm_params, psi)
+              pa
+            },
+            None => {
+              let (_, pa) = Array::get(lc_norm_params, psi)
+              pa
+            }
+          }
+          match pann {
+            Some(pte) => {
+              let pinfo = agg_info_of_type_expr(compile_ctx.ctor_table, pte)
+              if pinfo > 0 {
+                Array::push(compile_ctx.agg_local_slots, psi * 256 + pinfo)
+                // #811: agg_local_exprs is the index-aligned PARALLEL of
+                // agg_local_slots (agg_log_reset_above2 prunes both in
+                // lockstep, reading exprs[i] for every slots[i]). This param
+                // seed pushed only to slots, leaving exprs one entry short —
+                // every later reset then read exprs out of bounds and
+                // compacted the garbage back in. Push the same "no shape
+                // expr" placeholder the let-binding site uses.
+                Array::push(compile_ctx.agg_local_exprs, EInt(0))
+              } else {
+                ()
+              }
+              // Float/Double-typed params feed expr_is_floatish the same way
+              // let-bound floats do; without this, `a == b` on annotated float
+              // params misses the f64 path and (under RC, where floats are
+              // boxed) compares heap pointers — `1.5 == 1.5` came out false.
+              //
+              // #1015: Bool-typed params feed expr_is_boolish the same way
+              // (int_local_slots kind 3, #769 encoding slot*4+kind) let-bound
+              // bools do -- without this a Bool-typed param `b` passed straight
+              // to `to_string(b)` (e.g. `fn render(b: Bool) -> String {
+              // to_string(b) }`) is just a bare EIdent with no tracked slot
+              // info, so neither the call-site fast path in
+              // codegen/expr/compile_call.vibe nor `"\{b}"` interpolation can
+              // recognize it as Bool -- both fall through to the generic
+              // runtime bit-pattern heuristic and mis-render `true` as `"1"`.
+              match pte {
+                TyName(ptn) => if ptn == "Float" || ptn == "Double" {
+                  Array::push(compile_ctx.float_local_slots, psi * 2 + 1)
+                } else if ptn == "Bool" {
+                  Array::push(compile_ctx.int_local_slots, psi * 4 + 3)
+                } else {
+                  ()
+                },
+                _ => ()
+              }
+            },
+            None => ()
+          }
+          psi = psi + 1
+        }
+        Array::push(local_names, "__env")
+        let param_count = Array::length(lc_norm_params) + 1
+        if enable_rc {
+          let mut edi = 0
+          while edi < Array::length(lc_norm_params) {
+            let (edn, _edt) = Array::get(lc_norm_params, edi)
+            if array_contains_str(lc_heap_params, edn) {
+              let mut edc = 0
+              let mut edj = 0
+              while edj < Array::length(rc_dups) {
+                if Array::get(rc_dups, edj) == edn {
+                  edc = edc + 1
+                } else {
+                  ()
+                }
+                edj = edj + 1
+              }
+              let mut ede = 0
+              while ede < edc {
+                emit_rc_dup_guarded(body_buf, edi, rc_shadow)
+                ede = ede + 1
+              }
+            } else {
+              ()
+            }
+            edi = edi + 1
+          }
+        } else {
+          ()
+        }
+        // #805: an inline-wasm fn's instruction bytes come from the WAT
+        // assembler, not compile_expr (its AST body is a neutral EInt(0) after
+        // lc_extract_inline_wasm). Params are Int-only (parser-enforced), so
+        // no RC/Perceus bookkeeping applies; no extra locals are introduced
+        // (final_nl == param_count => meta extra 0).
+        let mut iw_found = -1
+        let mut iw_scan = 0
+        while iw_scan < Array::length(iw_names) {
+          if Array::get(iw_names, iw_scan) == fn_name_dbg {
+            iw_found = iw_scan
+            iw_scan = Array::length(iw_names)
+          } else {
+            iw_scan = iw_scan + 1
+          }
+        }
+        // ADR-0092 Phase 1 widening: a function whose body is EXACTLY
+        // `match p { ... }` over one of its own heap params (the dominant
+        // shape of the compiler's AST-rebuild loops) stages the same reuse
+        // fusion the ELet form gets in compile_expr_tail — flag local first,
+        // (name, flag) pushed for compile_match, and the param's #725
+        // epilogue drop below guarded on the flag.
+        let pfuse_name = if enable_rc && rc_drop_idx >= 0 && iw_found < 0 && expr_tag(body) == 16 && is_eident(get_match_scrutinee(body)) {
+          get_eident_name(get_match_scrutinee(body))
+        } else {
+          ""
+        }
+        let pfuse = pfuse_name != "" && array_contains_str(rc_drops, pfuse_name) && array_contains_str(lc_heap_params, pfuse_name)
+        let pfuse_flag = if pfuse {
+          Array::push(local_names, "__reuse_flag")
+          emit_i64_const(body_buf, 0)
+          emit_local_set(body_buf, param_count)
+          Array::push(compile_ctx.reuse_scrutinee_names, pfuse_name)
+          Array::push(compile_ctx.reuse_flag_locals, param_count)
           param_count
-        }, compile_ctx, -1)
-      }
-      if pfuse {
-        Array::truncate(compile_ctx.reuse_scrutinee_names, Array::length(compile_ctx.reuse_scrutinee_names) - 1)
-        Array::truncate(compile_ctx.reuse_flag_locals, Array::length(compile_ctx.reuse_flag_locals) - 1)
-      } else {
-        ()
-      }
-      let mut tail_nl = final_nl
-      if enable_rc && rc_drop_idx >= 0 {
-        let tail_root = scope_tail_proj_root(body)
-        // #706 leak follow-up: a loop-borrowed param's protective rc_dup (see
-        // compile_call.vibe's cc_is_loop_borrowed_ident sites) is matched by the
-        // callee's OWN internal drop each iteration — it never touches this
-        // function's own slot-held reference. The Perceus plan still counts that
-        // textual occurrence as "one real consume" (so `remaining` hits 0 and no
-        // PaDrop is emitted), leaking the binding's own reference once per such
-        // occurrence. Count each param's occurrences in loop_consumed_names and
-        // emit that many EXTRA rc_drop calls here — purely additive to the
-        // existing rc_drops accounting, so it cannot perturb any decision the
-        // plan and codegen already agree on elsewhere.
-        let mut need_dup = false
-        let mut tci = 0
-        while tci < Array::length(lc_norm_params) {
-          let (tcn, _tct) = Array::get(lc_norm_params, tci)
-          let mut tcn_loop_extra = 0
-          let mut tcle = 0
-          while tcle < Array::length(compile_ctx.loop_consumed_names) {
-            if Array::get(compile_ctx.loop_consumed_names, tcle) == tcn {
-              tcn_loop_extra = tcn_loop_extra + 1
-            } else {
-              ()
-            }
-            tcle = tcle + 1
-          }
-          // #1085: the loop-count clause only applies when every consuming
-          // occurrence is a loop site (see lc_has_nonloop_consume).
-          let tcn_loop_drop = tcn_loop_extra > 0 && !lc_has_nonloop_consume(body, tcn)
-          if array_contains_str(lc_heap_params, tcn) && (array_contains_str(rc_drops, tcn) || tcn_loop_drop) && tcn == tail_root {
-            need_dup = true
-          } else {
-            ()
-          }
-          tci = tci + 1
+        } else {
+          0 - 1
         }
-        let rtemp = final_nl
-        if need_dup {
-          emit_local_set(body_buf, rtemp)
-          emit_rc_dup_guarded(body_buf, rtemp, rc_shadow)
-          tail_nl = final_nl + 1
+        let final_nl = if iw_found >= 0 {
+          let iw_param_names = lc_fresh_string_array()
+          let mut iw_pi = 0
+          while iw_pi < Array::length(lc_norm_params) {
+            let (iw_pn, _) = Array::get(lc_norm_params, iw_pi)
+            Array::push(iw_param_names, iw_pn)
+            iw_pi = iw_pi + 1
+          }
+          bytebuf_push_buf(body_buf, compile_inline_wat(fn_name_dbg, Array::get(iw_wats, iw_found), iw_param_names))
+          param_count
+        } else {
+          compile_expr(body_buf, body, local_names, if pfuse {
+            param_count + 1
+          } else {
+            param_count
+          }, compile_ctx, -1)
+        }
+        if pfuse {
+          Array::truncate(compile_ctx.reuse_scrutinee_names, Array::length(compile_ctx.reuse_scrutinee_names) - 1)
+          Array::truncate(compile_ctx.reuse_flag_locals, Array::length(compile_ctx.reuse_flag_locals) - 1)
         } else {
           ()
         }
-        let mut tdj = 0
-        while tdj < Array::length(lc_norm_params) {
-          let (tdn, _tdt) = Array::get(lc_norm_params, tdj)
-          if array_contains_str(lc_heap_params, tdn) {
-            // #725: a loop-protected consume (per-iteration dup at the call
-            // site, #706 above) is NET-ZERO at runtime — the dup is matched by
-            // the callee's own drop each execution and never touches the
-            // param's single owned reference. So the epilogue owes EXACTLY ONE
-            // drop for that reference, regardless of how many textual
-            // loop-consumed SITES exist: a second site in a sibling match arm
-            // (even one that never executes — its protective dup is emitted
-            // but never runs) previously got its own per-occurrence drop,
-            // over-releasing the CALLER's value and poisoning the RC free
-            // list (fuzz/findings/issue725/). When a loop site exists it also
-            // absorbs the plan's PaDrop (the textual counts ate the budget the
-            // plan would otherwise drop), so emit one drop total either way.
-            let mut tdn_loop_count = 0
-            let mut tdle = 0
-            while tdle < Array::length(compile_ctx.loop_consumed_names) {
-              if Array::get(compile_ctx.loop_consumed_names, tdle) == tdn {
-                tdn_loop_count = tdn_loop_count + 1
+        let mut tail_nl = final_nl
+        if enable_rc && rc_drop_idx >= 0 {
+          let tail_root = scope_tail_proj_root(body)
+          // #706 leak follow-up: a loop-borrowed param's protective rc_dup (see
+          // compile_call.vibe's cc_is_loop_borrowed_ident sites) is matched by the
+          // callee's OWN internal drop each iteration — it never touches this
+          // function's own slot-held reference. The Perceus plan still counts that
+          // textual occurrence as "one real consume" (so `remaining` hits 0 and no
+          // PaDrop is emitted), leaking the binding's own reference once per such
+          // occurrence. Count each param's occurrences in loop_consumed_names and
+          // emit that many EXTRA rc_drop calls here — purely additive to the
+          // existing rc_drops accounting, so it cannot perturb any decision the
+          // plan and codegen already agree on elsewhere.
+          let mut need_dup = false
+          let mut tci = 0
+          while tci < Array::length(lc_norm_params) {
+            let (tcn, _tct) = Array::get(lc_norm_params, tci)
+            let mut tcn_loop_extra = 0
+            let mut tcle = 0
+            while tcle < Array::length(compile_ctx.loop_consumed_names) {
+              if Array::get(compile_ctx.loop_consumed_names, tcle) == tcn {
+                tcn_loop_extra = tcn_loop_extra + 1
               } else {
                 ()
               }
-              tdle = tdle + 1
+              tcle = tcle + 1
             }
-            // #1085: the "one epilogue drop when loop sites exist" rule
-            // (#725) assumed every textual consume is a net-zero loop site.
-            // When a NON-loop consuming occurrence also exists (e.g.
-            // `Array::set(buf, i, v)` in a sibling branch of the loop), the
-            // path through that real consume transfers the param's own
-            // reference and the unconditional drop over-releases the stored
-            // value (use-after-free — the loop arm does not even need to
-            // execute). Suppress the loop-count drop in that mixed case;
-            // the loop-only path then leaks one reference per call, which
-            // is the safe direction until path-sensitive accounting lands
-            // (fixtures/rc_branch_loop_mixed_consume_test.vibe).
-            let tdn_loop_drop = tdn_loop_count > 0 && !lc_has_nonloop_consume(body, tdn)
-            if array_contains_str(rc_drops, tdn) || tdn_loop_drop {
-              if pfuse_flag >= 0 && tdn == pfuse_name {
-                // ADR-0092: a reuse arm consumed this param's reference —
-                // drop only on the paths that did not (flag still 0).
-                emit_local_get(body_buf, pfuse_flag)
-                emit_i64_eqz(body_buf)
-                emit_if_void(body_buf)
-                emit_local_get(body_buf, tdj)
-                emit_call(body_buf, rc_drop_idx)
-                emit_end(body_buf)
+            // #1085: the loop-count clause only applies when every consuming
+            // occurrence is a loop site (see lc_has_nonloop_consume).
+            let tcn_loop_drop = tcn_loop_extra > 0 && !lc_has_nonloop_consume(body, tcn)
+            if array_contains_str(lc_heap_params, tcn) && (array_contains_str(rc_drops, tcn) || tcn_loop_drop) && tcn == tail_root {
+              need_dup = true
+            } else {
+              ()
+            }
+            tci = tci + 1
+          }
+          let rtemp = final_nl
+          if need_dup {
+            emit_local_set(body_buf, rtemp)
+            emit_rc_dup_guarded(body_buf, rtemp, rc_shadow)
+            tail_nl = final_nl + 1
+          } else {
+            ()
+          }
+          let mut tdj = 0
+          while tdj < Array::length(lc_norm_params) {
+            let (tdn, _tdt) = Array::get(lc_norm_params, tdj)
+            if array_contains_str(lc_heap_params, tdn) {
+              // #725: a loop-protected consume (per-iteration dup at the call
+              // site, #706 above) is NET-ZERO at runtime — the dup is matched by
+              // the callee's own drop each execution and never touches the
+              // param's single owned reference. So the epilogue owes EXACTLY ONE
+              // drop for that reference, regardless of how many textual
+              // loop-consumed SITES exist: a second site in a sibling match arm
+              // (even one that never executes — its protective dup is emitted
+              // but never runs) previously got its own per-occurrence drop,
+              // over-releasing the CALLER's value and poisoning the RC free
+              // list (fuzz/findings/issue725/). When a loop site exists it also
+              // absorbs the plan's PaDrop (the textual counts ate the budget the
+              // plan would otherwise drop), so emit one drop total either way.
+              let mut tdn_loop_count = 0
+              let mut tdle = 0
+              while tdle < Array::length(compile_ctx.loop_consumed_names) {
+                if Array::get(compile_ctx.loop_consumed_names, tdle) == tdn {
+                  tdn_loop_count = tdn_loop_count + 1
+                } else {
+                  ()
+                }
+                tdle = tdle + 1
+              }
+              // #1085: the "one epilogue drop when loop sites exist" rule
+              // (#725) assumed every textual consume is a net-zero loop site.
+              // When a NON-loop consuming occurrence also exists (e.g.
+              // `Array::set(buf, i, v)` in a sibling branch of the loop), the
+              // path through that real consume transfers the param's own
+              // reference and the unconditional drop over-releases the stored
+              // value (use-after-free — the loop arm does not even need to
+              // execute). Suppress the loop-count drop in that mixed case;
+              // the loop-only path then leaks one reference per call, which
+              // is the safe direction until path-sensitive accounting lands
+              // (fixtures/rc_branch_loop_mixed_consume_test.vibe).
+              let tdn_loop_drop = tdn_loop_count > 0 && !lc_has_nonloop_consume(body, tdn)
+              if array_contains_str(rc_drops, tdn) || tdn_loop_drop {
+                if pfuse_flag >= 0 && tdn == pfuse_name {
+                  // ADR-0092: a reuse arm consumed this param's reference —
+                  // drop only on the paths that did not (flag still 0).
+                  emit_local_get(body_buf, pfuse_flag)
+                  emit_i64_eqz(body_buf)
+                  emit_if_void(body_buf)
+                  emit_local_get(body_buf, tdj)
+                  emit_call(body_buf, rc_drop_idx)
+                  emit_end(body_buf)
+                } else {
+                  emit_local_get(body_buf, tdj)
+                  emit_call(body_buf, rc_drop_idx)
+                }
               } else {
-                emit_local_get(body_buf, tdj)
-                emit_call(body_buf, rc_drop_idx)
+                ()
               }
             } else {
               ()
             }
+            tdj = tdj + 1
+          }
+          if need_dup {
+            emit_local_get(body_buf, rtemp)
           } else {
             ()
           }
-          tdj = tdj + 1
-        }
-        if need_dup {
-          emit_local_get(body_buf, rtemp)
         } else {
           ()
         }
-      } else {
-        ()
-      }
-      if enable_rc && fn_name_dbg == entry_name {
-        emit_i64_const(body_buf, 1)
-        emit_i64_shr_s(body_buf)
-      }
-      Array::push(bodies, body_buf)
-      // #1259: the walk allocated exactly as many lambdas as the plan said.
-      // The per-allocation check in compile_lambda catches an UNDER-count (the
-      // walk runs past the planned range); this catches an OVER-count, where
-      // the plan reserved slots for EFn nodes codegen never reached.
-      if Array::get(lambda_plan_cell, 0) != lambda_planned_end {
-        throw(String::concat("lambda plan over-count: planned through ", String::concat(__to_string(lambda_planned_end), String::concat(", walk stopped at ", __to_string(Array::get(lambda_plan_cell, 0))))))
-      } else {
-        ()
-      }
-      let extra = if tail_nl > param_count {
-        tail_nl - param_count
-      } else {
-        0
-      }
-      Array::push(meta_i32, 0)
-      Array::push(meta_i64, extra)
-    } else {
-      // Module-level non-function `let` (a THUNK): previously the initializer
-      // re-ran on EVERY reference, so a 16-entry lookup table cost an O(size)
-      // allocation per access (~148 B/call in bench/_probe_sb_phases.vibe)
-      // and, worse, each access saw a FRESH value while the gc backend
-      // initializes module globals ONCE — a cross-backend semantics split
-      // (mutations visible there, lost here). Memoize: two appended i64
-      // globals per thunk (value + init flag; base index rc?7:6, after
-      // g_op_index). First call computes and caches, later calls reload.
-      // Under RC the cache holds one permanent reference and every return
-      // (both paths) hands the caller a guarded-dup'd reference, so consumer
-      // drops balance exactly like the old fresh-value contract.
-      Array::push(local_names, "__env")
-      let param_count = 1
-      let mut tg_k = -1
-      let mut tg_i = 0
-      while tg_i < Array::length(thunk_names_list) {
-        if Array::get(thunk_names_list, tg_i) == fn_name_dbg {
-          tg_k = tg_i
-          tg_i = Array::length(thunk_names_list)
-        } else {
-          tg_i = tg_i + 1
+        if enable_rc && fn_name_dbg == entry_name {
+          emit_i64_const(body_buf, 1)
+          emit_i64_shr_s(body_buf)
         }
-      }
-      let tg_base = if enable_rc {
-        7
+        Array::push(bodies, body_buf)
+        // #1259: the walk allocated exactly as many lambdas as the plan said.
+        // The per-allocation check in compile_lambda catches an UNDER-count (the
+        // walk runs past the planned range); this catches an OVER-count, where
+        // the plan reserved slots for EFn nodes codegen never reached.
+        if Array::get(lambda_plan_cell, 0) != lambda_planned_end {
+          throw(String::concat("lambda plan over-count: planned through ", String::concat(__to_string(lambda_planned_end), String::concat(", walk stopped at ", __to_string(Array::get(lambda_plan_cell, 0))))))
+        } else {
+          ()
+        }
+        let extra = if tail_nl > param_count {
+          tail_nl - param_count
+        } else {
+          0
+        }
+        Array::push(meta_i32, 0)
+        Array::push(meta_i64, extra)
       } else {
-        6
-      }
-      let tg_value_g = tg_base + tg_k * 2
-      let tg_flag_g = tg_value_g + 1
-      emit_global_get(body_buf, tg_flag_g)
-      emit_i32_wrap_i64(body_buf)
-      emit_if_i64(body_buf)
-      emit_global_get(body_buf, tg_value_g)
-      emit_local_tee(body_buf, 1)
-      if enable_rc {
-        emit_rc_dup_guarded(body_buf, 1, rc_shadow)
-      } else {
-        ()
-      }
-      emit_else(body_buf)
-      Array::push(local_names, "__thunk_memo")
-      let final_nl = compile_expr(body_buf, __bi_expr, local_names, 2, compile_ctx, -1)
-      emit_local_tee(body_buf, 1)
-      emit_global_set(body_buf, tg_value_g)
-      if enable_rc {
-        emit_rc_dup_guarded(body_buf, 1, rc_shadow)
-      } else {
-        ()
-      }
-      emit_i64_const(body_buf, 1)
-      emit_global_set(body_buf, tg_flag_g)
-      emit_local_get(body_buf, 1)
-      emit_end(body_buf)
-      if enable_rc && fn_name_dbg == entry_name {
+        // Module-level non-function `let` (a THUNK): previously the initializer
+        // re-ran on EVERY reference, so a 16-entry lookup table cost an O(size)
+        // allocation per access (~148 B/call in bench/_probe_sb_phases.vibe)
+        // and, worse, each access saw a FRESH value while the gc backend
+        // initializes module globals ONCE — a cross-backend semantics split
+        // (mutations visible there, lost here). Memoize: two appended i64
+        // globals per thunk (value + init flag; base index rc?7:6, after
+        // g_op_index). First call computes and caches, later calls reload.
+        // Under RC the cache holds one permanent reference and every return
+        // (both paths) hands the caller a guarded-dup'd reference, so consumer
+        // drops balance exactly like the old fresh-value contract.
+        Array::push(local_names, "__env")
+        let param_count = 1
+        let mut tg_k = -1
+        let mut tg_i = 0
+        while tg_i < Array::length(thunk_names_list) {
+          if Array::get(thunk_names_list, tg_i) == fn_name_dbg {
+            tg_k = tg_i
+            tg_i = Array::length(thunk_names_list)
+          } else {
+            tg_i = tg_i + 1
+          }
+        }
+        let tg_base = if enable_rc {
+          7
+        } else {
+          6
+        }
+        let tg_value_g = tg_base + tg_k * 2
+        let tg_flag_g = tg_value_g + 1
+        emit_global_get(body_buf, tg_flag_g)
+        emit_i32_wrap_i64(body_buf)
+        emit_if_i64(body_buf)
+        emit_global_get(body_buf, tg_value_g)
+        emit_local_tee(body_buf, 1)
+        if enable_rc {
+          emit_rc_dup_guarded(body_buf, 1, rc_shadow)
+        } else {
+          ()
+        }
+        emit_else(body_buf)
+        Array::push(local_names, "__thunk_memo")
+        let final_nl = compile_expr(body_buf, __bi_expr, local_names, 2, compile_ctx, -1)
+        emit_local_tee(body_buf, 1)
+        emit_global_set(body_buf, tg_value_g)
+        if enable_rc {
+          emit_rc_dup_guarded(body_buf, 1, rc_shadow)
+        } else {
+          ()
+        }
         emit_i64_const(body_buf, 1)
-        emit_i64_shr_s(body_buf)
+        emit_global_set(body_buf, tg_flag_g)
+        emit_local_get(body_buf, 1)
+        emit_end(body_buf)
+        if enable_rc && fn_name_dbg == entry_name {
+          emit_i64_const(body_buf, 1)
+          emit_i64_shr_s(body_buf)
+        }
+        Array::push(bodies, body_buf)
+        // #1259: the walk allocated exactly as many lambdas as the plan said.
+        // The per-allocation check in compile_lambda catches an UNDER-count (the
+        // walk runs past the planned range); this catches an OVER-count, where
+        // the plan reserved slots for EFn nodes codegen never reached.
+        if Array::get(lambda_plan_cell, 0) != lambda_planned_end {
+          throw(String::concat("lambda plan over-count: planned through ", String::concat(__to_string(lambda_planned_end), String::concat(", walk stopped at ", __to_string(Array::get(lambda_plan_cell, 0))))))
+        } else {
+          ()
+        }
+        let extra = if final_nl > param_count {
+          final_nl - param_count
+        } else {
+          0
+        }
+        Array::push(meta_i32, 0)
+        Array::push(meta_i64, extra)
       }
-      Array::push(bodies, body_buf)
-      // #1259: the walk allocated exactly as many lambdas as the plan said.
-      // The per-allocation check in compile_lambda catches an UNDER-count (the
-      // walk runs past the planned range); this catches an OVER-count, where
-      // the plan reserved slots for EFn nodes codegen never reached.
-      if Array::get(lambda_plan_cell, 0) != lambda_planned_end {
-        throw(String::concat("lambda plan over-count: planned through ", String::concat(__to_string(lambda_planned_end), String::concat(", walk stopped at ", __to_string(Array::get(lambda_plan_cell, 0))))))
-      } else {
-        ()
-      }
-      let extra = if final_nl > param_count {
-        final_nl - param_count
-      } else {
-        0
-      }
-      Array::push(meta_i32, 0)
-      Array::push(meta_i64, extra)
+      // #1259 step 7: harvest this function's codegen output as a VALUE.
+      //
+      // Everything the whole-program assembly needs from compiling function `bi`
+      // is now in hand: its encoded body, its two meta entries, and the lambdas
+      // it produced -- which sit at their PLANNED indices (#1275/#1277), so the
+      // table_slot immediates already baked into the body refer to the slots a
+      // full assembly will install them at. That is what makes a body compiled
+      // in isolation reusable, and it is why the lambda plan had to be frozen
+      // first.
+      //
+      // Harvest is unconditional and cheap (it copies references into parallel
+      // arrays, it does not re-encode). The cache is only READ when a caller
+      // supplies one.
+      codegen_body_cache_record(body_cache_out, bi, bodies, meta_i32, meta_i64, lt_w, Array::get(lambda_bases, bi), lambda_planned_end)
     }
     bi = bi + 1
   }
@@ -4902,36 +4941,36 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
 
 export fn compile_wasi_module_rc_impl(stmts_in: Array[Stmt], entry_name: String) -> Bytes with { Error } {
   let stmts = elaborate_heap_params(stmts_in)
-  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, empty_dbg_prov())
+  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new())
 }
 
 /// #715 recurrence guard: RC + shadow-liveness instrumentation (VIBE_RC=shadow).
 export fn compile_wasi_module_rc_shadow_impl(stmts_in: Array[Stmt], entry_name: String) -> Bytes with { Error } {
   let stmts = elaborate_heap_params(stmts_in)
-  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, true, empty_dbg_prov())
+  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new())
 }
 
 export fn compile_wasi_module_with_sources_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with { Error } {
-  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, false, false, false, false, false, empty_dbg_prov())
+  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new())
 }
 
 /// Coverage build (#cov): compile with function-level hit instrumentation +
 /// `vibe_cov` custom section. Same as compile_wasi_module_with_sources_impl but
 /// with coverage enabled.
 export fn compile_wasi_module_with_sources_coverage_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with { Error } {
-  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, true, false, false, false, empty_dbg_prov())
+  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, true, false, false, false, empty_dbg_prov(), codegen_body_cache_new())
 }
 
 /// Trace build (debugger / DAP P1 groundwork): compile with function-call
 /// execution-trace instrumentation + `vibe.trace` custom section. Same as
 /// compile_wasi_module_with_sources_impl but with debug_trace enabled.
 export fn compile_wasi_module_with_sources_trace_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with { Error } {
-  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, false, true, false, false, empty_dbg_prov())
+  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, false, true, false, false, empty_dbg_prov(), codegen_body_cache_new())
 }
 
 /// Break build (debugger / DAP P1): compile with `vibe::dbg_break` host-hook
 /// instrumentation at each user function entry. Same as
 /// compile_wasi_module_with_sources_impl but with debug_break enabled.
 export fn compile_wasi_module_with_sources_break_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], prov: DbgProv) -> Bytes with { Error } {
-  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, false, false, true, false, prov)
+  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, false, false, true, false, prov, codegen_body_cache_new())
 }

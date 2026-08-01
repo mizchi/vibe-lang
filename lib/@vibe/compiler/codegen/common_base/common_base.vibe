@@ -76,6 +76,130 @@ export struct LambdaTable {
   meta_i64: Array[Int]
 }
 
+/// #1259 step 7: one user function's codegen OUTPUT, carried as a value.
+///
+/// Body codegen has to become something a coordinator can hand out per
+/// function and collect back, and the compiler runs inside wasm -- it cannot
+/// spawn workers, and it must not grow an `Fs` row to persist anything (that
+/// row propagates out through the codegen facades and into the signatures of
+/// user programs that call `compile_wasi_module`, which is not acceptable).
+/// So the unit of exchange is a VALUE: the caller (file_compile, which already
+/// has Fs) does any serialization.
+///
+/// Parallel arrays rather than an array of records, matching how `bodies` /
+/// `meta_i32` / `meta_i64` and LambdaTable are already carried in this
+/// codegen.
+///
+/// `fn_*` is one entry per cached user function, keyed by `fn_indices`.
+/// `lam_*` is one entry per lambda that function produced, keyed by the
+/// PLANNED lambda index (#1275/#1277) -- which is what makes a body compiled
+/// in isolation reusable: its emitted table_slot immediates already refer to
+/// the slots the whole-program assembly will install these lambdas at.
+export struct CodegenBodyCache {
+  fn_indices: Array[Int];
+  fn_bodies: Array[Bytes];
+  fn_meta_i32: Array[Int];
+  fn_meta_i64: Array[Int];
+  lam_owner: Array[Int];
+  lam_indices: Array[Int];
+  lam_bodies: Array[Bytes];
+  lam_param_counts: Array[Int];
+  lam_captures: Array[Array[String]];
+  lam_meta_i32: Array[Int];
+  lam_meta_i64: Array[Int]
+}
+
+/// An empty cache. Threading one of these in means "compile everything, cache
+/// nothing" -- the pre-#1259 behaviour.
+export fn codegen_body_cache_new() -> CodegenBodyCache {
+  CodegenBodyCache::{
+    fn_indices: array_empty(),
+    fn_bodies: array_empty(),
+    fn_meta_i32: array_empty(),
+    fn_meta_i64: array_empty(),
+    lam_owner: array_empty(),
+    lam_indices: array_empty(),
+    lam_bodies: array_empty(),
+    lam_param_counts: array_empty(),
+    lam_captures: array_empty(),
+    lam_meta_i32: array_empty(),
+    lam_meta_i64: array_empty()
+  }
+}
+
+/// Position of `fn_index` in the cache, or -1. Linear scan: a slice holds at
+/// most the whole program's function count, and this runs once per function.
+export fn codegen_body_cache_find(cache: CodegenBodyCache, fn_index: Int) -> Int {
+  let n = Array::length(cache.fn_indices)
+  let mut i = 0
+  let mut found = 0 - 1
+  while found < 0 && i < n {
+    if Array::get(cache.fn_indices, i) == fn_index {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Append function `fn_index`'s just-finished codegen output to `cache`.
+///
+/// Reads the LAST entry of `bodies` / `meta_i32` / `meta_i64` -- the loop has
+/// just pushed them -- and the lambda table slice `[lam_lo, lam_hi)`, which is
+/// exactly the range the plan assigned this function.
+export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], lt: LambdaTable, lam_lo: Int, lam_hi: Int) -> Unit {
+  let n = Array::length(bodies)
+  if n == 0 {
+    ()
+  } else {
+    Array::push(cache.fn_indices, fn_index)
+    Array::push(cache.fn_bodies, Array::get(bodies, n - 1))
+    Array::push(cache.fn_meta_i32, Array::get(meta_i32, Array::length(meta_i32) - 1))
+    Array::push(cache.fn_meta_i64, Array::get(meta_i64, Array::length(meta_i64) - 1))
+    let mut li = lam_lo
+    while li < lam_hi {
+      Array::push(cache.lam_owner, fn_index)
+      Array::push(cache.lam_indices, li)
+      Array::push(cache.lam_bodies, Array::get(lt.bodies, li))
+      Array::push(cache.lam_param_counts, Array::get(lt.param_counts, li))
+      Array::push(cache.lam_captures, Array::get(lt.captures, li))
+      Array::push(cache.lam_meta_i32, Array::get(lt.meta_i32, li))
+      Array::push(cache.lam_meta_i64, Array::get(lt.meta_i64, li))
+      li = li + 1
+    }
+  }
+}
+
+/// Replay cache entry `at` into the whole-program accumulators, in place of
+/// compiling that function.
+///
+/// The lambdas go back by plain append, which lands them at their planned
+/// indices exactly because functions are replayed in the same order they were
+/// planned: `lt.bodies` is `lam_lo` long when this runs. That is the same
+/// invariant the compile path relies on, so a replayed function and a compiled
+/// one leave the table identical.
+export fn codegen_body_cache_replay(cache: CodegenBodyCache, at: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], lt: LambdaTable) -> Unit {
+  let owner = Array::get(cache.fn_indices, at)
+  Array::push(bodies, Array::get(cache.fn_bodies, at))
+  Array::push(meta_i32, Array::get(cache.fn_meta_i32, at))
+  Array::push(meta_i64, Array::get(cache.fn_meta_i64, at))
+  let n = Array::length(cache.lam_owner)
+  let mut i = 0
+  while i < n {
+    if Array::get(cache.lam_owner, i) == owner {
+      Array::push(lt.bodies, Array::get(cache.lam_bodies, i))
+      Array::push(lt.param_counts, Array::get(cache.lam_param_counts, i))
+      Array::push(lt.captures, Array::get(cache.lam_captures, i))
+      Array::push(lt.meta_i32, Array::get(cache.lam_meta_i32, i))
+      Array::push(lt.meta_i64, Array::get(cache.lam_meta_i64, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
 export struct CtorTable {
   names: Array[String];
   tags: Array[Int];

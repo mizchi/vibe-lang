@@ -185,6 +185,56 @@ flat source が現在の source と食い違い、stage1/stage2 parity 失敗と
 顕在化する (fetch 側は manifest の `source_commit` を、`--adopt-seed` 時は
 `seed.json` の sha256 を突き合わせて誤用を弾く)。
 
+### 生成物のマージコンフリクト
+
+`lib/@vibe/compiler/` には `scripts/generate_bundle.sh` の出力が5つ commit
+されている (seed だけで build できる bootstrap 契約のため):
+
+```
+compiler_sources_bundle.vibe
+cli_adapter_bundle.vibe
+selfbuild_runtime_entry_bundle.vibe
+_cli_adapter_module_source.vibe
+cache/codegen_fingerprint.vibe
+```
+
+5つとも compiler source の決定的な関数なので、**compiler source に触る PR が
+2本あれば必ずこの5ファイル全部で衝突する** — 片方が merge された瞬間にもう
+片方が `dirty` になるのはこれが理由。ただしこの衝突は「どちらを採るか」の
+問題ではない。正しい内容はどちらの側でもなく、merge 後の source から
+regenerate したものだけ。
+
+```bash
+# merge / rebase が止まったら
+bash scripts/resolve_generated_conflicts.sh
+git rebase --continue     # または git commit
+```
+
+**commit が複数ある rebase では、生成物に触る commit ごとに別々に衝突する** —
+最初の衝突で regenerate しても、あとの commit が自分の (rebase 前の) コピーを
+持ち込むので最終 tree は直らない。#1276 がこれで CI を落とした。rebase が
+終わったあとに tip をもう一度 regenerate すること:
+
+```bash
+bash scripts/resolve_generated_conflicts.sh --regen
+git commit          # または git commit --amend
+```
+
+`--regen` は衝突を必要とせず、現在の tree から regenerate して stage する
+(生成前に `check_vibe_fmt.sh` で lint し、未整形なら止まる)。
+これを飛ばした tip を検出するのは `scripts/check_module_source_sync.sh`。
+
+このスクリプトは生成物だけを捨てて regenerate し直して stage する。
+手書きファイルの衝突が残っている間は「未解決の tree を artifact に焼き込む」
+ことになるので何もせず失敗する — そちらを先に解決すること。regenerate の
+前に変更済み source を `vibe_fmt.sh` にかけるのもスクリプト側でやる
+(bundle は source text をそのまま埋め込むので、generate してから format
+すると bundle drift として gate に出る)。
+
+`.gitattributes` はこの5ファイルを `-diff linguist-generated` にしている。
+13MB の1行 bundle が diff に出ないようにするためと、衝突したときに
+何千個もの conflict marker ではなく whole-file conflict にするため。
+
 ### bootstrap bump の手順 (更新版)
 
 `seed-release.yml` は **tag push ではなく `workflow_dispatch`** で手動起動する
