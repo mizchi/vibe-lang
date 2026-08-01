@@ -1,0 +1,49 @@
+//# Imports
+
+// #1218: generic effect declarations compile but their operation signatures
+// are never registered (checker_stmt.vibe SEffectDef arm registers only
+// zero-param effects), so perform/handler validation silently skips them.
+// detect_generic_effect_decls surfaces that hole as a declaration-site
+// warning until ADR-0071 generic-instantiation normalization lands.
+import @vibe/compiler/core {
+  Stmt, TypeExpr
+}
+
+import @vibe/compiler/checker {
+  detect_generic_effect_decls
+}
+
+//# Misc
+
+test "generic effect declaration is flagged" {
+  let ops: Array[(String, Array[TypeExpr], TypeExpr)] = [
+    ("Get", [
+    ], TyName("S")),
+    ("Put", [
+      TyName("S")
+    ], TyUnit)
+  ]
+  let stmts: Array[Stmt] = [
+    SEffectDef(false, "State", [
+      "S"
+    ], ops)
+  ]
+  let warns = detect_generic_effect_decls(stmts)
+  assert(eq(Array::length(warns), 1))
+  let w = Array::get(warns, 0)
+  assert(String::contains(w, "generic effect 'State'"))
+  assert(String::contains(w, "unchecked"))
+}
+
+test "non-generic effect declaration is not flagged" {
+  let ops: Array[(String, Array[TypeExpr], TypeExpr)] = [
+    ("Emit", [
+      TyName("Int")
+    ], TyUnit)
+  ]
+  let stmts: Array[Stmt] = [
+    SEffectDef(false, "Log", [
+    ], ops)
+  ]
+  assert(eq(Array::length(detect_generic_effect_decls(stmts)), 0))
+}
