@@ -58,4 +58,20 @@ test "collect_all_diagnostics surfaces the warning end to end" {
   assert(eq(Array::length(diags), 1))
   let d = Array::get(diags, 0)
   assert(String::contains(d, "warning: generic effect 'State'"))
+  // #1302 review: the warning is anchored at the declaration's name token
+  // ('State' spans cols 8-13 of line 1) instead of surfacing unlocated.
+  assert(String::contains(d, "line 1:8-13:"))
+}
+
+// #1302 review regression: a declaration AWAY from the start of the file
+// must carry ITS line, not fall back to line 1 (the raw message has no
+// [@off=] marker, so without mark_generic_effect_warning every heuristic
+// missed and the LSP pinned the warning to 1:1).
+test "the warning is located at a mid-file declaration" {
+  let src = "let x = 1\n\neffect Box[T] {\n  Put(T) -> Unit\n}\n\nlet main = () -> Int {\n  x\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  let d = Array::get(diags, 0)
+  assert(String::contains(d, "warning: generic effect 'Box'"))
+  assert(String::contains(d, "line 3:8-11:"))
 }
