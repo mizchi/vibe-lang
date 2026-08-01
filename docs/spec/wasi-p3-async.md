@@ -1002,7 +1002,77 @@ park する（= 完了源が無いので deadlock trap に縮退。yield 扱い�
 livelock になる — spawn_suspend arm の判定を `r == 1` から `r >= 1` に変更）。
 waitable park 種の実体は本節の component lowering 側にあり、実 `.vibe`
 ソースの await をこの経路へ配線する step 4 本体（suspend lowering との接続）
-が次の仕事。
+は **§3.14 で landed**。
+
+### 3.14 ADR-0089 step 4 本体 — 実 `.vibe` ソースの await → `waitable-set.wait`（#1218）
+
+§3.13 の残件「実ソースの await をこの経路へ配線する」が landed。以下の
+program が selfhost compiler の single-source lane（entry 名 `run`）で
+コンパイルされ、**自動で** adapter-backed async component に wrap されて
+viberun 上で 42 を返す（producer delay 300ms で実測 ~313ms —
+wall clock が genuine park/wake の証明）:
+
+```vibe
+let run: () -> Int with { Async } = () -> {
+  let f = host_future_get()
+  await(f)
+}
+```
+
+**lowering チェーン全体**（gate =
+`scripts/test_hostfuture_source_component_gate.sh`、pkf task
+`test-hostfuture-source-component`）:
+
+1. **surface**: `host_future_get() -> Future[Int]`（pure builtin、
+   checker/builtins_async.vibe）。component-level import
+   `get-future: func() -> future<u32>` の readable end を Future cell に
+   包む。cell は第3の状態 **state 2 = waitable**（`[2, handle]`; 0=ready,
+   1=pending に追加）。compile_call が
+   `EArray([2, vibe_hf_get_raw()])` に AST lower する。
+2. **await**: await_poll_pass が program の `host_future_get` 使用を key に
+   拡張形 `__aw_poll` を注入 — loop 内で `__aw_pay(fut)`（state 2 なら
+   **`handle + 2`**、それ以外は 1）を計算して `perform
+   Async::Suspend(payload)`、resume 値を `__aw_settle(fut, v)` で cell に
+   書き戻す（payload 先、state 後 — Future::resolve と同順）。helpers は
+   synthesized row-free top-level fn（suspend CPS の spine 制約を満たす
+   let-chain 形）。非使用 program の `__aw_poll` はバイト不変。
+3. **boundary**: `lc_inject_async_sleep_boundary` の keying を拡張 —
+   `host_future_get` を呼ぶ Async-row entry は sleep 無しでも boundary
+   handler を得る。arm は synthesized `__entry_settle(q)`:
+   `1 < q → vibe_hf_wait_raw(q - 2)` /（sleep machinery 併用時のみ
+   `q < 0 → sleep_blocking(-q)`）/ else `assert` trap（poll-wait の
+   Suspend(1) は tail-resumptive boundary では従来どおり充足不能）。
+   waitable payload は poll-wait と違い **boundary で充足できる**:
+   canonical ABI が `waitable-set.wait` の中で task 全体を suspend する
+   ので、tail-resumptive arm が block してよい。
+4. **host imports**: `vibe.host_future_get () -> i64` /
+   `vibe.host_future_wait (i64) -> i64`（builtin_registry の
+   `vibe_hf_get_raw`/`vibe_hf_wait_raw`、checker_visible=false)。i64 は
+   guest-tagged（内部 Int = value << 1、generic vibe.* call path の規約）。
+   **component の adapter module だけが実装を提供する** — plain-wasm host
+   に waitable 機構は無いので、`vibe run`（core lane）ではこの program は
+   unknown-import で instantiate に失敗する（仕様）。
+5. **composition**（`comp_emit_component_wasm_async_hostfuture`、wrap は
+   `preprocess_compile.vibe` が core の `vibe.host_future_get` import を
+   sniff して p1 shape から自動 route）: buffers は memhost memory に
+   置き、値は i64 で渡すため **vfs の shim/fixup 循環が不要** —
+   memhost → canon defs（async-lower get-future / future.read /
+   drop-readable / task-return(u32) / waitable-set.new/join/wait/drop）→
+   adapter（`host_future_get` = lower(8) → RETURNED assert → handle、
+   `host_future_wait` = read(fut,0) → BLOCKED なら ws_new/join/wait →
+   FUTURE_READ assert → drop-readable → ws_drop → mem[0]、eager 完了も
+   同経路で値を返す）→ fd_write stub → main(wasi=stub, vibe=adapter) →
+   u32 trampoline（`(i64)->i64` の run を wrap_i64 → task.return）→
+   async lift。result は **u32**（viberun の typed driver に合わせる —
+   trampolined-p1 の s64 と違う点に注意）。
+6. **駆動**: viberun `run_async_component` の既存 `get-future`
+   FutureReader import（§3.13）がそのまま producer。
+
+制限（記録）: sleep を併用する component は従来どおり未対応（adapter は
+`vibe.sleep` を提供しない — composer が明確な診断で reject）。TaskGroup
+（spawn_suspend）との併用は D1 以来の mixing guard が reject。in-guest
+pump backend では Suspend(handle+2) は poller 扱い → 完了源が無く
+deadlock trap（§3.13 の縮退規則）。
 
 ## 4. WASI 0.3 境界マッピング
 
@@ -1140,6 +1210,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | **M2c-3 (spike)** | 真の `stream<u8>` canon built-ins の wasmtime 45 実行可否と最小形を確定（§3.3、`cm_stream_read_probe.wat` → 42）。`stream.read`/`write` は `more-async-builtins` 必須、self round-trip は producer 不在で deadlock | done |
 | **M2c-3 (producer 調査)** | producer を intra-wasm subtask で用意する案を検証 → cross-component reentrance（`cannot enter component instance`）で行き止まり。producer は **host**（HTTP body の readable `stream<u8>`）とする pivot を確定（§3.3.1） | done |
 | **ADR-0089 step 2 (future.*/stream.*)** | `future.new/read/write/drop-*` と `stream.new/read/write/drop-*` の canon emitter + `(future u32)`/`(stream u8)` 型 section + 固定シェイプ `comp_emit_component_wasm_future_value`/`comp_emit_component_wasm_stream_value`（self-contained 単一 task の read/write rendezvous、§3.12）。probe（`future_value/component.wat`・`stream_value/component.wat`、wasmtime 47 実測 42）→ byte-exact 移植。gate = `test_future_value_component_gate.sh`/`test_stream_value_component_gate.sh`（wasmtime CLI 直駆動、`more-async-builtins` flag） | done（#1218） |
+| **ADR-0089 step 4 (実ソース await → waitable)** | 実 `.vibe` ソースの `await` を component 経路へ配線（§3.14）: `host_future_get() -> Future[Int]`（cell state 2 = waitable）→ 拡張 `__aw_poll` の `Suspend(handle + 2)` → entry boundary `__entry_settle` → adapter の `future.read`/`waitable-set.wait`。`comp_emit_component_wasm_async_hostfuture`（memhost + 値渡し i64 adapter、u32 lift、wrap は core import sniff で自動 route）。gate = `test_hostfuture_source_component_gate.sh`（viberun 駆動、42 + wall >= 0.8×delay + p1 routing control） | done（#1218） |
 | **M2c-3 (runtime)** | `component_codegen` に host 供給の readable `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループで消費する形を emit、`for await`/`Stream::next` をそのループへ lower | 未着手（stream.read canon emit 自体は ADR-0089 step 2 で landed — §3.12。残りは host 供給 stream への接続と surface lowering） |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |

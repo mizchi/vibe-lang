@@ -24,7 +24,7 @@ import @vibe/compiler/core {
 }
 
 import ./component_codegen.vibe {
-  comp_emit_component_wasm_async_trampolined_p1
+  comp_core_imports_host_future, comp_emit_component_wasm_async_hostfuture, comp_emit_component_wasm_async_trampolined_p1
 }
 
 //# Functions
@@ -77,9 +77,19 @@ fn entry_declares_async_int(stmts: Array[Stmt], entry_name: String) -> Bool {
 /// Wrap the core wasm into an async component when the entry is async. The
 /// trampoline imports/aliases the main export by name "run", so this narrow PoC
 /// only triggers for an entry named "run".
-fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool) -> Bytes {
+///
+/// ADR-0089 step 4 (#1218): a program that calls `host_future_get` compiles
+/// to a core importing `vibe.host_future_get` -- route THAT core to the
+/// host-future composition (adapter-provided imports + `get-future`
+/// component import + u32 lift, driven by viberun); everything else keeps
+/// the self-contained trampolined-p1 shape byte-identically.
+fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool) -> Bytes with { Error } {
   if wrap_async {
-    comp_emit_component_wasm_async_trampolined_p1(bytes, "run", 120)
+    if comp_core_imports_host_future(bytes) {
+      comp_emit_component_wasm_async_hostfuture(bytes, "run")
+    } else {
+      comp_emit_component_wasm_async_trampolined_p1(bytes, "run", 120)
+    }
   } else {
     bytes
   }
