@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, Type, TypeEnv, TypeExpr, env_lookup
+  Expr, Pat, Stmt, Type, TypeEnv, TypeExpr, env_lookup, expr_children
 }
 
 import @vibe/core {
@@ -143,159 +143,32 @@ fn append_eff_errs(dst: Array[EffectError], src: Array[EffectError]) -> Unit {
 
 export fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> Array[EffectError] {
   let errors = array_empty()
+  // Preserve the legacy preorder diagnostic order: inspect a call before its
+  // structural children, then delegate their enumeration to expr_children.
   match expr {
-    ECall(callee, args, _) => {
-      match callee {
-        EIdent(name, _) => if !in_async && is_async_primitive(name, env) {
-          Array::push(errors, EEEffectfulCallOutsideEffect(name))
-        }
-        ,
-        _ => ()
-      }
-      append_eff_errs(errors, check_async_effects_expr(callee, env, in_async))
-      let mut ai = 0
-      while ai < Array::length(args) {
-        append_eff_errs(errors, check_async_effects_expr(Array::get(args, ai), env, in_async))
-        ai = ai + 1
-      }
-      errors
+    ECall(EIdent(name, _), _, _) => if !in_async && is_async_primitive(name, env) {
+      Array::push(errors, EEEffectfulCallOutsideEffect(name))
+    } else {
+      ()
     },
+    _ => ()
+  }
+  match expr {
+    // Scope boundary: a lambda's explicit row replaces its enclosing Async
+    // context. All other expression forms retain the context unchanged.
     EFn(_, _, _, _, effect, body) => {
       append_eff_errs(errors, check_async_effects_expr(body, env, effect_opt_is_async(effect)))
-      errors
     },
-    EHandle(body, arms) => {
-      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
-      let mut ai = 0
-      while ai < Array::length(arms) {
-        let (_, arm_body) = Array::get(arms, ai)
-        append_eff_errs(errors, check_async_effects_expr(arm_body, env, in_async))
-        ai = ai + 1
-      }
-      errors
-    },
-    ELet(_, val, body, _) => {
-      append_eff_errs(errors, check_async_effects_expr(val, env, in_async))
-      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
-      errors
-    },
-    ELetRec(_, val, body) => {
-      append_eff_errs(errors, check_async_effects_expr(val, env, in_async))
-      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
-      errors
-    },
-    ELetMut(_, val, body, _) => {
-      append_eff_errs(errors, check_async_effects_expr(val, env, in_async))
-      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
-      errors
-    },
-    ESeq(a, b) => {
-      append_eff_errs(errors, check_async_effects_expr(a, env, in_async))
-      append_eff_errs(errors, check_async_effects_expr(b, env, in_async))
-      errors
-    },
-    EIf(cond, then_e, else_e) => {
-      append_eff_errs(errors, check_async_effects_expr(cond, env, in_async))
-      append_eff_errs(errors, check_async_effects_expr(then_e, env, in_async))
-      append_eff_errs(errors, check_async_effects_expr(else_e, env, in_async))
-      errors
-    },
-    EMatch(scrutinee, arms) => {
-      append_eff_errs(errors, check_async_effects_expr(scrutinee, env, in_async))
-      let mut ai = 0
-      while ai < Array::length(arms) {
-        let (_, arm_body) = Array::get(arms, ai)
-        append_eff_errs(errors, check_async_effects_expr(arm_body, env, in_async))
-        ai = ai + 1
-      }
-      errors
-    },
-    EWhile(cond, body) => {
-      append_eff_errs(errors, check_async_effects_expr(cond, env, in_async))
-      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
-      errors
-    },
-    ELoop(params, body) => {
+    _ => {
+      let children = expr_children(expr)
       let mut i = 0
-      while i < Array::length(params) {
-        let (_, init) = Array::get(params, i)
-        append_eff_errs(errors, check_async_effects_expr(init, env, in_async))
+      while i < Array::length(children) {
+        append_eff_errs(errors, check_async_effects_expr(Array::get(children, i), env, in_async))
         i = i + 1
       }
-      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
-      errors
-    },
-    EForIn(_, _, iter, body) => {
-      append_eff_errs(errors, check_async_effects_expr(iter, env, in_async))
-      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
-      errors
-    },
-    EBinOp(_, left, right) => {
-      append_eff_errs(errors, check_async_effects_expr(left, env, in_async))
-      append_eff_errs(errors, check_async_effects_expr(right, env, in_async))
-      errors
-    },
-    EReturn(e) => check_async_effects_expr(e, env, in_async),
-    EUnaryOp(_, operand) => check_async_effects_expr(operand, env, in_async),
-    EAssign(_, val, cont) => {
-      append_eff_errs(errors, check_async_effects_expr(val, env, in_async))
-      append_eff_errs(errors, check_async_effects_expr(cont, env, in_async))
-      errors
-    },
-    EAssignOp(_, _, val, cont) => {
-      append_eff_errs(errors, check_async_effects_expr(val, env, in_async))
-      append_eff_errs(errors, check_async_effects_expr(cont, env, in_async))
-      errors
-    },
-    EDot(obj, _, _, _) => check_async_effects_expr(obj, env, in_async),
-    ETuple(elems) => {
-      let mut ei = 0
-      while ei < Array::length(elems) {
-        append_eff_errs(errors, check_async_effects_expr(Array::get(elems, ei), env, in_async))
-        ei = ei + 1
-      }
-      errors
-    },
-    EArray(elems) => {
-      let mut ei = 0
-      while ei < Array::length(elems) {
-        append_eff_errs(errors, check_async_effects_expr(Array::get(elems, ei), env, in_async))
-        ei = ei + 1
-      }
-      errors
-    },
-    ERecord(_, fields, _) => {
-      let mut fi = 0
-      while fi < Array::length(fields) {
-        let (_, fval) = Array::get(fields, fi)
-        append_eff_errs(errors, check_async_effects_expr(fval, env, in_async))
-        fi = fi + 1
-      }
-      errors
-    },
-    EMap(fields) => {
-      let mut fi = 0
-      while fi < Array::length(fields) {
-        let (_, fval) = Array::get(fields, fi)
-        append_eff_errs(errors, check_async_effects_expr(fval, env, in_async))
-        fi = fi + 1
-      }
-      errors
-    },
-    ELabeledArg(_, _, value) => check_async_effects_expr(value, env, in_async),
-    ESpread(value) => check_async_effects_expr(value, env, in_async),
-    EBreak(Some(value)) => check_async_effects_expr(value, env, in_async),
-    EBreak(None) => errors,
-    EContinue(args) => {
-      let mut ai = 0
-      while ai < Array::length(args) {
-        append_eff_errs(errors, check_async_effects_expr(Array::get(args, ai), env, in_async))
-        ai = ai + 1
-      }
-      errors
-    },
-    _ => errors
+    }
   }
+  errors
 }
 
 /// A function body runs in an `{Async}` context if EITHER the lambda's inline
@@ -1193,7 +1066,16 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
           ai = ai + 1
         }
       },
-      _ => ()
+      // Scoped forms are handled above; any future non-scoped structural
+      // expression inherits this frame unchanged.
+      _ => {
+        let children = expr_children(expr)
+        let mut i = 0
+        while i < Array::length(children) {
+          Array::push(stack, (Array::get(children, i), declared, in_handle, ov_names, ov_effs))
+          i = i + 1
+        }
+      }
     }
   }
   errors
@@ -1876,7 +1758,17 @@ export fn check_mutability_expr(expr: Expr, mutable: Array[String]) -> Array[Eff
       }
       errors
     },
-    _ => errors
+    // New structural forms keep the same binding context; scoped forms above
+    // intentionally remain explicit so their boundary semantics are visible.
+    _ => {
+      let children = expr_children(expr)
+      let mut i = 0
+      while i < Array::length(children) {
+        append_eff_errs(errors, check_mutability_expr(Array::get(children, i), mutable))
+        i = i + 1
+      }
+      errors
+    }
   }
 }
 

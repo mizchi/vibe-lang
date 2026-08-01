@@ -1,10 +1,11 @@
 //# Imports
 
 import @vibe/compiler/cache {
-  build_file_compile_module_artifact_fingerprint,
-  build_file_compile_wasi_artifact_fingerprint,
+  build_file_compile_module_artifact_fingerprint_for_entry_path,
+  build_file_compile_wasi_artifact_fingerprint_for_entry_path,
   build_source_groups_fingerprint,
   compact_string_fingerprint,
+  compilation_input_fingerprint,
   persistent_artifact_cache_path,
   persistent_dep_list_cache_path,
   persistent_leaf_fingerprint_cache_path,
@@ -31,6 +32,24 @@ import ../type_db.vibe {
 }
 
 //# Functions
+
+test "compilation input fingerprint distinguishes paths, order, and entry" {
+  let left = [
+    ("/tmp/a.vibe", "let main = 1"),
+    ("/tmp/b.vibe", "let helper = 2")
+  ]
+  let renamed = [
+    ("/tmp/c.vibe", "let main = 1"),
+    ("/tmp/b.vibe", "let helper = 2")
+  ]
+  let reordered = [
+    ("/tmp/b.vibe", "let helper = 2"),
+    ("/tmp/a.vibe", "let main = 1")
+  ]
+  assert(compilation_input_fingerprint(left, "/tmp/a.vibe") != compilation_input_fingerprint(renamed, "/tmp/c.vibe"))
+  assert(compilation_input_fingerprint(left, "/tmp/a.vibe") != compilation_input_fingerprint(reordered, "/tmp/a.vibe"))
+  assert(compilation_input_fingerprint(left, "/tmp/a.vibe") != compilation_input_fingerprint(left, "/tmp/b.vibe"))
+}
 
 fn string_to_bytes(s: String) -> Bytes {
   let out = Bytes::new()
@@ -85,19 +104,19 @@ fn build_type_db_fingerprint(source: String, dep_fps: Array[(String, String)]) -
 
 //# Misc
 
-test "compile_file_fs_module_cached: fresh db reuses persistent artifact cache across entry paths" {
+test "compile_file_fs_module_cached: identical text at different entry paths does not share an artifact" {
   let main_path1 = "/tmp/vibe_compiler_persistent_module_cache_a.vibe"
   let main_path2 = "/tmp/vibe_compiler_persistent_module_cache_b.vibe"
   let source = "let run: () -> Int = () -> { 1 + 2 }"
   Fs::write_bytes(main_path1, string_to_bytes(source))
   Fs::write_bytes(main_path2, string_to_bytes(source))
   let source_groups = collect_source_groups_fs(main_path1)
-  let cache_path = persistent_artifact_cache_path("file-compile-module", "", build_file_compile_module_artifact_fingerprint(source_groups))
-  remove_file_if_exists(cache_path)
+  remove_file_if_exists(persistent_artifact_cache_path("file-compile-module", "", build_file_compile_module_artifact_fingerprint_for_entry_path(source_groups, main_path1)))
+  remove_file_if_exists(persistent_artifact_cache_path("file-compile-module", "", build_file_compile_module_artifact_fingerprint_for_entry_path(source_groups, main_path2)))
   let (_, db1) = compile_file_fs_module_cached(db_new(), main_path1)
   assert(db_codegen_count(db1) > 0)
   let (_, db2) = compile_file_fs_module_cached(db_new(), main_path2)
-  assert(eq(db_codegen_count(db2), 0))
+  assert(db_codegen_count(db2) > 0)
 }
 
 test "compile_file_fs_mode_cached: fresh db reuses persistent artifact cache" {
@@ -105,7 +124,7 @@ test "compile_file_fs_mode_cached: fresh db reuses persistent artifact cache" {
   let source = "let unused: () -> Int = () -> { 0 }\nlet run: () -> Int = () -> { 40 + 2 }"
   Fs::write_bytes(main_path, string_to_bytes(source))
   let source_groups = collect_source_groups_fs(main_path)
-  let cache_path = persistent_artifact_cache_path("file-compile-wasi", "run", build_file_compile_wasi_artifact_fingerprint(source_groups, "run", "no-dce"))
+  let cache_path = persistent_artifact_cache_path("file-compile-wasi", "run", build_file_compile_wasi_artifact_fingerprint_for_entry_path(source_groups, main_path, "run", "no-dce"))
   remove_file_if_exists(cache_path)
   let (_, db1) = compile_file_fs_mode_cached(db_new(), main_path, "run", "no-dce")
   assert(db_codegen_count(db1) > 0)
@@ -169,7 +188,7 @@ test "compile_file_fs_mode_cached: fresh db reuses persistent type env cache whe
   let helper_dep_cache = persistent_dep_list_cache_path(helper_path, compact_string_fingerprint(helper_source))
   let main_dep_cache = persistent_dep_list_cache_path(main_path, compact_string_fingerprint(main_source))
   let source_groups = collect_source_groups_fs(main_path)
-  let artifact_cache_path = persistent_artifact_cache_path("file-compile-wasi", "run", build_file_compile_wasi_artifact_fingerprint(source_groups, "run", "no-dce"))
+  let artifact_cache_path = persistent_artifact_cache_path("file-compile-wasi", "run", build_file_compile_wasi_artifact_fingerprint_for_entry_path(source_groups, main_path, "run", "no-dce"))
   remove_file_if_exists(artifact_cache_path)
   remove_file_if_exists(persistent_source_list_cache_path(main_path))
   remove_file_if_exists(persistent_source_group_cache_path(main_path))

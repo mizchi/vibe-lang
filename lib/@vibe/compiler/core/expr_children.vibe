@@ -1,0 +1,107 @@
+//# Exhaustive structural expression traversal
+//
+// This deliberately reports only immediate expression children. Checkers own
+// scope transitions (lambda parameters, patterns, let bindings, handlers), so
+// callers must apply their context before recursing. Keeping the structural
+// match here makes adding an Expr variant require one update at the AST edge.
+
+import @vibe/core {
+  array_empty
+}
+
+import ./ast.vibe {
+  Expr, Pat
+}
+
+export fn expr_children(expr: Expr) -> Array[Expr] {
+  let children = array_empty()
+  match expr {
+    ETuple(elems) => append_exprs(children, elems),
+    EArray(elems) => append_exprs(children, elems),
+    ERecord(_, fields, _) => append_field_exprs(children, fields),
+    EIf(cond, then_e, else_e) => {
+      Array::push(children, cond)
+      Array::push(children, then_e)
+      Array::push(children, else_e)
+    },
+    ELet(_, val, body, _) => append_pair(children, val, body),
+    ELetRec(_, val, body) => append_pair(children, val, body),
+    ELetMut(_, val, body, _) => append_pair(children, val, body),
+    EAssign(_, val, cont) => append_pair(children, val, cont),
+    EAssignOp(_, _, val, cont) => append_pair(children, val, cont),
+    ESeq(a, b) => append_pair(children, a, b),
+    EMatch(scrutinee, arms) => {
+      Array::push(children, scrutinee)
+      append_arm_exprs(children, arms)
+    },
+    EHandle(body, arms) => {
+      Array::push(children, body)
+      append_arm_exprs(children, arms)
+    },
+    EWhile(cond, body) => append_pair(children, cond, body),
+    ELoop(params, body) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        Array::push(children, init)
+        i = i + 1
+      }
+      Array::push(children, body)
+    },
+    EForIn(_, _, iter, body) => append_pair(children, iter, body),
+    ECall(callee, args, _) => {
+      Array::push(children, callee)
+      append_exprs(children, args)
+    },
+    EBinOp(_, left, right) => append_pair(children, left, right),
+    EUnaryOp(_, operand) => Array::push(children, operand),
+    EFn(_, _, _, _, _, body) => Array::push(children, body),
+    EDot(obj, _, _, _) => Array::push(children, obj),
+    ELabeledArg(_, _, value) => Array::push(children, value),
+    EReturn(value) => Array::push(children, value),
+    EBreak(Some(value)) => Array::push(children, value),
+    EBreak(None) => (),
+    EContinue(args) => append_exprs(children, args),
+    EMap(fields) => append_field_exprs(children, fields),
+    ESpread(value) => Array::push(children, value),
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_) => (),
+    EBool(_) => (),
+    EIdent(_, _) => (),
+    EStringInterp(_) => (),
+    EUnit => ()
+  }
+  children
+}
+
+fn append_pair(dst: Array[Expr], first: Expr, second: Expr) -> Unit {
+  Array::push(dst, first)
+  Array::push(dst, second)
+}
+
+fn append_exprs(dst: Array[Expr], exprs: Array[Expr]) -> Unit {
+  let mut i = 0
+  while i < Array::length(exprs) {
+    Array::push(dst, Array::get(exprs, i))
+    i = i + 1
+  }
+}
+
+fn append_field_exprs(dst: Array[Expr], fields: Array[(String, Expr)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, value) = Array::get(fields, i)
+    Array::push(dst, value)
+    i = i + 1
+  }
+}
+
+fn append_arm_exprs(dst: Array[Expr], arms: Array[(Pat, Expr)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, body) = Array::get(arms, i)
+    Array::push(dst, body)
+    i = i + 1
+  }
+}
