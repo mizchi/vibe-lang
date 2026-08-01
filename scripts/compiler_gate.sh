@@ -4263,6 +4263,25 @@ fi
 rm -rf "$gcsuberrdir"
 echo "[compiler-gate] wasm-gc backend suberror constructor registration ok (4200)"
 
+# 40h8. Exercise test-block lowering and runtime assertions through the
+# wasm-gc path, rather than only calling exported `main` functions above.
+# These fixtures jointly cover structural equality of nested aggregates,
+# MapBuilder growth/freeze, record field-name collision handling, and
+# same-file `to_string` shadowing of a gc fast path. Keep this as an enforced
+# gate: test_gc_selfbuild.sh also runs three of these probes, but
+# is deliberately informational while the full gc selfbuild frontier moves.
+echo "[compiler-gate] 40h8/40 wasm-gc test-block runtime regression suite"
+if ! VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_BACKEND=gc \
+  bash scripts/vibe_test.sh \
+    fixtures/eq_structural_aggregates_test.vibe \
+    fixtures/map_builder_growth_test.vibe \
+    fixtures/struct_field_collision_test.vibe \
+    fixtures/to_string_shadow_gc_test.vibe; then
+  echo "[compiler-gate] FAIL: wasm-gc test-block runtime regression suite" >&2
+  exit 1
+fi
+echo "[compiler-gate] wasm-gc test-block runtime regression suite ok"
+
 # 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
 #      must render fixtures/wit_gen_http.vibe byte-exactly as the committed
 #      golden. Pins the WIT mapping contract (docs/effect-wit-mapping.md):

@@ -16,11 +16,11 @@ only behavior.**
 | | linear (today / default) | linear + Perceus RC (in progress) | wasm-gc |
 |---|---|---|---|
 | CLI entry | `compile --wasm` / `--wasm-linear`, `build --release`, `test`, `bench` | env opt-in `VIBE_RC` → `compile_source_wasi_only_rc`; **not** CLI-exposed | **not wired in the CLI** (`compile --wasm-gc` throws "not supported by selfhost cli yet"); reachable only via `VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` for host-import-free test/bench |
-| value representation | tagged `i64` (2-bit tag) | same tagged `i64` | linear-memory layout for tuple/struct/ctor + wasm-gc `struct`/`ref` for refcell/closure |
-| allocation | bump allocator | bump + (planned head free-list) | engine heap |
-| reclamation | **none (leaks linearly)** | Perceus dup/drop (analysis complete; drop **codegen Phase 3 WIP**) | engine GC (tracing) |
-| object lifetime | n/a | deterministic, eager (once Phase 3 lands) | non-deterministic, lazy |
-| cycles | n/a | **leak (RC limitation)** | collected |
+| value representation | tagged `i64` (2-bit tag) | same tagged `i64` | tagged `i64` with tuple/struct/ctor/closure data in guest linear memory (the backend enables Wasm-GC features but does not yet emit `struct.new` / `array.new` for user values) |
+| allocation | bump allocator | bump + (planned head free-list) | guest-linear bump allocator + `memory.grow` |
+| reclamation | **none (leaks linearly)** | Perceus dup/drop (analysis complete; drop **codegen Phase 3 WIP**) | **none for current user-value allocations**; Wasmtime tracing GC has no user allocations to reclaim yet |
+| object lifetime | n/a | deterministic, eager (once Phase 3 lands) | current user values live to instance teardown; future Wasm-GC values will be non-deterministic/lazy |
+| cycles | n/a | **leak (RC limitation)** | current bump allocations are retained; future Wasm-GC cycles are intended to be collected |
 | known gaps | — | uniform object header only partly landed (tuples done, arrays/enums/closures pending); no drop emission yet; no wasmtime RC e2e gate | HOF / Iterator codegen gaps (`docs/spec/iterable-touch-points.md`); builtin parity; not CLI-reachable |
 | intended status | production default | future linear default (opt-out leak) | long-term primary target |
 
@@ -84,10 +84,17 @@ reclamation half is not finished. Detailed staged plan:
 
 ## Semantics alignment with wasm-gc
 
-- The memory model differs fundamentally (eager RC vs. lazy GC) but, absent
-  finalizers, observable results can be made identical — the way to verify
-  this is a differential test (no-RC / RC / wasm-gc producing identical
-  observable output), which does not exist yet.
+- Today the gc lane's user-value allocation model is also guest-linear bump
+  allocation, not Wasmtime tracing GC. `scripts/test_gc_heap_accounting.sh`
+  characterizes its exported `__heap_ptr` high-water after discarded-object
+  churn; it is deliberately **not** a GC liveness or leak test. Wasmtime's
+  CLI does not expose stable live-GC-heap telemetry for such a test.
+- Once the backend emits Wasm-GC `struct.new` / `array.new` for user values,
+  this section must be updated and the bump-high-water characterization
+  replaced by an embedding-level live-heap/liveness test. At that point the
+  memory model will differ fundamentally (eager RC vs. lazy GC), though absent
+  finalizers observable results can still be made identical via a differential
+  test (no-RC / RC / wasm-gc producing identical output).
 - `Array::push` semantics already differ across backends (linear: in-place
   growable; wasm-gc: fixed-size, rebinds the local). Orthogonal to RC but
   must be reconciled or documented before unifying defaults.
