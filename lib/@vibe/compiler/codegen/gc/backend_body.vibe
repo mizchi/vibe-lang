@@ -66,6 +66,8 @@ import @vibe/compiler/codegen/common_extractors {
 }
 
 import @vibe/compiler/codegen/wasm_emit {
+  emit_array_new,
+  emit_array_type_raw,
   emit_block_i64,
   emit_block_void,
   emit_br,
@@ -823,7 +825,11 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
     ft_copy_i = ft_copy_i + 1
   }
   let refcell_type_idx = 10
-  let closure_type_base = 11
+  // This private i64 array is only used by the always-run native-GC smoke
+  // below. Its reference is dropped before user code, so it cannot cross the
+  // universal i64 ABI or change capture/escape representation.
+  let gc_native_alloc_probe_array_type_idx = 11
+  let closure_type_base = 12
   let fresh_bytes_array: () -> Array[Bytes] = () -> {
     ArrayBuilder::freeze(ArrayBuilder::new())
   }
@@ -1123,6 +1129,16 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
     }
     eri = eri + 1
   }
+  // First vertical slice toward native GC allocation: exercise a private
+  // struct and array at startup, then drop both references. All user values,
+  // function signatures, captures, and escaped values remain i64/linear.
+  emit_i64_const(start_body, 0)
+  emit_struct_new(start_body, refcell_type_idx)
+  emit_drop(start_body)
+  emit_i64_const(start_body, 0)
+  emit_i32_const(start_body, 1)
+  emit_array_new(start_body, gc_native_alloc_probe_array_type_idx)
+  emit_drop(start_body)
   emit_i64_const(start_body, 0)
   emit_call(start_body, entry_func_idx)
   if entry_returns_unit {
@@ -1165,7 +1181,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   } else {
     0
   }
-  let num_base_types = 11
+  let num_base_types = 12
   let type_content = bytebuf_new()
   bytebuf_push_vec_header(type_content, num_base_types + num_closure_types)
   emit_func_type_raw(type_content, [
@@ -1221,6 +1237,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   ], [
     1
   ])
+  emit_array_type_raw(type_content, 126, 0)
   let mut cti = 0
   while cti < num_closure_types {
     let num_params = cti + 1
