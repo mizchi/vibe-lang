@@ -1,0 +1,31 @@
+/// ADR-0089 Decision 1, increment 1 (#1218): KNOWN LIMITATION fixture.
+/// An entry whose row carries `Async` gets the synthesized tail-resumptive
+/// boundary handler (linked_compile.vibe lc_inject_async_sleep_boundary);
+/// a program that ALSO uses suspend-class Async handling (TaskGroup's
+/// spawn_suspend) then mixes the two conventions for one effect, which the
+/// ADR-0076 guard rejects with a clear diagnostic -- NOT a silent
+/// miscompile. The supported shapes are: row-free entry + TaskGroup (the
+/// library discharges Async itself), or Async-row entry without
+/// suspend-class handlers (sequential sleep via the boundary).
+import @vibex/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn main() -> Int with { Async } {
+  sleep(1)
+  let r = TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn_suspend(g, () -> Int with { Async, Error } {
+      let _ = perform Async::Suspend(0)
+      21
+    })
+    TaskGroup::pump_all(g)
+    match TaskHandle::join(h) {
+      Ok(v) => v + 21,
+      Err(_) => 0
+    }
+  })
+  match r {
+    Ok(v) => v,
+    Err(_) => 0 - 1
+  }
+}

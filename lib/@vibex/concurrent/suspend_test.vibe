@@ -624,3 +624,74 @@ test "a body that never suspends settles synchronously" {
     Err(_) => false
   })
 }
+
+/// ADR-0089 Decision 1 increment 3 (#1218): PLAIN `sleep` inside
+/// spawn_suspend tasks parks with a sleep debt instead of blocking the
+/// instance. The compiler retargets `sleep(ms)` to a synthesized
+/// `perform Async::Suspend(-ms)` whenever the program contains a
+/// `handle ... with Async` (spawn_suspend's internal handle qualifies), so
+/// the library needs no special spelling any more -- `sleep_wait` is now
+/// just an alias.
+///
+/// The log ORDER is the discriminator, no wall clock needed: task A sends
+/// 1 and sleeps 10ms, task B sends 2 and sleeps 5ms. A blocking sleep
+/// would run A to completion at its spawn site -> [1, 3, 2, 4]. Parking
+/// with debts lets the pump settle the smaller debt first, so B resumes
+/// before A -> [1, 2, 4, 3].
+test "plain sleep parks a spawn_suspend task instead of blocking it" {
+  let out = TaskGroup::run((g) -> {
+    match Channel::bounded(g, 4) {
+      Err(_) => [
+      ],
+      Ok((tx, rx)) => {
+        let tx2 = Sender::clone(tx)
+        let ha = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+          let _s1 = Sender::send_wait(tx, 1)
+          sleep(10)
+          let _s3 = Sender::send_wait(tx, 3)
+          Sender::release(tx)
+          100
+        })
+        let hb = TaskGroup::spawn_suspend(g, () -> Int with { Async } {
+          let _s2 = Sender::send_wait(tx2, 2)
+          sleep(5)
+          let _s4 = Sender::send_wait(tx2, 4)
+          Sender::release(tx2)
+          200
+        })
+        TaskGroup::pump_all(g)
+        let ra = match TaskHandle::join(ha) {
+          Ok(v) => v,
+          Err(_) => -1
+        }
+        let rb = match TaskHandle::join(hb) {
+          Ok(v) => v,
+          Err(_) => -1
+        }
+        let log = ArrayBuilder::new()
+        let mut going = true
+        while going {
+          match Receiver::recv(rx) {
+            Some(v) => ArrayBuilder::push(log, v),
+            None => {
+              going = false
+            }
+          }
+        }
+        ArrayBuilder::push(log, ra + rb)
+        ArrayBuilder::freeze(log)
+      }
+    }
+  })
+  match out {
+    Ok(log) => {
+      assert_eq(Array::length(log), 5)
+      assert_eq(Array::get(log, 0), 1)
+      assert_eq(Array::get(log, 1), 2)
+      assert_eq(Array::get(log, 2), 4)
+      assert_eq(Array::get(log, 3), 3)
+      assert_eq(Array::get(log, 4), 300)
+    },
+    Err(_) => assert(false)
+  }
+}

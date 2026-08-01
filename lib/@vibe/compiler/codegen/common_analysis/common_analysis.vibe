@@ -617,7 +617,31 @@ fn collect_pattern_bindings(pat: Pat, bindings: Array[String]) -> Int {
 /// lambda body. Otherwise a thunk such as `() -> { Task::join(t) }` would capture
 /// `Task::join` as a closure value and mis-lower the call as an indirect apply.
 fn is_inlined_async_builtin(name: String) -> Bool {
-  name == "await" || name == "Future::ready" || name == "Stream::empty" || name == "Stream::once" || name == "Stream::map" || name == "Stream::filter" || name == "Stream::fold" || name == "Stream::next" || name == "String::to_bytes" || name == "Stream::to_string"
+  // Every name here is lowered INLINE by compile_call.vibe and has NO func
+  // table entry, so the free-var collector below must not record it as a
+  // capturable free variable (the capture becomes a call_indirect of a
+  // nonexistent closure value -- an invalid-signature-index module or a
+  // "null function" trap, see the #773 story in the doc comment further
+  // down). Keep this in sync with compile_call's
+  // `!prefer_bound_call && fname == "..."` dispatch: a builtin added there
+  // that is neither func-table-registered (like Array::set) nor listed
+  // here reintroduces the bug for closures. Future::pending/resolve
+  // (#1230) and Path::to_string/is_absolute were exactly such omissions --
+  // each reproduced as a one-closure miscompile before being added
+  // (#1218 D1 increment 4 follow-up).
+  // NOT here, measured 2026-08-01 (#1218), do not re-add without a full
+  // battery + Path-shape matrix:
+  //   - the bare `path` builtin: a bare snake_case name collides with
+  //     ordinary local bindings, and listing it corrupted the SELF-COMPILE
+  //     (stage2 miscompiled every Path-touching program, including
+  //     straight-line top-level code).
+  //   - `Path::ref` / `Path::resolve`: listing them regressed TOP-LEVEL
+  //     `Path::is_absolute(Path::resolve(..))` to a trap through a
+  //     mechanism not yet understood -- so `Path::resolve` inside a
+  //     closure remains a known miscompile (null-function trap), tracked
+  //     in #1218. Bind the resolved path OUTSIDE the closure as the
+  //     workaround.
+  name == "await" || name == "Future::ready" || name == "Future::pending" || name == "Future::resolve" || name == "Stream::empty" || name == "Stream::once" || name == "Stream::map" || name == "Stream::filter" || name == "Stream::fold" || name == "Stream::next" || name == "String::to_bytes" || name == "Stream::to_string" || name == "Path::to_string" || name == "Path::is_absolute"
 }
 
 /// #773: the scalar arithmetic/logic intrinsics ("not"/"add"/"sub"/"mul"/"lt")

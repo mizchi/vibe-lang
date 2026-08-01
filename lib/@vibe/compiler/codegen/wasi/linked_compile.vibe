@@ -13,6 +13,7 @@ import @vibe/compiler/core {
   bytebuf_push_section,
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
+  exception_effect_labels_equal,
   is_exception_effect_name,
   leb128_encode_s64,
   leb128_encode_u32,
@@ -705,7 +706,7 @@ fn linked_type_expr_is_unit(t: TypeExpr) -> Bool {
 /// substring matching alone would false-positive on a user effect named
 /// e.g. "ErrorLog", so each comma-separated piece is trimmed and compared
 /// exactly.
-fn lc_row_has_error(eff: Option[String]) -> Bool {
+fn lc_row_has_label(eff: Option[String], label: String) -> Bool {
   match eff {
     Some(row) => {
       let mut found = false
@@ -719,7 +720,15 @@ fn lc_row_has_error(eff: Option[String]) -> Bool {
           String::char_code_at(row, i) == 44
         }
         if at_sep {
-          if is_exception_effect_name(String::trim(String::substring(row, start, i))) {
+          // #1313 rebase fix: compare against the REQUESTED label, with
+          // alias-aware equality so `Error` still matches the `Exception`
+          // spelling. The rebase resolution had collapsed this to a bare
+          // is_exception_effect_name(token) -- ignoring `label` entirely --
+          // which made lc_row_has_label(eff, "Async") true only for
+          // Error-ish rows: the Async entry boundary was never injected,
+          // and gate 77's mixed-convention fixture compiled instead of
+          // being rejected (the exact compiler-gate failure on this PR).
+          if exception_effect_labels_equal(String::trim(String::substring(row, start, i)), label) {
             found = true
           } else {
             ()
@@ -734,6 +743,10 @@ fn lc_row_has_error(eff: Option[String]) -> Bool {
     },
     None => false
   }
+}
+
+fn lc_row_has_error(eff: Option[String]) -> Bool {
+  lc_row_has_label(eff, "Error")
 }
 
 /// #944 (ADR-0073 stage C): the runtime outermost Error handler. When the
@@ -782,6 +795,922 @@ fn lc_wrap_entry_error_boundary(stmts: Array[Stmt], entry_name: String) -> Unit 
   }
 }
 
+/// ADR-0089 Decision 1, increment 1 (#1218): make `sleep` a real
+/// `perform Async::Suspend` when the ENTRY's declared row carries `Async`,
+/// and give that program a default (entry-boundary) Async handler so the
+/// unhandled sequential case keeps today's blocking behavior.
+///
+/// The nominal-`Async`-row `sleep` builtin is the label pun ADR-0089
+/// Decision 1 exists to remove: its row cannot be discharged by a handler
+/// (it is not a `perform` -- measured in #1227), and it is opaque to the
+/// ADR-0076 suspend lowering (scps_calls_ok admits performs, pure
+/// builtins, ctors, needing/effect-free functions -- a row-carrying host
+/// builtin is none of those, re-measured 2026-08-01 after the #1230 loop
+/// widening moved that wall). Both problems disappear when the call IS a
+/// perform.
+///
+/// Mechanism (all-AST-synthesis, no checker change -- `sleep` keeps its
+/// builtin type `(Int) -> Unit with { Async }` at check time):
+///
+///   1. a top-level `let sleep = (ms) -> Unit with { Async } { if 0 < ms
+///      { let _ = perform Async::Suspend(0 - ms) } }` is injected;
+///      compile_call's prefer-bound rule (the same one a user-defined
+///      `await` rides) then routes every existing call site through it.
+///      The negative payload is @vibex/concurrent's sleep-debt convention
+///      (0 = yield, 1 = poll, negative = debt), so inside a
+///      `spawn_suspend` task the injected perform parks the task exactly
+///      like `sleep_wait` does today.
+///   2. `effect Async { Suspend(Int) -> Int }` is injected when the
+///      merged program does not already declare it (the effect passes
+///      need the declaration's operation list).
+///   3. the entry body is wrapped in `handle { .. } with Async {
+///      Suspend(req) => { if req < 0 { sleep_blocking(0 - req) }; resume(0)
+///      } }` -- same synthesis point and shape as the #944 Error boundary
+///      above. The arm is TAIL-RESUMPTIVE: in an entry-row-Async program
+///      with no suspend-class handler of its own this compiles on the
+///      cheap evidence path, and `sleep_blocking` (the row-free host
+///      sleep) preserves the blocking semantics. A program that ALSO uses
+///      suspend-class Async handlers (e.g. TaskGroup) under an
+///      Async-carrying entry row is rejected by the existing
+///      convention-mixing guard -- handle Async yourself before the entry
+///      in that case (fixture err_async_boundary_mixed_convention pins the
+///      message).
+///
+/// Keyed on the entry row (like lc_wrap_entry_error_boundary): programs
+/// whose entry row has no `Async` -- including the `__no_entry__`
+/// test-runner lane and library_mode -- are untouched and keep the
+/// blocking `vibe.sleep` builtin lowering. A user-defined top-level
+/// `sleep` also disables the injection (their definition already shadows
+/// the builtin).
+/// Does pattern `p` bind the name `sleep` (an arm under it sees a
+/// different `sleep`)?
+fn lc_pat_binds_sleep(p: Pat) -> Bool {
+  match p {
+    PBind(n) => n == "sleep",
+    PCtor(_, ps) => lc_pats_bind_sleep(ps),
+    PTuple(ps) => lc_pats_bind_sleep(ps),
+    POr(a, b) => lc_pat_binds_sleep(a) || lc_pat_binds_sleep(b),
+    PStruct(_, fields) => {
+      let mut i = 0
+      let mut hit = false
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        if lc_pat_binds_sleep(fp) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    _ => false
+  }
+}
+
+fn lc_pats_bind_sleep(ps: Array[Pat]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(ps) {
+    if lc_pat_binds_sleep(Array::get(ps, i)) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// Rewrite calls to the BUILTIN `sleep` into calls to the injected
+/// `__slp_perform` (see lc_inject_async_sleep_boundary). `active` goes
+/// false for the subtree under any binder that shadows the name -- a local
+/// `sleep` binding is the user's own value and must keep resolving to it.
+///
+/// Why a rename instead of just naming the injected fn `sleep` (which the
+/// prefer-bound rule would route to): a top-level fn LITERALLY NAMED after
+/// a row-carrying builtin miscompiles today -- the evidence pass classifies
+/// the call site by the builtin's nominal row while codegen dispatches to
+/// the bound fn, and the emitted call's arity disagrees ("not enough
+/// arguments on the stack for call"). Measured on the pre-change compiler
+/// with a hand-written `fn sleep`; latent for any user doing the same
+/// (recorded in #1218). The fresh name sidesteps that double
+/// classification entirely.
+fn lc_rename_sleep_calls(e: Expr, active: Bool) -> Expr {
+  match e {
+    ECall(callee, args, off) => {
+      let new_args = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(new_args, lc_rename_sleep_calls(Array::get(args, i), active))
+        i = i + 1
+      }
+      let new_callee = match callee {
+        EIdent(nm, coff) => if active && nm == "sleep" {
+          EIdent("__slp_perform", coff)
+        } else {
+          callee
+        },
+        _ => lc_rename_sleep_calls(callee, active)
+      }
+      ECall(new_callee, new_args, off)
+    },
+    ELet(x, v, b, off) => ELet(x, lc_rename_sleep_calls(v, active), lc_rename_sleep_calls(b, active && x != "sleep"), off),
+    ELetMut(x, v, b, off) => ELetMut(x, lc_rename_sleep_calls(v, active), lc_rename_sleep_calls(b, active && x != "sleep"), off),
+    ELetRec(x, v, b) => {
+      let inner = active && x != "sleep"
+      ELetRec(x, lc_rename_sleep_calls(v, inner), lc_rename_sleep_calls(b, inner))
+    },
+    ESeq(a, b) => ESeq(lc_rename_sleep_calls(a, active), lc_rename_sleep_calls(b, active)),
+    EIf(c, t, el) => EIf(lc_rename_sleep_calls(c, active), lc_rename_sleep_calls(t, active), lc_rename_sleep_calls(el, active)),
+    EMatch(s, arms) => {
+      let out: Array[(Pat, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (mp, mb) = Array::get(arms, i)
+        Array::push(out, (mp, lc_rename_sleep_calls(mb, active && !lc_pat_binds_sleep(mp))))
+        i = i + 1
+      }
+      EMatch(lc_rename_sleep_calls(s, active), out)
+    },
+    EHandle(b, arms) => {
+      let out: Array[(Pat, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (mp, mb) = Array::get(arms, i)
+        Array::push(out, (mp, lc_rename_sleep_calls(mb, active && !lc_pat_binds_sleep(mp))))
+        i = i + 1
+      }
+      EHandle(lc_rename_sleep_calls(b, active), out)
+    },
+    EFn(tps, tbs, params, ret, eff, b) => {
+      let mut shadowed = false
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        if pn == "sleep" {
+          shadowed = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      EFn(tps, tbs, params, ret, eff, lc_rename_sleep_calls(b, active && !shadowed))
+    },
+    EWhile(c, b) => EWhile(lc_rename_sleep_calls(c, active), lc_rename_sleep_calls(b, active)),
+    EForIn(x, ix, it, b) => {
+      let inner = active && x != "sleep"
+      EForIn(x, ix, lc_rename_sleep_calls(it, active), lc_rename_sleep_calls(b, inner))
+    },
+    ELoop(pairs, b) => {
+      let out: Array[(String, Expr)] = array_empty()
+      let mut inner = active
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (pn, pv) = Array::get(pairs, i)
+        if pn == "sleep" {
+          inner = false
+        } else {
+          ()
+        }
+        Array::push(out, (pn, lc_rename_sleep_calls(pv, active)))
+        i = i + 1
+      }
+      ELoop(out, lc_rename_sleep_calls(b, inner))
+    },
+    EBinOp(op, l, r) => EBinOp(op, lc_rename_sleep_calls(l, active), lc_rename_sleep_calls(r, active)),
+    EUnaryOp(op, a) => EUnaryOp(op, lc_rename_sleep_calls(a, active)),
+    EAssign(x, v, b) => EAssign(x, lc_rename_sleep_calls(v, active), lc_rename_sleep_calls(b, active)),
+    EAssignOp(op, x, v, b) => EAssignOp(op, x, lc_rename_sleep_calls(v, active), lc_rename_sleep_calls(b, active)),
+    EReturn(a) => EReturn(lc_rename_sleep_calls(a, active)),
+    EDot(o, f, m, off) => EDot(lc_rename_sleep_calls(o, active), f, m, off),
+    ELabeledArg(l, s, v) => ELabeledArg(l, s, lc_rename_sleep_calls(v, active)),
+    EBreak(opt) => match opt {
+      Some(a) => EBreak(Some(lc_rename_sleep_calls(a, active))),
+      None => e
+    },
+    EContinue(args) => {
+      let out = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, lc_rename_sleep_calls(Array::get(args, i), active))
+        i = i + 1
+      }
+      EContinue(out)
+    },
+    ETuple(items) => {
+      let out = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(out, lc_rename_sleep_calls(Array::get(items, i), active))
+        i = i + 1
+      }
+      ETuple(out)
+    },
+    EArray(items) => {
+      let out = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(out, lc_rename_sleep_calls(Array::get(items, i), active))
+        i = i + 1
+      }
+      EArray(out)
+    },
+    ERecord(nm, fields, off) => {
+      let out: Array[(String, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fn2, fv) = Array::get(fields, i)
+        Array::push(out, (fn2, lc_rename_sleep_calls(fv, active)))
+        i = i + 1
+      }
+      ERecord(nm, out, off)
+    },
+    EMap(fields) => {
+      let out: Array[(String, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fk, fv) = Array::get(fields, i)
+        Array::push(out, (fk, lc_rename_sleep_calls(fv, active)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    ESpread(a) => ESpread(lc_rename_sleep_calls(a, active)),
+    _ => e
+  }
+}
+
+/// Deep scan: does `e` contain a `handle ... with Async` (an EHandle with a
+/// qualified `Async::<Op>` arm pattern)? Increment 2's codegen key: such a
+/// handle discharges the builtin `Async` row at check time
+/// (checker_effects.vibe's EHandle arm), so the sleep->perform retarget
+/// must fire for these programs too or the user's handler would never see
+/// the operations it demonstrably handles.
+fn lc_expr_has_async_handle(e: Expr) -> Bool {
+  match e {
+    EHandle(b, arms) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ab) = Array::get(arms, i)
+        match p {
+          PCtor(cname, _) => if String::starts_with(cname, "Async::") {
+            hit = true
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        if lc_expr_has_async_handle(ab) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit || lc_expr_has_async_handle(b)
+    },
+    ELet(_, v, b, _) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
+    ELetMut(_, v, b, _) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
+    ELetRec(_, v, b) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
+    ESeq(a, b) => lc_expr_has_async_handle(a) || lc_expr_has_async_handle(b),
+    EIf(c, t, el) => lc_expr_has_async_handle(c) || lc_expr_has_async_handle(t) || lc_expr_has_async_handle(el),
+    EMatch(s, arms) => {
+      let mut hit = lc_expr_has_async_handle(s)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ab) = Array::get(arms, i)
+        if lc_expr_has_async_handle(ab) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EFn(_, _, _, _, _, b) => lc_expr_has_async_handle(b),
+    EWhile(c, b) => lc_expr_has_async_handle(c) || lc_expr_has_async_handle(b),
+    EForIn(_, _, it, b) => lc_expr_has_async_handle(it) || lc_expr_has_async_handle(b),
+    ELoop(pairs, b) => {
+      let mut hit = lc_expr_has_async_handle(b)
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (_, pv) = Array::get(pairs, i)
+        if lc_expr_has_async_handle(pv) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    // Codex P2 on #1312: record/map fields and break/continue values are
+    // expression containers too -- a handler stored in a struct field must
+    // key the machinery, or the checker-accepted program silently keeps
+    // the blocking builtin.
+    ERecord(_, fields, _) => lc_pairs_have_async_handle(fields),
+    EMap(fields) => lc_pairs_have_async_handle(fields),
+    EBreak(opt) => match opt {
+      Some(a) => lc_expr_has_async_handle(a),
+      None => false
+    },
+    EContinue(args) => lc_exprs_have_async_handle(args),
+    ECall(callee, args, _) => {
+      let mut hit = lc_expr_has_async_handle(callee)
+      let mut i = 0
+      while i < Array::length(args) {
+        if lc_expr_has_async_handle(Array::get(args, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EBinOp(_, l, r) => lc_expr_has_async_handle(l) || lc_expr_has_async_handle(r),
+    EUnaryOp(_, a) => lc_expr_has_async_handle(a),
+    EAssign(_, v, b) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
+    EAssignOp(_, _, v, b) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
+    EReturn(a) => lc_expr_has_async_handle(a),
+    EDot(o, _, _, _) => lc_expr_has_async_handle(o),
+    ELabeledArg(_, _, v) => lc_expr_has_async_handle(v),
+    ETuple(items) => lc_exprs_have_async_handle(items),
+    EArray(items) => lc_exprs_have_async_handle(items),
+    ESpread(a) => lc_expr_has_async_handle(a),
+    _ => false
+  }
+}
+
+fn lc_exprs_have_async_handle(es: Array[Expr]) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(es) {
+    if lc_expr_has_async_handle(Array::get(es, i)) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn lc_pairs_have_async_handle(pairs: Array[(String, Expr)]) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(pairs) {
+    let (_, v) = Array::get(pairs, i)
+    if lc_expr_has_async_handle(v) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// Deep scan: does `e` contain a call whose callee is the bare identifier
+/// `sleep`? Shadow-BLIND on purpose -- this is only the cheap enablement
+/// key for the sleep machinery below (the retarget walk itself is
+/// shadow-aware), and a false positive merely enables machinery that then
+/// rewrites nothing.
+fn lc_expr_calls_sleep(e: Expr) -> Bool {
+  match e {
+    ECall(callee, args, _) => {
+      let callee_hit = match callee {
+        EIdent(nm, _) => nm == "sleep",
+        _ => lc_expr_calls_sleep(callee)
+      }
+      let mut hit = callee_hit
+      let mut i = 0
+      while i < Array::length(args) {
+        if lc_expr_calls_sleep(Array::get(args, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    ELet(_, v, b, _) => lc_expr_calls_sleep(v) || lc_expr_calls_sleep(b),
+    ELetMut(_, v, b, _) => lc_expr_calls_sleep(v) || lc_expr_calls_sleep(b),
+    ELetRec(_, v, b) => lc_expr_calls_sleep(v) || lc_expr_calls_sleep(b),
+    ESeq(a, b) => lc_expr_calls_sleep(a) || lc_expr_calls_sleep(b),
+    EIf(c, t, el) => lc_expr_calls_sleep(c) || lc_expr_calls_sleep(t) || lc_expr_calls_sleep(el),
+    EMatch(s, arms) => {
+      let mut hit = lc_expr_calls_sleep(s)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ab) = Array::get(arms, i)
+        if lc_expr_calls_sleep(ab) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EHandle(b, arms) => {
+      let mut hit = lc_expr_calls_sleep(b)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ab) = Array::get(arms, i)
+        if lc_expr_calls_sleep(ab) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EFn(_, _, _, _, _, b) => lc_expr_calls_sleep(b),
+    EWhile(c, b) => lc_expr_calls_sleep(c) || lc_expr_calls_sleep(b),
+    EForIn(_, _, it, b) => lc_expr_calls_sleep(it) || lc_expr_calls_sleep(b),
+    ELoop(pairs, b) => {
+      let mut hit = lc_expr_calls_sleep(b)
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (_, pv) = Array::get(pairs, i)
+        if lc_expr_calls_sleep(pv) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EBinOp(_, l, r) => lc_expr_calls_sleep(l) || lc_expr_calls_sleep(r),
+    EUnaryOp(_, a) => lc_expr_calls_sleep(a),
+    EAssign(_, v, b) => lc_expr_calls_sleep(v) || lc_expr_calls_sleep(b),
+    EAssignOp(_, _, v, b) => lc_expr_calls_sleep(v) || lc_expr_calls_sleep(b),
+    EReturn(a) => lc_expr_calls_sleep(a),
+    EDot(o, _, _, _) => lc_expr_calls_sleep(o),
+    ELabeledArg(_, _, v) => lc_expr_calls_sleep(v),
+    ETuple(items) => lc_exprs_call_sleep(items),
+    EArray(items) => lc_exprs_call_sleep(items),
+    ESpread(a) => lc_expr_calls_sleep(a),
+    _ => false
+  }
+}
+
+fn lc_exprs_call_sleep(es: Array[Expr]) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(es) {
+    if lc_expr_calls_sleep(Array::get(es, i)) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// Codex P1 on #1312: the SCOPED sleep retarget for programs whose entry
+/// row does NOT carry Async (so no boundary handler is installed). A
+/// program-wide rewrite there is unsound: a `handle ... with Async`
+/// anywhere enabled it, and a sleep in a function never driven by that
+/// handler (e.g. an Async-row `fn delay` called from a row-free main)
+/// became a perform NOTHING handles -- where the builtin used to block
+/// correctly. This walker rewrites only the positions whose performs are
+/// guaranteed a handler:
+///
+///   - the lexical BODY of a `handle ... with Async` (the handler itself),
+///   - the body of an Async-ROW closure LITERAL (Vertical B step-splits
+///     those, and their steps bubble to whichever handler drives them --
+///     spawn_suspend's task bodies are exactly this shape).
+///
+/// Everything else keeps the blocking builtin, i.e. exactly the
+/// pre-ADR-0089-D1 behavior. Under an Async-row entry the caller uses the
+/// full walk instead: the injected boundary makes program-wide rewriting
+/// sound there.
+fn lc_rename_sleep_scoped(e: Expr) -> Expr {
+  match e {
+    EHandle(b, arms) => {
+      let mut is_async_handle = false
+      let out: Array[(Pat, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ab) = Array::get(arms, i)
+        match p {
+          PCtor(cname, _) => if String::starts_with(cname, "Async::") {
+            is_async_handle = true
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        Array::push(out, (p, lc_rename_sleep_scoped(ab)))
+        i = i + 1
+      }
+      if is_async_handle {
+        EHandle(lc_rename_sleep_calls(b, true), out)
+      } else {
+        EHandle(lc_rename_sleep_scoped(b), out)
+      }
+    },
+    EFn(tps, tbs, params, ret, eff, b) => if lc_row_has_label(eff, "Async") {
+      EFn(tps, tbs, params, ret, eff, lc_rename_sleep_calls(b, true))
+    } else {
+      EFn(tps, tbs, params, ret, eff, lc_rename_sleep_scoped(b))
+    },
+    ELet(x, v, b, off) => ELet(x, lc_rename_sleep_scoped(v), lc_rename_sleep_scoped(b), off),
+    ELetMut(x, v, b, off) => ELetMut(x, lc_rename_sleep_scoped(v), lc_rename_sleep_scoped(b), off),
+    ELetRec(x, v, b) => ELetRec(x, lc_rename_sleep_scoped(v), lc_rename_sleep_scoped(b)),
+    ESeq(a, b) => ESeq(lc_rename_sleep_scoped(a), lc_rename_sleep_scoped(b)),
+    EIf(c, t, el) => EIf(lc_rename_sleep_scoped(c), lc_rename_sleep_scoped(t), lc_rename_sleep_scoped(el)),
+    EMatch(s, arms) => {
+      let out: Array[(Pat, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (mp, mb) = Array::get(arms, i)
+        Array::push(out, (mp, lc_rename_sleep_scoped(mb)))
+        i = i + 1
+      }
+      EMatch(lc_rename_sleep_scoped(s), out)
+    },
+    EWhile(c, b) => EWhile(lc_rename_sleep_scoped(c), lc_rename_sleep_scoped(b)),
+    EForIn(x, ix, it, b) => EForIn(x, ix, lc_rename_sleep_scoped(it), lc_rename_sleep_scoped(b)),
+    ELoop(pairs, b) => {
+      let out: Array[(String, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (pn, pv) = Array::get(pairs, i)
+        Array::push(out, (pn, lc_rename_sleep_scoped(pv)))
+        i = i + 1
+      }
+      ELoop(out, lc_rename_sleep_scoped(b))
+    },
+    ECall(callee, args, off) => {
+      let out = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, lc_rename_sleep_scoped(Array::get(args, i)))
+        i = i + 1
+      }
+      ECall(lc_rename_sleep_scoped(callee), out, off)
+    },
+    EBinOp(op, l, r) => EBinOp(op, lc_rename_sleep_scoped(l), lc_rename_sleep_scoped(r)),
+    EUnaryOp(op, a) => EUnaryOp(op, lc_rename_sleep_scoped(a)),
+    EAssign(x, v, b) => EAssign(x, lc_rename_sleep_scoped(v), lc_rename_sleep_scoped(b)),
+    EAssignOp(op, x, v, b) => EAssignOp(op, x, lc_rename_sleep_scoped(v), lc_rename_sleep_scoped(b)),
+    EReturn(a) => EReturn(lc_rename_sleep_scoped(a)),
+    EDot(o, f, m, off) => EDot(lc_rename_sleep_scoped(o), f, m, off),
+    ELabeledArg(l, s, v) => ELabeledArg(l, s, lc_rename_sleep_scoped(v)),
+    EBreak(opt) => match opt {
+      Some(a) => EBreak(Some(lc_rename_sleep_scoped(a))),
+      None => e
+    },
+    EContinue(args) => {
+      let out = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, lc_rename_sleep_scoped(Array::get(args, i)))
+        i = i + 1
+      }
+      EContinue(out)
+    },
+    ETuple(items) => {
+      let out = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(out, lc_rename_sleep_scoped(Array::get(items, i)))
+        i = i + 1
+      }
+      ETuple(out)
+    },
+    EArray(items) => {
+      let out = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(out, lc_rename_sleep_scoped(Array::get(items, i)))
+        i = i + 1
+      }
+      EArray(out)
+    },
+    ERecord(nm, fields, off) => {
+      let out: Array[(String, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fn2, fv) = Array::get(fields, i)
+        Array::push(out, (fn2, lc_rename_sleep_scoped(fv)))
+        i = i + 1
+      }
+      ERecord(nm, out, off)
+    },
+    EMap(fields) => {
+      let out: Array[(String, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fk, fv) = Array::get(fields, i)
+        Array::push(out, (fk, lc_rename_sleep_scoped(fv)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    ESpread(a) => ESpread(lc_rename_sleep_scoped(a)),
+    _ => e
+  }
+}
+
+fn lc_expr_has_spawn_suspend(e: Expr) -> Bool {
+  match e {
+    ECall(EIdent(name, _), args, _) => {
+      if name == "TaskGroup::spawn_suspend" || name == "spawn_suspend" {
+        true
+      } else {
+        lc_exprs_have_spawn_suspend(args)
+      }
+    },
+    ECall(callee, args, _) => lc_expr_has_spawn_suspend(callee) || lc_exprs_have_spawn_suspend(args),
+    ELet(_, value, body, _) => lc_expr_has_spawn_suspend(value) || lc_expr_has_spawn_suspend(body),
+    ELetMut(_, value, body, _) => lc_expr_has_spawn_suspend(value) || lc_expr_has_spawn_suspend(body),
+    ELetRec(_, value, body) => lc_expr_has_spawn_suspend(value) || lc_expr_has_spawn_suspend(body),
+    ESeq(a, b) => lc_expr_has_spawn_suspend(a) || lc_expr_has_spawn_suspend(b),
+    EIf(c, t, el) => lc_expr_has_spawn_suspend(c) || lc_expr_has_spawn_suspend(t) || lc_expr_has_spawn_suspend(el),
+    EFn(_, _, _, _, _, body) => lc_expr_has_spawn_suspend(body),
+    _ => false
+  }
+}
+
+fn lc_exprs_have_spawn_suspend(es: Array[Expr]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(es) {
+    if lc_expr_has_spawn_suspend(Array::get(es, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> String {
+  let mut entry_has_async = false
+  let mut user_defines_sleep = false
+  let mut has_async_decl = false
+  let mut has_async_handle = false
+  let mut calls_sleep = false
+  let mut has_spawn_suspend = false
+  let mut has_aw_poll = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(_, _, _, _, eff, fbody)) => {
+        if name == entry_name && lc_row_has_label(eff, "Async") {
+          entry_has_async = true
+        } else {
+          ()
+        }
+        if name == "sleep" {
+          user_defines_sleep = true
+        } else {
+          ()
+        }
+        if name == "__aw_poll" {
+          has_aw_poll = true
+        } else {
+          ()
+        }
+        if lc_expr_has_async_handle(fbody) {
+          has_async_handle = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_sleep(fbody) {
+          calls_sleep = true
+        } else {
+          ()
+        }
+        if lc_expr_has_spawn_suspend(fbody) {
+          has_spawn_suspend = true
+        } else {
+          ()
+        }
+      },
+      SLet(_, _, name, _, sv) => {
+        if name == "sleep" {
+          user_defines_sleep = true
+        } else {
+          ()
+        }
+        if lc_expr_has_async_handle(sv) {
+          has_async_handle = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_sleep(sv) {
+          calls_sleep = true
+        } else {
+          ()
+        }
+      },
+      SLetMut(_, _, mv) => {
+        if lc_expr_has_async_handle(mv) {
+          has_async_handle = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_sleep(mv) {
+          calls_sleep = true
+        } else {
+          ()
+        }
+      },
+      SExpr(se) => {
+        if lc_expr_has_async_handle(se) {
+          has_async_handle = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_sleep(se) {
+          calls_sleep = true
+        } else {
+          ()
+        }
+      },
+      STest(_, te) => {
+        if lc_expr_has_async_handle(te) {
+          has_async_handle = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_sleep(te) {
+          calls_sleep = true
+        } else {
+          ()
+        }
+      },
+      SBench(_, be) => {
+        if lc_expr_has_async_handle(be) {
+          has_async_handle = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_sleep(be) {
+          calls_sleep = true
+        } else {
+          ()
+        }
+      },
+      SEffectDef(_, ename, _, _) => if ename == "Async" {
+        has_async_decl = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if entry_has_async && calls_sleep && has_spawn_suspend {
+    "Async entry boundary and TaskGroup::spawn_suspend are mixing the step convention; handle Async inside the entry instead"
+  } else {
+    // Keying (#1218, tightened after gate 19 regressed on the first cut):
+    //
+    //   sleep machinery (retarget + optional boundary): the program must
+    //   actually CALL `sleep` somewhere. The first cut keyed on the entry
+    //   row alone, which wrapped every Async-row entry in the boundary
+    //   handle -- and the evidence migration then demanded eligibility of
+    //   the WHOLE entry body. Gate 19's for-await program (Async row, trait
+    //   dict calls, zero sleeps) was ineligible and failed to compile, a
+    //   regression for programs that never needed the machinery at all.
+    //
+    //   effect-decl injection: needed by the sleep machinery, and ALSO when
+    //   awaits expanded (__aw_poll present, injected by await_poll_pass just
+    //   before this) into a program that handles Async -- the migration of
+    //   that handle needs the declaration's operation list.
+    //
+    // Increment 2 keying is unchanged within the sleep machinery: a
+    // `handle ... with Async` anywhere also enables the retarget (the
+    // checker lets such a handle discharge the builtin row, so its body's
+    // sleeps MUST become performs the handler can receive); the boundary
+    // wrap itself stays entry-row-keyed.
+    let sleep_machinery = calls_sleep && !user_defines_sleep && (entry_has_async || has_async_handle)
+    let decl_needed = !has_async_decl && (sleep_machinery || (has_aw_poll && has_async_handle))
+    if decl_needed {
+      let ops: Array[(String, Array[TypeExpr], TypeExpr)] = [
+        ("Suspend", [
+          TyName("Int")
+        ], TyName("Int"))
+      ]
+      Array::push(stmts, SEffectDef(false, "Async", lc_fresh_string_array(), ops))
+    } else {
+      ()
+    }
+    if !sleep_machinery {
+      ()
+    } else {
+      let ms = EIdent("__slp_ms", -1)
+      let suspend = ECall(EIdent("perform", -1), [
+        ECall(EIdent("Async::Suspend", -1), [
+          EBinOp("-", EInt(0), ms)
+        ], -1)
+      ], -1)
+      let sleep_body = EIf(EBinOp("<", EInt(0), ms), ELet("__slp_w", suspend, EUnit, -1), EUnit)
+      let sleep_params: Array[(String, Option[TypeExpr])] = [
+        ("__slp_ms", Some(TyName("Int")))
+      ]
+      Array::push(stmts, SLet(false, false, "__slp_perform", None, EFn(lc_fresh_string_array(), array_empty(), sleep_params, Some(TyName("Unit")), Some("Async"), sleep_body)))
+      // Retarget `sleep(..)` calls to the injected fn -- see
+      // lc_rename_sleep_calls for why the fn cannot itself be named `sleep`.
+      // Codex P1 on #1312: which WALK depends on whether the boundary is
+      // installed. Under an Async-row entry the boundary catches every
+      // otherwise-unhandled perform, so the program-wide (shadow-aware)
+      // rewrite is sound. Without it, only positions guaranteed a handler
+      // are rewritten (lc_rename_sleep_scoped) -- everything else keeps the
+      // blocking builtin rather than gaining a perform nothing handles.
+      let rename_stmt_expr = (rexpr: Expr) -> Expr {
+        if entry_has_async {
+          lc_rename_sleep_calls(rexpr, true)
+        } else {
+          // A TOP-LEVEL fn's own EFn node is not a rewrite context in scoped
+          // mode -- only nested closure LITERALS are. An Async-row top-level
+          // fn (e.g. `fn delay() with { Async } { sleep(1) }`) may be called
+          // from row-free code with no handler in sight, so its sleeps must
+          // keep the blocking builtin; a row-annotated literal, by contrast,
+          // is step-split by Vertical B and its performs always bubble to
+          // the handler that drives it.
+          match rexpr {
+            EFn(rtps, rtbs, rparams, rret, reff, rbody) => EFn(rtps, rtbs, rparams, rret, reff, lc_rename_sleep_scoped(rbody)),
+            _ => lc_rename_sleep_scoped(rexpr)
+          }
+        }
+      }
+      let mut r = 0
+      while r < Array::length(stmts) {
+        match Array::get(stmts, r) {
+          SLet(rex, rrec, rname, rty, rexpr) => if rname == "__slp_perform" {
+            ()
+          } else {
+            Array::set(stmts, r, SLet(rex, rrec, rname, rty, rename_stmt_expr(rexpr)))
+          },
+          SLetMut(mname, mty, mexpr) => {
+            Array::set(stmts, r, SLetMut(mname, mty, rename_stmt_expr(mexpr)))
+          },
+          STest(tname, texpr) => {
+            // The unit-test lane (__no_entry__) compiles STest bodies as
+            // entries of their own; a sleep inside one must retarget exactly
+            // like fn-body sleeps or it stays an opaque builtin call that the
+            // suspend lowering rejects (found live: the spawn_suspend +
+            // plain-sleep test failed Vertical-B eligibility until this arm
+            // existed). Same stmt coverage as await_poll_pass.
+            Array::set(stmts, r, STest(tname, rename_stmt_expr(texpr)))
+          },
+          SBench(bname, bexpr) => {
+            Array::set(stmts, r, SBench(bname, rename_stmt_expr(bexpr)))
+          },
+          SExpr(sexpr) => {
+            Array::set(stmts, r, SExpr(rename_stmt_expr(sexpr)))
+          },
+          _ => ()
+        }
+        r = r + 1
+      }
+      if entry_has_async {
+        let req = EIdent("__entry_slp_req", -1)
+        let settle = EIf(EBinOp("<", req, EInt(0)), ECall(EIdent("sleep_blocking", -1), [
+          EBinOp("-", EInt(0), req)
+        ], -1), EUnit)
+        let arm = ESeq(settle, ECall(EIdent("resume", -1), [
+          EInt(0)
+        ], -1))
+        let mut j = 0
+        while j < Array::length(stmts) {
+          match Array::get(stmts, j) {
+            SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == entry_name {
+              let wrapped = EHandle(body, [
+                (PCtor("Async::Suspend", [
+                  PBind("__entry_slp_req")
+                ]), arm)
+              ])
+              Array::set(stmts, j, SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, wrapped)))
+            } else {
+              ()
+            },
+            _ => ()
+          }
+          j = j + 1
+        }
+      } else {
+        ()
+      }
+    }
+    ""
+  }
+}
+
 export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int) -> Bytes with { Error } {
   // ADR-0091 Phase 1: enforce `@zero_alloc` markers before any lowering
   // rewrites the marked bodies. No-op when no marker is present.
@@ -826,6 +1755,12 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // hand-written one, and before collect_used_builtin_names so the
   // diagnostic's Stderr host import is collected.
   lc_wrap_entry_error_boundary(stmts, entry_name)
+  let async_sleep_boundary_err = lc_inject_async_sleep_boundary(stmts, entry_name)
+  if async_sleep_boundary_err != "" {
+    throw(async_sleep_boundary_err)
+  } else {
+    ()
+  }
   // ADR-0076 (#817) Phase 2: inline `perform` calls that are structurally
   // reachable-only-via-tail-resumptive-handler-arms directly into their
   // handler arm body (single-shot fast path). Conservative: bails out

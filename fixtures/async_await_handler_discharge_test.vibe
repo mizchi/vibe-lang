@@ -1,0 +1,37 @@
+/// ADR-0089 Decision 1 increment 4 (#1218): `await` rides the same
+/// discharge machinery as `sleep` -- with NO new compiler work, because
+/// the two halves already compose: await_poll_pass unconditionally
+/// expands a pending-future await into a `perform Async::Suspend(1)`
+/// poll loop (#1230), and the increment-2 checker rule grants the async
+/// context to any `handle ... with Async` body for EVERY async
+/// primitive, not just sleep.
+///
+/// So a row-free main can drive a PENDING future to completion from its
+/// own handler: the loop polls (Suspend(1) reaches the arm), the arm
+/// resolves the future and resumes, the loop re-reads the state slot and
+/// exits. Before increment 2 this program was untypeable ("effectful
+/// call outside effectful context: await"); before #1230 the pending
+/// path did not exist at all. 40 + one-poll + 1 = 42.
+/// The arm resolves via `Future::resolve` -- which also pins the
+/// companion fix: inline-lowered builtins with no func-table entry
+/// (Future::pending/resolve, Path::to_string/is_absolute) used to be
+/// recorded as capturable FREE VARIABLES by the closure free-var
+/// collector, and a migrated handler arm is a closure, so this exact call
+/// produced an invalid-signature-index module until
+/// is_inlined_async_builtin listed them (common_analysis.vibe).
+fn main() -> Int {
+  let f = Future::pending()
+  let polls = [
+    0
+  ]
+  let r = handle {
+    await(f)
+  } with Async {
+    Suspend(_req) => {
+      Array::set(polls, 0, Array::get(polls, 0) + 1)
+      Future::resolve(f, 40)
+      resume(0)
+    }
+  }
+  r + Array::get(polls, 0) + 1
+}

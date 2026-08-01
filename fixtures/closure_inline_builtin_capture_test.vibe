@@ -1,0 +1,39 @@
+/// #1218 (found during D1 increment 4): inline-lowered builtins with NO
+/// func-table entry -- Future::pending/resolve (#1230) and
+/// Path::to_string/is_absolute -- were missing from
+/// is_inlined_async_builtin (common_analysis.vibe), so a closure calling
+/// one recorded the NAME as a capturable free variable. compile_lambda
+/// then allocated a captured-env slot for it and the call compiled to a
+/// call_indirect of that nonexistent closure value: an
+/// invalid-signature-index module (wasmtime refuses to instantiate) or a
+/// "null function or function signature mismatch" trap, depending on
+/// which signature the garbage index happened to name. Same mechanism as
+/// the #773 scalar-intrinsic capture bug.
+///
+/// Each closure below reproduced a miscompile on the unfixed compiler.
+/// The Path value is resolved OUTSIDE the closures on purpose:
+/// `Path::resolve` inside a closure is a separate, still-open miscompile
+/// (see is_inlined_async_builtin's do-not-re-add note). 40 + 1 + 1 = 42.
+fn main() -> Int {
+  let f = Future::pending()
+  let resolver = (v: Int) -> Unit {
+    Future::resolve(f, v)
+  }
+  resolver(40)
+  let p = Path::resolve("/tmp")
+  let abs_one = () -> Int {
+    if Path::is_absolute(p) {
+      1
+    } else {
+      0
+    }
+  }
+  let nonempty_one = () -> Int {
+    if String::length(Path::to_string(p)) > 0 {
+      1
+    } else {
+      0
+    }
+  }
+  Array::get(f, 1) + abs_one() + nonempty_one()
+}

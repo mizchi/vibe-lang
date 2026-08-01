@@ -7784,4 +7784,105 @@ fi
 rm -rf "$za91dir"
 echo "[compiler-gate] ADR-0091 @zero_alloc allocation check ok"
 
+# 77/77. ADR-0089 Decision 1, increment 1 (#1218): entry-row-Async sleep
+# boundary. An entry whose declared row carries `Async` gets (a) a
+# synthesized top-level `__slp_perform` that IS `perform
+# Async::Suspend(-ms)`, with every unshadowed `sleep(..)` call retargeted
+# to it, and (b) a tail-resumptive entry-boundary Async handler settling
+# the debt via the row-free `sleep_blocking` (linked_compile.vibe
+# lc_inject_async_sleep_boundary). Positive: a wrapper-fn `sleep` chain
+# under an Async-row main compiles and returns 42
+# (async_sleep_boundary_test.vibe -- behavior parity with the old blocking
+# builtin). Negative: adding suspend-class Async handling (TaskGroup
+# spawn_suspend) under an Async-row entry mixes conventions and must be
+# REJECTED by the ADR-0076 guard, not silently miscompiled
+# (err_async_boundary_mixed_convention.vibe).
+echo "[compiler-gate] 77/77 ADR-0089 D1 async sleep boundary (#1218)"
+asb89dir="_build/_gate_async_sleep89"
+rm -rf "$asb89dir"; mkdir -p "$asb89dir"
+cp fixtures/async_sleep_boundary_test.vibe "$asb89dir/pos.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asb89dir/pos.vibe" "$asb89dir/pos.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$asb89dir/pos.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_sleep_boundary_test.vibe did not compile -- ADR-0089 D1 sleep boundary regressed" >&2
+  cat "$asb89dir/pos.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+asb89_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/pos.wasm" 2>/dev/null | tail -1)"
+if [ "$asb89_pos_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_sleep_boundary_test.vibe got '$asb89_pos_out' (want 42)" >&2
+  exit 1
+fi
+cp fixtures/err_async_boundary_mixed_convention.vibe "$asb89dir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asb89dir/neg.vibe" "$asb89dir/neg.wasm" main >/dev/null 2>&1 || true
+if [ -s "$asb89dir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_async_boundary_mixed_convention.vibe compiled successfully -- convention mixing must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF 'mixing the step convention' "$asb89dir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_async_boundary_mixed_convention.vibe did not produce the expected diagnostic" >&2
+  cat "$asb89dir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# Increment 2 (#1218): a `handle ... with Async` discharges the builtin
+# row (the enclosing fn needs no `with { Async }`) and the handler REALLY
+# receives the operations -- sleep(20)+sleep(15) reach the arm as
+# Suspend(-20)/Suspend(-15) (debt-payload convention), accumulate to 35,
+# and 7 + 35 = 42 (async_sleep_handler_discharge_test.vibe).
+cp fixtures/async_sleep_handler_discharge_test.vibe "$asb89dir/dis.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asb89dir/dis.vibe" "$asb89dir/dis.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$asb89dir/dis.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_sleep_handler_discharge_test.vibe did not compile -- handle-with-Async must discharge the builtin row (ADR-0089 D1 increment 2)" >&2
+  cat "$asb89dir/dis.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+asb89_dis_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/dis.wasm" 2>/dev/null | tail -1)"
+if [ "$asb89_dis_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_sleep_handler_discharge_test.vibe got '$asb89_dis_out' (want 42 -- the user handler must intercept the sleeps)" >&2
+  exit 1
+fi
+# Increment 4 (#1218): `await` of a PENDING future drives through a user
+# Async handler -- the poll loop is a synthesized named `__aw_poll` fn, so
+# the tail-resumptive evidence migration sees it (an inline while-wrapped
+# perform was invisible). Arm resolves the future and counts one poll:
+# 40 + 1 + 1 = 42 (async_await_handler_discharge_test.vibe).
+cp fixtures/async_await_handler_discharge_test.vibe "$asb89dir/aw.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asb89dir/aw.vibe" "$asb89dir/aw.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$asb89dir/aw.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_await_handler_discharge_test.vibe did not compile -- a pending-future await under a user Async handler must be evidence-eligible (ADR-0089 D1 increment 4)" >&2
+  cat "$asb89dir/aw.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+asb89_aw_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/aw.wasm" 2>/dev/null | tail -1)"
+if [ "$asb89_aw_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_await_handler_discharge_test.vibe got '$asb89_aw_out' (want 42 -- the handler must receive the poll and its resolution must unblock the await)" >&2
+  exit 1
+fi
+# Codex P1 on #1312: scoped retargeting. A handler receives its own
+# lexical sleeps while an Async-row top-level fn called from row-free code
+# keeps the blocking builtin (no stranded perform). 40 + 1 + 1 = 42.
+cp fixtures/async_sleep_mixed_scope_test.vibe "$asb89dir/mx.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asb89dir/mx.vibe" "$asb89dir/mx.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$asb89dir/mx.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_sleep_mixed_scope_test.vibe did not compile -- scoped retargeting must not strand performs (Codex P1 on #1312)" >&2
+  cat "$asb89dir/mx.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+asb89_mx_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/mx.wasm" 2>/dev/null | tail -1)"
+if [ "$asb89_mx_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_sleep_mixed_scope_test.vibe got '$asb89_mx_out' (want 42)" >&2
+  exit 1
+fi
+rm -rf "$asb89dir"
+echo "[compiler-gate] ADR-0089 D1 async sleep boundary ok"
+
 echo "[compiler-gate] ok"
