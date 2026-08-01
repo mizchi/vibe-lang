@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Stmt, Type, TypeEnv, TypeExpr, env_bind
+  Expr, Pat, Stmt, Type, TypeEnv, TypeExpr, env_bind
 }
 
 import @vibe/core {
@@ -145,4 +145,54 @@ test "pure non-async call outside Async context is OK" {
   ], -1)
   let errors = check_async_effects_expr(call, EnvEmpty, false)
   assert(eq(Array::length(errors), 0))
+}
+
+// ADR-0089 Decision 1 increment 2 (#1218): a `handle ... with Async`
+// discharges the builtin row -- primitives inside its body need no
+// enclosing `with { Async }` context, because the handler is where their
+// perform lowering delivers them (linked_compile keys the sleep->perform
+// retarget on this same shape).
+
+test "handle with Async provides the async context for its body" {
+  let sleep_call = ECall(EIdent("sleep", -1), [
+    EInt(10)
+  ], -1)
+  let handled = EHandle(sleep_call, [
+    (PCtor("Async::Suspend", [
+      PBind("req")
+    ]), ECall(EIdent("resume", -1), [
+      EInt(0)
+    ], -1))
+  ])
+  let errors = check_async_effects_expr(handled, EnvEmpty, false)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "handle of a different effect does NOT provide the async context" {
+  let sleep_call = ECall(EIdent("sleep", -1), [
+    EInt(10)
+  ], -1)
+  let handled = EHandle(sleep_call, [
+    (PCtor("Log::Emit", [
+      PBind("m")
+    ]), ECall(EIdent("resume", -1), [
+      EInt(0)
+    ], -1))
+  ])
+  let errors = check_async_effects_expr(handled, EnvEmpty, false)
+  assert(Array::length(errors) > 0)
+}
+
+test "an Async handler arm's own body is NOT an async context" {
+  // the arm runs OUTSIDE the handled computation; a primitive there still
+  // needs its own context
+  let handled = EHandle(EInt(1), [
+    (PCtor("Async::Suspend", [
+      PBind("req")
+    ]), ECall(EIdent("sleep", -1), [
+      EInt(5)
+    ], -1))
+  ])
+  let errors = check_async_effects_expr(handled, EnvEmpty, false)
+  assert(Array::length(errors) > 0)
 }

@@ -174,8 +174,38 @@ trampoline を将来 `wasi:http/service` の
    read/write core sig は (handle, ptr, count) -> status。詳細は
    spec/wasi-p3-async.md §3.12
 3. Async 統一(Decision 1)と `suspend_cps_pass` の `while`/`let mut`
-   不適格解消 — 後者は `pump` を row-free に縛っている #1227 の制約も同時に
-   解くため二重に効く
+   不適格解消 — **進行中 (#1218)**。実測で判明した現状: (a) `while`/`let
+   mut` の spine 不適格は #1230 の loop widening
+   (`scps_split_while` + `ELetMut` boxing) で既に解消済み — 残る spine
+   不適格は suspend する loop 内の `break`/`continue`/`return`・条件/
+   scrutinee/引数位置の suspend・nested closure/handle。(b) row を pump に
+   通す再測定では新しい壁 = **nominal row 付き builtin (`sleep`) が
+   suspend lowering (scps_calls_ok) から不透明** — これが label pun の
+   実害であり Decision 1 の対象そのもの。**increment 1 landed**: entry
+   row が `Async` を持つプログラムに限り、`sleep` を `perform
+   Async::Suspend(-ms)` する合成 fn (`__slp_perform`) へ retarget し、
+   entry boundary に tail-resumptive な default handler
+   (debt を row-free `sleep_blocking` で settle) を注入
+   (`linked_compile.vibe` `lc_inject_async_sleep_boundary`、#944 Error
+   boundary と同型)。gate §77 (挙動 parity 42 + 混在規約 reject fixture)。
+   既知の制限: Async-row entry + suspend-class handler (TaskGroup) の
+   併用は ADR-0076 の混在 guard が明確な診断で reject
+   (err_async_boundary_mixed_convention.vibe)。**発見した潜在バグ**:
+   builtin と同名の top-level `fn sleep` は従来 compiler でも arity
+   miscompile ("not enough arguments on the stack") — evidence pass が
+   builtin nominal row で分類し codegen が bound fn に dispatch する齟齬。
+   合成 fn を別名にして回避、修正は別チケット対象。
+   **increment 2 landed**: `handle ... with Async` が builtin row を
+   discharge できるようになった — checker
+   (`checker_effects.vibe` の EHandle arm が `Async::` arm を持つ handle の
+   body を `in_async` で検査) + codegen keying 拡張
+   (`lc_expr_has_async_handle`: handle-with-Async を含むプログラムでも
+   sleep→perform retarget が発火。boundary wrap は entry-row キーのまま)。
+   これで **sleep が仮想化可能**になった (handler が `Suspend(-ms)` を
+   受けて時間を偽装できる — テスト用仮想クロックの入口)。gate §77 に
+   discharge fixture (7 + 20 + 15 = 42、handler 実受信 + 非 blocking) を
+   追加。arm 自身の body は async context ではない (handled computation の
+   外で走る) ことも checker test で pin
 4. `Future[T]` 実体化(Decision 2)→ AsyncIter/ByteStream の p3 接続
    (Decision 3)→ wit_gen(Decision 5)→ serve handler の async func 化
 

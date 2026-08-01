@@ -1,0 +1,31 @@
+/// Codex P1 on #1312 (ADR-0089 D1): scoped sleep retargeting. In a
+/// program whose entry row does NOT carry Async, a `handle ... with
+/// Async` must receive the sleeps in its own lexical body, while a sleep
+/// inside an Async-row TOP-LEVEL fn called from row-free code -- which no
+/// handler drives -- must keep the blocking builtin instead of becoming a
+/// perform nothing handles (the first cut rewrote program-wide and
+/// stranded exactly that perform).
+///
+/// delay() blocks for 1ms via the builtin and returns 40; the handle body
+/// sleeps once THROUGH the handler (counted, non-blocking) and returns 1;
+/// the count adds the last 1. 40 + 1 + 1 = 42.
+fn delay() -> Int with { Async } {
+  sleep(1)
+  40
+}
+
+fn main() -> Int {
+  let acc = [
+    0
+  ]
+  let h = handle {
+    sleep(5)
+    1
+  } with Async {
+    Suspend(_req) => {
+      Array::set(acc, 0, Array::get(acc, 0) + 1)
+      resume(0)
+    }
+  }
+  delay() + h + Array::get(acc, 0)
+}

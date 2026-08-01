@@ -993,8 +993,18 @@ fn conc_settle_sleep_debt[rg, e](n: TaskGroup[rg, e]) -> Unit {
 
 /// Sleep without blocking the group (#1227). Inside a `spawn_suspend` body
 /// this parks the task so its siblings run, and the group's pump settles
-/// the debt -- so concurrent sleeps overlap instead of serializing. The
-/// `sleep` builtin stays correct for straight-line sequential code.
+/// the debt -- so concurrent sleeps overlap instead of serializing.
+///
+/// ADR-0089 D1 (#1218) note: plain `sleep` now does the same thing in the
+/// positions guaranteed a handler -- inside an Async-row closure literal
+/// (spawn_suspend task bodies) or a `handle ... with Async` body, the
+/// compiler retargets it to this very perform shape, and under an
+/// Async-row entry the injected boundary settles it. This function keeps
+/// its DIRECT perform body rather than delegating to `sleep`: a top-level
+/// fn body is deliberately not a retarget position when no entry boundary
+/// exists (Codex P1 on #1312 -- rewriting there can strand a perform with
+/// no handler), so delegation would quietly turn this back into the
+/// blocking builtin.
 export fn sleep_wait(ms: Int) -> Unit with { Async } {
   if ms > 0 {
     let _ = perform Async::Suspend(0 - ms)

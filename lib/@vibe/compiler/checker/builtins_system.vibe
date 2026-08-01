@@ -91,18 +91,23 @@ fn lookup_io_b(name: String) -> Option[Type] {
     ], CtUnit, Some("Async")))
   } else if name == "sleep_blocking" {
     // #1227: the same host suspend as `sleep`, but WITHOUT the nominal
-    // `Async` row, for the one caller that must block while holding a
-    // row-free signature: @vibex/concurrent's pump settling sleep debts.
+    // `Async` row, for callers that must block while holding a row-free
+    // signature: @vibex/concurrent's pump settling sleep debts, and the
+    // ADR-0089 D1 entry-boundary handler doing the same for sequential
+    // code (linked_compile.vibe lc_inject_async_sleep_boundary).
     //
-    // The row on `sleep` cannot be discharged locally (a handler cannot
-    // discharge a builtin's nominal row -- it is not a `perform`), and
-    // propagating it makes the pump a "needing" function that the ADR-0076
-    // suspend pass must CPS-clone, which its `while`/`let mut` shape makes
-    // ineligible. Both were measured, see #1227.
+    // ADR-0089 D1 (#1218) update to the original #1227 rationale: `sleep`
+    // itself is no longer an opaque nominal-row call in programs that can
+    // handle it -- linked_compile retargets it to a synthesized
+    // `perform Async::Suspend(-ms)` whenever the entry row carries Async
+    // or a `handle ... with Async` exists, and the checker lets such a
+    // handle discharge the row. This builtin remains the row-free BLOCKING
+    // primitive those synthesized/settling sites bottom out in.
     //
-    // This is NOT a general-purpose blocking sleep: it is only sound where
-    // the caller knows nothing else is runnable. `sleep` remains the right
-    // spelling everywhere else, and `sleep_wait` the one inside a task.
+    // Still NOT a general-purpose blocking sleep: it is only sound where
+    // the caller knows nothing else is runnable (the pump settles only
+    // when every task owes time; the entry boundary runs only when nothing
+    // is parked). `sleep` remains the right spelling everywhere else.
     Some(CtFn([
       CtInt
     ], CtUnit, None))
