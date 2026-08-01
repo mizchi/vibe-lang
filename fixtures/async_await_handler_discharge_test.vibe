@@ -12,13 +12,13 @@
 /// exits. Before increment 2 this program was untypeable ("effectful
 /// call outside effectful context: await"); before #1230 the pending
 /// path did not exist at all. 40 + one-poll + 1 = 42.
-/// The arm resolves the future by writing the slots directly
-/// (payload-then-state, the Future::resolve order) rather than calling
-/// `Future::resolve`: that builtin MISCOMPILES inside any closure today
-/// (invalid call_indirect signature index; even a plain
-/// `() -> Unit { Future::resolve(f, 40) }` produces a module wasmtime
-/// refuses to instantiate), and a migrated handler arm is a closure.
-/// Pre-existing bug, recorded in #1218 -- not introduced by this work.
+/// The arm resolves via `Future::resolve` -- which also pins the
+/// companion fix: inline-lowered builtins with no func-table entry
+/// (Future::pending/resolve, Path::to_string/is_absolute) used to be
+/// recorded as capturable FREE VARIABLES by the closure free-var
+/// collector, and a migrated handler arm is a closure, so this exact call
+/// produced an invalid-signature-index module until
+/// is_inlined_async_builtin listed them (common_analysis.vibe).
 fn main() -> Int {
   let f = Future::pending()
   let polls = [
@@ -29,8 +29,7 @@ fn main() -> Int {
   } with Async {
     Suspend(_req) => {
       Array::set(polls, 0, Array::get(polls, 0) + 1)
-      Array::set(f, 1, 40)
-      Array::set(f, 0, 0)
+      Future::resolve(f, 40)
       resume(0)
     }
   }
