@@ -377,21 +377,24 @@ fn effect_row_parse(eff: Option[String]) -> Option[Array[String]] {
 }
 
 /// Exact membership only; notably, `NotAsync` and `AsyncLike` do not contain
-/// the `Async` label.
+/// the `Async` label. Keep the array form separate so hot authorization checks
+/// do not allocate a transient `Some(labels)` wrapper on the linear backend.
+fn effect_labels_has_label(labels: Array[String], wanted: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(labels) {
+    if Array::get(labels, i) == wanted {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn effect_row_has_label(row: Option[Array[String]], wanted: String) -> Bool {
   match row {
     None => false,
-    Some(labels) => {
-      let mut i = 0
-      let mut found = false
-      while i < Array::length(labels) {
-        if Array::get(labels, i) == wanted {
-          found = true
-        }
-        i = i + 1
-      }
-      found
-    }
+    Some(labels) => effect_labels_has_label(labels, wanted)
   }
 }
 
@@ -421,7 +424,7 @@ fn label_is_effect_var(name: String) -> Bool {
 fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
   // All concrete label checks, including Async above, go through this same
   // exact-membership primitive rather than substring matching.
-  if effect_row_has_label(Some(labels), eff_name) {
+  if effect_labels_has_label(labels, eff_name) {
     true
   } else {
     let mut i = 0
