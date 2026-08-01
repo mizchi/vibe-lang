@@ -5,6 +5,7 @@ import @vibe/compiler/core {
   Pat,
   Stmt,
   TypeExpr,
+  bsearch_leftmost,
   bytebuf_length,
   bytebuf_new,
   bytebuf_push,
@@ -131,6 +132,7 @@ import @vibe/compiler/codegen/common_base {
   LineMapState,
   StrTable,
   agg_info_of_type_expr,
+  await_poll_pass,
   builtin_registry,
   codegen_body_cache_find,
   codegen_body_cache_new,
@@ -780,6 +782,14 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // growth per recursive step instead of an unbounded `call`. No-op unless a
   // function is directly self-tail-recursive; runs before the borrow/scalar-
   // return analyses below so they see the rewritten (loop-shaped) body.
+  // #1230 (docs/spec/wasi-p3-async.md M1b-3c): expand `await(f)` into the
+  // suspend-and-retry loop a PENDING future needs. Runs right after
+  // desugar_trait_dicts (which is what produces the `await(..)` call of a
+  // `for await` loop) and BEFORE every effect pass below, so the
+  // `perform Async::Suspend(1)` it synthesizes is seen by them exactly like a
+  // hand-written one -- lowering `await` inside compile_call, where it used to
+  // live, is past the point where a perform can still be handled.
+  await_poll_pass(stmts)
   rewrite_self_tail_calls(stmts)
   // #944 (ADR-0073 stage C): entry-boundary Error handler -- see
   // lc_wrap_entry_error_boundary's doc comment. Runs BEFORE the effect
@@ -843,33 +853,30 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // program-wide (read-only first param, never valued/aliased -- see
   // compute_borrow_arg0_user_fns). The entry fn and the conventional entry
   // names are excluded: the host invokes them without consulting the set.
-  // ADR-0092 borrow-inference slice 1 -- DEFAULT OFF pending the
-  // per-use-paired planner vocabulary. Four failure classes have been
-  // isolated so far, each with its mechanism landed (all provably inert
-  // while this is false, since the borrow set is then empty):
-  // (1) over-release: a let-binding holding an UNOWNED interior view
-  // (value = call to a fn like agg_expr_lookup that returns a borrow-ret
-  // builtin result raw) whose uses all flip to borrows loses its entry
-  // dup while the retention-driven scope-end drop stays -- fixed by the
-  // planner's view-call drop suppression (PCtx.owned_uses/view_call_let).
-  // (2) fresh-result leak: suppressing that drop for EVERY borrow-arg0
-  // callee also cancels the release of FRESH results -- fixed by
-  // restricting the marking to callees that MAY RETURN a view
-  // (compute_may_return_view_fns, intersected into lc_borrow_view_ret).
-  // (3) temp-arg0 leak: a fresh temporary passed directly at a borrowed
-  // arg0 has no owner left to release it (the callee's epilogue drop is
-  // filtered program-wide) -- fixed by disqualifying fns ever called
-  // with a non-ident arg0 (ca_collect_nonident_arg0).
-  // (4) UNRESOLVED: with (1)-(3) combined, codegen_heap_e2e_test traps
-  // again and the RC reclamation guard still leaks 1.9MB -- changing the
-  // set's membership shuffles which latent per-binding imbalances are
-  // exercised (same fragility the original N=494/495 set bisection
-  // showed), so point-wise repairs do not converge. The sound endpoint
-  // is explicit per-use pairing in the plan (each dup tied to the
-  // consume it funds -- the ADR-0092 PaReuseToken/PaReuseAlloc planner
-  // vocabulary phase). Measured potential while enabled: RC selfcompile
-  // ratio 1.951 -> 1.71-1.80.
-  let lc_borrow_arg0_enabled = false
+  // ADR-0092 borrow-inference slice 1, per-use-paired accounting. The
+  // planner's invariant per binding: acquisitions (initial owned ref +
+  // dups) must equal releases (owned consumes + scope-end drop). A
+  // view-call binding (value = call to a lc_borrow_view_ret fn) holds NO
+  // initial owned reference, so (a) its LAST owned use must dup instead
+  // of spending the phantom initial ref (pe_use / the ELet alias mirror)
+  // and (b) its scope-end / seq-temp drop is suppressed unconditionally
+  // (pe_scope_end) -- not just when all its uses are borrows, which was
+  // the round-3 condition that left latent over-releases behind whenever
+  // a view binding also had owned consumes or was never used at all.
+  // Earlier isolated classes, still covered: fresh-result leak (marking
+  // restricted to compute_may_return_view_fns callees, intersected into
+  // lc_borrow_view_ret -- a fresh result from a may-return-view callee
+  // still leaks, bounded, safe direction), temp-arg0 leak (fns ever
+  // called with a non-ident arg0 disqualified via
+  // ca_collect_nonident_arg0), and the lexical-shadow holes (a local
+  // shadowing a borrow-set name is an ordinary owned call: pc_count /
+  // pc_emit / pctx_mark_view_call all guard on scope, mirroring
+  // compile_call's #875 local_idx_hint guard). Known conservative gaps:
+  // loop params bound to a view-call init are not marked (their
+  // back-edge rebinds make ownership flow-dependent), and a view call
+  // reaching a binding through an if/match VALUE position is unmarked
+  // (treated owned).
+  let lc_borrow_arg0_enabled = true
   let lc_borrow_arg0_user_all = if lc_borrow_arg0_enabled {
     compute_borrow_arg0_user_fns(stmts)
   } else {
@@ -886,25 +893,24 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     }
     lba_i = lba_i + 1
   }
-  // The borrow-arg0 fns whose RETURN may be an unowned interior view: only
-  // these mark view_call_let in the planner (see PCtx.view_ret_user and the
-  // gate comment above). Intersection keeps the planner's marking check to
-  // one membership test.
-  let lc_borrow_view_all = if lc_borrow_arg0_enabled {
-    compute_may_return_view_fns(stmts)
+  // Sorted once so every membership test on the borrow set -- pc_count /
+  // pc_emit per call site, compile_call's borrows_this per arg, the md
+  // consume-count borrow0 test -- is a bsearch_leftmost instead of a
+  // 500+-name linear scan (profiled at ~35% of selfcompile CPU as
+  // array_contains_str + __rt_eq/__rt_str_eq/__rt_arr_get traffic).
+  let lc_borrow_arg0_user_srt = sorted_names_of(lc_borrow_arg0_user)
+  // Fns whose RETURN may be an unowned interior view: these mark
+  // view_call_let in the planner (see PCtx.view_ret_user and the gate
+  // comment above). NOT intersected with the borrow-arg0 set: a callee
+  // returns a view regardless of whether its arg0 qualified for the
+  // borrowed ABI (e.g. a fn disqualified by a non-ident arg0 call site
+  // still hands back an interior view whose binding must not be dropped)
+  // -- the round-3 intersection left exactly those bindings with a
+  // release they never acquired.
+  let lc_borrow_view_ret = if lc_borrow_arg0_enabled {
+    sorted_names_of(compute_may_return_view_fns(stmts))
   } else {
     lc_fresh_string_array()
-  }
-  let lc_borrow_view_ret = lc_fresh_string_array()
-  let mut lbv_i = 0
-  while lbv_i < Array::length(lc_borrow_view_all) {
-    let lbv_n = Array::get(lc_borrow_view_all, lbv_i)
-    if array_contains_str(lc_borrow_arg0_user, lbv_n) {
-      Array::push(lc_borrow_view_ret, lbv_n)
-    } else {
-      ()
-    }
-    lbv_i = lbv_i + 1
   }
   // #710: see CompileCtx.scalar_ret_names' doc comment (common_base/common_base.vibe).
   let lc_scalar_ret_names = sorted_names_of(compute_scalar_returning_names(stmts))
@@ -2908,7 +2914,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         __bi_expr
       }
       if enable_rc {
-        let plan = build_perceus_plan_with_params(lc_norm_params, __bi_body, lc_borrow_ret_names, lc_borrow_arg0_user, lc_borrow_view_ret)
+        let plan = build_perceus_plan_with_params(lc_norm_params, __bi_body, lc_borrow_ret_names, lc_borrow_arg0_user_srt, lc_borrow_view_ret)
         let mut lhpi = 0
         while lhpi < Array::length(lc_norm_params) {
           let (lhpn, lhpt) = Array::get(lc_norm_params, lhpi)
@@ -2922,7 +2928,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         // ADR-0092 borrow-inference slice 1: when THIS fn's arg0 ABI is
         // borrowed, the caller keeps ownership -- the plan's scope-end drop
         // (and any entry dup) for param0 must not be emitted here.
-        let bfn_p0 = if array_contains_str(lc_borrow_arg0_user, fn_name_dbg) && Array::length(lc_norm_params) >= 1 {
+        let bfn_p0 = if bsearch_leftmost(lc_borrow_arg0_user_srt, fn_name_dbg) >= 0 && Array::length(lc_norm_params) >= 1 {
           let (bfn_p0n, _) = Array::get(lc_norm_params, 0)
           bfn_p0n
         } else {
@@ -3045,7 +3051,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         reuse_scrutinee_names: lc_fresh_string_array(),
         reuse_flag_locals: lc_fresh_int_array(),
         borrow_ret_names: lc_borrow_ret_names,
-        borrow_arg0_user: lc_borrow_arg0_user,
+        borrow_arg0_user: lc_borrow_arg0_user_srt,
         borrow_view_ret: lc_borrow_view_ret,
         scalar_ret_names: lc_scalar_ret_names,
         pending_letrec_self_name: lc_fresh_string_array(),

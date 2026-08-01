@@ -1413,6 +1413,32 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // `await` branch above for the representation.
       ce(buf, future_ready_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
     }
+    else if !prefer_bound_call && fname == "Future::pending" {
+      // #1230: an UNRESOLVED future -- state 1, payload slot reserved. The
+      // await hoist (await_poll_pass) sees a non-zero state and suspends with
+      // the poll-wait reason until someone calls Future::resolve on this same
+      // array, so the producer decides when it completes.
+      ce(buf, EArray([
+        EInt(1),
+        EInt(0)
+      ]), local_names, next_local, ctx, ld)
+    }
+    else if !prefer_bound_call && fname == "Future::resolve" {
+      // #1230: complete a pending future IN PLACE -- payload first, then clear
+      // the state. The write order is what makes the observation safe: an
+      // awaiter only reads the payload once the state says ready, so it can
+      // never see the state cleared ahead of the value it describes.
+      let fut = Array::get(args, 0)
+      ce(buf, ESeq(ECall(EIdent("Array::set", -1), [
+        fut,
+        EInt(1),
+        Array::get(args, 1)
+      ], -1), ECall(EIdent("Array::set", -1), [
+        fut,
+        EInt(0),
+        EInt(0)
+      ], -1)), local_names, next_local, ctx, ld)
+    }
     else if !prefer_bound_call && fname == "Stream::empty" {
       // Empty stream = empty backing array.
       let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
@@ -4805,7 +4831,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
           // (#704). Mirrors `is_borrow_arg0_call` in perceus/index.vibe.
           // ADR-0092 borrow-inference slice 1: user fns with a borrowed
           // arg0 ABI get the same call-site treatment as the builtin list.
-          let borrows_this = ci == 0 && (cc_is_borrow_arg0_call(fname) || array_contains_str(ctx.borrow_arg0_user, fname))
+          let borrows_this = ci == 0 && (cc_is_borrow_arg0_call(fname) || bsearch_leftmost(ctx.borrow_arg0_user, fname) >= 0)
           let is_loop_borrow1 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) && !borrows_this
           if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow1) && !borrows_this {
             // #706 leak follow-up: this dup's matching consume is INSIDE the loop

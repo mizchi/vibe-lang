@@ -1396,7 +1396,257 @@ fn md_max(a: Int, b: Int) -> Int {
 /// variant (modeled on fold_expr): skipping recursion into a child could miss a
 /// real consume and wrongly suppress the dup. A bare `EIdent(name)` passed as
 /// arg0 of a borrow-arg0 builtin does not consume (it is read in place).
+/// Builtin-only view of md_consume_count_b (empty user borrow set): kept as
+/// the stable 2-arg entry for callers with no CompileCtx in reach (and the
+/// borrow-set computation itself, which must not consume its own output).
 export fn md_consume_count(e: Expr, name: String) -> Int {
+  let md_no_user_fns: Array[String] = [
+  ]
+  md_cc_go(e, name, md_no_user_fns)
+}
+
+/// All names locally BOUND anywhere inside `e` -- let/let mut/let rec
+/// binders, fn params, match/handle pattern binds, loop params, for-in
+/// binders. Used by md_consume_count_b to disable the user-borrow-set
+/// callee test for any name a local binding could shadow (Codex P1 on
+/// #1282): scope-blind bfns matching would treat a call to a same-named
+/// LOCAL closure as borrowed-arg0 and omit the compensating dup -- a
+/// use-after-free direction. Presence anywhere in the body (not just
+/// enclosing scopes) over-approximates shadowing; the failure direction of
+/// the approximation is an extra dup (bounded leak), never a missing one.
+fn md_collect_shadow_names(e: Expr, out: Array[String]) -> Int {
+  match e {
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EStringInterp(_) => 0,
+    EIdent(_, _) => 0,
+    ETuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        md_collect_shadow_names(Array::get(items, i), out)
+        i = i + 1
+      }
+      0
+    },
+    EArray(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        md_collect_shadow_names(Array::get(items, i), out)
+        i = i + 1
+      }
+      0
+    },
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        md_collect_shadow_names(v, out)
+        i = i + 1
+      }
+      0
+    },
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        md_collect_shadow_names(v, out)
+        i = i + 1
+      }
+      0
+    },
+    EIf(c, t, el) => {
+      md_collect_shadow_names(c, out)
+      md_collect_shadow_names(t, out)
+      md_collect_shadow_names(el, out)
+    },
+    EWhile(c, b) => {
+      md_collect_shadow_names(c, out)
+      md_collect_shadow_names(b, out)
+    },
+    ELet(n, v, b, _) => {
+      Array::push(out, n)
+      md_collect_shadow_names(v, out)
+      md_collect_shadow_names(b, out)
+    },
+    ELetRec(n, v, b) => {
+      Array::push(out, n)
+      md_collect_shadow_names(v, out)
+      md_collect_shadow_names(b, out)
+    },
+    ELetMut(n, v, b, _) => {
+      Array::push(out, n)
+      md_collect_shadow_names(v, out)
+      md_collect_shadow_names(b, out)
+    },
+    EAssign(_, v, b) => {
+      md_collect_shadow_names(v, out)
+      md_collect_shadow_names(b, out)
+    },
+    EAssignOp(_, _, v, b) => {
+      md_collect_shadow_names(v, out)
+      md_collect_shadow_names(b, out)
+    },
+    ESeq(a, b) => {
+      md_collect_shadow_names(a, out)
+      md_collect_shadow_names(b, out)
+    },
+    EMatch(s, arms) => {
+      md_collect_shadow_names(s, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pt, v) = Array::get(arms, i)
+        collect_pattern_bindings(pt, out)
+        md_collect_shadow_names(v, out)
+        i = i + 1
+      }
+      0
+    },
+    EHandle(s, arms) => {
+      md_collect_shadow_names(s, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pt, v) = Array::get(arms, i)
+        collect_pattern_bindings(pt, out)
+        md_collect_shadow_names(v, out)
+        i = i + 1
+      }
+      0
+    },
+    ELoop(params, b) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let pr = Array::get(params, i)
+        Array::push(out, pr.0)
+        md_collect_shadow_names(pr.1, out)
+        i = i + 1
+      }
+      md_collect_shadow_names(b, out)
+    },
+    EForIn(vn, idx, it, b) => {
+      Array::push(out, vn)
+      match idx {
+        Some(ix) => {
+          Array::push(out, ix)
+          ()
+        },
+        None => ()
+      }
+      md_collect_shadow_names(it, out)
+      md_collect_shadow_names(b, out)
+    },
+    ECall(callee, args, _) => {
+      md_collect_shadow_names(callee, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        md_collect_shadow_names(Array::get(args, i), out)
+        i = i + 1
+      }
+      0
+    },
+    EBinOp(_, l, r) => {
+      md_collect_shadow_names(l, out)
+      md_collect_shadow_names(r, out)
+    },
+    EUnaryOp(_, x) => md_collect_shadow_names(x, out),
+    EFn(_, _, params, _, _, body) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let pr = Array::get(params, i)
+        Array::push(out, pr.0)
+        i = i + 1
+      }
+      md_collect_shadow_names(body, out)
+    },
+    EDot(x, _, _, _) => md_collect_shadow_names(x, out),
+    ELabeledArg(_, _, v) => md_collect_shadow_names(v, out),
+    EReturn(x) => md_collect_shadow_names(x, out),
+    EBreak(opt) => match opt {
+      Some(v) => md_collect_shadow_names(v, out),
+      None => 0
+    },
+    EContinue(args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        md_collect_shadow_names(Array::get(args, i), out)
+        i = i + 1
+      }
+      0
+    },
+    ESpread(x) => md_collect_shadow_names(x, out)
+  }
+}
+
+/// The shadow-honoring half of md_consume_count_b, split out so callers
+/// that count MANY names against the SAME body (compile_match's per-field
+/// bind loops, compile_lambda's capture loop) can run the binder prepass
+/// ONCE per body instead of once per name -- the per-name form showed up
+/// directly in selfcompile wall time. Returns `bfns` itself (no copy)
+/// when the body shadows no member; otherwise a filtered copy.
+/// PRECONDITION: `bfns` is sorted (linked_compile sorts the borrow set
+/// once; membership here is bsearch_leftmost). The filtered copy preserves
+/// order, so it stays bsearch-able.
+export fn md_shadow_filtered_bfns(e: Expr, bfns: Array[String]) -> Array[String] {
+  if Array::length(bfns) == 0 {
+    bfns
+  } else {
+    let sh: Array[String] = [
+    ]
+    md_collect_shadow_names(e, sh)
+    let mut any_hit = false
+    let mut si = 0
+    while si < Array::length(sh) {
+      if bsearch_leftmost(bfns, Array::get(sh, si)) >= 0 {
+        any_hit = true
+      } else {
+        ()
+      }
+      si = si + 1
+    }
+    if !any_hit {
+      bfns
+    } else {
+      let bfns2: Array[String] = [
+      ]
+      let mut bi = 0
+      while bi < Array::length(bfns) {
+        let bn = Array::get(bfns, bi)
+        if array_contains_str(sh, bn) {
+          ()
+        } else {
+          Array::push(bfns2, bn)
+        }
+        bi = bi + 1
+      }
+      bfns2
+    }
+  }
+}
+
+/// md_consume_count against a set ALREADY filtered by
+/// md_shadow_filtered_bfns for this same body. The hoisted form of
+/// md_consume_count_b -- pass the raw set here only if it is empty.
+export fn md_consume_count_pre(e: Expr, name: String, bfns_filtered: Array[String]) -> Int {
+  md_cc_go(e, name, bfns_filtered)
+}
+
+/// md_consume_count with the USER borrow-arg0 set threaded through the
+/// ECall borrow0 test. Lexical shadows are honored conservatively (Codex
+/// P1 on #1282): any bfns name that also appears as a LOCAL binder
+/// anywhere in `e` is dropped from the set for this body, so a call to a
+/// same-named local closure counts as an owning consume (compile_call and
+/// the planner give lexical bindings precedence, so the dup it forces is
+/// matched by the closure call's real consume; for the rare body that
+/// binds the name but still calls the top-level fn, the extra dup is a
+/// bounded leak -- never a missing one). One-shot form; loops over many
+/// names against one body should hoist md_shadow_filtered_bfns instead.
+export fn md_consume_count_b(e: Expr, name: String, bfns: Array[String]) -> Int {
+  md_cc_go(e, name, md_shadow_filtered_bfns(e, bfns))
+}
+
+fn md_cc_go(e: Expr, name: String, bfns: Array[String]) -> Int {
   match e {
     EInt(_) => 0,
     EFloat(_) => 0,
@@ -1413,7 +1663,7 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
       let mut acc = 0
       let mut i = 0
       while i < Array::length(items) {
-        acc = acc + md_consume_count(Array::get(items, i), name)
+        acc = acc + md_cc_go(Array::get(items, i), name, bfns)
         i = i + 1
       }
       acc
@@ -1422,7 +1672,7 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
       let mut acc = 0
       let mut i = 0
       while i < Array::length(items) {
-        acc = acc + md_consume_count(Array::get(items, i), name)
+        acc = acc + md_cc_go(Array::get(items, i), name, bfns)
         i = i + 1
       }
       acc
@@ -1432,7 +1682,7 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        acc = acc + md_consume_count(v, name)
+        acc = acc + md_cc_go(v, name, bfns)
         i = i + 1
       }
       acc
@@ -1442,25 +1692,25 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        acc = acc + md_consume_count(v, name)
+        acc = acc + md_cc_go(v, name, bfns)
         i = i + 1
       }
       acc
     },
     EIf(c, t, el) =>
-    md_consume_count(c, name) + md_max(md_consume_count(t, name), md_consume_count(el, name)),
-    ELet(_, v, b, _) => md_consume_count(v, name) + md_consume_count(b, name),
-    ELetRec(_, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
-    ELetMut(_, v, b, _) => md_consume_count(v, name) + md_consume_count(b, name),
-    EAssign(_, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
-    EAssignOp(_, _, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
-    ESeq(a, b) => md_consume_count(a, name) + md_consume_count(b, name),
+    md_cc_go(c, name, bfns) + md_max(md_cc_go(t, name, bfns), md_cc_go(el, name, bfns)),
+    ELet(_, v, b, _) => md_cc_go(v, name, bfns) + md_cc_go(b, name, bfns),
+    ELetRec(_, v, b) => md_cc_go(v, name, bfns) + md_cc_go(b, name, bfns),
+    ELetMut(_, v, b, _) => md_cc_go(v, name, bfns) + md_cc_go(b, name, bfns),
+    EAssign(_, v, b) => md_cc_go(v, name, bfns) + md_cc_go(b, name, bfns),
+    EAssignOp(_, _, v, b) => md_cc_go(v, name, bfns) + md_cc_go(b, name, bfns),
+    ESeq(a, b) => md_cc_go(a, name, bfns) + md_cc_go(b, name, bfns),
     EMatch(s, arms) => {
       let mut mx = 0
       let mut i = 0
       while i < Array::length(arms) {
         let (_, v) = Array::get(arms, i)
-        mx = md_max(mx, md_consume_count(v, name))
+        mx = md_max(mx, md_cc_go(v, name, bfns))
         i = i + 1
       }
       // A bare `match name { .. }` BORROWS the scrutinee (its fields become
@@ -1471,7 +1721,7 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
       // sub-expression, so recurse there.
       let scr = match s {
         EIdent(_, _) => 0,
-        _ => md_consume_count(s, name)
+        _ => md_cc_go(s, name, bfns)
       }
       scr + mx
     },
@@ -1480,30 +1730,30 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
       let mut i = 0
       while i < Array::length(arms) {
         let (_, v) = Array::get(arms, i)
-        mx = md_max(mx, md_consume_count(v, name))
+        mx = md_max(mx, md_cc_go(v, name, bfns))
         i = i + 1
       }
       let scr = match s {
         EIdent(_, _) => 0,
-        _ => md_consume_count(s, name)
+        _ => md_cc_go(s, name, bfns)
       }
       scr + mx
     },
-    EWhile(c, b) => md_consume_count(c, name) + md_consume_count(b, name),
+    EWhile(c, b) => md_cc_go(c, name, bfns) + md_cc_go(b, name, bfns),
     ELoop(params, b) => {
-      let mut acc = md_consume_count(b, name)
+      let mut acc = md_cc_go(b, name, bfns)
       let mut i = 0
       while i < Array::length(params) {
         let (_, v) = Array::get(params, i)
-        acc = acc + md_consume_count(v, name)
+        acc = acc + md_cc_go(v, name, bfns)
         i = i + 1
       }
       acc
     },
-    EForIn(_, _, it, b) => md_consume_count(it, name) + md_consume_count(b, name),
+    EForIn(_, _, it, b) => md_cc_go(it, name, bfns) + md_cc_go(b, name, bfns),
     ECall(callee, args, _) => {
       let borrow0 = match callee {
-        EIdent(f, _) => md_is_borrow_arg0_call(f),
+        EIdent(f, _) => md_is_borrow_arg0_call(f) || bsearch_leftmost(bfns, f) >= 0,
         _ => false
       }
       let start = if borrow0 && Array::length(args) >= 1 {
@@ -1514,7 +1764,7 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
       let head = if start == 1 {
         match Array::get(args, 0) {
           EIdent(_, _) => 0,
-          _ => md_consume_count(Array::get(args, 0), name)
+          _ => md_cc_go(Array::get(args, 0), name, bfns)
         }
       } else {
         0
@@ -1527,36 +1777,36 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
       // in a sub-expression.
       let callee_c = match callee {
         EIdent(_, _) => 0,
-        _ => md_consume_count(callee, name)
+        _ => md_cc_go(callee, name, bfns)
       }
       let mut acc = callee_c + head
       let mut ri = start
       while ri < Array::length(args) {
-        acc = acc + md_consume_count(Array::get(args, ri), name)
+        acc = acc + md_cc_go(Array::get(args, ri), name, bfns)
         ri = ri + 1
       }
       acc
     },
-    EBinOp(_, l, r) => md_consume_count(l, name) + md_consume_count(r, name),
-    EUnaryOp(_, x) => md_consume_count(x, name),
-    EFn(_, _, _, _, _, body) => md_consume_count(body, name),
-    EDot(x, _, _, _) => md_consume_count(x, name),
-    ELabeledArg(_, _, v) => md_consume_count(v, name),
-    EReturn(x) => md_consume_count(x, name),
+    EBinOp(_, l, r) => md_cc_go(l, name, bfns) + md_cc_go(r, name, bfns),
+    EUnaryOp(_, x) => md_cc_go(x, name, bfns),
+    EFn(_, _, _, _, _, body) => md_cc_go(body, name, bfns),
+    EDot(x, _, _, _) => md_cc_go(x, name, bfns),
+    ELabeledArg(_, _, v) => md_cc_go(v, name, bfns),
+    EReturn(x) => md_cc_go(x, name, bfns),
     EBreak(opt) => match opt {
-      Some(v) => md_consume_count(v, name),
+      Some(v) => md_cc_go(v, name, bfns),
       None => 0
     },
     EContinue(args) => {
       let mut acc = 0
       let mut i = 0
       while i < Array::length(args) {
-        acc = acc + md_consume_count(Array::get(args, i), name)
+        acc = acc + md_cc_go(Array::get(args, i), name, bfns)
         i = i + 1
       }
       acc
     },
-    ESpread(x) => md_consume_count(x, name)
+    ESpread(x) => md_cc_go(x, name, bfns)
   }
 }
 
