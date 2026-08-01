@@ -210,6 +210,20 @@ bash scripts/resolve_generated_conflicts.sh
 git rebase --continue     # または git commit
 ```
 
+**commit が複数ある rebase では、生成物に触る commit ごとに別々に衝突する** —
+最初の衝突で regenerate しても、あとの commit が自分の (rebase 前の) コピーを
+持ち込むので最終 tree は直らない。#1276 がこれで CI を落とした。rebase が
+終わったあとに tip をもう一度 regenerate すること:
+
+```bash
+bash scripts/resolve_generated_conflicts.sh --regen
+git commit          # または git commit --amend
+```
+
+`--regen` は衝突を必要とせず、現在の tree から regenerate して stage する
+(生成前に `check_vibe_fmt.sh` で lint し、未整形なら止まる)。
+これを飛ばした tip を検出するのは `scripts/check_module_source_sync.sh`。
+
 このスクリプトは生成物だけを捨てて regenerate し直して stage する。
 手書きファイルの衝突が残っている間は「未解決の tree を artifact に焼き込む」
 ことになるので何もせず失敗する — そちらを先に解決すること。regenerate の

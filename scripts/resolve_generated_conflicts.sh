@@ -24,7 +24,26 @@
 # Usage (inside an in-progress merge or rebase):
 #   bash scripts/resolve_generated_conflicts.sh
 #   git rebase --continue     # or: git commit
+#
+# A multi-commit rebase conflicts once PER COMMIT that touches the artifacts,
+# and each later commit reintroduces its own (pre-rebase) copy — so resolving
+# the first conflict does not make the FINAL tree correct. After the rebase
+# finishes, regenerate the tip once:
+#
+#   bash scripts/resolve_generated_conflicts.sh --regen
+#   git commit                # or: git commit --amend
+#
+# `--regen` needs no conflict; it just regenerates from the current tree and
+# stages the result. `scripts/check_module_source_sync.sh` is the check that
+# catches a tip that skipped this.
 set -euo pipefail
+
+REGEN_ONLY=0
+case "${1:-}" in
+  --regen) REGEN_ONLY=1 ;;
+  "") ;;
+  *) echo "usage: $0 [--regen]" >&2; exit 2 ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="${VIBE_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
@@ -46,43 +65,56 @@ is_generated() {
   return 1
 }
 
-# `git diff --name-only --diff-filter=U` lists exactly the unmerged paths, in
-# both merge and rebase states.
-mapfile -t conflicted < <(git diff --name-only --diff-filter=U)
-
-if [ "${#conflicted[@]}" -eq 0 ]; then
-  echo "resolve-generated-conflicts: no conflicted paths; nothing to do"
-  exit 0
-fi
-
-gen_conflicts=()
-other_conflicts=()
-for path in "${conflicted[@]}"; do
-  if is_generated "$path"; then
-    gen_conflicts+=("$path")
-  else
-    other_conflicts+=("$path")
+if [ "$REGEN_ONLY" -eq 1 ]; then
+  echo "resolve-generated-conflicts: --regen (no conflict required)"
+  # The tip is already committed here, so there is no staged set to format from.
+  # Lint the whole tree instead — generating from unformatted source is the one
+  # ordering mistake that turns into a confusing bundle-drift failure later.
+  if ! bash "$SCRIPT_DIR/check_vibe_fmt.sh" >/dev/null 2>&1; then
+    echo "resolve-generated-conflicts: lib/ is not formatted; run 'pkf run fmt' first" >&2
+    echo "(generating from unformatted source bakes the wrong text into the bundle)" >&2
+    exit 1
   fi
-done
+else
+  # `git diff --name-only --diff-filter=U` lists exactly the unmerged paths, in
+  # both merge and rebase states.
+  mapfile -t conflicted < <(git diff --name-only --diff-filter=U)
 
-if [ "${#other_conflicts[@]}" -gt 0 ]; then
-  echo "resolve-generated-conflicts: hand-written files are still conflicted:" >&2
-  printf '  %s\n' "${other_conflicts[@]}" >&2
-  echo "Resolve those first; regenerating now would bake an unresolved tree" >&2
-  echo "into the artifacts." >&2
-  exit 1
+  if [ "${#conflicted[@]}" -eq 0 ]; then
+    echo "resolve-generated-conflicts: no conflicted paths; nothing to do"
+    echo "(after a finished rebase, regenerate the tip with --regen)"
+    exit 0
+  fi
+
+  gen_conflicts=()
+  other_conflicts=()
+  for path in "${conflicted[@]}"; do
+    if is_generated "$path"; then
+      gen_conflicts+=("$path")
+    else
+      other_conflicts+=("$path")
+    fi
+  done
+
+  if [ "${#other_conflicts[@]}" -gt 0 ]; then
+    echo "resolve-generated-conflicts: hand-written files are still conflicted:" >&2
+    printf '  %s\n' "${other_conflicts[@]}" >&2
+    echo "Resolve those first; regenerating now would bake an unresolved tree" >&2
+    echo "into the artifacts." >&2
+    exit 1
+  fi
+
+  echo "resolve-generated-conflicts: regenerating ${#gen_conflicts[@]} artifact(s)"
+  printf '  %s\n' "${gen_conflicts[@]}"
+
+  # Take one side verbatim purely to clear the unmerged index entries — the
+  # content is overwritten by the regeneration below, so which side loses does
+  # not matter. `--ours` is the side already checked out in both merge and
+  # rebase, so it always exists.
+  for path in "${gen_conflicts[@]}"; do
+    git checkout --ours -- "$path"
+  done
 fi
-
-echo "resolve-generated-conflicts: regenerating ${#gen_conflicts[@]} artifact(s)"
-printf '  %s\n' "${gen_conflicts[@]}"
-
-# Take one side verbatim purely to clear the unmerged index entries — the
-# content is overwritten by the regeneration below, so which side loses does
-# not matter. `--ours` is the side already checked out in both merge and
-# rebase, so it always exists.
-for path in "${gen_conflicts[@]}"; do
-  git checkout --ours -- "$path"
-done
 
 # Format the merged hand-written sources BEFORE generating: the bundles embed
 # source text verbatim, so generating first and formatting second leaves the

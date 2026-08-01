@@ -49,6 +49,10 @@ cat > scripts/vibe_fmt.sh <<'STUB'
 #!/usr/bin/env bash
 exit 0
 STUB
+cat > scripts/check_vibe_fmt.sh <<'STUB'
+#!/usr/bin/env bash
+exit "${STUB_FMT_RC:-0}"
+STUB
 
 GEN=(
   lib/@vibe/compiler/compiler_sources_bundle.vibe
@@ -111,5 +115,38 @@ done
 # Staged, so `git commit` finishes the merge with no further steps.
 git diff --cached --name-only | grep -q "compiler_sources_bundle.vibe" ||
   fail "regenerated artifacts should be staged"
+
+# --- 4. --regen on a clean, already-committed tip ---------------------------
+# The case that bit #1276: a multi-commit rebase leaves the tip carrying a
+# later commit's stale artifacts, with no conflict left to key off.
+git commit -qm merged
+for f in "${GEN[@]}"; do echo stale > "$f"; done
+git commit -qam "tip with stale artifacts"
+bash scripts/resolve_generated_conflicts.sh --regen >"$WORK/out4" 2>&1 ||
+  fail "--regen should succeed on a clean tip: $(cat "$WORK/out4")"
+grep -q "STUB-GENERATE-RAN" "$WORK/out4" ||
+  fail "--regen should have regenerated: $(cat "$WORK/out4")"
+for f in "${GEN[@]}"; do
+  [ "$(cat "$f")" = "regenerated" ] || fail "--regen left $f stale"
+done
+git diff --cached --name-only | grep -q "compiler_sources_bundle.vibe" ||
+  fail "--regen should stage the artifacts"
+
+# --- 5. --regen refuses when lib/ is unformatted ----------------------------
+git commit -qm regen
+for f in "${GEN[@]}"; do echo stale2 > "$f"; done
+git commit -qam "stale again"
+if STUB_FMT_RC=1 bash scripts/resolve_generated_conflicts.sh --regen >"$WORK/out5" 2>&1; then
+  fail "--regen should refuse while lib/ is unformatted"
+fi
+grep -q "pkf run fmt" "$WORK/out5" ||
+  fail "refusal should point at pkf run fmt: $(cat "$WORK/out5")"
+grep -q "STUB-GENERATE-RAN" "$WORK/out5" &&
+  fail "--regen must not generate from unformatted source"
+
+# --- 6. bad flag ------------------------------------------------------------
+if bash scripts/resolve_generated_conflicts.sh --bogus >/dev/null 2>&1; then
+  fail "an unknown flag should be rejected"
+fi
 
 echo "resolve-generated-conflicts test: ok"

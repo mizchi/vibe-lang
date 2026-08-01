@@ -273,6 +273,14 @@ git rebase --continue                          # または git commit
 ```
 
 手書きファイルの衝突が残っている間はスクリプトは何もせず失敗する。
+
+**commit が複数ある rebase では衝突が commit ごとに起きるので、最初の衝突で
+regenerate しても最終 tree は直らない**。rebase 完了後に tip を regenerate:
+
+```bash
+bash scripts/resolve_generated_conflicts.sh --regen   # 衝突不要。tree から regenerate
+```
+
 詳細は [docs/bootstrap.md](docs/bootstrap.md).
 
 ## pkfire / pkspec
