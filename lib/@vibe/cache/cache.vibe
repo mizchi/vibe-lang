@@ -148,12 +148,16 @@ export fn persistent_leaf_fingerprint_cache_path(version_tag: String, path: Stri
   stable_cache_path(version_tag, "selfhost_leaf_fp_v2", String::concat(path, String::concat("|", source_fingerprint)), ".tsv")
 }
 
-fn build_sources_fingerprint_from_compact_fingerprints(source_fingerprints: Array[String]) -> String {
-  let mut acc = "merged"
+fn build_sources_fingerprint_from_compact_fingerprints(sources: Array[(String, String)]) -> String {
+  // Match compilation_input_fingerprint(sources, "") exactly, except the
+  // already-computed content fingerprints replace source text. The cached
+  // source-group fast path must therefore retain each source path too.
+  let mut acc = "compilation-input|entry="
   let mut i = 0
-  while i < Array::length(source_fingerprints) {
-    let next = String::concat(acc, String::concat("|", Array::get(source_fingerprints, i)))
-    acc = compact_string_fingerprint(next)
+  while i < Array::length(sources) {
+    let (path, source_fingerprint) = Array::get(sources, i)
+    let pair = String::concat(path, String::concat("=", source_fingerprint))
+    acc = compact_string_fingerprint(String::concat(acc, String::concat("|", pair)))
     i = i + 1
   }
   acc
@@ -164,16 +168,7 @@ export fn build_source_groups_fingerprint_from_compact_fingerprints(groups: Arra
   let mut i = 0
   while i < Array::length(groups) {
     let (group_name, specs) = Array::get(groups, i)
-    let source_fingerprints = Array::slice([
-      ""
-    ], 0, 0)
-    let mut j = 0
-    while j < Array::length(specs) {
-      let (_, source_fingerprint) = Array::get(specs, j)
-      Array::push(source_fingerprints, source_fingerprint)
-      j = j + 1
-    }
-    let fingerprint = build_sources_fingerprint_from_compact_fingerprints(source_fingerprints)
+    let fingerprint = build_sources_fingerprint_from_compact_fingerprints(specs)
     let next = String::concat(acc, String::concat("|", String::concat(group_name, String::concat("=", fingerprint))))
     acc = compact_string_fingerprint(next)
     i = i + 1
@@ -219,6 +214,14 @@ export fn build_fs_compile_module_artifact_fingerprint_from_group_fingerprint(so
 
 export fn build_fs_compile_module_artifact_fingerprint(source_groups: Array[(String, Array[(String, String)])]) -> String {
   build_fs_compile_module_artifact_fingerprint_from_group_fingerprint(build_source_groups_fingerprint(source_groups))
+}
+
+export fn build_fs_compile_module_artifact_fingerprint_for_entry_path(source_groups: Array[(String, Array[(String, String)])], entry_path: String) -> String {
+  build_fs_compile_module_artifact_fingerprint_from_group_fingerprint_for_entry_path(build_source_groups_fingerprint(source_groups), entry_path)
+}
+
+export fn build_fs_compile_module_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint: String, entry_path: String) -> String {
+  compact_string_fingerprint(String::concat("fs-compile-module|", String::concat(source_groups_fingerprint, String::concat("|", entry_path))))
 }
 
 export fn build_file_compile_module_artifact_fingerprint_from_group_fingerprint(source_groups_fingerprint: String) -> String {

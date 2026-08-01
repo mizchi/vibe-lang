@@ -4,6 +4,15 @@ import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_module_cached
 }
 
+import @vibe/compiler/cache {
+  build_file_compile_module_artifact_fingerprint_for_entry_path,
+  persistent_artifact_cache_path
+}
+
+import @vibe/compiler/loader {
+  collect_source_groups_fs
+}
+
 import @vibe/core {
   array_empty
 }
@@ -27,6 +36,16 @@ fn string_to_bytes(s: String) -> Bytes {
     i = i + 1
   }
   Bytes::from_array(out)
+}
+
+fn clear_file_compile_module_cache(entry_path: String) -> Unit with { Error, Fs } {
+  let groups = collect_source_groups_fs(entry_path)
+  let cache_path = persistent_artifact_cache_path("file-compile-module", "", build_file_compile_module_artifact_fingerprint_for_entry_path(groups, entry_path))
+  if Fs::exists(cache_path) {
+    Fs::remove(cache_path)
+  } else {
+    ()
+  }
 }
 
 //# Misc
@@ -66,14 +85,16 @@ test "compile_file_fs_module_cached: warm compile reuses merged module cache" {
   assert(eq(db_merge_count(db2), merge_count1))
 }
 
-test "compile_file_fs_module_cached: same merged source reuses merge cache across entry paths" {
+test "compile_file_fs_module_cached: same source at different entry paths does not reuse merge cache" {
   let main_path1 = "/tmp/vibe_compiler_merge_cache_same_source_a.vibe"
   let main_path2 = "/tmp/vibe_compiler_merge_cache_same_source_b.vibe"
   let source = "let run: () -> Int = () -> { 1 + 2 }"
   Fs::write_bytes(main_path1, string_to_bytes(source))
   Fs::write_bytes(main_path2, string_to_bytes(source))
+  clear_file_compile_module_cache(main_path1)
+  clear_file_compile_module_cache(main_path2)
   let (_, db1) = compile_file_fs_module_cached(db_new(), main_path1)
   let merge_count1 = db_merge_count(db1)
   let (_, db2) = compile_file_fs_module_cached(db1, main_path2)
-  assert(eq(db_merge_count(db2), merge_count1))
+  assert(db_merge_count(db2) > merge_count1)
 }

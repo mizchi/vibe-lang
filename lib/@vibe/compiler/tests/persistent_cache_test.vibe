@@ -4,6 +4,7 @@ import @vibe/compiler/cache {
   build_file_compile_module_artifact_fingerprint_for_entry_path,
   build_file_compile_wasi_artifact_fingerprint_for_entry_path,
   build_source_groups_fingerprint,
+  build_source_groups_fingerprint_from_compact_fingerprints,
   compact_string_fingerprint,
   compilation_input_fingerprint,
   persistent_artifact_cache_path,
@@ -32,6 +33,29 @@ import ../type_db.vibe {
 }
 
 //# Functions
+
+test "source-group compact fingerprint preserves paths and equals full fingerprint" {
+  let groups = [
+    ("entry", [
+      ("/tmp/a.vibe", "let main = 1"),
+      ("/tmp/b.vibe", "let helper = 2")
+    ])
+  ]
+  let compact_groups = [
+    ("entry", [
+      ("/tmp/a.vibe", compact_string_fingerprint("let main = 1")),
+      ("/tmp/b.vibe", compact_string_fingerprint("let helper = 2"))
+    ])
+  ]
+  let renamed_groups = [
+    ("entry", [
+      ("/tmp/c.vibe", compact_string_fingerprint("let main = 1")),
+      ("/tmp/b.vibe", compact_string_fingerprint("let helper = 2"))
+    ])
+  ]
+  assert(eq(build_source_groups_fingerprint(groups), build_source_groups_fingerprint_from_compact_fingerprints(compact_groups)))
+  assert(build_source_groups_fingerprint_from_compact_fingerprints(compact_groups) != build_source_groups_fingerprint_from_compact_fingerprints(renamed_groups))
+}
 
 test "compilation input fingerprint distinguishes paths, order, and entry" {
   let left = [
@@ -110,9 +134,10 @@ test "compile_file_fs_module_cached: identical text at different entry paths doe
   let source = "let run: () -> Int = () -> { 1 + 2 }"
   Fs::write_bytes(main_path1, string_to_bytes(source))
   Fs::write_bytes(main_path2, string_to_bytes(source))
-  let source_groups = collect_source_groups_fs(main_path1)
-  remove_file_if_exists(persistent_artifact_cache_path("file-compile-module", "", build_file_compile_module_artifact_fingerprint_for_entry_path(source_groups, main_path1)))
-  remove_file_if_exists(persistent_artifact_cache_path("file-compile-module", "", build_file_compile_module_artifact_fingerprint_for_entry_path(source_groups, main_path2)))
+  let source_groups1 = collect_source_groups_fs(main_path1)
+  let source_groups2 = collect_source_groups_fs(main_path2)
+  remove_file_if_exists(persistent_artifact_cache_path("file-compile-module", "", build_file_compile_module_artifact_fingerprint_for_entry_path(source_groups1, main_path1)))
+  remove_file_if_exists(persistent_artifact_cache_path("file-compile-module", "", build_file_compile_module_artifact_fingerprint_for_entry_path(source_groups2, main_path2)))
   let (_, db1) = compile_file_fs_module_cached(db_new(), main_path1)
   assert(db_codegen_count(db1) > 0)
   let (_, db2) = compile_file_fs_module_cached(db_new(), main_path2)
