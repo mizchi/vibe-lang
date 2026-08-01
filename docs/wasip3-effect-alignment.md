@@ -231,9 +231,21 @@ trampoline を将来 `wasi:http/service` の
    (e) checker: `Future[T]` capture を Spawnable-legal に(cell は現行
    poll モデルでは scheduler 非結合の共有メモリ。waiter list が付く
    waitable slice で region tag を得て sp_same_region 側へ移行する)。
-   残り: waitable 第3 park 種 + `waitable-set.wait` completion-order
-   backend(host future の e2e = step 4 と同時)、resolve→直接 wake の
-   waiter list(poll モデルの O(rounds×awaiters) 最適化、意味論は不変)。
+   **waitable 第3 park 種 + `waitable-set.wait` backend も landed
+   (spec §3.13)**: host 供給 `future<u32>` の e2e — viberun に
+   `get-future` import(wasmtime 47 は FutureWriter 型を持たないため
+   `FutureReader::new` の producer 形、tokio timer で resolve)、probe
+   `host_future_value/component.wat` + byte-exact 移植
+   `comp_emit_component_wasm_host_future_value`(async-lowered import →
+   future.read BLOCKED → waitable.join → `waitable-set.wait` で task が
+   本当に suspend → FUTURE_READ completion event で wake)。300ms delay で
+   42 を ~311ms(wall clock が genuine park/wake の証明)、gate =
+   `test_host_future_value_component_gate.sh`。in-guest scheduler 側は
+   Suspend payload >= 2 を waitable handle 用に予約し poller 扱いに
+   (完了源が無い in-guest では deadlock trap に縮退 — silent livelock
+   ではなく)。残り: 実 `.vibe` ソースの await をこの component 経路へ
+   配線する step 4 本体(suspend lowering との接続)、resolve→直接 wake
+   の waiter list(poll モデルの O(rounds×awaiters) 最適化、意味論不変)。
 
 ## Non-goals
 

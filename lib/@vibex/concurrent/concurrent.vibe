@@ -801,12 +801,20 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () ->
       SDone(v)
     } with Async {
       Suspend(r) => {
-        // 0 = yield, 1 = poll wait (both unchanged), NEGATIVE = a sleep
-        // debt of -r ms (#1227), so no existing caller changes behavior.
+        // Payload convention: 0 = yield, 1 = poll wait, NEGATIVE = a sleep
+        // debt of -r ms (#1227). Payloads >= 2 are RESERVED for waitable
+        // handles (ADR-0089 D2: the third wait kind; realized today at the
+        // component lowering level -- comp_emit_component_wasm_host_
+        // future_value parks the task on waitable-set.wait -- not in this
+        // in-guest scheduler, which has no host waitables to wait on).
+        // They park as POLLERS here so the in-guest backend degrades to
+        // the deadlock trap (nothing in-guest can ever complete a host
+        // waitable) rather than to a silent yield livelock (a yielder is
+        // resumed for free forever and never counts as stalled).
         if r < 0 {
           TaskHandle::park_kind(h, resume, true, 0 - r)
         } else {
-          TaskHandle::park_kind(h, resume, r == 1, 0)
+          TaskHandle::park_kind(h, resume, r >= 1, 0)
         }
         SParked
       }

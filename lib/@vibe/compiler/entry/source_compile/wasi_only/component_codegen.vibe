@@ -2730,6 +2730,357 @@ export fn comp_emit_component_wasm_future_value(export_name: String, comp_result
   bytebuf_to_bytes(buf)
 }
 
+/// ADR-0089 Decision 2 / step 4 (#1218): component type section with a
+/// single async func type `() -> <type index>` -- the variant of
+/// emit_comp_async_functype_section whose RESULT is a component type
+/// index (a defined type such as `(future u32)`) rather than a primitive
+/// valtype. Byte shape recovered via `wasm-tools dump` against
+/// tools/wasip3_component_probe/host_future_value/component.wat's
+/// compiled output: `43 00 00 <s33 type index>` -- same async-functype
+/// opcode 0x43, 0 params, result-form 0x00, and the positive s33 type
+/// index where a primitive result carries its (negative-range) valtype
+/// byte. Single-byte LEB is exact for every index this file mints.
+fn emit_comp_async_functype_section_result_type(buf: Bytes, result_type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 67)
+  bytebuf_push(content, 0)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, result_type_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 Decision 2 / step 4 (#1218): single component import with an
+/// EXPLICIT functype index. emit_comp_import_section above assumes import
+/// i uses functype i (true for the shapes that only mint functypes); a
+/// component whose type space also holds defined types (the future type
+/// precedes the import's functype here) needs the index spelled out.
+/// Byte shape from the host_future_value probe dump: extern-name tag 0x00,
+/// name, externdesc func (comp_extern_func = 1), functype index.
+fn emit_comp_import_section_typed(buf: Bytes, import_name: String, functype_idx: Int) -> Unit {
+  bytebuf_push(buf, section_import)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 0)
+  emit_name(content, import_name)
+  bytebuf_push(content, comp_extern_func)
+  leb128_encode_u32(content, functype_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 Decision 2 / step 4 (#1218): guest core module for the
+/// HOST-SUPPLIED future<u32> value -- a byte-level port of
+/// tools/wasip3_component_probe/host_future_value/component.wat's $guest.
+/// The counterpart of comp_generate_future_value_guest_core_module with
+/// the write end living in the HOST (runtime/viberun's `get-future`
+/// import, a wasmtime FutureReader producer that resolves only after a
+/// genuine timer suspend):
+///
+///   1. [async-lower]get-future -> must complete eagerly (RETURNED, code
+///      2): creating the future pair suspends nothing host-side. The
+///      future READABLE-end handle lands in the results buffer.
+///   2. async future.read -> BLOCKED (the producer's timer has not fired)
+///   3. waitable.join(fut, ws); waitable-set.wait -> the task genuinely
+///      SUSPENDS until the host producer resolves; the completion arrives
+///      as a FUTURE_READ (= 4) event in completion order
+///   4. read buffer -> value; drop the READABLE end only (the host owns
+///      the write side) then the set; task.return
+///
+/// This is the `waitable-set.wait` backend of Decision 1's three-backend
+/// split measured end-to-end: park-as-waitable instead of poll-retry,
+/// woken by host completion. Diagnostics via task.return (5000 + code:
+/// get-future not eager; 1000 + low bits: read did not block; 3000 + ev:
+/// unexpected wait event).
+///
+/// Memory layout: 0 = read buffer, 8 = async-lower results (the future
+/// handle), 16 = waitable-set.wait payload area. Import func indices 0-7,
+/// local func 8 = `run` (exported): 0=[async-lower]get-future,
+/// 1=[async-lower][future-read-0]get-future,
+/// 2=[future-drop-readable-0]get-future, 3=[waitable-set-new],
+/// 4=[waitable-join], 5=[waitable-set-wait], 6=[waitable-set-drop],
+/// 7=[task-return]run. Import names follow the wit-bindgen capture
+/// convention ([future-<op>-N]<introducing WIT function>,
+/// future_value/canon-imports-exports.wit-abi.txt) -- and unlike the
+/// self-contained shapes they are load-bearing here: `get-future` is the
+/// real component-level import name the host links against.
+fn comp_generate_host_future_value_guest_core_module() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  // types: 0 (i32)->(i32) async-lowered get-future; 1 (i32,i32)->(i32)
+  // future.read & ws_wait; 2 (i32)->() drop/ws_drop/task_return;
+  // 3 ()->(i32) ws_new; 4 (i32,i32)->() waitable_join; 5 ()->() run.
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 6)
+  emit_func_type_raw(tc, [
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127,
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127
+  ], array_empty())
+  emit_func_type_raw(tc, array_empty(), [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127,
+    127
+  ], array_empty())
+  emit_func_type_raw(tc, array_empty(), array_empty())
+  bytebuf_push_section(out, 1, tc)
+  // imports: 8 core funcs (indices 0-7) + the shared memhost memory.
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, 9)
+  emit_name(ic, "$root")
+  emit_name(ic, "[async-lower]get-future")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 0)
+  emit_name(ic, "$root")
+  emit_name(ic, "[async-lower][future-read-0]get-future")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "$root")
+  emit_name(ic, "[future-drop-readable-0]get-future")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-new]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 3)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-join]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 4)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-wait]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-drop]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "[export]$root")
+  emit_name(ic, "[task-return]run")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "env")
+  emit_name(ic, "memory")
+  bytebuf_push(ic, 2)
+  bytebuf_push(ic, 0)
+  leb128_encode_u32(ic, 1)
+  bytebuf_push_section(out, 2, ic)
+  emit_function_section(out, [
+    5
+  ])
+  emit_export_section(out, "run", 8)
+  // Code section built by hand (same convention as the future-value
+  // guest). run's locals (all i32): 0=packed, 1=code, 2=fut, 3=st, 4=ws,
+  // 5=ev.
+  let code_sec = bytebuf_new()
+  leb128_encode_u32(code_sec, 1)
+  let body = bytebuf_new()
+  leb128_encode_u32(body, 1)
+  leb128_encode_u32(body, 6)
+  bytebuf_push(body, 127)
+  // packed = get-future(results at 8); code = packed & 0xf
+  emit_i32_const(body, 8)
+  emit_call(body, 0)
+  emit_local_set(body, 0)
+  emit_local_get(body, 0)
+  emit_i32_const(body, 15)
+  emit_i32_and(body)
+  emit_local_set(body, 1)
+  // if code != RETURNED (2): report 5000 + code -- there is no
+  // subtask-wait epilogue in this shape, eagerness is the contract.
+  emit_local_get(body, 1)
+  emit_i32_const(body, 2)
+  emit_i32_ne(body)
+  emit_if_void(body)
+  emit_i32_const(body, 5000)
+  emit_local_get(body, 1)
+  emit_i32_add(body)
+  emit_call(body, 7)
+  emit_return(body)
+  emit_end(body)
+  // fut = mem[8]
+  emit_i32_const(body, 8)
+  emit_i32_load(body, 2, 0)
+  emit_local_set(body, 2)
+  // st = future.read(fut, 0) -- must block (>= 1ms producer delay)
+  emit_local_get(body, 2)
+  emit_i32_const(body, 0)
+  emit_call(body, 1)
+  emit_local_set(body, 3)
+  emit_local_get(body, 3)
+  emit_i32_const(body, -1)
+  emit_i32_ne(body)
+  emit_if_void(body)
+  emit_i32_const(body, 1000)
+  emit_local_get(body, 3)
+  emit_i32_const(body, 15)
+  emit_i32_and(body)
+  emit_i32_add(body)
+  emit_call(body, 7)
+  emit_return(body)
+  emit_end(body)
+  // park as a waitable: ws = ws_new(); join(fut, ws); ev = wait(ws, 16)
+  emit_call(body, 3)
+  emit_local_set(body, 4)
+  emit_local_get(body, 2)
+  emit_local_get(body, 4)
+  emit_call(body, 4)
+  emit_local_get(body, 4)
+  emit_i32_const(body, 16)
+  emit_call(body, 5)
+  emit_local_set(body, 5)
+  // this task owns exactly one waitable, so the first event must be
+  // FUTURE_READ (= 4)
+  emit_local_get(body, 5)
+  emit_i32_const(body, 4)
+  emit_i32_ne(body)
+  emit_if_void(body)
+  emit_i32_const(body, 3000)
+  emit_local_get(body, 5)
+  emit_i32_add(body)
+  emit_call(body, 7)
+  emit_return(body)
+  emit_end(body)
+  // teardown: drop the READABLE end (ours) before the set, then return
+  // the value that landed in the read buffer.
+  emit_local_get(body, 2)
+  emit_call(body, 2)
+  emit_local_get(body, 4)
+  emit_call(body, 6)
+  emit_i32_const(body, 0)
+  emit_i32_load(body, 2, 0)
+  emit_call(body, 7)
+  bytebuf_push(body, 11)
+  leb128_encode_u32(code_sec, Bytes::length(body))
+  bytebuf_push_buf(code_sec, body)
+  bytebuf_push_section(out, 10, code_sec)
+  bytebuf_to_bytes(out)
+}
+
+/// ADR-0089 Decision 2 / step 4 (#1218): fixed-shape component that reads
+/// a HOST-SUPPLIED `future<u32>` -- imports `get-future: func() ->
+/// future<u32>` (async-typed at the component level: the `async` canon
+/// lower option validates only against an async function type) and parks
+/// on the read via waitable-set.wait until the host's producer resolves.
+/// Byte-verified against tools/wasip3_component_probe/host_future_value/
+/// component.wat; runtime behavior (42 through a genuine BLOCKED read ->
+/// host timer -> completion-order FUTURE_READ wake, wall clock >= the
+/// producer delay) is gated by
+/// scripts/test_host_future_value_component_gate.sh, driven by
+/// runtime/viberun's `get-future` FutureReader import.
+///
+/// Component type indices: 0=(future u32), 1=import functype (async,
+/// result = type 0), 2=export functype (async, result u32). Component
+/// func indices: 0=the import, 1=the lifted "run". Core func indices:
+/// 0=lowered get-future, 1=future.read, 2=future.drop-readable,
+/// 3=task-return, 4=waitable-set.new, 5=waitable.join,
+/// 6=waitable-set.wait, 7=waitable-set.drop, 8=alias(guest, "run").
+/// Core instance indices: 0=memhost, 1=root, 2=export-root, 3=env,
+/// 4=guest.
+///
+/// `comp_result_valtype` must be comp_valtype_u32 (it is both the
+/// future's payload type and the task.return result type; the guest core
+/// module is hard-coded to the i32 lowering of both).
+export fn comp_emit_component_wasm_host_future_value(export_name: String, comp_result_valtype: Int) -> Bytes with { Error } {
+  if comp_result_valtype != comp_valtype_u32 {
+    throw("component(host-future-value): only comp_valtype_u32 (\{comp_valtype_u32}) is supported, got \{comp_result_valtype} -- the guest core module is hard-coded to an i32-shaped future payload and result")
+  }
+  else {
+    ()
+  }
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  let future_type_idx = 0
+  emit_comp_future_type_section(buf, comp_result_valtype)
+  emit_comp_async_functype_section_result_type(buf, future_type_idx)
+  emit_comp_import_section_typed(buf, "get-future", 1)
+  emit_core_module_section(buf, comp_generate_host_future_value_guest_core_module())
+  emit_core_module_section(buf, comp_generate_memhost_module())
+  let memhost_inst = 0
+  emit_core_instance_instantiate_section(buf, 1, array_empty())
+  let mem_alias_idx = 0
+  emit_alias_section(buf, memhost_inst, [
+    "memory"
+  ], [
+    core_sort_mem
+  ])
+  emit_canon_lower_async_section(buf, 0, mem_alias_idx)
+  emit_canon_future_read(buf, future_type_idx, mem_alias_idx)
+  emit_canon_future_drop_readable(buf, future_type_idx)
+  emit_canon_task_return(buf, comp_result_valtype)
+  emit_canon_waitable_set_new(buf)
+  emit_canon_waitable_join(buf)
+  emit_canon_waitable_set_wait(buf, mem_alias_idx)
+  emit_canon_waitable_set_drop(buf)
+  let root_inst = 1
+  emit_core_instance_from_exports(buf, 1, [
+    7
+  ], [
+    "[async-lower]get-future",
+    "[async-lower][future-read-0]get-future",
+    "[future-drop-readable-0]get-future",
+    "[waitable-set-new]",
+    "[waitable-join]",
+    "[waitable-set-wait]",
+    "[waitable-set-drop]"
+  ], [
+    0,
+    1,
+    2,
+    4,
+    5,
+    6,
+    7
+  ])
+  let export_root_inst = 2
+  emit_core_instance_from_exports(buf, 1, [
+    1
+  ], [
+    "[task-return]run"
+  ], [
+    3
+  ])
+  emit_core_instance_from_exports_sorted(buf, [
+    "memory"
+  ], [
+    core_sort_mem
+  ], [
+    mem_alias_idx
+  ])
+  let env_inst = 3
+  let guest_inst = 4
+  emit_core_instance_instantiate_args(buf, 0, [
+    "$root",
+    "[export]$root",
+    "env"
+  ], [
+    root_inst,
+    export_root_inst,
+    env_inst
+  ])
+  emit_comp_async_functype_section(buf, comp_result_valtype)
+  let run_func_alias_idx = 8
+  emit_alias_section(buf, guest_inst, [
+    "run"
+  ], [
+    core_sort_func
+  ])
+  emit_canon_lift_async_section(buf, run_func_alias_idx, 2)
+  emit_comp_export_section(buf, export_name, 1)
+  bytebuf_to_bytes(buf)
+}
+
 /// ADR-0089 step 2 (#1218): guest core module for the SELF-CONTAINED
 /// stream<u8> round-trip -- a byte-level port of
 /// tools/wasip3_component_probe/stream_value/component.wat's $guest. Same
