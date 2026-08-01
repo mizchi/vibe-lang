@@ -10222,3 +10222,346 @@ fn scps_stmt_has_trigger(s: Stmt) -> Bool {
     _ => false
   }
 }
+
+//# await の poll-wait 展開 (#1230, ADR-0068 / docs/spec/wasi-p3-async.md M1b-3c)
+
+/// #1230: expand `await(f)` into the suspend-and-retry loop that a PENDING
+/// future needs, before any of the effect passes run.
+///
+/// `Future[T]` is the two-element `[state, payload]` array
+/// (compile_call.vibe's `future_ready_expr`); state 0 is ready. `await` used
+/// to be lowered in compile_call, which emits wasm directly -- far too late
+/// for the `perform Async::Suspend(..)` a pending future has to raise, since
+/// suspend_cps_pass and evidence_dict_pass have both already run by then.
+/// Doing it here, right after desugar_trait_dicts (which is what produces the
+/// `await(..)` calls of a `for await` loop) and before rewrite_self_tail_calls,
+/// puts the perform on the ordinary AST where those passes see it like any
+/// hand-written one.
+///
+/// The shape is the one `@vibex/concurrent`'s own blocking helpers use
+/// (`Receiver::recv_wait`: re-check, `perform Async::Suspend(1)`, re-check):
+///
+/// ```text
+/// let __aw_f_N = <future>
+/// while 0 < Array::get(__aw_f_N, 0) {
+///   let __aw_w_N = perform Async::Suspend(1)
+///   ()
+/// }
+/// Array::get(__aw_f_N, 1)
+/// ```
+///
+/// 1 is the poll-wait reason (concurrent.vibe's payload convention: 0 =
+/// cooperative yield, 1 = poll wait, negative = sleep debt), so a driver that
+/// parks the continuation re-runs it and the loop re-reads the state slot --
+/// the producer resolves a future by writing slot 1 and clearing slot 0.
+///
+/// Every future in the tree today is created ready, so the loop is not entered
+/// at runtime; what this buys is that `await` is now CORRECT for a pending
+/// future, leaving "add a producer" as the only remaining step rather than
+/// "add a producer AND rework await under the effect passes".
+///
+/// `await(Future::ready(x))` collapses to `x` outright: the ready-future fast
+/// path the spec calls for, and it keeps the common case free of both the
+/// array and the loop.
+export fn await_poll_pass(stmts: Array[Stmt]) -> Unit {
+  // A user-defined top-level `await` shadows the builtin; leave those calls
+  // alone (compile_call applies the same rule via `prefer_bound_call`).
+  if awp_program_defines_await(stmts) {
+    ()
+  } else {
+    let ctr = [
+      0
+    ]
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(ex, isrec, nm, ty, expr) => {
+          Array::set(stmts, i, SLet(ex, isrec, nm, ty, awp_tail(expr, ctr)))
+        },
+        SLetMut(nm, ty, expr) => {
+          Array::set(stmts, i, SLetMut(nm, ty, awp_tail(expr, ctr)))
+        },
+        SExpr(expr) => {
+          Array::set(stmts, i, SExpr(awp_tail(expr, ctr)))
+        },
+        STest(nm, expr) => {
+          Array::set(stmts, i, STest(nm, awp_tail(expr, ctr)))
+        },
+        SBench(nm, expr) => {
+          Array::set(stmts, i, SBench(nm, awp_tail(expr, ctr)))
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+  }
+}
+
+fn awp_program_defines_await(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, nm, _, _) => if nm == "await" {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #1230: pull every unconditionally-evaluated `await` out of `e` into
+/// `binds`, replacing each with a fresh identifier.
+///
+/// The expansion must NOT be spliced in where the await stood. It is a
+/// `let`/`while`/read sequence, and vibe has no block expression, so
+/// `let a = await(..)` would produce `ELet(a, ELet(f, .., ESeq(EWhile(..),
+/// ..)), ..)` -- a shape no source program can write and, with two of them in
+/// one function, one the downstream passes do not converge on (the compiler
+/// itself recursed without bound). Hoisting instead keeps every synthesized
+/// node on the ordinary let/seq spine, which is exactly the discipline
+/// scps_split_tail already follows for the same reason.
+///
+/// Only positions that are evaluated unconditionally and in order are lifted.
+/// A branch, a loop body, a closure body, or a nested spine is left to its
+/// OWN spine rewrite (awp_rewrite), so an await under a condition never
+/// escapes ahead of it.
+fn awp_lift(e: Expr, ctr: Array[Int], binds: Array[(String, Expr, String)]) -> Expr {
+  match e {
+    ECall(callee, args, off) => {
+      let callee_nm = match callee {
+        EIdent(cn, _) => cn,
+        _ => ""
+      }
+      if callee_nm == "await" && Array::length(args) == 1 {
+        let inner = awp_lift(Array::get(args, 0), ctr, binds)
+        match awp_ready_payload(inner) {
+          Some(payload) => payload,
+          None => {
+            let n = Array::get(ctr, 0)
+            Array::set(ctr, 0, n + 1)
+            let fname = String::concat("__aw_f_", Int::to_string(n))
+            let vname = String::concat("__aw_v_", Int::to_string(n))
+            Array::push(binds, (fname, inner, vname))
+            EIdent(vname, -1)
+          }
+        }
+      } else {
+        let new_callee = if callee_nm == "" {
+          awp_lift(callee, ctr, binds)
+        } else {
+          callee
+        }
+        ECall(new_callee, awp_lift_exprs(args, ctr, binds), off)
+      }
+    },
+    EBinOp(op, l, r) => EBinOp(op, awp_lift(l, ctr, binds), awp_lift(r, ctr, binds)),
+    EUnaryOp(op, x) => EUnaryOp(op, awp_lift(x, ctr, binds)),
+    EDot(o, f, o1, o2) => EDot(awp_lift(o, ctr, binds), f, o1, o2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, awp_lift(v, ctr, binds)),
+    ETuple(items) => ETuple(awp_lift_exprs(items, ctr, binds)),
+    EArray(items) => EArray(awp_lift_exprs(items, ctr, binds)),
+    ESpread(x) => ESpread(awp_lift(x, ctr, binds)),
+    ERecord(n, fields, tas) => ERecord(n, awp_lift_pairs(fields, ctr, binds), tas),
+    EMap(fields) => EMap(awp_lift_pairs(fields, ctr, binds)),
+    // Everything else is either conditional, a loop, a closure, or a spine of
+    // its own: hand it to awp_rewrite so its awaits are hoisted THERE.
+    _ => awp_rewrite(e, ctr)
+  }
+}
+
+fn awp_lift_exprs(es: Array[Expr], ctr: Array[Int], binds: Array[(String, Expr, String)]) -> Array[Expr] {
+  for x in es {
+    awp_lift(x, ctr, binds)
+  }
+}
+
+fn awp_lift_pairs(pairs: Array[(String, Expr)], ctr: Array[Int], binds: Array[(String, Expr, String)]) -> Array[(String, Expr)] {
+  for p in pairs {
+    let (n, v) = p
+    (n, awp_lift(v, ctr, binds))
+  }
+}
+
+/// Wrap `inner` in one suspend-and-retry block per lifted await, innermost
+/// last so the bindings evaluate in source order:
+///
+/// ```text
+/// let __aw_f_N = <future>
+/// while 0 < Array::get(__aw_f_N, 0) {
+///   let __aw_w_N = perform Async::Suspend(1)
+///   ()
+/// }
+/// let __aw_v_N = Array::get(__aw_f_N, 1)
+/// <inner>
+/// ```
+fn awp_wrap(binds: Array[(String, Expr, String)], inner: Expr) -> Expr {
+  let mut out = inner
+  let mut i = Array::length(binds) - 1
+  while i >= 0 {
+    let (fname, fut, vname) = Array::get(binds, i)
+    let state = ECall(EIdent("Array::get", -1), [
+      EIdent(fname, -1),
+      EInt(0)
+    ], -1)
+    let pending = ECall(EIdent("lt", -1), [
+      EInt(0),
+      state
+    ], -1)
+    let suspend = ECall(EIdent("perform", -1), [
+      ECall(EIdent("Async::Suspend", -1), [
+        EInt(1)
+      ], -1)
+    ], -1)
+    let wname = String::concat("__aw_w_", vname)
+    let payload = ECall(EIdent("Array::get", -1), [
+      EIdent(fname, -1),
+      EInt(1)
+    ], -1)
+    out = ELet(fname, fut, ESeq(EWhile(pending, ELet(wname, suspend, EUnit, -1)), ELet(vname, payload, out, -1)), -1)
+    i = i - 1
+  }
+  out
+}
+
+/// Rewrite an expression in a SPINE position, hoisting the awaits of its
+/// unconditional sub-expression in front of it.
+fn awp_spine(e: Expr, ctr: Array[Int], rebuild_is_tail: Bool) -> Expr {
+  let _ = rebuild_is_tail
+  let binds = array_empty()
+  let lifted = awp_lift(e, ctr, binds)
+  awp_wrap(binds, lifted)
+}
+
+/// `Future::ready(x)` awaited immediately is just `x` -- no array, no loop.
+fn awp_ready_payload(fut: Expr) -> Option[Expr] {
+  match fut {
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if nm == "Future::ready" && Array::length(args) == 1 {
+        Some(Array::get(args, 0))
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
+/// A spine node's own rewrite: recurse structurally, hoisting the awaits of
+/// each unconditionally-evaluated slot in front of that slot's construct.
+/// Anything that is NOT a spine node is returned untouched -- awp_tail is the
+/// entry that lifts a bare tail expression, and keeping the two fallbacks
+/// disjoint is what makes the mutual recursion terminate.
+fn awp_rewrite(e: Expr, ctr: Array[Int]) -> Expr {
+  match e {
+    ELet(n, v, b, off) => {
+      let binds = array_empty()
+      let v2 = awp_lift(v, ctr, binds)
+      awp_wrap(binds, ELet(n, v2, awp_tail(b, ctr), off))
+    },
+    ELetMut(n, v, b, off) => {
+      let binds = array_empty()
+      let v2 = awp_lift(v, ctr, binds)
+      awp_wrap(binds, ELetMut(n, v2, awp_tail(b, ctr), off))
+    },
+    ELetRec(n, v, b) => ELetRec(n, awp_tail(v, ctr), awp_tail(b, ctr)),
+    ESeq(a, b) => {
+      let binds = array_empty()
+      let a2 = awp_lift(a, ctr, binds)
+      awp_wrap(binds, ESeq(a2, awp_tail(b, ctr)))
+    },
+    EAssign(n, v, c) => {
+      let binds = array_empty()
+      let v2 = awp_lift(v, ctr, binds)
+      awp_wrap(binds, EAssign(n, v2, awp_tail(c, ctr)))
+    },
+    EAssignOp(op, n, v, c) => {
+      let binds = array_empty()
+      let v2 = awp_lift(v, ctr, binds)
+      awp_wrap(binds, EAssignOp(op, n, v2, awp_tail(c, ctr)))
+    },
+    EIf(c, t, el) => {
+      let binds = array_empty()
+      let c2 = awp_lift(c, ctr, binds)
+      awp_wrap(binds, EIf(c2, awp_tail(t, ctr), awp_tail(el, ctr)))
+    },
+    EMatch(sc, arms) => {
+      let binds = array_empty()
+      let sc2 = awp_lift(sc, ctr, binds)
+      awp_wrap(binds, EMatch(sc2, awp_rewrite_arms(arms, ctr)))
+    },
+    // A loop condition is re-evaluated every iteration, so nothing can be
+    // hoisted out of it; both parts get their own spine instead.
+    EWhile(c, b) => EWhile(awp_tail(c, ctr), awp_tail(b, ctr)),
+    EForIn(n, idx, it, b) => {
+      let binds = array_empty()
+      let it2 = awp_lift(it, ctr, binds)
+      awp_wrap(binds, EForIn(n, idx, it2, awp_tail(b, ctr)))
+    },
+    ELoop(pairs, b) => ELoop(awp_rewrite_pairs(pairs, ctr), awp_tail(b, ctr)),
+    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, awp_tail(b, ctr)),
+    EHandle(b, arms) => EHandle(awp_tail(b, ctr), awp_rewrite_arms(arms, ctr)),
+    EReturn(x) => {
+      let binds = array_empty()
+      let x2 = awp_lift(x, ctr, binds)
+      awp_wrap(binds, EReturn(x2))
+    },
+    EBreak(opt) => match opt {
+      Some(x) => {
+        let binds = array_empty()
+        let x2 = awp_lift(x, ctr, binds)
+        awp_wrap(binds, EBreak(Some(x2)))
+      },
+      None => e
+    },
+    EContinue(args) => {
+      let binds = array_empty()
+      let args2 = awp_lift_exprs(args, ctr, binds)
+      awp_wrap(binds, EContinue(args2))
+    },
+    _ => e
+  }
+}
+
+/// A TAIL (or statement) position: a spine node recurses structurally, and
+/// anything else is a value whose awaits are hoisted in front of it.
+fn awp_tail(e: Expr, ctr: Array[Int]) -> Expr {
+  match e {
+    ELet(_, _, _, _) => awp_rewrite(e, ctr),
+    ELetMut(_, _, _, _) => awp_rewrite(e, ctr),
+    ELetRec(_, _, _) => awp_rewrite(e, ctr),
+    ESeq(_, _) => awp_rewrite(e, ctr),
+    EAssign(_, _, _) => awp_rewrite(e, ctr),
+    EAssignOp(_, _, _, _) => awp_rewrite(e, ctr),
+    EIf(_, _, _) => awp_rewrite(e, ctr),
+    EMatch(_, _) => awp_rewrite(e, ctr),
+    EWhile(_, _) => awp_rewrite(e, ctr),
+    EForIn(_, _, _, _) => awp_rewrite(e, ctr),
+    ELoop(_, _) => awp_rewrite(e, ctr),
+    EFn(_, _, _, _, _, _) => awp_rewrite(e, ctr),
+    EHandle(_, _) => awp_rewrite(e, ctr),
+    EReturn(_) => awp_rewrite(e, ctr),
+    EBreak(_) => awp_rewrite(e, ctr),
+    EContinue(_) => awp_rewrite(e, ctr),
+    _ => awp_spine(e, ctr, true)
+  }
+}
+
+fn awp_rewrite_pairs(pairs: Array[(String, Expr)], ctr: Array[Int]) -> Array[(String, Expr)] {
+  for p in pairs {
+    let (n, v) = p
+    (n, awp_tail(v, ctr))
+  }
+}
+
+fn awp_rewrite_arms(arms: Array[(Pat, Expr)], ctr: Array[Int]) -> Array[(Pat, Expr)] {
+  for a in arms {
+    let (p, ex) = a
+    (p, awp_tail(ex, ctr))
+  }
+}

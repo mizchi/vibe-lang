@@ -570,6 +570,48 @@ future を作る側は `Future::ready` / `Stream::next` / `Stream::fold` の3つ
 `Future[A]` なので専用ブランチに分離した（`Stream::map`/`filter` は `Stream` を
 返すので alias のまま）。
 
+さらに `await` の lowering 位置を `compile_call.vibe` から **AST パス
+`await_poll_pass`** へ移した（#1230）。`compile_call` は wasm を直接吐く位置で、
+`suspend_cps_pass` / `evidence_dict_pass` が走り終わった後なので、pending future
+が要る `perform Async::Suspend(..)` を出しても discharge できる相手がいない。
+新パスは `desugar_trait_dicts` の直後（= `for await` が `await(..)` を生成した
+直後）かつ全 effect パスの**前**に走り、`@vibex/concurrent` の `Receiver::recv_wait`
+と同じ suspend-and-retry 形へ **spine に持ち上げて**展開する:
+
+```
+let __aw_f_N = <future>
+while 0 < Array::get(__aw_f_N, 0) {
+  let __aw_w = perform Async::Suspend(1)
+  ()
+}
+let __aw_v_N = Array::get(__aw_f_N, 1)
+<await があった式（await は __aw_v_N に置換）>
+```
+
+`1` は poll wait（`concurrent.vibe` の payload 規約: 0 = yield / 1 = poll /
+負 = sleep debt）。producer が future を解決するときは slot 1 を書いて slot 0 を
+クリアする。`await(Future::ready(x))` は `x` へ潰す peephole 付き。
+
+**その場に埋めるのではなく持ち上げるのが要点**: vibe にはブロック式が無いので、
+その場展開だと `let a = await(..)` が `ELet(a, ELet(f, .., ESeq(EWhile, ..)), ..)`
+という**ソースでは書けない形**になり、1関数内に2つ並んだ時点でコンパイラ自身が
+無限再帰した。持ち上げれば合成物は常に let/seq spine 上に載る ―― `scps_split_tail`
+（追記36 のループ対応）が同じ理由で最初から取っていた規律と同じ。持ち上げるのは
+**無条件に評価される位置**だけで、分岐・ループ本体・closure 本体は自分の spine で
+処理する。
+
+fixture は `fixtures/async_await_multi.vibe`（let-value / match scrutinee /
+被演算子の各位置に await、want 50）。
+
+**producer**: `Future::pending() -> Future[T]` が state 1（未解決）の future を
+作り、`Future::resolve(f, v)` がその場で完了させる（payload を書いてから state を
+クリアする ―― 逆順だと awaiter が「ready なのに値がまだ」を観測しうる）。
+これで `Future[T]` は ready / pending の両方を作れる。まだ未解決の future を
+await する側には continuation を park する driver が要る（in-tree では
+`@vibex/concurrent` の `spawn_suspend` の `handle .. with Async`）。fixture
+`fixtures/async_future_pending.vibe` は await 前に resolve する形で、表現と
+builtin 2本を pin している（スケジューリングは pin していない）。
+
 **M1b-3c（todo、真の blocking await）**: 実 async ソース（host async import /
 subtask spawn）から得た future を待つ場合は §3.6 のとおり `future.read` +
 waitable-set 待機ループが必要。これは (a) async source 基盤、(b) core module へ

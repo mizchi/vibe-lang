@@ -1413,6 +1413,32 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // `await` branch above for the representation.
       ce(buf, future_ready_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
     }
+    else if !prefer_bound_call && fname == "Future::pending" {
+      // #1230: an UNRESOLVED future -- state 1, payload slot reserved. The
+      // await hoist (await_poll_pass) sees a non-zero state and suspends with
+      // the poll-wait reason until someone calls Future::resolve on this same
+      // array, so the producer decides when it completes.
+      ce(buf, EArray([
+        EInt(1),
+        EInt(0)
+      ]), local_names, next_local, ctx, ld)
+    }
+    else if !prefer_bound_call && fname == "Future::resolve" {
+      // #1230: complete a pending future IN PLACE -- payload first, then clear
+      // the state. The write order is what makes the observation safe: an
+      // awaiter only reads the payload once the state says ready, so it can
+      // never see the state cleared ahead of the value it describes.
+      let fut = Array::get(args, 0)
+      ce(buf, ESeq(ECall(EIdent("Array::set", -1), [
+        fut,
+        EInt(1),
+        Array::get(args, 1)
+      ], -1), ECall(EIdent("Array::set", -1), [
+        fut,
+        EInt(0),
+        EInt(0)
+      ], -1)), local_names, next_local, ctx, ld)
+    }
     else if !prefer_bound_call && fname == "Stream::empty" {
       // Empty stream = empty backing array.
       let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")

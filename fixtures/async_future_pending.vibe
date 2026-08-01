@@ -1,0 +1,30 @@
+// #1230: the producer half -- `Future::pending()` makes an UNRESOLVED future
+// and `Future::resolve(f, v)` completes it in place.
+//
+// A future is `[state, payload]` (docs/spec/wasi-p3-async.md M1b-3b); pending
+// is state 1. `await` (hoisted by await_poll_pass) reads the state, and while
+// it is non-zero raises `perform Async::Suspend(1)` -- the poll-wait reason --
+// re-checking after every resume. Resolve writes the payload first and clears
+// the state second, so an awaiter can never observe "ready" ahead of the value
+// that word describes.
+//
+// Both futures here are resolved BEFORE they are awaited, so the loop is not
+// entered and no handler is required. Awaiting one that is still pending is
+// what needs a driver (a `handle .. with Async` parking the continuation --
+// @vibex/concurrent's spawn_suspend is the in-tree one); this fixture pins the
+// representation and the two builtins, not the scheduling.
+//
+// 41 + 1 = 42.
+let _start = () -> Int with { Async } {
+  let f = Future::pending()
+  let g = Future::pending()
+  Future::resolve(f, 41)
+  Future::resolve(g, 1)
+  let a = await(f)
+  let b = await(g)
+  a + b
+}
+_start()
+
+__DATA__
+{"last":"42"}
