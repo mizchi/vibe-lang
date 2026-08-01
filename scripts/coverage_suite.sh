@@ -101,15 +101,22 @@ OUT_DIR="_build/coverage/selfhost-suite"
 REPORT="$OUT_DIR/selfhost_suite.report.json"
 COV_DIR="_build/vibe_test/coverage"
 
-# Compiling CLI: explicit override > the unit-runner override > the newest
-# generation stage2 > the committed seed.
+# Compiling CLI: explicit override > the generation built for this checkout.
+# Do not select the newest directory by mtime: a worktree can retain a stage2
+# from another revision, yielding stale coverage failures or false greens.
 cli="${VIBE_SUITE_CLI_WASM:-${VIBE_STAGE2_WASM:-}}"
 if [ -z "$cli" ]; then
-  gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1 || true)"
+  revision="$(git rev-parse --short=8 HEAD 2>/dev/null || true)"
+  if [ -n "$revision" ]; then
+    gen="$(ls -d "_build/selfhost/generations/"*"_${revision}/" 2>/dev/null | head -1 || true)"
+  else
+    gen=""
+  fi
   if [ -n "$gen" ] && [ -f "${gen}stage2.wasm" ]; then
     cli="${gen}stage2.wasm"
   else
-    cli="bootstrap/seed/compiler.wasm"
+    echo "[coverage-suite] no stage2 built for this checkout; run 'pkf run generation' or set VIBE_SUITE_CLI_WASM" >&2
+    exit 2
   fi
 fi
 if [ ! -f "$cli" ]; then
