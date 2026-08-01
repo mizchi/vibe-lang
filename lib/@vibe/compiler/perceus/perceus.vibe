@@ -50,10 +50,6 @@ struct PCtx {
   borrows: Array[Int];
   scalar: Array[Bool];
   remaining: Array[Int];
-  // ADR-0092 per-use pairing (the borrowed-arg0 over-release fix): uses as
-  // counted BEFORE pctx_apply_borrow_retention's +1 (i.e. owned consumes
-  // only), snapshotted by that pass in id order.
-  owned_uses: Array[Int];
   // True for a let-binding whose VALUE is a call to a borrow-arg0 fn (user
   // set or builtin list) -- the class whose result may be an unowned
   // interior view. With the borrow set empty this is never set, so the fix
@@ -113,7 +109,12 @@ fn pe_use(ctx: PCtx, scope: Map[String, Int], name: String) -> Int {
   if Map::has_key(scope, name) {
     let id = Map::get(scope, name)
     let rem = Array::get(ctx.remaining, id)
-    if rem > 1 && !Array::get(ctx.scalar, id) {
+    // ADR-0092 per-use pairing: a view-call binding holds NO initial owned
+    // reference (its value may be an unowned interior view), so its LAST
+    // owned use must also dup -- the standard rem == 1 "spend the initial
+    // ref" transfer would consume a reference the binding never acquired.
+    let last_view_use = rem == 1 && Array::get(ctx.view_call_let, id)
+    if (rem > 1 || last_view_use) && !Array::get(ctx.scalar, id) {
       pe_push(ctx, PaDup, name)
     } else {
       0
@@ -147,8 +148,6 @@ fn pctx_new(borrow_ret_names: Array[String], borrow_arg0_fns: Array[String], vie
     scalar: [
     ],
     remaining: [
-    ],
-    owned_uses: [
     ],
     view_call_let: [
     ],
@@ -229,11 +228,12 @@ fn pc_declare(ctx: PCtx, _name: String, scalar: Bool) -> Int {
 /// ADR-0092 per-use pairing: mark `id` as a view-call let-binding when its
 /// value is a call to a borrow-arg0 fn that may RETURN an unowned view
 /// (see PCtx.view_ret_user -- fresh-returning borrow-arg0 callees must
-/// keep their binding's scope-end drop or the result leaks).
-fn pctx_mark_view_call(ctx: PCtx, id: Int, value: Expr) -> Int {
+/// keep their binding's scope-end drop or the result leaks). A local that
+/// shadows a view-ret name is an ordinary owned closure call (#875).
+fn pctx_mark_view_call(ctx: PCtx, scope: Map[String, Int], id: Int, value: Expr) -> Int {
   match value {
     ECall(vc, _, _) => match vc {
-      EIdent(vf, _) => if array_contains_str_pctx(ctx.view_ret_user, vf) {
+      EIdent(vf, _) => if !Map::has_key(scope, vf) && array_contains_str_pctx(ctx.view_ret_user, vf) {
         Array::set(ctx.view_call_let, id, true)
       } else {
         ()
@@ -268,15 +268,18 @@ fn pc_count_use(ctx: PCtx, scope: Map[String, Int], name: String) -> Int {
 
 fn pe_scope_end(ctx: PCtx, id: Int, name: String) -> Int {
   if Array::get(ctx.remaining, id) > 0 && !Array::get(ctx.scalar, id) {
-    // ADR-0092 per-use pairing: a view-call let-binding whose uses are ALL
-    // borrows acquired no ownership -- its plan has no dup and its value
-    // may be an unowned interior view, so the retention-driven scope-end
-    // drop would release a reference it never held (the over-release that
-    // trapped codegen_heap_e2e_test under the borrowed-arg0 ABI). Suppress
-    // the drop for exactly that class; a fresh-owned value from a
-    // borrow-arg0 callee then leaks (bounded, safe direction). Params are
-    // never in the class (view_call_let is set only from ELet values).
-    if Array::get(ctx.view_call_let, id) && Array::get(ctx.owned_uses, id) == 0 && Array::get(ctx.borrows, id) > 0 {
+    // ADR-0092 per-use pairing: the scope-end drop releases the binding's
+    // INITIAL owned reference. A view-call binding never held one (its
+    // value may be an unowned interior view), so the drop over-releases
+    // REGARDLESS of how the binding was used -- with owned uses the last
+    // use spends the phantom initial ref, with none the retention-driven
+    // remaining spends it here (both trapped codegen_heap_e2e_test under
+    // the borrowed-arg0 ABI). Suppress unconditionally for the class; a
+    // fresh-owned value from a may-return-view callee then leaks (bounded,
+    // safe direction). pe_use pairs with this by dup-ing a view binding's
+    // last owned use. Params are never in the class (view_call_let is set
+    // only from let/seq values).
+    if Array::get(ctx.view_call_let, id) {
       ()
     } else {
       pe_push(ctx, PaDrop, name)
@@ -1290,8 +1293,9 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     EStringInterp(_) => 0,
     EIdent(x, _) => pe_use(ctx, scope, x),
     ECall(callee, args, _) => {
+      // Same lexical-shadow guard as pc_count (and compile_call #875).
       let is_index = match callee {
-        EIdent(f, _) => is_borrow_arg0_call(f) || array_contains_str_pctx(ctx.borrow_arg0_user, f),
+        EIdent(f, _) => !Map::has_key(scope, f) && (is_borrow_arg0_call(f) || array_contains_str_pctx(ctx.borrow_arg0_user, f)),
         _ => false
       }
       match callee {
@@ -1325,7 +1329,13 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
           if Map::has_key(scope, src) {
             let sid = Map::get(scope, src)
             let rem = Array::get(ctx.remaining, sid)
-            if rem > 1 && !Array::get(ctx.scalar, sid) {
+            // ADR-0092 per-use pairing: mirror pe_use -- an alias of a
+            // view-call binding must also dup at the source's LAST use
+            // (there is no initial owned reference to transfer), so the
+            // alias always ACQUIRES ownership and needs no view marking
+            // of its own.
+            let src_last_view = rem == 1 && Array::get(ctx.view_call_let, sid)
+            if (rem > 1 || src_last_view) && !Array::get(ctx.scalar, sid) {
               // #1056 (almide `alias_safety.rs` comparison, rc check
               // elision): this occurrence of `let name = src` would dup
               // src's reference into `name`'s own slot. `ctx.next_id` is
@@ -1647,16 +1657,18 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     EIdent(x, _) => pc_count_use(ctx, scope, x),
     ECall(callee, args, _) => {
       match callee {
-        EIdent(f, _) => if is_borrow_arg0_call(f) || array_contains_str_pctx(ctx.borrow_arg0_user, f) {
-          0
-        } else {
-          pc_count_borrow(ctx, scope, f)
-        }
-        ,
+        // Always borrow-count an ident callee: for a true top-level fn the
+        // name is not in scope and this is a no-op, while for a LOCAL that
+        // shadows a borrow-set name skipping it undercounted the local's
+        // borrows (ADR-0092 per-use pairing, shadow hole).
+        EIdent(f, _) => pc_count_borrow(ctx, scope, f),
         _ => pc_count(ctx, scope, callee)
       }
+      // Lexical scoping wins over the borrow sets (mirrors compile_call's
+      // #875 local_idx_hint guard): a local binding that shadows a
+      // borrow-arg0 name is an ordinary owned closure call.
       let is_index = match callee {
-        EIdent(f, _) => is_borrow_arg0_call(f) || array_contains_str_pctx(ctx.borrow_arg0_user, f),
+        EIdent(f, _) => !Map::has_key(scope, f) && (is_borrow_arg0_call(f) || array_contains_str_pctx(ctx.borrow_arg0_user, f)),
         _ => false
       }
       let mut i = 0
@@ -1682,13 +1694,13 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     ELet(name, value, body, _) => {
       pc_count(ctx, scope, value)
       let id = pc_declare(ctx, name, is_scalar_expr(ctx, value))
-      let _ = pctx_mark_view_call(ctx, id, value)
+      let _ = pctx_mark_view_call(ctx, scope, id, value)
       pc_count(ctx, Map::set(scope, name, id), body)
     },
     ELetMut(name, value, body, _) => {
       pc_count(ctx, scope, value)
       let id = pc_declare(ctx, name, is_scalar_expr(ctx, value))
-      let _ = pctx_mark_view_call(ctx, id, value)
+      let _ = pctx_mark_view_call(ctx, scope, id, value)
       pc_count(ctx, Map::set(scope, name, id), body)
     },
     ELetRec(name, value, body) => {
@@ -1708,7 +1720,10 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     ESeq(a, b) => {
       pc_count(ctx, scope, a)
       let nm = next_seq_name(ctx)
-      let _id = pc_declare(ctx, nm, is_scalar_expr(ctx, a))
+      let sq_id = pc_declare(ctx, nm, is_scalar_expr(ctx, a))
+      // ADR-0092 per-use pairing: a DISCARDED view-call result gets a seq-temp
+      // drop it never owned -- same class as a view-call let-binding.
+      let _ = pctx_mark_view_call(ctx, scope, sq_id, a)
       pc_count(ctx, scope, b)
     },
     EBinOp(_op, l, r) => {
@@ -1973,7 +1988,6 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
 fn pctx_apply_borrow_retention(ctx: PCtx) -> Int {
   let mut bid = 0
   while bid < ctx.next_id {
-    Array::push(ctx.owned_uses, Array::get(ctx.uses, bid))
     if Array::get(ctx.borrows, bid) > 0 {
       Array::set(ctx.uses, bid, Array::get(ctx.uses, bid) + 1)
     } else {

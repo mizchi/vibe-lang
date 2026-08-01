@@ -1396,7 +1396,16 @@ fn md_max(a: Int, b: Int) -> Int {
 /// variant (modeled on fold_expr): skipping recursion into a child could miss a
 /// real consume and wrongly suppress the dup. A bare `EIdent(name)` passed as
 /// arg0 of a borrow-arg0 builtin does not consume (it is read in place).
+/// Builtin-only view of md_consume_count_b (empty user borrow set): kept as
+/// the stable 2-arg entry for callers with no CompileCtx in reach (and the
+/// borrow-set computation itself, which must not consume its own output).
 export fn md_consume_count(e: Expr, name: String) -> Int {
+  let md_no_user_fns: Array[String] = [
+  ]
+  md_consume_count_b(e, name, md_no_user_fns)
+}
+
+export fn md_consume_count_b(e: Expr, name: String, bfns: Array[String]) -> Int {
   match e {
     EInt(_) => 0,
     EFloat(_) => 0,
@@ -1413,7 +1422,7 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
       let mut acc = 0
       let mut i = 0
       while i < Array::length(items) {
-        acc = acc + md_consume_count(Array::get(items, i), name)
+        acc = acc + md_consume_count_b(Array::get(items, i), name, bfns)
         i = i + 1
       }
       acc
@@ -1422,7 +1431,7 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
       let mut acc = 0
       let mut i = 0
       while i < Array::length(items) {
-        acc = acc + md_consume_count(Array::get(items, i), name)
+        acc = acc + md_consume_count_b(Array::get(items, i), name, bfns)
         i = i + 1
       }
       acc
@@ -1432,7 +1441,7 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        acc = acc + md_consume_count(v, name)
+        acc = acc + md_consume_count_b(v, name, bfns)
         i = i + 1
       }
       acc
@@ -1442,25 +1451,25 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        acc = acc + md_consume_count(v, name)
+        acc = acc + md_consume_count_b(v, name, bfns)
         i = i + 1
       }
       acc
     },
     EIf(c, t, el) =>
-    md_consume_count(c, name) + md_max(md_consume_count(t, name), md_consume_count(el, name)),
-    ELet(_, v, b, _) => md_consume_count(v, name) + md_consume_count(b, name),
-    ELetRec(_, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
-    ELetMut(_, v, b, _) => md_consume_count(v, name) + md_consume_count(b, name),
-    EAssign(_, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
-    EAssignOp(_, _, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
-    ESeq(a, b) => md_consume_count(a, name) + md_consume_count(b, name),
+    md_consume_count_b(c, name, bfns) + md_max(md_consume_count_b(t, name, bfns), md_consume_count_b(el, name, bfns)),
+    ELet(_, v, b, _) => md_consume_count_b(v, name, bfns) + md_consume_count_b(b, name, bfns),
+    ELetRec(_, v, b) => md_consume_count_b(v, name, bfns) + md_consume_count_b(b, name, bfns),
+    ELetMut(_, v, b, _) => md_consume_count_b(v, name, bfns) + md_consume_count_b(b, name, bfns),
+    EAssign(_, v, b) => md_consume_count_b(v, name, bfns) + md_consume_count_b(b, name, bfns),
+    EAssignOp(_, _, v, b) => md_consume_count_b(v, name, bfns) + md_consume_count_b(b, name, bfns),
+    ESeq(a, b) => md_consume_count_b(a, name, bfns) + md_consume_count_b(b, name, bfns),
     EMatch(s, arms) => {
       let mut mx = 0
       let mut i = 0
       while i < Array::length(arms) {
         let (_, v) = Array::get(arms, i)
-        mx = md_max(mx, md_consume_count(v, name))
+        mx = md_max(mx, md_consume_count_b(v, name, bfns))
         i = i + 1
       }
       // A bare `match name { .. }` BORROWS the scrutinee (its fields become
@@ -1471,7 +1480,7 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
       // sub-expression, so recurse there.
       let scr = match s {
         EIdent(_, _) => 0,
-        _ => md_consume_count(s, name)
+        _ => md_consume_count_b(s, name, bfns)
       }
       scr + mx
     },
@@ -1480,30 +1489,30 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
       let mut i = 0
       while i < Array::length(arms) {
         let (_, v) = Array::get(arms, i)
-        mx = md_max(mx, md_consume_count(v, name))
+        mx = md_max(mx, md_consume_count_b(v, name, bfns))
         i = i + 1
       }
       let scr = match s {
         EIdent(_, _) => 0,
-        _ => md_consume_count(s, name)
+        _ => md_consume_count_b(s, name, bfns)
       }
       scr + mx
     },
-    EWhile(c, b) => md_consume_count(c, name) + md_consume_count(b, name),
+    EWhile(c, b) => md_consume_count_b(c, name, bfns) + md_consume_count_b(b, name, bfns),
     ELoop(params, b) => {
-      let mut acc = md_consume_count(b, name)
+      let mut acc = md_consume_count_b(b, name, bfns)
       let mut i = 0
       while i < Array::length(params) {
         let (_, v) = Array::get(params, i)
-        acc = acc + md_consume_count(v, name)
+        acc = acc + md_consume_count_b(v, name, bfns)
         i = i + 1
       }
       acc
     },
-    EForIn(_, _, it, b) => md_consume_count(it, name) + md_consume_count(b, name),
+    EForIn(_, _, it, b) => md_consume_count_b(it, name, bfns) + md_consume_count_b(b, name, bfns),
     ECall(callee, args, _) => {
       let borrow0 = match callee {
-        EIdent(f, _) => md_is_borrow_arg0_call(f),
+        EIdent(f, _) => md_is_borrow_arg0_call(f) || array_contains_str(bfns, f),
         _ => false
       }
       let start = if borrow0 && Array::length(args) >= 1 {
@@ -1514,7 +1523,7 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
       let head = if start == 1 {
         match Array::get(args, 0) {
           EIdent(_, _) => 0,
-          _ => md_consume_count(Array::get(args, 0), name)
+          _ => md_consume_count_b(Array::get(args, 0), name, bfns)
         }
       } else {
         0
@@ -1527,36 +1536,36 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
       // in a sub-expression.
       let callee_c = match callee {
         EIdent(_, _) => 0,
-        _ => md_consume_count(callee, name)
+        _ => md_consume_count_b(callee, name, bfns)
       }
       let mut acc = callee_c + head
       let mut ri = start
       while ri < Array::length(args) {
-        acc = acc + md_consume_count(Array::get(args, ri), name)
+        acc = acc + md_consume_count_b(Array::get(args, ri), name, bfns)
         ri = ri + 1
       }
       acc
     },
-    EBinOp(_, l, r) => md_consume_count(l, name) + md_consume_count(r, name),
-    EUnaryOp(_, x) => md_consume_count(x, name),
-    EFn(_, _, _, _, _, body) => md_consume_count(body, name),
-    EDot(x, _, _, _) => md_consume_count(x, name),
-    ELabeledArg(_, _, v) => md_consume_count(v, name),
-    EReturn(x) => md_consume_count(x, name),
+    EBinOp(_, l, r) => md_consume_count_b(l, name, bfns) + md_consume_count_b(r, name, bfns),
+    EUnaryOp(_, x) => md_consume_count_b(x, name, bfns),
+    EFn(_, _, _, _, _, body) => md_consume_count_b(body, name, bfns),
+    EDot(x, _, _, _) => md_consume_count_b(x, name, bfns),
+    ELabeledArg(_, _, v) => md_consume_count_b(v, name, bfns),
+    EReturn(x) => md_consume_count_b(x, name, bfns),
     EBreak(opt) => match opt {
-      Some(v) => md_consume_count(v, name),
+      Some(v) => md_consume_count_b(v, name, bfns),
       None => 0
     },
     EContinue(args) => {
       let mut acc = 0
       let mut i = 0
       while i < Array::length(args) {
-        acc = acc + md_consume_count(Array::get(args, i), name)
+        acc = acc + md_consume_count_b(Array::get(args, i), name, bfns)
         i = i + 1
       }
       acc
     },
-    ESpread(x) => md_consume_count(x, name)
+    ESpread(x) => md_consume_count_b(x, name, bfns)
   }
 }
 
