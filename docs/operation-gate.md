@@ -14,7 +14,9 @@ Status: accepted from 2026-06-12.
 - seed artifact: `bootstrap/seed/compiler.wasm`
 - seed sha256: `f9da8e285fe0c71c33670a2b9a13a49088dee3ec9a46d2175e975968c6b4b26b`
 - source of truth: `lib/@vibe/compiler/` and `lib/@vibe/cli/`
-- MoonBit `src/`: legacy bootstrap / fallback / host-runner 層。通常開発では触らない
+- MoonBit `src/`: (cutover 当時) legacy bootstrap / fallback / host-runner 層。
+  その後 #594 (2026-06-23) で撤去済み — recovery point は tag
+  `moonbit-host-final-2026-06-23` (`59ef040`)
 
 2026-06-12 の local cutover sign-off:
 
@@ -34,9 +36,8 @@ Status: accepted from 2026-06-12.
 
 compiler/checker/codegen の挙動変更は `lib/@vibe/compiler/` に入れる。CLI の
 コマンド挙動、adapter、bundle、component entry は `lib/@vibe/cli/` と
-`lib/@vibe/compiler/` 側を source of truth とする。MoonBit `src/` は固定 seed から
-current compiler を作るための legacy bootstrap/fallback 境界として扱い、
-通常の feature / bugfix / CLI 変更では編集しない。
+`lib/@vibe/compiler/` 側を source of truth とする。旧 MoonBit `src/` は #594 で
+撤去済みで、現在の bootstrap 境界は committed seed (`bootstrap/seed/`) のみ。
 
 通常の feature / bugfix は次の順で進める。
 
@@ -46,10 +47,11 @@ current compiler を作るための legacy bootstrap/fallback 境界として扱
 4. `pkf run full-gate` を通す。
 5. 互換や配布 artifact に影響する変更だけ `pkf run release-check` も通す。
 
-`src/` を変更する必要があるように見える場合は、先に原因を
-`lib/@vibe/compiler/` / `lib/@vibe/cli/` / bootstrap scripts / seed 管理へ切り分ける。
-break-glass として `src/` を触る場合は、通常 feature commit とは分け、
-明示的な方針確認を行う。
+コンパイラが自分をコンパイルできない等 bootstrap 側の問題に見える場合は、
+原因を `lib/@vibe/compiler/` / `lib/@vibe/cli/` / bootstrap scripts / seed 管理へ
+切り分ける。旧 MoonBit host (`src/`) はもう存在しないため、break-glass 先は
+tag `moonbit-host-final-2026-06-23` の checkout になる — 使う場合は通常
+feature commit とは分け、明示的な方針確認を行う。
 
 bootstrap bump は通常の feature commit と分ける。新 syntax を compiler source
 自身で使い始める場合は、先にその syntax を理解する seed を作ってから source を
@@ -95,4 +97,5 @@ pkf run generation-gate
 - corpus REAL gap が増える。
 - TOTAL compile > 2.5x、TOTAL check > 1.33x、peak RSS > 2.0x が再現する。
 - runner 層の wasmtime/cwasm 依存が portable wasm correctness と乖離する。
-- 新機能または CLI 変更の実装に MoonBit `src/` 先行が必要な状態へ戻る。
+- 新機能または CLI 変更の実装が selfhost source (`lib/@vibe/compiler/` /
+  `lib/@vibe/cli/`) だけで完結できず、退役済み MoonBit host の復活が必要になる。

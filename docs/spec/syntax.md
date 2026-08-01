@@ -55,7 +55,9 @@ Rules:
 - User code should use lowercase `snake_case` for values/functions.
 - Type, enum, struct, trait, effect, and constructor names conventionally start
   with uppercase.
-- `r#keyword` forces identifier interpretation for reserved words.
+- `r#keyword` forces identifier interpretation for reserved words. Exception:
+  `fn` has no raw-identifier escape (#1280) — `r#fn` still lexes as the `fn`
+  keyword, so no binding/parameter/type/member can be named `fn`.
 - Qualified names use `::`: `Array::map`, `Module::name`, `Point::{ ... }`.
 - Field and tuple access use `.`: `record.name`, `tuple.0`.
 - Package/module refs after `@` may contain `/` and `-`: `@pkg/path`.
