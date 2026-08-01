@@ -1,0 +1,99 @@
+//# #1259 step 7: a replayed function body must be indistinguishable from a
+//# compiled one.
+//#
+//# `compile_wasi_module_replayed` compiles the program twice -- once compiling
+//# every body and harvesting it into a CodegenBodyCache, once replaying every
+//# harvested body -- and throws on the first differing byte. So each case here
+//# is a whole-module byte-equality assertion, not a smoke test.
+//#
+//# The interesting shapes are the ones where a function's output depends on
+//# state the body loop threads across functions: lambdas (whose table_slot
+//# immediates come from the frozen plan, #1275/#1277) and closures reaching
+//# call_indirect (whose slots land in the module-level table_slots_used log,
+//# which is read only AFTER the loop -- the case that a first cut got wrong).
+//#
+//# Mutation-checked against a compiler whose replay deliberately drops the
+//# recorded table slots (i.e. the state before that fix): cases 2, 3 and 4 fail,
+//# cases 1 and 5 still pass. That is the right shape rather than a coverage
+//# hole -- 1 and 5 build no lambdas at all, so they record no slots and cannot
+//# distinguish the two implementations. They are here for the other axis: that
+//# the plain and thunk body paths replay at all.
+
+//# Imports
+
+import @vibe/compiler/codegen {
+  compile_wasi_module, compile_wasi_module_replayed
+}
+
+import @vibe/compiler/syntax {
+  lex
+}
+
+import ../parser.vibe {
+  parse_program
+}
+
+//# Functions
+
+fn bytes_eq(left: Bytes, right: Bytes) -> Bool {
+  let n = Bytes::length(left)
+  if n != Bytes::length(right) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < n {
+      if Bytes::get(left, i) != Bytes::get(right, i) {
+        same = false
+      } else {
+        i = i + 1
+      }
+    }
+    same
+  }
+}
+
+/// Compile `source` straight and via the harvest/replay round trip, and assert
+/// the two modules are byte-identical. `compile_wasi_module_replayed` already
+/// throws on a mismatch between its own two passes; comparing against the
+/// ordinary entry as well pins that neither pass drifted from the production
+/// path.
+fn assert_replay_identical(source: String) -> Unit with { Error } {
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  let direct = compile_wasi_module(stmts, "main")
+  let tokens2 = lex(source)
+  let stmts2 = parse_program(tokens2)
+  let replayed = compile_wasi_module_replayed(stmts2, "main")
+  assert(Bytes::length(direct) > 8)
+  assert(bytes_eq(direct, replayed))
+}
+
+test "replay: a program with no lambdas at all" {
+  assert_replay_identical("fn add(a: Int, b: Int) -> Int {\n  a + b\n}\n\nfn main {\n  println(Int::to_string(add(2, 3)))\n}\n",)
+}
+
+test "replay: lambdas in several functions, so the plan spans owners" {
+  // Each function contributes lambdas, so the planned lambda ranges are
+  // non-trivial and a replayed body's baked-in table_slot immediates only stay
+  // correct because the plan -- not the emission order -- assigned them.
+  assert_replay_identical("fn twice(f: (Int) -> Int, x: Int) -> Int {\n  f(f(x))\n}\n\nfn bump(n: Int) -> Int {\n  twice((v) -> {\n    v + n\n  }, n)\n}\n\nfn scale(n: Int) -> Int {\n  twice((v) -> {\n    v * 2\n  }, n)\n}\n\nfn main {\n  println(Int::to_string(bump(3) + scale(4)))\n}\n",)
+}
+
+test "replay: closures reaching call_indirect record table slots" {
+  // The shape that exposed the missing piece: these closures are stored and
+  // called indirectly, so compiling them appends to the module-level
+  // table_slots_used log. That log is consumed after the body loop to build
+  // the element section, and a replayed function never runs the appends -- so
+  // until the cache carried them, the replayed module's element section was
+  // smaller than the compiled one's and this case failed on a byte mismatch.
+  assert_replay_identical("fn apply_all(fs: Array[(Int) -> Int], x: Int) -> Int {\n  let mut acc = x\n  let mut i = 0\n  while i < Array::length(fs) {\n    let f = Array::get(fs, i)\n    acc = f(acc)\n    i = i + 1\n  }\n  acc\n}\n\nfn main {\n  let fs = [\n    (v) -> {\n      v + 1\n    },\n    (v) -> {\n      v * 3\n    },\n    (v) -> {\n      v - 2\n    }\n  ]\n  println(Int::to_string(apply_all(fs, 5)))\n}\n",)
+}
+
+test "replay: nested lambdas, where an inner one advances the enclosing counter" {
+  assert_replay_identical("fn make_adder(n: Int) -> (Int) -> Int {\n  (x) -> {\n    let inner = (y) -> {\n      y + n\n    }\n    inner(x) + n\n  }\n}\n\nfn main {\n  let f = make_adder(2)\n  println(Int::to_string(f(10)))\n}\n",)
+}
+
+test "replay: module-level thunks, which take the non-EFn body path" {
+  assert_replay_identical("let table: Array[Int] = [\n  1,\n  2,\n  3,\n  4\n]\n\nfn total() -> Int {\n  let mut s = 0\n  let mut i = 0\n  while i < Array::length(table) {\n    s = s + Array::get(table, i)\n    i = i + 1\n  }\n  s\n}\n\nfn main {\n  println(Int::to_string(total()))\n}\n",)
+}

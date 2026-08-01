@@ -753,7 +753,7 @@ fn lc_wrap_entry_error_boundary(stmts: Array[Stmt], entry_name: String) -> Unit 
   }
 }
 
-export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache) -> Bytes with { Error } {
+export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache) -> Bytes with { Error } {
   // ADR-0091 Phase 1: enforce `@zero_alloc` markers before any lowering
   // rewrites the marked bodies. No-op when no marker is present.
   let za_msg = zero_alloc_check(stmts)
@@ -2646,10 +2646,6 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // Seeded into the ctx and checked at every allocation (compile_lambda), not
   // used: while plan and walk agree, swapping compile_lambda over to the
   // planned value cannot change a byte. This is the evidence for that swap.
-  // #1259 step 7: harvested per-function codegen output. Local for now --
-  // nothing reads it yet, and the harvest is what has to be proven
-  // output-neutral before an entry point hands it out or takes one back.
-  let body_cache_out = codegen_body_cache_new()
   let lambda_plan_cell = lc_fresh_int_array()
   Array::push(lambda_plan_cell, 0)
   // #1259 step 7: the frozen plan, built BEFORE any body is emitted.
@@ -2708,8 +2704,12 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     // compile_expr -- is skipped, not merely discarded.
     let __cache_hit = codegen_body_cache_find(body_cache_in, bi)
     if __cache_hit >= 0 {
-      codegen_body_cache_replay(body_cache_in, __cache_hit, bodies, meta_i32, meta_i64, lt_w)
+      codegen_body_cache_replay(body_cache_in, __cache_hit, bodies, meta_i32, meta_i64, lt_w, table_slots_used)
     } else {
+      // #1259 step 7: where this function's table_slots_used entries start.
+      // The log is module-level and append-only, so the function's own
+      // contribution is exactly the suffix it grows below.
+      let __slot_lo = Array::length(table_slots_used)
       let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
       // #703 follow-up: under RC, lift temporary match scrutinees into lets so the
       // Perceus pass (which drops named bindings) reclaims them. Applied here, the
@@ -3450,7 +3450,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       // Harvest is unconditional and cheap (it copies references into parallel
       // arrays, it does not re-encode). The cache is only READ when a caller
       // supplies one.
-      codegen_body_cache_record(body_cache_out, bi, bodies, meta_i32, meta_i64, lt_w, Array::get(lambda_bases, bi), lambda_planned_end)
+      codegen_body_cache_record(body_cache_out, bi, bodies, meta_i32, meta_i64, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used))
     }
     bi = bi + 1
   }
@@ -4941,36 +4941,77 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
 
 export fn compile_wasi_module_rc_impl(stmts_in: Array[Stmt], entry_name: String) -> Bytes with { Error } {
   let stmts = elaborate_heap_params(stmts_in)
-  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new())
+  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new())
 }
 
 /// #715 recurrence guard: RC + shadow-liveness instrumentation (VIBE_RC=shadow).
 export fn compile_wasi_module_rc_shadow_impl(stmts_in: Array[Stmt], entry_name: String) -> Bytes with { Error } {
   let stmts = elaborate_heap_params(stmts_in)
-  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new())
+  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new())
+}
+
+/// #1259 step 7: compile the module twice -- once compiling every body and
+/// harvesting it, once replaying every harvested body -- and return the
+/// REPLAYED module, throwing if the two disagree.
+///
+/// This is the only caller that exercises the replay path, and it exists to
+/// keep the two halves honest: a replayed function must be indistinguishable
+/// from a compiled one, not merely plausible. It caught the first real
+/// divergence -- `table_slots_used` is appended during compilation and read
+/// only after the body loop, so a replayed build emitted a smaller element
+/// section until the cache started carrying those entries too.
+///
+/// Deliberately not on any production path: it is strictly slower than
+/// compiling once. Callers are the round-trip test and the gate.
+export fn compile_wasi_module_replayed_impl(stmts: Array[Stmt], entry_name: String) -> Bytes with { Error } {
+  let harvest = codegen_body_cache_new()
+  let compiled = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), harvest)
+  let replayed = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, empty_dbg_prov(), harvest, codegen_body_cache_new())
+  let ln = Bytes::length(compiled)
+  let rn = Bytes::length(replayed)
+  if ln != rn {
+    throw(String::concat("codegen replay length mismatch: compiled ", String::concat(__to_string(ln), String::concat(" B, replayed ", String::concat(__to_string(rn), " B")))))
+  } else {
+    ()
+  }
+  let mut i = 0
+  let mut bad = 0 - 1
+  while bad < 0 && i < ln {
+    if Bytes::get(compiled, i) != Bytes::get(replayed, i) {
+      bad = i
+    } else {
+      i = i + 1
+    }
+  }
+  if bad >= 0 {
+    throw(String::concat("codegen replay byte mismatch at offset ", __to_string(bad)))
+  } else {
+    ()
+  }
+  replayed
 }
 
 export fn compile_wasi_module_with_sources_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with { Error } {
-  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new())
+  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new())
 }
 
 /// Coverage build (#cov): compile with function-level hit instrumentation +
 /// `vibe_cov` custom section. Same as compile_wasi_module_with_sources_impl but
 /// with coverage enabled.
 export fn compile_wasi_module_with_sources_coverage_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with { Error } {
-  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, true, false, false, false, empty_dbg_prov(), codegen_body_cache_new())
+  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, true, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new())
 }
 
 /// Trace build (debugger / DAP P1 groundwork): compile with function-call
 /// execution-trace instrumentation + `vibe.trace` custom section. Same as
 /// compile_wasi_module_with_sources_impl but with debug_trace enabled.
 export fn compile_wasi_module_with_sources_trace_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with { Error } {
-  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, false, true, false, false, empty_dbg_prov(), codegen_body_cache_new())
+  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, false, true, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new())
 }
 
 /// Break build (debugger / DAP P1): compile with `vibe::dbg_break` host-hook
 /// instrumentation at each user function entry. Same as
 /// compile_wasi_module_with_sources_impl but with debug_break enabled.
 export fn compile_wasi_module_with_sources_break_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], prov: DbgProv) -> Bytes with { Error } {
-  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, false, false, true, false, prov, codegen_body_cache_new())
+  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, false, false, true, false, prov, codegen_body_cache_new(), codegen_body_cache_new())
 }
