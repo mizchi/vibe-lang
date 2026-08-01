@@ -1649,8 +1649,9 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with { Err
   // first (reads + rolling hashes only, no parsing) and serve the finished
   // facade text from the persistent cache when nothing changed; a hit also
   // implies the cached conformance check passed for these exact inputs.
+  let contract_fp = fingerprint_file_fs(path)
   let closure_fp_sb = StringBuilder::new()
-  StringBuilder::push(closure_fp_sb, fingerprint_file_fs(path))
+  StringBuilder::push(closure_fp_sb, contract_fp)
   let member_paths = array_empty()
   let member_raws = array_empty()
   let mut fpi = 0
@@ -1686,6 +1687,17 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with { Err
   } else {
     ()
   }
+  // #1308/Codex P2: the probe key above pairs member FINGERPRINTS taken
+  // before this point with member BODIES read below — a member rewritten in
+  // between would get its new body persisted under the old closure key, and
+  // a later revert of the file would then serve that mismatched facade with
+  // conformance skipped. Rebuild the closure fingerprint from the bodies
+  // actually read (same row format as the probe key) and publish the cache
+  // entry under THAT key: in the no-race case the two keys are equal, and
+  // under a mid-compile rewrite the entry lands under a key no stale probe
+  // can hit. Costs one extra rolling hash per member on cache MISSES only.
+  let fresh_fp_sb = StringBuilder::new()
+  StringBuilder::push(fresh_fp_sb, contract_fp)
   let impl_units = array_empty()
   let union_stmts = array_empty()
   let mut ri = 0
@@ -1693,6 +1705,10 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with { Err
     let raw = Array::get(member_raws, ri)
     let resolved = Array::get(member_paths, ri)
     let resolved_content = Fs::read_file(resolved)
+    StringBuilder::push(fresh_fp_sb, "|")
+    StringBuilder::push(fresh_fp_sb, resolved)
+    StringBuilder::push(fresh_fp_sb, ":")
+    StringBuilder::push(fresh_fp_sb, compact_string_fingerprint(resolved_content))
     // #842: an impl raw may itself resolve to ANOTHER package's contract
     // (a cross-package `import ../pkg { ... }`, not just this package's own
     // sibling impl files) — route it through the same ingestion transform
@@ -1742,7 +1758,12 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with { Err
   // or a later cold compile) skips the whole member-parse + conformance
   // pass. Only a PASSING conformance result ever reaches this line (the
   // throw above aborts first), so a hit can never mask a violation.
-  Fs::write_file(facade_cache_path, String::concat("v1\n", facade_final))
+  // #1308/Codex P2: publish under the fingerprint of the bodies actually
+  // used (equal to the probed closure_fp unless a member changed between
+  // the fingerprint pass and the reads above — see the comment at
+  // fresh_fp_sb's construction).
+  let fresh_closure_fp = compact_string_fingerprint(StringBuilder::freeze(fresh_fp_sb))
+  Fs::write_file(persistent_contract_facade_cache_path(path, fresh_closure_fp), String::concat("v1\n", facade_final))
   facade_final
 }
 
