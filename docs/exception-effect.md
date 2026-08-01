@@ -8,6 +8,13 @@ Related: #1218, #1136, ADR-0016(`handle`/`throw`), ADR-0050(generic effect
 handler), ADR-0071(effectset), ADR-0073(checked `Error`), ADR-0084(effect
 taxonomy)。
 
+> **#1279 interim implementation:** the compiler currently accepts a
+> non-generic, abortive `Exception` spelling as an alias of existing `Error`.
+> `Exception::Throw` and `Error::Throw` use one Wasm tag and String-payload
+> compatibility behavior. This is deliberately **not** the typed
+> `Exception[E]` proposed by this ADR: it has no type argument, no distinct
+> normalized effect identity, and no typed-row/exact-kind guarantees.
+
 ## Context
 
 ADR-0073 により、現在の `Error::Throw` は非再開・完全 checked の semantic
