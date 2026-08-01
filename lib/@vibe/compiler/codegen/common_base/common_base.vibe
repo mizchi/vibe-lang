@@ -100,6 +100,9 @@ export struct CodegenBodyCache {
   fn_bodies: Array[Bytes];
   fn_meta_i32: Array[Int];
   fn_meta_i64: Array[Int];
+  /// v128-local run length of the function's code-entry locals header
+  /// (inline-wasm fns with `(local $x v128)` declarations; 0 otherwise).
+  fn_meta_v128: Array[Int];
   lam_owner: Array[Int];
   lam_indices: Array[Int];
   lam_bodies: Array[Bytes];
@@ -126,6 +129,7 @@ export fn codegen_body_cache_new() -> CodegenBodyCache {
     fn_bodies: array_empty(),
     fn_meta_i32: array_empty(),
     fn_meta_i64: array_empty(),
+    fn_meta_v128: array_empty(),
     lam_owner: array_empty(),
     lam_indices: array_empty(),
     lam_bodies: array_empty(),
@@ -159,7 +163,7 @@ export fn codegen_body_cache_find(cache: CodegenBodyCache, fn_index: Int) -> Int
 /// Reads the LAST entry of `bodies` / `meta_i32` / `meta_i64` -- the loop has
 /// just pushed them -- and the lambda table slice `[lam_lo, lam_hi)`, which is
 /// exactly the range the plan assigned this function.
-export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], lt: LambdaTable, lam_lo: Int, lam_hi: Int, slots: Array[Int], slot_lo: Int, slot_hi: Int) -> Unit {
+export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], meta_v128: Array[Int], lt: LambdaTable, lam_lo: Int, lam_hi: Int, slots: Array[Int], slot_lo: Int, slot_hi: Int) -> Unit {
   let n = Array::length(bodies)
   if n == 0 {
     ()
@@ -168,6 +172,7 @@ export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, bodi
     Array::push(cache.fn_bodies, Array::get(bodies, n - 1))
     Array::push(cache.fn_meta_i32, Array::get(meta_i32, Array::length(meta_i32) - 1))
     Array::push(cache.fn_meta_i64, Array::get(meta_i64, Array::length(meta_i64) - 1))
+    Array::push(cache.fn_meta_v128, Array::get(meta_v128, Array::length(meta_v128) - 1))
     let mut li = lam_lo
     while li < lam_hi {
       Array::push(cache.lam_owner, fn_index)
@@ -213,6 +218,7 @@ export fn codegen_body_cache_merge(a: CodegenBodyCache, b: CodegenBodyCache) -> 
       Array::push(out.fn_bodies, Array::get(src.fn_bodies, i))
       Array::push(out.fn_meta_i32, Array::get(src.fn_meta_i32, i))
       Array::push(out.fn_meta_i64, Array::get(src.fn_meta_i64, i))
+      Array::push(out.fn_meta_v128, Array::get(src.fn_meta_v128, i))
       i = i + 1
     }
     let lam_n = Array::length(src.lam_owner)
@@ -247,11 +253,12 @@ export fn codegen_body_cache_merge(a: CodegenBodyCache, b: CodegenBodyCache) -> 
 /// planned: `lt.bodies` is `lam_lo` long when this runs. That is the same
 /// invariant the compile path relies on, so a replayed function and a compiled
 /// one leave the table identical.
-export fn codegen_body_cache_replay(cache: CodegenBodyCache, at: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], lt: LambdaTable, slots: Array[Int]) -> Unit {
+export fn codegen_body_cache_replay(cache: CodegenBodyCache, at: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], meta_v128: Array[Int], lt: LambdaTable, slots: Array[Int]) -> Unit {
   let owner = Array::get(cache.fn_indices, at)
   Array::push(bodies, Array::get(cache.fn_bodies, at))
   Array::push(meta_i32, Array::get(cache.fn_meta_i32, at))
   Array::push(meta_i64, Array::get(cache.fn_meta_i64, at))
+  Array::push(meta_v128, Array::get(cache.fn_meta_v128, at))
   let n = Array::length(cache.lam_owner)
   let mut i = 0
   while i < n {
