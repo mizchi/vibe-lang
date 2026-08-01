@@ -4,6 +4,11 @@
 //# 左 subtree は「総 chunk 数未満の最大 2 冪」。counter は chunk index
 //# (62-bit Int に収まる範囲で正確)。出力は 256-bit digest の
 //# little-endian hex 64 文字。
+//#
+//# 圧縮の作業領域 (state / message words) は呼び出し 1 回分の Scratch に
+//# まとめて確保し、全 block / 全 chunk で使い回す — 初版の per-compress
+//# 確保は 8KiB 入力で ~145 KiB/op の bump-heap を積んでいた
+//# (docs/report/blake3-vs-sha1-bench-2026-08-01.md)。
 
 //# Constants
 
@@ -58,6 +63,27 @@ fn iv_words() -> Array[Int] {
   cv
 }
 
+//# Scratch
+
+/// Reusable compression workspace: one per top-level hash call, threaded
+/// through every block/chunk/parent compression. `st` doubles as the
+/// compression output (first 8 words = chaining value).
+struct Scratch {
+  st: Array[Int];
+  m1: Array[Int];
+  m2: Array[Int];
+  block: Array[Int]
+}
+
+fn new_scratch() -> Scratch {
+  Scratch::{
+    st: Int64Array::make(16, 0),
+    m1: Int64Array::make(16, 0),
+    m2: Int64Array::make(16, 0),
+    block: Int64Array::make(16, 0)
+  }
+}
+
 //# Compression
 
 /// The G mixing function on state indices (a, b, c, d) with message words
@@ -110,11 +136,12 @@ fn permute_words(src: Array[Int], dst: Array[Int]) -> Unit {
   Int64Array::set(dst, 15, Int64Array::get(src, 8))
 }
 
-/// Full 7-round compression. Returns the 16-word output state; callers take
-/// the first 8 words as a chaining value, or all root-output bytes come from
-/// the same first 8 words (256-bit digest).
-fn compress_words(cv: Array[Int], block: Array[Int], counter: Int, blen: Int, flags: Int) -> Array[Int] {
-  let st = Int64Array::make(16, 0)
+/// Full 7-round compression into `sc.st` (allocation-free: all working
+/// arrays live in `sc`). `block` may alias `sc.block` — it is only read
+/// before the first round writes to `sc.m1`. Callers read the result out
+/// of `sc.st` (first 8 words = chaining value, all 16 for root output).
+fn compress_into(sc: Scratch, cv: Array[Int], block: Array[Int], counter: Int, blen: Int, flags: Int) -> Unit {
+  let st = sc.st
   let mut i = 0
   while i < 8 {
     Int64Array::set(st, i, Int64Array::get(cv, i))
@@ -128,8 +155,8 @@ fn compress_words(cv: Array[Int], block: Array[Int], counter: Int, blen: Int, fl
   Int64Array::set(st, 13, (counter>>32)&mask32)
   Int64Array::set(st, 14, blen)
   Int64Array::set(st, 15, flags)
-  let m1 = Int64Array::make(16, 0)
-  let m2 = Int64Array::make(16, 0)
+  let m1 = sc.m1
+  let m2 = sc.m2
   let mut j = 0
   while j < 16 {
     Int64Array::set(m1, j, Int64Array::get(block, j))
@@ -154,24 +181,24 @@ fn compress_words(cv: Array[Int], block: Array[Int], counter: Int, blen: Int, fl
     Int64Array::set(st, k + 8, Int64Array::get(st, k + 8)^Int64Array::get(cv, k))
     k = k + 1
   }
-  st
 }
 
-fn first8(st: Array[Int]) -> Array[Int] {
-  let cv = Int64Array::make(8, 0)
+/// Copy the chaining value (first 8 words of `sc.st`) into `cv` in place.
+fn copy_cv(sc: Scratch, cv: Array[Int]) -> Unit {
   let mut i = 0
   while i < 8 {
-    Int64Array::set(cv, i, Int64Array::get(st, i))
+    Int64Array::set(cv, i, Int64Array::get(sc.st, i))
     i = i + 1
   }
-  cv
 }
 
 //# Tree hashing
 
-/// A deferred final compression: everything `compress_words` needs, minus the
+/// A deferred final compression: everything `compress_into` needs, minus the
 /// ROOT flag decision (the same node is compressed once as a chaining value
-/// or once with ROOT to produce the digest).
+/// or once with ROOT to produce the digest). `cv` and `block` are owned by
+/// the Output (never aliased into a Scratch), so they survive across the
+/// sibling subtree's compressions.
 struct Output {
   cv: Array[Int];
   block: Array[Int];
@@ -180,10 +207,9 @@ struct Output {
   flags: Int
 }
 
-/// Read one 64-byte block at `block_start` as 16 little-endian words,
-/// zero-padding past `data_end`.
-fn block_words_le(data: Bytes, block_start: Int, data_end: Int) -> Array[Int] {
-  let w = Int64Array::make(16, 0)
+/// Read one 64-byte block at `block_start` into `w` (16 little-endian
+/// words), zero-padding past `data_end`.
+fn block_words_into(w: Array[Int], data: Bytes, block_start: Int, data_end: Int) -> Unit {
   let mut i = 0
   while i < 16 {
     let off = block_start + i * 4
@@ -210,17 +236,19 @@ fn block_words_le(data: Bytes, block_start: Int, data_end: Int) -> Array[Int] {
     Int64Array::set(w, i, (b0|(b1<<8))|((b2<<16)|(b3<<24)))
     i = i + 1
   }
-  w
 }
 
 /// Hash one <= 1024-byte chunk down to its deferred last-block compression.
-fn chunk_output(data: Bytes, start: Int, len: Int, counter: Int) -> Output {
+/// Only the chunk's own `cv` (8 words) and the deferred last block
+/// (16 words) are allocated; every intermediate block compresses through
+/// `sc.block`/`sc.st`.
+fn chunk_output(sc: Scratch, data: Bytes, start: Int, len: Int, counter: Int) -> Output {
   let num_blocks = if len == 0 {
     1
   } else {
     (len + 63) / 64
   }
-  let mut cv = iv_words()
+  let cv = iv_words()
   let mut b = 0
   while b < num_blocks - 1 {
     let flags = if b == 0 {
@@ -228,8 +256,9 @@ fn chunk_output(data: Bytes, start: Int, len: Int, counter: Int) -> Output {
     } else {
       0
     }
-    let w = block_words_le(data, start + b * 64, start + len)
-    cv = first8(compress_words(cv, w, counter, block_len_max, flags))
+    block_words_into(sc.block, data, start + b * 64, start + len)
+    compress_into(sc, cv, sc.block, counter, block_len_max, flags)
+    copy_cv(sc, cv)
     b = b + 1
   }
   let last_start = start + (num_blocks - 1) * 64
@@ -239,17 +268,23 @@ fn chunk_output(data: Bytes, start: Int, len: Int, counter: Int) -> Output {
   } else {
     0
   }
+  let last_block = Int64Array::make(16, 0)
+  block_words_into(last_block, data, last_start, start + len)
   Output::{
     cv: cv,
-    block: block_words_le(data, last_start, start + len),
+    block: last_block,
     counter: counter,
     blen: last_len,
     flags: start_flag|flag_chunk_end
   }
 }
 
-fn chaining_value(o: Output) -> Array[Int] {
-  first8(compress_words(o.cv, o.block, o.counter, o.blen, o.flags))
+/// Finalize an Output as a chaining value. The Output is consumed: its own
+/// `cv` array is overwritten with the result and returned (no allocation).
+fn chaining_value(sc: Scratch, o: Output) -> Array[Int] {
+  compress_into(sc, o.cv, o.block, o.counter, o.blen, o.flags)
+  copy_cv(sc, o.cv)
+  o.cv
 }
 
 fn parent_output(left_cv: Array[Int], right_cv: Array[Int]) -> Output {
@@ -268,9 +303,9 @@ fn parent_output(left_cv: Array[Int], right_cv: Array[Int]) -> Output {
 /// Recursive subtree hash. The left subtree takes the largest power-of-two
 /// number of chunks strictly less than the subtree's total (BLAKE3 spec
 /// tree shape), so `left_chunks` below is largest_pow2(<= (len-1)/1024).
-fn subtree_output(data: Bytes, start: Int, len: Int, chunk_counter: Int) -> Output {
+fn subtree_output(sc: Scratch, data: Bytes, start: Int, len: Int, chunk_counter: Int) -> Output {
   if len <= chunk_len {
-    chunk_output(data, start, len, chunk_counter)
+    chunk_output(sc, data, start, len, chunk_counter)
   } else {
     let full_chunks = (len - 1) / chunk_len
     let mut left_chunks = 1
@@ -278,8 +313,8 @@ fn subtree_output(data: Bytes, start: Int, len: Int, chunk_counter: Int) -> Outp
       left_chunks = left_chunks * 2
     }
     let left_len = left_chunks * chunk_len
-    let left_cv = chaining_value(subtree_output(data, start, left_len, chunk_counter))
-    let right_cv = chaining_value(subtree_output(data, start + left_len, len - left_len, chunk_counter + left_chunks))
+    let left_cv = chaining_value(sc, subtree_output(sc, data, start, left_len, chunk_counter))
+    let right_cv = chaining_value(sc, subtree_output(sc, data, start + left_len, len - left_len, chunk_counter + left_chunks))
     parent_output(left_cv, right_cv)
   }
 }
@@ -300,12 +335,12 @@ fn push_byte_hex(sb: StringBuilder, b: Int) -> Unit {
 }
 
 /// Final ROOT compression -> 64-char little-endian hex of the 256-bit digest.
-fn root_hex(o: Output) -> String {
-  let st = compress_words(o.cv, o.block, 0, o.blen, o.flags|flag_root)
+fn root_hex(sc: Scratch, o: Output) -> String {
+  compress_into(sc, o.cv, o.block, 0, o.blen, o.flags|flag_root)
   let sb = StringBuilder::new()
   let mut i = 0
   while i < 8 {
-    let w = Int64Array::get(st, i)
+    let w = Int64Array::get(sc.st, i)
     push_byte_hex(sb, w&255)
     push_byte_hex(sb, (w>>8)&255)
     push_byte_hex(sb, (w>>16)&255)
@@ -319,17 +354,20 @@ fn root_hex(o: Output) -> String {
 
 /// BLAKE3 digest of a byte buffer, as 64 hex chars.
 export fn blake3_bytes(data: Bytes) -> String {
-  root_hex(subtree_output(data, 0, Bytes::length(data), 0))
+  let sc = new_scratch()
+  root_hex(sc, subtree_output(sc, data, 0, Bytes::length(data), 0))
 }
 
 /// BLAKE3 digest of a string, as 64 hex chars. Char codes are taken mod 256
-/// (byte-oriented input, same convention as @vibe/core sha1).
+/// (byte-oriented input, same convention as @vibe/core sha1). The byte
+/// buffer is pre-sized (`Bytes::new(len)` + set) so the conversion is one
+/// allocation, not a push-growth doubling tower.
 export fn blake3(msg: String) -> String {
   let len = String::length(msg)
-  let data = Bytes::new()
+  let data = Bytes::new(len)
   let mut i = 0
   while i < len {
-    Bytes::push(data, String::char_code_at(msg, i)&255)
+    Bytes::set(data, i, String::char_code_at(msg, i)&255)
     i = i + 1
   }
   blake3_bytes(data)
