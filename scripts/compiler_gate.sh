@@ -7784,4 +7784,50 @@ fi
 rm -rf "$za91dir"
 echo "[compiler-gate] ADR-0091 @zero_alloc allocation check ok"
 
+# 77/77. ADR-0089 Decision 1, increment 1 (#1218): entry-row-Async sleep
+# boundary. An entry whose declared row carries `Async` gets (a) a
+# synthesized top-level `__slp_perform` that IS `perform
+# Async::Suspend(-ms)`, with every unshadowed `sleep(..)` call retargeted
+# to it, and (b) a tail-resumptive entry-boundary Async handler settling
+# the debt via the row-free `sleep_blocking` (linked_compile.vibe
+# lc_inject_async_sleep_boundary). Positive: a wrapper-fn `sleep` chain
+# under an Async-row main compiles and returns 42
+# (async_sleep_boundary_test.vibe -- behavior parity with the old blocking
+# builtin). Negative: adding suspend-class Async handling (TaskGroup
+# spawn_suspend) under an Async-row entry mixes conventions and must be
+# REJECTED by the ADR-0076 guard, not silently miscompiled
+# (err_async_boundary_mixed_convention.vibe).
+echo "[compiler-gate] 77/77 ADR-0089 D1 async sleep boundary (#1218)"
+asb89dir="_build/_gate_async_sleep89"
+rm -rf "$asb89dir"; mkdir -p "$asb89dir"
+cp fixtures/async_sleep_boundary_test.vibe "$asb89dir/pos.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asb89dir/pos.vibe" "$asb89dir/pos.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$asb89dir/pos.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_sleep_boundary_test.vibe did not compile -- ADR-0089 D1 sleep boundary regressed" >&2
+  cat "$asb89dir/pos.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+asb89_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/pos.wasm" 2>/dev/null | tail -1)"
+if [ "$asb89_pos_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_sleep_boundary_test.vibe got '$asb89_pos_out' (want 42)" >&2
+  exit 1
+fi
+cp fixtures/err_async_boundary_mixed_convention.vibe "$asb89dir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asb89dir/neg.vibe" "$asb89dir/neg.wasm" main >/dev/null 2>&1 || true
+if [ -s "$asb89dir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_async_boundary_mixed_convention.vibe compiled successfully -- convention mixing must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF 'mixing the step convention' "$asb89dir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_async_boundary_mixed_convention.vibe did not produce the expected diagnostic" >&2
+  cat "$asb89dir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$asb89dir"
+echo "[compiler-gate] ADR-0089 D1 async sleep boundary ok"
+
 echo "[compiler-gate] ok"
