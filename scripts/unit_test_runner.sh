@@ -136,6 +136,76 @@ start_http_echo_server_if_needed() {
   echo "[unit-test-runner] started http echo server (pid $http_echo_pid, 127.0.0.1:$http_echo_port)"
 }
 
+# --- compiled-test-wasm cache -------------------------------------------------
+# Content-keyed reuse of each test file's COMPILE output (the wasm), so a
+# battery run only pays the dominant per-file compile cost (~1-6s for
+# compiler tests) for files whose compiler or import closure actually
+# changed; a cache hit skips straight to the ~0.1-0.5s run. Keying:
+#   entry dir  = first 16 hex of sha256(stage2.wasm) -- a compiler change
+#                rotates the whole directory (stale dirs are pruned below)
+#   .deps file = the file's import closure recorded from VIBE_MODULE_PLAN
+#                at store time (make-depfile logic: a closure-changing edit
+#                always touches a file in the OLD closure, so the key below
+#                misses and the deps are re-planned -- sound staleness)
+#   key        = sha256 over (contract salt + per-dep sha256 lines); the
+#                contract salt folds in every .vibei / index.vpkg under
+#                lib, since contracts affect compile output but are not
+#                module-plan entries.
+# Disable with VIBE_UNIT_OUT_CACHE=0. Store failures are silent misses.
+OUT_CACHE_ROOT="${VIBE_UNIT_OUT_CACHE_DIR:-$ROOT_DIR/_build/vibe_unit_out_cache}"
+unit_out_cache_enabled="${VIBE_UNIT_OUT_CACHE:-1}"
+STAGE2_SHA=""
+CONTRACT_SALT=""
+if [ "$unit_out_cache_enabled" != "0" ]; then
+  STAGE2_SHA="$(sha256sum "$S2" | cut -c1-16)"
+  CONTRACT_SALT="$(find "$ROOT_DIR/lib" -name '*.vibei' -o -name 'index.vpkg' 2>/dev/null | LC_ALL=C sort | xargs -r sha256sum 2>/dev/null | sha256sum | cut -c1-16)"
+  mkdir -p "$OUT_CACHE_ROOT/$STAGE2_SHA"
+  for _stale in "$OUT_CACHE_ROOT"/*/; do
+    case "$_stale" in "$OUT_CACHE_ROOT/$STAGE2_SHA/") ;; *) rm -rf "$_stale" ;; esac
+  done
+fi
+export OUT_CACHE_ROOT STAGE2_SHA CONTRACT_SALT unit_out_cache_enabled
+
+# Key from the STORED deps list, or "" when there is none / a dep vanished.
+unit_out_key() {
+  local f="$1"
+  local pathkey; pathkey="$(printf '%s' "$f" | tr '/' '_')"
+  local depf="$OUT_CACHE_ROOT/$STAGE2_SHA/$pathkey.deps"
+  [ -s "$depf" ] || { echo ""; return 0; }
+  local d
+  while IFS= read -r d; do
+    [ -f "$d" ] || { echo ""; return 0; }
+  done < "$depf"
+  # one sha256sum process for the whole dep list -- a per-dep spawn costs
+  # seconds per file on the hundreds-of-modules compiler-test closures
+  { printf 'salt\t%s\n' "$CONTRACT_SALT"
+    tr '\n' '\0' < "$depf" | xargs -0 -r sha256sum; } | sha256sum | cut -c1-32
+}
+
+# Record deps (one VIBE_MODULE_PLAN call) + store the compiled wasm.
+unit_out_store() {
+  local f="$1" wasm="$2"
+  [ "$unit_out_cache_enabled" != "0" ] || return 0
+  local pathkey; pathkey="$(printf '%s' "$f" | tr '/' '_')"
+  local plantmp; plantmp="$(mktemp -t vibe-unit-plan-XXXXXX)"
+  rm -f "$plantmp"
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_MODULE_PLAN=1 VIBE_IMPORT_ABI=raw       timeout 60 bash "$RUNNER" --invoke cli_main "$S2" "$f" "$plantmp" __no_entry__ >/dev/null 2>&1       || [ ! -s "$plantmp" ]; then
+    rm -f "$plantmp" "$plantmp.diag"
+    return 0
+  fi
+  local depf="$OUT_CACHE_ROOT/$STAGE2_SHA/$pathkey.deps"
+  { awk -F'\t' '$1=="module"{print $4}' "$plantmp"; printf '%s\n' "$f"; } \
+    | LC_ALL=C sort -u > "$depf.tmp.$$"
+  mv "$depf.tmp.$$" "$depf"
+  rm -f "$plantmp" "$plantmp.diag"
+  local ckey; ckey="$(unit_out_key "$f")"
+  [ -n "$ckey" ] || return 0
+  rm -f "$OUT_CACHE_ROOT/$STAGE2_SHA/$pathkey".*.wasm
+  cp "$wasm" "$OUT_CACHE_ROOT/$STAGE2_SHA/$pathkey.$ckey.wasm.tmp.$$" \
+    && mv "$OUT_CACHE_ROOT/$STAGE2_SHA/$pathkey.$ckey.wasm.tmp.$$" \
+          "$OUT_CACHE_ROOT/$STAGE2_SHA/$pathkey.$ckey.wasm"
+}
+
 # --- compile + run one test file; 0 = pass, 1 = fail --------------------------
 # A heavy file can trap the compiler with no diagnostic (the bump-heap hits a
 # guard page mid-compile) — that's a nondeterministic heap-marginal OOM, not a
@@ -144,6 +214,20 @@ start_http_echo_server_if_needed() {
 # runtime — both are stable, so the first observation is final.
 run_one() {
   local f="$1"
+  if [ "$unit_out_cache_enabled" != "0" ]; then
+    local pathkey ckey
+    pathkey="$(printf '%s' "$f" | tr '/' '_')"
+    ckey="$(unit_out_key "$f")"
+    if [ -n "$ckey" ] && [ -s "$OUT_CACHE_ROOT/$STAGE2_SHA/$pathkey.$ckey.wasm" ]; then
+      local cout; cout="$(mktemp -t vibe-unit-XXXXXX.wasm)"
+      cp "$OUT_CACHE_ROOT/$STAGE2_SHA/$pathkey.$ckey.wasm" "$cout"
+      if VIBE_PREOPEN_DIR="$ROOT_DIR" timeout 300 bash "$RUNNER" --invoke _start "$cout" >/dev/null 2>&1; then
+        rm -f "$cout"; return 0
+      fi
+      LAST_DIAG="(test assertion trapped at runtime)"
+      rm -f "$cout"; return 1
+    fi
+  fi
   local attempt=0
   while [ "$attempt" -lt 3 ]; do
     attempt=$((attempt + 1))
@@ -161,6 +245,7 @@ run_one() {
       # -- 120s tripped exactly that way on a 4-vCPU runner (#1321), and a
       # run-phase timeout is reported as a trap and never retried.
       if VIBE_PREOPEN_DIR="$ROOT_DIR" timeout 300 bash "$RUNNER" --invoke _start "$out" >/dev/null 2>&1; then
+        unit_out_store "$f" "$out"
         rm -f "$out" "$out.diag"; return 0
       fi
       LAST_DIAG="(test assertion trapped at runtime)"
@@ -375,7 +460,7 @@ else
     fi
     return 0
   }
-  export -f unit_worker run_one
+  export -f unit_worker run_one unit_out_key unit_out_store
   # strict_cache_tail: tests that assert on the DEFAULT persistent-cache
   # root's own semantics (cache_underlying_env_override_test exercises the
   # VIBE_BUILD_CACHE_DIR override itself; the persistent_* trio asserts
