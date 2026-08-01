@@ -38,8 +38,34 @@ Parser dispatch is explicit:
 
 Reserved leading keyword detection (`let`, `fn`, `type`, `effect`, `import`,
 `test`, `handle`, `throw`) exists as helper logic only and does not switch parser modes.
-`fn` is not a current declaration form.
 - `map` is not a reserved keyword and can be used as a normal identifier.
+
+## Functions (`fn`)
+
+`fn` is the preferred top-level named-function declaration form (#727,
+ADR-0064), and is used throughout the README, cheatsheet, and tutorial. It
+requires full annotations (every parameter type plus a return type) and
+needs no `rec` marker to recurse:
+
+```vibe
+fn add(x: Int, y: Int) -> Int { x + y }
+fn fact(n: Int) -> Int { if n < 2 { 1 } else { n * fact(n - 1) } }
+fn identity[T](x: T) -> T { x }                // generic
+fn show[T: Eq + Ord](x: T) -> T { x }          // trait bounds
+fn hello() -> Unit with { Stdout } { stdout_write("hi\n") }
+export fn doubled(x: Int) -> Int { x * 2 }
+```
+
+`fn` is top-level only. The declaration (`SFnDecl`) is kept in the AST and
+lowered to the equivalent recursive `let` form
+(`let rec add: (Int, Int) -> Int = (x, y) -> { x + y }`) just before
+checking/codegen, so checker/codegen semantics of the two forms are
+identical. An optional `where { requires: .., ensures: .. }` contract (#731)
+runs as always-on runtime asserts. See
+[`docs/spec/syntax.md`](spec/syntax.md#named-functions-fn) for the full
+grammar and [`docs/cheatsheet.md`](cheatsheet.md#functions) for further
+examples (labeled/optional params, the `where` contract, method-style
+dispatch).
 
 ## Standard tutorial scope (v1 core)
 

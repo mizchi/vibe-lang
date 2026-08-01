@@ -158,6 +158,42 @@ Compatibility:
   `let f: (Int) -> Int = (x) -> { x }`.
 - Top-level `let mut` is rejected; local mutation is block-scoped.
 
+### Named Functions (`fn`)
+
+`fn` is the preferred top-level named-function declaration form (#727,
+ADR-0064):
+
+```vibe
+fn add(x: Int, y: Int) -> Int { x + y }
+fn fact(n: Int) -> Int { if n < 2 { 1 } else { n * fact(n - 1) } }
+fn identity[T](x: T) -> T { x }                // generic
+fn show[T: Eq + Ord](x: T) -> T { x }          // trait bounds
+fn hello() -> Unit with { Stdout } { stdout_write("hi\n") }
+export fn doubled(x: Int) -> Int { x * 2 }
+fn checked_add(x: Int, y: Int) -> Int
+  where { requires: x >= 0, requires: y >= 0, ensures: result >= x } { x + y }
+```
+
+Accepted form:
+
+```text
+"export"? "fn" Name TypeParams? "(" Params ")" "->" Type ("with" "{" Row "}")? WhereClause? Block
+```
+
+- Top-level only; every parameter and the return type must be annotated.
+- Recursion needs no `rec` marker.
+- The declaration (including any `where` clause) is kept in the AST as
+  `SFnDecl` and lowered to the equivalent `let rec` form
+  (`let rec add: (Int, Int) -> Int = (x, y) -> { x + y }`) just before
+  checking/codegen, so the two forms have identical semantics.
+- The optional `where { requires: .., ensures: .. }` contract (#731) runs
+  as always-on runtime asserts: each `requires` condition asserts at entry,
+  each `ensures` condition sees the function's value bound as `result` and
+  asserts at exit. An early `return` bypasses `ensures`.
+
+See [`docs/cheatsheet.md`](../cheatsheet.md#functions) for labeled/optional
+parameters and method-style dispatch (`Type::method` spelling).
+
 ### Functions And Lambdas
 
 ```vibe
