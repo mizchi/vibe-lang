@@ -68,6 +68,9 @@ import @vibe/compiler/codegen/common_extractors {
 }
 
 import @vibe/compiler/codegen/wasm_emit {
+  emit_array_get,
+  emit_array_len,
+  emit_array_set,
   emit_block_i64,
   emit_block_void,
   emit_br,
@@ -266,9 +269,50 @@ fn bc_expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) ->
   }
 }
 
+fn gc_native_array_receiver_slot(args: Array[Expr], local_names: Array[String], ctx: CompileCtxGc) -> Int {
+  if Array::length(args) == 0 {
+    -1
+  } else {
+    match Array::get(args, 0) {
+      EIdent(name, _) => {
+        let slot = find_local_slot(local_names, name)
+        if slot >= 0 && array_contains_int(ctx.gc_native_array_locals, slot) {
+          slot
+        } else {
+          -1
+        }
+      },
+      _ => -1
+    }
+  }
+}
+
 fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with { Error }) -> Int with { Error } {
   match callee {
     EIdent(fname, _) => {
+      let native_slot = gc_native_array_receiver_slot(args, local_names, ctx)
+      if native_slot >= 0 && fname == "Array::length" && Array::length(args) == 1 {
+        emit_local_get(buf, native_slot)
+        emit_array_len(buf)
+        emit_i64_extend_i32_u(buf)
+        return next_local
+      } else if native_slot >= 0 && fname == "Array::get" && Array::length(args) == 2 {
+        emit_local_get(buf, native_slot)
+        let nl = ce(buf, Array::get(args, 1), local_names, next_local, ld)
+        emit_i32_wrap_i64(buf)
+        emit_array_get(buf, ctx.gc_native_array_type_idx)
+        return nl
+      } else if native_slot >= 0 && fname == "Array::set" && Array::length(args) == 3 {
+        emit_local_get(buf, native_slot)
+        let nl1 = ce(buf, Array::get(args, 1), local_names, next_local, ld)
+        emit_i32_wrap_i64(buf)
+        let nl2 = ce(buf, Array::get(args, 2), local_names, nl1, ld)
+        emit_array_set(buf, ctx.gc_native_array_type_idx)
+        emit_i64_const(buf, 0)
+        return nl2
+      } else {
+        ()
+      }
       let ctor_lookup_idx = ctor_table_index_of(ctx.gc_ctor_table, fname)
       if ctor_lookup_idx >= 0 {
         let tag = Array::get(ctx.gc_ctor_table.tags, ctor_lookup_idx)

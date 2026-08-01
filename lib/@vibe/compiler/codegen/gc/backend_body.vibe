@@ -829,7 +829,9 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   // below. Its reference is dropped before user code, so it cannot cross the
   // universal i64 ABI or change capture/escape representation.
   let gc_native_alloc_probe_array_type_idx = 11
-  let closure_type_base = 12
+  // Mutable i64 array used solely by non-escaping user local literals.
+  let gc_native_array_type_idx = 12
+  let closure_type_base = 13
   let fresh_bytes_array: () -> Array[Bytes] = () -> {
     ArrayBuilder::freeze(ArrayBuilder::new())
   }
@@ -844,6 +846,9 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   let meta_i32 = array_empty()
   let meta_i64 = array_empty()
   let user_ref_local_indices_all = array_empty()
+  // Absolute local slots of typed native-array locals, one entry per user
+  // body; ref-cell metadata remains separate because it is still i64.
+  let user_native_array_local_indices_all = array_empty()
   // #415 B-1: one call = one gc builtin body — body bytes, extra local
   // counts, the (always empty here) user-ref locals row, and the
   // function-section type index together. The function section splices
@@ -855,6 +860,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
     Array::push(meta_i32, m32)
     Array::push(meta_i64, m64)
     Array::push(user_ref_local_indices_all, array_empty())
+    Array::push(user_native_array_local_indices_all, array_empty())
     Array::push(gc_builtin_type_idxs, type_idx)
   }
   push_gc_builtin(gc_gen_print_i64_body(), 3, 1, 1)
@@ -1024,6 +1030,9 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
             gc_global_names: gc_global_names_l,
             gc_float_locals: gc_float_slots_f,
             gc_bool_locals: gc_bool_slots_f,
+            gc_native_array_locals: array_empty(),
+            gc_native_array_local_types: array_empty(),
+            gc_native_array_type_idx: gc_native_array_type_idx,
             gc_to_string_is_show_wrapper: gc_to_string_is_wrapper,
             gc_agg_local_slots: gc_agg_slots_f,
             gc_agg_ret_names: gc_agg_ret_names_l,
@@ -1040,6 +1049,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
           Array::push(meta_i32, 0)
           Array::push(meta_i64, extra)
           Array::push(user_ref_local_indices_all, ref_local_indices_f)
+          Array::push(user_native_array_local_indices_all, func_ctx.gc_native_array_local_types)
         },
         _ => throw("expected function")
       }
@@ -1084,6 +1094,9 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
       gc_global_names: gc_global_names_l,
       gc_float_locals: array_empty(),
       gc_bool_locals: array_empty(),
+      gc_native_array_locals: array_empty(),
+      gc_native_array_local_types: array_empty(),
+      gc_native_array_type_idx: gc_native_array_type_idx,
       gc_to_string_is_show_wrapper: gc_to_string_is_wrapper,
       gc_agg_local_slots: array_empty(),
       gc_agg_ret_names: gc_agg_ret_names_l,
@@ -1151,12 +1164,14 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   Array::push(meta_i32, 0)
   Array::push(meta_i64, start_extra_locals)
   Array::push(user_ref_local_indices_all, array_empty())
+  Array::push(user_native_array_local_indices_all, array_empty())
   let mut li = 0
   while li < num_lambdas {
     Array::push(bodies, Array::get(lt_w.bodies, li))
     Array::push(meta_i32, Array::get(lt_w.meta_i32, li))
     Array::push(meta_i64, Array::get(lt_w.meta_i64, li))
     Array::push(user_ref_local_indices_all, array_empty())
+    Array::push(user_native_array_local_indices_all, array_empty())
     li = li + 1
   }
   let mut max_closure_arity = -1
@@ -1181,7 +1196,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   } else {
     0
   }
-  let num_base_types = 12
+  let num_base_types = 13
   let type_content = bytebuf_new()
   bytebuf_push_vec_header(type_content, num_base_types + num_closure_types)
   emit_func_type_raw(type_content, [
@@ -1238,6 +1253,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
     1
   ])
   emit_array_type_raw(type_content, 126, 0)
+  emit_array_type_raw(type_content, 126, 1)
   let mut cti = 0
   while cti < num_closure_types {
     let num_params = cti + 1
@@ -1437,8 +1453,10 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
     let ni32 = Array::get(meta_i32, ci)
     let ni64 = Array::get(meta_i64, ci)
     let ref_indices = Array::get(user_ref_local_indices_all, ci)
+    let native_indices = Array::get(user_native_array_local_indices_all, ci)
     let num_ref_locals = Array::length(ref_indices)
-    if num_ref_locals == 0 {
+    let num_native_locals = Array::length(native_indices)
+    if num_ref_locals == 0 && num_native_locals == 0 {
       if ni32 == 0 {
         if ni64 == 0 {
           leb128_encode_u32(func_buf, 0)
@@ -1476,10 +1494,24 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
           }
           ri = ri + 1
         }
+        let mut is_native_array = false
+        let mut nai = 0
+        while nai < num_native_locals {
+          if Array::get(native_indices, nai) == actual_local_idx {
+            is_native_array = true
+          }
+          nai = nai + 1
+        }
         leb128_encode_u32(func_buf, 1)
-        // #538: ref cells are linear-memory cells now; every local is i64.
+        // #538 ref cells remain linear-memory i64 cells. Only proven local
+        // literals use a nullable typed GC reference.
         let _ = is_ref
-        bytebuf_push(func_buf, 126)
+        if is_native_array {
+          bytebuf_push(func_buf, 99)
+          leb128_encode_u32(func_buf, gc_native_array_type_idx)
+        } else {
+          bytebuf_push(func_buf, 126)
+        }
         rli = rli + 1
       }
     }
