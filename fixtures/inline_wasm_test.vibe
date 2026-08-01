@@ -6,28 +6,28 @@
 // Addition is tag-transparent: (2a) + (2b) == 2(a+b), so the tagged inputs
 // can be added directly. This ONLY works because the Int tag is a pure
 // left-shift; it is not a license to ignore the ABI (see wasm_mul below).
-fn wasm_add(a: Int, b: Int) -> Int = wasm "(i64.add (local.get $a) (local.get $b))"
+fn wasm_add(a: Int, b: Int) -> Int = wasm"(i64.add (local.get $a) (local.get $b))"
 
 // Multiplication is NOT tag-transparent: (2a)*(2b) == 4ab == tagged(2ab) —
 // twice the right answer. The body must untag (i64.shr_s 1), multiply, and
 // retag (i64.shl 1). This is the canonical proof that inline wasm sees the
 // raw tagged ABI.
 fn wasm_mul(a: Int, b: Int) -> Int = wasm
-  "(i64.shl (i64.mul (i64.shr_s (local.get $a) (i64.const 1)) (i64.shr_s (local.get $b) (i64.const 1))) (i64.const 1))"
+"(i64.shl (i64.mul (i64.shr_s (local.get $a) (i64.const 1)) (i64.shr_s (local.get $b) (i64.const 1))) (i64.const 1))"
 
 // Naive mul on tagged values yields 2*(a*b) — asserted below to pin the ABI
 // contract in a test (if params ever stopped being raw tagged values, this
 // fixture fails loudly).
-fn wasm_mul_naive(a: Int, b: Int) -> Int = wasm "(i64.mul (local.get $a) (local.get $b))"
+fn wasm_mul_naive(a: Int, b: Int) -> Int = wasm"(i64.mul (local.get $a) (local.get $b))"
 
 // SIMD (0xFD prefix): splat both tagged inputs into i64x2 lanes, add
 // lane-wise (tag-transparent like scalar add), extract lane 0.
 fn wasm_simd_add(a: Int, b: Int) -> Int = wasm
-  "(i64x2.extract_lane 0 (i64x2.add (i64x2.splat (local.get $a)) (i64x2.splat (local.get $b))))"
+"(i64x2.extract_lane 0 (i64x2.add (i64x2.splat (local.get $a)) (i64x2.splat (local.get $b))))"
 
 // v128.const + lane arithmetic: adds tagged 100 (i.e. raw 200) to lane 0.
 fn wasm_simd_add_const(a: Int) -> Int = wasm
-  "(i64x2.extract_lane 0 (i64x2.add (i64x2.splat (local.get $a)) (v128.const i64x2 200 0)))"
+"(i64x2.extract_lane 0 (i64x2.add (i64x2.splat (local.get $a)) (v128.const i64x2 200 0)))"
 
 // Structured control (folded-form only) + multi-string body (adjacent string
 // literals are joined with newlines) + params as scratch locals via
@@ -35,70 +35,70 @@ fn wasm_simd_add_const(a: Int) -> Int = wasm
 // `(i64.const 2)` is tagged 1, tagged compare (le_s) and tagged add/sub are
 // order/tag-preserving.
 fn wasm_sum_to(n: Int, acc: Int) -> Int = wasm
-  "(block $done"
-  "  (loop $top"
-  "    (br_if $done (i64.le_s (local.get $n) (i64.const 0)))"
-  "    (local.set $acc (i64.add (local.get $acc) (local.get $n)))"
-  "    (local.set $n (i64.sub (local.get $n) (i64.const 2)))"
-  "    (br $top)))"
-  "(local.get $acc)"
+"(block $done"
+"  (loop $top"
+"    (br_if $done (i64.le_s (local.get $n) (i64.const 0)))"
+"    (local.set $acc (i64.add (local.get $acc) (local.get $n)))"
+"    (local.set $n (i64.sub (local.get $n) (i64.const 2)))"
+"    (br $top)))"
+"(local.get $acc)"
 
 // Folded if with a result type; ;; line comments are allowed in WAT text.
 fn wasm_max(a: Int, b: Int) -> Int = wasm
-  "(if (result i64) ;; tagged compare preserves order"
-  "  (i64.gt_s (local.get $a) (local.get $b))"
-  "  (then (local.get $a))"
-  "  (else (local.get $b)))"
+"(if (result i64) ;; tagged compare preserves order"
+"  (i64.gt_s (local.get $a) (local.get $b))"
+"  (then (local.get $a))"
+"  (else (local.get $b)))"
 
 // Bitwise on raw tagged values: (2a & 2b) == 2(a & b) — and works untagged
 // too; exercise hex immediates + and/or/xor.
-fn wasm_mask_low(a: Int) -> Int = wasm "(i64.and (local.get $a) (i64.const 0x1FE))"
+fn wasm_mask_low(a: Int) -> Int = wasm"(i64.and (local.get $a) (i64.const 0x1FE))"
 
 // Exported inline-wasm fn: `export fn ... = wasm` parses through the same
 // path.
-export fn wasm_neg(a: Int) -> Int = wasm "(i64.sub (i64.const 0) (local.get $a))"
+export fn wasm_neg(a: Int) -> Int = wasm"(i64.sub (i64.const 0) (local.get $a))"
 
 // (local ...) declarations (#805 SIMD follow-up): extra i64 scratch beyond
 // the params. Declarations sit at the START of the body, grouped by type
 // (i32, i64, v128); local indices continue past the params + env slot.
 fn wasm_with_i64_local(a: Int, b: Int) -> Int = wasm
-  "(local $t i64)"
-  "(local.set $t (i64.add (local.get $a) (local.get $b)))"
-  "(i64.add (local.get $t) (local.get $t))"
+"(local $t i64)"
+"(local.set $t (i64.add (local.get $a) (local.get $b)))"
+"(i64.add (local.get $t) (local.get $t))"
 
 // v128 local: keep a vector value across several uses — impossible before
 // locals support (the operand stack can't fan out). Doubles tagged `a` via
 // lane-wise add of the vector with itself.
 fn wasm_with_v128_local(a: Int) -> Int = wasm
-  "(local $v v128)"
-  "(local.set $v (i64x2.splat (local.get $a)))"
-  "(i64x2.extract_lane 0 (i64x2.add (local.get $v) (local.get $v)))"
+"(local $v v128)"
+"(local.set $v (i64x2.splat (local.get $a)))"
+"(i64x2.extract_lane 0 (i64x2.add (local.get $v) (local.get $v)))"
 
 // Bytes param: passes the RAW untagged object pointer (linear heap layout:
 // length at obj+4, data pointer at obj+8). Reads byte `i` (tagged Int) and
 // returns it tagged.
 fn wasm_byte_at(buf: Bytes, i: Int) -> Int = wasm
-  "(i64.shl"
-  "  (i64.extend_i32_u"
-  "    (i32.load8_u"
-  "      (i32.add (i32.load offset=8 (i32.wrap_i64 (local.get $buf)))"
-  "               (i32.wrap_i64 (i64.shr_s (local.get $i) (i64.const 1))))))"
-  "  (i64.const 1))"
+"(i64.shl"
+"  (i64.extend_i32_u"
+"    (i32.load8_u"
+"      (i32.add (i32.load offset=8 (i32.wrap_i64 (local.get $buf)))"
+"               (i32.wrap_i64 (i64.shr_s (local.get $i) (i64.const 1))))))"
+"  (i64.const 1))"
 
 // Bytes length via the header (obj+4), tagged on the way out.
 fn wasm_byte_len(buf: Bytes) -> Int = wasm
-  "(i64.shl (i64.extend_i32_u (i32.load offset=4 (i32.wrap_i64 (local.get $buf)))) (i64.const 1))"
+"(i64.shl (i64.extend_i32_u (i32.load offset=4 (i32.wrap_i64 (local.get $buf)))) (i64.const 1))"
 
 // i8x16.shuffle: reverse the 16 bytes of a v128 loaded from a Bytes buffer,
 // store it back — exercises shuffle immediates + v128.load/store through the
 // data pointer + i32/v128 locals together.
 fn wasm_reverse16(buf: Bytes) -> Int = wasm
-  "(local $p i32) (local $v v128)"
-  "(local.set $p (i32.load offset=8 (i32.wrap_i64 (local.get $buf))))"
-  "(local.set $v (v128.load align=1 (local.get $p)))"
-  "(v128.store align=1 (local.get $p)"
-  "  (i8x16.shuffle 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0 (local.get $v) (local.get $v)))"
-  "(i64.const 0)"
+"(local $p i32) (local $v v128)"
+"(local.set $p (i32.load offset=8 (i32.wrap_i64 (local.get $buf))))"
+"(local.set $v (v128.load align=1 (local.get $p)))"
+"(v128.store align=1 (local.get $p)"
+"  (i8x16.shuffle 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0 (local.get $v) (local.get $v)))"
+"(i64.const 0)"
 
 //# Misc
 

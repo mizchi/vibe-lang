@@ -64,7 +64,40 @@ wasmtime で実測した (input = i % 251 pattern):
   codegen 品質 (bounds check / boxing / 関数呼び出しコスト)。SIMD 化の前に
   codegen 側の伸び代が支配的。
 
-### inline wasm (`= wasm`, ADR-0072) での SIMD compress は現状不可能
+### 追記 (同日夜): inline wasm 拡張により SIMD compress を実装 — scalar 比 4〜6.6 倍
+
+下の「現状不可能」節の 3 つの壁はコンパイラ拡張で解消した (同ブランチ):
+
+1. **v128/i32/i64 の `(local ...)` 宣言** を inline wasm でサポート
+   (`compile_inline_wat_full` + code-entry locals header の v128 run、
+   meta_v128 配列を bodies/meta_i32/meta_i64 と並走)。
+2. **Bytes param** を許可 — 生の untagged object pointer が渡り、
+   `i32.load offset=8` で data pointer、`offset=4` で length が取れる
+   (buffer address intrinsic は builtin 追加ではなくこの形で実現)。
+3. **`i8x16.shuffle`** (16 lane-byte immediates) を WAT assembler に追加。
+
+これで BLAKE3 の 1-block full compression を flat WAT の kernel として
+`lib/@vibex/blake3/simd.vibe` に実装 (命令列は Python 生成器 +
+命令レベルシミュレータで公式ベクタ全一致を検証してから出力。rows 方式、
+message schedule は各 round の 4 vector を m0..m3 から 2 入力 shuffle 木で
+直接 gather、diagonalize は r1/r2/r3 lane 回転)。`simd_test.vibe` が
+公式ベクタと scalar/simd 一致を実機で pin。
+
+vibe bench (net of baseline、同一 wasmtime):
+
+| case | scalar blake3 | **simd blake3** | sha1 | 現行 cache key |
+|---|---:|---:|---:|---:|
+| 1 KiB | ~94 µs | **~14 µs (~72 MB/s)** | ~221 µs | ~9.8 µs |
+| 8 KiB | ~799 µs | **~202 µs (~41 MB/s)** | ~1593 µs | ~76 µs |
+
+- SIMD kernel は scalar vibe 比 **4〜6.6 倍**、sha1 比 **8〜16 倍**。
+- 現行 `compact_string_fingerprint` にほぼ並ぶ速度になり (1KiB で 14 vs
+  9.8 µs)、衝突耐性つきハッシュとしては実用域。
+- ネイティブ SIMD 天井 (~1.2 GB/s) との残差は per-call オーバーヘッド
+  (RC dup/drop + call) と driver 側の Bytes 構築。kernel を chunk 単位に
+  太らせればさらに縮む。
+
+### (歴史) inline wasm (`= wasm`, ADR-0072) での SIMD compress は当初不可能だった
 
 現行の inline wasm 制約 (v0.3 slice) を `fixtures/inline_wasm_test.vibe` と
 突き合わせた結論:
