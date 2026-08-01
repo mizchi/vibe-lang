@@ -960,8 +960,11 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with { Error, 
       // (path, content fingerprint): the first member pays one parse, every
       // other member (and every later cold compile of an unchanged vpkg)
       // reads the one-line cache file instead.
-      let vpkg_raw = Fs::read_file(vpkg_path)
-      let prefix_cache_path = persistent_vpkg_prefix_cache_path(vpkg_path, compact_string_fingerprint(vpkg_raw))
+      // #1308: key the cache probe off the memoized file fingerprint and
+      // defer the raw read to the miss branch — the hit path (every member
+      // after the first) previously re-read + re-hashed the whole contract
+      // just to compute the cache key.
+      let prefix_cache_path = persistent_vpkg_prefix_cache_path(vpkg_path, fingerprint_file_fs(vpkg_path))
       let cached_prefix = if Fs::exists(prefix_cache_path) {
         normalize_persistent_cache_text(Fs::read_file(prefix_cache_path))
       } else {
@@ -970,6 +973,7 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with { Error, 
       if String::starts_with(cached_prefix, "v1\n") {
         cached_prefix[3: String::length(cached_prefix)]
       } else {
+        let vpkg_raw = Fs::read_file(vpkg_path)
         let (_, vpkg_pin_blanked) = extract_require_pins(vpkg_raw)
         let (_, _, vpkg_extra) = parse_contract_program(lex(vpkg_pin_blanked))
         let prefix_text = contract_directory_shared_import_prefix_text(vpkg_extra)
@@ -1647,7 +1651,7 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with { Err
   // implies the cached conformance check passed for these exact inputs.
   let closure_fp_sb = StringBuilder::new()
   StringBuilder::push(closure_fp_sb, fingerprint_file_fs(path))
-  let member_resolved = array_empty()
+  let member_paths = array_empty()
   let member_raws = array_empty()
   let mut fpi = 0
   while fpi < Array::length(impl_raws) {
@@ -1659,12 +1663,14 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with { Err
     // exist, exactly like the same import spelled inside a .vibe impl file.
     let fp_resolved = resolve_path_fs(dir, fp_raw)
     ensure_regular_source_fs(fp_resolved)
-    let fp_content = Fs::read_file(fp_resolved)
+    // #1308: fingerprint via the stat-token memo and don't read the member
+    // body here — on a facade-cache hit (the common case) every member's
+    // content was read only to be thrown away with the hit's early return.
     StringBuilder::push(closure_fp_sb, "|")
     StringBuilder::push(closure_fp_sb, fp_resolved)
     StringBuilder::push(closure_fp_sb, ":")
-    StringBuilder::push(closure_fp_sb, compact_string_fingerprint(fp_content))
-    Array::push(member_resolved, (fp_resolved, fp_content))
+    StringBuilder::push(closure_fp_sb, fingerprint_file_fs(fp_resolved))
+    Array::push(member_paths, fp_resolved)
     Array::push(member_raws, fp_raw)
     fpi = fpi + 1
   }
@@ -1685,7 +1691,8 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with { Err
   let mut ri = 0
   while ri < Array::length(member_raws) {
     let raw = Array::get(member_raws, ri)
-    let (resolved, resolved_content) = Array::get(member_resolved, ri)
+    let resolved = Array::get(member_paths, ri)
+    let resolved_content = Fs::read_file(resolved)
     // #842: an impl raw may itself resolve to ANOTHER package's contract
     // (a cross-package `import ../pkg { ... }`, not just this package's own
     // sibling impl files) — route it through the same ingestion transform
