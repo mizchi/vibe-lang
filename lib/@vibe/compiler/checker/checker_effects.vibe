@@ -111,16 +111,7 @@ export fn effect_error_to_string(err: EffectError) -> String {
 // stay green while `for await` over an async stream becomes sound (#2+#3).
 
 fn effect_opt_is_async(eff: Option[String]) -> Bool {
-  let labels = effect_decl_labels(eff)
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(labels) {
-    if Array::get(labels, i) == "Async" {
-      found = true
-    }
-    i = i + 1
-  }
-  found
+  effect_row_has_label(effect_row_parse(eff), "Async")
 }
 
 /// True only for async-effect BUILTIN primitives (await/sleep/Stream::next/...).
@@ -360,33 +351,63 @@ export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[E
 // declines to flag the (rarer) perform-of-a-different-effect-inside-a-handle
 // case, which full row tracking (#626 criteria 2/4) will cover.
 
-/// Split a `with { A, B }` annotation into trimmed, deduped effect labels.
-fn effect_decl_labels(eff: Option[String]) -> Array[String] {
-  let out = array_empty()
+/// Parse a source `with { ... }` annotation into the canonical row. This is
+/// the sole parser for checker effect rows: labels are trimmed and deduped, and
+/// `None` remains structurally different from an explicit `with {}`.
+fn effect_row_parse(eff: Option[String]) -> Option[Array[String]] {
   match eff {
-    None => out,
+    // None is structurally distinct from Some([]): it means the row is
+    // inferred and therefore inherits its surrounding context.
+    None => None,
     Some(s) => {
+      let labels = array_empty()
       let raw = String::split(s, ",")
       let mut i = 0
       while i < Array::length(raw) {
         let label = String::trim(Array::get(raw, i))
-        if String::length(label) > 0 {
-          let mut seen = false
-          let mut j = 0
-          while j < Array::length(out) {
-            if Array::get(out, j) == label {
-              seen = true
-            }
-            j = j + 1
-          }
-          if !seen {
-            Array::push(out, label)
-          }
+        if String::length(label) > 0 && !effect_row_has_label(Some(labels), label) {
+          Array::push(labels, label)
         }
         i = i + 1
       }
-      out
+      // Some([]) is an explicitly pure `with {}` row.
+      Some(labels)
     }
+  }
+}
+
+/// Exact membership only; notably, `NotAsync` and `AsyncLike` do not contain
+/// the `Async` label.
+fn effect_row_has_label(row: Option[Array[String]], wanted: String) -> Bool {
+  match row {
+    None => false,
+    Some(labels) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(labels) {
+        if Array::get(labels, i) == wanted {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
+fn effect_row_labels(row: Option[Array[String]]) -> Array[String] {
+  match row {
+    None => array_empty(),
+    Some(labels) => labels
+  }
+}
+
+/// Resolve an annotation at a nested lambda boundary. Inferred rows inherit;
+/// explicit rows, including `with {}`, replace the surrounding row.
+fn effect_row_inherit(row: Option[Array[String]], surrounding: Array[String]) -> Array[String] {
+  match row {
+    None => surrounding,
+    Some(labels) => labels
   }
 }
 
@@ -398,18 +419,21 @@ fn label_is_effect_var(name: String) -> Bool {
 }
 
 fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
-  let mut i = 0
-  let mut ok = false
-  while i < Array::length(labels) {
-    let l = Array::get(labels, i)
-    if l == eff_name {
-      ok = true
-    } else if label_is_effect_var(l) {
-      ok = true
+  // All concrete label checks, including Async above, go through this same
+  // exact-membership primitive rather than substring matching.
+  if effect_row_has_label(Some(labels), eff_name) {
+    true
+  } else {
+    let mut i = 0
+    let mut has_effect_var = false
+    while i < Array::length(labels) {
+      if label_is_effect_var(Array::get(labels, i)) {
+        has_effect_var = true
+      }
+      i = i + 1
     }
-    i = i + 1
+    has_effect_var
   }
-  ok
 }
 
 /// A DIRECT `perform EffName::Op` is authorized if the declared row names
@@ -664,7 +688,7 @@ fn collect_handle_effects(arms: Array[(Pat, Expr)]) -> Array[String] {
 fn fn_binding_effects(ty: Option[TypeExpr], body: Expr) -> Array[String] {
   let sig = sig_type_effect_labels(ty)
   match body {
-    EFn(_, _, _, _, eff, _) => labels_union(sig, effect_decl_labels(eff)),
+    EFn(_, _, _, _, eff, _) => labels_union(sig, effect_row_labels(effect_row_parse(eff))),
     _ => sig
   }
 }
@@ -766,7 +790,7 @@ fn build_param_overlay(params: Array[(String, Option[TypeExpr])]) -> (Array[Stri
     let (pname, ptype) = Array::get(params, i)
     match ptype {
       Some(TyFn(_, _, eff)) => {
-        let labels = effect_decl_labels(eff)
+        let labels = effect_row_labels(effect_row_parse(eff))
         if Array::length(labels) > 0 {
           Array::push(names, pname)
           Array::push(effs, labels)
@@ -998,12 +1022,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // where it is written (its inferred row is surfaced in its type and
         // re-checked at the call/handle site). Conservative — like the
         // mutability pass, this can only miss errors, never invent them.
-        let lam_labels = effect_decl_labels(effect)
-        let body_declared = match effect {
-          // `with {}` is an explicitly pure row, unlike a missing annotation.
-          Some(_) => lam_labels,
-          None => declared
-        }
+        let body_declared = effect_row_inherit(effect_row_parse(effect), declared)
         // #885: extend the callback-parameter overlay with THIS function's own
         // function-typed parameters (if any carry a declared effect), scoped to
         // its body. New entries are appended AHEAD of the inherited overlay so
@@ -1182,8 +1201,8 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
 
 fn sig_type_effect_labels(topt: Option[TypeExpr]) -> Array[String] {
   match topt {
-    Some(TyFn(_, _, eff)) => effect_decl_labels(eff),
-    _ => effect_decl_labels(None)
+    Some(TyFn(_, _, eff)) => effect_row_labels(effect_row_parse(eff)),
+    _ => effect_row_labels(effect_row_parse(None))
   }
 }
 
@@ -1211,7 +1230,7 @@ fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body:
     // redescend through a nested `EFn` node.
     EFn(_, _, params, _, eff, fbody) => {
       let (ov_names, ov_effs) = build_param_overlay(merge_param_types_with_sig(ty, params))
-      check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(sig_labels, effect_decl_labels(eff)), false, fn_names, fn_effs, ov_names, ov_effs)
+      check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(sig_labels, effect_row_labels(effect_row_parse(eff))), false, fn_names, fn_effs, ov_names, ov_effs)
     },
     _ => check_perform_effects_expr_tx_in(fn_name, body, sig_labels, false, fn_names, fn_effs, no_str_labels(), no_ov_effs())
   }
@@ -1293,7 +1312,7 @@ fn check_perform_effects_stmt_tx(stmt: Stmt, fn_names: Array[String], fn_effs: A
     SLetMut(name, ty, body) => check_perform_effects_binding_tx(name, ty, body, fn_names, fn_effs),
     STest(_, body) => check_perform_effects_expr_tx(body, test_bench_ambient_effects(), false, fn_names, fn_effs, no_str_labels(), no_ov_effs()),
     SBench(_, body) => check_perform_effects_expr_tx(body, test_bench_ambient_effects(), false, fn_names, fn_effs, no_str_labels(), no_ov_effs()),
-    SExpr(e) => check_perform_effects_expr_tx(e, effect_decl_labels(None), false, fn_names, fn_effs, no_str_labels(), no_ov_effs()),
+    SExpr(e) => check_perform_effects_expr_tx(e, effect_row_labels(effect_row_parse(None)), false, fn_names, fn_effs, no_str_labels(), no_ov_effs())
     _ => array_empty()
   }
 }
@@ -1319,7 +1338,7 @@ fn push_env_fn_eff(name: String, ty: Type, fn_names: Array[String], fn_effs: Arr
   }
   match fnty {
     CtFn(_, _, eff) => {
-      let labels = effect_decl_labels(eff)
+      let labels = effect_row_labels(effect_row_parse(eff))
       if Array::length(labels) > 0 {
         Array::push(fn_names, name)
         Array::push(fn_effs, labels)
