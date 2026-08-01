@@ -2637,7 +2637,47 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // planned value cannot change a byte. This is the evidence for that swap.
   let lambda_plan_cell = lc_fresh_int_array()
   Array::push(lambda_plan_cell, 0)
-  let mut lambda_planned_total = 0
+  // #1259 step 7: the frozen plan, built BEFORE any body is emitted.
+  //
+  // Each function's body is transformed here (scrutinee lift + shadow
+  // uniquify under RC) rather than inside the body loop, because the count
+  // has to see the same expression codegen will walk. The two counters those
+  // transforms draw fresh names from are shared across functions, so this
+  // loop must visit them in the same order the body loop does -- it does,
+  // both are bi = 0..num_user_funcs, which is why hoisting the transform out
+  // cannot change a name.
+  //
+  // What this buys over counting inside the loop: every function's lambda
+  // base is now known before the first body is compiled, so a body no longer
+  // depends on its predecessors having been compiled. That is the property
+  // step 7's WholeProgramPlan needs.
+  let planned_bodies: Array[Expr] = [
+  ]
+  let lambda_bases = lc_fresh_int_array()
+  let mut lambda_base_acc = 0
+  let mut pbi = 0
+  while pbi < num_user_funcs {
+    let pb_stmt = Array::get(stmts, Array::get(fn_stmt_indices, pbi))
+    let pb_expr = if enable_rc {
+      let pb_seen: Array[String] = [
+      ]
+      lift_match_scrutinees(uniquify_shadowed_bindings(get_slet_expr(pb_stmt), Map::new(), uq_shadow_counter, pb_seen), m_scrut_counter)
+    } else {
+      get_slet_expr(pb_stmt)
+    }
+    Array::push(planned_bodies, pb_expr)
+    Array::push(lambda_bases, lambda_base_acc)
+    // A function DEFINITION is itself an EFn, and that outer EFn is the
+    // function -- codegen takes its params and compiles its body, it never
+    // routes it through compile_lambda. Counting it would reserve a dead slot
+    // per user function.
+    lambda_base_acc = lambda_base_acc + (if is_efn(pb_expr) {
+      count_lambda_sites_expr(get_efn_body(pb_expr))
+    } else {
+      count_lambda_sites_expr(pb_expr)
+    })
+    pbi = pbi + 1
+  }
   let mut bi = 0
   while bi < num_user_funcs {
     let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
@@ -2652,16 +2692,10 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     // rc_alias_dup_names, rc_dup_names, loop_borrowed_names, and the Perceus
     // plan itself) can never confuse two distinct bindings that happen to share
     // a name. See uniquify_shadowed_bindings's doc comment (normalize/index.vibe).
-    let __bi_expr = if enable_rc {
-      // #715: fresh per-function seen-set -- name uniqueness is only required
-      // within one function (Perceus plans and codegen bookkeeping are
-      // per-function), and per-function reset keeps first binders unrenamed.
-      let uq_seen: Array[String] = [
-      ]
-      lift_match_scrutinees(uniquify_shadowed_bindings(get_slet_expr(__bi_stmt), Map::new(), uq_shadow_counter, uq_seen), m_scrut_counter)
-    } else {
-      get_slet_expr(__bi_stmt)
-    }
+    // #1259 step 7: transformed once, up in the planning loop. Re-running the
+    // transform here would draw a second set of fresh names from the shared
+    // counters and diverge from what the plan counted.
+    let __bi_expr = Array::get(planned_bodies, bi)
     let body_buf = bytebuf_new()
     // #644: tell the linemap recorder which user function `body_buf`'s
     // offsets belong to (mirrors cov_state.cur_fn below). Set unconditionally
@@ -2910,22 +2944,14 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     } else {
       lc_fresh_int_array()
     }
-    // #1259: this function's preassigned range.
-    //
-    // `__bi_expr` is the body codegen actually walks (post scrutinee-lift /
-    // alpha-rename), so the count comes off it rather than the raw stmt. But
-    // for a function DEFINITION it is itself an EFn, and that outer EFn is the
-    // function -- codegen takes its params and compiles its body, it never
-    // routes it through compile_lambda. Counting it would reserve a table slot
-    // per user function that nothing ever fills; the over-count check below
-    // caught exactly that on the first function with a lambda in it.
-    let lambda_planned_here = if is_efn(__bi_expr) {
-      count_lambda_sites_expr(get_efn_body(__bi_expr))
+    // #1259 step 7: this function's preassigned range, straight out of the
+    // frozen plan -- no counting happens here any more.
+    Array::set(lambda_plan_cell, 0, Array::get(lambda_bases, bi))
+    let lambda_planned_end = if bi + 1 < num_user_funcs {
+      Array::get(lambda_bases, bi + 1)
     } else {
-      count_lambda_sites_expr(__bi_expr)
+      lambda_base_acc
     }
-    Array::set(lambda_plan_cell, 0, lambda_planned_total)
-    lambda_planned_total = lambda_planned_total + lambda_planned_here
     let compile_ctx = CompileCtx::{
       func_table: FuncTable::{
         names: all_fn_names_list,
@@ -3292,8 +3318,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       // The per-allocation check in compile_lambda catches an UNDER-count (the
       // walk runs past the planned range); this catches an OVER-count, where
       // the plan reserved slots for EFn nodes codegen never reached.
-      if Array::get(lambda_plan_cell, 0) != lambda_planned_total {
-        throw(String::concat("lambda plan over-count: planned through ", String::concat(__to_string(lambda_planned_total), String::concat(", walk stopped at ", __to_string(Array::get(lambda_plan_cell, 0))))))
+      if Array::get(lambda_plan_cell, 0) != lambda_planned_end {
+        throw(String::concat("lambda plan over-count: planned through ", String::concat(__to_string(lambda_planned_end), String::concat(", walk stopped at ", __to_string(Array::get(lambda_plan_cell, 0))))))
       } else {
         ()
       }
@@ -3368,8 +3394,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       // The per-allocation check in compile_lambda catches an UNDER-count (the
       // walk runs past the planned range); this catches an OVER-count, where
       // the plan reserved slots for EFn nodes codegen never reached.
-      if Array::get(lambda_plan_cell, 0) != lambda_planned_total {
-        throw(String::concat("lambda plan over-count: planned through ", String::concat(__to_string(lambda_planned_total), String::concat(", walk stopped at ", __to_string(Array::get(lambda_plan_cell, 0))))))
+      if Array::get(lambda_plan_cell, 0) != lambda_planned_end {
+        throw(String::concat("lambda plan over-count: planned through ", String::concat(__to_string(lambda_planned_end), String::concat(", walk stopped at ", __to_string(Array::get(lambda_plan_cell, 0))))))
       } else {
         ()
       }
