@@ -13,7 +13,7 @@
 // the merge resolves. Keep this file alias-free.
 import @vibe/cache {
   compact_string_fingerprint,
-  load_persistent_artifact,
+  load_artifact_envelope_at,
   persistent_artifact_cache_path,
   persistent_dep_list_cache_path,
   persistent_leaf_fingerprint_cache_path,
@@ -23,7 +23,7 @@ import @vibe/cache {
   persistent_source_list_cache_path,
   persistent_type_env_cache_path,
   stable_cache_path,
-  store_persistent_artifact
+  store_artifact_envelope_at
 }
 
 //# Functions
@@ -85,12 +85,20 @@ export fn cache_persistent_artifact_cache_path(version_tag: String, kind: String
   rebase_cache_path(persistent_artifact_cache_path(version_tag, kind, entry_name, fingerprint))
 }
 
+/// #1326: store/load must go through the REBASED path. They used to forward
+/// to the raw @vibe/cache store/load, which recompute the path WITHOUT the
+/// VIBE_BUILD_CACHE_DIR rebase — so while `cache_persistent_artifact_cache_path`
+/// answered with the isolated root, the actual bytes landed in (and were read
+/// from) the ambient `_build/vibe_*` root. That broke the #849 isolation for
+/// exactly this class: concurrently running cache tests shared one artifact
+/// path, tore each other's writes, and the poisoned entry then failed every
+/// later run that hit it (CI persisted it via the shard cache).
 export fn cache_store_persistent_artifact(version_tag: String, kind: String, entry_name: String, fingerprint: String, bytes: Bytes) -> Unit with { Error, Fs } {
-  store_persistent_artifact(version_tag, kind, entry_name, fingerprint, bytes)
+  store_artifact_envelope_at(cache_persistent_artifact_cache_path(version_tag, kind, entry_name, fingerprint), bytes)
 }
 
 export fn cache_load_persistent_artifact(version_tag: String, kind: String, entry_name: String, fingerprint: String) -> Option[Bytes] with { Error, Fs } {
-  load_persistent_artifact(version_tag, kind, entry_name, fingerprint)
+  load_artifact_envelope_at(cache_persistent_artifact_cache_path(version_tag, kind, entry_name, fingerprint))
 }
 
 export fn cache_persistent_dep_list_cache_path(version_tag: String, path: String, source_fingerprint: String, resolution_seed: String) -> String {
