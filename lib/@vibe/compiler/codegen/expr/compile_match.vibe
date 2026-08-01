@@ -256,6 +256,34 @@ fn mr_is_loop_borrowed_ident(e: Expr, ctx: CompileCtx) -> Bool {
   }
 }
 
+fn mr_spine_tail(e: Expr) -> Expr with { Error } {
+  if expr_tag(e) == 9 {
+    mr_spine_tail(get_elet_body(e))
+  } else {
+    e
+  }
+}
+
+/// A let-spine prefix is admissible when every spine binding carries NO
+/// planned RC action (not in rc_drop/rc_dup/rc_alias_dup) -- such bindings
+/// compile as plain value+local_set with no bookkeeping to reproduce, so the
+/// reuse path can compile them verbatim without re-implementing
+/// compile_expr_tail's ELet dup/drop machinery. Scalar temporaries
+/// (`let s = x + y`) are the common case; anything the plan tracks makes the
+/// arm ineligible (normal path).
+fn mr_spine_lets_ok(e: Expr, ctx: CompileCtx) -> Bool with { Error } {
+  if expr_tag(e) == 9 {
+    let n = get_elet_name(e)
+    if array_contains_str(ctx.rc_drop_names, n) || array_contains_str(ctx.rc_dup_names, n) || array_contains_str(ctx.rc_alias_dup_names, n) {
+      false
+    } else {
+      mr_spine_lets_ok(get_elet_body(e), ctx)
+    }
+  } else {
+    true
+  }
+}
+
 /// Eligibility for the reuse fusion on ONE conditional arm: the staged
 /// scrutinee (top of ctx.reuse_scrutinee_names) is this match's own bare-ident
 /// scrutinee, the arm pattern is `PCtor` whose args are all PBind/PWild with
@@ -269,16 +297,17 @@ fn mr_is_loop_borrowed_ident(e: Expr, ctx: CompileCtx) -> Bool {
 /// front). Returns the target ctor_table index, or -1 when the arm must
 /// compile through the normal borrow-bind path (scope-end drop covers it).
 fn mr_reuse_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) -> Int with { Error } {
-  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && ctx.rc_alloc_func_idx >= 0 && Array::length(ctx.reuse_scrutinee_names) > 0 && is_pctor(p) && is_eident(scrutinee) && expr_tag(body) == 8 {
+  let mr_tail = mr_spine_tail(body)
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && ctx.rc_alloc_func_idx >= 0 && Array::length(ctx.reuse_scrutinee_names) > 0 && is_pctor(p) && is_eident(scrutinee) && expr_tag(mr_tail) == 8 && mr_spine_lets_ok(body, ctx) {
     let sname = Array::get(ctx.reuse_scrutinee_names, Array::length(ctx.reuse_scrutinee_names) - 1)
     if get_eident_name(scrutinee) == sname {
       let pargs = get_pctor_args(p)
       let arity = Array::length(pargs)
-      let callee = get_ecall_callee(body)
+      let callee = get_ecall_callee(mr_tail)
       if arity >= 1 && is_eident(callee) {
         let ci = ctor_table_index_of(ctx.ctor_table, get_eident_name(callee))
         let src_ci = ctor_table_index_of(ctx.ctor_table, get_pctor_name(p))
-        if ci >= 0 && src_ci >= 0 && Array::get(ctx.ctor_table.field_counts, ci) == arity && Array::length(get_ecall_args(body)) == arity {
+        if ci >= 0 && src_ci >= 0 && Array::get(ctx.ctor_table.field_counts, ci) == arity && Array::length(get_ecall_args(mr_tail)) == arity {
           let mut shape_ok = true
           let mut fj = 0
           while fj < arity {
@@ -346,7 +375,7 @@ fn mr_reuse_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) -> In
 ///      count already correct); token == 0 -> fresh __rc_alloc identical to
 ///      compile_call's ctor path.
 fn mr_compile_reuse_arm(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag_local: Int, arity: Int, ctor_idx: Int, local_names: Array[String], ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } {
-  let args = get_ecall_args(body)
+  let args = get_ecall_args(mr_spine_tail(body))
   let pargs = get_pctor_args(pat)
   let tag = Array::get(ctx.ctor_table.tags, ctor_idx)
   // 1. raw payload binds: field j lives at (scrut & ~1) + 8 + 8j.
@@ -366,6 +395,18 @@ fn mr_compile_reuse_arm(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag
       ()
     }
     bi = bi + 1
+  }
+  // ADR-0062 shadow lane: route the scrutinee through a guarded dup+drop
+  // pair before consuming it. Net-zero on the refcount, but both halves
+  // check the shadow liveness byte, so reusing (or releasing) a block the
+  // shadow ledger already considers freed traps deterministically here
+  // instead of corrupting the free list downstream.
+  if ctx.rc_shadow {
+    emit_rc_dup_guarded(buf, scrut_local, true)
+    emit_local_get(buf, scrut_local)
+    emit_call(buf, ctx.rc_drop_func_idx)
+  } else {
+    ()
   }
   // 2. consume the reference; tk = block base or 0.
   let tk = Array::length(local_names)
@@ -415,6 +456,19 @@ fn mr_compile_reuse_arm(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag
   emit_end(buf)
   emit_i64_const(buf, 1)
   emit_local_set(buf, flag_local)
+  // 3b. admissible let-spine prefix: plain value + local_set per binding
+  // (mr_spine_lets_ok proved the plan owes them no dup/drop), evaluated
+  // AFTER the reference is consumed -- payloads are owned by their
+  // bindings, so spine code may consume them exactly once as usual.
+  let mut mr_sp = body
+  while expr_tag(mr_sp) == 9 {
+    let spv = get_elet_val(mr_sp)
+    let spn = get_elet_name(mr_sp)
+    let spnl = ce(buf, spv, local_names, Array::length(local_names), ctx, ld)
+    emit_local_set(buf, spnl)
+    Array::push(local_names, spn)
+    mr_sp = get_elet_body(mr_sp)
+  }
   // 4. field values.
   let vals: Array[Int] = [
   ]

@@ -35,10 +35,30 @@ struct PCtx {
   mut next_id: Int;
   mut seq_id: Int;
   pctx_names: Array[String];
+  // ADR-0092 borrow-inference slice 1: whole-program set of user fns with a
+  // borrowed arg0 ABI (compute_borrow_arg0_user_fns, common_analysis.vibe).
+  // Same COPY discipline as pctx_names -- see pctx_new's doc comment.
+  borrow_arg0_user: Array[String];
+  // The subset of borrow_arg0_user whose RETURN may be an unowned interior
+  // view (compute_may_return_view_fns intersected in linked_compile). Only
+  // calls to THESE mark view_call_let: suppressing the scope-end drop for a
+  // fresh-returning callee's binding leaks its result (compiler-gate RC
+  // reclamation guard), while a view-returning callee's binding must not
+  // release a reference it never acquired. Same COPY discipline.
+  view_ret_user: Array[String];
   uses: Array[Int];
   borrows: Array[Int];
   scalar: Array[Bool];
   remaining: Array[Int];
+  // ADR-0092 per-use pairing (the borrowed-arg0 over-release fix): uses as
+  // counted BEFORE pctx_apply_borrow_retention's +1 (i.e. owned consumes
+  // only), snapshotted by that pass in id order.
+  owned_uses: Array[Int];
+  // True for a let-binding whose VALUE is a call to a borrow-arg0 fn (user
+  // set or builtin list) -- the class whose result may be an unowned
+  // interior view. With the borrow set empty this is never set, so the fix
+  // is inert while lc_borrow_arg0_enabled is off.
+  view_call_let: Array[Bool];
   actions: Array[PerceusAction]
 }
 
@@ -113,11 +133,13 @@ fn pe_use(ctx: PCtx, scope: Map[String, Int], name: String) -> Int {
 /// storing it directly would let PCtx's structural drop decrement a refcount
 /// this plan never owned -- the #707/#715 double-free shape. One
 /// Array::slice is a single allocation + memory.copy of the name pointers.
-fn pctx_new(borrow_ret_names: Array[String]) -> PCtx {
+fn pctx_new(borrow_ret_names: Array[String], borrow_arg0_fns: Array[String], view_ret_fns: Array[String]) -> PCtx {
   PCtx::{
     next_id: 0,
     seq_id: 0,
     pctx_names: Array::slice(borrow_ret_names, 0, Array::length(borrow_ret_names)),
+    borrow_arg0_user: Array::slice(borrow_arg0_fns, 0, Array::length(borrow_arg0_fns)),
+    view_ret_user: Array::slice(view_ret_fns, 0, Array::length(view_ret_fns)),
     uses: [
     ],
     borrows: [
@@ -125,6 +147,10 @@ fn pctx_new(borrow_ret_names: Array[String]) -> PCtx {
     scalar: [
     ],
     remaining: [
+    ],
+    owned_uses: [
+    ],
+    view_call_let: [
     ],
     actions: [
     ],
@@ -195,8 +221,28 @@ fn pc_declare(ctx: PCtx, _name: String, scalar: Bool) -> Int {
   Array::push(ctx.uses, 0)
   Array::push(ctx.borrows, 0)
   Array::push(ctx.scalar, scalar)
+  Array::push(ctx.view_call_let, false)
   ctx.next_id = id + 1
   id
+}
+
+/// ADR-0092 per-use pairing: mark `id` as a view-call let-binding when its
+/// value is a call to a borrow-arg0 fn that may RETURN an unowned view
+/// (see PCtx.view_ret_user -- fresh-returning borrow-arg0 callees must
+/// keep their binding's scope-end drop or the result leaks).
+fn pctx_mark_view_call(ctx: PCtx, id: Int, value: Expr) -> Int {
+  match value {
+    ECall(vc, _, _) => match vc {
+      EIdent(vf, _) => if array_contains_str_pctx(ctx.view_ret_user, vf) {
+        Array::set(ctx.view_call_let, id, true)
+      } else {
+        ()
+      },
+      _ => ()
+    },
+    _ => ()
+  }
+  0
 }
 
 fn pe_declare(ctx: PCtx, _name: String) -> Int {
@@ -222,7 +268,19 @@ fn pc_count_use(ctx: PCtx, scope: Map[String, Int], name: String) -> Int {
 
 fn pe_scope_end(ctx: PCtx, id: Int, name: String) -> Int {
   if Array::get(ctx.remaining, id) > 0 && !Array::get(ctx.scalar, id) {
-    pe_push(ctx, PaDrop, name)
+    // ADR-0092 per-use pairing: a view-call let-binding whose uses are ALL
+    // borrows acquired no ownership -- its plan has no dup and its value
+    // may be an unowned interior view, so the retention-driven scope-end
+    // drop would release a reference it never held (the over-release that
+    // trapped codegen_heap_e2e_test under the borrowed-arg0 ABI). Suppress
+    // the drop for exactly that class; a fresh-owned value from a
+    // borrow-arg0 callee then leaks (bounded, safe direction). Params are
+    // never in the class (view_call_let is set only from ELet values).
+    if Array::get(ctx.view_call_let, id) && Array::get(ctx.owned_uses, id) == 0 && Array::get(ctx.borrows, id) > 0 {
+      ()
+    } else {
+      pe_push(ctx, PaDrop, name)
+    }
     Array::set(ctx.remaining, id, 0)
   }
   0
@@ -1219,7 +1277,7 @@ fn elaborate_rw(e: Expr, hctx: HeapInferCtx) -> Expr {
 }
 
 fn is_borrow_arg0_call(f: String) -> Bool {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "__rec_field"
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
 }
 
 export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
@@ -1233,7 +1291,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     EIdent(x, _) => pe_use(ctx, scope, x),
     ECall(callee, args, _) => {
       let is_index = match callee {
-        EIdent(f, _) => is_borrow_arg0_call(f),
+        EIdent(f, _) => is_borrow_arg0_call(f) || array_contains_str_pctx(ctx.borrow_arg0_user, f),
         _ => false
       }
       match callee {
@@ -1589,7 +1647,7 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     EIdent(x, _) => pc_count_use(ctx, scope, x),
     ECall(callee, args, _) => {
       match callee {
-        EIdent(f, _) => if is_borrow_arg0_call(f) {
+        EIdent(f, _) => if is_borrow_arg0_call(f) || array_contains_str_pctx(ctx.borrow_arg0_user, f) {
           0
         } else {
           pc_count_borrow(ctx, scope, f)
@@ -1598,7 +1656,7 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         _ => pc_count(ctx, scope, callee)
       }
       let is_index = match callee {
-        EIdent(f, _) => is_borrow_arg0_call(f),
+        EIdent(f, _) => is_borrow_arg0_call(f) || array_contains_str_pctx(ctx.borrow_arg0_user, f),
         _ => false
       }
       let mut i = 0
@@ -1624,11 +1682,13 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     ELet(name, value, body, _) => {
       pc_count(ctx, scope, value)
       let id = pc_declare(ctx, name, is_scalar_expr(ctx, value))
+      let _ = pctx_mark_view_call(ctx, id, value)
       pc_count(ctx, Map::set(scope, name, id), body)
     },
     ELetMut(name, value, body, _) => {
       pc_count(ctx, scope, value)
       let id = pc_declare(ctx, name, is_scalar_expr(ctx, value))
+      let _ = pctx_mark_view_call(ctx, id, value)
       pc_count(ctx, Map::set(scope, name, id), body)
     },
     ELetRec(name, value, body) => {
@@ -1913,6 +1973,7 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
 fn pctx_apply_borrow_retention(ctx: PCtx) -> Int {
   let mut bid = 0
   while bid < ctx.next_id {
+    Array::push(ctx.owned_uses, Array::get(ctx.uses, bid))
     if Array::get(ctx.borrows, bid) > 0 {
       Array::set(ctx.uses, bid, Array::get(ctx.uses, bid) + 1)
     } else {
@@ -1926,6 +1987,8 @@ fn pctx_apply_borrow_retention(ctx: PCtx) -> Int {
 /// Build the dup/drop plan for a function body expression.
 export fn build_perceus_plan(body: Expr) -> Array[PerceusAction] {
   let ctx = pctx_new([
+  ], [
+  ], [
   ])
   let empty: Map[String, Int] = Map::new()
   pc_count(ctx, empty, body)
@@ -2182,8 +2245,8 @@ export fn param_is_heap_in_body(name: String, otype: Option[TypeExpr], body: Exp
 /// machinery emits a PaDrop for a borrowed-only/unused heap param and a PaDup for
 /// one used in multiple owning positions. Heap-ness comes from the param's type
 /// annotation (scalar params get scalar=true so they are never dropped).
-export fn build_perceus_plan_with_params(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String]) -> Array[PerceusAction] {
-  let ctx = pctx_new(borrow_ret_names)
+export fn build_perceus_plan_with_params(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_arg0_fns: Array[String], view_ret_fns: Array[String]) -> Array[PerceusAction] {
+  let ctx = pctx_new(borrow_ret_names, borrow_arg0_fns, view_ret_fns)
   let mut scope: Map[String, Int] = Map::new()
   let mut pi = 0
   while pi < Array::length(params) {

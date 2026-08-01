@@ -124,6 +124,48 @@ region の外に出られない。検査は TaskGroup の雛形を一般化す�
    RC on/off 出力同一、`bench/regression` に region 版 bench を追加し
    `bytes_per_op`(一般 heap 分)0 を tracked series で固定。
 
+## Phase 1 implementation notes (2026-07-31, #1262)
+
+最初の縦串が landed した。実装の実際の形と、設計との差分・既知ギャップ:
+
+- **parser**: `region` は hard keyword(`TRegion`)。
+  `parser_expr_dispatch.vibe` mode 27 が `region r { body }` を
+  `__region_run((r) -> { body })` に脱糖する。body は mode 20
+  (statement block)で parse する — 単一式ではない。
+- **checker**(`checker.vibe` の `__region_run` ECall branch、
+  TaskGroup::run 特例のクローン): 引数が literal lambda(parser 由来の
+  唯一の形)のとき、**binder を rigid skolem `#region_N` に bind してから
+  body を検査する**。bind-first が本質: check-first だと `let l =
+  MutList::empty(r)` の時点で region 型がまだ自由変数で、この checker の
+  let-generalization が taint を量化して逃がす(ADR-0068 節の generalize
+  穴の再演)。skolem は CtNamed なので generalize は量化できず、`let`
+  経由の return-position escape も検出される — これが本 ADR の
+  「region 型の generalization 禁止」の Phase 1 実装形。非 literal callee
+  (手書き `__region_run(f)`)は check-then-unify の弱い経路に落ちる
+  (直接 return escape のみ検出、documented gap)。
+- **MutList**: checker-only phantom(`CtNamed("MutList", [elem, region])`、
+  FrozenArray 手法 #906)。element 型は Phase 1 では tolerant
+  (`CtUnknown`)。region 引数の型が第2 type arg に入るので escape scan が
+  taint を見る。`freeze -> FrozenArray[T]` / `to_array -> Array[T]` が
+  sanctioned exit。**call-site の明示 type application
+  (`MutList::empty[Int](r)`)は非対応** — wrapper が builtin 名を ECall
+  dispatch から隠すため。
+- **codegen**(linear のみ): `compile_call` が `__region_run(lam)` を
+  「dummy token 0 での即時 closure call」に、`MutList::empty(r)` を
+  `ArrayBuilder::new()`(token 非評価)に書き換え。push/freeze/to_array は
+  ArrayBuilder lowering への alias。arena セグメント + Perceus 免除は
+  未実装(次スライス — 現状 runtime は通常の RC heap)。wasm-gc backend は
+  未対応。
+- **gate**: `compiler_gate.sh` §74 が positive
+  (`fixtures/region_arena_ok.vibe`、42)と negative
+  (`fixtures/err_region_escape_return_value.vibe`、needle
+  "region escapes its scope")を固定。
+- **既知ギャップ(Phase 1 で許容、ADR 本文の設計は不変)**: effect row 統合
+  (§3)は未着手 — 別 pass の effect 検査は lambda wrapper を見るため、
+  region body 内の effect は enclosing fn に帰属しない。outer-binding scan は
+  ADR-0068 と同じく generalize 済み束縛への leak を見ない。heap
+  boundedness gate(arena 前提)は arena スライスと同時に入れる。
+
 ## Reconciliation ledger
 
 | 項目 | 根拠 / 観測 | 結論 |

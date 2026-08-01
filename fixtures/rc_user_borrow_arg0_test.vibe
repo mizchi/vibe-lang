@@ -1,0 +1,71 @@
+// ADR-0092 borrow-inference slice 1 (#1262): a top-level fn whose FIRST
+// param is only ever read (consume count 0, not mut-captured, fn never used
+// as a value) gets a borrowed arg0 ABI program-wide: the caller's plan
+// counts an ident arg0 as a free borrow (no transfer dup) and the callee's
+// plan-site scope-end drop for that param is skipped
+// (compute_borrow_arg0_user_fns / lc_borrow_arg0_user). These tests pin the
+// semantics under RC: the caller stays the owner, the value survives
+// repeated borrowed calls, and consuming/aliasing fns keep the owned ABI.
+
+fn sum3(xs: Array[Int]) -> Int {
+  Array::get(xs, 0) + Array::get(xs, 1) + Array::get(xs, 2)
+}
+
+fn head_or(xs: Array[Int], d: Int) -> Int {
+  if Array::length(xs) > 0 {
+    Array::get(xs, 0)
+  } else {
+    d
+  }
+}
+
+// Returns its arg on one path -> param0 consume count is 1 -> NOT eligible;
+// stays on the owned ABI (control: both ABIs must coexist correctly).
+fn pick(xs: Array[Int], flag: Bool) -> Array[Int] {
+  if flag {
+    xs
+  } else {
+    [
+      0
+    ]
+  }
+}
+
+test "borrowed arg0: shared array survives a 1000-call read loop" {
+  let xs = [
+    1,
+    2,
+    3
+  ]
+  let mut i = 0
+  let mut acc = 0
+  while i < 1000 {
+    acc = acc + sum3(xs)
+    i = i + 1
+  }
+  assert(acc == 6000)
+  assert(Array::get(xs, 2) == 3)
+}
+
+test "borrowed arg0: caller keeps ownership across calls" {
+  let ys = [
+    7,
+    8
+  ]
+  let a = head_or(ys, 0)
+  let b = head_or(ys, 0)
+  Array::set(ys, 0, 9)
+  assert(a == 7)
+  assert(b == 7)
+  assert(Array::get(ys, 0) == 9)
+}
+
+test "owned fallback: a passthrough fn keeps the owned ABI" {
+  let zs = [
+    4,
+    5
+  ]
+  let w = pick(zs, true)
+  assert(Array::get(w, 0) == 4)
+  assert(Array::get(w, 1) == 5)
+}

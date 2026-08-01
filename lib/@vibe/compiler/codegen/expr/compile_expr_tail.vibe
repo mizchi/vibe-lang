@@ -1381,6 +1381,13 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         nl2 + 1
       } else {
         if ctx.rc_drop_func_idx >= 0 {
+          // ADR-0092 note: an inline shared-decrement drop fast path was
+          // tried here and at the fn epilogues (PR #1274) -- it measured
+          // FLAT on the selfcompile KPI (the allocator, not drop call
+          // overhead, dominated) while growing every drop site ~5B -> ~70B,
+          // which failed the output-size ratchet (+14% closure_indirect).
+          // Reverted to the plain runtime call; the allocator-side wins
+          // (bounded walk + size bins) carry the measured improvement.
           emit_local_get(buf, local_idx)
           emit_call(buf, ctx.rc_drop_func_idx)
         } else if rc_kind == 1 {

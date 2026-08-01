@@ -318,12 +318,10 @@ prepare_flat_cli_source() {
   local out="$out_dir/cli_adapter_module_source.vibe"
   # Decoupling hook (#533 follow-up / selfhost release-asset bootstrap):
   # the flat module source is a deterministic function of the committed
-  # compiler source. Regenerating it requires the MoonBit-built host
-  # `vibe.exe` (via emit-module-source), which in turn needs the full
-  # mooncakes registry. In a constrained environment that prebuilt flat
+  # compiler source. It is regenerated via scripts/generate_bundle.sh
+  # (seed-compiler based). In a constrained environment the prebuilt flat
   # source can instead be PULLED from a release asset (see
-  # scripts/fetch_compiler.sh) and supplied here, so the seed ->
-  # stage1 -> stage2 build needs no MoonBit host build at all.
+  # scripts/fetch_compiler.sh) and supplied here, skipping regeneration.
   #
   #   VIBE_PREBUILT_MODULE_SOURCE         path to prebuilt source
   #   VIBE_PREBUILT_MODULE_SOURCE_SHA256  optional integrity check

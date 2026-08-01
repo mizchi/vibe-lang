@@ -108,13 +108,16 @@ import @vibe/compiler/codegen/builtin_bodies {
 import @vibe/compiler/codegen/common_analysis {
   collect_free_vars,
   collect_strings_stmts,
+  compute_borrow_arg0_user_fns,
+  compute_may_return_view_fns,
   count_lambda_sites_expr,
   emit_closure_call_tail,
   emit_closure_resolve,
   emit_i64_extend_i32_u,
   is_mut_captured_in,
   scope_tail_proj_root,
-  stmts_contain_exceptions
+  stmts_contain_exceptions,
+  zero_alloc_check
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -744,6 +747,14 @@ fn lc_wrap_entry_error_boundary(stmts: Array[Stmt], entry_name: String) -> Unit 
 }
 
 export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, prov: DbgProv) -> Bytes with { Error } {
+  // ADR-0091 Phase 1: enforce `@zero_alloc` markers before any lowering
+  // rewrites the marked bodies. No-op when no marker is present.
+  let za_msg = zero_alloc_check(stmts)
+  if za_msg != "" {
+    throw(za_msg)
+  } else {
+    ()
+  }
   // Method-bearing-trait dictionary passing (#641 PR-3). Universal codegen
   // convergence point — runs here on the fully merged program before generic
   // type params are stripped (just below). No-op unless a method-bearing trait
@@ -823,6 +834,73 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // program) so those lookups are bsearch_leftmost instead of a linear scan
   // -- same rationale as ctor_table.names_sorted above.
   let lc_borrow_ret_names = sorted_names_of(compute_borrow_returning_names(stmts))
+  // ADR-0092 borrow-inference slice 1: user fns whose arg0 ABI is borrowed
+  // program-wide (read-only first param, never valued/aliased -- see
+  // compute_borrow_arg0_user_fns). The entry fn and the conventional entry
+  // names are excluded: the host invokes them without consulting the set.
+  // ADR-0092 borrow-inference slice 1 -- DEFAULT OFF pending the
+  // per-use-paired planner vocabulary. Four failure classes have been
+  // isolated so far, each with its mechanism landed (all provably inert
+  // while this is false, since the borrow set is then empty):
+  // (1) over-release: a let-binding holding an UNOWNED interior view
+  // (value = call to a fn like agg_expr_lookup that returns a borrow-ret
+  // builtin result raw) whose uses all flip to borrows loses its entry
+  // dup while the retention-driven scope-end drop stays -- fixed by the
+  // planner's view-call drop suppression (PCtx.owned_uses/view_call_let).
+  // (2) fresh-result leak: suppressing that drop for EVERY borrow-arg0
+  // callee also cancels the release of FRESH results -- fixed by
+  // restricting the marking to callees that MAY RETURN a view
+  // (compute_may_return_view_fns, intersected into lc_borrow_view_ret).
+  // (3) temp-arg0 leak: a fresh temporary passed directly at a borrowed
+  // arg0 has no owner left to release it (the callee's epilogue drop is
+  // filtered program-wide) -- fixed by disqualifying fns ever called
+  // with a non-ident arg0 (ca_collect_nonident_arg0).
+  // (4) UNRESOLVED: with (1)-(3) combined, codegen_heap_e2e_test traps
+  // again and the RC reclamation guard still leaks 1.9MB -- changing the
+  // set's membership shuffles which latent per-binding imbalances are
+  // exercised (same fragility the original N=494/495 set bisection
+  // showed), so point-wise repairs do not converge. The sound endpoint
+  // is explicit per-use pairing in the plan (each dup tied to the
+  // consume it funds -- the ADR-0092 PaReuseToken/PaReuseAlloc planner
+  // vocabulary phase). Measured potential while enabled: RC selfcompile
+  // ratio 1.951 -> 1.71-1.80.
+  let lc_borrow_arg0_enabled = false
+  let lc_borrow_arg0_user_all = if lc_borrow_arg0_enabled {
+    compute_borrow_arg0_user_fns(stmts)
+  } else {
+    lc_fresh_string_array()
+  }
+  let lc_borrow_arg0_user = lc_fresh_string_array()
+  let mut lba_i = 0
+  while lba_i < Array::length(lc_borrow_arg0_user_all) {
+    let lba_n = Array::get(lc_borrow_arg0_user_all, lba_i)
+    if lba_n != entry_name && lba_n != "main" && lba_n != "_start" && lba_n != "cli_main" {
+      Array::push(lc_borrow_arg0_user, lba_n)
+    } else {
+      ()
+    }
+    lba_i = lba_i + 1
+  }
+  // The borrow-arg0 fns whose RETURN may be an unowned interior view: only
+  // these mark view_call_let in the planner (see PCtx.view_ret_user and the
+  // gate comment above). Intersection keeps the planner's marking check to
+  // one membership test.
+  let lc_borrow_view_all = if lc_borrow_arg0_enabled {
+    compute_may_return_view_fns(stmts)
+  } else {
+    lc_fresh_string_array()
+  }
+  let lc_borrow_view_ret = lc_fresh_string_array()
+  let mut lbv_i = 0
+  while lbv_i < Array::length(lc_borrow_view_all) {
+    let lbv_n = Array::get(lc_borrow_view_all, lbv_i)
+    if array_contains_str(lc_borrow_arg0_user, lbv_n) {
+      Array::push(lc_borrow_view_ret, lbv_n)
+    } else {
+      ()
+    }
+    lbv_i = lbv_i + 1
+  }
   // #710: see CompileCtx.scalar_ret_names' doc comment (common_base/common_base.vibe).
   let lc_scalar_ret_names = sorted_names_of(compute_scalar_returning_names(stmts))
   let fn_names_list = lc_fresh_string_array()
@@ -1238,6 +1316,21 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let dbgargs_base = dbgargs_count_addr + 8
   let dbgargs_reserve = if debug_break {
     8 + dbgargs_cap * 8
+  } else {
+    0
+  }
+  // ADR-0092 (#1262) KPI follow-up 2: size-segregated free-list bins for
+  // small RC blocks. 32 bin heads (4 bytes each, sizes 16..264 step 8) live
+  // just below the bump base; the bump base moves up by the 128-byte table
+  // (rounded to 256 for alignment headroom). Linear memory is zero-page
+  // initialized and the data segments end below heap_start, so the bins
+  // start empty without an explicit memset. gen_rc_drop_body pushes
+  // small freed blocks onto their exact-size bin (O(1) exact fit on the
+  // alloc side); everything else stays on the legacy global-2 list with
+  // the bounded walk.
+  let rc_bins_base = heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve
+  let rc_bins_reserve = if enable_rc {
+    256
   } else {
     0
   }
@@ -2479,8 +2572,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   push_builtin(gen_bytes_from_array_body(enable_rc, arr_len_idx, arr_get_idx, bytes_new_idx, bytes_push_idx), 2, 1, 3)
   push_builtin(gen_bytes_to_array_body(enable_rc, arr_new_idx, arr_push_idx, bytes_len_idx, bytes_get_idx), 2, 1, 3)
   if enable_rc {
-    push_builtin(gen_rc_drop_body(rc_drop_idx, rc_shadow), 5, 1, 1)
-    push_builtin(gen_rc_alloc_body(rc_shadow), 4, 0, 3)
+    push_builtin(gen_rc_drop_body(rc_drop_idx, rc_shadow, rc_bins_base), 5, 1, 1)
+    push_builtin(gen_rc_alloc_body(rc_shadow, rc_bins_base), 5, 0, 3)
   } else {
     ()
   }
@@ -2757,7 +2850,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       __bi_expr
     }
     if enable_rc {
-      let plan = build_perceus_plan_with_params(lc_norm_params, __bi_body, lc_borrow_ret_names)
+      let plan = build_perceus_plan_with_params(lc_norm_params, __bi_body, lc_borrow_ret_names, lc_borrow_arg0_user, lc_borrow_view_ret)
       let mut lhpi = 0
       while lhpi < Array::length(lc_norm_params) {
         let (lhpn, lhpt) = Array::get(lc_norm_params, lhpi)
@@ -2768,11 +2861,33 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         }
         lhpi = lhpi + 1
       }
+      // ADR-0092 borrow-inference slice 1: when THIS fn's arg0 ABI is
+      // borrowed, the caller keeps ownership -- the plan's scope-end drop
+      // (and any entry dup) for param0 must not be emitted here.
+      let bfn_p0 = if array_contains_str(lc_borrow_arg0_user, fn_name_dbg) && Array::length(lc_norm_params) >= 1 {
+        let (bfn_p0n, _) = Array::get(lc_norm_params, 0)
+        bfn_p0n
+      } else {
+        ""
+      }
       let mut di = 0
       while di < Array::length(plan) {
         let pa = Array::get(plan, di)
         if pa_is_drop(pa) {
-          Array::push(rc_drops, pa.name)
+          // Skip ONLY the drop for the borrowed param -- the plan is
+          // name-keyed, so a shadowing local sharing param0's name can
+          // carry dup/alias-dup actions of its own, and filtering those
+          // out under-counts references (use-after-free that only
+          // surfaces under allocation churn -- codegen_heap_e2e_test
+          // caught it after ~90 compiles). A same-named shadow's own
+          // scope-end drop is also skipped here (a bounded leak, safe
+          // direction); eligibility makes that rare since a bare read of
+          // the shadow disqualifies the fn.
+          if pa.name == bfn_p0 && bfn_p0 != "" {
+            ()
+          } else {
+            Array::push(rc_drops, pa.name)
+          }
         } else if pa_is_alias_dup(pa) {
           Array::push(rc_alias_dups, pa.name)
         } else if pa_is_dup(pa) {
@@ -2880,6 +2995,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       reuse_scrutinee_names: lc_fresh_string_array(),
       reuse_flag_locals: lc_fresh_int_array(),
       borrow_ret_names: lc_borrow_ret_names,
+      borrow_arg0_user: lc_borrow_arg0_user,
+      borrow_view_ret: lc_borrow_view_ret,
       scalar_ret_names: lc_scalar_ret_names,
       pending_letrec_self_name: lc_fresh_string_array(),
       table_slots_used: table_slots_used,
@@ -3008,6 +3125,28 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           iw_scan = iw_scan + 1
         }
       }
+      // ADR-0092 Phase 1 widening: a function whose body is EXACTLY
+      // `match p { ... }` over one of its own heap params (the dominant
+      // shape of the compiler's AST-rebuild loops) stages the same reuse
+      // fusion the ELet form gets in compile_expr_tail — flag local first,
+      // (name, flag) pushed for compile_match, and the param's #725
+      // epilogue drop below guarded on the flag.
+      let pfuse_name = if enable_rc && rc_drop_idx >= 0 && iw_found < 0 && expr_tag(body) == 16 && is_eident(get_match_scrutinee(body)) {
+        get_eident_name(get_match_scrutinee(body))
+      } else {
+        ""
+      }
+      let pfuse = pfuse_name != "" && array_contains_str(rc_drops, pfuse_name) && array_contains_str(lc_heap_params, pfuse_name)
+      let pfuse_flag = if pfuse {
+        Array::push(local_names, "__reuse_flag")
+        emit_i64_const(body_buf, 0)
+        emit_local_set(body_buf, param_count)
+        Array::push(compile_ctx.reuse_scrutinee_names, pfuse_name)
+        Array::push(compile_ctx.reuse_flag_locals, param_count)
+        param_count
+      } else {
+        0 - 1
+      }
       let final_nl = if iw_found >= 0 {
         let iw_param_names = lc_fresh_string_array()
         let mut iw_pi = 0
@@ -3019,7 +3158,17 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         bytebuf_push_buf(body_buf, compile_inline_wat(fn_name_dbg, Array::get(iw_wats, iw_found), iw_param_names))
         param_count
       } else {
-        compile_expr(body_buf, body, local_names, param_count, compile_ctx, -1)
+        compile_expr(body_buf, body, local_names, if pfuse {
+          param_count + 1
+        } else {
+          param_count
+        }, compile_ctx, -1)
+      }
+      if pfuse {
+        Array::truncate(compile_ctx.reuse_scrutinee_names, Array::length(compile_ctx.reuse_scrutinee_names) - 1)
+        Array::truncate(compile_ctx.reuse_flag_locals, Array::length(compile_ctx.reuse_flag_locals) - 1)
+      } else {
+        ()
       }
       let mut tail_nl = final_nl
       if enable_rc && rc_drop_idx >= 0 {
@@ -3105,8 +3254,19 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
             // (fixtures/rc_branch_loop_mixed_consume_test.vibe).
             let tdn_loop_drop = tdn_loop_count > 0 && !lc_has_nonloop_consume(body, tdn)
             if array_contains_str(rc_drops, tdn) || tdn_loop_drop {
-              emit_local_get(body_buf, tdj)
-              emit_call(body_buf, rc_drop_idx)
+              if pfuse_flag >= 0 && tdn == pfuse_name {
+                // ADR-0092: a reuse arm consumed this param's reference —
+                // drop only on the paths that did not (flag still 0).
+                emit_local_get(body_buf, pfuse_flag)
+                emit_i64_eqz(body_buf)
+                emit_if_void(body_buf)
+                emit_local_get(body_buf, tdj)
+                emit_call(body_buf, rc_drop_idx)
+                emit_end(body_buf)
+              } else {
+                emit_local_get(body_buf, tdj)
+                emit_call(body_buf, rc_drop_idx)
+              }
             } else {
               ()
             }
@@ -4219,7 +4379,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   if total_table_entries > 0 {
     emit_table_section_funcref(out, total_table_entries)
   }
-  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + (if rc_shadow {
+  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + rc_bins_reserve + (if rc_shadow {
     rc_shadow_reserve()
   } else {
     0
@@ -4256,7 +4416,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   }
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
-  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve)
+  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + rc_bins_reserve)
   emit_end(global_content)
   bytebuf_push(global_content, 126)
   bytebuf_push(global_content, 1)
