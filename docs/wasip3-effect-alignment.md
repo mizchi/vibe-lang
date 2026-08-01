@@ -144,10 +144,20 @@ trampoline を将来 `wasi:http/service` の
 ### 6. 最初の具体ステップ — probe first
 
 `tools/wasip3_component_probe` に「`future<T>` **値**を渡す probe は未作成
-(`future.read` の literal encoding は実測でなく推定)」と明記されている。
+(`future.read` の literal encoding は実測でなく推定)」と明記されていた。
 本 repo の流儀(probe first → byte-exact emitter)に従い、実装順序は:
 
-1. `future<T>` 値 probe(`spawned_future/` の scaffolding を流用)
+1. `future<T>` 値 probe(`spawned_future/` の scaffolding を流用)—
+   **作成済み** (`future_value/`, #1218)。実測: future.* built-in は
+   `[future-<op>-N]<導入元 WIT 関数名>` で命名され (per-function ×
+   per-type-index、global counter ではない)、`future.read` は
+   `[async-lower][future-read-0]...` として async-lowered で到着 (既存の
+   waitable-set 機構にそのまま乗る = stackful 構成では既存 [async-lower]
+   import call と同型に emit できる)。task/waitable 側の機構は bare-async
+   probe と完全一致 (future 値は future.* 一族だけを追加する)。詳細は
+   `future_value/canon-imports-exports.wit-abi.txt`。host 側 driver
+   (wasmtime の FutureWriter で値を書く側) は未作成 — emitter 実装時の
+   end-to-end 検証で作る。
 2. `future.*` / `stream.*` canon emitter(§3.6 の loop を emit パターン化、
    memory cycle は `comp_generate_memhost_module` の既解決を流用)
 3. Async 統一(Decision 1)と `suspend_cps_pass` の `while`/`let mut`

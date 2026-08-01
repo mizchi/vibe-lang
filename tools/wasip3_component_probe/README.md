@@ -49,11 +49,15 @@ here because this probe's import is a **bare async function** (`async func()
 `future.new`/`.read` pair for a directly async-lowered import/export and
 folds the wait into the `[async-lower]`/`[async-lift]` call itself, backed by
 the same `waitable-set`/`subtask` machinery. A probe that explicitly passes a
-`future<T>` *value* (e.g. an import returning `future<u32>` that the guest
-then reads itself) would be needed to see literal `future.read` calls — not
-yet built here; `get-async`'s implicit wait already exercises the
-`waitable-set.new`/`.poll`/`waitable.join` loop, which is the part
-`compile_call.vibe`'s `await` lowering actually needs to emit.
+`future<T>` *value* (an import returning `future<u32>` that the guest
+then reads itself) is needed to see literal `future.*` calls — now built
+in `future_value/` (ADR-0089 Part B step 1): its capture shows the
+`[future-new-0]get-future` / `[async-lower][future-read-0]get-future` /
+`[future-drop-readable-0]get-future` family, named per introducing WIT
+function and per type index, with the read itself arriving async-lowered
+on the same waitable-set machinery. `get-async`'s implicit wait already
+exercises the `waitable-set.new`/`.poll`/`waitable.join` loop, which is
+the part `compile_call.vibe`'s `await` lowering actually needs to emit.
 
 ## Update: stackful blocking-wait mechanics now proven (`stackful/`)
 
