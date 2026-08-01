@@ -2654,3 +2654,30 @@ export fn detect_unbound_nonunit_returns(stmts: Array[Stmt], tytab: Array[(Int, 
   }
   out
 }
+
+/// #1218 (ADR-0084/ADR-0071 gap): a GENERIC effect declaration (`effect
+/// State[S] { ... }`) compiles and runs under both handler classes, but its
+/// operation signatures are never registered (see the SEffectDef arm above:
+/// only zero-param effects enter the TDEffect registry), so every consumer
+/// ground-gates to "no signature checking" -- `perform State::Get(1,2,3)`
+/// against a 0-arity op passes silently, handler arm names/arity/payloads
+/// are not validated, and `with { State[Int] }` is a parse error so the row
+/// can only name the bare effect. Until ADR-0071 generic-instantiation
+/// normalization gives these real signatures, surface the hole as a
+/// warning at the declaration site instead of letting it read as checked.
+export fn detect_generic_effect_decls(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectDef(_, ename, eparams, _) => if Array::length(eparams) > 0 {
+        Array::push(out, String::concat("generic effect '", String::concat(ename, "' declares type parameters: its operation signatures are not registered, so perform arguments and handler arms for it are unchecked (pending ADR-0071 generic-instantiation normalization)")))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}

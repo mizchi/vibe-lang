@@ -888,6 +888,63 @@ emitter（固定シェイプの component 合成）は本節では作ってい�
 同じ「mechanics 実証のみ」フェーズ。実 `.vibe` ソースからこの形へ落とすには
 上記の state 表現が先に要る。
 
+### 3.12 ADR-0089 step 2 — `future.*` / `stream.*` canon emitter landed（#1218）
+
+§3.6 の canon 表のうち **`future.new/read/write/drop-readable/drop-writable`
+と `stream.new/read/write/drop-readable/drop-writable` を初めて emitter 化**
+した（`emit_canon_future_*` / `emit_canon_stream_*` +
+`emit_comp_future_type_section` / `emit_comp_stream_type_section` +
+固定シェイプ `comp_emit_component_wasm_future_value` /
+`comp_emit_component_wasm_stream_value`、gate =
+`scripts/test_future_value_component_gate.sh` /
+`scripts/test_stream_value_component_gate.sh`)。probe は
+`tools/wasip3_component_probe/future_value/component.wat` と
+`stream_value/component.wat`（hand-authored、wasmtime 47 実測 42）。
+
+**§3.3 の「self round-trip は deadlock」の回避方法が確定**: M2c-3 spike は
+BLOCKING read で producer 不在 → deadlock だったが、**read/write の両方に
+`async` canonopt を付けると片側が fiber ではなく waitable として park する**
+ため、単一 task が自分自身と rendezvous できる:
+
+```
+future.new -> async future.read (BLOCKED)
+  -> waitable.join(readable, ws)
+  -> async future.write 42   ; pending read があるので copy は即時完了
+  -> waitable-set.wait        ; FUTURE_READ (event code 4)
+  -> read buffer から値を load -> drop-readable/-writable -> ws.drop
+```
+
+実測で pin した encodings（すべて probe が diagnostic 値として報告する形で
+検証、trap に頼らない）:
+
+- `future.new` の packed i64 は `(writable << 32) | readable`
+  （**readable が下位 32bit**。逆に読むと future.read が wrong-handle で trap）
+- async `future.read`/`future.write` の BLOCKED は `0xffffffff`
+- pending read に対する write は **call から直接 COMPLETED が返る**
+  （§3.9 の eager-completion パスと同じ「即時完了」形。subtask は作られない）
+- 完了 event は FUTURE_READ = **4**（payload[0] = readable end index）。
+  stream 側は STREAM_READ = **2**、read/write の core sig は
+  `(handle, ptr, count) -> status`（future より 1 引数多い）、完了 status は
+  `(amount << 4) | code` に pack される
+- wasmtime 47 でも future.*/stream.* canon は
+  `-W component-model-more-async-builtins=y`（🚝）が必要（§3.3 の 45 での
+  観測から不変）。**この component は host import を持たない**ので、
+  `func_wrap_concurrent` driver（viberun）不要 — 素の
+  `wasmtime --invoke run()` で駆動できる（§3.9 bug #1 の deadlock 条件に
+  当たらない）
+
+canon section のバイト形状（`wasm-tools dump` で回収、emitter 各関数の doc
+comment にも記載): component 型 `(future u32)` = `65 01 79`、
+`future.new` = opcode `0x15` + typeidx、`.read`/`.write` = `0x16`/`0x17` +
+typeidx + canonopts（async `06`、memory `03 <idx>`）、
+`.drop-readable`/`.drop-writable` = `0x1a`/`0x1b` + typeidx。
+
+これで §3.6 の blocking-await ループの **`future.read` 側の部品が全部
+byte-exact で手元に揃った**。残る M1b-3c 系の未着手は「実 `.vibe` ソースの
+await をこの経路に配線する」（ADR-0076 の suspend lowering との接続、
+ADR-0089 step 3-4）と、host 供給 future を read する形の e2e（host 側
+FutureWriter driver が必要 — viberun に future を返す import を足す）。
+
 ## 4. WASI 0.3 境界マッピング
 
 | vibe | WASI 0.3 |
@@ -1023,7 +1080,8 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | **M2c-3 (surface)** | `for await x in s { ... }` サーフェス構文。**言語仕様: `for await` は pull-only** — iterable は pull closure `() -> Option[T]` を要求し、`None` まで駆動する。eager iteration（Array/`Stream[T]`）は plain `for` を使う（#582）。**selfhost compiler は `await` マーカー自体を pull シグナルとして扱い**、`for await x in s` を parser で `let __pull_next = s; let mut cont = true; while cont { match __pull_next() { Some(x) => body, None => cont = false } }` へ desugar（`build_pull_for_in`、codegen に型情報不要）。マーカー無し `for x in arr` は eager `EForIn`。**host compiler は現状 iterable の型で eager/pull を出し分ける permissive 実装**（`await` マーカーを無視し eager `for await` も許容する）だが、spec 適合プログラム（pull closure のみ `for await`）は host/selfhost で同一挙動。host 側の hard enforcement は ROI 低のため見送り（#582）。gate の for-await entry は pull closure（bytes("ABC") を yield）で → 42 | done |
 | **M2c-3 (spike)** | 真の `stream<u8>` canon built-ins の wasmtime 45 実行可否と最小形を確定（§3.3、`cm_stream_read_probe.wat` → 42）。`stream.read`/`write` は `more-async-builtins` 必須、self round-trip は producer 不在で deadlock | done |
 | **M2c-3 (producer 調査)** | producer を intra-wasm subtask で用意する案を検証 → cross-component reentrance（`cannot enter component instance`）で行き止まり。producer は **host**（HTTP body の readable `stream<u8>`）とする pivot を確定（§3.3.1） | done |
-| **M2c-3 (runtime)** | `component_codegen` に `stream.read` canon emit、host 供給の readable `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループで消費、`for await`/`Stream::next` をそのループへ lower | 未着手 |
+| **ADR-0089 step 2 (future.*/stream.*)** | `future.new/read/write/drop-*` と `stream.new/read/write/drop-*` の canon emitter + `(future u32)`/`(stream u8)` 型 section + 固定シェイプ `comp_emit_component_wasm_future_value`/`comp_emit_component_wasm_stream_value`（self-contained 単一 task の read/write rendezvous、§3.12）。probe（`future_value/component.wat`・`stream_value/component.wat`、wasmtime 47 実測 42）→ byte-exact 移植。gate = `test_future_value_component_gate.sh`/`test_stream_value_component_gate.sh`（wasmtime CLI 直駆動、`more-async-builtins` flag） | done（#1218） |
+| **M2c-3 (runtime)** | `component_codegen` に host 供給の readable `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループで消費する形を emit、`for await`/`Stream::next` をそのループへ lower | 未着手（stream.read canon emit 自体は ADR-0089 step 2 で landed — §3.12。残りは host 供給 stream への接続と surface lowering） |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |
 

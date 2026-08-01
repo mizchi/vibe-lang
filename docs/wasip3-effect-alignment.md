@@ -144,12 +144,35 @@ trampoline を将来 `wasi:http/service` の
 ### 6. 最初の具体ステップ — probe first
 
 `tools/wasip3_component_probe` に「`future<T>` **値**を渡す probe は未作成
-(`future.read` の literal encoding は実測でなく推定)」と明記されている。
+(`future.read` の literal encoding は実測でなく推定)」と明記されていた。
 本 repo の流儀(probe first → byte-exact emitter)に従い、実装順序は:
 
-1. `future<T>` 値 probe(`spawned_future/` の scaffolding を流用)
-2. `future.*` / `stream.*` canon emitter(§3.6 の loop を emit パターン化、
-   memory cycle は `comp_generate_memhost_module` の既解決を流用)
+1. `future<T>` 値 probe(`spawned_future/` の scaffolding を流用)—
+   **作成済み** (`future_value/`, #1218)。実測: future.* built-in は
+   `[future-<op>-N]<導入元 WIT 関数名>` で命名され (per-function ×
+   per-type-index、global counter ではない)、`future.read` は
+   `[async-lower][future-read-0]...` として async-lowered で到着 (既存の
+   waitable-set 機構にそのまま乗る = stackful 構成では既存 [async-lower]
+   import call と同型に emit できる)。task/waitable 側の機構は bare-async
+   probe と完全一致 (future 値は future.* 一族だけを追加する)。詳細は
+   `future_value/canon-imports-exports.wit-abi.txt`。host 側 driver
+   (wasmtime の FutureWriter で値を書く側) は未作成 — emitter 実装時の
+   end-to-end 検証で作る。
+2. `future.*` / `stream.*` canon emitter — **完了** (#1218):
+   `emit_canon_future_*` / `emit_canon_stream_*`
+   (new/read/write/drop-readable/drop-writable) + `(future u32)`/`(stream
+   u8)` 型 section + 固定シェイプ `comp_emit_component_wasm_future_value` /
+   `comp_emit_component_wasm_stream_value`(self-contained 単一 task の
+   read/write rendezvous — async canonopt を両側に付けると §3.3 の
+   self-round-trip deadlock を回避できることを probe で発見)。probe =
+   `future_value/component.wat`・`stream_value/component.wat`(wasmtime 47
+   実測 42、`-W component-model-more-async-builtins=y` 必須)、gate =
+   `scripts/test_future_value_component_gate.sh` /
+   `scripts/test_stream_value_component_gate.sh`。実測 pin: packed i64 は
+   readable が下位 32bit / BLOCKED = 0xffffffff / pending read への write は
+   eager COMPLETED / event = FUTURE_READ(4)・STREAM_READ(2) / stream の
+   read/write core sig は (handle, ptr, count) -> status。詳細は
+   spec/wasi-p3-async.md §3.12
 3. Async 統一(Decision 1)と `suspend_cps_pass` の `while`/`let mut`
    不適格解消 — 後者は `pump` を row-free に縛っている #1227 の制約も同時に
    解くため二重に効く
