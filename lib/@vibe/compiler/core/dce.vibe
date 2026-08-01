@@ -5,7 +5,7 @@ import ./ast.vibe {
 }
 
 import @vibe/core {
-  array_empty
+  type HashMap, type HashSet, HashMap::get, HashMap::new_string, HashMap::set, HashSet::add, HashSet::has, HashSet::new_string, array_empty
 }
 
 //# Functions
@@ -39,6 +39,11 @@ fn dce_array_contains_str(arr: Array[String], s: String) -> Bool {
   search(0)
 }
 
+// `out` and `bound` are deduped/checked by linear scan on purpose: both stay
+// small (refs per def, binders per scope), and a per-def set would cost an
+// allocation per def -- the selfcompile heap KPI gate is tighter than the CPU
+// win. The quadratic scans #1259 removed were the per-queue-item def/reachable
+// lookups below, which are indexed via `def_idx` / `reachable_seen`.
 fn add_ref(out: Array[String], bound: Array[String], name: String) -> Int {
   if not(dce_array_contains_str(bound, name)) {
     if not(dce_array_contains_str(out, name)) {
@@ -271,14 +276,15 @@ fn collect_refs(expr: Expr, bound: Array[String]) -> Array[String] {
   out
 }
 
-fn enqueue_reachable(reachable: Array[String], queue: Array[String], name: String) -> Unit {
-  if not(dce_array_contains_str(reachable, name)) {
+fn enqueue_reachable(reachable: Array[String], reachable_seen: HashSet[String], queue: Array[String], name: String) -> Unit {
+  if not(HashSet::has(reachable_seen, name)) {
+    HashSet::add(reachable_seen, name)
     Array::push(reachable, name)
     Array::push(queue, name)
   }
 }
 
-fn collect_structural_refs_into_queue(stmt: Stmt, bound: Array[String], reachable: Array[String], queue: Array[String]) -> Unit {
+fn collect_structural_refs_into_queue(stmt: Stmt, bound: Array[String], reachable: Array[String], reachable_seen: HashSet[String], queue: Array[String]) -> Unit {
   let refs = match stmt {
     STest(_, expr) => collect_refs(expr, bound),
     SBench(_, expr) => collect_refs(expr, bound),
@@ -287,7 +293,7 @@ fn collect_structural_refs_into_queue(stmt: Stmt, bound: Array[String], reachabl
   }
   let mut i = 0
   while i < Array::length(refs) {
-    enqueue_reachable(reachable, queue, Array::get(refs, i))
+    enqueue_reachable(reachable, reachable_seen, queue, Array::get(refs, i))
     i = i + 1
   }
 }
@@ -326,19 +332,28 @@ export fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stm
     let empty_bound = array_empty()
     let def_names = array_empty()
     let def_refs = array_empty()
+    let def_idx: HashMap[String, Array[Int]] = HashMap::new_string()
     let mut i = 0
     while i < Array::length(stmts) {
       let stmt = Array::get(stmts, i)
       match stmt_name(stmt) {
         Some(name) => {
+          let di = Array::length(def_names)
           Array::push(def_names, name)
+          match HashMap::get(def_idx, name) {
+            Some(idxs) => Array::push(idxs, di),
+            None => HashMap::set(def_idx, name, Array::slice([
+              di
+            ], 0, 1))
+          }
           let refs = match stmt {
             SLet(_, _, _, _, expr) => collect_refs(expr, empty_bound),
             // Preserved fn decl (ADR-0064 #727): body refs plus contract-
             // condition refs (requires/ensures execute inside the function
             // after lowering, so helpers they call must stay live).
             SFnDecl(_, _, fn_value, reqs, enss) => {
-              let out = collect_refs(fn_value, empty_bound)
+              let out = array_empty()
+              let _ = collect_refs_into(fn_value, empty_bound, out)
               let mut cri = 0
               while cri < Array::length(reqs) {
                 let _ = collect_refs_into(Array::get(reqs, cri), empty_bound, out)
@@ -362,37 +377,42 @@ export fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stm
       i = i + 1
     }
     let reachable = array_empty()
+    let reachable_seen = HashSet::new_string()
     let queue = array_empty()
     let mut j = 0
     while j < Array::length(entry_names) {
       let name = Array::get(entry_names, j)
-      enqueue_reachable(reachable, queue, name)
+      enqueue_reachable(reachable, reachable_seen, queue, name)
       j = j + 1
     }
     let mut sj = 0
     while sj < Array::length(stmts) {
-      collect_structural_refs_into_queue(Array::get(stmts, sj), empty_bound, reachable, queue)
+      collect_structural_refs_into_queue(Array::get(stmts, sj), empty_bound, reachable, reachable_seen, queue)
       sj = sj + 1
     }
     let mut qi = 0
     while qi < Array::length(queue) {
       let current = Array::get(queue, qi)
       qi = qi + 1
-      let mut k = 0
-      while k < Array::length(def_names) {
-        if Array::get(def_names, k) == current {
-          let refs = Array::get(def_refs, k)
-          let mut r = 0
-          while r < Array::length(refs) {
-            let dep = Array::get(refs, r)
-            if not(dce_array_contains_str(reachable, dep)) {
-              Array::push(reachable, dep)
-              Array::push(queue, dep)
+      match HashMap::get(def_idx, current) {
+        Some(idxs) => {
+          let mut ki = 0
+          while ki < Array::length(idxs) {
+            let refs = Array::get(def_refs, Array::get(idxs, ki))
+            let mut r = 0
+            while r < Array::length(refs) {
+              let dep = Array::get(refs, r)
+              if not(HashSet::has(reachable_seen, dep)) {
+                HashSet::add(reachable_seen, dep)
+                Array::push(reachable, dep)
+                Array::push(queue, dep)
+              }
+              r = r + 1
             }
-            r = r + 1
+            ki = ki + 1
           }
-        }
-        k = k + 1
+        },
+        None => ()
       }
     }
     let result = array_empty()
@@ -403,7 +423,7 @@ export fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stm
         Array::push(result, stmt)
       } else {
         match stmt_name(stmt) {
-          Some(name) => if dce_array_contains_str(reachable, name) {
+          Some(name) => if HashSet::has(reachable_seen, name) {
             Array::push(result, stmt)
           },
           None => Array::push(result, stmt)
@@ -424,19 +444,28 @@ fn dce_reachable_names(stmts: Array[Stmt], entry_names: Array[String]) -> Array[
   let empty_bound = array_empty()
   let def_names = array_empty()
   let def_refs = array_empty()
+  let def_idx: HashMap[String, Array[Int]] = HashMap::new_string()
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
     match stmt_name(stmt) {
       Some(name) => {
+        let di = Array::length(def_names)
         Array::push(def_names, name)
+        match HashMap::get(def_idx, name) {
+          Some(idxs) => Array::push(idxs, di),
+          None => HashMap::set(def_idx, name, Array::slice([
+            di
+          ], 0, 1))
+        }
         let refs = match stmt {
           SLet(_, _, _, _, expr) => collect_refs(expr, empty_bound),
           // Preserved fn decl (ADR-0064 #727): body refs plus contract-
           // condition refs (requires/ensures execute inside the function
           // after lowering, so helpers they call must stay live).
           SFnDecl(_, _, fn_value, reqs, enss) => {
-            let out = collect_refs(fn_value, empty_bound)
+            let out = array_empty()
+            let _ = collect_refs_into(fn_value, empty_bound, out)
             let mut cri = 0
             while cri < Array::length(reqs) {
               let _ = collect_refs_into(Array::get(reqs, cri), empty_bound, out)
@@ -460,37 +489,42 @@ fn dce_reachable_names(stmts: Array[Stmt], entry_names: Array[String]) -> Array[
     i = i + 1
   }
   let reachable = array_empty()
+  let reachable_seen = HashSet::new_string()
   let queue = array_empty()
   let mut j = 0
   while j < Array::length(entry_names) {
     let name = Array::get(entry_names, j)
-    enqueue_reachable(reachable, queue, name)
+    enqueue_reachable(reachable, reachable_seen, queue, name)
     j = j + 1
   }
   let mut sj = 0
   while sj < Array::length(stmts) {
-    collect_structural_refs_into_queue(Array::get(stmts, sj), empty_bound, reachable, queue)
+    collect_structural_refs_into_queue(Array::get(stmts, sj), empty_bound, reachable, reachable_seen, queue)
     sj = sj + 1
   }
   let mut qi = 0
   while qi < Array::length(queue) {
     let current = Array::get(queue, qi)
     qi = qi + 1
-    let mut k = 0
-    while k < Array::length(def_names) {
-      if Array::get(def_names, k) == current {
-        let refs = Array::get(def_refs, k)
-        let mut r = 0
-        while r < Array::length(refs) {
-          let dep = Array::get(refs, r)
-          if not(dce_array_contains_str(reachable, dep)) {
-            Array::push(reachable, dep)
-            Array::push(queue, dep)
+    match HashMap::get(def_idx, current) {
+      Some(idxs) => {
+        let mut ki = 0
+        while ki < Array::length(idxs) {
+          let refs = Array::get(def_refs, Array::get(idxs, ki))
+          let mut r = 0
+          while r < Array::length(refs) {
+            let dep = Array::get(refs, r)
+            if not(HashSet::has(reachable_seen, dep)) {
+              HashSet::add(reachable_seen, dep)
+              Array::push(reachable, dep)
+              Array::push(queue, dep)
+            }
+            r = r + 1
           }
-          r = r + 1
+          ki = ki + 1
         }
-      }
-      k = k + 1
+      },
+      None => ()
     }
   }
   reachable
@@ -499,12 +533,12 @@ fn dce_reachable_names(stmts: Array[Stmt], entry_names: Array[String]) -> Array[
 /// Whether DCE keeps `stmt` given the reachable name set: type/structural
 /// statements are always kept; named value defs are kept iff reachable; unnamed
 /// statements are kept. (Same per-statement rule `dce_stmts` applies.)
-fn dce_keep_stmt(stmt: Stmt, reachable: Array[String]) -> Bool {
+fn dce_keep_stmt(stmt: Stmt, reachable_seen: HashSet[String]) -> Bool {
   if is_type_or_structural(stmt) {
     true
   } else {
     match stmt_name(stmt) {
-      Some(name) => dce_array_contains_str(reachable, name),
+      Some(name) => HashSet::has(reachable_seen, name),
       None => true
     }
   }
@@ -520,9 +554,15 @@ export fn dce_keep_flags(stmts: Array[Stmt], entry_names: Array[String]) -> Arra
     flags
   } else {
     let reachable = dce_reachable_names(stmts, entry_names)
+    let reachable_seen = HashSet::new_string()
+    let mut rsi = 0
+    while rsi < Array::length(reachable) {
+      HashSet::add(reachable_seen, Array::get(reachable, rsi))
+      rsi = rsi + 1
+    }
     let mut m = 0
     while m < Array::length(stmts) {
-      Array::push(flags, dce_keep_stmt(Array::get(stmts, m), reachable))
+      Array::push(flags, dce_keep_stmt(Array::get(stmts, m), reachable_seen))
       m = m + 1
     }
     flags
