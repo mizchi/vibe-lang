@@ -7846,6 +7846,25 @@ if [ "$asb89_dis_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_sleep_handler_discharge_test.vibe got '$asb89_dis_out' (want 42 -- the user handler must intercept the sleeps)" >&2
   exit 1
 fi
+# Increment 4 (#1218): `await` of a PENDING future drives through a user
+# Async handler -- the poll loop is a synthesized named `__aw_poll` fn, so
+# the tail-resumptive evidence migration sees it (an inline while-wrapped
+# perform was invisible). Arm resolves the future and counts one poll:
+# 40 + 1 + 1 = 42 (async_await_handler_discharge_test.vibe).
+cp fixtures/async_await_handler_discharge_test.vibe "$asb89dir/aw.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asb89dir/aw.vibe" "$asb89dir/aw.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$asb89dir/aw.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_await_handler_discharge_test.vibe did not compile -- a pending-future await under a user Async handler must be evidence-eligible (ADR-0089 D1 increment 4)" >&2
+  cat "$asb89dir/aw.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+asb89_aw_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/aw.wasm" 2>/dev/null | tail -1)"
+if [ "$asb89_aw_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_await_handler_discharge_test.vibe got '$asb89_aw_out' (want 42 -- the handler must receive the poll and its resolution must unblock the await)" >&2
+  exit 1
+fi
 rm -rf "$asb89dir"
 echo "[compiler-gate] ADR-0089 D1 async sleep boundary ok"
 

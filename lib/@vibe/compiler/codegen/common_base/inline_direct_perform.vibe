@@ -10294,7 +10294,53 @@ export fn await_poll_pass(stmts: Array[Stmt]) -> Unit {
       }
       i = i + 1
     }
+    // ADR-0089 D1 increment 4 (#1218): the poll loop lives in a synthesized
+    // NAMED top-level fn, injected once per program iff some await actually
+    // expanded (ctr counts expansions; the ready-future fast path leaves it
+    // untouched). See awp_wrap for why the call-shape matters.
+    if Array::get(ctr, 0) > 0 {
+      Array::push(stmts, awp_poll_fn_def())
+    } else {
+      ()
+    }
   }
+}
+
+/// The synthesized `__aw_poll(fut) -> Int with { Async }` definition:
+///
+/// ```text
+/// while 0 < Array::get(fut, 0) {
+///   let __aw_w = perform Async::Suspend(1)
+///   ()
+/// }
+/// Array::get(fut, 1)
+/// ```
+fn awp_poll_fn_def() -> Stmt {
+  let fut = EIdent("__aw_fut", -1)
+  let state = ECall(EIdent("Array::get", -1), [
+    fut,
+    EInt(0)
+  ], -1)
+  // EBinOp("<"), NOT the `lt` builtin the old inline expansion used: the
+  // evidence migration's see-through scan does not know `lt` as a pure
+  // callee, so a `while lt(...)` condition makes this fn -- and therefore
+  // every handle whose body awaits -- ineligible (measured: reduced case
+  // v9 REJECTED with `lt`, identical fn with `<` compiles and runs).
+  let pending = EBinOp("<", EInt(0), state)
+  let suspend = ECall(EIdent("perform", -1), [
+    ECall(EIdent("Async::Suspend", -1), [
+      EInt(1)
+    ], -1)
+  ], -1)
+  let payload = ECall(EIdent("Array::get", -1), [
+    fut,
+    EInt(1)
+  ], -1)
+  let body = ESeq(EWhile(pending, ELet("__aw_w", suspend, EUnit, -1)), payload)
+  let params: Array[(String, Option[TypeExpr])] = [
+    ("__aw_fut", None)
+  ]
+  SLet(false, false, "__aw_poll", None, EFn(array_empty_str(), array_empty(), params, None, Some("Async"), body))
 }
 
 fn awp_program_defines_await(stmts: Array[Stmt]) -> Bool {
@@ -10400,29 +10446,26 @@ fn awp_lift_pairs(pairs: Array[(String, Expr)], ctr: Array[Int], binds: Array[(S
 /// <inner>
 /// ```
 fn awp_wrap(binds: Array[(String, Expr, String)], inner: Expr) -> Expr {
+  // ADR-0089 D1 increment 4 (#1218): the poll loop is a CALL to the
+  // synthesized named `__aw_poll` (see awp_poll_fn_def), not an inline
+  // `while`. The shapes are semantically identical, but only the call is
+  // visible to the TAIL-RESUMPTIVE evidence migration -- a
+  // `handle ... with Async` body may contain "direct performs, calls to
+  // named top-level functions, or row-annotated closure literals", and an
+  // inline loop-wrapped perform is none of those (measured: the
+  // await-discharge fixture was rejected with "not eligible for
+  // evidence-passing migration" until this changed). This is the same
+  // asymmetry increment 1 solved for `sleep` by injecting `__slp_perform`;
+  // the suspend-class path is indifferent (a needing-fn call on the spine
+  // vs an inline loop both split), so the named form serves both.
   let mut out = inner
   let mut i = Array::length(binds) - 1
   while i >= 0 {
     let (fname, fut, vname) = Array::get(binds, i)
-    let state = ECall(EIdent("Array::get", -1), [
-      EIdent(fname, -1),
-      EInt(0)
+    let poll = ECall(EIdent("__aw_poll", -1), [
+      EIdent(fname, -1)
     ], -1)
-    let pending = ECall(EIdent("lt", -1), [
-      EInt(0),
-      state
-    ], -1)
-    let suspend = ECall(EIdent("perform", -1), [
-      ECall(EIdent("Async::Suspend", -1), [
-        EInt(1)
-      ], -1)
-    ], -1)
-    let wname = String::concat("__aw_w_", vname)
-    let payload = ECall(EIdent("Array::get", -1), [
-      EIdent(fname, -1),
-      EInt(1)
-    ], -1)
-    out = ELet(fname, fut, ESeq(EWhile(pending, ELet(wname, suspend, EUnit, -1)), ELet(vname, payload, out, -1)), -1)
+    out = ELet(fname, fut, ELet(vname, poll, out, -1), -1)
     i = i - 1
   }
   out
