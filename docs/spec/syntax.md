@@ -65,7 +65,7 @@ Rules:
 Reserved keywords:
 
 ```text
-let rec mut if else match while loop for in break continue yield
+let rec mut fn if else match while loop for in break continue yield
 throw perform resume handle with effect suberror
 test bench enum struct trait impl type import export module extern internal
 as true false do derive
@@ -139,6 +139,22 @@ let add: (Int, Int) -> Int = (x, y) -> { x + y }
 let id: [T](T) -> T = (x) -> { x }
 let show: [T: Eq + Ord](T) -> T = (x) -> { x }
 ```
+
+Top-level named functions use `fn`. They require parameter and return type
+annotations, support generic parameters and effect rows, and lower to the
+same recursive `let` representation before checking and code generation:
+
+```vibe
+fn add(x: Int, y: Int) -> Int { x + y }
+fn identity[T](x: T) -> T { x }
+fn log(message: String) -> Unit with { Stdout } {
+  Stdout::write_stream(message)
+}
+export fn doubled(x: Int) -> Int { x * 2 }
+```
+
+`fn` is top-level only; use the typed `let` forms above for lambdas and local
+functions.
 
 Accepted forms:
 
@@ -270,15 +286,23 @@ suberror AppError {
 
 ### Modules
 
-```vibe
-module Math {
-  export let abs: (Int) -> Int = (x) -> {
-    if x < 0 { 0 - x } else { x }
-  }
+Source files are modules. Module blocks such as `module Math { ... }` are
+rejected; use a file boundary with explicit imports and exports instead:
+
+```vibe skip
+// math.vibe
+export let abs: (Int) -> Int = (x) -> {
+  if x < 0 { 0 - x } else { x }
 }
 
-Math::abs(-5)
+// main.vibe
+import ./math.vibe { abs }
+abs(-5)
 ```
+
+`module` remains a reserved compatibility token, not a module-block
+declaration. `Type::method` and `Effect::Op` are qualified names independent
+of file modules.
 
 ### Extern
 
@@ -382,8 +406,13 @@ map_value["key"]
 arr[0] = value
 ```
 
-`.` is field/tuple access only. Method-call sugar (`obj.method()`) is not part
-of the syntax.
+`.` supports field/tuple access and user-type method calls. A declared
+user-type method may be called as `recv.method(args)`; its canonical normalized
+spelling is `Type::method(recv, args)`. The single-file normalizer performs
+that rewrite only when it can recover the receiver type locally, and otherwise
+leaves the dot form unchanged rather than guessing. Builtins use qualified or
+pipe-style calls (for example `String::length(s)`), while a function stored in
+a field must be invoked as `(obj.callback)(args)`.
 
 ### Collections
 
@@ -552,6 +581,8 @@ These forms may parse today but should not be used in new documentation:
 - Inline parameter type function declarations:
   `let f = (x: Int) -> Int { x }`
 - Legacy import/use forms outside `import <module-ref> { ... }`.
-- Method-call sugar (`obj.method()`) is rejected; use `Type::method(obj)` or
-  pipe-first style.
+- User-type methods may use `recv.method(...)`, normalized to
+  `Type::method(recv, ...)` when the receiver type is locally recoverable.
+  Builtins use qualified or pipe-style calls; function-valued fields require
+  `(obj.field)(...)`.
 - `~` bit-not is not supported; use `x ^ mask`.
