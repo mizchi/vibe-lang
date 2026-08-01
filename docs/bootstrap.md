@@ -159,7 +159,8 @@ merge し、`seed-release` workflow が使えるようになってから最初�
   そのもの (seed.json で sha256 pin)。
 - `vibe-compiler-module-source-<tag>.vibe` — flatten 済みの flat module source。
   `emit-module-source` の出力 (= committed compiler source からの決定的関数) を
-  pin したもの。これがあれば flatten で host `vibe.exe` を呼ばない。
+  pin したもの。これがあれば flatten を再実行せず prebuilt をそのまま使える
+  (regeneration は seed-based の `scripts/generate_bundle.sh`)。
 - `vibe-compiler-seed-<tag>.json` / `release-manifest.json` / `SHA256SUMS.txt` —
   provenance と整合性メタデータ。manifest の `compiler` block に各 asset の
   sha256 と `source_commit` が入る。
@@ -327,9 +328,10 @@ generation manifest (stage0..stage3 の sha, stage3==stage2) を rebuild 無し�
 > の等価性を `scripts/test_dist_stage2_parity.sh`
 > (`pkf run test-dist-stage2-parity`) の parity gate (ABI 一致 + behavioural
 > parity + byte 一致) で保証していた。MoonBit host 退役 (#594) で dist builder は
-> 撤去され、この parity gate は gate 本流から外れた (スクリプトは残っているが
-> dist 側の builder が無いため `--self-test` — pinned seed に対する `vibe.abi`
-> 抽出 smoke — のみ動作する)。経緯は
+> 撤去され、この parity gate は gate 本流から外れた。dist builder を失って
+> dead になっていた script / task 本体も #1271 の cleanup で撤去済み
+> (`vibe.abi` の検証自体は `scripts/generations.sh` / `test_host_abi.js` /
+> host runner 側が現役でカバーする)。経緯は
 > [docs/archive/moonbit-retirement.md](archive/moonbit-retirement.md)。
 
 ### `vibe.abi` custom section contract

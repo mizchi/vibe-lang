@@ -55,8 +55,7 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
   `test_vibe_trace{,_calls}.sh`, `test_vibe_dap.js`
 - **LSP / IDE:** `test_vibe_lsp.js`, `test_vibe_lsp_workspace.js`,
   `test_symbol_index.js`, `test_graph_query.js`
-- **Compiler component/CLI:** `test_check_*`, `test_cli_*`,
-  `test_dist_stage2_parity.sh`, `test_rc_bootstrap.sh`
+- **Compiler component/CLI:** `test_check_*`, `test_cli_*`, `test_rc_bootstrap.sh`
 - **Runtime / mem / perf:** `test_vibe_{alloc_site,mem,bench}.sh`,
   `test_gc_selfbuild.sh`, `test_name_section.sh`, `test_simd_emit_wasmtime.sh`
 - **Host ABI / library / install:** `test_host_abi.js`, `test_vibe_library.sh`,
