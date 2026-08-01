@@ -13,7 +13,6 @@ import ./parser_base.vibe {
   expect_tk,
   is_lambda_start,
   parse_param_list,
-  parse_type_params,
   parse_type_impl,
   peek,
   tk_name
@@ -579,8 +578,73 @@ fn parse_ctor_record_fields(tokens: Array[Token], starts: Array[Int], pos: Int, 
   }
 }
 
+fn parse_generic_type_param_bound_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) with { Error } {
+  let bounds = ArrayBuilder::new()
+  let mut p = pos
+  let mut done = false
+  while !done {
+    match peek(tokens, p) {
+      TIdent(name) => {
+        ArrayBuilder::push(bounds, name)
+        p = p + 1
+        match peek(tokens, p) {
+          TPlus => {
+            p = p + 1
+          },
+          _ => {
+            done = true
+          }
+        }
+      },
+      _ => throw("expected trait bound name")
+    }
+  }
+  (ArrayBuilder::freeze(bounds), p)
+}
+
+/// Parse an expression-position `[T: Bound, U]` header. This intentionally
+/// stays private to the primary-expression parser: unlike declaration headers,
+/// it is not part of the public parser contract.
+fn parse_generic_fn_type_params(tokens: Array[Token], pos: Int) -> (Array[String], Array[(String, Array[String])], Int) with { Error } {
+  let names = ArrayBuilder::new()
+  let bounds = ArrayBuilder::new()
+  let mut p = pos
+  while true {
+    match peek(tokens, p) {
+      TRBracket => {
+        p = p + 1
+        break
+      },
+      TIdent(name) => {
+        ArrayBuilder::push(names, name)
+        p = p + 1
+        match peek(tokens, p) {
+          TColon => {
+            let (bound_names, next) = parse_generic_type_param_bound_names(tokens, p + 1)
+            ArrayBuilder::push(bounds, (name, bound_names))
+            p = next
+          },
+          _ => ()
+        }
+        match peek(tokens, p) {
+          TComma => {
+            p = p + 1
+          },
+          TRBracket => {
+            p = p + 1
+            break
+          },
+          _ => throw("expected ',' or ']' in type params")
+        }
+      },
+      _ => throw("expected type parameter name or ']' in type params")
+    }
+  }
+  (ArrayBuilder::freeze(names), ArrayBuilder::freeze(bounds), p)
+}
+
 fn parse_generic_fn_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } {
-  let (type_params, type_bounds, after_header) = parse_type_params(tokens, pos + 1)
+  let (type_params, type_bounds, after_header) = parse_generic_fn_type_params(tokens, pos + 1)
   let params_pos = expect_tk(tokens, after_header, "(")
   let (params, after_params) = parse_param_list(tokens, params_pos)
   match peek(tokens, after_params) {
