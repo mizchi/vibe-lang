@@ -12,9 +12,13 @@
 #
 # Report: _build/coverage/selfhost-suite/selfhost_suite.report.json
 #   { cases: [{entry_path, ok, fn_hit, fn_total, branch_hit, branch_total}],
-#     fn_hit/fn_total/fn_rate, branch_hit/branch_total/branch_rate,
+#     function_union: {hit, total, rate},
+#     entry_weighted: {function: {hit, total, rate}, branch: {hit, total, rate}},
 #     entries_total/entries_passed/case_rate,
 #     top_branch_gaps: [{entry_path, branch_hit, branch_total, branch_miss}] }
+# `function_union` is the primary source-function metric. Entry-weighted
+# function/branch values retain the existing gate semantics; branch IDs are not
+# available in the per-entry JSON, so branch union cannot be computed exactly.
 #
 # Thresholds (percent, env-overridable; shard defaults live in
 # scripts/pkfire/gates_shard.sh — raise them as coverage improves,
@@ -199,90 +203,4 @@ esac
 VIBE_TEST_CLI_WASM="$cli_abs" bash scripts/vibe_test.sh --coverage "${entries[@]}" \
   | tee "$run_log" || true
 
-python3 - "$run_log" "$COV_DIR" "$REPORT" "$MIN_POINT" "$MIN_LINE" "$MIN_BRANCH" "$MIN_FN_HIT" "$MIN_BRANCH_HIT" <<'PY'
-import json, os, re, sys
-
-run_log, cov_dir, report_path, min_point, min_line, min_branch, min_fn_hit, min_branch_hit = sys.argv[1:9]
-min_point, min_line, min_branch = float(min_point), float(min_line), float(min_branch)
-min_fn_hit, min_branch_hit = int(min_fn_hit), int(min_branch_hit)
-
-cases = []
-for line in open(run_log, encoding="utf-8"):
-    m = re.match(r"^(ok|FAIL)\s+(\S+\.vibe)", line.strip())
-    if not m:
-        continue
-    ok = m.group(1) == "ok"
-    entry = m.group(2)
-    flat = entry.replace("/", "_")
-    flat = re.sub(r"\.vibe$", "", flat)
-    cov = os.path.join(cov_dir, flat + ".json")
-    fn_hit = fn_total = br_hit = br_total = 0
-    if ok and os.path.isfile(cov):
-        r = json.load(open(cov, encoding="utf-8"))
-        fn_hit, fn_total = r.get("hit", 0), r.get("total", 0)
-        b = r.get("branch") or {}
-        br_hit, br_total = b.get("hit", 0), b.get("total", 0)
-    cases.append({
-        "entry_path": entry, "ok": ok,
-        "fn_hit": fn_hit, "fn_total": fn_total,
-        "branch_hit": br_hit, "branch_total": br_total,
-    })
-
-entries_total = len(cases)
-entries_passed = sum(1 for c in cases if c["ok"])
-fn_hit = sum(c["fn_hit"] for c in cases)
-fn_total = sum(c["fn_total"] for c in cases)
-br_hit = sum(c["branch_hit"] for c in cases)
-br_total = sum(c["branch_total"] for c in cases)
-fn_rate = round(fn_hit / fn_total * 100, 2) if fn_total else 0.0
-br_rate = round(br_hit / br_total * 100, 2) if br_total else 0.0
-case_rate = round(entries_passed / entries_total * 100, 2) if entries_total else 0.0
-
-gaps = [
-    {
-        "entry_path": c["entry_path"],
-        "branch_hit": c["branch_hit"],
-        "branch_total": c["branch_total"],
-        "branch_miss": c["branch_total"] - c["branch_hit"],
-    }
-    for c in cases
-    if c["ok"] and c["branch_total"] > 0 and c["branch_total"] > c["branch_hit"]
-]
-gaps.sort(key=lambda g: -g["branch_miss"])
-
-report = {
-    "suite": "selfhost-unit-allowlist",
-    "entries_total": entries_total,
-    "entries_passed": entries_passed,
-    "case_rate": case_rate,
-    "fn_hit": fn_hit, "fn_total": fn_total, "fn_rate": fn_rate,
-    "branch_hit": br_hit, "branch_total": br_total, "branch_rate": br_rate,
-    "cases": cases,
-    "top_branch_gaps": gaps[:10],
-    "top_non_aggregate_branch_gaps": [],
-}
-os.makedirs(os.path.dirname(report_path), exist_ok=True)
-json.dump(report, open(report_path, "w", encoding="utf-8"), indent=2)
-
-print(f"[coverage-suite] cases {entries_passed}/{entries_total} ({case_rate}%)")
-print(f"[coverage-suite] functions {fn_hit}/{fn_total} ({fn_rate}%)")
-print(f"[coverage-suite] branches {br_hit}/{br_total} ({br_rate}%)")
-print(f"[coverage-suite] report: {report_path}")
-
-failures = []
-if fn_rate < min_point:
-    failures.append(f"function coverage {fn_rate}% < min {min_point}% (POINT)")
-if case_rate < min_line:
-    failures.append(f"case pass rate {case_rate}% < min {min_line}% (LINE)")
-if br_rate < min_branch:
-    failures.append(f"branch coverage {br_rate}% < min {min_branch}% (BRANCH)")
-if fn_hit < min_fn_hit:
-    failures.append(f"covered functions {fn_hit} < min {min_fn_hit} (FN_HIT ratchet)")
-if br_hit < min_branch_hit:
-    failures.append(f"covered branches {br_hit} < min {min_branch_hit} (BRANCH_HIT ratchet)")
-if failures:
-    for f in failures:
-        print(f"[coverage-suite] GATE FAIL: {f}")
-    sys.exit(1)
-print("[coverage-suite] gate ok")
-PY
+python3 scripts/coverage_suite_report.py "$run_log" "$COV_DIR" "$REPORT" "$MIN_POINT" "$MIN_LINE" "$MIN_BRANCH" "$MIN_FN_HIT" "$MIN_BRANCH_HIT"
