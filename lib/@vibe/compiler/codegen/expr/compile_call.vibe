@@ -1425,6 +1425,24 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         EInt(0)
       ]), local_names, next_local, ctx, ld)
     }
+    else if !prefer_bound_call && fname == "host_future_get" {
+      // ADR-0089 step 4 (#1218): a HOST-supplied future -- state 2 (the
+      // waitable state), payload = the host future handle. vibe_hf_get_raw
+      // lowers to the `vibe.host_future_get` import, which only the
+      // component adapter module provides (spec §3.13/§3.14): it
+      // async-lowers the component-level `get-future` import (eagerly --
+      // pair creation never suspends) and hands back the readable end's
+      // handle. Awaiting this cell parks with the reserved waitable payload
+      // (handle + 2, __aw_poll's waitable arm) until the entry boundary
+      // settles it via waitable-set.wait.
+      let no_args = Array::slice([
+        EInt(0)
+      ], 0, 0)
+      ce(buf, EArray([
+        EInt(2),
+        ECall(EIdent("vibe_hf_get_raw", -1), no_args, -1)
+      ]), local_names, next_local, ctx, ld)
+    }
     else if !prefer_bound_call && fname == "Future::resolve" {
       // #1230: complete a pending future IN PLACE -- payload first, then clear
       // the state. The write order is what makes the observation safe: an

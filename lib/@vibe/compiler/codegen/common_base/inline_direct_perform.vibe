@@ -328,7 +328,19 @@ fn idp_pure_builtin_names() -> Array[String] {
     // (a needing fn) before any effect pass runs.
     "Future::pending",
     "Future::ready",
-    "Future::resolve"
+    "Future::resolve",
+    // ADR-0089 step 4 (#1218): the host-future surface + its raw halves,
+    // same audit criterion -- opaque host calls (`vibe.host_future_get` /
+    // `vibe.host_future_wait` component-adapter imports) that cannot
+    // perform a user effect and take/return only Ints. `host_future_get`
+    // appears in user code (a boundary-wrapped entry body touching it must
+    // stay eligible, the Future::pending precedent above);
+    // `vibe_hf_wait_raw` appears in the injected `__entry_settle`;
+    // `vibe_hf_get_raw` only after compile_call's lowering (listed for
+    // symmetry/safety).
+    "host_future_get",
+    "vibe_hf_get_raw",
+    "vibe_hf_wait_raw"
   ]
 }
 
@@ -3636,7 +3648,12 @@ fn edp_pure_builtin_names() -> Array[String] {
     // idp_pure_builtin_names' entry (same audit, see that list's comment).
     "Future::pending",
     "Future::ready",
-    "Future::resolve"
+    "Future::resolve",
+    // ADR-0089 step 4 (#1218): host-future surface + raw halves -- mirrors
+    // idp_pure_builtin_names' entry (same audit, see that list's comment).
+    "host_future_get",
+    "vibe_hf_get_raw",
+    "vibe_hf_wait_raw"
   ]
 }
 
@@ -10312,9 +10329,15 @@ fn scps_stmt_has_trigger(s: Stmt) -> Bool {
 /// `await(Future::ready(x))` collapses to `x` outright: the ready-future fast
 /// path the spec calls for, and it keeps the common case free of both the
 /// array and the loop.
-export fn await_poll_pass(stmts: Array[Stmt]) -> Unit {
+export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool) -> Unit {
   // A user-defined top-level `await` shadows the builtin; leave those calls
   // alone (compile_call applies the same rule via `prefer_bound_call`).
+  //
+  // `host_future` (ADR-0089 step 4, #1218): the caller's "program calls
+  // host_future_get" key -- selects the waitable-aware __aw_poll form (see
+  // awp_poll_fn_def). Passed in rather than scanned here so the deep
+  // call-scan lives once, next to the boundary machinery's other keys
+  // (linked_compile's lc_expr_calls_host_future).
   if awp_program_defines_await(stmts) {
     ()
   } else {
@@ -10348,7 +10371,13 @@ export fn await_poll_pass(stmts: Array[Stmt]) -> Unit {
     // expanded (ctr counts expansions; the ready-future fast path leaves it
     // untouched). See awp_wrap for why the call-shape matters.
     if Array::get(ctr, 0) > 0 {
-      Array::push(stmts, awp_poll_fn_def())
+      Array::push(stmts, awp_poll_fn_def(host_future))
+      if host_future {
+        Array::push(stmts, awp_pay_fn_def())
+        Array::push(stmts, awp_settle_fn_def())
+      } else {
+        ()
+      }
     } else {
       ()
     }
@@ -10364,7 +10393,27 @@ export fn await_poll_pass(stmts: Array[Stmt]) -> Unit {
 /// }
 /// Array::get(fut, 1)
 /// ```
-fn awp_poll_fn_def() -> Stmt {
+///
+/// ADR-0089 step 4 (#1218): when the program calls `host_future_get`
+/// (`host_future` true), the loop instead computes the suspend payload per
+/// iteration and settles the cell from the resume value:
+///
+/// ```text
+/// while 0 < Array::get(fut, 0) {
+///   let __aw_p = __aw_pay(fut)                  // 1, or handle + 2 (waitable)
+///   let __aw_w = perform Async::Suspend(__aw_p)
+///   let __aw_s = __aw_settle(fut, __aw_w)       // waitable: cell <- resumed value
+///   ()
+/// }
+/// Array::get(fut, 1)
+/// ```
+///
+/// The helpers are synthesized row-free top-level fns (awp_pay_fn_def /
+/// awp_settle_fn_def) so the loop spine stays a let-chain of
+/// effect-free-fn calls around the perform -- the shape the suspend CPS
+/// split accepts. The non-host-future form is kept byte-identical for
+/// every program that never touches `host_future_get`.
+fn awp_poll_fn_def(host_future: Bool) -> Stmt {
   let fut = EIdent("__aw_fut", -1)
   let state = ECall(EIdent("Array::get", -1), [
     fut,
@@ -10376,20 +10425,88 @@ fn awp_poll_fn_def() -> Stmt {
   // every handle whose body awaits -- ineligible (measured: reduced case
   // v9 REJECTED with `lt`, identical fn with `<` compiles and runs).
   let pending = EBinOp("<", EInt(0), state)
-  let suspend = ECall(EIdent("perform", -1), [
-    ECall(EIdent("Async::Suspend", -1), [
-      EInt(1)
-    ], -1)
-  ], -1)
   let payload = ECall(EIdent("Array::get", -1), [
     fut,
     EInt(1)
   ], -1)
-  let body = ESeq(EWhile(pending, ELet("__aw_w", suspend, EUnit, -1)), payload)
+  let loop_body = if host_future {
+    let suspend = ECall(EIdent("perform", -1), [
+      ECall(EIdent("Async::Suspend", -1), [
+        EIdent("__aw_p", -1)
+      ], -1)
+    ], -1)
+    let pay = ECall(EIdent("__aw_pay", -1), [
+      fut
+    ], -1)
+    let settle = ECall(EIdent("__aw_settle", -1), [
+      fut,
+      EIdent("__aw_w", -1)
+    ], -1)
+    ELet("__aw_p", pay, ELet("__aw_w", suspend, ELet("__aw_s", settle, EUnit, -1), -1), -1)
+  } else {
+    let suspend = ECall(EIdent("perform", -1), [
+      ECall(EIdent("Async::Suspend", -1), [
+        EInt(1)
+      ], -1)
+    ], -1)
+    ELet("__aw_w", suspend, EUnit, -1)
+  }
+  let body = ESeq(EWhile(pending, loop_body), payload)
   let params: Array[(String, Option[TypeExpr])] = [
     ("__aw_fut", None)
   ]
   SLet(false, false, "__aw_poll", None, EFn(array_empty_str(), array_empty(), params, None, Some("Async"), body))
+}
+
+/// `__aw_pay(f) -> Int`: the suspend payload for one poll round. A waitable
+/// cell (state 2, ADR-0089 step 4) parks with `handle + 2` -- the reserved
+/// waitable band (0 = yield, 1 = poll wait, negative = sleep debt; the +2
+/// keeps even handle 0/1 out of the low reasons). Anything else is the
+/// plain poll-wait retry.
+fn awp_pay_fn_def() -> Stmt {
+  let f = EIdent("__awp_f", -1)
+  let state = ECall(EIdent("Array::get", -1), [
+    f,
+    EInt(0)
+  ], -1)
+  // `hnd`, not `handle` -- `handle` is the effect-handler keyword.
+  let hnd = ECall(EIdent("Array::get", -1), [
+    f,
+    EInt(1)
+  ], -1)
+  let body = EIf(EBinOp("==", state, EInt(2)), EBinOp("+", hnd, EInt(2)), EInt(1))
+  let params: Array[(String, Option[TypeExpr])] = [
+    ("__awp_f", None)
+  ]
+  SLet(false, false, "__aw_pay", None, EFn(array_empty_str(), array_empty(), params, None, None, body))
+}
+
+/// `__aw_settle(f, v) -> Int`: after a waitable park resumes, `v` is the
+/// value the boundary read from the host future -- write it into the cell
+/// (payload first, then state, the Future::resolve ordering) so the poll
+/// loop observes readiness. Poll-wait rounds (state != 2) ignore `v`.
+fn awp_settle_fn_def() -> Stmt {
+  let f = EIdent("__aws_f", -1)
+  let state = ECall(EIdent("Array::get", -1), [
+    f,
+    EInt(0)
+  ], -1)
+  let set_payload = ECall(EIdent("Array::set", -1), [
+    f,
+    EInt(1),
+    EIdent("__aws_v", -1)
+  ], -1)
+  let set_state = ECall(EIdent("Array::set", -1), [
+    f,
+    EInt(0),
+    EInt(0)
+  ], -1)
+  let body = EIf(EBinOp("==", state, EInt(2)), ESeq(set_payload, ESeq(set_state, EInt(0))), EInt(0))
+  let params: Array[(String, Option[TypeExpr])] = [
+    ("__aws_f", None),
+    ("__aws_v", None)
+  ]
+  SLet(false, false, "__aw_settle", None, EFn(array_empty_str(), array_empty(), params, None, None, body))
 }
 
 fn awp_program_defines_await(stmts: Array[Stmt]) -> Bool {

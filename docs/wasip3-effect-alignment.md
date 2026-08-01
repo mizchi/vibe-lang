@@ -243,9 +243,24 @@ trampoline を将来 `wasi:http/service` の
    `test_host_future_value_component_gate.sh`。in-guest scheduler 側は
    Suspend payload >= 2 を waitable handle 用に予約し poller 扱いに
    (完了源が無い in-guest では deadlock trap に縮退 — silent livelock
-   ではなく)。残り: 実 `.vibe` ソースの await をこの component 経路へ
-   配線する step 4 本体(suspend lowering との接続)、resolve→直接 wake
-   の waiter list(poll モデルの O(rounds×awaiters) 最適化、意味論不変)。
+   ではなく)。**step 4 本体(実 `.vibe` ソースの await → component 経路)
+   も landed (spec §3.14)**: surface `host_future_get() -> Future[Int]`
+   (cell 第3状態 state 2 = waitable) → 拡張 `__aw_poll` が
+   `perform Async::Suspend(handle + 2)` (予約 waitable band) → entry
+   boundary の `__entry_settle` が `vibe.host_future_wait` (component
+   adapter 実装) 経由で `waitable-set.wait` に park — canonical ABI が
+   task 全体を suspend するので tail-resumptive arm で充足できる (poll-wait
+   の Suspend(1) と違い)。composition は
+   `comp_emit_component_wasm_async_hostfuture` (memhost メモリ + 値渡し
+   i64 adapter で vfs 式 shim/fixup 循環を回避、u32 lift)、wrap は
+   compiled core の `vibe.host_future_get` import sniff で自動 route。
+   実測: `let run: () -> Int with { Async } = () -> { let f =
+   host_future_get(); await(f) }` が 300ms producer delay で 42 を
+   ~313ms (gate = `test_hostfuture_source_component_gate.sh`)。残り:
+   resolve→直接 wake の waiter list (poll モデルの O(rounds×awaiters)
+   最適化、意味論不変)、component 内 sleep (adapter は vibe.sleep を
+   提供しない — composer が明確な診断で reject)、TaskGroup 併用
+   (mixing guard reject のまま)。
 
 ## Non-goals
 

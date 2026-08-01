@@ -43,6 +43,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i32_sub,
   emit_i32_wrap_i64,
   emit_i64_const,
+  emit_i64_shl,
   emit_i64_shr_s,
   emit_if_void,
   emit_local_get,
@@ -3077,6 +3078,473 @@ export fn comp_emit_component_wasm_host_future_value(export_name: String, comp_r
     core_sort_func
   ])
   emit_canon_lift_async_section(buf, run_func_alias_idx, 2)
+  emit_comp_export_section(buf, export_name, 1)
+  bytebuf_to_bytes(buf)
+}
+
+/// ADR-0089 step 4 (#1218): does a compiled core module import the
+/// host-future pair (`vibe.host_future_get`)? This is the wrap-time key
+/// that routes an async entry to comp_emit_component_wasm_async_hostfuture
+/// instead of the plain trampolined-p1 shape -- the import is emitted by
+/// linked_compile exactly when the program calls `host_future_get`, so
+/// sniffing the BYTES is exact where an AST scan could be fooled by
+/// shadowing.
+export fn comp_core_imports_host_future(core_wasm: Bytes) -> Bool {
+  let imp_modules = array_empty()
+  let imp_names = array_empty()
+  let imp_type_indices = new_int_array()
+  let imp_type_sigs = array_empty()
+  let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  let mut found = false
+  let mut i = 0
+  while i < import_count {
+    if Array::get(imp_modules, i) == "vibe" && Array::get(imp_names, i) == "host_future_get" {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// ADR-0089 step 4 (#1218): the ADAPTER core module that implements the
+/// guest's `vibe.host_future_get` / `vibe.host_future_wait` raw imports
+/// over the canon built-ins (spec §3.13's sequence, factored out of the
+/// fixed-shape comp_generate_host_future_value_guest_core_module and
+/// re-targeted at a REAL compiled core module).
+///
+/// Values are value-passed (i64) in the guest's TAGGED convention
+/// (internal Int = value << 1, the generic vibe.* call path): the adapter
+/// shifts on entry/exit, so no compile_call shim is needed and the raw ABI
+/// stays pointer-free -- which is what makes this composition acyclic
+/// (buffers live in the memhost memory, never the guest's; the vfs
+/// shim/fixup dance is not needed).
+///
+/// Import func indices 0-6 + env.memory (memhost); local funcs
+/// 7 = host_future_get () -> i64, 8 = host_future_wait (i64) -> i64.
+/// Scratch layout in memhost memory: 0 = future.read landing slot,
+/// 8 = async-lower results slot, 16 = waitable-set.wait payload area.
+/// Contract violations (non-eager get-future, non-FUTURE_READ wake) trap
+/// with `unreachable`: the adapter runs inside the lifted task, so the
+/// fixed-shape's task.return diagnostic bands are not available here.
+fn comp_generate_hostfuture_adapter_core_module() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  // types: 0 (i32)->(i32) async-lowered get-future; 1 (i32,i32)->(i32)
+  // future.read & ws_wait; 2 (i32)->() drop-readable/ws_drop; 3 ()->(i32)
+  // ws_new; 4 (i32,i32)->() waitable_join; 5 ()->(i64) host_future_get;
+  // 6 (i64)->(i64) host_future_wait.
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 7)
+  emit_func_type_raw(tc, [
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127,
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127
+  ], array_empty())
+  emit_func_type_raw(tc, array_empty(), [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    127,
+    127
+  ], array_empty())
+  emit_func_type_raw(tc, array_empty(), [
+    126
+  ])
+  emit_func_type_raw(tc, [
+    126
+  ], [
+    126
+  ])
+  bytebuf_push_section(out, 1, tc)
+  // imports: 7 core funcs (indices 0-6) + the memhost memory.
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, 8)
+  emit_name(ic, "$root")
+  emit_name(ic, "[async-lower]get-future")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 0)
+  emit_name(ic, "$root")
+  emit_name(ic, "[async-lower][future-read-0]get-future")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "$root")
+  emit_name(ic, "[future-drop-readable-0]get-future")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-new]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 3)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-join]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 4)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-wait]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-drop]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "env")
+  emit_name(ic, "memory")
+  bytebuf_push(ic, 2)
+  bytebuf_push(ic, 0)
+  leb128_encode_u32(ic, 1)
+  bytebuf_push_section(out, 2, ic)
+  emit_function_section(out, [
+    5,
+    6
+  ])
+  emit_export_section_multi(out, [
+    "host_future_get",
+    "host_future_wait"
+  ], [
+    7,
+    8
+  ])
+  let code_sec = bytebuf_new()
+  leb128_encode_u32(code_sec, 2)
+  // func 7: host_future_get. locals (i32): 0=packed, 1=code.
+  let get_body = bytebuf_new()
+  leb128_encode_u32(get_body, 1)
+  leb128_encode_u32(get_body, 2)
+  bytebuf_push(get_body, 127)
+  // packed = get-future(results at 8); code = packed & 0xf
+  emit_i32_const(get_body, 8)
+  emit_call(get_body, 0)
+  emit_local_set(get_body, 0)
+  emit_local_get(get_body, 0)
+  emit_i32_const(get_body, 15)
+  emit_i32_and(get_body)
+  emit_local_set(get_body, 1)
+  // pair creation is synchronous by contract: code must be RETURNED (2)
+  emit_local_get(get_body, 1)
+  emit_i32_const(get_body, 2)
+  emit_i32_ne(get_body)
+  emit_if_void(get_body)
+  bytebuf_push(get_body, 0)
+  emit_end(get_body)
+  // return the handle from mem[8], tagged (i64.extend_i32_u = 0xad, << 1)
+  emit_i32_const(get_body, 8)
+  emit_i32_load(get_body, 2, 0)
+  bytebuf_push(get_body, 173)
+  emit_i64_const(get_body, 1)
+  emit_i64_shl(get_body)
+  bytebuf_push(get_body, 11)
+  leb128_encode_u32(code_sec, Bytes::length(get_body))
+  bytebuf_push_buf(code_sec, get_body)
+  // func 8: host_future_wait. param 0 = tagged handle (i64); locals (i32):
+  // 1=fut, 2=st, 3=ws, 4=ev.
+  let wait_body = bytebuf_new()
+  leb128_encode_u32(wait_body, 1)
+  leb128_encode_u32(wait_body, 4)
+  bytebuf_push(wait_body, 127)
+  // fut = wrap(param >> 1)
+  emit_local_get(wait_body, 0)
+  emit_i64_const(wait_body, 1)
+  emit_i64_shr_s(wait_body)
+  emit_i32_wrap_i64(wait_body)
+  emit_local_set(wait_body, 1)
+  // st = future.read(fut, 0)
+  emit_local_get(wait_body, 1)
+  emit_i32_const(wait_body, 0)
+  emit_call(wait_body, 1)
+  emit_local_set(wait_body, 2)
+  // BLOCKED (-1): park as a waitable -- ws = ws_new(); join(fut, ws);
+  // ev = wait(ws, 16); the only waitable in the set, so the event must be
+  // FUTURE_READ (4). Any other status means the read completed eagerly
+  // (host resolved before we read) and the value is already at mem[0].
+  emit_local_get(wait_body, 2)
+  emit_i32_const(wait_body, -1)
+  emit_i32_eq(wait_body)
+  emit_if_void(wait_body)
+  emit_call(wait_body, 3)
+  emit_local_set(wait_body, 3)
+  emit_local_get(wait_body, 1)
+  emit_local_get(wait_body, 3)
+  emit_call(wait_body, 4)
+  emit_local_get(wait_body, 3)
+  emit_i32_const(wait_body, 16)
+  emit_call(wait_body, 5)
+  emit_local_set(wait_body, 4)
+  emit_local_get(wait_body, 4)
+  emit_i32_const(wait_body, 4)
+  emit_i32_ne(wait_body)
+  emit_if_void(wait_body)
+  bytebuf_push(wait_body, 0)
+  emit_end(wait_body)
+  emit_end(wait_body)
+  // teardown: drop the READABLE end (ours; the writable end is host-owned),
+  // then the set if one was created (ends before sets, the children rule)
+  emit_local_get(wait_body, 1)
+  emit_call(wait_body, 2)
+  emit_local_get(wait_body, 2)
+  emit_i32_const(wait_body, -1)
+  emit_i32_eq(wait_body)
+  emit_if_void(wait_body)
+  emit_local_get(wait_body, 3)
+  emit_call(wait_body, 6)
+  emit_end(wait_body)
+  // return the value that landed in the read buffer, tagged
+  emit_i32_const(wait_body, 0)
+  emit_i32_load(wait_body, 2, 0)
+  bytebuf_push(wait_body, 173)
+  emit_i64_const(wait_body, 1)
+  emit_i64_shl(wait_body)
+  bytebuf_push(wait_body, 11)
+  leb128_encode_u32(code_sec, Bytes::length(wait_body))
+  bytebuf_push_buf(code_sec, wait_body)
+  bytebuf_push_section(out, 10, code_sec)
+  bytebuf_to_bytes(out)
+}
+
+/// ADR-0089 step 4 (#1218): async trampoline for a REAL compiled entry
+/// with a u32-lifted result -- imports ("main","run") in the compiled core
+/// shape `(i64) -> i64` (closure-env param, untagged result) and
+/// ("cm","task-return") `(i32) -> ()`, exports a void `run` that calls the
+/// entry with a dummy env, wraps the i64 to i32 and forwards it to
+/// task.return. The u32 result type (unlike trampolined-p1's s64) matches
+/// viberun's typed `run` driver -- the only host that provides the
+/// `get-future` import this composition needs.
+fn comp_generate_async_trampoline_hostfuture() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 3)
+  emit_func_type_raw(tc, [
+    126
+  ], [
+    126
+  ])
+  emit_func_type_raw(tc, [
+    127
+  ], array_empty())
+  emit_func_type_raw(tc, array_empty(), array_empty())
+  bytebuf_push_section(out, 1, tc)
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, 2)
+  emit_name(ic, "main")
+  emit_name(ic, "run")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 0)
+  emit_name(ic, "cm")
+  emit_name(ic, "task-return")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  bytebuf_push_section(out, 2, ic)
+  emit_function_section(out, [
+    2
+  ])
+  emit_export_section(out, "run", 2)
+  let body = bytebuf_new()
+  emit_i64_const(body, 0)
+  emit_call(body, 0)
+  emit_i32_wrap_i64(body)
+  emit_call(body, 1)
+  emit_code_section(out, [
+    body
+  ])
+  bytebuf_to_bytes(out)
+}
+
+/// ADR-0089 step 4 (#1218): wrap a REAL compiled core module -- one whose
+/// program calls `host_future_get`, so the core imports
+/// `vibe.host_future_get` / `vibe.host_future_wait` -- into an async
+/// component that imports `get-future: func() -> future<u32>` from the
+/// host and satisfies the core's imports with the adapter module above.
+/// This is the step-4 wiring: real `.vibe`-source `await` (lowered by
+/// await_poll_pass + the entry boundary to the reserved waitable Suspend
+/// payload) reaches `waitable-set.wait` through the adapter, where the
+/// canonical ABI genuinely suspends the task until the host resolves the
+/// future (measured by scripts/test_hostfuture_source_component_gate.sh).
+///
+/// Composition (acyclic -- buffers live in memhost memory, values cross
+/// as i64s): memhost -> canon defs over its memory -> adapter($root, env)
+/// -> fd_write stub -> main(wasi=stub, vibe=adapter) -> trampoline(main,
+/// cm) -> async lift (u32) -> export.
+///
+/// Component type indices: 0=(future u32), 1=import functype (async,
+/// result = type 0), 2=export functype (async, result u32). Component
+/// func indices: 0=the import, 1=the lifted run. Core func indices:
+/// 0=lowered get-future, 1=future.read, 2=future.drop-readable,
+/// 3=task-return, 4=waitable-set.new, 5=waitable.join,
+/// 6=waitable-set.wait, 7=waitable-set.drop, 8=alias(main, "run"),
+/// 9=alias(trampoline, "run"). Core instances: 0=memhost, 1=$root,
+/// 2=env(memory), 3=adapter, 4=wasi-stub, 5=main, 6=main-arg, 7=cm-arg,
+/// 8=trampoline.
+export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, export_name: String) -> Bytes with { Error } {
+  // The compiled entry must be exported as `run : (i64) -> i64` (entry
+  // name "run" -- the same constraint the trampolined-p1 wrap has).
+  let export_names = array_empty()
+  let export_func_indices = new_int_array()
+  let export_type_sigs = array_empty()
+  let _ = parse_core_exports(main_core_wasm, export_names, export_func_indices, export_type_sigs)
+  let mut run_ok = false
+  let mut ei = 0
+  while ei < Array::length(export_names) {
+    if Array::get(export_names, ei) == "run" {
+      let sig = Array::get(export_type_sigs, ei)
+      if Array::length(sig) == 4 {
+        run_ok = Array::get(sig, 0) == 1 && Array::get(sig, 1) == 126 && Array::get(sig, 2) == 1 && Array::get(sig, 3) == 126
+      } else {
+        ()
+      }
+      ei = Array::length(export_names)
+    } else {
+      ei = ei + 1
+    }
+  }
+  if !run_ok {
+    throw("component(async-hostfuture): core module must export 'run : (i64) -> i64' (compile with entry name \"run\")")
+  } else {
+    ()
+  }
+  // Import allowlist: the preview1 preamble stub plus the two adapter
+  // imports. Anything else (fs, http, sleep, ...) has no provider in this
+  // self-contained composition -- reject with a clear message instead of a
+  // late instantiation error.
+  let imp_modules = array_empty()
+  let imp_names = array_empty()
+  let imp_type_indices = new_int_array()
+  let imp_type_sigs = array_empty()
+  let import_count = parse_core_imports(main_core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  let mut ii = 0
+  while ii < import_count {
+    let im = Array::get(imp_modules, ii)
+    let ifn = Array::get(imp_names, ii)
+    if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
+      ()
+    } else if im == "vibe" && (ifn == "host_future_get" || ifn == "host_future_wait") {
+      ()
+    } else {
+      throw("component(async-hostfuture): core module uses host import '\{im}.\{ifn}' (only fd_write and the host-future pair are satisfiable in this composition)")
+    }
+    ii = ii + 1
+  }
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  let future_type_idx = 0
+  emit_comp_future_type_section(buf, comp_valtype_u32)
+  emit_comp_async_functype_section_result_type(buf, future_type_idx)
+  emit_comp_import_section_typed(buf, "get-future", 1)
+  emit_core_module_section(buf, main_core_wasm)
+  emit_core_module_section(buf, comp_generate_memhost_module())
+  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module())
+  emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
+  emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
+  let memhost_inst = 0
+  emit_core_instance_instantiate_section(buf, 1, array_empty())
+  let mem_alias_idx = 0
+  emit_alias_section(buf, memhost_inst, [
+    "memory"
+  ], [
+    core_sort_mem
+  ])
+  emit_canon_lower_async_section(buf, 0, mem_alias_idx)
+  emit_canon_future_read(buf, future_type_idx, mem_alias_idx)
+  emit_canon_future_drop_readable(buf, future_type_idx)
+  emit_canon_task_return(buf, comp_valtype_u32)
+  emit_canon_waitable_set_new(buf)
+  emit_canon_waitable_join(buf)
+  emit_canon_waitable_set_wait(buf, mem_alias_idx)
+  emit_canon_waitable_set_drop(buf)
+  let root_inst = 1
+  emit_core_instance_from_exports(buf, 1, [
+    7
+  ], [
+    "[async-lower]get-future",
+    "[async-lower][future-read-0]get-future",
+    "[future-drop-readable-0]get-future",
+    "[waitable-set-new]",
+    "[waitable-join]",
+    "[waitable-set-wait]",
+    "[waitable-set-drop]"
+  ], [
+    0,
+    1,
+    2,
+    4,
+    5,
+    6,
+    7
+  ])
+  let env_inst = 2
+  emit_core_instance_from_exports_sorted(buf, [
+    "memory"
+  ], [
+    core_sort_mem
+  ], [
+    mem_alias_idx
+  ])
+  let adapter_inst = 3
+  emit_core_instance_instantiate_args(buf, 2, [
+    "$root",
+    "env"
+  ], [
+    root_inst,
+    env_inst
+  ])
+  let stub_inst = 4
+  emit_core_instance_instantiate_section(buf, 4, array_empty())
+  let main_inst = 5
+  emit_core_instance_instantiate_args(buf, 0, [
+    "wasi_snapshot_preview1",
+    "vibe"
+  ], [
+    stub_inst,
+    adapter_inst
+  ])
+  let main_run_func_idx = 8
+  emit_alias_section(buf, main_inst, [
+    "run"
+  ], [
+    core_sort_func
+  ])
+  let main_arg_inst = 6
+  emit_core_instance_from_exports(buf, 1, [
+    1
+  ], [
+    "run"
+  ], [
+    main_run_func_idx
+  ])
+  let cm_arg_inst = 7
+  emit_core_instance_from_exports(buf, 1, [
+    1
+  ], [
+    "task-return"
+  ], [
+    3
+  ])
+  let tramp_inst = 8
+  emit_core_instance_instantiate_args(buf, 3, [
+    "main",
+    "cm"
+  ], [
+    main_arg_inst,
+    cm_arg_inst
+  ])
+  emit_comp_async_functype_section(buf, comp_valtype_u32)
+  let tramp_run_func_idx = 9
+  emit_alias_section(buf, tramp_inst, [
+    "run"
+  ], [
+    core_sort_func
+  ])
+  emit_canon_lift_async_section(buf, tramp_run_func_idx, 2)
   emit_comp_export_section(buf, export_name, 1)
   bytebuf_to_bytes(buf)
 }

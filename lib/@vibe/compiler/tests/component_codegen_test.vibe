@@ -9,9 +9,11 @@ import @vibe/core {
 }
 
 import @vibe/compiler/entry/source_compile/wasi_only {
+  comp_core_imports_host_future,
   comp_emit_component_wasm,
   comp_emit_component_wasm_async,
   comp_emit_component_wasm_async_concurrent_awaits,
+  comp_emit_component_wasm_async_hostfuture,
   comp_emit_component_wasm_async_spawned_future,
   comp_emit_component_wasm_async_trampolined,
   comp_emit_component_wasm_async_trampolined_p1,
@@ -1109,6 +1111,168 @@ test "component host-future-value: get-future import + waitable park, no write e
 test "component host-future-value: rejects a non-u32 result valtype" {
   let rejected = handle {
     let _ = comp_emit_component_wasm_host_future_value("run", 120)
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(rejected)
+}
+
+// ADR-0089 step 4 (#1218): a stand-in for a REAL compiled core whose
+// program calls `host_future_get` -- exports `run : (i64) -> i64` and
+// imports fd_write + the vibe host-future pair, exactly the import set
+// linked_compile emits for such a program. `with_run` false drops the run
+// export (the composer must reject); `extra_import` adds a vibe.sh import
+// (outside the composition's allowlist, must also reject).
+fn build_main_i64_core_hostfuture(with_run: Bool, extra_import: Bool) -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 3)
+  emit_func_type_raw(tc, [
+    127,
+    127,
+    127,
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    126
+  ], [
+    126
+  ])
+  emit_func_type_raw(tc, array_empty(), [
+    126
+  ])
+  bytebuf_push_section(out, 1, tc)
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, if extra_import {
+    4
+  } else {
+    3
+  })
+  emit_name(ic, "wasi_snapshot_preview1")
+  emit_name(ic, "fd_write")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 0)
+  emit_name(ic, "vibe")
+  emit_name(ic, "host_future_get")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "vibe")
+  emit_name(ic, "host_future_wait")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  if extra_import {
+    emit_name(ic, "vibe")
+    emit_name(ic, "sh")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 1)
+  } else {
+    ()
+  }
+  bytebuf_push_section(out, 2, ic)
+  emit_function_section(out, [
+    1
+  ])
+  let local_func_idx = if extra_import {
+    4
+  } else {
+    3
+  }
+  if with_run {
+    emit_export_section(out, "run", local_func_idx)
+  } else {
+    emit_export_section(out, "main", local_func_idx)
+  }
+  let body = bytebuf_new()
+  emit_i64_const(body, 42)
+  emit_code_section(out, [
+    body
+  ])
+  bytebuf_to_bytes(out)
+}
+
+// The step-4 composition: a host-future-importing core is wrapped with the
+// adapter module (canon built-ins over the memhost memory), the fd_write
+// stub, and the u32 trampoline, importing `get-future` from the host.
+// Runtime proof (42 in ~wall >= 0.8 x delay through a real compiled
+// program) lives in scripts/test_hostfuture_source_component_gate.sh.
+test "component async hostfuture: adapter-backed composition of a real-shaped core" {
+  let core = build_main_i64_core_hostfuture(true, false)
+  assert(comp_core_imports_host_future(core) == true)
+  // The p1 test core (fd_write only) must NOT sniff as host-future.
+  assert(comp_core_imports_host_future(build_main_i64_core_p1()) == false)
+  let comp = comp_emit_component_wasm_async_hostfuture(core, "run")
+  assert(Bytes::get(comp, 0) == 0)
+  assert(Bytes::get(comp, 4) == 13)
+  // component type (future u32): 07 04 01 65 01 79
+  assert(bytes_contains_seq(comp, [
+    7,
+    4,
+    1,
+    101,
+    1,
+    121
+  ]) == 1)
+  // import functype `async () -> (type 0)`: 07 05 01 43 00 00 00
+  assert(bytes_contains_seq(comp, [
+    7,
+    5,
+    1,
+    67,
+    0,
+    0,
+    0
+  ]) == 1)
+  assert(component_bytes_contains(comp, "get-future") == 1)
+  // canon lower async (memory 0) of the import: 08 08 01 01 00 00 02 06 03 00
+  assert(bytes_contains_seq(comp, [
+    8,
+    8,
+    1,
+    1,
+    0,
+    0,
+    2,
+    6,
+    3,
+    0
+  ]) == 1)
+  // the adapter's canon set + the pair it exports to the main module
+  assert(component_bytes_contains(comp, "[async-lower]get-future") == 1)
+  assert(component_bytes_contains(comp, "[async-lower][future-read-0]get-future") == 1)
+  assert(component_bytes_contains(comp, "[future-drop-readable-0]get-future") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-new]") == 1)
+  assert(component_bytes_contains(comp, "[waitable-join]") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-wait]") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-drop]") == 1)
+  assert(component_bytes_contains(comp, "host_future_get") == 1)
+  assert(component_bytes_contains(comp, "host_future_wait") == 1)
+  // u32-lifted run through the trampoline's task-return
+  assert(component_bytes_contains(comp, "task-return") == 1)
+  // The host owns the write end; the import call must complete eagerly --
+  // no write-side or subtask machinery anywhere in the shape.
+  assert(component_bytes_contains(comp, "future-new") == 0)
+  assert(component_bytes_contains(comp, "future-write") == 0)
+  assert(component_bytes_contains(comp, "future-drop-writable") == 0)
+  assert(component_bytes_contains(comp, "[subtask-drop]") == 0)
+}
+
+test "component async hostfuture: rejects a core without a run export" {
+  let rejected = handle {
+    let _ = comp_emit_component_wasm_async_hostfuture(build_main_i64_core_hostfuture(false, false), "run")
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(rejected)
+}
+
+test "component async hostfuture: rejects a core with an unsatisfiable host import" {
+  let rejected = handle {
+    let _ = comp_emit_component_wasm_async_hostfuture(build_main_i64_core_hostfuture(true, true), "run")
     false
   } with Error {
     Throw(_) => true
