@@ -281,8 +281,9 @@ async function main() {
     console.error(`[unit-batch] all ${listed.length} files already cached (${Date.now() - t0}ms)`);
     return;
   }
+  const totalMisses = misses.length;
   console.error(
-    `[unit-batch] ${misses.length} of ${listed.length} files to compile (${nHits} cached) with ${JOBS} daemons`,
+    `[unit-batch] ${totalMisses} of ${listed.length} files to compile (${nHits} cached) with ${JOBS} daemons`,
   );
 
   const daemons = Array.from({ length: JOBS }, (_, i) => new Daemon(`c${i}`, { VIBE_FS_COMPILE: "1" }));
@@ -330,7 +331,7 @@ async function main() {
     else nFail++;
     const done = nOk + nFail;
     if (done % 50 === 0) {
-      console.error(`[unit-batch] ${done}/${misses.length + (warmupFile ? 1 : 0)} (${Date.now() - t0}ms)`);
+      console.error(`[unit-batch] ${done}/${totalMisses} (${Date.now() - t0}ms)`);
     }
   };
 
@@ -359,7 +360,7 @@ async function main() {
   for (const d of daemons) d.kill();
   planDaemon.kill();
   console.error(
-    `[unit-batch] compiled ${nOk}/${misses.length} (${nFail} left to the one-shot fallback) in ${Date.now() - t0}ms`,
+    `[unit-batch] compiled ${nOk}/${totalMisses} (${nFail} left to the one-shot fallback) in ${Date.now() - t0}ms`,
   );
 }
 
