@@ -3094,6 +3094,52 @@ export fn comp_core_imports_host_future(core_wasm: Bytes) -> Bool {
   Array::length(comp_core_host_future_names(core_wasm)) > 0
 }
 
+/// ADR-0089 Decision 3 (#1218): the stream sibling of
+/// comp_core_imports_host_future -- does a compiled core module import any
+/// `vibe.host_stream_get$<name>`? Emitted by linked_compile exactly when
+/// the program calls `host_stream_named`, so the byte sniff is exact.
+/// Either sniff routes the wrap to the hostfuture/hoststream composition.
+export fn comp_core_imports_host_stream(core_wasm: Bytes) -> Bool {
+  Array::length(comp_core_host_stream_names(core_wasm)) > 0
+}
+
+/// ADR-0089 Decision 3 (#1218): is `nm` a host-stream GET core import?
+/// (There is no anonymous host stream -- the surface is named-only.)
+fn comp_is_host_stream_get_import(nm: String) -> Bool {
+  String::starts_with(nm, "host_stream_get$")
+}
+
+/// ADR-0089 Decision 3 (#1218): every host-stream GET core import name the
+/// module declares, in DECLARATION ORDER (linked_compile emits them
+/// sorted). Same single-source-of-truth role as
+/// comp_core_host_future_names: the adapter's func layout and the
+/// component's stream import order both derive from this list.
+export fn comp_core_host_stream_names(core_wasm: Bytes) -> Array[String] {
+  let imp_modules = array_empty()
+  let imp_names = array_empty()
+  let imp_type_indices = new_int_array()
+  let imp_type_sigs = array_empty()
+  let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  let out = array_empty()
+  let mut i = 0
+  while i < import_count {
+    let nm = Array::get(imp_names, i)
+    if Array::get(imp_modules, i) == "vibe" && comp_is_host_stream_get_import(nm) {
+      Array::push(out, nm)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The COMPONENT-level import name a host-stream GET core import asks for:
+/// exactly its `$` suffix, validated as a component label by compile_call.
+fn comp_hoststream_import_label(core_name: String) -> String {
+  String::substring(core_name, String::length("host_stream_get$"), String::length(core_name))
+}
+
 /// ADR-0089 (c) (#1218): is `nm` a host-future GET core import -- the
 /// anonymous `host_future_get` or a named `host_future_get$<label>`?
 fn comp_is_host_future_get_import(nm: String) -> Bool {
@@ -3203,23 +3249,56 @@ fn comp_hostfuture_import_label(core_name: String) -> String {
 /// handle with no started read, non-FUTURE_READ wake) trap with
 /// `unreachable`: the adapter runs inside the lifted task, so the
 /// fixed-shape's task.return diagnostic bands are not available here.
-fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String]) -> Bytes {
+fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String]) -> Bytes {
+  // ADR-0089 Decision 3 (#1218): generalized again -- K host futures AND L
+  // host streams (K + L >= 1, either may be 0). The future half is
+  // byte-identical for L = 0 (every stream-specific type/import/func is
+  // emitted only when L > 0, appended after the future/waitable layout).
+  // Stream layout: after the waitable quartet come L `[async-lower]<label>`
+  // stream getters, one shared `[async-lower][stream-read-0]<first-label>`
+  // and `[stream-drop-readable-0]<first-label>` (every host stream here is
+  // a `stream<u8>`, one canon pair covers them all). Local funcs append L
+  // per-name getters (exported under their `host_stream_get$<name>` core
+  // import names) and the single shared `host_stream_read (i64) -> i64`:
+  // read ONE byte -- issue `stream.read`, park in `waitable-set.wait` when
+  // it blocks, and report end-of-stream (the measured `amount 0 / code 1`
+  // status, spec §3.17) as -1 after dropping the readable end. Unlike the
+  // future getters there is NO eager read: the park is per READ, and a
+  // pending read left between calls would double-read the stream.
   let nnames = Array::length(core_names)
+  let nstreams = Array::length(stream_core_names)
   let read_idx = nnames
   let drop_idx = nnames + 1
-  let ws_new_idx = nnames + 2
-  let join_idx = nnames + 3
-  let ws_wait_idx = nnames + 4
-  let ws_drop_idx = nnames + 5
-  let first_label = comp_hostfuture_import_label(Array::get(core_names, 0))
+  let ws_base = if nnames > 0 {
+    nnames + 2
+  } else {
+    0
+  }
+  let ws_new_idx = ws_base
+  let join_idx = ws_base + 1
+  let ws_wait_idx = ws_base + 2
+  let ws_drop_idx = ws_base + 3
+  let sget_base = ws_base + 4
+  let sread_idx = sget_base + nstreams
+  let sdrop_idx = sget_base + nstreams + 1
+  let nfunc_imports = if nstreams > 0 {
+    sget_base + nstreams + 2
+  } else {
+    ws_base + 4
+  }
   let out = bytebuf_new()
   emit_header(out)
   // types: 0 (i32)->(i32) async-lowered get-future; 1 (i32,i32)->(i32)
   // future.read & ws_wait; 2 (i32)->() drop-readable/ws_drop; 3 ()->(i32)
   // ws_new; 4 (i32,i32)->() waitable_join; 5 ()->(i64) host_future_get;
-  // 6 (i64)->(i64) host_future_wait.
+  // 6 (i64)->(i64) host_future_wait; 7 (i32,i32,i32)->(i32) stream.read
+  // (only when streams are present).
   let tc = bytebuf_new()
-  bytebuf_push_vec_header(tc, 7)
+  bytebuf_push_vec_header(tc, if nstreams > 0 {
+    8
+  } else {
+    7
+  })
   emit_func_type_raw(tc, [
     127
   ], [
@@ -3249,10 +3328,23 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String]) -> By
   ], [
     126
   ])
+  if nstreams > 0 {
+    emit_func_type_raw(tc, [
+      127,
+      127,
+      127
+    ], [
+      127
+    ])
+  } else {
+    ()
+  }
   bytebuf_push_section(out, 1, tc)
-  // imports: K + 6 core funcs (indices 0..K+5) + the memhost memory.
+  // imports: the future half (K getters + shared read/drop, K > 0 only),
+  // the waitable quartet, the stream half (L getters + shared read/drop,
+  // L > 0 only), and the memhost memory.
   let ic = bytebuf_new()
-  bytebuf_push_vec_header(ic, nnames + 7)
+  bytebuf_push_vec_header(ic, nfunc_imports + 1)
   let mut imp_i = 0
   while imp_i < nnames {
     emit_name(ic, "$root")
@@ -3261,14 +3353,19 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String]) -> By
     bytebuf_push(ic, 0)
     imp_i = imp_i + 1
   }
-  emit_name(ic, "$root")
-  emit_name(ic, String::concat("[async-lower][future-read-0]", first_label))
-  bytebuf_push(ic, 0)
-  bytebuf_push(ic, 1)
-  emit_name(ic, "$root")
-  emit_name(ic, String::concat("[future-drop-readable-0]", first_label))
-  bytebuf_push(ic, 0)
-  bytebuf_push(ic, 2)
+  if nnames > 0 {
+    let first_label = comp_hostfuture_import_label(Array::get(core_names, 0))
+    emit_name(ic, "$root")
+    emit_name(ic, String::concat("[async-lower][future-read-0]", first_label))
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 1)
+    emit_name(ic, "$root")
+    emit_name(ic, String::concat("[future-drop-readable-0]", first_label))
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 2)
+  } else {
+    ()
+  }
   emit_name(ic, "$root")
   emit_name(ic, "[waitable-set-new]")
   bytebuf_push(ic, 0)
@@ -3285,13 +3382,36 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String]) -> By
   emit_name(ic, "[waitable-set-drop]")
   bytebuf_push(ic, 0)
   bytebuf_push(ic, 2)
+  if nstreams > 0 {
+    let mut simp_i = 0
+    while simp_i < nstreams {
+      emit_name(ic, "$root")
+      emit_name(ic, String::concat("[async-lower]", comp_hoststream_import_label(Array::get(stream_core_names, simp_i))))
+      bytebuf_push(ic, 0)
+      bytebuf_push(ic, 0)
+      simp_i = simp_i + 1
+    }
+    let s_first_label = comp_hoststream_import_label(Array::get(stream_core_names, 0))
+    emit_name(ic, "$root")
+    emit_name(ic, String::concat("[async-lower][stream-read-0]", s_first_label))
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 7)
+    emit_name(ic, "$root")
+    emit_name(ic, String::concat("[stream-drop-readable-0]", s_first_label))
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 2)
+  } else {
+    ()
+  }
   emit_name(ic, "env")
   emit_name(ic, "memory")
   bytebuf_push(ic, 2)
   bytebuf_push(ic, 0)
   leb128_encode_u32(ic, 1)
   bytebuf_push_section(out, 2, ic)
-  // K getters (type 5, `() -> i64`) then one shared wait (type 6).
+  // K future getters (type 5, `() -> i64`) + one shared wait (type 6) when
+  // K > 0, then L stream getters (type 5) + one shared read (type 6) when
+  // L > 0.
   let fn_types = new_int_array()
   let export_names = array_empty()
   let export_indices = new_int_array()
@@ -3299,16 +3419,39 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String]) -> By
   while fs_i < nnames {
     Array::push(fn_types, 5)
     Array::push(export_names, Array::get(core_names, fs_i))
-    Array::push(export_indices, nnames + 6 + fs_i)
+    Array::push(export_indices, nfunc_imports + fs_i)
     fs_i = fs_i + 1
   }
-  Array::push(fn_types, 6)
-  Array::push(export_names, "host_future_wait")
-  Array::push(export_indices, nnames + 6 + nnames)
+  if nnames > 0 {
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_future_wait")
+    Array::push(export_indices, nfunc_imports + nnames)
+  } else {
+    ()
+  }
+  let s_local_base = if nnames > 0 {
+    nfunc_imports + nnames + 1
+  } else {
+    nfunc_imports
+  }
+  let mut sfs_i = 0
+  while sfs_i < nstreams {
+    Array::push(fn_types, 5)
+    Array::push(export_names, Array::get(stream_core_names, sfs_i))
+    Array::push(export_indices, s_local_base + sfs_i)
+    sfs_i = sfs_i + 1
+  }
+  if nstreams > 0 {
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_stream_read")
+    Array::push(export_indices, s_local_base + nstreams)
+  } else {
+    ()
+  }
   emit_function_section(out, fn_types)
   emit_export_section_multi(out, export_names, export_indices)
   let code_sec = bytebuf_new()
-  leb128_encode_u32(code_sec, nnames + 1)
+  leb128_encode_u32(code_sec, Array::length(fn_types))
   // funcs K+6 .. K+6+K-1: the per-name getters. locals (i32): 0=packed,
   // 1=fut, 2=addr. Identical bodies apart from the lowered import they call.
   //
@@ -3463,8 +3606,153 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String]) -> By
   emit_i64_const(wait_body, 1)
   emit_i64_shl(wait_body)
   bytebuf_push(wait_body, 11)
-  leb128_encode_u32(code_sec, Bytes::length(wait_body))
-  bytebuf_push_buf(code_sec, wait_body)
+  if nnames > 0 {
+    leb128_encode_u32(code_sec, Bytes::length(wait_body))
+    bytebuf_push_buf(code_sec, wait_body)
+  } else {
+    ()
+  }
+  // Stream getter bodies: obtain the readable end and hand it back tagged.
+  // No eager read (see the header comment) and no per-handle state record
+  // -- host_stream_read is self-contained per call. locals (i32):
+  // 0=packed, 1=str.
+  let mut sget_i = 0
+  while sget_i < nstreams {
+    let sget_body = bytebuf_new()
+    leb128_encode_u32(sget_body, 1)
+    leb128_encode_u32(sget_body, 2)
+    bytebuf_push(sget_body, 127)
+    // packed = <name>(results at 8); pair creation is synchronous by
+    // contract, so the low nibble must be RETURNED (2)
+    emit_i32_const(sget_body, 8)
+    emit_call(sget_body, sget_base + sget_i)
+    emit_local_set(sget_body, 0)
+    emit_local_get(sget_body, 0)
+    emit_i32_const(sget_body, 15)
+    emit_i32_and(sget_body)
+    emit_i32_const(sget_body, 2)
+    emit_i32_ne(sget_body)
+    emit_if_void(sget_body)
+    bytebuf_push(sget_body, 0)
+    emit_end(sget_body)
+    // str = mem[8] (the readable end's handle), capped like the futures --
+    // the read's landing slot is per-handle in the same reserved band.
+    emit_i32_const(sget_body, 8)
+    emit_i32_load(sget_body, 2, 0)
+    emit_local_set(sget_body, 1)
+    emit_local_get(sget_body, 1)
+    emit_i32_const(sget_body, comp_hf_max_handles())
+    emit_i32_gt_u(sget_body)
+    emit_if_void(sget_body)
+    bytebuf_push(sget_body, 0)
+    emit_end(sget_body)
+    // return the handle, tagged
+    emit_local_get(sget_body, 1)
+    bytebuf_push(sget_body, 173)
+    emit_i64_const(sget_body, 1)
+    emit_i64_shl(sget_body)
+    bytebuf_push(sget_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(sget_body))
+    bytebuf_push_buf(code_sec, sget_body)
+    sget_i = sget_i + 1
+  }
+  // host_stream_read: one byte per call. param 0 = tagged handle (i64);
+  // locals (i32): 1=str, 2=st, 3=ws, 4=ev, 5=addr. Issue the read; when it
+  // BLOCKS, park in waitable-set.wait (the canonical ABI suspends the whole
+  // task) and take the completion status from the payload. A zero-transfer
+  // status must carry the measured CLOSED code (1, spec §3.17) -- then the
+  // readable end is dropped and -1 goes back; anything else traps loudly.
+  if nstreams > 0 {
+    let sread_body = bytebuf_new()
+    leb128_encode_u32(sread_body, 1)
+    leb128_encode_u32(sread_body, 5)
+    bytebuf_push(sread_body, 127)
+    // str = wrap(param >> 1); cap; addr = HF_VALUE_BASE + str * 4
+    emit_local_get(sread_body, 0)
+    emit_i64_const(sread_body, 1)
+    emit_i64_shr_s(sread_body)
+    emit_i32_wrap_i64(sread_body)
+    emit_local_set(sread_body, 1)
+    emit_local_get(sread_body, 1)
+    emit_i32_const(sread_body, comp_hf_max_handles())
+    emit_i32_gt_u(sread_body)
+    emit_if_void(sread_body)
+    bytebuf_push(sread_body, 0)
+    emit_end(sread_body)
+    emit_local_get(sread_body, 1)
+    emit_i32_const(sread_body, 2)
+    emit_i32_shl(sread_body)
+    emit_i32_const(sread_body, comp_hf_value_base())
+    emit_i32_add(sread_body)
+    emit_local_set(sread_body, 5)
+    // st = stream.read(str, addr, 1)
+    emit_local_get(sread_body, 1)
+    emit_local_get(sread_body, 5)
+    emit_i32_const(sread_body, 1)
+    emit_call(sread_body, sread_idx)
+    emit_local_set(sread_body, 2)
+    // BLOCKED (0xffffffff): park as a waitable, completion status is
+    // payload[1] (mem[20]); the only waitable in the set, so the event
+    // must be STREAM_READ (2). Set dropped before the event check, the
+    // probe's order.
+    emit_local_get(sread_body, 2)
+    emit_i32_const(sread_body, -1)
+    emit_i32_eq(sread_body)
+    emit_if_void(sread_body)
+    emit_call(sread_body, ws_new_idx)
+    emit_local_set(sread_body, 3)
+    emit_local_get(sread_body, 1)
+    emit_local_get(sread_body, 3)
+    emit_call(sread_body, join_idx)
+    emit_local_get(sread_body, 3)
+    emit_i32_const(sread_body, 16)
+    emit_call(sread_body, ws_wait_idx)
+    emit_local_set(sread_body, 4)
+    emit_local_get(sread_body, 3)
+    emit_call(sread_body, ws_drop_idx)
+    emit_local_get(sread_body, 4)
+    emit_i32_const(sread_body, 2)
+    emit_i32_ne(sread_body)
+    emit_if_void(sread_body)
+    bytebuf_push(sread_body, 0)
+    emit_end(sread_body)
+    emit_i32_const(sread_body, 20)
+    emit_i32_load(sread_body, 2, 0)
+    emit_local_set(sread_body, 2)
+    emit_end(sread_body)
+    // zero transfer = end of stream (code must be the measured CLOSED = 1)
+    emit_local_get(sread_body, 2)
+    emit_i32_const(sread_body, 4)
+    emit_i32_shr_u(sread_body)
+    emit_i32_eqz(sread_body)
+    emit_if_void(sread_body)
+    emit_local_get(sread_body, 2)
+    emit_i32_const(sread_body, 15)
+    emit_i32_and(sread_body)
+    emit_i32_const(sread_body, 1)
+    emit_i32_ne(sread_body)
+    emit_if_void(sread_body)
+    bytebuf_push(sread_body, 0)
+    emit_end(sread_body)
+    emit_local_get(sread_body, 1)
+    emit_call(sread_body, sdrop_idx)
+    emit_i64_const(sread_body, 0 - 1)
+    emit_i64_const(sread_body, 1)
+    emit_i64_shl(sread_body)
+    emit_return(sread_body)
+    emit_end(sread_body)
+    // a byte landed at THIS handle's slot -- return it, tagged
+    emit_local_get(sread_body, 5)
+    emit_i32_load8_u(sread_body, 0, 0)
+    bytebuf_push(sread_body, 173)
+    emit_i64_const(sread_body, 1)
+    emit_i64_shl(sread_body)
+    bytebuf_push(sread_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(sread_body))
+    bytebuf_push_buf(code_sec, sread_body)
+  } else {
+    ()
+  }
   bytebuf_push_section(out, 10, code_sec)
   bytebuf_to_bytes(out)
 }
@@ -3592,36 +3880,74 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     let ifn = Array::get(imp_names, ii)
     if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
       ()
-    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait") {
+    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read") {
       ()
     } else {
-      throw("component(async-hostfuture): core module uses host import '\{im}.\{ifn}' (only fd_write and the host-future imports are satisfiable in this composition)")
+      throw("component(async-hostfuture): core module uses host import '\{im}.\{ifn}' (only fd_write and the host-future/host-stream imports are satisfiable in this composition)")
     }
     ii = ii + 1
   }
   let hf_names = comp_core_host_future_names(main_core_wasm)
   let nhf = Array::length(hf_names)
-  if nhf == 0 {
-    throw("component(async-hostfuture): core module imports no vibe.host_future_get[$name] (this wrap is keyed on that import)")
+  // ADR-0089 Decision 3 (#1218): host STREAMS ride the same composition --
+  // per-name `stream<u8>` component imports after the future imports, the
+  // stream canon pair after the waitable quartet, and the shared adapter
+  // (spec §3.18). Either kind alone keys the wrap; the future-only shape
+  // is byte-identical to the pre-stream composer.
+  let hs_names = comp_core_host_stream_names(main_core_wasm)
+  let nhs = Array::length(hs_names)
+  let nt = nhf + nhs
+  if nt == 0 {
+    throw("component(async-hostfuture): core module imports no vibe.host_future_get[$name] / vibe.host_stream_get$name (this wrap is keyed on those imports)")
   } else {
     ()
   }
   let buf = bytebuf_new()
   emit_component_header(buf)
+  // Component type indices, in emission order: the future pair (value type
+  // + import functype) when futures exist, then the stream pair when
+  // streams exist, then (later) the export functype.
   let future_type_idx = 0
-  emit_comp_future_type_section(buf, comp_valtype_u32)
-  emit_comp_async_functype_section_result_type(buf, future_type_idx)
-  // One component import per host future, in the core module's declaration
-  // order, so component func index i is the import the adapter's lowered
-  // core func i belongs to.
+  let fut_functype_idx = 1
+  if nhf > 0 {
+    emit_comp_future_type_section(buf, comp_valtype_u32)
+    emit_comp_async_functype_section_result_type(buf, future_type_idx)
+  } else {
+    ()
+  }
+  let stream_type_idx = if nhf > 0 {
+    2
+  } else {
+    0
+  }
+  let stream_functype_idx = stream_type_idx + 1
+  if nhs > 0 {
+    emit_comp_stream_type_section(buf, comp_valtype_u8)
+    emit_comp_async_functype_section_result_type(buf, stream_type_idx)
+  } else {
+    ()
+  }
+  let export_functype_idx = if nhs > 0 {
+    stream_functype_idx + 1
+  } else {
+    fut_functype_idx + 1
+  }
+  // One component import per host future then per host stream, each kind in
+  // its core module's declaration order, so component func index i is the
+  // import the composer's lowered core func i belongs to.
   let mut himp_i = 0
   while himp_i < nhf {
-    emit_comp_import_section_typed(buf, comp_hostfuture_import_label(Array::get(hf_names, himp_i)), 1)
+    emit_comp_import_section_typed(buf, comp_hostfuture_import_label(Array::get(hf_names, himp_i)), fut_functype_idx)
     himp_i = himp_i + 1
+  }
+  let mut simp_i = 0
+  while simp_i < nhs {
+    emit_comp_import_section_typed(buf, comp_hoststream_import_label(Array::get(hs_names, simp_i)), stream_functype_idx)
+    simp_i = simp_i + 1
   }
   emit_core_module_section(buf, main_core_wasm)
   emit_core_module_section(buf, comp_generate_memhost_module())
-  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names))
+  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names))
   emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
   emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
   let memhost_inst = 0
@@ -3632,20 +3958,42 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   ], [
     core_sort_mem
   ])
-  // Core func indices 0..K-1: the lowered imports, emitted in the same order
-  // (the adapter calls them by that index).
+  // Core func indices 0..K+L-1: the lowered imports, emitted in the same
+  // order (futures then streams; the root instance exports map them by
+  // name for the adapter).
   let mut hlow_i = 0
-  while hlow_i < nhf {
+  while hlow_i < nt {
     emit_canon_lower_async_section(buf, hlow_i, mem_alias_idx)
     hlow_i = hlow_i + 1
   }
-  emit_canon_future_read(buf, future_type_idx, mem_alias_idx)
-  emit_canon_future_drop_readable(buf, future_type_idx)
+  let fut_extra = if nhf > 0 {
+    2
+  } else {
+    0
+  }
+  if nhf > 0 {
+    emit_canon_future_read(buf, future_type_idx, mem_alias_idx)
+    emit_canon_future_drop_readable(buf, future_type_idx)
+  } else {
+    ()
+  }
+  // Core func index bookkeeping past the lowers: (future read/drop when
+  // K > 0), task-return, the waitable quartet, then (stream read/drop when
+  // L > 0), then the two aliases below. K-only reproduces the pre-stream
+  // indices exactly (task-return = K+2, quartet K+3..K+6, run K+7/K+8).
+  let task_return_core_idx = nt + fut_extra
   emit_canon_task_return(buf, comp_valtype_u32)
   emit_canon_waitable_set_new(buf)
   emit_canon_waitable_join(buf)
   emit_canon_waitable_set_wait(buf, mem_alias_idx)
   emit_canon_waitable_set_drop(buf)
+  let stream_read_core_idx = task_return_core_idx + 5
+  if nhs > 0 {
+    emit_canon_stream_read(buf, stream_type_idx, mem_alias_idx)
+    emit_canon_stream_drop_readable(buf, stream_type_idx)
+  } else {
+    ()
+  }
   let root_inst = 1
   // $root's exports: the K lowered imports under the adapter's
   // `[async-lower]<label>` spellings, then the shared read/drop (named after
@@ -3660,19 +4008,38 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     Array::push(root_export_indices, rex_i)
     rex_i = rex_i + 1
   }
-  let hf_first_label = comp_hostfuture_import_label(Array::get(hf_names, 0))
-  Array::push(root_export_names, String::concat("[async-lower][future-read-0]", hf_first_label))
-  Array::push(root_export_indices, nhf)
-  Array::push(root_export_names, String::concat("[future-drop-readable-0]", hf_first_label))
-  Array::push(root_export_indices, nhf + 1)
+  if nhf > 0 {
+    let hf_first_label = comp_hostfuture_import_label(Array::get(hf_names, 0))
+    Array::push(root_export_names, String::concat("[async-lower][future-read-0]", hf_first_label))
+    Array::push(root_export_indices, nt)
+    Array::push(root_export_names, String::concat("[future-drop-readable-0]", hf_first_label))
+    Array::push(root_export_indices, nt + 1)
+  } else {
+    ()
+  }
   Array::push(root_export_names, "[waitable-set-new]")
-  Array::push(root_export_indices, nhf + 3)
+  Array::push(root_export_indices, task_return_core_idx + 1)
   Array::push(root_export_names, "[waitable-join]")
-  Array::push(root_export_indices, nhf + 4)
+  Array::push(root_export_indices, task_return_core_idx + 2)
   Array::push(root_export_names, "[waitable-set-wait]")
-  Array::push(root_export_indices, nhf + 5)
+  Array::push(root_export_indices, task_return_core_idx + 3)
   Array::push(root_export_names, "[waitable-set-drop]")
-  Array::push(root_export_indices, nhf + 6)
+  Array::push(root_export_indices, task_return_core_idx + 4)
+  let mut srex_i = 0
+  while srex_i < nhs {
+    Array::push(root_export_names, String::concat("[async-lower]", comp_hoststream_import_label(Array::get(hs_names, srex_i))))
+    Array::push(root_export_indices, nhf + srex_i)
+    srex_i = srex_i + 1
+  }
+  if nhs > 0 {
+    let hs_first_label = comp_hoststream_import_label(Array::get(hs_names, 0))
+    Array::push(root_export_names, String::concat("[async-lower][stream-read-0]", hs_first_label))
+    Array::push(root_export_indices, stream_read_core_idx)
+    Array::push(root_export_names, String::concat("[stream-drop-readable-0]", hs_first_label))
+    Array::push(root_export_indices, stream_read_core_idx + 1)
+  } else {
+    ()
+  }
   emit_core_instance_from_exports(buf, 1, [
     Array::length(root_export_names)
   ], root_export_names, root_export_indices)
@@ -3702,7 +4069,11 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     stub_inst,
     adapter_inst
   ])
-  let main_run_func_idx = nhf + 7
+  let main_run_func_idx = if nhs > 0 {
+    stream_read_core_idx + 2
+  } else {
+    task_return_core_idx + 5
+  }
   emit_alias_section(buf, main_inst, [
     "run"
   ], [
@@ -3722,7 +4093,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   ], [
     "task-return"
   ], [
-    nhf + 2
+    task_return_core_idx
   ])
   let tramp_inst = 8
   emit_core_instance_instantiate_args(buf, 3, [
@@ -3733,14 +4104,14 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     cm_arg_inst
   ])
   emit_comp_async_functype_section(buf, comp_valtype_u32)
-  let tramp_run_func_idx = nhf + 8
+  let tramp_run_func_idx = main_run_func_idx + 1
   emit_alias_section(buf, tramp_inst, [
     "run"
   ], [
     core_sort_func
   ])
-  emit_canon_lift_async_section(buf, tramp_run_func_idx, 2)
-  emit_comp_export_section(buf, export_name, nhf)
+  emit_canon_lift_async_section(buf, tramp_run_func_idx, export_functype_idx)
+  emit_comp_export_section(buf, export_name, nt)
   bytebuf_to_bytes(buf)
 }
 

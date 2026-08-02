@@ -345,7 +345,19 @@ fn idp_pure_builtin_names() -> Array[String] {
     // half is per-name (`vibe_hf_get_raw$<name>`), matched by prefix in
     // idp_is_pure_builtin_call below -- same audit, same shapes (a
     // `() -> Int` opaque host call).
-    "host_future_named"
+    "host_future_named",
+    // ADR-0089 Decision 3 (#1218): the host-stream surface + its shared raw
+    // read half, same audit criterion -- opaque component-adapter imports
+    // (`vibe.host_stream_get$<name>` / `vibe.host_stream_read`) that cannot
+    // perform a user effect and take/return only Ints. `host_stream_named`
+    // appears in user code (a boundary-wrapped entry body creating the
+    // stream cell must stay eligible, the host_future_named precedent);
+    // `vibe_hs_read_raw` appears in the injected `__entry_settle` stream
+    // arm. `host_stream_next` needs no entry here: the boundary machinery
+    // retargets every call to the injected `__hs_next` (a needing fn)
+    // before any effect pass runs, exactly like await -> `__aw_poll`.
+    "host_stream_named",
+    "vibe_hs_read_raw"
   ]
 }
 
@@ -358,8 +370,15 @@ fn idp_is_host_future_named_raw(nm: String) -> Bool {
   String::starts_with(nm, "vibe_hf_get_raw$")
 }
 
+/// ADR-0089 Decision 3 (#1218): the per-name raw halves of
+/// `host_stream_named` (`vibe_hs_get_raw$<name>`), same prefix criterion --
+/// every such callee is the same `() -> Int` adapter import.
+fn idp_is_host_stream_named_raw(nm: String) -> Bool {
+  String::starts_with(nm, "vibe_hs_get_raw$")
+}
+
 fn idp_is_pure_builtin_call(nm: String) -> Bool {
-  if idp_is_host_future_named_raw(nm) {
+  if idp_is_host_future_named_raw(nm) || idp_is_host_stream_named_raw(nm) {
     true
   } else {
     let names = idp_pure_builtin_names()
@@ -3674,12 +3693,18 @@ fn edp_pure_builtin_names() -> Array[String] {
     "vibe_hf_wait_raw",
     // ADR-0089 (c) (#1218): the NAMED sibling; its per-name raw halves are
     // matched by prefix below (see idp_is_host_future_named_raw's comment).
-    "host_future_named"
+    "host_future_named",
+    // ADR-0089 Decision 3 (#1218): host-stream surface + shared raw read --
+    // mirrors idp_pure_builtin_names' entry (same audit, see that list's
+    // comment; the per-name `vibe_hs_get_raw$<name>` halves are matched by
+    // prefix below).
+    "host_stream_named",
+    "vibe_hs_read_raw"
   ]
 }
 
 fn edp_is_pure_builtin_call(nm: String) -> Bool {
-  idp_is_host_future_named_raw(nm) || edp_str_array_contains(edp_pure_builtin_names(), nm)
+  idp_is_host_future_named_raw(nm) || idp_is_host_stream_named_raw(nm) || edp_str_array_contains(edp_pure_builtin_names(), nm)
 }
 
 /// Every top-level function name whose declared effect row is

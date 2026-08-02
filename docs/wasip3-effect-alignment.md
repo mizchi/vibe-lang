@@ -290,6 +290,28 @@ trampoline を将来 `wasi:http/service` の
    残り: component 内 sleep (adapter は vibe.sleep を
    提供しない — composer が明確な診断で reject)、TaskGroup 併用
    (mixing guard reject のまま)。
+   **Decision 3 の named host streams も landed (spec §3.18)**: D3 終端
+   probe (§3.17) の実測を受けて、`host_stream_named("body") ->
+   Stream[Int]` (pure、cell `[3, handle]`) + `host_stream_next(s) -> Int
+   with { Async }` (1 byte / -1 = EOS、EOS 後は cell を閉じて以後 -1) が
+   実ソースで動く。lowering は §3.16 と同型で park が「future 1本ごと」
+   から「read 1回ごと」に変わる: read は `Suspend(handle + 2048)` (予約
+   stream 帯 — future 帯 [2, 1025] と handle 上限 1023 で構成的に不交) で
+   park し、entry boundary の stream arm が adapter の
+   `vibe.host_stream_read` (stream.read → BLOCKED なら waitable-set.wait
+   → 終端 status `amount 0 / code 1` は drop-readable して -1) で settle
+   する。composer は core import `vibe.host_stream_get$body` sniff で
+   per-name `stream<u8>` component import + 共有 canon pair を生成し、
+   future と stream の混在 program は 1 つの adapter/composition を共有
+   (hf-only の出力はバイト不変)。future と違い **eager read はしない** —
+   park が read 単位なので、呼び出し間に pending read を残すと
+   double-read になる。実測: while ループで stream を終端まで飲む
+   program が `VIBE_ASYNC_STREAMS="body=10|15|17"` で 42、mixed
+   (future `price` 30 + stream 5|7) も 42 (gate =
+   `test_named_hoststreams_component_gate.sh`)。残り (D3 の続き):
+   AsyncIter / `for await` への接続 (host_stream_next は直接 scalar
+   read — 一般 `Stream[T]` protocol への統一は Decision 4 の boundary
+   規則と合わせて別スライス)。
 
 ## Non-goals
 

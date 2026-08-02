@@ -122,6 +122,42 @@ fn lookup_stream(name: String) -> Option[Type] {
     ], CtNamed("Future", [
       CtOption(CtUnknown)
     ]), Some("Async")))
+  } else if name == "host_stream_named" {
+    // host_stream_named: (String) -> Stream[Int]   (pure; a NAMED host stream)
+    //
+    // ADR-0089 Decision 3 (#1218): the readable end of a component-level
+    // `<name>: func() -> stream<u8>` import (spec §3.17/§3.18) -- the stream
+    // sibling of `host_future_named`. The argument is the component import
+    // NAME; codegen requires a STRING LITERAL (it becomes the core import
+    // `vibe.host_stream_get$<name>` and then a component import, both fixed
+    // at compile time). Creating the readable end is pure -- the
+    // async-lowered import call completes eagerly (pair creation never
+    // suspends) -- and only READING it (`host_stream_next`) carries `Async`.
+    // Elements are u8 on the wire, so Stream[Int] (the ByteStream shape).
+    Some(CtFn([
+      CtString
+    ], CtNamed("Stream", [
+      CtInt
+    ]), None))
+  } else if name == "host_stream_next" {
+    // host_stream_next: (Stream[Int]) -> Int with { Async }
+    //
+    // ADR-0089 Decision 3 (#1218): pull ONE byte from a host stream created
+    // by `host_stream_named`. Returns the byte (0-255), or -1 once the
+    // writer is gone (end of stream; further calls keep returning -1). This
+    // is where the park happens -- per READ, not per stream: each call
+    // performs `Async::Suspend` with the reserved stream payload band and
+    // the entry boundary settles it via `stream.read` (+ waitable-set.wait
+    // when the read blocks) in the component adapter.
+    //
+    // Distinct from the generic `Stream::next` (Future[Option[T]] protocol):
+    // this is the direct scalar read the p3 lowering supports today; the
+    // AsyncIter unification is recorded as follow-up in spec §3.18.
+    Some(CtFn([
+      CtNamed("Stream", [
+        CtInt
+      ])
+    ], CtInt, Some("Async")))
   } else if name == "Stream::map" {
     // Stream::map: (Stream[T], (T) -> U) -> Stream[U]   (lazy)
     Some(CtFn([
