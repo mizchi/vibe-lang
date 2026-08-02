@@ -222,14 +222,42 @@ collect path and also serializes 3 MB of source via `print_program`, so it was
 never comparable. Differencing CLI modes is not a substitute for timing the
 phases.
 
-What is still not split: the 1727 ms is function-body codegen *plus* the
-serial barriers around it (DCE, whole-program table construction, section
-emission, linking). Only the body part is parallelizable. Getting that split
-needs instrumentation inside `compile_wasi_module_linked_impl`, which drags
-`Fs`/`Profiler` through a chain of codegen signatures and their contracts —
-not worth carrying for a measurement, and it does not change the verdict:
-even if bodies were only half of the 1727 ms, four-way body codegen would
-still be worth roughly 650 ms of a ~3950 ms compile.
+**The body/barrier split has since been measured, and it kills the step-7
+verdict that used to stand here.** An earlier revision of this paragraph
+argued the split "needs instrumentation inside
+`compile_wasi_module_linked_impl`" (dragging `Fs`/`Profiler` through the
+codegen signature chain), declared that not worth carrying, and estimated
+"even if bodies were only half of the 1727 ms, four-way body codegen would
+still be worth roughly 650 ms". Both halves of that were wrong. The slice
+mechanism (#1305) measures the split with **zero instrumentation**: compile
+the same program with a full slice and with an EMPTY slice
+(`slice_lo=0, slice_hi=0` — every body skipped, everything else still runs),
+and the wall-clock difference IS the parallelizable body share. Measured on
+import-free synthetic programs of n functions (5 runs each, minimum):
+
+| n (functions) | parse | serial codegen (empty slice) | bodies (full − empty) |
+|---|---|---|---|
+| 400 | 291 ms | 858 ms | 120 ms |
+| 1500 | 360 ms | 1006 ms | 138 ms |
+| 3000 | 418 ms | 1288 ms | 165 ms |
+
+Marginal cost per added function: **serial side 0.165 ms/fn, bodies
+0.017 ms/fn**. Bodies are roughly **a tenth** of codegen, not half: four-way
+body codegen saves ~3% of a cold compile before paying for worker startup,
+cache serialization, and coordinator replay. One structural reason the body
+share cannot grow: the planning loop (#1277) runs
+`uniquify_shadowed_bindings` and `lift_match_scrutinees` — full AST walks —
+for functions **outside** the slice too, so a worker walks every function it
+does not burn.
+
+The serial nine-tenths is where the time was: profiling it found two O(N²)
+name-set scans, and sorting them (#1307) took **32%** off the whole compile —
+more than ten times what a four-way body split could have returned. The
+`--jobs N` body wiring is therefore **deliberately not pursued**: the slice
+mechanism stays (it is the measurement instrument and the recovery point if
+the body share ever grows), but no worker fan-out is built on it at these
+numbers. Measure with the empty-slice method again before reopening that
+decision.
 
 **What blocks the freeze is not diffuse, it is one line.**
 `compile_lambda.vibe:530`:
@@ -255,8 +283,12 @@ The freeze therefore needs a **pre-pass that counts lambdas per function in
 canonical function order and hands each function a preassigned index range**,
 before any body is emitted. That is the prerequisite for step 7 and is not a
 refinement of it: without it there is nothing meaningful to hand a worker.
-Not attempted yet — it is a real refactor of `linked_compile.vibe`'s body
-loop with byte-exact output requirements, and it wants its own change.
+**Landed**: #1277 added the planning pre-pass (per-function lambda bases,
+byte-exact against the incremental allocator), and #1305 added slice compile
+(`slice_lo`/`slice_hi` on `compile_wasi_module_linked_impl`, with lambda-table
+padding for skipped bodies) plus the body-cache record/replay/merge plumbing.
+What was NOT built on top of them is the actual `--jobs N` worker fan-out —
+see the empty-slice measurement above for why.
 
 ## Cache publication
 

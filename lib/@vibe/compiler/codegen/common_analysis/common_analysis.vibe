@@ -5,7 +5,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/core {
-  array_empty
+  type HashMap, type HashSet, HashMap::get, HashMap::new_string, HashMap::set, HashSet::add, HashSet::has, HashSet::new_string, array_empty
 }
 
 import @vibe/compiler/codegen/common_extractors {
@@ -1395,7 +1395,7 @@ export fn mut_needs_ref_cell(body: Expr, name: String) -> Bool {
 /// Builtins whose arg0 is BORROWED (read in place, not consumed/dropped). Kept
 /// in sync with is_borrow_arg0_call in perceus/index.vibe.
 export fn md_is_borrow_arg0_call(f: String) -> Bool {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
 }
 
 fn md_max(a: Int, b: Int) -> Int {
@@ -2598,8 +2598,21 @@ export fn compute_borrow_arg0_user_fns(stmts: Array[Stmt]) -> Array[String] {
 
 /// True when `name` is provably bound to a FRESH (owned) value: it was
 /// classified fresh at its binding and no assignment tainted it since.
-fn mrv_is_fresh_name(fresh_names: Array[String], tainted: Array[String], name: String) -> Bool {
-  array_contains_str(fresh_names, name) && !array_contains_str(tainted, name)
+/// Epoch-keyed membership: `m` maps name -> the generation that last
+/// inserted it, so one shared table serves every per-function walk of the
+/// fixpoint below -- bumping `gen` retires all previous entries at once
+/// with no clearing and no per-function allocation (the naive
+/// HashSet-per-walk variant of this index cost +160MB of bump high-water
+/// on a selfcompile).
+fn mrv_gen_has(m: HashMap[String, Int], gen: Int, name: String) -> Bool {
+  match HashMap::get(m, name) {
+    Some(g) => g == gen,
+    None => false
+  }
+}
+
+fn mrv_is_fresh_name(fresh_names: HashMap[String, Int], tainted: HashMap[String, Int], gen: Int, name: String) -> Bool {
+  mrv_gen_has(fresh_names, gen, name) && !mrv_gen_has(tainted, gen, name)
 }
 
 /// Value classification for compute_may_return_view_fns: does `e` evaluate
@@ -2620,7 +2633,7 @@ fn mrv_is_fresh_name(fresh_names: Array[String], tainted: Array[String], name: S
 /// Bindings are recorded flat (no scope popping): a name REBOUND to a
 /// non-fresh value taints itself, so collisions only ever push toward
 /// view -- the safe direction.
-fn mrv_fresh(e: Expr, fresh_names: Array[String], tainted: Array[String], bound: Array[String], user_fns_srt: Array[String], view_set: Array[String], ret_view: Array[Int]) -> Bool {
+fn mrv_fresh(e: Expr, fresh_names: HashMap[String, Int], tainted: HashMap[String, Int], bound: Array[String], gen: Int, user_fns_srt: Array[String], view_set: HashSet[String], ret_view: Array[Int]) -> Bool {
   match e {
     EInt(_) => true,
     EFloat(_) => true,
@@ -2628,11 +2641,11 @@ fn mrv_fresh(e: Expr, fresh_names: Array[String], tainted: Array[String], bound:
     EBool(_) => true,
     EUnit => true,
     EStringInterp(_) => true,
-    EIdent(n, _) => mrv_is_fresh_name(fresh_names, tainted, n),
+    EIdent(n, _) => mrv_is_fresh_name(fresh_names, tainted, gen, n),
     ETuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        let _ = mrv_fresh(Array::get(items, i), fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+        let _ = mrv_fresh(Array::get(items, i), fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
         i = i + 1
       }
       true
@@ -2640,7 +2653,7 @@ fn mrv_fresh(e: Expr, fresh_names: Array[String], tainted: Array[String], bound:
     EArray(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        let _ = mrv_fresh(Array::get(items, i), fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+        let _ = mrv_fresh(Array::get(items, i), fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
         i = i + 1
       }
       true
@@ -2649,7 +2662,7 @@ fn mrv_fresh(e: Expr, fresh_names: Array[String], tainted: Array[String], bound:
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        let _ = mrv_fresh(v, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+        let _ = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
         i = i + 1
       }
       true
@@ -2658,62 +2671,62 @@ fn mrv_fresh(e: Expr, fresh_names: Array[String], tainted: Array[String], bound:
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        let _ = mrv_fresh(v, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+        let _ = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
         i = i + 1
       }
       true
     },
     EIf(c, t, el) => {
-      let _ = mrv_fresh(c, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
-      let tf = mrv_fresh(t, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
-      let ef = mrv_fresh(el, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(c, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let tf = mrv_fresh(t, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let ef = mrv_fresh(el, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
       tf && ef
     },
     ELet(n, v, b, _) => {
-      let vf = mrv_fresh(v, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      let vf = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
       Array::push(bound, n)
       if vf {
-        Array::push(fresh_names, n)
+        HashMap::set(fresh_names, n, gen)
       } else {
-        Array::push(tainted, n)
+        HashMap::set(tainted, n, gen)
       }
-      mrv_fresh(b, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
     },
     ELetMut(n, v, b, _) => {
-      let vf = mrv_fresh(v, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      let vf = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
       Array::push(bound, n)
       if vf {
-        Array::push(fresh_names, n)
+        HashMap::set(fresh_names, n, gen)
       } else {
-        Array::push(tainted, n)
+        HashMap::set(tainted, n, gen)
       }
-      mrv_fresh(b, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
     },
     ELetRec(n, v, b) => {
-      let _ = mrv_fresh(v, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
       Array::push(bound, n)
-      Array::push(fresh_names, n)
-      mrv_fresh(b, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      HashMap::set(fresh_names, n, gen)
+      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
     },
     EAssign(n, v, b) => {
-      let vf = mrv_fresh(v, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      let vf = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
       if vf {
         ()
       } else {
-        Array::push(tainted, n)
+        HashMap::set(tainted, n, gen)
       }
-      mrv_fresh(b, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
     },
     EAssignOp(_, _, v, b) => {
-      let _ = mrv_fresh(v, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
-      mrv_fresh(b, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
     },
     ESeq(a, b) => {
-      let _ = mrv_fresh(a, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
-      mrv_fresh(b, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(a, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
     },
     EMatch(s, arms) => {
-      let _ = mrv_fresh(s, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(s, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
       let mut all = true
       let mut i = 0
       while i < Array::length(arms) {
@@ -2721,7 +2734,7 @@ fn mrv_fresh(e: Expr, fresh_names: Array[String], tainted: Array[String], bound:
         // Pattern payloads are interior views of the scrutinee: bound but
         // never fresh.
         let _ = collect_pattern_bindings(p, bound)
-        if mrv_fresh(v, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view) {
+        if mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view) {
           ()
         } else {
           all = false
@@ -2731,13 +2744,13 @@ fn mrv_fresh(e: Expr, fresh_names: Array[String], tainted: Array[String], bound:
       all
     },
     EHandle(s, arms) => {
-      let _ = mrv_fresh(s, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(s, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
       let mut all = true
       let mut i = 0
       while i < Array::length(arms) {
         let (p, v) = Array::get(arms, i)
         let _ = collect_pattern_bindings(p, bound)
-        if mrv_fresh(v, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view) {
+        if mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view) {
           ()
         } else {
           all = false
@@ -2747,36 +2760,36 @@ fn mrv_fresh(e: Expr, fresh_names: Array[String], tainted: Array[String], bound:
       all
     },
     EWhile(c, b) => {
-      let _ = mrv_fresh(c, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
-      let _ = mrv_fresh(b, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(c, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
       true
     },
     ELoop(params, b) => {
       let mut i = 0
       while i < Array::length(params) {
         let (pn, pv) = Array::get(params, i)
-        let _ = mrv_fresh(pv, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+        let _ = mrv_fresh(pv, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
         Array::push(bound, pn)
         i = i + 1
       }
-      let _ = mrv_fresh(b, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
       // A loop's value flows out of `break v` sites we do not track: view.
       false
     },
     EForIn(n1, n2, it, b) => {
-      let _ = mrv_fresh(it, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(it, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
       Array::push(bound, n1)
       match n2 {
         Some(n2s) => Array::push(bound, n2s),
         None => ()
       }
-      let _ = mrv_fresh(b, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
       true
     },
     ECall(callee, args, _) => {
       let mut i = 0
       while i < Array::length(args) {
-        let _ = mrv_fresh(Array::get(args, i), fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+        let _ = mrv_fresh(Array::get(args, i), fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
         i = i + 1
       }
       match callee {
@@ -2784,7 +2797,7 @@ fn mrv_fresh(e: Expr, fresh_names: Array[String], tainted: Array[String], bound:
           // A locally-bound closure: its return is untrackable.
           false
         } else if bsearch_leftmost(user_fns_srt, f) >= 0 {
-          !array_contains_str(view_set, f)
+          !HashSet::has(view_set, f)
         } else if borrow_ret_builtin_name(f) {
           false
         } else {
@@ -2794,18 +2807,18 @@ fn mrv_fresh(e: Expr, fresh_names: Array[String], tainted: Array[String], bound:
           true
         },
         _ => {
-          let _ = mrv_fresh(callee, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+          let _ = mrv_fresh(callee, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
           false
         }
       }
     },
     EBinOp(_, l, r) => {
-      let _ = mrv_fresh(l, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
-      let _ = mrv_fresh(r, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(l, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(r, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
       true
     },
     EUnaryOp(_, x) => {
-      let _ = mrv_fresh(x, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(x, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
       true
     },
     EFn(_, _, fps, _, _, body) => {
@@ -2821,16 +2834,16 @@ fn mrv_fresh(e: Expr, fresh_names: Array[String], tainted: Array[String], bound:
       let dummy_ret = [
         0
       ]
-      let _ = mrv_fresh(body, fresh_names, tainted, bound, user_fns_srt, view_set, dummy_ret)
+      let _ = mrv_fresh(body, fresh_names, tainted, bound, gen, user_fns_srt, view_set, dummy_ret)
       true
     },
     EDot(x, _, _, _) => {
-      let _ = mrv_fresh(x, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(x, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
       false
     },
-    ELabeledArg(_, _, v) => mrv_fresh(v, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view),
+    ELabeledArg(_, _, v) => mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view),
     EReturn(x) => {
-      if mrv_fresh(x, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view) {
+      if mrv_fresh(x, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view) {
         ()
       } else {
         Array::set(ret_view, 0, 1)
@@ -2839,7 +2852,7 @@ fn mrv_fresh(e: Expr, fresh_names: Array[String], tainted: Array[String], bound:
     },
     EBreak(opt) => {
       let _ = match opt {
-        Some(v) => mrv_fresh(v, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view),
+        Some(v) => mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view),
         None => true
       }
       true
@@ -2847,12 +2860,12 @@ fn mrv_fresh(e: Expr, fresh_names: Array[String], tainted: Array[String], bound:
     EContinue(args) => {
       let mut i = 0
       while i < Array::length(args) {
-        let _ = mrv_fresh(Array::get(args, i), fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+        let _ = mrv_fresh(Array::get(args, i), fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
         i = i + 1
       }
       true
     },
-    ESpread(x) => mrv_fresh(x, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+    ESpread(x) => mrv_fresh(x, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
   }
 }
 
@@ -2888,7 +2901,21 @@ export fn compute_may_return_view_fns(stmts: Array[Stmt]) -> Array[String] {
   // 2.0s of an 8.4s selfcompile profile. Sorted once here, binary-searched at
   // the call site.
   let user_fns_srt = sorted_names_of(user_fns)
+  // The returned array keeps the discovery order; `view_seen` is a parallel
+  // membership index (the per-callee scan of the growing view set was the
+  // hottest single lookup of a selfcompile profile after the user_fns sort
+  // above -- #1259).
   let view_set = array_empty()
+  let view_seen = HashSet::new_string()
+  let fresh_names: HashMap[String, Int] = HashMap::new_string()
+  let tainted: HashMap[String, Int] = HashMap::new_string()
+  // `bound` is a shared flat array reset per walk via truncate (the
+  // collect_free_vars push/truncate pattern): membership is only checked for
+  // call heads and stays function-local-small, while a per-walk table costs
+  // an allocation per binder insert -- the selfcompile heap KPI gate is
+  // tighter than that CPU win (#1259 follow-up).
+  let bound = array_empty()
+  let mut gen = 0
   let mut changed = true
   let mut rounds = 0
   while changed && rounds < 10 {
@@ -2897,12 +2924,11 @@ export fn compute_may_return_view_fns(stmts: Array[Stmt]) -> Array[String] {
     while si < Array::length(stmts) {
       match Array::get(stmts, si) {
         SLet(_, _, fname, _, fval) => match fval {
-          EFn(_, _, fps, _, _, fbody) => if array_contains_str(view_set, fname) {
+          EFn(_, _, fps, _, _, fbody) => if HashSet::has(view_seen, fname) {
             ()
           } else {
-            let fresh_names = array_empty()
-            let tainted = array_empty()
-            let bound = array_empty()
+            gen = gen + 1
+            Array::truncate(bound, 0)
             let mut pi = 0
             while pi < Array::length(fps) {
               let (pn, _) = Array::get(fps, pi)
@@ -2912,9 +2938,10 @@ export fn compute_may_return_view_fns(stmts: Array[Stmt]) -> Array[String] {
             let ret_view = [
               0
             ]
-            let tail_fresh = mrv_fresh(fbody, fresh_names, tainted, bound, user_fns_srt, view_set, ret_view)
+            let tail_fresh = mrv_fresh(fbody, fresh_names, tainted, bound, gen, user_fns_srt, view_seen, ret_view)
             if !tail_fresh || Array::get(ret_view, 0) == 1 {
               Array::push(view_set, fname)
+              HashSet::add(view_seen, fname)
               changed = true
             } else {
               ()

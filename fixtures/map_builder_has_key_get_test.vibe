@@ -1,0 +1,82 @@
+// #1310: MapBuilder::has_key / MapBuilder::get -- O(n) scan over the same
+// handle-indirect storage MapBuilder::set already walks (see its search loop
+// in codegen/expr/compile_call.vibe / codegen/gc/backend_call.vibe). Lets a
+// caller test membership / read a value mid-build without freezing to a Map
+// first (previously the only way to inspect a builder's contents).
+
+test "MapBuilder::has_key on an empty builder is always false" {
+  let b = MapBuilder::new()
+  assert_eq(MapBuilder::has_key(b, "missing"), false)
+}
+
+test "MapBuilder::get on an empty builder is always None" {
+  let b = MapBuilder::new()
+  assert_eq(MapBuilder::get(b, "missing"), None)
+}
+
+test "MapBuilder::has_key / MapBuilder::get see keys set before freeze" {
+  let b = MapBuilder::new()
+  MapBuilder::set(b, "a", 1)
+  MapBuilder::set(b, "b", 2)
+  assert_eq(MapBuilder::has_key(b, "a"), true)
+  assert_eq(MapBuilder::has_key(b, "b"), true)
+  assert_eq(MapBuilder::has_key(b, "c"), false)
+  assert_eq(MapBuilder::get(b, "a"), Some(1))
+  assert_eq(MapBuilder::get(b, "b"), Some(2))
+  assert_eq(MapBuilder::get(b, "c"), None)
+}
+
+test "MapBuilder::get reflects an in-place update, not a stale duplicate" {
+  let b = MapBuilder::new()
+  MapBuilder::set(b, "k", 1)
+  MapBuilder::set(b, "k", 2)
+  assert_eq(MapBuilder::get(b, "k"), Some(2))
+  assert_eq(MapBuilder::has_key(b, "k"), true)
+}
+
+let make_keys: (Int) -> Array[String] = (n) -> {
+  let seed = for i in [0] { "" }
+  let ks = Array::slice(seed, 0, 0)
+  let mut i = 0
+  while i < n {
+    Array::push(ks, String::concat("key", __to_string(i)))
+    i = i + 1
+  }
+  ks
+}
+
+test "MapBuilder::has_key / MapBuilder::get keep working past a storage grow" {
+  // Initial capacity is 8 entries in the linear lane / 32 in the gc lane
+  // (see fixtures/map_builder_growth_test.vibe) -- 40 keys forces at least
+  // one grow-and-copy in both, exercising the scan against the grown
+  // (reallocated) storage block, not just the original one.
+  let ks = make_keys(40)
+  let b = MapBuilder::new()
+  let mut i = 0
+  while i < 40 {
+    MapBuilder::set(b, ks[i], i * 10)
+    i = i + 1
+  }
+  assert_eq(MapBuilder::has_key(b, ks[0]), true)
+  assert_eq(MapBuilder::has_key(b, ks[39]), true)
+  assert_eq(MapBuilder::has_key(b, "not-a-key"), false)
+  assert_eq(MapBuilder::get(b, ks[0]), Some(0))
+  assert_eq(MapBuilder::get(b, ks[39]), Some(390))
+  assert_eq(MapBuilder::get(b, "not-a-key"), None)
+}
+
+test "MapBuilder::has_key / MapBuilder::get agree with the frozen Map" {
+  let b = MapBuilder::new()
+  MapBuilder::set(b, "x", 10)
+  MapBuilder::set(b, "y", 20)
+  // Two separate assert_eq calls, not one over a `(Bool, Option[Int])`
+  // tuple: structural `==` of a tuple containing an Option is a known gap
+  // under the wasm-gc backend (unrelated to MapBuilder, reproduces on a
+  // bare `assert_eq((true, Some(20)), (true, Some(20)))` too) -- not
+  // something this fix touches.
+  assert_eq(MapBuilder::has_key(b, "x"), true)
+  assert_eq(MapBuilder::get(b, "y"), Some(20))
+  let m = MapBuilder::freeze(b)
+  assert_eq(Map::has_key(m, "x"), true)
+  assert_eq(Map::get(m, "y"), 20)
+}

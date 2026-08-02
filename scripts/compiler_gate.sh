@@ -3992,12 +3992,12 @@ if [ ! -s "$shdir/shadow.wasm" ]; then
   exit 1
 fi
 sh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$shdir/shadow.wasm" 2>&1 | tail -1)"
-if [ "$sh_out" != "122489" ]; then
-  echo "[compiler-gate] FAIL: rc_shadow_regression got '$sh_out' (want 122489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
+if [ "$sh_out" != "232489" ]; then
+  echo "[compiler-gate] FAIL: rc_shadow_regression got '$sh_out' (want 232489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
   exit 1
 fi
 rm -rf "$shdir"
-echo "[compiler-gate] RC shadow-liveness regression guard ok (122489)"
+echo "[compiler-gate] RC shadow-liveness regression guard ok (232489)"
 
 # 40g. #cfg conditional-compilation guard: the flag-off build must strip the
 #      guarded statements entirely (compiles, dev symbols absent -> different
@@ -4262,6 +4262,25 @@ if [ "$gcsuberr_out" != "4200" ]; then
 fi
 rm -rf "$gcsuberrdir"
 echo "[compiler-gate] wasm-gc backend suberror constructor registration ok (4200)"
+
+# 40h8. Exercise test-block lowering and runtime assertions through the
+# wasm-gc path, rather than only calling exported `main` functions above.
+# These fixtures jointly cover structural equality of nested aggregates,
+# MapBuilder growth/freeze, record field-name collision handling, and
+# same-file `to_string` shadowing of a gc fast path. Keep this as an enforced
+# gate: test_gc_selfbuild.sh also runs three of these probes, but
+# is deliberately informational while the full gc selfbuild frontier moves.
+echo "[compiler-gate] 40h8/40 wasm-gc test-block runtime regression suite"
+if ! VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_BACKEND=gc \
+  bash scripts/vibe_test.sh \
+    fixtures/eq_structural_aggregates_test.vibe \
+    fixtures/map_builder_growth_test.vibe \
+    fixtures/struct_field_collision_test.vibe \
+    fixtures/to_string_shadow_gc_test.vibe; then
+  echo "[compiler-gate] FAIL: wasm-gc test-block runtime regression suite" >&2
+  exit 1
+fi
+echo "[compiler-gate] wasm-gc test-block runtime regression suite ok"
 
 # 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
 #      must render fixtures/wit_gen_http.vibe byte-exactly as the committed
