@@ -3192,6 +3192,17 @@ fn comp_hf_state_base() -> Int {
   8192
 }
 
+/// ADR-0089 Decision 3 (#1218): the STREAM read landing band, disjoint from
+/// the future bands above. Under the canonical ABI futures, streams and
+/// subtasks share one per-instance waitables table, so a future and a
+/// stream should never carry the same handle -- but that is a runtime
+/// property, not something this adapter has to lean on: a byte per read
+/// costs nothing to give its own band, and a collision would corrupt an
+/// eagerly-landed future value silently (Codex P1 on #1339).
+fn comp_hs_value_base() -> Int {
+  12288
+}
+
 /// Largest handle the two bands above can address. A component-model handle
 /// is a small instance-table index, so this is a generous ceiling; exceeding
 /// it traps rather than silently aliasing another future's slot.
@@ -3636,7 +3647,8 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     bytebuf_push(sget_body, 0)
     emit_end(sget_body)
     // str = mem[8] (the readable end's handle), capped like the futures --
-    // the read's landing slot is per-handle in the same reserved band.
+    // the read's landing slot is per-handle in the stream's own reserved
+    // band (comp_hs_value_base).
     emit_i32_const(sget_body, 8)
     emit_i32_load(sget_body, 2, 0)
     emit_local_set(sget_body, 1)
@@ -3667,7 +3679,9 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     leb128_encode_u32(sread_body, 1)
     leb128_encode_u32(sread_body, 5)
     bytebuf_push(sread_body, 127)
-    // str = wrap(param >> 1); cap; addr = HF_VALUE_BASE + str * 4
+    // str = wrap(param >> 1); cap; addr = HS_VALUE_BASE + str * 4 (the
+    // stream band -- disjoint from the futures' value/state bands, see
+    // comp_hs_value_base)
     emit_local_get(sread_body, 0)
     emit_i64_const(sread_body, 1)
     emit_i64_shr_s(sread_body)
@@ -3682,7 +3696,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_local_get(sread_body, 1)
     emit_i32_const(sread_body, 2)
     emit_i32_shl(sread_body)
-    emit_i32_const(sread_body, comp_hf_value_base())
+    emit_i32_const(sread_body, comp_hs_value_base())
     emit_i32_add(sread_body)
     emit_local_set(sread_body, 5)
     // st = stream.read(str, addr, 1)

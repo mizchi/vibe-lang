@@ -1568,6 +1568,32 @@ fn lc_expr_collect_hf_names(e: Expr, out: Array[String]) -> Unit {
     ELabeledArg(_, _, v) => lc_expr_collect_hf_names(v, out),
     ETuple(items) => lc_exprs_collect_hf_names(items, out),
     EArray(items) => lc_exprs_collect_hf_names(items, out),
+    // Codex P2 on #1339: these four were missing from the original walk --
+    // a call nested in a record/map literal or a break/continue argument
+    // was lowered to its per-name raw builtin without the import ever
+    // being reserved (missing-call-target compile failure). Same coverage
+    // as lc_rename_sleep_calls now.
+    ERecord(_, fields, _) => {
+      let mut fi = 0
+      while fi < Array::length(fields) {
+        let (_, fv) = Array::get(fields, fi)
+        lc_expr_collect_hf_names(fv, out)
+        fi = fi + 1
+      }
+    },
+    EMap(fields) => {
+      let mut mi = 0
+      while mi < Array::length(fields) {
+        let (_, mv) = Array::get(fields, mi)
+        lc_expr_collect_hf_names(mv, out)
+        mi = mi + 1
+      }
+    },
+    EBreak(opt) => match opt {
+      Some(a) => lc_expr_collect_hf_names(a, out),
+      None => ()
+    },
+    EContinue(args) => lc_exprs_collect_hf_names(args, out),
     ESpread(a) => lc_expr_collect_hf_names(a, out),
     _ => ()
   }
@@ -1590,12 +1616,50 @@ fn lc_arms_collect_hf_names(arms: Array[(Pat, Expr)], out: Array[String]) -> Uni
   }
 }
 
+/// Codex P2 on #1339: does the program define a TOP-LEVEL binding with this
+/// name? compile_call's prefer-bound rule routes calls to such a definition
+/// instead of the builtin lowering, so the import collectors below must not
+/// mint component imports from them (an unused `vibe.host_*` import would
+/// force an unrelated program into the host-future/stream composition).
+/// LOCAL bindings that shadow the name stay shadow-blind here -- the
+/// documented hf-collector tradeoff: compile_call resolves those correctly
+/// and the worst case is an unused import, never a wrong call target.
+fn lc_program_defines_top_level(stmts: Array[Stmt], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, nm, _, _) => if nm == name {
+        found = true
+      } else {
+        ()
+      },
+      SLetMut(nm, _, _) => if nm == name {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// ADR-0089 (c) (#1218): the program's named host futures, deduplicated and
 /// SORTED. The order decides core import indices and the composer's
 /// component import order, so it must depend only on the name SET -- not on
 /// where in the program each call happens to sit (which would make the same
 /// program compile to different bytes after an unrelated reorder).
 fn lc_collect_host_future_names(stmts: Array[Stmt]) -> Array[String] {
+  if lc_program_defines_top_level(stmts, "host_future_named") {
+    array_empty()
+  } else {
+    lc_collect_host_future_names_go(stmts)
+  }
+}
+
+fn lc_collect_host_future_names_go(stmts: Array[Stmt]) -> Array[String] {
   let raw = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -1729,6 +1793,30 @@ fn lc_expr_collect_hs_names(e: Expr, out: Array[String]) -> Unit {
     ELabeledArg(_, _, v) => lc_expr_collect_hs_names(v, out),
     ETuple(items) => lc_exprs_collect_hs_names(items, out),
     EArray(items) => lc_exprs_collect_hs_names(items, out),
+    // Codex P2 on #1339: same four missing arms as the hf collector --
+    // full coverage keeps a nested creation site from lowering to a raw
+    // builtin whose import was never reserved.
+    ERecord(_, fields, _) => {
+      let mut fi = 0
+      while fi < Array::length(fields) {
+        let (_, fv) = Array::get(fields, fi)
+        lc_expr_collect_hs_names(fv, out)
+        fi = fi + 1
+      }
+    },
+    EMap(fields) => {
+      let mut mi = 0
+      while mi < Array::length(fields) {
+        let (_, mv) = Array::get(fields, mi)
+        lc_expr_collect_hs_names(mv, out)
+        mi = mi + 1
+      }
+    },
+    EBreak(opt) => match opt {
+      Some(a) => lc_expr_collect_hs_names(a, out),
+      None => ()
+    },
+    EContinue(args) => lc_exprs_collect_hs_names(args, out),
     ESpread(a) => lc_expr_collect_hs_names(a, out),
     _ => ()
   }
@@ -1754,8 +1842,17 @@ fn lc_arms_collect_hs_names(arms: Array[(Pat, Expr)], out: Array[String]) -> Uni
 /// ADR-0089 Decision 3 (#1218): the program's named host streams,
 /// deduplicated and SORTED -- same order discipline as
 /// lc_collect_host_future_names (core import indices and the composer's
-/// component import order depend only on the name SET).
+/// component import order depend only on the name SET), same top-level
+/// shadow guard (Codex P2 on #1339).
 fn lc_collect_host_stream_names(stmts: Array[Stmt]) -> Array[String] {
+  if lc_program_defines_top_level(stmts, "host_stream_named") {
+    array_empty()
+  } else {
+    lc_collect_host_stream_names_go(stmts)
+  }
+}
+
+fn lc_collect_host_stream_names_go(stmts: Array[Stmt]) -> Array[String] {
   let raw = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {

@@ -200,4 +200,35 @@ MIXED_GOT="$(cat "$MIXED_LOG")"
   || { echo "named hoststreams component gate FAILED: mixed expected 42 (30 + 5 + 7), got: $MIXED_GOT" >&2; exit 1; }
 echo "[named-hoststreams-component-gate] mixed path: 42 (future + stream share one composition)"
 
+# --- the record-nested creation fixture (Codex P2 on #1339) ------------------
+# The creation call sits inside a struct literal: the import collector must
+# traverse ERecord (and friends) or the lowered `vibe_hs_get_raw$body` call
+# has no reserved import and compilation fails with a missing call target.
+NESTED_SRC="$OUT_DIR/nested.vibe"
+cat >"$NESTED_SRC" <<'EOF'
+struct Holder { s: Stream[Int] }
+
+let run: () -> Int with { Async } = () -> {
+  let h = Holder::{ s: host_stream_named("body") }
+  let a = host_stream_next(h.s)
+  let b = host_stream_next(h.s)
+  a + b
+}
+EOF
+
+NESTED="$OUT_DIR/nested.component.wasm"
+compile_fixture "$NESTED_SRC" "$NESTED"
+check_component_header "$NESTED"
+
+NESTED_LOG="$OUT_DIR/run.nested.log"
+if ! VIBE_ASYNC_STREAMS="body=21|21" timeout 60 "$RUNNER" "$NESTED" >"$NESTED_LOG" 2>&1; then
+  echo "named hoststreams component gate FAILED: record-nested run did not exit 0" >&2
+  cat "$NESTED_LOG" >&2
+  exit 1
+fi
+NESTED_GOT="$(cat "$NESTED_LOG")"
+[ "$NESTED_GOT" = "42" ] \
+  || { echo "named hoststreams component gate FAILED: record-nested expected 42 (21 + 21), got: $NESTED_GOT" >&2; exit 1; }
+echo "[named-hoststreams-component-gate] record-nested path: 42 (collector traverses struct literals)"
+
 echo "named hoststreams component gate OK"
