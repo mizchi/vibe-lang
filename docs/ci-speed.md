@@ -59,7 +59,51 @@ CI persists the cache per shard in the `vibecache-v2-*` actions/cache
 entry, keyed on the codegen fingerprint like the module-level compile
 cache, so a compiler change rotates the CI entry too.
 
-## Mechanism 2: weight-balanced shards (scale-out knob)
+## Mechanism 2: batch precompile (resident stage2 daemon pool)
+
+The cold path itself is batched: before the fan-out, `unit_test_runner.sh`
+runs `scripts/unit_batch_compile.mjs`, which compiles every out-cache-missing
+file through a pool of RESIDENT compiler daemons
+(`wasm_vibe_host_runner.js --daemon`, JSON-line requests) and stores the
+results into the out-cache above. This removes the ~0.4-0.5s fixed one-shot
+overhead (node boot + stage2 instantiate + V8 tier-up from scratch) per
+file — a warm daemon compiles a light test in ~10-70ms — and it removes the
+tier-up tax on every heavy compile after the first. Mechanics:
+
+- outputs are byte-identical to one-shot compiles (verified); import-closure
+  deps come from the plan daemon (`VIBE_MODULE_PLAN`) and are stored with
+  the exact same keying as `unit_out_store`, so batch entries and one-shot
+  entries are indistinguishable at hit time;
+- the guest bump allocator never frees, so each daemon reports its heap
+  high-water per response and is recycled past `VIBE_BATCH_HEAP_LIMIT`
+  (default 1.5GB; the heaviest single compile allocates ~1GB);
+- while daemon 0 compiles the single heaviest file (populating the shared
+  on-disk module cache with the big closures), the other daemons drain the
+  light tail — instead of N daemons cold-compiling the compiler closure in
+  parallel;
+- failures are never verdicts: a file that fails batch (error, timeout,
+  daemon crash) is left to `run_one`'s one-shot fallback, which retries and
+  reports the real diagnostic. `VIBE_UNIT_BATCH_COMPILE=0` opts out.
+
+Measured A/B, full 495-file battery, everything cold (module cache + wasm
+cache empty — the compiler-touching-PR scenario), local 4-core, prebuilt
+stage2 (2026-08-02):
+
+| | one-shot (batch off) | batch daemons |
+|---|---|---|
+| wall | 5m20s | **4m11s (−22%)** |
+| CPU (user) | 16m09s | **10m59s (−32%)** |
+| ~300 light files | ~0.5s each | **3.4s total** |
+
+The remaining cold wall is NOT process overhead: ~195 compiler-closure
+tests each pay ~5-6s of real link/codegen (whole-program backend passes
+over the closure) that a resident process cannot skip — that bound needs
+the compiler-side lever below. Where batch pays off severalfold is the
+growth dimension: a NEWLY ADDED ordinary test (an out-cache miss) costs
+~10-70ms in the pool instead of ~0.5s one-shot, so bulk-adding 1000 tests
+costs the batch phase ~15-30s once, and only their run time after that.
+
+## Mechanism 3: weight-balanced shards (scale-out knob)
 
 `VIBE_UNIT_TEST_SHARD=i/N` LPT-partitions the battery by recorded weights
 (`scripts/unit_test_weights.tsv`); ci.yml's matrix is the only place N is
@@ -81,11 +125,15 @@ With the cache warm, adding an ordinary test costs its RUN time
 
 ## Known limits / next levers
 
-- **Cold-path batching**: each file today pays a fresh node start + stage2
-  wasm instantiation + JIT re-warmup (~0.3-0.5s floor). One resident
-  stage2 instance compiling many files (recycled when heap grows) would
-  cut the cold battery severalfold; `VIBE_MODULE_PLAN`/#1239 laid the
-  groundwork.
+- **Compiler-closure link cost**: the cold battery's bound is now the ~195
+  compiler-closure tests' inherent ~5-6s of per-file link/codegen (the
+  whole-program backend passes over the closure), not process overhead.
+  The daemon protocol makes the next lever possible compiler-side: module-
+  level `let` state survives across daemon requests, so the compiler could
+  keep checked module envs (keyed by fingerprint) resident between
+  requests and skip re-deriving the closure for every test file. That is a
+  `lib/@vibe/compiler` change with real invalidation semantics — sized
+  like #1101/#1239, not a runner tweak.
 - The run-phase 300s bound and the runtime-self-compile class: those
   tests' cost is the compiler's own selfcompile speed (tracked by
   `scripts/selfcompile_kpi.sh` and the perf-metrics job).
