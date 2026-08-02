@@ -5526,36 +5526,36 @@ fi
 rm -rf "$a69dir"
 echo "[compiler-gate] ADR-0069 fn main sugar + entry/top-level hardening ok"
 
-# 42. #830 regression: `let record { .. } = <expr>` (record-pattern
-# destructuring, #760) parsed fine as a *local* `let` but hit a confusing raw
-# "expected = but got {" parse error at the top level (the top-level `let`
-# parser only special-cased `Name::{ .. }` struct-destructure and plain
-# bindings, not the `record { .. }` sugar). Top-level statements don't go
-# through the block-step desugar that makes the local form work (each
-# top-level `let` is its own independent global binding, not one big
-# continuation to expand into), so accepting the grammar there needs a real
-# multi-statement expansion -- not a local change. Fixed by rejecting it at
-# parse time with a clear, LOCATED, actionable error instead (docs/adr.md
-# option (b) fallback) while leaving the working function-body form alone.
-echo "[compiler-gate] 42/42 top-level record-pattern let rejection (#830)"
+# 42. #830 / #1281: `let record { .. } = <expr>` (record-pattern
+# destructuring, #760) worked as a *local* `let` but used to hit a raw
+# "expected = but got {" at the top level, and was then rejected with a
+# located error. #1281 implements the multi-statement expansion it was
+# waiting for, so the top-level form now COMPILES and RUNS: the record value
+# lands in a hidden binding and each field name becomes its own positional
+# `__rec_field` projection. Field patterns are positional (that is how the
+# block-level desugar reads them too), so `record { name: n, ver: v }` binds
+# slot 0 to `n` and slot 1 to `v`.
+echo "[compiler-gate] 42/42 top-level record-pattern let (#830 / #1281)"
 g830dir="_build/_gate_830"
 rm -rf "$g830dir"; mkdir -p "$g830dir"
 cat > "$g830dir/toplevel_record_destr.vibe" <<'EOF'
-let r = record { name: "vibe", ver: 1 }
+let r = record { name: "vibe", ver: 7 }
 let record { name: n, ver: v } = r
-export let _start: () -> Int = () -> { n; v; 0 }
+export let _start: () -> Int = () -> { String::length(n) * 100 + v }
 EOF
 rm -f "$g830dir/toplevel_record_destr.wasm"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$g830dir/toplevel_record_destr.vibe" "$g830dir/toplevel_record_destr.wasm" _start >/dev/null 2>&1 || true
-if [ -s "$g830dir/toplevel_record_destr.wasm" ]; then
-  echo "[compiler-gate] FAIL: top-level 'let record { .. } = ..' compiled (should be rejected, #830)" >&2
+if [ ! -s "$g830dir/toplevel_record_destr.wasm" ]; then
+  echo "[compiler-gate] FAIL: top-level 'let record { .. } = ..' did not compile (#1281)" >&2
+  cat "$g830dir/toplevel_record_destr.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-if ! grep -q "top-level 'let record" "$g830dir/toplevel_record_destr.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: top-level record-pattern let diag missing the clear #830 message (still the raw 'expected = but got {' error?)" >&2
-  cat "$g830dir/toplevel_record_destr.wasm.diag" 2>/dev/null >&2 || true
+g830_top_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$g830dir/toplevel_record_destr.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$g830_top_out" != "407" ]; then
+  echo "[compiler-gate] FAIL: top-level record-pattern destructure output '$g830_top_out' (want 407, #1281)" >&2
   exit 1
 fi
 # The function-body form (the one #830 says already worked) must keep
@@ -5587,7 +5587,7 @@ if [ "$g830_out" != "407" ]; then
   exit 1
 fi
 rm -rf "$g830dir"
-echo "[compiler-gate] top-level record-pattern let rejection (#830) ok"
+echo "[compiler-gate] top-level record-pattern let (#830 / #1281) ok"
 
 # 43. #844 regression: a `let`-style annotation used to be able to LAUNDER a
 #     generic struct's real type arguments. `resolve_type_expr` types a bare

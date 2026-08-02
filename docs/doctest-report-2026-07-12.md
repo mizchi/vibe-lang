@@ -237,6 +237,10 @@ ADR-0069 実装済み stage2 で 91 pass / 0 fail / 51 skip (exit 0)**。
 
 ### #830 — top-level `let record { ... } = r` が parse error
 
+> **2026-08-01 更新 (#1281)**: この制限は解消した。top-level の irrefutable
+> pattern `let` (tuple / record / named-struct) は parser が「値を保持する
+> hidden binding + 名前ごとの射影」へ展開して動く。以下は当時の再現記録。
+
 ```vibe skip
 // repro-830.vibe — top-level だと `expected = but got {`
 let r = record { name: "vibe", ver: 1 }
