@@ -102,7 +102,17 @@ TDEffect(name, ops, params, param_kinds)
   `params: Array[String]` を**全パラメータの順序付きリストのまま**にし、
   同じ添字で引く `param_kinds` を並置する (`""` が通常の型パラメータ)。
   これにより #1340 の `tparams` 消費側 (`effect_tparams` /
-  `effect_fresh_targs` / `subst_type_params`) は**形も意味も変わらない**。
+  `effect_fresh_targs` / `subst_type_params`) の**シグネチャは変わらない**が、
+  **意味は変わる — 消費側は `param_kinds` を見て分岐する必要がある**
+  (Codex review on PR #1356)。`effect_fresh_targs` は現在すべての要素に対して
+  無制約な `CtVar` を作る (`checker.vibe`) が、resource パラメータは推論変数
+  ではなく**論理リソースの同一性** (`Fs[SrcTree]` の `SrcTree`) なので、
+  fresh var を割り当ててはならない。resource 引数は宣言された resource へ
+  解決し、その kind が宣言の kind と一致するかを検査する別経路にする。
+  この分岐を入れずに resource パラメータを `params` に載せると、kind 検査が
+  効かないまま `Fs[SrcTree]` と `Fs[AnythingElse]` が単一化してしまう。
+  したがって実装順 3 は「スロット追加 + registration」だけでは閉じず、
+  **消費側3関数の kind 分岐までを1単位**とする。
 - 追加は**末尾**とする (`TDStruct` の #829、`TDEffect` の #1340 と同じ規約 —
   既存の positional match を壊さない)。
 - 宣言順に制約は課さない (「resource パラメータは先頭にまとめる」等の規則は
@@ -172,7 +182,12 @@ Phase 0 の前提である ADR-0075 Phase 2 (`resource` 宣言) が**未着手**
 2. ADR-0075 Phase 2: `resource X : Kind = <literal>` 宣言と `Process::Root`
    singleton kind。
 3. parser: `parse_type_params_list` に bound と `_` を追加。`TDEffect` の
-   `param_kinds` スロット追加と registration。
+   `param_kinds` スロット追加と registration。**同一単位で消費側3関数
+   (`effect_tparams` / `effect_fresh_targs` / `subst_type_params`) を
+   kind 分岐させる** — resource パラメータに fresh `CtVar` を割り当てず、
+   宣言された resource へ解決して kind 一致を検査する。分岐を欠くと
+   `Fs[SrcTree]` と `Fs[AnythingElse]` が単一化して kind 検査が無効化される
+   (Codex review on PR #1356)。
 4. `wit_gen` を `effect_class` 起点に切り替える (#1143 のねじれ解消)。
 5. main の closed row 検査 (ADR-0084 Phase 3、warning から)。ADR-0088
    Decision 5 の段階ゲートに接続。
