@@ -1200,6 +1200,149 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_local_get(buf, fm_l)
         nl + 3
       }
+      else if fname == "MapBuilder::has_key" {
+        // #1310: mirrors the linear lane's O(n) scan over the handle-
+        // indirect storage (see MapBuilder::set above), and Map::has_key's
+        // block-i64 shape just above.
+        let (mhk_eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
+        let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        let mb_l = nl
+        let mk_l = nl + 1
+        let mc_l = nl + 2
+        let st_l = nl + 3
+        let mi_l = nl + 4
+        Array::push(local_names, "__mhk_map")
+        Array::push(local_names, "__mhk_key")
+        Array::push(local_names, "__mhk_cnt")
+        Array::push(local_names, "__mhk_st")
+        Array::push(local_names, "__mhk_i")
+        emit_local_set(buf, mk_l)
+        emit_local_set(buf, mb_l)
+        emit_local_get(buf, mb_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_load(buf, 2, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, mc_l)
+        emit_local_get(buf, mb_l)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, 8)
+        emit_local_set(buf, st_l)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, mi_l)
+        emit_block_i64(buf)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, mi_l)
+        emit_local_get(buf, mc_l)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, st_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, mi_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 0)
+        emit_local_get(buf, mk_l)
+        emit_call_resolved(buf, ctx, mhk_eq_fi)
+        emit_i32_wrap_i64(buf)
+        emit_if_void(buf)
+        emit_i64_const(buf, 1)
+        emit_br(buf, 3)
+        emit_end(buf)
+        emit_local_get(buf, mi_l)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, mi_l)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_i64_const(buf, 0)
+        emit_end(buf)
+        nl + 5
+      }
+      else if fname == "MapBuilder::get" {
+        // #1310: same scan as MapBuilder::has_key, wrapping a hit in a
+        // synthesized `Some(..)` call (same technique the linear lane uses;
+        // ordinary enum-constructor codegen handles it in both lanes).
+        let (mbg_eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
+        let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        let mb_l = nl
+        let mk_l = nl + 1
+        let mc_l = nl + 2
+        let st_l = nl + 3
+        let mi_l = nl + 4
+        let mv_l = nl + 5
+        let res_l = nl + 6
+        Array::push(local_names, "__mbg_map")
+        Array::push(local_names, "__mbg_key")
+        Array::push(local_names, "__mbg_cnt")
+        Array::push(local_names, "__mbg_st")
+        Array::push(local_names, "__mbg_i")
+        Array::push(local_names, "__mbg_val")
+        Array::push(local_names, "__mbg_res")
+        let mut nl2 = nl + 7
+        emit_local_set(buf, mk_l)
+        emit_local_set(buf, mb_l)
+        emit_local_get(buf, mb_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_load(buf, 2, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, mc_l)
+        emit_local_get(buf, mb_l)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, 8)
+        emit_local_set(buf, st_l)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, mi_l)
+        nl2 = ce(buf, EIdent("None", -1), local_names, nl2, ld)
+        emit_local_set(buf, res_l)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, mi_l)
+        emit_local_get(buf, mc_l)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, st_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, mi_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 0)
+        emit_local_get(buf, mk_l)
+        emit_call_resolved(buf, ctx, mbg_eq_fi)
+        emit_i32_wrap_i64(buf)
+        emit_if_void(buf)
+        emit_local_get(buf, st_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, mi_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 8)
+        emit_local_set(buf, mv_l)
+        nl2 = ce(buf, ECall(EIdent("Some", -1), [
+          EIdent("__mbg_val", -1)
+        ], -1), local_names, nl2, ld)
+        emit_local_set(buf, res_l)
+        emit_br(buf, 2)
+        emit_end(buf)
+        emit_local_get(buf, mi_l)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, mi_l)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, res_l)
+        nl2
+      }
       else if fname == "Map::set" {
         // #538: functional set -- copy the source map block, then
         // update-or-append on the copy (same loop as MapBuilder::set).
