@@ -1304,6 +1304,53 @@ fn effect_fresh_targs(etps: Array[String], c: Int) -> (Array[Type], Int) {
   (out, c1)
 }
 
+/// #1340 (Codex P1 on #1352): the reserved TypeEnv key under which an
+/// enclosing `handle` publishes the instantiation it chose for a generic
+/// effect. `$` cannot start a source identifier (it is already the marker for
+/// compiler-generated effect variables), so this never collides with a user
+/// binding, and riding the ordinary lexical env gives nested handles the right
+/// scoping for free: the innermost handle of an effect wins.
+fn effect_inst_env_key(eff: String) -> String {
+  String::concat("$einst$", eff)
+}
+
+/// The instantiation an enclosing `handle` chose for `eff`, if this expression
+/// sits inside one. The arity guard makes a stale binding (the effect
+/// redeclared with a different parameter count between the handle and here)
+/// fall back to a fresh instantiation instead of substituting the wrong number
+/// of arguments.
+fn effect_inst_lookup(env: TypeEnv, eff: String, etps: Array[String]) -> Option[Array[Type]] {
+  match env_lookup(env, effect_inst_env_key(eff)) {
+    Some(t) => match t {
+      CtTuple(targs) => if Array::length(targs) == Array::length(etps) {
+        Some(targs)
+      } else {
+        None
+      },
+      _ => None
+    },
+    None => None
+  }
+}
+
+/// #1340 (Codex P1 on #1352): instantiate `eff`'s type params for ONE use
+/// site, reusing the enclosing handle's instantiation when there is one so the
+/// handled body and the arms that handle it share type variables. Falls back
+/// to fresh variables when the perform is NOT inside a handle of that effect —
+/// it is re-raised to the caller, whose own handle instantiates it.
+///
+/// This sharing is what makes `let s: String = perform Box::Get()` conflict
+/// with `Get => resume(123)`. Until the row-label set comparison was fixed
+/// (effect_label_sets_equal, same review) the link happened to fall out of
+/// unification instead; with that comparison corrected the two sides no longer
+/// meet on their own, so the instantiation has to be shared explicitly.
+fn effect_instantiate(env: TypeEnv, eff: String, etps: Array[String], c: Int) -> (Array[Type], Int) {
+  match effect_inst_lookup(env, eff, etps) {
+    Some(targs) => (targs, c),
+    None => effect_fresh_targs(etps, c)
+  }
+}
+
 /// #813: is `eff` a DECLARED effect (TDEffect) in this module? Distinguishes
 /// "unknown op of a declared effect" (reportable) from builtin/imported
 /// effects the registry cannot see (skip).
@@ -3521,10 +3568,11 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                         // per perform site, so arity AND argument types are
                         // genuinely checked (`perform State::Get(1,2,3)`
                         // against a 0-arity op used to pass silently).
-                        let etps = effect_tparams(defs, String::substring(op_qname, 0, String::index_of(op_qname, "::")))
+                        let eff_of_op = String::substring(op_qname, 0, String::index_of(op_qname, "::"))
+                        let etps = effect_tparams(defs, eff_of_op)
                         let mut c1b = c1
                         let (sig_params, sig_ret, ret_usable) = if Array::length(etps) > 0 {
-                          let (ftargs, nc) = effect_fresh_targs(etps, c1b)
+                          let (ftargs, nc) = effect_instantiate(env, eff_of_op, etps, c1b)
                           c1b = nc
                           let ip = for p in sig_params_decl {
                             subst_type_params(p, etps, ftargs)
@@ -3586,10 +3634,11 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                 match effect_op_sig(defs, bare_qname) {
                   Some(bare_sig) => {
                     let (bare_params_decl, bare_ret_decl) = bare_sig
-                    let betps = effect_tparams(defs, String::substring(bare_qname, 0, String::index_of(bare_qname, "::")))
+                    let bare_eff = String::substring(bare_qname, 0, String::index_of(bare_qname, "::"))
+                    let betps = effect_tparams(defs, bare_eff)
                     let mut bc1 = c
                     let (bare_ret, bare_ret_usable) = if Array::length(betps) > 0 {
-                      let (bftargs, bnc) = effect_fresh_targs(betps, bc1)
+                      let (bftargs, bnc) = effect_instantiate(env, bare_eff, betps, bc1)
                       bc1 = bnc
                       (subst_type_params(bare_ret_decl, betps, bftargs), type_is_ground_except(bare_ret_decl, betps))
                     } else {
@@ -5333,7 +5382,49 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
       }
     },
     EHandle(body, harms) => {
-      let (hty, hs, hc) = check_expr(body, env, defs, s, c, errors, tytab)
+      // #1340 (Codex P1 on #1352): choose this handle's instantiation of every
+      // DISCHARGED generic effect BEFORE the body is checked, and publish it in
+      // the type env so the body's `perform` sites and the arms that handle
+      // them resolve the SAME type variables. Instantiating only in the arm
+      // loop leaves `let s: String = perform Box::Get()` pinning its own
+      // private T while `Get => resume(123)` pins the arm's T to Int — two
+      // unrelated variables, no diagnostic, and a continuation resumed with the
+      // wrong type at runtime. Arm patterns carry the effect name
+      // syntactically (`Eff::Op`), so this pre-pass needs no type information
+      // and cannot depend on checking the body first.
+      let hinst_seen = array_empty()
+      let mut hc0 = c
+      let mut henv_shared = env
+      let mut hpi = 0
+      while hpi < Array::length(harms) {
+        let (hppat, _) = Array::get(harms, hpi)
+        match hppat {
+          PCtor(hpq, _) => {
+            let hpci = String::index_of(hpq, "::")
+            if hpci > 0 {
+              let hpeff = String::substring(hpq, 0, hpci)
+              if effect_is_declared(defs, hpeff) && !flat_names_contain(hinst_seen, hpeff) {
+                let hpetps = effect_tparams(defs, hpeff)
+                if Array::length(hpetps) > 0 {
+                  let (hptargs, hpnc) = effect_fresh_targs(hpetps, hc0)
+                  hc0 = hpnc
+                  Array::push(hinst_seen, hpeff)
+                  henv_shared = env_bind(henv_shared, effect_inst_env_key(hpeff), CtTuple(hptargs))
+                } else {
+                  ()
+                }
+              } else {
+                ()
+              }
+            } else {
+              ()
+            }
+          },
+          _ => ()
+        }
+        hpi = hpi + 1
+      }
+      let (hty, hs, hc) = check_expr(body, henv_shared, defs, s, hc0, errors, tytab)
       // #813: validate handler arms against DECLARED effects (TDEffect).
       // Previously arms were never checked at all: a typo'd op name silently
       // handled a different op, payload binds carried garbage types, and
@@ -5349,13 +5440,9 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
       // `let n: Int = handle { throw("x") } with Error { Throw(_) => "s" }`
       // sailed through and did Int arithmetic on a String.
       let mut hres: Type = hty
-      // #1340 (ADR-0071): ONE instantiation of each generic effect per
-      // handle expression, shared by every arm — the S that
-      // `Get => resume(0)` binds to Int must be the same S the `Put(v)`
-      // payload binder sees, or cross-arm state typing falls apart.
-      // (find-or-create keyed by effect name; non-generic effects skip.)
-      let hinst_effs = array_empty()
-      let hinst_targs = array_empty()
+      // #1340 (ADR-0071): every arm reads the ONE instantiation published in
+      // henv_shared above, so the S that `Get => resume(0)` binds to Int is the
+      // same S the `Put(v)` payload binder and the body's performs see.
       let mut hai = 0
       while hai < Array::length(harms) {
         let (hpat, hbody) = Array::get(harms, hai)
@@ -5369,25 +5456,8 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                   let heff_name = String::substring(hqname, 0, hci)
                   let hetps = effect_tparams(defs, heff_name)
                   let (hparams, hret) = if Array::length(hetps) > 0 {
-                    let mut hfi = 0
-                    let mut hfound = 0 - 1
-                    while hfi < Array::length(hinst_effs) {
-                      if Array::get(hinst_effs, hfi) == heff_name {
-                        hfound = hfi
-                      } else {
-                        ()
-                      }
-                      hfi = hfi + 1
-                    }
-                    let htargs = if hfound >= 0 {
-                      Array::get(hinst_targs, hfound)
-                    } else {
-                      let (created, hnc) = effect_fresh_targs(hetps, hc1)
-                      hc1 = hnc
-                      Array::push(hinst_effs, heff_name)
-                      Array::push(hinst_targs, created)
-                      created
-                    }
+                    let (htargs, hnc) = effect_instantiate(henv_shared, heff_name, hetps, hc1)
+                    hc1 = hnc
                     (for p in hparams_decl {
                       subst_type_params(p, hetps, htargs)
                     }, subst_type_params(hret_decl, hetps, htargs))
@@ -5415,6 +5485,19 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
                   }
                   // Bind payload names to the op's param types and check the
                   // arm body (the trailing k binder stays CtUnknown).
+                  // `env`, NOT henv_shared (Codex P1 on #1354): an arm body runs
+                  // OUTSIDE the handled computation ("an Async handler arm's own
+                  // body is NOT an async context", checker_async_effects_test),
+                  // so an operation RE-performed here is handled by the ENCLOSING
+                  // handler, not by this one. Starting from the pre-handle env
+                  // makes such a re-perform resolve against the outer handle's
+                  // instantiation (or a fresh one when there is no outer handle);
+                  // publishing this handle's instantiation here would instead let
+                  // an inner arm re-perform at the INNER type while the outer
+                  // handler supplies a different one to that continuation. The
+                  // arm's own payload/return types still come from THIS handle's
+                  // instantiation (hparams/hret above) -- that part is what the
+                  // arm actually handles.
                   let mut henv = env
                   let mut hbi = 0
                   let mut hbinds_shadow_resume = false
