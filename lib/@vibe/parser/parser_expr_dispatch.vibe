@@ -5,7 +5,17 @@ import @vibe/ast {
 }
 
 import ./parser_base.vibe {
-  empty_arms, empty_exprs, expect_tk, parse_enum_stmt, parse_pattern, parse_struct_stmt, parse_type_impl, peek, skip_semi, tk_name
+  collect_row_item_targs,
+  empty_arms,
+  empty_exprs,
+  expect_tk,
+  parse_enum_stmt,
+  parse_pattern,
+  parse_struct_stmt,
+  parse_type_impl,
+  peek,
+  skip_semi,
+  tk_name
 }
 
 import ./parser_expr_core.vibe {
@@ -1027,8 +1037,21 @@ export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int
     let br = expect_tk(tokens, pos, "{")
     let (body, bn) = parse_recur(tokens, br, 20)
     let wp = expect_tk(tokens, bn, "with")
+    // ADR-0085 (#1344): the handled effect may be a generic INSTANTIATION
+    // (`handle { .. } with Exception[IoError] { Throw(e) => .. }`), so the
+    // name is read with the same one-type-argument grammar `with { ... }` row
+    // items use (collect_row_item_targs, parser_base.vibe) rather than a bare
+    // identifier. The bracketed spelling rides straight into the arm patterns
+    // via qualify_handle_arm_pattern -- `Exception[IoError]::Throw` -- which
+    // is what lets collect_handle_effects publish the KIND the handle
+    // discharges. Runtime lowering is unaffected: every exception spelling
+    // shares one Wasm tag (is_exception_throw_operation, core/
+    // exception_effect.vibe).
     let (effect_name, effect_next) = match peek(tokens, wp) {
-      TIdent(name) => (name, wp + 1),
+      TIdent(name) => match peek(tokens, wp + 1) {
+        TLBracket => collect_row_item_targs(tokens, wp + 2, 1, String::concat(name, "[")),
+        _ => (name, wp + 1)
+      },
       _ => throw("expected effect name after 'with'")
     }
     let hb = expect_tk(tokens, effect_next, "{")
