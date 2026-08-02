@@ -1,0 +1,61 @@
+// ADR-0085 Phase 3 (#1344): typed `Exception[E]` rows. `throw(v)` requires
+// `Exception[typeof(v)]`, an effectset unions several kinds, `handle .. with
+// Exception[E]` discharges exactly one kind, and the erased `Error` spelling
+// keeps authorizing every kind (which is what makes the whole feature additive
+// for pre-#1344 code). Every spelling still lowers to the one abortive Wasm
+// exception tag, so this runs end to end.
+enum IoError {
+  NotFound(String)
+}
+
+enum ParseError {
+  Eof
+}
+
+effectset ConfigExceptions = {
+  Exception[IoError],
+  Exception[ParseError]
+}
+
+// One kind, named exactly.
+let read_cfg = () -> Int with { Exception[IoError] } {
+  throw(NotFound("cfg"))
+}
+
+// Two kinds, via the effectset union rather than a subclass hierarchy.
+let load = (which: Bool) -> Int with { ConfigExceptions } {
+  if which {
+    read_cfg()
+  } else {
+    throw(Eof)
+  }
+}
+
+// The erased alias still covers a kinded callee.
+let anything = () -> Int with { Error } {
+  load(true)
+}
+
+export let main = () -> Int {
+  // Exact-kind handler.
+  let a = handle {
+    read_cfg()
+  } with Exception[IoError] {
+    Throw(_e) => 20
+  }
+  // Erased handler over a union of kinds.
+  let b = handle {
+    load(false)
+  } with Error {
+    Throw(_e) => 20
+  }
+  let c = handle {
+    anything()
+  } with Exception {
+    Throw(_e) => 2
+  }
+  a + b + c
+}
+
+__DATA__
+{"last": "42"}

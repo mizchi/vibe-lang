@@ -1351,10 +1351,88 @@ lane（future 30 + stream 5+7 = 42、両 import が WIT に出る）。byte leve
 検証済みの consume 形: 直列 let 読み、while ループ、自己再帰、EOS 後の
 再読（latch で -1）。
 
-既知の制限（follow-up）: 途中で読むのをやめた stream の readable end を
-明示的に解放する surface が無い（`host_stream_close` 相当）。EOS まで
-読み切った stream は adapter が drop するが、部分消費して破棄した handle は
-component instance の寿命まで残る。
+#### 3.18.1 `host_stream_close` — 部分消費した stream の明示解放（done）
+
+§3.18 が follow-up として残していた制限（途中で読むのをやめた stream の
+readable end を解放する surface が無い）を埋めたスライス。read 半分は EOS に
+到達したときだけ drop するので、それ以前に読むのをやめた handle は component
+instance の寿命まで残っていた。
+
+surface は `host_stream_close: (Stream[Int]) -> Unit`。**`Async` は付かない** —
+`stream.drop-readable` は block しない canon call なので park も予約帯も
+boundary settle arm も要らず、注入 fn `__hs_close` が adapter を直接呼ぶ。
+
+```vibe
+let run: () -> Int with { Async } = () -> {
+  let s = host_stream_named("body")
+  let a = host_stream_next(s)
+  let b = host_stream_next(s)
+  host_stream_close(s)          // 残りは読まない
+  host_stream_close(s)          // 二重 close は no-op
+  let after = host_stream_next(s)  // close 後の read は -1
+  a + b + (after + 1)
+}
+```
+
+冪等性は **cell の state word が担保する**（飾りではなく load-bearing:
+1つの handle に `stream.drop-readable` を2回投げると host 側で trap する）。
+`__hs_close` は state 3 のときだけ drop し、同じ step で cell を閉じる
+(3 → 0) ので、2回目の close も close 後の read も adapter には届かない。
+inline-terminal read が立てた CLOSED latch も同時にクリアする — その drop が
+まさに latch の待っていた settle なので。
+
+**gating on use（byte 互換の要）**: `__hs_close` は source が実際に
+`host_stream_close` を呼んだときだけ注入される。`vibe_hs_close_raw` を参照する
+のはこの注入 fn だけで、import はその名前の使用で gate されるため、無条件に
+注入すると **drain するだけの program にも close import と adapter func が
+生えて**、既に pin されている stream composition のバイトが動く。adapter 側の
+close func も同じ sniff（guest が `vibe.host_stream_close` を import するか）で
+gate し、**func list の最後に append** するので既存 index は不変。
+
+gate lane = `test_named_hoststreams_component_gate.sh` の close lane
+（5 bytes 中 2 bytes だけ読んで close → 再 close → close 後 read で 42、
+かつ drain-only component に close import が無いこと + closing component に
+guest import と adapter export が両方あることを .wat で確認）。
+
+### 3.19 ADR-0089 Decision 3 — `wasi:http` incoming-body の実 provider 配線（未着手 / 設計）
+
+§3.18 + §3.18.1 の host stream は **viberun の test provider**
+（`VIBE_ASYNC_STREAMS="body=10|15|17"`、wasmtime 自身の `Vec<u8>`
+StreamProducer）を相手に実測されている。production の相手 —
+`wasi:http` の incoming request body — に繋ぐのが D3 の残件だが、これは
+「provider を差し替える」配線作業では**ない**。以下が実測した構造的な壁。
+
+**現状、serve 経路と host-stream 経路は互いに素な2つの composition である**:
+
+| | serve 経路 | host-stream 経路 |
+|---|---|---|
+| emitter | `comp_emit_component_wasm_string_handler`（`VIBE_SERVE_COMPONENT=1`） | `comp_emit_component_wasm_async_hostfuture` |
+| guest surface | `handler(method, url, headers, body: String) -> String` | `host_stream_named(name) -> Stream[Int]` |
+| body の扱い | full adapter が **materialize** する（`Request::consume_body` + `StreamReader::collect` → String） | 生の `stream<u8>` を per-name component import として受ける |
+| compose | `wac plug`（adapter component + guest） | 自前の core module 合成（adapter core module を同梱） |
+
+つまり body は guest に届く時点で既に String に潰れており、`stream<u8>` は
+adapter の内部で消費し終わっている。`host_stream_named("body")` が
+production で意味を持つには:
+
+1. **full adapter が body を materialize せず export する**:
+   `world adapter` に `export body: func() -> stream<u8>;` を足し、
+   `Request::consume_body` の `StreamReader` を collect せずそのまま返す
+   （handler import 側は `body: string` 引数を落とす）。adapter は request
+   ごとの reader を持ち回る必要がある。
+2. **serve emitter が host-stream machinery を積んだ component を出す**:
+   string-handler trampoline を export しつつ `body: func() -> stream<u8>`
+   を import し、hoststream adapter core module を同梱する — 現在の2つの
+   emitter の**合流**であって、どちらかの拡張ではない。
+3. **compose が2辺になる**: `wac plug` が handler 辺に加えて body 辺も繋ぐ。
+
+検証には `wasmtime serve` + curl が要る（既存の
+`test_wasi_http_p3_full_gate.sh` と同じ tooling 前提、不在時 skip）。
+
+この3点は独立に着手できず、2 が 1 と 3 の両方に依存する。**「incoming-body
+provider を配線する」ではなく「serve composition と host-stream composition を
+統合する」スライスとして起票し直すのが正しい**（現状の見積もりを
+「配線」と書くと規模を誤らせる）。
 
 ## 4. WASI 0.3 境界マッピング
 
@@ -1497,8 +1575,9 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | **ADR-0089 Decision 5 (wit_gen async)** | `with { Async }` export → `async func`（`Async` は import に出さない — async lift で実現される suspension effect）、`Future[T]` → `future<T'>`、nominal `ByteStream` → `stream<u8>`（一般 `Stream[T]`/guest 産 AsyncIter は spec §3.3 の boundary 規則により hard error のまま）。docs/effect-wit-mapping.md 更新 + wit_gen_test に D5 pin | done（#1218） |
 | **ADR-0089 (c) (named host futures)** | host import async の一般化（§3.16）: `host_future_named("x") -> Future[Int]`（string literal 必須、label 検証）→ 名前ごとの core import `vibe.host_future_get$x` → 名前ごとの component import `x: func() -> future<u32>` + adapter getter。wait 半分と `future.read`/`drop-readable` canon は共有、1名（匿名）のときの index 配置は step 4 と同一。並行性は adapter の **eager read**（getter が `future.read` を発行、wait は park と回収のみ）で成立する。viberun は `VIBE_ASYNC_FUTURES` で任意名を link。gate = `test_named_hostfutures_component_gate.sh`（42 = 40+2、wall が `[0.8×P, 0.9×(P+Q))` で overlap 実証、単一名 control） | done（#1218） |
 | **ADR-0089 D3 (終端 probe)** | host 供給 `stream<u8>` を1バイトずつ読む probe（§3.17）で「終端は `amount 0 / code 1` を read が inline に返す」を wasmtime 47 実測、viberun に `VIBE_ASYNC_STREAMS` の host stream import を追加。gate = `test_host_stream_value_probe_gate.sh`（42 = 10+15+17 を pin） | done（#1218） |
-| **M2c-3 (runtime)** | `component_codegen` に host 供給の readable `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループで消費する形を emit、`for await`/`Stream::next` をそのループへ lower | guest surface + Suspend stream 帯 + composer は done（§3.18: `host_stream_named`/`host_stream_next` の実ソースが `stream.read` + `waitable-set.wait` で終端まで読む、gate = `test_named_hoststreams_component_gate.sh`）。残りは `for await`/`Stream::next`（AsyncIter protocol）をこの read へ lower する接続のみ |
+| **M2c-3 (runtime)** | `component_codegen` に host 供給の readable `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループで消費する形を emit、`for`/`Stream::next` をそのループへ lower | guest surface + Suspend stream 帯 + composer + 明示 close（§3.18 / §3.18.1: `host_stream_named`/`host_stream_next`/`host_stream_close` の実ソースが `stream.read` + `waitable-set.wait` で終端まで読み、部分消費した readable end も解放できる。gate = `test_named_hoststreams_component_gate.sh`）は done。残り2件: (a) `for`/`Stream::next`（AsyncIter protocol）をこの read へ lower する接続、(b) 実 provider = `wasi:http` incoming-body（**serve composition と host-stream composition の統合が必要** — §3.19 に構造的な理由と3点の作業分解） |
 | **ADR-0089 D3 (named host streams)** | 実ソースの host stream 読み（§3.18）: `host_stream_named("body") -> Stream[Int]`（string literal 必須、cell `[3, handle]`）+ `host_stream_next -> Int with { Async }`（1 byte / -1 = EOS、EOS 後は latch）→ `Suspend(handle + 2048)`（予約 stream 帯）→ boundary の `vibe_hs_read_raw` settle → adapter の per-read `stream.read` + park（eager read はしない — per-read park と衝突する）→ per-name component import `<name>: func() -> stream<u8>`。future との混在は 1 composition を共有、hf-only 出力はバイト不変 | done（#1218） |
+| **ADR-0089 D3 (明示 close)** | 部分消費した host stream の readable end を解放する surface（§3.18.1）: `host_stream_close: (Stream[Int]) -> Unit`（**`Async` 無し** — `stream.drop-readable` は block しない）→ 注入 fn `__hs_close` が adapter を直接呼ぶ（perform も予約帯も boundary settle arm も不要）。冪等性は cell の state word が担保（1 handle への二重 drop は host 側 trap なので load-bearing）。**use で gate** し、drain するだけの program は close import も adapter func も持たない = 既存 stream composition はバイト不変。gate = close lane（5 bytes 中 2 bytes 読んで close → 再 close → close 後 read で 42 + .wat の import/export 検査） | done（#1218） |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |
 

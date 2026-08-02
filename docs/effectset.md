@@ -415,6 +415,25 @@ consumer 側の細粒度が欲しいからといって provider ラベルを分�
 するので、細粒度は operation-level row と effectset で表す。
 回帰ロック: fixtures/effect_builtin_operation_row.vibe + compiler_gate.sh 80。
 
+**進捗 (2026-08-02, #1344)**: ADR-0085 の typed `Exception[E]` が row に入った。
+#1340 が残した「instantiation まで見た row identity」を **exception effect に
+限って先取り**したもので、他の generic effect (`State[Int]` 等) は base 名比較の
+v1 のままである。具体的には `row_base_membership` (checker_effects.vibe) と
+`effect_label_base_name` (core/types.vibe) の両方が exception label を base 名
+同一視から除外し、代わりに kind (`Exception[K]` の `K`) で比較する
+(`exception_kinds_compatible`, core/exception_effect.vibe)。除外しないと
+`State[Int] ~ State[String]` と同じ規則で `Exception[IoError] ~
+Exception[ParseError]` になり、typed exception の唯一の保証が消える。
+
+`Error` / `Exception` (bracket なし) は **kind 消去された最弱の label** として
+扱い、宣言側・要求側どちらに現れても全 kind と compatible とした。これが
+既存の ~970 の un-annotated throw site を無変更に保つ根拠であり、同時に
+「この変更は既存コードに対し証明可能に additive」の根拠でもある — 新たに
+失敗しうるのは kinded label を書いた row だけで、その綴りはコードベースに
+存在しない。回帰ロック: fixtures/exception_typed_row.vibe /
+err_exception_kind_mismatch.vibe + compiler_gate.sh 81、unit tests
+lib/@vibe/compiler/tests/checker_exception_kind_test.vibe。
+
 **未着手のまま残っている範囲**: ADR-0076 evidence vector への正規化 row
 の接続 (項目 6)、および row 包含での instantiation 区別 (上記 v1 の
 base-name 比較を OperationRef 単位へ精密化する作業)。

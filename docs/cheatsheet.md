@@ -632,6 +632,50 @@ Stage 2 (#640) で `throw(x)` は parse 時に `perform Error::Throw(x)` へ脱�
 ある。`fn main with { Error }` から escape した Error は runtime 最外周で診断付きの
 異常終了へ変換される。
 
+### Typed exceptions (`Exception[E]`, ADR-0085 / #1344)
+
+`Error` は kind を持たない erased な例外 row。失敗の**型**を row に出したい
+ときは `Exception[E]` と書く。`E` は投げる値の静的型。
+
+```vibe
+enum IoError {
+  NotFound(String)
+}
+
+enum ParseError {
+  Eof
+}
+
+// この関数が投げうるのは IoError だけ、と row が言う
+let read_cfg: () -> Int with { Exception[IoError] } = () -> {
+  throw(NotFound("cfg"))
+}
+
+// 複数 family は subclass ではなく effectset の union で表す
+effectset ConfigExceptions = {
+  Exception[IoError],
+  Exception[ParseError]
+}
+
+// handler は exact kind だけを放電する
+let n = handle { read_cfg() } with Exception[IoError] { Throw(_e) => 0 }
+```
+
+規則:
+
+- `Exception[IoError]` は `Exception[ParseError]` を authorize も discharge も
+  しない。row に無い kind を投げると `missing { Exception[IoError] }`。
+- **`Error` / `Exception` (bracket なし) は全 kind と compatible** な erased
+  綴り。既存の `with { Error }` は今までどおり何でも投げられるし、erased な
+  `handle .. with Error` は kind 付きの throw も捕まえる。
+- payload の kind が解決できない throw (例: `throw(e)` の `e` が local
+  binding) は erased 扱いになり、どの `Exception[K]` でも通る (gradual)。
+  検出漏れはあるが誤検出はしない。
+- runtime は kind を区別しない — すべて単一の abortive Wasm tag。exact-kind
+  の保証は checker 側の性質。
+
+詳細と v1 の限界: [exception-effect.md](exception-effect.md)。
+
 ### Railway try (`?`) — `Result` and `Option` (#635)
 
 `e?` unwraps the success case and yields the inner value, or **early-`return`s**

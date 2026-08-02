@@ -259,4 +259,72 @@ NESTED_GOT="$(cat "$NESTED_LOG")"
   || { echo "named hoststreams component gate FAILED: record-nested expected 42 (21 + 21), got: $NESTED_GOT" >&2; exit 1; }
 echo "[named-hoststreams-component-gate] record-nested path: 42 (collector traverses struct literals)"
 
+# --- the partial-consume + explicit close fixture (D3 follow-up) -------------
+# The limitation recorded at the end of spec 3.18: the read half drops the
+# readable end only at end of stream, so a guest that stops early pinned its
+# handle for the instance's whole lifetime. `host_stream_close` is the
+# explicit drop.
+#
+# The fixture reads TWO of five bytes, closes, and then deliberately does two
+# more things that must be no-ops rather than traps:
+#   - a second close (the cell's state word gates the drop, so the adapter is
+#     called exactly once -- a double stream.drop-readable traps host-side)
+#   - a read after close (the closed cell latches -1 without performing, the
+#     same latch end-of-stream uses)
+# 42 = 20 + 22 with the remaining 3 bytes (90|91|92) never read: if the close
+# had instead drained or the post-close read had returned a real byte, the
+# sum would not be 42.
+CLOSE_SRC="$OUT_DIR/stream_close.vibe"
+cat >"$CLOSE_SRC" <<'EOF'
+let run: () -> Int with { Async } = () -> {
+  let s = host_stream_named("body")
+  let a = host_stream_next(s)
+  let b = host_stream_next(s)
+  host_stream_close(s)
+  host_stream_close(s)
+  let after = host_stream_next(s)
+  a + b + (after + 1)
+}
+EOF
+
+CLOSE_COMPONENT="$OUT_DIR/stream_close.component.wasm"
+compile_fixture "$CLOSE_SRC" "$CLOSE_COMPONENT"
+check_component_header "$CLOSE_COMPONENT"
+
+CLOSE_LOG="$OUT_DIR/run.close.log"
+if ! VIBE_ASYNC_STREAMS="body=20|22|90|91|92" timeout 60 "$RUNNER" "$CLOSE_COMPONENT" >"$CLOSE_LOG" 2>&1; then
+  echo "named hoststreams component gate FAILED: partial-consume close run did not exit 0 (a double drop-readable traps host-side)" >&2
+  cat "$CLOSE_LOG" >&2
+  exit 1
+fi
+CLOSE_GOT="$(cat "$CLOSE_LOG")"
+[ "$CLOSE_GOT" = "42" ]   || { echo "named hoststreams component gate FAILED: partial-consume close expected 42 (20 + 22, tail unread, post-close read -1), got: $CLOSE_GOT" >&2; exit 1; }
+echo "[named-hoststreams-component-gate] close path: 42 (partial consume released the readable end; re-close and post-close read are no-ops)"
+
+# A draining program must NOT pay for the close half: no import, no adapter
+# func. This is the byte-compat claim that lets the surface land without
+# touching every already-pinned stream composition.
+# NOTE the materialized .wat: `wasm-tools print ... | grep -q` looks right and
+# is a trap under `set -o pipefail` -- grep -q exits at the first match, the
+# writer takes SIGPIPE, and the PIPELINE reports failure, so BOTH polarities
+# of this check read as "no match found" (measured: it hid a real gating bug
+# AND then misreported which side failed). Print once to a file, then grep.
+DRAIN_WAT="$OUT_DIR/stream_sum.wat"
+CLOSE_WAT="$OUT_DIR/stream_close.wat"
+wasm-tools print "$COMPONENT" >"$DRAIN_WAT" 2>/dev/null || { echo "named hoststreams component gate FAILED: could not print the drain-only component" >&2; exit 1; }
+wasm-tools print "$CLOSE_COMPONENT" >"$CLOSE_WAT" 2>/dev/null || { echo "named hoststreams component gate FAILED: could not print the closing component" >&2; exit 1; }
+if grep -q 'host_stream_close' "$DRAIN_WAT"; then
+  echo "named hoststreams component gate FAILED: the drain-only component reserved a host_stream_close import (the close half must be gated on use)" >&2
+  exit 1
+fi
+# Two sites, not one: the GUEST's `(import "vibe" "host_stream_close" ...)`
+# and the ADAPTER's `(export "host_stream_close" ...)`. Checking only the
+# import would pass even if the adapter never grew the drop func -- and the
+# guest-side cell bookkeeping alone reproduces the 42 above, so the run
+# result cannot distinguish those two worlds on its own.
+CLOSE_SITES="$(grep -c 'host_stream_close' "$CLOSE_WAT" || true)"
+[ "${CLOSE_SITES:-0}" -ge 2 ] \
+  || { echo "named hoststreams component gate FAILED: expected the closing component to both import and export host_stream_close, found $CLOSE_SITES site(s)" >&2; exit 1; }
+echo "[named-hoststreams-component-gate] close half is gated on use (absent from the drain-only component, guest import + adapter export present in the closing one)"
+
 echo "named hoststreams component gate OK"
