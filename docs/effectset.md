@@ -272,7 +272,23 @@ leak-through チェック (checker_effects.vibe の #885 overlay) の両方が
 宣言した関数・コールバック引数のどちらも、`Ask::Get` を要求する呼び出しを
 正しく authorize できることを実証済み
 (fixtures/effect_effectset_expansion.vibe /
-effect_effectset_param_expansion.vibe)。**未着手のまま残っている範囲**:
+effect_effectset_param_expansion.vibe)。
+
+**#1361 (2026-08-02)**: この #885 overlay に **ローカル closure** も載る
+ようになった。`let f = () -> T with { E } { .. }` を関数本体の中に書いた
+場合、それは top-level 関数やコールバック引数と同じ call-graph の葉だが、
+どちらの表にも載っていなかった (call-graph map は top-level SLet/SLetMut
+のみ、overlay は関数型パラメータのみ) ため、`f()` は何もリークせず、
+closure 本体は自分の宣言 row の下で自己充足していた — つまり
+`with { Stdout }` しか宣言していない関数から `Env` に到達できた。同じ walk
+を使う doctest / `vibe test` の cache 判定 (`file_entry_cacheable` /
+`file_tests_cacheable`) もこれを決定的とみなしていた。ELet/ELetRec/ELetMut
+で binding を overlay に登録することで両方閉じている。実測: この変更で
+cache 判定が変わったファイルは test 499/499・doctest ```vibe run 27/27 で
+**ゼロ** (`fixtures/err_local_closure_effect_leak.vibe`, compiler_gate 82)。
+なお注釈つきの `let f: () -> T with { E } = ..` は ascription call
+(`ascribe_wrap`) に desugar されてからこの walk に来るので row が見えず、
+従来どおりの寛容な扱いのまま。**未着手のまま残っている範囲**:
 handler レベルの operation 単位 discharge (項目 4 — 現状 `handle ...
 with Env` は Env 全体を一括で discharge しており、特定 operation だけを
 discharge する形にはなっていない)、contract/WIT の operation 単位

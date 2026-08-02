@@ -11,7 +11,8 @@ import @vibe/compiler/core {
   env_lookup,
   exception_effect_labels_equal,
   expr_children,
-  is_exception_effect_name
+  is_exception_effect_name,
+  type_name_has_async_iterator_impl
 }
 
 import @vibe/core {
@@ -55,7 +56,11 @@ export enum EffectError {
   // (enclosing fn name or "" when unnamed, missing labels (sorted),
   //  declared row (source order, "" when no row), required row (sorted union)).
   EEEffectRowMismatch(String, String, String, String);
-  EEAssignImmutable(String)
+  EEAssignImmutable(String);
+  // #1347: a `handle ... with E` whose arms are provably dead because the
+  // body cannot reach a perform of E and only invokes an opaque value —
+  // the handler-switch footgun. Field: the effect name.
+  EEHandleNeverFires(String)
 }
 
 //# Functions
@@ -100,7 +105,11 @@ export fn effect_error_to_string(err: EffectError) -> String {
       }
       String::concat(head, String::concat(": missing { ", String::concat(missing, String::concat(" }", String::concat(detail, hint)))))
     },
-    EEAssignImmutable(name) => String::concat("cannot assign to immutable binding `", String::concat(name, "` (declare it with `let mut`)"))
+    EEAssignImmutable(name) => String::concat("cannot assign to immutable binding `", String::concat(name, "` (declare it with `let mut`)")),
+    EEHandleNeverFires(eff) => {
+      let tail = String::concat(eff, "::..` and calls an opaque function value. A continuation captured by another handler carries THAT handler with it, so wrapping its invocation in a new `handle` does not switch handlers (non-scoped resumption is unsupported -- ADR-0089 Part A, #1347). Drive the continuation without the wrapping handle, or handle the effect where it is performed")
+      String::concat("handle of effect '", String::concat(eff, String::concat("' can never fire: this body reaches no `perform ", tail)))
+    }
   }
 }
 
@@ -170,7 +179,152 @@ fn append_eff_errs(dst: Array[EffectError], src: Array[EffectError]) -> Unit {
   }
 }
 
+//# #1358: `for` over an ASYNC iterator also needs `Async`
+//
+// `for x in it`, where `it`'s iterator `next` yields a `Future`, is lowered to
+// an AWAIT loop by the dict-passing desugar (build_await_iter_for), which runs
+// AFTER the checker -- so at check time the program text holds no async
+// primitive and the pass above finds nothing to require. The loop could
+// therefore suspend from a context that neither declares nor handles `Async`.
+// This hole is not #1350's doing: the retired `for await` marker was unwrapped
+// by the checker without requiring anything either. #1350 only widened the
+// exposure, since now every plain `for` over a Future-returning iterator takes
+// the await lowering.
+//
+// Recognising the loop needs the ITERAND's type, so this mirrors the desugar's
+// own resolution (infer_arg_type_name over var_types/fn_returns). Those tables
+// are built in codegen, so here the head type name comes from the type
+// environment plus a small locals table threaded down the walk. Both sides are
+// best-effort by construction -- an unresolvable iterand requires nothing,
+// exactly as the desugar leaves an unclassifiable loop as a sync EForIn -- so
+// this can MISS a requirement, but never invent one.
+
+fn afe_no_locals() -> Array[(String, String)] {
+  array_empty()
+}
+
+/// Head name of an inferred checker type (`AsyncIter[Int]` -> "AsyncIter").
+fn afe_type_head_name(t: Type) -> Option[String] {
+  match t {
+    CtNamed(n, _) => Some(n),
+    CtStruct(n) => Some(n),
+    _ => None
+  }
+}
+
+/// Head name of a source annotation (`s: AsyncIter[Int]` -> "AsyncIter").
+fn afe_texpr_head_name(t: TypeExpr) -> Option[String] {
+  match t {
+    TyName(n) => Some(n),
+    TyApp(n, _) => Some(n),
+    _ => None
+  }
+}
+
+fn afe_lookup_local(locals: Array[(String, String)], name: String) -> Option[String] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(locals) {
+    let entry = Array::get(locals, i)
+    match found {
+      None => if entry.0 == name {
+        found = Some(entry.1)
+      } else {
+        ()
+      },
+      Some(_) => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Bind `name` to a head type for the scope below, REMOVING any outer entry of
+/// the same name first. Dropping the shadow would let an outer async-iterator
+/// binding be resolved through an inner, unrelated one of the same name — a
+/// false positive (a rejected valid program), which this pass must never
+/// produce. `None` therefore still shadows; it just adds nothing.
+fn afe_bind_local(locals: Array[(String, String)], name: String, head: Option[String]) -> Array[(String, String)] {
+  let out = array_empty()
+  match head {
+    Some(h) => Array::push(out, (name, h)),
+    None => ()
+  }
+  let mut i = 0
+  while i < Array::length(locals) {
+    let entry = Array::get(locals, i)
+    if entry.0 != name {
+      Array::push(out, entry)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn afe_bind_params(locals: Array[(String, String)], params: Array[(String, Option[TypeExpr])]) -> Array[(String, String)] {
+  let mut cur = locals
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, ptype) = Array::get(params, i)
+    let head = match ptype {
+      Some(te) => afe_texpr_head_name(te),
+      None => None
+    }
+    cur = afe_bind_local(cur, pname, head)
+    i = i + 1
+  }
+  cur
+}
+
+/// Best-effort head type name of an expression used as a `for` iterand (or as a
+/// `let` value feeding one).
+fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  match e {
+    EIdent(n, _) => match afe_lookup_local(locals, n) {
+      Some(h) => Some(h),
+      None => match env_lookup(env, n) {
+        Some(t) => afe_type_head_name(t),
+        None => None
+      }
+    },
+    // `Counter::{ .. }` -- the struct literal names its own type.
+    ERecord(n, _, _) => if String::length(n) > 0 {
+      Some(n)
+    } else {
+      None
+    },
+    // `for x in async_iter_arr(xs)` -- the callee's declared return head.
+    ECall(EIdent(f, _), _, _) => match env_lookup(env, f) {
+      Some(CtFn(_, ret, _)) => afe_type_head_name(ret),
+      _ => None
+    },
+    _ => None
+  }
+}
+
+/// The iterand's type name when driving it with `for` awaits each step,
+/// otherwise None. Named so the diagnostic can point at `<T>::next`.
+fn afe_async_iterand(iter: Expr, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  match afe_expr_head_name(iter, env, locals) {
+    Some(tn) => if type_name_has_async_iterator_impl(env, tn) {
+      Some(tn)
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
 export fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> Array[EffectError] {
+  check_async_effects_expr_lo(expr, env, in_async, afe_no_locals())
+}
+
+/// #1358: the same walk with a `name -> head type name` table for the bindings
+/// in scope, so an async `for` can be recognised through an ordinary local
+/// (`let it = async_iter_arr(xs); for x in it`) and through a typed parameter.
+fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals: Array[(String, String)]) -> Array[EffectError] {
   let errors = array_empty()
   // Preserve the legacy preorder diagnostic order: inspect a call before its
   // structural children, then delegate their enumeration to expr_children.
@@ -180,29 +334,63 @@ export fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> 
     } else {
       ()
     },
+    EForIn(_, _, iter, _) => match afe_async_iterand(iter, env, locals) {
+      Some(tn) => if !in_async {
+        Array::push(errors, EEEffectfulCallOutsideEffect(String::concat(tn, "::next (a `for` over an async iterator awaits every step -- add `with { Async }` or wrap the loop in a handler for it)")))
+      } else {
+        ()
+      },
+      None => ()
+    },
     _ => ()
   }
   match expr {
     // Scope boundary: a lambda's explicit row replaces its enclosing Async
     // context. All other expression forms retain the context unchanged.
-    EFn(_, _, _, _, effect, body) => {
-      append_eff_errs(errors, check_async_effects_expr(body, env, effect_opt_is_async(effect)))
+    EFn(_, _, params, _, effect, body) => {
+      append_eff_errs(errors, check_async_effects_expr_lo(body, env, effect_opt_is_async(effect), afe_bind_params(locals, params)))
     },
     EHandle(body, arms) => {
       let discharges_async = handle_arms_handle_async(arms)
-      append_eff_errs(errors, check_async_effects_expr(body, env, in_async || discharges_async))
+      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async || discharges_async, locals))
       let mut ai = 0
       while ai < Array::length(arms) {
         let (_, arm_body) = Array::get(arms, ai)
-        append_eff_errs(errors, check_async_effects_expr(arm_body, env, in_async))
+        append_eff_errs(errors, check_async_effects_expr_lo(arm_body, env, in_async, locals))
         ai = ai + 1
       }
+    },
+    // ELet/ELetMut are non-recursive: the value is resolved in the OUTER scope,
+    // and only the body sees the new binding. ELetRec's value may reference
+    // itself, so both sides see it.
+    ELet(name, val, body, _) => {
+      append_eff_errs(errors, check_async_effects_expr_lo(val, env, in_async, locals))
+      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async, afe_bind_local(locals, name, afe_expr_head_name(val, env, locals))))
+    },
+    ELetMut(name, val, body, _) => {
+      append_eff_errs(errors, check_async_effects_expr_lo(val, env, in_async, locals))
+      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async, afe_bind_local(locals, name, afe_expr_head_name(val, env, locals))))
+    },
+    ELetRec(name, val, body) => {
+      let rec_locals = afe_bind_local(locals, name, afe_expr_head_name(val, env, locals))
+      append_eff_errs(errors, check_async_effects_expr_lo(val, env, in_async, rec_locals))
+      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async, rec_locals))
+    },
+    EForIn(name, index_name, iter, body) => {
+      append_eff_errs(errors, check_async_effects_expr_lo(iter, env, in_async, locals))
+      // The loop variables are ELEMENTS, never the iterator itself: bind them
+      // to nothing so they shadow any same-named outer entry.
+      let body_locals = match index_name {
+        Some(idx) => afe_bind_local(afe_bind_local(locals, name, None), idx, None),
+        None => afe_bind_local(locals, name, None)
+      }
+      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async, body_locals))
     },
     _ => {
       let children = expr_children(expr)
       let mut i = 0
       while i < Array::length(children) {
-        append_eff_errs(errors, check_async_effects_expr(Array::get(children, i), env, in_async))
+        append_eff_errs(errors, check_async_effects_expr_lo(Array::get(children, i), env, in_async, locals))
         i = i + 1
       }
     }
@@ -222,7 +410,10 @@ fn sig_type_is_async(topt: Option[TypeExpr]) -> Bool {
 fn check_async_effects_binding(ty: Option[TypeExpr], body: Expr, env: TypeEnv) -> Array[EffectError] {
   let sig_async = sig_type_is_async(ty)
   match body {
-    EFn(_, _, _, _, eff, fbody) => check_async_effects_expr(fbody, env, sig_async || effect_opt_is_async(eff)),
+    // #1358: descending straight into `fbody` skips the EFn arm, so bind this
+    // binding's own parameters here — otherwise `fn drain(s: AsyncIter[Int])`
+    // would not resolve `s` when its body loops over it.
+    EFn(_, _, params, _, eff, fbody) => check_async_effects_expr_lo(fbody, env, sig_async || effect_opt_is_async(eff), afe_bind_params(afe_no_locals(), merge_param_types_with_sig(ty, params))),
     _ => check_async_effects_expr(body, env, sig_async)
   }
 }
@@ -780,6 +971,59 @@ fn shadow_overlay(names: Array[String], effs: Array[Array[String]], name: String
 /// parameter's `with { e }` and the enclosing function's own `with { e }` are
 /// the identical token by construction — no cross-call-site instantiation is
 /// involved), so a literal-name check here is sound, not a naive shortcut.
+/// #1361: a LOCAL `let f = () -> T with { E } { .. }` is a call-graph leaf just
+/// like a top-level function or a callback PARAMETER (#885), but NEITHER table
+/// knew about it: `fn_names`/`fn_effs` is built only from top-level SLet/SLetMut
+/// bindings, and `build_param_overlay` only from function-typed parameters. So
+/// `f()` leaked nothing into the enclosing body, while the closure's own body
+/// satisfied its own declared row (the EFn arm's `effect_row_inherit`) — a
+/// function declaring `with { Stdout }` could reach `Env` through a local
+/// closure with no diagnostic at all, and file_entry_cacheable /
+/// file_tests_cacheable consequently judged such an entry cacheable (its stdout
+/// varies with the environment, so the doctest cache replayed a stale run).
+/// Registering the binding in the SAME overlay the callback case uses closes
+/// both at once, with the same semantics: the row leaks at the call site unless
+/// the caller declares it or a `handle` discharges it.
+///
+/// Only a literal `EFn` value is registered. An ANNOTATED local binding
+/// (`let f: () -> T with { E } = ..`) is desugared to an ascription call
+/// (`((__asc: T) -> __asc)(e)`, ascribe_wrap) before this walk runs, so its row
+/// is not visible here — that shape keeps the old, permissive behavior rather
+/// than being half-checked.
+fn local_fn_overlay_labels(val: Expr) -> Array[String] {
+  match val {
+    EFn(_, _, _, _, eff, _) => effect_row_labels(effect_row_parse(eff)),
+    _ => no_str_labels()
+  }
+}
+
+/// Shadow `name` out of the inherited overlay (a local binding always hides an
+/// outer entry of the same name), then re-register it when its value is a
+/// row-declaring closure. The new entry goes FIRST so `lookup_fn_effs`'s
+/// first-match scan finds it.
+fn overlay_bind_local(names: Array[String], effs: Array[Array[String]], name: String, val: Expr) -> (Array[String], Array[Array[String]]) {
+  let shadowed = shadow_overlay(names, effs, name)
+  let labels = local_fn_overlay_labels(val)
+  if Array::length(labels) == 0 {
+    shadowed
+  } else {
+    let out_names = [
+      name
+    ]
+    let out_effs = [
+      labels
+    ]
+    let (sn, se) = shadowed
+    let mut i = 0
+    while i < Array::length(sn) {
+      Array::push(out_names, Array::get(sn, i))
+      Array::push(out_effs, Array::get(se, i))
+      i = i + 1
+    }
+    (out_names, out_effs)
+  }
+}
+
 fn build_param_overlay(params: Array[(String, Option[TypeExpr])]) -> (Array[String], Array[Array[String]]) {
   let names = array_empty()
   let effs = array_empty()
@@ -1108,22 +1352,24 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
       ELet(name, val, body, _) => {
         // #885 review (Codex): `val` is evaluated in the OUTER scope (ELet is
         // non-recursive), so only the body's overlay needs the new binding
-        // shadowed out.
-        let (body_ov_names, body_ov_effs) = shadow_overlay(ov_names, ov_effs, name)
+        // shadowed out. #1361: the same place registers a local closure's own
+        // declared row, so calling it from the body leaks that row.
+        let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val)
         Array::push(stack, (val, declared, in_handle, ov_names, ov_effs))
         Array::push(stack, (body, declared, in_handle, body_ov_names, body_ov_effs))
       },
       ELetRec(name, val, body) => {
         // #885 review (Codex): unlike ELet, `let rec` allows `val` itself to
         // reference `name` (self-recursion), so both val and body need the
-        // shadow applied.
-        let (rec_ov_names, rec_ov_effs) = shadow_overlay(ov_names, ov_effs, name)
+        // shadow applied -- and, since #1361, the local closure's own row, so a
+        // recursive effectful closure is checked against it on both sides.
+        let (rec_ov_names, rec_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val)
         Array::push(stack, (val, declared, in_handle, rec_ov_names, rec_ov_effs))
         Array::push(stack, (body, declared, in_handle, rec_ov_names, rec_ov_effs))
       },
       ELetMut(name, val, body, _) => {
         // #885 review (Codex): same as ELet -- non-recursive, only body shadows.
-        let (body_ov_names, body_ov_effs) = shadow_overlay(ov_names, ov_effs, name)
+        let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val)
         Array::push(stack, (val, declared, in_handle, ov_names, ov_effs))
         Array::push(stack, (body, declared, in_handle, body_ov_names, body_ov_effs))
       },
@@ -1488,7 +1734,420 @@ export fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv) -> A
     append_eff_errs(errors, check_perform_effects_stmt_tx(Array::get(stmts, i), fn_names, fn_effs))
     i = i + 1
   }
+  // #1347: only once the rows themselves check out — on a program with real
+  // row errors every reachability answer is suspect, and a second diagnostic
+  // per handle would bury the first.
+  if Array::length(errors) == 0 {
+    append_eff_errs(errors, check_dead_handles_stmts(stmts, fn_names, fn_effs))
+  } else {
+    ()
+  }
   errors
+}
+
+//# #1347: a `handle` that can never fire (the handler-switch footgun)
+//
+// A continuation captured by handler H carries H with it: the suspend
+// lowering bakes H's driver into the closure it hands to the arm
+// (`resume = (rv) -> .. __scps_driveN(k(rv))`, inline_direct_perform.vibe),
+// so invoking that stored continuation later re-enters H no matter what
+// handles enclose the invocation. Wrapping the call in a NEW
+// `handle .. with E { .. }` therefore switches nothing — the new arms are
+// simply dead. That is the semantics (first-class continuations are
+// handler-carrying); the defect #1347 reports is that it was SILENT.
+//
+// The suspend lowering already rejects the same shape when the WRAPPING
+// handle is itself suspend-class ("the handle body calls something this
+// suspend lowering cannot see through"). Only the tail-resumptive spelling
+// slipped through, so this restores the symmetry — measured on the two
+// spellings of one program, which differed solely in the wrapping arm.
+//
+// Flagged iff all three hold:
+//   1. the program performs E somewhere (so E is live, not a label pun);
+//   2. this handle's body cannot STATICALLY reach any perform of E;
+//   3. this handle's body calls an OPAQUE value — a plain lowercase local
+//      that is not a top-level binding or a builtin, i.e. exactly the
+//      `k(())` of a stored continuation.
+//
+// All three are load-bearing against real in-tree sites. Without (1),
+// `entry.vibe`'s `Profiler` handle (which wraps the whole CLI dispatch —
+// an opaque call) and `cache_underlying.vibe`'s module-private `effect Env`
+// label pun are flagged: nothing performs those labels, and today's
+// vacuous-handle elimination erases them deliberately. Without (3),
+// `http_e2e_test`'s client-only `Http` handle is flagged: `Http` IS
+// performed by the server wrappers elsewhere, but that body reaches only
+// direct host calls, which resolve. (2) is what spares the legitimate
+// coroutine handle, whose body performs the effect directly.
+//
+// Every uncertainty resolves toward NOT flagging: an unresolved callee, a
+// row variable, a nested handle, or a row-carrying closure literal all
+// count as "may reach", so this pass rejects only handles it can prove
+// dead.
+
+fn dh_effect_of_perform_arg(arg: Expr) -> String {
+  match arg {
+    ECall(EIdent(op_name, _), _, _) => effect_name_of_op(op_name),
+    EIdent(op_name, _) => effect_name_of_op(op_name),
+    _ => ""
+  }
+}
+
+/// The effect of `expr` if it is a `perform` call, else "".
+fn dh_perform_effect(expr: Expr) -> String {
+  match expr {
+    ECall(EIdent(name, _), args, _) => if name == "perform" && Array::length(args) == 1 {
+      dh_effect_of_perform_arg(Array::get(args, 0))
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
+fn dh_collect_performed_into(expr: Expr, acc: Array[String]) -> Unit {
+  let eff = dh_perform_effect(expr)
+  if String::length(eff) > 0 && !effect_row_has_label(Some(acc), eff) {
+    Array::push(acc, eff)
+  } else {
+    ()
+  }
+  let children = expr_children(expr)
+  let mut i = 0
+  while i < Array::length(children) {
+    dh_collect_performed_into(Array::get(children, i), acc)
+    i = i + 1
+  }
+}
+
+/// Every effect the program performs, anywhere. Collected once (rather than
+/// re-scanning per handle site) because a large program has many handles.
+fn dh_collect_performed_effects(stmts: Array[Stmt]) -> Array[String] {
+  let acc = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, body) => dh_collect_performed_into(body, acc),
+      SLetMut(_, _, body) => dh_collect_performed_into(body, acc),
+      SExpr(e) => dh_collect_performed_into(e, acc),
+      STest(_, body) => dh_collect_performed_into(body, acc),
+      SBench(_, body) => dh_collect_performed_into(body, acc),
+      _ => ()
+    }
+    i = i + 1
+  }
+  acc
+}
+
+fn dh_declared_effects(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectDef(_, name, _, _) => if effect_row_has_label(Some(out), name) {
+        ()
+      } else {
+        Array::push(out, name)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// True when any label in `labels` could denote `ename` — base-name match, or
+/// a row VARIABLE (which may be instantiated to anything, so it counts).
+fn dh_labels_may_be(labels: Array[String], ename: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(labels) {
+    let l = Array::get(labels, i)
+    if label_is_effect_var(l) || row_label_base(effect_name_of_op(l)) == ename {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Does this type annotation mention a function row carrying `ename`? An
+/// ANNOTATED local binding (`let apply: (String) -> String with { Transform }
+/// = (s) -> { .. }`) is desugared to an ascription call before this walk runs
+/// (`((__asc: T) -> __asc)(e)`, ascribe_wrap), so its row survives only in the
+/// ascription lambda's PARAMETER annotation -- see fixtures/effect_crossfn_test
+/// .vibe, where the handled body's only callee is such a binding.
+fn dh_texpr_may_be(t: TypeExpr, ename: String) -> Bool {
+  match t {
+    TyFn(ps, ret, eff) => if dh_labels_may_be(effect_row_labels(effect_row_parse(eff)), ename) {
+      true
+    } else {
+      dh_texprs_may_be(ps, ename) || dh_texpr_may_be(ret, ename)
+    },
+    TyApp(_, args) => dh_texprs_may_be(args, ename),
+    TyTuple(elems) => dh_texprs_may_be(elems, ename),
+    _ => false
+  }
+}
+
+fn dh_texprs_may_be(ts: Array[TypeExpr], ename: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(ts) && !found {
+    found = dh_texpr_may_be(Array::get(ts, i), ename)
+    i = i + 1
+  }
+  found
+}
+
+fn dh_params_may_be(params: Array[(String, Option[TypeExpr])], ename: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(params) && !found {
+    let (_, pty) = Array::get(params, i)
+    found = match pty {
+      Some(t) => dh_texpr_may_be(t, ename),
+      None => false
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Can this expression statically reach a `perform` of `ename`? Conservative
+/// in the "yes" direction: anything unresolved answers true, so a false here
+/// really does mean the handler is dead.
+fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Array[Array[String]], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Bool {
+  if dh_perform_effect(expr) == ename {
+    true
+  } else {
+    let direct = match expr {
+      // A callee whose declared row carries the effect (or a row variable
+      // that could be instantiated to it). Both tables are consulted: named
+      // top-level bindings, and the #885/#1361 overlay of function-typed
+      // PARAMETERS and row-declaring local closures in scope. The overlay is
+      // what spares `TaskGroup::spawn_suspend`, whose handled body's only
+      // callee is its own `f: () -> T with { Async, Error }` parameter.
+      ECall(EIdent(nm, _), _, _) => match lookup_fn_effs(fn_names, fn_effs, nm) {
+        Some(effs) => dh_labels_may_be(effs, ename),
+        None => match lookup_fn_effs(ov_names, ov_effs, nm) {
+          Some(effs) => dh_labels_may_be(effs, ename),
+          None => false
+        }
+      },
+      // A closure LITERAL whose row carries the effect: it may be invoked
+      // from anywhere inside this body, including through a value this walk
+      // cannot follow. Its PARAMETER annotations count too -- that is where
+      // an ascription-wrapped annotated local keeps its row.
+      EFn(_, _, params, ret, eff, _) => dh_labels_may_be(effect_row_labels(effect_row_parse(eff)), ename) || dh_params_may_be(params, ename) || (match ret {
+        Some(rt) => dh_texpr_may_be(rt, ename),
+        None => false
+      }),
+      // A nested handle is not analysed for discharge here -- treating it as
+      // reaching is the safe direction (it only ever suppresses a report).
+      EHandle(_, _) => true,
+      _ => false
+    }
+    if direct {
+      true
+    } else {
+      let children = expr_children(expr)
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(children) {
+        if !found && dh_may_reach(Array::get(children, i), ename, fn_names, fn_effs, ov_names, ov_effs) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
+/// A call to a plain lowercase, unqualified name that is neither a top-level
+/// binding nor a builtin: a local value holding a function, which is what a
+/// stored continuation is. Constructors (capitalised) and qualified names
+/// (`Fs::read_file`, `T::method`) are resolvable and never count; so does any
+/// non-`EIdent` callee, deliberately -- narrowing to this one shape is what
+/// keeps the rule free of false positives on ordinary code.
+fn dh_callee_is_opaque(nm: String, fn_names: Array[String]) -> Bool {
+  if String::length(nm) == 0 || nm == "perform" || nm == "resume" {
+    false
+  } else if String::index_of(nm, "::") >= 0 {
+    false
+  } else {
+    let c = String::char_code_at(nm, 0)
+    if c >= 65 && c <= 90 {
+      false
+    } else if effect_row_has_label(Some(fn_names), nm) {
+      false
+    } else {
+      match lookup_builtin(canonical_builtin_name(nm)) {
+        Some(_) => false,
+        None => true
+      }
+    }
+  }
+}
+
+fn dh_has_opaque_call(expr: Expr, fn_names: Array[String]) -> Bool {
+  let direct = match expr {
+    ECall(EIdent(nm, _), _, _) => dh_callee_is_opaque(nm, fn_names),
+    _ => false
+  }
+  if direct {
+    true
+  } else {
+    let children = expr_children(expr)
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(children) {
+      if !found && dh_has_opaque_call(Array::get(children, i), fn_names) {
+        found = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+/// Scope-aware descent: the #885/#1361 overlay of in-scope function-typed
+/// parameters and row-declaring local closures is rebuilt exactly as the
+/// transitive walk above rebuilds it, so a handle site is judged against the
+/// same notion of "this callee's declared row" the row checker itself uses.
+fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], fn_names: Array[String], fn_effs: Array[Array[String]], ov_names: Array[String], ov_effs: Array[Array[String]], errors: Array[EffectError]) -> Unit {
+  match expr {
+    EHandle(body, arms) => {
+      let handled = collect_handle_effects(arms)
+      let mut i = 0
+      while i < Array::length(handled) {
+        let eff = Array::get(handled, i)
+        if effect_row_has_label(Some(declared), eff) && effect_row_has_label(Some(performed), eff) && !dh_may_reach(body, eff, fn_names, fn_effs, ov_names, ov_effs) && dh_has_opaque_call(body, fn_names) {
+          Array::push(errors, EEHandleNeverFires(eff))
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, ov_names, ov_effs, errors)
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, ai)
+        dh_check_expr(arm_body, declared, performed, fn_names, fn_effs, ov_names, ov_effs, errors)
+        ai = ai + 1
+      }
+    },
+    EFn(_, _, params, _, _, body) => {
+      let (bn, be) = dh_overlay_with_params(ov_names, ov_effs, params)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, bn, be, errors)
+    },
+    ELet(name, val, body, _) => {
+      dh_check_expr(val, declared, performed, fn_names, fn_effs, ov_names, ov_effs, errors)
+      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, val)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, bn, be, errors)
+    },
+    ELetMut(name, val, body, _) => {
+      dh_check_expr(val, declared, performed, fn_names, fn_effs, ov_names, ov_effs, errors)
+      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, val)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, bn, be, errors)
+    },
+    ELetRec(name, val, body) => {
+      let (rn, re) = overlay_bind_local(ov_names, ov_effs, name, val)
+      dh_check_expr(val, declared, performed, fn_names, fn_effs, rn, re, errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, rn, re, errors)
+    },
+    _ => {
+      let children = expr_children(expr)
+      let mut c = 0
+      while c < Array::length(children) {
+        dh_check_expr(Array::get(children, c), declared, performed, fn_names, fn_effs, ov_names, ov_effs, errors)
+        c = c + 1
+      }
+    }
+  }
+}
+
+/// Strip a trailing `~` (labeled) / `?` (optional) marker — a parameter is
+/// DECLARED as `f~` but CALLED as `f()`, so the overlay key must be the base
+/// name or the lookup misses. fixtures/effect_inline_lambda_literal_labeled_
+/// arg.vibe is exactly that shape: its handled body's only callee is the
+/// labeled parameter `f~: () -> Int with { Log }`.
+fn dh_param_base_name(n: String) -> String {
+  let ln = String::length(n)
+  if ln > 0 {
+    let last = n[ln - 1: ln]
+    if last == "~" || last == "?" {
+      n[0: ln - 1]
+    } else {
+      n
+    }
+  } else {
+    n
+  }
+}
+
+fn dh_overlay_with_params(ov_names: Array[String], ov_effs: Array[Array[String]], params: Array[(String, Option[TypeExpr])]) -> (Array[String], Array[Array[String]]) {
+  let (sn, se) = shadow_overlay_names(ov_names, ov_effs, params)
+  let (raw_ln, le) = build_param_overlay(params)
+  let ln = for n in raw_ln {
+    dh_param_base_name(n)
+  }
+  if Array::length(ln) == 0 {
+    (sn, se)
+  } else {
+    let names = Array::slice(ln, 0, Array::length(ln))
+    let effs = Array::slice(le, 0, Array::length(le))
+    let mut i = 0
+    while i < Array::length(sn) {
+      Array::push(names, Array::get(sn, i))
+      Array::push(effs, Array::get(se, i))
+      i = i + 1
+    }
+    (names, effs)
+  }
+}
+
+fn dh_check_binding(ty: Option[TypeExpr], body: Expr, declared: Array[String], performed: Array[String], fn_names: Array[String], fn_effs: Array[Array[String]], errors: Array[EffectError]) -> Unit {
+  match body {
+    // Seed the overlay from THIS binding's own parameters, exactly as
+    // check_perform_effects_binding_tx does -- descending straight into
+    // `fbody` would otherwise lose them (the top-level annotation, not the
+    // EFn node, is where a separately-typed signature keeps its rows).
+    EFn(_, _, params, _, _, fbody) => {
+      let (n, e) = dh_overlay_with_params(no_str_labels(), no_ov_effs(), merge_param_types_with_sig(ty, params))
+      dh_check_expr(fbody, declared, performed, fn_names, fn_effs, n, e, errors)
+    },
+    _ => dh_check_expr(body, declared, performed, fn_names, fn_effs, no_str_labels(), no_ov_effs(), errors)
+  }
+}
+
+fn check_dead_handles_stmts(stmts: Array[Stmt], fn_names: Array[String], fn_effs: Array[Array[String]]) -> Array[EffectError] {
+  let errors = array_empty()
+  let declared = dh_declared_effects(stmts)
+  if Array::length(declared) == 0 {
+    errors
+  } else {
+    let performed = dh_collect_performed_effects(stmts)
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(_, _, _, ty, body) => dh_check_binding(ty, body, declared, performed, fn_names, fn_effs, errors),
+        SLetMut(_, ty, body) => dh_check_binding(ty, body, declared, performed, fn_names, fn_effs, errors),
+        SExpr(e) => dh_check_binding(None, e, declared, performed, fn_names, fn_effs, errors),
+        STest(_, body) => dh_check_binding(None, body, declared, performed, fn_names, fn_effs, errors),
+        SBench(_, body) => dh_check_binding(None, body, declared, performed, fn_names, fn_effs, errors),
+        _ => ()
+      }
+      i = i + 1
+    }
+    errors
+  }
 }
 
 /// #634 (ADR-0026): pure-test result cache verdict. A `test {}` block's result

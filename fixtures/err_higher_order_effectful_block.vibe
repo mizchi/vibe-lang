@@ -1,0 +1,37 @@
+// #1347 (ADR-0089 Part A, 資料 p87 "higher-order effect"): an operation whose
+// ARGUMENT is an effectful block. A PURE block works and is pinned by
+// fixtures/effect_talk_tracing_span_test.vibe; a block carrying its own row
+// does not, because invoking it from the `Tracing` arm would require migrating
+// `Log`'s evidence across the arm boundary, which ADR-0076's evidence passing
+// cannot do.
+//
+// The rejection itself predates #1347 -- what #1347 fixed is the MESSAGE. The
+// generic migration error blamed the `Log` handle and told the reader to
+// restructure its body, but no restructuring of that body can help: the gap is
+// in `Tracing::Span`'s signature, one level away. The diagnostic now names the
+// operation and states the limitation.
+effect Log {
+  Emit(String) -> Unit
+}
+
+effect Tracing {
+  Span(String, () -> Int with { Log }) -> Int
+}
+
+let main = () -> Int {
+  handle {
+    handle {
+      perform Tracing::Span("outer", () -> Int with { Log } {
+        perform Log::Emit("inside")
+        40
+      })
+    } with Tracing {
+      Span(_info, block) => resume(block() + 2)
+    }
+  } with Log {
+    Emit(_m) => resume(())
+  }
+}
+
+__DATA__
+{"error_contains": "Higher-order effects"}

@@ -8275,4 +8275,222 @@ fi
 rm -rf "$opb"
 echo "[compiler-gate] operation-level builtin rows ok"
 
+# 81/81. #1358: a `for` over an ASYNC iterator requires `Async`. The loop's
+# `await(..)` is injected AFTER the checker (desugar_trait_dict's
+# build_await_iter_for), so nothing in the program text is an async primitive
+# and the Async pass used to find nothing to require -- the loop could suspend
+# from a context that neither declares nor handles Async. The requirement is now
+# read from the ITERAND's type (type_name_has_async_iterator_impl), which is the
+# same bit the desugar switches on. Both directions are required: the declared
+# row still compiles AND runs (the await lowering is unchanged), and the
+# undeclared one is rejected naming `<T>::next`.
+echo "[compiler-gate] 81/81 async for-loop requires the Async row (#1358)"
+afdir="_build/_gate_1358"
+rm -rf "$afdir"; mkdir -p "$afdir"
+sed '/^__DATA__$/,$d' fixtures/effect_async_for_row.vibe > "$afdir/pos.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$afdir/pos.vibe" "$afdir/pos.wasm" main >/dev/null 2>&1
+if [ ! -s "$afdir/pos.wasm" ]; then
+  echo "[compiler-gate] FAIL: effect_async_for_row.vibe did not compile -- a declared { Async } row must still accept the async for loop (#1358)" >&2
+  cat "$afdir/pos.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+af_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$afdir/pos.wasm" 2>&1 | tail -1)"
+if [ "$af_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: effect_async_for_row got '$af_out' (want 42) -- the await lowering of the async for loop regressed" >&2
+  exit 1
+fi
+sed '/^__DATA__$/,$d' fixtures/err_async_for_undeclared.vibe > "$afdir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$afdir/neg.vibe" "$afdir/neg.wasm" main >/dev/null 2>&1 || true
+if [ -s "$afdir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_async_for_undeclared.vibe compiled -- a for loop over a Future-returning iterator must require { Async } (#1358)" >&2
+  exit 1
+fi
+if ! grep -q "Countdown::next" "$afdir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the async-for diagnostic must name the iterator's next method (#1358)" >&2
+  cat "$afdir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$afdir"
+echo "[compiler-gate] async for-loop Async requirement ok"
+
+# 82/82. #1361: a LOCAL closure's declared row leaks at its CALL site. Before
+# this the closure was checked against its OWN row (so it always satisfied
+# itself) and the call site consulted only the top-level call-graph map, in
+# which a local name never appears -- so the row escaped the enclosing
+# declaration silently, and file_entry_cacheable / file_tests_cacheable (which
+# reuse this walk) judged such an entry deterministic. Registering the binding
+# in the #885 callback overlay closes both. Measured on the corpus at the time
+# of the fix: 499/499 test files and 27/27 doctest ```vibe run blocks keep their
+# cache judgment, so nothing was de-cached to buy this.
+echo "[compiler-gate] 82/82 local closure rows leak at the call site (#1361)"
+lcdir="_build/_gate_1361"
+rm -rf "$lcdir"; mkdir -p "$lcdir"
+sed '/^__DATA__$/,$d' fixtures/err_local_closure_effect_leak.vibe > "$lcdir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$lcdir/neg.vibe" "$lcdir/neg.wasm" main >/dev/null 2>&1 || true
+if [ -s "$lcdir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_local_closure_effect_leak.vibe compiled -- a local closure's declared row must leak into its caller (#1361)" >&2
+  exit 1
+fi
+if ! grep -q "missing { Env }" "$lcdir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the local-closure leak must be reported as the caller's missing row label (#1361)" >&2
+  cat "$lcdir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+cat > "$lcdir/pos.vibe" <<'EOF'
+let main = () -> Unit with { Stdout, Env } {
+  let read_home = () -> String with { Env } {
+    Env::get("HOME")
+  }
+  println(read_home())
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$lcdir/pos.vibe" "$lcdir/pos.wasm" main >/dev/null 2>&1
+if [ ! -s "$lcdir/pos.wasm" ]; then
+  echo "[compiler-gate] FAIL: declaring the local closure's row must satisfy the leak check (#1361)" >&2
+  cat "$lcdir/pos.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+cat > "$lcdir/pure.vibe" <<'EOF'
+let main = () -> Unit with { Stdout } {
+  let twice = (n: Int) -> Int {
+    n * 2
+  }
+  println(__to_string(twice(21)))
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$lcdir/pure.vibe" "$lcdir/pure.wasm" main >/dev/null 2>&1
+if [ ! -s "$lcdir/pure.wasm" ]; then
+  echo "[compiler-gate] FAIL: a PURE local closure must stay free of any row requirement (#1361 must not over-require)" >&2
+  cat "$lcdir/pure.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$lcdir"
+echo "[compiler-gate] local closure row leak ok"
+
+# 83/83. #1347 (ADR-0089 Part A): a `handle ... with E` that can never fire. A
+# continuation captured by handler H carries H with it (the suspend lowering
+# bakes H's driver into the closure handed to the arm), so re-driving a stored
+# continuation under a NEW handle switches nothing -- the new arms are dead.
+# Measured before the fix on this exact program: the wrapping handler's arm
+# never ran and the second yield still went to the ORIGINAL arm, silently. The
+# suspend lowering already rejected the same shape when the WRAPPING arm was
+# itself suspend-class; this restores the symmetry for the tail-resumptive one.
+#
+# Three shapes are locked: the dead handle is REJECTED, a handle whose body
+# performs the effect directly still compiles, and -- the false-positive
+# direction that actually bit during implementation -- a body whose only callee
+# is a row-carrying PARAMETER or annotated local still compiles.
+echo "[compiler-gate] 83/83 a handle that can never fire is rejected (#1347)"
+hsdir="_build/_gate_1347_switch"
+rm -rf "$hsdir"; mkdir -p "$hsdir"
+sed '/^__DATA__$/,$d' fixtures/err_handler_switch_dead_handle.vibe > "$hsdir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$hsdir/neg.vibe" "$hsdir/neg.wasm" main >/dev/null 2>&1 || true
+if [ -s "$hsdir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_handler_switch_dead_handle.vibe compiled -- the handler-switch no-op is silent again (#1347)" >&2
+  exit 1
+fi
+if ! grep -q "can never fire" "$hsdir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the dead-handle diagnostic is missing (#1347)" >&2
+  cat "$hsdir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+cat > "$hsdir/live.vibe" <<'EOF'
+effect Yield {
+  Yield(Int) -> Unit
+}
+
+fn gen() -> Unit with { Yield } {
+  perform Yield::Yield(1)
+}
+
+let main = () -> Int {
+  handle {
+    gen()
+    41
+  } with Yield {
+    Yield(x) => resume(())
+  } + 1
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$hsdir/live.vibe" "$hsdir/live.wasm" main >/dev/null 2>&1
+if [ ! -s "$hsdir/live.wasm" ]; then
+  echo "[compiler-gate] FAIL: a handle whose body DOES reach the effect must still compile (#1347 must not over-reject)" >&2
+  cat "$hsdir/live.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+cat > "$hsdir/param.vibe" <<'EOF'
+effect Yield {
+  Yield(Int) -> Unit
+}
+
+fn gen() -> Unit with { Yield } {
+  perform Yield::Yield(1)
+}
+
+fn run(f: () -> Int with { Yield }) -> Int {
+  handle {
+    f()
+  } with Yield {
+    Yield(x) => resume(())
+  }
+}
+
+let main = () -> Int {
+  let body: () -> Int with { Yield } = () -> {
+    gen()
+    42
+  }
+  run(body)
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$hsdir/param.vibe" "$hsdir/param.wasm" main >/dev/null 2>&1
+if [ ! -s "$hsdir/param.wasm" ]; then
+  echo "[compiler-gate] FAIL: a handled body whose only callee is a row-carrying PARAMETER (or annotated local) must compile -- #1347 must consult the #885/#1361 overlay, not just top-level bindings" >&2
+  cat "$hsdir/param.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$hsdir"
+echo "[compiler-gate] dead-handle rejection ok"
+
+# 84/84. #1347: the higher-order-effect message. An operation parameterised by
+# an EFFECTFUL block was already rejected, but the generic migration error
+# blamed the handle and told the reader to restructure ITS body -- unactionable,
+# since the gap is in the operation's signature one level away. The diagnostic
+# now names the operation. The PURE-block form must keep working (that is the
+# supported half, pinned by fixtures/effect_talk_tracing_span_test.vibe).
+echo "[compiler-gate] 84/84 higher-order effectful block names the operation (#1347)"
+hodir="_build/_gate_1347_ho"
+rm -rf "$hodir"; mkdir -p "$hodir"
+sed '/^__DATA__$/,$d' fixtures/err_higher_order_effectful_block.vibe > "$hodir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$hodir/neg.vibe" "$hodir/neg.wasm" main >/dev/null 2>&1 || true
+if [ -s "$hodir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: an operation taking an EFFECTFUL block must still be rejected (#1347)" >&2
+  exit 1
+fi
+if ! grep -q "Higher-order effects" "$hodir/neg.wasm.diag" 2>/dev/null || ! grep -q "Tracing::Span" "$hodir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the diagnostic must name the higher-order OPERATION and the limitation (#1347)" >&2
+  cat "$hodir/neg.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$hodir"
+echo "[compiler-gate] higher-order effect diagnostic ok"
+
 echo "[compiler-gate] ok"

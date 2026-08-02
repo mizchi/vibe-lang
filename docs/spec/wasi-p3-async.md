@@ -70,6 +70,17 @@ vibe には `fn` キーワードが無く、関数は `let f: (A) -> B with { E 
   するループへ desugar）。`for await` という別綴りは #1350 で廃止 —
   iteration が suspend しうることは effect row が既に語っており、構文側の
   `await` マーカーは二重表現だったため。
+- **その `for` 自身が `Async` を要求する** (#1358, 2026-08-02)。注入される
+  `await` は checker より後 (`desugar_trait_dict` の `build_await_iter_for`)
+  なので、検査時点のプログラム中に async primitive は存在しない。したがって
+  この要求は **iterand の型**から読む — `next` が `Future` を返す iterator
+  trait を実装した型なら、囲む row に `Async` が要る
+  (`type_name_has_async_iterator_impl` / `check_async_effects_expr` の EForIn
+  arm)。desugar が await ループを選ぶのと同じビットを見ているので、両者の
+  判定は定義上一致する。iterand の型が解決できないときは何も要求しない
+  (desugar 側も分類できなければ sync ループのままなので対称)。この穴は
+  #1350 が作ったものではなく、`for await` 時代の marker も checker で
+  unwrap されるだけで何も要求していなかった。
 
 実体（状態機械 lowering）は §3 が担い、replay effect handler の上には載せない。
 

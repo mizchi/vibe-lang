@@ -40,9 +40,9 @@ async 対応は存在しない**。`vibe serve` は Rust adapter が p3 の stre
 | State(可変セル + 末尾 resume、資料 p132 の primitive 形) | **動作** | mut セルを閉じ込めた tail-resumptive handler。needing fn 内の `while` + `let mut` も evidence-dict 経路で通ることを確認。[fixtures/effect_talk_state_appdb_test.vibe](../fixtures/effect_talk_state_appdb_test.vibe)(資料 p63 AppDB の再現) |
 | State(古典的な状態渡し継続 `(s) => resume(s)(s)`) | **不可** | vibe の `handle` に return/value 節が無く、arm が lambda を返すと `handler arm value type mismatch with the handle body's type: expected Int, got (Int) -> Int`。primitive 形が資料自身の推奨でもあるため、これは追わない |
 | Coroutine(`Yielded(x, resume)` を返す) | **動作(制約付き)** | first-class `resume` を **ADT payload に格納して handle の外へ返し、driver ループで Done まで再入**する資料 p69-75 の形がそのまま通ることを新規に pin。[fixtures/effect_talk_coroutine_status_test.vibe](../fixtures/effect_talk_coroutine_status_test.vibe)。制約: one-shot(2回目は trap、gate 50)、suspend body は spine 形状のみ、linear backend のみ |
-| Handler switch(非スコープ再開、資料 p76) | **不可(silent)** | 格納された継続には元の driver が lexically 焼き付いており、新しい `handle ... with Yield { ... }` の下で呼んでも**新 handler は無視されて元の arm に配送され続ける**(実測: log=[101,102])。エラーにならない footgun なので、診断の追加を検討課題とする |
+| Handler switch(非スコープ再開、資料 p76) | **不可(診断あり)** | 格納された継続には元の driver が lexically 焼き付いており、新しい `handle ... with Yield { ... }` の下で呼んでも**新 handler は無視されて元の arm に配送され続ける**(実測: log=[101,102])。**#1347 (2026-08-02) で silent ではなくなった** — checker が「発火しえない handle」として reject する(下記)。[fixtures/err_handler_switch_dead_handle.vibe](../fixtures/err_handler_switch_dead_handle.vibe)、compiler_gate 83 |
 | 高階エフェクト: 純粋 block(`Span(String, () -> Int)`) | **動作** | operation の関数型パラメータ + arm からの block 呼び出しは通り、span の開始/終了 pairing を arm に閉じ込められる(資料 p86 の startSpan/endSpan 誤用問題は構造的に起きない)。[fixtures/effect_talk_tracing_span_test.vibe](../fixtures/effect_talk_tracing_span_test.vibe) |
-| 高階エフェクト: effectful block(資料 p87 の本丸) | **不可** | `Span(String, () -> Int with { Log })` + 外側 `handle .. with Log` は、arm 経由で呼ばれる closure が evidence migration から見えず `handle of effect 'Log' cannot be compiled: the site is not eligible for evidence-passing migration (ADR-0076) and the replay engine was removed (追記34 V2)` の明確な診断で reject(invalid module にはならない)。Provider effect(資料 p89)も同じ壁 |
+| 高階エフェクト: effectful block(資料 p87 の本丸) | **不可(仕様として非対応)** | `Span(String, () -> Int with { Log })` + 外側 `handle .. with Log` は、arm 経由で呼ばれる closure が evidence migration から見えず reject(invalid module にはならない)。**#1347 (2026-08-02) で診断文を専用化** — 汎用文言は「handle の body を restructure せよ」と言っていたが、原因は operation の**シグネチャ**側にあり body の書き換えでは直せない。現在は原因の operation を名指しし、非対応であることを明示する: ``effect 'Log' cannot be compiled here: operation `Tracing::Span` takes a block whose own row carries 'Log' ... Higher-order effects (an operation parameterised by an EFFECTFUL block) are not supported``。[fixtures/err_higher_order_effectful_block.vibe](../fixtures/err_higher_order_effectful_block.vibe)、compiler_gate 84。Provider effect(資料 p89)も同じ壁 |
 | 分散 Tracing として | **部分的に可** | 純粋 block 形 + mut セル(State)+ handler での backend 切り替えまでは今日書ける。block が Fs/Http を伴う実用形は上記の高階ギャップに依存する |
 
 ### 横断ギャップ(実測で確定)
@@ -65,7 +65,22 @@ async 対応は存在しない**。`vibe serve` は Rust adapter が p3 の stre
    資料の「継続を捨てる = 脱出」という直観と食い違うため、少なくとも
    diagnostics/doc で明示する。
 3. handler switch は evidence への下位 evidence vector 退避(資料 p133 と同じ
-   結論)が必要で、現状は silent no-op。当面は「診断を出す」を先行させる。
+   結論)が必要。~~現状は silent no-op。当面は「診断を出す」を先行させる。~~
+   → **#1347 (2026-08-02) で診断が入った**。実装は checker 側の3条件連言:
+   (a) その effect をプログラムのどこかが perform しており、(b) この handle
+   の body からは静的に到達せず、(c) body が opaque な値呼び出しを含む。
+   3条件すべてが必要で、(a) が無いと `entry.vibe` の `Profiler` handle や
+   `cache_underlying.vibe` の label pun (誰も perform しないラベルを包む、
+   vacuous erasure が意図的に消しているサイト) を、(c) が無いと
+   `http_e2e_test` の client-only `Http` handle を誤検出する。
+   到達判定は #885/#1361 の overlay を参照するので、row 付き
+   パラメータ・注釈つきローカル (`let f: () -> T with { E } = ..`) 経由で
+   perform に届く body は対象外 — 実装中に `TaskGroup::spawn_suspend` と
+   `fixtures/effect_crossfn_test.vibe` で実際に踏んで修正した。
+   **動的検出は安価な代替にならない**: 継続を呼んだ時点で「今 E を担当する
+   handler」を比較するには evidence を動的ベクタで持ち回る必要があり、
+   それは p133 の退避そのもの = handler switch の実装とほぼ同コスト。
+   よって選択肢は「静的診断」か「機能実装」の二択で、前者を先に置いた。
 
 ## Part B: wasip3 `future<T>` / `stream<T>` との整合(決定)
 
@@ -350,9 +365,14 @@ trampoline を将来 `wasi:http/service` の
   未配線)。Decision 2-4 の間、gc lane の扱いを明示する必要がある。
 - one-shot 検査は動的 trap のみ(静的 affine 検査なし)。`Future[T]` を
   公開 API にするなら誤用診断の改善が要る。
-- handler switch の silent no-op(Part A)は、coroutine を stream producer に
+- ~~handler switch の silent no-op(Part A)は、coroutine を stream producer に
   使う際の誤用経路になる — 「格納された継続を別 handle で包んだ」ことを
-  検出する診断を先行して足すべき。
+  検出する診断を先行して足すべき。~~ → #1347 で着地(上記 横断ギャップ 3)。
+  残る制限: 診断は「発火しえない handle」を捕まえる形なので、包み直した
+  handle の body が**別途本物の perform も含む**場合はすり抜ける(その
+  handle は実際に発火するため、死んではいない)。そこまで捕まえるには
+  「格納された継続」という値の由来を追う必要があり、機能実装(p133 の
+  evidence vector)を待つ。
 - ~~generic effect の「無検査で通る」現状は、資料パターンの写経がそのまま
   型穴になる(検査されていると誤認する)。ADR-0071 実装までの間、
   generic effect 宣言に warning を出す案を検討する。~~ → warning は

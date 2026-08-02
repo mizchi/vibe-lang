@@ -2476,7 +2476,8 @@ drive する資料 p69-75 の Coroutine 形がそのまま通ることを
 closure を追えず needle "replay engine was removed" の診断で reject
 (純粋 block なら通る — `effect_talk_tracing_span_test.vibe`)、(c) 格納した
 継続を別の `handle` で包んでも元 driver に配送され続ける (handler switch は
-silent no-op — 診断追加の検討課題)、(d) generic effect は TDEffect 未登録の
+silent no-op だった — **#1347 で診断が入り silent ではなくなった**、
+ADR-0089 Part A の横断ギャップ 3 参照)、(d) generic effect は TDEffect 未登録の
 まま両 handler class ともコンパイル・実行できてしまい検査が全て素通りする
 (arity 誤りも通る) ことを実測確認 — ADR-0071 正規化実装までの warning 追加を
 ADR-0089 が提案。

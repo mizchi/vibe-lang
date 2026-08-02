@@ -1,0 +1,45 @@
+// #1358: driving an ASYNC iterator (`next` yields a `Future`) with `for`
+// awaits every step, so the loop needs `Async` in the enclosing row. The
+// `await(..)` itself is injected AFTER the checker (desugar_trait_dict's
+// build_await_iter_for), which is why the requirement is recognised from the
+// iterand's TYPE rather than from an async primitive in the program text.
+//
+// The positive side: a row that declares `Async` accepts the loop, and the
+// await lowering still runs it (on the synchronous backend `await` /
+// `Future::ready` are the identity).
+trait AIter[T] {
+  next(Self) -> Future[Option[(T, Self)]]
+}
+
+struct Countdown {
+  n: Int
+}
+
+impl AIter for Countdown {
+  next(self) -> Future[Option[(Int, Countdown)]] {
+    Future::ready(if self.n > 0 {
+      Some((self.n, Countdown::{
+        n: self.n - 1
+      }))
+    } else {
+      None
+    })
+  }
+}
+
+fn total() -> Int with { Async } {
+  let mut acc = 0
+  for x in Countdown::{
+    n: 4
+  } {
+    acc = acc + x
+  }
+  acc
+}
+
+export let main = () -> Int with { Async } {
+  32 + total()
+}
+
+__DATA__
+{"last": "42"}

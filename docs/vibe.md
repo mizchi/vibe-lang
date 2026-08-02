@@ -229,6 +229,31 @@ Rules:
 > `with {e}` — still needs real call-site effect-row unification and remains
 > open.)
 
+> **Enforced (#1361):** the same rule holds for a LOCAL closure. A
+> `let f = () -> T with { E } { ... }` written inside a function body is a
+> call-graph leaf just like a top-level function or a callback parameter, so
+> calling `f()` requires the enclosing function to declare `E` (or to be under
+> a `handle` that discharges it). Until #1361 neither table saw such a
+> binding — the call-graph map is built from top-level bindings and the
+> overlay from function-typed parameters — so the closure satisfied its own
+> declared row and the requirement never surfaced at the call site:
+>
+> ```vibe skip
+> // error (ENFORCED — #1361): main declares only { Stdout } but reaches Env
+> let main = () -> Unit with { Stdout } {
+>   let read_home = () -> String with { Env } { Env::get("HOME") }
+>   println(read_home())
+> }
+> ```
+>
+> This also closed the doctest / `vibe test` cache half of the same hole:
+> `file_entry_cacheable` / `file_tests_cacheable` reuse this walk, so an entry
+> whose output tracked the environment through a local closure used to be
+> judged deterministic and replayed from cache. (Scope note: an ANNOTATED local
+> binding, `let f: () -> T with { E } = ...`, is desugared to an ascription call
+> before this walk runs, so its row is not visible here and that spelling keeps
+> the older, permissive behavior.)
+
 Examples:
 
 <!-- doctest-skip: intentional type error example (ok/error contrast

@@ -1,0 +1,41 @@
+// #1358: the negative side of effect_async_for_row.vibe — the very same loop
+// in a function that declares NO row. The loop can suspend from a context that
+// neither declares nor handles `Async`, so it must be rejected. Before the fix
+// this compiled silently, because the checker never saw an async primitive
+// (the `await` is injected later, in codegen's dict-passing desugar).
+trait AIter[T] {
+  next(Self) -> Future[Option[(T, Self)]]
+}
+
+struct Countdown {
+  n: Int
+}
+
+impl AIter for Countdown {
+  next(self) -> Future[Option[(Int, Countdown)]] {
+    Future::ready(if self.n > 0 {
+      Some((self.n, Countdown::{
+        n: self.n - 1
+      }))
+    } else {
+      None
+    })
+  }
+}
+
+fn total() -> Int {
+  let mut acc = 0
+  for x in Countdown::{
+    n: 4
+  } {
+    acc = acc + x
+  }
+  acc
+}
+
+let main = () -> Int {
+  total()
+}
+
+__DATA__
+{"error_contains": "Countdown::next"}

@@ -906,6 +906,106 @@ fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_b
 /// row-E closure VALUES whose migration cannot complete must fail loudly,
 /// never fall back to replay — the caller turns a non-empty list into a
 /// compile error, mirroring suspend_cps_pass's contract).
+/// #1347 (ADR-0089 Part A, 資料 p87 "higher-order effect"): does some declared
+/// effect's operation take a BLOCK — a function-typed parameter whose OWN row
+/// carries `ename`? E.g. `effect Tracing { Span(String, () -> Int with { Log })
+/// -> Int }` handled under an outer `handle .. with Log`: the arm invokes that
+/// block, so Log's evidence would have to migrate across the arm boundary,
+/// which this implementation cannot do. Returns "T::Op" when the shape is
+/// present, "" otherwise.
+///
+/// Worth singling out because the generic migration error below blames the
+/// `Log` handle and tells the reader to restructure ITS body — but no
+/// restructuring of that body can help; the gap is in the OPERATION's
+/// signature, one level away. Label matching here is a plain base-name
+/// compare (no effectset resolution): a miss just falls back to the generic
+/// message, which is the pre-#1347 behavior.
+fn edp_ho_row_names_contain(row: Option[String], ename: String) -> Bool {
+  match row {
+    None => false,
+    Some(s) => {
+      let parts = String::split(s, ",")
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(parts) {
+        let label = String::trim(Array::get(parts, i))
+        let qi = String::index_of(label, "::")
+        let head = if qi > 0 {
+          label[0: qi]
+        } else {
+          label
+        }
+        let bi = String::index_of(head, "[")
+        let base = if bi > 0 {
+          head[0: bi]
+        } else {
+          head
+        }
+        if base == ename {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
+fn edp_ho_texpr_has_block_row(t: TypeExpr, ename: String) -> Bool {
+  match t {
+    TyFn(ps, ret, eff) => if edp_ho_row_names_contain(eff, ename) {
+      true
+    } else {
+      edp_ho_texprs_have_block_row(ps, ename) || edp_ho_texpr_has_block_row(ret, ename)
+    },
+    TyApp(_, args) => edp_ho_texprs_have_block_row(args, ename),
+    TyTuple(elems) => edp_ho_texprs_have_block_row(elems, ename),
+    _ => false
+  }
+}
+
+fn edp_ho_texprs_have_block_row(ts: Array[TypeExpr], ename: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(ts) && !found {
+    found = edp_ho_texpr_has_block_row(Array::get(ts, i), ename)
+    i = i + 1
+  }
+  found
+}
+
+/// The shared #1347 wording. Used from BOTH migration failure paths (the
+/// closure-value guard in edp_plan_migrations and the live-replay-handle check
+/// in evidence_dict_pass), because which one a given program trips depends on
+/// whether the block is written as a row-annotated literal — an accident of
+/// spelling, not a different limitation.
+fn edp_higher_order_error_msg(ename: String, ho: String) -> String {
+  let tail = String::concat(ho, String::concat("` takes a block whose own row carries '", String::concat(ename, "', and invoking that block from a handler arm would require migrating the effect's evidence across the arm boundary. Higher-order effects (an operation parameterised by an EFFECTFUL block) are not supported -- ADR-0089 Part A / #1347. Make the block PURE (a row-free function parameter works, and keeps the arm's start/end pairing), or handle the effect inside the function that builds the block")))
+  String::concat("effect '", String::concat(ename, String::concat("' cannot be compiled here: operation `", tail)))
+}
+
+fn edp_higher_order_block_owner(effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], ename: String) -> String {
+  let mut i = 0
+  let mut hit = ""
+  while i < Array::length(effect_defs) && String::length(hit) == 0 {
+    let (tname, ops) = Array::get(effect_defs, i)
+    let mut j = 0
+    while j < Array::length(ops) && String::length(hit) == 0 {
+      let (opname, params, _) = Array::get(ops, j)
+      if edp_ho_texprs_have_block_row(params, ename) {
+        hit = String::concat(tname, String::concat("::", opname))
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  hit
+}
+
 export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[String] {
   let errs = empty_str_array()
   let effect_defs = edp_collect_effect_defs(stmts)
@@ -996,7 +1096,15 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
   if Array::length(errs) == 0 {
     let bad = edp_first_live_replay_handle(stmts, keep)
     if String::length(bad) > 0 {
-      Array::push(errs, String::concat(String::concat("handle of effect '", bad), "' cannot be compiled: the site is not eligible for evidence-passing migration (ADR-0076) and the replay engine was removed (追記34 V2) -- restructure the handled body so its performs are statically visible to the migration (direct performs, calls to named top-level functions, or row-annotated closure literals), or handle the effect inside the function that performs it"))
+      // #1347: when the cause is a higher-order operation (an effect whose
+      // operation takes a block carrying this row), say so -- the generic
+      // advice below is unactionable for that shape.
+      let ho = edp_higher_order_block_owner(effect_defs, bad)
+      if String::length(ho) > 0 {
+        Array::push(errs, edp_higher_order_error_msg(bad, ho))
+      } else {
+        Array::push(errs, String::concat(String::concat("handle of effect '", bad), "' cannot be compiled: the site is not eligible for evidence-passing migration (ADR-0076) and the replay engine was removed (追記34 V2) -- restructure the handled body so its performs are statically visible to the migration (direct performs, calls to named top-level functions, or row-annotated closure literals), or handle the effect inside the function that performs it"))
+      }
     } else {
       ()
     }
@@ -2869,7 +2977,17 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
           // spawn_suspend's `f: () -> T with { Async, Error }` param)
           // follow the STEP convention and are none of edp's business.
           if Array::length(edp_collect_handle_sites(stmts, ename)) > 0 && (Array::length(gb) > 0 || Array::length(gl) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list)) {
-            Array::push(errs, String::concat(String::concat("effect ", ename), " has closure values whose row carries it (type-directed evidence, ADR-0076 追記34), but its evidence migration is not fully eligible -- a handle body, a needing function, or a row-carrying closure literal calls something the pass cannot see through; replay fallback is not available for closure-value programs"))
+            // #1347: name the higher-order operation when that is the cause.
+            // The generic wording below points at "a handle body, a needing
+            // function, or a row-carrying closure literal", none of which the
+            // reader can fix for this shape -- the gap is the OPERATION's
+            // signature, one level away.
+            let ho = edp_higher_order_block_owner(effect_defs, ename)
+            if String::length(ho) > 0 {
+              Array::push(errs, edp_higher_order_error_msg(ename, ho))
+            } else {
+              Array::push(errs, String::concat(String::concat("effect ", ename), " has closure values whose row carries it (type-directed evidence, ADR-0076 追記34), but its evidence migration is not fully eligible -- a handle body, a needing function, or a row-carrying closure literal calls something the pass cannot see through; replay fallback is not available for closure-value programs"))
+            }
           } else {
             ()
           }
